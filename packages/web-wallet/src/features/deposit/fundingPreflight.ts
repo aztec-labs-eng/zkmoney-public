@@ -8,7 +8,6 @@ import {
   type PortalCapacityStore,
   type RequiredCredit,
 } from "@obsidion/front-core"
-import { SOURCE_OPERATION_CAP } from "@obsidion/sdk"
 import {
   capacityAllowsFunding,
   fundingEligibility,
@@ -77,7 +76,6 @@ async function freshEligibility(
   return fundingEligibility({
     state,
     required,
-    operationCap: SOURCE_OPERATION_CAP,
     now: now(),
     staleAfterMs: store.policy.staleAfterMs,
     unknownCapacity: policy,

@@ -1,12 +1,12 @@
 import { describe, expect, it, vi, beforeEach } from "vitest"
-import { Network, quotedDepositFee } from "@obsidion/core/constants"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import type { RegistryTagResolution, RequestInlinePacket } from "@obsidion/front-core"
 import type { PublicClient } from "viem"
-import { depositTokensFor } from "../src/features/deposit/loadDepositFacts"
+import { SipaNameUndepositableError } from "@obsidion/sdk"
 import {
   linkDeployment,
   RequestDecimalsMismatchError,
+  RequesterNotUpgradedError,
   resolveAccountlessRequest,
 } from "../src/features/requests/accountlessRequest"
 import {
@@ -17,28 +17,19 @@ import {
 const SIPA = `0x${"aa".repeat(20)}`
 const CCIP_SIPA = `0x${"bb".repeat(20)}`
 const L2 = `0x${"cc".repeat(32)}`
-const TOKEN = `0x${"22".repeat(20)}`
+const TOKEN = `0x${"22".repeat(20)}` as const
 const IMPLEMENTATION = `0x${"77".repeat(20)}`
 const PORTAL = `0x${"88".repeat(20)}`
-const RELAYER_FEE = 250_000n
-const FPC_FUNDING_CUT = 250_000_000_000_000_000n
-// The payer must cover the whole quoted fee: the sweep fee AND the portal's funding cut.
-const FEE = quotedDepositFee(RELAYER_FEE, FPC_FUNDING_CUT)
+const FEE = 250_000n
 
 const resolveSipaAddressMock = vi.fn(async (..._args: unknown[]) => CCIP_SIPA)
-const readDepositFeeMock = vi.fn(async (..._args: unknown[]) => RELAYER_FEE)
-const readFpcFundingCutMock = vi.fn(async (..._args: unknown[]) => FPC_FUNDING_CUT)
+const readDepositFeeMock = vi.fn(async (..._args: unknown[]) => FEE)
 
 vi.mock("@obsidion/sdk", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/sdk")>()),
   resolveSipaAddress: (...args: unknown[]) => resolveSipaAddressMock(...args),
   readDepositFee: (...args: unknown[]) => readDepositFeeMock(...args),
-  readFpcFundingCut: (...args: unknown[]) => readFpcFundingCutMock(...args),
-}))
-
-vi.mock("@obsidion/front-core", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@obsidion/front-core")>()),
-  depositSipaImplementation: async () => IMPLEMENTATION,
+  readDepositSIPAImplementation: async () => IMPLEMENTATION,
 }))
 
 const tuple = {
@@ -48,6 +39,7 @@ const tuple = {
   sipaResolver: `0x${"66".repeat(20)}`,
   ensDomain: "sandbox.oxide",
   sipaFactory: `0x${"55".repeat(20)}`,
+  forwardingTable: `0x${"99".repeat(20)}`,
   portal: PORTAL,
   rollupVersion: "4127419662",
 } as OxideEnvTuple
@@ -109,7 +101,7 @@ function deps(resolveRequester: () => Promise<RegistryTagResolution> = async () 
     publicClient: l1(),
     resolveRequester,
     chainId: 11155111,
-    network: Network.SANDBOX,
+    acceptedTokens: [TOKEN],
   }
 }
 
@@ -181,10 +173,10 @@ describe("resolveAccountlessRequest", () => {
   })
 
   it("asks the resolver when the embedded SIPA holds another accepted token", async () => {
-    const usdc = depositTokensFor(Network.MAINNET)[1].address!
+    const usdc = `0x${"c0".repeat(20)}` as const
     const result = await resolveAccountlessRequest(packet({ sipaAddress: SIPA }), {
       ...deps(),
-      network: Network.MAINNET,
+      acceptedTokens: [TOKEN, usdc],
       publicClient: l1(6, { [SIPA]: { tokens: { [usdc]: 1n } } }),
     })
     expect(result.sipaAddress).toBe(CCIP_SIPA)
@@ -240,6 +232,34 @@ describe("resolveAccountlessRequest", () => {
     ).rejects.toThrow(/no longer registered/)
     expect(resolveSipaAddressMock).not.toHaveBeenCalled()
   })
+
+  it("names a requester who hasn't upgraded, and never asks the resolver", async () => {
+    await expect(
+      resolveAccountlessRequest(
+        packet(),
+        deps(async () => ({ status: "staleRollup" })),
+      ),
+    ).rejects.toBeInstanceOf(RequesterNotUpgradedError)
+    expect(resolveSipaAddressMock).not.toHaveBeenCalled()
+  })
+
+  it("names a requester the resolver refuses as not upgraded", async () => {
+    resolveSipaAddressMock.mockRejectedValueOnce(
+      new SipaNameUndepositableError("alice.sandbox.oxide"),
+    )
+    await expect(resolveAccountlessRequest(packet(), deps())).rejects.toBeInstanceOf(
+      RequesterNotUpgradedError,
+    )
+  })
+
+  it("keeps the QR for a requester who hasn't upgraded, and says so", async () => {
+    const result = await resolveAccountlessRequest(
+      packet({ sipaAddress: SIPA }),
+      deps(async () => ({ status: "staleRollup" })),
+    )
+    expect(result.sipaAddress).toBe(SIPA)
+    expect(result.tagWarning).toBe("@alice hasn't upgraded yet")
+  })
 })
 
 const PREIMAGE = { intentHash: `0x${"4e".repeat(32)}`, recovery: `0x${"5f".repeat(32)}` }
@@ -279,7 +299,7 @@ describe("linkDeployment", () => {
 describe("resolveAccountlessRequest deployment", () => {
   beforeEach(() => resolveSipaAddressMock.mockClear())
 
-  it("re-predicts the link's address from the active factory, implementation and rollup", async () => {
+  it("re-predicts the link's address from the active factory, implementation, rollup and table", async () => {
     const calls: unknown[][] = []
     const result = await resolveAccountlessRequest(
       packet({ sipaAddress: SIPA, sipaPreimage: PREIMAGE }),
@@ -299,6 +319,7 @@ describe("resolveAccountlessRequest deployment", () => {
         PREIMAGE.recovery,
         4127419662n,
         true,
+        tuple.forwardingTable,
       ],
     ])
     expect(result.deployment).toBe("active")

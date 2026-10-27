@@ -1,4 +1,4 @@
-import type { ContractArtifact } from "@aztec/stdlib/abi"
+import type { ContractArtifact } from "@aztec-labs/stdlib/abi"
 import { ContractName, IContractServiceStorage, NetworkType } from "@obsidion/sdk"
 
 /**

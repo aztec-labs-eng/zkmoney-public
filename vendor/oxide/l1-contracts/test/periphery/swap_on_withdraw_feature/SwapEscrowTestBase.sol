@@ -15,8 +15,8 @@ import {EscrowRecoveryTestBase} from "@test/periphery/EscrowRecoveryTestBase.sol
 import {MockCurve3Pool} from "@test/mocks/MockCurve3Pool.sol";
 import {MockV3Aggregator} from "@test/mocks/MockV3Aggregator.sol";
 import {MockUniswapV2Pair} from "./MockUniswapV2Pair.sol";
-import {MockUniversalRouter} from "./MockUniversalRouter.sol";
-import {MockWETH9} from "./MockWETH9.sol";
+import {MockUniversalRouter} from "@test/mocks/MockUniversalRouter.sol";
+import {MockWETH9} from "@test/mocks/MockWETH9.sol";
 
 abstract contract SwapEscrowTestBase is EscrowRecoveryTestBase {
   uint256 internal constant AMOUNT = 2500e18;

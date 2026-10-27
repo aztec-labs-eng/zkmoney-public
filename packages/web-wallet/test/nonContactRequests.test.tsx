@@ -18,7 +18,6 @@ const declineRequestById = vi.hoisted(() => vi.fn(async (_id: string) => true))
 /** Whether a send must wait for the upgrade, and every action a press asked for. */
 const gate = vi.hoisted(() => ({ upgrade: false, asked: [] as string[] }))
 vi.mock("../src/features/actionGate", () => ({
-  useWalletFrozen: () => false,
   useActionGuard: () => (action: string, run: () => void) => {
     gate.asked.push(action)
     if (!gate.upgrade) run()

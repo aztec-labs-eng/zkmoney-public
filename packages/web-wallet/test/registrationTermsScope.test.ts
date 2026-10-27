@@ -351,14 +351,14 @@ describe("what a registration deposit is worth", () => {
 })
 
 describe("registrationDepositCredit", () => {
-  const base = { floor: 11n, feeOwed: 1n, fpcCut: 1n }
+  const base = { floor: 11n, feeOwed: 1n }
 
   it("calls a deposit short of the floor short, and names no credit for it", () => {
     // A settled verdict, not a read in flight: the row shows what was deposited.
     expect(registrationDepositCredit({ ...base, gross: 10n })).toEqual({ short: true })
   })
 
-  it.each(["gross", "floor", "feeOwed", "fpcCut"] as const)(
+  it.each(["gross", "floor", "feeOwed"] as const)(
     "withholds both figures while the %s is unread",
     (unread) => {
       expect(registrationDepositCredit({ ...base, gross: 11n, [unread]: undefined })).toEqual({
@@ -368,20 +368,20 @@ describe("registrationDepositCredit", () => {
   )
 
   it.each([
-    ["the fee owed plus the portal's cut", { ...base, gross: 15n }, 13n],
-    ["a larger fee", { ...base, gross: 15n, feeOwed: 3n }, 11n],
-    ["no fee", { ...base, gross: 15n, feeOwed: 0n }, 14n],
+    ["the fee owed", { ...base, gross: 15n }, 14n],
+    ["a larger fee", { ...base, gross: 15n, feeOwed: 3n }, 12n],
+    ["no fee", { ...base, gross: 15n, feeOwed: 0n }, 15n],
     // 14.7 sent against a 14.5 floor: the chain takes it, so the row projects a credit rather
     // than reporting the whole gross as still-short.
     [
       "a deposit over the floor but under the asked total",
-      { gross: dai(14.7), floor: dai(14.5), feeOwed: dai(5), fpcCut: dai(0.25) },
-      dai(9.45),
+      { gross: dai(14.7), floor: dai(14.5), feeOwed: dai(5) },
+      dai(9.7),
     ],
     [
-      "staging's 10 DAI deposit, 5.5 DAI fee and 0.1 cut",
-      { gross: dai(10), floor: dai(9.4), feeOwed: dai(5.5), fpcCut: dai(0.1) },
-      dai(4.4),
+      "staging's 10 DAI deposit and 5.5 DAI fee",
+      { gross: dai(10), floor: dai(9.4), feeOwed: dai(5.5) },
+      dai(4.5),
     ],
   ])("nets %s", (_, input, credit) => {
     expect(registrationDepositCredit(input)).toEqual({ credit, short: false })
@@ -579,49 +579,31 @@ it("preserves the campaign expectation when the same quote is refreshed, but nev
 })
 
 describe("what to ask for and what the chain takes are two figures", () => {
-  // The default schedules; staging's portal funding cut sits under both minimums, so each floor is
-  // its fee plus its minimum.
+  // The default schedules: each floor is its fee plus its minimum.
   const paid = PAID
   const earned = RANDOM
-  const CUT = dai(0.1)
   // An earned schedule whose floor is over the earned ask.
   const overAsk = { min: RANDOM_ASK, fee: RANDOM.fee }
 
   it.each([
-    ["before any schedule is known, with no split", undefined, CUT, undefined, undefined],
-    [
-      "once the schedule lands, with headroom over the floor",
-      paid,
-      CUT,
-      paid.fee,
-      paid.fee + paid.min,
-    ],
-    ["on the schedule alone, the floor waiting for the cut", paid, undefined, paid.fee, undefined],
-  ])("asks the constant standard total %s", (_, schedule, cut, fee, floor) => {
-    expect(registrationQuote(schedule, "standard", cut)).toEqual({ total: PAID_ASK, fee, floor })
+    ["before any schedule is known, with no split", undefined, undefined, undefined],
+    ["once the schedule lands, with headroom over the floor", paid, paid.fee, paid.fee + paid.min],
+  ])("asks the constant standard total %s", (_, schedule, fee, floor) => {
+    expect(registrationQuote(schedule, "standard")).toEqual({ total: PAID_ASK, fee, floor })
   })
 
   it("asks the earned total for an earned schedule, with headroom over its floor", () => {
-    const quote = registrationQuote(earned, "earned_tag", CUT)
+    const quote = registrationQuote(earned, "earned_tag")
     expect(quote.total).toBe(RANDOM_ASK)
     expect(quote.floor).toBe(earned.fee + earned.min)
-    expect(registrationQuote(undefined, "earned_tag", CUT).total).toBe(RANDOM_ASK)
-  })
-
-  it("prices the floor off the cut once it outranks the minimum", () => {
-    const quote = registrationQuote({ min: dai(0.1), fee: dai(0.5) }, "earned_tag", CUT)
-    expect(quote.floor).toBe(dai(0.6) + 1n)
+    expect(registrationQuote(undefined, "earned_tag").total).toBe(RANDOM_ASK)
   })
 
   it("reads a signed earned floor under the ask as quotable, and one over it as not", () => {
-    expect(floorExceedsAsk(earned, "earned_tag", CUT)).toBe(false)
-    expect(floorExceedsAsk(overAsk, "earned_tag", CUT)).toBe(true)
+    expect(floorExceedsAsk(earned, "earned_tag")).toBe(false)
+    expect(floorExceedsAsk(overAsk, "earned_tag")).toBe(true)
     // The standard ask leaves the same schedule inside its own bar.
-    expect(floorExceedsAsk(overAsk, "standard", CUT)).toBe(false)
-    // A cut that outranks the minimum lifts the floor over the earned ask.
-    expect(floorExceedsAsk(earned, "earned_tag", RANDOM_ASK)).toBe(true)
-    // No cut, no verdict.
-    expect(floorExceedsAsk(overAsk, "earned_tag", undefined)).toBeUndefined()
+    expect(floorExceedsAsk(overAsk, "standard")).toBe(false)
   })
 
   it("names the schedule a stored waiver or a wire `reduced` flag stands for", () => {
@@ -640,26 +622,25 @@ describe("what to ask for and what the chain takes are two figures", () => {
     const report = vi.spyOn(console, "error").mockImplementation(() => {})
     try {
       // Renders call this, so a misconfigured deployment must not take the screen down with it.
-      const quote = registrationQuote({ min: dai(15), fee: dai(1) }, "standard", CUT)
+      const quote = registrationQuote({ min: dai(15), fee: dai(1) }, "standard")
       expect(quote.total).toBe(dai(16))
       expect(quote.floor).toBe(dai(16))
       expect(report).toHaveBeenCalledTimes(1)
       // Once per distinct message: a re-render must not fill the console.
-      registrationQuote({ min: dai(15), fee: dai(1) }, "standard", CUT)
+      registrationQuote({ min: dai(15), fee: dai(1) }, "standard")
       expect(report).toHaveBeenCalledTimes(1)
     } finally {
       report.mockRestore()
     }
   })
 
-  it("decides the kind a registration is quoted as, and withholds it until it can", () => {
-    expect(quotedRegistrationKind(false, undefined, undefined)).toBe("standard")
-    expect(quotedRegistrationKind(undefined, earned, CUT)).toBe("standard")
-    expect(quotedRegistrationKind(true, earned, CUT)).toBe("earned_tag")
+  it("decides the kind a registration is quoted as", () => {
+    expect(quotedRegistrationKind(false, undefined)).toBe("standard")
+    expect(quotedRegistrationKind(undefined, earned)).toBe("standard")
+    expect(quotedRegistrationKind(true, earned)).toBe("earned_tag")
     // A waived schedule whose floor outgrew the earned ask is quoted on the standard one.
-    expect(quotedRegistrationKind(true, overAsk, CUT)).toBe("standard")
-    // Neither figure can be named without the schedule or the cut the floor is priced against.
-    expect(quotedRegistrationKind(true, undefined, CUT)).toBe("earned_tag")
-    expect(quotedRegistrationKind(true, earned, undefined)).toBeUndefined()
+    expect(quotedRegistrationKind(true, overAsk)).toBe("standard")
+    // With no schedule the waiver's hint stands.
+    expect(quotedRegistrationKind(true, undefined)).toBe("earned_tag")
   })
 })

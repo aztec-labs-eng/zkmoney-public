@@ -38,6 +38,31 @@ describe("ChatBubble", () => {
     container.remove()
   })
 
+  it("styles the last action as primary unless it is marked secondary", async () => {
+    const render = (actions: { label: string; onClick: () => void; secondary?: boolean }[]) =>
+      act(async () => {
+        root.render(
+          <ChatBubble
+            message={outgoingRequest as never}
+            leftName="cyphergirl"
+            rightName="me"
+            actions={actions}
+            onOpen={() => {}}
+          />,
+        )
+      })
+    const primary = () =>
+      [...container.querySelectorAll<HTMLButtonElement>("[data-primary]")].map((b) => b.textContent)
+
+    await render([
+      { label: "Decline", onClick: () => {}, secondary: true },
+      { label: "Send", onClick: () => {} },
+    ])
+    expect(primary()).toEqual(["Send"])
+    await render([{ label: "Decline", onClick: () => {}, secondary: true }])
+    expect(primary()).toEqual([])
+  })
+
   it("keeps inline Cancel / Remind separate from the open-detail click", async () => {
     const onOpen = vi.fn()
     const onCancel = vi.fn()

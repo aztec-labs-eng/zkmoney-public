@@ -16,7 +16,6 @@ import {
   useDepositSkim,
   useRegistrationSchedule,
   useRegistrationTerms,
-  useSweepDeductions,
 } from "./registrationTerms"
 import { formatDepositDue, formatDepositSeen } from "./steps/DepositTermsRows"
 import { useDepositWatch } from "./useDepositWatch"
@@ -27,7 +26,7 @@ export interface RegistrationAsk {
   total?: bigint
   /** The least the registration's sweep accepts, undefined while it is read. */
   floor?: bigint
-  /** What the sweep takes before crediting: the registration fee plus the portal's funding cut. */
+  /** What the sweep takes before crediting: the registration fee. */
   spent?: bigint
   /** Already at the address. */
   seen: bigint
@@ -47,16 +46,10 @@ export function useRegistrationAsk(): RegistrationAsk | null {
   const feeWaived = !termsUnpriced(terms) && terms?.feeWaived === true
   const [readAttempt, setReadAttempt] = useState(0)
   const retryReads = useCallback(() => setReadAttempt((n) => n + 1), [])
-  // The cut prices the floor, which every registration needs to tell a full deposit from a short one.
-  const readCut = record !== null
   const readSchedule = record !== null && unsignedFallback
-  const deductions = useSweepDeductions(config, record?.depositToken, readCut, readAttempt)
   const sweepFee = useDepositSkim(config, readSchedule, readAttempt)
   const chainAmounts = useRegistrationSchedule(config, readSchedule, readAttempt, sweepFee)
-  useChainReadRetry(
-    (readCut && deductions === undefined) || (readSchedule && chainAmounts === undefined),
-    retryReads,
-  )
+  useChainReadRetry(readSchedule && chainAmounts === undefined, retryReads)
   const watch = useDepositWatch(record ? (record.sipaAddress as Address) : null)
   const stalled = useRegistrationPublishStalled(record)
   if (!record || stalled || record.l1ChainId !== config.l1ChainId) return null
@@ -67,19 +60,15 @@ export function useRegistrationAsk(): RegistrationAsk | null {
     unsignedFallback ? chainAmounts ?? undefined : undefined,
     record.fee !== undefined ? BigInt(record.fee) : undefined,
   )
-  const kind = quotedRegistrationKind(feeWaived, schedule, deductions?.fpcCut)
-  const quote = kind && registrationQuote(schedule, kind, deductions?.fpcCut)
+  const kind = quotedRegistrationKind(feeWaived, schedule)
+  const quote = kind && registrationQuote(schedule, kind)
   const total = quote?.total
   const floor = quote?.floor
   const recorded = terms?.depositAmount ? BigInt(terms.depositAmount) : 0n
   const seen = watch.balance > recorded ? watch.balance : recorded
   const remaining = total !== undefined && seen > 0n && seen < total ? total - seen : undefined
   const feeOwed = record.fee !== undefined ? BigInt(record.fee) : schedule?.fee
-  const spent =
-    feeOwed !== undefined && deductions?.fpcCut !== undefined
-      ? feeOwed + deductions.fpcCut
-      : undefined
-  return { total, floor, spent, seen, remaining }
+  return { total, floor, spent: feeOwed, seen, remaining }
 }
 
 /** The registration's ask on the deposit screen, less what its address already holds. */

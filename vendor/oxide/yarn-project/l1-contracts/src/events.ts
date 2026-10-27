@@ -6,24 +6,6 @@
 export const OxidePortalEventsAbi = [
   {
     type: 'event',
-    name: 'TEEAdded',
-    inputs: [
-      { name: 'tee', type: 'address', indexed: true },
-      { name: 'pubKeyX', type: 'bytes32', indexed: false },
-      { name: 'pubKeyY', type: 'bytes32', indexed: false },
-      { name: 'encPubKeyX', type: 'bytes32', indexed: false },
-      { name: 'encPubKeyY', type: 'bytes32', indexed: false },
-      { name: 'messageKey', type: 'bytes32', indexed: false },
-      { name: 'index', type: 'uint256', indexed: false },
-    ],
-  },
-  {
-    type: 'event',
-    name: 'TEEPcr0Approved',
-    inputs: [{ name: 'pcr0Hash', type: 'bytes32', indexed: true }],
-  },
-  {
-    type: 'event',
     name: 'Deposit',
     inputs: [
       { name: 'recipientCommitment', type: 'bytes32', indexed: true },
@@ -41,11 +23,6 @@ export const OxidePortalEventsAbi = [
       { name: 'executor', type: 'address', indexed: true },
       { name: 'executionAmount', type: 'uint256', indexed: false },
     ],
-  },
-  {
-    type: 'event',
-    name: 'Initialized',
-    inputs: [{ name: 'l2Portal', type: 'bytes32', indexed: false }],
   },
   {
     type: 'event',

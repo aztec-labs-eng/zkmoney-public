@@ -1,7 +1,7 @@
 import { describe, it } from "vitest"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import { createAztecNodeClient } from "@aztec/aztec.js/node"
-import { computeFeePayerBalanceStorageSlot } from "@aztec/protocol-contracts/fee-juice"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import { createAztecNodeClient } from "@aztec-labs/aztec.js/node"
+import { computeFeePayerBalanceStorageSlot } from "@aztec-labs/protocol-contracts/fee-juice"
 import { TESTNET_NODE_URL } from "../src/utils/constants.js"
 
 const TARGET_ADDRESS = "0x15b7a9a3d3685e053bffec6bd35dfeb4beb2616831a8e93b65c0493bcb5b4138"

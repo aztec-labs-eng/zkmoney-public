@@ -55,6 +55,14 @@ describe("useInlineAddContact", () => {
     expect(result.current.lastResolved).toEqual({ tag: "bob", status: "not_found" })
   })
 
+  it("resolveTag reports not_upgraded for a tag still on a retired rollup", async () => {
+    const { result } = setup({ resolveTag: vi.fn().mockResolvedValue({ status: "staleRollup" }) })
+
+    await act(() => result.current.resolveTag("bob"))
+
+    expect(result.current.lastResolved).toEqual({ tag: "bob", status: "not_upgraded" })
+  })
+
   it("discards a stale response — only the most recent resolveTag wins", async () => {
     let releaseFirst!: (value: RegistryTagResolution) => void
     const first = new Promise<RegistryTagResolution>((r) => (releaseFirst = r))

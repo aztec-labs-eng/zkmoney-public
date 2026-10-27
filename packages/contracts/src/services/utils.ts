@@ -1,7 +1,7 @@
-import { ContractArtifact } from "@aztec/stdlib/abi"
-import { loadContractArtifact } from "@aztec/stdlib/abi"
-import { NoirCompiledContract } from "@aztec/stdlib/noir"
-import type { AztecAddress } from "@aztec/stdlib/aztec-address"
+import { ContractArtifact } from "@aztec-labs/stdlib/abi"
+import { loadContractArtifact } from "@aztec-labs/stdlib/abi"
+import { NoirCompiledContract } from "@aztec-labs/stdlib/noir"
+import type { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import { DEFAULT_CONTRACTS } from "@obsidion/core/constants"
 import type { ContractName } from "@obsidion/core/types"
 

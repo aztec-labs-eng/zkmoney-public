@@ -1,35 +1,35 @@
-import type { EthAddress } from '@aztec/aztec.js/addresses';
-import { type Logger, createLogger } from '@aztec/foundation/log';
-import { DateProvider } from '@aztec/foundation/timer';
+import type { EthAddress } from '@aztec-labs/aztec.js/addresses';
+import { maxBigint } from '@aztec-labs/foundation/bigint';
+import { type Logger, createLogger } from '@aztec-labs/foundation/log';
+import { DateProvider } from '@aztec-labs/foundation/timer';
 
-import { OperationExecutorAbi } from '@oxide/l1-contracts';
+import { classifyL1Operation } from '@oxide/l1-contracts';
 import {
+  type ExecuteGasCostArgs,
   GAS_COST_ARGS_CALLDATA_GAS,
   type L1OperationQuoteBlock,
-  SIMULATED_SENDER_BALANCE,
+  NO_EXECUTE_GAS_COST,
+  type OperationExecutorVersion,
   type SimulateL1OperationArgs,
-  WEI_PER_ETH,
+  encodeOperationExecute,
   estimateL1OperationFeeValues,
-  gasCostAtQuotePrice,
+  l1OperationGasLimit,
+  minGasToCover,
+  nextL1OperationGasLimit,
+  relayerGasCost,
   simulateL1Operation,
 } from '@oxide/oxide-client/l1_operation_quote.js';
 import { L1OperationConditionKind } from '@oxide/oxide-lib/l1_operation_calldata.js';
 
-import {
-  type FeeValuesEIP1559,
-  type Hex,
-  type PublicClient,
-  type TransactionReceipt,
-  encodeFunctionData,
-  erc20Abi,
-} from 'viem';
+import { type FeeValuesEIP1559, type Hex, type PublicClient, type TransactionReceipt, erc20Abi } from 'viem';
 
 import { CauseTransitions } from '../cause_transitions.js';
 import type { L1OperationsSubmissionConfig } from '../cli/config.js';
 import { type L1TxQueue, type SendL1Tx, type SentL1Tx, isAboveMaxFeePerGas } from '../l1/l1_tx_queue.js';
-import type { ChainlinkPriceOracle } from '../price_oracle/chainlink_price_oracle.js';
+import { type PriceOracle, readTokenUnitsPerEth } from '../price_oracle/price_oracle.js';
 import type { RelayerDeferReason, RelayerTelemetry } from '../relayer_telemetry.js';
 import type { PendingL1Operation, PendingL1OperationReason, StateStore } from '../state/types.js';
+import type { L1OperationOwnership } from './l1_operation_router.js';
 import type { L1OperationScreener } from './l1_operation_screener.js';
 import type { WithdrawalCompletion } from './withdrawal_completion.js';
 
@@ -39,13 +39,16 @@ const MAX_REVERT_BACKOFF_MS = 15 * 60_000;
 export interface L1OperationSubmitterDeps {
   /** OperationExecutor deployment the relayer executes through. */
   executor: EthAddress;
+  /** The `execute` version of `executor`. A deployment keeps the executor that it was deployed with. */
+  executorVersion: OperationExecutorVersion;
   client: PublicClient;
   l1TxQueue: Pick<L1TxQueue, 'enqueue' | 'address' | 'maxFeePerGasCap'>;
   store: StateStore;
-  priceOracle: ChainlinkPriceOracle;
+  priceOracle: PriceOracle;
   screener: L1OperationScreener;
   config: L1OperationsSubmissionConfig;
   withdrawalCompletion: WithdrawalCompletion;
+  ownership: L1OperationOwnership;
   allowUnprofitable?: boolean;
   telemetry?: RelayerTelemetry;
   logger?: Logger;
@@ -84,10 +87,9 @@ export interface L1OperationRunSummary {
 }
 
 /**
- * Polls due L1 operations, simulates each through the executor, and submits the profitable ones.
- *
- * `weiToUSD` returns 18-decimal USD, which is a payout amount because the syncer stores only operations that pay out
- * in an accepted payout token, an 18-decimal USD stablecoin.
+ * Polls due L1 operations, simulates each through the executor, and submits the profitable ones. It prices gas in the
+ * payout token of each operation. The syncer stores only operations that pay out in an accepted payout token, and the
+ * price oracle prices each accepted payout token.
  */
 export class L1OperationSubmitter {
   private readonly log: Logger;
@@ -102,6 +104,8 @@ export class L1OperationSubmitter {
   };
   /** The cause each operation was last deferred with, so a held cause logs once. */
   private readonly deferrals = new CauseTransitions();
+  /** The operations whose sent tx has no outcome yet. A batch skips them. */
+  private readonly inFlight = new Set<Hex>();
   private retryNextBatch = false;
 
   constructor(private readonly deps: L1OperationSubmitterDeps) {
@@ -117,7 +121,10 @@ export class L1OperationSubmitter {
 
   async #runBatch(send: SendL1Tx): Promise<L1OperationRunSummary> {
     const summary = this.#drainBackgroundSummary();
-    const due = await this.deps.store.listPendingL1Operations({ dueAt: this.#now() });
+    // A batch can start before the monitor of an earlier batch's tx records its outcome.
+    const due = (await this.deps.store.listPendingL1Operations({ dueAt: this.#now() })).filter(
+      operation => !this.inFlight.has(operation.operationId),
+    );
     if (due.length === 0) {
       return summary;
     }
@@ -135,6 +142,11 @@ export class L1OperationSubmitter {
     operation: PendingL1Operation,
     summary: L1OperationRunSummary,
   ): Promise<void> {
+    const owner = await this.deps.ownership.givesWayTo(operation).catch(() => undefined);
+    if (owner !== undefined) {
+      await this.#giveWay(operation, owner);
+      return;
+    }
     const evaluation = await this.#evaluate(operation).catch((error): Evaluation => ({ kind: 'failed', error }));
     switch (evaluation.kind) {
       case 'send':
@@ -171,7 +183,7 @@ export class L1OperationSubmitter {
       return { kind: 'failed', reason: 'completion_error', error };
     }
 
-    // One block prices the whole quote: the fee values, both simulations and the gas estimate.
+    // One block prices the whole quote: the fee values and the three simulations.
     const quoteBlock = await this.deps.client.getBlock({ blockTag: 'latest' });
     const feeValues = await estimateL1OperationFeeValues(this.deps.client, quoteBlock);
     // The relayer does not send above the cap, so it does not simulate either. A revert at this fee must not charge
@@ -182,6 +194,7 @@ export class L1OperationSubmitter {
 
     const quote: SimulateL1OperationArgs = {
       executor: this.deps.executor.toString(),
+      executorVersion: this.deps.executorVersion,
       sender: this.deps.l1TxQueue.address,
       operation: {
         target: operation.target.toString(),
@@ -207,51 +220,82 @@ export class L1OperationSubmitter {
       return { kind: 'blocked', listed };
     }
 
-    const { gasLimit, gasCostArgs, quotedGasCost } = await this.#price(quote, payout, quoteBlock);
+    const { gasLimit, minPayout, gasCostArgs, quotedGasCost } = await this.#price(
+      quote,
+      operation.payoutToken,
+      payout,
+      quoteBlock,
+    );
     if (payout < quotedGasCost) {
       return { kind: 'unprofitable', payout, gasCost: quotedGasCost };
     }
 
-    // The executor prices the gas to cover at the gas price the tx pays, so the sent `minPayout` is 0. The gas cost at
-    // the quote price only decides whether to send.
-    return { kind: 'send', data: encodeExecute(quote.operation, 0n, gasCostArgs), payout, gasLimit, feeValues };
+    const data = encodeOperationExecute(this.deps.executorVersion, quote.operation, minPayout, gasCostArgs);
+    return { kind: 'send', data, payout, gasLimit, feeValues };
   }
 
   /**
-   * Returns the gas limit, the `execute` arguments of the gas cost, and the gas cost at the quote price. The executor
-   * prices `gasToCover`, the gas used after refunds, at the gas price the tx pays. The relayer decides at the price the
-   * tx pays if the base fee holds: the base fee of the quote block plus the tip. Both calls require the quoted
-   * `payout`, so an inner failure cannot produce a cheaper run.
+   * Returns the gas limit, the sent `minPayout` and gas cost arguments, and the gas cost that decides whether to send.
+   * All simulations run in the block of the payout quote, because a payout can depend on the block, and all require
+   * the quoted `payout`, so an inner failure cannot produce a cheaper run. The later ones run at the gas limit.
+   *
+   * The gas to cover is at least {@link minGasToCover} of the gas limit, because the target can use all of the gas
+   * limit in the sent transaction. This matters only when the gas limit is more than its first value.
+   *
+   * - A `gas-to-cover` executor prices `gasToCover`, the gas used after refunds, at the gas price the tx pays, so the
+   *   sent `minPayout` is 0. The relayer decides at the price the tx pays if the base fee holds: the base fee of the
+   *   quote block plus the tip.
+   * - A `legacy` executor checks only `minPayout`, so the relayer sends the gas at `maxFeePerGas` as `minPayout` and
+   *   decides at that cost.
    */
   async #price(
     quote: SimulateL1OperationArgs,
+    payoutToken: EthAddress,
     payout: bigint,
     quoteBlock: L1OperationQuoteBlock,
-  ): Promise<{ gasLimit: bigint; gasCostArgs: GasCostArgs; quotedGasCost: bigint }> {
-    const estimatedGas = await this.deps.client.estimateGas({
-      blockNumber: quoteBlock.number,
-      account: quote.sender,
-      to: quote.executor,
-      data: encodeExecute(quote.operation, payout, NO_GAS_COST),
-      maxFeePerGas: quote.feeValues.maxFeePerGas,
-      maxPriorityFeePerGas: quote.feeValues.maxPriorityFeePerGas,
-      stateOverride: [{ address: quote.sender, balance: SIMULATED_SENDER_BALANCE }],
-    });
-    const gasLimit = estimatedGas + GAS_COST_ARGS_CALLDATA_GAS;
-    if (this.deps.allowUnprofitable) {
-      return { gasLimit, gasCostArgs: NO_GAS_COST, quotedGasCost: 0n };
-    }
+  ): Promise<{ gasLimit: bigint; minPayout: bigint; gasCostArgs: ExecuteGasCostArgs; quotedGasCost: bigint }> {
+    const { executorVersion } = this.deps;
     const gasSimulation = await simulateL1Operation(this.deps.client, { ...quote, minPayout: payout });
     if (gasSimulation.status === 'failure') {
       throw new Error(`gas simulation failed: ${errMessage(gasSimulation.error)}`);
     }
-    const { gasToCover } = gasSimulation;
-    const tokenWeiPerEth = await this.deps.priceOracle.weiToUSD(WEI_PER_ETH);
-    return {
-      gasLimit,
-      gasCostArgs: { gasToCover, tokenWeiPerEth },
-      quotedGasCost: gasCostAtQuotePrice(gasToCover, quoteBlock, quote.feeValues, tokenWeiPerEth),
-    };
+    const simulatedGasLimit = await this.#confirmGasLimit(quote, payout, gasSimulation.gasUsed, quoteBlock);
+    const gasLimit = simulatedGasLimit + GAS_COST_ARGS_CALLDATA_GAS;
+    if (this.deps.allowUnprofitable) {
+      return { gasLimit, minPayout: 0n, gasCostArgs: NO_EXECUTE_GAS_COST, quotedGasCost: 0n };
+    }
+    const gasToCover = maxBigint(gasSimulation.gasToCover, minGasToCover(gasLimit));
+    const tokenWeiPerEth = await readTokenUnitsPerEth(this.deps.priceOracle, payoutToken);
+    const quotedGasCost = relayerGasCost(executorVersion, gasToCover, quoteBlock, quote.feeValues, tokenWeiPerEth);
+    if (executorVersion === 'legacy') {
+      return { gasLimit, minPayout: quotedGasCost, gasCostArgs: NO_EXECUTE_GAS_COST, quotedGasCost };
+    }
+    return { gasLimit, minPayout: 0n, gasCostArgs: { gasToCover, tokenWeiPerEth }, quotedGasCost };
+  }
+
+  /**
+   * Returns the gas limit at which a simulation of the operation pays the quoted `payout`. It starts at
+   * {@link l1OperationGasLimit} of `gasUsed`. While the simulation fails, it tries {@link nextL1OperationGasLimit}.
+   * Throws when the simulation fails at the cap.
+   */
+  async #confirmGasLimit(
+    quote: SimulateL1OperationArgs,
+    payout: bigint,
+    gasUsed: bigint,
+    quoteBlock: L1OperationQuoteBlock,
+  ): Promise<bigint> {
+    let gasLimit = l1OperationGasLimit(gasUsed, quoteBlock);
+    for (;;) {
+      const simulation = await simulateL1Operation(this.deps.client, { ...quote, minPayout: payout, gas: gasLimit });
+      if (simulation.status === 'success') {
+        return gasLimit;
+      }
+      const next = nextL1OperationGasLimit(gasLimit, quoteBlock);
+      if (next === undefined) {
+        throw new Error(`gas limit simulation failed at ${gasLimit} gas: ${errMessage(simulation.error)}`);
+      }
+      gasLimit = next;
+    }
   }
 
   /**
@@ -318,7 +362,7 @@ export class L1OperationSubmitter {
     await this.deps.store.setL1OperationStatus(operation.operationId, 'blocked');
     this.deferrals.forget(operation.operationId);
     summary.blocked++;
-    this.deps.telemetry?.l1OperationOutcome('blocked');
+    this.deps.telemetry?.l1OperationOutcome('blocked', classifyL1Operation(operation));
     this.log.warn('L1 operation blocked by sanctions screening', {
       event: 'l1_operation_blocked',
       listed: listed.map(address => address.toString().toLowerCase()),
@@ -355,10 +399,14 @@ export class L1OperationSubmitter {
       nonce,
       payout: payout.toString(),
       gasLimit: gasLimit.toString(),
+      ...(sent.simulated ? { simulated: true } : {}),
       ...operationLogFields(operation),
     });
     summary.submitted++;
-    this.deps.telemetry?.l1OperationOutcome('submitted');
+    // A simulated tx was not sent, so no outcome or gas metric counts it.
+    if (!sent.simulated) {
+      this.deps.telemetry?.l1OperationOutcome('submitted', classifyL1Operation(operation));
+    }
 
     const pendingMarker = Symbol('pending');
     let pending = false;
@@ -367,7 +415,10 @@ export class L1OperationSubmitter {
     } catch {
       // An already rejected monitor is terminal and must be processed before this run returns.
     }
-    const monitor = this.#monitorBroadcast(sent, operation, pending ? this.backgroundSummary : summary);
+    this.inFlight.add(operation.operationId);
+    const monitor = this.#monitorBroadcast(sent, operation, pending ? this.backgroundSummary : summary).finally(() =>
+      this.inFlight.delete(operation.operationId),
+    );
     if (!pending) {
       await monitor;
     }
@@ -393,7 +444,7 @@ export class L1OperationSubmitter {
         ...operationLogFields(operation),
       });
       // No receipt, so there is no gas to record here.
-      this.deps.telemetry?.l1OperationOutcome('failed');
+      this.deps.telemetry?.l1OperationOutcome('failed', classifyL1Operation(operation));
       this.retryNextBatch = true;
       await this.#defer(operation, undefined, summary, { cause: 'tx_unsuccessful', countDeferred: false });
       return;
@@ -408,7 +459,7 @@ export class L1OperationSubmitter {
         ...operationLogFields(operation),
       });
       this.deps.telemetry?.gasSpentWei('l1_operation', receipt.gasUsed * receipt.effectiveGasPrice);
-      this.deps.telemetry?.l1OperationOutcome('failed');
+      this.deps.telemetry?.l1OperationOutcome('failed', classifyL1Operation(operation));
       await this.#defer(operation, undefined, summary, { cause: 'tx_reverted', countDeferred: false });
       return;
     }
@@ -416,12 +467,15 @@ export class L1OperationSubmitter {
     await this.deps.store.setL1OperationStatus(operation.operationId, 'executed');
     this.deferrals.forget(operation.operationId);
     summary.confirmed++;
-    this.deps.telemetry?.l1OperationOutcome('confirmed');
-    this.deps.telemetry?.gasSpentWei('l1_operation', receipt.gasUsed * receipt.effectiveGasPrice);
+    if (!sent.simulated) {
+      this.deps.telemetry?.l1OperationOutcome('confirmed', classifyL1Operation(operation));
+      this.deps.telemetry?.gasSpentWei('l1_operation', receipt.gasUsed * receipt.effectiveGasPrice);
+    }
     this.log.info('L1 operation executed on L1', {
       event: 'l1_operation_executed',
       txHash,
       nonce,
+      ...(sent.simulated ? { simulated: true } : {}),
       ...operationLogFields(operation),
     });
   }
@@ -498,8 +552,9 @@ export class L1OperationSubmitter {
   }
 
   /**
-   * A `MessageInOutbox` broadcast carries `OxidePortal.withdraw` with zeroed arguments; every other condition
-   * broadcasts calldata that is already complete. Rebuilt on every attempt, never persisted.
+   * A `MessageInOutbox` broadcast carries a finalization request, which the completion turns into
+   * `OxidePortal.withdraw` calldata; every other condition broadcasts calldata that is already complete. Rebuilt on
+   * every attempt, never persisted.
    */
   async #resolveCalldata(operation: PendingL1Operation): Promise<Hex> {
     if (operation.condition.kind !== L1OperationConditionKind.MessageInOutbox) {
@@ -544,7 +599,11 @@ export class L1OperationSubmitter {
     summary.deferred++;
     // A terminal-failure retry (countDeferred: false) is already counted as 'failed'; only count genuine defers.
     if (opts.countDeferred !== false) {
-      this.deps.telemetry?.l1OperationOutcome('deferred', opts.deferReason ?? reason ?? 'other');
+      this.deps.telemetry?.l1OperationOutcome(
+        'deferred',
+        classifyL1Operation(operation),
+        opts.deferReason ?? reason ?? 'other',
+      );
     }
     const changed = this.deferrals.changed(operation.operationId, opts.cause);
     if (changed) {
@@ -561,6 +620,20 @@ export class L1OperationSubmitter {
     return now.getTime() - operation.createdAt.getTime() >= this.deps.config.maxPendingAgeMs;
   }
 
+  /**
+   * Settles this worker's copy of an operation that another worker owns and holds. The owner submits it, so this is
+   * not a failure: it records no outcome and is not counted as dropped.
+   */
+  async #giveWay(operation: PendingL1Operation, owner: string): Promise<void> {
+    await this.deps.store.setL1OperationStatus(operation.operationId, 'dropped');
+    this.deferrals.forget(operation.operationId);
+    this.log.info('L1 operation left to the worker that owns it', {
+      event: 'l1_operation_given_way',
+      owner,
+      ...operationLogFields(operation),
+    });
+  }
+
   async #drop(
     operation: PendingL1Operation,
     summary: L1OperationRunSummary,
@@ -570,41 +643,13 @@ export class L1OperationSubmitter {
     await this.deps.store.setL1OperationStatus(operation.operationId, 'dropped');
     this.deferrals.forget(operation.operationId);
     summary.dropped++;
-    this.deps.telemetry?.l1OperationOutcome('dropped');
+    this.deps.telemetry?.l1OperationOutcome('dropped', classifyL1Operation(operation));
     this.log.warn(message, { event: 'l1_operation_dropped', ...fields, ...operationLogFields(operation) });
   }
 
   #now(): Date {
     return this.dateProvider.nowAsDate();
   }
-}
-
-/** The `execute` arguments of the gas cost. The executor prices `gasToCover` at the gas price the tx pays. */
-interface GasCostArgs {
-  gasToCover: bigint;
-  tokenWeiPerEth: bigint;
-}
-
-/** No gas to cover, so the executor checks only the `minPayout` argument. */
-const NO_GAS_COST: GasCostArgs = { gasToCover: 0n, tokenWeiPerEth: 0n };
-
-function encodeExecute(
-  operation: SimulateL1OperationArgs['operation'],
-  minPayout: bigint,
-  gasCostArgs: GasCostArgs,
-): Hex {
-  return encodeFunctionData({
-    abi: OperationExecutorAbi,
-    functionName: 'execute',
-    args: [
-      operation.target,
-      operation.calldata,
-      operation.payoutToken,
-      minPayout,
-      gasCostArgs.gasToCover,
-      gasCostArgs.tokenWeiPerEth,
-    ],
-  });
 }
 
 function errMessage(err: unknown): string {

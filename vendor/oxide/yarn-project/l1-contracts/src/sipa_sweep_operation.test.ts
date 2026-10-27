@@ -1,4 +1,4 @@
-import { EthAddress } from '@aztec/foundation/eth-address';
+import { EthAddress } from '@aztec-labs/foundation/eth-address';
 
 import { L1OperationCondition } from '@oxide/oxide-lib/l1_operation_calldata.js';
 
@@ -25,6 +25,7 @@ const DEPOSIT_SUBSIDY = '0x3333333333333333333333333333333333333333' as Address;
 const EXECUTOR = '0x4444444444444444444444444444444444444444' as Address;
 const TOKEN = '0x5555555555555555555555555555555555555555' as Address;
 const IMPLEMENTATION = '0x6666666666666666666666666666666666666666' as Address;
+const FORWARDING_TABLE = '0x8888888888888888888888888888888888888888' as Address;
 const RECOVERY = `0x00${'77'.repeat(31)}` as Hex;
 const INTENT_DATA = encodeDepositIntentData(`0x${'ab'.repeat(32)}`);
 const INTENT_HASH = `0x${'cd'.repeat(32)}` as Hex;
@@ -35,6 +36,7 @@ const DEPLOY_ARGS = {
   recoveryCommitment: RECOVERY,
   rollupVersion: 4n,
   resweepable: true,
+  forwardingTable: getAddress(FORWARDING_TABLE),
 };
 const SWEEP_ARGS = { token: TOKEN, relayer: EXECUTOR, intentData: INTENT_DATA, proofs: '0x' as Hex };
 
@@ -48,9 +50,11 @@ const BASE = {
 const DEPLOY_BASE = { ...BASE, sipaFactory: SIPA_FACTORY, intent: SipaIntent.Deposit, deployArgs: DEPLOY_ARGS };
 
 function decodeAggregate3(calldata: Buffer) {
-  const { functionName, args } = decodeFunctionData({ abi: multicall3Abi, data: `0x${calldata.toString('hex')}` });
-  expect(functionName).toBe('aggregate3');
-  return args[0]!;
+  const decoded = decodeFunctionData({ abi: multicall3Abi, data: `0x${calldata.toString('hex')}` });
+  if (decoded.functionName !== 'aggregate3') {
+    throw new Error(`expected aggregate3, got ${decoded.functionName}`);
+  }
+  return decoded.args[0];
 }
 
 describe('buildSipaDeployAndSweepOperation', () => {
@@ -60,7 +64,7 @@ describe('buildSipaDeployAndSweepOperation', () => {
     expect(operation.payoutToken.toString().toLowerCase()).toBe(TOKEN);
     expect(decodeFunctionData({ abi: DepositSubsidyAbi, data: `0x${operation.calldata.toString('hex')}` })).toEqual({
       functionName: 'deployAndSweepForSubsidy',
-      args: [SipaIntent.Deposit, RECOVERY, true, TOKEN, EXECUTOR, INTENT_DATA, '0x'],
+      args: [getAddress(FORWARDING_TABLE), SipaIntent.Deposit, RECOVERY, true, TOKEN, EXECUTOR, INTENT_DATA, '0x'],
     });
   });
 
@@ -104,7 +108,7 @@ describe('buildSipaDeployAndSweepOperation', () => {
     expect(deploy.allowFailure).toBe(true);
     expect(decodeFunctionData({ abi: SIPAFactoryAbi, data: deploy.callData })).toEqual({
       functionName: 'deploySIPA',
-      args: [IMPLEMENTATION, INTENT_HASH, RECOVERY, 4n, true],
+      args: [IMPLEMENTATION, INTENT_HASH, RECOVERY, 4n, true, getAddress(FORWARDING_TABLE)],
     });
     expect(sweep.target).toBe(SIPA);
     expect(decodeFunctionData({ abi: SIPAAbi, data: sweep.callData })).toEqual({
@@ -192,6 +196,7 @@ describe('decodeSipaSweepOperation', () => {
     expect(decodeSipaSweepOperation(operation)).toBeUndefined();
     expect(decodeSubsidizedDeployAndSweep(operation)).toEqual({
       depositSubsidy: getAddress(DEPOSIT_SUBSIDY),
+      forwardingTable: getAddress(FORWARDING_TABLE),
       token: TOKEN,
       intent: SipaIntent.Deposit,
       intentHash: keccak256(INTENT_DATA),

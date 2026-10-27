@@ -9,7 +9,7 @@
  * source-of-truth against a representative first-party fixture.
  */
 import { describe, it, expect } from "vitest"
-import type { SimulationTimings } from "@aztec/stdlib/tx"
+import type { SimulationTimings } from "@aztec-labs/stdlib/tx"
 import {
   extractSimFunctions,
   normalizeFunctionName,

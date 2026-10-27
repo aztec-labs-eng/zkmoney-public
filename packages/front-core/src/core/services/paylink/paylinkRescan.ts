@@ -12,7 +12,7 @@
  * a deferred link or PXE's synced block. Pure over injected collaborators.
  */
 
-import type { Fr } from "@aztec/aztec.js/fields"
+import type { Fr } from "@aztec-labs/aztec.js/fields"
 import { PaylinkActionEnum, TokenActionEnum } from "@obsidion/core/constants"
 import type {
   PaylinkService,
@@ -32,7 +32,10 @@ import { logger } from "src/utils/logger"
 const CURSOR_STORAGE_KEY = "@obsidion/paylink-rescan/cursor/v2"
 
 export interface PaylinkRescanDeps {
-  source: Pick<TransferEventSource, "headBlock" | "listIncoming" | "blockTimestampMs" | "anchorBlock">
+  source: Pick<
+    TransferEventSource,
+    "headBlock" | "listIncoming" | "blockTimestampMs" | "anchorBlock"
+  >
   /** Holds the block cursor per network and account. Absent, every pass scans from `fromBlock`. */
   storage?: Pick<IStorageAdapter, "getItem" | "setItem">
   accountAddress: string
@@ -44,7 +47,10 @@ export interface PaylinkRescanDeps {
   endpointScope?: string
   /** Abort when the owning account/network mount is disposed. */
   signal?: AbortSignal
-  paylinkService: Pick<PaylinkService, "recoverPaylinkFromTransfer" | "isPaylinkClaimed" | "sync_note">
+  paylinkService: Pick<
+    PaylinkService,
+    "recoverPaylinkFromTransfer" | "isPaylinkClaimed" | "sync_note"
+  >
   /** The share URL the platform writes on a created row, so a rebuilt row opens the same way. */
   linkFor: (params: RecoveredPaylinkParams) => string | Promise<string>
   store: Pick<

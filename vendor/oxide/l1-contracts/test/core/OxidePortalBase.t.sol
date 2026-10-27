@@ -9,16 +9,21 @@ import {NamePortal} from "@periphery/NamePortal.sol";
 import {INameRegistry} from "@periphery/interfaces/INameRegistry.sol";
 import {IOxideAccountFactory} from "@periphery/interfaces/IOxideAccountFactory.sol";
 import {SIPAFactory} from "@periphery/SIPAFactory.sol";
-import {DepositSIPA, DEPOSIT_FEE} from "@periphery/DepositSIPA.sol";
-import {RegistrationSIPA, REGISTRATION_SWEEP_FEE} from "@periphery/RegistrationSIPA.sol";
+import {DepositSIPA} from "@periphery/DepositSIPA.sol";
+import {RegistrationSIPA} from "@periphery/RegistrationSIPA.sol";
+import {ForwardingTable} from "@periphery/ForwardingTable.sol";
+import {ForwardingTableFixture, REGISTRATION_SWEEP_TIP} from "@test/helpers/ForwardingTableFixture.sol";
 import {Resolver} from "@periphery/Resolver.sol";
 import {DepositSubsidy} from "@periphery/DepositSubsidy.sol";
-import {WithdrawalSubsidy} from "@periphery/WithdrawalSubsidy.sol";
+import {OperationExecutor} from "@periphery/OperationExecutor.sol";
+import {IOperationExecutor} from "@periphery/interfaces/IOperationExecutor.sol";
+import {PlainWithdrawalSubsidy} from "@periphery/PlainWithdrawalSubsidy.sol";
 import {ProverSubsidy} from "@periphery/ProverSubsidy.sol";
 import {PlainWithdrawalExecutor} from "@periphery/PlainWithdrawalExecutor.sol";
 import {AggregatorV3Interface} from "@periphery/interfaces/AggregatorV3Interface.sol";
 import {RecoveryCommitmentLib} from "@periphery/RecoveryCommitmentLib.sol";
 import {OxidePortal} from "@core/OxidePortal.sol";
+import {TeeRegistry} from "@core/TeeRegistry.sol";
 import {IOxidePortal} from "@core/interfaces/IOxidePortal.sol";
 import {IExecutor} from "@core/interfaces/IExecutor.sol";
 import {TestERC20} from "@aztec/mock/TestERC20.sol";
@@ -40,6 +45,8 @@ import {MockRegistry} from "@test/fixtures/MockRegistry.sol";
 import {MockRollup} from "@test/fixtures/MockRollup.sol";
 
 abstract contract OxidePortalBase is Test {
+  bytes32 public pendingL2Token = L2_TOKEN;
+
   OxidePortal internal portal;
   NameRegistry internal nameRegistry;
   AccountMetadataRegistry internal metadataRegistry;
@@ -47,12 +54,14 @@ abstract contract OxidePortalBase is Test {
   NamePortal internal namePortal;
   IOxideAccountFactory internal accountFactory;
   SIPAFactory internal sipaFactory;
+  ForwardingTable internal forwardingTable;
   DepositSIPA internal depositSIPAImplementation;
   RegistrationSIPA internal registrationSIPAImplementation;
   Resolver internal resolver;
   DepositSubsidy internal depositSubsidy;
+  OperationExecutor internal operationExecutor;
   AggregatorV3Interface internal ethUsdFeed;
-  WithdrawalSubsidy internal withdrawalSubsidy;
+  PlainWithdrawalSubsidy internal plainWithdrawalSubsidy;
   ProverSubsidy internal proverSubsidy;
   PlainWithdrawalExecutor internal plainWithdrawalExecutor;
   TestERC20 internal underlying;
@@ -63,30 +72,33 @@ abstract contract OxidePortalBase is Test {
   MockRollup internal rollup;
   MockRegistry internal registry;
   MockProofVerifier internal frozenNotesRefundVerifier;
-  MockProofVerifier internal frozenDepositRefundVerifier;
+  MockProofVerifier internal frozenDepositsRefundVerifier;
   MockProofVerifier internal unprocessedDepositRefundVerifier;
   MockCertManager internal certManager;
   MockNitroValidator internal nitroValidator;
+  TeeRegistry internal teeRegistry;
 
-  bytes32 internal constant L2_PORTAL = bytes32(uint256(0xB12D6E));
+  bytes32 internal constant L2_TOKEN = bytes32(uint256(0xB12D6E));
   uint256 internal constant ROLLUP_VERSION = 7;
+  bytes32 internal constant TEE_REGISTRY_L2_RECIPIENT = bytes32(uint256(0x4a12));
   uint256 internal constant DEFAULT_CHECKPOINT_NUMBER = 11;
   bytes32 internal constant DEFAULT_ARCHIVE_ROOT = bytes32(uint256(0xA11CE));
 
+  uint128 internal constant TX_AMOUNT_CAP = 2583 ether;
   uint256 internal constant RATE = 1 ether;
   uint256 internal constant GLOBAL_LIMIT = 500_000 ether;
 
   address internal constant OWNER = address(0x0FFE);
   address internal constant USER = address(0xA11CE);
-  address internal constant FPC_FUNDER = address(0xF9C);
   address internal constant PROCESSOR = address(0x9120);
 
   address internal constant FEE_BENEFICIARY = address(0xD819);
+  address internal constant TABLE_BENEFICIARY = address(0x7AB1E);
+  address internal constant WITHDRAWAL_FEE_BENEFICIARY = address(0xFEEB);
   uint256 internal constant REGISTRATION_MIN = 9.5 ether;
   uint256 internal constant REGISTRATION_FEE = 5 ether;
-  uint256 internal constant REGISTRATION_FUNDER_CUT = REGISTRATION_FEE - REGISTRATION_SWEEP_FEE;
+  uint256 internal constant REGISTRATION_FUNDER_CUT = REGISTRATION_FEE - REGISTRATION_SWEEP_TIP;
 
-  uint256 internal fpcFundingCut;
   uint256 internal constant TEST_TEE_PK = 0xA11;
   address internal constant TEST_TEE_SIGNER = 0x563Bd9e11d18b6eA60c2f159F8D3062d30E8039e;
 
@@ -103,7 +115,6 @@ abstract contract OxidePortalBase is Test {
   bytes internal constant TEST_TEE_PCR0 =
     hex"0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f30";
 
-  event Initialized(bytes32 l2Portal);
   event Frozen(
     uint256 indexed checkpointNumber, uint256 indexed epochNumber, bytes32 archive, uint256 freezeCheckpointCount
   );
@@ -112,20 +123,10 @@ abstract contract OxidePortalBase is Test {
     IExecutor.Flow indexed flow, bytes32 indexed nullifier, address indexed executor, uint256 executionAmount
   );
   event TipReleased(address indexed to, uint256 amount);
-  event TEEAdded(
-    address indexed tee,
-    bytes32 pubKeyX,
-    bytes32 pubKeyY,
-    bytes32 encPubKeyX,
-    bytes32 encPubKeyY,
-    bytes32 messageKey,
-    uint256 index
-  );
-  event TEEPcr0Approved(bytes32 indexed pcr0Hash);
-  event TEECACertVerified(bytes32 indexed certHash, bytes32 indexed parentCertHash);
 
   address internal teeSigner;
   uint256 internal teePk;
+  uint256 internal plainWithdrawalFee;
 
   struct WithdrawParams {
     address recipient;
@@ -150,7 +151,7 @@ abstract contract OxidePortalBase is Test {
     _setupInbox();
     registry = new MockRegistry();
     frozenNotesRefundVerifier = new MockProofVerifier();
-    frozenDepositRefundVerifier = new MockProofVerifier();
+    frozenDepositsRefundVerifier = new MockProofVerifier();
     unprocessedDepositRefundVerifier = new MockProofVerifier();
     certManager = new MockCertManager();
     nitroValidator = new MockNitroValidator();
@@ -167,7 +168,7 @@ abstract contract OxidePortalBase is Test {
     nameRegistry = new NameRegistry(OWNER, OWNER);
     sipaFactory = new SIPAFactory(OWNER);
     metadataRegistry = new AccountMetadataRegistry(nameRegistry);
-    namePortal = new NamePortal(INameRegistry(address(nameRegistry)), IRegistry(address(registry)));
+    namePortal = new NamePortal(INameRegistry(address(nameRegistry)), IRegistry(address(registry)), accountFactory);
     resolver = new Resolver(nameRegistry, sipaFactory, mockResolverVerifier);
     registrationController = new RegistrationController(
       INameRegistry(address(nameRegistry)),
@@ -184,39 +185,56 @@ abstract contract OxidePortalBase is Test {
     nameRegistry.updateResolver(address(resolver));
     nameRegistry.updateRegistrationController(address(registrationController));
     vm.stopPrank();
+    nitroValidator.setCertManager(certManager);
+    teeRegistry = new TeeRegistry(
+      keccak256(TEST_TEE_PCR0),
+      certManager,
+      nitroValidator,
+      IRegistry(address(registry)),
+      ROLLUP_VERSION,
+      TEE_REGISTRY_L2_RECIPIENT
+    );
     portal = _buildPortal(address(underlying));
-    depositSIPAImplementation = new DepositSIPA(IOxidePortal(address(portal)), DEPOSIT_FEE);
-    registrationSIPAImplementation =
-      new RegistrationSIPA(IOxidePortal(address(portal)), INameRegistry(address(nameRegistry)), REGISTRATION_SWEEP_FEE);
+    forwardingTable = ForwardingTableFixture.deploy(OWNER, IOxidePortal(address(portal)), TABLE_BENEFICIARY);
+    depositSIPAImplementation = new DepositSIPA();
+    registrationSIPAImplementation = new RegistrationSIPA(INameRegistry(address(nameRegistry)));
     vm.startPrank(OWNER);
-    sipaFactory.bless(address(depositSIPAImplementation));
-    sipaFactory.bless(address(registrationSIPAImplementation));
+    sipaFactory.blessImplementation(address(depositSIPAImplementation));
+    sipaFactory.blessImplementation(address(registrationSIPAImplementation));
+    sipaFactory.blessTable(forwardingTable);
     vm.stopPrank();
-    plainWithdrawalExecutor = new PlainWithdrawalExecutor(address(portal));
     ethUsdFeed = AggregatorV3Interface(address(new MockV3Aggregator(8, 2500e8)));
-    depositSubsidy = new DepositSubsidy(OWNER, address(portal), ethUsdFeed, sipaFactory);
-    withdrawalSubsidy = new WithdrawalSubsidy(OWNER, address(portal), address(plainWithdrawalExecutor), ethUsdFeed);
+    plainWithdrawalExecutor = new PlainWithdrawalExecutor(
+      address(portal),
+      plainWithdrawalFee,
+      plainWithdrawalFee == 0 ? address(0) : WITHDRAWAL_FEE_BENEFICIARY,
+      OWNER,
+      ethUsdFeed
+    );
+    operationExecutor = new OperationExecutor();
+    depositSubsidy = new DepositSubsidy(
+      OWNER, address(portal), IOperationExecutor(address(operationExecutor)), ethUsdFeed, sipaFactory
+    );
+    plainWithdrawalSubsidy = plainWithdrawalExecutor.SUBSIDY();
     proverSubsidy = new ProverSubsidy(OWNER, address(portal));
 
-    underlying.mint(USER, OxideConstants.TX_AMOUNT_CAP * 10);
+    underlying.mint(USER, TX_AMOUNT_CAP * 10);
     vm.prank(USER);
     underlying.approve(address(portal), type(uint256).max);
   }
 
   function _buildPortal(address _underlying) internal returns (OxidePortal) {
     return new OxidePortal(
-      OWNER,
-      OxidePortal.FpcFunding({funder: FPC_FUNDER, cut: fpcFundingCut}),
-      certManager,
-      nitroValidator,
+      teeRegistry,
       IERC20(_underlying),
       IRegistry(address(registry)),
       ROLLUP_VERSION,
       OxidePortal.RefundVerifiers({
         frozenNotes: IVerifier(address(frozenNotesRefundVerifier)),
-        frozenDeposit: IVerifier(address(frozenDepositRefundVerifier)),
+        frozenDeposits: IVerifier(address(frozenDepositsRefundVerifier)),
         unprocessedDeposit: IVerifier(address(unprocessedDepositRefundVerifier))
       }),
+      TX_AMOUNT_CAP,
       RATE,
       GLOBAL_LIMIT
     );
@@ -240,18 +258,13 @@ abstract contract OxidePortalBase is Test {
     wiredInbox = IInbox(address(inbox));
   }
 
-  modifier givenPortalIsInitialized() {
-    _initialize();
-    _;
-  }
-
   modifier givenPortalIsFrozen() {
-    _freezeAsOwner();
+    _freeze();
     _;
   }
 
   modifier givenRollupIsNonCanonical() {
-    registry.setCanonicalRollup(IHaveVersion(address(0xBEEF)));
+    _makeRollupNonCanonical();
     _;
   }
 
@@ -262,14 +275,23 @@ abstract contract OxidePortalBase is Test {
     _;
   }
 
-  function _initialize() internal {
-    vm.prank(OWNER);
-    portal.initialize(L2_PORTAL);
+  function _recordDeposit(bytes32 _messageHash, uint256 _messageLeafIndex) internal {
+    inbox.primeNext(_messageHash, _messageLeafIndex);
+    vm.prank(USER);
+    portal.deposit(bytes32(uint256(0xD3905)), 10 ether);
   }
 
-  function _freezeAsOwner() internal {
-    vm.prank(OWNER);
-    portal.freeze();
+  function _freeze() internal {
+    _freezePortal(portal);
+  }
+
+  function _freezePortal(OxidePortal _portal) internal {
+    _makeRollupNonCanonical();
+    _portal.freeze();
+  }
+
+  function _makeRollupNonCanonical() internal {
+    registry.setCanonicalRollup(IHaveVersion(address(0xBEEF)));
   }
 
   function _registerSigner() internal {
@@ -278,10 +300,8 @@ abstract contract OxidePortalBase is Test {
 
     bytes memory attestationTbs = bytes.concat(TEST_TEE_PCR0, abi.encodePacked(userData));
 
-    vm.prank(OWNER);
-    portal.approveTeePcr0(keccak256(TEST_TEE_PCR0));
     nitroValidator.setRegistrationPtrs(uint64(block.timestamp * 1000), 0, 48);
-    portal.registerTee(
+    teeRegistry.registerTee(
       attestationTbs, hex"1234", TEST_TEE_PUBLIC_KEY_X, TEST_TEE_PUBLIC_KEY_Y, TEST_ENC_PUB_KEY_X, TEST_ENC_PUB_KEY_Y
     );
   }
@@ -331,7 +351,7 @@ abstract contract OxidePortalBase is Test {
 
   function _messageHash(WithdrawParams memory p) internal view returns (bytes32) {
     DataStructures.L2ToL1Msg memory message = DataStructures.L2ToL1Msg({
-      sender: DataStructures.L2Actor({actor: L2_PORTAL, version: ROLLUP_VERSION}),
+      sender: DataStructures.L2Actor({actor: L2_TOKEN, version: ROLLUP_VERSION}),
       recipient: DataStructures.L1Actor({actor: address(portal), chainId: block.chainid}),
       content: _contentHash(p)
     });
@@ -357,26 +377,47 @@ abstract contract OxidePortalBase is Test {
     returns (bytes32)
   {
     return sha256(
-      abi.encodePacked(OxideConstants.TEE_SIG_DOMAIN_WITHDRAWAL_FINALIZED, _archiveRoot, _withdrawalId, _withdrawalHash)
+      abi.encodePacked(
+        OxideConstants.TEE_SIG_DOMAIN_WITHDRAWAL_FINALIZED,
+        address(portal.TEE_REGISTRY()),
+        _archiveRoot,
+        _withdrawalId,
+        _withdrawalHash
+      )
     );
   }
 
   function _teeFrozenNotesRefundFinalDigest(bytes32[] memory _publicInputs) internal view returns (bytes32) {
-    return sha256(abi.encodePacked(OxideConstants.TEE_SIG_DOMAIN_FROZEN_NOTES_REFUND, _publicInputs));
+    return sha256(
+      abi.encodePacked(OxideConstants.TEE_SIG_DOMAIN_FROZEN_NOTES_REFUND, address(portal.TEE_REGISTRY()), _publicInputs)
+    );
   }
 
-  function _frozenDepositRefundFinalDigest(WithdrawParams memory p, bytes32 _siloedNullifier)
+  function _frozenDepositsRefundFinalDigest(WithdrawParams memory p, bytes32 _siloedNullifier)
+    internal
+    view
+    returns (bytes32)
+  {
+    return _frozenDepositsRefundFinalDigest(p, _oneNullifier(_siloedNullifier));
+  }
+
+  function _frozenDepositsRefundFinalDigest(WithdrawParams memory p, bytes32[] memory _nullifiers)
     internal
     view
     returns (bytes32)
   {
     bytes32[] memory publicInputs =
-      _frozenDepositRefundPublicInputs(p.executor, p.userPayloadHash, p.amount, _siloedNullifier);
-    return _teeFrozenDepositRefundFinalDigest(publicInputs);
+      _frozenDepositsRefundPublicInputs(p.executor, p.userPayloadHash, p.amount, _nullifiers);
+    return _teeFrozenDepositsRefundFinalDigest(publicInputs);
   }
 
-  function _teeFrozenDepositRefundFinalDigest(bytes32[] memory _publicInputs) internal view returns (bytes32) {
-    return sha256(abi.encodePacked(OxideConstants.TEE_SIG_DOMAIN_FROZEN_DEPOSIT_REFUND, _publicInputs));
+  function _oneNullifier(bytes32 _nullifier) internal pure returns (bytes32[] memory nullifiers) {
+    nullifiers = new bytes32[](1);
+    nullifiers[0] = _nullifier;
+  }
+
+  function _teeFrozenDepositsRefundFinalDigest(bytes32[] memory _publicInputs) internal view returns (bytes32) {
+    return sha256(abi.encodePacked(OxideConstants.TEE_SIG_DOMAIN_FROZEN_DEPOSITS_REFUND, _publicInputs));
   }
 
   function _content(WithdrawParams memory p) internal pure returns (IOxidePortal.WithdrawContent memory) {
@@ -403,7 +444,7 @@ abstract contract OxidePortalBase is Test {
       IOxidePortal.WithdrawArgs({
         content: _content(p),
         userPayload: _userPayload(p),
-        relayerPayload: _relayerPayload(_tipRecipient, address(0)),
+        relayerPayload: _relayerPayload(_tipRecipient),
         epochNumber: p.epochNumber,
         numCheckpointsInEpoch: 1,
         leafIndex: p.leafIndex,
@@ -425,7 +466,7 @@ abstract contract OxidePortalBase is Test {
       IOxidePortal.WithdrawArgs({
         content: _content(p),
         userPayload: _userPayload(p),
-        relayerPayload: _relayerPayload(msg.sender, address(0)),
+        relayerPayload: _relayerPayload(msg.sender),
         epochNumber: p.epochNumber,
         numCheckpointsInEpoch: 1,
         leafIndex: p.leafIndex,
@@ -448,7 +489,7 @@ abstract contract OxidePortalBase is Test {
       IOxidePortal.WithdrawArgs({
         content: _content(p),
         userPayload: _userPayload(p),
-        relayerPayload: _relayerPayload(msg.sender, address(0)),
+        relayerPayload: _relayerPayload(msg.sender),
         epochNumber: p.epochNumber,
         numCheckpointsInEpoch: _numCheckpointsInEpoch,
         leafIndex: _leafIndex,
@@ -470,7 +511,7 @@ abstract contract OxidePortalBase is Test {
       IOxidePortal.RefundFrozenNotesArgs({
         executor: p.executor,
         userPayload: _userPayload(p),
-        relayerPayload: _relayerPayload(p.tipRecipient, address(0)),
+        relayerPayload: _relayerPayload(p.tipRecipient),
         amount: p.amount,
         nullifiers: _nullifiers,
         proof: _proof,
@@ -479,19 +520,28 @@ abstract contract OxidePortalBase is Test {
     );
   }
 
-  function _refundFrozenDeposit(
+  function _refundFrozenDeposits(
     WithdrawParams memory p,
     bytes32 _siloedNullifier,
     bytes memory _proof,
     bytes memory _signature
   ) internal {
-    portal.refundFrozenDeposit(
-      IOxidePortal.RefundFrozenDepositArgs({
+    _refundFrozenDeposits(p, _oneNullifier(_siloedNullifier), _proof, _signature);
+  }
+
+  function _refundFrozenDeposits(
+    WithdrawParams memory p,
+    bytes32[] memory _nullifiers,
+    bytes memory _proof,
+    bytes memory _signature
+  ) internal {
+    portal.refundFrozenDeposits(
+      IOxidePortal.RefundFrozenDepositsArgs({
         executor: p.executor,
         userPayload: _userPayload(p),
-        relayerPayload: _relayerPayload(p.tipRecipient, address(0)),
+        relayerPayload: _relayerPayload(p.tipRecipient),
         amount: p.amount,
-        siloedNullifier: _siloedNullifier,
+        nullifiers: _nullifiers,
         proof: _proof,
         teeSignature: _signature
       })
@@ -503,7 +553,6 @@ abstract contract OxidePortalBase is Test {
     bytes32 _siloedNullifier,
     bytes32 _unprocessedMsgHash,
     uint256 _messageLeafIndex,
-    bytes32[] memory _inboxSiblingPath,
     bytes memory _proof,
     bytes memory _signature
   ) internal {
@@ -511,12 +560,11 @@ abstract contract OxidePortalBase is Test {
       IOxidePortal.RefundUnprocessedDepositArgs({
         executor: p.executor,
         userPayload: _userPayload(p),
-        relayerPayload: _relayerPayload(p.tipRecipient, address(0)),
+        relayerPayload: _relayerPayload(p.tipRecipient),
         amount: p.amount,
         siloedNullifier: _siloedNullifier,
         messageHash: _unprocessedMsgHash,
         messageLeafIndex: _messageLeafIndex,
-        inboxSiblingPath: _inboxSiblingPath,
         proof: _proof,
         teeSignature: _signature
       })
@@ -533,7 +581,7 @@ abstract contract OxidePortalBase is Test {
     publicInputs[0] = bytes32(block.chainid);
     publicInputs[1] = bytes32(portal.ROLLUP_VERSION());
     publicInputs[2] = bytes32(uint256(uint160(address(portal))));
-    publicInputs[3] = portal.$l2Portal();
+    publicInputs[3] = portal.L2_TOKEN();
     publicInputs[4] = portal.$freezeArchive();
     publicInputs[5] = bytes32(_amount);
     publicInputs[6] = bytes32(uint256(uint160(_executor)));
@@ -546,13 +594,22 @@ abstract contract OxidePortalBase is Test {
     return publicInputs;
   }
 
-  function _frozenDepositRefundPublicInputs(
+  function _frozenDepositsRefundPublicInputs(
     address _executor,
     bytes32 _userPayloadHash,
     uint256 _amount,
     bytes32 _siloedNullifier
   ) internal view returns (bytes32[] memory) {
-    bytes32[] memory publicInputs = new bytes32[](OxideConstants.FROZEN_DEPOSIT_REFUND_PUBLIC_INPUT_COUNT);
+    return _frozenDepositsRefundPublicInputs(_executor, _userPayloadHash, _amount, _oneNullifier(_siloedNullifier));
+  }
+
+  function _frozenDepositsRefundPublicInputs(
+    address _executor,
+    bytes32 _userPayloadHash,
+    uint256 _amount,
+    bytes32[] memory _nullifiers
+  ) internal view returns (bytes32[] memory) {
+    bytes32[] memory publicInputs = new bytes32[](OxideConstants.FROZEN_DEPOSITS_REFUND_PUBLIC_INPUT_COUNT);
     publicInputs[0] = bytes32(block.chainid);
     publicInputs[1] = bytes32(portal.ROLLUP_VERSION());
     publicInputs[2] = bytes32(uint256(uint160(address(portal))));
@@ -560,7 +617,11 @@ abstract contract OxidePortalBase is Test {
     publicInputs[4] = bytes32(_amount);
     publicInputs[5] = bytes32(uint256(uint160(_executor)));
     publicInputs[6] = _userPayloadHash;
-    publicInputs[7] = _siloedNullifier;
+
+    for (uint256 i = 0; i < _nullifiers.length; i++) {
+      publicInputs[i + 7] = _nullifiers[i];
+    }
+
     return publicInputs;
   }
 
@@ -626,8 +687,8 @@ abstract contract OxidePortalBase is Test {
     return abi.encode(p.recipient, p.processorTip);
   }
 
-  function _relayerPayload(address _tipRecipient, address _withdrawalSubsidy) internal pure returns (bytes memory) {
-    return abi.encode(_tipRecipient, _withdrawalSubsidy);
+  function _relayerPayload(address _tipRecipient) internal pure returns (bytes memory) {
+    return abi.encodePacked(_tipRecipient);
   }
 
   function _syncPayloadHash(WithdrawParams memory p) internal pure {

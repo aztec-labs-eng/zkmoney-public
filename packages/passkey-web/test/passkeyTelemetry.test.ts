@@ -174,6 +174,13 @@ describe("passkeyRouteFor", () => {
     ).toBe("phone_qr")
   })
 
+  it("reads a creation listing no transports as a security key only on an all-zero attested id", () => {
+    const empty = { authenticatorAttachment: "cross-platform" as const, transports: [] }
+    expect(passkeyRouteFor("create", { ...empty, aaguid: ZERO_AAGUID })).toBe("security_key")
+    expect(passkeyRouteFor("create", { ...empty, aaguid: APPLE_ICLOUD_AAGUID })).toBe("unknown")
+    expect(passkeyRouteFor("create", empty)).toBe("unknown")
+  })
+
   it("reads an assertion's route from its attachment and backup flag", () => {
     expect(passkeyRouteFor("assert", evidence({ authenticatorAttachment: "platform" }))).toBe(
       "same_device",
@@ -232,7 +239,7 @@ const timing: CeremonyTiming = {
   teardownWaitMs: 5,
   focusWaitMs: 10,
   pendingRetryDelaysMs: [1],
-  createTimeoutMs: 50,
+  requestTimeoutMs: 50,
 }
 
 /** The errors the browser ceremony itself throws, taken from a real run. */
@@ -315,10 +322,13 @@ describe("classifyPasskeyError", () => {
       // Built with an unknown kind here; its own kinds are checked below.
       LaptopPasskeyRefusedError: "provider_unnamed",
     }
-    // Every refusal class the policy exports, so a new one without a reason fails here.
+    // Every refusal class the policy exports, so a new one without a reason fails here. A backup
+    // passkey's refusal is reported by the backup events, never through this classifier.
     const refusals = (Object.values(policyErrors) as unknown[]).filter(
       (value) =>
-        typeof value === "function" && value.prototype instanceof policyErrors.PasskeyPolicyError,
+        typeof value === "function" &&
+        value.prototype instanceof policyErrors.PasskeyPolicyError &&
+        value !== policyErrors.BackupPasskeyRefusedError,
     ) as (new (arg: string) => policyErrors.PasskeyPolicyError)[]
     expect(refusals.map((Refusal) => new Refusal("manager").name).sort()).toEqual(
       Object.keys(expected).sort(),

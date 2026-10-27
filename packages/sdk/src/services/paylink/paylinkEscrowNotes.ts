@@ -15,10 +15,10 @@
  *   [0] amount  [1] randomness  [2] s_lo  [3] s_hi  [4] r_lo  [5] r_hi
  * The K1 signature rides inline in the note, so it comes back for free once the note is synced.
  */
-import { Fr } from "@aztec/aztec.js/fields"
-import type { AztecAddress } from "@aztec/aztec.js/addresses"
-import type { NoteDao } from "@aztec/stdlib/note"
-import { computeUniqueNoteHash, siloNoteHash } from "@aztec/stdlib/hash"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import type { AztecAddress } from "@aztec-labs/aztec.js/addresses"
+import type { NoteDao } from "@aztec-labs/stdlib/note"
+import { computeUniqueNoteHash, siloNoteHash } from "@aztec-labs/stdlib/hash"
 import type { NullificationEffectData } from "@oxide/oxide-client/token_operations_collector.js"
 
 // Mirror of aztec-nr `NoteStage::SETTLED` — any note read out of the note store lives in the tree.
@@ -89,7 +89,7 @@ export async function discoverPaylinkEscrowNotes(args: {
   if (typeof args.pxe.syncContractNotes !== "function") {
     throw new Error(
       "PXE.syncContractNotes() is missing — apply patches/@aztec__pxe@4.3.0.patch (on-demand " +
-        "contract note sync). An unpatched @aztec/pxe returns undefined here, not an error.",
+        "contract note sync). An unpatched @aztec-labs/pxe returns undefined here, not an error.",
     )
   }
 

@@ -35,12 +35,7 @@ export function readResolverOperatorRecords(
   const known = scans.get(key)
   if (known && Date.now() - known.at <= RESOLVER_RECORDS_REUSE_MS) return known.records
   const records = deploymentScanRange(publicClient, tuple, scanHead).then((range) =>
-    // sdk's reads are typed against @aztec/viem; a plain-viem client is runtime-identical.
-    fetchSipaResolverOperators(
-      publicClient as unknown as Parameters<typeof fetchSipaResolverOperators>[0],
-      registry,
-      range,
-    ),
+    fetchSipaResolverOperators(publicClient, registry, range),
   )
   scans.set(key, { at: Date.now(), records })
   records.catch(() => {

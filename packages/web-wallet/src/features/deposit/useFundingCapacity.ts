@@ -7,7 +7,6 @@ import {
   type PortalCapacityStore,
   type RequiredCredit,
 } from "@obsidion/front-core"
-import { SOURCE_OPERATION_CAP } from "@obsidion/sdk"
 import { activeCapacityKey, depositCapacityStore } from "./capacityStore"
 import {
   fundingCapacityView,
@@ -36,6 +35,8 @@ export interface FundingCapacity {
  * settlement token's base units; it is the credit only when `exactCredit`.
  */
 export function useFundingCapacity(input: {
+  /** The row the picked token settles on; the pinned bridge's when unset. */
+  rowToken?: string
   amountAtomic?: bigint
   decimals: number
   exactCredit: boolean
@@ -48,11 +49,18 @@ export function useFundingCapacity(input: {
   const [key, setKey] = useState<PortalCapacityKey>()
   const [keyFailed, setKeyFailed] = useState(false)
   const [keyAttempt, setKeyAttempt] = useState(0)
+  const { rowToken } = input
+
+  // Another row is another bucket: neither the last key nor its failure carries over.
+  useEffect(() => {
+    setKey(undefined)
+    setKeyFailed(false)
+  }, [rowToken])
 
   useEffect(() => {
     let stale = false
     let again: ReturnType<typeof setTimeout> | undefined
-    activeCapacityKey().then(
+    activeCapacityKey(rowToken).then(
       (next) => {
         if (stale) return
         setKeyFailed(false)
@@ -73,7 +81,7 @@ export function useFundingCapacity(input: {
       stale = true
       clearTimeout(again)
     }
-  }, [keyAttempt])
+  }, [keyAttempt, rowToken])
 
   const store = useMemo(() => (key ? depositCapacityStore(key) : undefined), [key])
   const state: PortalCapacityState | undefined = useSyncExternalStore(
@@ -95,7 +103,6 @@ export function useFundingCapacity(input: {
       ? fundingEligibility({
           state,
           required,
-          operationCap: SOURCE_OPERATION_CAP,
           now: Date.now(),
           staleAfterMs: store.policy.staleAfterMs,
           unknownCapacity: input.unknownCapacity,

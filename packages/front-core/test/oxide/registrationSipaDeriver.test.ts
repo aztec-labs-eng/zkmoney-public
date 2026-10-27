@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from "vitest"
 import type { Address } from "viem"
-import { Fr } from "@aztec/foundation/curves/bn254"
+import { Fr } from "@aztec-labs/foundation/curves/bn254"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 
 const h = vi.hoisted(() => ({
@@ -10,6 +10,7 @@ const h = vi.hoisted(() => ({
     async () => "0x00000000000000000000000000000000000000b2",
   ),
   predictLegacySIPA: vi.fn(async () => "0x00000000000000000000000000000000000000a1"),
+  predictSIPA: vi.fn(async () => "0x00000000000000000000000000000000000000a2"),
 }))
 vi.mock("@obsidion/sdk", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/sdk")>()),
@@ -17,6 +18,10 @@ vi.mock("@obsidion/sdk", async (importOriginal) => ({
   readRegistrationSIPAImplementation: h.readRegistrationSIPAImplementation,
 }))
 vi.mock("@oxide/l1-contracts/legacy_sipa.js", () => ({ predictLegacySIPA: h.predictLegacySIPA }))
+vi.mock("@oxide/l1-contracts", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@oxide/l1-contracts")>()),
+  predictSIPA: h.predictSIPA,
+}))
 
 const { createRegistrationSipaDeriver, NO_NAME_PORTAL_RECIPIENT, oxideEnvFromTuple } = await import(
   "../../src/oxide/oxideRegistrationDeps"
@@ -30,7 +35,22 @@ const TUPLE = {
   token: "0x0000000000000000000000000000000000000004",
   portal: "0x0000000000000000000000000000000000000012",
   sipaFactory: "0x0000000000000000000000000000000000000013",
+  forwardingTable: "0x0000000000000000000000000000000000000014",
 } as unknown as OxideEnvTuple
+const ENV_OPTS = {
+  resolverOperator: RESOLVER,
+  l1ChainId: 11155111,
+  accountFactory: "0x0000000000000000000000000000000000000002" as Address,
+  namePortalRecipient: NO_NAME_PORTAL_RECIPIENT,
+}
+const INPUT = {
+  owner: "0x00000000000000000000000000000000000000c3" as Address,
+  nameHash: `0x${"0d".repeat(32)}` as const,
+  l2Address: `0x${"0e".repeat(32)}`,
+  fee: 5n,
+  beneficiary: "0x00000000000000000000000000000000000000f4" as Address,
+  masterSecret: new Fr(7n),
+}
 
 const env = () =>
   oxideEnvFromTuple(TUPLE, {
@@ -59,6 +79,30 @@ describe("createRegistrationSipaDeriver", () => {
     expect(derived.sipaAddress).toBe("0x00000000000000000000000000000000000000a1")
     expect(derived.recordData.toLowerCase()).toContain(RESOLVER.slice(2).toLowerCase())
     expect(h.fetchSipaResolverOperators).not.toHaveBeenCalled()
+  })
+
+  it("predicts an account-protocol registration SIPA under the deployment's table", async () => {
+    const tuple = { ...TUPLE, sipaRecoveryProtocol: "account" } as OxideEnvTuple
+    const env = oxideEnvFromTuple(tuple, ENV_OPTS)
+    const derive = createRegistrationSipaDeriver({ publicClient: {} as never, env, tuple })
+
+    const derived = await derive(INPUT)
+
+    expect(derived.sipaAddress).toBe("0x00000000000000000000000000000000000000a2")
+    expect(h.readRegistrationSIPAImplementation).toHaveBeenCalledWith({}, TUPLE.sipaFactory)
+    expect(h.predictSIPA.mock.calls.at(-1)!.at(-1)).toBe(TUPLE.forwardingTable)
+    expect(derived.origin).toMatchObject({
+      protocol: "account",
+      forwardingTable: TUPLE.forwardingTable,
+    })
+  })
+
+  it("refuses a deployment that names no table", () => {
+    const tuple = { ...TUPLE, forwardingTable: undefined } as unknown as OxideEnvTuple
+    const env = oxideEnvFromTuple(tuple, ENV_OPTS)
+    expect(() => createRegistrationSipaDeriver({ publicClient: {} as never, env, tuple })).toThrow(
+      /forwardingTable/,
+    )
   })
 
   it("reads the registration implementation once for every fee it derives at", async () => {

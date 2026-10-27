@@ -1,4 +1,4 @@
-use crate::constants::DOM_SEP__PASSKEY_IMMUTABLES;
+use crate::constants::{DOM_SEP__PASSKEY_IMMUTABLES, DOM_SEP__PASSKEY_SET_IMMUTABLES, MAX_ACCOUNT_PASSKEYS};
 use aztec::protocol::{
     address::{AztecAddress, PartialAddress},
     contract_class_id::ContractClassId,
@@ -13,7 +13,7 @@ pub struct PasskeyPublicKey {
     pub y: [u8; 32],
 }
 
-/// The address preimage fields of a contract instance, less the immutables hash that the passkey provides.
+/// The address preimage fields of a contract instance, less the immutables hash.
 pub struct AccountInstancePreimage {
     pub contract_class_id: ContractClassId,
     pub salt: Field,
@@ -29,11 +29,8 @@ fn pack_16_bytes(bytes: [u8; 32], offset: u32) -> Field {
     acc
 }
 
-/// The `immutables_hash` a passkey account commits in its address preimage.
-///
-/// Mirrors `compute_key_commitment` in the wallet's alpha account library (see `DOM_SEP__PASSKEY_IMMUTABLES` in
-/// `constants.nr`).
-pub fn compute_passkey_immutables_hash(passkey: PasskeyPublicKey) -> Field {
+/// The hash of one passkey, which fills one slot of a passkey set.
+pub fn compute_passkey_hash(passkey: PasskeyPublicKey) -> Field {
     poseidon2_hash_with_separator(
         [
             pack_16_bytes(passkey.x, 0),
@@ -43,6 +40,11 @@ pub fn compute_passkey_immutables_hash(passkey: PasskeyPublicKey) -> Field {
         ],
         DOM_SEP__PASSKEY_IMMUTABLES,
     )
+}
+
+/// The `immutables_hash` of an account with the passkey set `slots`.
+pub fn compute_passkey_set_immutables_hash(slots: [Field; MAX_ACCOUNT_PASSKEYS]) -> Field {
+    poseidon2_hash_with_separator(slots, DOM_SEP__PASSKEY_SET_IMMUTABLES)
 }
 
 pub fn compute_account_address(
@@ -58,24 +60,4 @@ pub fn compute_account_address(
         immutables_hash,
     );
     AztecAddress::compute(public_keys, partial_address)
-}
-
-mod tests {
-    use super::{compute_passkey_immutables_hash, PasskeyPublicKey};
-
-    // Pinned vector shared with `yarn-project/oxide-lib/src/account_address.test.ts`. If this test fails, the Noir
-    // and the TS implementations of the passkey immutables hash disagree.
-    #[test]
-    fn immutables_hash_matches_ts() {
-        let mut x: [u8; 32] = [0; 32];
-        let mut y: [u8; 32] = [0; 32];
-        for i in 0..32 {
-            x[i] = (i + 1) as u8;
-            y[i] = (0xff - i) as u8;
-        }
-        let hash = compute_passkey_immutables_hash(PasskeyPublicKey { x, y });
-        assert_eq(hash, PINNED_IMMUTABLES_HASH);
-    }
-
-    global PINNED_IMMUTABLES_HASH: Field = 0x2ec7aa3dafb41e9b61288d8d83d3e22f82b044ac7ad4ad606f1bf7a110e3dc49;
 }

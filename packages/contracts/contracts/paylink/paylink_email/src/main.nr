@@ -160,7 +160,8 @@ pub contract PaylinkEmail {
     /// both, so the login nonce commits to the executor and the payout, and a proof cannot be
     /// replayed through a different executor or to a different address. Possession of a valid
     /// proof is the authorization; there is no L2 identity to gate. Consumes the same nullifier as
-    /// `claim` and the refund, and publishes the payout in the withdrawal log.
+    /// `claim` and the refund. Emits no recovery data: the batch's public finalization request
+    /// releases the burn.
     #[external("private")]
     fn claim_to_l1(
         zkjwt_vkey: [Field; VKEY_SIZE],

@@ -5,6 +5,8 @@
  */
 import { describe, expect, it, vi } from "vitest"
 import {
+  type Abi,
+  type AbiEvent,
   BaseError,
   ContractFunctionRevertedError,
   HttpRequestError,
@@ -209,7 +211,7 @@ describe("L1SwapEscrowReader.recoveredTxHash", () => {
       target: ARGS.recipient,
     })
     for (const eventName of ["EscrowRecovered", "SwapEscrowRecovered"]) {
-      expect(c.getContractEvents).toHaveBeenCalledWith(
+      expect((c as { getContractEvents: unknown }).getContractEvents).toHaveBeenCalledWith(
         expect.objectContaining({ address: ESCROW, eventName }),
       )
     }
@@ -258,8 +260,11 @@ describe("the legacy swap-escrow events", () => {
     type Input = { name?: string; type: string; indexed?: boolean }
     const shape = (inputs: readonly Input[]) =>
       inputs.map(({ name, type, indexed }) => ({ name, type, indexed: indexed === true }))
-    const legacy = getAbiItem({ abi: LegacySwapEscrowEventsAbi, name: legacyName })
-    const current = getAbiItem({ abi: abi as never, name: currentName }) as { inputs: Input[] }
+    const legacy = getAbiItem({
+      abi: LegacySwapEscrowEventsAbi as Abi,
+      name: legacyName,
+    }) as AbiEvent
+    const current = getAbiItem({ abi: abi as Abi, name: currentName }) as AbiEvent
     expect(toEventSelector(legacy)).toBe(topic)
     expect(shape(legacy.inputs)).toEqual(shape(current.inputs))
   })

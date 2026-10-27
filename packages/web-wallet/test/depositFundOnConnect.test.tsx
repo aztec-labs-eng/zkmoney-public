@@ -12,7 +12,7 @@ import type { Hex } from "viem"
 
 const L2_ADDRESS = `0x${"cd".repeat(32)}` as Hex
 const ACCOUNT = `0x${"a1".repeat(20)}` as Hex
-const MANIFEST_TOKEN = "0x00000000000000000000000000000000000000bb"
+const MANIFEST_TOKEN = "0x00000000000000000000000000000000000000bb" as Hex
 
 // Plenty of shared capacity, read from a fake bucket instead of the network.
 const capacity = vi.hoisted(() => ({ availableAtomic: 40_000n * 10n ** 18n }))
@@ -32,15 +32,20 @@ const gateway = {
   depositAddress: vi.fn(async () => ({ address: "0xp001ed", name: "alice.oxide.eth" })),
 }
 vi.mock("../src/features/deposit/sipaGateway", () => ({ getSipaDepositGateway: () => gateway }))
-vi.mock("../src/features/deposit/loadDepositFacts", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../src/features/deposit/loadDepositFacts")>()),
-  loadDepositDisplayFacts: vi.fn(async () => ({
-    fee: "0.35",
-    token: MANIFEST_TOKEN,
-    sweepFeeAtomic: 250_000_000_000_000_000n,
-    fpcFundingCutAtomic: 100_000_000_000_000_000n,
-  })),
-}))
+vi.mock("../src/features/deposit/loadDepositFacts", async (importOriginal) => {
+  const { mockLoadDepositFacts, singleToken } = await import("./support/depositTokens")
+  const tokens = singleToken(MANIFEST_TOKEN, "TEST")
+  return mockLoadDepositFacts(
+    importOriginal,
+    () => tokens,
+    async () => ({
+      fee: "0.25",
+      token: MANIFEST_TOKEN,
+      sweepFeeAtomic: 250_000_000_000_000_000n,
+      txAmountCap: 5166n * 10n ** 18n,
+    }),
+  )
+})
 vi.mock("../src/errors/errorModal", () => ({ showReportableError: vi.fn() }))
 vi.mock("../src/lib/analytics", () => ({
   fireEvent: vi.fn(),
@@ -109,11 +114,13 @@ describe("DepositScreen — funding click held across the wallet picker", () => 
     [...container.querySelectorAll("button")].find((b) => b.textContent?.includes(text))
 
   /** First call mounts; later calls re-render the screen against the mutated `l1`. */
-  const render = (screen = <DepositScreen />) =>
+  const render = () =>
     act(async () => {
       root.render(
         <MemoryRouter>
-          <ScreeningProvider screener={passThroughScreener}>{screen}</ScreeningProvider>
+          <ScreeningProvider screener={passThroughScreener}>
+            <DepositScreen />
+          </ScreeningProvider>
         </MemoryRouter>,
       )
     })
@@ -230,32 +237,6 @@ describe("DepositScreen — funding click held across the wallet picker", () => 
 
     walletLands()
     await render()
-    expect(sheets()).toBe(1)
-  })
-
-  it("opens the sheet for an upgrade's address once the address it asked for appears", async () => {
-    const create = vi.fn()
-    const upgrade = (address?: Hex) => (
-      <DepositScreen
-        target={{
-          kind: "upgrade",
-          address: address && { address, name: "alice" },
-          create,
-          fee: 5n * 10n ** 17n,
-          floor: 5n * 10n ** 17n + 1n,
-          ask: 10n ** 18n,
-          onFunded: () => {},
-          onShown: () => {},
-        }}
-      />
-    )
-    walletLands()
-    await render(upgrade())
-    await act(async () => buttonContaining("Deposit from")!.click())
-    expect(create).toHaveBeenCalled()
-    expect(sheets()).toBe(0)
-
-    await render(upgrade(`0x${"ee".repeat(20)}`))
     expect(sheets()).toBe(1)
   })
 

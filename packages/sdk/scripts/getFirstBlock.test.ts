@@ -1,4 +1,4 @@
-import { createAztecNodeClient } from "@aztec/aztec.js"
+import { createAztecNodeClient } from "@aztec-labs/aztec.js"
 import { describe, it } from "vitest"
 
 const node = createAztecNodeClient("https://https://aztec-testnet-fullnode.zkv.xyz")

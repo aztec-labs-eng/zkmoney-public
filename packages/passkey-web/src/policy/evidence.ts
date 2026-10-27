@@ -45,7 +45,7 @@ function checkBackup(
 /**
  * The PRF output the account binds to: the backup gate first, then the slot. A value in the other
  * slot only is a provider that evaluated one salt, and it is not the one this route binds to.
- * `securityKey` exempts a hardware key from the backup gate; creation decides it from transports.
+ * `securityKey` exempts a hardware key from the backup gate; creation decides it from its response.
  * `localManagers` marks a laptop's own route, so each refusal names the managers it admits.
  */
 export function prfOutputFor(
@@ -71,8 +71,22 @@ const validSlot = (out: Uint8Array | undefined): Uint8Array | undefined =>
   out && out.length === 32 ? out : undefined
 
 /**
- * Both candidate keys' PRF outputs from one assertion, each slot judged on its own: a malformed
- * slot is dropped and a valid sibling kept. Refuses what no anchor could rescue.
+ * The PRF outputs an assertion yielded, each slot judged on its own: a malformed slot is dropped
+ * and a valid sibling kept. No gate and no refusal: an empty answer is an empty object. For a key
+ * that opens an envelope, where the backup gate does not apply.
+ */
+export function prfOutputsOf(assertion: Evidence): PrfCandidates {
+  const outputs: PrfCandidates = {}
+  const first = validSlot(assertion.prfFirst)
+  if (first) outputs.first = first
+  const second = validSlot(assertion.prfSecond)
+  if (second) outputs.second = second
+  return outputs
+}
+
+/**
+ * Both candidate keys' PRF outputs from one assertion, behind the backup gate. Refuses what no
+ * anchor could rescue.
  *
  * An assertion carries no transports, so a security key cannot be told from a phone here. Another
  * device's answer is exempt from the backup gate on that account: creation only ever admits a
@@ -81,11 +95,7 @@ const validSlot = (out: Uint8Array | undefined): Uint8Array | undefined =>
  */
 export function candidatesFrom(assertion: Evidence): PrfCandidates {
   checkBackup(assertion, assertion.authenticatorAttachment === "cross-platform")
-  const candidates: PrfCandidates = {}
-  const first = validSlot(assertion.prfFirst)
-  if (first) candidates.first = first
-  const second = validSlot(assertion.prfSecond)
-  if (second) candidates.second = second
+  const candidates = prfOutputsOf(assertion)
   if (!candidates.first && !candidates.second) throw new NoPrfError()
   return candidates
 }

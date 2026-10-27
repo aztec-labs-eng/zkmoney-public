@@ -1,8 +1,8 @@
 // TS mirror of noir-projects/resolver_circuit, pinned by the shared test vector in
 // resolution.test.ts. The shared constants come from the generated source.
-import { toBufferBE } from '@aztec/foundation/bigint-buffer';
-import { sha256ToField } from '@aztec/foundation/crypto/sha256';
-import { Fr } from '@aztec/foundation/curves/bn254';
+import { toBufferBE } from '@aztec-labs/foundation/bigint-buffer';
+import { sha256ToField } from '@aztec-labs/foundation/crypto/sha256';
+import { Fr } from '@aztec-labs/foundation/curves/bn254';
 
 import { DOM_SEP__STEALTH_K, MAX_NONCE } from '@oxide/oxide-lib/oxide_constants.gen.js';
 

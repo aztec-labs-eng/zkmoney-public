@@ -30,10 +30,10 @@
  */
 import { readFileSync } from "fs"
 import { resolve as resolvePath } from "path"
-import { Fr, Fq } from "@aztec/aztec.js/fields"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import { Gas, GasSettings } from "@aztec/stdlib/gas"
-import { deriveMasterIncomingViewingSecretKey } from "@aztec/stdlib/keys"
+import { Fr, Fq } from "@aztec-labs/aztec.js/fields"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import { Gas, GasSettings } from "@aztec-labs/stdlib/gas"
+import { deriveMasterIncomingViewingSecretKey } from "@aztec-labs/stdlib/keys"
 import { TESTNET_NODE_URL, AZTEC_NODE_API_KEY, DEFAULT_CONTRACTS } from "@obsidion/core/constants"
 
 import {
@@ -44,14 +44,14 @@ import {
   ObsidionAccount,
   ObsidionFeeJuicePaymentMethod,
   PasswordFPCPaymentMethod,
-  type TeeSigner,
   createNode,
 } from "../../src/index.js"
 import { ObsidionWalletTest } from "../../src/obsidion/ObsidionWalletTest.js"
 import type { SpendMetadataResolver } from "@oxide/oxide-client/token_operations_collector.js"
+import type { RegisteredTeeSigner } from "@oxide/oxide-client/types.js"
 import { buildSpendMetadata } from "@oxide/oxide-client/spend_metadata.js"
-import { NO_FROM, type Account, type Salt } from "@aztec/aztec.js/account"
-import { ContractInitializationStatus } from "@aztec/aztec.js/wallet"
+import { NO_FROM, type Account, type Salt } from "@aztec-labs/aztec.js/account"
+import { ContractInitializationStatus } from "@aztec-labs/aztec.js/wallet"
 
 /**
  * Optional knobs for a benchmark/multi-wallet caller. Default (no options)
@@ -74,7 +74,7 @@ export interface SetupTestnetOptions {
   /** Build the real testnet oxide TEE signer + spend-metadata resolver. */
   attachTeeSigner?: boolean
   /** Front-end composition supplies the front-core TEE source without reversing the package graph. */
-  loadTeeSigner?(l1RpcUrl: string): Promise<TeeSigner | undefined>
+  loadTeeSigner?(l1RpcUrl: string): Promise<RegisteredTeeSigner | undefined>
   /**
    * Deploy the account on-chain. A fresh Schnorr account needs this (it does
    * not auto-deploy); alpha accounts auto-deploy on their first tx, so this is
@@ -101,11 +101,10 @@ export interface TestnetSetupResult {
   passwordFeePaymentMethod?: PasswordFPCPaymentMethod
   teardown: () => Promise<void>
   /** Present only when `attachTeeSigner` was set: the real testnet oxide TEE signer. */
-  teeSigner?: TeeSigner
+  teeSigner?: RegisteredTeeSigner
   /** Present only when `attachTeeSigner` was set: this account's spend-metadata resolver. */
   resolveSpendMetadata?: SpendMetadataResolver
 }
-
 
 const TESTNET_FEE_MULTIPLIER = 2n
 
@@ -365,7 +364,7 @@ export async function setupTestnet(options?: SetupTestnetOptions): Promise<Testn
   // validate without it. The oxide env-registry client must fetch its
   // manifest tuple before the signer can load — the same lifecycle the
   // app's ContractServiceProvider drives via client.initialize().
-  let teeSigner: TeeSigner | undefined
+  let teeSigner: RegisteredTeeSigner | undefined
   let resolveSpendMetadata: SpendMetadataResolver | undefined
   if (options?.attachTeeSigner) {
     const oxide = contractService.getOxideClient()

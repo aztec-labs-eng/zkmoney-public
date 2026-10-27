@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { Fr } from "@aztec/aztec.js/fields"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 import { AccountServiceError, type AccountServiceClient } from "@obsidion/front-core"
 import { GoldenTicketWitnessError } from "@obsidion/sdk"
 

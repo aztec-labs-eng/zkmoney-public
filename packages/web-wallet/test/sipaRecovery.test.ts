@@ -14,6 +14,7 @@ import {
   type Hex,
 } from "viem"
 import type { SIPADepositRecord } from "@obsidion/front-core"
+import { LIMIT_USD } from "./support/publicLimit"
 
 const SIPA = `0x${"11".repeat(20)}` as Address
 const TUPLE_TOKEN = `0x${"22".repeat(20)}` as Address
@@ -31,11 +32,11 @@ vi.mock("../src/config/env", async (original) => ({
   ...(await original<object>()),
   getConfig: () => ({ l1ChainId: 11155111 }),
 }))
-// The refund settle prices the entry it buys against the portal's cut, and will not decide without.
-vi.mock("../src/features/fees/fpcFundingCut", () => ({
-  currentFpcFundingCut: async () => 10n ** 17n,
-  fpcFundingCut: async () => 10n ** 17n,
-}))
+// The registration's table lists only its own token.
+vi.mock("../src/features/deposit/loadDepositFacts", async (importOriginal) => {
+  const { mockLoadDepositFacts, singleToken } = await import("./support/depositTokens")
+  return mockLoadDepositFacts(importOriginal, () => singleToken(RECORD_TOKEN))
+})
 vi.mock("../src/platform/desktopBridge", () => ({
   isDesktopL1SubmitActive: () => false,
   ...bridge,
@@ -544,14 +545,12 @@ describe("desktopBridgeChannel", () => {
 
 describe("unsweepableCopy", () => {
   const ONE_DAI = "1000000000000000000"
-  const QUARTER_DAI = "250000000000000000"
-  // A record whose whole deduction is 1.25 DAI, a quarter of it the portal's cut.
-  const FEE_WITH_CUT = "1250000000000000000"
-  const copy = (patch: Partial<SIPADepositRecord>) => unsweepableCopy(record(patch))
+  const TX_AMOUNT_CAP = 5166n * 10n ** 18n
+  const copy = (patch: Partial<SIPADepositRecord>) => unsweepableCopy(record(patch), TX_AMOUNT_CAP)
 
   it("names the fee when the deposit is at or below the floor", () => {
     for (const amount of ["0.4", "1"]) {
-      const text = copy({ amount, fee: ONE_DAI, fpcFundingCut: "0" })
+      const text = copy({ amount, fee: ONE_DAI })
       expect(text).toContain("at or below the network's deposit fee (1 DAI)")
       expect(text).toContain("holds more than 1 DAI in total")
       // Two ways out, read as a choice.
@@ -560,56 +559,44 @@ describe("unsweepableCopy", () => {
   })
 
   it("names the ceiling case only where the amount the pool would forward exceeds it", () => {
-    const over = copy({ amount: "4200", fee: ONE_DAI, fpcFundingCut: "0" })
+    const over = copy({ amount: "8400", fee: ONE_DAI })
     expect(over).toContain("larger than the network can process in one deposit")
     expect(over).toContain("Waiting won't change this.")
     expect(over).not.toContain("deposit fee (")
     expect(over).not.toContain("same deposit address")
     expect(over).toContain("You can recover the funds")
     // The pool keeps the fee, so a gross of exactly ceiling + fee forwards exactly the ceiling.
-    expect(copy({ amount: "2584", fee: ONE_DAI, fpcFundingCut: "0" })).not.toContain(
-      "larger than the network",
-    )
-    expect(copy({ amount: "2585", fee: ONE_DAI, fpcFundingCut: "0" })).toContain(
-      "larger than the network",
-    )
+    expect(copy({ amount: "5167", fee: ONE_DAI })).not.toContain("larger than the network")
+    expect(copy({ amount: "5168", fee: ONE_DAI })).toContain("larger than the network")
     // With no fee on the record the gross is all there is to measure against.
-    expect(copy({ amount: "2583" })).not.toContain("larger than the network")
-    expect(copy({ amount: "2584" })).toContain("larger than the network")
+    expect(copy({ amount: "5166" })).not.toContain("larger than the network")
+    expect(copy({ amount: "5167" })).toContain("larger than the network")
+    // An unread cap names no cause at that end.
+    expect(unsweepableCopy(record({ amount: "8400", fee: ONE_DAI }))).not.toContain(
+      "larger than the network",
+    )
   })
 
   it("never shows the internal ceiling or a wait, and points to the published limit", () => {
     for (const tokenSymbol of ["DAI", "USDC", "TEST"]) {
-      const text = copy({ amount: "4200", fee: ONE_DAI, fpcFundingCut: "0", tokenSymbol })
-      expect(text).not.toMatch(/2[,.]?583/)
+      const text = copy({ amount: "8400", fee: ONE_DAI, tokenSymbol })
+      expect(text).not.toMatch(/5[,.]?166/)
       expect(text).not.toMatch(/\b(minute|hour|refill|later)\b/i)
-      expect(text).toContain("Each deposit is limited to $2,500 sent, including fees.")
+      expect(text).toContain(`Each deposit is limited to ${LIMIT_USD} sent, including fees.`)
       expect(text).toContain(`The limit counts 1 ${tokenSymbol} as $1.`)
     }
   })
 
   it("names the fee in the token sent", () => {
-    const floor = copy({ amount: "0.4", fee: ONE_DAI, fpcFundingCut: "0", tokenSymbol: "USDC" })
+    const floor = copy({ amount: "0.4", fee: ONE_DAI, tokenSymbol: "USDC" })
     expect(floor).toContain("deposit fee (1 USDC)")
     expect(floor).toContain("holds more than 1 USDC in total")
-    const small = copy({
-      amount: "0.2",
-      fee: "350000000000000000",
-      fpcFundingCut: "0",
-      tokenSymbol: "USDC",
-    })
-    expect(small).toContain("deposit fee (0.35 USDC)")
-  })
-
-  it("names the whole deduction, not the sweep fee alone", () => {
-    // 1.2 DAI clears the 1 DAI sweep fee and still cannot move: the record's fee is the 1.25 total.
-    const text = copy({ amount: "1.2", fee: FEE_WITH_CUT, fpcFundingCut: QUARTER_DAI })
-    expect(text).toContain("at or below the network's deposit fee (1.25 DAI)")
-    expect(text).toContain("holds more than 1.25 DAI in total")
+    const small = copy({ amount: "0.2", fee: "250000000000000000", tokenSymbol: "USDC" })
+    expect(small).toContain("deposit fee (0.25 USDC)")
   })
 
   it("claims no cause it cannot prove between the fee and the cap", () => {
-    const text = copy({ amount: "95", fee: ONE_DAI, fpcFundingCut: "0" })
+    const text = copy({ amount: "95", fee: ONE_DAI })
     expect(text).toContain("can't be moved into your private balance")
     expect(text).not.toContain("deposit fee (")
     expect(text).not.toContain("larger than the network")
@@ -621,7 +608,7 @@ describe("unsweepableCopy", () => {
   })
 
   it("promises no recovery to a deposit discovered without its note secret", () => {
-    const text = copy({ amount: "0.4", fee: ONE_DAI, fpcFundingCut: "0", messageSecret: "" })
+    const text = copy({ amount: "0.4", fee: ONE_DAI, messageSecret: "" })
     expect(text).toContain("at or below the network's deposit fee")
     expect(text).toContain("hasn't discovered yet")
   })

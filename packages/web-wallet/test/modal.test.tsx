@@ -10,14 +10,14 @@ vi.mock("@obsidion/web-ds", () => ({
 }))
 
 const { Modal, ModalSuspension } = await import("../src/ui/Modal")
-const { BrowserPasskeyCeremony } = await import("@obsidion/passkey-web")
+const { BrowserPasskeyCeremony, KEPT_PASSKEY_API_KEY } = await import("@obsidion/passkey-web")
 
 const CEREMONY_TIMING = {
   handoffWaitMs: 30,
   teardownWaitMs: 5,
   focusWaitMs: 10,
   pendingRetryDelaysMs: [1],
-  createTimeoutMs: 50,
+  requestTimeoutMs: 50,
 }
 
 declare global {
@@ -147,6 +147,28 @@ describe("Modal", () => {
       </Modal>,
     )
     expect(dialog().getAttribute("aria-label")).toBe("Send")
+  })
+
+  it("puts a create sheet's Back top left, beside its Close", async () => {
+    const onBack = vi.fn()
+    await render(
+      <Modal variant="create" label="Deposit details" onBack={onBack} onClose={() => {}}>
+        <span>body</span>
+      </Modal>,
+    )
+    const back = container.querySelector<HTMLButtonElement>(".ww-modal__back [aria-label='Back']")!
+    expect(container.querySelector(".ww-modal__close [aria-label='Close']")).not.toBeNull()
+    await act(async () => back.click())
+    expect(onBack).toHaveBeenCalledOnce()
+  })
+
+  it("draws no Back on a create sheet that has nowhere to go back to", async () => {
+    await render(
+      <Modal variant="create" label="Deposit details" onClose={() => {}}>
+        <span>body</span>
+      </Modal>,
+    )
+    expect(container.querySelector("[aria-label='Back']")).toBeNull()
   })
 
   it("keeps Tab inside the sheet in both directions", async () => {
@@ -415,6 +437,130 @@ describe("Modal", () => {
       })
       expect(show).not.toHaveBeenCalled()
       expect(HTMLDialogElement.prototype.showModal).toHaveBeenCalledTimes(1)
+    })
+
+    describe("with the page's lock holding a kept wrapper", () => {
+      const scope = globalThis as Record<string, unknown>
+      const keep = (entries: Record<string, unknown>) => {
+        Object.defineProperty(scope, KEPT_PASSKEY_API_KEY, {
+          value: Object.freeze(Object.assign(Object.create(null), entries)),
+          configurable: true,
+        })
+      }
+      afterEach(() => {
+        delete scope[KEPT_PASSKEY_API_KEY]
+      })
+
+      it("drops an open sheet to non-modal while the kept get answers, with the native restored", async () => {
+        let settle!: (credential: null) => void
+        let ariaModalDuringRequest: string | null = null
+        const kept = vi.fn(() => {
+          ariaModalDuringRequest = dialog().getAttribute("aria-modal")
+          return new Promise<null>((resolve) => (settle = resolve))
+        })
+        keep({ get: kept })
+        Object.defineProperty(navigator, "credentials", {
+          value: { get: Reflect.get, create: vi.fn() },
+          configurable: true,
+        })
+        await render(
+          <Modal title="Pay" onClose={() => {}}>
+            <button>Pay</button>
+          </Modal>,
+        )
+        const request = assert()
+        await vi.waitFor(() => expect(kept).toHaveBeenCalledOnce())
+        expect(ariaModalDuringRequest).toBe("false")
+        await act(async () => {
+          settle(null)
+          await request
+        })
+        expect(show).toHaveBeenCalledTimes(1)
+        expect(HTMLDialogElement.prototype.showModal).toHaveBeenCalledTimes(2)
+        expect(dialog().getAttribute("aria-modal")).toBe("true")
+      })
+
+      it("drops an open sheet while a kept create answers an allowed creation, with no kept get", async () => {
+        let settle!: (credential: null) => void
+        let ariaModalDuringRequest: string | null = null
+        const kept = vi.fn(() => {
+          ariaModalDuringRequest = dialog().getAttribute("aria-modal")
+          return new Promise<null>((resolve) => (settle = resolve))
+        })
+        keep({ create: kept })
+        Object.defineProperty(navigator, "credentials", {
+          value: { get: Reflect.get, create: Object.create },
+          configurable: true,
+        })
+        await render(
+          <Modal title="Passkeys" onClose={() => {}}>
+            <button>Add</button>
+          </Modal>,
+        )
+        const request = new BrowserPasskeyCeremony(CEREMONY_TIMING)
+          .create({
+            rpId: "localhost",
+            rpName: "zk.money",
+            userName: "@alice",
+            prfFirstSalt: new Uint8Array(32),
+            extensionAllowed: true,
+          })
+          .catch(() => {})
+        await vi.waitFor(() => expect(kept).toHaveBeenCalledOnce())
+        expect(ariaModalDuringRequest).toBe("false")
+        await act(async () => {
+          settle(null)
+          await request
+        })
+        expect(show).toHaveBeenCalledTimes(1)
+        expect(dialog().getAttribute("aria-modal")).toBe("true")
+      })
+
+      it("leaves sheets modal for a request the kept wrapper does not answer", async () => {
+        const keptGet = vi.fn()
+        const keptCreate = vi.fn()
+        keep({ get: keptGet, create: keptCreate })
+        Object.defineProperty(navigator, "credentials", {
+          value: { get: Reflect.get, create: Object.create },
+          configurable: true,
+        })
+        await render(
+          <Modal title="Sign in" onClose={() => {}}>
+            <button>Continue</button>
+          </Modal>,
+        )
+        const ceremony = new BrowserPasskeyCeremony(CEREMONY_TIMING)
+        await act(async () => {
+          await ceremony
+            .assert({ rpId: "localhost", challenge: new Uint8Array(32), hints: ["hybrid", "security-key"] })
+            .catch(() => {})
+          await ceremony
+            .create({ rpId: "localhost", rpName: "zk.money", userName: "@alice", prfFirstSalt: new Uint8Array(32) })
+            .catch(() => {})
+        })
+        expect(keptGet).not.toHaveBeenCalled()
+        expect(keptCreate).not.toHaveBeenCalled()
+        expect(show).not.toHaveBeenCalled()
+        expect(HTMLDialogElement.prototype.showModal).toHaveBeenCalledTimes(1)
+      })
+
+      it("leaves sheets modal when the slot holds nothing", async () => {
+        keep({})
+        Object.defineProperty(navigator, "credentials", {
+          value: { get: Reflect.get, create: vi.fn() },
+          configurable: true,
+        })
+        await render(
+          <Modal title="Pay" onClose={() => {}}>
+            <button>Pay</button>
+          </Modal>,
+        )
+        await act(async () => {
+          await assert()
+        })
+        expect(show).not.toHaveBeenCalled()
+        expect(HTMLDialogElement.prototype.showModal).toHaveBeenCalledTimes(1)
+      })
     })
   })
 

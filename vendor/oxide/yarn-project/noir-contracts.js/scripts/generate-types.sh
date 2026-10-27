@@ -2,14 +2,14 @@
 # Generates type-safe TS bindings for the Aztec L2 contracts in noir-projects/.
 # For each contract it copies the compiled artifact into ./artifacts (with a `.d.json.ts` stub so
 # tsc types the JSON as NoirCompiledContract instead of inferring the multi-MB literal), runs the
-# @aztec/builder `codegen` CLI to emit ./src/<Contract>.ts, and writes ./src/index.ts.
+# @aztec-labs/builder `codegen` CLI to emit ./src/<Contract>.ts, and writes ./src/index.ts.
 #
 # Contracts are listed explicitly below; add a row when a new `type = "contract"` noir package lands.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 ROOT="$(cd ../.. && pwd)"
-BUILDER_CLI="$ROOT/yarn-project/node_modules/@aztec/builder/dest/bin/cli.js"
+BUILDER_CLI="$ROOT/yarn-project/node_modules/@aztec-labs/builder/dest/bin/cli.js"
 
 # noir package dir : compiled artifact basename (<package>-<ContractName>.json)
 CONTRACTS=(
@@ -29,7 +29,7 @@ mkdir -p artifacts src
 
 # Stub that types every imported artifact JSON as a NoirCompiledContract.
 read -r -d '' DECL <<'EOF' || true
-import { type NoirCompiledContract } from '@aztec/aztec.js/abi';
+import { type NoirCompiledContract } from '@aztec-labs/aztec.js/abi';
 const circuit: NoirCompiledContract;
 export = circuit;
 EOF

@@ -1,7 +1,7 @@
 // Shared receipt shape for reorg-aware code. Receipts stay structural — platform layers adapt a
 // real node client to ReorgNodeLike.
 
-import { TxExecutionResult, TxStatus } from "@aztec/stdlib/tx"
+import { TxExecutionResult, TxStatus } from "@aztec-labs/stdlib/tx"
 
 /** Tx receipt as reorg code consumes it. `status` may carry unknown future values. */
 export interface ReorgTxReceiptLike {

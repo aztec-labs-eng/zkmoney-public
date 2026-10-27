@@ -7,22 +7,26 @@
 import { describe, expect, it } from "vitest"
 import { readFileSync } from "fs"
 import { resolve } from "path"
-import { Fr } from "@aztec/aztec.js/fields"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import { loadContractArtifact } from "@aztec/stdlib/abi"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import { loadContractArtifact } from "@aztec-labs/stdlib/abi"
 import {
   CompleteAddress,
   getContractClassFromArtifact,
   getContractInstanceFromInstantiationParams,
-} from "@aztec/stdlib/contract"
-import type { NoirCompiledContract } from "@aztec/stdlib/noir"
+} from "@aztec-labs/stdlib/contract"
+import type { NoirCompiledContract } from "@aztec-labs/stdlib/noir"
 import { DEFAULT_CONTRACTS } from "@obsidion/contracts"
 import { PaylinkService } from "../../src/services/PaylinkService.js"
 import {
   deriveDeterministicPaylinkKeys,
   derivePaylinkKeys,
 } from "../../src/services/paylink/paylinkKeys.js"
-import { buildTransferMeta, buildTransferMetaForSend, decodeTransferMeta } from "../../src/services/transferMeta.js"
+import {
+  buildTransferMeta,
+  buildTransferMetaForSend,
+  decodeTransferMeta,
+} from "../../src/services/transferMeta.js"
 import type { ScannedTransferEvent } from "../../src/services/transferEventSource.js"
 
 const target = (path: string) =>
@@ -52,7 +56,12 @@ describe("PaylinkService.recoverPaylinkFromTransfer", () => {
     )
     const masterSecret = Fr.random()
     const day = 20_000
-    const keys = await deriveDeterministicPaylinkKeys(masterSecret, day, 3, DEFAULT_CONTRACTS.paylinkDirect)
+    const keys = await deriveDeterministicPaylinkKeys(
+      masterSecret,
+      day,
+      3,
+      DEFAULT_CONTRACTS.paylinkDirect,
+    )
     const escrow = await getContractInstanceFromInstantiationParams(ARTIFACT, {
       salt: new Fr(0n),
       publicKeys: keys.publicKeys,
@@ -119,7 +128,10 @@ describe("PaylinkService.recoverPaylinkFromTransfer", () => {
       buildTransferMetaForSend({}),
     )
     expect(
-      await service.recoverPaylinkFromTransfer({ ...event, paylinkCreated: undefined }, masterSecret),
+      await service.recoverPaylinkFromTransfer(
+        { ...event, paylinkCreated: undefined },
+        masterSecret,
+      ),
     ).toBeNull()
 
     // An email lane carries the plaintext email through to the link's display hint.

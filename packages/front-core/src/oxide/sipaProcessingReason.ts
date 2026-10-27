@@ -9,10 +9,9 @@ import type { SipaProcessingReason } from "../core/services/deposits/sipaProcess
 import type { CapacityEligibility, RequiredCredit } from "./portalCapacityEligibility"
 
 /**
- * What the portal would meter for this deposit: the whole balance less the route fee and the portal's funding cut.
- * The route fee is the implementation's `DEPOSIT_FEE`, or a registration's signed fee, which is at least that. Both
- * come from the deposit's own implementation and portal, not the record's stored fee, which carries the cut of the
- * deployment selected when it was written.
+ * What the portal would meter for this deposit: the whole balance less the route fee. The route fee is the
+ * deposit's forwarding-table row fee, or a registration's signed fee, which is at least that. Neither is the record's
+ * stored fee.
  *
  * Unknown for a deposit in another token: the sweep converts it first, and no supported bound gives the output.
  */
@@ -41,7 +40,7 @@ export function sipaRequiredCredit(
   } catch {
     return unknown
   }
-  const atomic = gross - routeFee - terms.fpcFundingCut
+  const atomic = gross - routeFee
   return atomic > 0n
     ? { status: "known", atomic, token: terms.token as Address, decimals: record.tokenDecimals }
     : unknown

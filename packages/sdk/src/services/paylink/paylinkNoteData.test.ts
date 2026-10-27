@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest"
-import { Fr } from "@aztec/aztec.js/fields"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import { buildPaylinkNoteView, unpackPaylinkData } from "./paylinkNoteData.js"
 import type { RawPaylinkNote } from "./paylinkNoteData.js"
 
@@ -44,14 +44,14 @@ describe("unpackPaylinkData", () => {
     expect(unpackPaylinkData(packed)).toEqual({ amount, from_claimable, until_claimable })
   })
 
-  it("accepts Fr and string field encodings", () => {
+  it("accepts Fr and bigint field encodings", () => {
     const amount = 100n
     const from_claimable = 1n
     const until_claimable = 2n
     const packed = packPaylinkData(amount, from_claimable, until_claimable)
 
     expect(unpackPaylinkData(packed)).toEqual({ amount, from_claimable, until_claimable })
-    expect(unpackPaylinkData(packed.toString())).toEqual({
+    expect(unpackPaylinkData(packed.toBigInt())).toEqual({
       amount,
       from_claimable,
       until_claimable,

@@ -1,13 +1,13 @@
 /**
  * A registration SIPA as the wallet records it when the address is derived: its origin names the
- * SIPA implementation, whose terms name the portal capacity is read from.
+ * forwarding table, whose registration row names the portal capacity is read from.
  */
 import type { Address, Hex } from "viem"
 import { SIPADepositStore } from "@obsidion/front-core"
 import type { SipaPortalTerms } from "@obsidion/sdk"
 import { webStorage } from "../src/platform/storage/WebStorageAdapter"
 
-export const ORIGINAL_IMPLEMENTATION = "0x7777777777777777777777777777777777777777" as Address
+export const ORIGINAL_TABLE = "0x7777777777777777777777777777777777777777" as Address
 /** Not the active bucket's portal (`FAKE_ACTIVE_KEY`): capacity must come from this one. */
 export const ORIGINAL_PORTAL = "0x9999999999999999999999999999999999999999" as Address
 
@@ -16,7 +16,7 @@ export function originalTerms(token: string): SipaPortalTerms {
     portal: ORIGINAL_PORTAL,
     token: token as Address,
     depositFee: 25n * 10n ** 16n,
-    fpcFundingCut: 10n ** 17n,
+    txAmountCap: 10_000n * 10n ** 18n,
   }
 }
 
@@ -27,8 +27,8 @@ export async function seedRecordedRegistration(input: {
   l1ChainId: number
   /** Leave the origin out, as a record from before origins were stored. */
   withoutOrigin?: boolean
-  /** The terms of an implementation are read once per page, so a test that counts reads uses its own. */
-  implementation?: Address
+  /** A table row's terms are read once per page, so a test that counts reads uses its own table. */
+  forwardingTable?: Address
   /** The deposit was recovered off the address (a refunded registration). */
   recovered?: boolean
 }): Promise<void> {
@@ -51,12 +51,15 @@ export async function seedRecordedRegistration(input: {
         : {
             origin: {
               sipaFactory: "0x00000000000000000000000000000000000000e7" as Address,
-              implementation: input.implementation ?? ORIGINAL_IMPLEMENTATION,
+              implementation: "0x00000000000000000000000000000000000000e8" as Address,
               intentHash: `0x${"55".repeat(32)}` as Hex,
               rollupVersion: "1",
               resweepable: false,
-              protocol: "legacy-eoa" as const,
-              recoveryAddress: "0x00000000000000000000000000000000000000aa" as Address,
+              protocol: "account" as const,
+              recoveryAccount: "0x00000000000000000000000000000000000000aa" as Address,
+              recoveryCommitment: `0x${"66".repeat(32)}` as Hex,
+              accountFactory: "0x00000000000000000000000000000000000000e9" as Address,
+              forwardingTable: input.forwardingTable ?? ORIGINAL_TABLE,
             },
           }),
       l1ChainId: input.l1ChainId,

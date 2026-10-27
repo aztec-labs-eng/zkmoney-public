@@ -124,35 +124,24 @@ export function registrationKind(earned: boolean | undefined): RegistrationKind 
 
 /**
  * A signed schedule whose floor outgrew what its kind is asked to deposit. Nothing here can quote
- * it: the prompt would name a figure the registry refuses. Undefined until the cut lands, since
- * the floor is priced against it.
+ * it: the prompt would name a figure the registry refuses.
  */
-export function floorExceedsAsk(
-  schedule: RegistrationSchedule,
-  kind: RegistrationKind,
-  fpcFundingCut: bigint | undefined,
-): boolean | undefined {
-  if (fpcFundingCut === undefined) return undefined
-  return registrationFloor(schedule, fpcFundingCut) > askedTotal(kind)
+export function floorExceedsAsk(schedule: RegistrationSchedule, kind: RegistrationKind): boolean {
+  return registrationFloor(schedule) > askedTotal(kind)
 }
 
 /**
  * The kind one registration is quoted as, decided once for every surface that prices it. A waived
  * tag whose floor outgrew the earned ask is quoted on the standard schedule, since the registry
  * would refuse the earned one. With no schedule at all the hint stands, since the ask needs none.
- * Undefined while a signed waiver's floor cannot be priced against the cut: the kind decides the
- * figure asked for, and naming the wrong one sends the wrong deposit.
  */
 export function quotedRegistrationKind(
   feeWaived: boolean | undefined,
   schedule: RegistrationSchedule | undefined,
-  fpcFundingCut: bigint | undefined,
-): RegistrationKind | undefined {
+): RegistrationKind {
   if (feeWaived !== true) return "standard"
   if (schedule === undefined) return "earned_tag"
-  const exceeds = floorExceedsAsk(schedule, "earned_tag", fpcFundingCut)
-  if (exceeds === undefined) return undefined
-  return exceeds ? "standard" : "earned_tag"
+  return floorExceedsAsk(schedule, "earned_tag") ? "standard" : "earned_tag"
 }
 
 /** The figures a registration prompt needs, priced apart. */
@@ -161,7 +150,7 @@ export interface RegistrationQuote {
   total: bigint
   /** The tag price the deposit covers, or for a waived tag the relayer's cut. Needs a schedule. */
   fee?: bigint
-  /** The least the chain accepts. Needs both the schedule and the portal's funding cut. */
+  /** The least the chain accepts. Needs a schedule. */
   floor?: bigint
 }
 
@@ -176,8 +165,8 @@ function reportOnce(message: string): void {
 
 /**
  * What to show for one registration of `kind`: the total its kind is asked for, and the schedule's
- * own figures once they are known. Anything the total carries above `fee` plus the portal's funding
- * cut lands in the opening balance.
+ * own figures once they are known. Anything the total carries above `fee` lands in the opening
+ * balance.
  *
  * A deployment whose floor outgrew the asked total is a configuration error. Renders call this, so
  * it reports rather than throws, and quotes the floor rather than a figure the registry refuses.
@@ -185,12 +174,10 @@ function reportOnce(message: string): void {
 export function registrationQuote(
   schedule: RegistrationSchedule | undefined,
   kind: RegistrationKind = "standard",
-  fpcFundingCut?: bigint,
 ): RegistrationQuote {
   const total = askedTotal(kind)
   if (schedule === undefined) return { total }
-  if (fpcFundingCut === undefined) return { total, fee: schedule.fee }
-  const floor = registrationFloor(schedule, fpcFundingCut)
+  const floor = registrationFloor(schedule)
   if (floor > total) {
     const envName = askOverrideName(kind)
     reportOnce(

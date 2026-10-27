@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest"
 
 // Minimal Fr: fromBufferReduce passes bytes through so tests can assert the
 // exact derivation input.
-vi.mock("@aztec/aztec.js/fields", () => {
+vi.mock("@aztec-labs/aztec.js/fields", () => {
   class Fr {
     constructor(public readonly bytes: Uint8Array) {}
     static fromBufferReduce(buf: Buffer | Uint8Array): Fr {

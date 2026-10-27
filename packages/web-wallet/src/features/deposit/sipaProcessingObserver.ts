@@ -12,7 +12,7 @@ import {
 } from "@obsidion/front-core"
 import { getConfig } from "../../config/env"
 import { isDemoMode } from "../../dev/demoFlag"
-import { l1PublicClient } from "../../config/oxideTuple"
+import { getOxideTuple, l1PublicClient, requireTupleField } from "../../config/oxideTuple"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
 import { depositCapacityStore } from "./capacityStore"
 
@@ -32,8 +32,11 @@ export function sipaProcessingObserver(): SipaProcessingObserver | undefined {
   observer = createSipaProcessingObserver({
     deposits: SIPADepositStore.get(webStorage),
     capacity: depositCapacityStore,
-    readTerms: async (implementation: Address) =>
-      readSipaPortalTerms((client ??= l1PublicClient(config)), implementation),
+    readTerms: async (route) =>
+      readSipaPortalTerms((client ??= l1PublicClient(config)), {
+        ...route,
+        token: requireTupleField(await getOxideTuple(config), "token") as Address,
+      }),
     l1ChainId: config.l1ChainId,
   })
   return observer

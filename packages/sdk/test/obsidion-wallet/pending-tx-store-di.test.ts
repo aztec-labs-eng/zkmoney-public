@@ -3,10 +3,10 @@
  * `pendingTxStore`. These exercise the wallet boundary using
  * mock PXE / mock node — no sandbox required.
  */
-import { Fr } from "@aztec/foundation/curves/bn254"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import { ExecutionPayload } from "@aztec/stdlib/tx"
-import { Gas, GasSettings } from "@aztec/stdlib/gas"
+import { Fr } from "@aztec-labs/foundation/curves/bn254"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import { ExecutionPayload } from "@aztec-labs/stdlib/tx"
+import { Gas, GasSettings } from "@aztec-labs/stdlib/gas"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { stubNodeInfo } from "../utils/obsidionWalletStubs.js"
 import { stubSimulateTx } from "../utils/stubSimulateTx.js"
@@ -191,7 +191,7 @@ describe("ObsidionWallet — pendingTxStore DI", () => {
     })
 
     const from = await AztecAddress.random()
-    const NO_WAIT_TOKEN = (await import("@aztec/aztec.js/contracts")).NO_WAIT
+    const NO_WAIT_TOKEN = (await import("@aztec-labs/aztec.js/contracts")).NO_WAIT
     const result = (await wallet.sendTx(new ExecutionPayload([], [], [], []), {
       from,
       wait: NO_WAIT_TOKEN,
@@ -229,7 +229,7 @@ describe("ObsidionWallet — pendingTxStore DI", () => {
     const { wallet, stubNode } = makeStubWallet({ pendingTxStore: store })
 
     const from = await AztecAddress.random()
-    const NO_WAIT_TOKEN = (await import("@aztec/aztec.js/contracts")).NO_WAIT
+    const NO_WAIT_TOKEN = (await import("@aztec-labs/aztec.js/contracts")).NO_WAIT
     const result = await wallet.sendTx(new ExecutionPayload([], [], [], []), {
       from,
       wait: NO_WAIT_TOKEN,

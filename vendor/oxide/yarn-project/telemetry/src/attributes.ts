@@ -105,6 +105,22 @@ export const RELAYER_STREAM = defineAttribute({
   privacy: 'A fixed stream enum matching the persisted cursor sources; addresses are excluded.',
 });
 
+export const RELAYER_SKIP_REASON = defineAttribute({
+  name: 'oxide.relayer.skip_reason',
+  description: 'Reason the relayer did not store an L1 operation it found on L2.',
+  valueType: 'string',
+  allowedValues: ['payout_token', 'unwatched_balance_token'] as const,
+  privacy: 'A fixed reason enum; token addresses and operation identifiers are excluded.',
+});
+
+export const RELAYER_OPERATION_KIND = defineAttribute({
+  name: 'oxide.relayer.operation_kind',
+  description: 'Kind of an L1 operation, derived from its condition and calldata.',
+  valueType: 'string',
+  allowedValues: ['withdrawal_finalization', 'refund', 'sweep', 'swap', 'bridge', 'other'] as const,
+  privacy: 'A fixed kind enum; addresses, calldata, and operation identifiers are excluded.',
+});
+
 export const RESOLVER_OUTCOME = defineAttribute({
   name: 'oxide.resolver.outcome',
   description: 'Normalized outcome of one CCIP resolve request.',
@@ -117,6 +133,7 @@ export const RESOLVER_OUTCOME = defineAttribute({
     'limiter_unavailable',
     'watcher_unavailable',
     'unknown_name',
+    'undepositable_portal',
     'nonce_exhausted',
     'proof_error',
     'store_error',
@@ -149,25 +166,67 @@ export const L1_OBSERVER_TOKEN_SYMBOL = defineAttribute({
   valueType: 'string',
   validate: value =>
     typeof value === 'string' && (/^[A-Za-z0-9._-]{1,16}$/.test(value) || /^0x[0-9a-fA-F]{40}$/.test(value)),
-  cardinalityLimit: 1,
+  cardinalityLimit: 100,
   privacy: 'The value is public ERC-20 contract metadata or a public contract address; it contains no user data.',
 });
 
 export const L1_OBSERVER_DEPLOYMENT_LABEL = defineAttribute({
   name: 'oxide.l1_observer.deployment_label',
-  description: 'Label of the deployment-env manifest entry an observed L2 value belongs to.',
+  description: 'Label of the deployment-env manifest entry an observed value belongs to.',
   valueType: 'string',
   validate: value => typeof value === 'string' && /^[A-Za-z0-9._-]{1,32}$/.test(value),
   cardinalityLimit: 100,
   privacy: 'The label names a public manifest entry; it contains no user data.',
 });
 
+export const L1_OBSERVER_PORTAL = defineAttribute({
+  name: 'oxide.l1_observer.portal_address',
+  description: 'Address of the observed portal that a value belongs to.',
+  valueType: 'string',
+  validate: value => typeof value === 'string' && /^0x[0-9a-fA-F]{40}$/.test(value),
+  cardinalityLimit: 100,
+  privacy: 'The value is a public contract address from the manifest; it contains no user data.',
+});
+
 export const L1_OBSERVER_CHECK_NAME = defineAttribute({
   name: 'oxide.l1_observer.check_name',
-  description: 'The L2 check of the L1 observer that a failure belongs to.',
+  description: 'The check of the L1 observer that a failure belongs to.',
   valueType: 'string',
-  allowedValues: ['nodes', 'l2_tips', 'withdrawals', 'sipa_sweeps'] as const,
+  allowedValues: [
+    'nodes',
+    'l2_tips',
+    'withdrawals',
+    'sipa_sweeps',
+    'tracked_operations',
+    'l2_fees',
+    'relayer_break_even',
+    'migrations',
+  ] as const,
   privacy: 'A fixed enum of check names; it contains no user data.',
+});
+
+export const L1_OBSERVER_OPERATION_KIND = defineAttribute({
+  name: 'oxide.l1_observer.operation_kind',
+  description: 'The withdrawal flow or SIPA intent that a relayer minimum tip or break-even base fee belongs to.',
+  valueType: 'string',
+  allowedValues: [
+    'withdrawal',
+    'frozen_notes_refund',
+    'frozen_deposits_refund',
+    'unprocessed_deposit_refund',
+    'deposit',
+    'registration',
+    'user_op',
+  ] as const,
+  privacy: 'A fixed enum of operation kinds; it contains no user data.',
+});
+
+export const L1_OBSERVER_MIGRATION_FLOW = defineAttribute({
+  name: 'oxide.l1_observer.migration_flow',
+  description: 'The exit flow of the old portal that a migration through MigrationExecutor came from.',
+  valueType: 'string',
+  allowedValues: ['withdrawal', 'frozen_notes_refund', 'frozen_deposits_refund', 'unprocessed_deposit_refund'] as const,
+  privacy: 'A fixed enum of exit flows; it contains no user data.',
 });
 
 export const ATTRIBUTE_DEFINITIONS = [
@@ -181,10 +240,15 @@ export const ATTRIBUTE_DEFINITIONS = [
   RELAYER_OUTCOME,
   RELAYER_DEFER_REASON,
   RELAYER_STREAM,
+  RELAYER_SKIP_REASON,
+  RELAYER_OPERATION_KIND,
   RESOLVER_OUTCOME,
   RESOLVER_BROADCAST_OUTCOME,
   RESOLVER_SIPA_STATE,
   L1_OBSERVER_TOKEN_SYMBOL,
   L1_OBSERVER_DEPLOYMENT_LABEL,
+  L1_OBSERVER_PORTAL,
   L1_OBSERVER_CHECK_NAME,
+  L1_OBSERVER_OPERATION_KIND,
+  L1_OBSERVER_MIGRATION_FLOW,
 ] as const;

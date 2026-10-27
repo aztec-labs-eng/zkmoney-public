@@ -6,14 +6,14 @@
  * and the only constructor arg is the configure-password hash. Same (artifact, salt, hash) → same
  * address on every network.
  */
-import { Fr } from "@aztec/aztec.js/fields"
-import { Gas } from "@aztec/stdlib/gas"
-import { poseidon2Hash } from "@aztec/foundation/crypto/poseidon"
-import type { ContractArtifact } from "@aztec/stdlib/abi"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { Gas } from "@aztec-labs/stdlib/gas"
+import { poseidon2Hash } from "@aztec-labs/foundation/crypto/poseidon"
+import type { ContractArtifact } from "@aztec-labs/stdlib/abi"
 import {
   getContractInstanceFromInstantiationParams,
   type ContractInstanceWithAddress,
-} from "@aztec/stdlib/contract"
+} from "@aztec-labs/stdlib/contract"
 import { CLAIM_FPC_GAS_TABLE } from "./claimFpcGasTable.js"
 import { CLAIM_FPC_MAX_FEES_PER_GAS, type claimFpcSponsoredFee } from "./claimFpcBatchGas.js"
 

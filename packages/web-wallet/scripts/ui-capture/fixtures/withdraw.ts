@@ -2,7 +2,6 @@ import * as actual from "../../../src/features/withdraw/withdrawGateway"
 import { WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
 import type { WithdrawalRecord } from "@obsidion/front-core"
 import { parseUnits, type Address } from "viem"
-import { DEMO_FPC_FUNDING_CUT } from "../../../src/dev/fakeL1Rpc"
 import { fixtureState, inOperation, operation } from "./control"
 import { TX_HASH, SIPA } from "./data"
 export * from "../../../src/features/withdraw/withdrawGateway"
@@ -25,24 +24,34 @@ export async function captureWithdrawal(
     recipient,
     amount,
     tokenSymbol: "DAI",
+    tokenDecimals: 18,
     recipientProvenance: "saved-recipient",
     phase: "submitting",
     startTime: Date.now(),
     relayerTip: WITHDRAW_RELAYER_TIP.toString(),
-    fpcFundingCut: DEMO_FPC_FUNDING_CUT.toString(),
     ...extra,
     rawAmount,
   })
   onStage?.("building")
-  return inOperation(flow, `$${amount} to ${extra.recipientAlias?.trim() || "Ethereum"}`, async () => {
-    try {
-      await operation("withdraw", onStage, signing)
-      return await store.markMined(localId, TX_HASH, 4212, rawAmount, WITHDRAW_RELAYER_TIP.toString())
-    } catch (error) {
-      await store.patch(localId, { phase: "failed", error: String(error) })
-      throw error
-    }
-  })
+  return inOperation(
+    flow,
+    `$${amount} to ${extra.recipientAlias?.trim() || "Ethereum"}`,
+    async () => {
+      try {
+        await operation("withdraw", onStage, signing)
+        return await store.markMined(
+          localId,
+          TX_HASH,
+          4212,
+          rawAmount,
+          WITHDRAW_RELAYER_TIP.toString(),
+        )
+      } catch (error) {
+        await store.patch(localId, { phase: "failed", error: String(error) })
+        throw error
+      }
+    },
+  )
 }
 export const submitSponsoredWithdrawal: typeof actual.submitSponsoredWithdrawal = async (
   ...args

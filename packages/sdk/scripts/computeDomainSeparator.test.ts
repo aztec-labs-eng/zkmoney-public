@@ -1,5 +1,5 @@
 import { describe, it } from "vitest"
-import { keccak256 } from "@aztec/foundation/crypto/keccak"
+import { keccak256 } from "@aztec-labs/foundation/crypto/keccak"
 
 // pnpm test -- scripts/computeDomainSeparator.test.ts
 

@@ -1,6 +1,6 @@
 /**
- * A swap route has to leave the escrow something to swap after the withdrawal relayer tip, the FPC
- * cut and the escrow's relayer tip. That floor rides on top of the typed amount, so the escrow
+ * A swap route has to leave the escrow something to swap after the executor's fee, the withdrawal
+ * relayer tip and the escrow's relayer tip. That floor rides on top of the typed amount, so the escrow
  * always has the typed amount to swap. The relayer tip comes from a live simulation, so the floor
  * is whatever the simulator answers — here a fake with the sdk's contract — and the burn derives
  * from it.
@@ -15,12 +15,19 @@ import { usdFigure } from "../src/ui/format"
 import type { FakeSwapControl } from "./fixtures/fakeSwapSimulator"
 
 const RELAYER_TIP = 3n * 10n ** 18n
-// What the mocked portal reads back as FPC_FUNDING_CUT.
-const CUT = 250_000_000_000_000_000n
-const FLOOR = WITHDRAW_RELAYER_TIP + CUT + RELAYER_TIP
+/** The source executor's withdrawal fee. */
+const FEE = 10n ** 17n
+const FLOOR = FEE + WITHDRAW_RELAYER_TIP + RELAYER_TIP
 
 const control = vi.hoisted<FakeSwapControl>(() => ({ relayerTip: 3n * 10n ** 18n, calls: [] }))
 
+vi.mock("../src/features/withdraw/withdrawalFee", () => ({
+  withdrawalExecutorFee: async () => FEE,
+  activeWithdrawalFee: async () => FEE,
+  activeWithdrawalExecutor: async () => ({ fee: FEE }),
+  withdrawalExecutor: async () => ({ fee: FEE }),
+  withdrawalExecutorAt: async () => ({ fee: FEE }),
+}))
 vi.mock("@obsidion/sdk", async (importOriginal) => {
   const sdk = await importOriginal<typeof import("@obsidion/sdk")>()
   const { fakeSwapSimulator } = await import("./fixtures/fakeSwapSimulator")
@@ -54,7 +61,10 @@ vi.mock("../src/config/oxideTuple", async (importOriginal) => ({
     swapEscrowFactoryV2: `0x${"fa".repeat(20)}`,
     operationExecutor: `0x${"e0".repeat(20)}`,
   }),
-  l1PublicClient: () => ({ readContract: async () => CUT }),
+  l1PublicClient: () => ({}),
+}))
+vi.mock("../src/features/token/useTxAmountCap", () => ({
+  useTxAmountCap: () => 5166n * 10n ** 18n,
 }))
 vi.mock("../src/lib/analytics", () => ({
   fireEvent: vi.fn(),
@@ -165,9 +175,9 @@ describe("WithdrawToWalletModal — swap floor", () => {
     expect(last.recipient).toBe(RECIPIENT)
     expect(last.amount).toBe(10n ** 18n + FLOOR)
     expect(last.deductions).toEqual({
+      withdrawalFee: FEE,
       withdrawalRelayerTip: WITHDRAW_RELAYER_TIP,
       proverTip: 0n,
-      fpcFundingCut: CUT,
     })
   })
 

@@ -8,12 +8,12 @@
  * contract service every payout lane is dropped.
  */
 
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import type { ContractInstanceWithAddress } from "@aztec/stdlib/contract"
-import { BlockNumber } from "@aztec/foundation/branded-types"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import type { ContractInstanceWithAddress } from "@aztec-labs/stdlib/contract"
+import { BlockNumber } from "@aztec-labs/foundation/branded-types"
 import { OxideTokenContract, type Transfer as TransferEvent } from "@obsidion/contracts"
 import type { ObsidionWallet } from "../obsidion/ObsidionWallet.js"
-import type { PrivateEvent } from "@aztec/aztec.js/wallet"
+import type { PrivateEvent } from "@aztec-labs/aztec.js/wallet"
 import {
   decodeTransferMeta,
   type PaylinkCreatedMeta,
@@ -51,9 +51,17 @@ type EscrowVerifier =
 /** Private balances by token address, read at one PXE anchor. */
 export type WalletBalances = Record<string, bigint>
 
-export interface WalletSyncSnapshot {
-  events: ScannedTransferEvent[]
+/**
+ * `readAt` is when each token's read resolved. PXE runs jobs in order, so a read that resolved
+ * before a PXE write resolved does not hold it, and one that resolved after it does.
+ */
+export interface WalletBalanceRead {
   balances: WalletBalances
+  readAt?: Record<string, number>
+}
+
+export interface WalletSyncSnapshot extends WalletBalanceRead {
+  events: ScannedTransferEvent[]
   anchorBlock: number
 }
 
@@ -65,7 +73,7 @@ export interface WalletSyncSource extends TransferEventSource {
     opts?: { assumeSynced?: boolean },
   ): Promise<WalletSyncSnapshot>
   /** The balances alone, on one sync. */
-  readBalanceSnapshot(): Promise<{ balances: WalletBalances; anchorBlock: number }>
+  readBalanceSnapshot(): Promise<WalletBalanceRead & { anchorBlock: number }>
 }
 
 export interface TransferEventSource {
@@ -137,14 +145,17 @@ export function createWalletSyncSource(deps: {
   tokenAddress: string
   accountAddress: string
   contractService?: EscrowVerifier
-  readBalances: () => Promise<WalletBalances>
+  readBalances: () => Promise<WalletBalanceRead>
+  /** Stores the token's immutables in this PXE. Reading its events runs its sync, which needs them. */
+  prepareToken: () => Promise<void>
 }): WalletSyncSource {
   return {
     ...createTransferEventSource(deps),
     async readSnapshot(fromBlock, toBlockExclusive, opts) {
+      await deps.prepareToken()
       const { events, projection, anchorBlock } = await deps.wallet.getPrivateEventsSnapshot<
         TransferEvent,
-        WalletBalances
+        WalletBalanceRead
       >(
         OxideTokenContract.events.Transfer,
         {
@@ -158,13 +169,13 @@ export function createWalletSyncSource(deps: {
       )
       return {
         events: await decodeEvents(events, deps.contractService),
-        balances: projection,
+        ...projection,
         anchorBlock,
       }
     },
     async readBalanceSnapshot() {
       const { value, anchorBlock } = await deps.wallet.getSnapshot(deps.readBalances)
-      return { balances: value, anchorBlock }
+      return { ...value, anchorBlock }
     },
   }
 }

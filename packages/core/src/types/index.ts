@@ -4,12 +4,12 @@
 // any @obsidion workspace package, or @aztec/* runtime entry points.
 // All @aztec/* references are type-only.
 
-import type { AztecAddress } from "@aztec/stdlib/aztec-address"
-import type { ContractArtifact } from "@aztec/stdlib/abi"
-import type { Fr } from "@aztec/aztec.js/fields"
-import type { TxReceipt } from "@aztec/stdlib/tx"
-import type { FieldLike } from "@aztec/aztec.js/abi"
-import type { TxSendResultImmediate } from "@aztec/aztec.js/contracts"
+import type { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import type { ContractArtifact } from "@aztec-labs/stdlib/abi"
+import type { Fr } from "@aztec-labs/aztec.js/fields"
+import type { TxReceipt } from "@aztec-labs/stdlib/tx"
+import type { FieldLike } from "@aztec-labs/aztec.js/abi"
+import type { TxSendResultImmediate } from "@aztec-labs/aztec.js/contracts"
 import type { DEFAULT_CONTRACTS_NAME, SWAP_ON_WITHDRAW_OUTPUTS } from "../constants/index.js"
 // ── Network ──────────────────────────────────────────────────────────
 
@@ -132,6 +132,33 @@ export interface ContractServiceConfig {
  * triple is ATOMIC and always comes from one manifest entry (the enclave's identity is verified
  * against the on-chain portal binding), so consumers must never mix it across entries.
  */
+/**
+ * Contracts that serve bridges beside their portals, such as an escrow factory that moves funds between two of them:
+ * one entry of an oxide deployment's `features`.
+ */
+export interface OxideFeature {
+  /** The feature's ID, e.g. `fea-sky-v6`. */
+  id: string
+  /** The Etherplan project that deployed it, e.g. `sky`. */
+  project: string
+  /** Role → the ID of the bridge it binds in that role. */
+  bridges: Readonly<Record<string, string>>
+  /** Name → L1 address. */
+  contracts: Readonly<Record<string, string>>
+  /** Name → deploy variable, e.g. a migration feature's `sourcePortal`. Empty when the manifest lists none. */
+  variables: Readonly<Record<string, string | number | boolean>>
+}
+
+/** The L2 token's address-bound values, serialized by the bridge publisher. */
+export interface OxideTokenImmutablesData {
+  portal: string
+  teeRegistry: string
+  name: string
+  symbol: string
+  decimals: number
+  maxNoteAmount: string
+}
+
 export interface OxideEnvTuple {
   /** The deployment's `label` (its SSM scope and fleet name). */
   version: string
@@ -152,10 +179,21 @@ export interface OxideEnvTuple {
   portal: string
   /** L1 chain id as a decimal string. */
   chainId?: string
-  /** L1 ERC-20 token address (20-byte hex). */
+  /** The L1 ERC-20 users hold and are paid in (20-byte hex). */
   token: string
+  /**
+   * The L1 ERC-20 the portal holds: the token a SIPA sweeps into it and the forwarding-table row's key. Differs from
+   * `token` only on a Sky bridge (sUSDS under DAI). Absent ⇒ `token`; see `bridgeUnderlying`.
+   */
+  underlying?: string
+  /** The bridge's forwarding-table row key, e.g. `dai`; absent on a bridge that serves no table. */
+  bridgeKey?: string
+  /** The bridge's ID, e.g. `brg-dai-v6`: what a feature binds it by. */
+  bridgeId?: string
   /** L2 oxide-token address (32-byte hex). */
   l2Token: string
+  /** The published L2 token values; its name and symbol may differ from the underlying ERC-20. */
+  l2TokenImmutables?: Readonly<OxideTokenImmutablesData>
   /** Public TEE proxy /rpc endpoint for this version's enclave. */
   enclaveUrl: string
   pcr0: string
@@ -171,7 +209,7 @@ export interface OxideEnvTuple {
   paymaster?: string
   entryPoint?: string
   ensDomain?: string
-  /** SIPA stealth-deposit surface; the implementations, `depositSubsidy` and `l2Broadcaster` roll per deployment. */
+  /** SIPA stealth-deposit surface; `forwardingTable`, `depositSubsidy` and `l2Broadcaster` roll per deployment. */
   sipaFactory?: string
   sipaRecoveryProtocol?: "legacy-eoa" | "account"
   /** The latest CCIP resolution module (`NameRegistry.resolver`) — the `resolve` target. */
@@ -187,16 +225,18 @@ export interface OxideEnvTuple {
   resolverProofVerifier?: string
   resolverGatewayUrl?: string
   /**
-   * The generation's blessed SIPA implementations, one per intent family. Deployment-coupled
-   * (`current` only), and the word every SIPA address commits to: each bakes in this generation's
-   * portal and its own `depositFee()`, which is why a registration sweep prices higher than a plain
-   * deposit's. `SIPAFactory` keeps only one forward pointer per rollup version, and every
-   * generation deployed against that version overwrites it, so a retired generation's SIPAs are
-   * derivable from these alone. Absent on generations that predate version-scoped implementations —
-   * their SIPAs used a different address preimage and are not derivable here at all.
+   * The factory's SIPA implementation for each intent family. Every SIPA address commits to one, and the owner can
+   * point an intent at a new one, so a SIPA records the implementation it was derived against.
    */
   depositSIPAImplementation?: string
   registrationSIPAImplementation?: string
+  /**
+   * The ForwardingTable every SIPA of the deployment commits to. Its row for a token and intent names the portal a
+   * sweep deposits into and the sweep tip and beneficiary fee it pays.
+   */
+  forwardingTable?: string
+  /** The L1 token registrations and metadata updates settle in. */
+  feeToken?: string
   depositSubsidy?: string
   /** Pays a relayer that finalizes a withdrawal or refund through the plain withdrawal executor. */
   withdrawalSubsidy?: string
@@ -206,7 +246,6 @@ export interface OxideEnvTuple {
   plainWithdrawalExecutor?: string
   /** L2 Broadcaster the wallet broadcasts L1 operations through. */
   l2Broadcaster?: string
-  updateMetadataSIPAImplementation?: string
   frozenNotesRefundVerifier?: string
   frozenDepositRefundVerifier?: string
   unprocessedDepositRefundVerifier?: string
@@ -216,8 +255,13 @@ export interface OxideEnvTuple {
    *  `swapEscrowFactory` key names a factory with another layout and is never read. Without this key the wallet offers
    *  no swap routes. */
   swapEscrowFactoryV2?: string
-  /** L1 SkyEscrowFactory that moves funds between this deployment and its Sky savings deployment. */
+  /**
+   * L1 SkyEscrowFactory published beside the deployment's fields, on a manifest that lists no Sky feature. A deployment
+   * that lists one names its factory in {@link OxideEnvTuple.features}.
+   */
   skyEscrowFactory?: string
+  /** The deployment's features, in manifest order. */
+  features?: readonly OxideFeature[]
   /** L1 OperationExecutor oxide's relayers run broadcast L1 operations through. The swap-on-withdraw
    *  tip is priced by simulating the relayer's exact `execute` call against it. */
   operationExecutor?: string
@@ -521,6 +565,25 @@ export type SIPADepositPhase =
   | "recovered" // recoverERC20/recoverETH completed. Terminal.
 export type {
   FrozenDepositDescriptor,
+  FrozenMigrationFundingBatch,
   FrozenRefundKind,
+  MigrationDirectDeposit,
   MigrationFundingBatch,
+  MigrationSavedOperation,
 } from "./metadataMigration.js"
+export type {
+  SourceSavingsMove,
+  SourceAccountKeys,
+  SourceArtifactManifest,
+  SourceExecutorCall,
+  SourceGenerationModule,
+  SourceGenerationOpenParams,
+  SourceGenerationSession,
+  SourceL1Operation,
+  SourcePasskey,
+  SourcePaylinkRows,
+  SourceRefundCandidates,
+  SourceRefundRuntime,
+  SourceSipaScan,
+} from "./sourceGeneration.js"
+export { SOURCE_GENERATION_PROTOCOL } from "./sourceGeneration.js"

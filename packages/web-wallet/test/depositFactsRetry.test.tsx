@@ -1,6 +1,6 @@
 /**
  * The deposit quote is what gates funding: without the fee the wallet would charge the amount
- * alone while the pool still takes its cut. A failed read has to say so and offer another go,
+ * alone while the pool still takes its fee. A failed read has to say so and offer another go,
  * rather than leaving every affordance dead.
  */
 import React, { act } from "react"
@@ -11,7 +11,7 @@ import { ScreeningProvider, passThroughScreener } from "@obsidion/front-core"
 import type { Hex } from "viem"
 
 const L2_ADDRESS = `0x${"cd".repeat(32)}` as Hex
-const MANIFEST_TOKEN = "0x00000000000000000000000000000000000000bb"
+const MANIFEST_TOKEN = "0x00000000000000000000000000000000000000bb" as Hex
 
 const loadDepositDisplayFacts = vi.hoisted(() => vi.fn())
 const showReportableError = vi.hoisted(() => vi.fn())
@@ -34,10 +34,11 @@ const gateway = {
   depositAddress: vi.fn(async () => ({ address: "0xp001ed", name: "alice.oxide.eth" })),
 }
 vi.mock("../src/features/deposit/sipaGateway", () => ({ getSipaDepositGateway: () => gateway }))
-vi.mock("../src/features/deposit/loadDepositFacts", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../src/features/deposit/loadDepositFacts")>()),
-  loadDepositDisplayFacts,
-}))
+vi.mock("../src/features/deposit/loadDepositFacts", async (importOriginal) => {
+  const { mockLoadDepositFacts, singleToken } = await import("./support/depositTokens")
+  const tokens = singleToken(MANIFEST_TOKEN, "TEST")
+  return mockLoadDepositFacts(importOriginal, () => tokens, loadDepositDisplayFacts)
+})
 vi.mock("../src/errors/errorModal", () => ({ showReportableError }))
 const fireEvent = vi.hoisted(() => vi.fn())
 vi.mock("../src/lib/analytics", () => ({
@@ -86,14 +87,14 @@ const { DepositScreen, FEE_UNAVAILABLE_NOTE, QUOTE_PENDING } = await import(
   "../src/features/deposit/DepositScreen"
 )
 const { saveWalletIdentity } = await import("../src/features/identity/walletIdentity")
-const { usdFigure } = await import("../src/ui/format")
+const { tokenFigure } = await import("../src/ui/format")
 import { seedBootConfig } from "./seedBootConfig"
 
 const FACTS = {
-  fee: "0.35",
+  fee: "0.25",
   token: MANIFEST_TOKEN,
   sweepFeeAtomic: 250_000_000_000_000_000n,
-  fpcFundingCutAtomic: 100_000_000_000_000_000n,
+  txAmountCap: 5166n * 10n ** 18n,
 }
 
 describe("DepositScreen — deposit quote", () => {
@@ -158,7 +159,7 @@ describe("DepositScreen — deposit quote", () => {
 
     expect(loadDepositDisplayFacts).toHaveBeenCalledTimes(2)
     expect(retry()).toBeNull()
-    expect(feeValue()).toBe(usdFigure(FACTS.fee))
+    expect(feeValue()).toBe(tokenFigure(FACTS.fee, "TEST"))
     expect(copyButton()?.disabled).toBe(false)
   })
 

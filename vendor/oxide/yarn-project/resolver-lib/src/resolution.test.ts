@@ -1,6 +1,6 @@
-import { toBigIntBE, toBufferBE } from '@aztec/foundation/bigint-buffer';
-import { EthAddress } from '@aztec/foundation/eth-address';
-import { AztecAddress } from '@aztec/stdlib/aztec-address';
+import { toBigIntBE, toBufferBE } from '@aztec-labs/foundation/bigint-buffer';
+import { EthAddress } from '@aztec-labs/foundation/eth-address';
+import { AztecAddress } from '@aztec-labs/stdlib/aztec-address';
 
 import { MAX_NONCE } from '@oxide/oxide-lib/oxide_constants.gen.js';
 import { computeRecipientCommitment } from '@oxide/oxide-lib/recipient_commitment.js';

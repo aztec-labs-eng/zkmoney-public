@@ -44,21 +44,13 @@ contract OxidePortalReentrancyTest is OxidePortalBase {
     executor = new CallbackExecutor(IERC20(address(underlying)));
   }
 
-  function testExecutorCannotReenterWithdraw()
-    external
-    givenPortalIsInitialized
-    givenTeeIsRegistered("callback-withdraw")
-  {
+  function testExecutorCannotReenterWithdraw() external givenTeeIsRegistered("callback-withdraw") {
     WithdrawParams memory p = _defaultWithdrawParams();
     IOxidePortal.WithdrawArgs memory args = _withdrawArgs(p, _dummyPath(), "");
     _withdrawWithCallback(p, abi.encodeCall(portal.withdraw, (args)), false);
   }
 
-  function testExecutorCannotReenterFrozenNotesRefund()
-    external
-    givenPortalIsInitialized
-    givenTeeIsRegistered("callback-frozen-notes")
-  {
+  function testExecutorCannotReenterFrozenNotesRefund() external givenTeeIsRegistered("callback-frozen-notes") {
     bytes32[] memory nullifiers = new bytes32[](0);
     _withdrawWithCallback(
       _defaultWithdrawParams(),
@@ -69,15 +61,12 @@ contract OxidePortalReentrancyTest is OxidePortalBase {
     );
   }
 
-  function testExecutorCannotReenterFrozenDepositRefund()
-    external
-    givenPortalIsInitialized
-    givenTeeIsRegistered("callback-frozen-deposit")
-  {
+  function testExecutorCannotReenterFrozenDepositsRefund() external givenTeeIsRegistered("callback-frozen-deposits") {
     _withdrawWithCallback(
       _defaultWithdrawParams(),
       abi.encodeCall(
-        portal.refundFrozenDeposit, (IOxidePortal.RefundFrozenDepositArgs(address(0), "", "", 0, bytes32(0), "", ""))
+        portal.refundFrozenDeposits,
+        (IOxidePortal.RefundFrozenDepositsArgs(address(0), "", "", 0, new bytes32[](0), "", ""))
       ),
       false
     );
@@ -85,40 +74,30 @@ contract OxidePortalReentrancyTest is OxidePortalBase {
 
   function testExecutorCannotReenterUnprocessedDepositRefund()
     external
-    givenPortalIsInitialized
     givenTeeIsRegistered("callback-unprocessed-deposit")
   {
-    bytes32[] memory path = new bytes32[](0);
     _withdrawWithCallback(
       _defaultWithdrawParams(),
       abi.encodeCall(
         portal.refundUnprocessedDeposit,
-        (IOxidePortal.RefundUnprocessedDepositArgs(address(0), "", "", 0, bytes32(0), bytes32(0), 0, path, "", ""))
+        (IOxidePortal.RefundUnprocessedDepositArgs(address(0), "", "", 0, bytes32(0), bytes32(0), 0, "", ""))
       ),
       false
     );
   }
 
-  function testExecutorCannotReenterProverClaims()
-    external
-    givenPortalIsInitialized
-    givenTeeIsRegistered("callback-prover-claims")
-  {
+  function testExecutorCannotReenterProverClaims() external givenTeeIsRegistered("callback-prover-claims") {
     IOxidePortal.ProverTipClaim[] memory claims = new IOxidePortal.ProverTipClaim[](0);
     _withdrawWithCallback(
       _defaultWithdrawParams(), abi.encodeCall(portal.claimProverTips, (IProverSubsidy(address(0)), claims)), false
     );
   }
 
-  function testExecutorCannotReenterFreeze() external givenPortalIsInitialized givenTeeIsRegistered("callback-freeze") {
+  function testExecutorCannotReenterFreeze() external givenTeeIsRegistered("callback-freeze") {
     _withdrawWithCallback(_defaultWithdrawParams(), abi.encodeCall(portal.freeze, ()), false);
   }
 
-  function testExecutorCanDepositDuringWithdraw()
-    external
-    givenPortalIsInitialized
-    givenTeeIsRegistered("callback-deposit")
-  {
+  function testExecutorCanDepositDuringWithdraw() external givenTeeIsRegistered("callback-deposit") {
     WithdrawParams memory p = _defaultWithdrawParams();
     bytes32 commitment = bytes32(uint256(1));
     _withdrawWithCallback(p, abi.encodeCall(portal.deposit, (commitment, p.amount)), true);
@@ -142,7 +121,7 @@ contract OxidePortalReentrancyTest is OxidePortalBase {
     return IOxidePortal.WithdrawArgs({
       content: _content(p),
       userPayload: _userPayload(p),
-      relayerPayload: _relayerPayload(address(0), address(0)),
+      relayerPayload: _relayerPayload(address(0)),
       epochNumber: p.epochNumber,
       numCheckpointsInEpoch: 1,
       leafIndex: p.leafIndex,

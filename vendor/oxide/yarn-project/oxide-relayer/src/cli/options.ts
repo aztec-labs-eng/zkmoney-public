@@ -1,5 +1,5 @@
-import { type EnvVar, enumConfigHelper, getValueFromEnvWithFallback } from '@aztec/foundation/config';
-import { schemas } from '@aztec/foundation/schemas';
+import { type EnvVar, enumConfigHelper, getValueFromEnvWithFallback } from '@aztec-labs/foundation/config';
+import { schemas } from '@aztec-labs/foundation/schemas';
 
 import { OFAC_SDN_LIST_URL } from '@oxide/watcher-lib/sanctions';
 
@@ -208,7 +208,8 @@ export const RUN_OPTIONS: readonly CliOptionSpec[] = [
   {
     flags: '--l1-operations-payout-tokens <addresses>',
     description:
-      "comma-separated 18-decimal USD tokens that L1 operations can pay out in; default: the manifest entry's token",
+      'comma-separated 18-decimal USD tokens that L1 operations can pay out in; default: the tokens of the served ' +
+      'deployments and the tokens that their deposit sweeps pay out in',
     env: 'OXIDE_RELAYER_L1_OPERATIONS_PAYOUT_TOKENS',
   },
   {

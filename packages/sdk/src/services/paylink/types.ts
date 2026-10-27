@@ -11,15 +11,15 @@ export {
   type PaylinkWindow,
 } from "@obsidion/core/types"
 
-import { Account } from "@aztec/aztec.js/account"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import { ContractBase } from "@aztec/aztec.js/contracts"
-import { TxReceipt, TxHash } from "@aztec/aztec.js/tx"
-import { Fr } from "@aztec/aztec.js/fields"
-import { FeePaymentMethod } from "@aztec/aztec.js/fee"
-import type { ContractInstanceWithAddress } from "@aztec/stdlib/contract"
+import { Account } from "@aztec-labs/aztec.js/account"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import { ContractBase } from "@aztec-labs/aztec.js/contracts"
+import { TxReceipt, TxHash } from "@aztec-labs/aztec.js/tx"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { FeePaymentMethod } from "@aztec-labs/aztec.js/fee"
+import type { ContractInstanceWithAddress } from "@aztec-labs/stdlib/contract"
 import type { MethodOptions } from "../ServiceBase.js"
-import type { TeeSigner } from "@oxide/oxide-lib/types.js"
+import type { RegisteredTeeSigner } from "@oxide/oxide-client/types.js"
 import type { TokenService } from "../TokenService.js"
 import type { PaylinkKeyMaterial } from "./paylinkKeys.js"
 import type { DirectClaimInput, ZkProofClaimInput } from "@obsidion/core/types"
@@ -43,7 +43,7 @@ import type { DirectClaimInput, ZkProofClaimInput } from "@obsidion/core/types"
  */
 export interface ClaimSubmitContext {
   tokenService: TokenService
-  teeSigner: TeeSigner
+  teeSigner: RegisteredTeeSigner
   paylinkInstance: ContractInstanceWithAddress
   paylinkKeys: PaylinkKeyMaterial
   /** The link's funding tx, when it carries one; otherwise the escrow note's creation tx serves. */

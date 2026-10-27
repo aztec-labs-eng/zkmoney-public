@@ -66,9 +66,10 @@
       }
       /* The boot screen. It paints before any script runs, shows while #root is empty or the app
          shows a BootSplash (body[data-booting]), and stays one element through
-         every boot stage. "shell" drops its surface over a shell already on screen; bootLeaving
-         fades it without unrendering it, so a stage that follows keeps it spinning. Its own layer
-         and containment keep the spin off the main thread the boot keeps busy. */
+         every boot stage. "shell" drops its surface over a shell already on screen; bootCovers
+         takes the taps meant for a wallet mounted beneath it; bootLeaving fades it without
+         unrendering it, so a stage that follows keeps it spinning. Its own layer and containment
+         keep the spin off the main thread the boot keeps busy. */
       #boot-splash {
         display: none;
         position: fixed;
@@ -90,6 +91,9 @@
       }
       body[data-booting="shell"] #boot-splash {
         background: none;
+      }
+      body[data-boot-covers] #boot-splash {
+        pointer-events: auto;
       }
       body[data-boot-leaving] #boot-splash {
         opacity: 0;

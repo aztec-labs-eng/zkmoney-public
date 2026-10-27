@@ -3,8 +3,8 @@
  * account derived from the move's nonce, and the account claims that deposit on L2 as it claims a swept SIPA deposit.
  * Fronts keep their own move records and run this step from their sync.
  */
-import type { AztecAddress } from "@aztec/aztec.js/addresses"
-import type { Fr } from "@aztec/aztec.js/fields"
+import type { AztecAddress } from "@aztec-labs/aztec.js/addresses"
+import type { Fr } from "@aztec-labs/aztec.js/fields"
 import { DEFAULT_DECIMALS } from "@obsidion/core/constants"
 import type { TokenService } from "@obsidion/sdk"
 import { OxidePortalAbi } from "@oxide/l1-contracts"

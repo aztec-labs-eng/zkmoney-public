@@ -1,4 +1,4 @@
-import type { EthAddress } from '@aztec/foundation/eth-address';
+import type { EthAddress } from '@aztec-labs/foundation/eth-address';
 
 import type { PredicateScreenerConfig } from '../l1_operations/predicate_screener.js';
 import type { ProverCommanderOptions, ProverRunConfig } from '../prover/cli.js';
@@ -33,7 +33,7 @@ export interface L1OperationsSubmissionConfig {
  */
 export interface RunConfig extends ProverRunConfig {
   deploymentEnvManifestUrl: string;
-  /** The deployment this relayer serves: the portal of one entry of the v4 manifest. */
+  /** The deployment this relayer serves: the portal of one bridge in the manifest. */
   portal: EthAddress;
   /** Manifest entries that get no L1-operations worker, by portal. Empty by default. */
   excludePortals: EthAddress[];

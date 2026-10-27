@@ -56,6 +56,11 @@ describe("paylinkRowView", () => {
     })
   })
 
+  it("a link from another rollup offers neither share nor recovery", () => {
+    const view = paylinkRowView(create(), { offer: "cancel", retired: true, nowSec: NOW_SEC })
+    expect(view).toMatchObject({ statusLabel: "Unclaimed", canShare: false, recovery: null })
+  })
+
   it("a settled unclaimed link is shareable and carries the offered recovery", () => {
     expect(paylinkRowView(create(), { offer: "cancel", nowSec: NOW_SEC })).toEqual({
       title: "Sent via paylink",

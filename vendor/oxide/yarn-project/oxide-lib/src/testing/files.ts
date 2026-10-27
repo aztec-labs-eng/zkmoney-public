@@ -1,8 +1,8 @@
-// Local mirror of `@aztec/foundation/testing/files::updateInlineTestData`. Foundation's helper
+// Local mirror of `@aztec-labs/foundation/testing/files::updateInlineTestData`. Foundation's helper
 // walks 5 directories up from its own module location to find the repo root, which works in the
 // aztec-packages monorepo (foundation lives at `<repo>/yarn-project/foundation/`) but lands one
 // level too short in this repo, where foundation is a hoisted dependency at
-// `<repo>/yarn-project/node_modules/@aztec/foundation/`. We mirror the helper here and find the
+// `<repo>/yarn-project/node_modules/@aztec-labs/foundation/`. We mirror the helper here and find the
 // repo root by walking up looking for `.git` instead.
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';

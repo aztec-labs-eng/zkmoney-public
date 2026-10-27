@@ -1,12 +1,12 @@
-import type { BatchCall } from "@aztec/aztec.js/contracts"
-import type { FeePaymentMethod, SponsoredFeePaymentMethod } from "@aztec/aztec.js/fee"
-import { waitForTx } from "@aztec/aztec.js/node"
-import type { AztecNode } from "@aztec/aztec.js/node"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import { Gas, GasSettings } from "@aztec/stdlib/gas"
-import type { TxExecutionRequest } from "@aztec/stdlib/tx"
-import type { PXE } from "@aztec/pxe/server"
-import type { TeeSigner } from "@oxide/oxide-lib/types.js"
+import type { BatchCall } from "@aztec-labs/aztec.js/contracts"
+import type { FeePaymentMethod, SponsoredFeePaymentMethod } from "@aztec-labs/aztec.js/fee"
+import { waitForTx } from "@aztec-labs/aztec.js/node"
+import type { AztecNode } from "@aztec-labs/aztec.js/node"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import { Gas, GasSettings } from "@aztec-labs/stdlib/gas"
+import type { TxExecutionRequest } from "@aztec-labs/stdlib/tx"
+import type { PXE } from "@aztec-labs/pxe/server"
+import type { RegisteredTeeSigner } from "@oxide/oxide-client/types.js"
 
 import type { OxideTokenContract } from "../../src/index.js"
 import { buildTeeOperation } from "../../src/index.js"
@@ -25,7 +25,7 @@ import { emptyTransferMeta } from "@obsidion/core/constants"
 export type OxideTokenTeeTestContext = {
   wallet: ObsidionWalletTest
   tokenContract: OxideTokenContract
-  teeSigner: TeeSigner
+  teeSigner: RegisteredTeeSigner
   paymentMethod: SponsoredFeePaymentMethod
 }
 
@@ -92,9 +92,13 @@ export async function buildOxideTokenTeeCall(
       buildOperationCall: (o, capsules) => {
         switch (o.kind) {
           case "transfer":
-            return ctx.tokenContract.methods
-              .transfer!(o.from, o.to, o.amount, emptyTransferMeta(), 0)
-              .with({ capsules })
+            return ctx.tokenContract.methods.transfer!(
+              o.from,
+              o.to,
+              o.amount,
+              emptyTransferMeta(),
+              0,
+            ).with({ capsules })
           case "outerCall":
             return o.interaction.with({ capsules, authWitnesses: o.authwits ?? [] })
           default:
@@ -193,6 +197,13 @@ export function createOxideTokenTeeHelpers(
     buildTeeCall: (from: AztecAddress, op: Operation) =>
       buildOxideTokenTeeCall(ctx, from, op, resolveSpendMetadata, resolveDepositSpendMetadata),
     sendTransferViaTee: (from: AztecAddress, to: AztecAddress, amount: bigint) =>
-      sendOxideTokenTransferViaTee(ctx, from, to, amount, resolveSpendMetadata, resolveDepositSpendMetadata),
+      sendOxideTokenTransferViaTee(
+        ctx,
+        from,
+        to,
+        amount,
+        resolveSpendMetadata,
+        resolveDepositSpendMetadata,
+      ),
   }
 }

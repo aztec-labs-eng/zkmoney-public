@@ -19,7 +19,7 @@ const ready = (over: Partial<ClaimFpcAllowance>): Ready => {
   return {
     status: "ready",
     scope: "alice|sandbox",
-    read: { fpcAddress: "0xf9c", railId: 1, allowance },
+    read: { fpcAddress: "0xf9c", railId: 1, payer: "alice", allowance },
     state: deriveAllowanceState(allowance),
     refreshing: false,
   }

@@ -9,6 +9,8 @@ import {IRegistry} from "@aztec/governance/interfaces/IRegistry.sol";
 import {OxideConstants} from "@generated/OxideConstants.gen.sol";
 import {INamePortal} from "./interfaces/INamePortal.sol";
 import {INameRegistry} from "./interfaces/INameRegistry.sol";
+import {IOxideAccountFactory} from "./interfaces/IOxideAccountFactory.sol";
+import {OxideAccount} from "./OxideAccount.sol";
 import {Errors} from "@periphery/Errors.sol";
 
 contract NamePortal is INamePortal {
@@ -23,12 +25,15 @@ contract NamePortal is INamePortal {
 
   INameRegistry public immutable NAME_REGISTRY;
   IRegistry public immutable AZTEC_REGISTRY;
+  IOxideAccountFactory public immutable ACCOUNT_FACTORY;
 
-  constructor(INameRegistry nameRegistry, IRegistry aztecRegistry) {
+  constructor(INameRegistry nameRegistry, IRegistry aztecRegistry, IOxideAccountFactory accountFactory) {
     require(address(nameRegistry) != address(0), Errors.NamePortal__ZeroNameRegistry());
     require(address(aztecRegistry) != address(0), Errors.NamePortal__ZeroAztecRegistry());
+    require(address(accountFactory) != address(0), Errors.NamePortal__ZeroAccountFactory());
     NAME_REGISTRY = nameRegistry;
     AZTEC_REGISTRY = aztecRegistry;
+    ACCOUNT_FACTORY = accountFactory;
   }
 
   function notify(address user, bytes32 l2Recipient, uint256 rollupVersion)
@@ -39,10 +44,11 @@ contract NamePortal is INamePortal {
     require(l2Recipient != bytes32(0), Errors.NamePortal__ZeroRecipient());
     bytes32 nameHash = NAME_REGISTRY.nameOf(user);
     require(nameHash != bytes32(0), Errors.NamePortal__NameNotFound(user));
+    address bootstrap = OxideAccount(payable(user)).bootstrapOwner();
+    require(ACCOUNT_FACTORY.predictAccountAddress(bootstrap) == user, Errors.NamePortal__NotFactoryAccount(user));
 
     IInbox inbox = IRollup(address(AZTEC_REGISTRY.getRollup(rollupVersion))).getInbox();
-    bytes32 contentHash =
-      Hash.sha256ToField(abi.encodeWithSignature("name_ownership_verified(address,bytes32)", user, nameHash));
+    bytes32 contentHash = Hash.sha256ToField(abi.encodePacked(bootstrap, nameHash));
     (key, index) = inbox.sendL2Message(
       DataStructures.L2Actor({actor: l2Recipient, version: rollupVersion}),
       contentHash,

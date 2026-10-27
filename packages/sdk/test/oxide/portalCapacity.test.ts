@@ -5,11 +5,9 @@ import {
   type PublicClient,
 } from "viem"
 import { OxidePortalAbi } from "@oxide/l1-contracts"
-import { TX_AMOUNT_CAP } from "@oxide/oxide-lib/oxide_constants.gen.js"
 
 import {
   PortalCapacityUnsupportedError,
-  SOURCE_OPERATION_CAP,
   readPortalCapacity,
 } from "../../src/oxide/portalCapacity.js"
 
@@ -22,6 +20,7 @@ function client(overrides: Record<string, unknown> = {}) {
     UNDERLYING: token.toUpperCase().replace("0X", "0x"),
     RATE: 7n,
     GLOBAL_LIMIT: 500_000n * 10n ** 18n,
+    TX_AMOUNT_CAP: 5_166n * 10n ** 18n,
     getCurrentAvailable: 123n,
     decimals: 6,
     ...overrides,
@@ -56,11 +55,19 @@ describe("readPortalCapacity", () => {
       blockTimestamp: 1_700_000_000n,
       rateAtomicPerSecond: 7n,
       globalLimitAtomic: 500_000n * 10n ** 18n,
+      txAmountCapAtomic: 5_166n * 10n ** 18n,
       availableAtomic: 123n,
     })
     const calls = readContract.mock.calls.map(([call]) => call as Record<string, unknown>)
     expect(calls.map((call) => call.functionName).sort()).toEqual(
-      ["GLOBAL_LIMIT", "RATE", "UNDERLYING", "decimals", "getCurrentAvailable"].sort(),
+      [
+        "GLOBAL_LIMIT",
+        "RATE",
+        "TX_AMOUNT_CAP",
+        "UNDERLYING",
+        "decimals",
+        "getCurrentAvailable",
+      ].sort(),
     )
     expect(calls.every((call) => call.blockNumber === BLOCK)).toBe(true)
     expect(
@@ -131,11 +138,5 @@ describe("readPortalCapacity", () => {
     await expect(
       readPortalCapacity(client({ getCurrentAvailable: failure }).client, { portal, token }),
     ).rejects.toBe(failure)
-  })
-})
-
-describe("SOURCE_OPERATION_CAP", () => {
-  it("is the vendored constant, marked unverified", () => {
-    expect(SOURCE_OPERATION_CAP).toEqual({ status: "unverified", sourceAtomic: TX_AMOUNT_CAP })
   })
 })

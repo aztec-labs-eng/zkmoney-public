@@ -40,8 +40,8 @@ const seed = (): Omit<WithdrawalRecord, "localId" | "operationId"> => ({
   amount: "25",
   rawAmount: (25n * 10n ** 18n).toString(),
   relayerTip: "1",
-  fpcFundingCut: "0",
   tokenSymbol: "sUSDS",
+  tokenDecimals: 18,
   phase: "submitting",
   startTime: 1_700_000_000_000,
   skyMove: {

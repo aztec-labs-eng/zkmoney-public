@@ -6,7 +6,5 @@ import {IOxidePortal} from "@core/interfaces/IOxidePortal.sol";
 interface ISIPA {
   function sweep(address token, address relayer, bytes calldata intentData, bytes calldata proofs) external;
 
-  function portal() external view returns (IOxidePortal);
-
-  function depositFee() external view returns (uint256);
+  function route(address token) external view returns (IOxidePortal portal, uint256 sweepTip, uint256 beneficiaryFee);
 }

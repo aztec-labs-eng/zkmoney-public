@@ -1,4 +1,4 @@
-import { type LogData, type LogLevel, LogLevels, type Logger } from '@aztec/foundation/log';
+import { type LogData, type LogLevel, LogLevels, type Logger } from '@aztec-labs/foundation/log';
 
 export interface RecordedLine {
   module: string;

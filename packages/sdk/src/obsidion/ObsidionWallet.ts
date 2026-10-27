@@ -4,34 +4,34 @@ import {
   extractOptimizablePublicStaticCalls,
   simulateViaNode,
   type FeeOptions,
-} from "@aztec/wallet-sdk/base-wallet"
+} from "@aztec-labs/wallet-sdk/base-wallet"
 import {
   ContractService,
   DEFAULT_CONTRACTS,
   getSimulatedAlphaAccountArtifact,
   ContractName,
 } from "@obsidion/contracts"
-import { getContractClassFromArtifact } from "@aztec/stdlib/contract"
-import { SimulationOverrides, type ContractOverrides } from "@aztec/stdlib/tx"
+import { getContractClassFromArtifact } from "@aztec-labs/stdlib/contract"
+import { SimulationOverrides, type ContractOverrides } from "@aztec-labs/stdlib/tx"
 import { StubAlphaAuthProvider } from "./alpha/auth/StubAlphaAuthProvider.js"
 import { ObsidionAccountEntrypoint } from "./alpha/account/ObsidionAccountEntrypoint.js"
-import { BaseAccount } from "@aztec/aztec.js/account"
+import { BaseAccount } from "@aztec-labs/aztec.js/account"
 import {
   createStubSchnorrAccount,
   getStubSchnorrAccountContractArtifact,
-} from "@aztec/accounts/schnorr/stub/lazy"
+} from "@aztec-labs/accounts/schnorr/stub/lazy"
 import {
   createStubEcdsaAccount,
   getStubEcdsaAccountContractArtifact,
-} from "@aztec/accounts/ecdsa/stub/lazy"
-import { getPXEConfig, type PXEConfig } from "@aztec/pxe/config"
-import { createPXE as createPXELazy, PXE, PXECreationOptions } from "@aztec/pxe/client/lazy"
+} from "@aztec-labs/accounts/ecdsa/stub/lazy"
+import { getPXEConfig, type PXEConfig } from "@aztec-labs/pxe/config"
+import { createPXE as createPXELazy, PXE, PXECreationOptions } from "@aztec-labs/pxe/client/lazy"
 import { ObsidionAccount } from "./alpha/account/ObsidionAccount.js"
 import {
   ObsidionAccountContractManager,
   AlphaContractManagerOptions,
 } from "./alpha/account/ObsidionAccountContractManager.js"
-import { pubkeyHexOf } from "./alpha/account/alphaKeyCommitment.js"
+import { alphaPasskeySet } from "./alpha/account/alphaPasskeySet.js"
 import { AlphaAuthProvider } from "./alpha/auth/AlphaAuthProvider.js"
 import {
   collectOffchainEffects,
@@ -40,10 +40,10 @@ import {
   type TxExecutionRequest,
   type TxProfileResult,
   type UtilityExecutionResult,
-} from "@aztec/stdlib/tx"
-import { CallAuthorizationRequest } from "@aztec/aztec.js/authorization"
-import { AztecNode } from "@aztec/aztec.js/node"
-import { Fr } from "@aztec/aztec.js/fields"
+} from "@aztec-labs/stdlib/tx"
+import { CallAuthorizationRequest } from "@aztec-labs/aztec.js/authorization"
+import { AztecNode } from "@aztec-labs/aztec.js/node"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 import {
   Aliased,
   TxSimulationResultWithAppOffset,
@@ -51,22 +51,26 @@ import {
   type PrivateEvent,
   type PrivateEventFilter,
   type ProfileOptions,
-} from "@aztec/aztec.js/wallet"
-import { Account, NO_FROM } from "@aztec/aztec.js/account"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import { SendInteractionOptions, SimulateInteractionOptions } from "@aztec/aztec.js/contracts"
-import { CompleteAddress } from "@aztec/aztec.js/addresses"
-import type { NodeInfo } from "@aztec/stdlib/contract"
-import type { ChainInfo } from "@aztec/entrypoints/interfaces"
-import { ContractArtifact, FunctionCall, type EventMetadataDefinition } from "@aztec/stdlib/abi"
+} from "@aztec-labs/aztec.js/wallet"
+import { Account, NO_FROM } from "@aztec-labs/aztec.js/account"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import { SendInteractionOptions, SimulateInteractionOptions } from "@aztec-labs/aztec.js/contracts"
+import { CompleteAddress } from "@aztec-labs/aztec.js/addresses"
+import type { NodeInfo } from "@aztec-labs/stdlib/contract"
+import type { ChainInfo } from "@aztec-labs/entrypoints/interfaces"
+import {
+  ContractArtifact,
+  FunctionCall,
+  type EventMetadataDefinition,
+} from "@aztec-labs/stdlib/abi"
 import { FEE_MULTIPLIER, getBlockBaseMaxFees } from "../utils/index.js"
 import { DEFAULT_WAIT_OPTS } from "../utils/constants.js"
 import { CLAIM_FPC_MAX_FEES_PER_GAS } from "../feePaymentMethod/claimFpcBatchGas.js"
 import {
   AccountFeePaymentMethodOptions,
   type DefaultAccountEntrypointOptions,
-} from "@aztec/entrypoints/account"
-import { Gas, GasSettings } from "@aztec/stdlib/gas"
+} from "@aztec-labs/entrypoints/account"
+import { Gas, GasSettings } from "@aztec-labs/stdlib/gas"
 import { assertProvenGasWithinLimits, type PayloadFinalizer } from "./stagedExecution.js"
 import { ObsidionFeeJuicePaymentMethod } from "../feePaymentMethod/index.js"
 import { FeeUnavailableError } from "./FeeUnavailableError.js"
@@ -95,11 +99,11 @@ import {
   type SendReturn,
   type WaitOpts,
   extractOffchainOutput,
-} from "@aztec/aztec.js/contracts"
-import { getGasLimits } from "@aztec/wallet-sdk/base-wallet"
-import type { SendOptions } from "@aztec/aztec.js/wallet"
-import { waitForTx } from "@aztec/aztec.js/node"
-import { displayDebugLogs } from "@aztec/pxe/client/lazy"
+} from "@aztec-labs/aztec.js/contracts"
+import { getGasLimits } from "@aztec-labs/wallet-sdk/base-wallet"
+import type { SendOptions } from "@aztec-labs/aztec.js/wallet"
+import { waitForTx } from "@aztec-labs/aztec.js/node"
+import { displayDebugLogs } from "@aztec-labs/pxe/client/lazy"
 import { inspect } from "util"
 import {
   InMemoryPendingTxStore,
@@ -164,6 +168,23 @@ export function nextOperationId(kind: TxKind): string {
  * returns true unconditionally.
  */
 export type AlphaAccountType = "alpha" | "schnorr" | "ecdsasecp256k1" | "ecdsasecp256r1"
+
+/**
+ * Awaited with the proven tx's hash and its expiry before the node takes it; a rejection sends
+ * nothing. `expiresAtMs` is the kernel expiry as {@link txExpiresAtMs} caps it.
+ */
+export type TxHashCallback = (txHash: string, tx: { expiresAtMs: number }) => Promise<void>
+
+/**
+ * When a tx is dead for sure: the kernel's `expirationTimestamp` (UInt64 seconds) capped at 24h
+ * from `now`. A missing or absurd kernel value is the cap alone.
+ */
+export function txExpiresAtMs(kernelExpirationTimestamp?: bigint, now = Date.now()): number {
+  const ceilingMs = now + MAX_TX_LIFETIME_MS
+  if (kernelExpirationTimestamp === undefined || kernelExpirationTimestamp <= 0n) return ceilingMs
+  const kernelMs = Number(kernelExpirationTimestamp) * 1000
+  return Number.isFinite(kernelMs) && kernelMs > 0 ? Math.min(kernelMs, ceilingMs) : ceilingMs
+}
 
 /** Wallet for the alpha (non-modular) account system. Auth is handled by AlphaAuthProvider. */
 export class ObsidionWallet extends BaseWallet {
@@ -271,94 +292,120 @@ export class ObsidionWallet extends BaseWallet {
     }
   }
 
+  /**
+   * The registered account for the master secret and the provider's passkey set: one shared
+   * `ObsidionAccount` per address, with this provider as its signer when the call is the newest
+   * for that address (see `acquireAccount`). Rejects when registration fails or when a newer
+   * request has installed another signer.
+   */
   async createObsidionAccount(
-    secretKey: Fr,
+    masterSecretKey: Fr,
     authProvider: AlphaAuthProvider,
     options?: CreateObsidionAccountWalletOptions,
   ) {
-    const { updateStatus } = options ?? {}
-    updateStatus?.(`Crafting account...`)
-
-    const accountContractManager = await ObsidionAccountContractManager.create(
-      secretKey,
-      await pubkeyHexOf(authProvider),
-      await this.getContractManagerOptions(),
-      true,
-    )
-
-    const obsidionAccount = new ObsidionAccount(
-      await accountContractManager.getCompleteAddress(),
-      accountContractManager,
-      authProvider,
-      await this.getNodeIdentity(),
-    )
-
-    this.addAccount(accountContractManager.address, obsidionAccount)
-    return obsidionAccount
+    options?.updateStatus?.(`Crafting account...`)
+    return this.acquireAccount(masterSecretKey, authProvider, { register: true })
   }
 
   /**
-   * Address from a candidate MSK and a signing key with no side effects (no PXE registration, no
+   * Address from a candidate MSK and a passkey set with no side effects (no PXE registration, no
    * `addAccount`), so recovery can check a candidate against the stored address before committing
-   * it. `pubkeyHex` is the 64-byte x‖y key the account is bound to.
+   * it. `passkeys` are the 64-byte x‖y keys the account is bound to, in any order.
    */
-  public async deriveAccountAddress(secretKey: Fr, pubkeyHex: string): Promise<AztecAddress> {
+  public async deriveAccountAddress(
+    masterSecretKey: Fr,
+    passkeys: readonly string[],
+  ): Promise<AztecAddress> {
     const accountContractManager = await ObsidionAccountContractManager.create(
-      secretKey,
-      pubkeyHex,
+      masterSecretKey,
+      await alphaPasskeySet(passkeys),
       await this.getContractManagerOptions(),
-      false,
     )
     const completeAddress = await accountContractManager.getCompleteAddress()
     return completeAddress.address
   }
 
-  /** In-flight account builds by derived address, so concurrent callers for one account share a build. */
-  private accountBuilds = new Map<string, Promise<ObsidionAccount>>()
-
   /**
-   * The account the secret and the provider's key derive, built once and shared. The identity is
-   * derived before anything is looked up or registered: a stored complete address that the inputs
-   * do not reproduce is refused, and never shares another account's build.
+   * The account the master secret and the provider's passkey set derive, built once and shared. The
+   * identity is derived before anything is looked up or registered: a stored complete address
+   * that the inputs do not reproduce is refused, and never shares another account's build.
    */
   public async getObsidionAccountWallet(
-    secretKey: Fr,
+    masterSecretKey: Fr,
     authProvider: AlphaAuthProvider,
     options: GetObsidionAccountWalletOptions,
   ): Promise<ObsidionAccount> {
+    return this.acquireAccount(masterSecretKey, authProvider, options)
+  }
+
+  /** In-flight account builds by derived address, so concurrent callers for one account share a build. */
+  private accountBuilds = new Map<string, Promise<ObsidionAccount>>()
+  /** Per derived address, the sequence of the newest request that reached its signer. */
+  private signerSequences = new Map<string, number>()
+  private requestSequence = 0
+
+  /**
+   * One `ObsidionAccount` per address; the provider of the newest request for that address is its
+   * signer. The sequence is taken before the first await, so "newest" is call order, not
+   * completion order: an older request that resumes after a newer one installed another provider
+   * is refused as stale instead of signing with a key its caller did not ask for. A request that
+   * fails validation (a refused stored address, a provider whose key is not in its set) or
+   * registration never reaches the signer. A registering request awaits the manager's
+   * deduplicated registration before the signer decision, so one refused as stale has still
+   * registered the account, and a failed registration caches no account.
+   */
+  private async acquireAccount(
+    masterSecretKey: Fr,
+    authProvider: AlphaAuthProvider,
+    options: GetObsidionAccountWalletOptions,
+  ): Promise<ObsidionAccount> {
+    const sequence = ++this.requestSequence
     const cmOptions = await this.getContractManagerOptions()
-    const pubkeyHex = await pubkeyHexOf(authProvider)
+    const passkeySet = await authProvider.getPasskeySet()
     const manager = options.completeAddress
       ? await ObsidionAccountContractManager.createFromCompleteAddress(
-          secretKey,
-          pubkeyHex,
+          masterSecretKey,
+          passkeySet,
           options.completeAddress,
           cmOptions,
-          false,
         )
-      : await ObsidionAccountContractManager.create(secretKey, pubkeyHex, cmOptions, false)
+      : await ObsidionAccountContractManager.create(masterSecretKey, passkeySet, cmOptions)
     const key = manager.address.toString()
 
-    const inFlight = this.accountBuilds.get(key)
-    if (inFlight) return inFlight
+    // Cache and in-flight lookups stay synchronous, so concurrent first requests share one build.
     const existing = this.accounts.get(key)
-    if (existing instanceof ObsidionAccount) return existing
+    let build = this.accountBuilds.get(key)
+    if (!build && existing instanceof ObsidionAccount) {
+      build = Promise.resolve(existing)
+    } else if (!build) {
+      const started = (async () => {
+        const obsidionAccount = new ObsidionAccount(
+          await manager.getCompleteAddress(),
+          manager,
+          authProvider,
+          await this.getNodeIdentity(),
+        )
+        // A build asked to register is cached only once registered.
+        if (options.register) await obsidionAccount.register()
+        this.addAccount(manager.address, obsidionAccount)
+        return obsidionAccount
+      })().finally(() => {
+        if (this.accountBuilds.get(key) === started) this.accountBuilds.delete(key)
+      })
+      this.accountBuilds.set(key, started)
+      build = started
+    }
+    const account = await build
+    if (options.register) await account.register()
 
-    const build = (async () => {
-      if (options.register) await manager.registerAccount()
-      const obsidionAccount = new ObsidionAccount(
-        await manager.getCompleteAddress(),
-        manager,
-        authProvider,
-        await this.getNodeIdentity(),
-      )
-      this.addAccount(manager.address, obsidionAccount)
-      return obsidionAccount
-    })().finally(() => {
-      if (this.accountBuilds.get(key) === build) this.accountBuilds.delete(key)
-    })
-    this.accountBuilds.set(key, build)
-    return build
+    // No await between the sequence check and the signer update.
+    if (sequence > (this.signerSequences.get(key) ?? 0)) {
+      this.signerSequences.set(key, sequence)
+      if (account.getAuthProvider() !== authProvider) account.setAuthProvider(authProvider)
+    } else if (account.getAuthProvider() !== authProvider) {
+      throw new Error(`stale request for account ${key}: a newer request installed another signer`)
+    }
+    return account
   }
 
   /** Fails closed: no default fee payer (a sponsor FPC is drainable on mainnet). */
@@ -557,14 +604,18 @@ export class ObsidionWallet extends BaseWallet {
   // next execution to re-run full note discovery (tens of seconds on a populated account). It
   // also re-opens the sim-vs-attestation drift window the single send sync closes. So while a
   // send is in flight, reads skip their sync and execute at the send's anchor — at most one
-  // send-duration stale, fine for balances, events and profiling.
+  // send-duration stale, fine for balances, events and profiling. Snapshots run one at a time and
+  // hold reads' syncs the same way, so no read moves the anchor a snapshot checks.
   // ────────────────────────────────────────────────────────────────────────
 
   /** In-flight `sendTx` count. A depth only as re-entrancy hygiene; sends are single-flight. */
   private anchorPinDepth = 0
+  /** A snapshot is reading. Unlike a send's pin, it never blocks a send. */
+  private snapshotHeld = false
+  private snapshots: Promise<unknown> = Promise.resolve()
 
   private async syncPXEUnlessPinned(): Promise<void> {
-    if (this.anchorPinDepth > 0) {
+    if (this.anchorPinDepth > 0 || this.snapshotHeld) {
       return
     }
     await this.pxe.sync()
@@ -587,8 +638,8 @@ export class ObsidionWallet extends BaseWallet {
   }
 
   /**
-   * Events plus a projection on one sync. Throws if the anchor moved in between (concurrent wallet
-   * ops can advance PXE); callers retry rather than publish mixed state. `assumeSynced` skips the
+   * Events plus a projection on one sync. Throws if the anchor moved in between (a send's entry
+   * sync can advance PXE); callers retry rather than publish mixed state. `assumeSynced` skips the
    * entry sync, for a caller reading several ranges at the anchor its first read adopted.
    */
   async getPrivateEventsSnapshot<T, P>(
@@ -609,19 +660,35 @@ export class ObsidionWallet extends BaseWallet {
     return this.readAtOneAnchor(read, {})
   }
 
-  private async readAtOneAnchor<P>(
+  /** Queued behind any snapshot in flight, so each one's entry sync follows the call. */
+  private readAtOneAnchor<P>(
     read: () => Promise<P>,
     opts: { assumeSynced?: boolean },
   ): Promise<{ value: P; anchorBlock: number }> {
-    if (!opts.assumeSynced) await this.syncPXEUnlessPinned()
-    const before = await this.pxe.getSyncedBlockHeader()
-    const beforeHash = (await before.hash()).toString()
-    const value = await read()
-    const after = await this.pxe.getSyncedBlockHeader()
-    if ((await after.hash()).toString() !== beforeHash) {
-      throw new Error("PXE anchor changed during wallet snapshot; retry the read")
+    const turn = this.snapshots.then(() => this.readHeld(read, opts))
+    this.snapshots = turn.catch(() => {})
+    return turn
+  }
+
+  private async readHeld<P>(
+    read: () => Promise<P>,
+    opts: { assumeSynced?: boolean },
+  ): Promise<{ value: P; anchorBlock: number }> {
+    // Held before the entry sync: a sync queued earlier lands before it, none can start after it.
+    this.snapshotHeld = true
+    try {
+      if (!opts.assumeSynced && this.anchorPinDepth === 0) await this.pxe.sync()
+      const before = await this.pxe.getSyncedBlockHeader()
+      const beforeHash = (await before.hash()).toString()
+      const value = await read()
+      const after = await this.pxe.getSyncedBlockHeader()
+      if ((await after.hash()).toString() !== beforeHash) {
+        throw new Error("PXE anchor changed during wallet snapshot; retry the read")
+      }
+      return { value, anchorBlock: Number(before.globalVariables.blockNumber) }
+    } finally {
+      this.snapshotHeld = false
     }
-    return { value, anchorBlock: Number(before.globalVariables.blockNumber) }
   }
 
   override async getPrivateEvents<T>(
@@ -669,8 +736,7 @@ export class ObsidionWallet extends BaseWallet {
        * blocks on it. Reject with an AbortError to abort before signing.
        */
       confirmGate?: Promise<unknown>
-      /** Awaited with the proven tx's hash before the node takes it; a rejection sends nothing. */
-      onTxHash?: (txHash: string) => Promise<void>
+      onTxHash?: TxHashCallback
     },
   ): Promise<SendReturn<W>> {
     // Read before the entry sync: the sync is the first timed phase.
@@ -975,7 +1041,9 @@ export class ObsidionWallet extends BaseWallet {
           if (await this.aztecNode.getTxEffect(txHash)) {
             throw new Error(`A settled tx with equal hash ${txHash.toString()} exists.`)
           }
-          await opts.onTxHash?.(txHash.toString())
+          await opts.onTxHash?.(txHash.toString(), {
+            expiresAtMs: txExpiresAtMs(provenTx.publicInputs.expirationTimestamp),
+          })
 
           // The op id and the client-side txHash let `TxLifecycleService` flip the row to MINING
           // and stamp the real hash before submit, without waiting for the caller's post-mining
@@ -1142,27 +1210,17 @@ export class ObsidionWallet extends BaseWallet {
     )
   }
 
-  /**
-   * `expiresAtMs` = kernel `expirationTimestamp` capped at 24h; once the kernel expiry lapses the
-   * tx is dead on chain and the record must go too. Missing or absurd kernel values fall back to
-   * the cap. `kernelExpirationTimestamp` is UInt64 seconds since epoch.
-   */
+  /** Once the expiry lapses the tx is dead on chain and the record must go too. */
   private async persistPendingRecord(
     txHash: string,
     kernelExpirationTimestamp?: bigint,
   ): Promise<void> {
     const submittedAt = Date.now()
-    const ceilingMs = submittedAt + MAX_TX_LIFETIME_MS
-
-    let expiresAtMs = ceilingMs
-    if (kernelExpirationTimestamp !== undefined && kernelExpirationTimestamp > 0n) {
-      const kernelMs = Number(kernelExpirationTimestamp) * 1000
-      if (Number.isFinite(kernelMs) && kernelMs > 0) {
-        expiresAtMs = Math.min(kernelMs, ceilingMs)
-      }
+    const record: PendingTxRecord = {
+      txHash,
+      expiresAtMs: txExpiresAtMs(kernelExpirationTimestamp, submittedAt),
+      submittedAt,
     }
-
-    const record: PendingTxRecord = { txHash, expiresAtMs, submittedAt }
     await this.pendingTxStore.create(record)
   }
 

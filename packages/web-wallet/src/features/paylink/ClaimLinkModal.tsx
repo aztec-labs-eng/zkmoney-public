@@ -18,6 +18,7 @@ import type { EmailClaimStage } from "./emailClaim"
 import { useBusyLabel } from "../operations/operations"
 import { OperationHandOff } from "../operations/OperationHandOff"
 import { WORKING_WARNING } from "../contacts/PayWorking"
+import { actionUpgradeTitle, claimUpgradeLead } from "../migration/upgradeCopy"
 
 export type ClaimStage = CreateStage | EmailClaimStage
 
@@ -35,6 +36,7 @@ const BADGE_STYLE = {
   unclaimed: "awaitingClaim",
   claimed: "paid",
   expired: "cancelled",
+  retired: "cancelled",
 } as const satisfies Record<LinkStatus, string>
 
 /**
@@ -47,6 +49,7 @@ export function ClaimLinkModal({
   claimWait,
   countdown,
   loading = false,
+  mustUpgrade = false,
   onRetryRead,
   onClose,
   onClaim,
@@ -60,6 +63,8 @@ export function ClaimLinkModal({
   countdown: string | undefined
   /** The escrow note (amount, memo) is still being read. */
   loading?: boolean
+  /** The account must upgrade to the current rollup first: Claim opens the upgrade instead. */
+  mustUpgrade?: boolean
   /** Set when the note could not be read, so the claim window is unknown: offers a re-read. */
   onRetryRead?: () => void
   onClose: () => void
@@ -90,6 +95,8 @@ export function ClaimLinkModal({
             <span className="ww-claim-modal__sub">
               {closed
                 ? closed
+                : mustUpgrade
+                ? claimUpgradeLead
                 : link.flavor === "email"
                 ? `Confirm ${link.email ?? "your email"} to securely receive funds in your account`
                 : "Accept to receive funds in your account"}
@@ -124,6 +131,15 @@ export function ClaimLinkModal({
 
         {closed ? (
           <PrimaryGradientButton title="Go to wallet" buttonStyle="dark" onClick={onClose} />
+        ) : mustUpgrade ? (
+          <div className="ww-claim-modal__actions">
+            <PrimaryGradientButton title="Decline" buttonStyle="dark" onClick={onClose} />
+            <PrimaryGradientButton
+              title={actionUpgradeTitle.claim}
+              isDisabled={busy}
+              onClick={onClaim}
+            />
+          </div>
         ) : onRetryRead ? (
           <div className="ww-claim-modal__actions">
             <span className="ww-claim-modal__sub">

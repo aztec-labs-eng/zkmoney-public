@@ -18,6 +18,10 @@ const h = vi.hoisted(() => ({
   report: vi.fn(),
   account: null as string | null,
   connecting: false,
+  /** Which table the registration reads: one row, a USDC fee token, or none yet. */
+  tokens: "single" as "single" | "usdc" | "unread",
+  failed: false,
+  retry: vi.fn(),
 }))
 const ACCOUNT = "0x00000000000000000000000000000000000000aa"
 vi.mock("../src/features/deposit/l1Wallet", () => ({
@@ -78,12 +82,25 @@ vi.mock("@obsidion/web-ds", () => ({
   TopNavIconButton: () => null,
 }))
 vi.mock("../src/config/env", () => ({
-  getConfig: () => ({ l1ChainId: 11155111 }),
+  getConfig: () => ({ l1ChainId: 11155111, network: "testnet" }),
   l1ChainFor: () => ({ name: "Sepolia" }),
 }))
 vi.mock("../src/config/oxideTuple", () => ({
   l1PublicClient: () => ({ waitForTransactionReceipt: h.receipt }),
 }))
+vi.mock("../src/features/deposit/loadDepositFacts", async (importOriginal) => {
+  const { mockLoadDepositFacts, singleToken, usdcFeeTokens } = await import(
+    "./support/depositTokens"
+  )
+  const single = singleToken("0x00000000000000000000000000000000000000dd")
+  const usdc = usdcFeeTokens()
+  return mockLoadDepositFacts(
+    importOriginal,
+    () => (h.tokens === "single" ? single : h.tokens === "usdc" ? usdc : undefined),
+    undefined,
+    () => ({ failed: h.failed, retry: h.retry }),
+  )
+})
 import { DepositPayBlock } from "../src/features/onboarding/steps/DepositAddress"
 
 const OPEN = "Your wallet still has the previous request open. Approve or reject it there first."
@@ -107,6 +124,7 @@ function fundingStore() {
       rateAtomicPerSecond: DAI,
       globalLimitAtomic: 50_000n * DAI,
       availableAtomic: 1_000n * DAI,
+      txAmountCapAtomic: 10_000n * DAI,
     }),
     policy: { maxHeadAgeMs: Infinity },
     visibility: { isVisible: () => true, onResume: () => () => {} },
@@ -151,6 +169,9 @@ beforeEach(() => {
   h.report.mockReset()
   h.account = ACCOUNT
   h.connecting = false
+  h.tokens = "single"
+  h.failed = false
+  h.retry.mockReset()
   // The payment lock is keyed by the target; each test pays its own address.
   props = {
     address: `0x${(++sequence).toString(16).padStart(40, "0")}`,
@@ -248,4 +269,30 @@ it("refuses a payment to another target while the wallet still holds the previou
   expect(el.querySelector('[data-testid="registration-pay-confirm-reason"]')?.textContent).toBe(
     OPEN,
   )
+})
+
+it("pays a USDC fee token in USDC and names no DAI", async () => {
+  h.tokens = "usdc"
+  await render()
+  await act(async () => row().click())
+  const dialog = el.querySelector("dialog")!
+  expect(dialog.querySelector('[data-testid="registration-pay-amount"]')?.textContent).toBe(
+    "0.000011 USDC",
+  )
+  expect(dialog.textContent).not.toContain("DAI")
+})
+
+it("holds the payment and says so until the accepted tokens are read", async () => {
+  h.tokens = "unread"
+  await render()
+  expect(row().disabled).toBe(true)
+  expect(el.querySelector('[data-testid="deposit-tokens-loading"]')).not.toBeNull()
+  expect(el.textContent).not.toContain("DAI")
+  h.failed = true
+  await render()
+  expect(el.querySelector('[data-testid="deposit-tokens-failed"]')).not.toBeNull()
+  await act(async () =>
+    el.querySelector<HTMLButtonElement>('[data-testid="deposit-tokens-retry"]')!.click(),
+  )
+  expect(h.retry).toHaveBeenCalledOnce()
 })

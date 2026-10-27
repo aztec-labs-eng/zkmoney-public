@@ -1,5 +1,5 @@
-import { AztecAddress, EthAddress } from '@aztec/aztec.js/addresses';
-import { Fr } from '@aztec/aztec.js/fields';
+import { AztecAddress, EthAddress } from '@aztec-labs/aztec.js/addresses';
+import { Fr } from '@aztec-labs/aztec.js/fields';
 
 import {
   MAX_DAI_FOR_GAS,
@@ -8,7 +8,7 @@ import {
   predictSwapEscrowAddressLocally,
 } from '@oxide/l1-contracts';
 import { L1OperationCondition } from '@oxide/oxide-lib/l1_operation_calldata.js';
-import { decodePlainWithdrawalPayload } from '@oxide/oxide-lib/plain_withdrawal.js';
+import { decodePlainWithdrawalPayload } from '@oxide/oxide-lib/plain_withdrawal_executor.js';
 import { deriveRecoveryCommitment } from '@oxide/oxide-lib/sipa_recovery.js';
 
 import { describe, expect, it, jest } from '@jest/globals';
@@ -23,15 +23,15 @@ async function swapArgs(): Promise<SwapOnWithdrawArgs> {
     swapEscrowFactoryV2: EthAddress.random(),
     dai: EthAddress.random(),
     from: await AztecAddress.random(),
-    plainWithdrawalExecutor: EthAddress.random(),
+    plainWithdrawalExecutor: { address: EthAddress.random(), fee: 7n },
     amount: 1_000n,
     withdrawalRelayerTip: 10n,
     proverTip: 5n,
-    fpcFundingCut: 0n,
     route: SwapRoute.USDC,
     l1Recipient: EthAddress.random(),
     recoveryAccount: EthAddress.random(),
     relayerTip: 20n,
+    portal: EthAddress.random(),
   };
 }
 
@@ -90,10 +90,7 @@ describe('buildSwapOnWithdraw', () => {
 
     const { escrow, operation } = buildSwapOnWithdraw(args);
 
-    if (operation.kind !== 'withdraw') {
-      throw new Error('expected a withdraw operation');
-    }
-    expect(operation.executor.equals(args.plainWithdrawalExecutor)).toBe(true);
+    expect(operation.executor.equals(args.plainWithdrawalExecutor.address)).toBe(true);
     const payload = decodePlainWithdrawalPayload(operation.userPayload);
     expect(payload.recipient.equals(escrow)).toBe(true);
     expect(payload.relayerTip).toBe(args.withdrawalRelayerTip);
@@ -143,7 +140,8 @@ describe('buildSwapOnWithdraw', () => {
 
   it('rejects daiForGas above the escrow funding after relayerTip', async () => {
     const args = await swapArgs();
-    const fundingAfterTip = args.amount - args.proverTip - args.withdrawalRelayerTip - args.relayerTip;
+    const fundingAfterTip =
+      args.amount - args.proverTip - args.plainWithdrawalExecutor.fee - args.withdrawalRelayerTip - args.relayerTip;
 
     expect(() => buildSwapOnWithdraw({ ...args, daiForGas: fundingAfterTip })).not.toThrow();
     expect(() => buildSwapOnWithdraw({ ...args, daiForGas: fundingAfterTip + 1n })).toThrow(/escrow funding/);

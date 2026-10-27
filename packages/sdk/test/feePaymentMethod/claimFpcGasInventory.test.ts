@@ -25,7 +25,7 @@ import { readFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { dirname, join } from "node:path"
 import { describe, expect, it } from "vitest"
-import { Fr } from "@aztec/aztec.js/fields"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 import { claimFpcGateGas, claimFpcOverheadGas, claimFpcRefuelGas } from "@obsidion/contracts"
 import { CLAIM_FPC_MAX_FEE_PER_GAS } from "@obsidion/core/constants"
 import {
@@ -106,11 +106,11 @@ describe("ClaimFPC gas derivation", () => {
     expect({ daGas: strict.daGas - bare.daGas, l2Gas: strict.l2Gas - bare.l2Gas }).toEqual(gate)
   })
 
-  it("charges a registration subscribe the overhead plus the message gate's own reported gas", () => {
-    // The registration gate consumes an L1->L2 message, so unlike the NameClaim gate it emits one
-    // side effect — the consumption nullifier — and the receipt reports it. The same subscribe
-    // shape as the NameClaim case above, measured on chain, is that much dearer.
+  it("charges a registration subscribe the overhead alone: the gate emits nothing", () => {
+    // The registration gate proves the L1->L2 message exists without consuming it, so like the
+    // NameClaim gate it emits no side effect and reports zero.
     const gate = claimFpcGateGas("registration")
+    expect(gate).toEqual({ daGas: 0, l2Gas: 0 })
     expect(gate).toEqual(claimFpcGateMarginal("registration"))
 
     const { base } = deriveClaimFpcGasBudgets()
@@ -245,7 +245,7 @@ describe("ClaimFPC per-call inventory", () => {
  * (`ClaimBatchFullError`) and the wallet sends the broadcast and the claim apart.
  */
 const OPEN_POLICY_ONLY = new Set([
-  "sponsor[paylink_direct.claim_with_withdrawal,broadcaster.broadcast_l1_operation_2k,oxide_token.notify_sipa_recipient,broadcaster.broadcast_l1_operation_2k,oxide_token.publish_da]",
+  "sponsor[paylink_direct.claim_with_withdrawal,oxide_token.notify_sipa_recipient,broadcaster.broadcast_l1_operation_2k,broadcaster.broadcast_l1_operation_2k,oxide_token.publish_da]",
 ])
 
 describe("ClaimFPC flat batch caps", () => {

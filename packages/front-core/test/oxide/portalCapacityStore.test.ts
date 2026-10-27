@@ -30,6 +30,7 @@ const snapshot = (over: Partial<PortalCapacitySnapshot> = {}): PortalCapacitySna
   blockTimestamp: BigInt(Math.floor(Date.now() / 1000)),
   rateAtomicPerSecond: 7n,
   globalLimitAtomic: 1_000n,
+  txAmountCapAtomic: 1_000n,
   availableAtomic: 500n,
   ...over,
 })

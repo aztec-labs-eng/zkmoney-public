@@ -23,7 +23,7 @@ const browserDeps: ClearSiteDataDeps = {
   opfsRoot: () => navigator.storage.getDirectory(),
   loadPools: async () => {
     const { OPFS_POOL_DIR_PREFIX, deletePoolDirectory } = await import(
-      "@aztec/kv-store/sqlite-opfs"
+      "@aztec-labs/kv-store/sqlite-opfs"
     )
     return { prefix: OPFS_POOL_DIR_PREFIX, deletePoolDirectory }
   },

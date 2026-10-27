@@ -1,8 +1,8 @@
 import { describe, it, expect } from "vitest"
 import { encode as cborEncode } from "cbor-x"
 import { Buffer } from "buffer"
-import { Fr } from "@aztec/aztec.js/fields"
-import { Grumpkin } from "@aztec/foundation/crypto/grumpkin"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { Grumpkin } from "@aztec-labs/foundation/crypto/grumpkin"
 import {
   assertLinkChain,
   assertLinkClass,
@@ -62,7 +62,9 @@ describe("paylinkInlineCodec", () => {
   })
 
   it("omits the escrow tag point when absent", () => {
-    expect(expectRoundTrip(makeParams({ escrowTagSecret: undefined })).escrowTagSecret).toBeUndefined()
+    expect(
+      expectRoundTrip(makeParams({ escrowTagSecret: undefined })).escrowTagSecret,
+    ).toBeUndefined()
   })
 
   it("rejects a chain id or rollup version that is not a positive integer", () => {
@@ -109,9 +111,9 @@ describe("paylinkInlineCodec", () => {
     expect(() => decodePaylinkInline(toBase64Url(Buffer.alloc(300).toString("base64")))).toThrow(
       "Invalid paylink link",
     )
-    expect(() => decodePaylinkInline(toBase64Url(Buffer.from(cborEncode([1, 2])).toString("base64")))).toThrow(
-      "Invalid paylink link",
-    )
+    expect(() =>
+      decodePaylinkInline(toBase64Url(Buffer.from(cborEncode([1, 2])).toString("base64"))),
+    ).toThrow("Invalid paylink link")
   })
 
   it("refuses a link derived against another class, chain or rollup deployment", () => {

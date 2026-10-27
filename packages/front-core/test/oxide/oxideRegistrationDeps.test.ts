@@ -109,7 +109,7 @@ describe("fetchSignupResolverOperator", () => {
   const LIVE_TUPLE = {
     accountMetadataRegistry: "0x0000000000000000000000000000000000000011",
     resolverGatewayUrl: "https://gw.example",
-    portal: "0x0000000000000000000000000000000000000012",
+    forwardingTable: "0x0000000000000000000000000000000000000012",
     deployedAt: new Date(Number(DEPLOY_BLOCK) * BLOCK_SEC * 1000).toISOString(),
   } as unknown as OxideEnvTuple
 
@@ -134,7 +134,7 @@ describe("fetchSignupResolverOperator", () => {
       { fromBlock: DEPLOY_BLOCK, toBlock: HEAD },
     )
     expect(sdkMocks.selectManifestResolverOperator).toHaveBeenCalledWith(records, {
-      portal: LIVE_TUPLE.portal,
+      forwardingTable: LIVE_TUPLE.forwardingTable,
       resolverGatewayUrl: LIVE_TUPLE.resolverGatewayUrl,
       preferredOwner: PREFERRED_RESOLVER_OWNER,
       failOnAmbiguousMatch: false,
@@ -142,7 +142,7 @@ describe("fetchSignupResolverOperator", () => {
   })
 
   it("throws before any read when the manifest lacks the resolver-selection surface", async () => {
-    const tuple = { ...LIVE_TUPLE, portal: undefined } as unknown as OxideEnvTuple
+    const tuple = { ...LIVE_TUPLE, forwardingTable: undefined } as unknown as OxideEnvTuple
     await expect(fetchSignupResolverOperator({} as never, tuple, Network.TESTNET)).rejects.toThrow(
       /resolver-selection surface/,
     )

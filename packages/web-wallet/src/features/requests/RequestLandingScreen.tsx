@@ -16,7 +16,7 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { Outlet, useLocation, useNavigate, useParams } from "react-router-dom"
 import { createPublicClient, formatUnits, type PublicClient } from "viem"
-import type { AztecNode } from "@aztec/aztec.js/node"
+import type { AztecNode } from "@aztec-labs/aztec.js/node"
 import {
   decodeRequestInline,
   normalizeTag,
@@ -40,21 +40,28 @@ import { useBack, useLinkSharing } from "../../ui/hooks"
 import { BootSplash, usePxeBoot, verifiedIdentity } from "../../ui/PxeBoot"
 import { loadOnboardedIdentity } from "../identity/walletIdentity"
 import { resolveTagForCommit } from "../contacts/registryResolution"
+import { recipientNotUpgradedCopy } from "../migration/upgradeCopy"
 import { InvitationChrome } from "../onboarding/InvitationChrome"
 import {
   RequestDecimalsMismatchError,
+  RequesterNotUpgradedError,
   resolveAccountlessRequest,
   type AccountlessResolveResult,
 } from "./accountlessRequest"
 import { ExternalWalletPayModal } from "./ExternalWalletPayModal"
+import { loadDepositTokens } from "../deposit/loadDepositFacts"
 import { requestAmountDisplay, validateRequestPacket, type RequestLinkProblem } from "./requestLink"
 import { fireRequestOpened } from "./requestOpened"
 
-/** `unknownPayee`: a pay page for a tag nobody holds, such as a mistyped `<tag>.zk.money`. */
-type PayProblem = RequestLinkProblem | "unknownPayee"
+/**
+ * `unknownPayee`: a pay page for a tag nobody holds, such as a mistyped `<tag>.zk.money`.
+ * `notUpgraded`: the payee's tag is still on a retired rollup.
+ */
+type PayProblem = RequestLinkProblem | "unknownPayee" | "notUpgraded"
 
 const PROBLEM_COPY: Record<PayProblem, string> = {
   unknownPayee: "There's no zk.money account with this name.",
+  notUpgraded: recipientNotUpgradedCopy.payPageHint,
   expired: "This payment request has expired.",
   wrongNetwork: "This payment request is for a different network.",
   wrongToken: "This payment request is for a token this wallet doesn't support.",
@@ -83,7 +90,9 @@ function standingPacket(tag: string): RequestInlinePacket {
 
 /** A standing packet is built here, so only its payee can be wrong. */
 async function standingProblem(payee: Promise<RegistryTagResolution>): Promise<PayProblem | null> {
-  return (await payee).status === "resolved" ? null : "unknownPayee"
+  const { status } = await payee
+  if (status === "staleRollup") return "notUpgraded"
+  return status === "resolved" ? null : "unknownPayee"
 }
 
 export function RequestLandingScreen({
@@ -324,13 +333,13 @@ function AccountlessRequest({
           // once. A link's checks come first: an expired link must not reach the CCIP resolver.
           const payee = standing ? resolveTagForCommit(packet.requesterTag) : undefined
           const resolve = () =>
-            tupleRead.then((tuple) =>
+            Promise.all([tupleRead, loadDepositTokens(config)]).then(([tuple, accepted]) =>
               resolveAccountlessRequest(packet, {
                 tuple,
                 publicClient,
                 resolveRequester: payee ? () => payee : resolveTagForCommit,
                 chainId: config.l1ChainId,
-                network: config.network,
+                acceptedTokens: accepted.options.map((t) => t.address),
               }),
             )
           const early = standing ? resolve() : undefined
@@ -352,6 +361,9 @@ function AccountlessRequest({
         } catch (e) {
           if (e instanceof RequestDecimalsMismatchError) {
             return { kind: "problem", problem: "wrongToken" }
+          }
+          if (e instanceof RequesterNotUpgradedError) {
+            return { kind: "problem", problem: "notUpgraded" }
           }
           const message = e instanceof Error ? e.message : String(e)
           // Registry identity failures are final and worded for the payer; anything else retries and

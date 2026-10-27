@@ -13,12 +13,12 @@ import {
   toFunctionSelector,
   zeroAddress,
 } from "viem"
-import { Fr } from "@aztec/aztec.js/fields"
-import type { AztecAddress } from "@aztec/aztec.js/addresses"
-import type { AztecNode } from "@aztec/aztec.js/node"
-import type { GrumpkinScalar } from "@aztec/foundation/curves/grumpkin"
-import { MAX_RPC_LEN } from "@aztec/stdlib/interfaces/api-limit"
-import { MerkleTreeId } from "@aztec/stdlib/trees"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import type { AztecAddress } from "@aztec-labs/aztec.js/addresses"
+import type { AztecNode } from "@aztec-labs/aztec.js/node"
+import type { GrumpkinScalar } from "@aztec-labs/foundation/curves/grumpkin"
+import { MAX_RPC_LEN } from "@aztec-labs/stdlib/interfaces/api-limit"
+import { MerkleTreeId } from "@aztec-labs/stdlib/trees"
 import { computeSiloedDepositMessageNullifier } from "@oxide/oxide-lib/deposit_message_hashing.js"
 import {
   SIPAAbi,
@@ -42,10 +42,10 @@ import {
   encodeSipaRecoverETH,
   type SipaRecoveryArgs,
 } from "@oxide/l1-contracts/sipa_recovery.js"
-import { TX_AMOUNT_CAP } from "@oxide/oxide-lib/oxide_constants.gen.js"
 import { chunkedContractEvents } from "./l1Logs.js"
+import { readSipaPortalTerms, type SipaRoute } from "../oxide/sipaPortalTerms.js"
 import { readSipaEvents, type SipaEvent } from "@oxide/oxide-client/sipa_event_calls.js"
-import type { PrivateEventFilter, Wallet } from "@aztec/aztec.js/wallet"
+import type { PrivateEventFilter, Wallet } from "@aztec-labs/aztec.js/wallet"
 import { OxideTokenContract } from "@obsidion/contracts"
 
 export type { SipaEvent }
@@ -209,6 +209,22 @@ export async function readSipaBalancesMany(
   return out
 }
 
+/** `holder`'s balance of `token` at `blockTag`. */
+export function readTokenBalanceAt(
+  publicClient: PublicClient,
+  token: Address,
+  holder: Address,
+  blockTag: "finalized" | "latest",
+): Promise<bigint> {
+  return publicClient.readContract({
+    address: token,
+    abi: erc20Abi,
+    functionName: "balanceOf",
+    args: [holder],
+    blockTag,
+  })
+}
+
 /**
  * Which of `sipas` are deployed clones, lowercased, through one Multicall3 call (`eth_getCode` cannot
  * be batched into one). A call to an address without code succeeds with no data; a clone answers
@@ -293,31 +309,27 @@ export async function readSipaHoldingsAtHead(
   return { timestamp: stamp.result as bigint, balances }
 }
 
-/** Where a SIPA's current funding sits between the deposit floor and the per-transaction cap. */
+/** Where a SIPA's current funding sits between the deposit fee and the per-transaction cap. */
 export interface SipaFundingStatus {
   /** The SIPA's current `token` balance, in the sent token's own units. */
   balance: bigint
   /** `balance` in the fee's denomination: the figure to compare with `fee` and the cap. */
   scaledBalance: bigint
-  /** The implementation's `depositFee()` — the relayer's half of the floor. */
+  /** The route's fee: the floor a sweep pays. */
   fee: bigint
-  /** The portal's `FPC_FUNDING_CUT` — the other half, skimmed off what the sweep forwards. */
-  fpcFundingCut: bigint
   sweepable: boolean
 }
 
 /**
  * Classify a funded-but-unswept SIPA against the two-sided sweep window:
- * `fee + cut < balance ≤ TX_AMOUNT_CAP + fee + cut`. A sweep pays the deposit fee out of the WHOLE
- * balance and deposits the rest into the portal, which requires the deposited amount to exceed its
- * funding cut and credits `balance − fee − cut`. The
- * per-transaction cap measures that credited amount. `recoverERC20` is the only exit outside the
- * window. `balance = 0` after a sweep is normal.
+ * `fee < balance ≤ txAmountCap + fee`. A sweep pays the deposit fee out of the WHOLE balance and
+ * deposits the rest into the portal, which credits `balance − fee`; the per-transaction cap
+ * measures that credited amount. `recoverERC20` is the only exit outside the window.
+ * `balance = 0` after a sweep is normal.
  *
- * `implementation` is the SIPA's intent implementation — the one the address commits to, whose
- * `depositFee()` the sweep charges. It is read only without `params.fee`, which supplies the floor
- * when the caller already holds it, so one read serves every SIPA of that implementation; the cut is
- * a per-deployment immutable the caller reads once with `readFpcFundingCut`.
+ * `route` is the forwarding-table row the sweep charges. It is read only without `params.fee`,
+ * which supplies the floor when the caller already holds it. `txAmountCap` is the portal's
+ * `TX_AMOUNT_CAP()`.
  *
  * `params.balanceScale` normalizes the balance into the fee's denomination when the sent token's
  * decimals differ (mainnet: the sweep swaps USDC/USDT ~1:1 into 18-dec DAI, which the fee and the
@@ -328,11 +340,11 @@ export async function readSipaFundingStatus(
   params: {
     sipa: Address
     token: Address
-    fpcFundingCut: bigint
+    txAmountCap: bigint
     balanceScale?: bigint
     /** The balance when the caller already read it; skips the `balanceOf` read. */
     balance?: bigint
-  } & ({ fee: bigint; implementation?: Address } | { fee?: undefined; implementation: Address }),
+  } & ({ fee: bigint; route?: SipaRoute } | { fee?: undefined; route: SipaRoute }),
 ): Promise<SipaFundingStatus> {
   const [balance, fee] = await Promise.all([
     params.balance ??
@@ -342,38 +354,30 @@ export async function readSipaFundingStatus(
         functionName: "balanceOf",
         args: [params.sipa],
       } as never) as Promise<bigint>),
-    params.fee !== undefined ? params.fee : readDepositFee(publicClient, params.implementation),
+    params.fee !== undefined ? params.fee : readDepositFee(publicClient, params.route),
   ])
   const scaledBalance = balance * (params.balanceScale ?? 1n)
-  const floor = fee + params.fpcFundingCut
   return {
     balance,
     scaledBalance,
     fee,
-    fpcFundingCut: params.fpcFundingCut,
-    sweepable: scaledBalance > floor && scaledBalance - floor <= TX_AMOUNT_CAP,
+    sweepable: scaledBalance > fee && scaledBalance - fee <= params.txAmountCap,
   }
 }
 
 /**
- * The deposit fee an intent implementation charges — a `SIPABase` immutable, so each intent family
- * prices its own sweep and a registration (which registers a name on the way through) costs more
- * than a plain deposit. It is one half of the deposit floor; the portal's `FPC_FUNDING_CUT` is the
- * other. The receive UX pre-checks the send against their sum: a sweep at or below it hard-reverts,
- * and a third-party sender has no client guard, which is why the recovery affordance exists.
+ * The fee a sweep on `route` pays: the row's sweep tip plus its beneficiary fee. Each intent has
+ * its own row, so a registration costs more than a plain deposit. It is the deposit floor. The
+ * receive UX pre-checks the send against it: a sweep at or below it hard-reverts, and a third-party
+ * sender has no client guard, which is why the recovery affordance exists.
  *
- * Read off the IMPLEMENTATION, never a clone: the quote a payer is shown exists before any SIPA is
- * deployed, and a clone only delegatecalls back to this same immutable.
+ * Read off the table, never a clone: the quote a payer is shown exists before any SIPA is deployed.
  */
 export async function readDepositFee(
   publicClient: PublicClient,
-  implementation: Address,
+  route: SipaRoute,
 ): Promise<bigint> {
-  return (await publicClient.readContract({
-    address: implementation,
-    abi: SIPAAbi,
-    functionName: "depositFee",
-  } as never)) as bigint
+  return (await readSipaPortalTerms(publicClient, route)).depositFee
 }
 
 /** The L1 transaction target + calldata for a recipient-self-sweep. */
@@ -570,9 +574,6 @@ export type SweepSigStruct = DomainAuthArg
 /** The operator-signed terms struct and its "no terms" marker (the immutable schedule applies). */
 export { EMPTY_SIGNED_TERMS } from "@oxide/l1-contracts"
 export type { SignedTermsArg } from "@oxide/l1-contracts"
-
-/** The per-transaction deposit ceiling `sweepable` measures against, for callers that name it in UI. */
-export { TX_AMOUNT_CAP } from "@oxide/oxide-lib/oxide_constants.gen.js"
 
 /** Read the `SIPA` events sent to `recipient` on `token`. Register the sender with the wallet first. */
 export function fetchSipaEvents(

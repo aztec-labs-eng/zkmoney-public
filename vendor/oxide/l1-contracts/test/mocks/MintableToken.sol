@@ -1,29 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity >=0.8.27;
 
-contract MintableToken {
-  mapping(address account => uint256 balance) public balanceOf;
-  mapping(address owner => mapping(address spender => uint256 amount)) public allowance;
+import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+
+contract MintableToken is ERC20 {
+  uint8 internal immutable DECIMALS;
+
+  constructor(string memory _name, string memory _symbol, uint8 _decimals) ERC20(_name, _symbol) {
+    DECIMALS = _decimals;
+  }
 
   function mint(address _to, uint256 _amount) external {
-    balanceOf[_to] += _amount;
+    _mint(_to, _amount);
   }
 
-  function approve(address _spender, uint256 _amount) external returns (bool) {
-    allowance[msg.sender][_spender] = _amount;
-    return true;
-  }
-
-  function transfer(address _to, uint256 _amount) external returns (bool) {
-    balanceOf[msg.sender] -= _amount;
-    balanceOf[_to] += _amount;
-    return true;
-  }
-
-  function transferFrom(address _from, address _to, uint256 _amount) external returns (bool) {
-    allowance[_from][msg.sender] -= _amount;
-    balanceOf[_from] -= _amount;
-    balanceOf[_to] += _amount;
-    return true;
+  function decimals() public view override returns (uint8) {
+    return DECIMALS;
   }
 }

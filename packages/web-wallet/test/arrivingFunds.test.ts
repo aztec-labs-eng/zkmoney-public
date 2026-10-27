@@ -20,7 +20,7 @@ const none = { deposits: [], burns: [], moves: [], transactions: [] }
 const deposit = (patch: Partial<SIPADepositRecord>): SIPADepositRecord =>
   ({ sipaAddress: SIPA, phase: "broadcast", amount: "800", ...patch } as SIPADepositRecord)
 
-/** 85 gross, 0.1 tip, 0.05 old-portal cut, 0.3 arrival fee: 84.55 reaches the new balance. */
+/** 85 gross, 0.1 tip, 0.3 arrival fee: 84.6 reaches the new balance. */
 const migration = (phase: WithdrawalPhase): WithdrawalRecord =>
   ({
     localId: "m1",
@@ -29,7 +29,6 @@ const migration = (phase: WithdrawalPhase): WithdrawalRecord =>
     amount: "85",
     rawAmount: (85n * E18).toString(),
     relayerTip: (E18 / 10n).toString(),
-    fpcFundingCut: ((5n * E18) / 100n).toString(),
     arrivalFee: ((3n * E18) / 10n).toString(),
     tokenSymbol: "DAI",
     phase,
@@ -46,13 +45,12 @@ const move = (patch: Partial<SavingsMoveRecord>): SavingsMoveRecord =>
     ...patch,
   } as SavingsMoveRecord)
 
-/** A move's burn: 800 DAI, its source cut and release tip, and the escrow's tip. */
+/** A move's burn: 800 DAI, its release tip, and the escrow's tip. */
 const moveBurn = (phase: WithdrawalPhase = "l2_mined"): WithdrawalRecord =>
   ({
     localId: "w1",
     amount: "800",
     rawAmount: (800n * E18).toString(),
-    fpcFundingCut: ((5n * E18) / 100n).toString(),
     relayerTip: (E18 / 10n).toString(),
     skyMove: { direction: "in", relayerTip: (E18 / 2n).toString() },
     tokenSymbol: "DAI",
@@ -76,8 +74,25 @@ describe("arrivingFunds", () => {
     expect(at({ phase: "recoverable" })).toBe(0n)
   })
 
+  it("stops counting a deposit once Main is read after its claim landed, before it records claimed", () => {
+    const net = (75n * E18) / 100n
+    const landed = deposit({
+      phase: "pendingClaim",
+      inboxIndex: "26",
+      netAmount: net.toString(),
+      claimLanded: { inboxIndex: "26", at: 500 },
+    })
+    const at = (record: SIPADepositRecord, main?: number) =>
+      arrivingFunds({ ...none, deposits: [record], balanceReadAt: { main } }).main
+    expect(at(landed)).toBe(net)
+    expect(at(landed, 499)).toBe(net)
+    expect(at(landed, 500)).toBe(0n)
+    // A later sweep on the same address is still on its way.
+    expect(at({ ...landed, inboxIndex: "28" }, 500)).toBe(net)
+  })
+
   it("counts a migration from its burn, then from its deposit's own net, never both", () => {
-    const net = (8455n * E18) / 100n
+    const net = (846n * E18) / 10n
     const at = (burn: WithdrawalRecord, arrival?: Partial<SIPADepositRecord>) =>
       arrivingFunds({ ...none, burns: [burn], deposits: arrival ? [deposit(arrival)] : [] }).main
     expect(at(migration("l2_mined"))).toBe(net)
@@ -173,20 +188,39 @@ describe("arrivingFunds beside an upgrade", () => {
   const swept = (patch: Partial<SIPADepositRecord>) =>
     deposit({ phase: "pendingClaim", netAmount: NET.toString(), ...patch })
 
-  it("counts no deposit an upgrade pays, whether its first or a later batch's", () => {
+  it("counts no deposit an upgrade's batch pays", () => {
     const funds = arrivingFunds({
       ...none,
-      deposits: [
-        swept({ sipaAddress: `0x${"a1".repeat(20)}`, intent: "metadata" }),
-        swept({ sipaAddress: `0x${"b2".repeat(20)}` }),
-      ],
+      deposits: [swept({ sipaAddress: `0x${"b2".repeat(20)}` })],
       upgradeRecipients: new Set([`0x${"b2".repeat(20)}`]),
     })
 
     expect(funds.main).toBe(0n)
   })
 
+  it("counts no deposit a backup passkey rotation pays itself", () => {
+    const funds = arrivingFunds({
+      ...none,
+      deposits: [swept({ sipaAddress: `0x${"c3".repeat(20)}`, intent: "user-op" })],
+    })
+
+    expect(funds.main).toBe(0n)
+  })
+
   it("counts an ordinary deposit and what old versions hold", () => {
-    expect(arrivingFunds({ ...none, deposits: [swept({})], oldVersions: E18 }).main).toBe(NET + E18)
+    expect(
+      arrivingFunds({ ...none, deposits: [swept({})], oldVersions: { main: E18, savings: 0n } })
+        .main,
+    ).toBe(NET + E18)
+  })
+
+  it("keeps old Savings in Savings beside old Main and an ordinary deposit", () => {
+    expect(
+      arrivingFunds({
+        ...none,
+        deposits: [swept({})],
+        oldVersions: { main: 59n * E18, savings: 40n * E18 },
+      }),
+    ).toEqual({ main: NET + 59n * E18, savings: 40n * E18 })
   })
 })

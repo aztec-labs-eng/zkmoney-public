@@ -12,6 +12,7 @@ import { getPendingStore } from "../src/features/onboarding/webRegistration"
 import { hasDepositAdmission, recordDepositAdmission } from "../src/features/identity/admission"
 import { saveRegistrationTerms } from "../src/features/onboarding/registrationTerms"
 import { RANDOM_ASK } from "./support/registrationPrices"
+import { MAINNET_DAI } from "./support/depositTokens"
 import {
   assertRegistrationRefunded,
   assertRegistrationUnfunded,
@@ -26,8 +27,12 @@ const h = vi.hoisted(() => ({
   balance: vi.fn(),
   receipt: vi.fn(),
   heal: vi.fn(),
-  cut: vi.fn(),
   config: { l1ChainId: 11155111 } as { l1ChainId: number; network?: string },
+  // The DAI row and the stables that swap into it, in place of the registration token's one row.
+  mainnetTable: false,
+  // The accepted tokens cannot be read.
+  tableDown: false,
+  token: `0x${"33".repeat(20)}` as const,
 }))
 vi.mock("../src/config/env", async (original) => ({
   ...(await original<object>()),
@@ -37,22 +42,24 @@ vi.mock("../src/config/oxideTuple", async (original) => ({
   ...(await original<object>()),
   l1PublicClient: () => ({ readContract: h.balance, getTransactionReceipt: h.receipt }),
 }))
-vi.mock("../src/features/fees/fpcFundingCut", () => ({
-  currentFpcFundingCut: h.cut,
-  fpcFundingCut: h.cut,
-}))
 vi.mock("../src/features/onboarding/registrationDepositSeed", () => ({
   healRegistrationDeposits: h.heal,
 }))
+vi.mock("../src/features/deposit/loadDepositFacts", async (importOriginal) => {
+  const { mainnetTokens, mockLoadDepositFacts, singleToken } = await import(
+    "./support/depositTokens"
+  )
+  return mockLoadDepositFacts(importOriginal, () =>
+    h.tableDown ? undefined : h.mainnetTable ? mainnetTokens() : singleToken(h.token),
+  )
+})
 const account = `0x${"11".repeat(20)}` as Address
 const sipa = `0x${"22".repeat(20)}` as Address
-const token = `0x${"33".repeat(20)}` as Address
+const token = h.token as Address
 const target = `0x${"44".repeat(20)}` as Address
 const l2 = `0x${"55".repeat(32)}` as Hex
 const hash = `0x${"66".repeat(32)}` as Hex
 const dai = 10n ** 18n
-/** Staging's portal funding cut, which every minimum here outranks. */
-const CUT = dai / 10n
 const config = { l1ChainId: 11155111 } as WebWalletConfig
 const record: PendingRegistrationRecord = {
   account,
@@ -104,6 +111,7 @@ beforeEach(async () => {
   vi.clearAllMocks()
   localStorage.clear()
   h.config = { l1ChainId: 11155111 }
+  h.mainnetTable = false
   ;(PendingRegistrationStore as unknown as { instance: unknown }).instance = null
   ;(SIPADepositStore as unknown as { instance: unknown }).instance = null
   await getPendingStore().load()
@@ -126,41 +134,28 @@ beforeEach(async () => {
   )
   h.balance.mockResolvedValue(0n)
   h.receipt.mockResolvedValue({ status: "success", logs: [transfer] })
-  h.cut.mockResolvedValue(CUT)
 })
 describe("earned registration refund", () => {
   it("offers recovery for a 5 DAI receipt at the 15 DAI address, including incompatible refreshed metadata", () => {
-    expect(registrationNeedsRefund(record, terms, true, undefined, CUT)).toBe(true)
+    expect(registrationNeedsRefund(record, terms, true)).toBe(true)
     expect(
       registrationNeedsRefund(
         record,
         { ...terms, fee: String(dai / 2n), minDeposit: String((45n * dai) / 10n) },
         true,
-        undefined,
-        CUT,
       ),
     ).toBe(true)
-    expect(registrationNeedsRefund(record, terms, false, undefined, CUT)).toBe(false)
-    expect(
-      registrationNeedsRefund({ ...record, phase: "confirmed" }, terms, true, undefined, CUT),
-    ).toBe(false)
+    expect(registrationNeedsRefund(record, terms, false)).toBe(false)
+    expect(registrationNeedsRefund({ ...record, phase: "confirmed" }, terms, true)).toBe(false)
     // A deposit already clearing this schedule's floor completes at the price it committed to.
     expect(
-      registrationNeedsRefund(
-        record,
-        { ...terms, depositAmount: String(15n * dai) },
-        true,
-        undefined,
-        CUT,
-      ),
+      registrationNeedsRefund(record, { ...terms, depositAmount: String(15n * dai) }, true),
     ).toBe(false)
     expect(
       registrationNeedsRefund(
         { ...record, fee: String(dai / 2n) },
         { ...terms, fee: String(dai / 2n), minDeposit: String((45n * dai) / 10n) },
         true,
-        undefined,
-        CUT,
       ),
     ).toBe(false)
   })
@@ -173,9 +168,7 @@ describe("earned registration refund", () => {
       feeWaived: true,
     }
     const earnedRecord = { ...record, fee: earned.fee }
-    // A short deposit here is topped up, whatever the cut makes of the floor.
-    expect(registrationNeedsRefund(earnedRecord, earned, true, undefined, 5n * dai)).toBe(false)
-    expect(registrationNeedsRefund(earnedRecord, earned, true, undefined, CUT)).toBe(false)
+    // A short deposit here is topped up.
     expect(registrationNeedsRefund(earnedRecord, earned, true)).toBe(false)
   })
   it("prepares the original deposit and displays its live amount without replacing the registration", async () => {
@@ -201,29 +194,20 @@ describe("earned registration refund", () => {
   })
   it("offers the restart from the persisted refund alone, with no admission receipt", async () => {
     expect(registrationRefunded(record)).toBe(false)
-    expect(
-      registrationNeedsRefund(record, terms, registrationRefunded(record), undefined, CUT),
-    ).toBe(false)
+    expect(registrationNeedsRefund(record, terms, registrationRefunded(record))).toBe(false)
     await markRefunded()
     expect(registrationRefunded(record)).toBe(true)
-    expect(
-      registrationNeedsRefund(record, terms, registrationRefunded(record), undefined, CUT),
-    ).toBe(true)
+    expect(registrationNeedsRefund(record, terms, registrationRefunded(record))).toBe(true)
   })
 
-  it("names no refund while the portal's cut is still unread", () => {
-    // The floor the deposit is judged against is priced from the cut, so an unfunded record is
-    // undecided until it lands: offering a recovery here would take back a wallet that qualifies.
-    expect(registrationNeedsRefund(record, terms, true)).toBe(false)
-    expect(registrationNeedsRefund(record, terms, true, undefined, CUT)).toBe(true)
-    // What fails on the fee alone needs no cut: a fee under the relayer's sweep cut, and one the
-    // terms disagree with, both stand on their own.
+  it("calls for a refund on the committed fee alone", () => {
+    // A fee under the relayer's sweep cut, and one the terms disagree with, both stand on their own.
     expect(registrationNeedsRefund(record, terms, true, 20n * dai)).toBe(true)
     expect(registrationNeedsRefund(record, { ...terms, fee: String(3n * dai) }, true)).toBe(true)
-    // A funded record has already had the covering branch's say; the committed fee decides it.
+    // With no minimum to price a floor, the committed fee decides it.
     const unpriced = { ...terms, minDeposit: undefined }
     expect(registrationNeedsRefund({ ...record, phase: "funded" }, unpriced, true)).toBe(true)
-    expect(registrationNeedsRefund(record, unpriced, true)).toBe(false)
+    expect(registrationNeedsRefund(record, unpriced, true)).toBe(true)
   })
   it("keeps the confirmed refund once the rail rewrites the address for another token", async () => {
     await markRefunded()
@@ -299,6 +283,19 @@ describe("earned registration refund", () => {
       amount: String(5n * dai),
     })
     expect(registrationRefunded(record)).toBe(true)
+  })
+  it("sizes and settles a confirmed refund while the accepted tokens cannot be read", async () => {
+    await getPendingStore().upsert(account, { phase: "funded", fundedAt: 5, fundingTxHash: hash })
+    h.tableDown = true
+    try {
+      await registrationRefundConfirmed(sipa, token, 11155111, hash, readReceipt)
+    } finally {
+      h.tableDown = false
+    }
+    expect(getPendingStore().get(account)).toMatchObject({
+      phase: "awaiting_deposit",
+      refundedEntry: { sipaAddress: sipa, recoveryTxHash: hash, amount: String(5n * dai) },
+    })
   })
   it("takes the deposit receipt with the refund it settles, entry staying on the record", async () => {
     const earned = {
@@ -406,27 +403,6 @@ describe("earned registration refund", () => {
         amount: String((152n * dai) / 10n),
       },
     })
-  })
-  it("leaves a funded record and its wallet access alone while the portal's cut cannot be read", async () => {
-    await getPendingStore().upsert(account, { phase: "funded", fundedAt: 5 })
-    recordDepositAdmission(record, 5n * dai)
-    h.cut.mockRejectedValue(new Error("rpc down"))
-
-    await registrationRefundConfirmed(sipa, token, 11155111, hash, readReceipt)
-
-    // The entry the refund buys is priced against the cut, so settling here would clear the stamp
-    // and the receipt while crediting nothing.
-    expect(getPendingStore().get(account)).toMatchObject({ phase: "funded", fundedAt: 5 })
-    expect(getPendingStore().get(account)?.refundedEntry).toBeUndefined()
-    expect(hasDepositAdmission(record)).toBe(true)
-
-    h.cut.mockResolvedValue(CUT)
-    await reconcileRegistrationRefund(record, config)
-    expect(getPendingStore().get(account)).toMatchObject({
-      phase: "awaiting_deposit",
-      refundedEntry: { sipaAddress: sipa, recoveryTxHash: hash, amount: String(5n * dai) },
-    })
-    expect(hasDepositAdmission(record)).toBe(false)
   })
   it("settles a funded record off the refund the rail reports for it", async () => {
     await getPendingStore().upsert(account, { phase: "funded", fundedAt: 5 })
@@ -657,10 +633,10 @@ describe("a registration nobody promised the earned price", () => {
     feeWaived: false,
   }
   it("is not flagged for a refund at the standard fee", () => {
-    expect(registrationNeedsRefund(standard, standardTerms, true, dai / 10n, CUT)).toBe(false)
+    expect(registrationNeedsRefund(standard, standardTerms, true, dai / 10n)).toBe(false)
   })
   it("still needs one when its fee cannot pay the deployed sweep", () => {
-    expect(registrationNeedsRefund(standard, standardTerms, true, 10n * dai, CUT)).toBe(true)
+    expect(registrationNeedsRefund(standard, standardTerms, true, 10n * dai)).toBe(true)
   })
   it("still needs one when the re-issued quote prices a different fee", () => {
     expect(
@@ -777,19 +753,26 @@ describe("replacing an address nothing reached", () => {
 
 describe("a mainnet address funded in a swapped stable", () => {
   const USDC = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" as Address
-  const mainnet = { ...config, network: "mainnet" } as WebWalletConfig
+  const mainnet = { ...config, l1ChainId: 1, network: "mainnet" } as WebWalletConfig
+  const daiRecord = { ...record, depositToken: MAINNET_DAI, l1ChainId: 1 }
+  const daiTransfer = { ...transfer, address: MAINNET_DAI }
   const usdcTransfer = {
-    ...transfer,
+    ...daiTransfer,
     address: USDC,
     data: encodeAbiParameters([{ type: "uint256" }], [5_000_000n]),
   }
   // Each part alone is short of the earned ask that buys entry; together they clear it.
   const part = (RANDOM_ASK * 3n) / 5n
   const usdcUnits = (amount: bigint) => amount / 10n ** 12n
-  it("pools a deposit refunded one token at a time toward the entry it earned", async () => {
+  beforeEach(async () => {
+    h.mainnetTable = true
     h.config = mainnet
+    await getPendingStore().upsert(account, { depositToken: MAINNET_DAI, l1ChainId: 1 })
+    await rail().upsert(sipa, { phase: "broadcast", tokenAddress: MAINNET_DAI, l1ChainId: 1 })
+  })
+  it("pools a deposit refunded one token at a time toward the entry it earned", async () => {
     const second = `0x${"99".repeat(32)}` as Hex
-    const daiPart = { ...transfer, data: encodeAbiParameters([{ type: "uint256" }], [part]) }
+    const daiPart = { ...daiTransfer, data: encodeAbiParameters([{ type: "uint256" }], [part]) }
     const usdcPart = {
       ...usdcTransfer,
       data: encodeAbiParameters([{ type: "uint256" }], [usdcUnits(part)]),
@@ -797,8 +780,8 @@ describe("a mainnet address funded in a swapped stable", () => {
     await getPendingStore().upsert(account, { phase: "funded", fundedAt: 5 })
     await registrationRefundConfirmed(
       sipa,
-      token,
-      11155111,
+      MAINNET_DAI,
+      1,
       hash,
       async () => ({ status: "success", logs: [daiPart] } as never),
     )
@@ -807,7 +790,7 @@ describe("a mainnet address funded in a swapped stable", () => {
     await registrationRefundConfirmed(
       sipa,
       USDC,
-      11155111,
+      1,
       second,
       async () => ({ status: "success", logs: [usdcPart] } as never),
     )
@@ -820,7 +803,7 @@ describe("a mainnet address funded in a swapped stable", () => {
       status: "success",
       logs: [wanted === second ? usdcPart : daiPart],
     }))
-    await expect(assertRegistrationRefunded(record, mainnet)).resolves.toEqual({
+    await expect(assertRegistrationRefunded(daiRecord, mainnet)).resolves.toEqual({
       amount: 2n * part,
       txHash: second,
     })
@@ -832,10 +815,10 @@ describe("a mainnet address funded in a swapped stable", () => {
       logs: [
         wanted === second
           ? usdcPart
-          : { ...transfer, data: encodeAbiParameters([{ type: "uint256" }], [part / 3n]) },
+          : { ...daiTransfer, data: encodeAbiParameters([{ type: "uint256" }], [part / 3n]) },
       ],
     }))
-    await expect(assertRegistrationRefunded(record, mainnet)).resolves.toEqual({
+    await expect(assertRegistrationRefunded(daiRecord, mainnet)).resolves.toEqual({
       amount: part + part / 3n,
       txHash: second,
     })
@@ -844,7 +827,7 @@ describe("a mainnet address funded in a swapped stable", () => {
         ? { status: "success", logs: [usdcPart] }
         : { status: "reverted", logs: [] },
     )
-    await expect(assertRegistrationRefunded(record, mainnet)).resolves.toEqual({
+    await expect(assertRegistrationRefunded(daiRecord, mainnet)).resolves.toEqual({
       amount: part,
       txHash: second,
     })
@@ -852,12 +835,13 @@ describe("a mainnet address funded in a swapped stable", () => {
       if (wanted === second) return { status: "success", logs: [usdcPart] }
       throw new Error("not served")
     })
-    await expect(assertRegistrationRefunded(record, mainnet)).rejects.toThrow("could not be read")
+    await expect(assertRegistrationRefunded(daiRecord, mainnet)).rejects.toThrow(
+      "could not be read",
+    )
   })
   it("sizes a refund remembered without an amount, so it pools with the next", async () => {
-    h.config = mainnet
     const second = `0x${"99".repeat(32)}` as Hex
-    const daiPart = { ...transfer, data: encodeAbiParameters([{ type: "uint256" }], [part]) }
+    const daiPart = { ...daiTransfer, data: encodeAbiParameters([{ type: "uint256" }], [part]) }
     const usdcPart = {
       ...usdcTransfer,
       data: encodeAbiParameters([{ type: "uint256" }], [usdcUnits(part)]),
@@ -865,16 +849,16 @@ describe("a mainnet address funded in a swapped stable", () => {
     await getPendingStore().upsert(account, { phase: "funded", fundedAt: 5 })
     walletStorage.setItem(
       "webwallet.registration.refunds",
-      JSON.stringify({ [sipa]: { token, l1ChainId: 11155111, txHashes: [hash] } }),
+      JSON.stringify({ [sipa]: { token: MAINNET_DAI, l1ChainId: 1, txHashes: [hash] } }),
     )
     await rail().upsert(sipa, { phase: "recoverable", recoveryTxHash: hash })
     h.receipt.mockImplementation(async () => ({ status: "success", logs: [daiPart] }))
-    await reconcileRegistrationRefund(record, mainnet)
+    await reconcileRegistrationRefund(daiRecord, mainnet)
     expect(getPendingStore().get(account)).toMatchObject({ phase: "funded", fundedAt: 5 })
     await registrationRefundConfirmed(
       sipa,
       USDC,
-      11155111,
+      1,
       second,
       async () => ({ status: "success", logs: [usdcPart] } as never),
     )
@@ -884,11 +868,10 @@ describe("a mainnet address funded in a swapped stable", () => {
     })
   })
   it("refunds the stable that holds the funds and counts it in registration-token units", async () => {
-    h.config = mainnet
     h.balance.mockImplementation(async ({ address }: { address: string }) =>
       address.toLowerCase() === USDC.toLowerCase() ? 5_000_000n : 0n,
     )
-    expect(await prepareRegistrationRefund(record, mainnet)).toMatchObject({
+    expect(await prepareRegistrationRefund(daiRecord, mainnet)).toMatchObject({
       tokenAddress: USDC,
       tokenSymbol: "USDC",
       tokenDecimals: 6,
@@ -897,14 +880,14 @@ describe("a mainnet address funded in a swapped stable", () => {
     await registrationRefundConfirmed(
       sipa,
       USDC,
-      11155111,
+      1,
       hash,
       async () => ({ status: "success", logs: [usdcTransfer] } as never),
     )
-    expect(registrationRefunded(record)).toBe(true)
+    expect(registrationRefunded(daiRecord)).toBe(true)
     h.balance.mockResolvedValue(0n)
     h.receipt.mockResolvedValue({ status: "success", logs: [usdcTransfer] })
-    await expect(assertRegistrationRefunded(record, mainnet)).resolves.toEqual({
+    await expect(assertRegistrationRefunded(daiRecord, mainnet)).resolves.toEqual({
       amount: 5n * dai,
       txHash: hash,
     })

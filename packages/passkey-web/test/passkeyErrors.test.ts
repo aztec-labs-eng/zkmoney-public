@@ -144,7 +144,7 @@ describe("the line a refusal adds after its message", () => {
     })
     expect(plain.message).toBe(
       "Bitwarden can't protect a wallet yet. Try again with iCloud Keychain, Google Password " +
-        `Manager, or 1Password, or a YubiKey 5 security key. ${advice}`,
+        `Manager, or 1Password, or a YubiKey 5, Trezor or Ledger security key. ${advice}`,
     )
     for (const err of [local, plain]) {
       expect(err).toBeInstanceOf(UnsupportedProviderError)

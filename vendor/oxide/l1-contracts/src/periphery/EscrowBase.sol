@@ -4,20 +4,14 @@ pragma solidity >=0.8.27;
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {IERC1271} from "@openzeppelin/contracts/interfaces/IERC1271.sol";
-import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
-import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
-import {RecoveryCommitmentLib} from "@periphery/RecoveryCommitmentLib.sol";
+import {RecoveryAuthLib} from "@periphery/RecoveryAuthLib.sol";
 
 abstract contract EscrowBase {
   using SafeERC20 for IERC20;
 
   error EscrowBase__NotClone();
   error EscrowBase__NotFactory();
-  error EscrowBase__RecoveryCommitmentMismatch();
-  error EscrowBase__InvalidSignature();
   error EscrowBase__NonceAlreadyUsed();
-  error EscrowBase__RecoveryExpired(uint256 deadline);
   error EscrowBase__EmptyBalance();
   error EscrowBase__EthTransferFailed();
 
@@ -91,22 +85,8 @@ abstract contract EscrowBase {
     uint256 _deadline
   ) internal {
     require(!usedNonces[_nonce], EscrowBase__NonceAlreadyUsed());
-    require(block.timestamp <= _deadline, EscrowBase__RecoveryExpired(_deadline));
-    require(
-      RecoveryCommitmentLib.deriveRecoveryCommitment(_recoverySalt, _account) == _recoveryCommitment(),
-      EscrowBase__RecoveryCommitmentMismatch()
-    );
-    require(_isValidSignature(_account, _digest, _signature), EscrowBase__InvalidSignature());
+    RecoveryAuthLib.authorize(_recoveryCommitment(), _recoverySalt, _account, _digest, _signature, _deadline);
 
     usedNonces[_nonce] = true;
-  }
-
-  function _isValidSignature(address _account, bytes32 _digest, bytes calldata _signature) private view returns (bool) {
-    if (_account.code.length == 0) {
-      (address recovered, ECDSA.RecoverError err,) =
-        ECDSA.tryRecoverCalldata(MessageHashUtils.toEthSignedMessageHash(_digest), _signature);
-      return err == ECDSA.RecoverError.NoError && recovered == _account;
-    }
-    return IERC1271(_account).isValidSignature(_digest, _signature) == IERC1271.isValidSignature.selector;
   }
 }

@@ -1,12 +1,12 @@
-// Translates the TS vocabulary of `@oxide/oxide-lib` and `@aztec/stdlib` into the structured `InputMap` shape that
-// `@aztec/noir-noir_js`'s `Noir.execute` expects. Field names (snake_case) and nesting must match the Noir structs in
+// Translates the TS vocabulary of `@oxide/oxide-lib` and `@aztec-labs/stdlib` into the structured `InputMap` shape that
+// `@aztec-foundation/noir-noir_js`'s `Noir.execute` expects. Field names (snake_case) and nesting must match the Noir structs in
 // `noir-projects`. Bytes are decimal strings, like every other `u8`. The three refund circuits share these mappers;
 // each circuit keeps its own top-level builder in `<circuit>/noir_input.ts`.
-import { Fr } from '@aztec/aztec.js/fields';
-import type { GrumpkinScalar } from '@aztec/foundation/curves/grumpkin';
-import type { MembershipWitness } from '@aztec/foundation/trees';
-import type { PublicKeys } from '@aztec/stdlib/keys';
-import type { BlockHeader } from '@aztec/stdlib/tx';
+import { Fr } from '@aztec-labs/aztec.js/fields';
+import type { GrumpkinScalar } from '@aztec-labs/foundation/curves/grumpkin';
+import type { MembershipWitness } from '@aztec-labs/foundation/trees';
+import type { PublicKeys } from '@aztec-labs/stdlib/keys';
+import type { BlockHeader } from '@aztec-labs/stdlib/tx';
 
 import {
   type AccountInstancePreimage,
@@ -15,7 +15,8 @@ import {
   WEBAUTHN_MAX_CLIENT_DATA_JSON_LEN,
   type WebAuthnAuth,
 } from '@oxide/oxide-lib/account_address.js';
-import type { RefundAuthorization } from '@oxide/oxide-lib/refund_authorization.js';
+import type { MigrationSignature } from '@oxide/oxide-lib/migration_signature.js';
+import { MAX_ACCOUNT_PASSKEYS } from '@oxide/oxide-lib/oxide_constants.gen.js';
 import type { GrumpkinPoseidonSignature } from '@oxide/oxide-lib/types.js';
 
 /* eslint-disable camelcase */
@@ -87,6 +88,7 @@ export function mapBlockHeader(header: BlockHeader): Record<string, unknown> {
       },
     },
     sponge_blob_hash: fieldStr(header.spongeBlobHash),
+    tx_effects_tree_root: fieldStr(header.txEffectsTreeRoot),
     global_variables: {
       chain_id: fieldStr(header.globalVariables.chainId),
       version: fieldStr(header.globalVariables.version),
@@ -155,21 +157,23 @@ const ZERO_WEBAUTHN: WebAuthnAuth = {
   signature: Buffer.alloc(64),
 };
 
+const ZERO_PASSKEY_SET = Array.from({ length: MAX_ACCOUNT_PASSKEYS }, () => Fr.ZERO);
 const ZERO_SIGNATURE: GrumpkinPoseidonSignature = { sLo: Fr.ZERO, sHi: Fr.ZERO, eLo: Fr.ZERO, eHi: Fr.ZERO };
 
-export function mapRefundAuthorization(auth: RefundAuthorization): Record<string, unknown> {
-  const usePasskey = auth.kind === 'passkey';
-  const fbpkM = auth.kind === 'fallbackKey' ? auth.fbpkM : { x: Fr.ZERO, y: Fr.ZERO, isInfinite: false };
-  const signature = auth.kind === 'fallbackKey' ? auth.signature : ZERO_SIGNATURE;
+export function mapMigrationSignature(signature: MigrationSignature): Record<string, unknown> {
+  const passkey = signature.kind === 'passkey' ? signature : undefined;
+  const fbpkM = signature.kind === 'fallbackKey' ? signature.fbpkM : { x: Fr.ZERO, y: Fr.ZERO, isInfinite: false };
+  const fallbackSignature = signature.kind === 'fallbackKey' ? signature.fallbackSignature : ZERO_SIGNATURE;
   return {
-    use_passkey: usePasskey,
-    passkey: mapPasskeyPublicKey(auth.kind === 'passkey' ? auth.passkey : ZERO_PASSKEY),
-    webauthn: mapWebAuthnAuth(auth.kind === 'passkey' ? auth.webauthn : ZERO_WEBAUTHN),
+    use_passkey: passkey !== undefined,
+    passkey: mapPasskeyPublicKey(passkey?.passkey ?? ZERO_PASSKEY),
+    passkey_set: (passkey?.passkeySet ?? ZERO_PASSKEY_SET).map(slot => slot.toString()),
+    webauthn: mapWebAuthnAuth(passkey?.webauthn ?? ZERO_WEBAUTHN),
     fbpk_m: mapPoint(fbpkM),
     // Noir `(EmbeddedCurveScalar, EmbeddedCurveScalar)` deserializes from a 2-element array of `{ lo, hi }` objects.
     fallback_signature: [
-      { lo: signature.sLo.toString(), hi: signature.sHi.toString() },
-      { lo: signature.eLo.toString(), hi: signature.eHi.toString() },
+      { lo: fallbackSignature.sLo.toString(), hi: fallbackSignature.sHi.toString() },
+      { lo: fallbackSignature.eLo.toString(), hi: fallbackSignature.eHi.toString() },
     ],
   };
 }

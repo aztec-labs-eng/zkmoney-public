@@ -2,12 +2,13 @@
  * The line that tells a laptop user this computer's copy of the passkey may answer: who sees it,
  * how its three showings are counted, and where the working beat puts it.
  */
-import { Fr } from "@aztec/aztec.js/fields"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { APPLE_ICLOUD_AAGUID, GPM_AAGUID } from "@obsidion/core/constants"
 import { provingProgress } from "@obsidion/proving-progress"
+import { WebAuthnAlphaAuthProvider } from "@obsidion/sdk"
 import { PayWorking } from "../src/features/contacts/PayWorking"
 import { OperationHandOff } from "../src/features/operations/OperationHandOff"
 import { getOperationStore } from "../src/features/operations/operations"
@@ -127,7 +128,10 @@ describe("from a real signature to the line", () => {
     await service.commitSecret({ secretKey: created.secretKey, authProvider: created.authProvider })
     expect(localPasskeyHintApplies()).toBe(false)
 
-    await created.authProvider.createAuthWit(Fr.random())
+    if (!(created.authProvider instanceof WebAuthnAlphaAuthProvider)) {
+      throw new Error("Expected a WebAuthn auth provider")
+    }
+    await created.authProvider.signChallenge(Fr.random().toBuffer())
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(localPasskeyHintApplies()).toBe(true)
   })

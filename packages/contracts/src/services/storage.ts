@@ -1,5 +1,5 @@
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import { ContractArtifact } from "@aztec/stdlib/abi"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import { ContractArtifact } from "@aztec-labs/stdlib/abi"
 import { Network } from "@obsidion/core/constants"
 import type { ContractName, ILocalLedgerStorage } from "@obsidion/core/types"
 

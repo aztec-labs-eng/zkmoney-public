@@ -9,7 +9,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { Buffer } from "buffer"
-import { Fr } from "@aztec/aztec.js/fields"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 import {
   amountBucket,
   ANALYTICS_CONSENT_COPY,

@@ -7,9 +7,9 @@ import { predictLegacySIPA, type LegacySipaDeployArgs } from "@oxide/l1-contract
  * resolver involvement — eligibility is the sponsoring entrypoint's subscription.
  */
 
-import type { Fr } from "@aztec/foundation/curves/bn254"
-import { EthAddress } from "@aztec/foundation/eth-address"
-import type { AztecAddress } from "@aztec/stdlib/aztec-address"
+import type { Fr } from "@aztec-labs/foundation/curves/bn254"
+import { EthAddress } from "@aztec-labs/foundation/eth-address"
+import type { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import { secp256k1 } from "@noble/curves/secp256k1"
 import { predictSIPA, type SipaDeployArgs } from "@oxide/l1-contracts"
 import type { Address, Hex, PublicClient } from "viem"
@@ -114,8 +114,8 @@ export class SipaSelfResolver {
     publicClient: PublicClient
     /** The permanent CREATE2 deployer every SIPA address commits to. */
     sipaFactory: Address
-    /** The portal the factory serves this generation's implementations under. */
-    portal: Address
+    /** The deployment's ForwardingTable: it routes the SIPA's sweeps to the portal. */
+    forwardingTable: Address
     rollupVersion: bigint
   }): Promise<SelfResolvedSipa> {
     const resolution = await this.resolve(
@@ -125,11 +125,7 @@ export class SipaSelfResolver {
       EthAddress.fromString(args.recoveryAccount),
     )
     // A self-broadcast deposit is the deposit intent; its clone delegates to the deposit impl.
-    const implementation = await readDepositSIPAImplementation(
-      args.publicClient,
-      args.sipaFactory,
-      args.portal,
-    )
+    const implementation = await readDepositSIPAImplementation(args.publicClient, args.sipaFactory)
     const intent = buildDepositIntent({
       implementation,
       recipientCommitment: resolution.recipientHash.toString() as Hex,
@@ -149,7 +145,11 @@ export class SipaSelfResolver {
               resolution.messageSecret,
             ).toString() as Address,
           }
-        : { ...common, recoveryCommitment: resolution.recoveryCommitment.toString() as Hex }
+        : {
+            ...common,
+            recoveryCommitment: resolution.recoveryCommitment.toString() as Hex,
+            forwardingTable: args.forwardingTable,
+          }
     const sipaAddress =
       "recoveryAddress" in sipaArgs
         ? await predictLegacySIPA(args.publicClient, args.sipaFactory, sipaArgs)
@@ -161,6 +161,7 @@ export class SipaSelfResolver {
             sipaArgs.recoveryCommitment,
             sipaArgs.rollupVersion,
             sipaArgs.resweepable,
+            sipaArgs.forwardingTable,
           )
     return { sipaAddress, sipaArgs, intent, resolution }
   }

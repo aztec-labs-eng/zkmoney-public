@@ -1,0 +1,48 @@
+{
+  "source": "e8763e1530f4bd06b6052b4954db507718981af9",
+  "oxidePin": "3b5e1f7c8f18e24f74d463911b319aac101f0aee",
+  "walletPackages": [
+    "@obsidion/auth-web",
+    "@obsidion/config-client",
+    "@obsidion/contracts",
+    "@obsidion/core",
+    "@obsidion/front-core",
+    "@obsidion/generation-v5",
+    "@obsidion/metrics-policy",
+    "@obsidion/oxide-build",
+    "@obsidion/passkey-web",
+    "@obsidion/proving-progress",
+    "@obsidion/sdk",
+    "@obsidion/web-ds",
+    "@obsidion/web-wallet"
+  ],
+  "oxidePackages": [
+    "@oxide/experiments",
+    "@oxide/l1-contracts",
+    "@oxide/noir-contracts.js",
+    "@oxide/oxide-client",
+    "@oxide/oxide-lib",
+    "@oxide/oxide-lib-tee",
+    "@oxide/oxide-relayer",
+    "@oxide/refund-proof",
+    "@oxide/resolver-lib",
+    "@oxide/tee-enclave",
+    "@oxide/tee-proxy",
+    "@oxide/telemetry",
+    "@oxide/watcher-lib"
+  ],
+  "oxideSourceRoots": [
+    "l1-contracts",
+    "noir-projects/broadcaster_contract",
+    "noir-projects/frozen_deposit_refund",
+    "noir-projects/frozen_notes_refund",
+    "noir-projects/name_notification_test_contract",
+    "noir-projects/oxide_lib",
+    "noir-projects/oxide_token_contract",
+    "noir-projects/oxide_token_lib",
+    "noir-projects/passkey_test_account_contract",
+    "noir-projects/refund_lib",
+    "noir-projects/resolver_circuit",
+    "noir-projects/unprocessed_deposit_refund"
+  ]
+}

@@ -22,20 +22,39 @@ const bridge = vi.hoisted(() => ({
   isDesktopL1SubmitActive: vi.fn(() => false),
 }))
 
+const sdk = vi.hoisted(() => ({
+  buildWithdrawFinalizationCall: vi.fn(),
+  portalDomain: vi.fn(async (portal: string) => ({ l1Portal: portal })),
+}))
+
 vi.mock("../src/features/deposit/l1Wallet", () => l1Clients)
+vi.mock("@obsidion/sdk", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@obsidion/sdk")>()),
+  buildWithdrawFinalizationCall: sdk.buildWithdrawFinalizationCall,
+}))
+vi.mock("../src/features/token/oxideToken", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/features/token/oxideToken")>()),
+  portalDomain: sdk.portalDomain,
+}))
 vi.mock("../src/platform/desktopBridge", () => bridge)
+vi.mock("../src/config/env", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/config/env")>()),
+  getConfig: () => ({ l1ChainId: 11155111 }),
+  l1Transport: () => () => ({ request: async () => null }),
+}))
+vi.mock("../src/config/oxideTuple", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/config/oxideTuple")>()),
+  getOxideTuple: async () => ({
+    portal: `0x${"cc".repeat(20)}`,
+    l2Token: `0x${"0b".repeat(32)}`,
+    plainWithdrawalExecutor: `0x${"e8".repeat(20)}`,
+  }),
+}))
 
 const { WithdrawFinalizationError } = await import("@obsidion/sdk")
-const { finalizeChannel, selfFinalizeWithdrawal } = await import(
+const { finalizeChannel, selfFinalize, selfFinalizeWithdrawal } = await import(
   "../src/features/withdraw/selfFinalize"
 )
-
-const PORTAL_CONTEXT = {
-  l1Portal: PORTAL,
-  l2Portal: `0x${"0b".repeat(32)}`,
-  rollupVersion: 1n,
-  l1ChainId: 11155111n,
-}
 
 const record = (patch: Partial<WithdrawalRecord> = {}): WithdrawalRecord => ({
   localId: "wdraw_1",
@@ -43,6 +62,7 @@ const record = (patch: Partial<WithdrawalRecord> = {}): WithdrawalRecord => ({
   recipientProvenance: "saved-recipient",
   amount: "210",
   tokenSymbol: "DAI",
+  tokenDecimals: 18,
   phase: "finalizing_l1",
   startTime: 1_700_000_000_000,
   l2TxHash: BURN_TX,
@@ -66,7 +86,7 @@ describe("selfFinalizeWithdrawal", () => {
     } = {},
   ) => ({
     channel,
-    portalContext: PORTAL_CONTEXT,
+    portal: PORTAL,
     l1: {} as never,
     store: store as never,
     isSpent: vi.fn(over.isSpent ?? (async () => over.spent ?? false)),
@@ -186,6 +206,77 @@ describe("selfFinalizeWithdrawal", () => {
       },
     })
     await expect(selfFinalizeWithdrawal(record(), d)).rejects.toThrow(/still finalizable/)
+  })
+})
+
+describe("selfFinalize", () => {
+  // A link's burn has no recovery events to build the calldata from.
+  it("leaves a paylink claim's burn to the relayer, before asking for the wallet", async () => {
+    await expect(selfFinalize(record({ source: "paylink" }), null)).rejects.toThrow(
+      "A relayer releases a link's withdrawal.",
+    )
+    await expect(selfFinalize(record(), null)).rejects.toThrow(/Unlock your wallet/)
+  })
+
+  describe("the executor the release goes through", () => {
+    const LISTED = `0x${"e8".repeat(20)}`
+    const wallet = { node: {}, signer: {}, wallet: {}, owner: {} } as never
+
+    beforeEach(() => {
+      vi.clearAllMocks()
+      bridge.isDesktopL1SubmitActive.mockReturnValue(false)
+      l1Clients.getL1Clients.mockResolvedValue({
+        walletClient: { sendTransaction: vi.fn(async () => L1_TX) },
+        publicClient: { waitForTransactionReceipt: vi.fn(async () => ({ status: "success" })) },
+        account: WALLET,
+        chain: { id: 11155111 },
+      })
+      sdk.buildWithdrawFinalizationCall.mockRejectedValue(new Error("stop at the builder"))
+    })
+
+    const executorOf = async (patch: Partial<WithdrawalRecord>) => {
+      await expect(
+        selfFinalize(record({ withdrawalId: undefined, ...patch }), wallet, { from: WALLET }),
+      ).rejects.toThrow("stop at the builder")
+      return sdk.buildWithdrawFinalizationCall.mock.calls[0]![0].executor
+    }
+
+    it("is the record's own, after its bridge lists another", async () => {
+      const burned = `0x${"e1".repeat(20)}` as Hex
+      expect(
+        await executorOf({ deployment: { portal: PORTAL, l2Token: "0x2a", executor: burned } }),
+      ).toBe(burned)
+    })
+
+    it("is the listed one for a record from before executor stamps", async () => {
+      expect(await executorOf({ deployment: { portal: PORTAL, l2Token: "0x2a" } })).toBe(LISTED)
+      sdk.buildWithdrawFinalizationCall.mockClear()
+      expect(await executorOf({})).toBe(LISTED)
+    })
+
+    it("releases a burn on a retired deployment on its own portal, through its own executor", async () => {
+      const retired = `0x${"0d".repeat(20)}` as Address
+      const burned = `0x${"e1".repeat(20)}` as Hex
+      expect(
+        await executorOf({ deployment: { portal: retired, l2Token: "0x2a", executor: burned } }),
+      ).toBe(burned)
+      expect(sdk.portalDomain).toHaveBeenCalledWith(retired)
+      expect(sdk.buildWithdrawFinalizationCall.mock.calls[0]![0].portal).toEqual({
+        l1Portal: retired,
+      })
+    })
+
+    it("refuses a record from before executor stamps made on another deployment", async () => {
+      const retired = `0x${"0d".repeat(20)}` as Address
+      await expect(
+        selfFinalize(
+          record({ withdrawalId: undefined, deployment: { portal: retired, l2Token: "0x2a" } }),
+          wallet,
+          { from: WALLET },
+        ),
+      ).rejects.toThrow("made on an earlier deployment")
+      expect(sdk.buildWithdrawFinalizationCall).not.toHaveBeenCalled()
+    })
   })
 })
 

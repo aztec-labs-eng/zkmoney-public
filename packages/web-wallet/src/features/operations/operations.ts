@@ -76,6 +76,23 @@ export function runOperation<T>(
 }
 
 /**
+ * Run `run` as one user operation that is NOT behind the gate: the bell lists it and it keeps the
+ * tab, as {@link runOperation} does, but it raises no user flow. Use it for a long flow that sends
+ * each transaction as its own gated step, such as an upgrade's send pass that waits for chain
+ * events: a user flow held for that time would stop every background proof. `run` may call
+ * {@link runUserFlow} for its own prompts, and may send through {@link runBackgroundOperation}
+ * outside of that call. It ends as a user operation would.
+ */
+export async function runListedOperation<T>(
+  input: OperationInput,
+  run: (op: OperationHandle) => Promise<T>,
+): Promise<T> {
+  const store = getOperationStore()
+  await store.begin({ ...input, scope: getActiveStorageId() })
+  return operate(store, input.operationId, run)
+}
+
+/**
  * Run `run` as one automatic operation no user started, such as an upgrade's transaction step: it
  * waits its turn on the background proving reservation, and its record is background, so nothing
  * lists it and leaving the page loses nothing. It ends as a user operation would.

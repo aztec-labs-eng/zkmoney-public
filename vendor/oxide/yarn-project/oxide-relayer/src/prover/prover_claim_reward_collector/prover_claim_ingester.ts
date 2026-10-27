@@ -1,6 +1,6 @@
-import { INITIAL_CHECKPOINT_NUMBER } from '@aztec/constants';
-import { CheckpointNumber } from '@aztec/foundation/branded-types';
-import { Logger, createLogger } from '@aztec/foundation/log';
+import { INITIAL_CHECKPOINT_NUMBER } from '@aztec-labs/constants';
+import { CheckpointNumber } from '@aztec-labs/foundation/branded-types';
+import { Logger, createLogger } from '@aztec-labs/foundation/log';
 
 import { ProverClaimDiscoverer } from '../prover_claim_lib/index.js';
 import { CapturedRange } from './first_prover_tracker.js';

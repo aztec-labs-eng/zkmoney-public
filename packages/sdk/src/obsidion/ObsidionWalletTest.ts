@@ -2,13 +2,13 @@ import {
   SchnorrAccountContract,
   SchnorrInitializerlessAccountContract,
   SchnorrInitializerlessAccountContractArtifact,
-} from "@aztec/accounts/schnorr"
-import { EcdsaKAccountContract, EcdsaRAccountContract } from "@aztec/accounts/ecdsa"
+} from "@aztec-labs/accounts/schnorr"
+import { EcdsaKAccountContract, EcdsaRAccountContract } from "@aztec-labs/accounts/ecdsa"
 import { ObsidionAccount } from "./alpha/account/ObsidionAccount.js"
-import { AccountManager, SendOptions } from "@aztec/aztec.js/wallet"
-import { Account, type AccountContract, type Salt } from "@aztec/aztec.js/account"
-import { Fr, Fq } from "@aztec/aztec.js/fields"
-import { deriveMasterIncomingViewingSecretKey } from "@aztec/stdlib/keys"
+import { AccountManager, SendOptions } from "@aztec-labs/aztec.js/wallet"
+import { Account, type AccountContract, type Salt } from "@aztec-labs/aztec.js/account"
+import { Fr, Fq } from "@aztec-labs/aztec.js/fields"
+import { deriveMasterIncomingViewingSecretKey } from "@aztec-labs/stdlib/keys"
 import {
   ExecutionPayload,
   OffchainEffect,
@@ -16,8 +16,8 @@ import {
   Tx,
   TxHash,
   TxReceipt,
-} from "@aztec/stdlib/tx"
-// import { NoteDao, NotesFilter } from "@aztec/stdlib/note"
+} from "@aztec-labs/stdlib/tx"
+// import { NoteDao, NotesFilter } from "@aztec-labs/stdlib/note"
 import {
   type AlphaAccountType,
   FeePaymentOptions,
@@ -25,20 +25,20 @@ import {
   type ObsidionWalletOptions,
 } from "./ObsidionWallet.js"
 import { proveTxWithProgress } from "./proving-progress-helpers.js"
-import { AztecNode, waitForTx } from "@aztec/aztec.js/node"
-import { NO_WAIT, NoWait, SendInteractionOptions, WaitOpts } from "@aztec/aztec.js/contracts"
-import { ContractFunctionInteraction } from "@aztec/aztec.js/contracts"
-import { createPXE, getPXEConfig, PXE, PXEConfig, PXECreationOptions } from "@aztec/pxe/server"
-// import { PXE, PXECreationOptions, PXEConfig, getPXEConfig } from "@aztec/pxe/client/lazy"
+import { AztecNode, waitForTx } from "@aztec-labs/aztec.js/node"
+import { NO_WAIT, NoWait, SendInteractionOptions, WaitOpts } from "@aztec-labs/aztec.js/contracts"
+import { ContractFunctionInteraction } from "@aztec-labs/aztec.js/contracts"
+import { createPXE, getPXEConfig, PXE, PXEConfig, PXECreationOptions } from "@aztec-labs/pxe/server"
+// import { PXE, PXECreationOptions, PXEConfig, getPXEConfig } from "@aztec-labs/pxe/client/lazy"
 import { getSponsoredFeePaymentMethod } from "../feePaymentMethod/sponsored_fpc.js"
-import { Gas, GasSettings } from "@aztec/stdlib/gas"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import { AccountFeePaymentMethodOptions } from "@aztec/entrypoints/account"
-import type { CompleteFeeOptionsConfig, FeeOptions } from "@aztec/wallet-sdk/base-wallet"
-import type { FieldsOf } from "@aztec/foundation/types"
+import { Gas, GasSettings } from "@aztec-labs/stdlib/gas"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import { AccountFeePaymentMethodOptions } from "@aztec-labs/entrypoints/account"
+import type { CompleteFeeOptionsConfig, FeeOptions } from "@aztec-labs/wallet-sdk/base-wallet"
+import type { FieldsOf } from "@aztec-labs/foundation/types"
 import { inspect } from "util"
-import { SimulationError } from "@aztec/stdlib/errors"
-import { ContractArtifact } from "@aztec/stdlib/abi"
+import { SimulationError } from "@aztec-labs/stdlib/errors"
+import { ContractArtifact } from "@aztec-labs/stdlib/abi"
 import { ContractService, DEFAULT_CONTRACTS, ContractName } from "@obsidion/contracts"
 
 type SchnorrTestAccountType = "schnorr" | "schnorr_initializerless"
@@ -101,7 +101,7 @@ export class ObsidionWalletTest extends ObsidionWallet {
     const rollupAddress = l1Contracts.rollupAddress
     pxeConfig.dataDirectory = pxeConfig.dataDirectory ?? `pxe-${rollupAddress}`
 
-    const pxe = await (await import("@aztec/pxe/server")).createPXE(node, pxeConfig, options)
+    const pxe = await (await import("@aztec-labs/pxe/server")).createPXE(node, pxeConfig, options)
     return new ObsidionWalletTest(pxe, node, walletOpts)
   }
 

@@ -16,7 +16,7 @@
  * the history stage.
  */
 
-import { type WalletBalances, type WalletSyncSource, TokenActionEnum } from "@obsidion/sdk"
+import { type WalletBalanceRead, type WalletSyncSource, TokenActionEnum } from "@obsidion/sdk"
 import type { Transaction } from "../../../types/transactions"
 import type { WithdrawalRecord } from "../bridge/types"
 import { globalEventEmitter } from "../GlobalEventEmitter"
@@ -47,7 +47,7 @@ export interface WalletSyncCoordinatorOptions
         token: string,
         balance: bigint,
         anchor?: number,
-        opts?: { strict?: boolean },
+        opts?: { strict?: boolean; readAt?: number },
       ): Promise<boolean>
     }
     scope: string
@@ -142,8 +142,8 @@ export class WalletSyncCoordinator {
     this.boot = boot ?? bootPriority
     this.scanner = new TransferEventScanner({
       ...scannerOptions,
-      onSynced: async (anchor, balances) => {
-        await this.writeBalances(balances, anchor)
+      onSynced: async (anchor, read) => {
+        await this.writeBalances(read, anchor)
         this.boot.notesSynced()
       },
       onCaughtUp: () => this.boot.historyReplayed(),
@@ -215,7 +215,7 @@ export class WalletSyncCoordinator {
   }
 
   private async writeBalances(
-    balances: WalletBalances | undefined,
+    { balances, readAt }: Partial<WalletBalanceRead> = {},
     anchor: number,
     opts?: { strict?: boolean },
   ): Promise<boolean> {
@@ -224,7 +224,10 @@ export class WalletSyncCoordinator {
       throw new Error("Wallet snapshot omitted its balance")
     let stored = false
     for (const [token, value] of Object.entries(balances)) {
-      const wrote = await store.updateBalance(scope, token, value, anchor, opts)
+      const wrote = await store.updateBalance(scope, token, value, anchor, {
+        ...opts,
+        readAt: readAt?.[token],
+      })
       if (token === tokenAddress) stored = wrote
     }
     return stored
@@ -234,8 +237,8 @@ export class WalletSyncCoordinator {
   private async readBalanceNow(): Promise<boolean> {
     for (let attempt = 1; ; attempt++) {
       try {
-        const { balances, anchorBlock } = await this.opts.source.readBalanceSnapshot()
-        return await this.writeBalances(balances, anchorBlock, { strict: true })
+        const { anchorBlock, ...read } = await this.opts.source.readBalanceSnapshot()
+        return await this.writeBalances(read, anchorBlock, { strict: true })
       } catch (err) {
         if (attempt >= BALANCE_READ_ATTEMPTS) throw err
       }

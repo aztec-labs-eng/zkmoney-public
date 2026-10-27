@@ -27,6 +27,7 @@ export function selectedContactOf(entry: Contact): SelectedContact {
       name: row.name,
       tag: row.tag,
       address: row.address,
+      retiredAddresses: entry.retiredAddresses,
       addressKind: row.addressKind,
       provenance: row.provenance,
     }
@@ -143,11 +144,7 @@ export function bubbleViewOf(role: ChatMessageRole): BubbleView {
     return {
       ...base,
       side,
-      label: role.endsWith("-cancelled")
-        ? "Cancelled"
-        : side === "left"
-        ? "Not received"
-        : "Failed",
+      label: role.endsWith("-cancelled") ? "Cancelled" : "Failed",
       icon: "reply-slash",
       error: true,
       struck: true,

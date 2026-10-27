@@ -20,6 +20,7 @@ import {
   passkeyTelemetryHarness,
 } from "./support/passkeyTelemetryHarness"
 import * as copy from "../src/features/limits/limitsCopy"
+import { LIMIT, LIMIT_USD } from "./support/publicLimit"
 
 const h = vi.hoisted(() => ({
   copied: [] as string[],
@@ -68,8 +69,8 @@ vi.mock("../src/config/oxideTuple", () => ({
 vi.mock("@obsidion/sdk", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   readFundingTransfers: async () => [],
-  readSipaPortalTerms: async (_client: unknown, implementation: string) => {
-    h.termsReads.push(implementation)
+  readSipaPortalTerms: async (_client: unknown, route: { forwardingTable: string }) => {
+    h.termsReads.push(route.forwardingTable)
     if (h.termsFail) throw new Error("terms read failed")
     return (await import("./recordedRegistration")).originalTerms(TOKEN)
   },
@@ -124,6 +125,16 @@ vi.mock("../src/features/deposit/sipaProcessing", async () => {
 vi.mock("../src/features/allowance/useSponsoredAllowance", () => ({
   useSponsoredAllowance: () => ({ snapshot: { status: "signed-out" }, refresh: () => {} }),
 }))
+// The testnet table: one row, its token named TEST. `usdcFee`: a table whose fee token is USDC.
+const table = vi.hoisted(() => ({ usdcFee: false }))
+vi.mock("../src/features/deposit/loadDepositFacts", async (importOriginal) => {
+  const { mockLoadDepositFacts, singleToken, usdcFeeTokens } = await import(
+    "./support/depositTokens"
+  )
+  return mockLoadDepositFacts(importOriginal, () =>
+    table.usdcFee ? usdcFeeTokens() : singleToken(TOKEN, "TEST"),
+  )
+})
 vi.mock("../src/features/onboarding/registrationSweep", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/features/onboarding/registrationSweep")>()),
   manualRegistrationSweep: h.manualRegistrationSweep,
@@ -265,9 +276,8 @@ describe("RegistrationDepositDetailModal", () => {
     terms: null,
     amount: "+11 DAI",
     feeLabel: "1 DAI",
-    // The row that opens this holds the reads; a zero cut is what this deployment answers.
+    // The row that opens this holds the reads.
     sweepFee: 0n,
-    deductions: { fpcCut: 0n },
     onClose: () => {},
   }
 
@@ -359,7 +369,7 @@ describe("RegistrationDepositDetailModal", () => {
     }
     render(<RegistrationDepositDetailModal record={record()} {...base} pay={pay} />)
     const maximum = container.querySelector("[data-testid='deposit-terms-maximum']")
-    expect(maximum?.textContent).toBe("Deposit limit: $2,500 incl. fees")
+    expect(maximum?.textContent).toBe(`Deposit limit: ${LIMIT_USD} incl. fees`)
     expect(container.querySelector("[data-testid='registration-over-limit']")).toBeNull()
     // Its details open on the limit, with the basis the limit is counted on.
     act(() =>
@@ -377,7 +387,7 @@ describe("RegistrationDepositDetailModal", () => {
     const pay = {
       token: TOKEN,
       chainId: 11155111,
-      total: 2500n * 10n ** 18n + 1n,
+      total: BigInt(LIMIT) * 10n ** 18n + 1n,
       tokenSymbol: "DAI",
     }
     h.l1.account = "0x00000000000000000000000000000000000000aa"
@@ -395,7 +405,7 @@ describe("RegistrationDepositDetailModal", () => {
       expect(inline.getAttribute("title")).toBe(sipa)
       expect(
         container.querySelector("[data-testid='registration-over-limit']")?.textContent,
-      ).toContain("over the $2,500 limit")
+      ).toContain(`over the ${LIMIT_USD} limit`)
       const payButton = buttons().find((b) => b.textContent?.includes("from Rainbow"))!
       expect(payButton.disabled).toBe(true)
       await act(async () => payButton.click())
@@ -422,7 +432,7 @@ describe("RegistrationDepositDetailModal", () => {
     let next = 0xd0
     const openFor = async (
       over: {
-        implementation?: `0x${string}`
+        forwardingTable?: `0x${string}`
         withoutOrigin?: boolean
         total?: bigint
         recovered?: boolean
@@ -431,14 +441,14 @@ describe("RegistrationDepositDetailModal", () => {
       } = {},
     ) => {
       const sipaAddress = `0x${(next++).toString(16).padStart(40, "0")}`
-      const implementation =
-        over.implementation ?? (`0x${"77".repeat(18)}${sipaAddress.slice(-4)}` as `0x${string}`)
+      const forwardingTable =
+        over.forwardingTable ?? (`0x${"77".repeat(18)}${sipaAddress.slice(-4)}` as `0x${string}`)
       await seedRecordedRegistration({
         sipaAddress,
         token: TOKEN,
         registrationFee: 10n ** 18n,
         l1ChainId: 11155111,
-        implementation,
+        forwardingTable,
         withoutOrigin: over.withoutOrigin,
         recovered: over.recovered,
       })
@@ -450,7 +460,7 @@ describe("RegistrationDepositDetailModal", () => {
         />,
       )
       await settle()
-      return implementation
+      return forwardingTable
     }
 
     beforeEach(() => {
@@ -495,7 +505,7 @@ describe("RegistrationDepositDetailModal", () => {
       it("offers only the gated copy for a recovered deposit the sheet asks for again", async () => {
         // A refunded standard registration, back to awaiting its deposit, shows the pay block.
         await openFor({
-          total: 2500n * 10n ** 18n + 1n,
+          total: BigInt(LIMIT) * 10n ** 18n + 1n,
           recovered: true,
           recordFee: String(10n ** 18n),
         })
@@ -517,9 +527,9 @@ describe("RegistrationDepositDetailModal", () => {
       })
     })
 
-    it("reads the bucket of the portal its recorded implementation names, never the active one", async () => {
-      const implementation = await openFor()
-      expect(h.termsReads).toEqual([implementation])
+    it("reads the bucket of the portal its recorded table names, never the active one", async () => {
+      const forwardingTable = await openFor()
+      expect(h.termsReads).toEqual([forwardingTable])
       expect(capacity.keys.some((id) => id.includes(ORIGINAL_PORTAL.toLowerCase()))).toBe(true)
       expect(capacity.keys.some((id) => id.includes(FAKE_ACTIVE_KEY.portal))).toBe(false)
       expect(panel()?.className).toContain("ww-capacity--quiet")
@@ -527,10 +537,10 @@ describe("RegistrationDepositDetailModal", () => {
     })
 
     it("holds copy and payment when the ask can't fit the original bucket, and keeps the ask", async () => {
-      // 11 DAI ask less the 1 DAI signed fee and the 0.1 DAI cut needs 9.9 DAI.
+      // 11 DAI ask less the 1 DAI signed fee needs 10 DAI.
       capacity.availableAtomic = 5n * 10n ** 18n
       await openFor()
-      expect(panel()?.textContent).toContain("This payment needs 9.9 DAI; 5 DAI is available now.")
+      expect(panel()?.textContent).toContain("This payment needs 10 DAI; 5 DAI is available now.")
       expect(container.querySelector<HTMLButtonElement>(".ww-send-to__copy")!.disabled).toBe(true)
       expect(payButton().disabled).toBe(true)
       await act(async () => payButton().click())
@@ -634,14 +644,14 @@ describe("RegistrationDepositDetailModal", () => {
 
       it("retries a failed original-terms read through the address's own reader", async () => {
         h.termsFail = true
-        const implementation = await openFor()
+        const forwardingTable = await openFor()
         const { section, retry } = await openSheet()
         expect(section.dataset.state).toBe("unavailable")
         expect(retry()).not.toBeNull()
         h.termsFail = false
         await act(async () => retry()!.click())
         await settle()
-        expect(h.termsReads).toEqual([implementation, implementation])
+        expect(h.termsReads).toEqual([forwardingTable, forwardingTable])
         expect(section.dataset.state).toBe("fresh")
         expect(readOriginal()).toBe(true)
         expect(readActive()).toBe(false)
@@ -659,7 +669,7 @@ describe("RegistrationDepositDetailModal", () => {
 
     it("offers Check again after the original terms fail to read, and reads them again", async () => {
       h.termsFail = true
-      const implementation = await openFor()
+      const forwardingTable = await openFor()
       expect(panel()?.textContent).toContain(copy.CAPACITY_UNAVAILABLE)
       expect(capacity.keys).toEqual([])
       h.termsFail = false
@@ -669,7 +679,7 @@ describe("RegistrationDepositDetailModal", () => {
           .click(),
       )
       await settle()
-      expect(h.termsReads).toEqual([implementation, implementation])
+      expect(h.termsReads).toEqual([forwardingTable, forwardingTable])
       expect(panel()?.className).toContain("ww-capacity--quiet")
     })
   })
@@ -735,25 +745,37 @@ describe("RegistrationDepositDetailModal", () => {
     expect(container.textContent).not.toContain("Recover this deposit")
   })
 
-  it("itemizes gross, registration fee and gas sponsorship against the credited headline", () => {
+  it("names no DAI when the fee token is USDC", () => {
+    table.usdcFee = true
+    try {
+      render(
+        <RegistrationDepositDetailModal
+          record={record()}
+          {...base}
+          amount="+10 USDC"
+          feeLabel="1 USDC"
+          pay={{ token: TOKEN, chainId: 11155111, total: 11n * 10n ** 6n, tokenSymbol: "USDC" }}
+        />,
+      )
+      expect(container.textContent).toContain("USDC")
+      expect(container.textContent).not.toContain("DAI")
+    } finally {
+      table.usdcFee = false
+    }
+  })
+
+  it("itemizes gross and registration fee against the credited headline", () => {
     render(
       <RegistrationDepositDetailModal
         record={record({ fundedAt: Date.now() })}
         {...base}
-        amount="+9.75 DAI"
+        amount="+10 DAI"
         deposited="11 DAI"
-        cutLabel="0.25 DAI"
       />,
     )
     expect(rowById("registration-detail-deposited")).toBe("11 DAI")
     expect(rowById("registration-detail-fee")).toBe("1 DAI")
-    expect(rowById("registration-detail-cut")).toBe("0.25 DAI")
-    expect(container.textContent).toContain("+9.75 DAI")
-  })
-
-  it("leaves the gas-sponsorship row out while the portal's cut is unread", () => {
-    render(<RegistrationDepositDetailModal record={record({ fundedAt: Date.now() })} {...base} />)
-    expect(rowById("registration-detail-cut")).toBeUndefined()
+    expect(container.textContent).toContain("+10 DAI")
   })
 
   it("holds the deposited row open while no read has named a gross", () => {

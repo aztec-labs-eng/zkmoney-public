@@ -1,4 +1,4 @@
-import type { AztecNode } from '@aztec/aztec.js/node';
+import type { AztecNode } from '@aztec-labs/aztec.js/node';
 
 import { redactedHttp } from '@oxide/oxide-lib/redacted_http.js';
 

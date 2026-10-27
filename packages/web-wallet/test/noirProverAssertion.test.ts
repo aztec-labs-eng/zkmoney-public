@@ -3,8 +3,8 @@
 import { readFileSync } from "node:fs"
 import { createRequire } from "node:module"
 import { beforeAll, describe, expect, it } from "vitest"
-import initACVM from "@aztec/noir-acvm_js/web/acvm_js.js"
-import initABI from "@aztec/noir-noirc_abi/web/noirc_abi_wasm.js"
+import initACVM from "@aztec-foundation/noir-acvm_js/web/acvm_js.js"
+import initABI from "@aztec-foundation/noir-noirc_abi/web/noirc_abi_wasm.js"
 import circuit from "../../contracts/src/artifacts/target/golden_ticket/golden_ticket.json"
 import { proveNoirCircuit } from "../src/platform/noirProver"
 
@@ -45,8 +45,8 @@ const outsideThePair = {
 describe("proveNoirCircuit on a failed assert", () => {
   beforeAll(async () => {
     await Promise.all([
-      initACVM(wasm("@aztec/noir-acvm_js/web/acvm_js_bg.wasm")),
-      initABI(wasm("@aztec/noir-noirc_abi/web/noirc_abi_wasm_bg.wasm")),
+      initACVM(wasm("@aztec-foundation/noir-acvm_js/web/acvm_js_bg.wasm")),
+      initABI(wasm("@aztec-foundation/noir-noirc_abi/web/noirc_abi_wasm_bg.wasm")),
     ])
   })
 

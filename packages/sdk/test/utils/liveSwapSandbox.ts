@@ -2,14 +2,14 @@
 import { createPublicClient, http, erc20Abi, type Address } from "viem"
 import { foundry } from "viem/chains"
 import { SwapEscrowAbi, SwapEscrowFactoryAbi } from "@oxide/l1-contracts"
-import { extractPinnedOxideEnvTuple } from "@obsidion/core/oxide"
+import { extractPinnedOxideEnvTuple, oxideManifestEntries } from "@obsidion/core/oxide"
 
 export async function liveSwapSandbox() {
   const url = process.env.OXIDE_MANIFEST_URL ?? "http://localhost:8083/oxide/sandbox.json"
   const response = await fetch(url)
   if (!response.ok) throw new Error(`Sandbox manifest ${url}: HTTP ${response.status}`)
   const manifest = await response.json()
-  const portal = process.env.OXIDE_PORTAL ?? manifest.deployments?.at(-1)?.portal
+  const portal = process.env.OXIDE_PORTAL ?? (oxideManifestEntries(manifest).at(-1)?.portal as string)
   if (!portal)
     throw new Error(
       "Expected a current sandbox manifest with a deployments array; rebuild the sandbox from this branch",

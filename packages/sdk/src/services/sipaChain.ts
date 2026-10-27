@@ -14,6 +14,8 @@ export const SIPA_TOPICS_PER_FILTER = 500
 
 /** A portal `Deposit`: one sweep of a SIPA whose intent routes to `recipientCommitment`. */
 export interface PortalDeposit {
+  /** The portal that emitted it: it names the forwarding-table row the sweep settled on. */
+  portal: Address
   recipientCommitment: Hex
   /** The amount credited on L2: the claim's `amount`. */
   amount: bigint
@@ -22,6 +24,8 @@ export interface PortalDeposit {
   /** The inbox leaf index: the claim's `inbox_index`. */
   index: bigint
   blockNumber: bigint
+  /** The block the log was read in; a reorg that moves the sweep changes it. */
+  blockHash: Hex
   txHash: Hex
   logIndex: number
 }
@@ -55,14 +59,15 @@ type RawLog = {
   address: Address
   args: Record<string, unknown>
   blockNumber: bigint
+  blockHash: Hex
   transactionHash: Hex
   logIndex: number
 }
 
-/** Every portal `Deposit` to one of `commitments` in `[fromBlock, toBlock]`, in chain order. */
+/** Every `Deposit` of `portals` to one of `commitments` in `[fromBlock, toBlock]`, in chain order. */
 export async function readPortalDeposits(
   publicClient: PublicClient,
-  portal: Address,
+  portals: readonly Address[],
   commitments: readonly Hex[],
   fromBlock: bigint,
   toBlock: bigint,
@@ -73,7 +78,7 @@ export async function readPortalDeposits(
       chunkedContractEvents(
         publicClient,
         {
-          address: portal,
+          address: [...portals],
           abi: OxidePortalEventsAbi,
           eventName: "Deposit",
           args: { recipientCommitment },
@@ -85,11 +90,13 @@ export async function readPortalDeposits(
   )
   return (logs.flat() as RawLog[])
     .map((log) => ({
+      portal: log.address,
       recipientCommitment: (log.args.recipientCommitment as Hex).toLowerCase() as Hex,
       amount: log.args.amount as bigint,
       key: log.args.key as Hex,
       index: log.args.index as bigint,
       blockNumber: log.blockNumber,
+      blockHash: log.blockHash,
       txHash: log.transactionHash,
       logIndex: log.logIndex,
     }))
@@ -134,18 +141,19 @@ export async function readTokenTransfers(
 }
 
 /**
- * The SIPA whose sweep made the portal deposit at `index` in `txHash`: the emitter of its `Sweep`
- * log. Undefined when the transaction holds no such sweep.
+ * Every contract that emitted a `Sweep` log for the portal deposit at `index` in `txHash`, in log
+ * order. The SIPA whose sweep made the deposit is among them, and so is any contract that chose to
+ * emit the same log: the caller keeps the one it can vouch for.
  */
-export async function readSweptSipa(
+export async function readSweepEmitters(
   publicClient: PublicClient,
   txHash: Hex,
   index: bigint,
-): Promise<Address | undefined> {
+): Promise<Address[]> {
   const { logs } = await publicClient.getTransactionReceipt({ hash: txHash })
   const sweeps = parseEventLogs({ abi: SIPAAbi, eventName: "Sweep", logs } as never) as unknown as {
     address: Address
     args: { index: bigint }
   }[]
-  return sweeps.find((log) => log.args.index === index)?.address
+  return sweeps.filter((log) => log.args.index === index).map((log) => log.address)
 }

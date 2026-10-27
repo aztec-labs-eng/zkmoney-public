@@ -12,7 +12,6 @@ vi.mock("../src/features/onboarding/sponsoredRailReadiness", () => ({
 vi.mock("../src/features/identity/walletIdentity", () => ({
   loadWalletIdentity: () => ({ address: "0xabc", handle: "taga" }),
 }))
-vi.mock("../src/features/withdraw/portalFrozen", () => ({ usePortalFrozen: () => false }))
 vi.mock("../src/config/env", () => ({
   getConfig: () => ({ oxideProfile: { portal: "0x" + "11".repeat(20) } }),
 }))
@@ -34,18 +33,20 @@ const ready: State = {
   locked: false,
   lockChecked: true,
   demo: false,
-  frozen: false,
+  oldWithdrawable: false,
 }
-const ACTIONS: Action[] = ["send", "receive", "deposit", "withdraw", "link", "savings", "claim"]
+const ACTIONS: Action[] = [
+  "send",
+  "receive",
+  "deposit",
+  "withdraw",
+  "link",
+  "requests",
+  "savings",
+  "claim",
+]
 
 describe("whether an action may start", () => {
-  it.each(ACTIONS)("closes %s on a frozen portal, except the withdrawal's exit", (action) => {
-    for (const state of [ready, { ...ready, named: false, upgrade: "offered" as const }])
-      expect(actionVerdict(action, { ...state, frozen: true })).toBe(
-        action === "withdraw" ? "exit" : "frozen",
-      )
-  })
-
   it.each(ACTIONS)("starts %s once nothing waits", (action) => {
     expect(actionVerdict(action, ready)).toBe("open")
   })
@@ -92,9 +93,24 @@ describe("whether an action may start", () => {
     expect(actionVerdict("receive", nameless)).toBe("upgrade")
   })
 
+  it("refunds an old version's funds on withdraw, ahead of the name, claim, upgrade and rail", () => {
+    const blocked = {
+      ...ready,
+      oldWithdrawable: true,
+      named: false,
+      claimPending: true,
+      upgrade: "offered" as const,
+      railPending: true,
+    }
+    expect(actionVerdict("withdraw", blocked)).toBe("refund")
+    expect(actionVerdict("send", { ...ready, oldWithdrawable: true, upgrade: "offered" })).toBe(
+      "upgrade",
+    )
+  })
+
   it("sends a pending tag claim home, except a deposit the registration owes", () => {
     const claiming = { ...ready, claimPending: true }
-    for (const action of ["send", "withdraw", "link", "deposit", "receive"] as const)
+    for (const action of ["send", "withdraw", "link", "deposit", "receive", "requests"] as const)
       expect(actionVerdict(action, claiming)).toBe("home")
     expect(actionVerdict("deposit", { ...claiming, depositOwed: true })).toBe("open")
     expect(actionVerdict("savings", claiming)).toBe("open")
@@ -112,7 +128,7 @@ describe("whether an action may start", () => {
       expect(actionVerdict(action, { ...ready, railPending: undefined })).toBe("checking")
       expect(actionVerdict(action, { ...ready, railPending: true })).toBe("registering")
     }
-    for (const action of ["deposit", "receive", "savings", "claim"] as const)
+    for (const action of ["deposit", "receive", "requests", "savings", "claim"] as const)
       expect(actionVerdict(action, { ...ready, railPending: true })).toBe("open")
   })
 

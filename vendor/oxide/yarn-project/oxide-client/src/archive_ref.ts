@@ -1,30 +1,29 @@
-import { Fr } from '@aztec/aztec.js/fields';
-import { BlockNumber, type CheckpointNumber } from '@aztec/foundation/branded-types';
-import { L2Block } from '@aztec/stdlib/block';
-import type { BlockResponse } from '@aztec/stdlib/interfaces/client';
-import type { BlockHeader, TxHash } from '@aztec/stdlib/tx';
+import { Fr } from '@aztec-labs/aztec.js/fields';
+import type { BlockNumber, CheckpointNumber } from '@aztec-labs/foundation/branded-types';
+import { L2Block } from '@aztec-labs/stdlib/block';
+import type { BlockResponse } from '@aztec-labs/stdlib/interfaces/client';
+import type { BlockHeader, TxHash } from '@aztec-labs/stdlib/tx';
 
 import type { ChainDataSource } from './chain_data_source.js';
 
 /**
  * Minimum archive info every TEE-signed L1 finalization / refund proof needs.
+ *
+ * Get the block-hash membership witnesses against `root` with `getBlockHashMembershipWitnessAtArchive({ archive:
+ * root }, ...)`. The root is the archive after the checkpoint's last block, so that block is a member of it and no
+ * later block has to exist.
  */
 export interface ArchiveRef {
+  /** Archive root after the checkpoint's last L2 block. */
   root: Fr;
   checkpointNumber: CheckpointNumber;
   /** Header of the checkpoint's last L2 block; the operation anchor for the refund proof. */
   checkpointEndBlockHeader: BlockHeader;
-  /**
-   * Number of the block whose `lastArchive.root` equals `root`, used as the witness reference to
-   * get the block-hash membership witness. The block need not exist.
-   */
-  witnessReferenceBlockNumber: BlockNumber;
 }
 
 /**
  * Build an `ArchiveRef` from a known archive root. Looks up the checkpoint-end block header
- * (whose archive IS `archiveRoot`) and derives the checkpoint number and witness-reference block
- * number.
+ * (whose archive IS `archiveRoot`) and derives the checkpoint number.
  *
  * Throws if the checkpoint-end block isn't on the chain yet.
  */
@@ -40,7 +39,6 @@ export async function resolveArchive(chain: ChainDataSource, archiveRoot: Fr): P
     root: archiveRoot,
     checkpointNumber: checkpointEnd.checkpointNumber,
     checkpointEndBlockHeader: checkpointEnd.header,
-    witnessReferenceBlockNumber: BlockNumber(checkpointEnd.header.globalVariables.blockNumber + 1),
   };
 }
 
@@ -64,18 +62,18 @@ export function checkpointContainsBlock(
 }
 
 /**
- * Resolve the archive root of the checkpoint containing the burn tx — the default anchor for a
- * withdrawal finalization.
+ * Resolve the archive root of the checkpoint that contains tx `txHash`. A withdrawal finalization anchors to the
+ * checkpoint of its initiation tx by default.
  */
-export async function resolveBurnCheckpointArchive(chain: ChainDataSource, txHash: TxHash): Promise<Fr> {
+export async function resolveTxCheckpointArchive(chain: ChainDataSource, txHash: TxHash): Promise<Fr> {
   const { slotNumber, blockNumber } = await chain.getTxReceipt(txHash);
   if (slotNumber === undefined || blockNumber === undefined) {
-    throw new Error(`Burn tx ${txHash} is not yet in a checkpoint; cannot resolve its archive.`);
+    throw new Error(`Tx ${txHash} is not yet in a checkpoint; cannot resolve its archive.`);
   }
-  // The containing checkpoint is anchored at or before the burn's slot, so scan backwards from it.
+  // The containing checkpoint is anchored at or before the tx's slot, so scan backwards from it.
   const [checkpoint] = await chain.getCheckpointsData({ fromSlot: slotNumber, limit: 1, reverse: true });
   if (!checkpoint || !checkpointContainsBlock(checkpoint, blockNumber)) {
-    throw new Error(`No checkpoint containing burn block ${blockNumber} for tx ${txHash}.`);
+    throw new Error(`No checkpoint containing block ${blockNumber} for tx ${txHash}.`);
   }
   return checkpoint.archive.root;
 }

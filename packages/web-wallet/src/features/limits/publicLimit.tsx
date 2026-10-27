@@ -1,19 +1,18 @@
 import type { ReactNode } from "react"
 import { PUBLIC_TX_LIMIT_USD } from "@obsidion/core/constants"
 import { Icon } from "@obsidion/web-ds"
+import { groupedCents } from "../../ui/groupedCents"
 import "./aboutLimits.css"
 
 /** `$2,499.65` / `$2,500` / `<$0.01`: dollars with thousands separators, so an amount and the limit
  *  it is checked against read alike in the deposit and withdrawal sheets. */
 export function usdFigureGrouped(display: string): string {
-  const n = Number(display)
-  if (!Number.isFinite(n)) return display
-  if (n > 0 && n < 0.005) return "<$0.01"
-  const grouped = n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-  return `$${grouped}`.replace(/\.00$/, "")
+  const grouped = groupedCents(display)
+  if (grouped === undefined) return display
+  return grouped.startsWith("<") ? `<$${grouped.slice(1)}` : `$${grouped}`
 }
 
-/** `$2,500`: the published per-operation limit. */
+/** `$5,000`: the published per-operation limit. */
 export function formatPublicLimit(): string {
   return usdFigureGrouped(String(PUBLIC_TX_LIMIT_USD))
 }

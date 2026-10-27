@@ -12,8 +12,8 @@
  * the event discovery later finds is pinned to it by salt rather than recorded again.
  */
 
-import type { AztecAddress } from "@aztec/aztec.js/addresses"
-import { EthAddress } from "@aztec/foundation/eth-address"
+import type { AztecAddress } from "@aztec-labs/aztec.js/addresses"
+import { EthAddress } from "@aztec-labs/foundation/eth-address"
 import { deriveRecoveryCommitment } from "@oxide/oxide-lib/sipa_recovery.js"
 import { formatUnits, type Address, type Hex, type PublicClient } from "viem"
 import type { OxideEnvTuple } from "@obsidion/core/types"
@@ -21,6 +21,7 @@ import {
   buildDepositIntent,
   epochDay,
   readAccountResolution,
+  readDepositSIPAImplementation,
   type SipaHoldingRead,
 } from "@obsidion/sdk"
 import { logger } from "src/utils/logger"
@@ -35,7 +36,6 @@ import type {
   SIPADepositRecord,
   SIPADepositStore,
 } from "../core/services/deposits/SIPADepositStore"
-import { depositSipaImplementation } from "./sipaImplementations"
 import { NATIVE_ETH, type SipaFundingToken } from "./sipaFunding"
 
 /** One L1 block: a balance cannot change between two reads closer together than that. */
@@ -61,7 +61,9 @@ const RESOLVER_RESWEEPABLE = true
 export interface ResolverDeployment {
   portal: Address
   sipaFactory: Address
-  /** The portal's deposit implementation, which every address the resolver hands out clones. */
+  /** The ForwardingTable every address the resolver hands out commits to. */
+  forwardingTable: Address
+  /** The factory's deposit implementation, which every address the resolver hands out clones. */
   implementation: Address
   /** The rollup version the account's user record names. */
   rollupVersion: bigint
@@ -84,8 +86,8 @@ const sameKey = (a: SipaK1Point, b: SipaK1Point) => a.x === b.x && a.y === b.y
 
 /**
  * The deployments whose resolver can hand out addresses for `recoveryAccount`: per metadata
- * registry, the account's user record names one operator, and that operator's portal is the only
- * one its addresses deposit into. Read the way the resolver gateway reads them, so the derivation
+ * registry, the account's user record names one operator, and that operator's forwarding table is
+ * the only one its addresses route through. Read the way the resolver gateway reads them, so the derivation
  * agrees with it. A record bound to another key or L2 account derives addresses this wallet could
  * never claim, so it is skipped.
  */
@@ -118,22 +120,19 @@ export async function readResolverDeployments(deps: {
       logger.warn(`[resolverPayments] the user record in ${registry} is bound to another key`)
       continue
     }
-    const portal = resolution.operator.oxidePortal.toLowerCase()
-    const source = deps.sources.find((s) => s.tuple.portal.toLowerCase() === portal)
+    const table = resolution.operator.forwardingTable.toLowerCase()
+    const source = deps.sources.find((s) => s.tuple.forwardingTable?.toLowerCase() === table)
     const { sipaFactory, accountFactory } = source?.tuple ?? {}
     if (!source || !sipaFactory || !accountFactory) {
-      logger.warn(`[resolverPayments] the resolver serves portal ${portal}, outside this profile`)
+      logger.warn(`[resolverPayments] the resolver routes through ${table}, outside this profile`)
       continue
     }
-    if (out.some((d) => d.portal.toLowerCase() === portal)) continue
+    if (out.some((d) => d.forwardingTable.toLowerCase() === table)) continue
     out.push({
       portal: source.tuple.portal as Address,
       sipaFactory: sipaFactory as Address,
-      implementation: await depositSipaImplementation(
-        deps.publicClient,
-        sipaFactory as Address,
-        source.tuple.portal as Address,
-      ),
+      forwardingTable: source.tuple.forwardingTable as Address,
+      implementation: await readDepositSIPAImplementation(deps.publicClient, sipaFactory as Address),
       rollupVersion: resolution.rollupVersion,
       resolverPublicKey: resolution.operator.resolverPublicKey,
       recoveryAccount: deps.recoveryAccount,
@@ -184,6 +183,7 @@ export async function deriveResolverCandidate(
     implementation: EthAddress.fromString(deployment.implementation),
     intentHash: Buffer.from(intentHash.slice(2), "hex"),
     recoveryCommitment,
+    forwardingTable: EthAddress.fromString(deployment.forwardingTable),
     rollupVersion: deployment.rollupVersion,
     resweepable: RESOLVER_RESWEEPABLE,
   }).toString() as Address
@@ -202,6 +202,7 @@ export async function deriveResolverCandidate(
       rollupVersion: deployment.rollupVersion.toString(),
       resweepable: RESOLVER_RESWEEPABLE,
       accountFactory: deployment.accountFactory,
+      forwardingTable: deployment.forwardingTable,
       recoveryAccount: deployment.recoveryAccount,
       recoveryCommitment: recoveryCommitment.toString() as Hex,
     },
@@ -300,6 +301,7 @@ export class ResolverPaymentWatcher {
       nonce,
       keys.recipient,
       deployment.sipaFactory,
+      deployment.forwardingTable,
       deployment.implementation,
       deployment.rollupVersion,
       deployment.resolverPublicKey.x,

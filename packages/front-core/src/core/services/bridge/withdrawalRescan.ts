@@ -1,16 +1,16 @@
 /**
- * Rebuild the withdrawal records a store lost from the account's own `Withdraw` events. Every
- * burn the account made delivered one to it, its `meta` names the L1 address the burn pays, and a
- * swap's or a Sky move's also carries the escrow args, so a fresh device gets its history back —
- * and with it a stuck escrow's exits — from chain alone. A burn whose meta names no address is
- * skipped. Records the store already holds (by burn tx hash) are left as they are; the rest
- * are created at `l2_mined` for the tracker to walk forward like any mined burn. Pure over
- * injected collaborators.
+ * Rebuild the withdrawal records a store lost from the account's own recovery events. Every burn
+ * the account made delivered its finalization data to it, which names the executor and the L1
+ * address the burn pays, the amount and the relayer tip, and a swap's or a Sky move's memo also
+ * carries the escrow args, so a fresh device gets its history back — and with it a stuck escrow's
+ * exits — from chain alone.
+ * Records the store already holds (by burn tx hash) keep their state, and one written before
+ * executor stamps gets its burn's executor; the rest are created at `l2_mined` for the tracker to
+ * walk forward like any mined burn. Pure over injected collaborators.
  */
 
-import { formatUnits, type Hash } from "viem"
+import { formatUnits, type Hash, type Hex } from "viem"
 import { SkyRoute } from "@oxide/experiments/sky/sky_savings.js"
-import { DEFAULT_DECIMALS } from "@obsidion/core/constants"
 import type { ScannedWithdrawEvent, WithdrawEventSource } from "@obsidion/sdk"
 import { globalEventEmitter } from "../GlobalEventEmitter"
 import { newWithdrawalLocalId, type WithdrawalStorage } from "./WithdrawalStorage"
@@ -18,10 +18,11 @@ import type { WithdrawalDeployment, WithdrawalRecord } from "./types"
 
 export interface WithdrawalRescanDeps {
   source: WithdrawEventSource
-  store: Pick<WithdrawalStorage, "load" | "getByL2TxHash" | "create">
+  store: Pick<WithdrawalStorage, "load" | "getByL2TxHash" | "create" | "migrateExecutors">
   tokenSymbol: string
-  /** Stamped on every rebuilt record: the deployment whose token the events came from. */
-  deployment?: WithdrawalDeployment
+  tokenDecimals: number
+  /** The events' deployment, stamped on each rebuilt record with its burn's executor. */
+  deployment?: Omit<WithdrawalDeployment, "executor">
   /** First block to scan. Default 1, the lowest PXE accepts. */
   fromBlock?: number
   /** Stands in for a burn whose block time cannot be read. Defaults to Date.now. */
@@ -32,7 +33,7 @@ export interface WithdrawalRescanDeps {
 
 export interface WithdrawalRescanSummary {
   tokenSymbol: string
-  /** `Withdraw` events the account's PXE holds for the token. */
+  /** Withdrawals the account's PXE recovers for the token. */
   events: number
   /** Events no stored record covers. */
   unknown: number
@@ -46,11 +47,15 @@ export async function rebuildWithdrawals(deps: WithdrawalRescanDeps): Promise<Wi
   await deps.store.load()
   const head = await deps.source.headBlock()
   const events = await deps.source.listWithdrawals(deps.fromBlock ?? 1, head + 1)
+  const byTxHash = new Map(events.map((event) => [event.txHash.toLowerCase(), event]))
+  await deps.store.migrateExecutors((record) => {
+    const event = record.l2TxHash && byTxHash.get(record.l2TxHash.toLowerCase())
+    return event
+      ? { executor: event.executor as Hex, withdrawalFee: event.withdrawalFee }
+      : undefined
+  })
   const missing = events
-    .filter(
-      (event): event is ScannedWithdrawEvent & { l1Recipient: Hash } =>
-        event.l1Recipient !== undefined && !deps.store.getByL2TxHash(event.txHash),
-    )
+    .filter((event) => !deps.store.getByL2TxHash(event.txHash))
     .sort((a, b) => a.blockNumber - b.blockNumber)
   // Rebuilt rows join an in-progress chain catch-up so they land behind the activity skeleton.
   const end =
@@ -80,24 +85,30 @@ export async function rebuildWithdrawals(deps: WithdrawalRescanDeps): Promise<Wi
 }
 
 function rebuiltRecord(
-  event: ScannedWithdrawEvent & { l1Recipient: Hash },
+  event: ScannedWithdrawEvent,
   startTime: number,
   deps: WithdrawalRescanDeps,
   startTimeEstimated: boolean,
 ): WithdrawalRecord {
-  const { swap } = event
+  const { swap, sky } = event
   return {
     localId: newWithdrawalLocalId(),
     l2TxHash: event.txHash as Hash,
     blockNumber: event.blockNumber,
     recipient: swap?.recipient ?? event.l1Recipient,
     recipientProvenance: "saved-recipient",
-    amount: formatUnits(event.amount, DEFAULT_DECIMALS),
+    amount: formatUnits(event.amount, deps.tokenDecimals),
     rawAmount: event.amount.toString(),
+    relayerTip: event.relayerTip.toString(),
+    ...(event.withdrawalFee > 0n ? { withdrawalFee: event.withdrawalFee.toString() } : {}),
+    ...(event.proverTip > 0n ? { proverTip: event.proverTip.toString() } : {}),
     tokenSymbol: deps.tokenSymbol,
+    tokenDecimals: deps.tokenDecimals,
     phase: "l2_mined",
     startTime,
-    deployment: deps.deployment,
+    ...(deps.deployment
+      ? { deployment: { ...deps.deployment, executor: event.executor as Hex } }
+      : {}),
     rebuilt: true,
     ...(startTimeEstimated ? { startTimeEstimated: true } : {}),
     ...(swap
@@ -105,7 +116,7 @@ function rebuiltRecord(
           swapOutput: swap.output,
           swapEscrow: event.l1Recipient,
           swapEscrowFactory: swap.factory,
-          swapEscrowLayout: swap.layout,
+          swapEscrowLayout: "v2",
           swapNonce: swap.nonce,
           swapRecoveryCommitment: swap.recoveryCommitment,
           swapRelayerTip: swap.relayerTip.toString(),
@@ -113,18 +124,17 @@ function rebuiltRecord(
           ...(swap.minEthForGas > 0n ? { swapMinEthForGas: swap.minEthForGas.toString() } : {}),
         }
       : {}),
-    ...(event.sky
+    ...(sky
       ? {
           skyMove: {
-            direction: event.sky.route === SkyRoute.Stake ? "in" : "out",
-            factory: event.sky.factory,
-            recipientCommitment: event.sky.recipientCommitment,
-            recoveryCommitment: event.sky.recoveryCommitment,
-            relayerTip: event.sky.relayerTip.toString(),
-            nonce: event.sky.nonce,
+            direction: sky.route === SkyRoute.Stake ? "in" : "out",
+            factory: sky.factory,
+            recipientCommitment: sky.recipientCommitment,
+            recoveryCommitment: sky.recoveryCommitment,
+            relayerTip: sky.relayerTip.toString(),
+            nonce: sky.nonce,
           },
         }
       : {}),
-    ...(event.group ? { groupId: event.group.id, groupLeg: event.group.leg } : {}),
   }
 }

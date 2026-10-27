@@ -1,0 +1,10 @@
+[package]
+name = "frozen_deposits_refund"
+type = "bin"
+compiler_version = ">=1.0.0"
+
+[dependencies]
+oxide_token_lib = { path = "../oxide_token_lib" }
+oxide_lib = { path = "../oxide_lib" }
+aztec = { git = "https://github.com/aztec-labs-eng/aztec-node", tag = "v6.0.0", directory = "noir-projects/aztec-nr/aztec" }
+refund_lib = { path = "../refund_lib" }

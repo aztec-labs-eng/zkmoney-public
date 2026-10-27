@@ -301,4 +301,20 @@ describe("failureReason", () => {
       failureReason(row("send", { status: "success", error: INTERRUPTED_SEND_ERROR })),
     ).toBeUndefined()
   })
+
+  it("says the network reverted a landed row a reorg took back, and only a landed one", () => {
+    const reorged = { reorgEpoch: 1, blockNumber: 42 }
+    expect(failureReason(row("receive", reorged))).toBe(
+      "Reverted by the network. It isn't in your balance.",
+    )
+    expect(failureReason(row("send", reorged))).toBe(
+      "Reverted by the network. The amount is still in your balance.",
+    )
+    expect(failureReason(row(PaylinkActionEnum.CLAIM, reorged))).toBe("Reverted by the network.")
+    // A send the network dropped before it ever landed was no reorg.
+    expect(failureReason(row("send", { reorgEpoch: 1 }))).toBe(
+      "It didn't go through. The amount is still in your balance.",
+    )
+    expect(failureReason(row("receive", { ...reorged, status: "success" }))).toBeUndefined()
+  })
 })

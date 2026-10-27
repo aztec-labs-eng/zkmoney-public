@@ -18,7 +18,8 @@ import { resetSingleton } from "../../__test-helpers__/resetSingleton"
 import { ActivityFeed } from "../../../src/core/services/bridge/BridgeActivityFeed"
 import { WithdrawalStorage } from "../../../src/core/services/bridge/WithdrawalStorage"
 import { SIPADepositStore } from "../../../src/core/services/deposits/SIPADepositStore"
-import { upgradeRunsOf } from "../../../src/core/migration/upgradeRuns"
+import { upgradeRunsOf, upgradeRunValue } from "../../../src/core/migration/upgradeRuns"
+import type { UpgradeBatchItem } from "../../../src/core/migration/upgradeActivity"
 
 const SIPA_ADDRESS = "0x00000000000000000000000000000000000000Aa"
 const WALLET_ADDRESS = "0x0000000000000000000000000000000000000002"
@@ -144,17 +145,39 @@ describe("BridgeNotificationProducer (SIPA — the only bridge source)", () => {
     ])
   })
 
+  it("names a deposit in its own row token's units", async () => {
+    producer.start()
+
+    feed.emit([
+      sipaDeposit({ tokenSymbol: "USDC", tokenDecimals: 6, netAmount: "1000000", fee: "100000" }),
+    ])
+    await producer.flush()
+
+    expect(notifications.list()).toEqual([expect.objectContaining({ description: "$1 arrived" })])
+  })
+
+  it("names a swapped deposit in the row token it settled in, not the funded token", async () => {
+    producer.start()
+
+    feed.emit([
+      sipaDeposit({
+        tokenSymbol: "USDC",
+        tokenDecimals: 6,
+        rowToken: "0x6B175474E89094C44Da98b954EedeAC495271d0F",
+        netAmount: "2000000000000000000",
+        fee: "0",
+      }),
+    ])
+    await producer.flush()
+
+    expect(notifications.list()).toEqual([expect.objectContaining({ description: "$2 arrived" })])
+  })
+
   it("creates a recovered notification with its own title", async () => {
     producer.start()
 
     // A recovery returns the whole balance, so the push names the gross, not a net no fee came off.
-    feed.emit([
-      sipaDeposit({
-        phase: "recovered",
-        fee: "250000000000000000",
-        fpcFundingCut: "250000000000000000",
-      }),
-    ])
+    feed.emit([sipaDeposit({ phase: "recovered", fee: "250000000000000000" })])
     await producer.flush()
 
     expect(notifications.list()).toEqual([
@@ -217,9 +240,8 @@ describe("BridgeNotificationProducer (SIPA — the only bridge source)", () => {
         phase: "done",
         rawAmount: "4000000000000000000",
         relayerTip: "100000000000000000",
-        fpcFundingCut: "250000000000000000",
       }),
-      sipaDeposit({ fee: "350000000000000000", fpcFundingCut: "250000000000000000" }),
+      sipaDeposit({ fee: "350000000000000000" }),
     ])
     await producer.flush()
 
@@ -418,10 +440,8 @@ describe("BridgeNotificationProducer (SIPA — the only bridge source)", () => {
         batch: {
           run: RUN,
           id,
-          first: false,
           recipient,
           amount: (10n * 10n ** 18n).toString(),
-          exitFee: (10n ** 17n).toString(),
           state,
           approved: true,
           startTime: 1_000,
@@ -439,8 +459,42 @@ describe("BridgeNotificationProducer (SIPA — the only bridge source)", () => {
         producer.start()
         feed.emit(items)
         await producer.flush()
-        expect(run).toMatchObject({ arrived: 1, total: 199n * 10n ** 17n })
-        expect(shown()[0]?.description).toBe("$19.90 · 1 of 2 arrived")
+        // A batch through the migration executor pays no fee: its figure is its amount.
+        expect(run).toMatchObject({ arrived: 1, total: 20n * 10n ** 18n })
+        expect(shown()[0]?.description).toBe("$20 · 1 of 2 arrived")
+      })
+
+      it("waits for the vault price and reports the credited Savings value", async () => {
+        producer.stop()
+        const mainToken = "0x" + "11".repeat(20)
+        const savingsToken = "0x" + "22".repeat(20)
+        let sharePrice: bigint | undefined
+        producer = new BridgeNotificationProducer(feed, notifications, {
+          liveRows: true,
+          upgradeValue: (run) => upgradeRunValue(run, { mainToken, savingsToken, sharePrice }),
+        })
+        producer.start()
+        const deposit = {
+          tokenAddress: savingsToken as `0x${string}`,
+          netAmount: String(40n * 10n ** 18n),
+        }
+        feed.emit([
+          batch("remaining-0", SIPA_ADDRESS, "received"),
+          sipaDeposit({ ...deposit, phase: "pendingClaim", endTime: undefined }),
+        ])
+        await producer.flush()
+        expect(shown()[0]?.description).toBe("— · 0 of 1 arrived")
+        feed.emit([
+          batch("remaining-0", SIPA_ADDRESS, "received"),
+          sipaDeposit({ ...deposit, phase: "claimed", endTime: 1_200 }),
+        ])
+        await producer.flush()
+        expect(shown().map((e) => e.title)).not.toContain("Upgrade complete")
+        sharePrice = 125n * 10n ** 16n
+        await producer.refresh()
+        expect(shown()).toMatchObject([
+          { title: "Upgrade complete", description: "$50 · 1 transfer" },
+        ])
       })
 
       it("is one live row until every batch has arrived, then one report", async () => {
@@ -477,6 +531,66 @@ describe("BridgeNotificationProducer (SIPA — the only bridge source)", () => {
         ])
       })
 
+      it("waits on the arrival's own record, not another token its address credited", async () => {
+        producer.start()
+        const credit: ActivityItem = {
+          ...sipaDeposit({ phase: "claimed", endTime: 1_100, inboxIndex: 6 as never }),
+          credit: "0x5875eee11cf8398102fdad704c9e96607675467a",
+        } as ActivityItem
+        feed.emit([
+          batch("remaining-0", SIPA_ADDRESS, "received"),
+          sipaDeposit({ phase: "pendingClaim", endTime: undefined }),
+          credit,
+        ])
+        await producer.flush()
+        expect(shown().map((e) => e.title)).not.toContain("Upgrade complete")
+        expect(shown()).toMatchObject([{ id: `migration-run:${RUN}`, pending: true }])
+      })
+
+      describe("beside a Savings run", () => {
+        const SAVINGS_RUN = "metadata-migration/0xsavings/0xoldsavings/0xaccount"
+        const savingsBatch = (state: "planned" | "sent" | "received"): ActivityItem => {
+          const item = batch("remaining-0", SECOND, state) as { batch: UpgradeBatchItem }
+          return { kind: "upgrade.batch", batch: { ...item.batch, run: SAVINGS_RUN } }
+        }
+        const mainLanded = [
+          batch("remaining-0", SIPA_ADDRESS, "received"),
+          sipaDeposit({ phase: "claimed", endTime: 1_200 }),
+        ]
+
+        it.each(["planned", "sent"] as const)(
+          "reports no completion while the Savings run is %s",
+          async (state) => {
+            producer.start()
+            feed.emit([...mainLanded, savingsBatch(state)])
+            await producer.flush()
+            expect(shown().map((e) => e.title)).not.toContain("Upgrade complete")
+          },
+        )
+
+        it("reports both runs once the Savings run lands too", async () => {
+          producer.start()
+          feed.emit([...mainLanded, savingsBatch("sent")])
+          await producer.flush()
+          feed.emit([
+            ...mainLanded,
+            savingsBatch("received"),
+            sipaDeposit({ sipaAddress: SECOND, phase: "claimed", endTime: 1_300 }),
+          ])
+          await producer.flush()
+          expect(
+            shown()
+              .filter((e) => e.title === "Upgrade complete")
+              .map((e) => e.id),
+          ).toEqual(
+            expect.arrayContaining([
+              `migration-run:${RUN}:done:1`,
+              `migration-run:${SAVINGS_RUN}:done:1`,
+            ]),
+          )
+        })
+      })
+
       it("reports no completion for a run whose deposit was recovered to Ethereum", async () => {
         producer.start()
         feed.emit([
@@ -496,7 +610,7 @@ describe("BridgeNotificationProducer (SIPA — the only bridge source)", () => {
         ])
         await producer.flush()
         expect(shown().find((e) => e.id === `migration-run:${RUN}`)?.description).toBe(
-          "$9.90 · 0 of 2 arrived",
+          "$10 · 0 of 2 arrived",
         )
       })
 
@@ -539,6 +653,60 @@ describe("BridgeNotificationProducer (SIPA — the only bridge source)", () => {
         )
       })
 
+      describe("read off chain", () => {
+        const inferred = (id: string, recipient: string): ActivityItem => {
+          const item = batch(id, recipient, "received") as { batch: UpgradeBatchItem }
+          return { kind: "upgrade.batch", batch: { ...item.batch, inferred: true } }
+        }
+        const reports = () => shown().filter((e) => e.title === "Upgrade complete")
+
+        it("reports no completion for history discovery claims, though it read as pending", async () => {
+          vi.setSystemTime(5_000)
+          producer.start()
+          feed.emit([
+            inferred("remaining-0", SIPA_ADDRESS),
+            sipaDeposit({ phase: "pendingClaim", endTime: undefined }),
+          ])
+          await producer.flush()
+          expect(shown()).toMatchObject([{ id: `migration-run:${RUN}`, pending: true }])
+          feed.emit([
+            inferred("remaining-0", SIPA_ADDRESS),
+            sipaDeposit({ phase: "claimed", endTime: 1_200 }),
+          ])
+          await producer.flush()
+          feed.emit([
+            inferred("remaining-0", SIPA_ADDRESS),
+            inferred("remaining-1", SECOND),
+            sipaDeposit({ phase: "claimed", endTime: 1_200 }),
+            sipaDeposit({ sipaAddress: SECOND, phase: "claimed", endTime: 1_300 }),
+          ])
+          await producer.flush()
+          expect(reports()).toEqual([])
+        })
+
+        it("keeps one report as discovery adds legs that arrive now", async () => {
+          producer.start()
+          const first = [
+            inferred("remaining-0", SIPA_ADDRESS),
+            sipaDeposit({ phase: "claimed", endTime: 1_200 }),
+          ]
+          feed.emit(first)
+          await producer.flush()
+          feed.emit([
+            ...first,
+            inferred("remaining-1", SECOND),
+            sipaDeposit({ sipaAddress: SECOND, phase: "claimed", endTime: 1_300 }),
+          ])
+          await producer.flush()
+          expect(reports()).toMatchObject([
+            {
+              id: `migration-run:${RUN}:done`,
+              description: expect.stringContaining("2 transfers"),
+            },
+          ])
+        })
+      })
+
       it("shows nothing for a run with nothing sent", async () => {
         producer.start()
         feed.emit([batch("remaining-0", SIPA_ADDRESS, "planned")])
@@ -547,13 +715,21 @@ describe("BridgeNotificationProducer (SIPA — the only bridge source)", () => {
       })
     })
 
-    it("reports an upgrade's first refund, which has no exit record, as a move", async () => {
+    it("reports nothing for a backup passkey rotation's funding, which its settings panel follows", async () => {
       producer.start()
-      feed.emit([sipaDeposit({ phase: "claimed", intent: "metadata", endTime: 1_200 })])
+      feed.emit([
+        sipaDeposit({ phase: "resolved", intent: "user-op", amount: "0", endTime: undefined }),
+        sipaDeposit({
+          sipaAddress: "0x00000000000000000000000000000000000000Bb",
+          phase: "claimed",
+          intent: "user-op",
+          endTime: 1_200,
+        }),
+        withdrawal({ localId: "backup", intent: "backup", phase: "l2_mined", endTime: undefined }),
+        withdrawal({ localId: "backup-done", intent: "backup", phase: "done" }),
+      ])
       await producer.flush()
-      const titles = notifications.list().map((e) => e.title)
-      expect(titles).toContain("Upgrade complete")
-      expect(titles).not.toContain("Deposit complete")
+      expect(notifications.list()).toEqual([])
     })
 
     it("walks the real feed from the exit's release to the arrival to complete, one live row at a time", async () => {
@@ -992,24 +1168,6 @@ describe("BridgeNotificationProducer (SIPA — the only bridge source)", () => {
     ])
   })
 
-  it("retires a swept deposit's live row once its portal is frozen", async () => {
-    let frozen = false
-    const frozenAware = new BridgeNotificationProducer(feed, notifications, {
-      liveRows: true,
-      portalFrozen: () => frozen,
-    })
-    frozenAware.start()
-    feed.emit([sipaDeposit({ phase: "pendingClaim", endTime: undefined })])
-    await frozenAware.flush()
-    expect(notifications.list()).toMatchObject([{ description: "$10 · Crediting", pending: true }])
-
-    frozen = true
-    feed.emit([sipaDeposit({ phase: "pendingClaim", endTime: undefined })])
-    await frozenAware.flush()
-    expect(notifications.list().filter((e) => !e.dismissedAt)).toEqual([])
-    frozenAware.stop()
-  })
-
   it("names an in-flight deposit's net once the fee is read, its gross until then", async () => {
     producer.start()
 
@@ -1018,7 +1176,6 @@ describe("BridgeNotificationProducer (SIPA — the only bridge source)", () => {
         phase: "sweeping",
         endTime: undefined,
         fee: "350000000000000000",
-        fpcFundingCut: "250000000000000000",
       }),
     ])
     await producer.flush()

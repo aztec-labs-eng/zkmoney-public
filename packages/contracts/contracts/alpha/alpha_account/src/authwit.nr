@@ -1,3 +1,4 @@
+use alpha_lib::keys::MAX_ACCOUNT_PASSKEYS;
 use aztec::oracle::auth_witness::get_auth_witness;
 
 global MAX_WITNESS_LEN: u32 = 500;
@@ -13,9 +14,11 @@ global CLIENT_DATA_JSON_LEN_INDEX: u32 = 165;
 global CLIENT_DATA_JSON_INDEX: u32 = 166;
 // Chromium pseudo-randomly appends a ~109-byte anti-templating key to clientDataJSON, which can
 // push it past 256 bytes on long origins. 319 is the largest value that keeps sha256_var at the
-// same block count (N / 64 = 4) and fits the witness (166 + 319 <= MAX_WITNESS_LEN).
+// same block count (N / 64 = 4) and ends at 166 + 319 = 485, where the passkey set starts.
 pub global MAX_CLIENT_DATA_JSON_LEN: u32 = 319;
 pub global CHALLENGE_LEN: u32 = 43;
+// The account's passkey-set slots (8 fields, 485..493 <= MAX_WITNESS_LEN).
+global PASSKEY_SET_INDEX: u32 = 485;
 
 pub struct AlphaWebauthnWitness {
     pub pub_key_x: [u8; 32],
@@ -24,6 +27,7 @@ pub struct AlphaWebauthnWitness {
     pub authenticator_data: [u8; AUTHENTICATOR_DATA_LEN],
     pub client_data_json_len: u32,
     pub client_data_json: [u8; MAX_CLIENT_DATA_JSON_LEN],
+    pub passkey_set: [Field; MAX_ACCOUNT_PASSKEYS],
 }
 
 impl AlphaWebauthnWitness {
@@ -55,6 +59,11 @@ impl AlphaWebauthnWitness {
             }
         }
 
+        let mut passkey_set: [Field; MAX_ACCOUNT_PASSKEYS] = [0; MAX_ACCOUNT_PASSKEYS];
+        for i in 0..MAX_ACCOUNT_PASSKEYS {
+            passkey_set[i] = witness[PASSKEY_SET_INDEX + i];
+        }
+
         Self {
             pub_key_x,
             pub_key_y,
@@ -62,6 +71,7 @@ impl AlphaWebauthnWitness {
             authenticator_data,
             client_data_json_len,
             client_data_json,
+            passkey_set,
         }
     }
 }

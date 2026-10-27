@@ -9,6 +9,7 @@ import {
   WebAuthnAlphaAuthProvider,
   type WebAuthnSignResult,
 } from "../../src/obsidion/alpha/auth/WebAuthnAlphaAuthProvider.js"
+import type { AlphaPasskeySet } from "../../src/obsidion/alpha/account/alphaPasskeySet.js"
 
 const RP_ID = "test.zk.money"
 const ORIGIN = `https://${RP_ID}`
@@ -45,10 +46,18 @@ export class SoftwareWebauthnKey {
 
   /** Signs like an authenticator: over SHA-256(authenticatorData ‖ SHA-256(clientDataJSON)). */
   async sign(challenge: Buffer): Promise<WebAuthnSignResult> {
-    const clientDataJSON = new TextEncoder().encode(
-      `{"type":"webauthn.get","challenge":"${base64url(challenge)}","origin":"${ORIGIN}","crossOrigin":false}`,
+    return this.signClientData(
+      new TextEncoder().encode(
+        `{"type":"webauthn.get","challenge":"${base64url(challenge)}","origin":"${ORIGIN}","crossOrigin":false}`,
+      ),
     )
-    const authData = authenticatorData()
+  }
+
+  /** Signs over the client data and authenticator bytes as given; a test shapes them. */
+  async signClientData(
+    clientDataJSON: Uint8Array,
+    authData: Uint8Array = authenticatorData(),
+  ): Promise<WebAuthnSignResult> {
     const signed = new Uint8Array(authData.length + 32)
     signed.set(authData, 0)
     signed.set(sha256(clientDataJSON), authData.length)
@@ -56,7 +65,23 @@ export class SoftwareWebauthnKey {
     return { signature, authenticatorData: authData, clientDataJSON }
   }
 
-  provider(): WebAuthnAlphaAuthProvider {
-    return new WebAuthnAlphaAuthProvider(this.pubkeyX, this.pubkeyY, (c) => this.sign(c))
+  /** A provider for this key over `passkeys` (default: this key alone). */
+  provider(passkeys?: readonly string[]): WebAuthnAlphaAuthProvider {
+    return new WebAuthnAlphaAuthProvider(this.pubkeyX, this.pubkeyY, (c) => this.sign(c), passkeys)
+  }
+}
+
+/**
+ * Signs with a key outside an account's set while carrying the account's real slots, so only the
+ * contract's membership check can refuse the witness. Test-only: a real provider's
+ * `getPasskeySet()` refuses a set its key is not in.
+ */
+export class ForeignKeyAlphaAuthProvider extends WebAuthnAlphaAuthProvider {
+  constructor(key: SoftwareWebauthnKey, private readonly accountSet: AlphaPasskeySet) {
+    super(key.pubkeyX, key.pubkeyY, (c) => key.sign(c))
+  }
+
+  override getPasskeySet(): Promise<AlphaPasskeySet> {
+    return Promise.resolve(this.accountSet)
   }
 }

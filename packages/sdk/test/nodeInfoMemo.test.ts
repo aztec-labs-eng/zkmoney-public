@@ -1,9 +1,9 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest"
-import type { AztecNode } from "@aztec/aztec.js/node"
-import { BlockNumber } from "@aztec/foundation/branded-types"
+import type { AztecNode } from "@aztec-labs/aztec.js/node"
+import { BlockNumber } from "@aztec-labs/foundation/branded-types"
 
 const h = vi.hoisted(() => ({ createAztecNodeClient: vi.fn() }))
-vi.mock("@aztec/aztec.js/node", () => ({ createAztecNodeClient: h.createAztecNodeClient }))
+vi.mock("@aztec-labs/aztec.js/node", () => ({ createAztecNodeClient: h.createAztecNodeClient }))
 
 const { createNode, NODE_INFO_TTL_MS } = await import("../src/node/createNode.js")
 

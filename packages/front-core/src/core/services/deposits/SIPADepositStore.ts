@@ -13,7 +13,7 @@
 
 import type { SIPADepositPhase } from "@obsidion/core/types"
 import type { IStorageAdapter } from "../../storages/adapter"
-import type { Address, Hash, Hex } from "viem"
+import { getAddress, keccak256, type Address, type Hash, type Hex } from "viem"
 import { RecordStorage } from "../bridge/RecordStorage"
 import { getActiveNetworkId } from "../../activeNetworkId"
 
@@ -33,6 +33,8 @@ export type SipaOrigin = {
       recoveryAccount: Address
       recoveryCommitment: Hex
       accountFactory: Address
+      /** The ForwardingTable the address commits to; its rows route each sweep. */
+      forwardingTable: Address
     }
 )
 
@@ -45,8 +47,19 @@ export interface SIPASweep {
   sweepTxHash: Hash
   /** ms epoch of the sweep's L1 block. */
   settledAt?: number
+  /** The portal of the row the sweep settled on, and that row's L2 token, where it is claimed. */
+  portal?: Address
+  l2Token?: string
+  /** The row's token: what the sweep credited, and the units of `netAmount` and `fee`. */
+  tokenAddress?: Address
+  tokenSymbol?: string
+  tokenDecimals?: number
+  /** The row's sweep fee, raw units of the credited token. */
+  fee?: string
   /** Credited on L2, raw units of the credited token. */
   netAmount: string
+  /** The L1→L2 message the sweep sent, when the entry carries it. */
+  messageKey?: Hex
   /**
    * What the sweep took out of the SIPA, raw units of `fundingTokenDecimals`: every funding
    * transfer it settled. Unset when the sweep tx moved more than one token out.
@@ -64,14 +77,22 @@ export interface SIPAPendingSweep {
   messageKey: Hex
   blockNumber: string
   sweepTxHash: Hash
+  /** The portal whose `Deposit` the sweep made, which names its row. Absent on a sweep saved before rows. */
+  portal?: Address
   /** What the sweep took out of the SIPA and in which token, once the window it was seen in is gone. */
   grossAmount?: string
   fundingToken?: Address
 }
 
+/**
+ * One portal deposit the rail tracks: a SIPA's sweep, or a direct (migration) deposit that no SIPA made.
+ * TODO: Rename to PortalDepositRecord, as this type is used for more than just SIPA deposits.
+ */
 export interface SIPADepositRecord {
   /** Counterfactual SIPA address (canonical key, lowercased on store). */
   sipaAddress: Address
+  /** The {@link SIPA_DEPOSIT_RECORD_VERSION} the record was written or migrated at; absent is 1. */
+  version?: number
   /** The recipient's L2 account — the feed's group identity for SIPA deposits. */
   recipientL2Address: string
   /**
@@ -110,12 +131,26 @@ export interface SIPADepositRecord {
   /** The resolved name (self-initiated flow), e.g. "alice.oxidestaging.eth". */
   resolvedName?: string
   /**
-   * Set when the SIPA is not a plain deposit — the intent its address commits to. `metadata` is an
-   * upgrade's first refund, paid to the SIPA that updates the account's registration.
+   * Set when the SIPA is not a plain deposit — the intent its address commits to. `user-op` is a
+   * backup passkey rotation's funding, paid to the SIPA that runs the account's user operation.
    */
-  intent?: "registration" | "metadata"
+  intent?: "registration" | "user-op"
+  /**
+   * Set when no SIPA exists: an upgrade's migration executor deposited straight into the portal under
+   * `recipientCommitment`. The record's key is then {@link directDepositKey}, not an L1 address.
+   * `expected` is the batch's amount in raw units, when this device sent the batch. The commitment
+   * is public, so another sender can deposit under it too: the rail observes the record until it
+   * has claimed `expected` in total, and observes a record with no `expected` always. `portal` is
+   * the destination portal, from the row of the token that announced the deposit.
+   */
+  direct?: { recipientCommitment: Hex; executor?: Address; expected?: string; portal?: Address }
   /** L1 token address of the funding transfer. */
   tokenAddress?: Address
+  /**
+   * The row token unswept funds settle in, when `tokenAddress` is a token the SIPA swaps into it
+   * (the mainnet USDC and USDT, into DAI).
+   */
+  rowToken?: Address
   /** Decimals of `tokenAddress` (6 for the mainnet USDC/USDT swap route, else 18). */
   tokenDecimals?: number
   /** Sweep log values — the claim inputs. Strings for JSON-safe bigints. */
@@ -133,8 +168,6 @@ export interface SIPADepositRecord {
   fee?: string
   /** Registration fee paid to the beneficiary, raw token units. */
   registrationFee?: string
-  /** The portal's funding cut, raw token units: the part of `fee` the portal takes. */
-  fpcFundingCut?: string
   /** L1 deploy-and-sweep tx hash. */
   sweepTxHash?: Hash
   /** L2 claim (store_deposit consumer) tx hash, once one exists. */
@@ -150,6 +183,11 @@ export interface SIPADepositRecord {
   observedFrom?: string
   /** A block (decimal string) a failed pass left this SIPA to re-read from. */
   rescanFrom?: string
+  /**
+   * The sweep whose claim landed and when, ms epoch. Set before the record reads `claimed`. A balance
+   * read resolved after it holds the deposit.
+   */
+  claimLanded?: { inboxIndex: string; at: number }
   /** Sweeps seen and not yet claimed, in inbox order. */
   pendingSweeps?: SIPAPendingSweep[]
   /** ms epoch the rail last asked for this funded, overdue SIPA to be published again. */
@@ -182,8 +220,21 @@ export interface SIPADepositRecord {
   walletImageUrl?: string
 }
 
-const KEY_SIPA_DEPOSITS = "@obsidion/sipa-deposits/records"
+export const KEY_SIPA_DEPOSITS = "@obsidion/sipa-deposits/records"
 const KEY_OBSERVED_THROUGH = "@obsidion/sipa-deposits/observed-through/"
+
+const cursorKey = (portal: Address, recipient: string) =>
+  `${KEY_OBSERVED_THROUGH}${portal.toLowerCase()}/${recipient.toLowerCase()}`
+
+/** The record schema {@link SIPADepositStore} writes: version 2 stamps each sweep with the row it settled on. */
+export const SIPA_DEPOSIT_RECORD_VERSION = 2
+
+/** The bridge every version 1 sweep was claimed through: one portal, its L2 token and its token. */
+export interface SipaSweepRow {
+  portal: Address
+  l2Token: string
+  token: { address: Address; symbol: string; decimals: number }
+}
 
 type UpdatedListener = (record: SIPADepositRecord) => void
 type ListChangedListener = (records: SIPADepositRecord[]) => void
@@ -209,6 +260,48 @@ export function sipaSweepsReceived(record: SIPADepositRecord | null | undefined)
 }
 
 /**
+ * The key of a direct deposit's record: an address-shaped value from its commitment. It holds
+ * nothing on L1, and no SIPA has it.
+ */
+export function directDepositKey(recipientCommitment: Hex): Address {
+  return getAddress(`0x${keccak256(recipientCommitment.toLowerCase() as Hex).slice(-40)}`)
+}
+
+/** The total of the sweeps the rail has claimed off `record`, raw units of their tokens. */
+export function claimedSweepsTotal(record: SIPADepositRecord | null | undefined): bigint {
+  const claimed = new Set(record?.claimedInboxIndexes ?? [])
+  return (record?.sweeps ?? [])
+    .filter((sweep) => claimed.has(sweep.inboxIndex))
+    .reduce((sum, sweep) => sum + BigInt(sweep.netAmount), 0n)
+}
+
+/**
+ * Whether nothing more is expected under a direct deposit's commitment: the rail has claimed
+ * every deposit it saw, and in total at least the batch's `expected` amount. A record with no
+ * `expected` never settles, since a deposit from another sender can come first.
+ */
+export function directDepositSettled(record: SIPADepositRecord | null | undefined): boolean {
+  const expected = record?.direct?.expected
+  return (
+    expected !== undefined &&
+    sipaSweepsReceived(record) &&
+    claimedSweepsTotal(record) >= BigInt(expected)
+  )
+}
+
+/**
+ * The total the rail has claimed from the direct deposits to `recipientCommitment`, raw units. A
+ * deposit it saw and has not claimed yet does not count.
+ */
+export async function directDepositClaimed(
+  store: Pick<SIPADepositStore, "load" | "get">,
+  recipientCommitment: Hex,
+): Promise<bigint> {
+  await store.load()
+  return claimedSweepsTotal(store.get(directDepositKey(recipientCommitment)))
+}
+
+/**
  * A deposit address that was derived and broadcast but never paid. Opening Add funds publishes one
  * whether or not the visitor goes on to send anything, and discovery records it at `amount: "0"` —
  * publishing an address is not an incoming payment, so it must neither sit in the feed as "Pending"
@@ -224,7 +317,42 @@ export function isUnfundedSipaDeposit(record: SIPADepositRecord): boolean {
   )
 }
 
+/**
+ * A SIPA the account pays itself, not a deposit from someone else: a backup passkey rotation's
+ * funding. The wallet reports it as the account's own move.
+ */
+export function isAccountMoveSipa(record: Pick<SIPADepositRecord, "intent">): boolean {
+  return record.intent === "user-op"
+}
+
 type SIPADepositPatch = Partial<SIPADepositRecord> & Pick<SIPADepositRecord, "phase">
+
+function needsSweepRows(record: SIPADepositRecord, networkId: string): boolean {
+  return (
+    (record.version ?? 1) < SIPA_DEPOSIT_RECORD_VERSION &&
+    (!record.networkId || record.networkId.toLowerCase() === networkId.toLowerCase())
+  )
+}
+
+function withSweepRows(record: SIPADepositRecord, pinned: SipaSweepRow): SIPADepositRecord {
+  const row = {
+    portal: pinned.portal,
+    l2Token: pinned.l2Token,
+    tokenAddress: pinned.token.address,
+    tokenSymbol: pinned.token.symbol,
+    tokenDecimals: pinned.token.decimals,
+  }
+  // The record's fee is its latest sweep's; no older sweep's fee is known.
+  const feeOf = (sweep: SIPASweep) =>
+    record.fee !== undefined && sweep.inboxIndex === record.inboxIndex ? { fee: record.fee } : {}
+  return {
+    ...record,
+    version: SIPA_DEPOSIT_RECORD_VERSION,
+    ...(record.sweeps
+      ? { sweeps: record.sweeps.map((sweep) => ({ ...row, ...feeOf(sweep), ...sweep })) }
+      : {}),
+  }
+}
 
 /** The record a patch leaves, or null when the reorg-epoch guard refuses it. */
 function merge(
@@ -248,6 +376,7 @@ function merge(
     }
     next = { ...fallback, ...patch, sipaAddress }
     next.networkId ??= getActiveNetworkId()
+    next.version ??= SIPA_DEPOSIT_RECORD_VERSION
   }
 
   if (SETTLED_PHASES.has(next.phase) && !next.endTime) {
@@ -311,14 +440,21 @@ export class SIPADepositStore {
     return stored as SIPADepositRecord
   }
 
-  /** Writes `record` unless one is already stored at `sipaAddress`; resolves to it, or null if not. */
+  /**
+   * Writes `record` unless one is already stored at `sipaAddress`; resolves to it, or null if not.
+   * `strict` rejects when the write does not reach storage.
+   */
   async create(
     sipaAddress: Address,
     record: Omit<SIPADepositRecord, "sipaAddress">,
+    opts?: { strict?: boolean },
   ): Promise<SIPADepositRecord | null> {
     let created: SIPADepositRecord | null = null
-    await this.store.updateRecord(sipaAddress.toLowerCase(), (existing) =>
-      existing ? null : (created = merge(sipaAddress, null, { phase: record.phase }, record)),
+    await this.store.updateRecord(
+      sipaAddress.toLowerCase(),
+      (existing) =>
+        existing ? null : (created = merge(sipaAddress, null, { phase: record.phase }, record)),
+      opts,
     )
     return created
   }
@@ -365,6 +501,25 @@ export class SIPADepositStore {
     })
   }
 
+  /**
+   * Migrate records written before {@link SIPA_DEPOSIT_RECORD_VERSION} 2. A version 1 record of
+   * `networkId` was claimed through one bridge, `pinned`, so each sweep with no row of its own is
+   * stamped with that row. The record's own fields already name what it holds. Records of another
+   * network stay at version 1. Returns the records migrated.
+   */
+  async migrateSweepRows(networkId: string, pinned: SipaSweepRow): Promise<SIPADepositRecord[]> {
+    await this.load()
+    const migrated: SIPADepositRecord[] = []
+    for (const record of this.store.list()) {
+      if (!needsSweepRows(record, networkId)) continue
+      const written = await this.store.updateRecord(record.sipaAddress.toLowerCase(), (current) =>
+        current && needsSweepRows(current, networkId) ? withSweepRows(current, pinned) : null,
+      )
+      if (written) migrated.push(written)
+    }
+    return migrated
+  }
+
   async remove(sipaAddress: Address): Promise<void> {
     await this.store.removeByKey(sipaAddress.toLowerCase())
   }
@@ -373,14 +528,31 @@ export class SIPADepositStore {
     await this.store.clearAll()
   }
 
-  /** The block through which every observed SIPA of the deployment at `portal` has been read. */
-  async observedThrough(portal: Address): Promise<bigint | undefined> {
-    const stored = await this.storage.getItem(KEY_OBSERVED_THROUGH + portal.toLowerCase())
+  /**
+   * The block through which every observed SIPA of `recipient` at the deployment at `portal` has
+   * been read. One cursor per account: a pass reads only its own recipient's SIPAs.
+   */
+  async observedThrough(portal: Address, recipient: string): Promise<bigint | undefined> {
+    const stored = await this.storage.getItem(cursorKey(portal, recipient))
     return stored ? BigInt(stored) : undefined
   }
 
-  async setObservedThrough(portal: Address, block: bigint): Promise<void> {
-    await this.storage.setItem(KEY_OBSERVED_THROUGH + portal.toLowerCase(), block.toString())
+  async setObservedThrough(portal: Address, recipient: string, block: bigint): Promise<void> {
+    await this.storage.setItem(cursorKey(portal, recipient), block.toString())
+  }
+
+  /**
+   * Moves a portal-wide cursor (one keyed by no account) to `recipient` and deletes it. Call it for
+   * the one account whose passes wrote it; `recipient` keeps its own cursor when it has one, and
+   * any other account starts from its history.
+   */
+  async adoptObservedThrough(portal: Address, recipient: string): Promise<void> {
+    const legacyKey = KEY_OBSERVED_THROUGH + portal.toLowerCase()
+    const legacy = await this.storage.getItem(legacyKey)
+    if (legacy === null) return
+    if ((await this.storage.getItem(cursorKey(portal, recipient))) === null)
+      await this.storage.setItem(cursorKey(portal, recipient), legacy)
+    await this.storage.removeItem(legacyKey)
   }
 
   onUpdated(listener: UpdatedListener): () => void {

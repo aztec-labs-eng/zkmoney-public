@@ -2,8 +2,8 @@
  * The wallet-bound half of a detection tick, and what tells whether a registration's broadcast
  * mined. Detection itself stays credential-free; these arm only once the wallet is unlocked.
  */
-import { AztecAddress } from "@aztec/aztec.js/addresses"
-import { BlockNumber } from "@aztec/foundation/branded-types"
+import { AztecAddress } from "@aztec-labs/aztec.js/addresses"
+import { BlockNumber } from "@aztec-labs/foundation/branded-types"
 import type { Address } from "viem"
 import { fetchSipaEvents, type ObsidionWallet } from "@obsidion/sdk"
 import {
@@ -22,9 +22,9 @@ import { buildRetrySignDeps, type OnboardingKeys } from "./oxideOnboarding"
 export async function unlockedSessionKeys(
   wallet: ObsidionWallet,
 ): Promise<OnboardingKeys | undefined> {
-  const auth = getAuthService()
-  const [secretKey, authProvider] = await Promise.all([auth.getSecretKey(), auth.getAuthProvider()])
-  if (!secretKey || !authProvider) return undefined
+  const keys = await getAuthService().sessionKeys()
+  if (!keys) return undefined
+  const { secretKey, authProvider } = keys
   const [x, y] = await authProvider.getPubkeys()
   return {
     account: await wallet.createObsidionAccount(secretKey, authProvider),

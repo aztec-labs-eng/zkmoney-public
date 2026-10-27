@@ -1,5 +1,5 @@
 import { beforeEach, expect, it, vi } from "vitest"
-import { TxStatus, TxExecutionResult } from "@aztec/stdlib/tx"
+import { TxStatus, TxExecutionResult } from "@aztec-labs/stdlib/tx"
 import { provingProgress, ProvingStage } from "@obsidion/proving-progress"
 import { WithdrawalStorage } from "../../src/core/services/bridge/WithdrawalStorage"
 import { trackWithdrawalSubmission } from "../../src/core/services/bridge/WithdrawalTrackingService"

@@ -1,8 +1,11 @@
-import { Buffer32 } from '@aztec/foundation/buffer';
+import { Buffer32 } from '@aztec-labs/foundation/buffer';
+import { EthAddress } from '@aztec-labs/foundation/eth-address';
+import { AztecAddress } from '@aztec-labs/stdlib/aztec-address';
 
 import { describe, expect, it } from '@jest/globals';
 
 import { P256PublicKey, generateEncryptionKeypair, openRequest, sealRequest } from './encryption.js';
+import type { PortalDomain } from './types.js';
 
 describe('encryption (HPKE P-256 + AES-128-GCM)', () => {
   it('round-trips request and response plaintexts', async () => {
@@ -31,6 +34,64 @@ describe('encryption (HPKE P-256 + AES-128-GCM)', () => {
     await expect(openRequest(enclave, tampered)).rejects.toThrow();
   });
 
+  it('round-trips a request sealed under a disclosed domain', async () => {
+    const enclave = await generateEncryptionKeypair();
+    const domain = await randomPortalDomain();
+    const plaintext = Buffer.from('disclosed payload');
+    const sealed = await sealRequest(enclave.publicKey, plaintext, domain);
+    const opened = await openRequest(enclave, sealed.wirePayload, domain);
+    expect(Buffer.from(opened.innerPlaintext)).toEqual(plaintext);
+  });
+
+  it('fails to open when the disclosed domain is stripped', async () => {
+    const enclave = await generateEncryptionKeypair();
+    const domain = await randomPortalDomain();
+    const sealed = await sealRequest(enclave.publicKey, Buffer.from('payload'), domain);
+    await expect(openRequest(enclave, sealed.wirePayload)).rejects.toThrow();
+  });
+
+  it('fails to open when a disclosed domain is injected', async () => {
+    const enclave = await generateEncryptionKeypair();
+    const sealed = await sealRequest(enclave.publicKey, Buffer.from('payload'));
+    await expect(openRequest(enclave, sealed.wirePayload, await randomPortalDomain())).rejects.toThrow();
+  });
+
+  it('fails to open when the disclosed domain names another portal than the sealed one', async () => {
+    const enclave = await generateEncryptionKeypair();
+    const domain = await randomPortalDomain();
+    const sealed = await sealRequest(enclave.publicKey, Buffer.from('payload'), domain);
+    const swapped = { ...domain, l1Portal: EthAddress.random() };
+    await expect(openRequest(enclave, sealed.wirePayload, swapped)).rejects.toThrow();
+  });
+
+  it('fails to open when the disclosed domain names another L2 token than the sealed one', async () => {
+    const enclave = await generateEncryptionKeypair();
+    const domain = await randomPortalDomain();
+    const sealed = await sealRequest(enclave.publicKey, Buffer.from('payload'), domain);
+    const swapped = { ...domain, l2Token: await AztecAddress.random() };
+    await expect(openRequest(enclave, sealed.wirePayload, swapped)).rejects.toThrow();
+  });
+
+  it('fails to open when the disclosed domain names another TeeRegistry than the sealed one', async () => {
+    const enclave = await generateEncryptionKeypair();
+    const domain = await randomPortalDomain();
+    const sealed = await sealRequest(enclave.publicKey, Buffer.from('payload'), domain);
+    const swapped = { ...domain, teeRegistry: EthAddress.random() };
+    await expect(openRequest(enclave, sealed.wirePayload, swapped)).rejects.toThrow();
+  });
+
+  it('fails to open when the disclosed domain names another chain or rollup version than the sealed one', async () => {
+    const enclave = await generateEncryptionKeypair();
+    const domain = await randomPortalDomain();
+    const sealed = await sealRequest(enclave.publicKey, Buffer.from('payload'), domain);
+    await expect(
+      openRequest(enclave, sealed.wirePayload, { ...domain, l1ChainId: domain.l1ChainId + 1n }),
+    ).rejects.toThrow();
+    await expect(
+      openRequest(enclave, sealed.wirePayload, { ...domain, rollupVersion: domain.rollupVersion + 1n }),
+    ).rejects.toThrow();
+  });
+
   it('round-trips through toSec1Uncompressed / fromSec1Uncompressed', () => {
     const key = P256PublicKey.fromCoordinates({
       x: Buffer32.fromBuffer(Buffer.alloc(32, 0xa1)),
@@ -50,4 +111,14 @@ describe('encryption (HPKE P-256 + AES-128-GCM)', () => {
     bad[0] = 0x02;
     expect(() => P256PublicKey.fromSec1Uncompressed(bad)).toThrow(/prefix 0x04/);
   });
+
+  async function randomPortalDomain(): Promise<PortalDomain> {
+    return {
+      l1Portal: EthAddress.random(),
+      l2Token: await AztecAddress.random(),
+      teeRegistry: EthAddress.random(),
+      l1ChainId: 31337n,
+      rollupVersion: 1n,
+    };
+  }
 });

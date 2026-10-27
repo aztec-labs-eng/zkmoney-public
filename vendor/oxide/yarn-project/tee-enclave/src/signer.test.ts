@@ -1,60 +1,63 @@
-import { Fr, GrumpkinScalar } from '@aztec/aztec.js/fields';
-import { DomainSeparator, L1_TO_L2_MSG_TREE_HEIGHT } from '@aztec/constants';
-import { Buffer32 } from '@aztec/foundation/buffer';
-import { Grumpkin } from '@aztec/foundation/crypto/grumpkin';
-import { poseidon2Hash } from '@aztec/foundation/crypto/poseidon';
-import { sha256 } from '@aztec/foundation/crypto/sha256';
-import { EthAddress } from '@aztec/foundation/eth-address';
-import { AztecAddress } from '@aztec/stdlib/aztec-address';
-import { CompleteAddress } from '@aztec/stdlib/contract';
-import { computeL2ToL1MessageHash } from '@aztec/stdlib/hash';
-import { type PublicKeys, computeAddress, deriveKeys, derivePublicKeyFromSecretKey } from '@aztec/stdlib/keys';
-import { AppendOnlyTreeSnapshot, NullifierLeaf, NullifierLeafPreimage } from '@aztec/stdlib/trees';
-import { BlockHeader, PartialStateReference, StateReference, TxEffect } from '@aztec/stdlib/tx';
+import { Fr, GrumpkinScalar } from '@aztec-labs/aztec.js/fields';
+import { DomainSeparator, L1_TO_L2_MSG_TREE_HEIGHT } from '@aztec-labs/constants';
+import { Buffer32 } from '@aztec-labs/foundation/buffer';
+import { Grumpkin } from '@aztec-labs/foundation/crypto/grumpkin';
+import { poseidon2Hash } from '@aztec-labs/foundation/crypto/poseidon';
+import { sha256 } from '@aztec-labs/foundation/crypto/sha256';
+import { EthAddress } from '@aztec-labs/foundation/eth-address';
+import { AztecAddress } from '@aztec-labs/stdlib/aztec-address';
+import { CompleteAddress } from '@aztec-labs/stdlib/contract';
+import { computeL2ToL1MessageHash } from '@aztec-labs/stdlib/hash';
+import { type PublicKeys, computeAddress, deriveKeys, derivePublicKeyFromSecretKey } from '@aztec-labs/stdlib/keys';
+import { AppendOnlyTreeSnapshot, NullifierLeaf, NullifierLeafPreimage } from '@aztec-labs/stdlib/trees';
+import { BlockHeader, GlobalVariables, PartialStateReference, StateReference, TxEffect } from '@aztec-labs/stdlib/tx';
 
 import {
   type AccountInstancePreimage,
   type PasskeyPublicKey,
   type WebAuthnAuth,
   computeAccountAddress,
-  computePasskeyAccountAddress,
+  computePasskeySetImmutablesHash,
   computeWebAuthnChallenge,
-} from '@oxide/oxide-lib/account_address.js';
-import { getWithdrawContentHash } from '@oxide/oxide-lib/content_hash.js';
+} from '@oxide/oxide-lib-tee/account_address.js';
+import { getWithdrawContentHash } from '@oxide/oxide-lib-tee/content_hash.js';
 import {
   computeDepositMessageHash,
   computeSiloedDepositMessageNullifier,
-} from '@oxide/oxide-lib/deposit_message_hashing.js';
-import { SCHNORR_CHALLENGE_DST } from '@oxide/oxide-lib/grumpkin_schnorr_signature.js';
-import { computeSiloedNoteHash } from '@oxide/oxide-lib/hash.js';
+} from '@oxide/oxide-lib-tee/deposit_message_hashing.js';
+import { SCHNORR_CHALLENGE_DST } from '@oxide/oxide-lib-tee/grumpkin_schnorr_signature.js';
+import { computeSiloedNoteHash } from '@oxide/oxide-lib-tee/hash.js';
 import {
-  TX_AMOUNT_CAP,
+  type MigrationSignature,
+  type PasskeyMigrationSignature,
+  computeRefundCommitment,
+} from '@oxide/oxide-lib-tee/migration_signature.js';
+import {
+  FROZEN_DEPOSITS_REFUND_PUBLIC_INPUT_COUNT,
+  MAX_FROZEN_DEPOSITS_PER_REFUND,
   WEBAUTHN_AUTHENTICATOR_DATA_LEN,
   WEBAUTHN_FLAGS_OFFSET,
   WEBAUTHN_FLAG_USER_PRESENT,
   WEBAUTHN_FLAG_USER_VERIFIED,
-} from '@oxide/oxide-lib/oxide_constants.gen.js';
+} from '@oxide/oxide-lib-tee/oxide_constants.gen.js';
 import {
-  computeFrozenDepositRefundAuthMessage,
-  computeUnprocessedDepositRefundAuthMessage,
-} from '@oxide/oxide-lib/refund_auth_message.js';
-import type { RefundAuthorization } from '@oxide/oxide-lib/refund_authorization.js';
+  type FrozenDepositsRefundFinalizationInput,
+  type FrozenNotesRefundFinalizationInput,
+  type K1NoteSignature,
+  type NoteData,
+  type OutboxWithdrawal,
+  type PortalDomain,
+  PortalLink,
+  type SecpPublicKey,
+  type SpendValidationData,
+  type SpentDeposit,
+  type TokenOperation,
+  type UnprocessedDepositRefundFinalizationInput,
+} from '@oxide/oxide-lib-tee/types.js';
+import { computePasskeySetSlots } from '@oxide/oxide-lib/account_address.js';
 import { frozenTipFixture } from '@oxide/oxide-lib/testing/frozen_tip.js';
 import { nullifierTreeFixture } from '@oxide/oxide-lib/testing/nullifier_tree.js';
 import { SparseTree } from '@oxide/oxide-lib/testing/sparse_tree.js';
-import type {
-  FrozenDepositRefundFinalizationInput,
-  FrozenNotesRefundFinalizationInput,
-  K1NoteSignature,
-  NoteData,
-  OutboxWithdrawal,
-  PortalContext,
-  SecpPublicKey,
-  SpendValidationData,
-  SpentDeposit,
-  TokenOperation,
-  UnprocessedDepositRefundFinalizationInput,
-} from '@oxide/oxide-lib/types.js';
 
 import { describe, expect, it, jest } from '@jest/globals';
 
@@ -63,12 +66,14 @@ import { verifyEcdsa } from './libsecp256k1_signer.js';
 import { SignatureBudget } from './signature_budget.js';
 import { LocalTeeSigner, k1NoteSignatureToRS } from './signer.js';
 
-const portalContext: PortalContext = {
-  l1Portal: EthAddress.ZERO,
-  l1ChainId: 1n,
-  l2Portal: AztecAddress.fromFieldUnsafe(new Fr(1)),
-  rollupVersion: 1n,
+const portalDomain: PortalDomain = {
+  l1Portal: EthAddress.fromField(new Fr(0x1101)),
+  l1ChainId: 7n,
+  l2Token: AztecAddress.fromFieldUnsafe(new Fr(1)),
+  teeRegistry: EthAddress.fromField(new Fr(0x7e9)),
+  rollupVersion: 9n,
 };
+const portalLink = PortalLink.from(portalDomain);
 
 const createdNote = (amount: bigint, owner = AztecAddress.ZERO, randomness = Fr.ZERO): NoteData => ({
   amount,
@@ -88,8 +93,13 @@ const withdrawal = (
   randomness,
 });
 
+// The signer reads chain id and rollup version from the header, so fixture headers must name the
+// values the expected hashes use.
+const globalsFrom = (domain: PortalDomain) =>
+  GlobalVariables.empty({ chainId: new Fr(domain.l1ChainId), version: new Fr(domain.rollupVersion) });
+
 const operation = (overrides: Partial<TokenOperation> = {}): TokenOperation => ({
-  anchorBlockHeader: BlockHeader.empty(),
+  anchorBlockHeader: BlockHeader.empty({ globalVariables: globalsFrom(portalDomain) }),
   spentNotes: [],
   createdNotes: [],
   deposits: [],
@@ -98,49 +108,7 @@ const operation = (overrides: Partial<TokenOperation> = {}): TokenOperation => (
 });
 
 describe('LocalTeeSigner token operations', () => {
-  const signer = LocalTeeSigner.random(portalContext);
-
-  it('rejects a created note one base-unit over the cap', async () => {
-    await expect(
-      signer.signTokenOperation(operation({ createdNotes: [createdNote(TX_AMOUNT_CAP + 1n)] })),
-    ).rejects.toThrow(/exceeds cap/);
-  });
-
-  it('rejects a withdrawal one base-unit over the cap', async () => {
-    await expect(
-      signer.signTokenOperation(operation({ withdrawals: [withdrawal(TX_AMOUNT_CAP + 1n)] })),
-    ).rejects.toThrow(/exceeds cap/);
-  });
-
-  it('signs a created note at exactly the cap when a deposit balances it', async () => {
-    const deposits = await depositFixture([TX_AMOUNT_CAP]);
-    const output = await signer.signTokenOperation(
-      operation({
-        anchorBlockHeader: deposits.anchorBlockHeader,
-        deposits: deposits.deposits,
-        createdNotes: [createdNote(TX_AMOUNT_CAP)],
-      }),
-    );
-
-    expect(output.signatures).toHaveLength(1);
-    expect(output.withdrawalSignatures).toHaveLength(0);
-    expectFields(output.requiredNullifiers, deposits.nullifiers);
-  });
-
-  it('signs a withdrawal at exactly the cap when a deposit balances it', async () => {
-    const deposits = await depositFixture([TX_AMOUNT_CAP]);
-    const output = await signer.signTokenOperation(
-      operation({
-        anchorBlockHeader: deposits.anchorBlockHeader,
-        deposits: deposits.deposits,
-        withdrawals: [withdrawal(TX_AMOUNT_CAP)],
-      }),
-    );
-
-    expect(output.signatures).toHaveLength(0);
-    expect(output.withdrawalSignatures).toHaveLength(1);
-    expectFields(output.requiredNullifiers, deposits.nullifiers);
-  });
+  const signer = LocalTeeSigner.random(portalLink);
 
   it('rejects an operation whose deposited value does not balance outputs', async () => {
     const deposits = await depositFixture([7n]);
@@ -173,15 +141,15 @@ describe('LocalTeeSigner token operations', () => {
     expectFields(output.requiredNullifiers, deposits.nullifiers);
   });
 
-  it('signs mixed outputs whose aggregate value exceeds the single-output cap', async () => {
-    const deposits = await depositFixture([TX_AMOUNT_CAP, TX_AMOUNT_CAP]);
+  it('signs multiple outputs balanced by multiple deposits', async () => {
+    const deposits = await depositFixture([10n, 7n]);
     const output = await signer.signTokenOperation(
       operation({
         anchorBlockHeader: deposits.anchorBlockHeader,
         deposits: deposits.deposits,
         createdNotes: [
-          createdNote(TX_AMOUNT_CAP, AztecAddress.fromFieldUnsafe(new Fr(2)), new Fr(11)),
-          createdNote(TX_AMOUNT_CAP - 1n, AztecAddress.fromFieldUnsafe(new Fr(3)), new Fr(12)),
+          createdNote(9n, AztecAddress.fromFieldUnsafe(new Fr(2)), new Fr(11)),
+          createdNote(7n, AztecAddress.fromFieldUnsafe(new Fr(3)), new Fr(12)),
         ],
         withdrawals: [withdrawal(1n, EthAddress.fromField(new Fr(5)), new Fr(13))],
       }),
@@ -205,10 +173,10 @@ describe('LocalTeeSigner token operations', () => {
 
     const output = await signer.signTokenOperation(op);
     const anchorBlockHash = await op.anchorBlockHeader.hash();
-    const noteHash = await computeSiloedNoteHash({ ...note, l2Portal: portalContext.l2Portal });
+    const noteHash = await computeSiloedNoteHash({ ...note, l2Token: portalDomain.l2Token });
     const withdrawalMessageHash = computeL2ToL1MessageHash({
-      l2Sender: portalContext.l2Portal,
-      l1Recipient: portalContext.l1Portal,
+      l2Sender: portalDomain.l2Token,
+      l1Recipient: portalDomain.l1Portal,
       content: getWithdrawContentHash(
         outgoing.executor,
         outgoing.userPayloadHash,
@@ -216,8 +184,8 @@ describe('LocalTeeSigner token operations', () => {
         outgoing.proverTip,
         outgoing.randomness,
       ),
-      rollupVersion: new Fr(portalContext.rollupVersion),
-      chainId: new Fr(portalContext.l1ChainId),
+      rollupVersion: new Fr(portalDomain.rollupVersion),
+      chainId: new Fr(portalDomain.l1ChainId),
     });
 
     expectFields(output.requiredNullifiers, deposits.nullifiers);
@@ -226,7 +194,9 @@ describe('LocalTeeSigner token operations', () => {
 
     const noteDigest = await buildNoteOperationDigest({
       anchorBlockHash,
-      tokenAddress: portalContext.l2Portal,
+      tokenAddress: portalDomain.l2Token,
+      l1Portal: portalDomain.l1Portal,
+      teeRegistry: portalDomain.teeRegistry,
       requiredNullifiers: output.requiredNullifiers,
       siloedNoteHashes: output.teeNotes,
       withdrawalMessageHashes: output.withdrawalMessageHashes,
@@ -236,7 +206,9 @@ describe('LocalTeeSigner token operations', () => {
 
     const withdrawalDigest = await buildWithdrawalOperationDigest({
       anchorBlockHash,
-      tokenAddress: portalContext.l2Portal,
+      tokenAddress: portalDomain.l2Token,
+      l1Portal: portalDomain.l1Portal,
+      teeRegistry: portalDomain.teeRegistry,
       requiredNullifiers: output.requiredNullifiers,
       siloedNoteHashes: output.teeNotes,
       withdrawalMessageHashes: output.withdrawalMessageHashes,
@@ -245,7 +217,7 @@ describe('LocalTeeSigner token operations', () => {
     expect(verifiesK1Signature(output.withdrawalSignatures[0]!, withdrawalDigest, signer.publicKey)).toBe(true);
 
     const otherPortalHash = computeL2ToL1MessageHash({
-      l2Sender: portalContext.l2Portal,
+      l2Sender: portalDomain.l2Token,
       l1Recipient: EthAddress.fromField(new Fr(99)),
       content: getWithdrawContentHash(
         outgoing.executor,
@@ -254,18 +226,48 @@ describe('LocalTeeSigner token operations', () => {
         outgoing.proverTip,
         outgoing.randomness,
       ),
-      rollupVersion: new Fr(portalContext.rollupVersion),
-      chainId: new Fr(portalContext.l1ChainId),
+      rollupVersion: new Fr(portalDomain.rollupVersion),
+      chainId: new Fr(portalDomain.l1ChainId),
     });
     const wrongWithdrawalDigest = await buildWithdrawalOperationDigest({
       anchorBlockHash,
-      tokenAddress: portalContext.l2Portal,
+      tokenAddress: portalDomain.l2Token,
+      l1Portal: portalDomain.l1Portal,
+      teeRegistry: portalDomain.teeRegistry,
       requiredNullifiers: output.requiredNullifiers,
       siloedNoteHashes: output.teeNotes,
       withdrawalMessageHashes: [otherPortalHash],
       messageHash: otherPortalHash,
     });
     expect(verifiesK1Signature(output.withdrawalSignatures[0]!, wrongWithdrawalDigest, signer.publicKey)).toBe(false);
+  });
+
+  it('commits withdrawal hashes to the anchor header chain id and rollup version, not the signer construction', async () => {
+    const otherChain: PortalDomain = { ...portalDomain, l1ChainId: 31337n, rollupVersion: 3n };
+    const deposits = await depositFixture([5n], otherChain);
+    const outgoing = withdrawal(5n);
+    const output = await signer.signTokenOperation(
+      operation({
+        anchorBlockHeader: deposits.anchorBlockHeader,
+        deposits: deposits.deposits,
+        withdrawals: [outgoing],
+      }),
+    );
+
+    const expected = computeL2ToL1MessageHash({
+      l2Sender: portalDomain.l2Token,
+      l1Recipient: portalDomain.l1Portal,
+      content: getWithdrawContentHash(
+        outgoing.executor,
+        outgoing.userPayloadHash,
+        outgoing.amount,
+        outgoing.proverTip,
+        outgoing.randomness,
+      ),
+      rollupVersion: new Fr(otherChain.rollupVersion),
+      chainId: new Fr(otherChain.l1ChainId),
+    });
+    expectFields(output.withdrawalMessageHashes, [expected]);
   });
 
   it('signs an empty operation without producing commitments', async () => {
@@ -289,7 +291,7 @@ describe('LocalTeeSigner token operations', () => {
 
     const output = await signer.signTokenOperation(operation({ createdNotes: notes }));
     const expectedHashes = await Promise.all(
-      notes.map(note => computeSiloedNoteHash({ ...note, l2Portal: portalContext.l2Portal })),
+      notes.map(note => computeSiloedNoteHash({ ...note, l2Token: portalDomain.l2Token })),
     );
 
     expect(output.signatures).toHaveLength(notes.length);
@@ -322,7 +324,7 @@ describe('LocalTeeSigner token operations', () => {
 // test there with equivalent behavior. This helps ensure the enclave and the client perform equivalent validation
 // checks.
 describe('LocalTeeSigner creation-effect checks', () => {
-  const signer = LocalTeeSigner.random(portalContext) as unknown as {
+  const signer = LocalTeeSigner.random(portalLink) as unknown as {
     validateWithdrawalMessageHashesInL2ToL1Msgs(withdrawalMessageHashes: Fr[], creationEffects: TxEffect): void;
     validateMessageHashInWithdrawalMessageHashes(messageHash: Fr, withdrawalMessageHashes: Fr[]): void;
     validateRequiredNullifiers(requiredNullifiers: Fr[], creationEffects: TxEffect): void;
@@ -390,7 +392,7 @@ describe('LocalTeeSigner creation-effect checks', () => {
 });
 
 describe('LocalTeeSigner refund executors', () => {
-  const signer = LocalTeeSigner.random(portalContext);
+  const signer = LocalTeeSigner.random(portalLink);
 
   // The zero-executor guard is the first statement in each refund signer, so a minimal input with only
   // `executor` set exercises it without building a full refund witness.
@@ -404,9 +406,9 @@ describe('LocalTeeSigner refund executors', () => {
 
   it('refuses to finalize a frozen-deposit refund to the zero executor', async () => {
     await expect(
-      signer.signFrozenDepositRefundFinalization({
+      signer.signFrozenDepositsRefundFinalization({
         executor: EthAddress.ZERO,
-      } as unknown as FrozenDepositRefundFinalizationInput),
+      } as unknown as FrozenDepositsRefundFinalizationInput),
     ).rejects.toThrow(/Refund executor is the zero address/);
   });
 
@@ -419,7 +421,7 @@ describe('LocalTeeSigner refund executors', () => {
   });
 
   it('refuses to finalize a frozen-notes refund that spends no note', async () => {
-    const frozen = await frozenTipFixture();
+    const frozen = await frozenTipFixture({ domain: portalDomain });
     await expect(
       signer.signFrozenNotesRefundFinalization({
         ...frozen,
@@ -432,13 +434,15 @@ describe('LocalTeeSigner refund executors', () => {
 });
 
 describe('LocalTeeSigner frozen-notes refund', () => {
-  const signer = LocalTeeSigner.random(portalContext);
+  const signer = LocalTeeSigner.random(portalLink);
   const executor = EthAddress.fromField(new Fr(0xbeef));
 
   it('rejects a note set that mixes owners', async () => {
     const owner = await makePasskeyAccount();
     const other = await makePasskeyAccount();
-    const { frozenTip, frozenArchiveRoot, frozenTipMembershipWitness } = await frozenTipFixture();
+    const { frozenTip, frozenArchiveRoot, frozenTipMembershipWitness } = await frozenTipFixture({
+      domain: portalDomain,
+    });
 
     // The single-owner rule is checked before the spends are validated, so the notes here only have to carry an
     // owner. One note belongs to `owner`, the other to `other`; one passkey cannot authorize both.
@@ -458,14 +462,14 @@ describe('LocalTeeSigner frozen-notes refund', () => {
         owner: owner.address,
         ownerPublicKeys: owner.publicKeys,
         ownerInstance: owner.instance,
-        auth: await owner.authorize(Fr.random()),
+        migrationSignature: await owner.signMigration(executor, Fr.ZERO),
       }),
     ).rejects.toThrow(`Note owner ${other.address} does not match the refund owner ${owner.address}`);
   });
 });
 
 describe('LocalTeeSigner unprocessed-deposit refund', () => {
-  const signer = LocalTeeSigner.random(portalContext);
+  const signer = LocalTeeSigner.random(portalLink);
   const executor = EthAddress.fromField(new Fr(0xbeef));
   const amount = 10n;
   const userPayloadHash = new Fr(1);
@@ -473,18 +477,20 @@ describe('LocalTeeSigner unprocessed-deposit refund', () => {
   // The frozen tip has absorbed no message, so any leaf index is unprocessed.
   const messageLeafIndex = new Fr(5);
 
-  async function refundInput(account: RefundAccountFixture): Promise<{
+  async function refundInput(
+    account: RefundAccountFixture,
+    domain: PortalDomain = portalDomain,
+  ): Promise<{
     input: UnprocessedDepositRefundFinalizationInput;
     messageHash: Fr;
   }> {
-    const { frozenTip, frozenArchiveRoot, frozenTipMembershipWitness } = await frozenTipFixture();
-    const messageHash = await computeDepositMessageHash(portalContext, {
+    const { frozenTip, frozenArchiveRoot, frozenTipMembershipWitness } = await frozenTipFixture({ domain });
+    const messageHash = await computeDepositMessageHash(domain, {
       sharedSecretSalt,
       recipient: account.address,
       amount,
       messageLeafIndex,
     });
-    const authMessage = await computeUnprocessedDepositRefundAuthMessage(messageHash, executor, userPayloadHash);
     const input: UnprocessedDepositRefundFinalizationInput = {
       frozenArchiveRoot,
       frozenTip,
@@ -498,7 +504,7 @@ describe('LocalTeeSigner unprocessed-deposit refund', () => {
       l2RecipientInstance: account.instance,
       l2RecipientNhkM: account.masterNullifierHidingKey,
       messageLeafIndex,
-      auth: await account.authorize(authMessage),
+      migrationSignature: await account.signMigration(executor, userPayloadHash),
     };
     return { input, messageHash };
   }
@@ -511,22 +517,32 @@ describe('LocalTeeSigner unprocessed-deposit refund', () => {
 
     expect(output.messageHash).toEqual(messageHash);
     expect(output.siloedNullifier).toEqual(
-      await computeSiloedDepositMessageNullifier(portalContext.l2Portal, messageHash, account.masterNullifierHidingKey),
+      await computeSiloedDepositMessageNullifier(portalDomain.l2Token, messageHash, account.masterNullifierHidingKey),
     );
+  });
+
+  it('commits the refund message hash to the frozen tip chain id and rollup version, not the signer construction', async () => {
+    const account = await makePasskeyAccount();
+    const otherChain: PortalDomain = { ...portalDomain, l1ChainId: 999n, rollupVersion: 3n };
+    const { input, messageHash } = await refundInput(account, otherChain);
+
+    const output = await signer.signUnprocessedDepositRefundFinalization(input);
+
+    expect(output.messageHash).toEqual(messageHash);
   });
 
   it('rejects a passkey the recipient address does not commit to', async () => {
     const account = await makePasskeyAccount();
     const other = await makePasskeyAccount();
     const { input } = await refundInput(account);
-    const auth = input.auth as Extract<RefundAuthorization, { kind: 'passkey' }>;
+    const signature = input.migrationSignature as PasskeyMigrationSignature;
 
     await expect(
       signer.signUnprocessedDepositRefundFinalization({
         ...input,
-        auth: { ...auth, passkey: other.passkey.publicKey },
+        migrationSignature: { ...signature, passkey: other.passkey.publicKey },
       }),
-    ).rejects.toThrow(/authorization does not verify/);
+    ).rejects.toThrow("passkey is not in the owner's passkey set");
   });
 
   it('rejects an assertion over a different user payload', async () => {
@@ -535,22 +551,24 @@ describe('LocalTeeSigner unprocessed-deposit refund', () => {
 
     await expect(
       signer.signUnprocessedDepositRefundFinalization({ ...input, userPayloadHash: new Fr(2) }),
-    ).rejects.toThrow(/authorization does not verify/);
+    ).rejects.toThrow('invalid WebAuthn signature');
   });
 
   it('rejects an assertion by another passkey', async () => {
     const account = await makePasskeyAccount();
     const other = await makePasskeyAccount();
-    const { input, messageHash } = await refundInput(account);
-    const authMessage = await computeUnprocessedDepositRefundAuthMessage(messageHash, executor, userPayloadHash);
-    const auth = input.auth as Extract<RefundAuthorization, { kind: 'passkey' }>;
+    const { input } = await refundInput(account);
+    const signature = input.migrationSignature as PasskeyMigrationSignature;
 
     await expect(
       signer.signUnprocessedDepositRefundFinalization({
         ...input,
-        auth: { ...auth, webauthn: await other.passkey.sign(authMessage) },
+        migrationSignature: {
+          ...signature,
+          webauthn: await other.passkey.sign(await computeRefundCommitment(executor, userPayloadHash)),
+        },
       }),
-    ).rejects.toThrow(/authorization does not verify/);
+    ).rejects.toThrow('invalid WebAuthn signature');
   });
 
   it('rejects a nullifier hiding key of another account', async () => {
@@ -566,6 +584,7 @@ describe('LocalTeeSigner unprocessed-deposit refund', () => {
   /** A frozen tip whose L1-to-L2 tree holds the leaves at indices below `nextAvailableLeafIndex`. */
   const frozenTipAbsorbingUpTo = (nextAvailableLeafIndex: number) =>
     frozenTipFixture({
+      domain: portalDomain,
       state: new StateReference(
         new AppendOnlyTreeSnapshot(Fr.random(), nextAvailableLeafIndex),
         PartialStateReference.empty(),
@@ -613,12 +632,15 @@ describe('LocalTeeSigner unprocessed-deposit refund', () => {
 
     // A later block of the frozen archive absorbed the message.
     await expect(
-      signer.signUnprocessedDepositRefundFinalization({ ...input, ...(await frozenTipFixture({ laterBlocks: 1 })) }),
+      signer.signUnprocessedDepositRefundFinalization({
+        ...input,
+        ...(await frozenTipFixture({ domain: portalDomain, laterBlocks: 1 })),
+      }),
     ).rejects.toThrow(`Membership witness verification failed for block hash ${Fr.ZERO}`);
   });
 
-  // A fallback-key owner - an address that commits to no passkey, such as a shared-secret escrow - authorizes with
-  // its master fallback key instead.
+  // A fallback-key owner - an address that commits to no passkey, such as a shared-secret escrow - signs with its
+  // master fallback key instead.
   it('signs a refund the recipient master fallback key authorized', async () => {
     const account = await makeFallbackKeyAccount();
     const { input, messageHash } = await refundInput(account);
@@ -627,28 +649,31 @@ describe('LocalTeeSigner unprocessed-deposit refund', () => {
 
     expect(output.messageHash).toEqual(messageHash);
     expect(output.siloedNullifier).toEqual(
-      await computeSiloedDepositMessageNullifier(portalContext.l2Portal, messageHash, account.masterNullifierHidingKey),
+      await computeSiloedDepositMessageNullifier(portalDomain.l2Token, messageHash, account.masterNullifierHidingKey),
     );
   });
 
-  it('rejects a fallback-key authorization by a passkey-bound owner', async () => {
+  it('rejects a fallback-key signature by a passkey-bound owner', async () => {
     const account = await makePasskeyAccount();
-    const { input, messageHash } = await refundInput(account);
-    const authMessage = await computeUnprocessedDepositRefundAuthMessage(messageHash, executor, userPayloadHash);
+    const { input } = await refundInput(account);
 
     // The signature is the account's own, but its address commits to a passkey, so it does not derive from the zero
     // immutables hash the fallback-key mode uses.
     await expect(
       signer.signUnprocessedDepositRefundFinalization({
         ...input,
-        auth: await fallbackKeyAuthorization(account.masterFallbackSecretKey, authMessage),
+        migrationSignature: await fallbackKeyMigrationSignature(
+          account.masterFallbackSecretKey,
+          executor,
+          userPayloadHash,
+        ),
       }),
-    ).rejects.toThrow(/authorization does not verify/);
+    ).rejects.toThrow('migration signature does not match owner address');
   });
 });
 
 describe('LocalTeeSigner frozen-deposit refund', () => {
-  const signer = LocalTeeSigner.random(portalContext);
+  const signer = LocalTeeSigner.random(portalLink);
   const executor = EthAddress.fromField(new Fr(0xbeef));
   const amount = 10n;
   const userPayloadHash = new Fr(1);
@@ -663,8 +688,8 @@ describe('LocalTeeSigner frozen-deposit refund', () => {
   async function refundInput(
     account: RefundAccountFixture,
     opts: { inTree: 'message' | 'another message'; nullifier: 'unspent' | 'spent' | 'spent, stale low leaf' },
-  ): Promise<FrozenDepositRefundFinalizationInput> {
-    const messageHash = await computeDepositMessageHash(portalContext, {
+  ): Promise<FrozenDepositsRefundFinalizationInput> {
+    const messageHash = await computeDepositMessageHash(portalDomain, {
       sharedSecretSalt,
       recipient: account.address,
       amount,
@@ -675,7 +700,7 @@ describe('LocalTeeSigner frozen-deposit refund', () => {
     const messageTree = await SparseTree.build(L1_TO_L2_MSG_TREE_HEIGHT, leaves, DomainSeparator.MERKLE_HASH);
 
     const siloedNullifier = await computeSiloedDepositMessageNullifier(
-      portalContext.l2Portal,
+      portalDomain.l2Token,
       messageHash,
       account.masterNullifierHidingKey,
     );
@@ -699,6 +724,7 @@ describe('LocalTeeSigner frozen-deposit refund', () => {
 
     const empty = PartialStateReference.empty();
     const frozen = await frozenTipFixture({
+      domain: portalDomain,
       state: new StateReference(
         new AppendOnlyTreeSnapshot(messageTree.root, leaves.length),
         new PartialStateReference(
@@ -708,46 +734,189 @@ describe('LocalTeeSigner frozen-deposit refund', () => {
         ),
       ),
     });
-    const authMessage = await computeFrozenDepositRefundAuthMessage(messageHash, executor, userPayloadHash);
     return {
       ...frozen,
-      amount,
       executor,
       userPayloadHash,
-      sharedSecretSalt,
       l2Recipient: account.address,
       l2RecipientPublicKeys: account.publicKeys,
       l2RecipientInstance: account.instance,
       l2RecipientNhkM: account.masterNullifierHidingKey,
-      messageMembershipWitness: messageTree.membershipWitness<typeof L1_TO_L2_MSG_TREE_HEIGHT>(messageLeafIndex),
-      lowNullifierMembershipWitness: witnessTree.witness(0),
-      auth: await account.authorize(authMessage),
+      deposits: [
+        {
+          amount,
+          sharedSecretSalt,
+          messageMembershipWitness: messageTree.membershipWitness<typeof L1_TO_L2_MSG_TREE_HEIGHT>(messageLeafIndex),
+          lowNullifierMembershipWitness: witnessTree.witness(0),
+        },
+      ],
+      migrationSignature: await account.signMigration(executor, userPayloadHash),
     };
   }
+
+  /**
+   * A frozen-deposit refund of deposits with `amounts` at the message leaves 0, 1, ... of a tip that holds every
+   * message and none of their nullifiers. One low leaf, below every key and with no next leaf, is the low leaf of every
+   * deposit nullifier.
+   */
+  async function batchRefundInput(
+    account: RefundAccountFixture,
+    amounts: bigint[],
+  ): Promise<{ input: FrozenDepositsRefundFinalizationInput; messageHashes: Fr[] }> {
+    const salts = amounts.map((_, i) => new Fr(100 + i));
+    const messageHashes = await Promise.all(
+      amounts.map((depositAmount, i) =>
+        computeDepositMessageHash(portalDomain, {
+          sharedSecretSalt: salts[i]!,
+          recipient: account.address,
+          amount: depositAmount,
+          messageLeafIndex: new Fr(i),
+        }),
+      ),
+    );
+    const leaves = messageHashes.length > 0 ? messageHashes : [Fr.random()];
+    const messageTree = await SparseTree.build(L1_TO_L2_MSG_TREE_HEIGHT, leaves, DomainSeparator.MERKLE_HASH);
+    const nullifierLeaves = [new NullifierLeafPreimage(new NullifierLeaf(new Fr(1)), Fr.ZERO, 0n)];
+    const nullifierTree = await nullifierTreeFixture(nullifierLeaves);
+
+    const empty = PartialStateReference.empty();
+    const frozen = await frozenTipFixture({
+      domain: portalDomain,
+      state: new StateReference(
+        new AppendOnlyTreeSnapshot(messageTree.root, leaves.length),
+        new PartialStateReference(
+          empty.noteHashTree,
+          new AppendOnlyTreeSnapshot(nullifierTree.root, nullifierLeaves.length),
+          empty.publicDataTree,
+        ),
+      ),
+    });
+    const input: FrozenDepositsRefundFinalizationInput = {
+      ...frozen,
+      executor,
+      userPayloadHash,
+      l2Recipient: account.address,
+      l2RecipientPublicKeys: account.publicKeys,
+      l2RecipientInstance: account.instance,
+      l2RecipientNhkM: account.masterNullifierHidingKey,
+      deposits: amounts.map((depositAmount, i) => ({
+        amount: depositAmount,
+        sharedSecretSalt: salts[i]!,
+        messageMembershipWitness: messageTree.membershipWitness<typeof L1_TO_L2_MSG_TREE_HEIGHT>(i),
+        lowNullifierMembershipWitness: nullifierTree.witness(0),
+      })),
+      migrationSignature: await account.signMigration(executor, userPayloadHash),
+    };
+    return { input, messageHashes };
+  }
+
+  it('signs one refund of the sum of a batch of deposits', async () => {
+    const account = await makePasskeyAccount();
+    const { input, messageHashes } = await batchRefundInput(account, [3n, 4n]);
+
+    const output = await signer.signFrozenDepositsRefundFinalization(input);
+
+    const nullifiers = await Promise.all(
+      messageHashes.map(messageHash =>
+        computeSiloedDepositMessageNullifier(portalDomain.l2Token, messageHash, account.masterNullifierHidingKey),
+      ),
+    );
+    expect(output.nullifiers).toEqual(nullifiers);
+    expect(output.amount).toBe(7n);
+    expect(output.publicInputs).toHaveLength(FROZEN_DEPOSITS_REFUND_PUBLIC_INPUT_COUNT);
+    expect(output.publicInputs[4]).toEqual(new Fr(7n));
+    expect(output.publicInputs.slice(7)).toEqual([
+      ...nullifiers,
+      ...Array(MAX_FROZEN_DEPOSITS_PER_REFUND - nullifiers.length).fill(Fr.ZERO),
+    ]);
+  });
+
+  it('signs a full batch of deposits', async () => {
+    const account = await makePasskeyAccount();
+    const amounts = Array.from({ length: MAX_FROZEN_DEPOSITS_PER_REFUND }, (_, i) => BigInt(i + 1));
+    const { input, messageHashes } = await batchRefundInput(account, amounts);
+
+    const output = await signer.signFrozenDepositsRefundFinalization(input);
+
+    const nullifiers = await Promise.all(
+      messageHashes.map(messageHash =>
+        computeSiloedDepositMessageNullifier(portalDomain.l2Token, messageHash, account.masterNullifierHidingKey),
+      ),
+    );
+    expect(output.nullifiers).toEqual(nullifiers);
+    expect(output.amount).toBe(amounts.reduce((sum, amount) => sum + amount, 0n));
+    expect(output.publicInputs.slice(7)).toEqual(nullifiers);
+  });
+
+  it('rejects a refund without deposits', async () => {
+    const account = await makePasskeyAccount();
+    const { input } = await batchRefundInput(account, []);
+
+    await expect(signer.signFrozenDepositsRefundFinalization(input)).rejects.toThrow(
+      'Frozen-deposit refund must refund at least one deposit',
+    );
+  });
+
+  it('rejects more deposits than the circuit holds', async () => {
+    const account = await makePasskeyAccount();
+    const { input } = await batchRefundInput(
+      account,
+      Array.from({ length: MAX_FROZEN_DEPOSITS_PER_REFUND + 1 }, () => 1n),
+    );
+
+    await expect(signer.signFrozenDepositsRefundFinalization(input)).rejects.toThrow(
+      `Frozen-deposit refund refunds ${MAX_FROZEN_DEPOSITS_PER_REFUND + 1} deposits, max ${MAX_FROZEN_DEPOSITS_PER_REFUND}`,
+    );
+  });
+
+  // The circuit skips a zero-amount deposit as padding, so the enclave refuses to sign for one.
+  it('rejects a deposit with a zero amount', async () => {
+    const account = await makePasskeyAccount();
+    const { input } = await batchRefundInput(account, [3n, 0n]);
+
+    await expect(signer.signFrozenDepositsRefundFinalization(input)).rejects.toThrow(
+      'Frozen-deposit refund includes a deposit with a zero amount',
+    );
+  });
+
+  it('rejects the same deposit twice', async () => {
+    const account = await makePasskeyAccount();
+    const { input, messageHashes } = await batchRefundInput(account, [3n]);
+    const nullifier = await computeSiloedDepositMessageNullifier(
+      portalDomain.l2Token,
+      messageHashes[0]!,
+      account.masterNullifierHidingKey,
+    );
+
+    await expect(
+      signer.signFrozenDepositsRefundFinalization({ ...input, deposits: [input.deposits[0]!, input.deposits[0]!] }),
+    ).rejects.toThrow(`Frozen-deposit refund includes the deposit with nullifier ${nullifier} twice`);
+  });
 
   it('signs a refund of a deposit that is in the frozen tree and unspent', async () => {
     const account = await makePasskeyAccount();
 
-    const output = await signer.signFrozenDepositRefundFinalization(
+    const output = await signer.signFrozenDepositsRefundFinalization(
       await refundInput(account, { inTree: 'message', nullifier: 'unspent' }),
     );
 
-    const messageHash = await computeDepositMessageHash(portalContext, {
+    const messageHash = await computeDepositMessageHash(portalDomain, {
       sharedSecretSalt,
       recipient: account.address,
       amount,
       messageLeafIndex: new Fr(messageLeafIndex),
     });
-    expect(output.siloedNullifier).toEqual(
-      await computeSiloedDepositMessageNullifier(portalContext.l2Portal, messageHash, account.masterNullifierHidingKey),
-    );
+    expect(output.nullifiers).toEqual([
+      await computeSiloedDepositMessageNullifier(portalDomain.l2Token, messageHash, account.masterNullifierHidingKey),
+    ]);
+    expect(output.amount).toBe(amount);
   });
 
   it('rejects a deposit message the frozen L1-to-L2 tree does not hold', async () => {
     const account = await makePasskeyAccount();
 
     await expect(
-      signer.signFrozenDepositRefundFinalization(
+      signer.signFrozenDepositsRefundFinalization(
         await refundInput(account, { inTree: 'another message', nullifier: 'unspent' }),
       ),
     ).rejects.toThrow(/Membership witness verification failed for L1->L2 message/);
@@ -757,7 +926,9 @@ describe('LocalTeeSigner frozen-deposit refund', () => {
     const account = await makePasskeyAccount();
 
     await expect(
-      signer.signFrozenDepositRefundFinalization(await refundInput(account, { inTree: 'message', nullifier: 'spent' })),
+      signer.signFrozenDepositsRefundFinalization(
+        await refundInput(account, { inTree: 'message', nullifier: 'spent' }),
+      ),
     ).rejects.toThrow(/does not skip over it/);
   });
 
@@ -766,7 +937,7 @@ describe('LocalTeeSigner frozen-deposit refund', () => {
     const account = await makePasskeyAccount();
 
     await expect(
-      signer.signFrozenDepositRefundFinalization(
+      signer.signFrozenDepositsRefundFinalization(
         await refundInput(account, { inTree: 'message', nullifier: 'spent, stale low leaf' }),
       ),
     ).rejects.toThrow(/Membership witness verification failed for low-nullifier/);
@@ -778,7 +949,7 @@ describe('LocalTeeSigner frozen-deposit refund', () => {
     const { frozenArchiveRoot } = await refundInput(account, { inTree: 'message', nullifier: 'spent' });
 
     // The header claims a state without the deposit nullifier, but the frozen archive ends at a block that holds it.
-    await expect(signer.signFrozenDepositRefundFinalization({ ...input, frozenArchiveRoot })).rejects.toThrow(
+    await expect(signer.signFrozenDepositsRefundFinalization({ ...input, frozenArchiveRoot })).rejects.toThrow(
       `Membership witness verification failed for block hash ${await input.frozenTip.hash()}`,
     );
   });
@@ -788,9 +959,9 @@ describe('LocalTeeSigner frozen-deposit refund', () => {
     const input = await refundInput(account, { inTree: 'message', nullifier: 'unspent' });
 
     // The deposit was spent in a later block of the frozen archive, so this block does not hold its nullifier yet.
-    const beforeSpend = await frozenTipFixture({ state: input.frozenTip.state, laterBlocks: 1 });
+    const beforeSpend = await frozenTipFixture({ domain: portalDomain, state: input.frozenTip.state, laterBlocks: 1 });
 
-    await expect(signer.signFrozenDepositRefundFinalization({ ...input, ...beforeSpend })).rejects.toThrow(
+    await expect(signer.signFrozenDepositsRefundFinalization({ ...input, ...beforeSpend })).rejects.toThrow(
       `Membership witness verification failed for block hash ${Fr.ZERO}`,
     );
   });
@@ -806,7 +977,7 @@ describe('LocalTeeSigner signature budget', () => {
 
   it('decrements one unit per signature produced', async () => {
     const budget = new SignatureBudget(10);
-    const signer = new LocalTeeSigner(Buffer32.random(), portalContext, budget);
+    const signer = new LocalTeeSigner(Buffer32.random(), portalLink, budget);
     const output = await signer.signTokenOperation(zeroSumOperation(2, 1));
     expect(output.signatures).toHaveLength(2);
     expect(output.withdrawalSignatures).toHaveLength(1);
@@ -816,16 +987,16 @@ describe('LocalTeeSigner signature budget', () => {
   it('rejects mid-operation when the budget runs out', async () => {
     const onExhausted = jest.fn();
     const budget = new SignatureBudget(2, undefined, onExhausted);
-    const signer = new LocalTeeSigner(Buffer32.random(), portalContext, budget);
+    const signer = new LocalTeeSigner(Buffer32.random(), portalLink, budget);
     await expect(signer.signTokenOperation(zeroSumOperation(3))).rejects.toThrow(/signature budget exhausted/);
     expect(onExhausted).toHaveBeenCalledTimes(1);
     expect(budget.remaining()).toBe(0);
   });
 
-  it('shares the budget with clones made via withPortalContext', async () => {
+  it('shares the budget with clones made via withPortalLink', async () => {
     const budget = new SignatureBudget(10);
-    const signer = new LocalTeeSigner(Buffer32.random(), portalContext, budget);
-    const clone = signer.withPortalContext({ ...portalContext, rollupVersion: 2n });
+    const signer = new LocalTeeSigner(Buffer32.random(), portalLink, budget);
+    const clone = signer.withPortalLink(PortalLink.from({ ...portalLink, l1Portal: EthAddress.fromField(new Fr(2)) }));
     await clone.signTokenOperation(zeroSumOperation(1));
     expect(budget.remaining()).toBe(9);
   });
@@ -839,17 +1010,17 @@ interface SyntheticOwner {
 /** A P-256 passkey held in WebCrypto that produces assertions with the layout the refund circuits verify. */
 interface TestPasskey {
   publicKey: PasskeyPublicKey;
-  sign(authMessage: Fr): Promise<WebAuthnAuth>;
+  sign(challenge: Fr): Promise<WebAuthnAuth>;
 }
 
-/** An account whose funds a refund recovers, with the authorizer of the mode its address selects. */
+/** An account whose funds a refund recovers, with the signer of the mode its address selects. */
 interface RefundAccountFixture {
   address: AztecAddress;
   publicKeys: PublicKeys;
   instance: AccountInstancePreimage;
   masterNullifierHidingKey: GrumpkinScalar;
   masterFallbackSecretKey: GrumpkinScalar;
-  authorize(authMessage: Fr): Promise<RefundAuthorization>;
+  signMigration(executor: EthAddress, userPayloadHash: Fr): Promise<MigrationSignature>;
 }
 
 interface PasskeyAccountFixture extends RefundAccountFixture {
@@ -857,17 +1028,20 @@ interface PasskeyAccountFixture extends RefundAccountFixture {
 }
 
 /**
- * Grumpkin-Schnorr-Poseidon2 signature over `authMessage`, matching `schnorr::assert_valid_signature`. Mirrors
- * `signRefundAuthMessageWithFallbackKey` of `@oxide/oxide-client`, which the enclave may not depend on.
+ * Grumpkin-Schnorr-Poseidon2 signature of the migration to `executor` with `userPayloadHash`, matching
+ * `schnorr::assert_valid_signature`. Mirrors the fallback-key mode of `signMigration` of `@oxide/oxide-client`, which
+ * the enclave may not depend on.
  */
-async function fallbackKeyAuthorization(
+async function fallbackKeyMigrationSignature(
   masterFallbackSecretKey: GrumpkinScalar,
-  authMessage: Fr,
-): Promise<RefundAuthorization> {
+  executor: EthAddress,
+  userPayloadHash: Fr,
+): Promise<MigrationSignature> {
   const fbpkM = await derivePublicKeyFromSecretKey(masterFallbackSecretKey);
+  const message = await computeRefundCommitment(executor, userPayloadHash);
   const k = GrumpkinScalar.random();
   const R = await Grumpkin.mul(Grumpkin.generator, k);
-  const e = await poseidon2Hash([SCHNORR_CHALLENGE_DST, R.x, fbpkM.x, fbpkM.y, authMessage]);
+  const e = await poseidon2Hash([SCHNORR_CHALLENGE_DST, R.x, fbpkM.x, fbpkM.y, message]);
   const order = GrumpkinScalar.MODULUS;
   const eBig = e.toBigInt();
   const sBig = (((k.toBigInt() - ((eBig * masterFallbackSecretKey.toBigInt()) % order)) % order) + order) % order;
@@ -875,7 +1049,7 @@ async function fallbackKeyAuthorization(
   return {
     kind: 'fallbackKey',
     fbpkM,
-    signature: { sLo: s.lo, sHi: s.hi, eLo: new Fr(eBig & ((1n << 128n) - 1n)), eHi: new Fr(eBig >> 128n) },
+    fallbackSignature: { sLo: s.lo, sHi: s.hi, eLo: new Fr(eBig & ((1n << 128n) - 1n)), eHi: new Fr(eBig >> 128n) },
   };
 }
 
@@ -884,9 +1058,9 @@ async function makeTestPasskey(): Promise<TestPasskey> {
   const raw = Buffer.from(await crypto.subtle.exportKey('raw', keyPair.publicKey));
   return {
     publicKey: { x: raw.subarray(1, 33), y: raw.subarray(33, 65) },
-    async sign(authMessage: Fr): Promise<WebAuthnAuth> {
+    async sign(challenge: Fr): Promise<WebAuthnAuth> {
       const clientDataJSON = Buffer.from(
-        `{"type":"webauthn.get","challenge":"${computeWebAuthnChallenge(authMessage)}","origin":"https://stub.passkey.test","crossOrigin":false}`,
+        `{"type":"webauthn.get","challenge":"${computeWebAuthnChallenge(challenge)}","origin":"https://stub.passkey.test","crossOrigin":false}`,
         'utf8',
       );
       const authenticatorData = Buffer.alloc(WEBAUTHN_AUTHENTICATOR_DATA_LEN, 1);
@@ -914,23 +1088,26 @@ function randomInstance(): AccountInstancePreimage {
 async function makePasskeyAccount(): Promise<PasskeyAccountFixture> {
   const { masterNullifierHidingSecretKey, masterFallbackSecretKey, publicKeys } = await deriveKeys(Fr.random());
   const passkey = await makeTestPasskey();
+  const passkeySet = await computePasskeySetSlots([passkey.publicKey]);
+  const immutablesHash = await computePasskeySetImmutablesHash(passkeySet);
   const instance = randomInstance();
   return {
-    address: await computePasskeyAccountAddress(publicKeys, instance, passkey.publicKey),
+    address: await computeAccountAddress(publicKeys, instance, immutablesHash),
     publicKeys,
     instance,
     passkey,
     masterNullifierHidingKey: masterNullifierHidingSecretKey,
     masterFallbackSecretKey,
-    authorize: async (authMessage: Fr) => ({
+    signMigration: async (executor: EthAddress, userPayloadHash: Fr) => ({
       kind: 'passkey',
       passkey: passkey.publicKey,
-      webauthn: await passkey.sign(authMessage),
+      passkeySet,
+      webauthn: await passkey.sign(await computeRefundCommitment(executor, userPayloadHash)),
     }),
   };
 }
 
-/** An account whose address commits to no passkey, so its immutables hash is zero and it authorizes with `fbsk_m`. */
+/** An account whose address commits to no passkey, so its immutables hash is zero and it signs with `fbsk_m`. */
 async function makeFallbackKeyAccount(): Promise<RefundAccountFixture> {
   const { masterNullifierHidingSecretKey, masterFallbackSecretKey, publicKeys } = await deriveKeys(Fr.random());
   const instance = randomInstance();
@@ -940,7 +1117,8 @@ async function makeFallbackKeyAccount(): Promise<RefundAccountFixture> {
     instance,
     masterNullifierHidingKey: masterNullifierHidingSecretKey,
     masterFallbackSecretKey,
-    authorize: (authMessage: Fr) => fallbackKeyAuthorization(masterFallbackSecretKey, authMessage),
+    signMigration: (executor: EthAddress, userPayloadHash: Fr) =>
+      fallbackKeyMigrationSignature(masterFallbackSecretKey, executor, userPayloadHash),
   };
 }
 
@@ -950,12 +1128,12 @@ interface DepositFixture {
   nullifiers: Fr[];
 }
 
-async function depositFixture(amounts: bigint[]): Promise<DepositFixture> {
+async function depositFixture(amounts: bigint[], domain: PortalDomain = portalDomain): Promise<DepositFixture> {
   const recipients = await Promise.all(amounts.map(() => makeSyntheticOwner()));
   const salts = amounts.map((_, i) => new Fr(i + 1));
   const messageHashes = await Promise.all(
     recipients.map((recipient, i) =>
-      computeDepositMessageHash(portalContext, {
+      computeDepositMessageHash(domain, {
         sharedSecretSalt: salts[i]!,
         recipient: recipient.completeAddress.address,
         amount: amounts[i]!,
@@ -964,7 +1142,7 @@ async function depositFixture(amounts: bigint[]): Promise<DepositFixture> {
     ),
   );
   const tree = await SparseTree.build(L1_TO_L2_MSG_TREE_HEIGHT, messageHashes, DomainSeparator.MERKLE_HASH);
-  const anchorBlockHeader = depositAnchorBlockHeader(tree.root, amounts.length);
+  const anchorBlockHeader = depositAnchorBlockHeader(tree.root, amounts.length, domain);
 
   const deposits = recipients.map((recipient, i) => ({
     recipient: recipient.completeAddress.address,
@@ -977,7 +1155,7 @@ async function depositFixture(amounts: bigint[]): Promise<DepositFixture> {
   }));
   const nullifiers = await Promise.all(
     deposits.map((deposit, i) =>
-      computeSiloedDepositMessageNullifier(portalContext.l2Portal, messageHashes[i]!, deposit.masterNullifierHidingKey),
+      computeSiloedDepositMessageNullifier(portalDomain.l2Token, messageHashes[i]!, deposit.masterNullifierHidingKey),
     ),
   );
 
@@ -994,10 +1172,15 @@ async function makeSyntheticOwner(): Promise<SyntheticOwner> {
   };
 }
 
-function depositAnchorBlockHeader(l1ToL2Root: Fr, nextAvailableLeafIndex: number): BlockHeader {
+function depositAnchorBlockHeader(
+  l1ToL2Root: Fr,
+  nextAvailableLeafIndex: number,
+  domain: PortalDomain = portalDomain,
+): BlockHeader {
   const emptyState = StateReference.empty();
   return BlockHeader.empty({
     state: new StateReference(new AppendOnlyTreeSnapshot(l1ToL2Root, nextAvailableLeafIndex), emptyState.partial),
+    globalVariables: globalsFrom(domain),
   });
 }
 

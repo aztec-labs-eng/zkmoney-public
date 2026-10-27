@@ -57,7 +57,6 @@ import {
   useDepositSkim,
   useRegistrationSchedule,
   useRegistrationTerms,
-  useSweepDeductions,
 } from "./registrationTerms"
 import { REGISTRATIONS_PAUSED_NOTICE } from "./onboardingErrorCopy"
 import { formatTokenAmount } from "./steps/DepositTermsRows"
@@ -208,12 +207,8 @@ export function SecureNameNoticeCard({ ask }: { ask: (note: string) => ReactNode
     readAttempt,
     sweepFee,
   )
-  const deductions = useSweepDeductions(config, record?.depositToken, record !== null, readAttempt)
   useChainReadRetry(
-    record !== null &&
-      ((unsignedFallback && chainAmounts === undefined) ||
-        sweepFee === undefined ||
-        deductions === undefined),
+    record !== null && ((unsignedFallback && chainAmounts === undefined) || sweepFee === undefined),
     retryReads,
   )
   useEffect(() => {
@@ -301,7 +296,6 @@ export function SecureNameNoticeCard({ ask }: { ask: (note: string) => ReactNode
     terms,
     { depositAdmitted, refunded },
     sweepFee || undefined,
-    deductions?.fpcCut,
   )
   // A past refund holds this hero only while the restart it calls for is still owed: a registration
   // resumed under the corrected quote wants its deposit again. A funded one is the sweep's to finish

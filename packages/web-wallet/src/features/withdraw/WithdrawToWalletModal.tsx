@@ -25,13 +25,13 @@ import { OperationHandOff } from "../operations/OperationHandOff"
 import { LocalPasskeyHint } from "../../ui/LocalPasskeyHint"
 import { SponsoredActionNotice, useSponsoredActionBlock } from "../allowance/SponsoredActionNotice"
 import { ScreeningNotice, useScreenedAddress } from "../../ui/screening"
-import { TeeSignerNotice } from "../../ui/TeeSignerNotice"
 import { Warning } from "../../ui/Warning"
 import { submitSponsoredWithdrawal, type WithdrawStage } from "./withdrawGateway"
 import { getConfig } from "../../config/env"
 import {
   FEE_UNAVAILABLE_COPY,
   settledFloor,
+  ExecutorFeeNote,
   SwapFeeNote,
   SwapGasWarning,
   useSwapSimulation,
@@ -56,6 +56,7 @@ import {
 } from "../limits/publicLimit"
 import { LimitsInfoButton } from "../limits/AboutLimitsSheet"
 import { withdrawalLimitProblem } from "../limits/withdrawalLimit"
+import { useTxAmountCap } from "../token/useTxAmountCap"
 
 /**
  * Amount entry → confirmation → sponsored L2 burn to the given L1 recipient. The typed amount is
@@ -92,6 +93,7 @@ export function WithdrawToWalletModal({
   onClose: () => void
   onDone: () => void
 }) {
+  const txAmountCap = useTxAmountCap()
   const { obsidionWallet } = useAztecContext()
   const { obsidionAccount } = useAccountContext()
   const { tokenService } = useAssetContext()
@@ -153,7 +155,7 @@ export function WithdrawToWalletModal({
   const valuation = NOMINAL_USD_VALUATION
   // A floor not yet priced counts nothing, so only a known excess shows.
   const problem: LimitProblem | undefined =
-    burnAtomic !== undefined ? withdrawalLimitProblem(burnAtomic) : undefined
+    burnAtomic !== undefined ? withdrawalLimitProblem(burnAtomic, txAmountCap) : undefined
   // A route that cannot be priced has no fee to charge and no tip to commit to, so it never
   // validates.
   const valid = charged !== undefined && parsed >= 1 && quote.fee !== undefined && !problem
@@ -176,6 +178,7 @@ export function WithdrawToWalletModal({
         feeAtomic: learned - tipInFee,
         decimals: DEFAULT_DECIMALS,
         valuation,
+        txAmountCap,
       })
     : undefined
   const maxAmount =
@@ -199,7 +202,7 @@ export function WithdrawToWalletModal({
   if (speed.offer && feeAtomic !== undefined && sendAtomic !== undefined) {
     const extra = speed.offer.proverTip - tipInFee
     if (balance - (feeAtomic + extra) < sendAtomic) tipBlocked = BALANCE_TIP_BLOCKED_COPY
-    else if (withdrawalLimitProblem(sendAtomic + learned + extra))
+    else if (withdrawalLimitProblem(sendAtomic + learned + extra, txAmountCap))
       tipBlocked = LIMIT_TIP_BLOCKED_COPY
   }
   const speedOutcome = useSpeedOutcome(
@@ -264,7 +267,7 @@ export function WithdrawToWalletModal({
       if (mined) void recordBurnDuration(durationMs)
       fireEvent("withdraw_submitted", {
         duration_ms: mined ? durationMs : undefined,
-        amount_bucket: amountBucket(BigInt(Math.floor(parsed)), 0),
+        amount_bucket: amountBucket(BigInt(record.rawAmount ?? 0), record.tokenDecimals),
       })
       void upsertSavedL1WalletContact({ address: recipient, name: walletName })
       if (!left.current) onDone()
@@ -306,7 +309,6 @@ export function WithdrawToWalletModal({
           <GradientText size={24} weight={700}>
             Withdraw
           </GradientText>
-          <TeeSignerNotice />
         </>
       )}
 
@@ -385,6 +387,7 @@ export function WithdrawToWalletModal({
               <span>Withdrawal fee</span>
               <b style={{ fontSize: 14 }}>{feeFigure}</b>
             </div>
+            <ExecutorFeeNote state={quote} />
             {receiveOption.direct ? (
               quote.status === "unavailable" && <Warning title={FEE_UNAVAILABLE_COPY} />
             ) : (

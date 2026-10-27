@@ -1,3 +1,4 @@
+mod bootstrap_key;
 mod config;
 mod eligibility;
 mod gas;
@@ -47,6 +48,7 @@ use aztec::macros::aztec;
 /// consume such a message, and the claimed juice pays for its own claim.
 #[aztec]
 pub contract ClaimFPC {
+    use crate::bootstrap_key::bootstrap_key_identity;
     use crate::config::{
         add_entry_budget, assert_call_whitelisted, bound_selector, ClassWitness, Config, GATE_NONE,
         MAX_PUBLIC_CALLDATA_FIELDS, PolicyMerkleProof, Rail, rail_at,
@@ -58,7 +60,7 @@ pub contract ClaimFPC {
     use crate::gas::{overhead_max_fee, OverheadGas};
     use crate::gate::{DOM_SEP__CLAIM_SUBSCRIPTION, GateReceipt};
     use crate::notes::{refresh_subscription_note, SubscriptionNote};
-    use crate::registration::name_ownership_content_hash;
+    use crate::registration::{assert_name_portal_message, name_ownership_content_hash};
 
     use aztec::{
         authwit::entrypoint::FunctionCall,
@@ -111,12 +113,12 @@ pub contract ClaimFPC {
     #[abi(fpc_gate_gas)]
     global NAME_CLAIM_GATE_GAS: OverheadGas = OverheadGas { da_gas: 0, l2_gas: 0 };
 
-    /// What a registration-gated subscribe costs on top of the entrypoint overhead: the consumed
-    /// message's nullifier, at L2_GAS_PER_NULLIFIER and one field of DA at DA_GAS_PER_FIELD. The two
-    /// signature checks the gate also runs emit nothing. Pinned against the kernel's metering
-    /// constants and the measured table by the sdk's `claimFpcGasInventory.test.ts`.
+    /// What a registration-gated subscribe costs on top of the entrypoint overhead. Zero for the same
+    /// reason as the NameClaim gate: it proves the message exists without consuming it and checks the
+    /// key in-circuit, so it emits no side effect. Pinned against the kernel's metering constants and
+    /// the measured table by the sdk's `claimFpcGasInventory.test.ts`.
     #[abi(fpc_gate_gas)]
-    global REGISTRATION_GATE_GAS: OverheadGas = OverheadGas { da_gas: 32, l2_gas: 16000 };
+    global REGISTRATION_GATE_GAS: OverheadGas = OverheadGas { da_gas: 0, l2_gas: 0 };
 
     /// What one `refuel` tx costs: its own circuit, the FeeJuice claim circuit (message-consumption
     /// nullifier + enqueued `_increase_public_balance`), and the public balance write. A fixed
@@ -300,22 +302,23 @@ pub contract ClaimFPC {
             "invalid NameClaim signature",
         );
 
-        GateReceipt { user, identity: eth_address_to_field(oxide_account), gas: NAME_CLAIM_GATE_GAS }
+        GateReceipt {
+            user,
+            identity: eth_address_to_field(oxide_account),
+            gas: NAME_CLAIM_GATE_GAS,
+        }
     }
 
-    /// The registration gate: oxide's NamePortal attested on L1 that an OxideAccount holds a name,
-    /// and the account's bootstrap key binds THIS L2 address to it. The message names an L1 address
-    /// and nothing else, so it admits nobody on its own -- the binding signature is what makes it
-    /// this user's, exactly as in the NameClaim gate. The identity it reports is that account.
+    /// The registration gate: oxide's NamePortal attested on L1 that the account of a bootstrap key
+    /// holds a name, and the prover holds that key. Nothing it emits or reports is computable from
+    /// public data: the message is only proven to exist, and the identity derives from the private key
+    /// witness (`bootstrap_key.nr`). Whoever holds the key may subscribe an L2 address of their
+    /// choosing; the rail's nullifier keys on the identity, so each key gets one subscription per rail.
     ///
-    /// `notify` is permissionless and repeatable, so the message is not the limiter: a second one
-    /// for the same owner is consumable, and the rail's one-subscription-per-identity nullifier is
-    /// what bounds admission. That repeatability is also how the rail re-opens after an FPC roll or
-    /// a rollup migration, and how an already-registered account is back-filled.
-    ///
-    /// Every witness is public (the message secret by design, the leaf index from the Inbox's logs)
-    /// except the bootstrap signature, which the master secret re-derives -- so a wallet restored on
-    /// a fresh device rebuilds the whole set by scanning. See `registrationMessage.ts`.
+    /// `notify` is permissionless and repeatable, and a message is never used up, which is how the
+    /// rail re-opens after an FPC roll or a rollup migration. The key derives from the master secret
+    /// and the leaf index comes from the Inbox's logs, so a wallet restored on a fresh device rebuilds
+    /// the whole witness set. See `registrationMessage.ts`.
     #[external("private")]
     #[only_self]
     fn _gate_registration(
@@ -323,32 +326,23 @@ pub contract ClaimFPC {
         name_hash: [u8; 32],
         bootstrap_pub_key_x: [u8; 32],
         bootstrap_pub_key_y: [u8; 32],
-        binding_sig: [u8; 64],
-        secret: Field,
+        key_witness: [u8; 32],
         message_leaf_index: Field,
     ) -> GateReceipt {
         let config = self.storage.config.read();
-        let oxide_account = bound_oxide_account(
-            config,
-            user,
-            bootstrap_pub_key_x,
-            bootstrap_pub_key_y,
-            binding_sig,
-        );
-
-        // The portal attested that this account holds this name.
-        self.context.consume_l1_to_l2_message(
-            name_ownership_content_hash(oxide_account, name_hash),
-            [secret],
+        let identity =
+            bootstrap_key_identity(bootstrap_pub_key_x, bootstrap_pub_key_y, key_witness);
+        assert_name_portal_message(
+            self.context,
             EthAddress::from_field(config.name_portal_address),
+            name_ownership_content_hash(
+                eth_address_from_pubkey(bootstrap_pub_key_x, bootstrap_pub_key_y),
+                name_hash,
+            ),
             message_leaf_index,
         );
 
-        GateReceipt {
-            user,
-            identity: eth_address_to_field(oxide_account),
-            gas: REGISTRATION_GATE_GAS,
-        }
+        GateReceipt { user, identity, gas: REGISTRATION_GATE_GAS }
     }
 
     /// A follow-up sponsored batch on a rail the user already holds. Identity is the rail's
@@ -595,9 +589,9 @@ pub contract ClaimFPC {
     /// from the key, then require that key's signature over the L2 address. Deriving the account
     /// rather than taking it is what stops a caller naming somebody else's L1 identity; the
     /// signature is what stops an observer of the (public) L1 data pointing that identity at an
-    /// address of their own. Both gates rest on this, and it is why both grant the same thing:
-    /// whoever holds a bootstrap key may subscribe an L2 address of their choosing, and the rail's
-    /// nullifier keys on the account, so doing it for a stranger spends the holder's own allowance.
+    /// address of their own. Whoever holds a bootstrap key may subscribe an L2 address of their
+    /// choosing, and the rail's nullifier keys on the account, so doing it for a stranger spends the
+    /// holder's own allowance.
     #[contract_library_method]
     fn bound_oxide_account(
         config: Config,

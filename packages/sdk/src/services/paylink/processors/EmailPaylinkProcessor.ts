@@ -14,7 +14,7 @@ import {
   ZkProofClaimInput,
 } from "../types.js"
 import { EMAIL_LEN, poseidon2HashPackedString } from "../../../email/utils.js"
-import { FieldLike } from "@aztec/aztec.js/abi"
+import { FieldLike } from "@aztec-labs/aztec.js/abi"
 import assert from "assert"
 
 /**

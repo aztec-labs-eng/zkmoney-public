@@ -10,9 +10,9 @@ library StablecoinMocks {
   Vm internal constant VM = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
 
   function install() internal returns (MockCurve3Pool threePool) {
-    VM.etch(address(DAI), address(new MintableToken()).code);
-    VM.etch(address(USDC), address(new MintableToken()).code);
-    VM.etch(address(USDT), address(new MintableToken()).code);
+    VM.etch(address(DAI), address(new MintableToken("Dai Stablecoin", "DAI", 18)).code);
+    VM.etch(address(USDC), address(new MintableToken("USD Coin", "USDC", 6)).code);
+    VM.etch(address(USDT), address(new MintableToken("Tether USD", "USDT", 6)).code);
     VM.etch(address(THREE_POOL), address(new MockCurve3Pool()).code);
     threePool = MockCurve3Pool(address(THREE_POOL));
     threePool.setCoins(address(DAI), address(USDC), address(USDT));

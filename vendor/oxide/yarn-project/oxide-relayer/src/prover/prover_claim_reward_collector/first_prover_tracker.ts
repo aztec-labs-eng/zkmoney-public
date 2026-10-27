@@ -1,14 +1,12 @@
-import { RollupContract } from '@aztec/ethereum/contracts/rollup';
-import { maxBigint, minBigint } from '@aztec/foundation/bigint';
-import { CheckpointNumber, EpochNumber } from '@aztec/foundation/branded-types';
-import { EthAddress } from '@aztec/foundation/eth-address';
-import { Logger, createLogger } from '@aztec/foundation/log';
-import { SerialQueue } from '@aztec/foundation/queue';
-import { RunningPromise } from '@aztec/foundation/running-promise';
-import { Checkpoint } from '@aztec/stdlib/checkpoint';
-import { AztecNode } from '@aztec/stdlib/interfaces/server';
-
-import { FirstProverRecordedEvent, OxidePortalContract } from '@oxide/l1-contracts/oxide_portal.js';
+import { RollupContract } from '@aztec-labs/ethereum/contracts/rollup';
+import { maxBigint, minBigint } from '@aztec-labs/foundation/bigint';
+import { CheckpointNumber, EpochNumber } from '@aztec-labs/foundation/branded-types';
+import { EthAddress } from '@aztec-labs/foundation/eth-address';
+import { Logger, createLogger } from '@aztec-labs/foundation/log';
+import { SerialQueue } from '@aztec-labs/foundation/queue';
+import { RunningPromise } from '@aztec-labs/foundation/running-promise';
+import { Checkpoint } from '@aztec-labs/stdlib/checkpoint';
+import { AztecNode } from '@aztec-labs/stdlib/interfaces/server';
 
 import { getFullCheckpoints } from '../node_block_stream_source.js';
 
@@ -27,11 +25,10 @@ export interface FirstProverHandlers {
 
 export interface FirstProverTrackerOptions {
   proverId: EthAddress;
-  portal: OxidePortalContract;
   rollup: RollupContract;
   node: AztecNode;
   /**
-   * First L1 block to scan FirstProverRecorded events from. It must be at or below the capture floor (see
+   * First L1 block to scan L2ProofVerified events from. It must be at or below the capture floor (see
    * `resolveStartBlock`): the tracker does not look below it for the capture that sets a range's start.
    */
   fromBlock: bigint;
@@ -70,7 +67,7 @@ export class FirstProverTracker {
     this.handlers = handlers;
 
     // Clamp the cursor to the confirmed head so the scan does not touch blocks a shallow reorg can still change.
-    const head = await this.options.portal.client.getBlockNumber();
+    const head = await this.options.rollup.client.getBlockNumber();
     this.cursor = minBigint(this.cursor, maxBigint(head - this.options.confirmations, -1n));
 
     // Begin emitting ranges. The first poll runs immediately.
@@ -88,7 +85,7 @@ export class FirstProverTracker {
     if (this.stopped) {
       return;
     }
-    const head = await this.options.portal.client.getBlockNumber();
+    const head = await this.options.rollup.client.getBlockNumber();
     const safeHead = head - this.options.confirmations;
     if (safeHead <= this.cursor) {
       return;
@@ -97,8 +94,15 @@ export class FirstProverTracker {
     // Scan at most `maxBlockRange` per poll.
     const toBlock = minBigint(this.cursor + this.options.maxBlockRange, safeHead);
 
-    const events = await this.options.portal.getFirstProverRecordedEvents({ fromBlock: this.cursor + 1n, toBlock });
-    this.processEvents(events);
+    const logs = await this.options.rollup
+      .getContract()
+      .getEvents.L2ProofVerified({}, { fromBlock: this.cursor + 1n, toBlock });
+    this.processEvents(
+      logs.map(log => ({
+        checkpointNumber: CheckpointNumber.fromBigInt(log.args.checkpointNumber!),
+        prover: EthAddress.fromString(log.args.proverId!),
+      })),
+    );
     this.cursor = toBlock;
 
     // If the confirmed head is still ahead we re-run immediately to catch up.
@@ -107,19 +111,13 @@ export class FirstProverTracker {
     }
   }
 
-  private processEvents(events: FirstProverRecordedEvent[]): void {
-    // Captures are strictly ascending on-chain. Validate the whole batch before mutating any state, so a bad
-    // batch (deep reorg, out-of-order logs from the RPC) throws with no side effects and the retry is clean.
-    let prev = this.highestCaptured;
-    for (const { checkpointNumber } of events) {
-      if (checkpointNumber <= prev) {
-        throw new Error(`Events not in ascending order: ${prev} <= ${checkpointNumber}. This should not happen.`);
-      }
-      prev = checkpointNumber;
-    }
-
-    // Enqueue our captures for processing.
+  private processEvents(events: { checkpointNumber: CheckpointNumber; prover: EthAddress }[]): void {
+    // The rollup records a first prover only for a proof that moves the proven tip. A proof whose end is not
+    // above the highest checkpoint seen so far re-proved a proven range, so it captured nothing.
     for (const { checkpointNumber, prover } of events) {
+      if (checkpointNumber <= this.highestCaptured) {
+        continue;
+      }
       if (prover.equals(this.options.proverId)) {
         // Each range's boundary is the previous capture by any prover.
         this.enqueueRange(checkpointNumber, this.highestCaptured);

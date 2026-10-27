@@ -182,6 +182,7 @@ pub struct TEEMetadata {
     pub pub_key_y_hi: Field,
     pub pub_key_y_lo: Field,
     pub anchor_block_hash: Field,
+    pub registration_leaf_index: Field,
 }
 
 impl TEEMetadata {
@@ -291,7 +292,8 @@ mod test {
     };
 
     global TWO_POW_128: Field = 0x100000000000000000000000000000000;
-    global METADATA_PAYLOAD: [Field; 5] = [11, 12, 13, 14, 15];
+    global METADATA_PAYLOAD: [Field; 6] = [11, 12, 13, 14, 15, 16];
+    global FULLY_EMITTED: u32 = 1 + METADATA_PAYLOAD.len();
 
     unconstrained fn token() -> AztecAddress {
         AztecAddress::from_field(0x1234)
@@ -307,11 +309,11 @@ mod test {
         PrivateLog::new(fields, 1 + count)
     }
 
-    /// A metadata log with `emitted` committed fields; the payload sits at fields 1..=5 regardless.
-    unconstrained fn metadata_log(payload: [Field; 5], emitted: u32) -> PrivateLog {
+    /// A metadata log with `emitted` committed fields; the payload sits at fields 1..=6 regardless.
+    unconstrained fn metadata_log(payload: [Field; 6], emitted: u32) -> PrivateLog {
         let mut fields = [0; PRIVATE_LOG_SIZE_IN_FIELDS];
         fields[0] = compute_siloed_private_log_first_field(token(), TEE_METADATA_DA_TAG);
-        for i in 0..5 {
+        for i in 0..6 {
             fields[1 + i] = payload[i];
         }
         PrivateLog::new(fields, emitted)
@@ -434,13 +436,14 @@ mod test {
 
     #[test]
     unconstrained fn metadata_reads_a_fully_emitted_log() {
-        let effect = effect_with([metadata_log(METADATA_PAYLOAD, 6)]);
+        let effect = effect_with([metadata_log(METADATA_PAYLOAD, FULLY_EMITTED)]);
         let metadata = extract_metadata_da_component(effect, token()).unwrap();
         assert_eq(metadata.pub_key_x_hi, 11);
         assert_eq(metadata.pub_key_x_lo, 12);
         assert_eq(metadata.pub_key_y_hi, 13);
         assert_eq(metadata.pub_key_y_lo, 14);
         assert_eq(metadata.anchor_block_hash, 15);
+        assert_eq(metadata.registration_leaf_index, 16);
     }
 
     #[test]
@@ -451,7 +454,7 @@ mod test {
 
     #[test]
     unconstrained fn metadata_rejects_a_payload_not_fully_emitted() {
-        for emitted in 1..6 {
+        for emitted in 1..FULLY_EMITTED {
             let effect = effect_with([metadata_log(METADATA_PAYLOAD, emitted)]);
             assert(extract_metadata_da_component(effect, token()).is_none());
         }
@@ -459,15 +462,16 @@ mod test {
 
     #[test]
     unconstrained fn metadata_rejects_two_tagged_logs() {
-        let effect = effect_with(
-            [metadata_log(METADATA_PAYLOAD, 6), metadata_log(METADATA_PAYLOAD, 6)],
-        );
+        let effect = effect_with([
+            metadata_log(METADATA_PAYLOAD, FULLY_EMITTED),
+            metadata_log(METADATA_PAYLOAD, FULLY_EMITTED),
+        ]);
         assert(extract_metadata_da_component(effect, token()).is_none());
     }
 
     #[test]
     unconstrained fn metadata_ignores_a_log_of_another_token() {
-        let effect = effect_with([metadata_log(METADATA_PAYLOAD, 6)]);
+        let effect = effect_with([metadata_log(METADATA_PAYLOAD, FULLY_EMITTED)]);
         assert(extract_metadata_da_component(effect, AztecAddress::from_field(0x5678)).is_none());
     }
 
@@ -475,7 +479,12 @@ mod test {
     unconstrained fn metadata_reads_key_halves_at_the_16_byte_boundary() {
         let max_half = TWO_POW_128 - 1;
         let effect = effect_with(
-            [metadata_log([max_half, max_half, max_half, max_half, 15], 6)],
+            [
+                metadata_log(
+                    [max_half, max_half, max_half, max_half, 15, 16],
+                    FULLY_EMITTED,
+                ),
+            ],
         );
         let metadata = extract_metadata_da_component(effect, token()).unwrap();
         assert_eq(metadata.pub_key_y_lo, max_half);
@@ -486,7 +495,7 @@ mod test {
         for wide_index in 0..4 {
             let mut payload = METADATA_PAYLOAD;
             payload[wide_index] += TWO_POW_128;
-            let effect = effect_with([metadata_log(payload, 6)]);
+            let effect = effect_with([metadata_log(payload, FULLY_EMITTED)]);
             assert(extract_metadata_da_component(effect, token()).is_none());
         }
     }

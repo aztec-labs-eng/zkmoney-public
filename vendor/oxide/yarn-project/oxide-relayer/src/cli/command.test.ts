@@ -1,4 +1,4 @@
-import { EthAddress } from '@aztec/foundation/eth-address';
+import { EthAddress } from '@aztec-labs/foundation/eth-address';
 
 import { OFAC_SDN_LIST_URL } from '@oxide/watcher-lib/sanctions';
 
@@ -308,13 +308,10 @@ describe('createCliProgram', () => {
     await expect(parseRunConfig([...REQUIRED_ARGS, '--bogus'], {})).rejects.toThrow(/unknown option '--bogus'/);
   });
 
-  it('rejects the subsidy manager flags: the manifest entry is the only source', async () => {
+  it('rejects the deposit subsidy manager flag', async () => {
     const address = '0x2222222222222222222222222222222222222222';
     await expect(parseRunConfig([...REQUIRED_ARGS, '--deposit-subsidy-manager', address], {})).rejects.toThrow(
       /unknown option '--deposit-subsidy-manager'/,
-    );
-    await expect(parseRunConfig([...REQUIRED_ARGS, '--withdrawal-subsidy-manager', address], {})).rejects.toThrow(
-      /unknown option '--withdrawal-subsidy-manager'/,
     );
   });
 

@@ -31,18 +31,19 @@ export function ModalSuspension({ suspended, children }: { suspended: boolean; c
 }
 
 /**
- * An extension that answers WebAuthn inside the page (1Password) mounts its prompt in the topmost
- * modal dialog. When that sheet unmounts at hand-off the prompt goes with it before it can report
- * closing, and the extension never draws another: every later request hangs. While such a request
- * is out, open sheets drop to non-modal so the prompt mounts on the body.
+ * An extension that answers WebAuthn inside the page (1Password, or Proton Pass through the wrapper
+ * the page's lock kept aside) mounts its prompt in the topmost modal dialog. When that sheet
+ * unmounts at hand-off the prompt goes with it before it can report closing, and the extension never
+ * draws another: every later request hangs. While such a request is out, open sheets drop to
+ * non-modal so the prompt mounts on the body.
  */
 type DialogLayer = { reopen: () => void }
 const layers = new Set<DialogLayer>()
 let nonModal = false
 
 if (typeof window !== "undefined") {
-  onPasskeyRequest((active) => {
-    const next = active && extensionAnswersPasskeys()
+  onPasskeyRequest((active, kept) => {
+    const next = active && (kept || extensionAnswersPasskeys())
     if (next === nonModal) return
     nonModal = next
     // In show order, so reopened modals stack as they did.
@@ -319,6 +320,11 @@ export function Modal({
           className,
         ].filter(Boolean).join(" ")}
       >
+        {variant === "create" && onBack && (
+          <div className="ww-modal__back">
+            <TopNavIconButton icon="chevron-left" ariaLabel="Back" onClick={onBack} />
+          </div>
+        )}
         {variant === "create" && onClose && (
           <div className="ww-modal__close">
             <TopNavIconButton icon="x" ariaLabel="Close" onClick={onClose} />

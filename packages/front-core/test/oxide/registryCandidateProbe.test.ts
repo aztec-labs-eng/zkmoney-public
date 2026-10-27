@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
-import { Fr } from "@aztec/aztec.js/fields"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 import { getContractAddress, type Address } from "viem"
 import { predictAccountAddressLocally } from "@oxide/l1-contracts"
 import { registryCandidateProbe } from "../../src/oxide/registryCandidateProbe"

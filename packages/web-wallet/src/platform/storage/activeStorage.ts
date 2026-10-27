@@ -162,6 +162,14 @@ function parseCachedMsk(raw: string | null): CachedMsk | null {
   return null
 }
 
+/** The cached key of a tuple read out of another rollup's database, when it is bound to that tuple. */
+export function sessionCacheIn(entries: ReadonlyMap<string, string>): CachedMsk | null {
+  const cache = parseCachedMsk(entries.get(MSK_KEY) ?? null)
+  const bound =
+    cache?.storageId === entries.get(ID_KEY) && cache?.credentialId === entries.get(CREDENTIAL_KEY)
+  return bound ? cache : null
+}
+
 export function writeCachedMsk(cache: CachedMsk): void {
   walletStorage.setItem(MSK_KEY, JSON.stringify(cache))
 }

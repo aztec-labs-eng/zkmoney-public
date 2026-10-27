@@ -68,7 +68,7 @@ export async function scanRefundableDeposits(
 ): Promise<RefundableDepositScan> {
   if (!sources.length) return { refundable: [], inTransit: [] }
   const { observed, strays } = await observeSipas(target.publicClient, {
-    portal: target.portal,
+    portals: [target.portal],
     tokens: [target.token],
     head: target.head,
     subjects: sources.map((source) => ({

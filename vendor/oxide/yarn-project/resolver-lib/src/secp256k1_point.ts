@@ -1,6 +1,6 @@
-import { toBigIntBE, toBufferBE } from '@aztec/foundation/bigint-buffer';
-import { keccak256 } from '@aztec/foundation/crypto/keccak';
-import { EthAddress } from '@aztec/foundation/eth-address';
+import { toBigIntBE, toBufferBE } from '@aztec-labs/foundation/bigint-buffer';
+import { keccak256 } from '@aztec-labs/foundation/crypto/keccak';
+import { EthAddress } from '@aztec-labs/foundation/eth-address';
 
 import { secp256k1 } from './libsecp256k1.js';
 

@@ -44,6 +44,10 @@ describe("artifactManifestUrl", () => {
       "https://cdn.staging.zk.money/profiles/v5/0.5.1.json",
       "https://cdn.staging.zk.money/artifacts/v5/0.5.1.json",
     ],
+    [
+      "https://cdn.zk.money/profiles/v0/current.json",
+      "https://cdn.zk.money/artifacts/v0/0.5.1.json",
+    ],
   ])("derives the versioned manifest from %s", (profileUrl, expected) => {
     expect(artifactManifestUrl(profileUrl, VERSION_ID)).toBe(expected)
   })
@@ -63,6 +67,7 @@ describe("assertProfileUrlShape", () => {
   it.each([
     "https://cdn.example/profiles/v5/current.json",
     "https://cdn.example/profiles/v5/1.2.3.json",
+    "https://cdn.example/profiles/v0/current.json",
   ])("accepts %s", (profileUrl) => {
     expect(() => assertProfileUrlShape(profileUrl)).not.toThrow()
   })

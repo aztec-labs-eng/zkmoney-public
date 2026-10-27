@@ -1,3 +1,4 @@
+import type { Address } from "viem"
 import type { SavingsMove } from "../../../oxide/savingsMoves"
 import type { SavingsMoveStorage } from "./SavingsMoveStorage"
 
@@ -28,16 +29,18 @@ export interface SavingsQuote {
   direction: SavingsDirection
   /** What the source burns: DAI moving in, sUSDS shares moving out. */
   amount: bigint
+  /** The L1 token every other figure is in: DAI, which both releases pay out. */
+  unit: Address
   /** The DAI value of `amount`. */
   value: bigint
+  /** The DAI the source's withdrawal executor takes from the burn: Main's fee moving in, none moving out. */
+  withdrawalFee: bigint
+  /** Who receives `withdrawalFee`. */
+  feeBeneficiary?: Address
   /** The DAI the release pays the relayer. */
   releaseTip: bigint
-  /** The source portal's cut, in the source token. */
-  sourceCut: bigint
   /** The DAI the escrow pays whoever runs it. */
   escrowTip: bigint
-  /** The destination portal's cut on the escrow's deposit, in DAI. */
-  arrivalCut: bigint
   /** DAI the release leaves at the escrow. */
   escrowFunding: bigint
   /** DAI that lands, or the DAI value of the shares that do. */
@@ -56,10 +59,14 @@ export interface SavingsMoveRecord extends SavingsMove {
   net?: string
   /** What the last settle pass found, for a row to show while the move is pending. */
   lastCheck?: { at: number; message: string }
+  /** Carried from a retired rollup's database, where the record ended. */
+  retired?: true
 }
 
 /** What a front composes over its deployments; `useSavings` reads it. */
 export interface SavingsSource {
+  /** L1 asset whose shares the vault prices. */
+  assetAddress?: string
   moves: SavingsMoveStorage
   /** Where the wallet's sync writes the shares held: Main's balance store, under the Savings token. */
   balance: { scope: string; tokenAddress: string }

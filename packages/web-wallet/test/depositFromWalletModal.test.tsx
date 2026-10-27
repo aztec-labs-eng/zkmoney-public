@@ -18,10 +18,20 @@ import {
   type PortalCapacityStore,
   type UsdValuation,
 } from "@obsidion/front-core"
-import { TX_AMOUNT_CAP, type PortalCapacitySnapshot } from "@obsidion/sdk"
+import type { PortalCapacitySnapshot } from "@obsidion/sdk"
 import type { L1TokenBalance } from "../src/features/deposit/l1DepositTokenBalance"
 import type { DepositTokenOption } from "../src/features/deposit/loadDepositFacts"
+import {
+  MAINNET_DAI,
+  MAINNET_USDC,
+  mainnetTokens,
+  mockLoadDepositFacts,
+  ROW_USDC,
+  tokenOption,
+  twoRowTokens,
+} from "./support/depositTokens"
 import * as copy from "../src/features/limits/limitsCopy"
+import { LIMIT, LIMIT_USD, grouped, typed } from "./support/publicLimit"
 
 const ACCOUNT = "0x00000000000000000000000000000000000000aa" as Hex
 const balance: { current: L1TokenBalance | undefined } = { current: undefined }
@@ -43,6 +53,15 @@ const deposit = vi.fn(async (_params: DepositParams) => ({
 }))
 
 const useL1TokenBalance = vi.hoisted(() => vi.fn())
+const TX_AMOUNT_CAP = vi.hoisted(() => 5166n * 10n ** 18n)
+const rowCap = vi.hoisted(() => ({ asked: [] as (string | undefined)[], twoRows: false }))
+vi.mock("../src/features/token/useTxAmountCap", () => ({
+  useTxAmountCap: () => TX_AMOUNT_CAP,
+  useRowTxAmountCap: (rowToken?: string) => {
+    rowCap.asked.push(rowToken)
+    return TX_AMOUNT_CAP
+  },
+}))
 vi.mock("../src/features/deposit/useL1TokenBalance", () => ({ useL1TokenBalance }))
 vi.mock("../src/ui/screening", () => ({
   useScreenedAddress: () => ({ verdict: undefined, cleared: screening.cleared, rescreen: vi.fn() }),
@@ -76,9 +95,11 @@ const capacity = vi.hoisted(() => ({
   /** Reads asked for, answered or not. */
   attempts: 0,
   store: undefined as unknown,
+  rowTokens: [] as (string | undefined)[],
 }))
 vi.mock("../src/features/deposit/capacityStore", () => ({
-  activeCapacityKey: async () => {
+  activeCapacityKey: async (rowToken?: string) => {
+    capacity.rowTokens.push(rowToken)
     if (capacity.keyFails) throw new Error("manifest unavailable")
     return {
       chainId: 11155111,
@@ -96,6 +117,7 @@ const snapshot = (): PortalCapacitySnapshot => ({
   rateAtomicPerSecond: DAI,
   globalLimitAtomic: 50_000n * DAI,
   availableAtomic: capacity.availableAtomic,
+  txAmountCapAtomic: TX_AMOUNT_CAP,
 })
 // Not sandbox: the balance ceiling only applies where nothing is minted on the way.
 vi.mock("../src/config/env", () => ({
@@ -106,6 +128,9 @@ vi.mock("../src/errors/errorModal", () => ({ showReportableError: vi.fn() }))
 vi.mock("../src/config/oxideTuple", () => ({
   getOxideTuple: () => Promise.reject(new Error("no manifest in this suite")),
 }))
+vi.mock("../src/features/deposit/loadDepositFacts", (importOriginal) =>
+  mockLoadDepositFacts(importOriginal, () => (rowCap.twoRows ? twoRowTokens() : mainnetTokens())),
+)
 vi.mock("../src/features/allowance/useSponsoredAllowance", () => ({
   useSponsoredAllowance: () => ({ snapshot: { status: "signed-out" }, refresh: () => {} }),
 }))
@@ -155,7 +180,7 @@ const l1 = {
   switchAccount: async () => {},
 } as never
 
-const token: DepositTokenOption = { symbol: "DAI", decimals: 18, icon: "" }
+const token: DepositTokenOption = mainnetTokens().settlement
 const holds = (display: string): L1TokenBalance => ({
   raw: BigInt(Math.round(Number(display) * 1e6)) * 10n ** 12n,
   value: Number(display),
@@ -258,6 +283,9 @@ beforeEach(() => {
   capacity.keyFails = false
   capacity.reads = 0
   capacity.attempts = 0
+  capacity.rowTokens = []
+  rowCap.asked = []
+  rowCap.twoRows = false
   capacity.store = createPortalCapacityStore(KEY, {
     read: () => {
       capacity.attempts++
@@ -351,7 +379,7 @@ describe("DepositFromWalletModal", () => {
   it("opens a capacity reason's details on capacity", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {})
     capacity.availableAtomic = 500n * DAI
-    balance.current = holds("5000")
+    balance.current = holds(String(2 * LIMIT))
     await render("0.5")
     await type("2000")
     const panel = byTestId("funding-capacity-panel")!
@@ -375,7 +403,7 @@ describe("DepositFromWalletModal", () => {
     expect(container.textContent).toContain("Not enough funds")
     await type("9.5")
     expect(button("Deposit funds").disabled).toBe(false)
-    expect(container.textContent).toContain("$10")
+    expect(container.textContent).toContain("You send10 DAI")
   })
 
   it("shows the wallet balance, and MAX enters it less the fee", async () => {
@@ -387,10 +415,10 @@ describe("DepositFromWalletModal", () => {
   })
 
   it("caps MAX at the published limit", async () => {
-    balance.current = holds("5000")
+    balance.current = holds(String(2 * LIMIT))
     await render("0.5")
     await act(async () => button("MAX").click())
-    expect(container.querySelector("input")!.value).toBe("2499.5")
+    expect(container.querySelector("input")!.value).toBe(typed(LIMIT - 0.5))
   })
 
   it("offers no MAX when the balance does not cover the fee", async () => {
@@ -445,54 +473,54 @@ describe("DepositFromWalletModal", () => {
     await render("0.5")
     const limits = container.querySelector('[data-testid="operation-limits"]')!.textContent
     // The typed amount is what lands; the limit names the send it is checked on.
-    expect(limits).toBe("Min $1 · Max sent: $2,500 incl. fees")
+    expect(limits).toBe(`Min $1 · Max sent: ${LIMIT_USD} incl. fees`)
     expect(container.textContent).toContain("Amount to receive")
     for (const label of ["You send", "Fee", "You receive"]) {
       expect(container.textContent).toContain(label)
     }
   })
 
-  it("counts the gross send, fee included, against the $2,500 limit and offers the largest amount that fits", async () => {
-    balance.current = holds("5000")
+  it(`counts the gross send, fee included, against the ${LIMIT_USD} limit and offers the largest amount that fits`, async () => {
+    balance.current = holds(String(2 * LIMIT))
     await render("0.5")
-    await type("2499.5")
+    await type(typed(LIMIT - 0.5))
     expect(button("Deposit funds").disabled).toBe(false)
-    expect(container.textContent).toContain("You send$2,500")
+    expect(container.textContent).toContain(`You send${grouped(LIMIT)} DAI`)
     expect(container.querySelector('[data-testid="limit-notice"]')).toBeNull()
 
-    await type("2499.51")
+    await type(typed(LIMIT - 0.49))
     expect(button("Deposit funds").disabled).toBe(true)
     const notice = container.querySelector('[data-testid="limit-notice"]')!
     expect(notice.getAttribute("role")).toBe("alert")
-    expect(notice.textContent).toContain("Over the $2,500 limit")
+    expect(notice.textContent).toContain(`Over the ${LIMIT_USD} limit`)
     // Said once: the field keeps its figure instead of repeating the reason.
     expect(container.querySelector(".ww-fund__amount small")!.textContent).not.toMatch(
       /limit|maximum/i,
     )
     // Nothing lands, so nothing is quoted as sent or received either.
-    expect(container.textContent).toContain("You send$--")
-    expect(container.textContent).toContain("You receive$--")
+    expect(container.textContent).toContain("You send--")
+    expect(container.textContent).toContain("You receive--")
 
     // The correction is the user's choice, never applied on its own.
-    expect(container.querySelector("input")!.value).toBe("2499.51")
-    await act(async () => button("Use maximum ($2,499.50)").click())
-    expect(container.querySelector("input")!.value).toBe("2499.5")
+    expect(container.querySelector("input")!.value).toBe(typed(LIMIT - 0.49))
+    await act(async () => button(`Use maximum ($${grouped(LIMIT - 0.5, true)})`).click())
+    expect(container.querySelector("input")!.value).toBe(typed(LIMIT - 0.5))
     expect(button("Deposit funds").disabled).toBe(false)
   })
 
   it("never shows the internal settlement ceiling as a deposit limit", async () => {
-    balance.current = holds("5000")
+    balance.current = holds(String(2 * LIMIT))
     await render("0.5")
     await type(formatUnits(TX_AMOUNT_CAP + 10n ** 18n, 18))
     expect(button("Deposit funds").disabled).toBe(true)
-    expect(container.textContent).not.toMatch(/2,?583/)
+    expect(container.textContent).not.toMatch(/5,?166/)
   })
 
   it("checks the credit against the protocol ceiling separately from the published limit", async () => {
     // A valuation under a dollar puts the published limit above the ceiling, so only the ceiling
-    // stops 2,583.01; the correction names no figure for it.
-    const cheap: UsdValuation = { source: "test", usdPerToken: { numerator: 9n, denominator: 10n } }
-    balance.current = holds("5000")
+    // stops 5,166.01; the correction names no figure for it.
+    const cheap: UsdValuation = { source: "test", usdPerToken: { numerator: 4n, denominator: 10n } }
+    balance.current = holds(String(2 * LIMIT))
     await render("0.5", token, cheap)
     await type(formatUnits(TX_AMOUNT_CAP, 18))
     expect(button("Deposit funds").disabled).toBe(false)
@@ -500,7 +528,7 @@ describe("DepositFromWalletModal", () => {
     expect(button("Deposit funds").disabled).toBe(true)
     const notice = container.querySelector('[data-testid="limit-notice"]')!
     expect(notice.textContent).toContain("Over the network's maximum per deposit")
-    expect(notice.textContent).not.toMatch(/2,?583/)
+    expect(notice.textContent).not.toMatch(/5,?166/)
     await act(async () => button("Use maximum").click())
     expect(container.querySelector("input")!.value).toBe(formatUnits(TX_AMOUNT_CAP, 18))
   })
@@ -508,22 +536,40 @@ describe("DepositFromWalletModal", () => {
   it("refuses to send a token it cannot value against the limit", async () => {
     await render("0.5", token, null)
     expect(container.querySelector('[data-testid="limit-notice"]')!.textContent).toContain(
-      "can't be checked against the $2,500 limit",
+      `can't be checked against the ${LIMIT_USD} limit`,
     )
     await type("5")
     expect(button("Deposit funds").disabled).toBe(true)
   })
 
   it("counts a 6-decimal token's send in its own units and does not promise a 1:1 swap", async () => {
-    const USDC = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" as Hex
-    const usdcToken = { address: USDC, symbol: "USDC", decimals: 6, icon: "" }
+    const usdcToken = tokenOption("USDC", MAINNET_USDC, 6, MAINNET_DAI)
     balance.current = undefined
     await render("0.5", usdcToken)
-    await type("2499.5")
+    await type(typed(LIMIT - 0.5))
     expect(container.querySelector('[data-testid="limit-notice"]')).toBeNull()
     expect(container.textContent).toContain("USDC is swapped to DAI at the market rate")
-    await type("2499.51")
+    // The row takes its fee in DAI, as the deposit screen states it.
+    expect(byTestId("fund-fee")?.textContent).toBe("0.50 DAI")
+    await type(typed(LIMIT - 0.49))
     expect(container.querySelector('[data-testid="limit-notice"]')).not.toBeNull()
+  })
+
+  it("says a USDC row credits USDC, in USDC, on its own row's cap and bucket", async () => {
+    rowCap.twoRows = true
+    const usdcRow = twoRowTokens().options[1]!
+    balance.current = undefined
+    await render("0.1", usdcRow)
+    await type("10")
+    await act(async () => button("Deposit funds").click())
+    expect(byTestId("fund-fee")?.textContent).toBe("0.10 USDC")
+    expect(byTestId("fund-credit-note")?.textContent).toBe(
+      "Each USDC you send is credited as 1 USDC, less the fee.",
+    )
+    expect(container.textContent).toContain("10.10 USDC")
+    expect(container.textContent).not.toContain("DAI")
+    expect(new Set(rowCap.asked)).toEqual(new Set([ROW_USDC]))
+    expect(new Set(capacity.rowTokens)).toEqual(new Set([ROW_USDC]))
   })
 
   it("is gated on the sender clearing screening", async () => {
@@ -585,7 +631,7 @@ describe("DepositFromWalletModal", () => {
 
 describe("DepositFromWalletModal shared capacity", () => {
   beforeEach(() => {
-    balance.current = holds("5000")
+    balance.current = holds(String(2 * LIMIT))
   })
 
   it("blocks 2,000 against 500 of capacity: the reason sits by the action and nothing is requested", async () => {
@@ -861,7 +907,7 @@ describe.each([
   ["USDT", "0xdAC17F958D2ee523a2206206994597C13D831ec7"],
 ] as const)("DepositFromWalletModal from mainnet %s", (symbol, address) => {
   // Swapped to DAI by the sweep, so the credit capacity meters is not known before the send.
-  const pick: DepositTokenOption = { address, symbol, decimals: 6, icon: "" }
+  const pick = tokenOption(symbol, address, 6, MAINNET_DAI)
   const holdsStable = (display: string): L1TokenBalance => ({
     raw: parseUnits(display, 6),
     value: Number(display),
@@ -873,7 +919,7 @@ describe.each([
     /can't be checked|could not be checked|Checking capacity|Fits the current capacity/
 
   beforeEach(() => {
-    balance.current = holdsStable("5000")
+    balance.current = holdsStable(String(2 * LIMIT))
   })
 
   async function reviewAndConfirm(feeDisplay = "0.5") {
@@ -995,12 +1041,12 @@ describe.each([
     expect(onFeeChanged).toHaveBeenCalledOnce()
   })
 
-  it("keeps the $2,500 limit, the balance and screening", async () => {
+  it(`keeps the ${LIMIT_USD} limit, the balance and screening`, async () => {
     await render("0.5", pick)
-    await type("2499.51")
+    await type(typed(LIMIT - 0.49))
     expect(button("Deposit funds").disabled).toBe(true)
-    expect(byTestId("limit-notice")!.textContent).toContain("Over the $2,500 limit")
-    await type("2499.5")
+    expect(byTestId("limit-notice")!.textContent).toContain(`Over the ${LIMIT_USD} limit`)
+    await type(typed(LIMIT - 0.5))
     expect(button("Deposit funds").disabled).toBe(false)
 
     balance.current = holdsStable("2")
@@ -1009,7 +1055,7 @@ describe.each([
     expect(button("Deposit funds").disabled).toBe(true)
     expect(container.textContent).toContain("Not enough funds")
 
-    balance.current = holdsStable("5000")
+    balance.current = holdsStable(String(2 * LIMIT))
     screening.cleared = false
     await render("0.5", pick)
     await type("2")

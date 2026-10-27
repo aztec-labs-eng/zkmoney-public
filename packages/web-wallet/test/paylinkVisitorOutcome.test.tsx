@@ -108,8 +108,7 @@ vi.mock("../src/features/withdraw/withdrawQuote", () => ({
   useSwapSimulation: () => ({
     status: "ready",
     fee: {
-      withdrawalRelayerTip: 100_000_000_000_000_000n,
-      fpcFundingCut: 250_000_000_000_000_000n,
+      withdrawalRelayerTip: 350_000_000_000_000_000n,
       swapRelayerTip: 0n,
       proverTip: 0n,
       floorAtomic: 350_000_000_000_000_000n,
@@ -137,6 +136,7 @@ const record: WithdrawalRecord = {
   source: "paylink",
   amount: "24.9",
   tokenSymbol: "DAI",
+  tokenDecimals: 18,
   startTime: 1_700_000_000_000,
   phase: "submitting",
 }

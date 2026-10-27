@@ -9,6 +9,7 @@ export function PayAmountForm({
   walletBalance,
   maxAmount,
   overspent,
+  limitError,
   validAmount,
   onAmount,
   onNote,
@@ -23,13 +24,15 @@ export function PayAmountForm({
   /** Balance floored to cents, for MAX. */
   maxAmount?: string
   overspent: boolean
+  limitError?: string
   validAmount: boolean
   onAmount: (value: string) => void
   onNote: (value: string) => void
   onContinue: () => void
   submitLabel?: string
 }) {
-  const go = () => validAmount && !overspent && onContinue()
+  const blocked = !validAmount || overspent || !!limitError
+  const go = () => !blocked && onContinue()
   return (
     <div className="ww-pay__form">
       <div className="ww-pay__field">
@@ -45,7 +48,7 @@ export function PayAmountForm({
           value={amount}
           onChange={(v) => onAmount(decimalInput(v))}
           onSubmit={go}
-          error={overspent ? "Balance not enough" : amountError(amount)}
+          error={overspent ? "Balance not enough" : limitError ?? amountError(amount)}
           trailing={
             isSend && (
               <button
@@ -68,7 +71,7 @@ export function PayAmountForm({
       />
       <PrimaryGradientButton
         title={submitLabel ?? (isSend ? "Send funds" : "Request funds")}
-        isDisabled={!validAmount || overspent}
+        isDisabled={blocked}
         onClick={onContinue}
       />
     </div>

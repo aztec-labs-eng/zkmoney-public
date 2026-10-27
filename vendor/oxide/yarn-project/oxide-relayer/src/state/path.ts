@@ -1,4 +1,4 @@
-import type { EthAddress } from '@aztec/foundation/eth-address';
+import type { EthAddress } from '@aztec-labs/foundation/eth-address';
 
 export const PORTAL_STATE_PLACEHOLDER = '{portal}';
 

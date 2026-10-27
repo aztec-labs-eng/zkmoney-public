@@ -7,19 +7,16 @@ import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } fr
 import { PendingRegistrationStore, WithdrawalStorage } from "@obsidion/front-core"
 import { WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
 import { provingProgress, ProvingStage } from "@obsidion/proving-progress"
-import { TxStatus } from "@aztec/stdlib/tx"
+import { TxStatus } from "@aztec-labs/stdlib/tx"
 import { webStorage } from "../src/platform/storage/WebStorageAdapter"
 import { TimeoutError } from "../src/lib/withTimeout"
 import { saveRegistrationTerms } from "../src/features/onboarding/registrationTerms"
 import { testWalletDbs } from "./support/fakeWalletDb"
 
 const dai = (n: number) => BigInt(Math.round(n * 100)) * 10n ** 16n
-const CUT = dai(0.1)
 /** Below the field modulus, as a real L2 tx hash is. */
 const HASH = `0x${"11".repeat(32)}`
 const h = vi.hoisted(() => ({
-  fundingCut: vi.fn(async () => 100_000_000_000_000_000n),
-  portalState: vi.fn(async () => ({ fpcFundingCut: 100_000_000_000_000_000n, frozen: false })),
   claimSdk: vi.fn(async (..._args: unknown[]) => "0x" + "11".repeat(32)),
   getTxReceipt: vi.fn(async () => ({ status: "success", blockNumber: 42 })),
   watch: vi.fn(async (_record: unknown) => {}),
@@ -36,6 +33,15 @@ const h = vi.hoisted(() => ({
   voucherUses: vi.fn(async (..._args: unknown[]) => 1),
   note: vi.fn(async (..._args: unknown[]) => ({ amount: 3n * 10n ** 18n })),
 }))
+// The executor's withdrawal fee is priced in its own suites; here it costs nothing.
+vi.mock("../src/features/withdraw/withdrawalFee", () => ({
+  withdrawalExecutorFee: async () => 0n,
+  activeWithdrawalFee: async () => 0n,
+  activeWithdrawalExecutor: async () => ({ fee: 0n }),
+  withdrawalExecutor: async () => ({ fee: 0n }),
+  withdrawalExecutorAt: async () => ({ fee: 0n }),
+  useActiveWithdrawalFee: () => 0n,
+}))
 vi.mock("../src/features/broadcasts/registrationExecutor", () => ({
   registrationBroadcastPayload: h.payload,
 }))
@@ -46,8 +52,6 @@ vi.mock("../src/features/onboarding/webRegistrationBroadcast", () => ({
 }))
 vi.mock("@obsidion/sdk", async (original) => ({
   ...(await original<typeof import("@obsidion/sdk")>()),
-  readFpcFundingCut: h.fundingCut,
-  readPortalWithdrawalState: h.portalState,
   PaylinkService: class {
     claimSponsoredPaylink = h.claimSdk
   },
@@ -94,7 +98,6 @@ vi.mock("../src/lib/analytics", async (original) => ({
 vi.mock("../src/features/withdraw/withdrawGateway", async (original) => ({
   ...(await original<typeof import("../src/features/withdraw/withdrawGateway")>()),
   currentDeployment: async () => undefined,
-  publishedBurn: async () => undefined,
   ensureWithdrawalTracker: async () => ({ watch: h.watch }),
 }))
 /** Read once at module load, so it is set before anything imports the analytics module. */
@@ -130,8 +133,8 @@ const deps = {
   },
 } as never
 const pending = PendingRegistrationStore.get(webStorage)
-/** Fee 0.5, no minimum, both cuts 0.1: SIPA target 0.61, burn 0.81, plus the committed tip. */
-const BURN = dai(0.81)
+/** Fee 0.5, no minimum: SIPA target 0.51, burn 0.61, plus the committed tip. */
+const BURN = dai(0.61)
 const TIP = dai(1)
 
 const terms = (overrides: Partial<Parameters<typeof saveRegistrationTerms>[0]> = {}) =>
@@ -162,17 +165,13 @@ const sdkOptions = (call = 0) =>
     broadcasts?: unknown[]
   }
 
-let portals = 0
 beforeEach(async () => {
   localStorage.clear()
   ;(WithdrawalStorage as unknown as { instance: unknown }).instance = null
   await pending.load()
   vi.clearAllMocks()
-  h.fundingCut.mockResolvedValue(CUT)
   h.claimSdk.mockResolvedValue(HASH)
   h.getTxReceipt.mockResolvedValue({ status: "success", blockNumber: 42 })
-  // A fresh portal per test: the cut reader caches one read per deployment.
-  h.portal.address = `0x${String(++portals).padStart(40, "0")}`
   await pending.upsert(
     account,
     { broadcast: true },
@@ -208,11 +207,10 @@ describe("a registration-funding claim's burn record", () => {
       recipient: "0xCcCCccccCCCCcCCCCCCcCcCccCcCCCcCcccccccC",
       source: "paylink",
       intent: "registration",
-      amount: "1.81",
+      amount: "1.61",
       rawAmount: (BURN + TIP).toString(),
       relayerTip: WITHDRAW_RELAYER_TIP.toString(),
       proverTip: TIP.toString(),
-      fpcFundingCut: CUT.toString(),
       tokenSymbol: "DAI",
     })
     expect(seeded[0]?.l2TxHash).toBeUndefined()
@@ -229,9 +227,8 @@ describe("a registration-funding claim's burn record", () => {
     expect(withdraw?.proverTip).toBe(TIP)
     expect(withdraw?.withdrawal).toEqual({
       tuple: { portal: h.portal.address },
-      portal: { fpcFundingCut: CUT, frozen: false },
+      l1: expect.anything(),
     })
-    expect(h.portalState).toHaveBeenCalledWith(expect.anything(), h.portal.address)
     expect(String(withdraw?.l1Recipient).toLowerCase()).toBe(sipaAddress)
 
     const [mined] = withdrawals()

@@ -13,8 +13,8 @@
     "./*": "./dest/*"
   },
   "dependencies": {
-    "@aztec/foundation": "5.2.0",
-    "@aztec/stdlib": "5.2.0",
+    "@aztec-labs/foundation": "6.0.0",
+    "@aztec-labs/stdlib": "6.0.0",
     "@oxide/oxide-lib": "workspace:^",
     "secp256k1": "^5.0.1"
   },

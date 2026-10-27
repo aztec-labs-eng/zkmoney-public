@@ -1,7 +1,7 @@
-import { loadContractArtifact } from "@aztec/stdlib/abi"
-import { computeArtifactHash, getContractClassFromArtifact } from "@aztec/stdlib/contract"
+import { loadContractArtifact } from "@aztec-labs/stdlib/abi"
+import { computeArtifactHash, getContractClassFromArtifact } from "@aztec-labs/stdlib/contract"
 import { describe, it } from "vitest"
-import { NoirCompiledContract } from "@aztec/stdlib/noir"
+import { NoirCompiledContract } from "@aztec-labs/stdlib/noir"
 
 // pnpm test:sandbox scripts/getArtifactHashByArtifact.test.ts
 

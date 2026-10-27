@@ -9,9 +9,13 @@
  * at a time: the active tab's. Without OPFS (Safari Private Browsing) and in demo mode the database
  * is in memory and nothing persistent is touched.
  */
-import { createLogger } from "@aztec/foundation/log"
-import { NoRetryError, makeBackoff, retry } from "@aztec/foundation/retry"
-import { AztecSQLiteOPFSStore, listStores, storePoolDirectory } from "@aztec/kv-store/sqlite-opfs"
+import { createLogger } from "@aztec-labs/foundation/log"
+import { NoRetryError, makeBackoff, retry } from "@aztec-labs/foundation/retry"
+import {
+  AztecSQLiteOPFSStore,
+  listStores,
+  storePoolDirectory,
+} from "@aztec-labs/kv-store/sqlite-opfs"
 import { openPooledStore } from "./openPooledStore"
 
 /** One write: a value, or `null` for a removal. */
@@ -432,6 +436,23 @@ export function removeFromOtherDatabases(keys: readonly string[]): Promise<void>
 }
 
 /**
+ * Removes every key `match` selects from every other rollup's database. A database another document
+ * holds, or one that fails, is skipped and left whole; a later call finishes it.
+ */
+export function removeMatchingFromOtherDatabases(match: (key: string) => boolean): Promise<void> {
+  return onOtherDatabases(async () => {
+    await visitOtherDatabases(
+      async (_, db) => {
+        const { state } = await db.load()
+        const ops = [...state.keys()].filter(match).map((key): WalletOp => [key, null])
+        if (ops.length) await db.apply(ops)
+      },
+      { verb: "edit" },
+    )
+  })
+}
+
+/**
  * Reads `key` from every other rollup's database: what this browser kept before the wallet moved to
  * another rollup. A database another document holds, one that fails to read, or one without the key
  * is skipped; with `strict`, the first two fail the read, so a caller that needs every copy never
@@ -455,24 +476,86 @@ export function readFromOtherDatabases(
 }
 
 async function readOtherDatabases(key: string, strict: boolean): Promise<string[]> {
+  return (await readKeysFromOthers([key], strict)).map((entries) => entries.get(key)!)
+}
+
+/**
+ * Reads `keys` from every other rollup's database, one map per database that holds any of them,
+ * so values that belong together come from one database. Skips databases as
+ * `readFromOtherDatabases` does.
+ */
+export function readEntriesFromOtherDatabases(
+  keys: readonly string[],
+): Promise<Array<Map<string, string>>> {
+  return onOtherDatabases(() => readKeysFromOthers(keys, false))
+}
+
+async function readKeysFromOthers(
+  keys: readonly string[],
+  strict: boolean,
+): Promise<Array<Map<string, string>>> {
+  const found = await visitOtherDatabases(
+    async (_, db) => {
+      const entries = new Map<string, string>()
+      for (const key of keys) {
+        const value = await db.get(key)
+        if (value !== undefined) entries.set(key, value)
+      }
+      return entries
+    },
+    { strict },
+  )
+  return found.filter((entries) => entries.size > 0)
+}
+
+/** One other rollup's database, loaded whole. */
+export interface OtherDatabase {
+  version: string
+  state: ReadonlyMap<string, string>
+}
+
+/**
+ * Reads every other rollup's database whole, handing each to `read` while it is open. A database
+ * another document holds or one that fails to read is skipped, or with `strict` fails the read, as
+ * `readFromOtherDatabases`. Reads run one at a time with the other work on those databases.
+ */
+export function loadFromOtherDatabases<T>(
+  read: (db: OtherDatabase) => T,
+  opts: { strict?: boolean } = {},
+): Promise<T[]> {
+  return onOtherDatabases(() =>
+    visitOtherDatabases(
+      async (version, db) => read({ version, state: (await db.load()).state }),
+      opts,
+    ),
+  )
+}
+
+/**
+ * Runs `visit` on each other rollup's database while it is open. A database another document holds,
+ * or one that fails, is skipped, or with `strict` fails the call.
+ */
+async function visitOtherDatabases<T>(
+  visit: (version: string, db: WalletDb) => Promise<T>,
+  opts: { strict?: boolean; verb?: string } = {},
+): Promise<T[]> {
   if (!walletStoreIsPersistent()) return []
   const others = (await store.backend.list()).filter((version) => version !== store.version)
-  const values: string[] = []
+  const results: T[] = []
   for (const version of others) {
     let db: WalletDb | undefined
     try {
       db = await store.backend.open(version, true)
-      const value = await db.get(key)
-      if (value !== undefined) values.push(value)
+      results.push(await visit(version, db))
     } catch (error) {
-      if (strict) throw error
+      if (opts.strict) throw error
       if (!isWalletOpenElsewhere(error))
-        console.warn(`[wallet-store] could not read wallet_${version}:`, error)
+        console.warn(`[wallet-store] could not ${opts.verb ?? "read"} wallet_${version}:`, error)
     } finally {
       await db?.close().catch(() => {})
     }
   }
-  return values
+  return results
 }
 
 /** Navigates once every queued write has committed. A lost background write is reported, not fatal. */

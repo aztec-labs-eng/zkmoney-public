@@ -5,8 +5,8 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest"
 
 const h = vi.hoisted(() => ({ classHashes: 0 }))
-vi.mock("@aztec/stdlib/contract", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@aztec/stdlib/contract")>()
+vi.mock("@aztec-labs/stdlib/contract", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@aztec-labs/stdlib/contract")>()
   return {
     ...actual,
     getContractClassFromArtifact: (
@@ -18,7 +18,7 @@ vi.mock("@aztec/stdlib/contract", async (importOriginal) => {
   }
 })
 
-import { getContractClassFromArtifact } from "@aztec/stdlib/contract"
+import { getContractClassFromArtifact } from "@aztec-labs/stdlib/contract"
 import type { FetchFunction } from "@obsidion/core/types"
 import { ContractService, DEFAULT_CONTRACTS, Network, NodeContractServiceStorage } from "../../src"
 

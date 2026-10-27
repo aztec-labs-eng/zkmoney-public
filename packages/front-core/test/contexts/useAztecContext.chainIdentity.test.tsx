@@ -5,8 +5,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import React from "react"
 import { act, render, waitFor } from "@testing-library/react"
-import { EthAddress } from "@aztec/foundation/eth-address"
-import type { AztecNode } from "@aztec/aztec.js/node"
+import { EthAddress } from "@aztec-labs/foundation/eth-address"
+import type { AztecNode } from "@aztec-labs/aztec.js/node"
 
 const { network } = vi.hoisted(() => ({
   network: {

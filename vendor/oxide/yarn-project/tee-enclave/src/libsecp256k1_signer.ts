@@ -1,9 +1,9 @@
-import { Buffer32 } from '@aztec/foundation/buffer';
-import { keccak256 } from '@aztec/foundation/crypto/keccak';
-import { EthAddress } from '@aztec/foundation/eth-address';
-import { Signature } from '@aztec/foundation/eth-signature';
+import { Buffer32 } from '@aztec-labs/foundation/buffer';
+import { keccak256 } from '@aztec-labs/foundation/crypto/keccak';
+import { EthAddress } from '@aztec-labs/foundation/eth-address';
+import { Signature } from '@aztec-labs/foundation/eth-signature';
 
-import type { SecpPublicKey } from '@oxide/oxide-lib/types.js';
+import type { SecpPublicKey } from '@oxide/oxide-lib-tee/types.js';
 
 import { randomBytes } from 'node:crypto';
 import { createRequire } from 'node:module';
@@ -48,7 +48,7 @@ export function verifyEcdsa(rs: Buffer, digest: Buffer, publicKeyUncompressed: B
 }
 
 /**
- * Drop-in replacement for `@aztec/foundation`'s `Secp256k1Signer` backed by libsecp256k1's
+ * Drop-in replacement for `@aztec-labs/foundation`'s `Secp256k1Signer` backed by libsecp256k1's
  * constant-time C implementation. libsecp256k1 always emits low-s canonical signatures, so
  * the output bytes are interchangeable with the noble-backed foundation signer for any
  * ECRECOVER-style verifier (Solidity, Noir `k1_verify`).

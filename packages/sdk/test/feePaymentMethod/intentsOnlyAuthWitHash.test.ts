@@ -6,9 +6,9 @@
  *   pnpm test test/feePaymentMethod/intentsOnlyAuthWitHash.test.ts
  */
 import { describe, expect, it } from "vitest"
-import { Fr } from "@aztec/foundation/curves/bn254"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import { computeOuterAuthWitHash } from "@aztec/stdlib/auth-witness"
+import { Fr } from "@aztec-labs/foundation/curves/bn254"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import { computeOuterAuthWitHash } from "@aztec-labs/stdlib/auth-witness"
 import {
   computeIntentsOnlyAuthWitHash,
   computeIntentsOnlySignatureHash,

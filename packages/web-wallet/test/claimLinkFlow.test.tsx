@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { provingProgress } from "@obsidion/proving-progress"
 import { DEFAULT_CONTRACTS } from "@obsidion/core/constants"
 import { PAYLINK_NOT_CLAIMABLE_YET_MESSAGE } from "../src/features/paylink/claimWindow"
+import { actionUpgradeTitle, claimUpgradeLead } from "../src/features/migration/upgradeCopy"
 import { TimeoutError } from "../src/lib/withTimeout"
 import { asOperation, endSigningAndHandOff } from "./support/handOff"
 
@@ -13,7 +14,6 @@ vi.mock("../src/features/operations/operations", async () =>
 /** Whether a claim must wait for the upgrade, and every action a press asked for. */
 const gate = vi.hoisted(() => ({ upgrade: false, asked: [] as string[] }))
 vi.mock("../src/features/actionGate", () => ({
-  useWalletFrozen: () => false,
   useActionGuard: () => (action: string, run: () => void) => {
     gate.asked.push(action)
     if (!gate.upgrade) run()
@@ -48,11 +48,11 @@ vi.mock("@obsidion/front-core", async () => {
   )
   const goldenTicketBurn = (
     schedule: { fee: bigint; min: bigint },
-    cuts: { withdrawalCut: bigint; depositCut: bigint },
     proverTip: bigint,
+    withdrawalFee: bigint,
   ) =>
     goldenTicketQuote(schedule, {
-      ...cuts,
+      withdrawalFee,
       relayerTip: WITHDRAW_RELAYER_TIP,
       proverTip,
       bridgeRemainder: GOLDEN_TICKET_BRIDGE_REMAINDER,
@@ -62,10 +62,10 @@ vi.mock("@obsidion/front-core", async () => {
     goldenTicketCoverage: (
       noteAmount: bigint,
       schedule: { fee: bigint; min: bigint },
-      cuts: { withdrawalCut: bigint; depositCut: bigint },
       proverTip: bigint,
+      withdrawalFee: bigint,
     ) => {
-      const quote = goldenTicketBurn(schedule, cuts, proverTip)
+      const quote = goldenTicketBurn(schedule, proverTip, withdrawalFee)
       const immediate = noteAmount - quote.burn
       return {
         ...quote,
@@ -217,7 +217,6 @@ vi.mock("react-router-dom", () => ({ useNavigate: () => navigate }))
 const commitTip = vi.fn((_account: string, _tag: string, _tip: bigint) => {})
 vi.mock("../src/features/onboarding/registrationTerms", () => ({
   useDepositSkim: () => skim.value,
-  useSweepDeductions: () => ({ skim: 0n, fpcCut: 10n }),
   commitRegistrationProverTip: (account: string, tag: string, tip: bigint) =>
     commitTip(account, tag, tip),
   useRegistrationTerms: () => null,
@@ -226,6 +225,8 @@ vi.mock("../src/features/onboarding/registrationTerms", () => ({
 /** The tip the review decides; its quote and decision have a suite of their own. */
 const reviewTip: { value: bigint | undefined } = { value: 10n ** 18n }
 vi.mock("../src/features/withdraw/speedChoice", () => ({ SpeedRow: () => null }))
+// The executor fee is priced in the quote's own suite; here it costs nothing so the figures stay the tips'.
+vi.mock("../src/features/withdraw/withdrawalFee", () => ({ useActiveWithdrawalFee: () => 0n }))
 vi.mock("../src/features/paylink/registrationProverTip", () => ({
   useRegistrationSpeed: ({
     active,
@@ -716,14 +717,14 @@ describe("useClaimLinkFlow", () => {
     expect(clearClaimStash).toHaveBeenCalledOnce()
   })
 
-  it("asks to upgrade before a claim, to this wallet or to Ethereum", async () => {
+  it("asks an account that must upgrade to upgrade to claim", async () => {
     paylinkDeps = { account: { getAddress: () => "0xme" } }
     l1Modal.props = undefined
     gate.upgrade = true
     await render()
-    await act(async () => button("Accept")!.click())
-    await act(async () => button("Claim to an Ethereum wallet instead")!.click())
-    expect(gate.asked).toEqual(["claim", "claim"])
+    expect(container.textContent).toContain(claimUpgradeLead)
+    await act(async () => button(actionUpgradeTitle.claim)!.click())
+    expect(gate.asked).toEqual(["claim"])
     expect(claimSponsoredLink).not.toHaveBeenCalled()
     expect(l1Modal.props).toBeUndefined()
   })
@@ -1352,9 +1353,8 @@ describe("useClaimLinkFlow", () => {
       await remount()
       expect(review()).not.toBeNull()
       expect(container.textContent).toContain("Pizza dinner")
-      // 20 - (0.5 fee + 10 wei return-deposit cut + 0.01 remainder + 10 wei withdrawal cut + 0.1
-      // relayer + 1 prover)
-      expect(container.textContent).toContain(`receive ${18_390_000_000_000_000_000n - 20n}`)
+      // 20 - (0.5 fee + 0.01 remainder + 0.1 relayer + 1 prover)
+      expect(container.textContent).toContain(`receive ${18_390_000_000_000_000_000n}`)
       expect(container.textContent).toContain(`proving ${10n ** 18n}`)
       // The tip on screen is the one the claim burns.
       expect(commitTip).toHaveBeenCalledWith("0xacct", "taga", 10n ** 18n)
@@ -1378,9 +1378,8 @@ describe("useClaimLinkFlow", () => {
         reviewTip.value = 0n
         await asked()
         await settle()
-        // 20 - (0.5 fee + 10 wei return-deposit cut + 0.01 remainder + 10 wei withdrawal cut + 0.1
-        // relayer)
-        expect(container.textContent).toContain(`receive ${19_390_000_000_000_000_000n - 20n}`)
+        // 20 - (0.5 fee + 0.01 remainder + 0.1 relayer)
+        expect(container.textContent).toContain(`receive ${19_390_000_000_000_000_000n}`)
         expect(container.textContent).toContain("proving 0")
         expect(commitTip).toHaveBeenCalledWith("0xacct", "taga", 0n)
         reviewTip.value = undefined
@@ -1627,7 +1626,7 @@ describe("useClaimLinkFlow", () => {
       commitTip.mockClear()
       await act(async () => root.render(<Harness fragment="frag" onDone={onDone} requested />))
       await settle()
-      expect(container.textContent).toContain(`receive ${19_390_000_000_000_000_000n - 20n}`)
+      expect(container.textContent).toContain(`receive ${19_390_000_000_000_000_000n}`)
       expect(container.textContent).toContain("proving 0")
       expect(commitTip).not.toHaveBeenCalled()
     })
@@ -1848,7 +1847,7 @@ describe("useClaimLinkFlow", () => {
       decodeLink.mockReturnValue({ ...emailLink, amount: "20", memo: "From the link" })
       await render()
       expect(container.textContent).toContain("From the link")
-      expect(container.textContent).toContain(`receive ${18_390_000_000_000_000_000n - 20n}`)
+      expect(container.textContent).toContain(`receive ${18_390_000_000_000_000_000n}`)
     })
 
     it("a link this account's signup did not leave claims the ordinary way", async () => {

@@ -17,8 +17,8 @@ export function fakeSwapSimulator(sdk: typeof import("@obsidion/sdk"), control: 
     async simulate(args: SwapSimulationArgs): Promise<SwapSimulation> {
       control.calls.push(args)
       if (control.failure) throw control.failure
-      const { withdrawalRelayerTip, proverTip, fpcFundingCut } = args.deductions
-      const funding = args.amount - withdrawalRelayerTip - proverTip - fpcFundingCut
+      const { withdrawalFee, withdrawalRelayerTip, proverTip } = args.deductions
+      const funding = args.amount - withdrawalFee - withdrawalRelayerTip - proverTip
       const tip = {
         relayerTip: control.relayerTip,
         minPayout: (control.relayerTip * 2n) / 3n,

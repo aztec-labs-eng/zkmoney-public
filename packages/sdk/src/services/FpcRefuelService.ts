@@ -10,21 +10,20 @@
  * another wallet is the expected common case and costs only local proving time — the duplicate
  * message nullifier drops the tx before any fee is charged.
  */
-import { Fr } from "@aztec/aztec.js/fields"
-import type { AztecAddress } from "@aztec/stdlib/aztec-address"
-import type { ContractArtifact } from "@aztec/stdlib/abi"
-import { Contract } from "@aztec/aztec.js/contracts"
-import { NO_FROM } from "@aztec/aztec.js/account"
-import { NO_WAIT } from "@aztec/aztec.js/contracts"
-import type { AztecNode } from "@aztec/aztec.js/node"
-import { computeFeeJuiceMessageNullifier } from "@aztec/stdlib/messaging"
-import { computeSecretHash, siloNullifier } from "@aztec/stdlib/hash"
-import { ExecutionPayload } from "@aztec/stdlib/tx"
-import { isL1ToL2MessageReady } from "@aztec/aztec.js/messaging"
-import { createLogger } from "@aztec/foundation/log"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import type { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import type { ContractArtifact } from "@aztec-labs/stdlib/abi"
+import { Contract } from "@aztec-labs/aztec.js/contracts"
+import { NO_FROM } from "@aztec-labs/aztec.js/account"
+import { NO_WAIT } from "@aztec-labs/aztec.js/contracts"
+import type { AztecNode } from "@aztec-labs/aztec.js/node"
+import { computeFeeJuiceMessageNullifier } from "@aztec-labs/stdlib/messaging"
+import { computeSecretHash, siloNullifier } from "@aztec-labs/stdlib/hash"
+import { ExecutionPayload } from "@aztec-labs/stdlib/tx"
+import { isL1ToL2MessageReady } from "@aztec-labs/aztec.js/messaging"
+import { createLogger } from "@aztec-labs/foundation/log"
 import { parseAbiItem, type PublicClient } from "viem"
 import { ensureContractRegisteredInPXE } from "@obsidion/contracts"
-import { DEFAULT_FPC_REFUEL_THRESHOLD } from "@obsidion/core/constants"
 import type { ObsidionWallet } from "../obsidion/ObsidionWallet.js"
 import { claimFpcRefuelFee } from "../feePaymentMethod/claimFpcRefuel.js"
 
@@ -42,7 +41,7 @@ export interface FpcRefuelTarget {
 
 export interface FpcRefuelOptions {
   /** Fee-juice balance (wei) below which a refuel is attempted. */
-  threshold?: bigint
+  threshold: bigint
   /** How far back to scan the portal's L1 logs for candidate deposits. */
   l1ScanBlocks?: bigint
   /** Minimum spacing between attempts; bursts of user txs share one check. */
@@ -67,9 +66,9 @@ export class FpcRefuelService {
     private readonly node: AztecNode,
     private readonly resolveFpc: () => Promise<FpcRefuelTarget | undefined>,
     private readonly l1: PublicClient,
-    options: FpcRefuelOptions = {},
+    options: FpcRefuelOptions,
   ) {
-    this.threshold = options.threshold ?? DEFAULT_FPC_REFUEL_THRESHOLD
+    this.threshold = options.threshold
     this.l1ScanBlocks = options.l1ScanBlocks ?? 50_000n
     this.cooldownMs = options.cooldownMs ?? 60_000
   }
@@ -135,7 +134,7 @@ export class FpcRefuelService {
     const { feeJuice } = await this.node.getProtocolContractAddresses()
     // Imported on use: the module parses the whole FeeJuice artifact when it loads.
     const { computeFeePayerBalanceStorageSlot } = await import(
-      "@aztec/protocol-contracts/fee-juice"
+      "@aztec-labs/protocol-contracts/fee-juice"
     )
     const slot = await computeFeePayerBalanceStorageSlot(owner)
     return (await this.node.getPublicStorageAt("latest", feeJuice, slot)).toBigInt()

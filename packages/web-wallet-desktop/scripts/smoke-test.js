@@ -137,19 +137,17 @@ async function main() {
       assert.equal(committed.localPort, 5173)
       assert.ok(committed.proxies["/svc/enclave"])
       assert.ok(committed.proxies["/svc/account"])
-      // Savings' co-signer has its own enclave, matching vite's /svc/enclave-sky proxy.
-      assert.deepEqual(matchProxy("/svc/enclave-sky/rpc", committed.proxies), {
-        prefix: "/svc/enclave-sky",
-        target: "http://localhost:5072",
-      })
-      assert.equal(matchProxy("/svc/enclave/rpc", committed.proxies).target, "http://localhost:5071")
-      // The override retargets Main's enclave only.
+      // Every token's co-signer is the one fleet behind /svc/enclave.
+      assert.equal(committed.proxies["/svc/enclave-sky"], undefined)
+      assert.equal(
+        matchProxy("/svc/enclave/rpc", committed.proxies).target,
+        "http://localhost:5071",
+      )
       process.env.OBSIDION_ENCLAVE_TARGET = "http://127.0.0.1:9999"
       const overridden = loadConfig(configFixture)
-      assert.equal(matchProxy("/svc/enclave/rpc", overridden.proxies).target, "http://127.0.0.1:9999")
       assert.equal(
-        matchProxy("/svc/enclave-sky/rpc", overridden.proxies).target,
-        "http://localhost:5072",
+        matchProxy("/svc/enclave/rpc", overridden.proxies).target,
+        "http://127.0.0.1:9999",
       )
     } finally {
       if (enclaveOverride === undefined) delete process.env.OBSIDION_ENCLAVE_TARGET

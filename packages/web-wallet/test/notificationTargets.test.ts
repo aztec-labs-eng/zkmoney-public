@@ -138,6 +138,19 @@ describe("notification target -> activity detail", () => {
     expect(findBridgeItem(items, { openWithdrawalId: "nope" })).toBeUndefined()
   })
 
+  it("opens an address's own record, not another token it credited", () => {
+    const credited = [
+      {
+        kind: "bridge.sipaDeposit",
+        record: { sipaAddress: SIPA, tokenSymbol: "DAI" },
+        credit: "0x6b175474e89094c44da98b954eedeac495271d0f",
+      },
+      { kind: "bridge.sipaDeposit", record: { sipaAddress: SIPA, tokenSymbol: "sUSDS" } },
+    ] as unknown as ActivityItem[]
+    const hit = findBridgeItem(credited, { openDepositAddress: SIPA })
+    expect(hit?.record).toMatchObject({ tokenSymbol: "sUSDS" })
+  })
+
   it("opens a Savings move's burn in the Savings detail its row opens, and a fresh leg as its group", () => {
     const withdrawal = (record: object) => ({ kind: "bridge.withdrawal", record }) as never
     expect(

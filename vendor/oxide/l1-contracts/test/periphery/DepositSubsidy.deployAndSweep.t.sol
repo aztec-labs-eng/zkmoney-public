@@ -1,21 +1,23 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity >=0.8.27;
 
-import {IERC20} from "@oz/token/ERC20/IERC20.sol";
 import {ReentrancyGuardTransient} from "@oz/utils/ReentrancyGuardTransient.sol";
 
-import {DepositSIPA, DEPOSIT_FEE} from "@periphery/DepositSIPA.sol";
+import {DepositSIPA} from "@periphery/DepositSIPA.sol";
 import {DepositSubsidy} from "@periphery/DepositSubsidy.sol";
+import {IOperationExecutor} from "@periphery/interfaces/IOperationExecutor.sol";
 import {Errors} from "@periphery/Errors.sol";
 import {SIPAFactory} from "@periphery/SIPAFactory.sol";
 import {SIPABase} from "@periphery/SIPABase.sol";
 import {AggregatorV3Interface} from "@periphery/interfaces/AggregatorV3Interface.sol";
 import {ISIPA} from "@periphery/interfaces/ISIPA.sol";
+import {IForwardingTable} from "@periphery/interfaces/IForwardingTable.sol";
 
 import {GasBurningSIPA} from "@test/periphery/GasBurningSIPA.sol";
 import {SweepGasFixture} from "@test/periphery/SweepGasFixture.sol";
-import {MockPortal} from "@test/mocks/MockPortal.sol";
+import {RelayerTransaction} from "@test/periphery/RelayerTransaction.sol";
 import {MockV3Aggregator} from "@test/mocks/MockV3Aggregator.sol";
+import {DEPOSIT_SWEEP_TIP} from "@test/helpers/ForwardingTableFixture.sol";
 
 contract BurningSIPAFactory {
   address internal immutable PORTAL;
@@ -28,20 +30,24 @@ contract BurningSIPAFactory {
     BURN = _burn;
   }
 
-  function implementationFor(address, SIPABase.Intent) external view returns (address) {
+  function implementationFor(SIPABase.Intent) external view returns (address) {
     return address(this);
+  }
+
+  function approvedTable(address) external pure returns (bool) {
+    return true;
   }
 
   function sipaIntentOf(address) external pure returns (SIPABase.Intent) {
     return SIPABase.Intent.Deposit;
   }
 
-  function predictSIPA(address, bytes32, bytes32, uint256, bool) public view returns (address) {
+  function predictSIPA(address, bytes32, bytes32, uint256, bool, address) public view returns (address) {
     bytes32 initCodeHash = keccak256(abi.encodePacked(type(GasBurningSIPA).creationCode, abi.encode(PORTAL, FEE, BURN)));
     return address(uint160(uint256(keccak256(abi.encodePacked(bytes1(0xff), address(this), bytes32(0), initCodeHash)))));
   }
 
-  function deploySIPA(address, bytes32, bytes32, uint256, bool) public virtual returns (address) {
+  function deploySIPA(address, bytes32, bytes32, uint256, bool, address) public virtual returns (address) {
     return address(new GasBurningSIPA{salt: bytes32(0)}(PORTAL, FEE, BURN));
   }
 }
@@ -53,7 +59,7 @@ contract ReenteringSIPAFactory is BurningSIPAFactory {
     TOKEN = _token;
   }
 
-  function deploySIPA(address, bytes32, bytes32, uint256, bool) public override returns (address) {
+  function deploySIPA(address, bytes32, bytes32, uint256, bool, address) public override returns (address) {
     DepositSubsidy(msg.sender).sweepForSubsidy(ISIPA(address(this)), TOKEN, address(this), "", "");
     return address(0);
   }
@@ -68,17 +74,13 @@ contract DeployAndSweepReentrantSIPA {
     PORTAL = _portal;
   }
 
-  function portal() external view returns (address) {
-    return PORTAL;
-  }
-
-  function depositFee() external pure returns (uint256) {
-    return DEPOSIT_FEE;
+  function route(address) external view returns (address, uint256, uint256) {
+    return (PORTAL, DEPOSIT_SWEEP_TIP, 0);
   }
 
   function sweep(address token, address relayer, bytes calldata intentData, bytes calldata proofs) external {
     DEPOSIT_SUBSIDY.deployAndSweepForSubsidy(
-      SIPABase.Intent.Deposit, bytes32(0), true, token, relayer, intentData, proofs
+      IForwardingTable(address(0)), SIPABase.Intent.Deposit, bytes32(0), true, token, relayer, intentData, proofs
     );
   }
 }
@@ -94,6 +96,7 @@ contract DepositSubsidyDeployAndSweepTest is SweepGasFixture {
     super.setUp();
     feed = new MockV3Aggregator(8, PRICED_FEED_ANSWER);
     sm = _newSubsidy(address(portal), sipaFactory);
+    underlying.mint(relayer, 1);
     vm.fee(PRICED_BASEFEE);
     vm.txGasPrice(PRICED_BASEFEE);
   }
@@ -112,15 +115,22 @@ contract DepositSubsidyDeployAndSweepTest is SweepGasFixture {
       uint8(sipaFactory.sipaIntentOf(sipa)), uint8(SIPABase.Intent.Deposit), "the call deployed a blessed deposit SIPA"
     );
     assertGt(subsidy, 0, "the deploy and sweep was paid a subsidy");
-    assertEq(underlying.balanceOf(address(portal)) - portalBefore, DEPOSIT - DEPOSIT_FEE, "the deposit bridged");
-    assertEq(underlying.balanceOf(relayer) - relayerBefore, DEPOSIT_FEE + subsidy, "the relayer got fee and subsidy");
+    assertEq(underlying.balanceOf(address(portal)) - portalBefore, DEPOSIT - DEPOSIT_SWEEP_TIP, "the deposit bridged");
+    assertEq(
+      underlying.balanceOf(relayer) - relayerBefore, DEPOSIT_SWEEP_TIP + subsidy, "the relayer got fee and subsidy"
+    );
     assertEq(underlying.balanceOf(sipa), 0, "the SIPA was swept");
   }
 
   function test_GivenAFrontRunDeploy_WhenDeployAndSweep_ThenTheSweepStillLands() external {
     bytes memory intent = _depositIntent("frontRun");
     address sipa = sipaFactory.deploySIPA(
-      address(depositSIPAImplementation), keccak256(intent), _recoveryCommitment("recovery"), ROLLUP_VERSION, true
+      address(depositSIPAImplementation),
+      keccak256(intent),
+      _recoveryCommitment("recovery"),
+      ROLLUP_VERSION,
+      true,
+      forwardingTable
     );
     underlying.mint(sipa, DEPOSIT);
     uint256 portalBefore = underlying.balanceOf(address(portal));
@@ -129,8 +139,10 @@ contract DepositSubsidyDeployAndSweepTest is SweepGasFixture {
     uint256 subsidy = _deployAndSweep(intent);
 
     assertGt(subsidy, 0, "the sweep of a front-run SIPA was paid a subsidy");
-    assertEq(underlying.balanceOf(address(portal)) - portalBefore, DEPOSIT - DEPOSIT_FEE, "the deposit bridged");
-    assertEq(underlying.balanceOf(relayer) - relayerBefore, DEPOSIT_FEE + subsidy, "the relayer got fee and subsidy");
+    assertEq(underlying.balanceOf(address(portal)) - portalBefore, DEPOSIT - DEPOSIT_SWEEP_TIP, "the deposit bridged");
+    assertEq(
+      underlying.balanceOf(relayer) - relayerBefore, DEPOSIT_SWEEP_TIP + subsidy, "the relayer got fee and subsidy"
+    );
     assertEq(underlying.balanceOf(sipa), 0, "the SIPA was swept");
   }
 
@@ -138,14 +150,14 @@ contract DepositSubsidyDeployAndSweepTest is SweepGasFixture {
     external
   {
     (DepositSubsidy burner, BurningSIPAFactory factory) = _burningSubsidy();
-    address sipa = factory.predictSIPA(address(0), bytes32(0), bytes32(0), 0, true);
+    address sipa = factory.predictSIPA(address(0), bytes32(0), bytes32(0), 0, true, address(0));
     assertEq(sipa.code.length, 0, "the SIPA must not exist before the call");
 
     uint256 subsidy = _deployAndSweepOn(burner, address(underlying));
 
     assertGt(sipa.code.length, 0, "the call deployed the SIPA");
     assertEq(
-      _pricedGas(subsidy, DEPOSIT_FEE),
+      _pricedGas(subsidy, DEPOSIT_SWEEP_TIP),
       burner.SWEEP_GAS_DEPOSIT_CEILING() + burner.SWEEP_GAS_DEPLOY_ALLOWANCE(),
       "a deploy must raise the ceiling by the deploy allowance"
     );
@@ -153,12 +165,12 @@ contract DepositSubsidyDeployAndSweepTest is SweepGasFixture {
 
   function test_GivenACeilingBoundSIPAAlreadyDeployed_WhenDeployAndSweep_ThenItGetsNoDeployAllowance() external {
     (DepositSubsidy burner, BurningSIPAFactory factory) = _burningSubsidy();
-    factory.deploySIPA(address(0), bytes32(0), bytes32(0), 0, true);
+    factory.deploySIPA(address(0), bytes32(0), bytes32(0), 0, true, address(0));
 
     uint256 subsidy = _deployAndSweepOn(burner, address(underlying));
 
     assertEq(
-      _pricedGas(subsidy, DEPOSIT_FEE),
+      _pricedGas(subsidy, DEPOSIT_SWEEP_TIP),
       burner.SWEEP_GAS_DEPOSIT_CEILING(),
       "a sweep that deployed nothing must not draw the deploy allowance"
     );
@@ -166,7 +178,7 @@ contract DepositSubsidyDeployAndSweepTest is SweepGasFixture {
 
   function test_GivenAnUnknownToken_WhenDeployAndSweepDeploys_ThenNothingIsPriced() external {
     (DepositSubsidy burner, BurningSIPAFactory factory) = _burningSubsidy();
-    address sipa = factory.predictSIPA(address(0), bytes32(0), bytes32(0), 0, true);
+    address sipa = factory.predictSIPA(address(0), bytes32(0), bytes32(0), 0, true, address(0));
 
     uint256 subsidy = _deployAndSweepOn(burner, makeAddr("unknownToken"));
 
@@ -177,6 +189,7 @@ contract DepositSubsidyDeployAndSweepTest is SweepGasFixture {
   function test_GivenAnIntentWithoutAnImplementation_WhenDeployAndSweep_ThenReverts() external {
     vm.expectRevert(abi.encodeWithSelector(Errors.DepositSubsidy__NoImplementationForIntent.selector, uint8(0)));
     sm.deployAndSweepForSubsidy(
+      forwardingTable,
       SIPABase.Intent.None,
       _recoveryCommitment("recovery"),
       true,
@@ -185,11 +198,13 @@ contract DepositSubsidyDeployAndSweepTest is SweepGasFixture {
       _depositIntent("none"),
       ""
     );
+  }
 
-    MockPortal barePortal = new MockPortal(IERC20(address(underlying)), ROLLUP_VERSION);
-    DepositSubsidy bare = _newSubsidy(address(barePortal), sipaFactory);
-    vm.expectRevert(abi.encodeWithSelector(Errors.DepositSubsidy__NoImplementationForIntent.selector, uint8(1)));
-    bare.deployAndSweepForSubsidy(
+  function test_GivenATableThatIsNotApproved_WhenDeployAndSweep_ThenReverts() external {
+    address unapproved = makeAddr("unapprovedTable");
+    vm.expectRevert(abi.encodeWithSelector(Errors.DepositSubsidy__TableNotApproved.selector, unapproved));
+    sm.deployAndSweepForSubsidy(
+      IForwardingTable(unapproved),
       SIPABase.Intent.Deposit,
       _recoveryCommitment("recovery"),
       true,
@@ -201,11 +216,13 @@ contract DepositSubsidyDeployAndSweepTest is SweepGasFixture {
   }
 
   function test_GivenADeployThatReentersSweepForSubsidy_ThenItIsRefused() external {
-    ReenteringSIPAFactory factory = new ReenteringSIPAFactory(address(portal), DEPOSIT_FEE, address(underlying));
+    ReenteringSIPAFactory factory = new ReenteringSIPAFactory(address(portal), DEPOSIT_SWEEP_TIP, address(underlying));
     DepositSubsidy reentered = _newSubsidy(address(portal), SIPAFactory(address(factory)));
 
     vm.expectRevert(ReentrancyGuardTransient.ReentrancyGuardReentrantCall.selector);
-    _deployAndSweepOn(reentered, address(underlying));
+    reentered.deployAndSweepForSubsidy(
+      forwardingTable, SIPABase.Intent.Deposit, bytes32(0), true, address(underlying), relayer, "", ""
+    );
   }
 
   function test_GivenASweepThatReentersDeployAndSweep_ThenItIsRefused() external {
@@ -221,14 +238,16 @@ contract DepositSubsidyDeployAndSweepTest is SweepGasFixture {
   }
 
   function _newSubsidy(address _portal, SIPAFactory _factory) internal returns (DepositSubsidy subsidy) {
-    subsidy = new DepositSubsidy(OWNER, _portal, AggregatorV3Interface(address(feed)), _factory);
+    subsidy = new DepositSubsidy(
+      OWNER, _portal, IOperationExecutor(address(operationExecutor)), AggregatorV3Interface(address(feed)), _factory
+    );
     underlying.mint(address(subsidy), 1_000_000 ether);
     vm.prank(OWNER);
-    subsidy.setDepositConfig(PRICED_MIN_PROFIT, type(uint128).max, PRICED_MIN_PROFIT, 0, 0);
+    subsidy.setDepositConfig(PRICED_MIN_PROFIT, type(uint128).max, 0);
   }
 
   function _burningSubsidy() internal returns (DepositSubsidy subsidy, BurningSIPAFactory factory) {
-    factory = new BurningSIPAFactory(address(portal), DEPOSIT_FEE, CEILING_BOUND_BURN);
+    factory = new BurningSIPAFactory(address(portal), DEPOSIT_SWEEP_TIP, CEILING_BOUND_BURN);
     subsidy = _newSubsidy(address(portal), SIPAFactory(address(factory)));
   }
 
@@ -238,18 +257,43 @@ contract DepositSubsidyDeployAndSweepTest is SweepGasFixture {
 
   function _predictDepositSIPA(bytes memory _intent) internal view returns (address) {
     return sipaFactory.predictSIPA(
-      address(depositSIPAImplementation), keccak256(_intent), _recoveryCommitment("recovery"), ROLLUP_VERSION, true
+      address(depositSIPAImplementation),
+      keccak256(_intent),
+      _recoveryCommitment("recovery"),
+      ROLLUP_VERSION,
+      true,
+      forwardingTable
     );
   }
 
-  function _deployAndSweep(bytes memory _intent) internal returns (uint256) {
-    vm.prank(relayer);
-    return sm.deployAndSweepForSubsidy(
-      SIPABase.Intent.Deposit, _recoveryCommitment("recovery"), true, address(underlying), relayer, _intent, ""
+  function _deployAndSweep(bytes memory _intent) internal returns (uint256 subsidy) {
+    (subsidy,) = RelayerTransaction.send(
+      relayer,
+      sm,
+      abi.encodeCall(
+        DepositSubsidy.deployAndSweepForSubsidy,
+        (
+          forwardingTable,
+          SIPABase.Intent.Deposit,
+          _recoveryCommitment("recovery"),
+          true,
+          address(underlying),
+          address(operationExecutor),
+          _intent,
+          ""
+        )
+      )
     );
   }
 
-  function _deployAndSweepOn(DepositSubsidy _subsidy, address _token) internal returns (uint256) {
-    return _subsidy.deployAndSweepForSubsidy(SIPABase.Intent.Deposit, bytes32(0), true, _token, relayer, "", "");
+  function _deployAndSweepOn(DepositSubsidy _subsidy, address _token) internal returns (uint256 subsidy) {
+    (subsidy,) = RelayerTransaction.send(
+      relayer,
+      _subsidy,
+      abi.encodeCall(
+        DepositSubsidy.deployAndSweepForSubsidy,
+        (forwardingTable, SIPABase.Intent.Deposit, bytes32(0), true, _token, address(operationExecutor), "", "")
+      )
+    );
   }
 }

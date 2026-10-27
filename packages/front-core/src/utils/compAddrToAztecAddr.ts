@@ -1,4 +1,4 @@
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 
 export async function compAddrToAztecAddr(compAddr: string) {
   // The address is the first 32-byte field of the serialized CompleteAddress in

@@ -1,6 +1,6 @@
-import type { Fr, GrumpkinScalar } from '@aztec/aztec.js/fields';
-import { sha256 } from '@aztec/foundation/crypto/sha256';
-import { sha512ToGrumpkinScalar } from '@aztec/foundation/crypto/sha512';
+import type { Fr, GrumpkinScalar } from '@aztec-labs/aztec.js/fields';
+import { sha256 } from '@aztec-labs/foundation/crypto/sha256';
+import { sha512ToGrumpkinScalar } from '@aztec-labs/foundation/crypto/sha512';
 
 /** Custom domain separator: sha256 of the concept name, trimmed to a u32. Keys derived under it are independent of
  *  every master key the protocol derives from the same secret (whose separators are small enum values). */

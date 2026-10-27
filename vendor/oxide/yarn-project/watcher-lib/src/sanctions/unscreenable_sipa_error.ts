@@ -1,4 +1,4 @@
-import type { EthAddress } from '@aztec/foundation/eth-address';
+import type { EthAddress } from '@aztec-labs/foundation/eth-address';
 
 /**
  * Thrown by a `FindFunders` lookup that cannot produce the funder set of a SIPA. The caller must not act on the

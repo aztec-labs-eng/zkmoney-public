@@ -6,8 +6,8 @@
 //
 // New code should import directly from `@obsidion/core/constants` where possible.
 
-import type { WaitOpts } from "@aztec/aztec.js/contracts"
-import { TxStatus } from "@aztec/stdlib/tx"
+import type { WaitOpts } from "@aztec-labs/aztec.js/contracts"
+import { TxStatus } from "@aztec-labs/stdlib/tx"
 
 export * from "@obsidion/core/constants"
 
@@ -32,8 +32,13 @@ export const DEFAULT_WAIT_OPTS: WaitOpts = {
 export const MAX_WITNESS_LEN = 500
 
 /**
+ * First witness field of the account's passkey-set slots (`PASSKEY_SET_INDEX` in the alpha
+ * `authwit.nr` files): right after the WebAuthn client data JSON window.
+ */
+export const PASSKEY_SET_INDEX = 485
+
+/**
  * Slot used by alpha account entrypoint when pushing intent capsules.
  * Single in-tree consumer: ObsidionAccountEntrypoint.
  */
 export const CAPSULE_SLOT = 1234
-

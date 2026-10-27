@@ -198,7 +198,7 @@ export type RegistryMatch = "match" | "mismatch" | "indeterminate"
  *
  * Both `l2Address` values are canonical (`AztecAddress.toString()`) and
  * `xmtpHandle`/`xmtpAddress` are EVM addresses, so a lowercase compare is
- * sufficient — no `@aztec/stdlib` runtime import needed here.
+ * sufficient — no `@aztec-labs/stdlib` runtime import needed here.
  */
 export function matchesRegistry(
   payload: HandshakeInlinePacket,

@@ -6,7 +6,6 @@ import {Hash} from "@aztec/core/libraries/crypto/Hash.sol";
 contract OxidePortalDirectExitsTest is OxidePortalBase {
   function test_GivenProcessorTip_WhenWithdrawIsCalled_ThenCallerReceivesTip()
     external
-    givenPortalIsInitialized
     givenTeeIsRegistered("tee-direct-withdraw-tip")
   {
     WithdrawParams memory p = _defaultWithdrawParams();
@@ -29,7 +28,6 @@ contract OxidePortalDirectExitsTest is OxidePortalBase {
 
   function test_GivenProcessorTip_WhenRefundFrozenNotesIsCalled_ThenCallerReceivesTip()
     external
-    givenPortalIsInitialized
     givenTeeIsRegistered("tee-direct-refund-tip")
     givenPortalIsFrozen
   {

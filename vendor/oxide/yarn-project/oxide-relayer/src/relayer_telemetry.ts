@@ -5,11 +5,14 @@ import { Attributes, type Counter, type Meter, Metrics, type TelemetryClient } f
 export type RelayerSubsystem = NonNullable<(typeof Attributes.RELAYER_SUBSYSTEM)['_value']>;
 export type RelayerOutcome = NonNullable<(typeof Attributes.RELAYER_OUTCOME)['_value']>;
 export type RelayerDeferReason = NonNullable<(typeof Attributes.RELAYER_DEFER_REASON)['_value']>;
+export type RelayerSkipReason = NonNullable<(typeof Attributes.RELAYER_SKIP_REASON)['_value']>;
+export type RelayerOperationKind = NonNullable<(typeof Attributes.RELAYER_OPERATION_KIND)['_value']>;
 export type RelayerStream = NonNullable<(typeof Attributes.RELAYER_STREAM)['_value']>;
 
 export class RelayerTelemetry {
   private readonly meter: Meter;
   private readonly l1OperationCount: Counter<typeof Metrics.RELAYER_L1_OPERATION_COUNT>;
+  private readonly l1OperationSkipped: Counter<typeof Metrics.RELAYER_L1_OPERATION_SKIPPED>;
   private readonly gasSpent: Counter<typeof Metrics.RELAYER_GAS_SPENT>;
   /** Epoch ms of each stream's last successful poll; the age gauge reads it at every export. */
   private readonly watcherPolls = new Map<RelayerStream, number>();
@@ -19,6 +22,7 @@ export class RelayerTelemetry {
   ) {
     this.meter = client.getMeter('oxide-relayer');
     this.l1OperationCount = this.meter.createCounter(Metrics.RELAYER_L1_OPERATION_COUNT);
+    this.l1OperationSkipped = this.meter.createCounter(Metrics.RELAYER_L1_OPERATION_SKIPPED);
     this.gasSpent = this.meter.createCounter(Metrics.RELAYER_GAS_SPENT);
     this.meter.createObservableGauge(Metrics.RELAYER_WATCHER_AGE, result => {
       for (const [stream, polledAt] of this.watcherPolls) {
@@ -38,8 +42,15 @@ export class RelayerTelemetry {
     this.watcherPolls.set(stream, this.clock());
   }
 
-  l1OperationOutcome(outcome: RelayerOutcome, deferReason?: RelayerDeferReason): void {
-    this.l1OperationCount.add(1, outcomeAttributes(outcome, deferReason));
+  l1OperationOutcome(outcome: RelayerOutcome, kind: RelayerOperationKind, deferReason?: RelayerDeferReason): void {
+    this.l1OperationCount.add(1, outcomeAttributes(outcome, kind, deferReason));
+  }
+
+  l1OperationSkippedFor(reason: RelayerSkipReason, kind: RelayerOperationKind): void {
+    this.l1OperationSkipped.add(1, {
+      [Attributes.RELAYER_SKIP_REASON.name]: reason,
+      [Attributes.RELAYER_OPERATION_KIND.name]: kind,
+    });
   }
 
   gasSpentWei(subsystem: RelayerSubsystem, wei: bigint): void {
@@ -74,9 +85,10 @@ export class RelayerTelemetry {
   }
 }
 
-function outcomeAttributes(outcome: RelayerOutcome, deferReason?: RelayerDeferReason) {
+function outcomeAttributes(outcome: RelayerOutcome, kind: RelayerOperationKind, deferReason?: RelayerDeferReason) {
   return {
     [Attributes.RELAYER_OUTCOME.name]: outcome,
+    [Attributes.RELAYER_OPERATION_KIND.name]: kind,
     ...(deferReason !== undefined ? { [Attributes.RELAYER_DEFER_REASON.name]: deferReason } : {}),
   };
 }

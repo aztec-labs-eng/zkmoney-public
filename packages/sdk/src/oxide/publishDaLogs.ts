@@ -20,7 +20,7 @@
  * model, and the sandbox-free unit tests all need it, and only the first of
  * those can afford the TEE client's import graph.
  */
-import { PRIVATE_LOG_CIPHERTEXT_LEN } from "@aztec/constants"
+import { PRIVATE_LOG_CIPHERTEXT_LEN } from "@aztec-labs/constants"
 
 export function computePublishDaLogEmittedLengths(counts: {
   teeNotes: number

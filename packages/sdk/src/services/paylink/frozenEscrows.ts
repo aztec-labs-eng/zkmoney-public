@@ -1,13 +1,10 @@
-import type { AztecAddress } from "@aztec/aztec.js/addresses"
-import type { Fr } from "@aztec/aztec.js/fields"
-import { createLogger } from "@aztec/foundation/log"
-import type { ContractInstanceWithAddress } from "@aztec/stdlib/contract"
-import { derivePublicKeyFromSecretKey, hashPublicKey } from "@aztec/stdlib/keys"
+import type { AztecAddress } from "@aztec-labs/aztec.js/addresses"
+import type { Fr } from "@aztec-labs/aztec.js/fields"
+import { createLogger } from "@aztec-labs/foundation/log"
+import type { ContractInstanceWithAddress } from "@aztec-labs/stdlib/contract"
+import { derivePublicKeyFromSecretKey, hashPublicKey } from "@aztec-labs/stdlib/keys"
 import type { ContractName, ContractService } from "@obsidion/contracts"
-import {
-  deriveRefundOwnerAddress,
-  type RefundOwner,
-} from "@oxide/oxide-lib/refund_authorization.js"
+import { deriveRefundOwnerAddress, type RefundOwner } from "@oxide/oxide-lib/migration_signature.js"
 import type { ObsidionWallet } from "../../obsidion/ObsidionWallet.js"
 import type { FrozenEscrow } from "../FrozenRefundMigrationRuntime.js"
 import type { CreatedPaylinkParams, PaylinkService } from "../PaylinkService.js"
@@ -20,7 +17,7 @@ const log = createLogger("wallet-sdk:frozen-escrows")
 
 /**
  * A link's escrow as a refund owner, or undefined when the fallback secret or keys don't derive it.
- * Its address commits to no passkey, so the creator authorizes the refund with the fallback key: no
+ * Its address commits to no passkey, so the creator signs the refund with the fallback key: no
  * prompt.
  */
 export async function paylinkRefundOwner(
@@ -28,8 +25,8 @@ export async function paylinkRefundOwner(
   keys: PaylinkKeyMaterial,
   fallbackSecret: Fr,
 ): Promise<RefundOwner | undefined> {
-  const masterFallbackSecretKey = derivePaylinkFallbackSecretKey(fallbackSecret)
-  const fallbackKey = await derivePublicKeyFromSecretKey(masterFallbackSecretKey)
+  const fbskM = derivePaylinkFallbackSecretKey(fallbackSecret)
+  const fallbackKey = await derivePublicKeyFromSecretKey(fbskM)
   if (!(await hashPublicKey(fallbackKey)).equals(keys.fallbackKeyHash)) return
   const owner: RefundOwner = {
     address: instance.address,
@@ -40,7 +37,7 @@ export async function paylinkRefundOwner(
       initializationHash: instance.initializationHash,
       deployer: instance.deployer,
     },
-    authorizer: { kind: "fallbackKey", masterFallbackSecretKey },
+    signer: { kind: "fallbackKey", fbskM },
   }
   if (!(await deriveRefundOwnerAddress(owner)).equals(instance.address)) return
   return owner

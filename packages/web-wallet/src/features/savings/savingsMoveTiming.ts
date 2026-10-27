@@ -1,5 +1,5 @@
 /**
- * What a move's time note is built from: the slot grid and Inbox lag the deposit screen reads, and
+ * What a move's time note is built from: the slot grid the deposit screen reads, and
  * the release ETA the withdrawal flow's estimator gives for a burn landing at a given time.
  */
 import { useEffect, useState } from "react"
@@ -27,7 +27,7 @@ async function loadTiming(node: SavingsNode | undefined): Promise<SavingsMoveTim
   const config = getConfig()
   const estimator = speedupEstimator(config.network, node, l1PublicClient(config))
   const [grid, constants, calibration] = await Promise.all([
-    loadArrivalGrid(node, config),
+    loadArrivalGrid(node),
     node.getL1Constants(),
     estimator.calibrate(),
   ])

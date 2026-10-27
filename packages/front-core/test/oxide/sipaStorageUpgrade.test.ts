@@ -6,8 +6,8 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { Address, Hex } from "viem"
-import { Fr } from "@aztec/aztec.js/fields"
-import { AztecAddress } from "@aztec/aztec.js/addresses"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { AztecAddress } from "@aztec-labs/aztec.js/addresses"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import { InMemoryStorageAdapter } from "../__test-helpers__/InMemoryStorageAdapter"
 import { resetSingleton } from "../__test-helpers__/resetSingleton"
@@ -40,10 +40,9 @@ vi.mock("@obsidion/sdk", async (importOriginal) => {
       async () => "0x00000000000000000000000000000000000000d6",
     ),
     readDepositFee: vi.fn(async () => 10n),
-    readFpcFundingCut: vi.fn(async () => 0n),
     readBlockTimeMs: vi.fn(async (_c: unknown, block: bigint) => Number(block) * 1000),
     readPortalDeposits: vi.fn(
-      async (_c: unknown, _portal: unknown, commitments: Hex[], from: bigint, to: bigint) => {
+      async (_c: unknown, portals: Hex[], commitments: Hex[], from: bigint, to: bigint) => {
         if (chain.failHistoryBelow !== undefined && from < chain.failHistoryBelow)
           throw new Error("pruned history unavailable")
         const wanted = new Set(commitments.map((c) => c.toLowerCase()))
@@ -51,6 +50,7 @@ vi.mock("@obsidion/sdk", async (importOriginal) => {
           .filter((d) => wanted.has(d.commitment.toLowerCase()))
           .filter((d) => d.blockNumber >= from && d.blockNumber <= to)
           .map((d) => ({
+            portal: portals[0],
             recipientCommitment: d.commitment.toLowerCase(),
             amount: d.amount,
             key: `0x${d.index.toString(16).padStart(64, "0")}`,
@@ -80,7 +80,13 @@ vi.mock("@obsidion/sdk", async (importOriginal) => {
           }))
       },
     ),
-    readSweptSipa: vi.fn(async (_c: unknown, txHash: string) => chain.sweptBy.get(txHash)),
+    readSweepEmitters: vi.fn(async (_c: unknown, txHash: string) => {
+      const sipa = chain.sweptBy.get(txHash)
+      return sipa ? [sipa] : []
+    }),
+    // A stray's clone here is a registration SIPA with no code read.
+    readSipaIntent: vi.fn(async () => actual.OxideSipaIntent.Registration),
+    readSipaCloneImplementation: vi.fn(async () => "0x0000000000000000000000000000000000000000"),
     readSipaBalancesMany: vi.fn(
       async (_c: unknown, sipas: string[]) =>
         new Map(
@@ -95,12 +101,13 @@ vi.mock("@obsidion/sdk", async (importOriginal) => {
     ),
   }
 })
-vi.mock("@aztec/aztec.js/messaging", () => ({ isL1ToL2MessageReady: vi.fn(async () => true) }))
+vi.mock("@aztec-labs/aztec.js/messaging", () => ({ isL1ToL2MessageReady: vi.fn(async () => true) }))
 
 import { computeStealthRecipientHash } from "@obsidion/sdk"
 import { SIPADepositStore } from "../../src/core/services/deposits/SIPADepositStore"
 import { deriveStealthKey } from "../../src/oxide/oxideAccountKeys"
 import { syncSipaDeposits } from "../../src/oxide/sipaClaims"
+import type { SipaRow } from "../../src/oxide/sipaRows"
 
 const DAI = "0x163a94b604dfcee8fac53ea6d24db032e8f5cd6b"
 const HEAD = 1_000_000n
@@ -109,10 +116,19 @@ const RECIPIENT = AztecAddress.fromBigIntUnsafe(0xbeefn)
 const TUPLE = {
   sipaFactory: "0x239474855dff1eb58dca3ee877d599e3c6bd0bd2",
   portal: "0x92308ce04e2416f20b03e941a14f9238c3603334",
+  forwardingTable: "0x00000000000000000000000000000000000000d1",
+  token: "0x163a94b604dfcee8fac53ea6d24db032e8f5cd6b",
   rollupVersion: "4127419662",
   l2Token: "0x0000000000000000000000000000000000000000000000000000000000001234",
 } as unknown as OxideEnvTuple
 const TOKEN = { address: DAI as Address, symbol: "DAI", decimals: 18 }
+const ROW = {
+  portal: TUPLE.portal as Address,
+  l2Token: TUPLE.l2Token,
+  token: TOKEN,
+  swapped: [],
+  intents: ["deposit", "registration", "metadata"],
+} as SipaRow
 
 let storage: InMemoryStorageAdapter
 const store = () => SIPADepositStore.get(storage)
@@ -141,7 +157,10 @@ async function oldRecord(salt: bigint, address: Address, fields: Record<string, 
   return { secret, commitment }
 }
 
-function sync(tokenService = { claimSweptDeposit: vi.fn(async () => undefined) }) {
+function sync(
+  tokenService = { claimSweptDeposit: vi.fn(async () => undefined) },
+  over: Partial<Parameters<typeof syncSipaDeposits>[0]> = {},
+) {
   return {
     tokenService,
     run: (historyStartBlock: () => Promise<bigint> = async () => START) =>
@@ -152,14 +171,16 @@ function sync(tokenService = { claimSweptDeposit: vi.fn(async () => undefined) }
         } as never,
         node: {} as never,
         wallet: {} as never,
-        tokenService,
+        tokenServiceFor: async () => tokenService,
         store: store(),
         tuple: TUPLE,
         recipient: RECIPIENT,
         stealthPublicKey: deriveStealthKey(new Fr(7n)).publicKey,
-        token: TOKEN,
+        rows: [ROW],
+        txAmountCap: async () => 5166n * 10n ** 18n,
         l1ChainId: 11155111,
         historyStartBlock,
+        ...over,
       }),
   }
 }
@@ -187,7 +208,6 @@ describe("a wallet with the previous sync's storage", () => {
       sweepTxHash: "0x07",
       sweeps: [{ inboxIndex: "7", sweepTxHash: "0x07", netAmount: "990000" }],
       fee: "10",
-      fpcFundingCut: "0",
       lastScannedBlock: (HEAD - 50n).toString(),
       historyScanned: true,
       lastScanAt: 5,
@@ -210,7 +230,7 @@ describe("a wallet with the previous sync's storage", () => {
       claimedInboxIndexes: ["7"],
       observedFrom: HEAD.toString(),
     })
-    expect(await store().observedThrough(TUPLE.portal as Address)).toBe(HEAD)
+    expect(await store().observedThrough(TUPLE.portal as Address, RECIPIENT.toString())).toBe(HEAD)
 
     await run()
     const { readPortalDeposits } = await import("@obsidion/sdk")
@@ -255,7 +275,6 @@ describe("a wallet with the previous sync's storage", () => {
       sweepTxHash: "0x03",
       sweeps: [{ inboxIndex: "3", sweepTxHash: "0x03", netAmount: "100000" }],
       fee: "10",
-      fpcFundingCut: "0",
       lastScannedBlock: (HEAD - 100_000n).toString(),
       historyScanned: true,
       lastScanAt: 5,
@@ -364,6 +383,62 @@ describe("a wallet with the previous sync's storage", () => {
     expect(store().get(SIPA_C)).toMatchObject({ phase: "claimed", claimedInboxIndexes: ["21"] })
   })
 
+  it("takes the cursor kept for the portal alone, once, for the account the pass names", async () => {
+    const legacyKey = `@obsidion/sipa-deposits/observed-through/${TUPLE.portal.toLowerCase()}`
+    await oldRecord(0x88n, SIPA_A, { phase: "resolved", observedFrom: (HEAD - 5_000n).toString() })
+    await storage.setItem(legacyKey, (HEAD - 10n).toString())
+    await restart()
+    const { readPortalDeposits } = await import("@obsidion/sdk")
+    const windows = () => vi.mocked(readPortalDeposits).mock.calls.map((c) => c[3])
+    vi.mocked(readPortalDeposits).mockClear()
+
+    expect(await sync(undefined, { adoptLegacyCursor: true }).run()).toMatchObject({ failed: 0 })
+
+    expect(windows()).toEqual([HEAD - 10n - 128n])
+    expect(await store().observedThrough(TUPLE.portal as Address, RECIPIENT.toString())).toBe(HEAD)
+    expect(await storage.getItem(legacyKey)).toBeNull()
+
+    // Another account's pass starts from its history: the adopted cursor was never its own.
+    const other = AztecAddress.fromBigIntUnsafe(0xcafen)
+    const secret = new Fr(0x99n)
+    await store().upsert(
+      SIPA_B,
+      { phase: "broadcast" },
+      {
+        recipientL2Address: other.toString(),
+        messageSecret: secret.toString(),
+        recipientHash: (await computeStealthRecipientHash(secret, other)).toString(),
+        recoveryAddress: "0xfd9df8ea9d7350063da52e60e7e1b6d78449786a",
+        l1ChainId: 11155111,
+        amount: "0",
+        tokenSymbol: "DAI",
+        tokenAddress: DAI as Address,
+        startTime: 1,
+      },
+    )
+    vi.mocked(readPortalDeposits).mockClear()
+
+    expect(await sync(undefined, { recipient: other }).run()).toMatchObject({ failed: 0 })
+
+    expect(windows()).toEqual([START])
+    expect(await store().observedThrough(TUPLE.portal as Address, other.toString())).toBe(HEAD)
+  })
+
+  it("leaves the portal-only cursor to the account that owns it when a pass does not adopt it", async () => {
+    const legacyKey = `@obsidion/sipa-deposits/observed-through/${TUPLE.portal.toLowerCase()}`
+    await oldRecord(0x88n, SIPA_A, { phase: "resolved", observedFrom: (HEAD - 5_000n).toString() })
+    await storage.setItem(legacyKey, (HEAD - 10n).toString())
+    await restart()
+    const { readPortalDeposits } = await import("@obsidion/sdk")
+    vi.mocked(readPortalDeposits).mockClear()
+
+    expect(await sync().run()).toMatchObject({ failed: 0 })
+
+    expect(vi.mocked(readPortalDeposits).mock.calls.map((c) => c[3])).toEqual([START])
+    expect(await storage.getItem(legacyKey)).toBe((HEAD - 10n).toString())
+    expect(await store().observedThrough(TUPLE.portal as Address, RECIPIENT.toString())).toBe(HEAD)
+  })
+
   it("re-reads a stray's block on the next pass when tracking its SIPA failed", async () => {
     const registration = await oldRecord(0x77n, SIPA_A, { intent: "registration" })
     chain.deposits.push({
@@ -376,8 +451,8 @@ describe("a wallet with the previous sync's storage", () => {
     })
     chain.sweptBy.set("0x1f", SIPA_C)
     await restart()
-    const { readSweptSipa } = await import("@obsidion/sdk")
-    vi.mocked(readSweptSipa).mockRejectedValueOnce(new Error("receipt unavailable"))
+    const { readSweepEmitters } = await import("@obsidion/sdk")
+    vi.mocked(readSweepEmitters).mockRejectedValueOnce(new Error("receipt unavailable"))
     const { run } = sync()
 
     await run()

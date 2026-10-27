@@ -41,8 +41,8 @@ const record = (over: Record<string, unknown> = {}) =>
     amount: "19.9",
     rawAmount: "20000000000000000000",
     relayerTip: "100000000000000000",
-    fpcFundingCut: "0",
     tokenSymbol: WALLET_TOKEN_SYMBOL,
+    tokenDecimals: 18,
     phase: "finalizing_l1",
     startTime: 0,
     ...over,
@@ -91,7 +91,6 @@ describe("ClaimProgressModal", () => {
             phase: "recoverable",
             swapOutput: "USDC",
             swapEscrow: `0x${"ee".repeat(20)}`,
-            fpcFundingCut: "50000000000000000",
             swapRelayerTip: "200000000000000000",
             swapEstimatedOut: "19400000",
             swapOutputDecimals: 6,
@@ -105,8 +104,8 @@ describe("ClaimProgressModal", () => {
     expect(container.textContent).not.toContain("USDC")
     expect(container.textContent).toContain("Amount")
     expect(container.textContent).toContain("DAI")
-    // 20 − 0.10 withdrawal relayer tip − 0.05 FPC cut − 0.20 swap relayer tip: what the escrow holds.
-    expect(container.textContent).toContain("$19.65")
+    // 20 − 0.10 withdrawal relayer tip − 0.20 swap relayer tip: what the escrow holds.
+    expect(container.textContent).toContain("$19.70")
     expect(container.textContent).not.toContain("$19.90")
   })
 
@@ -118,7 +117,6 @@ describe("ClaimProgressModal", () => {
           record={record({
             phase: "recovered",
             swapOutput: "USDC",
-            fpcFundingCut: "50000000000000000",
             swapRelayerTip: "200000000000000000",
             recoveryTarget: target,
             recoveryTxHash: `0x${"aa".repeat(32)}`,
@@ -128,7 +126,7 @@ describe("ClaimProgressModal", () => {
       ),
     )
     expect(container.textContent).toContain("Claim recovered")
-    expect(container.textContent).toContain("$19.65")
+    expect(container.textContent).toContain("$19.70")
     expect(container.textContent).toContain("Recovered to")
     expect(container.textContent).toContain(shortL1Addr(target))
     expect(container.querySelector("a")?.getAttribute("href")).toBe(

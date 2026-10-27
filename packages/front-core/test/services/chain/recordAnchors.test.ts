@@ -16,7 +16,7 @@ import {
   type SIPADepositRecord,
 } from "../../../src/core/services/deposits/SIPADepositStore"
 import type { TokenInTxService } from "../../../src/types"
-import { TxStatus } from "@aztec/stdlib/tx"
+import { TxStatus } from "@aztec-labs/stdlib/tx"
 
 const NETWORK_ID = "0x" + "ab".repeat(20)
 const TX_HASH = "0x" + "11".repeat(32)

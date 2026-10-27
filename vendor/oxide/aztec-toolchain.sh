@@ -6,7 +6,7 @@
 #   aztec-up install <version> && aztec-up use <version>
 # Docs: https://docs.aztec.network/developers/getting_started_on_local_network#install-the-aztec-toolchain
 
-AZTEC_TOOLCHAIN_VERSION="5.2.0"
+AZTEC_TOOLCHAIN_VERSION="6.0.0"
 
 # `aztec compile` and bb.js read these to pick a different nargo / bb. The toolchain's own must win.
 unset NARGO BB BB_BINARY_PATH

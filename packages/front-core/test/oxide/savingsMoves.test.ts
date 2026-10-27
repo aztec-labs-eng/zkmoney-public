@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
-import { AztecAddress } from "@aztec/aztec.js/addresses"
-import { Fr } from "@aztec/aztec.js/fields"
+import { AztecAddress } from "@aztec-labs/aztec.js/addresses"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 import type { Address, Hex } from "viem"
 import { deriveSkyEscrowSalts } from "../../src/oxide/oxideAccountKeys"
 import {

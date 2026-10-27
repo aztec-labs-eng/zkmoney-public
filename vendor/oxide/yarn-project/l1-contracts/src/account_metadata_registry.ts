@@ -1,4 +1,13 @@
-import { type Address, type Hex, type PublicClient, type WalletClient, encodeFunctionData } from 'viem';
+import {
+  type Address,
+  type Hex,
+  type PublicClient,
+  type WalletClient,
+  encodeAbiParameters,
+  encodeFunctionData,
+  keccak256,
+  zeroHash,
+} from 'viem';
 
 import { AccountMetadataRegistryAbi } from './artifacts.js';
 
@@ -14,8 +23,38 @@ export type ResolverOperatorArg = {
   publicKey: K1PointArg;
   l2Address: Hex;
   url: string;
+  /** The forwarding table that the operator's resolutions predict SIPAs against. */
   oxidePortal: Address;
 };
+
+const RECORD_ABI = [
+  {
+    type: 'tuple',
+    components: [
+      { name: 'l2Address', type: 'bytes32' },
+      { name: 'rollupVersion', type: 'uint256' },
+      {
+        name: 'publicKey',
+        type: 'tuple',
+        components: [
+          { name: 'x', type: 'uint256' },
+          { name: 'y', type: 'uint256' },
+        ],
+      },
+      { name: 'resolverOperator', type: 'address' },
+    ],
+  },
+] as const;
+
+/** Encode only the current UserRecord schema. A future controller supplies its own codec. */
+export function encodeUserRecordMetadata(record: UserRecordArg): Hex {
+  return encodeAbiParameters(RECORD_ABI, [record]);
+}
+
+/** The current schema's expected-state commitment. An absent record uses zero. */
+export function userRecordStateHash(record?: UserRecordArg): Hex {
+  return record === undefined ? zeroHash : keccak256(encodeUserRecordMetadata(record));
+}
 
 // Calldata builders for the user-or-controller-gated record functions. A user calls them from their 4337 account, so
 // these are meant to be wrapped in an account `execute` / UserOp.

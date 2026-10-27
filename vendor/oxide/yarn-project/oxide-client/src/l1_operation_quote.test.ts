@@ -1,14 +1,21 @@
+import { OperationExecutorAbi } from '@oxide/l1-contracts';
 import { LegacyOperationExecutorAbi } from '@oxide/l1-contracts/legacy_operation_executor.js';
 import { MAX_PRIORITY_FEE_WEI } from '@oxide/oxide-lib/oxide_constants.gen.js';
 
 import { describe, expect, it, jest } from '@jest/globals';
-import type { Address, PublicClient } from 'viem';
+import { type Address, type Hex, type PublicClient, getAbiItem, toFunctionSelector } from 'viem';
 
 import { priceFeedForChainId } from './eth_usd_price_feed.js';
 import {
+  LEGACY_OPERATION_EXECUTOR_ABI,
   SIMULATED_SENDER_BALANCE,
+  encodeOperationExecute,
   estimateL1OperationFeeValues,
+  l1OperationGasLimit,
+  minGasToCover,
+  nextL1OperationGasLimit,
   quoteL1Operation,
+  readOperationExecutorVersion,
   simulateL1Operation,
 } from './l1_operation_quote.js';
 
@@ -208,8 +215,80 @@ describe('quoteL1Operation', () => {
     });
   });
 
+  it('prices the gas of a legacy executor at the fee ceiling, and calls its four-argument execute', async () => {
+    const { client, simulateBlocks } = fakeClient({ status: 'success', result: 9n, gasUsed: 120_000n, logs: [] });
+    const quote = await quoteL1Operation(client, { ...args, executorVersion: 'legacy' });
+
+    const [request] = simulateBlocks.mock.calls[0] as [Record<string, any>];
+    expect(request.blocks[0].calls[0].abi).toBe(LEGACY_OPERATION_EXECUTOR_ABI);
+    expect(request.blocks[0].calls[0].args).toEqual([OPERATION.target, OPERATION.calldata, OPERATION.payoutToken, 9n]);
+    // 120,768 gas to cover at the 3.1 gwei fee ceiling and 3,000 USD/ETH.
+    expect(quote.minPayout).toBe(1_123_142_400_000_000_000n);
+  });
+
   it('throws when the simulation fails', async () => {
     const { client } = fakeClient({ status: 'failure', error: new Error('payout too low') });
     await expect(quoteL1Operation(client, args)).rejects.toThrow('L1 operation simulation failed: payout too low');
+  });
+});
+
+describe('readOperationExecutorVersion', () => {
+  const selector = (abi: typeof OperationExecutorAbi | typeof LEGACY_OPERATION_EXECUTOR_ABI) =>
+    toFunctionSelector(getAbiItem({ abi, name: 'execute' })).slice(2);
+  const clientWithCode = (code: Hex | undefined) =>
+    ({ getCode: () => Promise.resolve(code) }) as unknown as Pick<PublicClient, 'getCode'>;
+
+  it('reads the version from the execute selector in the code', async () => {
+    await expect(
+      readOperationExecutorVersion(clientWithCode(`0x6080${selector(OperationExecutorAbi)}00`), EXECUTOR),
+    ).resolves.toBe('gas-to-cover');
+    await expect(
+      readOperationExecutorVersion(clientWithCode(`0x6080${selector(LEGACY_OPERATION_EXECUTOR_ABI)}00`), EXECUTOR),
+    ).resolves.toBe('legacy');
+  });
+
+  it('throws when the code has no execute', async () => {
+    await expect(readOperationExecutorVersion(clientWithCode(undefined), EXECUTOR)).rejects.toThrow(
+      /no OperationExecutor/,
+    );
+    await expect(readOperationExecutorVersion(clientWithCode('0x6080'), EXECUTOR)).rejects.toThrow(
+      /no OperationExecutor/,
+    );
+  });
+});
+
+describe('encodeOperationExecute', () => {
+  it('refuses a gas cost for a legacy executor', () => {
+    expect(() => encodeOperationExecute('legacy', OPERATION, 1n, { gasToCover: 1n, tokenWeiPerEth: 1n })).toThrow(
+      /legacy OperationExecutor takes no gas cost/,
+    );
+  });
+});
+
+describe('L1 operation gas limit', () => {
+  const quoteBlock = { number: 1n, baseFeePerGas: 1n, gasLimit: 200_000_000n };
+
+  it('starts at 3/2 of the gas used and doubles up to 15M gas', () => {
+    expect(l1OperationGasLimit(400_000n, quoteBlock)).toBe(600_000n);
+    expect(nextL1OperationGasLimit(600_000n, quoteBlock)).toBe(1_200_000n);
+    expect(nextL1OperationGasLimit(9_600_000n, quoteBlock)).toBe(15_000_000n);
+    expect(nextL1OperationGasLimit(15_000_000n, quoteBlock)).toBeUndefined();
+  });
+
+  it('stops at the gas limit of a block below 15M gas', () => {
+    const smallBlock = { ...quoteBlock, gasLimit: 1_000_000n };
+    expect(nextL1OperationGasLimit(600_000n, smallBlock)).toBe(1_000_000n);
+    expect(nextL1OperationGasLimit(1_000_000n, smallBlock)).toBeUndefined();
+  });
+
+  it('requires a gas to cover of 2/3 of the gas limit, rounded up', () => {
+    expect(minGasToCover(1_200_000n)).toBe(800_000n);
+    expect(minGasToCover(1_000_000n)).toBe(666_667n);
+  });
+
+  it('does not raise the gas to cover at the first gas limit', () => {
+    for (const gasUsed of [21_000n, 100_001n, 2_892_587n]) {
+      expect(minGasToCover(l1OperationGasLimit(gasUsed, quoteBlock))).toBeLessThanOrEqual(gasUsed);
+    }
   });
 });

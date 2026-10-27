@@ -1,7 +1,7 @@
-import { Fr } from '@aztec/aztec.js/fields';
-import { DomainSeparator, NULLIFIER_TREE_HEIGHT } from '@aztec/constants';
-import { poseidon2Hash } from '@aztec/foundation/crypto/poseidon';
-import { type NullifierLeafPreimage, NullifierMembershipWitness } from '@aztec/stdlib/trees';
+import { Fr } from '@aztec-labs/aztec.js/fields';
+import { DomainSeparator, NULLIFIER_TREE_HEIGHT } from '@aztec-labs/constants';
+import { poseidon2Hash } from '@aztec-labs/foundation/crypto/poseidon';
+import { type NullifierLeafPreimage, NullifierMembershipWitness } from '@aztec-labs/stdlib/trees';
 
 import { SparseTree } from './sparse_tree.js';
 

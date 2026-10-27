@@ -3,10 +3,10 @@
  * (`activeTabLifecycle.ts`). Any other tab says so and can take over.
  */
 import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react"
-import type { AztecNode } from "@aztec/aztec.js/node"
-import { BlockNumber } from "@aztec/foundation/branded-types"
-import { NoRetryError, makeBackoff, retry } from "@aztec/foundation/retry"
-import type { AztecSQLiteOPFSStore } from "@aztec/kv-store/sqlite-opfs"
+import type { AztecNode } from "@aztec-labs/aztec.js/node"
+import { BlockNumber } from "@aztec-labs/foundation/branded-types"
+import { NoRetryError, makeBackoff, retry } from "@aztec-labs/foundation/retry"
+import type { AztecSQLiteOPFSStore } from "@aztec-labs/kv-store/sqlite-opfs"
 import type { ChainIdentity } from "@obsidion/core/types"
 import { LocalConfigStore } from "@obsidion/front-core"
 import { createNode } from "@obsidion/sdk"
@@ -18,11 +18,13 @@ import { ErrorModalHost } from "./errors/ErrorModalHost"
 import { stashInboundNameGrant } from "./features/onboarding/oxideOnboarding"
 import { bindAnalyticsConsent } from "./lib/analytics"
 import { discardIncompatiblePasskeyState } from "./platform/auth/discardIncompatiblePasskeyState"
+import { findRetiredSession } from "./platform/auth/retiredSession"
 import { warmBarretenberg } from "./platform/bbWasm"
 import { activateTab, revokeTab, sendOnlyWhileActive } from "./platform/storage/activeTab"
 import { ActiveTabLifecycle, type ActiveTabDeps } from "./platform/storage/activeTabLifecycle"
 import { createPxeStore, opfsAvailable } from "./platform/storage/createPxeStore"
 import { originWasFresh } from "./platform/storage/freshOrigin"
+import { carryRetiredConfig } from "./platform/storage/retiredConfig"
 import { activeRollup, removeOldWalletKeys } from "./platform/storage/rollupStorage"
 import {
   closeWalletStore,
@@ -117,6 +119,7 @@ function walletDeps(): ActiveTabDeps<OpenedWallet> {
       await openWalletStore(activeRollup(), { persistent: await opfsAvailable() })
       if (payPage && !bootWaitsForDemand()) warmPxe()
       try {
+        await carryRetiredConfig()
         await bindStoredConsent()
         // Checked once per page, after consent is bound so the check's events are sent. The wallet
         // database is named after the profile's rollup, which the check holds to L1's.
@@ -149,13 +152,14 @@ function walletDeps(): ActiveTabDeps<OpenedWallet> {
     isBusy,
     // After both opens, so an older-build tab still holding the PXE store keeps its state meanwhile.
     // Nothing reads those keys, so a failed removal is left to the next activation or logout.
-    prepare: () => {
+    prepare: async () => {
       try {
         removeOldWalletKeys()
       } catch (e) {
         console.warn("[ActiveTabGate] could not remove old wallet keys:", e)
       }
-      return discardIncompatiblePasskeyState(config.rpId)
+      await discardIncompatiblePasskeyState(config.rpId)
+      await findRetiredSession(config.rpId)
     },
     activate: activateTab,
     revoke: revokeTab,

@@ -20,7 +20,12 @@ contract SettlingAddressTest is RegistrationTestBase {
   {
     sipa = SIPABase(
       sipaFactory.deploySIPA(
-        address(registrationSIPAImplementation), keccak256(registrationData), recovery, ROLLUP_VERSION, resweepable
+        address(registrationSIPAImplementation),
+        keccak256(registrationData),
+        recovery,
+        ROLLUP_VERSION,
+        resweepable,
+        forwardingTable
       )
     );
     assertTrue(sipaFactory.isBlessed(address(sipa)), "provenance admits it; only the consent does not");
@@ -100,7 +105,8 @@ contract SettlingAddressTest is RegistrationTestBase {
         keccak256(reRouted),
         _recoveryCommitment("attackerRecovery"),
         ROLLUP_VERSION,
-        true
+        true,
+        forwardingTable
       )
     );
     underlying.mint(address(reRoutedSipa), DEPOSIT);
@@ -113,7 +119,7 @@ contract SettlingAddressTest is RegistrationTestBase {
 
   function test_reEncodedBeneficiaryCannotDivertTheFeeToAnotherAllowlistedFunder() external {
     address rival = makeAddr("rivalFunder");
-    vm.prank(regDomainOwner);
+    vm.prank(OWNER);
     registrationController.addBeneficiary(rival);
 
     bytes memory registrationData = _registrationData(NAME_HASH, defaultOwner);

@@ -1,8 +1,8 @@
-import { CheckpointNumber, EpochNumber } from '@aztec/foundation/branded-types';
-import { Logger, createLogger } from '@aztec/foundation/log';
-import { Checkpoint } from '@aztec/stdlib/checkpoint';
+import { RollupContract } from '@aztec-labs/ethereum/contracts/rollup';
+import { CheckpointNumber, EpochNumber } from '@aztec-labs/foundation/branded-types';
+import { Logger, createLogger } from '@aztec-labs/foundation/log';
+import { Checkpoint } from '@aztec-labs/stdlib/checkpoint';
 
-import { OxidePortalContract } from '@oxide/l1-contracts/oxide_portal.js';
 import {
   type ClaimProverTipsGasModel,
   type SubmitEpochProofGasModel,
@@ -27,25 +27,7 @@ interface EpochCache {
 
 export interface EpochProfitTrackerOptions {
   discoverer: ProverClaimDiscoverer;
-  /**
-   * The portal whose first-prover captures show which checkpoints are already captured. The tracker uses them for
-   * every portal in `portals`.
-   *
-   * @warning Each portal records its own captures, so the last captured checkpoint can be different on each portal.
-   * This occurs when a prover submits through a submitter that does not list every portal. The tracker does not
-   * detect this:
-   * - If another portal is captured through a later checkpoint than this portal, the tracker counts the claims on
-   *   that portal between the two checkpoints. Another prover already captured them. So the tracker overstates the
-   *   reward, and can start a proof that is not profitable. The collector then tries to claim them, and the portal
-   *   rejects them.
-   * - If this portal is captured through a later checkpoint than another portal, the tracker does not count the
-   *   claims on that portal between the two checkpoints. They are still available. So the tracker understates the
-   *   reward, and can skip a profitable proof. When our proof captures them, the collector does not claim them.
-   *
-   * When the rollup records the first prover, every portal has the same range. That change comes soon, so the tracker
-   * does not support a different range for each portal. We accept this risk to keep the code simple.
-   */
-  portal: OxidePortalContract;
+  rollup: RollupContract;
   portals: EarlySubmitPortalConfig[];
   priceOracle: PriceOracle;
   /** The per-gas price the proof submission tx and the claim txs are expected to pay. */
@@ -62,7 +44,6 @@ export interface EpochProfitTrackerOptions {
   maxFeePerGasCap?: bigint;
   submitEpochProofGasModel: SubmitEpochProofGasModel;
   claimProverTipsGasModel: ClaimProverTipsGasModel;
-  firstProverCaptureGas: bigint;
   minEpochProfit: bigint;
   minEpochProfitMarginBps: bigint;
   provingCostPerCheckpoint: bigint;
@@ -106,8 +87,8 @@ export class EpochProfitTracker {
     const tip = checkpoints.at(-1)!;
     this.cache.set(epoch, { toCheckpoint: tip.number, tipArchive: tip.archive.root.toString(), claims });
 
-    // Skip claims at or below the highest checkpoint another prover has already captured.
-    const lastCovered = await this.coveredThrough(checkpoints);
+    // Skip claims at or below the proven tip. The rollup already recorded a first prover for them.
+    const lastCovered = await this.coveredThrough();
     const uncovered = claims.filter(claim => claim.checkpointNumber > lastCovered);
     if (uncovered.length === 0) {
       return { submit: false, reason: 'no claimable tips' };
@@ -163,25 +144,14 @@ export class EpochProfitTracker {
   }
 
   /**
-   * Highest checkpoint in `checkpoints` already covered by a recorded first prover, or 0 if none.
+   * Highest checkpoint already covered by a recorded first prover: the proven tip, read at the L1 head.
    *
    * Coverage is read fresh from the L1 head and never stored, so a record later dropped by a reorg suppresses at
    * most the current decision; the next evaluation re-reads and recovers.
    */
-  private async coveredThrough(checkpoints: Checkpoint[]): Promise<CheckpointNumber> {
-    const head = await this.options.portal.client.getBlockNumber();
-    // The common early-proof case has nothing covered, which reads every checkpoint; issue them concurrently.
-    // All reads are pinned to one block so the boundary comes from a single consistent snapshot.
-    const provers = await Promise.all(
-      checkpoints.map(c => this.options.portal.firstProver(c.number, { blockNumber: head })),
-    );
-    for (let i = checkpoints.length - 1; i >= 0; i--) {
-      if (!provers[i].isZero()) {
-        this.log.debug(`Checkpoint ${checkpoints[i].number} covered by a recorded first prover`);
-        return checkpoints[i].number;
-      }
-    }
-    return CheckpointNumber(0);
+  private async coveredThrough(): Promise<CheckpointNumber> {
+    const head = await this.options.rollup.client.getBlockNumber();
+    return await this.options.rollup.getProvenCheckpointNumber({ blockNumber: head });
   }
 
   /** Drop cached claims for epochs older than `epoch`: once a newer epoch is being evaluated, the
@@ -232,9 +202,7 @@ export class EpochProfitTracker {
       { rewardValue: 0n, claimCount: 0, claimGas: 0n },
     );
 
-    const captureGas = BigInt(this.options.portals.length) * this.options.firstProverCaptureGas;
-    const gas =
-      submitEpochProofGas(BigInt(checkpointCount), this.options.submitEpochProofGasModel) + captureGas + claimGas;
+    const gas = submitEpochProofGas(BigInt(checkpointCount), this.options.submitEpochProofGasModel) + claimGas;
     const gasCostValue = weiToUsd(gas * effectiveGasPriceWei, ethPrice);
     const { profit, provingCostValue, profitable } = computePartialEpochProofProfit({
       rewardValue,

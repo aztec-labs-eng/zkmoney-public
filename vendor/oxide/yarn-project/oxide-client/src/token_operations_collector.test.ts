@@ -2,10 +2,10 @@
  * `collectAccountingEffects` against hand-built offchain effects: which effects it selects from the shared
  * `emit_offchain_effect` channel, and which malformed accounting effects it rejects.
  */
-import { Fr } from '@aztec/foundation/curves/bn254';
-import { EthAddress } from '@aztec/foundation/eth-address';
-import { AztecAddress } from '@aztec/stdlib/aztec-address';
-import { OFFCHAIN_MESSAGE_IDENTIFIER, type OffchainEffect, TxHash } from '@aztec/stdlib/tx';
+import { Fr } from '@aztec-labs/foundation/curves/bn254';
+import { EthAddress } from '@aztec-labs/foundation/eth-address';
+import { AztecAddress } from '@aztec-labs/stdlib/aztec-address';
+import { OFFCHAIN_MESSAGE_IDENTIFIER, type OffchainEffect, TxHash } from '@aztec-labs/stdlib/tx';
 
 import {
   ACCOUNTING_EFFECT_IDENTIFIER,

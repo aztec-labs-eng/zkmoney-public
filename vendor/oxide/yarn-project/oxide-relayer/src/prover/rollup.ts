@@ -1,6 +1,6 @@
-import { RollupContract } from '@aztec/ethereum/contracts/rollup';
-import type { ViemClient } from '@aztec/ethereum/types';
-import type { EthAddress } from '@aztec/foundation/eth-address';
+import { RollupContract } from '@aztec-labs/ethereum/contracts/rollup';
+import type { ViemClient } from '@aztec-labs/ethereum/types';
+import type { EthAddress } from '@aztec-labs/foundation/eth-address';
 
 import type { OxidePortalContract } from '@oxide/l1-contracts/oxide_portal.js';
 

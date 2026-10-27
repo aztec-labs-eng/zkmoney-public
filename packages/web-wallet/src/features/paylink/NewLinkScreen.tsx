@@ -31,7 +31,6 @@ import {
   ticketThresholdLabel,
 } from "./ticketThreshold"
 import { PayModalChrome } from "../../ui/PayModalChrome"
-import { TeeSignerNotice } from "../../ui/TeeSignerNotice"
 import { useBack, useProvingOutcome } from "../../ui/hooks"
 import { useUserFlowActive } from "../provingGate"
 import { amountError, decimalInput, floorToCents, parseAmount, usd } from "../../ui/format"
@@ -235,7 +234,6 @@ export function NewLinkScreen() {
                 </span>
               }
             />
-            <TeeSignerNotice />
 
             {phase === "amount" && (
               <div className="ww-pay__form">
@@ -255,8 +253,8 @@ export function NewLinkScreen() {
                     error={
                       overspent
                         ? "Balance not enough"
-                        : (amountError(amount) ??
-                          (belowMin ? `Amount too small (minimum $${MIN_AMOUNT})` : undefined))
+                        : amountError(amount) ??
+                          (belowMin ? `Amount too small (minimum $${MIN_AMOUNT})` : undefined)
                     }
                     trailing={
                       <button
@@ -321,7 +319,10 @@ export function NewLinkScreen() {
                 )}
                 {emailLockedLinksEnabled && (
                   <div className="zkm-field">
-                    <span className="zkm-field__label" title="Only the owner of this email can claim">
+                    <span
+                      className="zkm-field__label"
+                      title="Only the owner of this email can claim"
+                    >
                       Protect payment
                     </span>
                     <div className="ww-pay__summary">
@@ -344,9 +345,12 @@ export function NewLinkScreen() {
                         />
                       )}
                       {protectEnabled && (
-                        <span className="zkm-type-body-sm" style={{ color: "var(--text-secondary)" }}>
-                          This address needs a Google account: the recipient claims by signing in with
-                          Google as this exact email.
+                        <span
+                          className="zkm-type-body-sm"
+                          style={{ color: "var(--text-secondary)" }}
+                        >
+                          This address needs a Google account: the recipient claims by signing in
+                          with Google as this exact email.
                         </span>
                       )}
                     </div>

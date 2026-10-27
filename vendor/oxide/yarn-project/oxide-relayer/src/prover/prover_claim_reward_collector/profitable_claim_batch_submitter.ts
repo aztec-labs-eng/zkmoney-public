@@ -1,7 +1,7 @@
-import { RollupContract } from '@aztec/ethereum/contracts/rollup';
-import { EthAddress } from '@aztec/foundation/eth-address';
-import { Logger, createLogger } from '@aztec/foundation/log';
-import { RunningPromise } from '@aztec/foundation/running-promise';
+import { RollupContract } from '@aztec-labs/ethereum/contracts/rollup';
+import { EthAddress } from '@aztec-labs/foundation/eth-address';
+import { Logger, createLogger } from '@aztec-labs/foundation/log';
+import { RunningPromise } from '@aztec-labs/foundation/running-promise';
 
 import { ProverClaim, toProverTipClaim } from '@oxide/l1-contracts/oxide_portal.js';
 import { SIMULATED_SENDER_BALANCE } from '@oxide/oxide-client/l1_operation_quote.js';
@@ -28,8 +28,8 @@ export interface ProfitableClaimBatchSubmitterOptions {
   publisher: BatchPublisher;
   /**
    * Account the gas simulation runs as, and the account that must sign the batch. It must be the prover:
-   * `claimProverTips` credits `msg.sender`, and `ProverClaimLib` requires it to be the address recorded in
-   * `$firstProver` for the claim's checkpoint.
+   * `claimProverTips` credits `msg.sender`, and `ProverClaimLib` requires it to be the rollup's first prover for
+   * the claim's checkpoint.
    */
   senderAddress: EthAddress;
   /** Minimum batch profit in USD, scaled to 18 decimals: a batch below it is not worth a tx. */
@@ -230,7 +230,7 @@ export class ProfitableClaimBatchSubmitter {
         portal.context,
       );
       if (result.status === 'error') {
-        // The portal refuses this one for good (e.g. the burn is cut off by a freeze). Retrying cannot help.
+        // The portal refuses this one for good (e.g. the initiation is cut off by a freeze). Retrying cannot help.
         this.log.warn(`Dropping prover claim ${claim.id}: ${result.reason}`);
         this.options.backlog.resolve([claim.id]);
         return undefined;

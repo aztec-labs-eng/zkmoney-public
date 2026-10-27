@@ -1,7 +1,8 @@
 /**
- * Which accepted token funds a SIPA. Mainnet SIPAs take DAI, USDC or USDT and swap into DAI at
- * sweep time, so every reader of a SIPA's funding — the deposit rail, the registration tick, the
- * manual sweep — asks here and gets the same answer.
+ * Which accepted token funds a SIPA, each priced on the row its sweep settles on. A SIPA accepts every
+ * row's token, and on mainnet swaps USDC and USDT into DAI at sweep time, so every reader of a
+ * SIPA's funding — the deposit rail, the registration tick, the manual sweep — asks here and gets
+ * the same answer.
  */
 import { zeroAddress, type Address, type Hash, type PublicClient } from "viem"
 import { SIPA_SWAP_MAX_SLIPPAGE_BPS } from "@obsidion/core/constants"
@@ -37,85 +38,96 @@ export interface SipaFunding {
 const sameToken = (a: SipaFundingToken, b: SipaFundingToken) =>
   a.address.toLowerCase() === b.address.toLowerCase()
 
-/** Multiplier from `sent` base units into `feeToken` base units. */
-export function feeScale(feeToken: SipaFundingToken, sent: SipaFundingToken): bigint {
-  return 10n ** BigInt(Math.max(feeToken.decimals - sent.decimals, 0))
+/**
+ * `amount` of `sent` in units of `row`, the row token it swaps into. The swap is a stablecoin
+ * parity trade (mainnet USDC and USDT into DAI), so only the decimals differ.
+ */
+export function inRowUnits(amount: bigint, sent: SipaFundingToken, row: SipaFundingToken): bigint {
+  const shift = row.decimals - sent.decimals
+  return shift >= 0 ? amount * 10n ** BigInt(shift) : amount / 10n ** BigInt(-shift)
 }
 
-/** The least `feeToken` a `scaledBalance` of `sent` settles into: parity, less the swap's allowed loss. */
+/** The least `row` token an `amount` of `sent`, in row units, settles into: parity, less the swap's allowed loss. */
 export function settledBalance(
-  feeToken: SipaFundingToken,
+  row: SipaFundingToken,
   sent: SipaFundingToken,
-  scaledBalance: bigint,
+  amount: bigint,
 ): bigint {
-  if (sameToken(feeToken, sent)) return scaledBalance
-  return (scaledBalance * (10_000n - SIPA_SWAP_MAX_SLIPPAGE_BPS)) / 10_000n
+  if (sameToken(row, sent)) return amount
+  return (amount * (10_000n - SIPA_SWAP_MAX_SLIPPAGE_BPS)) / 10_000n
 }
+
+/** A token a SIPA may hold, priced on the row its sweep settles on. */
+export interface SipaFundingRoute {
+  token: SipaFundingToken
+  /** The row's token, which `fee` and `txAmountCap` are in; `token` itself unless the SIPA swaps it. */
+  settlesIn?: SipaFundingToken
+  /** The row's sweep fee for the SIPA's intent. */
+  fee: bigint
+  /** The row portal's `TX_AMOUNT_CAP()`. */
+  txAmountCap: bigint
+}
+
+/** A balance in its row's units, comparable across rows of different decimals. */
+const comparable = (funding: SipaFunding & { settlesIn: SipaFundingToken }) =>
+  funding.status.scaledBalance * 10n ** BigInt(Math.max(36 - funding.settlesIn.decimals, 0))
 
 /**
- * The token a sweep of `sipa` takes: the first sweepable one in list order, otherwise the largest
- * balance in fee-token units, so dust in one token never hides funding in another. `accepted`
- * narrows `sweepable` to a schedule's floor. An unpriced floor (`decided: false`) makes `sweepable`
- * meaningless, so the largest balance wins. Every token is read at once: a slow read of one never
- * delays a deposit that already shows in another, and a failed read of one never hides a sweepable
- * balance in another; it is rethrown only when no token answers the sweep.
+ * The token a sweep of `sipa` takes: the first sweepable route in list order, otherwise the
+ * largest balance, so dust in one token never hides funding in another. Each route's window is its
+ * own row's fee and cap, in that row's units. `accepted` narrows `sweepable` to a schedule's floor.
+ * An unpriced floor (`decided: false`) makes `sweepable` meaningless, so the largest balance wins.
+ * Every token is read at once: a slow read of one never delays a deposit that already shows in
+ * another, and a failed read of one never hides a sweepable balance in another; it is rethrown
+ * only when no token answers the sweep.
  */
 export async function readSipaFunding(
   publicClient: PublicClient,
   params: {
     sipa: Address
-    feeToken: SipaFundingToken
-    fundingTokens: readonly SipaFundingToken[]
-    fee: bigint
-    fpcFundingCut: bigint
-    accepted?: (scaledBalance: bigint, token: SipaFundingToken) => boolean
+    routes: readonly SipaFundingRoute[]
+    accepted?: (rowBalance: bigint, token: SipaFundingToken) => boolean
     decided?: boolean
     /** Balances already read, keyed by lowercased token; a missing one is read here. */
     balances?: ReadonlyMap<string, bigint>
   },
 ): Promise<SipaFunding> {
+  if (!params.routes.length) throw new Error("A SIPA funding read needs at least one token")
   const decided = params.decided ?? true
-  // Balances scale up into the fee token's units; a token with more decimals would rank by raw size.
-  const wider = params.fundingTokens.find((t) => t.decimals > params.feeToken.decimals)
-  if (wider) throw new Error(`${wider.symbol} has more decimals than the fee token`)
-  const read = async (token: SipaFundingToken): Promise<SipaFunding> => {
+  const read = async (route: SipaFundingRoute) => {
+    const settlesIn = route.settlesIn ?? route.token
+    const shift = settlesIn.decimals - route.token.decimals
+    if (shift < 0) throw new Error(`${route.token.symbol} swaps into a token of fewer decimals`)
     const status = await readSipaFundingStatus(publicClient as never, {
       sipa: params.sipa as never,
-      token: token.address as never,
-      fee: params.fee,
-      fpcFundingCut: params.fpcFundingCut,
-      balanceScale: feeScale(params.feeToken, token),
-      balance: params.balances?.get(token.address.toLowerCase()),
+      token: route.token.address as never,
+      fee: route.fee,
+      txAmountCap: route.txAmountCap,
+      balanceScale: 10n ** BigInt(shift),
+      balance: params.balances?.get(route.token.address.toLowerCase()),
     })
     const refused =
-      status.sweepable && params.accepted && !params.accepted(status.scaledBalance, token)
-    return { token, status: refused ? { ...status, sweepable: false } : status }
+      status.sweepable && params.accepted && !params.accepted(status.scaledBalance, route.token)
+    return {
+      token: route.token,
+      settlesIn,
+      status: refused ? { ...status, sweepable: false } : status,
+    }
   }
-  const others = params.fundingTokens.filter((token) => !sameToken(token, params.feeToken))
-  const reads = await Promise.allSettled([params.feeToken, ...others].map(read))
+  const reads = await Promise.allSettled(params.routes.map(read))
   const answers = reads.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []))
   const sweepable = decided ? answers.find((answer) => answer.status.sweepable) : undefined
-  if (sweepable) return sweepable
   const failed = reads.find((r) => r.status === "rejected")
-  if (failed) throw failed.reason
-  return answers.reduce((best, next) =>
-    next.status.scaledBalance > best.status.scaledBalance ? next : best,
-  )
+  if (!sweepable && failed) throw failed.reason
+  const best =
+    sweepable ?? answers.reduce((best, next) => (comparable(next) > comparable(best) ? next : best))
+  return { token: best.token, status: best.status }
 }
 
-/** The largest of `balances` (keyed by lowercased token) across `tokens`, in `feeToken` units. */
-export function largestBalance(
-  balances: ReadonlyMap<string, bigint>,
-  feeToken: SipaFundingToken,
-  tokens: readonly SipaFundingToken[],
-): bigint {
-  return tokens.reduce((max, token) => {
-    const scaled = (balances.get(token.address.toLowerCase()) ?? 0n) * feeScale(feeToken, token)
-    return scaled > max ? scaled : max
-  }, 0n)
-}
-
-/** Which of `tokens` holds `sipa`'s funds, by balance alone; `tokens[0]` is the fee token. */
+/**
+ * Which of `tokens` holds `sipa`'s funds, by balance alone. `tokens[0]` is the row token the
+ * others swap into, and the balance is in its units.
+ */
 export function readSipaHolding(
   publicClient: PublicClient,
   sipa: Address,
@@ -123,15 +135,13 @@ export function readSipaHolding(
 ): Promise<SipaFunding> {
   return readSipaFunding(publicClient, {
     sipa,
-    feeToken: tokens[0],
-    fundingTokens: tokens,
-    fee: 0n,
-    fpcFundingCut: 0n,
+    // Undecided: `sweepable` is not read, so no fee or cap applies.
+    routes: tokens.map((token) => ({ token, settlesIn: tokens[0], fee: 0n, txAmountCap: 0n })),
     decided: false,
   })
 }
 
-/** `sipa`'s largest balance across `tokens`, in `tokens[0]` (fee-token) units. */
+/** `sipa`'s largest balance across `tokens`, in `tokens[0]` units; see {@link readSipaHolding}. */
 export async function readSipaBalance(
   publicClient: PublicClient,
   sipa: Address,

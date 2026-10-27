@@ -1,6 +1,6 @@
 /** How a sent broadcast's receipt reads to the ledger: included, still pending, or dropped. */
 import { describe, expect, it } from "vitest"
-import { TxExecutionResult, TxStatus } from "@aztec/stdlib/tx"
+import { TxExecutionResult, TxStatus } from "@aztec-labs/stdlib/tx"
 import { broadcastState } from "../src/features/broadcasts/broadcastState"
 
 const hash = `0x${"11".repeat(32)}`

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 import { bytesToHex, concat, keccak256, toBytes, type Hex } from "viem"
 import { privateKeyToAccount } from "viem/accounts"
 import { secp256k1 } from "@noble/curves/secp256k1"
-import { Fr } from "@aztec/aztec.js/fields"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 
 import {
   deriveBootstrapKey,

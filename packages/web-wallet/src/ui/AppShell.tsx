@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { Outlet, useLocation, useNavigate } from "react-router-dom"
 import { AnalyticsConsentPrompt } from "../features/onboarding/AnalyticsConsentModal"
 import { useRegistrationDepositOwed } from "../features/onboarding/openRegistration"
-import { useActionGuard, useWalletFrozen, type WalletAction } from "../features/actionGate"
+import { useActionGuard, type WalletAction } from "../features/actionGate"
 import { useTagUnpicked } from "../features/onboarding/tagPick"
 import { TagSearchBar } from "../features/contacts/TagSearchBar"
 import { loadOnboardedIdentity, loadWalletIdentity } from "../features/identity/walletIdentity"
@@ -33,6 +33,7 @@ import { ensClient } from "../lib/ens"
 import { isDemoMode } from "../dev/demoFlag"
 import { REQUESTS_PATH } from "../features/requests/nonContactView"
 import { useSavingsAvailable } from "../features/savings/savingsGateway"
+import { UpgradeKeepOpenBanner } from "../features/migration/UpgradeIntro"
 import { createContext, useContext, useMemo } from "react"
 import "./shell.css"
 
@@ -88,12 +89,11 @@ const navItems = (items: NavItem[], savings: boolean) =>
   items.filter((item) => item.path !== "/savings" || savings)
 /** Routes that move money: with a name still waiting for its deposit they lead to Deposit. */
 const ACTIVATION_GATED = new Set(["/deposit", "/send", REQUESTS_PATH, "/withdraw"])
-/** Nav items a frozen wallet closes. */
-const FROZEN_CLOSED = new Set(["/savings", "/deposit", "/send", REQUESTS_PATH])
 /** Nav items that start an action. */
 const NAV_ACTIONS: Record<string, WalletAction> = {
   "/deposit": "deposit",
   "/send": "send",
+  [REQUESTS_PATH]: "requests",
   "/withdraw": "withdraw",
 }
 
@@ -150,8 +150,6 @@ export function SidebarLayout({
   const identity = loadWalletIdentity()
   const awaitingActivation = useRegistrationDepositOwed()
   const guard = useActionGuard()
-  const frozen = useWalletFrozen()
-  const closed = (item: NavItem) => frozen && FROZEN_CLOSED.has(item.path)
   // An unpicked drawn tag is never shown: no account button and no share.
   const unpicked = useTagUnpicked()
   const active = activePath(location.pathname)
@@ -281,7 +279,6 @@ export function SidebarLayout({
         .filter(Boolean)
         .join(" ")}
       aria-current={active === item.path ? "page" : undefined}
-      disabled={closed(item)}
       onClick={() => go(item)}
     >
       {phone ? <PhoneIcon name={item.icon} /> : <Icon name={item.icon} size={24} />}
@@ -414,7 +411,6 @@ export function SidebarLayout({
             .filter(Boolean)
             .join(" ")}
           aria-current={active === item.path ? "page" : undefined}
-          disabled={closed(item)}
           onClick={() => go(item)}
         >
           <PhoneIcon name={item.icon} />
@@ -446,10 +442,7 @@ export function SidebarLayout({
         <main ref={main} className="ww-main">
           <div className="ww-content">
             {!pageHeader && (
-              <div
-                className="ww-shell-header"
-                data-stuck={(phone && stuck && !notificationsOpen) || undefined}
-              >
+              <div className="ww-shell-header" data-stuck={(phone && stuck && !notificationsOpen) || undefined}>
                 <div className="ww-topbar">
                   {(!phone || unlocked) && <TagSearchBar placeholder={phone ? "tag" : undefined} />}
                   {phone && !unlocked && <BrandLockup />}
@@ -483,6 +476,7 @@ export function SidebarLayout({
                 </div>
               </div>
             )}
+            <UpgradeKeepOpenBanner />
             <Outlet />
           </div>
         </main>

@@ -6,7 +6,6 @@
  * with no gas share is a direct withdrawal. The burn is one withdrawal under the per-withdrawal
  * limit, gas share included.
  */
-import { DEFAULT_DECIMALS } from "@obsidion/core/constants"
 import { nextOperationId } from "@obsidion/sdk"
 import type { WithdrawalRecord } from "@obsidion/front-core"
 import type { Address } from "viem"
@@ -24,6 +23,7 @@ import {
   type WithdrawDeps,
   type WithdrawStage,
 } from "./withdrawGateway"
+import { currentTxAmountCap } from "../token/oxideToken"
 
 /** What the confirmed quote commits to: the escrow tip, the estimate the record keeps, and the route's floor. */
 export interface FreshQuote extends SwapCommit {
@@ -53,12 +53,9 @@ export function freshBurnAmount(
   fundsDisplay: string,
   gasDisplay: string,
   floorAtomic: bigint,
+  decimals: number,
 ): bigint {
-  return (
-    parseUnits(fundsDisplay, DEFAULT_DECIMALS) +
-    parseUnits(gasDisplay, DEFAULT_DECIMALS) +
-    floorAtomic
-  )
+  return parseUnits(fundsDisplay, decimals) + parseUnits(gasDisplay, decimals) + floorAtomic
 }
 
 /** The burn as one operation, checked against the limit before it is screened or signed. */
@@ -68,13 +65,14 @@ export async function submitFreshAddressWithdrawal(
   onStage: (stage: WithdrawStage) => void,
 ): Promise<WithdrawalRecord> {
   const { recipient, recipientAlias, fundsAsset, quote } = input
-  const amount = freshBurnAmount(input.fundsDisplay, input.gasDisplay, quote.floorAtomic)
-  const daiForGas = freshDaiForGas(fundsAsset, parseUnits(input.gasDisplay, DEFAULT_DECIMALS))
+  const { decimals } = await deps.tokenService.fetchTokenInformation()
+  const amount = freshBurnAmount(input.fundsDisplay, input.gasDisplay, quote.floorAtomic, decimals)
+  const daiForGas = freshDaiForGas(fundsAsset, parseUnits(input.gasDisplay, decimals))
   const summary = `${usdBalance(input.fundsDisplay)} to ${recipientAlias?.trim() || "Ethereum"}`
   const operation = { operationId: nextOperationId("withdraw"), flow: "withdraw" as const, summary }
   const { record } = await runOperation(operation, async (op) => {
     onStage("building")
-    assertWithinWithdrawalLimit(amount)
+    assertWithinWithdrawalLimit(amount, await currentTxAmountCap())
     const ctx = await burnContext(deps, recipient)
     const { proverTip = 0n } = quote
     const swap = await planSwapLeg(

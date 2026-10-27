@@ -5,8 +5,8 @@
  */
 import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
-import type { AztecNode } from "@aztec/aztec.js/node"
-import type { AztecSQLiteOPFSStore } from "@aztec/kv-store/sqlite-opfs"
+import type { AztecNode } from "@aztec-labs/aztec.js/node"
+import type { AztecSQLiteOPFSStore } from "@aztec-labs/kv-store/sqlite-opfs"
 import type { ChainIdentity } from "@obsidion/core/types"
 import type { PortalIdentityCall } from "@obsidion/sdk"
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
@@ -664,7 +664,7 @@ describe("BootHold", () => {
     async (shape) => {
       const replace = vi.fn()
       Object.defineProperty(window, "location", { value: { replace }, writable: true })
-      const { SqliteCorruptionError } = await import("@aztec/kv-store/sqlite-opfs")
+      const { SqliteCorruptionError } = await import("@aztec-labs/kv-store/sqlite-opfs")
       const corrupt = new SqliteCorruptionError(
         "SQLITE_CORRUPT: sqlite3 result code 11: database disk image is malformed",
       )

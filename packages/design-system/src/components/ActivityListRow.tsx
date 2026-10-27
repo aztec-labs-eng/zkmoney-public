@@ -43,8 +43,6 @@ export const STATUS_STYLE = {
   "Deposit failed": "failed",
   "Expired": "failed",
   "Needs recovery": "failed",
-  // A received payment the network reverted.
-  "Not received": "failed",
   "Funds not sent": "failed",
   "Cancelled": "cancelled",
   "Recovered": "cancelled",
@@ -67,8 +65,6 @@ export const STATUS_STYLE = {
   "Awaiting funds": "pending",
   "Receiving": "pending",
   "Crediting": "pending",
-  // A swept deposit a frozen portal refunds through Withdraw.
-  "Refundable": "pending",
   // A paylink refund on its way back to the creator.
   "Cancelling": "pending",
   "Reclaiming": "pending",

@@ -29,6 +29,7 @@ export async function startEarlyProofStarter(
     portals: deployments.map(({ publicConfig }) => ({
       portalAddress: publicConfig.portal,
       proverSubsidyAddress: publicConfig.proverSubsidy,
+      broadcasterAddress: publicConfig.broadcaster,
     })),
     priceOracle,
     earlySubmitPolicy: config.earlyProofPolicy,

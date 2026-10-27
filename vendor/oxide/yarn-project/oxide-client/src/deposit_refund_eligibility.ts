@@ -1,41 +1,41 @@
-import type { AztecAddress } from '@aztec/aztec.js/addresses';
-import { Fr, type GrumpkinScalar } from '@aztec/aztec.js/fields';
-import type { L1_TO_L2_MSG_TREE_HEIGHT } from '@aztec/constants';
-import type { InboxContract } from '@aztec/ethereum/contracts';
-import type { SiblingPath } from '@aztec/foundation/trees';
-import type { BlockHash } from '@aztec/stdlib/block';
-import type { CompleteAddress } from '@aztec/stdlib/contract';
-import { derivePublicKeyFromSecretKey, hashPublicKey } from '@aztec/stdlib/keys';
-import { MerkleTreeId } from '@aztec/stdlib/trees';
-import type { BlockHeader } from '@aztec/stdlib/tx';
+import type { AztecAddress } from '@aztec-labs/aztec.js/addresses';
+import { Fr, type GrumpkinScalar } from '@aztec-labs/aztec.js/fields';
+import type { L1_TO_L2_MSG_TREE_HEIGHT } from '@aztec-labs/constants';
+import type { SiblingPath } from '@aztec-labs/foundation/trees';
+import type { BlockHash } from '@aztec-labs/stdlib/block';
+import type { CompleteAddress } from '@aztec-labs/stdlib/contract';
+import { derivePublicKeyFromSecretKey, hashPublicKey } from '@aztec-labs/stdlib/keys';
+import { MerkleTreeId } from '@aztec-labs/stdlib/trees';
+import type { BlockHeader } from '@aztec-labs/stdlib/tx';
 
 import type { OxidePortalContract } from '@oxide/l1-contracts';
 import {
   computeDepositMessageHash,
   computeSiloedDepositMessageNullifier,
 } from '@oxide/oxide-lib/deposit_message_hashing.js';
+import type { PortalDomain } from '@oxide/oxide-lib/types.js';
+
+import type { Hex } from 'viem';
 
 import { type ArchiveRef, resolveFreezeArchive } from './archive_ref.js';
 import type { ChainDataSource } from './chain_data_source.js';
 import { PermanentError } from './errors.js';
 
-export type DepositPortalContext = Pick<
+/** The portal reads of the classification. `$depositMessageIndex` gives the leaf index plus one of a deposit message. */
+export type DepositRefundPortal = Pick<
   OxidePortalContract,
-  'address' | 'getChainId' | 'getL2Portal' | 'getRollupVersion'
->;
-
-export type DepositRefundPortal = DepositPortalContext &
-  Pick<OxidePortalContract, 'getFreezeArchive' | 'isRefundNullifierSpent'>;
-
-export type DepositInbox = Pick<InboxContract, 'getMessageSentEvents'> & {
-  client: Pick<InboxContract['client'], 'getBlock'>;
+  'getPortalDomain' | 'getFreezeArchive' | 'isRefundNullifierSpent'
+> & {
+  getContract(): {
+    read: {
+      $depositMessageIndex(args: readonly [Hex], options?: { blockTag?: 'latest' | 'finalized' }): Promise<bigint>;
+    };
+  };
 };
 
 export interface DepositRefundCandidate {
   messageKey: Fr;
   messageLeafIndex: bigint;
-  /** The L1 block of the `Deposit` event. The Inbox inserted the deposit message in the same transaction. */
-  l1BlockNumber: bigint;
   sharedSecretSalt: Fr;
   /** The credited amount of the `Deposit` event. */
   amount: bigint;
@@ -53,8 +53,9 @@ export interface DepositMessagePreimage {
 
 /**
  * The refund path of a deposit at a frozen archive:
- * - `frozen-deposit`: the archive has the message, but not its nullifier. Use `refundFrozenDeposit`.
- * - `unprocessed-deposit`: the L1 Inbox has the message, but the archive does not. Use `refundUnprocessedDeposit`.
+ * - `frozen-deposit`: the archive has the message, but not its nullifier. Use `refundFrozenDeposits`.
+ * - `unprocessed-deposit`: the portal recorded the deposit message, but the archive does not have it. Use
+ *   `refundUnprocessedDeposit`.
  * - `consumed`: an L2 transaction spent the deposit before the freeze. Use `refundFrozenNotes` for its unspent notes.
  * - `refunded`: the portal recorded the nullifier.
  */
@@ -66,35 +67,30 @@ export interface DepositRefundEligibility {
   nullifier: Fr;
 }
 
-export async function computePortalDepositMessageHash(
-  portal: DepositPortalContext,
+export function computePortalDepositMessageHash(
+  portalDomain: PortalDomain,
   deposit: DepositMessagePreimage,
-): Promise<{ messageHash: Fr; l2Portal: AztecAddress }> {
-  const [l2Portal, rollupVersion] = await Promise.all([portal.getL2Portal(), portal.getRollupVersion()]);
-  const messageHash = await computeDepositMessageHash(
-    { l1Portal: portal.address, l1ChainId: portal.getChainId(), l2Portal, rollupVersion },
-    {
-      sharedSecretSalt: deposit.sharedSecretSalt,
-      recipient: deposit.recipient,
-      amount: deposit.amount,
-      messageLeafIndex: new Fr(deposit.messageLeafIndex),
-    },
-  );
-  return { messageHash, l2Portal };
+): Promise<Fr> {
+  return computeDepositMessageHash(portalDomain, {
+    sharedSecretSalt: deposit.sharedSecretSalt,
+    recipient: deposit.recipient,
+    amount: deposit.amount,
+    messageLeafIndex: new Fr(deposit.messageLeafIndex),
+  });
 }
 
 /**
  * `recipient.publicKeys` must hash to `recipient.address`. A `CompleteAddress` does, and so does a `RefundOwner` that
- * `deriveRefundOwnerAddress` checked.
+ * `assertRefundOwner` checked.
  */
 export async function computeDepositRefundNullifier(
-  portal: DepositPortalContext,
-  deposit: Omit<DepositRefundCandidate, 'l1BlockNumber' | 'recipient'> & {
+  portalDomain: PortalDomain,
+  deposit: Omit<DepositRefundCandidate, 'recipient'> & {
     recipient: Pick<CompleteAddress, 'address' | 'publicKeys'>;
   },
 ): Promise<{ messageHash: Fr; siloedNullifier: Fr }> {
   const recipient = deposit.recipient.address;
-  const { messageHash, l2Portal } = await computePortalDepositMessageHash(portal, { ...deposit, recipient });
+  const messageHash = await computePortalDepositMessageHash(portalDomain, { ...deposit, recipient });
   if (!messageHash.equals(deposit.messageKey)) {
     throw new PermanentError(`Deposit preimage hashes to ${messageHash}, expected message key ${deposit.messageKey}`);
   }
@@ -103,7 +99,7 @@ export async function computeDepositRefundNullifier(
     throw new PermanentError(`The master nullifier hiding key does not belong to recipient ${recipient}`);
   }
   const siloedNullifier = await computeSiloedDepositMessageNullifier(
-    l2Portal,
+    portalDomain.l2Token,
     messageHash,
     deposit.recipientMasterNullifierHidingKey,
   );
@@ -154,52 +150,51 @@ export async function getFrozenDepositMessageSiblingPath(
 }
 
 /**
- * The message key commits to the leaf index, so a key match identifies the message. A read of one block stays in the
- * block range limit of RPC nodes. A block that is not final gives an `Error`, not a `PermanentError`, because an L1
- * reorg can still move the deposit.
+ * The portal records the leaf index of each deposit message, and `refundUnprocessedDeposit` accepts only a recorded
+ * message at its leaf index. The read at the finalized L1 block makes sure that an L1 reorg cannot remove the record.
+ * A record that only the latest L1 block has gives an `Error`, not a `PermanentError`, because the deposit can still
+ * become final.
  */
-async function isInInbox(
-  inbox: DepositInbox,
-  deposit: Pick<DepositRefundCandidate, 'messageKey' | 'l1BlockNumber'>,
+async function isRecordedByPortal(
+  portal: DepositRefundPortal,
+  deposit: Pick<DepositRefundCandidate, 'messageKey' | 'messageLeafIndex'>,
 ): Promise<boolean> {
-  const [finalized, logs] = await Promise.all([
-    inbox.client.getBlock({ blockTag: 'finalized' }),
-    inbox.getMessageSentEvents(deposit.l1BlockNumber, deposit.l1BlockNumber),
-  ]);
-  if (deposit.l1BlockNumber > finalized.number) {
-    throw new Error(
-      `Deposit L1 block ${deposit.l1BlockNumber} is not final. The finalized L1 block is ${finalized.number}`,
-    );
+  const read = portal.getContract().read;
+  const key = deposit.messageKey.toString() as Hex;
+  const expected = deposit.messageLeafIndex + 1n;
+  if ((await read.$depositMessageIndex([key], { blockTag: 'finalized' })) === expected) {
+    return true;
   }
-  return logs.some(log => log.args.leaf.equals(deposit.messageKey));
+  if ((await read.$depositMessageIndex([key], { blockTag: 'latest' })) === expected) {
+    throw new Error(`The portal recorded deposit message ${deposit.messageKey} in an L1 block that is not final`);
+  }
+  return false;
 }
 
 /**
  * The portal refunds a deposit only at its freeze archive, the default `archive`. There, `frozen-deposit` and
- * `unprocessed-deposit` mean that the circuit and the portal accept the refund, apart from the authorization and the
+ * `unprocessed-deposit` mean that the circuit and the portal accept the refund, apart from the migration signature and the
  * enclave signature. Give `archive` to resolve it once for many deposits. An unprocessed deposit in an L1 block that is
  * not final gives a retryable `Error`.
  */
 export async function classifyDepositRefund(
   portal: DepositRefundPortal,
-  inbox: DepositInbox,
   chain: ChainDataSource,
   deposit: DepositRefundCandidate,
   archive?: ArchiveRef,
 ): Promise<DepositRefundEligibility> {
   const [{ checkpointEndBlockHeader: frozenTip }, { siloedNullifier: nullifier }] = await Promise.all([
     archive ?? resolveFreezeArchive(portal, chain),
-    computeDepositRefundNullifier(portal, deposit),
+    portal.getPortalDomain().then(portalDomain => computeDepositRefundNullifier(portalDomain, deposit)),
   ]);
 
   if (await portal.isRefundNullifierSpent(nullifier)) {
     return { kind: 'refunded', nullifier };
   }
-  // The Inbox gives the root of an open tree, so an unprocessed deposit needs no wait.
   if (!isAbsorbedAtFrozenTip(frozenTip, deposit.messageLeafIndex)) {
-    if (!(await isInInbox(inbox, deposit))) {
+    if (!(await isRecordedByPortal(portal, deposit))) {
       throw new PermanentError(
-        `The L1 Inbox does not have deposit message ${deposit.messageKey} in L1 block ${deposit.l1BlockNumber}`,
+        `The portal did not record deposit message ${deposit.messageKey} at leaf index ${deposit.messageLeafIndex}`,
       );
     }
     return { kind: 'unprocessed-deposit', nullifier };

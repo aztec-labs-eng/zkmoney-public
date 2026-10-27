@@ -8,8 +8,8 @@
 
 import { describe, it, expect } from "vitest"
 import { inspect } from "node:util"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import { GasSettings } from "@aztec/stdlib/gas"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import { GasSettings } from "@aztec-labs/stdlib/gas"
 import { PasswordFPCPaymentMethod } from "../../src/feePaymentMethod/password_fpc_payment_method.js"
 
 const SECRET = "s3cr3t-Passw0rd-never-leak-x12y" // 31 printable-ASCII chars
@@ -38,7 +38,7 @@ describe("PasswordFPCPaymentMethod — no password leakage (R3a)", () => {
 
   it("encodes the password as 31 char-code fields, never the raw string", async () => {
     const payload = await method.getExecutionPayload()
-    const args = payload.calls[0].args
+    const args = payload.calls[0]!.args
     // [feeLimit, nonce] + 31 str<31> fields = 33
     expect(args).toHaveLength(33)
     expect(args.map((a) => a.toString()).join(",")).not.toContain(SECRET)

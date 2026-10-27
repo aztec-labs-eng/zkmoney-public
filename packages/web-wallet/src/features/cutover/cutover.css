@@ -1,0 +1,994 @@
+/* The v5 → v6 cutover screens (Figma "Migration" page). Figma values that no token names yet are
+   held here once: the muted caption, the active-step purple and the banner gold. */
+.ww-cutover {
+  --cutover-muted: #8b8fa8;
+  --cutover-active: #b99cff;
+  --cutover-gold: #ffe071;
+  --cutover-column: 484px;
+  /* Over the routed page, which the mount renders beside. */
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  color: var(--text-primary);
+  background: var(--surface-dark);
+  overflow: hidden auto;
+}
+.ww-cutover > * {
+  flex-shrink: 0;
+}
+.ww-cutover::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 60vh;
+  background: radial-gradient(60% 55% at 50% 0%, rgba(156, 4, 255, 0.35), transparent 70%),
+    radial-gradient(40% 40% at 50% 20%, rgba(6, 147, 255, 0.18), transparent 70%);
+  pointer-events: none;
+}
+.ww-cutover__bar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 40px 80px 0;
+}
+.ww-cutover__column {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  width: var(--cutover-column);
+  max-width: 100%;
+  margin: 0 auto;
+  padding: 40px 16px;
+  box-sizing: border-box;
+  flex: 1;
+  justify-content: flex-end;
+}
+.ww-cutover__column[data-center] {
+  justify-content: center;
+}
+/* On desktop the footer follows the column, so the two center together. */
+.ww-cutover:not([data-phone]) .ww-cutover__column:not([data-center]) {
+  flex: 0 0 auto;
+  margin-top: auto;
+}
+.ww-cutover:not([data-phone]) .ww-cutover__footer {
+  margin-bottom: auto;
+}
+/* Desktop's way back: a round button at the column's top-left (Figma 426:1941). */
+.ww-cutover__back {
+  position: absolute;
+  top: 40px;
+  left: 16px;
+}
+.ww-cutover__footer {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  width: var(--cutover-column);
+  max-width: 100%;
+  margin: 0 auto;
+  padding: 0 16px 40px;
+  box-sizing: border-box;
+}
+.ww-cutover__footer .ww-cutover__caption {
+  text-align: center;
+}
+.ww-cutover[data-phone] .ww-cutover__bar {
+  padding: 16px 20px 0;
+}
+.ww-cutover[data-phone] .ww-cutover__bar .ww-brand {
+  zoom: 0.72;
+}
+.ww-cutover[data-phone] .ww-cutover__column {
+  width: 100%;
+  padding: 28px 20px 24px;
+}
+.ww-cutover[data-phone] .ww-cutover__footer {
+  position: sticky;
+  bottom: 0;
+  width: 100%;
+  padding: 16px 20px calc(16px + var(--ww-safe-area-bottom, 0px));
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(7, 7, 7, 0.7);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+/* Account pill */
+.ww-cutover__account {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px 6px 6px;
+  border-radius: var(--radius-full);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: var(--surface-card);
+}
+.ww-cutover__avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--gradient-brand);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+}
+.ww-cutover[data-phone] .ww-cutover__avatar {
+  width: 28px;
+  height: 28px;
+}
+.ww-cutover__tag {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+.ww-cutover__tag b {
+  font-size: 20px;
+  font-weight: 600;
+}
+.ww-cutover__tag span {
+  font-size: 12px;
+  color: var(--cutover-muted);
+}
+.ww-cutover[data-phone] .ww-cutover__tag b {
+  font-size: 13px;
+}
+.ww-cutover[data-phone] .ww-cutover__tag span {
+  font-size: 11px;
+}
+.ww-cutover__account-anchor {
+  position: relative;
+}
+button.ww-cutover__account {
+  text-align: left;
+  color: var(--text-primary);
+}
+.ww-cutover__account-chevron {
+  flex: none;
+  color: var(--text-secondary);
+  transition: rotate 0.18s ease;
+}
+.ww-cutover__account[aria-expanded="true"] .ww-cutover__account-chevron {
+  rotate: 180deg;
+}
+/* The menu under the pill (Figma 489:38560): right-aligned, never wider than the screen. */
+.ww-cutover__menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 5;
+  width: min(310px, calc(100vw - 32px));
+  box-sizing: border-box;
+  padding: 12px 14px;
+  border-radius: var(--radius-12);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: #2c2c2c;
+  animation: ww-fade-in 0.18s ease;
+}
+.ww-cutover__menu-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 12px 16px;
+  border-radius: var(--radius-12);
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+.ww-cutover__menu-item:hover,
+.ww-cutover__menu-item:focus-visible {
+  background: var(--surface-card);
+  color: var(--text-primary);
+}
+@media (prefers-reduced-motion: reduce) {
+  .ww-cutover__menu {
+    animation: none;
+  }
+  .ww-cutover__account-chevron {
+    transition: none;
+  }
+}
+
+/* Text */
+.ww-cutover__title {
+  margin: 0;
+  font-size: 36px;
+  font-weight: 700;
+  line-height: 1.1;
+  text-align: center;
+  text-wrap: balance;
+  background: var(--gradient-title);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.ww-cutover__title[data-size="lg"] {
+  font-size: 44px;
+}
+.ww-cutover[data-phone] .ww-cutover__title,
+.ww-cutover[data-phone] .ww-cutover__title[data-size="lg"] {
+  font-size: 32px;
+}
+.ww-cutover__lead {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.5;
+  text-align: center;
+  color: var(--text-secondary);
+  text-wrap: pretty;
+}
+.ww-cutover__eyebrow {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--cutover-muted);
+}
+.ww-cutover__caption {
+  font-size: 12px;
+  color: var(--cutover-muted);
+}
+.ww-cutover__intro {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  text-align: center;
+}
+.ww-cutover__intro .ww-cutover__eyebrow {
+  color: var(--cutover-active);
+}
+
+/* Badge */
+.ww-cutover__badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  align-self: center;
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: var(--gradient-brand);
+  color: #fff;
+  box-shadow: 0 0 17px 5px rgba(0, 0, 0, 0.1);
+}
+.ww-cutover__badge[data-size="80"] {
+  width: 80px;
+  height: 80px;
+}
+.ww-cutover__badge[data-tone="warn"] {
+  background: rgba(255, 224, 113, 0.12);
+  color: var(--cutover-gold);
+}
+.ww-cutover__badge[data-tone="error"] {
+  background: var(--surface-pink);
+  color: var(--accent-pink);
+}
+
+/* Cards */
+.ww-cutover__card {
+  position: relative;
+  width: 100%;
+  box-sizing: border-box;
+  border-radius: var(--radius-16);
+  border: 1px solid rgba(253, 253, 253, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+  text-align: left;
+}
+.ww-cutover__balance-total {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 20px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+.ww-cutover__amount {
+  font-size: 46px;
+  font-weight: 600;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+}
+.ww-cutover__amount small {
+  font-size: 22px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+.ww-cutover__balance-split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+.ww-cutover__balance-split > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 14px 20px;
+  font-size: 16px;
+  font-weight: 600;
+}
+.ww-cutover__half-loading {
+  display: flex;
+  align-items: center;
+  height: 1lh;
+}
+.ww-cutover__balance-split > div + div {
+  border-left: 1px solid rgba(255, 255, 255, 0.08);
+}
+.ww-cutover__note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 16px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(6, 147, 255, 0.05);
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+.ww-cutover__note svg {
+  flex: none;
+  color: var(--blue-400, #33adff);
+}
+.zkm-btn-reset.ww-cutover__note-link {
+  display: inline;
+  font-size: inherit;
+  line-height: inherit;
+  color: var(--text-primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+/* The transactions sheet (Figma 489:38896): day groups of the wallet's own rows, scrolling inside. */
+.ww-modal.ww-cutover-sheet--transactions {
+  max-height: min(650px, 86dvh);
+}
+.ww-cutover__txns {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  width: 100%;
+  text-align: left;
+}
+.ww-cutover__txns-day {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ww-cutover__txns-day > span {
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+.ww-cutover__txns-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ww-cutover__txns-empty {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.ww-cutover__stamp {
+  position: absolute;
+  top: -12px;
+  right: -8px;
+  z-index: 1;
+  padding: 6px 12px;
+  border-radius: var(--radius-full);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  background: var(--gradient-brand);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  rotate: 6deg;
+}
+.ww-cutover__details {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 16px;
+  background: var(--surface-card);
+  border-radius: var(--radius-12);
+}
+.ww-cutover__row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 14px;
+  color: var(--text-secondary);
+}
+.ww-cutover__row--head {
+  padding-bottom: 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  color: var(--cutover-muted);
+  font-size: 13px;
+  font-weight: 500;
+}
+.ww-cutover__row--head b {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.ww-cutover__row-value {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  color: var(--text-primary);
+  font-weight: 500;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+.ww-cutover__row-value small {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--cutover-muted);
+}
+
+/* Pills */
+.ww-cutover__pills {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.ww-cutover__pills li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: var(--radius-full);
+  border: 1px solid rgba(86, 231, 157, 0.35);
+  background: rgba(86, 231, 157, 0.12);
+  color: var(--accent-green);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* Banner */
+.ww-cutover__banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 16px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 224, 113, 0.45);
+  background: rgba(255, 224, 113, 0.1);
+  color: var(--cutover-gold);
+  text-align: left;
+}
+.ww-cutover__banner[data-tone="ok"] {
+  border-color: rgba(86, 231, 157, 0.4);
+  background: rgba(86, 231, 157, 0.1);
+  color: var(--accent-green);
+}
+.ww-cutover__banner > svg {
+  flex: none;
+}
+.ww-cutover__banner > span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ww-cutover__banner b {
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+.ww-cutover__banner span span {
+  font-size: 13px;
+  line-height: 1.4;
+  color: rgba(253, 253, 253, 0.85);
+}
+
+/* Ring */
+.ww-cutover__ring {
+  /* Above the title, which its tip opens over. */
+  z-index: 2;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  align-self: center;
+  width: 180px;
+  height: 180px;
+}
+.ww-cutover__ring::before {
+  content: "";
+  position: absolute;
+  inset: 10%;
+  border-radius: 50%;
+  background: rgba(156, 4, 255, 0.35);
+  filter: blur(25px);
+}
+.ww-cutover__ring svg {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+@media (max-width: 640px) {
+  .ww-cutover__ring {
+    width: 168px;
+    height: 168px;
+  }
+}
+.ww-cutover__ring-label {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+.ww-cutover__ring-label b {
+  font-size: 40px;
+  font-weight: 600;
+  line-height: 1.1;
+}
+.ww-cutover__ring-label small {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+/* A spinner that still shows the share done: the arc turns, the figure stays put. */
+.ww-cutover__ring[data-spin] > svg {
+  animation: ww-cutover-spin 1.4s linear infinite;
+}
+@keyframes ww-cutover-spin {
+  to {
+    rotate: 360deg;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ww-cutover__ring[data-spin] > svg {
+    animation: none;
+  }
+}
+/* The info mark under the figure, and its tip below the ring (Figma 490:683). */
+.ww-cutover__ring-tip {
+  margin-top: 2px;
+}
+.ww-cutover__ring-tip .zkm-btn-reset.ww-tiprow__label {
+  color: var(--cutover-muted);
+}
+.ww-cutover__ring-tip .ww-tiprow__tip {
+  top: calc(100% + 36px);
+  bottom: auto;
+  left: 50%;
+  width: 228px;
+  max-width: calc(100vw - 32px);
+  translate: -50% 0;
+  padding: 10px 14px;
+  border-radius: var(--radius-12);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: #2c2c2c;
+  box-shadow: none;
+  font-size: 13px;
+  text-align: center;
+  color: var(--text-secondary);
+}
+
+/* Stepper */
+.ww-cutover__steps {
+  padding: 18px 20px;
+}
+.ww-cutover__steps-head {
+  padding-bottom: 16px;
+  border-bottom: 0;
+}
+.ww-cutover__steps-head b {
+  font-size: 13px;
+}
+.ww-cutover__steps ol {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.ww-cutover__step {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+.ww-cutover__rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  width: 24px;
+}
+.ww-cutover__step[data-state="done"] .ww-cutover__rail > svg {
+  color: var(--accent-green);
+}
+.ww-cutover__line {
+  width: 2px;
+  height: 30px;
+  border-radius: 1px;
+  background: rgba(255, 255, 255, 0.12);
+}
+.ww-cutover__step[data-state="done"] .ww-cutover__line {
+  background: rgba(86, 231, 157, 0.5);
+}
+.ww-cutover__dot {
+  width: 24px;
+  height: 24px;
+  box-sizing: border-box;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+}
+.ww-cutover__step-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-top: 2px;
+  min-width: 0;
+}
+.ww-cutover__step-text b {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+.ww-cutover__step[data-state="pending"] .ww-cutover__step-text b {
+  font-weight: 500;
+  color: var(--cutover-muted);
+}
+.ww-cutover__step-text small {
+  font-size: 13px;
+  line-height: 1.35;
+  color: var(--cutover-muted);
+}
+.ww-cutover__step[data-state="active"] .ww-cutover__step-text small {
+  color: var(--cutover-active);
+}
+.ww-cutover__step-text small[data-failed] {
+  color: var(--accent-pink);
+}
+
+/* What happens next */
+.ww-cutover__next {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px;
+}
+.ww-cutover__next--collapsible {
+  padding: 0;
+  border-style: dashed;
+  border-color: rgba(255, 255, 255, 0.15);
+}
+.ww-cutover__next--collapsible .ww-cutover__next-steps {
+  padding: 0 16px 16px;
+}
+.ww-cutover__next-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 14px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.ww-cutover__next--collapsible[data-open] .ww-cutover__next-head svg {
+  rotate: 180deg;
+}
+.ww-cutover__next-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.ww-cutover__next-steps li {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.ww-cutover__next-steps li > span:last-child {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ww-cutover__next-steps b {
+  font-size: 14px;
+  font-weight: 600;
+}
+.ww-cutover__next-steps small {
+  font-size: 12px;
+  color: var(--cutover-muted);
+}
+.ww-cutover__next-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  background: var(--gradient-brand);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+/* Options (the withdraw chooser, Figma 426:1941). Doubled with the reset, which is loaded after
+   this file in the app and would otherwise strip the card. */
+.zkm-btn-reset.ww-cutover__option {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 18px;
+  border-radius: var(--radius-16);
+  border: 1px solid rgba(253, 253, 253, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+  text-align: left;
+  color: var(--text-secondary);
+}
+.zkm-btn-reset.ww-cutover__option[aria-checked="true"] {
+  border-color: var(--purple-500);
+  background: linear-gradient(90deg, rgba(156, 4, 255, 0.1), rgba(6, 147, 255, 0.1));
+}
+.zkm-btn-reset.ww-cutover__option[aria-disabled="true"] {
+  opacity: 0.45;
+}
+.ww-cutover__radio {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  box-sizing: border-box;
+  border-radius: 50%;
+  border: 1.5px solid rgba(255, 255, 255, 0.3);
+}
+.ww-cutover__option[aria-checked="true"] .ww-cutover__radio {
+  border: 2px solid var(--purple-400);
+  background: radial-gradient(circle, var(--purple-400) 42%, transparent 48%);
+}
+.ww-cutover__option-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.ww-cutover__option-text b {
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--text-primary);
+}
+.ww-cutover__option-text span {
+  font-size: 13px;
+  line-height: 1.45;
+}
+.ww-cutover__option-text small {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--cutover-muted);
+}
+.ww-cutover__option-text small[data-tone="active"] {
+  color: var(--cutover-active);
+}
+/* The strip under the options that says why the routes differ (Figma 409:36121). */
+.ww-cutover__why {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 2px 4px;
+  border-radius: var(--radius-4);
+  background: var(--surface-card);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  text-align: left;
+}
+.ww-cutover__why svg {
+  flex: none;
+  margin-top: 3px;
+}
+.ww-cutover__fact {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--text-primary);
+}
+.ww-cutover__fact svg {
+  flex: none;
+  color: var(--accent-green);
+}
+.ww-cutover__facts {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+}
+
+/* Buttons */
+.ww-cutover__actions {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+}
+.ww-cutover__actions > .zkm-primary-btn {
+  width: 100%;
+}
+.zkm-btn-reset.ww-cutover__text-btn {
+  align-self: center;
+  min-height: 44px;
+  padding: 8px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.zkm-btn-reset.ww-cutover__text-btn:disabled {
+  opacity: 0.4;
+}
+.zkm-btn-reset.ww-cutover__text-btn u {
+  text-decoration: underline;
+}
+
+/* Done hero (Figma 409:37205) */
+.ww-cutover__hero {
+  position: relative;
+  align-self: center;
+  width: 141px;
+  height: 141px;
+}
+.ww-cutover__hero::before {
+  content: "";
+  position: absolute;
+  inset: -40px;
+  background: radial-gradient(circle, rgba(156, 4, 255, 0.35), transparent 60%),
+    radial-gradient(circle at 70% 70%, rgba(6, 147, 255, 0.3), transparent 60%);
+  pointer-events: none;
+}
+.ww-cutover__hero img {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+/* Destination field (Figma 392:2145) */
+.ww-cutover__valid {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: var(--radius-12);
+  background: rgba(86, 231, 157, 0.08);
+  border: 1px solid rgba(86, 231, 157, 0.3);
+  text-align: left;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.ww-cutover__valid svg {
+  flex: none;
+  color: var(--accent-green);
+}
+.ww-cutover__valid b {
+  display: block;
+  color: var(--accent-green);
+  font-size: 13px;
+}
+.ww-cutover__check {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px;
+  border-radius: var(--radius-12);
+  background: var(--surface-card);
+  font-size: 13px;
+  line-height: 1.4;
+  text-align: left;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.ww-cutover__check input {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  accent-color: var(--purple-500);
+}
+
+/* Summary rows on the error sheet (Figma 409:37782) */
+.ww-cutover__summary {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+}
+.ww-cutover__summary .ww-cutover__row span:first-child {
+  color: var(--cutover-muted);
+}
+.ww-cutover__summary .ww-cutover__row-value {
+  font-weight: 600;
+}
+
+/* Sheet */
+.ww-modal.ww-cutover-sheet {
+  --modal-pad-x: 40px;
+}
+.ww-cutover-sheet__body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  text-align: center;
+}
+.ww-cutover-sheet__body > .ww-cutover__card,
+.ww-cutover-sheet__body > .ww-cutover__actions,
+.ww-cutover-sheet__body > .ww-cutover__banner,
+.ww-cutover-sheet__body > .zkm-primary-btn,
+.ww-cutover-sheet__body > .ww-cutover__valid,
+.ww-cutover-sheet__body > .ww-cutover__check,
+.ww-cutover-sheet__body > .ww-cutover__field {
+  width: 100%;
+}
+.ww-cutover-sheet__title {
+  line-height: 1.3;
+  letter-spacing: 0.3px;
+  text-wrap: balance;
+}
+.ww-cutover-sheet__body .ww-cutover__lead {
+  max-width: 300px;
+  font-size: 14px;
+}
+.ww-cutover-sheet__body > .zkm-primary-btn {
+  margin-top: 8px;
+}
+.ww-cutover__field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  text-align: left;
+}
+.ww-cutover__working {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  width: 100%;
+}
+.ww-cutover__working-stage {
+  font-size: 15px;
+  font-weight: 500;
+}
+@media (max-width: 640px) {
+  .ww-modal.ww-cutover-sheet {
+    --modal-pad-x: 20px;
+    --modal-pad-y: 40px;
+  }
+}
+.ww-cutover__notes {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}

@@ -8,8 +8,12 @@ name: Release desktop wallet
 #
 # Mainnet build values come from packages/web-wallet-desktop/config/mainnet.env.example. The
 # `production` environment supplies the endpoints as secrets:
-#   WEB_WALLET_NODE_URL, WEB_WALLET_L1_RPC_URL (required), WEB_WALLET_NODE_API_KEY (optional).
+#   WEB_WALLET_NODE_URL, WEB_WALLET_L1_RPC_URL (required), WEB_WALLET_NODE_API_KEY (optional),
+#   WEB_WALLET_V5_ARCHIVE_NODE_URL and WEB_WALLET_V5_ARCHIVE_NODE_API_KEY (optional; unset keeps the profile's node).
 # The build bakes them into the bundle, so every installer carries them in plain text.
+#
+# The wallet reads and upgrades v5 accounts through the pinned v5 wallet bundle. The build downloads it from
+# this repository's `source-generations` release and fails without it.
 #
 # Signing is optional and all-or-nothing per platform:
 #   macOS: DESKTOP_MAC_CSC_LINK + DESKTOP_MAC_CSC_KEY_PASSWORD sign; DESKTOP_APPLE_ID +
@@ -23,7 +27,7 @@ on:
   workflow_dispatch:
 
 env:
-  AZTEC_VERSION: 5.2.0
+  AZTEC_VERSION: 6.0.0
 
 permissions:
   contents: write
@@ -50,9 +54,10 @@ jobs:
           [ "$NODE_URL_SET" = true ] || { echo "::error::secret WEB_WALLET_NODE_URL is unset"; exit 1; }
           [ "$L1_RPC_SET" = true ] || { echo "::error::secret WEB_WALLET_L1_RPC_URL is unset"; exit 1; }
 
+      # The Aztec 6.0.0 installer needs Node.js 24.15.0 or later.
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "24"
 
       - run: corepack enable
 
@@ -99,12 +104,22 @@ jobs:
           OXIDE_REFUND_CIRCUITS: required
         run: pnpm build:web-deps
 
+      - name: Fetch the v5 wallet bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pnpm --filter @obsidion/generation-v5 fetch:bundle
+          pnpm --filter @obsidion/generation-v5 check:bundle
+
       - name: Build wallet bundle
         env:
           ENV_FILE: ${{ github.workspace }}/packages/web-wallet-desktop/config/mainnet.env.example
           SKIP_MONOREPO_BUILD: "1"
+          REQUIRE_SOURCE_GENERATIONS: "true"
           VITE_NODE_URL: ${{ secrets.WEB_WALLET_NODE_URL }}
           VITE_NODE_API_KEY: ${{ secrets.WEB_WALLET_NODE_API_KEY }}
+          VITE_V5_ARCHIVE_NODE_URL: ${{ secrets.WEB_WALLET_V5_ARCHIVE_NODE_URL }}
+          VITE_V5_ARCHIVE_NODE_API_KEY: ${{ secrets.WEB_WALLET_V5_ARCHIVE_NODE_API_KEY }}
           VITE_L1_RPC_URL: ${{ secrets.WEB_WALLET_L1_RPC_URL }}
         run: |
           ./packages/web-wallet-desktop/scripts/build-web.sh

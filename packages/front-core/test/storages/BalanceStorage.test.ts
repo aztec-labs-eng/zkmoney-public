@@ -98,7 +98,13 @@ describe("BalanceStorage (record store)", () => {
       const { balances } = setup()
       await balances.updateBalance(SCOPE, TOKEN_A, 100n)
       expect(balances.list()).toEqual([
-        { scope: SCOPE, tokenAddress: TOKEN_A, balance: "100", updatedAt: expect.any(Number) },
+        {
+          scope: SCOPE,
+          tokenAddress: TOKEN_A,
+          balance: "100",
+          updatedAt: expect.any(Number),
+          readAt: expect.any(Number),
+        },
       ])
     })
 
@@ -125,7 +131,13 @@ describe("BalanceStorage (record store)", () => {
       balances.onListChanged(listener)
       await balances.updateBalance(SCOPE, TOKEN_A, 100n)
       expect(listener).toHaveBeenCalledWith([
-        { scope: SCOPE, tokenAddress: TOKEN_A, balance: "100", updatedAt: expect.any(Number) },
+        {
+          scope: SCOPE,
+          tokenAddress: TOKEN_A,
+          balance: "100",
+          updatedAt: expect.any(Number),
+          readAt: expect.any(Number),
+        },
       ])
     })
 
@@ -136,7 +148,13 @@ describe("BalanceStorage (record store)", () => {
       const revived = BalanceStorage.get(adapter)
       await revived.load()
       expect(revived.list()).toEqual([
-        { scope: SCOPE, tokenAddress: TOKEN_A, balance: "42", updatedAt: expect.any(Number) },
+        {
+          scope: SCOPE,
+          tokenAddress: TOKEN_A,
+          balance: "42",
+          updatedAt: expect.any(Number),
+          readAt: expect.any(Number),
+        },
       ])
     })
   })

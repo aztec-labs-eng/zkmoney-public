@@ -9,8 +9,8 @@ import type { WithdrawalRecord } from "../bridge/types"
 import { SWEEP_PICKUP_SECONDS, depositArrivalSeconds } from "../deposits/depositArrival"
 
 export interface SavingsMoveTiming {
-  /** The rollup's slot grid and the Inbox's checkpoint lag. */
-  grid: { l1GenesisTime: number; slotDuration: number; inboxLag: number }
+  /** The rollup's slot grid. */
+  grid: { l1GenesisTime: number; slotDuration: number }
   /** Seconds from a burn landing at `landedAtSeconds` until its release is finalizable on L1. */
   releaseSeconds: (landedAtSeconds: number) => number
 }

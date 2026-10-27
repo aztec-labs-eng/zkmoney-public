@@ -1,4 +1,4 @@
-import { FieldLike } from "@aztec/aztec.js/abi"
+import { FieldLike } from "@aztec-labs/aztec.js/abi"
 import { ContractName, DEFAULT_CONTRACTS } from "@obsidion/contracts"
 import { CommitmentInput, ClaimInput } from "../types.js"
 import { BasePaylinkProcessor, DepositArg, PaylinkConstructorArgs } from "./BasePaylinkProcessor.js"

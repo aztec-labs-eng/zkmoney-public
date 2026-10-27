@@ -1,6 +1,7 @@
 import { parseUnits } from "viem"
 import { DEFAULT_DECIMALS, PaylinkActionEnum } from "@obsidion/core/constants"
 import {
+  isAccountMoveSipa,
   isSettledSipaPhase,
   savingsValue,
   type SIPADepositRecord,
@@ -35,7 +36,7 @@ export function arrivingFunds({
   transactions,
   balanceReadAt = {},
   upgradeRecipients = new Set(),
-  oldVersions = 0n,
+  oldVersions = { main: 0n, savings: 0n },
 }: {
   deposits: readonly SIPADepositRecord[]
   burns: readonly WithdrawalRecord[]
@@ -43,12 +44,12 @@ export function arrivingFunds({
   /** Prices a move's landed shares; without it the quote stands. */
   sharePrice?: bigint
   transactions: readonly Transaction[]
-  /** When each balance was last written, ms. */
+  /** When each stored balance's read resolved, ms. */
   balanceReadAt?: { main?: number; savings?: number }
   /** Every deposit address an upgrade's batches pay. */
   upgradeRecipients?: ReadonlySet<string>
   /** What the account holds on old versions. */
-  oldVersions?: bigint
+  oldVersions?: ArrivingFunds
 }): ArrivingFunds {
   let main = 0n
   let savings = 0n
@@ -58,14 +59,21 @@ export function arrivingFunds({
   // A burn still proving has not left its source yet.
   const left = (burn?: WithdrawalRecord) =>
     !!burn && burn.phase !== "submitting" && burn.phase !== "failed"
-  // An upgrade's first deposit pays the SIPA that updates the registration.
+  // A SIPA the account pays itself is not a deposit the user waits on.
   const upgradeDeposit = (record: SIPADepositRecord) =>
-    record.intent === "metadata" || upgradeRecipients.has(record.sipaAddress.toLowerCase())
+    isAccountMoveSipa(record) || upgradeRecipients.has(record.sipaAddress.toLowerCase())
+
+  // A read resolved after a claim landed holds it, though the record still awaits `claimed`.
+  const held = ({ claimLanded, inboxIndex }: SIPADepositRecord) =>
+    !!claimLanded &&
+    claimLanded.inboxIndex === inboxIndex &&
+    (balanceReadAt.main ?? 0) >= claimLanded.at
 
   for (const record of deposits)
-    if (swept(record) && !upgradeDeposit(record)) main += BigInt(record.netAmount!)
+    if (swept(record) && !held(record) && !upgradeDeposit(record)) main += BigInt(record.netAmount!)
 
-  main += oldVersions
+  main += oldVersions.main
+  savings += oldVersions.savings
 
   for (const burn of burns) {
     if (burn.intent !== "migration" || !left(burn)) continue

@@ -10,14 +10,15 @@ import {
 } from "../src/features/limits/aboutLimitsView"
 import { CAPACITY_LOW, CAPACITY_NONE } from "../src/features/deposit/fundingCapacity"
 import * as copy from "../src/features/limits/limitsCopy"
+import { LIMIT, LIMIT_USD, grouped } from "./support/publicLimit"
 
 const E18 = 10n ** 18n
 const format = { time: (ms: number) => `time:${ms}` }
 
 const product: ProductLimitFacts = {
-  deposit: { maximumUsd: "2500" },
-  withdrawal: { maximumUsd: "2500" },
-  send: { maximumUsd: "2500" },
+  deposit: { maximumUsd: String(LIMIT) },
+  withdrawal: { maximumUsd: String(LIMIT) },
+  send: { maximumUsd: String(LIMIT) },
 }
 
 const dai: CapacityObservation = {
@@ -86,9 +87,9 @@ describe("aboutLimitsView per-transaction maximum", () => {
   it("states each supplied maximum, the fees inside it and the nominal valuation", () => {
     const { operation } = view({})
     expect(operation.state).toBe("known")
-    expect(row(operation, copy.LIMIT_ROW.send)).toBe("$2,500")
-    expect(row(operation, copy.LIMIT_ROW.deposit)).toBe("$2,500")
-    expect(row(operation, copy.LIMIT_ROW.withdrawal)).toBe("$2,500")
+    expect(row(operation, copy.LIMIT_ROW.send)).toBe(LIMIT_USD)
+    expect(row(operation, copy.LIMIT_ROW.deposit)).toBe(LIMIT_USD)
+    expect(row(operation, copy.LIMIT_ROW.withdrawal)).toBe(LIMIT_USD)
     expect(operation.notes).toContain(copy.LIMIT_NOTE)
   })
 
@@ -99,7 +100,7 @@ describe("aboutLimitsView per-transaction maximum", () => {
     expect(partial.notes).toContain(copy.LIMIT_NOTE)
 
     const malformed = view({
-      product: { deposit: { maximumUsd: "2,500" } },
+      product: { deposit: { maximumUsd: grouped(LIMIT) } },
     })
     expect(malformed.operation.state).toBe("unknown")
     expect(row(malformed.operation, copy.LIMIT_ROW.deposit)).toBe(copy.UNAVAILABLE)

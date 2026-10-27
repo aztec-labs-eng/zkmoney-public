@@ -11,7 +11,11 @@
  * The window arithmetic and every material/lifecycle guard come from front-core's shared
  * `isPaylinkInRefundWindow` / `paylinkRefundEligibility`.
  */
-import { isPaylinkInRefundWindow, paylinkRefundEligibility } from "@obsidion/front-core"
+import {
+  getActiveNetworkId,
+  isPaylinkInRefundWindow,
+  paylinkRefundEligibility,
+} from "@obsidion/front-core"
 import type { PaylinkStatusKind, PaylinkTransaction } from "@obsidion/front-core"
 import { canCancelAt } from "./claimWindow"
 
@@ -20,6 +24,12 @@ export type CreatorLinkAction = "reclaim" | "cancel"
 /** Statuses that still hold spendable escrow; anything else has already consumed the nullifier. */
 export function paylinkStatusIsUnspent(status: PaylinkStatusKind): boolean {
   return status === "awaitingClaim" || status === "expired"
+}
+
+/** A link made on another rollup. This build can't act on it there; the upgrade refunds it. */
+export function isOtherRollupLink(row: Pick<PaylinkTransaction, "networkId">): boolean {
+  const network = getActiveNetworkId()?.toLowerCase()
+  return !!network && !!row.networkId && row.networkId.toLowerCase() !== network
 }
 
 export function creatorLinkAction(

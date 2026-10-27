@@ -1,8 +1,8 @@
 // The Broadcaster calls that need no generated bindings. They are typed against structural slices of the
 // contract interface, so clients that do not build `@oxide/noir-contracts.js` can call them with their own bindings.
-import type { EthAddress } from '@aztec/aztec.js/addresses';
-import type { ContractFunctionInteraction } from '@aztec/aztec.js/contracts';
-import type { Fr } from '@aztec/aztec.js/fields';
+import type { EthAddress } from '@aztec-labs/aztec.js/addresses';
+import type { ContractFunctionInteraction } from '@aztec-labs/aztec.js/contracts';
+import type { Fr } from '@aztec-labs/aztec.js/fields';
 
 import { packBytesToFields } from '@oxide/oxide-lib/field_bytes.js';
 import {

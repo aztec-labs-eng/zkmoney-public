@@ -10,7 +10,7 @@ import { execSync } from "node:child_process"
 import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
-import { Barretenberg, UltraHonkBackend } from "@aztec/bb.js"
+import { Barretenberg, UltraHonkBackend } from "@aztec-foundation/bb.js"
 
 const PINS = { golden_ticket: "GOLDEN_TICKET_VK_BASE64", eligibility: "ELIGIBILITY_VK_BASE64" }
 const VK_BYTES = 115 * 32

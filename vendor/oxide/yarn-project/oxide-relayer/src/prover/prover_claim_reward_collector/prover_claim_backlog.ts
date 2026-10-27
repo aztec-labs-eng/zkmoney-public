@@ -1,4 +1,4 @@
-import { CheckpointNumber } from '@aztec/foundation/branded-types';
+import { CheckpointNumber } from '@aztec-labs/foundation/branded-types';
 
 import { ProverClaim } from '@oxide/l1-contracts/oxide_portal.js';
 

@@ -154,7 +154,7 @@ vi.mock("../../src/contexts/useStorageContext", () => ({
   useStorageContext: () => storageContextValue,
 }))
 
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import { DEFAULT_CONTRACTS, Network } from "@obsidion/sdk"
 import {
   ContractServiceProvider,

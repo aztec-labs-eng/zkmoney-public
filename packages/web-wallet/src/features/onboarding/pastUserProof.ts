@@ -3,7 +3,7 @@
  * (the eligible leaves' Poseidon2 hashes, sorted, 32 bytes each). The old address is a private
  * input: it stays in the browser, and only the proof leaves it.
  */
-import { BarretenbergSync } from "@aztec/bb.js"
+import { BarretenbergSync } from "@aztec-foundation/bb.js"
 import { ELIGIBILITY_SIGN_MESSAGE } from "@obsidion/core/constants"
 import {
   bytesToHex,

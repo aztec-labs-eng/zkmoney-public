@@ -39,7 +39,7 @@ export function publicKeyToJWK(publicKey: string, kid: string) {
 export function verifyJwt(token: string, jwks: { keys: any[] }) {
   try {
     // Extract the header from the JWT token
-    const [headerBase64] = token.split(".")
+    const [headerBase64] = token.split(".") as [string]
     const header = JSON.parse(Buffer.from(headerBase64, "base64url").toString())
 
     // Find the matching key in JWKS using the kid

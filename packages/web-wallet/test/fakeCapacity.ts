@@ -17,12 +17,14 @@ export const FAKE_ACTIVE_KEY: PortalCapacityKey = {
 
 export interface FakeCapacity {
   availableAtomic: bigint
-  /** The bucket's ceiling; 50,000 tokens unless a test sets it. */
+  /** The bucket's ceiling; 100,000 tokens unless a test sets it. */
   globalLimitAtomic?: bigint
   readFails?: boolean
   keyFails?: boolean
   /** Keys whose stores were asked for, by key id. */
   keys?: string[]
+  /** The rows the active key was asked for; undefined for the pinned bridge's. */
+  rowTokens?: (string | undefined)[]
   /** Bump between tests so each starts from a new store and a new read. */
   epoch?: number
 }
@@ -30,7 +32,8 @@ export interface FakeCapacity {
 export function fakeCapacityStore(capacity: FakeCapacity) {
   const stores = new Map<string, PortalCapacityStore>()
   return {
-    activeCapacityKey: async () => {
+    activeCapacityKey: async (rowToken?: string) => {
+      capacity.rowTokens?.push(rowToken)
       if (capacity.keyFails) throw new Error("manifest unavailable")
       return FAKE_ACTIVE_KEY
     },
@@ -52,8 +55,9 @@ export function fakeCapacityStore(capacity: FakeCapacity) {
               blockNumber: block,
               blockTimestamp: BigInt(Math.floor(Date.now() / 1000)),
               rateAtomicPerSecond: 10n ** 18n,
-              globalLimitAtomic: capacity.globalLimitAtomic ?? 50_000n * 10n ** 18n,
+              globalLimitAtomic: capacity.globalLimitAtomic ?? 100_000n * 10n ** 18n,
               availableAtomic: capacity.availableAtomic,
+              txAmountCapAtomic: 5166n * 10n ** 18n,
             }
           },
           policy: { maxHeadAgeMs: Infinity },

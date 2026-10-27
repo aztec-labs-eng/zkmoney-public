@@ -12,8 +12,8 @@ import {
 import { useAztecContext } from "src/contexts"
 import { completeAddressWireFormat, isDefined } from "src/utils"
 import { assert } from "ts-essentials"
-import { CompleteAddress } from "@aztec/stdlib/contract"
-import { Fr } from "@aztec/foundation/curves/bn254"
+import { CompleteAddress } from "@aztec-labs/stdlib/contract"
+import { Fr } from "@aztec-labs/foundation/curves/bn254"
 import { logger } from "src/utils/logger"
 
 export type UseAuthenticator = () => {
@@ -214,7 +214,7 @@ export const useAccount = (useAuthenticator: UseAuthenticator) => {
       // signing key, so it never registers a wrong account.
       updateStatus(`Verifying recovered key...`)
       const secretKey = await selectRecoveredMsk(recovered, async (msk) =>
-        (await obsidionWallet.deriveAccountAddress(msk, recovered.pubkey)).toString(),
+        (await obsidionWallet.deriveAccountAddress(msk, [recovered.pubkey])).toString(),
       )
 
       // No-anchor guard: a security-key recover with no expected address commits

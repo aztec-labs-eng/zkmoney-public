@@ -1,95 +1,50 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity >=0.8.27;
-import {Constants} from "@aztec/core/libraries/ConstantsGen.sol";
 import {OxideConstants} from "@generated/OxideConstants.gen.sol";
-import {Hash} from "@aztec/core/libraries/crypto/Hash.sol";
 import {OxidePortal} from "@core/OxidePortal.sol";
 import {Caps} from "@core/Caps.sol";
 import {IOxidePortal} from "@core/interfaces/IOxidePortal.sol";
 import {IExecutor} from "@core/interfaces/IExecutor.sol";
 import {OxidePortalBase} from "@test/core/OxidePortalBase.t.sol";
 import {Errors} from "@core/lib/Errors.sol";
-import {Errors as AztecErrors} from "@aztec/core/libraries/Errors.sol";
 
 contract OxidePortalRefundUnprocessedDepositTest is OxidePortalBase {
   bytes32 internal constant DEFAULT_MESSAGE_HASH = bytes32(uint256(0xDEEDF0));
   uint256 internal constant DEFAULT_MESSAGE_LEAF_INDEX = 5000;
   bytes32 internal constant DEFAULT_SILOED_NULLIFIER = bytes32(uint256(0xBEEF01));
 
-  uint256 internal constant SUBTREE_SIZE = 1 << Constants.L1_TO_L2_MSG_SUBTREE_HEIGHT;
-
-  function _inboxSubtreeRootFromPath(bytes32 leaf, uint256 leafIndexInSubtree, bytes32[] memory path)
-    internal
-    pure
-    returns (bytes32 root)
-  {
-    root = leaf;
-    for (uint256 i = 0; i < path.length; i++) {
-      bool isRight = ((leafIndexInSubtree >> i) & 1) == 1;
-      root = isRight ? Hash.sha256ToField(bytes.concat(path[i], root)) : Hash.sha256ToField(bytes.concat(root, path[i]));
-    }
+  modifier givenDepositIsRecorded(bytes32 _messageHash, uint256 _messageLeafIndex) {
+    _recordDeposit(_messageHash, _messageLeafIndex);
+    _;
   }
 
-  function _defaultInboxSiblingPath() internal pure returns (bytes32[] memory path) {
-    path = new bytes32[](10);
-  }
-
-  function _primeInbox(bytes32 messageHash, uint256 messageLeafIndex)
-    internal
-    returns (uint256 checkpointNumber, bytes32[] memory inboxSiblingPath)
-  {
-    checkpointNumber = (messageLeafIndex / SUBTREE_SIZE) + Constants.INITIAL_CHECKPOINT_NUMBER;
-    uint256 subtreeIndex = messageLeafIndex % SUBTREE_SIZE;
-    inboxSiblingPath = _defaultInboxSiblingPath();
-    bytes32 subtreeRoot = _inboxSubtreeRootFromPath(messageHash, subtreeIndex, inboxSiblingPath);
-    inbox.setRoot(checkpointNumber, subtreeRoot);
-    inbox.setInProgress(uint64(checkpointNumber + 1));
-  }
-
-  function test_revertsWhenPortalIsNotInitialized() external {
-    WithdrawParams memory p = _defaultWithdrawParams();
-    bytes memory proof = hex"c0ffee";
-    bytes memory sig;
-    bytes32[] memory path = _defaultInboxSiblingPath();
-
-    vm.expectRevert(Errors.OxidePortal__Uninitialized.selector);
-    _refundUnprocessedDeposit(
-      p, DEFAULT_SILOED_NULLIFIER, DEFAULT_MESSAGE_HASH, DEFAULT_MESSAGE_LEAF_INDEX, path, proof, sig
-    );
-  }
-
-  function test_revertsWhenPortalIsNotFrozen() external givenPortalIsInitialized {
+  function test_revertsWhenPortalIsNotFrozen() external {
     WithdrawParams memory p = _defaultWithdrawParams();
     bytes memory proof = hex"c0ffee";
     bytes memory sig = "";
-    bytes32[] memory path = _defaultInboxSiblingPath();
 
     vm.expectRevert(Errors.OxidePortal__NotFrozen.selector);
-    _refundUnprocessedDeposit(
-      p, DEFAULT_SILOED_NULLIFIER, DEFAULT_MESSAGE_HASH, DEFAULT_MESSAGE_LEAF_INDEX, path, proof, sig
-    );
+    _refundUnprocessedDeposit(p, DEFAULT_SILOED_NULLIFIER, DEFAULT_MESSAGE_HASH, DEFAULT_MESSAGE_LEAF_INDEX, proof, sig);
   }
 
-  function test_revertsWhenGivenZeroNullifier() external givenPortalIsInitialized givenPortalIsFrozen {
+  function test_revertsWhenGivenZeroNullifier() external givenPortalIsFrozen {
     WithdrawParams memory p = _defaultWithdrawParams();
     bytes memory proof = hex"c0ffee";
     bytes memory sig = "";
-    bytes32[] memory path = _defaultInboxSiblingPath();
 
     vm.expectRevert(Errors.OxidePortal__ZeroRefundNullifier.selector);
-    _refundUnprocessedDeposit(p, bytes32(0), DEFAULT_MESSAGE_HASH, DEFAULT_MESSAGE_LEAF_INDEX, path, proof, sig);
+    _refundUnprocessedDeposit(p, bytes32(0), DEFAULT_MESSAGE_HASH, DEFAULT_MESSAGE_LEAF_INDEX, proof, sig);
   }
 
   function test_revertsOnDoubleSpend()
     external
-    givenPortalIsInitialized
     givenTeeIsRegistered("tee-unprocessed-replay")
+    givenDepositIsRecorded(DEFAULT_MESSAGE_HASH, DEFAULT_MESSAGE_LEAF_INDEX)
     givenPortalIsFrozen
   {
     WithdrawParams memory p = _defaultWithdrawParams();
     bytes memory proof = hex"c0ffee";
 
-    (, bytes32[] memory inboxSiblingPath) = _primeInbox(DEFAULT_MESSAGE_HASH, DEFAULT_MESSAGE_LEAF_INDEX);
     bytes32[] memory publicInputs = _unprocessedDepositRefundPublicInputs(
       p.executor,
       p.userPayloadHash,
@@ -107,27 +62,21 @@ contract OxidePortalRefundUnprocessedDepositTest is OxidePortalBase {
         p, DEFAULT_MESSAGE_HASH, DEFAULT_MESSAGE_LEAF_INDEX, DEFAULT_SILOED_NULLIFIER
       )
     );
-    _refundUnprocessedDeposit(
-      p, DEFAULT_SILOED_NULLIFIER, DEFAULT_MESSAGE_HASH, DEFAULT_MESSAGE_LEAF_INDEX, inboxSiblingPath, proof, sig
-    );
+    _refundUnprocessedDeposit(p, DEFAULT_SILOED_NULLIFIER, DEFAULT_MESSAGE_HASH, DEFAULT_MESSAGE_LEAF_INDEX, proof, sig);
 
     vm.expectRevert(
       abi.encodeWithSelector(Errors.OxidePortal__RefundNullifierAlreadySpent.selector, DEFAULT_SILOED_NULLIFIER)
     );
-    _refundUnprocessedDeposit(
-      p, DEFAULT_SILOED_NULLIFIER, DEFAULT_MESSAGE_HASH, DEFAULT_MESSAGE_LEAF_INDEX, inboxSiblingPath, proof, sig
-    );
+    _refundUnprocessedDeposit(p, DEFAULT_SILOED_NULLIFIER, DEFAULT_MESSAGE_HASH, DEFAULT_MESSAGE_LEAF_INDEX, proof, sig);
   }
 
   function test_revertsWhenAmountExceedsTxLimit()
     external
-    givenPortalIsInitialized
     givenTeeIsRegistered("tee-unprocessed-over-cap")
     givenPortalIsFrozen
   {
     WithdrawParams memory p = _defaultWithdrawParams();
-    p.amount = OxideConstants.TX_AMOUNT_CAP + 1;
-    bytes32[] memory path = _defaultInboxSiblingPath();
+    p.amount = TX_AMOUNT_CAP + 1;
     bytes memory sig = _signTee(
       teePk,
       _unprocessedDepositRefundFinalDigest(
@@ -137,28 +86,27 @@ contract OxidePortalRefundUnprocessedDepositTest is OxidePortalBase {
 
     vm.expectRevert(Errors.Caps__TxLimitSurpassed.selector);
     _refundUnprocessedDeposit(
-      p, DEFAULT_SILOED_NULLIFIER, DEFAULT_MESSAGE_HASH, DEFAULT_MESSAGE_LEAF_INDEX, path, hex"c0ffee", sig
+      p, DEFAULT_SILOED_NULLIFIER, DEFAULT_MESSAGE_HASH, DEFAULT_MESSAGE_LEAF_INDEX, hex"c0ffee", sig
     );
   }
 
-  function test_revertsOnDoubleSpendViaFrozenDepositPath()
+  function test_revertsOnDoubleSpendViaFrozenDepositsPath()
     external
-    givenPortalIsInitialized
     givenTeeIsRegistered("tee-unprocessed-cross-path-replay")
+    givenDepositIsRecorded(DEFAULT_MESSAGE_HASH, DEFAULT_MESSAGE_LEAF_INDEX)
     givenPortalIsFrozen
   {
     WithdrawParams memory p = _defaultWithdrawParams();
     bytes memory proof = hex"c0ffee";
 
     underlying.mint(address(portal), p.amount);
-    bytes32[] memory frozenDepositPublicInputs =
-      _frozenDepositRefundPublicInputs(p.executor, p.userPayloadHash, p.amount, DEFAULT_SILOED_NULLIFIER);
-    frozenDepositRefundVerifier.setExpected(proof, frozenDepositPublicInputs);
-    bytes memory frozenDepositSig = _signTee(teePk, _frozenDepositRefundFinalDigest(p, DEFAULT_SILOED_NULLIFIER));
-    _refundFrozenDeposit(p, DEFAULT_SILOED_NULLIFIER, proof, frozenDepositSig);
+    bytes32[] memory frozenDepositsPublicInputs =
+      _frozenDepositsRefundPublicInputs(p.executor, p.userPayloadHash, p.amount, DEFAULT_SILOED_NULLIFIER);
+    frozenDepositsRefundVerifier.setExpected(proof, frozenDepositsPublicInputs);
+    bytes memory frozenDepositSig = _signTee(teePk, _frozenDepositsRefundFinalDigest(p, DEFAULT_SILOED_NULLIFIER));
+    _refundFrozenDeposits(p, DEFAULT_SILOED_NULLIFIER, proof, frozenDepositSig);
     assertTrue(portal.$isRefundNullifierSpent(DEFAULT_SILOED_NULLIFIER));
 
-    (, bytes32[] memory inboxSiblingPath) = _primeInbox(DEFAULT_MESSAGE_HASH, DEFAULT_MESSAGE_LEAF_INDEX);
     bytes memory sig = _signTee(
       teePk,
       _unprocessedDepositRefundFinalDigest(
@@ -169,16 +117,17 @@ contract OxidePortalRefundUnprocessedDepositTest is OxidePortalBase {
     vm.expectRevert(
       abi.encodeWithSelector(Errors.OxidePortal__RefundNullifierAlreadySpent.selector, DEFAULT_SILOED_NULLIFIER)
     );
-    _refundUnprocessedDeposit(
-      p, DEFAULT_SILOED_NULLIFIER, DEFAULT_MESSAGE_HASH, DEFAULT_MESSAGE_LEAF_INDEX, inboxSiblingPath, proof, sig
-    );
+    _refundUnprocessedDeposit(p, DEFAULT_SILOED_NULLIFIER, DEFAULT_MESSAGE_HASH, DEFAULT_MESSAGE_LEAF_INDEX, proof, sig);
   }
 
-  function test_revertsOnSignatureFromUnregisteredTEE() external givenPortalIsInitialized givenPortalIsFrozen {
+  function test_revertsOnSignatureFromUnregisteredTEE()
+    external
+    givenDepositIsRecorded(DEFAULT_MESSAGE_HASH, DEFAULT_MESSAGE_LEAF_INDEX)
+    givenPortalIsFrozen
+  {
     (, uint256 unregisteredPk) = makeAddrAndKey("tee-unprocessed-unregistered");
     WithdrawParams memory p = _defaultWithdrawParams();
     bytes memory proof = hex"c0ffee";
-    (, bytes32[] memory inboxSiblingPath) = _primeInbox(DEFAULT_MESSAGE_HASH, DEFAULT_MESSAGE_LEAF_INDEX);
     bytes32[] memory publicInputs = _unprocessedDepositRefundPublicInputs(
       p.executor,
       p.userPayloadHash,
@@ -196,20 +145,17 @@ contract OxidePortalRefundUnprocessedDepositTest is OxidePortalBase {
     );
 
     vm.expectRevert(Errors.OxidePortal__UnregisteredTEE.selector);
-    _refundUnprocessedDeposit(
-      p, DEFAULT_SILOED_NULLIFIER, DEFAULT_MESSAGE_HASH, DEFAULT_MESSAGE_LEAF_INDEX, inboxSiblingPath, proof, sig
-    );
+    _refundUnprocessedDeposit(p, DEFAULT_SILOED_NULLIFIER, DEFAULT_MESSAGE_HASH, DEFAULT_MESSAGE_LEAF_INDEX, proof, sig);
   }
 
-  function test_cannotReplayAuthSignatureFromFrozenDepositPath()
+  function test_cannotReplayAuthSignatureFromFrozenDepositsPath()
     external
-    givenPortalIsInitialized
     givenTeeIsRegistered("tee-unprocessed-wrong-domain")
+    givenDepositIsRecorded(DEFAULT_MESSAGE_HASH, DEFAULT_MESSAGE_LEAF_INDEX)
     givenPortalIsFrozen
   {
     WithdrawParams memory p = _defaultWithdrawParams();
     bytes memory proof = hex"c0ffee";
-    (, bytes32[] memory inboxSiblingPath) = _primeInbox(DEFAULT_MESSAGE_HASH, DEFAULT_MESSAGE_LEAF_INDEX);
     bytes32[] memory publicInputs = _unprocessedDepositRefundPublicInputs(
       p.executor,
       p.userPayloadHash,
@@ -220,68 +166,22 @@ contract OxidePortalRefundUnprocessedDepositTest is OxidePortalBase {
     );
     unprocessedDepositRefundVerifier.setExpected(proof, publicInputs);
 
-    bytes memory wrongDomainSig = _signTee(teePk, _frozenDepositRefundFinalDigest(p, DEFAULT_SILOED_NULLIFIER));
+    bytes memory wrongDomainSig = _signTee(teePk, _frozenDepositsRefundFinalDigest(p, DEFAULT_SILOED_NULLIFIER));
 
     vm.expectRevert(Errors.OxidePortal__UnregisteredTEE.selector);
     _refundUnprocessedDeposit(
-      p,
-      DEFAULT_SILOED_NULLIFIER,
-      DEFAULT_MESSAGE_HASH,
-      DEFAULT_MESSAGE_LEAF_INDEX,
-      inboxSiblingPath,
-      proof,
-      wrongDomainSig
+      p, DEFAULT_SILOED_NULLIFIER, DEFAULT_MESSAGE_HASH, DEFAULT_MESSAGE_LEAF_INDEX, proof, wrongDomainSig
     );
-  }
-
-  function test_revertsWhenInboxSiblingPathIsWrong()
-    external
-    givenPortalIsInitialized
-    givenTeeIsRegistered("tee-unprocessed-bad-path")
-    givenPortalIsFrozen
-  {
-    WithdrawParams memory p = _defaultWithdrawParams();
-    (, bytes32[] memory inboxSiblingPath) = _primeInbox(DEFAULT_MESSAGE_HASH, DEFAULT_MESSAGE_LEAF_INDEX);
-    inboxSiblingPath[0] = bytes32(uint256(1));
-
-    _expectInboxRejects(p, DEFAULT_MESSAGE_HASH, DEFAULT_MESSAGE_LEAF_INDEX, inboxSiblingPath);
-  }
-
-  function test_revertsWhenMessageIsNotInInbox()
-    external
-    givenPortalIsInitialized
-    givenTeeIsRegistered("tee-unprocessed-no-message")
-    givenPortalIsFrozen
-  {
-    WithdrawParams memory p = _defaultWithdrawParams();
-    (, bytes32[] memory inboxSiblingPath) = _primeInbox(bytes32(uint256(0xDEAD)), DEFAULT_MESSAGE_LEAF_INDEX);
-
-    _expectInboxRejects(p, DEFAULT_MESSAGE_HASH, DEFAULT_MESSAGE_LEAF_INDEX, inboxSiblingPath);
-  }
-
-  function test_revertsWhenLeafIndexPointsAtAnotherCheckpoint()
-    external
-    givenPortalIsInitialized
-    givenTeeIsRegistered("tee-unprocessed-other-checkpoint")
-    givenPortalIsFrozen
-  {
-    WithdrawParams memory p = _defaultWithdrawParams();
-    (, bytes32[] memory inboxSiblingPath) = _primeInbox(DEFAULT_MESSAGE_HASH, DEFAULT_MESSAGE_LEAF_INDEX);
-    _primeInbox(bytes32(uint256(0xDEAD)), DEFAULT_MESSAGE_LEAF_INDEX + SUBTREE_SIZE);
-
-    _expectInboxRejects(p, DEFAULT_MESSAGE_HASH, DEFAULT_MESSAGE_LEAF_INDEX + SUBTREE_SIZE, inboxSiblingPath);
   }
 
   function test_refundUnprocessedDepositHappyPath()
     external
-    givenPortalIsInitialized
     givenTeeIsRegistered("tee-unprocessed")
+    givenDepositIsRecorded(DEFAULT_MESSAGE_HASH, DEFAULT_MESSAGE_LEAF_INDEX)
     givenPortalIsFrozen
   {
     WithdrawParams memory p = _defaultWithdrawParams();
     bytes memory proof = hex"c0ffee";
-
-    (, bytes32[] memory inboxSiblingPath) = _primeInbox(DEFAULT_MESSAGE_HASH, DEFAULT_MESSAGE_LEAF_INDEX);
 
     bytes32[] memory publicInputs = _unprocessedDepositRefundPublicInputs(
       p.executor,
@@ -316,25 +216,23 @@ contract OxidePortalRefundUnprocessedDepositTest is OxidePortalBase {
     vm.expectEmit(true, true, true, true, address(portal));
     emit WithdrawalOrRefund(IExecutor.Flow.UnprocessedDepositRefund, DEFAULT_SILOED_NULLIFIER, p.executor, p.amount);
 
-    _refundUnprocessedDeposit(
-      p, DEFAULT_SILOED_NULLIFIER, DEFAULT_MESSAGE_HASH, DEFAULT_MESSAGE_LEAF_INDEX, inboxSiblingPath, proof, sig
-    );
+    _refundUnprocessedDeposit(p, DEFAULT_SILOED_NULLIFIER, DEFAULT_MESSAGE_HASH, DEFAULT_MESSAGE_LEAF_INDEX, proof, sig);
 
     assertEq(underlying.balanceOf(p.recipient), userBalanceBefore + p.amount);
     assertTrue(portal.$isRefundNullifierSpent(DEFAULT_SILOED_NULLIFIER));
+    assertEq(portal.$depositMessageIndex(DEFAULT_MESSAGE_HASH), DEFAULT_MESSAGE_LEAF_INDEX + 1);
   }
 
   function test_GivenProcessorTip_WhenRefundUnprocessedDepositIsCalled_ThenCallerReceivesTip()
     external
-    givenPortalIsInitialized
     givenTeeIsRegistered("tee-unprocessed-tip")
+    givenDepositIsRecorded(DEFAULT_MESSAGE_HASH, DEFAULT_MESSAGE_LEAF_INDEX)
     givenPortalIsFrozen
   {
     WithdrawParams memory p = _defaultWithdrawParams();
     p.processorTip = 7;
     _syncPayloadHash(p);
     bytes memory proof = hex"c0ffee";
-    (, bytes32[] memory inboxSiblingPath) = _primeInbox(DEFAULT_MESSAGE_HASH, DEFAULT_MESSAGE_LEAF_INDEX);
     bytes32[] memory publicInputs = _unprocessedDepositRefundPublicInputs(
       p.executor,
       p.userPayloadHash,
@@ -354,32 +252,96 @@ contract OxidePortalRefundUnprocessedDepositTest is OxidePortalBase {
     uint256 recipientBalanceBefore = underlying.balanceOf(p.recipient);
     uint256 tipRecipientBalanceBefore = underlying.balanceOf(p.tipRecipient);
 
-    _refundUnprocessedDeposit(
-      p, DEFAULT_SILOED_NULLIFIER, DEFAULT_MESSAGE_HASH, DEFAULT_MESSAGE_LEAF_INDEX, inboxSiblingPath, proof, sig
-    );
+    _refundUnprocessedDeposit(p, DEFAULT_SILOED_NULLIFIER, DEFAULT_MESSAGE_HASH, DEFAULT_MESSAGE_LEAF_INDEX, proof, sig);
 
     assertEq(underlying.balanceOf(p.recipient), recipientBalanceBefore + p.amount - p.processorTip);
     assertEq(underlying.balanceOf(p.tipRecipient), tipRecipientBalanceBefore + p.processorTip);
   }
 
-  function _expectInboxRejects(
-    WithdrawParams memory p,
-    bytes32 messageHash,
-    uint256 messageLeafIndex,
-    bytes32[] memory inboxSiblingPath
-  ) internal {
+  function test_revertsWhenDepositMessageIsUnknown()
+    external
+    givenTeeIsRegistered("tee-unprocessed-unknown-message")
+    givenPortalIsFrozen
+  {
+    _expectUnknownDepositMessage(_defaultWithdrawParams(), DEFAULT_MESSAGE_HASH, DEFAULT_MESSAGE_LEAF_INDEX);
+  }
+
+  function test_revertsWhenUnrecordedMessageClaimsIndexZero()
+    external
+    givenTeeIsRegistered("tee-unprocessed-unknown-index-zero")
+    givenPortalIsFrozen
+  {
+    _expectUnknownDepositMessage(_defaultWithdrawParams(), DEFAULT_MESSAGE_HASH, 0);
+  }
+
+  function test_revertsWhenMessageHashIsRecordedForAnotherDeposit()
+    external
+    givenTeeIsRegistered("tee-unprocessed-other-hash")
+    givenDepositIsRecorded(bytes32(uint256(0xDEAD)), DEFAULT_MESSAGE_LEAF_INDEX)
+    givenPortalIsFrozen
+  {
+    _expectUnknownDepositMessage(_defaultWithdrawParams(), DEFAULT_MESSAGE_HASH, DEFAULT_MESSAGE_LEAF_INDEX);
+  }
+
+  function test_revertsWhenMessageLeafIndexIsAboveTheRecord()
+    external
+    givenTeeIsRegistered("tee-unprocessed-index-above")
+    givenDepositIsRecorded(DEFAULT_MESSAGE_HASH, DEFAULT_MESSAGE_LEAF_INDEX)
+    givenPortalIsFrozen
+  {
+    _expectUnknownDepositMessage(_defaultWithdrawParams(), DEFAULT_MESSAGE_HASH, DEFAULT_MESSAGE_LEAF_INDEX + 1);
+  }
+
+  function test_revertsWhenMessageLeafIndexIsBelowTheRecord()
+    external
+    givenTeeIsRegistered("tee-unprocessed-index-below")
+    givenDepositIsRecorded(DEFAULT_MESSAGE_HASH, DEFAULT_MESSAGE_LEAF_INDEX)
+    givenPortalIsFrozen
+  {
+    _expectUnknownDepositMessage(_defaultWithdrawParams(), DEFAULT_MESSAGE_HASH, DEFAULT_MESSAGE_LEAF_INDEX - 1);
+  }
+
+  function test_refundsDepositRecordedAtIndexZero()
+    external
+    givenTeeIsRegistered("tee-unprocessed-index-zero")
+    givenDepositIsRecorded(DEFAULT_MESSAGE_HASH, 0)
+    givenPortalIsFrozen
+  {
+    WithdrawParams memory p = _defaultWithdrawParams();
     bytes memory proof = hex"c0ffee";
     unprocessedDepositRefundVerifier.setExpected(
       proof,
       _unprocessedDepositRefundPublicInputs(
-        p.executor, p.userPayloadHash, p.amount, messageHash, messageLeafIndex, DEFAULT_SILOED_NULLIFIER
+        p.executor, p.userPayloadHash, p.amount, DEFAULT_MESSAGE_HASH, 0, DEFAULT_SILOED_NULLIFIER
       )
     );
     underlying.mint(address(portal), p.amount);
+    uint256 userBalanceBefore = underlying.balanceOf(p.recipient);
     bytes memory sig =
-      _signTee(teePk, _unprocessedDepositRefundFinalDigest(p, messageHash, messageLeafIndex, DEFAULT_SILOED_NULLIFIER));
+      _signTee(teePk, _unprocessedDepositRefundFinalDigest(p, DEFAULT_MESSAGE_HASH, 0, DEFAULT_SILOED_NULLIFIER));
 
-    vm.expectPartialRevert(AztecErrors.MerkleLib__InvalidRoot.selector);
-    _refundUnprocessedDeposit(p, DEFAULT_SILOED_NULLIFIER, messageHash, messageLeafIndex, inboxSiblingPath, proof, sig);
+    _refundUnprocessedDeposit(p, DEFAULT_SILOED_NULLIFIER, DEFAULT_MESSAGE_HASH, 0, proof, sig);
+
+    assertEq(underlying.balanceOf(p.recipient), userBalanceBefore + p.amount);
+    assertTrue(portal.$isRefundNullifierSpent(DEFAULT_SILOED_NULLIFIER));
+  }
+
+  function _expectUnknownDepositMessage(WithdrawParams memory p, bytes32 _messageHash, uint256 _messageLeafIndex)
+    internal
+  {
+    bytes memory proof = hex"c0ffee";
+    unprocessedDepositRefundVerifier.setExpected(
+      proof,
+      _unprocessedDepositRefundPublicInputs(
+        p.executor, p.userPayloadHash, p.amount, _messageHash, _messageLeafIndex, DEFAULT_SILOED_NULLIFIER
+      )
+    );
+    underlying.mint(address(portal), p.amount);
+    bytes memory sig = _signTee(
+      teePk, _unprocessedDepositRefundFinalDigest(p, _messageHash, _messageLeafIndex, DEFAULT_SILOED_NULLIFIER)
+    );
+
+    vm.expectRevert(abi.encodeWithSelector(Errors.OxidePortal__UnknownDepositMessage.selector, _messageHash));
+    _refundUnprocessedDeposit(p, DEFAULT_SILOED_NULLIFIER, _messageHash, _messageLeafIndex, proof, sig);
   }
 }

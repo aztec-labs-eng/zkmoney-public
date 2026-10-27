@@ -1,4 +1,5 @@
 export * from "./SIPADepositStore"
+export * from "./sipaCredits"
 export * from "./depositAmounts"
 export * from "./depositArrival"
 export * from "./depositCopy"

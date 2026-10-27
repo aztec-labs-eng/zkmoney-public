@@ -27,8 +27,9 @@ type Field = {
 }
 
 const BUILT_IN = "Leave blank to use the address built into the app"
+const CONFIGURED = "Leave blank to use the address in zk.money's configuration"
 
-/** The node comes first. */
+/** The node comes first, with its key; the old network's node follows it. */
 const FIELDS: Field[] = [
   {
     kind: "node",
@@ -39,6 +40,16 @@ const FIELDS: Field[] = [
       "How the wallet reads the Aztec Network and sends transactions. Any node serving the same network works.",
       "The node's operator sees your IP address and can tell which transactions your wallet sends and receives, but not what is in them.",
       "Switching starts a fresh sync of your history for this node. Your history on the default node is kept.",
+    ],
+  },
+  {
+    kind: "sourceNode",
+    label: "Old network node URL",
+    short: "old node",
+    placeholder: CONFIGURED,
+    hints: [
+      "Only used to upgrade funds from the old network: how the wallet reads the version being retired. Any node serving that network works.",
+      "Switching starts a fresh sync of your history on the old network for this node.",
     ],
   },
   {
@@ -54,7 +65,7 @@ const FIELDS: Field[] = [
     kind: "enclave",
     label: "Enclave URL",
     short: "enclave",
-    placeholder: "Leave blank to use the address in zk.money's configuration",
+    placeholder: CONFIGURED,
     hints: [
       "The Oxide enclave that co-signs your sends and withdrawals. Any registered enclave works.",
     ],
@@ -70,11 +81,14 @@ const CHANGED = "Another tab changed the endpoints. Close this and open it again
 
 type Values = Record<EndpointKind, string> & { nodeApiKey: string }
 
-/** "Custom node, RPC" for the Home pill and the Settings row; undefined when every endpoint is the default. */
+/**
+ * "Custom node, RPC" for the Home pill and the Settings row; undefined when every endpoint is the
+ * default. A kind the config does not report counts as the default.
+ */
 export function customEndpointsLabel(
-  endpoints: Record<EndpointKind, { isDefault: boolean }>,
+  endpoints: Partial<Record<EndpointKind, { isDefault: boolean }>>,
 ): string | undefined {
-  const custom = FIELDS.filter((field) => !endpoints[field.kind].isDefault).map((f) => f.short)
+  const custom = FIELDS.filter((f) => endpoints[f.kind]?.isDefault === false).map((f) => f.short)
   return custom.length ? `Custom ${custom.join(", ")}` : undefined
 }
 
@@ -101,6 +115,7 @@ function invalidKeyReason(key: string, node: string): string | undefined {
 
 const valuesOf = (stored: EndpointOverrides): Values => ({
   node: stored.node ?? "",
+  sourceNode: stored.sourceNode ?? "",
   l1Rpc: stored.l1Rpc ?? "",
   enclave: stored.enclave ?? "",
   nodeApiKey: stored.nodeApiKey ?? "",

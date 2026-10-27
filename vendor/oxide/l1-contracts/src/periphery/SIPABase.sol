@@ -7,6 +7,7 @@ import {IERC1271} from "@openzeppelin/contracts/interfaces/IERC1271.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Errors} from "@periphery/Errors.sol";
+import {IForwardingTable} from "@periphery/interfaces/IForwardingTable.sol";
 import {RecoveryCommitmentLib} from "@periphery/RecoveryCommitmentLib.sol";
 
 abstract contract SIPABase {
@@ -16,16 +17,17 @@ abstract contract SIPABase {
     None,
     Deposit,
     Registration,
-    UpdateMetadata
+    UserOp
   }
 
-  function INTENT() external pure virtual returns (Intent);
+  function INTENT() public pure virtual returns (Intent);
 
   struct Args {
     bytes32 intentHash;
     bytes32 recoveryCommitment;
     uint256 rollupVersion;
     bool resweepable;
+    IForwardingTable table;
   }
 
   struct Routing {
@@ -36,21 +38,6 @@ abstract contract SIPABase {
   }
 
   address private immutable IMPLEMENTATION = address(this);
-
-  IOxidePortal public immutable PORTAL;
-  IERC20 public immutable UNDERLYING;
-  uint256 public immutable DEPOSIT_FEE;
-
-  uint256 private immutable PORTAL_ROLLUP_VERSION;
-
-  constructor(IOxidePortal portal_, uint256 fee) {
-    require(address(portal_) != address(0), Errors.SIPA__ZeroPortal());
-    require(fee > 0, Errors.SIPA__ZeroDepositFee());
-    PORTAL = portal_;
-    UNDERLYING = IERC20(address(portal_.UNDERLYING()));
-    DEPOSIT_FEE = fee;
-    PORTAL_ROLLUP_VERSION = portal_.ROLLUP_VERSION();
-  }
 
   mapping(bytes32 nonce => bool used) public usedNonces;
 
@@ -72,12 +59,12 @@ abstract contract SIPABase {
     return _args().rollupVersion;
   }
 
-  function portal() external view returns (IOxidePortal) {
-    return PORTAL;
+  function forwardingTable() external view returns (IForwardingTable) {
+    return _args().table;
   }
 
-  function depositFee() external view returns (uint256) {
-    return DEPOSIT_FEE;
+  function route(address token) external view returns (IOxidePortal portal_, uint256 sweepTip, uint256 beneficiaryFee) {
+    (portal_,, beneficiaryFee, sweepTip) = _args().table.rowFor(token, INTENT());
   }
 
   function resweepable() external view returns (bool) {
@@ -87,7 +74,7 @@ abstract contract SIPABase {
   function sweep(address token, address relayer, bytes calldata intentData, bytes calldata proofs) external {
     Args memory args = _args();
 
-    require(PORTAL_ROLLUP_VERSION == args.rollupVersion, Errors.SIPA__RollupVersionMismatch());
+    require(args.table.ROLLUP_VERSION() == args.rollupVersion, Errors.SIPA__RollupVersionMismatch());
     if (!args.resweepable) {
       require(!swept, Errors.SIPA__AlreadySwept());
       swept = true;
@@ -96,31 +83,36 @@ abstract contract SIPABase {
     require(keccak256(intentData) == args.intentHash, Errors.SIPA__IntentDataMismatch());
 
     Routing memory routing = _execute(token, intentData, proofs);
-    _route(relayer, routing);
+    _route(args.table, relayer, routing);
   }
 
-  function _route(address relayer, Routing memory routing) private {
+  function _route(IForwardingTable table_, address relayer, Routing memory routing) private {
+    (IOxidePortal portal_, address beneficiary, uint256 beneficiaryFee, uint256 tip) =
+      table_.rowFor(routing.token, INTENT());
     IERC20 token = IERC20(routing.token);
-    require(token == UNDERLYING, Errors.SIPA__TokenNotPortalUnderlying(address(token)));
 
     uint256 balance = token.balanceOf(address(this));
     require(balance > 0, Errors.SIPA__EmptyBalance());
 
     if (routing.fee > 0) {
-      require(routing.fee >= DEPOSIT_FEE, Errors.SIPA__FeeBelowDepositFee(routing.fee, DEPOSIT_FEE));
-      uint256 feeRecipientCut = routing.fee - DEPOSIT_FEE;
+      require(routing.fee >= tip, Errors.SIPA__FeeBelowSweepTip(routing.fee, tip));
+      uint256 feeRecipientCut = routing.fee - tip;
       if (feeRecipientCut > 0) {
         token.safeTransfer(routing.feeRecipient, feeRecipientCut);
         balance -= feeRecipientCut;
       }
     }
 
-    require(balance > DEPOSIT_FEE, Errors.SIPA__SweepBelowDepositFee(balance, DEPOSIT_FEE));
-    uint256 bridged = balance - DEPOSIT_FEE;
+    uint256 charges = tip + beneficiaryFee;
+    require(balance > charges, Errors.SIPA__SweepBelowCharges(balance, charges));
+    uint256 bridged = balance - charges;
 
-    token.safeTransfer(relayer, DEPOSIT_FEE);
-    token.forceApprove(address(PORTAL), bridged);
-    (, uint256 index, uint256 creditedAmount) = PORTAL.deposit(routing.remainderRecipient, bridged);
+    if (beneficiaryFee > 0) {
+      token.safeTransfer(beneficiary, beneficiaryFee);
+    }
+    token.safeTransfer(relayer, tip);
+    token.forceApprove(address(portal_), bridged);
+    (, uint256 index, uint256 creditedAmount) = portal_.deposit(routing.remainderRecipient, bridged);
 
     emit Sweep(index, creditedAmount);
   }

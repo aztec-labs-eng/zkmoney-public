@@ -1,36 +1,20 @@
-/**
- * SIPA discovery setup — the one-time PXE wiring that lets a device discover
- * resolver-published SIPA deposits. The Labs resolver sends the token's `SIPA`
- * event from its L2 account, and the PXE only decodes events from registered
- * senders. So:
- *
- *   1. read the resolver records off the L1 `AccountMetadataRegistry` (sdk
- *      reads) and pick the one matching the live manifest portal,
- *   2. register the broadcast account as a discovery sender (v5:
- *      `registerTaggingSecretSource`; 4.3.0: `registerSender` — duck-typed),
- *   3. register the Broadcaster at the manifest's `l2Broadcaster` unless the PXE
- *      already holds it, artifact bundled via `@obsidion/contracts` (class-id
- *      parity pinned by the drift sentinel test there) — so the wallet can
- *      broadcast its own SIPAs' sweeps.
- *
- * Pure over injected collaborators (narrow PXE/node surfaces, viem client,
- * resolved tuple, network) so the sequence is testable without a PXE or RPC.
- * Shared by every wallet front end; the platform supplies the collaborators.
- */
+/** Registers resolver senders and the Broadcaster so a PXE can discover SIPA notifications. */
 
-import { AztecAddress } from "@aztec/aztec.js/addresses"
-import type { ContractArtifact } from "@aztec/stdlib/abi"
-import type { ContractInstanceWithAddress } from "@aztec/stdlib/contract"
+import { AztecAddress } from "@aztec-labs/aztec.js/addresses"
+import type { ContractArtifact } from "@aztec-labs/stdlib/abi"
+import type { ContractInstanceWithAddress } from "@aztec-labs/stdlib/contract"
 import type { Address, PublicClient } from "viem"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import {
   Network,
   ensureContractRegisteredInPXE,
+  fetchHistoricalSipaResolverOperators,
   getBroadcasterArtifact,
   resolverSelectionPolicy,
   selectManifestResolverOperator,
   type SipaResolverOperatorRecord,
 } from "@obsidion/sdk"
+import { deploymentScanRange } from "./deploymentScanRange"
 import { readResolverOperatorRecords } from "./resolverOperatorRecords"
 
 /** The narrow PXE surface the setup drives. Registration shape is per-generation:
@@ -76,12 +60,8 @@ export async function setupSipaDiscovery(deps: {
   publicClient: PublicClient
   tuple: OxideEnvTuple
   network: Network
-  /**
-   * Deployment whose resolver record to use when none matches `tuple` — a same-rollup roll
-   * re-points the shared resolver at the new portal, but the sender identity discovery needs is
-   * unchanged. Pass the live tuple when `tuple` is a retired one.
-   */
-  resolverFallbackTuple?: OxideEnvTuple
+  /** Recovers all historical senders for the tuple's deployment. */
+  historical?: boolean
   /**
    * The ClaimFPC that sponsors this wallet's own broadcasts. Sponsored calls run with the FPC as
    * `msg_sender`, so the events they emit are tagged with it — a PXE that did not emit them locally
@@ -106,32 +86,34 @@ export async function setupSipaDiscovery(deps: {
     )
   }
 
-  // The retired tuple's own window: it starts before the live deployment, so the fallback record
-  // is inside it too.
-  const records = await readResolverOperatorRecords(
-    publicClient,
-    accountMetadataRegistry as Address,
-    tuple,
-    deps.scanHead,
-  )
-  // updateResolverOperator is permissionless, so match the gateway URL too and apply the
-  // shared per-network anti-squatter policy — a squatter can copy every record
-  // field except the owner key (testnet prefers the known operator; mainnet
-  // fails closed on ambiguity).
-  const select = (t: OxideEnvTuple) =>
-    selectManifestResolverOperator(records, {
-      portal: t.portal,
-      resolverGatewayUrl: t.resolverGatewayUrl,
-      ...resolverSelectionPolicy(network),
-    })
-  let resolver: SipaResolverOperatorRecord
-  try {
-    resolver = select(tuple)
-  } catch (error) {
-    if (!deps.resolverFallbackTuple) throw error
-    resolver = select(deps.resolverFallbackTuple)
+  if (!tuple.forwardingTable)
+    throw new Error(`oxide manifest entry ${tuple.version} lacks forwardingTable`)
+  const manifest = {
+    forwardingTable: tuple.forwardingTable,
+    resolverGatewayUrl: tuple.resolverGatewayUrl,
+    ...resolverSelectionPolicy(network),
   }
-  await registerSender(pxe, AztecAddress.fromStringUnsafe(resolver.l2Address))
+  const records = deps.historical
+    ? await fetchHistoricalSipaResolverOperators(
+        publicClient,
+        accountMetadataRegistry as Address,
+        await deploymentScanRange(publicClient, tuple, deps.scanHead),
+        manifest,
+      )
+    : [
+        selectManifestResolverOperator(
+          await readResolverOperatorRecords(
+            publicClient,
+            accountMetadataRegistry as Address,
+            tuple,
+            deps.scanHead,
+          ),
+          manifest,
+        ),
+      ]
+  const resolver = records[records.length - 1]!
+  for (const record of records)
+    await registerSender(pxe, AztecAddress.fromStringUnsafe(record.l2Address))
   if (deps.sponsorFpc) await registerSender(pxe, deps.sponsorFpc)
 
   const broadcaster = AztecAddress.fromStringUnsafe(l2Broadcaster)

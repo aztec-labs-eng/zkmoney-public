@@ -1,13 +1,11 @@
 /**
  * Whether the signed-in account may start an action now, and why not. One policy for the action
  * routes and the presses that start an action: a name first, then the tag claim, then the upgrade,
- * then the sponsored rail. A deposit stays open to the registration that owes it. A frozen portal,
- * or a frozen build past its freeze time, closes every action except the withdrawal, which becomes
- * its refund exit.
+ * then the sponsored rail. A deposit stays open to the registration that owes it. Withdraw refunds
+ * an old version's funds to L1 before anything else, since that needs none of them.
  */
 import { useCallback, useEffect, useRef } from "react"
 import { isDemoMode } from "../dev/demoFlag"
-import { showErrorModal } from "../errors/errorModal"
 import { useUpgradeLock } from "./migration/upgradeLock"
 import { loadWalletIdentity } from "./identity/walletIdentity"
 import {
@@ -15,10 +13,9 @@ import {
   useUpgradeStatus,
   type UpgradeState,
 } from "./migration/migrationDialog"
+import { useWithdrawableSources } from "./migration/oldVersionWithdraw"
 import { useNameClaimPending, useRegistrationDepositOwed } from "./onboarding/openRegistration"
 import { useSponsoredRailPending } from "./onboarding/sponsoredRailReadiness"
-import { usePortalFrozen } from "./withdraw/portalFrozen"
-import { FREEZES, isFrozen } from "../upgradeFreeze"
 
 export type WalletAction =
   | "send"
@@ -26,6 +23,7 @@ export type WalletAction =
   | "deposit"
   | "withdraw"
   | "link"
+  | "requests"
   | "savings"
   | "claim"
 
@@ -36,8 +34,7 @@ export type WalletAction =
  * - `holding`: whether it must upgrade is not known yet.
  * - `checking`: whether the sponsored rail carries the account is not known yet.
  * - `registering`: the account's registration has yet to reach the rollup.
- * - `frozen`: the wallet is frozen (`ActionState.frozen`), so the action is closed.
- * - `exit`: the wallet is frozen, so a withdrawal refunds everything to L1.
+ * - `refund`: withdraw refunds an old version's funds to L1.
  */
 export type ActionVerdict =
   | "open"
@@ -47,8 +44,7 @@ export type ActionVerdict =
   | "holding"
   | "checking"
   | "registering"
-  | "frozen"
-  | "exit"
+  | "refund"
 
 export interface ActionState {
   /** No identity reads as named. */
@@ -64,8 +60,8 @@ export interface ActionState {
   /** This page has read the account's upgrade runs, so the lock can be trusted. */
   lockChecked: boolean
   demo: boolean
-  /** `useWalletFrozen`. */
-  frozen: boolean
+  /** A frozen old version holds funds that withdraw can refund to L1. */
+  oldWithdrawable: boolean
 }
 
 /** What each action needs besides the upgrade. */
@@ -75,13 +71,14 @@ const NEEDS: Record<WalletAction, { name?: true; claim?: true; rail?: true }> = 
   link: { name: true, claim: true, rail: true },
   deposit: { name: true, claim: true },
   receive: { claim: true },
+  requests: { claim: true },
   savings: {},
   claim: {},
 }
 
 export function actionVerdict(action: WalletAction, s: ActionState): ActionVerdict {
-  if (s.frozen) return action === "withdraw" ? "exit" : "frozen"
   const needs = NEEDS[action]
+  if (action === "withdraw" && s.oldWithdrawable && !s.demo) return "refund"
   if (needs.name && !s.named) return "name"
   if (action === "deposit" && s.depositOwed) return "open"
   if (needs.claim && s.claimPending) return "home"
@@ -119,11 +116,6 @@ export function upgradeVerdict({
   }
 }
 
-/** The deployment's portal is frozen, or this build is past its freeze time. */
-export function useWalletFrozen(): boolean {
-  return usePortalFrozen() || (FREEZES && isFrozen())
-}
-
 export function useActionState(): ActionState {
   const identity = loadWalletIdentity()
   const lock = useUpgradeLock(identity?.address)
@@ -137,17 +129,12 @@ export function useActionState(): ActionState {
     locked: lock.state === "held",
     lockChecked: lock.checked,
     demo: isDemoMode(),
-    frozen: useWalletFrozen(),
+    oldWithdrawable: useWithdrawableSources().length > 0,
   }
 }
 
 export function useActionVerdict(action: WalletAction): ActionVerdict {
   return actionVerdict(action, useActionState())
-}
-
-export const FROZEN_COPY = {
-  title: "zk.money is down for its upgrade",
-  message: "Your funds are safe. You can still withdraw with your own wallet.",
 }
 
 /**
@@ -167,8 +154,7 @@ export function useActionGuard(): (action: WalletAction, run: () => void) => voi
   }, [])
   return useCallback((action, run) => {
     const verdict = actionVerdict(action, state.current)
-    if (verdict === "frozen") showErrorModal(FROZEN_COPY)
-    else if (verdict === "upgrade") openMigrationDialog({ action })
+    if (verdict === "upgrade") openMigrationDialog({ action })
     else if (verdict === "holding")
       openMigrationDialog({ action, then: () => mounted.current && run() })
     else run()

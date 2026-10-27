@@ -19,6 +19,7 @@ const walletTracker = () =>
       PasskeyMismatchError: PASSKEY_MISMATCH,
       HintedKeyMismatchError: PASSKEY_MISMATCH,
       StoredAddressMismatchError: PASSKEY_MISMATCH,
+      PasskeyEnvelopeError: { outcome: "failed", reason: "backup_envelope" },
       SignerKeyMismatchError: { outcome: "failed", reason: "signer_mismatch" },
       NoPasskeySessionError: SESSION_LOST,
       SessionChangedError: SESSION_LOST,

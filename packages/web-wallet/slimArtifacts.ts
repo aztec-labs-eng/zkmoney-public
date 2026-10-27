@@ -6,7 +6,7 @@ import type { Plugin } from "vite"
  * target) and aztec's protocol, standard and account contracts, current and historical.
  */
 const SLIM_SOURCES = [
-  /\/node_modules\/@aztec\/(?:protocol-contracts|standard-contracts|accounts)\/artifacts[^/]*\/[^/]+\.json$/,
+  /\/node_modules\/@aztec-labs\/(?:protocol-contracts|standard-contracts|accounts)\/artifacts[^/]*\/[^/]+\.json$/,
   /\/packages\/contracts\/(?:src|dist)\/artifacts\/target\/[^/]+\/[^/]+\.json$/,
 ]
 

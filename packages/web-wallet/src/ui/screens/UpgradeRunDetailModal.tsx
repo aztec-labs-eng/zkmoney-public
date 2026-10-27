@@ -1,7 +1,7 @@
 /**
  * One upgrade as one sheet: what reaches the balance, then a row per batch with its figure and
  * where it is. A row opens the batch's deposit, where its recovery lives, or the batch itself
- * before its deposit is seen.
+ * before its deposit is funded.
  */
 import { Fragment } from "react"
 import { DEFAULT_DECIMALS } from "@obsidion/core/constants"
@@ -9,9 +9,13 @@ import { GradientText, Icon, type StatusBadgeStyle } from "@obsidion/web-ds"
 import { formatUnits } from "viem"
 import {
   legDeposit,
-  upgradeBatchFigure,
+  upgradeLegValue,
+  upgradeRunValue,
+  type UpgradePricing,
   type UpgradeLeg,
   type UpgradeRun,
+  type SIPADepositRecord,
+  type UpgradeBatchItem,
 } from "@obsidion/front-core"
 import { whenLabel } from "../detailRows"
 import { usdFigure } from "../format"
@@ -29,15 +33,24 @@ export function legStatus(leg: UpgradeLeg): { label: string; badge: StatusBadgeS
 
 export function UpgradeRunDetailModal({
   run,
-  onViewLeg,
+  title,
+  pricing,
+  onViewDeposit,
+  onViewBatch,
   onClose,
 }: {
   run: UpgradeRun
-  /** Opens the leg's own detail sheet in place of this one. */
-  onViewLeg: (leg: UpgradeLeg) => void
+  /** Names the account the run pays into, since Main and Savings each have their own run. */
+  title: string
+  pricing: UpgradePricing
+  /** Open the leg's own detail sheet in place of this one: its deposit once that speaks for it. */
+  onViewDeposit: (deposit: SIPADepositRecord) => void
+  onViewBatch: (batch: UpgradeBatchItem) => void
   onClose: () => void
 }) {
-  const figure = (amount: bigint) => usdFigure(formatUnits(amount, DEFAULT_DECIMALS))
+  const total = upgradeRunValue(run, pricing)
+  const figure = (amount: bigint | undefined) =>
+    amount === undefined ? "—" : usdFigure(formatUnits(amount, DEFAULT_DECIMALS))
   return (
     <Modal
       variant="create"
@@ -50,9 +63,11 @@ export function UpgradeRunDetailModal({
       </span>
       <div className="ww-sheet__title">
         <GradientText size={32} weight={700}>
-          +{figure(run.total)}
+          {total === undefined ? "—" : `+${figure(total)}`}
         </GradientText>
-        <small>Upgrade · {whenLabel(run.time)}</small>
+        <small>
+          {title} · {whenLabel(run.time)}
+        </small>
       </div>
 
       <div className="ww-sheet__facts">
@@ -73,13 +88,17 @@ export function UpgradeRunDetailModal({
             <button
               type="button"
               className="zkm-btn-reset zkm-pressable ww-sheet__fact"
-              onClick={() => onViewLeg(leg)}
+              onClick={() => {
+                const deposit = legDeposit(leg)
+                if (deposit) onViewDeposit(deposit)
+                else onViewBatch(leg.batch)
+              }}
             >
               <span className="ww-deposit__connect-text">
                 <b>Transfer {i + 1}</b>
               </span>
               <b className="ww-fresh__to">
-                {figure(upgradeBatchFigure(leg.batch, leg.arrival))}
+                {figure(upgradeLegValue(leg, pricing))}
                 <DepositStatusValue {...legStatus(leg)} />
               </b>
               <Icon name="chevron-right" size={16} color="var(--text-secondary)" />

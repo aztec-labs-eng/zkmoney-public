@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { Fr } from "@aztec/aztec.js/fields"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 import { DEFAULT_CONTRACTS } from "@obsidion/contracts"
 import { deriveDeterministicPaylinkKeys, derivePaylinkKeys } from "./paylinkKeys.js"
 
@@ -25,7 +25,12 @@ describe("deriveDeterministicPaylinkKeys", () => {
     const base = await deriveDeterministicPaylinkKeys(MSK, DAY, N, DIRECT)
     const nextSlot = await deriveDeterministicPaylinkKeys(MSK, DAY, N + 1, DIRECT)
     const nextDay = await deriveDeterministicPaylinkKeys(MSK, DAY + 1, N, DIRECT)
-    const otherCreator = await deriveDeterministicPaylinkKeys(new Fr(MSK.toBigInt() + 1n), DAY, N, DIRECT)
+    const otherCreator = await deriveDeterministicPaylinkKeys(
+      new Fr(MSK.toBigInt() + 1n),
+      DAY,
+      N,
+      DIRECT,
+    )
     const otherFlavor = await deriveDeterministicPaylinkKeys(MSK, DAY, N, EMAIL)
 
     for (const other of [nextSlot, nextDay, otherCreator, otherFlavor]) {
@@ -41,9 +46,9 @@ describe("deriveDeterministicPaylinkKeys", () => {
   })
 
   it("rejects a non-paylink flavor", async () => {
-    await expect(deriveDeterministicPaylinkKeys(MSK, DAY, N, DEFAULT_CONTRACTS.claimFpc)).rejects.toThrow(
-      /unsupported paylink flavor/,
-    )
+    await expect(
+      deriveDeterministicPaylinkKeys(MSK, DAY, N, DEFAULT_CONTRACTS.claimFpc),
+    ).rejects.toThrow(/unsupported paylink flavor/)
   })
 
   // A shared separator would hand the migration factor to anyone holding the link.

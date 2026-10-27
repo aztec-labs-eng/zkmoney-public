@@ -104,3 +104,59 @@ test("loadOxideManifestTuple reports the URL and status for an HTTP failure", as
     /HTTP 503 \(https:\/\/oxide\.example\/manifest\.json\)/,
   )
 })
+
+/** A schema v5 app deployment: the shared fields once, each bridge's own under `bridges`. */
+function manifestV5(bridges) {
+  const { deployments } = manifest({ forwardingTable: FORWARDING_TABLE, feeToken: DAI })
+  const shared = Object.fromEntries(
+    Object.entries(deployments[0]).filter(([key]) => !["portal", "token", "l2Token"].includes(key)),
+  )
+  return { schemaVersion: "5", deployments: [{ ...shared, bridges }] }
+}
+
+const FORWARDING_TABLE = "0x00000000000000000000000000000000000000fb"
+const DAI = "0x6440f144b7e50D6a8439336510312d2F54beB01D"
+const SUSDS_PORTAL = "0x00000000000000000000000000000000000005d5"
+
+test("loadOxideManifestTuple reads a schema v5 bridge with its deployment's fields", async () => {
+  const fetchImpl = jsonFetch(
+    manifestV5([
+      {
+        key: "dai",
+        portal: PORTAL,
+        token: DAI,
+        l2Token: "0x2fbdc2a4303c9855eb39b14091d57cee8575692925ffbac5c7e3e1b1e62a20c8",
+      },
+      {
+        key: "susds",
+        portal: SUSDS_PORTAL,
+        token: "0x00000000000000000000000000000000000005d0",
+        l2Token: "0x00000000000000000000000000000000000000000000000000000000000005d1",
+      },
+    ]),
+  )
+  const tuple = await loadOxideManifestTuple({
+    manifestUrl: MANIFEST_URL,
+    portal: PORTAL,
+    network: Network.TESTNET,
+    fetchImpl,
+  })
+
+  assert.equal(tuple.portal, PORTAL)
+  assert.equal(tuple.token, DAI)
+  assert.equal(tuple.forwardingTable, FORWARDING_TABLE)
+  assert.equal(tuple.feeToken, DAI)
+  assert.equal(tuple.version, "v1")
+})
+
+test("loadOxideManifestTuple rejects a schema v5 deployment without bridges", async () => {
+  await assert.rejects(
+    loadOxideManifestTuple({
+      manifestUrl: MANIFEST_URL,
+      portal: PORTAL,
+      network: Network.TESTNET,
+      fetchImpl: jsonFetch(manifestV5([])),
+    }),
+    /lists no bridges/,
+  )
+})

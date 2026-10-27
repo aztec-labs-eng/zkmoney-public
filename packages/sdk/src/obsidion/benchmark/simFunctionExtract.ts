@@ -1,6 +1,6 @@
 // Sim-side per-function extractor (docs/plans/2026-06-04-001). Pure.
 //
-// Maps upstream `@aztec/pxe` `SimulationTimings` (returned on
+// Maps upstream `@aztec-labs/pxe` `SimulationTimings` (returned on
 // `TxSimulationResult.stats`) to the benchmark's per-function sim breakdown.
 // For each private function executed during a simulation, carries its witgen ms
 // and the aggregate oracle-resolution ms.
@@ -12,7 +12,7 @@
 // summed). This is the in-code privacy gate; the allowlist Set below is the
 // reviewable source of truth (asserted in the test against a real fixture).
 
-import type { SimulationTimings } from "@aztec/stdlib/tx"
+import type { SimulationTimings } from "@aztec-labs/stdlib/tx"
 import type { SimFunctionTiming } from "@obsidion/core/types"
 
 /** Redaction placeholder for any non-allowlisted function name. */
@@ -43,10 +43,7 @@ export const ALLOWLISTED_NAMES: ReadonlySet<string> = new Set([
   "OxideToken:recurse_subtract_balance_internal",
   // Account entrypoints (real + simulated stub + test)
   ...["ObsidionAccountAlpha", "ObsidionAccountAlphaSimulated", "ObsidionAccountAlphaTest"].flatMap(
-    (c) => [
-      `${c}:entrypoint`,
-      `${c}:entrypoint_with_intent`,
-    ],
+    (c) => [`${c}:entrypoint`, `${c}:entrypoint_with_intent`],
   ),
   // Paylink contracts
   ...["PaylinkDirect", "PaylinkEmail"].flatMap((c) => [

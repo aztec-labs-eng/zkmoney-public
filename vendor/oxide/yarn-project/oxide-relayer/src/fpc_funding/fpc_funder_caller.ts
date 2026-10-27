@@ -1,15 +1,22 @@
-import { EthAddress } from '@aztec/foundation/eth-address';
-import { type Logger, createLogger } from '@aztec/foundation/log';
-import { RunningPromise } from '@aztec/foundation/running-promise';
+import { EthAddress } from '@aztec-labs/foundation/eth-address';
+import { type Logger, createLogger } from '@aztec-labs/foundation/log';
+import { RunningPromise } from '@aztec-labs/foundation/running-promise';
 
 import { ErrorsAbi, IFPCFunderAbi, OperationExecutorAbi } from '@oxide/l1-contracts';
-import { SIMULATED_SENDER_BALANCE, UINT256_EXTRA_CALLDATA_GAS } from '@oxide/oxide-client/l1_operation_quote.js';
+import {
+  LEGACY_OPERATION_EXECUTOR_ABI,
+  type OperationExecutorVersion,
+  SIMULATED_SENDER_BALANCE,
+  UINT256_EXTRA_CALLDATA_GAS,
+  encodeOperationExecute,
+  gasCostInToken,
+} from '@oxide/oxide-client/l1_operation_quote.js';
 
 import { type Hex, type PublicClient, encodeFunctionData } from 'viem';
 
 import { CauseTransitions } from '../cause_transitions.js';
 import { type L1TxQueue, type SendL1Tx, type SentL1Tx, isAboveMaxFeePerGas } from '../l1/l1_tx_queue.js';
-import type { ChainlinkPriceOracle } from '../price_oracle/chainlink_price_oracle.js';
+import { type ExtensiblePriceOracle, readTokenUnitsPerEth } from '../price_oracle/price_oracle.js';
 
 export const DEFAULT_FPC_FUNDING_POLL_INTERVAL_MS = 60_000;
 
@@ -17,9 +24,11 @@ export interface FpcFunderCallerConfig {
   fpcFunder: EthAddress;
   /** OperationExecutor the call is wrapped in, so a raced call reverts on its payout floor. */
   executor: EthAddress;
+  /** The `execute` version of `executor`. */
+  executorVersion: OperationExecutorVersion;
   client: PublicClient;
   l1TxQueue: Pick<L1TxQueue, 'enqueue' | 'address' | 'maxFeePerGasCap'>;
-  priceOracle: ChainlinkPriceOracle;
+  priceOracle: ExtensiblePriceOracle;
   /** Call whenever the quote is nonzero, skipping the break-even check. */
   allowUnprofitable: boolean;
   pollIntervalMs?: number;
@@ -141,7 +150,8 @@ export class FpcFunderCaller {
     if (!this.config.allowUnprofitable) {
       // Break-even for the exact tx being sent, in payout-token units. The bounty ramp is the margin: an
       // unprofitable call becomes profitable by waiting.
-      floor = await this.config.priceOracle.weiToUSD(gasLimit * price.maxFeePerGas);
+      const tokenUnitsPerEth = await readTokenUnitsPerEth(this.config.priceOracle, inputToken);
+      floor = gasCostInToken(gasLimit, price.maxFeePerGas, tokenUnitsPerEth);
     }
     if (bounty < floor) {
       // The bounty ramps every block, so the amounts change while the state does not. Only the state opens the gate.
@@ -174,39 +184,42 @@ export class FpcFunderCaller {
     return this.config.fpcFunder.toString().toLowerCase();
   }
 
-  /** `executor.execute(funder, swapAndDepositAsFeeJuice, inputToken, minPayout, 0, 0)` calldata: no gas cost. */
+  /** `executor.execute(funder, swapAndDepositAsFeeJuice, inputToken, minPayout)` calldata: no gas cost. */
   private executeCalldata(inputToken: EthAddress, minPayout: bigint): Hex {
-    return encodeFunctionData({
-      abi: OperationExecutorAbi,
-      functionName: 'execute',
-      args: [
-        this.config.fpcFunder.toString(),
-        encodeFunctionData({ abi: IFPCFunderAbi, functionName: 'swapAndDepositAsFeeJuice' }),
-        inputToken.toString(),
-        minPayout,
-        0n,
-        0n,
-      ],
-    });
+    return encodeOperationExecute(this.config.executorVersion, this.operation(inputToken), minPayout);
+  }
+
+  private operation(inputToken: EthAddress) {
+    return {
+      target: this.config.fpcFunder.toString(),
+      calldata: encodeFunctionData({ abi: IFPCFunderAbi, functionName: 'swapAndDepositAsFeeJuice' }),
+      payoutToken: inputToken.toString(),
+    };
   }
 
   private async quotePayout(inputToken: EthAddress): Promise<bigint> {
     const sender = this.config.l1TxQueue.address;
-    const { result } = await this.config.client.simulateContract({
-      abi: [...OperationExecutorAbi, ...ErrorsAbi],
+    const { target, calldata, payoutToken } = this.operation(inputToken);
+    const call = {
       address: this.config.executor.toString(),
-      functionName: 'execute',
-      args: [
-        this.config.fpcFunder.toString(),
-        encodeFunctionData({ abi: IFPCFunderAbi, functionName: 'swapAndDepositAsFeeJuice' }),
-        inputToken.toString(),
-        0n,
-        0n,
-        0n,
-      ],
       account: sender,
       // A random key, used when submission is disabled, holds no ETH.
       stateOverride: [{ address: sender, balance: SIMULATED_SENDER_BALANCE }],
+    };
+    if (this.config.executorVersion === 'legacy') {
+      const { result } = await this.config.client.simulateContract({
+        ...call,
+        abi: [...LEGACY_OPERATION_EXECUTOR_ABI, ...ErrorsAbi],
+        functionName: 'execute',
+        args: [target, calldata, payoutToken, 0n],
+      });
+      return result;
+    }
+    const { result } = await this.config.client.simulateContract({
+      ...call,
+      abi: [...OperationExecutorAbi, ...ErrorsAbi],
+      functionName: 'execute',
+      args: [target, calldata, payoutToken, 0n, 0n, 0n],
     });
     return result;
   }
@@ -218,7 +231,9 @@ export class FpcFunderCaller {
         abi: IFPCFunderAbi,
         functionName: 'inputToken',
       });
-      this.inputToken = EthAddress.fromString(raw);
+      const inputToken = EthAddress.fromString(raw);
+      await this.config.priceOracle.addToken(inputToken);
+      this.inputToken = inputToken;
     }
     return this.inputToken;
   }

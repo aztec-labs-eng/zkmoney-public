@@ -29,6 +29,7 @@ vi.mock("../src/config/oxideTuple", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/config/oxideTuple")>()),
   getOxideTuple: async () => CURRENT_TUPLE,
   l1PublicClient: () => L1_CLIENT,
+  rollupScanFloor: async () => 7_000n,
 }))
 const { createOxideL1Reader, predictAccountAddress, readNameOf } = vi.hoisted(() => ({
   createOxideL1Reader: vi.fn(),
@@ -44,9 +45,10 @@ vi.mock("../src/config/env", async (importOriginal) => ({
   getConfig: () => ({ network: "sandbox" }),
 }))
 
-import { Fr } from "@aztec/aztec.js/fields"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import { REGISTRATION_MESSAGE_SECRET } from "@obsidion/sdk"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import { bootstrapKeyProof } from "@obsidion/sdk"
+import { deriveBootstrapKey, deriveBootstrapScalar } from "@obsidion/front-core"
 import { claimSponsorContext } from "../src/features/onboarding/claimSponsorship"
 import { registrationGateWitness } from "../src/features/onboarding/registrationRail"
 import { RAIL_REGISTERED } from "../src/features/onboarding/rails"
@@ -105,9 +107,11 @@ const witnessDeps = (identity: unknown, tuple: { namePortal: string } = CURRENT_
   } as never)
 
 /** The unlocked wallet's key material; `buildOxideAccountBinding` runs for real over it. */
-const keys = (user: AztecAddress) => ({ account: { getAddress: () => user }, secretKey: new Fr(0xb00751n) } as never)
+const keys = (user: AztecAddress) =>
+  ({ account: { getAddress: () => user }, secretKey: new Fr(0xb00751n) } as never)
 
-const witnessFor = (user: AztecAddress) => registrationGateWitness(witnessDeps(IDENTITY), keys(user))
+const witnessFor = (user: AztecAddress) =>
+  registrationGateWitness(witnessDeps(IDENTITY), keys(user))
 
 describe("the registration message a sponsored subscribe rides on", () => {
   beforeEach(() => {
@@ -130,7 +134,10 @@ describe("the registration message a sponsored subscribe rides on", () => {
 
   it("waits while no published generation holds a name for this wallet's key", async () => {
     // Nothing to attest yet, so there is no message to look for.
-    const found = await registrationGateWitness(witnessDeps(undefined), keys(AztecAddress.fromNumberUnsafe(10)))
+    const found = await registrationGateWitness(
+      witnessDeps(undefined),
+      keys(AztecAddress.fromNumberUnsafe(10)),
+    )
 
     expect(found).toEqual({ pending: "message" })
     expect(findRegistrationMessage).not.toHaveBeenCalled()
@@ -155,42 +162,31 @@ describe("the registration message a sponsored subscribe rides on", () => {
     expect(await witnessFor(AztecAddress.fromNumberUnsafe(12))).toEqual({ pending: "message" })
   })
 
-  it("waits for the note when this FPC already consumed the newest message", async () => {
-    // Only this wallet's bootstrap key could have spent it, so a consumed message with no note yet
-    // means the PXE is still syncing what this wallet minted.
+  it("turns a ready message into the gate witness, bound to this FPC and bootstrap key", async () => {
     findRegistrationMessage.mockResolvedValue({
       leafIndex: 9n,
       messageHash: MESSAGE_HASH,
-      status: "consumed",
-    })
-
-    expect(await witnessFor(AztecAddress.fromNumberUnsafe(16))).toEqual({ pending: "note" })
-  })
-
-  it("turns a consumable message into the gate witness, bound to this FPC and account", async () => {
-    findRegistrationMessage.mockResolvedValue({
-      leafIndex: 9n,
-      messageHash: MESSAGE_HASH,
-      status: "consumable",
+      status: "ready",
     })
     const user = AztecAddress.fromNumberUnsafe(13)
 
     const found = await witnessFor(user)
     if (!("gate" in found)) throw new Error(`expected a witness, got ${JSON.stringify(found)}`)
 
-    expect(found.gate).toMatchObject({
+    // The key witness re-derives from the master secret; only the key's holder can produce it.
+    const proof = bootstrapKeyProof(deriveBootstrapScalar(new Fr(0xb00751n)))
+    expect(found.gate).toEqual({
       kind: "registration",
-      secret: REGISTRATION_MESSAGE_SECRET,
       leafIndex: new Fr(9n),
       nameHash: Uint8Array.from(Buffer.from(NAME_HASH.slice(2), "hex")),
-      // The bootstrap key signs the L2 address; only its holder can produce this.
-      bindingSig: expect.any(Uint8Array),
-      bootstrapPubKeyX: expect.any(Uint8Array),
+      ...proof,
     })
 
     const target = findRegistrationMessage.mock.calls[0][2]
     expect(target.fpc.toString()).toBe(FPC.toString())
-    expect(target.owner.toString()).toBe(OXIDE_ACCOUNT)
+    expect(target.bootstrap.toString()).toBe(
+      deriveBootstrapKey(new Fr(0xb00751n)).address.toLowerCase(),
+    )
     expect(target.namePortal.toString()).toBe(NAME_PORTAL)
     expect(target.nameHash.toString("hex")).toBe(NAME_HASH.slice(2))
     // The wallet's pinned identity, not the node's answer.
@@ -202,7 +198,7 @@ describe("the registration message a sponsored subscribe rides on", () => {
     findRegistrationMessage.mockResolvedValue({
       leafIndex: 1n,
       messageHash: MESSAGE_HASH,
-      status: "consumable",
+      status: "ready",
     })
 
     await witnessFor(AztecAddress.fromNumberUnsafe(14))
@@ -211,6 +207,8 @@ describe("the registration message a sponsored subscribe rides on", () => {
     expect(registrationInbox.mock.calls[0][0]).toBe(L1_CLIENT)
     expect(registrationInbox.mock.calls[0][1].toString()).toBe(INBOX)
     expect(findRegistrationMessage.mock.calls[0][0]).toBe(INBOX_SOURCE)
+    // From the rollup's first deployment, not a walk back from the head.
+    expect(findRegistrationMessage.mock.calls[0][3]).toEqual({ fromBlock: 7_000n })
   })
 
   it("sponsors on a held subscription note without looking for a message at all", async () => {
@@ -218,7 +216,7 @@ describe("the registration message a sponsored subscribe rides on", () => {
     findRegistrationMessage.mockResolvedValue({
       leafIndex: 9n,
       messageHash: MESSAGE_HASH,
-      status: "consumable",
+      status: "ready",
     })
     loadClaimFpcPolicy.mockResolvedValue({
       rail: {
@@ -249,7 +247,7 @@ describe("the registration message a sponsored subscribe rides on", () => {
     findRegistrationMessage.mockResolvedValue({
       leafIndex: 3n,
       messageHash: MESSAGE_HASH,
-      status: "consumable",
+      status: "ready",
     })
 
     const found = await registrationGateWitness(
@@ -258,8 +256,12 @@ describe("the registration message a sponsored subscribe rides on", () => {
     )
     if (!("gate" in found)) throw new Error(`expected a witness, got ${JSON.stringify(found)}`)
 
-    expect(findRegistrationMessage.mock.calls[0][2].namePortal.toString()).toBe(HISTORIC_TUPLE.namePortal)
+    expect(findRegistrationMessage.mock.calls[0][2].namePortal.toString()).toBe(
+      HISTORIC_TUPLE.namePortal,
+    )
     expect(findRegistrationMessage.mock.calls[0][2].fpc.toString()).toBe(FPC.toString())
-    expect(findRegistrationMessage.mock.calls[0][2].owner.toString()).toBe(OXIDE_ACCOUNT)
+    expect(findRegistrationMessage.mock.calls[0][2].bootstrap.toString()).toBe(
+      deriveBootstrapKey(new Fr(0xb00751n)).address.toLowerCase(),
+    )
   })
 })

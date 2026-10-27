@@ -1,5 +1,5 @@
-import { EthAddress } from '@aztec/foundation/eth-address';
-import { Logger, createLogger } from '@aztec/foundation/log';
+import { EthAddress } from '@aztec-labs/foundation/eth-address';
+import { Logger, createLogger } from '@aztec-labs/foundation/log';
 
 const SANCTIONS_SCREENER__BASE_URL = 'https://api.predicate.io';
 const SANCTIONS_SCREENER__TIMEOUT_MS = 5_000;

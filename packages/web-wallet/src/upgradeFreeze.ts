@@ -2,6 +2,8 @@ import { dependencies } from "../package.json"
 
 // 30 minutes before the v6 payload.
 export const FREEZE_AT = Date.UTC(2026, 9, 26, 7, 30)
+/** When the web comes back on v6. */
+export const WINDOW_ENDS = Date.UTC(2026, 9, 26, 13)
 // A poll, not one long timer: timers fire late after sleep.
 const CHECK_MS = 15_000
 
@@ -11,9 +13,6 @@ export function freezesBuild(deps: Record<string, string | undefined>, dev: bool
 }
 
 export const FREEZES = freezesBuild(dependencies, import.meta.env.DEV)
-
-/** The desktop app keeps its refund exits past the freeze and closes every other action instead. */
-export const KEEPS_EXITS = import.meta.env.VITE_DESKTOP_BUILD === "true"
 
 export function isFrozen(now = Date.now()): boolean {
   return now >= FREEZE_AT
@@ -35,6 +34,8 @@ export function reloadAtFreeze(
 export async function showFreezePage(): Promise<void> {
   const { default: html } = await import("../maintenance/maintenance.html?raw")
   document.open()
-  document.write(html)
+  document.write(
+    html.replace('data-until=""', `data-until="${new Date(WINDOW_ENDS).toISOString()}"`),
+  )
   document.close()
 }

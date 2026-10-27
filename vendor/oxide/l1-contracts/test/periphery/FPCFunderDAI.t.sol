@@ -96,7 +96,7 @@ abstract contract FPCFunderBase is Test {
   event Funded(uint256 feeAssetAmount, uint256 bounty, bytes32 key, uint256 index);
 
   function setUp() public virtual {
-    vm.etch(FEE_ASSET, address(new MintableToken()).code);
+    vm.etch(FEE_ASSET, address(new MintableToken("Fee Asset", "FEE", 18)).code);
     feeAsset = MintableToken(FEE_ASSET);
     feeJuicePortal = new MockPullFeeJuicePortal(IERC20(FEE_ASSET));
 
@@ -155,8 +155,8 @@ contract FPCFunderDAITest is FPCFunderBase {
   function setUp() public override {
     super.setUp();
 
-    vm.etch(DAI, address(new MintableToken()).code);
-    vm.etch(USDC, address(new MintableToken()).code);
+    vm.etch(DAI, address(new MintableToken("Dai Stablecoin", "DAI", 18)).code);
+    vm.etch(USDC, address(new MintableToken("USD Coin", "USDC", 6)).code);
     vm.etch(THREE_POOL, address(new MockCurve3Pool()).code);
     threePool = MockCurve3Pool(THREE_POOL);
     threePool.setCoins(DAI, USDC, USDT);

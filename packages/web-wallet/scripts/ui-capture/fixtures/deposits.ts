@@ -1,8 +1,7 @@
 import * as actual from "../../../src/features/deposit/sipaGateway"
-import { quotedDepositFee } from "@obsidion/core/constants"
 import { formatUnits } from "viem"
 import { DEMO_L1_TOKEN } from "../../../src/dev/demoFixtures"
-import { DEMO_DEPOSIT_FEE, DEMO_FPC_FUNDING_CUT } from "../../../src/dev/fakeL1Rpc"
+import { DEMO_DEPOSIT_FEE } from "../../../src/dev/fakeL1Rpc"
 import { fixtureState, operation, pause } from "./control"
 import { SIPA, TX_HASH } from "./data"
 import { desktopState, nextPooledAddress, sendUnresolved } from "./desktop"
@@ -30,7 +29,7 @@ export const getSipaDepositGateway: typeof actual.getSipaDepositGateway = () => 
     deposit: async (params) => {
       if (desktopState()) {
         // The helper approved the send, then no hash arrived: the browser wallet may still send it.
-        const feeDisplay = await gateway!.depositFee()
+        const feeDisplay = formatUnits(DEMO_DEPOSIT_FEE, 18)
         await params.preflight({ feeDisplay })
         params.onStage?.("awaiting-browser")
         await pause()
@@ -50,8 +49,6 @@ export const getSipaDepositGateway: typeof actual.getSipaDepositGateway = () => 
       return { ...address, txHash: TX_HASH as `0x${string}` }
     },
     tokenMeta: async () => ({ address: DEMO_L1_TOKEN, symbol: "DAI", decimals: 18 }),
-    depositFee: async () =>
-      formatUnits(quotedDepositFee(DEMO_DEPOSIT_FEE, DEMO_FPC_FUNDING_CUT), 18),
     records: () => real.records(),
     subscribe: (listener) => real.subscribe(listener),
     warm: () => real.warm(),

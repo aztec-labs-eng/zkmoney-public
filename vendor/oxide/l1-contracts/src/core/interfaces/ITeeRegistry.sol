@@ -4,6 +4,8 @@ pragma solidity >=0.8.27;
 interface ITeeRegistry {
   function PCR0_HASH() external view returns (bytes32);
 
+  function ROLLUP_VERSION() external view returns (uint256);
+
   function verifyTeeCACert(bytes calldata _cert, bytes32 _parentCertHash) external returns (bytes32 certHash);
 
   function verifyTeeClientCert(bytes calldata _cert, bytes32 _parentCertHash) external returns (bytes32 certHash);

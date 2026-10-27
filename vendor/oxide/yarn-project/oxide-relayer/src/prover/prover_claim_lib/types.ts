@@ -1,6 +1,6 @@
-import { CheckpointNumber, EpochNumber } from '@aztec/foundation/branded-types';
-import { Fr } from '@aztec/foundation/curves/bn254';
-import { EthAddress } from '@aztec/foundation/eth-address';
+import { CheckpointNumber, EpochNumber } from '@aztec-labs/foundation/branded-types';
+import { Fr } from '@aztec-labs/foundation/curves/bn254';
+import { EthAddress } from '@aztec-labs/foundation/eth-address';
 
 import { OxidePortalContract, ProverClaim } from '@oxide/l1-contracts/oxide_portal.js';
 
@@ -18,21 +18,17 @@ export interface ProverClaimResult {
   // There may be more than one withdrawal for a portal in a transaction.
   // This is the index of the withdrawal in the array of qualifying withdrawals.
   withdrawalIndex: number;
-  // If there are multiple messages with the same content in the tx, this should be set to the index of the message in
-  // the tx's l2ToL1Msgs array.
-  messageIndexInTx?: number;
+  // The index of the withdraw message in the tx's l2ToL1Msgs array.
+  messageIndexInTx: number;
 }
 
 /** Discovery adaptor: all the prover-claim policy (early submit) needs. */
 export interface ProverClaimDiscoveryPortalAdaptor {
   /** Discover the prover-claimable messages in `tx`, for pricing and grouping (pre- or post-proof). */
-  buildProverClaims(
-    tx: ObservedTx,
-    portal: ProverClaimPortalContext,
-  ): ProverClaimResult[] | Promise<ProverClaimResult[]>;
+  buildProverClaims(tx: ObservedTx): ProverClaimResult[] | Promise<ProverClaimResult[]>;
 }
 
-/** Assembled claim ready to submit, or an error the collector must exclude from the batch (e.g. the burn is
+/** Assembled claim ready to submit, or an error the collector must exclude from the batch (e.g. the initiation is
  *  cut off by a freeze). */
 export type BuildProverClaimResult =
   | { status: 'success'; proverClaim: ProverClaim }

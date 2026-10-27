@@ -17,15 +17,6 @@ import type { ActivityRowView } from "../src/ui/screens/activityView"
 const h = vi.hoisted(() => ({
   pathname: "/",
   navigate: vi.fn(),
-  frozen: false,
-}))
-
-vi.mock("../src/features/actionGate", () => ({ useWalletFrozen: () => h.frozen }))
-vi.mock("../src/features/paylink/chainTime", () => ({
-  usePolledChainSeconds: () => Math.floor(Date.now() / 1000),
-}))
-vi.mock("../src/features/notifications/PaylinkClaimMount", () => ({
-  recheckPaylinkClaim: async () => {},
 }))
 
 vi.mock("../src/config/env", async (importOriginal) => ({
@@ -35,7 +26,9 @@ vi.mock("../src/config/env", async (importOriginal) => ({
 vi.mock("../src/lib/explorer", () => ({
   l1TxUrl: () => null,
   l1AddressUrl: () => null,
-  l2TxUrl: (_n: string, _u: string, hash: string) => `https://l2.example/tx/${hash}`,
+}))
+vi.mock("../src/ui/useL2TxUrl", () => ({
+  useL2TxUrl: () => (hash: string) => `https://l2.example/tx/${hash}`,
 }))
 vi.mock("../src/features/paylink/sponsoredPaylink", () => ({ viewLink: vi.fn() }))
 vi.mock("../src/features/paylink/usePaylinkDeps", () => ({ usePaylinkDeps: () => undefined }))
@@ -110,13 +103,14 @@ describe("TxDetailModal", () => {
       .find((row) => row.querySelector("[data-testid='label']")?.textContent === label)
       ?.querySelector("[data-testid='value']")?.textContent
   const links = () => Array.from(container.querySelectorAll("a")).map((a) => a.href)
+  const badge = () => container.querySelector("[data-testid='status-badge']")?.textContent
+  const reason = () => container.querySelector(".ww-status-reason > small")?.textContent
   const seeAll = () => container.querySelector<HTMLButtonElement>(".ww-txd__all")
 
   beforeEach(() => {
     globalThis.IS_REACT_ACT_ENVIRONMENT = true
     h.pathname = "/"
     h.navigate.mockReset()
-    h.frozen = false
     container = document.createElement("div")
     document.body.appendChild(container)
     root = createRoot(container)
@@ -208,16 +202,19 @@ describe("TxDetailModal", () => {
     expect(value("Status")).toBe("Failed")
   })
 
-  it("reverted receive: titled by the action, in the feed row's words", async () => {
+  it("reverted receive: titled by the action, Failed with the reorg beneath", async () => {
+    const error = "Reverted by the network. It isn't in your balance."
     await show(
       <TxDetailModal
-        row={{ ...plain, status: "failed", statusLabel: "Not received" }}
+        row={{ ...plain, status: "failed", statusLabel: "Failed", error }}
         onClose={vi.fn()}
       />,
     )
 
     expect(container.querySelector(".ww-pay__title")?.textContent).toBe("Receive")
-    expect(value("Status")).toBe("Not received")
+    expect(badge()).toBe("Failed")
+    expect(reason()).toBe(error)
+    expect(labels()).not.toContain("Reason")
   })
 
   it("pending send: -- date and hash, Pending badge, no See all", async () => {
@@ -307,8 +304,9 @@ describe("TxDetailModal", () => {
     )
 
     expect(container.querySelector(".ww-pay__title")?.textContent).toBe("Paylink")
-    expect(value("Status")).toBe("Failed")
-    expect(value("Reason")).toBe("The send was interrupted")
+    expect(badge()).toBe("Failed")
+    expect(reason()).toBe("The send was interrupted")
+    expect(labels()).not.toContain("Reason")
     expect(labels()).not.toContain("Link expiry")
     expect(container.querySelectorAll("button:not([aria-label])")).toHaveLength(0)
   })
@@ -371,22 +369,5 @@ describe("TxDetailModal", () => {
     expect(value("Status")).toBe("Cancelling")
     expect(container.textContent).not.toContain("Copy paylink")
     expect(container.textContent).not.toContain("Cancel paylink")
-  })
-
-  it("open creator paylink while frozen: Withdraw in place of Cancel link", async () => {
-    const button = (title: string) =>
-      [...container.querySelectorAll("button")].find((b) => b.textContent === title)
-    const row = linkRow("success", {
-      fallbackSecret: "0x01",
-      refundableUntil: Math.floor(Date.now() / 1000) + 3_600,
-    })
-    await show(<TxDetailModal row={row} onClose={vi.fn()} />)
-    expect(button("Cancel link")).toBeTruthy()
-
-    h.frozen = true
-    await show(<TxDetailModal row={row} onClose={vi.fn()} />)
-    expect(button("Cancel link")).toBeUndefined()
-    await act(async () => button("Withdraw")!.click())
-    expect(h.navigate).toHaveBeenCalledWith("/withdraw")
   })
 })

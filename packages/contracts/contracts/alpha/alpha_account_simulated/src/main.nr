@@ -21,8 +21,8 @@ use aztec::macros::aztec;
 // What each function keeps and drops, per production:
 //
 //   entrypoint{,_with_intent}:
-//     - `validate(...)` DROPPED: the instance read and the key commitment
-//       check emit nothing, and the signature circuit emits nothing.
+//     - `validate(...)` DROPPED: the instance read and the passkey-set
+//       checks emit nothing, and the signature circuit emits nothing.
 //     - `execute_calls(...)` KEPT, including the tx-nonce nullifier and the
 //       `intents_hashes` write.
 //

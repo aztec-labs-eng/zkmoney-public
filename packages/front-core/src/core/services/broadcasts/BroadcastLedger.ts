@@ -15,7 +15,15 @@ export type BroadcastKind = "registration" | "deposit" | "pool"
 /** What the executor rebuilds the broadcast from. Nothing secret: the keys re-derive the rest. */
 export type BroadcastSource =
   | { type: "registration"; account: string }
-  | { type: "slot"; cacheKey: string; day: number; nonce: number }
+  | {
+      type: "slot"
+      cacheKey: string
+      day: number
+      nonce: number
+      /** A pool fill's deployment (`sipaPoolDeployment`); a fill of a retired one is never broadcast. */
+      deployment?: string
+    }
+  | { type: "rotation"; owner: string }
 
 /**
  * `queued`: owed, and waiting for its turn or its retry time. `proving`: a page is building it.
@@ -62,7 +70,7 @@ const keyOf = (address: string) => address.toLowerCase()
 
 /** `txHash`: a broadcast an earlier page already sent, which the chain decides. */
 export type NewBroadcastJob = Pick<BroadcastJob, "address" | "kind" | "scope" | "source"> &
-  Partial<Pick<BroadcastJob, "shownAt" | "fundedAt" | "operationId" | "txHash">>
+  Partial<Pick<BroadcastJob, "shownAt" | "fundedAt" | "operationId" | "txHash" | "republishSince">>
 
 export class BroadcastLedger {
   private store: RecordStorage<BroadcastJob>

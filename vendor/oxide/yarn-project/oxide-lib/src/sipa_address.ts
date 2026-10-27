@@ -1,7 +1,7 @@
-import { toBufferBE } from '@aztec/foundation/bigint-buffer';
-import { keccak256 } from '@aztec/foundation/crypto/keccak';
-import type { Fr } from '@aztec/foundation/curves/bn254';
-import { EthAddress } from '@aztec/foundation/eth-address';
+import { toBufferBE } from '@aztec-labs/foundation/bigint-buffer';
+import { keccak256 } from '@aztec-labs/foundation/crypto/keccak';
+import type { Fr } from '@aztec-labs/foundation/curves/bn254';
+import { EthAddress } from '@aztec-labs/foundation/eth-address';
 
 export interface SipaAddressInputs {
   sipaFactory: EthAddress;
@@ -10,6 +10,8 @@ export interface SipaAddressInputs {
   recoveryCommitment: Fr;
   rollupVersion: bigint;
   resweepable: boolean;
+  /** The forwarding table in the clone args. Absent for a SIPA of a factory before the forwarding table. */
+  forwardingTable?: EthAddress;
 }
 
 export function computeSIPAAddress(inputs: SipaAddressInputs): EthAddress {
@@ -24,6 +26,7 @@ export function computeSIPAAddress(inputs: SipaAddressInputs): EthAddress {
     inputs.recoveryCommitment.toBuffer(),
     toBufferBE(inputs.rollupVersion, 32),
     toBufferBE(inputs.resweepable ? 1n : 0n, 32),
+    ...(inputs.forwardingTable ? [inputs.forwardingTable.toBuffer32()] : []),
   ]);
   const runtimeLength = args.length + 0x2d;
   const initCode = Buffer.concat([

@@ -11,9 +11,9 @@ import { l1AddressParts, shortL1Addr } from "../src/ui/format"
 import { ScreeningProvider, passThroughScreener } from "@obsidion/front-core"
 import type { Hex } from "viem"
 import * as copy from "../src/features/limits/limitsCopy"
+import { LIMIT, LIMIT_USD, grouped } from "./support/publicLimit"
 
 const L2_ADDRESS = `0x${"cd".repeat(32)}` as Hex
-const MANIFEST_TOKEN = "0x00000000000000000000000000000000000000bb"
 const ADDRESS = "0x7b3E9c41aD02f8B5c6E1d7a9F04c3B8e2A61d9F0"
 // MetaMask's bold ends of the checksummed address.
 const ENDS = [l1AddressParts(ADDRESS).head, l1AddressParts(ADDRESS).tail]
@@ -61,25 +61,22 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
 }))
 vi.mock("../src/features/deposit/sipaGateway", () => ({ getSipaDepositGateway: () => gateway }))
 // The mainnet coin list: DAI settles, USDC and USDT are swapped into it.
-vi.mock("../src/features/deposit/loadDepositFacts", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../src/features/deposit/loadDepositFacts")>()),
-  depositTokensFor: () => [
-    { symbol: "DAI", decimals: 18, icon: "dai.svg" },
-    { address: USDC, symbol: "USDC", decimals: 6, icon: "usdc.svg" },
-    {
-      address: "0xdAC17F958D2ee523a2206206994597C13D831ec7",
-      symbol: "USDT",
-      decimals: 6,
-      icon: "usdt.svg",
-    },
-  ],
-  loadDepositDisplayFacts: async () => ({
-    fee: "0.25",
-    token: MANIFEST_TOKEN,
-    sweepFeeAtomic: 150_000_000_000_000_000n,
-    fpcFundingCutAtomic: 100_000_000_000_000_000n,
-  }),
-}))
+vi.mock("../src/features/deposit/loadDepositFacts", async (importOriginal) => {
+  const { MAINNET_DAI, mainnetTokens, mockLoadDepositFacts } = await import(
+    "./support/depositTokens"
+  )
+  const tokens = mainnetTokens()
+  return mockLoadDepositFacts(
+    importOriginal,
+    () => tokens,
+    async () => ({
+      fee: "0.25",
+      token: MAINNET_DAI,
+      sweepFeeAtomic: 250_000_000_000_000_000n,
+      txAmountCap: 5166n * 10n ** 18n,
+    }),
+  )
+})
 vi.mock("../src/errors/errorModal", () => ({ showReportableError: vi.fn() }))
 // No WagmiProvider in the test tree: `connect` raises the picker, the tests land the account by hand.
 const l1 = vi.hoisted(() => ({
@@ -203,7 +200,7 @@ describe("DepositScreen with the address sheet", () => {
     expect(container.textContent).toContain("Deposit funds")
     expect(container.textContent).toContain("Which token are you sending?")
     const rows = [...container.querySelectorAll("[data-testid^='deposit-coin-']")]
-    expect(rows.map((r) => r.textContent)).toEqual(["USDCUSDC", "USDTTether", "DAIDAI"])
+    expect(rows.map((r) => r.textContent)).toEqual(["DAIDAI", "USDCUSDC", "USDTTether"])
     const network = container.querySelector(".ww-deposit__network")!
     expect(network.textContent).toBe(`Network${getConfig().l1Chain.name}`)
     for (const point of ["Risk of loss", "Each deposit gets a new address"]) {
@@ -242,7 +239,7 @@ describe("DepositScreen with the address sheet", () => {
     expect(qr()?.innerHTML).toContain(
       `ethereum:${USDC}@${getConfig().l1ChainId}/transfer?address=${ADDRESS}`,
     )
-    expect(byTestId("address-limits")!.textContent).toContain("Up to $2,500 right now")
+    expect(byTestId("address-limits")!.textContent).toContain(`Up to ${LIMIT_USD} right now`)
     expect(copyButton()!.disabled).toBe(false)
   })
 
@@ -274,28 +271,31 @@ describe("DepositScreen with the address sheet", () => {
     await act(async () => land({ address: ADDRESS, name: "alice.oxide.eth" }))
   })
 
-  it("opens the drawer with the four rows, and the DAI note only for a non-DAI token", async () => {
+  it("opens the drawer with the four rows, the swap note for a swap input and the credit note for the row", async () => {
     await render()
     await openCoin("USDC")
     await openDrawer()
     const drawer = byTestId("address-limits")!
     for (const row of [
       "Minimum deposit$1",
-      "Limit right now$2,500 incl. feesCheck again",
-      "Fee$0.25",
+      `Limit right now${LIMIT_USD} incl. feesCheck again`,
+      "Fee0.25 DAI",
       "Deposit arrival time~5 minutes",
     ]) {
       expect(drawer.textContent).toContain(row)
     }
     expect(byTestId("deposit-swap-note")!.textContent).toBe(
-      "Your balance is stored in DAI. Sending another token will automatically convert it to DAI at the current market price, so your balance might differ.",
+      "USDC is swapped to DAI at the market rate, so the DAI credited can differ.",
     )
 
     await closeSheet()
     await openCoin("DAI")
     await openDrawer()
-    expect(byTestId("address-limits")!.textContent).toContain("Fee$0.25")
+    expect(byTestId("address-limits")!.textContent).toContain("Fee0.25 DAI")
     expect(byTestId("deposit-swap-note")).toBeNull()
+    expect(byTestId("deposit-credit-note")!.textContent).toBe(
+      "Each DAI you send is credited as 1 DAI, less the fee.",
+    )
   })
 
   it("copies, says the address was copied, and then waits for the funds", async () => {
@@ -377,7 +377,9 @@ describe("DepositScreen with the address sheet", () => {
 
     expect(sheet()!.textContent).toContain("50 DAI spotted")
     expect(sheet()!.textContent).toContain("should arrive in about 5 minutes")
-    expect(byTestId("deposit-arriving")!.textContent).toBe("50 DAI sent · $49.75 arriving · ~5 min")
+    expect(byTestId("deposit-arriving")!.textContent).toBe(
+      "50 DAI sent · 49.75 DAI arriving · ~5 min",
+    )
     expect(byTestId("deposit-swap-line")).toBeNull()
     expect(sheet()!.textContent).toContain("You can close this screen.")
     expect(fireEvent.mock.calls.filter(([e]) => e === "deposit_funded")).toHaveLength(1)
@@ -479,7 +481,7 @@ describe("DepositScreen with the address sheet", () => {
     expect(sheet()!.textContent).toContain("Waiting for capacity")
     expect(sheet()!.textContent).not.toContain("should arrive in about")
     expect(byTestId("deposit-arriving")!.textContent).toBe(
-      "50 DAI sent · $49.75 arriving · once capacity frees up",
+      "50 DAI sent · 49.75 DAI arriving · once capacity frees up",
     )
   })
 
@@ -545,13 +547,15 @@ describe("DepositScreen with the address sheet", () => {
     await openCoin("DAI")
     await act(async () => byTestId("deposit-copy")!.click())
     await tick(2000)
-    held.mockResolvedValue(3_000n * 10n ** 18n)
+    held.mockResolvedValue(BigInt(LIMIT + 100) * 10n ** 18n)
     await act(async () => byTestId("deposit-check-again")!.click())
 
-    expect(sheet()!.textContent).toContain("3,000 DAI spotted")
-    expect(sheet()!.textContent).toContain("This deposit is over the $2,500 limit")
+    expect(sheet()!.textContent).toContain(`${grouped(LIMIT + 100)} DAI spotted`)
+    expect(sheet()!.textContent).toContain(`This deposit is over the ${LIMIT_USD} limit`)
     expect(sheet()!.textContent).toContain("Over the limit")
-    expect(byTestId("deposit-arriving")!.textContent).toBe("3,000 DAI sent · recovery needed")
+    expect(byTestId("deposit-arriving")!.textContent).toBe(
+      `${grouped(LIMIT + 100)} DAI sent · recovery needed`,
+    )
     expect(sheet()!.textContent).not.toContain("arriving")
     expect(sheet()!.querySelector(".ww-deposit-sheet__status .zkm-spinner-icon")).toBeNull()
     expect(sheet()!.textContent).toContain("Recovery sends the whole amount")
@@ -575,7 +579,7 @@ describe("DepositScreen with the address sheet", () => {
     expect(sheet()!.textContent).toContain("can take longer than 5 minutes")
     expect(sheet()!.textContent).toContain("Waiting for capacity")
     expect(byTestId("deposit-arriving")!.textContent).toBe(
-      "500 DAI sent · $499.75 arriving · once capacity frees up",
+      "500 DAI sent · 499.75 DAI arriving · once capacity frees up",
     )
     expect(button("Close")).toBeDefined()
     expect(button("Open Activity")).toBeUndefined()

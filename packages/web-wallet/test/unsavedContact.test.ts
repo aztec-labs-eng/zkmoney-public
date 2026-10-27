@@ -6,12 +6,15 @@ const m = vi.hoisted(() => ({
   commit: vi.fn(),
   addContact: vi.fn(),
   ownHandle: "me" as string | undefined,
+  transactions: [] as unknown[],
 }))
 
 vi.mock("@obsidion/front-core", async (original) => ({
   ...(await original<typeof import("@obsidion/front-core")>()),
   ContactStorage: { get: () => ({ getEntries: async () => m.entries }) },
+  TransactionStorage: { get: () => ({ getTransactions: async () => m.transactions }) },
 }))
+vi.mock("../src/platform/storage/WebStorageAdapter", () => ({ webStorage: {} }))
 vi.mock("../src/features/identity/walletIdentity", () => ({
   loadWalletIdentity: () => (m.ownHandle ? { handle: m.ownHandle } : null),
 }))
@@ -22,7 +25,7 @@ vi.mock("../src/features/contacts/registryResolution", () => ({
 vi.mock("../src/features/contacts/useInlineContactSearch", () => ({ addContact: m.addContact }))
 
 const { TagValidationError } = await import("@obsidion/front-core")
-const { lookUpUnsavedContact, saveUnsavedContact, unsavedContact } = await import(
+const { lookUpUnsavedContact, pastAddressOf, saveUnsavedContact, unsavedContact } = await import(
   "../src/features/contacts/unsavedContact"
 )
 
@@ -33,6 +36,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   m.entries = []
   m.ownHandle = "me"
+  m.transactions = []
   m.addContact.mockResolvedValue({ success: true })
 })
 
@@ -55,9 +59,39 @@ describe("lookUpUnsavedContact", () => {
     expect(m.typeAhead).not.toHaveBeenCalled()
   })
 
+  it("opens a tag still on an older zk.money at the address its past transfers used", async () => {
+    m.typeAhead.mockResolvedValue({ status: "staleRollup" })
+    m.transactions = [{ action: "send", token: { amount: 5 }, toTag: "Grace", to: ADDRESS }]
+    expect(await lookUpUnsavedContact("grace")).toEqual(unsavedContact("grace", ADDRESS))
+
+    m.transactions = []
+    expect(await lookUpUnsavedContact("grace")).toEqual(unsavedContact("grace", ""))
+  })
+
   it("lets a network failure through so the page can say so", async () => {
     m.typeAhead.mockRejectedValue(new Error("rpc down"))
     await expect(lookUpUnsavedContact("grace")).rejects.toThrow("rpc down")
+  })
+})
+
+describe("pastAddressOf", () => {
+  const OTHER = `0x${"4e".repeat(32)}`
+  const token = { amount: 5 }
+
+  it("reads a send's recipient and a receive's sender for the tag", () => {
+    const send = { action: "send", token, toTag: "grace", to: ADDRESS }
+    const receive = { action: "receive", token, from: "grace", senderL2Address: ADDRESS }
+    expect(pastAddressOf("grace", [send] as never)).toBe(ADDRESS)
+    expect(pastAddressOf("grace", [receive] as never)).toBe(ADDRESS)
+  })
+
+  it("ignores other people and rows that are not token transfers", () => {
+    const transactions = [
+      { action: "send", token, toTag: "bob", to: OTHER },
+      { action: "receive", token, from: "bob", senderL2Address: OTHER },
+      { action: "send", toTag: "grace", to: OTHER },
+    ]
+    expect(pastAddressOf("grace", transactions as never)).toBeUndefined()
   })
 })
 

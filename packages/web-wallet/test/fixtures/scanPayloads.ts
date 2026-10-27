@@ -1,5 +1,5 @@
-import { Fr } from "@aztec/aztec.js/fields"
-import { Grumpkin } from "@aztec/foundation/crypto/grumpkin"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { Grumpkin } from "@aztec-labs/foundation/crypto/grumpkin"
 import { Network } from "@obsidion/core/constants"
 import { MAX_TAG_LENGTH } from "@obsidion/core/constants"
 import { encodeInline, encodeRequestInline, mintQRHandshakeShare } from "@obsidion/front-core"

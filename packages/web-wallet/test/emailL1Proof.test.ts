@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { Fr } from "@aztec/aztec.js/fields"
-import { EthAddress } from "@aztec/aztec.js/addresses"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { EthAddress } from "@aztec-labs/aztec.js/addresses"
 
 const mocks = vi.hoisted(() => ({
   login: vi.fn(),

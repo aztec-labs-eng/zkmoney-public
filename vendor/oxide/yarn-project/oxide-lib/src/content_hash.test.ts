@@ -1,19 +1,20 @@
-// Cross-implementation parity test for the recipient commitment and the withdraw content hash. Computes each hash on the
-// TS side and pins the expected values into the Noir `#[test]` bodies in `oxide_token_lib/src/content_hash.nr`.
-// The Noir tests assert the same input → same output, so the implementations drift only when this test is re-run
-// with `OXIDE_GENERATE_TEST_DATA=1`.
+// Cross-implementation parity test for the recipient commitment and the withdraw and register-signer content hashes.
+// Computes each hash on the TS side and pins the expected values into the Noir `#[test]` bodies in
+// `oxide_token_lib/src/content_hash.nr`. The Noir tests assert the same input → same output, so the implementations
+// drift only when this test is re-run with `OXIDE_GENERATE_TEST_DATA=1`.
 //
 // Regenerate after touching either implementation:
 //   OXIDE_GENERATE_TEST_DATA=1 yarn workspace @oxide/oxide-lib test content_hash
 //
 // Then `cd noir-projects/oxide_token_lib && aztec-nargo test` to verify the Noir side matches.
-import { Fr } from '@aztec/foundation/curves/bn254';
-import { EthAddress } from '@aztec/foundation/eth-address';
-import { AztecAddress } from '@aztec/stdlib/aztec-address';
+import { Buffer32 } from '@aztec-labs/foundation/buffer';
+import { Fr } from '@aztec-labs/foundation/curves/bn254';
+import { EthAddress } from '@aztec-labs/foundation/eth-address';
+import { AztecAddress } from '@aztec-labs/stdlib/aztec-address';
 
 import { describe, expect, it } from '@jest/globals';
 
-import { getUserPayloadHash, getWithdrawContentHash } from './content_hash.js';
+import { getRegisterSignerContentHash, getUserPayloadHash, getWithdrawContentHash } from './content_hash.js';
 import { computeRecipientCommitment } from './recipient_commitment.js';
 import { updateInlineTestData } from './testing/files.js';
 
@@ -35,6 +36,10 @@ const FIXTURE_PLAIN_WITHDRAWAL_PAYLOAD = Buffer.from(
   '00000000000000000000000011223344556677889900aabbccddeeff0011223300000000000000000000000000000000000000000000000000000000047d411b',
   'hex',
 );
+const FIXTURE_SIGNER_PUBLIC_KEY = {
+  x: Buffer32.fromString('0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20'),
+  y: Buffer32.fromString('0x2122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40'),
+};
 const FIXTURE_PLAIN_WITHDRAWAL_PAYLOAD_HASH = '0x00ce6a41ff263e87fd9e2bb589e3708df5b40098af39741e2a6f92cedc4610b6';
 
 describe('content_hash TS ↔ Noir parity', () => {
@@ -48,6 +53,7 @@ describe('content_hash TS ↔ Noir parity', () => {
       FIXTURE_PROVER_TIP,
       FIXTURE_RANDOMNESS,
     );
+    const registerSigner = getRegisterSignerContentHash(FIXTURE_SIGNER_PUBLIC_KEY);
 
     // If any of the hashes change for a valid reason, update the inline snapshot and rerun the test
     // with `OXIDE_GENERATE_TEST_DATA=1` to regenerate the expected values on the noir side.
@@ -57,10 +63,14 @@ describe('content_hash TS ↔ Noir parity', () => {
     expect(withdraw.toString()).toMatchInlineSnapshot(
       `"0x0040e5e411ba5f4a9730607ebac66817a44df07a56cfc8df8a42d497e9bb5e9b"`,
     );
+    expect(registerSigner.toString()).toMatchInlineSnapshot(
+      `"0x008b33a581dcf8c37cd0271302e3abcea01ded7b659d006f1c2d411420e49f4a"`,
+    );
 
     updateInlineTestData(NOIR_TEST_FILE, 'expected_recipient_commitment', recipientCommitment.toString());
     updateInlineTestData(NOIR_TEST_FILE, 'fixture_user_payload_hash', userPayloadHash.toString());
     updateInlineTestData(NOIR_TEST_FILE, 'expected_withdraw_content_hash', withdraw.toString());
+    updateInlineTestData(NOIR_TEST_FILE, 'expected_register_signer_content_hash', registerSigner.toString());
   });
 
   it('commits the executor and user payload hash', () => {

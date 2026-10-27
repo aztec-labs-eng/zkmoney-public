@@ -49,11 +49,7 @@ describe("selectDeployment", () => {
 })
 
 describe("parseDeployment", () => {
-  it("retains optional metadata-update discovery without changing a historic deployment", () => {
-    const implementation = "0x1111111111111111111111111111111111111111"
-    expect(parseDeployment(V1).tuple.updateMetadataSIPAImplementation).toBeUndefined()
-    const destination = parseDeployment({ ...V2, updateMetadataSIPAImplementation: implementation }).tuple
-    expect(destination.updateMetadataSIPAImplementation).toBe(implementation)
+  it("parses a historic deployment's addresses", () => {
     expect(parseDeployment(V1).tuple.portal).toBe(V1.portal)
     expect(parseDeployment(V1).tuple.frozenNotesRefundVerifier).toBe(V1.frozenNotesRefundVerifier)
   })
@@ -68,6 +64,7 @@ describe("parseDeployment", () => {
       deployedAt: V1.deployedAt,
       portal: V1.portal,
       token: V1.token,
+      underlying: V1.token,
       l2Token: V1.l2Token,
       enclaveUrl: V1.enclaveUrl,
       pcr0: V1.pcr0,
@@ -158,9 +155,11 @@ describe("migrationSources", () => {
   it("returns explicitly selected entries on the pinned rollup", () => {
     const pinned = parseDeployment(V2).tuple
     expect(
-      migrationSources(fixture, pinned, new Set([V1.portal.toLowerCase(), V2.portal.toLowerCase()])).map(
-        (t) => t.version,
-      ),
+      migrationSources(
+        fixture,
+        pinned,
+        new Set([V1.portal.toLowerCase(), V2.portal.toLowerCase()]),
+      ).map((t) => t.version),
     ).toEqual(["v1"])
   })
 
@@ -170,9 +169,11 @@ describe("migrationSources", () => {
       portal: V1.portal.toUpperCase().replace("0X", "0x"),
     }
     expect(
-      migrationSources(fixture, pinned, new Set([V1.portal.toLowerCase(), V2.portal.toLowerCase()])).map(
-        (t) => t.portal,
-      ),
+      migrationSources(
+        fixture,
+        pinned,
+        new Set([V1.portal.toLowerCase(), V2.portal.toLowerCase()]),
+      ).map((t) => t.portal),
     ).toEqual([V2.portal])
   })
 
@@ -181,9 +182,11 @@ describe("migrationSources", () => {
     const legacy = entry("v0")
     expect(legacy.rollupVersion).toBe(V2.rollupVersion)
     expect(
-      migrationSources(fixture, pinned, new Set([legacy.portal.toLowerCase(), V1.portal.toLowerCase()])).map(
-        (t) => t.version,
-      ),
+      migrationSources(
+        fixture,
+        pinned,
+        new Set([legacy.portal.toLowerCase(), V1.portal.toLowerCase()]),
+      ).map((t) => t.version),
     ).not.toContain("v0")
   })
 
@@ -199,10 +202,11 @@ describe("migrationSources", () => {
 
   it("throws on a malformed known-schema entry instead of dropping it", () => {
     const broken = clone(fixture)
-    broken.deployments.find((d: { label: string }) => d.label === "v1").rollupVersion = "not-a-number"
-    expect(() => migrationSources(broken, parseDeployment(V2).tuple, new Set([V1.portal.toLowerCase()]))).toThrow(
-      /rollupVersion/,
-    )
+    broken.deployments.find((d: { label: string }) => d.label === "v1").rollupVersion =
+      "not-a-number"
+    expect(() =>
+      migrationSources(broken, parseDeployment(V2).tuple, new Set([V1.portal.toLowerCase()])),
+    ).toThrow(/rollupVersion/)
   })
 })
 
@@ -226,7 +230,11 @@ describe("extractPinnedOxideEnvTuple", () => {
 describe("duplicate deployments", () => {
   it("refuses two entries with one portal, compared lowercase, through the pinned read", () => {
     const twice = clone(fixture)
-    twice.deployments.push({ ...clone(V1), portal: V1.portal.toUpperCase().replace("0X", "0x") })
+    twice.deployments.push({
+      ...clone(V1),
+      label: "v1-copy",
+      portal: V1.portal.toUpperCase().replace("0X", "0x"),
+    })
     const profile = { manifestUrl: "https://m.example/staging.v4.json", portal: V2.portal }
     expect(() => extractPinnedOxideEnvTuple(twice, profile)).toThrow(/share portal/)
   })

@@ -9,7 +9,7 @@
  */
 import SCENARIO_HELP from "./demoScenarios.json"
 import { WALLET_TOKEN_SYMBOL } from "@obsidion/core/constants"
-import { Fr } from "@aztec/aztec.js/fields"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 import { AUTH_TYPE, EcdsaK256AlphaAuthProvider } from "@obsidion/sdk"
 import {
   AccountStorage,
@@ -24,7 +24,7 @@ import {
   type WithdrawalRecord,
 } from "@obsidion/front-core"
 import { getConfig } from "../config/env"
-import { primeOxideTuple } from "../config/oxideTuple"
+import { primeOxideDeployment, primeOxideTuple } from "../config/oxideTuple"
 import { getWithdrawalStore } from "../features/withdraw/withdrawGateway"
 import { loadWalletIdentity, saveWalletIdentity } from "../features/identity/walletIdentity"
 import { getAuthService } from "../platform/auth/useAuthenticator"
@@ -55,13 +55,14 @@ import {
   DEMO_L2_ADDRESS,
   DEMO_L2_TOKEN,
   DEMO_MSK_HEX,
+  DEMO_OXIDE_DEPLOYMENT,
   DEMO_OXIDE_TUPLE,
   DEMO_PASSKEY_PUBKEY_HEX,
   DEMO_SIGNING_KEY_HEX,
 } from "./demoFixtures"
 import { longDemoContacts } from "./contactDemo"
 import { installFakeEthereum } from "./fakeEthereum"
-import { installL1RpcStub, registerDemoSipaPrediction } from "./fakeL1Rpc"
+import { createL1RpcHandler, installL1RpcStub, registerDemoSipaPrediction } from "./fakeL1Rpc"
 
 /**
  * Demo mode owns this origin's wallet state — seeding on top of whatever is there would duplicate
@@ -166,16 +167,16 @@ async function seedContactsAndRequests(
 /**
  * What this origin already holds, named for the refusal message — or null when it holds nothing
  * but the demo's own prior seed. Both halves of the app's onboarded definition count: the claimed
- * handle AND the MSK-root passkey breadcrumb. An onboarding that died between the two leaves only
- * the breadcrumb, and the passkey behind it is still a real account key.
+ * handle AND the breadcrumb of a passkey that opens it. An onboarding that died between the two
+ * leaves only the breadcrumb, and the passkey behind it is still a real account key.
  */
 async function foreignWalletState(rpId: string): Promise<string | null> {
   const identity = loadWalletIdentity()
   if (identity && identity.address !== DEMO_L2_ADDRESS) {
     return `a wallet identity ("${identity.handle}")`
   }
-  const mskRoot = await new WebPasskeyIdentityMap(new WebStorageAdapter(), rpId).getMskRoot()
-  if (mskRoot && mskRoot.l2Address !== DEMO_L2_ADDRESS) return "a passkey for another account"
+  const opening = await new WebPasskeyIdentityMap(new WebStorageAdapter(), rpId).getOpeningRecord()
+  if (opening && opening.l2Address !== DEMO_L2_ADDRESS) return "a passkey for another account"
   return null
 }
 
@@ -222,8 +223,13 @@ export async function seedDemo(scenario: DemoScenario): Promise<boolean> {
 
   resetWalletStorage()
   primeOxideTuple(config, DEMO_OXIDE_TUPLE)
+  primeOxideDeployment(config, DEMO_OXIDE_DEPLOYMENT)
   // Onboarding uses mockOnboarding's local transitions and starts without an identity or provider.
-  if (scenario === "onboarding") return true
+  // Its token lists still read the table.
+  if (scenario === "onboarding") {
+    installL1RpcStub(config.l1RpcUrl, createL1RpcHandler(config.l1ChainId))
+    return true
+  }
   installL1RpcStub(config.l1RpcUrl, installFakeEthereum(config.l1ChainId))
 
   await seedIdentity(config.rpId)

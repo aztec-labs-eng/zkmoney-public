@@ -4,8 +4,8 @@
  * cache persists the user's email + address, so it rides an MSK-derived `EncryptedStorageAdapter`
  * (`ZkJwtStorage` refuses a plain adapter).
  */
-import { Fr } from "@aztec/aztec.js/fields"
-import { EthAddress } from "@aztec/aztec.js/addresses"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { EthAddress } from "@aztec-labs/aztec.js/addresses"
 import type { Address } from "viem"
 import {
   assertJwtEmailMatchesCommitment,
@@ -151,6 +151,9 @@ export async function obtainEmailClaimProof(
   // The account already matched the commitment above, so a miss here is the cache, not the email:
   // the prove stored the proof under a key this lookup did not find.
   const proof = await svc.getCachedZkProof(caller, commitment)
-  if (!proof) throw new Error("Your email was verified but the proof could not be found afterwards. Try again.")
+  if (!proof)
+    throw new Error(
+      "Your email was verified but the proof could not be found afterwards. Try again.",
+    )
   return proof
 }

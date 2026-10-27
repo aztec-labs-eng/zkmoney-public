@@ -34,7 +34,7 @@ import {
 } from "@obsidion/front-core"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
 import { getConfig, l1Transport } from "../../config/env"
-import { oxideEnvFor } from "../../config/oxideTuple"
+import { getFeeTokenBridgeTuple, oxideEnvFor, requireTupleField } from "../../config/oxideTuple"
 import {
   AlreadySweptError,
   assertSweepCapacity,
@@ -52,7 +52,7 @@ import {
   type L1ExitStage,
 } from "../deposit/sipaRecovery"
 import { isDesktopL1SubmitActive } from "../../platform/desktopBridge"
-import { currentFpcFundingCut } from "../fees/fpcFundingCut"
+import { txAmountCap } from "../token/oxideToken"
 import { getPendingStore } from "./webRegistration"
 import { sweptPhase } from "./registrationRailSync"
 import { readRegistrationSchedule } from "./registrationTerms"
@@ -167,22 +167,27 @@ export async function manualRegistrationSweep(
     ? { fee: BigInt(claim.terms.fee), min: BigInt(claim.terms.minDeposit) }
     : controllerSchedule
   const priced = schedule !== undefined && schedule.fee === BigInt(record.fee)
-  // The pre-flight checks the same floor the sweep enforces, so an unread cut signs nothing.
-  const fpcCut = await currentFpcFundingCut().catch(() => undefined)
-  const floor = priced && fpcCut !== undefined ? registrationFloor(schedule, fpcCut) : undefined
+  const floor = priced ? registrationFloor(schedule) : undefined
+  // The pre-flight checks the same cap the sweep enforces, the fee token row's, so an unread cap signs nothing.
+  const cap = await getFeeTokenBridgeTuple(config)
+    .then((fee) => txAmountCap(publicClient, requireTupleField(fee, "portal") as Address))
+    .catch(() => undefined)
   // The SIPA swaps whichever accepted token it holds into the fee token at sweep time, and the
   // controller floors what lands, so a swapped deposit is judged on the least the swap may settle.
-  const tokens = sipaFundingTokens(config.network, record.depositToken as Address)
+  const tokens = await sipaFundingTokens(config, record.depositToken as Address, "registration")
   const covers = (balance: bigint, sent: SipaFundingToken) =>
     floor !== undefined && settledBalance(tokens[0], sent, balance) >= floor
+  const fee = BigInt(record.fee)
   const { token, status } = await readSipaFunding(publicClient, {
     sipa: record.sipaAddress as Address,
-    feeToken: tokens[0],
-    fundingTokens: tokens,
-    fee: BigInt(record.fee),
-    fpcFundingCut: fpcCut ?? 0n,
+    routes: tokens.map((sent) => ({
+      token: sent,
+      settlesIn: tokens[0],
+      fee,
+      txAmountCap: cap ?? 0n,
+    })),
     accepted: floor === undefined ? undefined : covers,
-    decided: floor !== undefined,
+    decided: floor !== undefined && cap !== undefined,
   })
   if (status.balance === 0n) throw new AlreadySweptError()
   if (!priced) {
@@ -190,8 +195,10 @@ export async function manualRegistrationSweep(
     // carried none fell back to the deployment's own figures and a re-signed one may yet price it.
     throw new Error(claim.terms ? SWEEP_PRICE_COMMITTED : SWEEP_QUOTE_UNUSABLE)
   }
-  if (floor === undefined) {
-    throw new Error("This registration's minimum is not available yet. Try again in a moment.")
+  if (cap === undefined) {
+    throw new Error(
+      "This registration's deposit limit is not available yet. Try again in a moment.",
+    )
   }
   if (!covers(status.scaledBalance, token)) {
     throw new Error("The deposit does not yet cover this registration's fee and opening balance.")

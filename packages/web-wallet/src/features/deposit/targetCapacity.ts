@@ -1,15 +1,18 @@
 /**
  * Shared deposit capacity for an address the wallet shows, read from the bucket of the portal that
  * address forwards to. The active deployment is used only for an address derived from it in this
- * session; a recorded SIPA is keyed by its own implementation's portal; anything else is unknown.
+ * session; a recorded SIPA is keyed by its own forwarding-table row's portal; anything else is unknown.
  */
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react"
-import { formatUnits, type Address } from "viem"
-import { readSipaPortalTerms, SOURCE_OPERATION_CAP, type SipaPortalTerms } from "@obsidion/sdk"
+import { formatUnits } from "viem"
+import { readSipaPortalTerms, type SipaPortalTerms } from "@obsidion/sdk"
 import {
   evaluateCapacityEligibility,
   portalCapacityKey,
+  sipaIntentName,
+  sipaRecordRoute,
   sipaRequiredCredit,
+  sipaRouteKey,
   SIPADepositStore,
   useCachedRecords,
   type CapacityEligibility,
@@ -18,16 +21,18 @@ import {
   type PortalCapacityStore,
   type RequiredCredit,
   type SIPADepositRecord,
+  type SipaRecordRoute,
 } from "@obsidion/front-core"
 import { getConfig } from "../../config/env"
 import { l1PublicClient } from "../../config/oxideTuple"
+import { loadDepositTokens, settlementToken } from "./loadDepositFacts"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
 import { activeCapacityKey, depositCapacityStore } from "./capacityStore"
 
 export type CapacityTarget =
-  /** An address derived from the active deployment in this session. */
-  | { kind: "active" }
-  /** A SIPA this wallet recorded; its origin names the implementation, and so the portal. */
+  /** An address derived from the active deployment in this session, funded with `token`'s row when named. */
+  | { kind: "active"; token?: string }
+  /** A SIPA this wallet recorded; its origin names the forwarding table, and so the portal. */
   | { kind: "recorded"; sipaAddress: string }
   /** An address whose portal nothing proves. */
   | { kind: "unproven" }
@@ -42,7 +47,7 @@ export interface TargetCapacity {
   key?: PortalCapacityKey
   store?: PortalCapacityStore
   state?: PortalCapacityState
-  /** A recorded target's record and its implementation's terms, once read. */
+  /** A recorded target's record and its row's terms, once read. */
   record?: SIPADepositRecord
   terms?: SipaPortalTerms
   /** Set while no store can be named: why capacity is not known for this address. */
@@ -59,12 +64,29 @@ const UNPROVEN: CapacityEligibility = {
 
 const terms = new Map<string, Promise<SipaPortalTerms>>()
 
-/** Immutable per implementation, so one read serves every surface; a failed read is dropped. */
-function sipaPortalTerms(implementation: Address): Promise<SipaPortalTerms> {
-  const id = implementation.toLowerCase()
+/** A recorded SIPA's row: its route, and the token its funds are in, which names the row they settle on. */
+const recordedRowKey = (route: SipaRecordRoute, token: string | undefined) =>
+  `${sipaRouteKey(route)}|${token?.toLowerCase() ?? ""}`
+
+/**
+ * The terms of the row a recorded SIPA's funds settle on: the row of the token they are in, or the intent's
+ * settlement row while no token is recorded. One read per row serves every surface for the session; a failed read is
+ * dropped.
+ */
+function sipaPortalTerms(
+  route: SipaRecordRoute,
+  token: string | undefined,
+): Promise<SipaPortalTerms> {
+  const id = recordedRowKey(route, token)
   let read = terms.get(id)
   if (!read) {
-    read = readSipaPortalTerms(l1PublicClient(getConfig()), implementation)
+    const config = getConfig()
+    read = loadDepositTokens(config, sipaIntentName(route.intent)).then((tokens) =>
+      readSipaPortalTerms(l1PublicClient(config), {
+        ...route,
+        token: settlementToken(tokens, token) ?? tokens.settlement.address,
+      }),
+    )
     read.catch(() => terms.delete(id))
     terms.set(id, read)
   }
@@ -83,14 +105,15 @@ export function useTargetCapacity(target: CapacityTarget): TargetCapacity {
   const record = sipa ? records.find((r) => r.sipaAddress.toLowerCase() === sipa) : undefined
   // Until the stored records load, a missing record is not yet evidence of a missing origin.
   const recordLoading = !!sipa && !record && !hydrated
-  const implementation = record?.origin?.implementation
+  const route = useMemo(() => (record ? sipaRecordRoute(record) : undefined), [record])
   // A record from another L1 names a bucket this client cannot read.
   const otherChain = !!record && record.l1ChainId !== getConfig().l1ChainId
+  const activeToken = target.kind === "active" ? target.token?.toLowerCase() : undefined
   const id =
     target.kind === "active"
-      ? "active"
-      : implementation && !otherChain
-      ? implementation.toLowerCase()
+      ? `active|${activeToken ?? ""}`
+      : route && !otherChain
+      ? recordedRowKey(route, record?.tokenAddress)
       : undefined
 
   const [resolved, setResolved] = useState<Resolved>()
@@ -98,17 +121,16 @@ export function useTargetCapacity(target: CapacityTarget): TargetCapacity {
   useEffect(() => {
     if (!id) return
     let stale = false
-    const load: Promise<Omit<Resolved, "id">> =
-      id === "active"
-        ? activeCapacityKey().then((key) => ({ key }))
-        : sipaPortalTerms(implementation as Address).then((read) => ({
-            terms: read,
-            key: portalCapacityKey({
-              chainId: getConfig().l1ChainId,
-              portal: read.portal,
-              token: read.token,
-            }),
-          }))
+    const load: Promise<Omit<Resolved, "id">> = id.startsWith("active|")
+      ? activeCapacityKey(activeToken).then((key) => ({ key }))
+      : sipaPortalTerms(route!, record?.tokenAddress).then((read) => ({
+          terms: read,
+          key: portalCapacityKey({
+            chainId: getConfig().l1ChainId,
+            portal: read.portal,
+            token: read.token,
+          }),
+        }))
     load.then(
       (next) => {
         if (!stale) setResolved({ id, ...next })
@@ -121,7 +143,7 @@ export function useTargetCapacity(target: CapacityTarget): TargetCapacity {
     return () => {
       stale = true
     }
-  }, [id, implementation, attempt])
+  }, [id, route, activeToken, attempt])
 
   const current = resolved?.id === id ? resolved : undefined
   const key = current?.key
@@ -177,7 +199,6 @@ export function targetEligibility(
   return evaluateCapacityEligibility({
     state,
     required,
-    operationCap: SOURCE_OPERATION_CAP,
     now: Date.now(),
     staleAfterMs: store.policy.staleAfterMs,
   })
@@ -185,7 +206,7 @@ export function targetEligibility(
 
 /**
  * What the portal would credit for a registration ask sent to a recorded SIPA: the ask less the
- * record's signed registration fee and its portal's funding cut. Unknown until both are read.
+ * record's signed registration fee. Unknown until it is read.
  */
 export function registrationRequiredCredit(
   capacity: TargetCapacity,

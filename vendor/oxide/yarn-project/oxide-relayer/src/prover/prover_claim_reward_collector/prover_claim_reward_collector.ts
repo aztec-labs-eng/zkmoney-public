@@ -1,8 +1,8 @@
-import { RollupContract } from '@aztec/ethereum/contracts/rollup';
-import { Fr } from '@aztec/foundation/curves/bn254';
-import { EthAddress } from '@aztec/foundation/eth-address';
-import { Logger, createLogger } from '@aztec/foundation/log';
-import { AztecNode } from '@aztec/stdlib/interfaces/server';
+import { RollupContract } from '@aztec-labs/ethereum/contracts/rollup';
+import { Fr } from '@aztec-labs/foundation/curves/bn254';
+import { EthAddress } from '@aztec-labs/foundation/eth-address';
+import { Logger, createLogger } from '@aztec-labs/foundation/log';
+import { AztecNode } from '@aztec-labs/stdlib/interfaces/server';
 
 import type { PublicClient } from 'viem';
 
@@ -113,9 +113,6 @@ export class ProverClaimRewardCollector {
       pollIntervalMs: config.FIRST_PROVER_TRACKER__POLL_INTERVAL_MS,
       ...options.trackerOptions,
       proverId: options.proverId,
-      // Track the captures on the first portal only, and use each range for every portal. This assumes that every
-      // portal has the same captured range. Read the warning on `EpochProfitTrackerOptions.portal` for the risk.
-      portal: options.portals[0].contract,
       rollup: options.rollup,
       node: options.node,
       roundaboutSize: options.roundaboutSize,

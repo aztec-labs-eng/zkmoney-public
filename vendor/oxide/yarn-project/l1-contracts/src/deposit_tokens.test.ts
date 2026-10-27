@@ -1,4 +1,4 @@
-import { EthAddress } from '@aztec/foundation/eth-address';
+import { EthAddress } from '@aztec-labs/foundation/eth-address';
 
 import { describe, expect, test } from '@jest/globals';
 
@@ -21,9 +21,12 @@ describe('deposit tokens', () => {
     expect(depositTokensFor(SEPOLIA, TEST_TOKEN)).toEqual([TEST_TOKEN]);
   });
 
-  test('a swept mainnet swap input pays out in DAI, everything else in the sent token', () => {
+  test('a mainnet sweep of USDC or USDT pays out in DAI', () => {
     expect(depositPayoutTokenFor(MAINNET_CHAIN_ID, MAINNET_USDC).equals(MAINNET_DAI)).toBe(true);
     expect(depositPayoutTokenFor(MAINNET_CHAIN_ID, MAINNET_USDT).equals(MAINNET_DAI)).toBe(true);
+  });
+
+  test('every other sweep pays out in the sent token', () => {
     expect(depositPayoutTokenFor(MAINNET_CHAIN_ID, MAINNET_DAI).equals(MAINNET_DAI)).toBe(true);
     expect(depositPayoutTokenFor(SEPOLIA, TEST_TOKEN).equals(TEST_TOKEN)).toBe(true);
   });

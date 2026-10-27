@@ -29,8 +29,8 @@ export interface UpgradeStatus {
   phase?: MetadataMigrationPhase
   /** The upgrade also updates the account's registration for this version. */
   registration: boolean
-  /** Nothing on an old version can pay for it: a deposit funds it. */
-  external?: boolean
+  /** The run stops if the app closes now. */
+  keepOpen?: boolean
 }
 
 const requests = createExternalState(0)
@@ -65,7 +65,7 @@ export function setUpgradeStatus(next: UpgradeStatus): void {
     now.state !== next.state ||
     now.phase !== next.phase ||
     now.registration !== next.registration ||
-    now.external !== next.external
+    now.keepOpen !== next.keepOpen
   ) {
     status.set(next)
   }

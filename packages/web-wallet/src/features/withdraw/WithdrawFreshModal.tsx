@@ -38,11 +38,11 @@ import { useBusyLabel } from "../operations/operations"
 import { OperationHandOff } from "../operations/OperationHandOff"
 import { LocalPasskeyHint } from "../../ui/LocalPasskeyHint"
 import { ScreeningNotice, useScreenedAddress } from "../../ui/screening"
-import { TeeSignerNotice } from "../../ui/TeeSignerNotice"
 import { Warning } from "../../ui/Warning"
 import { getConfig } from "../../config/env"
 import {
   FEE_UNAVAILABLE_COPY,
+  ExecutorFeeNote,
   SwapFeeNote,
   settledFloor,
   useSwapSimulation,
@@ -73,6 +73,7 @@ import {
 import { LimitLine, LimitNotice, usdFigureGrouped } from "../limits/publicLimit"
 import { LimitsInfoButton } from "../limits/AboutLimitsSheet"
 import { withdrawalLimitProblem } from "../limits/withdrawalLimit"
+import { useTxAmountCap } from "../token/useTxAmountCap"
 
 /** Dollars of the wallet asset that land as ETH, on top of the funds. Each is at most `MAX_DAI_FOR_GAS`. */
 export const GAS_CHIPS = [0, 1, 5, 10, 15]
@@ -110,6 +111,7 @@ export function WithdrawFreshModal({
   onClose: () => void
   onDone: () => void
 }) {
+  const txAmountCap = useTxAmountCap()
   const { obsidionWallet } = useAztecContext()
   const { obsidionAccount } = useAccountContext()
   const { tokenService } = useAssetContext()
@@ -156,7 +158,10 @@ export function WithdrawFreshModal({
   })
   const quote = useSwapSimulation({
     receiveAsset: fundsAsset,
-    amountAtomic: charged !== undefined ? freshBurnAmount(charged, String(gas), floor) : undefined,
+    amountAtomic:
+      charged !== undefined
+        ? freshBurnAmount(charged, String(gas), floor, DEFAULT_DECIMALS)
+        : undefined,
     recipient,
     network,
     proverTip: speed.pricedTip,
@@ -187,7 +192,7 @@ export function WithdrawFreshModal({
   // A floor not yet priced counts nothing, so only a known excess shows.
   const problem =
     fundsAtomic !== undefined
-      ? withdrawalLimitProblem(fundsAtomic + gasAtomic + learned)
+      ? withdrawalLimitProblem(fundsAtomic + gasAtomic + learned, txAmountCap)
       : undefined
   const valid = complete && !problem
   const balance = walletAsset?.balanceAtomic ?? 0n
@@ -213,6 +218,7 @@ export function WithdrawFreshModal({
         feeAtomic: gasAtomic + learned - tipInFee,
         decimals: DEFAULT_DECIMALS,
         valuation: NOMINAL_USD_VALUATION,
+        txAmountCap,
       })
     : undefined
   const maxAmount =
@@ -227,7 +233,7 @@ export function WithdrawFreshModal({
     const extra = speed.offer.proverTip - tipInFee
     if (balance - gasAtomic - (feeAtomic + extra) < fundsAtomic)
       tipBlocked = BALANCE_TIP_BLOCKED_COPY
-    else if (withdrawalLimitProblem(fundsAtomic + gasAtomic + learned + extra))
+    else if (withdrawalLimitProblem(fundsAtomic + gasAtomic + learned + extra, txAmountCap))
       tipBlocked = LIMIT_TIP_BLOCKED_COPY
   }
   const speedOutcome = useSpeedOutcome(
@@ -289,7 +295,7 @@ export function WithdrawFreshModal({
       if (mined) void recordBurnDuration(durationMs)
       fireEvent("withdraw_submitted", {
         duration_ms: mined ? durationMs : undefined,
-        amount_bucket: amountBucket(BigInt(Math.floor(parsed + gas)), 0),
+        amount_bucket: amountBucket(BigInt(record.rawAmount ?? 0), record.tokenDecimals),
       })
       void upsertSavedL1WalletContact({ address: recipient, name: walletName })
       if (!left.current) onDone()
@@ -336,7 +342,6 @@ export function WithdrawFreshModal({
             </GradientText>
             <div className="ww-fund__addr">{destination}</div>
           </div>
-          <TeeSignerNotice />
         </>
       )}
 
@@ -435,6 +440,7 @@ export function WithdrawFreshModal({
               <DepositFact label="Withdrawal fee">
                 <b>{dollars(feeAtomic)}</b>
               </DepositFact>
+              <ExecutorFeeNote state={quote} />
               {/* An escrow's swap tip is the bulk of the fee: say what it was priced on, once the
                   whole fee above it is. */}
               {!direct && feeAtomic !== undefined && <SwapFeeNote state={quote} />}

@@ -6,17 +6,17 @@
 // `gen_test_attestation.ts`; the `./gen_test_attestation.js` import stays a sibling reference. Its
 // Re-sync on the next oxide bump.
 // ─────────────────────────────────────────────────────────────────────────────
-import { deployL1Contract } from '@aztec/ethereum/deploy-l1-contract';
-import type { ExtendedViemWalletClient } from '@aztec/ethereum/types';
-import type { EthAddress } from '@aztec/foundation/eth-address';
+import { deployL1Contract } from "@aztec-labs/ethereum/deploy-l1-contract"
+import type { ExtendedViemWalletClient } from "@aztec-labs/ethereum/types"
+import type { EthAddress } from "@aztec-labs/foundation/eth-address"
 
-import { TestCertManagerAbi, TestCertManagerBytecode } from '@oxide/l1-contracts';
+import { TestCertManagerAbi, TestCertManagerBytecode } from "@oxide/l1-contracts"
 
-import type { Hex } from 'viem';
+import type { Hex } from "viem"
 
-import type { RootArgs } from './gen_test_attestation.js';
+import type { RootArgs } from "./gen_test_attestation.js"
 
-export type TestCertManagerRootArgs = RootArgs;
+export type TestCertManagerRootArgs = RootArgs
 
 /**
  * Deploys `TestCertManager(rootArgs)`. Pair with a real `NitroValidator` (also from
@@ -33,8 +33,8 @@ export async function deployTestCertManager(
       notAfter: BigInt(rootArgs.notAfter),
       maxPathLen: BigInt(rootArgs.maxPathLen),
       subjectHash: rootArgs.subjectHash.toString() as Hex,
-      pubKey: ('0x' + rootArgs.pubKey.toString('hex')) as Hex,
+      pubKey: ("0x" + rootArgs.pubKey.toString("hex")) as Hex,
     },
-  ]);
-  return address;
+  ])
+  return address
 }

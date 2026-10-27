@@ -25,7 +25,7 @@ contract TeeRegistry is ITeeRegistry {
 
   IInbox public immutable INBOX;
 
-  uint256 public immutable ROLLUP_VERSION;
+  uint256 public immutable override(ITeeRegistry) ROLLUP_VERSION;
 
   bytes32 public immutable L2_RECIPIENT;
 

@@ -3,7 +3,7 @@
  * poseidon2 domain-separated key derivation shared by the
  * `AlphaAuthService.getDerivedKey` implementations and the XMTP DB-key path.
  *
- * Mocks `@aztec/foundation/crypto/poseidon` (bb.js/Barretenberg is unreliable under
+ * Mocks `@aztec-labs/foundation/crypto/poseidon` (bb.js/Barretenberg is unreliable under
  * jsdom/vitest) with a deterministic fake; real `Fr` is used because only the
  * hashing path is unreliable. The mock is deterministic so the tests assert the
  * correct (secret, separator) tuple flows in.
@@ -15,7 +15,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
-vi.mock("@aztec/foundation/crypto/poseidon", () => ({
+vi.mock("@aztec-labs/foundation/crypto/poseidon", () => ({
   poseidon2HashWithSeparator: vi.fn(
     async (input: Array<{ toBuffer: () => Buffer }>, sep: number) => {
       // Deterministic fake: byte 0 = (separator & 0xff), rest = first input's
@@ -29,8 +29,8 @@ vi.mock("@aztec/foundation/crypto/poseidon", () => ({
   ),
 }))
 
-import { Fr } from "@aztec/aztec.js/fields"
-import { poseidon2HashWithSeparator } from "@aztec/foundation/crypto/poseidon"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { poseidon2HashWithSeparator } from "@aztec-labs/foundation/crypto/poseidon"
 
 import { deriveKeyFromSecret, DOMAIN_SEPARATORS } from "../../src/core/storages/index"
 
@@ -93,10 +93,8 @@ describe("deriveKeyFromSecret", () => {
 
   it("throws when the hash output is not 32 bytes", async () => {
     vi.mocked(poseidon2HashWithSeparator).mockImplementationOnce(
-      async () => ({ toBuffer: () => Buffer.alloc(31) }) as never,
+      async () => ({ toBuffer: () => Buffer.alloc(31) } as never),
     )
-    await expect(deriveKeyFromSecret(new Fr(1n), "xmtp-store")).rejects.toThrow(
-      /must be 32 bytes/,
-    )
+    await expect(deriveKeyFromSecret(new Fr(1n), "xmtp-store")).rejects.toThrow(/must be 32 bytes/)
   })
 })

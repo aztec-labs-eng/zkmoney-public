@@ -3,10 +3,13 @@ import initACVM, {
   compressWitness,
   executeCircuit,
   type ExecutionError,
-} from "@aztec/noir-acvm_js/web/acvm_js.js"
-import initABI, { abiDecodeError, abiEncode } from "@aztec/noir-noirc_abi/web/noirc_abi_wasm.js"
-import { Barretenberg, UltraHonkBackend } from "@aztec/bb.js"
-import { createLogger } from "@aztec/foundation/log"
+} from "@aztec-foundation/noir-acvm_js/web/acvm_js.js"
+import initABI, {
+  abiDecodeError,
+  abiEncode,
+} from "@aztec-foundation/noir-noirc_abi/web/noirc_abi_wasm.js"
+import { Barretenberg, UltraHonkBackend } from "@aztec-foundation/bb.js"
+import { createLogger } from "@aztec-labs/foundation/log"
 import { barretenbergWasm } from "./bbWasmPath"
 
 export interface NoirCircuit {

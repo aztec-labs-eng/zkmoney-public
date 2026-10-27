@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { TxExecutionResult, TxStatus } from "@aztec/stdlib/tx"
+import { TxExecutionResult, TxStatus } from "@aztec-labs/stdlib/tx"
 import {
   hasBlockMoved,
   isRevertedInclusion,
@@ -19,23 +19,25 @@ describe("isRevertedInclusion", () => {
       TxStatus.PROVEN,
       TxStatus.FINALIZED,
     ]) {
-      expect(isRevertedInclusion(receipt({ status, executionResult: TxExecutionResult.REVERTED }))).toBe(
-        true,
-      )
+      expect(
+        isRevertedInclusion(receipt({ status, executionResult: TxExecutionResult.REVERTED })),
+      ).toBe(true)
     }
   })
 
   it("is false when the tx is not in a block, even if reverted", () => {
     for (const status of [TxStatus.PENDING, TxStatus.DROPPED]) {
-      expect(isRevertedInclusion(receipt({ status, executionResult: TxExecutionResult.REVERTED }))).toBe(
-        false,
-      )
+      expect(
+        isRevertedInclusion(receipt({ status, executionResult: TxExecutionResult.REVERTED })),
+      ).toBe(false)
     }
   })
 
   it("is false when execution succeeded or the adapter omits the field", () => {
     expect(
-      isRevertedInclusion(receipt({ status: TxStatus.PROPOSED, executionResult: TxExecutionResult.SUCCESS })),
+      isRevertedInclusion(
+        receipt({ status: TxStatus.PROPOSED, executionResult: TxExecutionResult.SUCCESS }),
+      ),
     ).toBe(false)
     expect(isRevertedInclusion(receipt({ status: TxStatus.FINALIZED }))).toBe(false)
   })

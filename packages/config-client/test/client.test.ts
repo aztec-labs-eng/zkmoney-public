@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import {
   ConfigProfileError,
   fetchConfigProfile,
@@ -6,6 +6,7 @@ import {
   pinnedProfileUrl,
   resolveVersion,
   retiredRollupNodes,
+  retiredRollupVersions,
 } from "../src/client.js"
 import { isSupportedVersion, parseConfigProfile } from "../src/schema.js"
 import { stagingDoc, withVersions } from "./fixture.js"
@@ -429,7 +430,7 @@ describe("pinnedProfileUrl", () => {
 })
 
 describe("retiredRollupNodes", () => {
-  it("maps historical portals to their configured nodes", () => {
+  it("names only profile-selected portals, including sources on the current node", () => {
     const doc = withVersions("0.0.3", "0.0.2", "0.0.1")
     doc.versions["0.0.2"].nodeUrl = "https://old.rpc.example"
     doc.versions["0.0.2"].oxide.portal = "0x" + "AB".repeat(20)
@@ -437,7 +438,42 @@ describe("retiredRollupNodes", () => {
     const nodes = retiredRollupNodes(parseConfigProfile(doc))
     expect([...nodes]).toEqual([
       ["0x" + "ab".repeat(20), "https://old.rpc.example"],
-      ["0x" + "cd".repeat(20), "https://node.example"],
+      ["0x" + "cd".repeat(20), doc.versions["0.0.1"].nodeUrl],
+    ])
+  })
+
+  it("names nothing when the profile has no supported history", () => {
+    expect(retiredRollupNodes(parseConfigProfile(withVersions("0.0.1"))).size).toBe(0)
+  })
+})
+
+describe("retiredRollupVersions", () => {
+  it("lists each version on another node with its manifest and every deployment it pins", () => {
+    const doc = withVersions("0.0.3", "0.0.2", "0.0.1")
+    const old = doc.versions["0.0.2"]
+    old.nodeUrl = "https://v5.rpc.example"
+    old.oxide.manifestUrl = "https://manifests.example/staging.v4.json"
+    old.oxide.portal = "0x" + "ab".repeat(20)
+    old.assets = [
+      { symbol: "DAI", portal: "0x" + "AB".repeat(20), expectedGitSha: old.oxide.expectedGitSha },
+      {
+        symbol: "sUSDS",
+        portal: "0x" + "ef".repeat(20),
+      },
+    ]
+    expect(retiredRollupVersions(parseConfigProfile(doc))).toEqual([
+      {
+        versionId: "0.0.2",
+        nodeUrl: "https://v5.rpc.example",
+        manifestUrl: "https://manifests.example/staging.v4.json",
+        pins: [
+          {
+            portal: "0x" + "ab".repeat(20),
+            expectedGitSha: old.oxide.expectedGitSha,
+          },
+          { portal: "0x" + "ef".repeat(20) },
+        ],
+      },
     ])
   })
 })

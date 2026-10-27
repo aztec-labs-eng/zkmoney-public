@@ -1,4 +1,4 @@
-import { EthAddress } from '@aztec/foundation/eth-address';
+import { EthAddress } from '@aztec-labs/foundation/eth-address';
 
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';

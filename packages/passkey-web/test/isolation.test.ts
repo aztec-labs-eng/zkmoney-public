@@ -51,11 +51,11 @@ describe("the checker", () => {
       emitted({
         "index.js": "export {}\n",
         "index.d.ts":
-          'import type { Fr } from "@aztec/aztec.js/fields"\nexport declare const k: Fr\n',
+          'import type { Fr } from "@aztec-labs/aztec.js/fields"\nexport declare const k: Fr\n',
       }),
     )
     expect(findings).toHaveLength(1)
-    expect(findings[0]!.problem).toMatch(/allowlist: @aztec\/aztec\.js\/fields/)
+    expect(findings[0]!.problem).toMatch(/allowlist: @aztec-labs\/aztec\.js\/fields/)
   })
 
   it("reads triple-slash type references from the declarations", () => {
@@ -89,23 +89,23 @@ describe("the checker", () => {
     ],
     [
       "a dynamic import that is never awaited",
-      'const load = () => import("@aztec/foundation/fields")\nexport { load }\n',
-      /allowlist: @aztec\/foundation\/fields/,
+      'const load = () => import("@aztec-labs/foundation/fields")\nexport { load }\n',
+      /allowlist: @aztec-labs\/foundation\/fields/,
     ],
     [
       "a dynamic import with a comment before the specifier",
-      'export const load = () => import(/* chunk */ "@aztec/foundation/fields")\n',
-      /allowlist: @aztec\/foundation\/fields/,
+      'export const load = () => import(/* chunk */ "@aztec-labs/foundation/fields")\n',
+      /allowlist: @aztec-labs\/foundation\/fields/,
     ],
     [
       "a dynamic import with options",
-      'export const load = () => import("@aztec/foundation/fields", { with: {} })\n',
-      /allowlist: @aztec\/foundation\/fields/,
+      'export const load = () => import("@aztec-labs/foundation/fields", { with: {} })\n',
+      /allowlist: @aztec-labs\/foundation\/fields/,
     ],
     [
       "a require",
-      'const { Fr } = require("@aztec/aztec.js/fields")\nexport { Fr }\n',
-      /allowlist: @aztec\/aztec\.js\/fields/,
+      'const { Fr } = require("@aztec-labs/aztec.js/fields")\nexport { Fr }\n',
+      /allowlist: @aztec-labs\/aztec\.js\/fields/,
     ],
     [
       "a dynamic import with a computed specifier",

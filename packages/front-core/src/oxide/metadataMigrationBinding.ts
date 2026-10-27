@@ -1,8 +1,8 @@
 import { concatHex, keccak256, toBytes, toHex, type Hex } from "viem"
-import type { Fr } from "@aztec/aztec.js/fields"
+import type { Fr } from "@aztec-labs/aztec.js/fields"
 import { L2_BINDING_MESSAGE_PREFIX } from "@obsidion/core/constants"
-import type { OxideAccountBinding } from "@obsidion/sdk"
-import { deriveBootstrapKey } from "./oxideAccountKeys"
+import { bootstrapKeyProof, type OxideAccountBinding, type RegistrationWitness } from "@obsidion/sdk"
+import { deriveBootstrapKey, deriveBootstrapScalar } from "./oxideAccountKeys"
 
 /** Shared web/mobile NameClaim and attestation binding to the destination L2 account. */
 export async function metadataMigrationBinding(
@@ -23,4 +23,12 @@ export async function metadataMigrationBinding(
     bootstrapPubKeyY: publicKey.slice(33, 65),
     bindingSig: toBytes(signature).slice(0, 64),
   }
+}
+
+/** The registration gate's key witnesses for this wallet's bootstrap key and the name it holds. */
+export function registrationKeyProof(
+  secretKey: Fr,
+  nameHash: Hex,
+): Omit<RegistrationWitness, "leafIndex"> {
+  return { nameHash: toBytes(nameHash), ...bootstrapKeyProof(deriveBootstrapScalar(secretKey)) }
 }

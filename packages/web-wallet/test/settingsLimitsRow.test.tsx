@@ -46,6 +46,9 @@ vi.mock("../src/features/onboarding/ChooseNameSheet", () => ({
 }))
 vi.mock("../src/lib/analytics", () => ({ appVersion: "0.0.0" }))
 vi.mock("../src/ui/prefs", () => ({ useHideBalances: () => [false, vi.fn()] }))
+vi.mock("../src/features/backupPasskey/backupRotationStore", () => ({
+  useBackupRotation: () => null,
+}))
 vi.mock("../src/features/requests/useNonContactRequests", () => ({
   useNonContactRequests: () => ({ requests: [], allowed: true, setAllowed: vi.fn() }),
 }))
@@ -61,6 +64,7 @@ vi.mock("../src/features/allowance/useSponsoredAllowance", () => ({
   useSponsoredAllowance: () => ({ snapshot: allowance.snapshot, refresh: allowance.refresh }),
 }))
 vi.mock("../src/ui/ContractAddressesModal", () => ({ ContractAddressesModal: () => null }))
+vi.mock("../src/ui/PasskeysModal", () => ({ PasskeysModal: () => null }))
 vi.mock("../src/dev/ConfigProfileModal", () => ({ ConfigProfileModal: () => null }))
 vi.mock("../src/ui/EndpointsModal", () => ({
   EndpointsModal: () => null,

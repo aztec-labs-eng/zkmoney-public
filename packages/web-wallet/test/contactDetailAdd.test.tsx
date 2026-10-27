@@ -22,9 +22,11 @@ const m = vi.hoisted(() => ({
   /** Actions that must wait for the upgrade, and every action a press asked for. */
   upgrade: new Set<string>(),
   asked: [] as string[],
+  notUpgraded: new Set<string>(),
+  /** Tags whose upgrade check is still reading. */
+  checking: new Set<string>(),
 }))
 vi.mock("../src/features/actionGate", () => ({
-  useWalletFrozen: () => false,
   useActionGuard: () => (action: string, run: () => void) => {
     m.asked.push(action)
     if (!m.upgrade.has(action)) run()
@@ -141,6 +143,11 @@ vi.mock("../src/features/contacts/unsavedContact", () => ({
   saveUnsavedContact: m.save,
 }))
 
+vi.mock("../src/features/contacts/useRecipientUpgraded", () => ({
+  useRecipientUpgraded: (tag?: string) =>
+    tag && m.checking.has(tag) ? undefined : !tag || !m.notUpgraded.has(tag),
+}))
+
 import { ContactDetailScreen } from "../src/features/contacts/ContactDetailScreen"
 
 type SaveResult = "added" | "changed"
@@ -185,6 +192,8 @@ beforeEach(async () => {
   m.phone = false
   m.upgrade = new Set()
   m.asked = []
+  m.notUpgraded = new Set()
+  m.checking = new Set()
   vi.spyOn(console, "warn").mockImplementation(() => {})
   m.entries = [ADA]
   m.lookUp.mockImplementation(async (idOrTag: string) => unsaved.get(idOrTag) ?? null)
@@ -342,6 +351,24 @@ describe("a person's actions wait for the upgrade", () => {
   })
 })
 
+describe("a person still on an older zk.money", () => {
+  it("keeps their page open with a notice, and offers no way to pay, ask or save them", async () => {
+    m.notUpgraded = new Set(["ada", "bob"])
+    await goTo("ada")
+    expect(title()).toBe("@ada")
+    expect(container.querySelector(".ww-chat__not-upgraded")?.textContent).toContain(
+      "@ada hasn't upgraded yet",
+    )
+    const labels = [...container.querySelectorAll("button")].map((b) => b.textContent)
+    expect(labels).not.toContain("Send")
+    expect(labels).not.toContain("Request")
+
+    await goTo("bob")
+    expect(unsavedStrip()).not.toBeNull()
+    expect(addButton()).toBeUndefined()
+  })
+})
+
 describe("Inline request card", () => {
   const requestButton = () =>
     [...container.querySelectorAll("button")].find((b) => b.textContent === "Request")
@@ -354,6 +381,23 @@ describe("Inline request card", () => {
       amountInput().dispatchEvent(new Event("input", { bubbles: true }))
     })
   }
+
+  it("waits for the upgrade check before a request can go", async () => {
+    m.checking = new Set(["ada"])
+    await goTo("ada")
+    await act(async () => requestButton()!.click())
+    await typeAmount("5")
+    expect(requestButton()!.disabled).toBe(true)
+  })
+
+  it("closes a form opened before the person turned out not to have upgraded", async () => {
+    await goTo("ada")
+    await act(async () => requestButton()!.click())
+    m.notUpgraded = new Set(["ada"])
+    await typeAmount("5")
+    expect(container.querySelector('input[aria-label="Request amount"]')).toBeNull()
+    expect(container.querySelector(".ww-chat__not-upgraded")).not.toBeNull()
+  })
 
   it("names a decimals mistake under the card and tints the card", async () => {
     await goTo("ada")

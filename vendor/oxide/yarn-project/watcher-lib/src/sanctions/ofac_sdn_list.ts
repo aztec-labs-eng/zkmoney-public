@@ -1,5 +1,5 @@
-import type { EthAddress } from '@aztec/foundation/eth-address';
-import { type Logger, createLogger } from '@aztec/foundation/log';
+import type { EthAddress } from '@aztec-labs/foundation/eth-address';
+import { type Logger, createLogger } from '@aztec-labs/foundation/log';
 
 import { addressKey } from '../address_key.js';
 import { type SdnList, parseSdnList } from './parse_sdn_list.js';

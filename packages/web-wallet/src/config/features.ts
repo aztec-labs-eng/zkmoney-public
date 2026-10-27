@@ -19,3 +19,10 @@ export const emailLockedLinksEnabled = import.meta.env.VITE_EMAIL_LOCKED_LINKS =
  * from its console. Off by default.
  */
 export const proveTxPerfLogsEnabled = import.meta.env.VITE_PROVE_TX_PERF_LOGS === "true"
+
+/**
+ * Adding a backup passkey from account settings (`VITE_BACKUP_PASSKEY_SETTINGS`). Off by default:
+ * the rotation that moves the account to a two-key address runs on demo steps that never touch the
+ * account, and the entry shows nothing while off.
+ */
+export const backupPasskeySettingsEnabled = import.meta.env.VITE_BACKUP_PASSKEY_SETTINGS === "true"

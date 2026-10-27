@@ -11,10 +11,10 @@ function centsAmount(amount: bigint, decimals: number, symbol: string): string {
 
 /**
  * Where a paylink-funded signup's funds go: the tag price (free when the signed fee is the sweep
- * fee), one network fee (sweep fee, both portal cuts, the relayer tip, the committed prover tip,
- * the dust the sweep returns), and what the user keeps, counting a signed minimum's excess the
- * sweep returns after registration, so the rows sum to the payment. Every figure waits for its own
- * read rather than showing one that would move once a cut or the sweep fee lands.
+ * fee), one network fee (sweep fee, the relayer tip, the committed prover tip, the dust the sweep
+ * returns), and what the user keeps, counting a signed minimum's excess the sweep returns after
+ * registration, so the rows sum to the payment. Every figure waits for its own read rather than
+ * showing one that would move once the sweep fee lands.
  */
 export function PaylinkSignupRows({
   quote,

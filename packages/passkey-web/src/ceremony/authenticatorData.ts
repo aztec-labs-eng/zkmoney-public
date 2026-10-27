@@ -6,6 +6,8 @@ import { ZERO_AAGUID } from "@obsidion/core/constants"
  * device-bound key that no other device can ever read.
  */
 export type AuthenticatorDataFlags = {
+  /** The authenticator verified the user; `hmac-secret` keeps a separate PRF secret for unverified reads. */
+  userVerified: boolean
   backupEligible: boolean
   backupState: boolean
   attestedCredentialData: boolean
@@ -13,6 +15,7 @@ export type AuthenticatorDataFlags = {
 
 const FLAGS_OFFSET = 32
 const MIN_LENGTH = 37
+const FLAG_UV = 0x04
 const FLAG_BE = 0x08
 const FLAG_BS = 0x10
 const FLAG_AT = 0x40
@@ -52,6 +55,7 @@ export function parseAuthenticatorDataFlags(authenticatorData: Uint8Array): Auth
   }
   const flags = authenticatorData[FLAGS_OFFSET]!
   return {
+    userVerified: (flags & FLAG_UV) !== 0,
     backupEligible: (flags & FLAG_BE) !== 0,
     backupState: (flags & FLAG_BS) !== 0,
     attestedCredentialData: (flags & FLAG_AT) !== 0,

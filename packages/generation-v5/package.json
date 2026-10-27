@@ -1,0 +1,23 @@
+{
+  "name": "@obsidion/generation-v5",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The Aztec v5 source generation: a bundle built from the pinned v5 wallet commit, loaded beside the app to read and refund a v5 deployment",
+  "type": "module",
+  "exports": {
+    "./check": {
+      "types": "./scripts/check.d.mts",
+      "default": "./scripts/check.mjs"
+    }
+  },
+  "files": [
+    "dist",
+    "scripts/check.mjs",
+    "scripts/check.d.mts"
+  ],
+  "scripts": {
+    "build:bundle": "node scripts/build.mjs",
+    "fetch:bundle": "node scripts/fetch.mjs",
+    "check:bundle": "node scripts/check.mjs"
+  }
+}

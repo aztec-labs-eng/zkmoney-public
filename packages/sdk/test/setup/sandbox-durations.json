@@ -18,5 +18,5 @@
   "test/oidcKeyRegistry/oidcKeyRegistry.sandbox.test.ts": 42,
   "test/alpha_account/productionKeyBinding.sandbox.test.ts": 23,
   "test/alpha_account/entrypoint-chain-binding.sandbox.test.ts": 7,
-  "test/alpha_account/alphaKeyCommitment.sandbox.test.ts": 2
+  "test/alpha_account/alphaPasskeySet.sandbox.test.ts": 2
 }

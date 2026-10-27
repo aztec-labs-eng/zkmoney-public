@@ -38,7 +38,13 @@ export type WithdrawalProvenance =
 export interface WithdrawalDeployment {
   portal: Hex
   l2Token: string
+  /** The withdrawal executor the burn pays. A self-finalize releases through it even after the
+   *  bridge's executor is replaced. Absent where the record predates it and no migration found it. */
+  executor?: Hex
 }
+
+/** The record schema {@link WithdrawalStorage} writes: version 2 stamps `deployment.executor`. */
+export const WITHDRAWAL_RECORD_VERSION = 2
 
 export interface WithdrawalRecord {
   /**
@@ -67,6 +73,9 @@ export interface WithdrawalRecord {
    * a descriptive `error`.
    */
   cancelReason?: WithdrawalCancelReason
+
+  /** The {@link WITHDRAWAL_RECORD_VERSION} the record was written or migrated at; absent is 1. */
+  version?: number
 
   /** L2 burn hash, persisted at broadcast when available; receipt recovery may still be pending. */
   l2TxHash?: Hash
@@ -110,7 +119,7 @@ export interface WithdrawalRecord {
 
   /**
    * Wallet randomness the escrow address commits to and the recovery salt derives from. Written
-   * BEFORE the burn signs, and carried in the burn's `Withdraw` event so a rescan rebuilds it.
+   * BEFORE the burn signs, and carried in the burn's recovery memo so a rescan rebuilds it.
    */
   swapNonce?: Hex
 
@@ -143,7 +152,7 @@ export interface WithdrawalRecord {
 
   /**
    * The Sky savings move a rebuilt burn funds: what its escrow, `recipient`, commits to, read off
-   * the burn's `Withdraw` event. `savingsMoveOfWithdrawal` turns it back into the move.
+   * the burn's recovery memo. `savingsMoveOfWithdrawal` turns it back into the move.
    */
   skyMove?: {
     direction: "in" | "out"
@@ -168,10 +177,6 @@ export interface WithdrawalRecord {
   /** Where a recovery sent the DAI. */
   recoveryTarget?: Address
 
-  /** `OxidePortal.FPC_FUNDING_CUT` at record creation (DAI base units as string) — the portal
-   *  skims it on release beside the tips. */
-  fpcFundingCut?: string
-
   /** The prover tip the burn offered (DAI base units as string); the portal deducts it first.
    *  Absent on burns that offered none. */
   proverTip?: string
@@ -194,20 +199,20 @@ export interface WithdrawalRecord {
 
   /**
    * The burn funded one of this wallet's own SIPAs, not a cash-out: its registration (a ticket
-   * signup), or its balance on a new deployment (a migration).
+   * signup), its balance on a new deployment (a migration), or the deposit address that runs a
+   * backup passkey rotation (backup).
    */
-  intent?: "registration" | "migration"
+  intent?: "registration" | "migration" | "backup"
 
   /**
-   * A migration's arrival fee (DAI base units as string): the new deployment's deposit fee plus its
-   * funding cut, taken as the relayer sweeps the release in. With the tip and `fpcFundingCut` it
-   * prices what the new balance receives.
+   * A migration's arrival fee (DAI base units as string): the new deployment's deposit fee, taken
+   * as the relayer sweeps the release in. With the tips it prices what the new balance receives.
    */
   arrivalFee?: string
 
   /**
    * 16 random bytes as 0x-hex, shared by the legs of one fresh-address withdrawal. Written before
-   * the burn signs and carried in the burn's meta, so a rescan regroups the legs.
+   * the burn signs.
    */
   groupId?: Hex
 
@@ -215,9 +220,8 @@ export interface WithdrawalRecord {
   groupLeg?: WithdrawalGroupLeg
 
   /**
-   * Recreated from the burn's `Withdraw` event by a rescan (`rebuildWithdrawals`), not written at
-   * Confirm: no submit-time quote, no relayer tip and no funding cut, and `startTime` is the
-   * burn's block time.
+   * Recreated from the burn's recovery events by a rescan (`rebuildWithdrawals`), not written at
+   * Confirm: no submit-time quote, and `startTime` is the burn's block time.
    */
   rebuilt?: boolean
   /** `startTime` is the rebuild's clock, not the burn's block time; no deposit search may start from it. */
@@ -234,21 +238,29 @@ export interface WithdrawalRecord {
 
   /**
    * Raw on-chain amount (bigint serialized as string) emitted by the L2 burn —
-   * the gross, before the portal deducts the tips and `fpcFundingCut`. Set at
+   * the gross, before the portal deducts the tips. Set at
    * `l2_mined` alongside `l2TxHash`/`blockNumber`.
    */
   rawAmount?: string
 
   /**
    * Relayer tip the burn's user payload offered, raw token units. The plain withdrawal executor
-   * pays it out of what the portal releases after the prover tip and `fpcFundingCut`. Stamped with
+   * pays it out of what the portal releases after the prover tip. Stamped with
    * the rest of the mined burn data. Absent where the writer did not record it, which leaves the
    * amount breakdown unrenderable rather than guessed.
    */
   relayerTip?: string
 
+  /**
+   * The fee the burn's executor (`deployment.executor`) takes (raw token units), ahead of the relayer
+   * tip. Absent for an executor that takes none.
+   */
+  withdrawalFee?: string
+
   /** Token ticker for display. */
   tokenSymbol: string
+  /** Decimals of the burned token; every amount on the record is in its units. */
+  tokenDecimals: number
 
   /**
    * Finalization key: `sha256(burnTxHash ‖ withdrawMessageHash)` (a 0x-hex

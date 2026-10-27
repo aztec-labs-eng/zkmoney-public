@@ -1,4 +1,4 @@
-import { Buffer32 } from '@aztec/foundation/buffer';
+import { Buffer32 } from '@aztec-labs/foundation/buffer';
 
 import { Wallet } from 'ethers';
 import { readFile } from 'node:fs/promises';

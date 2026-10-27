@@ -10,7 +10,7 @@
  * replicated here byte-for-byte and pinned by a parity test against the server.
  */
 
-import { sha256 } from "@aztec/foundation/crypto/sha256"
+import { sha256 } from "@aztec-labs/foundation/crypto/sha256"
 import { BOOTSTRAP_SIGNATURE_HEADER } from "@obsidion/core/constants"
 import type {
   DrawnNameResponse,

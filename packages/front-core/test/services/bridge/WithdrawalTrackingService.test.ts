@@ -6,19 +6,15 @@
  *
  * `@obsidion/sdk` is factory-mocked (not importActual) so the vendored `@oxide/*`
  * subpaths the real reader pulls stay out of this front-core test — the tracker
- * only needs `fetchWithdrawalsWithIds` from it at runtime.
+ * only needs `fetchWithdrawalIds` from it at runtime.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { TxStatus, TxExecutionResult } from "@aztec/stdlib/tx"
+import { TxStatus, TxExecutionResult } from "@aztec-labs/stdlib/tx"
 import { ProvingStage, provingProgress } from "@obsidion/proving-progress"
 import { trackWithdrawalSubmission } from "../../../src/core/services/bridge/WithdrawalTrackingService"
 import type { Address, Hex } from "viem"
-import type {
-  SwapEscrowReader,
-  WithdrawalFinalizationReader,
-  WithdrawalPortalContext,
-} from "@obsidion/sdk"
+import type { SwapEscrowReader, WithdrawalFinalizationReader } from "@obsidion/sdk"
 
 import { InMemoryStorageAdapter } from "../../__test-helpers__/InMemoryStorageAdapter"
 import { resetSingleton } from "../../__test-helpers__/resetSingleton"
@@ -34,11 +30,14 @@ import {
   revivePendingWithdrawal,
   type WithdrawalTrackerNode,
 } from "../../../src/core/services/bridge/WithdrawalTrackingService"
-import type { WithdrawalRecord } from "../../../src/core/services/bridge/types"
+import type {
+  WithdrawalDeployment,
+  WithdrawalRecord,
+} from "../../../src/core/services/bridge/types"
 
 const mockFetch = vi.hoisted(() => vi.fn())
 vi.mock("@obsidion/sdk", () => ({
-  fetchWithdrawalsWithIds: mockFetch,
+  fetchWithdrawalIds: mockFetch,
   swapRouteForOutput: (output: string) => ({ USDC: 0, USDT: 1, ETH: 2 }[output]),
 }))
 
@@ -49,11 +48,10 @@ const WID_1 = ("0x" + "ab".repeat(32)) as Hex
 const WID_2 = ("0x" + "cd".repeat(32)) as Hex
 const L1TX = ("0x" + "ef".repeat(32)) as Hex
 
-const PORTAL_CONTEXT: WithdrawalPortalContext = {
-  l1Portal: ("0x" + "aa".repeat(20)) as Hex,
-  l2Portal: "0x" + "bb".repeat(32),
-  rollupVersion: 1n,
-  l1ChainId: 11155111n,
+const DEPLOYMENT: WithdrawalDeployment = {
+  portal: ("0x" + "aa".repeat(20)) as Hex,
+  // Parsed as an AztecAddress, so it must sit below the field modulus.
+  l2Token: "0x" + "0b".repeat(32),
 }
 
 /** Never-firing scheduler — tests drive `syncOnce()` explicitly for determinism. */
@@ -67,12 +65,11 @@ function widForTx(l2TxHash: string): Hex {
   return l2TxHash.toLowerCase() === L2TX_1 ? WID_1 : WID_2
 }
 
-/** fetchWithdrawalsWithIds stub: derives the mapped id from the passed TxHash. */
+/** fetchWithdrawalIds stub: derives the mapped id from the passed TxHash. */
 function stubDerivation() {
-  mockFetch.mockImplementation(async (_node: unknown, txHash: { toString(): string }) => ({
-    withdrawals: [{ withdrawalId: { toString: () => widForTx(txHash.toString()) } }],
-    anchorBlockHash: {},
-  }))
+  mockFetch.mockImplementation(async (_node: unknown, txHash: { toString(): string }) => [
+    { withdrawalId: { toString: () => widForTx(txHash.toString()) } },
+  ])
 }
 
 function makeReader(
@@ -167,9 +164,9 @@ describe("WithdrawalTrackingService (chain-watching)", () => {
         WithdrawalTrackingService.get({
           store,
           node: makeNode(),
-          // finalizationReader + portalContext omitted
+          // finalizationReader + deployment omitted
         } as unknown as Parameters<typeof WithdrawalTrackingService.get>[0]),
-      ).toThrow(/finalizationReader, portalContext/)
+      ).toThrow(/finalizationReader, deployment/)
     })
 
     it("first-call-wins: later no-arg calls return the same instance", async () => {
@@ -178,7 +175,7 @@ describe("WithdrawalTrackingService (chain-watching)", () => {
         store,
         node: makeNode(),
         finalizationReader: makeReader(),
-        portalContext: PORTAL_CONTEXT,
+        deployment: DEPLOYMENT,
         scheduler: NOOP_SCHEDULER,
       })
       expect(WithdrawalTrackingService.get()).toBe(first)
@@ -200,7 +197,7 @@ describe("WithdrawalTrackingService (chain-watching)", () => {
           store,
           node,
           finalizationReader: makeReader(),
-          portalContext: PORTAL_CONTEXT,
+          deployment: DEPLOYMENT,
           scheduler: NOOP_SCHEDULER,
         })
         const active = trackWithdrawalSubmission(store, "w1", "operation")
@@ -219,7 +216,12 @@ describe("WithdrawalTrackingService (chain-watching)", () => {
 
     it("recovers a broadcast burn after the sender loses its receipt", async () => {
       const store = await seedStore()
-      await store.create({ ...submittingRecord("w1"), l2TxHash: L2TX_1 })
+      await store.create({
+        ...submittingRecord("w1"),
+        l2TxHash: L2TX_1,
+        rawAmount: "1000000",
+        relayerTip: "100",
+      })
       const node = makeNode(TxStatus.PROVEN)
       vi.mocked(node.getTxReceipt).mockResolvedValue({
         status: TxStatus.PROVEN,
@@ -229,21 +231,12 @@ describe("WithdrawalTrackingService (chain-watching)", () => {
         store,
         node,
         finalizationReader: makeReader(),
-        portalContext: PORTAL_CONTEXT,
+        deployment: DEPLOYMENT,
         scheduler: NOOP_SCHEDULER,
       })
-      mockFetch.mockResolvedValueOnce({ withdrawals: [] })
+      mockFetch.mockResolvedValueOnce([])
       await tracker.syncOnce()
       expect(store.get("w1")?.phase).toBe("submitting")
-      mockFetch.mockResolvedValueOnce({
-        withdrawals: [
-          {
-            withdrawalId: { toString: () => WID_1 },
-            amount: 1000000n,
-            relayerTip: 100n,
-          },
-        ],
-      })
       await tracker.syncOnce()
       expect(store.get("w1")).toMatchObject({
         phase: "finalizing_l1",
@@ -268,7 +261,7 @@ describe("WithdrawalTrackingService (chain-watching)", () => {
         store,
         node,
         finalizationReader: reader,
-        portalContext: PORTAL_CONTEXT,
+        deployment: DEPLOYMENT,
         scheduler: NOOP_SCHEDULER,
       })
 
@@ -291,7 +284,7 @@ describe("WithdrawalTrackingService (chain-watching)", () => {
       // The portal's `WithdrawalOrRefund` log carries the withdrawalId as its nullifier, so neither
       // the escrow a swap burn paid nor the net the portal released keys the lookup.
       const store = await seedStore()
-      await store.create({ ...submittingRecord("w1"), ...swapFields(), fpcFundingCut: "50000" })
+      await store.create({ ...submittingRecord("w1"), ...swapFields() })
       await store.markMined("w1", L2TX_1, 100, "1000000", "100000")
 
       const reader = makeReader({
@@ -302,7 +295,7 @@ describe("WithdrawalTrackingService (chain-watching)", () => {
         store,
         node: makeNode(TxStatus.PROVEN),
         finalizationReader: reader,
-        portalContext: PORTAL_CONTEXT,
+        deployment: DEPLOYMENT,
         scheduler: NOOP_SCHEDULER,
       })
       await tracker.watch(store.get("w1")!)
@@ -328,7 +321,7 @@ describe("WithdrawalTrackingService (chain-watching)", () => {
         store,
         node: makeNode(TxStatus.PROVEN),
         finalizationReader: reader,
-        portalContext: PORTAL_CONTEXT,
+        deployment: DEPLOYMENT,
         scheduler: NOOP_SCHEDULER,
         l1BlockAt,
       })
@@ -355,7 +348,7 @@ describe("WithdrawalTrackingService (chain-watching)", () => {
         store,
         node: makeNode(TxStatus.PROVEN),
         finalizationReader: reader,
-        portalContext: PORTAL_CONTEXT,
+        deployment: DEPLOYMENT,
         scheduler: NOOP_SCHEDULER,
         l1BlockAt,
       })
@@ -373,8 +366,7 @@ describe("WithdrawalTrackingService (chain-watching)", () => {
       const store = await seedStore()
       const retired = {
         portal: ("0x" + "cc".repeat(20)) as Hex,
-        pool: ("0x" + "dd".repeat(20)) as Hex,
-        l2Token: "0x" + "ee".repeat(32),
+        l2Token: "0x" + "0e".repeat(32),
       }
       await store.create({ ...submittingRecord("w1"), deployment: retired })
       await store.markMined("w1", L2TX_1, 100, "1000000")
@@ -386,7 +378,7 @@ describe("WithdrawalTrackingService (chain-watching)", () => {
         store,
         node: makeNode(TxStatus.PROVEN),
         finalizationReader: liveReader,
-        portalContext: PORTAL_CONTEXT,
+        deployment: DEPLOYMENT,
         readerForDeployment,
         scheduler: NOOP_SCHEDULER,
       })
@@ -396,11 +388,7 @@ describe("WithdrawalTrackingService (chain-watching)", () => {
       await tracker.syncOnce()
 
       expect(store.get("w1")?.phase).toBe("done")
-      expect(mockFetch).toHaveBeenCalledWith(
-        expect.anything(),
-        expect.anything(),
-        expect.objectContaining({ l1Portal: retired.portal, l2Portal: retired.l2Token }),
-      )
+      expect(mockFetch.mock.calls[0]![2].toString()).toBe(retired.l2Token)
       expect(readerForDeployment).toHaveBeenCalledWith(retired)
       expect(retiredReader.isSpent).toHaveBeenCalled()
       expect(liveReader.isSpent).not.toHaveBeenCalled()
@@ -410,11 +398,7 @@ describe("WithdrawalTrackingService (chain-watching)", () => {
       const store = await seedStore()
       await store.create({
         ...submittingRecord("w1"),
-        deployment: {
-          portal: PORTAL_CONTEXT.l1Portal,
-          pool: ("0x" + "dd".repeat(20)) as Hex,
-          l2Token: PORTAL_CONTEXT.l2Portal,
-        },
+        deployment: DEPLOYMENT,
       })
       await store.markMined("w1", L2TX_1, 100, "1000000")
       const liveReader = makeReader({ isSpent: vi.fn(async () => true) })
@@ -423,7 +407,7 @@ describe("WithdrawalTrackingService (chain-watching)", () => {
         store,
         node: makeNode(TxStatus.PROVEN),
         finalizationReader: liveReader,
-        portalContext: PORTAL_CONTEXT,
+        deployment: DEPLOYMENT,
         readerForDeployment,
         scheduler: NOOP_SCHEDULER,
       })
@@ -450,7 +434,7 @@ describe("WithdrawalTrackingService (chain-watching)", () => {
         store,
         node,
         finalizationReader: reader,
-        portalContext: PORTAL_CONTEXT,
+        deployment: DEPLOYMENT,
         scheduler: NOOP_SCHEDULER,
       })
       await tracker.watch(store.get("w1")!)
@@ -481,7 +465,7 @@ describe("WithdrawalTrackingService (chain-watching)", () => {
         store,
         node,
         finalizationReader: makeReader(),
-        portalContext: PORTAL_CONTEXT,
+        deployment: DEPLOYMENT,
         scheduler: NOOP_SCHEDULER,
       })
       await tracker.watch(store.get("w1")!)
@@ -501,7 +485,7 @@ describe("WithdrawalTrackingService (chain-watching)", () => {
         store,
         node,
         finalizationReader: makeReader(),
-        portalContext: PORTAL_CONTEXT,
+        deployment: DEPLOYMENT,
         scheduler: NOOP_SCHEDULER,
       })
       await tracker.resumeAll()
@@ -524,7 +508,7 @@ describe("WithdrawalTrackingService (chain-watching)", () => {
         store,
         node,
         finalizationReader: makeReader({ isSpent: vi.fn(async () => true) }),
-        portalContext: PORTAL_CONTEXT,
+        deployment: DEPLOYMENT,
         scheduler: NOOP_SCHEDULER,
       })
       await tracker.resumeAll()
@@ -585,7 +569,7 @@ describe("WithdrawalTrackingService (chain-watching)", () => {
         store,
         node: makeNode(TxStatus.PROVEN),
         finalizationReader: reader,
-        portalContext: PORTAL_CONTEXT,
+        deployment: DEPLOYMENT,
         scheduler: NOOP_SCHEDULER,
       })
       await tracker.watch(store.get("w1")!)
@@ -606,7 +590,7 @@ describe("WithdrawalTrackingService (chain-watching)", () => {
         store,
         node: makeNode(TxStatus.DROPPED),
         finalizationReader: makeReader(),
-        portalContext: PORTAL_CONTEXT,
+        deployment: DEPLOYMENT,
         scheduler: NOOP_SCHEDULER,
       })
       await tracker.watch(store.get("w1")!)
@@ -626,7 +610,7 @@ describe("WithdrawalTrackingService (chain-watching)", () => {
         store,
         node: makeNode(TxStatus.PENDING),
         finalizationReader: makeReader(),
-        portalContext: PORTAL_CONTEXT,
+        deployment: DEPLOYMENT,
         scheduler: NOOP_SCHEDULER,
       })
       await tracker.watch(store.get("w1")!)
@@ -644,7 +628,7 @@ describe("WithdrawalTrackingService (chain-watching)", () => {
         store,
         node,
         finalizationReader: makeReader(),
-        portalContext: PORTAL_CONTEXT,
+        deployment: DEPLOYMENT,
         scheduler: NOOP_SCHEDULER,
       })
       await tracker.resumeAll()
@@ -672,7 +656,7 @@ describe("WithdrawalTrackingService (chain-watching)", () => {
         store,
         node: makeNode(TxStatus.PROVEN),
         finalizationReader: reader,
-        portalContext: PORTAL_CONTEXT,
+        deployment: DEPLOYMENT,
         scheduler: NOOP_SCHEDULER,
       })
       await tracker.resumeAll()
@@ -712,7 +696,7 @@ describe("WithdrawalTrackingService (chain-watching)", () => {
         store,
         node: makeNode(TxStatus.PROVEN),
         finalizationReader: reader,
-        portalContext: PORTAL_CONTEXT,
+        deployment: DEPLOYMENT,
         scheduler: NOOP_SCHEDULER,
       })
       await tracker.resumeAll()
@@ -733,7 +717,7 @@ describe("WithdrawalTrackingService (chain-watching)", () => {
         store,
         node: makeNode(TxStatus.FINALIZED),
         finalizationReader: makeReader({ isSpent: vi.fn(async () => true) }),
-        portalContext: PORTAL_CONTEXT,
+        deployment: DEPLOYMENT,
         scheduler: NOOP_SCHEDULER,
       })
       await tracker.resumeAll()
@@ -756,7 +740,7 @@ describe("WithdrawalTrackingService (chain-watching)", () => {
         store,
         node: makeNode(TxStatus.PROVEN),
         finalizationReader: makeReader({ isSpent }),
-        portalContext: PORTAL_CONTEXT,
+        deployment: DEPLOYMENT,
         scheduler: NOOP_SCHEDULER,
       })
       const first = tracker.syncOnce()
@@ -795,7 +779,7 @@ describe("WithdrawalTrackingService (chain-watching)", () => {
         store,
         node: makeNode(TxStatus.PROVEN),
         finalizationReader: makeReader({ isSpent }),
-        portalContext: PORTAL_CONTEXT,
+        deployment: DEPLOYMENT,
         scheduler: NOOP_SCHEDULER,
       })
       const pass = tracker.syncOnce()
@@ -826,7 +810,7 @@ describe("WithdrawalTrackingService (chain-watching)", () => {
         store,
         node: makeNode(TxStatus.PROVEN),
         finalizationReader: makeReader({ isSpent }),
-        portalContext: PORTAL_CONTEXT,
+        deployment: DEPLOYMENT,
         scheduler: NOOP_SCHEDULER,
       })
       await tracker.watch(store.get("w1")!)
@@ -846,7 +830,7 @@ describe("WithdrawalTrackingService (chain-watching)", () => {
         store,
         node: makeNode(TxStatus.PROVEN),
         finalizationReader: makeReader({ isSpent }),
-        portalContext: PORTAL_CONTEXT,
+        deployment: DEPLOYMENT,
         scheduler: NOOP_SCHEDULER,
       })
 
@@ -872,7 +856,7 @@ describe("WithdrawalTrackingService (chain-watching)", () => {
         store,
         node: makeNode(TxStatus.PROVEN),
         finalizationReader: makeReader({ isSpent }),
-        portalContext: PORTAL_CONTEXT,
+        deployment: DEPLOYMENT,
         scheduler: NOOP_SCHEDULER,
       })
       await tracker.watch(store.get("w1")!)
@@ -900,7 +884,7 @@ describe("WithdrawalTrackingService (chain-watching)", () => {
         store,
         node,
         finalizationReader: makeReader(),
-        portalContext: PORTAL_CONTEXT,
+        deployment: DEPLOYMENT,
         scheduler: NOOP_SCHEDULER,
       })
       await tracker.watch(store.get("w1")!)
@@ -925,7 +909,7 @@ describe("WithdrawalTrackingService (chain-watching)", () => {
         store,
         node: makeNode(TxStatus.PROVEN),
         finalizationReader: makeReader({ isSpent: vi.fn(async () => true) }),
-        portalContext: PORTAL_CONTEXT,
+        deployment: DEPLOYMENT,
         swapEscrowReader: reader,
         scheduler: NOOP_SCHEDULER,
       })
@@ -965,7 +949,7 @@ describe("WithdrawalTrackingService (chain-watching)", () => {
         store,
         node: makeNode(TxStatus.PROVEN),
         finalizationReader: makeReader({ isSpent: vi.fn(async () => true) }),
-        portalContext: PORTAL_CONTEXT,
+        deployment: DEPLOYMENT,
         scheduler: NOOP_SCHEDULER,
       })
       await tracker.watch(store.get("w1")!)
@@ -1226,16 +1210,11 @@ describe("revivePendingWithdrawal", () => {
       status: TxStatus.PENDING,
       blockNumber: 120,
     } as never)
-    mockFetch.mockResolvedValueOnce({
-      withdrawals: [
-        { withdrawalId: { toString: () => WID_1 }, amount: 1000000n, relayerTip: 100n },
-      ],
-    })
     const tracker = WithdrawalTrackingService.get({
       store,
       node,
       finalizationReader: makeReader(),
-      portalContext: PORTAL_CONTEXT,
+      deployment: DEPLOYMENT,
       scheduler: NOOP_SCHEDULER,
     })
     await tracker.syncOnce()

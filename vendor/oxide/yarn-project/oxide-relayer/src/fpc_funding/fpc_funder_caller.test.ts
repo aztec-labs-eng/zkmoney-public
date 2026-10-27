@@ -1,14 +1,19 @@
-import { EthAddress } from '@aztec/foundation/eth-address';
-import type { Logger } from '@aztec/foundation/log';
+import { EthAddress } from '@aztec-labs/foundation/eth-address';
+import type { Logger } from '@aztec-labs/foundation/log';
 
 import { IFPCFunderAbi, OperationExecutorAbi } from '@oxide/l1-contracts';
-import { SIMULATED_SENDER_BALANCE, UINT256_EXTRA_CALLDATA_GAS } from '@oxide/oxide-client/l1_operation_quote.js';
+import {
+  LEGACY_OPERATION_EXECUTOR_ABI,
+  type OperationExecutorVersion,
+  SIMULATED_SENDER_BALANCE,
+  UINT256_EXTRA_CALLDATA_GAS,
+} from '@oxide/oxide-client/l1_operation_quote.js';
 
 import { describe, expect, it, jest } from '@jest/globals';
 import { type Hex, type PublicClient, decodeFunctionData } from 'viem';
 
 import { LogRecorder } from '../log_recorder.js';
-import type { ChainlinkPriceOracle } from '../price_oracle/chainlink_price_oracle.js';
+import { fixedPriceOracle } from '../price_oracle/fixed_price_oracle.js';
 import { FpcFunderCaller, type FpcFunderCallerConfig } from './fpc_funder_caller.js';
 
 const SENDER = EthAddress.random();
@@ -18,9 +23,7 @@ const TOKEN = EthAddress.random();
 
 const BOUNTY = 10n ** 18n;
 
-const identityOracle = {
-  weiToUSD: (wei: bigint) => Promise.resolve(wei),
-} as unknown as ChainlinkPriceOracle;
+const identityOracle = fixedPriceOracle();
 
 /** A revert shaped the way viem exposes a decoded custom error: the args sit on `cause.data`. */
 function belowMinimumRevert(balance: bigint, minimum: bigint): Error {
@@ -37,6 +40,7 @@ function buildCaller(
     gasLimit?: bigint;
     maxFeePerGasCap?: bigint;
     logger?: Logger;
+    executorVersion?: OperationExecutorVersion;
   } = {},
 ) {
   const quote = overrides.quote ?? (() => Promise.resolve({ result: BOUNTY }));
@@ -70,6 +74,7 @@ function buildCaller(
   const caller = FpcFunderCaller.create({
     fpcFunder: FUNDER,
     executor: EXECUTOR,
+    executorVersion: overrides.executorVersion ?? 'gas-to-cover',
     client,
     l1TxQueue,
     priceOracle: identityOracle,
@@ -107,13 +112,35 @@ describe('FpcFunderCaller', () => {
     expect(request.to).toBe(EXECUTOR.toString());
     const decoded = decodeFunctionData({ abi: OperationExecutorAbi, data: request.data });
     expect(decoded.functionName).toBe('execute');
-    const [target, innerData, payoutToken, minPayout, gasToCover, tokenWeiPerEth] = decoded.args;
+    const [target, innerData, payoutToken, minPayout, gasToCover, tokenWeiPerEth] = decoded.args as readonly [
+      Hex,
+      Hex,
+      Hex,
+      bigint,
+      bigint,
+      bigint,
+    ];
     expect(EthAddress.fromString(target).equals(FUNDER)).toBe(true);
     expect(decodeFunctionData({ abi: IFPCFunderAbi, data: innerData }).functionName).toBe('swapAndDepositAsFeeJuice');
     expect(EthAddress.fromString(payoutToken).equals(TOKEN)).toBe(true);
     expect(minPayout).toBe(100_000n + UINT256_EXTRA_CALLDATA_GAS);
     expect([gasToCover, tokenWeiPerEth]).toEqual([0n, 0n]);
     expect(request.gas).toBe(100_000n + UINT256_EXTRA_CALLDATA_GAS);
+  });
+
+  it('calls the four-argument execute of a legacy executor', async () => {
+    const { caller, sendTransaction, simulateContract } = buildCaller({ executorVersion: 'legacy' });
+
+    await caller.runOnce();
+
+    const [quote] = simulateContract.mock.calls[0] as unknown as [{ args: readonly unknown[] }];
+    expect(quote.args).toHaveLength(4);
+    const [request] = sendTransaction.mock.calls[0] as unknown as [{ data: Hex }];
+    const decoded = decodeFunctionData({ abi: LEGACY_OPERATION_EXECUTOR_ABI, data: request.data });
+    const [target, , payoutToken, minPayout] = decoded.args;
+    expect(EthAddress.fromString(target).equals(FUNDER)).toBe(true);
+    expect(EthAddress.fromString(payoutToken).equals(TOKEN)).toBe(true);
+    expect(minPayout).toBe(100_000n + UINT256_EXTRA_CALLDATA_GAS);
   });
 
   it('estimates gas against a zero floor', async () => {

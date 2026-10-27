@@ -40,6 +40,8 @@ pub contract Broadcaster {
         );
     }
 
+    // TODO(OX-1977): Only escrow withdrawals use this function, to pair the withdrawal release with the escrow run.
+    // With withdraw-and-execute the escrows become executors, and then this function is not necessary.
     #[external("private")]
     fn broadcast_l1_operation_pair_2k(
         targets: [EthAddress; 2],

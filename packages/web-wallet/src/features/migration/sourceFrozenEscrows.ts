@@ -1,13 +1,14 @@
 /**
- * The account's payment link escrows on a frozen source, registered in the source chain's wallet. A
- * link its funding transfer announces needs nothing local. The others come from this browser's link
- * rows the residual probe attributes to the source, in this rollup's database and earlier ones.
+ * The account's payment links on a frozen source. A link its funding transfer announces needs nothing
+ * local. The others come from this browser's link rows the residual probe attributes to the source, in
+ * this rollup's database and earlier ones.
  */
-import { AztecAddress } from "@aztec/aztec.js/addresses"
-import type { Fr } from "@aztec/aztec.js/fields"
-import type { OxideEnvTuple } from "@obsidion/core/types"
+import { AztecAddress } from "@aztec-labs/aztec.js/addresses"
+import type { Fr } from "@aztec-labs/aztec.js/fields"
+import type { OxideEnvTuple, SourceGenerationSession } from "@obsidion/core/types"
 import {
   creatorLinksFromRows,
+  markPaylinkMigrated,
   TRANSACTIONS_STORAGE_KEY,
   TransactionStorage,
   type PaylinkTransaction,
@@ -25,25 +26,23 @@ import {
 } from "@obsidion/sdk"
 import { getConfig } from "../../config/env"
 import { SessionChangedError } from "../../platform/auth/sessionErrors"
-import { getActiveStorageId } from "../../platform/storage/activeStorage"
+import { getActiveStorageId, withSessionLock } from "../../platform/storage/activeStorage"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
 import { isHistoricPaylinkRow } from "./historicResiduals"
 
+/** The escrows of the source's links, registered in the source chain's wallet. */
 export async function sourceFrozenEscrows(o: {
   chain: { wallet: ObsidionWallet; account: ObsidionAccount }
   tuple: OxideEnvTuple
-  /** The current deployment, whose creation dates a legacy row with no token address. */
-  current: OxideEnvTuple
   masterSecret: Fr
-  /** The account the scan started for, whose rows alone it reads. */
-  storageId: string
+  /** The source's link rows, from {@link sourceLinkRows}. */
+  rows: Transaction[]
 }): Promise<FrozenEscrow[]> {
   const { wallet, account } = o.chain
   const token = AztecAddress.fromStringUnsafe(o.tuple.l2Token)
   const tokenService = await TokenService.create(wallet, account, token)
   const contractService = ContractService.getInstance()
-  const hints = await sourceLinks(o.tuple, o.current, o.storageId)
-  const escrows = await discoverFrozenEscrows({
+  return discoverFrozenEscrows({
     paylinkService: new PaylinkService(wallet, account, tokenService, contractService),
     escrows: { wallet, contractService },
     events: createTransferEventSource({
@@ -53,35 +52,71 @@ export async function sourceFrozenEscrows(o: {
     }),
     account: account.getAddress(),
     masterSecret: o.masterSecret,
-    hints,
+    hints: await creatorLinksFromRows(o.rows),
   })
-  // A recorded link with no escrow is not refunded; the SDK logs why it did not rebuild.
-  console.info(
-    `[frozen-escrows] ${hints.length} links recorded here, ${escrows.length} escrows found`,
-  )
-  return escrows
 }
 
 /**
- * The source's links among this browser's rows. A legacy row's link from another chain is not its.
- * An account switch during the read fails it, so one account's links never reach another's refund.
+ * Marks migrated the source's links a frozen refund paid out on L1, which leaves their L2 notes
+ * unspent. Run on every probe, so a refund sent after the rows were imported is caught too. Only this
+ * rollup's rows are read: the import carries every other database's into it.
  */
-async function sourceLinks(tuple: OxideEnvTuple, current: OxideEnvTuple, storageId: string) {
+export async function markRefundedSourceLinks(o: {
+  session: SourceGenerationSession
+  tuple: OxideEnvTuple
+  current: OxideEnvTuple
+  storageId: string
+}): Promise<void> {
+  const refunded = await o.session.refundedLinks({
+    tuple: o.tuple,
+    paylinkRows: () =>
+      sourceLinkRows({
+        ...o,
+        rows: async () => (await TransactionStorage.get(webStorage).getTransactions()) ?? [],
+      }),
+  })
+  if (!refunded.length) return
+  await withSessionLock(async () => {
+    if (getActiveStorageId() !== o.storageId) throw new SessionChangedError()
+    const transactions = TransactionStorage.get(webStorage)
+    for (const txHash of refunded) await markPaylinkMigrated(txHash, transactions)
+  })
+}
+
+/**
+ * The source's links among this browser's rows of the account `storageId` names. A legacy row's link
+ * from another chain is not the source's. An account switch during the read fails it, so one
+ * account's link secrets never reach another's refund.
+ */
+export async function sourceLinkRows(o: {
+  tuple: OxideEnvTuple
+  /** The current deployment, whose creation dates a legacy row with no token address. */
+  current: OxideEnvTuple
+  storageId: string
+  /** The rows to pick from; by default every database's. */
+  rows?: () => Promise<Transaction[]>
+}): Promise<Transaction[]> {
   const checkSession = () => {
-    if (getActiveStorageId() !== storageId) throw new SessionChangedError()
+    if (getActiveStorageId() !== o.storageId) throw new SessionChangedError()
   }
   checkSession()
-  const since = Date.parse(current.timestamp)
-  const rows = (await browserRows()).filter((row) =>
-    isHistoricPaylinkRow(row as PaylinkTransaction, tuple, since),
+  const since = Date.parse(o.current.timestamp)
+  const rows = (await (o.rows ?? browserRows)()).filter((row) =>
+    isHistoricPaylinkRow(row as PaylinkTransaction, o.tuple, since),
   )
   checkSession()
-  const links = await creatorLinksFromRows(rows)
+  const onSource: Transaction[] = []
+  for (const row of rows) {
+    const [link] = await creatorLinksFromRows([row])
+    if (
+      link &&
+      link.chainId === getConfig().l1ChainId &&
+      link.rollupVersion === Number(o.tuple.rollupVersion)
+    )
+      onSource.push(row)
+  }
   checkSession()
-  return links.filter(
-    (link) =>
-      link.chainId === getConfig().l1ChainId && link.rollupVersion === Number(tuple.rollupVersion),
-  )
+  return onSource
 }
 
 /**

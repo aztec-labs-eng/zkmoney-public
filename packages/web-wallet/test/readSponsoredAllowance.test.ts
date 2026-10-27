@@ -49,7 +49,21 @@ describe("readSponsoredAllowance", () => {
       user,
       1,
     )
-    expect(read).toMatchObject({ fpcAddress: "0xretired", railId: 1 })
+    expect(read).toMatchObject({ fpcAddress: "0xretired", railId: 1, payer: "0xuser" })
+  })
+
+  it("reads the payer's note when the context names one", async () => {
+    const payer = { toString: () => "0xpayer" }
+    claimSponsorContext.mockResolvedValueOnce({ ...sponsor("0xcurrent", 1), payer })
+    const read = await readSponsoredAllowance(deps)
+    expect(readClaimFpcAllowance).toHaveBeenCalledWith(
+      {},
+      expect.anything(),
+      { name: "0xcurrent" },
+      payer,
+      1,
+    )
+    expect(read.payer).toBe("0xpayer")
   })
 
   it("falls back to the current instance while registration is pending", async () => {

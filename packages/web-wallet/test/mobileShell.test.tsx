@@ -25,7 +25,6 @@ vi.mock("../src/features/actionGate", () => ({
     state.asked.push(action)
     if (!state.upgrade.has(action)) run()
   },
-  useWalletFrozen: () => false,
 }))
 // Savings reads the booted profile, which this suite never boots.
 vi.mock("../src/features/savings/savingsGateway", () => ({
@@ -306,16 +305,16 @@ describe("phone shell", () => {
     act(() => tabs[3].click())
     expect(host.querySelector('.ww-tabbar [aria-current="page"]')?.textContent).toBe("Deposit")
   })
-  it("asks to upgrade before a money route or Receive, and opens every other route", () => {
-    state.upgrade = new Set(["deposit", "send", "withdraw", "receive"])
+  it("asks to upgrade before a money route, Requests or Receive, and opens every other route", () => {
+    state.upgrade = new Set(["deposit", "requests", "send", "withdraw", "receive"])
     render()
     const tabs = [...host.querySelectorAll<HTMLButtonElement>(".ww-tabbar button")]
     for (const tab of tabs) act(() => tab.click())
-    expect(host.querySelector('.ww-tabbar [aria-current="page"]')?.textContent).toBe("Requests")
+    expect(host.querySelector('.ww-tabbar [aria-current="page"]')?.textContent).toBe("Home")
     click("Open menu")
     click("Receive code")
     expect(host.textContent).not.toContain("Receive page")
-    expect(state.asked).toEqual(["deposit", "send", "withdraw", "receive"])
+    expect(state.asked).toEqual(["deposit", "requests", "send", "withdraw", "receive"])
   })
   it("leaves a locked wallet's money routes to their own gates", () => {
     state.upgrade = new Set(["send", "receive"])

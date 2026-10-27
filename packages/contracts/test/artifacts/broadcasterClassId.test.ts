@@ -20,15 +20,15 @@
  */
 
 import { describe, expect, it } from "vitest"
-import { getContractClassFromArtifact } from "@aztec/stdlib/contract"
+import { getContractClassFromArtifact } from "@aztec-labs/stdlib/contract"
 
 import { getBroadcasterArtifact } from "../../src/services/utils.js"
 import { liveInstanceClassId } from "./liveClassId.js"
 
-// Pinned at the Broadcaster source of vendor/oxide 3fab04e6. The broadcaster links oxide_lib, whose
+// Pinned at the Broadcaster source of vendor/oxide a68f12206 (aztec 6.0.0). The broadcaster links oxide_lib, whose
 // WebAuthn P-256 signature normalisation is part of the compiled private functions, so the class id
 // commits to it. Every deployment from that oxide source runs this class.
-const EXPECTED_CLASS_ID = "0x20ecff6fc13d5af9c939826cd2b79995c4bc50c7c3869de3229e1364e2528a83"
+const EXPECTED_CLASS_ID = "0x24f2762acb13987a767a20c311d980936ed4379147c8bf6db04c193aa93778ae"
 
 const verifyOnChain = process.env.VERIFY_ONCHAIN_CLASS_ID === "1"
 

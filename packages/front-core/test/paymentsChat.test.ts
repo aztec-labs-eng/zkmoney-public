@@ -315,6 +315,18 @@ describe("buildChatMessages", () => {
     expect(result[0].role).toBe("received-confirmed")
   })
 
+  it("matches transfers to a retired address of the contact", () => {
+    const upgraded = { ...maria, address: THEO_ADDRESS, retiredAddresses: [MARIA_ADDRESS] }
+    const transactions = [
+      tokenTx({ action: "send", to: MARIA_ADDRESS, txHash: "0xold" }),
+      tokenTx({ action: "send", to: THEO_ADDRESS, txHash: "0xnew", timestamp: 1_700_000_000_001 }),
+    ]
+    expect(buildChatMessages(upgraded, { transactions }).map((m) => m.id)).toEqual([
+      "0xold",
+      "0xnew",
+    ])
+  })
+
   it("returns empty array when the contact has no address", () => {
     const tx = tokenTx({ action: "send", to: MARIA_ADDRESS })
     const r = request({ status: "pending" })
@@ -445,7 +457,6 @@ describe("buildChatMessages", () => {
             phase: "claimed",
             amount: "12.5",
             fee: "250000000000000000",
-            fpcFundingCut: "0",
             startTime: 1_700_000_000_000,
           }),
           sipaDeposit({
@@ -496,7 +507,6 @@ describe("buildChatMessages", () => {
             phase: "recovered",
             amount: "100",
             fee: "250000000000000000",
-            fpcFundingCut: "0",
           }),
         ],
       },
@@ -514,7 +524,6 @@ describe("buildChatMessages", () => {
             phase: "recoverable",
             amount: "5000",
             fee: "250000000000000000",
-            fpcFundingCut: "0",
           }),
         ],
       },
@@ -536,7 +545,6 @@ describe("buildChatMessages", () => {
             phase: "recoverable",
             amount: "0.1",
             fee: "250000000000000000",
-            fpcFundingCut: "0",
           }),
         ],
       },
@@ -553,7 +561,6 @@ describe("buildChatMessages", () => {
             phase: "sweeping",
             amount: "0.2",
             fee: "350000000000000000",
-            fpcFundingCut: "0",
           }),
         ],
       },
@@ -579,7 +586,6 @@ describe("buildChatMessages", () => {
             phase: "funded",
             amount: "100",
             fee: "250000000000000000",
-            fpcFundingCut: "0",
           }),
         ],
       },

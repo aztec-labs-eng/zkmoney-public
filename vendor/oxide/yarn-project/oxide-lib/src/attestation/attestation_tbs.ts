@@ -1,20 +1,20 @@
-import { Buffer32 } from '@aztec/foundation/buffer';
-import { keccak256 } from '@aztec/foundation/crypto/keccak';
+import { Buffer32 } from '@aztec-labs/foundation/buffer';
+import { keccak256 } from '@aztec-labs/foundation/crypto/keccak';
 
 import { cborArray, cborBytes, cborText, parseCoseSign1 } from './nitro_attestation/parsers.js';
 
 /** Decoded outputs of {@link decodeAttestationTbs}. */
 export interface DecodedAttestationTbs {
   /** Sig_structure bytes — exactly what `NitroValidator._verifySignature` SHA-384's and verifies
-   *  against the leaf pubkey. Pass as `_attestationTbs` to `portal.registerTee` and as the first
-   *  arg to `portal.verifyTeeAttestationHash`. */
+   *  against the leaf pubkey. Pass as `_attestationTbs` to `teeRegistry.registerTee` and as the first
+   *  arg to `teeRegistry.verifyTeeAttestationHash`. */
   attestationTbs: Buffer;
   /** `keccak256(attestationTbs)` — the lookup key for the staged-hash and staged-leaf maps in
    *  `NitroValidator`, returned by `verifyTeeAttestationHash`. Pass as the first arg to
-   *  `portal.verifyTeeAttestationSig`. */
+   *  `teeRegistry.verifyTeeAttestationSig`. */
   attestationTbsKeccak: Buffer32;
   /** COSE-Sign1 signature over `attestationTbs` (ECDSA-P384 r||s, 96 bytes). Pass as the second
-   *  arg to `portal.verifyTeeAttestationSig` and `portal.registerTee`. */
+   *  arg to `teeRegistry.verifyTeeAttestationSig` and `teeRegistry.registerTee`. */
   signature: Buffer;
 }
 

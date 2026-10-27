@@ -27,7 +27,7 @@ pin them. The L1 eth address (`teeEthAddress`) is always derived from the signin
 keccak.
 
 The generated `user_data` only commits to `(domain, pubKeyX, pubKeyY, encPubKeyX, encPubKeyY)` —
-portal-context fields (portal, chainId, l2Portal, rollupVersion) are intentionally NOT bound, because the
+portal-context fields (portal, chainId, l2Token, rollupVersion) are intentionally NOT bound, because the
 enclave bakes them into its image and PCR0 already commits to them. As a result the test deploys
 the portal with arbitrary portal wiring; only the PCR0 hash + signing keys need to match the
 fixture.

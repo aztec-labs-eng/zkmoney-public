@@ -3,23 +3,30 @@ export * from "@obsidion/contracts"
 
 // SDK-specific exports
 export * from "./oxide/publishDaLogs.js"
-export * from "./oxide/publishedWithdrawal.js"
+export * from "./oxide/burnWithdrawals.js"
 export * from "./oxide/withdrawalFinalization.js"
 export * from "./oxide/portalIdentity.js"
 export * from "./oxide/withdrawFinalizationCall.js"
+export * from "./oxide/withdrawalExecutor.js"
 export * from "./oxide/swapOnWithdrawSimulator.js"
 export * from "./oxide/swapOnWithdraw.js"
 export * from "./oxide/skySavings.js"
 export * from "./oxide/swapEscrowReader.js"
 export * from "./oxide/portalCapacity.js"
+export * from "./oxide/tokenRegistration.js"
 export * from "./oxide/portalCapError.js"
 export * from "./oxide/sipaPortalTerms.js"
+export * from "./oxide/deploymentTable.js"
 export * from "./oxide/proverTipQuote.js"
+export * from "./oxide/tipQuote.js"
 export {
-  readPortalWithdrawalState,
-  type PortalWithdrawalState,
-  type PlainWithdrawalContext,
-} from "./oxide/plainWithdrawal.js"
+  assertBackupSweepProfitable,
+  quoteBackupSweep,
+  UnprofitableSweepError,
+  type BackupSweepQuote,
+} from "./oxide/l1OperationQuote.js"
+export type { PlainWithdrawalContext } from "./oxide/plainWithdrawal.js"
+export { readPlainWithdrawalFee } from "@oxide/oxide-client/executors/plain_withdrawal_executor.js"
 export * from "./email/index.js"
 export * from "./feePaymentMethod/index.js"
 export * from "./obsidion/index.js"

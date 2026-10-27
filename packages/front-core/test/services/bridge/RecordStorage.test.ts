@@ -95,6 +95,79 @@ describe("RecordStorage", () => {
       await store.load()
       expect(listener).toHaveBeenCalledTimes(1)
     })
+
+    const threeRows = {
+      a: { id: "a", value: 1 },
+      broken: { id: "broken", value: 2 },
+      c: { id: "c", value: 3 },
+    }
+
+    it("drops a record normalize rejects with one warning, keeps the rest and writes them back", async () => {
+      const adapter = new InMemoryStorageAdapter()
+      await adapter.setItem(STORAGE_KEY, JSON.stringify(threeRows))
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+      warnSpy.mockClear()
+      const setItemSpy = vi.spyOn(adapter, "setItem")
+      const store = new RecordStorage<TRec>({
+        storage: adapter,
+        storageKey: STORAGE_KEY,
+        keyOf,
+        label: LABEL,
+        normalize: (record, key) => {
+          if (key === "broken") throw new RangeError(`bad row ${JSON.stringify(record)}`)
+          return record
+        },
+      })
+
+      await store.load()
+
+      expect(store.isLoaded()).toBe(true)
+      expect(store.list().map((r) => r.id).sort()).toEqual(["a", "c"])
+      expect(warnSpy).toHaveBeenCalledTimes(1)
+      const warnMsg = warnSpy.mock.calls[0]?.[0] as string
+      expect(warnMsg).toContain(`[${LABEL}]`)
+      expect(warnMsg).toContain("broken")
+      expect(warnMsg).toContain("RangeError")
+      expect(warnMsg).not.toContain("bad row")
+      expect(setItemSpy).toHaveBeenCalledTimes(1)
+      const persisted = JSON.parse((await adapter.getItem(STORAGE_KEY))!)
+      expect(persisted).toEqual({ a: threeRows.a, c: threeRows.c })
+      warnSpy.mockRestore()
+    })
+
+    it("on a store that retries its loads, a record normalize rejects fails the load and the next load retries", async () => {
+      const adapter = new InMemoryStorageAdapter()
+      await adapter.setItem(STORAGE_KEY, JSON.stringify(threeRows))
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+      const getItemSpy = vi.spyOn(adapter, "getItem")
+      const setItemSpy = vi.spyOn(adapter, "setItem")
+      let reject = true
+      const store = new RecordStorage<TRec>({
+        storage: adapter,
+        storageKey: STORAGE_KEY,
+        keyOf,
+        label: LABEL,
+        retryLoadOnReadError: true,
+        normalize: (record, key) => {
+          if (reject && key === "broken") throw new RangeError("bad row")
+          return record
+        },
+      })
+
+      await store.load()
+
+      expect(store.isLoaded()).toBe(false)
+      expect(store.list()).toEqual([])
+      expect(setItemSpy).not.toHaveBeenCalled()
+
+      reject = false
+      await store.load()
+
+      expect(getItemSpy).toHaveBeenCalledTimes(2)
+      expect(store.isLoaded()).toBe(true)
+      expect(store.list().map((r) => r.id).sort()).toEqual(["a", "broken", "c"])
+      warnSpy.mockRestore()
+    })
   })
 
   describe("setRecord", () => {

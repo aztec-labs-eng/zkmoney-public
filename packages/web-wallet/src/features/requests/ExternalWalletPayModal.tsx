@@ -9,6 +9,7 @@ import { Modal } from "../../ui/Modal"
  * its own fee read and URI.
  */
 import { useEffect, useState } from "react"
+import { WALLET_TOKEN_SYMBOL } from "@obsidion/core/constants"
 import { formatUnits, type Address } from "viem"
 import {
   addressShareDecision,
@@ -24,12 +25,17 @@ import {
 import { GradientText, Icon, PrimaryGradientButton, TopNavIconButton } from "@obsidion/web-ds"
 import { getConfig } from "../../config/env"
 import { isDesktopL1SubmitActive } from "../../platform/desktopBridge"
-import { usdBalance, usdFigure, shortL1Addr } from "../../ui/format"
+import { usdBalance, shortL1Addr, tokenFigure } from "../../ui/format"
 import { useCopy } from "../../ui/hooks"
 import { DepositFromWalletModal } from "../deposit/DepositFromWalletModal"
 import { DepositQrSheet } from "../deposit/DepositQrSheet"
 import { useL1Wallet } from "../deposit/l1Wallet"
-import { depositTokensFor } from "../deposit/loadDepositFacts"
+import {
+  settlementToken,
+  useDepositTokens,
+  type DepositTokenOption,
+} from "../deposit/loadDepositFacts"
+import testIcon from "../../assets/deposit/ethereum.webp"
 import {
   OneTimeAddressPoints,
   oneTimeAddressPoints,
@@ -53,6 +59,7 @@ import type { AccountlessResolveResult } from "./accountlessRequest"
 import { requestAmountDisplay } from "./requestLink"
 import { clearPayment, holdPayment, paymentHeld } from "./unresolvedPayment"
 import ethIcon from "../../assets/deposit/ethereum.webp"
+import { useRowTxAmountCap } from "../token/useTxAmountCap"
 
 /** Why a fixed request cannot be paid. It never suggests more transfers to the same address. */
 const OVER_LIMIT_COPY = {
@@ -79,6 +86,10 @@ export function ExternalWalletPayModal({
   /** The payment confirmed on Ethereum. */
   onPaid?: () => void
 }) {
+  const depositTokens = useDepositTokens()
+  // The request names the token it is paid in: the cap and bucket of the row that token settles on apply.
+  const rowToken = settlementToken(depositTokens, result.token) ?? result.token
+  const txAmountCap = useRowTxAmountCap(rowToken)
   const config = getConfig()
   const { copied, copy } = useCopy()
   const [qr, setQr] = useState(false)
@@ -98,7 +109,17 @@ export function ExternalWalletPayModal({
   const [unresolved, setUnresolved] = useState(() => paymentHeld(config.network, payee))
   const [infoOpen, setInfoOpen] = useState(false)
 
-  const token = depositTokensFor(config.network)[0]
+  const listed = depositTokens?.offered.find(
+    (t) => !t.swapped && t.address.toLowerCase() === result.token.toLowerCase(),
+  )
+  const token: DepositTokenOption = listed ?? {
+    address: result.token,
+    symbol: packet.tokenSymbol ?? WALLET_TOKEN_SYMBOL,
+    decimals: result.decimals,
+    icon: testIcon,
+    settlesIn: result.token,
+    swapped: false,
+  }
   // The token's own decimals; the resolve refuses a link that declares others.
   const decimals = result.decimals
   const amountDisplay = requestAmountDisplay(packet)
@@ -114,18 +135,18 @@ export function ExternalWalletPayModal({
           decimals,
           requestedAtomic: packet.amountAtomic,
           feeAtomic: result.feeAtomic,
+          txAmountCap,
         }
-      : { kind: "open-request", decimals, feeAtomic: result.feeAtomic }
+      : { kind: "open-request", decimals, feeAtomic: result.feeAtomic, txAmountCap }
   const valuation = depositTokenValuation({
-    chainId: config.l1ChainId,
-    portalToken: result.token,
+    accepted: depositTokens?.offered.map((t) => t.address) ?? [],
     token: result.token,
   })
   const fixed = packet.amountAtomic > 0n
   const maxSend = maximumSendAtomic(route, valuation)
   const expired = result.deployment === "expired"
   const target: CapacityTarget =
-    result.deployment === "active" ? { kind: "active" } : { kind: "unproven" }
+    result.deployment === "active" ? { kind: "active", token: rowToken } : { kind: "unproven" }
   const capacity = useTargetCapacity(target)
   const required: RequiredCredit =
     fixed && capacity.store
@@ -236,7 +257,7 @@ export function ExternalWalletPayModal({
           </span>
           {total && (
             <span className="ww-paylink-summary__note" data-testid="request-fee">
-              Includes a {usdFigure(fee)} deposit fee
+              Includes a {tokenFigure(fee, token.symbol)} deposit fee
             </span>
           )}
           {packet.note && <span className="ww-paylink-summary__note">{packet.note}</span>}
@@ -288,7 +309,7 @@ export function ExternalWalletPayModal({
                     <hr className="ww-divider" />
                     <div className="ww-deposit__fact">
                       <span>Fee</span>
-                      <b>{usdFigure(fee)}</b>
+                      <b>{tokenFigure(fee, token.symbol)}</b>
                     </div>
                   </>
                 )}
@@ -341,8 +362,8 @@ export function ExternalWalletPayModal({
               </p>
             ) : !total ? (
               <p className="ww-deposit__note">
-                Send more than {usdFigure(fee)}. That much is kept as the deposit fee. Anything at
-                or below it is lost.
+                Send more than {tokenFigure(fee, token.symbol)}. That much is kept as the deposit
+                fee. Anything at or below it is lost.
               </p>
             ) : (
               result.feeAtomic >= packet.amountAtomic && (
@@ -435,6 +456,7 @@ export function ExternalWalletPayModal({
           topic={aboutLimits}
           details={limitsDetails}
           capacity={sourceFromTarget(capacity)}
+          settlementSymbol={token.symbol}
           // The request page sits outside the account context; a visitor may have no account.
           account={false}
           onClose={() => setAboutLimits(undefined)}

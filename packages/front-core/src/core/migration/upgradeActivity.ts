@@ -1,8 +1,11 @@
-import type { MigrationFundingBatch } from "@obsidion/core/types"
+import type { MigrationDirectDeposit, MigrationFundingBatch } from "@obsidion/core/types"
 import type { IStorageAdapter } from "../storages/adapter"
 import { depositAmounts } from "../services/deposits/depositAmounts"
-import { isSettledSipaPhase, type SIPADepositRecord } from "../services/deposits/SIPADepositStore"
-import type { MetadataMigrationRecord } from "./metadataMigrationFlow"
+import {
+  directDepositKey,
+  isSettledSipaPhase,
+  type SIPADepositRecord,
+} from "../services/deposits/SIPADepositStore"
 import { logger } from "src/utils/logger"
 
 /** One refund batch of an upgrade, as activity shows it. */
@@ -10,21 +13,25 @@ export interface UpgradeBatchItem {
   /** The run's record key. */
   run: string
   id: string
-  /** The batch the bootstrap carries; the others ride their own sends. */
-  first: boolean
-  /** The destination SIPA the refund pays. */
+  /** Where the batch's arrival is logged: its direct-deposit record key. */
   recipient: string
-  /** What the source refunds, before its exit fee. */
+  /**
+   * Set when the migration executor deposits the refund straight into the destination portal:
+   * there is no SIPA, and the user pays no tip.
+   */
+  direct?: MigrationDirectDeposit
+  /** The source block its plan was read at: no deposit of it is older. */
+  fromBlock?: string
+  /** What the source refunds. */
   amount: string
-  exitFee: string
-  /** What its deposit pays on the destination; absent on a batch planned without it. */
-  depositFee?: string
   /** Planned, sent to L2, refunded on L1, or received on the destination. */
   state: "planned" | "sent" | "refunded" | "received"
-  /** The user approved its refund; the first batch's approval comes with the run's plan. */
+  /** The user approved its refund. */
   approved: boolean
   tx?: string
   startTime: number
+  /** Read off chain by a device that holds none of the run's records (`chainUpgradeBatches`). */
+  inferred?: boolean
 }
 
 /** A batch has arrived once its deposit is credited; a recovery to Ethereum or a failure is not. */
@@ -32,20 +39,23 @@ export function upgradeBatchArrived(arrival?: Pick<SIPADepositRecord, "phase">):
   return arrival?.phase === "claimed"
 }
 
-/** A batch's figure: what it lands, from its deposit once swept, from its fees until then. */
+/**
+ * A batch's figure: what it lands, from its deposit once swept, else its amount. The migration
+ * executor takes no fee from it.
+ */
 export function upgradeBatchFigure(
-  batch: Pick<UpgradeBatchItem, "amount" | "exitFee" | "depositFee">,
+  batch: Pick<UpgradeBatchItem, "amount">,
   arrival?: SIPADepositRecord,
 ): bigint {
   if (upgradeBatchArrived(arrival) || arrival?.netAmount != null)
     return depositAmounts(arrival!).netAtomic
-  return BigInt(batch.amount) - BigInt(batch.exitFee) - BigInt(batch.depositFee ?? 0)
+  return BigInt(batch.amount)
 }
 
 /** What a run's batches bring to the balance: one whose deposit settled uncredited brings nothing. */
 export function upgradeRunTotal(
   legs: readonly {
-    batch: Pick<UpgradeBatchItem, "amount" | "exitFee" | "depositFee">
+    batch: Pick<UpgradeBatchItem, "amount">
     arrival?: SIPADepositRecord
   }[],
 ): bigint {
@@ -59,18 +69,11 @@ export function upgradeRunTotal(
 }
 
 const RUNS_KEY = "metadata-migration/runs"
-/** Past `subscribing`, or once sponsorship was sent, the bootstrap's deposit has been received. */
-const FIRST_RECEIVED: ReadonlySet<MetadataMigrationRecord["phase"]> = new Set([
-  "subscribing",
-  "recovering",
-  "arriving",
-  "done",
-])
 
 /**
  * The upgrade runs this account started and their refund batches, for activity. The batches are the
  * run's own records, so this reads them and never tracks anything itself; a migration session
- * reports each write through `changed`. A live source withdraws rather than refunds: not listed.
+ * reports each write through `changed`.
  */
 export class UpgradeActivity {
   private static instances = new WeakMap<object, UpgradeActivity>()
@@ -135,7 +138,7 @@ export class UpgradeActivity {
     return this.cached
   }
 
-  /** Every deposit address a run's batches pay, lowercase, a live source's included. */
+  /** Every deposit address a run's batches pay, lowercase. */
   recipients(): ReadonlySet<string> {
     return this.cachedRecipients
   }
@@ -169,45 +172,38 @@ export class UpgradeActivity {
     }
   }
 
-  /** A refund batch: a live source's withdrawals carry no selection, so only their address counts. */
+  /** A refund batch, with its selection. */
   private async batch(
     run: string,
     id: string,
     recipients: Set<string>,
-    live = false,
   ): Promise<MigrationFundingBatch | undefined> {
     const raw = await this.storage.getItem(`${run}/source/${id}`)
     const batch = raw ? (JSON.parse(raw) as MigrationFundingBatch) : undefined
-    if (batch) recipients.add(batch.recipient.toLowerCase())
-    return batch?.sourceSelection || (live && batch) ? batch : undefined
+    if (batch) recipients.add(batchRecipient(batch).toLowerCase())
+    return batch?.sourceSelection ? batch : undefined
+  }
+
+  /**
+   * Every sent batch the migration executor deposits straight into a portal, with no SIPA. The
+   * deposit rail finds each one's deposit by its commitment.
+   */
+  async directBatches(): Promise<UpgradeBatchItem[]> {
+    const { items } = await this.load()
+    return items.filter((item) => item.direct && item.state !== "planned")
   }
 
   private async load(): Promise<{ items: UpgradeBatchItem[]; recipients: Set<string> }> {
     const out: UpgradeBatchItem[] = []
     const recipients = new Set<string>()
     for (const run of await this.runs()) {
-      const raw = await this.storage.getItem(run)
-      const record = raw ? (JSON.parse(raw) as MetadataMigrationRecord) : undefined
-      const plan = record?.plan ? (JSON.parse(record.plan) as { sourceBatch?: string }) : undefined
-      const first = plan?.sourceBatch && (await this.batch(run, plan.sourceBatch, recipients))
-      // A live source's later batches are `remaining`, `remaining-1`, …: only their addresses count.
-      for (let index = 0; await this.batch(run, liveId(index), recipients, true); index++);
-      if (first && record) {
-        const received = FIRST_RECEIVED.has(record.phase) || !!record.subscriptionTx
-        out.push({
-          ...item(run, plan.sourceBatch!, first, true),
-          state: received ? "received" : record.bootstrapTx ? "sent" : "planned",
-          approved: true,
-          tx: record.bootstrapTx,
-        })
-      }
       for (let index = 0; ; index++) {
         const id = `remaining-${index}`
         const batch = await this.batch(run, id, recipients)
         if (!batch) break
         if (batch.abandoned) continue
         out.push({
-          ...item(run, id, batch, false),
+          ...item(run, id, batch),
           state: batch.received
             ? "received"
             : batch.refunded
@@ -224,17 +220,19 @@ export class UpgradeActivity {
   }
 }
 
-function item(run: string, id: string, batch: MigrationFundingBatch, first: boolean) {
+/** Where a batch's deposit is recorded: its SIPA, or a direct deposit's record key. */
+function batchRecipient(batch: MigrationFundingBatch): string {
+  return batch.direct ? directDepositKey(batch.direct.recipientCommitment) : batch.recipient
+}
+
+function item(run: string, id: string, batch: MigrationFundingBatch) {
   return {
     run,
     id,
-    first,
-    recipient: batch.recipient,
+    recipient: batchRecipient(batch),
+    ...(batch.direct ? { direct: batch.direct } : {}),
+    fromBlock: batch.fromBlock,
     amount: batch.amount,
-    exitFee: batch.exitFee,
-    depositFee: batch.depositFee,
     startTime: batch.sentAt ?? batch.createdAt ?? 0,
   }
 }
-
-const liveId = (index: number) => (index === 0 ? "remaining" : `remaining-${index}`)

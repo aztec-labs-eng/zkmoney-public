@@ -14,7 +14,12 @@ import {
 import { GradientText, Icon, PrimaryGradientButton, type StatusBadgeStyle } from "@obsidion/web-ds"
 import walletLineIcon from "../../assets/deposit/wallet-line.svg"
 import ethIcon from "../../assets/deposit/ethereum.webp"
-import { depositTokensFor } from "../../features/deposit/loadDepositFacts"
+import {
+  settlementDecimals,
+  settlementSymbol as settledSymbol,
+  settlementToken,
+  useDepositTokens,
+} from "../../features/deposit/loadDepositFacts"
 import { getConfig } from "../../config/env"
 import { Modal } from "../Modal"
 import { unsweepableCopy } from "../../features/deposit/unsweepableCopy"
@@ -23,7 +28,7 @@ import { useSipaProcessing } from "../../features/deposit/sipaProcessing"
 import { PendingLimitsLink } from "../../features/limits/AboutLimitsSheet"
 import { l2TxUrl } from "../../lib/explorer"
 import { l1AddressUrl, l1TxUrl, whenLabel } from "../detailRows"
-import { usdFigure } from "../format"
+import { tokenFigure, usdFigure } from "../format"
 import { L1AddressLabel } from "../L1AddressLabel"
 import {
   depositAttribution,
@@ -34,7 +39,7 @@ import {
 import { DepositFact } from "./DepositFact"
 import { DepositHashFact } from "./DepositHashFact"
 import { DepositStatusValue } from "./DepositStatusValue"
-import { usePortalFrozen } from "../../features/withdraw/portalFrozen"
+import { useRowTxAmountCap } from "../../features/token/useTxAmountCap"
 
 /** The sheet's badge per phase; the word is front-core's `DEPOSIT_PHASE_COPY`. */
 const PHASE_BADGE: Record<SIPADepositPhase, StatusBadgeStyle> = {
@@ -50,17 +55,11 @@ const PHASE_BADGE: Record<SIPADepositPhase, StatusBadgeStyle> = {
   failed: "failed",
 }
 
-export function depositStatus(
-  record: SIPADepositRecord,
-  portalFrozen = false,
-): {
+export function depositStatus(record: SIPADepositRecord): {
   label: string
   badge: StatusBadgeStyle
 } {
-  return {
-    label: depositPhaseCopy(record, { portalFrozen }).status,
-    badge: PHASE_BADGE[record.phase],
-  }
+  return { label: depositPhaseCopy(record).status, badge: PHASE_BADGE[record.phase] }
 }
 
 export function DepositDetailModal({
@@ -68,6 +67,7 @@ export function DepositDetailModal({
   registrationTag,
   exit,
   notice,
+  onBack,
   onClose,
 }: {
   /** Full text of the notification that opened this detail. */
@@ -77,17 +77,22 @@ export function DepositDetailModal({
   registrationTag?: string
   /** The exit the row offers, if any. A sweep is an escape hatch, so it is not the gradient button. */
   exit?: { title: string; onStart: () => void; sweep?: boolean }
+  /** Returns to the sheet that opened this one, such as an upgrade's. */
+  onBack?: () => void
   onClose: () => void
 }) {
   const config = getConfig()
-  const amounts = depositAmounts(record)
+  const depositTokens = useDepositTokens()
+  const txAmountCap = useRowTxAmountCap(settlementToken(depositTokens, record.tokenAddress))
+  const rowDecimals = settlementDecimals(depositTokens, record.tokenAddress)
+  const amounts = depositAmounts(record, rowDecimals)
   // A deposit that never credits L2 was charged no fee and receives nothing.
   const showBreakdown = !neverCreditsL2(record.phase) && amounts.feeKnown && amounts.netAtomic > 0n
-  const portalFrozen = usePortalFrozen()
-  const status = depositStatus(record, portalFrozen)
+  const status = depositStatus(record)
   const { fundingTxHash } = depositAttribution(record)
   const { title, address } = depositHeadline(record)
-  const sentFigure = amounts.grossAtomic > 0n ? depositGrossFigure(record) : "--"
+  const sentFigure =
+    amounts.grossAtomic > 0n ? depositGrossFigure(record, "full", rowDecimals) : "--"
   // The sheet leads with what lands on L2; the gross the wallet was charged is the Sent row. A
   // deposit that never credits L2 has no net anyone is owed, so it leads with that gross instead.
   const headline =
@@ -96,18 +101,18 @@ export function DepositDetailModal({
       : sentFigure
   const funderUrl = address ? l1AddressUrl(address) : undefined
   const sipaUrl = l1AddressUrl(record.sipaAddress)
-  const depositTokens = depositTokensFor(config.network)
   // What the funder sent; a swept record's `tokenSymbol` is the credited token.
   const fundingSymbol = record.fundingTokenSymbol ?? record.tokenSymbol
-  const tokenIcon = depositTokens.find((t) => t.symbol === fundingSymbol)?.icon
+  const tokenIcon = depositTokens?.options.find((t) => t.symbol === fundingSymbol)?.icon
   const { shown: processing, capacityKey } = useSipaProcessing(record.sipaAddress)
-  const settlementSymbol = depositTokens[0]?.symbol ?? record.tokenSymbol
+  const settlementSymbol = settledSymbol(depositTokens, record.tokenAddress, record.tokenSymbol)
 
   return (
     <Modal
       variant="create"
       label={registrationTag ? "Registration deposit details" : "Deposit details"}
       className="ww-sheet ww-sheet--detail"
+      onBack={onBack}
       onClose={onClose}
     >
       <span className="ww-deposit__connect-icon ww-sheet__icon">
@@ -146,21 +151,24 @@ export function DepositDetailModal({
             <b>{registrationTag}.zk.money</b>
           </DepositFact>
         )}
-        <DepositFact label="From">
-          <b>
-            {title}
-            {title && address && " · "}
-            {address &&
-              (funderUrl ? (
-                <a href={funderUrl} target="_blank" rel="noreferrer">
+        {/* A direct migration deposit has no funder: the upgrade made it. */}
+        {!record.direct && (
+          <DepositFact label="From">
+            <b>
+              {title}
+              {title && address && " · "}
+              {address &&
+                (funderUrl ? (
+                  <a href={funderUrl} target="_blank" rel="noreferrer">
+                    <L1AddressLabel address={address} />
+                  </a>
+                ) : (
                   <L1AddressLabel address={address} />
-                </a>
-              ) : (
-                <L1AddressLabel address={address} />
-              ))}
-            {!title && !address && "--"}
-          </b>
-        </DepositFact>
+                ))}
+              {!title && !address && "--"}
+            </b>
+          </DepositFact>
+        )}
         {fundingTxHash ? (
           <DepositHashFact label="Tx hash" hash={fundingTxHash} url={l1TxUrl(fundingTxHash)} />
         ) : (
@@ -185,11 +193,16 @@ export function DepositDetailModal({
         </DepositFact>
         {showBreakdown && (
           <DepositFact label="Fee">
-            <b>{usdFigure(amounts.feeDisplay)}</b>
+            <b data-testid="deposit-detail-fee">
+              {tokenFigure(amounts.feeDisplay, settlementSymbol)}
+            </b>
           </DepositFact>
         )}
-        <DepositHashFact label="Deposit address" hash={record.sipaAddress} url={sipaUrl} />
-        {record.sweepTxHash && (
+        {/* A direct migration deposit has no deposit address: its key holds nothing on L1. */}
+        {!record.direct && (
+          <DepositHashFact label="Deposit address" hash={record.sipaAddress} url={sipaUrl} />
+        )}
+        {record.sweepTxHash && !record.direct && (
           <DepositHashFact
             label="Sweep tx"
             hash={record.sweepTxHash}
@@ -214,14 +227,16 @@ export function DepositDetailModal({
           <>
             <hr className="ww-divider" />
             <DepositFact label="Received">
-              <b>{usdFigure(amounts.netDisplay)}</b>
+              <b data-testid="deposit-detail-received">
+                {tokenFigure(amounts.netDisplay, settlementSymbol)}
+              </b>
             </DepositFact>
           </>
         )}
       </div>
 
       {record.phase === "recoverable" && (
-        <p className="ww-sheet__note">{unsweepableCopy(record)}</p>
+        <p className="ww-sheet__note">{unsweepableCopy(record, txAmountCap, rowDecimals)}</p>
       )}
       {exit && (
         <PrimaryGradientButton

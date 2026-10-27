@@ -1,10 +1,10 @@
-import { AztecAddress } from '@aztec/aztec.js/addresses';
-import type { ContractFunctionInteraction } from '@aztec/aztec.js/contracts';
-import { Fr } from '@aztec/aztec.js/fields';
-import type { PrivateEvent, PrivateEventFilter, Wallet } from '@aztec/aztec.js/wallet';
-import { BlockNumber } from '@aztec/foundation/branded-types';
-import { type EventMetadataDefinition, EventSelector } from '@aztec/stdlib/abi';
-import { randomInTx } from '@aztec/stdlib/tx';
+import { AztecAddress } from '@aztec-labs/aztec.js/addresses';
+import type { ContractFunctionInteraction } from '@aztec-labs/aztec.js/contracts';
+import { Fr } from '@aztec-labs/aztec.js/fields';
+import type { PrivateEvent, PrivateEventFilter, Wallet } from '@aztec-labs/aztec.js/wallet';
+import { BlockNumber } from '@aztec-labs/foundation/branded-types';
+import { type EventMetadataDefinition, EventSelector } from '@aztec-labs/stdlib/abi';
+import { randomInTx } from '@aztec-labs/stdlib/tx';
 
 import { describe, expect, it, jest } from '@jest/globals';
 

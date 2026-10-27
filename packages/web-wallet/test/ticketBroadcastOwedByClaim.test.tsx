@@ -23,6 +23,15 @@ import {
   ticketBoundTerms,
 } from "./support/registrationFixtures"
 
+// The executor's withdrawal fee is priced in its own suites; here it costs nothing.
+vi.mock("../src/features/withdraw/withdrawalFee", () => ({
+  withdrawalExecutorFee: async () => 0n,
+  activeWithdrawalFee: async () => 0n,
+  activeWithdrawalExecutor: async () => ({ fee: 0n }),
+  withdrawalExecutor: async () => ({ fee: 0n }),
+  withdrawalExecutorAt: async () => ({ fee: 0n }),
+  useActiveWithdrawalFee: () => 0n,
+}))
 vi.mock("../src/features/paylink/linkIdentity", () => ({
   linkIdentity: (fragment: string) => `id:${fragment}`,
 }))
@@ -30,7 +39,13 @@ vi.mock("../src/features/paylink/linkIdentity", () => ({
 vi.mock("../src/config/oxideTuple", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/config/oxideTuple")>()),
   oxideEnvFor: async () => ({
-    tuple: { sipaFactory: "0x01", portal: "0x02", registry: "0x03" },
+    tuple: {
+      sipaFactory: "0x01",
+      portal: "0x02",
+      registry: "0x03",
+      forwardingTable: `0x${"04".repeat(20)}`,
+      token: `0x${"05".repeat(20)}`,
+    },
     env: {},
     publicClient: {},
   }),

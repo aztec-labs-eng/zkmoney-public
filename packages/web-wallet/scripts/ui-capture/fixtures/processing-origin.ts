@@ -2,17 +2,23 @@ import type { SipaOrigin } from "@obsidion/front-core"
 import type { SipaPortalTerms } from "@obsidion/sdk"
 import type { Address } from "viem"
 import { DEMO_L1_TOKEN, DEMO_OXIDE_TUPLE } from "../../../src/dev/demoFixtures"
-import { DEMO_DEPOSIT_FEE, DEMO_FPC_FUNDING_CUT } from "../../../src/dev/fakeL1Rpc"
+import { DEMO_DEPOSIT_FEE, DEMO_TX_AMOUNT_CAP } from "../../../src/dev/fakeL1Rpc"
 
-/** The origin capture deposits derive from; the observer fixture maps its implementation to the demo portal. */
+/** The origin capture deposits derive from; the observer fixture maps its table's row to the demo portal. */
 export const DEMO_ORIGIN: SipaOrigin = {
   sipaFactory: "0xfac7fac7fac7fac7fac7fac7fac7fac7fac7fac7",
   implementation: "0x1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e",
   intentHash: "0x5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e",
   rollupVersion: "1821665230",
   resweepable: false,
-  protocol: "legacy-eoa",
-  recoveryAddress: "0xfd9df8ea9d7350063da52e60e7e1b6d78449786a",
+  protocol: "account",
+  recoveryAccount: "0xfd9df8ea9d7350063da52e60e7e1b6d78449786a",
+  recoveryCommitment: "0x00c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0",
+  accountFactory: "0xacc0acc0acc0acc0acc0acc0acc0acc0acc0acc0",
+  // A getter: demoFixtures is still initializing when the deposit fixtures load this module.
+  get forwardingTable() {
+    return DEMO_OXIDE_TUPLE.forwardingTable as Address
+  },
 }
 
 /** With `?originFixture=other` or `failing`, the portal capture deposits were made to; not the active one. */
@@ -52,6 +58,6 @@ export async function captureSipaPortalTerms(): Promise<SipaPortalTerms> {
     portal: (origin ? ORIGIN_PORTAL : DEMO_OXIDE_TUPLE.portal) as Address,
     token: DEMO_L1_TOKEN,
     depositFee: DEMO_DEPOSIT_FEE,
-    fpcFundingCut: DEMO_FPC_FUNDING_CUT,
+    txAmountCap: DEMO_TX_AMOUNT_CAP,
   }
 }

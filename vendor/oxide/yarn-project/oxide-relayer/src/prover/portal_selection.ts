@@ -1,4 +1,4 @@
-import type { EthAddress } from '@aztec/foundation/eth-address';
+import type { EthAddress } from '@aztec-labs/foundation/eth-address';
 
 import type { ResolvedDeploymentEnvManifest, ResolvedManifestDeployment } from '../config/deployment_env_manifest.js';
 

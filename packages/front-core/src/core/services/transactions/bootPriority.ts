@@ -58,11 +58,15 @@ export const BOOT_ORDER = {
   resolverPayments: "notes",
   withdrawalRescan: "restore",
   paylinkRescan: "settled",
-  migrationProbe: "settled",
+  migrationProbe: "notes",
   /** A fresh device's search for registration addresses it has no record of. */
   registrationDiscovery: "settled",
   /** A pool fill is a proof. */
   depositPool: "history",
+  /** The account's rows in retired rollups' databases, each opened whole: after the probe has read the rows as they were. */
+  historicActivity: "history",
+  /** A frozen source's links its refunds paid out on L1: escrow note reads, after the import. */
+  refundedLinks: "history",
 } as const satisfies Record<string, BootStage>
 
 export type BootReader = keyof typeof BOOT_ORDER

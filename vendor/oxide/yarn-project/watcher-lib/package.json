@@ -19,11 +19,11 @@
     "./*": "./dest/*"
   },
   "dependencies": {
-    "@aztec/foundation": "5.2.0",
+    "@aztec-labs/foundation": "6.0.0",
     "fast-xml-parser": "^5.3.4",
     "sqlite": "^5.1.1",
     "sqlite3": "^5.1.7",
-    "viem": "npm:@aztec/viem@2.38.2"
+    "viem": "2.57.1"
   },
   "devDependencies": {
     "@jest/globals": "^30.0.0",

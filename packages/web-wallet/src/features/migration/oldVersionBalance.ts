@@ -1,5 +1,5 @@
 /**
- * What the account still holds on retired versions, kept in `BalanceStorage` beside the live balance
+ * The DAI value the account holds on retired versions, kept in `BalanceStorage` beside the live balance
  * and never in its scope. Home counts it until an upgrade starts; what is left once the account is
  * upgraded is abandoned. Everything is keyed by the deployment the profile pins, so a repoint never
  * mixes another deployment's old versions in.
@@ -40,6 +40,22 @@ const readKey = (account: string) =>
   `webwallet.oldHoldingsRead/${pinned()}/${account.toLowerCase()}`
 const changes = createExternalState(0)
 const released = createExternalState(false)
+const savingsSources = createExternalState<ReadonlySet<string> | undefined>(undefined)
+const savingsSourcesKey = () => `webwallet.oldSavingsSources/${pinned()}`
+
+/** The scan identifies which old portals move into Savings. */
+export function setOldVersionDestinations(
+  current: string,
+  destinations: ReadonlyMap<string, { tuple: { portal: string } }>,
+): void {
+  const sources = new Set(
+    [...destinations].flatMap(([source, { tuple }]) =>
+      tuple.portal.toLowerCase() === current.toLowerCase() ? [] : [source.toLowerCase()],
+    ),
+  )
+  walletStorage.setItem(savingsSourcesKey(), JSON.stringify([...sources]))
+  savingsSources.set(sources)
+}
 
 /** Whether a check has read every old version once for `account`. */
 export function oldHoldingsRead(account: string): boolean {
@@ -53,6 +69,23 @@ export function markOldHoldingsRead(account: string): void {
   changes.set(changes.get() + 1)
 }
 
+const fundsKey = (account: string) =>
+  `webwallet.upgradeMovesFunds/${pinned()}/${account.toLowerCase()}`
+
+/**
+ * Whether the last check that answered for `account` in this browser offered an upgrade that moves
+ * funds; undefined when none answered.
+ */
+export function upgradeMovedFunds(account: string): boolean | undefined {
+  const mark = walletStorage.getItem(fundsKey(account))
+  return mark === null ? undefined : mark === "1"
+}
+
+export function markUpgradeMovesFunds(account: string, moves: boolean): void {
+  if (upgradeMovedFunds(account) === moves) return
+  walletStorage.setItem(fundsKey(account), moves ? "1" : "0")
+}
+
 /** Nothing can be read in this page, such as with the wallet locked: Home shows what it has. */
 export function releaseOldHoldingsWait(release: boolean): void {
   released.set(release)
@@ -60,23 +93,52 @@ export function releaseOldHoldingsWait(release: boolean): void {
 
 /**
  * What the signed-in account holds on old versions, and whether Home waits for it: no check has
- * read every old version yet. Nothing once the upgrade lock is taken. A record a partial check wrote
- * can be one source of several. The demo has no wallet to check.
+ * read every old version yet. Home hides the total once the upgrade lock is taken.
+ * Recorded amounts keep each account's holdings available for the upgrade snapshot.
  */
-export function useOldVersionHoldings(): { total: bigint; pending: boolean } {
+export function useOldVersionHoldings(): {
+  total: bigint
+  main: bigint
+  savings: bigint
+  recordedMain: bigint
+  recordedSavings: bigint
+  pending: boolean
+} {
   const { records } = useCachedRecords(useMemo(() => BalanceStorage.get(webStorage), []))
   const changed = useSyncExternalStore(changes.subscribe, changes.get)
   const free = useSyncExternalStore(released.subscribe, released.get)
+  const scanned = useSyncExternalStore(savingsSources.subscribe, savingsSources.get)
+  const saved = walletStorage.getItem(savingsSourcesKey())
+  const sources = useMemo(
+    () => scanned ?? (saved === null ? undefined : new Set<string>(JSON.parse(saved))),
+    [scanned, saved],
+  )
   const account = loadWalletIdentity()?.address
   const lock = useUpgradeLock(account).state
   return useMemo(() => {
-    if (lock !== "pending") return { total: 0n, pending: false }
     const held = account ? oldVersionRecords(records, account) : []
+    let recordedMain = 0n
+    let recordedSavings = 0n
+    for (const r of held) {
+      const source = r.scope.slice(prefix().length, r.scope.lastIndexOf(":"))
+      if (sources?.has(source)) recordedSavings += BigInt(r.balance)
+      else recordedMain += BigInt(r.balance)
+    }
+    const recordedTotal = recordedMain + recordedSavings
     return {
-      total: held.reduce((sum, r) => sum + BigInt(r.balance), 0n),
-      pending: !!account && !isDemoMode() && !free && !oldHoldingsRead(account),
+      total: lock === "pending" ? recordedTotal : 0n,
+      main: lock === "pending" ? recordedMain : 0n,
+      savings: lock === "pending" ? recordedSavings : 0n,
+      recordedMain,
+      recordedSavings,
+      pending:
+        lock === "pending" &&
+        !!account &&
+        !isDemoMode() &&
+        !free &&
+        (!oldHoldingsRead(account) || sources === undefined),
     }
     // `changed` re-reads the mark.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [records, account, free, changed, lock])
+  }, [records, account, free, changed, lock, sources])
 }

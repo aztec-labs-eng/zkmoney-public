@@ -1,6 +1,6 @@
-import type { AztecAddress } from '@aztec/aztec.js/addresses';
-import type { AztecNode } from '@aztec/aztec.js/node';
-import type { Wallet } from '@aztec/aztec.js/wallet';
+import type { AztecAddress } from '@aztec-labs/aztec.js/addresses';
+import type { AztecNode } from '@aztec-labs/aztec.js/node';
+import type { Wallet } from '@aztec-labs/aztec.js/wallet';
 
 import { BroadcasterContract } from '@oxide/noir-contracts.js/Broadcaster';
 

@@ -13,8 +13,8 @@
 import { readFileSync, writeFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { dirname, join } from "node:path"
-import { Gas } from "@aztec/stdlib/gas"
-import type { ExecutionPayload } from "@aztec/stdlib/tx"
+import { Gas } from "@aztec-labs/stdlib/gas"
+import type { ExecutionPayload } from "@aztec-labs/stdlib/tx"
 import type { PayloadFinalizer } from "../../src/obsidion/stagedExecution.js"
 import type { ClaimFpcMeasuredTx } from "../../src/feePaymentMethod/claimFpcGasTable.js"
 

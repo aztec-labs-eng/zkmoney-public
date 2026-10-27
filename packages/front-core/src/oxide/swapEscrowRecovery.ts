@@ -13,7 +13,7 @@
  * testable without a wallet or RPC.
  */
 
-import { EthAddress } from "@aztec/foundation/eth-address"
+import { EthAddress } from "@aztec-labs/foundation/eth-address"
 import type { Address, Hex } from "viem"
 import { escrowERC20RecoveryDigest } from "@oxide/l1-contracts/escrow.js"
 import { deriveRecoveryCommitment } from "@oxide/oxide-lib/sipa_recovery.js"

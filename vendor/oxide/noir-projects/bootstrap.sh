@@ -46,12 +46,8 @@ build_circuit() {
     json="target/$name.json"
     [ -f "$json" ] || { echo "Error: expected '$name/$json' was not produced." >&2; exit 1; }
 
-    local target=evm
-    case "$name" in
-      frozen_notes_refund|frozen_deposit_refund|unprocessed_deposit_refund) target=evm-no-zk ;;
-    esac
     mkdir -p target/keys
-    aztec-bb write_vk -b "$json" -o target/keys -t "$target"
+    aztec-bb write_vk -b "$json" -o target/keys -t evm
     echo "Wrote $name/target/keys/vk"
   )
 }

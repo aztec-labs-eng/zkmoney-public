@@ -57,8 +57,7 @@ contract OxidePaymaster is BasePaymaster {
     returns (bytes memory context, uint256 validationData)
   {
     (uint48 validUntil, uint48 validAfter, bytes calldata signature) = _parsePaymasterData(userOp.paymasterAndData);
-    bool failed =
-      ECDSA.recover(getHash(userOp, validUntil, validAfter).toEthSignedMessageHash(), signature) != signer
+    bool failed = ECDSA.recover(getHash(userOp, validUntil, validAfter).toEthSignedMessageHash(), signature) != signer
       || !$allowedBundler[tx.origin];
     return ("", _packValidationData(failed, validUntil, validAfter));
   }

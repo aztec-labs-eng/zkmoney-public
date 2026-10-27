@@ -4,20 +4,19 @@ import {
   type PortalCapacityKey,
   type PortalCapacityState,
 } from "@obsidion/front-core"
-import { SOURCE_OPERATION_CAP } from "@obsidion/sdk"
 import { activeCapacityKey, depositCapacityStore } from "../deposit/capacityStore"
 import { fundingCapacityView } from "../deposit/fundingCapacity"
 import { capacityFacts } from "./aboutLimitsFacts"
 import type { CapacityFacts } from "./aboutLimitsView"
 
 /**
- * Which capacity bucket the sheet shows. `active`: the bucket new deposits fund. `key`: the bucket a
+ * Which capacity bucket the sheet shows. `active`: the bucket new deposits of `token`'s row fund. `key`: the bucket a
  * recorded deposit was made to. `pending`: that bucket is still being named. `unresolved`: it is not
  * known; `retry` re-reads it through the context that owns the record, and is omitted when no read
  * can name it.
  */
 export type CapacitySource =
-  | { kind: "active" }
+  | { kind: "active"; token?: string }
   | { kind: "key"; key: PortalCapacityKey }
   | { kind: "pending" }
   | { kind: "unresolved"; retry?: () => void }
@@ -34,6 +33,7 @@ export function useAboutLimitsCapacity(
   symbol: string,
 ): { facts: CapacityFacts; retry?: () => void } {
   const active = source.kind === "active"
+  const activeToken = source.kind === "active" ? source.token : undefined
   const [activeKey, setActiveKey] = useState<PortalCapacityKey>()
   const [keyFailed, setKeyFailed] = useState(false)
   const [keyAttempt, setKeyAttempt] = useState(0)
@@ -42,7 +42,8 @@ export function useAboutLimitsCapacity(
     if (!active) return
     let stale = false
     setKeyFailed(false)
-    activeCapacityKey().then(
+    setActiveKey(undefined)
+    activeCapacityKey(activeToken).then(
       (key) => {
         if (!stale) setActiveKey(key)
       },
@@ -54,7 +55,7 @@ export function useAboutLimitsCapacity(
     return () => {
       stale = true
     }
-  }, [active, keyAttempt])
+  }, [active, activeToken, keyAttempt])
 
   const key = source.kind === "key" ? source.key : active ? activeKey : undefined
   const store = useMemo(() => (key ? depositCapacityStore(key) : undefined), [key])
@@ -74,7 +75,6 @@ export function useAboutLimitsCapacity(
       ? evaluateCapacityEligibility({
           state,
           required: { status: "unknown" },
-          operationCap: SOURCE_OPERATION_CAP,
           now: Date.now(),
           staleAfterMs: store.policy.staleAfterMs,
         })

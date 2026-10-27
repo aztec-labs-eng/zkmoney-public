@@ -1,6 +1,10 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
-import { parseDeployment, retiredRollupSources } from "../dist/oxide/index.js"
+import {
+  isRetiredRollupSource,
+  parseDeployment,
+  retiredRollupSources,
+} from "../dist/oxide/index.js"
 
 const REGISTRY = "0xa14905681a6d078c0bd03957df3685d4f009aacb"
 const OTHER_REGISTRY = "0xb14905681a6d078c0bd03957df3685d4f009aacb"
@@ -113,4 +117,25 @@ test("retiredRollupSources ignores a malformed entry outside the pinned lineage"
   // No updatedAt, token or rollupVersion: unparseable, on a chain and registry this pin doesn't use.
   const unrelated = { portal: portalFor("unrelated"), chainId: "999", nameRegistry: OTHER_REGISTRY }
   assert.deepEqual(retiredRollupSources(manifestWith(unrelated), pinned), [])
+})
+
+test("isRetiredRollupSource admits another manifest's entry of the pinned lineage only", () => {
+  const tuple = (overrides) => parseDeployment(entry({ label: "other", ...overrides })).tuple
+  assert.equal(isRetiredRollupSource(tuple({ rollupVersion: "5", chainId: "1" }), pinned), true)
+  assert.equal(isRetiredRollupSource(tuple({ rollupVersion: "7", chainId: "1" }), pinned), false)
+  assert.equal(isRetiredRollupSource(tuple({ rollupVersion: "5", chainId: "2" }), pinned), false)
+  assert.equal(
+    isRetiredRollupSource(
+      tuple({ rollupVersion: "5", chainId: "1", nameRegistry: OTHER_REGISTRY }),
+      pinned,
+    ),
+    false,
+  )
+  assert.equal(
+    isRetiredRollupSource(
+      tuple({ rollupVersion: "5", chainId: "1", accountFactory: ZERO_L1 }),
+      pinned,
+    ),
+    false,
+  )
 })

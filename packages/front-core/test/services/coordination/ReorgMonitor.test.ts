@@ -21,8 +21,8 @@ import { TRANSACTIONS_STORAGE_KEY } from "../../../src/core/storages/constants"
 import { InMemoryStorageAdapter } from "../../__test-helpers__/InMemoryStorageAdapter"
 import { resetSingleton } from "../../__test-helpers__/resetSingleton"
 
-vi.mock("@aztec/aztec.js/node", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@aztec/aztec.js/node")>()
+vi.mock("@aztec-labs/aztec.js/node", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@aztec-labs/aztec.js/node")>()
   return { ...actual, createAztecNodeClient: vi.fn() }
 })
 
@@ -941,12 +941,7 @@ describe("ReorgMonitor withdrawal burns", () => {
       store: withdrawals,
       node: { getTxReceipt: async () => INCLUDED } as unknown as WithdrawalTrackerNode,
       finalizationReader: { isSpent: async () => false, resolveL1TxHash: async () => undefined },
-      portalContext: {
-        l1Portal: `0x${"aa".repeat(20)}`,
-        l2Portal: `0x${"bb".repeat(32)}`,
-        rollupVersion: 1n,
-        l1ChainId: 1n,
-      },
+      deployment: { portal: `0x${"aa".repeat(20)}`, l2Token: `0x${"bb".repeat(32)}` },
       scheduler: {
         setInterval: (cb: () => void) => {
           tick = cb

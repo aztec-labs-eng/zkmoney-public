@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { Fr } from "@aztec/aztec.js/fields"
-import type { AztecNode } from "@aztec/aztec.js/node"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import type { AztecNode } from "@aztec-labs/aztec.js/node"
 import { AZTEC_NODE_URL } from "@obsidion/core/constants"
 
 const h = vi.hoisted(() => ({
@@ -10,8 +10,8 @@ const h = vi.hoisted(() => ({
   warpTo: vi.fn(),
   blockData: vi.fn(),
 }))
-vi.mock("@aztec/aztec.js/messaging", () => ({ isL1ToL2MessageReady: h.ready }))
-vi.mock("@aztec/stdlib/interfaces/client", () => ({ createAztecNodeDebugClient: h.debug }))
+vi.mock("@aztec-labs/aztec.js/messaging", () => ({ isL1ToL2MessageReady: h.ready }))
+vi.mock("@aztec-labs/stdlib/interfaces/client", () => ({ createAztecNodeDebugClient: h.debug }))
 
 const { waitForSandboxL1ToL2Message, warpSandboxTimeTo } = await import("../../src/utils/helper.js")
 

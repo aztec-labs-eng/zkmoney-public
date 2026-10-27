@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import type { OperationCapFact, PortalCapacitySnapshot } from "@obsidion/sdk"
+import type { PortalCapacitySnapshot } from "@obsidion/sdk"
 import {
   evaluateCapacityEligibility,
   isCapacityAffirmative,
@@ -14,7 +14,7 @@ const KEY: PortalCapacityKey = {
   portal: `0x${"aa".repeat(20)}`,
   token: `0x${"bb".repeat(20)}`,
 }
-const CAP: OperationCapFact = { status: "unverified", sourceAtomic: 2_583n * E18 }
+const CAP = 5_166n * E18
 
 const snapshot = (over: Partial<PortalCapacitySnapshot> = {}): PortalCapacitySnapshot => ({
   chainId: 1,
@@ -26,6 +26,7 @@ const snapshot = (over: Partial<PortalCapacitySnapshot> = {}): PortalCapacitySna
   rateAtomicPerSecond: 578_703_703_703_703n,
   globalLimitAtomic: 50_000n * E18,
   availableAtomic: 50_000n * E18,
+  txAmountCapAtomic: CAP,
   ...over,
 })
 const fresh = (over: Partial<PortalCapacitySnapshot> = {}): PortalCapacityState => ({
@@ -40,8 +41,12 @@ const amount = (atomic: bigint, decimals = 18, token = KEY.token): RequiredCredi
   token,
   decimals,
 })
-const evaluate = (state: PortalCapacityState, required: RequiredCredit, now = NOW) =>
-  evaluateCapacityEligibility({ state, required, operationCap: CAP, now })
+const evaluate = (
+  state: PortalCapacityState,
+  required: RequiredCredit,
+  now = NOW,
+  txAmountCap?: bigint,
+) => evaluateCapacityEligibility({ state, required, txAmountCap, now })
 
 describe("evaluateCapacityEligibility", () => {
   it("fits at exactly the available amount and is short by one base unit above it", () => {
@@ -83,10 +88,10 @@ describe("evaluateCapacityEligibility", () => {
 
   it("flags low capacity below one operation cap, using the ceiling when it is smaller", () => {
     expect(evaluate(fresh(), amount(1n))).toMatchObject({ kind: "fits", low: false })
-    expect(evaluate(fresh({ availableAtomic: CAP.sourceAtomic }), amount(1n))).toMatchObject({
+    expect(evaluate(fresh({ availableAtomic: CAP }), amount(1n))).toMatchObject({
       low: false,
     })
-    expect(evaluate(fresh({ availableAtomic: CAP.sourceAtomic - 1n }), amount(1n))).toMatchObject({
+    expect(evaluate(fresh({ availableAtomic: CAP - 1n }), amount(1n))).toMatchObject({
       kind: "fits",
       low: true,
     })
@@ -128,14 +133,24 @@ describe("evaluateCapacityEligibility", () => {
     expect(result).not.toHaveProperty("estimate")
   })
 
-  it("checks the unverified operation cap before and without a capacity read", () => {
-    expect(evaluate(fresh(), amount(CAP.sourceAtomic)).kind).toBe("fits")
-    const over = evaluate({ status: "loading", key: KEY }, amount(CAP.sourceAtomic + 1n))
-    expect(over).toEqual({
+  it("checks the capacity read's operation cap", () => {
+    expect(evaluate(fresh(), amount(CAP)).kind).toBe("fits")
+    expect(evaluate(fresh(), amount(CAP + 1n))).toEqual({
       kind: "exceeds-operation-cap",
-      requiredAtomic: CAP.sourceAtomic + 1n,
-      operationCap: CAP,
+      requiredAtomic: CAP + 1n,
+      txAmountCap: CAP,
     })
+  })
+
+  it("checks a given operation cap before and without a capacity read", () => {
+    const loading: PortalCapacityState = { status: "loading", key: KEY }
+    expect(evaluate(loading, amount(CAP + 1n), NOW, CAP)).toEqual({
+      kind: "exceeds-operation-cap",
+      requiredAtomic: CAP + 1n,
+      txAmountCap: CAP,
+    })
+    expect(evaluate(loading, amount(CAP + 1n)).kind).toBe("checking")
+    expect(evaluate(fresh(), amount(CAP), NOW, CAP - 1n).kind).toBe("exceeds-operation-cap")
   })
 
   it("refuses an amount in another token or with other decimals instead of converting it", () => {
@@ -162,7 +177,6 @@ describe("evaluateCapacityEligibility", () => {
       evaluateCapacityEligibility({
         state,
         required: amount(1n),
-        operationCap: CAP,
         now: NOW + 5_000,
         staleAfterMs: 5_000,
       }).kind,

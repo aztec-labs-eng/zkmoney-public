@@ -40,6 +40,7 @@ vi.mock("../src/features/deposit/l1Wallet", () => ({
 vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/front-core")>()),
   useAztecContext: () => ({ obsidionWallet: { node: {} } }),
+  useAccountContext: () => ({ obsidionAccount: { getAddress: () => ({}) } }),
   useAssetContext: () => ({ teeSigner: {} }),
 }))
 // The DS drags in liquid-glass optics jsdom can't render; this test is about the sheet's content.
@@ -313,7 +314,7 @@ describe("WithdrawalExitModal", () => {
     await act(async () => button("Finalize this withdrawal")!.click())
     expect(h.selfFinalize).toHaveBeenCalledWith(
       record,
-      { node: {}, signer },
+      expect.objectContaining({ node: {}, signer }),
       expect.objectContaining({ tuple }),
     )
   })

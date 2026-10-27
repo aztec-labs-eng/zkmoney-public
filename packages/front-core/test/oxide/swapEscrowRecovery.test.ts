@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { Fr } from "@aztec/aztec.js/fields"
-import { EthAddress } from "@aztec/foundation/eth-address"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { EthAddress } from "@aztec-labs/foundation/eth-address"
 import { escrowERC20RecoveryDigest } from "@oxide/l1-contracts/escrow.js"
 import { deriveRecoveryCommitment } from "@oxide/oxide-lib/sipa_recovery.js"
 

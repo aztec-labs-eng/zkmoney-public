@@ -1,11 +1,11 @@
-import { ARCHIVE_HEIGHT } from '@aztec/constants';
-import { Fr } from '@aztec/foundation/curves/bn254';
-import { GrumpkinScalar } from '@aztec/foundation/curves/grumpkin';
-import { EthAddress } from '@aztec/foundation/eth-address';
-import { MembershipWitness } from '@aztec/foundation/trees';
-import { AztecAddress } from '@aztec/stdlib/aztec-address';
-import type { CompleteAddress } from '@aztec/stdlib/contract';
-import { type BlockHeader, type OffchainEffect, TxHash } from '@aztec/stdlib/tx';
+import { ARCHIVE_HEIGHT } from '@aztec-labs/constants';
+import { Fr } from '@aztec-labs/foundation/curves/bn254';
+import { GrumpkinScalar } from '@aztec-labs/foundation/curves/grumpkin';
+import { EthAddress } from '@aztec-labs/foundation/eth-address';
+import { MembershipWitness } from '@aztec-labs/foundation/trees';
+import { AztecAddress } from '@aztec-labs/stdlib/aztec-address';
+import type { CompleteAddress } from '@aztec-labs/stdlib/contract';
+import { type BlockHeader, type OffchainEffect, TxHash } from '@aztec-labs/stdlib/tx';
 
 import { extractMetadata } from '@oxide/oxide-lib/da_extractors.js';
 import {
@@ -27,7 +27,7 @@ import type {
 import { PermanentError } from './errors.js';
 import { type AnchoredNodeReads, memoizeNodeReads } from './node_read_memo.js';
 import { produceTxEffectsAtAnchorHints } from './produce_tx_effects_hints.js';
-import { fetchSignerApprovalWitness } from './signer_approval.js';
+import { fetchSignerRegistrationWitness } from './signer_registration.js';
 
 /**
  * Mirror of `NoteStage` from `aztec-nr/aztec/src/note/note_metadata.nr`. A nullification
@@ -197,6 +197,7 @@ export interface PortalAssertions {
 export async function buildTokenOperation(
   chain: AnchoredNodeReads,
   tokenAddress: AztecAddress,
+  teeRegistry: EthAddress,
   anchorBlockHeader: BlockHeader,
   collected: CollectedAccountingEffects,
   spendMetadata: SpendMetadata[],
@@ -236,11 +237,11 @@ export async function buildTokenOperation(
         );
       }
 
-      const signerApprovalWitness = await fetchSignerApprovalWitness(
+      const signerRegistrationWitness = await fetchSignerRegistrationWitness(
         chain,
-        tokenAddress,
-        creationMetadata.publicKey(),
-        anchorBlockHash,
+        teeRegistry,
+        creationMetadata,
+        anchorBlockHeader,
       );
 
       return {
@@ -254,7 +255,7 @@ export async function buildTokenOperation(
         hints,
         signature: nullified.signature,
         anchorBlockHashMembershipWitness,
-        signerApprovalWitness,
+        signerRegistrationWitness,
       };
     }),
   );
@@ -266,6 +267,71 @@ export async function buildTokenOperation(
     deposits: portal?.deposits ?? [],
     withdrawals: collected.withdrawals,
   };
+}
+
+/**
+ * Resolve the deposit witnesses and the spend metadata of the collected effects, then build the token operation. A
+ * resolver is required only when the effects contain what it resolves.
+ */
+export async function hydrateTokenOperation(
+  chain: AnchoredNodeReads,
+  args: {
+    tokenAddress: AztecAddress;
+    teeRegistry: EthAddress;
+    anchorBlockHeader: BlockHeader;
+    collected: CollectedAccountingEffects;
+    resolveSpendMetadata?: SpendMetadataResolver;
+    resolveDepositSpendMetadata?: DepositSpendMetadataResolver;
+  },
+): Promise<TokenOperation> {
+  const { collected, resolveSpendMetadata, resolveDepositSpendMetadata } = args;
+  const anchorBlockHash = await args.anchorBlockHeader.hash();
+
+  if (collected.deposits.length > 0 && !resolveDepositSpendMetadata) {
+    throw new Error(
+      `${collected.deposits.length} deposit spend(s) need resolveDepositSpendMetadata, but none was supplied`,
+    );
+  }
+  const deposits: SpentDeposit[] = [];
+  for (const spent of collected.deposits) {
+    const witness = await chain.getL1ToL2MessageMembershipWitness(anchorBlockHash, spent.messageHash);
+    if (!witness) {
+      throw new Error(`No L1->L2 membership witness for deposit message ${spent.messageHash}`);
+    }
+    const [witnessLeafIndex, siblingPath] = witness;
+    if (witnessLeafIndex !== spent.inboxIndex) {
+      throw new Error(
+        `Deposit witness leaf index ${witnessLeafIndex} does not match deposit effect leaf index ${spent.inboxIndex}`,
+      );
+    }
+    const metadata = await resolveDepositSpendMetadata!(spent.recipient);
+    deposits.push({
+      recipient: spent.recipient,
+      recipientAddressPreimage: metadata.ownerAddressPreimage,
+      masterNullifierHidingKey: metadata.masterNullifierHidingKey,
+      amount: spent.amount,
+      sharedSecretSalt: spent.sharedSecretSalt,
+      messageLeafIndex: spent.inboxIndex,
+      siblingPath: siblingPath.toTuple(),
+    });
+  }
+
+  if (collected.nullifiedNotes.length > 0 && !resolveSpendMetadata) {
+    throw new Error(
+      `${collected.nullifiedNotes.length} nullified note(s) need resolveSpendMetadata, but none was supplied`,
+    );
+  }
+  const spendMetadata = await Promise.all(collected.nullifiedNotes.map(nullified => resolveSpendMetadata!(nullified)));
+
+  return await buildTokenOperation(
+    chain,
+    args.tokenAddress,
+    args.teeRegistry,
+    args.anchorBlockHeader,
+    collected,
+    spendMetadata,
+    { deposits },
+  );
 }
 
 const NULLIFICATION_EFFECT_LEN = 14;

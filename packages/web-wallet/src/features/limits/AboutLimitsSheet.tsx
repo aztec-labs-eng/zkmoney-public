@@ -1,8 +1,8 @@
 import { useEffect, useState, type ReactNode } from "react"
+import { WALLET_TOKEN_SYMBOL } from "@obsidion/core/constants"
 import { Modal } from "../../ui/Modal"
-import { getConfig } from "../../config/env"
 import { useSponsoredAllowance } from "../allowance/useSponsoredAllowance"
-import { depositTokensFor } from "../deposit/loadDepositFacts"
+import { useDepositTokens } from "../deposit/loadDepositFacts"
 import type { SipaCapacityKey } from "@obsidion/front-core"
 import { sipaProcessingObserver } from "../deposit/sipaProcessing"
 import { AboutLimitsContent, type LimitsDetails } from "./AboutLimitsContent"
@@ -77,7 +77,8 @@ function PolicyAndCapacitySheet({
   sponsorship,
   onRetrySponsorship,
 }: WalletSheetProps & { sponsorship: SponsorshipFacts; onRetrySponsorship?: () => void }) {
-  const symbol = settlementSymbol ?? depositTokensFor(getConfig().network)[0].symbol
+  const depositTokens = useDepositTokens()
+  const symbol = settlementSymbol ?? depositTokens?.settlement.symbol ?? WALLET_TOKEN_SYMBOL
   // An unresolved source reads no store.
   const shared = useAboutLimitsCapacity(capacity || { kind: "unresolved" }, symbol)
   const facts: AboutLimitsFacts = {

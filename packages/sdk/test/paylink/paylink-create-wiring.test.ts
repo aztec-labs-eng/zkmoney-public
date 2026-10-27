@@ -19,9 +19,9 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import { buildTransferMetaForSend } from "../../src/services/transferMeta.js"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import { Fr } from "@aztec/aztec.js/fields"
-import { PRIVATE_LOG_CIPHERTEXT_LEN } from "@aztec/constants"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { PRIVATE_LOG_CIPHERTEXT_LEN } from "@aztec-labs/constants"
 
 const { depositSpy } = vi.hoisted(() => ({
   depositSpy: vi.fn(() => ({ __fake: "depositInteraction" })),
@@ -38,8 +38,8 @@ vi.mock("../../src/services/paylink/paylinkDepositSubmit.js", () => ({
 
 // Stub `Contract.at` so we don't need a real artifact ABI to build the deposit
 // interaction; preserve all other exports.
-vi.mock("@aztec/aztec.js/contracts", async (importActual) => {
-  const actual = await importActual<typeof import("@aztec/aztec.js/contracts")>()
+vi.mock("@aztec-labs/aztec.js/contracts", async (importActual) => {
+  const actual = await importActual<typeof import("@aztec-labs/aztec.js/contracts")>()
   return {
     ...actual,
     Contract: {

@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest"
 import type { Address } from "viem"
 import type { PortalCapacitySnapshot, SipaPortalTerms } from "@obsidion/sdk"
-import { SOURCE_OPERATION_CAP } from "@obsidion/sdk"
 
 import {
   evaluateCapacityEligibility,
@@ -30,7 +29,7 @@ const terms: SipaPortalTerms = {
   portal: PORTAL,
   token: DAI,
   depositFee: 1n * E18,
-  fpcFundingCut: E18 / 2n,
+  txAmountCap: 5_166n * E18,
 }
 
 const deposit = (over: Partial<SIPADepositRecord> = {}) => ({
@@ -50,6 +49,7 @@ const snapshot = (over: Partial<PortalCapacitySnapshot> = {}): PortalCapacitySna
   rateAtomicPerSecond: E18,
   globalLimitAtomic: 50_000n * E18,
   availableAtomic: 500n * E18,
+  txAmountCapAtomic: terms.txAmountCap,
   ...over,
 })
 
@@ -72,25 +72,25 @@ const reason = (state: PortalCapacityState, required: RequiredCredit) =>
     evaluateCapacityEligibility({
       state,
       required,
-      operationCap: SOURCE_OPERATION_CAP,
+      txAmountCap: terms.txAmountCap,
       now: T + 1,
     }),
     T + 1,
   )
 
 describe("sipaRequiredCredit", () => {
-  it("takes the deposit fee and the original portal's cut off the gross", () => {
-    expect(sipaRequiredCredit(deposit(), terms)).toEqual(known(100n * E18 - E18 - E18 / 2n))
+  it("takes the implementation's deposit fee off the gross", () => {
+    expect(sipaRequiredCredit(deposit(), terms)).toEqual(known(99n * E18))
   })
 
-  it("uses the portal's own cut, not the fee stored on the record", () => {
-    const stored = deposit({ fee: (5n * E18).toString(), fpcFundingCut: (4n * E18).toString() })
-    expect(sipaRequiredCredit(stored, terms)).toEqual(known(98n * E18 + E18 / 2n))
+  it("uses the implementation's deposit fee, not the fee stored on the record", () => {
+    const stored = deposit({ fee: (5n * E18).toString() })
+    expect(sipaRequiredCredit(stored, terms)).toEqual(known(99n * E18))
   })
 
   it("takes a registration's signed fee instead of the deposit fee", () => {
     const registration = deposit({ intent: "registration", registrationFee: (3n * E18).toString() })
-    expect(sipaRequiredCredit(registration, terms)).toEqual(known(96n * E18 + E18 / 2n))
+    expect(sipaRequiredCredit(registration, terms)).toEqual(known(97n * E18))
   })
 
   it("is unknown for a registration without its fee or with a fee below the deposit fee", () => {
@@ -117,7 +117,7 @@ describe("sipaRequiredCredit", () => {
       deposit({ tokenAddress: undefined }),
       deposit({ tokenDecimals: undefined }),
       deposit({ amount: "not a number" }),
-      deposit({ amount: "1.5" }),
+      deposit({ amount: "1" }),
     ]) {
       expect(sipaRequiredCredit(record, terms)).toEqual({ status: "unknown" })
     }
@@ -163,7 +163,7 @@ describe("sipaProcessingReason", () => {
 
   it("names a credit above the operation cap even before capacity is read", () => {
     const loading: PortalCapacityState = { status: "loading", key: KEY }
-    expect(reason(loading, known(SOURCE_OPERATION_CAP.sourceAtomic + 1n))).toEqual({
+    expect(reason(loading, known(terms.txAmountCap + 1n))).toEqual({
       kind: "operation-cap",
       observedAt: T + 1,
     })

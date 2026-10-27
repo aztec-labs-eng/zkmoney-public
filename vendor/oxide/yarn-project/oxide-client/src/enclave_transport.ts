@@ -98,10 +98,10 @@ export async function postFrame(
 }
 
 /**
- * Fetch an enclave's attestation **without verifying it against the portal**, so the keys it carries
- * are untrusted. Two callers legitimately want that: bootstrap registration, where no binding exists
+ * Fetch an enclave's attestation **without verifying it against the `TeeRegistry`**, so the keys it carries
+ * are untrusted. Two callers legitimately want that: bootstrap registration, where no registration exists
  * yet, and liveness probing, which only cares that the enclave answers. Anything that will seal a
- * request to these keys must go through `FleetSigner.connect`, which verifies the binding first.
+ * request to these keys must go through `FleetSigner.connect`, which verifies the registration first.
  * `teeAddress` pins the fetch to a named fleet member; without it the router assigns one.
  */
 export async function fetchUnverifiedAttestation(

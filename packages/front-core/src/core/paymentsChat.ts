@@ -12,6 +12,8 @@ export interface SelectedContact {
   name: string
   tag: string
   address?: string
+  /** See `Contact.retiredAddresses`. */
+  retiredAddresses?: string[]
   addressKind?: "aztec-l2" | "ethereum-l1"
   provenance?: "deposit-attested" | "saved-recipient"
 }
@@ -163,6 +165,7 @@ export function buildChatMessages(
   const renderedTxHashes = new Set<string>()
 
   if (contactAddress) {
+    const addresses = new Set([contactAddress, ...(selectedContact.retiredAddresses ?? [])])
     const filtered = transactions.filter((tx: Transaction) => {
       if (!("token" in tx) || !tx.token) return false
       // A cancel aborted during prove leaves detailedStatus=CANCELLED with an
@@ -175,7 +178,7 @@ export function buildChatMessages(
       // address as `senderL2Address` — match the latter so they land in the
       // matching contact's chat history.
       const senderL2 = !isSend && "senderL2Address" in tx ? (tx as any).senderL2Address : undefined
-      return toAddr === contactAddress || fromAddr === contactAddress || senderL2 === contactAddress
+      return addresses.has(toAddr) || addresses.has(fromAddr) || addresses.has(senderL2)
     })
 
     for (const tx of filtered) {

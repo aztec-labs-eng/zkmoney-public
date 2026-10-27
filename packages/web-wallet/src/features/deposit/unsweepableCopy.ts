@@ -6,19 +6,24 @@
  * Between them the cause is not in the record, so the copy offers the likeliest one without
  * claiming it. All three end on the exit that is left; the floor case also names the top-up.
  *
- * The ceiling is an internal protocol figure and is never shown. Refill cannot lift it, so that case
- * says waiting will not help and points to the published per-deposit limit instead.
+ * The ceiling is the portal's `TX_AMOUNT_CAP()`, an internal protocol figure that is never shown;
+ * without it the copy names no cause at that end. Refill cannot lift it, so that case says waiting
+ * will not help and points to the published per-deposit limit instead.
  */
 import { WALLET_TOKEN_SYMBOL } from "@obsidion/core/constants"
-import { TX_AMOUNT_CAP } from "@obsidion/sdk"
 import { depositAmounts, isNativeEth, type SIPADepositRecord } from "@obsidion/front-core"
 import { DEPOSIT_LIMIT_BASIS, formatPublicLimit, nominalValuationNote } from "../limits/publicLimit"
 
 type UnsweepableRecord = Pick<SIPADepositRecord, "amount" | "netAmount" | "fee" | "messageSecret"> &
   Partial<Pick<SIPADepositRecord, "tokenSymbol" | "tokenAddress">>
 
-export function unsweepableCopy(record: UnsweepableRecord): string {
-  const { feeKnown, grossAtomic, feeAtomic, feeDisplay } = depositAmounts(record)
+/** `decimals`: the row token's, which the record's amounts and `txAmountCap` are in. */
+export function unsweepableCopy(
+  record: UnsweepableRecord,
+  txAmountCap?: bigint,
+  decimals?: number,
+): string {
+  const { feeKnown, grossAtomic, feeAtomic, feeDisplay } = depositAmounts(record, decimals)
   const symbol = record.tokenSymbol || WALLET_TOKEN_SYMBOL
   // The fee is met by the token sent, scaled by its decimals alone.
   const feeLabel = `${feeDisplay} ${symbol}`
@@ -45,7 +50,7 @@ export function unsweepableCopy(record: UnsweepableRecord): string {
     return `This deposit is at or below the network's deposit fee (${feeLabel}), so it can't be moved into your private balance. ${topUp} ${exit}`
   }
   const cause =
-    forwarded > TX_AMOUNT_CAP
+    txAmountCap !== undefined && forwarded > txAmountCap
       ? `This deposit is larger than the network can process in one deposit, so it can't be moved into your private balance. Waiting won't change this. Each deposit is limited to ${formatPublicLimit()} ${DEPOSIT_LIMIT_BASIS}. ${nominalValuationNote(
           symbol,
         )}`

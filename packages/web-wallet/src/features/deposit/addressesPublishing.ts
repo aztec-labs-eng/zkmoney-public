@@ -9,6 +9,7 @@ export function addressesPublishing(jobs: readonly BroadcastJob[], scope: string
     (job) =>
       job.scope === scope &&
       job.kind === "deposit" &&
+      job.source.type === "slot" &&
       job.state !== "landed" &&
       job.fundedAt === undefined &&
       job.failures < 2,

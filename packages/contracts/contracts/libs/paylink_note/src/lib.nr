@@ -203,7 +203,6 @@ pub fn execute_claim_to_l1(
             user_payload_hash,
             amount_val,
             prover_tip,
-            [0; OxideToken::WITHDRAW_META_LEN],
             0,
         )
         .call(context);

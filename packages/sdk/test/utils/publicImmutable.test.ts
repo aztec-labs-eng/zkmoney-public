@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest"
-import { poseidon2Hash } from "@aztec/foundation/crypto/poseidon"
-import { Fr } from "@aztec/foundation/curves/bn254"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import type { ContractArtifact } from "@aztec/stdlib/abi"
+import { poseidon2Hash } from "@aztec-labs/foundation/crypto/poseidon"
+import { Fr } from "@aztec-labs/foundation/curves/bn254"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import type { ContractArtifact } from "@aztec-labs/stdlib/abi"
 import { readPublicImmutable } from "../../src/utils/publicImmutable.js"
 
 const SLOT = new Fr(7n)
@@ -15,17 +15,15 @@ const artifact = {
     {
       name: "get_config",
       parameters: [],
-      returnTypes: [
-        {
-          kind: "struct",
-          path: "probe::Config",
-          fields: [
-            { name: "owner", type: { kind: "field" } },
-            { name: "cap", type: { kind: "integer", sign: "unsigned", width: 128 } },
-            { name: "flags", type: { kind: "array", length: 2, type: { kind: "boolean" } } },
-          ],
-        },
-      ],
+      returnType: {
+        kind: "struct",
+        path: "probe::Config",
+        fields: [
+          { name: "owner", type: { kind: "field" } },
+          { name: "cap", type: { kind: "integer", sign: "unsigned", width: 128 } },
+          { name: "flags", type: { kind: "array", length: 2, type: { kind: "boolean" } } },
+        ],
+      },
     },
   ],
 } as unknown as ContractArtifact

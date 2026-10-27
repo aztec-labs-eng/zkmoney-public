@@ -33,8 +33,6 @@ const h = vi.hoisted(() => ({
   detailPay: undefined as { total: bigint } | undefined,
   /** What the fake token answers for balanceOf(sipa). */
   balance: 0n,
-  /** Portal deductions the banner's refund verdict reads; undefined while unread. */
-  deductions: undefined as { fpcCut: bigint } | undefined,
   /** The relayer's sweep fee; undefined while unread. */
   sweepFee: undefined as bigint | undefined,
   /** The pending-deposit observer; none unless a test states a processing reason. */
@@ -107,7 +105,6 @@ vi.mock("@obsidion/web-ds", () => ({
 
 vi.mock("../src/features/onboarding/registrationTerms", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/features/onboarding/registrationTerms")>()),
-  useSweepDeductions: () => h.deductions,
   useDepositSkim: () => h.sweepFee,
 }))
 // Fake fragments never decode; one named for an email link is one.
@@ -146,7 +143,6 @@ const { saveWalletIdentity } = await import("../src/features/identity/walletIden
 const { recordDepositAdmission } = await import("../src/features/identity/admission")
 const { loadRegistrationTerms } = await import("../src/features/onboarding/registrationTerms")
 const { askedTotal } = await import("../src/features/onboarding/registrationAsk")
-const { DETECTING_AMOUNT } = await import("../src/features/onboarding/useRegistrationDepositEntry")
 const { REGISTRATIONS_PAUSED_NOTICE } = await import(
   "../src/features/onboarding/onboardingErrorCopy"
 )
@@ -203,7 +199,6 @@ beforeEach(async () => {
   h.amounts = { min: 0n, fee: 0n }
   h.scheduleReads = 0
   h.balance = 0n
-  h.deductions = { fpcCut: 25n * 10n ** 16n }
   h.sweepFee = 5n * 10n ** 17n
   h.detailPay = undefined
   container = document.createElement("div")
@@ -252,10 +247,7 @@ describe("SecureNameNoticeCard", () => {
     expect(body).not.toContain("$")
   })
 
-  it("names no received figure while the total is still being priced", async () => {
-    // The portal cut is unread, so an earned tag has no total yet. What is already at the address
-    // is the sheet's to name, not the hero's.
-    h.deductions = undefined
+  it("names no received figure: what is already at the address is the sheet's to name", async () => {
     h.amounts = { min: 5n * 10n ** 18n, fee: 10n * 10n ** 18n }
     saveWalletIdentity({ handle: "taga", address: L2_ADDRESS, claimedAt: 1, pending: true })
     saveRegistrationTerms(
@@ -538,9 +530,9 @@ describe("registration deposit entry — deposit admission", () => {
   }
 
   it("projects the credit once the deposit clears the floor", async () => {
-    // The whole ask deposited, against the paid fee and the portal's cut: the sweep credits the rest.
+    // The whole ask deposited, against the paid fee: the sweep credits the rest.
     const amount = await feedRow({ deposited: askedTotal("standard") })
-    const credit = askedTotal("standard") - PAID.fee - h.deductions!.fpcCut
+    const credit = askedTotal("standard") - PAID.fee
     expect(amount).toContain(formatUnits(credit, 18))
   })
 
@@ -550,12 +542,6 @@ describe("registration deposit entry — deposit admission", () => {
     // The fee alone is under the floor, which adds the minimum.
     const amount = await feedRow({ deposited: PAID.fee })
     expect(amount).toBe(usdFigure(formatUnits(PAID.fee, 18)))
-  })
-
-  it("names no credit while the portal's cut is unread", async () => {
-    h.deductions = undefined
-    const amount = await feedRow({ deposited: askedTotal("standard") })
-    expect(amount).toBe(DETECTING_AMOUNT)
   })
 
   it("names the deposited gross when no schedule is signed and none is being read", async () => {

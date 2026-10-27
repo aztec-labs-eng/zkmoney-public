@@ -2,7 +2,6 @@
 pragma solidity >=0.8.27;
 import {OxidePortal} from "@core/OxidePortal.sol";
 import {IOxidePortal} from "@core/interfaces/IOxidePortal.sol";
-import {OxideConstants} from "@generated/OxideConstants.gen.sol";
 import {OxidePortalBase} from "@test/core/OxidePortalBase.t.sol";
 import {Errors as CoreErrors} from "@core/lib/Errors.sol";
 
@@ -12,14 +11,10 @@ contract OxidePortalWithdrawFrozenTest is OxidePortalBase {
     if (_count > 0) {
       outbox.setRoot(4, _count, bytes32(uint256(0xC0FFEE)));
     }
-    _freezeAsOwner();
+    _freeze();
   }
 
-  function test_GivenFreezeEpochWithdrawal_WhenWithdrawIsCalled()
-    external
-    givenPortalIsInitialized
-    givenTeeIsRegistered("tee-frozen")
-  {
+  function test_GivenFreezeEpochWithdrawal_WhenWithdrawIsCalled() external givenTeeIsRegistered("tee-frozen") {
     WithdrawParams memory p = _defaultWithdrawParams();
     p.epochNumber = 4;
     _freezeFreezeEpoch(2);
@@ -45,7 +40,6 @@ contract OxidePortalWithdrawFrozenTest is OxidePortalBase {
 
   function test_GivenConsumeDepthPastFreezeCount_WhenWithdrawIsCalled()
     external
-    givenPortalIsInitialized
     givenTeeIsRegistered("tee-frozen-deep")
   {
     WithdrawParams memory p = _defaultWithdrawParams();
@@ -59,11 +53,7 @@ contract OxidePortalWithdrawFrozenTest is OxidePortalBase {
     _withdrawFrozen(p, 3, 0, path, sig);
   }
 
-  function test_GivenEpochAfterFreezeEpoch_WhenWithdrawIsCalled()
-    external
-    givenPortalIsInitialized
-    givenTeeIsRegistered("tee-frozen-epoch")
-  {
+  function test_GivenEpochAfterFreezeEpoch_WhenWithdrawIsCalled() external givenTeeIsRegistered("tee-frozen-epoch") {
     WithdrawParams memory p = _defaultWithdrawParams();
     p.epochNumber = 5;
     _freezeFreezeEpoch(1);
@@ -77,7 +67,6 @@ contract OxidePortalWithdrawFrozenTest is OxidePortalBase {
 
   function test_GivenCheckpointAfterFreeze_WhenWithdrawIsCalled()
     external
-    givenPortalIsInitialized
     givenTeeIsRegistered("tee-frozen-checkpoint")
   {
     WithdrawParams memory p = _defaultWithdrawParams();
@@ -94,7 +83,6 @@ contract OxidePortalWithdrawFrozenTest is OxidePortalBase {
 
   function test_GivenEpochBeforeFreezeEpoch_WhenWithdrawIsCalled()
     external
-    givenPortalIsInitialized
     givenTeeIsRegistered("tee-frozen-previous-epoch")
   {
     WithdrawParams memory p = _defaultWithdrawParams();
@@ -115,14 +103,10 @@ contract OxidePortalWithdrawFrozenTest is OxidePortalBase {
     assertEq(numCheckpointsInEpoch, 7);
   }
 
-  function test_GivenAmountExceedsTxLimit_WhenWithdrawIsCalled()
-    external
-    givenPortalIsInitialized
-    givenTeeIsRegistered("tee-frozen-over-cap")
-  {
+  function test_GivenAmountExceedsTxLimit_WhenWithdrawIsCalled() external givenTeeIsRegistered("tee-frozen-over-cap") {
     WithdrawParams memory p = _defaultWithdrawParams();
     p.epochNumber = 4;
-    p.amount = OxideConstants.TX_AMOUNT_CAP + 1;
+    p.amount = TX_AMOUNT_CAP + 1;
     _freezeFreezeEpoch(2);
 
     bytes32[] memory path = new bytes32[](0);
@@ -134,7 +118,6 @@ contract OxidePortalWithdrawFrozenTest is OxidePortalBase {
 
   function test_GivenPortalWasFrozenAfterRollupReplacement_WhenWithdrawIsCalled()
     external
-    givenPortalIsInitialized
     givenTeeIsRegistered("tee-frozen-replaced-rollup")
     givenRollupIsNonCanonical
   {
@@ -160,7 +143,6 @@ contract OxidePortalWithdrawFrozenTest is OxidePortalBase {
 
   function test_GivenMessageOnlyUnderPostFreezeRoot_WhenWithdrawIsCalled()
     external
-    givenPortalIsInitialized
     givenTeeIsRegistered("tee-frozen-root")
   {
     WithdrawParams memory p = _defaultWithdrawParams();
@@ -180,7 +162,6 @@ contract OxidePortalWithdrawFrozenTest is OxidePortalBase {
 
   function test_GivenFreezeEpochWithdrawalAlreadyClaimed_WhenWithdrawIsCalled()
     external
-    givenPortalIsInitialized
     givenTeeIsRegistered("tee-frozen-replay")
   {
     WithdrawParams memory p = _defaultWithdrawParams();

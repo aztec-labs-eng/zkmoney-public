@@ -1,4 +1,4 @@
-import { startAnvil } from '@aztec/ethereum/test';
+import { startAnvil } from '@aztec-labs/ethereum/test';
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from '@jest/globals';
 import {

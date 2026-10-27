@@ -1,11 +1,11 @@
-import type { BlockNumber } from '@aztec/foundation/branded-types';
-import { type BlockParameter, inspectBlockParameter } from '@aztec/stdlib/block';
+import type { BlockNumber } from '@aztec-labs/foundation/branded-types';
+import { type BlockParameter, inspectBlockParameter } from '@aztec-labs/stdlib/block';
 import type {
   AztecNode,
   BlockIncludeOptions,
   BlockResponse,
   BlocksIncludeOptions,
-} from '@aztec/stdlib/interfaces/client';
+} from '@aztec-labs/stdlib/interfaces/client';
 
 /**
  * The node reads the spent-note fan-out performs. All are anchored reads of immutable history, so within one
@@ -13,7 +13,13 @@ import type {
  */
 export type AnchoredNodeReads = Pick<
   AztecNode,
-  'getTxEffect' | 'getBlock' | 'getBlocks' | 'getBlockData' | 'getBlockHashMembershipWitness' | 'getPublicDataWitness'
+  | 'getTxEffect'
+  | 'getBlock'
+  | 'getBlocks'
+  | 'getBlockData'
+  | 'getBlockHashMembershipWitness'
+  | 'getBlockHashMembershipWitnessAtArchive'
+  | 'getL1ToL2MessageMembershipWitness'
 >;
 
 const includeKey = (o?: BlocksIncludeOptions): string =>
@@ -52,9 +58,15 @@ export function memoizeNodeReads(node: AnchoredNodeReads): AnchoredNodeReads {
       once(`getBlockHashMembershipWitness:${inspectBlockParameter(referenceBlock)}:${blockHash}`, () =>
         node.getBlockHashMembershipWitness(referenceBlock, blockHash),
       ),
-    getPublicDataWitness: (referenceBlock, leafSlot) =>
-      once(`getPublicDataWitness:${inspectBlockParameter(referenceBlock)}:${leafSlot}`, () =>
-        node.getPublicDataWitness(referenceBlock, leafSlot),
+    // Keyed by the exact root, so a witness is never reused for another archive. A cached witness does not make its
+    // root canonical: the caller still selects a root that its verifier accepts.
+    getBlockHashMembershipWitnessAtArchive: ({ archive }, blockHash) =>
+      once(`getBlockHashMembershipWitnessAtArchive:${archive}:${blockHash}`, () =>
+        node.getBlockHashMembershipWitnessAtArchive({ archive }, blockHash),
+      ),
+    getL1ToL2MessageMembershipWitness: (referenceBlock, messageHash) =>
+      once(`getL1ToL2MessageMembershipWitness:${inspectBlockParameter(referenceBlock)}:${messageHash}`, () =>
+        node.getL1ToL2MessageMembershipWitness(referenceBlock, messageHash),
       ),
   };
 }

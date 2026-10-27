@@ -13,7 +13,16 @@ const h = vi.hoisted(() => ({
   whenReady: vi.fn(async (_reader: string) => {}),
   refreshBalance: vi.fn(async () => {}),
   syncSource: undefined as unknown,
+  account: undefined as unknown,
+  balance: undefined as { scope: string } | undefined,
+  v6MayStart: vi.fn(async () => {}),
 }))
+
+/** The page's account, as the mount reads it. */
+const accountAt = (complete: string) => ({
+  getAddress: () => ({ toString: () => complete }),
+  getCompleteAddress: () => ({ toString: () => complete }),
+})
 
 /** The Savings token as the lookup answers it: its deployment's label and its service. */
 const savingsOf = (balance: bigint) => ({
@@ -24,12 +33,11 @@ const savingsOf = (balance: bigint) => ({
 vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/front-core")>()),
   useAztecContext: () => ({ obsidionWallet: {}, currentNetwork: { type: "testnet" } }),
-  useAccountContext: () => ({ obsidionAccount: {} }),
+  useAccountContext: () => ({ obsidionAccount: h.account }),
   useAssetContext: () => ({
     tokenService: {
       fetchTokenInformation: h.fetchTokenInformation,
       readBalanceAssumingSynced: async () => 0n,
-      account: { getCompleteAddress: () => ({ toString: () => "0xcomplete" }) },
     },
   }),
   useContractServiceContext: () => ({ contractService: {} }),
@@ -39,6 +47,9 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
   createTagForwardResolver: () => ({}),
   createWalletSyncSource: (deps: unknown) => ((h.syncSource = deps), {}),
   WalletSyncCoordinator: class {
+    constructor(opts: { balance: { scope: string } }) {
+      h.balance = opts.balance
+    }
     start = h.start
     stop = h.stop
     static refreshBalance = h.refreshBalance
@@ -61,6 +72,9 @@ vi.mock("../src/features/savings/savingsGateway", () => ({
   savingsRescanToken: () => h.savingsToken(),
 }))
 vi.mock("../src/platform/storage/WebStorageAdapter", () => ({ webStorage: {} }))
+vi.mock("../src/features/migration/upgradeFirst", () => ({
+  upgradeFirst: { v6MayStart: h.v6MayStart },
+}))
 vi.mock("../src/platform/xmtp/adapters", () => ({ createContactsByL2: () => ({}) }))
 
 const { TransferScannerMount } = await import("../src/platform/transactions/TransferScannerMount")
@@ -71,8 +85,10 @@ let root: Root
 beforeEach(() => {
   vi.clearAllMocks()
   h.whenReady.mockImplementation(async () => {})
+  h.v6MayStart.mockImplementation(async () => {})
   h.savingsToken.mockImplementation(async () => undefined)
   h.syncSource = undefined
+  h.account = accountAt("0xcomplete")
   // jsdom reports a hidden document; the mount only scans while visible.
   vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible")
   // The setup's Web Locks polyfill takes no options; without locks the mount scans directly.
@@ -105,6 +121,35 @@ describe("TransferScannerMount", () => {
     })
   })
 
+  it("holds the v6 balance sync until the upgrade's probe lets it start", async () => {
+    let open = () => {}
+    h.v6MayStart.mockReturnValue(new Promise<void>((resolve) => (open = resolve)))
+    await act(async () => {
+      root.render(<TransferScannerMount />)
+    })
+    expect(h.start).not.toHaveBeenCalled()
+
+    await act(async () => open())
+
+    await vi.waitFor(() => expect(h.start).toHaveBeenCalledTimes(1))
+  })
+
+  it("scans again for the account the page switches to, caching its balance under its own address", async () => {
+    await act(async () => {
+      root.render(<TransferScannerMount />)
+    })
+    await vi.waitFor(() => expect(h.start).toHaveBeenCalledTimes(1))
+    expect(h.balance?.scope).toBe("testnet:0xcomplete")
+
+    h.account = accountAt("0xtwokey")
+    await act(async () => {
+      root.render(<TransferScannerMount />)
+    })
+    await vi.waitFor(() => expect(h.start).toHaveBeenCalledTimes(2))
+    expect(h.stop).toHaveBeenCalled()
+    expect(h.balance?.scope).toBe("testnet:0xtwokey")
+  })
+
   it("rescans Main's withdrawals only; Savings' burns are rebuilt with its moves", async () => {
     h.savingsToken.mockResolvedValue(savingsOf(0n))
     await act(async () => {
@@ -134,7 +179,10 @@ describe("TransferScannerMount", () => {
     expect(h.rescan).not.toHaveBeenCalled()
     await vi.waitFor(() => expect(h.syncSource).toBeDefined())
     const { readBalances } = h.syncSource as { readBalances: () => Promise<unknown> }
-    expect(await readBalances()).toEqual({ "0xtoken": 0n, "0xsav": 7n })
+    expect(await readBalances()).toEqual({
+      balances: { "0xtoken": 0n, "0xsav": 7n },
+      readAt: { "0xtoken": expect.any(Number), "0xsav": expect.any(Number) },
+    })
     await act(async () => gates.get("withdrawalRescan")!())
     await vi.waitFor(() => expect(h.rescan).toHaveBeenCalledTimes(1))
     expect(h.savingsToken).toHaveBeenCalledTimes(1)
@@ -155,7 +203,10 @@ describe("TransferScannerMount", () => {
     await vi.waitFor(() => expect(h.refreshBalance).toHaveBeenCalled())
     await vi.waitFor(() => expect(h.syncSource).toBeDefined())
     const { readBalances } = h.syncSource as { readBalances: () => Promise<unknown> }
-    expect(await readBalances()).toEqual({ "0xtoken": 0n })
+    expect(await readBalances()).toEqual({
+      balances: { "0xtoken": 0n },
+      readAt: { "0xtoken": expect.any(Number) },
+    })
     vi.mocked(console.warn).mockRestore()
   })
 

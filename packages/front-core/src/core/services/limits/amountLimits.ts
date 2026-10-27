@@ -1,13 +1,11 @@
-import { EthAddress } from "@aztec/foundation/eth-address"
 import { PUBLIC_TX_LIMIT_USD } from "@obsidion/core/constants"
-import { TX_AMOUNT_CAP } from "@obsidion/sdk"
-import { depositTokensFor } from "@oxide/l1-contracts"
 import { AMOUNT_MAX_DECIMALS } from "../../../utils/validate"
 
 /**
  * Per-operation amount limits. Two checks stay separate: the published USD limit on the gross
- * amount (product policy) and the protocol's `TX_AMOUNT_CAP` on settlement-token units. Neither
- * depends on shared deposit capacity.
+ * amount (product policy) and the portal's `TX_AMOUNT_CAP()` on settlement-token units, which the
+ * caller reads off the portal and passes as `txAmountCap`, undefined until read. Neither depends on
+ * shared deposit capacity.
  */
 
 /** A token's USD price as an exact fraction per whole token, and where it came from. */
@@ -17,8 +15,8 @@ export interface UsdValuation {
 }
 
 /**
- * Product policy values DAI, USDC and USDT at a fixed $1 per token for the published limit. It is a
- * stated basis, not a market price, and says nothing about what a swap credits.
+ * Product policy values every token the deployment accepts as a deposit at a fixed $1 per token for the published
+ * limit. It is a stated basis, not a market price, and says nothing about what a swap credits.
  */
 export const NOMINAL_USD_VALUATION: UsdValuation = {
   source: "nominal-1-usd-per-token",
@@ -26,25 +24,18 @@ export const NOMINAL_USD_VALUATION: UsdValuation = {
 }
 
 /**
- * The nominal rate for a token this deployment accepts as a deposit, matched by address through
- * Oxide's deposit-token list (DAI, USDC and USDT on mainnet, the portal's token elsewhere).
+ * The nominal rate for a token Main's rows of the pinned table accept as a deposit (`mainDepositTokenRoutes`), matched
+ * by address.
  * Undefined for any other token.
  */
 export function depositTokenValuation(input: {
-  chainId: number
-  portalToken: string
+  accepted: readonly string[]
   token: string
 }): UsdValuation | undefined {
-  try {
-    const token = EthAddress.fromString(input.token)
-    const accepted = depositTokensFor(
-      BigInt(input.chainId),
-      EthAddress.fromString(input.portalToken),
-    )
-    return accepted.some((t) => t.equals(token)) ? NOMINAL_USD_VALUATION : undefined
-  } catch {
-    return undefined
-  }
+  const token = input.token.toLowerCase()
+  return input.accepted.some((accepted) => accepted.toLowerCase() === token)
+    ? NOMINAL_USD_VALUATION
+    : undefined
 }
 
 /** `valuation-unavailable`: no USD price, so the published limit cannot be checked either way. */
@@ -90,10 +81,16 @@ export function checkPublicLimit(
   return worth > limit ? "over" : "within"
 }
 
-/** `creditAtomic` is in settlement-token base units, the units `TX_AMOUNT_CAP` counts. */
-export function checkProtocolCeiling(creditAtomic: bigint | undefined): ProtocolCeilingCheck {
-  if (creditAtomic === undefined) return "credit-unknown"
-  return creditAtomic > TX_AMOUNT_CAP ? "over" : "within"
+/**
+ * `creditAtomic` is in settlement-token base units, the units `txAmountCap` counts. Either one
+ * unknown leaves the check undecided.
+ */
+export function checkProtocolCeiling(
+  creditAtomic: bigint | undefined,
+  txAmountCap: bigint | undefined,
+): ProtocolCeilingCheck {
+  if (creditAtomic === undefined || txAmountCap === undefined) return "credit-unknown"
+  return creditAtomic > txAmountCap ? "over" : "within"
 }
 
 export interface DepositLimits {
@@ -116,22 +113,24 @@ export function depositLimits(input: {
   decimals: number
   valuation: UsdValuation | undefined
   settlementCreditAtomic: bigint | undefined
+  txAmountCap: bigint | undefined
 }): DepositLimits {
-  const { receiveAtomic, feeAtomic, decimals, valuation, settlementCreditAtomic } = input
+  const { receiveAtomic, feeAtomic, decimals, valuation, settlementCreditAtomic, txAmountCap } =
+    input
   const sendAtomic = receiveAtomic + feeAtomic
   const limit = publicLimitAtomic(decimals, valuation)
   let maxReceiveAtomic: bigint | undefined
   if (limit !== undefined) {
     const net = limit > feeAtomic ? floorToTypeable(limit - feeAtomic, decimals) : 0n
     maxReceiveAtomic =
-      settlementCreditAtomic !== undefined && net > TX_AMOUNT_CAP
-        ? floorToTypeable(TX_AMOUNT_CAP, decimals)
+      settlementCreditAtomic !== undefined && txAmountCap !== undefined && net > txAmountCap
+        ? floorToTypeable(txAmountCap, decimals)
         : net
   }
   return {
     sendAtomic,
     publicLimit: checkPublicLimit(sendAtomic, decimals, valuation),
-    protocolCeiling: checkProtocolCeiling(settlementCreditAtomic),
+    protocolCeiling: checkProtocolCeiling(settlementCreditAtomic, txAmountCap),
     maxReceiveAtomic,
   }
 }
@@ -146,10 +145,11 @@ export function withdrawalLimits(input: {
   debitAtomic: bigint
   decimals: number
   valuation: UsdValuation | undefined
+  txAmountCap: bigint | undefined
 }): WithdrawalLimits {
   return {
     publicLimit: checkPublicLimit(input.debitAtomic, input.decimals, input.valuation),
-    protocolCeiling: checkProtocolCeiling(input.debitAtomic),
+    protocolCeiling: checkProtocolCeiling(input.debitAtomic, input.txAmountCap),
   }
 }
 
@@ -157,11 +157,12 @@ export type WithdrawalMax =
   | { status: "available"; atomic: bigint; bound: "balance" | "public-limit" | "protocol-ceiling" }
   | { status: "valuation-unavailable" }
 
-/** MAX: the smallest of the spendable balance, the published limit and `TX_AMOUNT_CAP`, rounded down. */
+/** MAX: the smallest of the spendable balance, the published limit and `txAmountCap`, rounded down. */
 export function withdrawalMax(input: {
   spendableAtomic: bigint
   decimals: number
   valuation: UsdValuation | undefined
+  txAmountCap: bigint | undefined
 }): WithdrawalMax {
   return withdrawalMaxNet({ ...input, feeAtomic: 0n })
 }
@@ -169,21 +170,24 @@ export function withdrawalMax(input: {
 /**
  * MAX for a withdrawal typed as the amount to receive, its fee burned on top: the largest typeable
  * amount whose debit, fee included, fits the spendable balance, the published limit and
- * `TX_AMOUNT_CAP`. Zero when the fee alone fills the smallest of them.
+ * `txAmountCap`. Zero when the fee alone fills the smallest of them.
  */
 export function withdrawalMaxNet(input: {
   spendableAtomic: bigint
   feeAtomic: bigint
   decimals: number
   valuation: UsdValuation | undefined
+  txAmountCap: bigint | undefined
 }): WithdrawalMax {
   const limit = publicLimitAtomic(input.decimals, input.valuation)
   if (limit === undefined) return { status: "valuation-unavailable" }
-  const candidates = [
+  const candidates: { atomic: bigint; bound: "balance" | "public-limit" | "protocol-ceiling" }[] = [
     { atomic: input.spendableAtomic, bound: "balance" },
     { atomic: limit, bound: "public-limit" },
-    { atomic: TX_AMOUNT_CAP, bound: "protocol-ceiling" },
-  ] as const
+    ...(input.txAmountCap === undefined
+      ? []
+      : [{ atomic: input.txAmountCap, bound: "protocol-ceiling" as const }]),
+  ]
   const least = candidates.reduce((a, b) => (b.atomic < a.atomic ? b : a))
   const net = least.atomic - input.feeAtomic
   return {

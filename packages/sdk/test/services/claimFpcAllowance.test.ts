@@ -4,16 +4,16 @@
  * not guess whether the next batch renews it.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import type { ContractArtifact } from "@aztec/stdlib/abi"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import type { ContractArtifact } from "@aztec-labs/stdlib/abi"
 
 const { simulate, calls } = vi.hoisted(() => ({
   simulate: new Map<string, () => unknown>(),
   calls: [] as { name: string; args: unknown[]; from: unknown }[],
 }))
 
-vi.mock("@aztec/aztec.js/contracts", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@aztec/aztec.js/contracts")>()),
+vi.mock("@aztec-labs/aztec.js/contracts", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@aztec-labs/aztec.js/contracts")>()),
   Contract: {
     at: () => ({
       methods: new Proxy(

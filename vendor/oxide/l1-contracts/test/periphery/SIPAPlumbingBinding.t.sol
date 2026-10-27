@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity >=0.8.27;
 import {console2} from "forge-std/console2.sol";
-import {Vm} from "forge-std/Vm.sol";
 
-import {DepositSIPA, DEPOSIT_FEE} from "@periphery/DepositSIPA.sol";
+import {DepositSIPA} from "@periphery/DepositSIPA.sol";
 import {Ownable} from "@oz/access/Ownable.sol";
 import {IOxidePortal} from "@core/interfaces/IOxidePortal.sol";
 import {INameRegistry} from "@periphery/interfaces/INameRegistry.sol";
-import {SIPAFactory} from "@periphery/SIPAFactory.sol";
-import {RegistrationSIPA, REGISTRATION_SWEEP_FEE} from "@periphery/RegistrationSIPA.sol";
+import {ForwardingTable} from "@periphery/ForwardingTable.sol";
+import {IForwardingTable} from "@periphery/interfaces/IForwardingTable.sol";
+import {RegistrationSIPA} from "@periphery/RegistrationSIPA.sol";
 import {DepositSubsidy} from "@periphery/DepositSubsidy.sol";
+import {IOperationExecutor} from "@periphery/interfaces/IOperationExecutor.sol";
 import {SIPABase} from "@periphery/SIPABase.sol";
 import {AccountMetadataRegistry} from "@periphery/AccountMetadataRegistry.sol";
 import {AggregatorV3Interface} from "@periphery/interfaces/AggregatorV3Interface.sol";
@@ -17,11 +18,16 @@ import {ISIPA} from "@periphery/interfaces/ISIPA.sol";
 import {DomainAuth} from "@periphery/interfaces/INameRegistry.sol";
 import {Errors} from "@periphery/Errors.sol";
 import {IERC20} from "@oz/token/ERC20/IERC20.sol";
-import {Math} from "@oz/utils/math/Math.sol";
 
 import {RegistrationTestBase} from "@test/periphery/registration/RegistrationTestBase.sol";
 import {MockV3Aggregator} from "@test/mocks/MockV3Aggregator.sol";
 import {MockPortal} from "@test/mocks/MockPortal.sol";
+import {
+  ForwardingTableFixture,
+  DEPOSIT_SWEEP_TIP,
+  REGISTRATION_SWEEP_TIP
+} from "@test/helpers/ForwardingTableFixture.sol";
+import {RelayerTransaction} from "@test/periphery/RelayerTransaction.sol";
 
 contract RoguePortal {
   IERC20 public immutable UNDERLYING;
@@ -43,17 +49,21 @@ contract RoguePortal {
 contract SIPAPlumbingBindingTest is RegistrationTestBase {
   address internal attacker = makeAddr("attacker");
 
-  function test_GivenTheCloneArgs_ThenTheyNameNoContract() external {
+  function test_GivenTheCloneArgs_ThenTheyNameOnlyTheTable() external {
     bytes memory intent = _depositIntent("shape");
     DepositSIPA sipa = _depositSIPA(intent);
 
     assertEq(
-      abi.encode(SIPABase.Args(keccak256(intent), _recoveryCommitment("recovery"), ROLLUP_VERSION, true)).length, 4 * 32
+      abi.encode(
+        SIPABase.Args(keccak256(intent), _recoveryCommitment("recovery"), ROLLUP_VERSION, true, forwardingTable)
+      )
+      .length,
+      5 * 32
     );
-    assertEq(address(sipa.portal()), address(portal));
-    assertEq(sipa.depositFee(), DEPOSIT_FEE);
-    assertEq(address(depositSIPAImplementation.PORTAL()), address(portal));
-    assertEq(depositSIPAImplementation.DEPOSIT_FEE(), DEPOSIT_FEE);
+    assertEq(address(sipa.forwardingTable()), address(forwardingTable));
+    (IOxidePortal portal_, uint256 sweepTip,) = sipa.route(address(underlying));
+    assertEq(address(portal_), address(portal));
+    assertEq(sweepTip, DEPOSIT_SWEEP_TIP);
   }
 
   function test_GivenARoguePortal_ThenNoSIPACanSettleAgainstIt() external {
@@ -61,13 +71,14 @@ contract SIPAPlumbingBindingTest is RegistrationTestBase {
     bytes memory registrationData = _registrationData(NAME_HASH, defaultOwner);
     SIPABase sipa = _deployAndFund(registrationData, REGISTRATION_MIN + REGISTRATION_FEE);
 
-    assertEq(address(sipa.portal()), address(portal));
-    assertNotEq(address(sipa.portal()), address(rogue));
+    (IOxidePortal portal_,,) = sipa.route(address(underlying));
+    assertEq(address(portal_), address(portal));
+    assertNotEq(address(portal_), address(rogue));
 
     uint256 portalBefore = underlying.balanceOf(address(portal));
     _sweepRegistrationAsAttacker(sipa, registrationData);
 
-    assertEq(underlying.balanceOf(attacker), REGISTRATION_SWEEP_FEE, "only the relayer's cut is the sweeper's");
+    assertEq(underlying.balanceOf(attacker), REGISTRATION_SWEEP_TIP, "only the relayer's cut is the sweeper's");
     assertEq(
       underlying.balanceOf(address(portal)) - portalBefore,
       REGISTRATION_MIN,
@@ -75,12 +86,13 @@ contract SIPAPlumbingBindingTest is RegistrationTestBase {
     );
   }
 
-  function test_GivenARegistrationSweep_ThenOnlyTheImplementationsFeeIsCharged() external {
+  function test_GivenARegistrationSweep_ThenOnlyTheTablesTipIsCharged() external {
     bytes memory registrationData = _registrationData(NAME_HASH, defaultOwner);
     SIPABase sipa = _deployAndFund(registrationData, REGISTRATION_MIN + REGISTRATION_FEE);
 
-    uint256 sweepFee = registrationSIPAImplementation.DEPOSIT_FEE();
-    assertEq(sipa.depositFee(), sweepFee, "the clone charges its implementation's fee and no other");
+    uint256 sweepFee = REGISTRATION_SWEEP_TIP;
+    (, uint256 sweepTip,) = sipa.route(address(underlying));
+    assertEq(sweepTip, sweepFee, "the clone charges its table's tip and no other");
 
     _sweepRegistrationAsAttacker(sipa, registrationData);
 
@@ -100,7 +112,8 @@ contract SIPAPlumbingBindingTest is RegistrationTestBase {
         keccak256(registrationData),
         _recoveryCommitment("attackerRecovery"),
         ROLLUP_VERSION,
-        true
+        true,
+        forwardingTable
       )
     );
     assertNotEq(address(front), address(victim));
@@ -122,34 +135,40 @@ contract SIPAPlumbingBindingTest is RegistrationTestBase {
   }
 
   function test_GivenASelfFundedSweep_ThenItDrawsLessThanItCost() external {
-    uint128 fee = uint128(DEPOSIT_FEE);
+    uint128 fee = uint128(DEPOSIT_SWEEP_TIP);
     MockV3Aggregator feed = new MockV3Aggregator(8, 3000e8);
-    DepositSubsidy sm = new DepositSubsidy(OWNER, address(portal), AggregatorV3Interface(address(feed)), sipaFactory);
+    DepositSubsidy sm = new DepositSubsidy(
+      OWNER,
+      address(portal),
+      IOperationExecutor(address(operationExecutor)),
+      AggregatorV3Interface(address(feed)),
+      sipaFactory
+    );
     underlying.mint(address(sm), 100_000 ether);
     vm.prank(OWNER);
-    sm.setDepositConfig(0.1e18, 12e18, fee, 0, 0);
+    sm.setDepositConfig(0.1e18, 12e18, 0);
     vm.fee(1 gwei);
     vm.txGasPrice(1 gwei);
 
     bytes memory intent = _depositIntent("drain");
     DepositSIPA sipa = _depositSIPA(intent);
-    assertEq(sipa.depositFee(), DEPOSIT_FEE, "a SIPA has no fee of its own to name, only its implementation's");
+    (, uint256 sweepTip,) = sipa.route(address(underlying));
+    assertEq(sweepTip, DEPOSIT_SWEEP_TIP, "a SIPA has no fee of its own, only its table's");
 
+    bytes memory sweep = abi.encodeCall(
+      DepositSubsidy.sweepForSubsidy,
+      (ISIPA(address(sipa)), address(underlying), address(operationExecutor), intent, "")
+    );
     underlying.mint(address(sipa), 100 ether);
-    vm.prank(relayer);
-    uint256 warm = sm.sweepForSubsidy(ISIPA(address(sipa)), address(underlying), relayer, intent, "");
+    (uint256 warm,) = RelayerTransaction.send(relayer, sm, sweep);
     underlying.mint(address(sipa), 100 ether);
 
     uint256 relayerBefore = underlying.balanceOf(relayer);
-    vm.prank(relayer);
-    uint256 subsidy = sm.sweepForSubsidy(ISIPA(address(sipa)), address(underlying), relayer, intent, "");
-    Vm.Gas memory g = vm.lastCallGas();
+    (uint256 subsidy, uint256 txGas) = RelayerTransaction.send(relayer, sm, sweep);
 
-    uint256 burnt = uint256(g.gasTotalUsed);
-    uint256 refund = uint256(int256(g.gasRefunded));
-    uint256 realCostUsd = (burnt - Math.min(refund, burnt / 5)) * 1 gwei * 3000;
+    uint256 realCostUsd = txGas * 1 gwei * 3000;
     console2.log("warm", warm, "subsidy", subsidy);
-    console2.log("gas burnt", burnt, "real cost (1e18 USD)", realCostUsd);
+    console2.log("transaction gas", txGas, "real cost (1e18 USD)", realCostUsd);
 
     assertEq(underlying.balanceOf(relayer) - relayerBefore, subsidy + fee, "the payout is the subsidy plus the fee");
     assertLt(subsidy, realCostUsd, "a self-swept deposit must never earn more than the gas it burnt");
@@ -157,12 +176,18 @@ contract SIPAPlumbingBindingTest is RegistrationTestBase {
   }
 
   function test_GivenEachIntent_ThenTheQuoteIsKeyedOnIt() external {
-    uint128 fee = uint128(DEPOSIT_FEE);
+    uint128 fee = uint128(DEPOSIT_SWEEP_TIP);
     MockV3Aggregator feed = new MockV3Aggregator(8, 3000e8);
-    DepositSubsidy sm = new DepositSubsidy(OWNER, address(portal), AggregatorV3Interface(address(feed)), sipaFactory);
+    DepositSubsidy sm = new DepositSubsidy(
+      OWNER,
+      address(portal),
+      IOperationExecutor(address(operationExecutor)),
+      AggregatorV3Interface(address(feed)),
+      sipaFactory
+    );
     underlying.mint(address(sm), 100_000 ether);
     vm.prank(OWNER);
-    sm.setDepositConfig(0.1e18, type(uint128).max, fee, 0, 0);
+    sm.setDepositConfig(0.1e18, type(uint128).max, 0);
     vm.fee(1 gwei);
     vm.txGasPrice(1 gwei);
 
@@ -195,80 +220,56 @@ contract SIPAPlumbingBindingTest is RegistrationTestBase {
     assertEq(costs[2], costs[1], "the gate must not get dearer as the set grows");
   }
 
-  function test_GivenAVersionRoll_ThenTheOlderImplementationStaysBlessed() external {
+  function test_GivenAVersionRoll_ThenTheOlderTableStaysBlessed() external {
     bytes memory intent = _depositIntent("roll");
     DepositSIPA sipa = _depositSIPA(intent);
     underlying.mint(address(sipa), 100 ether);
 
     MockPortal nextPortal = new MockPortal(IERC20(address(underlying)), ROLLUP_VERSION + 1);
-    address nextDeposit = address(new DepositSIPA(IOxidePortal(address(nextPortal)), DEPOSIT_FEE));
-    address nextRegistration = address(_registrationImplementationFor(address(nextPortal)));
-    vm.startPrank(OWNER);
-    sipaFactory.bless(nextDeposit);
-    sipaFactory.bless(nextRegistration);
-    vm.stopPrank();
+    _blessTable(_tableFor(address(nextPortal)));
 
-    assertTrue(sipaFactory.isBlessed(address(sipa)), "the older implementation must stay blessed");
+    assertTrue(sipaFactory.isBlessed(address(sipa)), "the older table must stay blessed");
     vm.prank(relayer);
     sipa.sweep(address(underlying), relayer, intent, "");
     assertEq(underlying.balanceOf(address(sipa)), 0, "a SIPA funded before the roll must still sweep");
   }
 
-  function test_GivenAGenerationRoll_ThenTheNewPortalGetsItsOwnPointer() external {
-    MockPortal nextPortal = new MockPortal(IERC20(address(underlying)), ROLLUP_VERSION);
-    assertEq(nextPortal.ROLLUP_VERSION(), portal.ROLLUP_VERSION(), "a generation roll keeps the rollup version");
+  function test_GivenANewTable_ThenTheIntentPointersDoNotChange() external {
+    ForwardingTable nextTable = _tableFor(address(new MockPortal(IERC20(address(underlying)), ROLLUP_VERSION)));
+    _blessTable(nextTable);
 
-    address nextDeposit = address(new DepositSIPA(IOxidePortal(address(nextPortal)), DEPOSIT_FEE));
-    address nextRegistration = address(_registrationImplementationFor(address(nextPortal)));
-    vm.startPrank(OWNER);
-    sipaFactory.bless(nextDeposit);
-    sipaFactory.bless(nextRegistration);
-    vm.stopPrank();
-
-    assertEq(sipaFactory.implementationFor(address(nextPortal), SIPABase.Intent.Deposit), nextDeposit);
-    assertEq(sipaFactory.implementationFor(address(nextPortal), SIPABase.Intent.Registration), nextRegistration);
-    assertEq(
-      sipaFactory.implementationFor(address(portal), SIPABase.Intent.Deposit), address(depositSIPAImplementation)
-    );
-    assertEq(
-      sipaFactory.implementationFor(address(portal), SIPABase.Intent.Registration),
-      address(registrationSIPAImplementation)
-    );
-    assertTrue(sipaFactory.intentOf(address(depositSIPAImplementation)) == SIPABase.Intent.Deposit);
+    assertTrue(sipaFactory.approvedTable(address(nextTable)));
+    assertTrue(sipaFactory.approvedTable(address(forwardingTable)), "the earlier table stays approved");
+    assertEq(sipaFactory.implementationFor(SIPABase.Intent.Deposit), address(depositSIPAImplementation));
+    assertEq(sipaFactory.implementationFor(SIPABase.Intent.Registration), address(registrationSIPAImplementation));
   }
 
-  function test_GivenAPointedPortal_WhenBlessingASecondImplementation_ThenReverts() external {
-    address secondDeposit = address(new DepositSIPA(IOxidePortal(address(portal)), DEPOSIT_FEE + 1));
+  function test_GivenANewImplementation_ThenItsIntentIsPointedAgainAndOlderSIPAsStillSweep() external {
+    bytes memory intent = _depositIntent("repoint");
+    DepositSIPA older = _depositSIPA(intent);
+    underlying.mint(address(older), 100 ether);
+    address nextDeposit = address(new DepositSIPA());
 
     vm.prank(OWNER);
-    vm.expectRevert(
-      abi.encodeWithSelector(
-        Errors.SIPAFactory__PortalIntentAlreadyPointed.selector,
-        address(portal),
-        uint8(SIPABase.Intent.Deposit),
-        address(depositSIPAImplementation)
-      )
-    );
-    sipaFactory.bless(secondDeposit);
+    sipaFactory.blessImplementation(nextDeposit);
 
+    assertEq(sipaFactory.implementationFor(SIPABase.Intent.Deposit), nextDeposit);
     assertEq(
-      sipaFactory.implementationFor(address(portal), SIPABase.Intent.Deposit), address(depositSIPAImplementation)
+      sipaFactory.implementationFor(SIPABase.Intent.Registration),
+      address(registrationSIPAImplementation),
+      "the other intents keep their pointers"
     );
-    assertTrue(sipaFactory.intentOf(secondDeposit) == SIPABase.Intent.None, "a refused bless admits nothing");
-  }
+    assertTrue(sipaFactory.intentOf(address(depositSIPAImplementation)) == SIPABase.Intent.Deposit);
+    address newer = sipaFactory.deploySIPA(
+      nextDeposit, keccak256(intent), _recoveryCommitment("recovery"), ROLLUP_VERSION, true, forwardingTable
+    );
+    assertNotEq(newer, address(older));
+    assertTrue(sipaFactory.isBlessed(newer));
 
-  function test_GivenAPortalPointedForOneFamily_ThenTheOtherFamilyStillBlesses() external {
-    MockPortal freshPortal = new MockPortal(IERC20(address(underlying)), ROLLUP_VERSION);
-    address deposit = address(new DepositSIPA(IOxidePortal(address(freshPortal)), DEPOSIT_FEE));
-    address registration = address(_registrationImplementationFor(address(freshPortal)));
-
-    vm.startPrank(OWNER);
-    sipaFactory.bless(deposit);
-    sipaFactory.bless(registration);
-    vm.stopPrank();
-
-    assertEq(sipaFactory.implementationFor(address(freshPortal), SIPABase.Intent.Deposit), deposit);
-    assertEq(sipaFactory.implementationFor(address(freshPortal), SIPABase.Intent.Registration), registration);
+    assertTrue(sipaFactory.isBlessed(address(older)), "a SIPA of the earlier implementation stays blessed");
+    vm.prank(relayer);
+    older.sweep(address(underlying), relayer, intent, "");
+    assertEq(underlying.balanceOf(address(older)), 0, "a SIPA funded before the new pointing must still sweep");
   }
 
   function test_GivenADepositImplementation_ThenItDoesNotAuthenticateARegistration() external {
@@ -279,23 +280,39 @@ contract SIPAPlumbingBindingTest is RegistrationTestBase {
 
   function test_GivenANonOwner_WhenBlessing_ThenReverts() external {
     vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, address(this)));
-    sipaFactory.bless(address(depositSIPAImplementation));
+    sipaFactory.blessImplementation(address(depositSIPAImplementation));
+    vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, address(this)));
+    sipaFactory.blessTable(forwardingTable);
   }
 
-  function test_GivenANonImplementation_WhenBlessing_ThenReverts() external {
+  function test_GivenAZeroImplementation_WhenBlessing_ThenReverts() external {
     vm.prank(OWNER);
     vm.expectRevert(Errors.SIPAFactory__ZeroImplementation.selector);
-    sipaFactory.bless(address(0));
+    sipaFactory.blessImplementation(address(0));
   }
 
-  function test_GivenAZeroFeeImplementation_ThenItCannotBeBuilt() external {
-    vm.expectRevert(Errors.SIPA__ZeroDepositFee.selector);
-    new DepositSIPA(IOxidePortal(address(portal)), 0);
+  function test_GivenAnImplementationOfNoIntent_WhenBlessing_ThenReverts() external {
+    address noIntent = makeAddr("noIntent");
+    vm.mockCall(noIntent, abi.encodeCall(SIPABase.INTENT, ()), abi.encode(SIPABase.Intent.None));
+    vm.prank(OWNER);
+    vm.expectRevert(Errors.SIPAFactory__ZeroImplementation.selector);
+    sipaFactory.blessImplementation(noIntent);
+  }
+
+  function test_GivenAZeroTable_WhenBlessing_ThenReverts() external {
+    vm.prank(OWNER);
+    vm.expectRevert(Errors.SIPAFactory__ZeroTable.selector);
+    sipaFactory.blessTable(IForwardingTable(address(0)));
   }
 
   function test_GivenAFactoryClone_ThenItsImplementationIsReadBackExactly() external {
     address clone = sipaFactory.deploySIPA(
-      address(depositSIPAImplementation), keccak256("offset"), _recoveryCommitment("r"), ROLLUP_VERSION, true
+      address(depositSIPAImplementation),
+      keccak256("offset"),
+      _recoveryCommitment("r"),
+      ROLLUP_VERSION,
+      true,
+      forwardingTable
     );
     assertEq(
       sipaFactory.cloneImplementation(clone),
@@ -307,11 +324,13 @@ contract SIPAPlumbingBindingTest is RegistrationTestBase {
   function _growBlessedSetTo(uint256 target) internal {
     while (blessedCount < target) {
       address portalFor = address(new MockPortal(IERC20(address(underlying)), ROLLUP_VERSION + 100 + blessedCount));
-      address deposit = address(new DepositSIPA(IOxidePortal(portalFor), DEPOSIT_FEE));
-      address registration = address(_registrationImplementationFor(portalFor));
+      address deposit = address(new DepositSIPA());
+      address registration = address(new RegistrationSIPA(INameRegistry(address(nameRegistry))));
+      ForwardingTable table = _tableFor(portalFor);
       vm.startPrank(OWNER);
-      sipaFactory.bless(deposit);
-      sipaFactory.bless(registration);
+      sipaFactory.blessImplementation(deposit);
+      sipaFactory.blessImplementation(registration);
+      sipaFactory.blessTable(table);
       vm.stopPrank();
       blessedCount++;
     }
@@ -319,8 +338,13 @@ contract SIPAPlumbingBindingTest is RegistrationTestBase {
 
   uint256 internal blessedCount = 1;
 
-  function _registrationImplementationFor(address _portal) internal returns (RegistrationSIPA) {
-    return new RegistrationSIPA(IOxidePortal(_portal), INameRegistry(address(nameRegistry)), REGISTRATION_SWEEP_FEE);
+  function _tableFor(address _portal) internal returns (ForwardingTable) {
+    return ForwardingTableFixture.deploy(OWNER, IOxidePortal(_portal), TABLE_BENEFICIARY);
+  }
+
+  function _blessTable(ForwardingTable _table) internal {
+    vm.prank(OWNER);
+    sipaFactory.blessTable(_table);
   }
 
   function _depositIntent(bytes32 _salt) internal pure returns (bytes memory) {
@@ -330,7 +354,12 @@ contract SIPAPlumbingBindingTest is RegistrationTestBase {
   function _depositSIPA(bytes memory _intent) internal returns (DepositSIPA) {
     return DepositSIPA(
       sipaFactory.deploySIPA(
-        address(depositSIPAImplementation), keccak256(_intent), _recoveryCommitment("recovery"), ROLLUP_VERSION, true
+        address(depositSIPAImplementation),
+        keccak256(_intent),
+        _recoveryCommitment("recovery"),
+        ROLLUP_VERSION,
+        true,
+        forwardingTable
       )
     );
   }

@@ -1,4 +1,4 @@
-import { Fr } from "@aztec/aztec.js/fields"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 import {
   APPLE_ICLOUD_AAGUID,
   GPM_AAGUID,
@@ -75,7 +75,10 @@ export function normalizeAaguid(aaguid: string): string {
   if (hex.length !== 32) {
     throw new Error(`Malformed AAGUID: expected 32 hex digits, got ${hex.length}`)
   }
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(
+    16,
+    20,
+  )}-${hex.slice(20)}`
 }
 
 /**

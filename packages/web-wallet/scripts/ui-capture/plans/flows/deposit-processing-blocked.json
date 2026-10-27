@@ -9,7 +9,7 @@
   "steps": [
     {
       "action": "reachable",
-      "text": "+$17.65",
+      "text": "+$17.75",
       "exact": true
     },
     {
@@ -19,7 +19,7 @@
     },
     {
       "action": "click",
-      "text": "+$17.65",
+      "text": "+$17.75",
       "exact": true
     },
     {

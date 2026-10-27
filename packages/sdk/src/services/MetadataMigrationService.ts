@@ -1,47 +1,46 @@
-import { NO_FROM } from "@aztec/aztec.js/account"
-import { EthAddress } from "@aztec/aztec.js/addresses"
-import { Fr } from "@aztec/aztec.js/fields"
-import { TxHash, TxStatus, TxExecutionResult } from "@aztec/stdlib/tx"
-import type { FunctionCall } from "@aztec/stdlib/abi"
+import { NO_FROM } from "@aztec-labs/aztec.js/account"
+import { EthAddress } from "@aztec-labs/aztec.js/addresses"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { TxHash, TxStatus, TxExecutionResult } from "@aztec-labs/stdlib/tx"
+import type { BlockParameter } from "@aztec-labs/stdlib/block"
+import type { FunctionCall } from "@aztec-labs/stdlib/abi"
 import {
-  decodeMetadataUpdateIntentData,
-  decodeMetadataUpdateProofs,
   encodeUserRecordMetadata,
-  predictSIPA,
   readMetadataStateHash,
   readNameOf,
+  getBootstrapOwner,
   userRecordStateHash,
+  type R1PublicKeyArg,
   type UserRecordArg,
+  type WebAuthnAuthArg,
 } from "@oxide/l1-contracts"
-import type { BroadcastL1Operation } from "@oxide/oxide-lib/l1_operation_calldata.js"
-import { erc20Abi, keccak256, toHex, type Address, type Hex } from "viem"
-import { WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
+import { readRecordUpdateResult } from "@oxide/oxide-client/record_update.js"
+import { keccak256, toHex, type Address, type Hex } from "viem"
 import {
-  prepareMetadataUpdate,
-  assertMetadataUpdateFresh,
+  checkRecordUpdate,
+  MigrationHaltedError,
+  prepareRecordUpdate,
   readMetadataDestinationState,
-  readMetadataUpdateFee,
-  readOrdinaryDepositFee,
+  restoreRecordUpdate,
+  serializeRecordUpdate,
   StalePlanError,
-  type PreparedMetadataUpdate,
+  type PreparedRecordUpdate,
+  type RecordUpdateContext,
 } from "./metadataMigration.js"
 import {
   prepareMigrationBootstrap,
   claimFpcIdentitySubscribed,
+  claimFpcRegistrationSubscribed,
   type MigrationBootstrapOptions,
 } from "./migrationBootstrap.js"
 import {
   buildClaimSubscribePayload,
   buildClaimSponsorPayload,
-  type OxideAccountBinding,
+  type RegistrationWitness,
 } from "../feePaymentMethod/claimSponsoredCall.js"
 import { claimFpcSponsoredFee } from "../feePaymentMethod/claimFpcBatchGas.js"
 import { claimFpcSubscriptionUses, hasClaimFpcSubscription } from "./claimSponsor.js"
-import {
-  findRegistrationMessage,
-  registrationInbox,
-  REGISTRATION_MESSAGE_SECRET,
-} from "./registrationMessage.js"
+import { findRegistrationMessage, registrationInbox } from "./registrationMessage.js"
 import {
   migrationDepositCalls,
   migrationSipaCoordinates,
@@ -49,67 +48,46 @@ import {
   type MigrationDestinationContext,
 } from "./migrationDeposit.js"
 
+/**
+ * Runs one step that sends one transaction, as the operation it names to the step. The host uses it
+ * to send each transaction in its turn on the prover. The default runs the step immediately.
+ */
+export type MigrationSendGate = <T>(step: (operationId?: string) => Promise<T>) => Promise<T>
+
 /** A source generation supplies public DTOs; its Aztec objects/prover never cross into this SDK. */
 export interface MetadataMigrationSource {
   /** Includes source rollup, portal, asset and proof generation. */
   identity: string
-  /** Read actual source state. This must not freeze a live deployment. */
-  state(): Promise<"live" | "frozen" | "empty">
   /**
-   * Select one sufficient batch after the source's exit fee. The returned net amount is denominated in the
-   * destination deposit asset. Reject an unavailable settlement route before authorizing a broadcast.
-   * `onSelected` receives the batch id once its selection is saved, before anything is signed.
+   * The source moves only funds, never the record update: its run is a recovery-only run, as with
+   * {@link MetadataMigrationServiceOptions.recoveryOnly}. Every frozen source is funds-only.
    */
-  prepare(
-    recipient: Address,
-    minimumNetAmount: bigint,
-    onSelected?: (id: string) => Promise<void>,
-    /** What the batch's deposit pays on the destination, recorded with it. */
-    depositFee?: bigint,
-  ): Promise<{
-    id: string
-    netAmount: bigint
-    operation?: BroadcastL1Operation
-    /** False for a batch whose proof asks the user nothing. */
-    asksApproval?: boolean
-  }>
-  /** Rebuild from source data and verify the selected batch still pays the specified SIPA. */
-  restore(
-    id: string,
-    recipient: Address,
-  ): Promise<{ netAmount: bigint; operation?: BroadcastL1Operation; asksApproval?: boolean }>
+  readonly fundsOnly?: boolean
+  /** Read actual source state. A source that is not frozen moves nothing. */
+  state(): Promise<"frozen" | "empty">
+  /** Send every planned batch once recurring sponsorship exists. It sends each transaction inside `gate`. */
+  recoverRemaining(signal?: AbortSignal, gate?: MigrationSendGate): Promise<void>
   /**
-   * Live burn only. Must durably record its tx before RPC and reconcile it on retries. A cancelled
-   * `signal` stops it before recording a new hash.
+   * Plan and prove every batch inside the user's action, so recovery only sends. A source without it
+   * plans each batch during recovery. It chooses its batches by its own minimum.
    */
-  fund(id: string, recipient: Address, signal?: AbortSignal): Promise<void>
-  /** Existing source recovery adapter, restricted to ordinary DepositSIPAs after bootstrap. */
-  recoverRemaining(signal?: AbortSignal): Promise<void>
-  /**
-   * Plan and prove every later batch inside the user's action, so recovery only sends. A source
-   * without it plans each batch during recovery.
-   */
-  prepareRemaining?(
-    minimumNetAmount: bigint,
-    opts: {
-      /** What each batch's deposit pays on the destination, recorded with it. */
-      depositFee?: bigint
-      exclude?: string
-      reserved?: { day: number; nonce: number }[]
-      signal?: AbortSignal
-      onApproval?: (approved: number, total: number) => Promise<void>
-    },
-  ): Promise<void>
-  /** Whether every planned later batch has been sent. */
+  prepareRemaining?(opts: {
+    /** Coordinates that the run's plan already uses. */
+    reserved?: { day: number; nonce: number }[]
+    signal?: AbortSignal
+    onApproval?: (approved: number, total: number) => Promise<void>
+  }): Promise<void>
+  /** Whether every planned batch has been sent. */
   remainingSent?(): Promise<boolean>
-  /** Bring every sent batch up to date from chain evidence, never signing or sending. */
-  reconcileRemaining?(): Promise<void>
-  remainingComplete(): Promise<boolean>
   /**
-   * What a run moves from here now, by the rule each batch applies: the first must net at least
-   * `first` after the source's exit, each later one at least `later`.
+   * Bring every sent batch up to date from chain evidence. It asks no approval. It can send again
+   * a broadcast that a relayer did not run in time, byte for byte as first sent. A cancelled
+   * `signal` stops it before a send records a new hash. It sends each transaction inside `gate`.
    */
-  quote?(minimums: { first: bigint; later: bigint }): Promise<MigrationSourceQuote>
+  reconcileRemaining?(signal?: AbortSignal, gate?: MigrationSendGate): Promise<void>
+  remainingComplete(): Promise<boolean>
+  /** What a run moves from here now, by the rules its batches apply. */
+  quote?(): Promise<MigrationSourceQuote>
   /** Everything the source holds for the account. */
   holdings?(): Promise<bigint>
 }
@@ -125,11 +103,11 @@ export interface MigrationSourceQuote {
   /** How many refund batches move it. */
   batches?: number
   /**
-   * Approvals a run asks for: the consent until the first refund settles, and one per batch that
-   * asks one. A source's own quote counts only its batches.
+   * Approvals a run asks for: the record update until it settles, and one per batch that asks one.
+   * A source's own quote counts only its batches.
    */
   approvals?: number
-  /** What the batches pay: each one's relayer tip and its deposit's fee. */
+  /** What the batches pay. A frozen batch pays no fee and no relayer tip. */
   fees?: bigint
 }
 
@@ -138,6 +116,13 @@ type FpcOptions = MigrationBootstrapOptions["fpc"]
 export interface MetadataMigrationServiceOptions
   extends Omit<MigrationDestinationContext, "node" | "recipient" | "recoveryAccount"> {
   wallet: MigrationBootstrapOptions["wallet"]
+  /** Ordinary deposits can preserve an asset after the fee-token registration update. */
+  depositDestination?: MigrationDestinationContext["destination"]
+  /**
+   * Another run establishes registration; prepare only the source's batches. A source with
+   * `fundsOnly` runs so too, and waits for registration as an asset recovery does.
+   */
+  recoveryOnly?: boolean
   /** The registered OxideAccount; it recovers every migration SIPA. */
   owner: Address
   record: UserRecordArg
@@ -147,34 +132,34 @@ export interface MetadataMigrationServiceOptions
   nameClaim(): Promise<
     Extract<MigrationBootstrapOptions["sponsorship"], { kind: "bootstrap" }>["gate"]
   >
-  bindingWitness(nameHash: Hex): Promise<OxideAccountBinding>
-  signConsent(digest: Hex): Promise<Hex>
-  /** Whether the consent asks a passkey, so a run's approvals count it. */
-  consentPrompts?(): Promise<boolean>
+  /** The registration gate's key witnesses for the account's bootstrap key and `nameHash`. */
+  registrationKeyProof(nameHash: Hex): Omit<RegistrationWitness, "leafIndex">
+  /** The installed passkey that signs the record update. */
+  recordPasskey: R1PublicKeyArg
+  /** Signs a record update's `userOpHash`; an approval holds only over `expectedStateHash`. */
+  signRecordUpdate(userOpHash: Hex, expectedStateHash: Hex): Promise<WebAuthnAuthArg>
   /** Scan bound captured before publication, persisted with the signed plan. */
   fromBlock?: bigint
   /** Whether a balance read begun now is stored. Absent: an import is enough. */
   confirmBalance?(): Promise<boolean>
-  /** A funding address is shown for the first time: seed it on the rail, as a registration address is. */
-  seedFunding?(sipa: Address, resolution: { messageSecret: Fr; recipientHash: Fr }): Promise<void>
 }
 
 /** What a preparation saves before it signs, so resuming it asks for the same approvals. */
 interface Draft {
   day: number
   nonce: number
-  sourceBatch?: string
 }
 
 interface Plan {
+  /** This source follows the registration run and only moves funds. */
+  recoveryOnly?: boolean
   binding: string
   day: number
   nonce: number
   fromBlock: string
-  intentData: Hex
-  proofs: Hex
-  sourceState: "live" | "frozen" | "empty"
-  sourceBatch?: string
+  sourceState: "frozen" | "empty"
+  /** The signed record update; absent when the destination record was already current. */
+  recordUpdate?: string
 }
 
 /** Contract adapter used by the shared front-core durable driver. No L1 writes or relayer requests. */
@@ -186,9 +171,21 @@ export class MetadataMigrationService {
     const o = this.options
     return {
       ...o,
+      destination: o.depositDestination ?? o.destination,
       node: o.wallet.node,
       recipient: o.registered.user,
       recoveryAccount: o.owner,
+    }
+  }
+
+  private get recordContext(): RecordUpdateContext {
+    const o = this.options
+    return {
+      client: o.client,
+      destination: o.destination,
+      owner: o.owner,
+      record: o.record,
+      fpc: o.bootstrap.fpcAddress,
     }
   }
 
@@ -202,26 +199,18 @@ export class MetadataMigrationService {
     )
   }
 
-  /** What funding the update takes, before any plan: its sweep's fee and the least it sweeps. */
-  async fundingTerms() {
-    const o = this.options
-    const token = o.destination.token
-    const [fee, decimals, symbol] = await Promise.all([
-      readMetadataUpdateFee(o.client, o.destination),
-      o.client.readContract({ address: token, abi: erc20Abi, functionName: "decimals" }),
-      o.client.readContract({ address: token, abi: erc20Abi, functionName: "symbol" }),
-    ])
-    return { fee, minimumAmount: fee + 1n, token, decimals, symbol }
+  /** Whether this run moves only funds: another run updates the record, or the source moves only funds. */
+  private get fundsOnly(): boolean {
+    return !!this.options.recoveryOnly || !!this.options.source.fundsOnly
   }
 
-  async funding(raw: string) {
-    const { sipa, plan, resolution } = await this.restore(raw)
-    await this.options.seedFunding?.(sipa, resolution)
-    return {
-      address: sipa,
-      ...(await this.fundingTerms()),
-      external: plan.sourceState === "empty",
-    }
+  /** This asset settles on another bridge than the fee token's, which carries registration. */
+  private separateAsset(): boolean {
+    const o = this.options
+    return (
+      !!o.depositDestination &&
+      o.depositDestination.token.toLowerCase() !== o.destination.token.toLowerCase()
+    )
   }
 
   async binding(): Promise<string> {
@@ -231,6 +220,9 @@ export class MetadataMigrationService {
         JSON.stringify({
           source: o.source.identity,
           destination: Object.values(o.destination).map(String),
+          ...(o.depositDestination
+            ? { depositDestination: Object.values(o.depositDestination).map(String) }
+            : {}),
           owner: o.owner,
           record: encodeUserRecordMetadata(o.record),
           fpc: o.bootstrap.fpcAddress.toString(),
@@ -239,11 +231,6 @@ export class MetadataMigrationService {
         }),
       ),
     )
-  }
-
-  private resolve(day: number, nonce: number) {
-    const o = this.options
-    return o.selfResolver.resolve(o.bootstrap.user, day, nonce, EthAddress.fromString(o.owner))
   }
 
   /**
@@ -268,119 +255,59 @@ export class MetadataMigrationService {
       throw new Error("The wallet is connected to a different destination rollup")
     }
     const saved: Draft = draft ? (JSON.parse(draft) as Draft) : migrationSipaCoordinates()
-    const { day, nonce } = saved
     if (!draft) await saveDraft?.(JSON.stringify(saved))
-    const resolution = await this.resolve(day, nonce)
     const sourceState = await o.source.state()
-    // A current destination record publishes no bootstrap, so its refund would never be broadcast.
-    const first = await this.firstBatch(async () => sourceState)
-    // The consent, then each batch's approval, counted up front for the run's screen.
-    const consent = await this.consentApprovals()
-    const total = consent + (sourceState === "frozen" ? await this.batchApprovals(first) : 0)
-    await onApproval?.(0, total)
-    signal?.throwIfAborted()
-    const metadata = await prepareMetadataUpdate({
-      client: o.client,
-      destination: o.destination,
-      owner: o.owner,
-      record: o.record,
-      fpc: o.bootstrap.fpcAddress.toString() as Hex,
-      recipientCommitment: resolution.recipientHash.toString() as Hex,
-      recoveryCommitment: resolution.recoveryCommitment.toString() as Hex,
-      signConsent: o.signConsent,
-    })
-    await onApproval?.(consent, total)
-    const batch =
-      sourceState === "empty" || first.skipped
-        ? undefined
-        : await this.firstSourceBatch(saved, metadata.sipa, first, saveDraft, signal)
-    const before = consent + (batch && batch.asksApproval !== false ? 1 : 0)
-    if (batch) await onApproval?.(before, total)
-    signal?.throwIfAborted()
-    if (sourceState === "frozen")
-      await this.prepareLater(
-        { day, nonce, sourceBatch: batch?.id },
-        signal,
-        onApproval && ((approved, of) => onApproval(before + approved, before + of)),
-      )
-    signal?.throwIfAborted()
-    if (batch && batch.netAmount <= metadata.fee)
-      throw new Error("The first batch cannot fund the migration fee and a positive deposit")
-    if (sourceState === "frozen" && !first.skipped && !batch?.operation)
-      throw new Error("Frozen migration requires a source refund operation")
-    if (sourceState === "live" && batch?.operation)
-      throw new Error("A live source must use its withdrawal path")
-    // Preparing the real payload also checks the call budget, gate and every signature before
-    // front-core persists the plan. It does not prove or submit a transaction.
-    const prepared = await this.bootstrap(metadata, resolution.messageSecret, batch?.operation)
-    const plan = JSON.stringify({
-      binding: await this.binding(),
-      day,
-      nonce,
-      fromBlock: String(o.fromBlock ?? (await o.client.getBlockNumber())),
-      intentData: metadata.intentData,
-      proofs: metadata.proofs,
-      sourceState,
-      sourceBatch: batch?.id,
-    } satisfies Plan)
-    this.prepared = { plan, batch: prepared }
-    return plan
-  }
-
-  /** The consent counts as an approval when it asks a passkey. */
-  private async consentApprovals(): Promise<number> {
-    return (await this.options.consentPrompts?.()) === false ? 0 : 1
-  }
-
-  /** How many approvals a frozen source's batches ask now, by the rules preparing applies. */
-  private async batchApprovals(first: { minimum: bigint; skipped: boolean }): Promise<number> {
-    const o = this.options
-    if (!o.source.quote) return 0
-    const later = (await readOrdinaryDepositFee(o.client, o.destination)) + 1n
-    const quote = await o.source.quote({ first: first.skipped ? later : first.minimum, later })
-    return quote.approvals ?? quote.batches ?? 0
-  }
-
-  /** The draft's batch when it still pays this SIPA, else a new selection saved before its approval. */
-  private async firstSourceBatch(
-    draft: Draft,
-    sipa: Address,
-    first: { fee: bigint; minimum: bigint },
-    saveDraft: ((draft: string) => Promise<void>) | undefined,
-    signal: AbortSignal | undefined,
-  ) {
-    const o = this.options
-    signal?.throwIfAborted()
-    if (draft.sourceBatch) {
-      try {
-        return { id: draft.sourceBatch, ...(await o.source.restore(draft.sourceBatch, sipa)) }
-      } catch (error) {
-        if (!(error instanceof StalePlanError)) throw error
-      }
+    const plan = async (extra: Pick<Plan, "recoveryOnly" | "recordUpdate">): Promise<string> =>
+      JSON.stringify({
+        binding: await this.binding(),
+        day: saved.day,
+        nonce: saved.nonce,
+        fromBlock: String(o.fromBlock ?? (await o.client.getBlockNumber())),
+        sourceState,
+        ...extra,
+      } satisfies Plan)
+    if (this.fundsOnly || this.separateAsset()) {
+      if (sourceState !== "frozen") throw new Error("Asset recovery requires a frozen source")
+      await this.prepareLater(saved, signal, onApproval)
+      return plan({ recoveryOnly: true })
     }
-    return o.source.prepare(
-      sipa,
-      first.minimum,
-      async (id) => {
-        await saveDraft?.(JSON.stringify({ ...draft, sourceBatch: id } satisfies Draft))
-        signal?.throwIfAborted()
-      },
-      first.fee,
-    )
+    // The run with no source updates the record; a frozen source moves only funds.
+    if (sourceState === "frozen")
+      throw new Error("A frozen source moves only funds; it cannot update the record")
+    const consent = await this.consentApprovals()
+    await onApproval?.(0, consent)
+    signal?.throwIfAborted()
+    const signed = consent
+      ? await prepareRecordUpdate({
+          ...this.recordContext,
+          passkey: o.recordPasskey,
+          sign: o.signRecordUpdate,
+        })
+      : undefined
+    await onApproval?.(consent, consent)
+    signal?.throwIfAborted()
+    // Preparing the real payload also checks the rails and the call budget before front-core
+    // persists the plan. It does not prove or submit a transaction.
+    const prepared = signed && (await this.bootstrap(signed))
+    const raw = await plan(signed ? { recordUpdate: serializeRecordUpdate(signed) } : {})
+    this.prepared = prepared ? { plan: raw, batch: prepared } : undefined
+    return raw
   }
 
-  /** Plan and prove every later batch, beside the first batch and the plan's own coordinates. */
+  /** The record update counts as an approval until the destination record is current. */
+  async consentApprovals(): Promise<number> {
+    return (await this.bootstrapSkipped()) ? 0 : 1
+  }
+
+  /** Plan and prove every batch, beside the plan's own coordinates. */
   private async prepareLater(
-    plan: Pick<Plan, "day" | "nonce" | "sourceBatch">,
+    plan: Pick<Plan, "day" | "nonce">,
     signal?: AbortSignal,
     onApproval?: (approved: number, total: number) => Promise<void>,
   ) {
     const o = this.options
     if (!o.source.prepareRemaining) return
-    const depositFee = await readOrdinaryDepositFee(o.client, o.destination)
-    await o.source.prepareRemaining(depositFee + 1n, {
-      depositFee,
-      exclude: plan.sourceBatch,
+    await o.source.prepareRemaining({
       reserved: [{ day: plan.day, nonce: plan.nonce }],
       signal,
       onApproval,
@@ -398,83 +325,46 @@ export class MetadataMigrationService {
     published = false,
     onApproval?: (approved: number, total: number) => Promise<void>,
   ): Promise<void> {
-    const o = this.options
-    const plan = JSON.parse(raw) as Plan
-    if (!published && plan.sourceBatch && this.prepared?.plan !== raw) {
-      const { resolution, metadata, sipa } = await this.restore(raw, true)
+    const plan = await this.restore(raw)
+    if (!published && plan.recordUpdate) {
+      const signed = await this.fresh(plan)
       signal?.throwIfAborted()
-      const batch = await o.source.restore(plan.sourceBatch, sipa)
-      signal?.throwIfAborted()
-      this.prepared = {
-        plan: raw,
-        batch: await this.bootstrap(metadata!, resolution.messageSecret, batch.operation),
-      }
+      if (this.prepared?.plan !== raw)
+        this.prepared = { plan: raw, batch: await this.bootstrap(signed) }
     }
     signal?.throwIfAborted()
     // The plan's state is a snapshot: a source empty at preparation can hold refundable funds now.
     await this.prepareLater(plan, signal, onApproval)
   }
 
-  private async restore(raw: string, verifyConsent = false) {
-    const o = this.options
-    const plan = JSON.parse(raw) as Plan
+  private async restore(raw: string): Promise<Plan> {
+    const plan = JSON.parse(raw) as Plan & { intentData?: Hex; sourceBatch?: string }
     if (plan.binding !== (await this.binding()))
       throw new Error("Migration account or deployment changed")
-    const resolution = await this.resolve(plan.day, plan.nonce)
-    const intent = decodeMetadataUpdateIntentData(plan.intentData)
-    const signature = decodeMetadataUpdateProofs(plan.proofs)
-    // The consent commits to the state it was signed over; checked first, since the account rejects
-    // the old signature once that state moves.
-    if (
-      verifyConsent &&
-      (await readMetadataDestinationState(o.client, o.destination, o.owner)).toLowerCase() !==
-        intent.expectedStateHash.toLowerCase()
-    ) {
-      throw new StalePlanError("Metadata state changed; prepare migration again")
+    if (plan.recoveryOnly) {
+      // A funds-only plan may carry empty metadata fields.
+      if (
+        plan.sourceState !== "frozen" ||
+        plan.recordUpdate ||
+        plan.sourceBatch ||
+        (plan.intentData ?? "0x") !== "0x"
+      )
+        throw new Error("Stored asset recovery does not match the destination")
+      return plan
     }
-    // Re-derive routing from the current trusted context. Persisted calldata never chooses a
-    // different recipient or registry. Consent is checked again before a new publication.
-    if (
-      intent.metadata.toLowerCase() !== encodeUserRecordMetadata(o.record).toLowerCase() ||
-      intent.owner.toLowerCase() !== o.owner.toLowerCase() ||
-      intent.metadataRegistry.toLowerCase() !== o.destination.metadataRegistry.toLowerCase() ||
-      intent.recipientCommitment.toLowerCase() !==
-        resolution.recipientHash.toString().toLowerCase() ||
-      intent.namePortalRecipient.toLowerCase() !==
-        o.bootstrap.fpcAddress.toString().toLowerCase() ||
-      intent.namePortal.toLowerCase() !== o.destination.namePortal.toLowerCase() ||
-      intent.rollupVersion !== o.destination.rollupVersion
-    ) {
-      throw new StalePlanError("Stored migration intent does not match the destination")
-    }
-    if (verifyConsent) {
-      const metadata = await prepareMetadataUpdate({
-        client: o.client,
-        destination: o.destination,
-        owner: o.owner,
-        record: o.record,
-        fpc: o.bootstrap.fpcAddress.toString() as Hex,
-        recipientCommitment: resolution.recipientHash.toString() as Hex,
-        recoveryCommitment: resolution.recoveryCommitment.toString() as Hex,
-        signConsent: async () => signature,
-      })
-      if (metadata.intentData !== plan.intentData)
-        throw new StalePlanError("Metadata state changed; prepare migration again")
-      return { plan, resolution, metadata, sipa: metadata.sipa }
-    }
-    const sipa = await predictSIPA(
-      o.client,
-      o.destination.factory,
-      o.destination.implementation,
-      keccak256(plan.intentData),
-      resolution.recoveryCommitment.toString() as Hex,
-      o.destination.rollupVersion,
-      false,
-    )
-    return { plan, resolution, sipa, metadata: undefined }
+    // A plan that signed a metadata-update SIPA, which this wallet no longer sends.
+    if (plan.intentData !== undefined)
+      throw new StalePlanError("This upgrade was prepared by an earlier version; prepare it again")
+    return plan
   }
 
-  /** A current destination record with recurring sponsorship needs no bootstrap: recovery is ordinary deposits. */
+  /** The plan's signed record update, checked against the chain before it is published. */
+  private async fresh(plan: Plan): Promise<PreparedRecordUpdate> {
+    const signed = await restoreRecordUpdate(plan.recordUpdate!, this.recordContext)
+    return checkRecordUpdate(this.options.client, this.options.destination, signed)
+  }
+
+  /** A current destination record with recurring sponsorship needs no bootstrap: recovery only moves funds. */
   private async bootstrapSkipped(): Promise<boolean> {
     const o = this.options
     return (
@@ -484,42 +374,12 @@ export class MetadataMigrationService {
     )
   }
 
-  /**
-   * The source's first batch. A frozen source skips it once the destination record is current,
-   * and recovers through ordinary deposits. Every other first batch funds the metadata update.
-   */
-  private async firstBatch(state: () => ReturnType<MetadataMigrationSource["state"]>) {
-    const o = this.options
-    const skipped = (await this.bootstrapSkipped()) && (await state()) === "frozen"
-    const fee = skipped
-      ? await readOrdinaryDepositFee(o.client, o.destination)
-      : await readMetadataUpdateFee(o.client, o.destination)
-    return { skipped, fee, minimum: fee + 1n }
-  }
-
-  /**
-   * What a run moves from the source now, by the rules `prepare` and recovery apply. Once the saved
-   * run's first refund has settled (`firstBatchSettled`), the rest pays only ordinary deposit fees.
-   */
-  async quote(opts: { firstBatchSettled?: boolean } = {}): Promise<MigrationSourceQuote> {
+  /** What a run moves from the source now, by the rules its batches apply. A frozen batch pays no fee. */
+  async quote(): Promise<MigrationSourceQuote> {
     const o = this.options
     if (!o.source.quote) throw new Error("This migration source cannot quote its funds")
-    const ordinary = await readOrdinaryDepositFee(o.client, o.destination)
-    const later = ordinary + 1n
-    const first = opts.firstBatchSettled
-      ? later
-      : (await this.firstBatch(() => o.source.state())).minimum
-    const quote = await o.source.quote({ first, later })
-    if (quote.batches === undefined) return quote
-    const batches = BigInt(quote.batches)
-    return {
-      ...quote,
-      approvals:
-        (quote.approvals ?? quote.batches) +
-        (opts.firstBatchSettled ? 0 : await this.consentApprovals()),
-      // The first deposit pays the fee its minimum covers; every later one the ordinary fee.
-      fees: batches && batches * WITHDRAW_RELAYER_TIP + first - 1n + (batches - 1n) * ordinary,
-    }
+    const quote = await o.source.quote()
+    return { ...quote, approvals: quote.approvals ?? quote.batches, fees: 0n }
   }
 
   async movable(): Promise<boolean> {
@@ -575,21 +435,13 @@ export class MetadataMigrationService {
     }
   }
 
-  private async bootstrap(
-    metadata: PreparedMetadataUpdate,
-    messageSecret: Fr,
-    refund?: BroadcastL1Operation,
-  ) {
+  private async bootstrap(recordUpdate: PreparedRecordUpdate) {
     const o = this.options
     const recurring = await this.recurring()
     return prepareMigrationBootstrap({
-      client: o.client,
       wallet: o.wallet,
-      metadata,
-      token: o.token,
+      recordUpdate,
       broadcaster: o.broadcaster,
-      messageSecret,
-      refund,
       sponsorship: recurring
         ? { kind: "registered" }
         : { kind: "bootstrap", gate: await o.nameClaim() },
@@ -603,43 +455,23 @@ export class MetadataMigrationService {
     operationId?: string,
   ): Promise<void> {
     const o = this.options
-    const { plan, resolution, metadata, sipa } = await this.restore(raw, true)
-    if ((await o.source.state()) !== plan.sourceState)
-      throw new StalePlanError("Source state changed; prepare migration again")
-    if (plan.sourceState === "frozen" && !plan.sourceBatch)
-      throw new StalePlanError("Destination metadata changed; prepare migration again")
-    const batch = plan.sourceBatch ? await o.source.restore(plan.sourceBatch, sipa) : undefined
-    if (batch && batch.netAmount <= metadata!.fee)
-      throw new Error("Source batch no longer covers migration funding")
+    const plan = await this.restore(raw)
+    if (plan.recoveryOnly) throw new Error("Asset recovery cannot broadcast a record update")
+    if (!plan.recordUpdate)
+      throw new StalePlanError("The destination record changed; prepare the upgrade again")
+    const signed = await this.fresh(plan)
     // Reuse every collected signature in this process. A cold restart re-creates only the
-    // unpublished L2 batch; metadata consent remains the signed public plan on disk.
+    // unpublished L2 transaction; the signed record update stays in the plan on disk.
     const prepared =
-      this.prepared?.plan === raw
-        ? this.prepared.batch
-        : await this.bootstrap(metadata!, resolution.messageSecret, batch?.operation)
+      this.prepared?.plan === raw ? this.prepared.batch : await this.bootstrap(signed)
     await o.wallet.sendTx(prepared.payload, {
       ...prepared.sendOptions,
       operationId,
       onTxHash: async (hash) => {
-        await assertMetadataUpdateFresh(o.client, metadata!)
+        await checkRecordUpdate(o.client, o.destination, signed)
         await onTxHash(hash)
       },
     })
-  }
-
-  async fund(raw: string, signal?: AbortSignal): Promise<void> {
-    const { plan, sipa } = await this.restore(raw)
-    const state = await readMetadataDestinationState(
-      this.options.client,
-      this.options.destination,
-      this.options.owner,
-    )
-    const intent = decodeMetadataUpdateIntentData(plan.intentData)
-    if (state !== intent.expectedStateHash && state !== userRecordStateHash(this.options.record)) {
-      throw new Error("Destination metadata changed after publication; funding requires attention")
-    }
-    if (plan.sourceState === "live" && plan.sourceBatch)
-      await this.options.source.fund(plan.sourceBatch, sipa, signal)
   }
 
   private async attestation(fromBlock: bigint) {
@@ -652,7 +484,7 @@ export class MetadataMigrationService {
       {
         fpc: o.registered.fpcAddress,
         namePortal: EthAddress.fromString(o.destination.namePortal),
-        owner: EthAddress.fromString(o.owner),
+        bootstrap: EthAddress.fromString(await getBootstrapOwner(o.client, o.owner)),
         nameHash: Buffer.from(nameHash.slice(2), "hex"),
         rollupVersion: info.rollupVersion,
         l1ChainId: Number(o.destination.chainId),
@@ -662,16 +494,63 @@ export class MetadataMigrationService {
     return { message, nameHash }
   }
 
+  /**
+   * Whether the destination record is the upgrade's. A published record update settles once it
+   * ran and its record holds. Before the registered subscription exists, so before any refund is
+   * sent, an update that can no longer run stops the run.
+   */
+  private async metadataSettled(
+    plan: Plan,
+    published: boolean,
+    subscribed: boolean,
+  ): Promise<boolean> {
+    const o = this.options
+    const current =
+      (await readMetadataDestinationState(o.client, o.destination, o.owner)) ===
+      userRecordStateHash(o.record)
+    if (!plan.recordUpdate || !published) return current
+    const { update } = await restoreRecordUpdate(plan.recordUpdate, this.recordContext)
+    const read = () =>
+      readRecordUpdateResult(o.client, update, { fromBlock: BigInt(plan.fromBlock) })
+    let result = await read()
+    // The reader reads the logs, then the nonce: an update that lands between them reads as not run
+    // with its nonce used. Read after the nonce moved, its logs show it.
+    if (result.status === "not-run" && result.nonceUsed) result = await read()
+    if (result.status === "succeeded" && (result.recordHeld || subscribed)) return true
+    if (subscribed && current) return true
+    if (result.status === "not-run" && !result.nonceUsed) return false
+    throw new MigrationHaltedError(
+      "reverted",
+      result.status === "failed"
+        ? "The upgrade's record update failed on Ethereum"
+        : "The account's record changed before the upgrade's record update held",
+    )
+  }
+
   async observe(record: { plan?: string; bootstrapTx?: string; subscriptionTx?: string }) {
     const o = this.options
     if (!record.plan) throw new Error("Migration has no prepared plan")
-    const { plan, sipa } = await this.restore(record.plan)
+    const plan = await this.restore(record.plan)
     const recurringSponsorship = await this.recurring()
-    const metadataSettled =
-      (await readMetadataDestinationState(o.client, o.destination, o.owner)) ===
-      userRecordStateHash(o.record)
-    const depositReceived = await o.received(sipa)
-    const { message } = await this.attestation(BigInt(plan.fromBlock))
+    const metadataSettled = plan.recoveryOnly
+      ? (await readMetadataDestinationState(o.client, o.destination, o.owner)) ===
+        userRecordStateHash(o.record)
+      : await this.metadataSettled(
+          plan,
+          !!record.bootstrapTx,
+          // Spent allowance only holds sending back: the subscription still shows refunds may be out.
+          recurringSponsorship ||
+            (await hasClaimFpcSubscription(
+              o.wallet,
+              o.registered.fpcAddress,
+              o.registered.fpcArtifact,
+              o.registered.user,
+              o.registered.railId,
+            )),
+        )
+    const { message } = plan.recoveryOnly
+      ? { message: undefined }
+      : await this.attestation(BigInt(plan.fromBlock))
     return {
       bootstrapStatus: await this.txState(record.bootstrapTx),
       subscriptionStatus: await this.txState(record.subscriptionTx),
@@ -682,20 +561,10 @@ export class MetadataMigrationService {
         o.bootstrap.railId,
       ),
       metadataSettled,
-      messagesReady:
-        metadataSettled &&
-        depositReceived &&
-        (message?.status === "consumable" || recurringSponsorship),
+      messagesReady: metadataSettled && (message?.status === "ready" || recurringSponsorship),
       recurringSponsorship,
-      swept: await o.swept(sipa),
       sent: (await o.source.remainingSent?.()) ?? false,
-      // The rail's claim of every sweep establishes the receipt. A destination record that was
-      // already current published no bootstrap, so no first deposit.
-      complete:
-        metadataSettled &&
-        recurringSponsorship &&
-        (!record.bootstrapTx || depositReceived) &&
-        (await o.source.remainingComplete()),
+      complete: metadataSettled && recurringSponsorship && (await o.source.remainingComplete()),
     }
   }
 
@@ -704,42 +573,69 @@ export class MetadataMigrationService {
   ): Promise<"unknown" | "pending" | "included" | "reverted" | "dropped" | undefined> {
     if (!hash) return undefined
     const receipt = await this.options.wallet.node.getTxReceipt(TxHash.fromString(hash))
-    // The node also returns DROPPED for an unknown hash (including after pruning or a
-    // node restart). That is not proof that this signed transaction cannot still land.
-    if (receipt.status === TxStatus.DROPPED) return "unknown"
+    if (receipt.status === TxStatus.DROPPED) return "dropped"
     if (receipt.status === TxStatus.PENDING) return "pending"
     if (receipt.executionResult === TxExecutionResult.REVERTED) return "reverted"
     if (receipt.executionResult === TxExecutionResult.SUCCESS) return "included"
     return "unknown"
   }
 
+  /**
+   * Activate the registered rail. Another flow of the wallet, such as the deposit-address ledger, can subscribe the
+   * account first: the run then sends nothing. The rail admits one subscription per key, so a key that subscribed
+   * with no note this wallet holds for the account, once it has synced past that subscription, stops the run instead.
+   */
   async subscribe(
     raw: string,
     onTxHash: (txHash: string) => Promise<void>,
     operationId?: string,
   ): Promise<void> {
     const o = this.options
-    const { plan } = await this.restore(raw)
+    const plan = await this.restore(raw)
     if (
       (await readMetadataDestinationState(o.client, o.destination, o.owner)) !==
       userRecordStateHash(o.record)
     ) {
       throw new Error("Destination metadata changed before sponsorship activation")
     }
-    if (!(await this.received(raw))) throw new Error("The migration deposit is not available yet")
     const { message, nameHash } = await this.attestation(BigInt(plan.fromBlock))
-    if (message?.status !== "consumable")
+    if (message?.status !== "ready")
       throw new Error("The registration attestation is not available to subscribe")
-    // ClaimFPC requires at least one real batched call. Publish the ordinary receive SIPA
-    // alongside activation; subsequent recovery uses DepositSIPAs, never another update.
+    const keyProof = o.registrationKeyProof(nameHash)
+    const subscribed = (block?: BlockParameter) =>
+      claimFpcRegistrationSubscribed(
+        o.wallet.node,
+        o.registered.fpcAddress,
+        keyProof.keyWitness,
+        o.registered.railId,
+        block,
+      )
+    if (await subscribed()) {
+      // The note and the subscription are read at one anchor.
+      const { value } = await o.wallet.getSnapshot(async () => ({
+        held: await hasClaimFpcSubscription(
+          o.wallet,
+          o.registered.fpcAddress,
+          o.registered.fpcArtifact,
+          o.registered.user,
+          o.registered.railId,
+        ),
+        seen: await subscribed(await (await o.wallet.pxe.getSyncedBlockHeader()).hash()),
+      }))
+      // An anchor that has not seen the subscription reads again on a later pass.
+      if (value.held || !value.seen) return
+      throw new Error(
+        "The account's key already subscribed on the registered rail, and this wallet holds no subscription note for the account",
+      )
+    }
+    // ClaimFPC requires at least one real batched call: publish the ordinary receive SIPA.
     const innerCalls = await this.receiveCalls(plan.day, plan.nonce)
     const payload = await buildClaimSubscribePayload({
       ...o.registered,
       innerCalls,
       gate: {
         kind: "registration",
-        ...(await o.bindingWitness(nameHash)),
-        secret: REGISTRATION_MESSAGE_SECRET,
+        ...keyProof,
         leafIndex: new Fr(message.leafIndex),
       },
     })
@@ -760,21 +656,28 @@ export class MetadataMigrationService {
     )
   }
 
-  private async received(raw: string): Promise<boolean> {
-    const { sipa } = await this.restore(raw)
-    return this.options.received(sipa)
-  }
-
-  async reconcileRemaining(raw: string): Promise<void> {
+  /**
+   * Bring the run's sent batches up to date from chain evidence, and send again each broadcast that
+   * is due. It asks no approval. A cancelled `signal` stops it before a send records a new hash.
+   * The source sends each transaction inside `gate`.
+   */
+  async reconcileRemaining(
+    raw: string,
+    signal?: AbortSignal,
+    gate?: MigrationSendGate,
+  ): Promise<void> {
     await this.restore(raw)
-    await this.options.source.reconcileRemaining?.()
+    await this.options.source.reconcileRemaining?.(signal, gate)
   }
 
-  async recoverRemaining(raw: string, published: boolean, signal?: AbortSignal): Promise<void> {
+  /** The source sends each transaction inside `gate`. */
+  async recoverRemaining(
+    raw: string,
+    signal?: AbortSignal,
+    gate?: MigrationSendGate,
+  ): Promise<void> {
     await this.restore(raw)
     if (!(await this.recurring())) throw new Error("Recurring sponsorship is not available")
-    if (published && !(await this.received(raw)))
-      throw new Error("The first migration deposit is not available")
-    await this.options.source.recoverRemaining(signal)
+    await this.options.source.recoverRemaining(signal, gate)
   }
 }

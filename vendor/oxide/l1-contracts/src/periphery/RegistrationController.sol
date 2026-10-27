@@ -8,9 +8,8 @@ import {IOxideAccountFactory} from "./interfaces/IOxideAccountFactory.sol";
 import {INameRegistry, DomainAuth} from "./interfaces/INameRegistry.sol";
 import {INamePortal} from "./interfaces/INamePortal.sol";
 import {IRegistrationController, SignedTerms, R1Install} from "./interfaces/IRegistrationController.sol";
-import {IAccountMetadataController, MetadataUpdateIntent} from "./interfaces/IAccountMetadataController.sol";
+import {IAccountMetadataController} from "./interfaces/IAccountMetadataController.sol";
 import {OxideAccount} from "./OxideAccount.sol";
-import {SignatureChecker} from "@openzeppelin/contracts/utils/cryptography/SignatureChecker.sol";
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 import {ERC4337Utils} from "@openzeppelin/contracts/account/utils/draft-ERC4337Utils.sol";
 import {IEntryPoint, PackedUserOperation} from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
@@ -18,10 +17,10 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC1271} from "@openzeppelin/contracts/interfaces/IERC1271.sol";
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Errors} from "@periphery/Errors.sol";
 
 contract RegistrationController is IRegistrationController, IAccountMetadataController, EIP712 {
-  bytes32 public constant METADATA_UPDATE_DOMAIN = keccak256("Oxide Metadata Update v1");
   bytes32 private constant SIGNED_TERMS_TYPEHASH = keccak256(
     "SignedTerms(bytes32 nameHash,address owner,uint256 fee,uint256 minDeposit,uint256 nonce,uint256 deadline)"
   );
@@ -76,55 +75,13 @@ contract RegistrationController is IRegistrationController, IAccountMetadataCont
   }
 
   function addBeneficiary(address beneficiary) external returns (uint256 beneficiaryId) {
-    require(msg.sender == NAME_REGISTRY.domainOwner(), Errors.RegistrationController__NotDomainOwner());
+    require(msg.sender == Ownable(address(NAME_REGISTRY)).owner(), Errors.RegistrationController__NotRegistryOwner());
     beneficiaryId = _addBeneficiary(beneficiary);
-  }
-
-  function metadataUpdateDigest(bytes calldata intentData, address sipa) public view override returns (bytes32) {
-    return
-      keccak256(abi.encode(METADATA_UPDATE_DOMAIN, block.chainid, address(NAME_REGISTRY), sipa, keccak256(intentData)));
   }
 
   function metadataStateHash(address owner) public view virtual override returns (bytes32) {
     AccountMetadataRegistry registry = AccountMetadataRegistry(NAME_REGISTRY.accountMetadataRegistry());
     return registry.hasUserRecord(owner) ? keccak256(abi.encode(registry.getUserRecord(owner))) : bytes32(0);
-  }
-
-  function updateUser(bytes calldata intentData, bytes calldata signature) external override {
-    require(
-      SIPAFactory(SIPA_FACTORY).sipaIntentOf(msg.sender) == SIPABase.Intent.UpdateMetadata,
-      Errors.RegistrationController__CallerNotSIPA(msg.sender)
-    );
-    SIPABase.Args memory args = abi.decode(Clones.fetchCloneArgs(msg.sender), (SIPABase.Args));
-    require(!args.resweepable, Errors.MetadataUpdate__Resweepable());
-    require(args.intentHash == keccak256(intentData), Errors.SIPA__IntentDataMismatch());
-    MetadataUpdateIntent memory intent = abi.decode(intentData, (MetadataUpdateIntent));
-    require(intent.metadataRegistry == NAME_REGISTRY.accountMetadataRegistry(), Errors.MetadataUpdate__WrongRegistry());
-    require(NAME_REGISTRY.nameOf(intent.owner) != bytes32(0), Errors.NamePortal__NameNotFound(intent.owner));
-    require(args.rollupVersion == intent.rollupVersion, Errors.SIPA__RollupVersionMismatch());
-    require(
-      intent.namePortalRecipient == bytes32(0)
-        ? intent.namePortal == address(0)
-        : intent.namePortal == address(NAME_PORTAL),
-      Errors.MetadataUpdate__WrongNamePortal()
-    );
-    require(metadataStateHash(intent.owner) == intent.expectedStateHash, Errors.MetadataUpdate__StaleRecord());
-    require(
-      SignatureChecker.isValidERC1271SignatureNow(
-        intent.owner, metadataUpdateDigest(intentData, msg.sender), signature
-      ),
-      Errors.MetadataUpdate__InvalidConsent()
-    );
-    _writeMetadata(intent);
-    if (intent.namePortalRecipient != bytes32(0)) {
-      NAME_PORTAL.notify(intent.owner, intent.namePortalRecipient, intent.rollupVersion);
-    }
-  }
-
-  function _writeMetadata(MetadataUpdateIntent memory intent) internal virtual {
-    AccountMetadataRegistry.UserRecord memory record = abi.decode(intent.metadata, (AccountMetadataRegistry.UserRecord));
-    require(record.rollupVersion == intent.rollupVersion, Errors.SIPA__RollupVersionMismatch());
-    AccountMetadataRegistry(intent.metadataRegistry).setUserRecord(intent.owner, record);
   }
 
   function _addBeneficiary(address beneficiary) internal returns (uint256 beneficiaryId) {
@@ -145,6 +102,7 @@ contract RegistrationController is IRegistrationController, IAccountMetadataCont
 
     (bytes memory recordData, uint256 fee, address beneficiary,, bytes32 namePortalRecipient) =
       abi.decode(registrationData, (bytes, uint256, address, bytes32, bytes32));
+    (, uint256 relayerFee,) = SIPABase(msg.sender).route(token);
 
     _register(
       RegisterArgs({
@@ -153,7 +111,7 @@ contract RegistrationController is IRegistrationController, IAccountMetadataCont
         beneficiary: beneficiary,
         namePortalRecipient: namePortalRecipient,
         balance: balance,
-        relayerFee: SIPABase(msg.sender).depositFee()
+        relayerFee: relayerFee
       }),
       proofs
     );

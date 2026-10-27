@@ -19,16 +19,17 @@
  * one of those emissions firing for the rest of the SDK's flows.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest"
-import { TxHash } from "@aztec/stdlib/tx"
+import { TxHash } from "@aztec-labs/stdlib/tx"
+import type { ContractFunctionInteraction } from "@aztec-labs/aztec.js/contracts"
 import { QueueStatus } from "@obsidion/core/constants"
 import { provingProgress, ProvingStage } from "@obsidion/proving-progress"
 import { ServiceBase } from "../../src/services/ServiceBase.js"
-import { waitForTx } from "@aztec/aztec.js/node"
+import { waitForTx } from "@aztec-labs/aztec.js/node"
 
 // Replace only `waitForTx` (the wait-phase mining await) so the test never
 // touches a real node; preserve the rest of the module.
-vi.mock("@aztec/aztec.js/node", async (importActual) => {
-  const actual = await importActual<typeof import("@aztec/aztec.js/node")>()
+vi.mock("@aztec-labs/aztec.js/node", async (importActual) => {
+  const actual = await importActual<typeof import("@aztec-labs/aztec.js/node")>()
   return { ...actual, waitForTx: vi.fn() }
 })
 
@@ -38,7 +39,7 @@ const FAKE_FROM = { toString: () => "0xfrom" } as never
 // Minimal interaction stub: `sendAndWait` only calls `.send(...)` on it (the
 // profile branch is gated behind `instanceof ContractFunctionInteraction`, so
 // a plain object is correctly skipped when `profile` is unset).
-function makeInteraction(sendImpl?: () => Promise<unknown>) {
+function makeInteraction(sendImpl?: () => Promise<unknown>): ContractFunctionInteraction {
   return {
     send:
       sendImpl ??
@@ -47,7 +48,7 @@ function makeInteraction(sendImpl?: () => Promise<unknown>) {
         offchainMessages: [],
         offchainEffects: [],
       }),
-  }
+  } as unknown as ContractFunctionInteraction
 }
 
 function makeService() {

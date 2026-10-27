@@ -1,20 +1,23 @@
-import type { AztecAddress } from '@aztec/aztec.js/addresses';
-import type { AztecNode } from '@aztec/aztec.js/node';
-import type { EthAddress } from '@aztec/foundation/eth-address';
-import { type Logger, createLogger } from '@aztec/foundation/log';
-import { RunningPromise } from '@aztec/foundation/running-promise';
+import type { AztecAddress } from '@aztec-labs/aztec.js/addresses';
+import type { AztecNode } from '@aztec-labs/aztec.js/node';
+import type { EthAddress } from '@aztec-labs/foundation/eth-address';
+import { type Logger, createLogger } from '@aztec-labs/foundation/log';
+import { RunningPromise } from '@aztec-labs/foundation/running-promise';
 
+import type { OperationExecutorVersion } from '@oxide/oxide-client/l1_operation_quote.js';
 import type { SanctionsList } from '@oxide/watcher-lib/sanctions';
 
 import type { PublicClient } from 'viem';
 
 import type { L1OperationsSubmissionConfig } from '../cli/config.js';
-import type { ChainlinkPriceOracle } from '../price_oracle/chainlink_price_oracle.js';
+import type { PriceOracle } from '../price_oracle/price_oracle.js';
 import type { RelayerTelemetry } from '../relayer_telemetry.js';
 import type { StateStore } from '../state/types.js';
 import { BalanceWatcher, OutboxWatcher } from './l1_operation_condition.js';
+import type { L1OperationOwnership } from './l1_operation_router.js';
 import { L1OperationScreener } from './l1_operation_screener.js';
 import { L1OperationSyncer } from './l1_operation_syncer.js';
+import type { PayoutTokenFilter } from './payout_token_registry.js';
 import { PredicateScreener, type PredicateScreenerConfig } from './predicate_screener.js';
 import { L1OperationSubmitter, type L1OperationSubmitterDeps } from './submitter.js';
 import type { WithdrawalCompletion } from './withdrawal_completion.js';
@@ -29,20 +32,23 @@ export interface L1OperationRelayerConfig {
   publicClient: PublicClient;
   store: StateStore;
   broadcaster: AztecAddress;
-  payoutTokens: EthAddress[];
+  ownership: L1OperationOwnership;
+  payoutTokens: PayoutTokenFilter;
   watchedTokens: EthAddress[];
   logScanWindow?: bigint;
   l1OperationsSubmission: L1OperationsSubmissionConfig;
   allowUnprofitable?: boolean;
   /** OperationExecutor that operations submit through; the env registry's published executor for the version. */
   executor: EthAddress;
+  /** The `execute` version of `executor`. */
+  executorVersion: OperationExecutorVersion;
   l1TxQueue: L1OperationSubmitterDeps['l1TxQueue'];
   /** The list every address an operation touches is screened against before it is executed. */
   sanctionsList: SanctionsList;
   /** When set, addresses the Predicate policy declines also block the operation. */
   predicate?: PredicateScreenerConfig;
   withdrawalCompletion: WithdrawalCompletion;
-  priceOracle: ChainlinkPriceOracle;
+  priceOracle: PriceOracle;
   telemetry?: RelayerTelemetry;
   pollIntervalMs?: number;
   logger?: Logger;
@@ -73,6 +79,7 @@ export class L1OperationRelayer {
       node: config.node,
       store: config.store,
       broadcaster: config.broadcaster,
+      ownership: config.ownership,
       payoutTokens: config.payoutTokens,
       watchedTokens: config.watchedTokens,
       balanceWatcher: new BalanceWatcher({
@@ -96,6 +103,7 @@ export class L1OperationRelayer {
 
     const submitter = new L1OperationSubmitter({
       executor: config.executor,
+      executorVersion: config.executorVersion,
       client: config.publicClient,
       l1TxQueue: config.l1TxQueue,
       store: config.store,
@@ -106,6 +114,7 @@ export class L1OperationRelayer {
       ),
       config: config.l1OperationsSubmission,
       withdrawalCompletion: config.withdrawalCompletion,
+      ownership: config.ownership,
       allowUnprofitable: config.allowUnprofitable,
       telemetry: config.telemetry,
       logger: log.createChild('l1-operation-submitter'),

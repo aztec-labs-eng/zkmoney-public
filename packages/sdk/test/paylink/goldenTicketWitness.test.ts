@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { EthAddress } from "@aztec/aztec.js/addresses"
-import { Fr } from "@aztec/aztec.js/fields"
-import { computeUniqueNoteHash, siloNoteHash } from "@aztec/stdlib/hash"
+import { EthAddress } from "@aztec-labs/aztec.js/addresses"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { computeUniqueNoteHash, siloNoteHash } from "@aztec-labs/stdlib/hash"
 
 const ESCROW = 0xe5c0n
 const CLASS_ID = new Fr(0xc1a55n)
@@ -12,8 +12,8 @@ const h = vi.hoisted(() => ({ registerEscrow: vi.fn() }))
 
 vi.mock("../../src/services/paylink/paylinkVoucher", () => ({ registerEscrow: h.registerEscrow }))
 // A stub artifact names its class; the current direct and email artifacts carry theirs.
-vi.mock("@aztec/stdlib/contract", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@aztec/stdlib/contract")>()),
+vi.mock("@aztec-labs/stdlib/contract", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@aztec-labs/stdlib/contract")>()),
   getContractClassFromArtifact: async (artifact: { classId?: Fr }) => ({ id: artifact.classId }),
 }))
 
@@ -28,7 +28,7 @@ const {
 } = await import("../../src/services/paylink/goldenTicket")
 const { registerEscrow } = await import("../../src/services/paylink/escrowRegistration")
 const { LINK_CLASS_REFUSAL } = await import("../../src/services/paylink/paylinkInlineCodec")
-const { AztecAddress } = await import("@aztec/stdlib/aztec-address")
+const { AztecAddress } = await import("@aztec-labs/stdlib/aztec-address")
 
 const AMOUNT = 3n * 10n ** 18n
 const point = { x: new Fr(1n), y: new Fr(2n), isInfinite: false }

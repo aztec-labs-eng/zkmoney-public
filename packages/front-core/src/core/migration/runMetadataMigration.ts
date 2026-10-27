@@ -15,10 +15,9 @@ export async function runMetadataMigration(
   options: {
     signal: AbortSignal
     pollMs?: number
-    onProgress?: () => Promise<void>
     /**
-     * A run the user did not start, such as the boot's: it follows an arriving run to the end and
-     * stops once the run needs the user, never signing or sending.
+     * A run the user did not start, such as the boot's: it follows an arriving or waiting run to
+     * the end and stops once the run needs the user, never signing.
      */
     observeOnly?: boolean
     /**
@@ -32,6 +31,12 @@ export async function runMetadataMigration(
     until?: (record: MetadataMigrationRecord) => boolean
     /** Fires once the user's start has approved and proven everything: the rest needs no prompt. */
     onPrepared?: () => void
+    /** Collect and save approvals without sending any transaction. With `retry`, a failed pass is tried again. */
+    prepareOnly?: boolean
+    /** Like `prepareOnly`, but returns once every approval is saved, before any proof. */
+    approvalsOnly?: boolean
+    /** A prepared queue must stop if a new approval becomes necessary. */
+    prompts?: boolean
     /** Return once every batch is sent: what is left needs no tab. */
     untilArriving?: boolean
     /**
@@ -41,6 +46,7 @@ export async function runMetadataMigration(
     retry?: boolean
     /** What the user's start was quoted, saved with the run. */
     summary?: MetadataMigrationSummary
+    beforeApproval?: (approved: number, total: number) => Promise<void>
   },
 ) {
   const observeOnly = options.observeOnly ?? false
@@ -54,25 +60,30 @@ export async function runMetadataMigration(
     const record = await controller.advance(start, options.signal, {
       observeOnly,
       promptless,
+      prepareOnly: options.prepareOnly,
+      approvalsOnly: options.approvalsOnly,
       exclusive: options.exclusive,
       ...(start
         ? {
             // A start tried again rebuilds from saved approvals and never asks for another.
             ...(failures ? { prompts: false } : {}),
+            ...(options.prompts === undefined ? {} : { prompts: options.prompts }),
             onPrepared: () => {
               prepared = true
               options.onPrepared?.()
             },
             summary: options.summary,
+            beforeApproval: options.beforeApproval,
           }
         : {}),
     })
-    await options.onProgress?.()
     const retry = retryableStop(record) && failures < retries
+    // A prepare-only pass ends with what it prepared, once no retry is left to clear a stop.
+    if ((options.prepareOnly || options.approvalsOnly) && !retry) return record
     failures = retry ? failures + 1 : 0
     start = start && retry && !prepared
     if (!retry) {
-      if (observeOnly && record?.phase !== "arriving") return record
+      if (observeOnly && record?.phase !== "arriving" && record?.phase !== "waiting") return record
       if (options.untilArriving && record?.phase === "arriving") return record
       if (record && options.until?.(record)) return record
       if (

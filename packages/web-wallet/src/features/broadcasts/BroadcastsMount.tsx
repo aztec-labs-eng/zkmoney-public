@@ -10,6 +10,7 @@ import { usePxeBoot } from "../../ui/PxeBoot"
 import { getSipaDepositGateway } from "../deposit/sipaGateway"
 import { startBroadcasts } from "./broadcasts"
 import { registrationExecutor } from "./registrationExecutor"
+import { rotationExecutor } from "./rotationBroadcastExecutor"
 
 export function BroadcastsMount(): null {
   const { obsidionWallet } = useAztecContext()
@@ -19,6 +20,7 @@ export function BroadcastsMount(): null {
     if (!booted || !ready || !obsidionWallet) return
     return startBroadcasts(obsidionWallet, {
       registration: registrationExecutor(obsidionWallet, getConfig()),
+      rotation: rotationExecutor(obsidionWallet, getConfig()),
       slot: getSipaDepositGateway().slotExecutor(obsidionWallet),
     })
   }, [booted, ready, obsidionWallet])

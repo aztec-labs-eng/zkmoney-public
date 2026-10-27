@@ -1,8 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import type { Address, Hash } from "viem"
+import type { Address, Hash, Hex } from "viem"
 import { InMemoryStorageAdapter } from "../../__test-helpers__/InMemoryStorageAdapter"
 import { resetSingleton } from "../../__test-helpers__/resetSingleton"
-import type { WithdrawalPhase, WithdrawalRecord } from "../../../src/core/services/bridge/types"
+import {
+  WITHDRAWAL_RECORD_VERSION,
+  type WithdrawalPhase,
+  type WithdrawalRecord,
+} from "../../../src/core/services/bridge/types"
 import { WithdrawalStorage } from "../../../src/core/services/bridge/WithdrawalStorage"
 
 const VALID_RECIPIENT = "0x1234567890abcdef1234567890abcdef12345678" as Address
@@ -25,6 +29,7 @@ function makeRecord(overrides: OverrideableFields = {}): WithdrawalRecord {
     recipientProvenance: "saved-recipient",
     amount: "1.0",
     tokenSymbol: "DAI",
+    tokenDecimals: 18,
     phase: "submitting",
     startTime: 1_700_000_000_000,
     ...overrides,
@@ -272,6 +277,26 @@ describe("WithdrawalStorage", () => {
     })
   })
 
+  describe("token decimals on load", () => {
+    it("gives a record stored without them 18, and keeps a stored record's own", async () => {
+      resetSingleton(WithdrawalStorage as unknown as { instance: WithdrawalStorage | null })
+      const adapter = new InMemoryStorageAdapter()
+      const { tokenDecimals: _, ...unstamped } = makeRecord({ localId: "old" })
+      await adapter.setItem(
+        "@obsidion/withdrawals/records",
+        JSON.stringify({
+          old: unstamped,
+          usdc: makeRecord({ localId: "usdc", tokenSymbol: "USDC", tokenDecimals: 6 }),
+        }),
+      )
+      const store = WithdrawalStorage.get(adapter)
+      await store.load()
+
+      expect(store.get("old")?.tokenDecimals).toBe(18)
+      expect(store.get("usdc")?.tokenDecimals).toBe(6)
+    })
+  })
+
   describe("stampTerminal idempotence", () => {
     it("preserves existing endTime across subsequent terminal-phase patches", async () => {
       const store = await newStore()
@@ -296,7 +321,6 @@ describe("WithdrawalStorage", () => {
       expect(patched.withdrawalId).toBe(("0x" + "ab".repeat(32)) as `0x${string}`)
     })
   })
-
 
   describe("delegation smoke", () => {
     it("remove deletes an existing record", async () => {
@@ -401,7 +425,6 @@ describe("WithdrawalStorage", () => {
       expect(advanced.phase).toBe("finalizing_l1")
       expect(advanced.reorgEpoch).toBe(1)
     })
-
   })
 
   describe("reviveDroppedBurn", () => {
@@ -549,5 +572,120 @@ describe("failInterruptedSubmissions", () => {
     await store.create(makeRecord({ localId: "stale", startTime: NOW - 2 * HOUR }))
     await store.failInterruptedSubmissions(NOW)
     expect(await store.failInterruptedSubmissions(NOW)).toEqual([])
+  })
+})
+
+describe("WithdrawalStorage executor migration", () => {
+  const PORTAL = ("0x" + "70".repeat(20)) as Hex
+  const EXECUTOR = ("0x" + "ec".repeat(20)) as Hex
+  const SWAPPED = ("0x" + "ed".repeat(20)) as Hex
+  const TX_A = ("0x" + "a1".repeat(32)) as Hash
+  const TX_C = ("0x" + "c1".repeat(32)) as Hash
+
+  /** A store whose blob holds `records` as version 1 wrote them: no version, no executor. */
+  async function legacyStore(records: WithdrawalRecord[]) {
+    resetSingleton(WithdrawalStorage as unknown as { instance: WithdrawalStorage | null })
+    const adapter = new InMemoryStorageAdapter()
+    await adapter.setItem(
+      "@obsidion/withdrawals/records",
+      JSON.stringify(Object.fromEntries(records.map((r) => [r.localId, r]))),
+    )
+    const store = WithdrawalStorage.get(adapter)
+    await store.load()
+    return { store, adapter }
+  }
+
+  /** The burns' recovery data, by burn tx hash. */
+  const burns =
+    (paid: Record<string, { executor: Hex; withdrawalFee: bigint }>) =>
+    (record: WithdrawalRecord) =>
+      record.l2TxHash ? paid[record.l2TxHash] : undefined
+
+  it("writes new records at the current version", async () => {
+    const store = await newStore()
+    await store.create(makeRecord())
+    expect(store.get("local-1")?.version).toBe(WITHDRAWAL_RECORD_VERSION)
+  })
+
+  it("stamps a version 1 record with the executor and fee its burn paid, and persists it", async () => {
+    const { store, adapter } = await legacyStore([
+      makeRecord({
+        localId: "a",
+        l2TxHash: TX_A,
+        phase: "awaiting_proven",
+        deployment: { portal: PORTAL, l2Token: "0xl2" },
+      }),
+      makeRecord({ localId: "b", phase: "done" }),
+    ])
+
+    const migrated = await store.migrateExecutors(
+      burns({ [TX_A]: { executor: SWAPPED, withdrawalFee: 7n } }),
+    )
+
+    expect(migrated.map((r) => r.localId).sort()).toEqual(["a", "b"])
+    expect(store.get("a")).toMatchObject({
+      version: WITHDRAWAL_RECORD_VERSION,
+      phase: "awaiting_proven",
+      deployment: { portal: PORTAL, l2Token: "0xl2", executor: SWAPPED },
+      withdrawalFee: "7",
+    })
+    // A record from before deployments were stamped has nowhere to keep an executor.
+    expect(store.get("b")).toMatchObject({ version: WITHDRAWAL_RECORD_VERSION })
+    expect(store.get("b")?.deployment).toBeUndefined()
+    const persisted = JSON.parse((await adapter.getItem("@obsidion/withdrawals/records"))!)
+    expect(persisted.a.deployment.executor).toBe(SWAPPED)
+  })
+
+  it("keeps the fee a version 1 record already names", async () => {
+    const { store } = await legacyStore([
+      makeRecord({
+        localId: "a",
+        l2TxHash: TX_A,
+        withdrawalFee: "5",
+        deployment: { portal: PORTAL, l2Token: "0xl2" },
+      }),
+    ])
+    await store.migrateExecutors(burns({ [TX_A]: { executor: EXECUTOR, withdrawalFee: 7n } }))
+    expect(store.get("a")?.withdrawalFee).toBe("5")
+  })
+
+  it("leaves a record whose burn is not known yet at version 1, and never restamps a migrated one", async () => {
+    const { store } = await legacyStore([
+      makeRecord({ localId: "a", l2TxHash: TX_A, deployment: { portal: PORTAL, l2Token: "0xl2" } }),
+      makeRecord({ localId: "c", l2TxHash: TX_C, deployment: { portal: PORTAL, l2Token: "0xl2" } }),
+    ])
+
+    const first = await store.migrateExecutors(
+      burns({ [TX_C]: { executor: EXECUTOR, withdrawalFee: 0n } }),
+    )
+    expect(first.map((r) => r.localId)).toEqual(["c"])
+    expect(store.get("a")?.version).toBeUndefined()
+
+    const swapped = vi.fn(burns({ [TX_A]: { executor: SWAPPED, withdrawalFee: 0n } }))
+    await store.migrateExecutors(swapped)
+    expect(store.get("a")?.deployment?.executor).toBe(SWAPPED)
+    expect(store.get("c")?.deployment?.executor).toBe(EXECUTOR)
+    expect(swapped).toHaveBeenCalledTimes(1)
+  })
+
+  it("keeps an executor a version 1 record already names, and fences no reorged record", async () => {
+    const { store } = await legacyStore([
+      makeRecord({
+        localId: "a",
+        phase: "l2_mined",
+        reorgEpoch: 2,
+        deployment: { portal: PORTAL, l2Token: "0xl2", executor: SWAPPED },
+      }),
+    ])
+    const burnOf = vi.fn(() => ({ executor: EXECUTOR, withdrawalFee: 0n }))
+
+    await store.migrateExecutors(burnOf)
+
+    expect(burnOf).not.toHaveBeenCalled()
+    expect(store.get("a")).toMatchObject({
+      version: WITHDRAWAL_RECORD_VERSION,
+      reorgEpoch: 2,
+      deployment: { executor: SWAPPED },
+    })
   })
 })

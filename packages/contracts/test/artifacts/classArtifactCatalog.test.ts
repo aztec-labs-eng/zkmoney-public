@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto"
 import { expect, it, vi } from "vitest"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import { SchnorrInitializerlessAccountContractArtifact } from "@aztec/accounts/schnorr"
-import { contractArtifactToBuffer } from "@aztec/stdlib/abi"
-import { getContractClassFromArtifact } from "@aztec/stdlib/contract"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import { SchnorrInitializerlessAccountContractArtifact } from "@aztec-labs/accounts/schnorr"
+import { contractArtifactToBuffer } from "@aztec-labs/stdlib/abi"
+import { getContractClassFromArtifact } from "@aztec-labs/stdlib/contract"
 import raw from "../../src/artifacts/lazy/broadcaster_contract.js"
 import { getBroadcasterArtifact, getHardcodedArtifact } from "../../src/services/utils.js"
 import {

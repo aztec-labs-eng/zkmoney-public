@@ -1,8 +1,7 @@
 /**
  * The gross / fee / net split a withdrawal's detail sheet reads off the record. What is pinned is
- * the arithmetic and the encoding of each field, the portal's cap on its funding cut, and the two
- * records that carry no split at all: one written without a tip, and one whose whole amount went
- * to the tip.
+ * the arithmetic and the encoding of each field, and the two records that carry no split at all:
+ * one written without a tip, and one whose whole amount went to the tip.
  */
 import { describe, expect, it } from "vitest"
 import { parseUnits } from "viem"
@@ -13,23 +12,31 @@ import {
 } from "../../../src/core/services/bridge/withdrawalAmounts"
 
 const TIP = WITHDRAW_RELAYER_TIP.toString()
-/** The portal's FPC_FUNDING_CUT on the funded tiers: 0.25 DAI. */
-const CUT = parseUnits("0.25", 18).toString()
-/** A deployment that skims nothing, so the tip is the whole fee. */
-const NO_CUT = "0"
 
 describe("withdrawalAmounts", () => {
+  it("reads a 6-decimal token's record in its own decimals", () => {
+    const a = withdrawalAmounts({
+      tokenDecimals: 6,
+      amount: "120",
+      rawAmount: parseUnits("120", 6).toString(),
+      relayerTip: parseUnits("0.1", 6).toString(),
+    })
+    expect(a.grossAtomic).toBe(120_000_000n)
+    expect([a.grossDisplay, a.feeDisplay, a.netDisplay]).toEqual(["120", "0.1", "119.9"])
+    expect(withdrawalAmounts({ tokenDecimals: 6, amount: "2.5" }).grossAtomic).toBe(2_500_000n)
+  })
+
   it("splits the mined burn amount into the tip and what the recipient receives", () => {
     const a = withdrawalAmounts({
+      tokenDecimals: 18,
       amount: "120",
       rawAmount: parseUnits("120", 18).toString(),
       relayerTip: TIP,
-      fpcFundingCut: NO_CUT,
     })
 
     expect(a.grossAtomic).toBe(120000000000000000000n)
     expect(a.tipAtomic).toBe(100000000000000000n)
-    expect(a.cutAtomic).toBe(0n)
+    expect(a.proverTipAtomic).toBe(0n)
     expect(a.feeAtomic).toBe(a.tipAtomic)
     expect(a.netAtomic).toBe(a.grossAtomic - a.feeAtomic)
     expect(a.grossDisplay).toBe("120")
@@ -39,7 +46,7 @@ describe("withdrawalAmounts", () => {
   })
 
   it("takes the gross from the typed amount when no raw amount was recorded", () => {
-    const a = withdrawalAmounts({ amount: "36.5", relayerTip: TIP, fpcFundingCut: NO_CUT })
+    const a = withdrawalAmounts({ tokenDecimals: 18, amount: "36.5", relayerTip: TIP })
 
     expect(a.grossAtomic).toBe(36500000000000000000n)
     expect(a.netAtomic).toBe(36400000000000000000n)
@@ -47,10 +54,10 @@ describe("withdrawalAmounts", () => {
 
   it("treats rawAmount and relayerTip as raw units, never parseUnits (encoding guard)", () => {
     const a = withdrawalAmounts({
+      tokenDecimals: 18,
       amount: "0",
       rawAmount: "120000000000000000000",
       relayerTip: TIP,
-      fpcFundingCut: NO_CUT,
     })
 
     expect(a.grossAtomic).toBe(120000000000000000000n)
@@ -61,7 +68,11 @@ describe("withdrawalAmounts", () => {
   })
 
   it("reports no fee and net = gross for a record written without a tip", () => {
-    const a = withdrawalAmounts({ amount: "120", rawAmount: parseUnits("120", 18).toString() })
+    const a = withdrawalAmounts({
+      tokenDecimals: 18,
+      amount: "120",
+      rawAmount: parseUnits("120", 18).toString(),
+    })
 
     expect(a.feeKnown).toBe(false)
     expect(a.tipAtomic).toBe(0n)
@@ -69,98 +80,64 @@ describe("withdrawalAmounts", () => {
     expect(a.netAtomic).toBe(a.grossAtomic)
   })
 
-  it("subtracts the portal's funding cut alongside the tip", () => {
+  it("adds the prover tip to the relayer tip", () => {
     const a = withdrawalAmounts({
-      amount: "120",
-      rawAmount: parseUnits("120", 18).toString(),
-      relayerTip: TIP,
-      fpcFundingCut: CUT,
-    })
-
-    expect(a.cutAtomic).toBe(250000000000000000n)
-    expect(a.feeAtomic).toBe(350000000000000000n)
-    expect(a.feeDisplay).toBe("0.35")
-    expect(a.netAtomic).toBe(119650000000000000000n)
-    expect(a.netDisplay).toBe("119.65")
-    expect(a.feeKnown).toBe(true)
-  })
-
-  it("deducts the prover tip first and caps the cut at what it leaves", () => {
-    const a = withdrawalAmounts({
-      amount: "0.61",
+      tokenDecimals: 18,
+      amount: "0.71",
       rawAmount: parseUnits("1.81", 18).toString(),
       relayerTip: TIP,
       proverTip: parseUnits("1", 18).toString(),
-      fpcFundingCut: parseUnits("0.1", 18).toString(),
     })
     expect(a.proverTipAtomic).toBe(parseUnits("1", 18))
-    expect(a.feeAtomic).toBe(parseUnits("1.2", 18))
-    expect(a.netDisplay).toBe("0.61")
+    expect(a.feeAtomic).toBe(parseUnits("1.1", 18))
+    expect(a.netDisplay).toBe("0.71")
 
-    // The cut takes the 0.15 the prover tip leaves; the relayer tip comes on top.
-    const capped = withdrawalAmounts({
-      amount: "0",
-      rawAmount: parseUnits("1.15", 18).toString(),
-      relayerTip: TIP,
-      proverTip: parseUnits("1", 18).toString(),
-      fpcFundingCut: CUT,
-    })
-    expect(capped.feeAtomic).toBe(parseUnits("1.25", 18))
-    expect(capped.netAtomic).toBe(0n)
-    // A record that offered no prover tip splits as before.
+    // A record that offered no prover tip splits on the relayer tip alone.
     expect(
       withdrawalAmounts({
+        tokenDecimals: 18,
         amount: "1",
         rawAmount: parseUnits("1", 18).toString(),
         relayerTip: TIP,
-        fpcFundingCut: NO_CUT,
       }).proverTipAtomic,
     ).toBe(0n)
   })
 
-  it("takes the cut before the relayer tip, capped at the gross", () => {
-    // The portal takes `min(cut, amount - proverTip)` before the executor pays the relayer tip, so
-    // a small withdrawal pays the cut first and the recipient lands nothing rather than a negative.
-    const a = withdrawalAmounts({ amount: "0.2", relayerTip: TIP, fpcFundingCut: CUT })
-    expect(a.cutAtomic).toBe(250000000000000000n)
-    expect(a.feeAtomic).toBe(300000000000000000n)
-    expect(a.netAtomic).toBe(0n)
+  it("adds the executor's fee to the tips", () => {
+    const a = withdrawalAmounts({
+      tokenDecimals: 18,
+      amount: "1.8",
+      rawAmount: parseUnits("2", 18).toString(),
+      relayerTip: TIP,
+      withdrawalFee: parseUnits("0.1", 18).toString(),
+    })
+    expect(a.withdrawalFeeAtomic).toBe(parseUnits("0.1", 18))
+    expect(a.feeAtomic).toBe(parseUnits("0.2", 18))
+    expect(a.netDisplay).toBe("1.8")
 
-    const under = withdrawalAmounts({ amount: "0.05", relayerTip: TIP, fpcFundingCut: CUT })
-    expect(under.feeAtomic).toBe(150000000000000000n)
-    expect(under.netAtomic).toBe(0n)
-  })
-
-  it("hides the breakdown on a record that carries a tip but no cut", () => {
-    // The portal always took the cut, so a tip alone is not the fee this burn paid.
-    const a = withdrawalAmounts({ amount: "120", relayerTip: TIP })
-
-    expect(a.feeKnown).toBe(false)
-    expect(a.feeAtomic).toBe(0n)
-    expect(a.netAtomic).toBe(a.grossAtomic)
+    // A record without an executor fee splits on the tips alone.
+    expect(
+      withdrawalAmounts({ tokenDecimals: 18, amount: "1", relayerTip: TIP }).withdrawalFeeAtomic,
+    ).toBe(0n)
   })
 
   it("clamps net to zero when the fee takes the whole amount", () => {
+    expect(withdrawalAmounts({ tokenDecimals: 18, amount: "0.1", relayerTip: TIP }).netAtomic).toBe(
+      0n,
+    )
     expect(
-      withdrawalAmounts({ amount: "0.1", relayerTip: TIP, fpcFundingCut: NO_CUT }).netAtomic,
-    ).toBe(0n)
-    expect(
-      withdrawalAmounts({ amount: "0.05", relayerTip: TIP, fpcFundingCut: NO_CUT }).netAtomic,
+      withdrawalAmounts({ tokenDecimals: 18, amount: "0.05", relayerTip: TIP }).netAtomic,
     ).toBe(0n)
   })
 
   it("is exact at 18dp (no float drift)", () => {
     expect(
-      withdrawalAmounts({ amount: "10.07", relayerTip: TIP, fpcFundingCut: NO_CUT }).netAtomic,
+      withdrawalAmounts({ tokenDecimals: 18, amount: "10.07", relayerTip: TIP }).netAtomic,
     ).toBe(9970000000000000000n)
   })
 
   it("never throws on a malformed amount", () => {
-    const a = withdrawalAmounts({
-      amount: "not-a-number",
-      relayerTip: TIP,
-      fpcFundingCut: NO_CUT,
-    })
+    const a = withdrawalAmounts({ tokenDecimals: 18, amount: "not-a-number", relayerTip: TIP })
 
     expect(a.grossAtomic).toBe(0n)
     expect(a.netAtomic).toBe(0n)
@@ -169,26 +146,28 @@ describe("withdrawalAmounts", () => {
 
 describe("swapWithdrawalAmounts", () => {
   const swapRecord = {
-    amount: "100.35",
-    rawAmount: parseUnits("100.35", 18).toString(),
+    tokenDecimals: 18,
+    amount: "100.25",
+    rawAmount: parseUnits("100.25", 18).toString(),
     relayerTip: TIP, // 0.1
     swapOutput: "ETH" as const,
     swapRelayerTip: parseUnits("0.15", 18).toString(),
-    fpcFundingCut: parseUnits("0.1", 18).toString(),
     swapEstimatedOut: parseUnits("0.5", 18).toString(),
     swapOutputDecimals: 18,
   }
 
   it("is undefined for a direct withdrawal", () => {
-    expect(swapWithdrawalAmounts({ amount: "120", relayerTip: TIP })).toBeUndefined()
+    expect(
+      swapWithdrawalAmounts({ tokenDecimals: 18, amount: "120", relayerTip: TIP }),
+    ).toBeUndefined()
   })
 
   it("sums every pre-swap deduction into the fee and swaps the rest", () => {
     const s = swapWithdrawalAmounts(swapRecord)!
 
     expect(s.feeKnown).toBe(true)
-    expect(s.feeAtomic).toBe(parseUnits("0.35", 18))
-    expect(s.feeDisplay).toBe("0.35")
+    expect(s.feeAtomic).toBe(parseUnits("0.25", 18))
+    expect(s.feeDisplay).toBe("0.25")
     expect(s.swapInputAtomic).toBe(parseUnits("100", 18))
     expect(s.estimate?.outAtomic).toBe(parseUnits("0.5", 18))
     expect(s.estimate?.outDisplay).toBe("0.5")
@@ -197,6 +176,7 @@ describe("swapWithdrawalAmounts", () => {
 
   it("takes the gas share out of the route's input, and reports it with its ETH quote", () => {
     const s = swapWithdrawalAmounts({
+      tokenDecimals: 18,
       ...swapRecord,
       swapOutput: "USDC",
       swapDaiForGas: parseUnits("5", 18).toString(),
@@ -216,14 +196,18 @@ describe("swapWithdrawalAmounts", () => {
   })
 
   it("carries no estimate when the record has no quote", () => {
-    const s = swapWithdrawalAmounts({ ...swapRecord, swapEstimatedOut: undefined })!
+    const s = swapWithdrawalAmounts({
+      tokenDecimals: 18,
+      ...swapRecord,
+      swapEstimatedOut: undefined,
+    })!
 
     expect(s.feeKnown).toBe(true)
     expect(s.estimate).toBeUndefined()
   })
 
-  it("reports the fee unknown on a record without the FPC cut", () => {
-    const s = swapWithdrawalAmounts({ ...swapRecord, fpcFundingCut: undefined })!
+  it("reports the fee unknown on a record without the relayer tip", () => {
+    const s = swapWithdrawalAmounts({ tokenDecimals: 18, ...swapRecord, relayerTip: undefined })!
 
     expect(s.feeKnown).toBe(false)
     expect(s.estimate).toBeUndefined()

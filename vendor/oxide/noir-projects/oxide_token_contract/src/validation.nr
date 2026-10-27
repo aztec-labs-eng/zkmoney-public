@@ -8,24 +8,29 @@ use super::{
 };
 use aztec::{
     context::UtilityContext,
+    hash::compute_l1_to_l2_message_hash,
     note::note_interface::NoteHash,
+    oracle::get_l1_to_l2_membership_witness::try_get_l1_to_l2_membership_witness,
     protocol::{
-        address::AztecAddress,
+        address::{AztecAddress, EthAddress},
         blob_data::TxEffect,
         constants::{MAX_L2_TO_L1_MSGS_PER_TX, MAX_NOTE_HASHES_PER_TX, MAX_NULLIFIERS_PER_TX},
         hash::{compute_note_hash_nonce, compute_siloed_note_hash, compute_unique_note_hash, poseidon2_hash},
-        traits::{Deserialize, Serialize},
+        merkle_tree::root::root_from_sibling_path,
+        traits::{Deserialize, FromField, Serialize},
     },
-    state_vars::{Map, PublicMutable, StateVariable},
 };
 
-use oxide_lib::constants::{APPROVED_SIGNERS_STORAGE_SLOT, TEE_SIG_DOMAIN_NOTE};
+use oxide_lib::constants::{PORTAL_CONSTANT_SECRET_HASH, TEE_REGISTRY_L2_RECIPIENT, TEE_SIG_DOMAIN_NOTE};
+use oxide_token_lib::content_hash::get_register_signer_content_hash;
 
 #[derive(Deserialize, Eq, Serialize)]
 struct TeeSignedData {
     domain: u8,
     anchor_block_hash: Field,
     token_address: AztecAddress,
+    l1_portal: EthAddress,
+    tee_registry: EthAddress,
     signed_commitment: Field,
     required_nullifiers: BoundedVec<Field, MAX_NULLIFIERS_PER_TX>,
     tee_notes: BoundedVec<Field, MAX_NOTE_HASHES_PER_TX>,
@@ -68,6 +73,8 @@ fn validate_signature(
     signature: Signature,
     domain: u8,
     contract_address: AztecAddress,
+    l1_portal: EthAddress,
+    tee_registry: EthAddress,
     signed_commitment: Field,
     da_components: DAComponents,
 ) -> bool {
@@ -75,6 +82,8 @@ fn validate_signature(
         domain,
         anchor_block_hash: da_components.metadata.anchor_block_hash,
         token_address: contract_address,
+        l1_portal,
+        tee_registry,
         signed_commitment,
         required_nullifiers: da_components.required_nullifiers,
         tee_notes: da_components.tee_notes,
@@ -103,27 +112,6 @@ fn validate_signature(
         signature,
         msg_hash,
     )
-}
-
-fn fetch_unique_note_hash(siloed_note_hash: Field, effect: TxEffect) -> Option<Field> {
-    let first_nullifier_in_tx = effect.nullifiers[0];
-    let mut matching_count = 0;
-    let mut unique_note_hash = 0;
-
-    for i in 0..MAX_NOTE_HASHES_PER_TX {
-        let nonce_for_i = compute_note_hash_nonce(first_nullifier_in_tx, i);
-        let unique_note_hash_for_i = compute_unique_note_hash(nonce_for_i, siloed_note_hash);
-        if effect.note_hashes[i] == unique_note_hash_for_i {
-            matching_count += 1;
-            unique_note_hash = unique_note_hash_for_i;
-        }
-    }
-    // The siloed note hash must be used exactly once in the transaction.
-    if matching_count == 1 {
-        Option::some(unique_note_hash)
-    } else {
-        Option::none()
-    }
 }
 
 fn validate_siloed_vs_unique_note_hash(siloed_note_hash: Field, effect: TxEffect) -> bool {
@@ -164,7 +152,7 @@ fn validate_siloed_note_hash_in_tee_notes<let N: u32>(
 // circuits that may be buggy. So independently verify that every withdrawal the TEE attested in the
 // creation preimage actually shows up as an L2->L1 message in the creation tx's effects.
 // At least once, not exactly once: the check exists to catch an attested message the tx never emitted. A repeated
-// message settles as a single withdrawal, so it says nothing about the notes, and the enclave accepts it.
+// message is finalized as a single withdrawal, so it says nothing about the notes, and the enclave accepts it.
 fn validate_withdrawal_message_hashes_in_l2_to_l1_msgs<let N: u32>(
     withdrawal_message_hashes: BoundedVec<Field, N>,
     effect: TxEffect,
@@ -177,28 +165,45 @@ fn validate_withdrawal_message_hashes_in_l2_to_l1_msgs<let N: u32>(
     valid
 }
 
-unconstrained fn validate_signer_registration(metadata: TEEMetadata) -> bool {
-    let util_ctx = UtilityContext::new();
-    let approved_signers: Map<Field, PublicMutable<bool, UtilityContext>, UtilityContext> =
-        Map::new(util_ctx, APPROVED_SIGNERS_STORAGE_SLOT);
-    let signer_key = poseidon2_hash([
-        metadata.pub_key_x_hi,
-        metadata.pub_key_x_lo,
-        metadata.pub_key_y_hi,
-        metadata.pub_key_y_lo,
-    ]);
-    approved_signers.at(signer_key).read()
+// Returns whether the `tee_registry` registered the note's signer. The registration message must be in the L1->L2 tree of
+// the anchor block, at the leaf index that the note's metadata gives.
+unconstrained fn validate_signer_registration(metadata: TEEMetadata, tee_registry: EthAddress) -> bool {
+    let context = UtilityContext::new();
+    let message_hash = compute_l1_to_l2_message_hash(
+        tee_registry,
+        context.chain_id(),
+        AztecAddress::from_field(TEE_REGISTRY_L2_RECIPIENT),
+        context.version(),
+        get_register_signer_content_hash(
+            metadata.pub_key_x_hi,
+            metadata.pub_key_x_lo,
+            metadata.pub_key_y_hi,
+            metadata.pub_key_y_lo,
+        ),
+        PORTAL_CONSTANT_SECRET_HASH,
+        metadata.registration_leaf_index,
+    );
+    // A missing registration message makes only this note invalid, so it must not stop the recipient's note sync.
+    // Nothing consumes a registration message, so there is no nullifier.
+    try_get_l1_to_l2_membership_witness(message_hash, Option::none())
+        .map(|(_, sibling_path)| {
+            root_from_sibling_path(message_hash, metadata.registration_leaf_index, sibling_path)
+                == context.block_header().state.l1_to_l2_message_tree.root
+        })
+        .unwrap_or(false)
 }
 
-// Returns the unique note hash and the TEE-signed anchor block hash if valid. The anchor's chain presence is NOT
-// checked here; the caller batches that check (see delivery.nr).
+// Returns the TEE-signed anchor block hash if valid. The anchor's chain presence is NOT checked here; the caller
+// batches that check (see delivery.nr).
 pub unconstrained fn validate_note(
     note: AssertedNote,
     contract_address: AztecAddress,
+    l1_portal: EthAddress,
+    tee_registry: EthAddress,
     storage_slot: Field,
     owner: AztecAddress,
     maybe_effect: Option<TxEffect>,
-) -> Option<(Field, Field)> {
+) -> Option<Field> {
     let inner_note_hash = note.compute_note_hash(owner, storage_slot, note.randomness);
     let siloed_note_hash = compute_siloed_note_hash(contract_address, inner_note_hash);
 
@@ -230,7 +235,7 @@ pub unconstrained fn validate_note(
                 & validate_required_nullifiers(da_components.required_nullifiers, effect)
                 & validate_siloed_note_hash_in_tee_notes(siloed_note_hash, da_components.tee_notes)
                 & validate_withdrawal_message_hashes_in_l2_to_l1_msgs(da_components.withdrawal_message_hashes, effect)
-                & validate_signer_registration(da_components.metadata);
+                & validate_signer_registration(da_components.metadata, tee_registry);
 
             if valid_conditions {
                 // Now validate the signature. We do this last because the signature verification can panic if the public key is
@@ -240,12 +245,12 @@ pub unconstrained fn validate_note(
                     note.signature,
                     TEE_SIG_DOMAIN_NOTE,
                     contract_address,
+                    l1_portal,
+                    tee_registry,
                     siloed_note_hash,
                     da_components,
                 ) {
-                    fetch_unique_note_hash(siloed_note_hash, effect).map(|unique_note_hash| {
-                        (unique_note_hash, da_components.metadata.anchor_block_hash)
-                    })
+                    Option::some(da_components.metadata.anchor_block_hash)
                 } else {
                     Option::none()
                 }
@@ -280,14 +285,17 @@ fn count_appearances_in_bounded_vec<T: Eq, let N: u32>(vec: BoundedVec<T, N>, va
 // with equivalent behavior. This helps ensure the enclave and the client perform equivalent validation checks.
 mod test {
     use super::{
-        validate_required_nullifiers, validate_siloed_note_hash_in_tee_notes,
+        TeeSignedData, validate_required_nullifiers, validate_siloed_note_hash_in_tee_notes,
         validate_withdrawal_message_hashes_in_l2_to_l1_msgs,
     };
     use aztec::protocol::{
+        address::{AztecAddress, EthAddress},
         blob_data::TxEffect,
         constants::{MAX_L2_TO_L1_MSGS_PER_TX, MAX_NOTE_HASHES_PER_TX, MAX_NULLIFIERS_PER_TX},
-        traits::Empty,
+        hash::poseidon2_hash,
+        traits::{Empty, FromField, Serialize},
     };
+    use oxide_lib::constants::TEE_SIG_DOMAIN_NOTE;
 
     global H1: Field = 0x1111;
     global H2: Field = 0x2222;
@@ -346,5 +354,84 @@ mod test {
         assert(validate_siloed_note_hash_in_tee_notes(H1, tee_notes));
         assert(!validate_siloed_note_hash_in_tee_notes(H2, tee_notes));
         assert(!validate_siloed_note_hash_in_tee_notes(0, tee_notes));
+    }
+
+    // Parity with the TS builders: `TeeSignedData TS <-> Noir parity` in oxide-lib's types.test.ts pins this value.
+    #[test]
+    unconstrained fn ts_parity() {
+        // Updated by `OXIDE_GENERATE_TEST_DATA=1 yarn workspace @oxide/oxide-lib test types`.
+        let expected_note_digest: Field = 0x005e3bf1161b9788b3cbefb5df256aa5d4846903a4469a819e7274c22933f6a7;
+
+        let signed_data = TeeSignedData {
+            domain: TEE_SIG_DOMAIN_NOTE,
+            anchor_block_hash: 1,
+            token_address: AztecAddress::from_field(2),
+            l1_portal: EthAddress::from_field(3),
+            tee_registry: EthAddress::from_field(7),
+            signed_commitment: 4,
+            required_nullifiers: BoundedVec::from_array([5]),
+            tee_notes: BoundedVec::from_array([4]),
+            withdrawal_message_hashes: BoundedVec::from_array([6]),
+        };
+        assert_eq(poseidon2_hash(signed_data.serialize()), expected_note_digest);
+    }
+}
+
+mod registration_test {
+    use crate::da::TEEMetadata;
+    use super::validate_signer_registration;
+    use aztec::{
+        protocol::{address::{AztecAddress, EthAddress}, traits::FromField},
+        test::helpers::test_environment::TestEnvironment,
+    };
+    use oxide_lib::constants::{PORTAL_CONSTANT_SECRET_HASH, TEE_REGISTRY_L2_RECIPIENT};
+    use oxide_token_lib::content_hash::get_register_signer_content_hash;
+
+    global TEE_REGISTRY: EthAddress = EthAddress::from_field(0x7e6);
+
+    /// Sends the registration message for a signer from `TEE_REGISTRY` and returns the signer's metadata.
+    unconstrained fn register_signer(env: TestEnvironment) -> TEEMetadata {
+        let mut metadata = TEEMetadata {
+            pub_key_x_hi: 1,
+            pub_key_x_lo: 2,
+            pub_key_y_hi: 3,
+            pub_key_y_lo: 4,
+            anchor_block_hash: 0,
+            registration_leaf_index: 0,
+        };
+        metadata.registration_leaf_index = env.send_l1_to_l2_message_from_secret_hash(
+            get_register_signer_content_hash(
+                metadata.pub_key_x_hi,
+                metadata.pub_key_x_lo,
+                metadata.pub_key_y_hi,
+                metadata.pub_key_y_lo,
+            ),
+            PORTAL_CONSTANT_SECRET_HASH,
+            TEE_REGISTRY,
+            AztecAddress::from_field(TEE_REGISTRY_L2_RECIPIENT),
+        );
+        metadata
+    }
+
+    #[test]
+    unconstrained fn accepts_a_signer_that_the_registry_registered() {
+        let env = TestEnvironment::new();
+        let metadata = register_signer(env);
+        env.utility_context(|_| assert(validate_signer_registration(metadata, TEE_REGISTRY)));
+    }
+
+    #[test]
+    unconstrained fn rejects_a_signer_that_another_registry_registered() {
+        let env = TestEnvironment::new();
+        let metadata = register_signer(env);
+        env.utility_context(|_| assert(!validate_signer_registration(metadata, EthAddress::from_field(0xbad))));
+    }
+
+    #[test]
+    unconstrained fn rejects_a_signer_with_a_wrong_registration_leaf_index() {
+        let env = TestEnvironment::new();
+        let mut metadata = register_signer(env);
+        metadata.registration_leaf_index += 1;
+        env.utility_context(|_| assert(!validate_signer_registration(metadata, TEE_REGISTRY)));
     }
 }

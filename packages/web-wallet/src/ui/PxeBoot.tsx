@@ -13,8 +13,8 @@ import { readPortalChainIdentity } from "@obsidion/sdk"
 import { L1RpcSimulationUnsupportedError, assertL1RpcSimulates } from "@obsidion/core/oxide"
 import type { ChainIdentity } from "@obsidion/core/types"
 import type { ReactNode } from "react"
-import type { AztecNode } from "@aztec/aztec.js/node"
-import { SqliteCorruptionError, type AztecSQLiteOPFSStore } from "@aztec/kv-store/sqlite-opfs"
+import type { AztecNode } from "@aztec-labs/aztec.js/node"
+import { SqliteCorruptionError, type AztecSQLiteOPFSStore } from "@aztec-labs/kv-store/sqlite-opfs"
 import type { Hex } from "viem"
 import { useLocation } from "react-router-dom"
 import {
@@ -472,7 +472,7 @@ export function BootDemand() {
   return null
 }
 
-const mountedSplashes: { inShell: boolean }[] = []
+const mountedSplashes: { inShell: boolean; covers: boolean }[] = []
 let bootScreenShown = false
 /** The app has drawn its first screen, so a screen standing in for it must go. */
 const firstScreen = createExternalState(false)
@@ -509,6 +509,8 @@ function showSplash(): void {
   // Until the first screen, every wait is the boot screen; after it, a shell's wait keeps the shell.
   const full = !bootScreenShown || mountedSplashes.some((copy) => !copy.inShell)
   document.body.dataset.booting = full ? "full" : "shell"
+  if (mountedSplashes.some((copy) => copy.covers)) document.body.dataset.bootCovers = ""
+  else delete document.body.dataset.bootCovers
 }
 
 /**
@@ -517,6 +519,7 @@ function showSplash(): void {
  */
 function releaseSplash(): void {
   const since = performance.now()
+  delete document.body.dataset.bootCovers
   // Once this commit has settled, before it paints: a screen that replaced the last copy takes over
   // from a stand-in at once, so the two never show together. The stand-in hid the boot screen, so
   // it ends with no fade.
@@ -552,10 +555,17 @@ function releaseSplash(): void {
  * keeps up the boot screen index.html paints before any script runs. That one element spins from
  * first paint to the first screen, so a hand-off between gates never restarts or moves it.
  * `inShell` is a wait inside a mounted shell, which after the first screen keeps the shell in view.
+ * `covers` is a wait over a mounted wallet: the boot screen takes the taps that would reach it.
  */
-export function BootSplash({ inShell = false }: { inShell?: boolean }) {
+export function BootSplash({
+  inShell = false,
+  covers = false,
+}: {
+  inShell?: boolean
+  covers?: boolean
+}) {
   useLayoutEffect(() => {
-    const copy = { inShell }
+    const copy = { inShell, covers }
     mountedSplashes.push(copy)
     showSplash()
     return () => {
@@ -563,6 +573,6 @@ export function BootSplash({ inShell = false }: { inShell?: boolean }) {
       if (mountedSplashes.length > 0) showSplash()
       else releaseSplash()
     }
-  }, [inShell])
+  }, [inShell, covers])
   return <span style={VISUALLY_HIDDEN}>Loading zk.money…</span>
 }

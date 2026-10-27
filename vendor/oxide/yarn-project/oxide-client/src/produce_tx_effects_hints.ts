@@ -1,15 +1,15 @@
-import { encodeBlockBlobData } from '@aztec/blob-lib/encoding';
-import { ARCHIVE_HEIGHT } from '@aztec/constants';
-import { BlockNumber } from '@aztec/foundation/branded-types';
-import type { Fr } from '@aztec/foundation/curves/bn254';
-import type { MembershipWitness } from '@aztec/foundation/trees';
-import { BlockHash, L2Block } from '@aztec/stdlib/block';
-import type { BlockHeader, TxEffect, TxHash } from '@aztec/stdlib/tx';
+import type { BlockHash, L2Block } from '@aztec-labs/stdlib/block';
+import { type TxEffect, type TxHash, computeTxEffectMembershipWitness } from '@aztec-labs/stdlib/tx';
 
-import type { ArchivedTxEffectsHints, TxBlockAnchorRelation, TxEffectsAtAnchorHints } from '@oxide/oxide-lib/types.js';
+import { toTxEffectHintData } from '@oxide/oxide-lib/tx_effect_hint.js';
+import type {
+  ArchivedTxEffectsHints,
+  TxBlockAnchorRelation,
+  TxEffectsAtAnchorHints,
+  TxEffectsHints,
+} from '@oxide/oxide-lib/types.js';
 
 import { type ArchiveRef, blockResponseToL2Block } from './archive_ref.js';
-import { PermanentError } from './errors.js';
 import type { AnchoredNodeReads } from './node_read_memo.js';
 
 /**
@@ -25,20 +25,9 @@ export async function produceTxEffectsAtAnchorHints(
   txHash: TxHash,
   anchorBlockHash: BlockHash,
 ): Promise<{ effects: TxEffect; hints: TxEffectsAtAnchorHints }> {
-  // 1. Look up the tx effect
-  const indexedTxEffect = await chain.getTxEffect(txHash);
-  if (!indexedTxEffect) {
-    throw new Error(`Tx effect not found for hash ${txHash}`);
-  }
+  const { txBlock, txIndexInBlock } = await fetchTxBlock(chain, txHash);
 
-  // 2. Fetch the tx's block (including body so we can read tx effects + blob data)
-  const txBlockResp = await chain.getBlock(indexedTxEffect.l2BlockNumber, { includeTransactions: true });
-  if (!txBlockResp) {
-    throw new Error(`Block ${indexedTxEffect.l2BlockNumber} not found`);
-  }
-  const txBlock = blockResponseToL2Block(txBlockResp);
-
-  // 3. If the tx block is not the anchor block we will get a witness that it's some of the ancestors.
+  // If the tx block is not the anchor block we will get a witness that it's some of the ancestors.
   const txBlockHash = await txBlock.hash();
   let anchorRelation: TxBlockAnchorRelation;
   if (txBlockHash.equals(anchorBlockHash)) {
@@ -54,24 +43,8 @@ export async function produceTxEffectsAtAnchorHints(
     anchorRelation = { kind: 'txBlockIsAncestorOfAnchor', archiveMembershipWitness };
   }
 
-  // 4. Collect preceding blob fields and the predecessor header with its archive proof.
-  const { previousBlocksBlobFields, previousBlockHeader, previousBlockArchiveMembershipWitness } =
-    await computePreviousBlockHints(chain, txBlock, anchorBlockHash);
-
-  return {
-    effects: indexedTxEffect.data,
-    hints: {
-      anchorRelation,
-      txEffectsHints: {
-        txBlockHeader: txBlock.header,
-        previousBlockHeader,
-        previousBlockArchiveMembershipWitness,
-        checkpointBlobFields: [...previousBlocksBlobFields, ...encodeBlockBlobData(txBlock.toBlockBlobData())],
-        txBlockStartOffset: previousBlocksBlobFields.length,
-        txIndexInBlock: indexedTxEffect.txIndexInBlock,
-      },
-    },
-  };
+  const { effects, txEffectsHints } = await produceTxEffectsHints(txBlock, txIndexInBlock, txHash);
+  return { effects, hints: { anchorRelation, txEffectsHints } };
 }
 
 /**
@@ -83,101 +56,65 @@ export async function produceArchivedTxEffectsHints(
   txHash: TxHash,
   archive: ArchiveRef,
 ): Promise<ArchivedTxEffectsHints> {
-  // 1. Look up the tx effect
-  const indexedTxEffect = await chain.getTxEffect(txHash);
-  if (!indexedTxEffect) {
-    throw new Error(`Tx effect not found for hash ${txHash}`);
-  }
+  const { txBlock, txIndexInBlock } = await fetchTxBlock(chain, txHash);
 
-  // 2. Fetch the tx's block (including body so we can read tx effects + blob data)
-  const txBlockResp = await chain.getBlock(indexedTxEffect.l2BlockNumber, { includeTransactions: true });
-  if (!txBlockResp) {
-    throw new Error(`Block ${indexedTxEffect.l2BlockNumber} not found`);
-  }
-  const txBlock = blockResponseToL2Block(txBlockResp);
-
-  // 3. Get archive membership witness proving txBlock is in the archive.
+  // The witness is against the exact root, so it exists also when the chain stops at the checkpoint's last block.
   const txBlockHash = await txBlock.hash();
-  const archiveMembershipWitness = await chain.getBlockHashMembershipWitness(
-    archive.witnessReferenceBlockNumber,
+  const archiveMembershipWitness = await chain.getBlockHashMembershipWitnessAtArchive(
+    { archive: archive.root },
     txBlockHash,
   );
   if (!archiveMembershipWitness) {
     throw new Error(`Tx block ${txBlockHash} is not in the archive ${archive.root}`);
   }
 
-  // 4. Collect preceding blob fields and the predecessor header with its archive proof.
-  const { previousBlocksBlobFields, previousBlockHeader, previousBlockArchiveMembershipWitness } =
-    await computePreviousBlockHints(chain, txBlock, archive.witnessReferenceBlockNumber);
+  const { txEffectsHints } = await produceTxEffectsHints(txBlock, txIndexInBlock, txHash);
+  return { archiveMembershipWitness, txEffectsHints };
+}
 
-  return {
-    archiveMembershipWitness,
-    txEffectsHints: {
-      txBlockHeader: txBlock.header,
-      previousBlockHeader,
-      previousBlockArchiveMembershipWitness,
-      checkpointBlobFields: [...previousBlocksBlobFields, ...encodeBlockBlobData(txBlock.toBlockBlobData())],
-      txBlockStartOffset: previousBlocksBlobFields.length,
-      txIndexInBlock: indexedTxEffect.txIndexInBlock,
-    },
-  };
+/** Looks up the tx and fetches its block with the body, which the tx effects tree is rebuilt from. */
+async function fetchTxBlock(
+  chain: AnchoredNodeReads,
+  txHash: TxHash,
+): Promise<{ txBlock: L2Block; txIndexInBlock: number }> {
+  const indexedTxEffect = await chain.getTxEffect(txHash);
+  if (!indexedTxEffect) {
+    throw new Error(`Tx effect not found for hash ${txHash}`);
+  }
+  const txBlockResp = await chain.getBlock(indexedTxEffect.l2BlockNumber, { includeTransactions: true });
+  if (!txBlockResp) {
+    throw new Error(`Block ${indexedTxEffect.l2BlockNumber} not found`);
+  }
+  return { txBlock: blockResponseToL2Block(txBlockResp), txIndexInBlock: indexedTxEffect.txIndexInBlock };
 }
 
 /**
- * Collects blob fields from checkpoint start up to the target block, plus the predecessor header and archive proof.
- * The enclave uses these fields to reconstruct the sponge and uses the predecessor proof to check the boundary.
+ * Rebuilds the block's tx effects tree and returns the tx's effects with its membership path. The root is checked
+ * against the header here, so a node that serves a body its header does not commit to fails loudly.
  */
-async function computePreviousBlockHints(
-  chain: AnchoredNodeReads,
+async function produceTxEffectsHints(
   txBlock: L2Block,
-  archiveReferenceBlock: BlockNumber | BlockHash,
-): Promise<{
-  previousBlocksBlobFields: Fr[];
-  previousBlockHeader: BlockHeader;
-  previousBlockArchiveMembershipWitness: MembershipWitness<typeof ARCHIVE_HEIGHT>;
-}> {
-  if (txBlock.number === 0) {
-    throw new PermanentError('Target block is genesis block, which is not supported as a target.');
+  txIndexInBlock: number,
+  txHash: TxHash,
+): Promise<{ effects: TxEffect; txEffectsHints: TxEffectsHints }> {
+  const effects = txBlock.body.txEffects[txIndexInBlock];
+  if (!effects || !effects.txHash.equals(txHash)) {
+    throw new Error(`Tx ${txHash} is not at index ${txIndexInBlock} of block ${txBlock.number}`);
   }
-
-  const previousBlocksBlobFields: Fr[] = [];
-  if (txBlock.indexWithinCheckpoint > 0) {
-    // Collect all prior blocks in this checkpoint in order.
-    const firstBlockInCheckpoint = BlockNumber(txBlock.number - txBlock.indexWithinCheckpoint);
-    const previousBlocks = await chain.getBlocks(firstBlockInCheckpoint, txBlock.indexWithinCheckpoint, {
-      includeTransactions: true,
-    });
-    if (previousBlocks.length !== txBlock.indexWithinCheckpoint) {
-      throw new Error(
-        `Expected ${txBlock.indexWithinCheckpoint} previous blocks in the checkpoint, got ${previousBlocks.length}`,
-      );
-    }
-    for (const block of previousBlocks) {
-      previousBlocksBlobFields.push(...encodeBlockBlobData(blockResponseToL2Block(block).toBlockBlobData()));
-    }
+  const witness = await computeTxEffectMembershipWitness(txBlock.body.txEffects, txIndexInBlock);
+  if (!witness.root.equals(txBlock.header.txEffectsTreeRoot)) {
+    throw new Error(
+      `Tx effects tree root ${witness.root} rebuilt from the body of block ${txBlock.number} does not match ` +
+        `the header's ${txBlock.header.txEffectsTreeRoot}`,
+    );
   }
-
-  // Fetch the immediate predecessor (target.blockNumber - 1) and its archive membership witness.
-  // Its sponge hash authenticates the boundary between the preceding fields and the target block.
-  // A different slot proves that the target block starts a new checkpoint.
-  const prevBlockNumber = BlockNumber(txBlock.number - 1);
-  const previousBlockData = await chain.getBlockData(prevBlockNumber);
-  if (!previousBlockData) {
-    throw new Error(`Previous block ${prevBlockNumber} header not found`);
-  }
-  const previousBlockHeader = previousBlockData.header;
-  const previousBlockHash = previousBlockData.blockHash;
-  const previousBlockArchiveMembershipWitness = await chain.getBlockHashMembershipWitness(
-    archiveReferenceBlock,
-    previousBlockHash,
-  );
-  if (!previousBlockArchiveMembershipWitness) {
-    throw new Error(`Previous block ${prevBlockNumber} not found in anchor's archive.`);
-  }
-
   return {
-    previousBlocksBlobFields,
-    previousBlockHeader,
-    previousBlockArchiveMembershipWitness,
+    effects,
+    txEffectsHints: {
+      txBlockHeader: txBlock.header,
+      txEffect: await toTxEffectHintData(effects),
+      leafIndex: witness.leafIndex,
+      siblingPath: witness.siblingPath.toFields(),
+    },
   };
 }

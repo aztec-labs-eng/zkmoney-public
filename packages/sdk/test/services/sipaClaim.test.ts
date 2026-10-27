@@ -12,10 +12,11 @@ import {
   type Hex,
   type PublicClient,
 } from "viem"
-import { Fr } from "@aztec/aztec.js/fields"
-import { AztecAddress } from "@aztec/aztec.js/addresses"
-import { GrumpkinScalar } from "@aztec/foundation/curves/grumpkin"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { AztecAddress, EthAddress } from "@aztec-labs/aztec.js/addresses"
+import { GrumpkinScalar } from "@aztec-labs/foundation/curves/grumpkin"
 import {
+  SipaIntent,
   encodeDeploySIPA,
   encodeRegistrationProofs,
   encodeSweep,
@@ -37,12 +38,12 @@ import {
   readSipaDeployedMany,
   readSipaHoldingsAtHead,
   readSipaFundingStatus,
-  TX_AMOUNT_CAP,
 } from "../../src/services/sipaClaim.js"
 import { OxideTokenContract } from "@obsidion/contracts"
 
 const SIPA = "0x1234567890abcdef1234567890abcdef12345678" as Address
 const TX_HASH = `0x${"ab".repeat(32)}` as Hex
+const TX_AMOUNT_CAP = 5166n * 10n ** 18n
 
 describe("readSipaDepositsConsumed", () => {
   const scope = {
@@ -232,23 +233,28 @@ describe("readFundingTransfers", () => {
 })
 
 describe("readSipaFundingStatus", () => {
+  // The fee is the route row's sweep tip; the row names a portal whose cap the read also takes.
   function client(balance: bigint, fee: bigint): PublicClient {
     return {
       readContract: async (params: { functionName: string }) => {
         if (params.functionName === "balanceOf") return balance
-        if (params.functionName === "depositFee") return fee
+        if (params.functionName === "rowFor") return [SIPA, SIPA, 0n, fee]
+        if (params.functionName === "TX_AMOUNT_CAP") return TX_AMOUNT_CAP
         throw new Error(`unexpected read: ${params.functionName}`)
       },
     } as unknown as PublicClient
   }
+  const token = "0x163a94b604dfcee8fac53ea6d24db032e8f5cd6b" as Address
   const params = {
     sipa: SIPA,
-    token: "0x163a94b604dfcee8fac53ea6d24db032e8f5cd6b" as Address,
-    implementation: "0x6f94c6c6014199ae899e086ec75b6a2245371ce3" as Address,
-    fpcFundingCut: 0n,
+    token,
+    route: {
+      forwardingTable: "0x6f94c6c6014199ae899e086ec75b6a2245371ce3" as Address,
+      token,
+      intent: SipaIntent.Deposit,
+    },
+    txAmountCap: TX_AMOUNT_CAP,
   }
-  /** Same SIPA, on a deployment that skims a funding cut on top of the sweep fee. */
-  const withCut = { ...params, fpcFundingCut: 40n }
 
   it("classifies a balance the caller already read without reading it again", async () => {
     const status = await readSipaFundingStatus(client(0n, 100n), { ...params, balance: 101n })
@@ -261,23 +267,11 @@ describe("readSipaFundingStatus", () => {
     expect((await readSipaFundingStatus(client(0n, 100n), params)).sweepable).toBe(false)
   })
 
-  it("adds the portal's funding cut to the floor", async () => {
-    // The portal requires the deposit left after the fee to exceed its cut, so a balance that clears
-    // the sweep fee alone still cannot be swept.
-    expect((await readSipaFundingStatus(client(120n, 100n), withCut)).sweepable).toBe(false)
-    expect((await readSipaFundingStatus(client(140n, 100n), withCut)).sweepable).toBe(false)
-    expect((await readSipaFundingStatus(client(141n, 100n), withCut)).sweepable).toBe(true)
-  })
-
   it("measures the cap against the amount credited on L2, not the whole balance", async () => {
-    // The sweep pays the fee and the portal keeps the cut, so the window's top sits both above the
-    // cap.
+    // The sweep pays the fee, so the window's top sits the fee above the cap.
     const at = await readSipaFundingStatus(client(TX_AMOUNT_CAP + 100n, 100n), params)
     const over = await readSipaFundingStatus(client(TX_AMOUNT_CAP + 101n, 100n), params)
     expect([at.sweepable, over.sweepable]).toEqual([true, false])
-    const atWithCut = await readSipaFundingStatus(client(TX_AMOUNT_CAP + 140n, 100n), withCut)
-    const overWithCut = await readSipaFundingStatus(client(TX_AMOUNT_CAP + 141n, 100n), withCut)
-    expect([atWithCut.sweepable, overWithCut.sweepable]).toEqual([true, false])
     // A zero floor collapses that top back onto the cap itself.
     expect((await readSipaFundingStatus(client(TX_AMOUNT_CAP, 0n), params)).sweepable).toBe(true)
     expect((await readSipaFundingStatus(client(TX_AMOUNT_CAP + 1n, 0n), params)).sweepable).toBe(
@@ -285,25 +279,24 @@ describe("readSipaFundingStatus", () => {
     )
   })
 
-  it("reports the balance, the fee it read and the cut it was given alongside the verdict", async () => {
-    expect(await readSipaFundingStatus(client(141n, 100n), withCut)).toEqual({
+  it("reports the balance and the fee it read alongside the verdict", async () => {
+    expect(await readSipaFundingStatus(client(141n, 100n), params)).toEqual({
       balance: 141n,
       scaledBalance: 141n,
       fee: 100n,
-      fpcFundingCut: 40n,
       sweepable: true,
     })
   })
 
   it("scales a 6-decimal balance into the fee's denomination", async () => {
-    // 5,000 USDC against an 18-dec fee: raw units read as dust below the floor, scaled they are
+    // 50,000 USDC against an 18-dec fee: raw units read as dust below the floor, scaled they are
     // far over the cap.
-    const usdc = { ...params, balanceScale: 10n ** 12n, fpcFundingCut: parseEther("0.1") }
-    const status = await readSipaFundingStatus(client(5_000_000_000n, parseEther("0.25")), usdc)
-    expect(status.balance).toBe(5_000_000_000n)
-    expect(status.scaledBalance).toBe(parseEther("5000"))
+    const usdc = { ...params, balanceScale: 10n ** 12n }
+    const status = await readSipaFundingStatus(client(50_000_000_000n, parseEther("0.25")), usdc)
+    expect(status.balance).toBe(50_000_000_000n)
+    expect(status.scaledBalance).toBe(parseEther("50000"))
     expect(status.sweepable).toBe(false)
-    expect(status.scaledBalance - status.fee - status.fpcFundingCut > TX_AMOUNT_CAP).toBe(true)
+    expect(status.scaledBalance - status.fee > TX_AMOUNT_CAP).toBe(true)
   })
 })
 
@@ -388,6 +381,7 @@ describe("buildSipaRecoverCall", () => {
       recoveryCommitment: `0x${"44".repeat(32)}`,
       rollupVersion: 1n,
       resweepable: false,
+      forwardingTable: "0x5a7b1e0000000000000000000000000000005a7b",
     }
     const call = buildSipaRecoverCall({
       deployed: false,
@@ -414,16 +408,22 @@ describe("buildSipaRecoverCall", () => {
 })
 
 describe("readDepositFee", () => {
-  it("reads depositFee() off the intent implementation, not a clone", async () => {
-    const implementation = "0x6f94c6c6014199ae899e086ec75b6a2245371ce3"
+  it("adds the route row's sweep tip and beneficiary fee, read off the table, not a clone", async () => {
+    const forwardingTable = "0x6f94c6c6014199ae899e086ec75b6a2245371ce3"
+    const portal = "0x2e45a4e5d9100a4e8cb94f81257b5a1eba05a29b"
+    const token = "0x163a94b604dfcee8fac53ea6d24db032e8f5cd6b"
     const client = {
-      readContract: async (params: { functionName: string; address: string }) => {
-        expect(params.functionName).toBe("depositFee")
-        expect(params.address).toBe(implementation)
-        return 250_000n
+      readContract: async (params: { functionName: string; address: string; args?: unknown[] }) => {
+        if (params.functionName === "TX_AMOUNT_CAP") return TX_AMOUNT_CAP
+        expect(params.functionName).toBe("rowFor")
+        expect(params.address).toBe(forwardingTable)
+        expect(params.args).toEqual([token, SipaIntent.Registration])
+        return [portal, portal, 50_000n, 250_000n]
       },
     } as unknown as PublicClient
-    expect(await readDepositFee(client, implementation)).toBe(250_000n)
+    expect(
+      await readDepositFee(client, { forwardingTable, token, intent: SipaIntent.Registration }),
+    ).toBe(300_000n)
   })
 })
 
@@ -435,6 +435,7 @@ describe("buildSipaSweepCall", () => {
     recoveryCommitment: `0x${"44".repeat(32)}`,
     rollupVersion: 4127419662n,
     resweepable: false,
+    forwardingTable: "0x5a7b1e0000000000000000000000000000005a7b",
   }
   const sweepArgs: SweepArgs = {
     token: "0x163a94b604dfcee8fac53ea6d24db032e8f5cd6b",
@@ -470,11 +471,11 @@ describe("buildSipaSweepCall", () => {
     expect(decoded.functionName).toBe("aggregate3")
     const [calls] = decoded.args as [{ target: Address; allowFailure: boolean; callData: Hex }[]]
     expect(calls).toHaveLength(2)
-    expect(calls[0].target.toLowerCase()).toBe(sipaFactory)
-    expect(calls[0].allowFailure).toBe(false)
-    expect(calls[0].callData).toBe(encodeDeploySIPA(deployArgs))
-    expect(calls[1].target.toLowerCase()).toBe(SIPA)
-    expect(calls[1].callData).toBe(encodeSweep(sweepArgs))
+    expect(calls[0]!.target.toLowerCase()).toBe(sipaFactory)
+    expect(calls[0]!.allowFailure).toBe(false)
+    expect(calls[0]!.callData).toBe(encodeDeploySIPA(deployArgs))
+    expect(calls[1]!.target.toLowerCase()).toBe(SIPA)
+    expect(calls[1]!.callData).toBe(encodeSweep(sweepArgs))
   })
 })
 
@@ -486,6 +487,7 @@ describe("buildRegistrationSweepCall", () => {
     recoveryCommitment: `0x${"44".repeat(32)}`,
     rollupVersion: 4127419662n,
     resweepable: false,
+    forwardingTable: "0x5a7b1e0000000000000000000000000000005a7b",
   }
   const sipaFactory = "0x0b903b955dbc0c97252f1ce9e43f8c26e8f5635f" as Address
   const token = "0x163a94b604dfcee8fac53ea6d24db032e8f5cd6b" as Address
@@ -538,10 +540,10 @@ describe("buildRegistrationSweepCall", () => {
     expect(decoded.functionName).toBe("aggregate3")
     const [calls] = decoded.args as [{ target: Address; allowFailure: boolean; callData: Hex }[]]
     expect(calls).toHaveLength(2)
-    expect(calls[0].target.toLowerCase()).toBe(sipaFactory)
-    expect(calls[0].callData).toBe(encodeDeploySIPA(deployArgs))
-    expect(calls[1].target.toLowerCase()).toBe(SIPA)
-    expect(calls[1].callData).toBe(encodeSweep(expectedSweep()))
+    expect(calls[0]!.target.toLowerCase()).toBe(sipaFactory)
+    expect(calls[0]!.callData).toBe(encodeDeploySIPA(deployArgs))
+    expect(calls[1]!.target.toLowerCase()).toBe(SIPA)
+    expect(calls[1]!.callData).toBe(encodeSweep(expectedSweep()))
   })
 })
 

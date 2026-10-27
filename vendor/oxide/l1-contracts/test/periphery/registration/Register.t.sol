@@ -10,14 +10,29 @@ import {SIPABase} from "@periphery/SIPABase.sol";
 import {OxideAccount} from "@periphery/OxideAccount.sol";
 import {IEntryPoint} from "@account-abstraction/contracts/interfaces/IEntryPoint.sol";
 import {TestERC20} from "@aztec/mock/TestERC20.sol";
-import {REGISTRATION_SWEEP_FEE} from "@periphery/RegistrationSIPA.sol";
 import {Errors} from "@periphery/Errors.sol";
+import {ForwardingTableFixture, REGISTRATION_SWEEP_TIP} from "@test/helpers/ForwardingTableFixture.sol";
+import {IForwardingTable} from "@periphery/interfaces/IForwardingTable.sol";
+import {IOxidePortal} from "@core/interfaces/IOxidePortal.sol";
 
 contract RegisterTest is RegistrationTestBase {
   uint256 internal constant DEPOSIT = 100 ether;
+  uint128 internal constant TABLE_FEE = 1 ether;
 
   function _deadline() internal view returns (uint256) {
     return block.timestamp + 1 days;
+  }
+
+  function _switchToNewTableWithRegistrationBeneficiaryFee(uint128 beneficiaryFee) internal {
+    IForwardingTable.IntentFees[] memory intents = ForwardingTableFixture.standardIntents();
+    intents[1].beneficiaryFee = beneficiaryFee;
+    _switchToNewTable(intents);
+  }
+
+  function _switchToNewTable(IForwardingTable.IntentFees[] memory _intents) internal {
+    forwardingTable = ForwardingTableFixture.deploy(OWNER, IOxidePortal(address(portal)), TABLE_BENEFICIARY, _intents);
+    vm.prank(OWNER);
+    sipaFactory.blessTable(forwardingTable);
   }
 
   function _sweepDefault() internal returns (SIPABase sipa, bytes memory registrationData) {
@@ -43,7 +58,7 @@ contract RegisterTest is RegistrationTestBase {
     assertEq(r.resolverOperator, resolverOperatorAddr);
 
     assertEq(underlying.balanceOf(FEE_BENEFICIARY), REGISTRATION_FUNDER_CUT, "the funder takes the fee's remainder");
-    assertEq(underlying.balanceOf(relayer), REGISTRATION_SWEEP_FEE, "the relayer's cut comes out of the same fee");
+    assertEq(underlying.balanceOf(relayer), REGISTRATION_SWEEP_TIP, "the relayer's cut comes out of the same fee");
     assertEq(
       underlying.balanceOf(FEE_BENEFICIARY) + underlying.balanceOf(relayer),
       REGISTRATION_FEE,
@@ -223,7 +238,8 @@ contract RegisterTest is RegistrationTestBase {
         keccak256(registrationData),
         _recoveryCommitment("recovery"),
         ROLLUP_VERSION,
-        true
+        true,
+        forwardingTable
       )
     );
     underlying.mint(address(deposit), DEPOSIT);
@@ -315,6 +331,7 @@ contract RegisterTest is RegistrationTestBase {
 
   function test_wrongFeeTokenReverts() external {
     TestERC20 other = new TestERC20("Other", "OTH", address(this));
+    _listInTable(address(other));
     bytes memory registrationData = _registrationData(NAME_HASH, defaultOwner);
     SIPABase sipa = _deployRegistrationSIPA(registrationData);
     other.mint(address(sipa), DEPOSIT);
@@ -394,26 +411,72 @@ contract RegisterTest is RegistrationTestBase {
     assertEq(underlying.balanceOf(address(portal)) - portalBefore, REGISTRATION_MIN);
   }
 
+  function test_tableFeeAtTheControllerFloorReverts() external {
+    _switchToNewTableWithRegistrationBeneficiaryFee(TABLE_FEE);
+    bytes memory registrationData = _registrationData(NAME_HASH, defaultOwner);
+    uint256 amount = REGISTRATION_MIN + REGISTRATION_FEE;
+    SIPABase sipa = _deployAndFund(registrationData, amount);
+    bytes memory consent = _consentSig(bootstrapKey, registrationData);
+    DomainAuth memory auth = _domainAuth(NAME_HASH, defaultOwner, nextNonce++, _deadline());
+
+    vm.expectRevert(
+      abi.encodeWithSelector(Errors.RegistrationController__BalanceBelowFloor.selector, amount - TABLE_FEE, amount)
+    );
+    _sweepRegistration(sipa, registrationData, consent, auth, _noTerms());
+  }
+
+  function test_tableFeeAboveTheControllerFloorBridgesTheFloor() external {
+    _switchToNewTableWithRegistrationBeneficiaryFee(TABLE_FEE);
+    bytes memory registrationData = _registrationData(NAME_HASH, defaultOwner);
+    SIPABase sipa = _deployAndFund(registrationData, REGISTRATION_MIN + REGISTRATION_FEE + TABLE_FEE);
+    bytes memory consent = _consentSig(bootstrapKey, registrationData);
+    DomainAuth memory auth = _domainAuth(NAME_HASH, defaultOwner, nextNonce++, _deadline());
+    uint256 portalBefore = underlying.balanceOf(address(portal));
+
+    _sweepRegistration(sipa, registrationData, consent, auth, _noTerms());
+
+    assertEq(nameRegistry.ownerOf(NAME_HASH), defaultOwner);
+    assertEq(underlying.balanceOf(address(portal)) - portalBefore, REGISTRATION_MIN);
+    assertEq(underlying.balanceOf(TABLE_BENEFICIARY), TABLE_FEE);
+    assertEq(underlying.balanceOf(FEE_BENEFICIARY), REGISTRATION_FUNDER_CUT);
+    assertEq(underlying.balanceOf(relayer), REGISTRATION_SWEEP_TIP);
+    assertEq(underlying.balanceOf(address(sipa)), 0);
+  }
+
+  function test_balanceBelowTheTableFeeReverts() external {
+    _switchToNewTableWithRegistrationBeneficiaryFee(TABLE_FEE);
+    bytes memory registrationData = _registrationData(NAME_HASH, defaultOwner);
+    uint256 amount = TABLE_FEE - 1;
+    SIPABase sipa = _deployAndFund(registrationData, amount);
+    bytes memory consent = _consentSig(bootstrapKey, registrationData);
+    DomainAuth memory auth = _domainAuth(NAME_HASH, defaultOwner, nextNonce++, _deadline());
+
+    vm.expectRevert(
+      abi.encodeWithSelector(Errors.RegistrationSIPA__BalanceBelowBeneficiaryFee.selector, amount, TABLE_FEE)
+    );
+    _sweepRegistration(sipa, registrationData, consent, auth, _noTerms());
+  }
+
   function test_signedFullyWaivedTermsFloorAtTheRelayerFee() external {
     bytes memory registrationData =
-      _registrationDataFor(REGISTRATION_SWEEP_FEE, FEE_BENEFICIARY, NAME_HASH, defaultOwner);
+      _registrationDataFor(REGISTRATION_SWEEP_TIP, FEE_BENEFICIARY, NAME_HASH, defaultOwner);
     SIPABase sipa = _deployAndFund(registrationData, DEPOSIT);
     bytes memory consent = _consentSig(bootstrapKey, registrationData);
     DomainAuth memory auth = _domainAuth(NAME_HASH, defaultOwner, nextNonce++, _deadline());
     SignedTerms memory terms =
-      _signedTerms(NAME_HASH, defaultOwner, REGISTRATION_SWEEP_FEE, REGISTRATION_MIN, nextNonce++, _deadline());
+      _signedTerms(NAME_HASH, defaultOwner, REGISTRATION_SWEEP_TIP, REGISTRATION_MIN, nextNonce++, _deadline());
 
     uint256 portalBefore = underlying.balanceOf(address(portal));
     _sweepRegistration(sipa, registrationData, consent, auth, terms);
 
     assertEq(nameRegistry.ownerOf(NAME_HASH), defaultOwner);
     assertEq(underlying.balanceOf(FEE_BENEFICIARY), 0, "a waived share pays the funder nothing");
-    assertEq(underlying.balanceOf(relayer), REGISTRATION_SWEEP_FEE, "the relayer is still paid");
-    assertEq(underlying.balanceOf(address(portal)) - portalBefore, DEPOSIT - REGISTRATION_SWEEP_FEE);
+    assertEq(underlying.balanceOf(relayer), REGISTRATION_SWEEP_TIP, "the relayer is still paid");
+    assertEq(underlying.balanceOf(address(portal)) - portalBefore, DEPOSIT - REGISTRATION_SWEEP_TIP);
   }
 
   function test_signedTermsBelowTheRelayerFeeRevert() external {
-    uint256 waived = REGISTRATION_SWEEP_FEE - 1;
+    uint256 waived = REGISTRATION_SWEEP_TIP - 1;
     bytes memory registrationData = _registrationDataFor(waived, FEE_BENEFICIARY, NAME_HASH, defaultOwner);
     SIPABase sipa = _deployAndFund(registrationData, DEPOSIT);
     bytes memory consent = _consentSig(bootstrapKey, registrationData);
@@ -421,13 +484,13 @@ contract RegisterTest is RegistrationTestBase {
     SignedTerms memory terms = _signedTerms(NAME_HASH, defaultOwner, waived, REGISTRATION_MIN, nextNonce++, _deadline());
 
     vm.expectRevert(
-      abi.encodeWithSelector(Errors.RegistrationController__FeeBelowRelayerFee.selector, waived, REGISTRATION_SWEEP_FEE)
+      abi.encodeWithSelector(Errors.RegistrationController__FeeBelowRelayerFee.selector, waived, REGISTRATION_SWEEP_TIP)
     );
     _sweepRegistration(sipa, registrationData, consent, auth, terms);
   }
 
   function test_immutableScheduleBelowTheRelayerFeeReverts() external {
-    uint256 tooLow = REGISTRATION_SWEEP_FEE - 1;
+    uint256 tooLow = REGISTRATION_SWEEP_TIP - 1;
     _setController(address(_deployController(REGISTRATION_MIN, tooLow, FEE_BENEFICIARY)));
 
     bytes memory registrationData = _registrationDataFor(tooLow, FEE_BENEFICIARY, NAME_HASH, defaultOwner);
@@ -436,27 +499,27 @@ contract RegisterTest is RegistrationTestBase {
     DomainAuth memory auth = _domainAuth(NAME_HASH, defaultOwner, nextNonce++, _deadline());
 
     vm.expectRevert(
-      abi.encodeWithSelector(Errors.RegistrationController__FeeBelowRelayerFee.selector, tooLow, REGISTRATION_SWEEP_FEE)
+      abi.encodeWithSelector(Errors.RegistrationController__FeeBelowRelayerFee.selector, tooLow, REGISTRATION_SWEEP_TIP)
     );
     _sweepRegistration(sipa, registrationData, consent, auth, _noTerms());
   }
 
   function test_signedReducedTermsRegisterBelowImmutableFloor() external {
     bytes memory registrationData =
-      _registrationDataFor(REGISTRATION_SWEEP_FEE, FEE_BENEFICIARY, NAME_HASH, defaultOwner);
+      _registrationDataFor(REGISTRATION_SWEEP_TIP, FEE_BENEFICIARY, NAME_HASH, defaultOwner);
     uint256 amount = 4 ether;
     SIPABase sipa = _deployAndFund(registrationData, amount);
     bytes memory consent = _consentSig(bootstrapKey, registrationData);
     DomainAuth memory auth = _domainAuth(NAME_HASH, defaultOwner, nextNonce++, _deadline());
     SignedTerms memory terms =
-      _signedTerms(NAME_HASH, defaultOwner, REGISTRATION_SWEEP_FEE, 0, nextNonce++, _deadline());
+      _signedTerms(NAME_HASH, defaultOwner, REGISTRATION_SWEEP_TIP, 0, nextNonce++, _deadline());
 
     uint256 portalBefore = underlying.balanceOf(address(portal));
     _sweepRegistration(sipa, registrationData, consent, auth, terms);
 
     assertEq(nameRegistry.ownerOf(NAME_HASH), defaultOwner);
     assertEq(underlying.balanceOf(FEE_BENEFICIARY), 0);
-    assertEq(underlying.balanceOf(address(portal)) - portalBefore, amount - REGISTRATION_SWEEP_FEE);
+    assertEq(underlying.balanceOf(address(portal)) - portalBefore, amount - REGISTRATION_SWEEP_TIP);
   }
 
   function test_signedLowerFloorAdmitsBalanceBetweenFloors() external {
@@ -474,7 +537,7 @@ contract RegisterTest is RegistrationTestBase {
     _sweepRegistration(sipa, registrationData, consent, auth, terms);
 
     assertEq(nameRegistry.ownerOf(NAME_HASH), defaultOwner);
-    assertEq(underlying.balanceOf(FEE_BENEFICIARY), signedFee - REGISTRATION_SWEEP_FEE);
+    assertEq(underlying.balanceOf(FEE_BENEFICIARY), signedFee - REGISTRATION_SWEEP_TIP);
   }
 
   function test_signedHigherFloorRejectsBalanceBetweenFloors() external {
@@ -507,23 +570,23 @@ contract RegisterTest is RegistrationTestBase {
     uint256 portalBefore = underlying.balanceOf(address(portal));
     _sweepRegistration(sipa, registrationData, consent, auth, terms);
 
-    assertEq(underlying.balanceOf(FEE_BENEFICIARY), signedFee - REGISTRATION_SWEEP_FEE);
+    assertEq(underlying.balanceOf(FEE_BENEFICIARY), signedFee - REGISTRATION_SWEEP_TIP);
     assertEq(underlying.balanceOf(address(portal)) - portalBefore, DEPOSIT - signedFee);
   }
 
   function test_signedTermsStillEnforceSignedMinDeposit() external {
     bytes memory registrationData =
-      _registrationDataFor(REGISTRATION_SWEEP_FEE, FEE_BENEFICIARY, NAME_HASH, defaultOwner);
-    uint256 amount = REGISTRATION_MIN + REGISTRATION_SWEEP_FEE - 1;
+      _registrationDataFor(REGISTRATION_SWEEP_TIP, FEE_BENEFICIARY, NAME_HASH, defaultOwner);
+    uint256 amount = REGISTRATION_MIN + REGISTRATION_SWEEP_TIP - 1;
     SIPABase sipa = _deployAndFund(registrationData, amount);
     bytes memory consent = _consentSig(bootstrapKey, registrationData);
     DomainAuth memory auth = _domainAuth(NAME_HASH, defaultOwner, nextNonce++, _deadline());
     SignedTerms memory terms =
-      _signedTerms(NAME_HASH, defaultOwner, REGISTRATION_SWEEP_FEE, REGISTRATION_MIN, nextNonce++, _deadline());
+      _signedTerms(NAME_HASH, defaultOwner, REGISTRATION_SWEEP_TIP, REGISTRATION_MIN, nextNonce++, _deadline());
 
     vm.expectRevert(
       abi.encodeWithSelector(
-        Errors.RegistrationController__BalanceBelowFloor.selector, amount, REGISTRATION_MIN + REGISTRATION_SWEEP_FEE
+        Errors.RegistrationController__BalanceBelowFloor.selector, amount, REGISTRATION_MIN + REGISTRATION_SWEEP_TIP
       )
     );
     _sweepRegistration(sipa, registrationData, consent, auth, terms);
@@ -574,23 +637,23 @@ contract RegisterTest is RegistrationTestBase {
     uint256 termsNonce = nextNonce++;
 
     {
-      bytes memory data1 = _registrationDataFor(REGISTRATION_SWEEP_FEE, FEE_BENEFICIARY, NAME_HASH, defaultOwner);
+      bytes memory data1 = _registrationDataFor(REGISTRATION_SWEEP_TIP, FEE_BENEFICIARY, NAME_HASH, defaultOwner);
       SIPABase sipa1 = _deployAndFund(data1, DEPOSIT);
       _sweepRegistration(
         sipa1,
         data1,
         _consentSig(bootstrapKey, data1),
         _domainAuth(NAME_HASH, defaultOwner, nextNonce++, _deadline()),
-        _signedTerms(NAME_HASH, defaultOwner, REGISTRATION_SWEEP_FEE, 0, termsNonce, _deadline())
+        _signedTerms(NAME_HASH, defaultOwner, REGISTRATION_SWEEP_TIP, 0, termsNonce, _deadline())
       );
     }
 
     (address bootstrap2, uint256 bootstrapKey2) = makeAddrAndKey("bootstrap2");
     address owner2 = _ownerOf(bootstrapKey2);
     bytes32 name2 = keccak256("bob.oxide.eth");
-    bytes memory data2 = _registrationDataFor(REGISTRATION_SWEEP_FEE, FEE_BENEFICIARY, name2, owner2);
+    bytes memory data2 = _registrationDataFor(REGISTRATION_SWEEP_TIP, FEE_BENEFICIARY, name2, owner2);
     SIPABase sipa2 = _deployAndFund(data2, DEPOSIT);
-    SignedTerms memory replayTerms = _signedTerms(name2, owner2, REGISTRATION_SWEEP_FEE, 0, termsNonce, _deadline());
+    SignedTerms memory replayTerms = _signedTerms(name2, owner2, REGISTRATION_SWEEP_TIP, 0, termsNonce, _deadline());
     bytes memory consent2 = _consentSig(bootstrapKey2, data2);
     DomainAuth memory auth2 = _domainAuth(name2, owner2, nextNonce++, _deadline());
     bytes memory proofs2 = _regProofs(bootstrap2, consent2, auth2, replayTerms, _r1Install(bootstrapKey2, owner2));
@@ -601,7 +664,7 @@ contract RegisterTest is RegistrationTestBase {
 
   function test_signedTermsFeeRoutesToSelectedBeneficiary() external {
     address funder2 = makeAddr("funder2");
-    vm.prank(regDomainOwner);
+    vm.prank(OWNER);
     registrationController.addBeneficiary(funder2);
 
     bytes memory registrationData = _registrationDataFor(REGISTRATION_FEE, funder2, NAME_HASH, defaultOwner);
@@ -649,7 +712,7 @@ contract RegisterTest is RegistrationTestBase {
 
   function test_feeRoutesToSelectedBeneficiary() external {
     address funder2 = makeAddr("funder2");
-    vm.prank(regDomainOwner);
+    vm.prank(OWNER);
     registrationController.addBeneficiary(funder2);
 
     bytes memory registrationData = _registrationDataFor(REGISTRATION_FEE, funder2, NAME_HASH, defaultOwner);
@@ -679,7 +742,7 @@ contract RegisterTest is RegistrationTestBase {
     SIPABase sipa = _deployAndFund(registrationData, DEPOSIT);
 
     address funder2 = makeAddr("funder2");
-    vm.prank(regDomainOwner);
+    vm.prank(OWNER);
     registrationController.addBeneficiary(funder2);
     bytes memory swapped = _registrationDataFor(REGISTRATION_FEE, funder2, NAME_HASH, defaultOwner);
     bytes memory consent = _consentSig(bootstrapKey, registrationData);
@@ -787,39 +850,11 @@ contract RegisterTest is RegistrationTestBase {
     assertEq(underlying.balanceOf(address(sipa)), 0);
   }
 
-  function test_addBeneficiaryOnlyDomainOwner() external {
-    vm.expectRevert(Errors.RegistrationController__NotDomainOwner.selector);
+  function test_addBeneficiaryOnlyRegistryOwner() external {
+    vm.expectRevert(Errors.RegistrationController__NotRegistryOwner.selector);
     registrationController.addBeneficiary(makeAddr("funder2"));
-  }
-}
-
-contract RegisterFpcCutTest is RegistrationTestBase {
-  uint256 internal constant CUT = 10e16;
-
-  function setUp() public override {
-    fpcFundingCut = CUT;
-    super.setUp();
-  }
-
-  function test_atTheFloorTheCreditIsTheFloorLessTheFpcCut() external {
-    bytes memory registrationData = _registrationData(NAME_HASH, defaultOwner);
-    SIPABase sipa = _deployAndFund(registrationData, REGISTRATION_MIN + REGISTRATION_FEE);
-    bytes memory consent = _consentSig(bootstrapKey, registrationData);
-    DomainAuth memory auth = _domainAuth(NAME_HASH, defaultOwner, nextNonce++, block.timestamp + 1 days);
-    uint256 portalBefore = underlying.balanceOf(address(portal));
-    inbox.primeNext(bytes32(uint256(0x1234)), 42);
-
-    vm.expectEmit(true, true, true, true, address(portal));
-    emit Deposit(RECIPIENT_COMMITMENT, REGISTRATION_MIN - CUT, bytes32(uint256(0x1234)), 42);
-    _sweepRegistration(sipa, registrationData, consent, auth, _noTerms());
-
-    assertEq(underlying.balanceOf(relayer), REGISTRATION_SWEEP_FEE, "0.5 of the 5 is the relayer's");
-    assertEq(underlying.balanceOf(FEE_BENEFICIARY), REGISTRATION_FUNDER_CUT, "4.5 of the 5 is the funder's");
-    assertEq(underlying.balanceOf(FPC_FUNDER), CUT, "the portal takes its cut out of the bridged floor");
-    assertEq(
-      underlying.balanceOf(address(portal)) - portalBefore,
-      REGISTRATION_MIN - CUT,
-      "9.90 of the 15 deposited is what the registrant is credited"
-    );
+    vm.prank(regDomainOwner);
+    vm.expectRevert(Errors.RegistrationController__NotRegistryOwner.selector);
+    registrationController.addBeneficiary(makeAddr("funder2"));
   }
 }

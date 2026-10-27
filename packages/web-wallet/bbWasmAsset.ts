@@ -8,7 +8,7 @@ const require = createRequire(import.meta.url)
 
 /** bb.js's gzipped threads wasm: the bytes its browser build carries as a base64 module. */
 export const BB_THREADS_WASM = path.join(
-  path.dirname(require.resolve("@aztec/bb.js")),
+  path.dirname(require.resolve("@aztec-foundation/bb.js")),
   "barretenberg_wasm/barretenberg-threads.wasm.gz",
 )
 

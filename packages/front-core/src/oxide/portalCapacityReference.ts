@@ -3,7 +3,7 @@
  * has reached at least that time, so a capacity RPC whose block is far older is behind, whatever this device's clock
  * says. A failed node read rejects, which the store reports as unavailable.
  */
-import type { AztecNode } from "@aztec/stdlib/interfaces/client"
+import type { AztecNode } from "@aztec-labs/stdlib/interfaces/client"
 
 type ReferenceNode = Pick<AztecNode, "getChainId" | "getSyncedL1Timestamp">
 

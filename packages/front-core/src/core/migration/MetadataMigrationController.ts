@@ -56,16 +56,23 @@ export class MetadataMigrationController {
       observeOnly = false,
       promptless = false,
       onPrepared,
+      prepareOnly = false,
+      approvalsOnly = false,
       prompts = start,
       summary,
       exclusive,
+      beforeApproval,
     }: {
       observeOnly?: boolean
       promptless?: boolean
       onPrepared?: () => void
+      prepareOnly?: boolean
+      /** Save every approval this run asks for, then return before any proof. */
+      approvalsOnly?: boolean
       prompts?: boolean
       summary?: MetadataMigrationSummary
       exclusive?: <T>(step: (operationId?: string) => Promise<T>) => Promise<T>
+      beforeApproval?: (approved: number, total: number) => Promise<void>
     } = {},
   ): Promise<MetadataMigrationRecord | null> {
     if (this.running) return this.running
@@ -73,6 +80,7 @@ export class MetadataMigrationController {
       if (this.gate) {
         this.gate.signal = signal
         this.gate.prompts = prompts
+        this.gate.approvalsOnly = approvalsOnly
       }
       const raw = await this.storage.getItem(this.key)
       const existing = raw ? (JSON.parse(raw) as MetadataMigrationRecord) : null
@@ -85,7 +93,18 @@ export class MetadataMigrationController {
           await this.storage.setItem(this.key, JSON.stringify(next))
           this.publish(next)
         },
-        { start, signal, observeOnly, promptless, onPrepared, summary, exclusive },
+        {
+          start,
+          signal,
+          observeOnly,
+          promptless,
+          onPrepared,
+          prepareOnly: prepareOnly || approvalsOnly,
+          approvalsOnly,
+          summary,
+          exclusive,
+          beforeApproval,
+        },
       )
       this.publish(result)
       return result
@@ -95,6 +114,7 @@ export class MetadataMigrationController {
       if (this.gate) {
         this.gate.signal = undefined
         this.gate.prompts = true
+        this.gate.approvalsOnly = false
       }
     })
     return this.running

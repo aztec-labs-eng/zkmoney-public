@@ -1,10 +1,10 @@
-import { Fr } from "@aztec/aztec.js/fields"
-import type { ContractArtifact } from "@aztec/stdlib/abi"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import type { ContractArtifact } from "@aztec-labs/stdlib/abi"
 import {
   computeContractAddressFromInstance,
   type ContractInstanceWithAddress,
   getContractInstanceFromInstantiationParams,
-} from "@aztec/stdlib/contract"
+} from "@aztec-labs/stdlib/contract"
 import { type ContractService, DEFAULT_CONTRACTS, type ContractName } from "@obsidion/contracts"
 import type { PaylinkParams } from "../PaylinkService.js"
 import { assertLinkClass, LINK_CLASS_REFUSAL } from "./paylinkInlineCodec.js"

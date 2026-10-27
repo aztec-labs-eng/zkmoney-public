@@ -1,5 +1,6 @@
-import type { EthAddress } from '@aztec/foundation/eth-address';
+import type { EthAddress } from '@aztec-labs/foundation/eth-address';
 
+import type { WithdrawalExecutor } from '@oxide/oxide-client/executors/plain_withdrawal_executor.js';
 import {
   type EscrowWithdrawal,
   type EscrowWithdrawalArgs,
@@ -20,7 +21,7 @@ export interface SkyEscrowWithdrawalArgs extends Omit<EscrowWithdrawalArgs, 'pla
    * from the DAI portal, and the `SkyWithdrawalExecutor` for an unstake from the sUSDS portal, which redeems the
    * shares to DAI. The escrow's run waits for DAI, so an executor that forwards shares leaves it waiting.
    */
-  withdrawalExecutor: EthAddress;
+  withdrawalExecutor: WithdrawalExecutor;
 }
 
 export type SkyEscrowWithdrawal = EscrowWithdrawal<SkyEscrowArgs>;

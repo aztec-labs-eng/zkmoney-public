@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import type { AztecNode } from "@aztec/aztec.js/node"
+import type { AztecNode } from "@aztec-labs/aztec.js/node"
 import { pauseWhenHidden } from "../../platform/visibilityScheduler"
 
 /**

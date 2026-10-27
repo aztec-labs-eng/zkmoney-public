@@ -1,5 +1,5 @@
-import { AztecAddress } from '@aztec/aztec.js/addresses';
-import { EthAddress } from '@aztec/foundation/eth-address';
+import { AztecAddress } from '@aztec-labs/aztec.js/addresses';
+import { EthAddress } from '@aztec-labs/foundation/eth-address';
 
 import { L1OperationCondition, L1OperationConditionKind } from '@oxide/oxide-lib/l1_operation_calldata.js';
 

@@ -64,6 +64,7 @@ export const readSponsoredAllowance: typeof actual.readSponsoredAllowance = asyn
   return {
     fpcAddress: field("fc"),
     railId: 1,
+    payer: deps.account.getAddress().toString(),
     allowance: allowanceFor(state === "retry" ? "available" : state),
   }
 }

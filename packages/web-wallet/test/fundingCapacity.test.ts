@@ -9,7 +9,7 @@ import {
   type PortalCapacityState,
   type RequiredCredit,
 } from "@obsidion/front-core"
-import { SOURCE_OPERATION_CAP, type PortalCapacitySnapshot } from "@obsidion/sdk"
+import type { PortalCapacitySnapshot } from "@obsidion/sdk"
 import { CAPACITY_CHECKING, CAPACITY_UNAVAILABLE } from "../src/features/limits/limitsCopy"
 import {
   CAPACITY_FITS,
@@ -26,6 +26,7 @@ import {
 } from "../src/features/deposit/fundingCapacity"
 
 const DAI = 10n ** 18n
+const TX_AMOUNT_CAP = 5166n * DAI
 const NOW = 1_800_000_000_000
 const key = {
   chainId: 1,
@@ -42,6 +43,7 @@ const snapshot = (over: Partial<PortalCapacitySnapshot> = {}): PortalCapacitySna
   rateAtomicPerSecond: (50_000n * DAI) / 86_400n,
   globalLimitAtomic: 50_000n * DAI,
   availableAtomic: 500n * DAI,
+  txAmountCapAtomic: TX_AMOUNT_CAP,
   ...over,
 })
 const fresh = (over: Partial<PortalCapacitySnapshot> = {}): PortalCapacityState => ({
@@ -58,7 +60,7 @@ const known = (whole: bigint, extra = 0n): Extract<RequiredCredit, { status: "kn
 })
 
 const eligibilityFor = (state: PortalCapacityState, required: RequiredCredit) =>
-  evaluateCapacityEligibility({ state, required, operationCap: SOURCE_OPERATION_CAP, now: NOW })
+  evaluateCapacityEligibility({ state, required, now: NOW })
 
 function view(
   state: PortalCapacityState,
@@ -187,7 +189,7 @@ describe("fundingCapacityView", () => {
   it("adds nothing of its own above the operation cap; the amount form explains that limit", () => {
     const v = view(fresh(), {
       status: "known",
-      atomic: SOURCE_OPERATION_CAP.sourceAtomic + 1n,
+      atomic: TX_AMOUNT_CAP + 1n,
       token: key.token,
       decimals: 18,
     })
@@ -331,13 +333,8 @@ describe("fundingCapacityView under the proceed policy", () => {
       view(fresh({ globalLimitAtomic: 1_000n * DAI }), known(2_000n), "editable", true, "proceed"),
     ).toMatchObject({ canFund: false, tone: "blocked" })
     expect(
-      view(
-        fresh(),
-        { ...known(0n), atomic: SOURCE_OPERATION_CAP.sourceAtomic + 1n },
-        "editable",
-        true,
-        "proceed",
-      ).canFund,
+      view(fresh(), { ...known(0n), atomic: TX_AMOUNT_CAP + 1n }, "editable", true, "proceed")
+        .canFund,
     ).toBe(false)
     expect(
       view(fresh({ availableAtomic: 0n }), known(10n), "editable", true, "proceed"),
@@ -468,14 +465,7 @@ describe("fundingEligibility", () => {
     state: PortalCapacityState,
     required: RequiredCredit,
     unknownCapacity?: UnknownCapacityPolicy,
-  ) =>
-    fundingEligibility({
-      state,
-      required,
-      operationCap: SOURCE_OPERATION_CAP,
-      now: NOW,
-      unknownCapacity,
-    })
+  ) => fundingEligibility({ state, required, now: NOW, unknownCapacity })
 
   it("under proceed, keeps a current shortfall, empty bucket or mismatch that a failed read follows", () => {
     const shortfall = funding(failedAfter({}), known(2_000n), "proceed")

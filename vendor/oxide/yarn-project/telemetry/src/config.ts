@@ -1,4 +1,10 @@
-export const RESOURCE_ATTRIBUTE_NAMES = ['deployment.environment.name', 'service.instance.id'] as const;
+export const RESOURCE_ATTRIBUTE_NAMES = [
+  'deployment.environment.name',
+  'service.instance.id',
+  'oxide.relayer.submission',
+  'oxide.resolver.operator_id',
+  'oxide.tee.fleet_id',
+] as const;
 
 export type AdditionalResourceAttribute = (typeof RESOURCE_ATTRIBUTE_NAMES)[number];
 

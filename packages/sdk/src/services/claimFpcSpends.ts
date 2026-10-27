@@ -4,11 +4,11 @@
  * name the txs that used the allowance. A SIPA broadcast also sends the user a `SIPA` event in the
  * same tx, which marks the batch as a deposit-address broadcast.
  */
-import type { AztecAddress } from "@aztec/stdlib/aztec-address"
-import type { ContractArtifact } from "@aztec/stdlib/abi"
-import { BlockNumber } from "@aztec/foundation/branded-types"
-import type { NotesFilter } from "@aztec/pxe/client/lazy"
-import { NoteStatus, type NoteDao } from "@aztec/stdlib/note"
+import type { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import type { ContractArtifact } from "@aztec-labs/stdlib/abi"
+import { BlockNumber } from "@aztec-labs/foundation/branded-types"
+import type { NotesFilter } from "@aztec-labs/pxe/client/lazy"
+import { NoteStatus, type NoteDao } from "@aztec-labs/stdlib/note"
 import { OxideTokenContract } from "@obsidion/contracts"
 
 import type { ObsidionWallet } from "../obsidion/ObsidionWallet.js"
@@ -24,7 +24,7 @@ export interface ClaimFpcSubscriptionNote {
 
 /**
  * `user`'s SubscriptionNotes on `railId`, spent and unspent. Read through `PXE.debug.getNotes`, the
- * one note-preimage read `@aztec/pxe` 5.2.0 exposes; the note layout is the wallet's own ClaimFPC
+ * one note-preimage read `@aztec-labs/pxe` 5.2.0 exposes; the note layout is the wallet's own ClaimFPC
  * (`rail, uses, refilled_at`), and the slot comes from the artifact's storage layout.
  */
 export async function readClaimFpcSubscriptionNotes(

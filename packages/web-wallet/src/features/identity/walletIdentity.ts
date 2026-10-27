@@ -1,7 +1,7 @@
 import { getConfig } from "../../config/env"
 import { getActiveCredentialId } from "../../platform/storage/activeStorage"
 import { walletStorage } from "../../platform/storage/walletStorage"
-import { hasMskRootBreadcrumb, rememberUsertag } from "../../platform/auth/WebPasskeyIdentityMap"
+import { hasOpeningBreadcrumb, rememberUsertag } from "../../platform/auth/WebPasskeyIdentityMap"
 import { clearAdmission } from "./admission"
 import { clearNameGrant } from "../onboarding/nameGrant"
 
@@ -87,6 +87,6 @@ export function retractPendingWalletIdentity(): void {
  */
 /** `saved` reads only a record already persisted, for a caller about to enter on it. */
 export function loadOnboardedIdentity({ saved = false } = {}): WalletIdentity | null {
-  if (!hasMskRootBreadcrumb(getConfig().rpId)) return null
+  if (!hasOpeningBreadcrumb(getConfig().rpId)) return null
   return loadWalletIdentity({ saved })
 }

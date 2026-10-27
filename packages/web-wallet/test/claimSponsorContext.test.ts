@@ -164,7 +164,7 @@ const DEPLOYED_RAILS = [
 ]
 
 const NAME_CLAIM = { nameHash: new Uint8Array(32) }
-const REGISTRATION_GATE = { kind: "registration", secret: "0x0", leafIndex: "0x9" }
+const REGISTRATION_GATE = { kind: "registration", keyWitness: "0x1", leafIndex: "0x9" }
 
 function manifestDeps(fpc: string, account: string) {
   vi.clearAllMocks()
@@ -216,6 +216,20 @@ describe("the rail a flow declares decides what its subscribe leg carries", () =
     expect(sponsor.subscribe).toEqual({ gate: REGISTRATION_GATE })
     // The registration gate builds its own binding, so nothing reads the name-claim store for it.
     expect(buildClaimSubscribeWitness).not.toHaveBeenCalled()
+  })
+
+  it("builds the registration witness for the acting account, not the session's", async () => {
+    const deps = manifestDeps(
+      "0x00000000000000000000000000000000000000000000000000000000000001fb",
+      "0xacc8",
+    ) as Record<string, unknown>
+    const acting = { getAddress: () => address("0xacc9") }
+    const sponsor = await claimSponsorContext(
+      { ...deps, payerFor: async () => ({ payer: deps.account, acting }) } as never,
+      RAIL_REGISTERED,
+    )
+    expect(sponsor.subscribe).toEqual({ gate: REGISTRATION_GATE })
+    expect(collectOnboardingKeys).toHaveBeenCalledWith(acting)
   })
 
   it("fails naming the offered rails when the deployment has none under the declared name", async () => {

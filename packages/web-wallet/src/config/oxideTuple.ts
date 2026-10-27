@@ -1,37 +1,54 @@
 import { createPublicClient, parseAbi, type Address, type Hex, type PublicClient } from "viem"
 import { withTimeout } from "../lib/withTimeout"
 import type { OxideEnvTuple } from "@obsidion/core/types"
-import { isAllZeroHex } from "@obsidion/core/oxide"
-import { MULTICALL3_ADDRESS } from "@obsidion/sdk"
 import {
+  bridgeOfTuple,
+  feeTokenBridge,
+  isAllZeroHex,
+  loadOxideDeployment,
+  type OxideDeploymentTable,
+  type PinnedOxideDeployment,
+} from "@obsidion/core/oxide"
+import { MULTICALL3_ADDRESS, readDeploymentTable } from "@obsidion/sdk"
+import {
+  deploymentScanRange,
   fetchSignupResolverRecord,
   loadOxideManifestTuple,
   oxideEnvFromTuple,
   resolveOxideAccountFactory,
 } from "@obsidion/front-core"
-import { loadRetiredRollupSources } from "@obsidion/core/oxide"
+import {
+  isRetiredRollupSource,
+  loadRetiredRollupSources,
+  oxideManifestDeployments,
+  oxideManifestEntries,
+  parseDeployment,
+  pinnedEntryPolicy,
+  type OxideDeployment,
+} from "@obsidion/core/oxide"
 import { l1Transport, type WebWalletConfig } from "./env"
 
 let cached: { key: string; tuple: Promise<OxideEnvTuple> } | undefined
 
-const cacheKey = (config: WebWalletConfig) =>
+/** What every per-profile cache of the manifest is keyed by. */
+export const oxideProfileKey = (config: WebWalletConfig) =>
   `${config.oxideProfile.manifestUrl}|${config.oxideProfile.portal}`
 
 /** Dev demo seam: satisfy the profile from a fixture so nothing dials the env registry. */
 export function primeOxideTuple(config: WebWalletConfig, tuple: OxideEnvTuple): void {
-  cached = { key: cacheKey(config), tuple: Promise.resolve(tuple) }
+  cached = { key: oxideProfileKey(config), tuple: Promise.resolve(tuple) }
 }
 
 /**
- * The oxide manifest tuple for the active profile, fetched once per profile —
- * `loadOxideManifestTuple` is a bare HTTP fetch, and the SIPA sync loop reads
- * the tuple every tick. A failed fetch is not sticky; the next call retries.
+ * The pinned bridge's tuple for the active profile, read once per profile off the manifest fetch
+ * {@link getOxideDeployment} makes, so the tuple and the table always come from one republish. The SIPA sync loop
+ * reads the tuple every tick. A failed fetch is not sticky; the next call retries.
  */
 export function getOxideTuple(config: WebWalletConfig): Promise<OxideEnvTuple> {
-  const key = cacheKey(config)
+  const key = oxideProfileKey(config)
   if (cached?.key !== key) {
-    const tuple = loadOxideManifestTuple({ ...config.oxideProfile, network: config.network }).then(
-      (loaded) => withRegistryController(config, loaded),
+    const tuple = getOxideDeployment(config).then(({ pinned }) =>
+      withRegistryController(config, pinned.tuple),
     )
     cached = { key, tuple }
     tuple.catch(() => {
@@ -39,6 +56,113 @@ export function getOxideTuple(config: WebWalletConfig): Promise<OxideEnvTuple> {
     })
   }
   return cached.tuple
+}
+
+let deploymentCached: { key: string; deployment: Promise<PinnedOxideDeployment> } | undefined
+
+/** Dev demo seam, as {@link primeOxideTuple}. */
+export function primeOxideDeployment(config: WebWalletConfig, pinned: PinnedOxideDeployment): void {
+  deploymentCached = { key: oxideProfileKey(config), deployment: Promise.resolve(pinned) }
+}
+
+/** A read after an invalidation revalidates with the host, so a host `max-age` cannot delay a feature. */
+let revalidate = false
+
+/**
+ * Drops the cached deployment, so the next {@link getOxideDeployment} fetches the manifest again: a
+ * feature the manifest gained, such as a migration executor, is then read in place. From then on,
+ * each fetch revalidates with the host (`cache: "no-cache"`). The pinned tuple stays cached, since
+ * the pinned bridge does not change when a feature is added. A repoint to another portal still goes
+ * through the Reload prompt.
+ */
+export function invalidateOxideDeployment(): void {
+  deploymentCached = undefined
+  revalidate = true
+}
+
+/** The pinned deployment with every bridge, fetched once per profile like {@link getOxideTuple}. */
+export function getOxideDeployment(config: WebWalletConfig): Promise<PinnedOxideDeployment> {
+  const key = oxideProfileKey(config)
+  if (deploymentCached?.key !== key) {
+    const deployment = loadOxideDeployment({
+      ...config.oxideProfile,
+      network: config.network,
+      ...(revalidate ? { cache: "no-cache" as const } : {}),
+    })
+    deploymentCached = { key, deployment }
+    deployment.catch(() => {
+      if (deploymentCached?.deployment === deployment) deploymentCached = undefined
+    })
+  }
+  return deploymentCached.deployment
+}
+
+/**
+ * The fee token's bridge, where registrations and metadata updates settle; the pinned bridge's own entry when it is
+ * that bridge, so it carries the overlay {@link getOxideTuple} applies.
+ */
+export async function getFeeTokenBridgeTuple(config: WebWalletConfig): Promise<OxideEnvTuple> {
+  const [pinned, { deployment }] = await Promise.all([
+    getOxideTuple(config),
+    getOxideDeployment(config),
+  ])
+  const fee = feeTokenBridge(deployment)
+  if (!fee || fee.portal.toLowerCase() === pinned.portal.toLowerCase()) return pinned
+  return fee.tuple
+}
+
+/** How long a read of the table's rows is reused. The owner can change a row at any time. */
+export const DEPLOYMENT_TABLE_TTL_MS = 30_000
+
+let tableCached: { key: string; at: number; table: Promise<OxideDeploymentTable> } | undefined
+
+/**
+ * The pinned table's rows, read off L1 and reused for {@link DEPLOYMENT_TABLE_TTL_MS}. `fresh` reads again, for a
+ * quote the user is about to act on. A failed read is not sticky.
+ */
+export function getDeploymentTable(
+  config: WebWalletConfig,
+  opts: { fresh?: boolean } = {},
+): Promise<OxideDeploymentTable> {
+  const key = oxideProfileKey(config)
+  if (
+    opts.fresh ||
+    tableCached?.key !== key ||
+    Date.now() - tableCached.at > DEPLOYMENT_TABLE_TTL_MS
+  ) {
+    const table = getOxideDeployment(config).then(({ deployment }) =>
+      readDeploymentTable(l1PublicClient(config), deployment),
+    )
+    tableCached = { key, at: Date.now(), table }
+    table.catch(() => {
+      if (tableCached?.table === table) tableCached = undefined
+    })
+  }
+  return tableCached.table
+}
+
+/**
+ * The rows a SIPA committed to `forwardingTable` sweeps through: the pinned table's, or, after a repoint, those of the
+ * earlier table. An address handed out before the repoint still commits to it. The earlier table may route a token to
+ * a bridge the pinned deployment has since replaced or dropped, so every bridge the manifests list is a candidate.
+ */
+export async function getSipaDeploymentTable(
+  config: WebWalletConfig,
+  forwardingTable: string,
+): Promise<OxideDeploymentTable> {
+  const { deployment } = await getOxideDeployment(config)
+  if (deployment.forwardingTable?.toLowerCase() === forwardingTable.toLowerCase()) {
+    return getDeploymentTable(config)
+  }
+  const pinnedPortals = new Set(deployment.bridges.map(({ portal }) => portal.toLowerCase()))
+  const others = (await getManifestBridges(config))
+    .filter(({ portal }) => !pinnedPortals.has(portal.toLowerCase()))
+    .map(bridgeOfTuple)
+  return readDeploymentTable(l1PublicClient(config), {
+    ...deployment,
+    forwardingTable,
+    bridges: [...deployment.bridges, ...others],
+  })
 }
 
 let retiredCached: { key: string; deployments: Promise<OxideEnvTuple[]> } | undefined
@@ -58,10 +182,17 @@ export const ASSET_TUPLE_TIMEOUT_MS = 20_000
  * also keeps a fetch that never settles out of the cache.
  */
 export async function getRetiredRollupSources(config: WebWalletConfig): Promise<OxideEnvTuple[]> {
-  const key = cacheKey(config)
+  const key = oxideProfileKey(config)
   if (retiredCached?.key !== key) {
     const deployments = withTimeout(
-      loadRetiredRollupSources({ ...config.oxideProfile, network: config.network }),
+      Promise.all([
+        loadRetiredRollupSources({ ...config.oxideProfile, network: config.network }),
+        getOtherManifestSources(config),
+      ]).then(async ([listed, others]) => {
+        if (!others.length) return listed
+        const pinned = await getOxideTuple(config)
+        return [...listed, ...others.filter((tuple) => isRetiredRollupSource(tuple, pinned))]
+      }),
       ASSET_TUPLE_TIMEOUT_MS,
     )
     retiredCached = { key, deployments }
@@ -70,6 +201,141 @@ export async function getRetiredRollupSources(config: WebWalletConfig): Promise<
     })
   }
   return retiredCached.deployments
+}
+
+let othersCached: { key: string; deployments: Promise<OxideEnvTuple[]> } | undefined
+
+/**
+ * The deployments of retired rollups that another manifest than the profile's publishes: an
+ * earlier Aztec generation's. Each is that manifest's pinned entry for the version's portal.
+ */
+export function getOtherManifestSources(config: WebWalletConfig): Promise<OxideEnvTuple[]> {
+  const key = oxideProfileKey(config)
+  if (othersCached?.key !== key) {
+    const pins = (config.sourceRollups ?? []).flatMap((rollup) =>
+      rollup.manifestUrl === config.oxideProfile.manifestUrl
+        ? []
+        : rollup.pins.map((pin) => ({ ...pin, manifestUrl: rollup.manifestUrl })),
+    )
+    const deployments = withTimeout(
+      Promise.all(pins.map((pin) => loadOxideManifestTuple({ ...pin, network: config.network }))),
+      ASSET_TUPLE_TIMEOUT_MS,
+    )
+    othersCached = { key, deployments }
+    deployments.catch(() => {
+      if (othersCached?.deployments === deployments) othersCached = undefined
+    })
+  }
+  return othersCached.deployments
+}
+
+let bridgesCached: { key: string; bridges: Promise<OxideEnvTuple[]> } | undefined
+
+/**
+ * Every bridge the profile's manifest lists, then the other manifests' pinned bridges: the tokens the wallet knows
+ * exist. A malformed entry is skipped. Fetched once per profile; `fresh` fetches again. A list missing another
+ * manifest's bridges, or a failed or stalled fetch, is not kept.
+ */
+export function getManifestBridges(
+  config: WebWalletConfig,
+  opts: { fresh?: boolean } = {},
+): Promise<OxideEnvTuple[]> {
+  const key = oxideProfileKey(config)
+  if (opts.fresh || bridgesCached?.key !== key) {
+    let complete = true
+    const bridges = withTimeout(
+      Promise.all([
+        loadManifestBridges(config.oxideProfile.manifestUrl),
+        getOtherManifestSources(config).catch(() => {
+          complete = false
+          return []
+        }),
+      ]).then(([listed, others]) => [...listed, ...others]),
+      ASSET_TUPLE_TIMEOUT_MS,
+    )
+    bridgesCached = { key, bridges }
+    const drop = () => {
+      if (bridgesCached?.bridges === bridges) bridgesCached = undefined
+    }
+    bridges.then(() => complete || drop(), drop)
+  }
+  return bridgesCached!.bridges
+}
+
+async function fetchManifest(manifestUrl: string): Promise<unknown> {
+  const response = await fetch(manifestUrl)
+  if (!response.ok) throw new Error(`oxide manifest HTTP ${response.status} (${manifestUrl})`)
+  return response.json()
+}
+
+async function loadManifestBridges(manifestUrl: string): Promise<OxideEnvTuple[]> {
+  return oxideManifestEntries(await fetchManifest(manifestUrl)).flatMap((entry) => {
+    try {
+      return [parseDeployment(entry).tuple]
+    } catch {
+      return []
+    }
+  })
+}
+
+let deploymentsCached: { key: string; deployments: Promise<OxideDeployment[]> } | undefined
+
+/**
+ * Every deployment the profile's manifest lists, with its features: where a contract a record names, such as an older
+ * Sky escrow factory, is looked up. On mainnet a deployment that fails the mainnet gate is left out. Fetched once per
+ * profile; a failed or stalled fetch is not sticky.
+ */
+export function getManifestDeployments(config: WebWalletConfig): Promise<OxideDeployment[]> {
+  const key = oxideProfileKey(config)
+  if (deploymentsCached?.key !== key) {
+    const deployments = withTimeout(
+      fetchManifest(config.oxideProfile.manifestUrl).then((manifest) =>
+        oxideManifestDeployments(manifest, pinnedEntryPolicy({ network: config.network })),
+      ),
+      ASSET_TUPLE_TIMEOUT_MS,
+    )
+    deploymentsCached = { key, deployments }
+    deployments.catch(() => {
+      if (deploymentsCached?.deployments === deployments) deploymentsCached = undefined
+    })
+  }
+  return deploymentsCached.deployments
+}
+
+/**
+ * The first L1 block of the earliest deployment the manifest lists on `rollupVersion`: nothing a deployment on that
+ * rollup sent is older, so a log scan about the rollup starts here. Undefined when the manifest cannot be read.
+ */
+export async function rollupScanFloor(
+  config: WebWalletConfig,
+  publicClient: PublicClient,
+  rollupVersion: string,
+): Promise<bigint | undefined> {
+  try {
+    const [deployments, head] = await Promise.all([
+      getManifestDeployments(config),
+      publicClient.getBlockNumber({ cacheTime: 0 }),
+    ])
+    const tuples = deployments
+      .flatMap((deployment) => deployment.bridges.map((bridge) => bridge.tuple))
+      .filter((tuple) => tuple.rollupVersion === rollupVersion)
+    if (!tuples.length) return undefined
+    const starts = await Promise.all(
+      tuples.map(async (tuple) => (await deploymentScanRange(publicClient, tuple, head)).fromBlock),
+    )
+    return starts.reduce((low, start) => (start < low ? start : low))
+  } catch (error) {
+    console.warn("[oxide] the rollup's first deployment block could not be read:", error)
+    return undefined
+  }
+}
+
+/** The fleet a deployment's requests go to: the configured enclave override, else the manifest's router URL. */
+export function fleetUrl(
+  config: WebWalletConfig,
+  tuple: Pick<OxideEnvTuple, "enclaveUrl">,
+): string {
+  return config.enclaveUrl ? `${config.enclaveUrl}/rpc` : tuple.enclaveUrl
 }
 
 /**

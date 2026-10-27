@@ -10,7 +10,6 @@ import { REGISTRATION_SCHEDULE_DEFAULTS } from "@obsidion/core/constants"
  * and `deposit-expired` one whose reservation deadline has passed with no deposit — see OnboardingScreen's `mockRecord`/`freshClaim` seeding;
  * `&min=<tokens>&fee=<tokens>` set the schedule the previews quote, its minimum and its fee
  * (18 decimals, with a default per kind below);
- * `&cut=<tokens>` sets the portal's funding cut;
  * `&token=DAI|USDC|USDT` picks the deposit token and
  * `&received=<tokens>` seeds a deposit already at the address.
  * `import.meta.env.DEV` is a build-time literal — production drops this.
@@ -55,8 +54,6 @@ export function mockOnboarding(): {
   /** The schedule the previews quote: its minimum and its fee, in base units. */
   min: bigint
   fee: bigint
-  /** The portal's funding cut, in base units: what the opening balance loses on arrival. */
-  cut: bigint
   /** The deposit token. A token other than the settlement one adds the panel's note about the
    *  opening balance. */
   tokenSymbol: string
@@ -76,7 +73,6 @@ export function mockOnboarding(): {
     handle: q.get("handle") ?? "honktheg00se",
     min: q.get("min") ? parseUnits(q.get("min")!, 18) : schedule.min,
     fee: q.get("fee") ? parseUnits(q.get("fee")!, 18) : schedule.fee,
-    cut: parseUnits(q.get("cut") ?? "0.1", 18),
     tokenSymbol: (TOKENS as readonly string[]).includes(token) ? token : "DAI",
     received: received === null ? undefined : parseUnits(received, 18),
   }

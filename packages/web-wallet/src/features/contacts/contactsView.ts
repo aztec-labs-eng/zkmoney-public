@@ -56,10 +56,12 @@ export type InlinePanelState =
   | { kind: "add-offer"; tag: string }
   | { kind: "no-user-found"; tag: string }
   | { kind: "reserved"; tag: string }
+  | { kind: "not-upgraded"; tag: string }
 
 /**
- * Panel under the search field: looking-up → add-offer | no-user-found | reserved. A tag the
- * Registry does not know but the claim server holds is reserved: its signup waits for a deposit.
+ * Panel under the search field: looking-up → add-offer | no-user-found | reserved | not-upgraded. A
+ * tag the Registry does not know but the claim server holds is reserved: its signup waits for a
+ * deposit. A tag still on a retired rollup is not-upgraded: its owner has yet to upgrade.
  * `held` is the claim server's answer for a Registry miss; null while it is still asked.
  */
 export function inlinePanelState(
@@ -75,6 +77,7 @@ export function inlinePanelState(
     return { kind: "looking-up", tag }
   }
   if (lastResolved.status === "found") return { kind: "add-offer", tag }
+  if (lastResolved.status === "not_upgraded") return { kind: "not-upgraded", tag }
   if (held === null) return { kind: "looking-up", tag }
   return held ? { kind: "reserved", tag } : { kind: "no-user-found", tag }
 }

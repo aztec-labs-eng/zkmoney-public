@@ -6,7 +6,6 @@ import {
   EARLY_SUBMIT_POLICY__MIN_EPOCH_PROFIT_MARGIN_BPS,
   EARLY_SUBMIT_POLICY__PROVING_COST_PER_CHECKPOINT,
   PAR_TOKEN_PRICE,
-  PORTAL__FIRST_PROVER_CAPTURE_GAS,
   type PartialEpochProofTerms,
   type PortalTokenPrice,
   claimProverTipsGas,
@@ -22,9 +21,9 @@ const USD_PER_ETH = 2_000n * 10n ** 8n;
 /** 18-decimal USD from dollars and cents. */
 const usd = (dollars: bigint, cents = 0n): bigint => dollars * 10n ** 18n + cents * 10n ** 16n;
 
-// A proof of one checkpoint is 1_537_000 gas with its first-prover capture, and the claim transaction that collects
-// one tip is 190_000 gas. Together they are 1_727_000 gas, at 10 gwei 0.01727 ETH, or 34.54 USD at 2_000 USD per ETH.
-// Each further checkpoint adds 37_000 gas, or 0.74 USD.
+// A proof of one checkpoint is 1_537_000 gas, and the claim transaction that collects one tip is 190_000 gas. Together
+// they are 1_727_000 gas, at 10 gwei 0.01727 ETH, or 34.54 USD at 2_000 USD per ETH. Each further checkpoint adds
+// 37_000 gas, or 0.74 USD.
 const GAS_COST = usd(34n, 54n);
 const GAS_COST_PER_CHECKPOINT = usd(0n, 74n);
 // The claim transaction alone: 190_000 gas, or 3.80 USD.
@@ -82,14 +81,13 @@ describe('claimProverTipsGas', () => {
 describe('quoteProverTip', () => {
   const base = { gasPriceWei: GAS_PRICE_WEI, usdPerEth: USD_PER_ETH, subsidyForOneClaim: 0n, checkpointCount: 1n };
   /** A proof of one gas unit and a claim of none, so a case can price a single unit. */
-  const ONE_GAS = { submitEpochProofGasModel: { baseGas: 1n, gasPerCheckpoint: 0n }, firstProverCaptureGas: 0n };
+  const ONE_GAS = { submitEpochProofGasModel: { baseGas: 1n, gasPerCheckpoint: 0n } };
   const NO_CLAIM_GAS = { claimProverTipsGasModel: { baseGas: 0n, gasPerClaim: 0n } };
 
   /** Whether the relayer rule accepts a lone claim with `tip`. */
   const accepts = (tip: bigint, input: Parameters<typeof quoteProverTip>[0]): boolean => {
     const gas =
       submitEpochProofGas(input.checkpointCount, input.submitEpochProofGasModel) +
-      (input.firstProverCaptureGas ?? PORTAL__FIRST_PROVER_CAPTURE_GAS) +
       claimProverTipsGas(1n, input.claimProverTipsGasModel);
     // The relayer values the tip and the subsidy together, rounding down.
     const { usdPerToken, decimals } = input.tokenPrice ?? PAR_TOKEN_PRICE;

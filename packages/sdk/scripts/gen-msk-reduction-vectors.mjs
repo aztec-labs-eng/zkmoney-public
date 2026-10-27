@@ -4,7 +4,7 @@
  * the sdk's `deriveMskFromPrfOutput` and @obsidion/passkey-web's bigint reduction are pinned to the
  * same answers at the arithmetic boundary. Run from packages/sdk after `pnpm build`; prints JSON.
  */
-import { Fr } from "@aztec/aztec.js/fields"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 
 const P = 21888242871839275222246405745257275088548364400416034343698204186575808495617n
 const hex32 = (n) => n.toString(16).padStart(64, "0")

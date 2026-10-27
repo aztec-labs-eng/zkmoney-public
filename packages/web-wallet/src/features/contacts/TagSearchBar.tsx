@@ -12,6 +12,7 @@ import {
 } from "@obsidion/web-ds"
 import { PhoneIcon } from "../../ui/PhoneIcon"
 import { usePhoneLayout } from "../../ui/usePhoneLayout"
+import { recipientNotUpgradedCopy } from "../migration/upgradeCopy"
 import { filterContacts } from "./contactsView"
 import { useInlineContactSearch } from "./useInlineContactSearch"
 
@@ -192,6 +193,21 @@ export function TagSearchBar({
               subtitle="Not active yet, so it can't receive payments"
               leading={<IconCircle name="user-unfollow" glyphSize={24} />}
             />
+          )}
+          {panel.kind === "not-upgraded" && (
+            <button
+              type="button"
+              className="zkm-btn-reset ww-search__row"
+              aria-label={`Open @${panel.tag}`}
+              onClick={() => go(panel.tag)}
+            >
+              <ListRow
+                title={recipientNotUpgradedCopy.title(panel.tag)}
+                subtitle={recipientNotUpgradedCopy.searchSubtitle}
+                leading={<IconCircle name="user-unfollow" glyphSize={24} />}
+                trailing={phone ? <PhoneIcon name="chevron-right" size={16} color="#bfc2d7" /> : <RowChevron />}
+              />
+            </button>
           )}
           {location.pathname !== "/contacts" && (
             <button

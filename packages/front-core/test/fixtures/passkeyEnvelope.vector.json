@@ -1,0 +1,9 @@
+{
+  "prfHex": "0x5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5aa5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
+  "slot": "second",
+  "masterKeyHex": "0x0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f01",
+  "account": "0x1111111111111111111111111111111111111111",
+  "credentialId": "AQIDBAUGBwgJCgsMDQ4PEBESExQ",
+  "nonceHex": "0x0c0c0c0c0c0c0c0c0c0c0c0c",
+  "envelopeHex": "0x01010c0c0c0c0c0c0c0c0c0c0c0cfad4e5139cf0966139145e0a1fadd1b8218d389f09127dd9451449ef65fb6e7ca1c5ea16abd2935200178862debd494d"
+}

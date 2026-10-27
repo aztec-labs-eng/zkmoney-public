@@ -109,7 +109,7 @@ export function ActivityScreen() {
           </button>
         )}
       </div>
-      {hydrated && entries.length > 0 && (
+      {hydrated && entries.length > 0 && csvSources && savingsCsvSources && (
         <div className="ww-activity__foot">
           <button
             type="button"

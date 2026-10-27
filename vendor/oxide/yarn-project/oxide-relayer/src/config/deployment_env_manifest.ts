@@ -1,12 +1,15 @@
-import { AztecAddress } from '@aztec/aztec.js/addresses';
-import { EthAddress } from '@aztec/foundation/eth-address';
+import { AztecAddress } from '@aztec-labs/aztec.js/addresses';
+import { EthAddress } from '@aztec-labs/foundation/eth-address';
 
 import { readFile } from 'node:fs/promises';
 
 /**
- * Reader for the published schema v4 `v<major>/<deployment-env>/releases.json` deployment env manifest
- * (writer: deployer/src/composer/publish_deployment_manifest.ts). The relayer pins one entry by portal and
- * watches the other L1-operation entries on the same rollup version, minus the entries its policy skips.
+ * Reader for the published schema v5 `v<major>/<deployment-env>/releases.json` deployment env manifest
+ * (writer: deployer/src/composer/publish_deployment_manifest.ts). Each deployment lists its bridges, and the reader
+ * makes one entry for each bridge: the deployment's shared fields and the bridge's fields. A bridge that stays in a
+ * later deployment is listed under both, so one portal can have several entries; they must agree on the fields the
+ * relayer reads. The relayer pins one entry by portal and watches one entry for each other portal among the
+ * L1-operation entries on the same rollup version, minus the entries its policy skips.
  */
 
 /** The deployment-env-manifest fields the relayer uses for one deployment. */
@@ -19,14 +22,12 @@ export interface DeploymentEnvManifestPublicConfig {
   rollupVersion: bigint;
   enclaveUrl: string;
   broadcaster: AztecAddress;
-  withdrawalSubsidy: EthAddress;
   proverSubsidy: EthAddress;
-  plainWithdrawalExecutor: EthAddress;
   operationExecutor: EthAddress;
   fpcFunder: EthAddress;
 }
 
-/** One manifest deployment and the label that names it. */
+/** One manifest entry (one bridge of a deployment) and the label of its deployment. */
 export interface ResolvedManifestDeployment {
   label: string;
   publicConfig: DeploymentEnvManifestPublicConfig;
@@ -73,11 +74,14 @@ interface RawDeployment {
   token?: unknown;
   enclaveUrl?: unknown;
   l2Broadcaster?: unknown;
-  withdrawalSubsidy?: unknown;
   proverSubsidy?: unknown;
-  plainWithdrawalExecutor?: unknown;
   operationExecutor?: unknown;
   fpcFunder?: unknown;
+}
+
+/** A schema v5 deployment: the shared fields and one item for each bridge. */
+interface RawDeploymentGroup extends RawDeployment {
+  bridges?: unknown;
 }
 
 interface DeploymentEnvManifestDocument {
@@ -86,7 +90,7 @@ interface DeploymentEnvManifestDocument {
 }
 
 /**
- * Fetch `<deployment-env>.v4.json`, pin one entry by portal and select the historical entries to watch: the other
+ * Fetch the releases list, pin one entry by portal and select the historical entries to watch: the other
  * L1-operation entries on the pinned entry's rollup, minus the entries that the policy skips. Only these entries
  * are parsed. An older entry can lack a field that this relayer reads, and it stays a supported deployment for
  * other consumers.
@@ -113,13 +117,19 @@ export async function resolveDeploymentEnvManifest(
   if (pinnedSkip) {
     skipped.push(skippedOf(pinned, pinnedSkip));
   }
+  // A portal listed under several deployments gets one worker.
+  const seen = new Set([portal]);
   for (const entry of entries) {
+    const entryPortal = typeof entry.portal === 'string' ? entry.portal.toLowerCase() : undefined;
     if (
-      entry === pinned ||
+      (entryPortal !== undefined && seen.has(entryPortal)) ||
       entry.withdrawalProtocol !== 'l1-operation' ||
       entry.rollupVersion !== pinned.rollupVersion
     ) {
       continue;
+    }
+    if (entryPortal !== undefined) {
+      seen.add(entryPortal);
     }
     const reason = skipReason(entry);
     if (reason) {
@@ -184,9 +194,7 @@ function parseDeployment(url: string, raw: unknown): ResolvedManifestDeployment 
         rollupVersion: field(entry, 'rollupVersion', rollupVersionOf),
         enclaveUrl: field(entry, 'enclaveUrl', v => v),
         broadcaster: field(entry, 'l2Broadcaster', v => AztecAddress.fromStringUnsafe(v)),
-        withdrawalSubsidy: field(entry, 'withdrawalSubsidy', v => EthAddress.fromString(v)),
         proverSubsidy: field(entry, 'proverSubsidy', v => EthAddress.fromString(v)),
-        plainWithdrawalExecutor: field(entry, 'plainWithdrawalExecutor', v => EthAddress.fromString(v)),
         operationExecutor: field(entry, 'operationExecutor', v => EthAddress.fromString(v)),
         fpcFunder: field(entry, 'fpcFunder', v => EthAddress.fromString(v)),
       },
@@ -226,44 +234,91 @@ async function readDocument(url: string, fetchFn: typeof fetch): Promise<RawDepl
   } catch (err: unknown) {
     throw new Error(`deployment env manifest ${url} is not valid JSON: ${message(err)}`);
   }
-  if (doc?.schemaVersion !== '4') {
+  if (doc?.schemaVersion !== '5') {
     throw new Error(
-      `deployment env manifest ${url} has unsupported schemaVersion ${JSON.stringify(doc?.schemaVersion)} (want "4"; the relayer reads <env>.v4.json).`,
+      `deployment env manifest ${url} has unsupported schemaVersion ${JSON.stringify(doc?.schemaVersion)} (want "5").`,
     );
   }
   if (!Array.isArray(doc.deployments)) {
     throw new Error(`deployment env manifest ${url} has no deployments array.`);
   }
-  const entries = doc.deployments as RawDeployment[];
+  const deployments = doc.deployments as RawDeploymentGroup[];
+  rejectDuplicateLabels(url, deployments);
+  const entries = deployments.flatMap((deployment, index) => bridgesOf(url, deployment, index));
   rejectDuplicates(url, entries);
   return entries;
 }
 
+/** One entry for each bridge of a deployment. The bridges of one deployment share its label. */
+function bridgesOf(url: string, deployment: RawDeploymentGroup, index: number): RawDeployment[] {
+  if (!Array.isArray(deployment?.bridges)) {
+    throw new Error(`deployment env manifest ${url}: deployments[${index}] has no bridges array.`);
+  }
+  const { bridges, ...shared } = deployment;
+  return (bridges as unknown[]).map(bridge => ({ ...shared, ...(bridge as RawDeployment), label: shared.label }));
+}
+
+function rejectDuplicateLabels(url: string, deployments: RawDeploymentGroup[]): void {
+  const labels = new Set<string>();
+  for (const deployment of deployments) {
+    const label = deployment?.label;
+    if (typeof label !== 'string') {
+      continue;
+    }
+    if (labels.has(label)) {
+      throw new Error(`deployment env manifest ${url} has two deployments with label ${label}.`);
+    }
+    labels.add(label);
+  }
+}
+
 function rejectDuplicates(url: string, entries: RawDeployment[]): void {
   const byPortal = new Map<string, RawDeployment>();
-  const byLabel = new Map<string, RawDeployment>();
+  const byLabelToken = new Map<string, RawDeployment>();
   for (const entry of entries) {
     const portal = typeof entry.portal === 'string' ? entry.portal.toLowerCase() : undefined;
-    const label = typeof entry.label === 'string' ? entry.label : undefined;
+    const labelToken =
+      typeof entry.label === 'string'
+        ? `${entry.label}/${typeof entry.token === 'string' ? entry.token.toLowerCase() : ''}`
+        : undefined;
     const samePortal = portal === undefined ? undefined : byPortal.get(portal);
-    if (samePortal) {
+    const differs = samePortal && SERVED_FIELDS.find(key => !sameValue(samePortal[key], entry[key]));
+    if (samePortal && (samePortal.label === entry.label || differs)) {
+      const reason = differs ? `disagree on ${differs}` : 'share a label';
       throw new Error(
-        `deployment env manifest ${url} has two deployments with portal ${portal}: ${nameOf(samePortal)} and ${nameOf(entry)}.`,
+        `deployment env manifest ${url} has two bridges with portal ${portal} that ${reason}: ${nameOf(samePortal)} and ${nameOf(entry)}.`,
       );
     }
-    const sameLabel = label === undefined ? undefined : byLabel.get(label);
-    if (sameLabel) {
+    const sameLabelToken = labelToken === undefined ? undefined : byLabelToken.get(labelToken);
+    if (sameLabelToken) {
       throw new Error(
-        `deployment env manifest ${url} has two deployments with label ${label}: ${nameOf(sameLabel)} and ${nameOf(entry)}.`,
+        `deployment env manifest ${url} has two bridges with label ${entry.label} and token ${entry.token}: ${nameOf(sameLabelToken)} and ${nameOf(entry)}.`,
       );
     }
     if (portal !== undefined) {
       byPortal.set(portal, entry);
     }
-    if (label !== undefined) {
-      byLabel.set(label, entry);
+    if (labelToken !== undefined) {
+      byLabelToken.set(labelToken, entry);
     }
   }
+}
+
+/** The fields the relayer reads, besides the portal and the label. */
+const SERVED_FIELDS = [
+  'withdrawalProtocol',
+  'rollupVersion',
+  'l2Token',
+  'token',
+  'enclaveUrl',
+  'l2Broadcaster',
+  'proverSubsidy',
+  'operationExecutor',
+  'fpcFunder',
+] as const satisfies readonly (keyof RawDeployment)[];
+
+function sameValue(a: unknown, b: unknown): boolean {
+  return typeof a === 'string' && typeof b === 'string' ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 
 async function fetchRaw(url: string, fetchFn: typeof fetch): Promise<string> {

@@ -1,6 +1,6 @@
-import { Fr } from '@aztec/aztec.js/fields';
-import { AppendOnlyTreeSnapshot, NullifierLeaf, NullifierLeafPreimage } from '@aztec/stdlib/trees';
-import { PartialStateReference, StateReference } from '@aztec/stdlib/tx';
+import { Fr } from '@aztec-labs/aztec.js/fields';
+import { AppendOnlyTreeSnapshot, NullifierLeaf, NullifierLeafPreimage } from '@aztec-labs/stdlib/trees';
+import { PartialStateReference, StateReference } from '@aztec-labs/stdlib/tx';
 
 import { describe, expect, it } from '@jest/globals';
 

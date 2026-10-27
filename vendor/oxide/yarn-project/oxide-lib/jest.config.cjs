@@ -13,9 +13,11 @@ module.exports = {
     ],
   },
   moduleNameMapper: {
+    // ci-jest never builds sibling workspaces' dest/, so resolve @oxide/oxide-lib-tee subpath imports to its TS sources.
+    '^@oxide/oxide-lib-tee/(.*)\\.js$': '<rootDir>/../../oxide-lib-tee/src/$1.ts',
     '^(\\.{1,2}/.*)\\.[cm]?js$': '$1',
   },
   moduleDirectories: ['node_modules', '<rootDir>/../../node_modules'],
-  setupFilesAfterEnv: ['<rootDir>/../../node_modules/@aztec/foundation/src/jest/setupAfterEnv.mjs'],
-  testEnvironment: '<rootDir>/../../node_modules/@aztec/foundation/src/jest/env.mjs',
+  setupFilesAfterEnv: ['<rootDir>/../../node_modules/@aztec-labs/foundation/src/jest/setupAfterEnv.mjs'],
+  testEnvironment: '<rootDir>/../../node_modules/@aztec-labs/foundation/src/jest/env.mjs',
 };

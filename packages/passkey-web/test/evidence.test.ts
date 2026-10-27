@@ -6,6 +6,7 @@ import {
   isComplete,
   preferredSlot,
   prfOutputFor,
+  prfOutputsOf,
 } from "../src/policy/evidence.js"
 
 const bytes = (n: number, fill = 7) => new Uint8Array(n).fill(fill)
@@ -134,6 +135,20 @@ describe("candidatesFrom", () => {
     expect(() =>
       candidatesFrom({ authenticatorAttachment: "cross-platform", prfFirst: first }),
     ).toThrow(expect.objectContaining({ name: "DeviceBoundPasskeyError" }))
+  })
+})
+
+describe("prfOutputsOf", () => {
+  it("returns both slots, one, or none, with no gate", () => {
+    expect(prfOutputsOf({ prfFirst: first, prfSecond: second })).toEqual({ first, second })
+    expect(prfOutputsOf({ backupEligible: false, prfSecond: second })).toEqual({ second })
+    expect(prfOutputsOf({ backupEligible: false, authenticatorAttachment: "platform" })).toEqual({})
+  })
+
+  it("drops a malformed slot and keeps a valid sibling", () => {
+    expect(prfOutputsOf({ prfFirst: bytes(31), prfSecond: second })).toEqual({ second })
+    expect(prfOutputsOf({ prfFirst: first, prfSecond: bytes(33) })).toEqual({ first })
+    expect(prfOutputsOf({ prfFirst: bytes(0) })).toEqual({})
   })
 })
 

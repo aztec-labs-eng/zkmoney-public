@@ -29,6 +29,7 @@ function fakeStore(key: PortalCapacityKey, availableAtomic: bigint) {
       rateAtomicPerSecond: DAI,
       globalLimitAtomic: 50_000n * DAI,
       availableAtomic,
+      txAmountCapAtomic: 5166n * DAI,
     },
   }
   return {

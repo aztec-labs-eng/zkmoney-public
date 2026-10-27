@@ -6,7 +6,7 @@ import { captureLandingSource } from "./lib/trafficSource"
 import { DESKTOP_SETTINGS_PATH } from "./platform/desktopBridge"
 import { RESET_PATH, ResetScreen } from "./ui/ResetScreen"
 import { UnsupportedBrowser } from "./ui/UnsupportedBrowser"
-import { FREEZES, isFrozen, KEEPS_EXITS, reloadAtFreeze, showFreezePage } from "./upgradeFreeze"
+import { FREEZES, isFrozen, reloadAtFreeze, showFreezePage } from "./upgradeFreeze"
 
 // A separate chunk, so `/reset` still loads when the wallet's own modules fail.
 const WalletBoot = React.lazy(() => import("./walletBoot"))
@@ -68,9 +68,9 @@ function startWallet() {
   )
 }
 
-if (FREEZES && isFrozen() && !KEEPS_EXITS) {
+if (FREEZES && isFrozen()) {
   void showFreezePage()
 } else {
-  if (FREEZES && !isFrozen()) reloadAtFreeze()
+  if (FREEZES) reloadAtFreeze()
   startWallet()
 }

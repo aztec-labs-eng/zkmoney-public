@@ -43,7 +43,7 @@ const PICKS = {
     choice: "phone",
     supported: ["iCloud Keychain", "Google Password Manager", "1Password"],
   },
-  key: { choice: "key", supported: ["YubiKey 5 security key"] },
+  key: { choice: "key", supported: ["YubiKey 5, Trezor or Ledger security key"] },
   onePassword: { choice: "1password", supported: ["1Password"] },
 } satisfies Record<string, UnheldPick>
 /** Whether 1Password's script answers the page's passkey creation, or the browser's own method. */

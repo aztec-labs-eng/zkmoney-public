@@ -31,11 +31,9 @@ const sha256 = z.string().regex(/^[0-9a-f]{64}$/, "expected lowercase SHA-256 va
 const fullGitSha = z.string().regex(/^[0-9a-f]{40}$/, "expected full 40-char lowercase git sha")
 const isoInstant = z.iso.datetime({ offset: true })
 const httpUrl = z.url({ protocol: /^https?$/ })
-const immutableProfileUrl = httpUrl.pipe(
-  z.string().refine(
-    (value) => !new URL(value).pathname.endsWith("/current.json"),
-    "profile reference must not name mutable current.json",
-  ),
+const versionProfileUrl = httpUrl.refine(
+  (value) => !new URL(value).pathname.endsWith("/current.json"),
+  "profile reference must not name mutable current.json",
 )
 
 const profileId = z
@@ -100,7 +98,7 @@ const sharedSchema = z.strictObject({
   /** The rollup every version here runs on. A different rollup is a different document. */
   rollupVersion: z.string().regex(/^\d+$/, "on-chain rollupVersion as a decimal string"),
   /** The final profile of the generation this one replaced. */
-  previousGenerationProfile: immutableProfileUrl.nullable().optional(),
+  previousGenerationProfile: versionProfileUrl.nullable().optional(),
 })
 
 /**
@@ -130,9 +128,11 @@ const versionSchema = z.strictObject({
     expectedGitSha: fullGitSha.optional(),
   }),
   /**
-   * Every asset the wallet holds: its token symbol and its deployment, found by portal in `oxide`'s
-   * manifest. The wallet token (DAI) is `oxide`'s own deployment, where names and registration
-   * live, and no other asset is; `oxide` stays for clients that predate this field.
+   * Display metadata for the wallet's assets: a symbol and a place in the list for the deployment found by portal in
+   * `oxide`'s manifest. The deposit tokens come from the pinned forwarding table's rows; an asset only names and
+   * orders a row, and adds or removes none. Withdrawals and savings find an asset's deployment by its portal. The
+   * wallet token (DAI) is `oxide`'s own deployment, where names and registration live, and no other asset is;
+   * `oxide` stays for clients that predate this field.
    */
   assets: z
     .array(

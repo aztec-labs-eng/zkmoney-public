@@ -91,7 +91,7 @@ vi.mock("../src/errors/errorModal", () => ({ showReportableError: vi.fn() }))
 // app's browser is told before any request only where there is none.
 vi.mock("../src/platform/auth/WebPasskeyIdentityMap", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/platform/auth/WebPasskeyIdentityMap")>()),
-  hasMskRootBreadcrumb: () => h.hasRootBreadcrumb,
+  hasOpeningBreadcrumb: () => h.hasRootBreadcrumb,
 }))
 vi.mock("../src/features/deposit/l1Wallet", () => ({
   useL1Wallet: () => ({ account: null, walletName: null, connect: vi.fn() }),

@@ -1,7 +1,7 @@
-import { loadContractArtifact } from "@aztec/stdlib/abi"
-import { getContractClassFromArtifact } from "@aztec/stdlib/contract"
+import { loadContractArtifact } from "@aztec-labs/stdlib/abi"
+import { getContractClassFromArtifact } from "@aztec-labs/stdlib/contract"
 import { readFileSync } from "fs"
-import type { NoirCompiledContract } from "@aztec/stdlib/noir"
+import type { NoirCompiledContract } from "@aztec-labs/stdlib/noir"
 
 async function main() {
   const artifactPath = process.argv[2]

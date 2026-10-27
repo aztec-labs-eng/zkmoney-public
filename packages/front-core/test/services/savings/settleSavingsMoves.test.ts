@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
-import { AztecAddress } from "@aztec/aztec.js/addresses"
-import { Fr } from "@aztec/aztec.js/fields"
+import { AztecAddress } from "@aztec-labs/aztec.js/addresses"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 import { encodeAbiParameters, encodeEventTopics, erc4626Abi, type Address, type Hex } from "viem"
 import { InMemoryStorageAdapter } from "../../__test-helpers__/InMemoryStorageAdapter"
 import type { WithdrawalRecord } from "../../../src/core/services/bridge/types"

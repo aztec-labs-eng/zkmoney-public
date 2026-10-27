@@ -1,9 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { NO_FROM } from "@aztec/aztec.js/account"
-import { AztecAddress, EthAddress } from "@aztec/aztec.js/addresses"
-import { Fr } from "@aztec/aztec.js/fields"
+import { NO_FROM } from "@aztec-labs/aztec.js/account"
+import { AztecAddress, EthAddress } from "@aztec-labs/aztec.js/addresses"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 import type { FrozenDepositDescriptor } from "@obsidion/core/types"
-import { encodeAbiParameters, encodeEventTopics, erc20Abi, getAddress, toHex } from "viem"
 
 const h = vi.hoisted(() => ({
   notesCircuit: { bytecode: "0x" } as { bytecode?: string },
@@ -16,8 +15,8 @@ const h = vi.hoisted(() => ({
 vi.mock("@oxide/refund-proof/frozen_notes_refund/artifact.js", () => ({
   RefundCircuit: h.notesCircuit,
 }))
-vi.mock("@oxide/refund-proof/frozen_deposit_refund/artifact.js", () => ({
-  FrozenDepositRefundCircuit: h.depositCircuit,
+vi.mock("@oxide/refund-proof/frozen_deposits_refund/artifact.js", () => ({
+  FrozenDepositsRefundCircuit: h.depositCircuit,
 }))
 vi.mock("@oxide/refund-proof/unprocessed_deposit_refund/artifact.js", () => ({
   UnprocessedDepositRefundCircuit: h.unprocessedCircuit,
@@ -34,12 +33,21 @@ vi.mock("@oxide/oxide-client/frozen_notes.js", () => ({
 vi.mock("@oxide/oxide-lib/hash.js", () => ({
   computeNoteNullifier: async (provenNoteHash: Fr) => provenNoteHash,
 }))
-vi.mock("@oxide/oxide-client/atlatl/process_refund_requests.js", () => ({
-  buildRefundFrozenNotesPortalCalldata: h.buildNotesRefund,
+vi.mock("@oxide/oxide-client/sign_migration.js", () => ({
+  assertRefundOwner: async () => {},
+  signMigrationOf: async () => ({ kind: "fallbackKey" }),
+}))
+vi.mock("@oxide/oxide-client/atlatl/refund.js", () => ({
+  buildRefundFrozenNotesCalldata: h.buildNotesRefund,
 }))
 
-const { FrozenRefundMigrationRuntime, nextFrozenSelfRefund, readRefundableFrozenDeposits } =
-  await import("../../src/services/FrozenRefundMigrationRuntime.js")
+const {
+  FrozenRefundMigrationRuntime,
+  estimateFrozenSelfRefundCost,
+  nextFrozenSelfRefund,
+  planFrozenSelfRefunds,
+  readRefundableFrozenDeposits,
+} = await import("../../src/services/FrozenRefundMigrationRuntime.js")
 
 const descriptor = (n: number): FrozenDepositDescriptor => ({
   messageKey: new Fr(n).toString(),
@@ -48,6 +56,9 @@ const descriptor = (n: number): FrozenDepositDescriptor => ({
   sharedSecretSalt: new Fr(100 + n).toString(),
   amount: String(1000 + n),
 })
+
+/** An L1 client whose finalized block is `finalized`. */
+const l1 = (finalized: bigint) => ({ getBlock: vi.fn(async () => ({ number: finalized })) })
 
 function runtime(over: Record<string, unknown> = {}) {
   const address = EthAddress.random()
@@ -61,8 +72,12 @@ function runtime(over: Record<string, unknown> = {}) {
       })),
     },
     token: { address },
-    portal: { address, getUnderlying: async () => address },
-    inbox: {},
+    portal: {
+      address,
+      client: l1(7n),
+      getTxAmountCap: async () => 5_000n,
+      getUnderlying: async () => address,
+    },
     rollup: address.toString(),
     rollupVersion: 1n,
     owner,
@@ -84,51 +99,6 @@ describe("FrozenRefundMigrationRuntime", () => {
     h.frozenNotes.mockReset()
     h.frozenNotes.mockResolvedValue([])
     h.buildNotesRefund.mockClear()
-  })
-
-  it("finds the batches L1 already refunded, through notes the reader would drop", async () => {
-    const notes = [11, 12].map((n) => ({ provenNoteHash: new Fr(n), amount: new Fr(5n) }))
-    h.frozenNotes.mockImplementation(async (portal) =>
-      (await portal.isRefundNullifierSpent()) ? [] : notes,
-    )
-    const executor = EthAddress.random()
-    const { runtime: r, options } = runtime({
-      executor,
-      resolveSpendMetadata: async () => ({ masterNullifierHidingKey: Fr.ONE }),
-    })
-    Object.assign(options.portal, {
-      isRefundNullifierSpent: async (id: Fr) => id.equals(new Fr(11)),
-    })
-    const recipient = `0x${"44".repeat(20)}` as const
-    const hash = `0x${"ab".repeat(32)}` as const
-    const client = {
-      getBlockNumber: async () => 20n,
-      getContractEvents: vi.fn(async () => [
-        { transactionHash: hash, blockNumber: 15n, args: { executionAmount: 5n } },
-      ]),
-      getTransactionReceipt: async () => ({
-        logs: [
-          {
-            address: options.portal.address.toString(),
-            topics: encodeEventTopics({
-              abi: erc20Abi,
-              eventName: "Transfer",
-              args: { from: executor.toString() as `0x${string}`, to: recipient },
-            }),
-            data: encodeAbiParameters([{ type: "uint256" }], [5n]),
-          },
-        ],
-      }),
-    }
-    expect(await r.refundsSent(client as never, 1n)).toEqual([
-      { hash, amount: 5n, recipient: getAddress(recipient), blockNumber: 15n },
-    ])
-    expect(client.getContractEvents).toHaveBeenCalledWith(
-      expect.objectContaining({
-        eventName: "WithdrawalOrRefund",
-        args: { nullifier: [toHex(11n, { size: 32 })] },
-      }),
-    )
   })
 
   it("reads each payment link's notes under its escrow, and refunds them as that escrow", async () => {
@@ -206,12 +176,12 @@ describe("FrozenRefundMigrationRuntime", () => {
     }
   })
 
-  it("accepts any Aztec 5 source node and refuses another major", async () => {
+  it("accepts any Aztec 6 source node and refuses another major", async () => {
     const validate = (nodeVersion: string) => {
       const { runtime: r, options } = runtime()
       const { address } = options.token
       Object.assign(options.portal, {
-        getL2Portal: async () => address,
+        getL2Token: async () => address,
         getRollup: async () => address,
         getRollupVersion: async () => 1n,
         isFrozen: async () => true,
@@ -223,48 +193,55 @@ describe("FrozenRefundMigrationRuntime", () => {
       })
       return r.validate(address.toString())
     }
-    await expect(validate("5.3.0-nightly.20261022")).resolves.toBeUndefined()
-    await expect(validate("v5.2.0")).resolves.toBeUndefined()
-    await expect(validate("6.0.0")).rejects.toThrow("does not match its pinned proof generation")
+    await expect(validate("6.1.0-nightly.20261022")).resolves.toBeUndefined()
+    await expect(validate("v6.0.0")).resolves.toBeUndefined()
+    await expect(validate("5.2.0")).rejects.toThrow("does not match its pinned proof generation")
   })
 
-  it("keeps a frozen deposit and a closed-tree unprocessed one, and drops one claimed before the freeze or refunded", async () => {
-    h.classify.mockImplementation(async (_p, _i, _c, deposit: { messageLeafIndex: bigint }) => ({
+  it("keeps a frozen deposit and an unprocessed one, and drops one claimed before the freeze or refunded", async () => {
+    h.classify.mockImplementation(async (_p, _c, deposit: { messageLeafIndex: bigint }) => ({
       kind: ["frozen-deposit", "consumed", "refunded", "unprocessed-deposit"][
         Number(deposit.messageLeafIndex) - 1
       ],
       nullifier: new Fr(deposit.messageLeafIndex + 50n),
     }))
-    const inbox = (inProgress: bigint) => ({
-      getState: async () => ({ treeInProgress: inProgress }),
-      getMessageSentEvents: async () => [{ args: { leaf: new Fr(4), checkpointNumber: 9n } }],
-    })
     const found = await readRefundableFrozenDeposits({
-      portal: {},
-      inbox: inbox(10n),
+      portal: { client: l1(7n) },
       node: {},
       depositMetadata: {},
       descriptors: [1, 2, 3, 4, 1].map(descriptor),
     } as never)
-    expect(found.map(({ kind, id }) => [kind, id])).toEqual([
+    expect(found.refundable.map(({ kind, id }) => [kind, id])).toEqual([
       ["frozen-deposit", new Fr(51n).toString()],
       ["unprocessed-deposit", new Fr(54n).toString()],
     ])
-    const deposits = async () => [1, 4].map(descriptor)
-    // An unprocessed deposit waits while its Inbox tree is open: a later message would change the root.
-    const open = runtime({ depositDescriptors: deposits, inbox: inbox(9n) }).runtime
-    expect(await open.candidates()).toMatchObject({
-      candidates: [{ id: new Fr(51n).toString(), amount: "1001", kind: "frozen-deposit" }],
-      waiting: 1004n,
-    })
-    const closed = runtime({ depositDescriptors: deposits, inbox: inbox(10n) }).runtime
-    expect(await closed.candidates()).toMatchObject({
-      candidates: [
-        { id: new Fr(51n).toString(), amount: "1001", kind: "frozen-deposit" },
-        { id: new Fr(54n).toString(), amount: "1004", kind: "unprocessed-deposit" },
-      ],
+    expect(found.waiting).toBe(0)
+    const { runtime: r } = runtime({ depositDescriptors: async () => [1, 4].map(descriptor) })
+    expect(await r.candidates()).toEqual({
+      maxNotesPerBatch: expect.any(Number),
+      maxBatchAmount: 5_000n,
       waiting: 0n,
+      candidates: [
+        { id: new Fr(51n).toString(), amount: "1001", kind: "frozen-deposit", leafIndex: "1" },
+        { id: new Fr(54n).toString(), amount: "1004", kind: "unprocessed-deposit", leafIndex: "4" },
+      ],
     })
+  })
+
+  it("leaves a deposit in an L1 block that is not final waiting, unclassified", async () => {
+    h.classify.mockResolvedValue({ kind: "unprocessed-deposit", nullifier: Fr.ONE })
+    const found = await readRefundableFrozenDeposits({
+      portal: { client: l1(6n) },
+      node: {},
+      depositMetadata: {},
+      descriptors: [1, 1].map(descriptor),
+    } as never)
+    expect(found).toEqual({ refundable: [], waiting: 1, waitingAmount: 1001n })
+    expect(h.classify).not.toHaveBeenCalled()
+    const { runtime: r } = runtime({
+      portal: { address: EthAddress.random(), client: l1(6n), getTxAmountCap: async () => 5_000n },
+    })
+    expect(await r.candidates()).toMatchObject({ candidates: [], waiting: 1001n })
   })
 
   it("never reads a failed classification or scan as empty, and does not memoize a failed scan", async () => {
@@ -283,17 +260,13 @@ describe("FrozenRefundMigrationRuntime", () => {
     expect(scan).toHaveBeenCalledTimes(2)
   })
 
-  it("never reads a failed Inbox read as a waiting or refundable deposit", async () => {
+  it("never reads a failed L1 read as a waiting or refundable deposit", async () => {
     h.classify.mockResolvedValue({ kind: "unprocessed-deposit", nullifier: Fr.ONE })
-    const inbox = {
-      getState: async () => Promise.reject(new Error("l1 down")),
-      getMessageSentEvents: async () => [],
-    }
-    await expect(runtime({ inbox }).runtime.candidates()).rejects.toThrow("l1 down")
-    inbox.getState = async () => ({ treeInProgress: 99n } as never)
-    await expect(runtime({ inbox }).runtime.candidates()).rejects.toThrow(
-      "no message for the deposit",
-    )
+    const client = { getBlock: async () => Promise.reject(new Error("l1 down")) }
+    const { runtime: r } = runtime({
+      portal: { address: EthAddress.random(), client, getTxAmountCap: async () => 5_000n },
+    })
+    await expect(r.candidates()).rejects.toThrow("l1 down")
   })
 
   it("refuses a fresh scan whose sync resolves behind the source tip", async () => {
@@ -309,12 +282,16 @@ describe("FrozenRefundMigrationRuntime", () => {
 
 describe("nextFrozenSelfRefund", () => {
   const recipient = "0x00000000000000000000000000000000000000aa"
-  const selfRuntime = (candidates: Array<{ id: string; amount: string }>, waiting = 0n) => ({
+  const selfRuntime = (
+    candidates: Array<{ id: string; amount: string; leafIndex?: string }>,
+    waiting = 0n,
+    kind: "note" | "frozen-deposit" = "note",
+  ) => ({
     candidates: vi.fn(async () => ({
       maxNotesPerBatch: 2,
       maxBatchAmount: 1000n,
       waiting,
-      candidates: candidates.map((c) => ({ ...c, kind: "note" as const })),
+      candidates: candidates.map((c) => ({ ...c, kind })),
     })),
     build: vi.fn(async (selection: { ids: string[] }) => ({
       amount: 5n,
@@ -347,11 +324,19 @@ describe("nextFrozenSelfRefund", () => {
       waiting: 7n,
       refund: {
         ids: rt.build.mock.calls[0]![0].ids,
+        deposits: [],
         amount: 5n,
         to: "0x00000000000000000000000000000000000000bb",
         data: "0x1234",
       },
     })
+  })
+
+  it("names the deposits a refund covers by their Inbox leaf index and amount", async () => {
+    const rt = selfRuntime([{ id: "d", amount: "4", leafIndex: "9" }], 0n, "frozen-deposit")
+    expect((await nextFrozenSelfRefund(rt as never, recipient)).refund?.deposits).toEqual([
+      { leafIndex: "9", amount: "4" },
+    ])
   })
 
   it("builds nothing once no refundable batch is left", async () => {
@@ -361,5 +346,50 @@ describe("nextFrozenSelfRefund", () => {
       waiting: 7n,
     })
     expect(rt.build).not.toHaveBeenCalled()
+  })
+})
+
+describe("planFrozenSelfRefunds", () => {
+  it("plans every capped batch nextFrozenSelfRefund would send", () => {
+    const batches = planFrozenSelfRefunds({
+      maxNotesPerBatch: 2,
+      maxBatchAmount: 1000n,
+      candidates: [
+        { id: "a", amount: "1", kind: "note" },
+        { id: "b", amount: "2", kind: "note" },
+        { id: "c", amount: "3", kind: "note" },
+        { id: "d", amount: "9", kind: "frozen-deposit" },
+      ],
+    })
+    expect(batches.map((b) => b.kind).sort()).toEqual(["frozen-deposit", "note", "note"])
+    expect(batches.flatMap((b) => b.ids).sort()).toEqual(["a", "b", "c", "d"])
+  })
+})
+
+describe("estimateFrozenSelfRefundCost", () => {
+  it("prices each refund at the subsidy's modeled gas, the gas price and its feed", async () => {
+    const gas: Record<string, bigint> = {
+      FROZEN_NOTES_REFUND_TX_GAS: 2_350_000n,
+      FROZEN_DEPOSITS_REFUND_TX_GAS: 2_245_000n,
+    }
+    const client = {
+      readContract: vi.fn(async ({ functionName }: { functionName: string }) =>
+        functionName === "PRICE_FEED"
+          ? "0x00000000000000000000000000000000000000fe"
+          : functionName === "latestRoundData"
+          ? [1n, 2000n * 10n ** 8n, 0n, 100n, 1n]
+          : gas[functionName],
+      ),
+      getBlock: vi.fn(async () => ({ timestamp: 100n })),
+      getGasPrice: vi.fn(async () => 10n ** 9n),
+    }
+    const cost = await estimateFrozenSelfRefundCost(
+      client as never,
+      "0x00000000000000000000000000000000000000aa",
+      ["note", "note", "frozen-deposit"],
+    )
+    expect(cost.wei).toBe((2n * 2_350_000n + 2_245_000n) * 10n ** 9n)
+    // 0.006945 ETH at $2,000.
+    expect(cost.usd).toBe(1389n * 10n ** 16n)
   })
 })

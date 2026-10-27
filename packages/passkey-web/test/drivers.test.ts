@@ -110,11 +110,13 @@ describe("runPasskeyCreation on the laptop's own route", () => {
     expect(bytesToHex(result.prfOutput)).toBe(
       bytesToHex(ceremony.prfFor(result.created.credentialId, "second")),
     )
-    // A key named after this computer, so 1Password's extension stands aside.
+    // A key named after this computer, so 1Password's extension stands aside; no kept wrapper
+    // answers the account's own passkey either.
     expect(ceremony.creates[0]).toMatchObject({
       authenticatorAttachment: "platform",
       hints: ["client-device", "security-key"],
     })
+    expect(ceremony.creates[0]!.extensionAllowed).toBeUndefined()
     expect(ceremony.creates[0]!.timeoutMs).toBeUndefined()
     expect(ceremony.creates[0]!.prfSecondSalt).toHaveLength(32)
   })
@@ -693,6 +695,22 @@ describe("runPasskeyCreation", () => {
     // Opens on the phone, and names a key so a password manager's extension stands aside.
     expect(ceremony.creates[0]!.hints).toEqual(["hybrid", "security-key"])
     expect(ceremony.creates[0]!.prfSecondSalt).toHaveLength(32)
+  })
+
+  it("lets a laptop route that names a key leave the passkey unstored, and nothing else", async () => {
+    const residentKey = async (
+      posture: "laptop" | "phone",
+      over: Partial<PasskeyCreationOptions> = {},
+    ) => {
+      const fake = create(posture, { route: posture === "laptop" ? "cross-device" : "local" }, over)
+      await fake.run
+      return fake.ceremony.creates[0]!.residentKey
+    }
+    expect(await residentKey("laptop")).toBe("preferred")
+    expect(await residentKey("laptop", { laptopHints: ["security-key"] })).toBe("preferred")
+    // The phone names a key too, but keeps the requirement; the hint-free build sends no hints.
+    expect(await residentKey("phone")).toBe("required")
+    expect(await residentKey("laptop", { laptopHints: null })).toBe("required")
   })
 
   it("phone: its own answer with both slots binds second, asking for no class and hinting both", async () => {
@@ -1510,6 +1528,56 @@ describe("security keys at creation", () => {
     await expect(run).rejects.toThrow(named("DeviceBoundPasskeyError"))
   })
 
+  describe("a key the browser lists no transports for", () => {
+    /** Chrome's shape for a Trezor, and for a Ledger: an empty list and an id attested as zeros. */
+    const trezor = (over: FakeCeremonyOptions = {}) =>
+      key({ transports: [], aaguid: ZERO_AAGUID, ...over })
+
+    it("is a key on the zero id: admitted, binding first, asked again without transports", async () => {
+      const complete = create("laptop", trezor())
+      const atCreate = await complete.run
+      expect(atCreate.securityKey).toBe(true)
+      expect(complete.ceremony.assertRequests).toHaveLength(0)
+      expect(atCreate.slot).toBe("first")
+      expect(atCreate.created.aaguid).toBeUndefined()
+      expect(atCreate.created.attestedAaguid).toBe(ZERO_AAGUID)
+
+      // A Ledger: no PRF at creation, and a passkey it did not store, so the creation must have
+      // allowed one and the follow-up must name it.
+      const { ceremony, run } = create("laptop", trezor({ prfAtCreate: false }))
+      const chained = await run
+      expect(chained.securityKey).toBe(true)
+      expect(chained.slot).toBe("first")
+      expect(ceremony.creates[0]!.residentKey).toBe("preferred")
+      expect(ceremony.assertRequests).toHaveLength(1)
+      expect(ceremony.assertRequests[0]).toMatchObject({
+        credentialIds: [chained.created.credentialId],
+        hints: ["security-key"],
+      })
+      expect(ceremony.assertRequests[0]!.transports).toBeUndefined()
+    })
+
+    it("stays refused when nothing was attested, or when any id was reported", async () => {
+      const unattested = create(
+        "laptop",
+        trezor({ backupEligible: "unknown", createAuthData: false }),
+      )
+      await expect(unattested.run).rejects.toThrow(named("DeviceBoundPasskeyError"))
+      for (const aaguid of [APPLE_ICLOUD_AAGUID, GPM_AAGUID]) {
+        const { run } = create("laptop", trezor({ aaguid }))
+        await expect(run).rejects.toThrow(named("DeviceBoundPasskeyError"))
+      }
+      // A key's own id on an empty list is a phone to the class, so the manager gate refuses it.
+      const yubikey = create("laptop", trezor({ aaguid: YUBIKEY_5_USB_A_AAGUID }))
+      await expect(yubikey.run).rejects.toThrow(named("UnsupportedProviderError"))
+    })
+
+    it("gets the key's refusal when it returns no PRF on either ceremony", async () => {
+      const { run } = create("laptop", trezor({ prfAtCreate: false, prfAtAssert: false }))
+      await expect(run).rejects.toThrow(named("SecurityKeyNoPrfError"))
+    })
+  })
+
   it("refuses a key that returned no PRF on either ceremony, in words a key holder can use", async () => {
     for (const posture of ["laptop", "phone"] as const) {
       const { run } = create(posture, key({ prfAtCreate: false, prfAtAssert: false }))
@@ -1766,7 +1834,7 @@ describe("security keys at creation", () => {
       await expect(run).rejects.toThrow(named("SecurityKeyNoPrfError"))
     })
 
-    it("is made from one place in the package, with one caller", () => {
+    it("is made from one place in the package, called only by the creation drivers", () => {
       const src = join(dirname(fileURLToPath(import.meta.url)), "../src")
       const read = (file: string) => readFileSync(join(src, file), "utf8")
       const files = (readdirSync(src, { recursive: true }) as string[]).filter((file) =>
@@ -1777,8 +1845,9 @@ describe("security keys at creation", () => {
       ])
       const drivers = read(join("policy", "drivers.ts"))
       expect(drivers.match(/signalUnknownCredential\(/g)).toHaveLength(1)
-      // The definition and its one call, in the creation's catch.
-      expect(drivers.match(/forgetCredential\(/g)).toHaveLength(2)
+      // The definition, one call in each creation driver's catch, and the backup driver's call for
+      // a creation the browser saved but the wallet could not read.
+      expect(drivers.match(/forgetCredential\(/g)).toHaveLength(4)
     })
   })
 

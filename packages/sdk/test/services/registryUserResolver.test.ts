@@ -12,7 +12,10 @@ import { createPublicClient, http, type Address, type Hex, type PublicClient } f
 import { namehash } from "viem/ens"
 import { extractPinnedOxideEnvTuple } from "@obsidion/core/oxide"
 import { getUserRecord, readUserAddress } from "@oxide/l1-contracts"
-import { readUserByNameHash } from "../../src/services/registryUserResolver.js"
+import {
+  readUserByNameHash,
+  recordNamesOtherAccount,
+} from "../../src/services/registryUserResolver.js"
 
 const LIVE_MANIFEST_URL =
   process.env.OXIDE_MANIFEST_URL ?? "https://d1162cdsa8f9md.cloudfront.net/dev.v4.json"
@@ -140,4 +143,34 @@ describe.runIf(process.env.LIVE_OXIDE === "1")("live registry user record", () =
     },
     120_000,
   )
+})
+
+describe("recordNamesOtherAccount", () => {
+  const ask = (client: PublicClient, l2Address: Hex, rollupVersion: bigint) =>
+    recordNamesOtherAccount(client, METADATA_REGISTRY, ACCOUNT, l2Address, rollupVersion)
+
+  it.each([
+    [
+      "the same account on the same rollup",
+      RECORD.l2Address.toUpperCase().replace("0X", "0x"),
+      4n,
+      false,
+    ],
+    ["another rollup", RECORD.l2Address, 5n, true],
+    ["another L2 account", `0x${"22".repeat(32)}`, 4n, true],
+  ])("compares the record with %s", async (_, l2Address, rollupVersion, stale) => {
+    const { client, calls } = stubClient({
+      ownerOf: () => ZERO,
+      hasUserRecord: () => true,
+      getUserRecord: () => RECORD,
+    })
+    expect(await ask(client, l2Address as Hex, rollupVersion)).toBe(stale)
+    expect(calls.every((c) => c.address === METADATA_REGISTRY)).toBe(true)
+    expect(calls[0]!.args).toEqual([ACCOUNT])
+  })
+
+  it("reads an account with no record as not stale, without reading the record", async () => {
+    const { client } = stubClient({ ownerOf: () => ZERO, hasUserRecord: () => false })
+    expect(await ask(client, RECORD.l2Address, 4n)).toBe(false)
+  })
 })

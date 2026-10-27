@@ -1,8 +1,8 @@
-import { Fr } from '@aztec/aztec.js/fields';
-import { MAX_L2_TO_L1_MSGS_PER_TX, MAX_NULLIFIERS_PER_TX, PRIVATE_LOG_SIZE_IN_FIELDS } from '@aztec/constants';
-import { AztecAddress } from '@aztec/stdlib/aztec-address';
-import { PrivateLog, SiloedTag, Tag } from '@aztec/stdlib/logs';
-import { TxEffect } from '@aztec/stdlib/tx';
+import { Fr } from '@aztec-labs/aztec.js/fields';
+import { MAX_L2_TO_L1_MSGS_PER_TX, MAX_NULLIFIERS_PER_TX, PRIVATE_LOG_SIZE_IN_FIELDS } from '@aztec-labs/constants';
+import { AztecAddress } from '@aztec-labs/stdlib/aztec-address';
+import { PrivateLog, SiloedTag, Tag } from '@aztec-labs/stdlib/logs';
+import { TxEffect } from '@aztec-labs/stdlib/tx';
 
 import { beforeAll, describe, expect, it } from '@jest/globals';
 
@@ -16,8 +16,9 @@ import {
 // These tests are mirrored in noir-projects/oxide_token_contract/src/da.nr: every case here has a same-named test there
 // with equivalent behavior. This helps ensure the enclave and the client perform equivalent validation checks.
 
-// Layout mirrors da.nr: fields[0] the siloed DA tag, fields[1..5] the 5 metadata payload fields.
-const METADATA_PAYLOAD = [11, 12, 13, 14, 15].map(n => new Fr(n));
+// Layout mirrors da.nr: fields[0] the siloed DA tag, fields[1..6] the 6 metadata payload fields.
+const METADATA_PAYLOAD = [11, 12, 13, 14, 15, 16].map(n => new Fr(n));
+const FULLY_EMITTED = 1 + METADATA_PAYLOAD.length;
 const TWO_POW_128 = 1n << 128n;
 
 let l2Token: AztecAddress;
@@ -63,13 +64,14 @@ function effectWith(...logs: PrivateLog[]): TxEffect {
 
 describe('metadata', () => {
   it('reads a fully emitted log', async () => {
-    const metadata = await extractMetadata(effectWith(metadataLog(6)), l2Token);
+    const metadata = await extractMetadata(effectWith(metadataLog(FULLY_EMITTED)), l2Token);
     const got = [
       metadata.pubKeyXHi,
       metadata.pubKeyXLo,
       metadata.pubKeyYHi,
       metadata.pubKeyYLo,
       metadata.anchorBlockHash,
+      metadata.registrationLeafIndex,
     ].map(f => f.toString());
     expect(got).toEqual(METADATA_PAYLOAD.map(f => f.toString()));
   });
@@ -80,8 +82,8 @@ describe('metadata', () => {
   });
 
   it('rejects a payload not fully emitted', async () => {
-    // Tag is emitted but some of the 5 payload fields live in padding beyond emittedLength.
-    for (let emitted = 1; emitted < 6; emitted++) {
+    // Tag is emitted but some of the 6 payload fields live in padding beyond emittedLength.
+    for (let emitted = 1; emitted < FULLY_EMITTED; emitted++) {
       await expect(extractMetadata(effectWith(metadataLog(emitted)), l2Token)).rejects.toThrow(
         /not fully emitted|need at least/,
       );
@@ -90,17 +92,19 @@ describe('metadata', () => {
 
   it('ignores a log of another token', async () => {
     const otherToken = await AztecAddress.random();
-    await expect(extractMetadata(effectWith(metadataLog(6)), otherToken)).rejects.toThrow(/found 0/);
+    await expect(extractMetadata(effectWith(metadataLog(FULLY_EMITTED)), otherToken)).rejects.toThrow(/found 0/);
   });
 
   it('rejects two tagged logs', async () => {
-    await expect(extractMetadata(effectWith(metadataLog(6), metadataLog(6)), l2Token)).rejects.toThrow(/found 2/);
+    await expect(
+      extractMetadata(effectWith(metadataLog(FULLY_EMITTED), metadataLog(FULLY_EMITTED)), l2Token),
+    ).rejects.toThrow(/found 2/);
   });
 
   it('reads key halves at the 16-byte boundary', async () => {
     const maxHalf = new Fr(TWO_POW_128 - 1n);
     const metadata = await extractMetadata(
-      effectWith(metadataLog(6, [maxHalf, maxHalf, maxHalf, maxHalf, new Fr(15)])),
+      effectWith(metadataLog(FULLY_EMITTED, [maxHalf, maxHalf, maxHalf, maxHalf, new Fr(15), new Fr(16)])),
       l2Token,
     );
     expect(metadata.pubKeyYLo.equals(maxHalf)).toBe(true);
@@ -110,7 +114,9 @@ describe('metadata', () => {
     for (let wideIndex = 0; wideIndex < 4; wideIndex++) {
       const payload = [...METADATA_PAYLOAD];
       payload[wideIndex] = new Fr(payload[wideIndex].toBigInt() + TWO_POW_128);
-      await expect(extractMetadata(effectWith(metadataLog(6, payload)), l2Token)).rejects.toThrow(/exceeds 16 bytes/);
+      await expect(extractMetadata(effectWith(metadataLog(FULLY_EMITTED, payload)), l2Token)).rejects.toThrow(
+        /exceeds 16 bytes/,
+      );
     }
   });
 });

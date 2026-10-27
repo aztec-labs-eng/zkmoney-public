@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest"
 import { walletStorage } from "../src/platform/storage/walletStorage"
 import { discardIncompatiblePasskeyState } from "../src/platform/auth/discardIncompatiblePasskeyState"
-import { WebPasskeyIdentityMap, hasMskRootBreadcrumb } from "../src/platform/auth/WebPasskeyIdentityMap"
+import { WebPasskeyIdentityMap, hasOpeningBreadcrumb } from "../src/platform/auth/WebPasskeyIdentityMap"
 import { WebStorageAdapter } from "../src/platform/storage/WebStorageAdapter"
 import {
   getActiveCredentialId,
@@ -37,9 +37,9 @@ describe("discarding state before account restoration", () => {
     expect(readCachedMsk()).toBeNull()
     expect(walletStorage.getItem("webwallet.identity")).toBeNull()
     expect(await map("wallet.zk.money").get(entry.credentialId)).toBeUndefined()
-    expect(hasMskRootBreadcrumb("auth.zk.money")).toBe(false)
+    expect(hasOpeningBreadcrumb("auth.zk.money")).toBe(false)
     await map("auth.zk.money").upsert(entry)
-    expect(hasMskRootBreadcrumb("auth.zk.money")).toBe(true)
+    expect(hasOpeningBreadcrumb("auth.zk.money")).toBe(true)
   })
 
   it.each(["auth.zk.money", "staging.zk.money", "localhost"])(

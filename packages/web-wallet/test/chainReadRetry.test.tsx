@@ -11,7 +11,6 @@ import type { PendingRegistrationRecord } from "@obsidion/front-core"
 import type { WebWalletConfig } from "../src/config/env"
 
 const h = vi.hoisted(() => ({
-  cut: vi.fn(),
   transfers: vi.fn(),
   read: vi.fn(),
   skim: vi.fn(),
@@ -25,12 +24,19 @@ vi.mock("../src/config/oxideTuple", () => ({
     portal: `0x${"b1".repeat(20)}`,
     registry: `0x${"b2".repeat(20)}`,
     sipaFactory: `0x${"b3".repeat(20)}`,
+    forwardingTable: `0x${"b5".repeat(20)}`,
+    token: `0x${"b6".repeat(20)}`,
     pool: `0x${"b4".repeat(20)}`,
   }),
   requireTupleField: (tuple: Record<string, string>, key: string) => tuple[key],
   l1PublicClient: () => ({ readContract: (args: { functionName: string }) => h.read(args) }),
 }))
-vi.mock("../src/features/fees/fpcFundingCut", () => ({ fpcFundingCut: () => h.cut() }))
+// One row, of the record's token.
+vi.mock("../src/features/deposit/loadDepositFacts", async (importOriginal) => {
+  const { mockLoadDepositFacts, singleToken } = await import("./support/depositTokens")
+  const tokens = singleToken(`0x${"d4".repeat(20)}`)
+  return mockLoadDepositFacts(importOriginal, () => tokens)
+})
 vi.mock("@obsidion/sdk", async (importOriginal) => ({
   ...(await importOriginal<object>()),
   readFundingTransfers: () => h.transfers(),
@@ -47,7 +53,6 @@ const {
   useChainReadRetry,
   useDepositSkim,
   useRegistrationSchedule,
-  useSweepDeductions,
 } = await import("../src/features/onboarding/registrationTerms")
 const { useFundingTransfer } = await import("../src/features/onboarding/registrationFunding")
 
@@ -83,7 +88,6 @@ const wait = (ms: number) => act(async () => void (await vi.advanceTimersByTimeA
 
 beforeEach(() => {
   vi.useFakeTimers()
-  h.cut.mockReset()
   h.transfers.mockReset()
   h.read.mockReset()
   h.skim.mockReset()
@@ -181,62 +185,6 @@ describe("useChainReadRetry state", () => {
   })
 })
 
-/** The three attempts every one-shot chain read makes before it waits for its next trigger. */
-describe("useSweepDeductions", () => {
-  /** Long enough for both waits between the three attempts. */
-  const ATTEMPTS_MS = 2_000
-
-  function Probe({ refreshKey = 0 }: { refreshKey?: number }) {
-    const deductions = useSweepDeductions(CONFIG, TOKEN, true, refreshKey)
-    return (
-      <span data-testid="key">{deductions === undefined ? "" : String(deductions.fpcCut)}</span>
-    )
-  }
-  const cut = () => container.querySelector('[data-testid="key"]')!.textContent
-  const show = (refreshKey: number) =>
-    act(async () => {
-      root.render(<Probe refreshKey={refreshKey} />)
-    })
-
-  it("rides out two failed reads and yields what the third answers", async () => {
-    h.cut
-      .mockRejectedValueOnce(new Error("rpc down"))
-      .mockRejectedValueOnce(new Error("rpc down"))
-      .mockResolvedValueOnce(7n)
-
-    await act(() => {
-      root.render(<Probe />)
-    })
-    await wait(ATTEMPTS_MS)
-
-    expect(h.cut).toHaveBeenCalledTimes(3)
-    expect(cut()).toBe("7")
-  })
-
-  it("stays unread when every attempt fails, rather than reading as a zero cut", async () => {
-    h.cut.mockRejectedValue(new Error("rpc down"))
-
-    await act(() => {
-      root.render(<Probe />)
-    })
-    await wait(ATTEMPTS_MS)
-
-    expect(cut()).toBe("")
-  })
-
-  it("holds the cut it read across a bumped key", async () => {
-    h.cut.mockResolvedValue(7n)
-    await show(0)
-    expect(cut()).toBe("7")
-
-    await show(1)
-    await wait(ATTEMPTS_MS)
-
-    expect(h.cut).toHaveBeenCalledTimes(1)
-    expect(cut()).toBe("7")
-  })
-})
-
 describe("useRegistrationSchedule", () => {
   /** One read of the schedule: the controller lookup, then its two immutables. */
   const READS_PER_ATTEMPT = 3
@@ -293,6 +241,27 @@ describe("useDepositSkim", () => {
     act(async () => {
       root.render(<Probe refreshKey={refreshKey} />)
     })
+
+  // The three attempts every one-shot chain read makes before it waits for its next trigger.
+  it("rides out two failed reads and yields what the third answers", async () => {
+    h.skim
+      .mockRejectedValueOnce(new Error("rpc down"))
+      .mockRejectedValueOnce(new Error("rpc down"))
+      .mockResolvedValueOnce(4n)
+    await show(0)
+    await wait(2_000)
+
+    expect(h.skim).toHaveBeenCalledTimes(3)
+    expect(skim()).toBe("4")
+  })
+
+  it("stays unread when every attempt fails, rather than reading as a zero skim", async () => {
+    h.skim.mockRejectedValue(new Error("rpc down"))
+    await show(0)
+    await wait(2_000)
+
+    expect(skim()).toBe("")
+  })
 
   it("holds the skim it read across a bumped key", async () => {
     h.read.mockResolvedValue(`0x${"c2".repeat(20)}`)

@@ -2,7 +2,7 @@ import { useEffect, useState } from "react"
 import type { Address } from "viem"
 import { WALLET_TOKEN_SYMBOL, tokenDecimalsForNetwork } from "@obsidion/core/constants"
 import {
-  feeScale,
+  inRowUnits,
   type PendingRegistrationRecord,
   type SipaFundingToken,
 } from "@obsidion/front-core"
@@ -48,7 +48,7 @@ export function registrationFunding(
     txHash: first.txHash,
     token: tokens[at],
     amount: totals[at],
-    normalized: totals.reduce((sum, total, i) => sum + total * feeScale(tokens[0], tokens[i]), 0n),
+    normalized: totals.reduce((sum, total, i) => sum + inRowUnits(total, tokens[i], tokens[0]), 0n),
   }
 }
 
@@ -71,14 +71,20 @@ export function useFundingTransfer(record: PendingRegistrationRecord | null, ref
     if (!token || !sipa || funding !== undefined) return
     let live = true
     const config = getConfig()
-    const tokens = sipaFundingTokens(config.network, {
-      address: token as Address,
-      symbol: WALLET_TOKEN_SYMBOL,
-      decimals: tokenDecimalsForNetwork(config.network),
-    })
     const client = l1PublicClient(config)
-    Promise.all(tokens.map((t) => readFundingTransfers(client, t.address, sipa as Address)))
-      .then((perToken) => {
+    sipaFundingTokens(
+      config,
+      {
+        address: token as Address,
+        symbol: WALLET_TOKEN_SYMBOL,
+        decimals: tokenDecimalsForNetwork(config.network),
+      },
+      "registration",
+    )
+      .then(async (tokens) => {
+        const perToken = await Promise.all(
+          tokens.map((t) => readFundingTransfers(client, t.address, sipa as Address)),
+        )
         if (live) setRead({ sipa, funding: registrationFunding(tokens, perToken) })
       })
       .catch((err) => console.warn("funding transfer read failed", err))

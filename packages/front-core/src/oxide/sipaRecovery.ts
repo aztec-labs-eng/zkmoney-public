@@ -1,5 +1,5 @@
-import { Fr } from "@aztec/aztec.js/fields"
-import { EthAddress } from "@aztec/foundation/eth-address"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { EthAddress } from "@aztec-labs/foundation/eth-address"
 import type { Address, Hex } from "viem"
 import type { LegacySipaDeployArgs } from "@oxide/l1-contracts/legacy_sipa.js"
 import {
@@ -97,7 +97,11 @@ export function sipaDeployArgCandidates(
         ? {
             protocol: "account",
             sipaFactory: origin.sipaFactory,
-            args: { ...args, recoveryCommitment: origin.recoveryCommitment },
+            args: {
+              ...args,
+              recoveryCommitment: origin.recoveryCommitment,
+              forwardingTable: origin.forwardingTable,
+            },
           }
         : {
             protocol: "legacy-eoa",

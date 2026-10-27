@@ -9,6 +9,12 @@
     "noUncheckedIndexedAccess": true,
     "resolveJsonModule": true
   },
-  "include": ["src/types/index.ts", "src/constants/index.ts", "src/oxide/index.ts", "src/text/index.ts"],
+  "include": [
+    "src/types/index.ts",
+    "src/constants/index.ts",
+    "src/oxide/index.ts",
+    "src/oxide/manifestEntriesCli.ts",
+    "src/text/index.ts"
+  ],
   "exclude": ["node_modules", "dist"]
 }

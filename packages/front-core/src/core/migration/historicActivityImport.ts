@@ -1,0 +1,238 @@
+/**
+ * The account's activity from the wallet databases this browser kept for retired rollups, carried into
+ * the active rollup's stores: its transaction rows, its deposit and withdrawal records that settled
+ * there, and those withdrawals' Savings moves. A retired rollup's row can never progress here, so an
+ * unfinished one lands failed, and a deposit or withdrawal still moving there stays, for the upgrade
+ * to report. Every record keeps, or takes, its retired network's id, so the active network's
+ * reconcilers leave it alone; a deposit or withdrawal whose network cannot be told stays too. Runs once per account: the writes run while no
+ * account switch may commit, each must reach storage, and only then is the marker written, so a read
+ * that could not see every other database, or a write that failed, leaves no marker and the next boot
+ * tries again.
+ */
+import type { IStorageAdapter } from "../storages/adapter"
+import { ACCOUNT_STORAGE_KEY, TRANSACTIONS_STORAGE_KEY } from "../storages/constants"
+import type { TransactionStorage } from "../storages/TransactionStorage"
+import type { Transaction } from "../../types/transactions"
+import {
+  isSettledSipaPhase,
+  KEY_SIPA_DEPOSITS,
+  type SIPADepositRecord,
+  type SIPADepositStore,
+} from "../services/deposits/SIPADepositStore"
+import { WITHDRAWAL_TERMINAL_PHASES, type WithdrawalRecord } from "../services/bridge/types"
+import { KEY_WITHDRAWALS, type WithdrawalStorage } from "../services/bridge/WithdrawalStorage"
+import { KEY_SAVINGS_MOVES, type SavingsMoveStorage } from "../services/savings/SavingsMoveStorage"
+import type { SavingsMoveRecord } from "../services/savings/types"
+import {
+  TRANSFER_SCAN_CURSOR_PREFIX,
+  transferScanNetworkOf,
+} from "../services/transactions/TransferEventScanner"
+import { logger } from "src/utils/logger"
+
+export const HISTORIC_ACTIVITY_IMPORTED_KEY = "@obsidion/historic-activity/imported/v2"
+
+const LOG_PREFIX = "[historicActivity]"
+
+/** This account's part of one retired rollup's database. */
+export interface RetiredDatabase {
+  /** The rollup version the database is named for. */
+  version: string
+  get(key: string): string | undefined
+  /** This account's keys under `prefix`. */
+  keys(prefix: string): string[]
+}
+
+/** A database held as plain entries, as a source generation's `history` hands one over. */
+export function retiredDatabaseOf(
+  version: string,
+  entries: Readonly<Record<string, string>>,
+): RetiredDatabase {
+  const items = new Map(Object.entries(entries))
+  return {
+    version,
+    get: (key) => items.get(key),
+    keys: (prefix) => [...items.keys()].filter((key) => key.startsWith(prefix)),
+  }
+}
+
+export interface HistoricActivityImportDeps {
+  /** The account's storage on the active rollup, where the marker lives. */
+  storage: IStorageAdapter
+  /** The marker; {@link HISTORIC_ACTIVITY_IMPORTED_KEY} for this browser's databases. */
+  key?: string
+  /** `read` over each retired rollup's database; rejects when one could not be read. */
+  readOtherDatabases<T>(read: (db: RetiredDatabase) => T): Promise<T[]>
+  transactions: Pick<TransactionStorage, "importHistoricRows">
+  sipaDeposits: Pick<SIPADepositStore, "load" | "get" | "create">
+  withdrawals: Pick<WithdrawalStorage, "load" | "get" | "getByL2TxHash" | "create">
+  savingsMoves: Pick<SavingsMoveStorage, "load" | "get" | "put">
+  /** Whether the account the import started for is still the active one; false stops it before a write. */
+  ownsStorage?: () => boolean
+  /** Runs the writes while no account switch may commit; absent, they run as they are. */
+  holdSession?: <T>(fn: () => Promise<T>) => Promise<T>
+}
+
+export interface HistoricActivityImported {
+  databases: number
+  transactions: number
+  deposits: number
+  withdrawals: number
+  savingsMoves: number
+  /** Settled deposits and withdrawals left behind because nothing told their network. */
+  unstamped: number
+}
+
+interface Snapshot {
+  version: string
+  /** The network the account scanned or recorded there, when exactly one is named. */
+  networkId: string | undefined
+  rows: Transaction[]
+  deposits: SIPADepositRecord[]
+  withdrawals: WithdrawalRecord[]
+  savingsMoves: SavingsMoveRecord[]
+}
+
+/** Imports once per account; null when already done. */
+export async function importHistoricActivity(
+  deps: HistoricActivityImportDeps,
+): Promise<HistoricActivityImported | null> {
+  const key = deps.key ?? HISTORIC_ACTIVITY_IMPORTED_KEY
+  if ((await deps.storage.getItem(key)) !== null) return null
+  const snapshots = await deps.readOtherDatabases(snapshotOf)
+  const assertOwner = () => {
+    if (deps.ownsStorage && !deps.ownsStorage()) {
+      throw new Error("the account changed during the import")
+    }
+  }
+  const writes = async (): Promise<HistoricActivityImported> => {
+    const result: HistoricActivityImported = {
+      databases: snapshots.length,
+      transactions: 0,
+      deposits: 0,
+      withdrawals: 0,
+      savingsMoves: 0,
+      unstamped: 0,
+    }
+    assertOwner()
+    await Promise.all([deps.sipaDeposits.load(), deps.withdrawals.load(), deps.savingsMoves.load()])
+    for (const snapshot of snapshots) {
+      assertOwner()
+      result.transactions += await deps.transactions.importHistoricRows(
+        snapshot.rows.map((row) => ({ ...row, networkId: row.networkId ?? snapshot.networkId })),
+      )
+      for (const record of snapshot.deposits) {
+        if (!isSettledSipaPhase(record.phase)) continue
+        const networkId = record.networkId ?? snapshot.networkId
+        if (!networkId) {
+          result.unstamped++
+          continue
+        }
+        if (deps.sipaDeposits.get(record.sipaAddress)) continue
+        assertOwner()
+        const { sipaAddress, ...rest } = record
+        if (await deps.sipaDeposits.create(sipaAddress, { ...rest, networkId }, { strict: true })) {
+          result.deposits++
+        }
+      }
+      for (const record of snapshot.withdrawals) {
+        if (!WITHDRAWAL_TERMINAL_PHASES.has(record.phase)) continue
+        const networkId = record.networkId ?? snapshot.networkId
+        if (!networkId) {
+          result.unstamped++
+          continue
+        }
+        // Another source's copy of the same burn carries its own id.
+        const held =
+          deps.withdrawals.get(record.localId) ??
+          (record.l2TxHash ? deps.withdrawals.getByL2TxHash(record.l2TxHash) : null)
+        if (!held) {
+          assertOwner()
+          await deps.withdrawals.create({ ...record, networkId }, { strict: true })
+          result.withdrawals++
+        }
+        const withdrawalLocalId = held?.localId ?? record.localId
+        const move = snapshot.savingsMoves.find((m) => m.withdrawalLocalId === record.localId)
+        const current = deps.savingsMoves.get(withdrawalLocalId)
+        if (!move || current?.retired) continue
+        assertOwner()
+        // The retired record's outcome wins over a move this rollup adopted from the burn alone.
+        await deps.savingsMoves.put({ ...current, ...move, withdrawalLocalId, retired: true })
+        result.savingsMoves++
+      }
+    }
+    assertOwner()
+    await deps.storage.setItem(
+      key,
+      JSON.stringify({ at: Date.now(), databases: snapshots.map((s) => s.version) }),
+    )
+    return result
+  }
+  const result = await (deps.holdSession ? deps.holdSession(writes) : writes())
+  logger.info(
+    `${LOG_PREFIX} ${result.databases} database(s): ${result.transactions} rows, ${result.deposits} deposits, ` +
+      `${result.withdrawals} withdrawals, ${result.savingsMoves} Savings moves; ${result.unstamped} without a network`,
+  )
+  return result
+}
+
+function snapshotOf(db: RetiredDatabase): Snapshot {
+  const label = `wallet_${db.version}`
+  const rows = transactionRows(db, label)
+  const deposits = parseRecords<SIPADepositRecord>(db.get(KEY_SIPA_DEPOSITS), label).filter(
+    (r) => typeof r.sipaAddress === "string" && typeof r.phase === "string",
+  )
+  const withdrawals = parseRecords<WithdrawalRecord>(db.get(KEY_WITHDRAWALS), label).filter(
+    (r) => typeof r.localId === "string" && typeof r.phase === "string",
+  )
+  const savingsMoves = parseRecords<SavingsMoveRecord>(db.get(KEY_SAVINGS_MOVES), label).filter(
+    (r) => typeof r.withdrawalLocalId === "string",
+  )
+  const networks = new Set<string>()
+  for (const key of db.keys(TRANSFER_SCAN_CURSOR_PREFIX)) {
+    const id = transferScanNetworkOf(key)
+    if (id) networks.add(id)
+  }
+  for (const r of [...rows, ...deposits, ...withdrawals]) if (r.networkId) networks.add(r.networkId)
+  if (networks.size > 1) {
+    logger.warn(
+      `${LOG_PREFIX} ${label} names ${networks.size} networks; its unstamped records stay`,
+    )
+  }
+  const [networkId] = networks.size === 1 ? networks : []
+  return { version: db.version, networkId, rows, deposits, withdrawals, savingsMoves }
+}
+
+/** The database's transaction list; a database no build split yet still holds it on the account blob. */
+function transactionRows(db: RetiredDatabase, label: string): Transaction[] {
+  const own = db.get(TRANSACTIONS_STORAGE_KEY)
+  if (own !== undefined) return parseList<Transaction>(own, label)
+  const account = parseJson(db.get(ACCOUNT_STORAGE_KEY), label)
+  const legacy = isRecord(account)
+    ? (account as { transactions?: unknown }).transactions
+    : undefined
+  return Array.isArray(legacy) ? (legacy.filter(isRecord) as Transaction[]) : []
+}
+
+const isRecord = (value: unknown): value is object => typeof value === "object" && value !== null
+
+function parseJson(raw: string | undefined, label: string): unknown {
+  if (raw === undefined) return undefined
+  try {
+    return JSON.parse(raw)
+  } catch {
+    logger.warn(`${LOG_PREFIX} ${label} holds a malformed value; skipped`)
+    return undefined
+  }
+}
+
+function parseList<T>(raw: string | undefined, label: string): T[] {
+  const parsed = parseJson(raw, label)
+  return Array.isArray(parsed) ? (parsed.filter(isRecord) as T[]) : []
+}
+
+function parseRecords<T>(raw: string | undefined, label: string): T[] {
+  const parsed = parseJson(raw, label)
+  return isRecord(parsed) && !Array.isArray(parsed)
+    ? (Object.values(parsed).filter(isRecord) as T[])
+    : []
+}

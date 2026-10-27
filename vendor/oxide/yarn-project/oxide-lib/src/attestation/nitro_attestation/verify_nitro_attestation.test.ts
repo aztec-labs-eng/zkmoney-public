@@ -1,5 +1,5 @@
-import { Buffer32 } from '@aztec/foundation/buffer';
-import { sha256 } from '@aztec/foundation/crypto/sha256';
+import { Buffer32 } from '@aztec-labs/foundation/buffer';
+import { sha256 } from '@aztec-labs/foundation/crypto/sha256';
 
 import { readFileSync } from 'node:fs';
 

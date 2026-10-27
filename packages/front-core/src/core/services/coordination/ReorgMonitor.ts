@@ -22,7 +22,7 @@ import type { WithdrawalRecord } from "../bridge/types"
 import type { SIPADepositStore } from "../deposits/SIPADepositStore"
 import type { Transaction } from "src/types"
 import { makeLimiter } from "src/utils/makeLimiter"
-import { TxExecutionResult, TxStatus } from "@aztec/stdlib/tx"
+import { TxExecutionResult, TxStatus } from "@aztec-labs/stdlib/tx"
 
 // `reorgEpoch` identifies the reorg episode the outcome belongs to (notification identity).
 // `incoming` marks a payment this wallet received, so the alert speaks to the recipient.

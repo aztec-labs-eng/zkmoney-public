@@ -77,6 +77,7 @@ export function notificationRoute(entry: AppNotificationEntry): NotificationRout
   }
   if (t.type === "migration.residuals") return { migration: "residuals" }
   if (t.type === "migration.run") return { migration: "run" }
+  if (t.type === "withdraw.oldVersion") return { to: "/activity" }
   if (t.type === "registration.pending") {
     // A payment link's registration is Home's: its claim runs there and its review reports it, so
     // the wizard's deposit ask is never the place to land.
@@ -290,12 +291,7 @@ export function NotificationsPanel({
           op ? (
             <OperationRow key={key} operation={op} place={place} />
           ) : (
-            <EntryRow
-              key={key}
-              entry={entry!}
-              onOpen={open}
-              onDismiss={(id) => void dismiss(id)}
-            />
+            <EntryRow key={key} entry={entry!} onOpen={open} onDismiss={(id) => void dismiss(id)} />
           ),
         )}
       </div>
@@ -306,7 +302,9 @@ export function NotificationsPanel({
       {content}
     </Modal>
   ) : (
-    <div className="ww-notifications" role="dialog" aria-label="Notifications">{content}</div>
+    <div className="ww-notifications" role="dialog" aria-label="Notifications">
+      {content}
+    </div>
   )
 }
 

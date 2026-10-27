@@ -14,6 +14,7 @@ import { l1RpcCapability } from "./l1RpcCapability.js"
 import { nativePasskeyLock } from "./nativePasskeyLock.js"
 import { slimArtifactsIfAsked } from "./slimArtifacts.js"
 import { socialPreview } from "./socialPreview.js"
+import { sourceGenerations } from "./sourceGenerations.js"
 import { metricsBuildPlugin } from "@obsidion/metrics-policy/build"
 
 const require = createRequire(import.meta.url)
@@ -37,12 +38,6 @@ function backendProxies(fileEnv: Record<string, string>) {
       target: target("ACCOUNT_SERVICE_TARGET", "http://localhost:8060"),
       changeOrigin: true,
       rewrite: (path: string) => path.replace(/^\/svc\/account/, ""),
-    },
-    // Listed before /svc/enclave, which it would otherwise match as a prefix.
-    "/svc/enclave-sky": {
-      target: target("SKY_ENCLAVE_TARGET", "http://localhost:5072"),
-      changeOrigin: true,
-      rewrite: (path: string) => path.replace(/^\/svc\/enclave-sky/, "") || "/",
     },
     "/svc/enclave": {
       target: target("ENCLAVE_TARGET", "http://localhost:5071"),
@@ -111,7 +106,7 @@ const sqliteRuntimeAssets: Plugin = {
       this.emitFile({
         type: "asset",
         fileName: `assets/${file}`,
-        source: readFileSync(require.resolve(`@aztec/sqlite3mc-wasm/vendor/jswasm/${file}`)),
+        source: readFileSync(require.resolve(`@aztec-labs/sqlite3mc-wasm/vendor/jswasm/${file}`)),
       })
     }
   },
@@ -202,7 +197,9 @@ export default defineConfig(({ mode }) => {
       webPasskeyBuildPlugin(env),
       metricsBuildPlugin("wallet"),
       react(),
-      nodePolyfills({ include: ["buffer", "assert", "util"] }),
+      // `path`: `@aztec-labs/ethereum`'s L1 deploy module joins a path at import (see the
+      // `node:module` shim below).
+      nodePolyfills({ include: ["buffer", "assert", "util", "path"] }),
       shimResolveFix,
       sqliteRuntimeAssets,
       bbWasmAsset(),
@@ -215,6 +212,7 @@ export default defineConfig(({ mode }) => {
       l1RpcCapability(),
       socialPreview(env),
       nativePasskeyLock(),
+      sourceGenerations(),
     ],
     // Per the @xmtp/browser-sdk README: the SDK + wasm-bindings use import.meta.url (worker/WASM
     // loading) and must not be pre-bundled; @xmtp/proto is CJS and must be.
@@ -239,10 +237,12 @@ export default defineConfig(({ mode }) => {
         "@obsidion/web-ds": path.resolve(__dirname, "../design-system/src/index.ts"),
         // The native KZG addon enters via the vendored oxide packages: @oxide/oxide-lib
         // types.js and @oxide/oxide-client import SpongeBlob/Poseidon2Sponge from the
-        // @aztec/blob-lib ROOT barrel, whose blob.js top-level-imports kzg_context -> the
+        // @aztec-labs/blob-lib ROOT barrel, whose blob.js top-level-imports kzg_context -> the
         // addon. The classes actually used are pure JS; KZG is never called client-side.
-        // Proper fix is upstream: oxide imports from `@aztec/blob-lib/types` (pure subpath).
+        // Proper fix is upstream: oxide imports from `@aztec-labs/blob-lib/types` (pure subpath).
         "@crate-crypto/node-eth-kzg": path.resolve(__dirname, "src/shims/node-eth-kzg.ts"),
+        // The L1 deploy module `@oxide/l1-contracts` re-exports calls `createRequire` at import.
+        "node:module": path.resolve(__dirname, "src/shims/node-module.ts"),
       },
     },
   }

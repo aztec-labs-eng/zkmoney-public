@@ -1,5 +1,5 @@
 import { expect, it, vi } from "vitest"
-import { TxStatus, TxExecutionResult } from "@aztec/stdlib/tx"
+import { TxStatus, TxExecutionResult } from "@aztec-labs/stdlib/tx"
 import { provingProgress, ProvingStage } from "@obsidion/proving-progress"
 import {
   conflictingPendingTx,

@@ -1,5 +1,5 @@
-import { type Logger, createLogger } from '@aztec/foundation/log';
-import { sleep } from '@aztec/foundation/sleep';
+import { type Logger, createLogger } from '@aztec-labs/foundation/log';
+import { sleep } from '@aztec-labs/foundation/sleep';
 
 import { randomBytes } from 'node:crypto';
 import {
@@ -31,6 +31,8 @@ export interface SentL1Tx {
   nonce: number;
   /** Resolves with a mined receipt, including a revert; rejects on replacement or expiry. */
   settled: Promise<TransactionReceipt>;
+  /** True when submission is disabled: the tx was not sent and `settled` holds a fake receipt. */
+  simulated?: boolean;
 }
 
 /** Broadcasts within the current submission batch. */
@@ -290,7 +292,7 @@ export class L1TxQueue {
       logs: [],
       logsBloom: `0x${'00'.repeat(256)}`,
     };
-    return { txHash, nonce: 0, settled: Promise.resolve(receipt) };
+    return { txHash, nonce: 0, settled: Promise.resolve(receipt), simulated: true };
   }
 
   /** Runs `broadcast` after the earlier broadcasts settle. A failed broadcast does not stop the next one. */

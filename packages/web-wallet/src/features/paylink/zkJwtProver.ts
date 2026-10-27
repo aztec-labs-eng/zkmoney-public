@@ -9,10 +9,13 @@
  * the per-deposit `ZKJWT_VKEY_HASH` binding), and deriving it would cost a second proving-length
  * operation.
  */
-import initACVM, { compressWitness, executeCircuit } from "@aztec/noir-acvm_js/web/acvm_js.js"
-import initABI, { abiEncode } from "@aztec/noir-noirc_abi/web/noirc_abi_wasm.js"
-import { Barretenberg, UltraHonkBackend } from "@aztec/bb.js"
-import { Fr } from "@aztec/aztec.js/fields"
+import initACVM, {
+  compressWitness,
+  executeCircuit,
+} from "@aztec-foundation/noir-acvm_js/web/acvm_js.js"
+import initABI, { abiEncode } from "@aztec-foundation/noir-noirc_abi/web/noirc_abi_wasm.js"
+import { Barretenberg, UltraHonkBackend } from "@aztec-foundation/bb.js"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 import { getZkJwtVkey, type JwtInput } from "@obsidion/sdk"
 import { PROOF_FIELD_COUNT } from "@obsidion/core/constants"
 import type { IZkJwtProver, ZkJwtProofResult } from "@obsidion/front-core"
@@ -59,10 +62,7 @@ function zkJwtInputMap(input: JwtInput, caller: string) {
   }
 }
 
-async function proveZkJwtInBrowser(
-  jwtInput: JwtInput,
-  caller: string,
-): Promise<ZkJwtProofResult> {
+async function proveZkJwtInBrowser(jwtInput: JwtInput, caller: string): Promise<ZkJwtProofResult> {
   const started = performance.now()
   const [circuit, vkeyFields] = await Promise.all([getZkJwtCircuit(), getZkJwtVkey(), initWasm()])
 
@@ -85,10 +85,14 @@ async function proveZkJwtInBrowser(
       fields.push(Fr.fromBuffer(Buffer.from(proof.subarray(i, i + 32))).toString())
     }
     if (fields.length < PROOF_FIELD_COUNT) {
-      throw new Error(`zkJWT proof too short: need ${PROOF_FIELD_COUNT} fields, got ${fields.length}`)
+      throw new Error(
+        `zkJWT proof too short: need ${PROOF_FIELD_COUNT} fields, got ${fields.length}`,
+      )
     }
     console.log(
-      `[zkjwt-prover] proof in ${Math.round(performance.now() - started)}ms (witness ${witnessMs}ms)`,
+      `[zkjwt-prover] proof in ${Math.round(
+        performance.now() - started,
+      )}ms (witness ${witnessMs}ms)`,
     )
     return {
       proof: fields.slice(0, PROOF_FIELD_COUNT),

@@ -12,7 +12,6 @@ import {
   withdrawalAmounts,
   type WithdrawalRecord,
 } from "@obsidion/front-core"
-import { DEFAULT_DECIMALS } from "@obsidion/core/constants"
 import { formatUnits } from "viem"
 import { GradientText, Icon, PrimaryGradientButton, type StatusBadgeStyle } from "@obsidion/web-ds"
 import ethIcon from "../../assets/deposit/ethereum.webp"
@@ -110,12 +109,14 @@ export function WithdrawalDetailModal({
   const unpaid = record.phase === "failed" || record.phase === "recovered"
   // A migration's recipient is the new balance, which also pays the arrival's fee.
   const migration = record.intent === "migration" ? migrationAmounts(record) : undefined
-  // A registration's burn has no recipient to receive a net: the address it pays is swept for the
-  // name, so the sheet states what was sent and leaves the withdrawal arithmetic out.
+  // A registration's or a backup passkey's burn has no recipient to receive a net: the address it
+  // pays is swept for the name or the key, so the sheet states what was sent and leaves the
+  // withdrawal arithmetic out.
   const showBreakdown =
     !swap &&
     record.intent !== "migration" &&
     record.intent !== "registration" &&
+    record.intent !== "backup" &&
     amounts.feeKnown &&
     amounts.netAtomic > 0n &&
     !unpaid
@@ -124,12 +125,17 @@ export function WithdrawalDetailModal({
   const estimate = !unpaid ? swap?.estimate : undefined
   // The burn less the gas share, which the escrow swaps to ETH apart from the route.
   const routeGross = swap
-    ? formatUnits(swap.grossAtomic - (swap.gas?.daiAtomic ?? 0n), DEFAULT_DECIMALS)
+    ? formatUnits(swap.grossAtomic - (swap.gas?.daiAtomic ?? 0n), record.tokenDecimals)
     : "0"
   const recipientUrl = l1AddressUrl(record.recipient)
-  // A registration's burn pays this wallet's own registration address, not a recipient.
+  // A registration's or a backup passkey's burn pays this wallet's own deposit address, not a recipient.
   const registration = record.intent === "registration"
-  const recipientAlias = registration ? "Registration address" : record.recipientAlias
+  const backup = record.intent === "backup"
+  const recipientAlias = registration
+    ? "Registration address"
+    : backup
+    ? "Backup passkey deposit address"
+    : record.recipientAlias
 
   return (
     <Modal
@@ -137,6 +143,8 @@ export function WithdrawalDetailModal({
       label={
         registration
           ? "Registration details"
+          : backup
+          ? "Backup passkey funding"
           : record.source === "paylink"
           ? "Paylink withdrawal details"
           : "Withdrawal details"

@@ -1,16 +1,16 @@
 // Translates the TS-side `UnprocessedDepositRefundProofInput` into the structured `InputMap`
-// shape that `@aztec/noir-noir_js`'s `Noir.execute` expects for the unprocessed_deposit_refund
+// shape that `@aztec-foundation/noir-noir_js`'s `Noir.execute` expects for the unprocessed_deposit_refund
 // circuit. Field names (snake_case) and nesting must match the noir struct layout in
 // `noir-projects/unprocessed_deposit_refund/src/main.nr`.
-import { Fr } from '@aztec/aztec.js/fields';
+import { Fr } from '@aztec-labs/aztec.js/fields';
 
 import {
   fieldStr,
   mapAccountInstancePreimage,
   mapBlockHeader,
   mapGrumpkinScalar,
+  mapMigrationSignature,
   mapPublicKeys,
-  mapRefundAuthorization,
 } from '../noir_input_mappers.js';
 import type { UnprocessedDepositRefundProofInput } from './types.js';
 
@@ -37,6 +37,6 @@ export function buildUnprocessedDepositRefundNoirInput(
     l2_recipient_public_keys: mapPublicKeys(input.l2RecipientPublicKeys),
     l2_recipient_instance: mapAccountInstancePreimage(input.l2RecipientInstance),
     l2_recipient_nhk_m: mapGrumpkinScalar(input.l2RecipientNhkM),
-    auth: mapRefundAuthorization(input.auth),
+    migration_signature: mapMigrationSignature(input.migrationSignature),
   };
 }

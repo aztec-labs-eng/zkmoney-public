@@ -1,4 +1,4 @@
-import type { ContractFunctionInteraction } from '@aztec/aztec.js/contracts';
+import type { ContractFunctionInteraction } from '@aztec-labs/aztec.js/contracts';
 
 import { L1_OPERATION_BROADCAST_TIERS } from '@oxide/oxide-lib/l1_operation_calldata.js';
 

@@ -1,5 +1,5 @@
-import type { AztecAddress } from '@aztec/aztec.js/addresses';
-import type { EthAddress } from '@aztec/foundation/eth-address';
+import type { AztecAddress } from '@aztec-labs/aztec.js/addresses';
+import type { EthAddress } from '@aztec-labs/foundation/eth-address';
 
 import type { L1OperationCondition, L1OperationConditionKind } from '@oxide/oxide-lib/l1_operation_calldata.js';
 
@@ -116,8 +116,8 @@ export interface StateStore {
   /** Waiting Balance operations whose one-time `balanceOf` read has not run yet, oldest first. */
   listUncheckedBalanceOperations(limit: number): Promise<WaitingBalanceOperation[]>;
   markL1OperationBalanceChecked(operationId: Hex): Promise<void>;
-  /** `waiting` → `dropped` for each operation of one condition kind recorded before `createdBefore`. Returns the count. */
-  dropWaitingL1Operations(kind: L1OperationConditionKind, createdBefore: Date): Promise<number>;
+  /** `waiting` → `dropped` for each operation of one condition kind recorded before `createdBefore`. Returns them. */
+  dropWaitingL1Operations(kind: L1OperationConditionKind, createdBefore: Date): Promise<PendingL1Operation[]>;
   /** `waiting` → `pending`, due immediately. False when the operation is not waiting. */
   markL1OperationPending(operationId: Hex): Promise<boolean>;
   updatePendingL1OperationRetry(operationId: Hex, retry: PendingL1OperationRetry): Promise<boolean>;

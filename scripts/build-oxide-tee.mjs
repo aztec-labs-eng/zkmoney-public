@@ -8,7 +8,7 @@
 // We compile each directly with the locally-hoisted tsc instead.
 //
 // Builds the full subset needed by oxide-client::submit():
-//   1. `yarn install` inside vendor/oxide/l1-contracts (pulls @aztec/l1-artifacts
+//   1. `yarn install` inside vendor/oxide/l1-contracts (pulls @aztec-foundation/l1-artifacts
 //      whose sources @oxide/l1-contracts and OxidePortal.sol consume via remappings).
 //   2. The pinned Solidity repositories under vendor/oxide/l1-contracts/.deps/.
 //   3. `forge build` inside vendor/oxide/l1-contracts/ (writes
@@ -16,7 +16,7 @@
 //   4. `node gen_abis.mjs` inside vendor/oxide/yarn-project/l1-contracts/
 //      (emits src/abis/*.ts from the Foundry JSON).
 //   5. The three refund circuits under
-//      `vendor/oxide/noir-projects/{frozen_notes_refund,frozen_deposit_refund,unprocessed_deposit_refund}/target/`,
+//      `vendor/oxide/noir-projects/{frozen_notes_refund,frozen_deposits_refund,unprocessed_deposit_refund}/target/`,
 //      which @oxide/refund-proof JSON-imports. A plain build stubs missing ones;
 //      `OXIDE_REFUND_CIRCUITS=required` compiles them with the pinned Aztec toolchain.
 //   6. tsc-build each yarn-project/ package in topological order.
@@ -81,17 +81,18 @@ const SENTINELS = {
 const NOIR_PROJECTS = resolve(VENDOR_ROOT, "noir-projects")
 const REFUND_CIRCUITS = [
   "frozen_notes_refund",
-  "frozen_deposit_refund",
+  "frozen_deposits_refund",
   "unprocessed_deposit_refund",
 ]
 
-// Topological order: leaves first. oxide-lib has no @oxide/* deps; everything
-// else depends on it (attestation verification now lives at oxide-lib/src/attestation/).
+// Build oxide-lib-tee before oxide-lib, which re-exports its shared protocol types.
 // resolver-lib mirrors resolver_circuit/content_hash.nr (SIPA-resolution parity) and depends on oxide-lib.
 // tee-enclave hosts LocalTeeSigner (the sandbox in-process signer) and depends on oxide-lib.
 // refund-proof bundles the frozen/unprocessed refund circuits oxide-client re-exports.
 // experiments holds the experiments' clients and depends on l1-contracts and oxide-client.
+// migration-lib holds the source-runner protocol and has no @oxide/* deps.
 const PACKAGES = [
+  "oxide-lib-tee",
   "oxide-lib",
   "resolver-lib",
   "tee-enclave",
@@ -99,6 +100,7 @@ const PACKAGES = [
   "refund-proof",
   "oxide-client",
   "experiments",
+  "migration-lib",
 ]
 
 const BUILD_RELAYER = process.argv.includes("--relayer")
@@ -132,6 +134,13 @@ function run(cmd, args, cwd) {
 // where git is unavailable but the stamp is still wanted.
 const VENDOR_SHA_STAMP = resolve(L1_DIST, ".vendor-sha")
 const exportManifest = resolve(REPO_ROOT, "EXPORT-MANIFEST.json")
+// The public export omits test-only packages such as migration-lib.
+const exportedPackages = existsSync(exportManifest)
+  ? JSON.parse(readFileSync(exportManifest, "utf8")).oxidePackages
+  : undefined
+const BUILT_PACKAGES = exportedPackages
+  ? PACKAGES.filter((pkg) => exportedPackages.includes(`@oxide/${pkg}`))
+  : PACKAGES
 const vendorSha =
   process.env.OXIDE_VENDOR_SHA?.trim() ||
   (existsSync(exportManifest) ? JSON.parse(readFileSync(exportManifest, "utf8")).oxidePin : "") ||
@@ -151,6 +160,8 @@ if (
   (!existsSync(VENDOR_SHA_STAMP) || readFileSync(VENDOR_SHA_STAMP, "utf8").trim() !== vendorSha)
 ) {
   console.error(`vendor/oxide pin moved (or first build) — clearing forge outputs, ABIs and dest/`)
+  // The pin can move the l1-contracts dependencies (e.g. the l1-artifacts that forge remaps to).
+  rmSync(SENTINELS.yarnInstall, { force: true })
   rmSync(L1_DIST, { recursive: true, force: true })
   rmSync(resolve(L1_CONTRACTS, ".cache"), { recursive: true, force: true })
   rmSync(ABI_DIR, { recursive: true, force: true })
@@ -167,7 +178,7 @@ if (
 }
 
 if (!existsSync(SENTINELS.yarnInstall)) {
-  console.error("vendor/oxide/l1-contracts: yarn install (pulls @aztec/l1-artifacts)")
+  console.error("vendor/oxide/l1-contracts: yarn install (pulls @aztec-foundation/l1-artifacts)")
   run("yarn", ["install"], L1_CONTRACTS)
 }
 
@@ -243,9 +254,9 @@ if (!tsc) {
 // the submodule tree (untracked); cleaner than editing the vendored tsconfig.
 //
 // EXTRA_EXCLUDES drops files that pull in an @oxide package we deliberately
-// don't build. oxide-client's broadcaster.ts and sipa_events.ts import the
+// don't build. oxide-client's broadcaster.ts, sipa_events.ts and token.ts import the
 // generated @oxide/noir-contracts.js bindings, and the barrel index.ts
-// re-exports them, so all three drop out. Consumers import oxide-client's
+// re-exports them, so all four drop out. Consumers import oxide-client's
 // bindings-free subpaths (broadcaster_calls.js, sipa_event_calls.js,
 // withdraw_escrows/swap.js, …), never the barrel.
 //
@@ -255,7 +266,7 @@ if (!tsc) {
 // (and that in turn forbids emit). Excluding the whole directory keeps them out of a
 // build that emits, and covers any worker oxide adds later.
 const EXTRA_EXCLUDES = {
-  "oxide-client": ["src/broadcaster.ts", "src/sipa_events.ts", "src/index.ts"],
+  "oxide-client": ["src/broadcaster.ts", "src/sipa_events.ts", "src/token.ts", "src/index.ts"],
   "tee-enclave": ["src/testing/**"],
 }
 
@@ -295,7 +306,7 @@ function buildPackage(pkg) {
   }
 }
 
-for (const pkg of PACKAGES) buildPackage(pkg)
+for (const pkg of BUILT_PACKAGES) buildPackage(pkg)
 
 // --- Relayer (--relayer) ------------------------------------------------------
 
@@ -312,13 +323,13 @@ const NOIR_CONTRACTS_JS = resolve(YARN_PROJECT, "noir-contracts.js")
 
 // Types each artifact JSON as a NoirCompiledContract, as generate-types.sh does, so tsc does not
 // infer the multi-MB literal.
-const ARTIFACT_DECLARATION = `import { type NoirCompiledContract } from '@aztec/aztec.js/abi';
+const ARTIFACT_DECLARATION = `import { type NoirCompiledContract } from '@aztec-labs/aztec.js/abi';
 const circuit: NoirCompiledContract;
 export = circuit;
 `
 
 // Does what Oxide's generate-types.sh does for BOUND_CONTRACTS, with the `aztec codegen` of the
-// Aztec toolchain: generate-types.sh expects @aztec/builder in a yarn node_modules tree.
+// Aztec toolchain: generate-types.sh expects @aztec-labs/builder in a yarn node_modules tree.
 function generateNoirBindings() {
   const contracts = BOUND_CONTRACTS.map(([pkg, name]) => {
     const file = `${pkg}-${name}.json`

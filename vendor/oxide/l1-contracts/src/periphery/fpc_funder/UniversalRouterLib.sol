@@ -18,6 +18,18 @@ library UniversalRouterLib {
     return abi.encode(_recipient, _amountIn, _amountOutMinimum, _path, false);
   }
 
+  function v3SwapExactOutInput(address _recipient, uint256 _amountOut, uint256 _amountInMaximum, bytes memory _path)
+    internal
+    pure
+    returns (bytes memory)
+  {
+    return abi.encode(_recipient, _amountOut, _amountInMaximum, _path, false);
+  }
+
+  function sweepInput(address _token, address _recipient, uint160 _amountMinimum) internal pure returns (bytes memory) {
+    return abi.encode(_token, _recipient, _amountMinimum);
+  }
+
   function unwrapWethInput(address _recipient, uint256 _amountMinimum) internal pure returns (bytes memory) {
     return abi.encode(_recipient, _amountMinimum);
   }

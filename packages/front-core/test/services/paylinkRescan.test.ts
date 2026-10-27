@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { PaylinkActionEnum } from "@obsidion/core/constants"
-import { Fr } from "@aztec/aztec.js/fields"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 import type { ScannedTransferEvent } from "@obsidion/sdk"
 import { rebuildPaylinks } from "../../src/core/services/paylink/paylinkRescan"
 

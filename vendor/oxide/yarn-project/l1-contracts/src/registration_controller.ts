@@ -1,6 +1,6 @@
-import type { Address, PublicClient, WalletClient } from 'viem';
+import type { Address, Hex, PublicClient, WalletClient } from 'viem';
 
-import { RegistrationControllerAbi } from './artifacts.js';
+import { AccountMetadataControllerAbi, RegistrationControllerAbi } from './artifacts.js';
 import type { R1InstallGas } from './r1_install.js';
 import { maybeWaitForReceipt } from './write_receipt.js';
 
@@ -19,6 +19,20 @@ export async function readRegistrationMin(publicClient: PublicClient, controller
     abi: RegistrationControllerAbi,
     functionName: 'REGISTRATION_MIN',
   })) as bigint;
+}
+
+/** Read through the destination decoder; callers must also bind the live metadata-registry pointer. */
+export async function readMetadataStateHash(
+  publicClient: PublicClient,
+  controller: Address,
+  owner: Address,
+): Promise<Hex> {
+  return await publicClient.readContract({
+    address: controller,
+    abi: AccountMetadataControllerAbi,
+    functionName: 'metadataStateHash',
+    args: [owner],
+  });
 }
 
 /** The gas limits a deployed controller puts in the R1 install UserOp it sweeps. */

@@ -1,18 +1,14 @@
-import { EthAddress } from '@aztec/stdlib/block';
+import { EthAddress } from '@aztec-labs/stdlib/block';
 
 import { OxidePortalContract } from '@oxide/l1-contracts/oxide_portal.js';
-import type { AttestationData } from '@oxide/oxide-lib/attestation/attestation_data.js';
+import { TeeRegistryContract } from '@oxide/l1-contracts/tee_registry.js';
 import { ethAddressFromSecpPublicKey } from '@oxide/oxide-lib/attestation/user_data.js';
 import type { RpcMethod, RpcParams, RpcResult } from '@oxide/oxide-lib/codec.js';
-import type { P256PublicKey } from '@oxide/oxide-lib/encryption.js';
 import type {
-  FrozenDepositRefundFinalizationInput,
-  FrozenDepositRefundFinalizationOutput,
+  FrozenDepositsRefundFinalizationInput,
+  FrozenDepositsRefundFinalizationOutput,
   FrozenNotesRefundFinalizationInput,
   FrozenNotesRefundFinalizationOutput,
-  SecpPublicKey,
-  SignTokenOperationOutput,
-  TeeSigner,
   TokenOperation,
   UnprocessedDepositRefundFinalizationInput,
   UnprocessedDepositRefundFinalizationOutput,
@@ -23,6 +19,7 @@ import type {
 import { DEFAULT_TIMEOUTS, type Timeouts, fetchUnverifiedAttestation } from './enclave_transport.js';
 import { EnclaveUnavailable } from './errors.js';
 import { PinnedEnclave, type SealedCall } from './pinned_enclave.js';
+import type { RegisteredSignTokenOperationOutput, RegisteredTeeSigner } from './types.js';
 
 export interface FleetSignerOptions {
   timeouts?: Partial<Timeouts>;
@@ -37,16 +34,13 @@ const DEFAULT_MAX_ATTEMPTS = 3;
  * A `TeeSigner` over a fleet of enclaves reached at one URL.
  *
  * Every registered enclave is an equal peer, so this pins one — verified against the portal's
- * registration binding — and seals every request to it. When the fleet reports that pin is gone, it
+ * `TeeRegistry` — and seals every request to it. When the fleet reports that pin is gone, it
  * pins another and retries. A fleet reporting no routable enclave at all fails on the spot instead:
  * capacity comes back only when a replacement host boots and registers, minutes later, so retrying
  * here would burn the budget to reach the same conclusion and hide the condition from the caller's
  * retry loop, which is the only thing on the right timescale.
- *
- * The keys and address therefore track whichever enclave is currently pinned. Callers that need an
- * identity which cannot change should hold {@link FleetSigner.enclave} instead.
  */
-export class FleetSigner implements TeeSigner {
+export class FleetSigner implements RegisteredTeeSigner {
   private pinned: PinnedEnclave;
   private repinning?: Promise<PinnedEnclave>;
   private readonly maxAttempts: number;
@@ -62,7 +56,7 @@ export class FleetSigner implements TeeSigner {
     this.maxAttempts = options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
   }
 
-  /** Fetch an attestation from the fleet, verify it against the portal, and pin that enclave. */
+  /** Fetch an attestation from the fleet, verify it against the portal's `TeeRegistry`, and pin that enclave. */
   static async connect(
     url: string,
     portal: OxidePortalContract,
@@ -78,24 +72,13 @@ export class FleetSigner implements TeeSigner {
     return this.pinned;
   }
 
-  get attestation(): AttestationData {
-    return this.pinned.attestation;
+  get teeRegistry(): EthAddress {
+    return this.pinned.teeRegistry;
   }
 
-  get publicKey(): SecpPublicKey {
-    return this.pinned.publicKey;
-  }
-
-  get ethAddress(): EthAddress {
-    return this.pinned.ethAddress;
-  }
-
-  get encryptionPublicKey(): P256PublicKey {
-    return this.pinned.encryptionPublicKey;
-  }
-
-  signTokenOperation(operation: TokenOperation): Promise<SignTokenOperationOutput> {
-    return this.call('signTokenOperation', operation);
+  async signTokenOperation(operation: TokenOperation): Promise<RegisteredSignTokenOperationOutput> {
+    const { result, enclave } = await this.callReturningEnclave('signTokenOperation', operation);
+    return { ...result, publicKey: enclave.publicKey, registrationLeafIndex: enclave.registrationLeafIndex };
   }
 
   signWithdrawalFinalization(input: WithdrawalFinalizationInput): Promise<WithdrawalFinalizationOutput> {
@@ -108,10 +91,10 @@ export class FleetSigner implements TeeSigner {
     return this.call('signFrozenNotesRefundFinalization', input);
   }
 
-  signFrozenDepositRefundFinalization(
-    input: FrozenDepositRefundFinalizationInput,
-  ): Promise<FrozenDepositRefundFinalizationOutput> {
-    return this.call('signFrozenDepositRefundFinalization', input);
+  signFrozenDepositsRefundFinalization(
+    input: FrozenDepositsRefundFinalizationInput,
+  ): Promise<FrozenDepositsRefundFinalizationOutput> {
+    return this.call('signFrozenDepositsRefundFinalization', input);
   }
 
   signUnprocessedDepositRefundFinalization(
@@ -121,6 +104,14 @@ export class FleetSigner implements TeeSigner {
   }
 
   private async call<M extends RpcMethod>(method: M, params: RpcParams<M>): Promise<RpcResult<M>> {
+    const { result } = await this.callReturningEnclave(method, params);
+    return result;
+  }
+
+  private async callReturningEnclave<M extends RpcMethod>(
+    method: M,
+    params: RpcParams<M>,
+  ): Promise<{ result: RpcResult<M>; enclave: PinnedEnclave }> {
     let sealedRequest: SealedCall<M> | undefined = await this.pinned.prepare(method, params);
     let resentThisPin = false;
     let firstError: EnclaveUnavailable | undefined;
@@ -131,7 +122,8 @@ export class FleetSigner implements TeeSigner {
         // Re-pinning is part of the attempt, so its own failure spends the budget rather than escaping
         // and hiding why the operation actually failed.
         sealedRequest ??= await (await this.repin()).prepare(method, params);
-        return await sealedRequest.send();
+        const result = await sealedRequest.send();
+        return { result, enclave: sealedRequest.enclave };
       } catch (err) {
         // An enclave's refusal is deterministic and a failed verification is not ours to paper over.
         if (!(err instanceof EnclaveUnavailable)) {
@@ -170,8 +162,8 @@ export class FleetSigner implements TeeSigner {
 }
 
 /**
- * Fetch an attestation and pin the enclave it names, having established that the portal registered
- * exactly these keys: the binding exists, its PCR0 is allow-listed, and all four public keys match.
+ * Fetch an attestation and pin the enclave it names, having established that the portal's `TeeRegistry`
+ * registered exactly these keys. That is enough, because the registry registers only enclaves that run its PCR0.
  * Throws rather than returning a signer pointed at unverified key material.
  */
 export async function verifyAndPin(
@@ -183,22 +175,20 @@ export async function verifyAndPin(
   const { publicKeyX, publicKeyY, encPubKeyX, encPubKeyY } = attestation.userData;
   const ethAddress = ethAddressFromSecpPublicKey({ x: publicKeyX, y: publicKeyY });
 
-  const binding = await portal.getTeeBinding(ethAddress);
-  if (!binding || binding.pcr0Hash.isZero()) {
-    throw new Error(`TEE ${ethAddress} not registered in portal`);
-  }
-  if (!(await portal.isPcr0Approved(binding.pcr0Hash))) {
-    throw new Error(`TEE ${ethAddress} PCR0 not approved in portal`);
-  }
+  const portalDomain = await portal.getPortalDomain();
+  const teeRegistry = new TeeRegistryContract(portal.client, portalDomain.teeRegistry);
+  const { keys, leafIndex } = await teeRegistry.getRegistration(ethAddress);
   if (
-    !publicKeyX.equals(binding.keys.pubKeyX) ||
-    !publicKeyY.equals(binding.keys.pubKeyY) ||
-    !encPubKeyX.equals(binding.keys.encPubKeyX) ||
-    !encPubKeyY.equals(binding.keys.encPubKeyY)
+    !publicKeyX.equals(keys.pubKeyX) ||
+    !publicKeyY.equals(keys.pubKeyY) ||
+    !encPubKeyX.equals(keys.encPubKeyX) ||
+    !encPubKeyY.equals(keys.encPubKeyY)
   ) {
-    throw new Error(`TEE ${ethAddress} attestation does not match the data registered in the portal`);
+    throw new Error(
+      `TEE ${ethAddress} attestation does not match the keys registered on TeeRegistry ${teeRegistry.address}`,
+    );
   }
-  return new PinnedEnclave(url, attestation, timeouts);
+  return new PinnedEnclave(url, attestation, timeouts, portalDomain, leafIndex);
 }
 
 /**

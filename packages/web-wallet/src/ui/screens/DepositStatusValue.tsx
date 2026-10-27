@@ -1,6 +1,30 @@
+import type { ReactNode } from "react"
 import { Icon, Spinner, type StatusBadgeStyle } from "@obsidion/web-ds"
 
-export function DepositStatusValue({ label, badge }: { label: string; badge: StatusBadgeStyle }) {
+/** A status with the reason for it on a line beneath. */
+export function StatusWithReason({ status, reason }: { status: ReactNode; reason?: string }) {
+  if (!reason) return <>{status}</>
+  return (
+    <span className="ww-status-reason">
+      {status}
+      <small>{reason}</small>
+    </span>
+  )
+}
+
+export function DepositStatusValue({
+  label,
+  badge,
+  reason,
+}: {
+  label: string
+  badge: StatusBadgeStyle
+  reason?: string
+}) {
+  return <StatusWithReason status={statusValue(label, badge)} reason={reason} />
+}
+
+function statusValue(label: string, badge: StatusBadgeStyle) {
   if (badge === "pending")
     return (
       <b data-tone="pending">

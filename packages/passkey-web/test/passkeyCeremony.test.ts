@@ -3,7 +3,7 @@ import { runInNewContext } from "node:vm"
 import { APPLE_ICLOUD_AAGUID, ZERO_AAGUID } from "@obsidion/core/constants"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { hexToBytes } from "../src/ceremony/bytes.js"
-import { NATIVE_LOCK_KEY } from "../src/ceremony/nativeLock.js"
+import { KEPT_PASSKEY_API_KEY, NATIVE_LOCK_KEY } from "../src/ceremony/nativeLock.js"
 import {
   BLOCKED_PROMPT_MS,
   BrowserPasskeyCeremony,
@@ -84,7 +84,7 @@ const timing: CeremonyTiming = {
   teardownWaitMs: 5,
   focusWaitMs: 10,
   pendingRetryDelaysMs: [1, 1, 1, 1],
-  createTimeoutMs: 50,
+  requestTimeoutMs: 50,
 }
 
 const pendingError = () => new DOMException("A request is already pending.", "NotAllowedError")
@@ -421,6 +421,26 @@ describe("BrowserPasskeyCeremony tab slot", () => {
     get.mockResolvedValueOnce(fakeAssertionCredential())
     const nameless = await new BrowserPasskeyCeremony(timing).assert(request)
     expect(nameless.userHandle).toBeUndefined()
+  })
+
+  it("reads the user-verified flag, and nothing from authenticator data too short for flags", async () => {
+    const credential = fakeAssertionCredential()
+    const verified = new Uint8Array(37)
+    verified[32] = 0x05
+    get.mockResolvedValueOnce({
+      ...credential,
+      response: { ...credential.response, authenticatorData: verified.buffer },
+    })
+    expect((await new BrowserPasskeyCeremony(timing).assert(request)).userVerified).toBe(true)
+
+    get.mockResolvedValueOnce(fakeAssertionCredential())
+    expect((await new BrowserPasskeyCeremony(timing).assert(request)).userVerified).toBe(false)
+
+    get.mockResolvedValueOnce({
+      ...credential,
+      response: { ...credential.response, authenticatorData: new Uint8Array(20).buffer },
+    })
+    expect((await new BrowserPasskeyCeremony(timing).assert(request)).userVerified).toBeUndefined()
   })
 
   it("queues behind a live ceremony instead of aborting it", async () => {
@@ -784,6 +804,233 @@ describe("BrowserPasskeyCeremony tab slot", () => {
   })
 })
 
+describe("BrowserPasskeyCeremony through a kept wrapper", () => {
+  const get = vi.fn()
+  const create = vi.fn()
+  const keptGet = vi.fn()
+  const keptCreate = vi.fn()
+  const scope = globalThis as Record<string, unknown>
+  const creation = {
+    rpId: "localhost",
+    rpName: "zk.money",
+    userName: "@alice",
+    prfFirstSalt: new Uint8Array(32),
+  }
+
+  /** Publishes the slot as the lock does: frozen, prototype-free, holding what is given. */
+  const keep = (entries: Record<string, unknown>) => {
+    Object.defineProperty(scope, KEPT_PASSKEY_API_KEY, {
+      value: Object.freeze(Object.assign(Object.create(null), entries)),
+      configurable: true,
+    })
+  }
+
+  beforeEach(() => {
+    for (const fn of [get, create, keptGet, keptCreate]) fn.mockReset()
+    Object.defineProperty(navigator, "credentials", { value: { get, create }, configurable: true })
+    vi.spyOn(document, "hasFocus").mockReturnValue(true)
+    keep({ get: keptGet, create: keptCreate })
+  })
+  afterEach(() => {
+    delete scope[KEPT_PASSKEY_API_KEY]
+  })
+
+  it("sends an assertion to the kept get, as a method of navigator.credentials, with a deadline", async () => {
+    keptGet.mockResolvedValueOnce(fakeAssertionCredential())
+    const result = await new BrowserPasskeyCeremony(timing).assert(request)
+    expect(result.credentialId).toBe("cred-1")
+    expect(get).not.toHaveBeenCalled()
+    expect(keptGet).toHaveBeenCalledTimes(1)
+    expect(keptGet.mock.contexts[0]).toBe(navigator.credentials)
+    const options = keptGet.mock.calls[0]![0] as CredentialRequestOptions
+    expect(options.publicKey!.timeout).toBe(timing.requestTimeoutMs)
+    expect(options.publicKey!.rpId).toBe("localhost")
+    expect(options.signal).toBeInstanceOf(AbortSignal)
+  })
+
+  it("calls the kept function itself, not a call property a later script put on it", async () => {
+    const hijack = vi.fn()
+    Object.defineProperty(keptGet, "call", { value: hijack, configurable: true })
+    keptGet.mockResolvedValueOnce(fakeAssertionCredential())
+    expect((await new BrowserPasskeyCeremony(timing).assert(request)).credentialId).toBe("cred-1")
+    expect(hijack).not.toHaveBeenCalled()
+    expect(keptGet.mock.contexts[0]).toBe(navigator.credentials)
+  })
+
+  it("sends the browser's own get when nothing is kept, with no deadline", async () => {
+    keep({})
+    get.mockResolvedValueOnce(fakeAssertionCredential())
+    await new BrowserPasskeyCeremony(timing).assert(request)
+    expect(keptGet).not.toHaveBeenCalled()
+    expect((get.mock.calls[0]![0] as CredentialRequestOptions).publicKey!.timeout).toBeUndefined()
+
+    delete scope[KEPT_PASSKEY_API_KEY]
+    get.mockResolvedValueOnce(fakeAssertionCredential())
+    await new BrowserPasskeyCeremony(timing).assert(request)
+    expect(get).toHaveBeenCalledTimes(2)
+  })
+
+  it("keeps an assertion hinted away from this device on the browser's own get", async () => {
+    get.mockResolvedValue(fakeAssertionCredential())
+    keptGet.mockResolvedValue(fakeAssertionCredential())
+    const ceremony = new BrowserPasskeyCeremony(timing)
+
+    await ceremony.assert({ ...request, hints: ["hybrid", "security-key"] })
+    expect(keptGet).not.toHaveBeenCalled()
+    expect(get).toHaveBeenCalledTimes(1)
+    expect(get.mock.calls[0]![0].publicKey.hints).toEqual(["hybrid", "security-key"])
+
+    await ceremony.assert({ ...request, hints: ["client-device"] })
+    expect(keptGet).toHaveBeenCalledTimes(1)
+    await ceremony.assert({ ...request, hints: ["client-device", "security-key"] })
+    expect(keptGet).toHaveBeenCalledTimes(2)
+    expect(get).toHaveBeenCalledTimes(1)
+  })
+
+  it("sends a creation to the kept create only when the request allows an extension", async () => {
+    const credential = { id: "cred-1" }
+    keptCreate.mockResolvedValue(credential)
+    create.mockResolvedValue(credential)
+    const ceremony = new BrowserPasskeyCeremony(timing)
+
+    // A credential without a usable key fails after the call: what matters is who was called.
+    await ceremony.create({ ...creation, extensionAllowed: true }).catch(() => {})
+    expect(keptCreate).toHaveBeenCalledTimes(1)
+    expect(keptCreate.mock.contexts[0]).toBe(navigator.credentials)
+    expect(create).not.toHaveBeenCalled()
+    const options = keptCreate.mock.calls[0]![0] as CredentialCreationOptions
+    expect(options.publicKey!.timeout).toBe(timing.requestTimeoutMs)
+    expect(options.publicKey!.rp.id).toBe("localhost")
+
+    await ceremony.create(creation).catch(() => {})
+    await ceremony.create({ ...creation, extensionAllowed: false }).catch(() => {})
+    expect(create).toHaveBeenCalledTimes(2)
+    expect(keptCreate).toHaveBeenCalledTimes(1)
+  })
+
+  it("reads a kept answer like the browser's: user handle, flags and PRF", async () => {
+    const credential = fakeAssertionCredential()
+    const verified = new Uint8Array(37)
+    verified[32] = 0x05
+    keptGet.mockResolvedValueOnce({
+      ...credential,
+      getClientExtensionResults: () => ({
+        prf: { results: { first: new Uint8Array(32).fill(7) } },
+      }),
+      response: {
+        ...credential.response,
+        authenticatorData: verified.buffer,
+        userHandle: encodeUserHandle("alice").buffer,
+      },
+    })
+    const result = await new BrowserPasskeyCeremony(timing).assert(request)
+    expect(decodeUserHandle(result.userHandle)).toBe("alice")
+    expect(result.userVerified).toBe(true)
+    expect(result.prfFirst).toEqual(new Uint8Array(32).fill(7))
+  })
+
+  it("passes a kept refusal through, and marks a related-origin failure like the browser's", async () => {
+    keptGet.mockRejectedValueOnce(new DOMException("Dismissed", "NotAllowedError"))
+    await expect(new BrowserPasskeyCeremony(timing).assert(request)).rejects.toMatchObject({
+      name: "NotAllowedError",
+      message: "Dismissed",
+    })
+
+    const browserError = new DOMException("RP not authorized", "SecurityError")
+    keptGet.mockRejectedValueOnce(browserError)
+    const error = (await new BrowserPasskeyCeremony(timing)
+      .assert({ rpId: "auth.zk.money", challenge: new Uint8Array(32) })
+      .catch((e: unknown) => e)) as Error
+    expect(error.name).toBe("RelatedOriginPasskeyError")
+    expect(error.cause).toBe(browserError)
+  })
+
+  it("hands the caller's cancel back as the cancel, whatever the wrapper made of it", async () => {
+    const controller = new AbortController()
+    keptGet.mockImplementation(
+      (options: CredentialRequestOptions) =>
+        new Promise((_, reject) => {
+          options.signal!.addEventListener("abort", () =>
+            reject(new DOMException("Operation failed", "NotAllowedError")),
+          )
+        }),
+    )
+    const asserting = new BrowserPasskeyCeremony(timing).assert({
+      ...request,
+      signal: controller.signal,
+    })
+    await new Promise((r) => setTimeout(r, 5))
+    controller.abort(new DOMException("the user cancelled", "AbortError"))
+    await expect(asserting).rejects.toThrow(/the user cancelled/)
+  })
+
+  it("names an evicted request as evicted when the wrapper reported its own refusal", async () => {
+    keptGet.mockImplementationOnce(
+      (options: CredentialRequestOptions) =>
+        new Promise((_, reject) => {
+          options.signal!.addEventListener("abort", () =>
+            reject(new DOMException("Operation failed", "NotAllowedError")),
+          )
+        }),
+    )
+    keptGet.mockResolvedValueOnce(fakeAssertionCredential())
+    const ceremony = new BrowserPasskeyCeremony(timing)
+    const stuck = ceremony.assert(request).catch((e: unknown) => e)
+    expect((await ceremony.assert(request)).credentialId).toBe("cred-1")
+    expect(isEvictedRequestError(await stuck)).toBe(true)
+  })
+
+  it("retries a pending-request refusal from the wrapper as it does the browser's", async () => {
+    keptGet.mockRejectedValueOnce(pendingError())
+    keptGet.mockResolvedValueOnce(fakeAssertionCredential())
+    expect((await new BrowserPasskeyCeremony(timing).assert(request)).credentialId).toBe("cred-1")
+    expect(keptGet).toHaveBeenCalledTimes(2)
+  })
+
+  it("tells request listeners which requests go to the kept wrapper", async () => {
+    const heard: [boolean, boolean][] = []
+    const off = onPasskeyRequest((active, kept) => heard.push([active, kept]))
+    get.mockResolvedValue(fakeAssertionCredential())
+    keptGet.mockResolvedValue(fakeAssertionCredential())
+    create.mockRejectedValue(new DOMException("closed", "NotAllowedError"))
+    const ceremony = new BrowserPasskeyCeremony(timing)
+    await ceremony.assert(request)
+    await ceremony.assert({ ...request, hints: ["hybrid", "security-key"] })
+    await expect(ceremony.create(creation)).rejects.toThrow("closed")
+    off()
+    expect(heard).toEqual([
+      [true, true],
+      [false, false],
+      [true, false],
+      [false, false],
+      [true, false],
+      [false, false],
+    ])
+  })
+
+  it("announces a kept request and its answer like the browser's", async () => {
+    const { hook, heard, phases } = listener()
+    keptGet.mockResolvedValueOnce(fakeAssertionCredential())
+    await new BrowserPasskeyCeremony(timing, hook).assert(request)
+    expect(phases()).toEqual(["issued", "answered"])
+    expect(heard[0]).toMatchObject({ kind: "assert" })
+  })
+
+  it("takes only an own function from the slot", async () => {
+    get.mockResolvedValue(fakeAssertionCredential())
+    const ceremony = new BrowserPasskeyCeremony(timing)
+    keep({ get: "PASSKEY_GET" })
+    await ceremony.assert(request)
+    Object.defineProperty(scope, KEPT_PASSKEY_API_KEY, {
+      value: Object.create({ get: keptGet }),
+      configurable: true,
+    })
+    await ceremony.assert(request)
+    expect(get).toHaveBeenCalledTimes(2)
+    expect(keptGet).not.toHaveBeenCalled()
+  })
+})
+
 describe("decodePrfSlot", () => {
   const bytes = (n: number) => new Uint8Array(n).fill(7)
 
@@ -965,7 +1212,7 @@ describe("BrowserPasskeyCeremony create", () => {
 
   it("waits as long as the request says, and the default when it names no timeout", async () => {
     await stubCreate()
-    expect(create.mock.calls.at(-1)![0].publicKey.timeout).toBe(timing.createTimeoutMs)
+    expect(create.mock.calls.at(-1)![0].publicKey.timeout).toBe(timing.requestTimeoutMs)
     await stubCreate({}, { timeoutMs: 300_000 })
     expect(create.mock.calls.at(-1)![0].publicKey.timeout).toBe(300_000)
   })
@@ -999,6 +1246,34 @@ describe("BrowserPasskeyCeremony create", () => {
     expect(result.pubkey).toEqual(lastPoint)
   })
 
+  it("decodes a creation the kept create answered as it does the browser's", async () => {
+    const kept = vi.fn((options: CredentialCreationOptions) => create(options))
+    Object.defineProperty(globalThis, KEPT_PASSKEY_API_KEY, {
+      value: Object.freeze(Object.assign(Object.create(null), { create: kept })),
+      configurable: true,
+    })
+    try {
+      const { hook, phases } = listener()
+      const written: string[] = []
+      const result = await stubCreate(
+        {},
+        { extensionAllowed: true, onWritten: (id: string) => written.push(id) },
+        () => ({ prf: { results: { first: new Uint8Array(32).fill(7) } } }),
+        { onRequest: hook },
+      )
+      expect(kept).toHaveBeenCalledOnce()
+      expect(kept.mock.contexts[0]).toBe(navigator.credentials)
+      expect(result.credentialId).toBe("cred-1")
+      expect(result.pubkey).toEqual(lastPoint)
+      expect(result.prfFirst).toEqual(new Uint8Array(32).fill(7))
+      expect(result.aaguid).toBe("fbfc3007-154e-4ecc-8c0b-6e020557d7bd")
+      expect(written).toEqual(["cred-1"])
+      expect(phases()).toEqual(["issued", "answered"])
+    } finally {
+      delete (globalThis as Record<string, unknown>)[KEPT_PASSKEY_API_KEY]
+    }
+  })
+
   it("recovers the key from the raw attestation when every accessor is missing or empty", async () => {
     const result = await stubCreate({
       getPublicKeyAlgorithm: () => 0,
@@ -1023,17 +1298,22 @@ describe("BrowserPasskeyCeremony create", () => {
       authData.set(bad, 56)
       return authData
     })()
-    const error = await stubCreate({
-      attestationObject: attestationOf(notP256).buffer,
-      getPublicKeyAlgorithm: () => -257,
-      getPublicKey: () => null,
-      getAuthenticatorData: () => notP256.buffer,
-    }).catch((e: unknown) => e)
+    const written: string[] = []
+    const error = await stubCreate(
+      {
+        attestationObject: attestationOf(notP256).buffer,
+        getPublicKeyAlgorithm: () => -257,
+        getPublicKey: () => null,
+        getAuthenticatorData: () => notP256.buffer,
+      },
+      { onWritten: (id: string) => void written.push(id) },
+    ).catch((e: unknown) => e)
     expect((error as Error).message).toMatch(
       /algorithm -257 by fbfc3007-154e-4ecc-8c0b-6e020557d7bd, not ES256/,
     )
     // The authenticator saved the key before the wallet could refuse it.
     expect(passkeyWritten(error)).toBe(true)
+    expect(written).toEqual(["cred-1"])
   })
 
   it("names an unreported algorithm and an unknown provider when nothing can be read", async () => {
@@ -1055,6 +1335,24 @@ describe("BrowserPasskeyCeremony create", () => {
     expect(result.authenticatorAttachment).toBe("cross-platform")
   })
 
+  it("reads the user-verified flag, undefined when the flags do not parse", async () => {
+    expect((await stubCreate()).userVerified).toBe(false)
+    const verified = await stubCreate({}, {}, undefined, { flags: 0x40 | 0x08 | 0x04 })
+    expect(verified.userVerified).toBe(true)
+    const unreadable = await stubCreate({ getAuthenticatorData: () => new Uint8Array(20).buffer })
+    expect(unreadable.userVerified).toBeUndefined()
+  })
+
+  it("keeps the attested id apart from the reported one: zeros stay, no attested data is undefined", async () => {
+    expect((await stubCreate()).attestedAaguid).toBe("fbfc3007-154e-4ecc-8c0b-6e020557d7bd")
+    const zeros = await stubCreate({}, {}, undefined, { aaguidHex: "0".repeat(32) })
+    expect(zeros.aaguid).toBeUndefined()
+    expect(zeros.attestedAaguid).toBe(ZERO_AAGUID)
+    const unattested = await stubCreate({}, {}, undefined, { flags: 0x08 | 0x04 })
+    expect(unattested.aaguid).toBeUndefined()
+    expect(unattested.attestedAaguid).toBeUndefined()
+  })
+
   it("passes the hints and the attachment filter through to the browser as given", async () => {
     // The driver decides these; this is the only place that proves what the browser receives.
     await stubCreate({}, { hints: ["client-device", "security-key"] })
@@ -1071,6 +1369,40 @@ describe("BrowserPasskeyCeremony create", () => {
     const bare = create.mock.calls.at(-1)![0].publicKey
     expect(bare.hints).toBeUndefined()
     expect(bare.authenticatorSelection.authenticatorAttachment).toBeUndefined()
+  })
+
+  it("requires a stored passkey unless asked for a preference, and keeps UV required", async () => {
+    await stubCreate()
+    const required = create.mock.calls.at(-1)![0].publicKey.authenticatorSelection
+    expect(required).toMatchObject({
+      residentKey: "required",
+      requireResidentKey: true,
+      userVerification: "required",
+    })
+
+    await stubCreate({}, { residentKey: "preferred" })
+    const preferred = create.mock.calls.at(-1)![0].publicKey.authenticatorSelection
+    expect(preferred).toMatchObject({
+      residentKey: "preferred",
+      requireResidentKey: false,
+      userVerification: "required",
+    })
+  })
+
+  it("asks whether the passkey was stored beside the PRF salts, and reports the answer", async () => {
+    const stored = await stubCreate({}, {}, () => ({ credProps: { rk: true } }))
+    const sent = create.mock.calls.at(-1)![0].publicKey.extensions
+    expect(sent.credProps).toBe(true)
+    expect(sent.prf.eval.first).toBeDefined()
+    expect(stored.discoverable).toBe(true)
+
+    const unstored = await stubCreate({}, {}, () => ({ credProps: { rk: false } }))
+    expect(unstored.discoverable).toBe(false)
+
+    // No answer, or one that is not a boolean, is not an answer.
+    expect((await stubCreate()).discoverable).toBeUndefined()
+    expect((await stubCreate({}, {}, () => ({ credProps: {} }))).discoverable).toBeUndefined()
+    expect((await stubCreate({}, {}, () => ({ credProps: { rk: 1 } }))).discoverable).toBeUndefined()
   })
 
   it("reads a key that answered with an empty slot as having answered with nothing", async () => {
@@ -1232,17 +1564,20 @@ describe("BrowserPasskeyCeremony create", () => {
     it("never answers a creation the browser resolved empty", async () => {
       create.mockResolvedValue(null)
       const { hook, phases } = listener()
+      const written: string[] = []
       const error = await new BrowserPasskeyCeremony(timing, hook)
         .create({
           rpId: "localhost",
           rpName: "zk.money",
           userName: "@a",
           prfFirstSalt: new Uint8Array(32),
+          onWritten: (id) => void written.push(id),
         })
         .catch((e: unknown) => e)
       expect(phases()).toEqual(["issued"])
       expect(isNoCredentialError(error)).toBe(true)
       expect(passkeyWritten(error)).toBe(false)
+      expect(written).toEqual([])
     })
   })
 })

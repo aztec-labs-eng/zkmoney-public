@@ -20,32 +20,18 @@ const UNMINED: ReadonlySet<WithdrawalRecord["phase"]> = new Set(["submitting", "
 
 /**
  * The USDS a move in put into the vault: the vault's own figure from the escrow run once read, else
- * what the move burned less the source portal's cut, the release tip and the escrow tip. DAI is
- * USDS one for one and both tips are fixed when the escrow is built, so that is the quote's `net`;
- * a move rebuilt from its burn sums the burn's own fields. The destination's cut is zero on both
- * Sky portals.
+ * what the move burned less the release tip and the escrow tip. DAI is USDS one for one and both
+ * tips are fixed when the escrow is built, so that is the quote's `net`; a move rebuilt from its
+ * burn sums the burn's own fields.
  */
 export function savingsMoveBasis(
   move: Pick<SavingsMoveRecord, "net" | "vault">,
-  burn:
-    | Pick<WithdrawalRecord, "rawAmount" | "fpcFundingCut" | "relayerTip" | "skyMove">
-    | undefined,
+  burn: Pick<WithdrawalRecord, "rawAmount" | "relayerTip" | "skyMove"> | undefined,
 ): bigint | undefined {
   if (move.vault) return BigInt(move.vault.assets)
   if (move.net !== undefined) return BigInt(move.net)
-  if (
-    !burn?.rawAmount ||
-    burn.fpcFundingCut === undefined ||
-    burn.relayerTip === undefined ||
-    !burn.skyMove
-  ) {
-    return undefined
-  }
-  const basis =
-    BigInt(burn.rawAmount) -
-    BigInt(burn.fpcFundingCut) -
-    BigInt(burn.relayerTip) -
-    BigInt(burn.skyMove.relayerTip)
+  if (!burn?.rawAmount || burn.relayerTip === undefined || !burn.skyMove) return undefined
+  const basis = BigInt(burn.rawAmount) - BigInt(burn.relayerTip) - BigInt(burn.skyMove.relayerTip)
   return basis > 0n ? basis : undefined
 }
 

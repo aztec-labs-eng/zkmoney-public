@@ -1,87 +1,55 @@
-import { AztecAddress, EthAddress } from '@aztec/aztec.js/addresses';
-import { Fr } from '@aztec/aztec.js/fields';
+import { Fr } from '@aztec-labs/aztec.js/fields';
+import { poseidon2Hash } from '@aztec-labs/foundation/crypto/poseidon';
+import { sha256ToField } from '@aztec-labs/foundation/crypto/sha256';
+import { EthAddress } from '@aztec-labs/foundation/eth-address';
+import { AztecAddress } from '@aztec-labs/stdlib/aztec-address';
 
-import { getUserPayloadHash } from '@oxide/oxide-lib/content_hash.js';
-import { encodePlainWithdrawalPayload } from '@oxide/oxide-lib/plain_withdrawal.js';
-import type { OutboxWithdrawal } from '@oxide/oxide-lib/types.js';
+import { encodePlainWithdrawalPayload } from '@oxide/oxide-lib/plain_withdrawal_executor.js';
+import type { WithdrawalFinalizationData } from '@oxide/oxide-lib/withdrawal_finalization_data.js';
+import { chunkRecoveryData } from '@oxide/oxide-lib/withdrawal_recovery_data.js';
 
 import { describe, expect, it } from '@jest/globals';
 
-import { buildPlainExecutorUserPayloadCapsule, buildPlainExecutorUserPayloadCapsules } from './capsules.js';
+import { buildRecoveryChunkCapsules } from './capsules.js';
 
-function withdrawal(executor: EthAddress, userPayload: Buffer): OutboxWithdrawal {
+function finalizationData(userPayload: Buffer): WithdrawalFinalizationData {
   return {
-    executor,
-    userPayloadHash: getUserPayloadHash(userPayload),
-    amount: 100n,
-    proverTip: 1n,
-    randomness: Fr.random(),
+    executor: EthAddress.fromNumber(1),
+    amount: 1000n,
+    proverTip: 10n,
+    randomness: new Fr(7n),
+    withdrawalSignature: { rHi: new Fr(1n), rLo: new Fr(2n), sHi: new Fr(3n), sLo: new Fr(4n) },
+    userPayload,
   };
 }
 
-describe('buildPlainExecutorUserPayloadCapsules', () => {
-  it('gives each plain withdrawal the payload that its hash commits to, in any order', async () => {
+describe('buildRecoveryChunkCapsules', () => {
+  it('puts the chunks of each withdrawal in its own capsule array', async () => {
     const token = await AztecAddress.random();
-    const executor = EthAddress.random();
-    const first = { recipient: EthAddress.random(), relayerTip: 3n };
-    const second = { recipient: EthAddress.random(), relayerTip: 4n };
-    const firstPayload = encodePlainWithdrawalPayload(first);
-    const secondPayload = encodePlainWithdrawalPayload(second);
-    const withdrawals = [withdrawal(executor, firstPayload), withdrawal(executor, secondPayload)];
-
-    const capsules = await buildPlainExecutorUserPayloadCapsules(
-      token,
-      withdrawals,
-      [secondPayload, firstPayload],
-      executor,
-    );
-
-    expect(capsules).toEqual([
-      await buildPlainExecutorUserPayloadCapsule(token, withdrawals[0], first.recipient.toField(), first.relayerTip),
-      await buildPlainExecutorUserPayloadCapsule(token, withdrawals[1], second.recipient.toField(), second.relayerTip),
-    ]);
-  });
-
-  it('gives no capsule to a withdrawal through a different executor', async () => {
-    const token = await AztecAddress.random();
-    const payload = encodePlainWithdrawalPayload({ recipient: EthAddress.random(), relayerTip: 0n });
-
-    const capsules = await buildPlainExecutorUserPayloadCapsules(
-      token,
-      [withdrawal(EthAddress.random(), payload)],
-      [payload],
-      EthAddress.random(),
-    );
-
-    expect(capsules).toEqual([]);
-  });
-
-  it('gives no capsule when there is no plain withdrawal executor', async () => {
-    const executor = EthAddress.random();
-    const payload = encodePlainWithdrawalPayload({ recipient: EthAddress.random(), relayerTip: 0n });
-
-    const capsules = await buildPlainExecutorUserPayloadCapsules(
-      await AztecAddress.random(),
-      [withdrawal(executor, payload)],
-      [payload],
-      undefined,
-    );
-
-    expect(capsules).toEqual([]);
-  });
-
-  it('rejects a plain withdrawal that has no matching payload', async () => {
-    const executor = EthAddress.random();
-    const committed = encodePlainWithdrawalPayload({ recipient: EthAddress.random(), relayerTip: 0n });
-    const other = encodePlainWithdrawalPayload({ recipient: EthAddress.random(), relayerTip: 0n });
-
-    await expect(
-      buildPlainExecutorUserPayloadCapsules(
-        await AztecAddress.random(),
-        [withdrawal(executor, committed)],
-        [other],
-        executor,
+    const large = { finalizationData: finalizationData(Buffer.alloc(700, 1)), memo: Buffer.alloc(0) };
+    const small = {
+      finalizationData: finalizationData(
+        encodePlainWithdrawalPayload({ recipient: EthAddress.fromNumber(5), relayerTip: 3n }),
       ),
-    ).rejects.toThrow(/No user payload/);
+      memo: Buffer.from('memo'),
+    };
+    expect(chunkRecoveryData(large).length).toBeGreaterThan(1);
+
+    const capsules = await buildRecoveryChunkCapsules(token, [large, small]);
+
+    const capsulesSlot = sha256ToField([Buffer.from('OXIDE_TOKEN::RECOVERY_CHUNKS')]);
+    const expected: { slot: Fr; data: Fr[] }[] = [];
+    for (const [k, data] of [large, small].entries()) {
+      const baseSlot = await poseidon2Hash([capsulesSlot, new Fr(k)]);
+      const chunks = chunkRecoveryData(data);
+      expected.push({ slot: baseSlot, data: [new Fr(chunks.length)] });
+      expected.push(...chunks.map((chunk, i) => ({ slot: baseSlot.add(new Fr(1 + i)), data: chunk })));
+    }
+    expect(capsules).toHaveLength(expected.length);
+    for (const [i, capsule] of capsules.entries()) {
+      expect(capsule.contractAddress.equals(token)).toBe(true);
+      expect(capsule.storageSlot.equals(expected[i].slot)).toBe(true);
+      expect(capsule.data).toEqual(expected[i].data);
+    }
   });
 });

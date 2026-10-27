@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 const { open } = vi.hoisted(() => ({ open: vi.fn(async (..._args: unknown[]) => ({})) }))
-vi.mock("@aztec/kv-store/sqlite-opfs", () => ({ AztecSQLiteOPFSStore: { open } }))
-vi.mock("@aztec/foundation/log", () => ({ createLogger: () => ({ warn: vi.fn() }) }))
+vi.mock("@aztec-labs/kv-store/sqlite-opfs", () => ({ AztecSQLiteOPFSStore: { open } }))
+vi.mock("@aztec-labs/foundation/log", () => ({ createLogger: () => ({ warn: vi.fn() }) }))
 
 vi.resetModules()
 const { createPxeStore } = await import("../src/platform/storage/createPxeStore")

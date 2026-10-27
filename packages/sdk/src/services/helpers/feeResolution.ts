@@ -1,5 +1,5 @@
-import type { AztecAddress } from "@aztec/aztec.js/addresses"
-import type { FeePaymentMethod } from "@aztec/aztec.js/fee"
+import type { AztecAddress } from "@aztec-labs/aztec.js/addresses"
+import type { FeePaymentMethod } from "@aztec-labs/aztec.js/fee"
 import type { ObsidionWallet } from "../../obsidion/ObsidionWallet.js"
 
 /**

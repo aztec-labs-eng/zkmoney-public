@@ -1,4 +1,4 @@
-import { EthAddress } from '@aztec/foundation/eth-address';
+import { EthAddress } from '@aztec-labs/foundation/eth-address';
 
 import { beforeEach, describe, expect, it } from '@jest/globals';
 
@@ -64,6 +64,11 @@ describe('readUsdPerEth', () => {
     await expect(readUsdPerEth(client, FEED)).resolves.toBe(USD_PER_ETH);
     updatedAt -= 1n;
     await expect(readUsdPerEth(client, FEED)).rejects.toThrow(/stale/);
+  });
+
+  it('accepts an answer just past the 1h heartbeat of the feed', async () => {
+    updatedAt = L1_TIMESTAMP - 60n * 60n - 1n;
+    await expect(readUsdPerEth(client, FEED)).resolves.toBe(USD_PER_ETH);
   });
 
   it('accepts an answer from a block after the one it ages against', async () => {

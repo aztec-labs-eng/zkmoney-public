@@ -38,7 +38,7 @@ const { PayConfirmForm } = await import("../src/features/contacts/PayConfirmForm
 const snapshotOf = (read: ClaimFpcAllowance): AllowanceSnapshot => ({
   status: "ready",
   scope: "alice|sandbox",
-  read: { fpcAddress: "0xf9c", railId: 1, allowance: read },
+  read: { fpcAddress: "0xf9c", railId: 1, payer: "alice", allowance: read },
   state: deriveAllowanceState(read),
   refreshing: false,
 })

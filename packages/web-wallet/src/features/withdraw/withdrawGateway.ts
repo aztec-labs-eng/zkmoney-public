@@ -11,23 +11,20 @@
  * originates no contract call. Boot is memoized per page load and re-armed by
  * `useWithdrawals` whenever a wallet is available.
  */
-import { EthAddress } from "@aztec/aztec.js/addresses"
-import { Fr } from "@aztec/aztec.js/fields"
-import { TxHash } from "@aztec/stdlib/tx"
+import { EthAddress } from "@aztec-labs/aztec.js/addresses"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import type { Address, Hex } from "viem"
 import { createPublicClient, formatUnits, parseUnits } from "viem"
-import { DEFAULT_DECIMALS, WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
+import { WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
 import {
   ContractService,
   createWithdrawEventSource,
-  fetchWithdrawalsWithIds,
   L1SwapEscrowReader,
   L1WithdrawalFinalizationReader,
   nextOperationId,
   planSwapOnWithdraw,
   predictAccountAddress,
-  readPortalWithdrawalState,
   type ObsidionAccount,
   type ObsidionWallet,
   type SwapEscrowArgs,
@@ -35,6 +32,7 @@ import {
   type SwapOnWithdrawPlan,
   type SwapSimulation,
   type TokenService,
+  type WithdrawalExecutorKind,
   type WithdrawalOptions,
 } from "@obsidion/sdk"
 import {
@@ -59,17 +57,18 @@ import {
 import { getConfig, l1Transport } from "../../config/env"
 import { getOxideTuple, l1PublicClient, requireTupleField } from "../../config/oxideTuple"
 import { getAuthService } from "../../platform/auth/useAuthenticator"
+import { currentTxAmountCap, portalDomainOfToken } from "../token/oxideToken"
 import { usdBalance } from "../../ui/format"
 import { isFlowCancelled, runOperation, type OperationHandle } from "../operations/operations"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
 import { maybeRefuelFpc } from "../fees/fpcRefuel"
-import { currentFpcFundingCut, fpcFundingCut } from "../fees/fpcFundingCut"
 import { loadWalletIdentity } from "../identity/walletIdentity"
 import { claimSponsorContext, noteSubscribed } from "../onboarding/claimSponsorship"
 import { RAIL_REGISTERED } from "../onboarding/rails"
 import { slowWhenHidden } from "../../platform/visibilityScheduler"
 import { assertWithinWithdrawalLimit } from "../limits/withdrawalLimit"
 import type { WithdrawalReceiveAsset } from "./withdrawAssets"
+import { withdrawalExecutorAt, withdrawalExecutorFee } from "./withdrawalFee"
 import { sponsorshipErrorCopy } from "../allowance/sponsorshipError"
 
 /** Progress stages the modal's proving view renders. */
@@ -90,37 +89,16 @@ function l1Client() {
   return createPublicClient({ chain: config.l1Chain, transport: l1Transport(config) })
 }
 
-/** The live deployment's withdrawal coordinates, stamped on every new record. */
+/** The live deployment's withdrawal coordinates and executor, stamped on every new record. */
 export async function currentDeployment(
   source?: OxideEnvTuple,
 ): Promise<WithdrawalDeployment | undefined> {
   const config = getConfig()
   const tuple = source ?? (await getOxideTuple(config))
-  const wiring = resolveWithdrawalWiring(tuple, BigInt(config.l1ChainId))
-  return wiring ? { portal: wiring.portal, l2Token: tuple.l2Token } : undefined
-}
-
-/**
- * The withdrawal a burn tx published, read from its tx effect — the authoritative amount and tip,
- * as opposed to whatever the caller believed it was burning. Undefined off the oxide rails.
- */
-export async function publishedBurn(
-  node: ObsidionWallet["node"],
-  l2TxHash: string,
-  source?: OxideEnvTuple,
-) {
-  const config = getConfig()
-  const wiring = resolveWithdrawalWiring(
-    source ?? (await getOxideTuple(config)),
-    BigInt(config.l1ChainId),
-  )
-  if (!wiring) return undefined
-  const { withdrawals } = await fetchWithdrawalsWithIds(
-    node,
-    TxHash.fromString(l2TxHash),
-    wiring.portalContext,
-  )
-  return withdrawals[0]
+  const wiring = resolveWithdrawalWiring(tuple)
+  return wiring
+    ? { portal: wiring.portal, l2Token: wiring.l2Token, executor: wiring.plainWithdrawalExecutor }
+    : undefined
 }
 
 /**
@@ -135,7 +113,7 @@ export function ensureWithdrawalTracker(
     const boot = (async () => {
       const config = getConfig()
       const tuple = await getOxideTuple(config)
-      const wiring = resolveWithdrawalWiring(tuple, BigInt(config.l1ChainId))
+      const wiring = resolveWithdrawalWiring(tuple)
       if (!wiring) return null
       const publicClient = l1Client() as unknown as ConstructorParameters<
         typeof L1WithdrawalFinalizationReader
@@ -149,7 +127,7 @@ export function ensureWithdrawalTracker(
         store: getWithdrawalStore(),
         node: wallet.node,
         finalizationReader: readerFor(wiring),
-        portalContext: wiring.portalContext,
+        deployment: { portal: wiring.portal, l2Token: wiring.l2Token },
         // A burn on a since-retired deployment finalizes on ITS portal, not the live one.
         readerForDeployment: readerFor,
         // The swap leg watches the escrow itself; the factory comes off each record.
@@ -170,21 +148,28 @@ export function ensureWithdrawalTracker(
   return trackerBoot
 }
 
-/** A token whose `Withdraw` events the rescan rebuilds burns from. */
+/** A token whose recovery events the rescan rebuilds burns from. */
 export interface RescanToken {
-  tokenService: Pick<TokenService, "fetchTokenInformation">
+  tokenService: Pick<TokenService, "fetchTokenInformation" | "getTokenContract">
   /** The deployment the token belongs to, stamped on its rebuilt records; Main's live one when absent. */
   tuple?: OxideEnvTuple
+  /** The kind of each executor the token's burns name; plain when absent. */
+  executorKind?: (executor: Address) => WithdrawalExecutorKind
   /** What the console calls this scan; the token's own symbol when absent. */
   label?: string
+  /** `executorKind` may not know every executor: the pass runs, then fails, so a later call scans again. */
+  partial?: boolean
 }
 
-/** Each token's pass, kept for the page load; a failed one is dropped so a later mount tries again. */
+/**
+ * Each token's pass, kept for the page load. A failed one, or one that skipped a burn whose
+ * executor it could not read, is dropped so a later call tries again.
+ */
 const rescans = new Map<string, Promise<WithdrawalRecord[]>>()
 
 /**
  * Once per page load and token: rebuild the records this browser lost from the account's own
- * `Withdraw` events on every token it holds, Savings' included, and arm the watcher for them.
+ * recovery events on every token it holds, Savings' included, and arm the watcher for them.
  * Reading the events syncs PXE first, so a fresh device gets its whole history. Tokens run one at a
  * time; a token missing from an earlier call is scanned when a later call names it. Resolves to the
  * records created.
@@ -198,11 +183,16 @@ export async function rescanWithdrawals(
     const key = token.tuple?.l2Token ?? "main"
     let pass = rescans.get(key)
     if (!pass) {
-      const made = rescanToken(wallet, token)
-      rescans.set(key, made)
-      made.catch(() => {
+      const forget = () => {
         if (rescans.get(key) === made) rescans.delete(key)
+      }
+      const made = rescanToken(wallet, token, forget).then((records) => {
+        if (token.partial)
+          throw new Error(`rescan ${token.label ?? key} ran without every executor`)
+        return records
       })
+      rescans.set(key, made)
+      made.catch(forget)
       pass = made
     }
     rebuilt.push(...(await pass))
@@ -212,27 +202,38 @@ export async function rescanWithdrawals(
 
 async function rescanToken(
   wallet: ObsidionWallet,
-  { tokenService, tuple, label }: RescanToken,
+  { tokenService, tuple, label, executorKind = () => "plain" }: RescanToken,
+  forget: () => void,
 ): Promise<WithdrawalRecord[]> {
   const identity = loadWalletIdentity()
   if (!identity) return []
   const token = await tokenService.fetchTokenInformation()
+  const deployment = tuple ?? (await getOxideTuple(getConfig()))
+  const wiring = resolveWithdrawalWiring(deployment)
+  if (!wiring) return []
+  // Reading the token's events runs its sync, which needs its immutables stored in this PXE.
+  await tokenService.getTokenContract()
   const rebuilt = await rebuildWithdrawals({
     source: createWithdrawEventSource({
       wallet,
-      tokenAddress: token.address,
+      portal: await portalDomainOfToken(deployment.l2Token),
       accountAddress: identity.address,
+      // Every executor the account's burns name, not only the one the bridge lists today.
+      readExecutor: (address) =>
+        withdrawalExecutorAt(address, executorKind(address)).catch((err) => {
+          forget()
+          throw err
+        }),
     }),
     store: getWithdrawalStore(),
     tokenSymbol: token.symbol,
-    deployment: tuple
-      ? { portal: tuple.portal as Hex, l2Token: tuple.l2Token }
-      : await currentDeployment(),
+    tokenDecimals: token.decimals,
+    deployment: { portal: wiring.portal, l2Token: wiring.l2Token },
     report: ({ tokenSymbol, events, unknown, created, savingsMoves }) =>
       console.info(
         `[withdrawGateway] rescan ${
           label ?? tokenSymbol
-        }: ${events} Withdraw events, ${unknown} unknown, ${
+        }: ${events} withdrawals, ${unknown} unknown, ${
           created.length
         } rebuilt (${savingsMoves} Savings moves)`,
       ),
@@ -299,6 +300,8 @@ export interface BurnInput<R extends BurnResult> {
   wallet: ObsidionWallet
   /** The record seeded before the burn is sent, so a reload mid-prove finds it. */
   record: Omit<WithdrawalRecord, "localId" | "operationId">
+  /** The row key a caller chose ahead of the seed, one no row holds yet; a fresh one otherwise. */
+  localId?: string
   /** Runs once the record is seeded, before the burn: records of the caller's own ride the seed. */
   onSeeded?: (record: WithdrawalRecord) => Promise<void>
   /** Signs, proves and sends the burn off the persisted record; resolves on the L2 receipt. */
@@ -323,7 +326,7 @@ export async function runBurn<R extends BurnResult>(
   const { op, wallet } = input
   const store = getWithdrawalStore()
   await store.load()
-  const localId = newWithdrawalLocalId()
+  const localId = input.localId ?? newWithdrawalLocalId()
   const record = await store.create({ ...input.record, localId, operationId: op.operationId })
   const submission = trackWithdrawalSubmission(store, localId, op.operationId)
   let result: R
@@ -441,17 +444,19 @@ export async function planSwapLeg(
   const tuple = source ?? (await getOxideTuple(getConfig()))
   requireTupleField(tuple, "l2Broadcaster")
   const swapEscrowFactoryV2 = requireTupleField(tuple, "swapEscrowFactoryV2") as Address
-  const cut = await fpcFundingCut(l1PublicClient(getConfig()), tuple.portal as Address)
   const nonce = Fr.random().toString() as Hex
-  const { account, secret } = recoverer ?? (await ownSwapRecoverer(tuple))
+  const [{ account, secret }, withdrawalFee] = await Promise.all([
+    recoverer ?? ownSwapRecoverer(tuple),
+    withdrawalExecutorFee(tuple),
+  ])
   const plan = planSwapOnWithdraw({
     swapEscrowFactoryV2,
     output: receiveAsset,
     l1Recipient: recipient,
     amount,
+    withdrawalFee,
     withdrawalRelayerTip: WITHDRAW_RELAYER_TIP,
     proverTip,
-    fpcFundingCut: cut,
     relayerTip: commit.relayerTip,
     daiForGas,
     recovery: { account, salt: deriveSwapEscrowRecoverySalt(secret, nonce) },
@@ -466,18 +471,10 @@ export async function planSwapLeg(
   }
 }
 
-/**
- * How a burn from `tuple` settles: the deployment, its portal's state for the sdk's relayer-tip
- * check, and the swap leg the burn pays. Read before the record exists, so an unreadable portal
- * aborts with nothing persisted.
- */
-export async function withdrawalOptions(
-  tuple: OxideEnvTuple,
-  swap?: SwapLeg,
-): Promise<WithdrawalOptions> {
+/** How a burn from `tuple` settles: the deployment, and the swap leg the burn pays. */
+export function withdrawalOptions(tuple: OxideEnvTuple, swap?: SwapLeg): WithdrawalOptions {
   const l1 = l1PublicClient(getConfig())
-  const portal = await readPortalWithdrawalState(l1, requireTupleField(tuple, "portal") as Address)
-  return { tuple, portal, ...(swap ? { swap: { ...swap.plan, l1 } } : {}) }
+  return { tuple, l1, ...(swap ? { swap: swap.plan } : {}) }
 }
 
 /** What a swap leg writes on the record before its burn is sent, plus the confirm-time quote for the detail sheet. */
@@ -527,8 +524,9 @@ async function submitSponsoredWithdrawalFlow(
   proverTip = 0n,
 ): Promise<WithdrawalRecord> {
   onStage("building")
-  const amount = parseUnits(amountDisplay, DEFAULT_DECIMALS)
-  assertWithinWithdrawalLimit(amount)
+  const { decimals } = await deps.tokenService.fetchTokenInformation()
+  const amount = parseUnits(amountDisplay, decimals)
+  assertWithinWithdrawalLimit(amount, await currentTxAmountCap())
   const ctx = await burnContext(deps, recipient)
   const swap = await planSwapLeg(
     deps.wallet,
@@ -560,7 +558,13 @@ export async function burnContext(deps: WithdrawDeps, recipient: Address) {
   const sponsor = await claimSponsorContext(deps, RAIL_REGISTERED)
 
   const tuple = await getOxideTuple(getConfig())
-  return { tokenSymbol: token.symbol, sponsor, tuple, deployment: await currentDeployment(tuple) }
+  return {
+    tokenSymbol: token.symbol,
+    tokenDecimals: token.decimals,
+    sponsor,
+    tuple,
+    deployment: await currentDeployment(tuple),
+  }
 }
 
 export type BurnContext = Awaited<ReturnType<typeof burnContext>>
@@ -587,7 +591,7 @@ async function sponsoredExit(tuple: OxideEnvTuple, input: SponsoredBurnInput) {
   return {
     l1Recipient: EthAddress.fromString(withdrawalRecipients(seed).release),
     amount: seed.rawAmount ?? amount.toString(),
-    withdrawal: { ...(await withdrawalOptions(tuple, swap)), ...input.options },
+    withdrawal: { ...withdrawalOptions(tuple, swap), ...input.options },
     proverTip: input.proverTip,
   }
 }
@@ -599,13 +603,15 @@ async function sponsoredExit(tuple: OxideEnvTuple, input: SponsoredBurnInput) {
 export async function runSponsoredBurn(
   op: OperationHandle,
   deps: WithdrawDeps,
-  { tokenSymbol, sponsor, tuple, deployment }: BurnContext,
+  { tokenSymbol, tokenDecimals, sponsor, tuple, deployment }: BurnContext,
   input: SponsoredBurnInput,
   onStage: (stage: WithdrawStage) => void,
 ): Promise<{ record: WithdrawalRecord; mined: boolean }> {
   const { recipient, recipientAlias, amount, swap, swapCommit } = input
-  const fpcFundingCut = await currentFpcFundingCut()
-  const exit = await sponsoredExit(tuple, input)
+  const [exit, withdrawalFee] = await Promise.all([
+    sponsoredExit(tuple, input),
+    withdrawalExecutorFee(tuple),
+  ])
 
   const { record, result } = await runBurn({
     op,
@@ -614,12 +620,13 @@ export async function runSponsoredBurn(
       recipient,
       recipientProvenance: "saved-recipient",
       recipientAlias: recipientAlias?.trim() || undefined,
-      amount: formatUnits(amount, DEFAULT_DECIMALS),
+      amount: formatUnits(amount, tokenDecimals),
       rawAmount: amount.toString(),
       relayerTip: WITHDRAW_RELAYER_TIP.toString(),
+      ...(withdrawalFee ? { withdrawalFee: withdrawalFee.toString() } : {}),
       ...(exit.proverTip ? { proverTip: exit.proverTip.toString() } : {}),
-      fpcFundingCut: fpcFundingCut.toString(),
       tokenSymbol,
+      tokenDecimals,
       phase: "submitting",
       startTime: Date.now(),
       deployment,
@@ -661,9 +668,9 @@ export function noteSponsoredMine(
   }
 }
 
-/** This wallet's Oxide account and its secret; needs the unlocked passkey secret. */
-export async function ownSwapRecoverer(tuple: OxideEnvTuple): Promise<SwapRecoverer> {
-  const msk = await getAuthService().getSecretKey()
+/** This wallet's Oxide account and its secret: the one handed in, else the unlocked passkey secret. */
+export async function ownSwapRecoverer(tuple: OxideEnvTuple, secret?: Fr): Promise<SwapRecoverer> {
+  const msk = secret ?? (await getAuthService().getSecretKey())
   if (!msk) throw new Error("Unlock your wallet with your passkey and try again.")
   const account = await predictAccountAddress(
     l1PublicClient(getConfig()),

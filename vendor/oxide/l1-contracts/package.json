@@ -4,7 +4,8 @@
   "packageManager": "yarn@4.5.2",
   "version": "0.0.0",
   "dependencies": {
-    "@aztec/l1-artifacts": "5.2.0"
+    "@aztec-foundation/bb.js": "6.0.0",
+    "@aztec-foundation/l1-artifacts": "6.0.0"
   },
   "devDependencies": {
     "@account-abstraction/contracts": "^0.8.0",

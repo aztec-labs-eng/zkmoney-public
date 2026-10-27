@@ -1,9 +1,9 @@
 export { RecordStorage } from "./RecordStorage"
 export type { RecordStorageOptions } from "./RecordStorage"
 
-export { WithdrawalStorage, newWithdrawalLocalId } from "./WithdrawalStorage"
+export { KEY_WITHDRAWALS, WithdrawalStorage, newWithdrawalLocalId } from "./WithdrawalStorage"
 
-export { WITHDRAWAL_TERMINAL_PHASES } from "./types"
+export { WITHDRAWAL_RECORD_VERSION, WITHDRAWAL_TERMINAL_PHASES } from "./types"
 export type {
   WithdrawalCancelReason,
   WithdrawalPhase,
@@ -49,6 +49,7 @@ export {
   canRecoverSwap,
   canSelfExecuteSwap,
   canSelfFinalizeWithdrawal,
+  isEscrowBurn,
   isWithdrawalDelayed,
 } from "./WithdrawalTrackingService"
 export type {

@@ -1,12 +1,12 @@
 // @vitest-environment node
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest"
 import { readFileSync } from "node:fs"
-import { createExtendedL1Client } from "@aztec/ethereum/client"
-import { deployMulticall3 } from "@aztec/ethereum/contracts"
-import { startAnvil } from "@aztec/ethereum/test"
-import { createLogger } from "@aztec/foundation/log"
-import { Fr } from "@aztec/aztec.js/fields"
-import { EthAddress } from "@aztec/foundation/eth-address"
+import { createExtendedL1Client } from "@aztec-labs/ethereum/client"
+import { deployMulticall3 } from "@aztec-labs/ethereum/contracts"
+import { startAnvil } from "@aztec-labs/ethereum/test"
+import { createLogger } from "@aztec-labs/foundation/log"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { EthAddress } from "@aztec-labs/foundation/eth-address"
 import { secp256k1 } from "@noble/curves/secp256k1"
 import {
   createPublicClient,
@@ -31,11 +31,13 @@ import {
   deployNameRegistry,
   deploySIPAFactory,
   deploySIPAImplementations,
+  deployForwardingTable,
+  DEFAULT_FORWARDING_TABLE_INTENTS,
   deployOxideAccountFactory,
   predictAccountAddress,
   encodeAccountInitCode,
-  TestERC20Abi,
-  TestERC20Bytecode,
+  MintableTokenAbi,
+  MintableTokenBytecode,
   predictSIPA,
   getAuthKeys,
 } from "@oxide/l1-contracts"
@@ -66,6 +68,7 @@ let token: Address
 let accountFactory: Address
 let factory: Address
 let implementation: Address
+let forwardingTable: Address
 
 beforeAll(async () => {
   const anvil = await startAnvil({ port: 0, hardfork: "osaka" })
@@ -76,20 +79,26 @@ beforeAll(async () => {
     createExtendedL1Client([anvil.rpcUrl], deployer, foundry),
     createLogger("wallet-recovery"),
   )
-  token = await deployContract(wallet, client, TestERC20Abi, TestERC20Bytecode, [
+  token = await deployContract(wallet, client, MintableTokenAbi, MintableTokenBytecode, [
     "Test",
     "T",
-    deployer.address,
+    18,
   ])
   accountFactory = await deployOxideAccountFactory(wallet, client)
-  // Recovery never reaches the portal; the mock only gives the implementations a version to pin.
+  // Recovery never reaches the portal; the mock only gives the table a portal to route to.
   const portal = await deployMockPortal(wallet, client, token, rollupVersion)
   const nameRegistry = await deployNameRegistry(wallet, client, deployer.address, deployer.address)
   factory = await deploySIPAFactory(wallet, client, deployer.address)
+  forwardingTable = await deployForwardingTable(wallet, client, {
+    owner: deployer.address,
+    rollupVersion,
+    beneficiary: deployer.address,
+    rows: [{ token, portal, intents: DEFAULT_FORWARDING_TABLE_INTENTS }],
+  })
   ;({ depositSIPAImplementation: implementation } = await deploySIPAImplementations(
     wallet,
     client,
-    { sipaFactory: factory, portal, nameRegistry },
+    { sipaFactory: factory, forwardingTable, nameRegistry },
   ))
 }, 120_000)
 afterAll(async () => {
@@ -110,7 +119,7 @@ async function mint(address: Address) {
       account: deployer,
       chain: foundry,
       address: token,
-      abi: TestERC20Abi,
+      abi: MintableTokenAbi,
       functionName: "mint",
       args: [address, amount],
     }),
@@ -138,6 +147,7 @@ it("recovers a saved account deposit with both contracts initially undeployed, t
     recoveryCommitment,
     rollupVersion,
     true,
+    forwardingTable,
   )
   const record = JSON.parse(
     JSON.stringify({
@@ -156,6 +166,7 @@ it("recovers a saved account deposit with both contracts initially undeployed, t
         recoveryCommitment,
         recoveryAccount: account,
         accountFactory,
+        forwardingTable,
       },
     }),
   )
@@ -197,6 +208,7 @@ it("recovers a saved account deposit with both contracts initially undeployed, t
                 candidate.args.recoveryCommitment,
                 candidate.args.rollupVersion,
                 candidate.args.resweepable,
+                candidate.args.forwardingTable,
               )
             : predictLegacySIPA(client, candidate.sipaFactory, candidate.args),
       },
@@ -228,6 +240,7 @@ it("recovers ETH and a token sent to an undeployed account deposit in one transa
     recoveryCommitment,
     rollupVersion,
     true,
+    forwardingTable,
   )
   const origin = {
     protocol: "account" as const,
@@ -239,6 +252,7 @@ it("recovers ETH and a token sent to an undeployed account deposit in one transa
     recoveryCommitment,
     recoveryAccount: account,
     accountFactory,
+    forwardingTable,
   }
   const record = {
     sipaAddress: sipa,
@@ -287,6 +301,7 @@ it("recovers ETH and a token sent to an undeployed account deposit in one transa
           (candidate.args as { recoveryCommitment: Hex }).recoveryCommitment,
           candidate.args.rollupVersion,
           candidate.args.resweepable,
+          (candidate.args as { forwardingTable: Address }).forwardingTable,
         ),
     },
     sendTransaction,

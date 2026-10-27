@@ -3,10 +3,15 @@
  * row offers — Cancel inside the refund window, Reclaim after expiry — across lifecycle flags, the
  * on-open status refresh, and whether the session's account is the row's creator.
  */
-import { describe, expect, it } from "vitest"
-import type { PaylinkStatusKind, PaylinkTransaction } from "@obsidion/front-core"
+import { afterEach, describe, expect, it } from "vitest"
+import {
+  setActiveNetworkId,
+  type PaylinkStatusKind,
+  type PaylinkTransaction,
+} from "@obsidion/front-core"
 import {
   creatorLinkAction,
+  isOtherRollupLink,
   paylinkStatusIsUnspent,
 } from "../src/features/paylink/creatorLinkActions"
 
@@ -136,5 +141,17 @@ describe("creatorLinkAction", () => {
     expect(creatorLinkAction(row, { nowSec: NOW + 31, liveStatus: "awaitingClaim" })).toBeNull()
     expect(creatorLinkAction(row, { nowSec: NOW + 60, liveStatus: "awaitingClaim" })).toBeNull()
     expect(creatorLinkAction(row, { nowSec: NOW + 61, liveStatus: "expired" })).toBe("reclaim")
+  })
+})
+
+describe("isOtherRollupLink", () => {
+  afterEach(() => setActiveNetworkId(undefined))
+
+  it("names a link stamped with another rollup, and nothing before the network is known", () => {
+    expect(isOtherRollupLink({ networkId: "0xOLD" })).toBe(false)
+    setActiveNetworkId("0xNEW")
+    expect(isOtherRollupLink({ networkId: "0xOLD" })).toBe(true)
+    expect(isOtherRollupLink({ networkId: "0xnew" })).toBe(false)
+    expect(isOtherRollupLink({})).toBe(false)
   })
 })

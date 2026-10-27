@@ -1,9 +1,9 @@
 import { describe, it } from "vitest"
-import { loadContractArtifact } from "@aztec/stdlib/abi"
-import { NoirCompiledContract } from "@aztec/stdlib/noir"
-import { getContractInstanceFromInstantiationParams } from "@aztec/stdlib/contract"
-import { AztecAddress, EthAddress } from "@aztec/aztec.js/addresses"
-import { Fr } from "@aztec/aztec.js/fields"
+import { loadContractArtifact } from "@aztec-labs/stdlib/abi"
+import { NoirCompiledContract } from "@aztec-labs/stdlib/noir"
+import { getContractInstanceFromInstantiationParams } from "@aztec-labs/stdlib/contract"
+import { AztecAddress, EthAddress } from "@aztec-labs/aztec.js/addresses"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 
 // pnpm test:sandbox scripts/computeBridgeAddress.test.ts
 

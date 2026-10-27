@@ -25,6 +25,28 @@ vi.setConfig({ testTimeout: 30_000 })
 
 const originalFetch = globalThis.fetch
 
+// viem's HTTP transport cannot run under jsdom; the app's L1 reads go through `fetch`, which the
+// demo's RPC stub answers.
+vi.mock("../src/config/env", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/config/env")>()
+  const { custom } = await import("viem")
+  return {
+    ...actual,
+    l1Transport: (config: { l1RpcUrl: string }) =>
+      custom({
+        request: async ({ method, params }) => {
+          const response = await fetch(config.l1RpcUrl, {
+            method: "POST",
+            body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+          })
+          const { result, error } = await response.json()
+          if (error) throw new Error(error.message)
+          return result
+        },
+      }),
+  }
+})
+
 /** The injected provider, un-narrowed: these tests probe methods viem's union doesn't model. */
 const injected = () =>
   window.ethereum as unknown as {
@@ -143,21 +165,32 @@ describe("explorer links", () => {
 })
 
 describe("seeded session", () => {
-  it("keeps onboarding identity-free without replacing the provider or fetch", async () => {
+  it("keeps onboarding identity-free without replacing the provider", async () => {
     const provider = { request: vi.fn() }
     const originalProvider = Object.getOwnPropertyDescriptor(window, "ethereum")
     Object.defineProperty(window, "ethereum", { value: provider, configurable: true })
     try {
-      const fetchBefore = globalThis.fetch
+      const fetchBefore = vi.fn(async () => new Response("{}"))
+      globalThis.fetch = fetchBefore
+      window.history.replaceState({}, "", "/?demo=onboarding")
       await seed("onboarding")
       const { loadWalletIdentity } = await import("../src/features/identity/walletIdentity")
       const { getOxideTuple } = await import("../src/config/oxideTuple")
+      const { loadDepositTokens } = await import("../src/features/deposit/loadDepositFacts")
       const { getConfig } = await import("../src/config/env")
       const { DEMO_OXIDE_TUPLE } = await import("../src/dev/demoFixtures")
       expect(loadWalletIdentity()).toBeNull()
       expect(window.ethereum).toBe(provider)
-      expect(globalThis.fetch).toBe(fetchBefore)
       expect(await getOxideTuple(getConfig())).toEqual(DEMO_OXIDE_TUPLE)
+      // Only the L1 endpoint is answered locally, so the token lists read the table.
+      expect((await loadDepositTokens(getConfig())).options.map((t) => t.symbol)).toEqual([
+        "DAI",
+        "USDC",
+        "USDT",
+      ])
+      expect(fetchBefore).not.toHaveBeenCalled()
+      await fetch("https://elsewhere.invalid/")
+      expect(fetchBefore).toHaveBeenCalledWith("https://elsewhere.invalid/", undefined)
       expect(provider.request).not.toHaveBeenCalled()
     } finally {
       if (originalProvider) Object.defineProperty(window, "ethereum", originalProvider)
@@ -340,23 +373,20 @@ describe("recovery scenario", () => {
     ])
   })
 
-  it("stamps the fee and the funding cut on every funded deposit, as the sync writes it", async () => {
+  it("stamps the fee on every funded deposit, as the sync writes it", async () => {
     await seed("recovery")
     const { SIPADepositStore, depositAmounts } = await import("@obsidion/front-core")
     const { WebStorageAdapter } = await import("../src/platform/storage/WebStorageAdapter")
-    const { DEMO_DEPOSIT_FEE, DEMO_FPC_FUNDING_CUT } = await import("../src/dev/fakeL1Rpc")
+    const { DEMO_DEPOSIT_FEE } = await import("../src/dev/fakeL1Rpc")
     await SIPADepositStore.get(new WebStorageAdapter()).load()
-    // The gross amount, the whole fee and the portal's share of it are written together the moment
-    // the funding read lands, so a funded record carrying only some of them is a shape the sync
-    // cannot produce.
+    // The gross amount and the fee are written together the moment the funding read lands, so a
+    // funded record carrying only one of them is a shape the sync cannot produce.
     const funded = SIPADepositStore.get()
       .list()
       .filter((r) => Number(r.amount) > 0)
     expect(funded.length).toBeGreaterThan(0)
-    const floor = DEMO_DEPOSIT_FEE + DEMO_FPC_FUNDING_CUT
-    expect(funded.every((r) => r.fee === floor.toString())).toBe(true)
-    expect(funded.every((r) => r.fpcFundingCut === DEMO_FPC_FUNDING_CUT.toString())).toBe(true)
-    expect(funded.every((r) => depositAmounts(r).feeAtomic === floor)).toBe(true)
+    expect(funded.every((r) => r.fee === DEMO_DEPOSIT_FEE.toString())).toBe(true)
+    expect(funded.every((r) => depositAmounts(r).feeAtomic === DEMO_DEPOSIT_FEE)).toBe(true)
   })
 
   it("offers the self-sweep exactly where the sweep can still land", async () => {
@@ -389,7 +419,7 @@ describe("recovery scenario", () => {
 
   it("derives each recovery address from the record's own secret", async () => {
     await seed("recovery")
-    const { Fr } = await import("@aztec/aztec.js/fields")
+    const { Fr } = await import("@aztec-labs/aztec.js/fields")
     const { deriveRecoveryAddress } = await import("@obsidion/sdk")
     const { SIPADepositStore } = await import("@obsidion/front-core")
     const { WebStorageAdapter } = await import("../src/platform/storage/WebStorageAdapter")
@@ -534,7 +564,7 @@ describe("activity scenario", () => {
     const { WebStorageAdapter } = await import("../src/platform/storage/WebStorageAdapter")
     const { recoveryReasonFor } = await import("../src/features/deposit/sipaRecovery")
     const { canSelfSweep } = await import("../src/features/deposit/sipaSweep")
-    const { TX_AMOUNT_CAP } = await import("@obsidion/sdk")
+    const { DEMO_TX_AMOUNT_CAP } = await import("../src/dev/fakeL1Rpc")
     await SIPADepositStore.get(new WebStorageAdapter()).load()
     const records = SIPADepositStore.get().list()
 
@@ -554,7 +584,7 @@ describe("activity scenario", () => {
       .map((r) => depositAmounts(r))
     expect(unsweepable.filter((a) => a.grossAtomic <= a.feeAtomic)).toHaveLength(1)
     // The cap meets the amount the pool would forward, so the fee comes off before the comparison.
-    const overCap = unsweepable.filter((a) => a.grossAtomic - a.feeAtomic > TX_AMOUNT_CAP)
+    const overCap = unsweepable.filter((a) => a.grossAtomic - a.feeAtomic > DEMO_TX_AMOUNT_CAP)
     expect(overCap).toHaveLength(1)
     // The over-cap deposit's net is nonzero — the one record carrying a net it will never be paid.
     expect(overCap[0].netAtomic).toBeGreaterThan(0n)
@@ -615,16 +645,14 @@ describe("activity scenario", () => {
     const { WebStorageAdapter } = await import("../src/platform/storage/WebStorageAdapter")
     const { getAddress, parseUnits } = await import("viem")
     const { WITHDRAW_RELAYER_TIP } = await import("@obsidion/core/constants")
-    const { DEMO_FPC_FUNDING_CUT } = await import("../src/dev/fakeL1Rpc")
     await WithdrawalStorage.get(new WebStorageAdapter()).load()
     const records = WithdrawalStorage.get().list()
 
-    // The burn's gross and both deductions are fixed when it is built, so a pre-mine row carries
+    // The burn's gross and its relayer tip are fixed when it is built, so a pre-mine row carries
     // them too — and the detail sheet's breakdown renders on every phase.
     for (const record of records) {
       expect(record.rawAmount).toBe(parseUnits(record.amount, 18).toString())
       expect(record.relayerTip).toBe(WITHDRAW_RELAYER_TIP.toString())
-      expect(record.fpcFundingCut).toBe(DEMO_FPC_FUNDING_CUT.toString())
     }
     const postMine = records.filter((r) => r.phase !== "submitting" && r.phase !== "failed")
     expect(postMine.length).toBeGreaterThan(0)
@@ -755,16 +783,16 @@ describe("fake L1", () => {
     window.history.replaceState({}, "", "/?demo=fresh")
     await seed("fresh")
     const { createPublicClient, custom, erc20Abi } = await import("viem")
-    const { depositTokensFor } = await import("../src/features/deposit/loadDepositFacts")
+    const { loadDepositTokens } = await import("../src/features/deposit/loadDepositFacts")
     const { DEMO_L1_ACCOUNT, DEMO_L1_TOKENS } = await import("../src/dev/fakeL1Rpc")
     const { getConfig } = await import("../src/config/env")
     const client = createPublicClient({ transport: custom(window.ethereum!) })
 
-    const picked = depositTokensFor(getConfig().network).filter((t) => t.address)
+    const picked = (await loadDepositTokens(getConfig())).options.filter((t) => t.swapped)
     expect(picked.map((t) => t.symbol)).toEqual(["USDC", "USDT"])
 
     for (const option of picked) {
-      const address = option.address!
+      const address = option.address
       const read = (functionName: "decimals" | "symbol" | "balanceOf") =>
         client.readContract({
           address,
@@ -785,8 +813,8 @@ describe("fake L1", () => {
     window.history.replaceState({}, "", "/?demo=fresh")
     await seed("fresh")
     const { decodeAbiParameters, encodeFunctionData, parseAbi } = await import("viem")
-    const { depositTokensFor } = await import("../src/features/deposit/loadDepositFacts")
-    const { DEMO_DEPOSIT_FEE, DEMO_FPC_FUNDING_CUT, DEMO_TOKEN_DECIMALS } = await import(
+    const { loadDepositTokens } = await import("../src/features/deposit/loadDepositFacts")
+    const { DEMO_DEPOSIT_FEE, DEMO_TX_AMOUNT_CAP, DEMO_TOKEN_DECIMALS } = await import(
       "../src/dev/fakeL1Rpc"
     )
     const { DEMO_L1_TOKEN, DEMO_OXIDE_TUPLE } = await import("../src/dev/demoFixtures")
@@ -809,29 +837,39 @@ describe("fake L1", () => {
     expect(await read(DEMO_L1_TOKEN, "function decimals() view returns (uint8)", "uint8")).toBe(
       DEMO_TOKEN_DECIMALS,
     )
-    const implementation = await read(
-      DEMO_OXIDE_TUPLE.sipaFactory!,
-      "function implementationFor(address portal, uint8 intent) view returns (address)",
-      "address",
-      [DEMO_OXIDE_TUPLE.portal, 1],
-    )
     expect(
       await read(
-        implementation as string,
-        "function depositFee() view returns (uint256)",
-        "uint256",
+        DEMO_OXIDE_TUPLE.sipaFactory!,
+        "function implementationFor(uint8 intent) view returns (address)",
+        "address",
+        [1],
       ),
-    ).toBe(DEMO_DEPOSIT_FEE)
+    ).not.toBe(`0x${"00".repeat(20)}`)
+    const row = decodeAbiParameters(
+      [{ type: "address" }, { type: "address" }, { type: "uint128" }, { type: "uint128" }],
+      await call(
+        DEMO_OXIDE_TUPLE.forwardingTable!,
+        encodeFunctionData({
+          abi: parseAbi([
+            "function rowFor(address token, uint8 intent) view returns (address, address, uint128, uint128)",
+          ]),
+          args: [DEMO_L1_TOKEN, 1],
+        }),
+      ),
+    )
+    // The deposit row routes to the demo portal at the deposit fee, with no beneficiary fee.
+    expect(row[0].toLowerCase()).toBe(DEMO_OXIDE_TUPLE.portal.toLowerCase())
+    expect(row[2] + row[3]).toBe(DEMO_DEPOSIT_FEE)
     expect(
       await read(
         DEMO_OXIDE_TUPLE.portal!,
-        "function FPC_FUNDING_CUT() view returns (uint256)",
+        "function TX_AMOUNT_CAP() view returns (uint256)",
         "uint256",
       ),
-    ).toBe(DEMO_FPC_FUNDING_CUT)
+    ).toBe(DEMO_TX_AMOUNT_CAP)
 
     // The picker shows the mainnet tokens whatever network the demo booted on.
-    expect(depositTokensFor(getConfig().network).map((t) => t.symbol)).toEqual([
+    expect((await loadDepositTokens(getConfig())).options.map((t) => t.symbol)).toEqual([
       "DAI",
       "USDC",
       "USDT",
@@ -884,7 +922,7 @@ describe("fake L1", () => {
     const { SIPADepositStore } = await import("@obsidion/front-core")
     const { WebStorageAdapter } = await import("../src/platform/storage/WebStorageAdapter")
     const { getConfig } = await import("../src/config/env")
-    const { DEMO_DEPOSIT_FEE, DEMO_FPC_FUNDING_CUT, DEMO_SIPA_BALANCE } = await import(
+    const { DEMO_DEPOSIT_FEE, DEMO_L1_TOKEN, DEMO_SIPA_BALANCE } = await import(
       "../src/dev/fakeL1Rpc"
     )
     await SIPADepositStore.get(new WebStorageAdapter()).load()
@@ -901,29 +939,29 @@ describe("fake L1", () => {
     }
     const uint = (hex: `0x${string}`) => decodeAbiParameters([{ type: "uint256" }], hex)[0]
 
-    const feeAbi = parseAbi(["function depositFee() view returns (uint256)"])
-    const cutAbi = parseAbi(["function FPC_FUNDING_CUT() view returns (uint256)"])
+    const rowAbi = parseAbi([
+      "function rowFor(address token, uint8 intent) view returns (address, address, uint128, uint128)",
+    ])
     const balanceAbi = parseAbi(["function balanceOf(address owner) view returns (uint256)"])
     const predictAbi = parseAbi([
       "function predictSIPA(address implementation, bytes32 intentHash, address recoveryAddress, uint256 rollupVersion, bool resweepable) view returns (address)",
     ])
 
-    // Balance strictly above the sweep fee and the portal's cut together — the funding guard reads
-    // the deposit as sweepable.
-    const fee = uint(await call(encodeFunctionData({ abi: feeAbi })))
-    const cut = uint(await call(encodeFunctionData({ abi: cutAbi })))
+    // Balance strictly above the sweep fee — the funding guard reads the deposit as sweepable.
+    const [, , beneficiaryFee, sweepTip] = decodeAbiParameters(
+      [{ type: "address" }, { type: "address" }, { type: "uint128" }, { type: "uint128" }],
+      await call(encodeFunctionData({ abi: rowAbi, args: [DEMO_L1_TOKEN, 1] })),
+    )
+    const fee = beneficiaryFee + sweepTip
     const balance = uint(
       await call(encodeFunctionData({ abi: balanceAbi, args: [stuck.sipaAddress] })),
     )
     expect(fee).toBe(DEMO_DEPOSIT_FEE)
-    expect(cut).toBe(DEMO_FPC_FUNDING_CUT)
     expect(balance).toBe(DEMO_SIPA_BALANCE)
-    expect(balance > fee + cut).toBe(true)
+    expect(balance > fee).toBe(true)
     // What the chain charges is what the seeded records carry, so the Deposit screen's quote and
-    // the rows can never disagree. The record's `fee` is the whole deduction; `fpcFundingCut` names
-    // the portal's share of it rather than adding to it.
-    expect(BigInt(stuck.fee!)).toBe(fee + cut)
-    expect(BigInt(stuck.fpcFundingCut!)).toBe(cut)
+    // the rows can never disagree.
+    expect(BigInt(stuck.fee!)).toBe(fee)
 
     // The SIPAFactory reproduces the fixture's own address, so the deploy guard passes.
     const predicted = await call(
@@ -968,18 +1006,17 @@ describe("withdrawal self-finalize", () => {
     const { resolveWithdrawalWiring } = await import("@obsidion/front-core")
     const { getOxideTuple } = await import("../src/config/oxideTuple")
     const { getConfig } = await import("../src/config/env")
-    const config = getConfig()
-    return resolveWithdrawalWiring(await getOxideTuple(config), BigInt(config.l1ChainId))
+    return resolveWithdrawalWiring(await getOxideTuple(getConfig()))
   }
 
   it("resolves the withdrawal rails from the fixture manifest", async () => {
     await seed("activity")
     const { DEMO_OXIDE_TUPLE } = await import("../src/dev/demoFixtures")
     // Null here — a fixture missing a portal field — is what refuses the flow before it starts.
-    expect((await wiring())?.portalContext).toMatchObject({
-      l1Portal: DEMO_OXIDE_TUPLE.portal,
-      l2Portal: DEMO_OXIDE_TUPLE.l2Token,
-      rollupVersion: 1n,
+    expect(await wiring()).toMatchObject({
+      portal: DEMO_OXIDE_TUPLE.portal,
+      l2Token: DEMO_OXIDE_TUPLE.l2Token,
+      plainWithdrawalExecutor: DEMO_OXIDE_TUPLE.plainWithdrawalExecutor,
     })
   })
 
@@ -1048,7 +1085,7 @@ describe("withdrawal self-finalize", () => {
     const hash = await selfFinalizeWithdrawal(record, {
       channel,
       build: demoFinalizationBuilder(DEMO_OXIDE_TUPLE.portal as `0x${string}`),
-      portalContext: (await wiring())!.portalContext,
+      portal: (await wiring())!.portal,
       l1: createPublicClient({ transport: custom(window.ethereum!) }),
       store,
     })

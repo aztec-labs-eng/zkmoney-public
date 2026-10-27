@@ -13,6 +13,7 @@ module.exports = {
   moduleNameMapper: {
     // ci-jest never builds sibling workspaces' dest/, so resolve their subpath imports to TS sources
     '^@oxide/oxide-lib/(.*)\\.js$': '<rootDir>/../../oxide-lib/src/$1.ts',
+    '^@oxide/oxide-lib-tee/(.*)\\.js$': '<rootDir>/../../oxide-lib-tee/src/$1.ts',
     '^@oxide/watcher-lib/event-store$': '<rootDir>/../../watcher-lib/src/event_store.ts',
     '^@oxide/watcher-lib/cursor$': '<rootDir>/../../watcher-lib/src/cursor.ts',
     '^@oxide/watcher-lib/ingester$': '<rootDir>/../../watcher-lib/src/ingester.ts',

@@ -104,7 +104,7 @@ function parseProfileUrl(profileUrl: string): {
     )
   }
   const match =
-    /^\/profiles\/(v[1-9]\d*)\/(current|(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))\.json$/.exec(
+    /^\/profiles\/(v(?:0|[1-9]\d*))\/(current|(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))\.json$/.exec(
       url.pathname,
     )
   if (!match) {

@@ -12,12 +12,18 @@ import { isRpDomainSuffix } from "../policy/relyingParty.js"
 import { iosBelowFloor, parseUserAgent } from "../policy/userAgentInfo.js"
 import { authDataFromAttestation, p256FromAuthData, p256FromSpki } from "./attestation.js"
 import {
+  type AuthenticatorDataFlags,
   parseAaguid,
   parseAttestedAaguid,
   parseAuthenticatorDataFlags,
 } from "./authenticatorData.js"
 import { base64UrlToBytes } from "./bytes.js"
-import { nativeLockFor, printsNative } from "./nativeLock.js"
+import {
+  type KeptPasskeyApi,
+  keptPasskeyApiFor,
+  nativeLockFor,
+  printsNative,
+} from "./nativeLock.js"
 
 /**
  * WebAuthn and Web Locks present at all — absent on old or locked-down browsers. The session store
@@ -34,6 +40,12 @@ export type PasskeyAttachment = "platform" | "cross-platform"
 /** WebAuthn Level 3 UI hints — advisory steering for the browser sheet, never enforcement. */
 export type PasskeyHint = "hybrid" | "client-device" | "security-key"
 
+/**
+ * Whether the authenticator must store the passkey. `"preferred"` admits one it rebuilds from the
+ * credential id instead (a Ledger's); such a passkey answers only a request that names its id.
+ */
+export type PasskeyResidentKey = "required" | "preferred"
+
 export type PasskeyCreateRequest = {
   rpId: string
   rpName: string
@@ -41,6 +53,10 @@ export type PasskeyCreateRequest = {
   /** Which authenticator class to ask for; the response's attachment is what the caller checks. */
   authenticatorAttachment?: PasskeyAttachment
   hints?: readonly PasskeyHint[]
+  /** Absent requires a stored passkey. */
+  residentKey?: PasskeyResidentKey
+  /** An extension wrapper the page's lock kept aside may answer this creation. */
+  extensionAllowed?: boolean
   /** PRF `eval.first` salt — the browser applies K(·) itself before the authenticator sees it. */
   prfFirstSalt: Uint8Array
   /** PRF `eval.second` salt, evaluated in the same ceremony. */
@@ -51,6 +67,8 @@ export type PasskeyCreateRequest = {
   timeoutMs?: number
   /** Ends the ceremony: the browser's sheet closes, and no queued or retried request follows. */
   signal?: AbortSignal
+  /** Hears the id once the authenticator has saved the passkey, before its response is read. */
+  onWritten?: (credentialId: string) => void
 }
 
 export type PasskeyCreateResult = {
@@ -61,8 +79,12 @@ export type PasskeyCreateResult = {
   authenticatorAttachment?: PasskeyAttachment
   /** Undefined when the response carried no readable authenticator data. */
   backupEligible?: boolean
+  /** Undefined when the response carried no readable authenticator data. */
+  userVerified?: boolean
   /** The provider's self-reported id (hyphenated uuid); undefined when absent or all zeros. */
   aaguid?: string
+  /** The id as attested, all zeros included; undefined without attested data. */
+  attestedAaguid?: string
   /**
    * The transports the client believes this authenticator supports, as it reported them. Undefined
    * when the browser offers no answer; the policy layer decides what a given list means. Always
@@ -70,6 +92,8 @@ export type PasskeyCreateResult = {
    * where the class is decided.
    */
   transports: readonly string[] | undefined
+  /** Whether the authenticator stored the passkey (`credProps.rk`); undefined when the browser did not say. */
+  discoverable?: boolean
   /** The `user.id` the passkey was created under; the one key that can relabel it later. */
   userHandle: Uint8Array
 }
@@ -99,6 +123,8 @@ export type PasskeyAssertResult = {
   authenticatorAttachment?: PasskeyAttachment
   /** Undefined when the authenticator data did not parse. */
   backupEligible?: boolean
+  /** Undefined when the authenticator data did not parse. */
+  userVerified?: boolean
   /** ASN.1 DER ECDSA signature as returned by WebAuthn. */
   signatureDer: Uint8Array
   authenticatorData: Uint8Array
@@ -127,9 +153,10 @@ export type PasskeyAnswerEvidence = {
 }
 
 /**
- * One native WebAuthn request of a `create` or `assert` call, carrying the request object that call
- * was given. `issued` precedes every native request, a re-issue after "already pending" included;
- * `answered` follows the one that returned a credential.
+ * One WebAuthn request of a `create` or `assert` call, to the browser's own method or to the
+ * wrapper the page's lock kept aside, carrying the request object that call was given. `issued`
+ * precedes every request, a re-issue after "already pending" included; `answered` follows the one
+ * that returned a credential.
  */
 export type PasskeyRequestSignal =
   | { phase: "issued"; kind: "create"; request: PasskeyCreateRequest }
@@ -147,7 +174,7 @@ export type PasskeyRequestSignal =
       evidence: PasskeyAnswerEvidence
     }
 
-/** Watches native requests. Whatever it throws or returns is ignored. */
+/** Watches requests. Whatever it throws or returns is ignored. */
 export type PasskeyRequestHook = (signal: PasskeyRequestSignal) => void
 
 /**
@@ -176,7 +203,7 @@ type TabSlot = {
   /** The holder, so a waiter can evict it. */
   active?: { controller: AbortController }
   /** Told when the tab's request goes out and when it ends. */
-  listeners?: Set<(active: boolean) => void>
+  listeners?: Set<PasskeyRequestListener>
 }
 
 const TAB_SLOT_KEY = "__zkMoneyWebAuthnTabSlot"
@@ -186,11 +213,14 @@ function tabSlot(): TabSlot {
   return (globalScope[TAB_SLOT_KEY] ??= { turn: Promise.resolve() })
 }
 
+/** `kept`: the request goes to a wrapper the page's lock kept aside, not to the browser. */
+type PasskeyRequestListener = (active: boolean, kept: boolean) => void
+
 /**
  * Subscribe to the tab's WebAuthn request: `true` just before it goes to the browser, `false` once
  * it settles. Called synchronously, so a listener can change the page before the request is seen.
  */
-export function onPasskeyRequest(listener: (active: boolean) => void): () => void {
+export function onPasskeyRequest(listener: PasskeyRequestListener): () => void {
   const listeners = (tabSlot().listeners ??= new Set())
   listeners.add(listener)
   return () => listeners.delete(listener)
@@ -268,17 +298,18 @@ export function passkeyExtensionFor(): PasskeyExtension {
 /**
  * An extension (1Password, Bitwarden, …) answers WebAuthn inside the page when it has swapped
  * `navigator.credentials.get`, or `.create` for a creation, for its own script. Browser and OS
- * prompts leave both native.
+ * prompts leave both native, and so does a wrapper the page's lock restored over and kept aside
+ * (`keptPasskeyApiFor`): the ceremony routes to that one itself.
  */
 export function extensionAnswersPasskeys(call: CredentialCall = "get"): boolean {
   const source = credentialSource(call)
   return source !== undefined && (scripted(call, source) || ownOverride(call))
 }
 
-function announce(slot: TabSlot, active: boolean): void {
+function announce(slot: TabSlot, active: boolean, kept = false): void {
   for (const listener of slot.listeners ?? []) {
     try {
-      listener(active)
+      listener(active, kept)
     } catch {
       // A listener never fails a ceremony.
     }
@@ -350,12 +381,14 @@ export type CeremonyTiming = {
   /** Backoff for re-issuing while the browser still reports a pending request. */
   pendingRetryDelaysMs: readonly number[]
   /**
-   * How long a creation may wait for an authenticator to answer when its request names no timeout.
-   * Without it the browser waits without end when nothing it may offer exists — a phone asked for
-   * its own passkey where only a roaming key is present never sees a sheet, and never sees a
-   * refusal either.
+   * How long a request that names no timeout may wait for an answer: every creation, and an
+   * assertion sent through a kept extension wrapper. Without it the browser waits without end
+   * when nothing it may offer exists — a phone asked for its own passkey where only a roaming key
+   * is present never sees a sheet, and never sees a refusal either — and an extension's bridge
+   * that never answers holds the tab's one request. A native assertion names none, as the
+   * browser bounds those itself.
    */
-  createTimeoutMs: number
+  requestTimeoutMs: number
 }
 
 export const DEFAULT_CEREMONY_TIMING: CeremonyTiming = {
@@ -371,7 +404,7 @@ export const DEFAULT_CEREMONY_TIMING: CeremonyTiming = {
   // The steps that precede a creation send the user for their phone or key first, so the sheet
   // opens with the device already to hand. Past this the browser gives up and the screen offers
   // another attempt, which beats a prompt that waits for something that cannot arrive.
-  createTimeoutMs: 60_000,
+  requestTimeoutMs: 60_000,
 }
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
@@ -471,7 +504,8 @@ async function issueWithRetries<T>(
 async function withTabSlot<T>(
   request: (signal: AbortSignal) => Promise<T>,
   timing: CeremonyTiming,
-  signal?: AbortSignal,
+  signal: AbortSignal | undefined,
+  kept: boolean,
 ): Promise<T> {
   signal?.throwIfAborted()
   const slot = tabSlot()
@@ -496,7 +530,7 @@ async function withTabSlot<T>(
     await awaitDocumentReady(timing.focusWaitMs, controller.signal)
     slot.active = { controller }
     held = true
-    announce(slot, true)
+    announce(slot, true, kept)
     return await issueWithRetries(request, controller.signal, timing.pendingRetryDelaysMs)
   } finally {
     signal?.removeEventListener("abort", forward)
@@ -551,10 +585,10 @@ function toAttachment(value: string | null | undefined): PasskeyAttachment | und
   return value === "platform" || value === "cross-platform" ? value : undefined
 }
 
-function readBackupEligible(authenticatorData: Uint8Array | undefined): boolean | undefined {
+function readFlags(authenticatorData: Uint8Array | undefined): AuthenticatorDataFlags | undefined {
   if (!authenticatorData) return undefined
   try {
-    return parseAuthenticatorDataFlags(authenticatorData).backupEligible
+    return parseAuthenticatorDataFlags(authenticatorData)
   } catch {
     return undefined
   }
@@ -720,6 +754,35 @@ function rpErrorFor(rpId: string, error: unknown): unknown {
   return error
 }
 
+/**
+ * Taken as this module loads: a kept function's own `.call` is a property any later script can set.
+ * Nothing earlier is captured, since a script that runs before this module can replace
+ * `navigator.credentials` itself.
+ */
+const applyFunction = Reflect.apply
+
+/**
+ * Sends the call to the kept wrapper where one applies, else to the browser's own method, with
+ * `navigator.credentials` as the receiver either way. An abort the ceremony raised outranks
+ * whatever the call threw for it: a wrapper may report the abort as a refusal of its own.
+ */
+async function issueCredentialCall(
+  call: CredentialCall,
+  kept: KeptPasskeyApi | undefined,
+  options: { signal: AbortSignal; publicKey: CreationOptionsL3 | RequestOptionsL3 },
+): Promise<Credential | null> {
+  try {
+    if (kept) {
+      return (await applyFunction(kept, navigator.credentials, [options])) as Credential | null
+    }
+    return call === "create"
+      ? await navigator.credentials.create(options as CredentialCreationOptions)
+      : await navigator.credentials.get(options as CredentialRequestOptions)
+  } catch (error) {
+    throw options.signal.aborted ? options.signal.reason : error
+  }
+}
+
 export class BrowserPasskeyCeremony implements PasskeyCeremony {
   constructor(
     private readonly timing: CeremonyTiming = DEFAULT_CEREMONY_TIMING,
@@ -727,7 +790,9 @@ export class BrowserPasskeyCeremony implements PasskeyCeremony {
   ) {}
 
   async create(request: PasskeyCreateRequest): Promise<PasskeyCreateResult> {
+    const kept = request.extensionAllowed ? keptPasskeyApiFor("create") : undefined
     const userHandle = encodeUserHandle(request.userName, request.provenance)
+    const residentKey = request.residentKey ?? "required"
     const publicKey: CreationOptionsL3 = {
       rp: { id: request.rpId, name: request.rpName },
       // The name and the creation's provenance ride in the handle so an assertion anywhere hands
@@ -744,8 +809,8 @@ export class BrowserPasskeyCeremony implements PasskeyCeremony {
       // the browser refuse before it writes anything.
       pubKeyCredParams: [{ type: "public-key", alg: -7 }],
       authenticatorSelection: {
-        residentKey: "required",
-        requireResidentKey: true,
+        residentKey,
+        requireResidentKey: residentKey === "required",
         userVerification: "required", // load-bearing: hmac-secret/PRF keys on UV
         ...(request.authenticatorAttachment
           ? { authenticatorAttachment: request.authenticatorAttachment }
@@ -753,20 +818,25 @@ export class BrowserPasskeyCeremony implements PasskeyCeremony {
       },
       ...(request.hints ? { hints: request.hints } : {}),
       attestation: "none",
-      timeout: request.timeoutMs ?? this.timing.createTimeoutMs,
-      extensions: prfInputs(request.prfFirstSalt, request.prfSecondSalt),
+      timeout: request.timeoutMs ?? this.timing.requestTimeoutMs,
+      // `credProps` asks whether the passkey was stored; the answer is evidence, never a decision.
+      extensions: { ...prfInputs(request.prfFirstSalt, request.prfSecondSalt), credProps: true },
     }
     const credential = (await withTabSlot(
       (signal) => {
         notify(this.onRequest, () => ({ phase: "issued", kind: "create", request }))
-        return withRpError(request.rpId, () => navigator.credentials.create({ signal, publicKey }))
+        return withRpError(request.rpId, () =>
+          issueCredentialCall("create", kept, { signal, publicKey }),
+        )
       },
       this.timing,
       request.signal,
+      kept !== undefined,
     )) as PublicKeyCredential | null
     if (!credential) throw new Error(NO_CREATED_CREDENTIAL_MESSAGE)
     // The authenticator has saved the passkey: anything thrown from here leaves it behind.
     try {
+      request.onWritten?.(credential.id)
       notify(this.onRequest, () => ({
         phase: "answered",
         kind: "create",
@@ -795,16 +865,24 @@ export class BrowserPasskeyCeremony implements PasskeyCeremony {
         throw new Error(`${NOT_ES256_PREFIX}${String(alg)} by ${provider}${NOT_ES256_SUFFIX}`)
       }
 
-      const extensions = credential.getClientExtensionResults() as { prf?: { results?: unknown } }
+      const extensions = credential.getClientExtensionResults() as {
+        prf?: { results?: unknown }
+        credProps?: { rk?: unknown }
+      }
+      const flags = readFlags(authData)
+      const rk = extensions.credProps?.rk
       return {
         credentialId: credential.id,
         pubkey,
         prfFirst: decodePrfSlot(extensions.prf?.results, "first"),
         prfSecond: decodePrfSlot(extensions.prf?.results, "second"),
         authenticatorAttachment: toAttachment(credential.authenticatorAttachment),
-        backupEligible: readBackupEligible(authData),
+        backupEligible: flags?.backupEligible,
+        userVerified: flags?.userVerified,
         aaguid: readAaguid(authData),
+        attestedAaguid: authData ? tryRead(() => parseAttestedAaguid(authData)) : undefined,
         transports: readTransports(response),
+        discoverable: typeof rk === "boolean" ? rk : undefined,
         userHandle,
       }
     } catch (err) {
@@ -813,6 +891,12 @@ export class BrowserPasskeyCeremony implements PasskeyCeremony {
   }
 
   async assert(request: PasskeyAssertRequest): Promise<PasskeyAssertResult> {
+    // A request hinted away from this device is the browser's: a kept wrapper reads no hints and
+    // would offer this device's passkey first.
+    const kept =
+      !request.hints || request.hints.includes("client-device")
+        ? keptPasskeyApiFor("get")
+        : undefined
     const publicKey: RequestOptionsL3 = {
       rpId: request.rpId,
       challenge: request.challenge as BufferSource,
@@ -825,15 +909,19 @@ export class BrowserPasskeyCeremony implements PasskeyCeremony {
           : {}),
       })),
       ...(request.hints ? { hints: request.hints } : {}),
+      ...(kept ? { timeout: this.timing.requestTimeoutMs } : {}),
       extensions: prfInputs(request.prfFirstSalt, request.prfSecondSalt),
     }
     const credential = (await withTabSlot(
       (signal) => {
         notify(this.onRequest, () => ({ phase: "issued", kind: "assert", request }))
-        return withRpError(request.rpId, () => navigator.credentials.get({ signal, publicKey }))
+        return withRpError(request.rpId, () =>
+          issueCredentialCall("get", kept, { signal, publicKey }),
+        )
       },
       this.timing,
       request.signal,
+      kept !== undefined,
     )) as PublicKeyCredential | null
     if (!credential) throw new Error(NO_ASSERTED_CREDENTIAL_MESSAGE)
     notify(this.onRequest, () => ({
@@ -848,12 +936,14 @@ export class BrowserPasskeyCeremony implements PasskeyCeremony {
       prf?: { results?: unknown }
     }
     const authenticatorData = new Uint8Array(response.authenticatorData)
+    const flags = readFlags(authenticatorData)
     return {
       credentialId: credential.id,
       prfFirst: decodePrfSlot(extensions.prf?.results, "first"),
       prfSecond: decodePrfSlot(extensions.prf?.results, "second"),
       authenticatorAttachment: toAttachment(credential.authenticatorAttachment),
-      backupEligible: readBackupEligible(authenticatorData),
+      backupEligible: flags?.backupEligible,
+      userVerified: flags?.userVerified,
       signatureDer: new Uint8Array(response.signature),
       authenticatorData,
       clientDataJSON: new Uint8Array(response.clientDataJSON),

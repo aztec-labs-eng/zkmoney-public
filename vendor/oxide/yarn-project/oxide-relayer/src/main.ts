@@ -1,19 +1,20 @@
-import type { EthAddress } from '@aztec/foundation/eth-address';
-import { createLogger } from '@aztec/foundation/log';
+import type { EthAddress } from '@aztec-labs/foundation/eth-address';
+import { createLogger } from '@aztec-labs/foundation/log';
 
 import { OxidePortalContract, depositTokensFor } from '@oxide/l1-contracts';
+import { priceFeedForChainId } from '@oxide/oxide-client/eth_usd_price_feed.js';
 import { FleetSigner } from '@oxide/oxide-client/fleet_signer.js';
+import { readOperationExecutorVersion } from '@oxide/oxide-client/l1_operation_quote.js';
+import type { RegisteredTeeSigner } from '@oxide/oxide-client/types.js';
 import { createNodeClient } from '@oxide/oxide-lib/aztec_node_client.js';
 import { L1OperationConditionKind } from '@oxide/oxide-lib/l1_operation_calldata.js';
-import type { TeeSigner } from '@oxide/oxide-lib/types.js';
 import { initTelemetry } from '@oxide/telemetry';
 import { OFAC_SDN_LIST_URL, OfacSdnList } from '@oxide/watcher-lib/sanctions';
 
-import { type PublicClient, erc20Abi, zeroAddress } from 'viem';
+import { type PublicClient, zeroAddress } from 'viem';
 
 import { type RunConfig, redactRunConfig } from './cli/config.js';
 import {
-  type DeploymentEnvManifestPublicConfig,
   type ResolvedManifestDeployment,
   describeSkip,
   resolveDeploymentEnvManifest,
@@ -25,8 +26,10 @@ import { getL1PublicClient } from './l1/client.js';
 import { assertNotFlashbots } from './l1/flashbots_protect.js';
 import { createL1TxQueue } from './l1/l1_tx_queue.js';
 import { L1OperationRelayer } from './l1_operations/l1_operation_relayer.js';
+import { L1OperationRouter } from './l1_operations/l1_operation_router.js';
+import { PayoutTokenRegistry } from './l1_operations/payout_token_registry.js';
 import { WithdrawalCompletion } from './l1_operations/withdrawal_completion.js';
-import { ChainlinkPriceOracle } from './price_oracle/chainlink_price_oracle.js';
+import { UsdPeggedPriceOracle } from './price_oracle/usd_pegged_price_oracle.js';
 import { startEpochProofs } from './prover/index.js';
 import { RelayerTelemetry } from './relayer_telemetry.js';
 import { createEphemeralSigner, hasSignerKey, loadSigner } from './signers/index.js';
@@ -39,7 +42,9 @@ import { relayerVersion } from './version.js';
  */
 export interface RunRelayerOptions {
   shutdownSignal?: AbortSignal;
-  teeSigner?: TeeSigner;
+  teeSigner?: RegisteredTeeSigner;
+  /** The signer of one deployment's portal, before `teeSigner`. A test with several portals gives each its own. */
+  teeSignerFor?: (portal: EthAddress) => RegisteredTeeSigner | undefined;
 }
 
 /** Bounded final telemetry flush on shutdown, so a hung exporter cannot block exit. */
@@ -106,6 +111,8 @@ export async function runRelayer(config: RunConfig, opts: RunRelayerOptions = {}
   const telemetryClient = await initTelemetry({
     serviceName: 'oxide-relayer',
     serviceVersion: manifest.current.label,
+    // Lets dashboards tell the fisherman (submission disabled) from relayers that send txs.
+    resourceAttributes: { 'oxide.relayer.submission': config.disableSubmission ? 'disabled' : 'enabled' },
   });
   const telemetry = new RelayerTelemetry(telemetryClient);
 
@@ -117,7 +124,7 @@ export async function runRelayer(config: RunConfig, opts: RunRelayerOptions = {}
   const currentServices: Array<{ stop(): Promise<void> }> = [];
   try {
     state = await openSqliteStateStore(currentStatePath, identity(manifest.current));
-    const priceOracle = new ChainlinkPriceOracle(publicClient, { chainId });
+    const priceOracle = await UsdPeggedPriceOracle.create(publicClient, { chainId, tokens: [] });
     console.log(
       [
         `oxide-relayer starting label=${manifest.current.label}`,
@@ -133,7 +140,7 @@ export async function runRelayer(config: RunConfig, opts: RunRelayerOptions = {}
         `signer=${signer.backend}:${signer.address}`,
         `submission=${config.disableSubmission ? 'disabled' : 'enabled'}`,
         `l1MaxFeePerGasGwei=${config.l1MaxFeePerGasGwei ?? '(none)'}`,
-        `priceFeed=${priceOracle.feed.toString()}`,
+        `priceFeed=${priceFeedForChainId(chainId).toString()}`,
         `sdn=${config.modes.includes('l1-operations') ? rpcHost(config.sdnUrl ?? OFAC_SDN_LIST_URL) : '(none)'}`,
         `l1OperationScreening=${config.modes.includes('l1-operations') ? 'enabled' : 'disabled'}`,
       ].join(' '),
@@ -170,32 +177,51 @@ export async function runRelayer(config: RunConfig, opts: RunRelayerOptions = {}
         ),
       );
       await assertSimulateV1Supported(publicClient, config.readL1RpcUrl);
-      // Two served entries on one Broadcaster both record and may both submit every operation on it.
-      const broadcasters = new Map<string, string[]>();
-      const noteServed = (deployment: ResolvedManifestDeployment) => {
-        const shared = recordBroadcaster(broadcasters, deployment);
-        if (shared) {
-          log.warn(`shared broadcaster ${deployment.publicConfig.broadcaster} portals=${shared.join(',')}`);
-        }
-      };
+      // All startup deployments are added to the router before any worker is started, so the priority order is fixed:
+      // the pinned deployment first, which is always running, then the manifest order. The owner of an operation can
+      // change; a worker that saved the operation then gives way to the new owner before it submits.
+      const router = new L1OperationRouter(log);
+      const payoutTokenRegistry = await PayoutTokenRegistry.create(priceOracle, config.l1OperationsPayoutTokens, {
+        chainId,
+        log,
+      });
+      // Every startup deployment is also registered for its payout tokens before any worker starts, so each worker
+      // accepts their tokens from its first poll.
+      const startupDeployments = [...(pinnedSkip ? [] : [manifest.current]), ...historical];
+      for (const deployment of startupDeployments) {
+        router.addWorker(deployment);
+        await payoutTokenRegistry.addDeployment({ label: deployment.label, token: deployment.publicConfig.token });
+      }
+      log.info(`L1 operations accept payout in ${payoutTokenRegistry.list().join(', ')}`);
+      for (const line of priceOracle.describe()) {
+        log.info(`L1 operation gas pricing: ${line}`);
+      }
       const start = async (deployment: ResolvedManifestDeployment, store: SqliteStateStore) => {
         const { publicConfig, label } = deployment;
         const portal = new OxidePortalContract(publicClient, publicConfig.portal);
-        const payoutTokens = await selectPayoutTokens(publicClient, config.l1OperationsPayoutTokens, publicConfig);
-        if (!opts.teeSigner && !publicConfig.enclaveUrl) {
+        await payoutTokenRegistry.addDeployment({ label, token: publicConfig.token });
+        const teeSigner = opts.teeSignerFor?.(publicConfig.portal) ?? opts.teeSigner;
+        if (!teeSigner && !publicConfig.enclaveUrl) {
           throw new Error(`no enclave is published for deployment ${label}:${publicConfig.portal}`);
         }
-        const withdrawalSigner = opts.teeSigner ?? (await FleetSigner.connect(publicConfig.enclaveUrl, portal));
+        const withdrawalSigner = teeSigner ?? (await FleetSigner.connect(publicConfig.enclaveUrl, portal));
+        // An entry keeps the executor that it was deployed with, so an older entry can have the legacy `execute`.
+        const executorVersion = await readOperationExecutorVersion(
+          publicClient,
+          publicConfig.operationExecutor.toString(),
+        );
         const worker = L1OperationRelayer.create({
           node,
           publicClient,
           store,
           broadcaster: publicConfig.broadcaster,
-          payoutTokens,
+          ownership: router.ownershipFor(deployment),
+          payoutTokens: payoutTokenRegistry,
           watchedTokens: depositTokensFor(chainId, publicConfig.token),
           l1OperationsSubmission,
           allowUnprofitable: config.allowUnprofitable,
           executor: publicConfig.operationExecutor,
+          executorVersion,
           l1TxQueue,
           sanctionsList,
           withdrawalCompletion: new WithdrawalCompletion(
@@ -203,9 +229,7 @@ export async function runRelayer(config: RunConfig, opts: RunRelayerOptions = {}
             portal,
             publicConfig.l2Token,
             withdrawalSigner,
-            publicConfig.plainWithdrawalExecutor,
             publicConfig.operationExecutor,
-            publicConfig.withdrawalSubsidy,
           ),
           predicate: config.predicate,
           logScanWindow: config.logScanWindow,
@@ -214,6 +238,7 @@ export async function runRelayer(config: RunConfig, opts: RunRelayerOptions = {}
           pollIntervalMs: config.l1OperationsPollIntervalMs,
           logger: createLogger(`oxide-relayer:${label}:${publicConfig.portal.toString().toLowerCase()}`),
         });
+        router.attachStore(deployment, store);
         worker.start();
         operationStores.add(store);
         // One line per worker, the pinned one included, for deploy checks.
@@ -226,11 +251,11 @@ export async function runRelayer(config: RunConfig, opts: RunRelayerOptions = {}
             `(${pinnedSkip.reason}); fpc-funding and epoch proofs still run for it when enabled`,
         );
       } else {
-        noteServed(manifest.current);
         currentServices.push(await start(manifest.current, state));
       }
       const discover = (deployment: ResolvedManifestDeployment, path: string) => {
-        noteServed(deployment);
+        // A deployment that the manifest refresher finds is added here; a startup deployment is added already.
+        router.addWorker(deployment);
         const supervisor = new HistoricalDeploymentSupervisor({
           label: deployment.label,
           portal: deployment.publicConfig.portal.toString(),
@@ -241,11 +266,13 @@ export async function runRelayer(config: RunConfig, opts: RunRelayerOptions = {}
               return {
                 stop: () => worker.stop(),
                 close: async () => {
+                  router.detachStore(deployment);
                   operationStores.delete(historicalState);
                   await historicalState.close();
                 },
               };
             } catch (error) {
+              router.detachStore(deployment);
               await historicalState.close();
               throw error;
             }
@@ -277,6 +304,10 @@ export async function runRelayer(config: RunConfig, opts: RunRelayerOptions = {}
       const fpcFunding = FpcFunderCaller.create({
         fpcFunder: currentPublicConfig.fpcFunder,
         executor: currentPublicConfig.operationExecutor,
+        executorVersion: await readOperationExecutorVersion(
+          publicClient,
+          currentPublicConfig.operationExecutor.toString(),
+        ),
         client: publicClient,
         l1TxQueue,
         priceOracle,
@@ -324,52 +355,6 @@ export function assertNodeRollupVersion(nodeRollupVersion: bigint, current: Reso
         `${current.label}:${current.publicConfig.portal} is on ${expected}`,
     );
   }
-}
-
-/**
- * Record a served deployment's Broadcaster. Returns every served Portal on that Broadcaster once there is more than
- * one, and `undefined` otherwise.
- */
-export function recordBroadcaster(
-  served: Map<string, string[]>,
-  deployment: ResolvedManifestDeployment,
-): string[] | undefined {
-  const broadcaster = deployment.publicConfig.broadcaster.toString();
-  const portals = served.get(broadcaster) ?? [];
-  portals.push(deployment.publicConfig.portal.toString());
-  served.set(broadcaster, portals);
-  return portals.length > 1 ? [...portals] : undefined;
-}
-
-/**
- * The tokens an L1-operations worker accepts as payout: the configured list, or else the token of the manifest entry.
- */
-export async function selectPayoutTokens(
-  client: Pick<PublicClient, 'readContract'>,
-  configured: EthAddress[] | undefined,
-  deployment: Pick<DeploymentEnvManifestPublicConfig, 'token'>,
-): Promise<EthAddress[]> {
-  const tokens = configured ?? [deployment.token];
-  await Promise.all(tokens.map(token => assertPriceable(client, token, 'payout token')));
-  return tokens;
-}
-
-/**
- * Each profit floor is `weiToUSD`, an 18-decimal USD amount, so the relayer can price only an 18-decimal USD
- * stablecoin.
- */
-async function assertPriceable(
-  client: Pick<PublicClient, 'readContract'>,
-  token: EthAddress,
-  what: string,
-): Promise<EthAddress> {
-  const decimals = await client.readContract({ address: token.toString(), abi: erc20Abi, functionName: 'decimals' });
-  if (decimals !== 18) {
-    throw new Error(
-      `${what} ${token.toString()} has ${decimals} decimals; the relayer prices payouts as 18-decimal USD`,
-    );
-  }
-  return token;
 }
 
 /**

@@ -48,19 +48,17 @@ describe("savingsMoveBasis", () => {
     )
   })
 
-  it("sums a rebuilt move's burn fields: what burned less the source cut and both tips", () => {
+  it("sums a rebuilt move's burn fields: what burned less both tips", () => {
     const burn = {
       rawAmount: (260n * ONE).toString(),
-      fpcFundingCut: (ONE / 4n).toString(),
       relayerTip: (ONE / 2n).toString(),
       skyMove: { relayerTip: (114n * ONE) / 100n + "" } as WithdrawalRecord["skyMove"],
     }
-    expect(savingsMoveBasis({}, burn as never)).toBe(
-      260n * ONE - ONE / 4n - ONE / 2n - (114n * ONE) / 100n,
-    )
+    expect(savingsMoveBasis({}, burn as never)).toBe(260n * ONE - ONE / 2n - (114n * ONE) / 100n)
     expect(savingsMoveBasis({}, undefined)).toBeUndefined()
     expect(savingsMoveBasis({}, { ...burn, rawAmount: undefined } as never)).toBeUndefined()
     expect(savingsMoveBasis({}, { ...burn, skyMove: undefined } as never)).toBeUndefined()
+    expect(savingsMoveBasis({}, { ...burn, relayerTip: undefined } as never)).toBeUndefined()
   })
 })
 

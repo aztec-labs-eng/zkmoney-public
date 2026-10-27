@@ -18,6 +18,7 @@ const record = (patch: Partial<WithdrawalRecord> = {}): WithdrawalRecord => ({
   recipientProvenance: "saved-recipient",
   amount: "210",
   tokenSymbol: "DAI",
+  tokenDecimals: 18,
   phase: "submitting",
   startTime: Date.now() - 60_000,
   ...patch,

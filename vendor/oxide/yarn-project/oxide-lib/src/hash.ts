@@ -1,24 +1,20 @@
-import type { AztecAddress } from '@aztec/aztec.js/addresses';
-import { Fr, GrumpkinScalar } from '@aztec/aztec.js/fields';
-import { DomainSeparator } from '@aztec/constants';
-import { poseidon2Hash, poseidon2HashWithSeparator } from '@aztec/foundation/crypto/poseidon';
-import {
-  computeL2ToL1MessageHash,
-  computePublicDataTreeLeafSlot,
-  deriveStorageSlotInMap,
-  siloNoteHash,
-  siloNullifier,
-} from '@aztec/stdlib/hash';
-import { computeAppNullifierHidingKey } from '@aztec/stdlib/keys';
+// The withdrawal hashes that clients and the L1 observer use. The rest of this module is in `@oxide/oxide-lib-tee/hash.js`, which this module re-exports.
+// The enclave does not use this code, so a change here does not change the enclave PCR0.
+import { Fr } from '@aztec-labs/aztec.js/fields';
+import { Buffer32 } from '@aztec-labs/foundation/buffer';
+import { sha256 } from '@aztec-labs/foundation/crypto/sha256';
+import { computeL2ToL1MessageHash } from '@aztec-labs/stdlib/hash';
+import type { TxHash } from '@aztec-labs/stdlib/tx';
 
-import { getWithdrawContentHash } from './content_hash.js';
-import { APPROVED_SIGNERS_STORAGE_SLOT, BALANCES_STORAGE_SLOT } from './oxide_constants.gen.js';
-import { type OutboxWithdrawal, type PortalContext, type SecpPublicKey, splitSecpCoord } from './types.js';
+import { getWithdrawContentHash } from '@oxide/oxide-lib-tee/content_hash.js';
+import type { OutboxWithdrawal, PortalDomain } from '@oxide/oxide-lib-tee/types.js';
 
-export function computeWithdrawMessageHash(portal: PortalContext, withdrawal: OutboxWithdrawal): Fr {
+export * from '@oxide/oxide-lib-tee/hash.js';
+
+export function computeWithdrawMessageHash(portalDomain: PortalDomain, withdrawal: OutboxWithdrawal): Fr {
   return computeL2ToL1MessageHash({
-    l2Sender: portal.l2Portal,
-    l1Recipient: portal.l1Portal,
+    l2Sender: portalDomain.l2Token,
+    l1Recipient: portalDomain.l1Portal,
     content: getWithdrawContentHash(
       withdrawal.executor,
       withdrawal.userPayloadHash,
@@ -26,45 +22,15 @@ export function computeWithdrawMessageHash(portal: PortalContext, withdrawal: Ou
       withdrawal.proverTip,
       withdrawal.randomness,
     ),
-    rollupVersion: new Fr(portal.rollupVersion),
-    chainId: new Fr(portal.l1ChainId),
+    rollupVersion: new Fr(portalDomain.rollupVersion),
+    chainId: new Fr(portalDomain.l1ChainId),
   });
 }
 
-export async function computeSiloedNoteHash(args: {
-  amount: bigint;
-  owner: AztecAddress;
-  randomness: Fr;
-  l2Portal: AztecAddress;
-}) {
-  const innerNoteHash = await poseidon2HashWithSeparator(
-    [new Fr(args.amount), args.owner, BALANCES_STORAGE_SLOT, args.randomness],
-    DomainSeparator.NOTE_HASH,
-  );
-  return siloNoteHash(args.l2Portal, innerNoteHash);
-}
-
-export async function computeNoteNullifier(
-  provenNoteHash: Fr,
-  contractAddress: AztecAddress,
-  masterNullifierHidingKey: GrumpkinScalar,
-): Promise<Fr> {
-  const appNullifierHidingKey = await computeAppNullifierHidingKey(masterNullifierHidingKey, contractAddress);
-  const innerNullifier = await poseidon2HashWithSeparator(
-    [provenNoteHash, appNullifierHidingKey],
-    DomainSeparator.NOTE_NULLIFIER,
-  );
-  return await siloNullifier(contractAddress, innerNullifier);
-}
-
-/** The `approved_signers` map slot for `publicKey`, keyed by `poseidon2_hash([x_hi, x_lo, y_hi, y_lo])`. */
-export async function computeSignerApprovalStorageSlot(publicKey: SecpPublicKey): Promise<Fr> {
-  const x = splitSecpCoord(publicKey.x);
-  const y = splitSecpCoord(publicKey.y);
-  const signerKey = await poseidon2Hash([x.hi, x.lo, y.hi, y.lo]);
-  return await deriveStorageSlotInMap(new Fr(APPROVED_SIGNERS_STORAGE_SLOT), signerKey);
-}
-
-export async function computeSignerApprovalLeafSlot(tokenAddress: AztecAddress, publicKey: SecpPublicKey) {
-  return await computePublicDataTreeLeafSlot(tokenAddress, await computeSignerApprovalStorageSlot(publicKey));
+/**
+ * The id `OxidePortal.$isWithdrawalSpent` records for a withdrawal: `sha256(creation_tx_hash || message_hash)`.
+ * The TEE computes the same value when it signs the finalization (`tee-enclave/src/signer.ts`).
+ */
+export function computeWithdrawalId(creationTxHash: TxHash, messageHash: Fr): Buffer32 {
+  return new Buffer32(sha256(Buffer.concat([creationTxHash.toBuffer(), messageHash.toBuffer()])));
 }

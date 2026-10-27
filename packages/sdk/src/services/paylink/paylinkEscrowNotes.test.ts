@@ -5,14 +5,11 @@
  * suite; here we only pin that it is derived (deterministic, owner/nonce/randomness-sensitive).
  */
 import { describe, it, expect } from "vitest"
-import { Fr } from "@aztec/aztec.js/fields"
-import { AztecAddress } from "@aztec/aztec.js/addresses"
-import { TxHash } from "@aztec/stdlib/tx"
-import type { NoteDao } from "@aztec/stdlib/note"
-import {
-  noteDaoToNullificationEffect,
-  discoverPaylinkEscrowNotes,
-} from "./paylinkEscrowNotes.js"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { AztecAddress } from "@aztec-labs/aztec.js/addresses"
+import { TxHash } from "@aztec-labs/stdlib/tx"
+import type { NoteDao } from "@aztec-labs/stdlib/note"
+import { noteDaoToNullificationEffect, discoverPaylinkEscrowNotes } from "./paylinkEscrowNotes.js"
 
 // Minimal NoteDao stand-in — only the fields the mapper reads. `note.items` is the packed
 // AssertedNote: [amount, randomness, s_lo, s_hi, r_lo, r_hi].
@@ -88,7 +85,12 @@ describe("discoverPaylinkEscrowNotes", () => {
     const paylink = await AztecAddress.random()
     const token = await AztecAddress.random()
     await expect(
-      discoverPaylinkEscrowNotes({ pxe: {}, tokenAddress: token, paylinkAddress: paylink, scopes: [paylink] }),
+      discoverPaylinkEscrowNotes({
+        pxe: {},
+        tokenAddress: token,
+        paylinkAddress: paylink,
+        scopes: [paylink],
+      }),
     ).rejects.toThrow(/syncContractNotes\(\) is missing/)
   })
 
@@ -111,7 +113,7 @@ describe("discoverPaylinkEscrowNotes", () => {
       scopes: [paylink],
     })
     expect(notes.length).toBe(1)
-    expect(notes[0].amount.toBigInt()).toBe(300_000n)
-    expect(notes[0].owner.equals(paylink)).toBe(true)
+    expect(notes[0]!.amount.toBigInt()).toBe(300_000n)
+    expect(notes[0]!.owner.equals(paylink)).toBe(true)
   })
 })

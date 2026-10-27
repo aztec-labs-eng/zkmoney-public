@@ -42,6 +42,7 @@ export async function demoContactResolution(
   await wait(tag === "slowfriend" ? 2200 : fresh ? 900 : 450)
   if (fresh && tag === "retryfriend" && retryVerification++ === 0)
     throw new Error("Demo verification unavailable")
+  if (tag === "dmitri") return { status: "staleRollup" }
   if (!["newfriend", "slowfriend", "retryfriend", "mismatchfriend"].includes(tag))
     return { status: "notFound" }
   return {

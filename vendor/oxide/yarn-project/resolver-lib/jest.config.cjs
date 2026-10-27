@@ -14,6 +14,7 @@ module.exports = {
     // ci-jest never builds sibling workspaces' dest/, so resolve @oxide/oxide-lib subpath imports
     // to its TS sources (transformed on the fly by @swc/jest) instead of the unbuilt ./dest/* exports.
     '^@oxide/oxide-lib/(.*)\\.js$': '<rootDir>/../../oxide-lib/src/$1.ts',
+    '^@oxide/oxide-lib-tee/(.*)\\.js$': '<rootDir>/../../oxide-lib-tee/src/$1.ts',
     '^(\\.{1,2}/.*)\\.[cm]?js$': '$1',
   },
   moduleDirectories: ['node_modules', '<rootDir>/../../node_modules'],

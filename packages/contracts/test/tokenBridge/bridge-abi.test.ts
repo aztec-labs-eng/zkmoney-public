@@ -3,15 +3,13 @@
  *
  * Asserts the vendored L2 bridge artifact exposes the oxide surface:
  *
- *   - constructor(portal_address: EthAddress, name: str<31>, symbol: str<31>, decimals: u8)
+ *   - no constructor: the address commits to the immutables' hash, stored by
+ *     store_immutables(immutables: OxideTokenImmutables)
  *   - store_deposit(...) — records an L1->L2 deposit for lazy spending (there is no explicit `claim`)
  *   - withdraw(from: AztecAddress, executor: EthAddress, user_payload_hash: Field, amount: u128,
- *              prover_tip: u128, meta: [Field; 7], authwit_nonce: Field)
- *   - transfer(from: AztecAddress, to: AztecAddress, amount: u128, authwit_nonce: Field)
+ *              prover_tip: u128, authwit_nonce: Field); its recovery chunks come in capsules
+ *   - transfer(from: AztecAddress, to: AztecAddress, amount: u128, meta, authwit_nonce: Field)
  *   - balance_of(owner: AztecAddress) -> u128
- *   - consume_signer_registration(pub_key_x_hi: Field, pub_key_x_lo: Field,
- *                                 pub_key_y_hi: Field, pub_key_y_lo: Field,
- *                                 message_leaf_index: Field)
  *
  * And forbids the legacy obsidion-only names:
  *   - claim_private
@@ -21,13 +19,13 @@
  *   - get_token / get_config / get_admin (config struct removed)
  *
  * Storage layout:
- *   - balances occupies slot 3
+ *   - balances is the only storage field, at slot 1
  */
 import { readFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { dirname, resolve } from "node:path"
 import { describe, expect, it } from "vitest"
-import { TRANSFER_META_LEN, WITHDRAW_META_LEN } from "@obsidion/core/constants"
+import { TRANSFER_META_LEN } from "@obsidion/core/constants"
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ARTIFACT_PATH = resolve(
@@ -125,19 +123,14 @@ describe("OxideToken artifact — oxide surface", () => {
   })
 
   describe("oxide-aligned functions exist with the right parameter shape", () => {
-    it("constructor(portal_address, name, symbol, decimals)", () => {
+    it("has no constructor and stores its immutables", () => {
       const a = loadArtifact()
-      const fn = findFn(a, "constructor")
-      expect(fn, "constructor missing").toBeDefined()
+      expect(findFn(a, "constructor")).toBeUndefined()
+      const fn = findFn(a, "store_immutables")
+      expect(fn, "store_immutables missing").toBeDefined()
       const params = userVisibleParams(fn!)
-      // oxide 4.3.0 stable (commit ade5dbd "Update to 4.3.0 stable") dropped
-      // the legacy `minter` and `admin` constructor args; role management
-      // moved to separate post-deploy admin operations.
-      expect(params.map((p) => p.name)).toEqual(["portal_address", "name", "symbol", "decimals"])
-      expect(params[0].type.kind).toBe("struct")
-      expect(params[0].type.path).toMatch(/EthAddress$/)
-      expect(params[3].type.kind).toBe("integer")
-      expect(params[3].type.width).toBe(8)
+      expect(params.map((p) => p.name)).toEqual(["immutables"])
+      expect(params[0].type.path).toMatch(/OxideTokenImmutables$/)
     })
 
     it("lazy deposit spending: no explicit claim, store_deposit present", () => {
@@ -149,7 +142,7 @@ describe("OxideToken artifact — oxide surface", () => {
       expect(findFn(a, "store_deposit"), "store_deposit missing").toBeDefined()
     })
 
-    it("withdraw(from, executor, user_payload_hash, amount, prover_tip, meta, authwit_nonce)", () => {
+    it("withdraw(from, executor, user_payload_hash, amount, prover_tip, authwit_nonce)", () => {
       const a = loadArtifact()
       const fn = findFn(a, "withdraw")
       expect(fn, "withdraw missing").toBeDefined()
@@ -160,7 +153,6 @@ describe("OxideToken artifact — oxide surface", () => {
         "user_payload_hash",
         "amount",
         "prover_tip",
-        "meta",
         "authwit_nonce",
       ])
       expect(params[0].type.path).toMatch(/AztecAddress$/)
@@ -170,9 +162,7 @@ describe("OxideToken artifact — oxide surface", () => {
       expect(params[3].type.width).toBe(128)
       expect(params[4].type.kind).toBe("integer")
       expect(params[4].type.width).toBe(128)
-      expect(params[5].type.kind).toBe("array")
-      expect(params[5].type.length).toBe(WITHDRAW_META_LEN)
-      expect(params[6].type.kind).toBe("field")
+      expect(params[5].type.kind).toBe("field")
     })
 
     it("transfer(from, to, amount, meta, authwit_nonce)", () => {
@@ -198,49 +188,14 @@ describe("OxideToken artifact — oxide surface", () => {
       expect(params.map((p) => p.name)).toEqual(["owner"])
       expect(params[0].type.path).toMatch(/AztecAddress$/)
     })
-
-    it("consume_signer_registration(pub_key_x_hi, pub_key_x_lo, pub_key_y_hi, pub_key_y_lo, message_leaf_index)", () => {
-      const a = loadArtifact()
-      const fn = findFn(a, "consume_signer_registration")
-      expect(fn, "consume_signer_registration missing").toBeDefined()
-      const params = userVisibleParams(fn!)
-      expect(params.map((p) => p.name)).toEqual([
-        "pub_key_x_hi",
-        "pub_key_x_lo",
-        "pub_key_y_hi",
-        "pub_key_y_lo",
-        "message_leaf_index",
-      ])
-      // All 5 args are bare fields (the contract recombines the halves
-      // and recomputes the eth address from the secp pubkey on-chain).
-      expect(params[0].type.kind).toBe("field")
-      expect(params[1].type.kind).toBe("field")
-      expect(params[2].type.kind).toBe("field")
-      expect(params[3].type.kind).toBe("field")
-      expect(params[4].type.kind).toBe("field")
-    })
   })
 
   describe("storage layout matches oxide", () => {
-    it("balances occupies slot 3", () => {
+    it("balances is the only storage field", () => {
       const a = loadArtifact()
       const entries = getBridgeStorage(a)
-      const slot = slotOf(entries, "balances")
-      expect(slot, `balances slot, got ${slot}`).toBe(3)
-    })
-
-    it("portal_address exists in storage", () => {
-      const a = loadArtifact()
-      const entries = getBridgeStorage(a)
-      const slot = slotOf(entries, "portal_address")
-      expect(slot).toBeGreaterThan(0)
-    })
-
-    it("approved_signers exists in storage", () => {
-      const a = loadArtifact()
-      const entries = getBridgeStorage(a)
-      const slot = slotOf(entries, "approved_signers")
-      expect(slot).toBeGreaterThan(0)
+      expect(entries.map((e) => e.name)).toEqual(["balances"])
+      expect(slotOf(entries, "balances")).toBe(1)
     })
 
     it("legacy `config` and `token` storage slots are gone", () => {

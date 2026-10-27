@@ -105,6 +105,7 @@ const tuple = (version: string, l2Token: string) => ({
   accountMetadataRegistry: "0xamr",
   pool: "0xpool",
   sipaFactory: "0xfactory",
+  forwardingTable: "0xtable",
   accountFactory: "0x" + "33".repeat(20),
   resolverGatewayUrl: "https://resolver.test",
   rollupVersion: "7",
@@ -135,11 +136,14 @@ describe("runIntraRollupMigration", () => {
     vi.clearAllMocks()
     await store.clearAll()
     h.historicTokenContext.mockResolvedValue({
-      tokenService: { getBalance: async () => 85n * 10n ** 18n },
+      tokenService: {
+        getBalance: async () => 85n * 10n ** 18n,
+        fetchTokenInformation: async () => ({ symbol: "DAI", decimals: 18 }),
+      },
       teeSigner: {},
     })
     h.claimSponsorContext.mockResolvedValue({ fpcAddress: {} })
-    h.fee.mockResolvedValue({ relayerTip: "1", fpcFundingCut: "2", arrivalFee: "3" })
+    h.fee.mockResolvedValue({ relayerTip: "1", withdrawalFee: "2", arrivalFee: "3" })
     // As the sdk does: the caller's publish runs before `prepareExit` returns.
     h.prepareExit.mockImplementation(
       async (args: { broadcastSipa?: (sipa: unknown) => Promise<void> }) => {
@@ -179,12 +183,13 @@ describe("runIntraRollupMigration", () => {
   // The rows price what the new balance receives off the record.
   it("stamps the fees on the record, and burns without them when they cannot be read", async () => {
     h.burn.mockResolvedValue(MINED)
-    expect(await run()).toMatchObject({ fpcFundingCut: "2", arrivalFee: "3" })
+    expect(await run()).toMatchObject({ withdrawalFee: "2", arrivalFee: "3" })
     await store.clearAll()
     h.fee.mockRejectedValueOnce(new Error("rpc down"))
     const record = await run()
     expect(record.phase).toBe("l2_mined")
     expect(record.arrivalFee).toBeUndefined()
+    expect(record.withdrawalFee).toBeUndefined()
   })
 
   it("burns nothing and seeds no record when the publish is refused or fails", async () => {

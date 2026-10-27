@@ -6,27 +6,13 @@ use aztec::protocol::{
     abis::block_header::BlockHeader,
     address::{AztecAddress, EthAddress},
     constants::{ARCHIVE_HEIGHT, DOM_SEP__NHK_M},
-    hash::{compute_app_siloed_secret_key, compute_siloed_nullifier, poseidon2_hash_with_separator},
+    hash::{compute_app_siloed_secret_key, compute_siloed_nullifier},
     public_keys::{hash_public_key, PublicKeys},
     scalar::Scalar,
-    traits::ToField,
 };
 use oxide_lib::account_address::AccountInstancePreimage;
-use oxide_lib::constants::DOM_SEP__UNPROCESSED_DEPOSIT_AUTH;
 use oxide_token_lib::deposit_message_hashing::{compute_deposit_message_hash, compute_deposit_message_nullifier};
-use refund_lib::{assert_is_frozen_tip, assert_refund_authorized, RefundAuthorization};
-
-// Mirrored by `computeUnprocessedDepositRefundAuthMessage` in `yarn-project/oxide-lib`.
-pub fn compute_unprocessed_deposit_refund_auth_message(
-    message_hash: Field,
-    executor: EthAddress,
-    user_payload_hash: Field,
-) -> Field {
-    poseidon2_hash_with_separator(
-        [message_hash, executor.to_field(), user_payload_hash],
-        DOM_SEP__UNPROCESSED_DEPOSIT_AUTH,
-    )
-}
+use refund_lib::{assert_is_frozen_tip, assert_valid_migration_signature, MigrationSignature};
 
 fn main(
     // ===== Public inputs =====
@@ -41,6 +27,7 @@ fn main(
     // `sha256_to_field` of the payload the executor runs. Public for the same reason.
     user_payload_hash: pub Field,
     message_hash: pub Field,
+    // Leaf index that the Inbox returned for the message. OxidePortal checks it against its deposit record.
     message_leaf_index: pub Field,
     // ===== Private inputs =====
     // Can be private as we trust OxidePortal to not create a message for a different L2 token.
@@ -53,8 +40,7 @@ fn main(
     l2_recipient_public_keys: PublicKeys,
     l2_recipient_instance: AccountInstancePreimage,
     l2_recipient_nhk_m: Scalar,
-    // The recipient's authorization of the refund auth message.
-    auth: RefundAuthorization,
+    migration_signature: MigrationSignature,
 ) -> pub Field {
     assert(executor != EthAddress::zero(), "executor must be non-zero");
 
@@ -72,7 +58,7 @@ fn main(
         "attempting to spend a processed message via the unprocessed deposit refund",
     );
 
-    // 2. VERIFYING L2_RECIPIENT AUTHORIZATION
+    // 2. VERIFYING THE L2_RECIPIENT'S MIGRATION SIGNATURE
 
     // 2.1 Recompute the L1->L2 deposit message exactly as `OxidePortal.sol::deposit` did and assert it matches
     //    the public-input `message_hash`.
@@ -88,17 +74,14 @@ fn main(
     );
     assert(recomputed_message_hash == message_hash, "recomputed message hash does not match public input");
 
-    // 2.2 Verify the L2 recipient authorized this refund.
-    let auth_message = poseidon2_hash_with_separator(
-        [message_hash, executor.to_field(), user_payload_hash],
-        DOM_SEP__UNPROCESSED_DEPOSIT_AUTH,
-    );
-    assert_refund_authorized(
+    // 2.2 Verify the L2 recipient's migration signature.
+    assert_valid_migration_signature(
         l2_recipient,
         l2_recipient_public_keys,
         l2_recipient_instance,
-        auth_message,
-        auth,
+        executor,
+        user_payload_hash,
+        migration_signature,
     );
 
     // 3. RETURN THE SILOED DEPOSIT-MESSAGE NULLIFIER
@@ -126,7 +109,7 @@ mod tests {
     };
     use oxide_token_lib::deposit_message_hashing::compute_deposit_message_hash;
     use refund_lib::test_fixtures::{
-        frozen_tip_with, FrozenTip, older_block_with, unread_authorization, unread_instance,
+        frozen_tip_with, FrozenTip, older_block_with, unread_instance, unread_migration_signature,
     };
     use std::embedded_curve_ops::{EmbeddedCurvePoint, EmbeddedCurveScalar};
 
@@ -148,7 +131,7 @@ mod tests {
         AztecAddress::from_field(2)
     }
 
-    // The recipient's keys, instance and authorization are zero, so the circuit refuses the authorization of every
+    // The recipient's keys, instance and migration signature are zero, so the circuit refuses the signature of every
     // claim that gets that far.
     fn unread_public_keys() -> PublicKeys {
         PublicKeys {
@@ -168,8 +151,8 @@ mod tests {
         state
     }
 
-    // The message is the first one the frozen tip did not absorb, so only the unread authorization refuses it.
-    #[test(should_fail_with = "refund authorization does not match owner address")]
+    // The message is the first one the frozen tip did not absorb, so only the unread migration signature refuses it.
+    #[test(should_fail_with = "migration signature does not match owner address")]
     fn accepts_the_first_message_the_frozen_tip_did_not_absorb() {
         refund_at(frozen_tip_with(state_absorbing_up_to(MESSAGE_LEAF_INDEX)));
     }
@@ -225,7 +208,7 @@ mod tests {
             unread_public_keys(),
             unread_instance(),
             EmbeddedCurveScalar::new(0, 0),
-            unread_authorization(),
+            unread_migration_signature(),
         );
     }
 }

@@ -1,8 +1,8 @@
-import { SchnorrAccountContract, SchnorrInitializerlessAccountContract } from '@aztec/accounts/schnorr';
-import { Fr, GrumpkinScalar } from '@aztec/aztec.js/fields';
-import { deriveKeys } from '@aztec/aztec.js/keys';
-import { CompleteAddress, getContractInstanceFromInstantiationParams } from '@aztec/stdlib/contract';
-import type { TxHash } from '@aztec/stdlib/tx';
+import { SchnorrAccountContract, SchnorrInitializerlessAccountContract } from '@aztec-labs/accounts/schnorr';
+import { Fr, GrumpkinScalar } from '@aztec-labs/aztec.js/fields';
+import { deriveKeys } from '@aztec-labs/aztec.js/keys';
+import { CompleteAddress, getContractInstanceFromInstantiationParams } from '@aztec-labs/stdlib/contract';
+import type { TxHash } from '@aztec-labs/stdlib/tx';
 
 import type { SpendMetadata } from './token_operations_collector.js';
 

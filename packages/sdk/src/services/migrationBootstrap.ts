@@ -1,38 +1,22 @@
-import { NO_FROM } from "@aztec/aztec.js/account"
-import { EthAddress } from "@aztec/aztec.js/addresses"
-import type { ContractFunctionInteraction } from "@aztec/aztec.js/contracts"
-import { Fr } from "@aztec/aztec.js/fields"
-import type { AztecNode } from "@aztec/aztec.js/node"
-import { poseidon2HashWithSeparator } from "@aztec/foundation/crypto/poseidon"
-import { siloNullifier } from "@aztec/stdlib/hash"
-import { MerkleTreeId } from "@aztec/stdlib/trees"
-import type { FunctionCall } from "@aztec/stdlib/abi"
-import type { ExecutionPayload } from "@aztec/stdlib/tx"
-import {
-  buildSipaDeployAndSweepOperation,
-  decodeUserRecordMetadata,
-  depositPayoutTokenFor,
-  SipaIntent,
-} from "@oxide/l1-contracts"
-import {
-  broadcastL1Operation,
-  type L1OperationBroadcaster,
-} from "@oxide/oxide-client/broadcaster_calls.js"
-import type { SipaNotifier } from "@oxide/oxide-client/sipa_event_calls.js"
-import {
-  encodeL1OperationCalldata,
-  L1OperationCondition,
-  type BroadcastL1Operation,
-} from "@oxide/oxide-lib/l1_operation_calldata.js"
-import type { Address, PublicClient } from "viem"
+import { NO_FROM } from "@aztec-labs/aztec.js/account"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import type { AztecNode } from "@aztec-labs/aztec.js/node"
+import { poseidon2HashWithSeparator } from "@aztec-labs/foundation/crypto/poseidon"
+import { siloNullifier } from "@aztec-labs/stdlib/hash"
+import type { BlockParameter } from "@aztec-labs/stdlib/block"
+import { MerkleTreeId } from "@aztec-labs/stdlib/trees"
+import type { FunctionCall } from "@aztec-labs/stdlib/abi"
+import type { ExecutionPayload } from "@aztec-labs/stdlib/tx"
+import { broadcastL1Operation } from "@oxide/oxide-client/broadcaster_calls.js"
+import { encodeL1OperationCalldata } from "@oxide/oxide-lib/l1_operation_calldata.js"
+import type { Address } from "viem"
 import {
   buildClaimSponsorPayload,
   buildClaimSubscribePayload,
 } from "../feePaymentMethod/claimSponsoredCall.js"
 import { claimFpcSponsoredFee } from "../feePaymentMethod/claimFpcBatchGas.js"
-import { assertMetadataUpdateFresh, type PreparedMetadataUpdate } from "./metadataMigration.js"
-import { assertSubsidySweepsSipa, buildSipaBroadcast } from "./sipaIntents.js"
-import { computeStealthRecipientHash } from "./sipaStealth.js"
+import type { PreparedRecordUpdate } from "./metadataMigration.js"
+import type { SipaOperationBroadcaster } from "./sipaIntents.js"
 import type { ObsidionWallet } from "../obsidion/ObsidionWallet.js"
 import { hasClaimFpcSubscription } from "./claimSponsor.js"
 
@@ -42,30 +26,55 @@ export type MigrationSponsorship =
   | { kind: "bootstrap"; gate: SubscribeOptions["gate"] }
   | { kind: "registered" }
 
-/** Matches this wallet's ClaimFPC gate.nr and subscribe. Identity is L1 owner, independent of L2 address. */
-export async function claimFpcIdentitySubscribed(
+/** Whether ClaimFPC's one-per-identity `subscribe` nullifier for `identity` on `railId` is spent as of `block`. */
+async function claimFpcSubscriptionSpent(
   node: Pick<AztecNode, "findLeavesIndexes">,
   fpc: SubscribeOptions["fpcAddress"],
-  owner: Address,
+  identity: Fr,
   railId: number,
+  block: BlockParameter,
 ): Promise<boolean> {
-  const inner = await poseidon2HashWithSeparator([new Fr(BigInt(owner)), new Fr(railId)], 1236)
-  const [leaf] = await node.findLeavesIndexes("latest", MerkleTreeId.NULLIFIER_TREE, [
+  const inner = await poseidon2HashWithSeparator([identity, new Fr(railId)], 1236)
+  const [leaf] = await node.findLeavesIndexes(block, MerkleTreeId.NULLIFIER_TREE, [
     await siloNullifier(fpc, inner),
   ])
   return leaf !== undefined
 }
 
+/** Matches this wallet's ClaimFPC gate.nr and subscribe. Identity is L1 owner, independent of L2 address. */
+export function claimFpcIdentitySubscribed(
+  node: Pick<AztecNode, "findLeavesIndexes">,
+  fpc: SubscribeOptions["fpcAddress"],
+  owner: Address,
+  railId: number,
+): Promise<boolean> {
+  return claimFpcSubscriptionSpent(node, fpc, new Fr(BigInt(owner)), railId, "latest")
+}
+
+/**
+ * Whether a bootstrap key subscribed on a registration-gated rail as of `block`, whichever flow or device sent it. The
+ * identity is bootstrap_key.nr's `bootstrap_key_identity`, over the key witness's two 16-byte halves.
+ */
+export async function claimFpcRegistrationSubscribed(
+  node: Pick<AztecNode, "findLeavesIndexes">,
+  fpc: SubscribeOptions["fpcAddress"],
+  keyWitness: Uint8Array,
+  railId: number,
+  block: BlockParameter = "latest",
+): Promise<boolean> {
+  const half = (bytes: Uint8Array) => new Fr(BigInt(`0x${Buffer.from(bytes).toString("hex")}`))
+  const identity = await poseidon2HashWithSeparator(
+    [half(keyWitness.subarray(0, 16)), half(keyWitness.subarray(16, 32))],
+    1241,
+  )
+  return claimFpcSubscriptionSpent(node, fpc, identity, railId, block)
+}
+
 export interface MigrationBootstrapOptions {
-  client: PublicClient
   wallet: ObsidionWallet
-  metadata: PreparedMetadataUpdate
-  /** The destination token; it emits the SIPA event to the recipient. */
-  token: SipaNotifier
+  recordUpdate: PreparedRecordUpdate
   /** The destination L2 broadcaster the relayer reads L1 operations from. */
-  broadcaster: L1OperationBroadcaster
-  messageSecret: Fr
-  refund?: BroadcastL1Operation
+  broadcaster: SipaOperationBroadcaster
   setupCalls?: FunctionCall[]
   sponsorship: MigrationSponsorship
   fpc: Omit<SubscribeOptions, "innerCalls" | "gate">
@@ -74,8 +83,6 @@ export interface MigrationBootstrapOptions {
 export interface PreparedMigrationBootstrap {
   payload: ExecutionPayload
   innerCalls: FunctionCall[]
-  /** The deploy-and-sweep the broadcast hands the relayer; it waits for the SIPA's balance. */
-  metadataOperation: BroadcastL1Operation
   sendOptions: {
     from: typeof NO_FROM
     sendMessagesAs: SubscribeOptions["user"]
@@ -84,29 +91,26 @@ export interface PreparedMigrationBootstrap {
   }
   metrics: {
     topLevelCalls: number
-    metadataBytes: number
-    metadataMethod: string
-    refundBytes: number
-    refundMethod?: string
+    recordBytes: number
+    recordMethod: string
   }
 }
 
-/** Prepare the entire sponsored transaction. This function never sends or consumes the allowance. */
+/**
+ * Prepare the sponsored transaction that broadcasts the record update. This function never sends
+ * or consumes the allowance.
+ */
 export async function prepareMigrationBootstrap(
   args: MigrationBootstrapOptions,
 ): Promise<PreparedMigrationBootstrap> {
   if (args.sponsorship.kind === "bootstrap" && args.sponsorship.gate.kind !== "nameClaim") {
     throw new Error("Bootstrap migration requires the NameClaim registration-broadcast rail")
   }
-  const { metadata, fpc } = args
+  const { recordUpdate, fpc } = args
+  const { update } = recordUpdate
   if (args.sponsorship.kind === "bootstrap") {
     if (
-      await claimFpcIdentitySubscribed(
-        args.wallet.node,
-        fpc.fpcAddress,
-        metadata.intent.owner,
-        fpc.railId,
-      )
+      await claimFpcIdentitySubscribed(args.wallet.node, fpc.fpcAddress, update.owner, fpc.railId)
     ) {
       throw new Error(
         "The registration-broadcast allowance is already spent for this identity and FPC",
@@ -123,72 +127,24 @@ export async function prepareMigrationBootstrap(
   ) {
     throw new Error("The destination account has no registered sponsorship subscription")
   }
-  const recipient = await computeStealthRecipientHash(args.messageSecret, fpc.user)
-  const record = decodeUserRecordMetadata(metadata.intent.metadata)
-  if (
-    recipient.toString().toLowerCase() !== metadata.intent.recipientCommitment.toLowerCase() ||
-    record.l2Address.toLowerCase() !== fpc.user.toString().toLowerCase()
-  ) {
-    throw new Error("Metadata, deposit secret, and sponsored account must name the same recipient")
+  if (update.record.l2Address.toLowerCase() !== fpc.user.toString().toLowerCase()) {
+    throw new Error("The record update and the sponsored account must name the same account")
   }
-  if (
-    metadata.intent.namePortalRecipient.toLowerCase() !== fpc.fpcAddress.toString().toLowerCase()
-  ) {
-    throw new Error("Metadata attestation names a different destination FPC")
+  if (BigInt(update.namePortalRecipient) !== fpc.fpcAddress.toBigInt()) {
+    throw new Error("The record update notifies a different destination FPC")
   }
-  const { destination } = metadata
-  await assertSubsidySweepsSipa(args.client, {
-    depositSubsidy: destination.depositSubsidy,
-    portal: destination.portal,
-    sipaFactory: destination.factory,
-    intent: SipaIntent.UpdateMetadata,
-    deployArgs: metadata.deployArgs,
-    intentData: metadata.intentData,
-    sipa: metadata.sipa,
-  })
-  const token = EthAddress.fromString(destination.token)
-  const operation = buildSipaDeployAndSweepOperation({
-    sipa: metadata.sipa,
-    sipaFactory: destination.factory,
-    intent: SipaIntent.UpdateMetadata,
-    deployArgs: metadata.deployArgs,
-    sweepArgs: {
-      token: destination.token,
-      relayer: destination.operationExecutor,
-      intentData: metadata.intentData,
-      proofs: metadata.proofs,
-    },
-    depositSubsidy: destination.depositSubsidy,
-    payoutToken: depositPayoutTokenFor(destination.chainId, token).toString() as Address,
-    condition: L1OperationCondition.balance(token, EthAddress.fromString(metadata.sipa)),
-  })
-  const interactions: ContractFunctionInteraction[] = [
-    ...(args.refund ? [broadcastL1Operation(args.broadcaster, args.refund)] : []),
-    ...buildSipaBroadcast(
-      args.token,
-      args.broadcaster,
-      {
-        recipient: fpc.user,
-        sharedSecretSalt: args.messageSecret,
-        resweepable: false,
-        intentHash: metadata.deployArgs.intentHash,
-      },
-      [operation],
-    ),
+  const innerCalls = [
+    ...(args.setupCalls ?? []),
+    ...(await broadcastL1Operation(args.broadcaster, recordUpdate.operation).request()).calls,
   ]
-  const innerCalls = [...(args.setupCalls ?? [])]
-  for (const interaction of interactions) innerCalls.push(...(await interaction.request()).calls)
-  const metadataTier = encodeL1OperationCalldata(operation.calldata)
-  const refundTier = args.refund && encodeL1OperationCalldata(args.refund.calldata)
+  const tier = encodeL1OperationCalldata(recordUpdate.operation.calldata)
   const payload =
     args.sponsorship.kind === "bootstrap"
       ? await buildClaimSubscribePayload({ ...fpc, innerCalls, gate: args.sponsorship.gate })
       : await buildClaimSponsorPayload({ ...fpc, innerCalls })
-  await assertMetadataUpdateFresh(args.client, metadata)
   return {
     payload,
     innerCalls,
-    metadataOperation: operation,
     sendOptions: {
       from: NO_FROM,
       sendMessagesAs: fpc.user,
@@ -197,10 +153,8 @@ export async function prepareMigrationBootstrap(
     },
     metrics: {
       topLevelCalls: innerCalls.length,
-      metadataBytes: metadataTier.bytesLen,
-      metadataMethod: metadataTier.tier.method,
-      refundBytes: refundTier?.bytesLen ?? 0,
-      refundMethod: refundTier?.tier.method,
+      recordBytes: tier.bytesLen,
+      recordMethod: tier.tier.method,
     },
   }
 }

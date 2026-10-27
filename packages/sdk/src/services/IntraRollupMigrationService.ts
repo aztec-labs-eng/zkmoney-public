@@ -1,11 +1,11 @@
 import type { LegacySipaDeployArgs } from "@oxide/l1-contracts/legacy_sipa.js"
-import type { Account } from "@aztec/aztec.js/account"
-import { EthAddress } from "@aztec/aztec.js/addresses"
-import { Fr } from "@aztec/aztec.js/fields"
-import { waitForL1ToL2MessageReady } from "@aztec/aztec.js/messaging"
-import type { AztecNode } from "@aztec/aztec.js/node"
-import type { ViemClient } from "@aztec/ethereum/types"
-import { retryUntil } from "@aztec/foundation/retry"
+import type { Account } from "@aztec-labs/aztec.js/account"
+import { EthAddress } from "@aztec-labs/aztec.js/addresses"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { waitForL1ToL2MessageReady } from "@aztec-labs/aztec.js/messaging"
+import type { AztecNode } from "@aztec-labs/aztec.js/node"
+import type { ViemClient } from "@aztec-labs/ethereum/types"
+import { retryUntil } from "@aztec-labs/foundation/retry"
 import {
   OxidePortalAbi,
   OxidePortalContract,
@@ -16,6 +16,7 @@ import { computeDepositMessageHash } from "@oxide/oxide-lib/deposit_message_hash
 import type { SpendMetadataResolver } from "@oxide/oxide-client/token_operations_collector.js"
 import type { Network } from "@obsidion/core/constants"
 import {
+  bridgeUnderlying,
   extractPinnedOxideEnvTuple,
   migrationSources,
   pinnedEntryPolicy,
@@ -27,12 +28,11 @@ import type { DepositSpendMetadataResolver } from "../oxide/index.js"
 import { epochDay } from "../utils/helper.js"
 import type { ObsidionAccount } from "../obsidion/alpha/account/ObsidionAccount.js"
 import type { ClaimSponsorContext } from "./claimSponsor.js"
-import { readDepositFee } from "./sipaClaim.js"
-import { readDepositSIPAImplementation } from "./sipaIntents.js"
+import { readSipaPortalTerms } from "../oxide/sipaPortalTerms.js"
+import { OxideSipaIntent } from "./sipaIntents.js"
 import { SipaSelfResolver, type SelfResolvedSipa } from "./sipaSelfResolve.js"
 import type { TokenService } from "./TokenService.js"
 import type { WithdrawalDeployment } from "./plainWithdrawal.js"
-import { readPortalWithdrawalState } from "../oxide/plainWithdrawal.js"
 
 const DEFAULT_TIMEOUT_MS = 1_800_000
 
@@ -43,7 +43,7 @@ export interface IntraRollupMigrationDeps {
   /** Pinned to the new deployment's token. */
   toTokenService: TokenService
   /** Retiring deployment for the withdrawal and value-continuity checks. */
-  from: WithdrawalDeployment
+  from: WithdrawalDeployment & Pick<OxideEnvTuple, "underlying">
   /**
    * Self-resolution for the deployment-B SIPA: the account's stealth scalar plus its self-SIPA key
    * (same construction as the receive flow's deposit-address derivation).
@@ -54,9 +54,10 @@ export interface IntraRollupMigrationDeps {
   recoveryAccount: Address
   /** New deployment's SIPA wiring (the sweep itself is the relayer's job, so no subsidy manager). */
   to: {
-    /** Also the key the factory serves this deployment's implementations under. */
     portal: Hex
     sipaFactory: Hex
+    /** Routes the SIPA's sweep; its deposit row must name `portal`. */
+    forwardingTable: Hex
     /** The tuple's decimal rollup version; keys the SIPA's CREATE2 preimage. */
     rollupVersion: string
     recoveryProtocol?: "legacy-eoa" | "account"
@@ -218,16 +219,25 @@ export class IntraRollupMigrationService {
   constructor(private readonly deps: IntraRollupMigrationDeps) {}
 
   /**
-   * Resolve supported profile history into migration sources with the same identity lineage and underlying asset.
-   * No selected sources means no historical contract reads.
+   * Resolve explicitly selected profile history into sources whose underlying matches Main or another product.
+   * Products on the pinned rollup are destinations, not history. No selected sources means no historical L1 reads.
    */
   static async detectHistoricDeployments(
     args: PinnedManifestArgs & {
       publicClient: PublicClient
-      /** Lowercase source portals selected by supported profile history, with a configured source node. */
+      /** Lowercase source portals selected by supported profile history. */
       sourcePortals?: ReadonlySet<string>
+      /** Sources another generation's manifest publishes; kept only when explicitly selected. */
+      otherSources?: readonly OxideEnvTuple[]
+      /** Other live entries on the pinned rollup, such as the Sky sUSDS one. */
+      products?: readonly OxideEnvTuple[]
     },
-  ): Promise<{ current: OxideEnvTuple; historic: OxideEnvTuple[] }> {
+  ): Promise<{
+    current: OxideEnvTuple
+    historic: OxideEnvTuple[]
+    /** Each historic deployment's destination by lowercase portal: `current` or a product. */
+    destinations: ReadonlyMap<string, OxideEnvTuple>
+  }> {
     const fetchImpl = args.fetchImpl ?? fetch
     const res = await fetchImpl(args.manifestUrl)
     if (!res.ok) {
@@ -237,19 +247,53 @@ export class IntraRollupMigrationService {
     }
     const manifest = await res.json()
     const current = extractPinnedOxideEnvTuple(manifest, args, pinnedEntryPolicy(args)).tuple
-    const candidates = migrationSources(manifest, current, args.sourcePortals)
-    if (candidates.length === 0) return { current, historic: [] }
-    const [pinned, ...others] = await Promise.all(
-      [current, ...candidates].map((tuple) =>
-        args.publicClient.readContract({
-          address: tuple.portal as Address,
-          abi: OxidePortalAbi,
-          functionName: "UNDERLYING",
-        }),
-      ),
+    const products = (args.products ?? []).filter(
+      (p) =>
+        p.rollupVersion === current.rollupVersion &&
+        p.portal.toLowerCase() !== current.portal.toLowerCase(),
     )
-    const historic = candidates.filter((_, i) => others[i]!.toLowerCase() === pinned!.toLowerCase())
-    return { current, historic }
+    const byPortal = new Map(
+      migrationSources(manifest, current, args.sourcePortals).map((t) => [
+        t.portal.toLowerCase(),
+        t,
+      ]),
+    )
+    for (const tuple of args.otherSources ?? []) {
+      const portal = tuple.portal.toLowerCase()
+      if (tuple.plainWithdrawalExecutor && args.sourcePortals?.has(portal) && !byPortal.has(portal))
+        byPortal.set(portal, tuple)
+    }
+    for (const product of products) byPortal.delete(product.portal.toLowerCase())
+    const candidates = [...byPortal.values()]
+    if (candidates.length === 0) return { current, historic: [], destinations: new Map() }
+    const underlyings = (
+      await Promise.all(
+        [current, ...products, ...candidates].map((tuple) =>
+          args.publicClient.readContract({
+            address: tuple.portal as Address,
+            abi: OxidePortalAbi,
+            functionName: "UNDERLYING",
+          }),
+        ),
+      )
+    ).map((u) => u.toLowerCase())
+    const [pinned, ...rest] = underlyings
+    const productUnderlyings = rest.slice(0, products.length)
+    const historic: OxideEnvTuple[] = []
+    const destinations = new Map<string, OxideEnvTuple>()
+    candidates.forEach((tuple, i) => {
+      const underlying = rest[products.length + i]
+      const destination =
+        underlying === pinned
+          ? current
+          : tuple.rollupVersion !== current.rollupVersion
+            ? products[productUnderlyings.indexOf(underlying!)]
+            : undefined
+      if (!destination) return
+      historic.push(tuple)
+      destinations.set(tuple.portal.toLowerCase(), destination)
+    })
+    return { current, historic, destinations }
   }
 
   /**
@@ -321,20 +365,11 @@ export class IntraRollupMigrationService {
     const { node, fromTokenService, to, publicClient, selfResolver } = this.deps
 
     const amount = args.amount ?? (await fromTokenService.getBalance(args.account))
-    // The fee floor and the address must price off the same implementation, so resolve it once
-    // here and hand it to both — the factory read is keyed by the destination portal.
-    const [implementation, portalRollupVersion] = await Promise.all([
-      readDepositSIPAImplementation(
-        publicClient as unknown as PublicClient,
-        to.sipaFactory as Address,
-        to.portal as Address,
-      ),
-      (publicClient as unknown as PublicClient).readContract({
-        address: to.portal as Address,
-        abi: OxidePortalAbi,
-        functionName: "ROLLUP_VERSION",
-      }),
-    ])
+    const portalRollupVersion = await (publicClient as unknown as PublicClient).readContract({
+      address: to.portal as Address,
+      abi: OxidePortalAbi,
+      functionName: "ROLLUP_VERSION",
+    })
     // The SIPA commits to this version, and the burn after it is irreversible: a manifest that
     // disagrees with the portal would send the funds where no sweep can land.
     if (portalRollupVersion.toString() !== String(to.rollupVersion)) {
@@ -343,12 +378,12 @@ export class IntraRollupMigrationService {
           `portal ${to.portal} says ${portalRollupVersion}`,
       )
     }
-    const underlying = await this.assertMigratable(amount, implementation)
+    const underlying = await this.assertMigratable(amount)
 
     // Self-resolve the deployment-B SIPA — the same helper as the receive flow's deposit
     // addresses, so the address is standard-shaped: derived message secret, derived recovery
-    // key, and the resweepable flag self-broadcast commits to. It delegates to B's own deposit
-    // implementation, which bakes in B's portal, so funds arriving there can only enter portal B.
+    // key, and the resweepable flag self-broadcast commits to. It commits to B's table, whose
+    // deposit row names portal B, so funds arriving there can only enter portal B.
     const block = await node.getBlock("latest" as never)
     if (!block) throw new Error("IntraRollupMigrationService: no L2 block — is the node running?")
     const day = epochDay(block.header.globalVariables.timestamp)
@@ -360,7 +395,7 @@ export class IntraRollupMigrationService {
       nonce: await args.nonceForDay(day),
       publicClient,
       sipaFactory: to.sipaFactory as Address,
-      portal: to.portal as Address,
+      forwardingTable: to.forwardingTable as Address,
       rollupVersion: BigInt(to.rollupVersion),
     })
 
@@ -385,13 +420,7 @@ export class IntraRollupMigrationService {
     const { sipaAddress, sipaArgs, resolution } = resolved
     const exitOptions = {
       userAccount: args.account,
-      withdrawal: {
-        tuple: this.deps.from,
-        portal: await readPortalWithdrawalState(
-          publicClient as unknown as PublicClient,
-          this.deps.from.portal as Address,
-        ),
-      },
+      withdrawal: { tuple: this.deps.from, l1: publicClient },
       useRawAmount: true,
       resolveSpendMetadata: args.resolveSpendMetadata,
       resolveDepositSpendMetadata: args.resolveDepositSpendMetadata,
@@ -491,20 +520,12 @@ export class IntraRollupMigrationService {
       // Sweep log — no receipt needed, so a resume detects and claims identically.
       phase = "pendingClaim"
       const portalB = new OxidePortalContract(publicClient as unknown as ViemClient, to.portal)
-      const messageHash = await computeDepositMessageHash(
-        {
-          l1Portal: portalB.address,
-          l1ChainId: portalB.getChainId(),
-          l2Portal: toTokenService.tokenAddress,
-          rollupVersion: sipaArgs.rollupVersion,
-        },
-        {
-          sharedSecretSalt: messageSecret,
-          recipient: args.account.getAddress(),
-          amount: forwardedAmount,
-          messageLeafIndex: new Fr(inboxIndex),
-        },
-      )
+      const messageHash = await computeDepositMessageHash(await portalB.getPortalDomain(), {
+        sharedSecretSalt: messageSecret,
+        recipient: args.account.getAddress(),
+        amount: forwardedAmount,
+        messageLeafIndex: new Fr(inboxIndex),
+      })
       const remainingSeconds = (deadline.getTime() - Date.now()) / 1000
       if (remainingSeconds <= 0) {
         throw new Error("IntraRollupMigrationService.l1ToL2Message: timed out")
@@ -530,25 +551,24 @@ export class IntraRollupMigrationService {
   }
 
   /** Value continuity + fee floor, checked before anything moves. */
-  private async assertMigratable(amount: bigint, implementation: Address): Promise<Address> {
+  private async assertMigratable(amount: bigint): Promise<Address> {
     const { from, to, publicClient } = this.deps
     if (amount <= 0n) throw new Error("IntraRollupMigrationService: nothing to migrate")
 
-    const client = publicClient as unknown as ViemClient
-    const [underlyingA, underlyingB] = await Promise.all([
-      new OxidePortalContract(client, from.portal as Hex).getUnderlying(),
-      new OxidePortalContract(client, to.portal).getUnderlying(),
-    ])
-    // Both portals escrowing one ERC20 is deployment convention, not contract law — a mismatch
-    // would strand the withdrawal at a SIPA whose portal expects a different asset.
-    if (!underlyingA.equals(underlyingB)) {
+    // Value continuity: the destination row for the source's asset must name `to.portal`. The table
+    // lists a row only for a portal that holds its token, so a portal of another asset fails here.
+    const underlying = bridgeUnderlying(from) as Address
+    const terms = await readSipaPortalTerms(publicClient as unknown as PublicClient, {
+      forwardingTable: to.forwardingTable as Address,
+      token: underlying,
+      intent: OxideSipaIntent.Deposit,
+    })
+    if (terms.portal.toLowerCase() !== to.portal.toLowerCase()) {
       throw new Error(
-        `IntraRollupMigrationService: portal underlyings differ (${underlyingA} vs ${underlyingB})`,
+        `IntraRollupMigrationService: the table routes deposits to ${terms.portal}, not ${to.portal}`,
       )
     }
-    const underlying = underlyingA.toString() as Address
-
-    const fee = await readDepositFee(publicClient as unknown as PublicClient, implementation)
+    const fee = terms.depositFee
     // A sweep at or below the fee hard-reverts and strands the funds at the SIPA.
     if (amount <= fee) {
       throw new Error(

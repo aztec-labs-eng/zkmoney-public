@@ -4,7 +4,7 @@
  * Pure; the platform boot performs both reads and decides what a mismatch means.
  */
 
-import type { NodeInfo } from "@aztec/stdlib/contract"
+import type { NodeInfo } from "@aztec-labs/stdlib/contract"
 import type { ChainIdentity } from "@obsidion/core/types"
 
 export { L1IdentityUnavailableError, PortalIdentityMismatchError } from "@obsidion/sdk"

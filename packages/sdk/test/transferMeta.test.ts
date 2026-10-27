@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { Fr } from "@aztec/aztec.js/fields"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 import { TRANSFER_META_LEN, emptyTransferMeta } from "@obsidion/core/constants"
 import {
   buildTransferMeta,

@@ -1,21 +1,21 @@
-import { AztecAddress } from '@aztec/aztec.js/addresses';
-import { EthAddress } from '@aztec/foundation/eth-address';
+import { AztecAddress } from '@aztec-labs/aztec.js/addresses';
+import { EthAddress } from '@aztec-labs/foundation/eth-address';
 
 import { describe, expect, it } from '@jest/globals';
 
 import { type ResolveDeploymentEnvManifestOptions, resolveDeploymentEnvManifest } from './deployment_env_manifest.js';
 
-const URL = 'https://manifest.example/prod.v4.json';
+const URL = 'https://manifest.example/v1/prod/releases.json';
 const PORTAL = '0x0000000000000000000000000000000000000001';
 const OTHER_PORTAL = '0x0000000000000000000000000000000000000010';
 const THIRD_PORTAL = '0x0000000000000000000000000000000000000011';
 const L2_TOKEN = '0x' + '11'.repeat(32);
 const TOKEN = '0x0000000000000000000000000000000000000006';
+const OTHER_TOKEN = '0x0000000000000000000000000000000000000016';
 const BROADCASTER = '0x' + '22'.repeat(32);
 const OPERATION_EXECUTOR = '0x0000000000000000000000000000000000000004';
 const PLAIN_WITHDRAWAL_EXECUTOR = '0x0000000000000000000000000000000000000009';
 const ENCLAVE_URL = 'https://enclave.example/rpc';
-const WITHDRAWAL_SUBSIDY = '0x0000000000000000000000000000000000000005';
 const PROVER_SUBSIDY = '0x000000000000000000000000000000000000000a';
 const FPC_FUNDER = '0x0000000000000000000000000000000000000007';
 
@@ -29,7 +29,6 @@ function entry(overrides: Record<string, unknown> = {}): Record<string, unknown>
     rollupVersion: '4',
     enclaveUrl: ENCLAVE_URL,
     l2Broadcaster: BROADCASTER,
-    withdrawalSubsidy: WITHDRAWAL_SUBSIDY,
     proverSubsidy: PROVER_SUBSIDY,
     plainWithdrawalExecutor: PLAIN_WITHDRAWAL_EXECUTOR,
     operationExecutor: OPERATION_EXECUTOR,
@@ -41,8 +40,23 @@ function entry(overrides: Record<string, unknown> = {}): Record<string, unknown>
 /** The fields that select the entries the relayer watches. */
 const SELECTION_FIELDS = ['portal', 'rollupVersion', 'withdrawalProtocol'];
 
-function document(...deployments: Record<string, unknown>[]): string {
-  return JSON.stringify({ schemaVersion: '4', deployments });
+/** The fields that each bridge of a deployment has. The other fields are shared by the deployment. */
+const BRIDGE_FIELDS = ['portal', 'l2Token', 'token', 'proverSubsidy', 'plainWithdrawalExecutor', 'fpcFunder'];
+
+/** A schema v5 deployment with one bridge for each entry. The shared fields come from the first entry. */
+function deployment(...entries: Record<string, unknown>[]): Record<string, unknown> {
+  const pick = (fields: Record<string, unknown>, bridge: boolean) =>
+    Object.fromEntries(Object.entries(fields).filter(([key]) => BRIDGE_FIELDS.includes(key) === bridge));
+  return { ...pick(entries[0]!, false), bridges: entries.map(item => pick(item, true)) };
+}
+
+function releases(...deployments: Record<string, unknown>[]): string {
+  return JSON.stringify({ schemaVersion: '5', deployments });
+}
+
+/** A document with one single-bridge deployment for each entry. */
+function document(...entries: Record<string, unknown>[]): string {
+  return releases(...entries.map(item => deployment(item)));
 }
 
 type Policy = Pick<ResolveDeploymentEnvManifestOptions, 'excludePortals' | 'acceptedPayoutTokens'>;
@@ -72,12 +86,19 @@ describe('resolveDeploymentEnvManifest', () => {
     expect(publicConfig.rollupVersion).toBe(4n);
     expect(publicConfig.enclaveUrl).toBe(ENCLAVE_URL);
     expect(publicConfig.broadcaster.toString()).toBe(BROADCASTER);
-    expect(publicConfig.withdrawalSubsidy.toString()).toBe(WITHDRAWAL_SUBSIDY);
     expect(publicConfig.proverSubsidy.toString()).toBe(PROVER_SUBSIDY);
-    expect(publicConfig.plainWithdrawalExecutor.toString()).toBe(PLAIN_WITHDRAWAL_EXECUTOR);
     expect(publicConfig.operationExecutor.toString()).toBe(OPERATION_EXECUTOR);
     expect(publicConfig.fpcFunder.toString()).toBe(FPC_FUNDER);
   });
+
+  it.each([undefined, 'not an address'])(
+    'does not require or interpret withdrawal executor addresses (%s)',
+    async executor => {
+      const result = await resolve(document(entry({ plainWithdrawalExecutor: executor })));
+      expect(result.current.publicConfig.portal.toString()).toBe(PORTAL);
+      expect(result.current.publicConfig).not.toHaveProperty('plainWithdrawalExecutor');
+    },
+  );
 
   it('throws when the pinned portal is absent, listing the available deployments', async () => {
     await expect(resolve(document(entry()), OTHER_PORTAL)).rejects.toThrow(
@@ -85,9 +106,34 @@ describe('resolveDeploymentEnvManifest', () => {
     );
   });
 
-  it('throws on a v3 document at the v4 URL', async () => {
-    const v3 = JSON.stringify({ schemaVersion: '3', shared: {}, versions: {} });
-    await expect(resolve(v3)).rejects.toThrow(/unsupported schemaVersion "3" \(want "4"/);
+  it.each([
+    ['3', { schemaVersion: '3', shared: {}, versions: {} }],
+    ['4', { schemaVersion: '4', deployments: [entry()] }],
+  ])('throws on a schema v%s document', async (version, body) => {
+    await expect(resolve(JSON.stringify(body))).rejects.toThrow(`unsupported schemaVersion "${version}" (want "5").`);
+  });
+
+  it('throws on a deployment without a bridges array', async () => {
+    await expect(resolve(releases(deployment(entry()), entry({ label: 'flat' })))).rejects.toThrow(
+      `deployment env manifest ${URL}: deployments[1] has no bridges array.`,
+    );
+  });
+
+  it('makes one entry for each bridge of a deployment, with the shared fields and the label', async () => {
+    const second = entry({ portal: OTHER_PORTAL, token: OTHER_TOKEN, l2Token: '0x' + '03'.repeat(32) });
+    const result = await resolve(releases(deployment(entry(), second)), OTHER_PORTAL);
+    expect(result.current.label).toBe('v4');
+    expect(result.current.publicConfig.token.toString()).toBe(OTHER_TOKEN);
+    expect(result.current.publicConfig.l2Token.toString()).toBe('0x' + '03'.repeat(32));
+    expect(result.current.publicConfig.broadcaster.toString()).toBe(BROADCASTER);
+    expect(result.current.publicConfig.rollupVersion).toBe(4n);
+    expect(result.historical.map(d => [d.label, d.publicConfig.portal.toString()])).toEqual([['v4', PORTAL]]);
+  });
+
+  it('rejects a document with two deployments that share a label', async () => {
+    await expect(resolve(document(entry(), entry({ portal: OTHER_PORTAL, token: OTHER_TOKEN })))).rejects.toThrow(
+      `deployment env manifest ${URL} has two deployments with label v4.`,
+    );
   });
 
   it('pins the requested portal and selects historical entries on the same rollup', async () => {
@@ -111,19 +157,41 @@ describe('resolveDeploymentEnvManifest', () => {
     expect(manifest.unreadable).toEqual([]);
   });
 
-  it('rejects a document with two entries that share a portal, whatever its case, naming both', async () => {
+  it('watches a portal listed under two deployments once, whatever its case', async () => {
+    const upper = OTHER_PORTAL.toUpperCase().replace('0X', '0x');
+    const manifest = await resolve(
+      document(entry(), entry({ label: 'v5', portal: OTHER_PORTAL }), entry({ label: 'v6', portal: upper })),
+    );
+    expect(manifest.historical.map(d => [d.label, d.publicConfig.portal.toString()])).toEqual([['v5', OTHER_PORTAL]]);
+  });
+
+  it('does not watch the pinned portal again under another deployment', async () => {
+    const manifest = await resolve(document(entry(), entry({ label: 'v5' })));
+    expect(manifest.current.label).toBe('v4');
+    expect(manifest.historical).toEqual([]);
+  });
+
+  it('rejects two entries for one portal that disagree on a field the relayer reads, naming both', async () => {
     const upper = OTHER_PORTAL.toUpperCase().replace('0X', '0x');
     const other = entry({ label: 'v5', portal: OTHER_PORTAL });
     const otherUpper = entry({ label: 'v6', portal: upper, rollupVersion: '9' });
     await expect(resolve(document(entry(), other, otherUpper))).rejects.toThrow(
-      `deployment env manifest ${URL} has two deployments with portal ${OTHER_PORTAL}: v5:${OTHER_PORTAL} and v6:${upper}.`,
+      `deployment env manifest ${URL} has two bridges with portal ${OTHER_PORTAL} that disagree on rollupVersion: v5:${OTHER_PORTAL} and v6:${upper}.`,
     );
   });
 
-  it('rejects a document with two entries that share a label, naming both', async () => {
-    const other = entry({ label: 'v4', portal: OTHER_PORTAL, rollupVersion: '9' });
-    await expect(resolve(document(entry(), other))).rejects.toThrow(
-      `deployment env manifest ${URL} has two deployments with label v4: v4:${PORTAL} and v4:${OTHER_PORTAL}.`,
+  it("serves the pinned label's portal for another token as a historical entry", async () => {
+    const manifest = await resolve(releases(deployment(entry(), entry({ portal: OTHER_PORTAL, token: OTHER_TOKEN }))));
+    expect(manifest.current.publicConfig.portal.toString()).toBe(PORTAL);
+    expect(manifest.historical.map(d => d.publicConfig.portal.toString())).toEqual([OTHER_PORTAL]);
+  });
+
+  it('rejects a document with two portals for one label and token, in any case, naming both', async () => {
+    const token = '0x00000000000000000000000000000000000000ab';
+    const upper = token.toUpperCase().replace('0X', '0x');
+    const other = entry({ portal: OTHER_PORTAL, token: upper });
+    await expect(resolve(releases(deployment(entry({ token }), other)))).rejects.toThrow(
+      `deployment env manifest ${URL} has two bridges with label v4 and token ${upper}: v4:${PORTAL} and v4:${OTHER_PORTAL}.`,
     );
   });
 
@@ -214,7 +282,6 @@ describe('manifest entries from other relayer versions', () => {
 });
 
 describe('selection policy', () => {
-  const OTHER_TOKEN = '0x0000000000000000000000000000000000000060';
   const other = () => entry({ label: 'other', portal: OTHER_PORTAL, token: OTHER_TOKEN });
   const third = () => entry({ label: 'third', portal: THIRD_PORTAL });
 

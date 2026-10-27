@@ -1,6 +1,6 @@
-import { TxHash } from "@aztec/stdlib/tx"
-import type { ContractInstanceWithAddress } from "@aztec/stdlib/contract"
-import { deriveMasterNullifierHidingSecretKey } from "@aztec/stdlib/keys"
+import { TxHash } from "@aztec-labs/stdlib/tx"
+import type { ContractInstanceWithAddress } from "@aztec-labs/stdlib/contract"
+import { deriveMasterNullifierHidingSecretKey } from "@aztec-labs/stdlib/keys"
 import { buildPaylinkCompleteAddress, type PaylinkKeyMaterial } from "./paylinkKeys.js"
 import type {
   SpendMetadata,

@@ -1,16 +1,23 @@
-import { Fr } from "@aztec/aztec.js/fields"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 import { PASSKEY_RP_NAME } from "@obsidion/core/constants"
 import type { SignInRoute } from "@obsidion/core/types"
 import {
   DOMAIN_SEPARATORS,
+  type InstalledPasskey,
+  PasskeyEnvelopeError,
   StoredAddressMismatchError,
+  answeringKey,
+  candidateCredentialIds,
   deriveKeyFromSecret,
+  envelopeSlot,
   selectRecoveredMsk,
   type IStorageAdapter,
   type RecoveredCandidates,
 } from "@obsidion/front-core"
 import {
+  type BackupAddChoice,
   BrowserPasskeyCeremony,
+  type CeremonyObserver,
   type DevicePosture,
   LAPTOP_LOCAL_HINTS,
   type LaptopCreation,
@@ -36,6 +43,8 @@ import {
   currentPhoneReach,
   currentUserAgentInfoSoon,
   impliedKeyTransports,
+  isPasskeyCancelled,
+  isPasskeyPolicyError,
   isPhysicalOnly,
   preferredSlot,
   recordPasskeyEnvironment,
@@ -45,6 +54,10 @@ import {
   decodeUserHandle,
   withoutManager,
 } from "@obsidion/passkey-web"
+import type { Address } from "viem"
+import { type BackupSignInFacts, noteBackupSignIn } from "../../features/onboarding/backupSignIn"
+import type { BackupCreation, BackupCreationDriver } from "./backupCreation"
+import { openBackupEnvelope } from "./backupEnvelope"
 import {
   clearActiveCredentialId,
   clearActiveStorage,
@@ -68,6 +81,7 @@ import {
   type AlphaAuthProvider,
   type AlphaAuthService,
   type CommitSecretInput,
+  type FeePayerEntry,
   type PrfSlot,
   type RecoverPasskeyResult,
   type RecoveryMetadata,
@@ -75,12 +89,18 @@ import {
   deriveMskFromPrfOutput,
 } from "@obsidion/sdk"
 import { countingLocalRefusals } from "./localRefusals"
+import { type RetiredSession, retiredSession } from "./retiredSession"
 import { scopeOfStatus } from "./passkeyAttemptScope"
 import { PASSKEY_ENVIRONMENT_KEY } from "./passkeyEnvironmentKey"
 import { NoPasskeySessionError, SessionChangedError } from "./sessionErrors"
 import { UNASKED_PASSKEY_MESSAGE } from "./unaskedPasskey"
 import { type SigningSteering, makeWebauthnSignFn } from "./webauthnSigning"
-import { type PasskeyAnswer, WebPasskeyIdentityMap } from "./WebPasskeyIdentityMap"
+import {
+  type PasskeyAnswer,
+  type StoredRecoveryMetadata,
+  WebPasskeyIdentityMap,
+  opensWallet,
+} from "./WebPasskeyIdentityMap"
 
 /** The package's PRF candidates as the field elements the wallet's anchors compare. */
 const toFrCandidates = (prf: PrfCandidates): RecoverPasskeyResult["candidates"] => ({
@@ -125,8 +145,35 @@ export type Observation = {
   recordAaguid?: string
 }
 
-/** A recovery result plus the observation the screens read to diagnose a miss. */
-export type WebRecoverResult = RecoverPasskeyResult & { observed?: Observation }
+/**
+ * A recovery result plus the observation the screens read to diagnose a miss, and, when the key
+ * opened the wallet through its envelope, the account and envelope its record keeps and the facts
+ * the backup sign-in event reports.
+ */
+export type WebRecoverResult = RecoverPasskeyResult & {
+  observed?: Observation
+  backup?: RecoveryMetadata["backup"]
+  backupFacts?: BackupSignInFacts
+  /**
+   * The record's key set when the chain's list has moved past it (a backup added on another
+   * browser): the record still picks the key, by this set and `expectedAddress`; `passkeys` is the
+   * chain's, the entry derives under it, and the record is rewritten to it.
+   */
+  staleSet?: readonly string[]
+  /** The tag a retired rollup's record names for the credential: a hint, never trusted. */
+  usertag?: string
+}
+
+/**
+ * A tag's account and the keys L1 lists for it, for a sign-in pinned to that account: the
+ * answering credential is matched against the keys, never trusted. `l2Address` is diagnostic only;
+ * the anchors name the address.
+ */
+export type AccountPasskeys = {
+  account: Address
+  l2Address?: string
+  keys: readonly InstalledPasskey[]
+}
 
 /**
  * What a record-anchored mismatch means for the UI. `wrong-key` is a certain wrong key on this
@@ -161,7 +208,12 @@ export type UnsettledRecovery = RecoveredCandidates & {
   pubkeyCandidates: readonly string[]
   /** Which device answered the first assertion; a key-settling second one never overwrites it. */
   observed?: Observation
-  settle: (pubkey?: string, attempt?: AbortSignal) => Promise<WebRecoverResult>
+  /** `passkeys` is the account's whole key set when the caller read it beside `pubkey`. */
+  settle: (
+    pubkey?: string,
+    attempt?: AbortSignal,
+    passkeys?: readonly string[],
+  ) => Promise<WebRecoverResult>
 }
 
 export type BeginRecoveryResult = WebRecoverResult | UnsettledRecovery
@@ -184,9 +236,32 @@ export type StoredAccountSnapshot =
   | { kind: "webauthn"; credentialId: string; pubkey: string; address: string }
   | { kind: "other" }
 
-const hexBytes = (hex: string) => new Uint8Array(Buffer.from(hex.replace(/^0x/i, ""), "hex"))
-const sameHex = (a: string, b: string) =>
-  a.replace(/^0x/i, "").toLowerCase() === b.replace(/^0x/i, "").toLowerCase()
+const normalKey = (hex: string) => hex.replace(/^0x/i, "").toLowerCase()
+const hexBytes = (hex: string) => new Uint8Array(Buffer.from(normalKey(hex), "hex"))
+const sameHex = (a: string, b: string) => normalKey(a) === normalKey(b)
+/** The record's key set in the candidate form; a record without one is its key alone. */
+const setOf = (record: Pick<RecoveryMetadata, "pubkey" | "passkeySet">): string[] =>
+  (record.passkeySet ?? [record.pubkey]).map(normalKey)
+const memberOf = (passkeys: readonly string[], pubkey: string) =>
+  passkeys.some((key) => sameHex(key, pubkey))
+/** Whether `set` holds every key of `subset` and more: a record ahead of the chain's list. */
+const strictlyContains = (set: readonly string[], subset: readonly string[]) =>
+  set.length > subset.length && subset.every((key) => memberOf(set, key))
+/** A record's envelope in the opener's form. */
+const envelopeOf = (backup: NonNullable<RecoveryMetadata["backup"]>) => ({
+  envelope: hexBytes(backup.envelope),
+  account: backup.account as Address,
+})
+/** What the backup sign-in event may learn: the answer's backup flag and the record's provider. */
+const backupFactsOf = (
+  assertion: PasskeyAssertResult | undefined,
+  record: RecoveryMetadata | undefined,
+): BackupSignInFacts => ({
+  ...(assertion?.backupEligible !== undefined ? { backupEligible: assertion.backupEligible } : {}),
+  ...(record?.prfAaguid ? { aaguid: record.prfAaguid } : {}),
+})
+/** The wallet's address derivation from a master key and the account's key set. */
+export type AddressDeriver = (msk: Fr, passkeys: readonly string[]) => Promise<string>
 export type WebAlphaAuthServiceOptions = {
   storage: IStorageAdapter
   /** Production: `"auth.zk.money"` (via related-origins). Dev/e2e: `"localhost"`. */
@@ -265,7 +340,7 @@ export class WebAlphaAuthService implements AlphaAuthService {
   private sessionWritesInFlight = 0
   /** Set once a commit moves the session under record stores loaded for another account. */
   private staleRecords = false
-  private deriveAddress?: (msk: Fr, pubkeyHex: string) => Promise<string>
+  private deriveAddress?: AddressDeriver
   private readAccount?: () => Promise<StoredAccountSnapshot | null>
   private readonly derivedKeys = new Map<string, Uint8Array>()
 
@@ -319,6 +394,9 @@ export class WebAlphaAuthService implements AlphaAuthService {
 
   /** The handle each passkey this session created was created under, base64url, for its record. */
   private readonly createdHandles = new Map<string, string>()
+
+  /** The passkeys this session created that the driver judged security keys, for their records. */
+  private readonly createdSecurityKeys = new Set<string>()
 
   /** Where each credential's passkey answered from this session, and the attempt that saw it. */
   private readonly answers = new Map<string, { where: PasskeyAnswer; owns?: () => boolean }>()
@@ -442,8 +520,8 @@ export class WebAlphaAuthService implements AlphaAuthService {
     }
   }
 
-  /** The wallet's address derivation from a master key and a signing key; a cache restore proves the key with it. */
-  setAddressDeriver(derive: (msk: Fr, pubkeyHex: string) => Promise<string>): void {
+  /** The wallet's address derivation from a master key and a key set; a cache restore proves the key with it. */
+  setAddressDeriver(derive: AddressDeriver): void {
     this.deriveAddress = derive
   }
 
@@ -452,9 +530,16 @@ export class WebAlphaAuthService implements AlphaAuthService {
     this.readAccount = read
   }
 
-  /** A signing provider for a known passkey; no ceremony, so its first signature costs a prompt. */
-  providerFor(passkey: { credentialId: string; pubkeyHex: string }): AlphaAuthProvider {
-    return this.buildProvider(hexBytes(passkey.pubkeyHex), passkey.credentialId)
+  /**
+   * A signing provider for a known passkey inside its account's key set; no ceremony, so its first
+   * signature costs a prompt. A key outside the set throws.
+   */
+  providerFor(passkey: {
+    credentialId: string
+    pubkeyHex: string
+    passkeys: readonly string[]
+  }): AlphaAuthProvider {
+    return this.buildProvider(hexBytes(passkey.pubkeyHex), passkey.credentialId, passkey.passkeys)
   }
 
   /**
@@ -471,9 +556,10 @@ export class WebAlphaAuthService implements AlphaAuthService {
    * so the assertion admits the local copy (`localAllowed`) and sends no transport restriction; a
    * `platform` or a cross-device answer is accepted either way, and the anchors settle it.
    * `securityKey` names a hardware key in the hints, so the sheet keeps that row and a password
-   * manager's extension stands aside; for anything else the extension may answer. `signal` can end
-   * it. `phone` steers the sheet to another device, and refuses this computer's answer only where
-   * the browser's label for it can be believed: elsewhere a phone's answer may carry that label.
+   * manager's extension stands aside; for anything else the extension may answer, a Proton Pass
+   * wrapper the page's lock kept aside included. `signal` can end it. `phone` steers the sheet to
+   * another device, which no kept wrapper sees, and refuses this computer's answer only where the
+   * browser's label for it can be believed: elsewhere a phone's answer may carry that label.
    */
   private async assertForRecovery(
     posture: DevicePosture,
@@ -529,10 +615,16 @@ export class WebAlphaAuthService implements AlphaAuthService {
     }
   }
 
-  /** This browser's record for the credential. A rotated signing credential never derives the key. */
-  private async rootRecord(credentialId: string): Promise<RecoveryMetadata | undefined> {
+  /**
+   * This browser's record for the credential, when it opens a wallet with a key inside its own set.
+   * A rotated signing credential never opens one; a record naming a key outside its set could not
+   * sign for the address it names.
+   */
+  private async openingRecord(credentialId: string): Promise<RecoveryMetadata | undefined> {
     const record = await this.identityMap.get(credentialId)
-    if (record && !record.isMskRoot) throw new RotatedCredentialError()
+    if (record && (!opensWallet(record) || !memberOf(setOf(record), record.pubkey))) {
+      throw new RotatedCredentialError()
+    }
     return record
   }
 
@@ -564,18 +656,38 @@ export class WebAlphaAuthService implements AlphaAuthService {
     this.heldCreation = { creation, choice }
   }
 
-  private recovered(
-    assertion: PasskeyAssertResult,
-    candidates: RecoverPasskeyResult["candidates"],
-    pubkey: Uint8Array,
-    record: RecoveryMetadata | undefined,
+  /**
+   * `passkeys` is the account's key set the signer belongs to; the address derives from it.
+   * `opened` is set when the key opened its envelope: the candidate is the master key itself, and
+   * the result carries the envelope for the record and the facts for the event. `staleSet` is the
+   * record's set when the chain's list has moved past it.
+   */
+  private recovered({
+    assertion,
+    candidates,
+    pubkey,
+    passkeys,
+    record,
     steered = false,
-  ): WebRecoverResult {
+    opened,
+    staleSet,
+  }: {
+    assertion: PasskeyAssertResult
+    candidates: RecoverPasskeyResult["candidates"]
+    pubkey: Uint8Array
+    passkeys: readonly string[]
+    record?: RecoveryMetadata
+    steered?: boolean
+    opened?: { backup: NonNullable<RecoveryMetadata["backup"]>; backupFacts: BackupSignInFacts }
+    staleSet?: readonly string[]
+  }): WebRecoverResult {
     const userHandle = decodeUserHandle(assertion.userHandle)
+    const backup = opened?.backup ?? record?.backup
     return {
-      authProvider: this.buildProvider(pubkey, assertion.credentialId),
+      authProvider: this.buildProvider(pubkey, assertion.credentialId, passkeys),
       credentialId: assertion.credentialId,
       pubkey: Buffer.from(pubkey).toString("hex"),
+      passkeys,
       candidates,
       preferredSlot: preferredSlot(assertion.authenticatorAttachment, record?.prfSlot),
       hasPersistedSlot: record?.prfSlot !== undefined,
@@ -583,14 +695,56 @@ export class WebAlphaAuthService implements AlphaAuthService {
       expectedAddress: record?.l2Address,
       authenticatorType: record?.authenticatorType ?? "platform",
       ...(userHandle ? { userHandle } : {}),
+      ...(backup ? { backup } : {}),
+      ...(opened ? { backupFacts: opened.backupFacts } : {}),
+      ...(staleSet ? { staleSet } : {}),
       // The device that answered, which the result otherwise drops; a screen reads it to diagnose a
       // miss. On a settled key it names the first assertion, never the salt-free second one.
       observed: this.observationOf(assertion, steered, record),
     }
   }
 
-  private buildProvider(pubkey: Uint8Array, credentialId: string): WebAuthnAlphaAuthProvider {
+  /**
+   * The master key a backup passkey's assertion opens from `envelope`, as the one candidate in the
+   * envelope's slot. A failure to open is reported as the backup sign-in's `failed` and rides the
+   * observation like any other refusal.
+   */
+  private async openedCandidate(
+    assertion: PasskeyAssertResult,
+    envelope: Uint8Array,
+    account: Address,
+    record: RecoveryMetadata | undefined,
+    steered: boolean,
+  ): Promise<{ candidates: RecoverPasskeyResult["candidates"]; backupFacts: BackupSignInFacts }> {
+    const backupFacts = backupFactsOf(assertion, record)
+    try {
+      const slot = envelopeSlot(envelope)
+      const msk = await openBackupEnvelope(assertion, {
+        envelope,
+        account,
+        credentialId: assertion.credentialId,
+      })
+      return { candidates: { [slot]: msk }, backupFacts }
+    } catch (err) {
+      if (err instanceof PasskeyEnvelopeError) noteBackupSignIn("failed", backupFacts)
+      throw this.withObservation(err, assertion, steered, record)
+    }
+  }
+
+  /**
+   * The signer for a key inside `passkeys`, the set its account's address derives from. A key
+   * outside the set is refused here: the set-derived address proves the master key, not the
+   * signer, so nothing later would catch a provider that cannot sign.
+   */
+  private buildProvider(
+    pubkey: Uint8Array,
+    credentialId: string,
+    passkeys: readonly string[],
+  ): WebAuthnAlphaAuthProvider {
     const buf = Buffer.from(pubkey)
+    if (!memberOf(passkeys, buf.toString("hex"))) {
+      throw new Error("the signing key is not in its account's passkey set")
+    }
     const sign = makeWebauthnSignFn(
       this.ceremony,
       this.rpId,
@@ -598,38 +752,78 @@ export class WebAlphaAuthService implements AlphaAuthService {
       pubkey,
       this.steeringFor(credentialId),
     )
-    const provider = new WebAuthnAlphaAuthProvider(buf.subarray(0, 32), buf.subarray(32, 64), sign)
+    const provider = new WebAuthnAlphaAuthProvider(
+      buf.subarray(0, 32),
+      buf.subarray(32, 64),
+      sign,
+      passkeys,
+    )
     this.providerCredential.set(provider, credentialId)
     return provider
   }
 
+  /**
+   * The session's signer: the provider the commit or the cache proof installed, else one built from
+   * the session's own record, so a browser holding a root and a backup record for one account signs
+   * with the key that opened the session. Only with no session open does the newest opening record
+   * stand in. A commit in flight installs its signer before its turn ends, so the answer waits for
+   * it; a commit that lands during the record's read installs the signer itself, and a session that
+   * moved, or is still moving, during the read is read again.
+   */
   async getAuthProvider(): Promise<AlphaAuthProvider | undefined> {
     if (!this.msk) await this.restoreFromCache()
+    await this.sessionSettled()
     if (this.authProvider) return this.authProvider
-    const root = await this.identityMap.getMskRoot()
-    if (!root) return undefined
+    const epoch = this.epoch
+    const credentialId = getActiveCredentialId()
+    const record = credentialId
+      ? await this.identityMap.get(credentialId)
+      : await this.identityMap.getOpeningRecord()
+    if (this.sessionMoved(epoch, credentialId)) {
+      await this.sessionSettled()
+      return this.getAuthProvider()
+    }
+    if (this.authProvider) return this.authProvider
+    if (!record) return undefined
     this.authProvider = this.buildProvider(
-      new Uint8Array(Buffer.from(root.pubkey, "hex")),
-      root.credentialId,
+      hexBytes(record.pubkey),
+      record.credentialId,
+      setOf(record),
     )
     return this.authProvider
   }
 
+  /** The key in memory, else the cache's once no session write is in flight: a write still saving suppresses the restore. */
   async getSecretKey(): Promise<Fr | undefined> {
     if (!this.msk) await this.restoreFromCache()
     return this.msk
+  }
+
+  /**
+   * The key and the signer as one read, for a caller that builds on the pair: a commit or a restore
+   * installs the two together, and a commit in flight is waited out, so the pair is one session's.
+   * Nothing while locked.
+   */
+  async sessionKeys(): Promise<{ secretKey: Fr; authProvider: AlphaAuthProvider } | undefined> {
+    if (!this.msk) await this.restoreFromCache()
+    await this.sessionSettled()
+    const { msk: secretKey, authProvider } = this
+    return secretKey && authProvider ? { secretKey, authProvider } : undefined
   }
 
   /** Sign an Oxide metadata digest as the WebAuthn challenge, without a UserOp or personal-sign wrapper. */
   async signMetadataChallenge(challenge: `0x${string}`, opts?: { signal?: AbortSignal }) {
     const storageId = getActiveStorageId()
     const credentialId = getActiveCredentialId()
+    const moved = () =>
+      getActiveStorageId() !== storageId || getActiveCredentialId() !== credentialId
     const provider = await this.getAuthProvider()
     if (!storageId || !credentialId || !(provider instanceof WebAuthnAlphaAuthProvider))
       throw new NoPasskeySessionError()
+    // The signer read waits out a commit in flight: one that replaced the session prompts no one.
+    if (moved()) throw new SessionChangedError()
     const result = await provider.signChallenge(Buffer.from(challenge.slice(2), "hex"), opts)
-    if (getActiveStorageId() !== storageId || getActiveCredentialId() !== credentialId)
-      throw new SessionChangedError()
+    if (moved()) throw new SessionChangedError()
     const clientDataJSON =
       typeof result.clientDataJSON === "string"
         ? result.clientDataJSON
@@ -680,7 +874,15 @@ export class WebAlphaAuthService implements AlphaAuthService {
     }
     this.msk = proof.msk
     this.derivedKeys.clear()
-    this.authProvider = this.buildProvider(hexBytes(proof.record.pubkey), cache.credentialId)
+    // A signer already built from this credential's record stays: an account built on it is the pair's.
+    const kept =
+      this.authProvider && this.providerCredential.get(this.authProvider) === cache.credentialId
+    if (kept) return
+    this.authProvider = this.buildProvider(
+      hexBytes(proof.record.pubkey),
+      cache.credentialId,
+      setOf(proof.record),
+    )
   }
 
   /**
@@ -719,7 +921,9 @@ export class WebAlphaAuthService implements AlphaAuthService {
       return { kind: "invalid" }
     }
     const record = await this.identityMap.get(cache.credentialId)
-    if (!record?.l2Address || !record.isMskRoot) return { kind: "invalid" }
+    if (!record?.l2Address || !opensWallet(record) || !memberOf(setOf(record), record.pubkey)) {
+      return { kind: "invalid" }
+    }
     let msk: Fr
     try {
       msk = Fr.fromHexString(cache.msk)
@@ -733,7 +937,7 @@ export class WebAlphaAuthService implements AlphaAuthService {
     let derived: string
     try {
       snapshot = await readAccount()
-      derived = await deriveAddress(msk, record.pubkey)
+      derived = await deriveAddress(msk, setOf(record))
     } catch {
       return { kind: "unknown" }
     }
@@ -803,9 +1007,10 @@ export class WebAlphaAuthService implements AlphaAuthService {
     const userAgent = await this.userAgent()
     // A screen that left during the read sends no request.
     opts?.signal?.throwIfAborted()
-    // `securityKey` from the driver is deliberately not persisted: every record this wallet writes
-    // says "platform". Storing the real class turns on front-core's no-anchor commit branch and the
-    // no-backup acknowledgement, which land together with the screen that warns the user.
+    // The driver's `securityKey` never becomes the record's `authenticatorType`: every record this
+    // wallet writes says "platform", since the real class turns on front-core's no-anchor commit
+    // branch and the no-backup acknowledgement, which land together with the screen that warns the
+    // user. The record keeps the verdict as its own flag, for naming the key.
     const creating = runPasskeyCreation(asking, {
       posture,
       rpId: this.rpId,
@@ -841,7 +1046,7 @@ export class WebAlphaAuthService implements AlphaAuthService {
         }
       },
     })
-    const { created, slot, prfOutput } = await (localCreation
+    const { created, slot, prfOutput, securityKey } = await (localCreation
       ? countingLocalRefusals(creating)
       : creating
     ).catch((err: unknown) => {
@@ -849,13 +1054,15 @@ export class WebAlphaAuthService implements AlphaAuthService {
       throw err
     })
     const secretKey = deriveMskFromPrfOutput(prfOutput)
-    const authProvider = this.buildProvider(created.pubkey, created.credentialId)
+    const pubkey = Buffer.from(created.pubkey).toString("hex")
+    const authProvider = this.buildProvider(created.pubkey, created.credentialId, [pubkey])
     this.createdHandles.set(created.credentialId, bytesToBase64Url(created.userHandle))
+    if (securityKey) this.createdSecurityKeys.add(created.credentialId)
 
     return {
       authProvider,
       credentialId: created.credentialId,
-      pubkey: Buffer.from(created.pubkey).toString("hex"),
+      pubkey,
       secretKey,
       prfSlot: slot,
       prfAaguid: created.aaguid,
@@ -865,17 +1072,75 @@ export class WebAlphaAuthService implements AlphaAuthService {
   }
 
   /**
-   * The credential this origin derives its wallet key from, if one was recorded: the one that
-   * opened `l2Address` when given, so a browser with several roots never pins another account's.
+   * Create a backup passkey for the signed-in account on `ceremony` and return it with the PRF
+   * output the master key is sealed under. `choice` is where the Passkeys sheet's picker said the
+   * passkey lives; the driver shapes its request from it. Its handle is kept for its record, as a
+   * sign-up passkey's is; nothing else about the credential is recorded until the rotation installs it.
+   */
+  async createBackupPasskey(
+    driver: BackupCreationDriver,
+    ceremony: PasskeyCeremony,
+    opts: {
+      userName: string
+      choice?: BackupAddChoice
+      observe?: CeremonyObserver
+      signal?: AbortSignal
+    },
+  ): Promise<BackupCreation> {
+    const userAgent = await this.userAgent()
+    opts.signal?.throwIfAborted()
+    const creation = await driver(ceremony, {
+      posture: this.posture(),
+      rpId: this.rpId,
+      rpName: this.rpName,
+      userName: opts.userName,
+      userAgent,
+      extraProviders: this.extraProviders,
+      challengeForChained: () => new Uint8Array(randomChallenge()),
+      ...(opts.choice ? { choice: opts.choice } : {}),
+      ...(opts.observe ? { observe: opts.observe } : {}),
+      ...(opts.signal ? { signal: opts.signal } : {}),
+    })
+    this.createdHandles.set(
+      creation.created.credentialId,
+      bytesToBase64Url(creation.created.userHandle),
+    )
+    return creation
+  }
+
+  /**
+   * The credential this origin opens its wallet with, if one was recorded: the one that opened
+   * `l2Address` when given, so a browser with several records never pins another account's.
    */
   async rootCredentialId(l2Address?: string): Promise<string | undefined> {
-    return (await this.identityMap.getMskRoot(l2Address))?.credentialId
+    return (await this.identityMap.getOpeningRecord(l2Address))?.credentialId
+  }
+
+  /** The record this browser opens `l2Address` with: its root credential's, else a backup's. */
+  async accountRecord(l2Address: string): Promise<RecoveryMetadata | undefined> {
+    return (
+      (await this.identityMap.getRootRecord(l2Address)) ??
+      (await this.identityMap.getOpeningRecord(l2Address))
+    )
+  }
+
+  /** The account that pays for `credentialId`'s sponsored batches on the ClaimFPC at `fpc`. */
+  async recordFeePayer(credentialId: string, fpc: string, payer: FeePayerEntry): Promise<void> {
+    await this.identityMap.setFeePayer(credentialId, fpc, payer)
   }
 
   /** `stillOwns` is checked under the map's lock, so a cancel that landed while waiting writes nothing. */
-  async recordRecoveryMetadata(meta: RecoveryMetadata, stillOwns?: () => boolean): Promise<void> {
-    const userHandle = this.createdHandles.get(meta.credentialId)
-    await this.identityMap.upsert(userHandle ? { ...meta, userHandle } : meta, stillOwns)
+  async recordRecoveryMetadata(meta: StoredRecoveryMetadata, stillOwns?: () => boolean): Promise<void> {
+    const userHandle = meta.userHandle ?? this.createdHandles.get(meta.credentialId)
+    const securityKey = meta.securityKey || this.createdSecurityKeys.has(meta.credentialId)
+    await this.identityMap.upsert(
+      {
+        ...meta,
+        ...(userHandle ? { userHandle } : {}),
+        ...(securityKey ? { securityKey: true } : {}),
+      },
+      stillOwns,
+    )
     const where = this.answerSeen(meta.credentialId)
     if (where) {
       await this.identityMap
@@ -896,12 +1161,16 @@ export class WebAlphaAuthService implements AlphaAuthService {
    * previous session stands. The cached key is the one part that may be missing and still leave a
    * usable session: without it a reload asks for the passkey, which the wallet already knows how
    * to do. A commit without a passkey (the demo seed) caches nothing and removes a passkey
-   * session's cache and credential pointer. False, with nothing written, when `stillOwns` says the
-   * caller's operation ended while the storage id was being derived.
+   * session's cache and credential pointer. With `stillOwns`: the generation of the session it
+   * started (for `sessionHeld`), or false, with nothing written, when the caller's operation
+   * ended on the way.
    */
   commitSecret(input: CommitSecretInput): Promise<void>
-  commitSecret(input: CommitSecretInput, stillOwns: () => boolean): Promise<boolean>
-  async commitSecret(input: CommitSecretInput, stillOwns?: () => boolean): Promise<boolean | void> {
+  commitSecret(input: CommitSecretInput, stillOwns: () => boolean): Promise<number | false>
+  async commitSecret(
+    input: CommitSecretInput,
+    stillOwns?: () => boolean,
+  ): Promise<number | false | void> {
     return this.commit(input, stillOwns)
   }
 
@@ -920,10 +1189,47 @@ export class WebAlphaAuthService implements AlphaAuthService {
     return this.staleRecords
   }
 
+  /** A commit kept the storage id but moved the session's address: the page's stores hold the old one. */
+  markRecordsStale(): void {
+    this.staleRecords = true
+  }
+
+  /**
+   * Whether the session committed as `generation` is still this service's, with no commit saving
+   * over it. Work begun under a session asks before writing, so a session that replaced it, or is
+   * replacing it, is never written into.
+   */
+  sessionHeld(generation: number): boolean {
+    return this.epoch === generation && this.sessionWritesInFlight === 0
+  }
+
+  /** The address this browser's record names for the session's credential; none without a passkey session. */
+  async sessionAddress(): Promise<string | undefined> {
+    const credentialId = getActiveCredentialId()
+    return credentialId ? (await this.identityMap.get(credentialId))?.l2Address : undefined
+  }
+
+  /** Whether the session read as `epoch` and `credentialId` has been replaced, or a write is replacing it. */
+  private sessionMoved(epoch: number, credentialId: string | null): boolean {
+    return (
+      this.epoch !== epoch ||
+      getActiveCredentialId() !== credentialId ||
+      this.sessionWritesInFlight > 0
+    )
+  }
+
+  /** Resolves once the session write in flight, if any, has finished its turn under the lock. */
+  private sessionSettled(): Promise<void> {
+    return this.sessionWritesInFlight > 0 ? withSessionLock(async () => {}) : Promise.resolve()
+  }
+
   /** `stillOwns` lets a ceremony that outlived its session (a commit or clear landed while its
    * prompt was open) write nothing. The tuple is written under the session lock, so no other
    * commit or sign-out on this page runs between reading the session it replaces and saving. */
-  private async commit(input: CommitSecretInput, stillOwns?: () => boolean): Promise<boolean> {
+  private async commit(
+    input: CommitSecretInput,
+    stillOwns?: () => boolean,
+  ): Promise<number | false> {
     // Read before the first await: a sign-out during the derivation or the lock wait fences it.
     const fence = this.fence
     const storageId = await storageIdFromSecret(new Uint8Array(input.secretKey.toBuffer()))
@@ -972,7 +1278,7 @@ export class WebAlphaAuthService implements AlphaAuthService {
         this.msk = input.secretKey
         this.authProvider = input.authProvider
         this.derivedKeys.clear()
-        return true
+        return this.epoch
       } finally {
         this.sessionWritesInFlight--
       }
@@ -995,7 +1301,7 @@ export class WebAlphaAuthService implements AlphaAuthService {
    * `SessionChangedError`, and whoever changed it owns the tab.
    */
   async unlock(
-    deriveAddress: (msk: Fr, pubkeyHex: string) => Promise<string>,
+    deriveAddress: AddressDeriver,
     options?: { signal?: AbortSignal; own?: PasskeyRequestScope; phone?: boolean },
   ): Promise<void> {
     await this.restoreFromCache()
@@ -1020,7 +1326,7 @@ export class WebAlphaAuthService implements AlphaAuthService {
   }
 
   private async runUnlock(
-    deriveAddress: (msk: Fr, pubkeyHex: string) => Promise<string>,
+    deriveAddress: AddressDeriver,
     signal?: AbortSignal,
     own?: PasskeyRequestScope,
     phone?: boolean,
@@ -1032,26 +1338,52 @@ export class WebAlphaAuthService implements AlphaAuthService {
     if (!storageId || !credentialId || !record?.l2Address) throw new NoPasskeySessionError()
     const stillOwns = () => this.epoch === epoch && !signal?.aborted
     signal?.throwIfAborted()
-    const recovered = await this.recoverPasskey({
-      credentialId,
-      signal,
-      ...(own ? { own } : {}),
-      ...(phone ? { phone } : {}),
-    })
-    let msk: Fr
+    // A backup record's unlock is one backup sign-in event, whatever ends it: a failure to open is
+    // reported where the envelope is opened, every other end here.
+    const backupFacts = record.backup ? backupFactsOf(undefined, record) : undefined
+    let recovered: WebRecoverResult | undefined
     try {
-      msk = await selectRecoveredMsk(recovered, (candidate) =>
-        deriveAddress(candidate, recovered.pubkey),
+      recovered = await this.recoverPasskey({
+        credentialId,
+        signal,
+        ...(own ? { own } : {}),
+        ...(phone ? { phone } : {}),
+      })
+      // The sheet was held to the session's credential; only its own record's answer may unlock it.
+      if (
+        recovered.credentialId !== credentialId ||
+        recovered.expectedAddress !== record.l2Address
+      ) {
+        throw new Error(UNASKED_PASSKEY_MESSAGE)
+      }
+      let msk: Fr
+      try {
+        msk = await selectRecoveredMsk(recovered, (candidate) =>
+          deriveAddress(candidate, recovered!.passkeys ?? [recovered!.pubkey]),
+        )
+      } catch (err) {
+        throw this.tagRecordMismatch(err, recovered)
+      }
+      signal?.throwIfAborted()
+      const committed = await this.commit(
+        { secretKey: msk, authProvider: recovered.authProvider },
+        stillOwns,
       )
+      if (!committed) {
+        // A cancel that landed inside the commit is the cancel, not a lost session.
+        signal?.throwIfAborted()
+        throw new SessionChangedError()
+      }
     } catch (err) {
-      throw this.tagRecordMismatch(err, recovered)
+      if (backupFacts && !(err instanceof PasskeyEnvelopeError)) {
+        const facts = recovered?.backupFacts ?? backupFacts
+        if (isPasskeyCancelled(err)) noteBackupSignIn("cancelled", facts)
+        else if (isPasskeyPolicyError(err)) noteBackupSignIn("refused", facts)
+        else noteBackupSignIn("failed", facts)
+      }
+      throw err
     }
-    signal?.throwIfAborted()
-    const committed = await this.commit(
-      { secretKey: msk, authProvider: recovered.authProvider },
-      stillOwns,
-    )
-    if (!committed) throw new SessionChangedError()
+    if (backupFacts) noteBackupSignIn("succeeded", recovered.backupFacts ?? backupFacts)
   }
 
   /**
@@ -1111,12 +1443,12 @@ export class WebAlphaAuthService implements AlphaAuthService {
   async beginRecovery(request?: string | RecoverPasskeyRequest): Promise<BeginRecoveryResult> {
     const posture = this.posture()
     const asked = typeof request === "string" ? { credentialId: request } : request
-    // A recorded root passkey is named to the authenticator, so the browser never asks the user
-    // to pick one. A discoverable request, and a fresh device (no record), leave the list open, so
-    // the browser's sheet offers every passkey for the relying party.
+    // A recorded passkey is named to the authenticator, so the browser never asks the user to pick
+    // one. A discoverable request, and a fresh device (no record), leave the list open, so the
+    // browser's sheet offers every passkey for the relying party.
     const rootId = asked?.discover
       ? undefined
-      : asked?.credentialId ?? (await this.identityMap.getMskRoot())?.credentialId
+      : asked?.credentialId ?? (await this.identityMap.getOpeningRecord())?.credentialId
     // The record for that credential, when this browser holds one: what it says about reaching the
     // authenticator is what steers the sheet. A credential this browser never saw sends nothing.
     const known = rootId ? await this.identityMap.get(rootId) : undefined
@@ -1130,10 +1462,26 @@ export class WebAlphaAuthService implements AlphaAuthService {
       asked?.own,
       asked?.phone,
     )
-    const record = await this.rootRecord(assertion.credentialId)
-    // The sheet was held to the recorded credential; an answer from any other is not the session's.
-    if (known && !record) throw new Error(UNASKED_PASSKEY_MESSAGE)
+    // The sheet was held to the named credential; an answer from any other is not the session's.
+    if (rootId && assertion.credentialId !== rootId) throw new Error(UNASKED_PASSKEY_MESSAGE)
+    const record = await this.openingRecord(assertion.credentialId)
     const steered = asked?.phone === true
+    if (record?.backup) {
+      // The record's envelope names the key; the backup gate does not apply to a key that opens one.
+      const pubkeyCandidates = await candidatePubkeys(assertion)
+      if (!pubkeyCandidates.includes(normalKey(record.pubkey))) throw new RotatedCredentialError()
+      const { account, envelope } = envelopeOf(record.backup)
+      const opened = await this.openedCandidate(assertion, envelope, account, record, steered)
+      return this.recovered({
+        assertion,
+        candidates: opened.candidates,
+        pubkey: hexBytes(record.pubkey),
+        passkeys: setOf(record),
+        record,
+        steered,
+        opened: { backup: record.backup, backupFacts: opened.backupFacts },
+      })
+    }
     let candidates: RecoverPasskeyResult["candidates"]
     try {
       candidates = toFrCandidates(candidatesFrom(assertion))
@@ -1145,9 +1493,15 @@ export class WebAlphaAuthService implements AlphaAuthService {
     const pubkeyCandidates = await candidatePubkeys(assertion)
     if (record) {
       // A record whose key the signature cannot have come from is another credential's.
-      if (!pubkeyCandidates.includes(record.pubkey.toLowerCase()))
-        throw new RotatedCredentialError()
-      return this.recovered(assertion, candidates, hexBytes(record.pubkey), record, steered)
+      if (!pubkeyCandidates.includes(normalKey(record.pubkey))) throw new RotatedCredentialError()
+      return this.recovered({
+        assertion,
+        candidates,
+        pubkey: hexBytes(record.pubkey),
+        passkeys: setOf(record),
+        record,
+        steered,
+      })
     }
 
     return {
@@ -1159,13 +1513,20 @@ export class WebAlphaAuthService implements AlphaAuthService {
       credentialId: assertion.credentialId,
       pubkeyCandidates,
       observed: this.observationOf(assertion, steered),
-      settle: async (pubkey?: string, attempt?: AbortSignal) => {
+      settle: async (pubkey?: string, attempt?: AbortSignal, passkeys?: readonly string[]) => {
         if (pubkey !== undefined) {
-          const wanted = pubkey.toLowerCase().replace(/^0x/, "")
+          const wanted = normalKey(pubkey)
           if (!pubkeyCandidates.includes(wanted)) {
             throw new Error("That key is not a candidate of this sign-in's signature")
           }
-          return this.recovered(assertion, candidates, hexBytes(wanted), undefined, steered)
+          const set = passkeys ? passkeys.map(normalKey) : [wanted]
+          return this.recovered({
+            assertion,
+            candidates,
+            pubkey: hexBytes(wanted),
+            passkeys: set,
+            steered,
+          })
         }
         // The second assertion signs another random challenge, so the two signatures share exactly
         // one recovered key. It sends no salts and is deliberately left unsteered and unchecked: a
@@ -1179,7 +1540,14 @@ export class WebAlphaAuthService implements AlphaAuthService {
         })
         void this.learnAnswer(second, () => !attempt?.aborted)
         const recoveredKey = await recoverPubkeyFromAssertions(assertion, second)
-        return this.recovered(assertion, candidates, recoveredKey, undefined, steered)
+        const own = Buffer.from(recoveredKey).toString("hex")
+        return this.recovered({
+          assertion,
+          candidates,
+          pubkey: recoveredKey,
+          passkeys: [own],
+          steered,
+        })
       },
     }
   }
@@ -1191,46 +1559,72 @@ export class WebAlphaAuthService implements AlphaAuthService {
   }
 
   /**
-   * A passkey identified by its credential and public key (a sign-in by tag): one assertion reads
-   * both PRF slots, and the hinted public key is checked against its signature before anything is
-   * committed. A hint the signature does not match throws, never selects a key.
-   * A record this browser already holds for the credential counts the same as in `beginRecovery`.
+   * A sign-in by tag: one assertion against the account's installed keys. The answering credential
+   * must name one of them, and its signature must carry that key, before anything is committed; a
+   * key named by its raw credential id derives the master key from the PRF, one named by the hash
+   * oxide's prefix carries opens its envelope. The sheet is held to the credential ids the keys
+   * name (a root's raw id, a backup's id behind its envelope), so a passkey the browser cannot
+   * list still answers. A record this browser holds for the credential outranks the hint, and its
+   * set outranks the chain's list when the record is strictly ahead of it; a record the list is
+   * strictly ahead of is stale.
    */
-  async adoptKnownPasskey(hint: {
-    credentialId: string
-    pubkeyHex: string
-    signal?: AbortSignal
-    own?: PasskeyRequestScope
-    phone?: boolean
-  }): Promise<WebRecoverResult> {
+  async adoptAccountPasskey(
+    hint: AccountPasskeys & { signal?: AbortSignal; own?: PasskeyRequestScope; phone?: boolean },
+  ): Promise<WebRecoverResult> {
     const posture = this.posture()
-    // What this browser recorded about reaching the authenticator steers the sheet, as in
-    // `beginRecovery`; a credential it never saw sends nothing.
-    const known = await this.identityMap.get(hint.credentialId)
+    const { account, keys } = hint
+    const rawIds = candidateCredentialIds(keys)
+    // Steering from this browser's record applies when exactly one credential is named.
+    const pinned = rawIds.length === 1 ? rawIds[0] : undefined
+    const known = pinned ? await this.identityMap.get(pinned) : undefined
     const assertion = await this.assertForRecovery(
       posture,
       randomChallenge(),
-      [hint.credentialId],
+      rawIds.length > 0 ? rawIds : undefined,
       known?.transports,
-      await this.knownSecurityKey(hint.credentialId),
+      pinned ? await this.knownSecurityKey(pinned) : false,
       hint.signal,
       hint.own,
       hint.phone,
     )
-    const record = await this.rootRecord(assertion.credentialId)
+    const record = await this.openingRecord(assertion.credentialId)
     const steered = hint.phone === true
-    let candidates: RecoverPasskeyResult["candidates"]
-    try {
-      candidates = toFrCandidates(candidatesFrom(assertion))
-    } catch (err) {
-      throw this.withObservation(err, assertion, steered, record)
-    }
-    const wanted = hint.pubkeyHex.toLowerCase().replace(/^0x/, "")
+    const answer = answeringKey(keys, assertion.credentialId)
+    if (!answer) throw new HintedKeyMismatchError()
+    const wanted = normalKey(answer.key.pubkeyHex)
     if (!(await candidatePubkeys(assertion)).includes(wanted)) throw new HintedKeyMismatchError()
     // This browser's own record for the credential outranks the hint.
     if (record && !sameHex(record.pubkey, wanted)) throw new HintedKeyMismatchError()
-    const pubkey = new Uint8Array(Buffer.from(wanted, "hex"))
-    return this.recovered(assertion, candidates, pubkey, record, steered)
+    const pubkey = hexBytes(wanted)
+    // L1 may list a key twice; the set holds it once.
+    const listed = [...new Set(keys.map((k) => normalKey(k.pubkeyHex)))]
+    const recorded = record ? setOf(record) : undefined
+    const passkeys = recorded && strictlyContains(recorded, listed) ? recorded : listed
+    const staleSet = recorded && strictlyContains(listed, recorded) ? recorded : undefined
+    if (answer.by === "raw" || answer.key.parsed.kind !== "envelope-prefixed") {
+      let candidates: RecoverPasskeyResult["candidates"]
+      try {
+        candidates = toFrCandidates(candidatesFrom(assertion))
+      } catch (err) {
+        throw this.withObservation(err, assertion, steered, record)
+      }
+      return this.recovered({ assertion, candidates, pubkey, passkeys, record, steered, staleSet })
+    }
+    const envelope = answer.key.parsed.envelope
+    const opened = await this.openedCandidate(assertion, envelope, account, record, steered)
+    return this.recovered({
+      assertion,
+      candidates: opened.candidates,
+      pubkey,
+      passkeys,
+      record,
+      steered,
+      opened: {
+        backup: { account, envelope: `0x${Buffer.from(envelope).toString("hex")}` },
+        backupFacts: opened.backupFacts,
+      },
+      staleSet,
+    })
   }
 
   /**
@@ -1238,27 +1632,60 @@ export class WebAlphaAuthService implements AlphaAuthService {
    * under the passkey it is bound to, when that passkey has a record here. One candidate, the
    * record's address as its anchor; nothing when locked or unbound. `restore: false` consults only
    * the key already in memory: a caller answering a tap must not start the cache proof, which reads
-   * the account and derives its address, on the way to the prompt.
+   * the account and derives its address, on the way to the prompt. With no session on this rollup,
+   * the key a retired rollup's session cached answers instead.
    */
-  async recoverFromCache(options?: {
-    restore?: boolean
-  }): Promise<RecoverPasskeyResult | undefined> {
+  async recoverFromCache(options?: { restore?: boolean }): Promise<WebRecoverResult | undefined> {
     if (!this.msk && options?.restore !== false) await this.restoreFromCache()
+    // One session's key, signer and credential, taken before the record's read: a session that
+    // moved, or is still moving, during the read is read again.
+    const { msk, authProvider, epoch } = this
     const credentialId = getActiveCredentialId()
-    if (!this.msk || !this.authProvider || !credentialId) return undefined
-    const record = await this.rootRecord(credentialId)
+    if (!msk && options?.restore !== false && !this.restoreSuppressed) {
+      const retired = retiredSession()
+      if (retired && this.sessionWritesInFlight === 0) return this.retiredRecovery(retired)
+    }
+    if (!msk || !authProvider || !credentialId) return undefined
+    const record = await this.openingRecord(credentialId)
+    if (this.sessionMoved(epoch, credentialId)) {
+      await this.sessionSettled()
+      return this.recoverFromCache(options)
+    }
     if (!record?.l2Address) return undefined
     const slot = record.prfSlot ?? "first"
     return {
-      authProvider: this.authProvider,
+      authProvider,
       credentialId,
       pubkey: record.pubkey,
-      candidates: { [slot]: this.msk },
+      passkeys: setOf(record),
+      candidates: { [slot]: msk },
       preferredSlot: slot,
       hasPersistedSlot: false,
       candidateSource: "webauthn",
       expectedAddress: record.l2Address,
       authenticatorType: record.authenticatorType ?? "platform",
+      ...(record.backup ? { backup: record.backup } : {}),
+    }
+  }
+
+  /**
+   * The retired session's key as a recovery result. No `expectedAddress`: the address it recorded
+   * is the retired rollup's, so the sign-in's anchors on this rollup name the account.
+   */
+  private retiredRecovery({ credentialId, msk, record }: RetiredSession): WebRecoverResult {
+    const slot = record.prfSlot ?? "first"
+    return {
+      authProvider: this.buildProvider(hexBytes(record.pubkey), credentialId, setOf(record)),
+      credentialId,
+      pubkey: record.pubkey,
+      passkeys: setOf(record),
+      candidates: { [slot]: msk },
+      preferredSlot: slot,
+      hasPersistedSlot: false,
+      candidateSource: "webauthn",
+      authenticatorType: record.authenticatorType ?? "platform",
+      ...(record.backup ? { backup: record.backup } : {}),
+      ...(record.usertag ? { usertag: record.usertag } : {}),
     }
   }
 

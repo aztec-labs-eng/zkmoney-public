@@ -1,4 +1,4 @@
-import { Fr } from "@aztec/aztec.js/fields"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 import type { PrfSlot, SignInRoute } from "@obsidion/core/types"
 import { AlphaAuthProvider } from "./AlphaAuthProvider.js"
 
@@ -49,9 +49,17 @@ export type RecoverPasskeyResult = {
    * hashes to the claim or reservation it found.
    */
   userHandle?: string
+  /**
+   * Every key of the account the signer belongs to, as `pubkey` is encoded, in the account's
+   * order; the address is derived from all of them. Absent means the signer alone.
+   */
+  passkeys?: readonly string[]
 }
 
-/** Recovery breadcrumb persisted at create. `isMskRoot:false` marks a credential whose PRF never derived the account MSK. */
+/**
+ * Recovery breadcrumb persisted at create. `isMskRoot:false` marks a credential whose PRF never
+ * derived the account MSK; one carrying `backup` still opens the wallet, through its envelope.
+ */
 export type RecoveryMetadata = {
   credentialId: string
   l2Address: string
@@ -60,6 +68,17 @@ export type RecoveryMetadata = {
   prfAaguid?: string
   /** Only the root onboarding credential's PRF reproduces the account MSK. */
   isMskRoot: boolean
+  /**
+   * Set on a backup credential: the Ethereum account its envelope is bound to and the envelope
+   * itself, `0x`-prefixed hex. Present exactly when the record opens the wallet without deriving
+   * the MSK.
+   */
+  backup?: { account: string; envelope: string }
+  /**
+   * Every key of the account, as `pubkey` is encoded, in the account's order; `l2Address` derives
+   * from all of them. Absent means `pubkey` alone.
+   */
+  passkeySet?: readonly string[]
   /** Which authenticator class roots the credential (default `"platform"` when absent). */
   authenticatorType?: "platform" | "security-key"
   /**
@@ -73,7 +92,17 @@ export type RecoveryMetadata = {
    * both are present.
    */
   inferredTransports?: readonly string[]
+  /**
+   * Per ClaimFPC instance, keyed by its address: the account whose subscription note pays for this
+   * account's sponsored batches, and the one key that account derives from. Written only with
+   * evidence that the account holds the note on that instance. No entry means the account pays
+   * with its own note.
+   */
+  feePayer?: Record<string, FeePayerEntry>
 }
+
+/** An account that holds a ClaimFPC subscription note, with the key it derives from (x‖y hex). */
+export type FeePayerEntry = { address: string; passkey: string }
 
 /** Input to the commit step — reseeds the Keychain and seeds the caches. */
 export type CommitSecretInput = {
@@ -159,20 +188,22 @@ export interface AlphaAuthService {
    * Commit a verified MSK: reseed the implementation's store (web: the plain-text local-storage
    * cache) and seed the MSK + provider caches. The ONLY place the secret is persisted and
    * caches are mutated — recover never reseeds until the caller has verified the candidate's
-   * derived address against the stored one.
+   * derived address against the stored one. The provider is the session's signer, root or
+   * backup, with its key inside the set the address was derived from.
    */
   commitSecret(input: CommitSecretInput): Promise<void>
 
   /**
    * Recover an existing passkey and produce BOTH MSK candidates WITHOUT
    * committing. Fails closed when the looked-up record is `isMskRoot:false`
-   * (a rotated signing credential whose PRF does not reproduce the account MSK).
+   * with no `backup` (a rotated signing credential that neither derives the
+   * account MSK nor opens an envelope).
    *
-   * The MSK MUST be regenerated from the credential itself (WebAuthn PRF with
-   * the fixed salt) — never from local state alone — so login works
-   * wherever the credential is available. The caller commits a candidate only
-   * once an anchor names it: the stored `expectedAddress`, or a record it looks
-   * up for each candidate.
+   * The MSK MUST be regenerated from the credential itself — a root's WebAuthn
+   * PRF with the fixed salt, or a backup's PRF opening its envelope — never
+   * from local state alone — so login works wherever the credential is
+   * available. The caller commits a candidate only once an anchor names it:
+   * the stored `expectedAddress`, or a record it looks up for each candidate.
    *
    * When `credentialId` is provided (account-picker), implementations MUST
    * pre-resolve the authenticator type + pubkey from the synced record and

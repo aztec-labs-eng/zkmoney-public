@@ -1,4 +1,4 @@
-import { EthAddress } from '@aztec/foundation/eth-address';
+import { EthAddress } from '@aztec-labs/foundation/eth-address';
 
 /** The read surface of a Chainlink AggregatorV3Interface feed. */
 export const AGGREGATOR_V3_READ_ABI = [
@@ -17,8 +17,12 @@ export const AGGREGATOR_V3_READ_ABI = [
   },
 ] as const;
 
-/** Max age of a feed answer before it is rejected as stale. */
-export const ETH_USD_MAX_PRICE_AGE_SECONDS = 60n * 60n;
+/**
+ * Max age of a feed answer before it is rejected as stale: the 1h heartbeat of the feed plus 5 minutes for the round
+ * to get on-chain. The same value as `EthUsdMinOutLib.MAX_PRICE_AGE`, which the subsidy contracts use. If this value
+ * is smaller, the relayer refuses to price while the contracts accept the answer.
+ */
+export const ETH_USD_MAX_PRICE_AGE_SECONDS = 65n * 60n;
 
 /**
  * The canonical Chainlink ETH/USD proxy per chain — the same table the shared-L1 deploy binds the subsidy

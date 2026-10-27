@@ -7,5 +7,5 @@
   "contact-search": "local, registry and retryable add-contact states",
   "share-retry": "a recoverable connect-link mint failure",
   "share-long": "a real connect packet with a long tag and origin",
-  "onboarding": "identity-free onboarding; combine with /claim?mock=create|claiming|deposit|deposit-wrong-chain|deposit-expired|funded, plus &min=&fee=&cut= for the chain schedule and the portal cut, &token=DAI|USDC|USDT and &received= for a deposit already at the address"
+  "onboarding": "identity-free onboarding; combine with /claim?mock=create|claiming|deposit|deposit-wrong-chain|deposit-expired|funded, plus &min=&fee= for the chain schedule, &token=DAI|USDC|USDT and &received= for a deposit already at the address"
 }

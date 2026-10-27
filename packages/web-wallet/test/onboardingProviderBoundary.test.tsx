@@ -61,7 +61,6 @@ vi.mock("../src/config/env", async (importOriginal) => ({
 vi.mock("../src/features/onboarding/registrationTerms", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/features/onboarding/registrationTerms")>()),
   useDepositSkim: () => 0n,
-  useSweepDeductions: () => ({ skim: 0n, fpcCut: 0n }),
 }))
 vi.mock("../src/config/oxideTuple", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/config/oxideTuple")>()),

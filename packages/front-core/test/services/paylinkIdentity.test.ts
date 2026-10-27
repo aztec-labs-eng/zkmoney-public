@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { Fr } from "@aztec/aztec.js/fields"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 import { paylinkIdentity } from "../../src/core/services/paylink/paylinkIdentity"
 
 const params = {

@@ -1,7 +1,13 @@
 import type { ActivityItem } from "../services/bridge/BridgeActivityFeed"
 import { DEPOSIT_PHASE_COPY, depositPhaseCopy } from "../services/deposits/depositCopy"
 import { isSettledSipaPhase, type SIPADepositRecord } from "../services/deposits/SIPADepositStore"
-import { upgradeBatchArrived, upgradeRunTotal, type UpgradeBatchItem } from "./upgradeActivity"
+import { savingsValue } from "../services/savings/savingsMath"
+import {
+  upgradeBatchArrived,
+  upgradeBatchFigure,
+  upgradeRunTotal,
+  type UpgradeBatchItem,
+} from "./upgradeActivity"
 
 /** One batch of an upgrade, with the deposit that brings it once one is seen. */
 export interface UpgradeLeg {
@@ -22,11 +28,12 @@ export interface UpgradeRun {
   /** What reaches the balance (`upgradeRunTotal`). */
   total: bigint
   time: number
+  /** Read off chain: discovery may still add legs to it. */
+  inferred: boolean
 }
 
-/** The first batch first, then the others in the order they were planned (`remaining-N`). */
-const legOrder = (leg: UpgradeLeg) =>
-  leg.batch.first ? -1 : Number(/(\d+)$/.exec(leg.batch.id)?.[1] ?? 0)
+/** The batches in the order they were planned (`remaining-N`). */
+const legOrder = (leg: UpgradeLeg) => Number(/(\d+)$/.exec(leg.batch.id)?.[1] ?? 0)
 
 export const legArrived = (leg: UpgradeLeg) => upgradeBatchArrived(leg.arrival)
 
@@ -38,7 +45,7 @@ export const legSettled = (leg: Pick<UpgradeLeg, "arrival">) =>
 export function upgradeRunsOf(items: readonly ActivityItem[]): UpgradeRun[] {
   const deposits = new Map(
     items.flatMap((item) =>
-      item.kind === "bridge.sipaDeposit"
+      item.kind === "bridge.sipaDeposit" && !item.credit
         ? [[item.record.sipaAddress.toLowerCase(), item.record] as const]
         : [],
     ),
@@ -62,6 +69,7 @@ export function upgradeRunsOf(items: readonly ActivityItem[]): UpgradeRun[] {
         complete: arrived === legs.length,
         settled: legs.every(legSettled),
         total: upgradeRunTotal(legs),
+        inferred: legs.every((leg) => leg.batch.inferred),
         time: Math.max(
           ...legs.map((leg) => Math.max(leg.batch.startTime, leg.arrival?.endTime ?? 0)),
         ),
@@ -118,4 +126,39 @@ export function upgradeRunStatus(run: UpgradeRun): string | undefined {
     .filter((leg) => !legSettled(leg))
     .map(upgradeLegStatus)
     .sort((a, b) => rank(a) - rank(b))[0]
+}
+
+export interface UpgradePricing {
+  mainToken?: string
+  savingsToken?: string
+  sharePrice?: bigint
+  /** The token run `run` credits, which values a batch until its deposit is swept. */
+  runToken?(run: string): string | undefined
+}
+
+/** Dollar value in the credited asset. An unknown credited token or Savings price stays unknown. */
+export function upgradeLegValue(leg: UpgradeLeg, pricing: UpgradePricing): bigint | undefined {
+  if (legSettled(leg) && !legArrived(leg)) return 0n
+  const arrival = leg.arrival
+  const token = (
+    arrival?.netAmount == null
+      ? pricing.runToken?.(leg.batch.run)
+      : arrival.rowToken ?? arrival.tokenAddress
+  )?.toLowerCase()
+  if (!token) return undefined
+  const amount = upgradeBatchFigure(leg.batch, arrival)
+  if (token === pricing.mainToken?.toLowerCase()) return amount
+  if (token === pricing.savingsToken?.toLowerCase() && pricing.sharePrice !== undefined)
+    return savingsValue(amount, pricing.sharePrice)
+  return undefined
+}
+
+export function upgradeRunValue(run: UpgradeRun, pricing: UpgradePricing): bigint | undefined {
+  let total = 0n
+  for (const leg of run.legs) {
+    const value = upgradeLegValue(leg, pricing)
+    if (value === undefined) return undefined
+    total += value
+  }
+  return total
 }

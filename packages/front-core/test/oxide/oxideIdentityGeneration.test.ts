@@ -325,6 +325,71 @@ describe("resolveOxideIdentity", () => {
     })
   })
 
+  describe("a retired rollup of another Aztec generation", () => {
+    const RETIRED_ROLLUP = "6"
+    const RETIRED = generation({
+      fpcAddress: `0x${"ee".repeat(32)}`,
+      accountFactory: CURRENT.accountFactory,
+      namePortal: CURRENT.namePortal,
+      rollupVersion: RETIRED_ROLLUP,
+    })
+    const chain: Chain = {
+      names: { [NEW_ACCOUNT.toLowerCase()]: NAME_HASH },
+      records: {
+        [NEW_ACCOUNT.toLowerCase()]: { l2Address: OTHER_L2, rollupVersion: BigInt(RETIRED_ROLLUP) },
+      },
+    }
+    const resolve = (addressOn: (rollupVersion: string) => Promise<string | undefined>) =>
+      resolveOxideIdentity(
+        {
+          reader: readerFor(chain),
+          registry: REGISTRY,
+          catalog: [RETIRED],
+          rollupVersion: ROLLUP,
+          admissibleRollupVersions: new Set([ROLLUP, RETIRED_ROLLUP]),
+        },
+        BOOTSTRAP,
+        L2,
+        addressOn,
+      )
+
+    it("verifies the record against the address the account has on the record's rollup", async () => {
+      const addressOn = vi.fn(async (rollupVersion: string) =>
+        rollupVersion === RETIRED_ROLLUP ? OTHER_L2 : L2,
+      )
+      await expect(resolve(addressOn)).resolves.toMatchObject({ kind: "verified" })
+      expect(addressOn).toHaveBeenCalledWith(RETIRED_ROLLUP)
+    })
+
+    it("derives nothing for a record on this rollup", async () => {
+      const addressOn = vi.fn(async () => OTHER_L2)
+      const outcome = await resolveOxideIdentity(
+        {
+          reader: readerFor({
+            ...chain,
+            records: { [NEW_ACCOUNT.toLowerCase()]: { l2Address: L2 } },
+          }),
+          registry: REGISTRY,
+          catalog: [CURRENT],
+          rollupVersion: ROLLUP,
+        },
+        BOOTSTRAP,
+        L2,
+        addressOn,
+      )
+      expect(outcome.kind).toBe("verified")
+      expect(addressOn).not.toHaveBeenCalled()
+    })
+
+    it("leaves the account unverified when that rollup derives no address", async () => {
+      await expect(resolve(async () => undefined)).resolves.toMatchObject({ kind: "unverified" })
+    })
+
+    it("leaves the account unverified against this rollup's address", async () => {
+      await expect(resolve(async () => L2)).resolves.toMatchObject({ kind: "unverified" })
+    })
+  })
+
   describe("a catalog missing one of its sources", () => {
     const partial = (chain: Chain, catalog: IdentityGeneration[]) =>
       resolveOxideIdentity(

@@ -3,8 +3,8 @@
  * claim quotes the ticket schedule. Unavailable, below-threshold and uncovered leave the ticket
  * unspent; a prove or redeem failure surfaces to the caller instead of quoting a paid deposit.
  */
-import { EthAddress } from "@aztec/aztec.js/addresses"
-import type { Fr } from "@aztec/aztec.js/fields"
+import { EthAddress } from "@aztec-labs/aztec.js/addresses"
+import type { Fr } from "@aztec-labs/aztec.js/fields"
 import type { Hex } from "viem"
 import type { RegistrationSchedule } from "@obsidion/core/types"
 import {
@@ -112,9 +112,8 @@ async function redeemableWitness(
 /**
  * A ticket is spent by the redeem POST and never refunded, so every check that can fail closed runs
  * before it: the network issues tickets, the note clears the threshold, and the note covers the
- * registration burn on the schedule the service advertises for a ticket right now (`covers`,
- * which the caller prices against the live cuts). An advertised schedule that is missing cannot
- * price a burn, so it does not cover. A network that paused tickets between the offer read and the
+ * registration burn on the schedule the service advertises for a ticket right now (`covers`). An
+ * advertised schedule that is missing cannot price a burn, so it does not cover. A network that paused tickets between the offer read and the
  * redeem reads as unavailable too: the route refuses before anything is spent.
  */
 export async function redeemGoldenTicketForLink(args: {

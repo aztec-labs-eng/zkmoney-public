@@ -1,40 +1,48 @@
-import { Fr } from '@aztec/aztec.js/fields';
-import { SpongeBlob } from '@aztec/blob-lib';
+import { Fr } from '@aztec-labs/aztec.js/fields';
 import {
   ARCHIVE_HEIGHT,
   L1_TO_L2_MSG_TREE_HEIGHT,
   MAX_L2_TO_L1_MSGS_PER_TX,
   MAX_NOTE_HASHES_PER_TX,
   MAX_NULLIFIERS_PER_TX,
+  MAX_PRIVATE_LOGS_PER_TX,
   NULLIFIER_TREE_HEIGHT,
-  PUBLIC_DATA_TREE_HEIGHT,
-} from '@aztec/constants';
-import { Point } from '@aztec/foundation/curves/grumpkin';
-import { EthAddress } from '@aztec/foundation/eth-address';
-import { jsonStringify } from '@aztec/foundation/json-rpc';
-import { MembershipWitness } from '@aztec/foundation/trees';
-import { AztecAddress } from '@aztec/stdlib/aztec-address';
-import { NullifierMembershipWitness, PublicDataWitness } from '@aztec/stdlib/trees';
+  PRIVATE_LOG_SIZE_IN_FIELDS,
+} from '@aztec-labs/constants';
+import { poseidon2Hash } from '@aztec-labs/foundation/crypto/poseidon';
+import { Point } from '@aztec-labs/foundation/curves/grumpkin';
+import { EthAddress } from '@aztec-labs/foundation/eth-address';
+import { jsonStringify } from '@aztec-labs/foundation/json-rpc';
+import { MembershipWitness } from '@aztec-labs/foundation/trees';
+import { AztecAddress } from '@aztec-labs/stdlib/aztec-address';
+import { BlockHash } from '@aztec-labs/stdlib/block';
+import { NullifierMembershipWitness } from '@aztec-labs/stdlib/trees';
 
 import { describe, expect, it } from '@jest/globals';
 
 import {
+  MAX_ACCOUNT_PASSKEYS,
+  MAX_FROZEN_DEPOSITS_PER_REFUND,
   MAX_FROZEN_NOTES_PER_REFUND,
+  TEE_SIG_DOMAIN_NOTE,
   WEBAUTHN_AUTHENTICATOR_DATA_LEN,
   WEBAUTHN_MAX_CLIENT_DATA_JSON_LEN,
 } from './oxide_constants.gen.js';
+import { updateInlineTestData } from './testing/files.js';
 import {
-  FrozenDepositRefundFinalizationInputSchema,
+  FrozenDepositsRefundFinalizationInputSchema,
   FrozenNotesRefundFinalizationInputSchema,
+  MAX_TX_EFFECTS_TREE_DEPTH,
   NoteDataSchema,
   OutboxWithdrawalSchema,
+  TeeSignedData,
   TokenOperationSchema,
+  TxEffectHintDataSchema,
   TxEffectsHintsSchema,
   UnprocessedDepositRefundFinalizationInputSchema,
   WithdrawalFinalizationInputSchema,
   archiveMembershipWitnessSchema,
   nullifierMembershipWitnessSchema,
-  publicDataWitnessSchema,
 } from './types.js';
 
 const LEAF_INDEX_BYTES = 32;
@@ -43,7 +51,6 @@ const ADDRESS_BYTES = AztecAddress.SIZE_IN_BYTES;
 const ADDRESS_HEX_CHARS = 2 + 2 * ADDRESS_BYTES;
 const ARCHIVE_BYTES = LEAF_INDEX_BYTES + ARCHIVE_HEIGHT * Fr.SIZE_IN_BYTES;
 const NULLIFIER_PATH_BYTES = VECTOR_COUNT_BYTES + NULLIFIER_TREE_HEIGHT * Fr.SIZE_IN_BYTES;
-const PUBLIC_DATA_PATH_BYTES = VECTOR_COUNT_BYTES + PUBLIC_DATA_TREE_HEIGHT * Fr.SIZE_IN_BYTES;
 
 // A malicious caller can send arrays long enough that per-element Zod validation blows the error message past V8's max
 // string length. The bounded-array caps reject an over-length array up front, before any element is validated,
@@ -80,6 +87,13 @@ describe('attacker-controlled array caps', () => {
     }
   });
 
+  it('caps FrozenDepositsRefundFinalization deposits at MAX_FROZEN_DEPOSITS_PER_REFUND', async () => {
+    const over = new Array(MAX_FROZEN_DEPOSITS_PER_REFUND + 1).fill(null);
+    await expect(FrozenDepositsRefundFinalizationInputSchema.parseAsync({ deposits: over })).rejects.toThrow(
+      `deposits has ${MAX_FROZEN_DEPOSITS_PER_REFUND + 1} entries, exceeds max ${MAX_FROZEN_DEPOSITS_PER_REFUND}`,
+    );
+  });
+
   it('caps FrozenNotesRefundFinalization arrays at MAX_FROZEN_NOTES_PER_REFUND', async () => {
     const over = new Array(MAX_FROZEN_NOTES_PER_REFUND + 1).fill(null);
     await expect(FrozenNotesRefundFinalizationInputSchema.parseAsync({ notes: over })).rejects.toThrow(
@@ -87,10 +101,30 @@ describe('attacker-controlled array caps', () => {
     );
   });
 
-  it('rejects an over-length checkpointBlobFields array before validating elements', async () => {
-    const over = new Array(SpongeBlob.MAX_FIELDS + 1).fill(null);
-    await expect(TxEffectsHintsSchema.parseAsync({ checkpointBlobFields: over })).rejects.toThrow(
-      `checkpointBlobFields has ${SpongeBlob.MAX_FIELDS + 1} entries, exceeds max ${SpongeBlob.MAX_FIELDS}`,
+  it('bounds the tx effects tree path to the deepest tree a checkpoint admits', () => {
+    expect(MAX_TX_EFFECTS_TREE_DEPTH).toBe(13);
+  });
+
+  it('rejects over-length tx effect hint arrays before validating elements', async () => {
+    const overPath = new Array(MAX_TX_EFFECTS_TREE_DEPTH + 1).fill(null);
+    await expect(TxEffectsHintsSchema.parseAsync({ siblingPath: overPath })).rejects.toThrow(
+      `siblingPath has ${MAX_TX_EFFECTS_TREE_DEPTH + 1} entries, exceeds max ${MAX_TX_EFFECTS_TREE_DEPTH}`,
+    );
+    const bounds = [
+      ['noteHashes', MAX_NOTE_HASHES_PER_TX],
+      ['nullifiers', MAX_NULLIFIERS_PER_TX],
+      ['l2ToL1Msgs', MAX_L2_TO_L1_MSGS_PER_TX],
+      ['privateLogs', MAX_PRIVATE_LOGS_PER_TX],
+    ] as const;
+    for (const [field, max] of bounds) {
+      const over = new Array(max + 1).fill(null);
+      await expect(TxEffectHintDataSchema.parseAsync({ [field]: over })).rejects.toThrow(
+        `${field} has ${max + 1} entries, exceeds max ${max}`,
+      );
+    }
+    const overLog = new Array(PRIVATE_LOG_SIZE_IN_FIELDS + 1).fill(null);
+    await expect(TxEffectHintDataSchema.parseAsync({ privateLogs: [overLog] })).rejects.toThrow(
+      `privateLog has ${PRIVATE_LOG_SIZE_IN_FIELDS + 1} entries, exceeds max ${PRIVATE_LOG_SIZE_IN_FIELDS}`,
     );
   });
 
@@ -115,8 +149,8 @@ describe('attacker-controlled array caps', () => {
     ).rejects.toThrow(`archiveMembershipWitness has ${ARCHIVE_BYTES + 1} bytes, exceeds max ${ARCHIVE_BYTES}`);
 
     await expect(
-      FrozenDepositRefundFinalizationInputSchema.parseAsync({
-        lowNullifierMembershipWitness: { siblingPath: bytes(NULLIFIER_PATH_BYTES + 1) },
+      FrozenDepositsRefundFinalizationInputSchema.parseAsync({
+        deposits: [{ lowNullifierMembershipWitness: { siblingPath: bytes(NULLIFIER_PATH_BYTES + 1) } }],
       }),
     ).rejects.toThrow(`nullifierMembershipWitness.siblingPath has ${NULLIFIER_PATH_BYTES + 1} bytes`);
   });
@@ -136,15 +170,15 @@ describe('attacker-controlled witness buffers', () => {
   it('rejects a sibling path declaring more entries than the tree height', async () => {
     // 153 bytes on the wire; upstream would allocate 2**32 - 1 entries from these four.
     await expect(
-      WithdrawalFinalizationInputSchema.parseAsync({
-        signerApprovalWitness: { siblingPath: b64(vector(0xffffffff, 0)) },
+      FrozenDepositsRefundFinalizationInputSchema.parseAsync({
+        deposits: [{ lowNullifierMembershipWitness: { siblingPath: b64(vector(0xffffffff, 0)) } }],
       }),
-    ).rejects.toThrow(`publicDataWitness.siblingPath must be exactly ${PUBLIC_DATA_PATH_BYTES} bytes`);
+    ).rejects.toThrow(`nullifierMembershipWitness.siblingPath must be exactly ${NULLIFIER_PATH_BYTES} bytes`);
 
     // Right length, lying count.
     await expect(
-      FrozenDepositRefundFinalizationInputSchema.parseAsync({
-        lowNullifierMembershipWitness: { siblingPath: b64(vector(0xffffffff, NULLIFIER_TREE_HEIGHT)) },
+      FrozenDepositsRefundFinalizationInputSchema.parseAsync({
+        deposits: [{ lowNullifierMembershipWitness: { siblingPath: b64(vector(0xffffffff, NULLIFIER_TREE_HEIGHT)) } }],
       }),
     ).rejects.toThrow(`nullifierMembershipWitness.siblingPath must declare exactly ${NULLIFIER_TREE_HEIGHT} entries`);
   });
@@ -152,9 +186,16 @@ describe('attacker-controlled witness buffers', () => {
   it('rejects an undersized sibling path with a schema error', async () => {
     for (const siblingPath of ['', b64(Buffer.alloc(2))]) {
       await expect(
-        WithdrawalFinalizationInputSchema.parseAsync({ signerApprovalWitness: { siblingPath } }),
-      ).rejects.toThrow(`publicDataWitness.siblingPath must be exactly ${PUBLIC_DATA_PATH_BYTES} bytes`);
+        FrozenDepositsRefundFinalizationInputSchema.parseAsync({
+          deposits: [{ lowNullifierMembershipWitness: { siblingPath } }],
+        }),
+      ).rejects.toThrow(`nullifierMembershipWitness.siblingPath must be exactly ${NULLIFIER_PATH_BYTES} bytes`);
     }
+    await expect(
+      WithdrawalFinalizationInputSchema.parseAsync({ signerRegistrationWitness: b64(Buffer.alloc(2)) }),
+    ).rejects.toThrow(
+      `signerRegistrationWitness must be exactly ${LEAF_INDEX_BYTES + L1_TO_L2_MSG_TREE_HEIGHT * Fr.SIZE_IN_BYTES} bytes`,
+    );
   });
 
   it('rejects an over-length base64 witness instead of decoding and truncating it', async () => {
@@ -177,9 +218,6 @@ describe('attacker-controlled witness buffers', () => {
     await expect(
       archiveMembershipWitnessSchema.parseAsync(roundTrip(MembershipWitness.random(ARCHIVE_HEIGHT))),
     ).resolves.toBeInstanceOf(MembershipWitness);
-    await expect(publicDataWitnessSchema.parseAsync(roundTrip(PublicDataWitness.random()))).resolves.toBeInstanceOf(
-      PublicDataWitness,
-    );
     await expect(
       nullifierMembershipWitnessSchema.parseAsync(roundTrip(NullifierMembershipWitness.random())),
     ).resolves.toBeInstanceOf(NullifierMembershipWitness);
@@ -201,7 +239,7 @@ describe('attacker-controlled addresses', () => {
     ).rejects.toThrow(`note.owner has ${over} bytes, exceeds max ${ADDRESS_BYTES}`);
 
     await expect(
-      FrozenDepositRefundFinalizationInputSchema.parseAsync({
+      FrozenDepositsRefundFinalizationInputSchema.parseAsync({
         l2Recipient: { type: 'Buffer', data: new Array(1024 * 1024).fill(-1) },
       }),
     ).rejects.toThrow(`l2Recipient has ${1024 * 1024} bytes, exceeds max ${ADDRESS_BYTES}`);
@@ -209,7 +247,7 @@ describe('attacker-controlled addresses', () => {
 
   it('caps an over-length address string before matching it', async () => {
     const overlong = `0x${'f'.repeat(4 * 1024 * 1024)}`;
-    await expect(FrozenDepositRefundFinalizationInputSchema.parseAsync({ l2Recipient: overlong })).rejects.toThrow(
+    await expect(FrozenDepositsRefundFinalizationInputSchema.parseAsync({ l2Recipient: overlong })).rejects.toThrow(
       `l2Recipient is ${overlong.length} hex chars, exceeds max ${ADDRESS_HEX_CHARS}`,
     );
   });
@@ -245,46 +283,50 @@ describe('u128 amounts and tips', () => {
 });
 
 // The passkey and the WebAuthn assertion are byte buffers. `jsonStringify` sends them as base64, every buffer is capped
-// on size, and the encoding a real client sends still round-trips. The fallback-key mode of the authorization carries
-// a point and four field halves instead.
-describe('attacker-controlled authorization material', () => {
+// on size, and the encoding a real client sends still round-trips. The fallback-key mode of the migration signature
+// carries a point and four field halves instead.
+describe('attacker-controlled migration signature material', () => {
   const b64 = (buf: Buffer) => buf.toString('base64');
 
   it('caps the assertion buffers before decoding them', async () => {
     const overlong = b64(Buffer.alloc(WEBAUTHN_MAX_CLIENT_DATA_JSON_LEN + 4 * 1024 * 1024));
     await expect(
-      FrozenDepositRefundFinalizationInputSchema.parseAsync({
-        auth: { kind: 'passkey', webauthn: { clientDataJSON: overlong } },
+      FrozenDepositsRefundFinalizationInputSchema.parseAsync({
+        migrationSignature: { kind: 'passkey', webauthn: { clientDataJSON: overlong } },
       }),
-    ).rejects.toThrow(`auth.webauthn.clientDataJSON is ${overlong.length} base64 chars`);
+    ).rejects.toThrow(`migrationSignature.webauthn.clientDataJSON is ${overlong.length} base64 chars`);
 
     await expect(
-      FrozenDepositRefundFinalizationInputSchema.parseAsync({
-        auth: {
+      FrozenDepositsRefundFinalizationInputSchema.parseAsync({
+        migrationSignature: {
           kind: 'passkey',
           webauthn: { clientDataJSON: b64(Buffer.alloc(WEBAUTHN_MAX_CLIENT_DATA_JSON_LEN + 1)) },
         },
       }),
-    ).rejects.toThrow(`auth.webauthn.clientDataJSON must be at most ${WEBAUTHN_MAX_CLIENT_DATA_JSON_LEN} bytes`);
+    ).rejects.toThrow(
+      `migrationSignature.webauthn.clientDataJSON must be at most ${WEBAUTHN_MAX_CLIENT_DATA_JSON_LEN} bytes`,
+    );
 
     await expect(
       FrozenNotesRefundFinalizationInputSchema.parseAsync({
-        auth: {
+        migrationSignature: {
           kind: 'passkey',
           webauthn: { authenticatorData: b64(Buffer.alloc(WEBAUTHN_AUTHENTICATOR_DATA_LEN + 1)) },
         },
       }),
-    ).rejects.toThrow(`auth.webauthn.authenticatorData must be exactly ${WEBAUTHN_AUTHENTICATOR_DATA_LEN} bytes`);
+    ).rejects.toThrow(
+      `migrationSignature.webauthn.authenticatorData must be exactly ${WEBAUTHN_AUTHENTICATOR_DATA_LEN} bytes`,
+    );
 
     await expect(
-      FrozenDepositRefundFinalizationInputSchema.parseAsync({
-        auth: { kind: 'passkey', passkey: { x: b64(Buffer.alloc(33)) } },
+      FrozenDepositsRefundFinalizationInputSchema.parseAsync({
+        migrationSignature: { kind: 'passkey', passkey: { x: b64(Buffer.alloc(33)) } },
       }),
-    ).rejects.toThrow('auth.passkey.x must be exactly 32 bytes');
+    ).rejects.toThrow('migrationSignature.passkey.x must be exactly 32 bytes');
   });
 
   it('still accepts passkey material encoded the way the client sends them', async () => {
-    const auth = {
+    const migrationSignature = {
       kind: 'passkey',
       passkey: { x: Buffer.alloc(32, 1), y: Buffer.alloc(32, 2) },
       webauthn: {
@@ -292,25 +334,58 @@ describe('attacker-controlled authorization material', () => {
         clientDataJSON: Buffer.from('{"type":"webauthn.get","challenge":"x"}', 'utf8'),
         signature: Buffer.alloc(64, 4),
       },
+      passkeySet: Array.from({ length: MAX_ACCOUNT_PASSKEYS }, (_, i) => new Fr(i + 1)),
     };
-    const result = await FrozenDepositRefundFinalizationInputSchema.safeParseAsync(JSON.parse(jsonStringify({ auth })));
-    // Every other field is missing, so the parse fails; the authorization fields must not be among the issues.
+    const result = await FrozenDepositsRefundFinalizationInputSchema.safeParseAsync(
+      JSON.parse(jsonStringify({ migrationSignature })),
+    );
+    // Every other field is missing, so the parse fails; the signature fields must not be among the issues.
     expect(result.success).toBe(false);
     const paths = result.error!.issues.map(issue => String(issue.path[0]));
-    expect(paths).not.toContain('auth');
+    expect(paths).not.toContain('migrationSignature');
   });
 
-  it('still accepts a fallback-key authorization encoded the way the client sends it', async () => {
-    const auth = {
+  it('still accepts a fallback-key signature encoded the way the client sends it', async () => {
+    const migrationSignature = {
       kind: 'fallbackKey',
       fbpkM: await Point.random(),
-      signature: { sLo: new Fr(1), sHi: new Fr(2), eLo: new Fr(3), eHi: new Fr(4) },
+      fallbackSignature: { sLo: new Fr(1), sHi: new Fr(2), eLo: new Fr(3), eHi: new Fr(4) },
     };
     const result = await UnprocessedDepositRefundFinalizationInputSchema.safeParseAsync(
-      JSON.parse(jsonStringify({ auth })),
+      JSON.parse(jsonStringify({ migrationSignature })),
     );
     expect(result.success).toBe(false);
     const paths = result.error!.issues.map(issue => String(issue.path[0]));
-    expect(paths).not.toContain('auth');
+    expect(paths).not.toContain('migrationSignature');
+  });
+});
+
+// Pins the TeeSignedData digest that the Noir note validator rebuilds. On a valid change, update the
+// snapshot and rerun with `OXIDE_GENERATE_TEST_DATA=1` to push the value into the Noir `#[test]`.
+describe('TeeSignedData TS ↔ Noir parity', () => {
+  it('pins the note digest for the Noir #[test]', async () => {
+    // Must match the values in the Noir #[test].
+    const data = new TeeSignedData(
+      TEE_SIG_DOMAIN_NOTE,
+      new BlockHash(new Fr(1)),
+      AztecAddress.fromFieldUnsafe(new Fr(2)),
+      EthAddress.fromField(new Fr(3)),
+      EthAddress.fromField(new Fr(7)),
+      new Fr(4),
+      [new Fr(5)],
+      [new Fr(4)],
+      [new Fr(6)],
+    );
+    const digest = await poseidon2Hash(data.toFields());
+
+    expect(digest.toString()).toMatchInlineSnapshot(
+      `"0x005e3bf1161b9788b3cbefb5df256aa5d4846903a4469a819e7274c22933f6a7"`,
+    );
+
+    updateInlineTestData(
+      'noir-projects/oxide_token_contract/src/validation.nr',
+      'expected_note_digest',
+      digest.toString(),
+    );
   });
 });

@@ -6,7 +6,7 @@
  *      the repo's mocked JWKS (test/fixtures/jwks.json).
  *   2. Run it through `prepareJwtFromProvider` to produce a JwtInput.
  *   3. Write Prover.toml for circuits/zkJWT and call the prove script
- *      (which uses @aztec/bb.js UltraHonkBackend).
+ *      (which uses @aztec-foundation/bb.js UltraHonkBackend).
  *   4. Pack {proof, public_inputs, vk_base64} into test/fixtures/zkjwt/fixture.json.
  *
  * The helper installs a global fetch interceptor (setupJwtMocking) so that
@@ -28,7 +28,7 @@ import { tmpdir } from "os"
 import { resolve, dirname } from "path"
 import { fileURLToPath } from "url"
 import { execSync } from "child_process"
-import { Fr } from "@aztec/aztec.js/fields"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 import { computeNonce, prepareJwtFromProvider, type JwtInput } from "../../src/email/utils.js"
 import { PublicKeyRegistry } from "../../src/email/PublicKeyRegistry.js"
 import { createJwtPayload, setupJwtMocking } from "./email.js"

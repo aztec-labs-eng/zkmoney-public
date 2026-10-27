@@ -1,6 +1,7 @@
-// The self-finalize exit for an L2->L1 withdrawal the relayer has not released: given only the
-// burn tx hash, assemble the `OxidePortal.withdraw` call anyone may submit. The portal pays the
-// plain withdrawal executor, which pays the burn's relayer tip to `tipRecipient` and the rest to
+// The self-finalize exit for an L2->L1 withdrawal the relayer has not released: given the burn tx
+// hash and its owner, assemble the `OxidePortal.withdraw` call anyone may submit. The owner recovers
+// the withdrawal's finalization data from the burn's recovery events. The portal pays the executor
+// the burn named, which takes its fee, pays the burn's relayer tip to `tipRecipient` and the rest to
 // the recipient the burn named.
 //
 // A relayer that wins the race makes this call revert (`OxidePortal__WithdrawalAlreadyClaimed`);
@@ -10,22 +11,23 @@
 //
 // Narrow subpath imports only — the `@oxide/*` barrels re-export node-only modules that break
 // browser bundles.
-import { AztecAddress } from "@aztec/aztec.js/addresses"
-import type { AztecNode } from "@aztec/aztec.js/node"
-import { EthAddress } from "@aztec/foundation/eth-address"
-import { TxHash } from "@aztec/stdlib/tx"
+import type { AztecAddress } from "@aztec-labs/aztec.js/addresses"
+import type { AztecNode } from "@aztec-labs/aztec.js/node"
+import type { Wallet } from "@aztec-labs/aztec.js/wallet"
+import { EthAddress } from "@aztec-labs/foundation/eth-address"
+import { TxHash } from "@aztec-labs/stdlib/tx"
 
 import { OxidePortalAbi } from "@oxide/l1-contracts/artifacts.js"
-import { resolveBurnCheckpointArchive } from "@oxide/oxide-client/archive_ref.js"
-import { buildWithdrawalPortalCalldata } from "@oxide/oxide-client/atlatl/process_withdrawal_request.js"
+import { resolveTxCheckpointArchive } from "@oxide/oxide-client/archive_ref.js"
+import { buildWithdrawalFinalizationCalldata } from "@oxide/oxide-client/atlatl/withdrawal_finalization.js"
 import { EnclaveUnavailable } from "@oxide/oxide-client/errors.js"
-import { plainWithdrawalUserPayload } from "@oxide/oxide-client/published_withdrawal.js"
-import { encodePlainRelayerPayload } from "@oxide/oxide-lib/plain_withdrawal.js"
-import type { TeeSigner } from "@oxide/oxide-lib/types.js"
+import type { RegisteredTeeSigner } from "@oxide/oxide-client/types.js"
+import { encodeExecutorRelayerPayload } from "@oxide/oxide-lib/executor.js"
+import type { PortalDomain } from "@oxide/oxide-lib/types.js"
 
 import { decodeFunctionData, type Address, type Hex, type PublicClient } from "viem"
 
-import { fetchWithdrawalsWithIds, type WithdrawalPortalContext } from "./publishedWithdrawal.js"
+import { computeWithdrawalId, recoverBurnWithdrawals } from "./burnWithdrawals.js"
 import { isWithdrawalSpent } from "./withdrawalFinalization.js"
 
 /**
@@ -53,24 +55,26 @@ export class WithdrawFinalizationError extends Error {
 
 export interface WithdrawFinalizationDeps {
   node: AztecNode
+  /** The owner's wallet, which reads the burn's recovery events. */
+  wallet: Pick<Wallet, "getPrivateEvents">
   /** Enclave RPC. Unauthenticated — it checks the request against chain data, not against a caller. */
-  signer: TeeSigner
-  portalContext: WithdrawalPortalContext
-  /** The deployment's plain withdrawal executor; a burn through any other executor is refused. */
-  plainWithdrawalExecutor: Hex
+  signer: RegisteredTeeSigner
+  portal: PortalDomain
+  /** The executor the burn's record names; a burn through any other executor is refused. */
+  executor: Hex
   /** L1 client for the already-finalized pre-flight. */
   l1: PublicClient
 }
 
 export interface WithdrawFinalizationArgs {
-  /** L2 burn tx hash. Everything else re-derives from it. */
+  /** L2 burn tx hash. Everything else re-derives from it and the owner's recovery events. */
   burnTxHash: Hex
-  /** Which published withdrawal of the burn. A wallet burn publishes one. */
+  /** The account the burn spent from. */
+  owner: AztecAddress
+  /** Which of the owner's withdrawals in the burn. A wallet burn makes one. */
   withdrawalIndex?: number
-  /** Who the executor pays the burn's relayer tip to. */
+  /** Who the executor pays the burn's relayer tip and the subsidy to. */
   tipRecipient: Hex
-  /** `WithdrawalSubsidy` to claim for `tipRecipient`; the zero address claims none. */
-  withdrawalSubsidy?: Hex
 }
 
 export interface WithdrawFinalizationCall {
@@ -83,7 +87,7 @@ export interface WithdrawFinalizationCall {
 /**
  * Build the finalization call for `burnTxHash`.
  *
- * Ordered cheapest-first: the burn log and the already-finalized read cost two round trips, the
+ * Ordered cheapest-first: the recovery read and the already-finalized read cost a few round trips, the
  * outbox witness one more, and only then does the enclave signature run — it replays the burn
  * checkpoint's blocks with bodies, which is a large fetch and must never be speculative.
  */
@@ -91,24 +95,35 @@ export async function buildWithdrawFinalizationCall(
   deps: WithdrawFinalizationDeps,
   args: WithdrawFinalizationArgs,
 ): Promise<WithdrawFinalizationCall> {
-  const { node, portalContext } = deps
+  const { node, portal } = deps
   const txHash = TxHash.fromString(args.burnTxHash)
   const index = args.withdrawalIndex ?? 0
 
-  const { withdrawals } = await fetchWithdrawalsWithIds(node, txHash, portalContext)
+  const withdrawals = await recoverBurnWithdrawals({
+    wallet: deps.wallet,
+    node,
+    portal,
+    owner: args.owner,
+    txHash,
+  })
   const withdrawal = withdrawals[index]
   if (!withdrawal) {
     throw new Error(
-      `Burn tx ${args.burnTxHash} published ${withdrawals.length} withdrawals; no index ${index}.`,
+      `Burn tx ${args.burnTxHash} recovered ${withdrawals.length} withdrawals; no index ${index}.`,
+    )
+  }
+  if (!withdrawal.finalizationData.executor.equals(EthAddress.fromString(deps.executor))) {
+    throw new Error(
+      `Burn tx ${args.burnTxHash} does not withdraw through executor ${deps.executor}.`,
     )
   }
 
-  if (
-    await isWithdrawalSpent(deps.l1, portalContext.l1Portal, withdrawal.withdrawalId.toString())
-  ) {
+  const withdrawalId = computeWithdrawalId(txHash, withdrawal.messageHash).toString() as Hex
+  const l1Portal = portal.l1Portal.toString() as Address
+  if (await isWithdrawalSpent(deps.l1, l1Portal, withdrawalId)) {
     throw new WithdrawFinalizationError(
       "already-finalized",
-      `Withdrawal ${withdrawal.withdrawalId} has already been released on L1.`,
+      `Withdrawal ${withdrawalId} has already been released on L1.`,
     )
   }
 
@@ -121,36 +136,26 @@ export async function buildWithdrawFinalizationCall(
     )
   }
 
-  const userPayload = plainWithdrawalUserPayload(
-    withdrawal,
-    EthAddress.fromString(deps.plainWithdrawalExecutor),
-    txHash,
-  )
-  const relayerPayload = encodePlainRelayerPayload({
+  const relayerPayload = encodeExecutorRelayerPayload({
     tipRecipient: EthAddress.fromString(args.tipRecipient),
-    withdrawalSubsidy: args.withdrawalSubsidy
-      ? EthAddress.fromString(args.withdrawalSubsidy)
-      : EthAddress.ZERO,
   })
 
   let data: Hex
   try {
-    data = await buildWithdrawalPortalCalldata(
+    data = await buildWithdrawalFinalizationCalldata(
       {
         chain: node,
         signer: deps.signer,
-        l2Token: AztecAddress.fromStringUnsafe(portalContext.l2Portal),
+        l2Token: portal.l2Token,
         portal: {
-          address: EthAddress.fromString(portalContext.l1Portal),
-          getRollupVersion: () => Promise.resolve(portalContext.rollupVersion),
-          getChainId: () => portalContext.l1ChainId,
+          address: portal.l1Portal,
+          getRollupVersion: () => Promise.resolve(portal.rollupVersion),
+          getChainId: () => portal.l1ChainId,
         },
       },
       {
-        txHash,
-        archiveRoot: await resolveBurnCheckpointArchive(node, txHash),
-        withdrawalIndex: index,
-        userPayload,
+        withdrawal,
+        archiveRoot: await resolveTxCheckpointArchive(node, txHash),
         relayerPayload,
       },
     )
@@ -165,13 +170,12 @@ export async function buildWithdrawFinalizationCall(
     throw err
   }
 
-  const withdrawalId = withdrawal.withdrawalId.toString() as Hex
   const signed = decodeFunctionData({ abi: OxidePortalAbi, data })
   if (
     signed.functionName !== "withdraw" ||
     signed.args[0].withdrawalId.toLowerCase() !== withdrawalId.toLowerCase()
   ) {
-    throw new Error("Enclave finalization withdrawal ID does not match the published withdrawal.")
+    throw new Error("Enclave finalization withdrawal ID does not match the burn's withdrawal.")
   }
-  return { to: portalContext.l1Portal, data, withdrawalId }
+  return { to: l1Portal, data, withdrawalId }
 }

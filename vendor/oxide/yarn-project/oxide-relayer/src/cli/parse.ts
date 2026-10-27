@@ -1,4 +1,4 @@
-import { EthAddress } from '@aztec/foundation/eth-address';
+import { EthAddress } from '@aztec-labs/foundation/eth-address';
 
 /** Parse a comma-separated list of L1 addresses from CLI/env input. `label` names the option in errors. */
 export function parseEthAddresses(value: string, label: string): EthAddress[] {

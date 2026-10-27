@@ -76,6 +76,8 @@ export interface Contact {
    * pays it, or it pays one of the user's own requests.
    */
   autoAdded?: boolean
+  /** Addresses this L2 contact held on retired rollups; its history there still matches them. */
+  retiredAddresses?: string[]
   // L1-only (present iff addressKind === "ethereum-l1")
   avatar?: ContactAvatar
   l1Wallet?: ContactL1Wallet
@@ -474,6 +476,12 @@ export class ContactStorage {
     if (v.verified !== undefined && typeof v.verified !== "boolean") return false
     if (v.provenance !== undefined && v.provenance !== "qr-scan") return false
     if (v.autoAdded !== undefined && typeof v.autoAdded !== "boolean") return false
+    if (
+      v.retiredAddresses !== undefined &&
+      (!Array.isArray(v.retiredAddresses) || v.retiredAddresses.some((a) => typeof a !== "string"))
+    ) {
+      return false
+    }
 
     const addressKind = v.addressKind
     if (
@@ -590,6 +598,88 @@ export class ContactStorage {
         this.validateDuplicateEntry(entry)
       }
       this.entries.push(...entries)
+      await this.saveToStorage()
+    })
+  }
+
+  /**
+   * Adds another book's contacts, skipping each one this book already holds by address or tag. A
+   * skipped L2 contact's addresses join the held contact's `retiredAddresses`, so its history still
+   * shows. An L2 contact whose name another contact holds falls back to its tag; wallet names may
+   * repeat. Returns how many were added.
+   */
+  public importContacts(entries: readonly unknown[]): Promise<number> {
+    return this.mutate(async () => {
+      let added = 0
+      let merged = false
+      for (const candidate of entries) {
+        if (!this.isValidEntry(candidate)) continue
+        const heldIndex = this.entries.findIndex((e) => sameTag(e, candidate))
+        if (heldIndex !== -1) {
+          merged = this.mergeRetiredAddresses(heldIndex, candidate) || merged
+          continue
+        }
+        if (this.entries.some((e) => sameAddressIdentity(e, candidate))) continue
+        const taken = (name: string) =>
+          this.entries.some((e) => normalizeName(e.name) === normalizeName(name))
+        let entry = candidate
+        if (addressKindOf(entry) !== "ethereum-l1" && taken(entry.name)) {
+          if (!entry.tag || taken(entry.tag)) continue
+          entry = { ...entry, name: entry.tag }
+        }
+        this.entries.push(entry)
+        added++
+      }
+      if (added > 0 || merged) await this.saveToStorage()
+      return added
+    })
+  }
+
+  /** Adds `from`'s L2 addresses to the retired ones of the L2 row at `index`; true when any was new. */
+  private mergeRetiredAddresses(index: number, from: Contact): boolean {
+    const held = this.entries[index]
+    if (addressKindOf(held) !== "aztec-l2" || addressKindOf(from) !== "aztec-l2") return false
+    const known = new Set([held.address, ...(held.retiredAddresses ?? [])].map(normalizeAddress))
+    const fresh: string[] = []
+    for (const address of [from.address, ...(from.retiredAddresses ?? [])]) {
+      if (known.has(normalizeAddress(address))) continue
+      known.add(normalizeAddress(address))
+      fresh.push(address)
+    }
+    if (fresh.length === 0) return false
+    this.entries[index] = {
+      ...held,
+      retiredAddresses: [...(held.retiredAddresses ?? []), ...fresh],
+    }
+    return true
+  }
+
+  /**
+   * Points the L2 contact with `tag` at `l2Address`, unless another contact holds that address. The
+   * old address joins `retiredAddresses`.
+   */
+  public updateL2Address(tag: string, l2Address: string): Promise<void> {
+    return this.mutate(async () => {
+      const needle = tag.toLowerCase()
+      const index = this.entries.findIndex(
+        (e) => addressKindOf(e) === "aztec-l2" && e.tag?.toLowerCase() === needle,
+      )
+      if (index === -1) return
+      const address = normalizeAddress(l2Address)
+      if (normalizeAddress(this.entries[index].address) === address) return
+      if (
+        this.entries.some(
+          (e) => addressKindOf(e) === "aztec-l2" && normalizeAddress(e.address) === address,
+        )
+      ) {
+        return
+      }
+      const { address: retired, retiredAddresses = [] } = this.entries[index]
+      this.entries[index] = {
+        ...this.entries[index],
+        address: l2Address,
+        retiredAddresses: [...retiredAddresses, retired],
+      }
       await this.saveToStorage()
     })
   }

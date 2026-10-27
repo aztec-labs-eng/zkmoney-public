@@ -46,7 +46,7 @@ import {
   MAX_NOTE_HASHES_PER_TX,
   MAX_NULLIFIERS_PER_TX,
   PUBLIC_TX_L2_GAS_OVERHEAD,
-} from "@aztec/constants"
+} from "@aztec-labs/constants"
 import { computePublishDaLogEmittedLengths } from "../oxide/publishDaLogs.js"
 import { SUBSCRIPTION_NOTE_LOG_EMITTED_LENGTH } from "./claimFpcOverhead.js"
 import type { ClaimFpcMeasuredTx } from "./claimFpcGasTable.js"
@@ -61,11 +61,11 @@ export interface SideEffects {
 
 /** Every MessageDelivery.onchain_* note-delivery and event log is 16 fields. */
 const DELIVERY_LOG_LENGTH = SUBSCRIPTION_NOTE_LOG_EMITTED_LENGTH
-/** WITHDRAWAL_PUBLISHING_TAG log: tag + 5 scalars + recipient and relayer tip + 4-field Signature
- * (withdrawal.nr). */
-const WITHDRAWAL_PUBLISHING_LOG_LENGTH = 12
-/** TEEMetadata: 4 pubkey limbs + anchor block hash. */
-const TEE_METADATA_FIELDS = 5
+/** The recovery chunk events a wallet withdrawal emits: one, plus one for an escrow's memo
+ * (`withdrawalMemo.ts`). */
+const WITHDRAWAL_RECOVERY_CHUNKS = 2
+/** TEEMetadata: 4 pubkey limbs, the anchor block hash and the signer's registration leaf index. */
+export const TEE_METADATA_FIELDS = 6
 
 /**
  * How many notes and deposits the oxide token spends per call, from the vendored contract
@@ -203,10 +203,10 @@ export const authorizeIntentsEffects = (): SideEffects => ({
   l2ToL1Msgs: 0,
 })
 
-/** The registration gate: the consumed message's nullifier. Its two signature checks, like the
- * whole NameClaim gate, emit nothing. */
+/** The registration gate: nothing. It proves the message exists without consuming it and checks the
+ * key in-circuit, like the NameClaim gate. */
 export const registrationGateEffects = (): SideEffects => ({
-  nullifiers: 1,
+  nullifiers: 0,
   noteHashes: 0,
   privateLogEmittedLengths: [],
   l2ToL1Msgs: 0,
@@ -273,8 +273,9 @@ export function operationAvmExecutionGas(
 /**
  * What enqueuing `publicCalls` public calls adds to a batch whose calls already price their own
  * effects at AVM rates: the public per-tx overhead and AVM startup, the calls' execution, and the
- * AVM rates on the base's and the gate's effects, which the contract charges at private rates. The
- * registration gate is the dearest gate. DA is floored at zero: the base's DA covers a public tx's.
+ * AVM rates on the base's and the gate's effects, which the contract charges at private rates. No
+ * gate emits anything, so the registration gate stands for every gate. DA is floored at zero: the
+ * base's DA covers a public tx's.
  */
 function publicCallSurcharge(
   execution: ClaimFpcMeasuredTx,
@@ -381,12 +382,12 @@ export function worstTransferMarginal(): ClaimFpcMeasuredTx {
   )
 }
 
-/** The burn's own emissions beside the spend: the L2->L1 message, the withdrawal publishing log
- * and the Withdraw event, delivered to the withdrawer. */
+/** The burn's own emissions beside the spend: the L2->L1 message and its recovery chunk events,
+ * delivered to the withdrawer. */
 const withdrawEffects = (): SideEffects =>
   mergeEffects(
-    { ...NO_EFFECTS, privateLogEmittedLengths: [WITHDRAWAL_PUBLISHING_LOG_LENGTH], l2ToL1Msgs: 1 },
-    eventEffects(1),
+    { ...NO_EFFECTS, l2ToL1Msgs: 1 },
+    ...Array.from({ length: WITHDRAWAL_RECOVERY_CHUNKS }, () => eventEffects(1)),
   )
 
 /** Worst-case oxide_token.withdraw marginal: a ladder spend with a change note only, and the

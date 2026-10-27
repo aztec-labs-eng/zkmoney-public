@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity >=0.8.27;
 import {AccountMetadataRegistry} from "@periphery/AccountMetadataRegistry.sol";
-import {MockPortal} from "@test/mocks/MockPortal.sol";
 import {RegistriesTestBase} from "@test/periphery/registries/RegistriesTestBase.sol";
 import {Errors} from "@periphery/Errors.sol";
 
@@ -11,7 +10,7 @@ contract ResolverOperatorsTest is RegistriesTestBase {
 
     AccountMetadataRegistry.ResolverOperator memory stored = metadataRegistry.getResolverOperator(resolverOperatorAddr);
     assertEq(stored.url, RESOLVER_OPERATOR_URL);
-    assertEq(stored.oxidePortal, address(mockPortal));
+    assertEq(stored.oxidePortal, address(forwardingTable));
     assertEq(stored.publicKey.x, RESOLVER_OPERATOR_PUBLIC_KEY_X);
     assertEq(stored.publicKey.y, RESOLVER_OPERATOR_PUBLIC_KEY_Y);
     assertEq(stored.l2Address, RESOLVER_OPERATOR_L2_ADDRESS);
@@ -48,7 +47,7 @@ contract ResolverOperatorsTest is RegistriesTestBase {
     AccountMetadataRegistry.ResolverOperator memory updated = _resolverOperatorFixture();
     updated.url = "https://new.example.com";
     updated.l2Address = keccak256("resolverOperator-l2-address-2");
-    updated.oxidePortal = address(new MockPortal(mockUnderlying, ROLLUP_VERSION + 1));
+    updated.oxidePortal = makeAddr("nextForwardingTable");
     updated.publicKey = AccountMetadataRegistry.K1Point(G_X, G_Y);
 
     vm.expectEmit(address(metadataRegistry));

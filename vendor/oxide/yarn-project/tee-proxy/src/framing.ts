@@ -2,9 +2,9 @@
 // Standalone copy of yarn-project/oxide-lib/src/framing.ts so this proxy package has zero
 // runtime dependencies and can be scp'd to the operator host as a self-contained tree.
 
-// Sized to admit the largest legal signTokenOperation — 64 spends whose creation blocks each fill a full
-// 6-blob checkpoint (~146 MB sealed + base64) — with headroom.
-export const MAX_MESSAGE_SIZE = 160 * 1024 * 1024;
+// Sized to admit the largest legal signTokenOperation — 64 spends whose tx effect hints each carry the maximum
+// 1166 fields (~5.7 MB of JSON, ~7.9 MB sealed + base64) — with headroom.
+export const MAX_MESSAGE_SIZE = 9 * 1024 * 1024;
 
 export function frame(payload: Buffer | string): Buffer {
   const body = typeof payload === 'string' ? Buffer.from(payload, 'utf8') : payload;

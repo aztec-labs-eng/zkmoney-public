@@ -1,8 +1,8 @@
-import { EthAddress } from '@aztec/foundation/eth-address';
-import type { AztecNode } from '@aztec/stdlib/interfaces/client';
+import { EthAddress } from '@aztec-labs/foundation/eth-address';
+import type { AztecNode } from '@aztec-labs/stdlib/interfaces/client';
 
 import { OxidePortalContract } from '@oxide/l1-contracts/oxide_portal.js';
-import type { TeeSigner } from '@oxide/oxide-lib/types.js';
+import type { RegisteredTeeSigner } from '@oxide/oxide-client/types.js';
 
 import type { PublicClient } from 'viem';
 
@@ -10,7 +10,7 @@ import type { RunConfig } from '../cli/config.js';
 import type { ResolvedDeploymentEnvManifest } from '../config/deployment_env_manifest.js';
 import type { L1TxQueue } from '../l1/l1_tx_queue.js';
 import type { PriceOracle } from '../price_oracle/price_oracle.js';
-import { SimplePriceOracle } from '../price_oracle/simple_price_oracle.js';
+import { UsdPeggedPriceOracle } from '../price_oracle/usd_pegged_price_oracle.js';
 import { selectProverPortals } from './portal_selection.js';
 import { startEarlyProofStarter } from './start_early_proof_starter.js';
 import { startProverClaimCollector } from './start_prover_claim_collector.js';
@@ -21,7 +21,7 @@ export interface EpochProofsDeps {
   node: Pick<AztecNode, 'getNodeInfo'>;
   l1TxQueue: Pick<L1TxQueue, 'enqueue' | 'address' | 'maxFeePerGasCap'>;
   /** Finalizes prover claims in place of the enclave fleet the manifest publishes. */
-  teeSigner?: TeeSigner;
+  teeSigner?: RegisteredTeeSigner;
 }
 
 /**
@@ -71,7 +71,10 @@ export async function startEpochProofs(
 
 async function createPriceOracle(client: PublicClient, tokens: EthAddress[]): Promise<PriceOracle> {
   const unique = tokens.filter((token, i) => tokens.findIndex(other => other.equals(token)) === i);
-  const oracle = await SimplePriceOracle.create(client, { chainId: BigInt(await client.getChainId()), tokens: unique });
+  const oracle = await UsdPeggedPriceOracle.create(client, {
+    chainId: BigInt(await client.getChainId()),
+    tokens: unique,
+  });
   for (const line of oracle.describe()) {
     console.log(`prover reward pricing: ${line}`);
   }

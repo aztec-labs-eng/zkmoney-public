@@ -1,16 +1,13 @@
-import { Buffer32 } from '@aztec/foundation/buffer';
-import { AztecAddress } from '@aztec/stdlib/aztec-address';
-import { EthAddress } from '@aztec/stdlib/block';
+import { Buffer32 } from '@aztec-labs/foundation/buffer';
 
-import type { AttestationData } from '@oxide/oxide-lib/attestation/attestation_data.js';
-import { computeAttestationUserData } from '@oxide/oxide-lib/attestation/user_data.js';
-import type { AttestationProvider } from '@oxide/oxide-lib/attestation_provider.js';
+import type { AttestationData } from '@oxide/oxide-lib-tee/attestation/attestation_data.js';
+import { computeAttestationUserData } from '@oxide/oxide-lib-tee/attestation/user_data.js';
+import type { AttestationProvider } from '@oxide/oxide-lib-tee/attestation_provider.js';
 import {
   type EnclaveEncryptionKeypair,
   P256PublicKey,
   generateEncryptionKeypair,
-} from '@oxide/oxide-lib/encryption.js';
-import type { PortalContext } from '@oxide/oxide-lib/types.js';
+} from '@oxide/oxide-lib-tee/encryption.js';
 
 import { secpPublicKeyFromPrivateKey } from './libsecp256k1_signer.js';
 import { SignatureBudget, type SignatureBudgetWorkerData } from './signature_budget.js';
@@ -42,9 +39,8 @@ export async function createEnclaveKeyMaterial(attestationProvider: AttestationP
 }
 
 /**
- * Structured-clone-safe form of the enclave key material + portal context passed to each worker
- * via `workerData`. Class instances don't survive the clone, so everything is raw bytes/strings
- * except the P-256 private key, whose `CryptoKey` handle is cloneable as-is.
+ * Structured-clone-safe form of the enclave key material passed to each worker via `workerData`: raw bytes/strings,
+ * plus the P-256 private key's `CryptoKey` handle, which clones as-is.
  */
 export interface EnclaveWorkerData {
   signingKey: Uint8Array;
@@ -54,15 +50,10 @@ export interface EnclaveWorkerData {
   signerPubKeyX: Uint8Array;
   signerPubKeyY: Uint8Array;
   attestationDoc: Uint8Array;
-  portal: { l1Portal: string; l1ChainId: string; l2Portal: string; rollupVersion: string };
   signatureBudget: SignatureBudgetWorkerData;
 }
 
-export function toWorkerData(
-  material: EnclaveKeyMaterial,
-  portalContext: PortalContext,
-  budget: SignatureBudget,
-): EnclaveWorkerData {
+export function toWorkerData(material: EnclaveKeyMaterial, budget: SignatureBudget): EnclaveWorkerData {
   const { userData } = material.attestation;
   return {
     signatureBudget: budget.toWorkerData(),
@@ -73,12 +64,6 @@ export function toWorkerData(
     signerPubKeyX: userData.publicKeyX.toBuffer(),
     signerPubKeyY: userData.publicKeyY.toBuffer(),
     attestationDoc: material.attestation.attestation,
-    portal: {
-      l1Portal: portalContext.l1Portal.toString(),
-      l1ChainId: portalContext.l1ChainId.toString(),
-      l2Portal: portalContext.l2Portal.toString(),
-      rollupVersion: portalContext.rollupVersion.toString(),
-    },
   };
 }
 
@@ -87,7 +72,6 @@ export function fromWorkerData(
   onSignatureBudgetExhausted?: () => void,
 ): {
   material: EnclaveKeyMaterial;
-  portalContext: PortalContext;
   budget: SignatureBudget;
 } {
   const userData = {
@@ -104,12 +88,6 @@ export function fromWorkerData(
         privateKey: data.encPrivateKey,
       },
       attestation: { attestation: Buffer.from(data.attestationDoc), userData },
-    },
-    portalContext: {
-      l1Portal: EthAddress.fromString(data.portal.l1Portal),
-      l1ChainId: BigInt(data.portal.l1ChainId),
-      l2Portal: AztecAddress.fromStringUnsafe(data.portal.l2Portal),
-      rollupVersion: BigInt(data.portal.rollupVersion),
     },
     budget: SignatureBudget.fromWorkerData(data.signatureBudget, onSignatureBudgetExhausted),
   };

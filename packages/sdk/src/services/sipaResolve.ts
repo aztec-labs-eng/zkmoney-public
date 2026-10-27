@@ -12,15 +12,30 @@
  * a contract call.
  */
 
-import type { Address, PublicClient } from "viem"
+import { BaseError, HttpRequestError, type Address, type PublicClient } from "viem"
 import { resolveName } from "@oxide/l1-contracts"
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
 
 /**
+ * The resolver gateway refused the name (409): no sweep can deposit its SIPA, e.g. because its
+ * account is still on a retired rollup.
+ */
+export class SipaNameUndepositableError extends Error {
+  constructor(name: string, options?: ErrorOptions) {
+    super(`"${name}" cannot receive deposits`, options)
+    this.name = "SipaNameUndepositableError"
+  }
+}
+
+const isUndepositableRefusal = (err: unknown) =>
+  err instanceof BaseError && !!err.walk((e) => e instanceof HttpRequestError && e.status === 409)
+
+/**
  * CCIP-resolve `name` (e.g. `alice.oxidestaging.eth`) to a SIPA deposit address.
  * Throws on a zero-address result — funding the zero address is
  * unrecoverable, so an unresolvable name must never reach the send path.
+ * Throws {@link SipaNameUndepositableError} when the gateway refuses the name.
  * The resolved address is single-use and short-lived (the resolver's
  * retention window); resolve fresh per deposit, never cache.
  */
@@ -29,7 +44,9 @@ export async function resolveSipaAddress(
   sipaResolver: Address,
   name: string,
 ): Promise<Address> {
-  const address = await resolveName(publicClient, sipaResolver, name)
+  const address = await resolveName(publicClient, sipaResolver, name).catch((err: unknown) => {
+    throw isUndepositableRefusal(err) ? new SipaNameUndepositableError(name, { cause: err }) : err
+  })
   if (address.toLowerCase() === ZERO_ADDRESS) {
     throw new Error(`SIPA resolve returned the zero address for "${name}"`)
   }

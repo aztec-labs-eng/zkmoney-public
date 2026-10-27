@@ -1,5 +1,5 @@
-import { EthAddress } from '@aztec/foundation/eth-address';
-import { createLogger } from '@aztec/foundation/log';
+import { EthAddress } from '@aztec-labs/foundation/eth-address';
+import { createLogger } from '@aztec-labs/foundation/log';
 
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { readFileSync } from 'node:fs';

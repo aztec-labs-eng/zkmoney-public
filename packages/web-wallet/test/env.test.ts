@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { Network } from "@obsidion/sdk"
-import { DEFAULT_FPC_REFUEL_THRESHOLD, MAINNET_CLAIM_FPC_FLOAT } from "@obsidion/core/constants"
+import { CLAIM_FPC_FUNDING } from "@obsidion/core/constants"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { getConfig, loadConfig } from "../src/config/env"
 
@@ -65,19 +65,6 @@ describe("loadConfig", () => {
       expect(loadConfig(sandboxEnv).enclaveUrl).toBe("/svc/enclave")
     })
 
-    it("gives Savings its own enclave: its sandbox proxy, or the manifest's URL off sandbox", () => {
-      expect(loadConfig(sandboxEnv).savingsEnclaveUrl).toBe("/svc/enclave-sky")
-      expect(loadConfig(testnetEnv).savingsEnclaveUrl).toBe("")
-      expect(
-        loadConfig({ ...testnetEnv, VITE_SAVINGS_ENCLAVE_URL: "/svc/enclave-sky" })
-          .savingsEnclaveUrl,
-      ).toBe("/svc/enclave-sky")
-      // Main's override does not move Savings.
-      expect(loadConfig({ ...sandboxEnv, VITE_ENCLAVE_URL: "/x" }).savingsEnclaveUrl).toBe(
-        "/svc/enclave-sky",
-      )
-    })
-
     it("honors an explicit proxy override for a CORS-free tier", () => {
       expect(loadConfig({ ...testnetEnv, VITE_ENCLAVE_URL: "/svc/enclave" }).enclaveUrl).toBe(
         "/svc/enclave",
@@ -125,9 +112,13 @@ describe("loadConfig", () => {
       VITE_PREDICATE_CHAIN: "ethereum-mainnet",
     }
 
-    it("refuels below the mainnet float on mainnet, and the default elsewhere", () => {
-      expect(loadConfig(screenedMainnet).fpcRefuelThreshold).toBe(MAINNET_CLAIM_FPC_FLOAT)
-      expect(loadConfig(testnetEnv).fpcRefuelThreshold).toBe(DEFAULT_FPC_REFUEL_THRESHOLD)
+    it("refuels below the network's ClaimFPC refuel threshold", () => {
+      expect(loadConfig(screenedMainnet).fpcRefuelThreshold).toBe(
+        CLAIM_FPC_FUNDING[Network.MAINNET].refuelBelow,
+      )
+      expect(loadConfig(testnetEnv).fpcRefuelThreshold).toBe(
+        CLAIM_FPC_FUNDING[Network.TESTNET].refuelBelow,
+      )
     })
 
     it("honors an explicit threshold in whole FJ", () => {

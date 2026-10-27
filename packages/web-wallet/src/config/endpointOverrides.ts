@@ -1,19 +1,20 @@
 /**
  * Endpoint overrides the user saves in the endpoint editor — the Aztec node with an optional API
- * key, the L1 RPC and the enclave — one device-scoped storage record, in this browser only. Config
- * resolution reads it at boot, on web and desktop alike.
+ * key, the old network's node an upgrade reads, the L1 RPC and the enclave — one device-scoped
+ * storage record, in this browser only. Config resolution reads it at boot, on web and desktop
+ * alike.
  */
 import { sha256 } from "@noble/hashes/sha2"
 import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils"
 import { deviceStorage } from "../platform/storage/rollupStorage"
 
-export type EndpointKind = "node" | "l1Rpc" | "enclave"
+export type EndpointKind = "node" | "sourceNode" | "l1Rpc" | "enclave"
 /** A key is only ever stored and read beside the node URL it was saved with. */
 export type EndpointOverrides = Partial<Record<EndpointKind, string>> & { nodeApiKey?: string }
-/** What the editor submits; an empty value means no override. */
-export type EndpointValues = Record<EndpointKind, string> & { nodeApiKey?: string }
+/** What the editor submits; an empty or absent value means no override. */
+export type EndpointValues = Partial<Record<EndpointKind, string>> & { nodeApiKey?: string }
 
-const KINDS: EndpointKind[] = ["node", "l1Rpc", "enclave"]
+const KINDS: EndpointKind[] = ["node", "sourceNode", "l1Rpc", "enclave"]
 const STORAGE_KEY = "webwallet.endpoints"
 
 /**
@@ -112,8 +113,9 @@ export function writeEndpointOverrides(
 ): EndpointWriteResult {
   const record: EndpointOverrides = {}
   for (const kind of KINDS) {
-    if (next[kind].trim() === "") continue
-    const url = storableOverride(kind, next[kind])
+    const typed = next[kind] ?? ""
+    if (typed.trim() === "") continue
+    const url = storableOverride(kind, typed)
     if (url === undefined) return { ok: false, reason: "invalid", kind }
     record[kind] = url
   }

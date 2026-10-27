@@ -1,4 +1,4 @@
-import type { AttestationProvider } from '@oxide/oxide-lib/attestation_provider.js';
+import type { AttestationProvider } from '@oxide/oxide-lib-tee/attestation_provider.js';
 
 import { spawn } from 'node:child_process';
 

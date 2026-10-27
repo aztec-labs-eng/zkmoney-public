@@ -8,14 +8,15 @@ import { assertPaylinkSwapSource, readPaylinkSource } from "./paylinkSource"
  * funding-deposit redemption, and the amount/link formatting. Screens build
  * `PaylinkService` from the shared front-core contexts and call these helpers.
  */
-import { EthAddress } from "@aztec/aztec.js/addresses"
-import { Fr } from "@aztec/aztec.js/fields"
-import type { ContractFunctionInteraction } from "@aztec/aztec.js/contracts"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import { TxHash } from "@aztec/stdlib/tx"
+import { EthAddress } from "@aztec-labs/aztec.js/addresses"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import type { ContractFunctionInteraction } from "@aztec-labs/aztec.js/contracts"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import { TxHash } from "@aztec-labs/stdlib/tx"
 import { formatUnits, getAddress, parseUnits, type Address, type Hex } from "viem"
 import type { PaylinkL1Proof } from "@obsidion/sdk"
 import { paylinkIdentity } from "@obsidion/front-core"
+import { withdrawalExecutorFee } from "../withdraw/withdrawalFee"
 import {
   trackSubmission,
   trackWithdrawalSubmission,
@@ -38,7 +39,7 @@ import {
   type ClaimSponsorContext,
   type ObsidionAccount,
   type ObsidionWallet,
-  type TeeSigner,
+  type RegisteredTeeSigner,
   type TokenService,
   type WithdrawalOptions,
 } from "@obsidion/sdk"
@@ -82,7 +83,6 @@ import {
   signedSchedule,
 } from "../onboarding/registrationTerms"
 import { recordBurnDuration } from "../withdraw/burnTiming"
-import { fpcFundingCut } from "../fees/fpcFundingCut"
 import { isFlowCancelled, runOperation, type OperationHandle } from "../operations/operations"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
 import { walletStorage } from "../../platform/storage/walletStorage"
@@ -97,7 +97,7 @@ import {
 import { holdSigningFlow } from "../../lib/passkeyTelemetry"
 import { getConfig } from "../../config/env"
 import { emailLockedLinksEnabled } from "../../config/features"
-import { getOxideTuple, l1PublicClient, requireTupleField } from "../../config/oxideTuple"
+import { getOxideTuple, l1PublicClient } from "../../config/oxideTuple"
 import { maybeRefuelFpc } from "../fees/fpcRefuel"
 import { findHistoricTuple, historicTokenContext } from "../migration/historicTokenContext"
 import { assertWithinWithdrawalLimit } from "../limits/withdrawalLimit"
@@ -118,7 +118,6 @@ import {
   ensureWithdrawalTracker,
   getWithdrawalStore,
   planSwapLeg,
-  publishedBurn,
   runBurn,
   swapRecordFields,
   withdrawalOptions,
@@ -128,6 +127,7 @@ import {
 } from "../withdraw/withdrawGateway"
 import type { CreateStage, LinkFlavor, PaymentLink } from "./types"
 import { sponsorshipErrorCopy } from "../allowance/sponsorshipError"
+import { txAmountCap } from "../token/oxideToken"
 import { broadcastAttemptEnded, freshPayloads, getBroadcastLedger } from "../broadcasts/broadcasts"
 import { registrationBroadcastPayload } from "../broadcasts/registrationExecutor"
 import {
@@ -175,7 +175,7 @@ export interface SponsoredPaylinkDeps {
   account: ObsidionAccount
   tokenService: TokenService
   contractService: ContractService
-  teeSigner: TeeSigner
+  teeSigner: RegisteredTeeSigner
   /** Active network's rollup address (hydrated by AztecContext at boot) — a `paylinkPh` input. */
   rollupAddress: string
 }
@@ -943,13 +943,12 @@ export interface RegistrationSlice {
   l1Recipient: EthAddress
   /** The gross the batch burns. */
   amount: bigint
+  withdrawalFee: bigint
   relayerTip: bigint
   proverTip: bigint
-  /** The portal's cut, priced on both legs. */
-  fundingCut: bigint
   /** What the SIPA holds once the portal releases the burn. */
   target: bigint
-  /** How the burn settles; its release broadcast rides the claim batch. */
+  /** How the burn settles; its finalization request rides the claim batch. */
   withdrawal: WithdrawalOptions
   /** The registration whose address is not published yet: the claim publishes it. */
   unpublished?: PendingRegistrationRecord
@@ -998,8 +997,8 @@ export async function claimRail(
 /**
  * The golden ticket's second half: when this account's registration still waits for its deposit,
  * the claim batch also burns the ticket quote to the registration SIPA, so the link pays for the
- * tag. The quote is `goldenTicketCoverage` off the signed schedule, the portal's live cut on both
- * legs and the prover tip the review committed, none when it committed nothing. Undefined leaves an
+ * tag. The quote is `goldenTicketCoverage` off the signed schedule and the prover tip the review
+ * committed, none when it committed nothing. Undefined leaves an
  * ordinary claim as it was; a required burn that cannot be priced or covered refuses the claim, as
  * do lapsed terms, which need a renewal before the irreversible burn. An address not yet published
  * is published by the claim.
@@ -1054,19 +1053,14 @@ export async function registrationSlice(
       "unpriced",
       `the portal's ${what} could not be read: ${err instanceof Error ? err.message : String(err)}`,
     )
-  let cut: bigint
-  try {
-    cut = await fpcFundingCut(l1PublicClient(config), requireTupleField(tuple, "portal") as Address)
-  } catch (err) {
-    throw unpriced("funding cut", err)
-  }
   const proverTip = committedProverTip(terms)
-  const coverage = goldenTicketCoverage(
-    noteAmount,
-    schedule,
-    { withdrawalCut: cut, depositCut: cut },
-    proverTip,
-  )
+  let withdrawalFee: bigint
+  try {
+    withdrawalFee = await withdrawalExecutorFee(tuple)
+  } catch (err) {
+    throw unpriced("withdrawal fee", err)
+  }
+  const coverage = goldenTicketCoverage(noteAmount, schedule, proverTip, withdrawalFee)
   if (!coverage.covers) {
     throw new RegistrationFundingError(
       "uncovered",
@@ -1075,16 +1069,16 @@ export async function registrationSlice(
   }
   let withdrawal: WithdrawalOptions
   try {
-    withdrawal = await withdrawalOptions(tuple)
+    withdrawal = withdrawalOptions(tuple)
   } catch (err) {
     throw unpriced("withdrawal state", err)
   }
   return {
     l1Recipient: EthAddress.fromString(record.sipaAddress),
     amount: coverage.burn,
+    withdrawalFee,
     relayerTip: WITHDRAW_RELAYER_TIP,
     proverTip,
-    fundingCut: cut,
     target: coverage.sipaTarget,
     withdrawal,
     ...(record.broadcast ? {} : { unpublished: record }),
@@ -1219,12 +1213,13 @@ async function seedRegistrationBurn(
     intent: "registration",
     paylinkId: paylinkIdentity(params),
     // The gross the batch burns: what leaves the balance, and what the feed's row shows.
-    amount: formatUnits(slice.amount, tokenDecimalsForNetwork(getConfig().network)),
+    amount: formatUnits(slice.amount, token.decimals),
     rawAmount: slice.amount.toString(),
     relayerTip: slice.relayerTip.toString(),
+    ...(slice.withdrawalFee ? { withdrawalFee: slice.withdrawalFee.toString() } : {}),
     ...(slice.proverTip ? { proverTip: slice.proverTip.toString() } : {}),
-    fpcFundingCut: slice.fundingCut.toString(),
     tokenSymbol: token.symbol,
+    tokenDecimals: token.decimals,
     phase: "submitting",
     startTime,
     deployment: await currentDeployment(tuple),
@@ -1268,20 +1263,17 @@ async function seedRegistrationBurn(
       const durationMs = Date.now() - startTime
       await submission.stop()
       try {
-        const [published, receipt] = await Promise.all([
-          publishedBurn(deps.wallet.node, txHash, tuple).catch(() => undefined),
-          Promise.resolve()
-            .then(() => deps.wallet.node.getTxReceipt(TxHash.fromString(txHash)))
-            .catch(() => undefined),
-        ])
+        const receipt = await deps.wallet.node
+          .getTxReceipt(TxHash.fromString(txHash))
+          .catch(() => undefined)
         const record =
           receipt?.blockNumber !== undefined
             ? await store.markMined(
                 localId,
                 txHash,
                 receipt.blockNumber,
-                (published?.amount ?? slice.amount).toString(),
-                (published?.relayerTip ?? slice.relayerTip).toString(),
+                slice.amount.toString(),
+                slice.relayerTip.toString(),
               )
             : await store.patch(localId, { phase: "submitting", l2TxHash: txHash as Hex })
         if (receipt?.blockNumber !== undefined) void recordBurnDuration(durationMs)
@@ -1397,13 +1389,18 @@ async function claimLinkToL1Flow(
     params.paylinkType === DEFAULT_CONTRACTS.paylinkEmail ? "email" : "direct"
   const svc = service(deps)
   // The burn spends the escrow note and the fee comes off it. A note that cannot clear the fee
-  // would revert, or leave the recipient nothing — refuse up front, and take the mined burn's
-  // figures as the truth below. The whole note is the withdrawal the limit counts.
+  // would revert, or leave the recipient nothing — refuse up front. The whole note is the
+  // withdrawal the limit counts.
   const amount = note.amount
   const decimals = tokenDecimalsForNetwork(network)
-  assertWithinWithdrawalLimit(amount, "link", decimals)
-  const cut = await fpcFundingCut(l1PublicClient(getConfig()), tuple.portal as Address)
-  const fee = WITHDRAW_RELAYER_TIP + cut + proverTip
+  assertWithinWithdrawalLimit(
+    amount,
+    await txAmountCap(l1PublicClient(getConfig()), tuple.portal as Address),
+    "link",
+    decimals,
+  )
+  const withdrawalFee = await withdrawalExecutorFee(tuple)
+  const fee = withdrawalFee + WITHDRAW_RELAYER_TIP + proverTip
   if (amount <= fee) {
     throw new Error("This link holds too little to cover the withdrawal fee")
   }
@@ -1419,7 +1416,7 @@ async function claimLinkToL1Flow(
     planned ??
     (await planLinkClaimSwap(deps, fragment, amount, recipient, receiveAsset, quote, proverTip))
   assertPaylinkSwapSource(swap, tuple)
-  const withdrawal = await withdrawalOptions(tuple, swap)
+  const withdrawal = withdrawalOptions(tuple, swap)
   const token = await deps.tokenService.fetchTokenInformation()
   op.describe(`$${formatUnits(amount - fee, decimals)} to ${recipientAlias?.trim() || "Ethereum"}`)
   const paylinkId = paylinkIdentity(params)
@@ -1439,12 +1436,13 @@ async function claimLinkToL1Flow(
       recipientAlias: recipientAlias?.trim() || undefined,
       source: "paylink",
       paylinkId,
-      amount: formatUnits(amount - fee, decimals),
+      amount: formatUnits(amount - fee, token.decimals),
       rawAmount: amount.toString(),
       relayerTip: WITHDRAW_RELAYER_TIP.toString(),
+      ...(withdrawalFee ? { withdrawalFee: withdrawalFee.toString() } : {}),
       ...(proverTip ? { proverTip: proverTip.toString() } : {}),
-      fpcFundingCut: cut.toString(),
       tokenSymbol: token.symbol,
+      tokenDecimals: token.decimals,
       phase: "submitting",
       startTime: Date.now(),
       deployment: await currentDeployment(tuple),
@@ -1462,15 +1460,11 @@ async function claimLinkToL1Flow(
         { operationId: op.operationId, zkProof },
       )
     },
-    minedFigures: async (burn) => {
-      const published = await publishedBurn(deps.wallet.node, burn.txHash, tuple)
-      return (
-        published && {
-          amount: published.amount.toString(),
-          relayerTip: published.relayerTip.toString(),
-        }
-      )
-    },
+    // The batch refuses to sign unless the burn spends the whole note.
+    minedFigures: async () => ({
+      amount: amount.toString(),
+      relayerTip: WITHDRAW_RELAYER_TIP.toString(),
+    }),
   })
   // A burn left to the chain reports once the tracker marks its record mined.
   void reportPaylinkClaims(getWithdrawalStore().list(), webStorage)
@@ -1647,7 +1641,8 @@ function linkShape(
 /**
  * Decode a link fragment into its display shape — no wallet needed. The fragment names the flavor
  * and nothing else to show: amount, email, memo and funding tx wait for `viewLink` to read the
- * escrow. Status starts unclaimed until `viewLink` reads the nullifier.
+ * escrow. Status starts unclaimed until `viewLink` reads the nullifier, or retired for a link made
+ * on another rollup of this L1 chain.
  *
  * Every inbound link decodes here (`/link`, Home's stash, `viewLink`), so an email link is refused
  * while email-locked links are off, before any signup, Google sign-in or transaction.
@@ -1657,7 +1652,24 @@ export function decodeLink(fragment: string): PaymentLink {
   const flavor: LinkFlavor =
     params.paylinkType === DEFAULT_CONTRACTS.paylinkEmail ? "email" : "direct"
   if (flavor === "email" && !emailLockedLinksEnabled) throw new EmailPaylinkUnsupportedError()
-  return linkShape(fragment, undefined, tokenDecimalsForNetwork(getConfig().network), flavor)
+  const config = getConfig()
+  const link = linkShape(fragment, undefined, tokenDecimalsForNetwork(config.network), flavor)
+  return isRetiredLink(params, config) ? { ...link, status: "retired" } : link
+}
+
+/**
+ * A link funded on another rollup of this L1 chain, an earlier generation's: its escrow is not on
+ * this rollup, so nothing can claim it here. A link for another L1 chain is not retired; the SDK
+ * refuses it.
+ */
+function isRetiredLink(
+  params: { chainId: number; rollupVersion: number },
+  config: { l1ChainId: number; profileRollupVersion: string },
+): boolean {
+  return (
+    params.chainId === config.l1ChainId &&
+    String(params.rollupVersion) !== config.profileRollupVersion
+  )
 }
 
 /**
@@ -1724,6 +1736,7 @@ async function verifiedSenderTag(tag?: string, from?: string): Promise<string | 
 export async function viewLink(deps: ViewLinkDeps, fragment: string): Promise<PaymentLink> {
   const params = decodePaylinkInline(fragment)
   const link = decodeLink(fragment)
+  if (link.status === "retired") return link
   const svc = statusService(deps)
   const claimed = await svc.isPaylinkClaimed(params)
   if (claimed) return { ...link, status: "claimed" }

@@ -20,6 +20,10 @@ declare global {
   var IS_REACT_ACT_ENVIRONMENT: boolean
 }
 
+vi.mock("../src/config/env", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/config/env")>()),
+  getConfig: () => ({ oxideProfile: { portal: "0xcurrent" } }),
+}))
 vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/front-core")>()),
   useAztecContext: () => ({}),
@@ -56,17 +60,23 @@ vi.mock("../src/features/onboarding/useRegistrationDepositEntry", () => ({
   useRegistrationDepositEntry: () => registrationEntry.value,
 }))
 vi.mock("../src/features/withdraw/withdrawFunnel", () => ({ reportWithdrawFunnel: () => {} }))
+// No deposit row is read here, so each deposit shows at the default decimals.
+vi.mock("../src/features/deposit/loadDepositFacts", async (importOriginal) => {
+  const { mockLoadDepositFacts, singleToken, MAINNET_DAI } = await import("./support/depositTokens")
+  return mockLoadDepositFacts(importOriginal, () => singleToken(MAINNET_DAI))
+})
 
 const { useActivityEntries } = await import("../src/ui/screens/useActivityEntries")
 const { STUCK_SUBLINE } = await import("../src/ui/screens/activityView")
 const { getWithdrawalStore } = await import("../src/features/withdraw/withdrawGateway")
 const { webStorage } = await import("../src/platform/storage/WebStorageAdapter")
+const { upgradeRunTitle } = await import("../src/features/migration/upgradeCopy")
 
 const SIPA = `0x${"5a".repeat(20)}` as const
 const withdrawals = getWithdrawalStore()
 const deposits = SIPADepositStore.get(webStorage)
 
-/** 85 gross, 0.1 tip, 0.05 old-portal cut, 0.3 arrival fee: 84.55 reaches the new balance. */
+/** 85 gross, 0.1 tip, 0.3 arrival fee: 84.6 reaches the new balance. */
 function burn(phase: WithdrawalPhase, endTime?: number): WithdrawalRecord {
   return {
     localId: "m1",
@@ -77,9 +87,9 @@ function burn(phase: WithdrawalPhase, endTime?: number): WithdrawalRecord {
     amount: "85",
     rawAmount: (85n * 10n ** 18n).toString(),
     relayerTip: (10n ** 17n).toString(),
-    fpcFundingCut: (5n * 10n ** 16n).toString(),
     arrivalFee: (3n * 10n ** 17n).toString(),
     tokenSymbol: "DAI",
+    tokenDecimals: 18,
     phase,
     startTime: 1_000,
     endTime,
@@ -99,6 +109,7 @@ const arrival = (patch: Partial<SIPADepositRecord> = {}) =>
       l1ChainId: 31337,
       amount: "0",
       tokenSymbol: "DAI",
+      tokenAddress: "0x6B175474E89094C44Da98b954EedeAC495271d0F",
       startTime: 2_000,
     },
   )
@@ -153,7 +164,7 @@ const stamps = () =>
   [...container.querySelectorAll('[data-testid="row"]')].map((r) => r.getAttribute("data-time"))
 
 describe("arriving funds", () => {
-  const net = (8455n * 10n ** 18n) / 100n
+  const net = (846n * 10n ** 18n) / 10n
   const arriving = async () => {
     await act(async () => {
       root.render(
@@ -176,9 +187,16 @@ describe("arriving funds", () => {
 
   it("counts a swept deposit the feed hides behind the burn from this wallet that paid it", async () => {
     await withdrawals.create({ ...burn("l2_mined"), intent: "registration" })
-    await arrival({ phase: "pendingClaim", amount: "84.55", netAmount: net.toString() })
-    expect((await rows()).some((row) => row.includes("+$84.55"))).toBe(false)
+    await arrival({ phase: "pendingClaim", amount: "84.6", netAmount: net.toString() })
+    expect((await rows()).some((row) => row.includes("+$84.60"))).toBe(false)
     expect(await arriving()).toBe(net.toString())
+  })
+
+  it("shows the burn that funds a backup passkey as the key's, not a withdrawal to a stranger", async () => {
+    await withdrawals.create({ ...burn("l2_mined"), intent: "backup", recipientAlias: undefined })
+    expect((await rows()).some((row) => row.startsWith("Backup passkey | Funding | -$85"))).toBe(
+      true,
+    )
   })
 })
 
@@ -190,7 +208,7 @@ describe("migration activity rows", () => {
     // The arrival sits directly above its exit and reads as what it brings. Nothing has reached the
     // address yet, so it offers no exit and never reads as stuck, however long the burn takes.
     expect(shown).toEqual([
-      "Upgrade | +$84.55 | Pending",
+      "Upgrade | +$84.60 | Pending",
       expect.stringMatching(/^Upgrade \| -\$85/),
     ])
     const [arrivalStamp, exitStamp] = stamps()
@@ -224,12 +242,6 @@ describe("migration activity rows", () => {
     expect(shown.some((r) => r.includes("Arriv"))).toBe(false)
   })
 
-  // An upgrade's first refund rides its bootstrap, not a burn, to the update-metadata SIPA.
-  it("shows an upgrade's first refund as an arrival with no exit", async () => {
-    await arrival({ phase: "claimed", amount: "9.5", intent: "metadata" })
-    expect(await rows()).toEqual(["Upgrade | Arrived | $9.50"])
-  })
-
   // A burn failed locally after a lost hash stamp may still release on chain.
   it("shows a funded arrival behind a failed burn", async () => {
     await withdrawals.create(burn("failed"))
@@ -239,10 +251,11 @@ describe("migration activity rows", () => {
   })
 })
 
-// A later refund batch of an upgrade rides its own send, not a burn, to its own deposit address.
+// A refund batch of an upgrade rides its own send, not a burn, to its own deposit address.
 // An upgrade is one row over its batches; each batch's deposit is one of its legs.
 describe("an upgrade's row", () => {
-  const RUN = "metadata-migration/0xnew/0xold/0xaccount"
+  const RUN = "metadata-migration/0xcurrent/0xold/0xaccount"
+  const TITLE = upgradeRunTitle.main
   const SECOND = `0x${"6b".repeat(20)}` as const
   const upgrades = UpgradeActivity.get(webStorage)
   const batch = async (id: string, patch: Record<string, unknown>) => {
@@ -277,20 +290,23 @@ describe("an upgrade's row", () => {
     await batch("remaining-0", { broadcastTx: "0xa", sentAt: 1_500, received: true })
     await batch("remaining-1", { recipient: SECOND, broadcastTx: "0xb", sentAt: 1_600 })
     await arrival({ phase: "claimed", amount: "9.9", netAmount: (99n * 10n ** 17n).toString() })
-    // The row names the run's least advanced step: the second batch is still being released.
-    expect(await rows()).toEqual(["Upgrade | 1 of 2 arrived | +$19.80 | Releasing"])
+    // The row names the run's least advanced step: the second batch is still being released, at
+    // its amount until its deposit is swept.
+    expect(await rows()).toEqual([`${TITLE} | 1 of 2 arrived | +$19.90 | Releasing`])
   })
 
   it("never reads a deposit recovered to Ethereum as arrived", async () => {
     await batch("remaining-0", { broadcastTx: "0xa", sentAt: 1_500, received: true })
     await arrival({ phase: "recovered", amount: "9.9" })
-    expect(await rows()).toEqual([expect.stringMatching(/^Upgrade \| 0 of 1 arrived/)])
+    expect(await rows()).toEqual([
+      expect.stringMatching(new RegExp(`^${TITLE} \\| 0 of 1 arrived`)),
+    ])
   })
 
   it("completes once every batch's deposit has arrived", async () => {
     await batch("remaining-0", { broadcastTx: "0xa", sentAt: 1_500, received: true })
     await arrival({ phase: "claimed", amount: "9.9", netAmount: (99n * 10n ** 17n).toString() })
-    expect(await rows()).toEqual(["Upgrade | 1 transfer | +$9.90"])
+    expect(await rows()).toEqual([`${TITLE} | 1 transfer | +$9.90`])
   })
 })
 

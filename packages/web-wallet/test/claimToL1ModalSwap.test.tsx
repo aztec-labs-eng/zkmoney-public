@@ -107,8 +107,7 @@ beforeEach(() => {
   simulation.mockImplementation(({ proverTip = 0n }: { proverTip?: bigint }) => ({
     status: "ready",
     fee: {
-      withdrawalRelayerTip: 1n,
-      fpcFundingCut: 2n,
+      withdrawalRelayerTip: 3n,
       swapRelayerTip: 5n,
       proverTip,
       floorAtomic: 8n + proverTip,
@@ -233,7 +232,6 @@ describe("ClaimToL1Modal email swap", () => {
     const simulate = vi.fn(async ({ output }: { output: string }) => ({
       fee: {
         swapRelayerTip: output === "ETH" ? 99n : 5n,
-        fpcFundingCut: 0n,
         proverTip: 0n,
         floorAtomic: 100n,
       },

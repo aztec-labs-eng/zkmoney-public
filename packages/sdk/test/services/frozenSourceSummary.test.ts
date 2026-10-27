@@ -1,11 +1,10 @@
 import { describe, expect, it, vi } from "vitest"
-import { Fr } from "@aztec/aztec.js/fields"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 
 vi.mock("@oxide/l1-contracts", () => ({
   OxidePortalContract: class {
     isFrozen = async () => true
     getRollupVersion = async () => 1n
-    getInbox = async () => "0x" + "03".repeat(20)
   },
 }))
 const { getRefundableFrozenNotes } = vi.hoisted(() => ({

@@ -41,8 +41,8 @@ import {
 } from "@obsidion/sdk"
 import { DEFAULT_CONTRACTS } from "@obsidion/core/constants"
 import type { OxideEnvTuple } from "@obsidion/core/types"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import type { ContractArtifact } from "@aztec/stdlib/abi"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import type { ContractArtifact } from "@aztec-labs/stdlib/abi"
 import { getConfig, type WebWalletConfig } from "../../config/env"
 import { getOxideTuple, l1PublicClient, requireTupleField } from "../../config/oxideTuple"
 import { loadWalletIdentity } from "../identity/walletIdentity"
@@ -57,6 +57,7 @@ import {
   type RegistrationPending,
 } from "./registrationRail"
 import { loadOxideGenerations } from "./oxideGenerations"
+import { generationAddresses } from "./generationAddresses"
 import { cacheNameClaimFromLog } from "./webRegistration"
 
 export interface SponsorLegDeps {
@@ -76,7 +77,49 @@ export interface ClaimSponsorRailDeps {
 
 export interface ClaimSponsorDeps extends ClaimSponsorRailDeps {
   account: ObsidionAccount
+  /**
+   * The accounts a batch on the registered instance `sponsor` names: the payer, whose note it
+   * spends, and the acting account. Absent, the installed resolver answers; without one the
+   * account pays with its own note.
+   */
+  payerFor?: SponsorAccountsResolver
 }
+
+/** The payer and the acting account of a sponsored batch; one account when the wallet never rotated. */
+export interface SponsorAccounts {
+  payer: ObsidionAccount
+  acting: ObsidionAccount
+}
+
+export type SponsorAccountsResolver = (
+  deps: ClaimSponsorDeps,
+  sponsor: ClaimSponsorContext,
+) => Promise<SponsorAccounts>
+
+const selfPays: SponsorAccountsResolver = async (deps) => ({
+  payer: deps.account,
+  acting: deps.account,
+})
+let installedResolver: SponsorAccountsResolver = selfPays
+
+/** Installed once by the wallet's boot; the session's root record decides the payer per instance. */
+export function setSponsorAccountsResolver(resolver: SponsorAccountsResolver | undefined): void {
+  installedResolver = resolver ?? selfPays
+}
+
+const accountsFor = (deps: ClaimSponsorDeps, sponsor: ClaimSponsorContext) =>
+  (deps.payerFor ?? installedResolver)(deps, sponsor)
+
+const sameAccount = (a: ObsidionAccount, b: ObsidionAccount) =>
+  a.getAddress().toString() === b.getAddress().toString()
+
+/** The context with `holder` as its payer; unchanged when the acting account pays itself. */
+const withPayer = (
+  sponsor: ClaimSponsorContext,
+  holder: ObsidionAccount,
+  acting: ObsidionAccount,
+): ClaimSponsorContext =>
+  sameAccount(holder, acting) ? sponsor : { ...sponsor, payer: holder.getAddress() }
 
 export interface ClaimSponsorRailOptions {
   /**
@@ -160,20 +203,52 @@ export async function claimSponsorContext(
         "wallet can only satisfy that gate on the current deployment",
     )
   }
+  const accounts = await accountsFor(deps, sponsor)
   if (rail.gate === "registration") {
-    return registrationSponsor(deps, { sponsor, rail, railName, config, tuple: opts.tuple })
-  }
-  return {
-    ...sponsor,
-    subscribe: await subscribeContext({
-      wallet: deps.wallet,
-      account: deps.account,
-      config,
-      fpcAddress: sponsor.fpcAddress,
-      fpcArtifact: sponsor.fpcArtifact,
+    return registrationSponsor(deps, {
+      sponsor,
       rail,
-    }),
+      railName,
+      config,
+      tuple: opts.tuple,
+      accounts,
+    })
   }
+  const leg = legFor(deps, config, sponsor, rail)
+  const holder = await subscribedPayer(leg, accounts)
+  if (holder) return withPayer(sponsor, holder, accounts.acting)
+  return { ...sponsor, subscribe: await subscribeLeg(leg(accounts.acting)) }
+}
+
+/** The leg deps of one account on one registered instance. */
+const legFor =
+  (
+    deps: ClaimSponsorRailDeps,
+    config: WebWalletConfig,
+    sponsor: ClaimSponsorContext,
+    rail: ClaimFpcRailPolicy,
+  ) =>
+  (account: ObsidionAccount): SponsorLegDeps => ({
+    wallet: deps.wallet,
+    account,
+    config,
+    fpcAddress: sponsor.fpcAddress,
+    fpcArtifact: sponsor.fpcArtifact,
+    rail,
+  })
+
+/**
+ * Which of the batch's accounts holds the rail's note on the instance: the payer, else the acting
+ * account, else none. A payer whose note is gone on the instance is not subscribed on behalf of the
+ * acting account; the acting account subscribes itself.
+ */
+async function subscribedPayer(
+  leg: (account: ObsidionAccount) => SponsorLegDeps,
+  { payer, acting }: SponsorAccounts,
+): Promise<ObsidionAccount | undefined> {
+  if (!(await needsSubscription(leg(payer)))) return payer
+  if (sameAccount(payer, acting)) return undefined
+  return (await needsSubscription(leg(acting))) ? undefined : acting
 }
 
 // One utility call per (account, FPC, rail), not per transaction. Keying on the FPC address is what
@@ -184,8 +259,28 @@ const subscriptionChecks = new Map<string, Promise<boolean>>()
 const subscriptionKey = (account: ObsidionAccount, fpcAddress: AztecAddress, railId: number) =>
   `${account.getAddress().toString()}|${fpcAddress.toString()}|${railId}`
 
+type SubscriptionReadDeps = Pick<
+  SponsorLegDeps,
+  "wallet" | "account" | "fpcAddress" | "fpcArtifact"
+> & { rail: Pick<ClaimFpcRailPolicy, "railId"> }
+
+/** Whether `account` holds the rail's note on the registered instance `sponsor` names. */
+export async function holdsSubscription(
+  wallet: ObsidionWallet,
+  sponsor: ClaimSponsorContext,
+  account: ObsidionAccount,
+): Promise<boolean> {
+  return !(await needsSubscription({
+    wallet,
+    account,
+    fpcAddress: sponsor.fpcAddress,
+    fpcArtifact: sponsor.fpcArtifact,
+    rail: { railId: sponsor.railId },
+  }))
+}
+
 /** True when this account has no subscription note for this rail of the live ClaimFPC. */
-async function needsSubscription(deps: SponsorLegDeps): Promise<boolean> {
+async function needsSubscription(deps: SubscriptionReadDeps): Promise<boolean> {
   const key = subscriptionKey(deps.account, deps.fpcAddress, deps.rail.railId)
   const cached = subscriptionChecks.get(key)
   if (cached) return cached
@@ -254,7 +349,11 @@ export async function subscribeContext(
   deps: SponsorLegDeps,
 ): Promise<ClaimSubscribeContext | undefined> {
   if (!(await needsSubscription(deps))) return undefined
+  return subscribeLeg(deps)
+}
 
+/** The leg for an account read as holding no note. */
+async function subscribeLeg(deps: SponsorLegDeps): Promise<ClaimSubscribeContext | undefined> {
   const keys = await collectOnboardingKeys(deps.account)
   const gate = await gateWitness(deps, keys)
   if (!gate) return undefined
@@ -305,7 +404,12 @@ async function verifiedIdentityFor(
   const l2Address = deps.account.getAddress().toString()
   const generations = await loadOxideGenerations(deps.wallet, deps.contractService, config)
   return requireVerifiedIdentity(
-    await resolveOxideIdentity(generations, deriveBootstrapKey(keys.secretKey).address, l2Address),
+    await resolveOxideIdentity(
+      generations,
+      deriveBootstrapKey(keys.secretKey).address,
+      l2Address,
+      generationAddresses(config, keys.pubkeyHex)(keys.secretKey, l2Address),
+    ),
   )
 }
 
@@ -355,25 +459,25 @@ async function registrationSponsor(
     railName: string
     config: WebWalletConfig
     tuple?: OxideEnvTuple
+    accounts: SponsorAccounts
   },
 ): Promise<ClaimSponsorContext> {
   const token = AztecAddress.fromStringUnsafe(
     ctx.tuple?.l2Token ?? (await getOxideTuple(ctx.config)).l2Token,
   )
-  const held: SponsorLegDeps = {
-    wallet: deps.wallet,
-    account: deps.account,
-    config: ctx.config,
-    fpcAddress: ctx.sponsor.fpcAddress,
-    fpcArtifact: ctx.sponsor.fpcArtifact,
-    rail: ctx.rail,
+  const { acting } = ctx.accounts
+  // A note already held on the instance the caller asked for rides as it is: the FPC checks the
+  // note and the policy, not the registration gate. Reaching any other instance needs the key, the
+  // identity and a generation.
+  if (railCovers(ctx.rail, token)) {
+    const holder = await subscribedPayer(
+      legFor(deps, ctx.config, ctx.sponsor, ctx.rail),
+      ctx.accounts,
+    )
+    if (holder) return withPayer(ctx.sponsor, holder, acting)
   }
-  // A note this account already holds on the instance the caller asked for rides as it is: the FPC
-  // checks the note and the policy, not the registration gate. Reaching any other instance needs the
-  // key, the identity and a generation.
-  if (railCovers(ctx.rail, token) && !(await needsSubscription(held))) return ctx.sponsor
 
-  const keys = await collectOnboardingKeys(deps.account)
+  const keys = await collectOnboardingKeys(acting)
   const identity = await verifiedIdentityFor(deps, keys, ctx.config)
   const pinned = ctx.tuple ? ctx.sponsor.fpcAddress.toString() : undefined
   const targets = registrationTargets(ctx.sponsor, identity).filter(
@@ -389,19 +493,18 @@ async function registrationSponsor(
   let waiting: RegistrationPending | undefined
   for (const generation of targets) {
     const address = AztecAddress.fromStringUnsafe(generation.fpcAddress)
-    const sponsor = sameFpc(generation.fpcAddress, ctx.sponsor.fpcAddress.toString())
+    const current = sameFpc(generation.fpcAddress, ctx.sponsor.fpcAddress.toString())
+    const sponsor = current
       ? { sponsor: ctx.sponsor, rail: ctx.rail }
       : await sponsorAt(deps, ctx.railName, address)
     if (!railCovers(sponsor.rail, token)) continue
-    const leg: SponsorLegDeps = {
-      wallet: deps.wallet,
-      account: deps.account,
-      config: ctx.config,
-      fpcAddress: sponsor.sponsor.fpcAddress,
-      fpcArtifact: sponsor.sponsor.fpcArtifact,
-      rail: sponsor.rail,
-    }
-    if (!(await needsSubscription(leg))) return sponsor.sponsor
+    // The payer travels with the instance: another generation's instance has its own.
+    const accounts = current ? ctx.accounts : await accountsFor(deps, sponsor.sponsor)
+    const holder = await subscribedPayer(
+      legFor(deps, ctx.config, sponsor.sponsor, sponsor.rail),
+      accounts,
+    )
+    if (holder) return withPayer(sponsor.sponsor, holder, acting)
     const found = await registrationGateWitness(
       {
         wallet: deps.wallet,

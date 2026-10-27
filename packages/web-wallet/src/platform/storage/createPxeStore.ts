@@ -1,5 +1,5 @@
-import { AztecSQLiteOPFSStore } from "@aztec/kv-store/sqlite-opfs"
-import { createLogger } from "@aztec/foundation/log"
+import { AztecSQLiteOPFSStore } from "@aztec-labs/kv-store/sqlite-opfs"
+import { createLogger } from "@aztec-labs/foundation/log"
 import { openPooledStore } from "./openPooledStore"
 
 /**
@@ -18,7 +18,7 @@ export async function opfsAvailable(): Promise<boolean> {
 }
 
 /**
- * The store's OPFS names: `pxe_data_<rollup>` as upstream `@aztec/wallets`' BrowserEmbeddedWallet
+ * The store's OPFS names: `pxe_data_<rollup>` as upstream `@aztec-labs/wallets`' BrowserEmbeddedWallet
  * names it, plus `_<digest>` of the node endpoint when the node is not the default, so a custom
  * node never writes into the default node's store. `digest` is required, `undefined` for the default
  * node, so a caller cannot drop it by omission.

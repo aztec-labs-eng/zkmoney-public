@@ -10,8 +10,8 @@
  */
 
 import { Buffer } from "buffer"
-import { poseidon2Hash } from "@aztec/foundation/crypto/poseidon"
-import { Fr } from "@aztec/foundation/curves/bn254"
+import { poseidon2Hash } from "@aztec-labs/foundation/crypto/poseidon"
+import { Fr } from "@aztec-labs/foundation/curves/bn254"
 import { VKEY_FIELD_COUNT, ZKJWT_VKEY_HASH, ZKJWT_VK_BASE64 } from "@obsidion/core/constants"
 
 let cachedVkey: Promise<Fr[]> | null = null

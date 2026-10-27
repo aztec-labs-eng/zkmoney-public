@@ -1,4 +1,5 @@
 import { formatUnits, getAddress, isAddress } from "viem"
+import { groupedCents } from "./groupedCents"
 import { DEFAULT_DECIMALS } from "@obsidion/core/constants"
 import {
   AMOUNT_MAX_DECIMALS,
@@ -65,6 +66,11 @@ export function usdFigure(display: string): string {
   // A charge that rounds to nothing still charges: never render it as free.
   if (n > 0 && n < 0.005) return "<$0.01"
   return `$${n.toFixed(2)}`.replace(/\.00$/, "")
+}
+
+/** `0.25 USDC` / `1,200 DAI`: a token amount by {@link groupedCents}. */
+export function tokenFigure(display: string, symbol: string): string {
+  return `${groupedCents(display) ?? display} ${symbol}`
 }
 
 /** `$1,234.56` from base units. */

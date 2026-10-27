@@ -20,10 +20,10 @@ import { resolve, join, dirname } from "path"
 import { execSync } from "child_process"
 import { tmpdir } from "os"
 import { fileURLToPath } from "url"
-import { poseidon2Hash } from "@aztec/foundation/crypto/poseidon"
-import { Fr } from "@aztec/aztec.js/fields"
-import { loadContractArtifact } from "@aztec/stdlib/abi"
-import { getContractClassFromArtifact } from "@aztec/stdlib/contract"
+import { poseidon2Hash } from "@aztec-labs/foundation/crypto/poseidon"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { loadContractArtifact } from "@aztec-labs/stdlib/abi"
+import { getContractClassFromArtifact } from "@aztec-labs/stdlib/contract"
 
 const repoRoot = resolve(fileURLToPath(import.meta.url), "../../../../")
 

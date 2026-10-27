@@ -7,7 +7,7 @@
  * pinned so a change to the production salt or helper fails here rather than cancelling out.
  */
 // @vitest-environment node
-import { Fr } from "@aztec/aztec.js/fields"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 import { GPM_AAGUID } from "@obsidion/core/constants"
 import { selectRecoveredMsk } from "@obsidion/front-core"
 import { MSK_PRF_SALT, contextualize } from "@obsidion/sdk"

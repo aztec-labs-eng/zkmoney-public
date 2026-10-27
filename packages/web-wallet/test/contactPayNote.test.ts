@@ -74,7 +74,7 @@ vi.mock("@obsidion/proving-progress", () => ({
   ProvingStage: { Mining: "mining" },
   provingProgress: { on: () => {}, off: () => {} },
 }))
-vi.mock("@aztec/stdlib/aztec-address", () => ({
+vi.mock("@aztec-labs/stdlib/aztec-address", () => ({
   AztecAddress: { fromStringUnsafe: (s: string) => s },
 }))
 vi.mock("../src/config/env", () => ({ getConfig: () => ({ network: "sandbox" }) }))
@@ -90,17 +90,19 @@ vi.mock("../src/features/onboarding/claimSponsorship", () => ({
   noteSubscribed: () => {},
 }))
 vi.mock("../src/features/contacts/registryResolution", () => ({
-  resolveTagForCommit: async () => ({
-    status: "resolved",
-    l2Address: "0xabc",
-    xmtpAddress: "0xxmtp",
-  }),
+  resolveTagForCommit: async (tag: string) =>
+    tag === "stale"
+      ? { status: "staleRollup" }
+      : { status: "resolved", l2Address: "0xabc", xmtpAddress: "0xxmtp" },
+  resolveTagViaRegistry: async () => ({ status: "resolved" }),
 }))
 vi.mock("../src/features/contacts/requestActions", () => ({
   markRequestPaidById: h.markRequestPaidById,
 }))
 
-const { runContactPay } = await import("../src/features/contacts/contactPay")
+const { runContactPay, RecipientNotUpgradedError } = await import(
+  "../src/features/contacts/contactPay"
+)
 
 const token = {
   fetchTokenInformation: async () => ({
@@ -111,6 +113,31 @@ const token = {
   }),
   sendTokenSponsored: h.sendTokenSponsored,
 }
+
+describe("recipient upgrade check", () => {
+  it("refuses a send to a tag still on a retired rollup before anything is written or proven", async () => {
+    vi.clearAllMocks()
+    await expect(
+      runContactPay(
+        {
+          mode: "send",
+          deps: {
+            tokenService: token as never,
+            account: { makeSpendMetadataResolver: async () => () => {} } as never,
+            wallet: {} as never,
+            contractService: {} as never,
+          },
+          tag: "stale",
+          senderTag: "bob",
+          amountDisplay: "5",
+        },
+        () => {},
+      ),
+    ).rejects.toBeInstanceOf(RecipientNotUpgradedError)
+    expect(h.addTokenTransaction).not.toHaveBeenCalled()
+    expect(h.sendTokenSponsored).not.toHaveBeenCalled()
+  })
+})
 
 describe("contact pay note", () => {
   it("carries a request note onto the announce and the stored row", async () => {

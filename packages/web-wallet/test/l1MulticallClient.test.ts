@@ -13,7 +13,7 @@ import {
   type Hex,
 } from "viem"
 import { foundry } from "viem/chains"
-import { Fr } from "@aztec/foundation/curves/bn254"
+import { Fr } from "@aztec-labs/foundation/curves/bn254"
 
 const h = vi.hoisted(() => ({ batches: [] as { to: string; calls: number }[] }))
 
@@ -58,6 +58,7 @@ const TUPLE = {
   token: "0x0000000000000000000000000000000000000004",
   portal: "0x0000000000000000000000000000000000000012",
   sipaFactory: "0x0000000000000000000000000000000000000013",
+  forwardingTable: "0x0000000000000000000000000000000000000014",
 } as unknown as OxideEnvTuple
 
 describe("l1MulticallClient", () => {

@@ -235,9 +235,10 @@ type Recoverer = SwapRecoverer & { signAccount: (account: Address, digest: Hex) 
 
 async function walletRecoverer(l1: ReturnType<typeof l1PublicClient>): Promise<Recoverer> {
   const config = getConfig()
-  const { account, secret } = await ownSwapRecoverer(await getOxideTuple(config))
-  const provider = await getAuthService().getAuthProvider()
-  const passkey = provider ? await oxideAccountPasskey(provider) : undefined
+  const keys = await getAuthService().sessionKeys()
+  if (!keys) throw new Error("Unlock your wallet with your passkey and try again.")
+  const { account, secret } = await ownSwapRecoverer(await getOxideTuple(config), keys.secretKey)
+  const passkey = await oxideAccountPasskey(keys.authProvider)
   const reader = createOxideL1Reader(l1)
   return {
     account,

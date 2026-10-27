@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { TxStatus, TxExecutionResult } from "@aztec/stdlib/tx"
+import { TxStatus, TxExecutionResult } from "@aztec-labs/stdlib/tx"
 import { ProvingStage, provingProgress } from "@obsidion/proving-progress"
 import { OperationStore } from "../../src/core/services/operations/OperationStore"
 
@@ -83,7 +83,13 @@ it("ends a record that started in the millisecond the tab became active", async 
 })
 
 it("keeps the parent a child operation runs inside", async () => {
-  await store.begin({ operationId: "child", flow: "deposit", summary: "x", scope: null, parent: "root" })
+  await store.begin({
+    operationId: "child",
+    flow: "deposit",
+    summary: "x",
+    scope: null,
+    parent: "root",
+  })
   expect(store.get("child")?.parent).toBe("root")
 })
 
@@ -117,9 +123,17 @@ it("never fails a sent record at boot: the chain decides it", async () => {
 })
 
 it.each([
-  ["included", { status: TxStatus.PROPOSED, executionResult: TxExecutionResult.SUCCESS, blockNumber: 7 }, "settled"],
+  [
+    "included",
+    { status: TxStatus.PROPOSED, executionResult: TxExecutionResult.SUCCESS, blockNumber: 7 },
+    "settled",
+  ],
   ["dropped", { status: TxStatus.DROPPED }, "failed"],
-  ["reverted", { status: TxStatus.PROVEN, executionResult: TxExecutionResult.REVERTED, blockNumber: 7 }, "failed"],
+  [
+    "reverted",
+    { status: TxStatus.PROVEN, executionResult: TxExecutionResult.REVERTED, blockNumber: 7 },
+    "failed",
+  ],
   ["pending", { status: TxStatus.PENDING }, "sent"],
 ])("resolves an unowned sent record from a %s receipt", async (_label, receipt, state) => {
   await begin("op")
@@ -154,7 +168,9 @@ it("keeps a record when the node is unreachable", async () => {
   await begin("op")
   await store.markSent("op", hash)
   store.release("op")
-  await store.resolveSent({ getTxReceipt: vi.fn(async () => Promise.reject(new Error("down"))) } as never)
+  await store.resolveSent({
+    getTxReceipt: vi.fn(async () => Promise.reject(new Error("down"))),
+  } as never)
   expect(store.get("op")?.state).toBe("sent")
 })
 

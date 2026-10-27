@@ -1,4 +1,4 @@
-import type { createAztecNodeClient } from "@aztec/aztec.js/node"
+import type { createAztecNodeClient } from "@aztec-labs/aztec.js/node"
 
 // The canonical generation's node client — the one the wallet built at boot
 // (createV4BootWallet for a v4 generation, createAztecNodeClient for v5). Any

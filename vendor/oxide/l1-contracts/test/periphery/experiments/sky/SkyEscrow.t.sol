@@ -5,6 +5,7 @@ import {console2} from "forge-std/console2.sol";
 import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 import {IVerifier} from "@aztec/core/interfaces/IVerifier.sol";
 import {IRegistry} from "@aztec/governance/interfaces/IRegistry.sol";
+import {TestERC20} from "@aztec/mock/TestERC20.sol";
 import {IERC20} from "@oz/token/ERC20/IERC20.sol";
 import {OxidePortal} from "@core/OxidePortal.sol";
 import {IOxidePortal} from "@core/interfaces/IOxidePortal.sol";
@@ -14,6 +15,7 @@ import {SkyEscrow} from "@periphery/experiments/sky/SkyEscrow.sol";
 import {SkyEscrowFactory} from "@periphery/experiments/sky/SkyEscrowFactory.sol";
 import {SkyWithdrawalExecutor} from "@periphery/experiments/sky/SkyWithdrawalExecutor.sol";
 import {EscrowBase} from "@periphery/EscrowBase.sol";
+import {RecoveryAuthLib} from "@periphery/RecoveryAuthLib.sol";
 import {SkyErrors} from "@periphery/experiments/sky/SkyErrors.sol";
 import {SkyRoute} from "@periphery/experiments/sky/SkyTypes.sol";
 import {ISUsds} from "@periphery/experiments/sky/interfaces/ISUsds.sol";
@@ -62,15 +64,16 @@ contract SkyEscrowTest is SkyTestBase {
   }
 
   function test_GivenAnExecutorOfAnotherPortal_WhenTheFactoryIsBuilt_ThenReverts() external {
-    SkyWithdrawalExecutor other = new SkyWithdrawalExecutor(_newPortal(address(sUsds), 0), _skyRoute());
+    SkyWithdrawalExecutor other =
+      new SkyWithdrawalExecutor(_newPortal(address(sUsds), SUSDS_L2_TOKEN), _skyRoute(), OWNER, ethUsdFeed);
     vm.expectRevert(SkyErrors.SkyEscrow__ExecutorPortalMismatch.selector);
     new SkyEscrowFactory(_skyRoute(), portal, sUsdsPortal, other);
   }
 
   function test_GivenAnExecutorThatPaysAnotherToken_WhenTheFactoryIsBuilt_ThenReverts() external {
     SkyRoute memory otherRoute = _skyRoute();
-    otherRoute.dai = IERC20(makeAddr("otherDai"));
-    SkyWithdrawalExecutor other = new SkyWithdrawalExecutor(sUsdsPortal, otherRoute);
+    otherRoute.dai = new TestERC20("Other DAI", "ODAI", address(this));
+    SkyWithdrawalExecutor other = new SkyWithdrawalExecutor(sUsdsPortal, otherRoute, OWNER, ethUsdFeed);
     vm.expectRevert(SkyErrors.SkyEscrow__ExecutorAssetMismatch.selector);
     new SkyEscrowFactory(_skyRoute(), portal, sUsdsPortal, other);
   }
@@ -84,11 +87,10 @@ contract SkyEscrowTest is SkyTestBase {
     dai.mint(address(portal), amount);
 
     vm.prank(RELAYER);
-    portal.withdraw(_daiWithdrawArgs(amount, abi.encode(escrow, releaseTip), abi.encode(RELAYER, address(0))));
+    portal.withdraw(_daiWithdrawArgs(amount, abi.encode(escrow, releaseTip), abi.encodePacked(RELAYER)));
 
-    uint256 escrowed = amount - DAI_PORTAL_CUT - releaseTip;
+    uint256 escrowed = amount - releaseTip;
     assertEq(dai.balanceOf(escrow), escrowed, "the release pays the escrow in dai");
-    assertEq(dai.balanceOf(FPC_FUNDER), DAI_PORTAL_CUT, "the DAI portal takes its withdrawal cut");
     assertEq(escrow.code.length, 0, "the escrow is not deployed yet");
 
     uint256 expectedShares = sUsds.convertToShares(escrowed - ESCROW_TIP);
@@ -106,7 +108,6 @@ contract SkyEscrowTest is SkyTestBase {
     assertEq(dai.balanceOf(escrow), 0, "the run empties the escrow");
     assertEq(sUsds.balanceOf(escrow), 0);
     assertEq(usds.balanceOf(escrow), 0);
-    assertEq(dai.balanceOf(FPC_FUNDER), DAI_PORTAL_CUT, "the sUSDS portal takes no deposit cut");
   }
 
   function test_GivenAnUnstake_WhenTheReleaseAndTheRunLand_ThenTheDaiIsDepositedIntoTheDaiPortal() external {
@@ -118,22 +119,19 @@ contract SkyEscrowTest is SkyTestBase {
     _fundSUsdsPortal(shares);
 
     vm.prank(RELAYER);
-    sUsdsPortal.withdraw(_skyWithdrawArgs(shares, abi.encode(escrow, releaseTip), abi.encode(RELAYER, address(0))));
+    sUsdsPortal.withdraw(_skyWithdrawArgs(shares, abi.encode(escrow, releaseTip), abi.encodePacked(RELAYER)));
 
     uint256 escrowed = 100e18 - releaseTip;
     assertEq(dai.balanceOf(escrow), escrowed, "the Sky executor pays the escrow in dai");
 
     uint256 portalBefore = dai.balanceOf(address(portal));
     vm.expectEmit(true, false, false, false, address(portal));
-    emit Deposit(RECIPIENT_COMMITMENT, escrowed - ESCROW_TIP - DAI_PORTAL_CUT, bytes32(0), 0);
+    emit Deposit(RECIPIENT_COMMITMENT, escrowed - ESCROW_TIP, bytes32(0), 0);
     vm.prank(RELAYER);
     escrowFactory.deployAndExecute(args);
 
     assertEq(dai.balanceOf(RELAYER), releaseTip + ESCROW_TIP);
-    assertEq(dai.balanceOf(FPC_FUNDER), DAI_PORTAL_CUT, "the DAI portal takes its deposit cut");
-    assertEq(
-      dai.balanceOf(address(portal)) - portalBefore, escrowed - ESCROW_TIP - DAI_PORTAL_CUT, "the DAI portal escrows"
-    );
+    assertEq(dai.balanceOf(address(portal)) - portalBefore, escrowed - ESCROW_TIP, "the DAI portal escrows");
     assertEq(dai.balanceOf(escrow), 0);
   }
 
@@ -228,7 +226,7 @@ contract SkyEscrowTest is SkyTestBase {
     bytes memory signature =
       _rawSign(0x5162, _recoverERC20Digest(address(escrow), target, address(dai), REQUEST_NONCE, deadline));
 
-    vm.expectRevert(EscrowBase.EscrowBase__InvalidSignature.selector);
+    vm.expectRevert(RecoveryAuthLib.RecoveryAuthLib__InvalidSignature.selector);
     escrow.recoverERC20(RECOVERY_SALT, address(account), signature, target, address(dai), REQUEST_NONCE, deadline);
   }
 
@@ -238,7 +236,7 @@ contract SkyEscrowTest is SkyTestBase {
     bytes memory signature =
       _eoaSign(0xBAD, _recoverERC20Digest(address(escrow), target, address(dai), REQUEST_NONCE, deadline));
 
-    vm.expectRevert(EscrowBase.EscrowBase__InvalidSignature.selector);
+    vm.expectRevert(RecoveryAuthLib.RecoveryAuthLib__InvalidSignature.selector);
     escrow.recoverERC20(RECOVERY_SALT, escrowOwner, signature, target, address(dai), REQUEST_NONCE, deadline);
   }
 
@@ -249,7 +247,7 @@ contract SkyEscrowTest is SkyTestBase {
     bytes memory signature =
       _eoaSign(0xBAD, _recoverERC20Digest(address(escrow), target, address(dai), REQUEST_NONCE, deadline));
 
-    vm.expectRevert(EscrowBase.EscrowBase__RecoveryCommitmentMismatch.selector);
+    vm.expectRevert(RecoveryAuthLib.RecoveryAuthLib__RecoveryCommitmentMismatch.selector);
     escrow.recoverERC20(RECOVERY_SALT, other, signature, target, address(dai), REQUEST_NONCE, deadline);
   }
 
@@ -259,7 +257,7 @@ contract SkyEscrowTest is SkyTestBase {
     bytes memory signature =
       _eoaSign(OWNER_KEY, _recoverERC20Digest(address(escrow), target, address(dai), REQUEST_NONCE, deadline));
 
-    vm.expectRevert(EscrowBase.EscrowBase__InvalidSignature.selector);
+    vm.expectRevert(RecoveryAuthLib.RecoveryAuthLib__InvalidSignature.selector);
     escrow.recoverERC20(RECOVERY_SALT, escrowOwner, signature, RELAYER, address(dai), REQUEST_NONCE, deadline);
   }
 
@@ -282,7 +280,7 @@ contract SkyEscrowTest is SkyTestBase {
       _eoaSign(OWNER_KEY, _recoverERC20Digest(address(escrow), target, address(dai), REQUEST_NONCE, deadline));
     vm.warp(deadline + 1);
 
-    vm.expectRevert(abi.encodeWithSelector(EscrowBase.EscrowBase__RecoveryExpired.selector, deadline));
+    vm.expectRevert(abi.encodeWithSelector(RecoveryAuthLib.RecoveryAuthLib__RecoveryExpired.selector, deadline));
     escrow.recoverERC20(RECOVERY_SALT, escrowOwner, signature, target, address(dai), REQUEST_NONCE, deadline);
   }
 
@@ -321,7 +319,7 @@ contract SkyEscrowTest is SkyTestBase {
     bytes memory signature =
       _eoaSign(OWNER_KEY, _recoverERC20Digest(address(escrow), target, address(0), REQUEST_NONCE, deadline));
 
-    vm.expectRevert(EscrowBase.EscrowBase__InvalidSignature.selector);
+    vm.expectRevert(RecoveryAuthLib.RecoveryAuthLib__InvalidSignature.selector);
     escrow.recoverETH(RECOVERY_SALT, escrowOwner, signature, target, REQUEST_NONCE, deadline);
   }
 
@@ -330,13 +328,13 @@ contract SkyEscrowTest is SkyTestBase {
     uint256 deadline = block.timestamp + 1 hours;
     bytes memory signature = _eoaSign(OWNER_KEY, _recoverETHDigest(address(escrow), target, REQUEST_NONCE, deadline));
 
-    vm.expectRevert(EscrowBase.EscrowBase__InvalidSignature.selector);
+    vm.expectRevert(RecoveryAuthLib.RecoveryAuthLib__InvalidSignature.selector);
     escrow.recoverERC20(RECOVERY_SALT, escrowOwner, signature, target, address(dai), REQUEST_NONCE, deadline);
 
     _fundSUsdsPortal(10e18);
     IOxidePortal.WithdrawArgs memory withdrawal =
-      _skyWithdrawArgs(10e18, abi.encode(address(escrow), 0), abi.encode(address(0), address(0)));
-    vm.expectRevert(EscrowBase.EscrowBase__InvalidSignature.selector);
+      _skyWithdrawArgs(10e18, abi.encode(address(escrow), 0), abi.encodePacked(address(0)));
+    vm.expectRevert(RecoveryAuthLib.RecoveryAuthLib__InvalidSignature.selector);
     escrow.withdrawInShares(withdrawal, RECOVERY_SALT, escrowOwner, signature, REQUEST_NONCE, deadline);
   }
 
@@ -358,7 +356,7 @@ contract SkyEscrowTest is SkyTestBase {
     bytes32 withdrawalId = bytes32(uint256(uint160(target)));
     bytes memory signature = _eoaSign(OWNER_KEY, escrow.withdrawInSharesDigest(withdrawalId, REQUEST_NONCE, deadline));
 
-    vm.expectRevert(EscrowBase.EscrowBase__InvalidSignature.selector);
+    vm.expectRevert(RecoveryAuthLib.RecoveryAuthLib__InvalidSignature.selector);
     escrow.recoverERC20(RECOVERY_SALT, escrowOwner, signature, target, address(dai), REQUEST_NONCE, deadline);
   }
 
@@ -367,12 +365,12 @@ contract SkyEscrowTest is SkyTestBase {
     SkyEscrow escrow = SkyEscrow(escrowFactory.deploy(args));
     _fundSUsdsPortal(10e18);
     IOxidePortal.WithdrawArgs memory withdrawal =
-      _skyWithdrawArgs(10e18, abi.encode(address(escrow), 0), abi.encode(address(0), address(0)));
+      _skyWithdrawArgs(10e18, abi.encode(address(escrow), 0), abi.encodePacked(address(0)));
     uint256 deadline = block.timestamp + 1 hours;
     bytes memory signature =
       _eoaSign(OWNER_KEY, _recoverERC20Digest(address(escrow), target, address(sUsds), REQUEST_NONCE, deadline));
 
-    vm.expectRevert(EscrowBase.EscrowBase__InvalidSignature.selector);
+    vm.expectRevert(RecoveryAuthLib.RecoveryAuthLib__InvalidSignature.selector);
     escrow.withdrawInShares(withdrawal, RECOVERY_SALT, escrowOwner, signature, REQUEST_NONCE, deadline);
   }
 
@@ -380,12 +378,12 @@ contract SkyEscrowTest is SkyTestBase {
     SkyEscrow escrow = SkyEscrow(escrowFactory.deploy(_args(1)));
     _fundSUsdsPortal(10e18);
     IOxidePortal.WithdrawArgs memory withdrawal =
-      _skyWithdrawArgs(10e18, abi.encode(address(escrow), 0), abi.encode(address(0), address(0)));
+      _skyWithdrawArgs(10e18, abi.encode(address(escrow), 0), abi.encodePacked(address(0)));
     uint256 deadline = block.timestamp + 1 hours;
     bytes memory signature =
       _eoaSign(OWNER_KEY, escrow.withdrawInSharesDigest(keccak256("another"), REQUEST_NONCE, deadline));
 
-    vm.expectRevert(EscrowBase.EscrowBase__InvalidSignature.selector);
+    vm.expectRevert(RecoveryAuthLib.RecoveryAuthLib__InvalidSignature.selector);
     escrow.withdrawInShares(withdrawal, RECOVERY_SALT, escrowOwner, signature, REQUEST_NONCE, deadline);
   }
 
@@ -396,7 +394,7 @@ contract SkyEscrowTest is SkyTestBase {
     uint256 shares = 80e18;
     _fundSUsdsPortal(shares);
     IOxidePortal.WithdrawArgs memory withdrawal =
-      _skyWithdrawArgs(shares, abi.encode(address(escrow), 1e18), abi.encode(RELAYER, address(0)));
+      _skyWithdrawArgs(shares, abi.encode(address(escrow), 1e18), abi.encodePacked(RELAYER));
 
     converter.setBroken(true);
     vm.expectRevert(MockDaiUsds.MockDaiUsds__Paused.selector);
@@ -419,15 +417,14 @@ contract SkyEscrowTest is SkyTestBase {
 
     assertEq(sUsds.balanceOf(address(escrow)), 0, "the run redeems the shares");
     assertEq(dai.balanceOf(RELAYER), ESCROW_TIP);
-    assertEq(dai.balanceOf(address(portal)) - portalBefore, 100e18 - ESCROW_TIP - DAI_PORTAL_CUT);
+    assertEq(dai.balanceOf(address(portal)) - portalBefore, 100e18 - ESCROW_TIP);
   }
 
   function test_GivenAFrozenDestination_WhenAStakeRuns_ThenItRevertsAndTheOwnerRecovers() external {
     SkyEscrow.Args memory args = _args(0);
     address escrow = escrowFactory.predictEscrowAddress(args);
     dai.mint(escrow, 50e18);
-    vm.prank(OWNER);
-    sUsdsPortal.freeze();
+    _freezePortal(sUsdsPortal);
 
     vm.expectRevert(CoreErrors.OxidePortal__FrozenPortal.selector);
     escrowFactory.deployAndExecute(args);
@@ -441,14 +438,6 @@ contract SkyEscrowTest is SkyTestBase {
     SkyEscrow(escrow).recoverERC20(RECOVERY_SALT, escrowOwner, signature, target, address(dai), REQUEST_NONCE, deadline);
 
     assertEq(dai.balanceOf(target), 50e18);
-  }
-
-  function test_GivenAnUnstakeUnderTheDaiPortalCut_WhenRun_ThenReverts() external {
-    SkyEscrow.Args memory args = _args(1);
-    dai.mint(escrowFactory.predictEscrowAddress(args), ESCROW_TIP + DAI_PORTAL_CUT);
-
-    vm.expectRevert(CoreErrors.OxidePortal__AmountNotAboveFpcFundingCut.selector);
-    escrowFactory.deployAndExecute(args);
   }
 
   function test_GivenBothRoutes_ThenTheRunGasIsMeasured() external {
@@ -474,8 +463,7 @@ contract SkyEscrowTest is SkyTestBase {
     SkyEscrow.Args memory args = _args(1);
     address escrow = escrowFactory.predictEscrowAddress(args);
     dai.mint(escrow, 50e18);
-    vm.prank(OWNER);
-    portal.freeze();
+    _freeze();
 
     vm.prank(RELAYER);
     vm.expectRevert(CoreErrors.OxidePortal__FrozenPortal.selector);
@@ -486,24 +474,9 @@ contract SkyEscrowTest is SkyTestBase {
     _recoverDai(escrowFactory, args, 50e18);
   }
 
-  function test_GivenAnUninitializedDaiPortal_WhenAnUnstakeRuns_ThenItRevertsAndTheOwnerRecovers() external {
-    OxidePortal uninitialized = _newPortal(address(dai), DAI_PORTAL_CUT);
-    SkyEscrowFactory factory = new SkyEscrowFactory(_skyRoute(), uninitialized, sUsdsPortal, skyExecutor);
-    SkyEscrow.Args memory args = _args(1);
-    address escrow = factory.predictEscrowAddress(args);
-    dai.mint(escrow, 50e18);
-
-    vm.prank(RELAYER);
-    vm.expectRevert(CoreErrors.OxidePortal__Uninitialized.selector);
-    factory.deployAndExecute(args);
-    assertEq(dai.balanceOf(escrow), 50e18, "the funds stay in the escrow");
-
-    _recoverDai(factory, args, 50e18);
-  }
-
   function test_GivenAFullSUsdsPortalBucket_WhenAStakeRuns_ThenItRevertsUntilTheBucketRefills() external {
-    OxidePortal cappedSUsdsPortal = _cappedPortal(address(sUsds), 0, bytes32(uint256(0xCA95)));
-    SkyWithdrawalExecutor cappedExecutor = new SkyWithdrawalExecutor(cappedSUsdsPortal, _skyRoute());
+    OxidePortal cappedSUsdsPortal = _cappedPortal(address(sUsds), bytes32(uint256(0xCA95)));
+    SkyWithdrawalExecutor cappedExecutor = new SkyWithdrawalExecutor(cappedSUsdsPortal, _skyRoute(), OWNER, ethUsdFeed);
     SkyEscrowFactory factory = new SkyEscrowFactory(_skyRoute(), portal, cappedSUsdsPortal, cappedExecutor);
     uint256 filled = _mintShares(address(this), 90e18);
     sUsds.approve(address(cappedSUsdsPortal), filled);
@@ -530,12 +503,12 @@ contract SkyEscrowTest is SkyTestBase {
   }
 
   function test_GivenAFullDaiPortalBucket_WhenAnUnstakeRuns_ThenItRevertsUntilTheBucketRefills() external {
-    OxidePortal cappedDaiPortal = _cappedPortal(address(dai), DAI_PORTAL_CUT, bytes32(uint256(0xCADA1)));
+    OxidePortal cappedDaiPortal = _cappedPortal(address(dai), bytes32(uint256(0xCADA1)));
     SkyEscrowFactory factory = new SkyEscrowFactory(_skyRoute(), cappedDaiPortal, sUsdsPortal, skyExecutor);
     dai.mint(address(this), 90e18);
     dai.approve(address(cappedDaiPortal), 90e18);
     cappedDaiPortal.deposit(keccak256("another-user"), 90e18);
-    assertEq(cappedDaiPortal.getCurrentAvailable(), 10.5e18, "the bucket is nearly full");
+    assertEq(cappedDaiPortal.getCurrentAvailable(), 10e18, "the bucket is nearly full");
 
     SkyEscrow.Args memory args = _args(1);
     address escrow = factory.predictEscrowAddress(args);
@@ -552,7 +525,7 @@ contract SkyEscrowTest is SkyTestBase {
     factory.deployAndExecute(args);
 
     assertEq(dai.balanceOf(escrow), 0, "the run succeeds after the bucket refills");
-    assertEq(dai.balanceOf(address(cappedDaiPortal)) - portalBefore, 48e18 - DAI_PORTAL_CUT);
+    assertEq(dai.balanceOf(address(cappedDaiPortal)) - portalBefore, 48e18);
     assertEq(dai.balanceOf(RELAYER), ESCROW_TIP);
   }
 
@@ -564,7 +537,7 @@ contract SkyEscrowTest is SkyTestBase {
     assertEq(sUsds.convertToShares(1), 0, "one wei of dai mints no share");
 
     vm.prank(RELAYER);
-    vm.expectRevert(CoreErrors.OxidePortal__AmountNotAboveFpcFundingCut.selector);
+    vm.expectRevert(CoreErrors.OxidePortal__ZeroAmount.selector);
     escrowFactory.deployAndExecute(args);
     assertEq(dai.balanceOf(escrow), ESCROW_TIP + 1, "the funds stay in the escrow");
     assertEq(dai.balanceOf(RELAYER), 0);
@@ -580,7 +553,7 @@ contract SkyEscrowTest is SkyTestBase {
     SkyEscrow escrow = SkyEscrow(escrowFactory.deploy(args));
     _fundSUsdsPortal(10e18);
     IOxidePortal.WithdrawArgs memory withdrawal =
-      _skyWithdrawArgs(10e18, abi.encode(address(escrow), 0), abi.encode(address(0), address(0)));
+      _skyWithdrawArgs(10e18, abi.encode(address(escrow), 0), abi.encodePacked(address(0)));
     converter.setBroken(true);
     uint256 deadline = block.timestamp + 1 hours;
     bytes memory signature =
@@ -601,12 +574,12 @@ contract SkyEscrowTest is SkyTestBase {
     SkyEscrow escrow = SkyEscrow(escrowFactory.deploy(args));
     _fundSUsdsPortal(10e18);
     IOxidePortal.WithdrawArgs memory withdrawal =
-      _skyWithdrawArgs(10e18, abi.encode(address(escrow), 0), abi.encode(address(0), address(0)));
+      _skyWithdrawArgs(10e18, abi.encode(address(escrow), 0), abi.encodePacked(address(0)));
     uint256 deadline = block.timestamp + 1 hours;
     bytes memory signature =
       _rawSign(0x5162, escrow.withdrawInSharesDigest(withdrawal.withdrawalId, REQUEST_NONCE, deadline));
 
-    vm.expectRevert(EscrowBase.EscrowBase__InvalidSignature.selector);
+    vm.expectRevert(RecoveryAuthLib.RecoveryAuthLib__InvalidSignature.selector);
     escrow.withdrawInShares(withdrawal, RECOVERY_SALT, address(account), signature, REQUEST_NONCE, deadline);
 
     assertFalse(sUsdsPortal.$isWithdrawalSpent(withdrawal.withdrawalId));
@@ -709,27 +682,26 @@ contract SkyEscrowTest is SkyTestBase {
 
     assertEq(dai.balanceOf(escrow), 0, "the run succeeds once Sky works again");
     assertEq(sUsds.balanceOf(escrow), 0);
-    assertEq(dai.balanceOf(address(portal)) - portalBefore, 50e18 + 1 - ESCROW_TIP - DAI_PORTAL_CUT);
+    assertEq(dai.balanceOf(address(portal)) - portalBefore, 50e18 + 1 - ESCROW_TIP);
   }
 
-  function _cappedPortal(address _underlying, uint256 _cut, bytes32 _l2Portal) internal returns (OxidePortal capped) {
+  function _cappedPortal(address _underlying, bytes32 _l2Token) internal returns (OxidePortal capped) {
+    pendingL2Token = _l2Token;
     capped = new OxidePortal(
-      OWNER,
-      OxidePortal.FpcFunding({funder: FPC_FUNDER, cut: _cut}),
-      certManager,
-      nitroValidator,
+      teeRegistry,
       IERC20(_underlying),
       IRegistry(address(registry)),
       ROLLUP_VERSION,
       OxidePortal.RefundVerifiers({
         frozenNotes: IVerifier(address(frozenNotesRefundVerifier)),
-        frozenDeposit: IVerifier(address(frozenDepositRefundVerifier)),
+        frozenDeposits: IVerifier(address(frozenDepositsRefundVerifier)),
         unprocessedDeposit: IVerifier(address(unprocessedDepositRefundVerifier))
       }),
+      TX_AMOUNT_CAP,
       RATE,
       CAPPED_GLOBAL_LIMIT
     );
-    _initializeAndRegister(capped, _l2Portal);
+    pendingL2Token = L2_TOKEN;
   }
 
   function _recoverDai(SkyEscrowFactory _factory, SkyEscrow.Args memory _escrowArgs, uint256 _amount) internal {
@@ -752,7 +724,7 @@ contract SkyEscrowTest is SkyTestBase {
     escrow = _deployFunded(_args(1), 10e18);
     vm.deal(address(escrow), 1 ether);
     _fundSUsdsPortal(10e18);
-    withdrawal = _skyWithdrawArgs(10e18, abi.encode(address(escrow), 0), abi.encode(address(0), address(0)));
+    withdrawal = _skyWithdrawArgs(10e18, abi.encode(address(escrow), 0), abi.encodePacked(address(0)));
     deadline = block.timestamp + 1 hours;
   }
 

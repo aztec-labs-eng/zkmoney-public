@@ -1,36 +1,43 @@
-import type { AztecAddress } from '@aztec/aztec.js/addresses';
-import type { ContractFunctionInteraction } from '@aztec/aztec.js/contracts';
-import { Fr } from '@aztec/aztec.js/fields';
-import { EthAddress } from '@aztec/foundation/eth-address';
+import type { AztecAddress } from '@aztec-labs/aztec.js/addresses';
+import type { ContractFunctionInteraction } from '@aztec-labs/aztec.js/contracts';
+import { Fr } from '@aztec-labs/aztec.js/fields';
+import { EthAddress } from '@aztec-labs/foundation/eth-address';
 
 import { THREE_POOL_SWAP_MAX_SLIPPAGE_BPS } from '@oxide/l1-contracts/deposit_tokens.js';
 import { predictEscrowAddressLocally } from '@oxide/l1-contracts/escrow.js';
 import { type BroadcastL1Operation, L1OperationCondition } from '@oxide/oxide-lib/l1_operation_calldata.js';
-import { encodePlainWithdrawalPayload, plainWithdrawalExecutorAmount } from '@oxide/oxide-lib/plain_withdrawal.js';
+import { plainWithdrawalNetAmount } from '@oxide/oxide-lib/plain_withdrawal_executor.js';
 import { deriveRecoveryCommitment } from '@oxide/oxide-lib/sipa_recovery.js';
 
 import type { Hex } from 'viem';
 
 import { type L1OperationBroadcaster, broadcastL1Operation } from '../broadcaster_calls.js';
-import type { Operation } from '../l2_operations.js';
+import { type WithdrawalExecutor, buildPlainWithdrawal } from '../executors/plain_withdrawal_executor.js';
+import type { WithdrawOperation } from '../l2_operations.js';
 
 /** What every withdrawal into a counterfactual escrow needs. */
 export interface EscrowWithdrawalArgs {
   broadcaster: L1OperationBroadcaster;
   dai: EthAddress;
   from: AztecAddress;
-  /** PlainWithdrawalExecutor the withdrawal settles into. It pays the tip and forwards the rest to the escrow. */
-  plainWithdrawalExecutor: EthAddress;
+  /**
+   * PlainWithdrawalExecutor that the finalized withdrawal pays. It pays the fee and the tip, and forwards the rest to
+   * the escrow.
+   */
+  plainWithdrawalExecutor: WithdrawalExecutor;
   amount: bigint;
   /** DAI the executor pays the relayer that finalizes the withdrawal on L1. */
   withdrawalRelayerTip: bigint;
   proverTip: bigint;
-  /** The portal's `FPC_FUNDING_CUT`, which it takes from the withdrawal before it pays the executor. */
-  fpcFundingCut: bigint;
   /** Signs the escrow's recovery: ERC-1271 if it has code, else an EOA `personal_sign`. */
   recoveryAccount: EthAddress;
   /** DAI the escrow pays the relayer that calls `deployAndExecute`. */
   relayerTip: bigint;
+  /**
+   * The portal that the withdrawal's finalization request targets. A relayer finalizes the withdrawal from the request,
+   * and so funds the escrow.
+   */
+  portal: EthAddress;
   /** Fresh randomness if omitted. Give it when you derive `recoverySalt` from it. Never reuse it. */
   nonce?: Hex;
   /**
@@ -51,8 +58,8 @@ export type EscrowWithdrawal<TEscrowArgs> = {
   /** Recovery needs it, and nothing on chain reveals it. */
   recoverySalt: Fr;
   /** Pass in `submit`'s `operations`: the withdrawal, addressed to the escrow. */
-  operation: Operation;
-  /** For `broadcastL1OperationPair` with the withdrawal's own L1 operation. */
+  operation: WithdrawOperation;
+  /** The L1 operation that executes the escrow. `broadcast` broadcasts it. */
   l1Operation: BroadcastL1Operation;
   /** Pass in `submit`'s `teeUnsignedInteractions`: the L1 operation broadcast that executes the escrow. */
   broadcast: ContractFunctionInteraction;
@@ -66,19 +73,18 @@ type EscrowDeployment<TEscrowArgs> = {
 
 export type EscrowFundingArgs = Pick<
   EscrowWithdrawalArgs,
-  'amount' | 'withdrawalRelayerTip' | 'proverTip' | 'fpcFundingCut' | 'relayerTip'
+  'amount' | 'withdrawalRelayerTip' | 'proverTip' | 'relayerTip' | 'plainWithdrawalExecutor'
 >;
 
 /** The DAI the withdrawal leaves at the escrow. Throws if `relayerTip` is not below it. */
 export function checkedEscrowFunding(args: EscrowFundingArgs): bigint {
   // The factory only executes above the tip, so a tip at or above the funding would leave the operation deferring.
-  // A frozen portal takes no cut, so the escrow gets at least this.
-  const executorAmount = plainWithdrawalExecutorAmount(args.amount, args.proverTip, args.fpcFundingCut, false);
-  const funding = executorAmount - args.withdrawalRelayerTip;
+  const netAmount = plainWithdrawalNetAmount(args.amount, args.proverTip, args.plainWithdrawalExecutor.fee);
+  const funding = netAmount - args.withdrawalRelayerTip;
   if (args.relayerTip >= funding) {
     throw new Error(
       `relayerTip (${args.relayerTip}) must be below the escrow funding of ` +
-        `amount - proverTip - fpcFundingCut - withdrawalRelayerTip (${funding})`,
+        `amount - proverTip - withdrawalFee - withdrawalRelayerTip (${funding})`,
     );
   }
   return funding;
@@ -112,14 +118,15 @@ export function buildEscrowWithdrawal<TEscrowArgs>(
   const { escrowArgs, encodedArgs, deployCalldata } = escrowFor({ nonce, recoveryCommitment });
   const escrow = EthAddress.fromString(predictEscrowAddressLocally(factory.toString(), encodedArgs));
 
-  const operation: Operation = {
-    kind: 'withdraw',
+  const operation = buildPlainWithdrawal({
     from: args.from,
     executor: args.plainWithdrawalExecutor,
-    userPayload: encodePlainWithdrawalPayload({ recipient: escrow, relayerTip: args.withdrawalRelayerTip }),
+    recipient: escrow,
+    relayerTip: args.withdrawalRelayerTip,
     amount: args.amount,
     proverTip: args.proverTip,
-  };
+    finalizationRequestBroadcastParams: { broadcaster: args.broadcaster, portal: args.portal, payoutToken: args.dai },
+  });
   const l1Operation: BroadcastL1Operation = {
     target: factory,
     payoutToken: args.dai,

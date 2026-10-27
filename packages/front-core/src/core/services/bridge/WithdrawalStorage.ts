@@ -14,12 +14,23 @@
  */
 
 import type { IStorageAdapter } from "../../storages/adapter"
-import { isHash } from "viem"
-import { WITHDRAWAL_TERMINAL_PHASES, type WithdrawalPhase, type WithdrawalRecord } from "./types"
+import { isHash, type Hex } from "viem"
+import {
+  WITHDRAWAL_RECORD_VERSION,
+  WITHDRAWAL_TERMINAL_PHASES,
+  type WithdrawalPhase,
+  type WithdrawalRecord,
+} from "./types"
 import { RecordStorage } from "./RecordStorage"
 import { getActiveNetworkId } from "../../activeNetworkId"
 
-const KEY_WITHDRAWALS = "@obsidion/withdrawals/records"
+export const KEY_WITHDRAWALS = "@obsidion/withdrawals/records"
+
+/** What a burn's recovery data says it paid: the executor, and that executor's fee. */
+export interface BurnExecutor {
+  executor: Hex
+  withdrawalFee: bigint
+}
 
 /** Fresh `wdraw_*` key for a record created at Confirm — the prefix is this store's keying contract. */
 export function newWithdrawalLocalId(): string {
@@ -28,6 +39,15 @@ export function newWithdrawalLocalId(): string {
 
 type UpdatedListener = (record: WithdrawalRecord) => void
 type ListChangedListener = (records: WithdrawalRecord[]) => void
+
+/** Records stored without `tokenDecimals` all burned an 18-decimal token. */
+const UNSTAMPED_TOKEN_DECIMALS = 18
+
+function withTokenDecimals(record: WithdrawalRecord): WithdrawalRecord {
+  return record.tokenDecimals === undefined
+    ? { ...record, tokenDecimals: UNSTAMPED_TOKEN_DECIMALS }
+    : record
+}
 
 function keyForRecord(record: WithdrawalRecord): string {
   return record.localId.toLowerCase()
@@ -74,7 +94,7 @@ function mergeWithdrawalRecords(
     blockNumber: incoming.blockNumber ?? existing.blockNumber,
     rawAmount: incoming.rawAmount ?? existing.rawAmount,
     relayerTip: incoming.relayerTip ?? existing.relayerTip,
-    fpcFundingCut: incoming.fpcFundingCut ?? existing.fpcFundingCut,
+    withdrawalFee: incoming.withdrawalFee ?? existing.withdrawalFee,
     withdrawalId: incoming.withdrawalId ?? existing.withdrawalId,
     l1TxHash: incoming.l1TxHash ?? existing.l1TxHash,
     receivedAmount: incoming.receivedAmount ?? existing.receivedAmount,
@@ -104,6 +124,7 @@ export class WithdrawalStorage {
       keyOf: keyForRecord,
       sortBy: (r) => r.startTime,
       label: "WithdrawalStorage",
+      normalize: withTokenDecimals,
     })
   }
 
@@ -148,17 +169,54 @@ export class WithdrawalStorage {
 
   /**
    * Create a fresh record (pre-mine). Caller supplies a full record including
-   * the generated `localId`, which remains the stable persistence key.
+   * the generated `localId`, which remains the stable persistence key. `strict`
+   * rejects when the write does not reach storage.
    */
-  async create(record: WithdrawalRecord): Promise<WithdrawalRecord> {
+  async create(record: WithdrawalRecord, opts?: { strict?: boolean }): Promise<WithdrawalRecord> {
     await this.load()
     const stamped = this.stampTerminal({
       ...record,
+      version: record.version ?? WITHDRAWAL_RECORD_VERSION,
       networkId: record.networkId ?? getActiveNetworkId(),
     })
-    const stored = await this.store.setRecord(keyForRecord(stamped), stamped)
+    const stored = await this.store.setRecord(keyForRecord(stamped), stamped, opts)
     this.indexAddIfPresent(stored)
     return stored
+  }
+
+  /**
+   * Migrate records written before {@link WITHDRAWAL_RECORD_VERSION} 2: stamp each burn's executor,
+   * and its fee where the record names none, as `burnOf` reads them off the burn's own recovery data.
+   * A record `burnOf` does not know stays at version 1 for the next pass. Returns the records
+   * migrated.
+   */
+  async migrateExecutors(
+    burnOf: (record: WithdrawalRecord) => BurnExecutor | undefined,
+  ): Promise<WithdrawalRecord[]> {
+    await this.load()
+    const migrated: WithdrawalRecord[] = []
+    for (const record of this.store.list()) {
+      if ((record.version ?? 1) >= WITHDRAWAL_RECORD_VERSION) continue
+      const burn = record.deployment && !record.deployment.executor ? burnOf(record) : undefined
+      if (record.deployment && !record.deployment.executor && !burn) continue
+      const written: { record?: WithdrawalRecord } = {}
+      await this.store.updateRecord(keyForRecord(record), (current) => {
+        if (!current || (current.version ?? 1) >= WITHDRAWAL_RECORD_VERSION) return null
+        written.record = {
+          ...current,
+          version: WITHDRAWAL_RECORD_VERSION,
+          ...(current.deployment && burn
+            ? { deployment: { ...current.deployment, executor: burn.executor } }
+            : {}),
+          ...(burn && !current.withdrawalFee && burn.withdrawalFee > 0n
+            ? { withdrawalFee: burn.withdrawalFee.toString() }
+            : {}),
+        }
+        return written.record
+      })
+      if (written.record) migrated.push(written.record)
+    }
+    return migrated
   }
 
   /**
@@ -223,15 +281,14 @@ export class WithdrawalStorage {
   /**
    * Persist the mined L2 burn data while keeping the record keyed by localId.
    *
-   * `relayerTip` is the tip the burn offered, in raw token units. It is the deduction only the
-   * burn knows; the portal's `fpcFundingCut` sits on the record from creation. A caller that does
-   * not know the tip leaves it out and the record carries no breakdown.
+   * `rawAmount` and `relayerTip` (the tip the burn offered, in raw token units) keep the record's
+   * own values when left out; a record that never had a tip carries no breakdown.
    */
   async markMined(
     localId: string,
     l2TxHash: string,
     blockNumber: number,
-    rawAmount: string,
+    rawAmount?: string,
     relayerTip?: string,
   ): Promise<WithdrawalRecord> {
     // Fail fast on a malformed hash — silently storing a non-0x / non-hex
@@ -253,7 +310,7 @@ export class WithdrawalStorage {
         ...existing,
         l2TxHash,
         blockNumber,
-        rawAmount,
+        rawAmount: rawAmount ?? existing.rawAmount,
         relayerTip: relayerTip ?? existing.relayerTip,
         phase: "l2_mined",
         minedAt: existing.minedAt ?? Date.now(),

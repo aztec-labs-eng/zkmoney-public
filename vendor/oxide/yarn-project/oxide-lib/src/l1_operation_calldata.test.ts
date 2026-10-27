@@ -1,11 +1,11 @@
-import { Fr } from '@aztec/aztec.js/fields';
-import { DomainSeparator } from '@aztec/constants';
-import { EthAddress } from '@aztec/foundation/eth-address';
-import { EventSelector, FunctionSelector } from '@aztec/stdlib/abi';
-import { AztecAddress } from '@aztec/stdlib/aztec-address';
-import { computeLogTag } from '@aztec/stdlib/hash';
-import { TxHash } from '@aztec/stdlib/tx';
-import type { Tx } from '@aztec/stdlib/tx';
+import { Fr } from '@aztec-labs/aztec.js/fields';
+import { DomainSeparator } from '@aztec-labs/constants';
+import { EthAddress } from '@aztec-labs/foundation/eth-address';
+import { EventSelector, FunctionSelector } from '@aztec-labs/stdlib/abi';
+import { AztecAddress } from '@aztec-labs/stdlib/aztec-address';
+import { computeLogTag } from '@aztec-labs/stdlib/hash';
+import { TxHash } from '@aztec-labs/stdlib/tx';
+import type { Tx } from '@aztec-labs/stdlib/tx';
 
 import { describe, expect, it, test } from '@jest/globals';
 
@@ -229,7 +229,7 @@ describe('l1 operation broadcast decoder', () => {
   });
 });
 
-test('withdrawal identities require and retain the burn transaction while other operations retain content identity', () => {
+test('withdrawal identities require and retain the initiation tx while other operations retain content identity', () => {
   const operation = {
     target: EthAddress.random(),
     payoutToken: EthAddress.random(),
@@ -238,7 +238,7 @@ test('withdrawal identities require and retain the burn transaction while other 
   };
   const first = TxHash.random();
   const second = TxHash.random();
-  expect(() => computeL1OperationId(operation)).toThrow('burn transaction');
+  expect(() => computeL1OperationId(operation)).toThrow('initiation transaction');
   expect(computeL1OperationId(operation, first)).toBe(computeL1OperationId(operation, first));
   expect(computeL1OperationId(operation, second)).not.toBe(computeL1OperationId(operation, first));
   const immediate = { ...operation, condition: L1OperationCondition.immediate() };

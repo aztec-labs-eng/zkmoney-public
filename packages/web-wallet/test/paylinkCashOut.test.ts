@@ -7,17 +7,18 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import { formatUnits, parseUnits, type Address, type Hex } from "viem"
 import { WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
 import { provingProgress, ProvingStage } from "@obsidion/proving-progress"
-import { TxStatus } from "@aztec/stdlib/tx"
+import { TxStatus } from "@aztec-labs/stdlib/tx"
+import { LIMIT, LIMIT_USD } from "./support/publicLimit"
 
 const L2_TX = `0x${"0a".repeat(32)}` as Hex
 const RECIPIENT = `0x${"dd".repeat(20)}` as Address
 /** The escrow's whole balance; the burn takes all of it and the portal's fee comes out of it. */
 const ESCROW = parseUnits("25", 18)
-// What the stubbed portal reads back as FPC_FUNDING_CUT — the other half of the fee.
-const CUT = 250_000_000_000_000_000n
 const SOURCE = { portal: `0x${"70".repeat(20)}`, l2Token: `0x${"11".repeat(32)}` }
-// What the stubbed portal answers the sdk's pre-burn relayer-tip check with.
-const PORTAL_STATE = { fpcFundingCut: CUT, frozen: false }
+/** The source executor's withdrawal fee. */
+const FEE = parseUnits("0.1", 18)
+/** The L1 client every burn's sdk options carry. */
+const L1 = { l1: true }
 
 vi.mock("../src/config/env", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/config/env")>()),
@@ -25,15 +26,19 @@ vi.mock("../src/config/env", async (importOriginal) => ({
   l1Transport: () => ({}),
 }))
 // The portal alone resolves no withdrawal wiring, so the record carries no deployment and the chain
-// watcher is skipped — the assertions here are about what the burn writes, not about finalization —
-// while the fee's portal half still reads back.
+// watcher is skipped — the assertions here are about what the burn writes, not about finalization.
 vi.mock("../src/config/oxideTuple", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/config/oxideTuple")>()),
   getOxideTuple: async () => SOURCE,
-  l1PublicClient: () => ({
-    readContract: async ({ functionName }: { functionName: string }) =>
-      functionName === "$frozen" ? false : CUT,
-  }),
+  l1PublicClient: () => L1,
+}))
+vi.mock("../src/features/token/oxideToken", () => ({
+  txAmountCap: async () => 5166n * 10n ** 18n,
+  oxideTokenImmutablesOf: async () => ({ symbol: "DAI", decimals: 18 }),
+}))
+vi.mock("../src/features/withdraw/withdrawalFee", () => ({
+  withdrawalExecutorFee: async () => FEE,
+  withdrawalExecutor: async () => ({ fee: FEE }),
 }))
 const { claimSponsorRail } = vi.hoisted(() => ({
   claimSponsorRail: vi.fn(async () => ({ sponsor: { railId: 2 }, rail: { railId: 2 } })),
@@ -155,12 +160,12 @@ describe("cashOutLink", () => {
     )
     const args = exitPaylinkWithVoucher.mock.calls[0]![0] as {
       l1Recipient: { toString(): string }
-      withdrawal: { tuple: unknown; swap?: unknown }
+      withdrawal: { tuple: unknown; l1: unknown; swap?: unknown }
     }
     expect(args.l1Recipient.toString().toLowerCase()).toBe(SWAP_ESCROW)
     expect(args.withdrawal).toEqual({
       tuple: SOURCE,
-      portal: PORTAL_STATE,
+      l1: L1,
       swap: expect.objectContaining({
         escrowArgs: expect.objectContaining({ relayerTip: 5n }),
         recovery: expect.objectContaining({ account: RECIPIENT }),
@@ -198,12 +203,12 @@ describe("cashOutLink", () => {
     expect(planSwapLeg).not.toHaveBeenCalled()
     const args = exitPaylinkWithVoucher.mock.calls[0]![0] as {
       l1Recipient: { toString(): string }
-      withdrawal: { tuple: unknown; swap?: unknown }
+      withdrawal: { tuple: unknown; l1: unknown; swap?: unknown }
     }
     expect(args.l1Recipient.toString().toLowerCase()).toBe(SWAP_ESCROW)
     expect(args.withdrawal).toEqual({
       tuple: SOURCE,
-      portal: PORTAL_STATE,
+      l1: L1,
       swap: expect.objectContaining({ escrowArgs: expect.objectContaining({ nonce: "0x01" }) }),
     })
     expect(record.swapEscrow).toBe(SWAP_ESCROW)
@@ -215,10 +220,10 @@ describe("cashOutLink", () => {
     const args = exitPaylinkWithVoucher.mock.calls[0]![0] as {
       l1Recipient: { toString(): string }
       meta?: unknown
-      withdrawal: { tuple: unknown; swap?: unknown }
+      withdrawal: { tuple: unknown; l1: unknown; swap?: unknown }
     }
     expect(args.l1Recipient.toString().toLowerCase()).toBe(RECIPIENT)
-    expect(args.withdrawal).toEqual({ tuple: SOURCE, portal: PORTAL_STATE })
+    expect(args.withdrawal).toEqual({ tuple: SOURCE, l1: L1 })
     expect(args.meta).toBeUndefined()
   })
 
@@ -234,11 +239,12 @@ describe("cashOutLink", () => {
     // The escrow the burn spent — how the link page finds this record again.
     expect(record.paylinkId).toMatch(/^0x[0-9a-f]{64}$/)
     expect(record.l2TxHash).toBe(L2_TX)
-    // Gross is the escrow; the display amount is what lands once the portal's fee comes out.
+    // Gross is the escrow; the display amount is what lands once the executor's fee and the relayer
+    // tip come out.
     expect(record.rawAmount).toBe(ESCROW.toString())
     expect(record.relayerTip).toBe(WITHDRAW_RELAYER_TIP.toString())
-    expect(record.fpcFundingCut).toBe(CUT.toString())
-    expect(record.amount).toBe(formatUnits(ESCROW - WITHDRAW_RELAYER_TIP - CUT, 18))
+    expect(record.withdrawalFee).toBe(FEE.toString())
+    expect(record.amount).toBe(formatUnits(ESCROW - FEE - WITHDRAW_RELAYER_TIP, 18))
   })
 
   it("burns through the voucher rail with the link's escrow as the only identity", async () => {
@@ -261,19 +267,19 @@ describe("cashOutLink", () => {
   })
 
   // The burn spends the whole escrow, so a link over the limit has no smaller amount to send.
-  it("cashes out a link of exactly $2,500 and refuses one atomic unit more before burning or writing", async () => {
-    const LIMIT = parseUnits("2500", 18)
+  it(`cashes out a link of exactly ${LIMIT_USD} and refuses one atomic unit more before burning or writing`, async () => {
+    const LIMIT_ATOMIC = parseUnits(String(LIMIT), 18)
     const note = (amount: bigint) => ({ amount, tokenAddress: { toString: () => SOURCE.l2Token } })
     try {
-      readPaylinkEscrowNote.mockResolvedValue(note(LIMIT))
+      readPaylinkEscrowNote.mockResolvedValue(note(LIMIT_ATOMIC))
       await cashOutLink(deps(), "fragment-at-limit", RECIPIENT)
       expect(exitPaylinkWithVoucher).toHaveBeenCalledTimes(1)
       await vi.waitFor(() => expect(claimedEvents()).toHaveLength(1))
       await getWithdrawalStore().clearAll()
 
-      readPaylinkEscrowNote.mockResolvedValue(note(LIMIT + 1n))
+      readPaylinkEscrowNote.mockResolvedValue(note(LIMIT_ATOMIC + 1n))
       await expect(cashOutLink(deps(), "fragment-over-limit", RECIPIENT)).rejects.toThrow(
-        "This link holds more than the $2,500 withdrawal limit, so it cannot be claimed to an Ethereum wallet.",
+        `This link holds more than the ${LIMIT_USD} withdrawal limit, so it cannot be claimed to an Ethereum wallet.`,
       )
       expect(exitPaylinkWithVoucher).toHaveBeenCalledTimes(1)
       expect(getWithdrawalStore().list()).toHaveLength(0)
@@ -419,11 +425,11 @@ describe("linkVoucherUses", () => {
 })
 
 describe("cashOutNet", () => {
-  it("takes the relayer tip and the portal's cut off the top, and never goes negative", () => {
-    expect(cashOutNet(ESCROW, CUT)).toBe(ESCROW - WITHDRAW_RELAYER_TIP - CUT)
-    // A link that clears the tip but not the cut leaves the recipient nothing.
-    expect(cashOutNet(WITHDRAW_RELAYER_TIP + CUT / 2n, CUT)).toBe(0n)
+  it("takes the executor's fee and the relayer tip off the top, and never goes negative", () => {
+    expect(cashOutNet(ESCROW, FEE)).toBe(ESCROW - FEE - WITHDRAW_RELAYER_TIP)
+    expect(cashOutNet(ESCROW, 0n)).toBe(ESCROW - WITHDRAW_RELAYER_TIP)
+    expect(cashOutNet(FEE + WITHDRAW_RELAYER_TIP, FEE)).toBe(0n)
     // The sdk refuses such a link outright; the sheet must still render a figure.
-    expect(cashOutNet(WITHDRAW_RELAYER_TIP / 2n, CUT)).toBe(0n)
+    expect(cashOutNet(WITHDRAW_RELAYER_TIP, FEE)).toBe(0n)
   })
 })

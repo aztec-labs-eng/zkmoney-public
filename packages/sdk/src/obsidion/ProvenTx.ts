@@ -1,7 +1,7 @@
-import { OffchainEffect, ProvingStats, Tx, TxHash, TxReceipt } from "@aztec/stdlib/tx"
-import { AztecNode, waitForTx } from "@aztec/aztec.js/node"
-import { NO_WAIT, NoWait, WaitOpts } from "@aztec/aztec.js/contracts"
-import { SimulationError } from "@aztec/stdlib/errors"
+import { OffchainEffect, ProvingStats, Tx, TxHash, TxReceipt } from "@aztec-labs/stdlib/tx"
+import { AztecNode, waitForTx } from "@aztec-labs/aztec.js/node"
+import { NO_WAIT, NoWait, WaitOpts } from "@aztec-labs/aztec.js/contracts"
+import { SimulationError } from "@aztec-labs/stdlib/errors"
 import { ProvingStage, provingProgress } from "@obsidion/proving-progress"
 import { inspect } from "util"
 

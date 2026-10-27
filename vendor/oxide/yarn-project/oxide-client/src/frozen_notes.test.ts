@@ -1,7 +1,7 @@
-import { NO_FROM } from '@aztec/aztec.js/account';
-import type { SimulateInteractionOptions } from '@aztec/aztec.js/contracts';
-import { Fr } from '@aztec/aztec.js/fields';
-import { AztecAddress } from '@aztec/stdlib/aztec-address';
+import { NO_FROM } from '@aztec-labs/aztec.js/account';
+import type { SimulateInteractionOptions } from '@aztec-labs/aztec.js/contracts';
+import { Fr } from '@aztec-labs/aztec.js/fields';
+import { AztecAddress } from '@aztec-labs/stdlib/aztec-address';
 
 import { describe, expect, it, jest } from '@jest/globals';
 

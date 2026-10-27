@@ -1,6 +1,6 @@
-import { type AztecNode, createAztecNodeClient } from '@aztec/aztec.js/node';
-import { jsonStringify } from '@aztec/foundation/json-rpc';
-import type { JsonRpcFetch } from '@aztec/foundation/json-rpc/client';
+import { type AztecNode, createAztecNodeClient } from '@aztec-labs/aztec.js/node';
+import { jsonStringify } from '@aztec-labs/foundation/json-rpc';
+import type { JsonRpcFetch } from '@aztec-labs/foundation/json-rpc/client';
 
 const API_KEY_HEADER = 'x-api-key';
 const RATE_LIMIT_STATUS = 429;
@@ -105,5 +105,5 @@ export function createNodeClient({ url, apiKey }: AztecNodeEndpoint): AztecNode 
   if (!isSafeForCredentials(url)) {
     throw new Error(`Refusing to send the Aztec node API key to ${new URL(url).origin}: use https.`);
   }
-  return createAztecNodeClient(url, undefined, keyedFetch(key));
+  return createAztecNodeClient(url, { fetch: keyedFetch(key) });
 }

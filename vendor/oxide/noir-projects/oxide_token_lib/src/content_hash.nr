@@ -1,6 +1,6 @@
 use aztec::protocol::{address::{AztecAddress, EthAddress}, hash::sha256_to_field, traits::{FromField, ToField}};
 
-// L1 -> L2 signer-registration message content hash. Must match `OxidePortal.sol::registerTee`
+// L1 -> L2 signer-registration message content hash. Must match `TeeRegistry.sol::registerTee`
 pub fn get_register_signer_content_hash(
     pub_key_x_hi: Field,
     pub_key_x_lo: Field,
@@ -68,6 +68,8 @@ fn ts_parity() {
     // Updated by `OXIDE_GENERATE_TEST_DATA=1 yarn workspace @oxide/oxide-lib test content_hash`.
     let expected_recipient_commitment: Field = 0x2edfa85ed3d7333e199dbdf8be5c2b4887fc556a9cc1ba5fb19ac8386d4a6ee8;
     let expected_withdraw_content_hash: Field = 0x0040e5e411ba5f4a9730607ebac66817a44df07a56cfc8df8a42d497e9bb5e9b;
+    let expected_register_signer_content_hash: Field =
+        0x008b33a581dcf8c37cd0271302e3abcea01ded7b659d006f1c2d411420e49f4a;
 
     let recipient = AztecAddress::from_field(fixture_l2_recipient);
     let executor = EthAddress::from_field(fixture_executor);
@@ -84,6 +86,14 @@ fn ts_parity() {
         fixture_randomness,
     );
     assert_eq(withdraw, expected_withdraw_content_hash);
+
+    let register_signer = get_register_signer_content_hash(
+        0x0102030405060708090a0b0c0d0e0f10,
+        0x1112131415161718191a1b1c1d1e1f20,
+        0x2122232425262728292a2b2c2d2e2f30,
+        0x3132333435363738393a3b3c3d3e3f40,
+    );
+    assert_eq(register_signer, expected_register_signer_content_hash);
 }
 
 // `get_withdraw_content_hash` takes `amount: u128`, so any caller-supplied Field above the u128

@@ -1,17 +1,17 @@
-import { Account } from "@aztec/aztec.js/account"
-import { TxReceipt } from "@aztec/stdlib/tx"
+import { Account } from "@aztec-labs/aztec.js/account"
+import { TxReceipt } from "@aztec-labs/stdlib/tx"
 import { getSponsoredFeePaymentMethod } from "../feePaymentMethod/index.js"
-import type { FeeJuiceContract } from "@aztec/noir-contracts.js/FeeJuice"
-import { Fr } from "@aztec/aztec.js/fields"
+import type { FeeJuiceContract } from "@aztec-labs/aztec.js/protocol"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 import { ObsidionWallet } from "../obsidion/ObsidionWallet.js"
-import { SendInteractionOptions, TxSendResultMined } from "@aztec/aztec.js/contracts"
-import { sha256 } from "@aztec/foundation/crypto/sha256"
-import type { FeePaymentMethod } from "@aztec/aztec.js/fee"
-import { Gas, GasFees, GasSettings } from "@aztec/stdlib/gas"
-import type { AztecNode } from "@aztec/aztec.js/node"
-import { isL1ToL2MessageReady } from "@aztec/aztec.js/messaging"
-import { retryUntil } from "@aztec/foundation/retry"
-import { createAztecNodeDebugClient } from "@aztec/stdlib/interfaces/client"
+import { SendInteractionOptions, TxSendResultMined } from "@aztec-labs/aztec.js/contracts"
+import { sha256 } from "@aztec-labs/foundation/crypto/sha256"
+import type { FeePaymentMethod } from "@aztec-labs/aztec.js/fee"
+import { Gas, GasFees, GasSettings } from "@aztec-labs/stdlib/gas"
+import type { AztecNode } from "@aztec-labs/aztec.js/node"
+import { isL1ToL2MessageReady } from "@aztec-labs/aztec.js/messaging"
+import { retryUntil } from "@aztec-labs/foundation/retry"
+import { createAztecNodeDebugClient } from "@aztec-labs/stdlib/interfaces/client"
 import { AZTEC_NODE_URL } from "@obsidion/core/constants"
 
 /**
@@ -138,9 +138,8 @@ export const sendEmptyTx = async (
   let feeJuiceContract = feeJuiceContracts.get(wallet)
   if (!feeJuiceContract) {
     // Lazy: keeps the ~1MB FeeJuice artifact out of the entry chunk.
-    const { FeeJuiceContract } = await import("@aztec/noir-contracts.js/FeeJuice")
-    const feeJuiceAddr = (await wallet.node.getNodeInfo()).protocolContractAddresses.feeJuice
-    feeJuiceContract = FeeJuiceContract.at(feeJuiceAddr, wallet)
+    const { FeeJuiceContract } = await import("@aztec-labs/aztec.js/protocol")
+    feeJuiceContract = FeeJuiceContract.withWallet(wallet)
     feeJuiceContracts.set(wallet, feeJuiceContract)
   }
 

@@ -1,7 +1,7 @@
 import { act } from "react"
 import { createRoot } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import type { AztecNode } from "@aztec/aztec.js/node"
+import type { AztecNode } from "@aztec-labs/aztec.js/node"
 import { CHAIN_POLL_MS, usePolledChainSeconds } from "../src/features/paylink/chainTime"
 
 /**

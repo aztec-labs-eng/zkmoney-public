@@ -1,5 +1,5 @@
 import { fileURLToPath } from "node:url"
-import { generateKeyPair, generateJwt, type KeyPair } from "./jwt"
+import { generateKeyPair, generateJwt, type KeyPair } from "./jwt.js"
 import crypto from "crypto"
 import fs from "fs"
 import path from "path"
@@ -13,8 +13,8 @@ import {
   JWT_PAYLOAD_MAX_LEN,
   splitInto120BitLimbs,
   toBoundedVec,
-} from "../../src"
-import { Fr } from "@aztec/aztec.js/fields"
+} from "../../src/index.js"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 
 // Use the same static key as Apple JWT generator for consistency
 const STATIC_TEST_KEY_PAIR = generateKeyPair()
@@ -43,7 +43,11 @@ interface JwtInputData {
  * This mimics the prepareJwtFromProvider function
  */
 function extractJwtInputData(jwt: string, nonce_preimage: bigint, keyPair: KeyPair): JwtInputData {
-  const [headerBase64Url, payloadBase64Url, signatureBase64Url] = jwt.split(".")
+  const [headerBase64Url, payloadBase64Url, signatureBase64Url] = jwt.split(".") as [
+    string,
+    string,
+    string,
+  ]
 
   const headerBytes = Array.from(Bytes.fromString(headerBase64Url))
   const base64_decode_offset = headerBytes.length + 1 // +1 for the '.' separator

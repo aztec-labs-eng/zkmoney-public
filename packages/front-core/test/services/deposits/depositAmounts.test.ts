@@ -34,6 +34,16 @@ describe("depositAmounts", () => {
     expect(a.netAtomic).not.toBe(parseUnits("99750000000000000000", 18))
   })
 
+  it("reads a 6-decimal row's raw amounts in that row's units", () => {
+    const swept = depositAmounts({ amount: "99.9", netAmount: "99900000", fee: "100000" }, 6)
+    expect(swept.netDisplay).toBe("99.9")
+    expect(swept.feeDisplay).toBe("0.1")
+    expect(swept.grossDisplay).toBe("100")
+    const pending = depositAmounts({ amount: "100", fee: "100000" }, 6)
+    expect(pending.grossAtomic).toBe(100_000_000n)
+    expect(pending.netDisplay).toBe("99.9")
+  })
+
   it("clamps net to zero for a sub-fee pending amount", () => {
     const a = depositAmounts({ amount: "0.07", fee: FEE })
     expect(a.netAtomic).toBe(0n)
@@ -81,18 +91,5 @@ describe("depositAmounts", () => {
     expect((Number(a.grossDisplay) - Number(a.feeDisplay)).toFixed(2)).toBe(
       Number(a.netDisplay).toFixed(2),
     )
-  })
-
-  it("reads the fee as the whole deduction and sums nothing onto it", () => {
-    // A record from a deployment that skims 0.25 carries a 0.5 fee; the cut stamped beside it is
-    // already inside that figure.
-    const record = { amount: "100", fee: "500000000000000000", fpcFundingCut: FEE }
-    const a = depositAmounts(record)
-    expect(a.feeAtomic).toBe(500000000000000000n)
-    expect(a.feeDisplay).toBe("0.5")
-    expect(a.netAtomic).toBe(99500000000000000000n)
-
-    const claimed = depositAmounts({ ...record, amount: "99.5", netAmount: "99500000000000000000" })
-    expect(claimed.grossAtomic).toBe(100000000000000000000n)
   })
 })

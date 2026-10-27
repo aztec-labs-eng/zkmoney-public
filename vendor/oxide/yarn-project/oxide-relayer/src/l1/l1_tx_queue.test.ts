@@ -1,4 +1,4 @@
-import { sleep } from '@aztec/foundation/sleep';
+import { sleep } from '@aztec-labs/foundation/sleep';
 
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import {
@@ -423,6 +423,7 @@ describe('L1TxQueue', () => {
     const tx = await send(makeQueue({ disableSubmission: true }), { gas: 60_000n, maxFeePerGas: 100n });
     expect(chain.client.sendTransaction).not.toHaveBeenCalled();
     expect(chain.client.getTransactionCount).not.toHaveBeenCalled();
+    expect(tx.simulated).toBe(true);
     await expect(tx.settled).resolves.toMatchObject({
       status: 'success',
       transactionHash: tx.txHash,

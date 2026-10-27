@@ -78,8 +78,9 @@ function countKernelInner(steps: ProfileStep[]): number {
 }
 
 function largestCircuit(steps: ProfileStep[]): ProfileStep | undefined {
-  if (steps.length === 0) return undefined
-  return steps.reduce((max, s) => (s.gateCount > max.gateCount ? s : max), steps[0])
+  const [first, ...rest] = steps
+  if (!first) return undefined
+  return rest.reduce((max, s) => (s.gateCount > max.gateCount ? s : max), first)
 }
 
 function printSummaryTable(entries: BenchmarkEntry[]) {
@@ -115,8 +116,28 @@ function printSummaryTable(entries: BenchmarkEntry[]) {
   console.log(hr("\u250c", "\u252c", "\u2510"))
   console.log(
     `\u2502${pad("Flow", col.flow)}\u2502${pad("Function", col.fn)}` +
-    `\u2502${pad("Total Gates", col.gates, true)}\u2502${pad("Kernel Inner #", col.kernelInner, true)}\u2502${pad("Largest Circuit", col.largest)}\u2502${pad("Circuit Gates", col.largestGates, true)}` +
-    `\u2502${pad("L2 Gas", col.l2Gas, true)}\u2502${pad("DA Gas", col.daGas, true)}\u2502${pad("Tx Fee", col.fee, true)}\u2502${pad("Nullifiers", col.nullifiers, true)}\u2502${pad("NoteHashes", col.noteHashes, true)}\u2502${pad("PrivLogs", col.privLogs, true)}\u2502${pad("PubWrites", col.pubWrites, true)}\u2502`,
+      `\u2502${pad("Total Gates", col.gates, true)}\u2502${pad(
+        "Kernel Inner #",
+        col.kernelInner,
+        true,
+      )}\u2502${pad("Largest Circuit", col.largest)}\u2502${pad(
+        "Circuit Gates",
+        col.largestGates,
+        true,
+      )}` +
+      `\u2502${pad("L2 Gas", col.l2Gas, true)}\u2502${pad("DA Gas", col.daGas, true)}\u2502${pad(
+        "Tx Fee",
+        col.fee,
+        true,
+      )}\u2502${pad("Nullifiers", col.nullifiers, true)}\u2502${pad(
+        "NoteHashes",
+        col.noteHashes,
+        true,
+      )}\u2502${pad("PrivLogs", col.privLogs, true)}\u2502${pad(
+        "PubWrites",
+        col.pubWrites,
+        true,
+      )}\u2502`,
   )
   console.log(hr("\u251c", "\u253c", "\u2524"))
 
@@ -138,8 +159,28 @@ function printSummaryTable(entries: BenchmarkEntry[]) {
 
     console.log(
       `\u2502${pad(e.flowName, col.flow)}\u2502${pad(e.functionName, col.fn)}` +
-      `\u2502${pad(gates, col.gates, true)}\u2502${pad(kernelCount, col.kernelInner, true)}\u2502${pad(largestName, col.largest)}\u2502${pad(largestGates, col.largestGates, true)}` +
-      `\u2502${pad(l2Gas, col.l2Gas, true)}\u2502${pad(daGas, col.daGas, true)}\u2502${pad(fee, col.fee, true)}\u2502${pad(nullifiers, col.nullifiers, true)}\u2502${pad(noteHashes, col.noteHashes, true)}\u2502${pad(privLogs, col.privLogs, true)}\u2502${pad(pubWrites, col.pubWrites, true)}\u2502`,
+        `\u2502${pad(gates, col.gates, true)}\u2502${pad(
+          kernelCount,
+          col.kernelInner,
+          true,
+        )}\u2502${pad(largestName, col.largest)}\u2502${pad(
+          largestGates,
+          col.largestGates,
+          true,
+        )}` +
+        `\u2502${pad(l2Gas, col.l2Gas, true)}\u2502${pad(daGas, col.daGas, true)}\u2502${pad(
+          fee,
+          col.fee,
+          true,
+        )}\u2502${pad(nullifiers, col.nullifiers, true)}\u2502${pad(
+          noteHashes,
+          col.noteHashes,
+          true,
+        )}\u2502${pad(privLogs, col.privLogs, true)}\u2502${pad(
+          pubWrites,
+          col.pubWrites,
+          true,
+        )}\u2502`,
     )
   }
 
@@ -192,10 +233,9 @@ function buildMarkdown(entries: BenchmarkEntry[]): string {
       lines.push(`| ID | Method | Gate Count |`)
       lines.push(`|----|--------|-----------|`)
 
-      for (let i = 0; i < e.profileSteps!.length; i++) {
-        const step = e.profileSteps![i]
+      e.profileSteps!.forEach((step, i) => {
         lines.push(`| ${i + 1} | ${step.method} | ${step.gateCount} |`)
-      }
+      })
 
       lines.push(`| | **TOTAL** | **${totalGates ?? 0}** |`)
       lines.push(``)

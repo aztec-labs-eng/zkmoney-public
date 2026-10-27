@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest"
-import { AztecAddress } from "@aztec/aztec.js/addresses"
-import { Fr } from "@aztec/aztec.js/fields"
-import { EthAddress } from "@aztec/foundation/eth-address"
+import { AztecAddress } from "@aztec-labs/aztec.js/addresses"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { EthAddress } from "@aztec-labs/foundation/eth-address"
 
 const EXPECTED_SIPA = "0x" + "88".repeat(20)
 vi.mock("../../../src/core/services/deposits/sipa", async (importOriginal) => ({
@@ -13,7 +13,7 @@ vi.mock("../../../src/core/services/deposits/sipa", async (importOriginal) => ({
 
 import { computeSIPAAddress } from "../../../src/core/services/deposits/sipa"
 import { deriveRefundableSipaSources } from "../../../src/core/services/deposits/refundableSipaDiscovery"
-import { keccak256 } from "@aztec/foundation/crypto/keccak"
+import { keccak256 } from "@aztec-labs/foundation/crypto/keccak"
 import { computeSIPAAddress as computeAccountSIPAAddress } from "@oxide/oxide-lib/sipa_address.js"
 import { deriveRecoveryCommitment } from "@oxide/oxide-lib/sipa_recovery.js"
 import { computeStealthRecipientHash } from "../../../src/core/services/deposits/sipa"
@@ -22,6 +22,7 @@ import { deriveStealthKey } from "../../../src/oxide/oxideAccountKeys"
 const RECIPIENT = AztecAddress.fromStringUnsafe("0x" + "00".repeat(30) + "1234")
 const SIPA_FACTORY = EthAddress.fromString("0x" + "11".repeat(20))
 const IMPLEMENTATION = EthAddress.fromString("0x" + "22".repeat(20))
+const FORWARDING_TABLE = EthAddress.fromString("0x" + "fb".repeat(20))
 const STEALTH_KEY = deriveStealthKey(new Fr(5)).publicKey
 
 const tuple = (over: Record<string, unknown> = {}) => ({
@@ -35,6 +36,7 @@ const tuple = (over: Record<string, unknown> = {}) => ({
   pcr0: "",
   rollupVersion: "5",
   sipaFactory: SIPA_FACTORY.toString(),
+  forwardingTable: FORWARDING_TABLE.toString(),
   depositSIPAImplementation: IMPLEMENTATION.toString(),
   ...over,
 })
@@ -135,9 +137,22 @@ describe("deriveRefundableSipaSources", () => {
         recoveryCommitment: deriveRecoveryCommitment(secret, recoveryAccount),
         rollupVersion: 5n,
         resweepable: false,
+        forwardingTable: FORWARDING_TABLE,
       }).toString(),
     ])
     expect(vi.mocked(computeSIPAAddress)).not.toHaveBeenCalled()
+  })
+
+  it("fails closed on an account deployment that publishes no forwarding table", async () => {
+    await expect(
+      deriveRefundableSipaSources({
+        events: [{ messageSecret: new Fr(1).toString(), resweepable: true }],
+        recipientL2Address: RECIPIENT.toString(),
+        stealthPublicKey: STEALTH_KEY,
+        tuple: tuple({ sipaRecoveryProtocol: "account", forwardingTable: undefined }) as never,
+        recoveryAccount: "0x" + "cd".repeat(20),
+      }),
+    ).rejects.toThrow(/publishes no forwardingTable/)
   })
 
   it("fails closed on an account deployment without the recovery account", async () => {
@@ -154,7 +169,6 @@ describe("deriveRefundableSipaSources", () => {
   describe("a SIPA announced with another intent", () => {
     const recoveryAccount = EthAddress.fromString("0x" + "cd".repeat(20))
     const registration = EthAddress.fromString("0x" + "33".repeat(20))
-    const metadataUpdate = EthAddress.fromString("0x" + "44".repeat(20))
     const secret = new Fr(7)
     const intentHash = "0x" + "e1".repeat(32)
     const derive = (events: object[], over: Record<string, unknown> = {}) =>
@@ -165,7 +179,6 @@ describe("deriveRefundableSipaSources", () => {
         tuple: tuple({
           sipaRecoveryProtocol: "account",
           registrationSIPAImplementation: registration.toString(),
-          updateMetadataSIPAImplementation: metadataUpdate.toString(),
           ...over,
         }) as never,
         recoveryAccount: recoveryAccount.toString(),
@@ -178,17 +191,15 @@ describe("deriveRefundableSipaSources", () => {
         recoveryCommitment: deriveRecoveryCommitment(secret, recoveryAccount),
         rollupVersion: 5n,
         resweepable,
+        forwardingTable: FORWARDING_TABLE,
       }).toString()
 
-    it("derives a registration or metadata-update SIPA from the carried intent hash", async () => {
+    it("derives a registration SIPA from the carried intent hash", async () => {
       const sources = await derive([
         { messageSecret: secret.toString(), resweepable: false, intentHash },
       ])
       const carried = Buffer.from(intentHash.slice(2), "hex")
-      expect(sources.map((s) => s.sipaAddress)).toEqual([
-        address(registration, carried),
-        address(metadataUpdate, carried),
-      ])
+      expect(sources.map((s) => s.sipaAddress)).toEqual([address(registration, carried)])
     })
 
     it("reads a zero intent hash as a deposit", async () => {
@@ -200,24 +211,20 @@ describe("deriveRefundableSipaSources", () => {
     })
 
     it("keeps one salt's SIPAs apart when their intent or resweepability differs", async () => {
-      const sources = await derive(
-        [
-          { messageSecret: secret.toString(), resweepable: false },
-          { messageSecret: secret.toString(), resweepable: true },
-          { messageSecret: secret.toString(), resweepable: false, intentHash },
-        ],
-        { updateMetadataSIPAImplementation: undefined },
-      )
+      const sources = await derive([
+        { messageSecret: secret.toString(), resweepable: false },
+        { messageSecret: secret.toString(), resweepable: true },
+        { messageSecret: secret.toString(), resweepable: false, intentHash },
+      ])
       expect(new Set(sources.map((s) => s.sipaAddress)).size).toBe(3)
     })
 
     it("fails closed when the tuple cannot derive that intent", async () => {
       await expect(
         derive([{ messageSecret: secret.toString(), resweepable: false, intentHash }], {
-          registrationSIPAImplementation: undefined,
-          updateMetadataSIPAImplementation: "0x" + "00".repeat(20),
+          registrationSIPAImplementation: "0x" + "00".repeat(20),
         }),
-      ).rejects.toThrow(/no registration or metadata-update/)
+      ).rejects.toThrow(/no registration SIPA/)
     })
   })
 })

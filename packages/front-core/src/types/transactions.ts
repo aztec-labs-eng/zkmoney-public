@@ -1,7 +1,7 @@
 import { QueueStatus } from "@obsidion/sdk"
 import type { OriginalFlowKind } from "@obsidion/proving-progress"
 import { TokenAction, TokenInTxService, PaylinkAction } from "./tokens"
-import type { TxStatus } from "@aztec/stdlib/tx"
+import type { TxStatus } from "@aztec-labs/stdlib/tx"
 
 // TransactionType discriminates the storage shape. This alias is consumed
 // by the optional `TransactionQueueItem.type` field; it is not a persisted
@@ -142,8 +142,8 @@ export type PaylinkTransaction = BaseTransaction & {
   /** Which recovery returned the escrow; unset on rows refunded before it was recorded. */
   refundKind?: "cancel" | "reclaim"
   isClaimed?: boolean
-  // Escrow exited by the v4->v5 migration and landed on L1. No chain signal ever reaches this row
-  // post-cutover (the reconciler polls the canonical node), so this local flip is the only truth.
+  // Escrow returned on L1 by an upgrade off a retired deployment. Its L2 note stays unspent there, so
+  // no nullifier read ever settles this row.
   isMigrated?: boolean
 }
 

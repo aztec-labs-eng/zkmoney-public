@@ -8,9 +8,15 @@ import {
   type ReactNode,
 } from "react"
 import { useLocation, useNavigate } from "react-router-dom"
-import { useActionGuard, useWalletFrozen } from "../../features/actionGate"
+import { useActionGuard } from "../../features/actionGate"
+import { isDemoMode } from "../../dev/demoFlag"
 import { formatUnits } from "viem"
-import { DEFAULT_DECIMALS, REGISTRATION_SCHEDULE_DEFAULTS } from "@obsidion/core/constants"
+import {
+  DEFAULT_DECIMALS,
+  REGISTRATION_SCHEDULE_DEFAULTS,
+  WALLET_TOKEN_SYMBOL,
+} from "@obsidion/core/constants"
+import type { TokenService } from "@obsidion/sdk"
 import {
   ActivityListRow,
   GradientInitialAvatar,
@@ -54,6 +60,7 @@ import {
   worstWithdrawalPhase,
   WITHDRAWAL_TERMINAL_PHASES,
   type ActivityCsvSources,
+  type ActivityCsvToken,
   type SavingsCsvSources,
   type ActivityItem,
   type BridgeActivityItem,
@@ -75,7 +82,11 @@ import {
   type SavingsMoveRecord,
   upgradeRecipients,
   upgradeRunsOf,
+  upgradeRunValue,
+  type UpgradePricing,
   type UpgradeRun,
+  type OldVersionRefund,
+  type OldVersionWithdrawal,
 } from "@obsidion/front-core"
 import { ensClient } from "../../lib/ens"
 import { declineRequestById } from "../../features/contacts/requestActions"
@@ -89,6 +100,7 @@ import {
   type RecoveryReason,
 } from "../../features/deposit/sipaRecovery"
 import { canSelfSweep } from "../../features/deposit/sipaSweep"
+import { settlementDecimals, useDepositTokens } from "../../features/deposit/loadDepositFacts"
 import { bridgeActivityFeed } from "../../features/deposit/sipaProcessing"
 import { loadWalletIdentity } from "../../features/identity/walletIdentity"
 import { usePolledChainSeconds } from "../../features/paylink/chainTime"
@@ -119,8 +131,19 @@ import {
 import { getSavingsMoveStore } from "../../features/savings/savingsMoveStore"
 import { useNowMs, useSavingsMoveTiming } from "../../features/savings/savingsMoveTiming"
 import { useWithdrawals } from "../../features/withdraw/useWithdrawals"
+import {
+  oldVersionRefundOffer,
+  useOldVersionWithdrawals,
+  withdrawalSent,
+} from "../../features/withdraw/oldVersionWithdrawals"
+import { l1TxUrl } from "../detailRows"
+import {
+  oldVersionLeftovers,
+  type OldVersionLeftovers,
+} from "../../features/migration/oldVersionLeftovers"
 import { SwapExitModal } from "../../features/withdraw/SwapExitModal"
 import { swapExitReasonFor, type SwapExitReason } from "../../features/withdraw/swapRecovery"
+import { OldVersionRefundExitModal } from "../../features/withdraw/OldVersionRefundExitModal"
 import { WithdrawalExitModal } from "../../features/withdraw/WithdrawalExitModal"
 import { migrationAmounts } from "../../features/migration/migrationFee"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
@@ -129,6 +152,8 @@ import { writeClipboard } from "../hooks"
 import { usePhoneLayout } from "../usePhoneLayout"
 import { arrivingFunds, type ArrivingFunds } from "./arrivingFunds"
 import { useOldVersionHoldings } from "../../features/migration/oldVersionBalance"
+import { upgradeRunAccount, upgradeRunToken } from "../../features/migration/upgradeRunAccount"
+import { upgradeRunTitle } from "../../features/migration/upgradeCopy"
 import { contactDisplayName } from "../../features/contacts/contactsView"
 import {
   buildActivityRows,
@@ -148,9 +173,6 @@ import { DepositDetailModal, TagPurchaseModal } from "./DepositDetailModal"
 import { FreshWithdrawalDetailModal } from "./FreshWithdrawalDetailModal"
 import { TxDetailModal } from "./TxDetailModal"
 import { WithdrawalDetailModal, withdrawalHeroAmount } from "./WithdrawalDetailModal"
-import { usePortalFrozen } from "../../features/withdraw/portalFrozen"
-import { fundsLeft, sharesUsd, useLastFrozenFunds } from "../../features/withdraw/frozenFunds"
-import { isFrozenRefundRecord } from "../../features/withdraw/frozenExit"
 
 /** Feed-row wording per phase, from the shared copy table; a `done` withdrawal carries no status. */
 export const WITHDRAWAL_PHASE_LABEL = Object.fromEntries(
@@ -243,15 +265,19 @@ function WithdrawalRow({
   const offer = withdrawalExitOffer(record)
   const delayed = isWithdrawalDelayed(record) || offer?.reason === "stuck"
   const checkAgain = delayed && record.l2TxHash ? () => onCheckAgain(record.l2TxHash!) : undefined
-  // A burn to this wallet's registration SIPA paid for its tag, not a withdrawal to a stranger.
+  // A burn to this wallet's registration SIPA paid for its tag, not a withdrawal to a stranger; one
+  // to a backup passkey's deposit address pays for the key.
   const registrationTag = registrationTagForSipa(record.recipient)
   const migration = record.intent === "migration"
+  const backup = record.intent === "backup"
   const ensName = useEnsName(record.recipient, ensClient)
   return (
     <ActivityListRow
       counterparty={
         migration
           ? "Upgrade"
+          : backup
+          ? "Backup passkey"
           : registrationTag
           ? `@${registrationTag}`
           : record.recipientAlias ?? ensName ?? shortL1Addr(record.recipient)
@@ -262,6 +288,8 @@ function WithdrawalRow({
           ? record.phase === "done"
             ? "Left old version"
             : undefined
+          : backup
+          ? "Funding"
           : registrationTag
           ? "Registration"
           : record.source === "paylink"
@@ -285,14 +313,24 @@ function WithdrawalRow({
 }
 
 /** One upgrade: its batches and the deposits they bring, as one row until every one has arrived. */
-function UpgradeRunRow({ run, onOpen }: { run: UpgradeRun; onOpen: () => void }) {
+function UpgradeRunRow({
+  run,
+  pricing,
+  onOpen,
+}: {
+  run: UpgradeRun
+  pricing: UpgradePricing
+  onOpen: () => void
+}) {
+  const title = upgradeRunTitle[upgradeRunAccount(run.run)]
+  const value = upgradeRunValue(run, pricing)
   const transfers = run.legs.length === 1 ? "1 transfer" : `${run.legs.length} transfers`
   return (
     <ActivityListRow
-      counterparty="Upgrade"
+      counterparty={title}
       counterpartyBadge={run.complete ? transfers : `${run.arrived} of ${run.legs.length} arrived`}
       timestamp={rowTimestamp(run.time)}
-      amount={`+${usdFigure(formatUnits(run.total, DEFAULT_DECIMALS))}`}
+      amount={value === undefined ? "—" : `+${usdFigure(formatUnits(value, DEFAULT_DECIMALS))}`}
       statusLabel={upgradeRowStatusLabel(run)}
       avatarIcon="wallet"
       onClick={onOpen}
@@ -306,6 +344,7 @@ function DepositRow({
   processing,
   arriving,
   time,
+  decimals,
   onOpen,
   onExit,
 }: {
@@ -318,6 +357,8 @@ function DepositRow({
   arriving?: { net?: string }
   /** When the row is dated; the record's own time where unset. */
   time?: number
+  /** The decimals of the row the deposit settles on: the units of its record's amounts. */
+  decimals?: number
   /** The deposit projected onto its intent: a plain DepositIntent, or a RegistrationIntent that
    *  keeps the `@name` identity. */
   row: SipaDepositIntentRow
@@ -325,7 +366,6 @@ function DepositRow({
   onExit: () => void
 }) {
   const { record } = row
-  const portalFrozen = usePortalFrozen()
   const offer = depositExitOffer(record, processing)
   const subline = depositRowSubline(processing, record, !!offer?.waiting)
   const registration = row.intent === "registration" ? row : undefined
@@ -346,9 +386,9 @@ function DepositRow({
           ? arriving.net
             ? `+${usdFigure(arriving.net)}`
             : ""
-          : depositRowAmount(record, !!offer)
+          : depositRowAmount(record, !!offer, decimals)
       }
-      statusLabel={arriving ? "Pending" : depositRowStatusLabel(record, portalFrozen)}
+      statusLabel={arriving ? "Pending" : depositRowStatusLabel(record)}
       avatarIcon="arrow-down-circle"
       onClick={onOpen}
       ariaLabel="Open deposit details"
@@ -364,6 +404,39 @@ function DepositRow({
 function bridgeItemTime(item: BridgeActivityItem): number {
   if (item.kind === "bridge.sipaDeposit") return item.record.startTime
   return item.record.endTime ?? item.record.startTime
+}
+
+type SipaDepositItem = Extract<BridgeActivityItem, { kind: "bridge.sipaDeposit" }>
+
+/** A deposit row's ID: its address, plus the token when the row is another token the address credited. */
+function depositRowId(item: SipaDepositItem): string {
+  return item.credit
+    ? `${item.record.sipaAddress}:${item.credit.toLowerCase()}`
+    : item.record.sipaAddress
+}
+
+/** The token a deposit row shows: the one it splits out, else the record's own. */
+function depositRowToken(item: SipaDepositItem): string | undefined {
+  return (item.credit ?? item.record.rowToken ?? item.record.tokenAddress)?.toLowerCase()
+}
+
+/**
+ * The row an open deposit detail shows: `address:token` picks that token's row, whether it is split out or the
+ * address's own by now; an address alone, or a token it no longer shows, picks the address's own row.
+ */
+function depositDetailRow(
+  items: readonly ActivityItem[],
+  id: string | null,
+): SipaDepositItem | undefined {
+  const [address, token] = id?.toLowerCase().split(":") ?? []
+  const rows = items.filter(
+    (item): item is SipaDepositItem =>
+      item.kind === "bridge.sipaDeposit" && item.record.sipaAddress.toLowerCase() === address,
+  )
+  return (
+    (token ? rows.find((item) => depositRowToken(item) === token) : undefined) ??
+    rows.find((item) => !item.credit)
+  )
 }
 
 /** What each recovery calls itself, in the words the detail sheet's button uses. */
@@ -404,6 +477,7 @@ type BridgeExit =
   | { kind: "withdrawal"; record: WithdrawalRecord; savings?: boolean }
   | { kind: "swap"; record: WithdrawalRecord; reason: SwapExitReason }
   | { kind: "skyEscrow"; move: SavingsMoveRecord; burn: WithdrawalRecord }
+  | { kind: "oldVersion"; record: OldVersionWithdrawal; refund: OldVersionRefund }
 
 /** Actionable pending-request row — Decline/Send incoming, Cancel/Remind to a contact, Cancel/Share on
  *  a link. Cancelling a link only drops the local row: nothing can revoke a minted link. */
@@ -500,6 +574,8 @@ export interface ActivityEntriesState {
   savingsLedger: SavingsLedger | undefined
   /** Funds on their way into Main and Savings, which their balances show before they land. */
   arriving: ArrivingFunds
+  /** What old versions still hold that no balance here shows. */
+  oldVersionLeft: OldVersionLeftovers
   /** The upgrade's deposit addresses are read, so `arriving` counts none of them. */
   upgradesLoaded: boolean
   /** True once every source has served its last-known state from storage. */
@@ -507,10 +583,10 @@ export interface ActivityEntriesState {
   /** The contacts could not be read, so incoming requests are hidden. The directory retries. */
   requestsUnavailable: boolean
   detailModals: ReactNode
-  /** The stored records behind the feed, for the accounting export. */
-  csvSources: ActivityCsvSources
-  /** The Savings feed's moves and their burns, for its export. */
-  savingsCsvSources: SavingsCsvSources
+  /** The stored records behind the feed, for the accounting export; undefined until the Main token's metadata is read. */
+  csvSources?: ActivityCsvSources
+  /** The Savings feed's moves and their burns, for its export; undefined like `csvSources`. */
+  savingsCsvSources?: SavingsCsvSources
 }
 
 /**
@@ -561,6 +637,7 @@ export function findBridgeItem(
         (item.record.localId === openWithdrawalId ||
           (!!txHash && item.record.l2TxHash?.toLowerCase() === txHash))) ||
       (item.kind === "bridge.sipaDeposit" &&
+        !item.credit &&
         (item.record.sipaAddress.toLowerCase() === deposit ||
           (!!txHash && item.record.claimTxHash?.toLowerCase() === txHash))),
   )
@@ -598,19 +675,69 @@ function tagPriceOf(record: { registrationFee?: string }): bigint {
   return fee > sweepFee ? fee - sweepFee : 0n
 }
 
+/** Demo mode boots no token service; its fixtures are in the wallet token. */
+const DEMO_WALLET_TOKEN: ActivityCsvToken = {
+  symbol: WALLET_TOKEN_SYMBOL,
+  decimals: DEFAULT_DECIMALS,
+}
+
+/** How long a failed read of the Main token's metadata waits before reading again. */
+const WALLET_TOKEN_RETRY_MS = 10_000
+
+/** The Main token's symbol and decimals, which the exports report in. A failed read is retried. */
+function useWalletToken(
+  tokenService: Pick<TokenService, "fetchTokenInformation"> | null | undefined,
+): ActivityCsvToken | undefined {
+  const [token, setToken] = useState<ActivityCsvToken>()
+  useEffect(() => {
+    setToken(undefined)
+    if (!tokenService) return
+    let live = true
+    let retry: ReturnType<typeof setTimeout> | undefined
+    const read = () =>
+      tokenService.fetchTokenInformation().then(
+        ({ symbol, decimals }) => live && setToken({ symbol, decimals }),
+        (err: unknown) => {
+          console.warn("[activity] token metadata unavailable:", err)
+          if (live) retry = setTimeout(read, WALLET_TOKEN_RETRY_MS)
+        },
+      )
+    void read()
+    return () => {
+      live = false
+      clearTimeout(retry)
+    }
+  }, [tokenService])
+  return token
+}
+
 export function useActivityEntries(): ActivityEntriesState {
   const navigate = useNavigate()
   const directory = useContactsDirectory()
   const { tokenService, activeTokenAddress, balanceReadAt } = useAssetContext()
   const { obsidionWallet } = useAztecContext()
+  const walletToken =
+    useWalletToken(tokenService) ??
+    (import.meta.env.DEV && isDemoMode() ? DEMO_WALLET_TOKEN : undefined)
+  const depositTokens = useDepositTokens()
   const { records: withdrawalRecords, checkAgain, hydrated: withdrawalsHydrated } = useWithdrawals()
+  const { records: oldVersionWithdrawals } = useOldVersionWithdrawals()
   const { records: savingsMoves, hydrated: savingsHydrated } = useCachedRecords(
     useMemo(getSavingsMoveStore, []),
   )
   const savingsSource = useSavingsSource()
   const savingsPosition = useSavingsPosition().position
   const savingsSharePrice = savingsPosition?.sharePrice
-  const exitFunds = useLastFrozenFunds()
+  const upgradePricing: UpgradePricing = {
+    mainToken: depositTokens?.settlement.address,
+    savingsToken: savingsSource?.assetAddress,
+    sharePrice: savingsSharePrice,
+    runToken: (run) =>
+      upgradeRunToken(run, {
+        main: depositTokens?.settlement.address,
+        savings: savingsSource?.assetAddress,
+      }),
+  }
   const savingsTiming = useSavingsMoveTiming()
   const nowMs = useNowMs()
   const savingsEtaFor = useCallback(
@@ -649,6 +776,8 @@ export function useActivityEntries(): ActivityEntriesState {
   const [withdrawalDetailId, setWithdrawalDetailId] = useState<string | null>(null)
   const [upgradeDetailId, setUpgradeDetailId] = useState<string | null>(null)
   const [upgradeRunId, setUpgradeRunId] = useState<string | null>(null)
+  // The upgrade whose sheet opened the transfer detail on screen, which Back returns to.
+  const [upgradeBackRun, setUpgradeBackRun] = useState<string | null>(null)
   const [depositDetailId, setDepositDetailId] = useState<string | null>(null)
   const [tagDetailId, setTagDetailId] = useState<string | null>(null)
   const [requestLinkDetail, setRequestLinkDetail] = useState<PaymentRequest | null>(null)
@@ -693,7 +822,6 @@ export function useActivityEntries(): ActivityEntriesState {
   // Desktop has no useful native share sheet, so a sent link's row copies instead; the id keeps the
   // "Copied!" flash on the one row that was clicked.
   const phone = usePhoneLayout()
-  const walletFrozen = useWalletFrozen()
   const [copiedLinkId, setCopiedLinkId] = useState<string | null>(null)
   const copiedTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
   useEffect(() => () => clearTimeout(copiedTimer.current), [])
@@ -809,7 +937,10 @@ export function useActivityEntries(): ActivityEntriesState {
     navigate,
   ])
   const sipaRecords = useMemo(
-    () => items.flatMap((item) => (item.kind === "bridge.sipaDeposit" ? [item.record] : [])),
+    () =>
+      items.flatMap((item) =>
+        item.kind === "bridge.sipaDeposit" && !item.credit ? [item.record] : [],
+      ),
     [items],
   )
   // Requests from non-contacts are listed on their own page (NonContactRequestsScreen). Without a
@@ -861,6 +992,7 @@ export function useActivityEntries(): ActivityEntriesState {
     const offer = depositDetailOffer(record, processing)
     if (!offer) return
     setDepositDetailId(null)
+    setUpgradeBackRun(null)
     setExit({
       kind: "deposit",
       record,
@@ -947,6 +1079,14 @@ export function useActivityEntries(): ActivityEntriesState {
   const upgradeRuns = upgradeRunsOf(items)
   const upgradeArrivals = upgradeRecipients(items)
   const upgradeRunDetail = upgradeRuns.find((run) => run.run === upgradeRunId) ?? null
+  const upgradeBack = (close: () => void) =>
+    upgradeBackRun
+      ? () => {
+          close()
+          setUpgradeBackRun(null)
+          setUpgradeRunId(upgradeBackRun)
+        }
+      : undefined
   const openUpgradeRun = routerState?.openUpgradeRun
   useEffect(() => {
     if (!openUpgradeRun || !upgradeRuns.some((run) => run.run === openUpgradeRun)) return
@@ -962,15 +1102,12 @@ export function useActivityEntries(): ActivityEntriesState {
       .map((r) => r.recipient.toLowerCase()),
   )
 
-  const depositDetailItem = items.find(
-    (item): item is Extract<ActivityItem, { kind: "bridge.sipaDeposit" }> =>
-      item.kind === "bridge.sipaDeposit" &&
-      item.record.sipaAddress.toLowerCase() === depositDetailId?.toLowerCase(),
-  )
+  const depositDetailItem = depositDetailRow(items, depositDetailId)
   const depositDetail = depositDetailItem?.record ?? null
   const tagDetail = items.find(
     (item): item is Extract<ActivityItem, { kind: "bridge.sipaDeposit" }> =>
       item.kind === "bridge.sipaDeposit" &&
+      !item.credit &&
       item.record.sipaAddress.toLowerCase() === tagDetailId?.toLowerCase(),
   )?.record
   const tagDetailTag = tagDetail && registrationTagForDeposit(tagDetail.sipaAddress)
@@ -1004,37 +1141,6 @@ export function useActivityEntries(): ActivityEntriesState {
       }
     />
   )
-
-  // A frozen exit stopped partway: what is left stays Pending until Withdraw sends it.
-  const exitRefunds = withdrawalRecords.filter(isFrozenRefundRecord)
-  const exitLeft = exitFunds
-    ? fundsLeft(exitFunds.main) +
-      (exitFunds.savings ? sharesUsd(fundsLeft(exitFunds.savings), savingsSharePrice) : 0n)
-    : 0n
-  const frozenExitEntry: ActivityEntry[] =
-    exitRefunds.length && exitLeft > 0n
-      ? [
-          {
-            id: "frozen-exit-left",
-            ts: Math.max(...exitRefunds.map((record) => record.endTime ?? record.startTime)) + 1,
-            direction: "out",
-            pending: true,
-            node: (
-              <ActivityListRow
-                key="frozen-exit-left"
-                counterparty="Withdrawal"
-                counterpartyBadge="Not finished"
-                timestamp="Open Withdraw to send the rest"
-                amount={`-${usdFigure(formatUnits(exitLeft, DEFAULT_DECIMALS))}`}
-                statusLabel="Pending"
-                avatarIcon="wallet"
-                onClick={() => navigate("/withdraw")}
-                ariaLabel="Open Withdraw"
-              />
-            ),
-          },
-        ]
-      : []
 
   const entries: ActivityEntry[] = [
     ...requestRows.map((row) => ({
@@ -1093,15 +1199,12 @@ export function useActivityEntries(): ActivityEntriesState {
           }}
           ariaLabel="Open transaction details"
           actions={[
-            // Frozen, a cancel's new note is past the refund snapshot: the link leaves through Withdraw.
             ...(row.creatorAction
               ? [
-                  walletFrozen
-                    ? { title: "Withdraw", onClick: () => navigate("/withdraw") }
-                    : {
-                        title: LINK_RECOVERY_TITLE[row.creatorAction],
-                        onClick: () => openLinkRecovery(row),
-                      },
+                  {
+                    title: LINK_RECOVERY_TITLE[row.creatorAction],
+                    onClick: () => openLinkRecovery(row),
+                  },
                 ]
               : []),
             ...(row.paylink && row.canShare
@@ -1137,6 +1240,7 @@ export function useActivityEntries(): ActivityEntriesState {
           <UpgradeRunRow
             key={run.run}
             run={run}
+            pricing={upgradePricing}
             onOpen={() => {
               setNotice(undefined)
               setUpgradeRunId(run.run)
@@ -1145,6 +1249,40 @@ export function useActivityEntries(): ActivityEntriesState {
         ),
       }),
     ),
+    ...oldVersionWithdrawals.map((record): ActivityEntry => {
+      const url = record.refunds.at(-1)?.l1TxHash && l1TxUrl(record.refunds.at(-1)!.l1TxHash!)
+      const stuck = oldVersionRefundOffer(record)
+      return {
+        id: `old-version-withdrawal:${record.id}`,
+        ts: record.startTime,
+        direction: "out",
+        pending: record.phase === "sending",
+        node: (
+          <ActivityListRow
+            key={record.id}
+            counterparty={shortL1Addr(record.to)}
+            counterpartyBadge="Old version"
+            timestamp={stuck ? STUCK_SUBLINE : rowTimestamp(record.startTime)}
+            amount={`-${usdFigure(formatUnits(withdrawalSent(record), DEFAULT_DECIMALS))}`}
+            statusLabel={record.phase === "done" ? undefined : "Releasing"}
+            avatarIcon="arrow.up.right"
+            onClick={() => url && window.open(url, "_blank", "noopener")}
+            ariaLabel="Open the withdrawal on Ethereum"
+            actions={
+              stuck
+                ? [
+                    {
+                      title: "Process manually",
+                      actionStyle: "gradient" as const,
+                      onClick: () => setExit({ kind: "oldVersion", record, refund: stuck }),
+                    },
+                  ]
+                : []
+            }
+          />
+        ),
+      }
+    }),
     // One row for the two burns of a legacy fresh-address withdrawal: worst leg's status, total burned.
     ...withdrawalGroups.map((group): ActivityEntry => {
       const head = group.legs.gas ?? group.records[0]
@@ -1261,15 +1399,19 @@ export function useActivityEntries(): ActivityEntriesState {
           exitTime !== undefined
             ? Math.max(pending ? 0 : bridgeItemTime(item), exitTime + 1)
             : bridgeItemTime(item)
+        const rowId = depositRowId(item)
+        const token = depositRowToken(item)
         const openDetail = () => {
           setNotice(undefined)
-          setDepositDetailId(item.record.sipaAddress)
+          setDepositDetailId(
+            token ? `${item.record.sipaAddress}:${token}` : item.record.sipaAddress,
+          )
         }
         const tag = registrationTagForDeposit(item.record.sipaAddress)
         // The tag's price came out of the deposit before it reached L2; its own row says where it went.
         const tagPrice = tagPriceOf(item.record)
         const tagPurchase =
-          tag && tagPrice && item.record.phase === "claimed"
+          tag && tagPrice && item.record.phase === "claimed" && !item.credit
             ? [
                 {
                   id: `${item.record.sipaAddress}:tag`,
@@ -1297,13 +1439,13 @@ export function useActivityEntries(): ActivityEntriesState {
         return [
           ...tagPurchase,
           {
-            id: item.record.sipaAddress,
+            id: rowId,
             ts,
             direction: "in",
             pending: !isSettledSipaPhase(item.record.phase),
             node: (
               <DepositRow
-                key={item.record.sipaAddress}
+                key={rowId}
                 row={sipaDepositIntentRow(item.record, tag, !!burn)}
                 processing={item.processing}
                 arriving={
@@ -1312,6 +1454,7 @@ export function useActivityEntries(): ActivityEntriesState {
                     : undefined
                 }
                 time={exitTime !== undefined ? ts : undefined}
+                decimals={settlementDecimals(depositTokens, item.record.tokenAddress)}
                 onOpen={openDetail}
                 onExit={() => openDepositExit(item.record, item.processing)}
               />
@@ -1335,7 +1478,6 @@ export function useActivityEntries(): ActivityEntriesState {
           },
         ]
       : []),
-    ...frozenExitEntry,
   ].sort((a, b) => b.ts - a.ts)
 
   const burns = new Map(withdrawalRecords.map((record) => [record.localId, record] as const))
@@ -1389,6 +1531,12 @@ export function useActivityEntries(): ActivityEntriesState {
     entries,
     savingsEntries,
     savingsHydrated,
+    oldVersionLeft: oldVersionLeftovers({
+      moves: savingsMoves,
+      burns: withdrawalRecords,
+      rows,
+      sharePrice: savingsSharePrice,
+    }),
     savingsLedger: ledger,
     arriving: arrivingFunds({
       // The store, not the feed: the feed hides a deposit behind the burn from this wallet that paid it.
@@ -1403,7 +1551,7 @@ export function useActivityEntries(): ActivityEntriesState {
         savings: savingsPosition?.sharesReadAt,
       },
       upgradeRecipients: upgrades.recipients(),
-      oldVersions: oldHoldings.total,
+      oldVersions: { main: oldHoldings.main, savings: oldHoldings.savings },
     }),
     upgradesLoaded: upgradesHydrated,
     hydrated:
@@ -1415,8 +1563,8 @@ export function useActivityEntries(): ActivityEntriesState {
       (directory.hydrated || directory.failed) &&
       !catchingUp,
     requestsUnavailable: directory.failed,
-    csvSources: { transactions, items, requests },
-    savingsCsvSources: { moves: savingsMoves, burns },
+    csvSources: walletToken && { walletToken, transactions, items, requests },
+    savingsCsvSources: walletToken && { walletToken, moves: savingsMoves, burns },
     detailModals: (
       <>
         {registrationDeposit?.modal}
@@ -1446,15 +1594,29 @@ export function useActivityEntries(): ActivityEntriesState {
           />
         )}
         {upgradeDetail && (
-          <UpgradeBatchDetailModal batch={upgradeDetail} onClose={() => setUpgradeDetailId(null)} />
+          <UpgradeBatchDetailModal
+            batch={upgradeDetail}
+            onBack={upgradeBack(() => setUpgradeDetailId(null))}
+            onClose={() => {
+              setUpgradeDetailId(null)
+              setUpgradeBackRun(null)
+            }}
+          />
         )}
         {upgradeRunDetail && (
           <UpgradeRunDetailModal
             run={upgradeRunDetail}
-            onViewLeg={(leg) => {
+            title={upgradeRunTitle[upgradeRunAccount(upgradeRunDetail.run)]}
+            pricing={upgradePricing}
+            onViewDeposit={(deposit) => {
               setUpgradeRunId(null)
-              if (leg.arrival) setDepositDetailId(leg.arrival.sipaAddress)
-              else setUpgradeDetailId(`${leg.batch.run}/${leg.batch.id}`)
+              setUpgradeBackRun(upgradeRunDetail.run)
+              setDepositDetailId(deposit.sipaAddress)
+            }}
+            onViewBatch={(batch) => {
+              setUpgradeRunId(null)
+              setUpgradeBackRun(upgradeRunDetail.run)
+              setUpgradeDetailId(`${batch.run}/${batch.id}`)
             }}
             onClose={() => setUpgradeRunId(null)}
           />
@@ -1492,7 +1654,11 @@ export function useActivityEntries(): ActivityEntriesState {
                 : undefined
             }
             notice={notice?.text}
-            onClose={() => setDepositDetailId(null)}
+            onBack={upgradeBack(() => setDepositDetailId(null))}
+            onClose={() => {
+              setDepositDetailId(null)
+              setUpgradeBackRun(null)
+            }}
           />
         )}
         {exit?.kind === "deposit" && (
@@ -1521,9 +1687,16 @@ export function useActivityEntries(): ActivityEntriesState {
             record={exit.record}
             deployment={
               exit.savings && obsidionWallet
-                ? () => savingsFinalizeDeployment(obsidionWallet, exit.record)
+                ? () => savingsFinalizeDeployment(exit.record)
                 : undefined
             }
+            onClose={() => setExit(null)}
+          />
+        )}
+        {exit?.kind === "oldVersion" && (
+          <OldVersionRefundExitModal
+            record={exit.record}
+            refund={exit.refund}
             onClose={() => setExit(null)}
           />
         )}
@@ -1567,6 +1740,7 @@ export function useActivityEntries(): ActivityEntriesState {
             eta={savingsEtaFor(savingsDetail, burns.get(savingsDetail.withdrawalLocalId))}
             onCheckAgain={savingsSource ? settleSavings : undefined}
             exit={savingsMoveExit(savingsDetail, burns.get(savingsDetail.withdrawalLocalId))}
+            onWithdraw={() => navigate("/withdraw")}
             onClose={() => setSavingsDetailId(null)}
           />
         )}

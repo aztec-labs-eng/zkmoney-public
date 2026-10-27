@@ -76,6 +76,13 @@ describe("inlinePanelState", () => {
     ["a miss the claim server is still asked about", resolved("not_found"), null, "looking-up"],
     ["a miss the claim server holds", resolved("not_found"), true, "reserved"],
     ["a hit the claim server also holds", resolved("found"), true, "add-offer"],
+    ["a tag on a retired rollup", resolved("not_upgraded"), false, "not-upgraded"],
+    [
+      "a tag on a retired rollup the claim server holds",
+      resolved("not_upgraded"),
+      true,
+      "not-upgraded",
+    ],
   ] as const)("names the panel for %s", (_, resolution, held, kind) => {
     expect(inlinePanelState([], "bob", resolution, undefined, held)).toEqual({
       kind,

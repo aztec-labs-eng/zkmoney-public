@@ -2,9 +2,9 @@ import { DEFAULT_CONTRACTS, OidcKeyRegistryContract } from "@obsidion/contracts"
 import { ServiceContractBase } from "./ServiceBase.js"
 import { assert } from "ts-essentials"
 import { ObsidionWallet } from "../obsidion/ObsidionWallet.js"
-import { Account } from "@aztec/aztec.js/account"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import { Fr } from "@aztec/aztec.js/fields"
+import { Account } from "@aztec-labs/aztec.js/account"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 
 /**
  * OidcKeyRegistry: on-chain attestation of the currently-trusted Apple/Google JWKS used to claim

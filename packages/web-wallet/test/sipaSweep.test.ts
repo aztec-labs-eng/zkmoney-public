@@ -30,13 +30,14 @@ const TYPED = `0x${"55".repeat(20)}` as Address
 const REGISTRY = `0x${"66".repeat(20)}` as Address
 const SIPA_FACTORY = `0x${"77".repeat(20)}` as Address
 const PORTAL = `0x${"cc".repeat(20)}` as Address
+const FORWARDING_TABLE = `0x${"fb".repeat(20)}` as Address
 const SUBSIDY = `0x${"aa".repeat(20)}` as Address
 const COMMITMENT = `0x${"1f".repeat(32)}` as Hex
 const RECOVERY_ADDRESS = `0x${"bb".repeat(20)}` as Address
 const IMPL = `0x${"ee".repeat(20)}` as Address
 const HASH = `0x${"ab".repeat(32)}` as Hex
 const FEE = 10n
-const CUT = 5n
+const TX_AMOUNT_CAP = 5166n * 10n ** 18n
 
 const l1Clients = vi.hoisted(() => ({ getL1Clients: vi.fn() }))
 const bridge = vi.hoisted(() => ({
@@ -47,13 +48,8 @@ const bridge = vi.hoisted(() => ({
 vi.mock("../src/features/deposit/l1Wallet", () => l1Clients)
 vi.mock("../src/platform/desktopBridge", () => bridge)
 
-const {
-  SELF_BROADCAST_RESWEEPABLE,
-  TX_AMOUNT_CAP,
-  buildDepositIntent,
-  encodeSweep,
-  MULTICALL3_ADDRESS,
-} = await import("@obsidion/sdk")
+const { SELF_BROADCAST_RESWEEPABLE, buildDepositIntent, encodeSweep, MULTICALL3_ADDRESS } =
+  await import("@obsidion/sdk")
 const {
   AlreadySweptError,
   canSelfSweep,
@@ -101,6 +97,7 @@ const record = (patch: Partial<SIPADepositRecord> = {}): SIPADepositRecord =>
 
 const manifest = {
   sipaFactory: SIPA_FACTORY,
+  forwardingTable: FORWARDING_TABLE,
   portal: PORTAL,
   rollupVersion: 4127419662n,
   token: TUPLE_TOKEN,
@@ -119,6 +116,7 @@ const tuple = {
   rollupVersion: "4127419662",
   registry: REGISTRY,
   sipaFactory: SIPA_FACTORY,
+  forwardingTable: FORWARDING_TABLE,
   depositSubsidy: SUBSIDY,
 } satisfies OxideEnvTuple
 
@@ -169,7 +167,7 @@ describe("canSelfSweep", () => {
 })
 
 describe("sweepManifestFrom", () => {
-  it("reads the four fields the derivation and the sweep bind to", () => {
+  it("reads the fields the derivation and the sweep bind to", () => {
     expect(sweepManifestFrom(tuple)).toEqual(manifest)
   })
 
@@ -202,6 +200,29 @@ describe("sweepDeployArgs", () => {
       resweepable: SELF_BROADCAST_RESWEEPABLE,
     })
   })
+
+  it("keeps an account origin's forwarding table, which the address commits to", () => {
+    const origin = {
+      protocol: "account" as const,
+      sipaFactory: SIPA_FACTORY,
+      implementation: IMPL,
+      intentHash: HASH,
+      rollupVersion: "4127419662",
+      resweepable: true,
+      recoveryAccount: WALLET,
+      recoveryCommitment: COMMITMENT,
+      accountFactory: REGISTRY,
+      forwardingTable: FORWARDING_TABLE,
+    }
+    expect(sweepDeployArgs(record({ origin }), manifest, IMPL)).toEqual({
+      implementation: IMPL,
+      intentHash: HASH,
+      recoveryCommitment: COMMITMENT,
+      rollupVersion: 4127419662n,
+      resweepable: true,
+      forwardingTable: FORWARDING_TABLE,
+    })
+  })
 })
 
 describe("selfSweepDeposit", () => {
@@ -219,7 +240,6 @@ describe("selfSweepDeposit", () => {
       /** `10^(feeDecimals - sentDecimals)`, as `readSipaFundingStatus` is given it. */
       scale?: bigint
       fee?: bigint
-      cut?: bigint
       deployed?: boolean
       predicted?: Address
     } = {},
@@ -227,20 +247,18 @@ describe("selfSweepDeposit", () => {
     const balance = over.balance ?? 1_000n
     const scaledBalance = balance * (over.scale ?? 1n)
     const fee = over.fee ?? FEE
-    const fpcFundingCut = over.cut ?? CUT
-    const floor = fee + fpcFundingCut
     return {
       channel,
       manifest,
       implementation: IMPL,
+      txAmountCap: TX_AMOUNT_CAP,
       readDeployed: vi.fn(async () => over.deployed ?? false),
       readFunding: vi.fn(async () => ({
         balance,
         scaledBalance,
         fee,
-        fpcFundingCut,
-        // The fee and the cut come off first, and only what is forwarded meets the cap.
-        sweepable: scaledBalance > floor && scaledBalance - floor <= TX_AMOUNT_CAP,
+        // The fee comes off first, and only what is forwarded meets the cap.
+        sweepable: scaledBalance > fee && scaledBalance - fee <= TX_AMOUNT_CAP,
       })),
       predict: predict.mockResolvedValue(over.predicted ?? SIPA),
       store,
@@ -283,22 +301,14 @@ describe("selfSweepDeposit", () => {
       /at or below the network's deposit fee, so it can't be moved into your private balance/,
     )
     expect(channel.sendTransaction).not.toHaveBeenCalled()
-  })
-
-  it("refuses a balance that clears the sweep fee but not the portal's cut", async () => {
-    // The portal takes its cut out of what the sweep forwards, so the floor is both halves.
-    await expect(selfSweepDeposit(record(), deps({ balance: FEE + CUT }))).rejects.toThrow(
-      /at or below the network's deposit fee/,
-    )
-    expect(channel.sendTransaction).not.toHaveBeenCalled()
-    // One unit above both halves is the first balance that moves.
-    await expect(selfSweepDeposit(record(), deps({ balance: FEE + CUT + 1n }))).resolves.toBe(HASH)
+    // One unit above the fee is the first balance that moves.
+    await expect(selfSweepDeposit(record(), deps({ balance: FEE + 1n }))).resolves.toBe(HASH)
   })
 
   it("names the ceiling, not the fee, on a balance topped up past it, as a refusal", async () => {
-    // Over the ceiling by one unit: the portal credits `balance − fee − cut`, so the window's top is
-    // the whole floor above the ceiling.
-    const over = deps({ balance: TX_AMOUNT_CAP + FEE + CUT + 1n })
+    // Over the ceiling by one unit: the portal credits `balance − fee`, so the window's top is the
+    // fee above the ceiling.
+    const over = deps({ balance: TX_AMOUNT_CAP + FEE + 1n })
     const sweep = selfSweepDeposit(record(), over)
     await expect(sweep).rejects.toBeInstanceOf(SweepRefusedError)
     await expect(sweep).rejects.toThrow(
@@ -307,19 +317,18 @@ describe("selfSweepDeposit", () => {
     await expect(sweep).rejects.not.toThrow(/cap|2[,.]?583/)
     expect(channel.sendTransaction).not.toHaveBeenCalled()
     // Exactly at it still sweeps.
-    await expect(
-      selfSweepDeposit(record(), deps({ balance: TX_AMOUNT_CAP + FEE + CUT })),
-    ).resolves.toBe(HASH)
+    await expect(selfSweepDeposit(record(), deps({ balance: TX_AMOUNT_CAP + FEE }))).resolves.toBe(
+      HASH,
+    )
   })
 
   it("names the ceiling on a 6-decimal deposit measured against the 18-decimal fee it swaps into", async () => {
-    // 5,000 USDC. In raw token units the balance reads as dust below the fee floor; in the fee's
+    // 50,000 USDC. In raw token units the balance reads as dust below the fee floor; in the fee's
     // own denomination it is far over the cap, which is what the sender has to be told.
     const usdc = deps({
-      balance: 5_000_000_000n,
+      balance: 50_000_000_000n,
       scale: 10n ** 12n,
       fee: parseEther("0.25"),
-      cut: parseEther("0.1"),
     })
     await expect(selfSweepDeposit(record(), usdc)).rejects.toThrow(
       /larger than the network can process in one deposit/,
@@ -482,12 +491,19 @@ describe("selfSweepDeposit", () => {
         rateAtomicPerSecond: 0n,
         globalLimitAtomic: 10_000n,
         availableAtomic: 100n,
+        txAmountCapAtomic: TX_AMOUNT_CAP,
       }))
       const registry = createPortalCapacityRegistry({
         read,
         visibility: { isVisible: () => true, onResume: () => () => {} },
         policy: { maxHeadAgeMs: Infinity },
       })
+      const readTerms = vi.fn(async () => ({
+        portal: PORTAL,
+        token: TUPLE_TOKEN,
+        depositFee: FEE,
+        txAmountCap: TX_AMOUNT_CAP,
+      }))
       const observer = createSipaProcessingObserver({
         deposits: {
           get: () => stored,
@@ -495,12 +511,7 @@ describe("selfSweepDeposit", () => {
           onListChanged: () => () => {},
         } as never,
         capacity: (key) => registry.store(key),
-        readTerms: async () => ({
-          portal: PORTAL,
-          token: TUPLE_TOKEN,
-          depositFee: FEE,
-          fpcFundingCut: CUT,
-        }),
+        readTerms,
         l1ChainId: 11155111,
       })
       const sweep = selfSweepDeposit(stored, {
@@ -508,19 +519,25 @@ describe("selfSweepDeposit", () => {
         checkCapacity: (live) => observer.refreshForSweep(SIPA, live),
       })
       await expect(sweep).rejects.toBeInstanceOf(SweepRefusedError)
+      // The deposit row of the table the address commits to.
+      expect(readTerms).toHaveBeenCalledWith({ forwardingTable: FORWARDING_TABLE, intent: 1 })
       expect(read).toHaveBeenCalledWith(
         expect.objectContaining({ portal: PORTAL, token: TUPLE_TOKEN }),
       )
       expect(channel.sendTransaction).not.toHaveBeenCalled()
     }
+    // An account origin names the table the observer reads the deposit's portal from.
     const origin = {
-      protocol: "legacy-eoa" as const,
+      protocol: "account" as const,
       sipaFactory: SIPA_FACTORY,
       implementation: IMPL,
       intentHash: HASH,
       rollupVersion: "4127419662",
       resweepable: true,
-      recoveryAddress: RECOVERY_ADDRESS,
+      recoveryAccount: WALLET,
+      recoveryCommitment: COMMITMENT,
+      accountFactory: REGISTRY,
+      forwardingTable: FORWARDING_TABLE,
     }
 
     it("reads capacity for a funded deposit the rail still records as unfunded", async () => {

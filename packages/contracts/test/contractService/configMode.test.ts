@@ -2,15 +2,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 import { readFileSync } from "fs"
 import { fileURLToPath } from "url"
 import { dirname, resolve } from "path"
-import {
-  ContractService,
-  NodeContractServiceStorage,
-  DEFAULT_CONTRACTS,
-  Network,
-} from "../../src"
+import { ContractService, NodeContractServiceStorage, DEFAULT_CONTRACTS, Network } from "../../src"
 import type { ContractServiceConfig, FetchFunction, OxideEnvProfile } from "@obsidion/core/types"
-import type { PXE } from "@aztec/pxe/client/lazy"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
+import type { PXE } from "@aztec-labs/pxe/client/lazy"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -72,8 +67,7 @@ function makeService(
     pxe?: PXE
   } = {},
 ) {
-  const storage =
-    opts.storage ?? new NodeContractServiceStorage(config.network)
+  const storage = opts.storage ?? new NodeContractServiceStorage(config.network)
   const service = ContractService.getInstance(storage, undefined, opts.pxe, config.network, {
     fetchFunction: opts.fetchFunction ?? noFetch,
     source: "profile",
@@ -163,8 +157,6 @@ describe("ContractService profile mode — reads", () => {
     const named = await service.getArtifactForContract(DEFAULT_CONTRACTS.sponsorFPC)
     expect(named.name).not.toBe(`artifact-at-${SPONSOR}`)
   })
-
-
 })
 
 describe("ContractService profile mode — the snapshot has one writer", () => {
@@ -293,7 +285,6 @@ describe("ContractService profile mode — oxide overlay", () => {
 
     const byName = await service.getContractAddress(DEFAULT_CONTRACTS.oxideToken)
     expect(byName?.toString()).toBe(MANIFEST_L2_TOKEN)
-
   })
 
   it("builds no client at all when the snapshot has no oxide pointer", async () => {

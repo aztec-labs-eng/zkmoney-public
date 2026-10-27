@@ -10,11 +10,21 @@ import { parseUnits } from "viem"
 import type { RequestInlinePacket } from "@obsidion/front-core"
 import { shortL1Addr } from "../src/ui/format"
 import type { LinkDeployment } from "../src/features/requests/accountlessRequest"
+import {
+  MAINNET_DAI,
+  MAINNET_USDC,
+  mainnetTokens,
+  mockLoadDepositFacts,
+  ROW_USDC,
+  singleToken,
+  twoRowTokens,
+} from "./support/depositTokens"
 import * as copy from "../src/features/limits/limitsCopy"
+import { LIMIT, LIMIT_USD, grouped, typed } from "./support/publicLimit"
 
 const SIPA = `0x${"aa".repeat(20)}`
 const L1_TOKEN = `0x${"22".repeat(20)}` as const
-const FEE = parseUnits("0.35", 18)
+const FEE = parseUnits("0.25", 18)
 
 const capacity = vi.hoisted(() => ({
   availableAtomic: 40_000n * 10n ** 18n,
@@ -22,10 +32,17 @@ const capacity = vi.hoisted(() => ({
   globalLimitAtomic: undefined as bigint | undefined,
   epoch: 0,
   keys: [] as string[],
+  rowTokens: [] as (string | undefined)[],
+  twoRows: false,
+  mainnet: false,
 }))
 vi.mock("../src/features/deposit/capacityStore", async () =>
   (await import("./fakeCapacity")).fakeCapacityStore(capacity),
 )
+vi.mock("../src/features/token/useTxAmountCap", () => ({
+  useTxAmountCap: () => 5166n * 10n ** 18n,
+  useRowTxAmountCap: () => 5166n * 10n ** 18n,
+}))
 vi.mock("../src/config/env", () => ({
   getConfig: () => ({ network: "sandbox", l1ChainId: 31337 }),
 }))
@@ -39,6 +56,16 @@ vi.mock("../src/config/oxideTuple", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/config/oxideTuple")>()),
   getOxideTuple: async () => ({ token: L1_TOKEN }),
 }))
+// The sandbox's one-row table.
+vi.mock("../src/features/deposit/loadDepositFacts", (importOriginal) =>
+  mockLoadDepositFacts(importOriginal, () =>
+    capacity.mainnet
+      ? mainnetTokens()
+      : capacity.twoRows
+      ? twoRowTokens()
+      : singleToken(L1_TOKEN, "TEST"),
+  ),
+)
 vi.mock("@obsidion/web-ds", () => ({
   GradientText: ({ children }: { children?: React.ReactNode }) => <span>{children}</span>,
   Icon: () => null,
@@ -124,6 +151,9 @@ beforeEach(() => {
   capacity.globalLimitAtomic = undefined
   capacity.epoch += 1
   capacity.keys.length = 0
+  capacity.rowTokens = []
+  capacity.twoRows = false
+  capacity.mainnet = false
   Object.assign(navigator, { clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } })
   container = document.createElement("div")
   document.body.appendChild(container)
@@ -177,17 +207,81 @@ const maxSend = (scope: ParentNode) =>
 const maxCredit = (scope: ParentNode) =>
   scope.querySelector("[data-testid='address-limits-max-credit']")?.textContent
 
+describe("ExternalWalletPayModal on a two-row table", () => {
+  it("prices a USDC request's fee in USDC, on the USDC row's bucket, and names no DAI", async () => {
+    capacity.twoRows = true
+    const p = {
+      ...packet("0", false),
+      tokenSymbol: "USDC",
+      tokenDecimals: 6,
+    } as RequestInlinePacket
+    await act(async () => {
+      root.render(
+        <ExternalWalletPayModal
+          packet={p}
+          result={{
+            ...result(p, "active"),
+            token: ROW_USDC,
+            decimals: 6,
+            feeAtomic: 100_000n,
+            grossAtomic: 0n,
+          }}
+          onClose={() => {}}
+          onFeeChanged={() => {}}
+        />,
+      )
+    })
+    for (let i = 0; i < 5; i++) await act(async () => {})
+
+    expect(document.body.textContent).toContain("Send more than 0.10 USDC.")
+    expect(document.body.textContent).not.toContain("DAI")
+    expect(capacity.rowTokens).toEqual([ROW_USDC])
+  })
+})
+
+describe("ExternalWalletPayModal for a swapped token", () => {
+  it("reads the bucket of the row the request's token swaps into", async () => {
+    capacity.mainnet = true
+    const p = {
+      ...packet("0", false),
+      tokenSymbol: "USDC",
+      tokenDecimals: 6,
+    } as RequestInlinePacket
+    await act(async () => {
+      root.render(
+        <ExternalWalletPayModal
+          packet={p}
+          result={{
+            ...result(p, "active"),
+            token: MAINNET_USDC,
+            decimals: 6,
+            feeAtomic: 100_000n,
+            grossAtomic: 0n,
+          }}
+          onClose={() => {}}
+          onFeeChanged={() => {}}
+        />,
+      )
+    })
+    for (let i = 0; i < 5; i++) await act(async () => {})
+
+    const asked = capacity.rowTokens.map((t) => t?.toLowerCase())
+    expect(asked).toContain(MAINNET_DAI.toLowerCase())
+    expect(asked).not.toContain(MAINNET_USDC.toLowerCase())
+  })
+})
+
 describe("ExternalWalletPayModal limits", () => {
   it("shows the limits beside the address and in the QR sheet of a fixed request", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {})
     await render(packet("100"))
     expect(document.querySelector("[data-testid='address-limits']")?.textContent).toBe(
-      "Deposit limit: $2,500 incl. fees",
+      `Deposit limit: ${LIMIT_USD} incl. fees`,
     )
     const details = await openLimit()
-    expect(maxSend(details)).toBe("2,500 TEST")
+    expect(maxSend(details)).toBe(`${grouped(LIMIT)} TEST`)
     // The credit at the maximum send, net of the current deposit fee.
-    expect(maxCredit(details)).toBe("2,499.65 TEST")
+    expect(maxCredit(details)).toBe(`${grouped(LIMIT - 0.25)} TEST`)
     expect(details.textContent).toContain(copy.LIMIT_NOTE)
     await act(async () => {
       details.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }))
@@ -197,45 +291,49 @@ describe("ExternalWalletPayModal limits", () => {
     await click(gotIt())
     const qr = document.querySelector("dialog[aria-label='Payment address']")!
     expect(qr.querySelector("[data-testid='address-limits']")?.textContent).toBe(
-      "Deposit limit: $2,500 incl. fees",
+      `Deposit limit: ${LIMIT_USD} incl. fees`,
     )
-    expect(maxSend(await openLimit(qr))).toBe("2,500 TEST")
+    expect(maxSend(await openLimit(qr))).toBe(`${grouped(LIMIT)} TEST`)
     vi.restoreAllMocks()
   })
 
-  it("offers a request whose send is exactly $2,500, fee included", async () => {
-    await render(packet("2499.65"))
+  it(`offers a request whose send is exactly ${LIMIT_USD}, fee included`, async () => {
+    await render(packet(typed(LIMIT - 0.25)))
     expect(addressButton()?.disabled).toBe(false)
     expect(buttonNamed("Show")?.disabled).toBe(false)
     expect(buttonNamed("Copy")?.disabled).toBe(false)
     expect(document.querySelector("[data-testid='request-over-limit']")).toBeNull()
-    expect(document.querySelector(".ww-paylink-summary__amount")?.textContent).toBe("$2,500.00")
+    expect(document.querySelector(".ww-paylink-summary__amount")?.textContent).toBe(
+      `$${grouped(LIMIT, true)}`,
+    )
     expect(document.querySelector("[data-testid='request-fee']")?.textContent).toBe(
-      "Includes a $0.35 deposit fee",
+      "Includes a 0.25 TEST deposit fee",
     )
   })
 
   it("holds copy and scan for a request over the limit, and keeps its address and amount", async () => {
-    await render(packet("2500"))
+    await render(packet(String(LIMIT)))
     expect(addressButton()?.disabled).toBe(true)
     expect(addressButton()?.textContent).toContain(shortL1Addr(SIPA))
     expect(buttonNamed("Show")?.disabled).toBe(true)
     expect(buttonNamed("Copy")?.disabled).toBe(true)
     const notice = document.querySelector("[data-testid='request-over-limit']")?.textContent ?? ""
-    expect(notice).toContain("Over the $2,500 limit")
+    expect(notice).toContain(`Over the ${LIMIT_USD} limit`)
     expect(notice).toContain("Ask the requester for a new request")
     expect(notice).not.toMatch(
       /send (it )?again|separate|another transfer|one transfer|split|more than one/i,
     )
     // The amount is shown as asked plus the fee, never reduced to fit.
-    expect(document.querySelector(".ww-paylink-summary__amount")?.textContent).toBe("$2,500.35")
+    expect(document.querySelector(".ww-paylink-summary__amount")?.textContent).toBe(
+      `$${grouped(LIMIT + 0.25, true)}`,
+    )
   })
 
   it("shows the limits for an open request and leaves sharing to the payer", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {})
     await render(packet("0"))
     expect(document.body.textContent).toContain("Any amount")
-    expect(maxSend(await openLimit())).toBe("2,500 TEST")
+    expect(maxSend(await openLimit())).toBe(`${grouped(LIMIT)} TEST`)
     await act(async () => {
       aboutLimits()!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }))
     })
@@ -276,13 +374,13 @@ describe("ExternalWalletPayModal limits", () => {
         deposit: { address: SIPA },
         payee: "alice",
         fixedAmount: "100",
-        fee: "0.35",
+        fee: "0.25",
       })
       await act(async () =>
         walletSend.props!.onSent({
           address: SIPA,
           txHash: `0x${"ab".repeat(32)}`,
-          amount: "100.35",
+          amount: "100.25",
           tokenSymbol: "USDC",
         }),
       )
@@ -322,7 +420,7 @@ describe("ExternalWalletPayModal limits", () => {
 
     it("is held with Copy and Show when the request is over the limit", async () => {
       l1.account = `0x${"ee".repeat(20)}`
-      await render(packet("2500"))
+      await render(packet(String(LIMIT)))
       expect(buttonNamed("Pay with wallet")?.disabled).toBe(true)
       await click(buttonNamed("Pay with wallet")!)
       expect(sendOpen()).toBeNull()
@@ -403,7 +501,7 @@ describe("ExternalWalletPayModal limits", () => {
       expect(document.querySelector("[data-testid='request-over-limit']")?.textContent).toBe(
         "Copy and scan are paused until this payment fits current capacity.",
       )
-      expect(document.body.textContent).toContain("$100.35")
+      expect(document.body.textContent).toContain("$100.25")
     })
 
     it("warns before sharing an open request's address while capacity is zero", async () => {
@@ -417,7 +515,7 @@ describe("ExternalWalletPayModal limits", () => {
       capacity.availableAtomic = 500n * 10n ** 18n
       await render(packet("0", false))
       expect(document.querySelector("[data-testid='address-capacity-detail']")?.textContent).toBe(
-        "To fit current capacity, send at most 500.35 TEST.",
+        "To fit current capacity, send at most 500.25 TEST.",
       )
     })
 
@@ -431,7 +529,7 @@ describe("ExternalWalletPayModal limits", () => {
       expect(buttonNamed("Copy")?.disabled).toBe(true)
       expect(buttonNamed("Show")?.disabled).toBe(true)
       expect(navigator.clipboard.writeText).not.toHaveBeenCalled()
-      expect(document.body.textContent).toContain("$100.35")
+      expect(document.body.textContent).toContain("$100.25")
     })
 
     it("asks again on each copy inside the QR while capacity is unconfirmed", async () => {

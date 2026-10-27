@@ -1,5 +1,5 @@
-import { Fr } from "@aztec/foundation/curves/bn254"
-import { poseidon2Hash } from "@aztec/foundation/crypto/poseidon"
+import { Fr } from "@aztec-labs/foundation/curves/bn254"
+import { poseidon2Hash } from "@aztec-labs/foundation/crypto/poseidon"
 
 /** Declared width of PasswordFPC's password argument (`str<31>`). */
 export const FPC_PASSWORD_MAX_LENGTH = 31

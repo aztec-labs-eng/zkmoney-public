@@ -2,11 +2,9 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 import { sepolia } from "viem/chains"
 
 // ---------------------------------------------------------------------------
-// `teeSignerSource` covers the oxide-vs-sandbox connect decision that used to
-// live inside `useAsset`. The oxide source reads the enclave URL + portal from
-// ONE manifest-tuple snapshot (atomicity), guards a malformed portal, and
-// wires subscribe/refresh through the oxide client; the sandbox source is a
-// static proxy to the relayer.
+// The oxide source reads the enclave URL + portal from ONE manifest-tuple
+// snapshot (atomicity), guards a malformed portal, and wires subscribe/refresh
+// through the oxide client.
 // ---------------------------------------------------------------------------
 
 const { loadTeeSignerMock, oxideClientHolder } = vi.hoisted(() => ({
@@ -26,11 +24,11 @@ vi.mock("@obsidion/sdk", async () => {
   }
 })
 
-import { createOxideTeeSignerSource } from "../../src/tee/teeSignerSource"
+import { createOxideTeeSignerSource, sharedFleetSigners } from "../../src/tee/teeSignerSource"
 
 const FAKE_PORTAL = "0x10c20f5ec11aa51de97edd0cfb01bfcb11e8fbf3"
 const FAKE_ENCLAVE_URL = "http://enclave/rpc"
-const FAKE_SIGNER = { ethAddress: { toString: () => "0xenclave" } } as any
+const FAKE_SIGNER = { teeRegistry: { toString: () => "0xregistry" } } as any
 
 const makeTuple = (overrides: Record<string, string> = {}) =>
   Object.freeze({ portal: FAKE_PORTAL, enclaveUrl: FAKE_ENCLAVE_URL, ...overrides })
@@ -132,70 +130,13 @@ describe("createOxideTeeSignerSource", () => {
     expect(client.refresh).toHaveBeenCalledTimes(1)
   })
 
-  describe("L2 approval getters", () => {
-    const FAKE_NODE = { __tag: "node" } as any
-    const FAKE_TOKEN = { __tag: "token" } as any
+  it("rethrows a connect-time refusal so the hook keeps retrying", async () => {
+    const refusal = new Error("not registered")
+    loadTeeSignerMock.mockRejectedValueOnce(refusal)
+    oxideClientHolder.current = makeFakeClient(makeTuple())
+    const source = createOxideTeeSignerSource(L1_OPTS)
 
-    it("passes node and token address to loadTeeSigner as l2Approval", async () => {
-      loadTeeSignerMock.mockResolvedValueOnce(FAKE_SIGNER)
-      oxideClientHolder.current = makeFakeClient(makeTuple())
-      const source = createOxideTeeSignerSource({
-        ...L1_OPTS,
-        getNode: () => FAKE_NODE,
-        getTokenAddress: async () => FAKE_TOKEN,
-      })
-
-      expect(await source.load()).toBe(FAKE_SIGNER)
-      expect(loadTeeSignerMock).toHaveBeenCalledWith(
-        FAKE_ENCLAVE_URL,
-        FAKE_PORTAL,
-        expect.any(Object),
-        { l2Approval: { node: FAKE_NODE, tokenAddress: FAKE_TOKEN } },
-      )
-    })
-
-    it("skips the connect while the node is missing", async () => {
-      oxideClientHolder.current = makeFakeClient(makeTuple())
-      const source = createOxideTeeSignerSource({
-        ...L1_OPTS,
-        getNode: () => undefined,
-        getTokenAddress: async () => FAKE_TOKEN,
-      })
-
-      expect(await source.load()).toBeUndefined()
-      expect(loadTeeSignerMock).not.toHaveBeenCalled()
-    })
-
-    it("skips the connect while the token address is missing", async () => {
-      oxideClientHolder.current = makeFakeClient(makeTuple())
-      const source = createOxideTeeSignerSource({
-        ...L1_OPTS,
-        getNode: () => FAKE_NODE,
-        getTokenAddress: async () => undefined,
-      })
-
-      expect(await source.load()).toBeUndefined()
-      expect(loadTeeSignerMock).not.toHaveBeenCalled()
-    })
-
-    it("rethrows the connect-time refusal so the hook keeps retrying", async () => {
-      const refusal = new Error("not approved")
-      loadTeeSignerMock.mockRejectedValueOnce(refusal)
-      oxideClientHolder.current = makeFakeClient(makeTuple())
-      const source = createOxideTeeSignerSource({
-        ...L1_OPTS,
-        getNode: () => FAKE_NODE,
-        getTokenAddress: async () => FAKE_TOKEN,
-      })
-
-      await expect(source.load()).rejects.toBe(refusal)
-    })
-
-    it("refuses a half-configured pair at construction", () => {
-      expect(() => createOxideTeeSignerSource({ ...L1_OPTS, getNode: () => FAKE_NODE })).toThrow(
-        /supplied together/,
-      )
-    })
+    await expect(source.load()).rejects.toBe(refusal)
   })
 
   it("connects to the caller's deployment and ignores the contract service's rolls", async () => {
@@ -245,5 +186,50 @@ describe("createOxideTeeSignerSource", () => {
       FAKE_PORTAL,
       expect.any(Object),
     )
+  })
+})
+
+describe("sharedFleetSigners", () => {
+  const SKY_PORTAL = "0x20c20f5ec11aa51de97edd0cfb01bfcb11e8fbf4"
+  beforeEach(() => vi.clearAllMocks())
+
+  it("connects one signer per portal domain over the one fleet", async () => {
+    const connect = vi.fn(async (_url: string, portal: string) => ({ portal } as any))
+    const signers = sharedFleetSigners(connect)
+
+    const [main, again, sky] = await Promise.all([
+      signers(FAKE_ENCLAVE_URL, FAKE_PORTAL),
+      signers(FAKE_ENCLAVE_URL, FAKE_PORTAL.toUpperCase().replace("0X", "0x") as `0x${string}`),
+      signers(FAKE_ENCLAVE_URL, SKY_PORTAL),
+    ])
+
+    expect(again).toBe(main)
+    expect(sky).not.toBe(main)
+    expect(connect.mock.calls).toEqual([
+      [FAKE_ENCLAVE_URL, FAKE_PORTAL],
+      [FAKE_ENCLAVE_URL, SKY_PORTAL],
+    ])
+  })
+
+  it("connects again after a failed connect", async () => {
+    const connect = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("not registered"))
+      .mockResolvedValueOnce(FAKE_SIGNER)
+    const signers = sharedFleetSigners(connect)
+
+    await expect(signers(FAKE_ENCLAVE_URL, FAKE_PORTAL)).rejects.toThrow("not registered")
+    expect(await signers(FAKE_ENCLAVE_URL, FAKE_PORTAL)).toBe(FAKE_SIGNER)
+    expect(connect).toHaveBeenCalledTimes(2)
+  })
+
+  it("is how a source connects when given", async () => {
+    oxideClientHolder.current = makeFakeClient(makeTuple())
+    const connect = vi.fn(async () => FAKE_SIGNER)
+    const source = createOxideTeeSignerSource({ ...L1_OPTS, connect })
+
+    expect(await source.load()).toBe(FAKE_SIGNER)
+    expect(connect).toHaveBeenCalledWith(FAKE_ENCLAVE_URL, FAKE_PORTAL)
+    expect(loadTeeSignerMock).not.toHaveBeenCalled()
   })
 })

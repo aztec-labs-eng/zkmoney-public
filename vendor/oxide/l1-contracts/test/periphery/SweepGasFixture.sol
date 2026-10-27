@@ -7,16 +7,14 @@ import {Inbox} from "@aztec/core/messagebridge/Inbox.sol";
 import {IInbox} from "@aztec/core/interfaces/messagebridge/IInbox.sol";
 import {Constants} from "@aztec/core/libraries/ConstantsGen.sol";
 
-import {DEPOSIT_FEE} from "@periphery/DepositSIPA.sol";
-
 import {RegistrationTestBase} from "@test/periphery/registration/RegistrationTestBase.sol";
+import {DEPOSIT_SWEEP_TIP} from "@test/helpers/ForwardingTableFixture.sol";
 
 abstract contract SweepGasFixture is RegistrationTestBase {
   uint256 internal constant HARNESS_TO_CHAIN = 99_827;
 
-  function _setupInbox() internal override {
-    Inbox realInbox =
-      new Inbox(address(rollup), IERC20(address(underlying)), ROLLUP_VERSION, Constants.L1_TO_L2_MSG_SUBTREE_HEIGHT, 2);
+  function _setupInbox() internal virtual override {
+    Inbox realInbox = new Inbox(address(rollup), IERC20(address(underlying)), ROLLUP_VERSION, 512);
     wiredInbox = IInbox(address(realInbox));
   }
 
@@ -41,10 +39,15 @@ abstract contract SweepGasFixture is RegistrationTestBase {
     return _lastCallCost(_callData) + HARNESS_TO_CHAIN;
   }
 
+  function _openNextInboxBucket() internal {
+    vm.warp(block.timestamp + 12);
+    vm.roll(block.number + 1);
+  }
+
   uint256 internal constant PRICED_UNIT_FEE = 4e9;
   uint256 internal constant PRICED_BASEFEE = PRICED_UNIT_FEE;
   int256 internal constant PRICED_FEED_ANSWER = 2500e8;
-  uint128 internal constant PRICED_MIN_PROFIT = uint128(DEPOSIT_FEE);
+  uint128 internal constant PRICED_MIN_PROFIT = uint128(DEPOSIT_SWEEP_TIP);
 
   function _pricedGas(uint256 _quote, uint256 _fee) internal pure returns (uint256) {
     require(_quote > 0, "quote clamped to zero: it carries no gas figure to read back");

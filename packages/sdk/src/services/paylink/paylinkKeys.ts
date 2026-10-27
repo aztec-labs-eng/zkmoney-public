@@ -1,17 +1,17 @@
-import { ContractArtifact } from "@aztec/aztec.js/abi"
-import { Fr } from "@aztec/aztec.js/fields"
-import { DomainSeparator } from "@aztec/constants"
-import { poseidon2HashWithSeparator } from "@aztec/foundation/crypto/poseidon"
-import { sha512ToGrumpkinScalar } from "@aztec/foundation/crypto/sha512"
-import { GrumpkinScalar } from "@aztec/foundation/curves/grumpkin"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import { computeSharedTaggingSecret } from "@aztec/stdlib/logs"
+import { ContractArtifact } from "@aztec-labs/aztec.js/abi"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { DomainSeparator } from "@aztec-labs/constants"
+import { poseidon2HashWithSeparator } from "@aztec-labs/foundation/crypto/poseidon"
+import { sha512ToGrumpkinScalar } from "@aztec-labs/foundation/crypto/sha512"
+import { GrumpkinScalar } from "@aztec-labs/foundation/curves/grumpkin"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import { computeSharedTaggingSecret } from "@aztec-labs/stdlib/logs"
 import {
   CompleteAddress,
   ContractInstanceWithAddress,
   computePartialAddress,
-} from "@aztec/stdlib/contract"
-import { KeyValidationRequest } from "@aztec/stdlib/kernel"
+} from "@aztec-labs/stdlib/contract"
+import { KeyValidationRequest } from "@aztec-labs/stdlib/kernel"
 import {
   PublicKeys,
   computeAppSecretKey,
@@ -23,7 +23,7 @@ import {
   hashPublicKey,
   type KeyPrefix,
   type PublicKey,
-} from "@aztec/stdlib/keys"
+} from "@aztec-labs/stdlib/keys"
 import { DEFAULT_CONTRACTS, registerContractInPXE, type ContractName } from "@obsidion/contracts"
 import { ObsidionWallet } from "../../obsidion/ObsidionWallet.js"
 
@@ -143,7 +143,8 @@ export async function findPaylinkKeysForDay(
       [masterSecret, new Fr(day), new Fr(n), paylinkFlavorId(flavor)],
       PAYLINK_SECRET_SEPARATOR,
     )
-    if (candidate.equals(secret)) return deriveDeterministicPaylinkKeys(masterSecret, day, n, flavor)
+    if (candidate.equals(secret))
+      return deriveDeterministicPaylinkKeys(masterSecret, day, n, flavor)
   }
   return undefined
 }
@@ -245,7 +246,7 @@ export async function registerEscrowTagSecret(args: {
     }) => Promise<void>
   }
   if (typeof pxe.registerTaggingSecretSource !== "function") {
-    throw new Error("PXE.registerTaggingSecretSource() is missing — requires @aztec/pxe >= v5")
+    throw new Error("PXE.registerTaggingSecretSource() is missing — requires @aztec-labs/pxe >= v5")
   }
   await pxe.registerTaggingSecretSource({
     kind: "arbitrary-secret",
@@ -291,7 +292,10 @@ async function buildPaylinkKeySet(
   const masterIncomingViewingSecretKey = deriveMasterIncomingViewingSecretKey(keyMaterial.secretKey)
   const masterOutgoingViewingSecretKey = deriveMasterOutgoingViewingSecretKey(keyMaterial.secretKey)
   // stdlib has no standalone derivation for tsk_m; this mirrors `deriveKeys`.
-  const masterTaggingSecretKey = sha512ToGrumpkinScalar([keyMaterial.secretKey, DomainSeparator.TSK_M])
+  const masterTaggingSecretKey = sha512ToGrumpkinScalar([
+    keyMaterial.secretKey,
+    DomainSeparator.TSK_M,
+  ])
 
   // v5 PublicKeys stores hashes for npk/ovpk/tpk and the raw point only for ivpk.
   const pk = keyMaterial.publicKeys

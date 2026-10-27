@@ -10,6 +10,7 @@ import {Errors} from "@periphery/Errors.sol";
 import {OxideConstants} from "@generated/OxideConstants.gen.sol";
 import {Hash} from "@aztec/core/libraries/crypto/Hash.sol";
 import {IRegistry} from "@aztec/governance/interfaces/IRegistry.sol";
+import {IOxideAccountFactory} from "@periphery/interfaces/IOxideAccountFactory.sol";
 
 contract NamePortalTest is RegistrationTestBase {
   uint256 internal constant DEPOSIT = 100 ether;
@@ -25,15 +26,15 @@ contract NamePortalTest is RegistrationTestBase {
     _sweepRegistration(sipa, registrationData, consent, auth, _noTerms());
   }
 
-  function _expectedContent(address user, bytes32 nameHash) internal pure returns (bytes32) {
-    return Hash.sha256ToField(abi.encodeWithSignature("name_ownership_verified(address,bytes32)", user, nameHash));
+  function _expectedContent(address bootstrapAddress, bytes32 nameHash) internal pure returns (bytes32) {
+    return Hash.sha256ToField(abi.encodePacked(bootstrapAddress, nameHash));
   }
 
   function _assertNotification(uint256 callIndex, bytes32 l2Recipient, uint256 rollupVersion) internal view {
     (bytes32 actor, uint256 version, bytes32 content, bytes32 secretHash) = inbox.calls(callIndex);
     assertEq(actor, l2Recipient);
     assertEq(version, rollupVersion);
-    assertEq(content, _expectedContent(defaultOwner, NAME_HASH));
+    assertEq(content, _expectedContent(bootstrap, NAME_HASH));
     assertEq(secretHash, OxideConstants.PORTAL_CONSTANT_SECRET_HASH);
   }
 
@@ -158,10 +159,29 @@ contract NamePortalTest is RegistrationTestBase {
     namePortal.notify(defaultOwner, bytes32(0), ROLLUP_VERSION);
   }
 
+  function test_notifyNonFactoryAccountReverts() external {
+    FakeOxideAccount fake = new FakeOxideAccount(makeAddr("fakeBootstrap"));
+    vm.prank(address(registrationController));
+    nameRegistry.claimName(NAME_HASH, address(fake), _domainAuth(NAME_HASH, address(fake), nextNonce++, _deadline()));
+
+    vm.expectRevert(abi.encodeWithSelector(Errors.NamePortal__NotFactoryAccount.selector, address(fake)));
+    namePortal.notify(address(fake), NAME_PORTAL_RECIPIENT, ROLLUP_VERSION);
+  }
+
   function test_constructorRejectsZeroAddresses() external {
     vm.expectRevert(Errors.NamePortal__ZeroNameRegistry.selector);
-    new NamePortal(INameRegistry(address(0)), IRegistry(address(registry)));
+    new NamePortal(INameRegistry(address(0)), IRegistry(address(registry)), accountFactory);
     vm.expectRevert(Errors.NamePortal__ZeroAztecRegistry.selector);
-    new NamePortal(INameRegistry(address(nameRegistry)), IRegistry(address(0)));
+    new NamePortal(INameRegistry(address(nameRegistry)), IRegistry(address(0)), accountFactory);
+    vm.expectRevert(Errors.NamePortal__ZeroAccountFactory.selector);
+    new NamePortal(INameRegistry(address(nameRegistry)), IRegistry(address(registry)), IOxideAccountFactory(address(0)));
+  }
+}
+
+contract FakeOxideAccount {
+  address public bootstrapOwner;
+
+  constructor(address bootstrap) {
+    bootstrapOwner = bootstrap;
   }
 }

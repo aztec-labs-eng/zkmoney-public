@@ -1,7 +1,6 @@
 import { useState, type ReactNode } from "react"
 import type { Address } from "viem"
-import { WALLET_TOKEN_SYMBOL } from "@obsidion/core/constants"
-import type { Network, RegistrationKind } from "@obsidion/core/types"
+import type { RegistrationKind } from "@obsidion/core/types"
 import { Icon } from "@obsidion/web-ds"
 import { formatDateLabel, formatTimeLabel } from "@obsidion/front-core"
 import type { PaylinkSignupQuote } from "../paylink/paylinkSignupQuote"
@@ -28,7 +27,8 @@ import {
   fundingAssetsLabel,
 } from "./steps/DepositTermsRows"
 import { PaylinkSignupRows } from "./steps/PaylinkSignupRows"
-import { depositTokensFor } from "../deposit/loadDepositFacts"
+import { useDepositTokens } from "../deposit/loadDepositFacts"
+import { useRowTxAmountCap } from "../token/useTxAmountCap"
 import ethIcon from "../../assets/deposit/ethereum.webp"
 
 const PUBLISHING_NOTE = "Getting your fresh deposit address ready."
@@ -57,7 +57,6 @@ export interface RegistrationSheetProps {
     chainLabel: string
     /** The deposit to ask for. Unknown while the schedule it is quoted on is still being settled. */
     total?: bigint
-    fpcCut?: bigint
     fee?: bigint
     sweepFee?: bigint
     /** The least deposit the chain accepts; at or above it the sheet stops asking. */
@@ -67,8 +66,6 @@ export interface RegistrationSheetProps {
     /** The schedule this registration is quoted on. */
     kind: RegistrationKind
     tokenSymbol: string
-    /** Picks what the user may send: the settlement token and anything the sweep swaps into it. */
-    network: Network
     /** The funding tokens the sweep swaps into the settlement token; unset where none are. */
     swapAssets?: string
     tokenDecimals: number
@@ -88,7 +85,7 @@ export interface RegistrationSheetProps {
     check?: RegistrationCheck
   }
   /** Paylink-funded signup: split the note instead of asking for an L1 deposit. The quote is
-   *  absent while the cut that prices it is unread. */
+   *  absent while the figures that price it are unread. */
   settlement?: {
     quote?: PaylinkSignupQuote
     tokenSymbol: string
@@ -165,7 +162,6 @@ function RegistrationSheetPayment({
   token,
   chainId,
   chainLabel,
-  network,
   received,
   receivedToken,
   funded,
@@ -173,24 +169,25 @@ function RegistrationSheetPayment({
   floor,
   ...terms
 }: NonNullable<RegistrationSheetProps["payment"]>) {
-  const { total, sweepFee, fpcCut, tokenSymbol, tokenDecimals, kind, scheduleUnavailable } = terms
+  const { total, sweepFee, tokenSymbol, tokenDecimals, kind, scheduleUnavailable } = terms
+  const fundingTokens = useDepositTokens("registration")
   const address = reserved
   const free = kind === "earned_tag"
-  // The relayer's sweep fee and the portal's cut are the network's, on every schedule: one figure.
-  const funding = sweepFee === undefined || fpcCut === undefined ? undefined : sweepFee + fpcCut
   const fmt = (v: bigint) => formatDepositAmount(v, tokenDecimals)
   const due = (v: bigint) => formatDepositDue(v, tokenDecimals)
   const got = (v: bigint) => formatDepositSeen(v, tokenDecimals)
   const seen = received !== undefined && received > 0n ? received : undefined
   const remaining =
     seen !== undefined && total !== undefined && total > seen ? total - seen : undefined
+  // A registration settles on the fee token's row, whichever token funds it.
+  const txAmountCap = useRowTxAmountCap(fundingTokens?.settlement.address)
   const overLimit = registrationOverLimit({
     token,
     chainId,
     decimals: tokenDecimals,
     askAtomic: total,
     scheduleFeeAtomic: terms.fee,
-    fpcCutAtomic: fpcCut,
+    txAmountCap,
   })
 
   // Covered: the machine has what it needs, so the sheet stops asking and reports. A deposit at the
@@ -234,7 +231,9 @@ function RegistrationSheetPayment({
     )
   }
 
-  const warning = tokenSymbol !== WALLET_TOKEN_SYMBOL && (
+  // A swapped token's arrival sets the opening balance at the market rate.
+  const swapped = fundingTokens?.options.find((t) => t.symbol === tokenSymbol)?.swapped
+  const warning = swapped && (
     <p className="ww-reg-sheet__warn">
       <Icon name="info-circle" size={16} color="var(--text-secondary)" />
       <span>Your opening balance is set when your {tokenSymbol} arrives.</span>
@@ -267,8 +266,8 @@ function RegistrationSheetPayment({
           ) : free ? (
             <>
               Send at least {due(total)} to activate your account. The tag is free
-              {funding !== undefined && funding > 0n
-                ? `, and ${fmt(funding)} is network funding`
+              {sweepFee !== undefined && sweepFee > 0n
+                ? `, and ${fmt(sweepFee)} is network funding`
                 : ""}
               .
             </>
@@ -279,17 +278,18 @@ function RegistrationSheetPayment({
           <span className="ww-reg-sheet__fund" data-testid="registration-sheet-funding">
             <span className="ww-reg-sheet__fund-row">
               <span className="ww-reg-sheet__fund-logos">
-                {depositTokensFor(network).map((t) => (
+                {fundingTokens?.offered.map((t) => (
                   <img key={t.symbol} src={t.icon} alt="" width={20} height={20} />
                 ))}
               </span>
-              {fundingAssetsLabel(network)}
+              {fundingAssetsLabel(fundingTokens)}
             </span>
             <span className="ww-reg-sheet__fund-row">
               on <img src={ethIcon} alt="" width={20} height={20} /> {chainLabel}
             </span>
             <span className="ww-reg-sheet__fund-note">
-              Other tokens or networks can&apos;t be recovered.
+              Other tokens need manual recovery from Settings. Other networks can&apos;t be
+              recovered.
             </span>
           </span>
         </span>
@@ -361,7 +361,12 @@ function RegistrationSheetPayment({
             capacity: address && <p className="ww-about-limits__note">{ADDRESS_RECHECK_NOTE}</p>,
           }}
           // Before the claim: no account yet, and the address will come from the active deployment.
-          capacity={address ? sourceFromTarget(registration.capacity) : { kind: "active" }}
+          capacity={
+            address
+              ? sourceFromTarget(registration.capacity)
+              : { kind: "active", token: fundingTokens?.settlement.address }
+          }
+          settlementSymbol={fundingTokens?.settlement.symbol}
           account={!!address}
           onClose={() => setAboutLimits(undefined)}
         />

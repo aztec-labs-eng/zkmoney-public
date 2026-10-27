@@ -7,8 +7,8 @@
  * fail-closes on. That makes the Recover button in the `recovery` scenario a genuine end-to-end
  * run against the fake wallet, not a mocked one.
  */
-import { quotedDepositFee, WALLET_TOKEN_SYMBOL } from "@obsidion/core/constants"
-import { Fr, Point } from "@aztec/aztec.js/fields"
+import { WALLET_TOKEN_SYMBOL } from "@obsidion/core/constants"
+import { Fr, Point } from "@aztec-labs/aztec.js/fields"
 import { deriveRecoveryAddress, encodePaylinkInline } from "@obsidion/sdk"
 import { deriveStealthKey, isSettledSipaPhase } from "@obsidion/front-core"
 import type {
@@ -21,9 +21,11 @@ import type {
 } from "@obsidion/front-core"
 import { WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
 import type { OxideEnvTuple } from "@obsidion/core/types"
+import { deploymentOfTuples, type PinnedOxideDeployment } from "@obsidion/core/oxide"
 import { getAddress, parseUnits, type Address, type Hash, type Hex } from "viem"
 import { STUCK_SWEEP_MS } from "../features/deposit/sipaRecovery"
-import { DEMO_DEPOSIT_FEE, DEMO_FPC_FUNDING_CUT } from "./fakeL1Rpc"
+import { DEMO_DEPOSIT_FEE, DEMO_L1_TOKEN, DEMO_PORTAL, DEMO_WITHDRAWAL_FEE } from "./fakeL1Rpc"
+export { DEMO_L1_TOKEN }
 
 /** Master secret every demo key derives from. Under the BN254 modulus, and public by design. */
 export const DEMO_MSK_HEX = `0x${"2a".repeat(32)}`
@@ -41,7 +43,6 @@ export const DEMO_COMPLETE_ADDRESS = `0x${"ab".repeat(288)}`
 
 /** L2 oxide token — the address TokenStorage and BalanceStorage agree on. */
 export const DEMO_L2_TOKEN = `0x${"5c".repeat(32)}`
-export const DEMO_L1_TOKEN = "0xb0de1000000000000000000000000000000b01d0" as Address
 
 /** The L1 account that paid the funded demo deposits — the deposit sheet's Funder. */
 export const DEMO_L1_FUNDER = "0xf0de1000000000000000000000000000000fd0e1" as Address
@@ -55,7 +56,7 @@ export const DEMO_OXIDE_TUPLE: OxideEnvTuple = {
   gitSha: "0".repeat(40),
   timestamp: new Date(0).toISOString(),
   deployedAt: new Date(0).toISOString(),
-  portal: "0xde1100000000000000000000000000000000da01",
+  portal: DEMO_PORTAL,
   token: DEMO_L1_TOKEN,
   l2Token: DEMO_L2_TOKEN,
   enclaveUrl: "https://enclave.invalid",
@@ -63,6 +64,7 @@ export const DEMO_OXIDE_TUPLE: OxideEnvTuple = {
   rollupVersion: "1",
   // The self-sweep binds its CREATE2 args and its deploy call to the factory.
   sipaFactory: "0x5117a0000000000000000000000000000000fac7",
+  forwardingTable: "0xf0a2000000000000000000000000000000000fb1",
   sipaResolver: "0x8e50100000000000000000000000000000005e12",
   registry: "0x1e61000000000000000000000000000000015ada",
   depositSubsidy: "0x5ab500000000000000000000000000000000d1da",
@@ -70,6 +72,12 @@ export const DEMO_OXIDE_TUPLE: OxideEnvTuple = {
   // Every burn settles into it; the withdrawal rails resolve only when it is present.
   plainWithdrawalExecutor: "0xe8ec000000000000000000000000000000000e8c",
 }
+
+/** The demo's deployment: one bridge, {@link DEMO_OXIDE_TUPLE}'s. */
+export const DEMO_OXIDE_DEPLOYMENT: PinnedOxideDeployment = (() => {
+  const deployment = deploymentOfTuples([DEMO_OXIDE_TUPLE])
+  return { deployment, pinned: deployment.bridges[0]!, timestampMs: 0 }
+})()
 
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE
@@ -110,7 +118,6 @@ interface DepositSpec {
   ageMs: number
   netAmount?: string
   fee?: string
-  fpcFundingCut?: string
   /** The sweep's inbox leaf index. Stamped with the net the moment the sweep log is read. */
   inboxIndex?: string
   /** Set only on the self-initiated deposits — a third-party sender's transfer is unknown. */
@@ -143,7 +150,6 @@ function depositFrom(spec: DepositSpec, now: number): SIPADepositRecord {
     tokenAddress: DEMO_L1_TOKEN,
     netAmount: spec.netAmount,
     fee: spec.fee,
-    fpcFundingCut: spec.fpcFundingCut,
     inboxIndex: spec.inboxIndex,
     fundingTxHash: spec.fundingTxHash,
     // The funding-transfer scan reads the sender and the hash off the same log, so a fixture that
@@ -160,13 +166,11 @@ function depositFrom(spec: DepositSpec, now: number): SIPADepositRecord {
 }
 
 /**
- * What a deposit costs in the demo: 0.35 DAI in all, with `DEMO_CUT` naming the portal's share of
- * it. Every funded fixture carries both, because the sync stamps them with the gross the moment it
- * reads L1 — and both come off the fake chain's own reads, so the seeded records and the Deposit
- * screen quote the same floor.
+ * What a deposit costs in the demo: 0.25 DAI. Every funded fixture carries it, because the sync
+ * stamps it with the gross the moment it reads L1 — and it comes off the fake chain's own read, so
+ * the seeded records and the Deposit screen quote the same floor.
  */
-const DEMO_FEE = quotedDepositFee(DEMO_DEPOSIT_FEE, DEMO_FPC_FUNDING_CUT).toString()
-const DEMO_CUT = DEMO_FPC_FUNDING_CUT.toString()
+const DEMO_FEE = DEMO_DEPOSIT_FEE.toString()
 
 /**
  * Every branch of the two exits, in order: recovery alone under the fee floor, recovery alone over
@@ -182,16 +186,14 @@ export function recoveryDeposits(now: number): SIPADepositRecord[] {
       amount: "0.2",
       ageMs: 3 * HOUR,
       fee: DEMO_FEE,
-      fpcFundingCut: DEMO_CUT,
     },
     // Above the fee, so the copy reads the cap rather than the floor.
     {
       seed: "d8",
       phase: "recoverable" as const,
-      amount: "4200",
+      amount: "8400",
       ageMs: 90 * MINUTE,
       fee: DEMO_FEE,
-      fpcFundingCut: DEMO_CUT,
     },
     {
       seed: "d2",
@@ -199,7 +201,6 @@ export function recoveryDeposits(now: number): SIPADepositRecord[] {
       amount: "18",
       ageMs: STUCK_SWEEP_MS + 20 * MINUTE,
       fee: DEMO_FEE,
-      fpcFundingCut: DEMO_CUT,
     },
     // Clearly inside the STUCK_SWEEP_MS window: seeded AT the threshold it reads stuck by the
     // time anything evaluates it (the check is >= against a later Date.now()).
@@ -209,7 +210,6 @@ export function recoveryDeposits(now: number): SIPADepositRecord[] {
       amount: "42",
       ageMs: 2 * MINUTE,
       fee: DEMO_FEE,
-      fpcFundingCut: DEMO_CUT,
     },
     {
       seed: "d4",
@@ -218,18 +218,16 @@ export function recoveryDeposits(now: number): SIPADepositRecord[] {
       ageMs: 2 * DAY,
       // Under the fee floor, which is what made it recoverable before it was recovered.
       fee: DEMO_FEE,
-      fpcFundingCut: DEMO_CUT,
       recoveryTxHash: hash("4e"),
     },
     {
       seed: "d5",
       phase: "claimed" as const,
       // amount is the net: the sweep write overwrites the gross with formatUnits(net).
-      amount: "249.65",
+      amount: "249.75",
       ageMs: 5 * DAY,
-      netAmount: atomic("249.65"),
+      netAmount: atomic("249.75"),
       fee: DEMO_FEE,
-      fpcFundingCut: DEMO_CUT,
       sweepTxHash: hash("7b"),
     },
     {
@@ -238,7 +236,6 @@ export function recoveryDeposits(now: number): SIPADepositRecord[] {
       amount: "31",
       ageMs: STUCK_SWEEP_MS + 2 * HOUR,
       fee: DEMO_FEE,
-      fpcFundingCut: DEMO_CUT,
       sweepTxHash: hash("8c"),
     },
   ].map((spec) => depositFrom(spec, now))
@@ -496,8 +493,8 @@ export function demoTransactions(now: number): Transaction[] {
 }
 
 /**
- * One record per phase. Every record carries `rawAmount`, `relayerTip` and `fpcFundingCut`,
- * written at the seed because all three are fixed when the burn is built; post-mine records add
+ * One record per phase. Every record carries `rawAmount` and `relayerTip`, written at the seed
+ * because both are fixed when the burn is built; post-mine records add
  * `l2TxHash` and `blockNumber`, which `markMined` writes with them. `withdrawalId` joins them from
  * `awaiting_proven` on: the tracker derives it at the top of a tick and cannot advance a record
  * past `l2_mined` without one.
@@ -505,11 +502,11 @@ export function demoTransactions(now: number): Transaction[] {
 export function demoWithdrawals(now: number): WithdrawalRecord[] {
   const base = {
     tokenSymbol: WALLET_TOKEN_SYMBOL,
+    tokenDecimals: 18,
     recipientProvenance: "saved-recipient" as const,
-    // The portal skims the cut from the burn and the executor pays the tip out of the rest, so the
-    // fee row renders on every record.
+    // The executor takes its fee and pays the tip out of the burn, so the fee row renders on every record.
     relayerTip: WITHDRAW_RELAYER_TIP.toString(),
-    fpcFundingCut: DEMO_CUT,
+    withdrawalFee: DEMO_WITHDRAWAL_FEE.toString(),
   }
   return [
     {
@@ -810,11 +807,10 @@ export function activityDeposits(now: number): SIPADepositRecord[] {
       seed: "e1",
       phase: "claimed" as const,
       // amount is the net: the sweep write overwrites the gross with formatUnits(net).
-      amount: "399.65",
+      amount: "399.75",
       ageMs: 8 * HOUR,
-      netAmount: atomic("399.65"),
+      netAmount: atomic("399.75"),
       fee: DEMO_FEE,
-      fpcFundingCut: DEMO_CUT,
       fundingTxHash: hash("e6"),
       sweepTxHash: hash("e7"),
       claimTxHash: hash("e8"),
@@ -825,7 +821,6 @@ export function activityDeposits(now: number): SIPADepositRecord[] {
       amount: "95",
       ageMs: 3 * MINUTE,
       fee: DEMO_FEE,
-      fpcFundingCut: DEMO_CUT,
     },
     // Funds for the "Concert ticket" request link: hidden as a deposit row, shown on that row.
     {
@@ -834,18 +829,16 @@ export function activityDeposits(now: number): SIPADepositRecord[] {
       amount: "25",
       ageMs: 2 * MINUTE,
       fee: DEMO_FEE,
-      fpcFundingCut: DEMO_CUT,
     },
     // Sweep log read, L1->L2 message not yet settled. The claim scan writes the net into both
     // `amount` and `netAmount` here, so the gross 75 the row shows is the net plus the stamped fee.
     {
       seed: "e3",
       phase: "pendingClaim" as const,
-      amount: "74.65",
+      amount: "74.75",
       ageMs: 2 * MINUTE,
-      netAmount: atomic("74.65"),
+      netAmount: atomic("74.75"),
       fee: DEMO_FEE,
-      fpcFundingCut: DEMO_CUT,
       inboxIndex: "12",
       sweepTxHash: hash("eb"),
     },
@@ -855,16 +848,14 @@ export function activityDeposits(now: number): SIPADepositRecord[] {
       amount: "0.2",
       ageMs: 5 * HOUR,
       fee: DEMO_FEE,
-      fpcFundingCut: DEMO_CUT,
     },
     // Above the fee: unsweepable for the per-transaction cap instead of the floor.
     {
       seed: "e9",
       phase: "recoverable" as const,
-      amount: "4200",
+      amount: "8400",
       ageMs: 90 * MINUTE,
       fee: DEMO_FEE,
-      fpcFundingCut: DEMO_CUT,
     },
     {
       seed: "e5",
@@ -872,7 +863,6 @@ export function activityDeposits(now: number): SIPADepositRecord[] {
       amount: "18",
       ageMs: STUCK_SWEEP_MS + 20 * MINUTE,
       fee: DEMO_FEE,
-      fpcFundingCut: DEMO_CUT,
       fundingTxHash: hash("ea"),
     },
     {
@@ -881,7 +871,6 @@ export function activityDeposits(now: number): SIPADepositRecord[] {
       amount: "0.3",
       ageMs: 2 * DAY,
       fee: DEMO_FEE,
-      fpcFundingCut: DEMO_CUT,
       recoveryTxHash: hash("e9"),
     },
     // Address published, never paid — the feed hides it.

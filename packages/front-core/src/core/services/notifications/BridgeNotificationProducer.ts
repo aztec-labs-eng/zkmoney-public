@@ -17,7 +17,7 @@ import { depositAmounts } from "../deposits/depositAmounts"
 import { WITHDRAWAL_PHASE_COPY } from "../bridge/withdrawalCopy"
 import { savingsMoveLabel } from "../savings/savingsMoveCopy"
 import { depositPhaseCopy } from "../deposits/depositCopy"
-import type { SIPADepositRecord } from "../deposits/SIPADepositStore"
+import { isAccountMoveSipa, type SIPADepositRecord } from "../deposits/SIPADepositStore"
 import { SIPA_PROCESSING_COPY, sipaReasonShown } from "../deposits/sipaProcessing"
 import { AppNotificationStore } from "./AppNotificationStore"
 import type {
@@ -67,11 +67,8 @@ function terminalPhaseForItem(item: BridgeActivityItem): TerminalBridgePhase | n
  * What a deposit's live row says it is waiting on; undefined for one not yet funded, parked, or
  * settled, where a spinner would claim progress that is not happening.
  */
-export function sipaDepositInflightLabel(
-  record: SIPADepositRecord,
-  portalFrozen = false,
-): string | undefined {
-  return depositPhaseCopy(record, { portalFrozen }).live
+export function sipaDepositInflightLabel(record: SIPADepositRecord): string | undefined {
+  return depositPhaseCopy(record).live
 }
 
 /** Phases a rebuilt withdrawal sits in until the tracker has seen its L1 release. */
@@ -88,7 +85,7 @@ const UNRELEASED: ReadonlySet<WithdrawalRecord["phase"]> = new Set([
  * record rebuilt from chain starts at the burn: its release was never observed here, so until the
  * tracker sees it spent on L1 a live row would report an old, settled withdrawal as in progress.
  */
-function inflightLabel(item: BridgeActivityItem, portalFrozen: boolean): string | undefined {
+function inflightLabel(item: BridgeActivityItem): string | undefined {
   if (item.kind === "bridge.sipaDeposit" && sipaReasonShown(item.processing, item.record)) {
     return SIPA_PROCESSING_COPY[item.processing.reason.kind].short
   }
@@ -104,7 +101,7 @@ function inflightLabel(item: BridgeActivityItem, portalFrozen: boolean): string 
       ? undefined
       : WITHDRAWAL_PHASE_COPY[item.record.phase].live
   }
-  return sipaDepositInflightLabel(item.record, portalFrozen)
+  return sipaDepositInflightLabel(item.record)
 }
 
 /**
@@ -133,7 +130,7 @@ function groupAsItem(group: WithdrawalGroup): BridgeActivityItem {
 /**
  * A migration is one exit (a withdrawal record with `intent: "migration"`, or an upgrade's refund
  * batch) and one arrival (the SIPA that exit pays), reported as one move of funds rather than a
- * withdrawal and a deposit. An upgrade's first refund arrives at its update-metadata SIPA.
+ * withdrawal and a deposit. A SIPA the account pays itself is an arrival on its own.
  */
 function migrationMatcher(
   items: BridgeActivityItem[],
@@ -150,7 +147,7 @@ function migrationMatcher(
   return (item) =>
     item.kind === "bridge.withdrawal"
       ? item.record.intent === "migration"
-      : item.record.intent === "metadata" || arrivals.has(item.record.sipaAddress.toLowerCase())
+      : isAccountMoveSipa(item.record) || arrivals.has(item.record.sipaAddress.toLowerCase())
 }
 
 /** A grouped leg keys its rows by its group, so the pair keeps one live row across the hand-off. */
@@ -205,10 +202,16 @@ function inflightInput(
   }
 }
 
-function upgradeRunInput(run: UpgradeRun, done: boolean): CreateAppNotificationInput {
-  const figure = dollars(Number(formatUnits(run.total, DEFAULT_DECIMALS)))
-  // Funds that reach the old version later join the run: its larger whole reports anew.
-  const id = `migration-run:${run.run}${done ? `:done:${run.legs.length}` : ""}`
+function upgradeRunInput(
+  run: UpgradeRun,
+  done: boolean,
+  value: bigint | undefined,
+): CreateAppNotificationInput {
+  const figure = value === undefined ? "—" : dollars(Number(formatUnits(value, DEFAULT_DECIMALS)))
+  // Funds that reach the old version later join the run: its larger whole reports anew. An
+  // inferred run's legs join as discovery finds them, so it keeps one report.
+  const count = run.inferred ? "" : `:${run.legs.length}`
+  const id = `migration-run:${run.run}${done ? `:done${count}` : ""}`
   const n = run.legs.length
   return {
     id,
@@ -268,10 +271,10 @@ function amountLabel(item: BridgeActivityItem): string {
 
 /**
  * Net, except for a recovery: `recoverERC20` returns the whole balance with no fee taken, so its
- * gross is the figure.
+ * gross is the figure. A swapped deposit's amounts are in its row token's units, not the funded token's.
  */
 function depositFigure(record: SIPADepositRecord): string {
-  const amounts = depositAmounts(record)
+  const amounts = depositAmounts(record, record.rowToken ? undefined : record.tokenDecimals)
   return record.phase === "recovered" ? amounts.grossDisplay : amounts.netDisplay
 }
 
@@ -358,14 +361,14 @@ function inputForItem(
 }
 
 export interface BridgeNotificationOptions {
+  /** Dollar value of the destination assets; undefined while their denomination or price is unknown. */
+  upgradeValue?(run: UpgradeRun): bigint | undefined
   /**
    * Also mint a live row per in-flight record, retired when it settles. Opt-in: a retired row is
    * dismissed rather than deleted, so a client whose list does not filter `dismissedAt` would keep
    * it forever beside the completion row.
    */
   liveRows?: boolean
-  /** Whether the deposits' portal is frozen, so a swept deposit has no claim in flight. */
-  portalFrozen?: () => boolean
 }
 
 export class BridgeNotificationProducer implements NotificationProducer {
@@ -373,7 +376,7 @@ export class BridgeNotificationProducer implements NotificationProducer {
   private notifications: AppNotificationStore
   private runner: SnapshotNotificationProducer<ActivityItem>
   private liveRows: boolean
-  private portalFrozen: () => boolean
+  private upgradeValue: (run: UpgradeRun) => bigint | undefined
   private hasSeenBridgeItems = false
   readonly id = "bridge"
 
@@ -384,7 +387,7 @@ export class BridgeNotificationProducer implements NotificationProducer {
   ) {
     this.notifications = notifications
     this.liveRows = options.liveRows ?? false
-    this.portalFrozen = options.portalFrozen ?? (() => false)
+    this.upgradeValue = options.upgradeValue ?? ((run) => run.total)
     this.runner = new SnapshotNotificationProducer<ActivityItem>({
       id: this.id,
       feed,
@@ -409,6 +412,8 @@ export class BridgeNotificationProducer implements NotificationProducer {
         notifications,
         options,
       )
+    } else if (options?.upgradeValue) {
+      BridgeNotificationProducer.instance.upgradeValue = options.upgradeValue
     }
     return BridgeNotificationProducer.instance
   }
@@ -430,6 +435,10 @@ export class BridgeNotificationProducer implements NotificationProducer {
     await this.runner.flush()
   }
 
+  async refresh(): Promise<void> {
+    await this.runner.refresh()
+  }
+
   /**
    * Live rows for everything still in flight, and a dismiss for every live row that no longer is.
    * The survivor set is read back off the store rather than tracked in memory, so a row left behind
@@ -447,7 +456,7 @@ export class BridgeNotificationProducer implements NotificationProducer {
     const stillFlying = new Set<string>()
     for (const item of items) {
       const migration = isMigration(item)
-      const label = inflightLabel(item, this.portalFrozen())
+      const label = inflightLabel(item)
       if (!label) continue
       // No baseline gate: a deposit that started before this session is still worth a live row.
       stillFlying.add(inflightSourceId(item))
@@ -460,7 +469,7 @@ export class BridgeNotificationProducer implements NotificationProducer {
     // An upgrade is one live row until every batch has arrived.
     for (const run of runs) {
       if (run.settled) continue
-      const input = upgradeRunInput(run, false)
+      const input = upgradeRunInput(run, false, this.upgradeValue(run))
       stillFlying.add(input.id)
       await this.notifications.upsert(input).catch((err) => {
         logger.warn("[BridgeNotificationProducer] failed to update an upgrade's live row:", err)
@@ -524,12 +533,16 @@ export class BridgeNotificationProducer implements NotificationProducer {
     // A registration's deposit and the burn that funds it (a ticket signup's claim) are carried
     // by RegistrationNotificationProducer as one claim story. Excluding both here is what stops a
     // duplicate row for the deposit, and what stops the funding burn reading as a cash-out
-    // withdrawal to Ethereum. Each fresh-address group stands in for its legs.
+    // withdrawal to Ethereum. Each fresh-address group stands in for its legs. A backup passkey
+    // rotation's deposit address and the burn that funds it are followed by the settings panel
+    // that drives them, not by the bell.
     const bridgeItems = allBridgeItems
       .filter(
         (item) =>
           item.record.intent !== "registration" &&
-          !(item.kind === "bridge.withdrawal" && item.record.groupId),
+          !(item.kind === "bridge.withdrawal" && item.record.groupId) &&
+          !(item.kind === "bridge.withdrawal" && item.record.intent === "backup") &&
+          !(item.kind === "bridge.sipaDeposit" && item.record.intent === "user-op"),
       )
       .concat(withdrawalGroupsOf(withdrawals).map(groupAsItem))
     const runs = upgradeRunsOf(items)
@@ -548,13 +561,25 @@ export class BridgeNotificationProducer implements NotificationProducer {
         runs,
       )
 
+    // The upgrade is complete only once no run is still to arrive or approved and unsent.
+    const upgrading =
+      runs.some((run) => !run.settled) ||
+      items.some(
+        (i) => i.kind === "upgrade.batch" && i.batch.state === "planned" && i.batch.approved,
+      )
     for (const run of runs) {
-      if (!run.complete) continue
-      const input = upgradeRunInput(run, true)
+      if (!run.complete || upgrading) continue
+      const value = this.upgradeValue(run)
+      if (value === undefined) continue
+      const input = upgradeRunInput(run, true, value)
       // A deposit claimed from a replayed sweep takes the sweep's time: a run seen pending reports.
-      if (input.timestampMs < baseline && !this.notifications.get(`migration-run:${run.run}`))
-        continue
-      await this.notifications.createIfAbsent(input).catch((err) => {
+      // An inferred run reads as pending while discovery claims its history, so only time counts.
+      const seenPending = !run.inferred && !!this.notifications.get(`migration-run:${run.run}`)
+      if (input.timestampMs < baseline && !seenPending) continue
+      const report: Promise<unknown> = run.inferred
+        ? this.notifications.upsert(input)
+        : this.notifications.createIfAbsent(input)
+      await report.catch((err) => {
         logger.warn("[BridgeNotificationProducer] failed to report an upgrade:", err)
       })
     }

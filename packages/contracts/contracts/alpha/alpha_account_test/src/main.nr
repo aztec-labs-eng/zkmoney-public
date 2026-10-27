@@ -24,7 +24,9 @@ pub contract ObsidionAccountAlphaTest {
         compute_signed_message_hash, INTENT_HASHES_LEN, push_tx_nonce_nullifier, set_as_fee_payer,
     };
 
-    use alpha_lib::keys::compute_key_commitment;
+    use alpha_lib::keys::{
+        compute_passkey_hash, compute_passkey_set_immutables_hash, passkey_set_contains,
+    };
     use alpha_lib::notes::BoolNote;
     use alpha_lib::payloads::AppPayload;
 
@@ -105,9 +107,10 @@ pub contract ObsidionAccountAlphaTest {
     ////////////////////// Validation methods //////////////////////
     ////////////////////////////////////////////////////////////////
 
-    /// The K256 key is committed into the address exactly as the production class commits its
-    /// passkey: the witness key must hash to the instance's `immutables_hash`. The signed message
-    /// is the same authwit outer hash the production class verifies.
+    /// The K256 key set is committed into the address exactly as the production class commits its
+    /// passkey set: the witness set must hash to the instance's `immutables_hash` and the witness
+    /// key must be a member. The signed message is the same authwit outer hash the production
+    /// class verifies.
     #[contract_library_method]
     fn validate(context: &mut PrivateContext, inner_hash: Field) -> bool {
         let outer_hash = compute_signed_message_hash(context, inner_hash);
@@ -115,8 +118,15 @@ pub contract ObsidionAccountAlphaTest {
 
         let instance = get_contract_instance(context.this_address());
         assert(
-            compute_key_commitment(witness.pub_key_x, witness.pub_key_y) == instance.immutables_hash,
-            "key does not match the account's committed key",
+            compute_passkey_set_immutables_hash(witness.passkey_set) == instance.immutables_hash,
+            "passkey set does not match the account's committed set",
+        );
+        assert(
+            passkey_set_contains(
+                witness.passkey_set,
+                compute_passkey_hash(witness.pub_key_x, witness.pub_key_y),
+            ),
+            "key is not in the account's passkey set",
         );
 
         verify_ecdsa_k256(witness.pub_key_x, witness.pub_key_y, outer_hash, witness.signature)

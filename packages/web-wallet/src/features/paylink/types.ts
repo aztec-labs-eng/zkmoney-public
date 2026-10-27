@@ -1,5 +1,8 @@
-/** `claimed`: the nullifier is spent, by a claim or the sender's refund. `expired`: unspent past `claimableUntil` by chain time (`withExpiry`). */
-export type LinkStatus = "unclaimed" | "claimed" | "expired"
+/**
+ * `claimed`: the nullifier is spent, by a claim or the sender's refund. `expired`: unspent past `claimableUntil` by
+ * chain time (`withExpiry`). `retired`: made on an earlier rollup of this chain; its funds go back to the sender.
+ */
+export type LinkStatus = "unclaimed" | "claimed" | "expired" | "retired"
 
 export type CreateStage = "building" | "proving" | "submitting"
 

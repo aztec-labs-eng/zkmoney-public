@@ -14,10 +14,12 @@ const OTHER_KEY = "bb".repeat(64)
 const MSK_A = { toString: () => "0x0a", toBuffer: () => Buffer.alloc(32, 0x0a) }
 const MSK_B = { toString: () => "0x0b", toBuffer: () => Buffer.alloc(32, 0x0b) }
 
-/** A derivation only (MSK_B, KEY) reproduces as "0xacct". */
-const deriveAccountAddressMock = vi.fn(async (msk: { toString(): string }, pubkey: string) => ({
-  toString: () => (msk.toString() === "0x0b" && pubkey === KEY ? "0xacct" : "0xother"),
-}))
+/** A derivation only (MSK_B, [KEY]) reproduces as "0xacct". */
+const deriveAccountAddressMock = vi.fn(
+  async (msk: { toString(): string }, passkeys: readonly string[]) => ({
+    toString: () => (msk.toString() === "0x0b" && passkeys[0] === KEY ? "0xacct" : "0xother"),
+  }),
+)
 const obsidionAccountStub = {
   getAddress: () => ({ toString: () => "0xacct" }),
   getCompleteAddress: () => ({ toString: () => "0xcomplete" }),
@@ -86,8 +88,8 @@ describe("useAccount — import binds the recovered key into the address check",
     await act(async () => {
       await result.current.createAccount(true, AUTH_TYPE.WEB_AUTHN, () => {}, "@x", "cred-1")
     })
-    expect(deriveAccountAddressMock).toHaveBeenCalledWith(MSK_A, KEY)
-    expect(deriveAccountAddressMock).toHaveBeenCalledWith(MSK_B, KEY)
+    expect(deriveAccountAddressMock).toHaveBeenCalledWith(MSK_A, [KEY])
+    expect(deriveAccountAddressMock).toHaveBeenCalledWith(MSK_B, [KEY])
     expect(commitSecretMock).toHaveBeenCalledWith(
       expect.objectContaining({ secretKey: MSK_B }),
     )
@@ -101,7 +103,7 @@ describe("useAccount — import binds the recovered key into the address check",
         result.current.createAccount(true, AUTH_TYPE.WEB_AUTHN, () => {}, "@x", "cred-1"),
       ).rejects.toThrow(/does not match the stored account address/)
     })
-    expect(deriveAccountAddressMock).toHaveBeenCalledWith(MSK_A, OTHER_KEY)
+    expect(deriveAccountAddressMock).toHaveBeenCalledWith(MSK_A, [OTHER_KEY])
     expect(commitSecretMock).not.toHaveBeenCalled()
     expect(getObsidionAccountWalletMock).not.toHaveBeenCalled()
   })

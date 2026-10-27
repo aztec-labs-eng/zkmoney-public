@@ -1,27 +1,33 @@
+import type { AztecAddress } from "@aztec-labs/aztec.js/addresses"
+import { EthAddress } from "@aztec-labs/aztec.js/addresses"
 import {
-  encodeMetadataUpdateIntentData,
-  encodeMetadataUpdateProofs,
+  CANONICAL_ENTRY_POINT_V08,
+  depositPayoutTokenFor,
+  encodeExecuteBatch,
+  encodeSetUserRecord,
   encodeUserRecordMetadata,
-  metadataUpdateDigest,
-  oxideAccountPersonalSignDigest,
-  OxideAccountAbi,
-  OxidePortalAbi,
-  predictSIPA,
+  getAccountNonce,
+  getUserOpHash,
+  OxidePortalContract,
   readAccountMetadataRegistry,
   readMetadataStateHash,
   readNameOf,
   readRegistrationController,
-  readSIPAImplementation,
-  SipaIntent,
-  type MetadataUpdateIntent,
-  type SipaDeployArgs,
+  userRecordStateHash,
+  type R1PublicKeyArg,
   type UserRecordArg,
+  type WebAuthnAuthArg,
 } from "@oxide/l1-contracts"
-import { keccak256, zeroAddress, zeroHash, type Address, type Hex, type PublicClient } from "viem"
-import { quotedDepositFee } from "@obsidion/core/constants"
+import {
+  buildRecordUpdate,
+  buildRecordUpdateOperation,
+  recordUpdateCalls,
+  type RecordUpdate,
+} from "@oxide/oxide-client/record_update.js"
+import type { BroadcastL1Operation } from "@oxide/oxide-lib/l1_operation_calldata.js"
+import { zeroAddress, zeroHash, type Address, type Hex, type PublicClient } from "viem"
+import { bridgeUnderlying } from "@obsidion/core/oxide"
 import type { OxideEnvTuple } from "@obsidion/core/types"
-import { readDepositFee } from "./sipaClaim.js"
-import { readDepositSIPAImplementation } from "./sipaIntents.js"
 
 export interface MetadataDestination {
   chainId: bigint
@@ -30,10 +36,11 @@ export interface MetadataDestination {
   metadataRegistry: Address
   controller: Address
   factory: Address
+  /** Routes the SIPA's sweeps; its rows must name `portal`. */
+  forwardingTable: Address
   portal: Address
-  implementation: Address
   namePortal: Address
-  /** The portal's underlying token; the SIPA is funded and swept in it. */
+  /** The fee token: the portal's underlying, which the SIPA is funded and swept in. */
   token: Address
   depositSubsidy: Address
   operationExecutor: Address
@@ -76,6 +83,14 @@ export class ApprovalNeededError extends Error {
   }
 }
 
+/** An approval pass stopped a build once its approval was saved, before its proof. */
+export class ApprovalSavedError extends Error {
+  constructor() {
+    super("The approval is saved; the proof is built later")
+    this.name = "ApprovalSavedError"
+  }
+}
+
 function address(value: string | undefined, field: string): Address {
   if (!value || !/^0x[0-9a-f]{40}$/i.test(value) || value.toLowerCase() === zeroAddress) {
     throw new Error(`Metadata migration requires ${field} in the destination manifest`)
@@ -83,9 +98,16 @@ function address(value: string | undefined, field: string): Address {
   return value as Address
 }
 
-export function metadataDestination(tuple: OxideEnvTuple): MetadataDestination {
+/** The fee token's bridge as every sweep on its row sees it. */
+export function bridgeDestination(tuple: OxideEnvTuple): MetadataDestination {
   if (!tuple.chainId || !tuple.rollupVersion)
     throw new Error("Destination chain identity is missing")
+  const token = bridgeUnderlying(tuple)
+  if (tuple.feeToken && !same(tuple.feeToken, token)) {
+    throw new Error(
+      `Metadata updates settle on the fee token ${tuple.feeToken}; the destination bridge holds ${token}`,
+    )
+  }
   return {
     chainId: BigInt(tuple.chainId),
     rollupVersion: BigInt(tuple.rollupVersion),
@@ -93,16 +115,28 @@ export function metadataDestination(tuple: OxideEnvTuple): MetadataDestination {
     metadataRegistry: address(tuple.accountMetadataRegistry, "accountMetadataRegistry"),
     controller: address(tuple.registrationController, "registrationController"),
     factory: address(tuple.sipaFactory, "sipaFactory"),
+    forwardingTable: address(tuple.forwardingTable, "forwardingTable"),
     portal: address(tuple.portal, "portal"),
-    implementation: address(
-      tuple.updateMetadataSIPAImplementation,
-      "updateMetadataSIPAImplementation",
-    ),
     namePortal: address(tuple.namePortal, "namePortal"),
-    token: address(tuple.token, "token"),
+    token: address(token, "underlying"),
     depositSubsidy: address(tuple.depositSubsidy, "depositSubsidy"),
     operationExecutor: address(tuple.operationExecutor, "operationExecutor"),
   }
+}
+
+/** The tuple with the settlement token read off the portal. */
+async function withPortalToken(client: PublicClient, tuple: OxideEnvTuple): Promise<OxideEnvTuple> {
+  const portal = address(tuple.portal, "portal")
+  const token = await new OxidePortalContract(client as never, portal).getUnderlying()
+  return { ...tuple, token: token.toString() }
+}
+
+/** Read the settlement token from the portal before preparing its migration sweeps. */
+export async function readBridgeDestination(
+  client: PublicClient,
+  tuple: OxideEnvTuple,
+): Promise<MetadataDestination> {
+  return bridgeDestination(await withPortalToken(client, tuple))
 }
 
 const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase()
@@ -111,17 +145,11 @@ export async function readMetadataDestinationState(
   client: PublicClient,
   destination: MetadataDestination,
   owner: Address,
-) {
-  const [chainId, registry, controller, implementation, name] = await Promise.all([
+): Promise<Hex> {
+  const [chainId, registry, controller, name] = await Promise.all([
     client.getChainId(),
     readAccountMetadataRegistry(client, destination.nameRegistry),
     readRegistrationController(client, destination.nameRegistry),
-    readSIPAImplementation(
-      client,
-      destination.factory,
-      destination.portal,
-      SipaIntent.UpdateMetadata,
-    ),
     readNameOf(client, destination.nameRegistry, owner),
   ])
   if (BigInt(chainId) !== destination.chainId) throw new Error("Destination L1 chain changed")
@@ -130,151 +158,144 @@ export async function readMetadataDestinationState(
       "Destination metadata registry or controller changed; prepare migration again",
     )
   }
-  if (!same(implementation, destination.implementation)) {
-    throw new Error("Destination factory does not serve the requested metadata implementation")
-  }
   if (name === zeroHash) throw new Error("Metadata migration requires an existing registered name")
   return readMetadataStateHash(client, controller, owner)
 }
 
-export interface PreparedMetadataUpdate {
-  destination: MetadataDestination
-  intent: MetadataUpdateIntent
-  sipa: Address
-  deployArgs: SipaDeployArgs
-  intentData: Hex
-  proofs: Hex
-  fee: bigint
+/** The account's signed record update, with the state it was approved over. */
+export interface PreparedRecordUpdate {
+  update: RecordUpdate
+  expectedStateHash: Hex
+  assertion: WebAuthnAuthArg
+  /** The L1 operation the bootstrap broadcasts; building it simulated the signed update. */
+  operation: BroadcastL1Operation
 }
 
-/** Derive the current schema from destination keys; never decode a source registry's record. */
-export async function prepareMetadataUpdate(args: {
+export interface RecordUpdateContext {
   client: PublicClient
   destination: MetadataDestination
   owner: Address
   record: UserRecordArg
-  fpc: Hex
-  recipientCommitment: Hex
-  recoveryCommitment: Hex
-  signConsent(digest: Hex): Promise<Hex>
-}): Promise<PreparedMetadataUpdate> {
-  const { client, destination, owner } = args
-  if (args.record.rollupVersion !== destination.rollupVersion) {
+  /** The destination ClaimFPC: the name notification opens its registered rail. */
+  fpc: AztecAddress
+}
+
+/**
+ * Read the record's current state, build the account's zero-fee record update and have its
+ * passkey sign it. An approval holds only over the state it was given for.
+ */
+export async function prepareRecordUpdate(
+  args: RecordUpdateContext & {
+    passkey: R1PublicKeyArg
+    sign(userOpHash: Hex, expectedStateHash: Hex): Promise<WebAuthnAuthArg>
+  },
+): Promise<PreparedRecordUpdate> {
+  const { client, destination, owner, record } = args
+  if (record.rollupVersion !== destination.rollupVersion) {
     throw new Error("Destination metadata and deposit rollup disagree")
   }
-  if (
-    args.fpc === zeroHash ||
-    args.recipientCommitment === zeroHash ||
-    args.recoveryCommitment === zeroHash
-  ) {
-    throw new Error("Migration requires an FPC, a deposit recipient, and a recovery commitment")
-  }
   const expectedStateHash = await readMetadataDestinationState(client, destination, owner)
-  const intent: MetadataUpdateIntent = {
+  const update = await buildRecordUpdate(client, {
     owner,
     metadataRegistry: destination.metadataRegistry,
-    metadata: encodeUserRecordMetadata(args.record),
-    expectedStateHash,
-    rollupVersion: destination.rollupVersion,
     namePortal: destination.namePortal,
     namePortalRecipient: args.fpc,
-    recipientCommitment: args.recipientCommitment,
-  }
-  const intentData = encodeMetadataUpdateIntentData(intent)
-  const deployArgs: SipaDeployArgs = {
-    implementation: destination.implementation,
-    intentHash: keccak256(intentData),
-    recoveryCommitment: args.recoveryCommitment,
     rollupVersion: destination.rollupVersion,
-    resweepable: false,
-  }
-  const sipa = await predictSIPA(
-    client,
-    destination.factory,
-    deployArgs.implementation,
-    deployArgs.intentHash,
-    deployArgs.recoveryCommitment,
-    deployArgs.rollupVersion,
-    false,
-  )
-  const digest = metadataUpdateDigest({
-    chainId: destination.chainId,
-    nameRegistry: destination.nameRegistry,
-    sipa,
-    intentData,
+    record,
+    passkey: args.passkey,
   })
-  const signature = await args.signConsent(
-    oxideAccountPersonalSignDigest({ chainId: destination.chainId, account: owner, digest }),
-  )
-  const valid = await client.readContract({
-    address: owner,
-    abi: OxideAccountAbi,
-    functionName: "isValidSignature",
-    args: [digest, signature],
-  })
-  if (valid !== "0x1626ba7e") throw new Error("The registered account rejected metadata consent")
-  const prepared = {
-    destination,
-    intent,
-    sipa,
-    deployArgs,
-    intentData,
-    proofs: encodeMetadataUpdateProofs(signature),
-    fee: await readMetadataUpdateFee(client, destination),
-  }
-  await assertMetadataUpdateFresh(client, prepared)
-  return prepared
+  const assertion = await args.sign(update.userOpHash, expectedStateHash)
+  return checkRecordUpdate(client, destination, { update, expectedStateHash, assertion })
 }
 
-/** Re-check after signing and immediately before spending sponsorship. */
-export async function assertMetadataUpdateFresh(
-  client: PublicClient,
-  prepared: PreparedMetadataUpdate,
-): Promise<void> {
-  const state = await readMetadataDestinationState(
-    client,
-    prepared.destination,
-    prepared.intent.owner,
-  )
-  if (!same(state, prepared.intent.expectedStateHash)) {
-    throw new StalePlanError(
-      "Destination metadata changed; prepare migration again before broadcasting",
-    )
-  }
-}
-
-/** What funding a SIPA pays before its deposit: the implementation's sweep fee and the portal's funding cut. */
-export async function readQuotedDepositFee(
-  client: PublicClient,
-  portal: Address,
-  implementation: Address,
-): Promise<bigint> {
-  const [depositFee, fpcFundingCut] = await Promise.all([
-    readDepositFee(client, implementation),
-    client.readContract({
-      address: portal,
-      abi: OxidePortalAbi,
-      functionName: "FPC_FUNDING_CUT",
-    }) as Promise<bigint>,
-  ])
-  return quotedDepositFee(depositFee, fpcFundingCut)
-}
-
-export function readMetadataUpdateFee(
+/**
+ * Before each publication: the record and the account's nonce are as approved, and the signed
+ * update still runs. A change while unpublished is a stale plan.
+ */
+export async function checkRecordUpdate(
   client: PublicClient,
   destination: MetadataDestination,
-): Promise<bigint> {
-  return readQuotedDepositFee(client, destination.portal, destination.implementation)
+  signed: Omit<PreparedRecordUpdate, "operation">,
+): Promise<PreparedRecordUpdate> {
+  const { update, expectedStateHash } = signed
+  const [state, nonce] = await Promise.all([
+    readMetadataDestinationState(client, destination, update.owner),
+    getAccountNonce(client, CANONICAL_ENTRY_POINT_V08, update.owner),
+  ])
+  if (!same(state, expectedStateHash))
+    throw new StalePlanError("The account's record changed; prepare the upgrade again")
+  if (nonce !== update.userOp.nonce)
+    throw new StalePlanError("The account sent another operation; prepare the upgrade again")
+  const operation = await buildRecordUpdateOperation(client, update, signed.assertion, {
+    target: CANONICAL_ENTRY_POINT_V08,
+    payoutToken: depositPayoutTokenFor(
+      destination.chainId,
+      EthAddress.fromString(destination.token),
+    ).toString() as Address,
+  })
+  return { ...signed, operation }
 }
 
-/** What an ordinary DepositSIPA on the destination pays before its deposit. */
-export async function readOrdinaryDepositFee(
-  client: PublicClient,
-  destination: Pick<MetadataDestination, "factory" | "portal">,
-): Promise<bigint> {
-  return readQuotedDepositFee(
-    client,
-    destination.portal,
-    await readDepositSIPAImplementation(client, destination.factory, destination.portal),
-  )
+const bigintJson = (_: string, value: unknown) =>
+  typeof value === "bigint" ? { bigint: value.toString() } : value
+const bigintRevive = (_: string, value: unknown) =>
+  value && typeof value === "object" && "bigint" in value && Object.keys(value).length === 1
+    ? BigInt((value as { bigint: string }).bigint)
+    : value
+
+export function serializeRecordUpdate({
+  update,
+  expectedStateHash,
+  assertion,
+}: Omit<PreparedRecordUpdate, "operation">): string {
+  return JSON.stringify({ update, expectedStateHash, assertion }, bigintJson)
+}
+
+/**
+ * A saved record update, re-derived from the trusted context: saved calldata never chooses the
+ * registry, record, recipient or fees. Any difference is a stale plan.
+ */
+export async function restoreRecordUpdate(
+  raw: string,
+  context: RecordUpdateContext,
+): Promise<Omit<PreparedRecordUpdate, "operation">> {
+  const signed = JSON.parse(raw, bigintRevive) as Omit<PreparedRecordUpdate, "operation">
+  const { update } = signed
+  const { client, destination, owner, record } = context
+  const writeData = encodeSetUserRecord(owner, record)
+  const namePortalRecipient = context.fpc.toString() as Hex
+  const op = update.userOp
+  const zero32 = `0x${"0".repeat(64)}`
+  const expected =
+    same(update.owner, owner) &&
+    same(op.sender, owner) &&
+    same(update.nameRegistry, destination.nameRegistry) &&
+    same(update.metadataRegistry, destination.metadataRegistry) &&
+    same(update.namePortal, destination.namePortal) &&
+    BigInt(update.namePortalRecipient) === BigInt(namePortalRecipient) &&
+    update.rollupVersion === destination.rollupVersion &&
+    same(encodeUserRecordMetadata(update.record), encodeUserRecordMetadata(record)) &&
+    same(update.write.data, writeData) &&
+    same(update.write.stateHash, userRecordStateHash(record)) &&
+    op.initCode === "0x" &&
+    op.paymasterAndData === "0x" &&
+    op.preVerificationGas === 0n &&
+    same(op.gasFees, zero32) &&
+    same(
+      op.callData,
+      encodeExecuteBatch(
+        recordUpdateCalls({
+          owner,
+          metadataRegistry: destination.metadataRegistry,
+          writeData,
+          namePortal: destination.namePortal,
+          namePortalRecipient,
+          rollupVersion: destination.rollupVersion,
+        }),
+      ),
+    )
+  if (!expected) throw new StalePlanError("Stored record update does not match the destination")
+  if (!same(await getUserOpHash(client, CANONICAL_ENTRY_POINT_V08, op), update.userOpHash))
+    throw new StalePlanError("Stored record update does not match its hash")
+  return signed
 }

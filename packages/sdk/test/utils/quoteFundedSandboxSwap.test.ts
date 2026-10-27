@@ -10,7 +10,7 @@ import {
 import { quoteFundedSandboxSwap } from "./quoteFundedSandboxSwap.js"
 
 const DAI = 10n ** 18n
-const deductions = { withdrawalRelayerTip: DAI / 10n, proverTip: 0n, fpcFundingCut: 0n }
+const deductions = { withdrawalFee: DAI / 5n, withdrawalRelayerTip: DAI / 10n, proverTip: 0n }
 const args: SwapSimulationArgs = {
   output: "USDC",
   amount: 20n * DAI,
@@ -30,6 +30,7 @@ const quote = (relayerTip: bigint): SwapSimulation => ({
   ...tip(relayerTip),
   amountOut: 1n,
   decimals: 6,
+  gasOut: 0n,
 })
 
 function fakeSimulator(
@@ -62,7 +63,8 @@ describe("quoteFundedSandboxSwap", () => {
 
     const result = await quoteFundedSandboxSwap(fakeSimulator(simulate), args)
 
-    const fundedAmount = deductions.withdrawalRelayerTip + convergedTip + 20n * DAI
+    const fundedAmount =
+      deductions.withdrawalFee + deductions.withdrawalRelayerTip + convergedTip + 20n * DAI
     expect(result).toEqual({ amount: fundedAmount, quote: quote(convergedTip) })
     expect(simulate).toHaveBeenNthCalledWith(3, expect.objectContaining({ amount: fundedAmount }))
   })

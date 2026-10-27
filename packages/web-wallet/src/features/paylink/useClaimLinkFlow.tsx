@@ -13,7 +13,7 @@ import { getConfig } from "../../config/env"
 import { TimeoutError } from "../../lib/withTimeout"
 import { showErrorModal, showReportableError } from "../../errors/errorModal"
 import { failureCode, fireEvent } from "../../lib/analytics"
-import { useDepositSkim, useSweepDeductions } from "../onboarding/registrationTerms"
+import { useDepositSkim } from "../onboarding/registrationTerms"
 import { loadWalletIdentity } from "../identity/walletIdentity"
 import { ClaimReviewStep } from "../onboarding/steps/ClaimReviewStep"
 import { getWithdrawalStore, type WithdrawStage } from "../withdraw/withdrawGateway"
@@ -52,6 +52,7 @@ import { obtainEmailClaimProof } from "./emailClaim"
 import { GoogleSignInCancelled } from "./googleAuth"
 import { LINK_READ_BUDGET_MS, readBefore, seededLink, watchLink } from "./linkStatus"
 import { paylinkSignupQuote } from "./paylinkSignupQuote"
+import { useActiveWithdrawalFee } from "../withdraw/withdrawalFee"
 import { useRegistrationSpeed } from "./registrationProverTip"
 import { SpeedRow } from "../withdraw/speedChoice"
 import {
@@ -197,7 +198,8 @@ export function useClaimLinkFlow(
   const claimDeps = usePaylinkDeps()
   const chainNow = usePolledChainSeconds(obsidionWallet?.node)
   const guard = useActionGuard()
-  const upgradeFirst = useActionVerdict("claim") !== "open"
+  const claimVerdict = useActionVerdict("claim")
+  const upgradeFirst = claimVerdict !== "open"
 
   // Claim-funnel top for the Home handoff surface — /link redirects signed-in visitors here
   // without emitting. Once per fragment, as soon as the network identity (part of the join key)
@@ -281,7 +283,6 @@ export function useClaimLinkFlow(
   }, [fragment, claimDeps, continuation === null])
   const navigate = useNavigate()
   const config = getConfig()
-  const deductions = useSweepDeductions(config, undefined, continuation !== null || !!unfunded)
   const sweepFee = useDepositSkim(config, continuation !== null || !!unfunded)
   const [beat, setBeat] = useState<ClaimBeat>()
   const [l1Open, setL1Open] = useState(false)
@@ -688,15 +689,13 @@ export function useClaimLinkFlow(
     !submitted
   const reviewRecord = continuation?.record
   const reviewTerms = useRegistrationTerms(reviewRecord?.account, reviewRecord?.tag)
+  const reviewWithdrawalFee = useActiveWithdrawalFee(reviewShown)
   const reviewSpeed = useRegistrationSpeed({
     active: reviewShown,
     node: obsidionWallet?.node,
     noteAmount: paylinkAmount,
     schedule: reviewSchedule,
-    cuts:
-      deductions === undefined
-        ? undefined
-        : { withdrawalCut: deductions.fpcCut, depositCut: deductions.fpcCut },
+    withdrawalFee: reviewWithdrawalFee,
     initialSpeed: reviewTerms?.speed,
     onCommit: (tip, speed) => {
       if (reviewRecord)
@@ -708,17 +707,14 @@ export function useClaimLinkFlow(
   // that commits the tip. A link with no voucher, or a note short of the split, claims as any other.
   const voucher = useLinkVoucher(unfunded ? link : null)
   const fundSchedule = unfunded?.schedule
-  const fundCuts = deductions && {
-    withdrawalCut: deductions.fpcCut,
-    depositCut: deductions.fpcCut,
-  }
+  const fundWithdrawalFee = useActiveWithdrawalFee(!!unfunded)
   const fundTip = useRef<{ tip: bigint; speed: "standard" | "faster" }>(undefined)
   const fundSpeed = useRegistrationSpeed({
     active: !!unfunded && voucher.uses !== 0,
     node: obsidionWallet?.node,
     noteAmount: paylinkAmount,
     schedule: fundSchedule,
-    cuts: fundCuts,
+    withdrawalFee: fundWithdrawalFee,
     onCommit: (tip, speed) => {
       fundTip.current = { tip, speed }
     },
@@ -726,11 +722,14 @@ export function useClaimLinkFlow(
   // The review is chosen, and priced, only once the voucher and the sweep fee answered.
   const fundAnswered = voucher.uses !== undefined && sweepFee !== undefined
   const fundQuote =
-    fundAnswered && fundSchedule && fundCuts && fundSpeed.proverTip !== undefined
+    fundAnswered &&
+    fundSchedule &&
+    fundWithdrawalFee !== undefined &&
+    fundSpeed.proverTip !== undefined
       ? paylinkSignupQuote({
           ...(paylinkAmount !== undefined ? { paylink: paylinkAmount } : {}),
           schedule: fundSchedule,
-          cuts: fundCuts,
+          withdrawalFee: fundWithdrawalFee,
           sweepFee,
           proverTip: fundSpeed.proverTip,
         })
@@ -825,14 +824,14 @@ export function useClaimLinkFlow(
       // background, its status the review's word.
       <ClaimReviewStep
         quote={
-          deductions === undefined || !reviewSchedule || proverTip === undefined
+          !reviewSchedule || proverTip === undefined || reviewWithdrawalFee === undefined
             ? undefined
             : paylinkSignupQuote({
                 ...(paylinkAmount !== undefined ? { paylink: paylinkAmount } : {}),
                 schedule: reviewSchedule,
-                cuts: { withdrawalCut: deductions.fpcCut, depositCut: deductions.fpcCut },
                 sweepFee,
                 proverTip,
+                withdrawalFee: reviewWithdrawalFee,
                 ticket: !reviewTerms?.paylinkDeposit,
               })
         }
@@ -926,6 +925,7 @@ export function useClaimLinkFlow(
         claimWait={offeredWait}
         countdown={countdown}
         loading={loading}
+        mustUpgrade={claimVerdict === "upgrade"}
         onRetryRead={offerRetry ? retryRead : undefined}
         onClose={dismiss}
         onClaim={() => guard("claim", () => void claim())}

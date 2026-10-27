@@ -71,6 +71,7 @@ const onClose = vi.fn()
 const onCandidate = vi.fn()
 const onTagChange = vi.fn()
 const onTagBlur = vi.fn()
+const onDifferentPasskey = vi.fn()
 const onPrepareAgain = vi.fn()
 
 const ROW = {
@@ -78,6 +79,7 @@ const ROW = {
   pubkeyHex: "ab".repeat(64),
   l2Address: `0x${"ac".repeat(32)}`,
   usertag: "alice",
+  backup: false,
 }
 
 const start = (over: Partial<SignInStart> = {}): SignInStart => ({
@@ -86,6 +88,7 @@ const start = (over: Partial<SignInStart> = {}): SignInStart => ({
   value: "",
   onTagChange,
   onTagBlur,
+  onDifferentPasskey,
   submitReady: false,
   resolving: false,
   prepared: "ready",
@@ -169,8 +172,16 @@ describe("the start role", () => {
 
     await renderStart({ candidates: [ROW], submitReady: true, value: "alice" })
     expect(byTestId("sign-in-account")?.getAttribute("aria-label")).toBe("Sign in as @alice")
+    expect(byTestId("sign-in-account-backup")).toBeNull()
     await click("sign-in-account")
     expect(onCandidate).toHaveBeenCalledWith(ROW)
+
+    // A backup passkey's row says so, in its label and under the tag.
+    await renderStart({ candidates: [{ ...ROW, backup: true }], submitReady: true, value: "alice" })
+    expect(byTestId("sign-in-account")?.getAttribute("aria-label")).toBe(
+      "Sign in as @alice with the backup passkey",
+    )
+    expect(byTestId("sign-in-account-backup")?.textContent).toBe("Backup passkey")
 
     await renderStart({ candidates: [ROW], submitReady: true, value: "alice", busy: true })
     expect((byTestId("sign-in-account") as HTMLButtonElement).disabled).toBe(true)
@@ -192,8 +203,19 @@ describe("the start role", () => {
     await renderStart({ value: "alice", notice: { kind: "unreadable", tag: "alice" } })
     expect(byTestId("by-tag-unreadable")?.textContent).toContain("couldn't be read")
 
+    // A listed tag's way in with another passkey: the link reads the tag like any other.
     await renderStart({ value: "alice", notice: { kind: "listed", tag: "alice" } })
     expect(byTestId("by-tag-listed")?.textContent).toContain("already on this browser")
+    await click("by-tag-different-passkey")
+    expect(onDifferentPasskey).toHaveBeenCalledTimes(1)
+    await renderStart({ value: "alice", notice: { kind: "listed", tag: "alice" }, busy: true })
+    expect((byTestId("by-tag-different-passkey") as HTMLButtonElement).disabled).toBe(true)
+
+    await renderStart({ value: "alice", notice: { kind: "inconclusive", tag: "alice" } })
+    expect(byTestId("by-tag-inconclusive")?.textContent).toContain(
+      "more passkeys than this version can read",
+    )
+    expect(byTestId("by-tag-different-passkey")).toBeNull()
 
     // A read the network refused is the one notice with a retry: it asks the way leaving the field does.
     await renderStart({ value: "alice", notice: { kind: "lookupFailed", tag: "alice" } })

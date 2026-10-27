@@ -1,5 +1,5 @@
-import { AztecAddress, EthAddress } from '@aztec/aztec.js/addresses';
-import { Fr } from '@aztec/aztec.js/fields';
+import { AztecAddress, EthAddress } from '@aztec-labs/aztec.js/addresses';
+import { Fr } from '@aztec-labs/aztec.js/fields';
 
 import {
   CctpBridgeRoute,
@@ -82,7 +82,7 @@ describe('buildCctpBridgeOnWithdraw', () => {
     const args = await bridgeArgs();
 
     expect(() => buildCctpBridgeOnWithdraw({ ...args, relayerTip: ESCROW_FUNDING })).toThrow(
-      `relayerTip (${ESCROW_FUNDING}) must be below the escrow funding of amount - proverTip - fpcFundingCut - withdrawalRelayerTip (${ESCROW_FUNDING})`,
+      `relayerTip (${ESCROW_FUNDING}) must be below the escrow funding of amount - proverTip - withdrawalFee - withdrawalRelayerTip (${ESCROW_FUNDING})`,
     );
   });
 
@@ -216,17 +216,17 @@ async function bridgeArgs(): Promise<CctpBridgeOnWithdrawArgs> {
     cctpBridgeEscrowFactory: EthAddress.random(),
     dai: EthAddress.random(),
     from: await AztecAddress.random(),
-    plainWithdrawalExecutor: EthAddress.random(),
+    plainWithdrawalExecutor: { address: EthAddress.random(), fee: 0n },
     amount: 100n * DAI,
     withdrawalRelayerTip: 1n * DAI,
     proverTip: 1n * DAI,
-    fpcFundingCut: 0n,
     destination: cctpEvmDestination('base'),
     recipient: EthAddress.random(),
     minFinalityThreshold: CctpFinality.Fast,
     maxFee: 100_000n,
     recoveryAccount: EthAddress.random(),
     relayerTip: 3n * DAI,
+    portal: EthAddress.random(),
   };
 }
 
@@ -238,8 +238,8 @@ function quoteArgs(
   return {
     amount: escrowFunding,
     withdrawalRelayerTip: 0n,
+    plainWithdrawalExecutor: { address: EthAddress.random(), fee: 0n },
     proverTip: 0n,
-    fpcFundingCut: 0n,
     relayerTip,
     minFinalityThreshold: CctpFinality.Fast,
     destination,

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { AboutLimitsFacts } from "../src/features/limits/aboutLimitsView"
 import { LIMITS_DOCS_URL } from "../src/lib/links"
 import * as copy from "../src/features/limits/limitsCopy"
+import { LIMIT, LIMIT_USD, grouped } from "./support/publicLimit"
 
 vi.mock("@obsidion/web-ds", () => ({
   Icon: ({ name }: { name: string }) => <svg data-icon={name} />,
@@ -23,9 +24,9 @@ const observation = {
 }
 const facts = (overrides: Partial<AboutLimitsFacts> = {}): AboutLimitsFacts => ({
   product: {
-    deposit: { maximumUsd: "2500" },
-    withdrawal: { maximumUsd: "2500" },
-    send: { maximumUsd: "2500" },
+    deposit: { maximumUsd: String(LIMIT) },
+    withdrawal: { maximumUsd: String(LIMIT) },
+    send: { maximumUsd: String(LIMIT) },
   },
   capacity: { state: "fresh", observation },
   sponsorship: { state: "renewal-unknown", maxTx: 100, refillPeriodSeconds: 86_400 },
@@ -176,9 +177,9 @@ describe("AboutLimitsContent", () => {
       (row) => [row.querySelector("dt")?.textContent, row.querySelector("dd")?.textContent],
     )
     expect(rows).toEqual([
-      [copy.LIMIT_ROW.send, "$2,500"],
-      [copy.LIMIT_ROW.deposit, "$2,500"],
-      [copy.LIMIT_ROW.withdrawal, "$2,500"],
+      [copy.LIMIT_ROW.send, LIMIT_USD],
+      [copy.LIMIT_ROW.deposit, LIMIT_USD],
+      [copy.LIMIT_ROW.withdrawal, LIMIT_USD],
     ])
   })
 
@@ -272,7 +273,7 @@ describe("AboutLimitsContent topics", () => {
       topic: "capacity",
       details: {
         capacity: <p data-testid="own-capacity-line">Recheck before each transfer.</p>,
-        limit: <p data-testid="own-limit-line">At most 2,500 DAI here.</p>,
+        limit: <p data-testid="own-limit-line">At most {grouped(LIMIT)} DAI here.</p>,
       },
     })
     expect(body("about-limits-capacity").contains(byTestId("own-capacity-line"))).toBe(true)

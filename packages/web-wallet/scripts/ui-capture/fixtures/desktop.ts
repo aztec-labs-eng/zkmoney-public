@@ -1,6 +1,6 @@
 import { WALLET_TOKEN_SYMBOL } from "@obsidion/core/constants"
 import { SIPADepositStore, type SIPADepositRecord } from "@obsidion/front-core"
-import { Fr } from "@aztec/aztec.js/fields"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 import { deriveRecoveryAddress } from "@obsidion/sdk"
 import type { Address } from "viem"
 import { isDemoMode } from "../../../src/dev/demoFlag"

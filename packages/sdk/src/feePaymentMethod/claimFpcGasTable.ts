@@ -20,47 +20,47 @@ export const CLAIM_FPC_GAS_TABLE: Record<string, ClaimFpcMeasuredTx> = /* TABLE_
     l2Gas: 659123,
   },
   "sponsor[authorize_intents,oxide_token.transfer,oxide_token.publish_da]": {
-    daGas: 4192,
+    daGas: 4224,
     l2Gas: 595300,
   },
-  "sponsor[authorize_intents,oxide_token.withdraw,broadcaster.broadcast_l1_operation_2k,oxide_token.publish_da]": {
-    daGas: 3616,
-    l2Gas: 831801,
+  "sponsor[authorize_intents,oxide_token.withdraw,broadcaster.broadcast_l1_operation_2k,broadcaster.broadcast_l1_operation_2k,oxide_token.publish_da]": {
+    daGas: 3328,
+    l2Gas: 850738,
   },
-  "sponsor[authorize_intents,oxide_token.withdraw,broadcaster.broadcast_l1_operation_pair_2k,oxide_token.publish_da]": {
-    daGas: 3712,
-    l2Gas: 853238,
+  "sponsor[authorize_intents,oxide_token.withdraw,broadcaster.broadcast_l1_operation_2k,oxide_token.publish_da]": {
+    daGas: 3232,
+    l2Gas: 829301,
+  },
+  "sponsor[authorize_intents,oxide_token.withdraw,broadcaster.broadcast_l1_operation_pair_2k,broadcaster.broadcast_l1_operation_2k,oxide_token.publish_da]": {
+    daGas: 3424,
+    l2Gas: 872175,
   },
   "sponsor[authorize_intents,paylink_direct.claim,oxide_token.publish_da]": {
-    daGas: 3616,
+    daGas: 3648,
     l2Gas: 599600,
   },
-  "sponsor[authorize_intents,paylink_direct.claim,oxide_token.withdraw,broadcaster.broadcast_l1_operation_2k,oxide_token.publish_da]": {
-    daGas: 4800,
-    l2Gas: 929201,
-  },
   "sponsor[authorize_intents,paylink_direct.deposit,claim_fpc.gift_voucher,oxide_token.publish_da]": {
-    daGas: 7200,
+    daGas: 7232,
     l2Gas: 724600,
   },
   "sponsor[authorize_intents,paylink_direct.deposit,oxide_token.publish_da]": {
-    daGas: 6016,
+    daGas: 6048,
     l2Gas: 685200,
   },
   "sponsor[authorize_intents,paylink_email.claim_to_l1,broadcaster.broadcast_l1_operation_2k,oxide_token.publish_da]": {
-    daGas: 2944,
-    l2Gas: 842511,
+    daGas: 2560,
+    l2Gas: 840011,
   },
   "sponsor[authorize_intents,paylink_email.claim,oxide_token.publish_da]": {
-    daGas: 3552,
+    daGas: 3584,
     l2Gas: 868410,
   },
   "sponsor[authorize_intents,paylink_email.deposit,claim_fpc.gift_voucher,oxide_token.publish_da]": {
-    daGas: 7200,
+    daGas: 7232,
     l2Gas: 724600,
   },
   "sponsor[authorize_intents,paylink_email.deposit,oxide_token.publish_da]": {
-    daGas: 6016,
+    daGas: 6048,
     l2Gas: 685200,
   },
   "sponsor[authorize_intents,test_token.transfer]": {
@@ -92,35 +92,35 @@ export const CLAIM_FPC_GAS_TABLE: Record<string, ClaimFpcMeasuredTx> = /* TABLE_
     l2Gas: 678112,
   },
   "sponsor[paylink_direct.claim_to_l1,broadcaster.broadcast_l1_operation_2k,oxide_token.publish_da]": {
-    daGas: 2336,
-    l2Gas: 754951,
-  },
-  "sponsor[paylink_direct.claim_with_withdrawal,broadcaster.broadcast_l1_operation_2k,oxide_token.notify_sipa_recipient,broadcaster.broadcast_l1_operation_2k,oxide_token.publish_da]": {
-    daGas: 4800,
-    l2Gas: 869763,
+    daGas: 1952,
+    l2Gas: 752451,
   },
   "sponsor[paylink_direct.claim_with_withdrawal,broadcaster.broadcast_l1_operation_2k,oxide_token.publish_da]": {
-    daGas: 4128,
-    l2Gas: 815026,
+    daGas: 3744,
+    l2Gas: 812526,
+  },
+  "sponsor[paylink_direct.claim_with_withdrawal,oxide_token.notify_sipa_recipient,broadcaster.broadcast_l1_operation_2k,broadcaster.broadcast_l1_operation_2k,oxide_token.publish_da]": {
+    daGas: 4416,
+    l2Gas: 867263,
   },
   "sponsor[paylink_email.claim_to_l1,broadcaster.broadcast_l1_operation_2k,oxide_token.publish_da]": {
-    daGas: 2336,
-    l2Gas: 789936,
+    daGas: 1952,
+    l2Gas: 787436,
   },
   "subscribe[nameClaim,oxide_token.notify_sipa_recipient,broadcaster.broadcast_l1_operation_2k]": {
     daGas: 1408,
     l2Gas: 678112,
   },
   "subscribe[registration,authorize_intents,test_token.transfer]": {
-    daGas: 5600,
-    l2Gas: 693700,
+    daGas: 5568,
+    l2Gas: 677700,
   },
   "subscribe[registration,authorize_intents]": {
-    daGas: 1440,
-    l2Gas: 527400,
+    daGas: 1408,
+    l2Gas: 511400,
   },
   "subscribe[registration,oxide_token.notify_sipa_recipient,broadcaster.broadcast_l1_operation_2k]": {
-    daGas: 1440,
-    l2Gas: 708912,
+    daGas: 1408,
+    l2Gas: 678112,
   },
 } /* TABLE_END */

@@ -1,21 +1,22 @@
-import { SpongeBlob } from '@aztec/blob-lib';
-import { type BlockBlobData, decodeBlockBlobData } from '@aztec/blob-lib/encoding';
-import { Fr } from '@aztec/foundation/curves/bn254';
-import { FieldReader } from '@aztec/foundation/serialize';
-import { type BlockHeader, TxEffect } from '@aztec/stdlib/tx';
+import type { Fr } from '@aztec-labs/foundation/curves/bn254';
+import type { BlockHeader } from '@aztec-labs/stdlib/tx';
 
-import { type Constrained, derive, markConstrained } from '@oxide/oxide-lib/constrained.js';
-import { verifyBlockHeaderInArchive } from '@oxide/oxide-lib/membership.js';
-import type { ArchivedTxEffectsHints, TxEffectsAtAnchorHints, TxEffectsHints } from '@oxide/oxide-lib/types.js';
+import { type Constrained, derive, markConstrained } from '@oxide/oxide-lib-tee/constrained.js';
+import { verifyBlockHeaderInArchive, verifyTxEffectsTreeMembership } from '@oxide/oxide-lib-tee/membership.js';
+import {
+  type TeeTxEffect,
+  computeTxEffectLeafFromHint,
+  decodeTxEffectHint,
+} from '@oxide/oxide-lib-tee/tx_effect_hint.js';
+import type { ArchivedTxEffectsHints, TxEffectsAtAnchorHints, TxEffectsHints } from '@oxide/oxide-lib-tee/types.js';
 
 /**
- * Proves that the tx was included in the chain at anchor block or one of its ancestors, and returns its effects
- * decoded from the block's DA-committed blob fields.
+ * Verifies that the tx is in the anchor block or in an ancestor of the anchor block, and returns its verified effects.
  */
 export async function verifyAndDecodeTxEffectsAtAnchor(
   hints: TxEffectsAtAnchorHints,
   anchorBlockHeader: Constrained<BlockHeader>,
-): Promise<Constrained<TxEffect>> {
+): Promise<Constrained<TeeTxEffect>> {
   const archiveRoot = derive(anchorBlockHeader, h => h.lastArchive.root);
 
   // 1. Verify that the block in which the tx was included is either the anchor block or is one of the anchor block's
@@ -45,140 +46,45 @@ export async function verifyAndDecodeTxEffectsAtAnchor(
     }
   }
 
-  // 2. Authenticate the blob field stream against the block's sponge blob hash and decode the tx effect from it
-  return authenticateBlobFieldsAndDecodeTxEffect(hints.txEffectsHints, txBlockHeader, archiveRoot);
+  // 2. Verify that the tx effects are in the tx effects tree of the block.
+  return verifyTxEffectInBlock(hints.txEffectsHints, txBlockHeader);
 }
 
 /**
- * Proves that the tx was included in a block whose hash is a leaf of the given archive root, and returns its effects
- * decoded from the block's DA-committed blob fields, along with the constrained block header.
+ * Verifies that the tx is in a block of the archive `archiveRoot`, and returns its verified effects and block header.
  */
 export async function verifyAndDecodeArchivedTxEffects(
   hints: ArchivedTxEffectsHints,
   archiveRoot: Constrained<Fr>,
-): Promise<{ txEffect: Constrained<TxEffect>; txBlockHeader: Constrained<BlockHeader> }> {
+): Promise<{ txEffect: Constrained<TeeTxEffect>; txBlockHeader: Constrained<BlockHeader> }> {
   const txBlockHeader = await verifyBlockHeaderInArchive(
     hints.txEffectsHints.txBlockHeader,
     hints.archiveMembershipWitness,
     archiveRoot,
   );
-  const txEffect = await authenticateBlobFieldsAndDecodeTxEffect(hints.txEffectsHints, txBlockHeader, archiveRoot);
+  const txEffect = await verifyTxEffectInBlock(hints.txEffectsHints, txBlockHeader);
   return { txEffect, txBlockHeader };
 }
 
-/** Authenticates the block's blob field stream and decodes the tx effect at txIndexInBlock from it. */
-async function authenticateBlobFieldsAndDecodeTxEffect(
+/** Decodes the tx effect hint and verifies that its leaf is in the tx effects tree of the block. */
+export async function verifyTxEffectInBlock(
   hints: TxEffectsHints,
   txBlockHeader: Constrained<BlockHeader>,
-  archiveRoot: Constrained<Fr>,
-): Promise<Constrained<TxEffect>> {
-  if (
-    !Number.isInteger(hints.txBlockStartOffset) ||
-    hints.txBlockStartOffset < 0 ||
-    hints.txBlockStartOffset >= hints.checkpointBlobFields.length
-  ) {
-    throw new Error(
-      `txBlockStartOffset ${hints.txBlockStartOffset} is out of range [0, ${hints.checkpointBlobFields.length})`,
-    );
-  }
-
-  const { isFirstBlockInCheckpoint, previousBlockEndSpongeBlob } = await reconstructPreviousBlockEndSponge(
-    hints,
-    txBlockHeader,
-    archiveRoot,
-  );
-
-  const blockBlobData = await verifyAndDecodeBlockBlobFields(
-    previousBlockEndSpongeBlob,
-    hints.checkpointBlobFields.slice(hints.txBlockStartOffset),
-    isFirstBlockInCheckpoint,
-    derive(txBlockHeader, h => h.spongeBlobHash),
-  );
-
-  if (hints.txIndexInBlock < 0 || hints.txIndexInBlock >= blockBlobData.txs.length) {
-    throw new Error(`txIndexInBlock ${hints.txIndexInBlock} is out of range [0, ${blockBlobData.txs.length})`);
-  }
-  return derive(blockBlobData, d => TxEffect.fromTxBlobData(d.txs[hints.txIndexInBlock]));
-}
-
-/** Authenticates a raw block blob field stream against the block's published sponge blob hash, then decodes it. */
-export async function verifyAndDecodeBlockBlobFields(
-  previousBlockEndSpongeBlob: Constrained<SpongeBlob>,
-  blockBlobFields: Fr[],
-  isFirstBlockInCheckpoint: boolean,
-  expectedSpongeBlobHash: Constrained<Fr>,
-): Promise<Constrained<BlockBlobData>> {
-  const sponge = previousBlockEndSpongeBlob.clone();
-  await sponge.absorb(blockBlobFields);
-  const computedSpongeBlobHash = await sponge.squeeze();
-  if (!computedSpongeBlobHash.equals(expectedSpongeBlobHash)) {
-    throw new Error(
-      `Sponge blob hash mismatch: computed ${computedSpongeBlobHash}, expected ${expectedSpongeBlobHash}`,
-    );
-  }
-
-  const reader = new FieldReader(blockBlobFields);
-  let blockBlobData: BlockBlobData;
+): Promise<Constrained<TeeTxEffect>> {
+  let txEffect: TeeTxEffect;
   try {
-    blockBlobData = decodeBlockBlobData(reader, isFirstBlockInCheckpoint);
+    txEffect = decodeTxEffectHint(hints.txEffect);
   } catch (err) {
-    throw new Error(`Failed to decode verified block blob fields: ${err instanceof Error ? err.message : err}`);
+    throw new Error(`Failed to decode tx effect hint: ${err instanceof Error ? err.message : err}`);
   }
-  if (!reader.isFinished()) {
-    throw new Error(`Block blob fields carry ${reader.remainingFields()} trailing fields past the block end data`);
-  }
-  return markConstrained(blockBlobData, 'blob fields absorb to constrained sponge hash');
-}
 
-/** Reconstructs the sponge from checkpoint start and authenticates the boundary before the target block. */
-async function reconstructPreviousBlockEndSponge(
-  hints: TxEffectsHints,
-  txBlockHeader: Constrained<BlockHeader>,
-  archiveRoot: Constrained<Fr>,
-): Promise<{ isFirstBlockInCheckpoint: boolean; previousBlockEndSpongeBlob: Constrained<SpongeBlob> }> {
-  const previousBlockHeader = await verifyBlockHeaderInArchive(
-    hints.previousBlockHeader,
-    hints.previousBlockArchiveMembershipWitness,
-    archiveRoot,
+  // Never accept a leaf from the caller: with variable-depth paths an internal node would pass as a leaf.
+  const leaf = await computeTxEffectLeafFromHint(hints.txEffect);
+  await verifyTxEffectsTreeMembership(
+    leaf,
+    hints.leafIndex,
+    hints.siblingPath,
+    derive(txBlockHeader, h => h.txEffectsTreeRoot),
   );
-
-  // The authenticated previous block must be the immediate predecessor.
-  const prevBlockNumber = previousBlockHeader.getBlockNumber();
-  const txBlockNumber = txBlockHeader.getBlockNumber();
-  if (prevBlockNumber + 1 !== txBlockNumber) {
-    throw new Error(
-      `Previous block is not the immediate predecessor: prev blockNumber ${prevBlockNumber} + 1 !== target blockNumber ${txBlockNumber}`,
-    );
-  }
-
-  // Derive is-first-in-checkpoint from slot comparison (each checkpoint has a unique slot).
-  const prevSlot = previousBlockHeader.globalVariables.slotNumber;
-  const targetSlot = txBlockHeader.globalVariables.slotNumber;
-  const isFirstBlockInCheckpoint = prevSlot !== targetSlot;
-
-  // Never accept a continuation state from the caller. A squeezed hash does not authenticate the full state.
-  const sponge = SpongeBlob.init();
-  if (isFirstBlockInCheckpoint) {
-    if (hints.txBlockStartOffset !== 0) {
-      throw new Error('First block in checkpoint must have txBlockStartOffset 0');
-    }
-  } else {
-    await sponge.absorb(hints.checkpointBlobFields.slice(0, hints.txBlockStartOffset));
-    // Check a clone so the reconstructed sponge can continue into the target block without a squeeze.
-    // This check authenticates the split between preceding fields and target fields.
-    const squeezed = await sponge.clone().squeeze();
-    if (!squeezed.equals(previousBlockHeader.spongeBlobHash)) {
-      throw new Error(
-        `Previous blocks blob hash mismatch: computed ${squeezed}, expected ${previousBlockHeader.spongeBlobHash}`,
-      );
-    }
-  }
-
-  return {
-    isFirstBlockInCheckpoint,
-    previousBlockEndSpongeBlob: markConstrained(
-      sponge,
-      'reconstructed from init; block boundary checked against authenticated predecessor',
-    ),
-  };
+  return markConstrained(txEffect, 'leaf recomputed from the effects hashes to the authenticated tx effects tree root');
 }

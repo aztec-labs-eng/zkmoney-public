@@ -1,15 +1,15 @@
-import { BlockNumber, CheckpointNumber, EpochNumber } from '@aztec/foundation/branded-types';
-import { type Logger, createLogger } from '@aztec/foundation/log';
-import { SerialQueue } from '@aztec/foundation/queue';
+import { BlockNumber, CheckpointNumber, EpochNumber } from '@aztec-labs/foundation/branded-types';
+import { type Logger, createLogger } from '@aztec-labs/foundation/log';
+import { SerialQueue } from '@aztec-labs/foundation/queue';
 import {
   L2BlockStream,
   type L2BlockStreamEvent,
   type L2BlockStreamEventHandler,
   L2TipsMemoryStore,
-} from '@aztec/stdlib/block';
-import { Checkpoint } from '@aztec/stdlib/checkpoint';
-import { getEpochAtSlot } from '@aztec/stdlib/epoch-helpers';
-import { AztecNode } from '@aztec/stdlib/interfaces/server';
+} from '@aztec-labs/stdlib/block';
+import { Checkpoint } from '@aztec-labs/stdlib/checkpoint';
+import { getEpochAtSlot } from '@aztec-labs/stdlib/epoch-helpers';
+import { AztecNode } from '@aztec-labs/stdlib/interfaces/server';
 
 import {
   blockStreamSourceFromAztecNode,

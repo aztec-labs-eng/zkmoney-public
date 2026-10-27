@@ -1,4 +1,4 @@
-use dep::aztec::{
+use aztec::{
     macros::notes::note, oracle::random::random, 
     protocol_types::{
       address::AztecAddress,

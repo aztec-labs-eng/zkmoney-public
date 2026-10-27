@@ -46,17 +46,35 @@ const gateway = {
 vi.mock("../src/features/deposit/sipaGateway", () => ({ getSipaDepositGateway: () => gateway }))
 const loadDepositDisplayFacts = vi.hoisted(() =>
   vi.fn(async () => ({
-    fee: "0.35",
-    token: "0x00000000000000000000000000000000000000bb",
+    fee: "0.25",
+    token: "0x00000000000000000000000000000000000000bb" as Hex,
     sweepFeeAtomic: 250_000_000_000_000_000n,
-    fpcFundingCutAtomic: 100_000_000_000_000_000n,
+    txAmountCap: 5166n * 10n ** 18n,
   })),
 )
-vi.mock("../src/features/deposit/loadDepositFacts", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../src/features/deposit/loadDepositFacts")>()),
-  loadDepositDisplayFacts,
-}))
+vi.mock("../src/features/deposit/loadDepositFacts", async (importOriginal) => {
+  const { mockLoadDepositFacts, singleToken } = await import("./support/depositTokens")
+  const tokens = singleToken("0x00000000000000000000000000000000000000bb", "TEST")
+  return mockLoadDepositFacts(importOriginal, () => tokens, loadDepositDisplayFacts)
+})
 vi.mock("../src/errors/errorModal", () => ({ showReportableError: vi.fn() }))
+// A test's own target stands in for the registration's.
+const targeted = vi.hoisted(() => ({
+  target: undefined as import("../src/features/deposit/depositTarget").DepositTarget | undefined,
+}))
+vi.mock("../src/features/onboarding/registrationDepositTarget", async (importOriginal) => {
+  const real = await importOriginal<
+    typeof import("../src/features/onboarding/registrationDepositTarget")
+  >()
+  return {
+    useRegistrationDepositTarget: (
+      ...args: Parameters<typeof real.useRegistrationDepositTarget>
+    ) => {
+      const made = real.useRegistrationDepositTarget(...args)
+      return targeted.target ?? made
+    },
+  }
+})
 vi.mock("../src/lib/analytics", () => ({
   fireEvent: vi.fn(),
   failureCode: () => "x",
@@ -286,6 +304,7 @@ describe("DepositScreen after an unresolved desktop send", () => {
   afterEach(async () => {
     dbs.onApply = undefined
     await act(async () => root.unmount())
+    targeted.target = undefined
     container.remove()
   })
 
@@ -543,30 +562,20 @@ describe("DepositScreen after an unresolved desktop send", () => {
   it("records a send to a target's address at the target's fee, not the plain deposit's", async () => {
     sentFacts.length = 0
     const fee = 5n * 10n ** 17n
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <ScreeningProvider screener={passThroughScreener}>
-            <DepositScreen
-              target={{
-                kind: "upgrade",
-                address: { address: SECOND as Hex, name: "alice" },
-                fee,
-                floor: fee + 1n,
-                ask: 10n ** 18n,
-                onFunded: () => {},
-                onShown: () => {},
-              }}
-            />
-          </ScreeningProvider>
-        </MemoryRouter>,
-      )
-    })
-    for (let i = 0; i < 3; i++) await act(async () => {})
+    targeted.target = {
+      kind: "registration",
+      address: { address: SECOND as Hex, name: "alice" },
+      fee,
+      floor: fee + 1n,
+      ask: 10n ** 18n,
+      onFunded: () => {},
+      onShown: () => {},
+    }
+    await render()
     await act(async () => buttonContaining("deposit from your browser")!.click())
     expect(byTestId("fund-sheet")!.dataset.address).toBe(SECOND)
     await click("sent")
-    expect(sentFacts.at(-1)).toMatchObject({ sweepFeeAtomic: fee, fpcFundingCutAtomic: 0n })
+    expect(sentFacts.at(-1)).toMatchObject({ sweepFeeAtomic: fee })
   })
 
   it("reloads the fee when a send stops on a changed fee", async () => {

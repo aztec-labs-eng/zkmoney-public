@@ -7,19 +7,13 @@ import type { DepositAddress } from "./sipaGateway"
 export type ShownAddress = DepositAddress & { publishing?: boolean }
 
 /**
- * An address the deposit screen funds instead of a fresh deposit address: a registration's or an
- * upgrade's. It says only what its sweep needs; the screen keeps the transfer, the funding checks,
- * the unresolved-send hold and capacity. Amounts are in the settlement token's base units.
+ * An address the deposit screen funds instead of a fresh deposit address: a registration's. It says
+ * only what its sweep needs; the screen keeps the transfer, the funding checks, the unresolved-send
+ * hold and capacity. Amounts are in the settlement token's base units.
  */
 export interface DepositTarget {
-  kind: "registration" | "upgrade"
-  /** The address once there is one. */
-  address?: ShownAddress
-  /** Starts making the address; `creating` until it appears. */
-  create?(): void
-  creating?: boolean
-  /** The line under "Creating your address..." while it is made. */
-  creatingNote?: string
+  kind: "registration"
+  address: ShownAddress
   /** What the sweep takes. Fixed by the target, so the funding sheet never reads it again. */
   fee?: bigint
   /** The least the address must hold for its sweep; less waits there. */

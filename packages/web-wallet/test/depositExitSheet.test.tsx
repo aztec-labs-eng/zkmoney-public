@@ -84,6 +84,21 @@ const capacity = vi.hoisted(() => ({
 vi.mock("../src/features/deposit/capacityStore", async () =>
   (await import("./fakeCapacity")).fakeCapacityStore(capacity),
 )
+// No table is read unless a case lists its rows.
+const rows = vi.hoisted(() => ({ twoRows: false, asked: [] as (string | undefined)[] }))
+const ROW_USDC_TOKEN = vi.hoisted(() => "0x00000000000000000000000000000000000000c6")
+vi.mock("../src/features/deposit/loadDepositFacts", async (importOriginal) => {
+  const { mockLoadDepositFacts, twoRowTokens } = await import("./support/depositTokens")
+  return mockLoadDepositFacts(importOriginal, () => (rows.twoRows ? twoRowTokens() : undefined))
+})
+vi.mock("../src/features/token/useTxAmountCap", () => ({
+  useTxAmountCap: () => 5166n * 10n ** 18n,
+  useRowTxAmountCap: (rowToken?: string) => {
+    rows.asked.push(rowToken)
+    if (!rowToken) return undefined
+    return rowToken === ROW_USDC_TOKEN ? 2_583n * 10n ** 6n : 2_583n * 10n ** 18n
+  },
+}))
 // The exit sheet sits inside AccountGate; this suite renders without the provider.
 vi.mock("../src/features/allowance/useSponsoredAllowance", () => ({
   useSponsoredAllowance: () => ({ snapshot: { status: "signed-out" }, refresh: () => {} }),
@@ -966,5 +981,86 @@ describe("DepositExitModal waiting on the wallet", () => {
     await act(async () => held.stage("confirming"))
     expect(slotOpen()).toBe("false")
     expect(button("Sweep now")).toBeUndefined()
+  })
+})
+
+describe("DepositExitModal — a USDC row's deposit", () => {
+  let container: HTMLDivElement
+  let root: Root
+
+  beforeEach(() => {
+    globalThis.IS_REACT_ACT_ENVIRONMENT = true
+    rows.twoRows = true
+    rows.asked = []
+    container = document.createElement("div")
+    document.body.appendChild(container)
+    root = createRoot(container)
+  })
+
+  afterEach(async () => {
+    await act(async () => root.unmount())
+    container.remove()
+    rows.twoRows = false
+  })
+
+  it("states an over-cap USDC deposit on the USDC row's cap and names no DAI", async () => {
+    const { ROW_USDC } = await import("./support/depositTokens")
+    const record = {
+      ...stuck,
+      phase: "recoverable",
+      amount: "3000",
+      fee: "100000",
+      tokenSymbol: "USDC",
+      tokenAddress: ROW_USDC,
+      tokenDecimals: 6,
+    } as SIPADepositRecord
+    await act(async () => {
+      root.render(
+        <ScreeningProvider screener={passThroughScreener}>
+          <DepositExitModal
+            record={record}
+            reason="unsweepable"
+            canSweep={false}
+            onClose={vi.fn()}
+          />
+        </ScreeningProvider>,
+      )
+    })
+    await act(() => new Promise((r) => setTimeout(r, 1)))
+
+    expect(rows.asked).toContain(ROW_USDC)
+    expect(document.body.textContent).toContain(
+      "larger than the network can process in one deposit",
+    )
+    expect(document.body.textContent).toContain("counts 1 USDC as $1")
+    expect(document.body.textContent).not.toContain("DAI")
+  })
+
+  it("states an untracked record's over-cap deposit on the pinned row's cap", async () => {
+    const { ROW_DAI } = await import("./support/depositTokens")
+    const record = {
+      ...stuck,
+      phase: "recoverable",
+      amount: "3000",
+      fee: "250000000000000000",
+    } as SIPADepositRecord
+    await act(async () => {
+      root.render(
+        <ScreeningProvider screener={passThroughScreener}>
+          <DepositExitModal
+            record={record}
+            reason="unsweepable"
+            canSweep={false}
+            onClose={vi.fn()}
+          />
+        </ScreeningProvider>,
+      )
+    })
+    await act(() => new Promise((r) => setTimeout(r, 1)))
+
+    expect(rows.asked).toContain(ROW_DAI)
+    expect(document.body.textContent).toContain(
+      "larger than the network can process in one deposit",
+    )
   })
 })

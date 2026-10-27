@@ -61,7 +61,7 @@ describe("scanRefundableDeposits", () => {
 
     expect(observation.observeSipas).toHaveBeenCalledTimes(1)
     expect(observation.observeSipas).toHaveBeenCalledWith(TARGET.publicClient, {
-      portal: PORTAL,
+      portals: [PORTAL],
       tokens: [TOKEN],
       head: 99n,
       subjects: [

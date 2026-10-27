@@ -3,13 +3,13 @@
   "bootstrap": "/?demo=activity&flowFixture=success&capacityFixture=empty",
   "path": "/activity?originFixture=failing&allowanceFixture=available",
   "ready": {
-    "text": "+$17.65",
+    "text": "+$17.75",
     "exact": true
   },
   "steps": [
     {
       "action": "click",
-      "text": "+$17.65",
+      "text": "+$17.75",
       "exact": true
     },
     {

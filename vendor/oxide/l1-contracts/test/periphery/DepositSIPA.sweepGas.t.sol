@@ -11,11 +11,12 @@ import {OxidePortalBase} from "@test/core/OxidePortalBase.t.sol";
 contract DepositSIPASweepGasTest is OxidePortalBase {
   uint256 internal constant SWEEP_AMOUNT = 100 ether;
 
-  uint256 internal constant STEADY_SWEEP_GAS = 111_321;
+  uint256 internal constant STEADY_SWEEP_GAS = 136_267;
   uint256 internal constant TOLERANCE = 1500;
 
   DepositSIPA internal sipa;
   address internal relayer = makeAddr("relayer");
+  uint256 internal sweepCount;
 
   function _depositIntent() internal pure returns (bytes memory) {
     return abi.encode(keccak256("recipient"));
@@ -23,7 +24,6 @@ contract DepositSIPASweepGasTest is OxidePortalBase {
 
   function setUp() public override {
     super.setUp();
-    _initialize();
 
     sipa = DepositSIPA(
       sipaFactory.deploySIPA(
@@ -31,7 +31,8 @@ contract DepositSIPASweepGasTest is OxidePortalBase {
         keccak256(_depositIntent()),
         _recoveryCommitment("recovery"),
         ROLLUP_VERSION,
-        true
+        true,
+        forwardingTable
       )
     );
     underlying.mint(address(sipa), SWEEP_AMOUNT);
@@ -49,6 +50,8 @@ contract DepositSIPASweepGasTest is OxidePortalBase {
 
   function _sweep() internal returns (uint256) {
     underlying.mint(address(sipa), SWEEP_AMOUNT);
+    sweepCount++;
+    inbox.primeNext(bytes32(sweepCount), sweepCount);
     sipa.sweep(address(underlying), relayer, _depositIntent(), "");
     Vm.Gas memory g = vm.lastCallGas();
     return uint256(int256(uint256(g.gasTotalUsed)) - int256(g.gasRefunded));

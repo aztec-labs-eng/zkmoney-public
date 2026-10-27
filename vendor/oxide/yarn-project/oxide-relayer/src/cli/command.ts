@@ -1,5 +1,5 @@
-import { enumConfigHelper } from '@aztec/foundation/config';
-import { EthAddress } from '@aztec/foundation/eth-address';
+import { enumConfigHelper } from '@aztec-labs/foundation/config';
+import { EthAddress } from '@aztec-labs/foundation/eth-address';
 
 import { Command } from 'commander';
 

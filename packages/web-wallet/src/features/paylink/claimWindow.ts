@@ -5,7 +5,7 @@
  */
 
 import { useEffect, useRef, useState } from "react"
-import type { AztecNode } from "@aztec/aztec.js/node"
+import type { AztecNode } from "@aztec-labs/aztec.js/node"
 import { PAYLINK_CANCEL_MARGIN_SECONDS } from "@obsidion/core/constants"
 import { isPaylinkWindowNotOpenRevert, isPaylinkWindowRevert } from "@obsidion/front-core"
 import type { LinkStatus, PaymentLink } from "./types"
@@ -20,6 +20,11 @@ export const CLOSED_LINK_COPY: Record<
     caption: "It has already been claimed or cancelled by the sender.",
   },
   expired: { title: "This link has expired", caption: "Ask the sender to send a new link." },
+  retired: {
+    title: "This link has been retired",
+    caption:
+      "It was made before the latest zk.money upgrade and can't be claimed. The funds go back to the sender when they upgrade.",
+  },
 }
 
 /** One-line form of `CLOSED_LINK_COPY` for sheets over an open claim. */
@@ -33,6 +38,7 @@ export const LINK_STATUS_LABEL: Record<LinkStatus, string> = {
   unclaimed: "Unclaimed",
   claimed: "Claimed",
   expired: "Expired",
+  retired: "Retired",
 }
 
 export const PAYLINK_NOT_CLAIMABLE_YET_MESSAGE =

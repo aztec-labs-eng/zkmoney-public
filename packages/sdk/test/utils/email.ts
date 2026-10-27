@@ -5,7 +5,7 @@
 import path from "path"
 import { loadKeyPairs, generateJwks, generateJwt, KeyPair } from "./jwt.js"
 import { setupFetchInterceptor } from "./customizableFetchInterceptor.js"
-import type { AztecNode } from "@aztec/aztec.js/node"
+import type { AztecNode } from "@aztec-labs/aztec.js/node"
 
 // ============ Constants ============
 
@@ -139,7 +139,7 @@ export const setupJwtMocking = (
 
   const keyPairs = loadKeyPairs(keyFilePath)
   const jwks = generateJwks(keyPairs)
-  const signingKeyPair = keyPairs[0]
+  const signingKeyPair = keyPairs[0]!
   const jwt = generateJwt(jwtPayload, signingKeyPair)
 
   const { restoreFetch } = setupFetchInterceptor({
@@ -162,6 +162,6 @@ export const setupJwtMocking = (
  * Useful when tests need multiple JWTs with different payloads
  */
 export const generateMultipleJwts = (payloads: JwtPayload[], keyPairs: KeyPair[]): string[] => {
-  const signingKeyPair = keyPairs[0]
+  const signingKeyPair = keyPairs[0]!
   return payloads.map((payload) => generateJwt(payload, signingKeyPair))
 }

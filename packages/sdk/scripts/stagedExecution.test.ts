@@ -4,8 +4,8 @@ import {
   L2_GAS_PER_PRIVATE_LOG,
   PRIVATE_LOG_CIPHERTEXT_LEN,
   PRIVATE_LOG_SIZE_IN_FIELDS,
-} from "@aztec/constants"
-import { Gas } from "@aztec/stdlib/gas"
+} from "@aztec-labs/constants"
+import { Gas } from "@aztec-labs/stdlib/gas"
 
 import {
   InvalidEffectDeltasError,

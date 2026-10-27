@@ -1,0 +1,12 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "paths": {
+      "@aztec/ethereum/contracts": [
+        "../sdk/node_modules/@aztec/ethereum/dest/contracts/index.d.ts"
+      ],
+      "@aztec/ethereum/types": ["../sdk/node_modules/@aztec/ethereum/dest/types.d.ts"]
+    }
+  },
+  "include": ["index.ts", "protocol.ts"]
+}

@@ -7,7 +7,7 @@ import {
   type IStorageAdapter,
 } from "@obsidion/front-core"
 import { Network } from "@obsidion/core/constants"
-import { Fr } from "@aztec/aztec.js/fields"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 import { mintMyConnectLink } from "../src/features/contacts/myCode"
 
 /** Map-backed adapter so the mint drives the real IssuedConnectStorage without a browser. */

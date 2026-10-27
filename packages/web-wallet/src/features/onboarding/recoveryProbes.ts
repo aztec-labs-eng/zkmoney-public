@@ -1,3 +1,4 @@
+import type { Fr } from "@aztec-labs/aztec.js/fields"
 import type { Hex } from "viem"
 import type { PrivateKeyAccount } from "viem/accounts"
 import {
@@ -7,6 +8,7 @@ import {
   type AnchorTier,
   type BootstrapKeyProvider,
   type CandidateProbe,
+  type L2AddressOn,
   type OxideIdentityDeps,
   type ResolvedMsk,
 } from "@obsidion/front-core"
@@ -20,8 +22,11 @@ import { AmbiguousPasskeyError, NoWalletForPasskeyError } from "@obsidion/passke
  * asked, because the factory of the generation a user registered under predicts their account and
  * a later factory does not.
  */
-function registryTier(generations: OxideIdentityDeps): AnchorTier[] {
-  return [{ name: "registry", probes: [registryCandidateProbe(generations)] }]
+function registryTier(
+  generations: OxideIdentityDeps,
+  addressesFor?: (msk: Fr, l2Address: string) => L2AddressOn,
+): AnchorTier[] {
+  return [{ name: "registry", probes: [registryCandidateProbe(generations, addressesFor)] }]
 }
 
 /**
@@ -30,8 +35,12 @@ function registryTier(generations: OxideIdentityDeps): AnchorTier[] {
  * under the same bootstrap key, so the ledger names it. The Registry decides first, so an anchor
  * that cannot answer only ever reaches the keys it has never seen registered.
  */
-export function anchorTiers(config: WebWalletConfig, generations: OxideIdentityDeps): AnchorTier[] {
-  const tiers = registryTier(generations)
+export function anchorTiers(
+  config: WebWalletConfig,
+  generations: OxideIdentityDeps,
+  addressesFor?: (msk: Fr, l2Address: string) => L2AddressOn,
+): AnchorTier[] {
+  const tiers = registryTier(generations, addressesFor)
   if (!config.accountServiceTestMode) {
     tiers.push({ name: "reservation", probes: [reservationCandidateProbe()] })
   }
@@ -95,8 +104,9 @@ export function enterTiers(
   config: WebWalletConfig,
   generations: OxideIdentityDeps,
   grant?: { nameHash: Hex; token: string },
+  addressesFor?: (msk: Fr, l2Address: string) => L2AddressOn,
 ): AnchorTier[] {
-  const tiers = anchorTiers(config, generations)
+  const tiers = anchorTiers(config, generations, addressesFor)
   if (grant && !config.accountServiceTestMode)
     tiers.splice(1, 0, {
       name: "name-grant",

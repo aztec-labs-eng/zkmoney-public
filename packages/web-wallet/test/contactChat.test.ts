@@ -78,7 +78,6 @@ function sipaDeposit(overrides: Partial<SIPADepositRecord>): SIPADepositRecord {
     amount: "10",
     // Priced, so the row can read as a credit: an unpriced deposit shows its gross unsigned.
     fee: "250000000000000000",
-    fpcFundingCut: "0",
     tokenSymbol: "DAI",
     walletAddress: ETH_ADDR,
     phase: "claimed",
@@ -276,7 +275,7 @@ describe("bubbleViewOf", () => {
     expect(bubbleViewOf("request-declined").label).toBe("Declined")
     expect(bubbleViewOf("sent-pending").label).toBe("Pending")
     expect(bubbleViewOf("sent-failed").label).toBe("Failed")
-    expect(bubbleViewOf("received-failed").label).toBe("Not received")
+    expect(bubbleViewOf("received-failed").label).toBe("Failed")
   })
 
   it("sides outgoing right, tints declined red + struck", () => {

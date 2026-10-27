@@ -6,7 +6,7 @@ import {
   KeyPair,
   loadKeyPairs,
   generateKeyPairs,
-} from "../utils/jwt"
+} from "../utils/jwt.js"
 import fs from "fs"
 
 // JWT to sign
@@ -43,7 +43,7 @@ if (fs.existsSync(keyFilePath)) {
 }
 
 // Use the first key pair for signing
-const signingKeyPair = keyPairs[0]
+const signingKeyPair = keyPairs[0]!
 
 // Generate JWT token
 const token = generateJwt(jwt, signingKeyPair)

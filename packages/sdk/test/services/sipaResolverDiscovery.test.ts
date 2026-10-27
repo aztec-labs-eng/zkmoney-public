@@ -6,15 +6,22 @@
  * live dev.json) is env-gated behind LIVE_OXIDE=1 so default runs stay network-free.
  */
 
-import { describe, expect, it } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 import { createPublicClient, http, type PublicClient } from "viem"
 import { extractPinnedOxideEnvTuple } from "@obsidion/core/oxide"
 import {
   fetchSipaResolverOperators,
+  fetchHistoricalSipaResolverOperators,
   readAccountResolution,
+  resetResolverOperatorHistoryForTests,
   selectManifestResolverOperator,
   type SipaResolverOperatorRecord,
 } from "../../src/services/sipaResolverDiscovery.js"
+
+const { readHistory } = vi.hoisted(() => ({ readHistory: vi.fn() }))
+vi.mock("@oxide/l1-contracts/resolver_operator_history.js", () => ({
+  readResolverOperatorHistory: readHistory,
+}))
 
 const LIVE_MANIFEST_URL =
   process.env.OXIDE_MANIFEST_URL ?? "https://d1162cdsa8f9md.cloudfront.net/dev.v4.json"
@@ -24,19 +31,15 @@ const OWNER_LIVE = "0xf902DF6c3d057230ac8c2FbD7a86aD03AFf2F871"
 const OWNER_STALE = "0x1111111111111111111111111111111111111111"
 const L2_LIVE = "0x2589c51355cabd0722def6dabd818a309c4a8fc2d4cbc3ce2bf2eaaf59318456"
 const L2_STALE = "0x1e3946ea94b923f81e234eae1f8428873771588422e4f1002e6cea39162a04db"
-const PORTAL_LIVE = "0x1DDbB070F55c51b970cba7Ae185A1adC8BcC43DF"
-const PORTAL_STALE = "0xe49aBA0d10B72b11bd39a2E204f4d3aA9C466f78"
+const TABLE_LIVE = "0x1DDbB070F55c51b970cba7Ae185A1adC8BcC43DF"
+const TABLE_STALE = "0xe49aBA0d10B72b11bd39a2E204f4d3aA9C466f78"
 const ZERO = "0x0000000000000000000000000000000000000000"
+const RESOLVER_KEY = { x: 1n, y: 2n }
 
 /** resolverOperators(owner) tuple as the AccountMetadataRegistry ABI returns it (positional). */
 const RECORDS: Record<string, [unknown, string, string, string]> = {
-  [OWNER_LIVE]: [{ x: 1n, y: 2n }, L2_LIVE, "https://gw.live/{sender}/{data}.json", PORTAL_LIVE],
-  [OWNER_STALE]: [
-    { x: 3n, y: 4n },
-    L2_STALE,
-    "https://gw.stale/{sender}/{data}.json",
-    PORTAL_STALE,
-  ],
+  [OWNER_LIVE]: [{ x: 1n, y: 2n }, L2_LIVE, "https://gw.live/{sender}/{data}.json", TABLE_LIVE],
+  [OWNER_STALE]: [{ x: 3n, y: 4n }, L2_STALE, "https://gw.stale/{sender}/{data}.json", TABLE_STALE],
 }
 
 /** What a rate-limited RPC enforces: a numeric window, capped, with no earliest/latest strings. */
@@ -94,11 +97,11 @@ describe("fetchSipaResolverOperators", () => {
       owner: OWNER_LIVE,
       l2Address: L2_LIVE,
       url: "https://gw.live/{sender}/{data}.json",
-      oxidePortal: PORTAL_LIVE,
+      forwardingTable: TABLE_LIVE,
       // The self-resolve ECDH counterparty; the FPC pins these limbs in its config.
       resolverPublicKey: { x: 1n, y: 2n },
     })
-    expect(records[1].owner).toBe(OWNER_STALE)
+    expect(records[1]!.owner).toBe(OWNER_STALE)
   })
 
   it("drops an address that has a log but no record (empty url sentinel)", async () => {
@@ -143,31 +146,35 @@ describe("selectManifestResolverOperator", () => {
       owner: OWNER_STALE,
       l2Address: L2_STALE,
       url: "https://gw.stale/{sender}/{data}.json",
-      oxidePortal: PORTAL_STALE,
+      forwardingTable: TABLE_STALE,
+      resolverPublicKey: RESOLVER_KEY,
     },
     {
       owner: OWNER_LIVE,
       l2Address: L2_LIVE,
       url: "https://gw.live/{sender}/{data}.json",
-      oxidePortal: PORTAL_LIVE,
+      forwardingTable: TABLE_LIVE,
+      resolverPublicKey: RESOLVER_KEY,
     },
-  ] as SipaResolverOperatorRecord[]
+  ]
 
-  it("picks the record matching the manifest portal, skipping stale ones", () => {
-    const chosen = selectManifestResolverOperator(records, { portal: PORTAL_LIVE })
+  it("picks the record matching the manifest forwarding table, skipping stale ones", () => {
+    const chosen = selectManifestResolverOperator(records, { forwardingTable: TABLE_LIVE })
     expect(chosen.owner).toBe(OWNER_LIVE)
     expect(chosen.l2Address).toBe(L2_LIVE)
   })
 
   it("matches case-insensitively (manifest vs checksummed record casing)", () => {
-    const chosen = selectManifestResolverOperator(records, { portal: PORTAL_LIVE.toLowerCase() })
+    const chosen = selectManifestResolverOperator(records, {
+      forwardingTable: TABLE_LIVE.toLowerCase(),
+    })
     expect(chosen.owner).toBe(OWNER_LIVE)
   })
 
   it("throws when no record matches the live deployment", () => {
     expect(() =>
       selectManifestResolverOperator(records, {
-        portal: "0x9999999999999999999999999999999999999999",
+        forwardingTable: "0x9999999999999999999999999999999999999999",
       }),
     ).toThrow(/no resolver-operator record matches/)
   })
@@ -175,12 +182,12 @@ describe("selectManifestResolverOperator", () => {
   it("also matches the gateway URL when the manifest carries one", () => {
     expect(() =>
       selectManifestResolverOperator(records, {
-        portal: PORTAL_LIVE,
+        forwardingTable: TABLE_LIVE,
         resolverGatewayUrl: "https://gw.other/{sender}/{data}.json",
       }),
     ).toThrow(/no resolver-operator record matches/)
     const chosen = selectManifestResolverOperator(records, {
-      portal: PORTAL_LIVE,
+      forwardingTable: TABLE_LIVE,
       resolverGatewayUrl: "https://gw.live/{sender}/{data}.json",
     })
     expect(chosen.owner).toBe(OWNER_LIVE)
@@ -191,16 +198,17 @@ describe("selectManifestResolverOperator", () => {
       owner: "0xbadbadbadbadbadbadbadbadbadbadbadbadbad0",
       l2Address: L2_STALE,
       url: "https://gw.live/{sender}/{data}.json",
-      oxidePortal: PORTAL_LIVE,
-    } as SipaResolverOperatorRecord
+      forwardingTable: TABLE_LIVE,
+      resolverPublicKey: RESOLVER_KEY,
+    }
     const chosen = selectManifestResolverOperator([squatter, ...records], {
-      portal: PORTAL_LIVE,
+      forwardingTable: TABLE_LIVE,
       preferredOwner: OWNER_LIVE.toLowerCase(),
     })
     expect(chosen.owner).toBe(OWNER_LIVE)
     // without the preference, ordering would have picked the squatter
     const unpreferred = selectManifestResolverOperator([squatter, ...records], {
-      portal: PORTAL_LIVE,
+      forwardingTable: TABLE_LIVE,
     })
     expect(unpreferred.owner).toBe(squatter.owner)
   })
@@ -212,20 +220,22 @@ describe("selectManifestResolverOperator — failOnAmbiguousMatch (mainnet fail-
       owner: OWNER_LIVE,
       l2Address: L2_LIVE,
       url: "https://gw.live/{sender}/{data}.json",
-      oxidePortal: PORTAL_LIVE,
+      forwardingTable: TABLE_LIVE,
+      resolverPublicKey: RESOLVER_KEY,
     },
     {
       owner: "0xbadbadbadbadbadbadbadbadbadbadbadbadbad0",
       l2Address: L2_STALE,
       url: "https://gw.live/{sender}/{data}.json",
-      oxidePortal: PORTAL_LIVE,
+      forwardingTable: TABLE_LIVE,
+      resolverPublicKey: RESOLVER_KEY,
     },
-  ] as SipaResolverOperatorRecord[]
+  ]
 
   it("fails closed on multiple manifest-matching candidates with no preferred owner", () => {
     expect(() =>
       selectManifestResolverOperator(twoMatching, {
-        portal: PORTAL_LIVE,
+        forwardingTable: TABLE_LIVE,
         failOnAmbiguousMatch: true,
       }),
     ).toThrow(/anti-squatter fail-closed/)
@@ -233,7 +243,7 @@ describe("selectManifestResolverOperator — failOnAmbiguousMatch (mainnet fail-
 
   it("returns the sole candidate under failOnAmbiguousMatch when unambiguous", () => {
     const chosen = selectManifestResolverOperator([twoMatching[0]!], {
-      portal: PORTAL_LIVE,
+      forwardingTable: TABLE_LIVE,
       failOnAmbiguousMatch: true,
     })
     expect(chosen.owner).toBe(OWNER_LIVE)
@@ -241,7 +251,7 @@ describe("selectManifestResolverOperator — failOnAmbiguousMatch (mainnet fail-
 
   it("still honors a matching preferred owner even with failOnAmbiguousMatch set", () => {
     const chosen = selectManifestResolverOperator(twoMatching, {
-      portal: PORTAL_LIVE,
+      forwardingTable: TABLE_LIVE,
       preferredOwner: OWNER_LIVE,
       failOnAmbiguousMatch: true,
     })
@@ -250,7 +260,7 @@ describe("selectManifestResolverOperator — failOnAmbiguousMatch (mainnet fail-
 
   it("first-matches (no throw) when failOnAmbiguousMatch is off — testnet behavior", () => {
     const chosen = selectManifestResolverOperator(twoMatching, {
-      portal: PORTAL_LIVE,
+      forwardingTable: TABLE_LIVE,
     })
     expect(chosen.owner).toBe(OWNER_LIVE)
   })
@@ -275,7 +285,9 @@ describe.runIf(process.env.LIVE_OXIDE === "1")("live dev.json resolver-operator 
       tuple.accountMetadataRegistry as never,
       { fromBlock, toBlock: head },
     )
-    const chosen = selectManifestResolverOperator(records, { portal: tuple.portal })
+    const chosen = selectManifestResolverOperator(records, {
+      forwardingTable: tuple.forwardingTable!,
+    })
     // The operator's L2 broadcast account — the registerSender target.
     expect(chosen.l2Address).toBe(L2_LIVE)
     expect(chosen.url).toBe(tuple.resolverGatewayUrl)
@@ -315,7 +327,7 @@ describe("readAccountResolution", () => {
         owner: OWNER_LIVE,
         l2Address: L2_LIVE,
         url: "https://gw.live/{sender}/{data}.json",
-        oxidePortal: PORTAL_LIVE,
+        forwardingTable: TABLE_LIVE,
         resolverPublicKey: { x: 1n, y: 2n },
       },
     })
@@ -323,5 +335,109 @@ describe("readAccountResolution", () => {
 
   it("is null for an account with no record", async () => {
     expect(await readAccountResolution(recordClient(false), METADATA_REGISTRY, ACCOUNT)).toBeNull()
+  })
+})
+
+describe("historical resolver senders", () => {
+  beforeEach(() => {
+    readHistory.mockReset()
+    resetResolverOperatorHistoryForTests()
+  })
+
+  const record = (owner: string, sender: string, table = TABLE_LIVE, blockNumber = 0n) => ({
+    owner,
+    blockNumber,
+    entry: {
+      l2Address: sender,
+      oxidePortal: table,
+      url: "https://gw.live/{sender}/{data}.json",
+      publicKey: RESOLVER_KEY,
+    },
+  })
+  const manifest = {
+    forwardingTable: TABLE_LIVE,
+    preferredOwner: OWNER_LIVE,
+    failOnAmbiguousMatch: true,
+  }
+
+  it("recovers rotated source senders after overwrite, excluding other owners and duplicate senders", async () => {
+    readHistory.mockResolvedValue([
+      record(OWNER_STALE, L2_STALE),
+      record(OWNER_LIVE, L2_LIVE),
+      record(OWNER_LIVE, L2_STALE),
+      record(OWNER_LIVE, L2_LIVE),
+      record(OWNER_LIVE, L2_STALE, TABLE_STALE),
+    ])
+    const result = await fetchHistoricalSipaResolverOperators(
+      {} as PublicClient,
+      METADATA_REGISTRY,
+      RANGE,
+      manifest,
+    )
+    expect(result.map(({ owner, l2Address }) => [owner, l2Address])).toEqual([
+      [OWNER_LIVE, L2_LIVE],
+      [OWNER_LIVE, L2_STALE],
+    ])
+  })
+
+  it("rejects competing owners but accepts rotations by one owner under the ambiguity policy", async () => {
+    const policy = { forwardingTable: TABLE_LIVE, failOnAmbiguousMatch: true }
+    readHistory.mockResolvedValue([record(OWNER_STALE, L2_STALE), record(OWNER_LIVE, L2_LIVE)])
+    await expect(
+      fetchHistoricalSipaResolverOperators({} as PublicClient, METADATA_REGISTRY, RANGE, policy),
+    ).rejects.toThrow(/anti-squatter/)
+    resetResolverOperatorHistoryForTests()
+    readHistory.mockResolvedValue([record(OWNER_LIVE, L2_LIVE), record(OWNER_LIVE, L2_STALE)])
+    const records = await fetchHistoricalSipaResolverOperators(
+      {} as PublicClient,
+      METADATA_REGISTRY,
+      RANGE,
+      policy,
+    )
+    expect(records.map(({ l2Address }) => l2Address)).toEqual([L2_LIVE, L2_STALE])
+  })
+
+  it("reads a registry's history once, then only the blocks past it", async () => {
+    readHistory.mockResolvedValueOnce([record(OWNER_LIVE, L2_LIVE, TABLE_LIVE, RANGE.fromBlock)])
+    const read = (toBlock: bigint) =>
+      fetchHistoricalSipaResolverOperators(
+        {} as PublicClient,
+        METADATA_REGISTRY,
+        { ...RANGE, toBlock },
+        manifest,
+      )
+    await Promise.all([read(RANGE.toBlock), read(RANGE.toBlock)])
+    expect(readHistory).toHaveBeenCalledTimes(1)
+
+    readHistory.mockResolvedValueOnce([
+      record(OWNER_LIVE, L2_STALE, TABLE_LIVE, RANGE.toBlock + 5n),
+    ])
+    const later = await read(RANGE.toBlock + 10n)
+    expect(readHistory).toHaveBeenCalledTimes(2)
+    expect(readHistory.mock.calls[1][2]).toEqual({
+      fromBlock: RANGE.toBlock + 1n - 128n,
+      toBlock: RANGE.toBlock + 10n,
+    })
+    expect(later.map(({ l2Address }) => l2Address)).toEqual([L2_LIVE, L2_STALE])
+    // An earlier head reads nothing and sees only what it covers.
+    expect((await read(RANGE.toBlock)).map(({ l2Address }) => l2Address)).toEqual([L2_LIVE])
+    expect(readHistory).toHaveBeenCalledTimes(2)
+  })
+
+  it("keeps the history read so far when a later read fails", async () => {
+    readHistory.mockResolvedValueOnce([record(OWNER_LIVE, L2_LIVE, TABLE_LIVE, RANGE.fromBlock)])
+    const read = (toBlock: bigint) =>
+      fetchHistoricalSipaResolverOperators(
+        {} as PublicClient,
+        METADATA_REGISTRY,
+        { ...RANGE, toBlock },
+        manifest,
+      )
+    await read(RANGE.toBlock)
+    readHistory.mockRejectedValueOnce(new Error("rpc down"))
+    await expect(read(RANGE.toBlock + 10n)).rejects.toThrow("rpc down")
+    readHistory.mockResolvedValueOnce([])
+    await read(RANGE.toBlock + 10n)
+    expect(readHistory.mock.calls[2][2].fromBlock).toBe(RANGE.toBlock + 1n - 128n)
   })
 })

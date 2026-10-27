@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest"
 import type { MigrationFundingBatch } from "@obsidion/core/types"
 import { UpgradeActivity } from "../../src/core/migration/upgradeActivity"
+import { directDepositKey } from "../../src/core/services/deposits/SIPADepositStore"
 
 const RUN = "metadata-migration/0xnew/0xold/0xaccount"
 
@@ -25,17 +26,9 @@ const batch = (patch: Partial<MigrationFundingBatch> = {}): MigrationFundingBatc
 })
 
 describe("upgrade activity", () => {
-  it("lists a run's first batch from its record and each later batch by its state", async () => {
+  it("lists each batch of a run by its state", async () => {
     const s = storage()
-    s.items.set(
-      RUN,
-      JSON.stringify({
-        phase: "recovering",
-        plan: JSON.stringify({ sourceBatch: "proof" }),
-        bootstrapTx: "0xboot",
-      }),
-    )
-    s.items.set(`${RUN}/source/proof`, JSON.stringify(batch({ recipient: "0xmeta" })))
+    s.items.set(RUN, JSON.stringify({ phase: "recovering", plan: JSON.stringify({}) }))
     s.items.set(
       `${RUN}/source/remaining-0`,
       JSON.stringify(batch({ broadcastTx: "0xa", sentAt: 20 })),
@@ -50,21 +43,16 @@ describe("upgrade activity", () => {
 
     await activity.addRun(RUN)
 
-    expect(activity.items().map((i) => [i.id, i.first, i.state, i.tx, i.startTime])).toEqual([
-      ["proof", true, "received", "0xboot", 10],
-      ["remaining-0", false, "sent", "0xa", 20],
-      ["remaining-2", false, "refunded", "0xb", 10],
-      ["remaining-3", false, "planned", undefined, 10],
+    expect(activity.items().map((i) => [i.id, i.state, i.tx, i.startTime])).toEqual([
+      ["remaining-0", "sent", "0xa", 20],
+      ["remaining-2", "refunded", "0xb", 10],
+      ["remaining-3", "planned", undefined, 10],
     ])
   })
 
-  it("marks the first batch approved with its plan, and each later one by its own approval", async () => {
+  it("marks each batch by its own approval", async () => {
     const s = storage()
-    s.items.set(
-      RUN,
-      JSON.stringify({ phase: "needsApproval", plan: JSON.stringify({ sourceBatch: "p" }) }),
-    )
-    s.items.set(`${RUN}/source/p`, JSON.stringify(batch()))
+    s.items.set(RUN, JSON.stringify({ phase: "needsApproval", plan: JSON.stringify({}) }))
     s.items.set(`${RUN}/source/remaining-0`, JSON.stringify(batch({ approved: true })))
     s.items.set(`${RUN}/source/remaining-1`, JSON.stringify(batch()))
     const activity = UpgradeActivity.get(s)
@@ -72,7 +60,6 @@ describe("upgrade activity", () => {
     await activity.addRun(RUN)
 
     expect(activity.items().map((i) => [i.id, i.approved])).toEqual([
-      ["p", true],
       ["remaining-0", true],
       ["remaining-1", false],
     ])
@@ -92,58 +79,16 @@ describe("upgrade activity", () => {
     expect(listener).toHaveBeenCalledTimes(3)
   })
 
-  it("keeps a received first batch received when a later step stops the run", async () => {
+  it("names every batch's deposit address", async () => {
     const s = storage()
-    s.items.set(
-      RUN,
-      JSON.stringify({
-        phase: "needsAttention",
-        plan: JSON.stringify({ sourceBatch: "p" }),
-        bootstrapTx: "0xboot",
-        subscriptionTx: "0xsub",
-      }),
-    )
-    s.items.set(`${RUN}/source/p`, JSON.stringify(batch()))
+    s.items.set(RUN, JSON.stringify({ phase: "arriving", plan: JSON.stringify({}) }))
+    s.items.set(`${RUN}/source/remaining-0`, JSON.stringify(batch({ recipient: "0xFirst" })))
+    s.items.set(`${RUN}/source/remaining-1`, JSON.stringify(batch({ recipient: "0xLast" })))
     const activity = UpgradeActivity.get(s)
 
     await activity.addRun(RUN)
 
-    expect(activity.items()[0]).toMatchObject({ first: true, state: "received" })
-  })
-
-  // A live source withdraws rather than refunds: its batches stay off this list.
-  it("lists no batch of a live source", async () => {
-    const s = storage()
-    s.items.set(
-      RUN,
-      JSON.stringify({ phase: "arriving", plan: JSON.stringify({ sourceBatch: "0xhash" }) }),
-    )
-    const live = { binding: "b", recipient: "0xsipa", amount: "100", exitFee: "1", fromBlock: "1" }
-    s.items.set(`${RUN}/source/0xhash`, JSON.stringify({ ...live, burnTx: "0xburn" }))
-    s.items.set(`${RUN}/source/remaining`, JSON.stringify(live))
-    const activity = UpgradeActivity.get(s)
-
-    await activity.addRun(RUN)
-
-    expect(activity.items()).toEqual([])
-  })
-
-  it("names every batch's deposit address, a live source's included", async () => {
-    const s = storage()
-    s.items.set(
-      RUN,
-      JSON.stringify({ phase: "arriving", plan: JSON.stringify({ sourceBatch: "0xhash" }) }),
-    )
-    const live = { binding: "b", amount: "100", exitFee: "1", fromBlock: "1" }
-    s.items.set(`${RUN}/source/0xhash`, JSON.stringify({ ...live, recipient: "0xMeta" }))
-    s.items.set(`${RUN}/source/remaining`, JSON.stringify({ ...live, recipient: "0xLater" }))
-    s.items.set(`${RUN}/source/remaining-1`, JSON.stringify({ ...live, recipient: "0xLast" }))
-    const activity = UpgradeActivity.get(s)
-
-    await activity.addRun(RUN)
-
-    expect([...activity.recipients()].sort()).toEqual(["0xlast", "0xlater", "0xmeta"])
-    expect(activity.items()).toEqual([])
+    expect([...activity.recipients()].sort()).toEqual(["0xfirst", "0xlast"])
   })
 
   it("lists a run before its record is written, and refuses the write when it cannot", async () => {
@@ -217,20 +162,6 @@ describe("upgrade activity", () => {
     expect(activity.items()).toEqual([])
   })
 
-  it("reads an unpublished first batch as planned", async () => {
-    const s = storage()
-    s.items.set(
-      RUN,
-      JSON.stringify({ phase: "broadcasting", plan: JSON.stringify({ sourceBatch: "p" }) }),
-    )
-    s.items.set(`${RUN}/source/p`, JSON.stringify(batch()))
-    const activity = UpgradeActivity.get(s)
-
-    await activity.addRun(RUN)
-
-    expect(activity.items()[0]).toMatchObject({ first: true, state: "planned" })
-  })
-
   it("saves a batch even when activity cannot read the runs", async () => {
     const s = storage()
     s.items.set("metadata-migration/runs", JSON.stringify([RUN]))
@@ -240,5 +171,44 @@ describe("upgrade activity", () => {
     await writes.setItem(`${RUN}/source/remaining-0`, JSON.stringify(batch({ broadcastTx: "0xa" })))
 
     expect(s.items.has(`${RUN}/source/remaining-0`)).toBe(true)
+  })
+
+  it("lists a direct batch under its deposit record's key, and hands the rail each sent one", async () => {
+    const s = storage()
+    const direct = (n: string) => ({
+      executor: "0xe0" as `0x${string}`,
+      subsidy: "0xf0" as `0x${string}`,
+      day: 1,
+      nonce: Number(n),
+      recipientCommitment: `0x${n.repeat(64)}` as `0x${string}`,
+    })
+    s.items.set(RUN, JSON.stringify({ phase: "recovering", plan: JSON.stringify({}) }))
+    s.items.set(
+      `${RUN}/source/remaining-0`,
+      JSON.stringify(
+        batch({
+          recipient: direct("1").recipientCommitment,
+          direct: direct("1"),
+          broadcastTx: "0xa",
+        }),
+      ),
+    )
+    s.items.set(
+      `${RUN}/source/remaining-1`,
+      JSON.stringify(batch({ recipient: direct("2").recipientCommitment, direct: direct("2") })),
+    )
+    s.items.set(`${RUN}/source/remaining-2`, JSON.stringify(batch({ broadcastTx: "0xb" })))
+    const activity = UpgradeActivity.get(s)
+
+    await activity.addRun(RUN)
+
+    const key = directDepositKey(direct("1").recipientCommitment)
+    expect(activity.items()[0]).toMatchObject({
+      recipient: key,
+      direct: direct("1"),
+      fromBlock: "1",
+    })
+    expect(activity.recipients().has(key.toLowerCase())).toBe(true)
+    expect((await activity.directBatches()).map((i) => i.id)).toEqual(["remaining-0"])
   })
 })

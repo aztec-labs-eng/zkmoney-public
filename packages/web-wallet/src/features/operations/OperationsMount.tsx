@@ -4,7 +4,7 @@
  * withdrawal tracker picks up burns past submit.
  */
 import { useEffect } from "react"
-import type { AztecNode } from "@aztec/stdlib/interfaces/client"
+import type { AztecNode } from "@aztec-labs/stdlib/interfaces/client"
 import { TransactionStorage, useAztecContext, type OperationRecord } from "@obsidion/front-core"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
 import { slowWhenHidden } from "../../platform/visibilityScheduler"

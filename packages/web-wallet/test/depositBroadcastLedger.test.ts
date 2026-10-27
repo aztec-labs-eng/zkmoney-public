@@ -4,7 +4,7 @@
  * sponsorship and the prover).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { OperationStore } from "@obsidion/front-core"
+import { BroadcastAbandoned, BroadcastDeferred, OperationStore } from "@obsidion/front-core"
 import type { Address } from "viem"
 import { L2_ADDRESS } from "./support/registrationFixtures"
 
@@ -16,11 +16,18 @@ const h = vi.hoisted(() => ({
   sponsor: undefined as Error | undefined,
 }))
 
-const TUPLE = {
+const PINNED = {
+  rollupVersion: "1",
   portal: "0x00000000000000000000000000000000000000a0",
+  forwardingTable: "0x00000000000000000000000000000000000000fb",
   ensDomain: "zk.money",
   l2Token: `0x${"01".repeat(32)}`,
 }
+const TUPLE = { ...PINNED }
+const DEPLOYMENT = `1:${PINNED.portal}`
+/** The pin moves, in this wallet database, to another deployment that keeps the forwarding table. */
+const roll = () =>
+  Object.assign(TUPLE, { rollupVersion: "2", portal: "0x00000000000000000000000000000000000000b0" })
 vi.mock("../src/config/oxideTuple", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/config/oxideTuple")>()),
   getOxideTuple: async () => TUPLE,
@@ -46,8 +53,13 @@ vi.mock("../src/features/broadcasts/broadcastState", () => ({
   broadcastState: async () => "included",
 }))
 
-const { getSipaDepositGateway, readCachedSipa, readSipaPool, resetSipaDepositGatewayForTests } =
-  await import("../src/features/deposit/sipaGateway")
+const {
+  appendToSipaPool,
+  getSipaDepositGateway,
+  readCachedSipa,
+  readSipaPool,
+  resetSipaDepositGatewayForTests,
+} = await import("../src/features/deposit/sipaGateway")
 const { getBroadcastLedger, resetBroadcastsForTests, startBroadcasts } = await import(
   "../src/features/broadcasts/broadcasts"
 )
@@ -60,7 +72,7 @@ const { SIPADepositStore } = await import("@obsidion/front-core")
 
 const wallet = {} as never
 const address = (n: number) => `0x${(0xd00 + n).toString(16).padStart(40, "0")}` as Address
-const CACHE_KEY = `webwallet.sipa.address.sandbox.${TUPLE.portal}.${L2_ADDRESS}.alice`
+const CACHE_KEY = `webwallet.sipa.address.sandbox.${TUPLE.forwardingTable}.${L2_ADDRESS}.alice`
 
 /** The gateway with its derivation, unlock and prover replaced at their boundaries. */
 function gateway() {
@@ -103,6 +115,7 @@ beforeEach(async () => {
   resetSipaDepositGatewayForTests()
   OperationStore.reset()
   Object.assign(h, { nonce: 0, derived: [], sent: [], landed: new Set(), sponsor: undefined })
+  Object.assign(TUPLE, PINNED)
   await saveWalletIdentity({ handle: "alice", address: L2_ADDRESS, claimedAt: 1 })
 })
 
@@ -120,7 +133,7 @@ describe("deposit addresses on the broadcast ledger", () => {
     expect(h.derived).toEqual([address(0)])
     run(gw)
     await vi.waitFor(() =>
-      expect(readSipaPool(CACHE_KEY).map((e) => e.address)).toEqual([address(0)]),
+      expect(readSipaPool(CACHE_KEY, DEPLOYMENT).map((e) => e.address)).toEqual([address(0)]),
     )
     expect(h.sent).toEqual([address(0).toLowerCase()])
   })
@@ -132,7 +145,7 @@ describe("deposit addresses on the broadcast ledger", () => {
     const executor = gw.slotExecutor(wallet)
     await executor.onLanded!(job)
     await executor.onLanded!(job)
-    expect(readSipaPool(CACHE_KEY).map((e) => e.address)).toEqual([address(0)])
+    expect(readSipaPool(CACHE_KEY, DEPLOYMENT).map((e) => e.address)).toEqual([address(0)])
     await expect(gw.depositAddress(wallet, {} as never, "alice")).resolves.toMatchObject({
       address: address(0),
       source: "pool",
@@ -151,7 +164,7 @@ describe("deposit addresses on the broadcast ledger", () => {
     await shown.publish!()
     expect(h.sent).toEqual([address(0).toLowerCase()])
     // Shown, so it never reaches the pool; its slot reads published.
-    expect(readSipaPool(CACHE_KEY)).toEqual([])
+    expect(readSipaPool(CACHE_KEY, DEPLOYMENT)).toEqual([])
     expect(readCachedSipa(CACHE_KEY)).toMatchObject({ address: address(0), published: true })
   })
 
@@ -167,6 +180,28 @@ describe("deposit addresses on the broadcast ledger", () => {
       state: "queued",
     })
     expect(getBroadcastLedger().get(first.address)?.shownAt).toBeDefined()
+  })
+
+  it("hands out a new address after a table repoint, and still publishes the earlier table's", async () => {
+    const gw = gateway()
+    const before = await gw.depositAddress(wallet, {} as never, "alice")
+    await before.owe!()
+    const table = TUPLE.forwardingTable
+    TUPLE.forwardingTable = "0x00000000000000000000000000000000000000fc"
+    try {
+      const after = await gw.depositAddress(wallet, {} as never, "alice")
+      expect(after.address).not.toBe(before.address)
+      expect(readCachedSipa(CACHE_KEY.replace(table, TUPLE.forwardingTable))).toMatchObject({
+        address: after.address,
+      })
+      expect(readCachedSipa(CACHE_KEY)).toMatchObject({ address: before.address })
+      await after.owe!()
+      run(gw)
+      await vi.waitFor(() => expect(h.sent).toHaveLength(2))
+      expect(h.sent).toContain(before.address.toLowerCase())
+    } finally {
+      TUPLE.forwardingTable = table
+    }
   })
 
   it("derives no fresh address past the publishing limit, but still hands out a pool fill", async () => {
@@ -218,7 +253,7 @@ describe("deposit addresses on the broadcast ledger", () => {
     vi.spyOn(getBroadcastLedger(), "markShown").mockRejectedValueOnce(new Error("disk"))
     await expect(gw.depositAddress(wallet, {} as never, "alice")).rejects.toThrow("disk")
     await gw.slotExecutor(wallet).onLanded!(getBroadcastLedger().get(address(0))!)
-    expect(readSipaPool(CACHE_KEY).map((e) => e.address)).toEqual([address(0)])
+    expect(readSipaPool(CACHE_KEY, DEPLOYMENT).map((e) => e.address)).toEqual([address(0)])
   })
 
   it("keeps a fill a view took out of the pool, even when it lands before the view records it", async () => {
@@ -231,7 +266,77 @@ describe("deposit addresses on the broadcast ledger", () => {
     void gw.depositAddress(wallet, {} as never, "alice")
     await vi.waitFor(() => expect(recording).toHaveBeenCalled())
     await gw.slotExecutor(wallet).onLanded!(job)
-    expect(readSipaPool(CACHE_KEY)).toEqual([])
+    expect(readSipaPool(CACHE_KEY, DEPLOYMENT)).toEqual([])
+  })
+
+  it("hands out no pooled address of a retired deployment, even under the same table", async () => {
+    const gw = gateway()
+    await refill(gw)
+    run(gw)
+    await vi.waitFor(() => expect(readSipaPool(CACHE_KEY, DEPLOYMENT)).toHaveLength(1))
+    roll()
+    const shown = await gw.depositAddress(wallet, {} as never, "alice")
+    expect(shown).toMatchObject({ source: "derived" })
+    expect(shown.address).not.toBe(address(0))
+  })
+
+  it("drains a retired deployment only once registered on the new rollup", async () => {
+    const gw = gateway()
+    await refill(gw)
+    const retiredTable = CACHE_KEY.replace(PINNED.forwardingTable, "0xretiredtable")
+    appendToSipaPool(retiredTable, {
+      address: address(9),
+      day: 7,
+      nonce: 9,
+      published: true,
+      deployment: DEPLOYMENT,
+    })
+    roll()
+    const job = getBroadcastLedger().get(address(0))!
+    const attempt = { onTxHash: async () => {} }
+
+    h.sponsor = new RegistrationPendingError({ pending: "message" } as never)
+    await expect(gw.slotExecutor(wallet).send(job, attempt)).rejects.toBeInstanceOf(
+      BroadcastDeferred,
+    )
+    expect(walletStorage.getItem(`${retiredTable}.pool`)).not.toBeNull()
+
+    h.sponsor = undefined
+    await expect(gw.slotExecutor(wallet).send(job, attempt)).rejects.toBeInstanceOf(
+      BroadcastAbandoned,
+    )
+    expect(walletStorage.getItem(`${retiredTable}.pool`)).toBeNull()
+    expect(h.sent).toEqual([])
+  })
+
+  it("drops a retired deployment's pool fill from the ledger without proving it", async () => {
+    const gw = gateway()
+    await refill(gw)
+    roll()
+    run(gw)
+    await vi.waitFor(() => expect(getBroadcastLedger().get(address(0))).toBeNull())
+    expect(h.sent).toEqual([])
+  })
+
+  it("does not pool a fill that lands after its deployment retired", async () => {
+    const gw = gateway()
+    await refill(gw)
+    roll()
+    await gw.slotExecutor(wallet).onLanded!(getBroadcastLedger().get(address(0))!)
+    expect(readSipaPool(CACHE_KEY, DEPLOYMENT)).toEqual([])
+    expect(readSipaPool(CACHE_KEY, `2:${TUPLE.portal}`)).toEqual([])
+  })
+
+  it("still publishes an address shown before the roll", async () => {
+    const gw = gateway()
+    await refill(gw)
+    const shown = await gw.depositAddress(wallet, {} as never, "alice")
+    expect(shown).toMatchObject({ address: address(0), source: "filling" })
+    // The hand-out's refill owes its fill before the pin moves, so it is the retired deployment's.
+    await vi.waitFor(() => expect(h.derived).toHaveLength(2))
+    roll()
+    run(gw)
+    await vi.waitFor(() => expect(h.sent).toEqual([address(0).toLowerCase()]))
   })
 
   it("rejects publish with the registration's wait while no rail can pay, keeping it owed", async () => {
@@ -301,6 +406,16 @@ describe("deposit addresses on the broadcast ledger", () => {
     run(gw)
     await vi.waitFor(() => expect(h.sent).toHaveLength(2))
     expect(h.sent).toEqual([paid.address.toLowerCase(), unpaid.address.toLowerCase()])
+  })
+
+  it("owes the ledger a slot an earlier version keyed by the pinned portal", async () => {
+    walletStorage.setItem(
+      `webwallet.sipa.address.sandbox.${TUPLE.portal}.${L2_ADDRESS}.alice`,
+      JSON.stringify({ address: address(7), day: 7, nonce: 7, published: false }),
+    )
+    const gw = gateway()
+    await refill(gw)
+    expect(getBroadcastLedger().get(address(7))).toMatchObject({ kind: "deposit", state: "queued" })
   })
 
   it("owes the ledger a slot an earlier version left unpublished, and lets the chain decide a sent one", async () => {

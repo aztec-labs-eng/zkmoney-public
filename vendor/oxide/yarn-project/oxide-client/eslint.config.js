@@ -3,17 +3,24 @@ import base from '../eslint.config.js';
 // External clients build these modules without `@oxide/noir-contracts.js`. See "Bindings-free client modules" in
 // AGENTS.md.
 const BINDINGS_FREE_MODULES = [
-  'src/atlatl/process_withdrawal_request.ts',
+  'src/atlatl/withdrawal_finalization.ts',
   'src/broadcaster_calls.ts',
   'src/capsules.ts',
   'src/deposit_refund_eligibility.ts',
   'src/eth_usd_price_feed.ts',
+  'src/executors/*',
   'src/l1_operation_quote.ts',
   'src/l2_operations.ts',
   'src/partial_epoch_proof_profit.ts',
-  'src/published_withdrawal.ts',
+  'src/passkey_rotation.ts',
+  'src/record_update.ts',
   'src/sipa_event_calls.ts',
+  'src/submitted_withdrawal.ts',
+  'src/token_registration.ts',
   'src/withdraw_escrows/*',
+  'src/withdrawal_recovery.ts',
+  'src/withdrawal_finalization_request.ts',
+  'src/withdrawal_in_tx.ts',
 ];
 
 const BINDINGS_FREE_REASON =

@@ -1,5 +1,5 @@
-import { startAnvil } from '@aztec/ethereum/test';
-import { sleep } from '@aztec/foundation/sleep';
+import { startAnvil } from '@aztec-labs/ethereum/test';
+import { sleep } from '@aztec-labs/foundation/sleep';
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from '@jest/globals';
 import * as http from 'node:http';

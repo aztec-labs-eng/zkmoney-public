@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs"
 import { describe, expect, it } from "vitest"
-import { Fr } from "@aztec/aztec.js/fields"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 import { ZKJWT_VKEY_HASH, ZKJWT_VK_BASE64 } from "@obsidion/core/constants"
 import {
   DriftError,
@@ -46,7 +46,7 @@ describe("checkVkeyHash (Check D)", () => {
   // Mirrors checkVkeyHash's own parse so the fixture's "fresh" constant is
   // derived the same way deploy.ts derives ZKJWT_VKEY_HASH from the circuit vk.
   async function hashOf(buf: Buffer): Promise<string> {
-    const { poseidon2Hash } = await import("@aztec/foundation/crypto/poseidon")
+    const { poseidon2Hash } = await import("@aztec-labs/foundation/crypto/poseidon")
     const fields: Fr[] = []
     for (let i = 0; i < buf.length; i += 32) fields.push(Fr.fromBuffer(buf.subarray(i, i + 32)))
     return (await poseidon2Hash(fields)).toString()

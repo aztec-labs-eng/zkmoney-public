@@ -9,6 +9,7 @@ import type { PortalCapacitySnapshot } from "@obsidion/sdk"
 import { getConfig } from "../../../src/config/env"
 import { isDemoMode } from "../../../src/dev/demoFlag"
 import { DEMO_OXIDE_TUPLE } from "../../../src/dev/demoFixtures"
+import { DEMO_TX_AMOUNT_CAP } from "../../../src/dev/fakeL1Rpc"
 import { ORIGIN_PORTAL } from "./processing-origin"
 
 const STATES = ["fits", "low", "short", "empty", "unavailable", "clock-ahead", "clears"] as const
@@ -70,8 +71,8 @@ function read(key: PortalCapacityKey): Promise<PortalCapacitySnapshot> {
     decimals: 18,
     blockNumber: BigInt(Math.floor(Date.now() / 12_000)),
     blockTimestamp: BigInt(Math.floor(Date.now() / 1000) - skew),
-    rateAtomicPerSecond: (50_000n * DAI) / 86_400n,
-    globalLimitAtomic: 50_000n * DAI,
+    rateAtomicPerSecond: (100_000n * DAI) / 86_400n,
+    globalLimitAtomic: 100_000n * DAI,
     // A deposit's original portal (`?originFixture=`) reports its own amount, so it never looks like the active one.
     availableAtomic:
       key.portal.toLowerCase() === ORIGIN_PORTAL
@@ -81,6 +82,7 @@ function read(key: PortalCapacityKey): Promise<PortalCapacitySnapshot> {
           ? AVAILABLE.fits
           : 0n
         : AVAILABLE[state],
+    txAmountCapAtomic: DEMO_TX_AMOUNT_CAP,
   })
 }
 
@@ -104,8 +106,8 @@ export const depositCapacityStore: typeof actual.depositCapacityStore = (key) =>
 }
 
 /** The demo tuple has no chain id; the demo's configured L1 chain stands in. */
-export const activeCapacityKey: typeof actual.activeCapacityKey = async () => {
-  if (!isDemoMode()) return actual.activeCapacityKey()
+export const activeCapacityKey: typeof actual.activeCapacityKey = async (rowToken) => {
+  if (!isDemoMode()) return actual.activeCapacityKey(rowToken)
   return portalCapacityKey({
     chainId: getConfig().l1ChainId,
     portal: DEMO_OXIDE_TUPLE.portal,

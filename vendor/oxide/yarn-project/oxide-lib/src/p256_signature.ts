@@ -6,7 +6,7 @@
  * the high-s form verifies in WebCrypto but cannot be proven. So the witness builder must normalise the signature
  * first.
  */
-import { toBigIntBE } from '@aztec/foundation/bigint-buffer';
+import { toBigIntBE } from '@aztec-labs/foundation/bigint-buffer';
 
 /** Order of the P-256 (secp256r1) curve group. */
 export const P256_CURVE_ORDER = 0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551n;

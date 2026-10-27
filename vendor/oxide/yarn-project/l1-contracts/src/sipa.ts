@@ -24,9 +24,9 @@ export function encodeSweep(args: SweepArgs): Hex {
 }
 
 /**
- * `DepositSubsidy.sweepForSubsidy(sipa, ...)` calldata: the same sweep, driven by the deposit subsidy so it is
- * clocked and paid for the gas it burns. A bare `encodeSweep` still bridges the deposit; it just earns nothing on
- * top of the fee.
+ * `DepositSubsidy.sweepForSubsidy(sipa, ...)` calldata: the same sweep, driven by the deposit subsidy. The subsidy
+ * pays for the gas of the sweep when a code-free EOA sends it through the bound executor. A bare `encodeSweep` still
+ * bridges the deposit; it just earns nothing on top of the fee.
  */
 export function encodeSweepForSubsidy(sipa: Address, args: SweepArgs): Hex {
   return encodeFunctionData({
@@ -36,9 +36,10 @@ export function encodeSweepForSubsidy(sipa: Address, args: SweepArgs): Hex {
   });
 }
 
-/** The SIPA that `deployAndSweepForSubsidy` deploys. The deposit subsidy gets the implementation and the rollup version
- *  from its portal, and gets the intent hash from the sweep's `intentData`. */
+/** The SIPA that `deployAndSweepForSubsidy` deploys. The deposit subsidy gets the implementation from the table, the
+ *  rollup version from its portal, and the intent hash from the sweep's `intentData`. */
 export interface SubsidizedDeployArgs {
+  forwardingTable: Address;
   intent: SipaIntent;
   recoveryCommitment: Hex;
   resweepable: boolean;
@@ -50,6 +51,7 @@ export function encodeDeployAndSweepForSubsidy(deploy: SubsidizedDeployArgs, arg
     abi: DepositSubsidyAbi,
     functionName: 'deployAndSweepForSubsidy',
     args: [
+      deploy.forwardingTable,
       deploy.intent,
       deploy.recoveryCommitment,
       deploy.resweepable,
@@ -59,19 +61,6 @@ export function encodeDeployAndSweepForSubsidy(deploy: SubsidizedDeployArgs, arg
       args.proofs,
     ],
   });
-}
-
-/** The portal and sweep fee an intent implementation pins. Every clone of it settles into the one and charges the
- *  other, so reading them off the implementation is how a deploy checks what it just blessed. */
-export async function readSipaPlumbing(
-  publicClient: PublicClient,
-  implementation: Address,
-): Promise<{ portal: Address; depositFee: bigint }> {
-  const [portal, depositFee] = await Promise.all([
-    publicClient.readContract({ address: implementation, abi: SIPAAbi, functionName: 'PORTAL' }),
-    publicClient.readContract({ address: implementation, abi: SIPAAbi, functionName: 'DEPOSIT_FEE' }),
-  ]);
-  return { portal: portal as Address, depositFee: depositFee as bigint };
 }
 
 /** A SIPA `Sweep(index, amount)` event. `index` is the L1→L2 inbox leaf; `amount` is the L2-credited amount. */

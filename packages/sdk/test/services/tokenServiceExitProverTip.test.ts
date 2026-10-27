@@ -3,9 +3,9 @@
  * and the withdraw call the user's intent covers. Everything past batch building is stubbed.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { AztecAddress } from "@aztec/aztec.js/addresses"
-import { Fr } from "@aztec/aztec.js/fields"
-import { EthAddress } from "@aztec/foundation/eth-address"
+import { AztecAddress } from "@aztec-labs/aztec.js/addresses"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { EthAddress } from "@aztec-labs/foundation/eth-address"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 
 const f = vi.hoisted(() => ({
@@ -37,7 +37,7 @@ vi.mock("../../src/services/claimSponsor.js", () => ({
   authorizeSponsoredBatch: f.authorize,
 }))
 // The intent hash follows the withdraw call's tip argument, so a tip the intent drops shows up.
-vi.mock("@aztec/aztec.js/authorization", () => ({
+vi.mock("@aztec-labs/aztec.js/authorization", () => ({
   computeAuthWitMessageHash: async ({ action }: { action: { args: unknown[] } }) =>
     new Fr(1000n + (action.args[4] as bigint)),
 }))
@@ -57,7 +57,8 @@ const tuple = {
   plainWithdrawalExecutor: `0x${"44".repeat(20)}`,
   l2Broadcaster: AztecAddress.fromBigIntUnsafe(11n).toString(),
 } as OxideEnvTuple
-const withdrawal: WithdrawalOptions = { tuple, portal: { fpcFundingCut: 7n, frozen: false } }
+// An executor that takes no fee.
+const withdrawal: WithdrawalOptions = { tuple, l1: { readContract: async () => 0n } as never }
 const AMOUNT = 1_000n * 10n ** 18n
 
 function makeService() {
@@ -132,4 +133,37 @@ it("the sponsored intent covers the tipped withdraw call", async () => {
   const resigned = (f.authorize.mock.lastCall![5] as Fr[]).map((h) => h.toBigInt())
   expect(signed).toEqual([1003n])
   expect(resigned).toEqual([1004n])
+})
+
+describe("the accounts a sponsored exit names", () => {
+  const payer = AztecAddress.fromBigIntUnsafe(30n)
+  const exitWith = async (context: ClaimSponsorContext) => {
+    const service = makeService()
+    const sendTx = vi.fn(async () => ({
+      receipt: { txHash: { toString: () => "0xabc" }, blockNumber: 7 },
+    }))
+    ;(service as unknown as { wallet: { sendTx: unknown } }).wallet.sendTx = sendTx
+    const onTxHash = vi.fn()
+    await service.exitToL1PrivateSponsored(recipient, AMOUNT.toString(), context, {
+      useRawAmount: true,
+      withdrawal,
+      onTxHash,
+    })
+    return { tee: f.buildSponsored.mock.lastCall![1], send: sendTx.mock.lastCall![1], onTxHash }
+  }
+
+  it("names the acting account alone when it pays itself", async () => {
+    const { tee, send, onTxHash } = await exitWith(sponsor)
+    expect(tee.user).toBe(user)
+    expect(tee).not.toHaveProperty("intentsAccount")
+    expect(send.additionalScopes).toEqual([user])
+    expect(send.onTxHash).toBe(onTxHash)
+  })
+
+  it("names the payer as the FPC's user and the acting account as the intents' owner", async () => {
+    const { tee, send } = await exitWith({ ...sponsor, payer })
+    expect(tee.user).toBe(payer)
+    expect(tee.intentsAccount).toBe(user)
+    expect(send.additionalScopes).toEqual([payer, user])
+  })
 })

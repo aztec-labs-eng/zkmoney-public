@@ -17,7 +17,6 @@ import {
 import { useLocation, useNavigate } from "react-router-dom"
 import { DepositArt } from "../DepositArt"
 import { HighGasNotice, HighL2FeeNotice } from "../HighGasNotice"
-import { MaintenanceNotice } from "../MaintenanceNotice"
 import { PhoneIcon } from "../PhoneIcon"
 import { usePhoneLayout } from "../usePhoneLayout"
 import { LostRegistrationNoticeCard } from "../../features/onboarding/LostRegistrationNoticeCard"
@@ -25,8 +24,7 @@ import { inviteLink, useInvite } from "../../features/invite/useInvite"
 import { RegisterNameCard } from "../../features/onboarding/SecureNameNoticeCard"
 import { ActivationHome } from "../../features/onboarding/ActivationHome"
 import { useNameClaimPending } from "../../features/onboarding/openRegistration"
-import { useActionGuard, useWalletFrozen } from "../../features/actionGate"
-import { fundsLeft, sharesUsd, useFrozenFunds } from "../../features/withdraw/frozenFunds"
+import { useActionGuard } from "../../features/actionGate"
 import { getConfig } from "../../config/env"
 import { healRegistrationDeposits } from "../../features/onboarding/registrationDepositSeed"
 import { discoverRegistrationDeposits } from "../../features/onboarding/registrationRederive"
@@ -55,6 +53,7 @@ import earnCoin from "../../assets/home/earn-coin.webp"
 import gift from "../../assets/home/gift.webp"
 import { UpgradeBanner } from "../../features/migration/UpgradeIntro"
 import { useOldVersionHoldings } from "../../features/migration/oldVersionBalance"
+import { OldVersionLeftoversNotice } from "../../features/migration/OldVersionLeftoversNotice"
 import { useUpgradeLock } from "../../features/migration/upgradeLock"
 import { loadWalletIdentity } from "../../features/identity/walletIdentity"
 import iosApp from "../../assets/home/ios-app.webp"
@@ -265,6 +264,7 @@ export function HomeScreen() {
   const lock = useUpgradeLock(address)
   // Held, Main stays at what the upgrade will land, with nothing from the new version.
   const frozen = lock.state === "held"
+  const savingsFrozen = frozen && lock.savings !== undefined
   const [hideBal, setHideBal] = useHideBalances()
   const savings = useSavings()
   const { pathname } = useLocation()
@@ -288,6 +288,7 @@ export function HomeScreen() {
     savingsHydrated,
     savingsLedger,
     arriving,
+    oldVersionLeft,
     upgradesLoaded,
     hydrated,
     requestsUnavailable,
@@ -295,21 +296,14 @@ export function HomeScreen() {
   } = useActivityEntries()
   const mainKnown =
     lock.checked && (frozen || (balanceKnown && !oldHoldings.pending && upgradesLoaded))
-  // A frozen portal's scan says what is left: a refund leaves its notes in the balance.
-  const exitFunds = useFrozenFunds().funds
   // Funds on their way count where they land, flat: they neither tick nor earn until they arrive.
-  const mainShown = frozen
-    ? lock.main
-    : exitFunds
-    ? fundsLeft(exitFunds.main)
-    : mainAtomic + arriving.main
+  const mainShown = frozen ? lock.main : mainAtomic + arriving.main
   const mainText = hideBal ? HIDDEN : mainShown === undefined ? "—" : usdAtomicFloor(mainShown)
   // The last read value; the ticking figures carry it to now in their own components.
   const estimate = useSavingsEstimate(savings.position, false)
-  const sharePrice = savings.position?.sharePrice
-  const savingsShown = exitFunds?.savings
-    ? sharesUsd(fundsLeft(exitFunds.savings), sharePrice)
-    : estimate.value === undefined
+  const savingsShown = savingsFrozen
+    ? lock.savings
+    : oldHoldings.pending || estimate.value === undefined
     ? undefined
     : estimate.value + arriving.savings
   const savingsValueText = savingsShown === undefined ? undefined : usdAtomicFloor(savingsShown)
@@ -371,7 +365,9 @@ export function HomeScreen() {
   }, [hiddenKey])
   const totalText = hideBal ? HIDDEN : totalValue === undefined ? "—" : usdAtomicFloor(totalValue)
   const balanceText = onSavings ? savingsText : mainText
-  const balanceShown = onSavings ? savings.hydrated : mainKnown
+  const balanceShown = onSavings
+    ? !oldHoldings.pending && (savingsFrozen || savings.hydrated)
+    : mainKnown
   // A device catching up can be short on either account: a rebuilt move's deposit lands in either.
   const syncing = balanceShown && balanceSyncing
   const openDeposit = () => guard("deposit", () => navigate("/deposit"))
@@ -399,21 +395,17 @@ export function HomeScreen() {
   const requestEntries = entries.filter((entry) => entry.incomingRequest)
   const feedEntries = entries.filter((entry) => !entry.incomingRequest)
 
-  // Frozen, only Withdraw stays open.
-  const closed = useWalletFrozen()
   const receive: HomeAction = {
     title: "Receive",
     icon: "arrow-down",
     phoneIcon: "arrow-down",
     run: () => guard("receive", () => navigate("/receive")),
-    disabled: closed,
   }
   const send: HomeAction = {
     title: "Send",
     icon: "send",
     phoneIcon: "send",
     run: () => guard("send", () => navigate("/send")),
-    disabled: closed,
   }
   const withdraw: HomeAction = {
     title: "Withdraw",
@@ -423,29 +415,22 @@ export function HomeScreen() {
   }
   const actions: HomeAction[] = onSavings
     ? [
-        {
-          title: "Add to Savings",
-          icon: "earn",
-          phoneIcon: "earn",
-          run: () => openMove("in"),
-          disabled: closed,
-        },
+        { title: "Add to Savings", icon: "earn", phoneIcon: "earn", run: () => openMove("in") },
         {
           title: "Move to Main Account",
           icon: "payments-arrows-horizontal",
           run: () => openMove("out"),
-          disabled: closed,
         },
       ]
     : phone
     ? [
-        { title: "Deposit", icon: "coins", phoneIcon: "coins", run: openDeposit, disabled: closed },
+        { title: "Deposit", icon: "coins", phoneIcon: "coins", run: openDeposit },
         receive,
         send,
         withdraw,
       ]
     : [
-        { title: "Deposit", icon: "coins", phoneIcon: "coins", run: openDeposit, disabled: closed },
+        { title: "Deposit", icon: "coins", phoneIcon: "coins", run: openDeposit },
         send,
         receive,
         withdraw,
@@ -522,7 +507,7 @@ export function HomeScreen() {
             data-testid={onSavings ? "savings-balance" : "wallet-balance"}
             aria-busy={syncing}
           >
-            {onSavings && !hideBal && savingsValueText !== undefined ? (
+            {onSavings && !hideBal && savingsValueText !== undefined && !savingsFrozen ? (
               <TickingUsd position={savings.position} at={(value) => value + arriving.savings} />
             ) : (
               balanceText
@@ -563,7 +548,7 @@ export function HomeScreen() {
           </div>
         )}
       </div>
-      {!onSavings && <UpgradeBanner />}
+      <UpgradeBanner />
       <HomeActions actions={actions} phone={phone} />
       {onSavings ? (
         savingsHydrated && savingsEntries.length === 0 ? (
@@ -581,6 +566,10 @@ export function HomeScreen() {
       ) : (
         <>
           {hydrated && requestsUnavailable && <RequestsUnavailableNotice />}
+          {/* Until the account is upgraded, the upgrade still moves these funds. */}
+          {hydrated && lock.state === "released" && (
+            <OldVersionLeftoversNotice left={oldVersionLeft} />
+          )}
           {hydrated &&
             requestEntries.map((e) => (
               <div key={e.id} className="ww-home__request">
@@ -611,7 +600,6 @@ export function HomeScreen() {
 
   return (
     <>
-      <MaintenanceNotice />
       <HighL2FeeNotice />
       <HighGasNotice />
       <LostRegistrationNoticeCard />

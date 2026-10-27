@@ -1,4 +1,4 @@
-import { keccak256 } from '@aztec/foundation/crypto/keccak';
+import { keccak256 } from '@aztec-labs/foundation/crypto/keccak';
 
 import { readFileSync } from 'node:fs';
 

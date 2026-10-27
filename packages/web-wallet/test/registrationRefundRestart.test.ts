@@ -10,7 +10,7 @@ import {
   type Hex,
   toFunctionSelector,
 } from "viem"
-import { Fr } from "@aztec/aztec.js/fields"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 import {
   goldenTicketBurn,
   NameClaimStore,
@@ -70,7 +70,9 @@ const h = vi.hoisted(() => ({
   balance: vi.fn(),
   receipt: vi.fn(),
   metadataRegistry: vi.fn(),
-  cut: vi.fn(),
+  cap: vi.fn(),
+  /** The executor's withdrawal fee, which prices whether a link covers a deposit. */
+  withdrawalFee: vi.fn(),
   /** The controller's immutable schedule, counted: the sweep reads it exactly once. */
   schedule: vi.fn(async () => PAID),
   config: {} as WebWalletConfig,
@@ -112,10 +114,14 @@ vi.mock("@obsidion/sdk", async (original) => ({
   ContractService: { getInstance: () => ({}) },
 }))
 vi.mock("../src/platform/auth/useAuthenticator", () => ({ peekAuthService: () => undefined }))
-// The sandbox portal's cut. The earned quote is refused without one, so every restart here needs it.
-vi.mock("../src/features/fees/fpcFundingCut", () => ({
-  fpcFundingCut: () => h.cut(),
-  currentFpcFundingCut: () => h.cut(),
+// The portal's per-transaction cap. The manual sweep signs nothing without it.
+vi.mock("../src/features/token/oxideToken", async (original) => ({
+  ...(await original<object>()),
+  txAmountCap: () => h.cap(),
+}))
+vi.mock("../src/features/withdraw/withdrawalFee", async (original) => ({
+  ...(await original<object>()),
+  activeWithdrawalFee: () => h.withdrawalFee(),
 }))
 vi.mock("../src/config/env", async (original) => ({
   ...(await original<object>()),
@@ -123,8 +129,14 @@ vi.mock("../src/config/env", async (original) => ({
 }))
 vi.mock("../src/config/oxideTuple", async (original) => ({
   ...(await original<object>()),
-  oxideEnvFor: async () => ({ tuple: {}, env: ENV, publicClient: { readContract: h.balance } }),
+  oxideEnvFor: async () => ({
+    tuple: { portal: PORTAL },
+    env: ENV,
+    publicClient: { readContract: h.balance },
+  }),
   l1PublicClient: () => ({ readContract: h.balance, getTransactionReceipt: h.receipt }),
+  // The fee token's row is the registration's.
+  getFeeTokenBridgeTuple: async () => ({ portal: PORTAL }),
 }))
 vi.mock("../src/features/onboarding/registrationTerms", async (original) => ({
   ...(await original<object>()),
@@ -156,6 +168,15 @@ vi.mock("../src/features/deposit/sipaSweep", async (original) => ({
   readSipaDeployed: async () => false,
   sweepManifestFrom: () => ({ sipaFactory: OWNER, token: TOKEN }),
 }))
+// A mainnet profile accepts the stables that swap into the registration token.
+vi.mock("../src/features/deposit/loadDepositFacts", async (importOriginal) => {
+  const { mainnetTokens, mockLoadDepositFacts, singleToken } = await import(
+    "./support/depositTokens"
+  )
+  return mockLoadDepositFacts(importOriginal, () =>
+    h.config.network === "mainnet" ? mainnetTokens(TOKEN) : singleToken(TOKEN),
+  )
+})
 const { manualRegistrationSweep, SWEEP_PRICE_COMMITTED, SWEEP_QUOTE_UNUSABLE } = await import(
   "../src/features/onboarding/registrationSweep"
 )
@@ -167,6 +188,7 @@ const NEW = `0x${"33".repeat(20)}` as Address
 const TOKEN = `0x${"44".repeat(20)}` as Address
 const IMPL = `0x${"77".repeat(20)}` as Address
 const PORTAL = `0x${"88".repeat(20)}` as Address
+const TABLE = `0x${"99".repeat(20)}` as Address
 const L2 = `0x${"55".repeat(32)}` as Hex
 const HASH = `0x${"66".repeat(32)}` as Hex
 /** Answers the recovery's holding read: `balance` of the first token asked for. */
@@ -238,6 +260,7 @@ const keys = {
 beforeEach(async () => {
   resetBroadcastsForTests()
   vi.clearAllMocks()
+  h.withdrawalFee.mockResolvedValue(0n)
   localStorage.clear()
   resetRegistrationStores()
   NameClaimStore.resetForTests()
@@ -274,7 +297,7 @@ beforeEach(async () => {
   h.redeem.mockReset().mockResolvedValue({ status: "created" })
   h.registeredOwner.mockReset().mockResolvedValue(zeroAddress)
   h.heldName.mockReset().mockResolvedValue(`0x${"00".repeat(32)}`)
-  h.cut.mockResolvedValue(0n)
+  h.cap.mockReset().mockResolvedValue(10_000n * DAI)
   h.metadataRegistry.mockResolvedValue(OWNER)
   h.balance.mockResolvedValue(0n)
   h.receipt.mockResolvedValue(transfer(REFUND))
@@ -286,13 +309,16 @@ beforeEach(async () => {
     sharedSecretSalt: HASH,
     stealthScalar: 1n,
     origin: {
-      protocol: "legacy-eoa",
+      protocol: "account",
       sipaFactory: OWNER,
       implementation: IMPL,
       intentHash: HASH,
       rollupVersion: "1",
       resweepable: false,
-      recoveryAddress: OWNER,
+      recoveryAccount: OWNER,
+      recoveryCommitment: HASH,
+      accountFactory: OWNER,
+      forwardingTable: TABLE,
     },
   })
   h.broadcast.mockRejectedValue(new Error("one-use registration broadcast already spent"))
@@ -434,7 +460,7 @@ describe("refund then restart the earned registration", () => {
         portal: PORTAL,
         token: TOKEN,
         depositFee: DAI / 10n,
-        fpcFundingCut: 0n,
+        txAmountCap: 10_000n * DAI,
       }))
       const read = vi.fn(async (key: PortalCapacityKey) => ({
         ...key,
@@ -444,6 +470,7 @@ describe("refund then restart the earned registration", () => {
         rateAtomicPerSecond: 0n,
         globalLimitAtomic: 2_583n * DAI,
         availableAtomic,
+        txAmountCapAtomic: 10_000n * DAI,
       }))
       const registry = createPortalCapacityRegistry({
         read,
@@ -466,7 +493,8 @@ describe("refund then restart the earned registration", () => {
       const sweep = manualRegistrationSweep(record, { keys })
       await expect(sweep).rejects.toBeInstanceOf(SweepRefusedError)
       await expect(sweep).rejects.toThrow(/stopped before signing/)
-      expect(readTerms).toHaveBeenCalledWith(IMPL)
+      // The registration row of the table the address commits to.
+      expect(readTerms).toHaveBeenCalledWith({ forwardingTable: TABLE, intent: 2 })
       expect(read).toHaveBeenCalledWith(
         expect.objectContaining({ chainId: 11155111, portal: PORTAL, token: TOKEN }),
       )
@@ -530,13 +558,16 @@ describe("refund then restart the earned registration", () => {
           recipientHash: HASH,
           recoveryAddress: OWNER,
           origin: {
-            protocol: "legacy-eoa",
+            protocol: "account",
             sipaFactory: OWNER,
             implementation: IMPL,
             intentHash: HASH,
             rollupVersion: "1",
             resweepable: false,
-            recoveryAddress: OWNER,
+            recoveryAccount: OWNER,
+            recoveryCommitment: HASH,
+            accountFactory: OWNER,
+            forwardingTable: TABLE,
           },
           l1ChainId: 11155111,
           amount: patch.amount,
@@ -956,16 +987,10 @@ describe("refund then restart the earned registration", () => {
       feeWaived: true,
     })
   })
-  // The sweep credits an opening balance over the portal's cut, so a deposit that clears fee plus
-  // minimum can still fall short of the floor the sweep enforces.
-  it.each([
-    ["the portal's cut lifts the floor above it", RANDOM_ASK, "does not yet cover"],
-    ["the portal's cut is unread, so the floor is unknown", undefined, "Try again"],
-  ])("signs nothing for a deposit while %s", async (_, cut, refusal) => {
+  it("signs nothing for a deposit while the portal's cap is unread", async () => {
     const replacement = await fundedReplacement()
-    if (cut === undefined) h.cut.mockRejectedValue(new Error("rpc down"))
-    else h.cut.mockResolvedValue(cut)
-    await expect(manualRegistrationSweep(replacement, { keys })).rejects.toThrow(refusal)
+    h.cap.mockRejectedValue(new Error("rpc down"))
+    await expect(manualRegistrationSweep(replacement, { keys })).rejects.toThrow("Try again")
     expect(h.send).not.toHaveBeenCalled()
   })
   // The SIPA swaps a stable into DAI at up to 1% loss before the controller floors it, so a stable
@@ -988,24 +1013,6 @@ describe("refund then restart the earned registration", () => {
       expect.anything(),
       expect.objectContaining({ manifest: expect.objectContaining({ token: USDC }) }),
     )
-  })
-  it("refuses the restart while the portal's cut is unread, rather than losing the refund's entry", async () => {
-    h.cut.mockRejectedValue(new Error("rpc down"))
-
-    await expect(restart()).rejects.toThrow("Try again")
-
-    // Nothing was replaced, so the retry still has the refund to price an entry from.
-    expect(getPendingStore().get(OWNER)?.sipaAddress).toBe(OLD)
-    expect(h.broadcast).not.toHaveBeenCalled()
-
-    h.cut.mockResolvedValue(0n)
-    const result = await restart()
-    expect(result.kind).toBe("pending")
-    expect(getPendingStore().get(OWNER)?.refundedEntry).toEqual({
-      sipaAddress: OLD,
-      recoveryTxHash: HASH,
-      amount: String(REFUND),
-    })
   })
   it.each(["not refunded", "standard quote", "same address"])(
     "preserves the old record when %s",
@@ -1136,9 +1143,8 @@ describe("a link with no ticket for this signup, which pays the name's own depos
       proverTip,
       speed: "faster",
     })
-  /** What the claim burns for the random tag's signed deposit at a zero cut. */
-  const burn = (proverTip: bigint) =>
-    goldenTicketBurn(RANDOM, { withdrawalCut: 0n, depositCut: 0n }, proverTip).burn
+  /** What the claim burns for the random tag's signed deposit at a zero executor fee. */
+  const burn = (proverTip: bigint) => goldenTicketBurn(RANDOM, proverTip, 0n).burn
 
   it("binds the registration to the link, with its tip, when the note covers the signed deposit", async () => {
     const outcome = await register(20n * DAI, DAI / 10n)
@@ -1158,10 +1164,10 @@ describe("a link with no ticket for this signup, which pays the name's own depos
   it.each([
     ["covers the deposit but not the tip", () => register(burn(DAI / 10n), DAI / 10n)],
     [
-      "is priced while the cut is unread",
+      "is priced while the executor fee is unread",
       () => {
         h.sign.mockResolvedValue(standardClaim())
-        h.cut.mockRejectedValue(new Error("rpc down"))
+        h.withdrawalFee.mockRejectedValue(new Error("rpc down"))
         return register(20n * DAI, 0n, false)
       },
     ],
