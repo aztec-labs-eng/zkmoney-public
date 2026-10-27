@@ -6,7 +6,6 @@ import {
   ObsidionWallet,
   ObsidionAlphaTestWallet,
   Network,
-  type IPendingTxStore,
 } from "@obsidion/sdk"
 import { l1ChainIdForNetwork } from "@obsidion/core/constants"
 import type { ChainIdentity } from "@obsidion/core/types"
@@ -37,11 +36,6 @@ export interface InitializePXEOptions {
   bbWasmPath?: string
   store?: AztecAsyncKVStore
   simulator?: CircuitSimulator
-  /**
-   * Encrypted persistent `PendingTxStore`, constructed by the platform. Unset leaves the wallet on
-   * its `InMemoryPendingTxStore` default.
-   */
-  pendingTxStore?: IPendingTxStore
   /**
    * The identity boot verified against L1. Pinned into the wallet's chain info and published as the
    * active network id; unset, both come from the node's own answer.
@@ -103,7 +97,6 @@ export const AztecProvider = ({
     const customProver = opts.prover
     const customStore = opts.store
     const customSimulator = opts.simulator
-    const customPendingTxStore = opts.pendingTxStore
     const chainIdentity = opts.chainIdentity
     // if (pxe) return // Already initialized
 
@@ -146,8 +139,6 @@ export const AztecProvider = ({
         })
 
         const WalletClass = isTestAccount ? ObsidionAlphaTestWallet : ObsidionWallet
-        // Forward the persistent pendingTxStore into the wallet so `sendTx`
-        // writes records into the same store the `TxLifecycleService` reads.
         const obsidionWallet = await WalletClass.create(
           node,
           pxeConfig,
@@ -163,7 +154,6 @@ export const AztecProvider = ({
             simulator: customSimulator,
           },
           {
-            pendingTxStore: customPendingTxStore,
             chainInfo: chainIdentity && {
               l1ChainId: chainIdentity.l1ChainId,
               rollupVersion: Number(chainIdentity.rollupVersion),

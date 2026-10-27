@@ -5,8 +5,9 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { ProvingStage, provingProgress } from "@obsidion/proving-progress"
-import { TransactionStorage, TxInFlightError, trackSubmission } from "@obsidion/front-core"
-import { webStorage } from "../src/platform/storage/WebStorageAdapter"
+import { TRANSACTIONS_STORAGE_KEY, TxInFlightError, trackSubmission } from "@obsidion/front-core"
+import { activeAccount, closeSession, openSession } from "../src/platform/session"
+import { walletStorage } from "../src/platform/storage/walletStorage"
 import { testWalletDbs } from "./support/fakeWalletDb"
 import {
   currentOperation,
@@ -21,7 +22,7 @@ import {
 import { userFlowActive } from "../src/features/provingGate"
 import { recoverInterrupted } from "../src/features/operations/OperationsMount"
 import { getWithdrawalStore } from "../src/features/withdraw/withdrawGateway"
-import { operationEntry } from "../src/features/operations/operationEntries"
+import { operationText } from "../src/features/operations/operationEntries"
 
 const hash = `0x${"ab".repeat(32)}`
 const flush = () => new Promise((r) => setTimeout(r, 0))
@@ -32,7 +33,10 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks()
+  closeSession()
 })
+
+const activity = () => openSession(activeAccount()).activity
 
 describe("runOperation", () => {
   it("returns the flow's result even when the settle write fails, and stays unsettled", async () => {
@@ -57,9 +61,9 @@ describe("runOperation", () => {
       { operationId: "op-send", flow: "send", summary: "$25" },
       async () => {
         expect(store.get("op-send")?.state).toBe("local")
-        const submission = trackSubmission("op-send", async () => {})
+        const submission = trackSubmission("op-send")
         provingProgress.emitStageStart(ProvingStage.Mining, "op-send", hash)
-        await submission.stop()
+        submission.stop()
         await flush()
         seen = store.get("op-send")?.state
         return hash
@@ -105,7 +109,7 @@ describe("runOperation", () => {
       await expect(failed).rejects.toThrow(refusal)
       const record = getOperationStore().get("op-h")
       expect(record).toMatchObject({ state: "failed", error: refusal })
-      const description = operationEntry(record!)?.description
+      const { description } = operationText(record!)
       expect(description).toMatch(/^\$1\. This transaction was not sent/)
       expect(description).toMatch(copy)
     },
@@ -135,14 +139,12 @@ describe("runOperation", () => {
     expect(store.unowned().map((r) => r.operationId)).toContain("op-l")
   })
 
-  it("marks an in-flight operation sent even when the flow's hash write failed", async () => {
+  it("marks an in-flight operation sent from its error when nothing announced the hash", async () => {
     const store = getOperationStore()
     const lost = runOperation({ operationId: "op-w", flow: "send", summary: "$1" }, async () => {
-      const submission = trackSubmission("op-w", async () => {
-        throw new Error("quota exceeded")
-      })
+      const submission = trackSubmission("op-w", { announce: false })
       provingProgress.emitStageStart(ProvingStage.Mining, "op-w", hash)
-      await submission.stop()
+      submission.stop()
       throw new TxInFlightError(hash, new Error("socket closed"))
     })
     await expect(lost).rejects.toBeInstanceOf(TxInFlightError)
@@ -163,9 +165,9 @@ describe("runOperation", () => {
   it("fails a sent operation with the flow's error when the chain turned it down", async () => {
     const store = getOperationStore()
     const dropped = runOperation({ operationId: "op-d", flow: "send", summary: "$1" }, async () => {
-      const submission = trackSubmission("op-d", async () => {})
+      const submission = trackSubmission("op-d")
       provingProgress.emitStageStart(ProvingStage.Mining, "op-d", hash)
-      await submission.stop()
+      submission.stop()
       await flush()
       expect(store.get("op-d")?.state).toBe("sent")
       throw new Error("The network dropped this payment")
@@ -287,7 +289,7 @@ describe("runBackgroundOperation", () => {
     await store.begin({ ...step, scope: null, background: true }, 9_000)
     await store.markProving("op-step")
     store.release("op-step")
-    await recoverInterrupted(10_000, 20_000)
+    await recoverInterrupted(activity(), 10_000, 20_000)
     expect(store.get("op-step")).toMatchObject({ state: "failed", cause: "interrupted" })
   })
 })
@@ -328,6 +330,30 @@ describe("recoverInterrupted", () => {
   const activeSince = 10_000
   const now = 20_000
 
+  async function sendRow(operationId: string, txHash = "") {
+    const rows = activity()
+    await rows.insertPending({
+      id: operationId,
+      operationId,
+      action: "send",
+      token: {
+        address: "0x1",
+        name: "DAI",
+        symbol: "DAI",
+        decimals: 18,
+        logo: "",
+        price: 1,
+        amount: 1,
+      },
+      amountAtomic: 10n ** 18n,
+      timestamp: activeSince - 1,
+      status: "pending",
+      txHash,
+      to: "0x2",
+    })
+    return () => rows.latest(operationId)
+  }
+
   it("fails a withdrawal a reload cut off before submit, and keeps one that was sent", async () => {
     const withdrawals = getWithdrawalStore()
     const seed = (localId: string, l2TxHash?: string) =>
@@ -343,7 +369,7 @@ describe("recoverInterrupted", () => {
       } as Parameters<typeof withdrawals.create>[0])
     await seed("cut-off")
     await seed("sent", hash)
-    await recoverInterrupted(activeSince, now)
+    await recoverInterrupted(activity(), activeSince, now)
     expect(withdrawals.get("cut-off")?.phase).toBe("failed")
     expect(withdrawals.get("sent")?.phase).toBe("submitting")
   })
@@ -371,44 +397,14 @@ describe("recoverInterrupted", () => {
       { operationId: "new", flow: "send", summary: "$1", scope: null },
       activeSince + 1,
     )
-    const rows = TransactionStorage.get(webStorage)
-    await rows.addTokenTransaction(
-      "send",
-      { address: "0x1", name: "DAI", symbol: "DAI", decimals: 18, logo: "", price: 1, amount: 1 },
-      "pending",
-      undefined,
-      "0x2",
-      "old",
-    )
-    await rows.updateTransaction(
-      (tx) => tx.queueId === "old",
-      (tx) => void (tx.timestamp = activeSince - 1),
-    )
-    await recoverInterrupted(activeSince, now)
+    const row = await sendRow("old")
+    await recoverInterrupted(activity(), activeSince, now)
     expect(ops.get("old")).toMatchObject({ state: "failed", cause: "interrupted" })
     expect(ops.get("other-scope")).toMatchObject({ state: "failed", cause: "interrupted" })
     expect(ops.get("never-proved")).toBeNull()
     expect(ops.get("new")?.state).toBe("local")
-    const row = (await rows.getTransactions()).find((tx) => tx.queueId === "old")
-    expect(row?.status).toBe("failed")
+    expect(row()?.status).toBe("failed")
   })
-
-  const sendRow = async (queueId: string, txHash?: string) => {
-    const rows = TransactionStorage.get(webStorage)
-    await rows.addTokenTransaction(
-      "send",
-      { address: "0x1", name: "DAI", symbol: "DAI", decimals: 18, logo: "", price: 1, amount: 1 },
-      "pending",
-      txHash,
-      "0x2",
-      queueId,
-    )
-    await rows.updateTransaction(
-      (tx) => tx.queueId === queueId,
-      (tx) => void (tx.timestamp = activeSince - 1),
-    )
-    return async () => (await rows.getTransactions()).find((tx) => tx.queueId === queueId)
-  }
 
   it("stamps a sent operation's hash onto the flow's records, so neither is failed", async () => {
     const ops = getOperationStore()
@@ -427,8 +423,8 @@ describe("recoverInterrupted", () => {
       phase: "submitting",
       startTime: activeSince - 5_000,
     } as Parameters<typeof withdrawals.create>[0])
-    await recoverInterrupted(activeSince, now)
-    expect(await row()).toMatchObject({ status: "pending", txHash: hash })
+    await recoverInterrupted(activity(), activeSince, now)
+    expect(row()).toMatchObject({ status: "pending", txHash: hash })
     expect(withdrawals.get("rep-burn")).toMatchObject({ phase: "submitting", l2TxHash: hash })
     expect(ops.get("rep")?.state).toBe("sent")
   })
@@ -439,9 +435,36 @@ describe("recoverInterrupted", () => {
     await ops.markProving("rep2")
     ops.release("rep2")
     const row = await sendRow("rep2", hash)
-    await recoverInterrupted(activeSince, now)
+    await recoverInterrupted(activity(), activeSince, now)
     expect(ops.get("rep2")).toMatchObject({ state: "sent", txHash: hash })
-    expect((await row())?.status).toBe("pending")
+    expect(row()?.status).toBe("pending")
+  })
+
+  it("sends, not fails, a local operation whose legacy row holds the hash, once a failed import lands", async () => {
+    const token = { address: "0x1", name: "DAI", symbol: "DAI", decimals: 18, logo: "", price: 1 }
+    const legacy = {
+      operationId: "imported",
+      action: "send",
+      token: { ...token, amount: 1 },
+      amountAtomic: "1",
+      timestamp: 1,
+      status: "pending",
+      txHash: hash,
+    }
+    await walletStorage.commitItem(`obsidion.${TRANSACTIONS_STORAGE_KEY}`, JSON.stringify([legacy]))
+    let failed = false
+    testWalletDbs().onApply = (_version, ops) => {
+      if (failed || !ops.some(([key]) => key.endsWith("acct/meta/activity"))) return
+      failed = true
+      throw new Error("disk full")
+    }
+    const ops = getOperationStore()
+    await ops.begin({ operationId: "imported", flow: "send", summary: "$1", scope: null }, 1)
+    await ops.markProving("imported")
+    ops.release("imported")
+    await recoverInterrupted(activity(), activeSince, now)
+    expect(failed).toBe(true)
+    expect(ops.get("imported")).toMatchObject({ state: "sent", txHash: hash })
   })
 
   it("sends an operation begun the moment this tab became active whose flow's record holds the hash", async () => {
@@ -450,7 +473,7 @@ describe("recoverInterrupted", () => {
     await ops.markProving("edge")
     ops.release("edge")
     await sendRow("edge", hash)
-    await recoverInterrupted(activeSince, now)
+    await recoverInterrupted(activity(), activeSince, now)
     expect(ops.get("edge")).toMatchObject({ state: "sent", txHash: hash })
   })
 })

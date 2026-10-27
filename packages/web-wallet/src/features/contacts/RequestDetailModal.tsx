@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { RequestStorage, type PaymentRequest } from "@obsidion/front-core"
+import type { PaymentRequest } from "@obsidion/front-core"
 import {
   ConfirmationSheetDetailRow,
   GradientInitialAvatar,
@@ -14,6 +14,7 @@ import { failureCode, fireEvent } from "../../lib/analytics"
 import { l2TxUrl } from "../../lib/explorer"
 import { rowTimestamp, shortAddr, usdBalance } from "../../ui/format"
 import { Modal } from "../../ui/Modal"
+import { useSession } from "../../platform/session"
 import { cancelRequestById } from "./requestActions"
 import { REMIND_TITLE, type RemindState } from "./useRemind"
 
@@ -98,12 +99,13 @@ export function RequestDetailModal({
   const [row, setRow] = useState<PaymentRequest>()
   const [step, setStep] = useState<"detail" | "confirm" | "cancelled">(initialStep)
   const [busy, setBusy] = useState(false)
+  const { requests } = useSession()
+  const findRequest = (id: string) => requests.view.get().find((r) => r.id === id)
 
   useEffect(() => {
-    RequestStorage.get()
-      .findById(requestId)
-      .then((r) => (r ? setRow(r) : onClose()))
-      .catch(() => onClose())
+    const found = findRequest(requestId)
+    if (found) setRow(found)
+    else onClose()
     // Loads once per open — the modal owns the row for its lifetime.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [requestId])
@@ -123,7 +125,7 @@ export function RequestDetailModal({
         return
       }
       // Lost the race to a terminal status: show what the row became.
-      const fresh = await RequestStorage.get().findById(requestId)
+      const fresh = findRequest(requestId)
       if (fresh) setRow(fresh)
       else onClose()
       setStep("detail")

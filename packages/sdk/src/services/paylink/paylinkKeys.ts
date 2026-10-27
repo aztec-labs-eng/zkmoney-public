@@ -26,6 +26,12 @@ import {
 } from "@aztec-labs/stdlib/keys"
 import { DEFAULT_CONTRACTS, registerContractInPXE, type ContractName } from "@obsidion/contracts"
 import { ObsidionWallet } from "../../obsidion/ObsidionWallet.js"
+import {
+  type LinkKey,
+  LinkKind,
+  linkKeyFromSecret,
+  linkSecret,
+} from "../linkLocator/linkLocator.js"
 
 /**
  * An escrow's keys. Every master key but fallback is a function of `secretKey`; the fallback key
@@ -40,6 +46,8 @@ export interface PaylinkKeyMaterial {
   fallbackSecret?: Fr
   /** The `(day, n)` slot under the master secret; absent for keys not derived from one. */
   nonce?: { day: number; n: number }
+  /** The short link's signing key when `secretKey` derives from its seed. */
+  link?: LinkKey
 }
 
 export type PaylinkDerivedKeyMaterial = PaylinkKeyMaterial
@@ -83,9 +91,11 @@ type PatchedKeyStore = KeyStoreMethods & {
 
 const KEY_PREFIXES: KeyPrefix[] = ["n", "iv", "ov", "t"]
 
-// Frozen 4-byte ASCII selectors ("PLNK" / "PLFB"). Changing either orphans the migration path for
-// every paylink already created under it.
+// Frozen 4-byte ASCII selectors ("PLNK" / "PLSK" / "PLFB"). Changing one orphans the migration path
+// for every paylink already created under it. "PLNK" derives the secret of links made before short
+// links; those stay recoverable.
 const PAYLINK_SECRET_SEPARATOR = 0x504c4e4b
+const PAYLINK_LINK_KEY_SEPARATOR = 0x504c534b
 const PAYLINK_FALLBACK_SEPARATOR = 0x504c4642
 
 // Frozen per-flavor domain ids mixed into the hash. 0 is unused so a missing field cannot collide.
@@ -104,10 +114,26 @@ function paylinkFlavorId(flavor: ContractName): Fr {
 // widens the recovery scan for all history, so bump deliberately.
 export const MAX_PAYLINK_NONCES_PER_DAY = 64
 
+function slotFields(masterSecret: Fr, day: number, n: number, flavor: ContractName): Fr[] {
+  // Catches a seconds/ms timestamp or a DDMMYYYY-style date passed as `day`; 100_000 is year ~2243.
+  if (!Number.isInteger(day) || day < 0 || day > 100_000) {
+    throw new Error(`paylink day must be an epoch-day index (see epochDay()), got ${day}`)
+  }
+  return [masterSecret, new Fr(day), new Fr(n), paylinkFlavorId(flavor)]
+}
+
+/** The short link's signing key for a slot. A link holder has its seed, never the key. */
+async function slotLinkKey(fields: Fr[]): Promise<LinkKey> {
+  return linkKeyFromSecret(
+    (await poseidon2HashWithSeparator(fields, PAYLINK_LINK_KEY_SEPARATOR)).toBuffer(),
+  )
+}
+
 /**
  * The escrow's secrets bound to the creator's master secret and a `(day, n, flavor)` nonce — `day`
- * is days since the unix epoch at creation, `n` the first free slot that day for this flavor. A link
- * holder knows `secret` but not the master secret, so the fallback secret stays creator-only.
+ * is days since the unix epoch at creation, `n` the first free slot that day for this flavor. The
+ * secret derives from the short link's seed. A link holder knows the seed but not the master
+ * secret, so the link key and the fallback secret stay creator-only.
  */
 export async function deriveDeterministicPaylinkKeys(
   masterSecret: Fr,
@@ -115,22 +141,48 @@ export async function deriveDeterministicPaylinkKeys(
   n: number,
   flavor: ContractName,
 ): Promise<PaylinkKeyMaterial> {
-  // Catches a seconds/ms timestamp or a DDMMYYYY-style date passed as `day`; 100_000 is year ~2243.
-  if (!Number.isInteger(day) || day < 0 || day > 100_000) {
-    throw new Error(`paylink day must be an epoch-day index (see epochDay()), got ${day}`)
-  }
-  const nonceFields = [masterSecret, new Fr(day), new Fr(n), paylinkFlavorId(flavor)]
+  const fields = slotFields(masterSecret, day, n, flavor)
+  const [link, fallbackSecret] = await Promise.all([
+    slotLinkKey(fields),
+    poseidon2HashWithSeparator(fields, PAYLINK_FALLBACK_SEPARATOR),
+  ])
+  const secretKey = await linkSecret(LinkKind.Paylink, link.seed)
+  return { ...(await derivePaylinkKeys({ secretKey, fallbackSecret })), nonce: { day, n }, link }
+}
+
+/** A slot's keys as links made before short links derived them, straight from the slot. */
+export async function deriveLegacyPaylinkKeys(
+  masterSecret: Fr,
+  day: number,
+  n: number,
+  flavor: ContractName,
+): Promise<PaylinkKeyMaterial> {
+  const fields = slotFields(masterSecret, day, n, flavor)
   const [secretKey, fallbackSecret] = await Promise.all([
-    poseidon2HashWithSeparator(nonceFields, PAYLINK_SECRET_SEPARATOR),
-    poseidon2HashWithSeparator(nonceFields, PAYLINK_FALLBACK_SEPARATOR),
+    poseidon2HashWithSeparator(fields, PAYLINK_SECRET_SEPARATOR),
+    poseidon2HashWithSeparator(fields, PAYLINK_FALLBACK_SEPARATOR),
   ])
   return { ...(await derivePaylinkKeys({ secretKey, fallbackSecret })), nonce: { day, n } }
 }
 
+/** Both escrows a slot can hold: a short link's, then one made before short links. */
+export function deriveSlotPaylinkKeys(
+  masterSecret: Fr,
+  day: number,
+  n: number,
+  flavor: ContractName,
+): Promise<PaylinkKeyMaterial[]> {
+  return Promise.all([
+    deriveDeterministicPaylinkKeys(masterSecret, day, n, flavor),
+    deriveLegacyPaylinkKeys(masterSecret, day, n, flavor),
+  ])
+}
+
 /**
  * The creator's key material for an escrow a funding transfer announced by `(day, secret)`: the
- * slot on that day whose derived secret matches. Undefined when none does, so a lane from another
- * account's master secret, or from bring-your-own keys, recovers nothing.
+ * slot on that day whose derived secret matches, under either derivation. Undefined when none
+ * does, so a lane from another account's master secret, or from bring-your-own keys, recovers
+ * nothing.
  */
 export async function findPaylinkKeysForDay(
   masterSecret: Fr,
@@ -139,12 +191,13 @@ export async function findPaylinkKeysForDay(
   flavor: ContractName,
 ): Promise<PaylinkKeyMaterial | undefined> {
   for (let n = 0; n < MAX_PAYLINK_NONCES_PER_DAY; n++) {
-    const candidate = await poseidon2HashWithSeparator(
-      [masterSecret, new Fr(day), new Fr(n), paylinkFlavorId(flavor)],
-      PAYLINK_SECRET_SEPARATOR,
-    )
-    if (candidate.equals(secret))
-      return deriveDeterministicPaylinkKeys(masterSecret, day, n, flavor)
+    const fields = slotFields(masterSecret, day, n, flavor)
+    const [seeded, legacy] = await Promise.all([
+      slotLinkKey(fields).then((link) => linkSecret(LinkKind.Paylink, link.seed)),
+      poseidon2HashWithSeparator(fields, PAYLINK_SECRET_SEPARATOR),
+    ])
+    if (seeded.equals(secret)) return deriveDeterministicPaylinkKeys(masterSecret, day, n, flavor)
+    if (legacy.equals(secret)) return deriveLegacyPaylinkKeys(masterSecret, day, n, flavor)
   }
   return undefined
 }

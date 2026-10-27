@@ -39,21 +39,48 @@ vi.mock("../src/features/onboarding/openRegistration", () => ({
   useNameClaimPending: () => false,
   useRegistrationDepositOwed: () => state.owed,
 }))
-vi.mock("@obsidion/front-core", () => ({
+vi.mock("@obsidion/front-core", async () => ({
+  ...(await import("@obsidion/front-core/dist/engine/store.js")),
+  ...(await import("@obsidion/front-core/dist/engine/clock.js")),
+  ...(await import("@obsidion/front-core/dist/engine/errors.js")),
+  ...(await import("@obsidion/front-core/dist/engine/notificationFeed.js")),
+  ...(await import("@obsidion/front-core/dist/hooks/useStore.js")),
   INTERRUPTED_ERRORS: {},
   nameL1ContactsByEns: () => () => {},
   useAccountContext: () => ({ obsidionAccount: state.unlocked ? {} : undefined }),
   useAztecContext: () => ({ obsidionWallet: undefined }),
-  useAppNotifications: () => ({
-    entries: [],
-    hydrated: true,
-    unreadCount: 0,
-    markAllRead: state.markAllRead,
-  }),
   useCachedRecords: () => ({ records: [] }),
   useConfigValue: () => ({ value: true, setValue: async () => {} }),
   WithdrawalStorage: { get: () => null },
 }))
+// The bell over this suite's operations, with no records and no notification state.
+vi.mock("../src/platform/session", async () => {
+  const { derived, memoryStore } = await import("@obsidion/front-core/dist/engine/store.js")
+  const ops = await import("../src/features/operations/operations")
+  const { wallClock } = await import("../src/lib/clock")
+  const none = { records: [], hydrated: true }
+  const sources = derived([ops.endedOperations, ops.runningOperations] as const, (ended, running) => ({
+    rows: [],
+    oldVersionWithdrawals: [],
+    deposits: none,
+    withdrawals: none,
+    upgrades: { items: [], recipients: new Set<string>(), loaded: true },
+    processing: new Map(),
+    registrations: [],
+    operations: { ended, running },
+    loaded: true,
+  }))
+  const open = {
+    bell: derived([sources, wallClock] as const, (sources, now) => ({
+      sources,
+      state: new Map(),
+      events: new Map(),
+      now,
+    })),
+    notifications: { markRead: state.markAllRead, dismiss: () => {} },
+  }
+  return { openedSession: memoryStore(open).readonly, useSession: () => open }
+})
 vi.mock("@obsidion/web-ds", () => ({
   GradientInitialAvatar: () => null,
   Icon: () => null,

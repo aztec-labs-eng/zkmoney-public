@@ -77,6 +77,7 @@ vi.mock("@aztec-labs/aztec.js/contracts", async (importActual) => {
       ...(actual.Contract as object),
       at: vi.fn(() => ({
         address: INSTANCE_ADDR,
+        artifact: { functions: [] },
         methods: { claim: claimSpy, claim_to_l1: claimToL1Spy, sync_note: syncNote },
       })),
     },
@@ -166,6 +167,7 @@ function makeService() {
   ;(service as any).reconstructPaylinkContract = vi.fn(async () => ({
     contract: {
       address: INSTANCE_ADDR,
+      artifact: { functions: [] },
       methods: { claim_to_l1: claimToL1Spy, sync_note: syncNote },
     },
     instance: {

@@ -5,7 +5,7 @@
  */
 import React, { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import type { WebBootConfig } from "../src/config/env"
 import { GOOGLE_CALLBACK_PATH } from "../src/features/paylink/googleAuth"
 import { ACTIVE_TAB_LOCK, STALLED_AFTER_MS } from "../src/platform/storage/activeTabLifecycle"
@@ -122,6 +122,16 @@ afterEach(() => {
   Object.defineProperty(navigator, "locks", locks)
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
+})
+
+// An unmount leaves the splash waiting for page text, then fading on a timer that would outlive the
+// environment. Text ends every wait at the next frame; the fade takes 200ms.
+afterAll(async () => {
+  const page = document.createElement("div")
+  page.id = "root"
+  page.textContent = "wallet"
+  document.body.appendChild(page)
+  await new Promise((resolve) => setTimeout(resolve, 300))
 })
 
 const stubLocks = (value: unknown) =>

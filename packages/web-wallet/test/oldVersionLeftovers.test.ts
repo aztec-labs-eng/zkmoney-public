@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, it } from "vitest"
 import {
   setActiveNetworkId,
+  type FeedItem,
   type SavingsMoveRecord,
   type WithdrawalRecord,
 } from "@obsidion/front-core"
 import { oldVersionLeftovers } from "../src/features/migration/oldVersionLeftovers"
-import type { ActivityRowView } from "../src/ui/screens/activityView"
 
 const ONE = 10n ** 18n
 
@@ -25,10 +25,10 @@ const link = (
   status = "success",
 ) =>
   ({
-    status,
+    kind: "tx",
     paylinkStatus,
-    paylinkRow: { networkId, token: { amount, price: 1 } },
-  } as unknown as ActivityRowView)
+    tx: { action: "Pay To Email", status, networkId, token: { amount, price: 1 } },
+  } as unknown as FeedItem)
 
 afterEach(() => setActiveNetworkId(undefined))
 
@@ -38,19 +38,25 @@ describe("old-version leftovers", () => {
     expect(
       oldVersionLeftovers({
         moves: [
-          move("old", 1022n, { retired: true }),
-          move("ran", 300n, {
-            retired: true,
-            deposit: { inboxIndex: "1", amount: "1", claimed: false },
-          }),
-          move("done", 400n, {
-            retired: true,
-            deposit: { inboxIndex: "2", amount: "1", claimed: true },
-          }),
-          move("new", 500n),
+          {
+            move: move("old", 1022n, { retired: true }),
+            burn: { phase: "done" } as WithdrawalRecord,
+          },
+          {
+            move: move("ran", 300n, {
+              retired: true,
+              deposit: { inboxIndex: "1", amount: "1", claimed: false },
+            }),
+          },
+          {
+            move: move("done", 400n, {
+              retired: true,
+              deposit: { inboxIndex: "2", amount: "1", claimed: true },
+            }),
+          },
+          { move: move("new", 500n) },
         ],
-        burns: [{ localId: "old", phase: "done" } as WithdrawalRecord],
-        rows: [
+        items: [
           link("0xold", 10),
           link("0xold", 2, "expired"),
           link("0xnew", 3),

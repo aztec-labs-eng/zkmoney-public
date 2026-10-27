@@ -60,19 +60,10 @@ export type {
 export {
   ActivityFeed,
   BridgeActivityFeed,
-  bridgeItemEndTime,
-  bridgeItemStartTime,
   isBridgeActivityItem,
   itemStartTime,
-  itemEndTime,
 } from "./BridgeActivityFeed"
-export type {
-  ActivityItem,
-  BridgeActivityItem,
-  BridgeItem,
-  SipaProcessingSource,
-  TransferActivityItem,
-} from "./BridgeActivityFeed"
+export type { ActivityItem, BridgeActivityItem, SipaProcessingSource } from "./BridgeActivityFeed"
 
 export { resolveWithdrawalWiring } from "./withdrawalWiring"
 export type { WithdrawalWiring } from "./withdrawalWiring"

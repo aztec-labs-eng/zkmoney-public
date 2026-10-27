@@ -10,6 +10,7 @@ import { StyledQr } from "../../ui/StyledQr"
 import { usePhoneLayout } from "../../ui/usePhoneLayout"
 import { useBack, useLinkSharing, useWakeLock } from "../../ui/hooks"
 import { requestShareText } from "../requests/shareView"
+import { useShortRequestLink } from "../requests/shortRequestLink"
 import { useRegistrationDepositOwed } from "../onboarding/openRegistration"
 import { REQUESTS_PATH } from "../requests/nonContactView"
 import { RecipientNotUpgradedError, requestFromContact } from "../contacts/contactPay"
@@ -35,8 +36,10 @@ export function ReceiveScreen() {
   const { tag, code, payment, setAmount, clearAmount, showCode } = useReceiveCode(
     !awaitingActivation,
   )
+  const shortLink = useShortRequestLink(code)
+  const publishing = shortLink.status === "publishing"
   const { copied, copy, share } = useLinkSharing(
-    code?.url,
+    shortLink.url,
     "Pay me",
     requestShareText(code?.amount ?? 0),
   )
@@ -219,7 +222,13 @@ export function ReceiveScreen() {
               onClick={enterFull}
             >
               {code && (
-                <StyledQr value={code.url} icon={CODE_LOGO} label="Your pay code" size={128} />
+                <StyledQr
+                  value={shortLink.qrUrl ?? code.url}
+                  icon={CODE_LOGO}
+                  busy={publishing}
+                  label="Your pay code"
+                  size={128}
+                />
               )}
             </button>
             <span className="ww-request-anyone__text">
@@ -256,9 +265,15 @@ export function ReceiveScreen() {
             isDisabled={!code}
             onClick={() => {
               handOut()
+              shortLink.publish()
               void (phone ? share() : copy())
             }}
           />
+          {shortLink.status === "failed" && (
+            <span className="ww-receive__error">
+              Your link didn't publish. Share again for a new one.
+            </span>
+          )}
         </section>
       )}
     </>
@@ -289,7 +304,7 @@ export function ReceiveScreen() {
               <BrandLockup />
               <TopNavIconButton icon="x" ariaLabel="Close full screen" onClick={exitFull} />
             </div>
-            <ReceiveCodeCard tag={tag} code={code} />
+            <ReceiveCodeCard tag={tag} code={code} url={shortLink.qrUrl} busy={publishing} />
             <div className="ww-receive-full__print">
               <div className="ww-receive__actions">
                 <PrimaryGradientButton

@@ -51,14 +51,17 @@ function leave(): boolean {
   return event.defaultPrevented
 }
 
-/** An operation that runs until `finish()`, with the flow's own hash save wired like a real flow. */
+/** An operation that runs until `finish()`, with its submit boundary tracked like a real flow. */
 async function start(operationId: string, flow: "send" | "withdraw" = "withdraw") {
   let done!: Promise<void>
   await act(async () => {
     done = m.runOperation({ operationId, flow, summary: "$25" }, () => {
-      const submission = m.trackSubmission(operationId, async () => {})
+      const submission = m.trackSubmission(operationId)
       return new Promise<void>((resolve) => {
-        finish = () => void submission.stop().then(resolve)
+        finish = () => {
+          submission.stop()
+          resolve()
+        }
       })
     })
   })

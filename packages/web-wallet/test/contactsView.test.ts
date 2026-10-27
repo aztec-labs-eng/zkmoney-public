@@ -181,6 +181,13 @@ describe("renamed zk.money contacts", () => {
     })
   })
 
+  it("heads a contact with no tag by its name over its address", () => {
+    expect(l2ContactHeader({ name: "Unknown sender", address: ADDR_A })).toEqual({
+      title: "Unknown sender",
+      subtitle: "0xaaaa...aaaaaa",
+    })
+  })
+
   it("counts a case-only change as a rename", () => {
     expect(l2ContactHeader(l2("Harry"))).toEqual({ title: "Harry", subtitle: "@harry.zk.money" })
   })

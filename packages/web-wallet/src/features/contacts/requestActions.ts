@@ -1,29 +1,27 @@
 /**
- * Request-row actions shared by the contact chat and the activity feed, wired to the web
- * singletons. Decline signals the requester over
+ * Request-row actions shared by the contact chat and the activity feed, over the session's
+ * requests. Decline signals the requester over
  * XMTP, remind re-announces the stored row, cancel is a local status flip.
  */
-import { getActiveNetworkId, RequestStorage, resolveAssetConstants } from "@obsidion/front-core"
+import { getActiveNetworkId, resolveAssetConstants } from "@obsidion/front-core"
 import { getConfig } from "../../config/env"
 import { isDemoMode } from "../../dev/demoFlag"
 import { fireEvent, requestAmountBucket } from "../../lib/analytics"
+import { session } from "../../platform/session"
 import { getRequestBroadcaster } from "../../platform/xmtp/xmtpLifecycle"
 import { loadWalletIdentity } from "../identity/walletIdentity"
 import { verifyTag } from "./registryResolution"
-import {
-  announceOutgoingRequest,
-  declineIncomingRequest,
-  markRequestPaidLocally,
-} from "./requestFlow"
+import { announceOutgoingRequest, declineIncomingRequest } from "./requestFlow"
 
 export async function resolveXmtpAddress(tag: string): Promise<string | null> {
   return (await verifyTag(tag))?.xmtpAddress ?? null
 }
 
 export async function declineRequestById(id: string): Promise<boolean> {
-  const row = await RequestStorage.get().findById(id)
+  const { requests } = session()
+  const row = requests.view.get().find((r) => r.id === id)
   const declined = await declineIncomingRequest(id, {
-    store: RequestStorage.get(),
+    store: requests,
     broadcaster: getRequestBroadcaster(),
     resolveXmtpAddress,
     // The rollup address published at boot — the wire value peers compare on receive.
@@ -39,13 +37,8 @@ export async function declineRequestById(id: string): Promise<boolean> {
 }
 
 export async function cancelRequestById(id: string): Promise<boolean> {
-  const { applied } = await RequestStorage.get().applyStatus(id, "cancelled")
+  const { applied } = await session().requests.cancel(id)
   return applied
-}
-
-/** Payer side after a fulfilling send lands: flip the local row (no-op for a link with no row). */
-export async function markRequestPaidById(id: string, txHash: string): Promise<boolean> {
-  return markRequestPaidLocally(id, txHash, RequestStorage.get())
 }
 
 /**
@@ -53,13 +46,13 @@ export async function markRequestPaidById(id: string, txHash: string): Promise<b
  * `tokenAddress` comes from the asset context.
  */
 export async function remindRequestById(id: string, tokenAddress?: string): Promise<boolean> {
-  const store = RequestStorage.get()
+  const store = session().requests
   // Demo mounts no XMTP; the reminder is acknowledged without a delivery.
   if (import.meta.env.DEV && isDemoMode()) {
     await store.markReminded(id, Date.now())
     return true
   }
-  const target = await store.findById(id)
+  const target = store.latest(id)
   const broadcaster = getRequestBroadcaster()
   const requesterTag = loadWalletIdentity()?.handle
   if (!target || !broadcaster || !requesterTag || !tokenAddress) return false

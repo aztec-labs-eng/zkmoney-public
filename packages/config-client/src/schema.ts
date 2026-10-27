@@ -74,12 +74,13 @@ const l2ContractEntry = z.strictObject({
 
 const contractEntry = z.union([l1ContractEntry, l2ContractEntry])
 
-/** Derived per link/user from the class — the document check rejects an address row on these. */
+/** Derived from the class (per link, per user, or once) — the document check rejects an address row. */
 export const PER_INSTANCE_CONTRACTS = [
   "paylinkDirect",
   "paylinkEmail",
   "obsidionAccountAlpha",
   "obsidionAccountAlphaTest",
+  "linkLocator",
 ] as const
 
 export type ConfigContractEntry = z.infer<typeof contractEntry>
@@ -282,7 +283,7 @@ export const configProfileSchema = baseSchema.check((ctx) => {
           code: "custom",
           message:
             `version "${id}" states an address for "${name}" — a per-instance contract is ` +
-            `derived from its class per link or per user and carries no fleet-wide address`,
+            `derived from its class and carries no fleet-wide address`,
           input: entry,
           path: ["versions", id, "contracts", name, "address"],
         })

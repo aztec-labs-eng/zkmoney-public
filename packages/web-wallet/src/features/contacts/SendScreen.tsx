@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useState } from "react"
 import { useNavigate } from "react-router-dom"
-import { useContactsDirectory } from "@obsidion/front-core"
+import { useContactsDirectory, useStore } from "@obsidion/front-core"
 import { ContactRow, GradientText, Icon, avatarColors } from "@obsidion/web-ds"
 import { PaylinkInfoModal, isPaylinkInfoHidden, shownVariant } from "../paylink/PaylinkInfoModal"
 import { voucherAvailable } from "../paylink/sponsoredPaylink"
 import { usePaylinkDeps } from "../paylink/usePaylinkDeps"
 import { StableCopy } from "../../ui/StableCopy"
 import { recentPeople } from "./recentPeople"
-import { useContactActivity } from "./useContactActivity"
+import { useSession } from "../../platform/session"
 
 const RECENT_COUNT = 4
 const SEND_LINE = [
@@ -19,7 +19,7 @@ const SEND_LINE = [
 export function SendScreen() {
   const navigate = useNavigate()
   const { contacts } = useContactsDirectory()
-  const sources = useContactActivity(true)
+  const sources = useStore(useSession().contactActivity)
   const recent = useMemo(() => recentPeople(contacts, sources, RECENT_COUNT), [contacts, sources])
   // "first-use" fronts "Send via paylink" until the user hides it; "explain" is the "Open" button.
   const [info, setInfo] = useState<"first-use" | "explain">()

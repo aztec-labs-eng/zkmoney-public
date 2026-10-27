@@ -8,10 +8,15 @@ import { beforeEach, describe, expect, it } from "vitest"
 import {
   ContactStorage,
   RequestReceiver,
-  RequestStorage,
+  createRequests,
+  memoryStore,
   TagValidationError,
-  TransactionStorage,
   TransferEventScanner,
+  createActivity,
+  createMemoryKv,
+  type KvStore,
+  type Activity,
+  type TokenTransaction,
   XmtpInboxReceiverDriver,
   approvedContactTags,
   contactRowFromEntry,
@@ -30,6 +35,12 @@ import {
   createRequestSenderPolicy,
   createRequestStoreWrites,
 } from "../src/platform/xmtp/adapters"
+
+const memRequests = () =>
+  createRequests({
+    kv: createMemoryKv(),
+    payments: memoryStore({ rows: [], deposits: [] }).readonly,
+  })
 
 const TX_HASH = `0x${"ab".repeat(32)}`
 const SENDER_L2 = `0x${"11".repeat(32)}`
@@ -55,11 +66,15 @@ function memStorage(): IStorageAdapter {
   }
 }
 
-/** Fresh TransactionStorage over in-memory storage, pre-seeded to skip the legacy migration. */
-async function freshTxStorage(storage: IStorageAdapter): Promise<TransactionStorage> {
-  ;(TransactionStorage as unknown as { instance: TransactionStorage | null }).instance = null
-  await storage.setItem("obsidion_transactions", "[]")
-  return TransactionStorage.get(storage)
+/** Each test store's database, which its scan cursor shares. */
+const kvOf = new WeakMap<Activity, KvStore>()
+
+/** A fresh activity store over memory. */
+async function freshTxStorage(_storage: IStorageAdapter): Promise<Activity> {
+  const kv = createMemoryKv()
+  const activity = createActivity({ kv, networkId: () => undefined })
+  kvOf.set(activity, kv)
+  return activity
 }
 
 const tags = { resolveL2: async () => ({ l2Address: SENDER_L2 }) }
@@ -77,10 +92,9 @@ function scannedEvent(overrides: Partial<ScannedTransferEvent> = {}): ScannedTra
 }
 
 function scannerOver(
-  txStorage: TransactionStorage,
+  txStorage: Activity,
   contacts: ReturnType<typeof createContactsByL2>,
   events: ScannedTransferEvent[],
-  storage: IStorageAdapter,
 ): TransferEventScanner {
   return new TransferEventScanner({
     source: {
@@ -88,7 +102,7 @@ function scannerOver(
       listIncoming: async () => events,
       blockTimestampMs: async (b) => b * 1000,
     },
-    storage,
+    kv: kvOf.get(txStorage)!,
     transactionStore: txStorage,
     tags,
     contacts,
@@ -148,12 +162,11 @@ describe("web chain-native transfer ingest", () => {
     const storage = memStorage()
     const txStorage = await freshTxStorage(storage)
     const contacts = contactStoreFake([])
-    const scanner = scannerOver(txStorage, createContactsByL2(contacts), [scannedEvent()], storage)
-    await scanner.start(scanContext)
-    scanner.stop()
+    const scanner = scannerOver(txStorage, createContactsByL2(contacts), [scannedEvent()])
+    await scanner.pass(scanContext, { full: true })
 
-    const row = await txStorage.findByTxHash(TX_HASH)
-    expect(row).not.toBeNull()
+    const row = txStorage.byHash(TX_HASH) as TokenTransaction | undefined
+    expect(row).toBeDefined()
     expect(row!.to).toBe("bob")
     // Unknown sender attributes by the registry-verified meta tag and auto-adds to the contact book.
     expect(row!.from).toBe("alice")
@@ -173,17 +186,12 @@ describe("web chain-native transfer ingest", () => {
   it("re-scanning the same event is idempotent (one transaction write)", async () => {
     const storage = memStorage()
     const txStorage = await freshTxStorage(storage)
-    const scanner = scannerOver(
-      txStorage,
-      createContactsByL2(contactStoreFake([])),
-      [scannedEvent()],
-      storage,
-    )
-    await scanner.start(scanContext)
-    await scanner.tickNow()
-    scanner.stop()
-    const rows = JSON.parse((await storage.getItem("obsidion_transactions"))!) as unknown[]
-    expect(rows).toHaveLength(1)
+    const scanner = scannerOver(txStorage, createContactsByL2(contactStoreFake([])), [
+      scannedEvent(),
+    ])
+    await scanner.pass(scanContext, { full: true })
+    await scanner.pass(scanContext, { full: true })
+    expect(txStorage.rows.get()).toHaveLength(1)
   })
 })
 
@@ -220,21 +228,17 @@ describe("createContactsByL2", () => {
     const entries: Contact[] = [
       { name: "ally", address: SENDER_L2, tag: "ally", addressKind: "aztec-l2" },
     ]
-    const scanner = scannerOver(
-      txStorage,
-      createContactsByL2(contactStoreFake(entries)),
-      [scannedEvent()],
-      storage,
-    )
-    await scanner.start(scanContext)
-    scanner.stop()
-    expect((await txStorage.findByTxHash(TX_HASH))!.from).toBe("ally")
+    const scanner = scannerOver(txStorage, createContactsByL2(contactStoreFake(entries)), [
+      scannedEvent(),
+    ])
+    await scanner.pass(scanContext, { full: true })
+    expect((txStorage.byHash(TX_HASH) as TokenTransaction).from).toBe("ally")
   })
 })
 
 describe("createRequestStoreWrites", () => {
-  it("lands an incoming request in RequestStorage and applies status flips", async () => {
-    const requests = new RequestStorage(memStorage())
+  it("lands an incoming request in the requests store and applies a decline", async () => {
+    const requests = memRequests()
     const receiver = new RequestReceiver(createRequestStoreWrites(requests))
     const announce = {
       kind: "request" as const,
@@ -251,7 +255,7 @@ describe("createRequestStoreWrites", () => {
     // Duplicate delivery is a no-op.
     expect((await receiver.process({ content: announce })).status).toBe("duplicate")
 
-    const rows = await requests.list()
+    const rows = requests.view.get()
     expect(rows).toHaveLength(1)
     expect(rows[0]).toMatchObject({
       id: "req-1",
@@ -274,13 +278,13 @@ describe("createRequestStoreWrites", () => {
       networkId: "aztec-dev",
     }
     expect((await receiver.process({ content: declined })).status).toBe("accepted")
-    const [row] = await requests.list()
+    const [row] = requests.view.get()
     expect(row.status).toBe("declined")
   })
 
-  it("payment-request messages route through the driver into RequestStorage", async () => {
+  it("payment-request messages route through the driver into the requests store", async () => {
     const storage = memStorage()
-    const requests = new RequestStorage(storage)
+    const requests = memRequests()
     const requestMessage: InboxMessage = {
       id: "r1",
       sentNs: 2_000n,
@@ -303,7 +307,7 @@ describe("createRequestStoreWrites", () => {
       asyncStorage: storage,
     })
     await driver.pollOnce()
-    expect(await requests.findById("req-2")).toMatchObject({ id: "req-2", contactTag: "alice" })
+    expect(requests.latest("req-2")).toMatchObject({ id: "req-2", contactTag: "alice" })
   })
 })
 
@@ -352,7 +356,7 @@ describe("requests from a sender added from a transfer", () => {
     ContactStorage.resetForTests()
     const storage = memStorage()
     const contacts = ContactStorage.get(storage)
-    const requests = new RequestStorage(storage)
+    const requests = memRequests()
     const receiver = new RequestReceiver(
       createRequestStoreWrites(requests),
       undefined,
@@ -361,14 +365,13 @@ describe("requests from a sender added from a transfer", () => {
     )
     const txStorage = await freshTxStorage(storage)
     const events = [scannedEvent({ amount: "10000" })]
-    const scanner = scannerOver(txStorage, createContactsByL2(contacts), events, storage)
-    await scanner.start(scanContext)
-    scanner.stop()
+    const scanner = scannerOver(txStorage, createContactsByL2(contacts), events)
+    await scanner.pass(scanContext, { full: true })
     expect(await contacts.findByTag("alice")).toMatchObject({ autoAdded: true })
     /** Whether Activity and the inbox read the stored request as from a non-contact. */
     const listedAsNonContact = async () => {
       const rows = (await contacts.getEntries()).filter(isPaymentContactEntry)
-      const request = (await requests.findById(announce.requestId))!
+      const request = requests.latest(announce.requestId)!
       return isFromNonContact(request, approvedContactTags(rows.map(contactRowFromEntry)))
     }
     return { contacts, receiver, listedAsNonContact }

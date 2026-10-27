@@ -22,6 +22,7 @@ const h = vi.hoisted(() => ({
   setTeeSigner: vi.fn(),
   runBurn: vi.fn(),
   factoryPortals: vi.fn(),
+  exit: vi.fn(),
 }))
 const moves = new SavingsMoveStorage(new InMemoryStorageAdapter())
 const TX_AMOUNT_CAP = 5166n * 10n ** 18n
@@ -144,6 +145,7 @@ const source = () =>
       tokenService: {
         getBalance: async () => 10n ** 30n,
         fetchTokenInformation: async () => ({ symbol: "DAI" }),
+        exitToL1PrivateSponsored: h.exit,
       },
     } as never,
     TUPLE as never,
@@ -221,6 +223,15 @@ describe("createSavingsSource move", () => {
       l2Token: TUPLE.l2Token,
       executor: SKY_EXECUTOR,
     })
+  })
+
+  // `runBurn`'s tests hold that the hash is saved before the node, and a failed save sends nothing.
+  it("hands the sdk the burn's hash save, awaited before the node takes the burn", async () => {
+    h.quote.mockResolvedValue(quoteOf(90n))
+    await source().move("in", 100n, () => {})
+    const stamp = async () => {}
+    await h.runBurn.mock.calls[0][0].burn({}, stamp)
+    expect(h.exit.mock.calls[0][3]).toMatchObject({ onTxHash: stamp })
   })
 
   it("burns a move in through Main's plain executor", async () => {

@@ -13,6 +13,7 @@ import { GateStep } from "../identity/PhoneSteps"
 import { PasskeyRefusal, type RefusalState } from "../identity/PasskeyRefusal"
 import { isPasskeyCancelled, isPasskeyPolicyError } from "@obsidion/passkey-web"
 import { reusePasskeyAccount, type OnboardingKeys } from "./oxideOnboarding"
+import { reloadIfSessionSwitched } from "./sessionReload"
 import { prepareRegistrationRefund, useRegistrationRefunded } from "./registrationQuoteRecovery"
 import { askedTotal } from "./registrationAsk"
 import { formatDepositDue } from "./steps/DepositTermsRows"
@@ -55,6 +56,7 @@ export function RegistrationRefundAction({
     try {
       if (!obsidionWallet) throw new Error("The wallet is still starting. Try again in a moment.")
       const keys = await reusePasskeyAccount(obsidionWallet, record.l2Address, undefined, gate)
+      if (reloadIfSessionSwitched(null, record.l2Address)) return
       if (restart) await onRestart(keys)
       else setDeposit(await prepareRegistrationRefund(record, getConfig()))
     } catch (err) {

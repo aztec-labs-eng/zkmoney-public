@@ -1136,45 +1136,56 @@ describe("WithdrawalTrackingService (chain-watching)", () => {
   })
 })
 
-// `sent` is a claim about storage: a hash stamp that did not persist is never announced as saved.
+// The stamp is the burn's `onTxHash`, which the wallet awaits before the node takes the burn.
 describe("trackWithdrawalSubmission's hash stamp", () => {
   beforeEach(() => resetSingletons())
 
-  it.each([
-    ["persists", false, true],
-    ["fails to persist", true, false],
-  ])("announces the hash only when the stamp %s", async (_label, failWrites, announced) => {
+  it("resolves once the hash persisted", async () => {
     const adapter = new InMemoryStorageAdapter()
     const store = WithdrawalStorage.get(adapter)
     await store.load()
     await store.create(submittingRecord("w1"))
-    if (failWrites) adapter.setItem = async () => Promise.reject(new Error("quota"))
-    const heard = vi.fn()
-    provingProgress.on("tx-hash-saved", heard)
     const submission = trackWithdrawalSubmission(store, "w1", "op")
     try {
-      provingProgress.emitStageStart(ProvingStage.Mining, "op", L2TX_1)
-      await submission.stop()
-      expect(await submission.saved()).toBe(announced)
-      expect(heard).toHaveBeenCalledTimes(announced ? 1 : 0)
+      await submission.stamp(L2TX_1)
+      resetSingletons()
+      const reopened = WithdrawalStorage.get(adapter)
+      await reopened.load()
+      expect(reopened.get("w1")?.l2TxHash).toBe(L2TX_1)
     } finally {
-      provingProgress.off("tx-hash-saved", heard)
+      submission.stop()
     }
   })
 
-  it("stamps without announcing for a record that rides another record's tx", async () => {
+  // Nothing reached the node, so the burn is not in flight.
+  it("rejects a hash that did not persist, and leaves nothing to recover", async () => {
+    const adapter = new InMemoryStorageAdapter()
+    const store = WithdrawalStorage.get(adapter)
+    await store.load()
+    await store.create(submittingRecord("w1"))
+    adapter.setItem = async () => Promise.reject(new Error("quota"))
+    const submission = trackWithdrawalSubmission(store, "w1", "op")
+    try {
+      await expect(submission.stamp(L2TX_1)).rejects.toThrow("quota")
+      expect(await submission.recover({ getTxReceipt: vi.fn() } as never)).toBeNull()
+    } finally {
+      submission.stop()
+    }
+  })
+
+  it("does not announce a record that rides another record's tx", async () => {
     const store = await seedStore()
     await store.create(submittingRecord("w1"))
     const heard = vi.fn()
     provingProgress.on("tx-hash-saved", heard)
     const submission = trackWithdrawalSubmission(store, "w1", "op", { announce: false })
     try {
+      await submission.stamp(L2TX_1)
       provingProgress.emitStageStart(ProvingStage.Mining, "op", L2TX_1)
-      await submission.stop()
-      expect(await submission.saved()).toBe(true)
       expect(store.get("w1")?.l2TxHash).toBe(L2TX_1)
       expect(heard).not.toHaveBeenCalled()
     } finally {
+      submission.stop()
       provingProgress.off("tx-hash-saved", heard)
     }
   })

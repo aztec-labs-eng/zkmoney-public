@@ -60,6 +60,7 @@ function makeStubSender(): any {
 function makeStubContractInstance(): any {
   return {
     address: AztecAddress.fromBigIntUnsafe(33n),
+    artifact: { functions: [] },
     methods: {
       claim: () => ({}),
       refund: () => ({}),

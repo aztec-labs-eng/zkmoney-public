@@ -80,17 +80,19 @@ test("loadOxideManifestTuple gates and overlays the pinned mainnet entry", async
   assert.equal(Object.isFrozen(tuple), true)
 })
 
-test("loadOxideManifestTuple enforces the pinned git SHA on mainnet", async () => {
-  await assert.rejects(
-    loadOxideManifestTuple({
+test("loadOxideManifestTuple accepts mainnet git SHA drift or an absent SHA", async () => {
+  for (const gitSha of [GIT_SHA, undefined]) {
+    const tuple = await loadOxideManifestTuple({
       manifestUrl: MANIFEST_URL,
       portal: PORTAL,
       network: Network.MAINNET,
       expectedGitSha: "0".repeat(40),
-      fetchImpl: jsonFetch(manifest()),
-    }),
-    /gitSha/,
-  )
+      fetchImpl: jsonFetch(manifest({ gitSha })),
+    })
+
+    assert.equal(tuple.gitSha, gitSha ?? "")
+    assert.equal(tuple.portal, PORTAL)
+  }
 })
 
 test("loadOxideManifestTuple reports the URL and status for an HTTP failure", async () => {
@@ -159,4 +161,70 @@ test("loadOxideManifestTuple rejects a schema v5 deployment without bridges", as
     }),
     /lists no bridges/,
   )
+})
+
+const SWAP_FACTORY = "0x00000000000000000000000000000000000005f1"
+
+/** A schema v5 deployment with a DAI and an sUSDS bridge and the given features. */
+function manifestV5WithFeatures(features, daiBridge = {}) {
+  const manifest = manifestV5([
+    {
+      key: "dai",
+      bridgeId: "brg-dai-v6",
+      portal: PORTAL,
+      token: DAI,
+      l2Token: "0x2fbdc2a4303c9855eb39b14091d57cee8575692925ffbac5c7e3e1b1e62a20c8",
+      ...daiBridge,
+    },
+    {
+      key: "susds",
+      bridgeId: "brg-susds-v6",
+      portal: SUSDS_PORTAL,
+      token: "0x00000000000000000000000000000000000005d0",
+      l2Token: "0x00000000000000000000000000000000000000000000000000000000000005d1",
+    },
+  ])
+  manifest.deployments[0].features = features
+  return manifest
+}
+
+function swapFeature(bridge, factory = SWAP_FACTORY) {
+  return {
+    project: "swap",
+    bridges: { dai: bridge },
+    contracts: { swapEscrowFactory: factory },
+    variables: {},
+  }
+}
+
+async function tupleFor(manifest, portal = PORTAL) {
+  return loadOxideManifestTuple({
+    manifestUrl: MANIFEST_URL,
+    portal,
+    network: Network.TESTNET,
+    fetchImpl: jsonFetch(manifest),
+  })
+}
+
+test("loadOxideManifestTuple reads the swap escrow factory of the swap feature that binds the bridge", async () => {
+  const manifest = manifestV5WithFeatures({ "fea-swap-v6": swapFeature("brg-dai-v6") })
+
+  assert.equal((await tupleFor(manifest)).swapEscrowFactoryV2, SWAP_FACTORY)
+  assert.equal((await tupleFor(manifest, SUSDS_PORTAL)).swapEscrowFactoryV2, undefined)
+})
+
+test("loadOxideManifestTuple keeps the swap escrow factory that a bridge names itself", async () => {
+  const own = "0x00000000000000000000000000000000000005f2"
+  const manifest = manifestV5WithFeatures({}, { swapEscrowFactoryV2: own })
+
+  assert.equal((await tupleFor(manifest)).swapEscrowFactoryV2, own)
+})
+
+test("loadOxideManifestTuple rejects two swap features for one bridge", async () => {
+  const manifest = manifestV5WithFeatures({
+    "fea-swap-a": swapFeature("brg-dai-v6"),
+    "fea-swap-b": swapFeature("brg-dai-v6", "0x00000000000000000000000000000000000005f3"),
+  })
+
+  await assert.rejects(tupleFor(manifest), /more than one swap feature \(fea-swap-a, fea-swap-b\)/)
 })

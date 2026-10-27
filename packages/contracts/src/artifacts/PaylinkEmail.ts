@@ -80,11 +80,11 @@ export class PaylinkEmailContract extends ContractBase {
   /** Type-safe wrappers for the public methods exposed by the contract. */
   public declare methods: {
     
-    /** claim(zkjwt_vkey: array, zkjwt_proof: array, email_hash: field, pre_email_hash: field, aud_hash: field, iat: field, jwk_id: field, h_iss: field, recipient: struct, authwit_nonce: field, meta: array) */
-    claim: ((zkjwt_vkey: FieldLike[], zkjwt_proof: FieldLike[], email_hash: FieldLike, pre_email_hash: FieldLike, aud_hash: FieldLike, iat: FieldLike, jwk_id: FieldLike, h_iss: FieldLike, recipient: AztecAddressLike, authwit_nonce: FieldLike, meta: FieldLike[]) => ContractFunctionInteraction) & Pick<ContractMethod, "selector">;
+    /** claim(zkjwt_vkey: array, zkjwt_proof: array, email_hash: field, pre_email_hash: field, aud_hash: field, iat: field, jwk_id: field, h_iss: field, recipient: struct, authwit_nonce: field, meta: array, terms: field) */
+    claim: ((zkjwt_vkey: FieldLike[], zkjwt_proof: FieldLike[], email_hash: FieldLike, pre_email_hash: FieldLike, aud_hash: FieldLike, iat: FieldLike, jwk_id: FieldLike, h_iss: FieldLike, recipient: AztecAddressLike, authwit_nonce: FieldLike, meta: FieldLike[], terms: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, "selector">;
 
-    /** claim_to_l1(zkjwt_vkey: array, zkjwt_proof: array, email_hash: field, pre_email_hash: field, aud_hash: field, iat: field, jwk_id: field, h_iss: field, executor: struct, user_payload_hash: field, prover_tip: integer) */
-    claim_to_l1: ((zkjwt_vkey: FieldLike[], zkjwt_proof: FieldLike[], email_hash: FieldLike, pre_email_hash: FieldLike, aud_hash: FieldLike, iat: FieldLike, jwk_id: FieldLike, h_iss: FieldLike, executor: EthAddressLike, user_payload_hash: FieldLike, prover_tip: (bigint | number)) => ContractFunctionInteraction) & Pick<ContractMethod, "selector">;
+    /** claim_to_l1(zkjwt_vkey: array, zkjwt_proof: array, email_hash: field, pre_email_hash: field, aud_hash: field, iat: field, jwk_id: field, h_iss: field, executor: struct, user_payload_hash: field, prover_tip: integer, terms: field) */
+    claim_to_l1: ((zkjwt_vkey: FieldLike[], zkjwt_proof: FieldLike[], email_hash: FieldLike, pre_email_hash: FieldLike, aud_hash: FieldLike, iat: FieldLike, jwk_id: FieldLike, h_iss: FieldLike, executor: EthAddressLike, user_payload_hash: FieldLike, prover_tip: (bigint | number), terms: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, "selector">;
 
     /** deposit(amount: integer, oidc_key_registry: struct, vkey_hash: field, emailhash: field, from_claimable: integer, until_claimable: integer, refundable_until: integer, token_address: struct, sender: struct, meta: array) */
     deposit: ((amount: (bigint | number), oidc_key_registry: AztecAddressLike, vkey_hash: FieldLike, emailhash: FieldLike, from_claimable: (bigint | number), until_claimable: (bigint | number), refundable_until: (bigint | number), token_address: AztecAddressLike, sender: AztecAddressLike, meta: FieldLike[]) => ContractFunctionInteraction) & Pick<ContractMethod, "selector">;

@@ -8,6 +8,8 @@ import {
   assertLinkClass,
   encodePaylinkInline,
   decodePaylinkInline,
+  decodePaylinkLocatorPayload,
+  encodePaylinkLocatorPayload,
 } from "./paylinkInlineCodec.js"
 import type { PaylinkParams } from "../PaylinkService.js"
 
@@ -65,6 +67,47 @@ describe("paylinkInlineCodec", () => {
     expect(
       expectRoundTrip(makeParams({ escrowTagSecret: undefined })).escrowTagSecret,
     ).toBeUndefined()
+  })
+
+  it("carries a short link's seed when it has one", () => {
+    const seed = Uint8Array.from({ length: 16 }, (_, i) => i)
+    expect(expectRoundTrip(makeParams({ seed })).seed).toEqual(seed)
+    expect(expectRoundTrip(makeParams()).seed).toBeUndefined()
+  })
+
+  it("carries the note's terms, and fits every field under the fragment cap", () => {
+    const terms = Fr.random()
+    expect(expectRoundTrip(makeParams({ terms })).terms).toEqual(terms)
+    expect(expectRoundTrip(makeParams()).terms).toBeUndefined()
+    const full = encodePaylinkInline(
+      makeParams({ terms, seed: Uint8Array.from({ length: 16 }, (_, i) => i) }),
+    )
+    expect(Buffer.from(fromBase64Url(full), "base64").length).toBeLessThanOrEqual(256)
+  })
+
+  it("round-trips a locator payload, which never holds the secret", () => {
+    const seed = Uint8Array.from({ length: 16 }, (_, i) => i)
+    const params = makeParams({ seed, terms: Fr.random() })
+    const bytes = encodePaylinkLocatorPayload(params)
+    expect(Buffer.from(bytes).includes(params.secret.toBuffer())).toBe(false)
+    const decoded = decodePaylinkLocatorPayload(bytes, params.secret, seed)
+    expect(encodePaylinkInline(decoded)).toBe(encodePaylinkInline(params))
+  })
+
+  it("refuses a locator payload without terms", () => {
+    const seed = Uint8Array.from({ length: 16 }, (_, i) => i)
+    const params = makeParams({ seed })
+    expect(() =>
+      decodePaylinkLocatorPayload(encodePaylinkLocatorPayload(params), params.secret, seed),
+    ).toThrow(/Invalid paylink link/)
+  })
+
+  it("refuses a locator payload that holds a secret", () => {
+    const params = makeParams()
+    const raw = Buffer.from(fromBase64Url(encodePaylinkInline(params)), "base64")
+    expect(() =>
+      decodePaylinkLocatorPayload(new Uint8Array(raw), params.secret, new Uint8Array(16)),
+    ).toThrow(/Invalid paylink link/)
   })
 
   it("rejects a chain id or rollup version that is not a positive integer", () => {

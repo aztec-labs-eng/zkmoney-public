@@ -44,6 +44,7 @@ export class PaylinkDirectClaimService extends ServiceBase implements ClaimServi
       recipient.getAddress(),
       new Fr(0),
       submitContext.transferMeta ?? emptyTransferMeta(),
+      ...(submitContext.claimTerms ?? []),
     )
 
     const { initFn, buildResult, sendOptions } = await preparePaylinkClaimSubmit({

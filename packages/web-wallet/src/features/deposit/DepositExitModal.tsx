@@ -44,13 +44,11 @@ import {
 } from "@obsidion/passkey-web"
 import { GateStep } from "../identity/PhoneSteps"
 import { reusePasskeyAccount } from "../onboarding/oxideOnboarding"
-import {
-  canManualRegistrationSweep,
-  manualRegistrationSweep,
-  registrationRecordForSipa,
-} from "../onboarding/registrationSweep"
+import { reloadIfSessionSwitched } from "../onboarding/sessionReload"
+import { canManualRegistrationSweep, type RecoveryReason } from "@obsidion/front-core"
+import { manualRegistrationSweep, registrationRecordForSipa } from "../onboarding/registrationSweep"
 import { isWalletRejection, useL1Wallet } from "./l1Wallet"
-import { recoverDeposit, type L1ExitStage, type RecoveryReason } from "./sipaRecovery"
+import { recoverDeposit, type L1ExitStage } from "./sipaRecovery"
 import { AlreadySweptError, selfSweep, SweepRefusedError } from "./sipaSweep"
 import { unsweepableCopy } from "./unsweepableCopy"
 import {
@@ -277,6 +275,8 @@ export function DepositExitModal({
       const keys = await signIn.run((own) =>
         reusePasskeyAccount(obsidionWallet, reg.l2Address, undefined, gate, signal, own),
       )
+      // The page is reloading: nothing settles before it goes.
+      if (reloadIfSessionSwitched(null, reg.l2Address)) return new Promise<never>(() => {})
       return manualRegistrationSweep(reg, { keys, ...opts, onNotice: setNotice })
     }
     try {

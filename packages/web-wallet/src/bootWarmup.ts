@@ -26,7 +26,7 @@ export async function warmBoot(pathname: string): Promise<void> {
   // The PXE's largest download.
   const barretenberg = warmBarretenberg()
   // A payment link's first read loads its escrow's artifact: fetched once that download is in.
-  if (pathname === "/link") {
+  if (pathname === "/link" || pathname === "/p") {
     void barretenberg
       .then(() => getHardcodedArtifact(DEFAULT_CONTRACTS.paylinkDirect))
       .catch(() => {})

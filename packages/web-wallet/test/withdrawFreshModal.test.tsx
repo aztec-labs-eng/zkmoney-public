@@ -2,6 +2,7 @@
 import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { balancesOf } from "./support/balances"
 import { parseGwei, parseUnits } from "viem"
 import { MAX_DAI_FOR_GAS } from "@obsidion/sdk"
 import { ScreeningProvider, passThroughScreener, type AddressScreener } from "@obsidion/front-core"
@@ -18,7 +19,7 @@ type Asset = "USDC" | "USDT" | "ETH" | "DAI"
 type Route = Asset | "DAI_GAS"
 const submit = vi.fn()
 const cfg = { network: "sandbox" }
-const walletAsset = { balance: 100, balanceAtomic: parseUnits("100", 18) }
+const walletAsset = { balanceAtomic: parseUnits("100", 18) }
 const priced = (floor: string, tip: string) => ({
   floor: parseUnits(floor, 18),
   tip: parseUnits(tip, 18),
@@ -41,10 +42,12 @@ const GAS_OUT = parseUnits("5", 18) / 3000n
 vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/front-core")>()),
   useAccountContext: () => ({ obsidionAccount: {} }),
-  useAssetContext: () => ({ tokenService: {} }),
+  useAssetContext: () => ({
+    tokenService: {},
+    balances: balancesOf({ main: walletAsset.balanceAtomic, live: true, known: true }),
+  }),
   useAztecContext: () => ({ obsidionWallet: {} }),
   useContractServiceContext: () => ({ contractService: {} }),
-  useBalance: () => ({ walletAsset, walletBalance: "100", assetsLoaded: true }),
   upsertSavedL1WalletContact: vi.fn(),
 }))
 vi.mock("../src/features/withdraw/freshAddressGateway", async (importOriginal) => ({

@@ -180,6 +180,14 @@ describe("TxDetailModal", () => {
     expect(h.navigate).toHaveBeenCalledWith("/contacts/pleaswork")
   })
 
+  it("an unknown sender opens the conversation for its address", async () => {
+    const address = "0x" + "2d".repeat(32)
+    await show(<TxDetailModal row={{ ...plain, counterpartyAddress: address }} onClose={vi.fn()} />)
+
+    await act(async () => seeAll()!.click())
+    expect(h.navigate).toHaveBeenCalledWith(`/contacts/${address}`)
+  })
+
   it("inside that contact's chat: the row's own note, no See all", async () => {
     h.pathname = "/contacts/c_1"
     await show(

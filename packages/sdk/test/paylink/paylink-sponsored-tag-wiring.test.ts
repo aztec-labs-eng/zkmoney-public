@@ -76,6 +76,7 @@ vi.mock("@aztec-labs/aztec.js/contracts", async (importActual) => {
       ...(actual.Contract as object),
       at: vi.fn(() => ({
         address: INSTANCE_ADDR,
+        artifact: { functions: [] },
         methods: {
           deposit: depositSpy,
           claim: claimSpy,
@@ -396,6 +397,7 @@ describe("sponsored paylink dispatch — tag sender", () => {
       () =>
         ({
           address: INSTANCE_ADDR,
+          artifact: { functions: [] },
           methods: {
             claim: claimSpy,
             claim_with_withdrawal: claimWithWithdrawal,
@@ -459,6 +461,7 @@ describe("sponsored paylink dispatch — tag sender", () => {
         () =>
           ({
             address: INSTANCE_ADDR,
+            artifact: { functions: [] },
             methods: { claim: claimSpy, sync_note: syncNoteSpy, ...methods },
           } as never),
       )

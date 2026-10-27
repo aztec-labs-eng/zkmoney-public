@@ -1,4 +1,5 @@
 import { useMemo } from "react"
+import { Spinner } from "@obsidion/web-ds"
 import { encode } from "uqr"
 
 const DARK = "#141413"
@@ -40,10 +41,13 @@ export function StyledQr({
   icon,
   size = 128,
   label,
+  busy = false,
 }: {
   value: string
   /** An image for the center; raises the error correction so the covered modules are spare. */
   icon?: string
+  /** A spinner in the center's place, drawn over the code so the compositor animates it. */
+  busy?: boolean
   size?: number
   label?: string
 }) {
@@ -64,13 +68,15 @@ export function StyledQr({
       ? `<rect x="${logoStart}" y="${logoStart}" width="${logo}" height="${logo}" rx="${
           logo / 2
         }" fill="#fff"/>` +
-        `<image href="${icon}" x="${logoStart + 0.5}" y="${logoStart + 0.5}" width="${
-          logo - 1
-        }" height="${logo - 1}"/>`
+        (busy
+          ? ""
+          : `<image href="${icon}" x="${logoStart + 0.5}" y="${logoStart + 0.5}" width="${
+              logo - 1
+            }" height="${logo - 1}"/>`)
       : ""
     return { n, body: finders(n) + dots + art }
-  }, [value, icon])
-  return (
+  }, [value, icon, busy])
+  const code = (
     <svg
       viewBox={`0 0 ${svg.n} ${svg.n}`}
       width={size}
@@ -81,5 +87,14 @@ export function StyledQr({
       shapeRendering="geometricPrecision"
       dangerouslySetInnerHTML={{ __html: svg.body }}
     />
+  )
+  if (!busy || !icon) return code
+  return (
+    <span className="ww-qr-busy">
+      {code}
+      <span className="ww-qr-busy__spin">
+        <Spinner size={24} color={DARK} period={0.9} />
+      </span>
+    </span>
   )
 }

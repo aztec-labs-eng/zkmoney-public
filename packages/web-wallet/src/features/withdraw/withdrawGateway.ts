@@ -304,8 +304,11 @@ export interface BurnInput<R extends BurnResult> {
   localId?: string
   /** Runs once the record is seeded, before the burn: records of the caller's own ride the seed. */
   onSeeded?: (record: WithdrawalRecord) => Promise<void>
-  /** Signs, proves and sends the burn off the persisted record; resolves on the L2 receipt. */
-  burn: (record: WithdrawalRecord) => Promise<R>
+  /**
+   * Signs, proves and sends the burn off the persisted record; resolves on the L2 receipt. Hands
+   * `onTxHash` to the sdk, which awaits it before the node takes the burn.
+   */
+  burn: (record: WithdrawalRecord, onTxHash: (txHash: string) => Promise<void>) => Promise<R>
   /** The mined amount and tip; the seeded record's figures stand in when absent or rejected. */
   minedFigures?: (result: R) => Promise<{ amount: string; relayerTip: string } | undefined>
   /** The context the failure copy is worded for; "withdraw:submit" when absent. */
@@ -313,12 +316,13 @@ export interface BurnInput<R extends BurnResult> {
 }
 
 /**
- * The one burn sequence behind every L2→L1 exit. Seeds the withdrawal record, stamps its hash at
- * submit, and runs the burn. A burn that may still land is returned unmined, left to the chain and
- * the tracker (`result` absent). One a node refused because a burn it holds spends the same notes
- * drops its seed and puts that earlier withdrawal back to pending. One that never went out drops
- * its seed on a cancel and is marked `failed` otherwise, then rethrows. A mined burn is marked mined and armed on the tracker; nothing
- * after the mine fails the record, so callers keep their own bookkeeping off it too.
+ * The one burn sequence behind every L2→L1 exit. Seeds the withdrawal record and runs the burn,
+ * which saves its hash on the record before the node takes it. A burn that may still land is
+ * returned unmined, left to the chain and the tracker (`result` absent). One a node refused because
+ * a burn it holds spends the same notes drops its seed and puts that earlier withdrawal back to
+ * pending. One that never went out drops its seed on a cancel and is marked `failed` otherwise,
+ * then rethrows. A mined burn is marked mined and armed on the tracker; nothing after the mine
+ * fails the record, so callers keep their own bookkeeping off it too.
  */
 export async function runBurn<R extends BurnResult>(
   input: BurnInput<R>,
@@ -332,7 +336,7 @@ export async function runBurn<R extends BurnResult>(
   let result: R
   try {
     await input.onSeeded?.(record)
-    result = await input.burn(record)
+    result = await input.burn(record, submission.stamp)
   } catch (err) {
     // The node refused this burn because one it holds spends the same notes, so this one never
     // went out. When that one is an earlier withdrawal, it is pending again, whatever it read.
@@ -371,7 +375,7 @@ export async function runBurn<R extends BurnResult>(
     }
     throw err
   } finally {
-    await submission.stop()
+    submission.stop()
   }
   const figures = await input.minedFigures?.(result).catch(() => undefined)
   let mined: WithdrawalRecord
@@ -633,10 +637,11 @@ export async function runSponsoredBurn(
       ...swapRecordFields(swap, swapCommit),
       ...input.record,
     },
-    burn: () => {
+    burn: (_record, onTxHash) => {
       onStage("proving")
       return deps.tokenService.exitToL1PrivateSponsored(exit.l1Recipient, exit.amount, sponsor, {
         operationId: op.operationId,
+        onTxHash,
         userAccount: deps.account,
         useRawAmount: true,
         withdrawal: exit.withdrawal,

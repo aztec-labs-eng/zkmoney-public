@@ -13,6 +13,7 @@ vi.mock(import("@obsidion/sdk"), async (importOriginal) => ({
 const VALID = "AaBb123-_"
 
 import { encodeRequestInline } from "@obsidion/front-core"
+import { encodeLinkFragment, LinkKind } from "@obsidion/sdk"
 import { pastedLinkRoute } from "../src/features/paylink/pastedLink"
 
 // A real v3 request fragment — the request codec is not mocked.
@@ -36,12 +37,18 @@ describe("pastedLinkRoute", () => {
   })
 
   it("routes a request URL and a bare request fragment to /request", () => {
-    for (const text of [
-      `https://paylink.zk.money/request#${REQUEST_FRAGMENT}`,
-      REQUEST_FRAGMENT,
-    ]) {
+    for (const text of [`https://paylink.zk.money/request#${REQUEST_FRAGMENT}`, REQUEST_FRAGMENT]) {
       expect(pastedLinkRoute(text)).toBe(`/request#${REQUEST_FRAGMENT}`)
     }
+  })
+
+  it("routes short links by their kind", () => {
+    const seed = Uint8Array.from({ length: 16 }, (_, i) => i)
+    const paylink = encodeLinkFragment(LinkKind.Paylink, seed)
+    const request = encodeLinkFragment(LinkKind.Request, seed)
+    expect(pastedLinkRoute(`https://zk.money/p#${paylink}`)).toBe(`/link#${paylink}`)
+    expect(pastedLinkRoute(`https://wallet.zk.money/link#${paylink}`)).toBe(`/link#${paylink}`)
+    expect(pastedLinkRoute(`https://zk.money/pay/alice#${request}`)).toBe(`/request#${request}`)
   })
 
   it("rejects text that decodes as neither", () => {

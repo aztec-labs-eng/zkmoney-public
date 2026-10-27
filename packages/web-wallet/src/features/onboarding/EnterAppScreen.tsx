@@ -30,6 +30,7 @@ import {
   type PasskeyClassification,
 } from "@obsidion/passkey-web"
 import { peekAuthService } from "../../platform/auth/useAuthenticator"
+import { servesAnotherAccount } from "../../platform/session"
 import { getActiveStorageId } from "../../platform/storage/activeStorage"
 import { EndpointsModal } from "../../ui/EndpointsModal"
 import { useHoldEndpoints } from "../../ui/endpointsHold"
@@ -459,10 +460,12 @@ export function EnterAppScreen() {
 
   // The account active when this screen opened.
   const previousStorageId = useRef(getActiveStorageId())
-  // The account changed while this screen was open, or a commit on this page (possibly before it
-  // opened, e.g. a signed-out page entering an account this browser holds) left the stores stale.
+  // The account changed while this screen was open, the page served another account before it, or
+  // a commit on this page (e.g. a signed-out page entering an account this browser holds) left the
+  // stores stale.
   const storesStale = () =>
     peekAuthService()?.recordsStale() === true ||
+    servesAnotherAccount() ||
     (previousStorageId.current !== null && previousStorageId.current !== getActiveStorageId())
 
   /**

@@ -10,6 +10,13 @@ export type { PaylinkRefundEligibility, PaylinkRefundIneligibleReason } from "./
 export { paylinkStatusFor, PAYLINK_STATUS_LABEL } from "./paylinkStatus"
 export type { PaylinkStatusKind } from "./paylinkStatus"
 export { paylinkRowView } from "./paylinkRowView"
+export {
+  canCancelAt,
+  creatorLinkAction,
+  isOtherRollupLink,
+  paylinkStatusIsUnspent,
+  type CreatorLinkAction,
+} from "./creatorLinkAction"
 export type { PaylinkRecovery, PaylinkRowStatusLabel, PaylinkRowView } from "./paylinkRowView"
 export {
   isRefundInFlight,
@@ -17,6 +24,7 @@ export {
   clearRefundInFlight,
   onRefundInFlightChanged,
   refundInFlightVersion,
+  refundsInFlight,
   withRefundInFlight,
 } from "./refundInFlight"
 export {
@@ -47,7 +55,6 @@ export type {
 } from "./PendingPaylinkMigrationStore"
 export {
   PendingPaylinkMigrationService,
-  PAYLINK_MIGRATION_PRODUCER_ID,
   paylinkReclaimableNotificationId,
 } from "./PendingPaylinkMigrationService"
 export type { PendingPaylinkMigrationServiceDeps } from "./PendingPaylinkMigrationService"

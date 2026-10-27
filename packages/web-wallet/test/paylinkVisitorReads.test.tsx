@@ -86,8 +86,8 @@ vi.mock("../src/features/paylink/ClaimProgressModal", () => ({
   ClaimProgressModal: () => null,
   hasClaimReceipt: () => false,
 }))
-vi.mock("../src/features/notifications/NotificationsMount", () => ({
-  NotificationsMount: () => null,
+vi.mock("../src/features/notifications/ReorgMonitorMount", () => ({
+  ReorgMonitorMount: () => null,
 }))
 vi.mock("../src/ui/NotificationsBell", () => ({ NotificationsBell: () => null }))
 vi.mock("../src/ui/screens/WithdrawalDetailModal", () => ({

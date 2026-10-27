@@ -5,7 +5,6 @@ import {
   ContactStorage,
   NetworkStorage,
   TokenStorage,
-  TransactionStorage,
   WithdrawalStorage,
   type IStorageAdapter,
   type NetworkStorageConfig,
@@ -28,7 +27,6 @@ export const useStorage = (
       BalanceStorage.get(_storageAdapter)
       TokenStorage.get(_storageAdapter)
       ContactStorage.get(_storageAdapter)
-      TransactionStorage.get(_storageAdapter)
       WithdrawalStorage.get(_storageAdapter)
       setStorageAdapter(_storageAdapter)
     }

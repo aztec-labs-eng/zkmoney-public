@@ -62,8 +62,13 @@ vi.mock("../src/errors/errorModal", () => ({
   showReportableError: vi.fn(),
 }))
 
+// Publishing needs the wallet; test/shortRequestLink.test.tsx covers it. The full link stands in.
+const publish = vi.hoisted(() => vi.fn())
+vi.mock("../src/features/requests/shortRequestLink", () => ({
+  useShortRequestLink: (request?: { url: string }) => ({ url: request?.url, publish }),
+}))
+
 const { SharePaylinkModal } = await import("../src/features/requests/SharePaylinkModal")
-const { RequestRow } = await import("../src/ui/screens/useActivityEntries")
 
 const FIELD_ID = `0x${"0a".repeat(32)}`
 const TOKEN_ADDRESS = `0x${"1b".repeat(32)}`
@@ -149,6 +154,19 @@ describe("SharePaylinkModal", () => {
     await render()
     expect(container.textContent).toContain("Request link")
     expect(container.textContent).not.toContain("is ready")
+  })
+
+  it("copies a request's saved short link, and publishes one for a request without", async () => {
+    publish.mockClear()
+    await render({ shortLink: "https://zk.money/r#short" })
+    const copy = () =>
+      [...container.querySelectorAll("button")].find((b) => b.textContent === "Copy link")
+    await act(async () => copy()?.click())
+    expect(writeText).toHaveBeenLastCalledWith("https://zk.money/r#short")
+
+    await render()
+    await act(async () => copy()?.click())
+    expect(publish).toHaveBeenCalled()
   })
 
   it("reopens a stored link request and copies its reconstructed URL", async () => {
@@ -288,53 +306,5 @@ describe("SharePaylinkModal", () => {
     })
     expect(writeText).toHaveBeenCalledOnce()
     expect(titles()).toContain("Copied!")
-  })
-
-  it("opens link-request details from the activity row, with Share reusing the open path", async () => {
-    const onOpen = vi.fn()
-    const onCancel = vi.fn()
-    await act(async () => {
-      root.render(
-        <RequestRow
-          row={{
-            id: request.id,
-            kind: "outgoingLink",
-            counterparty: "Requested via link",
-            statusLabel: "Unpaid",
-            amount: "+$25.00",
-            amountValue: 25,
-            timestampMs: NOW,
-            direction: "in",
-          }}
-          remind="idle"
-          onDecline={() => {}}
-          onSend={() => {}}
-          onCancel={onCancel}
-          onRemind={() => {}}
-          onOpen={onOpen}
-        />,
-      )
-    })
-
-    expect(container.textContent).toContain("Requested via paylink")
-
-    await act(async () => {
-      container.querySelector<HTMLElement>("[data-testid='activity-row']")?.click()
-    })
-    expect(onOpen).toHaveBeenCalledOnce()
-
-    await act(async () => {
-      ;[...container.querySelectorAll("button")]
-        .find((button) => button.textContent === "Share")
-        ?.click()
-    })
-    expect(onOpen).toHaveBeenCalledTimes(2)
-
-    await act(async () => {
-      ;[...container.querySelectorAll("button")]
-        .find((button) => button.textContent === "Cancel")
-        ?.click()
-    })
-    expect(onCancel).toHaveBeenCalledWith(request.id)
   })
 })

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
+import { canCancelAt } from "@obsidion/front-core"
 import {
-  canCancelAt,
   claimWaitSeconds,
   secondsToOpeningBlock,
   formatClaimCountdown,

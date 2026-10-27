@@ -88,13 +88,19 @@ pub contract PaylinkDirect {
     /// while a foreign callstack still cannot redirect the payout to an unconsenting address.
     #[authorize_once("recipient", "authwit_nonce")]
     #[external("private")]
-    fn claim(recipient: AztecAddress, authwit_nonce: Field, meta: [Field; TRANSFER_META_LEN]) {
+    fn claim(
+        recipient: AztecAddress,
+        authwit_nonce: Field,
+        meta: [Field; TRANSFER_META_LEN],
+        terms: Field,
+    ) {
         assert_is_initialized_private(self.context);
         assert(!recipient.is_zero(), "recipient required");
         let (note, amount, from_claimable_val, until_claimable_val) = get_note_and_unpack_data(
             self.context,
             DIRECT_HASH,
             self.storage.paylink_direct_note.get_storage_slot(),
+            terms,
         );
 
         execute_claim(
@@ -115,13 +121,14 @@ pub contract PaylinkDirect {
     /// Emits no recovery data: the batch's public finalization request releases the burn, so an L1
     /// claim is visible to anyone holding the link.
     #[external("private")]
-    fn claim_to_l1(executor: EthAddress, user_payload_hash: Field, prover_tip: u128) {
+    fn claim_to_l1(executor: EthAddress, user_payload_hash: Field, prover_tip: u128, terms: Field) {
         assert_is_initialized_private(self.context);
         assert(!executor.is_zero(), "executor required");
         let (note, amount, from_claimable_val, until_claimable_val) = get_note_and_unpack_data(
             self.context,
             DIRECT_HASH,
             self.storage.paylink_direct_note.get_storage_slot(),
+            terms,
         );
 
         execute_claim_to_l1(
@@ -150,6 +157,7 @@ pub contract PaylinkDirect {
         user_payload_hash: Field,
         prover_tip: u128,
         meta: [Field; TRANSFER_META_LEN],
+        terms: Field,
     ) {
         assert_is_initialized_private(self.context);
         assert(!recipient.is_zero(), "recipient required");
@@ -158,6 +166,7 @@ pub contract PaylinkDirect {
             self.context,
             DIRECT_HASH,
             self.storage.paylink_direct_note.get_storage_slot(),
+            terms,
         );
         assert(withdrawal_amount > 0, "withdrawal required");
         assert(withdrawal_amount < amount, "withdrawal must leave a payout");

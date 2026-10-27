@@ -27,7 +27,7 @@
 //   8. tsc-build noir-contracts.js, telemetry, watcher-lib and oxide-relayer.
 //
 // Steps 1-5 are gated by sentinel files so subsequent runs short-circuit;
-// the script is idempotent and a full from-cold run is ~60-120s.
+// the script is idempotent and a full from-cold run is ~1 min.
 
 import { execFileSync } from "node:child_process"
 import {
@@ -184,8 +184,9 @@ if (!existsSync(SENTINELS.yarnInstall)) {
 
 if (!existsSync(SENTINELS.l1Forge)) {
   run("bash", ["fetch_solidity_deps.sh"], L1_CONTRACTS)
-  console.error("vendor/oxide/l1-contracts: forge build")
-  run("forge", ["build"], L1_CONTRACTS)
+  console.error("vendor/oxide/l1-contracts: forge build --skip test")
+  // Skips only *.t.sol; the test/ mocks gen_abis.mjs reads still build.
+  run("forge", ["build", "--skip", "test"], L1_CONTRACTS)
 }
 
 const allAbisExist = ABI_TARGETS.every((name) => existsSync(resolve(ABI_DIR, name)))

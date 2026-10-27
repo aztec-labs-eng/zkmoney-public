@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { InMemoryStorageAdapter } from "../__test-helpers__/InMemoryStorageAdapter"
-import { AppNotificationStore } from "../../src/core/services/notifications/AppNotificationStore"
+import { createMemoryKv } from "../../src/engine/kv"
+import { createNotifications, type Notifications } from "../../src/engine/notifications"
 import { PendingPaylinkMigrationStore } from "../../src/core/services/paylink/PendingPaylinkMigrationStore"
 import { PendingPaylinkMigrationService } from "../../src/core/services/paylink/PendingPaylinkMigrationService"
 import { setActiveNetworkId } from "../../src/core/activeNetworkId"
@@ -42,13 +43,16 @@ const unspent: CheckSpent = async (rows) => new Map(rows.map((r) => [r.txHash, f
 
 afterEach(() => setActiveNetworkId(undefined))
 
+/** The reclaim notices the bell holds. */
+const notices = (notifications: Notifications) => [...notifications.events.get().values()]
+
 /** `checkSpent: null` builds a service that has no nullifier read yet. */
 function build(rows: Transaction[], checkSpent: CheckSpent | null = unspent) {
   const store = new PendingPaylinkMigrationStore(new InMemoryStorageAdapter())
-  const notifications = new AppNotificationStore(new InMemoryStorageAdapter())
+  const notifications = createNotifications(createMemoryKv())
   const service = new PendingPaylinkMigrationService({
     store,
-    notificationStore: notifications,
+    notifications,
     accountTransactions: async () => rows,
     checkSpent: checkSpent ?? undefined,
     now: () => NOW_MS,
@@ -77,10 +81,33 @@ describe("PendingPaylinkMigrationService", () => {
     const { store, notifications, service } = build([row(), legacy, other])
     await service.recordPending([row(), legacy, other])
     await service.reconcile(UNTIL + 10)
-    expect(notifications.list()).toHaveLength(3)
+    expect(notices(notifications)).toHaveLength(3)
     await service.retire(["0xRow", "0xLEGACY"])
     expect(store.list().map((r) => r.txHash)).toEqual(["0xOther"])
-    expect(notifications.list().map((n) => n.id)).toEqual(["paylink:reclaimable:0xother"])
+    expect(notices(notifications).map((n) => n.id)).toEqual(["paylink:reclaimable:0xother"])
+  })
+
+  it("records the other links' notices when one fails to save", async () => {
+    const other = row({ txHash: "0xOther" })
+    const store = new PendingPaylinkMigrationStore(new InMemoryStorageAdapter())
+    const bell = createNotifications(createMemoryKv())
+    const notifications: Notifications = {
+      ...bell,
+      record: (event) =>
+        event.id === "paylink:reclaimable:0xrow"
+          ? Promise.reject(new Error("disk"))
+          : bell.record(event),
+    }
+    const service = new PendingPaylinkMigrationService({
+      store,
+      notifications,
+      accountTransactions: async () => [row(), other],
+      checkSpent: unspent,
+      now: () => NOW_MS,
+    })
+    await service.recordPending([row(), other])
+    await service.reconcile(UNTIL + 10)
+    expect(notices(bell).map((n) => n.id)).toEqual(["paylink:reclaimable:0xother"])
   })
 
   it("leaves no record or reclaim notice when a retirement lands during reconciliation", async () => {
@@ -102,7 +129,7 @@ describe("PendingPaylinkMigrationService", () => {
     release()
     await Promise.all([reconciling, retiring])
     expect(store.list()).toEqual([])
-    expect(notifications.list()).toEqual([])
+    expect(notices(notifications)).toEqual([])
   })
 
   it("drops its queued and running work once its account no longer owns the stores", async () => {
@@ -130,7 +157,7 @@ describe("PendingPaylinkMigrationService", () => {
     const second = row({ txHash: "0xSecond" })
     const service = new PendingPaylinkMigrationService({
       store: new PendingPaylinkMigrationStore(scoped),
-      notificationStore: new AppNotificationStore(scoped),
+      notifications: createNotifications(createMemoryKv()),
       accountTransactions: async () => [row(), second],
       checkSpent: async (rows) => {
         reached()
@@ -156,7 +183,7 @@ describe("PendingPaylinkMigrationService", () => {
     await service.recordPending([row()])
     await service.reconcile(FROM + 10)
     expect(store.get("0xrow")!.status).toBe("waiting")
-    expect(notifications.list()).toHaveLength(0)
+    expect(notices(notifications)).toHaveLength(0)
   })
 
   it("flips to claimable past expiry and mints one reclaim notification, fire-once", async () => {
@@ -165,11 +192,14 @@ describe("PendingPaylinkMigrationService", () => {
     await service.reconcile(UNTIL + 1)
     await service.reconcile(UNTIL + 2)
     expect(store.get("0xRow")!.status).toBe("claimable")
-    const list = notifications.list()
-    expect(list).toHaveLength(1)
-    expect(list[0]!.title).toBe("Paylink ready to reclaim")
-    expect(list[0]!.description).toContain("$5")
-    expect(list[0]!.target).toEqual({ type: "paylink.reclaimable", txHash: "0xRow" })
+    expect(notices(notifications)).toEqual([
+      {
+        id: "paylink:reclaimable:0xrow",
+        at: NOW_MS,
+        kind: "reclaimable",
+        data: { txHash: "0xRow" },
+      },
+    ])
   })
 
   it("a stale probe never pulls a claimable record back to waiting", async () => {
@@ -187,7 +217,7 @@ describe("PendingPaylinkMigrationService", () => {
     rows[0] = row({ isClaimed: true })
     await service.reconcile(UNTIL + 1)
     expect(store.get("0xRow")).toMatchObject({ status: "resolved", resolvedReason: "claimed" })
-    expect(notifications.list()).toHaveLength(0)
+    expect(notices(notifications)).toHaveLength(0)
   })
 
   it("resolves a claimable record once its refund lands", async () => {
@@ -220,10 +250,10 @@ describe("PendingPaylinkMigrationService", () => {
 
   it("leaves records untouched when the transactions read throws or returns null", async () => {
     const store = new PendingPaylinkMigrationStore(new InMemoryStorageAdapter())
-    const notifications = new AppNotificationStore(new InMemoryStorageAdapter())
+    const notifications = createNotifications(createMemoryKv())
     const throwing = new PendingPaylinkMigrationService({
       store,
-      notificationStore: notifications,
+      notifications,
       accountTransactions: async () => {
         throw new Error("boom")
       },
@@ -233,24 +263,13 @@ describe("PendingPaylinkMigrationService", () => {
     await expect(throwing.reconcile(UNTIL + 1)).resolves.toHaveLength(1)
     const empty = new PendingPaylinkMigrationService({
       store,
-      notificationStore: notifications,
+      notifications,
       accountTransactions: async () => null,
       now: () => NOW_MS,
     })
     await expect(empty.reconcile(UNTIL + 1)).resolves.toHaveLength(1)
     expect(store.get("0xRow")!.status).toBe("waiting")
-    expect(notifications.list()).toHaveLength(0)
-  })
-
-  it("retries the reclaim notification on the next reconcile when the mint failed", async () => {
-    const { store, notifications, service } = build([row()])
-    await service.recordPending([row()])
-    vi.spyOn(notifications, "createIfAbsent").mockRejectedValueOnce(new Error("disk"))
-    await service.reconcile(UNTIL + 1)
-    expect(store.get("0xRow")!.status).toBe("claimable")
-    expect(notifications.list()).toHaveLength(0)
-    await service.reconcile(UNTIL + 2)
-    expect(notifications.list()).toHaveLength(1)
+    expect(notices(notifications)).toHaveLength(0)
   })
 
   it("re-opens a resolved record when the probe reports the escrow locked again", async () => {
@@ -265,7 +284,7 @@ describe("PendingPaylinkMigrationService", () => {
     expect(store.get("0xRow")!.resolvedReason).toBeUndefined()
     await service.reconcile(UNTIL + 1)
     expect(store.get("0xRow")!.status).toBe("claimable")
-    expect(notifications.list()).toHaveLength(1)
+    expect(notices(notifications)).toHaveLength(1)
   })
 
   it("resolves as claimed instead of notifying when the nullifier is already spent", async () => {
@@ -273,7 +292,7 @@ describe("PendingPaylinkMigrationService", () => {
     await service.recordPending([row()])
     await service.reconcile(UNTIL + 1)
     expect(store.get("0xRow")).toMatchObject({ status: "resolved", resolvedReason: "claimed" })
-    expect(notifications.list()).toHaveLength(0)
+    expect(notices(notifications)).toHaveLength(0)
   })
 
   it("defers the notice while the spent check fails, then mints once it reads unspent", async () => {
@@ -287,9 +306,9 @@ describe("PendingPaylinkMigrationService", () => {
     await service.reconcile(UNTIL + 1)
     await service.reconcile(UNTIL + 2)
     expect(store.get("0xRow")!.status).toBe("claimable")
-    expect(notifications.list()).toHaveLength(0)
+    expect(notices(notifications)).toHaveLength(0)
     await service.reconcile(UNTIL + 3)
-    expect(notifications.list()).toHaveLength(1)
+    expect(notices(notifications)).toHaveLength(1)
     // The read happens once per notice: an existing entry short-circuits it.
     await service.reconcile(UNTIL + 4)
     expect(checkSpent).toHaveBeenCalledTimes(3)
@@ -300,7 +319,7 @@ describe("PendingPaylinkMigrationService", () => {
     await service.recordPending([row()])
     await service.reconcile(UNTIL + 1)
     expect(store.get("0xRow")!.status).toBe("claimable")
-    expect(notifications.list()).toHaveLength(0)
+    expect(notices(notifications)).toHaveLength(0)
   })
 
   it("stamps the active network and leaves other networks' records alone", async () => {
@@ -311,11 +330,11 @@ describe("PendingPaylinkMigrationService", () => {
     setActiveNetworkId("net-b")
     await service.reconcile(UNTIL + 1)
     expect(store.get("0xRow")!.status).toBe("waiting")
-    expect(notifications.list()).toHaveLength(0)
+    expect(notices(notifications)).toHaveLength(0)
     setActiveNetworkId("net-a")
     await service.reconcile(UNTIL + 1)
     expect(store.get("0xRow")!.status).toBe("claimable")
-    expect(notifications.list()).toHaveLength(1)
+    expect(notices(notifications)).toHaveLength(1)
   })
 
   it("survives a reload — records persist through the adapter", async () => {

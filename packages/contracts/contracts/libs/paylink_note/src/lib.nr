@@ -6,6 +6,7 @@ use aztec::{
     oracle::logging::debug_log_format,
     protocol::{
         address::{AztecAddress, EthAddress},
+        hash::poseidon2_hash_with_separator,
         traits::{Deserialize, FromField, Packable, Serialize, ToField},
     },
 };
@@ -33,6 +34,26 @@ pub struct PaylinkNote {
     pub oidc_key_registry: AztecAddress,
     pub vkey_hash: Field,
     pub token_address: AztecAddress,
+}
+
+/// "PLTM": keeps a note's terms apart from every other hash of its fields.
+global TERMS_SEPARATOR: u32 = 0x504c544d;
+
+/// One hash over every field of the note. A link carries it, so a claim spends only the escrow the
+/// link was made for, never one someone else initialized at the same address.
+pub fn paylink_terms(note: PaylinkNote) -> Field {
+    poseidon2_hash_with_separator(
+        [
+            note.hash,
+            note.sender_hash,
+            note.data,
+            note.refundable_until,
+            note.oidc_key_registry.to_field(),
+            note.vkey_hash,
+            note.token_address.to_field(),
+        ],
+        TERMS_SEPARATOR,
+    )
 }
 
 // =============================================
@@ -212,9 +233,11 @@ pub fn get_note_and_unpack_data(
     context: &mut PrivateContext,
     commitment_hash: Field,
     storage_slot: Field,
+    terms: Field,
 ) -> (PaylinkNote, u128, u64, u64) {
     let note = _get_note(context, storage_slot);
     assert(note.hash == commitment_hash, "Incorrect commitment to claim");
+    assert(paylink_terms(note) == terms, "link terms do not match the escrow");
     let (amount_val, from_claimable_val, until_claimable_val) = unpack_data(note.data);
     (note, amount_val, from_claimable_val, until_claimable_val)
 }
@@ -298,4 +321,31 @@ fn test_assert_windows_rejects_refund_window_past_expiry() {
 #[test]
 fn test_assert_windows_accepts_overlapping_windows() {
     assert_windows(10, 100, 100);
+}
+
+/// The sdk's `paylinkTerms` pins the same vector.
+#[test]
+fn test_paylink_terms_vector() {
+    let note = PaylinkNote {
+        hash: 1,
+        sender_hash: 2,
+        data: pack_data(1000, 10, 100),
+        refundable_until: 50,
+        oidc_key_registry: AztecAddress::from_field(3),
+        vkey_hash: 4,
+        token_address: AztecAddress::from_field(5),
+    };
+    assert_eq(
+        paylink_terms(note),
+        0x2990a2606ec999744beecb7c857e662d4f0e072435c4a898e51e9ecd78761d29,
+    );
+}
+
+/// The sdk's note terms hash the deposit's `sender_hash` the same way.
+#[test]
+fn test_sender_hash_vector() {
+    assert_eq(
+        Poseidon2::hash([7], 1),
+        0x29f0f539ca2b1865fb736203c036100998291b6e1072323a1db5022f0a52b3cc,
+    );
 }

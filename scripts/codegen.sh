@@ -69,7 +69,8 @@ fi
 find packages/contracts -name "codegenCache.json" -type f -delete
 
 # Define directories to skip codegen
-SKIP_DIRS=("authenticators/interface")  # Replace with your specific paths
+# link_locator: only its artifact is used; a typed wrapper would offer a deploy nobody makes.
+SKIP_DIRS=("authenticators/interface" "contracts/link_locator")
 
 # Function to check if CONTRACT_DIR is in SKIP_DIRS
 should_skip() {

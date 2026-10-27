@@ -10,7 +10,6 @@ import {
   ContactStorage,
   IssuedConnectStorage,
   NameClaimStore,
-  RequestStorage,
   ObsidionCoreProvider,
   PendingConnectBackStorage,
   PredicateScreeningService,
@@ -79,12 +78,12 @@ import { retiredSession } from "./platform/auth/retiredSession"
 import { XmtpMount } from "./platform/xmtp/XmtpMount"
 import { MigrationDetectionMount } from "./features/migration/MigrationDetectionMount"
 import { CutoverLogoutMount } from "./features/cutover/account"
-import { NotificationsMount } from "./features/notifications/NotificationsMount"
+import { ReorgMonitorMount } from "./features/notifications/ReorgMonitorMount"
 import { PaylinkClaimMount } from "./features/notifications/PaylinkClaimMount"
-import { TransferScannerMount } from "./platform/transactions/TransferScannerMount"
+import { useWalletRuntime } from "./platform/useWalletRuntime"
 import { SipaDepositsMount } from "./features/deposit/useSipaDeposits"
 import { BrowserContractServiceStorage } from "./platform/contracts/BrowserContractServiceStorage"
-import { contactsWriteLock, requestsWriteLock } from "./platform/storage/contactsLock"
+import { contactsWriteLock } from "./platform/storage/contactsLock"
 import { webStorage } from "./platform/storage/WebStorageAdapter"
 import { getDesktopSettingsPath } from "./platform/desktopBridge"
 import { AppShell, SidebarLayout } from "./ui/AppShell"
@@ -157,8 +156,6 @@ function createAppServices(node: AztecNode) {
   // Cache of the L1 NameClaim artifacts that gate ClaimFPC eligibility; recoverable from the
   // Registry's log, so it is seeded here purely so later get() calls need no adapter.
   NameClaimStore.get(storageAdapter)
-  // P2P payment requests — the receiver writes and the request UI observe the same instance.
-  RequestStorage.get(storageAdapter, requestsWriteLock)
   return {
     config,
     storageAdapter,
@@ -170,8 +167,8 @@ function createAppServices(node: AztecNode) {
       : passThroughScreener,
     // The Main token's co-signer, following the manifest tuple; it shares every token's fleet signers.
     assetOptions: {
-      // Without this seed TokenStorage stays empty and
-      // every loadAssets short-circuits to an empty asset list — no balance.
+      // Without this seed TokenStorage stays empty and the balances name no wallet token: no
+      // balance.
       initialTokensToLoad: [WALLET_TOKEN_SYMBOL],
       teeSignerSource: createOxideTeeSignerSource({
         l1RpcUrl: config.l1RpcUrl,
@@ -312,6 +309,8 @@ function WalletGate() {
   const location = useLocation()
   const draft = useSyncExternalStore(subscribeDrawnOffer, drawnOfferTag)
   const claimPending = useNameClaimPending()
+  // Background work, the chain sync among it, runs once the account is unlocked.
+  useWalletRuntime(!isDemoMode())
   if (!loadOnboardedIdentity() && draft) return <DraftHome tag={draft} />
   // A stashed inbound connect replays once the gates pass — e.g. after onboarding routed
   // away from /connect. The stash is consume-once, so this fires at most one redirect. While the
@@ -324,14 +323,12 @@ function WalletGate() {
       {/* Unlocked only: the lock/visibility-scoped XMTP client + stage-2 inbox. Demo mode has no
           network identity to register, so it renders the seeded stores as-is. */}
       {!isDemoMode() && <XmtpMount />}
+      <ReorgMonitorMount />
       {!isDemoMode() && <SponsoredRailReadinessMount />}
       {!isDemoMode() && <PaylinkClaimMount />}
-      {/* Chain-native incoming-transfer ingest — independent of XMTP and the leader lock. */}
-      {!isDemoMode() && <TransferScannerMount />}
       {/* The SIPA sync loop runs on every wallet route, so an open deposit sheet advances anywhere. */}
       <SipaDepositsMount />
       <WebSavingsProvider>
-        <NotificationsMount />
         <Outlet />
         {/* Last so the upgrade dialog stacks above route-level sheets. */}
         <MigrationDetectionMount />
@@ -493,7 +490,7 @@ export function App({ boot, activeTab }: { boot: WebBootConfig; activeTab: Activ
                             {/* The pay page, and the older request-link entry. It sits outside
                       AccountGate so the SIPA pay-QR paints before PXE is up; the accountless right
                       pane nests AccountGate + the existing /claim wizard (OnboardingScreen). */}
-                            {["pay/:tag", "request"].map((path) => (
+                            {["pay/:tag", "request", "r"].map((path) => (
                               <Route
                                 key={path}
                                 path={path}
@@ -603,6 +600,8 @@ export function App({ boot, activeTab }: { boot: WebBootConfig; activeTab: Activ
                                 {/* Link view is identity-free but needs the asset layer to claim. */}
                                 <Route element={<BootHold />}>
                                   <Route path="link" element={<LinkViewScreen />} />
+                                  {/* The zk.money apex's short paylink path. */}
+                                  <Route path="p" element={<LinkViewScreen />} />
                                 </Route>
                               </Route>
                             </Route>

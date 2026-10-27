@@ -24,8 +24,9 @@
  * `notes` while the boot sync is open, else at `settled`.
  */
 
+import { syncCatchUp, type CatchUp } from "src/engine/catchUp"
+import { memoryStore, type ReadonlyStore } from "src/engine/store"
 import { logger } from "src/utils/logger"
-import { globalEventEmitter } from "../GlobalEventEmitter"
 import { TRANSFER_SCAN_CATCH_UP_TIMEOUT_MS } from "./TransferEventScanner"
 
 export const BOOT_WAIT_MS = TRANSFER_SCAN_CATCH_UP_TIMEOUT_MS
@@ -56,6 +57,7 @@ export const BOOT_ORDER = {
   messaging: "notes",
   /** The resolver payment watcher: L1 polls and address derivation, no PXE work. */
   resolverPayments: "notes",
+  oldVersionWithdrawals: "notes",
   withdrawalRescan: "restore",
   paylinkRescan: "settled",
   migrationProbe: "notes",
@@ -67,14 +69,18 @@ export const BOOT_ORDER = {
   historicActivity: "history",
   /** A frozen source's links its refunds paid out on L1: escrow note reads, after the import. */
   refundedLinks: "history",
+  /** The bell's starting point: an entry the replayed history lists before it never toasts. */
+  notifications: "history",
 } as const satisfies Record<string, BootStage>
 
 export type BootReader = keyof typeof BOOT_ORDER
 
-type CatchUpSource = Pick<
-  typeof globalEventEmitter,
-  "beginSyncCatchUp" | "isSyncCatchingUp" | "onSyncCatchUpChanged" | "offSyncCatchUpChanged"
->
+export interface BalanceSync {
+  /** A fresh device's first balance may still be short of deposits the replay has not claimed. */
+  syncing: boolean
+  /** Share of the boot replay checked, 0–1; null until its total is known. */
+  progress: number | null
+}
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
   let resolve!: () => void
@@ -97,11 +103,10 @@ export class BootPriority {
   /** The boot sync was open at `notes`: restore readers run then, and the moves replay counts. */
   private restoring = false
   private historySettled = false
-  private syncing = false
   private syncClosed = false
-  private progress: number | null = null
+  private readonly sync = memoryStore<BalanceSync>({ syncing: false, progress: null })
+  readonly balanceSync: ReadonlyStore<BalanceSync> = this.sync.readonly
   private endCatchUp: (() => void) | null = null
-  private readonly listeners = new Set<() => void>()
   private readonly waitMs: number
 
   constructor(
@@ -111,18 +116,17 @@ export class BootPriority {
       syncWaitMs?: number
       historyWaitMs?: number
       now?: () => number
-      catchUp?: CatchUpSource
+      catchUp?: CatchUp
     } = {},
   ) {
     this.waitMs = opts.waitMs ?? BOOT_WAIT_MS
     const now = opts.now ?? (() => globalThis.performance?.now() ?? Date.now())
-    const catchUp = opts.catchUp ?? globalEventEmitter
+    const catchUp = opts.catchUp ?? syncCatchUp
 
-    const onCatchUp = (catchingUp: boolean) => {
-      if (!catchingUp || this.syncing || this.syncClosed) return
-      this.syncing = true
-      this.endCatchUp = catchUp.beginSyncCatchUp()
-      this.notify()
+    const onCatchUp = () => {
+      if (!catchUp.status.get() || this.syncing || this.syncClosed) return
+      this.endCatchUp = catchUp.begin()
+      this.sync.set({ syncing: true, progress: null })
       // A sync whose notes wait gave up has no replay to wait for.
       void this.whenStage("settled").then(() => {
         if (!this.notesReached) this.closeSync()
@@ -153,7 +157,7 @@ export class BootPriority {
     })
     this.settled = Promise.all([this.notes.promise, this.deposits.promise]).then(() => {
       this.balanceSettled = true
-      catchUp.offSyncCatchUpChanged(onCatchUp)
+      stopWatching()
       if (this.replaysEnded) this.closeSync()
       logger.log(
         `[bootPriority] balance settled at ${Math.round(now())}ms (notes at ${Math.round(
@@ -170,8 +174,12 @@ export class BootPriority {
       this.historySettled = true
       logger.log(`[bootPriority] history settled at ${Math.round(now())}ms`)
     })
-    catchUp.onSyncCatchUpChanged(onCatchUp)
-    onCatchUp(catchUp.isSyncCatchingUp())
+    const stopWatching = catchUp.status.subscribe(onCatchUp)
+    onCatchUp()
+  }
+
+  private get syncing(): boolean {
+    return this.sync.get().syncing
   }
 
   /** The coordinator published its first balance. */
@@ -187,8 +195,7 @@ export class BootPriority {
   /** The first SIPA pass's items checked so far; ignored unless the boot sync is open. */
   depositProgress(done: number, total: number): void {
     if (!this.syncing || total === 0) return
-    this.progress = done / total
-    this.notify()
+    this.sync.set({ syncing: true, progress: done / total })
   }
 
   /** The first SIPA pass ended, claims included. */
@@ -214,21 +221,6 @@ export class BootPriority {
     return this.balanceSettled
   }
 
-  /** A fresh device's first balance may still be short of deposits the replay has not claimed. */
-  isBalanceSyncing(): boolean {
-    return this.syncing
-  }
-
-  /** Share of the boot replay checked, 0–1; null until its total is known. */
-  balanceSyncProgress(): number | null {
-    return this.progress
-  }
-
-  onChange(listener: () => void): () => void {
-    this.listeners.add(listener)
-    return () => this.listeners.delete(listener)
-  }
-
   private endReplays(): void {
     this.replaysEnded = true
     if (this.balanceSettled) this.closeSync()
@@ -237,15 +229,9 @@ export class BootPriority {
   private closeSync(): void {
     if (this.syncClosed) return
     this.syncClosed = true
-    this.syncing = false
-    this.progress = null
+    this.sync.set({ syncing: false, progress: null })
     this.endCatchUp?.()
     this.endCatchUp = null
-    this.notify()
-  }
-
-  private notify(): void {
-    for (const listener of this.listeners) listener()
   }
 
   private async whenStage(stage: BootStage): Promise<void> {

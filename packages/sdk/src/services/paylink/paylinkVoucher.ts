@@ -16,7 +16,7 @@ import {
   DEFAULT_CONTRACTS,
   ensureContractRegisteredInPXE,
 } from "@obsidion/contracts"
-import type { ObsidionWallet } from "../../obsidion/ObsidionWallet.js"
+import type { ObsidionWallet, TxHashCallback } from "../../obsidion/ObsidionWallet.js"
 import {
   contractClassWitness,
   registerSponsorFpc,
@@ -28,7 +28,12 @@ import { TokenService } from "../TokenService.js"
 import { buildOperationCall } from "./paylinkClaimSubmit.js"
 import { registerEscrow, sharedNoteRead } from "./escrowRegistration.js"
 import { paylinkL1ClaimArgs, type PaylinkL1Proof } from "./paylinkL1Claim.js"
-import { buildPaylinkNoteView, type PaylinkNoteView } from "./paylinkNoteData.js"
+import {
+  assertPaylinkTerms,
+  buildPaylinkNoteView,
+  claimTermsArgs,
+  type PaylinkNoteView,
+} from "./paylinkNoteData.js"
 import { findEscrowDepositTx } from "./paylinkRecovery.js"
 import { makePaylinkSpendMetadataResolver } from "./paylinkSpendMetadata.js"
 
@@ -41,13 +46,16 @@ export interface PaylinkVoucherDeps {
 
 export { registerEscrow }
 
-/** The escrow note behind a link, read with no account: what a bearer cash-out can burn. */
+/**
+ * The escrow note behind a link, read with no account: what a bearer cash-out can burn. Refuses a
+ * note other than the one the link was made for.
+ */
 export async function readPaylinkEscrowNote(
   deps: Pick<PaylinkVoucherDeps, "wallet" | "contractService">,
   params: PaylinkParams,
 ): Promise<PaylinkNoteView> {
   const { instance, artifact } = await registerEscrow(deps, params)
-  return sharedNoteRead(deps.wallet, instance.address, async () => {
+  const note = await sharedNoteRead(deps.wallet, instance.address, async () => {
     const escrow = Contract.at(instance.address, artifact, deps.wallet)
     const sim = await escrow.methods.sync_note!().simulate({
       from: NO_FROM,
@@ -55,6 +63,8 @@ export async function readPaylinkEscrowNote(
     })
     return buildPaylinkNoteView(sim.result)
   })
+  await assertPaylinkTerms(params, note)
+  return note
 }
 
 /** Sponsored txs the link's escrow still holds on the voucher rail: how many exits it can pay for. */
@@ -82,6 +92,7 @@ export interface PaylinkExitArgs extends PaylinkVoucherDeps {
   withdrawal: WithdrawalOptions
   operationId?: string
   zkProof?: PaylinkL1Proof
+  onTxHash?: TxHashCallback
 }
 
 /**
@@ -95,7 +106,8 @@ export async function exitPaylinkWithVoucher(
   const { params } = args
   const proverTip = args.proverTip ?? 0n
   const { instance, keys, artifact } = await registerEscrow(args, params)
-  const { amount, tokenAddress } = await readPaylinkEscrowNote(args, params)
+  const note = await readPaylinkEscrowNote(args, params)
+  const { amount, tokenAddress } = note
   if (!tokenAddress.equals(args.tokenAddress)) {
     throw new Error("The paylink note token differs from its withdrawal source")
   }
@@ -106,12 +118,15 @@ export async function exitPaylinkWithVoucher(
     { from: instance.address, recipient: args.l1Recipient, amount, proverTip },
     args.withdrawal,
   )
-  const claimArgs = await paylinkL1ClaimArgs(
-    params.paylinkType,
-    { executor: payout.plainWithdrawal.executor, userPayload: payout.userPayload },
-    proverTip,
-    args.zkProof,
-  )
+  const claimArgs = [
+    ...(await paylinkL1ClaimArgs(
+      params.paylinkType,
+      { executor: payout.plainWithdrawal.executor, userPayload: payout.userPayload },
+      proverTip,
+      args.zkProof,
+    )),
+    ...(await claimTermsArgs(artifact, params, async () => note)),
+  ]
   const fpcArtifact = await registerSponsorFpc(args.wallet, args.sponsor)
   const tokenArtifact = await args.contractService.getArtifactForContract(
     DEFAULT_CONTRACTS.oxideToken,
@@ -173,6 +188,7 @@ export async function exitPaylinkWithVoucher(
     fee: op.sendOpts.fee,
     operationId: args.operationId,
     kind: "paylink-claim",
+    onTxHash: args.onTxHash,
   })
   const receipt = (sent as { receipt?: { txHash?: { toString(): string }; blockNumber?: number } })
     .receipt

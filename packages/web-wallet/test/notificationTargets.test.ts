@@ -3,7 +3,7 @@
  * Bridge targets carry the producer's lowercased SIPA address; records keep it checksummed.
  */
 import { describe, expect, it, vi } from "vitest"
-import type { ActivityItem, AppNotificationEntry } from "@obsidion/front-core"
+import type { ActivityItem, NotificationEntry } from "@obsidion/front-core"
 
 vi.mock("@obsidion/web-ds", () => ({
   ActivityListRow: () => null,
@@ -20,25 +20,28 @@ vi.mock("../src/features/paylink/ticketContinuation", () => ({
 }))
 
 const { notificationRoute } = await import("../src/ui/NotificationsPanel")
-const { bridgeDetailTarget, detailNoticeFor, findBridgeItem, savingsMoveExitOffer } = await import(
-  "../src/ui/screens/useActivityEntries"
+const { bridgeDetailTarget, findBridgeItem, savingsMoveExitOffer } = await import(
+  "@obsidion/front-core"
 )
+const { detailNoticeFor } = await import("../src/ui/activity/ActivityDetailHost")
 
 const SIPA = "0xAbCdEf0000000000000000000000000000000001"
 
-function entry(target: AppNotificationEntry["target"]): AppNotificationEntry {
+function entry(target: NotificationEntry["target"]): NotificationEntry {
   return {
     id: "x",
-    producer: "bridge",
-    domain: "bridge",
-    sourceId: "x",
-    title: "",
-    description: "",
+    about: {
+      kind: "event",
+      event: { id: "x", at: 0, kind: "claimReversed", data: { txHash: "0x" } },
+    },
     timestampMs: 0,
-    systemIcon: "",
+    icon: "",
     severity: "info",
+    pending: false,
+    read: false,
+    firstSeenAt: 0,
     target,
-  } as AppNotificationEntry
+  }
 }
 
 const items = [
@@ -48,6 +51,13 @@ const items = [
 ] as unknown as ActivityItem[]
 
 describe("notification target -> activity detail", () => {
+  it("opens a request link's publish at its request's sheet, as it has no activity row", () => {
+    expect(notificationRoute(entry({ type: "request.share", requestId: "0x0a1b" }))).toEqual({
+      to: "/activity",
+      state: { openRequestId: "0x0a1b" },
+    })
+  })
+
   it("routes bridge targets by kind and tx targets by hash", () => {
     expect(
       notificationRoute(
@@ -66,7 +76,7 @@ describe("notification target -> activity detail", () => {
   })
 
   it("outdates a reorg failure notice once its row confirms; a confirmation notice never", () => {
-    const reorg = { type: "reorg.txDetail", txHash: "0xt" }
+    const reorg = { type: "reorg.txDetail", txHash: "0xt" } as const
     expect(notificationRoute({ ...entry(reorg), severity: "error" })?.state).toMatchObject({
       openTxHash: "0xt",
       noticeStaleOn: "success",
@@ -91,7 +101,7 @@ describe("notification target -> activity detail", () => {
     expect(notificationRoute(entry({ type: "contact.added", contactId: "bob" }))).toEqual({
       to: "/contacts/bob",
     })
-    expect(notificationRoute(entry({ type: "contact.added" }))).toBeNull()
+    expect(notificationRoute(entry({ type: "contact.added" } as NotificationEntry["target"]))).toBeNull()
   })
 
   it("opens the migration dialog, in place, for funds left on an old version", () => {
@@ -115,7 +125,7 @@ describe("notification target -> activity detail", () => {
     expect(notificationRoute(entry({ type: "registration.pending", tag: "alice" }))).toEqual({
       to: "/claim/alice",
     })
-    expect(notificationRoute(entry({ type: "registration.pending" }))).toBeNull()
+    expect(notificationRoute(entry({ type: "registration.pending" } as NotificationEntry["target"]))).toBeNull()
   })
 
   it("opens Home and the link's review for a registration a payment link funds", () => {
@@ -155,14 +165,16 @@ describe("notification target -> activity detail", () => {
     const withdrawal = (record: object) => ({ kind: "bridge.withdrawal", record }) as never
     expect(
       bridgeDetailTarget(withdrawal({ localId: "m1", skyMove: { direction: "out" } })),
-    ).toEqual({
-      savings: "m1",
-    })
+    ).toEqual({ kind: "savings", id: "m1" })
     expect(bridgeDetailTarget(withdrawal({ localId: "w2", groupId: "g1" }))).toEqual({
-      withdrawal: "g1",
+      kind: "withdrawal",
+      id: "g1",
     })
-    expect(bridgeDetailTarget(withdrawal({ localId: "w3" }))).toEqual({ withdrawal: "w3" })
-    expect(bridgeDetailTarget(items[1] as never)).toEqual({ deposit: SIPA })
+    expect(bridgeDetailTarget(withdrawal({ localId: "w3" }))).toEqual({
+      kind: "withdrawal",
+      id: "w3",
+    })
+    expect(bridgeDetailTarget(items[1] as never)).toEqual({ kind: "deposit", address: SIPA })
   })
 
   it("resolves a reorg notice's tx hash to the bridge row it was taken from", () => {

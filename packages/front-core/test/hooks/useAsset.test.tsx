@@ -46,10 +46,6 @@ const {
     mockStorageState: {
       completeAddress: "0xcomplete",
       tokens: [] as any[],
-      /** Seeded rows read as cache-hydrated (no `updatedAt`); `updateBalance` writes stamp one. */
-      balances: {} as Record<string, bigint>,
-      updatedAt: new Map<string, number>(),
-      listeners: new Set<(records: unknown[]) => void>(),
       contractAddress: undefined as { toString(): string } | undefined,
     },
   }
@@ -99,34 +95,6 @@ vi.mock("src/contexts/useAztecContext", () => ({
 
 vi.mock("src/core", async () => {
   const actual = await vi.importActual<typeof import("src/core")>("src/core")
-  // Stable stub implementing the CachedRecordSource surface useAsset hydrates
-  // through, backed by the mutable `mockStorageState.balances` map (keys are
-  // `${scope}:${token}`, the token being the last `:`-segment).
-  const balanceStorageStub = {
-    load: vi.fn(async () => {}),
-    list: vi.fn(() =>
-      Object.entries(mockStorageState.balances).map(([key, balance]) => {
-        const sep = key.lastIndexOf(":")
-        return {
-          scope: key.slice(0, sep),
-          tokenAddress: key.slice(sep + 1),
-          balance: balance.toString(),
-          updatedAt: mockStorageState.updatedAt.get(key),
-        }
-      }),
-    ),
-    onListChanged: vi.fn((listener: (records: unknown[]) => void) => {
-      mockStorageState.listeners.add(listener)
-      return () => mockStorageState.listeners.delete(listener)
-    }),
-    updateBalance: vi.fn(async (scope: string, addr: string, balance: bigint) => {
-      const key = `${scope}:${addr}`
-      mockStorageState.balances[key] = balance
-      mockStorageState.updatedAt.set(key, Date.now())
-      const records = balanceStorageStub.list()
-      mockStorageState.listeners.forEach((l) => l(records))
-    }),
-  }
   return {
     ...actual,
     TokenStorage: {
@@ -141,7 +109,7 @@ vi.mock("src/core", async () => {
       }),
     },
     BalanceStorage: {
-      get: () => balanceStorageStub,
+      get: () => ({ load: async () => {}, list: () => [], onListChanged: () => () => {} }),
     },
     TransactionStorage: { get: () => ({ getTransactions: vi.fn(async () => []) }) },
     WithdrawalStorage: {
@@ -173,7 +141,6 @@ vi.mock("src/utils", async () => {
 })
 
 import { useAsset, type UseAssetOptions } from "../../src/hooks/useAsset"
-import { BalanceStorage } from "src/core"
 import type { TeeSignerSource } from "../../src/tee/teeSignerSource"
 
 function renderHook(options?: UseAssetOptions) {
@@ -225,9 +192,6 @@ describe("useAsset background-connect", () => {
     mockAccountState.obsidionAccount = mockObsidionAccount
     mockStorageState.completeAddress = "0xcomplete"
     mockStorageState.tokens = []
-    mockStorageState.balances = {}
-    mockStorageState.updatedAt.clear()
-    mockStorageState.listeners.clear()
     mockStorageState.contractAddress = undefined
     tokenServiceStub.tokenAddress = undefined
   })
@@ -452,202 +416,6 @@ describe("useAsset background-connect", () => {
 
     expect(setTeeSignerMock).toHaveBeenCalledWith(undefined)
     expect(unsubscribe).toHaveBeenCalled()
-  })
-
-  it("hydrates last-known balances from cache on mount, before any wallet/PXE init", async () => {
-    // No wallet yet — token service init never runs, mirroring app cold start.
-    mockAztecState.obsidionWallet = null
-    mockStorageState.tokens = [{ address: "0xtok", symbol: "DAI", name: "DAI", decimals: 2 }]
-    mockStorageState.balances = { "sandbox:0xcomplete:0xtok": 12345n }
-
-    const { result, unmount } = renderHook()
-
-    await waitFor(() => expect(result.current.assets).not.toBeNull())
-    expect(result.current.assets).toHaveLength(1)
-    expect(result.current.assets![0].balance).toBe(123.45)
-    // Cached values are display-only: not live-confirmed until a real fetch.
-    expect(result.current.liveAssetsLoaded).toBe(false)
-    await waitFor(() => expect(result.current.assetsLoading).toBe(false))
-    unmount()
-  })
-
-  it("hydrates when the network loads after mount (no ordering can skip the cache fill)", async () => {
-    mockAztecState.obsidionWallet = null
-    mockAztecState.currentNetwork = null
-    mockStorageState.tokens = [{ address: "0xtok", symbol: "DAI", name: "DAI", decimals: 2 }]
-    mockStorageState.balances = { "sandbox:0xcomplete:0xtok": 12345n }
-
-    const { result, rerender, unmount } = renderHook()
-
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 50))
-    })
-    expect(result.current.assets).toBeNull()
-
-    mockAztecState.currentNetwork = { type: "sandbox" } as any
-    rerender()
-
-    await waitFor(() => expect(result.current.assets).not.toBeNull())
-    expect(result.current.assets![0].balance).toBe(123.45)
-    unmount()
-  })
-
-  it("clears the previous scope's balance when the network switches to one with no record", async () => {
-    mockAztecState.obsidionWallet = null
-    mockStorageState.tokens = [{ address: "0xtok", symbol: "DAI", name: "DAI", decimals: 2 }]
-    mockStorageState.balances = { "sandbox:0xcomplete:0xtok": 12345n }
-    mockStorageState.updatedAt.set("sandbox:0xcomplete:0xtok", Date.now())
-
-    const { result, rerender, unmount } = renderHook()
-    await waitFor(() => expect(result.current.assets).not.toBeNull())
-    await waitFor(() => expect(result.current.liveAssetsLoaded).toBe(true))
-
-    mockAztecState.currentNetwork = { type: "testnet" } as any
-    rerender()
-
-    await waitFor(() => expect(result.current.assets).toBeNull())
-    expect(result.current.liveAssetsLoaded).toBe(false)
-    unmount()
-  })
-
-  it.each(["empty", "cached", "live"])(
-    "projects the new account's %s balance on an account-only switch",
-    async (balanceState) => {
-      mockStorageState.tokens = [{ address: "0xtok", symbol: "DAI", name: "DAI", decimals: 2 }]
-      mockStorageState.balances = { "sandbox:0xcomplete:0xtok": 12345n }
-      mockStorageState.updatedAt.set("sandbox:0xcomplete:0xtok", Date.now())
-      if (balanceState !== "empty") {
-        mockStorageState.balances["sandbox:0xother-account:0xtok"] = 999n
-      }
-      if (balanceState === "live") {
-        mockStorageState.updatedAt.set("sandbox:0xother-account:0xtok", Date.now())
-      }
-
-      const { result, rerender, unmount } = renderHook()
-      await waitFor(() => expect(result.current.tokenService).toBeTruthy())
-      await waitFor(() => expect(result.current.assets?.[0]?.balance).toBe(123.45))
-      await waitFor(() => expect(result.current.liveAssetsLoaded).toBe(true))
-
-      // Keep the network and balance records unchanged: only the active account changes.
-      mockStorageState.completeAddress = "0xother-account"
-      mockAccountState.obsidionAccount = {
-        getAddress: () => ({ toString: () => "0xother-account" }),
-        getCompleteAddress: () => ({ toString: () => "0xother-account" }),
-      }
-      rerender()
-
-      await waitFor(() => {
-        if (balanceState === "empty") expect(result.current.assets).toBeNull()
-        else expect(result.current.assets?.[0]?.balance).toBe(9.99)
-        expect(result.current.liveAssetsLoaded).toBe(balanceState === "live")
-      })
-      unmount()
-    },
-  )
-
-  it("ignores cached balances from another network or account scope", async () => {
-    mockAztecState.obsidionWallet = null
-    mockStorageState.tokens = [{ address: "0xtok", symbol: "DAI", name: "DAI", decimals: 2 }]
-    mockStorageState.balances = {
-      "testnet:0xcomplete:0xtok": 12345n,
-      "sandbox:0xother-account:0xtok": 999n,
-    }
-
-    const { result, unmount } = renderHook()
-
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 50))
-    })
-    expect(result.current.assets).toBeNull()
-    unmount()
-  })
-
-  it("leaves assets null when nothing is cached (fresh install shows loading, not $0)", async () => {
-    mockAztecState.obsidionWallet = null
-    mockStorageState.tokens = [{ address: "0xtok", symbol: "DAI", name: "DAI", decimals: 2 }]
-
-    const { result, unmount } = renderHook()
-
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 50))
-    })
-    expect(result.current.assets).toBeNull()
-    unmount()
-  })
-
-  it("persists the token row on init and projects a live store write as a confirmed balance", async () => {
-    // First launch: nothing stored, wallet up, DAI resolvable on-chain.
-    mockStorageState.contractAddress = { toString: () => "0xtok" }
-    tokenServiceStub.tokenAddress = { toString: () => "0xtok" }
-
-    const { result, unmount } = renderHook({ initialTokensToLoad: ["DAI"] })
-
-    await waitFor(() =>
-      expect(mockStorageState.tokens.some((t) => t.address === "0xtok")).toBe(true),
-    )
-    expect(result.current.assets).toBeNull()
-    expect(result.current.liveAssetsLoaded).toBe(false)
-
-    // The coordinator's synced tick writes the store; the hook only projects it.
-    await act(async () => {
-      await BalanceStorage.get().updateBalance("sandbox:0xcomplete", "0xtok", 777n, 12)
-    })
-    vi.mocked(Date.now).mockReturnValue(Date.now() + 1)
-    const written = BalanceStorage.get().list()[0]!.updatedAt!
-
-    await waitFor(() => expect(result.current.assets?.[0]?.balance).toBeGreaterThan(0))
-    expect(result.current.liveAssetsLoaded).toBe(true)
-    // The asset carries when its balance was written, so a figure and what it holds move together.
-    await waitFor(() =>
-      expect(result.current.balanceReadAt["0xtok"]).toBeGreaterThanOrEqual(written),
-    )
-    // A balance spent to zero leaves the assets, but its read time stays.
-    await act(async () => {
-      await BalanceStorage.get().updateBalance("sandbox:0xcomplete", "0xtok", 0n, 13)
-    })
-    await waitFor(() => expect(result.current.assets ?? []).toHaveLength(0))
-    await waitFor(() =>
-      expect(result.current.balanceReadAt["0xtok"]).toBeGreaterThanOrEqual(written),
-    )
-    unmount()
-  })
-
-  it("loadAssets waits for a coordinator and gives up after the cap when none starts", async () => {
-    const { result, unmount } = renderHook()
-    vi.useFakeTimers()
-    try {
-      let settled = false
-      let pending!: Promise<void>
-      await act(async () => {
-        pending = result.current.loadAssets().then(() => {
-          settled = true
-        })
-        await vi.advanceTimersByTimeAsync(1_000)
-      })
-      expect(settled).toBe(false)
-      expect(result.current.assetsLoading).toBe(true)
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(60_000)
-        await pending
-      })
-      expect(settled).toBe(true)
-      expect(result.current.assetsLoading).toBe(false)
-    } finally {
-      vi.useRealTimers()
-    }
-    unmount()
-  })
-
-  it("leaves assets null when no tokens are stored", async () => {
-    mockAztecState.obsidionWallet = null
-
-    const { result, unmount } = renderHook()
-
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 50))
-    })
-    expect(result.current.assets).toBeNull()
-    unmount()
   })
 
   it("does not write state for a stale connect that resolves after unmount", async () => {

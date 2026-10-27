@@ -1045,9 +1045,8 @@ export class ObsidionWallet extends BaseWallet {
             expiresAtMs: txExpiresAtMs(provenTx.publicInputs.expirationTimestamp),
           })
 
-          // The op id and the client-side txHash let `TxLifecycleService` flip the row to MINING
-          // and stamp the real hash before submit, without waiting for the caller's post-mining
-          // patch.
+          // The op id and the client-side txHash let the caller stamp the real hash on its row
+          // before submit (`trackSubmission`), without waiting for the post-mining patch.
           provingProgress.emitStageStart(ProvingStage.Mining, opId, txHash.toString())
           this.log.debug(`Sending transaction ${txHash}`)
 

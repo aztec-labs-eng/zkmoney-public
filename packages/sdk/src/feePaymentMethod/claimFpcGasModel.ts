@@ -26,7 +26,7 @@
  *
  * Shapes fall in three groups:
  *   - Fixed private shapes (authorize_intents, the registration gate, gift_voucher, the SIPA
- *     notify): the side-effect model must equal the measured table to the gas.
+ *     notify, the link announce): the side-effect model must equal the measured table to the gas.
  *   - Spends (transfer, withdraw, paylink deposit): the oxide token spends notes through a recursion
  *     ladder, so these are budgeted at the ladder's sponsored maximum.
  *   - Public calls (L1-operation broadcasts, the email paylink's registry view): their execution gas
@@ -45,6 +45,7 @@ import {
   MAX_L2_TO_L1_MSGS_PER_TX,
   MAX_NOTE_HASHES_PER_TX,
   MAX_NULLIFIERS_PER_TX,
+  PRIVATE_LOG_CIPHERTEXT_LEN,
   PUBLIC_TX_L2_GAS_OVERHEAD,
 } from "@aztec-labs/constants"
 import { computePublishDaLogEmittedLengths } from "../oxide/publishDaLogs.js"
@@ -240,6 +241,14 @@ const handshakeEffects = (count: number): SideEffects => ({
   nullifiers: count,
   noteHashes: count,
   privateLogEmittedLengths: Array.from({ length: 2 * count }, () => DELIVERY_LOG_LENGTH),
+  l2ToL1Msgs: 0,
+})
+
+/** link_locator.announce: one log, the tag plus a full ciphertext. */
+export const linkAnnounceEffects = (): SideEffects => ({
+  nullifiers: 0,
+  noteHashes: 0,
+  privateLogEmittedLengths: [1 + PRIVATE_LOG_CIPHERTEXT_LEN],
   l2ToL1Msgs: 0,
 })
 

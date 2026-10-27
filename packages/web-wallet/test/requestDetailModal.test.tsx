@@ -37,12 +37,14 @@ vi.mock("@obsidion/web-ds", () => ({
 
 const findById = vi.fn()
 vi.mock("@obsidion/front-core", () => ({
-  RequestStorage: { get: () => ({ findById }) },
   formatDateLabel: () => "Today",
   formatTimeLabel: () => "14:32",
 }))
 
 const cancelRequestById = vi.fn(async (_id: string) => true)
+vi.mock("../src/platform/session", () => ({
+  useSession: () => ({ requests: { view: { get: () => [findById()].filter(Boolean) } } }),
+}))
 vi.mock("../src/features/contacts/requestActions", () => ({
   cancelRequestById: (id: string) => cancelRequestById(id),
 }))
@@ -86,7 +88,7 @@ describe("RequestDetailModal", () => {
     container = document.createElement("div")
     document.body.appendChild(container)
     root = createRoot(container)
-    findById.mockResolvedValue(pendingRow)
+    findById.mockReturnValue(pendingRow)
   })
 
   afterEach(() => {
@@ -151,7 +153,7 @@ describe("RequestDetailModal", () => {
   })
 
   it("links the fulfillment tx and drops the cancel button once fulfilled", async () => {
-    findById.mockResolvedValue({
+    findById.mockReturnValue({
       ...pendingRow,
       status: "fulfilled",
       fulfillmentTxHash: "0xabcdef1234567890",
@@ -184,7 +186,7 @@ describe("RequestDetailModal", () => {
     cancelRequestById.mockResolvedValueOnce(false)
     await render()
     await act(async () => button("Cancel request")?.click())
-    findById.mockResolvedValue({
+    findById.mockReturnValue({
       ...pendingRow,
       status: "fulfilled",
       fulfillmentTxHash: "0xabcdef1234567890",
@@ -208,7 +210,7 @@ describe("RequestDetailModal", () => {
   })
 
   it("closes itself when the row no longer exists", async () => {
-    findById.mockResolvedValue(undefined)
+    findById.mockReturnValue(undefined)
     await render()
     expect(onClose).toHaveBeenCalled()
   })

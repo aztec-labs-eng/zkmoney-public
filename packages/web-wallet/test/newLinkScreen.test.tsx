@@ -2,6 +2,7 @@ import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { MemoryRouter, Routes, Route, useLocation } from "react-router-dom"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { balancesOf } from "./support/balances"
 import { fireEvent } from "../src/lib/analytics"
 import { provingProgress } from "@obsidion/proving-progress"
 import { asOperation, endSigningAndHandOff } from "./support/handOff"
@@ -13,11 +14,9 @@ function LocationProbe() {
 }
 vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/front-core")>()),
-  useAssetContext: () => ({ teeSignerError: null }),
-  useBalance: () => ({
-    walletAsset: { balance: 100, balanceAtomic: 100n * 10n ** 18n, decimals: 18 },
-    walletBalance: "100",
-    assetsLoaded: true,
+  useAssetContext: () => ({
+    teeSignerError: null,
+    balances: balancesOf({ main: 100n * 10n ** 18n, live: true, known: true }),
   }),
   parseEscrowAmount: (s: string, d: number) => ({
     atomic: BigInt(Math.round(Number(s))) * 10n ** BigInt(d),
@@ -317,7 +316,9 @@ describe("NewLinkScreen", () => {
     expect(container.textContent).toContain("Confirm with passkey")
     await endSigningAndHandOff()
     expect(location.pathname).toBe("/activity")
-    expect(location.state).toEqual({ openPaylink: link.url })
+    expect(location.state).toEqual({
+      openPaylink: `${window.location.origin}/link#${link.fragment}`,
+    })
     expect(container.textContent).toBe("Activity")
     expect(fireEvent).not.toHaveBeenCalledWith("proving_cancelled", expect.anything())
 
@@ -362,7 +363,9 @@ describe("NewLinkScreen", () => {
     await act(async () => button("Create paylink")?.click())
     await act(async () => new Promise((r) => setTimeout(r)))
     expect(location.pathname).toBe("/activity")
-    expect(location.state).toEqual({ openPaylink: link.url })
+    expect(location.state).toEqual({
+      openPaylink: `${window.location.origin}/link#${link.fragment}`,
+    })
     expect(container.textContent).toBe("Activity")
     expect(fireEvent).not.toHaveBeenCalledWith("proving_cancelled", expect.anything())
   })

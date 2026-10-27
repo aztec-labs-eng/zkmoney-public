@@ -80,14 +80,14 @@ export class PaylinkDirectContract extends ContractBase {
   /** Type-safe wrappers for the public methods exposed by the contract. */
   public declare methods: {
     
-    /** claim(recipient: struct, authwit_nonce: field, meta: array) */
-    claim: ((recipient: AztecAddressLike, authwit_nonce: FieldLike, meta: FieldLike[]) => ContractFunctionInteraction) & Pick<ContractMethod, "selector">;
+    /** claim(recipient: struct, authwit_nonce: field, meta: array, terms: field) */
+    claim: ((recipient: AztecAddressLike, authwit_nonce: FieldLike, meta: FieldLike[], terms: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, "selector">;
 
-    /** claim_to_l1(executor: struct, user_payload_hash: field, prover_tip: integer) */
-    claim_to_l1: ((executor: EthAddressLike, user_payload_hash: FieldLike, prover_tip: (bigint | number)) => ContractFunctionInteraction) & Pick<ContractMethod, "selector">;
+    /** claim_to_l1(executor: struct, user_payload_hash: field, prover_tip: integer, terms: field) */
+    claim_to_l1: ((executor: EthAddressLike, user_payload_hash: FieldLike, prover_tip: (bigint | number), terms: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, "selector">;
 
-    /** claim_with_withdrawal(recipient: struct, withdrawal_amount: integer, executor: struct, user_payload_hash: field, prover_tip: integer, meta: array) */
-    claim_with_withdrawal: ((recipient: AztecAddressLike, withdrawal_amount: (bigint | number), executor: EthAddressLike, user_payload_hash: FieldLike, prover_tip: (bigint | number), meta: FieldLike[]) => ContractFunctionInteraction) & Pick<ContractMethod, "selector">;
+    /** claim_with_withdrawal(recipient: struct, withdrawal_amount: integer, executor: struct, user_payload_hash: field, prover_tip: integer, meta: array, terms: field) */
+    claim_with_withdrawal: ((recipient: AztecAddressLike, withdrawal_amount: (bigint | number), executor: EthAddressLike, user_payload_hash: FieldLike, prover_tip: (bigint | number), meta: FieldLike[], terms: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, "selector">;
 
     /** deposit(amount: integer, from_claimable: integer, until_claimable: integer, refundable_until: integer, token_address: struct, sender: struct, meta: array) */
     deposit: ((amount: (bigint | number), from_claimable: (bigint | number), until_claimable: (bigint | number), refundable_until: (bigint | number), token_address: AztecAddressLike, sender: AztecAddressLike, meta: FieldLike[]) => ContractFunctionInteraction) & Pick<ContractMethod, "selector">;

@@ -38,7 +38,7 @@ import {
   loadRegistrationTerms,
   saveRegistrationTerms,
 } from "../src/features/onboarding/registrationTerms"
-import { canManualRegistrationSweep } from "../src/features/onboarding/registrationSweep"
+import { canManualRegistrationSweep } from "@obsidion/front-core"
 import { reconcileRegistrationRefund } from "../src/features/onboarding/registrationQuoteRecovery"
 import { recordDepositAdmission, hasDepositAdmission } from "../src/features/identity/admission"
 import { saveWalletIdentity } from "../src/features/identity/walletIdentity"

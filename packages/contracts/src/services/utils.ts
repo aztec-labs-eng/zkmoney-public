@@ -25,6 +25,7 @@ const HARDCODED_ARTIFACT_IMPORTS: Partial<
   [DEFAULT_CONTRACTS.paylinkEmail]: () => import("../artifacts/lazy/paylink_email.js"),
   [DEFAULT_CONTRACTS.passwordFPC]: () => import("../artifacts/lazy/password_fpc.js"),
   [DEFAULT_CONTRACTS.claimFpc]: () => import("../artifacts/lazy/claim_fpc.js"),
+  [DEFAULT_CONTRACTS.linkLocator]: () => import("../artifacts/lazy/link_locator.js"),
 }
 
 export const isContractArtifact = (obj: any): obj is ContractArtifact => {

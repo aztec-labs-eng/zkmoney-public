@@ -1,6 +1,7 @@
 import { Icon, Toast } from "@obsidion/web-ds"
 import { useCallback, useEffect, useRef, useState } from "react"
-import type { AppNotificationEntry } from "@obsidion/front-core"
+import type { NotificationEntry } from "@obsidion/front-core"
+import { fmt } from "../lib/fmt"
 import { useOperationsInProgress, useTabBoundOperation } from "../features/operations/operations"
 import type { TabPlace } from "../features/operations/TabLine"
 import {
@@ -13,10 +14,11 @@ import {
   type EntryOpener,
   type NotificationScope,
 } from "./NotificationsPanel"
+import copy from "./notifications.copy"
+import { notificationText } from "./notificationText"
 import { PhoneIcon } from "./PhoneIcon"
 import { usePhoneLayout } from "./usePhoneLayout"
 
-/** Bell + dropdown. Closing by any route marks everything read. */
 /**
  * The bell while the wallet starts: nothing is listed yet. A tap opens the panel, which shows once
  * the wallet is up.
@@ -26,7 +28,7 @@ export function IdleBell() {
   return (
     <div className="ww-notifications__anchor">
       <BellButton
-        label="Notifications"
+        label={copy.bell.label}
         expanded={open}
         unread={false}
         onClick={() => setOpen(!open)}
@@ -89,23 +91,25 @@ export function NotificationsBell({
   const spinning = running || hasPending
   const wasOpen = useRef(open)
   useEffect(() => {
-    if (wasOpen.current && !open) void markAllRead()
+    if (wasOpen.current && !open) markAllRead()
     wasOpen.current = open
   }, [open, markAllRead])
   const close = useCallback(() => setOpen(false), [setOpen])
 
-  // Entries minted after hydration pop a toast, one at a time; the stored backlog stays behind the
-  // bell. An id leaves the queue once its toast has shown. `seen` holds the listed entries' keys
-  // only, so an entry removed and minted again under its id toasts again.
+  // Entries first seen after this bell mounted pop a toast, one at a time; the backlog, all the list
+  // holds once it is first complete (`hydrated`), stays behind the bell. An id leaves the queue once
+  // its toast has shown. `seen` holds the listed entries' keys only, so an entry forgotten and
+  // listed again under its id toasts again.
   const seen = useRef<Set<string> | null>(null)
-  const [queue, setQueue] = useState<AppNotificationEntry[]>([])
+  const [since] = useState(Date.now)
+  const [queue, setQueue] = useState<NotificationEntry[]>([])
   const toast = queue[0] ?? null
   useEffect(() => {
     if (!hydrated) return
-    const fresh = seen.current ? freshToasts(entries, seen.current) : []
+    const fresh = seen.current ? freshToasts(entries, seen.current, since) : []
     seen.current = new Set(entries.map(toastKey))
     if (fresh.length) setQueue((q) => [...q, ...fresh])
-  }, [entries, hydrated])
+  }, [entries, hydrated, since])
   const dropToast = useCallback(() => setQueue((q) => q.slice(1)), [])
   useEffect(() => {
     if (!toast) return
@@ -146,11 +150,11 @@ export function NotificationsBell({
         label={
           spinning
             ? running
-              ? `Notifications, ${
-                  tabBound ? `keep this ${place} open` : "a transaction is finishing"
-                }`
-              : "Notifications, something is in progress"
-            : "Notifications"
+              ? tabBound
+                ? fmt(copy.bell.keepOpen, { place })
+                : copy.bell.finishing
+              : copy.bell.inProgress
+            : copy.bell.label
         }
         expanded={open}
         ring={spinning ? (tabBound ? "is-tab-bound" : "is-safe") : undefined}
@@ -164,8 +168,8 @@ export function NotificationsBell({
         <Toast
           className="ww-notifications__toast"
           kind={toast.severity === "error" ? "error" : "success"}
-          message={`${toast.title}: ${toast.description}`}
-          actionLabel={opener(toast) ? "Open" : undefined}
+          message={fmt(copy.panel.toast, notificationText(toast))}
+          actionLabel={opener(toast) ? copy.panel.open : undefined}
           onAction={openToast}
           onDismiss={dropToast}
         />

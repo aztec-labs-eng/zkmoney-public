@@ -11,17 +11,16 @@ import { walletStorage } from "../src/platform/storage/walletStorage"
 import { TxStatus } from "@aztec-labs/stdlib/tx"
 import { provingProgress } from "@obsidion/proving-progress"
 import {
-  AppNotificationStore,
   INTERRUPTED_ERRORS,
   OPERATIONS_STORAGE_KEY,
-  WithdrawalStorage,
+  reorgEvent,
   type OperationRecord,
 } from "@obsidion/front-core"
 import { clearActiveStorage, setActiveStorageId } from "../src/platform/storage/activeStorage"
-import { webStorage } from "../src/platform/storage/WebStorageAdapter"
 import { PAYLINK_NOT_CLAIMABLE_YET_MESSAGE } from "../src/features/paylink/claimWindow"
 import { getOperationStore } from "../src/features/operations/operations"
-import { operationEntry } from "../src/features/operations/operationEntries"
+import { activeAccount, closeSession, openSession, session } from "../src/platform/session"
+import { operationEntry } from "./support/operations"
 import { NotificationsPanel, useNotificationList } from "../src/ui/NotificationsPanel"
 
 const hash = `0x${"ab".repeat(32)}`
@@ -44,6 +43,7 @@ beforeEach(async () => {
 afterEach(async () => {
   await act(async () => root.unmount())
   container.remove()
+  closeSession()
   clearActiveStorage()
   // Every test starts from an empty panel for the visitor scope.
   await getOperationStore().dismissEnded(null)
@@ -60,8 +60,10 @@ function Unread() {
   return null
 }
 
-const renderPanel = () =>
-  act(async () =>
+// Opened as late as a boot would: the records an earlier page left are saved by then.
+const renderPanel = () => {
+  openSession(activeAccount())
+  return act(async () =>
     root.render(
       <MemoryRouter>
         <Unread />
@@ -69,6 +71,7 @@ const renderPanel = () =>
       </MemoryRouter>,
     ),
   )
+}
 const items = () => [...container.querySelectorAll(".ww-notifications__item")]
 const itemText = (text: string) => items().find((i) => i.textContent?.includes(text))
 const click = (el: Element | null | undefined) => act(async () => (el as HTMLButtonElement).click())
@@ -166,6 +169,20 @@ describe("the panel", () => {
     await act(async () => getOperationStore().remove("op-still-running"))
   })
 
+  it("keeps a reorg notice its failed send covers hidden once the send is cleared", async () => {
+    await begin("op-dropped")
+    await act(async () => getOperationStore().markSent("op-dropped", hash))
+    await act(async () => getOperationStore().fail("op-dropped", "boom"))
+    const notice = reorgEvent({ type: "failed", txHash: hash }, Date.now(), () => false)!
+    await act(async () => openSession(activeAccount()).notifications.record(notice))
+    await renderPanel()
+    expect(items()).toHaveLength(1)
+    await click(items()[0].querySelector('[aria-label="Dismiss"]'))
+    expect(getOperationStore().get("op-dropped")?.dismissedAt).toBeDefined()
+    expect(items()).toHaveLength(0)
+    await act(async () => session().notifications.retract(notice.id))
+  })
+
   it("never lists another account's operations", async () => {
     setActiveStorageId("acct-b")
     await begin("op-of-a", "send", "acct-a")
@@ -188,65 +205,6 @@ describe("the panel", () => {
     expect(items()).toHaveLength(0)
     await act(async () => getOperationStore().fail("op-burn", "boom"))
     expect(items()).toHaveLength(0)
-  })
-
-  it("shows a legacy grouped withdrawal's running leg in place of its group's live row", async () => {
-    const bell = AppNotificationStore.get(webStorage)
-    const withdrawals = WithdrawalStorage.get(webStorage)
-    const row = (group: string, entry: "inflight" | "remaining") => {
-      const id = `bridge:withdrawal-group:${group}:${entry}`
-      return bell.upsert({
-        id,
-        sourceId: id,
-        producer: "bridge",
-        domain: "bridge",
-        title: "Withdrawal",
-        description: `${group} ${entry}`,
-        timestampMs: 1,
-        systemIcon: "arrow.up.right",
-        severity: "info",
-        pending: entry === "inflight",
-        target: { type: "bridge.txDetail", bridgeKind: "withdrawal", sourceId: group },
-      })
-    }
-    await row("0xa1", "inflight")
-    await row("0xa1", "remaining")
-    await row("0xb2", "inflight")
-    await renderPanel()
-    const listed = () =>
-      ["0xa1 inflight", "0xa1 remaining", "0xb2 inflight", "$25 to @alice"].map(
-        (text) => !!itemText(text),
-      )
-    expect(listed()).toEqual([true, true, true, false])
-
-    // The running leg's record names the group.
-    await act(async () => {
-      await withdrawals.create({
-        localId: "w-leg",
-        operationId: "op-earlier-leg",
-        groupId: "0xA1",
-        groupLeg: "funds",
-        recipient: `0x${"11".repeat(20)}`,
-        recipientProvenance: "saved-recipient",
-        amount: "25",
-        tokenSymbol: "DAI",
-        tokenDecimals: 18,
-        phase: "submitting",
-        startTime: 1,
-      })
-    })
-    await begin("op-earlier-leg", "withdraw")
-    expect(listed()).toEqual([false, true, true, true])
-
-    // A sent leg leaves the list, so its group's live row is the one row.
-    await act(async () => getOperationStore().markSent("op-earlier-leg", hash))
-    expect(listed()).toEqual([true, true, true, false])
-
-    await act(async () => {
-      await getOperationStore().remove("op-earlier-leg")
-      await withdrawals.clearAll()
-      await bell.dismissAll()
-    })
   })
 })
 

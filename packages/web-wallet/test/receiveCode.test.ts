@@ -9,7 +9,6 @@ import {
   openCode,
   readReceiveCode,
   setCodeAmount,
-  unlistedCodeRequestIds,
   type CodeDeps,
   type ReadyAddress,
 } from "../src/features/receive/receiveCode"
@@ -101,7 +100,6 @@ describe("receive code", () => {
     const cleared = await clearCode(deps, NOW)
     expect(cleared).toMatchObject({ address: addr(5), amount: 0, note: undefined })
     expect(cancelled).toContain(priced.requestId)
-    expect(unlistedCodeRequestIds().has(cleared.requestId.toLowerCase())).toBe(true)
   })
 
   it("moves to a new address after a payment and keeps the paid request", async () => {
@@ -131,14 +129,5 @@ describe("receive code", () => {
     expect(opened.address).toBe(addr(8))
     expect(opened.amount).toBe(0)
     expect(cancelled).not.toContain(first.requestId)
-  })
-
-  it("keeps codes without an amount out of the requests list", async () => {
-    const { deps } = harness([{ address: addr(8), day: TODAY }])
-    const open = await currentCode(deps, NOW)
-    const priced = await setCodeAmount(deps, { amountInput: "3", noteInput: "" }, NOW)
-    const unlisted = unlistedCodeRequestIds()
-    expect(unlisted.has(open.requestId.toLowerCase())).toBe(true)
-    expect(unlisted.has(priced.requestId.toLowerCase())).toBe(false)
   })
 })

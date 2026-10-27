@@ -46,6 +46,7 @@ vi.mock("@aztec-labs/aztec.js/contracts", async (importActual) => {
       ...(actual.Contract as object),
       at: () => ({
         address: INSTANCE_ADDR,
+        artifact: { functions: [] },
         methods: {
           claim_to_l1: claimToL1Spy,
           // A 1-token escrow note: `data` packs the amount in its top 16 bytes.

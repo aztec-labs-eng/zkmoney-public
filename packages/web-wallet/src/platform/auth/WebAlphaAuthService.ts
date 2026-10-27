@@ -284,6 +284,8 @@ export type WebAlphaAuthServiceOptions = {
   /** Whether this laptop may create on its own password manager; tests fix it, production reads
    * the browser's claims. */
   laptopCreation?: () => Promise<LaptopCreation>
+  /** Hears each saved change of the session pointers: a commit, and a rejected cache's removal. */
+  onSessionSaved?: () => void
 }
 
 /**
@@ -316,6 +318,7 @@ export class WebAlphaAuthService implements AlphaAuthService {
   private readonly userAgent: () => Promise<UserAgentInfo>
   private readonly laptopHints: null | undefined
   private readonly extraProviders: readonly string[] | undefined
+  private readonly onSessionSaved: () => void
   private readonly probeEnabled: boolean
   private readonly laptopCreation: () => Promise<LaptopCreation>
   /** The gate's answer and the sheet's pick, for the next creation only; `createPasskey` consumes both. */
@@ -357,6 +360,7 @@ export class WebAlphaAuthService implements AlphaAuthService {
     this.extraProviders = options.extraProviders
     this.probeEnabled = options.laptopHints !== null
     this.laptopCreation = options.laptopCreation ?? (() => currentLaptopCreation(this.posture()))
+    this.onSessionSaved = options.onSessionSaved ?? (() => {})
   }
 
   /**
@@ -891,14 +895,15 @@ export class WebAlphaAuthService implements AlphaAuthService {
    * goes. Only the active tab opens the wallet database, so a plain removal is enough — no
    * cross-tab compare-and-remove.
    */
-  private dropInvalidCache(
+  private async dropInvalidCache(
     cache: CachedMsk,
     storageId: string | null,
     credentialId: string | null,
   ): Promise<void> {
     // Saved before the restore settles, so nothing after it reads the rejected session.
     if (storageId && cache.storageId === storageId && cache.credentialId === credentialId) {
-      return walletStorage.batch(() => clearActiveStorage())
+      await walletStorage.batch(() => clearActiveStorage())
+      return this.onSessionSaved()
     }
     // A blob for another session, or one with no session at all: the blob goes, nothing else.
     return walletStorage.batch(() => clearCachedMsk())
@@ -1130,7 +1135,10 @@ export class WebAlphaAuthService implements AlphaAuthService {
   }
 
   /** `stillOwns` is checked under the map's lock, so a cancel that landed while waiting writes nothing. */
-  async recordRecoveryMetadata(meta: StoredRecoveryMetadata, stillOwns?: () => boolean): Promise<void> {
+  async recordRecoveryMetadata(
+    meta: StoredRecoveryMetadata,
+    stillOwns?: () => boolean,
+  ): Promise<void> {
     const userHandle = meta.userHandle ?? this.createdHandles.get(meta.credentialId)
     const securityKey = meta.securityKey || this.createdSecurityKeys.has(meta.credentialId)
     await this.identityMap.upsert(
@@ -1273,6 +1281,7 @@ export class WebAlphaAuthService implements AlphaAuthService {
         }
 
         if (leavesStale) this.staleRecords = true
+        this.onSessionSaved()
         this.epoch++
         this.restoreSuppressed = false
         this.msk = input.secretKey

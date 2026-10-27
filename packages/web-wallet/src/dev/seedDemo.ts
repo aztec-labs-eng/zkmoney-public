@@ -15,10 +15,8 @@ import {
   AccountStorage,
   BalanceStorage,
   ContactStorage,
-  RequestStorage,
   SIPADepositStore,
   TokenStorage,
-  TRANSACTIONS_STORAGE_KEY,
   type SIPADepositRecord,
   type Transaction,
   type WithdrawalRecord,
@@ -30,10 +28,11 @@ import { loadWalletIdentity, saveWalletIdentity } from "../features/identity/wal
 import { getAuthService } from "../platform/auth/useAuthenticator"
 import { WebPasskeyIdentityMap } from "../platform/auth/WebPasskeyIdentityMap"
 import { activateTab } from "../platform/storage/activeTab"
-import { contactsWriteLock, requestsWriteLock } from "../platform/storage/contactsLock"
+import { contactsWriteLock } from "../platform/storage/contactsLock"
 import { WebStorageAdapter, WEB_STORAGE_PREFIX } from "../platform/storage/WebStorageAdapter"
 import { deviceStorage } from "../platform/storage/rollupStorage"
 import { walletStorage } from "../platform/storage/walletStorage"
+import { activeAccount, openSession, session } from "../platform/session"
 import {
   disableDemoMode,
   DEMO_DEFAULT_SCENARIO,
@@ -108,7 +107,7 @@ async function seedIdentity(rpId: string): Promise<void> {
   await saveWalletIdentity({ handle: DEMO_HANDLE, address: DEMO_L2_ADDRESS, claimedAt: Date.now() })
 }
 
-/** Token row + scoped balance record — the pair `useAsset` hydrates the home figure from. */
+/** Token row + scoped balance record — the pair the balances store reads the home figure from. */
 async function seedBalance(networkType: string, balance: bigint): Promise<void> {
   const adapter = new WebStorageAdapter()
   await TokenStorage.get(adapter).addToken({
@@ -140,13 +139,10 @@ async function seedWithdrawals(records: WithdrawalRecord[]): Promise<void> {
   for (const record of records) await store.create(record)
 }
 
-/**
- * `TransactionStorage.addTokenTransaction` stamps `Date.now()`, which would pile every fixture row
- * onto the same minute. The persisted shape is a plain `Transaction[]`, so past-dated history is
- * written directly — typed, so a schema change surfaces at compile time.
- */
+/** Past-dated history, written as the rows themselves so every fixture keeps its own time. */
 async function seedTransactions(rows: Transaction[]): Promise<void> {
-  await new WebStorageAdapter().setItem(TRANSACTIONS_STORAGE_KEY, JSON.stringify(rows))
+  const { activity } = session()
+  for (const row of rows) await activity.insertPending(row)
 }
 
 async function seedContactsAndRequests(
@@ -160,7 +156,7 @@ async function seedContactsAndRequests(
   const contacts = ContactStorage.get(adapter, contactsWriteLock)
   await contacts.initialize()
   await contacts.addEntries(longContacts ? longDemoContacts() : demoContacts())
-  const requests = RequestStorage.get(adapter, requestsWriteLock)
+  const { requests } = session()
   for (const request of demoRequests(now, networkId)) await requests.add(request)
 }
 
@@ -224,6 +220,7 @@ export async function seedDemo(scenario: DemoScenario): Promise<boolean> {
   resetWalletStorage()
   primeOxideTuple(config, DEMO_OXIDE_TUPLE)
   primeOxideDeployment(config, DEMO_OXIDE_DEPLOYMENT)
+  openSession(activeAccount())
   // Onboarding uses mockOnboarding's local transitions and starts without an identity or provider.
   // Its token lists still read the table.
   if (scenario === "onboarding") {

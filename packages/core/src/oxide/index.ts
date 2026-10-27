@@ -124,25 +124,20 @@ export interface ExtractOxideEnvTupleOptions {
    */
   requireProdSchema?: boolean
   /**
-   * When set, the manifest's `gitSha` MUST equal this or extraction throws —
-   * mainnet enforces same-sha parity fatally (vs the non-blocking drift WARN
-   * OxideEnvRegistryClient emits for testnet/staging).
+   * Explicit SHA expectations reject mismatches. The network policy leaves this unset;
+   * OxideEnvRegistryClient reports SHA drift as a non-blocking warning.
    */
   expectedGitSha?: string
 }
 
 /**
- * The policy every read of the pinned (canonical) entry applies: on MAINNET the full prod schema
- * and the same-sha gate against `expectedGitSha`; elsewhere a bare extract. Historic entries are
- * never held to the pinned entry's sha.
+ * Mainnet requires the full prod schema; other networks use a bare extract. Git SHA drift is advisory.
  */
 export function pinnedEntryPolicy(pin: {
   network: Network
   expectedGitSha?: string
 }): ExtractOxideEnvTupleOptions | undefined {
-  return pin.network === Network.MAINNET
-    ? { requireProdSchema: true, expectedGitSha: pin.expectedGitSha }
-    : undefined
+  return pin.network === Network.MAINNET ? { requireProdSchema: true } : undefined
 }
 
 /**
@@ -354,7 +349,9 @@ export function parseDeployment(entry: Record<string, unknown>): {
     frozenDepositRefundVkSha256: optionalString(
       entry.frozenDepositsRefundVkSha256 ?? entry.frozenDepositRefundVkSha256,
     ),
-    swapEscrowFactoryV2: optionalString(entry.swapEscrowFactoryV2),
+    swapEscrowFactoryV2:
+      optionalString(entry.swapEscrowFactoryV2) ??
+      swapFeatureFactory(entry.features, entry.bridgeId),
     skyEscrowFactory: optionalString(entry.skyEscrowFactory),
     features: parseFeatures(entry.features),
     operationExecutor: optionalString(entry.operationExecutor),
@@ -451,6 +448,25 @@ function parseFeatures(value: unknown): readonly OxideFeature[] | undefined {
         : [],
     ),
   )
+}
+
+/**
+ * The SwapEscrowFactory of the deployment's `swap` feature that binds this bridge. A deployment without features names
+ * the factory in the bridge's own `swapEscrowFactoryV2`. Two swap features for one bridge fail the entry: the escrow
+ * address derives from the factory, so a guess could send a withdrawal to an escrow that no factory deploys.
+ */
+function swapFeatureFactory(features: unknown, bridgeId: unknown): string | undefined {
+  if (typeof bridgeId !== "string") return undefined
+  const factories = (parseFeatures(features) ?? []).filter(
+    (feature) => feature.project === "swap" && Object.values(feature.bridges).includes(bridgeId),
+  )
+  if (factories.length > 1) {
+    const ids = factories.map((feature) => feature.id).join(", ")
+    throw new OxideManifestValidationError(
+      `oxide env registry: bridge ${bridgeId} has more than one swap feature (${ids})`,
+    )
+  }
+  return optionalString(factories[0]?.contracts.swapEscrowFactory)
 }
 
 function sipaRecoveryProtocol(value: unknown): "legacy-eoa" | "account" {
@@ -628,7 +644,7 @@ export interface LoadOxideManifestOpts {
   portal: string
   /** MAINNET applies the prod-schema gate + entryPoint/ensDomain overlay; other networks bare-extract. */
   network: Network
-  /** Required on MAINNET: the manifest gitSha must match (fatal on mismatch). */
+  /** Deployment provenance; a different manifest gitSha does not block a read. */
   expectedGitSha?: string
   /** Injectable fetch implementation; defaults to global fetch. */
   fetchImpl?: typeof fetch

@@ -12,7 +12,7 @@
 import { formatUnits, type Hash, type Hex } from "viem"
 import { SkyRoute } from "@oxide/experiments/sky/sky_savings.js"
 import type { ScannedWithdrawEvent, WithdrawEventSource } from "@obsidion/sdk"
-import { globalEventEmitter } from "../GlobalEventEmitter"
+import { syncCatchUp } from "src/engine/catchUp"
 import { newWithdrawalLocalId, type WithdrawalStorage } from "./WithdrawalStorage"
 import type { WithdrawalDeployment, WithdrawalRecord } from "./types"
 
@@ -59,9 +59,7 @@ export async function rebuildWithdrawals(deps: WithdrawalRescanDeps): Promise<Wi
     .sort((a, b) => a.blockNumber - b.blockNumber)
   // Rebuilt rows join an in-progress chain catch-up so they land behind the activity skeleton.
   const end =
-    missing.length && globalEventEmitter.isSyncCatchingUp()
-      ? globalEventEmitter.beginSyncCatchUp()
-      : undefined
+    missing.length && syncCatchUp.status.get() ? syncCatchUp.begin() : undefined
   const created: WithdrawalRecord[] = []
   try {
     for (const event of missing) {

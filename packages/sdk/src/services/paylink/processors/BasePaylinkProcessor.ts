@@ -1,7 +1,9 @@
 import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import { FieldLike } from "@aztec-labs/aztec.js/abi"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 import { ContractName } from "@obsidion/contracts"
 import { CommitmentInput, ClaimInput, PaylinkWindow } from "../types.js"
+import { packPaylinkData, paylinkSenderHash, type RawPaylinkNote } from "../paylinkNoteData.js"
 
 /**
  * Constructor arguments that might be needed by paylink contracts
@@ -53,6 +55,9 @@ export abstract class BasePaylinkProcessor {
    */
   abstract getConstructorArgs(args: PaylinkConstructorArgs): DepositArg[]
 
+  /** The note `deposit` writes for these args, whose terms the link carries. */
+  abstract depositNote(args: PaylinkConstructorArgs): Promise<RawPaylinkNote>
+
   /**
    * Prepare claim inputs for the contract claim method
    * Transforms proof data into the format expected by the contract
@@ -60,4 +65,21 @@ export abstract class BasePaylinkProcessor {
    * @returns Promise resolving to the prepared claim inputs
    */
   abstract prepareClaimInputs(proof: ClaimInput): Promise<unknown>
+}
+
+/** The fields both flavors' `deposit` write alike. */
+export async function commonDepositNote(
+  args: PaylinkConstructorArgs,
+): Promise<Omit<RawPaylinkNote, "hash" | "oidc_key_registry" | "vkey_hash">> {
+  if (!args.sender) throw new Error("a paylink deposit requires the funding sender")
+  return {
+    sender_hash: await paylinkSenderHash(args.sender),
+    data: packPaylinkData(args.amount, args.window.fromClaimable, args.window.untilClaimable),
+    refundable_until: new Fr(args.window.refundableUntil),
+    token_address: args.token,
+  }
+}
+
+export function toField(value: FieldLike): Fr {
+  return value instanceof Fr ? value : new Fr(BigInt(value.toString()))
 }

@@ -10,6 +10,7 @@ import {
   SIPADepositStore,
   STUCK_SWEEP_MS,
   type SipaCapacityKey,
+  type SipaProcessingObserver,
   type SipaProcessingState,
   UpgradeActivity,
 } from "@obsidion/front-core"
@@ -24,12 +25,11 @@ let attached = false
 let upgradesAttached = false
 
 /** The page's one activity feed, with pending deposits annotated by the observer and the account's upgrade batches. */
-export function bridgeActivityFeed(): ActivityFeed {
+export function bridgeActivityFeed(observer: SipaProcessingObserver | undefined): ActivityFeed {
   const feed = ActivityFeed.get(SIPADepositStore.get(webStorage), getWithdrawalStore())
-  const source = sipaProcessingObserver()
-  if (source && !attached) {
+  if (observer && !attached) {
     attached = true
-    feed.setProcessingSource(source)
+    feed.setProcessingSource(observer)
   }
   if (!upgradesAttached) {
     upgradesAttached = true

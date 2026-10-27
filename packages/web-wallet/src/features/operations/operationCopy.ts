@@ -110,12 +110,17 @@ export const OPERATION_COPY: Readonly<Record<OperationFlow, FlowCopy>> = {
     ...failures(false),
   },
   "request-link": {
-    live: "Preparing",
-    failed: "Request link failed",
+    live: "Publishing request link",
+    settled: "Request link ready",
+    failed: "Request link not published",
     busy: "Waiting for your request link",
     icon: "link",
     outcome: "operation",
-    ...failures(false),
+    causes: {
+      interrupted: "The tab closed before it was sent. Share again for a new link.",
+      dropped: "The network turned it down. Share again for a new link.",
+    },
+    thrown: "It didn't go through. Share again for a new link.",
   },
   "migration": {
     live: "Upgrading",
@@ -125,6 +130,7 @@ export const OPERATION_COPY: Readonly<Record<OperationFlow, FlowCopy>> = {
     outcome: "record",
     ...failures(false),
   },
+  // Only saved records carry this flow: a migration's arrival address, published before its burn.
   "migration-arrival": {
     live: "Publishing your new address",
     failed: "Couldn't publish your new address",

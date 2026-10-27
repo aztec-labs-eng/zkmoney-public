@@ -17,6 +17,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { readFileSync } from "fs"
 import { fileURLToPath } from "url"
 import { dirname, resolve } from "path"
+import { Network } from "@obsidion/core/constants"
+import { pinnedEntryPolicy } from "@obsidion/core/oxide"
 import {
   OxideEnvRegistryClient,
   OxideManifestValidationError,
@@ -171,9 +173,13 @@ describe("OxideEnvRegistryClient", () => {
     const driftWarnings = () =>
       warnSpy.mock.calls.filter((args) => String(args[0]).includes(DRIFT_SUBSTRING))
 
-    it("warns AND still applies the tuple when a non-empty live gitSha differs from expectedGitSha", async () => {
+    it.each([Network.MAINNET, Network.TESTNET])("warns and applies git SHA drift on %s", async (network) => {
       const profile: OxideEnvProfile = { ...PROFILE, expectedGitSha: "0".repeat(40) }
-      const client = makeClient({ profile, fetchFunction: fetchReturning(fixture) })
+      const client = makeClient({
+        profile,
+        extractOptions: pinnedEntryPolicy({ network, expectedGitSha: profile.expectedGitSha }),
+        fetchFunction: fetchReturning(fixture),
+      })
       const seen: OxideEnvTuple[] = []
       client.subscribe((t) => seen.push(t))
 
@@ -181,6 +187,7 @@ describe("OxideEnvRegistryClient", () => {
 
       // Non-blocking: the drifted tuple still applied and notified.
       expect(client.getCurrentTuple()?.gitSha).toBe(FIXTURE_GIT_SHA)
+      expect(client.getResolutionState().failureMode).toBeNull()
       expect(seen).toHaveLength(1)
       // And the drift was surfaced.
       expect(driftWarnings()).toHaveLength(1)

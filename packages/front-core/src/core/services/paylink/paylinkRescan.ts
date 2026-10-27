@@ -9,7 +9,8 @@
  * or was refunded on another device, settles that row on a later pass. A link whose note cannot
  * be read yet is retried on the next pass. Each pass resumes from a persisted block cursor, a
  * reorg margin behind (the store's tx-hash dedup absorbs the overlap), and the cursor never passes
- * a deferred link or PXE's synced block. Pure over injected collaborators.
+ * a deferred link or PXE's synced block. A pass saves its rows and its cursor in one transaction.
+ * Pure over injected collaborators.
  */
 
 import type { Fr } from "@aztec-labs/aztec.js/fields"
@@ -20,9 +21,9 @@ import type {
   ScannedTransferEvent,
   TransferEventSource,
 } from "@obsidion/sdk"
-import type { PaylinkTransaction } from "src/types"
-import type { IStorageAdapter } from "../../storages/adapter"
-import type { TransactionStorage } from "../../storages/TransactionStorage"
+import type { PaylinkTransaction, Transaction } from "src/types"
+import type { Activity, RecoveredPaylink } from "../../../engine/activity"
+import type { KvStore } from "../../../engine/kv"
 import {
   buildTokenInTxService,
   TRANSFER_SCAN_REORG_MARGIN,
@@ -36,8 +37,11 @@ export interface PaylinkRescanDeps {
     TransferEventSource,
     "headBlock" | "listIncoming" | "blockTimestampMs" | "anchorBlock"
   >
-  /** Holds the block cursor per network and account. Absent, every pass scans from `fromBlock`. */
-  storage?: Pick<IStorageAdapter, "getItem" | "setItem">
+  /**
+   * The store's own database, holding the block cursor per network and account. Absent, every pass
+   * scans from `fromBlock`.
+   */
+  kv?: KvStore
   accountAddress: string
   /** The creator's master secret: re-derives each announced escrow's creator-only key material. */
   masterSecret: Fr
@@ -49,17 +53,13 @@ export interface PaylinkRescanDeps {
   signal?: AbortSignal
   paylinkService: Pick<
     PaylinkService,
-    "recoverPaylinkFromTransfer" | "isPaylinkClaimed" | "sync_note"
+    "recoverPaylinkFromTransfer" | "paylinkClaimBlock" | "sync_note"
   >
   /** The share URL the platform writes on a created row, so a rebuilt row opens the same way. */
   linkFor: (params: RecoveredPaylinkParams) => string | Promise<string>
   store: Pick<
-    TransactionStorage,
-    | "hasTxHash"
-    | "findByTxHash"
-    | "updateTransaction"
-    | "addRecoveredPaylinkTransaction"
-    | "addRecoveredPaylinkPayout"
+    Activity,
+    "hasTxHash" | "byHash" | "apply" | "addRecoveredPaylink" | "addRecoveredPayout"
   >
   token: { address: string; symbol: string; decimals: number }
   /** First block to scan when no cursor is stored. Default 1, the lowest PXE accepts. */
@@ -80,7 +80,7 @@ export async function rebuildPaylinks(deps: PaylinkRescanDeps): Promise<PaylinkT
   const scope = deps.endpointScope ? `/${deps.endpointScope}` : ""
   const cursorKey = `${CURSOR_STORAGE_KEY}/${deps.networkId}${scope}/${me}`
   const start = deps.fromBlock ?? 1
-  const cursor = deps.storage ? await loadCursor(deps.storage, cursorKey) : undefined
+  const cursor = deps.kv ? loadCursor(deps.kv, cursorKey) : undefined
   // A cursor past the anchor means PXE was rebuilt or head regressed: resume from the anchor.
   const from = Math.max(start, Math.min(cursor ?? start, anchor) - TRANSFER_SCAN_REORG_MARGIN)
   if (deps.signal?.aborted) return created
@@ -94,23 +94,26 @@ export async function rebuildPaylinks(deps: PaylinkRescanDeps): Promise<PaylinkT
   )
   // The oldest link whose note could not be read yet; the cursor stops short of it.
   let heldAt: number | undefined
+  // Run by the one save at the end.
+  const writes: (() => void)[] = []
   for (const event of events) {
     if (deps.signal?.aborted) break
     if (!event.paylinkCreated || event.from.toLowerCase() !== me) continue
     const payout = payouts.get(event.to.toLowerCase())
     if (
-      (await deps.store.hasTxHash(event.txHash)) &&
-      (await deps.store.findByTxHash(event.txHash))?.action !== TokenActionEnum.SEND
+      deps.store.hasTxHash(event.txHash) &&
+      deps.store.byHash(event.txHash)?.action !== TokenActionEnum.SEND
     ) {
       // A PAY row from an earlier pass or another device: its payout may be newer than the row.
-      if (payout && !deps.signal?.aborted) await settlePayout(deps, event, payout)
+      if (payout && !deps.signal?.aborted) writes.push(await settlePayout(deps, event, payout))
       continue
     }
     if (deps.signal?.aborted) break
     const params = await deps.paylinkService.recoverPaylinkFromTransfer(event, deps.masterSecret)
     if (deps.signal?.aborted) break
     if (!params) continue
-    const spent = await deps.paylinkService.isPaylinkClaimed(params)
+    const claimBlock = await deps.paylinkService.paylinkClaimBlock(params)
+    const spent = claimBlock !== undefined
     if (deps.signal?.aborted) break
     // A spent note is nullified: its windows no longer matter and can no longer be read.
     let note
@@ -126,14 +129,16 @@ export async function rebuildPaylinks(deps: PaylinkRescanDeps): Promise<PaylinkT
     }
     const outcome = spent ? spentOutcome(event, payout) : undefined
     const timestamp = await blockTime(deps, event.blockNumber)
+    const claimedAt = outcome === "claimed" ? await blockTime(deps, claimBlock!) : undefined
     if (deps.signal?.aborted) break
     const paylink = await deps.linkFor(params)
     if (deps.signal?.aborted) break
-    const { tx, inserted } = await deps.store.addRecoveredPaylinkTransaction({
+    const recovered: RecoveredPaylink = {
       networkId: deps.networkId,
       txHash: event.txHash,
       flavor: event.paylinkCreated.flavor,
       token: usdToken(deps, event.amount),
+      amountAtomic: BigInt(event.amount),
       timestamp,
       blockNumber: event.blockNumber,
       to: params.email,
@@ -146,15 +151,31 @@ export async function rebuildPaylinks(deps: PaylinkRescanDeps): Promise<PaylinkT
       untilClaimable: note?.claimableUntil,
       refundableUntil: note?.refundableUntil,
       memo: event.memo,
-      ...(outcome === "claimed" ? { isClaimed: true } : {}),
+      // A payout to this account on a claim: this account claimed it.
+      ...(outcome === "claimed"
+        ? { isClaimed: true, claimedAt, claimedBy: payout ? ("self" as const) : ("chain" as const) }
+        : {}),
       ...(outcome === "refunded" ? { isRefunded: true, refundTxHash: payout!.txHash } : {}),
+    }
+    writes.push(() => {
+      const { tx, inserted } = deps.store.addRecoveredPaylink(recovered)
+      if (inserted) created.push(tx)
     })
-    if (inserted) created.push(tx)
-    if (payout && !deps.signal?.aborted) await writePayout(deps, event, payout, outcome!)
+    if (payout && !deps.signal?.aborted) {
+      writes.push(await writePayout(deps, event, payout, outcome!))
+    }
   }
-  if (deps.storage && !deps.signal?.aborted) {
-    const next = heldAt === undefined ? anchor : Math.min(anchor, heldAt - 1)
-    if (next >= 1) await deps.storage.setItem(cursorKey, String(next))
+  // An aborted pass saves nothing: its mount is gone.
+  if (deps.signal?.aborted) return created
+  const next = heldAt === undefined ? anchor : Math.min(anchor, heldAt - 1)
+  const { kv } = deps
+  const save = () => writes.forEach((write) => write())
+  if (!kv) save()
+  else {
+    await kv.batch(() => {
+      save()
+      if (next >= 1) kv.setItem(cursorKey, String(next))
+    })
   }
   return created
 }
@@ -180,31 +201,31 @@ function spentOutcome(
   return forwarded ? "claimed" : "refunded"
 }
 
-/** Settles an existing PAY row against its escrow's payout; a refund flips a row that read claimed. */
+/**
+ * Settles an existing PAY row against its escrow's payout: a refund flips a row that read claimed,
+ * and a claim marks one that read claimed by another as this account's.
+ */
 async function settlePayout(
   deps: PaylinkRescanDeps,
   funding: ScannedTransferEvent,
   payout: ScannedTransferEvent,
-): Promise<void> {
+): Promise<() => void> {
   const outcome = spentOutcome(funding, payout)
   const txHash = funding.txHash.toLowerCase()
-  if (outcome === "refunded") {
-    await deps.store.updateTransaction(
-      (tx) =>
-        tx.action === PaylinkActionEnum.PAY &&
-        tx.txHash?.toLowerCase() === txHash &&
-        !(tx as PaylinkTransaction).isRefunded &&
-        !(tx as PaylinkTransaction).isMigrated,
-      (tx) => {
-        const row = tx as PaylinkTransaction
-        row.isRefunded = true
-        row.isClaimed = false
-        row.refundTxHash = payout.txHash
-        row.paylink = undefined
-      },
-    )
+  const writePayoutRow = await writePayout(deps, funding, payout, outcome)
+  const at = await blockTime(deps, payout.blockNumber)
+  const epoch = deps.store.byHash(funding.txHash)?.reorgEpoch
+  const pay = (tx: Transaction) =>
+    tx.action === PaylinkActionEnum.PAY &&
+    tx.txHash?.toLowerCase() === txHash &&
+    !(tx as PaylinkTransaction).isRefunded &&
+    !(tx as PaylinkTransaction).isMigrated
+  return () => {
+    if (outcome === "refunded")
+      deps.store.apply(pay, { type: "refunded", refundTxHash: payout.txHash })
+    else deps.store.apply(pay, { type: "claimed", at, epoch, refundInFlight: false, by: "self" })
+    writePayoutRow()
   }
-  await writePayout(deps, funding, payout, outcome)
 }
 
 async function writePayout(
@@ -212,19 +233,20 @@ async function writePayout(
   funding: ScannedTransferEvent,
   payout: ScannedTransferEvent,
   outcome: "claimed" | "refunded",
-): Promise<void> {
+): Promise<() => void> {
   const timestamp = await blockTime(deps, payout.blockNumber)
-  if (deps.signal?.aborted) return
-  await deps.store.addRecoveredPaylinkPayout({
-    action: outcome === "refunded" ? PaylinkActionEnum.CLAIM_BACK : PaylinkActionEnum.CLAIM,
-    networkId: deps.networkId,
-    txHash: payout.txHash,
-    flavor: funding.paylinkCreated!.flavor,
-    token: usdToken(deps, payout.amount),
-    timestamp,
-    blockNumber: payout.blockNumber,
-    memo: payout.memo,
-  })
+  return () =>
+    deps.store.addRecoveredPayout({
+      action: outcome === "refunded" ? PaylinkActionEnum.CLAIM_BACK : PaylinkActionEnum.CLAIM,
+      networkId: deps.networkId,
+      txHash: payout.txHash,
+      flavor: funding.paylinkCreated!.flavor,
+      token: usdToken(deps, payout.amount),
+      amountAtomic: BigInt(payout.amount),
+      timestamp,
+      blockNumber: payout.blockNumber,
+      memo: payout.memo,
+    })
 }
 
 async function blockTime(deps: PaylinkRescanDeps, blockNumber: number): Promise<number> {
@@ -236,10 +258,7 @@ function usdToken(deps: PaylinkRescanDeps, rawAmount: string) {
   return { ...buildTokenInTxService({ ...deps.token, rawAmount }), price: 1 }
 }
 
-async function loadCursor(
-  storage: Pick<IStorageAdapter, "getItem">,
-  key: string,
-): Promise<number | undefined> {
-  const n = Number((await storage.getItem(key)) ?? NaN)
+function loadCursor(kv: Pick<KvStore, "getItem">, key: string): number | undefined {
+  const n = Number(kv.getItem(key) ?? NaN)
   return Number.isFinite(n) && n > 0 ? n : undefined
 }

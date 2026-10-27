@@ -9505,6 +9505,32 @@ details[open] .ww-withdraw__warning-chevron {
   width: 100%;
   height: 100%;
 }
+/* The publishing spinner sits over the code on its own compositor layer, so redrawing the code's
+   dots never blocks a frame of it. */
+.ww-qr-busy {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.ww-qr-busy__spin {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  contain: strict;
+}
+/* will-change alone lifts it to a layer: a static transform here would become the rotation's
+   start and turn 0 -> 360deg into identity -> identity, so it would never move. */
+.ww-qr-busy__spin .zkm-spinner-icon {
+  will-change: transform;
+  backface-visibility: hidden;
+}
+.ww-receive__qr .ww-qr-busy__spin svg {
+  width: auto;
+  height: auto;
+}
 .zkm-btn-reset.ww-receive__qr--empty {
   padding: 32px;
   border-radius: 16px;

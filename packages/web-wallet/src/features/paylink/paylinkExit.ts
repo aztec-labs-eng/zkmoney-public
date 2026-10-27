@@ -259,7 +259,7 @@ async function cashOutLinkFlow(
       deployment: await currentDeployment(tuple),
       ...swapRecordFields(swap, quote),
     },
-    burn: (seeded) => {
+    burn: (seeded, onTxHash) => {
       if (getConfig().network !== network) throw new Error("Network changed — reopen the link")
       onStage?.("proving")
       return exitPaylinkWithVoucher({
@@ -272,6 +272,7 @@ async function cashOutLinkFlow(
         withdrawal,
         operationId: op.operationId,
         zkProof,
+        onTxHash,
       })
     },
     // The burn's own figures, not the link packet's: the escrow note is what was spent.

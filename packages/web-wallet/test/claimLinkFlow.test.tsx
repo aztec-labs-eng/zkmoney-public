@@ -58,6 +58,7 @@ vi.mock("@obsidion/front-core", async () => {
       bridgeRemainder: GOLDEN_TICKET_BRIDGE_REMAINDER,
     })
   return {
+    ...(await import("@obsidion/front-core/dist/engine/legacyStore.js")),
     goldenTicketBurn,
     goldenTicketCoverage: (
       noteAmount: bigint,

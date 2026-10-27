@@ -4,12 +4,15 @@ import { readFileSync } from "node:fs"
 import { resolve } from "node:path"
 import ts from "typescript"
 import { expect, it } from "vitest"
-import { BalanceStorage, SavingsProvider, useSavingsPosition } from "@obsidion/front-core"
-import { webStorage } from "../src/platform/storage/WebStorageAdapter"
+import { SavingsProvider, useSavingsPosition } from "@obsidion/front-core"
+import { memoryStore } from "@obsidion/front-core/dist/engine/store.js"
 
 it("makes the loaded Savings position available to the upgrade dialog", async () => {
   const balance = { scope: "upgrade-provider", tokenAddress: "0xsavings" }
-  await BalanceStorage.get(webStorage).updateBalance(balance.scope, balance.tokenAddress, 0n)
+  const balances = memoryStore({
+    hydrated: true,
+    entries: [{ scope: balance.scope, token: balance.tokenAddress, atomic: 0n }],
+  }).readonly
   const source = {
     balance,
     readPrice: async () => ({ sharePrice: 10n ** 18n, readAt: 1 }),
@@ -17,7 +20,9 @@ it("makes the loaded Savings position available to the upgrade dialog", async ()
   const Wrapper = ({ children }: { children?: ReactNode }) => children
   const Empty = () => null
   const Savings = ({ children }: { children?: ReactNode }) => (
-    <SavingsProvider source={source as never}>{children}</SavingsProvider>
+    <SavingsProvider source={source as never} balances={balances}>
+      {children}
+    </SavingsProvider>
   )
   function Upgrade() {
     const { position } = useSavingsPosition()
@@ -45,6 +50,7 @@ it("makes the loaded Savings position available to the upgrade dialog", async ()
     isDemoMode: () => true,
     XmtpMount: Empty,
     NotificationsMount: Empty,
+    ReorgMonitorMount: Empty,
     SponsoredRailReadinessMount: Empty,
     PaylinkClaimMount: Empty,
     TransferScannerMount: Empty,

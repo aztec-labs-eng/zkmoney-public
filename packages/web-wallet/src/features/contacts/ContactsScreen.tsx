@@ -3,6 +3,8 @@ import { useNavigate } from "react-router-dom"
 import {
   recentContacts,
   useContactsDirectory,
+  useStore,
+  type ContactActivitySources,
   type ContactRow as DirectoryRow,
 } from "@obsidion/front-core"
 import {
@@ -21,20 +23,31 @@ import { useBack } from "../../ui/hooks"
 import { recipientNotUpgradedCopy } from "../migration/upgradeCopy"
 import { REQUESTS_PATH } from "../requests/nonContactView"
 import { TagSearchBar } from "./TagSearchBar"
-import { useContactActivity } from "./useContactActivity"
 import { useNotUpgradedTags } from "./useNotUpgradedTags"
+import { useSession } from "../../platform/session"
 import emptyArt from "../../assets/contacts/empty-contacts.webp"
 import { MessagingBanner } from "../../platform/xmtp/MessagingBanner"
 import { NonContactRequestsEntry } from "../requests/NonContactRequestsScreen"
 
-function ContactGroup({ label, contacts, phone, notUpgraded }: {
+const NO_SOURCES: ContactActivitySources = {}
+
+function ContactGroup({
+  label,
+  contacts,
+  phone,
+  notUpgraded,
+}: {
   label: string
   contacts: DirectoryRow[]
   phone: boolean
   notUpgraded: ReadonlySet<string>
 }) {
   const navigate = useNavigate()
-  const chevron = phone ? <PhoneIcon name="chevron-right" size={16} color="#bfc2d7" /> : <RowChevron />
+  const chevron = phone ? (
+    <PhoneIcon name="chevron-right" size={16} color="#bfc2d7" />
+  ) : (
+    <RowChevron />
+  )
   return (
     <div className="ww-contacts__section">
       <span className="ww-contacts__label">{label}</span>
@@ -73,17 +86,27 @@ export function ContactsScreen() {
   const phone = usePhoneLayout()
   const { openScanner, scannerAvailable } = useShellActions()
   const back = useBack(REQUESTS_PATH)
-  const sources = useContactActivity(phone)
+  const all = useStore(useSession().contactActivity)
+  // Only the phone layout lists recent contacts.
+  const sources = phone ? all : NO_SOURCES
   const recent = useMemo(() => recentContacts(contacts, sources), [contacts, sources])
   const notUpgraded = useNotUpgradedTags(
-    useMemo(() => contacts.filter((c) => c.addressKind === "aztec-l2").map((c) => c.tag), [contacts]),
+    useMemo(
+      () => contacts.filter((c) => c.addressKind === "aztec-l2").map((c) => c.tag),
+      [contacts],
+    ),
   )
 
   return (
     <div className="ww-panel ww-contacts">
       <div className="ww-panel__head ww-contacts__head">
         {phone ? (
-          <button type="button" className="zkm-btn-reset zkm-pressable ww-contacts__back" aria-label="Back" onClick={back}>
+          <button
+            type="button"
+            className="zkm-btn-reset zkm-pressable ww-contacts__back"
+            aria-label="Back"
+            onClick={back}
+          >
             <span className="zkm-glass-circle zkm-glass-circle--faint ww-contacts__back-disc">
               <PhoneIcon name="arrow-left" size={24} color="#fff" />
             </span>
@@ -111,8 +134,12 @@ export function ContactsScreen() {
         <div className="ww-contacts__search">
           <TagSearchBar />
           {scannerAvailable && (
-            <button type="button" className="zkm-btn-reset zkm-pressable ww-contacts__search-action"
-              aria-label="Scan QR code" onClick={openScanner}>
+            <button
+              type="button"
+              className="zkm-btn-reset zkm-pressable ww-contacts__search-action"
+              aria-label="Scan QR code"
+              onClick={openScanner}
+            >
               <PhoneIcon name="scan" size={20.16} color="#fff" />
             </button>
           )}
@@ -133,8 +160,20 @@ export function ContactsScreen() {
       ) : (
         <div className="ww-panel__scroll">
           <NonContactRequestsEntry />
-          {phone && recent.length > 0 && <ContactGroup label="Recent contacts" contacts={recent} phone={phone} notUpgraded={notUpgraded} />}
-          <ContactGroup label="All contacts" contacts={contacts} phone={phone} notUpgraded={notUpgraded} />
+          {phone && recent.length > 0 && (
+            <ContactGroup
+              label="Recent contacts"
+              contacts={recent}
+              phone={phone}
+              notUpgraded={notUpgraded}
+            />
+          )}
+          <ContactGroup
+            label="All contacts"
+            contacts={contacts}
+            phone={phone}
+            notUpgraded={notUpgraded}
+          />
         </div>
       )}
     </div>

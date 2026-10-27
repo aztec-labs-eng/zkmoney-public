@@ -68,6 +68,7 @@ const MARGINAL_BY_FUNCTION: Record<string, keyof ReturnType<typeof deriveClaimFp
   authorize_intents: "mAuth",
   gift_voucher: "mGift",
   notify_sipa_recipient: "mSipaNotify",
+  announce: "mLinkAnnounce",
   broadcast_l1_operation_2k: "mL1Operation",
   broadcast_l1_operation_4k: "mL1Operation4k",
   broadcast_l1_operation_pair_2k: "mL1OperationPair",

@@ -67,7 +67,26 @@ vi.mock("../../src/services/paylink/paylinkKeys.js", () => ({
   computeEscrowTagSecret: vi.fn(async () => "fake-escrow-tag-secret"),
 }))
 
+vi.mock("../../src/services/linkLocator/linkLocator.js", async (importActual) => ({
+  ...(await importActual<typeof import("../../src/services/linkLocator/linkLocator.js")>()),
+  linkAnnounceInteraction: vi.fn(async () => ({ __fake: "announce" })),
+  shortLinksEnabled: vi.fn(async () => true),
+}))
+
 import { PaylinkService } from "../../src/services/PaylinkService.js"
+import { prepareDepositSubmit } from "../../src/services/paylink/paylinkDepositSubmit.js"
+import { computeEscrowTagSecret } from "../../src/services/paylink/paylinkKeys.js"
+import {
+  linkAnnounceInteraction,
+  LinkKind,
+  shortLinksEnabled,
+} from "../../src/services/linkLocator/linkLocator.js"
+import {
+  packPaylinkData,
+  paylinkSenderHash,
+  paylinkTerms,
+} from "../../src/services/paylink/paylinkNoteData.js"
+import { encodePaylinkLocatorPayload } from "../../src/services/paylink/paylinkInlineCodec.js"
 import { DEFAULT_CONTRACTS } from "@obsidion/contracts"
 
 const INSTANCE_ADDR = AztecAddress.fromBigIntUnsafe(33n)
@@ -275,5 +294,78 @@ describe("PaylinkService.createPaylinkContract — dispatch wiring", () => {
       { resolveSpendMetadata: async () => ({} as any) },
     )
     expect(depositSpy.mock.calls[0]!.at(-1)).toEqual(buildTransferMetaForSend({}))
+  })
+
+  it("announces a seeded link in the deposit's batch and returns its seed", async () => {
+    const { service } = makeService()
+    const link = { secretKey: new Uint8Array(32).fill(3), seed: new Uint8Array(16).fill(7) }
+    vi.mocked(computeEscrowTagSecret).mockResolvedValueOnce(Fr.fromString("0x5") as any)
+    const params = await service.createPaylinkContract(
+      { ...emailInitParams, paylinkKeys: { ...emailInitParams.paylinkKeys, link } },
+      DEFAULT_CONTRACTS.paylinkDirect,
+      { resolveSpendMetadata: async () => ({} as any) },
+    )
+    expect(params.seed).toBe(link.seed)
+    expect(linkAnnounceInteraction).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      LinkKind.Paylink,
+      link,
+      encodePaylinkLocatorPayload(params),
+    )
+    expect(vi.mocked(prepareDepositSubmit).mock.calls[0]![0].teeUnsignedInteractions).toEqual([
+      { __fake: "announce" },
+    ])
+  })
+
+  it("announces nothing and returns no seed on a deployment with no locator", async () => {
+    const { service } = makeService()
+    vi.mocked(shortLinksEnabled).mockResolvedValueOnce(false)
+    const params = await service.createPaylinkContract(
+      {
+        ...emailInitParams,
+        paylinkKeys: {
+          ...emailInitParams.paylinkKeys,
+          link: { secretKey: new Uint8Array(32).fill(3), seed: new Uint8Array(16).fill(7) },
+        },
+      },
+      DEFAULT_CONTRACTS.paylinkDirect,
+      { resolveSpendMetadata: async () => ({} as any) },
+    )
+    expect(params.seed).toBeUndefined()
+    expect(linkAnnounceInteraction).not.toHaveBeenCalled()
+  })
+
+  it("carries the terms of the note its deposit args write", async () => {
+    const { service } = makeService()
+    const params = await service.createPaylinkContract(
+      emailInitParams,
+      DEFAULT_CONTRACTS.paylinkDirect,
+      { resolveSpendMetadata: async () => ({} as any) },
+    )
+    // PaylinkDirect.deposit(amount, from_claimable, until_claimable, refundable_until, token, sender, meta)
+    const [amount, from, until, refundable, token, sender] = depositSpy.mock.calls[0]! as any[]
+    const note = {
+      hash: Fr.ZERO,
+      sender_hash: await paylinkSenderHash(sender),
+      data: packPaylinkData(amount, from, until),
+      refundable_until: new Fr(refundable),
+      oidc_key_registry: AztecAddress.ZERO,
+      vkey_hash: Fr.ZERO,
+      token_address: token,
+    }
+    expect(params.terms).toEqual(await paylinkTerms(note))
+  })
+
+  it("announces nothing and returns no seed for keys without one", async () => {
+    const { service } = makeService()
+    const params = await service.createPaylinkContract(
+      emailInitParams,
+      DEFAULT_CONTRACTS.paylinkDirect,
+      { resolveSpendMetadata: async () => ({} as any) },
+    )
+    expect(params.seed).toBeUndefined()
+    expect(linkAnnounceInteraction).not.toHaveBeenCalled()
+    expect(vi.mocked(prepareDepositSubmit).mock.calls[0]![0].teeUnsignedInteractions).toEqual([])
   })
 })

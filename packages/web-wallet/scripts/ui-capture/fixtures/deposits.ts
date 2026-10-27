@@ -56,12 +56,6 @@ export const getSipaDepositGateway: typeof actual.getSipaDepositGateway = () => 
     observe: (...args) => real.observe(...args),
     // Captures read no chain.
     resolverPayments: () => ({ tick: async () => 60_000 }),
-    nextSelfNonce: () => {
-      throw new Error("Unmocked SIPA nonce allocation in a UI capture")
-    },
-    broadcastResolvedSipa: () => {
-      throw new Error("Unmocked SIPA broadcast in a UI capture")
-    },
     broadcastTxHashes: async () => new Set<string>(),
     // Captures publish nothing: every address reads as landed.
     slotExecutor: () => ({ landed: async () => true, send: async () => "0x" }),

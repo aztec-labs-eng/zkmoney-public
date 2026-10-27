@@ -10,7 +10,7 @@ const h = vi.hoisted(() => ({
 }))
 
 vi.mock("@obsidion/sdk", () => ({
-  IntraRollupMigrationService: {},
+  detectHistoricDeployments: vi.fn(),
   loadTeeSigner: vi.fn(),
   TokenService: {},
 }))

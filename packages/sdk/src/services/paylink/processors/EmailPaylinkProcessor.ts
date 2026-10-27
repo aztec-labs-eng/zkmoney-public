@@ -1,4 +1,11 @@
-import { BasePaylinkProcessor, DepositArg, PaylinkConstructorArgs } from "./BasePaylinkProcessor.js"
+import type { RawPaylinkNote } from "../paylinkNoteData.js"
+import {
+  BasePaylinkProcessor,
+  commonDepositNote,
+  DepositArg,
+  PaylinkConstructorArgs,
+  toField,
+} from "./BasePaylinkProcessor.js"
 import {
   PROOF_FIELD_COUNT,
   ZKJWT_PUBLIC_INPUT_COUNT,
@@ -80,6 +87,20 @@ export class EmailPaylinkProcessor extends BasePaylinkProcessor {
       args.sender,
       args.meta,
     ]
+  }
+
+  async depositNote(args: PaylinkConstructorArgs): Promise<RawPaylinkNote> {
+    assert(
+      args.registry_address !== undefined,
+      "email paylink requires an oidc_key_registry address",
+    )
+    assert(args.vkey_hash !== undefined, "email paylink requires a vkey_hash")
+    return {
+      ...(await commonDepositNote(args)),
+      hash: toField(args.hash),
+      oidc_key_registry: args.registry_address,
+      vkey_hash: toField(args.vkey_hash),
+    }
   }
 
   /**

@@ -22,8 +22,10 @@ import {
   normalizeTag,
   type RegistryTagResolution,
   type RequestInlinePacket,
+  useContractServiceContext,
 } from "@obsidion/front-core"
 import type { ChainIdentity } from "@obsidion/core/types"
+import { bundledLinkLocator, decodeLinkFragment, LinkKind } from "@obsidion/sdk"
 import {
   Card,
   Icon,
@@ -52,6 +54,8 @@ import { ExternalWalletPayModal } from "./ExternalWalletPayModal"
 import { loadDepositTokens } from "../deposit/loadDepositFacts"
 import { requestAmountDisplay, validateRequestPacket, type RequestLinkProblem } from "./requestLink"
 import { fireRequestOpened } from "./requestOpened"
+import { resolveShortRequest } from "./shortRequestLink"
+import { useShortLinkLookup } from "../shortLinks"
 
 /**
  * `unknownPayee`: a pay page for a tag nobody holds, such as a mistyped `<tag>.zk.money`.
@@ -95,7 +99,37 @@ async function standingProblem(payee: Promise<RegistryTagResolution>): Promise<P
   return status === "resolved" ? null : "unknownPayee"
 }
 
-export function RequestLandingScreen({
+/** A short link's fragment is looked up on chain first and replaced by the request it stands for. */
+export function RequestLandingScreen(props: { node: AztecNode; chainIdentity?: ChainIdentity }) {
+  const location = useLocation()
+  const fragment = location.hash.replace(/^#/, "")
+  const short = useMemo(() => {
+    const decoded = decodeLinkFragment(fragment)
+    return decoded?.kind === LinkKind.Request ? decoded.seed : undefined
+  }, [fragment])
+  return short ? (
+    <ShortRequestLanding seed={short} node={props.node} />
+  ) : (
+    <FullRequestLanding {...props} />
+  )
+}
+
+function ShortRequestLanding({ seed, node }: { seed: Uint8Array; node: AztecNode }) {
+  const navigate = useNavigate()
+  const location = useLocation()
+  // A browser with no account has no contract service; the bundled class still finds the link.
+  const classes = useContractServiceContext().contractService ?? bundledLinkLocator
+  const resolve = useMemo(
+    () => () => resolveShortRequest(node, classes, seed),
+    [node, classes, seed],
+  )
+  useShortLinkLookup(resolve, (fragment) =>
+    navigate(`${location.pathname}#${fragment}`, { replace: true, state: location.state }),
+  )
+  return <BootSplash />
+}
+
+function FullRequestLanding({
   node,
   chainIdentity,
 }: {
