@@ -65,7 +65,7 @@ The exporter stops if a checkout has tracked changes or if the Oxide checkout is
 2. Run `node "$WALLET/public-export/check-public-only.mjs" . "$SCRATCH/exp-$TARGET"`. Each file that it flags must be a file that the private repository deleted, or a public edit that step 1 shows. The check also flags the files of this skill, until the private exporter has them in `public-export/overlay/`.
 3. Scan the added lines for the items in [Rules](#rules): `git diff origin/main -U0 | grep '^+'`.
 4. Make sure that `EXPORT-MANIFEST.json` names the target as `source`.
-5. Make sure that `packages/generation-v5/scripts/fetch.mjs` has `BUNDLE_RELEASE`. Without it, `fetch:bundle` reads only `source-generations`, and a new bundle cannot reach this repository.
+5. Make sure that `packages/generation-v5/scripts/fetch.mjs` has `BUNDLE_RELEASE`. Without it, `fetch:bundle` reads only `source-generations`, and a new bundle cannot reach this repository. `BUNDLE_RELEASE` is a public edit that the private repository does not have. If the sync has a conflict in `fetch.mjs`, keep it.
 
 ## 5. Verify the build
 
