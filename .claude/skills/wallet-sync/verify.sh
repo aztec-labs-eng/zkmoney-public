@@ -7,7 +7,7 @@
 #
 # Environment:
 #   AZTEC_DIR                The Aztec installation to use. Default: ~/.aztec/current.
-#   SOURCE_GENERATIONS_REPO  The repository whose `source-generations` release fetch:bundle reads.
+#   SOURCE_GENERATIONS_REPO  The repository whose releases fetch:bundle reads.
 #                            Default: this repository's origin.
 #   V5_ARCHIVE_NODE_URL      The v5 node with all historical state. Default: the mainnet v5 archive node.
 #   TESTS                    1 also builds the relayer and runs the typecheck and the tests of each package.

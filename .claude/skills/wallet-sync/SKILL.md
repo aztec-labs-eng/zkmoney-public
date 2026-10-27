@@ -65,6 +65,7 @@ The exporter stops if a checkout has tracked changes or if the Oxide checkout is
 2. Run `node "$WALLET/public-export/check-public-only.mjs" . "$SCRATCH/exp-$TARGET"`. Each file that it flags must be a file that the private repository deleted, or a public edit that step 1 shows. The check also flags the files of this skill, until the private exporter has them in `public-export/overlay/`.
 3. Scan the added lines for the items in [Rules](#rules): `git diff origin/main -U0 | grep '^+'`.
 4. Make sure that `EXPORT-MANIFEST.json` names the target as `source`.
+5. Make sure that `packages/generation-v5/scripts/fetch.mjs` has `BUNDLE_RELEASE`. Without it, `fetch:bundle` reads only `source-generations`, and a new bundle cannot reach this repository.
 
 ## 5. Verify the build
 
@@ -86,7 +87,7 @@ The script clones the branch. It then runs the `bundle` job and the Linux row of
 | `typecheck-*`, `test-*` | The typecheck and the tests of each package pass. |
 | Clean tree | `git status --porcelain` is empty after the build. |
 
-Use `SOURCE_GENERATIONS_REPO=aztec-labs-eng/obsidion-wallet` until this repository's `source-generations` release has the bundle of the target (see [6](#6-the-v5-bundle)).
+Use `SOURCE_GENERATIONS_REPO=aztec-labs-eng/obsidion-wallet` until this repository has the bundle of the target (see [6](#6-the-v5-bundle)).
 
 Read `logs/summary.log` in the work directory. If a test fails, run the same test on the private target commit. A failure is acceptable only if it also occurs there.
 
@@ -100,11 +101,16 @@ The wallet reads v5 accounts through a prebuilt v5 wallet bundle. The name of th
 node -e 'import("./scripts/check.mjs").then((m) => console.log(m.assetName))'
 ```
 
-Before a desktop release, this repository's `source-generations` release must have that asset. To add it:
+`fetch:bundle` reads the asset from the `source-generations` release, else from the release whose tag is the asset name without `.tar.zst`. The releases of this repository are immutable: nobody can add an asset to a published release, and nobody can use the tag of a deleted release again. So each new bundle gets its own release. Before a desktop release, this repository must have the asset. To add it:
 
 1. Download the asset from the private `source-generations` release into a new, empty directory.
 2. Scan its contents for the items in [Rules](#rules).
-3. With approval, upload it to this repository's `source-generations` release. Keep the release a pre-release, and do not make it the latest release.
+3. With approval, create the release with the asset in one command. `gh release create` uploads the asset before it publishes the release:
+   ```shell
+   gh release create "$TAG" "$DIR/$TAG.tar.zst" --target main --prerelease --latest=false \
+     --title "v5 bundle <inputs hash>" --notes "<wallet commit, protocol and inputs hash>"
+   ```
+   `$TAG` is the asset name without `.tar.zst`.
 4. Run `fetch:bundle` and `check:bundle` against this repository.
 
 ## 7. Release
