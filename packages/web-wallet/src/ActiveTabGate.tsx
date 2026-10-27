@@ -20,7 +20,6 @@ import { bindAnalyticsConsent } from "./lib/analytics"
 import { discardIncompatiblePasskeyState } from "./platform/auth/discardIncompatiblePasskeyState"
 import { findRetiredSession } from "./platform/auth/retiredSession"
 import { warmBarretenberg } from "./platform/bbWasm"
-import { activeAccount, openSession } from "./platform/session"
 import { activateTab, revokeTab, sendOnlyWhileActive } from "./platform/storage/activeTab"
 import { ActiveTabLifecycle, type ActiveTabDeps } from "./platform/storage/activeTabLifecycle"
 import { createPxeStore, opfsAvailable } from "./platform/storage/createPxeStore"
@@ -161,7 +160,6 @@ function walletDeps(): ActiveTabDeps<OpenedWallet> {
       }
       await discardIncompatiblePasskeyState(config.rpId)
       await findRetiredSession(config.rpId)
-      openSession(activeAccount())
     },
     activate: activateTab,
     revoke: revokeTab,

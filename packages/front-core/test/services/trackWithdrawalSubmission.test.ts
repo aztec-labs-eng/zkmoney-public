@@ -34,7 +34,7 @@ it.each([TxStatus.DROPPED, TxStatus.PROVEN])(
       }
       expect(await monitor.recover(node as never)).toBeNull()
     } finally {
-      monitor.stop()
+      await monitor.stop()
     }
   },
 )
@@ -49,15 +49,22 @@ it("keeps an ambiguous transport failure and ignores unrelated operations", asyn
   try {
     provingProgress.emitStageStart(ProvingStage.Mining, "unrelated", hash)
     expect(await monitor.recover(node as never)).toBeNull()
-    await monitor.stamp(hash)
     provingProgress.emitStageStart(ProvingStage.Mining, "op", hash)
     expect(await monitor.recover(node as never)).toMatchObject({
       phase: "submitting",
       l2TxHash: hash,
     })
   } finally {
-    monitor.stop()
+    await monitor.stop()
   }
   provingProgress.emitStageStart(ProvingStage.Mining, "op", `0x${"33".repeat(32)}`)
   expect(store.get("test")?.l2TxHash).toBe(hash)
+})
+
+it("does not fail a mined burn when persisting the broadcast hash fails", async () => {
+  const patch = vi.spyOn(store, "patch").mockRejectedValueOnce(new Error("Storage unavailable"))
+  const monitor = trackWithdrawalSubmission(store, "test", "op")
+  provingProgress.emitStageStart(ProvingStage.Mining, "op", hash)
+  await expect(monitor.stop()).resolves.toBeUndefined()
+  patch.mockRestore()
 })

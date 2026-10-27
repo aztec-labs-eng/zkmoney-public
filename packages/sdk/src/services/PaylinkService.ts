@@ -10,7 +10,7 @@ import type { WithdrawOperation } from "../oxide/plainWithdrawal.js"
 
 import { Account, NO_FROM } from "@aztec-labs/aztec.js/account"
 import { computeAuthWitMessageHash } from "@aztec-labs/aztec.js/authorization"
-import { ObsidionWallet, type TxHashCallback } from "../obsidion/ObsidionWallet.js"
+import { ObsidionWallet } from "../obsidion/ObsidionWallet.js"
 import { ObsidionAccount } from "../obsidion/alpha/account/ObsidionAccount.js"
 import {
   buildSponsoredTeeOperation,
@@ -1054,11 +1054,6 @@ export class PaylinkService extends ServiceBase {
   private static readonly PAYLINK_NOTE_STORAGE_SLOT = 1n
 
   public async isPaylinkClaimed(params: PaylinkParams): Promise<boolean> {
-    return (await this.paylinkClaimBlock(params)) !== undefined
-  }
-
-  /** The L2 block whose transaction spent the link's escrow; undefined while it is unspent. */
-  public async paylinkClaimBlock(params: PaylinkParams): Promise<number | undefined> {
     assertLinkChain(params, await linkChainInfo(this.wallet))
     const contractAddress = await this.getContractAddress(params)
 
@@ -1075,7 +1070,7 @@ export class PaylinkService extends ServiceBase {
       [siloedNullifier],
     )
 
-    return leafIndex?.data === undefined ? undefined : Number(leafIndex.l2BlockNumber)
+    return leafIndex?.data !== undefined // true = claimed, false = available
   }
 
   /**
@@ -1340,7 +1335,6 @@ export class PaylinkService extends ServiceBase {
        * deposit is still proving. Awaited, so a caller can persist it before the tx moves on.
        */
       onPrepared?: (params: CreatedPaylinkParams) => void | Promise<void>
-      onTxHash?: TxHashCallback
     },
   ): Promise<SettledPaylinkParams> {
     assert(
@@ -1490,7 +1484,6 @@ export class PaylinkService extends ServiceBase {
       fee: op.sendOpts.fee,
       operationId: options?.operationId,
       kind: "paylink-create",
-      onTxHash: options?.onTxHash,
     })
     const txHash = (
       sent as { receipt?: { txHash?: { toString(): string } } }
@@ -1532,7 +1525,6 @@ export class PaylinkService extends ServiceBase {
       withdraw?: PaylinkClaimWithdraw
       /** Calls the enclave does not sign that ride the claim batch, e.g. a SIPA broadcast. */
       broadcasts?: ContractFunctionInteraction[]
-      onTxHash?: TxHashCallback
     },
   ): Promise<string> {
     const isEmail = claimParams.paylinkType === DEFAULT_CONTRACTS.paylinkEmail
@@ -1551,8 +1543,15 @@ export class PaylinkService extends ServiceBase {
     const voucherBurn = options?.voucher?.withdraw
     const broadcasts = options?.broadcasts ?? []
     if (!isEmail && voucherBurn && escrow.methods.claim_with_withdrawal) {
-      return (await this.claimWithWithdrawal(prepared, voucherBurn, sponsor, options, broadcasts))
-        .txHash
+      return (
+        await this.claimWithWithdrawal(
+          prepared,
+          voucherBurn,
+          sponsor,
+          options?.operationId,
+          broadcasts,
+        )
+      ).txHash
     }
     if (broadcasts.length > 0) {
       throw new ClaimBatchFullError(
@@ -1608,7 +1607,7 @@ export class PaylinkService extends ServiceBase {
     l1Recipient: EthAddress,
     args: Omit<ClaimToL1Args, "l1Recipient">,
     sponsor: PaylinkSponsorContext,
-    options?: { operationId?: string; zkProof?: PaylinkL1Proof; onTxHash?: TxHashCallback },
+    options?: { operationId?: string; zkProof?: PaylinkL1Proof },
   ): Promise<{ txHash: string; blockNumber: number }> {
     const prepared = await this.prepareSponsoredEscrow(claimParams, sponsor)
     const { amount } = await this.readEscrowNote(prepared.escrow, claimParams, prepared.account)
@@ -1653,7 +1652,7 @@ export class PaylinkService extends ServiceBase {
     prepared: Awaited<ReturnType<PaylinkService["prepareSponsoredEscrow"]>>,
     withdraw: PaylinkClaimWithdraw,
     sponsor: PaylinkSponsorContext,
-    options: { operationId?: string; onTxHash?: TxHashCallback } | undefined,
+    operationId?: string,
     broadcasts: ContractFunctionInteraction[] = [],
   ): Promise<{ txHash: string; blockNumber: number }> {
     const { escrow, user, meta, terms } = prepared
@@ -1699,11 +1698,7 @@ export class PaylinkService extends ServiceBase {
       prepared,
       interaction,
       sponsor,
-      {
-        operationId: options?.operationId,
-        onTxHash: options?.onTxHash,
-        voucher: { railId: sponsor.railId },
-      },
+      { operationId, voucher: { railId: sponsor.railId } },
       {
         accountFree: true,
         teeUnsignedInteractions: [...payout.broadcasts, ...broadcasts],
@@ -1760,7 +1755,6 @@ export class PaylinkService extends ServiceBase {
       operationId?: string
       voucher?: VoucherClaimOptions
       withdraw?: PaylinkClaimWithdraw
-      onTxHash?: TxHashCallback
     },
     extra?: Pick<
       SponsoredTeeOperationArgs,
@@ -1873,7 +1867,6 @@ export class PaylinkService extends ServiceBase {
       fee: op.sendOpts.fee,
       operationId: options?.operationId,
       kind: "paylink-claim",
-      onTxHash: options?.onTxHash,
     })
     const receipt = (sent as { receipt?: TxReceipt }).receipt
     const txHash = receipt?.txHash?.toString()
@@ -1891,7 +1884,7 @@ export class PaylinkService extends ServiceBase {
   public async refundSponsoredPaylink(
     claimParams: PaylinkParams,
     sponsor: PaylinkSponsorContext,
-    options?: { operationId?: string; memo?: string; onTxHash?: TxHashCallback },
+    options?: { operationId?: string; memo?: string },
   ): Promise<string> {
     const account = this.asObsidionAccount()
     const user = account.getAddress()
@@ -1962,7 +1955,6 @@ export class PaylinkService extends ServiceBase {
       fee: op.sendOpts.fee,
       operationId: options?.operationId,
       kind: "paylink-refund",
-      onTxHash: options?.onTxHash,
     })
     const txHash = (
       sent as { receipt?: { txHash?: { toString(): string } } }

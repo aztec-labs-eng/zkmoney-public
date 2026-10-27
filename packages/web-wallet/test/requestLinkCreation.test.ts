@@ -1,7 +1,7 @@
 import {
   decodeRequestInline,
   sipaDeploymentTag,
-  type StoredRequest,
+  type PaymentRequest,
   type SipaOrigin,
 } from "@obsidion/front-core"
 import { describe, expect, it, vi } from "vitest"
@@ -27,7 +27,7 @@ const input = {
 
 describe("createAndStoreRequestLink", () => {
   it("persists the outgoing join row before returning the link", async () => {
-    const writes: StoredRequest[] = []
+    const writes: PaymentRequest[] = []
     const result = await createAndStoreRequestLink(input, {
       add: async (row) => {
         writes.push(row)

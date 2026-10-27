@@ -10,14 +10,12 @@ import { loadOnboardedIdentity, loadWalletIdentity } from "../features/identity/
 import { logout } from "../features/identity/logout"
 import { isLogoutBlockedByRegistration } from "../features/onboarding/webRegistration"
 import { getAuthService } from "../platform/auth/useAuthenticator"
-import { openedSession } from "../platform/session"
 import { getDesktopL1Bridge } from "../platform/desktopBridge"
 import { ScannerModal } from "../features/scan/ScannerModal"
 import { scanPayload } from "../features/scan/scanPayload"
 import { useScanNavigation } from "../features/scan/ScanNavigation"
 import { useScanShare } from "../features/scan/useScanShare"
 import { BrandLockup } from "./BrandLockup"
-import { BootSplash } from "./PxeBoot"
 import { LogoutBlockedModal } from "./LogoutBlockedModal"
 import { LogoutModal } from "./LogoutModal"
 import { MobileMenu } from "./MobileMenu"
@@ -30,7 +28,6 @@ import {
   nameL1ContactsByEns,
   useAccountContext,
   useAztecContext,
-  useStore,
 } from "@obsidion/front-core"
 import { ensClient } from "../lib/ens"
 import { isDemoMode } from "../dev/demoFlag"
@@ -46,12 +43,10 @@ import "./shell.css"
  * styled like the rest of the wallet).
  */
 export function AppShell({ notice }: { notice?: ReactNode }) {
-  // Every route reads the session, which boot opens before the first render.
-  const open = useStore(openedSession) !== null
   return (
     <ShellRoot>
       {notice}
-      {open ? <Outlet /> : <BootSplash />}
+      <Outlet />
     </ShellRoot>
   )
 }
@@ -447,10 +442,7 @@ export function SidebarLayout({
         <main ref={main} className="ww-main">
           <div className="ww-content">
             {!pageHeader && (
-              <div
-                className="ww-shell-header"
-                data-stuck={(phone && stuck && !notificationsOpen) || undefined}
-              >
+              <div className="ww-shell-header" data-stuck={(phone && stuck && !notificationsOpen) || undefined}>
                 <div className="ww-topbar">
                   {(!phone || unlocked) && <TagSearchBar placeholder={phone ? "tag" : undefined} />}
                   {phone && !unlocked && <BrandLockup />}

@@ -1,33 +1,23 @@
 /** The transactions sheet over the wallet's activity feed. */
-import { formatDateLabel, type FeedItem } from "@obsidion/front-core"
-import { ActivityDetailHost, useActivityHost } from "../../ui/activity/ActivityDetailHost"
-import { ActivityRow } from "../../ui/activity/ActivityRow"
+import { formatDateLabel } from "@obsidion/front-core"
+import { useActivityEntries, type ActivityEntry } from "../../ui/screens/useActivityEntries"
 import { TransactionsSheet, type TransactionGroup } from "./TransactionsSheet"
 
-/** Newest-first items under their day label. */
-export function groupByDay(items: readonly FeedItem[]): TransactionGroup[] {
-  const groups = new Map<string, FeedItem[]>()
-  for (const item of items) {
-    const label = formatDateLabel(item.ts)
-    groups.set(label, [...(groups.get(label) ?? []), item])
+/** Newest-first entries under their day label. */
+export function groupByDay(entries: ActivityEntry[]): TransactionGroup[] {
+  const groups = new Map<string, ActivityEntry[]>()
+  for (const entry of entries) {
+    const label = formatDateLabel(entry.ts)
+    groups.set(label, [...(groups.get(label) ?? []), entry])
   }
-  return [...groups].map(([label, rows]) => ({
-    label,
-    rows: rows.map((item) => <ActivityRow key={item.id} item={item} />),
-  }))
+  return [...groups].map(([label, rows]) => ({ label, rows: rows.map((entry) => entry.node) }))
 }
 
 export function ChooseTransactions({ onClose }: { onClose: () => void }) {
+  const { entries, hydrated, detailModals } = useActivityEntries()
   return (
-    <ActivityDetailHost>
-      <Transactions onClose={onClose} />
-    </ActivityDetailHost>
-  )
-}
-
-function Transactions({ onClose }: { onClose: () => void }) {
-  const { feed } = useActivityHost()
-  return (
-    <TransactionsSheet groups={groupByDay(feed.items)} hydrated={feed.hydrated} onClose={onClose} />
+    <TransactionsSheet groups={groupByDay(entries)} hydrated={hydrated} onClose={onClose}>
+      {detailModals}
+    </TransactionsSheet>
   )
 }

@@ -4,13 +4,12 @@ import { formatUnits, parseUnits, type Address } from "viem"
 import { DEFAULT_DECIMALS } from "@obsidion/core/constants"
 import {
   NOMINAL_USD_VALUATION,
-  exceedsBalance,
   upsertSavedL1WalletContact,
   useAccountContext,
   useAssetContext,
   useAztecContext,
+  useBalance,
   useContractServiceContext,
-  useStore,
   withdrawalMaxNet,
 } from "@obsidion/front-core"
 import { isPasskeyCancelled } from "@obsidion/passkey-web"
@@ -18,7 +17,7 @@ import { GradientText, Icon, PrimaryGradientButton, TopNavIconButton } from "@ob
 import { chargedAmount } from "../deposit/DepositFromWalletModal"
 import { showReportableError } from "../../errors/errorModal"
 import { amountBucket, failureCode, fireEvent, lapTimer } from "../../lib/analytics"
-import { amountError, decimalInput, fixedCents, parseAmount, usdFigure } from "../../ui/format"
+import { amountError, decimalInput, parseAmount, usdFigure } from "../../ui/format"
 import { useProvingOutcome } from "../../ui/hooks"
 import { useUserFlowActive } from "../provingGate"
 import { useBusyLabel } from "../operations/operations"
@@ -97,9 +96,9 @@ export function WithdrawToWalletModal({
   const txAmountCap = useTxAmountCap()
   const { obsidionWallet } = useAztecContext()
   const { obsidionAccount } = useAccountContext()
-  const { tokenService, balances } = useAssetContext()
+  const { tokenService } = useAssetContext()
   const { contractService } = useContractServiceContext()
-  const wallet = useStore(balances.view)
+  const { walletAsset, walletBalance, assetsLoaded } = useBalance()
   const { screener, verdict, cleared, rescreen } = useScreenedAddress(recipient, "withdraw")
 
   const [phase, setPhase] = useState<"amount" | "confirm" | "working">("amount")
@@ -165,15 +164,15 @@ export function WithdrawToWalletModal({
     !receiveOption.direct && quote.status === "ready" && quote.fee && quote.estimate
       ? { relayerTip: quote.fee.swapRelayerTip, ...quote.estimate }
       : undefined
-  const balance = wallet.main?.atomic ?? 0n
+  const balance = walletAsset?.balanceAtomic ?? 0n
   // Only a KNOWN shortfall blocks: a balance still loading reads 0 and would flag every amount.
   // Checked apart from `valid`: an amount over both the balance and the limit names the balance.
-  const overspent = exceedsBalance(wallet, burnAtomic)
+  const overspent = assetsLoaded && burnAtomic !== undefined && burnAtomic > balance
   // The fee rides on top, so MAX leaves room for it and keeps the burn within the limit; a fee not
   // yet priced takes nothing until it lands. The tip is not in MAX: a maxed amount never moves for
   // it, and Faster is refused below when it would not fit.
   const tipInFee = quote.fee?.proverTip ?? 0n
-  const max = wallet.main
+  const max = walletAsset
     ? withdrawalMaxNet({
         spendableAtomic: balance,
         feeAtomic: learned - tipInFee,
@@ -191,8 +190,8 @@ export function WithdrawToWalletModal({
     feeAtomic === undefined ? "$--" : usdFigure(formatUnits(feeAtomic, DEFAULT_DECIMALS))
   // Under the $1 minimum there is nothing to send, and the sheet says why.
   const short =
-    wallet.live &&
-    wallet.main &&
+    assetsLoaded &&
+    walletAsset &&
     feeAtomic !== undefined &&
     balance - (feeAtomic - tipInFee) < minimum
       ? `Your balance can't cover the withdrawal fee (${feeFigure}) plus the $1 minimum.`
@@ -319,7 +318,7 @@ export function WithdrawToWalletModal({
             <span className="ww-fund__label ww-withdraw__amount-label">
               <span>Amount to send</span>
               <span>
-                Available: <b>{usdFigureGrouped(fixedCents(wallet.main))}</b>
+                Available: <b>{usdFigureGrouped(String(walletBalance))}</b>
               </span>
             </span>
             <label className="ww-deposit__input ww-fund__amount">

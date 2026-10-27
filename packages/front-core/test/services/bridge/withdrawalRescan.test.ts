@@ -7,10 +7,10 @@ import { InMemoryStorageAdapter } from "../../__test-helpers__/InMemoryStorageAd
 import { resetSingleton } from "../../__test-helpers__/resetSingleton"
 import { WithdrawalStorage } from "../../../src/core/services/bridge/WithdrawalStorage"
 import { rebuildWithdrawals } from "../../../src/core/services/bridge/withdrawalRescan"
+import { globalEventEmitter } from "../../../src/core/services/GlobalEventEmitter"
 import { swapEscrowTarget } from "../../../src/core/services/bridge/swapEscrowArgs"
 import { withdrawalRecipients } from "../../../src/core/services/bridge/withdrawalRecipients"
 import { savingsMoveOfWithdrawal } from "../../../src/oxide/savingsMoves"
-import { syncCatchUp } from "../../../src/engine/catchUp"
 
 const RECIPIENT = getAddress(`0x${"b0".repeat(20)}`)
 const ESCROW = getAddress(`0x${"e5".repeat(20)}`)
@@ -83,14 +83,14 @@ describe("rebuildWithdrawals", () => {
     const gate = new Promise<number>((resolve) => (open = () => resolve(1_000)))
     const source = makeSource()
     source.blockTimestampMs.mockImplementation(() => gate)
-    const endScan = syncCatchUp.begin()
+    const endScan = globalEventEmitter.beginSyncCatchUp()
     const rebuild = rebuildWithdrawals({ source, store, tokenSymbol: "DAI", tokenDecimals: 18 })
     await vi.waitFor(() => expect(source.blockTimestampMs).toHaveBeenCalled())
     endScan()
-    expect(syncCatchUp.status.get()).toBe(true) // the rescan still holds it
+    expect(globalEventEmitter.isSyncCatchingUp()).toBe(true) // the rescan still holds it
     open()
     await rebuild
-    expect(syncCatchUp.status.get()).toBe(false)
+    expect(globalEventEmitter.isSyncCatchingUp()).toBe(false)
 
     // Without a catch-up in progress the rescan never starts one.
     await rebuildWithdrawals({
@@ -99,7 +99,7 @@ describe("rebuildWithdrawals", () => {
       tokenSymbol: "DAI",
       tokenDecimals: 18,
     })
-    expect(syncCatchUp.status.get()).toBe(false)
+    expect(globalEventEmitter.isSyncCatchingUp()).toBe(false)
   })
 
   beforeEach(() => {

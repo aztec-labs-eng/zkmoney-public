@@ -107,8 +107,7 @@ vi.mock("../src/features/withdraw/withdrawGateway", () => ({
   ownSwapRecoverer: h.ownSwapRecoverer,
 }))
 
-const { swapExitReasonFor } = await import("@obsidion/front-core")
-const { executeSwapWithdrawal, recoverSwapWithdrawal } = await import(
+const { executeSwapWithdrawal, recoverSwapWithdrawal, swapExitReasonFor } = await import(
   "../src/features/withdraw/swapRecovery"
 )
 const { SWAP_ESCROW_RECOVERY_DEADLINE_S, SWAP_STUCK_THRESHOLD_MS, deriveSwapEscrowRecoverySalt } =

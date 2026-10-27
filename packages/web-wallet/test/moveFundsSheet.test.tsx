@@ -1,7 +1,6 @@
 import { act, type ReactNode } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { balancesOf } from "./support/balances"
 
 const ONE = 10n ** 18n
 const state = vi.hoisted(() => ({
@@ -24,8 +23,7 @@ const state = vi.hoisted(() => ({
   timing: undefined as { releaseSeconds: (at: number) => number } | undefined,
   savingsMoveEta: vi.fn(),
 }))
-vi.mock("@obsidion/front-core", async () => ({
-  ...(await vi.importActual("@obsidion/front-core/dist/hooks/useStore.js")),
+vi.mock("@obsidion/front-core", () => ({
   SavingsFeeError: class SavingsFeeError extends Error {
     constructor(readonly fee: bigint) {
       super("fee")
@@ -40,7 +38,7 @@ vi.mock("@obsidion/front-core", async () => ({
       ? Infinity
       : Math.log1p(Number(fee) / Number(net)) / Math.log1p(apy),
   savingsMoveEta: state.savingsMoveEta,
-  useAssetContext: () => ({ balances: balancesOf({ main: state.balance, live: true }) }),
+  useBalance: () => ({ walletAsset: { balanceAtomic: state.balance }, assetsLoaded: true }),
   normalizeAmountInput: (v: string) => v,
   tokenAmount: (v: string) => v,
   AMOUNT_MAX_DECIMALS: 2,

@@ -4,17 +4,20 @@ import { useNavigate, useParams } from "react-router-dom"
 import { useActionGuard } from "../actionGate"
 import {
   ContactStorage,
+  TransactionStorage,
+  RequestStorage,
   getActiveNetworkId,
+  globalEventEmitter,
   contactRowFromEntry,
   isPaymentContactEntry,
   resolveAssetConstants,
-  sameChat,
-  selectContactChat,
   updateSavedL1WalletContact,
   useAssetContext,
-  useStore,
+  useContactsDirectory,
+  type ChatMessage,
   type Contact,
   type SIPADepositRecord,
+  type WithdrawalRecord,
 } from "@obsidion/front-core"
 import { TRANSFER_MEMO_MAX_BYTES, truncateUtf8 } from "@obsidion/sdk"
 import {
@@ -34,10 +37,10 @@ import { fireEvent, requestAmountBucket } from "../../lib/analytics"
 import { useBack } from "../../ui/hooks"
 import { pageBottom, revealAboveKeyboard, useKeyboardInset } from "../../ui/keyboardInset"
 import { usePhoneLayout } from "../../ui/usePhoneLayout"
+import { getSipaDepositGateway } from "../deposit/sipaGateway"
+import { getWithdrawalStore } from "../withdraw/withdrawGateway"
 import { loadWalletIdentity } from "../identity/walletIdentity"
-import { useSession } from "../../platform/session"
-import { wallClock } from "../../lib/clock"
-import { ActivityDetailHost, useActivityHost } from "../../ui/activity/ActivityDetailHost"
+import { webStorage } from "../../platform/storage/WebStorageAdapter"
 import { MessagingBanner } from "../../platform/xmtp/MessagingBanner"
 import {
   getRequestBroadcaster,
@@ -48,8 +51,14 @@ import emptyArt from "../../assets/contacts/empty-txns.webp"
 import { ChatBubble } from "./ChatBubble"
 import { DepositDetailModal } from "../../ui/screens/DepositDetailModal"
 import { TxDetailModal } from "../../ui/screens/TxDetailModal"
-import { txNoteFor, txRowView, type ActivityRowView } from "../../ui/screens/activityView"
-import { chatContactOf, chatMessageOf, type ChatMessage } from "./contactChat"
+import { WithdrawalDetailModal } from "../../ui/screens/WithdrawalDetailModal"
+import { buildActivityRows, txNoteFor, type ActivityRowView } from "../../ui/screens/activityView"
+import {
+  buildContactChat,
+  chatMessageSource,
+  selectedContactOf,
+  type ContactChatSources,
+} from "./contactChat"
 import {
   addressKindLabel,
   findContactEntry,
@@ -70,24 +79,15 @@ import { lookUpUnsavedContact, saveUnsavedContact } from "./unsavedContact"
 /** Contact detail: identity header, delete, the payments chat — the chronological R15 record
  *  kinds (transfers, requests, paylinks, SIPA deposits, withdrawals) between the user and this
  *  contact — plus L2 payment-request actions and Send, or L1 Deposit + Withdraw. A registered tag
- *  that is not saved opens here too, with Add contact in place of delete, and so does an unknown
- *  sender's address, with its history only. */
+ *  that is not saved opens here too, with Add contact in place of delete. */
 export function ContactDetailScreen() {
-  return (
-    <ActivityDetailHost>
-      <ContactDetail />
-    </ActivityDetailHost>
-  )
-}
-
-function ContactDetail() {
-  const session = useSession()
   const navigate = useNavigate()
   const guard = useActionGuard()
   const phone = usePhoneLayout()
   const back = useBack("/contacts")
   const { idOrTag } = useParams()
   const { tokenService } = useAssetContext()
+  const directory = useContactsDirectory()
   const [entry, setEntry] = useState<Contact | null | undefined>(undefined)
   const [saved, setSaved] = useState(true)
   const [lookingUp, setLookingUp] = useState(false)
@@ -103,22 +103,15 @@ function ContactDetail() {
   const [requestDraft, setRequestDraft] = useState<{ amount: string; note: string }>()
   const [submitting, setSubmitting] = useState(false)
   const [requestDetail, setRequestDetail] = useState<{ id: string; step: "detail" | "confirm" }>()
-  const host = useActivityHost()
-  const { feed } = host
-  const requests = feed.csv.requests
-  // Kept while the bubbles and their day labels say the same, so a clock tick changes nothing.
-  const thread = useStore(
-    wallClock,
-    (now) => ({
-      day: new Date(now).toDateString(),
-      items: entry ? selectContactChat(feed, requests, chatContactOf(entry), now) : [],
-    }),
-    (a, b) => a.day === b.day && sameChat(a.items, b.items),
-  )
-  const messages = useMemo(() => thread.items.map(chatMessageOf), [thread])
+  const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [sources, setSources] = useState<ContactChatSources>({})
   const [txDetail, setTxDetail] = useState<{ row: ActivityRowView; note?: string }>()
   const [depositDetail, setDepositDetail] = useState<{
     record: SIPADepositRecord
+    amount: string
+  }>()
+  const [withdrawalDetail, setWithdrawalDetail] = useState<{
+    record: WithdrawalRecord
     amount: string
   }>()
   const inboxState = useSyncExternalStore(subscribeXmtpInboxState, getXmtpInboxState)
@@ -127,8 +120,6 @@ function ContactDetail() {
   // Route visit count. Add contact reads it when it starts and checks it before each state write,
   // so a late result cannot change a later route, including a return to the same person.
   const routeVisit = useRef(0)
-  // Only a new message scrolls the chat to its end.
-  const latestMessage = messages.at(-1)?.id
   useEffect(() => {
     const el = chatBody.current
     if (phone) {
@@ -136,7 +127,7 @@ function ContactDetail() {
       const latest = footer?.getClientRects().length ? footer : el?.lastElementChild
       latest?.scrollIntoView({ block: "end" })
     } else if (el) el.scrollTop = el.scrollHeight
-  }, [messages.length, latestMessage, phone])
+  }, [messages, phone])
 
   // Phones scroll the page, so the request form and its error can open below the fold.
   const requestAmountError = amountError(requestDraft?.amount ?? "")
@@ -209,6 +200,44 @@ function ContactDetail() {
       unsubscribe()
     }
   }, [idOrTag])
+
+  // Assemble the chat from the live web sources; rebuild on any source change. No paylink store
+  // exists on web — paylink rows persisted in TransactionStorage flow through `transactions`.
+  useEffect(() => {
+    if (!entry) return
+    let cancelled = false
+    const storage = webStorage
+    const rebuild = async () => {
+      const [transactions, requests] = await Promise.all([
+        TransactionStorage.get(storage)
+          .getTransactions()
+          .catch(() => []),
+        RequestStorage.get()
+          .list()
+          .catch(() => []),
+      ])
+      const sipaDeposits = getSipaDepositGateway().records()
+      const withdrawalStore = getWithdrawalStore()
+      await withdrawalStore.load().catch(() => {})
+      if (cancelled) return
+      const next = { transactions, requests, sipaDeposits, withdrawals: withdrawalStore.list() }
+      setSources(next)
+      setMessages(buildContactChat(entry, next))
+    }
+    void rebuild()
+    const onUpdate = () => void rebuild()
+    globalEventEmitter.onTransactionsUpdated(onUpdate)
+    const unsubRequests = RequestStorage.get().subscribe(onUpdate)
+    const unsubSipa = getSipaDepositGateway().subscribe(onUpdate)
+    const unsubWithdrawals = getWithdrawalStore().onListChanged(onUpdate)
+    return () => {
+      cancelled = true
+      globalEventEmitter.offTransactionsUpdated(onUpdate)
+      unsubRequests()
+      unsubSipa()
+      unsubWithdrawals()
+    }
+  }, [entry])
 
   const addToContacts = async () => {
     if (!entry || saved || adding) return
@@ -316,7 +345,7 @@ function ContactDetail() {
         showReportableError(new Error("Enter a valid amount"), "contact:request-compose")
         return
       }
-      await session.requests.add(row)
+      await RequestStorage.get().add(row)
       fireEvent("request_created", {
         source: "contact",
         amount_bucket: requestAmountBucket(row.amount),
@@ -346,7 +375,7 @@ function ContactDetail() {
   // Same route as the activity feed's Send-on-request: ContactPayScreen fulfills the row and
   // signals the requester over XMTP once the transfer lands.
   const payRequest = async (m: ChatMessage) => {
-    const row = session.requests.view.get().find((r) => r.id === m.id)
+    const row = await RequestStorage.get().findById(m.id)
     if (!row) return
     guard("send", () =>
       navigate(`/contacts/${idOrTag}/send`, {
@@ -364,24 +393,19 @@ function ContactDetail() {
 
   // Every bubble opens its own sheet.
   const openMessage = (m: ChatMessage) => {
-    const { source } = m.item
-    if (source.kind === "chatRequest")
-      return setRequestDetail({ id: source.request.id, step: "detail" })
+    const source = chatMessageSource(m, sources)
+    if (!source) return
+    if (source.kind === "request") return setRequestDetail({ id: source.id, step: "detail" })
     if (source.kind === "deposit")
       return setDepositDetail({ record: source.record, amount: m.amount })
     if (source.kind === "withdrawal")
-      return host.open({ kind: "withdrawal", id: source.record.localId })
-    if (source.kind === "withdrawalGroup")
-      return host.open({ kind: "withdrawal", id: source.group.groupId })
-    if (source.kind !== "tx" || !entry) return
-    const row = txRowView(source)
+      return setWithdrawalDetail({ record: source.record, amount: m.amount })
+    if (!entry || !isPaymentContactEntry(entry)) return
+    const row = buildActivityRows([source.transaction], directory)[0]
+    if (!row) return
     setTxDetail({
-      row: {
-        ...row,
-        contact:
-          row.contact ?? (isPaymentContactEntry(entry) ? contactRowFromEntry(entry) : undefined),
-      },
-      note: txNoteFor(row, [...requests]),
+      row: { ...row, contact: row.contact ?? contactRowFromEntry(entry) },
+      note: txNoteFor(row, sources.requests ?? []),
     })
   }
 
@@ -398,7 +422,7 @@ function ContactDetail() {
       return [decline, { label: "Send", onClick: () => void payRequest(m).catch(console.warn) }]
     }
     if (m.role === "request-out") {
-      const state = remindStateOf(m.id, requests.find((r) => r.id === m.id)?.remindedAt)
+      const state = remindStateOf(m.id, sources.requests?.find((r) => r.id === m.id)?.remindedAt)
       return [
         { label: "Cancel", onClick: () => setRequestDetail({ id: m.id, step: "confirm" }) },
         {
@@ -447,9 +471,9 @@ function ContactDetail() {
   const ownHandle = loadWalletIdentity()?.handle ?? "me"
   // Payment rails need a completed handshake (payable L2 address) and a tag registered on the
   // current zk.money. L1 contacts are the bridge counterparty — Deposit + Withdraw only.
-  const chat = chatContactOf(entry)
+  const selected = selectedContactOf(entry)
   const payable =
-    !notUpgraded && chat.addressKind === "aztec-l2" && Boolean(chat.address && entry.tag)
+    !notUpgraded && selected.addressKind === "aztec-l2" && Boolean(selected.address && entry.tag)
   const parsedAmount = parseAmount(requestDraft?.amount ?? "")
   const validRequestAmount = Number.isFinite(parsedAmount) && parsedAmount > 0
   const inlineCard = confirmingDelete || renaming || !!requestDraft
@@ -503,7 +527,7 @@ function ContactDetail() {
       {!saved && (
         <div className="ww-chat__unsaved">
           <span>Not in your contacts</span>
-          {!notUpgraded && entry.tag && (
+          {!notUpgraded && (
             <button
               type="button"
               className="zkm-btn-reset zkm-pressable ww-chat__unsaved-add"
@@ -789,6 +813,13 @@ function ContactDetail() {
         <DepositDetailModal
           record={depositDetail.record}
           onClose={() => setDepositDetail(undefined)}
+        />
+      )}
+      {withdrawalDetail && (
+        <WithdrawalDetailModal
+          record={withdrawalDetail.record}
+          amount={withdrawalDetail.amount}
+          onClose={() => setWithdrawalDetail(undefined)}
         />
       )}
     </div>

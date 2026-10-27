@@ -1,11 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { beforeEach, describe, expect, it } from "vitest"
 import {
   HISTORIC_ACTIVITY_IMPORTED_KEY,
   TRANSACTIONS_STORAGE_KEY,
+  TransactionStorage,
   type Transaction,
 } from "@obsidion/front-core"
 import { importHistoricActivityOnce } from "../src/features/migration/historicActivityImport"
-import { activeAccount, closeSession, openSession, session } from "../src/platform/session"
 import { setActiveRollup } from "../src/platform/storage/rollupStorage"
 import {
   closeWalletStore,
@@ -88,11 +88,8 @@ describe("WebStorageAdapter.readOtherDatabases", () => {
 })
 
 describe("importHistoricActivityOnce", () => {
-  afterEach(() => closeSession())
-
   it("carries the account's rows from the retired rollup's database into this one, once", async () => {
     await activate("acct1")
-    openSession(activeAccount())
     const old = dbs.db(OLD_ROLLUP).state
     old.set(scoped("acct1", TRANSACTIONS_STORAGE_KEY), JSON.stringify([row("0xA1")]))
     old.set(scoped("acct1", CURSOR), "10")
@@ -101,8 +98,7 @@ describe("importHistoricActivityOnce", () => {
     const result = await importHistoricActivityOnce()
 
     expect(result).toMatchObject({ databases: 1, transactions: 1 })
-    await session().activity.ready
-    const rows = session().activity.rows.get()
+    const rows = await TransactionStorage.get(webStorage).getTransactions()
     expect(rows.map((r) => [r.txHash, r.networkId])).toEqual([["0xA1", OLD_NETWORK]])
     expect(await webStorage.getItem(HISTORIC_ACTIVITY_IMPORTED_KEY)).not.toBeNull()
     await expect(importHistoricActivityOnce()).resolves.toBe(result)

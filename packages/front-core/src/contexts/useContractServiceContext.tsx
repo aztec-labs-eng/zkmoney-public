@@ -119,8 +119,8 @@ export const ContractServiceProvider = ({
   // Oxide env-registry lifecycle: start the client so boot-time readers that never call
   // initialize() themselves still inherit manifest values, then gate mainnet on the result.
   //
-  // Nothing subscribes. A tuple-to-tuple roll moves the token address, which signals a portal
-  // roll rather than a stale cache — the upgrade's boot-time detection owns the response, and
+  // Nothing subscribes. A tuple-to-tuple roll moves the token address, which signals an
+  // intra-rollup migration rather than a stale cache — that flow owns the response, and
   // reacting here would be a second, blinder detector for the same event.
   useEffect(() => {
     if (!contractService) return

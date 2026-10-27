@@ -3,7 +3,6 @@ import { encodeEventTopics, erc20Abi, pad, toHex, type Address } from "viem"
 import { keccak256 } from "@aztec-labs/foundation/crypto/keccak"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import { SipaIntent } from "@oxide/l1-contracts"
-import { syncCatchUp } from "../../src/engine/catchUp"
 
 const ZERO = "0x0000000000000000000000000000000000000000"
 
@@ -240,6 +239,7 @@ import { observeSipas } from "../../src/oxide/sipaObservation"
 import { syncSipaDeposits, type SipaDepositSyncDeps } from "../../src/oxide/sipaClaims"
 import type { SipaFundingToken } from "../../src/oxide/sipaFunding"
 import type { SipaRow } from "../../src/oxide/sipaRows"
+import { globalEventEmitter } from "../../src/core/services/GlobalEventEmitter"
 import { isStuckSweep, STUCK_SWEEP_MS } from "../../src/core/services/deposits/sipaStuck"
 import {
   directDepositKey,
@@ -3587,13 +3587,13 @@ describe("syncSipaDeposits balance refresh", () => {
     expect(refreshBalance.mock.invocationCallOrder[0]).toBeGreaterThan(
       tokenService.claimSweptDeposit.mock.invocationCallOrder[0],
     )
-    expect(syncCatchUp.status.get()).toBe(true)
+    expect(globalEventEmitter.isSyncCatchingUp()).toBe(true)
 
     land()
 
     expect(await pass).toMatchObject({ claimed: 1 })
     expect(refreshBalance).toHaveBeenCalledTimes(1)
-    expect(syncCatchUp.status.get()).toBe(false)
+    expect(globalEventEmitter.isSyncCatchingUp()).toBe(false)
   })
 
   it.each([
@@ -3758,11 +3758,11 @@ describe("syncSipaDeposits balance refresh", () => {
       claimed: 1,
       failed: 0,
     })
-    expect(syncCatchUp.status.get()).toBe(false)
+    expect(globalEventEmitter.isSyncCatchingUp()).toBe(false)
   })
 
   it("begins a catch-up only for a pass that discovers an event with no local record", async () => {
-    const begin = vi.spyOn(syncCatchUp, "begin")
+    const begin = vi.spyOn(globalEventEmitter, "beginSyncCatchUp")
     try {
       const store = makeStore()
       store.records.set(SIPA_A, {

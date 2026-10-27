@@ -5,7 +5,8 @@ import {
   type PaylinkParams,
   type PaylinkWindow,
 } from "@obsidion/sdk"
-import { isPaylinkTransaction, type PaylinkTransaction, type Transaction } from "src/types"
+import type { PaylinkTransaction, Transaction } from "src/types"
+import { isPaylinkTransaction } from "../notifications/PaylinkClaimedNotificationProducer"
 import { isRefundInFlight } from "./refundInFlight"
 
 /**

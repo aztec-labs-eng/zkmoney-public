@@ -1,13 +1,7 @@
 import { Modal } from "../../ui/Modal"
 import { useEffect, useRef, useState } from "react"
 import { useNavigate } from "react-router-dom"
-import {
-  exceedsBalance,
-  parseEscrowAmount,
-  TxInFlightError,
-  useAssetContext,
-  useStore,
-} from "@obsidion/front-core"
+import { useBalance, parseEscrowAmount, TxInFlightError } from "@obsidion/front-core"
 import { isPasskeyCancelled } from "@obsidion/passkey-web"
 import { PAYLINK_MEMO_MAX_BYTES, truncateUtf8 } from "@obsidion/sdk"
 import {
@@ -39,14 +33,7 @@ import {
 import { PayModalChrome } from "../../ui/PayModalChrome"
 import { useBack, useProvingOutcome } from "../../ui/hooks"
 import { useUserFlowActive } from "../provingGate"
-import {
-  amountError,
-  decimalInput,
-  fixedCents,
-  floorToCents,
-  parseAmount,
-  usd,
-} from "../../ui/format"
+import { amountError, decimalInput, floorToCents, parseAmount, usd } from "../../ui/format"
 import { emailLockedLinksEnabled } from "../../config/features"
 import { useBusyLabel } from "../operations/operations"
 import { OperationHandOff } from "../operations/OperationHandOff"
@@ -71,8 +58,7 @@ export function NewLinkScreen() {
   const navigate = useNavigate()
   const back = useBack("/send")
   const deps = usePaylinkDeps()
-  const balance = useStore(useAssetContext().balances.view)
-  const main = balance.main
+  const { walletAsset, walletBalance, assetsLoaded } = useBalance()
 
   const [phase, setPhase] = useState<Phase>("amount")
   const previousPhase = PREVIOUS_PHASE[phase]
@@ -118,11 +104,10 @@ export function NewLinkScreen() {
   // Past those, a $0 account blocks too — the escrow it can't fund reverts a minute into proving,
   // after the passkey prompt, and the link never exists.
   const overspent =
+    assetsLoaded &&
     !hasPendingDeposits() &&
-    exceedsBalance(
-      balance,
-      validAmount ? parseEscrowAmount(amount, main?.decimals ?? 0).atomic : 0n,
-    )
+    (validAmount ? parseEscrowAmount(amount, walletAsset?.decimals ?? 0).atomic : 0n) >
+      (walletAsset?.balanceAtomic ?? 0n)
   const canNext = validAmount && !overspent
   const canConfirm = !protectEnabled || validEmail
   // The asset layer connects async after mount; the CTA waits for the full deps set.
@@ -144,7 +129,7 @@ export function NewLinkScreen() {
   // The visitor page reads the same offer and amount: a link at the threshold, carrying a voucher,
   // pays a new user's tag.
   const { offer } = useGoldenTicketOffer()
-  const decimals = main?.decimals
+  const decimals = walletAsset?.decimals
   const ticketMinimum =
     offer && decimals !== undefined ? ticketThresholdLabel(offer.threshold, decimals) : undefined
   const amountUnits =
@@ -256,7 +241,7 @@ export function NewLinkScreen() {
               <div className="ww-pay__form">
                 <div className="ww-pay__field">
                   <span className="ww-pay__available">
-                    Available: <b>${fixedCents(main)}</b>
+                    Available: <b>${walletBalance}</b>
                   </span>
                   <TextField
                     label="Amount"
@@ -277,7 +262,10 @@ export function NewLinkScreen() {
                       <button
                         type="button"
                         className="zkm-btn-reset ww-pay__max"
-                        onClick={() => main && setAmount(floorToCents(main.atomic, main.decimals))}
+                        onClick={() =>
+                          walletAsset &&
+                          setAmount(floorToCents(walletAsset.balanceAtomic, walletAsset.decimals))
+                        }
                       >
                         MAX
                       </button>

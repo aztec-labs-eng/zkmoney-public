@@ -1,10 +1,7 @@
 import { describe, expect, it } from "vitest"
+import type { SavingsMoveRecord, WithdrawalRecord } from "@obsidion/front-core"
 import {
   isSavingsMoveSettled,
-  type SavingsMoveRecord,
-  type WithdrawalRecord,
-} from "@obsidion/front-core"
-import {
   recoveredTo,
   savingsMoveFigure,
   savingsMoveStatus,

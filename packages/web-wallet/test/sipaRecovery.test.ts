@@ -47,8 +47,8 @@ const {
   desktopBridgeChannel,
   injectedWalletChannel,
   recoverSipaDeposit,
+  recoveryReasonFor,
 } = await import("../src/features/deposit/sipaRecovery")
-const { recoveryReasonFor } = await import("@obsidion/front-core")
 type L1ExitStage = import("../src/features/deposit/sipaRecovery").L1ExitStage
 const { unsweepableCopy } = await import("../src/features/deposit/unsweepableCopy")
 

@@ -49,11 +49,9 @@ import { PasskeyRefusal, type RefusalState } from "../identity/PasskeyRefusal"
 import { isPasskeyPolicyError, type PasskeyAttemptHandle } from "@obsidion/passkey-web"
 import { GateStep } from "../identity/PhoneSteps"
 import { reusePasskeyAccount } from "./oxideOnboarding"
-import { reloadIfSessionSwitched } from "./sessionReload"
 import { failureCode, fireEvent } from "../../lib/analytics"
 import { passkeyTelemetry } from "../../lib/passkeyTelemetry"
-import { canManualRegistrationSweep } from "@obsidion/front-core"
-import { manualRegistrationSweep } from "./registrationSweep"
+import { canManualRegistrationSweep, manualRegistrationSweep } from "./registrationSweep"
 import { reservedUntil, type RegistrationTerms } from "./registrationTerms"
 import { registrationNeedsRefund, useRegistrationRefunded } from "./registrationQuoteRecovery"
 import { DepositProcessingNotice } from "../deposit/DepositProcessingNotice"
@@ -465,7 +463,6 @@ export function ManualSweepAction({
       const keys = await signIn.run((own) =>
         reusePasskeyAccount(obsidionWallet, record.l2Address, undefined, gate, signal, own),
       )
-      if (reloadIfSessionSwitched(null, record.l2Address)) return
       const opts = isDesktopL1SubmitActive() ? { destination: destination as Address } : {}
       // The paid address (typed destination or the connected account) is only known once the
       // channel resolves, so it is screened at submit rather than in the form.

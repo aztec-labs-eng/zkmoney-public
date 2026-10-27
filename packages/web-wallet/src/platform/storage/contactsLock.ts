@@ -13,3 +13,7 @@ const webLock =
 /** Guards ContactStorage plus the connect handshake stores (distinct keys, one mutex). */
 const CONTACTS_WRITE_LOCK = "contacts-write"
 export const contactsWriteLock: StorageLock = webLock(CONTACTS_WRITE_LOCK)
+
+/** Guards RequestStorage. */
+const REQUESTS_WRITE_LOCK = "requests-write"
+export const requestsWriteLock: StorageLock = webLock(REQUESTS_WRITE_LOCK)

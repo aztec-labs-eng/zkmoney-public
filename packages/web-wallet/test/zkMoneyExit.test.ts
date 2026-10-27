@@ -9,6 +9,7 @@ const m = vi.hoisted(() => ({
   register: vi.fn(),
   saved: [] as Record[],
   pending: [] as Record[],
+  notify: vi.fn(),
   settle: vi.fn(),
   producing: vi.fn(),
 }))
@@ -43,6 +44,7 @@ vi.mock("../src/features/withdraw/oldVersionWithdrawals", () => ({
   pendingRefundIds: (records: Record[]) =>
     new Set(records.flatMap((r) => r.refunds.filter((f) => !f.l1TxHash).flatMap((f) => f.ids))),
   withdrawalSent: (record: Record) => record.refunds.reduce((sum, f) => sum + BigInt(f.usd), 0n),
+  notifyOldVersionWithdrawal: m.notify,
   settleOldVersionWithdrawal: m.settle,
   setProducingOldVersionWithdrawal: m.producing,
 }))
@@ -85,6 +87,7 @@ beforeEach(() => {
   m.order = []
   m.saved = []
   m.pending = []
+  m.notify.mockReset()
   m.producing.mockReset()
   m.register.mockReset().mockImplementation(async () => {
     m.order.push("register")
@@ -129,6 +132,7 @@ describe("withdrawing old versions' funds to Ethereum from zk.money", () => {
         { ids: ["s0"], usd: String(2n * 4n * TIP), sentAt: expect.any(Number) },
       ],
     })
+    expect(m.notify).toHaveBeenCalledTimes(2)
     expect(result).toEqual({ sent: 2n * TIP + 8n * TIP, left: 3n + 6n, hash: "0xl11" })
     // Process manually stays off the record only while the run sends.
     expect(m.producing.mock.calls).toEqual([[m.saved[0]!.id], [undefined]])

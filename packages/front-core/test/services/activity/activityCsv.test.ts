@@ -228,11 +228,14 @@ const upgradeBatch = (state: string): ActivityItem => ({
   },
 })
 
-/** Feed item kinds the export reads. */
-const ITEM_KINDS: Record<string, "exported"> = {
+/** Feed item kinds whose rows come from somewhere else. */
+const ITEM_KINDS: Record<string, "exported" | "from transactions"> = {
   "bridge.withdrawal": "exported",
   "upgrade.batch": "exported",
   "bridge.sipaDeposit": "exported",
+  "p2p": "from transactions",
+  "paylink": "from transactions",
+  "request": "from transactions",
 }
 
 const keys = (table: object) => Object.keys(table).sort()

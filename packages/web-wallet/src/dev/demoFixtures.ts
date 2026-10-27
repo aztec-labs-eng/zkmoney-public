@@ -14,7 +14,7 @@ import { deriveStealthKey, isSettledSipaPhase } from "@obsidion/front-core"
 import type {
   Contact,
   PaylinkTransaction,
-  StoredRequest,
+  PaymentRequest,
   SIPADepositRecord,
   Transaction,
   WithdrawalRecord,
@@ -95,20 +95,6 @@ const l1Recipient = (seed: string): Address => getAddress(address(seed))
 
 /** Base units at the flat 18 decimals, for the fields writers persist raw. */
 const atomic = (display: string): string => parseUnits(display, 18).toString()
-
-/** A fixture row before the activity store's key and raw amount, which `keyed` derive. */
-type DemoRow = Transaction extends infer T
-  ? T extends Transaction
-    ? Omit<T, "id" | "amountAtomic">
-    : never
-  : never
-
-const keyed = (row: DemoRow): Transaction =>
-  ({
-    ...row,
-    id: row.operationId ?? row.txHash,
-    amountAtomic: "token" in row && row.token ? parseUnits(String(row.token.amount), 18) : 0n,
-  }) as Transaction
 
 const daiToken = (amount: number) => ({
   address: DEMO_L2_TOKEN,
@@ -286,10 +272,6 @@ export const STRANGER_ADDRESS = `0x${"1e".repeat(32)}`
  *  but bound to no contact on this device, so the row draws the bare tag. */
 export const STRANGER_TAG = "kai"
 
-/** A sender with no tag the registry proves, so its receives store the raw address and draw as
- *  "Unknown sender". */
-export const UNKNOWN_SENDER_ADDRESS = `0x${"2d".repeat(32)}`
-
 /** Stands in for a stored claim URL. It carries no decodable fragment, so submitting a recovery
  *  from the demo fails at the decode rather than reaching a chain that isn't there. */
 const DEMO_PAYLINK = "https://zk.money/link#demo"
@@ -301,7 +283,7 @@ const DEMO_PAYLINK = "https://zk.money/link#demo"
  * `paylink`: `markCreateRowClaimed` / `markCreateRowRefunded` scrub it as they set the flag. Their
  * status pill reads `paylinkStatusFor`, which never looks at the URL.
  */
-function creatorLinkRows(now: number): Omit<PaylinkTransaction, "id" | "amountAtomic">[] {
+function creatorLinkRows(now: number): PaylinkTransaction[] {
   const sec = (ms: number) => Math.floor(ms / 1000)
   const base = {
     action: "Pay To Email" as const,
@@ -388,8 +370,8 @@ function creatorLinkRows(now: number): Omit<PaylinkTransaction, "id" | "amountAt
  * can actually write: sends and receives against saved contacts (which is what the contact chat
  * assembles from) and against strangers, the three paylink legs, and the pending/failed statuses.
  *
- * A receive's `from` is the sender's TAG when the registry proves it, else the sender's address;
- * `senderL2Address` carries the proven sender either way. A send's `to` is the
+ * A receive's `from` is the sender's TAG — the receiver resolves a display name and persists that,
+ * never an address — while `senderL2Address` carries the proven sender. A send's `to` is the
  * resolved L2 address, which is what the send path passes to storage.
  */
 /** A row this page is still proving: dated after it loaded, so the boot sweep leaves it. */
@@ -399,7 +381,7 @@ function provingSince(at: number): number {
 
 export function demoTransactions(now: number): Transaction[] {
   const [ada, bo, cleo] = CONTACT_ADDRESSES as [string, string, string]
-  const rows: DemoRow[] = [
+  return [
     // The two pending sends are the chat's delivery marks: no hash yet means the proof is still
     // running (spinner), a hash means it is in the mempool (one tick).
     {
@@ -410,7 +392,7 @@ export function demoTransactions(now: number): Transaction[] {
       status: "pending",
       // Pre-submit rows persist with an empty hash until the wallet mints the real one.
       txHash: "",
-      operationId: "demo-send-proving",
+      queueId: "demo-send-proving",
     },
     // A pre-submit row a closed tab left behind: `recoverInterrupted` fails it on the next load.
     {
@@ -420,7 +402,7 @@ export function demoTransactions(now: number): Transaction[] {
       timestamp: now - 2 * HOUR,
       status: "pending",
       txHash: "",
-      operationId: "demo-send-interrupted",
+      queueId: "demo-send-interrupted",
     },
     {
       action: "send",
@@ -442,16 +424,6 @@ export function demoTransactions(now: number): Transaction[] {
       txHash: hash("22"),
     },
     {
-      action: "receive",
-      token: daiToken(30),
-      from: UNKNOWN_SENDER_ADDRESS,
-      senderL2Address: UNKNOWN_SENDER_ADDRESS,
-      to: DEMO_HANDLE,
-      timestamp: now - 1 * DAY,
-      status: "success",
-      txHash: hash("d1"),
-    },
-    {
       action: "send",
       token: daiToken(15.5),
       to: cleo,
@@ -464,10 +436,10 @@ export function demoTransactions(now: number): Transaction[] {
       token: daiToken(8),
       to: ada,
       timestamp: now - 3 * DAY,
-      // The send path keeps the thrown message as detail; this is aztec.js's receipt wait giving up
+      // The send path stores the thrown message verbatim; this is aztec.js's receipt wait giving up
       // on a transaction the sequencer dropped after it was broadcast.
       status: "failed",
-      failure: { code: "tx.failed", detail: `Transaction ${hash("44")} was dropped. Reason: unknown` },
+      error: `Transaction ${hash("44")} was dropped. Reason: unknown`,
       txHash: hash("44"),
     },
     {
@@ -479,17 +451,6 @@ export function demoTransactions(now: number): Transaction[] {
       timestamp: now - 4 * DAY,
       status: "success",
       txHash: hash("55"),
-      requestId: "req_demo_done",
-    },
-    {
-      action: "receive",
-      token: daiToken(12),
-      from: UNKNOWN_SENDER_ADDRESS,
-      senderL2Address: UNKNOWN_SENDER_ADDRESS,
-      to: DEMO_HANDLE,
-      timestamp: now - 6 * DAY,
-      status: "success",
-      txHash: hash("d2"),
     },
     ...creatorLinkRows(now),
     {
@@ -529,7 +490,6 @@ export function demoTransactions(now: number): Transaction[] {
       txHash: hash("c9"),
     },
   ]
-  return rows.map(keyed)
 }
 
 /**
@@ -674,7 +634,7 @@ export function demoWithdrawals(now: number): WithdrawalRecord[] {
  * every row: the announce (and the receiver's ingest on the incoming one) carries them alongside the
  * display amount.
  */
-export function demoRequests(now: number, networkId: string): StoredRequest[] {
+export function demoRequests(now: number, networkId: string): PaymentRequest[] {
   const token = { tokenAddress: DEMO_L2_TOKEN, tokenDecimals: 18, networkId }
   return [
     {
@@ -828,9 +788,10 @@ export function demoRequests(now: number, networkId: string): StoredRequest[] {
       amountAtomic: atomic("60"),
       asset: WALLET_TOKEN_SYMBOL,
       direction: "outgoing",
-      status: "pending",
+      status: "fulfilled",
       createdAt: now - 9 * DAY,
       kind: "contact",
+      fulfillmentTxHash: hash("55"),
     },
   ]
 }

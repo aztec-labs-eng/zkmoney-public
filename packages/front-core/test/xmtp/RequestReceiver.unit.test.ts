@@ -8,12 +8,19 @@ import type {
   RequestSenderPolicy,
   RequestStoreWrites,
   RequestTagBindingResolver,
+  RequestTerminalStatus,
   StoredRequestView,
 } from "../../src/xmtp/requestReceiverTypes"
 
+interface ApplyCall {
+  requestId: string
+  status: RequestTerminalStatus
+  txHash?: string
+}
+
 class FakeStore implements RequestStoreWrites {
   added: IncomingRequestInput[] = []
-  declined: string[] = []
+  applies: ApplyCall[] = []
   insertResult = true
   applyResult = true
   throwOnAdd = false
@@ -29,8 +36,12 @@ class FakeStore implements RequestStoreWrites {
     return { inserted: this.insertResult }
   }
 
-  async decline(requestId: string): Promise<{ applied: boolean }> {
-    this.declined.push(requestId)
+  async applyStatus(
+    requestId: string,
+    status: RequestTerminalStatus,
+    txHash?: string,
+  ): Promise<{ applied: boolean }> {
+    this.applies.push({ requestId, status, txHash })
     return { applied: this.applyResult }
   }
 }
@@ -90,7 +101,7 @@ describe("RequestReceiver", () => {
       content: { kind: "request-declined", requestId: "req-1", networkId: "aztec-sandbox" },
     })
     expect(result).toEqual({ status: "accepted", kind: "request-declined" })
-    expect(store.declined).toHaveLength(1)
+    expect(store.applies[0].status).toBe("declined")
   })
 
   it("defers on a store-write throw", async () => {
@@ -173,7 +184,7 @@ describe("RequestReceiver", () => {
         senderXmtpAddresses: ["0xmallory"],
       })
       expect(result).toEqual({ status: "ignored", reason: "sender-binding-mismatch" })
-      expect(store.declined).toHaveLength(0)
+      expect(store.applies).toHaveLength(0)
     })
 
     it("ignores a flip with no matching row without resolving the binding", async () => {
@@ -192,7 +203,7 @@ describe("RequestReceiver", () => {
       })
       expect(result).toEqual({ status: "ignored", reason: "no-matching-request" })
       expect(resolved).toBe(0)
-      expect(store.declined).toHaveLength(0)
+      expect(store.applies).toHaveLength(0)
     })
   })
 

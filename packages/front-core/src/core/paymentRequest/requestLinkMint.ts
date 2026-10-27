@@ -5,7 +5,7 @@
  */
 import { encodePacked, keccak256, type Address } from "viem"
 import { parseEscrowAmount } from "../../utils/escrowAmount"
-import type { StoredRequest } from "../../engine/requests"
+import type { PaymentRequest } from "../storages/RequestStorage"
 import type { SipaOrigin } from "../services/deposits/SIPADepositStore"
 import { encodeRequestInline, type SipaLinkPreimage } from "./requestInlineCodec"
 
@@ -52,10 +52,7 @@ export interface MintRequestLinkArgs {
   /** Self-broadcast L1 SIPA. Optional on the v3 fragment. */
   sipaAddress?: string
   sipaPreimage?: SipaLinkPreimage
-  /**
-   * Mint a compact Receive code; `requestId` must come from `randomCodeRequestId`. One without an
-   * amount is unlisted.
-   */
+  /** Mint a compact Receive code; `requestId` must come from `randomCodeRequestId`. */
   compact?: boolean
   /** A compact code's `sipaDeploymentTag` for `sipaAddress`. */
   sipaDeployment?: string
@@ -89,7 +86,7 @@ export function sipaDeploymentTag(deployment: {
 
 export interface MintedRequestLink {
   url: string
-  row: StoredRequest
+  row: PaymentRequest
   note?: string
 }
 
@@ -106,7 +103,7 @@ export class RequestLinkMintError extends Error {
  * rows that predate the persisted requester identity. A stored SIPA is written back onto the v3 fragment.
  */
 export function buildRequestShareUrl(
-  request: Omit<StoredRequest, "status">,
+  request: PaymentRequest,
   currentRequesterTag: string,
   baseUrl: string,
 ): string | null {
@@ -172,7 +169,7 @@ export function mintRequestLink(args: MintRequestLinkArgs): MintedRequestLink {
     sipaDeployment: args.sipaDeployment,
   })
 
-  const row: StoredRequest = {
+  const row: PaymentRequest = {
     id: args.requestId,
     contactTag: "",
     amount: human,
@@ -191,7 +188,6 @@ export function mintRequestLink(args: MintRequestLinkArgs): MintedRequestLink {
     requesterAddress: args.requesterAddress,
     sipaAddress: args.sipaAddress,
     sipaPreimage: args.sipaPreimage,
-    ...(args.compact && human === 0 ? { unlisted: true } : {}),
   }
 
   return {

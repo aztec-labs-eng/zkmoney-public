@@ -27,17 +27,16 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
     reconcile = h.reconcile
     reconcileTxHash = async () => {}
   },
+  TransactionStorage: { get: () => ({}) },
 }))
 vi.mock("@obsidion/sdk", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/sdk")>()),
   PaylinkService: class {},
 }))
 vi.mock("../src/config/env", () => ({ getConfig: () => ({ nodeEndpointDigest: "digest" }) }))
+vi.mock("../src/platform/storage/WebStorageAdapter", () => ({ webStorage: {} }))
 
 const { PaylinkClaimMount } = await import("../src/features/notifications/PaylinkClaimMount")
-const { activeAccount, closeSession, openSession } = await import("../src/platform/session")
-beforeEach(() => void openSession(activeAccount()))
-afterEach(closeSession)
 
 const NETWORK_ID = `0x${"a".repeat(40)}`
 

@@ -9,13 +9,13 @@ import {
   importHistoricActivity,
   importHistoricContacts,
   SIPADepositStore,
+  TransactionStorage,
   WithdrawalStorage,
   type HistoricActivityImported,
   type RetiredDatabase,
 } from "@obsidion/front-core"
 import { getActiveStorageId, withSessionLock } from "../../platform/storage/activeStorage"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
-import { session } from "../../platform/session"
 import { getSavingsMoveStore } from "../savings/savingsMoveStore"
 
 const imports = new Map<string, Promise<HistoricActivityImported | null>>()
@@ -41,7 +41,7 @@ export function importHistoricActivityOnce(
       readOtherDatabases: from
         ? async (read) => [read(await from.read())]
         : (read) => webStorage.readOtherDatabases(read),
-      transactions: session().activity,
+      transactions: TransactionStorage.get(webStorage),
       sipaDeposits: SIPADepositStore.get(webStorage),
       withdrawals: WithdrawalStorage.get(webStorage),
       savingsMoves: getSavingsMoveStore(),

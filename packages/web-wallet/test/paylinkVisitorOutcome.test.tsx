@@ -67,8 +67,8 @@ vi.mock("../src/features/onboarding/InvitationChrome", () => ({
   InvitationChrome: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
 }))
 vi.mock("../src/features/onboarding/OnboardingScreen", () => ({ OnboardingScreen: () => null }))
-vi.mock("../src/features/notifications/ReorgMonitorMount", () => ({
-  ReorgMonitorMount: () => null,
+vi.mock("../src/features/notifications/NotificationsMount", () => ({
+  NotificationsMount: () => null,
 }))
 vi.mock("../src/ui/NotificationsBell", () => ({ NotificationsBell: () => null }))
 vi.mock("@obsidion/web-ds", () => ({

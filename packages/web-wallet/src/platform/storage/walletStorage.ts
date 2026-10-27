@@ -327,7 +327,7 @@ export const walletStorage = {
     }
     return store.committed.get(key) ?? null
   },
-  /** Called with each transaction's writes once they are saved, all in one store `batch`. */
+  /** Called with each transaction's writes once they are saved. */
   onCommit(listener: (ops: readonly WalletOp[]) => void): () => void {
     commitListeners.add(listener)
     return () => commitListeners.delete(listener)

@@ -15,9 +15,8 @@ vi.mock("@obsidion/front-core", async (original) => ({
 
 import { getOperationStore } from "../src/features/operations/operations"
 import { OperationsMount } from "../src/features/operations/OperationsMount"
-import { activeAccount, closeSession, openSession } from "../src/platform/session"
 
-it("sweeps nothing until this tab's boot is ready and a session is open, then up to when it became active", async () => {
+it("sweeps nothing until this tab's boot is ready, then up to when it became active", async () => {
   const store = getOperationStore()
   const resolveSent = vi.spyOn(store, "resolveSent").mockResolvedValue()
   for (const [operationId, startedAt] of [
@@ -37,11 +36,7 @@ it("sweeps nothing until this tab's boot is ready and a session is open, then up
 
   h.status = "ready"
   await act(async () => root.render(<OperationsMount node={node} activeSince={5_000} />))
-  expect(states()).toEqual({ before: "local", after: "local" })
-  expect(resolveSent).toHaveBeenCalled()
-
-  await act(async () => void openSession(activeAccount()))
   await vi.waitFor(() => expect(states()).toEqual({ before: "failed", after: "local" }))
+  expect(resolveSent).toHaveBeenCalled()
   await act(async () => root.unmount())
-  closeSession()
 })

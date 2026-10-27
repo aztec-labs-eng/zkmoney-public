@@ -170,9 +170,6 @@ const h = vi.hoisted(() => ({
   balance: { current: 0n },
 }))
 
-vi.mock("../src/platform/session", () => ({
-  session: () => ({ activity: { rows: { get: () => [] } }, notifications: {} }),
-}))
 vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   PendingPaylinkMigrationService: class {
@@ -181,6 +178,8 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
     retire = async () => undefined
   },
   PendingPaylinkMigrationStore: { get: () => ({}) },
+  AppNotificationStore: { get: () => ({}) },
+  TransactionStorage: { get: () => ({ getTransactions: async () => [] }) },
   WithdrawalStorage: { get: () => ({ load: async () => {}, list: () => [] }) },
   deriveStealthKey: () => ({ publicKey: "pk" }),
   deriveRefundableSipaSources: h.sources,
@@ -188,7 +187,7 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
 }))
 vi.mock("@obsidion/sdk", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  detectHistoricDeployments: h.detect,
+  IntraRollupMigrationService: { detectHistoricDeployments: h.detect },
   getBroadcasterArtifact: async () => ({}),
   fetchSipaEvents: async () => [],
   readSipaDepositsConsumed: async (_node: unknown, _scope: unknown, keys: unknown[]) =>

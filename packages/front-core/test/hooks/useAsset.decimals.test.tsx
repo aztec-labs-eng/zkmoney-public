@@ -6,7 +6,8 @@ import { parseUnits } from "viem"
 // ---------------------------------------------------------------------------
 // U5 — persisted token-row refresh. An upgraded install can carry a pre-cutover
 // TokenStorage row against the CURRENT token address: 6-dp decimals (left alone
-// the balances read it and mis-scale paylink escrow amounts by 10^12) and/or the legacy "USDC" display identity. These tests render useAsset
+// it wins in createAssetWithBalance and mis-scales paylink escrow amounts by
+// 10^12) and/or the legacy "USDC" display identity. These tests render useAsset
 // with a seeded stale row and assert the row is actually REWRITTEN to 18-dp
 // the current identity (a test that only checked the resolved asset value could pass without
 // the refresh existing), scoped to the active oxideToken address only.
@@ -75,18 +76,10 @@ vi.mock("src/contexts/useAztecContext", () => ({
 
 vi.mock("src/core", async () => {
   const actual = await vi.importActual<typeof import("src/core")>("src/core")
-  const { memoryStore } = await vi.importActual<typeof import("src/engine/store")>(
-    "src/engine/store",
-  )
-  const rows = memoryStore({ value: [] as any[], loaded: true })
   return {
     ...actual,
     TokenStorage: {
       get: () => ({
-        rows: {
-          get: () => ({ value: tokenStoreRef.current, loaded: true }),
-          subscribe: rows.subscribe,
-        },
         getTokens: vi.fn(async () => tokenStoreRef.current),
         addToken: vi.fn(async (t: any) => {
           if (addTokenDelayRef.current)
@@ -100,14 +93,8 @@ vi.mock("src/core", async () => {
     BalanceStorage: {
       get: () => ({
         load: vi.fn(async () => {}),
-        // Written after the session started, so it reads as live once the decimals are checked.
         list: vi.fn(() => [
-          {
-            scope: "testnet:0xcomplete",
-            tokenAddress: ACTIVE_ADDR,
-            balance: BALANCE.toString(),
-            updatedAt: Date.now() + 60_000,
-          },
+          { scope: "testnet:0xcomplete", tokenAddress: ACTIVE_ADDR, balance: BALANCE.toString() },
         ]),
         onListChanged: vi.fn(() => () => {}),
         updateBalance: vi.fn(async () => {}),
@@ -118,10 +105,7 @@ vi.mock("src/core", async () => {
       get: () => ({ list: vi.fn(() => []), onListChanged: vi.fn(() => () => {}) }),
     },
     AccountStorage: {
-      get: () => ({
-        current: memoryStore({ value: { completeAddress: "0xcomplete" }, loaded: true }).readonly,
-        getAccount: vi.fn(async () => ({ completeAddress: "0xcomplete" })),
-      }),
+      get: () => ({ getAccount: vi.fn(async () => ({ completeAddress: "0xcomplete" })) }),
     },
     globalEventEmitter: {
       onTransactionsUpdated: vi.fn(),
@@ -174,7 +158,7 @@ describe("useAsset persisted token-row refresh", () => {
 
   it("repairs the active token's stale decimals without rewriting its stored identity", async () => {
     tokenStoreRef.current = [legacyUsdcRow(ACTIVE_ADDR, 6)]
-    const { unmount } = renderUseAsset()
+    const { result, unmount } = renderUseAsset()
 
     await waitFor(() =>
       expect(tokenStoreRef.current.find((t) => t.address === ACTIVE_ADDR)?.decimals).toBe(18),
@@ -186,6 +170,10 @@ describe("useAsset persisted token-row refresh", () => {
     const repaired = tokenStoreRef.current.find((t) => t.address === ACTIVE_ADDR)
     expect(repaired?.symbol).toBe("USDC")
     expect(repaired?.name).toBe("USD Coin")
+
+    await waitFor(() =>
+      expect(result.current.assets?.find((a) => a.address === ACTIVE_ADDR)?.decimals).toBe(18),
+    )
     unmount()
   })
 
@@ -206,22 +194,17 @@ describe("useAsset persisted token-row refresh", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     try {
       tokenStubFetch.mockRejectedValueOnce(new Error("L1 unreachable"))
-      // A wallet token row, so its balance names Main and only the decimals check holds it back.
-      tokenStoreRef.current = [{ ...legacyUsdcRow(ACTIVE_ADDR, 6), symbol: "DAI", name: "Dai" }]
+      tokenStoreRef.current = [legacyUsdcRow(ACTIVE_ADDR, 6)]
       const { result, unmount } = renderUseAsset()
 
-      const watch = result.current.balances.view.subscribe(() => {})
       await waitFor(() => expect(tokenStubFetch).toHaveBeenCalledTimes(1))
       expect(tokenStoreRef.current.find((t) => t.address === ACTIVE_ADDR)?.decimals).toBe(6)
-      expect(result.current.balances.view.get()).toMatchObject({ main: { atomic: BALANCE } })
-      expect(result.current.balances.view.get().live).toBe(false)
+      expect(result.current.liveAssetsLoaded).toBe(false)
 
       await vi.advanceTimersByTimeAsync(4000)
       await waitFor(() =>
         expect(tokenStoreRef.current.find((t) => t.address === ACTIVE_ADDR)?.decimals).toBe(18),
       )
-      await waitFor(() => expect(result.current.balances.view.get().live).toBe(true))
-      watch()
       unmount()
     } finally {
       vi.useRealTimers()
@@ -249,8 +232,7 @@ describe("useAsset persisted token-row refresh", () => {
     tokenStoreRef.current = [legacyUsdcRow(ACTIVE_ADDR, 6)]
     const { result, unmount } = renderUseAsset()
 
-    await waitFor(() => expect(result.current.tokenService).not.toBeNull())
-    await new Promise((r) => setTimeout(r, 20))
+    await waitFor(() => expect(result.current.assets).not.toBeNull())
     expect(tokenStoreRef.current.find((t) => t.address === ACTIVE_ADDR)?.decimals).toBe(6)
     unmount()
   })

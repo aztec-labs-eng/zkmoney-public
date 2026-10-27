@@ -61,6 +61,16 @@ export function useSavingsMoveTiming(): SavingsMoveTiming | undefined {
   return timing
 }
 
+/** The clock a countdown reads, ticking every `tickMs`. */
+export function useNowMs(tickMs = 30_000): number {
+  const [now, setNow] = useState(Date.now)
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), tickMs)
+    return () => clearInterval(timer)
+  }, [tickMs])
+  return now
+}
+
 /** "About 12 min left" while a leg counts down, "Usually about 25 min" for a typical duration. */
 export const savingsEtaCopy = (eta: SavingsMoveEta): string =>
   eta.remaining

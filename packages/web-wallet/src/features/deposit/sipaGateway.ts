@@ -61,6 +61,7 @@ import {
   type ObsidionAccount,
   type ObsidionWallet,
   selfSipaNonce,
+  type SelfResolvedSipa,
   type SipaIntent,
   BroadcasterContract,
   SipaSelfResolver,
@@ -577,6 +578,19 @@ export interface SipaDepositGateway {
   /** The current local deposit records (feed). */
   records(): SIPADepositRecord[]
   subscribe(listener: (records: SIPADepositRecord[]) => void): () => void
+  /** The nonce for this wallet's next self-resolution on `day`; see `nextSelfSipaNonce`. */
+  nextSelfNonce(wallet: ObsidionWallet, day: number): Promise<number>
+  /**
+   * Publish a SIPA the caller already self-resolved (intra-rollup migrate). Same ClaimFPC-sponsored
+   * broadcast as Receive; re-derives from `(day, nonce)` and refuses if the address moved.
+   * `operationId` tags its proving events with the caller's operation.
+   */
+  broadcastResolvedSipa(
+    wallet: ObsidionWallet,
+    contractService: ContractService,
+    sipa: SelfResolvedSipa,
+    operationId?: string,
+  ): Promise<void>
   /** What the broadcast ledger runs for this wallet's deposit addresses. */
   slotExecutor(wallet: ObsidionWallet): BroadcastExecutor
   /** Txs from `fromBlock` on that broadcast one of `user`'s deposit addresses. */
@@ -713,6 +727,12 @@ class RealSipaDepositGateway implements SipaDepositGateway {
   private slotPrefix(scope: string): string {
     const account = loadWalletIdentity()?.address ?? "unknown"
     return `webwallet.sipa.address.${this.config.network}.${scope}.${account}.`
+  }
+
+  async nextSelfNonce(wallet: ObsidionWallet, day: number): Promise<number> {
+    const keys = await this.unlockedKeys(wallet)
+    if (!keys) throw new Error("no account for this session — enter with your passkey first")
+    return this.nextNonce(wallet, await getOxideTuple(this.config), keys, day)
   }
 
   /**
@@ -1403,6 +1423,31 @@ class RealSipaDepositGateway implements SipaDepositGateway {
     await this.ensureDiscovery(wallet, tuple)
     const token = AztecAddress.fromStringUnsafe(requireTupleField(tuple, "l2Token"))
     return readSipaBroadcastTxHashes(wallet, token, user, fromBlock)
+  }
+
+  async broadcastResolvedSipa(
+    wallet: ObsidionWallet,
+    contractService: ContractService,
+    sipa: SelfResolvedSipa,
+    operationId?: string,
+  ): Promise<void> {
+    this.bind(wallet)
+    const tuple = await getOxideTuple(this.config)
+    const keys = await this.unlockedKeys(wallet)
+    if (!keys) throw new Error("no account for this session — enter with your passkey first")
+    await this.broadcastSipa(
+      wallet,
+      contractService,
+      tuple,
+      keys,
+      {
+        address: sipa.sipaAddress,
+        day: sipa.resolution.day,
+        nonce: sipa.resolution.nonce,
+        published: false,
+      },
+      { operationId },
+    )
   }
 
   async deposit(

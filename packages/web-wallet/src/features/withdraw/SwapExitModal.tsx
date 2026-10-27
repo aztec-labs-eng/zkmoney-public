@@ -46,8 +46,8 @@ import {
   recoverSkyEscrowMove,
   recoverSwapWithdrawal,
   runSkyEscrowMove,
+  type SwapExitReason,
 } from "./swapRecovery"
-import type { SwapExitReason } from "@obsidion/front-core"
 import { unswappableCopy } from "./unswappableCopy"
 
 /** Which exit the user is running. */

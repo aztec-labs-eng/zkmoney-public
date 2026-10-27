@@ -5,18 +5,11 @@
  */
 import { describe, expect, it } from "vitest"
 import type { Hex } from "viem"
-import {
-  WITHDRAWAL_PHASE_COPY,
-  type SIPADepositPhase,
-  type SIPADepositRecord,
-} from "@obsidion/front-core"
+import type { SIPADepositPhase, SIPADepositRecord } from "@obsidion/front-core"
 import { depositRowStatusLabel } from "../src/ui/screens/activityView"
 import { depositStatus } from "../src/ui/screens/DepositDetailModal"
 import { statusBadgeStyle } from "@obsidion/web-ds"
-
-const WITHDRAWAL_PHASE_LABEL = Object.fromEntries(
-  Object.entries(WITHDRAWAL_PHASE_COPY).map(([phase, copy]) => [phase, copy.pill]),
-) as Record<keyof typeof WITHDRAWAL_PHASE_COPY, string | undefined>
+import { WITHDRAWAL_PHASE_LABEL } from "../src/ui/screens/useActivityEntries"
 
 const SWEEP_TX = `0x${"5e".repeat(32)}` as Hex
 

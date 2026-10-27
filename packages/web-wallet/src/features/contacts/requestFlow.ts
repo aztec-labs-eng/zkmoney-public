@@ -7,7 +7,7 @@ import { parseAmount } from "../../ui/format"
 import { Fr } from "@aztec-labs/aztec.js/fields"
 import { WALLET_TOKEN_SYMBOL } from "@obsidion/core/constants"
 import { parseUnits } from "viem"
-import type { RequestBroadcaster, Requests, StoredRequest } from "@obsidion/front-core"
+import type { PaymentRequest, RequestBroadcaster, RequestStorage } from "@obsidion/front-core"
 
 /** Mint a pending outgoing contact-request row, or null when the amount doesn't parse positive. */
 export function newOutgoingRequest(
@@ -15,7 +15,7 @@ export function newOutgoingRequest(
   amountText: string,
   decimals: number,
   note?: string,
-): StoredRequest | null {
+): PaymentRequest | null {
   const amount = parseAmount(amountText)
   if (!Number.isFinite(amount) || amount <= 0) return null
   let amountAtomic: string
@@ -52,7 +52,7 @@ export interface AnnounceDeps {
 
 /** Best-effort announce of a persisted outgoing row: whether it reached the payer. Never throws. */
 export async function announceOutgoingRequest(
-  request: StoredRequest,
+  request: PaymentRequest,
   deps: AnnounceDeps,
 ): Promise<boolean> {
   try {
@@ -78,7 +78,7 @@ export async function announceOutgoingRequest(
 }
 
 export interface DeclineDeps {
-  store: Pick<Requests, "latest" | "decline">
+  store: Pick<RequestStorage, "findById" | "applyStatus">
   /** Null when no leader XMTP client exists — the local flip still applies. */
   broadcaster: Pick<RequestBroadcaster, "signalDeclined"> | null
   resolveXmtpAddress(tag: string): Promise<string | null>
@@ -86,12 +86,13 @@ export interface DeclineDeps {
 }
 
 /**
- * Decline a pending incoming request, then signal the requester best-effort over XMTP. Returns
- * whether the local flip applied.
+ * Decline an incoming request: the store's monotonic guard applies the status (a fulfilled or
+ * already-declined row never regresses), then the requester is signalled best-effort over XMTP.
+ * Returns whether the local flip applied.
  */
 export async function declineIncomingRequest(id: string, deps: DeclineDeps): Promise<boolean> {
-  const target = deps.store.latest(id)
-  const { applied } = await deps.store.decline(id)
+  const target = await deps.store.findById(id)
+  const { applied } = await deps.store.applyStatus(id, "declined")
   if (!applied) return false
   if (!deps.broadcaster || !target?.contactTag) return true
   try {
@@ -106,4 +107,18 @@ export async function declineIncomingRequest(id: string, deps: DeclineDeps): Pro
     console.warn("[requestFlow] declined signal failed", err)
   }
   return true
+}
+
+/**
+ * Payer side of a send that fulfilled a request: flip the local incoming row (a link request
+ * usually has none — best-effort). The requester's row flips on their side from the send's
+ * on-chain `Transfer.meta`; nothing is signalled.
+ */
+export async function markRequestPaidLocally(
+  id: string,
+  txHash: string,
+  store: Pick<RequestStorage, "applyStatus">,
+): Promise<boolean> {
+  const { applied } = await store.applyStatus(id, "fulfilled", txHash)
+  return applied
 }

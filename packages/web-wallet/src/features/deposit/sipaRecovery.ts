@@ -46,7 +46,7 @@ import {
 import {
   predictAccountAddress,
   encodeAccountInitCode,
-  detectHistoricDeployments,
+  IntraRollupMigrationService,
   readDepositSIPAImplementation,
 } from "@obsidion/sdk"
 import type { OxideEnvTuple } from "@obsidion/core/types"
@@ -73,9 +73,24 @@ import { recoveryProbeTokens } from "./loadDepositFacts"
 /** The stuck-sweep clock the activity feed and both exits share. */
 export { isStuckSweep, STUCK_SWEEP_MS }
 
+/** Why a record offers the exit: `unsweepable` can never be swept, `stuck` still can. */
+export type RecoveryReason = "unsweepable" | "stuck" | "registration-quote" | "stranded"
 
 /** Progress of one L1 submission — shared by both exits. */
 export type L1ExitStage = "signing" | "awaiting-browser" | "confirming"
+
+/**
+ * Whether `record` offers the recovery exit, and on which grounds. The note's message secret is
+ * half the recovery key, so a record discovered without one cannot sign at all.
+ */
+export function recoveryReasonFor(
+  record: Pick<SIPADepositRecord, "phase" | "messageSecret" | "startTime" | "sweepTxHash">,
+  now: number = Date.now(),
+): RecoveryReason | null {
+  if (!record.messageSecret) return null
+  if (record.phase === "recoverable") return "unsweepable"
+  return isStuckSweep(record, now) ? "stuck" : null
+}
 
 /** Who the transaction pays and how it reaches L1. Shared by the recovery and self-sweep exits. */
 export interface L1ExitChannel {
@@ -418,7 +433,7 @@ async function recoveryDeployment(
   const deployments: Parameters<typeof sipaDeployArgCandidates>[1] = []
   if (!record.origin) {
     const config = getConfig()
-    const { historic } = await detectHistoricDeployments({
+    const { historic } = await IntraRollupMigrationService.detectHistoricDeployments({
       ...config.oxideProfile,
       network: config.network,
       publicClient,

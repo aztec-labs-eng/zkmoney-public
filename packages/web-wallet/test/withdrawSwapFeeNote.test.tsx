@@ -7,7 +7,6 @@
 import React, { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { balancesOf } from "./support/balances"
 import { parseUnits } from "viem"
 import { ScreeningProvider, passThroughScreener } from "@obsidion/front-core"
 import { WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
@@ -37,12 +36,14 @@ vi.mock("@obsidion/sdk", async (importOriginal) => {
 vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/front-core")>()),
   useAccountContext: () => ({ obsidionAccount: {} }),
-  useAssetContext: () => ({
-    tokenService: {},
-    balances: balancesOf({ main: 500n * 10n ** 18n, live: true, known: true }),
-  }),
+  useAssetContext: () => ({ tokenService: {} }),
   useAztecContext: () => ({ obsidionWallet: {} }),
   useContractServiceContext: () => ({ contractService: {} }),
+  useBalance: () => ({
+    walletAsset: { symbol: "DAI", decimals: 18, balance: 500, balanceAtomic: 500n * 10n ** 18n },
+    walletBalance: "500",
+    assetsLoaded: true,
+  }),
   upsertSavedL1WalletContact: vi.fn(),
 }))
 vi.mock("../src/features/withdraw/withdrawGateway", () => ({

@@ -1,6 +1,6 @@
-import { bubbleViewOf, type ChatMessage } from "./contactChat"
-import copy from "./contactChat.copy"
+import type { ChatMessage } from "@obsidion/front-core"
 import { GradientInitialAvatar, Icon, Spinner, avatarColors } from "@obsidion/web-ds"
+import { bubbleViewOf } from "./contactChat"
 
 /** Amount bubble for the contact payments chat: counterparty avatar + glass bubble, left (incoming)
  *  or right (outgoing). The body is the control that opens the message's detail sheet; `actions`
@@ -37,7 +37,7 @@ export function ChatBubble({
         <div
           className="ww-bubble__body"
           role="button"
-          aria-label={view.request ? copy.aria.request : copy.aria.transaction}
+          aria-label={view.request ? "Request details" : "Transaction details"}
           tabIndex={0}
           onClick={onOpen}
           onKeyDown={(e) => {

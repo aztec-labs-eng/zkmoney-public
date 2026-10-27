@@ -15,8 +15,8 @@ import {
 } from "../chain/receiptTypes"
 import { getActiveNetworkId } from "../../activeNetworkId"
 // type-only store imports: value imports here would close an import cycle through the
-// services barrel (a store → services index → coordination → this file)
-import type { Activity } from "../../../engine/activity"
+// services barrel (TransactionStorage → services index → coordination → this file)
+import type { TransactionStorage } from "../../storages/TransactionStorage"
 import type { WithdrawalStorage } from "../bridge/WithdrawalStorage"
 import type { WithdrawalRecord } from "../bridge/types"
 import type { SIPADepositStore } from "../deposits/SIPADepositStore"
@@ -26,7 +26,7 @@ import { TxExecutionResult, TxStatus } from "@aztec-labs/stdlib/tx"
 
 // `reorgEpoch` identifies the reorg episode the outcome belongs to (notification identity).
 // `incoming` marks a payment this wallet received, so the alert speaks to the recipient.
-// `source: "withdrawal"` marks a withdrawal record's burn; its record reports the failure and the corrective says so.
+// `source: "withdrawal"` marks a withdrawal record's burn; its own producer reports the failure and the corrective says so.
 export type ConfirmationOutcome = { txHash: string } & (
   | { type: "demoted" }
   | { type: "re-confirmed"; hadAlerted: boolean; reorgEpoch?: number; source?: "withdrawal" }
@@ -38,8 +38,8 @@ export type ConfirmationOutcome = { txHash: string } & (
 export type ConfirmationListener = (outcome: ConfirmationOutcome) => void
 
 export type ReorgTransactionStore = Pick<
-  Activity,
-  "rows" | "byHash" | "apply" | "demoteByTxHash" | "settleByHash"
+  TransactionStorage,
+  "getTransactions" | "demoteByTxHash" | "updateByTxHash" | "updateTransaction"
 >
 export type ReorgWithdrawalStore = Pick<
   WithdrawalStorage,
@@ -214,12 +214,12 @@ export class ReorgMonitor {
       )
     }
 
-    // --- Activity rows: every txHash-bearing row across all kinds, including
+    // --- TransactionStorage rows: every txHash-bearing row across all kinds, including
     // failed rows for the re-inclusion corrective path. CANCELLED rows were aborted before
     // submit and carry no receipt to reconcile.
     const txStore = this.deps.transactionStorage
     if (txStore) {
-      const rows = txStore.rows.get().filter(
+      const rows = (await txStore.getTransactions()).filter(
         (tx) =>
           !!tx.txHash &&
           tx.tier !== TxStatus.FINALIZED &&
@@ -324,20 +324,20 @@ export class ReorgMonitor {
     if (!receipt) return
     const status = receipt.status
 
-    const writeAnchor = (tier: TxStatus) => {
+    const writeAnchor = async (tier: TxStatus) => {
       const changed =
         row.tier !== tier ||
         (receipt.blockNumber !== undefined && row.blockNumber !== receipt.blockNumber) ||
         (receipt.blockHash !== undefined && row.blockHash !== receipt.blockHash)
       if (!changed) return
-      const current = store.byHash(txHash)
-      if (!current) return
-      store.apply((tx) => tx.id === current.id, {
-        type: "anchored",
-        tier,
-        blockNumber: receipt.blockNumber,
-        blockHash: receipt.blockHash,
-      })
+      await store.updateTransaction(
+        (tx) => (tx.txHash ?? "").toLowerCase() === key,
+        (tx) => {
+          if (receipt.blockNumber !== undefined) tx.blockNumber = receipt.blockNumber
+          if (receipt.blockHash !== undefined) tx.blockHash = receipt.blockHash
+          tx.tier = tier
+        },
+      )
     }
 
     if (status === TxStatus.DROPPED || isRevertedInclusion(receipt)) {
@@ -358,12 +358,12 @@ export class ReorgMonitor {
         if (demoted) {
           // Already inside a reorg episode: terminalize without opening a new one, so the
           // failure alert shares the episode's epoch and dedupes against a grace-expired alert.
-          store.settleByHash(txHash, QueueStatus.FAILED, this.now(), epoch)
+          await store.updateByTxHash(txHash, QueueStatus.FAILED, this.now(), epoch)
           summary.failed++
           this.grace.delete(key)
           this.emit({ type: "failed", txHash, reorgEpoch: epoch, ...incoming })
         } else {
-          const result = store.demoteByTxHash(txHash, { terminal: "failed" })
+          const result = await store.demoteByTxHash(txHash, { terminal: "failed" })
           summary.failed++
           this.grace.delete(key)
           this.emit({ type: "failed", txHash, reorgEpoch: result.reorgEpoch, ...incoming })
@@ -380,19 +380,19 @@ export class ReorgMonitor {
       if (row.status === "success") {
         if (status !== TxStatus.FINALIZED && hasBlockMoved(row, receipt)) {
           // moved blocks between checks: demote now, re-confirm at the new anchor next pass
-          store.demoteByTxHash(txHash)
+          await store.demoteByTxHash(txHash)
           summary.demoted++
           this.grace.set(key, { deadline: this.now() + this.graceWindowMs, alerted: false })
           this.emit({ type: "demoted", txHash })
           return
         }
-        writeAnchor(status)
+        await writeAnchor(status)
       } else {
         // demoted → re-included, failed → re-included (corrective), or confirmed while closed
         if (row.status === "failed" && !canCorrectFailed) return
         const hadAlerted = row.status === "failed" || (this.grace.get(key)?.alerted ?? false)
-        writeAnchor(status)
-        store.settleByHash(txHash, QueueStatus.SUCCESS, this.now(), epoch)
+        await writeAnchor(status)
+        await store.updateByTxHash(txHash, QueueStatus.SUCCESS, this.now(), epoch)
         summary.reConfirmed++
         this.grace.delete(key)
         this.emit({ type: "re-confirmed", txHash, hadAlerted, reorgEpoch: epoch })
@@ -403,10 +403,10 @@ export class ReorgMonitor {
 
     if (status === TxStatus.PENDING) {
       // A confirmed row regressed to the mempool: demote and start the grace window.
-      // Still-pending in-flight rows stay with their flow (its epoch-less settle must not be
-      // fenced by a needless demote); failed rows wait for inclusion.
+      // Still-pending in-flight rows stay with TxLifecycleService (its epoch-less SUCCESS
+      // write must not be fenced by a needless demote); failed rows wait for inclusion.
       if (row.status === "success") {
-        store.demoteByTxHash(txHash)
+        await store.demoteByTxHash(txHash)
         summary.demoted++
         this.grace.set(key, { deadline: this.now() + this.graceWindowMs, alerted: false })
         this.emit({ type: "demoted", txHash })

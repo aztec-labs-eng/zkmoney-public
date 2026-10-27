@@ -4,7 +4,6 @@ import {
   decodeRequestInline,
   formatExpiryDuration,
   mintRequestLink,
-  randomCodeRequestId,
   RequestLinkMintError,
   type MintRequestLinkArgs,
   type PaymentRequest,
@@ -96,14 +95,6 @@ describe("mintRequestLink", () => {
       expect(minted.row.amountAtomic).toBe("0")
       expect(decodeRequestInline(minted.url.split("#")[1]).amountAtomic).toBe(0n)
     }
-  })
-
-  it("unlists a Receive code minted without an amount, and nothing else", () => {
-    const code = (amountInput: string) =>
-      mintRequestLink(args({ amountInput, compact: true, requestId: randomCodeRequestId() })).row
-    expect(code("").unlisted).toBe(true)
-    expect(code("5").unlisted).toBeUndefined()
-    expect(mintRequestLink(args({ amountInput: "" })).row.unlisted).toBeUndefined()
   })
 
   it("stores the human amount on the row", () => {
