@@ -1,12 +1,16 @@
 import * as actual from "../../../src/features/paylink/sponsoredPaylink"
 import { Fr } from "@aztec-labs/aztec.js/fields"
 import { decodePaylinkInline, encodePaylinkInline } from "@obsidion/sdk"
-import type { PaylinkTransaction, Transaction } from "@obsidion/front-core"
-import { PaylinkActionEnum } from "@obsidion/core/constants"
-import { session } from "../../../src/platform/session"
+import { TransactionStorage, type PaylinkTransaction } from "@obsidion/front-core"
+import { PaylinkActionEnum, QueueStatus } from "@obsidion/core/constants"
+import { webStorage } from "../../../src/platform/storage/WebStorageAdapter"
 import { TOKEN_INFO, field } from "./data"
-import { formatUnits, parseUnits } from "viem"
-import { demoClaimFragments, demoEscrowAmount, demoFundingTxHash } from "../../../src/dev/demoFixtures"
+import { formatUnits } from "viem"
+import {
+  demoClaimFragments,
+  demoEscrowAmount,
+  demoFundingTxHash,
+} from "../../../src/dev/demoFixtures"
 import { fixtureState, inOperation, operation, pause } from "./control"
 export * from "../../../src/features/paylink/sponsoredPaylink"
 
@@ -14,24 +18,21 @@ let fixtureSequence = 0
 
 /** Distinct synthetic identities even after a retry, fixed clock, or page reload. */
 async function fixtureIdentity(kind: "paylink-create" | "paylink-claim", fundingHash?: string) {
-  const store = session().activity
-  const rows = store.rows.get()
+  const store = TransactionStorage.get(webStorage)
+  const rows = await store.getTransactions()
   const base = kind === "paylink-create" ? 0x78410000n : 0x78420000n
   for (;;) {
     const sequence = ++fixtureSequence
     const id = `capture-${kind}-${sequence}`
     const txHash = `0x${(base + BigInt(sequence)).toString(16).padStart(64, "0")}`
-    if (txHash === fundingHash || rows.some((row) => row.operationId === id || row.txHash === txHash)) continue
+    if (
+      txHash === fundingHash ||
+      rows.some((row) => row.queueId === id || row.operationId === id || row.txHash === txHash)
+    )
+      continue
     return { store, id, txHash }
   }
 }
-
-/** A capture row before submit, as `startPaylinkRow` writes one. */
-function pendingLinkRow(id: string, fields: Omit<PaylinkTransaction, "id" | "operationId" | "timestamp" | "status" | "txHash" | "emailPaymentAction">): PaylinkTransaction {
-  return { ...fields, id, operationId: id, emailPaymentAction: fields.action, timestamp: Date.now(), status: "pending", txHash: "" }
-}
-
-const withFields = (fields: Partial<PaylinkTransaction>) => (row: Transaction) => ({ ...row, ...fields }) as Transaction
 
 function requireRow(matched: boolean, operation: string): void {
   if (!matched) throw new Error(`Capture paylink row missing during ${operation}`)
@@ -40,11 +41,21 @@ function requireRow(matched: boolean, operation: string): void {
 /** Read-only browser assertions over rows written by this capture adapter. */
 export async function capturePaylinkRows() {
   if (!fixtureState()) throw new Error("Capture paylink inspection requires an active flow fixture")
-  const rows = session().activity.rows.get()
-  return rows.filter((row) => row.operationId?.startsWith("capture-paylink-")).map((tx) => {
-    const row = tx as PaylinkTransaction
-    return { operationId: row.operationId, kind: row.kind, status: row.status, txHash: row.txHash, amount: row.token?.amount, paylink: row.paylink, secret: row.payToEmailSecret }
-  })
+  const rows = await TransactionStorage.get(webStorage).getTransactions()
+  return rows
+    .filter((row) => row.operationId?.startsWith("capture-paylink-"))
+    .map((tx) => {
+      const row = tx as PaylinkTransaction
+      return {
+        operationId: row.operationId,
+        kind: row.kind,
+        status: row.status,
+        txHash: row.txHash,
+        amount: row.token?.amount,
+        paylink: row.paylink,
+        secret: row.payToEmailSecret,
+      }
+    })
 }
 
 export const voucherAvailable: typeof actual.voucherAvailable = async (deps) => {
@@ -78,33 +89,45 @@ const fakeCreate: typeof actual.createSponsoredLink = async (...args) => {
   }
   const now = Math.floor(Date.now() / 1000)
   const untilClaimable = now + (opts?.expiryDays ?? 30) * 86_400
-  await store.insertPending(pendingLinkRow(id, {
-    action: PaylinkActionEnum.PAY, flavor: link.flavor, kind: "paylink-create", to: opts?.email,
+  await store.addPreSubmitPaylinkTransaction(id, id, {
+    action: PaylinkActionEnum.PAY,
+    flavor: link.flavor,
+    kind: "paylink-create",
+    to: opts?.email,
     token: { ...TOKEN_INFO, amount: Number(amount), price: 1, logo: "" },
-    amountAtomic: parseUnits(amount, TOKEN_INFO.decimals),
-    obsidionAccountAddress: deps.account.getAddress().toString(), tokenAddress: TOKEN_INFO.address,
+    obsidionAccountAddress: deps.account.getAddress().toString(),
+    tokenAddress: TOKEN_INFO.address,
     memo: opts?.memo,
-  }))
+  })
   try {
     await operation("paylink-create", onStage, true, {
       operationId: id,
       txHash,
       onPrepared: async () => {
-        requireRow(store.patch(id, withFields({
-          payToEmailSecret: prepared.secret.toString(),
-          paylink: link.url, fallbackSecret: field("1d"), fromClaimable: now + 300,
-          untilClaimable, refundableUntil: untilClaimable,
-        })), "prepare")
+        requireRow(
+          await store.patchPaylinkSynthRow(id, {
+            payToEmailSecret: prepared.secret.toString(),
+            paylink: link.url,
+            fallbackSecret: field("1d"),
+            fromClaimable: now + 300,
+            untilClaimable,
+            refundableUntil: untilClaimable,
+          }),
+          "prepare",
+        )
         opts?.onLink?.(link)
       },
     })
     const settledLink = { ...link, txHash }
-    requireRow(await store.setHash(id, txHash), "funding hash")
-    requireRow(store.patch(id, withFields({ paylink: settledLink.url })), "settled link")
-    store.settle(id)
+    requireRow(await store.patchTxHashForQueue(id, txHash), "funding hash")
+    requireRow(await store.patchPaylinkSynthRow(id, { paylink: settledLink.url }), "settled link")
+    requireRow(
+      await store.patchDetailedStatusForQueue(id, QueueStatus.SUCCESS),
+      "create completion",
+    )
     return settledLink
   } catch (error) {
-    store.fail(id, { code: "tx.failed" })
+    requireRow(await store.patchDetailedStatusForQueue(id, QueueStatus.FAILED), "create failure")
     throw error
   }
 }
@@ -126,20 +149,31 @@ const fakeClaim: typeof actual.claimSponsoredLink = async (...args) => {
     throw new Error("This link is locked to an email — sign in first to prove ownership")
   const { store, id, txHash } = await fixtureIdentity("paylink-claim", demoFundingTxHash(fragment))
   // Capture has no PXE note; this fragment is ours, so its amount is the demo escrow.
-  await store.insertPending(pendingLinkRow(id, {
-    action: PaylinkActionEnum.CLAIM, kind: "paylink-claim", flavor: link.flavor,
-    token: { ...TOKEN_INFO, amount: Number(formatUnits(demoEscrowAmount(fragment), TOKEN_INFO.decimals)), price: 1, logo: "" },
-    amountAtomic: demoEscrowAmount(fragment),
-    obsidionAccountAddress: deps.account.getAddress().toString(), tokenAddress: TOKEN_INFO.address,
-  }))
+  await store.addPreSubmitPaylinkTransaction(id, id, {
+    action: PaylinkActionEnum.CLAIM,
+    kind: "paylink-claim",
+    flavor: link.flavor,
+    token: {
+      ...TOKEN_INFO,
+      amount: Number(formatUnits(demoEscrowAmount(fragment), TOKEN_INFO.decimals)),
+      price: 1,
+      logo: "",
+    },
+    obsidionAccountAddress: deps.account.getAddress().toString(),
+    tokenAddress: TOKEN_INFO.address,
+  })
   try {
     await operation("paylink-claim", onStage, true, { operationId: id, txHash })
-    requireRow(await store.setHash(id, txHash), "claim hash")
-    store.settle(id)
-    actual.markCreateRowClaimed(params.secret.toString(), link.flavor, deps.account.getAddress().toString())
+    requireRow(await store.patchTxHashForQueue(id, txHash), "claim hash")
+    requireRow(await store.patchDetailedStatusForQueue(id, QueueStatus.SUCCESS), "claim completion")
+    await actual.markCreateRowClaimed(
+      params.secret.toString(),
+      link.flavor,
+      deps.account.getAddress().toString(),
+    )
     return txHash
   } catch (error) {
-    store.fail(id, { code: "tx.failed" })
+    requireRow(await store.patchDetailedStatusForQueue(id, QueueStatus.FAILED), "claim failure")
     throw error
   }
 }
@@ -158,7 +192,13 @@ const fakeRecover: typeof actual.recoverSponsoredLink = async (...args) => {
   const refundHash = field("5c")
   await operation("paylink-recover", onStage, true, { txHash: refundHash })
   const params = decodePaylinkInline(args[1])
-  actual.markCreateRowRefunded(params.secret.toString(), actual.decodeLink(args[1]).flavor, args[0].account.getAddress().toString(), refundHash, "cancel")
+  await actual.markCreateRowRefunded(
+    params.secret.toString(),
+    actual.decodeLink(args[1]).flavor,
+    args[0].account.getAddress().toString(),
+    refundHash,
+    "cancel",
+  )
   return refundHash
 }
 export const viewLink: typeof actual.viewLink = async (...args) => {

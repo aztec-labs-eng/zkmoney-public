@@ -1,37 +1,35 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { createCatchUp } from "../../../src/engine/catchUp"
+import { EventEmitter } from "eventemitter3"
 import {
   BOOT_ORDER,
   BootPriority,
   type BootReader,
 } from "../../../src/core/services/transactions/bootPriority"
 
-/** The real catch-up flag, with an outside pass to toggle and a count of the holds boot priority takes itself. */
 function catchUpSource() {
-  const real = createCatchUp()
-  let outside: (() => void) | undefined
+  const bus = new EventEmitter()
+  let external = false
   let own = 0
+  const emit = () => bus.emit("changed", external || own > 0)
   return {
-    status: real.status,
-    begin: () => {
+    set: (value: boolean) => {
+      external = value
+      emit()
+    },
+    ownHolds: () => own,
+    beginSyncCatchUp: () => {
       own++
-      const end = real.begin()
       let ended = false
       return () => {
         if (ended) return
         ended = true
         own--
-        end()
+        emit()
       }
     },
-    set: (value: boolean) => {
-      if (value && !outside) outside = real.begin()
-      if (!value && outside) {
-        outside()
-        outside = undefined
-      }
-    },
-    ownHolds: () => own,
+    isSyncCatchingUp: () => external || own > 0,
+    onSyncCatchUpChanged: (l: (v: boolean) => void) => void bus.on("changed", l),
+    offSyncCatchUpChanged: (l: (v: boolean) => void) => void bus.off("changed", l),
   }
 }
 
@@ -138,19 +136,19 @@ describe("BootPriority", () => {
   it("opens a boot sync on a catch-up before settle, holding its own catch-up until settle", async () => {
     const catchUp = catchUpSource()
     const boot = new BootPriority({ catchUp })
-    expect(boot.balanceSync.get().syncing).toBe(false)
+    expect(boot.isBalanceSyncing()).toBe(false)
     catchUp.set(true)
     catchUp.set(false)
-    expect(boot.balanceSync.get().syncing).toBe(true)
-    expect(catchUp.status.get()).toBe(true) // bridges the gap before the next catch-up
+    expect(boot.isBalanceSyncing()).toBe(true)
+    expect(catchUp.isSyncCatchingUp()).toBe(true) // bridges the gap before the next catch-up
     boot.notesSynced()
     boot.depositsReplayed()
     boot.movesReplayed()
     await vi.advanceTimersByTimeAsync(0)
-    expect(boot.balanceSync.get().syncing).toBe(false)
+    expect(boot.isBalanceSyncing()).toBe(false)
     expect(catchUp.ownHolds()).toBe(0)
     catchUp.set(true)
-    expect(boot.balanceSync.get().syncing).toBe(false)
+    expect(boot.isBalanceSyncing()).toBe(false)
     expect(catchUp.ownHolds()).toBe(0)
   })
 
@@ -171,12 +169,12 @@ describe("BootPriority", () => {
     boot.depositsReplayed()
     await vi.advanceTimersByTimeAsync(0)
     expect(balance).toBe(false)
-    expect(boot.balanceSync.get().syncing).toBe(true)
+    expect(boot.isBalanceSyncing()).toBe(true)
 
     boot.movesReplayed()
     await vi.advanceTimersByTimeAsync(0)
     expect(balance).toBe(true)
-    expect(boot.balanceSync.get().syncing).toBe(false)
+    expect(boot.isBalanceSyncing()).toBe(false)
   })
 
   it("keeps a boot sync open past the deposits backstop until the replays end", async () => {
@@ -188,13 +186,13 @@ describe("BootPriority", () => {
     boot.notesSynced()
     await vi.advanceTimersByTimeAsync(1_000)
     expect(balance).toBe(true)
-    expect(boot.balanceSync.get().syncing).toBe(true)
+    expect(boot.isBalanceSyncing()).toBe(true)
     expect(catchUp.ownHolds()).toBe(1)
 
     boot.depositsReplayed()
     boot.movesReplayed()
     await vi.advanceTimersByTimeAsync(0)
-    expect(boot.balanceSync.get().syncing).toBe(false)
+    expect(boot.isBalanceSyncing()).toBe(false)
     expect(catchUp.ownHolds()).toBe(0)
   })
 
@@ -204,9 +202,9 @@ describe("BootPriority", () => {
     catchUp.set(true)
     boot.notesSynced()
     await vi.advanceTimersByTimeAsync(2_999)
-    expect(boot.balanceSync.get().syncing).toBe(true)
+    expect(boot.isBalanceSyncing()).toBe(true)
     await vi.advanceTimersByTimeAsync(1)
-    expect(boot.balanceSync.get().syncing).toBe(false)
+    expect(boot.isBalanceSyncing()).toBe(false)
     expect(catchUp.ownHolds()).toBe(0)
   })
 
@@ -215,29 +213,29 @@ describe("BootPriority", () => {
     const boot = new BootPriority({ waitMs: 1_000, catchUp })
     catchUp.set(true)
     await vi.advanceTimersByTimeAsync(2_000)
-    expect(boot.balanceSync.get().syncing).toBe(false)
+    expect(boot.isBalanceSyncing()).toBe(false)
     expect(catchUp.ownHolds()).toBe(0)
     catchUp.set(false)
     catchUp.set(true)
-    expect(boot.balanceSync.get().syncing).toBe(false)
+    expect(boot.isBalanceSyncing()).toBe(false)
   })
 
   it("reports replay progress only while the boot sync is open", async () => {
     const catchUp = catchUpSource()
     const boot = new BootPriority({ catchUp })
     boot.depositProgress(1, 4)
-    expect(boot.balanceSync.get().progress).toBeNull() // no sync open yet
+    expect(boot.balanceSyncProgress()).toBeNull() // no sync open yet
     catchUp.set(true)
-    expect(boot.balanceSync.get().progress).toBeNull() // total not known yet
+    expect(boot.balanceSyncProgress()).toBeNull() // total not known yet
     boot.depositProgress(1, 4)
-    expect(boot.balanceSync.get().progress).toBe(0.25)
+    expect(boot.balanceSyncProgress()).toBe(0.25)
     boot.notesSynced()
     boot.depositsReplayed()
     boot.movesReplayed()
     await vi.advanceTimersByTimeAsync(0)
-    expect(boot.balanceSync.get().progress).toBeNull()
+    expect(boot.balanceSyncProgress()).toBeNull()
     boot.depositProgress(3, 4)
-    expect(boot.balanceSync.get().progress).toBeNull()
+    expect(boot.balanceSyncProgress()).toBeNull()
   })
 
   it("never holds a warm start whose catch-up begins after settle", async () => {
@@ -247,7 +245,7 @@ describe("BootPriority", () => {
     boot.depositsReplayed()
     await vi.advanceTimersByTimeAsync(0)
     catchUp.set(true)
-    expect(boot.balanceSync.get().syncing).toBe(false)
+    expect(boot.isBalanceSyncing()).toBe(false)
   })
 
   it("bounds each stage's wait separately, without settling the balance", async () => {

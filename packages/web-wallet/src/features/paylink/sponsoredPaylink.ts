@@ -16,7 +16,7 @@ import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import { TxHash } from "@aztec-labs/stdlib/tx"
 import { formatUnits, getAddress, parseUnits, type Address, type Hex } from "viem"
 import type { PaylinkL1Proof } from "@obsidion/sdk"
-import { isRefundInFlight, paylinkIdentity } from "@obsidion/front-core"
+import { paylinkIdentity } from "@obsidion/front-core"
 import { withdrawalExecutorFee } from "../withdraw/withdrawalFee"
 import {
   trackSubmission,
@@ -57,9 +57,9 @@ import type { OxideEnvTuple } from "@obsidion/core/types"
 import {
   parseEscrowAmount,
   PaylinkWindowClosedError,
-  toFailure,
+  TransactionStorage,
+  TxLifecycleService,
   type PaylinkTransaction,
-  type Transaction,
   newWithdrawalLocalId,
   upsertSavedL1WalletContact,
   type AddressScreener,
@@ -87,7 +87,6 @@ import {
 import { recordBurnDuration } from "../withdraw/burnTiming"
 import { isFlowCancelled, runOperation, type OperationHandle } from "../operations/operations"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
-import { session } from "../../platform/session"
 import { walletStorage } from "../../platform/storage/walletStorage"
 import { deadline, TimeoutError, withTimeout } from "../../lib/withTimeout"
 import { getAuthService } from "../../platform/auth/useAuthenticator"
@@ -112,9 +111,9 @@ import {
 import { latestChainSeconds } from "./chainTime"
 import { resolveTagViaRegistry } from "../contacts/registryResolution"
 import { owePaylinkClaim, reportPaylinkClaims } from "./paylinkClaimReport"
+import { canCancelAt } from "./claimWindow"
 import { RAIL_REGISTERED, RAIL_VOUCHER } from "../onboarding/rails"
 import { isPasskeyCancelled } from "@obsidion/passkey-web"
-import { canCancelAt } from "@obsidion/front-core"
 import type { WithdrawalReceiveAsset } from "../withdraw/withdrawAssets"
 import {
   currentDeployment,
@@ -257,26 +256,27 @@ async function redeemPendingDeposits(deps: SponsoredPaylinkDeps): Promise<void> 
 }
 
 /**
- * A link's activity row: pending before sign/prove, keyed by its operation, its txHash written at
- * the submit boundary (`saveRowTxHash`), paylink fields patched after. The flow settles it as soon
- * as the sponsored call resolves, or the chain does after a reload.
+ * Activity rows ride the shared TxLifecycleService → TransactionStorage path: a
+ * Pending PaylinkTransaction row before sign/prove, its txHash written at the submit boundary
+ * (`saveRowTxHash`), paylink fields patched after. No lifecycle poller runs on web, so the row is
+ * terminalized here as soon as the sponsored call resolves, or by the chain after a reload.
  */
 export async function startPaylinkRow(
   deps: SponsoredPaylinkDeps,
+  svc: PaylinkService,
   kind: "paylink-create" | "paylink-claim" | "paylink-refund",
   action: PaylinkActionEnum.PAY | PaylinkActionEnum.CLAIM | PaylinkActionEnum.CLAIM_BACK,
-  amount: { atomic: bigint; human: number } | undefined,
+  amountHuman: number | undefined,
   opts?: { flavor?: LinkFlavor; to?: string; memo?: string; operationId?: string },
-): Promise<{ operationId: string }> {
+): Promise<{ queueId: string; operationId: string }> {
+  TransactionStorage.get(webStorage)
+  const lifecycle = TxLifecycleService.getInstance()
+  const queueId = await lifecycle.startTrackingTx(action, 240_000, svc)
   const token = await deps.tokenService.fetchTokenInformation()
   // One id for the row and the wallet call both: the submit boundary's hash is matched by it.
   const operationId = opts?.operationId ?? nextOperationId(kind)
-  const now = Date.now()
-  await session().activity.insertPending({
-    id: operationId,
-    operationId,
+  await lifecycle.recordPreSubmitPaylinkRow(queueId, operationId, {
     action,
-    emailPaymentAction: action,
     flavor: opts?.flavor ?? "direct",
     kind,
     ...(opts?.to !== undefined ? { to: opts.to } : {}),
@@ -286,23 +286,16 @@ export async function startPaylinkRow(
       name: token.name,
       address: token.address,
       logo: "",
-      amount: amount?.human ?? 0,
+      amount: amountHuman ?? 0,
       decimals: token.decimals,
       // Single USD-pegged asset; the activity feed multiplies amount × price.
       price: 1,
-      hasUnknownAmount: amount === undefined,
+      hasUnknownAmount: amountHuman === undefined,
     },
-    amountAtomic: amount?.atomic ?? 0n,
-    timestamp: now,
-    status: "pending",
-    txHash: "",
-    detailedStatus: QueueStatus.PENDING,
-    progress: 0,
-    startTime: now,
     obsidionAccountAddress: deps.account.getAddress().toString(),
     tokenAddress: token.address,
   })
-  return { operationId }
+  return { queueId, operationId }
 }
 
 /** The operation's one-line name, e.g. "$25 paylink". */
@@ -310,51 +303,39 @@ function linkSummary(amount: string | number | null | undefined): string {
   return amount == null ? "Paylink" : `$${amount} paylink`
 }
 
-/** The row's `onTxHash`: the hash is saved before the node takes the tx, so a reload finds it. */
-function saveRowTxHash(operationId: string) {
-  return async (txHash: string): Promise<void> => {
-    await session().activity.setHash(operationId, txHash)
-  }
+/** Writes the submitted hash onto the row, so the chain settles it even if this tab closes. */
+function saveRowTxHash(queueId: string) {
+  return (txHash: string) => TxLifecycleService.getInstance().patchTxHashForQueue(queueId, txHash)
 }
 
-type PaylinkRowFields = Partial<
-  Pick<
-    PaylinkTransaction,
-    | "payToEmailSecret"
-    | "paylink"
-    | "fallbackSecret"
-    | "fromClaimable"
-    | "untilClaimable"
-    | "refundableUntil"
-  >
->
-
-function patchPaylinkRow(operationId: string, fields: PaylinkRowFields): void {
-  session().activity.patch(operationId, (row) => ({ ...row, ...fields }) as Transaction)
-}
-
-/** Saves a prepared link on its row before signing, so a funded link keeps its refund details. */
-export function savePreparedLink(operationId: string, fields: PaylinkRowFields): Promise<void> {
-  return session().kv.batch(() => patchPaylinkRow(operationId, fields))
-}
-
-export function finishPaylinkRow(
-  operationId: string,
+export async function finishPaylinkRow(
+  queueId: string,
   txHash: string,
-  paylinkFields?: PaylinkRowFields,
-): void {
-  if (paylinkFields) patchPaylinkRow(operationId, paylinkFields)
-  session().activity.settle(operationId, txHash)
+  paylinkFields?: Parameters<TxLifecycleService["patchPaylinkSynthRow"]>[1],
+): Promise<void> {
+  const lifecycle = TxLifecycleService.getInstance()
+  await lifecycle.patchTxHashForQueue(queueId, txHash)
+  if (paylinkFields) await lifecycle.patchPaylinkSynthRow(queueId, paylinkFields)
+  lifecycle.completeTransaction(queueId, QueueStatus.SUCCESS, txHash)
 }
 
-export function failPaylinkRow(operationId: string, error: unknown): void {
-  const { activity } = session()
-  // A closed passkey prompt before submit sent nothing: the row goes.
-  if (isPasskeyCancelled(error) && !activity.latest(operationId)?.txHash) {
-    activity.remove(operationId)
-    return
+export async function failPaylinkRow(queueId: string, error: unknown): Promise<void> {
+  if (isPasskeyCancelled(error)) {
+    // Completion clears queueId, so remove the pre-submit row before releasing its tracking.
+    const removed = await TransactionStorage.get(webStorage)
+      .removeTransaction((tx) => tx.queueId === queueId && !tx.txHash)
+      .catch(console.warn)
+    if (removed) {
+      TxLifecycleService.getInstance().completeTransaction(queueId, QueueStatus.CANCELLED)
+      return
+    }
   }
-  activity.fail(operationId, toFailure(error, "tx.failed"))
+  TxLifecycleService.getInstance().completeTransaction(
+    queueId,
+    QueueStatus.FAILED,
+    undefined,
+    error instanceof Error ? error.message : String(error),
+  )
 }
 
 /**
@@ -363,14 +344,14 @@ export function failPaylinkRow(operationId: string, error: unknown): void {
  * to report as such; otherwise the row is failed and the transport error stands.
  */
 export async function paylinkFailure(
-  operationId: string,
+  queueId: string,
   error: unknown,
   submission: Pick<SubmissionTracker, "survived">,
   node: Parameters<SubmissionTracker["survived"]>[0],
 ): Promise<unknown> {
   const inFlight = await submission.survived(node)
   if (inFlight) return new TxInFlightError(inFlight, error)
-  failPaylinkRow(operationId, error)
+  await failPaylinkRow(queueId, error)
   return error
 }
 
@@ -391,76 +372,87 @@ function createRowMatcher(secret: string, flavor: LinkFlavor, account?: string) 
 }
 
 /** When this account created the link, flip its PAY row to claimed. */
-export function markCreateRowClaimed(secret: string, flavor: LinkFlavor, account: string): void {
-  const { activity } = session()
-  const match = createRowMatcher(secret, flavor, account)
-  activity.apply(match, {
-    type: "claimed",
-    at: Date.now(),
-    epoch: activity.rows.get().find(match)?.reorgEpoch,
-    refundInFlight: isRefundInFlight(secret),
-    by: "self",
-  })
+export async function markCreateRowClaimed(
+  secret: string,
+  flavor: LinkFlavor,
+  account: string,
+): Promise<void> {
+  try {
+    await TransactionStorage.get(webStorage).updateTransaction(
+      createRowMatcher(secret, flavor, account),
+      (tx) => {
+        const ptx = tx as PaylinkTransaction
+        ptx.isClaimed = true
+        ptx.paylink = undefined
+      },
+    )
+  } catch (e) {
+    console.warn("marking own paylink row claimed failed:", e)
+  }
 }
 
 /**
  * Flip the creator's PAY row to refunded, stamping the refund
  * transaction on it — that row is the only record of the round trip, so it carries both hashes.
  */
-export function markCreateRowRefunded(
+export async function markCreateRowRefunded(
   secret: string,
   flavor: LinkFlavor,
   account: string,
   refundTxHash?: string,
   refundKind?: PaylinkRecovery,
-): void {
-  session().activity.apply(createRowMatcher(secret, flavor, account), {
-    type: "refunded",
-    refundTxHash,
-    refundKind,
-  })
+): Promise<void> {
+  try {
+    await TransactionStorage.get(webStorage).updateTransaction(
+      createRowMatcher(secret, flavor, account),
+      (tx) => {
+        const ptx = tx as PaylinkTransaction
+        ptx.isRefunded = true
+        ptx.paylink = undefined
+        if (refundTxHash) ptx.refundTxHash = refundTxHash
+        if (refundKind) ptx.refundKind = refundKind
+      },
+    )
+  } catch (e) {
+    console.warn("marking own paylink row refunded failed:", e)
+  }
 }
 
-/**
- * Saves a submitted refund's hash on its own row and on the creator's PAY row in one write; the
- * claim reconciler settles the link from that pair.
- */
-export function saveRefundSubmitted(
-  operationId: string,
+/** Stamp the submitted refund on the creator's PAY row; the claim reconciler settles it from chain. */
+export async function markCreateRowRefundSubmitted(
   secret: string,
   flavor: LinkFlavor,
   account: string,
   refundTxHash: string,
   refundKind: PaylinkRecovery,
 ): Promise<void> {
-  const { activity, kv } = session()
-  return kv.batch(() => {
-    activity.apply((row) => row.id === operationId, { type: "sent", txHash: refundTxHash })
-    activity.apply(createRowMatcher(secret, flavor, account), {
-      type: "refundSubmitted",
-      refundTxHash,
-      refundKind,
-    })
-  })
+  await TransactionStorage.get(webStorage).updateTransaction(
+    createRowMatcher(secret, flavor, account),
+    (tx) => {
+      const ptx = tx as PaylinkTransaction
+      ptx.refundTxHash = refundTxHash
+      ptx.refundKind = refundKind
+    },
+  )
 }
 
 /**
  * This device's create row for a link, keyed by the fragment's secret + flavor — presence marks
  * the viewer as the creator; the full row feeds front-core's `paylinkRefundEligibility`.
  */
-export function creatorRowFor(fragment: string): PaylinkTransaction | null {
-  let params
+export async function creatorRowFor(fragment: string): Promise<PaylinkTransaction | null> {
   try {
-    params = decodePaylinkInline(fragment)
+    const params = decodePaylinkInline(fragment)
+    const flavor: LinkFlavor =
+      params.paylinkType === DEFAULT_CONTRACTS.paylinkEmail ? "email" : "direct"
+    const rows = await TransactionStorage.get(webStorage).getTransactions()
+    const row = rows.find(createRowMatcher(params.secret.toString(), flavor)) as
+      | PaylinkTransaction
+      | undefined
+    return row ?? null
   } catch {
     return null
   }
-  const flavor: LinkFlavor =
-    params.paylinkType === DEFAULT_CONTRACTS.paylinkEmail ? "email" : "direct"
-  const row = session()
-    .activity.rows.get()
-    .find(createRowMatcher(params.secret.toString(), flavor))
-  return (row as PaylinkTransaction | undefined) ?? null
 }
 
 /**
@@ -677,11 +669,12 @@ async function createSponsoredLinkFlow(
   }
   const windows = paylinkWindows(chainNow, windowSeconds, graceSeconds)
 
-  const { operationId } = await startPaylinkRow(
+  const { queueId, operationId } = await startPaylinkRow(
     deps,
+    svc,
     "paylink-create",
     PaylinkActionEnum.PAY,
-    { atomic: amount, human },
+    human,
     { flavor, to: email, memo, operationId: op.operationId },
   )
   // The row keeps the full link: refunds, migration and status reads decode it. Shares convert it.
@@ -695,7 +688,7 @@ async function createSponsoredLinkFlow(
   })
   let params: Awaited<ReturnType<PaylinkService["createSponsoredPaylink"]>>
   let link: PaymentLink | undefined
-  const submission = trackSubmission(operationId)
+  const submission = trackSubmission(operationId, saveRowTxHash(queueId))
   try {
     // createSponsoredPaylink runs sign → prove → submit in one call; emit a coarse
     // proving marker around it (the fine-grained sheet is the passkey prompt itself).
@@ -718,7 +711,6 @@ async function createSponsoredLinkFlow(
       {
         // Correlates the TEE and prove benchmark legs → one tx_timing analytics event.
         operationId,
-        onTxHash: saveRowTxHash(operationId),
         // The fragment needs nothing from the funding tx, so the link exists before the passkey
         // prompt: the pending row carries it from here, and the caller can show it while the
         // proof runs.
@@ -727,7 +719,10 @@ async function createSponsoredLinkFlow(
             ...linkShape(encodePaylinkInline(prepared), amount, decimals, flavor, email),
             memo,
           }
-          await savePreparedLink(operationId, rowFields(prepared, link))
+          await TxLifecycleService.getInstance().patchPaylinkSynthRow(
+            queueId,
+            rowFields(prepared, link),
+          )
           opts.onLink?.(link)
         },
       },
@@ -738,11 +733,11 @@ async function createSponsoredLinkFlow(
     if (!link) throw new Error("sponsored paylink create never prepared its link")
     // The row now carries the tx-bearing link: later copies let a claimer read the memo.
     link = { ...linkShape(encodePaylinkInline(params), amount, decimals, flavor, email), memo }
-    finishPaylinkRow(operationId, params.txHash, rowFields(params, link))
+    await finishPaylinkRow(queueId, params.txHash, rowFields(params, link))
   } catch (e) {
-    throw await paylinkFailure(operationId, e, submission, deps.wallet.node)
+    throw await paylinkFailure(queueId, e, submission, deps.wallet.node)
   } finally {
-    submission.stop()
+    await submission.stop()
   }
   emitPaylinkStage("created", flavor, deps, params.secret, amount, decimals)
   return { ...link, txHash: params.txHash }
@@ -830,18 +825,23 @@ async function claimSponsoredLinkFlow(
   const flavor: LinkFlavor = isEmail ? "email" : "direct"
   const decimals = tokenDecimalsForNetwork(getConfig().network)
   op.describe(linkSummary(note && formatUnits(note.amount, decimals)))
-  const { operationId } = await startPaylinkRow(
+  const { queueId, operationId } = await startPaylinkRow(
     deps,
+    svc,
     "paylink-claim",
     PaylinkActionEnum.CLAIM,
-    note && { atomic: note.amount, human: Number(formatUnits(note.amount, decimals)) },
+    note && Number(formatUnits(note.amount, decimals)),
     { flavor, operationId: op.operationId },
   )
   onStage?.("proving")
   let txHash: string
   let burn: Awaited<ReturnType<typeof seedRegistrationBurn>> | undefined
   let publish: Awaited<ReturnType<typeof registrationPublish>> | undefined
-  const submission = trackSubmission(operationId)
+  // The claim is saved once its row holds the hash, and the burn riding it its record.
+  const submission = trackSubmission(operationId, async (hash) => {
+    await saveRowTxHash(queueId)(hash)
+    if (burn && !(await burn.saved())) throw new Error("registration burn hash not saved")
+  })
   try {
     const slice = await prepare.within(
       registrationSlice(deps, note?.amount, Boolean(opts?.fundRegistration)),
@@ -861,11 +861,6 @@ async function claimSponsoredLinkFlow(
     const send = (broadcasts?: ContractFunctionInteraction[]) =>
       svc.claimSponsoredPaylink(params, sponsor, {
         operationId,
-        // The claim's row and the burn riding it both hold the hash before the node takes it.
-        onTxHash: async (hash) => {
-          await saveRowTxHash(operationId)(hash)
-          await burn?.stamp(hash)
-        },
         ...(isEmail ? { zkProof } : {}),
         ...(voucherRail
           ? {
@@ -903,13 +898,17 @@ async function claimSponsoredLinkFlow(
     if (sponsor.subscribe) noteSubscribed(deps.account, sponsor.fpcAddress, sponsor.railId)
     maybeRefuelFpc({ ...deps, fpc: { address: sponsor.fpcAddress, artifact: sponsor.fpcArtifact } })
     onStage?.("submitting")
-    finishPaylinkRow(operationId, txHash)
-    markCreateRowClaimed(params.secret.toString(), flavor, deps.account.getAddress().toString())
+    await finishPaylinkRow(queueId, txHash)
+    await markCreateRowClaimed(
+      params.secret.toString(),
+      flavor,
+      deps.account.getAddress().toString(),
+    )
   } catch (e) {
     if (e instanceof TxInFlightError) throw e
-    throw await paylinkFailure(operationId, e, submission, deps.wallet.node)
+    throw await paylinkFailure(queueId, e, submission, deps.wallet.node)
   } finally {
-    submission.stop()
+    await submission.stop()
   }
   emitPaylinkStage("claimed", flavor, deps, params.secret, note?.amount, decimals)
   return txHash
@@ -1228,15 +1227,15 @@ async function seedRegistrationBurn(
     startTime,
     deployment: await currentDeployment(tuple),
   })
-  // The claim's own tracker announces the batch.
+  // The claim's own tracker announces the batch, once this stamp and its row both saved.
   const submission = trackWithdrawalSubmission(store, localId, operationId, { announce: false })
   const arm = (record: WithdrawalRecord) =>
     ensureWithdrawalTracker(deps.wallet)
       .then((tracker) => tracker?.watch(record))
       .catch((e) => console.warn("registration burn: watcher arm failed, resumed on next load", e))
   return {
-    /** Saves the burn's hash on its record; rejects when it did not persist. */
-    stamp: submission.stamp,
+    /** Whether the burn's hash stamp persisted. */
+    saved: () => submission.saved(),
     /**
      * After a failed send: the burn's hash when the batch was broadcast and not seen failing, so
      * the claim went out with it; null once the record is dropped (a cancel) or failed.
@@ -1259,13 +1258,13 @@ async function seedRegistrationBurn(
         }
         return null
       } finally {
-        submission.stop()
+        await submission.stop()
       }
     },
     /** Mined. Nothing here may fail the claim: a record left at its hash resumes on the next boot. */
     async mined(txHash: string): Promise<void> {
       const durationMs = Date.now() - startTime
-      submission.stop()
+      await submission.stop()
       try {
         const receipt = await deps.wallet.node
           .getTxReceipt(TxHash.fromString(txHash))
@@ -1452,7 +1451,7 @@ async function claimLinkToL1Flow(
       deployment: await currentDeployment(tuple),
       ...swapRecordFields(swap, quote),
     },
-    burn: (seeded, onTxHash) => {
+    burn: (seeded) => {
       if (getConfig().network !== network) throw new Error("Network changed — reopen the link")
       onStage("proving")
       // Off the persisted record, so what the burn pays can never drift from what was written.
@@ -1461,7 +1460,7 @@ async function claimLinkToL1Flow(
         EthAddress.fromString(withdrawalRecipients(seeded).release),
         { proverTip, withdrawal },
         sponsor,
-        { operationId: op.operationId, zkProof, onTxHash },
+        { operationId: op.operationId, zkProof },
       )
     },
     // The batch refuses to sign unless the burn spends the whole note.
@@ -1487,7 +1486,11 @@ async function claimLinkToL1Flow(
     }
     if (sponsor.subscribe) noteSubscribed(deps.account, sponsor.fpcAddress, sponsor.railId)
     maybeRefuelFpc({ ...deps, fpc: { address: sponsor.fpcAddress, artifact: sponsor.fpcArtifact } })
-    markCreateRowClaimed(params.secret.toString(), flavor, deps.account.getAddress().toString())
+    await markCreateRowClaimed(
+      params.secret.toString(),
+      flavor,
+      deps.account.getAddress().toString(),
+    )
     void upsertSavedL1WalletContact({ address: recipient, name: recipientAlias })
   } catch (e) {
     console.warn("paylink claim_to_l1 mined; post-mine bookkeeping failed", e)
@@ -1560,8 +1563,10 @@ async function recoverSponsoredLinkFlow(
   // The offer was made from a polled tip that may be seconds old; the refund tx expires at
   // `refundable_until` unless the link is already past expiry. Re-read once before anything is
   // proven or recorded.
-  const row = creatorRowFor(fragment)
-  const now = await latestChainSeconds(liveDeps.wallet.node)
+  const [row, now] = await Promise.all([
+    creatorRowFor(fragment),
+    latestChainSeconds(liveDeps.wallet.node),
+  ])
   const { deps, tuple } = await refundDepsForRow(liveDeps, row)
   const svc = service(deps)
   const sponsor = await claimSponsorContext(deps, RAIL_REGISTERED, { tuple })
@@ -1574,35 +1579,37 @@ async function recoverSponsoredLinkFlow(
   // The link carries no amount; the create row does.
   const rowAmount = row?.token?.amount
   op.describe(linkSummary(rowAmount))
-  const { operationId } = await startPaylinkRow(
+  const { queueId, operationId } = await startPaylinkRow(
     deps,
+    svc,
     "paylink-refund",
     PaylinkActionEnum.CLAIM_BACK,
-    row && rowAmount !== undefined ? { atomic: row.amountAtomic, human: rowAmount } : undefined,
+    rowAmount,
     { flavor, operationId: op.operationId },
   )
   onStage?.("proving")
   const secret = params.secret.toString()
   const account = deps.account.getAddress().toString()
-  const submission = trackSubmission(operationId)
+  // The creator row learns of the refund at submit too: after a reload the claim reconciler would
+  // otherwise read the spent note as a recipient's claim.
+  const submission = trackSubmission(operationId, async (txHash) => {
+    await saveRowTxHash(queueId)(txHash)
+    await markCreateRowRefundSubmitted(secret, flavor, account, txHash, refundKind)
+  })
   let txHash: string
   try {
     txHash = await svc.refundSponsoredPaylink(params, sponsor, {
       operationId,
-      // The creator row learns of the refund before submit too: after a reload the claim
-      // reconciler would otherwise read the spent note as a recipient's claim.
-      onTxHash: (hash) =>
-        saveRefundSubmitted(operationId, secret, flavor, account, hash, refundKind),
     })
     if (sponsor.subscribe) noteSubscribed(deps.account, sponsor.fpcAddress, sponsor.railId)
     maybeRefuelFpc({ ...deps, fpc: { address: sponsor.fpcAddress, artifact: sponsor.fpcArtifact } })
     onStage?.("submitting")
-    finishPaylinkRow(operationId, txHash)
-    markCreateRowRefunded(secret, flavor, account, txHash, refundKind)
+    await finishPaylinkRow(queueId, txHash)
+    await markCreateRowRefunded(secret, flavor, account, txHash, refundKind)
   } catch (e) {
-    throw await paylinkFailure(operationId, e, submission, deps.wallet.node)
+    throw await paylinkFailure(queueId, e, submission, deps.wallet.node)
   } finally {
-    submission.stop()
+    await submission.stop()
   }
   emitPaylinkStage(
     "refunded",

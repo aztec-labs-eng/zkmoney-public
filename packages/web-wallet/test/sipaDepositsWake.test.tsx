@@ -10,9 +10,9 @@ const h = vi.hoisted(() => ({
   watching: Promise.resolve() as Promise<void>,
 }))
 
-vi.mock("@obsidion/front-core", async () => ({
-  ...(await import("@obsidion/front-core/dist/engine/legacyStore.js")),
+vi.mock("@obsidion/front-core", () => ({
   SIPADepositStore: { get: () => ({}) },
+  RequestStorage: { get: () => ({}) },
   bootPriority: {
     whenReady: (reader: string) => (reader === "deposits" ? h.booted : h.watching),
     depositProgress: () => undefined,

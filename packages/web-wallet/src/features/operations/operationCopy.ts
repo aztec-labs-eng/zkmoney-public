@@ -130,7 +130,6 @@ export const OPERATION_COPY: Readonly<Record<OperationFlow, FlowCopy>> = {
     outcome: "record",
     ...failures(false),
   },
-  // Only saved records carry this flow: a migration's arrival address, published before its burn.
   "migration-arrival": {
     live: "Publishing your new address",
     failed: "Couldn't publish your new address",

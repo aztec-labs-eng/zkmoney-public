@@ -41,10 +41,9 @@ import { usdFigure } from "../format"
 import { useL2TxUrl } from "../useL2TxUrl"
 import {
   creatorLinkAction,
-  getActiveNetworkId,
   isOtherRollupLink,
   type CreatorLinkAction,
-} from "@obsidion/front-core"
+} from "../../features/paylink/creatorLinkActions"
 import { paylinkRowShareUrl } from "../../features/shortLinks"
 import { LinkRecoverModal } from "../../features/paylink/LinkRecoverModal"
 import { usePolledChainSeconds } from "../../features/paylink/chainTime"
@@ -153,7 +152,7 @@ export function TxDetailModal({
             : null,
         refundStatus: row.refundStatus,
         refundStarting: isRefundInFlight(row.paylinkRow.payToEmailSecret ?? ""),
-        retired: isOtherRollupLink(row.paylinkRow, getActiveNetworkId()),
+        retired: isOtherRollupLink(row.paylinkRow),
         nowSec: chainNow ?? Math.floor(Date.now() / 1000),
       })
     : undefined
@@ -190,9 +189,9 @@ export function TxDetailModal({
       : "Received"
     : type
   const avatarName = row.contact?.name ?? row.counterparty
-  // The counterparty's chat is where all of that user's transactions live; an unsaved tag or an
-  // unknown sender's address opens it unsaved.
-  const contactId = row.contact?.id ?? row.counterpartyTag ?? row.counterpartyAddress
+  // The counterparty's chat is where all of that user's transactions live; an unsaved tag opens it
+  // unsaved.
+  const contactId = row.contact?.id ?? row.counterpartyTag
   const contactPath =
     contactId && !row.paylink ? `/contacts/${encodeURIComponent(contactId)}` : null
   const openContact =

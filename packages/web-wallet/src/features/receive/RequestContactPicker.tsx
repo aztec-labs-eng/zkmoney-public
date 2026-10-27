@@ -1,9 +1,9 @@
 import { useMemo, useState } from "react"
-import { normalizeTag, useContactsDirectory, useStore } from "@obsidion/front-core"
+import { normalizeTag, useContactsDirectory } from "@obsidion/front-core"
 import { ContactRow, TextField, avatarColors } from "@obsidion/web-ds"
 import { filterContacts } from "../contacts/contactsView"
 import { recentPeople } from "../contacts/recentPeople"
-import { useSession } from "../../platform/session"
+import { useContactActivity } from "../contacts/useContactActivity"
 import { loadWalletIdentity } from "../identity/walletIdentity"
 
 const RECENT_COUNT = 4
@@ -21,7 +21,7 @@ export function RequestContactPicker({
   onRequest: (tag: string) => void
 }) {
   const { contacts } = useContactsDirectory()
-  const sources = useStore(useSession().contactActivity)
+  const sources = useContactActivity(true)
   const [query, setQuery] = useState("")
   const ownTag = loadWalletIdentity()?.handle
 

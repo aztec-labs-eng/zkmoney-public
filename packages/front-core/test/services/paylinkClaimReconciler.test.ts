@@ -3,9 +3,8 @@ import {
   PaylinkClaimReconciler,
   demotePaylinkClaim,
   markPaylinkMigrated,
+  type ReconcilerStorage,
 } from "../../src/core/services/paylink/PaylinkClaimReconciler"
-import type { Activity } from "../../src/engine/activity"
-import { seededActivity } from "../utils/activityFixture"
 import { markRefundInFlight, clearRefundInFlight } from "../../src/core/services/paylink/refundInFlight"
 import { globalEventEmitter } from "../../src/core/services/GlobalEventEmitter"
 import type { PaylinkTransaction, Transaction } from "../../src/types"
@@ -26,24 +25,41 @@ const row = (overrides: Partial<PaylinkTransaction> = {}): PaylinkTransaction =>
     ...overrides,
   }) as PaylinkTransaction
 
-const makeStorage = (rows: Transaction[]) => seededActivity(rows)
-const at = (storage: Activity, i: number) => storage.rows.get()[i] as PaylinkTransaction
-const set = (storage: Activity, change: Partial<PaylinkTransaction>) =>
-  storage.patch("0xrow", (r) => ({ ...r, ...change }) as Transaction)
+// In-memory storage mirroring TransactionStorage.updateTransaction semantics:
+// find-by-predicate, mutate in place, return whether a row matched.
+function makeStorage(rows: Transaction[]): ReconcilerStorage & { rows: Transaction[] } {
+  return {
+    rows,
+    async getTransactions() {
+      return rows
+    },
+    async updateTransaction(predicate, updater) {
+      const idx = rows.findIndex(predicate)
+      if (idx < 0) return false
+      updater(rows[idx])
+      return true
+    },
+  }
+}
 
 // Resolves spent=true for any row whose txHash is in `spent`.
 const spentCheck = (spent: string[]) =>
   vi.fn(async (rows: PaylinkTransaction[]) => new Map(rows.map((r) => [r.txHash, spent.includes(r.txHash)])))
 
 let claimed: string[]
+let demoted: string[]
 const capture = (d: { txHash: string }) => claimed.push(d.txHash)
+const captureDemoted = (d: { txHash: string }) => demoted.push(d.txHash)
 
 beforeEach(() => {
   claimed = []
+  demoted = []
   globalEventEmitter.onPaylinkClaimed(capture)
+  globalEventEmitter.onPaylinkClaimDemoted(captureDemoted)
 })
 afterEach(() => {
   globalEventEmitter.offPaylinkClaimed(capture)
+  globalEventEmitter.offPaylinkClaimDemoted(captureDemoted)
   clearRefundInFlight("0xsecret")
 })
 
@@ -51,14 +67,14 @@ describe("PaylinkClaimReconciler", () => {
   it("flips isClaimed and emits once on a genuine claim", async () => {
     const storage = makeStorage([row()])
     await new PaylinkClaimReconciler({ checkSpent: spentCheck(["0xrow"]), storage }).reconcile()
-    expect(at(storage, 0).isClaimed).toBe(true)
+    expect((storage.rows[0] as PaylinkTransaction).isClaimed).toBe(true)
     expect(claimed).toEqual(["0xrow"])
   })
 
   it("does not flip or emit when the note is not spent", async () => {
     const storage = makeStorage([row()])
     await new PaylinkClaimReconciler({ checkSpent: spentCheck([]), storage }).reconcile()
-    expect(at(storage, 0).isClaimed).toBeUndefined()
+    expect((storage.rows[0] as PaylinkTransaction).isClaimed).toBeUndefined()
     expect(claimed).toEqual([])
   })
 
@@ -66,7 +82,7 @@ describe("PaylinkClaimReconciler", () => {
     markRefundInFlight("0xsecret")
     const storage = makeStorage([row()])
     await new PaylinkClaimReconciler({ checkSpent: spentCheck(["0xrow"]), storage }).reconcile()
-    expect(at(storage, 0).isClaimed).toBeUndefined()
+    expect((storage.rows[0] as PaylinkTransaction).isClaimed).toBeUndefined()
     expect(claimed).toEqual([])
   })
 
@@ -82,7 +98,7 @@ describe("PaylinkClaimReconciler", () => {
     const storage = makeStorage([row({ isClaimed: true })])
     const checkSpent = spentCheck(["0xrow"])
     await new PaylinkClaimReconciler({ checkSpent, storage }).reconcile()
-    expect(at(storage, 0).isClaimed).toBe(true)
+    expect((storage.rows[0] as PaylinkTransaction).isClaimed).toBe(true)
     expect(claimed).toEqual([])
   })
 
@@ -111,7 +127,7 @@ describe("PaylinkClaimReconciler", () => {
       throw new Error("rpc down")
     })
     await new PaylinkClaimReconciler({ checkSpent, storage }).reconcile()
-    expect(at(storage, 0).isClaimed).toBeUndefined()
+    expect((storage.rows[0] as PaylinkTransaction).isClaimed).toBeUndefined()
     expect(claimed).toEqual([])
   })
 
@@ -125,7 +141,7 @@ describe("PaylinkClaimReconciler", () => {
     }).reconcile()
     // sanity: with a stable account it would have flipped; assert the guard by switching
     // before the post-read loop is exercised via a second run with a switching getter.
-    expect(at(storage, 0).isClaimed).toBe(true)
+    expect((storage.rows[0] as PaylinkTransaction).isClaimed).toBe(true)
 
     const storage2 = makeStorage([row()])
     const switching = vi.fn(() => account)
@@ -139,7 +155,7 @@ describe("PaylinkClaimReconciler", () => {
       storage: storage2,
       getActiveAccount: switching,
     }).reconcile()
-    expect(at(storage2, 0).isClaimed).toBeUndefined()
+    expect((storage2.rows[0] as PaylinkTransaction).isClaimed).toBeUndefined()
     expect(claimed).toEqual([])
   })
 
@@ -148,8 +164,8 @@ describe("PaylinkClaimReconciler", () => {
     await new PaylinkClaimReconciler({ checkSpent: spentCheck(["0xa", "0xb"]), storage }).reconcileTxHash(
       "0xa",
     )
-    expect(at(storage, 0).isClaimed).toBe(true)
-    expect(at(storage, 1).isClaimed).toBeUndefined()
+    expect((storage.rows[0] as PaylinkTransaction).isClaimed).toBe(true)
+    expect((storage.rows[1] as PaylinkTransaction).isClaimed).toBeUndefined()
     expect(claimed).toEqual(["0xa"])
   })
 
@@ -159,7 +175,7 @@ describe("PaylinkClaimReconciler", () => {
     const checkSpent = spentCheck(["0xrow"])
     await new PaylinkClaimReconciler({ checkSpent, storage }).reconcile()
     expect(checkSpent).not.toHaveBeenCalled()
-    expect(at(storage, 0).isClaimed).toBeUndefined()
+    expect((storage.rows[0] as PaylinkTransaction).isClaimed).toBeUndefined()
     expect(claimed).toEqual([])
   })
 
@@ -167,66 +183,60 @@ describe("PaylinkClaimReconciler", () => {
     const storage = makeStorage([row()])
     const checkSpent = vi.fn(async (rows: PaylinkTransaction[]) => {
       // Migration flips the row between the candidate read and the write loop.
-      markPaylinkMigrated("0xrow", storage)
+      ;(storage.rows[0] as PaylinkTransaction).isMigrated = true
       return new Map(rows.map((r) => [r.txHash, true]))
     })
     await new PaylinkClaimReconciler({ checkSpent, storage }).reconcile()
-    expect(at(storage, 0).isClaimed).toBeUndefined()
+    expect((storage.rows[0] as PaylinkTransaction).isClaimed).toBeUndefined()
     expect(claimed).toEqual([])
   })
 })
 
 describe("markPaylinkMigrated", () => {
-  it("flips exactly once and emits no paylinkClaimed", () => {
+  it("flips exactly once and emits no paylinkClaimed", async () => {
     const storage = makeStorage([row()])
-    expect(markPaylinkMigrated("0xrow", storage)).toBe(true)
-    expect(at(storage, 0).isMigrated).toBe(true)
-    expect(markPaylinkMigrated("0xrow", storage)).toBe(false)
+    expect(await markPaylinkMigrated("0xrow", storage)).toBe(true)
+    expect((storage.rows[0] as PaylinkTransaction).isMigrated).toBe(true)
+    expect(await markPaylinkMigrated("0xrow", storage)).toBe(false)
     expect(claimed).toEqual([])
   })
 
-  it("refuses to flip a row already claimed or refunded", () => {
-    const storage = makeStorage([
-      row({ txHash: "0xa", isClaimed: true }),
-      row({ txHash: "0xb", isRefunded: true }),
-    ])
-    expect(markPaylinkMigrated("0xa", storage)).toBe(false)
-    expect(markPaylinkMigrated("0xb", storage)).toBe(false)
-    expect(at(storage, 0).isMigrated).toBeUndefined()
-    expect(at(storage, 1).isMigrated).toBeUndefined()
+  it("refuses to flip a row already claimed or refunded", async () => {
+    const storage = makeStorage([row({ txHash: "0xa", isClaimed: true }), row({ txHash: "0xb", isRefunded: true })])
+    expect(await markPaylinkMigrated("0xa", storage)).toBe(false)
+    expect(await markPaylinkMigrated("0xb", storage)).toBe(false)
+    expect((storage.rows[0] as PaylinkTransaction).isMigrated).toBeUndefined()
+    expect((storage.rows[1] as PaylinkTransaction).isMigrated).toBeUndefined()
   })
 })
 
 describe("demotePaylinkClaim (reorg)", () => {
-  it("flips isClaimed back to false and bumps the row's reorgEpoch", async () => {
+  it("flips isClaimed back to false, bumps the row's reorgEpoch, and emits paylinkClaimDemoted", async () => {
     const storage = makeStorage([row({ isClaimed: true })])
     expect(await demotePaylinkClaim("0xrow", storage)).toBe(true)
-    const demotedRow = at(storage, 0)
+    const demotedRow = storage.rows[0] as PaylinkTransaction
     expect(demotedRow.isClaimed).toBe(false)
     expect(demotedRow.reorgEpoch).toBe(1)
+    expect(demoted).toEqual(["0xrow"])
   })
 
-  it("is a no-op on an unclaimed row", async () => {
+  it("is a no-op on an unclaimed row and emits nothing", async () => {
     const storage = makeStorage([row()])
     expect(await demotePaylinkClaim("0xrow", storage)).toBe(false)
-    expect(at(storage, 0).reorgEpoch).toBeUndefined()
+    expect((storage.rows[0] as PaylinkTransaction).reorgEpoch).toBeUndefined()
+    expect(demoted).toEqual([])
   })
 
   it("a stale sweep (rows read pre-demote) cannot re-flip a demoted claim", async () => {
     const storage = makeStorage([row()])
     const checkSpent = vi.fn(async (rows: PaylinkTransaction[]) => {
       // Reorg demote lands between the candidate read and the write loop.
-      storage.apply((r) => r.id === "0xrow", {
-        type: "claimed",
-        at: 1,
-        refundInFlight: false,
-        by: "chain",
-      })
+      ;(storage.rows[0] as PaylinkTransaction).isClaimed = true
       await demotePaylinkClaim("0xrow", storage)
       return new Map(rows.map((r) => [r.txHash, true]))
     })
     await new PaylinkClaimReconciler({ checkSpent, storage }).reconcile()
-    expect(at(storage, 0).isClaimed).toBe(false)
+    expect((storage.rows[0] as PaylinkTransaction).isClaimed).toBe(false)
     expect(claimed).toEqual([])
   })
 
@@ -234,43 +244,47 @@ describe("demotePaylinkClaim (reorg)", () => {
     const storage = makeStorage([row({ isClaimed: true })])
     await demotePaylinkClaim("0xrow", storage)
     await new PaylinkClaimReconciler({ checkSpent: spentCheck(["0xrow"]), storage }).reconcile()
-    expect(at(storage, 0).isClaimed).toBe(true)
+    expect((storage.rows[0] as PaylinkTransaction).isClaimed).toBe(true)
     expect(claimed).toEqual(["0xrow"])
   })
 })
 
 describe("reverse leg — reconcile rechecks claimed rows", () => {
-  it("demotes a claimed row whose note reads UNSPENT", async () => {
+  it("demotes a claimed row whose note reads UNSPENT and emits paylinkClaimDemoted", async () => {
     const storage = makeStorage([row({ isClaimed: true })])
     await new PaylinkClaimReconciler({ checkSpent: spentCheck([]), storage }).reconcile()
-    const r = at(storage, 0)
+    const r = storage.rows[0] as PaylinkTransaction
     expect(r.isClaimed).toBe(false)
     expect(r.reorgEpoch).toBe(1)
+    expect(demoted).toEqual(["0xrow"])
     expect(claimed).toEqual([])
   })
 
   it("leaves a claimed row untouched when the note is still spent", async () => {
     const storage = makeStorage([row({ isClaimed: true })])
     await new PaylinkClaimReconciler({ checkSpent: spentCheck(["0xrow"]), storage }).reconcile()
-    expect(at(storage, 0).isClaimed).toBe(true)
+    expect((storage.rows[0] as PaylinkTransaction).isClaimed).toBe(true)
+    expect(demoted).toEqual([])
   })
 
   it("does not demote a claimed row the checkSpent result did not cover", async () => {
     const storage = makeStorage([row({ isClaimed: true })])
     const checkSpent = vi.fn(async () => new Map<string, boolean>())
     await new PaylinkClaimReconciler({ checkSpent, storage }).reconcile()
-    expect(at(storage, 0).isClaimed).toBe(true)
+    expect((storage.rows[0] as PaylinkTransaction).isClaimed).toBe(true)
+    expect(demoted).toEqual([])
   })
 
   it("a stale UNSPENT observation cannot demote a row re-claimed at a newer epoch", async () => {
     const storage = makeStorage([row({ isClaimed: true })]) // epoch 0 at read
     const checkSpent = vi.fn(async (rows: PaylinkTransaction[]) => {
-      // A reorg lands mid-read: epoch bumps, claim stands.
-      storage.demoteByTxHash("0xrow")
+      // A demote + re-claim cycle lands mid-read: epoch bumps, claim stands.
+      ;(storage.rows[0] as PaylinkTransaction).reorgEpoch = 1
       return new Map(rows.map((r) => [r.txHash, false]))
     })
     await new PaylinkClaimReconciler({ checkSpent, storage }).reconcile()
-    expect(at(storage, 0).isClaimed).toBe(true)
+    expect((storage.rows[0] as PaylinkTransaction).isClaimed).toBe(true)
+    expect(demoted).toEqual([])
   })
 })
 
@@ -282,14 +296,14 @@ describe("PaylinkClaimReconciler — refund submitted before a reload", () => {
   it("never reads the spent note as a recipient's claim", async () => {
     const storage = makeStorage([row({ refundTxHash: "0xrefund" }), refundRow("pending")])
     await new PaylinkClaimReconciler({ checkSpent: spentCheck(["0xrow"]), storage }).reconcile()
-    expect(at(storage, 0).isClaimed).toBeUndefined()
+    expect((storage.rows[0] as PaylinkTransaction).isClaimed).toBeUndefined()
     expect(claimed).toEqual([])
   })
 
   it("marks the link refunded once the refund lands", async () => {
     const storage = makeStorage([row({ refundTxHash: "0xrefund" }), refundRow("success")])
     await new PaylinkClaimReconciler({ checkSpent: spentCheck(["0xrow"]), storage }).reconcile()
-    const creator = at(storage, 0)
+    const creator = storage.rows[0] as PaylinkTransaction
     expect(creator.isRefunded).toBe(true)
     expect(creator.paylink).toBeUndefined()
     expect(creator.isClaimed).toBeUndefined()
@@ -298,7 +312,7 @@ describe("PaylinkClaimReconciler — refund submitted before a reload", () => {
   it("waits, and never reads a claim, while the refund's own row is missing", async () => {
     const storage = makeStorage([row({ refundTxHash: "0xrefund" })])
     await new PaylinkClaimReconciler({ checkSpent: spentCheck(["0xrow"]), storage }).reconcile()
-    const creator = at(storage, 0)
+    const creator = storage.rows[0] as PaylinkTransaction
     expect(creator.refundTxHash).toBe("0xrefund")
     expect(creator.isRefunded).toBeUndefined()
     expect(creator.isClaimed).toBeUndefined()
@@ -311,7 +325,7 @@ describe("PaylinkClaimReconciler — refund submitted before a reload", () => {
       refundRow("failed"),
     ])
     await new PaylinkClaimReconciler({ checkSpent: spentCheck([]), storage }).reconcile()
-    const creator = at(storage, 0)
+    const creator = storage.rows[0] as PaylinkTransaction
     expect(creator.refundTxHash).toBeUndefined()
     expect(creator.refundKind).toBeUndefined()
     expect(creator.isRefunded).toBeUndefined()

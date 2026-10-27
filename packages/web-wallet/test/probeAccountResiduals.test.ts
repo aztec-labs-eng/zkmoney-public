@@ -24,23 +24,14 @@ const h = vi.hoisted(() => ({
   sourceLinkRows: vi.fn(async () => [{ link: "row" }]),
   markRefundedSourceLinks: vi.fn(async () => {}),
   importOnce: vi.fn(async () => null),
-  settled: vi.fn((_account: string, _source: string) => false),
-  recordRead: vi.fn(),
-  candidate: vi.fn((_account: string, _source: string): unknown => undefined),
-  getBlock: vi.fn(),
-  getItem: vi.fn(async (_key: string): Promise<string | null> => null),
   serviceDeps: [] as unknown[],
   storageId: "acct" as string | null,
   onSecretKey: () => {},
   deployment: vi.fn(),
   invalidate: vi.fn(),
   route: vi.fn(),
-  config: {} as Record<string, unknown>,
 }))
 
-vi.mock("../src/platform/session", () => ({
-  session: () => ({ activity: { rows: { get: () => [] } }, notifications: {} }),
-}))
 vi.mock("@obsidion/front-core", () => ({
   PendingPaylinkMigrationService: class {
     reconcile = h.reconcile
@@ -51,17 +42,18 @@ vi.mock("@obsidion/front-core", () => ({
     }
   },
   PendingPaylinkMigrationStore: { get: () => ({}) },
+  AppNotificationStore: { get: () => ({}) },
   bootPriority: { whenReady: async () => {} },
   HISTORIC_ACTIVITY_IMPORTED_KEY: "imported",
+  TransactionStorage: { get: () => ({ getTransactions: async () => [] }) },
   WithdrawalStorage: { get: () => ({ load: async () => {}, list: () => [] }) },
   deriveStealthKey: () => ({ publicKey: { x: 1n, y: 2n } }),
   deriveRefundableSipaSources: h.derive,
   deploymentScanRange: async () => ({ fromBlock: 1n, toBlock: 1n }),
   setupSipaDiscovery: h.setupSipaDiscovery,
-  retiredDatabaseOf: (_version: string, db: unknown) => db,
 }))
 vi.mock("@obsidion/sdk", () => ({
-  detectHistoricDeployments: h.detect,
+  IntraRollupMigrationService: { detectHistoricDeployments: h.detect },
   getBroadcasterArtifact: async () => ({}),
   fetchSipaEvents: h.fetchSipaEvents,
   fetchHistoricalSipaResolverOperators: async () => [{ l2Address: h.resolverSender }],
@@ -70,13 +62,11 @@ vi.mock("@obsidion/sdk", () => ({
   readSipaDepositsConsumed: h.readSipaDepositsConsumed,
   migrationRouteFor: h.route,
 }))
-vi.mock("../src/config/env", () => ({ getConfig: () => h.config }))
+vi.mock("../src/config/env", () => ({
+  getConfig: () => ({ oxideProfile: {}, network: "sandbox", l1ChainId: 1, assets: [] }),
+}))
 vi.mock("../src/config/oxideTuple", () => ({
-  l1MulticallClient: () => ({
-    getBlockNumber: async () => 1n,
-    getBlock: h.getBlock,
-    readContract: vi.fn(),
-  }),
+  l1MulticallClient: () => ({ getBlockNumber: async () => 1n, readContract: vi.fn() }),
   getOtherManifestSources: h.otherSources,
   getOxideDeployment: h.deployment,
   invalidateOxideDeployment: h.invalidate,
@@ -92,14 +82,7 @@ vi.mock("../src/platform/auth/useAuthenticator", () => ({
     },
   }),
 }))
-vi.mock("../src/platform/storage/WebStorageAdapter", () => ({
-  webStorage: { getItem: h.getItem },
-}))
-vi.mock("../src/features/migration/upgradeLock", () => ({
-  retiredSourceSettled: h.settled,
-  recordRetiredSourceRead: h.recordRead,
-  retiredSourceCandidate: h.candidate,
-}))
+vi.mock("../src/platform/storage/WebStorageAdapter", () => ({ webStorage: {} }))
 vi.mock("../src/features/migration/sourceSavingsDeposits", () => ({
   sourceSavingsDeposits: h.savingsDeposits,
 }))
@@ -158,7 +141,6 @@ const lockedSummary = {
 
 beforeEach(() => {
   vi.clearAllMocks()
-  h.config = { oxideProfile: {}, network: "sandbox", l1ChainId: 1, assets: [] }
   h.reconcile.mockResolvedValue([])
   h.recordPending.mockResolvedValue(undefined)
   h.setupSipaDiscovery.mockResolvedValue({ broadcaster: "0xbroadcaster" })
@@ -170,16 +152,6 @@ beforeEach(() => {
   h.savingsTuple.mockResolvedValue(undefined)
   h.deployment.mockResolvedValue({ deployment: { features: [], bridges: [] } })
   h.route.mockReturnValue(undefined)
-  h.settled.mockReturnValue(false)
-  h.getItem.mockResolvedValue(null)
-  h.candidate.mockReturnValue(undefined)
-  h.getBlock.mockImplementation(async (args: { blockTag?: string; blockNumber?: bigint }) =>
-    args.blockTag === "finalized"
-      ? { number: 6n, hash: "0xfinal" }
-      : args.blockNumber !== undefined
-      ? { number: args.blockNumber, hash: "0xcandidate" }
-      : { number: 9n, hash: "0xtip" },
-  )
 })
 
 describe("probeAccountResiduals — frozen sources", () => {
@@ -383,33 +355,6 @@ describe("probeAccountResiduals — another Aztec generation", () => {
     expect(h.detect.mock.calls[0]![0].otherSources).toEqual([other])
   })
 
-  it("fails, rather than reads no history, when another generation's manifest can't be read", async () => {
-    h.otherSources.mockRejectedValue(new Error("timed out"))
-    await expect(probeAccountResiduals(wallet, account)).rejects.toBeInstanceOf(
-      ManifestUnavailableError,
-    )
-    expect(h.detect).not.toHaveBeenCalled()
-  })
-
-  it("fails, rather than reads no history, when boot could not read a previous generation's profile", async () => {
-    // Boot leaves the unread generation out of the config's source rollups, so another
-    // generation's manifests resolve to none, as they do for an account with no history.
-    h.config = {
-      ...h.config,
-      sourceRollupIssues: [
-        {
-          profileUrl: "https://config.example/profiles/v5/0.44.0.json",
-          code: "UNREACHABLE",
-          message: "profile fetch failed: no complete response within 15000ms",
-        },
-      ],
-    }
-    await expect(probeAccountResiduals(wallet, account)).rejects.toBeInstanceOf(
-      ManifestUnavailableError,
-    )
-    expect(h.detect).not.toHaveBeenCalled()
-  })
-
   it("reports a live source of another generation as awaiting its freeze, with its balance", async () => {
     h.detect.mockResolvedValue({ current, historic: [tuple], destinations: new Map() })
     h.isReadableSource.mockResolvedValue(false)
@@ -543,161 +488,6 @@ describe("probeAccountResiduals — another Aztec generation", () => {
     })
     await probeAccountResiduals(wallet, account)
     await vi.waitFor(() => expect(h.markRefundedSourceLinks).toHaveBeenCalled())
-  })
-
-  describe("a source on another rollup", () => {
-    const v5 = { ...tuple, rollupVersion: "5" }
-    const empty = {
-      ...lockedSummary,
-      tuple: v5,
-      frozen: true,
-      lockedPaylinks: [],
-      paylinkCandidates: [],
-      incomplete: false,
-      hasResiduals: false,
-    }
-    const replayKey = `imported/0xv5rollup/${v5.l2Token}`
-    beforeEach(() => {
-      h.importOnce.mockImplementation(async () => null)
-      h.detect.mockResolvedValue({ current, historic: [v5], destinations: new Map() })
-      h.sourceChain.mockResolvedValue({
-        kind: "generation",
-        session: { ...session, rollupAddress: "0xv5rollup" },
-      })
-    })
-
-    it("is not read once settled, so nothing of its rollup loads", async () => {
-      h.settled.mockReturnValue(true)
-      const found = await probeAccountResiduals(wallet, account)
-      expect(h.settled).toHaveBeenCalledWith("0xacct", v5.portal)
-      expect(h.isReadableSource).not.toHaveBeenCalled()
-      expect(h.sourceChain).not.toHaveBeenCalled()
-      expect(h.probe).not.toHaveBeenCalled()
-      expect(found).toMatchObject({ historic: [], residuals: [] })
-    })
-
-    it("is read on this rollup whatever its marker says", async () => {
-      h.settled.mockReturnValue(true)
-      h.detect.mockResolvedValue({ current, historic: [tuple], destinations: new Map() })
-      await probeAccountResiduals(wallet, account)
-      expect(h.settled).not.toHaveBeenCalled()
-      expect(h.probe.mock.calls[0]![0].historic).toEqual([tuple])
-    })
-
-    it("settles once a complete read finds it frozen and empty, with its history in", async () => {
-      h.probe.mockResolvedValue([empty])
-      h.getItem.mockImplementation(async (key) =>
-        key === replayKey || key === "imported" ? "{}" : null,
-      )
-      await probeAccountResiduals(wallet, account)
-      await vi.waitFor(() =>
-        expect(h.recordRead).toHaveBeenCalledWith("0xacct", v5.portal, {
-          empty: true,
-          tip: { number: 9n, hash: "0xtip" },
-          priorFinal: false,
-        }),
-      )
-    })
-
-    it.each([
-      ["final and still on chain", { number: 5n, hash: "0xcandidate" }, true],
-      ["dropped by a reorg", { number: 5n, hash: "0xreorged" }, false],
-      ["not final yet", { number: 7n, hash: "0xcandidate" }, false],
-    ])(
-      "settles on an empty read only when the earlier read's block is %s",
-      async (_case, candidate, priorFinal) => {
-        h.probe.mockResolvedValue([empty])
-        h.candidate.mockReturnValue(candidate)
-        h.getItem.mockResolvedValue("{}")
-        await probeAccountResiduals(wallet, account)
-        await vi.waitFor(() =>
-          expect(h.recordRead).toHaveBeenCalledWith("0xacct", v5.portal, {
-            empty: true,
-            tip: { number: 9n, hash: "0xtip" },
-            priorFinal,
-          }),
-        )
-      },
-    )
-
-    it("takes the tip that closes the read after the source's pass, not before its reads", async () => {
-      const order: string[] = []
-      h.probe.mockResolvedValue([empty])
-      h.getItem.mockResolvedValue("{}")
-      h.markRefundedSourceLinks.mockImplementation(async () => void order.push("links"))
-      const read = h.getBlock.getMockImplementation()!
-      h.getBlock.mockImplementation(async (args) => {
-        if (args.blockTag === "latest") order.push("tip")
-        return read(args)
-      })
-      await probeAccountResiduals(wallet, account)
-      await vi.waitFor(() => expect(h.recordRead).toHaveBeenCalled())
-      expect(order).toEqual(["links", "tip"])
-    })
-
-    it("does not settle while this browser's databases are not imported", async () => {
-      h.probe.mockResolvedValue([empty])
-      h.getItem.mockImplementation(async (key) => (key === replayKey ? "{}" : null))
-      await probeAccountResiduals(wallet, account)
-      await vi.waitFor(() => expect(h.getItem).toHaveBeenCalledWith("imported"))
-      await new Promise((resolve) => setTimeout(resolve))
-      expect(h.recordRead).not.toHaveBeenCalled()
-    })
-
-    it("rebuilds its history with every source of its rollup, a settled one too", async () => {
-      const savings = { ...current, portal: "0xsavings" }
-      const v5Savings = { ...v5, portal: "0xv5susds", l2Token: `0x${"0d".repeat(32)}` }
-      h.savingsTuple.mockResolvedValue(savings)
-      h.detect.mockResolvedValue({
-        current,
-        historic: [v5, v5Savings],
-        destinations: new Map([["0xv5susds", savings]]),
-      })
-      h.settled.mockImplementation((_account, source) => source === v5Savings.portal)
-      const history = vi.fn(async (_scan: { deployments: unknown[] }) => ({}))
-      h.sourceChain.mockResolvedValue({
-        kind: "generation",
-        session: { ...session, rollupAddress: "0xv5rollup", history },
-      })
-      h.importOnce.mockImplementation(async (from?: { read(): Promise<unknown> }) => {
-        await from?.read()
-        return null
-      })
-      await probeAccountResiduals(wallet, account)
-      await vi.waitFor(() => expect(history).toHaveBeenCalled())
-      expect(history.mock.calls[0]![0]).toMatchObject({ deployments: [v5, v5Savings] })
-    })
-
-    it("does not settle while its history replay is missing", async () => {
-      h.probe.mockResolvedValue([empty])
-      await probeAccountResiduals(wallet, account)
-      await vi.waitFor(() => expect(h.getItem).toHaveBeenCalledWith(replayKey))
-      await new Promise((resolve) => setTimeout(resolve))
-      expect(h.recordRead).not.toHaveBeenCalled()
-    })
-
-    it.each([
-      ["an incomplete read", { incomplete: true }],
-      ["a live portal", { frozen: false }],
-    ])("records nothing after %s", async (_case, over) => {
-      h.probe.mockResolvedValue([{ ...empty, ...over }])
-      h.getItem.mockResolvedValue("{}")
-      await probeAccountResiduals(wallet, account)
-      await vi.waitFor(() => expect(h.markRefundedSourceLinks).toHaveBeenCalled())
-      await new Promise((resolve) => setTimeout(resolve))
-      expect(h.recordRead).not.toHaveBeenCalled()
-    })
-
-    it.each([
-      ["funds left", { balance: 1n, hasResiduals: true }],
-      ["an unverified Savings move", { unverifiedMoves: 1 }],
-    ])("starts its settling over after %s", async (_case, over) => {
-      h.probe.mockResolvedValue([{ ...empty, ...over }])
-      h.getItem.mockResolvedValue("{}")
-      await probeAccountResiduals(wallet, account)
-      expect(h.recordRead).toHaveBeenCalledWith("0xacct", v5.portal, { empty: false })
-      expect(h.recordRead).toHaveBeenCalledTimes(1)
-    })
   })
 
   it("takes the source's SIPAs from the generation, which derives them by its own rules", async () => {

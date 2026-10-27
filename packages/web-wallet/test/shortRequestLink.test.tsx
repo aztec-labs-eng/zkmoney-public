@@ -17,9 +17,7 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
   useAztecContext: () => ({ obsidionWallet: wallet }),
   useAccountContext: () => ({ obsidionAccount: account }),
   useContractServiceContext: () => ({ contractService: {} }),
-}))
-vi.mock("../src/platform/session", () => ({
-  session: () => ({ requests: { setShortLink: h.setShortLink } }),
+  RequestStorage: { get: () => ({ setShortLink: h.setShortLink }) },
 }))
 vi.mock("@obsidion/sdk", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/sdk")>()),
@@ -49,7 +47,7 @@ vi.mock("../src/config/env", () => ({ getConfig: () => ({ network: "mainnet" }) 
 const { decodeLinkFragment } = await import("@obsidion/sdk")
 const { useShortRequestLink } = await import("../src/features/requests/shortRequestLink")
 const { getOperationStore } = await import("../src/features/operations/operations")
-const { operationEntry } = await import("./support/operations")
+const { operationEntry } = await import("../src/features/operations/operationEntries")
 
 /** The bell's record of the latest publish. */
 const lastPublish = () =>

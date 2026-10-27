@@ -71,8 +71,8 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/front-core")>()),
   useAztecContext: () => ({}),
 }))
-vi.mock("../src/features/notifications/ReorgMonitorMount", () => ({
-  ReorgMonitorMount: () => null,
+vi.mock("../src/features/notifications/NotificationsMount", () => ({
+  NotificationsMount: () => null,
 }))
 vi.mock("../src/ui/NotificationsPanel", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/ui/NotificationsPanel")>()),

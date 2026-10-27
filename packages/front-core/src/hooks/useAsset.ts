@@ -1,23 +1,23 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   AccountStorage,
   BalanceStorage,
   TokenStorage,
   WalletSyncCoordinator,
-  bootPriority,
+  balanceScope,
   getTokenServiceFactory,
 } from "src/core"
-import { createBalances } from "src/engine/balances"
-import { memoryStore, derived } from "src/engine/store"
-import { useStore } from "./useStore"
 import {
   TokenService,
+  Token,
   ContractService,
   ContractName,
   Network,
   type RegisteredTeeSigner,
 } from "@obsidion/sdk"
 import { type TeeSignerSource } from "src/tee/teeSignerSource"
+import { Asset } from "src/types"
+import { useCachedRecords } from "./useCachedRecords"
 import { useAccountContext, useAztecContext } from "src/contexts"
 import { resolveAssetConstants, type AssetConstants } from "src/utils"
 import { isWalletTokenSymbol } from "src/utils/tokenIdentity"
@@ -36,20 +36,6 @@ const withTimeout = <T>(promise: Promise<T>, ms: number, label: string): Promise
       timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)
     }),
   ])
-}
-
-// Corrects the active token row's stale decimals from its immutables: an upgraded install can hold
-// a 6-dp row for the current 18-dp address, which mis-scales amounts by 10^12. Keyed on the active
-// address only, so an old address keeps its real scale. Throws when the metadata or storage cannot
-// be read.
-async function refreshStalePersistedTokenDecimals(service: TokenService): Promise<void> {
-  const activeAddress = await ContractService.getInstance().getContractAddress("oxideToken")
-  if (!activeAddress) return
-  const addressStr = activeAddress.toString()
-  const liveDecimals = (await service.fetchTokenInformation()).decimals
-  const persisted = (await TokenStorage.get().getTokens()).find((t) => t.address === addressStr)
-  if (!persisted || persisted.decimals === liveDecimals) return
-  await TokenStorage.get().addToken({ ...persisted, decimals: liveDecimals })
 }
 
 export type UseAssetOptions = {
@@ -76,16 +62,24 @@ export const useAsset = (options?: UseAssetOptions) => {
   // placeholder for the pre-network render.
   const assetConstants = resolveAssetConstants(currentNetwork?.type ?? Network.SANDBOX)
 
-  // A store, so the balances read the token address the moment the service resolves.
-  const [tokenServiceStore] = useState(() => memoryStore<TokenService | null>(null))
-  const tokenService = useStore(tokenServiceStore)
-  // The service whose token row's decimals were checked against its immutables.
-  const [decimalsCheckedStore] = useState(() => memoryStore<TokenService | null>(null))
-  const decimalsCheckedFor = useStore(decimalsCheckedStore)
+  const [tokenService, setTokenService] = useState<TokenService | null>(null)
   const [teeSigner, setTeeSignerState] = useState<RegisteredTeeSigner | undefined>(undefined)
   // Last connect failure; cleared by the next successful connect so the UI can say why payments
   // are unavailable while the retry loop runs.
   const [teeSignerError, setTeeSignerError] = useState<Error | null>(null)
+  const [globalTokens, setGlobalTokens] = useState<Token[]>([])
+
+  // Read through a nullable accessor: `tokenAddress` throws before the address
+  // resolves, and optional chaining does not guard a throwing getter.
+  const activeTokenAddress = useMemo(
+    () => tokenService?.tokenAddressOrNull?.toString() ?? null,
+    [tokenService],
+  )
+
+  const [assets, setAssets] = useState<Asset[] | null>(null)
+  // When each token's balance was last written, by lowercased address, zero balances included.
+  const [balanceReadAt, setBalanceReadAt] = useState<Record<string, number | undefined>>({})
+  const [assetsLoading, setAssetsLoading] = useState(false)
 
   // Bumped when TokenService init fails so the effect below retries —
   // otherwise a rejected `TokenService.create` leaves `tokenService` null
@@ -94,32 +88,76 @@ export const useAsset = (options?: UseAssetOptions) => {
   const [tokenInitRetryTick, setTokenInitRetryTick] = useState(0)
   const retryAttemptRef = useRef(0)
 
-  // A session's balances: the coordinator's writes to BalanceStorage, from cache on cold start,
-  // named by the stored account and token rows. Every write to those lands in their stores.
-  const network = currentNetwork?.type ?? null
-  const balances = useMemo(
-    () =>
-      createBalances(
-        BalanceStorage.get(),
-        {
-          network,
-          account: AccountStorage.get().current,
-          tokens: TokenStorage.get().rows,
-          // Read through a nullable accessor: `tokenAddress` throws before the address resolves.
-          active: derived(
-            [tokenServiceStore],
-            (service) => service?.tokenAddressOrNull?.toString() ?? null,
-          ),
-          // No balance counts as live until the service has checked the row's decimals.
-          decimalsPending: derived(
-            [tokenServiceStore, decimalsCheckedStore],
-            (service, checked) => !!service && service !== checked,
-          ),
-        },
-        bootPriority.balanceSync,
-      ),
-    [network, tokenServiceStore, decimalsCheckedStore],
-  )
+  // True once a balance read from THIS session has landed in the store. Cache-hydrated rows from
+  // an earlier session deliberately do not set it: consumers gate balance-dependent UI (overspend
+  // checks) on live-confirmed values only.
+  const [liveAssetsLoaded, setLiveAssetsLoaded] = useState(false)
+  const sessionStartRef = useRef(Date.now())
+
+  // Bumped once the init effect has persisted the wallet token's row, so the derivation below
+  // re-reads TokenStorage (web never populates it otherwise).
+  const [tokenRowsVersion, setTokenRowsVersion] = useState(0)
+
+  // The token service has not yet confirmed the active token's persisted decimals against its
+  // immutables. No balance counts as live meanwhile.
+  const [decimalsPending, setDecimalsPending] = useState(false)
+
+  // Store-driven assets: BalanceStorage is written by WalletSyncCoordinator on every synced tick
+  // and hydrates from cache on cold start, so a returning user sees their previous balance while
+  // wallet/PXE init and the first tick are in flight. The hook only projects the store.
+  const balanceStorage = useMemo(() => BalanceStorage.get(), [])
+  const { records: cachedBalances, hydrated: balancesHydrated } = useCachedRecords(balanceStorage)
+
+  useEffect(() => {
+    if (!balancesHydrated || !currentNetwork) return
+    let cancelled = false
+    void (async () => {
+      const account = await AccountStorage.get().getAccount()
+      if (!account || cancelled) return
+      const scope = balanceScope(currentNetwork.type, account.completeAddress)
+      const balances: { [key: string]: bigint } = {}
+      const readAt: Record<string, number | undefined> = {}
+      let live = false
+      for (const record of cachedBalances) {
+        if (record.scope !== scope) continue
+        try {
+          balances[record.tokenAddress] = BigInt(record.balance)
+          readAt[record.tokenAddress.toLowerCase()] = record.readAt ?? record.updatedAt
+        } catch {
+          continue // corrupt record — skip rather than poison the whole projection
+        }
+        if ((record.updatedAt ?? 0) >= sessionStartRef.current) live = true
+      }
+      // Nothing known for this scope shows loading, not a fabricated $0 — and never the previous
+      // scope's balance after an account or network switch.
+      const tokens = Object.keys(balances).length ? await TokenStorage.get().getTokens() : []
+      if (cancelled) return
+      // Set beside the assets, so a figure and its read time land in one render.
+      setBalanceReadAt(readAt)
+      if (tokens.length === 0) {
+        setAssets(null)
+        setLiveAssetsLoaded(false)
+        return
+      }
+      setAssets(
+        tokens
+          .map((token) => createAssetWithBalance(token, balances))
+          .filter((asset) => asset.balance > 0)
+          .sort((a, b) => a.symbol.localeCompare(b.symbol)),
+      )
+      setLiveAssetsLoaded(live && !decimalsPending)
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [
+    balancesHydrated,
+    cachedBalances,
+    currentNetwork,
+    obsidionAccount,
+    tokenRowsVersion,
+    decimalsPending,
+  ])
 
   // Initialize services and persist the wallet token's row
   useEffect(() => {
@@ -178,7 +216,8 @@ export const useAsset = (options?: UseAssetOptions) => {
         })
       }
       // Published once the rows exist: the decimals repair it starts checks the row this loop writes.
-      tokenServiceStore.set(newTokenService)
+      setTokenService(newTokenService)
+      if (!cancelled) setTokenRowsVersion((v) => v + 1)
     }
 
     initializeTokenService()
@@ -197,8 +236,6 @@ export const useAsset = (options?: UseAssetOptions) => {
       cancelled = true
       if (retryTimer) clearTimeout(retryTimer)
     }
-    // Options and the network's constants are fixed for the provider's life.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [obsidionWallet, tokenService, obsidionAccount, tokenInitRetryTick])
 
   // Connect the TEE signer in the background, with no account behind it: a visitor cashing a paylink
@@ -283,16 +320,77 @@ export const useAsset = (options?: UseAssetOptions) => {
     return () => tokenService.setTeeSigner(undefined)
   }, [tokenService, teeSigner])
 
-  // The rows render without waiting on the token's metadata read; a repaired row lands in the token
-  // rows' store. A failed read retries with the init effect's backoff.
+  // Keep track of all tokens
   useEffect(() => {
+    const loadGlobalTokens = async () => {
+      if (!tokenService) return
+
+      // Get all registered tokens
+      const allTokens = new Set<string>()
+
+      // Get all tokens from TokenStorage
+      const tokens = await TokenStorage.get().getTokens()
+
+      // Add all tokens to the set
+      tokens.forEach((token) => {
+        allTokens.add(JSON.stringify(token))
+      })
+
+      const processedTokens = Array.from(allTokens).map((tokenStr) => {
+        const token = JSON.parse(tokenStr)
+        const constAssetParams = assetConstants[token.symbol as keyof AssetConstants]
+        return {
+          // Token's own decimals win, matching createAssetWithBalance so effective
+          // decimals don't depend on which path built the asset. The active token's
+          // persisted decimals are refreshed to its immutables' decimals on init (see
+          // refreshStalePersistedTokenDecimals); an old-address record keeps its real (possibly 6-dp) scale.
+          ...constAssetParams,
+          ...token,
+        }
+      })
+      setGlobalTokens(processedTokens)
+    }
+    loadGlobalTokens()
+  }, [tokenService])
+
+  // Correct stale persisted DECIMALS for the ACTIVE token, and say whether it
+  // rewrote the row. An upgraded install can carry a pre-cutover row against the
+  // current token address with 6-dp decimals (it touched staging on a 6-dp
+  // build); left alone that wins in createAssetWithBalance and mis-scales
+  // paylink escrow amounts by 10^12. Scoped to the active oxideToken address
+  // ONLY — a symbol/name match would wrongly rewrite a legitimately different
+  // old-address record. Throws when the metadata or storage cannot be read.
+  //
+  // Display identity is deliberately NOT repaired here. createAssetWithBalance
+  // takes name/symbol/logo from the asset constant, so a row naming an older
+  // token already renders correctly, and rewriting it would turn a display
+  // change into a silent migration of stored records. Decimals are different:
+  // they are arithmetic, not presentation, and the row's value legitimately
+  // wins downstream, so a wrong one has to be corrected at the source.
+  const refreshStalePersistedTokenDecimals = async (service: TokenService): Promise<boolean> => {
+    const activeAddress = await ContractService.getInstance().getContractAddress("oxideToken")
+    if (!activeAddress) return false
+    const addressStr = activeAddress.toString()
+    const liveDecimals = (await service.fetchTokenInformation()).decimals
+    const persisted = (await TokenStorage.get().getTokens()).find((t) => t.address === addressStr)
+    if (!persisted || persisted.decimals === liveDecimals) return false
+    await TokenStorage.get().addToken({ ...persisted, decimals: liveDecimals })
+    return true
+  }
+
+  // The rows render without waiting on the token's metadata read; a repaired row re-renders. A
+  // failed read retries with the init effect's backoff.
+  useEffect(() => {
+    setDecimalsPending(Boolean(tokenService))
     if (!tokenService) return
     let active = true
     let retryTimer: ReturnType<typeof setTimeout> | undefined
     const repair = (attempt: number) =>
       refreshStalePersistedTokenDecimals(tokenService).then(
-        () => {
-          if (active) decimalsCheckedStore.set(tokenService)
+        (repaired) => {
+          if (!active) return
+          if (repaired) setTokenRowsVersion((v) => v + 1)
+          setDecimalsPending(false)
         },
         (error) => {
           if (!active) return
@@ -309,11 +407,71 @@ export const useAsset = (options?: UseAssetOptions) => {
       active = false
       clearTimeout(retryTimer)
     }
-  }, [tokenService, decimalsCheckedStore])
+  }, [tokenService])
+
+  /** Sync the chain view now; the balance lands through the store projection above. */
+  const loadAssets = useCallback(async () => {
+    setAssetsLoading(true)
+    try {
+      await WalletSyncCoordinator.refresh()
+    } finally {
+      setAssetsLoading(false)
+    }
+  }, [])
+
+  const createAssetWithBalance = (token: Token, balances: { [key: string]: bigint }) => {
+    const constAssetParams = matchTokenToAssetConstant(token)
+    const balanceAtomic = balances[token.address] ?? 0n
+    // A token's own decimals win over the network-derived constants, so each
+    // token renders at its real scale. The active token's persisted decimals are
+    // refreshed to its immutables' decimals on init (see
+    // refreshStalePersistedTokenDecimals), which re-renders a stale row once
+    // repaired.
+    const decimals = token.decimals ?? constAssetParams?.decimals ?? 0
+    const balance = decimals > 0 ? Number(balanceAtomic) / 10 ** decimals : Number(balanceAtomic)
+
+    return {
+      ...constAssetParams,
+      ...token,
+      // Display identity comes from the constant, never from the row. A row
+      // written under an older token name would otherwise keep that name — and
+      // its logo — on screen. Address, decimals and balances stay the row's:
+      // they identify and scale it, and the spread order above is what lets a
+      // token's own decimals win.
+      name: constAssetParams.name,
+      symbol: constAssetParams.symbol,
+      logo: constAssetParams.logo,
+      balance,
+      balanceAtomic,
+      publicBalance: 0,
+      privateBalance: balance,
+    }
+  }
+
+  // Helper function to match tokens to asset constants by symbol and name
+  const matchTokenToAssetConstant = (token: Token) => {
+    // 1. First try direct symbol match (case-sensitive)
+    let assetConstant = assetConstants[token.symbol as keyof AssetConstants]
+
+    if (assetConstant) return assetConstant
+
+    // 2. Try case-insensitive symbol match
+    const symbolUpper = token.symbol.toUpperCase()
+    for (const key in assetConstants) {
+      if (key.toUpperCase() === symbolUpper) {
+        return assetConstants[key as keyof AssetConstants]
+      }
+    }
+
+    // 3. Default to unknown if no matches found
+    return assetConstants.ANY
+  }
 
   return {
     // services
     tokenService,
+    /** The live token contract address, or null before it resolves. */
+    activeTokenAddress,
     /**
      * Connected TEE signer or `undefined` while loading / on connect
      * failure. Consumers that need to drive TEE-signed flows from a
@@ -331,10 +489,16 @@ export const useAsset = (options?: UseAssetOptions) => {
      */
     teeSignerError,
 
-    balances,
-    /** The active token row's decimals were checked against its immutables. */
-    decimalsChecked: !!tokenService && decimalsCheckedFor === tokenService,
-    /** Sync the chain view now; the balance lands through `balances`. */
-    loadAssets: WalletSyncCoordinator.refresh,
+    // assets
+    assets,
+    setAssets,
+    loadAssets,
+    assetsLoading,
+    /** True once a balance read from this session landed in the store; false while assets
+     *  hold only cache-hydrated values. Balance-gated UI keys off this. */
+    liveAssetsLoaded,
+    /** When each balance was last written, by lowercased token address; funds on their way count until then. */
+    balanceReadAt,
+    globalTokens,
   }
 }

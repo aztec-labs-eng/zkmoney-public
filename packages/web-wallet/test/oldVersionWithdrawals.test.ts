@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 
 const m = vi.hoisted(() => ({
   records: new Map<string, unknown>(),
+  upsert: vi.fn(),
   noted: vi.fn(),
   /** The refund nullifier each L1 transaction ran. */
   ran: new Map<string, string>(),
@@ -21,6 +22,7 @@ vi.mock("@obsidion/front-core", () => ({
       return next
     }
   },
+  AppNotificationStore: { get: () => ({ load: async () => {}, upsert: m.upsert }) },
   useCachedRecords: () => ({ records: [], hydrated: true }),
   SWAP_STUCK_THRESHOLD_MS: 5 * 60 * 1000,
 }))
@@ -68,16 +70,18 @@ const record = {
 beforeEach(() => {
   m.records = new Map([["w1", record]])
   m.ran = new Map()
+  m.upsert.mockReset()
   m.noted.mockReset()
 })
 
 describe("following a withdrawal of old-version funds", () => {
-  it("stays pending until the portal ran every refund", async () => {
+  it("stays pending until the portal ran every refund, then notifies with the total", async () => {
     m.ran.set("0xaaa", "a")
     expect(await settleOldVersionWithdrawal("w1")).toMatchObject({
       phase: "sending",
       refunds: [{ l1TxHash: "0xaaa" }, { ids: ["b", "c"] }],
     })
+    expect(m.upsert).not.toHaveBeenCalled()
     // The Savings moves whose deposits the refund returned end as recovered.
     expect(m.noted).toHaveBeenCalledWith([{ leafIndex: "7", amount: "1" }], TO, "0xaaa")
 
@@ -86,6 +90,14 @@ describe("following a withdrawal of old-version funds", () => {
       phase: "done",
       refunds: [{ l1TxHash: "0xaaa" }, { l1TxHash: "0xbbb" }],
     })
+    expect(m.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Withdrawn to Ethereum",
+        description: "$29.30 to 0xf1f1f…1f1F1",
+        pending: false,
+        target: { type: "withdraw.oldVersion", id: "w1" },
+      }),
+    )
   })
 
   it("ends a withdrawal whose broadcasts L2 dropped as failed, freeing its funds", async () => {
@@ -94,6 +106,9 @@ describe("following a withdrawal of old-version funds", () => {
       phase: "failed",
       refunds: [{ dropped: true }, { dropped: true }],
     })
+    expect(m.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "Withdrawal didn't go through", severity: "error" }),
+    )
   })
 
   it("keeps a refund the run adds during a check, and stays pending until the run sent its last", async () => {
@@ -169,6 +184,9 @@ describe("processing an old-version withdrawal manually", () => {
       refunds: [{ l1TxHash: "0xaaa" }, { l1TxHash: "0xself", dropped: undefined }],
     })
     expect(m.noted).toHaveBeenCalledWith([], TO, "0xself")
+    expect(m.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "Withdrawn to Ethereum", pending: false }),
+    )
   })
 
   it("keeps a refund the user sent counted when a check that read L2 before it lands after", async () => {

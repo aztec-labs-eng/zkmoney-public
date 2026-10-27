@@ -9,7 +9,8 @@ import type { OxideEnvTuple, SourceGenerationSession } from "@obsidion/core/type
 import {
   creatorLinksFromRows,
   markPaylinkMigrated,
-  storedActivity,
+  TRANSACTIONS_STORAGE_KEY,
+  TransactionStorage,
   type PaylinkTransaction,
   type Transaction,
 } from "@obsidion/front-core"
@@ -27,7 +28,6 @@ import { getConfig } from "../../config/env"
 import { SessionChangedError } from "../../platform/auth/sessionErrors"
 import { getActiveStorageId, withSessionLock } from "../../platform/storage/activeStorage"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
-import { session } from "../../platform/session"
 import { isHistoricPaylinkRow } from "./historicResiduals"
 
 /** The escrows of the source's links, registered in the source chain's wallet. */
@@ -72,14 +72,14 @@ export async function markRefundedSourceLinks(o: {
     paylinkRows: () =>
       sourceLinkRows({
         ...o,
-        rows: async () => [...session().activity.rows.get()],
+        rows: async () => (await TransactionStorage.get(webStorage).getTransactions()) ?? [],
       }),
   })
   if (!refunded.length) return
   await withSessionLock(async () => {
     if (getActiveStorageId() !== o.storageId) throw new SessionChangedError()
-    const { activity } = session()
-    for (const txHash of refunded) markPaylinkMigrated(txHash, activity)
+    const transactions = TransactionStorage.get(webStorage)
+    for (const txHash of refunded) await markPaylinkMigrated(txHash, transactions)
   })
 }
 
@@ -120,10 +120,18 @@ export async function sourceLinkRows(o: {
 }
 
 /**
- * This account's rows here and in every other rollup's database. A database that can't be read
- * fails the read, so a hint is never silently missing.
+ * This account's rows here and in every other rollup's database. A database that can't be read fails
+ * the read, so a hint is never silently missing; a malformed copy holds nothing to recover.
  */
 async function browserRows(): Promise<Transaction[]> {
-  const others = await webStorage.readOtherDatabases(storedActivity)
-  return [...session().activity.rows.get(), ...(others.flat() as Transaction[])]
+  const rows = [...((await TransactionStorage.get(webStorage).getTransactions()) ?? [])]
+  for (const raw of await webStorage.getItemFromOtherDatabases(TRANSACTIONS_STORAGE_KEY)) {
+    try {
+      const parsed: unknown = JSON.parse(raw)
+      if (Array.isArray(parsed)) rows.push(...(parsed as Transaction[]))
+    } catch {
+      // Malformed: nothing to recover from it.
+    }
+  }
+  return rows
 }

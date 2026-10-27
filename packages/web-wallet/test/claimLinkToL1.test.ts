@@ -3,13 +3,12 @@
  * withdrawal: the burn pays the planned escrow, the sdk pairs its swap with the release in the same
  * tx, and the record carries the escrow args plus the confirm-time quote the detail sheet renders.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 import { formatUnits, parseUnits, type Address, type Hex } from "viem"
 import { DEFAULT_CONTRACTS, WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
 import { ProvingStage, provingProgress } from "@obsidion/proving-progress"
 import { TxStatus } from "@aztec-labs/stdlib/tx"
 import { LIMIT, LIMIT_USD } from "./support/publicLimit"
-import { sendLikeTheWallet, watchWalletDb, type WalletSendOptions } from "./support/submitBoundary"
 
 const RELAYER_TIP = 5n * 10n ** 18n
 const SWAP_COMMIT = { relayerTip: RELAYER_TIP, amountOut: 1n, decimals: 18 }
@@ -94,19 +93,10 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
 
 // The burn is the sdk's; here it only reports a mined tx. planSwapOnWithdraw stays real.
 const claimToL1 = vi.fn(async () => ({ txHash: L2_TX, blockNumber: 42 }))
-// The link's other sends, as the boundary tests below drive them.
-const sends = {
-  createSponsoredPaylink: vi.fn(),
-  claimSponsoredPaylink: vi.fn(),
-  refundSponsoredPaylink: vi.fn(),
-}
 vi.mock("@obsidion/sdk", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/sdk")>()),
   PaylinkService: class {
     claimSponsoredPaylinkToL1 = claimToL1
-    createSponsoredPaylink = sends.createSponsoredPaylink
-    claimSponsoredPaylink = sends.claimSponsoredPaylink
-    refundSponsoredPaylink = sends.refundSponsoredPaylink
   },
   decodePaylinkInline: () => linkParams,
   readPaylinkEscrowNote: async () => ({
@@ -121,10 +111,7 @@ vi.mock("../src/features/withdraw/burnTiming", async (importOriginal) => ({
   recordBurnDuration,
 }))
 
-const { claimLinkToL1, claimSponsoredLink, createSponsoredLink, recoverSponsoredLink } =
-  await import("../src/features/paylink/sponsoredPaylink")
-const { TxInFlightError } = await import("@obsidion/front-core")
-const { activeAccount, closeSession, openSession } = await import("../src/platform/session")
+const { claimLinkToL1 } = await import("../src/features/paylink/sponsoredPaylink")
 const { getWithdrawalStore } = await import("../src/features/withdraw/withdrawGateway")
 const { getOperationStore } = await import("../src/features/operations/operations")
 const { reportPaylinkClaims } = await import("../src/features/paylink/paylinkClaimReport")
@@ -175,7 +162,8 @@ describe("claimLinkToL1", () => {
     localStorage.clear()
     await getWithdrawalStore().clearAll()
     claimToL1.mockImplementationOnce(async (...args: unknown[]) => {
-      await sendLikeTheWallet(args[4] as WalletSendOptions, L2_TX, () => {})
+      const { operationId } = args[4] as { operationId: string }
+      provingProgress.emitStageStart(ProvingStage.Mining, operationId, L2_TX)
       throw new Error("Receipt timed out")
     })
     const d = deps()
@@ -280,7 +268,8 @@ describe("claimLinkToL1", () => {
 
   it("leaves a burn that reached the node to the chain, record and operation both", async () => {
     claimToL1.mockImplementationOnce(async (...args: unknown[]) => {
-      await sendLikeTheWallet(args[4] as WalletSendOptions, L2_TX, () => {})
+      const { operationId } = args[4] as { operationId: string }
+      provingProgress.emitStageStart(ProvingStage.Mining, operationId, L2_TX)
       throw new Error("Receipt timed out")
     })
     const d = deps()
@@ -332,7 +321,8 @@ describe("claimLinkToL1", () => {
       endTime: 2,
     })
     claimToL1.mockImplementationOnce(async (...args: unknown[]) => {
-      await sendLikeTheWallet(args[4] as WalletSendOptions, L2_TX, () => {})
+      const { operationId } = args[4] as { operationId: string }
+      provingProgress.emitStageStart(ProvingStage.Mining, operationId, L2_TX)
       throw new Error(
         `Nullifier conflict with existing tx ${EARLIER}. Minimum required fee: 1, got: 0`,
       )
@@ -494,88 +484,5 @@ describe("claimLinkToL1", () => {
       ),
     ).rejects.toThrow(/swapEscrowFactoryV2/)
     expect(getWithdrawalStore().list()).toHaveLength(0)
-  })
-})
-
-// Every send of a link saves its hash before the node takes it; one it cannot save is never sent.
-describe("a link's submit boundary", () => {
-  const node = {
-    getBlockData: async () => ({ header: { globalVariables: { timestamp: 1000n } } }),
-    getTxReceipt: vi.fn(async () => ({ status: TxStatus.PENDING })),
-  }
-  const run = (send: () => Promise<unknown>) => send().catch((e: unknown) => e)
-  const flows = [
-    {
-      name: "a create",
-      key: "activity",
-      sdk: sends.createSponsoredPaylink,
-      at: 2,
-      result: L2_TX,
-      send: () => createSponsoredLink(on(), "25"),
-    },
-    {
-      name: "a claim",
-      key: "activity",
-      sdk: sends.claimSponsoredPaylink,
-      at: 2,
-      result: L2_TX,
-      send: () => claimSponsoredLink(on(), "frag"),
-    },
-    {
-      name: "a recovery",
-      key: "activity",
-      sdk: sends.refundSponsoredPaylink,
-      at: 2,
-      result: L2_TX,
-      send: () => recoverSponsoredLink(on(), "frag"),
-    },
-    {
-      name: "a claim to Ethereum",
-      key: "withdrawals",
-      sdk: claimToL1,
-      at: 4,
-      result: { txHash: L2_TX, blockNumber: 42 },
-      send: () => claimLinkToL1(on(), "frag-direct", RECIPIENT, screener, vi.fn()),
-    },
-  ]
-  function on() {
-    const d = deps()
-    ;(d.wallet as unknown as { node: object }).node = node
-    return d
-  }
-
-  beforeEach(async () => {
-    localStorage.clear()
-    await getWithdrawalStore().clearAll()
-    openSession(activeAccount())
-  })
-  afterEach(closeSession)
-
-  it.each(flows)("$name holds its hash when the node takes it", async (flow) => {
-    const { key, sdk, at, result, send } = flow
-    const db = watchWalletDb()
-    let heldAtNode: boolean | undefined
-    sdk.mockImplementationOnce(async (...args: unknown[]) => {
-      await sendLikeTheWallet(args[at] as WalletSendOptions, L2_TX, () => {
-        heldAtNode = db.holds(key, L2_TX)
-      })
-      return result as never
-    })
-    await run(send)
-    expect(heldAtNode).toBe(true)
-  })
-
-  it.each(flows)("$name that cannot save its hash is not sent", async (flow) => {
-    const { key, sdk, at, result, send } = flow
-    watchWalletDb().refuse(key, L2_TX)
-    const sent = vi.fn()
-    sdk.mockImplementationOnce(async (...args: unknown[]) => {
-      await sendLikeTheWallet(args[at] as WalletSendOptions, L2_TX, sent)
-      return result as never
-    })
-    const err = await run(send)
-    expect(sent).not.toHaveBeenCalled()
-    expect(err).toMatchObject({ message: "quota exceeded" })
-    expect(err).not.toBeInstanceOf(TxInFlightError)
   })
 })

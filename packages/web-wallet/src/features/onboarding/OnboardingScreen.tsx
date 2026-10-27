@@ -86,7 +86,7 @@ import {
   loadWalletIdentity,
   saveWalletIdentity,
 } from "../identity/walletIdentity"
-import { markNewAccountHere } from "../migration/upgradeLock"
+import { markCreatedHere } from "../migration/upgradeLock"
 import {
   clearClaimStash,
   clearTicketSignup,
@@ -210,7 +210,7 @@ import { ManualSweepAction } from "./RegistrationDepositDetailModal"
 import { useSipaProcessing } from "../deposit/sipaProcessing"
 import { useDepositTokens } from "../deposit/loadDepositFacts"
 import { heldDepositLine } from "../deposit/processingCopy"
-import { canManualRegistrationSweep } from "@obsidion/front-core"
+import { canManualRegistrationSweep } from "./registrationSweep"
 import { InvitationStep, type InviteNotice } from "./steps/InvitationStep"
 import { ClaimTagModal } from "./steps/ClaimTagModal"
 import { ChooseTagStep } from "./steps/ChooseTagStep"
@@ -1454,7 +1454,7 @@ export function OnboardingScreen({
     }
     setIdentityRetry(undefined)
     // An account created here is new on this version: nothing older to upgrade.
-    if (createdRef.current === addressRef.current) markNewAccountHere(addressRef.current!)
+    if (createdRef.current === addressRef.current) markCreatedHere(addressRef.current!)
     if (rec?.phase === "confirmed") clearNameGrant(effectiveHandle)
     // Home shows what the account still owes, the deposit included.
     enterWallet()

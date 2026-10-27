@@ -15,9 +15,9 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
   // The burn in these runs is never sent: nothing to stamp, nothing to recover.
   trackWithdrawalSubmission: () => ({
     txHash: undefined,
-    stamp: async () => {},
     recover: async () => null,
-    stop: () => {},
+    saved: () => false,
+    stop: async () => {},
   }),
 }))
 vi.mock("../src/config/env", async (importOriginal) => ({

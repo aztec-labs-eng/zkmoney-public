@@ -1,11 +1,11 @@
 import { beforeEach, describe, expect, it } from "vitest"
 import type { Address, Hex } from "viem"
+import { PendingRegistrationStore, type PendingRegistrationRecord } from "@obsidion/front-core"
 import {
-  PendingRegistrationStore,
+  assertScreened,
   canManualRegistrationSweep,
-  type PendingRegistrationRecord,
-} from "@obsidion/front-core"
-import { assertScreened, registrationRecordForSipa } from "../src/features/onboarding/registrationSweep"
+  registrationRecordForSipa,
+} from "../src/features/onboarding/registrationSweep"
 import {
   archiveReplacedRegistration,
   getPendingStore,

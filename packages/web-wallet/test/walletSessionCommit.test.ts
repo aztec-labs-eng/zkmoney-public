@@ -1,14 +1,7 @@
 import type { Fr } from "@aztec-labs/aztec.js/fields"
-import { afterEach, describe, expect, it } from "vitest"
-import { createMemoryKv } from "@obsidion/front-core"
+import { describe, expect, it } from "vitest"
 import { signOut } from "../src/features/identity/signOut"
 import { WebAlphaAuthService } from "../src/platform/auth/WebAlphaAuthService"
-import {
-  closeSession,
-  followSavedSession,
-  openSession,
-  openedSession,
-} from "../src/platform/session"
 import {
   getActiveStorageId,
   readCommittedSession,
@@ -21,8 +14,6 @@ import { testWalletDbs } from "./support/fakeWalletDb"
 const dbs = testWalletDbs()
 const ADDR = "0xacct"
 
-afterEach(closeSession)
-
 function gate() {
   let open!: () => void
   let fail!: (e: unknown) => void
@@ -33,17 +24,11 @@ function gate() {
   return { promise, open, fail }
 }
 
-async function setup(onSessionSaved?: () => void) {
+async function setup() {
   const ceremony = new FakePasskeyCeremony({ route: "local" })
   const storage = new MemoryStorage()
   const make = () =>
-    new WebAlphaAuthService({
-      storage,
-      rpId: "localhost",
-      ceremony,
-      posture: () => "phone",
-      onSessionSaved,
-    })
+    new WebAlphaAuthService({ storage, rpId: "localhost", ceremony, posture: () => "phone" })
   const service = make()
   const created = await service.createPasskey("@alice")
   await service.recordRecoveryMetadata({
@@ -152,9 +137,8 @@ describe("session commit against the wallet database", () => {
     expect(getActiveStorageId()).toBeNull()
   })
 
-  it("removes what it saved when its attempt is cancelled mid-save, and opens no session", async () => {
-    const { service, input } = await setup(followSavedSession)
-    const anonymous = openSession({ id: null, prefix: "" }, createMemoryKv())
+  it("removes what it saved when its attempt is cancelled mid-save", async () => {
+    const { service, input } = await setup()
     let live = true
     const held = holdNextWrite()
     const commit = service.commitSecret(input, () => live)
@@ -164,7 +148,6 @@ describe("session commit against the wallet database", () => {
     expect(await commit).toBe(false)
     expect(await service.getSecretKey()).toBeUndefined()
     expect(readCommittedSession()).toEqual({ storageId: null, credentialId: null, cache: null })
-    expect(openedSession.get()).toBe(anonymous)
   })
 
   it("puts back the session a cancelled switch replaced", async () => {

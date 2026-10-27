@@ -1,8 +1,10 @@
 // Puts the bundle of this checkout in dist/: the pinned wallet commit, this checkout's protocol and
 // the hash of this checkout's bundle inputs (`assetName` in check.mjs). It keeps dist/ when dist/
-// already holds that bundle, else it downloads it from the source-generations release through the
-// GitHub REST API. Exits 2 only when the release or its asset is absent. Any other failure (no
-// token, auth, network) exits 1.
+// already holds that bundle, else it downloads it through the GitHub REST API from the
+// source-generations release, or from the release whose tag is the asset name without `.tar.zst`.
+// A repository with immutable releases cannot add an asset to a published release, so it publishes
+// each bundle in its own release. Exits 2 only when neither release has the asset. Any other
+// failure (no token, auth, network) exits 1.
 //
 // Env: GH_TOKEN or GITHUB_TOKEN. GH_REPO or GITHUB_REPOSITORY names the repository, else the
 // origin remote of the checkout does.
@@ -13,6 +15,7 @@ import path from "node:path"
 import { assetName, dist, inputsHash, protocol, readBundle } from "./check.mjs"
 
 const RELEASE = "source-generations"
+const BUNDLE_RELEASE = assetName.replace(/\.tar\.zst$/, "")
 const API = "https://api.github.com"
 const pin = JSON.parse(
   readFileSync(new URL("../source.json", import.meta.url), "utf8"),
@@ -64,25 +67,31 @@ const request = async (url, accept = "application/vnd.github+json") => {
   return response
 }
 
-const release = await request(`${API}/repos/${repo}/releases/tags/${RELEASE}`)
-if (release.status === 404) {
+const asset = assetName
+
+// The asset in the release with this tag, or undefined when the release or the asset is absent.
+const releaseAsset = async (tag) => {
+  const release = await request(`${API}/repos/${repo}/releases/tags/${tag}`)
+  if (release.status === 404) return undefined
+  const { id } = await release.json()
+  for (let page = 1; ; page++) {
+    const response = await request(
+      `${API}/repos/${repo}/releases/${id}/assets?per_page=100&page=${page}`,
+    )
+    if (response.status === 404) throw new Error(`The ${tag} release vanished while it was read`)
+    const assets = await response.json()
+    if (assets.length === 0) return undefined
+    const match = assets.find((entry) => entry.name === asset)
+    if (match) return match
+  }
+}
+
+const found = (await releaseAsset(RELEASE)) ?? (await releaseAsset(BUNDLE_RELEASE))
+if (!found) {
   // A token without access to the repository also gets 404, which is not an absent release.
   if ((await request(`${API}/repos/${repo}`)).status === 404)
     throw new Error(`${repo} is not readable with the given token`)
-  absent(`${repo} has no ${RELEASE} release`)
-}
-const { id } = await release.json()
-
-const asset = assetName
-let found
-for (let page = 1; !found; page++) {
-  const response = await request(
-    `${API}/repos/${repo}/releases/${id}/assets?per_page=100&page=${page}`,
-  )
-  if (response.status === 404) throw new Error(`The ${RELEASE} release vanished while it was read`)
-  const assets = await response.json()
-  if (assets.length === 0) absent(`The ${RELEASE} release has no ${asset}`)
-  found = assets.find((entry) => entry.name === asset)
+  absent(`${repo} has ${asset} in neither the ${RELEASE} release nor the ${BUNDLE_RELEASE} release`)
 }
 
 const download = await request(found.url, "application/octet-stream")

@@ -3,9 +3,17 @@
  * row offers — Cancel inside the refund window, Reclaim after expiry — across lifecycle flags, the
  * on-open status refresh, and whether the session's account is the row's creator.
  */
-import { describe, expect, it } from "vitest"
-import type { PaylinkStatusKind, PaylinkTransaction } from "@obsidion/front-core"
-import { creatorLinkAction, isOtherRollupLink, paylinkStatusIsUnspent } from "@obsidion/front-core"
+import { afterEach, describe, expect, it } from "vitest"
+import {
+  setActiveNetworkId,
+  type PaylinkStatusKind,
+  type PaylinkTransaction,
+} from "@obsidion/front-core"
+import {
+  creatorLinkAction,
+  isOtherRollupLink,
+  paylinkStatusIsUnspent,
+} from "../src/features/paylink/creatorLinkActions"
 
 const CREATOR = `0x${"22".repeat(32)}`
 const OTHER = `0x${"33".repeat(32)}`
@@ -137,10 +145,13 @@ describe("creatorLinkAction", () => {
 })
 
 describe("isOtherRollupLink", () => {
+  afterEach(() => setActiveNetworkId(undefined))
+
   it("names a link stamped with another rollup, and nothing before the network is known", () => {
-    expect(isOtherRollupLink({ networkId: "0xOLD" }, undefined)).toBe(false)
-    expect(isOtherRollupLink({ networkId: "0xOLD" }, "0xNEW")).toBe(true)
-    expect(isOtherRollupLink({ networkId: "0xnew" }, "0xNEW")).toBe(false)
-    expect(isOtherRollupLink({}, "0xNEW")).toBe(false)
+    expect(isOtherRollupLink({ networkId: "0xOLD" })).toBe(false)
+    setActiveNetworkId("0xNEW")
+    expect(isOtherRollupLink({ networkId: "0xOLD" })).toBe(true)
+    expect(isOtherRollupLink({ networkId: "0xnew" })).toBe(false)
+    expect(isOtherRollupLink({})).toBe(false)
   })
 })

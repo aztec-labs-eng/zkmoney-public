@@ -2,11 +2,11 @@ import {
   ContactStorage,
   normalizeTag,
   TagValidationError,
-  validateAddress,
+  TransactionStorage,
   type Contact,
   type Transaction,
 } from "@obsidion/front-core"
-import { session } from "../../platform/session"
+import { webStorage } from "../../platform/storage/WebStorageAdapter"
 import { loadWalletIdentity } from "../identity/walletIdentity"
 import { addContact } from "./useInlineContactSearch"
 import { resolveTagForCommit, resolveTagViaRegistry } from "./registryResolution"
@@ -17,11 +17,6 @@ import { resolveTagForCommit, resolveTagViaRegistry } from "./registryResolution
  */
 export function unsavedContact(tag: string, l2Address: string): Contact {
   return { name: tag, tag, address: l2Address, addressKind: "aztec-l2" }
-}
-
-/** A sender known only by its L2 address. Its page shows every transfer from that address. */
-export function unknownSender(l2Address: string): Contact {
-  return { name: "Unknown sender", address: l2Address, addressKind: "aztec-l2" }
 }
 
 /** The L2 address the user's own transfers with this tag recorded, if any. */
@@ -40,12 +35,10 @@ export function pastAddressOf(
 }
 
 /**
- * The unsaved contact a route names, or null when it is neither an L2 address nor someone else's
- * registered tag. A tag still on an older zk.money opens at the address its past transfers used,
- * so its history shows.
+ * The unsaved contact a route names, or null when it is not someone else's registered tag. A tag
+ * still on an older zk.money opens at the address its past transfers used, so its history shows.
  */
 export async function lookUpUnsavedContact(idOrTag: string): Promise<Contact | null> {
-  if (validateAddress(idOrTag)) return unknownSender(idOrTag)
   const tag = normalizeTag(idOrTag)
   const own = loadWalletIdentity()?.handle
   if (!tag || (own && normalizeTag(own) === tag)) return null
@@ -53,9 +46,10 @@ export async function lookUpUnsavedContact(idOrTag: string): Promise<Contact | n
     const resolution = await resolveTagViaRegistry(tag)
     if (resolution.status === "resolved") return unsavedContact(tag, resolution.l2Address)
     if (resolution.status === "notFound") return null
-    const { activity } = session()
-    await activity.ready
-    return unsavedContact(tag, pastAddressOf(tag, activity.rows.get()) ?? "")
+    const transactions = await TransactionStorage.get(webStorage)
+      .getTransactions()
+      .catch(() => [])
+    return unsavedContact(tag, pastAddressOf(tag, transactions) ?? "")
   } catch (e) {
     if (e instanceof TagValidationError) return null
     throw e

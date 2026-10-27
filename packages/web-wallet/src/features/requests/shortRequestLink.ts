@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useReducer, useState } from "react"
 import { NO_FROM } from "@aztec-labs/aztec.js/account"
 import type { AztecNode } from "@aztec-labs/aztec.js/node"
 import {
-  requestLinkOperationId,
+  RequestStorage,
   trackSubmission,
   TxInFlightError,
   useAccountContext,
@@ -26,6 +26,7 @@ import {
   shortLinksEnabled,
 } from "@obsidion/sdk"
 import { requestAmountLabel } from "../../ui/format"
+import { requestLinkOperationId } from "../operations/operationEntries"
 import { getOperationStore, runOperation } from "../operations/operations"
 import {
   claimSponsorContext,
@@ -34,7 +35,6 @@ import {
 } from "../onboarding/claimSponsorship"
 import { RAIL_REGISTERED } from "../onboarding/rails"
 import { shortRequestUrl } from "../shortLinks"
-import { session } from "../../platform/session"
 import type { ReceiveCode } from "../receive/receiveCode"
 
 /** What a short link publishes: a request, its full link and its amount. A Receive code is one. */
@@ -77,7 +77,7 @@ async function announceCode(
     ? await buildClaimSubscribePayload({ ...common, gate: subscribe.gate })
     : await buildClaimSponsorPayload(common)
   // The operation is this tx's only record, and holds its hash once sent.
-  const submission = trackSubmission(operationId)
+  const submission = trackSubmission(operationId, () => {})
   try {
     // The user tags the tx, so the FPC's refreshed SubscriptionNote stays discoverable.
     await wallet.sendTx(payload, {
@@ -92,7 +92,7 @@ async function announceCode(
     if (inFlight) throw new TxInFlightError(inFlight, e)
     throw e
   } finally {
-    submission.stop()
+    await submission.stop()
   }
   if (subscribe) noteSubscribed(account, fpcAddress, railId)
 }
@@ -193,7 +193,9 @@ export function useShortRequestLink(code: ShareableRequest | undefined) {
         changed()
         // Later shares of this request, from Activity too, use the short link.
         void Promise.resolve()
-          .then(() => session().requests.setShortLink(requestId, shortRequestUrl(current.key.seed)))
+          .then(() =>
+            RequestStorage.get().setShortLink(requestId, shortRequestUrl(current.key.seed)),
+          )
           .catch((e: unknown) => console.warn("[request] short link not saved:", e))
       },
       (e: unknown) => {

@@ -52,13 +52,13 @@ const { SELF_BROADCAST_RESWEEPABLE, buildDepositIntent, encodeSweep, MULTICALL3_
   await import("@obsidion/sdk")
 const {
   AlreadySweptError,
+  canSelfSweep,
   selfSweepDeposit,
   sweepChannel,
   sweepDeployArgs,
   sweepManifestFrom,
   SweepRefusedError,
 } = await import("../src/features/deposit/sipaSweep")
-const { canSelfSweep } = await import("@obsidion/front-core")
 const { encodeErrorResult, toFunctionSelector } = await import("viem")
 const { STUCK_SWEEP_MS } = await import("../src/features/deposit/sipaRecovery")
 

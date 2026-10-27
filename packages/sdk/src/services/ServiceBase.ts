@@ -263,7 +263,7 @@ export class ServiceBase extends EventEmitter {
    * `ProvingStage.Mining` start) is achieved by threading
    * `options.operationId` / `options.kind` into the merged `sendOptions`
    * — NOT by emitting a second Mining stage-start here, which would
-   * double-fire to subscribers (`trackSubmission`, UI proving feeds).
+   * double-fire to subscribers (TxLifecycleService, UI proving feeds).
    *
    * @param initFn Function that returns the interaction and any extra data { interaction, ...extra }
    * @param buildResult Function that transforms the result after tx is mined (can be async)

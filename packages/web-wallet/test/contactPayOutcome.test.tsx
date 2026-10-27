@@ -2,7 +2,6 @@ import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { MemoryRouter, Route, Routes } from "react-router-dom"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { balancesOf } from "./support/balances"
 
 const m = vi.hoisted(() => ({
   pay: vi.fn(),
@@ -14,14 +13,13 @@ const m = vi.hoisted(() => ({
 vi.mock("../src/features/operations/operations", async () =>
   (await import("./support/fakeOperations")).fakeOperationsModule(),
 )
-vi.mock("@obsidion/front-core", async () => ({
-  ...(await vi.importActual("@obsidion/front-core/dist/engine/balances.js")),
-  ...(await vi.importActual("@obsidion/front-core/dist/hooks/useStore.js")),
+vi.mock("@obsidion/front-core", () => ({
   ContactStorage: { get: () => ({ getEntries: async () => [] }) },
   useAccountContext: () => ({ obsidionAccount: {} }),
-  useAssetContext: () => ({ tokenService: {}, balances: balancesOf({ main: 100n * 10n ** 18n }) }),
+  useAssetContext: () => ({ tokenService: {} }),
   useAztecContext: () => ({ obsidionWallet: {} }),
   useContractServiceContext: () => ({ contractService: {} }),
+  useBalance: () => ({ walletBalance: "100", assetsLoaded: false }),
   TxInFlightError: class TxInFlightError extends Error {},
   INTERRUPTED_ERRORS: {},
 }))

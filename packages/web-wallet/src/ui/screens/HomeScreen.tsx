@@ -11,11 +11,8 @@ import {
   type SavingsPosition,
   savingsEarned,
   savingsEarningsPending,
-  selectHome,
-  selectHomeMain,
-  useAssetContext,
+  useBalance,
   useSavings,
-  useStore,
 } from "@obsidion/front-core"
 import { useLocation, useNavigate } from "react-router-dom"
 import { DepositArt } from "../DepositArt"
@@ -51,14 +48,12 @@ import { BalanceSkeleton } from "../Skeletons"
 import { customEndpointsLabel } from "../EndpointsModal"
 import { HomeActions, type HomeAction } from "./HomeActions"
 import { HomeTransactions } from "./HomeTransactions"
-import { ActivityDetailHost, useActivityHost } from "../activity/ActivityDetailHost"
-import { ActivityRow, SavingsActivityRow } from "../activity/ActivityRow"
+import { useActivityEntries } from "./useActivityEntries"
 import earnCoin from "../../assets/home/earn-coin.webp"
 import gift from "../../assets/home/gift.webp"
 import { UpgradeBanner } from "../../features/migration/UpgradeIntro"
 import { useOldVersionHoldings } from "../../features/migration/oldVersionBalance"
 import { OldVersionLeftoversNotice } from "../../features/migration/OldVersionLeftoversNotice"
-import { oldVersionLeftovers } from "../../features/migration/oldVersionLeftovers"
 import { useUpgradeLock } from "../../features/migration/upgradeLock"
 import { loadWalletIdentity } from "../../features/identity/walletIdentity"
 import iosApp from "../../assets/home/ios-app.webp"
@@ -240,19 +235,13 @@ function TickingUsd({
 }
 
 export function HomeScreen() {
-  return (
-    <ActivityDetailHost>
-      <Home />
-    </ActivityDetailHost>
-  )
-}
-
-function Home() {
   // Track registration deposits once their claim inputs are available.
   useEffect(() => {
-    const warn = (err: unknown) => console.warn("[home] registration deposits not tracked:", err)
-    const timer = setTimeout(() => void healRegistrationDeposits(getConfig()).catch(warn), 4_000)
-    void discoverRegistrationDeposits(getConfig()).catch(warn)
+    const timer = setTimeout(
+      () => void healRegistrationDeposits(getConfig()).catch(() => {}),
+      4_000,
+    )
+    void discoverRegistrationDeposits(getConfig()).catch(() => {})
     return () => clearTimeout(timer)
   }, [])
 
@@ -266,7 +255,9 @@ function Home() {
   // Share falls back to the clipboard where the Web Share API is absent, and says so.
   const { copied: inviteShared, share: shareInvite } = useLinkSharing(inviteUrl, "Invite friends")
 
-  const balance = useStore(useAssetContext().balances.view)
+  const { walletAsset, balanceKnown, balanceSyncing, balanceSyncProgress } = useBalance()
+  // Exact, so funds on their way fold into it without moving a cent.
+  const mainAtomic = walletAsset?.balanceAtomic ?? 0n
   // A first look at what old versions hold, with nothing recorded yet, could only show too little.
   const oldHoldings = useOldVersionHoldings()
   const address = loadWalletIdentity()?.address
@@ -291,22 +282,22 @@ function Home() {
   const onSavings = account === "savings"
   const apy = savings.position?.apy
   const apyLabel = apy === undefined ? undefined : `${apyPercent(apy)} APY`
-  const { feed } = useActivityHost()
-  const { arriving, upgradesLoaded, hydrated, requestsUnavailable } = feed
-  const { items: savingsItems, hydrated: savingsHydrated, ledger: savingsLedger } = feed.savings
-  // What old versions still hold that no balance here shows.
-  const oldVersionLeft = oldVersionLeftovers({
-    moves: savingsItems,
-    items: feed.items,
-    sharePrice: savings.position?.sharePrice,
-  })
-  // Funds on their way count where they land, flat: they neither tick nor earn until they arrive.
-  const { shown: mainShown, known: mainKnown } = selectHomeMain(balance, {
-    arriving: arriving.main,
-    lock: { checked: lock.checked, held: frozen, main: frozen ? lock.main : undefined },
-    oldVersionsPending: oldHoldings.pending,
+  const {
+    entries,
+    savingsEntries,
+    savingsHydrated,
+    savingsLedger,
+    arriving,
+    oldVersionLeft,
     upgradesLoaded,
-  })
+    hydrated,
+    requestsUnavailable,
+    detailModals,
+  } = useActivityEntries()
+  const mainKnown =
+    lock.checked && (frozen || (balanceKnown && !oldHoldings.pending && upgradesLoaded))
+  // Funds on their way count where they land, flat: they neither tick nor earn until they arrive.
+  const mainShown = frozen ? lock.main : mainAtomic + arriving.main
   const mainText = hideBal ? HIDDEN : mainShown === undefined ? "—" : usdAtomicFloor(mainShown)
   // The last read value; the ticking figures carry it to now in their own components.
   const estimate = useSavingsEstimate(savings.position, false)
@@ -378,7 +369,7 @@ function Home() {
     ? !oldHoldings.pending && (savingsFrozen || savings.hydrated)
     : mainKnown
   // A device catching up can be short on either account: a rebuilt move's deposit lands in either.
-  const syncing = balanceShown && balance.syncing
+  const syncing = balanceShown && balanceSyncing
   const openDeposit = () => guard("deposit", () => navigate("/deposit"))
   // An inbound paylink stashed by /link — prompts until claimed or dismissed.
   const [claimFragment, setClaimFragment] = useState(peekClaimStash)
@@ -401,7 +392,8 @@ function Home() {
     () => setClaimAsked(false),
   )
   const customEndpoints = customEndpointsLabel(getConfig().endpoints)
-  const { requests: requestItems, feed: feedItems } = selectHome(feed)
+  const requestEntries = entries.filter((entry) => entry.incomingRequest)
+  const feedEntries = entries.filter((entry) => !entry.incomingRequest)
 
   const receive: HomeAction = {
     title: "Receive",
@@ -478,15 +470,19 @@ function Home() {
             {syncing && (
               <LiquidGlassPill
                 label={
-                  balance.progress === null
+                  balanceSyncProgress === null
                     ? "Syncing deposits"
-                    : `Syncing deposits - ${Math.round(balance.progress * 100)}%`
+                    : `Syncing deposits - ${Math.round(balanceSyncProgress * 100)}%`
                 }
                 customIcon={
-                  balance.progress === null ? (
+                  balanceSyncProgress === null ? (
                     <Spinner size={12} color="currentColor" />
                   ) : (
-                    <ProgressSpinner progress={balance.progress} size={12} color="currentColor" />
+                    <ProgressSpinner
+                      progress={balanceSyncProgress}
+                      size={12}
+                      color="currentColor"
+                    />
                   )
                 }
                 iconLeading
@@ -555,16 +551,15 @@ function Home() {
       <UpgradeBanner />
       <HomeActions actions={actions} phone={phone} />
       {onSavings ? (
-        savingsHydrated && savingsItems.length === 0 ? (
+        savingsHydrated && savingsEntries.length === 0 ? (
           <div className="ww-home__cta">
             <SavingsArt />
             <PrimaryGradientButton title="Add to Savings" onClick={() => openMove("in")} />
           </div>
         ) : (
           <HomeTransactions
-            items={savingsItems}
+            entries={savingsEntries}
             hydrated={savingsHydrated}
-            row={(item) => <SavingsActivityRow item={item} />}
             onViewAll={() => navigate("/activity?account=savings")}
           />
         )
@@ -576,14 +571,14 @@ function Home() {
             <OldVersionLeftoversNotice left={oldVersionLeft} />
           )}
           {hydrated &&
-            requestItems.map((item) => (
-              <div key={item.id} className="ww-home__request">
-                <ActivityRow item={item} />
+            requestEntries.map((e) => (
+              <div key={e.id} className="ww-home__request">
+                {e.node}
               </div>
             ))}
           {/* Funds an upgrade still moves are the account's: no invitation to deposit over them. */}
           {hydrated &&
-          feedItems.length === 0 &&
+          feedEntries.length === 0 &&
           !frozen &&
           !oldHoldings.pending &&
           oldHoldings.total === 0n ? (
@@ -593,9 +588,8 @@ function Home() {
             </div>
           ) : (
             <HomeTransactions
-              items={feedItems}
+              entries={feedEntries}
               hydrated={hydrated}
-              row={(item) => <ActivityRow item={item} />}
               onViewAll={() => navigate("/activity")}
             />
           )}
@@ -699,6 +693,7 @@ function Home() {
       </div>
 
       {claim.modal}
+      {detailModals}
       {(sheet === "in" || sheet === "out") && (
         <MoveFundsSheet direction={sheet} onClose={() => setSheet(null)} />
       )}
@@ -714,7 +709,7 @@ function Home() {
           apy={apy}
           balances={{
             savings: savings.position?.value,
-            main: balance.known ? balance.main?.atomic ?? 0n : undefined,
+            main: balanceKnown ? mainAtomic : undefined,
           }}
           onMove={(amount) => openMove("in", String(amount))}
           onClose={() => setSheet(null)}

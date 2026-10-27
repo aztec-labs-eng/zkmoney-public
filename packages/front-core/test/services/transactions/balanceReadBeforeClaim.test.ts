@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { IStorageAdapter } from "../../../src/core/storages/adapter"
 import { WalletSyncCoordinator } from "../../../src/core/services/transactions/WalletSyncCoordinator"
 import { BalanceStorage } from "../../../src/core/storages/BalanceStorage"
-import { createMemoryKv } from "../../../src/engine/kv"
+import { makeScheduler } from "../../utils/xmtpReceiveFixtures"
 
 const E18 = 10n ** 18n
 const SHARES = "0xshares"
@@ -56,10 +56,10 @@ describe("a balance read in flight across a claim", () => {
           anchorBlock: 100,
         }),
       },
-      kv: createMemoryKv(),
+      storage: memStorage(),
       transactionStore: {
-        hasTxHash: () => false,
-        upsertScanned: () => {
+        hasTxHash: async () => false,
+        addIncomingTokenTransaction: async () => {
           throw new Error("no events")
         },
       },
@@ -67,12 +67,10 @@ describe("a balance read in flight across a claim", () => {
       contacts: { findByL2Address: async () => null },
       token: { address: "0xtok", symbol: "DAI", decimals: 18 },
       balance: { store: storage, scope: "net:me", tokenAddress: "0xtok" },
+      scheduler: makeScheduler(),
     })
 
-    const pass = coordinator.pass(
-      { accountAddress: "0xme", accountTag: "me", networkId: "net" },
-      { full: true },
-    )
+    const pass = coordinator.start({ accountAddress: "0xme", accountTag: "me", networkId: "net" })
     await read.promise
     // The settle pass stores the move in's 5-share claim, then stamps it.
     vi.setSystemTime(2_000)
@@ -86,5 +84,6 @@ describe("a balance read in flight across a claim", () => {
     expect(BigInt(record.balance)).toBe(6n * E18)
     // What useAsset and useSavingsContext report as the read time.
     expect(record.readAt ?? record.updatedAt).toBeLessThan(storedAt)
+    coordinator.stop()
   })
 })

@@ -41,7 +41,7 @@ GH_TOKEN=$(gh auth token) pnpm --filter @obsidion/generation-v5 fetch:bundle
 
 `OXIDE_REFUND_CIRCUITS=required` compiles the three Oxide refund circuits. The wallet uses them to move funds out of a frozen deployment, and it refuses a stub. Without the variable, the dependency build writes stubs. The tests can use the stubs.
 
-The wallet reads and upgrades v5 accounts through a build of the v5 wallet at the commit `packages/generation-v5/source.json` names. `fetch:bundle` downloads it from this repository's `source-generations` release into `packages/generation-v5/dist`. It needs any GitHub token. A build without the bundle cannot read v5 accounts; `REQUIRE_SOURCE_GENERATIONS=true` makes that a build error.
+The wallet reads and upgrades v5 accounts through a build of the v5 wallet at the commit `packages/generation-v5/source.json` names. `fetch:bundle` downloads it into `packages/generation-v5/dist` from one of this repository's releases: `source-generations`, or the release whose tag is the bundle's asset name without `.tar.zst`. This repository publishes each new bundle in its own release, because its releases are immutable. `fetch:bundle` needs any GitHub token. A build without the bundle cannot read v5 accounts; `REQUIRE_SOURCE_GENERATIONS=true` makes that a build error.
 
 You must supply three values yourself: an Aztec mainnet node URL (`VITE_NODE_URL`), its API key if the node needs one (`VITE_NODE_API_KEY`), and an Ethereum mainnet RPC URL (`VITE_L1_RPC_URL`). The example files hold all other mainnet values.
 

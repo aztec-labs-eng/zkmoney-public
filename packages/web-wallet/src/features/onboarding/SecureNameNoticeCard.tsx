@@ -15,9 +15,8 @@ import {
   isStuckSweep,
   SIPA_PROCESSING_COPY,
   STUCK_SWEEP_MS,
-  depositPhaseCopy,
+  sipaDepositInflightLabel,
   sipaReasonShown,
-  depositDetailOffer,
   depositOwed,
   fundsIn,
 } from "@obsidion/front-core"
@@ -25,8 +24,7 @@ import { Card, Icon, PrimaryGradientButton, Spinner } from "@obsidion/web-ds"
 import { WALLET_TOKEN_SYMBOL, tokenDecimalsForNetwork } from "@obsidion/core/constants"
 import paylinkCoins from "../../assets/home/paylink-coins.webp"
 import { DepositDetailModal } from "../../ui/screens/DepositDetailModal"
-import rowCopy from "../../ui/activity/ActivityRow.copy"
-import { registrationRecordForSipa } from "./webRegistration"
+import { depositDetailOffer } from "../../ui/screens/useActivityEntries"
 import { DepositExitModal } from "../deposit/DepositExitModal"
 import { getConfig } from "../../config/env"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
@@ -93,7 +91,7 @@ function railLabel(): string | null {
   if (!deposit) return null
   return shown
     ? SIPA_PROCESSING_COPY[shown.reason.kind].short
-    : depositPhaseCopy(deposit).live ?? null
+    : sipaDepositInflightLabel(deposit) ?? null
 }
 
 /** A stated reason or a stuck sweep has no known end, so the hero promises no short wait. */
@@ -148,22 +146,14 @@ function LiveDepositDetail(props: { sipaAddress: string; tag: string; onClose: (
       />
     )
   }
-  const offer = depositDetailOffer(deposit, {
-    processing,
-    registration: registrationRecordForSipa(deposit.sipaAddress) ?? undefined,
-    now: Date.now(),
-  })
+  const offer = depositDetailOffer(deposit, processing)
   return (
     <DepositDetailModal
       record={deposit}
       registrationTag={props.tag}
       exit={
         offer
-          ? {
-              title: offer.action === "sweep" ? rowCopy.action.sweep : rowCopy.action.recover,
-              sweep: offer.canSweep,
-              onStart: () => setExit(offer),
-            }
+          ? { title: offer.title, sweep: offer.canSweep, onStart: () => setExit(offer) }
           : undefined
       }
       onClose={props.onClose}

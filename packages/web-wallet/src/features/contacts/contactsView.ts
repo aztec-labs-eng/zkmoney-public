@@ -8,7 +8,6 @@ import {
   isUserLabel,
   normalizeTag,
   shortenAddressSm,
-  truncateMiddle,
   type Contact,
   type ContactRow,
   type InlineResolveResult,
@@ -144,20 +143,14 @@ export function l2ContactLabel(entry: Pick<Contact, "name" | "tag">): string | u
 
 /** How Activity and other lists name a saved contact: its rename, else its @tag; an Ethereum
  *  wallet by its label. */
-export function contactDisplayName(
-  contact: Pick<ContactRow, "name" | "tag" | "addressKind">,
-): string {
+export function contactDisplayName(contact: Pick<ContactRow, "name" | "tag" | "addressKind">): string {
   if (contact.addressKind === "ethereum-l1") return contact.name
   return l2ContactLabel(contact) ?? `@${contact.tag}`
 }
 
-/** Detail header for a zk.money contact: a renamed one leads with its name over its full tag; one
- *  without a tag shows its address. */
+/** Detail header for a zk.money contact: a renamed one leads with its name over its full tag. */
 export function l2ContactHeader(entry: Contact): { title: string; subtitle: string } {
-  if (!entry.tag) return { title: entry.name, subtitle: truncateMiddle(entry.address, 15) }
-  const handle = entry.tag
+  const handle = entry.tag ?? entry.name
   const label = l2ContactLabel(entry)
-  return label
-    ? { title: label, subtitle: `@${handle}.zk.money` }
-    : { title: `@${handle}`, subtitle: ".zk.money" }
+  return label ? { title: label, subtitle: `@${handle}.zk.money` } : { title: `@${handle}`, subtitle: ".zk.money" }
 }

@@ -9,11 +9,8 @@ vi.mock("react-router-dom", async (importOriginal) => ({
   ...(await importOriginal<typeof import("react-router-dom")>()),
   useNavigate: () => navigate,
 }))
-vi.mock("@obsidion/front-core", () => ({
-  useContactsDirectory: () => ({ contacts: [] }),
-  useStore: (store: { get(): unknown }) => store.get(),
-}))
-vi.mock("../src/platform/session", () => ({ useSession: () => ({ contactActivity: { get: () => ({}) } }) }))
+vi.mock("@obsidion/front-core", () => ({ useContactsDirectory: () => ({ contacts: [] }) }))
+vi.mock("../src/features/contacts/useContactActivity", () => ({ useContactActivity: () => ({}) }))
 vi.mock("../src/features/contacts/recentPeople", () => ({ recentPeople: () => [] }))
 const deps = vi.hoisted(() => ({ current: undefined as object | undefined }))
 vi.mock("../src/features/paylink/usePaylinkDeps", () => ({ usePaylinkDeps: () => deps.current }))

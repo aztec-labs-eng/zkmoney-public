@@ -463,7 +463,7 @@ export function createSavingsSource(deps: SavingsDeps, savings: OxideEnvTuple): 
         seeded = record
         await moves.put(moveOf(record))
       },
-      burn: (_record, onTxHash) => {
+      burn: () => {
         onStage("proving")
         return sourceToken.exitToL1PrivateSponsored(
           build.escrowOptions.escrow,
@@ -474,7 +474,6 @@ export function createSavingsSource(deps: SavingsDeps, savings: OxideEnvTuple): 
             userAccount: deps.account,
             useRawAmount: true,
             withdrawal: { ...options, escrow: build.escrowOptions },
-            onTxHash,
           },
         )
       },

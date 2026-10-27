@@ -1,19 +1,20 @@
 /**
  * The note typed on the pay form must reach its carriers — for a request the XMTP announce +
- * the requests store, for a send the on-chain `Transfer.meta` (via sendTokenSponsored's memo option)
- * and the activity row the rail writes before proving and advances in place.
+ * RequestStorage, for a send the on-chain `Transfer.meta` (via sendTokenSponsored's memo option)
+ * and the TransactionStorage row the rail writes before proving and advances in place (a second
+ * post-settlement write could fail after funds
+ * moved).
  */
-import { beforeEach, describe, expect, it, vi } from "vitest"
-import { createActivity, type Activity } from "../../front-core/src/engine/activity"
-import { createMemoryKv } from "../../front-core/src/engine/kv"
-import { toFailure } from "../../front-core/src/engine/errors"
-import type { WalletSendOptions } from "./support/submitBoundary"
+import { describe, expect, it, vi } from "vitest"
 
 const h = vi.hoisted(() => ({
   announce: vi.fn(async (_input: object) => ({ status: "sent", messageId: "m1" })),
   requestAdd: vi.fn(async (_row: object) => {}),
-  activity: undefined as unknown as Activity,
+  addTokenTransaction: vi.fn(async (..._args: unknown[]) => {}),
   sendTokenSponsored: vi.fn(async (..._args: unknown[]) => ({ txHash: "0xhash", amount: 5n })),
+  markRequestPaidById: vi.fn(async (_id: string, _txHash: string) => true),
+  updateTransaction: vi.fn(async (..._args: unknown[]) => true),
+  removeTransaction: vi.fn(async (..._args: unknown[]) => true),
   addEntry: vi.fn(async (_entry: object) => {}),
   addOrMergeContact: vi.fn(async (entry: object) => entry),
   approveAutoAdded: vi.fn(async (_address: string) => undefined),
@@ -37,7 +38,14 @@ vi.mock("@obsidion/front-core", () => ({
   RequestBroadcaster: class {
     announce = h.announce
   },
-  toFailure,
+  RequestStorage: { get: () => ({ add: h.requestAdd }) },
+  TransactionStorage: {
+    get: () => ({
+      addTokenTransaction: h.addTokenTransaction,
+      updateTransaction: h.updateTransaction,
+      removeTransaction: h.removeTransaction,
+    }),
+  },
   ContactStorage: {
     get: () => ({
       addEntry: h.addEntry,
@@ -53,20 +61,14 @@ vi.mock("@obsidion/front-core", () => ({
       return h.survivingHash
     },
     survived: async () => h.survivingHash ?? null,
-    stop: () => {},
+    stop: async () => {},
   }),
   TxInFlightError: h.TxInFlightError,
 }))
 vi.mock("@obsidion/sdk", () => ({ nextOperationId: () => "op" }))
 vi.mock("@obsidion/core/constants", async (original) => ({
   ...(await original<object>()),
-  QueueStatus: {
-    MINING: "mining",
-    SUCCESS: "success",
-    FAILED: "failed",
-    PENDING: "pending",
-    CANCELLED: "cancelled",
-  },
+  QueueStatus: { MINING: "mining", SUCCESS: "success", FAILED: "failed" },
 }))
 vi.mock("@obsidion/proving-progress", () => ({
   ProvingStage: { Mining: "mining" },
@@ -76,6 +78,7 @@ vi.mock("@aztec-labs/stdlib/aztec-address", () => ({
   AztecAddress: { fromStringUnsafe: (s: string) => s },
 }))
 vi.mock("../src/config/env", () => ({ getConfig: () => ({ network: "sandbox" }) }))
+vi.mock("../src/platform/storage/WebStorageAdapter", () => ({ webStorage: {} }))
 vi.mock("../src/platform/xmtp/xmtpLifecycle", () => ({
   getXmtpSender: () => ({}),
   getXmtpUiState: () => ({}),
@@ -93,19 +96,13 @@ vi.mock("../src/features/contacts/registryResolution", () => ({
       : { status: "resolved", l2Address: "0xabc", xmtpAddress: "0xxmtp" },
   resolveTagViaRegistry: async () => ({ status: "resolved" }),
 }))
-vi.mock("../src/platform/session", () => ({
-  session: () => ({ activity: h.activity, requests: { add: h.requestAdd } }),
+vi.mock("../src/features/contacts/requestActions", () => ({
+  markRequestPaidById: h.markRequestPaidById,
 }))
 
 const { runContactPay, RecipientNotUpgradedError } = await import(
   "../src/features/contacts/contactPay"
 )
-
-beforeEach(() => {
-  h.activity = createActivity({ kv: createMemoryKv(), networkId: () => "0xrollup" })
-  vi.spyOn(h.activity, "insertPending")
-})
-const inserted = () => vi.mocked(h.activity.insertPending).mock.calls[0]?.[0]
 
 const token = {
   fetchTokenInformation: async () => ({
@@ -137,7 +134,7 @@ describe("recipient upgrade check", () => {
         () => {},
       ),
     ).rejects.toBeInstanceOf(RecipientNotUpgradedError)
-    expect(h.activity.insertPending).not.toHaveBeenCalled()
+    expect(h.addTokenTransaction).not.toHaveBeenCalled()
     expect(h.sendTokenSponsored).not.toHaveBeenCalled()
   })
 })
@@ -176,9 +173,12 @@ describe("contact pay note", () => {
       },
       () => {},
     )
-    // The tag rides the same write, so a send to someone unsaved still reads as them. Written
-    // pending, before the proof — the chat needs a bubble to advance while it runs.
-    expect(inserted()).toMatchObject({ memo: "dinner", toTag: "alice", status: "pending" })
+    const args = h.addTokenTransaction.mock.calls[0]
+    expect(args[7]).toBe("dinner")
+    // The tag rides the same write, so a send to someone unsaved still reads as them.
+    expect(args[8]).toBe("alice")
+    // Written pending, before the proof — the chat needs a bubble to advance while it runs.
+    expect(args[2]).toBe("pending")
     // The note also rides the on-chain meta, with the sender tag.
     expect(h.sendTokenSponsored.mock.calls[0][3]).toMatchObject({
       memo: "dinner",
@@ -210,8 +210,15 @@ describe("contact pay note", () => {
       () => {},
     )
     expect(sendTokenSponsored.mock.calls[0][3]).toMatchObject({ requestId: REQ })
+    await vi.waitFor(() => expect(h.markRequestPaidById).toHaveBeenCalledWith(REQ, "0xhash"))
     // The pending row carries the request id so the feed hides the request it pays.
-    expect(inserted()).toMatchObject({ requestId: REQ })
+    const [, stamp] = h.updateTransaction.mock.calls[0] as [
+      unknown,
+      (row: { requestId?: string }) => void,
+    ]
+    const row: { requestId?: string } = {}
+    stamp(row)
+    expect(row.requestId).toBe(REQ)
   })
 
   it("saves an unsaved requester before the send row is written, and approves them once it lands", async () => {
@@ -221,7 +228,7 @@ describe("contact pay note", () => {
       order.push("contact")
       return entry
     })
-    vi.mocked(h.activity.insertPending).mockImplementationOnce(async () => {
+    h.addTokenTransaction.mockImplementationOnce(async () => {
       order.push("row")
     })
     h.sendTokenSponsored.mockImplementationOnce(async () => {
@@ -303,6 +310,7 @@ describe("approving an unsaved requester", () => {
     expect(h.addOrMergeContact).toHaveBeenCalledWith(expect.objectContaining({ autoAdded: true }))
     expect(h.sendTokenSponsored).not.toHaveBeenCalled()
     expect(h.addEntry).not.toHaveBeenCalled()
+    expect(h.markRequestPaidById).not.toHaveBeenCalled()
   })
 
   it("does not approve them when the send fails", async () => {
@@ -325,7 +333,7 @@ describe("approving an unsaved requester", () => {
     }
   })
 
-  it("still sends when saving the contact fails", async () => {
+  it("still marks the request paid when saving the contact fails", async () => {
     vi.clearAllMocks()
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
     try {
@@ -333,6 +341,7 @@ describe("approving an unsaved requester", () => {
       h.addEntry.mockRejectedValueOnce(new Error("contacts unavailable"))
       await expect(runContactPay(send, () => {})).resolves.toEqual({ txHash: "0xhash" })
       expect(h.addEntry).toHaveBeenCalledOnce()
+      expect(h.markRequestPaidById).toHaveBeenCalledWith("req-1", "0xhash")
     } finally {
       warn.mockRestore()
     }
@@ -422,8 +431,9 @@ describe("contact send cancellation and failure identity", () => {
         if (stage === "proving") throw cancelled
       }),
     ).rejects.toBe(cancelled)
-    expect(h.activity.rows.get()).toEqual([])
+    expect(h.addTokenTransaction).not.toHaveBeenCalled()
     expect(h.sendTokenSponsored).not.toHaveBeenCalled()
+    expect(h.updateTransaction).not.toHaveBeenCalled()
   })
 
   it("a later service rejection fails only the row keyed by its operation id", async () => {
@@ -431,45 +441,21 @@ describe("contact send cancellation and failure identity", () => {
     const rejection = new Error("passkey rejected")
     h.sendTokenSponsored.mockRejectedValueOnce(rejection)
     await expect(runContactPay(send, () => {})).rejects.toBe(rejection)
-    const operationId = inserted()!.id
-    expect(inserted()).toMatchObject({ status: "pending", operationId })
+    expect(h.addTokenTransaction).toHaveBeenCalledOnce()
+    const pendingArgs = h.addTokenTransaction.mock.calls[0]
+    expect(pendingArgs[2]).toBe("pending")
+    const operationId = pendingArgs[5]
     expect(h.sendTokenSponsored.mock.calls[0][3]).toMatchObject({ operationId })
-    expect(h.activity.rows.get()).toEqual([
-      expect.objectContaining({
-        id: operationId,
-        status: "failed",
-        detailedStatus: "failed",
-        failure: { code: "tx.failed", detail: rejection.message },
-      }),
-    ])
-  })
-
-  it("holds the send's hash on its row when the node takes it", async () => {
-    vi.clearAllMocks()
-    let heldAtNode: string | undefined
-    h.sendTokenSponsored.mockImplementationOnce(async (...args: unknown[]) => {
-      await (args[3] as WalletSendOptions).onTxHash?.("0xhash", { expiresAtMs: 0 })
-      heldAtNode = h.activity.rows.get()[0]?.txHash
-      return { txHash: "0xhash", amount: 5n }
-    })
-    await runContactPay(send, () => {})
-    expect(heldAtNode).toBe("0xhash")
-  })
-
-  it("sends nothing, and fails the row, when the hash cannot be saved", async () => {
-    vi.clearAllMocks()
-    vi.spyOn(h.activity, "setHash").mockRejectedValueOnce(new Error("quota exceeded"))
-    const node = vi.fn()
-    h.sendTokenSponsored.mockImplementationOnce(async (...args: unknown[]) => {
-      await (args[3] as WalletSendOptions).onTxHash?.("0xhash", { expiresAtMs: 0 })
-      node()
-      return { txHash: "0xhash", amount: 5n }
-    })
-    const err = await runContactPay(send, () => {}).catch((e: unknown) => e)
-    expect(err).toMatchObject({ message: "quota exceeded" })
-    expect(err).not.toBeInstanceOf(h.TxInFlightError)
-    expect(node).not.toHaveBeenCalled()
-    expect(h.activity.rows.get()).toEqual([expect.objectContaining({ status: "failed" })])
+    expect(h.updateTransaction).toHaveBeenCalledOnce()
+    const [matches, update] = h.updateTransaction.mock.calls[0] as [
+      (row: { queueId: unknown }) => boolean,
+      (row: { status: string; txHash?: string; detailedStatus?: string; error?: string }) => void,
+    ]
+    expect(matches({ queueId: operationId })).toBe(true)
+    expect(matches({ queueId: "unrelated-operation" })).toBe(false)
+    const row = { status: "pending" }
+    update(row)
+    expect(row).toEqual({ status: "failed", detailedStatus: "failed", error: rejection.message })
   })
 
   // ULT-876: the wallet emits the submit boundary before handing the tx to the node, so a
@@ -485,7 +471,25 @@ describe("contact send cancellation and failure identity", () => {
       expect(thrown).toBeInstanceOf(h.TxInFlightError)
       expect(thrown).toMatchObject({ txHash: "0xsubmitted", message: rejection.message })
       // Neither failed nor dropped: the chain settles it.
-      expect(h.activity.rows.get()).toEqual([expect.objectContaining({ status: "pending" })])
+      expect(h.removeTransaction).not.toHaveBeenCalled()
+      expect(h.updateTransaction).not.toHaveBeenCalled()
+    } finally {
+      h.survivingHash = undefined
+    }
+  })
+
+  // `fulfilled` is terminal, and a send that only reached the node may still be dropped: marking
+  // it here would strand the request paid and unpayable. The pending row speaks for it instead.
+  it("does not mark a request paid while the send is unconfirmed", async () => {
+    vi.clearAllMocks()
+    const requestId = "0x" + "0d".repeat(32)
+    h.survivingHash = "0xsubmitted"
+    try {
+      h.sendTokenSponsored.mockRejectedValueOnce(new Error("socket closed"))
+      await expect(
+        runContactPay({ ...send, request: { id: requestId } }, () => {}),
+      ).rejects.toBeInstanceOf(h.TxInFlightError)
+      expect(h.markRequestPaidById).not.toHaveBeenCalled()
     } finally {
       h.survivingHash = undefined
     }
@@ -499,7 +503,10 @@ describe("contact send cancellation and failure identity", () => {
     )
     h.sendTokenSponsored.mockRejectedValueOnce(closed)
     await expect(runContactPay(send, () => {})).rejects.toBe(closed)
-    expect(inserted()).toBeDefined()
-    expect(h.activity.rows.get()).toEqual([])
+    const operationId = h.addTokenTransaction.mock.calls[0][5]
+    expect(h.updateTransaction).not.toHaveBeenCalled()
+    expect(h.removeTransaction).toHaveBeenCalledOnce()
+    const [matches] = h.removeTransaction.mock.calls[0] as [(row: { queueId: unknown }) => boolean]
+    expect(matches({ queueId: operationId })).toBe(true)
   })
 })

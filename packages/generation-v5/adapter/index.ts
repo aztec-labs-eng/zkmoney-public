@@ -60,7 +60,6 @@ import {
   type ObsidionAccount,
 } from "@obsidion/sdk"
 import { OxidePortalContract } from "@oxide/l1-contracts"
-import type { L2BlockTag, L2TipId } from "@aztec/stdlib/block"
 import { deriveMasterNullifierHidingSecretKey } from "@aztec/stdlib/keys"
 import { TxHash } from "@aztec/stdlib/tx"
 import {
@@ -170,57 +169,8 @@ const l1Chain = (id: number): Chain =>
     name: `Chain ${id}`,
   }
 
-/**
- * `node` with its chain held at the tip given to `hold`. A frozen source refunds what its freeze
- * archive holds, so its PXE stops there, and its synced state and cached node reads stay valid. The
- * blocks past the hold are hidden too, so a PXE synced past it prunes back and drops their notes.
- */
-function holdableNode(node: AztecNode) {
-  let held: L2TipId | undefined
-  // Once the held block is finalized, every capped tip is the held one, so the node is not asked.
-  let settled = false
-  const cap = (tip: L2TipId) => (held && tip.block.number > held.block.number ? held : tip)
-  const proxy = new Proxy(node, {
-    get(target, key, receiver) {
-      if (key === "getChainTips")
-        return async () => {
-          if (held && settled)
-            return { proposed: held.block, checkpointed: held, proven: held, finalized: held }
-          const tips = await target.getChainTips()
-          if (!held) return tips
-          settled = tips.finalized.block.number >= held.block.number
-          return {
-            proposed: tips.proposed.number > held.block.number ? held.block : tips.proposed,
-            checkpointed: cap(tips.checkpointed),
-            proven: cap(tips.proven),
-            finalized: cap(tips.finalized),
-          }
-        }
-      if (key === "getBlockNumber")
-        return async (tip?: L2BlockTag) => {
-          if (held && settled) return held.block.number
-          const number = await target.getBlockNumber(tip)
-          return held && number > held.block.number ? held.block.number : number
-        }
-      if (key === "getBlock")
-        return async (...args: Parameters<AztecNode["getBlock"]>) => {
-          const block = await target.getBlock(...args)
-          return held && block && block.header.globalVariables.blockNumber > held.block.number
-            ? undefined
-            : block
-        }
-      return Reflect.get(target, key, receiver)
-    },
-  })
-  const hold = (tip: L2TipId | undefined) => {
-    held = tip
-    settled = false
-  }
-  return { node: proxy, hold }
-}
-
 export const open: SourceGenerationModule["open"] = async (params) => {
-  const { node, hold } = holdableNode(createNode(params.nodeUrl, params.nodeApiKey))
+  const node = createNode(params.nodeUrl, params.nodeApiKey)
   const { rollupAddress } = await node.getL1ContractAddresses()
   const store = await createPxeStore(rollupAddress.toString(), undefined)
   let wallet: ObsidionWallet
@@ -254,7 +204,6 @@ export const open: SourceGenerationModule["open"] = async (params) => {
     l1ChainId: params.l1ChainId,
     masterSecret: Fr.fromString(params.account.secretKey),
     rollupAddress: rollupAddress.toString(),
-    hold,
   })
 }
 
@@ -266,14 +215,12 @@ function session(o: {
   l1ChainId: number
   masterSecret: Fr
   rollupAddress: string
-  hold: (tip: L2TipId | undefined) => void
 }): SourceGenerationSession {
   const { wallet, account, client } = o
   const portalOf = (tuple: OxideEnvTuple) =>
     new OxidePortalContract(client as unknown as ViemClient, tuple.portal as Address)
   // After a freeze, only an L1 refund changes what a frozen source can refund. So the session reads
   // each owner's frozen notes from the PXE once and checks their refund nullifiers on L1 at each read.
-  // A fresh read reads the PXE again and replaces the kept result.
   const frozenAnchors = new Map<string, Promise<void>>()
   const frozenNotes = new Map<string, ReturnType<typeof readRefundableFrozenNotes>>()
   const discovered = new Map<string, Promise<FrozenEscrow[]>>()
@@ -299,17 +246,18 @@ function session(o: {
   const readFrozenNotes = async (
     tuple: OxideEnvTuple,
     read: Parameters<typeof readRefundableFrozenNotes>[0],
-    fresh = false,
   ) => {
-    const key = `${read.portal.address}:${read.owner}`.toLowerCase()
-    if (fresh) frozenNotes.delete(key)
-    const notes = await memo(frozenNotes, key, async () => {
-      await atFrozenAnchor(tuple)
-      const unrefunded = Object.assign(Object.create(read.portal), {
-        isRefundNullifierSpent: async () => false,
-      }) as OxidePortalContract
-      return readRefundableFrozenNotes({ ...read, portal: unrefunded })
-    })
+    const notes = await memo(
+      frozenNotes,
+      `${read.portal.address}:${read.owner}`.toLowerCase(),
+      async () => {
+        await atFrozenAnchor(tuple)
+        const unrefunded = Object.assign(Object.create(read.portal), {
+          isRefundNullifierSpent: async () => false,
+        }) as OxidePortalContract
+        return readRefundableFrozenNotes({ ...read, portal: unrefunded })
+      },
+    )
     const refunded = await Promise.all(
       notes.map(({ id }) => read.portal.isRefundNullifierSpent(Fr.fromString(id))),
     )
@@ -318,60 +266,21 @@ function session(o: {
   const readFrozenEscrowNotes = async (
     tuple: OxideEnvTuple,
     read: Parameters<typeof readRefundableEscrowNotes>[0],
-    fresh = false,
   ) =>
     (
       await Promise.all(
         read.escrows.map(async (escrow) => {
           const owner = escrow.owner.address
-          const notes = await readFrozenNotes(
-            tuple,
-            {
-              ...read,
-              owner,
-              resolveSpendMetadata: escrow.resolveSpendMetadata,
-              simulateOptions: { from: NO_FROM, additionalScopes: [owner] },
-            },
-            fresh,
-          )
+          const notes = await readFrozenNotes(tuple, {
+            ...read,
+            owner,
+            resolveSpendMetadata: escrow.resolveSpendMetadata,
+            simulateOptions: { from: NO_FROM, additionalScopes: [owner] },
+          })
           return notes.map((note) => ({ ...note, escrow }))
         }),
       )
     ).flat()
-  // A freeze is final, so each portal's freeze tip is read once. A live portal needs the tip, so
-  // once one is seen the session never holds.
-  const freezeTips = new Map<string, L2TipId>()
-  let live = false
-  let held: L2TipId | undefined
-  /** Holds the PXE at the latest freeze among the frozen portals the session reads. */
-  const holdAtFreeze = async (tuple: OxideEnvTuple) => {
-    if (live) return
-    const key = tuple.portal.toLowerCase()
-    let tip = freezeTips.get(key)
-    if (!tip) {
-      const portal = portalOf(tuple)
-      if (!(await portal.isFrozen())) {
-        live = true
-        return o.hold((held = undefined))
-      }
-      const block = await wallet.node.getBlockData({ archive: await portal.getFreezeArchive() })
-      if (!block) throw new Error("The source freeze archive has no block")
-      const [checkpoint] = await wallet.node.getCheckpointsData({
-        from: block.checkpointNumber,
-        limit: 1,
-      })
-      if (!checkpoint) throw new Error("The source freeze checkpoint has no data")
-      tip = {
-        block: {
-          number: block.header.globalVariables.blockNumber,
-          hash: block.blockHash.toString(),
-        },
-        checkpoint: { number: block.checkpointNumber, hash: checkpoint.header.hash().toString() },
-      }
-      freezeTips.set(key, tip)
-    }
-    if (!live && (!held || tip.block.number > held.block.number)) o.hold((held = tip))
-  }
   // Sponsored calls run with the deployment's ClaimFPC as msg_sender, so the notes they mint for
   // the account are tagged with it. A new PXE finds those notes only with the FPC as a sender.
   const registerClaimFpc = async (tuple: OxideEnvTuple) => {
@@ -395,7 +304,7 @@ function session(o: {
   // The account's payment link escrows on a frozen source, found as v5's `sourceFrozenEscrows` finds
   // them. The funding events end at the freeze, so a session finds them once for each set of hints,
   // keyed by every field a hint carries.
-  const escrows = async (tuple: OxideEnvTuple, paylinkRows: SourcePaylinkRows, fresh = false) => {
+  const escrows = async (tuple: OxideEnvTuple, paylinkRows: SourcePaylinkRows) => {
     const hints = await creatorLinksFromRows((await paylinkRows()) as Transaction[])
     const key = [
       tuple.portal.toLowerCase(),
@@ -408,7 +317,6 @@ function session(o: {
         )
         .sort(),
     ].join("|")
-    if (fresh) discovered.delete(key)
     return memo(discovered, key, async () => {
       await atFrozenAnchor(tuple)
       const tokenService = await TokenService.create(
@@ -447,7 +355,6 @@ function session(o: {
     )
     const portal = portalOf(tuple)
     if (!open.length || !(await portal.isFrozen())) return []
-    await holdAtFreeze(tuple)
     await atFrozenAnchor(tuple)
     const freezeEnd = await wallet.node.getBlockData({ archive: await portal.getFreezeArchive() })
     if (!freezeEnd) throw new Error("The source freeze archive has no block")
@@ -495,7 +402,6 @@ function session(o: {
     history: (scan) =>
       takeTurn(async () => {
         const { tuple } = scan
-        await holdAtFreeze(tuple)
         const tokenService = await prepareSipaScan(scan)
         setActiveNetworkId(o.rollupAddress)
         const items = new Map<string, string>()
@@ -712,7 +618,6 @@ function session(o: {
       }),
 
     async balance({ tuple }) {
-      await holdAtFreeze(tuple)
       await registerClaimFpc(tuple)
       const token = AztecAddress.fromStringUnsafe(tuple.l2Token)
       return (await (await TokenService.create(wallet, account, token)).getBalance()).toString()
@@ -720,7 +625,6 @@ function session(o: {
 
     async sipaSources(scan) {
       const { tuple } = scan
-      await holdAtFreeze(tuple)
       await prepareSipaScan(scan)
       const token = AztecAddress.fromStringUnsafe(tuple.l2Token)
       const events = await fetchSipaEvents(wallet, token, account.getAddress())
@@ -754,7 +658,6 @@ function session(o: {
     },
 
     async savingsMoves({ tuple }) {
-      await holdAtFreeze(tuple)
       await registerClaimFpc(tuple)
       await TokenService.create(wallet, account, AztecAddress.fromStringUnsafe(tuple.l2Token))
       const source = createWithdrawEventSource({
@@ -779,7 +682,6 @@ function session(o: {
 
     // Mirrors v5's `frozenSourceSummary`, and also sums what the waiting deposits hold.
     async frozenSummary({ tuple, depositDescriptors, paylinkRows }) {
-      await holdAtFreeze(tuple)
       await registerClaimFpc(tuple)
       const portal = portalOf(tuple)
       if (!(await portal.isFrozen())) return undefined
@@ -840,7 +742,6 @@ function session(o: {
     async refundRuntime({ tuple, tipRecipient, depositDescriptors, paylinkRows }) {
       if (!tuple.plainWithdrawalExecutor)
         throw new Error("The frozen source has no withdrawal executor")
-      await holdAtFreeze(tuple)
       await registerClaimFpc(tuple)
       const portal = portalOf(tuple)
       const teeSigner = await loadTeeSigner(
@@ -877,7 +778,7 @@ function session(o: {
             await account.makeDepositSpendMetadataResolver()
           )(account.getAddress()),
           depositDescriptors,
-          escrows: ({ fresh }) => escrows(tuple, paylinkRows, fresh),
+          escrows: () => escrows(tuple, paylinkRows),
           teeSigner,
           executor: EthAddress.fromString(tuple.plainWithdrawalExecutor),
           withdrawalSubsidy: tuple.withdrawalSubsidy
@@ -886,10 +787,9 @@ function session(o: {
           tipRecipient: EthAddress.fromString(tipRecipient),
         }),
         {
-          notes: (fresh) =>
-            readFrozenNotes(tuple, { ...read, owner: owner.address, resolveSpendMetadata }, fresh),
-          escrowNotes: (escrows, fresh) =>
-            readFrozenEscrowNotes(tuple, { ...read, escrows }, fresh),
+          notes: () =>
+            readFrozenNotes(tuple, { ...read, owner: owner.address, resolveSpendMetadata }),
+          escrowNotes: (escrows) => readFrozenEscrowNotes(tuple, { ...read, escrows }),
         },
       )
     },
@@ -957,43 +857,32 @@ function v5ExecutorCall(call: SourceExecutorCall): V5ExecutorCall {
 function plainRuntime(
   runtime: FrozenRefundMigrationRuntime,
   reads: {
-    notes(fresh: boolean): ReturnType<typeof readRefundableFrozenNotes>
-    escrowNotes(
-      escrows: FrozenEscrow[],
-      fresh: boolean,
-    ): ReturnType<typeof readRefundableEscrowNotes>
+    notes(): ReturnType<typeof readRefundableFrozenNotes>
+    escrowNotes(escrows: FrozenEscrow[]): ReturnType<typeof readRefundableEscrowNotes>
   },
 ): SourceRefundRuntime {
   const plainCall = executorCallOf(runtime)
   // The Inbox leaf of each deposit a read classified.
   const leaves = new Map<string, string>()
-  // The runtime's memos live on `runtime`, so a call through any view keeps them. The runtime's
-  // `notes()` takes no fresh flag, so a fresh `candidates` runs on a view whose reads are fresh.
-  const view = (freshNotes: boolean): FrozenRefundMigrationRuntime =>
-    Object.create(runtime, {
-      notes: { value: () => reads.notes(freshNotes) },
-      escrowNotes: {
-        value: async (fresh = false) =>
-          reads.escrowNotes(await runtime["readEscrows"](fresh), fresh),
+  // The runtime's memos live on `runtime`, so a call through any view keeps them.
+  const base: FrozenRefundMigrationRuntime = Object.create(runtime, {
+    notes: { value: () => reads.notes() },
+    escrowNotes: {
+      value: async (fresh = false) => reads.escrowNotes(await runtime["readEscrows"](fresh)),
+    },
+    deposits: {
+      value: async (fresh?: boolean) => {
+        const read = await runtime["deposits"](fresh)
+        for (const { id, descriptor } of read) leaves.set(id, descriptor.messageLeafIndex)
+        return read
       },
-      deposits: {
-        value: async (fresh?: boolean) => {
-          const read = await runtime["deposits"](fresh)
-          for (const { id, descriptor } of read) leaves.set(id, descriptor.messageLeafIndex)
-          return read
-        },
-      },
-    })
-  const base = view(false)
-  const freshBase = view(true)
+    },
+  })
   return {
     identity: runtime.identity,
     validate: (destinationAsset) => runtime.validate(destinationAsset as Address),
     candidates: async (opts) => {
-      const { waiting, maxBatchAmount, ...read } = await runtime.candidates.call(
-        opts?.fresh ? freshBase : base,
-        opts,
-      )
+      const { waiting, maxBatchAmount, ...read } = await runtime.candidates.call(base, opts)
       return {
         ...read,
         candidates: read.candidates.map((c) => {

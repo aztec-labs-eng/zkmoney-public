@@ -10,7 +10,8 @@
  * tries again.
  */
 import type { IStorageAdapter } from "../storages/adapter"
-import { storedActivity, type Activity } from "../../engine/activity"
+import { ACCOUNT_STORAGE_KEY, TRANSACTIONS_STORAGE_KEY } from "../storages/constants"
+import type { TransactionStorage } from "../storages/TransactionStorage"
 import type { Transaction } from "../../types/transactions"
 import {
   isSettledSipaPhase,
@@ -61,7 +62,7 @@ export interface HistoricActivityImportDeps {
   key?: string
   /** `read` over each retired rollup's database; rejects when one could not be read. */
   readOtherDatabases<T>(read: (db: RetiredDatabase) => T): Promise<T[]>
-  transactions: Pick<Activity, "importHistoricRows">
+  transactions: Pick<TransactionStorage, "importHistoricRows">
   sipaDeposits: Pick<SIPADepositStore, "load" | "get" | "create">
   withdrawals: Pick<WithdrawalStorage, "load" | "get" | "getByL2TxHash" | "create">
   savingsMoves: Pick<SavingsMoveStorage, "load" | "get" | "put">
@@ -176,7 +177,7 @@ export async function importHistoricActivity(
 
 function snapshotOf(db: RetiredDatabase): Snapshot {
   const label = `wallet_${db.version}`
-  const rows = storedActivity(db) as Transaction[]
+  const rows = transactionRows(db, label)
   const deposits = parseRecords<SIPADepositRecord>(db.get(KEY_SIPA_DEPOSITS), label).filter(
     (r) => typeof r.sipaAddress === "string" && typeof r.phase === "string",
   )
@@ -201,6 +202,17 @@ function snapshotOf(db: RetiredDatabase): Snapshot {
   return { version: db.version, networkId, rows, deposits, withdrawals, savingsMoves }
 }
 
+/** The database's transaction list; a database no build split yet still holds it on the account blob. */
+function transactionRows(db: RetiredDatabase, label: string): Transaction[] {
+  const own = db.get(TRANSACTIONS_STORAGE_KEY)
+  if (own !== undefined) return parseList<Transaction>(own, label)
+  const account = parseJson(db.get(ACCOUNT_STORAGE_KEY), label)
+  const legacy = isRecord(account)
+    ? (account as { transactions?: unknown }).transactions
+    : undefined
+  return Array.isArray(legacy) ? (legacy.filter(isRecord) as Transaction[]) : []
+}
+
 const isRecord = (value: unknown): value is object => typeof value === "object" && value !== null
 
 function parseJson(raw: string | undefined, label: string): unknown {
@@ -211,6 +223,11 @@ function parseJson(raw: string | undefined, label: string): unknown {
     logger.warn(`${LOG_PREFIX} ${label} holds a malformed value; skipped`)
     return undefined
   }
+}
+
+function parseList<T>(raw: string | undefined, label: string): T[] {
+  const parsed = parseJson(raw, label)
+  return Array.isArray(parsed) ? (parsed.filter(isRecord) as T[]) : []
 }
 
 function parseRecords<T>(raw: string | undefined, label: string): T[] {

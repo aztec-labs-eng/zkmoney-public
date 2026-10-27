@@ -7,8 +7,6 @@ import { reloadIfSessionSwitched } from "../src/features/onboarding/sessionReloa
 import { setActiveStorageId } from "../src/platform/storage/activeStorage"
 import { walletStorage } from "../src/platform/storage/walletStorage"
 import { loadWalletIdentity, saveWalletIdentity } from "../src/features/identity/walletIdentity"
-import { closeSession, openSession } from "../src/platform/session"
-import { createMemoryKv } from "@obsidion/front-core"
 
 const address = `0x${"ab".repeat(32)}`
 
@@ -46,27 +44,5 @@ describe("reloadIfSessionSwitched", () => {
     expect(reloadIfSessionSwitched("same-account", address)).toBe(false)
     await walletStorage.flush()
     expect(h.reload).not.toHaveBeenCalled()
-  })
-
-  // Last: from here on this page has served "acct-a".
-  it("reloads a passkey reuse that committed another account than the page serves", async () => {
-    openSession({ id: "acct-a", prefix: "a." }, createMemoryKv())
-    setActiveStorageId("acct-b")
-    await walletStorage.flush()
-    expect(reloadIfSessionSwitched(null, address)).toBe(true)
-    await vi.waitFor(() => expect(h.reload).toHaveBeenCalledTimes(1))
-    closeSession()
-  })
-
-  it("reloads a sign-in after a dropped key when the page served another account", async () => {
-    openSession({ id: "acct-a", prefix: "a." }, createMemoryKv())
-    // The dropped key: the page falls back to the anonymous namespace.
-    closeSession()
-    openSession({ id: null, prefix: "" }, createMemoryKv())
-    setActiveStorageId("acct-b")
-    await walletStorage.flush()
-    expect(reloadIfSessionSwitched(null, address)).toBe(true)
-    await vi.waitFor(() => expect(h.reload).toHaveBeenCalledTimes(1))
-    closeSession()
   })
 })

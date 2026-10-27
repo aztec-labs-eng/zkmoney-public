@@ -67,10 +67,10 @@ import { isFailedSubmission, trackSubmission } from "../transactions/trackSubmis
 const liveSubmissions = new Set<string>()
 
 /**
- * {@link trackSubmission} over a withdrawal record. `stamp` is the burn's `onTxHash`: it saves the
- * hash onto the record, strictly, so a stamp that did not persist sends nothing. A rejection is
- * answered with the record whenever the burn may still land, so a lost connection never fails a
- * withdrawal that is already on chain. `announce: false` for a record riding another's tx.
+ * {@link trackSubmission} over a withdrawal record: stamps the hash onto the record at the submit
+ * boundary, and answers a rejection with the record itself whenever the burn may still land, so a
+ * lost connection never fails a withdrawal that is already on chain. The stamp is strict: a hash
+ * that did not persist is never announced. `announce: false` for a record riding another's tx.
  */
 export function trackWithdrawalSubmission(
   store: WithdrawalStorage,
@@ -79,23 +79,29 @@ export function trackWithdrawalSubmission(
   opts: { announce?: boolean } = {},
 ) {
   liveSubmissions.add(localId)
-  const submission = trackSubmission(operationId, opts)
+  const submission = trackSubmission(
+    operationId,
+    (txHash) => store.patch(localId, { phase: "submitting", l2TxHash: txHash }, { strict: true }),
+    opts,
+  )
   return {
     /** The hash emitted at the submit boundary; undefined until then. */
     get txHash() {
       return submission.txHash
-    },
-    async stamp(txHash: string): Promise<void> {
-      await store.patch(localId, { phase: "submitting", l2TxHash: txHash as Hex }, { strict: true })
     },
     /** The record while the burn may still land, else null. */
     async recover(node: Pick<AztecNode, "getTxReceipt">) {
       if (!(await submission.survived(node))) return null
       return store.get(localId)
     },
-    stop() {
-      submission.stop()
-      liveSubmissions.delete(localId)
+    /** Whether the hash stamp persisted. */
+    saved: () => submission.saved(),
+    async stop() {
+      try {
+        await submission.stop()
+      } finally {
+        liveSubmissions.delete(localId)
+      }
     },
   }
 }

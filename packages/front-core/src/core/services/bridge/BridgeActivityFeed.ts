@@ -36,10 +36,19 @@ export type BridgeActivityItem =
     }
   | { kind: "bridge.withdrawal"; record: WithdrawalRecord }
 
+export type TransferActivityItem = {
+  kind: "p2p" | "paylink" | "request"
+  startTime: number
+  endTime?: number
+  sourceId: string
+}
+
 /** A refund batch of an upgrade: its exit from the old version, paired with its arrival by recipient. */
 export type UpgradeActivityItem = { kind: "upgrade.batch"; batch: UpgradeBatchItem }
 
-export type ActivityItem = BridgeActivityItem | UpgradeActivityItem
+export type ActivityItem = BridgeActivityItem | TransferActivityItem | UpgradeActivityItem
+
+export type BridgeItem = BridgeActivityItem
 
 type ChangedListener = (items: ActivityItem[]) => void
 
@@ -210,7 +219,7 @@ export const BridgeActivityFeed = ActivityFeed
  * failed, surfaces so its error and recovery actions are reachable. The hidden record still drives
  * the claim in the background.
  */
-export function hiddenBehindOwnWithdrawal(
+function hiddenBehindOwnWithdrawal(
   record: SIPADepositRecord,
   withdrawals: readonly WithdrawalRecord[],
   now: number,
@@ -226,9 +235,25 @@ export function hiddenBehindOwnWithdrawal(
 }
 
 export function itemStartTime(item: ActivityItem): number {
-  return "record" in item ? item.record.startTime : item.batch.startTime
+  if ("record" in item) return item.record.startTime
+  if ("batch" in item) return item.batch.startTime
+  return item.startTime
+}
+
+export function itemEndTime(item: ActivityItem): number | undefined {
+  if ("record" in item) return item.record.endTime
+  if ("batch" in item) return undefined
+  return item.endTime
 }
 
 export function isBridgeActivityItem(item: ActivityItem): item is BridgeActivityItem {
   return item.kind === "bridge.sipaDeposit" || item.kind === "bridge.withdrawal"
+}
+
+export function bridgeItemStartTime(item: BridgeActivityItem): number {
+  return item.record.startTime
+}
+
+export function bridgeItemEndTime(item: BridgeActivityItem): number | undefined {
+  return item.record.endTime
 }

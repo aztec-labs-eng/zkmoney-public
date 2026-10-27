@@ -27,22 +27,17 @@ vi.mock("@obsidion/sdk", () => ({
   PaylinkService: class {},
   TokenService: { create: async () => ({}) },
 }))
-vi.mock("../src/platform/session", () => ({
-  session: () => ({
-    activity: {
-      rows: {
-        get: () => {
-          h.reads++
-          return h.rows
-        },
-      },
-    },
-  }),
-}))
 vi.mock("@obsidion/front-core", () => ({
-  // A database stands for its own rows here.
-  storedActivity: (rows: unknown[]) => rows,
-  markPaylinkMigrated: (txHash: string) => {
+  TRANSACTIONS_STORAGE_KEY: "obsidion_transactions",
+  TransactionStorage: {
+    get: () => ({
+      getTransactions: async () => {
+        h.reads++
+        return h.rows
+      },
+    }),
+  },
+  markPaylinkMigrated: async (txHash: string) => {
     h.marked.push(txHash)
     return true
   },
@@ -54,9 +49,9 @@ vi.mock("@obsidion/front-core", () => ({
 }))
 vi.mock("../src/platform/storage/WebStorageAdapter", () => ({
   webStorage: {
-    readOtherDatabases: async <T>(read: (db: unknown[]) => T) => {
+    getItemFromOtherDatabases: async () => {
       h.onOtherRead()
-      return [read(h.otherRows)]
+      return [JSON.stringify(h.otherRows)]
     },
   },
 }))

@@ -2,7 +2,6 @@ import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { MemoryRouter, Routes, Route, useLocation } from "react-router-dom"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { balancesOf } from "./support/balances"
 import { fireEvent } from "../src/lib/analytics"
 import { provingProgress } from "@obsidion/proving-progress"
 import { asOperation, endSigningAndHandOff } from "./support/handOff"
@@ -14,9 +13,11 @@ function LocationProbe() {
 }
 vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/front-core")>()),
-  useAssetContext: () => ({
-    teeSignerError: null,
-    balances: balancesOf({ main: 100n * 10n ** 18n, live: true, known: true }),
+  useAssetContext: () => ({ teeSignerError: null }),
+  useBalance: () => ({
+    walletAsset: { balance: 100, balanceAtomic: 100n * 10n ** 18n, decimals: 18 },
+    walletBalance: "100",
+    assetsLoaded: true,
   }),
   parseEscrowAmount: (s: string, d: number) => ({
     atomic: BigInt(Math.round(Number(s))) * 10n ** BigInt(d),

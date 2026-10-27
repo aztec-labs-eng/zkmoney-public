@@ -16,7 +16,7 @@ import {
   DEFAULT_CONTRACTS,
   ensureContractRegisteredInPXE,
 } from "@obsidion/contracts"
-import type { ObsidionWallet, TxHashCallback } from "../../obsidion/ObsidionWallet.js"
+import type { ObsidionWallet } from "../../obsidion/ObsidionWallet.js"
 import {
   contractClassWitness,
   registerSponsorFpc,
@@ -92,7 +92,6 @@ export interface PaylinkExitArgs extends PaylinkVoucherDeps {
   withdrawal: WithdrawalOptions
   operationId?: string
   zkProof?: PaylinkL1Proof
-  onTxHash?: TxHashCallback
 }
 
 /**
@@ -188,7 +187,6 @@ export async function exitPaylinkWithVoucher(
     fee: op.sendOpts.fee,
     operationId: args.operationId,
     kind: "paylink-claim",
-    onTxHash: args.onTxHash,
   })
   const receipt = (sent as { receipt?: { txHash?: { toString(): string }; blockNumber?: number } })
     .receipt

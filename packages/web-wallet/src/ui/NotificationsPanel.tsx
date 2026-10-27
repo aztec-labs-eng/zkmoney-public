@@ -1,31 +1,30 @@
 import { Icon, Spinner, TopNavIconButton } from "@obsidion/web-ds"
-import { useCallback, useSyncExternalStore } from "react"
+import { useCallback, useMemo, useSyncExternalStore } from "react"
 import { useNavigate } from "react-router-dom"
 import {
-  bestEffort,
-  notificationsStamped,
-  selectNotifications,
-  useStore,
-  type NotificationEntry,
+  useAppNotifications,
+  useCachedRecords,
+  type AppNotificationEntry,
   type OperationRecord,
 } from "@obsidion/front-core"
 import { createExternalState } from "../lib/externalState"
-import { fmt } from "../lib/fmt"
 import { getActiveStorageId } from "../platform/storage/activeStorage"
+import { webStorage } from "../platform/storage/WebStorageAdapter"
 import { rowTimestamp } from "./format"
 import { Modal } from "./Modal"
 import { usePhoneLayout } from "./usePhoneLayout"
-import copy from "./notifications.copy"
-import { notificationText } from "./notificationText"
 import { flowCopy } from "../features/operations/operationCopy"
 import { openMigrationDialog } from "../features/migration/migrationDialog"
-import type { Bell } from "../features/notifications/notifications"
-import { useSession } from "../platform/session"
-import { operationIdOf } from "../features/operations/operationEntries"
+import { operationEntry, operationIdOf } from "../features/operations/operationEntries"
 import { openTicketClaimReview } from "../features/paylink/claimPrompt"
 import { pendingTicketRegistration } from "../features/paylink/ticketContinuation"
 import { TabLine, type TabPlace } from "../features/operations/TabLine"
-import { getOperationStore, operationsLoaded } from "../features/operations/operations"
+import {
+  getOperationStore,
+  useEndedOperations,
+  useOperationsInProgress,
+} from "../features/operations/operations"
+import { getWithdrawalStore } from "../features/withdraw/withdrawGateway"
 
 const panelOpen = createExternalState(false)
 
@@ -34,7 +33,7 @@ export function useNotificationsPanelOpen(): [boolean, (open: boolean) => void] 
   return [useSyncExternalStore(panelOpen.subscribe, panelOpen.get), panelOpen.set]
 }
 
-/** SF Symbol names the entries carry → web-ds glyphs. */
+/** SF Symbol names the producers emit → web-ds glyphs. */
 const ICON: Record<string, string> = {
   "arrow.down.left": "receive",
   "arrow.up.right": "send",
@@ -43,6 +42,7 @@ const ICON: Record<string, string> = {
   "checkmark.circle.fill": "check-circle",
   "exclamationmark.triangle": "alert-triangle",
   "exclamationmark.triangle.fill": "alert-triangle",
+  "lock.shield": "lock-shield",
   "arrow.uturn.backward": "reply",
   "person.crop.circle.badge.plus": "user-follow",
   "clock.arrow.circlepath": "history-clock",
@@ -63,7 +63,7 @@ export interface NotificationRoute {
  * Where a row tap lands: a mutual add opens the contact, funds on an old version the migration
  * dialog, a request link's publish its sheet, everything else the matching activity detail.
  */
-export function notificationRoute(entry: NotificationEntry): NotificationRoute | null {
+export function notificationRoute(entry: AppNotificationEntry): NotificationRoute | null {
   const t = entry.target as {
     type: string
     run?: string
@@ -89,9 +89,9 @@ export function notificationRoute(entry: NotificationEntry): NotificationRoute |
     const tag = (entry.target as { tag?: string }).tag
     return tag ? { to: `/claim/${encodeURIComponent(tag)}` } : null
   }
-  const notice = fmt(copy.panel.toast, notificationText(entry))
-  // A failure alert is stale once a re-inclusion confirms its row or revives its withdrawal. A
-  // withdrawal's failed entry is one; "Funds not sent", an error on the same target, is not.
+  const notice = `${entry.title}: ${entry.description}`
+  // A failure alert is stale once a re-inclusion confirms its row or revives its withdrawal. The
+  // bridge producer's failed entry is one; "Funds not sent", an error on the same target, is not.
   const failure =
     t.type === "reorg.txDetail" || (t.bridgeKind === "withdrawal" && /:failed(:|$)/.test(entry.id))
   const noticeStale: Record<string, string> =
@@ -114,13 +114,13 @@ export function notificationRoute(entry: NotificationEntry): NotificationRoute |
 }
 
 /** What opening an entry does; null when it has nothing to open here. */
-export type EntryOpener = (entry: NotificationEntry) => (() => void) | null
+export type EntryOpener = (entry: AppNotificationEntry) => (() => void) | null
 
 /** The wallet's opener: every entry's detail is a route. */
 export function useRouteOpener(): EntryOpener {
   const navigate = useNavigate()
   return useCallback(
-    (entry: NotificationEntry) => {
+    (entry: AppNotificationEntry) => {
       const route = notificationRoute(entry)
       return route
         ? () => {
@@ -139,27 +139,16 @@ export function useRouteOpener(): EntryOpener {
  * Toast identity. A live row and its settled outcome are the same entry id, so the key carries the
  * state too — otherwise a row seen in flight would count as already toasted once it settles.
  */
-export function toastKey(entry: NotificationEntry): string {
+export function toastKey(entry: AppNotificationEntry): string {
   return entry.pending ? `${entry.id}:pending` : entry.id
 }
 
-/**
- * Entries the bell should toast: unread, not yet shown, settled, and either first seen since
- * `since` or seen live by this bell. A live row is status; an entry first seen settled before is
- * the backlog behind the bell.
- */
+/** Entries the bell should toast: unread, not yet shown, and settled. A live row is status. */
 export function freshToasts(
-  entries: NotificationEntry[],
+  entries: AppNotificationEntry[],
   seen: Set<string>,
-  since: number,
-): NotificationEntry[] {
-  return entries.filter(
-    (e) =>
-      !e.read &&
-      !e.pending &&
-      !seen.has(toastKey(e)) &&
-      (e.firstSeenAt >= since || seen.has(toastKey({ ...e, pending: true }))),
-  )
+): AppNotificationEntry[] {
+  return entries.filter((e) => !e.read && !e.pending && !seen.has(toastKey(e)))
 }
 
 /**
@@ -167,72 +156,87 @@ export function freshToasts(
  * list, count and toast. Everything else in the store is left untouched by that bell.
  */
 export interface NotificationScope {
-  entry: (entry: NotificationEntry) => boolean
+  entry: (entry: AppNotificationEntry) => boolean
   operation: (operationId: string) => boolean
 }
 
 /**
- * What the bell lists: this scope's running operations, and the entries read off the records and
- * events, newest first. Actions route an operation's entry to its record.
+ * What the bell lists: this scope's running operations, and the notification store's entries and
+ * ended operations, read off their records, newest first. Actions route an operation's entry to its
+ * record.
  */
 export function useNotificationList(scope?: NotificationScope) {
-  const select = useCallback(
-    ({ sources, state, events, now }: Bell) => {
-      const running = sources.operations.running.filter(
-        (op) => !scope || scope.operation(op.operationId),
-      )
-      const entries = selectNotifications(
-        { ...sources, operations: { ...sources.operations, running } },
-        state,
-        events,
-        now,
-      ).filter((e) => !scope || scope.entry(e))
-      return { running, entries, state, stamped: notificationsStamped(sources, state, events, now) }
-    },
-    [scope],
+  const app = useAppNotifications(webStorage)
+  const { ended, loaded } = useEndedOperations()
+  const { records: withdrawals } = useCachedRecords(getWithdrawalStore())
+  // A sent withdrawal is already its own record's live row.
+  const running = useOperationsInProgress().filter(
+    (op) =>
+      (!scope || scope.operation(op.operationId)) &&
+      (op.state !== "sent" || flowCopy(op.flow).outcome !== "record"),
   )
-  const { bell, notifications } = useSession()
-  const { running, entries, state, stamped } = useStore(bell, select)
-  const loaded = useStore(operationsLoaded)
+  const entries = useMemo(() => {
+    // A running leg of a legacy fresh-address withdrawal stands for its group, in place of the live
+    // row the bridge producer mints; its record names the group.
+    const stoodFor = running.flatMap(({ operationId }) => {
+      const group = withdrawals.find((w) => w.operationId === operationId)?.groupId
+      return group ? `bridge:withdrawal-group:${group.toLowerCase()}:inflight` : []
+    })
+    return [
+      ...app.entries.filter((e) => !stoodFor.includes(e.id)),
+      ...ended.map(operationEntry).filter((e) => e !== null),
+    ]
+      .filter((e) => !scope || scope.entry(e))
+      .sort((a, b) => b.timestampMs - a.timestampMs)
+  }, [app.entries, ended, running, withdrawals, scope])
+  const { dismiss: dismissEntry, dismissAll, markAllRead: markEntriesRead, markRead } = app
   const dismiss = useCallback(
     (id: string) => {
       const operationId = operationIdOf(id)
-      if (!operationId) return void bestEffort("unknown", notifications.dismiss([id]))
-      void getOperationStore().dismiss(operationId).catch(console.warn)
+      if (!operationId) return dismissEntry(id)
+      return getOperationStore().dismiss(operationId).catch(console.warn)
     },
-    [notifications],
+    [dismissEntry],
   )
   /**
    * Opening an entry: an operation's is marked read, and so are the old-version funds row and a
    * waiting upgrade's, which stay while those do. Any other is cleared.
    */
   const opened = useCallback(
-    (entry: NotificationEntry) => {
+    (entry: AppNotificationEntry) => {
       const operationId = operationIdOf(entry.id)
       if (operationId) void getOperationStore().markRead([operationId]).catch(console.warn)
       else if (entry.target.type === "migration.residuals" || entry.target.type === "migration.run")
-        void bestEffort("unknown", notifications.markRead([entry.id]))
-      else if (!entry.pending) void bestEffort("unknown", notifications.dismiss([entry.id]))
+        void markRead(entry.id)
+      else if (!entry.pending) void dismissEntry(entry.id)
     },
-    [notifications],
+    [dismissEntry, markRead],
   )
   const markAllRead = useCallback(() => {
-    const unread = scope
-      ? entries.filter((e) => !e.read).map((e) => e.id)
-      : [...entries.filter((e) => !e.read).map((e) => e.id), ...state.keys()]
-    void bestEffort("unknown", notifications.markRead(unread.filter((id) => !operationIdOf(id))))
-    const ops = unread.map(operationIdOf).filter((id) => id !== undefined)
-    if (ops.length) void getOperationStore().markRead(ops).catch(console.warn)
-  }, [scope, entries, state, notifications])
+    if (scope) {
+      const unread = entries.filter((e) => !e.read)
+      for (const e of unread) if (!operationIdOf(e.id)) void markRead(e.id)
+      const ops = unread.map((e) => operationIdOf(e.id)).filter((id) => id !== undefined)
+      if (ops.length) void getOperationStore().markRead(ops).catch(console.warn)
+      return
+    }
+    void markEntriesRead()
+    const unread = ended.filter((r) => r.readAt === undefined).map((r) => r.operationId)
+    if (unread.length) void getOperationStore().markRead(unread).catch(console.warn)
+  }, [scope, entries, markRead, markEntriesRead, ended])
   // Running operations and live rows stay: their work has not ended.
   const clearAll = useCallback(() => {
-    for (const e of entries) if (!e.pending) dismiss(e.id)
-    if (!scope) void getOperationStore().dismissEnded(getActiveStorageId()).catch(console.warn)
-  }, [scope, entries, dismiss])
+    if (scope) {
+      for (const e of entries) if (!e.pending) void dismiss(e.id)
+      return
+    }
+    void dismissAll({ keepPending: true })
+    void getOperationStore().dismissEnded(getActiveStorageId()).catch(console.warn)
+  }, [scope, entries, dismiss, dismissAll])
   return {
     entries,
     running,
-    hydrated: loaded && stamped,
+    hydrated: app.hydrated && loaded,
     unreadCount: entries.filter((e) => !e.read).length,
     dismiss,
     opened,
@@ -261,7 +265,7 @@ export function NotificationsPanel({
     ...entries.map((entry) => ({ key: entry.id, time: entry.timestampMs, op: undefined, entry })),
   ].sort((a, b) => b.time - a.time)
 
-  const open = (entry: NotificationEntry) => {
+  const open = (entry: AppNotificationEntry) => {
     opened(entry)
     onClose()
     opener(entry)?.()
@@ -270,43 +274,39 @@ export function NotificationsPanel({
   const content = (
     <>
       <div className="ww-notifications__head">
-        <span>{copy.panel.title}</span>
+        <span>Notifications</span>
         <span className="ww-notifications__head-actions">
-          {unreadCount > 0 && (
-            <span className="ww-notifications__new">
-              {fmt(copy.panel.new, { count: unreadCount })}
-            </span>
-          )}
+          {unreadCount > 0 && <span className="ww-notifications__new">{unreadCount} new</span>}
           {entries.some((e) => !e.pending) && (
             <button
               type="button"
               className="zkm-btn-reset ww-notifications__clear"
               onClick={clearAll}
             >
-              {copy.panel.clearAll}
+              Clear all
             </button>
           )}
-          {phone && <TopNavIconButton icon="x" ariaLabel={copy.panel.close} onClick={onClose} />}
+          {phone && <TopNavIconButton icon="x" ariaLabel="Close notifications" onClick={onClose} />}
         </span>
       </div>
       <div className="ww-notifications__list">
-        {rows.length === 0 && <p className="ww-notifications__empty">{copy.panel.empty}</p>}
+        {rows.length === 0 && <p className="ww-notifications__empty">No notifications yet</p>}
         {rows.map(({ key, op, entry }) =>
           op ? (
             <OperationRow key={key} operation={op} place={place} />
           ) : (
-            <EntryRow key={key} entry={entry!} onOpen={open} onDismiss={dismiss} />
+            <EntryRow key={key} entry={entry!} onOpen={open} onDismiss={(id) => void dismiss(id)} />
           ),
         )}
       </div>
     </>
   )
   return phone ? (
-    <Modal variant="bare" label={copy.panel.title} className="ww-notifications" onClose={onClose}>
+    <Modal variant="bare" label="Notifications" className="ww-notifications" onClose={onClose}>
       {content}
     </Modal>
   ) : (
-    <div className="ww-notifications" role="dialog" aria-label={copy.panel.title}>
+    <div className="ww-notifications" role="dialog" aria-label="Notifications">
       {content}
     </div>
   )
@@ -317,11 +317,10 @@ function EntryRow({
   onOpen,
   onDismiss,
 }: {
-  entry: NotificationEntry
-  onOpen: (entry: NotificationEntry) => void
+  entry: AppNotificationEntry
+  onOpen: (entry: AppNotificationEntry) => void
   onDismiss: (id: string) => void
 }) {
-  const { title, description } = notificationText(entry)
   return (
     <div className="ww-notifications__item">
       <button
@@ -330,22 +329,22 @@ function EntryRow({
         onClick={() => onOpen(entry)}
       >
         <div className="zkm-avatar__disc zkm-activity-row__glyph">
-          <Icon name={ICON[entry.icon] ?? "bell"} size={20} color="#fff" />
+          <Icon name={ICON[entry.systemIcon] ?? "bell"} size={20} color="#fff" />
         </div>
         <span className="ww-notifications__body">
-          <span className="ww-notifications__title">{title}</span>
-          <span className="ww-notifications__desc">{description}</span>
+          <span className="ww-notifications__title">{entry.title}</span>
+          <span className="ww-notifications__desc">{entry.description}</span>
         </span>
         <span className="ww-notifications__time">
           {entry.pending ? <Spinner size={14} /> : rowTimestamp(entry.timestampMs)}
         </span>
-        {!entry.read && <span className="ww-notifications__dot" aria-label={copy.panel.unread} />}
+        {!entry.read && <span className="ww-notifications__dot" aria-label="Unread" />}
       </button>
-      {/* Live rows have no dismiss: they leave when the work settles. */}
+      {/* Live rows have no dismiss: their producer retires them when the work settles. */}
       {!entry.pending && (
         <button
           type="button"
-          aria-label={copy.panel.dismiss}
+          aria-label="Dismiss"
           className="zkm-btn-reset ww-notifications__dismiss"
           onClick={() => onDismiss(entry.id)}
         >
@@ -359,25 +358,23 @@ function EntryRow({
 /** Where a running operation is, off its record: the tab line says once it is sent. */
 function stageOf(operation: OperationRecord): string | undefined {
   if (operation.state !== "local") return undefined
-  return operation.provingStartedAt === undefined ? copy.panel.preparing : copy.panel.proving
+  return operation.provingStartedAt === undefined ? "Preparing" : "Proving"
 }
 
 /** A transaction still in progress, read off its operation. */
 function OperationRow({ operation, place }: { operation: OperationRecord; place?: TabPlace }) {
-  const flow = flowCopy(operation.flow)
+  const copy = flowCopy(operation.flow)
   const stage = stageOf(operation)
   return (
     <div className="ww-notifications__item" role="status">
       <div className="ww-notifications__row">
         <div className="zkm-avatar__disc zkm-activity-row__glyph">
-          <Icon name={ICON[flow.icon] ?? "bell"} size={20} color="#fff" />
+          <Icon name={ICON[copy.icon] ?? "bell"} size={20} color="#fff" />
         </div>
         <span className="ww-notifications__body">
-          <span className="ww-notifications__title">{flow.live}</span>
+          <span className="ww-notifications__title">{copy.live}</span>
           <span className="ww-notifications__desc">
-            {stage && stage !== flow.live
-              ? fmt(copy.panel.operation, { summary: operation.summary, stage })
-              : operation.summary}
+            {stage && stage !== copy.live ? `${operation.summary} · ${stage}` : operation.summary}
           </span>
           <TabLine operationId={operation.operationId} place={place} />
         </span>

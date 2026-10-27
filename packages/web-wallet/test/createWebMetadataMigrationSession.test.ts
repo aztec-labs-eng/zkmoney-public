@@ -26,9 +26,6 @@ vi.mock("@obsidion/sdk", () => ({
   frozenRuntimeFromSourceGeneration: vi.fn(),
 }))
 vi.mock("../src/config/env", () => ({ getConfig: () => ({ network: "sandbox" }) }))
-vi.mock("../src/platform/session", () => ({
-  session: () => ({ activity: { rows: { get: () => [] } } }),
-}))
 vi.mock("../src/config/oxideTuple", () => ({
   l1MulticallClient: () => ({}),
   getFeeTokenBridgeTuple: async () => ({ portal: `0x${"ab".repeat(20)}` }),

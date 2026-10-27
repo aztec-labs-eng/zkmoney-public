@@ -6,9 +6,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { formatUnits, parseUnits, type Address, type Hex } from "viem"
 import { WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
+import { provingProgress, ProvingStage } from "@obsidion/proving-progress"
 import { TxStatus } from "@aztec-labs/stdlib/tx"
 import { LIMIT, LIMIT_USD } from "./support/publicLimit"
-import { sendLikeTheWallet, watchWalletDb, type WalletSendOptions } from "./support/submitBoundary"
 
 const L2_TX = `0x${"0a".repeat(32)}` as Hex
 const RECIPIENT = `0x${"dd".repeat(20)}` as Address
@@ -321,7 +321,7 @@ describe("cashOutLink", () => {
 
   it("preserves a broadcast hash when waiting for its receipt fails", async () => {
     exitPaylinkWithVoucher.mockImplementationOnce(async (args) => {
-      await sendLikeTheWallet(args as WalletSendOptions, L2_TX, () => {})
+      provingProgress.emitStageStart(ProvingStage.Mining, args.operationId as string, L2_TX)
       throw new Error("Receipt timed out")
     })
     const record = await cashOutLink(deps(), "fragment", RECIPIENT)
@@ -333,31 +333,9 @@ describe("cashOutLink", () => {
     expect(getOperationStore().isLive(record.operationId!)).toBe(false)
   })
 
-  it("saves the burn's hash before the node takes it, and sends nothing when it cannot", async () => {
-    const db = watchWalletDb()
-    let heldAtNode: boolean | undefined
-    exitPaylinkWithVoucher.mockImplementationOnce(async (args) => {
-      await sendLikeTheWallet(args as WalletSendOptions, L2_TX, () => {
-        heldAtNode = db.holds("withdrawals", L2_TX)
-      })
-      return { txHash: L2_TX, blockNumber: 42, amount: ESCROW, l1Recipient: RECIPIENT }
-    })
-    await cashOutLink(deps(), "fragment", RECIPIENT)
-    expect(heldAtNode).toBe(true)
-
-    db.refuse("withdrawals", L2_TX)
-    const node = vi.fn()
-    exitPaylinkWithVoucher.mockImplementationOnce(async (args) => {
-      await sendLikeTheWallet(args as WalletSendOptions, L2_TX, node)
-      return { txHash: L2_TX, blockNumber: 42, amount: ESCROW, l1Recipient: RECIPIENT }
-    })
-    await expect(cashOutLink(deps(), "fragment", RECIPIENT)).rejects.toThrow("quota exceeded")
-    expect(node).not.toHaveBeenCalled()
-  })
-
   it("makes a rejected broadcast retryable instead of returning a pending withdrawal", async () => {
     exitPaylinkWithVoucher.mockImplementationOnce(async (args) => {
-      await sendLikeTheWallet(args as WalletSendOptions, L2_TX, () => {})
+      provingProgress.emitStageStart(ProvingStage.Mining, args.operationId as string, L2_TX)
       throw new Error("Node rejected withdrawal")
     })
     const dependencies = deps()
@@ -407,7 +385,7 @@ describe("cashOutLink claim reporting", () => {
 
   it("reports a burn left to the chain once its record mines, and only then", async () => {
     exitPaylinkWithVoucher.mockImplementationOnce(async (args) => {
-      await sendLikeTheWallet(args as WalletSendOptions, L2_TX, () => {})
+      provingProgress.emitStageStart(ProvingStage.Mining, args.operationId as string, L2_TX)
       throw new Error("Receipt timed out")
     })
     const record = await cashOutLink(deps(), "fragment", RECIPIENT)

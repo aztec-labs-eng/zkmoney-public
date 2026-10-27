@@ -69,6 +69,7 @@ vi.mock("../src/features/requests/shortRequestLink", () => ({
 }))
 
 const { SharePaylinkModal } = await import("../src/features/requests/SharePaylinkModal")
+const { RequestRow } = await import("../src/ui/screens/useActivityEntries")
 
 const FIELD_ID = `0x${"0a".repeat(32)}`
 const TOKEN_ADDRESS = `0x${"1b".repeat(32)}`
@@ -306,5 +307,53 @@ describe("SharePaylinkModal", () => {
     })
     expect(writeText).toHaveBeenCalledOnce()
     expect(titles()).toContain("Copied!")
+  })
+
+  it("opens link-request details from the activity row, with Share reusing the open path", async () => {
+    const onOpen = vi.fn()
+    const onCancel = vi.fn()
+    await act(async () => {
+      root.render(
+        <RequestRow
+          row={{
+            id: request.id,
+            kind: "outgoingLink",
+            counterparty: "Requested via link",
+            statusLabel: "Unpaid",
+            amount: "+$25.00",
+            amountValue: 25,
+            timestampMs: NOW,
+            direction: "in",
+          }}
+          remind="idle"
+          onDecline={() => {}}
+          onSend={() => {}}
+          onCancel={onCancel}
+          onRemind={() => {}}
+          onOpen={onOpen}
+        />,
+      )
+    })
+
+    expect(container.textContent).toContain("Requested via paylink")
+
+    await act(async () => {
+      container.querySelector<HTMLElement>("[data-testid='activity-row']")?.click()
+    })
+    expect(onOpen).toHaveBeenCalledOnce()
+
+    await act(async () => {
+      ;[...container.querySelectorAll("button")]
+        .find((button) => button.textContent === "Share")
+        ?.click()
+    })
+    expect(onOpen).toHaveBeenCalledTimes(2)
+
+    await act(async () => {
+      ;[...container.querySelectorAll("button")]
+        .find((button) => button.textContent === "Cancel")
+        ?.click()
+    })
+    expect(onCancel).toHaveBeenCalledWith(request.id)
   })
 })

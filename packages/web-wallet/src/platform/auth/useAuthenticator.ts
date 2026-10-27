@@ -14,7 +14,6 @@ import {
 import { AUTH_TYPE } from "@obsidion/sdk"
 import { getConfig } from "../../config/env"
 import { passkeyTelemetry } from "../../lib/passkeyTelemetry"
-import { followSavedSession } from "../session"
 import { walletStorage } from "../storage/walletStorage"
 import { webStorage } from "../storage/WebStorageAdapter"
 import { WebAlphaAuthService, type StoredAccountSnapshot } from "./WebAlphaAuthService"
@@ -72,7 +71,6 @@ export function getAuthService(): WebAlphaAuthService {
       ceremony: virtualAuthenticators ? recordingCreateRequests(ceremony) : ceremony,
       laptopHints: virtualAuthenticators ? null : undefined,
       extraProviders: virtualAuthenticators ? [CHROMIUM_VIRTUAL_AUTHENTICATOR_AAGUID] : undefined,
-      onSessionSaved: followSavedSession,
     })
   }
   return singleton

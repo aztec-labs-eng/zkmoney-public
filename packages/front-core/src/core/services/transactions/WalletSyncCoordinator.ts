@@ -1,14 +1,14 @@
 /**
- * WalletSyncCoordinator — the one owner of the wallet's chain view. Each pass of its
- * `TransferEventScanner` (the only reader that syncs PXE) reads the private balances at the same
- * anchor and writes them to `BalanceStorage`: Main's token, and any other the source reads
- * (Savings' shares). The UI renders from that store; nothing else in the app syncs PXE to read a
- * balance. The `transferScan` runtime task runs the passes.
+ * WalletSyncCoordinator — the one owner of the wallet's chain view. It drives the
+ * `TransferEventScanner` (the only loop that syncs PXE) and, on every synced tick, reads the
+ * private balances at the same anchor and writes them to `BalanceStorage`: Main's token, and any
+ * other the source reads (Savings' shares). The UI renders from that store; nothing else in the
+ * app syncs PXE to read a balance.
  *
- * Every "refresh now" in the app wakes that task: pull-to-refresh and `loadAssets` through the
- * static `refresh()`, a send or withdrawal terminalising through the store watches below. The
+ * Every "refresh now" in the app funnels into `tickNow`: pull-to-refresh and `loadAssets` through
+ * the static `refresh()`, a send or withdrawal terminalising through the store watches below. The
  * watches diff terminal keys so pending-row progress writes never trigger a sync, and skip receive
- * rows because those are written by the pass itself. A write that moves the balance but no
+ * rows because those are written by the tick itself. A write that moves the balance but no
  * `Transfer` event (a claimed deposit) uses `refreshBalance()` instead, which never waits behind a
  * scan pass.
  *
@@ -19,18 +19,19 @@
 import { type WalletBalanceRead, type WalletSyncSource, TokenActionEnum } from "@obsidion/sdk"
 import type { Transaction } from "../../../types/transactions"
 import type { WithdrawalRecord } from "../bridge/types"
-import type { ReadonlyStore } from "../../../engine/store"
+import { globalEventEmitter } from "../GlobalEventEmitter"
 import { bootPriority, type BootPriority } from "./bootPriority"
 import {
   TransferEventScanner,
   type TransferEventScannerOptions,
   type TransferScanContext,
-  type TransferScanPass,
 } from "./TransferEventScanner"
+import { logger } from "src/utils/logger"
 
+const LOG_PREFIX = "[WalletSyncCoordinator]"
 /** Collapses a burst of refresh requests (e.g. several terminal writes) into one refresh. */
 const REFRESH_DEBOUNCE_MS = 500
-/** Longest a `refresh()` issued with no running task waits for a pass. */
+/** Longest a `refresh()` issued before any coordinator started will wait for one. */
 const REFRESH_WAIT_MS = 60_000
 /** Balance-only reads before falling back to a full pass; a concurrent sync can move the anchor. */
 const BALANCE_READ_ATTEMPTS = 3
@@ -54,7 +55,7 @@ export interface WalletSyncCoordinatorOptions
     tokenAddress: string
   }
   /** Terminal send rows trigger a refresh. */
-  transactions?: ReadonlyStore<readonly Transaction[]>
+  transactions?: { getTransactions(): Promise<Transaction[]> }
   /** Withdrawals live in their own store; a record leaving `submitting` triggers a refresh. */
   withdrawals?: {
     list(): readonly WithdrawalRecord[]
@@ -63,98 +64,84 @@ export interface WalletSyncCoordinatorOptions
   boot?: Pick<BootPriority, "notesSynced" | "historyReplayed">
 }
 
-/** How the coordinator reaches the task that runs its passes. */
-export interface SyncLink {
-  /** Runs a full pass; settles once a pass begun after the call ends. */
-  wake(): Promise<void>
-  /** Passes may run now: the page is visible. */
-  live(): boolean
-}
-
 export class WalletSyncCoordinator {
-  // ponytail: one session per process (one wallet at a time); key by account if that changes
-  private static session: { coordinator: WalletSyncCoordinator; link: SyncLink } | null = null
+  // ponytail: one active coordinator per process (one wallet at a time); key by account if that changes
+  private static active: WalletSyncCoordinator | null = null
   private static pending: { promise: Promise<void>; settle: () => void } | null = null
 
-  private static live(): { coordinator: WalletSyncCoordinator; link: SyncLink } | null {
-    const session = WalletSyncCoordinator.session
-    return session?.link.live() ? session : null
-  }
-
   /**
-   * Sync now through the running task. With none running (cold start, its task still building, the
-   * page hidden) the promise settles after the next pass, or after `REFRESH_WAIT_MS` so a caller's
-   * spinner can never hang on a pass that never comes.
+   * Sync now through the running coordinator. With none mounted yet (cold start, mount still
+   * building) the promise settles after the next `start()` completes its first tick, or after
+   * `REFRESH_WAIT_MS` so a caller's spinner can never hang on a coordinator that never comes.
    */
   static refresh(): Promise<void> {
-    const live = WalletSyncCoordinator.live()
-    if (live) return live.link.wake()
-    WalletSyncCoordinator.pending ??= WalletSyncCoordinator.request()
+    if (WalletSyncCoordinator.active) return WalletSyncCoordinator.active.tickNow()
+    if (!WalletSyncCoordinator.pending) {
+      let resolve!: () => void
+      const promise = new Promise<void>((r) => (resolve = r))
+      const timer = setTimeout(() => WalletSyncCoordinator.settlePending(), REFRESH_WAIT_MS)
+      WalletSyncCoordinator.pending = {
+        promise,
+        settle: () => {
+          clearTimeout(timer)
+          resolve()
+        },
+      }
+    }
     return WalletSyncCoordinator.pending.promise
   }
 
-  /** A waiting `refresh()`: a pass that takes it settles it, and so does its own cap. */
-  private static request(): { promise: Promise<void>; settle: () => void } {
-    let resolve!: () => void
-    const promise = new Promise<void>((r) => (resolve = r))
-    const request = {
-      promise,
-      settle: () => {
-        clearTimeout(timer)
-        if (WalletSyncCoordinator.pending === request) WalletSyncCoordinator.pending = null
-        resolve()
-      },
-    }
-    const timer = setTimeout(request.settle, REFRESH_WAIT_MS)
-    return request
-  }
-
-  /** The balance alone at a fresh anchor; without a running task, same as `refresh()`. */
+  /** The balance alone at a fresh anchor; without a running coordinator, same as `refresh()`. */
   static refreshBalance(): Promise<void> {
-    const live = WalletSyncCoordinator.live()
-    if (!live) return WalletSyncCoordinator.refresh()
-    return live.coordinator.readBalanceCoalesced().then(
+    const active = WalletSyncCoordinator.active
+    if (!active) return WalletSyncCoordinator.refresh()
+    return active.readBalanceCoalesced().then(
       () => {},
-      () => live.link.wake(),
+      () => active.tickNow(),
     )
   }
 
   /**
    * The balance alone, read after every pass already in flight has published, so a deposit imported
    * before the call is in it. True only once that read is stored durably: failed reads fall back to
-   * a full pass, which refreshes the view but confirms nothing, and with no running task nothing is
-   * read.
+   * a full pass, which refreshes the view but confirms nothing, and with no running coordinator
+   * nothing is read.
    */
   static async confirmBalance(): Promise<boolean> {
-    const live = WalletSyncCoordinator.live()
-    if (!live) return false
-    await live.coordinator.drained()
+    const active = WalletSyncCoordinator.active
+    if (!active) return false
+    await active.scanner.drained()
     try {
-      return await live.coordinator.readBalanceCoalesced()
+      return await active.readBalanceCoalesced()
     } catch {
-      await live.link.wake()
+      await active.tickNow()
       return false
     }
   }
 
-  private static takePending(): { settle: () => void } | null {
+  private static settlePending(): void {
     const pending = WalletSyncCoordinator.pending
     WalletSyncCoordinator.pending = null
-    return pending
+    pending?.settle()
   }
 
   private readonly opts: WalletSyncCoordinatorOptions
   private readonly scanner: TransferEventScanner
-  private inFlight: Promise<boolean> | null = null
+  private seenTerminal: Set<string> | null = null
+  private seenAdvanced: Set<string> | null = null
+  private debounce: ReturnType<typeof setTimeout> | null = null
+  private unsubscribe: (() => void)[] = []
+  private generation = 0
   private balanceRead: Promise<boolean> | null = null
   private balanceReadQueued: Promise<boolean> | null = null
   private readonly boot: Pick<BootPriority, "notesSynced" | "historyReplayed">
 
   constructor(options: WalletSyncCoordinatorOptions) {
+    const { balance, transactions, withdrawals, boot, ...scannerOptions } = options
     this.opts = options
-    this.boot = options.boot ?? bootPriority
+    this.boot = boot ?? bootPriority
     this.scanner = new TransferEventScanner({
-      ...options,
+      ...scannerOptions,
       onSynced: async (anchor, read) => {
         await this.writeBalances(read, anchor)
         this.boot.notesSynced()
@@ -163,60 +150,46 @@ export class WalletSyncCoordinator {
     })
   }
 
-  /**
-   * One scan pass. A `refresh()` that found no running task settles once it ends. An aborted pass
-   * lets go of `drained()` and that refresh at once.
-   */
-  async pass(context: TransferScanContext, opts: TransferScanPass = {}): Promise<boolean> {
-    const waiting = WalletSyncCoordinator.takePending()
-    const pass = (this.inFlight = this.scanner.pass(context, opts))
-    const release = () => {
-      if (this.inFlight === pass) this.inFlight = null
-      waiting?.settle()
+  async start(context: TransferScanContext): Promise<void> {
+    this.stop()
+    const generation = this.generation
+    if (this.opts.transactions) {
+      const onTransactionsUpdated = () => void this.checkTransactions()
+      globalEventEmitter.onTransactionsUpdated(onTransactionsUpdated)
+      this.unsubscribe.push(() => globalEventEmitter.offTransactionsUpdated(onTransactionsUpdated))
+      await this.checkTransactions() // baseline; never refreshes
+      if (generation !== this.generation) return
     }
-    opts.signal?.addEventListener("abort", release)
+    if (this.opts.withdrawals) {
+      this.seenAdvanced = advancedKeys(this.opts.withdrawals.list())
+      this.unsubscribe.push(
+        this.opts.withdrawals.onListChanged((records) =>
+          this.diff("seenAdvanced", advancedKeys(records)),
+        ),
+      )
+    }
     try {
-      return await pass
+      const started = this.scanner.start(context)
+      WalletSyncCoordinator.active = this
+      await started
     } finally {
-      opts.signal?.removeEventListener("abort", release)
-      release()
+      if (generation === this.generation) WalletSyncCoordinator.settlePending()
     }
   }
 
-  /**
-   * Routes the static refreshes through `link`, and wakes it, debounced, on a new terminal send or
-   * a withdrawal leaving `submitting`. Returns the detach.
-   */
-  attach(link: SyncLink): () => void {
-    let debounce: ReturnType<typeof setTimeout> | undefined
-    const wake = () => {
-      clearTimeout(debounce)
-      debounce = setTimeout(() => void link.wake(), REFRESH_DEBOUNCE_MS)
-    }
-    const off: (() => void)[] = []
-    const { transactions, withdrawals } = this.opts
-    if (transactions) {
-      const seen = watch(wake)
-      off.push(transactions.subscribe(() => seen(terminalKeys(transactions.get()))))
-      seen(terminalKeys(transactions.get()))
-    }
-    if (withdrawals) {
-      const seen = watch(wake)
-      off.push(withdrawals.onListChanged((records) => seen(advancedKeys(records))))
-      seen(advancedKeys(withdrawals.list()))
-    }
-    const session = { coordinator: this, link }
-    WalletSyncCoordinator.session = session
-    return () => {
-      for (const stop of off) stop()
-      clearTimeout(debounce)
-      if (WalletSyncCoordinator.session === session) WalletSyncCoordinator.session = null
-    }
+  stop(): void {
+    this.generation++
+    this.scanner.stop()
+    for (const off of this.unsubscribe.splice(0)) off()
+    this.seenTerminal = null
+    this.seenAdvanced = null
+    if (this.debounce) clearTimeout(this.debounce)
+    this.debounce = null
+    if (WalletSyncCoordinator.active === this) WalletSyncCoordinator.active = null
   }
 
-  /** Settles once no pass is in flight: every pass begun before the call has published. */
-  async drained(): Promise<void> {
-    while (this.inFlight) await this.inFlight.then(noop, noop)
+  tickNow(): Promise<void> {
+    return this.scanner.tickNow()
   }
 
   /**
@@ -226,10 +199,12 @@ export class WalletSyncCoordinator {
   private readBalanceCoalesced(): Promise<boolean> {
     if (this.balanceReadQueued) return this.balanceReadQueued
     if (!this.balanceRead) return (this.balanceRead = this.runBalanceRead())
-    this.balanceReadQueued = this.balanceRead.then(noop, noop).then(() => {
-      this.balanceReadQueued = null
-      return (this.balanceRead = this.runBalanceRead())
-    })
+    this.balanceReadQueued = this.balanceRead
+      .catch(() => {})
+      .then(() => {
+        this.balanceReadQueued = null
+        return (this.balanceRead = this.runBalanceRead())
+      })
     return this.balanceReadQueued
   }
 
@@ -269,26 +244,44 @@ export class WalletSyncCoordinator {
       }
     }
   }
-}
 
-const noop = () => {}
+  private async checkTransactions(): Promise<void> {
+    const generation = this.generation
+    let txs: Transaction[]
+    try {
+      txs = await this.opts.transactions!.getTransactions()
+    } catch {
+      return
+    }
+    if (generation !== this.generation) return
+    this.diff("seenTerminal", terminalKeys(txs))
+  }
 
-/** Calls `changed` when a snapshot holds a key the last one lacked; the first only baselines. */
-function watch(changed: () => void): (current: Set<string>) => void {
-  let previous: Set<string> | undefined
-  return (current) => {
-    const grew = previous !== undefined && [...current].some((key) => !previous!.has(key))
-    previous = current
-    if (grew) changed()
+  /** Refreshes when `current` holds a key the previous snapshot lacked; the first call only baselines. */
+  private diff(field: "seenTerminal" | "seenAdvanced", current: Set<string>): void {
+    const previous = this[field]
+    this[field] = current
+    if (!previous) return
+    for (const key of current) {
+      if (!previous.has(key)) return this.scheduleRefresh()
+    }
+  }
+
+  private scheduleRefresh(): void {
+    if (this.debounce) clearTimeout(this.debounce)
+    this.debounce = setTimeout(() => {
+      this.debounce = null
+      this.tickNow().catch((err) => logger.warn(`${LOG_PREFIX} refresh failed:`, err))
+    }, REFRESH_DEBOUNCE_MS)
   }
 }
 
-function terminalKeys(txs: readonly Transaction[]): Set<string> {
+function terminalKeys(txs: Transaction[]): Set<string> {
   const out = new Set<string>()
   for (const tx of txs) {
     if (tx.status === "pending") continue
     if ("action" in tx && tx.action === TokenActionEnum.RECEIVE) continue
-    out.add(tx.txHash || tx.id)
+    out.add(tx.txHash || tx.queueId || String(tx.timestamp))
   }
   return out
 }

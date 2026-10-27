@@ -6,7 +6,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import {
   SIPADepositStore,
-  depositPhaseCopy,
+  sipaDepositInflightLabel,
   type PendingRegistrationRecord,
 } from "@obsidion/front-core"
 
@@ -75,7 +75,7 @@ describe("the tick's stamps reach the rail", () => {
     const swept = record({ fundedAt: 1, sweptAt: 2, sweepTxHash: HASH, phase: "funded" })
     await syncRegistrationRail([swept])
     expect(deposit()).toMatchObject({ phase: "sweeping", sweepTxHash: HASH })
-    expect(depositPhaseCopy(deposit()).live).toBe("Receiving")
+    expect(sipaDepositInflightLabel(deposit())).toBe("Receiving")
     const listener = vi.fn()
     rail().onListChanged(listener)
     await syncRegistrationRail([swept])

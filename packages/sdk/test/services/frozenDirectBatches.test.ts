@@ -246,8 +246,8 @@ describe("a source on the migration executor route", () => {
           recipientCommitment: commitment(1, nonce),
         },
       })
-      expect(batch).not.toHaveProperty("day")
-      expect(batch).not.toHaveProperty("nonce")
+      expect(batch.day).toBeUndefined()
+      expect(batch.nonce).toBeUndefined()
     }
     // The runtime proves each batch for its commitment with no tip.
     expect(f.build.mock.calls.map(([, recipient, tip]) => [recipient, tip])).toEqual(

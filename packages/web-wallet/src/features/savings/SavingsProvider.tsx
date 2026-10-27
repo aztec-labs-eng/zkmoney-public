@@ -35,7 +35,7 @@ export const SAVINGS_REPLAY_RETRY_MS = 30_000
 export function WebSavingsProvider({ children }: { children: ReactNode }) {
   const { obsidionWallet, currentNetwork } = useAztecContext()
   const { obsidionAccount } = useAccountContext()
-  const { tokenService, balances } = useAssetContext()
+  const { tokenService } = useAssetContext()
   const { contractService } = useContractServiceContext()
   // Undefined until read; null where the profile has no sUSDS deployment.
   const [savings, setSavings] = useState<OxideEnvTuple | null>()
@@ -148,9 +148,5 @@ export function WebSavingsProvider({ children }: { children: ReactNode }) {
     const timer = setInterval(pass, SAVINGS_SETTLE_INTERVAL_MS)
     return () => clearInterval(timer)
   }, [source, pending, unadopted])
-  return (
-    <SavingsProvider source={source} balances={balances.records}>
-      {children}
-    </SavingsProvider>
-  )
+  return <SavingsProvider source={source}>{children}</SavingsProvider>
 }

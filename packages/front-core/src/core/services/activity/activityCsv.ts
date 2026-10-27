@@ -8,11 +8,11 @@
  * phase, intent or feed item kind fails the build until someone decides how it is reported.
  */
 import { formatUnits } from "viem"
-import { PaylinkActionEnum, WALLET_TOKEN_SYMBOL } from "@obsidion/core/constants"
+import { PaylinkActionEnum } from "@obsidion/core/constants"
 import type { SIPADepositPhase, WithdrawalPhase } from "@obsidion/core/types"
 import type { Transaction, TransactionStatus } from "../../../types/transactions"
 import { requestLinkedSipaAddresses } from "../../paymentRequest/sipaRequestFulfillment"
-import type { PaymentRequest } from "../../../engine/requests"
+import type { PaymentRequest } from "../../storages/RequestStorage"
 import type { ActivityItem } from "../bridge/BridgeActivityFeed"
 import type { WithdrawalRecord } from "../bridge/types"
 import { withdrawalAmounts } from "../bridge/withdrawalAmounts"
@@ -81,20 +81,6 @@ export interface ActivityCsvRow {
 export interface ActivityCsvToken {
   symbol: string
   decimals: number
-}
-
-/**
- * The Main token the exports report in, once its row's decimals were checked against its
- * immutables. Its symbol is the wallet token's, whatever an older row stored.
- */
-export function csvWalletToken(
-  rows: readonly { address: string; decimals: number }[],
-  active: string | undefined,
-  decimalsChecked: boolean,
-): ActivityCsvToken | undefined {
-  if (!decimalsChecked || !active) return undefined
-  const row = rows.find((t) => t.address.toLowerCase() === active.toLowerCase())
-  return row && { symbol: WALLET_TOKEN_SYMBOL, decimals: row.decimals }
 }
 
 export interface ActivityCsvSources {
@@ -242,7 +228,7 @@ interface ItemContext {
 }
 
 /** Feed items by kind. Transfer kinds are reported from the stored transactions instead. */
-const ITEM_KIND: Record<ActivityItem["kind"], ItemRows> = {
+const ITEM_KIND: Record<ActivityItem["kind"], ItemRows | null> = {
   "bridge.withdrawal": (item) =>
     item.kind === "bridge.withdrawal" && WITHDRAWAL_SETTLED[item.record.phase]
       ? [withdrawalRow(item.record)]
@@ -254,6 +240,9 @@ const ITEM_KIND: Record<ActivityItem["kind"], ItemRows> = {
     item.kind === "upgrade.batch" && UPGRADE_SETTLED[item.batch.state]
       ? [upgradeRow(item.batch, ctx.walletToken)]
       : [],
+  "p2p": null,
+  "paylink": null,
+  "request": null,
 }
 
 /** Every stored kind the export has a rule for; the tests pin each one. */
@@ -286,7 +275,7 @@ export function buildActivityCsvRows(sources: ActivityCsvSources): ActivityCsvRo
     const row = TRANSACTION_ACTION[tx.action]
     return row && TRANSACTION_SETTLED[tx.status] ? [row(tx, sources.walletToken)] : []
   })
-  const itemRows = sources.items.flatMap((item) => ITEM_KIND[item.kind](item, ctx))
+  const itemRows = sources.items.flatMap((item) => ITEM_KIND[item.kind]?.(item, ctx) ?? [])
   return [...txRows, ...itemRows].sort((a, b) => a.timestampMs - b.timestampMs)
 }
 

@@ -1,16 +1,29 @@
 import { useEffect } from "react"
-import { balanceScope, BalanceStorage } from "@obsidion/front-core"
-import { getConfig } from "../config/env"
-import { webStorage } from "../platform/storage/WebStorageAdapter"
+import { useAssetContext, type Asset } from "@obsidion/front-core"
+import { WALLET_TOKEN_SYMBOL } from "@obsidion/core/constants"
 import { demoScenario } from "./demoFlag"
-import { DEMO_COMPLETE_ADDRESS, DEMO_L2_TOKEN } from "./demoFixtures"
+import { DEMO_L2_TOKEN } from "./demoFixtures"
 
-/** A cached zero is no figure; the offline fixture has no sync, so it stands in for one's read. */
+const emptyAsset: Asset = {
+  address: DEMO_L2_TOKEN,
+  name: WALLET_TOKEN_SYMBOL,
+  symbol: WALLET_TOKEN_SYMBOL,
+  decimals: 18,
+  balance: 0,
+  balanceAtomic: 0n,
+  publicBalance: 0,
+  privateBalance: 0,
+  price: 1,
+  change: 0,
+  changeAmount: 0,
+  logo: "",
+}
+
+/** Zero cached assets are omitted by normal hydration; the offline fixture has no live fetch. */
 export default function DemoEmptyBalance() {
+  const { assets, setAssets } = useAssetContext()
   useEffect(() => {
-    if (demoScenario() !== "empty") return
-    const scope = balanceScope(getConfig().network, DEMO_COMPLETE_ADDRESS)
-    void BalanceStorage.get(webStorage).updateBalance(scope, DEMO_L2_TOKEN, 0n)
-  }, [])
+    if (demoScenario() === "empty" && !assets?.length) setAssets([emptyAsset])
+  }, [assets, setAssets])
   return null
 }

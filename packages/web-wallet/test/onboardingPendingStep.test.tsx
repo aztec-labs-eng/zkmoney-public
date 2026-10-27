@@ -534,9 +534,6 @@ vi.mock("../src/config/oxideTuple", async (importOriginal) => ({
 const { OnboardingScreen } = await import("../src/features/onboarding/OnboardingScreen")
 const { PaylinkVisitorScreen } = await import("../src/features/paylink/PaylinkVisitorScreen")
 const { WithdrawalStorage } = await import("@obsidion/front-core")
-const { activeAccount, closeSession, openSession } = await import("../src/platform/session")
-beforeEach(() => void openSession(activeAccount()))
-afterEach(closeSession)
 const { webStorage } = await import("../src/platform/storage/WebStorageAdapter")
 const { LostRegistrationNoticeCard } = await import(
   "../src/features/onboarding/LostRegistrationNoticeCard"
