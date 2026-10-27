@@ -1,26 +1,16 @@
 import { describe, it, expect } from "vitest"
 import { Fr } from "@aztec-labs/aztec.js/fields"
 import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
-import { buildPaylinkNoteView, unpackPaylinkData } from "./paylinkNoteData.js"
+import {
+  assertPaylinkTerms,
+  buildPaylinkNoteView,
+  packPaylinkData,
+  PAYLINK_TERMS_REFUSAL,
+  paylinkSenderHash,
+  paylinkTerms,
+  unpackPaylinkData,
+} from "./paylinkNoteData.js"
 import type { RawPaylinkNote } from "./paylinkNoteData.js"
-
-/** Test-only mirror of `paylink_note::pack_data` for round-trip checks. */
-function packPaylinkData(amount: bigint, from_claimable: bigint, until_claimable: bigint): Fr {
-  const amountBytes = new Fr(amount).toBuffer()
-  const fromBytes = new Fr(from_claimable).toBuffer()
-  const untilBytes = new Fr(until_claimable).toBuffer()
-
-  const combined = Buffer.alloc(32)
-  for (let i = 0; i < 16; i++) combined[i] = amountBytes[16 + i]!
-  for (let i = 0; i < 8; i++) combined[16 + i] = fromBytes[24 + i]!
-  for (let i = 0; i < 8; i++) combined[24 + i] = untilBytes[24 + i]!
-
-  let result = 0n
-  for (let i = 0; i < 32; i++) {
-    result = result * 256n + BigInt(combined[i]!)
-  }
-  return new Fr(result)
-}
 
 function rawNote(data: Fr, refundable_until: Fr = Fr.ZERO): RawPaylinkNote {
   return {
@@ -140,5 +130,40 @@ describe("buildPaylinkNoteView", () => {
     const view = buildPaylinkNoteView(note, 2_000)
     expect(view.isExpired).toBe(false)
     expect(view.isClaimable).toBe(true)
+  })
+})
+
+describe("paylinkTerms", () => {
+  const note: RawPaylinkNote = {
+    hash: new Fr(1),
+    sender_hash: new Fr(2),
+    data: packPaylinkData(1000n, 10n, 100n),
+    refundable_until: new Fr(50),
+    oidc_key_registry: AztecAddress.fromBigIntUnsafe(3n),
+    vkey_hash: new Fr(4),
+    token_address: AztecAddress.fromBigIntUnsafe(5n),
+  }
+
+  it("matches paylink_note::test_paylink_terms_vector", async () => {
+    expect((await paylinkTerms(note)).toString()).toBe(
+      "0x2990a2606ec999744beecb7c857e662d4f0e072435c4a898e51e9ecd78761d29",
+    )
+  })
+
+  it("hashes the sender as paylink_note::test_sender_hash_vector", async () => {
+    expect((await paylinkSenderHash(AztecAddress.fromBigIntUnsafe(7n))).toString()).toBe(
+      "0x29f0f539ca2b1865fb736203c036100998291b6e1072323a1db5022f0a52b3cc",
+    )
+  })
+
+  it("refuses a note other than the link's, and passes a link with no terms", async () => {
+    const terms = await paylinkTerms(note)
+    await expect(assertPaylinkTerms({ terms }, note)).resolves.toBeUndefined()
+    await expect(
+      assertPaylinkTerms({}, { ...note, data: packPaylinkData(1n, 10n, 100n) }),
+    ).resolves.toBeUndefined()
+    await expect(
+      assertPaylinkTerms({ terms }, { ...note, data: packPaylinkData(1n, 10n, 100n) }),
+    ).rejects.toThrow(PAYLINK_TERMS_REFUSAL)
   })
 })

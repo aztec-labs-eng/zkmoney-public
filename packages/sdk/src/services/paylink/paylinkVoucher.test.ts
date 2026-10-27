@@ -104,7 +104,7 @@ const params = { paylinkType: "paylinkDirect", classId: {}, chainId: 31337, roll
 const getArtifactForContract = vi.fn(async () => ({}))
 const contractService = {
   getArtifactForContract,
-  getArtifactForClass: vi.fn(async () => ({})),
+  getArtifactForClass: vi.fn(async () => ({ functions: [] })),
   getKnownClassIds: vi.fn(async () => []),
 }
 const wallet = {

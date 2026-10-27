@@ -1,16 +1,17 @@
-import { floorToCents, parseAmount } from "../../ui/format"
+import { parseUnits } from "viem"
+import { DEFAULT_DECIMALS } from "@obsidion/core/constants"
+import { fixedCents, floorToCents, parseAmount } from "../../ui/format"
 import { Modal } from "../../ui/Modal"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useLocation, useNavigate, useParams } from "react-router-dom"
-import { parseUnits } from "viem"
-import { DEFAULT_DECIMALS } from "@obsidion/core/constants"
 import {
   ContactStorage,
+  exceedsBalance,
   useAccountContext,
   useAssetContext,
   useAztecContext,
-  useBalance,
   useContractServiceContext,
+  useStore,
   TxInFlightError,
   type Contact,
 } from "@obsidion/front-core"
@@ -87,9 +88,10 @@ function ContactPayFlow({ mode }: { mode: "send" | "request" }) {
   const request = routerState?.request
   const { obsidionWallet } = useAztecContext()
   const { obsidionAccount } = useAccountContext()
-  const { tokenService } = useAssetContext()
+  const { tokenService, balances } = useAssetContext()
   const { contractService } = useContractServiceContext()
-  const { walletAsset, walletBalance, assetsLoaded } = useBalance()
+  const balance = useStore(balances.view)
+  const main = balance.main
 
   const [entry, setEntry] = useState<Contact | null | undefined>(routerState?.contact)
   const [phase, setPhase] = useState<Phase>(request && request.amount > 0 ? "confirm" : "amount")
@@ -139,8 +141,9 @@ function ContactPayFlow({ mode }: { mode: "send" | "request" }) {
   const validAmount = Number.isFinite(parsed) && parsed > 0
   const isSend = mode === "send"
   // Only a KNOWN shortfall blocks: a balance still loading reads 0 and would flag every amount.
-  const overspent = isSend && assetsLoaded && parsed > (walletAsset?.balance ?? 0)
-  const decimals = walletAsset?.decimals ?? DEFAULT_DECIMALS
+  const decimals = main?.decimals ?? DEFAULT_DECIMALS
+  const overspent =
+    isSend && exceedsBalance(balance, validAmount ? parseUnits(amount, decimals) : undefined)
   // A request over the limit is one its payer can't send.
   const limitError = validAmount
     ? sendLimitError(parseUnits(amount, decimals), decimals)
@@ -358,12 +361,8 @@ function ContactPayFlow({ mode }: { mode: "send" | "request" }) {
               amount={amount}
               note={note}
               isSend={isSend}
-              walletBalance={walletBalance}
-              maxAmount={
-                walletAsset
-                  ? floorToCents(walletAsset.balanceAtomic, walletAsset.decimals)
-                  : undefined
-              }
+              walletBalance={fixedCents(main)}
+              maxAmount={main ? floorToCents(main.atomic, main.decimals) : undefined}
               overspent={overspent}
               limitError={limitError}
               validAmount={validAmount}

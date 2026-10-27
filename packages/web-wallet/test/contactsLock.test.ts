@@ -20,9 +20,7 @@ Object.defineProperty(navigator, "locks", {
   },
 })
 
-const { contactsWriteLock, requestsWriteLock } = await import(
-  "../src/platform/storage/contactsLock"
-)
+const { contactsWriteLock } = await import("../src/platform/storage/contactsLock")
 
 const tick = () => new Promise((r) => setTimeout(r, 0))
 
@@ -71,37 +69,5 @@ describe("contactsWriteLock", () => {
       }),
     ).rejects.toThrow("boom")
     await expect(contactsWriteLock(async () => "after")).resolves.toBe("after")
-  })
-})
-
-describe("requestsWriteLock", () => {
-  beforeEach(() => {
-    queues.clear()
-    requestedNames.length = 0
-  })
-
-  it("uses its own requests-write lock name and serializes overlapping critical sections", async () => {
-    const events: string[] = []
-    let releaseA!: () => void
-    const gate = new Promise<void>((r) => {
-      releaseA = r
-    })
-
-    const pA = requestsWriteLock(async () => {
-      events.push("a-start")
-      await gate
-      events.push("a-end")
-    })
-    const pB = requestsWriteLock(async () => {
-      events.push("b-start")
-    })
-
-    await tick()
-    expect(events).toEqual(["a-start"])
-
-    releaseA()
-    await Promise.all([pA, pB])
-    expect(events).toEqual(["a-start", "a-end", "b-start"])
-    expect(requestedNames).toEqual(["requests-write", "requests-write"])
   })
 })

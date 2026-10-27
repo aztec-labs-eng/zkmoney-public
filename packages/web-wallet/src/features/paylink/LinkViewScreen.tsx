@@ -1,11 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useLocation, useNavigate } from "react-router-dom"
 import { useAztecContext, useContractServiceContext } from "@obsidion/front-core"
-import { DEFAULT_CONTRACTS, getHardcodedArtifact } from "@obsidion/sdk"
+import {
+  DEFAULT_CONTRACTS,
+  decodeLinkFragment,
+  encodePaylinkInline,
+  getHardcodedArtifact,
+  LINK_CLASS_REFUSAL,
+  LinkKind,
+  resolveShortPaylink,
+} from "@obsidion/sdk"
 import { Card, ScreenNavBar, Spinner } from "@obsidion/web-ds"
 import { showReportableError } from "../../errors/errorModal"
 import { loadOnboardedIdentity } from "../identity/walletIdentity"
 import { OnboardingLayout } from "../../ui/OnboardingLayout"
+import { BootSplash } from "../../ui/PxeBoot"
 import { warmNoirWasm } from "../../platform/noirProver"
 import { stashClaimLink } from "./claimStash"
 import { PaylinkVisitorScreen } from "./PaylinkVisitorScreen"
@@ -14,19 +23,75 @@ import { seededLink, watchLink } from "./linkStatus"
 import { usePolledChainSeconds } from "./chainTime"
 import { withExpiry } from "./claimWindow"
 import type { PaymentLink } from "./types"
+import { useShortLinkLookup } from "../shortLinks"
 
 /**
- * `/link#fragment`. A signed-in browser claims on Home (ClaimLinkModal), the link's creator
- * included — a creator's recoveries live on the row's detail sheet. No account: the signup page
- * with the amount above it. A fragment that does not decode, or an email link while email-locked
- * links are off, stays here on its error card: nothing is stashed and no signup is offered.
+ * `/link#fragment`. A short link's fragment is looked up on chain first and replaced by the full
+ * link, so everything past this point reads the full fragment.
  */
 export function LinkViewScreen() {
-  const navigate = useNavigate()
   const location = useLocation()
+  const fragment = location.hash.replace(/^#/, "")
+  const short = useMemo(() => {
+    const decoded = decodeLinkFragment(fragment)
+    return decoded?.kind === LinkKind.Paylink ? decoded.seed : undefined
+  }, [fragment])
+  return short ? <ShortLinkView seed={short} /> : <FullLinkView fragment={fragment} />
+}
+
+function ShortLinkView({ seed }: { seed: Uint8Array }) {
+  const navigate = useNavigate()
+  const { obsidionWallet } = useAztecContext()
+  const { contractService } = useContractServiceContext()
+  const node = obsidionWallet?.node
+  const resolve = useMemo(() => {
+    if (!node || !contractService) return undefined
+    return async () => {
+      const params = await resolveShortPaylink({ node, contractService }, seed)
+      return params && encodePaylinkInline(params)
+    }
+  }, [node, contractService, seed])
+  const refused = useShortLinkLookup(
+    resolve,
+    (fragment) => navigate(`/link#${fragment}`, { replace: true }),
+    (e) => (e instanceof Error && e.message === LINK_CLASS_REFUSAL ? e.message : undefined),
+  )
+
+  if (!refused) return <BootSplash />
+  return (
+    <OnboardingLayout>
+      <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
+        <ScreenNavBar title="Payment link" onLeading={() => navigate("/")} />
+        <Card style={{ marginTop: 24 }}>
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              gap: 12,
+              padding: "18px 8px",
+              color: "var(--text-secondary)",
+              textAlign: "center",
+            }}
+          >
+            {refused}
+          </div>
+        </Card>
+      </div>
+    </OnboardingLayout>
+  )
+}
+
+/**
+ * A full link. A signed-in browser claims on Home (ClaimLinkModal), the link's creator included — a
+ * creator's recoveries live on the row's detail sheet. No account: the signup page with the amount
+ * above it. A fragment that does not decode, or an email link while email-locked links are off,
+ * stays here on its error card: nothing is stashed and no signup is offered.
+ */
+function FullLinkView({ fragment }: { fragment: string }) {
+  const navigate = useNavigate()
   const { obsidionWallet, rollupAddress } = useAztecContext()
   const { contractService } = useContractServiceContext()
-  const fragment = location.hash.replace(/^#/, "")
 
   const [decoded, unsupported] = useMemo((): [PaymentLink | null, boolean] => {
     try {

@@ -39,13 +39,13 @@ export const CLAIM_FPC_GAS_TABLE: Record<string, ClaimFpcMeasuredTx> = /* TABLE_
     daGas: 3648,
     l2Gas: 599600,
   },
-  "sponsor[authorize_intents,paylink_direct.deposit,claim_fpc.gift_voucher,oxide_token.publish_da]": {
-    daGas: 7232,
-    l2Gas: 724600,
+  "sponsor[authorize_intents,paylink_direct.deposit,link_locator.announce,claim_fpc.gift_voucher,oxide_token.publish_da]": {
+    daGas: 7776,
+    l2Gas: 727100,
   },
-  "sponsor[authorize_intents,paylink_direct.deposit,oxide_token.publish_da]": {
-    daGas: 6048,
-    l2Gas: 685200,
+  "sponsor[authorize_intents,paylink_direct.deposit,link_locator.announce,oxide_token.publish_da]": {
+    daGas: 6592,
+    l2Gas: 687700,
   },
   "sponsor[authorize_intents,paylink_email.claim_to_l1,broadcaster.broadcast_l1_operation_2k,oxide_token.publish_da]": {
     daGas: 2560,
@@ -55,13 +55,13 @@ export const CLAIM_FPC_GAS_TABLE: Record<string, ClaimFpcMeasuredTx> = /* TABLE_
     daGas: 3584,
     l2Gas: 868410,
   },
-  "sponsor[authorize_intents,paylink_email.deposit,claim_fpc.gift_voucher,oxide_token.publish_da]": {
-    daGas: 7232,
-    l2Gas: 724600,
+  "sponsor[authorize_intents,paylink_email.deposit,link_locator.announce,claim_fpc.gift_voucher,oxide_token.publish_da]": {
+    daGas: 7776,
+    l2Gas: 727100,
   },
-  "sponsor[authorize_intents,paylink_email.deposit,oxide_token.publish_da]": {
-    daGas: 6048,
-    l2Gas: 685200,
+  "sponsor[authorize_intents,paylink_email.deposit,link_locator.announce,oxide_token.publish_da]": {
+    daGas: 6592,
+    l2Gas: 687700,
   },
   "sponsor[authorize_intents,test_token.transfer]": {
     daGas: 3264,
@@ -86,6 +86,10 @@ export const CLAIM_FPC_GAS_TABLE: Record<string, ClaimFpcMeasuredTx> = /* TABLE_
   "sponsor[claim_fpc.gift_voucher]": {
     daGas: 1984,
     l2Gas: 523100,
+  },
+  "sponsor[link_locator.announce]": {
+    daGas: 1344,
+    l2Gas: 486200,
   },
   "sponsor[oxide_token.notify_sipa_recipient,broadcaster.broadcast_l1_operation_2k]": {
     daGas: 1408,
@@ -118,6 +122,10 @@ export const CLAIM_FPC_GAS_TABLE: Record<string, ClaimFpcMeasuredTx> = /* TABLE_
   "subscribe[registration,authorize_intents]": {
     daGas: 1408,
     l2Gas: 511400,
+  },
+  "subscribe[registration,link_locator.announce]": {
+    daGas: 1344,
+    l2Gas: 486200,
   },
   "subscribe[registration,oxide_token.notify_sipa_recipient,broadcaster.broadcast_l1_operation_2k]": {
     daGas: 1408,

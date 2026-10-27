@@ -10,7 +10,7 @@ import type { WithdrawOperation } from "../oxide/plainWithdrawal.js"
 
 import { Account, NO_FROM } from "@aztec-labs/aztec.js/account"
 import { computeAuthWitMessageHash } from "@aztec-labs/aztec.js/authorization"
-import { ObsidionWallet } from "../obsidion/ObsidionWallet.js"
+import { ObsidionWallet, type TxHashCallback } from "../obsidion/ObsidionWallet.js"
 import { ObsidionAccount } from "../obsidion/alpha/account/ObsidionAccount.js"
 import {
   buildSponsoredTeeOperation,
@@ -88,6 +88,7 @@ import {
   assertLinkChain,
   encodePaylinkInline,
   decodePaylinkInline,
+  encodePaylinkLocatorPayload,
 } from "./paylink/paylinkInlineCodec.js"
 import { FeePaymentMethod } from "@aztec-labs/aztec.js/fee"
 import { PaylinkDirectClaimService, PaylinkEmailClaimService } from "./index.js"
@@ -102,7 +103,13 @@ import {
   MAX_PAYLINK_NONCES_PER_DAY,
   type PaylinkKeyMaterial,
 } from "./paylink/paylinkKeys.js"
-import { buildPaylinkNoteView, type PaylinkNoteView } from "./paylink/paylinkNoteData.js"
+import {
+  assertPaylinkTerms,
+  buildPaylinkNoteView,
+  claimTermsArgs,
+  paylinkTerms,
+  type PaylinkNoteView,
+} from "./paylink/paylinkNoteData.js"
 import {
   escrowInstancesForClasses,
   escrowInstancesForKnownClasses,
@@ -111,6 +118,7 @@ import {
   paylinkTypeOf,
 } from "./paylink/paylinkEscrow.js"
 import { escrowDepositTx, registerEscrow, sharedNoteRead } from "./paylink/escrowRegistration.js"
+import { LinkKind, linkAnnounceInteraction, shortLinksEnabled } from "./linkLocator/linkLocator.js"
 import {
   findDepositTxHash,
   PAYLINK_NONCE_EPOCH_DAY,
@@ -188,6 +196,13 @@ export type PaylinkParams = {
    * that note. See `computeEscrowTagSecret`.
    */
   escrowTagSecret?: PublicKey
+  /** The short link's seed, which derives `secret`. Absent on a link made before short links. */
+  seed?: Uint8Array
+  /**
+   * `paylink_terms` of the note the create deposited. Every note read refuses another note, and a
+   * claim on a class that takes terms asserts them. Absent on a link made before terms.
+   */
+  terms?: Fr
 }
 
 /** What a create hands back: the link plus the creator-side material its row stores. */
@@ -322,6 +337,7 @@ export class PaylinkService extends ServiceBase {
     depositTxHash?: TxHash
     feePaymentMethod?: FeePaymentMethod
     transferMeta?: Fr[]
+    claimTerms?: Fr[]
   }): ClaimSubmitContext {
     return {
       tokenService: this.tokenService,
@@ -331,6 +347,7 @@ export class PaylinkService extends ServiceBase {
       depositTxHash: args.depositTxHash,
       feePaymentMethod: args.feePaymentMethod,
       transferMeta: args.transferMeta,
+      claimTerms: args.claimTerms,
     }
   }
 
@@ -393,6 +410,20 @@ export class PaylinkService extends ServiceBase {
       sender: this.sender?.getAddress(),
       meta,
     })
+  }
+
+  /** The terms of the note `deposit` writes for these args, which the link carries. */
+  private async depositTerms(
+    paylinkType: ContractName,
+    args: PaylinkInitParams,
+    meta: Fr[],
+  ): Promise<Fr> {
+    const note = await PaylinkProcessorFactory.create(paylinkType).depositNote({
+      ...args,
+      sender: this.sender?.getAddress(),
+      meta,
+    })
+    return paylinkTerms(note)
   }
 
   /**
@@ -547,6 +578,7 @@ export class PaylinkService extends ServiceBase {
       depositTxHash,
       feePaymentMethod: options?.sendOptions?.fee?.paymentMethod,
       transferMeta: await this.payoutMeta(claimParams),
+      claimTerms: await this.claimTerms(contractInstance, claimParams),
     })
 
     const result = await service.claimPayment(
@@ -581,7 +613,7 @@ export class PaylinkService extends ServiceBase {
       depositTxHash,
     } = await this.reconstructPaylinkContract(claimParams)
 
-    const { amount } = await this.readEscrowNote(escrow)
+    const { amount } = await this.readEscrowNote(escrow, claimParams)
     const token = (await this.tokenService.getTokenContract()).address
     const payout = await planPayout(
       this.wallet,
@@ -597,6 +629,7 @@ export class PaylinkService extends ServiceBase {
         args.proverTip,
         args.zkProof,
       )),
+      ...(await this.claimTerms(escrow, claimParams)),
     )
     const submitContext = this.buildClaimSubmitContext({
       paylinkInstance: instance,
@@ -650,11 +683,15 @@ export class PaylinkService extends ServiceBase {
     return { contract, instance, keys, depositTxHash: deposit?.txHash }
   }
 
-  /** The link a create or a recovery hands out for this escrow. */
+  /**
+   * The link a create or a recovery hands out for this escrow. It carries the short link's seed only
+   * when `announced`: the create tx also publishes the locator log the seed resolves through.
+   */
   private async linkParams(
     paylinkType: ContractName,
     instance: ContractInstanceWithAddress,
     keys: PaylinkKeyMaterial,
+    created: { terms?: Fr; announced?: boolean } = {},
   ): Promise<CreatedPaylinkParams> {
     assert(keys.fallbackSecret, "paylink key material lacks the creator's fallback secret")
     return {
@@ -669,6 +706,8 @@ export class PaylinkService extends ServiceBase {
         creator: this.sender.getAddress(),
       }),
       fallbackSecret: keys.fallbackSecret,
+      ...(created.announced && keys.link ? { seed: keys.link.seed } : {}),
+      ...(created.terms ? { terms: created.terms } : {}),
     }
   }
 
@@ -783,6 +822,22 @@ export class PaylinkService extends ServiceBase {
     // `AssertedNote::create`. The outer call is the paylink's manual initializer;
     // the token's `_validate_from_private` authwit branch is satisfied by `authwit`.
     const depositInteraction = contract.methods.deposit!(...depositArgs)
+    // The announce shares the deposit's tx: a short link resolves only when the announcing tx
+    // also initializes the escrow.
+    const prepared = await this.linkParams(paylinkType, instance, paylinkKeys, {
+      terms: await this.depositTerms(paylinkType, args, meta),
+      announced: !!paylinkKeys.link && (await shortLinksEnabled(this.contractService)),
+    })
+    const announce =
+      prepared.seed && paylinkKeys.link
+        ? await linkAnnounceInteraction(
+            this.wallet,
+            this.contractService,
+            LinkKind.Paylink,
+            paylinkKeys.link,
+            encodePaylinkLocatorPayload(prepared),
+          )
+        : undefined
     const { batchCall, sendOpts } = await prepareDepositSubmit({
       wallet: this.wallet,
       node: this.wallet.node,
@@ -792,6 +847,7 @@ export class PaylinkService extends ServiceBase {
       depositInteraction,
       paylinkInstance: instance,
       authwit,
+      teeUnsignedInteractions: announce ? [announce] : [],
       // Pin `kind` so the benchmark TEE-leg flow tag matches the prove-leg
       // (the dispatch below hardcodes `kind: "paylink-create"`); otherwise a
       // TEE-only orphan sample would fall back to the "send" default.
@@ -863,11 +919,7 @@ export class PaylinkService extends ServiceBase {
     // produced before the deposit tx is actually submitted.
     const sent = await result.sentTx
 
-    const paylinkParams: SettledPaylinkParams = {
-      ...(await this.linkParams(paylinkType, instance, paylinkKeys)),
-      txHash: sent.txHash,
-    }
-
+    const paylinkParams: SettledPaylinkParams = { ...prepared, txHash: sent.txHash }
     return paylinkParams
   }
 
@@ -1002,6 +1054,11 @@ export class PaylinkService extends ServiceBase {
   private static readonly PAYLINK_NOTE_STORAGE_SLOT = 1n
 
   public async isPaylinkClaimed(params: PaylinkParams): Promise<boolean> {
+    return (await this.paylinkClaimBlock(params)) !== undefined
+  }
+
+  /** The L2 block whose transaction spent the link's escrow; undefined while it is unspent. */
+  public async paylinkClaimBlock(params: PaylinkParams): Promise<number | undefined> {
     assertLinkChain(params, await linkChainInfo(this.wallet))
     const contractAddress = await this.getContractAddress(params)
 
@@ -1018,7 +1075,7 @@ export class PaylinkService extends ServiceBase {
       [siloedNullifier],
     )
 
-    return leafIndex?.data !== undefined // true = claimed, false = available
+    return leafIndex?.data === undefined ? undefined : Number(leafIndex.l2BlockNumber)
   }
 
   /**
@@ -1083,11 +1140,13 @@ export class PaylinkService extends ServiceBase {
     account: Account = this.sender,
   ): Promise<PaylinkNoteView> {
     const { contract } = await this.reconstructPaylinkContract(params)
-    return this.readEscrowNote(contract, account)
+    return this.readEscrowNote(contract, params, account)
   }
 
+  /** The escrow's note, refused when it is not the one the link was made for. */
   private async readEscrowNote(
     contract: ContractBase,
+    link: Pick<PaylinkParams, "terms">,
     account: Account = this.sender,
   ): Promise<PaylinkNoteView> {
     if (!contract.methods.sync_note) {
@@ -1095,13 +1154,24 @@ export class PaylinkService extends ServiceBase {
     }
     // Visitors have no account. ZERO is only a placeholder, not a valid note-discovery scope.
     const from = account.getAddress()
-    return sharedNoteRead(this.wallet, contract.address, async () => {
+    const note = await sharedNoteRead(this.wallet, contract.address, async () => {
       const sim = await contract.methods.sync_note!().simulate({
         from: from.equals(AztecAddress.ZERO) ? NO_FROM : from,
         additionalScopes: [contract.address],
       })
       return buildPaylinkNoteView(sim.result)
     })
+    await assertPaylinkTerms(link, note)
+    return note
+  }
+
+  /** The trailing `terms` a claim on this escrow takes. */
+  private claimTerms(
+    escrow: ContractBase,
+    link: PaylinkParams,
+    account: Account = this.sender,
+  ): Promise<Fr[]> {
+    return claimTermsArgs(escrow.artifact, link, () => this.readEscrowNote(escrow, link, account))
   }
 
   /**
@@ -1115,7 +1185,7 @@ export class PaylinkService extends ServiceBase {
     account: Account = this.sender,
   ): Promise<ResolvedPaylink> {
     const { contract, instance, depositTxHash } = await this.reconstructPaylinkContract(params)
-    const note = await this.readEscrowNote(contract, account)
+    const note = await this.readEscrowNote(contract, params, account)
     const deposit = await this.readDepositMetaOf(instance, depositTxHash, note.tokenAddress).catch(
       () => undefined,
     )
@@ -1270,6 +1340,7 @@ export class PaylinkService extends ServiceBase {
        * deposit is still proving. Awaited, so a caller can persist it before the tx moves on.
        */
       onPrepared?: (params: CreatedPaylinkParams) => void | Promise<void>
+      onTxHash?: TxHashCallback
     },
   ): Promise<SettledPaylinkParams> {
     assert(
@@ -1297,20 +1368,17 @@ export class PaylinkService extends ServiceBase {
       email: args.email?.address,
       paylinkKeys,
     })
-    const depositArgs = this.getConstructorArgs(
-      paylinkType,
-      {
-        amount: args.amount,
-        hash: commitment ?? 0n,
-        token: args.token,
-        window: args.window,
-        memo: args.memo,
-        ...(args.email
-          ? { registry_address: args.email.registryAddress, vkey_hash: args.email.vkeyHash }
-          : {}),
-      },
-      meta,
-    )
+    const initArgs: PaylinkInitParams = {
+      amount: args.amount,
+      hash: commitment ?? 0n,
+      token: args.token,
+      window: args.window,
+      memo: args.memo,
+      ...(args.email
+        ? { registry_address: args.email.registryAddress, vkey_hash: args.email.vkeyHash }
+        : {}),
+    }
+    const depositArgs = this.getConstructorArgs(paylinkType, initArgs, meta)
     const instance = await getContractInstanceFromInstantiationParams(artifact, {
       salt: new Fr(0n),
       publicKeys: paylinkKeys.publicKeys,
@@ -1330,8 +1398,21 @@ export class PaylinkService extends ServiceBase {
     const token = await this.tokenService.getTokenContract()
     const fpcArtifact = await registerSponsorFpc(this.wallet, sponsor)
 
-    const prepared = await this.linkParams(paylinkType, instance, paylinkKeys)
+    const prepared = await this.linkParams(paylinkType, instance, paylinkKeys, {
+      terms: await this.depositTerms(paylinkType, initArgs, meta),
+      announced: !!paylinkKeys.link && (await shortLinksEnabled(this.contractService)),
+    })
     await options?.onPrepared?.(prepared)
+    const announce =
+      prepared.seed && paylinkKeys.link
+        ? await linkAnnounceInteraction(
+            this.wallet,
+            this.contractService,
+            LinkKind.Paylink,
+            paylinkKeys.link,
+            encodePaylinkLocatorPayload(prepared),
+          )
+        : undefined
 
     // One passkey signature covers the funding-pull intent AND unlocks the session.
     const pull = token.methods.transfer!(user, instance.address, args.amount, meta, 0)
@@ -1378,9 +1459,10 @@ export class PaylinkService extends ServiceBase {
         operationClassWitnesses: [await contractClassWitness(instance)],
         ...authorized,
         // The escrow is already in scope for its own notes, which the gift's tag also needs.
-        ...(args.voucher
-          ? {
-              teeUnsignedInteractions: [
+        teeUnsignedInteractions: [
+          ...(announce ? [announce] : []),
+          ...(args.voucher
+            ? [
                 // The gift spends a use of the payer's subscription.
                 giftVoucherInteraction(
                   this.wallet,
@@ -1389,9 +1471,9 @@ export class PaylinkService extends ServiceBase {
                   instance.address,
                   args.voucher.railId,
                 ),
-              ],
-            }
-          : {}),
+              ]
+            : []),
+        ],
         gate: sponsor.subscribe?.gate,
       },
     )
@@ -1408,6 +1490,7 @@ export class PaylinkService extends ServiceBase {
       fee: op.sendOpts.fee,
       operationId: options?.operationId,
       kind: "paylink-create",
+      onTxHash: options?.onTxHash,
     })
     const txHash = (
       sent as { receipt?: { txHash?: { toString(): string } } }
@@ -1449,6 +1532,7 @@ export class PaylinkService extends ServiceBase {
       withdraw?: PaylinkClaimWithdraw
       /** Calls the enclave does not sign that ride the claim batch, e.g. a SIPA broadcast. */
       broadcasts?: ContractFunctionInteraction[]
+      onTxHash?: TxHashCallback
     },
   ): Promise<string> {
     const isEmail = claimParams.paylinkType === DEFAULT_CONTRACTS.paylinkEmail
@@ -1463,19 +1547,12 @@ export class PaylinkService extends ServiceBase {
       )
     }
     const prepared = await this.prepareSponsoredEscrow(claimParams, sponsor)
-    const { escrow, user, meta } = prepared
+    const { escrow, user, meta, terms } = prepared
     const voucherBurn = options?.voucher?.withdraw
     const broadcasts = options?.broadcasts ?? []
     if (!isEmail && voucherBurn && escrow.methods.claim_with_withdrawal) {
-      return (
-        await this.claimWithWithdrawal(
-          prepared,
-          voucherBurn,
-          sponsor,
-          options?.operationId,
-          broadcasts,
-        )
-      ).txHash
+      return (await this.claimWithWithdrawal(prepared, voucherBurn, sponsor, options, broadcasts))
+        .txHash
     }
     if (broadcasts.length > 0) {
       throw new ClaimBatchFullError(
@@ -1510,9 +1587,10 @@ export class PaylinkService extends ServiceBase {
         user,
         Fr.random(),
         meta,
+        ...terms,
       )
     } else {
-      claimInteraction = escrow.methods.claim!(user, Fr.random(), meta)
+      claimInteraction = escrow.methods.claim!(user, Fr.random(), meta, ...terms)
     }
     const sent = await this.sendSponsoredEscrowCall(prepared, claimInteraction, sponsor, options)
     return sent.txHash
@@ -1530,10 +1608,10 @@ export class PaylinkService extends ServiceBase {
     l1Recipient: EthAddress,
     args: Omit<ClaimToL1Args, "l1Recipient">,
     sponsor: PaylinkSponsorContext,
-    options?: { operationId?: string; zkProof?: PaylinkL1Proof },
+    options?: { operationId?: string; zkProof?: PaylinkL1Proof; onTxHash?: TxHashCallback },
   ): Promise<{ txHash: string; blockNumber: number }> {
     const prepared = await this.prepareSponsoredEscrow(claimParams, sponsor)
-    const { amount } = await this.readEscrowNote(prepared.escrow, prepared.account)
+    const { amount } = await this.readEscrowNote(prepared.escrow, claimParams, prepared.account)
     const payout = await planPayout(
       this.wallet,
       this.contractService,
@@ -1549,7 +1627,7 @@ export class PaylinkService extends ServiceBase {
       args.proverTip,
       options?.zkProof ?? args.zkProof,
     )
-    const interaction = prepared.escrow.methods.claim_to_l1!(...claimArgs)
+    const interaction = prepared.escrow.methods.claim_to_l1!(...claimArgs, ...prepared.terms)
     return this.sendSponsoredEscrowCall(prepared, interaction, sponsor, options, {
       teeUnsignedInteractions: payout.broadcasts,
       plainWithdrawal: payout.plainWithdrawal,
@@ -1575,10 +1653,10 @@ export class PaylinkService extends ServiceBase {
     prepared: Awaited<ReturnType<PaylinkService["prepareSponsoredEscrow"]>>,
     withdraw: PaylinkClaimWithdraw,
     sponsor: PaylinkSponsorContext,
-    operationId?: string,
+    options: { operationId?: string; onTxHash?: TxHashCallback } | undefined,
     broadcasts: ContractFunctionInteraction[] = [],
   ): Promise<{ txHash: string; blockNumber: number }> {
-    const { escrow, user, meta } = prepared
+    const { escrow, user, meta, terms } = prepared
     const payout = await planPayout(
       this.wallet,
       this.contractService,
@@ -1615,12 +1693,17 @@ export class PaylinkService extends ServiceBase {
       getUserPayloadHash(payout.userPayload),
       withdraw.proverTip,
       meta,
+      ...terms,
     )
     return this.sendSponsoredEscrowCall(
       prepared,
       interaction,
       sponsor,
-      { operationId, voucher: { railId: sponsor.railId } },
+      {
+        operationId: options?.operationId,
+        onTxHash: options?.onTxHash,
+        voucher: { railId: sponsor.railId },
+      },
       {
         accountFree: true,
         teeUnsignedInteractions: [...payout.broadcasts, ...broadcasts],
@@ -1650,7 +1733,19 @@ export class PaylinkService extends ServiceBase {
     const escrow = Contract.at(instance.address, artifact, this.wallet)
     const fpcArtifact = await registerSponsorFpc(this.wallet, sponsor)
     const meta = await this.payoutMeta(claimParams)
-    return { account, user, instance, keys, depositTxHash, escrow, fpcArtifact, claimParams, meta }
+    const terms = await this.claimTerms(escrow, claimParams, account)
+    return {
+      account,
+      user,
+      instance,
+      keys,
+      depositTxHash,
+      escrow,
+      fpcArtifact,
+      claimParams,
+      meta,
+      terms,
+    }
   }
 
   /**
@@ -1665,6 +1760,7 @@ export class PaylinkService extends ServiceBase {
       operationId?: string
       voucher?: VoucherClaimOptions
       withdraw?: PaylinkClaimWithdraw
+      onTxHash?: TxHashCallback
     },
     extra?: Pick<
       SponsoredTeeOperationArgs,
@@ -1777,6 +1873,7 @@ export class PaylinkService extends ServiceBase {
       fee: op.sendOpts.fee,
       operationId: options?.operationId,
       kind: "paylink-claim",
+      onTxHash: options?.onTxHash,
     })
     const receipt = (sent as { receipt?: TxReceipt }).receipt
     const txHash = receipt?.txHash?.toString()
@@ -1794,7 +1891,7 @@ export class PaylinkService extends ServiceBase {
   public async refundSponsoredPaylink(
     claimParams: PaylinkParams,
     sponsor: PaylinkSponsorContext,
-    options?: { operationId?: string; memo?: string },
+    options?: { operationId?: string; memo?: string; onTxHash?: TxHashCallback },
   ): Promise<string> {
     const account = this.asObsidionAccount()
     const user = account.getAddress()
@@ -1865,6 +1962,7 @@ export class PaylinkService extends ServiceBase {
       fee: op.sendOpts.fee,
       operationId: options?.operationId,
       kind: "paylink-refund",
+      onTxHash: options?.onTxHash,
     })
     const txHash = (
       sent as { receipt?: { txHash?: { toString(): string } } }

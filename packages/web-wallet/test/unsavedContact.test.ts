@@ -12,9 +12,12 @@ const m = vi.hoisted(() => ({
 vi.mock("@obsidion/front-core", async (original) => ({
   ...(await original<typeof import("@obsidion/front-core")>()),
   ContactStorage: { get: () => ({ getEntries: async () => m.entries }) },
-  TransactionStorage: { get: () => ({ getTransactions: async () => m.transactions }) },
 }))
-vi.mock("../src/platform/storage/WebStorageAdapter", () => ({ webStorage: {} }))
+vi.mock("../src/platform/session", () => ({
+  session: () => ({
+    activity: { ready: Promise.resolve(), rows: { get: () => m.transactions } },
+  }),
+}))
 vi.mock("../src/features/identity/walletIdentity", () => ({
   loadWalletIdentity: () => (m.ownHandle ? { handle: m.ownHandle } : null),
 }))
@@ -25,9 +28,8 @@ vi.mock("../src/features/contacts/registryResolution", () => ({
 vi.mock("../src/features/contacts/useInlineContactSearch", () => ({ addContact: m.addContact }))
 
 const { TagValidationError } = await import("@obsidion/front-core")
-const { lookUpUnsavedContact, pastAddressOf, saveUnsavedContact, unsavedContact } = await import(
-  "../src/features/contacts/unsavedContact"
-)
+const { lookUpUnsavedContact, pastAddressOf, saveUnsavedContact, unknownSender, unsavedContact } =
+  await import("../src/features/contacts/unsavedContact")
 
 const ADDRESS = `0x${"2c".repeat(32)}`
 const resolved = (l2Address = ADDRESS) => ({ status: "resolved", l2Address })
@@ -66,6 +68,11 @@ describe("lookUpUnsavedContact", () => {
 
     m.transactions = []
     expect(await lookUpUnsavedContact("grace")).toEqual(unsavedContact("grace", ""))
+  })
+
+  it("opens an L2 address as an unknown sender without asking the registry", async () => {
+    expect(await lookUpUnsavedContact(ADDRESS)).toEqual(unknownSender(ADDRESS))
+    expect(m.typeAhead).not.toHaveBeenCalled()
   })
 
   it("lets a network failure through so the page can say so", async () => {

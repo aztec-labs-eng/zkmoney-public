@@ -1,9 +1,7 @@
 import { useEffect, useMemo, useRef } from "react"
 import {
   SIPADepositStore,
-  RequestStorage,
   bootPriority,
-  reconcileSipaRequestFulfillments,
   useAssetContext,
   useAztecContext,
   useCachedRecords,
@@ -126,8 +124,8 @@ export function startResolverPaymentLoop(
  * on an interval. Records render cache-first — the persisted store hydrates
  * immediately and the sync pass overwrites it as fresh chain state lands.
  * Balance is NOT read here — a claim credits the shared asset layer, the pass
- * refreshes the chain view through `refreshBalance`, and `useBalance` renders
- * the result.
+ * refreshes the chain view through `refreshBalance`, and the balances store
+ * renders the result.
  * Sync is a no-op while the wallet is locked (the claim path needs the
  * unlocked key), so a refreshed session starts crediting deposits as soon as
  * it unlocks. The first pass runs right after the boot balance's note sync, and
@@ -141,13 +139,6 @@ export function useSipaDeposits(): void {
 
   const store = useMemo(() => SIPADepositStore.get(webStorage), [])
   const { records } = useCachedRecords(store)
-
-  // A claimed deposit closes the request link it was minted for.
-  useEffect(() => {
-    void reconcileSipaRequestFulfillments(RequestStorage.get(), records).catch((err) =>
-      console.warn("[sipaDeposits] request reconcile failed:", err),
-    )
-  }, [records])
 
   // Per-mount, so a StrictMode re-run reuses the same reporter and re-reports nothing.
   const reportSweeps = useRef<ReturnType<typeof createClaimSweepReporter> | null>(null)

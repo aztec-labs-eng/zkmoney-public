@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { ContactStorage, TransactionStorage, type IStorageAdapter, type PaylinkTransaction } from "@obsidion/front-core"
+import { ContactStorage, type IStorageAdapter, type PaylinkTransaction } from "@obsidion/front-core"
+import { activeAccount, closeSession, openSession, session } from "../src/platform/session"
 import { PaylinkActionEnum } from "@obsidion/core/constants"
 import { decodePaylinkInline } from "@obsidion/sdk"
 import { provingProgress } from "@obsidion/proving-progress"
@@ -39,7 +40,6 @@ const handled = <T,>(promise: Promise<T>) => promise.then(
 )
 
 describe("capture service boundary contracts", () => {
-  let store: TransactionStorage
   const events: { kind: string; operationId?: string; failed?: boolean }[] = []
   const start = (event: { operationId?: string }) => events.push({ kind: "start", ...event })
   const end = (event: { operationId?: string; failed?: boolean }) => events.push({ kind: "end", ...event })
@@ -48,11 +48,11 @@ describe("capture service boundary contracts", () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date("2026-09-01T00:00:00Z"))
     demo.enabled = true
-    const session = new Map<string, string>()
+    const tab = new Map<string, string>()
     vi.stubGlobal("sessionStorage", {
-      getItem: (key: string) => session.get(key) ?? null,
-      setItem: (key: string, value: string) => { session.set(key, value) },
-      removeItem: (key: string) => { session.delete(key) },
+      getItem: (key: string) => tab.get(key) ?? null,
+      setItem: (key: string, value: string) => { tab.set(key, value) },
+      removeItem: (key: string) => { tab.delete(key) },
     })
     // The faked flows run inside real operations, whose store persists here.
     const local = new Map<string, string>()
@@ -63,22 +63,22 @@ describe("capture service boundary contracts", () => {
     })
     state("success")
     events.length = 0
-    const values = new Map<string, string>([["obsidion_transactions", "[]"]])
+    const values = new Map<string, string>()
     const adapter: IStorageAdapter = {
       getItem: async (key) => values.get(key) ?? null,
       setItem: async (key, value) => { values.set(key, value) },
       removeItem: async (key) => { values.delete(key) },
       clear: async () => { values.clear() },
     }
-    ;(TransactionStorage as unknown as { instance: TransactionStorage | null }).instance = null
-    store = TransactionStorage.get(adapter)
     ContactStorage.resetForTests()
     ContactStorage.get(adapter)
     provingProgress.on("signing-start", start)
     provingProgress.on("signing-end", end)
+    openSession(activeAccount())
   })
 
   afterEach(() => {
+    closeSession()
     provingProgress.off("signing-start", start)
     provingProgress.off("signing-end", end)
     vi.clearAllTimers()
@@ -154,32 +154,38 @@ describe("capture service boundary contracts", () => {
     }, (stage) => { if (stage === "proving") throw cancelled }))
     await vi.advanceTimersByTimeAsync(6000)
     expect((await result).error).toBe(cancelled)
-    expect(await store.getTransactions()).toEqual([])
+    expect(session().activity.rows.get()).toEqual([])
     expect(events).toEqual([])
   })
 
-  it("a later capture send failure updates only its own queue id", async () => {
-    await store.addTokenTransaction("send", { address: "unrelated", name: "DAI", symbol: "DAI", decimals: 18, amount: 7, price: 1, logo: "" }, "pending", undefined, "other", "unrelated-send")
+  it("a later capture send failure updates only its own operation id", async () => {
+    await session().activity.insertPending({
+      id: "unrelated-send", operationId: "unrelated-send", action: "send",
+      token: { address: "unrelated", name: "DAI", symbol: "DAI", decimals: 18, amount: 7, price: 1, logo: "" },
+      amountAtomic: 7n, timestamp: Date.now(), status: "pending", txHash: "", to: "other",
+    })
     state("signing-failure")
     const result = handled(runCaptureContactPay({
       mode: "send", deps, tag: "ada", senderTag: "bob", amountDisplay: "24",
     }, () => {}))
     await vi.advanceTimersByTimeAsync(6000)
     expect((await result).error).toBeInstanceOf(Error)
-    const rows = await store.getTransactions()
+    const rows = session().activity.rows.get()
     expect(rows).toHaveLength(2)
-    expect(rows.find((row) => row.queueId === "unrelated-send")?.status).toBe("pending")
-    const failed = rows.find((row) => row.queueId?.startsWith("capture-send-"))!
+    expect(rows.find((row) => row.id === "unrelated-send")?.status).toBe("pending")
+    const failed = rows.find((row) => row.id.startsWith("capture-send-"))!
     expect(failed.status).toBe("failed")
     expect(failed.txHash).toBeFalsy()
     expect(events).toEqual([
-      { kind: "start", operationId: failed.queueId },
-      { kind: "end", operationId: failed.queueId, failed: true },
+      { kind: "start", operationId: failed.id },
+      { kind: "end", operationId: failed.id, failed: true },
     ])
   })
 
   it("a desktop send saves its hold at the helper's approval, after the recheck, then ends unresolved", async () => {
     vi.stubGlobal("location", new URL("http://localhost/?demo=activity&flowFixture=success&desktopFixture=unresolved"))
+    // No account rows here, and the session's clock would keep every timer running.
+    closeSession()
     const calls: string[] = []
     const sent = handled(getSipaDepositGateway().deposit({
       target: { address: SIPA, name: "demo.sandbox.oxide" },
@@ -263,7 +269,7 @@ describe("capture service boundary contracts", () => {
     await vi.advanceTimersByTimeAsync(6000)
     const { value, error } = await result
     expect(error).toBeUndefined()
-    const rows = (await store.getTransactions()) as PaylinkTransaction[]
+    const rows = session().activity.rows.get() as PaylinkTransaction[]
     expect(rows).toHaveLength(1)
     expect(rows[0]).toMatchObject({ kind: "paylink-claim", emailPaymentAction: PaylinkActionEnum.CLAIM, status: "success", txHash: value, token: { amount: 100 } })
     expect(value).toMatch(/^0x[0-9a-f]{64}$/)

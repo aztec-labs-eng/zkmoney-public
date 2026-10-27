@@ -25,7 +25,7 @@ const withdrawals = WithdrawalStorage.get(new InMemoryStorageAdapter())
 const ctx = vi.hoisted(() => ({
   aztec: { obsidionWallet: {}, currentNetwork: { type: "sandbox" } },
   account: { obsidionAccount: {} },
-  asset: { tokenService: {} },
+  asset: { tokenService: {}, balances: { records: undefined } },
   contracts: { contractService: {} },
 }))
 vi.mock("@obsidion/front-core", async (importOriginal) => ({

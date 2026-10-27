@@ -107,7 +107,7 @@ import {
   type SIPASweep,
   type SIPADepositStore,
 } from "../core/services/deposits/SIPADepositStore"
-import { globalEventEmitter } from "../core/services/GlobalEventEmitter"
+import { syncCatchUp } from "src/engine/catchUp"
 
 /** Node surface for the settlement check (`isL1ToL2MessageReady`) and the consumed check. */
 export interface SipaClaimsNode {
@@ -473,9 +473,7 @@ export async function syncSipaDeposits(
   // holds the balance and activity placeholders until its claims have refreshed the chain view.
   // Otherwise it only joins a catch-up already in progress.
   const end =
-    replaying || globalEventEmitter.isSyncCatchingUp()
-      ? globalEventEmitter.beginSyncCatchUp()
-      : undefined
+    replaying || syncCatchUp.status.get() ? syncCatchUp.begin() : undefined
   const eventPins = new Map<string, number>()
   events.forEach((_, i) => {
     const key = eventKey(i)

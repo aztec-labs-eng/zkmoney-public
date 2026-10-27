@@ -3,10 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { AccountStorage } from "../../src/core/storages/AccountStorage"
 import { NetworkStorage } from "../../src/core/storages/NetworkStorage"
-import { TransactionStorage } from "../../src/core/storages/TransactionStorage"
 import { WithdrawalStorage } from "../../src/core/services/bridge/WithdrawalStorage"
 import { SIPADepositStore } from "../../src/core/services/deposits/SIPADepositStore"
-import { TransactionTracker } from "../../src/core/services/transactions/TransactionTracker"
+import { createActivity } from "../../src/engine/activity"
+import { createMemoryKv } from "../../src/engine/kv"
 import { bootPriority } from "../../src/core/services/transactions/bootPriority"
 import { createReorgMonitor, type CreateReorgMonitorOptions } from "../../src/core/reorgBoot"
 import { InMemoryStorageAdapter } from "../__test-helpers__/InMemoryStorageAdapter"
@@ -17,14 +17,13 @@ vi.mock("@aztec-labs/aztec.js/node", async (importOriginal) => {
   return { ...actual, createAztecNodeClient: vi.fn() }
 })
 
+const emptyActivity = () => createActivity({ kv: createMemoryKv(), networkId: () => undefined })
+
 function setup() {
   resetSingleton(AccountStorage as unknown as { instance: AccountStorage | null })
-  resetSingleton(TransactionStorage as unknown as { instance: TransactionStorage | null })
   resetSingleton(NetworkStorage as unknown as { instance: NetworkStorage | null })
   resetSingleton(WithdrawalStorage as unknown as { instance: WithdrawalStorage | null })
   resetSingleton(SIPADepositStore as unknown as { instance: SIPADepositStore | null })
-  ;(TransactionTracker as unknown as { instance: unknown }).instance = null
-  vi.spyOn(TransactionTracker.getInstance(), "getQueue").mockReturnValue([])
   const storage = new InMemoryStorageAdapter()
   AccountStorage.get(storage)
   const sync = vi.fn(async () => {})
@@ -32,7 +31,15 @@ function setup() {
     node: { getNodeInfo: vi.fn(), getTxReceipt: vi.fn() },
     pxe: { sync },
   } as unknown as CreateReorgMonitorOptions["wallet"]
-  return { monitor: createReorgMonitor({ wallet, storage }), sync }
+  return {
+    monitor: createReorgMonitor({
+      wallet,
+      storage,
+      activity: emptyActivity(),
+      onOutcome: () => {},
+    }),
+    sync,
+  }
 }
 
 describe("createReorgMonitor PXE sync", () => {

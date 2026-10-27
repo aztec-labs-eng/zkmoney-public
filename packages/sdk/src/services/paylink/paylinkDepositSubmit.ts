@@ -72,6 +72,8 @@ export async function prepareDepositSubmit(args: {
   depositInteraction: ContractFunctionInteraction
   paylinkInstance: ContractInstanceWithAddress
   authwit: AuthWitness
+  /** Calls that need no TEE capsules, sent in the deposit's tx (the short link's announce). */
+  teeUnsignedInteractions?: ContractFunctionInteraction[]
   options?: MethodOptions<{
     resolveSpendMetadata?: SpendMetadataResolver
     /** Metadata for deposits the funding pull may spend. */
@@ -121,6 +123,7 @@ export async function prepareDepositSubmit(args: {
         },
       ],
       buildOperationCall: paylinkOuterCallBuilder,
+      teeUnsignedInteractions: args.teeUnsignedInteractions,
       resolveSpendMetadata,
       resolveDepositSpendMetadata: options?.resolveDepositSpendMetadata,
     },

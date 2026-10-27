@@ -21,6 +21,7 @@ import {
   authorizeIntentsEffects,
   firstDepositTxGas,
   giftVoucherEffects,
+  linkAnnounceEffects,
   mergeEffects,
   operationAvmExecutionGas,
   operationBroadcastMarginal,
@@ -149,6 +150,11 @@ export function deriveClaimFpcGasBudgets(
     privateSideEffectGas(giftVoucherEffects()),
     gasSub(measuredTx("sponsor[claim_fpc.gift_voucher]"), base, "gift_voucher"),
   )
+  assertModelExact(
+    "link_locator.announce",
+    privateSideEffectGas(linkAnnounceEffects()),
+    gasSub(measuredTx("sponsor[link_locator.announce]"), base, "link_locator.announce"),
+  )
   // The broadcast's execution gas, read off the lone broadcast, has to reproduce the first
   // deposit, which is the check that the public-call pricing is right.
   const bareOperation = measuredTx(`sponsor[${RELEASE}]`)
@@ -164,6 +170,7 @@ export function deriveClaimFpcGasBudgets(
   const mAuth = publicSideEffectGas(authorizeIntentsEffects())
   const mGift = worstGiftVoucherMarginal()
   const mSipaNotify = publicSideEffectGas(sipaNotifyEffects())
+  const mLinkAnnounce = publicSideEffectGas(linkAnnounceEffects())
   const mL1Operation = operationBroadcastMarginal(bareOperation, 1, base)
   const mL1Operation4k = operationBroadcastMarginal(
     measuredTx("sponsor[broadcaster.broadcast_l1_operation_4k]"),
@@ -204,9 +211,10 @@ export function deriveClaimFpcGasBudgets(
     mPublishDa,
   )
   covers(
-    "sponsor[authorize_intents,paylink_direct.deposit,oxide_token.publish_da]",
+    "sponsor[authorize_intents,paylink_direct.deposit,link_locator.announce,oxide_token.publish_da]",
     mAuth,
     mPaylinkDeposit,
+    mLinkAnnounce,
     mPublishDa,
   )
   covers(claimRow, mAuth, mPaylinkClaim, mPublishDa)
@@ -242,6 +250,7 @@ export function deriveClaimFpcGasBudgets(
     mAuth,
     mGift,
     mSipaNotify,
+    mLinkAnnounce,
     mL1Operation,
     mL1Operation4k,
     mL1OperationPair,

@@ -6,6 +6,7 @@ import {
   resolveWalletProfile,
   type ConfigProfileErrorCode,
   type WalletSourceRollup,
+  type WalletSourceRollupIssue,
   type ConfigVersion,
   type WalletProfileBoot,
   type ResolveWalletProfileInput,
@@ -84,6 +85,11 @@ export type WebWalletConfig = {
   sourceRollupNodes?: ReadonlyMap<string, string>
   /** The rollups a cutover left, each with its version's contracts. */
   sourceRollups?: readonly WalletSourceRollup[]
+  /**
+   * The previous-generation profiles boot could not read. Their rollups, and every older one, are
+   * missing from `sourceRollups`, so nothing here can say their deployments hold nothing.
+   */
+  sourceRollupIssues?: readonly WalletSourceRollupIssue[]
   /** L1 chain the accounts and the Registry live on. */
   l1ChainId: number
   /** Viem chain for `l1ChainId` (TEE signer source, injected-wallet clients). */
@@ -326,7 +332,6 @@ export function loadConfig(
 }
 
 let cached: WebWalletConfig | undefined
-
 type LiveProfileRequest = Pick<
   ResolveWalletProfileInput,
   "profileUrl" | "expectedProfileId" | "expectedZkJwtVkeyHash"
@@ -459,6 +464,7 @@ function mergeProfileConfig(
     oxideProfile,
     sourceRollupNodes,
     sourceRollups,
+    sourceRollupIssues: boot.sourceRollupIssues,
     claimFpcAddress: boot.snapshot.contracts.claimFpc?.address,
     assets: boot.version.assets ?? [],
   }

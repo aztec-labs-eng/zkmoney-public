@@ -1,3 +1,4 @@
+import { useMemo } from "react"
 import { buildRequestShareUrl, type PaymentRequest } from "@obsidion/front-core"
 import {
   ConfirmationSheetDetailRow,
@@ -12,6 +13,7 @@ import { Modal } from "../../ui/Modal"
 import { linkExpiryLabel, requestShareStatus, requestShareText } from "./shareView"
 import { usePhoneLayout } from "../../ui/usePhoneLayout"
 import { requestLinkOrigin } from "./requestLinkCreation"
+import { useShortRequestLink } from "./shortRequestLink"
 
 /**
  * Share step of the request-paylink flow (ULT-671), doubling as the detail sheet for a persisted
@@ -34,12 +36,27 @@ export function SharePaylinkModal({
   onCancel?: () => void
   onClose: () => void
 }) {
-  const url = buildRequestShareUrl(request, requesterTag, requestLinkOrigin()) ?? undefined
-  const { copied, copy, share } = useLinkSharing(
-    url,
-    "Payment request",
-    requestShareText(request.amount),
+  const full = buildRequestShareUrl(request, requesterTag, requestLinkOrigin()) ?? undefined
+  // A request with no short link yet publishes one on its first share, as Receive does.
+  const unpublished = useMemo(
+    () =>
+      full && !request.shortLink
+        ? { requestId: request.id, url: full, amount: request.amount }
+        : undefined,
+    [full, request.shortLink, request.id, request.amount],
   )
+  const short = useShortRequestLink(unpublished)
+  const url = request.shortLink ?? short.url
+  const sharing = useLinkSharing(url, "Payment request", requestShareText(request.amount))
+  const { copied } = sharing
+  const copy = () => {
+    short.publish()
+    return sharing.copy()
+  }
+  const share = () => {
+    short.publish()
+    return sharing.share()
+  }
   const phone = usePhoneLayout()
   const status = requestShareStatus(request, Date.now())
   const expiry = linkExpiryLabel(request.expiresAt, Date.now())

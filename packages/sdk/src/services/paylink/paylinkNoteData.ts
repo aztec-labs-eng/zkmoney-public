@@ -1,5 +1,6 @@
-import type { FieldLike } from "@aztec-labs/aztec.js/abi"
+import type { ContractArtifact, FieldLike } from "@aztec-labs/aztec.js/abi"
 import { Fr } from "@aztec-labs/aztec.js/fields"
+import { poseidon2Hash, poseidon2HashWithSeparator } from "@aztec-labs/foundation/crypto/poseidon"
 import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 
 /** Unpacked `PaylinkNote.data` — amount + claim window timestamps. */
@@ -83,6 +84,65 @@ export function unpackPaylinkData(data: FieldLike): PaylinkNoteData {
   }
 
   return { amount, from_claimable, until_claimable }
+}
+
+/** Mirrors `paylink_note::pack_data`. */
+export function packPaylinkData(amount: bigint, fromClaimable: bigint, untilClaimable: bigint): Fr {
+  return new Fr((amount << 128n) | (fromClaimable << 64n) | untilClaimable)
+}
+
+/** Mirrors the deposit's `sender_hash`, which binds refund rights to the funder. */
+export function paylinkSenderHash(sender: AztecAddress): Promise<Fr> {
+  return poseidon2Hash([sender.toField()])
+}
+
+/** "PLTM", as `paylink_note::paylink_terms` separates it. */
+const TERMS_SEPARATOR = 0x504c544d
+
+/**
+ * Mirrors `paylink_note::paylink_terms`: one hash over every note field. A link carries it and a
+ * claim asserts it, so a link opens only the escrow it was made for.
+ */
+export function paylinkTerms(note: RawPaylinkNote): Promise<Fr> {
+  return poseidon2HashWithSeparator(
+    [
+      note.hash,
+      note.sender_hash,
+      note.data,
+      note.refundable_until,
+      note.oidc_key_registry.toField(),
+      note.vkey_hash,
+      note.token_address.toField(),
+    ],
+    TERMS_SEPARATOR,
+  )
+}
+
+export const PAYLINK_TERMS_REFUSAL = "This link doesn't match its escrow"
+
+/** Refuse a note other than the one the link was made for. */
+export async function assertPaylinkTerms(
+  link: { terms?: Fr },
+  note: RawPaylinkNote,
+): Promise<void> {
+  if (link.terms && !(await paylinkTerms(note)).equals(link.terms)) {
+    throw new Error(PAYLINK_TERMS_REFUSAL)
+  }
+}
+
+/**
+ * The trailing `terms` a claim on an escrow of this artifact takes; none on a class made before
+ * them. A link without terms, made before them or rebuilt by a resync from its creator's own
+ * funding transfer, claims against the note it reads.
+ */
+export async function claimTermsArgs(
+  artifact: ContractArtifact,
+  link: { terms?: Fr },
+  readNote: () => Promise<RawPaylinkNote>,
+): Promise<Fr[]> {
+  const claim = artifact.functions.find((f) => f.name === "claim")
+  if (!claim?.parameters.some((p) => p.name === "terms")) return []
+  return [link.terms ?? (await paylinkTerms(await readNote()))]
 }
 
 /** Shape a raw synced note into display-ready fields (amount, valid until, expiry status). */

@@ -64,6 +64,7 @@ export class PaylinkEmailClaimService extends ServiceBase implements ClaimServic
       recipient.getAddress(),
       new Fr(0),
       submitContext.transferMeta ?? emptyTransferMeta(),
+      ...(submitContext.claimTerms ?? []),
     )
 
     const { initFn, buildResult, sendOptions } = await preparePaylinkClaimSubmit({

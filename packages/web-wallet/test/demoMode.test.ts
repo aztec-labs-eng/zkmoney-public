@@ -20,8 +20,9 @@ import {
 import { sandboxProfile } from "./fixtures/sandboxProfile"
 import { testWalletDbs } from "./support/fakeWalletDb"
 
-// Every test re-imports the aztec + front-core graph; the first one pays the cold transform.
-vi.setConfig({ testTimeout: 30_000 })
+// Every test, and the hook closing its session, re-imports the aztec + front-core graph; the first
+// one pays the cold transform.
+vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 })
 
 const originalFetch = globalThis.fetch
 
@@ -86,7 +87,8 @@ beforeEach(async () => {
   vi.spyOn(console, "info").mockImplementation(() => {})
 })
 
-afterEach(() => {
+afterEach(async () => {
+  ;(await import("../src/platform/session")).closeSession()
   globalThis.fetch = originalFetch
   vi.restoreAllMocks()
 })
@@ -242,27 +244,24 @@ describe("seeded session", () => {
 
   it("seeds the empty scenario with a known zero balance and no transactions", async () => {
     await seed("empty")
-    const { BalanceStorage, TransactionStorage } = await import("@obsidion/front-core")
+    const { BalanceStorage } = await import("@obsidion/front-core")
     const { DEMO_COMPLETE_ADDRESS, DEMO_L2_TOKEN } = await import("../src/dev/demoFixtures")
     const { getConfig } = await import("../src/config/env")
     const scope = `${getConfig().network}:${DEMO_COMPLETE_ADDRESS}`
     expect(await BalanceStorage.get().getBalance(scope, DEMO_L2_TOKEN)).toBe(0n)
-    const { WebStorageAdapter } = await import("../src/platform/storage/WebStorageAdapter")
-    expect(await TransactionStorage.get(new WebStorageAdapter()).getTransactions()).toEqual([])
+    expect((await import("../src/platform/session")).session().activity.rows.get()).toEqual([])
   })
 
   it("leaves the fresh scenario with nothing in the feed", async () => {
     await seed("fresh")
-    const { SIPADepositStore, TransactionStorage, WithdrawalStorage } = await import(
-      "@obsidion/front-core"
-    )
+    const { SIPADepositStore, WithdrawalStorage } = await import("@obsidion/front-core")
     const { WebStorageAdapter } = await import("../src/platform/storage/WebStorageAdapter")
     const adapter = new WebStorageAdapter()
     await SIPADepositStore.get(adapter).load()
     await WithdrawalStorage.get(adapter).load()
     expect(SIPADepositStore.get().list()).toEqual([])
     expect(WithdrawalStorage.get().list()).toEqual([])
-    expect(await TransactionStorage.get(adapter).getTransactions()).toEqual([])
+    expect((await import("../src/platform/session")).session().activity.rows.get()).toEqual([])
   })
 })
 
@@ -356,13 +355,13 @@ describe("recovery scenario", () => {
     await seed("recovery")
     const { SIPADepositStore } = await import("@obsidion/front-core")
     const { WebStorageAdapter } = await import("../src/platform/storage/WebStorageAdapter")
-    const { recoveryReasonFor } = await import("../src/features/deposit/sipaRecovery")
+    const { recoveryReasonFor } = await import("@obsidion/front-core")
     await SIPADepositStore.get(new WebStorageAdapter()).load()
     const records = SIPADepositStore.get().list()
     expect(records).toHaveLength(7)
     // d1 under the fee floor, d2 stuck, d3 too young, d4 recovered, d5 claimed, d7 has a self-sweep
     // already in flight, d8 is over the per-transaction cap.
-    expect(bySeed(records, recoveryReasonFor)).toEqual([
+    expect(bySeed(records, (r) => recoveryReasonFor(r, Date.now()))).toEqual([
       "unsweepable",
       "stuck",
       null,
@@ -393,10 +392,10 @@ describe("recovery scenario", () => {
     await seed("recovery")
     const { SIPADepositStore } = await import("@obsidion/front-core")
     const { WebStorageAdapter } = await import("../src/platform/storage/WebStorageAdapter")
-    const { canSelfSweep } = await import("../src/features/deposit/sipaSweep")
+    const { canSelfSweep } = await import("@obsidion/front-core")
     await SIPADepositStore.get(new WebStorageAdapter()).load()
     // Only d2: d1/d8 are unsweepable, d3 is young, d4/d5 are settled, d7 is submitted.
-    expect(bySeed(SIPADepositStore.get().list(), canSelfSweep)).toEqual([
+    expect(bySeed(SIPADepositStore.get().list(), (r) => canSelfSweep(r, Date.now()))).toEqual([
       false,
       true,
       false,
@@ -451,24 +450,26 @@ describe("activity scenario", () => {
     await seed("activity")
     const {
       ContactStorage,
-      RequestStorage,
       SIPADepositStore,
-      TransactionStorage,
       WithdrawalStorage,
+      SEND_SUBMIT_TIMEOUT_MS,
     } = await import("@obsidion/front-core")
+    const { session } = await import("../src/platform/session")
     const { WebStorageAdapter } = await import("../src/platform/storage/WebStorageAdapter")
     const adapter = new WebStorageAdapter()
     await SIPADepositStore.get(adapter).load()
     await WithdrawalStorage.get(adapter).load()
 
-    const transactions = await TransactionStorage.get(adapter).getTransactions()
+    const transactions = session().activity.rows.get()
     expect(transactions.map((tx) => tx.status)).toContain("pending")
     expect(transactions.map((tx) => tx.status)).toContain("failed")
     // One pre-submit send is two hours old: the load-time sweep fails it and leaves the live one.
-    const failed = await TransactionStorage.get(adapter).failInterruptedSends()
-    expect(failed.map((tx) => tx.queueId)).toEqual(["demo-send-interrupted"])
+    const failed = session().activity.failInterrupted(Date.now(), SEND_SUBMIT_TIMEOUT_MS)
+    expect(failed.map((tx) => tx.operationId)).toEqual(["demo-send-interrupted"])
+    const { walletStorage } = await import("../src/platform/storage/walletStorage")
+    await walletStorage.flush()
     expect(
-      (await TransactionStorage.get(adapter).getTransactions()).filter(
+      session().activity.rows.get().filter(
         (tx) => tx.status === "pending" && !tx.txHash,
       ),
     ).toHaveLength(1)
@@ -476,7 +477,7 @@ describe("activity scenario", () => {
     expect(SIPADepositStore.get().list().length).toBeGreaterThan(0)
     expect(await ContactStorage.get(adapter).getEntries()).toHaveLength(6)
 
-    const requests = await RequestStorage.get(adapter).list()
+    const requests = session().requests.view.get()
     expect(
       new Set(
         requests.filter((r) => r.status === "pending").map((r) => `${r.direction}:${r.kind}`),
@@ -493,21 +494,21 @@ describe("activity scenario", () => {
     }
   })
 
-  it("writes a sender tag, never an address, on every receive", async () => {
+  it("writes a sender tag on every receive but the unknown sender's", async () => {
     await seed("activity")
-    const { TransactionStorage, validateAddress } = await import("@obsidion/front-core")
-    const { WebStorageAdapter } = await import("../src/platform/storage/WebStorageAdapter")
-    const rows = (await TransactionStorage.get(new WebStorageAdapter()).getTransactions()).filter(
+    const { validateAddress } = await import("@obsidion/front-core")
+    const { UNKNOWN_SENDER_ADDRESS } = await import("../src/dev/demoFixtures")
+    const rows = (await import("../src/platform/session")).session().activity.rows.get().filter(
       (tx) => tx.action === "receive",
     ) as { from?: string; senderL2Address?: string }[]
 
     expect(rows.length).toBeGreaterThan(0)
     for (const row of rows) {
-      // The receiver resolves a display name and persists that; the proven sender rides along
-      // separately. An address in `from` would draw as "Unknown sender".
-      expect(validateAddress(row.from!)).toBe(false)
+      // The proven sender rides along separately. An address in `from` draws as "Unknown sender".
+      expect(validateAddress(row.from!)).toBe(row.senderL2Address === UNKNOWN_SENDER_ADDRESS)
       expect(row.senderL2Address).toMatch(/^0x[0-9a-f]{64}$/)
     }
+    expect(rows.filter((row) => row.senderL2Address === UNKNOWN_SENDER_ADDRESS)).toHaveLength(2)
     // Including the one whose sender is a stranger to this device's contacts, whose address would
     // otherwise parse — the row draws the tag, not the "Unknown sender" fallback.
     const { STRANGER_ADDRESS, STRANGER_TAG } = await import("../src/dev/demoFixtures")
@@ -518,12 +519,11 @@ describe("activity scenario", () => {
 
   it("seeds a creator link row for every recovery the detail modal can offer", async () => {
     await seed("activity")
-    const { TransactionStorage, paylinkStatusFor } = await import("@obsidion/front-core")
-    const { WebStorageAdapter } = await import("../src/platform/storage/WebStorageAdapter")
-    const { creatorLinkAction } = await import("../src/features/paylink/creatorLinkActions")
+    const { paylinkStatusFor } = await import("@obsidion/front-core")
+    const { creatorLinkAction } = await import("@obsidion/front-core")
     const { DEMO_L2_ADDRESS } = await import("../src/dev/demoFixtures")
 
-    const rows = (await TransactionStorage.get(new WebStorageAdapter()).getTransactions()).filter(
+    const rows = (await import("../src/platform/session")).session().activity.rows.get().filter(
       (tx) => tx.action === "Pay To Email",
     ) as PaylinkTransaction[]
     const nowSec = Math.floor(Date.now() / 1000)
@@ -562,8 +562,8 @@ describe("activity scenario", () => {
     const { SIPADepositStore, depositAmounts, isSettledSipaPhase, isUnfundedSipaDeposit } =
       await import("@obsidion/front-core")
     const { WebStorageAdapter } = await import("../src/platform/storage/WebStorageAdapter")
-    const { recoveryReasonFor } = await import("../src/features/deposit/sipaRecovery")
-    const { canSelfSweep } = await import("../src/features/deposit/sipaSweep")
+    const { recoveryReasonFor } = await import("@obsidion/front-core")
+    const { canSelfSweep } = await import("@obsidion/front-core")
     const { DEMO_TX_AMOUNT_CAP } = await import("../src/dev/fakeL1Rpc")
     await SIPADepositStore.get(new WebStorageAdapter()).load()
     const records = SIPADepositStore.get().list()
@@ -577,10 +577,10 @@ describe("activity scenario", () => {
     )
     // One row per exit affordance: the stuck sweep offers both exits, each unsweepable deposit
     // recovery alone — and the two of those sit at opposite ends of the sweep window.
-    expect(visible.filter((r) => canSelfSweep(r))).toHaveLength(1)
-    expect(visible.filter((r) => recoveryReasonFor(r) === "stuck")).toHaveLength(1)
+    expect(visible.filter((r) => canSelfSweep(r, Date.now()))).toHaveLength(1)
+    expect(visible.filter((r) => recoveryReasonFor(r, Date.now()) === "stuck")).toHaveLength(1)
     const unsweepable = visible
-      .filter((r) => recoveryReasonFor(r) === "unsweepable")
+      .filter((r) => recoveryReasonFor(r, Date.now()) === "unsweepable")
       .map((r) => depositAmounts(r))
     expect(unsweepable.filter((a) => a.grossAtomic <= a.feeAtomic)).toHaveLength(1)
     // The cap meets the amount the pool would forward, so the fee comes off before the comparison.
@@ -591,12 +591,12 @@ describe("activity scenario", () => {
     // Settled with no exit left to offer.
     const recovered = visible.find((r) => r.phase === "recovered")!
     expect(isSettledSipaPhase(recovered.phase)).toBe(true)
-    expect(recoveryReasonFor(recovered)).toBeNull()
+    expect(recoveryReasonFor(recovered, Date.now())).toBeNull()
     // Unsettled, and still no exit: the sweep has landed, so there is nothing left to push or pull.
     const pending = visible.find((r) => r.phase === "pendingClaim")!
     expect(isSettledSipaPhase(pending.phase)).toBe(false)
-    expect(recoveryReasonFor(pending)).toBeNull()
-    expect(canSelfSweep(pending)).toBe(false)
+    expect(recoveryReasonFor(pending, Date.now())).toBeNull()
+    expect(canSelfSweep(pending, Date.now())).toBe(false)
     // The claim scan stamps the net, the fee and the sweep's inbox index together.
     expect(depositAmounts(pending).netAtomic).toBeGreaterThan(0n)
     expect(depositAmounts(pending).grossAtomic - depositAmounts(pending).netAtomic).toBe(

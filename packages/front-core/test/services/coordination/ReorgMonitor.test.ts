@@ -1,15 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { QueueStatus } from "@obsidion/sdk"
+import { TxStatus } from "@aztec-labs/stdlib/tx"
 import { AccountStorage } from "../../../src/core/storages/AccountStorage"
 import { NetworkStorage } from "../../../src/core/storages/NetworkStorage"
-import { TransactionStorage } from "../../../src/core/storages/TransactionStorage"
+import { getActiveNetworkId } from "../../../src/core/activeNetworkId"
+import { createActivity, type Activity } from "../../../src/engine/activity"
+import { createMemoryKv } from "../../../src/engine/kv"
 import { WithdrawalStorage } from "../../../src/core/services/bridge/WithdrawalStorage"
 import {
   WithdrawalTrackingService,
   type WithdrawalTrackerNode,
 } from "../../../src/core/services/bridge/WithdrawalTrackingService"
 import { SIPADepositStore } from "../../../src/core/services/deposits/SIPADepositStore"
-import { TransactionTracker } from "../../../src/core/services/transactions/TransactionTracker"
 import {
   ReorgMonitor,
   type ConfirmationOutcome,
@@ -17,7 +19,6 @@ import {
 } from "../../../src/core/services/coordination/ReorgMonitor"
 import type { ReorgTxReceiptLike } from "../../../src/core/services/chain/receiptTypes"
 import type { TokenInTxService } from "../../../src/types"
-import { TRANSACTIONS_STORAGE_KEY } from "../../../src/core/storages/constants"
 import { InMemoryStorageAdapter } from "../../__test-helpers__/InMemoryStorageAdapter"
 import { resetSingleton } from "../../__test-helpers__/resetSingleton"
 
@@ -45,17 +46,12 @@ const sampleToken = (): TokenInTxService => ({
 
 const resetSingletons = () => {
   resetSingleton(AccountStorage as unknown as { instance: AccountStorage | null })
-  resetSingleton(TransactionStorage as unknown as { instance: TransactionStorage | null })
   resetSingleton(NetworkStorage as unknown as { instance: NetworkStorage | null })
   resetSingleton(WithdrawalStorage as unknown as { instance: WithdrawalStorage | null })
   resetSingleton(SIPADepositStore as unknown as { instance: SIPADepositStore | null })
 }
 
-const stubTracker = () => {
-  ;(TransactionTracker as unknown as { instance: unknown }).instance = null
-  const tracker = TransactionTracker.getInstance()
-  vi.spyOn(tracker, "getQueue").mockReturnValue([])
-}
+let activity: Activity
 
 /** Scripted node: per-hash receipt or "throw"; records call order. */
 function makeNode() {
@@ -86,46 +82,46 @@ async function seedRow(
     networkId?: string
   } = {},
 ) {
-  const transactions = TransactionStorage.get()
-  await transactions.addTokenTransaction(
-    "send",
-    sampleToken(),
-    "pending",
+  const status = opts.status ?? "pending"
+  await activity.insertPending({
+    id: "q-" + txHash.slice(-4),
+    action: "send",
+    token: sampleToken(),
+    amountAtomic: 0n,
+    timestamp: Date.now(),
+    status,
     txHash,
-    "0xr",
-    "q-" + txHash.slice(-4),
-  )
-  await transactions.updateTransaction(
-    (tx) => tx.txHash === txHash,
-    (tx) => {
-      if (opts.blockNumber !== undefined) tx.blockNumber = opts.blockNumber
-      if (opts.blockHash !== undefined) tx.blockHash = opts.blockHash
-      if (opts.networkId !== undefined) tx.networkId = opts.networkId
-    },
-  )
-  if (opts.status === "success") {
-    await transactions.updateByTxHash(txHash, QueueStatus.SUCCESS, 1111)
-  } else if (opts.status === "failed") {
-    await transactions.updateByTxHash(txHash, QueueStatus.FAILED, 1111)
-  }
+    to: "0xr",
+    blockNumber: opts.blockNumber,
+    blockHash: opts.blockHash,
+    networkId: opts.networkId,
+    ...(status === "pending"
+      ? {}
+      : {
+          detailedStatus: status === "success" ? QueueStatus.SUCCESS : QueueStatus.FAILED,
+          endTime: 1111,
+          progress: 100,
+        }),
+  })
 }
 
 async function rowByHash(txHash: string) {
-  const txs = await TransactionStorage.get().getTransactions()
-  return txs.find((t) => (t.txHash ?? "").toLowerCase() === txHash.toLowerCase())!
+  return activity.byHash(txHash)!
 }
+
+const setTier = (txHash: string, tier: TxStatus) =>
+  activity.apply((row) => row.txHash === txHash, { type: "anchored", tier })
 
 function setup() {
   resetSingletons()
-  stubTracker()
   const adapter = new InMemoryStorageAdapter()
   AccountStorage.get(adapter)
-  TransactionStorage.get(adapter)
+  activity = createActivity({ kv: createMemoryKv(), networkId: getActiveNetworkId })
   const chain = makeNode()
   const outcomes: ConfirmationOutcome[] = []
   const deps: ReorgMonitorDeps = {
     node: chain.node,
-    transactionStorage: TransactionStorage.get(),
+    transactionStorage: activity,
     onOutcome: (o) => outcomes.push(o),
   }
   return { adapter, chain, outcomes, deps }
@@ -155,7 +151,8 @@ describe("ReorgMonitor.runPass", () => {
 
   it("a received payment that fails is flagged incoming", async () => {
     const { chain, outcomes, deps } = setup()
-    await TransactionStorage.get().addIncomingTokenTransaction({
+    activity.upsertScanned({
+      amountAtomic: 0n,
       txHash: TX,
       from: "@alice",
       senderL2Address: "0xa11ce",
@@ -208,17 +205,14 @@ describe("ReorgMonitor.runPass", () => {
   it("healthy confirmed rows are left unchanged", async () => {
     const { chain, outcomes, deps } = setup()
     await seedRow(TX, { status: "success", blockNumber: 42, blockHash: "0xb42" })
-    await TransactionStorage.get().updateTransaction(
-      (tx) => tx.txHash === TX,
-      (tx) => {
-        tx.tier = "proposed"
-      },
-    )
+    setTier(TX, TxStatus.PROPOSED)
     chain.script(TX, { status: "proposed", blockNumber: 42, blockHash: "0xb42" })
+    const before = await rowByHash(TX)
+    expect(before.tier).toBe(TxStatus.PROPOSED)
 
     const summary = await runPass(deps)
 
-    expect((await rowByHash(TX)).status).toBe("success")
+    expect(await rowByHash(TX)).toEqual(before)
     expect(summary).toMatchObject({ checked: 1, demoted: 0, failed: 0, reConfirmed: 0 })
     expect(outcomes).toEqual([])
   })
@@ -253,22 +247,25 @@ describe("ReorgMonitor.runPass", () => {
 
   it("rows beyond the four surfaces (faucet, paylink-create) are reconciled", async () => {
     const { chain, deps } = setup()
-    const transactions = TransactionStorage.get()
-    await transactions.addFaucetTransaction(sampleToken(), "success", TX)
-    // paylink row seeded raw — the persisted discriminator is emailPaymentAction
-    const rows = await transactions.getTransactions()
-    rows.push({
+    await activity.insertPending({
+      id: TX,
+      action: "faucet",
+      token: sampleToken(),
+      amountAtomic: 0n,
+      timestamp: 1,
+      status: "success",
+      txHash: TX,
+    })
+    await activity.insertPending({
+      id: TX2,
+      amountAtomic: 0n,
       timestamp: 1,
       status: "success",
       txHash: TX2,
       action: "Pay To Email",
       emailPaymentAction: "Pay To Email",
       flavor: "direct",
-    } as (typeof rows)[number])
-    await (transactions as unknown as { storage: InMemoryStorageAdapter }).storage.setItem(
-      TRANSACTIONS_STORAGE_KEY,
-      JSON.stringify(rows),
-    )
+    })
 
     chain.script(TX, { status: "dropped" })
     chain.script(TX2, { status: "dropped" })
@@ -514,20 +511,18 @@ describe("ReorgMonitor.runPass", () => {
 
   it("requestPass triggers landing mid-pass coalesce into one trailing re-run", async () => {
     const { deps } = setup()
+    await seedRow(TX, { status: "success", blockNumber: 42 })
     let release!: () => void
     const gate = new Promise<void>((r) => (release = r))
     let passes = 0
     const monitor = new ReorgMonitor({
       ...deps,
-      transactionStorage: {
-        async getTransactions() {
+      node: {
+        async getTxReceipt() {
           passes++
           if (passes === 1) await gate
-          return []
+          throw new Error("no receipt")
         },
-        demoteByTxHash: () => Promise.reject(new Error("unused")),
-        updateByTxHash: () => Promise.reject(new Error("unused")),
-        updateTransaction: () => Promise.reject(new Error("unused")),
       },
     })
 

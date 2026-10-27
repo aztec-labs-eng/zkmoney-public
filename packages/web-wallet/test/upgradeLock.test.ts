@@ -8,12 +8,23 @@ vi.mock("../src/config/env", () => ({
 
 const { walletStorage } = await import("../src/platform/storage/walletStorage")
 const { webStorage } = await import("../src/platform/storage/WebStorageAdapter")
-const { acquireUpgradeLock, checkUpgradeLock, releaseUpgradeLock, upgradeLock, useUpgradeLock } =
-  await import("../src/features/migration/upgradeLock")
+const {
+  acquireUpgradeLock,
+  checkUpgradeLock,
+  markCreatedHere,
+  markNewAccountHere,
+  recordRetiredSourceRead,
+  releaseUpgradeLock,
+  retiredSourceCandidate,
+  retiredSourceSettled,
+  upgradeLock,
+  useUpgradeLock,
+} = await import("../src/features/migration/upgradeLock")
 
 const ACCOUNT = "0xabc"
 
 const RUN = `metadata-migration/${"0x" + "aa".repeat(20)}/${"0x" + "03".repeat(20)}/${ACCOUNT}`
+const SOURCE = "0x" + "05".repeat(20)
 
 afterEach(async () => {
   vi.restoreAllMocks()
@@ -21,6 +32,10 @@ afterEach(async () => {
   await webStorage.removeItem(RUN)
   walletStorage.removeItem(`webwallet.upgradeLock/${ACCOUNT}`)
   walletStorage.removeItem(`webwallet.version/${ACCOUNT}`)
+  walletStorage.removeItem(`webwallet.createdOn/${ACCOUNT}`)
+  walletStorage.removeItem(
+    `webwallet.retiredSourceRead/${"0x" + "aa".repeat(20)}/${SOURCE}/${ACCOUNT}`,
+  )
 })
 
 describe("the upgrade lock", () => {
@@ -104,5 +119,82 @@ describe("the upgrade lock", () => {
     await act(async () => checkUpgradeLock("0xdef"))
     expect(read()).toBe(true)
     act(() => root.unmount())
+  })
+})
+
+describe("a source on another rollup", () => {
+  const tip = (number: bigint) => ({ number, hash: `0x${number.toString(16)}` })
+  const empty = (number: bigint, priorFinal: boolean) => ({
+    empty: true as const,
+    tip: tip(number),
+    priorFinal,
+  })
+
+  it("settles only once the account is current here", async () => {
+    await acquireUpgradeLock(ACCOUNT, 7n)
+    recordRetiredSourceRead(ACCOUNT, SOURCE, empty(100n, false))
+    recordRetiredSourceRead(ACCOUNT, SOURCE, empty(200n, true))
+    expect(retiredSourceSettled(ACCOUNT, SOURCE)).toBe(false)
+
+    await releaseUpgradeLock(ACCOUNT)
+    recordRetiredSourceRead(ACCOUNT, SOURCE, empty(300n, false))
+    expect(retiredSourceSettled(ACCOUNT, SOURCE)).toBe(false)
+    recordRetiredSourceRead(ACCOUNT, SOURCE, empty(400n, true))
+    expect(retiredSourceSettled(ACCOUNT, SOURCE)).toBe(true)
+    expect(retiredSourceSettled(ACCOUNT, "0x" + "06".repeat(20))).toBe(false)
+  })
+
+  it("keeps the block that closed its latest empty read until that block is final", async () => {
+    await releaseUpgradeLock(ACCOUNT)
+    recordRetiredSourceRead(ACCOUNT, SOURCE, empty(100n, false))
+    expect(retiredSourceCandidate(ACCOUNT, SOURCE)).toEqual(tip(100n))
+    recordRetiredSourceRead(ACCOUNT, SOURCE, empty(150n, false))
+    expect(retiredSourceCandidate(ACCOUNT, SOURCE)).toEqual(tip(150n))
+    expect(retiredSourceSettled(ACCOUNT, SOURCE)).toBe(false)
+
+    recordRetiredSourceRead(ACCOUNT, SOURCE, empty(200n, true))
+    expect(retiredSourceSettled(ACCOUNT, SOURCE)).toBe(true)
+    expect(retiredSourceCandidate(ACCOUNT, SOURCE)).toBeUndefined()
+  })
+
+  it("starts over after a read that finds funds again", async () => {
+    await releaseUpgradeLock(ACCOUNT)
+    recordRetiredSourceRead(ACCOUNT, SOURCE, empty(100n, false))
+    recordRetiredSourceRead(ACCOUNT, SOURCE, { empty: false })
+    expect(retiredSourceCandidate(ACCOUNT, SOURCE)).toBeUndefined()
+
+    // No earlier empty read is held, so nothing can be final yet.
+    recordRetiredSourceRead(ACCOUNT, SOURCE, empty(200n, true))
+    expect(retiredSourceSettled(ACCOUNT, SOURCE)).toBe(false)
+    expect(retiredSourceCandidate(ACCOUNT, SOURCE)).toEqual(tip(200n))
+  })
+
+  it("is read again while a new upgrade holds the account", async () => {
+    await releaseUpgradeLock(ACCOUNT)
+    recordRetiredSourceRead(ACCOUNT, SOURCE, empty(100n, false))
+    recordRetiredSourceRead(ACCOUNT, SOURCE, empty(200n, true))
+    walletStorage.removeItem(`webwallet.version/${ACCOUNT}`)
+    await acquireUpgradeLock(ACCOUNT, 7n)
+
+    expect(retiredSourceSettled(ACCOUNT, SOURCE)).toBe(false)
+  })
+
+  it("is settled for a new account made here", () => {
+    markNewAccountHere(ACCOUNT)
+
+    expect(upgradeLock(ACCOUNT)).toEqual({ state: "released" })
+    expect(retiredSourceSettled(ACCOUNT, SOURCE)).toBe(true)
+  })
+
+  it("is not settled for an account a passkey rotation made here, which keeps its keys", () => {
+    markCreatedHere(ACCOUNT)
+
+    expect(retiredSourceSettled(ACCOUNT, SOURCE)).toBe(false)
+  })
+
+  it("is not settled for an account that upgraded here, before any read", async () => {
+    await releaseUpgradeLock(ACCOUNT)
+
+    expect(retiredSourceSettled(ACCOUNT, SOURCE)).toBe(false)
   })
 })

@@ -1,7 +1,15 @@
 import { FieldLike } from "@aztec-labs/aztec.js/abi"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import { ContractName, DEFAULT_CONTRACTS } from "@obsidion/contracts"
 import { CommitmentInput, ClaimInput } from "../types.js"
-import { BasePaylinkProcessor, DepositArg, PaylinkConstructorArgs } from "./BasePaylinkProcessor.js"
+import type { RawPaylinkNote } from "../paylinkNoteData.js"
+import {
+  BasePaylinkProcessor,
+  commonDepositNote,
+  DepositArg,
+  PaylinkConstructorArgs,
+} from "./BasePaylinkProcessor.js"
 
 /**
  * Processor for direct paylinks — no identity verification.
@@ -35,6 +43,15 @@ export class DirectPaylinkProcessor extends BasePaylinkProcessor {
       args.sender,
       args.meta,
     ]
+  }
+
+  async depositNote(args: PaylinkConstructorArgs): Promise<RawPaylinkNote> {
+    return {
+      ...(await commonDepositNote(args)),
+      hash: Fr.ZERO,
+      oidc_key_registry: AztecAddress.ZERO,
+      vkey_hash: Fr.ZERO,
+    }
   }
 
   /**

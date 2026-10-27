@@ -1,31 +1,25 @@
 import { describe, expect, it, vi } from "vitest"
-import { RequestStorage, type IStorageAdapter, type PaymentRequest } from "@obsidion/front-core"
+import {
+  createMemoryKv,
+  createRequests,
+  memoryStore,
+  type StoredRequest,
+} from "@obsidion/front-core"
 import {
   announceOutgoingRequest,
   declineIncomingRequest,
-  markRequestPaidLocally,
   newOutgoingRequest,
 } from "../src/features/contacts/requestFlow"
 
-function memStorage(): IStorageAdapter {
-  const m = new Map<string, string>()
-  return {
-    getItem: async (k) => m.get(k) ?? null,
-    setItem: async (k, v) => {
-      m.set(k, v)
-    },
-    removeItem: async (k) => {
-      m.delete(k)
-    },
-    clear: async () => {
-      m.clear()
-    },
-  }
-}
+const memRequests = () =>
+  createRequests({
+    kv: createMemoryKv(),
+    payments: memoryStore({ rows: [], deposits: [] }).readonly,
+  })
 
 const TOKEN = { address: "0x" + "1".repeat(64), symbol: "DAI", decimals: 9 }
 
-function incomingRow(overrides: Partial<PaymentRequest> = {}): PaymentRequest {
+function incomingRow(overrides: Partial<StoredRequest> = {}): StoredRequest {
   return {
     id: "req-1",
     contactTag: "alice",
@@ -143,7 +137,7 @@ describe("announceOutgoingRequest", () => {
 
 describe("declineIncomingRequest", () => {
   it("flips a pending incoming row to declined and signals the requester", async () => {
-    const store = new RequestStorage(memStorage())
+    const store = memRequests()
     await store.add(incomingRow())
     const signalDeclined = vi.fn().mockResolvedValue({ status: "sent", messageId: "m1" })
     const applied = await declineIncomingRequest("req-1", {
@@ -153,7 +147,7 @@ describe("declineIncomingRequest", () => {
       networkId: "fallback-net",
     })
     expect(applied).toBe(true)
-    expect((await store.findById("req-1"))!.status).toBe("declined")
+    expect(store.latest("req-1")!.status).toBe("declined")
     expect(signalDeclined).toHaveBeenCalledWith({
       recipientXmtpAddress: "0xabc",
       requestId: "req-1",
@@ -161,23 +155,8 @@ describe("declineIncomingRequest", () => {
     })
   })
 
-  it("never regresses a fulfilled row (monotonic guard) and sends no signal", async () => {
-    const store = new RequestStorage(memStorage())
-    await store.add(incomingRow({ status: "fulfilled", fulfillmentTxHash: "0xdead" }))
-    const signalDeclined = vi.fn()
-    const applied = await declineIncomingRequest("req-1", {
-      store,
-      broadcaster: { signalDeclined },
-      resolveXmtpAddress: async () => "0xabc",
-      networkId: "testnet",
-    })
-    expect(applied).toBe(false)
-    expect((await store.findById("req-1"))!.status).toBe("fulfilled")
-    expect(signalDeclined).not.toHaveBeenCalled()
-  })
-
   it("re-declining an already-declined row is a no-op", async () => {
-    const store = new RequestStorage(memStorage())
+    const store = memRequests()
     await store.add(incomingRow({ status: "declined" }))
     const signalDeclined = vi.fn()
     const applied = await declineIncomingRequest("req-1", {
@@ -191,7 +170,7 @@ describe("declineIncomingRequest", () => {
   })
 
   it("still declines locally when the XMTP sender is absent or the signal fails", async () => {
-    const store = new RequestStorage(memStorage())
+    const store = memRequests()
     await store.add(incomingRow())
     const applied = await declineIncomingRequest("req-1", {
       store,
@@ -200,32 +179,6 @@ describe("declineIncomingRequest", () => {
       networkId: "testnet",
     })
     expect(applied).toBe(true)
-    expect((await store.findById("req-1"))!.status).toBe("declined")
-  })
-})
-
-describe("markRequestPaidLocally", () => {
-  const TX = "0x" + "ab".repeat(32)
-
-  it("flips a pending row to fulfilled with the tx hash", async () => {
-    const store = new RequestStorage(memStorage())
-    await store.add(incomingRow())
-    expect(await markRequestPaidLocally("req-1", TX, store)).toBe(true)
-    const row = (await store.findById("req-1"))!
-    expect(row.status).toBe("fulfilled")
-    expect(row.fulfillmentTxHash).toBe(TX)
-  })
-
-  it("fulfilled overrides a declined row — a real on-chain payment is authoritative", async () => {
-    const store = new RequestStorage(memStorage())
-    await store.add(incomingRow({ status: "declined" }))
-    expect(await markRequestPaidLocally("req-1", TX, store)).toBe(true)
-    expect((await store.findById("req-1"))!.status).toBe("fulfilled")
-  })
-
-  it("is a no-op without a local row (a link request has none on the payer's device)", async () => {
-    const store = new RequestStorage(memStorage())
-    expect(await markRequestPaidLocally("0x" + "0a".repeat(32), TX, store)).toBe(false)
-    expect(await store.list()).toEqual([])
+    expect(store.latest("req-1")!.status).toBe("declined")
   })
 })

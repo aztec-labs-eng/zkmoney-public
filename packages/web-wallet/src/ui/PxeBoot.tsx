@@ -388,9 +388,9 @@ export type PxeBootTarget =
       attempts: number
     }
 
-/** The pay page, and the older request-link entry. */
+/** The pay page, the older request-link entry, and the short request link's apex path. */
 export const isPayPath = (pathname: string): boolean =>
-  /^\/(?:pay\/[^/]+|request)\/?$/.test(pathname)
+  /^\/(?:pay\/[^/]+|request|r)\/?$/.test(pathname)
 
 /**
  * A signed-out visitor on a pay page shows nothing the PXE serves, so the boot waits until a screen

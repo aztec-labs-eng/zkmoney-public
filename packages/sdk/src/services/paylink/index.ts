@@ -13,7 +13,9 @@ export {
   assertLinkClass,
   encodePaylinkInline,
   decodePaylinkInline,
+  LINK_CLASS_REFUSAL,
 } from "./paylinkInlineCodec.js"
+export { resolveShortPaylink } from "./shortPaylink.js"
 export { buildOperationCall } from "./paylinkClaimSubmit.js"
 export { paylinkL1Caller } from "./paylinkL1Claim.js"
 export type { PaylinkL1Payout, PaylinkL1Proof } from "./paylinkL1Claim.js"
@@ -27,7 +29,11 @@ export {
 export { makePaylinkSpendMetadataResolver } from "./paylinkSpendMetadata.js"
 export { discoverFrozenEscrows, paylinkRefundOwner } from "./frozenEscrows.js"
 export {
+  assertPaylinkTerms,
   buildPaylinkNoteView,
+  packPaylinkData,
+  PAYLINK_TERMS_REFUSAL,
+  paylinkTerms,
   unpackPaylinkData,
   type PaylinkClaimWindowStatus,
   type PaylinkNoteData,

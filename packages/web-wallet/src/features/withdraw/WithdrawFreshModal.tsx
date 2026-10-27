@@ -4,12 +4,13 @@ import { formatUnits, parseUnits, type Address } from "viem"
 import { DEFAULT_DECIMALS } from "@obsidion/core/constants"
 import {
   NOMINAL_USD_VALUATION,
+  exceedsBalance,
   upsertSavedL1WalletContact,
   useAccountContext,
   useAssetContext,
   useAztecContext,
-  useBalance,
   useContractServiceContext,
+  useStore,
   withdrawalMaxNet,
 } from "@obsidion/front-core"
 import { isPasskeyCancelled } from "@obsidion/passkey-web"
@@ -26,6 +27,7 @@ import { amountBucket, failureCode, fireEvent, lapTimer } from "../../lib/analyt
 import {
   amountError,
   decimalInput,
+  fixedCents,
   parseAmount,
   tokenAmount,
   usdFigure,
@@ -114,9 +116,9 @@ export function WithdrawFreshModal({
   const txAmountCap = useTxAmountCap()
   const { obsidionWallet } = useAztecContext()
   const { obsidionAccount } = useAccountContext()
-  const { tokenService } = useAssetContext()
+  const { tokenService, balances } = useAssetContext()
   const { contractService } = useContractServiceContext()
-  const { walletAsset, walletBalance, assetsLoaded } = useBalance()
+  const wallet = useStore(balances.view)
   const { screener, verdict, cleared, rescreen } = useScreenedAddress(recipient, "withdraw")
 
   const [phase, setPhase] = useState<"amount" | "confirm" | "working">("amount")
@@ -195,9 +197,9 @@ export function WithdrawFreshModal({
       ? withdrawalLimitProblem(fundsAtomic + gasAtomic + learned, txAmountCap)
       : undefined
   const valid = complete && !problem
-  const balance = walletAsset?.balanceAtomic ?? 0n
+  const balance = wallet.main?.atomic ?? 0n
   // Only a KNOWN shortfall blocks: a balance still loading reads 0 and would flag every amount.
-  const overspent = assetsLoaded && complete && totalAtomic !== undefined && totalAtomic > balance
+  const overspent = complete && exceedsBalance(wallet, totalAtomic)
   // The gas share and the fee ride on top, so MAX leaves room for them within the balance and the
   // limit; a fee not yet priced takes nothing until it lands. The tip is not in MAX: a maxed amount
   // never moves for it, and Faster is refused below when it would not fit. Under the $1 minimum
@@ -207,12 +209,12 @@ export function WithdrawFreshModal({
   const room = balance - gasAtomic - (untippedFee ?? 0n)
   const minimum = parseUnits("1", DEFAULT_DECIMALS)
   const short =
-    assetsLoaded && untippedFee !== undefined && walletAsset !== null && room < minimum
+    wallet.live && untippedFee !== undefined && wallet.main !== null && room < minimum
       ? `Your balance can't cover ${gas > 0 ? "the gas share and fees" : "the fees"} (${dollars(
           gasAtomic + untippedFee,
         )}) plus the $1 minimum.`
       : undefined
-  const max = walletAsset
+  const max = wallet.main
     ? withdrawalMaxNet({
         spendableAtomic: balance,
         feeAtomic: gasAtomic + learned - tipInFee,
@@ -350,7 +352,7 @@ export function WithdrawFreshModal({
           <div className="ww-fund__fields">
             <span className="ww-fund__label ww-withdraw__amount-label">
               <span>
-                Available: <b>${walletBalance}</b>
+                Available: <b>${fixedCents(wallet.main)}</b>
               </span>
             </span>
             <label className="ww-deposit__input ww-fund__amount">

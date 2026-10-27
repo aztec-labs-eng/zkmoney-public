@@ -8,6 +8,7 @@
 import React, { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { balancesOf } from "./support/balances"
 import { parseUnits } from "viem"
 import { ScreeningProvider, passThroughScreener } from "@obsidion/front-core"
 import { fireEvent } from "../src/lib/analytics"
@@ -18,7 +19,7 @@ import { LIMIT, LIMIT_USD, grouped, typed } from "./support/publicLimit"
 const submit = vi.fn()
 // The direct route's fee: the withdrawal relayer tip.
 const FEE = "0.10"
-const balance = { walletAsset: null as { balance: number; balanceAtomic: bigint } | null }
+const balance = { walletAsset: null as { balanceAtomic: bigint } | null }
 
 // The executor's withdrawal fee is priced in its own suites; here it costs nothing.
 vi.mock("../src/features/withdraw/withdrawalFee", () => ({
@@ -32,10 +33,12 @@ vi.mock("../src/features/withdraw/withdrawalFee", () => ({
 vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/front-core")>()),
   useAccountContext: () => ({ obsidionAccount: {} }),
-  useAssetContext: () => ({ tokenService: {} }),
+  useAssetContext: () => ({
+    tokenService: {},
+    balances: balancesOf({ main: balance.walletAsset?.balanceAtomic, live: true, known: true }),
+  }),
   useAztecContext: () => ({ obsidionWallet: {} }),
   useContractServiceContext: () => ({ contractService: {} }),
-  useBalance: () => ({ ...balance, walletBalance: "0", assetsLoaded: true }),
   upsertSavedL1WalletContact: vi.fn(),
 }))
 vi.mock("../src/features/withdraw/withdrawGateway", () => ({ submitSponsoredWithdrawal: submit }))
@@ -174,7 +177,7 @@ describe("WithdrawToWalletModal", () => {
     submit.mockImplementation(() => new Promise(() => {}))
     onClose.mockReset()
     onDone.mockReset()
-    balance.walletAsset = { balance: 4.11, balanceAtomic: parseUnits("4.11", 18) }
+    balance.walletAsset = { balanceAtomic: parseUnits("4.11", 18) }
     faster.offer = undefined
     faster.loading = false
     container = document.createElement("div")
@@ -289,7 +292,7 @@ describe("WithdrawToWalletModal", () => {
 
     it("lists both speeds with their ETAs and the tip, defaulting to Faster", async () => {
       faster.offer = offer
-      balance.walletAsset = { balance: 10, balanceAtomic: parseUnits("10", 18) }
+      balance.walletAsset = { balanceAtomic: parseUnits("10", 18) }
       // The 0.5 DAI tip is 10% of this amount, the most Faster opens at.
       await toConfirm("5")
       expect(speed()).toBe("Faster")
@@ -453,7 +456,7 @@ describe("WithdrawToWalletModal", () => {
   })
 
   it("says when the fee leaves less than the minimum of the balance", async () => {
-    balance.walletAsset = { balance: 1.05, balanceAtomic: parseUnits("1.05", 18) }
+    balance.walletAsset = { balanceAtomic: parseUnits("1.05", 18) }
     await click("MAX")
     expect(container.textContent).toContain(
       "Your balance can't cover the withdrawal fee ($0.10) plus the $1 minimum.",
@@ -462,7 +465,7 @@ describe("WithdrawToWalletModal", () => {
   })
 
   it("MAX on a balance twice the limit is the limit less the fee, not the balance", async () => {
-    balance.walletAsset = { balance: 2 * LIMIT, balanceAtomic: parseUnits(String(2 * LIMIT), 18) }
+    balance.walletAsset = { balanceAtomic: parseUnits(String(2 * LIMIT), 18) }
     await type("1")
     await click("MAX")
     expect(input().value).toBe(typed(LIMIT - 0.1))
@@ -477,7 +480,7 @@ describe("WithdrawToWalletModal", () => {
   })
 
   it(`refuses a burn one cent over ${LIMIT_USD} and offers the maximum, without changing the amount itself`, async () => {
-    balance.walletAsset = { balance: 2 * LIMIT, balanceAtomic: parseUnits(String(2 * LIMIT), 18) }
+    balance.walletAsset = { balanceAtomic: parseUnits(String(2 * LIMIT), 18) }
     // The fee is burned on top, so the typed amount can reach the limit less the fee.
     await type(typed(LIMIT - 0.1))
     expect(button("Review").disabled).toBe(false)
@@ -499,7 +502,7 @@ describe("WithdrawToWalletModal", () => {
   })
 
   it("names the balance, not the limit, when an amount is over both", async () => {
-    balance.walletAsset = { balance: 2400, balanceAtomic: parseUnits("2400", 18) }
+    balance.walletAsset = { balanceAtomic: parseUnits("2400", 18) }
     await type("2600")
     expect(button("Review").disabled).toBe(true)
     expect(container.textContent).toContain("Balance not enough")
@@ -510,7 +513,7 @@ describe("WithdrawToWalletModal", () => {
   })
 
   it("blocks a burn above the balance by one atomic unit", async () => {
-    balance.walletAsset = { balance: 4.11, balanceAtomic: parseUnits("4.11", 18) - 1n }
+    balance.walletAsset = { balanceAtomic: parseUnits("4.11", 18) - 1n }
     // 4.01 plus the 0.10 fee is the 4.11 the balance is one unit short of.
     await type("4.01")
     expect(button("Review").disabled).toBe(true)

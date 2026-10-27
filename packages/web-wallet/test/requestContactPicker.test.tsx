@@ -9,9 +9,10 @@ const contacts = [
 ]
 vi.mock("@obsidion/front-core", () => ({
   useContactsDirectory: () => ({ contacts }),
+  useStore: (store: { get(): unknown }) => store.get(),
   normalizeTag: (s: string) => s.trim().replace(/^@/, "").toLowerCase() || null,
 }))
-vi.mock("../src/features/contacts/useContactActivity", () => ({ useContactActivity: () => ({}) }))
+vi.mock("../src/platform/session", () => ({ useSession: () => ({ contactActivity: { get: () => ({}) } }) }))
 vi.mock("../src/features/contacts/recentPeople", () => ({ recentPeople: (c: unknown[]) => c }))
 vi.mock("../src/features/identity/walletIdentity", () => ({
   loadWalletIdentity: () => ({ handle: "river" }),

@@ -16,7 +16,7 @@ import {
   type TransactionStatus,
   type WithdrawalRecord,
 } from "@obsidion/front-core"
-import { activityStatusLabel, type ActivityRowView } from "../src/ui/screens/activityView"
+import type { ActivityRowView } from "../src/ui/screens/activityView"
 
 const h = vi.hoisted(() => ({ recheckPaylinkClaim: vi.fn(), usePaylinkDeps: vi.fn() }))
 
@@ -62,7 +62,6 @@ vi.mock("@obsidion/web-ds", () => ({
 
 const { TxDetailModal } = await import("../src/ui/screens/TxDetailModal")
 const { WithdrawalDetailModal } = await import("../src/ui/screens/WithdrawalDetailModal")
-const { WITHDRAWAL_PHASE_LABEL } = await import("../src/ui/screens/useActivityEntries")
 
 declare global {
   // eslint-disable-next-line no-var
@@ -81,7 +80,12 @@ const creatorRow = (
   timestampMs: CREATED_MS,
   amount: "-$30.00",
   status,
-  statusLabel: activityStatusLabel(status, paylinkStatus),
+  statusLabel:
+    status === "pending"
+      ? "Pending"
+      : status === "failed"
+      ? "Failed"
+      : PAYLINK_STATUS_LABEL[paylinkStatus],
   txHash: `0x${"66".repeat(32)}`,
   // No decodable fragment would strand the sheet's share block, which the hero renders above.
   paylink: "https://zk.money/link#frag",
@@ -105,7 +109,7 @@ const plainRow = (status: TransactionStatus): ActivityRowView => ({
   timestampMs: CREATED_MS,
   amount: "-$5.00",
   status,
-  statusLabel: activityStatusLabel(status, undefined),
+  statusLabel: status === "pending" ? "Pending" : status === "failed" ? "Failed" : undefined,
   txHash: `0x${"77".repeat(32)}`,
 })
 
@@ -242,7 +246,7 @@ describe("detail sheet hero badge", () => {
         awaiting_proven: "Releasing to Ethereum",
         finalizing_l1: "Releasing to Ethereum",
         done: "Paid",
-        failed: WITHDRAWAL_PHASE_LABEL.failed,
+        failed: "Failed",
       }[phase],
     )
   })

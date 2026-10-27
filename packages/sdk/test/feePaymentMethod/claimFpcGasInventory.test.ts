@@ -177,6 +177,7 @@ describe("ClaimFPC per-call inventory", () => {
     const budgets = deriveClaimFpcGasBudgets()
     expect(claimFpcCallGas({ name: "authorize_intents" })).toEqual(budgets.mAuth)
     expect(claimFpcCallGas({ name: "notify_sipa_recipient" })).toEqual(budgets.mSipaNotify)
+    expect(claimFpcCallGas({ name: "announce" })).toEqual(budgets.mLinkAnnounce)
     expect(claimFpcCallGas({ name: "broadcast_l1_operation_2k" })).toEqual(budgets.mL1Operation)
     expect(claimFpcCallGas({ name: "broadcast_l1_operation_4k" })).toEqual(budgets.mL1Operation4k)
     expect(claimFpcCallGas({ name: "broadcast_l1_operation_pair_2k" })).toEqual(

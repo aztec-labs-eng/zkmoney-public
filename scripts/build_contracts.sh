@@ -13,9 +13,9 @@ set -e
 #  chmod +x scripts/build_contracts.sh
 
 # Extract version from update-versions script in package.json if not already set
-if [ -z "$VERSION" ]; then
-  VERSION=$(grep -m 1 '"update-versions":' "$(git rev-parse --show-toplevel)/package.json" | grep -o -- "--newVersion [0-9a-zA-Z.-]*" | awk '{print $2}')
-fi
+PINNED_VERSION=$(grep -m 1 '"update-versions":' "$(git rev-parse --show-toplevel)/package.json" |
+  grep -o -- "--newVersion [0-9a-zA-Z.-]*" | awk '{print $2}')
+VERSION="${VERSION:-$PINNED_VERSION}"
 echo "Using version: $VERSION"
 
 # -----------------------------------------------
@@ -96,7 +96,8 @@ echo "Cleaning up all codegenCache.json files..."
 find packages/contracts -name "codegenCache.json" -type f -delete
 
 # Define directories to skip codegen
-SKIP_DIRS=("authenticators/interface")  # Replace with your specific paths
+# link_locator: only its artifact is used; a typed wrapper would offer a deploy nobody makes.
+SKIP_DIRS=("authenticators/interface" "contracts/link_locator")
 
 # Function to check if CONTRACT_DIR is in SKIP_DIRS
 should_skip() {
@@ -147,6 +148,7 @@ REPO_ROOT=$(git rev-parse --show-toplevel)
 ARTIFACTS_DIR="$REPO_ROOT/packages/contracts/src/artifacts"
 COMPILED_TARGET_DIR="$ARTIFACTS_DIR/target"
 TRANSFORM_SCRIPT="$REPO_ROOT/scripts/transform-artifact.js"
+VKEY_GENERATOR="$REPO_ROOT/packages/sdk/scripts/generate-vk.mjs"
 
 # Check if transform script exists
 if [[ ! -f "$TRANSFORM_SCRIPT" ]]; then
@@ -168,9 +170,29 @@ SEARCH_ROOTS=()
 [[ -d "vendor/oxide/noir-projects/oxide_token_contract" ]] && SEARCH_ROOTS+=("vendor/oxide/noir-projects/oxide_token_contract")
 [[ -d "vendor/oxide/noir-projects/broadcaster_contract" ]] && SEARCH_ROOTS+=("vendor/oxide/noir-projects/broadcaster_contract")
 
+# `aztec compile` arguments for a contract package.
+#
+# The vendored oxide contracts must match oxide's deploy compile flags exactly so the bytecode (and therefore the
+# contract class id) matches the on-chain instances deployed by oxide's pipeline. oxide compiles every contract with
+# `--inliner-aggressiveness 0` (`build_contract` in vendor/oxide/noir-projects/bootstrap.sh, invoked by
+# deploy/build.sh).
+compile_args() {
+  if [[ "$1" == "oxide_token_contract" || "$1" == "broadcaster_contract" ]]; then
+    echo "--silence-warnings --inliner-aggressiveness 0"
+  else
+    echo "--silence-warnings"
+  fi
+}
+
+# Circuits whose VK is pinned in @obsidion/core/constants — a stale pin ships the proof/VK mismatch class the SSoT
+# generator below exists to prevent, so their compile and VK derivation are both fatal rather than best-effort.
+vk_pinned() {
+  [[ "$1" == "golden_ticket" || "$1" == "eligibility" ]]
+}
+
+PACKAGE_DIRS=()
 for NARGO_FILE in $(find "${SEARCH_ROOTS[@]}" -type f -name "Nargo.toml" -not -path '*/node_modules/*' -not -path '*/libs/*' -not -path '*/lib/*' -not -path '*/.git/*'); do
   CONTRACT_DIR=$(dirname "$NARGO_FILE")
-  PKG_TYPE=$(get_nargo_type "$NARGO_FILE")
 
   # Skip if we're targeting a specific contract and this isn't it
   if [[ -n "$TARGET_CONTRACT" && ! "$CONTRACT_DIR" == *"$TARGET_CONTRACT"* ]]; then
@@ -195,6 +217,41 @@ for NARGO_FILE in $(find "${SEARCH_ROOTS[@]}" -type f -name "Nargo.toml" -not -p
     continue
   fi
 
+  PACKAGE_DIRS+=("$CONTRACT_DIR")
+done
+
+# ENABLE_NIX=1 compiles every package, and the pinned circuits' VKs, with Nix in Docker; codegen, the VK pins and the
+# copy below run on the host. See docs/conventions/noir-nix-build.md.
+if [[ "${ENABLE_NIX:-0}" == "1" ]]; then
+  if [[ -n "${CI:-}" || -n "${GITHUB_ACTIONS:-}" ]]; then
+    echo "ERROR: ENABLE_NIX=1 is for development machines; CI and deployments compile on the host. Unset it."
+    exit 1
+  fi
+  if [[ "${VERSION#v}" != "${PINNED_VERSION#v}" ]]; then
+    echo "ERROR: ENABLE_NIX=1 compiles with the pinned Aztec $PINNED_VERSION, not VERSION=$VERSION. Unset one of them."
+    exit 1
+  fi
+  NIX_SPEC=""
+  for CONTRACT_DIR in "${PACKAGE_DIRS[@]}"; do
+    CONTRACT_NAME=$(basename "$CONTRACT_DIR")
+    EXTRA=""
+    if [[ "$(get_nargo_type "$CONTRACT_DIR/Nargo.toml")" == "contract" ]]; then
+      ARGS=$(compile_args "$CONTRACT_NAME")
+      EXTRA=",\"args\":[\"${ARGS// /\",\"}\"]"
+    elif vk_pinned "$CONTRACT_NAME"; then
+      EXTRA=',"vk":true'
+    fi
+    NIX_SPEC+="${NIX_SPEC:+,}{\"dir\":\"$CONTRACT_DIR\"$EXTRA}"
+  done
+  if [[ -n "$NIX_SPEC" ]]; then
+    echo "Compiling with Nix: ${PACKAGE_DIRS[*]}"
+    "$REPO_ROOT/packages/contracts/nix/build.sh" "[$NIX_SPEC]"
+  fi
+fi
+
+for CONTRACT_DIR in "${PACKAGE_DIRS[@]}"; do
+  PKG_TYPE=$(get_nargo_type "$CONTRACT_DIR/Nargo.toml")
+
   echo "============================================================"
   if [[ "$PKG_TYPE" == "contract" ]]; then
     echo "Compiling contract in: $CONTRACT_DIR"
@@ -213,19 +270,14 @@ for NARGO_FILE in $(find "${SEARCH_ROOTS[@]}" -type f -name "Nargo.toml" -not -p
     # Calculate the depth from packages/contracts/contracts to this folder
     DEPTH=$(echo "$CONTRACT_DIR" | awk -F'/' '{print NF-5}')
 
-    # Compile the Noir contract with VERSION environment variable.
-    # Retry to absorb transient github.com 5xx during nargo's git fetch of
-    # Aztec / Noir dependencies (see `with_retry` header above).
-    #
-    # The vendored oxide contracts must match oxide's deploy compile flags
-    # exactly so the bytecode (and therefore the contract class id) matches the
-    # on-chain instances deployed by oxide's pipeline. oxide compiles every
-    # contract with `--inliner-aggressiveness 0` (`build_contract` in
-    # vendor/oxide/noir-projects/bootstrap.sh, invoked by deploy/build.sh).
-    if [[ "$CONTRACT_NAME" == "oxide_token_contract" || "$CONTRACT_NAME" == "broadcaster_contract" ]]; then
-      with_retry env VERSION=$VERSION aztec compile --silence-warnings --inliner-aggressiveness 0
+    if [[ "${ENABLE_NIX:-0}" == "1" ]]; then
+      echo "Compiled with Nix: $CONTRACT_DIR/target"
     else
-      with_retry env VERSION=$VERSION aztec compile --silence-warnings
+      # Compile the Noir contract with VERSION environment variable.
+      # Retry to absorb transient github.com 5xx during nargo's git fetch of
+      # Aztec / Noir dependencies (see `with_retry` header above).
+      # shellcheck disable=SC2046
+      with_retry env VERSION=$VERSION aztec compile $(compile_args "$CONTRACT_NAME")
     fi
 
     # Postprocess the Noir contract, generates the VKEYS
@@ -269,32 +321,22 @@ for NARGO_FILE in $(find "${SEARCH_ROOTS[@]}" -type f -name "Nargo.toml" -not -p
       fi
     fi
   else
-    # Circuit path: aztec-nargo compile only; no codegen, no transform-artifact.
-    # Circuits are single-entry-point, so the injectable-artifact wrapping
-    # the contract codegen produces doesn't apply. Retry for the same
-    # transient-fetch reason as the contract branch above.
-    # Circuits whose VK is pinned in @obsidion/core/constants — a stale pin ships the proof/VK
-    # mismatch class the SSoT generator below exists to prevent, so their compile and VK
-    # derivation are both fatal rather than best-effort.
-    VK_PINNED_CIRCUIT=false
-    case "$CONTRACT_NAME" in
-      golden_ticket|eligibility)
-        VK_PINNED_CIRCUIT=true
-        VKEY_GENERATOR="$REPO_ROOT/packages/sdk/scripts/generate-vk.mjs"
-        ;;
-    esac
-
-    if ! with_retry aztec-nargo compile; then
-      if [[ "$VK_PINNED_CIRCUIT" == true ]]; then
+    # Circuits are single-entry-point, so the injectable-artifact wrapping the contract codegen produces doesn't apply.
+    VK_ARGS=()
+    if [[ "${ENABLE_NIX:-0}" == "1" ]]; then
+      echo "Compiled with Nix: $CONTRACT_DIR/target"
+      VK_ARGS=(--vk "./target/${CONTRACT_NAME}.vk")
+    elif ! with_retry aztec-nargo compile; then
+      if vk_pinned "$CONTRACT_NAME"; then
         echo "ERROR: aztec-nargo compile failed for $CONTRACT_DIR — required for $CONTRACT_NAME VK SSoT"
         exit 1
       fi
       echo "WARNING: aztec-nargo compile failed for $CONTRACT_DIR (continuing)"
     fi
 
-    if [[ "$VK_PINNED_CIRCUIT" == true ]]; then
+    if vk_pinned "$CONTRACT_NAME"; then
       if [[ ! -f "./target/${CONTRACT_NAME}.json" ]]; then
-        echo "ERROR: ./target/${CONTRACT_NAME}.json missing after aztec-nargo compile — cannot derive VK"
+        echo "ERROR: ./target/${CONTRACT_NAME}.json missing after the compile — cannot derive VK"
         exit 1
       fi
       VKEY_OUTPUT="$REPO_ROOT/packages/core/src/constants/index.ts"
@@ -311,14 +353,15 @@ for NARGO_FILE in $(find "${SEARCH_ROOTS[@]}" -type f -name "Nargo.toml" -not -p
       else
         TIMEOUT_BIN=""
       fi
+      VK_CMD=(node "$VKEY_GENERATOR" --in "./target/${CONTRACT_NAME}.json" --out "$VKEY_OUTPUT" --circuit "$CONTRACT_NAME" "${VK_ARGS[@]}")
       if [[ -n "$TIMEOUT_BIN" ]]; then
-        if ! "$TIMEOUT_BIN" 15m node "$VKEY_GENERATOR" --in "./target/${CONTRACT_NAME}.json" --out "$VKEY_OUTPUT" --circuit "$CONTRACT_NAME"; then
+        if ! "$TIMEOUT_BIN" 15m "${VK_CMD[@]}"; then
           echo "ERROR: $CONTRACT_NAME VK generation failed (or exceeded 15m timeout)"
           exit 1
         fi
       else
         echo "WARNING: no \`timeout\`/\`gtimeout\` binary found; running VK generator without wall-clock cap"
-        if ! node "$VKEY_GENERATOR" --in "./target/${CONTRACT_NAME}.json" --out "$VKEY_OUTPUT" --circuit "$CONTRACT_NAME"; then
+        if ! "${VK_CMD[@]}"; then
           echo "ERROR: $CONTRACT_NAME VK generation failed"
           exit 1
         fi
@@ -339,14 +382,14 @@ for NARGO_FILE in $(find "${SEARCH_ROOTS[@]}" -type f -name "Nargo.toml" -not -p
       rm -rf ./target
     else
       # Circuit target/ also holds tracked fixtures (proof/, vk/) — only touch the regenerable
-      # nargo outputs (.json / .gz at the top of target/) so the fixtures stay put.
+      # outputs at the top of target/ so the fixtures stay put.
       echo "Copying nargo outputs from $CONTRACT_DIR/target to $CONTRACT_OUTPUT_DIR"
       shopt -s nullglob
       for OUT_FILE in ./target/*.json ./target/*.gz; do
         cp "$OUT_FILE" "$CONTRACT_OUTPUT_DIR/"
       done
       echo "Cleaning up nargo outputs in $CONTRACT_DIR/target (preserving proof/, vk/)"
-      rm -f ./target/*.json ./target/*.gz
+      rm -f ./target/*.json ./target/*.gz ./target/*.vk
       shopt -u nullglob
     fi
   else

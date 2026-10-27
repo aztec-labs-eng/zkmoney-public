@@ -108,6 +108,7 @@ describe("profile mode", () => {
     expect(result.config.l1RpcUrl).toBe("http://profile-l1.test")
     expect(result.config.accountServiceUrl).toBe("http://profile-account.test")
     expect(result.config.xmtpEnv).toBe("local")
+    expect(result.config.sourceRollupIssues).toEqual([])
     expect(getConfig()).toBe(result.config)
 
     expect(result.contractServiceOptions.source).toBe("profile")
@@ -145,6 +146,10 @@ describe("profile mode", () => {
     expect(warn).toHaveBeenCalledWith(
       expect.stringContaining(`migration source unavailable at ${historicalUrl} (NOT_FOUND:`),
     )
+    // The upgrade check reads the unread generation as unknown, not as one with no history.
+    expect(result.config.sourceRollupIssues).toEqual([
+      expect.objectContaining({ profileUrl: historicalUrl, code: "NOT_FOUND" }),
+    ])
   })
 
   it("exposes the version's assets, and none where the document lists none", async () => {

@@ -19,7 +19,7 @@ const h = vi.hoisted(() => ({
 const secret = new Fr(123n)
 vi.mock("@obsidion/sdk", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/sdk")>()),
-  IntraRollupMigrationService: { detectHistoricDeployments: async () => ({ historic: [] }) },
+  detectHistoricDeployments: async () => ({ historic: [] }),
 }))
 vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<object>()),

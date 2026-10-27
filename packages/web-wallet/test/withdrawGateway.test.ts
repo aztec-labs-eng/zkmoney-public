@@ -13,8 +13,8 @@ import {
   deriveSwapEscrowRecoverySalt,
   withdrawalAmounts,
 } from "@obsidion/front-core"
-import { ProvingStage, provingProgress } from "@obsidion/proving-progress"
 import { LIMIT, LIMIT_USD } from "./support/publicLimit"
+import { sendLikeTheWallet, watchWalletDb, type WalletSendOptions } from "./support/submitBoundary"
 
 const L2_TX = `0x${"0a".repeat(32)}` as Hex
 const TX_AMOUNT_CAP = 5166n * 10n ** 18n
@@ -168,23 +168,35 @@ describe("submitSponsoredWithdrawal", () => {
     expect(record?.relayerTip).toBe(WITHDRAW_RELAYER_TIP.toString())
   })
 
-  it("writes the burn's hash onto the record at submit, so a reload can still track it", async () => {
+  it("saves the burn's hash on the record before the node takes it, so a reload can track it", async () => {
     const d = deps()
-    let atSubmit: string | undefined
-    d.tokenService.exitToL1PrivateSponsored = (async (
-      _to: unknown,
-      _amount: unknown,
-      _sponsor: unknown,
-      opts: { operationId: string },
-    ) => {
-      provingProgress.emitStageStart(ProvingStage.Mining, opts.operationId, L2_TX)
-      await new Promise((r) => setTimeout(r, 0))
-      atSubmit = getWithdrawalStore().list()[0]?.l2TxHash
+    const db = watchWalletDb()
+    let heldAtNode: boolean | undefined
+    d.tokenService.exitToL1PrivateSponsored = (async (...args: unknown[]) => {
+      await sendLikeTheWallet(args[3] as WalletSendOptions, L2_TX, () => {
+        heldAtNode = db.holds("withdrawals", L2_TX)
+      })
       return { txHash: L2_TX, blockNumber: 42, amount: parseUnits("120", 18) }
     }) as never
 
     await submitSponsoredWithdrawal(d, RECIPIENT, "120", vi.fn())
-    expect(atSubmit).toBe(L2_TX)
+    expect(heldAtNode).toBe(true)
+  })
+
+  it("sends nothing when the hash cannot be saved, and fails the burn", async () => {
+    const d = deps()
+    watchWalletDb().refuse("withdrawals", L2_TX)
+    const node = vi.fn()
+    d.tokenService.exitToL1PrivateSponsored = (async (...args: unknown[]) => {
+      await sendLikeTheWallet(args[3] as WalletSendOptions, L2_TX, node)
+      return { txHash: L2_TX, blockNumber: 42, amount: parseUnits("120", 18) }
+    }) as never
+
+    await expect(submitSponsoredWithdrawal(d, RECIPIENT, "120", vi.fn())).rejects.toThrow(
+      "quota exceeded",
+    )
+    expect(node).not.toHaveBeenCalled()
+    expect(getWithdrawalStore().list()[0]).toMatchObject({ phase: "failed" })
   })
 
   it("keeps a burn that reached the node when the call then fails", async () => {
@@ -192,13 +204,8 @@ describe("submitSponsoredWithdrawal", () => {
     ;(d.wallet as unknown as { node: object }).node = {
       getTxReceipt: vi.fn(async () => ({ status: "pending" })),
     }
-    d.tokenService.exitToL1PrivateSponsored = (async (
-      _to: unknown,
-      _amount: unknown,
-      _sponsor: unknown,
-      opts: { operationId: string },
-    ) => {
-      provingProgress.emitStageStart(ProvingStage.Mining, opts.operationId, L2_TX)
+    d.tokenService.exitToL1PrivateSponsored = (async (...args: unknown[]) => {
+      await sendLikeTheWallet(args[3] as WalletSendOptions, L2_TX, () => {})
       throw new Error("fetch failed")
     }) as never
 

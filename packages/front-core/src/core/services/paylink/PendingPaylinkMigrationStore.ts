@@ -2,7 +2,7 @@
  * PendingPaylinkMigrationStore — creator paylinks left behind on a retired oxide deployment because
  * the migration ran while their claim window was open. The contract only refunds outside the
  * window, so these wait here until chain time passes `untilClaimable`. The create row in
- * TransactionStorage stays the source of truth; every field here re-derives from it on reconcile.
+ * The activity store stays the source of truth; every field here re-derives from it on reconcile.
  */
 
 import type { IStorageAdapter } from "../../storages/adapter"
@@ -12,7 +12,7 @@ import { RecordStorage } from "../bridge/RecordStorage"
 export type PendingPaylinkMigrationStatus = "waiting" | "claimable" | "resolved"
 
 export interface PendingPaylinkMigrationRecord {
-  /** Create-row txHash; the key and the join back to TransactionStorage. */
+  /** Create-row txHash; the key and the join back to the activity row. */
   txHash: string
   /** Unix seconds the claim window closes — refund is possible after this. */
   untilClaimable: number

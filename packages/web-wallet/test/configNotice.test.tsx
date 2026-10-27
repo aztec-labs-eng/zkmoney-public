@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { startTabBoundOperation } from "./support/operations"
 import { BakedProfileNotice, CustomProfileNotice } from "../src/ui/ConfigNotice"
 import { AppShell } from "../src/ui/AppShell"
+import { activeAccount, closeSession, openSession } from "../src/platform/session"
 
 let container: HTMLDivElement
 let root: Root
@@ -88,6 +89,9 @@ describe("CustomProfileNotice", () => {
 })
 
 describe("AppShell", () => {
+  beforeEach(() => void openSession(activeAccount()))
+  afterEach(closeSession)
+
   const render = (notice?: React.ReactNode) =>
     act(async () => {
       root.render(

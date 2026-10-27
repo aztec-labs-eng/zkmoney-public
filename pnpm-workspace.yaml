@@ -1,5 +1,6 @@
 packages:
   - packages/core
+  - packages/lint-config
   - packages/metrics-policy
   - packages/config-client
   - packages/passkey-web

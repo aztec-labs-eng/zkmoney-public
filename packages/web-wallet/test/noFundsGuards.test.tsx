@@ -8,12 +8,10 @@ import React, { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { MemoryRouter, Route, Routes } from "react-router-dom"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { balancesOf } from "./support/balances"
 import { ScreeningProvider, passThroughScreener } from "@obsidion/front-core"
 
-const balance = {
-  walletAsset: null as { balance: number; balanceAtomic: bigint; decimals: number } | null,
-  walletBalance: "0.00",
-}
+const balance = { walletAsset: null as { balanceAtomic: bigint } | null }
 let assetsLoaded = true
 let pendingDeposits = false
 
@@ -33,10 +31,13 @@ vi.mock("react-router-dom", async (importOriginal) => ({
 vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/front-core")>()),
   useAccountContext: () => ({ obsidionAccount: {} }),
-  useAssetContext: () => ({ tokenService: {}, teeSigner: {} }),
+  useAssetContext: () => ({
+    tokenService: {},
+    teeSigner: {},
+    balances: balancesOf({ main: balance.walletAsset?.balanceAtomic, live: assetsLoaded }),
+  }),
   useAztecContext: () => ({ obsidionWallet: {} }),
   useContractServiceContext: () => ({ contractService: {} }),
-  useBalance: () => ({ ...balance, assetsLoaded }),
   ContactStorage: {
     get: () => ({
       getEntries: async () => [{ tag: "alice", name: "Alice", address: `0x${"11".repeat(32)}` }],
@@ -224,7 +225,6 @@ describe.each([
     assetsLoaded = true
     pendingDeposits = false
     balance.walletAsset = null
-    balance.walletBalance = "0.00"
     ;({ container, root } = mountHarness(render()))
     await act(async () => {
       root.render(render())
@@ -244,8 +244,7 @@ describe.each([
   })
 
   it("blocks more than the balance, allows up to it", async () => {
-    balance.walletAsset = { balance: 10, balanceAtomic: 10n * 10n ** 18n, decimals: 18 }
-    balance.walletBalance = "10.00"
+    balance.walletAsset = { balanceAtomic: 10n * 10n ** 18n }
     await type("25")
     expect(cta(container).disabled).toBe(true)
     await type(upTo)
@@ -271,8 +270,7 @@ describe("NewLinkScreen — MAX precision", () => {
   beforeEach(async () => {
     assetsLoaded = true
     pendingDeposits = false
-    balance.walletAsset = { balance: 2, balanceAtomic: 2n * 10n ** 18n - 1n, decimals: 18 }
-    balance.walletBalance = "2.00"
+    balance.walletAsset = { balanceAtomic: 2n * 10n ** 18n - 1n }
     ;({ container, root } = mountHarness(<div />))
     await act(async () => {
       root.render(
@@ -314,7 +312,6 @@ describe("NewLinkScreen — parked deposits", () => {
     assetsLoaded = true
     pendingDeposits = true
     balance.walletAsset = null
-    balance.walletBalance = "0.00"
     ;({ container, root } = mountHarness(<div />))
     await act(async () => {
       root.render(

@@ -14,7 +14,19 @@ import type { CodePayment } from "./useReceiveCode"
 export const CODE_LOGO = coinLogo
 
 /** The white pay card full screen shows: "Scan to pay", the amount and note, the code and the tag. */
-export function ReceiveCodeCard({ tag, code }: { tag: string; code?: ReceiveCode }) {
+export function ReceiveCodeCard({
+  tag,
+  code,
+  url = code?.url,
+  busy = false,
+}: {
+  tag: string
+  code?: ReceiveCode
+  /** What the QR encodes, when not the code's own link. */
+  url?: string
+  /** The code's short link is publishing. */
+  busy?: boolean
+}) {
   return (
     <div className="ww-receive__card">
       <span className="ww-receive__eyebrow">Scan to pay</span>
@@ -23,7 +35,7 @@ export function ReceiveCodeCard({ tag, code }: { tag: string; code?: ReceiveCode
       )}
       {code?.note && <span className="ww-receive__muted">{code.note}</span>}
       <span className="ww-receive__qr">
-        {code && <StyledQr value={code.url} icon={CODE_LOGO} label="Your pay code" />}
+        {code && url && <StyledQr value={url} icon={CODE_LOGO} busy={busy} label="Your pay code" />}
       </span>
       <b className="ww-receive__tag">@{tag}</b>
     </div>

@@ -21,6 +21,13 @@ export const emailLockedLinksEnabled = import.meta.env.VITE_EMAIL_LOCKED_LINKS =
 export const proveTxPerfLogsEnabled = import.meta.env.VITE_PROVE_TX_PERF_LOGS === "true"
 
 /**
+ * Short links on the zk.money apex (`VITE_ZK_MONEY_LINK_HOST`): `zk.money/p#…` and
+ * `zk.money/r#…`. Off until the apex routes those paths to the wallet; off, short links use
+ * this deploy's own origin.
+ */
+export const zkMoneyLinkHostEnabled = import.meta.env.VITE_ZK_MONEY_LINK_HOST === "true"
+
+/**
  * Adding a backup passkey from account settings (`VITE_BACKUP_PASSKEY_SETTINGS`). Off by default:
  * the rotation that moves the account to a two-key address runs on demo steps that never touch the
  * account, and the entry shows nothing while off.

@@ -54,6 +54,8 @@ export interface ClaimSubmitContext {
    * Absent on `claim_to_l1`, whose burn carries no transfer meta.
    */
   transferMeta?: Fr[]
+  /** The trailing `terms` this escrow's claims take; empty on a class without them. */
+  claimTerms?: Fr[]
 }
 
 /**

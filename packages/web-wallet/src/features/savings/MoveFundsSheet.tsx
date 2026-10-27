@@ -5,8 +5,9 @@ import {
   SavingsFeeError,
   savingsMoveEta,
   savingsPaybackYears,
-  useBalance,
+  useAssetContext,
   useSavings,
+  useStore,
   type SavingsDirection,
   type SavingsMoveStage,
   type SavingsMoveTiming,
@@ -109,7 +110,7 @@ export function MoveFundsSheet({
   const txAmountCap = useTxAmountCap()
   const savingsCap = useTxAmountCap(savingsDeployment)
   const { position, quote, move } = useSavings()
-  const { walletAsset, assetsLoaded } = useBalance()
+  const wallet = useStore(useAssetContext().balances.view)
   const [direction, setDirection] = useState(initialDirection)
   const [amount, setAmount] = useState(initialAmount)
   const [maxed, setMaxed] = useState(false)
@@ -136,8 +137,8 @@ export function MoveFundsSheet({
 
   const from = direction === "in" ? "Main Account" : "Savings"
   const to = direction === "in" ? "Savings" : "Main Account"
-  const available = direction === "in" ? walletAsset?.balanceAtomic ?? 0n : position?.value ?? 0n
-  const availableKnown = direction === "in" ? assetsLoaded : position !== null
+  const available = direction === "in" ? wallet.main?.atomic ?? 0n : position?.value ?? 0n
+  const availableKnown = direction === "in" ? wallet.live : position !== null
   const parsed = parseAmount(amount)
   const valueAtomic =
     !amountError(amount) && parsed > 0 ? parseUnits(amount, DEFAULT_DECIMALS) : undefined

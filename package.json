@@ -5,6 +5,7 @@
   "scripts": {
     "codegen": "scripts/codegen.sh",
     "build-contracts": "VERSION=v6.0.0 scripts/build_contracts.sh",
+    "update-versions": "scripts/update_versions.sh --oldVersion v6.0.0-nightly.20261014 --newVersion v6.0.0",
     "build:core": "pnpm --filter '@obsidion/core...' --filter '!@oxide/*' -r --if-present run build",
     "build:contracts": "pnpm --filter '@obsidion/contracts...' --filter '!@oxide/*' -r --if-present run build",
     "build:config-client": "pnpm --filter '@obsidion/config-client...' --filter '!@oxide/*' -r --if-present run build",

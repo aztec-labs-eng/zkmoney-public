@@ -1,7 +1,13 @@
 import { Modal } from "../../ui/Modal"
 import { useEffect, useRef, useState } from "react"
 import { useNavigate } from "react-router-dom"
-import { useBalance, parseEscrowAmount, TxInFlightError } from "@obsidion/front-core"
+import {
+  exceedsBalance,
+  parseEscrowAmount,
+  TxInFlightError,
+  useAssetContext,
+  useStore,
+} from "@obsidion/front-core"
 import { isPasskeyCancelled } from "@obsidion/passkey-web"
 import { PAYLINK_MEMO_MAX_BYTES, truncateUtf8 } from "@obsidion/sdk"
 import {
@@ -33,13 +39,21 @@ import {
 import { PayModalChrome } from "../../ui/PayModalChrome"
 import { useBack, useProvingOutcome } from "../../ui/hooks"
 import { useUserFlowActive } from "../provingGate"
-import { amountError, decimalInput, floorToCents, parseAmount, usd } from "../../ui/format"
+import {
+  amountError,
+  decimalInput,
+  fixedCents,
+  floorToCents,
+  parseAmount,
+  usd,
+} from "../../ui/format"
 import { emailLockedLinksEnabled } from "../../config/features"
 import { useBusyLabel } from "../operations/operations"
 import { OperationHandOff } from "../operations/OperationHandOff"
 import { LocalPasskeyHint } from "../../ui/LocalPasskeyHint"
 import { SponsoredActionNotice, useSponsoredActionBlock } from "../allowance/SponsoredActionNotice"
 import { loadWalletIdentity } from "../identity/walletIdentity"
+import { paylinkRowUrl } from "../shortLinks"
 
 type Phase = "amount" | "options" | "confirm" | "working"
 
@@ -57,7 +71,8 @@ export function NewLinkScreen() {
   const navigate = useNavigate()
   const back = useBack("/send")
   const deps = usePaylinkDeps()
-  const { walletAsset, walletBalance, assetsLoaded } = useBalance()
+  const balance = useStore(useAssetContext().balances.view)
+  const main = balance.main
 
   const [phase, setPhase] = useState<Phase>("amount")
   const previousPhase = PREVIOUS_PHASE[phase]
@@ -84,7 +99,8 @@ export function NewLinkScreen() {
   const leave = () => {
     left.current = true
     outcome.finish()
-    const state = link.current ? { openPaylink: link.current.url } : undefined
+    // The row stores the full link, so the sheet is found by that, not the short one shared.
+    const state = link.current ? { openPaylink: paylinkRowUrl(link.current.fragment) } : undefined
     navigate("/activity", { replace: true, state })
   }
 
@@ -102,10 +118,11 @@ export function NewLinkScreen() {
   // Past those, a $0 account blocks too — the escrow it can't fund reverts a minute into proving,
   // after the passkey prompt, and the link never exists.
   const overspent =
-    assetsLoaded &&
     !hasPendingDeposits() &&
-    (validAmount ? parseEscrowAmount(amount, walletAsset?.decimals ?? 0).atomic : 0n) >
-      (walletAsset?.balanceAtomic ?? 0n)
+    exceedsBalance(
+      balance,
+      validAmount ? parseEscrowAmount(amount, main?.decimals ?? 0).atomic : 0n,
+    )
   const canNext = validAmount && !overspent
   const canConfirm = !protectEnabled || validEmail
   // The asset layer connects async after mount; the CTA waits for the full deps set.
@@ -127,7 +144,7 @@ export function NewLinkScreen() {
   // The visitor page reads the same offer and amount: a link at the threshold, carrying a voucher,
   // pays a new user's tag.
   const { offer } = useGoldenTicketOffer()
-  const decimals = walletAsset?.decimals
+  const decimals = main?.decimals
   const ticketMinimum =
     offer && decimals !== undefined ? ticketThresholdLabel(offer.threshold, decimals) : undefined
   const amountUnits =
@@ -239,7 +256,7 @@ export function NewLinkScreen() {
               <div className="ww-pay__form">
                 <div className="ww-pay__field">
                   <span className="ww-pay__available">
-                    Available: <b>${walletBalance}</b>
+                    Available: <b>${fixedCents(main)}</b>
                   </span>
                   <TextField
                     label="Amount"
@@ -260,10 +277,7 @@ export function NewLinkScreen() {
                       <button
                         type="button"
                         className="zkm-btn-reset ww-pay__max"
-                        onClick={() =>
-                          walletAsset &&
-                          setAmount(floorToCents(walletAsset.balanceAtomic, walletAsset.decimals))
-                        }
+                        onClick={() => main && setAmount(floorToCents(main.atomic, main.decimals))}
                       >
                         MAX
                       </button>

@@ -93,8 +93,8 @@ vi.mock("../src/features/paylink/ClaimProgressModal", () => ({
   ),
   hasClaimReceipt: (record: { phase: string }) => record.phase === "done",
 }))
-vi.mock("../src/features/notifications/NotificationsMount", () => ({
-  NotificationsMount: () => <div data-testid="producers" />,
+vi.mock("../src/features/notifications/ReorgMonitorMount", () => ({
+  ReorgMonitorMount: () => <div data-testid="reorg-monitor" />,
 }))
 vi.mock("../src/ui/NotificationsBell", () => ({
   NotificationsBell: (props: typeof bell) => {
@@ -1040,7 +1040,7 @@ describe("PaylinkVisitorScreen", () => {
     voucher.uses = 0
     withdrawal.record = { localId: "w1", recipient: `0x${"dd".repeat(20)}`, phase: "done" }
     render({ link: link({ status: "claimed" }) })
-    expect(testId("producers")).toBeTruthy()
+    expect(testId("reorg-monitor")).toBeTruthy()
 
     act(() => button("View receipt")!.click())
     expect(testId("receipt")?.textContent).toBe("w1")

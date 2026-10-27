@@ -5,7 +5,8 @@
 // compiled), `--out` (the constants file) and `--circuit`, so the pin cannot fall behind the artifact
 // the wallet proves with. Standalone, with no `--in`, it compiles the circuit first and copies the
 // artifact to packages/contracts. `--check` derives the key and fails on a pin that differs, writing
-// nothing.
+// nothing. `--vk-out FILE` only writes the derived key to FILE; the Nix build derives it that way, and
+// `--vk FILE` pins that key instead of deriving it.
 import { execSync } from "node:child_process"
 import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
@@ -19,18 +20,29 @@ const here = dirname(fileURLToPath(import.meta.url))
 const root = resolve(here, "../../..")
 
 function parseArgs(argv) {
-  const args = { in: null, out: null, circuit: null, check: false }
+  const args = { in: null, out: null, circuit: null, check: false, vk: null, vkOut: null }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     if (a === "--in") args.in = argv[++i]
     else if (a === "--out") args.out = argv[++i]
     else if (a === "--circuit") args.circuit = argv[++i]
     else if (a === "--check") args.check = true
+    else if (a === "--vk") args.vk = argv[++i]
+    else if (a === "--vk-out") args.vkOut = argv[++i]
     else throw new Error(`unknown argument ${a}`)
   }
   if (!PINS[args.circuit])
     throw new Error(`--circuit must be one of ${Object.keys(PINS).join(", ")}`)
   return args
+}
+
+async function deriveVk(bytecode) {
+  const api = await Barretenberg.new({})
+  try {
+    return await new UltraHonkBackend(bytecode, api).getVerificationKey()
+  } finally {
+    await api.destroy()
+  }
 }
 
 const args = parseArgs(process.argv.slice(2))
@@ -53,35 +65,33 @@ if (!args.in) {
 
 const { bytecode } = JSON.parse(readFileSync(compiled, "utf-8"))
 if (typeof bytecode !== "string" || !bytecode) throw new Error(`${compiled} has no bytecode`)
-const src = readFileSync(constants, "utf-8")
-if (!PIN.test(src)) throw new Error(`${NAME} markers not found in ${constants}`)
+const src = args.vkOut ? "" : readFileSync(constants, "utf-8")
+if (!args.vkOut && !PIN.test(src)) throw new Error(`${NAME} markers not found in ${constants}`)
 
-const api = await Barretenberg.new({})
-try {
-  const vk = await new UltraHonkBackend(bytecode, api).getVerificationKey()
-  if (vk.length !== VK_BYTES) {
-    throw new Error(`verification key is ${vk.length} bytes, expected ${VK_BYTES}`)
-  }
-  const b64 = Buffer.from(vk).toString("base64")
-  if (args.check) {
-    const pinned = src.match(PINNED)?.[1]
-    if (pinned !== b64) {
-      console.error(
-        `${NAME} in ${constants} does not match the key derived from ${compiled}; ` +
-          "rerun without --check to re-pin it",
-      )
-      process.exit(1)
-    }
-    console.log(`${NAME} matches ${compiled}`)
-  } else {
-    mkdirSync(dirname(vkPath), { recursive: true })
-    writeFileSync(vkPath, vk)
-    writeFileSync(
-      constants,
-      src.replace(PIN, `// ${NAME}_START\nexport const ${NAME} =\n  "${b64}"\n// ${NAME}_END`),
+const vk = args.vk ? readFileSync(args.vk) : await deriveVk(bytecode)
+if (vk.length !== VK_BYTES) {
+  throw new Error(`verification key is ${vk.length} bytes, expected ${VK_BYTES}`)
+}
+const b64 = Buffer.from(vk).toString("base64")
+if (args.vkOut) {
+  writeFileSync(args.vkOut, vk)
+  console.log(`vk: ${vk.length} bytes → ${args.vkOut}`)
+} else if (args.check) {
+  const pinned = src.match(PINNED)?.[1]
+  if (pinned !== b64) {
+    console.error(
+      `${NAME} in ${constants} does not match the key derived from ${compiled}; ` +
+        "rerun without --check to re-pin it",
     )
-    console.log(`vk: ${vk.length} bytes → ${vkPath}; pinned in ${constants}`)
+    process.exit(1)
   }
-} finally {
-  await api.destroy()
+  console.log(`${NAME} matches ${compiled}`)
+} else {
+  mkdirSync(dirname(vkPath), { recursive: true })
+  writeFileSync(vkPath, vk)
+  writeFileSync(
+    constants,
+    src.replace(PIN, `// ${NAME}_START\nexport const ${NAME} =\n  "${b64}"\n// ${NAME}_END`),
+  )
+  console.log(`vk: ${vk.length} bytes → ${vkPath}; pinned in ${constants}`)
 }

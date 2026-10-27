@@ -39,6 +39,7 @@ packages/contracts/contracts/**/*/target/
 # nargo outputs at the top level of target/ — not its subdirectories.
 packages/contracts/circuits/**/target/*.json
 packages/contracts/circuits/**/target/*.gz
+packages/contracts/circuits/**/target/*.vk
 packages/contracts/**/codegenCache.json
 packages/contracts/src/artifacts/target/
 # Locally built bootstrap artifact manifests; the store is the record, only the README is tracked.

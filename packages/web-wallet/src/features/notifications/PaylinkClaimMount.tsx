@@ -2,14 +2,13 @@
  * Creator-side paylink upkeep: rebuilds the sent paylink rows this browser never had from the
  * account's own funding `Transfer` copies, then sweeps sent rows against the on-chain nullifier —
  * once the wallet is live, whenever the tab becomes visible, and on a timer while it stays visible.
- * The reconciler owns the isClaimed write and the `paylinkClaimed` event the notification producer
- * listens to.
+ * The reconciler flips sent rows to claimed, which stamps the `claimedAt` the bell's entry reads,
+ * and fires the `paylinkClaimed` event an open detail sheet listens to.
  */
 
 import { useEffect } from "react"
 import {
   PaylinkClaimReconciler,
-  TransactionStorage,
   bootPriority,
   checkSpentViaPaylinkService,
   createTransferEventSource,
@@ -22,7 +21,7 @@ import {
 } from "@obsidion/front-core"
 import { PaylinkService, encodePaylinkInline } from "@obsidion/sdk"
 import { getConfig } from "../../config/env"
-import { webStorage } from "../../platform/storage/WebStorageAdapter"
+import { useSession } from "../../platform/session"
 
 const SWEEP_MS = 60_000
 
@@ -38,6 +37,7 @@ export function PaylinkClaimMount(): null {
   const { obsidionAccount, getSecretKey } = useAccountContext()
   const { tokenService } = useAssetContext()
   const { contractService } = useContractServiceContext()
+  const { activity, kv } = useSession()
 
   useEffect(() => {
     if (!obsidionWallet || !obsidionAccount || !tokenService || !contractService) return
@@ -51,6 +51,7 @@ export function PaylinkClaimMount(): null {
     )
     const reconciler = new PaylinkClaimReconciler({
       checkSpent: checkSpentViaPaylinkService(paylinkService),
+      storage: activity,
       getActiveAccount: () => accountAddress,
     })
     active = reconciler
@@ -81,8 +82,8 @@ export function PaylinkClaimMount(): null {
         signal: controller.signal,
         paylinkService,
         linkFor: (params) => `${location.origin}/link#${encodePaylinkInline(params)}`,
-        store: TransactionStorage.get(webStorage),
-        storage: webStorage,
+        store: activity,
+        kv,
         token: { address: token.address, symbol: token.symbol, decimals: token.decimals },
       })
     }
@@ -103,7 +104,7 @@ export function PaylinkClaimMount(): null {
       document.removeEventListener("visibilitychange", run)
       if (active === reconciler) active = undefined
     }
-  }, [obsidionWallet, obsidionAccount, tokenService, contractService])
+  }, [obsidionWallet, obsidionAccount, tokenService, contractService, activity, kv])
 
   return null
 }

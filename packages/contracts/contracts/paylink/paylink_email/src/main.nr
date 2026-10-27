@@ -117,6 +117,7 @@ pub contract PaylinkEmail {
         recipient: AztecAddress,
         authwit_nonce: Field,
         meta: [Field; TRANSFER_META_LEN],
+        terms: Field,
     ) {
         assert_is_initialized_private(self.context);
         assert(!recipient.is_zero(), "recipient required");
@@ -125,6 +126,7 @@ pub contract PaylinkEmail {
             self.context,
             pre_email_hash,
             self.storage.paylink_email_note.get_storage_slot(),
+            terms,
         );
 
         // Recursively verify the zkJWT proof against the vkey this paylink was bound to at deposit.
@@ -175,6 +177,7 @@ pub contract PaylinkEmail {
         executor: EthAddress,
         user_payload_hash: Field,
         prover_tip: u128,
+        terms: Field,
     ) {
         assert_is_initialized_private(self.context);
         assert(!executor.is_zero(), "executor required");
@@ -183,6 +186,7 @@ pub contract PaylinkEmail {
             self.context,
             pre_email_hash,
             self.storage.paylink_email_note.get_storage_slot(),
+            terms,
         );
 
         verify_proof_with_type(

@@ -3,7 +3,7 @@
  * resilient KTD-3 lifecycle: capability gate, visibility-scoped `xmtp-client` Web Lock, and — as
  * leader — the stage-3 inbox: payment-request receive and connect-back receive via the hoisted
  * driver, plus the pending connect-back outbox flush. (Transfer receive is chain-native —
- * `TransferScannerMount` — and independent of XMTP.) A catch-up drain runs on
+ * the `transferScan` task — and independent of XMTP.) A catch-up drain runs on
  * every leader acquisition (unlock / tab promotion); the inbox reads "ready" when it completes or
  * after a bounded wait (KTD-10). Non-leader / unsupported tabs render nothing and only publish the
  * shared UI state.
@@ -11,19 +11,18 @@
 
 import { useEffect } from "react"
 import {
-  AppNotificationStore,
+  bestEffort,
   ConnectBackReceiver,
   ContactStorage,
   IssuedConnectStorage,
   PendingConnectBackStorage,
   RequestReceiver,
-  RequestStorage,
   XmtpInboxReceiverDriver,
-  contactAddedNotificationInput,
   createClaimedTagVerifier,
   flushPendingConnectBacks,
   getActiveNetworkId,
   importHistory,
+  navigateIdFor,
   startArchivePublisher,
   startHistoryImporter,
   useBootReady,
@@ -33,6 +32,7 @@ import { getConfig } from "../../config/env"
 import { resolveTagForCommit } from "../../features/contacts/registryResolution"
 import { loadWalletIdentity } from "../../features/identity/walletIdentity"
 import { getAuthService } from "../auth/useAuthenticator"
+import { session } from "../session"
 import { webStorage, type WebStorageAdapter } from "../storage/WebStorageAdapter"
 import {
   createRequestBindingResolver,
@@ -112,18 +112,27 @@ async function mountReceivePipeline(
   const warnLog = { log: (message: string, ...args: unknown[]) => console.warn(message, ...args) }
 
   const contactStorage = ContactStorage.get()
-  const notifications = AppNotificationStore.get(storage)
   const connectBackReceiver = new ConnectBackReceiver(
     IssuedConnectStorage.get(storage),
     {
       addOrMergeContact: async (entry) => {
         const contact = await contactStorage.addOrMergeContact(entry)
         // The add is silent otherwise — nothing else tells the sharer their link was redeemed.
-        // A mint failure must never surface as an add throw: the receiver reads that as a
-        // terminal no-add.
-        await notifications
-          .createIfAbsent(contactAddedNotificationInput(contact, Date.now()))
-          .catch((err) => console.warn("[XmtpMount] contact-added notification failed", err))
+        // Keyed on the XMTP address: a tag-less connect-back is stored handle-only.
+        const address = contact.address.toLowerCase()
+        void bestEffort(
+          "unknown",
+          session().notifications.record({
+            id: `contact:added:${address}`,
+            at: Date.now(),
+            kind: "contactAdded",
+            data: {
+              address,
+              contactId: navigateIdFor(contact),
+              ...(contact.tag && { tag: contact.tag }),
+            },
+          }),
+        )
         return contact
       },
     },
@@ -133,7 +142,7 @@ async function mountReceivePipeline(
 
   // Sender- and binding-gated — see RequestReceiver.
   const requestReceiver = new RequestReceiver(
-    createRequestStoreWrites(RequestStorage.get()),
+    createRequestStoreWrites(session().requests),
     receiverLogger,
     createRequestBindingResolver(),
     createRequestSenderPolicy(contactStorage, allowNonContactRequests),

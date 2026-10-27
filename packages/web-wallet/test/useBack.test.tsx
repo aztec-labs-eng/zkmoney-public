@@ -46,15 +46,15 @@ describe("useBack", () => {
     expect(navigate).toHaveBeenCalledWith(-1)
   })
 
-  it("falls back to the structural parent on the first in-app entry (idx 0)", () => {
+  it("replaces the entry with the structural parent on the first in-app entry (idx 0)", () => {
     window.history.replaceState({ idx: 0 }, "")
     back()
-    expect(navigate).toHaveBeenCalledWith("/contacts")
+    expect(navigate).toHaveBeenCalledWith("/contacts", { replace: true })
   })
 
-  it("falls back when history state is absent (deep link before router stamps idx)", () => {
+  it("replaces the entry when history state is absent (deep link before router stamps idx)", () => {
     window.history.replaceState(null, "")
     back()
-    expect(navigate).toHaveBeenCalledWith("/contacts")
+    expect(navigate).toHaveBeenCalledWith("/contacts", { replace: true })
   })
 })

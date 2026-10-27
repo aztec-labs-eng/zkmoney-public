@@ -6,12 +6,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest"
 import { PendingRegistrationStore, WithdrawalStorage } from "@obsidion/front-core"
 import { WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
-import { provingProgress, ProvingStage } from "@obsidion/proving-progress"
 import { TxStatus } from "@aztec-labs/stdlib/tx"
 import { webStorage } from "../src/platform/storage/WebStorageAdapter"
 import { TimeoutError } from "../src/lib/withTimeout"
 import { saveRegistrationTerms } from "../src/features/onboarding/registrationTerms"
-import { testWalletDbs } from "./support/fakeWalletDb"
+import { sendLikeTheWallet, watchWalletDb, type WalletSendOptions } from "./support/submitBoundary"
 
 const dai = (n: number) => BigInt(Math.round(n * 100)) * 10n ** 16n
 /** Below the field modulus, as a real L2 tx hash is. */
@@ -73,15 +72,6 @@ vi.mock("../src/config/oxideTuple", async (original) => ({
 vi.mock("@obsidion/front-core", async (original) => ({
   ...(await original<typeof import("@obsidion/front-core")>()),
   readPaylinkNote: h.note,
-  TxLifecycleService: {
-    getInstance: () => ({
-      startTrackingTx: async () => "claim-row",
-      recordPreSubmitPaylinkRow: async () => {},
-      patchTxHashForQueue: async () => {},
-      completeTransaction: () => {},
-      failTransaction: () => {},
-    }),
-  },
 }))
 vi.mock("../src/features/onboarding/claimSponsorship", () => ({
   claimSponsorRail: async () => ({ sponsor: { railId: 2, fpcAddress: {}, fpcArtifact: {} } }),
@@ -115,6 +105,9 @@ const { getOperationStore, getOperationsInProgress } = await import(
   "../src/features/operations/operations"
 )
 const { trackBackgroundProve } = await import("../src/features/provingGate")
+const { activeAccount, closeSession, openSession } = await import("../src/platform/session")
+beforeEach(() => void openSession(activeAccount()))
+afterEach(closeSession)
 
 const account = `0x${"aa".repeat(20)}`
 const l2Address = `0x${"bb".repeat(32)}` as const
@@ -484,8 +477,7 @@ describe("a registration-funding claim's burn record", () => {
 
     it("leaves the ledger watching a batch the node took, to re-send only if it drops", async () => {
       h.claimSdk.mockImplementation(async (_params, _sponsor, options) => {
-        const { operationId } = options as { operationId: string }
-        provingProgress.emitStageStart(ProvingStage.Mining, operationId, HASH)
+        await sendLikeTheWallet(options as WalletSendOptions, HASH, () => {})
         throw new Error("Receipt timed out")
       })
       h.getTxReceipt.mockRejectedValue(new Error("node away"))
@@ -509,8 +501,7 @@ describe("a registration-funding claim's burn record", () => {
 
   it("keeps a broadcast burn at its hash when the receipt wait fails, and reports the claim by it", async () => {
     h.claimSdk.mockImplementation(async (_params, _sponsor, options) => {
-      const { operationId } = options as { operationId: string }
-      provingProgress.emitStageStart(ProvingStage.Mining, operationId, HASH)
+      await sendLikeTheWallet(options as WalletSendOptions, HASH, () => {})
       throw new Error("Receipt timed out")
     })
     h.getTxReceipt.mockRejectedValue(new Error("node away"))
@@ -525,24 +516,31 @@ describe("a registration-funding claim's burn record", () => {
     })
   })
 
-  it("keeps the claim tab-bound when the burn's hash stamp did not persist", async () => {
-    testWalletDbs().onApply = (_version, ops) => {
-      if (
-        ops.some(
-          ([key, value]) => key.includes("@obsidion/withdrawals/records") && value?.includes(HASH),
-        )
-      ) {
-        throw new Error("quota")
-      }
-    }
+  it("holds the claim's and the burn's hashes when the node takes the batch", async () => {
+    const db = watchWalletDb()
+    let held: boolean[] = []
     h.claimSdk.mockImplementation(async (_params, _sponsor, options) => {
-      const { operationId } = options as { operationId: string }
-      provingProgress.emitStageStart(ProvingStage.Mining, operationId, HASH)
-      await new Promise((r) => setTimeout(r, 0))
-      expect(getOperationStore().get(operationId)?.state).toBe("local")
+      await sendLikeTheWallet(options as WalletSendOptions, HASH, () => {
+        held = [db.holds("activity", HASH), db.holds("withdrawals", HASH)]
+      })
       return HASH
     })
     expect(await fund()).toBe(HASH)
+    expect(held).toEqual([true, true])
+  })
+
+  it("sends nothing when the burn's hash cannot be saved", async () => {
+    watchWalletDb().refuse("withdrawals", HASH)
+    const node = vi.fn()
+    h.claimSdk.mockImplementation(async (_params, _sponsor, options) => {
+      await sendLikeTheWallet(options as WalletSendOptions, HASH, node)
+      return HASH
+    })
+    const err = await fund().catch((e: unknown) => e)
+    expect(err).toMatchObject({ message: "quota exceeded" })
+    expect(err).not.toMatchObject({ name: "TxInFlightError" })
+    expect(node).not.toHaveBeenCalled()
+    expect(withdrawals()[0]).toMatchObject({ phase: "failed" })
   })
 
   /**
@@ -620,8 +618,7 @@ describe("a registration-funding claim's burn record", () => {
 
   it("fails the record when the node reports the broadcast dropped", async () => {
     h.claimSdk.mockImplementation(async (_params, _sponsor, options) => {
-      const { operationId } = options as { operationId: string }
-      provingProgress.emitStageStart(ProvingStage.Mining, operationId, HASH)
+      await sendLikeTheWallet(options as WalletSendOptions, HASH, () => {})
       throw new Error("Node rejected the batch")
     })
     h.getTxReceipt.mockResolvedValue({ status: TxStatus.DROPPED } as never)

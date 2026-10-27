@@ -3,6 +3,7 @@ import { useState, type ReactNode } from "react"
 import { PrimaryGradientButton } from "@obsidion/web-ds"
 import doneBadge from "../../assets/cutover/done-badge.png"
 import { usdAtomicFloor } from "../../ui/format"
+import { useWakeLock } from "../../ui/hooks"
 import {
   chooseCopy,
   finishCopy,
@@ -118,6 +119,8 @@ export function UpgradeChoose(props: {
   checking?: boolean
   overlay?: ReactNode
 }) {
+  // A phone that sleeps suspends the run, so every migration screen keeps it awake.
+  useWakeLock(true)
   const shown = amounts(props.balance)
   const { waiting } = props
   const [transactionsOpen, setTransactionsOpen] = useState(false)
@@ -128,6 +131,11 @@ export function UpgradeChoose(props: {
         testId="cutover-choose"
         footer={
           <div className="ww-cutover__actions">
+            {props.checking && (
+              <span className="ww-cutover__caption" role="status">
+                {chooseCopy.preparing}
+              </span>
+            )}
             <PrimaryGradientButton
               title={chooseCopy.upgrade}
               isDisabled={!!waiting || !!props.checking}
@@ -181,6 +189,7 @@ export function UpgradeSign(props: {
   onSign: () => void
   onClose: () => void
 }) {
+  useWakeLock(true)
   return (
     <MoveFundsSheet
       figures={props.updateOnly ? undefined : figures(props.balance)}
@@ -213,6 +222,7 @@ export function UpgradePreparing(props: {
   onStay: () => void
   onLeave: () => void
 }) {
+  useWakeLock(true)
   const { percent } = props.ring
   return (
     <ProgressScreen
@@ -254,6 +264,7 @@ export function UpgradeMoving(props: {
   waitReason?: string
   updateOnly?: boolean
 }) {
+  useWakeLock(true)
   const { percent } = props.ring
   const elapsed = useElapsed(true)
   const longer = elapsed !== undefined && elapsed > SLOW_AFTER_MS
@@ -291,6 +302,7 @@ export function UpgradeDone(props: {
   updateOnly?: boolean
   onClose: () => void
 }) {
+  useWakeLock(true)
   const shown = figures(props.balance)
   return (
     <CutoverPage account={account()} testId="cutover-upgrade-done" center>
@@ -334,6 +346,7 @@ export function UpgradeLeft(props: {
   onStart: () => void
   overlay?: ReactNode
 }) {
+  useWakeLock(true)
   return (
     <>
       <CutoverPage account={account()} testId="cutover-stopped" center>
@@ -361,6 +374,7 @@ export function UpgradeLeft(props: {
 
 /** S2: the run started moving funds, and a later step stopped (Figma 401:2054 / 425:2030). */
 export function UpgradeFinish(props: { balance: UpgradeBalance; onResume: () => void }) {
+  useWakeLock(true)
   const steps = runSteps(["done", "done", "failed"])
   steps[1]!.status = finishCopy.started
   return (

@@ -31,6 +31,7 @@ const KNOWN: ReadonlySet<string> = new Set<string>([
   "paylinkEmail",
   "paylinkDirect",
   "passwordFPC",
+  "linkLocator",
 ])
 
 function toContractName(profileKey: string): ContractName | undefined {

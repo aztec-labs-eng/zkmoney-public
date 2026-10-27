@@ -39,6 +39,8 @@ export const DEFAULT_CONTRACTS = {
   paylinkEmail: "paylinkEmail",
   paylinkDirect: "paylinkDirect",
   passwordFPC: "passwordFPC",
+  // Short links' announcements. Never deployed: its address follows from its class.
+  linkLocator: "linkLocator",
 } as const
 
 export const DEFAULT_CONTRACTS_NAME = [
@@ -51,6 +53,7 @@ export const DEFAULT_CONTRACTS_NAME = [
   DEFAULT_CONTRACTS.paylinkEmail,
   DEFAULT_CONTRACTS.paylinkDirect,
   DEFAULT_CONTRACTS.passwordFPC,
+  DEFAULT_CONTRACTS.linkLocator,
 ] as const
 
 // ── Fee payment ──────────────────────────────────────────────────────

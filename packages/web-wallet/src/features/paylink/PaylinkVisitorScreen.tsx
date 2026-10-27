@@ -16,12 +16,12 @@ import { BalanceSkeleton } from "../../ui/Skeletons"
 import type { EntryOpener, NotificationScope } from "../../ui/NotificationsPanel"
 import { NotificationsBell } from "../../ui/NotificationsBell"
 import { withdrawalStatus } from "../../ui/screens/WithdrawalDetailModal"
-import { NotificationsMount } from "../notifications/NotificationsMount"
+import { ReorgMonitorMount } from "../notifications/ReorgMonitorMount"
 import { operationIdOf } from "../operations/operationEntries"
 import { TabLine } from "../operations/TabLine"
 import { releaseNote } from "../withdraw/waitingNote"
 import { SwapExitModal } from "../withdraw/SwapExitModal"
-import { swapExitReasonFor, type SwapExitReason } from "../withdraw/swapRecovery"
+import { swapExitReasonFor, type SwapExitReason } from "@obsidion/front-core"
 import { WithdrawalExitModal } from "../withdraw/WithdrawalExitModal"
 import { InvitationChrome } from "../onboarding/InvitationChrome"
 import {
@@ -428,8 +428,8 @@ export function PaylinkVisitorScreen({
 
   return (
     <>
-      {/* No wallet shell here: the page runs the producers the bell reads. */}
-      <NotificationsMount />
+      {/* No wallet shell here: the page runs the reorg monitor the bell reports. */}
+      <ReorgMonitorMount />
       {page}
       {exit === "finalize" && withdrawal && (
         <WithdrawalExitModal record={withdrawal} onClose={() => setExit(null)} />

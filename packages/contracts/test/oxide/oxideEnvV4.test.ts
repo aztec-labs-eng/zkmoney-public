@@ -216,7 +216,7 @@ describe("extractPinnedOxideEnvTuple", () => {
     expect(extractPinnedOxideEnvTuple(fixture, profile).tuple.version).toBe("v1")
   })
 
-  it("applies the mainnet parity gate to the pinned entry", () => {
+  it("enforces an explicit git SHA expectation on the pinned entry", () => {
     const profile = { manifestUrl: "https://m.example/prod.v4.json", portal: V1.portal }
     expect(() =>
       extractPinnedOxideEnvTuple(fixture, profile, {
@@ -247,11 +247,10 @@ describe("duplicate deployments", () => {
 })
 
 describe("pinnedEntryPolicy", () => {
-  it("gates the pinned entry on mainnet only", () => {
+  it("requires the prod schema on mainnet without enforcing the expected git SHA", () => {
     expect(pinnedEntryPolicy({ network: Network.MAINNET, expectedGitSha: "a".repeat(40) })).toEqual(
       {
         requireProdSchema: true,
-        expectedGitSha: "a".repeat(40),
       },
     )
     expect(
