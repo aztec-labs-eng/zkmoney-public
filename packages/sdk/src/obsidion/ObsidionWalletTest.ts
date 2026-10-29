@@ -22,6 +22,8 @@ import {
   type AlphaAccountType,
   FeePaymentOptions,
   ObsidionWallet,
+  readNetworkId,
+  type CreateWalletOptions,
   type ObsidionWalletOptions,
 } from "./ObsidionWallet.js"
 import { proveTxWithProgress } from "./proving-progress-helpers.js"
@@ -59,8 +61,8 @@ export class ObsidionWalletTest extends ObsidionWallet {
   // for CHECKPOINTED keeps test L1 writes out of the publisher's in-flight window.
   public override readonly defaultWaitOpts: WaitOpts = {}
 
-  constructor(pxe: PXE, node: AztecNode, walletOpts?: ObsidionWalletOptions) {
-    super(pxe, node, walletOpts)
+  constructor(pxe: PXE, node: AztecNode, networkId: string, walletOpts?: ObsidionWalletOptions) {
+    super(pxe, node, networkId, walletOpts)
   }
 
   protected override async getAccountArtifact(): Promise<ContractArtifact> {
@@ -89,20 +91,18 @@ export class ObsidionWalletTest extends ObsidionWallet {
     node: AztecNode,
     overridePXEConfig?: Partial<PXEConfig>,
     options: PXECreationOptions = { loggers: {} },
-    walletOpts?: ObsidionWalletOptions,
+    walletOpts?: CreateWalletOptions,
   ): Promise<ObsidionWalletTest> {
+    const networkId = await readNetworkId(node, walletOpts)
     const pxeConfig = Object.assign(getPXEConfig(), {
       proverEnabled: overridePXEConfig?.proverEnabled ?? false,
       autoSync: overridePXEConfig?.autoSync ?? false,
       ...overridePXEConfig,
     })
-    // TODO: change this, this is a 200ms roundtrip to the node
-    const l1Contracts = await node.getL1ContractAddresses()
-    const rollupAddress = l1Contracts.rollupAddress
-    pxeConfig.dataDirectory = pxeConfig.dataDirectory ?? `pxe-${rollupAddress}`
+    pxeConfig.dataDirectory = pxeConfig.dataDirectory ?? `pxe-${networkId}`
 
     const pxe = await (await import("@aztec-labs/pxe/server")).createPXE(node, pxeConfig, options)
-    return new ObsidionWalletTest(pxe, node, walletOpts)
+    return new ObsidionWalletTest(pxe, node, networkId, walletOpts)
   }
 
   // -- Account Creation (TEST ONLY) --

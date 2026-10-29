@@ -30,6 +30,8 @@ export interface DirectMigrationDepositDeps {
   /** The recipient account the rail claims for. */
   recipient: string
   l1ChainId: number
+  /** The network the rail claims on, which the deposit lands in. */
+  networkId: string
   /** The commitment and shared secret at the batch's `(day, nonce)` (`migrationDirectCommitment`). */
   secret(
     direct: MigrationDirectDeposit,
@@ -97,6 +99,7 @@ async function ensure(
     recipientHash: commitment,
     recoveryAddress: "",
     l1ChainId: deps.l1ChainId,
+    networkId: deps.networkId,
     amount: "0",
     tokenSymbol: row.token.symbol,
     tokenAddress: row.token.address,

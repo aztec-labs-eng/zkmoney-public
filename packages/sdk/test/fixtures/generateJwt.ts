@@ -6,7 +6,7 @@ import {
   KeyPair,
   loadKeyPairs,
   generateKeyPairs,
-} from "../utils/jwt.js"
+} from "../utils/jwt/jwt.js"
 import fs from "fs"
 
 // JWT to sign
@@ -64,8 +64,4 @@ keyPairs.forEach((keyPair: KeyPair, index: number) => {
 })
 
 // Verify the JWT token using the JWKS
-try {
-  verifyJwt(token, jwks)
-} catch (error) {
-  // Error is already logged in the verifyJwt function
-}
+verifyJwt(token, jwks)

@@ -10,8 +10,7 @@
  * tries again.
  */
 import type { IStorageAdapter } from "../storages/adapter"
-import { ACCOUNT_STORAGE_KEY, TRANSACTIONS_STORAGE_KEY } from "../storages/constants"
-import type { TransactionStorage } from "../storages/TransactionStorage"
+import { storedActivity, type Activity } from "../../engine/activity"
 import type { Transaction } from "../../types/transactions"
 import {
   isSettledSipaPhase,
@@ -20,7 +19,7 @@ import {
   type SIPADepositStore,
 } from "../services/deposits/SIPADepositStore"
 import { WITHDRAWAL_TERMINAL_PHASES, type WithdrawalRecord } from "../services/bridge/types"
-import { KEY_WITHDRAWALS, type WithdrawalStorage } from "../services/bridge/WithdrawalStorage"
+import { storedWithdrawals, type Withdrawals } from "../../engine/withdrawals"
 import { KEY_SAVINGS_MOVES, type SavingsMoveStorage } from "../services/savings/SavingsMoveStorage"
 import type { SavingsMoveRecord } from "../services/savings/types"
 import {
@@ -62,9 +61,9 @@ export interface HistoricActivityImportDeps {
   key?: string
   /** `read` over each retired rollup's database; rejects when one could not be read. */
   readOtherDatabases<T>(read: (db: RetiredDatabase) => T): Promise<T[]>
-  transactions: Pick<TransactionStorage, "importHistoricRows">
+  transactions: Pick<Activity, "importHistoricRows">
   sipaDeposits: Pick<SIPADepositStore, "load" | "get" | "create">
-  withdrawals: Pick<WithdrawalStorage, "load" | "get" | "getByL2TxHash" | "create">
+  withdrawals: Pick<Withdrawals, "ready" | "adopt">
   savingsMoves: Pick<SavingsMoveStorage, "load" | "get" | "put">
   /** Whether the account the import started for is still the active one; false stops it before a write. */
   ownsStorage?: () => boolean
@@ -114,7 +113,7 @@ export async function importHistoricActivity(
       unstamped: 0,
     }
     assertOwner()
-    await Promise.all([deps.sipaDeposits.load(), deps.withdrawals.load(), deps.savingsMoves.load()])
+    await Promise.all([deps.sipaDeposits.load(), deps.withdrawals.ready, deps.savingsMoves.load()])
     for (const snapshot of snapshots) {
       assertOwner()
       result.transactions += await deps.transactions.importHistoricRows(
@@ -142,15 +141,10 @@ export async function importHistoricActivity(
           continue
         }
         // Another source's copy of the same burn carries its own id.
-        const held =
-          deps.withdrawals.get(record.localId) ??
-          (record.l2TxHash ? deps.withdrawals.getByL2TxHash(record.l2TxHash) : null)
-        if (!held) {
-          assertOwner()
-          await deps.withdrawals.create({ ...record, networkId }, { strict: true })
-          result.withdrawals++
-        }
-        const withdrawalLocalId = held?.localId ?? record.localId
+        assertOwner()
+        const { record: held, adopted } = await deps.withdrawals.adopt({ ...record, networkId })
+        if (adopted) result.withdrawals++
+        const withdrawalLocalId = held.localId
         const move = snapshot.savingsMoves.find((m) => m.withdrawalLocalId === record.localId)
         const current = deps.savingsMoves.get(withdrawalLocalId)
         if (!move || current?.retired) continue
@@ -177,13 +171,11 @@ export async function importHistoricActivity(
 
 function snapshotOf(db: RetiredDatabase): Snapshot {
   const label = `wallet_${db.version}`
-  const rows = transactionRows(db, label)
+  const rows = storedActivity(db) as Transaction[]
   const deposits = parseRecords<SIPADepositRecord>(db.get(KEY_SIPA_DEPOSITS), label).filter(
     (r) => typeof r.sipaAddress === "string" && typeof r.phase === "string",
   )
-  const withdrawals = parseRecords<WithdrawalRecord>(db.get(KEY_WITHDRAWALS), label).filter(
-    (r) => typeof r.localId === "string" && typeof r.phase === "string",
-  )
+  const withdrawals = storedWithdrawals(db)
   const savingsMoves = parseRecords<SavingsMoveRecord>(db.get(KEY_SAVINGS_MOVES), label).filter(
     (r) => typeof r.withdrawalLocalId === "string",
   )
@@ -202,17 +194,6 @@ function snapshotOf(db: RetiredDatabase): Snapshot {
   return { version: db.version, networkId, rows, deposits, withdrawals, savingsMoves }
 }
 
-/** The database's transaction list; a database no build split yet still holds it on the account blob. */
-function transactionRows(db: RetiredDatabase, label: string): Transaction[] {
-  const own = db.get(TRANSACTIONS_STORAGE_KEY)
-  if (own !== undefined) return parseList<Transaction>(own, label)
-  const account = parseJson(db.get(ACCOUNT_STORAGE_KEY), label)
-  const legacy = isRecord(account)
-    ? (account as { transactions?: unknown }).transactions
-    : undefined
-  return Array.isArray(legacy) ? (legacy.filter(isRecord) as Transaction[]) : []
-}
-
 const isRecord = (value: unknown): value is object => typeof value === "object" && value !== null
 
 function parseJson(raw: string | undefined, label: string): unknown {
@@ -223,11 +204,6 @@ function parseJson(raw: string | undefined, label: string): unknown {
     logger.warn(`${LOG_PREFIX} ${label} holds a malformed value; skipped`)
     return undefined
   }
-}
-
-function parseList<T>(raw: string | undefined, label: string): T[] {
-  const parsed = parseJson(raw, label)
-  return Array.isArray(parsed) ? (parsed.filter(isRecord) as T[]) : []
 }
 
 function parseRecords<T>(raw: string | undefined, label: string): T[] {

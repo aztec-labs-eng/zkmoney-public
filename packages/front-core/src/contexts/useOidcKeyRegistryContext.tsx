@@ -1,9 +1,13 @@
 import { createContext, ReactNode, useContext, useEffect, useState } from "react"
 import { assert } from "ts-essentials"
 import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
-import { ContractService, DEFAULT_CONTRACTS, OidcKeyRegistryService } from "@obsidion/sdk"
-import { useAccountContext } from "./useAccountContext"
-import { useAztecContext } from "./useAztecContext"
+import {
+  ContractService,
+  DEFAULT_CONTRACTS,
+  OidcKeyRegistryService,
+  type ObsidionAccount,
+  type ObsidionWallet,
+} from "@obsidion/sdk"
 import { logger } from "src/utils/logger"
 
 interface OidcKeyRegistryContextProps {
@@ -17,9 +21,15 @@ const OidcKeyRegistryContext = createContext<OidcKeyRegistryContextProps | undef
  * Thin provider exposing the on-chain `OidcKeyRegistry` surface that
  * paylink-by-email claim depends on (issuer-scoped JWK / aud validation).
  */
-export const OidcKeyRegistryProvider = ({ children }: { children: ReactNode }) => {
-  const { obsidionWallet } = useAztecContext()
-  const { obsidionAccount } = useAccountContext()
+export const OidcKeyRegistryProvider = ({
+  children,
+  wallet: obsidionWallet,
+  account: obsidionAccount,
+}: {
+  children: ReactNode
+  wallet: ObsidionWallet | undefined
+  account: ObsidionAccount | undefined
+}) => {
   const [oidcKeyRegistryService, setOidcKeyRegistryService] =
     useState<OidcKeyRegistryService | null>(null)
   const [oidcKeyRegistryAddress, setOidcKeyRegistryAddress] = useState<AztecAddress | null>(null)

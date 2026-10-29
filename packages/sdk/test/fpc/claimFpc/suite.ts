@@ -45,7 +45,7 @@ import {
   testL1Client,
   testNamePortalAccount,
   type TestRegistrant,
-} from "../../utils/claimFpcFixture.js"
+} from "../../utils/claimFpc/claimFpcFixture.js"
 import { emptyTransferMeta } from "@obsidion/core/constants"
 
 export const TRANSFER_AMOUNT = 10n ** 18n

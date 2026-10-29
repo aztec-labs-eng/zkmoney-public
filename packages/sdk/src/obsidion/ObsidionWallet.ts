@@ -65,7 +65,7 @@ import {
 } from "@aztec-labs/stdlib/abi"
 import { FEE_MULTIPLIER, getBlockBaseMaxFees } from "../utils/index.js"
 import { DEFAULT_WAIT_OPTS } from "../utils/constants.js"
-import { CLAIM_FPC_MAX_FEES_PER_GAS } from "../feePaymentMethod/claimFpcBatchGas.js"
+import { CLAIM_FPC_MAX_FEES_PER_GAS } from "../feePaymentMethod/claimFpc/gas/claimFpcBatchGas.js"
 import {
   AccountFeePaymentMethodOptions,
   type DefaultAccountEntrypointOptions,
@@ -140,6 +140,9 @@ export interface ObsidionWalletOptions {
   chainInfo?: WalletChainInfo
 }
 
+/** `networkId` is the pinned rollup address; absent, `create` reads the node's. */
+export type CreateWalletOptions = ObsidionWalletOptions & { networkId?: string }
+
 /**
  * `aztecNode.sendTx` succeeded but the pending record did not persist. Carries `txHash` so the
  * caller can show "submitted, tracking failed" rather than a generic send failure.
@@ -186,6 +189,14 @@ export function txExpiresAtMs(kernelExpirationTimestamp?: bigint, now = Date.now
   return Number.isFinite(kernelMs) && kernelMs > 0 ? Math.min(kernelMs, ceilingMs) : ceilingMs
 }
 
+/** The pinned rollup address, else the node's. */
+export async function readNetworkId(
+  node: AztecNode,
+  opts?: { networkId?: string },
+): Promise<string> {
+  return opts?.networkId ?? (await node.getNodeInfo()).l1ContractAddresses.rollupAddress.toString()
+}
+
 /** Wallet for the alpha (non-modular) account system. Auth is handled by AlphaAuthProvider. */
 export class ObsidionWallet extends BaseWallet {
   public accounts: Map<string, Account> = new Map()
@@ -203,7 +214,13 @@ export class ObsidionWallet extends BaseWallet {
 
   private readonly pinnedChainInfo: WalletChainInfo | undefined
 
-  constructor(public pxe: PXE, public node: AztecNode, opts?: ObsidionWalletOptions) {
+  /** The rollup's L1 address: the network the wallet's records belong to. */
+  constructor(
+    public pxe: PXE,
+    public node: AztecNode,
+    public readonly networkId: string,
+    opts?: ObsidionWalletOptions,
+  ) {
     super(pxe, node)
     this.pendingTxStore = opts?.pendingTxStore ?? new InMemoryPendingTxStore()
     this.pinnedChainInfo = opts?.chainInfo
@@ -236,8 +253,9 @@ export class ObsidionWallet extends BaseWallet {
     node: AztecNode,
     overridePXEConfig?: Partial<PXEConfig>,
     options: PXECreationOptions = { loggers: {} },
-    walletOpts?: ObsidionWalletOptions,
+    walletOpts?: CreateWalletOptions,
   ): Promise<ObsidionWallet> {
+    const networkId = await readNetworkId(node, walletOpts)
     const pxeConfig = Object.assign(getPXEConfig(), {
       proverEnabled: overridePXEConfig?.proverEnabled ?? false,
       ...overridePXEConfig,
@@ -246,13 +264,10 @@ export class ObsidionWallet extends BaseWallet {
       autoSync: false,
     })
     // Rollup-keyed default so restarts reuse the cache; tests pass their own for isolation.
-    if (pxeConfig.dataDirectory === undefined) {
-      const { l1ContractAddresses } = await node.getNodeInfo()
-      pxeConfig.dataDirectory = `pxe-${l1ContractAddresses.rollupAddress}`
-    }
+    pxeConfig.dataDirectory ??= `pxe-${networkId}`
 
     const pxe = await createPXELazy(node, pxeConfig, options)
-    return new ObsidionWallet(pxe, node, walletOpts)
+    return new ObsidionWallet(pxe, node, networkId, walletOpts)
   }
 
   /**
@@ -262,9 +277,10 @@ export class ObsidionWallet extends BaseWallet {
   static async createWithPXE(
     pxe: PXE,
     node: AztecNode,
+    networkId: string,
     walletOpts?: ObsidionWalletOptions,
   ): Promise<ObsidionWallet> {
-    return new ObsidionWallet(pxe, node, walletOpts)
+    return new ObsidionWallet(pxe, node, networkId, walletOpts)
   }
 
   protected addAccount(
@@ -1045,9 +1061,8 @@ export class ObsidionWallet extends BaseWallet {
             expiresAtMs: txExpiresAtMs(provenTx.publicInputs.expirationTimestamp),
           })
 
-          // The op id and the client-side txHash let `TxLifecycleService` flip the row to MINING
-          // and stamp the real hash before submit, without waiting for the caller's post-mining
-          // patch.
+          // The op id and the client-side txHash let the caller stamp the real hash on its row
+          // before submit (`trackSubmission`), without waiting for the post-mining patch.
           provingProgress.emitStageStart(ProvingStage.Mining, opId, txHash.toString())
           this.log.debug(`Sending transaction ${txHash}`)
 

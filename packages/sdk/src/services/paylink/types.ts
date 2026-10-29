@@ -20,8 +20,8 @@ import { FeePaymentMethod } from "@aztec-labs/aztec.js/fee"
 import type { ContractInstanceWithAddress } from "@aztec-labs/stdlib/contract"
 import type { MethodOptions } from "../ServiceBase.js"
 import type { RegisteredTeeSigner } from "@oxide/oxide-client/types.js"
-import type { TokenService } from "../TokenService.js"
-import type { PaylinkKeyMaterial } from "./paylinkKeys.js"
+import type { TokenService } from "../token/TokenService.js"
+import type { PaylinkKeyMaterial } from "./escrow/paylinkKeys.js"
 import type { DirectClaimInput, ZkProofClaimInput } from "@obsidion/core/types"
 
 /**
