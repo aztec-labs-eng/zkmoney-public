@@ -65,6 +65,7 @@ packages/web-wallet-desktop/config/generated.json
 coverage/
 
 tsconfig.tsbuildinfo
+tsconfig.build.tsbuildinfo
 
 # Editor temporary files
 *.swp
