@@ -3,7 +3,7 @@ import {
   generateJwt,
   generateJwks,
   verifyJwt,
-  KeyPair,
+  type KeyPair,
   loadKeyPairs,
   generateKeyPairs,
 } from "../utils/jwt/jwt.js"

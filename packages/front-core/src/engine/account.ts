@@ -5,9 +5,9 @@ import type {
   ObsidionAccount,
   ObsidionWallet,
 } from "@obsidion/sdk"
-import type { AccountState } from "src/types"
-import { completeAddressWireFormat } from "src/utils/completeAddressWireFormat"
-import { logger } from "src/utils/logger"
+import type { AccountState } from "../types"
+import { completeAddressWireFormat } from "../utils/completeAddressWireFormat"
+import { logger } from "../utils/logger"
 import { WalletError } from "./errors"
 import { resource, type Resource, type ResourceState } from "./resource"
 import { derived, memoryStore } from "./store"

@@ -1,8 +1,8 @@
-import { createContext, useContext, ReactNode, useState, useEffect } from "react"
+import { createContext, useContext, type ReactNode, useState, useEffect } from "react"
 import { assert } from "ts-essentials"
-import { ContractService, Network } from "@obsidion/sdk"
-import type { Resource } from "src/engine/resource"
-import { useStore } from "src/hooks/useStore"
+import { type ContractService, Network } from "@obsidion/sdk"
+import type { Resource } from "../engine/resource"
+import { useStore } from "../hooks/useStore"
 
 interface ContractServiceContextProps {
   contractService: ContractService | null

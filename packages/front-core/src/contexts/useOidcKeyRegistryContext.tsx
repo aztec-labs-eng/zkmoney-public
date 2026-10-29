@@ -1,6 +1,6 @@
-import { createContext, ReactNode, useContext, useEffect, useState } from "react"
+import { createContext, type ReactNode, useContext, useEffect, useState } from "react"
 import { assert } from "ts-essentials"
-import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import type { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import {
   ContractService,
   DEFAULT_CONTRACTS,
@@ -8,7 +8,7 @@ import {
   type ObsidionAccount,
   type ObsidionWallet,
 } from "@obsidion/sdk"
-import { logger } from "src/utils/logger"
+import { logger } from "../utils/logger"
 
 interface OidcKeyRegistryContextProps {
   oidcKeyRegistryService: OidcKeyRegistryService | null

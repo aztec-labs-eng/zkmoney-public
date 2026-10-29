@@ -60,11 +60,11 @@ import type {
   NewPaylinkPayoutTx,
   TransactionStoreWrites,
 } from "../../../xmtp/receiverTypes"
-import { syncCatchUp, type CatchUp } from "src/engine/catchUp"
-import { bestEffort, WalletError } from "src/engine/errors"
-import type { Database, Write } from "src/engine/database"
-import { within } from "src/engine/runtime"
-import { logger } from "src/utils/logger"
+import { syncCatchUp, type CatchUp } from "../../../engine/catchUp"
+import { bestEffort, WalletError } from "../../../engine/errors"
+import type { Database, Write } from "../../../engine/database"
+import { within } from "../../../engine/runtime"
+import { logger } from "../../../utils/logger"
 import { PaylinkActionEnum, TokenActionEnum } from "@obsidion/core/constants"
 
 export type { ScannedTransferEvent, TransferEventSource }

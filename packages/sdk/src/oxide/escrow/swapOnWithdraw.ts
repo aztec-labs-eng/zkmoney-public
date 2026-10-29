@@ -15,7 +15,7 @@ import {
 } from "@oxide/l1-contracts"
 import { deriveRecoveryCommitment } from "@oxide/oxide-lib/sipa_recovery.js"
 import { encodeFunctionData, multicall3Abi } from "viem"
-import type { Address, Hex, PublicClient } from "viem"
+import type { Address, Hex } from "viem"
 import type { SwapEscrowOutput } from "@obsidion/core/types"
 import { MULTICALL3_ADDRESS } from "../../services/sipa/sipaClaim.js"
 

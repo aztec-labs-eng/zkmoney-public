@@ -2,7 +2,7 @@ import { EventEmitter } from "eventemitter3"
 
 import type { TxKind } from "./race.js"
 
-export { type OriginalFlowKind, type TxKind } from "./race.js"
+export type { OriginalFlowKind, TxKind } from "./race.js"
 
 // ─── Stages (existing) ────────────────────────────────────────────────────────
 

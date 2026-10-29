@@ -8,6 +8,7 @@
 import { describe, expect, it } from "vitest"
 import type { PublicClient } from "viem"
 import {
+  fetchHistoricalResolverPublicKeys,
   fetchSipaResolverOperators,
   readAccountResolution,
   selectManifestResolverOperator,
@@ -295,5 +296,33 @@ describe("readAccountResolution", () => {
 
   it("is null for an account with no record", async () => {
     expect(await readAccountResolution(recordClient(false), METADATA_REGISTRY, ACCOUNT)).toBeNull()
+  })
+})
+
+describe("fetchHistoricalResolverPublicKeys", () => {
+  it("returns every key the registry published, a rotated one under the same sender included", async () => {
+    const entry = (owner: string, l2Address: string, publicKey: { x: bigint; y: bigint }) => ({
+      args: {
+        resolverOperator: owner,
+        entry: { publicKey, l2Address, url: "u", oxidePortal: TABLE_LIVE },
+      },
+      blockNumber: 1n,
+      logIndex: 0,
+      removed: false,
+    })
+    const client = {
+      getContractEvents: async () => [
+        entry(OWNER_LIVE, L2_LIVE, { x: 1n, y: 2n }),
+        entry(OWNER_LIVE, L2_LIVE, { x: 7n, y: 8n }),
+        entry(OWNER_STALE, L2_STALE, { x: 1n, y: 2n }),
+        entry(OWNER_STALE, L2_STALE, { x: 3n, y: 4n }),
+      ],
+    } as unknown as PublicClient
+
+    expect(await fetchHistoricalResolverPublicKeys(client, METADATA_REGISTRY, RANGE)).toEqual([
+      { x: 1n, y: 2n },
+      { x: 7n, y: 8n },
+      { x: 3n, y: 4n },
+    ])
   })
 })

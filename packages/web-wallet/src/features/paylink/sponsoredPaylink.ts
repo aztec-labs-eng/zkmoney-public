@@ -34,7 +34,7 @@ import {
 } from "@obsidion/front-core"
 import {
   PaylinkService,
-  ContractService,
+  type ContractService,
   encodePaylinkInline,
   decodePaylinkInline,
   nextOperationId,

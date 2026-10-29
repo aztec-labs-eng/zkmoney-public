@@ -1,6 +1,6 @@
 import { CONTACT_STORAGE_KEY } from "./storage-constants.js"
 import type { IStorageAdapter, StorageLock } from "./adapter.js"
-import { logger } from "src/utils/logger"
+import { logger } from "../../utils/logger"
 import type { ReadonlyStore } from "../../engine/store"
 import { legacyStore, type Sourced } from "../../engine/legacyStore"
 

@@ -3,7 +3,7 @@ import type { AztecAddress } from "@aztec-labs/aztec.js/addresses"
 import type { Wallet } from "@aztec-labs/aztec.js/wallet"
 import { createExtendedL1Client } from "@aztec-labs/ethereum/client"
 import { foundry } from "viem/chains"
-import { type Address, type Hex } from "viem"
+import type { Address, Hex } from "viem"
 import { MintableTokenAbi } from "@oxide/l1-contracts"
 import { L1_RPC_URL } from "@obsidion/core/constants"
 import {
@@ -11,7 +11,7 @@ import {
   WithdrawFinalizationError,
 } from "../../../src/oxide/withdrawal/withdrawFinalizationCall.js"
 import { sendEmptyTx } from "../../../src/utils/helper.js"
-import { type OxideTokenSandbox } from "../oxide/oxideTokenSandbox.js"
+import type { OxideTokenSandbox } from "../oxide/oxideTokenSandbox.js"
 import { HARNESS_FEE_BENEFICIARY, HARNESS_WITHDRAWAL_FEE } from "../tee/oxidePortalHarness.js"
 
 /** The executor a burn named, and the fee it pays its beneficiary. */

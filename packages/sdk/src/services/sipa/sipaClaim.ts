@@ -21,7 +21,6 @@ import { MAX_RPC_LEN } from "@aztec-labs/stdlib/interfaces/api-limit"
 import { MerkleTreeId } from "@aztec-labs/stdlib/trees"
 import { computeSiloedDepositMessageNullifier } from "@oxide/oxide-lib/deposit_message_hashing.js"
 import {
-  SIPAAbi,
   encodeDeploySIPA,
   encodeRegistrationProofs,
   encodeLegacyRegistrationProofs,

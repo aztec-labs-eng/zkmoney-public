@@ -20,9 +20,9 @@ import { PENDING, type Activity } from "../../../engine/activity"
 import type { Withdrawals } from "../../../engine/withdrawals"
 import type { WithdrawalRecord } from "../bridge/types"
 import type { SIPADepositStore } from "../deposits/SIPADepositStore"
-import type { Transaction } from "src/types"
-import { stampedOn } from "src/types/networkStamp"
-import { makeLimiter } from "src/utils/makeLimiter"
+import type { Transaction } from "../../../types"
+import { stampedOn } from "../../../types/networkStamp"
+import { makeLimiter } from "../../../utils/makeLimiter"
 import { TxExecutionResult, TxStatus } from "@aztec-labs/stdlib/tx"
 
 // `reorgEpoch` identifies the reorg episode the outcome belongs to (notification identity).

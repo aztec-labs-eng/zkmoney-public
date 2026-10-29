@@ -17,7 +17,7 @@ import type { SipaProcessingState } from "../deposits/sipaProcessing"
 import type { WithdrawalRecord } from "./types"
 import type { UpgradeActivity, UpgradeBatchItem } from "../../migration/upgradeActivity"
 import { chainUpgradeBatches } from "../../migration/chainUpgradeBatches"
-import { logger } from "src/utils/logger"
+import { logger } from "../../../utils/logger"
 
 export type BridgeActivityItem =
   /**

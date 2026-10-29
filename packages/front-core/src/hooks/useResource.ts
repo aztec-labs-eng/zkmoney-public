@@ -1,5 +1,5 @@
-import type { Resource, ResourceState } from "src/engine/resource"
-import { memoryStore } from "src/engine/store"
+import type { Resource, ResourceState } from "../engine/resource"
+import { memoryStore } from "../engine/store"
 import { useStore } from "./useStore"
 
 const NONE = memoryStore<ResourceState<never>>({ status: "pending" }).readonly

@@ -62,7 +62,7 @@ import {
   type TokenService,
   type TokenTransfer,
 } from "@obsidion/sdk"
-import { logger } from "src/utils/logger"
+import { logger } from "../utils/logger"
 
 import { OxidePortalAbi, SipaIntent } from "@oxide/l1-contracts"
 import { computeSIPAAddress as computeAccountSIPAAddress } from "@oxide/oxide-lib/sipa_address.js"
@@ -108,7 +108,7 @@ import {
   type SIPASweep,
   type SIPADepositStore,
 } from "../core/services/deposits/SIPADepositStore"
-import { syncCatchUp } from "src/engine/catchUp"
+import { syncCatchUp } from "../engine/catchUp"
 
 /** Node surface for the settlement check (`isL1ToL2MessageReady`) and the consumed check. */
 export interface SipaClaimsNode {
@@ -1512,8 +1512,7 @@ async function finishEvent(
 /** The rest of a due SIPA's sync, once the batched reads land. */
 async function scanOne(due: DueScan): Promise<void> {
   const { deps, result, run, sharedSecretSalt, sipaAddress, fallback, record, phase } = due
-  const { intent, implementation, observed } = due
-  const { tuple } = deps
+  const { intent, observed } = due
   // History is dated by chain. A direct deposit's announcement writes its record before its deposit
   // is seen, so that record is history until its first deposit is ledgered.
   const discovered =
@@ -2088,14 +2087,6 @@ async function republishIfOverdue(deps: SipaDepositSyncDeps, run: SyncRunContext
     run.incomplete()
     logger.warn(`[sipaClaims] ${sipa} republish failed, asking again in a day:`, err)
   }
-}
-
-/** A claimed sweep the ledger has no entry for: the record was claimed before the ledger existed. */
-function unledgeredSweeps(record: SIPADepositRecord): boolean {
-  const claimed =
-    record.claimedInboxIndexes ??
-    (record.phase === "claimed" && record.inboxIndex ? [record.inboxIndex] : [])
-  return claimed.some((index) => !record.sweeps?.some((s) => s.inboxIndex === index))
 }
 
 /** The ledger with `entry` in place of any earlier entry for its sweep, in inbox order. */

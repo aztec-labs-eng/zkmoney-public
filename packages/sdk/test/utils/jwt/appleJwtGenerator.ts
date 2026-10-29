@@ -1,5 +1,5 @@
 import { sha256 } from "@aztec-labs/foundation/crypto/sha256"
-import { generateKeyPair, generateJwt, publicKeyToJWK, KeyPair } from "./jwt.js"
+import { generateKeyPair, generateJwt, publicKeyToJWK, type KeyPair } from "./jwt.js"
 import crypto from "crypto"
 
 /**

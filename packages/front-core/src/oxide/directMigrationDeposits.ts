@@ -14,7 +14,7 @@ import type { MigrationDirectDeposit } from "@obsidion/core/types"
 import type { Address, Hex } from "viem"
 import { directDepositKey, type SIPADepositStore } from "../core/services/deposits/SIPADepositStore"
 import type { UpgradeBatchItem } from "../core/migration/upgradeActivity"
-import { logger } from "src/utils/logger"
+import { logger } from "../utils/logger"
 import { sipaRowByPortal, type SipaRow } from "./sipaRows"
 
 type DirectBatch = Pick<UpgradeBatchItem, "run" | "direct" | "fromBlock" | "amount">

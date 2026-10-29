@@ -24,7 +24,7 @@ import {
   readDepositSIPAImplementation,
   type SipaHoldingRead,
 } from "@obsidion/sdk"
-import { logger } from "src/utils/logger"
+import { logger } from "../utils/logger"
 
 import { computeAccountSIPAAddress } from "../core/services/deposits/sipa/sipaAddress"
 import {

@@ -1,6 +1,6 @@
-import { QueueStatus } from "@obsidion/sdk"
+import type { QueueStatus } from "@obsidion/sdk"
 import type { OriginalFlowKind } from "@obsidion/proving-progress"
-import { TokenAction, TokenInTxService, PaylinkAction } from "./tokens"
+import type { TokenAction, TokenInTxService, PaylinkAction } from "./tokens"
 import type { TxStatus } from "@aztec-labs/stdlib/tx"
 import type { Failure } from "../engine/errors"
 

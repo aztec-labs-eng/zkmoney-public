@@ -1,15 +1,15 @@
-import {
+import type {
   BatchCall,
   ContractFunctionInteraction,
   SendInteractionOptions,
 } from "@aztec-labs/aztec.js/contracts"
-import { TxReceipt } from "@aztec-labs/aztec.js/tx"
-import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import type { TxReceipt } from "@aztec-labs/aztec.js/tx"
+import type { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import type { AztecNode } from "@aztec-labs/aztec.js/node"
 import type { Capsule } from "@aztec-labs/stdlib/tx"
 
-import { ObsidionWallet } from "../../../obsidion/ObsidionWallet.js"
-import { type MethodOptions } from "../../ServiceBase.js"
+import type { ObsidionWallet } from "../../../obsidion/ObsidionWallet.js"
+import type { MethodOptions } from "../../ServiceBase.js"
 import { type BuildTeeOperationSendOpts, buildTeeOperation } from "../../tee/teeOperation.js"
 import type { Operation } from "../../../oxide/index.js"
 import type { PlainWithdrawalContext, WithdrawOperation } from "../../../oxide/withdrawal/plainWithdrawal.js"

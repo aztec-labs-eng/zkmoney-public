@@ -1,7 +1,7 @@
 import { DomainSeparator } from "@aztec-labs/constants"
 import { Fr } from "@aztec-labs/aztec.js/fields"
 import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
-import { FunctionCall, FunctionSelector, FunctionType } from "@aztec-labs/stdlib/abi"
+import { type FunctionCall, FunctionSelector, FunctionType } from "@aztec-labs/stdlib/abi"
 import { Capsule, HashedValues } from "@aztec-labs/stdlib/tx"
 import { poseidon2HashWithSeparator } from "@aztec-labs/foundation/crypto/poseidon"
 import { computeOuterAuthWitHash } from "@aztec-labs/stdlib/auth-witness"

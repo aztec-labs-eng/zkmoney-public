@@ -5,8 +5,8 @@ import type {
   RegisteredTeeSigner,
   TokenService,
 } from "@obsidion/sdk"
-import type { TeeSignerSource } from "src/tee/teeSignerSource"
-import { logger } from "src/utils/logger"
+import type { TeeSignerSource } from "../tee/teeSignerSource"
+import { logger } from "../utils/logger"
 import { resource, type Backoff, type Resource } from "./resource"
 import { within } from "./runtime"
 

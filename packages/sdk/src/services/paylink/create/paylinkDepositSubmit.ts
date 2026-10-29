@@ -10,7 +10,7 @@ import type { AztecNode } from "@aztec-labs/aztec.js/node"
 import type { RegisteredTeeSigner } from "@oxide/oxide-client/types.js"
 
 import type { ObsidionWallet } from "../../../obsidion/ObsidionWallet.js"
-import { type MethodOptions } from "../../ServiceBase.js"
+import type { MethodOptions } from "../../ServiceBase.js"
 import {
   type BuildTeeOperationSendOpts,
   buildTeeOperation,

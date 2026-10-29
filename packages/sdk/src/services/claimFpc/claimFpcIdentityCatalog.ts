@@ -1,5 +1,5 @@
 import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
-import { ContractService, DEFAULT_CONTRACTS } from "@obsidion/contracts"
+import { type ContractService, DEFAULT_CONTRACTS } from "@obsidion/contracts"
 
 import type { ObsidionWallet } from "../../obsidion/ObsidionWallet.js"
 import { readPublicImmutable } from "../../utils/publicImmutable.js"

@@ -1,9 +1,9 @@
-import { DEFAULT_CONTRACTS, OidcKeyRegistryContract } from "@obsidion/contracts"
+import { DEFAULT_CONTRACTS, type OidcKeyRegistryContract } from "@obsidion/contracts"
 import { ServiceContractBase } from "../ServiceBase.js"
 import { assert } from "ts-essentials"
-import { ObsidionWallet } from "../../obsidion/ObsidionWallet.js"
-import { Account } from "@aztec-labs/aztec.js/account"
-import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import type { ObsidionWallet } from "../../obsidion/ObsidionWallet.js"
+import type { Account } from "@aztec-labs/aztec.js/account"
+import type { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import { Fr } from "@aztec-labs/aztec.js/fields"
 
 /**

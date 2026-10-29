@@ -17,24 +17,24 @@
  * Batch layout (MAX_SPONSORED_CALLS = 5): [account auth?, ...ops, ...teeUnsignedInteractions,
  * ...finalization requests, publish_da].
  */
-import { Contract, ContractFunctionInteraction } from "@aztec-labs/aztec.js/contracts"
-import { Capsule, ExecutionPayload } from "@aztec-labs/stdlib/tx"
-import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import type { Contract, ContractFunctionInteraction } from "@aztec-labs/aztec.js/contracts"
+import type { Capsule, ExecutionPayload } from "@aztec-labs/stdlib/tx"
+import type { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import type { ContractArtifact, FunctionCall } from "@aztec-labs/stdlib/abi"
 import type { AuthWitness } from "@aztec-labs/stdlib/auth-witness"
-import { Fr } from "@aztec-labs/aztec.js/fields"
+import type { Fr } from "@aztec-labs/aztec.js/fields"
 import { createLogger } from "@aztec-labs/foundation/log"
 import { buildSeedCapsule } from "@oxide/oxide-client/capsules.js"
 import type { RegisteredTeeSigner } from "@oxide/oxide-client/types.js"
 import type { WithdrawalFinalizationData } from "@oxide/oxide-lib/withdrawal_finalization_data.js"
 import type { PlainWithdrawalContext } from "../../oxide/withdrawal/plainWithdrawal.js"
 import type { AztecNode } from "@aztec-labs/aztec.js/node"
-import {
-  type Operation,
-  type SpendMetadataResolver,
-  type DepositSpendMetadataResolver,
+import type {
+  Operation,
+  SpendMetadataResolver,
+  DepositSpendMetadataResolver,
 } from "../../oxide/index.js"
-import { type FinalizedPayload, type PayloadFinalizer } from "../../obsidion/stagedExecution.js"
+import type { FinalizedPayload, PayloadFinalizer } from "../../obsidion/stagedExecution.js"
 import {
   MAX_SPONSORED_CALLS,
   buildClaimSponsorPayload,

@@ -7,12 +7,12 @@
 
 import { readFileSync } from "fs"
 import { resolve } from "path"
-import { BaseAccount } from "@aztec-labs/aztec.js/account"
-import { AztecAddress } from "@aztec-labs/aztec.js/addresses"
+import type { BaseAccount } from "@aztec-labs/aztec.js/account"
+import type { AztecAddress } from "@aztec-labs/aztec.js/addresses"
 import { Fr } from "@aztec-labs/aztec.js/fields"
-import { ContractArtifact } from "@aztec-labs/stdlib/abi"
+import type { ContractArtifact } from "@aztec-labs/stdlib/abi"
 import { poseidon2Hash } from "@zkpassport/poseidon2"
-import { ContractService } from "../../../src/index.js"
+import type { ContractService } from "../../../src/index.js"
 import type { ObsidionWalletTest } from "../../../src/obsidion/ObsidionWalletTest.js"
 import type { OidcKeyRegistryServer } from "../../../src/services/oidc/OidcKeyRegistryServer.js"
 

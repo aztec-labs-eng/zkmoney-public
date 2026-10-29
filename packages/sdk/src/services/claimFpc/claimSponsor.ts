@@ -7,12 +7,12 @@
 import { computeSaltedInitializationHash } from "@aztec-labs/stdlib/contract"
 import type { ContractInstancePreimageWithAddress } from "@aztec-labs/stdlib/contract"
 import { Contract, type ContractFunctionInteraction } from "@aztec-labs/aztec.js/contracts"
-import { Fr } from "@aztec-labs/aztec.js/fields"
+import type { Fr } from "@aztec-labs/aztec.js/fields"
 import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import type { ContractArtifact, FunctionCall } from "@aztec-labs/stdlib/abi"
 import type { AuthWitness } from "@aztec-labs/stdlib/auth-witness"
 import {
-  ContractService,
+  type ContractService,
   DEFAULT_CONTRACTS,
   ensureContractRegisteredInPXE,
 } from "@obsidion/contracts"
@@ -147,7 +147,7 @@ export async function loadClaimFpcPolicyAt(
 export async function authorizeSponsoredBatch(
   wallet: ObsidionWallet,
   contractService: ContractService,
-  sponsor: ClaimSponsorContext,
+  _sponsor: ClaimSponsorContext,
   user: AztecAddress,
   authProvider: Pick<AlphaAuthProvider, "createAuthWit">,
   ownIntents: Fr[],

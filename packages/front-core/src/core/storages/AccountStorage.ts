@@ -1,10 +1,10 @@
-import { AccountState, WebAuthnData } from "src/types"
+import type { AccountState, WebAuthnData } from "../../types"
 import { assert } from "ts-essentials"
 import { ACCOUNT_STORAGE_KEY } from "./constants"
 import { AUTH_TYPE } from "@obsidion/sdk"
 import type { IStorageAdapter } from "./adapter"
-import { memoryStore } from "src/engine/store"
-import { legacyStore } from "src/engine/legacyStore"
+import { memoryStore } from "../../engine/store"
+import { legacyStore } from "../../engine/legacyStore"
 
 /**
  * Single-account wallet storage.

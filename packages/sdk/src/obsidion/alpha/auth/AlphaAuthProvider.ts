@@ -1,6 +1,6 @@
-import { AuthWitnessProvider } from "@aztec-labs/entrypoints/interfaces"
-import { Fr } from "@aztec-labs/aztec.js/fields"
-import { AuthWitness } from "@aztec-labs/stdlib/auth-witness"
+import type { AuthWitnessProvider } from "@aztec-labs/entrypoints/interfaces"
+import type { Fr } from "@aztec-labs/aztec.js/fields"
+import type { AuthWitness } from "@aztec-labs/stdlib/auth-witness"
 import type { AlphaPasskeySet } from "../account/alphaPasskeySet.js"
 
 /**

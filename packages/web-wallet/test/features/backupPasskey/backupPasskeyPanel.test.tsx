@@ -2,7 +2,7 @@ import { StrictMode, act, useState, useSyncExternalStore } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { TxStatus } from "@aztec-labs/stdlib/tx"
 import {
-  BackupRotationStore,
+  type BackupRotationStore,
   fundingLocalId,
   type BackupRotationRecord,
 } from "@obsidion/front-core"

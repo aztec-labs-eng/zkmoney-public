@@ -1,11 +1,11 @@
-import {
+import type {
   ContractFunctionInteraction,
   DeployMethod,
   SimulateInteractionOptions,
 } from "@aztec-labs/aztec.js/contracts"
 import type { Wallet } from "@aztec-labs/aztec.js/wallet"
 import type { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
-import { ExecutionPayload, TxProfileResult } from "@aztec-labs/stdlib/tx"
+import type { ExecutionPayload, TxProfileResult } from "@aztec-labs/stdlib/tx"
 
 export interface ExecutionStep {
   id: number

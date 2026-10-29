@@ -6,7 +6,7 @@
  */
 
 import type { IStorageAdapter } from "../../storages/adapter"
-import type { PaylinkTransaction } from "src/types/transactions"
+import type { PaylinkTransaction } from "../../../types/transactions"
 import { RecordStorage } from "../bridge/RecordStorage"
 
 export type PendingPaylinkMigrationStatus = "waiting" | "claimable" | "resolved"

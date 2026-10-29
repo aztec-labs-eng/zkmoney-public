@@ -1,6 +1,9 @@
 import type { PaylinkWindow } from "@obsidion/core/types"
 import { describe, it, expect, beforeAll } from "vitest"
-import { PaylinkInitParams, PaylinkService } from "../../../src/services/paylink/PaylinkService.js"
+import {
+  type PaylinkInitParams,
+  PaylinkService,
+} from "../../../src/services/paylink/PaylinkService.js"
 import { derivePaylinkKeys } from "../../../src/services/paylink/escrow/paylinkKeys.js"
 import { buildTransferMetaForSend } from "../../../src/services/token/transferMeta.js"
 import { Fr } from "@aztec-labs/aztec.js/fields"

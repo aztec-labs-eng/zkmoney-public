@@ -7,8 +7,8 @@ import {
   TokenStorage,
   type IStorageAdapter,
   type NetworkStorageConfig,
-} from "src/core"
-import { logger } from "src/utils/logger"
+} from "../core"
+import { logger } from "../utils/logger"
 
 export const useStorage = (
   networkConfig: NetworkStorageConfig,

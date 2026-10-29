@@ -26,7 +26,7 @@ import {
   TRANSFER_SCAN_CURSOR_PREFIX,
   transferScanNetworkOf,
 } from "../services/transactions/TransferEventScanner"
-import { logger } from "src/utils/logger"
+import { logger } from "../../utils/logger"
 
 export const HISTORIC_ACTIVITY_IMPORTED_KEY = "@obsidion/historic-activity/imported/v2"
 

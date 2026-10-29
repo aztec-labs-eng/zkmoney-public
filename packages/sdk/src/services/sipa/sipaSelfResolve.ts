@@ -67,11 +67,9 @@ export interface SipaSelfResolverKeys {
 
 export class SipaSelfResolver {
   readonly userPublicKey: SipaK1Point
-  private readonly stealthScalar: bigint
   private readonly selfSipaKey: Fr
 
   constructor(keys: SipaSelfResolverKeys) {
-    this.stealthScalar = keys.stealthScalar
     this.selfSipaKey = keys.selfSipaKey
     const point = secp256k1.ProjectivePoint.BASE.multiply(keys.stealthScalar).toAffine()
     this.userPublicKey = { x: point.x, y: point.y }

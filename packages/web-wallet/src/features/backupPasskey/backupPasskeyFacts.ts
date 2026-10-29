@@ -12,7 +12,7 @@ import {
   useResource,
 } from "@obsidion/front-core"
 import {
-  ContractService,
+  type ContractService,
   fundingAmount,
   readBridgeDestination,
   readSpendShape,

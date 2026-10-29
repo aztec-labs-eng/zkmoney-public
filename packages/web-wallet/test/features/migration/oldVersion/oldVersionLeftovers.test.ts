@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { type FeedItem, type SavingsMoveRecord, type WithdrawalRecord } from "@obsidion/front-core"
+import type { FeedItem, SavingsMoveRecord, WithdrawalRecord } from "@obsidion/front-core"
 import { oldVersionLeftovers } from "../../../../src/features/migration/oldVersionLeftovers"
 
 const ONE = 10n ** 18n

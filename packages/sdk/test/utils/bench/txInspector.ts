@@ -3,9 +3,9 @@
  * Extracts on-chain and off-chain effects from a sent transaction.
  */
 
-import { Fr } from "@aztec-labs/aztec.js/fields"
+import type { Fr } from "@aztec-labs/aztec.js/fields"
 import type { AztecNode } from "@aztec-labs/aztec.js/node"
-import { TxHash } from "@aztec-labs/stdlib/tx"
+import type { TxHash } from "@aztec-labs/stdlib/tx"
 
 export interface TxInspection {
   txHash: string

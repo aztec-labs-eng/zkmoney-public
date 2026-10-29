@@ -5,7 +5,7 @@
  * account installed is the credential's own, so the sign-in takes one assertion and adopts that
  * key; a nameless account is not read, and the second assertion recovers the same one.
  */
-import { Fr } from "@aztec-labs/aztec.js/fields"
+import type { Fr } from "@aztec-labs/aztec.js/fields"
 import type { AnchorTier, CandidateProbe } from "@obsidion/front-core"
 import { getContractAddress } from "viem"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"

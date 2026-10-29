@@ -21,7 +21,7 @@ import { failureCode, fireEvent } from "../../lib/analytics"
 import { useDepositSkim } from "../onboarding/registrationTerms"
 import { loadWalletIdentity } from "../identity/walletIdentity"
 import { ClaimReviewStep } from "../onboarding/steps/ClaimReviewStep"
-import { type WithdrawStage } from "../withdraw/withdrawGateway"
+import type { WithdrawStage } from "../withdraw/withdrawGateway"
 import { usePolledChainSeconds } from "./chainTime"
 import {
   ClaimLinkModal,

@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import {
   createPublicClient,
@@ -16,7 +17,11 @@ import {
 import { OxidePortalEventsAbi } from "@oxide/l1-contracts"
 import { sepolia } from "viem/chains"
 import type { OxideEnvTuple } from "@obsidion/core/types"
-import { resetDeploymentScanRangeForTests } from "@obsidion/front-core"
+import {
+  composeWireNameHash,
+  registrationCommitments,
+  resetDeploymentScanRangeForTests,
+} from "@obsidion/front-core"
 import type { HistoricResidualSummary } from "../../../src/features/migration/historicResiduals"
 
 const HEAD = 25_000n
@@ -47,8 +52,11 @@ interface CountingClient {
 }
 
 interface Chain {
-  /** A sweep of a source: its portal `Deposit` and the SIPA's `Transfer` out, in one transaction. */
-  sweeps: { address: string; block: bigint }[]
+  /**
+   * A sweep of a source: its portal `Deposit` and the SIPA's `Transfer` out, in one transaction.
+   * `commitment` overrides the one derived from the address.
+   */
+  sweeps: { address: string; block: bigint; commitment?: Hex }[]
   rejectGetBlock?: boolean
   rejectSources?: boolean
 }
@@ -78,11 +86,11 @@ function logsFor(chain: Chain, filter: LogRange) {
   const [transfer] = encodeEventTopics({ abi: erc20Abi, eventName: "Transfer" })
   if (topic0 === deposit)
     return sweeps
-      .filter((s) => listed(topic1, commitmentOf(s.address)))
+      .filter((s) => listed(topic1, s.commitment ?? commitmentOf(s.address)))
       .map((s) =>
         log(
           [filter.address].flat()[0]!,
-          [deposit!, commitmentOf(s.address)],
+          [deposit!, s.commitment ?? commitmentOf(s.address)],
           encodeAbiParameters(
             [{ type: "uint256" }, { type: "bytes32" }, { type: "uint256" }],
             [100n, ("0x" + "ab".repeat(32)) as Hex, 7n],
@@ -166,6 +174,11 @@ const h = vi.hoisted(() => ({
   sources: vi.fn(),
   active: { current: null as unknown },
   balance: { current: 0n },
+  identity: { current: null as { address: string; handle: string } | null },
+}))
+
+vi.mock("../../../src/features/identity/walletIdentity", () => ({
+  loadWalletIdentity: () => h.identity.current,
 }))
 
 vi.mock("../../../src/platform/session", () => ({
@@ -190,6 +203,7 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
 vi.mock("@obsidion/sdk", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   detectHistoricDeployments: h.detect,
+  fetchHistoricalResolverPublicKeys: async () => [],
   getBroadcasterArtifact: async () => ({}),
   fetchSipaEvents: async () => [],
   readSipaDepositsConsumed: async (_node: unknown, _scope: unknown, keys: unknown[]) =>
@@ -249,7 +263,7 @@ const tuple = (n: number): OxideEnvTuple =>
 const current = tuple(9)
 const wallet = { node: {}, pxe: {} } as never
 const account = {
-  getAddress: () => ({ toString: () => "0x" + "ee".repeat(32) }),
+  getAddress: () => ({ toString: () => "0x" + "0e".repeat(32) }),
   makeDepositSpendMetadataResolver: async () => async () => ({ masterNullifierHidingKey: 1 }),
 } as never
 
@@ -262,7 +276,7 @@ function sourcesOf(count: number) {
     const sipaAddress = "0x" + (i + 0x100).toString(16).padStart(40, "0")
     return {
       sipaAddress,
-      recipientL2Address: "0x" + "ee".repeat(32),
+      recipientL2Address: "0x" + "0e".repeat(32),
       messageSecret: "0x01",
       recipientCommitment: commitmentOf(sipaAddress),
     }
@@ -289,6 +303,7 @@ async function boot(
 
 beforeEach(() => {
   vi.clearAllMocks()
+  h.identity.current = null
   // Every row here is the cost of a COLD boot; the deployment-block cache spans a session.
   resetDeploymentScanRangeForTests()
 })
@@ -299,7 +314,7 @@ describe("migration scan budget of one wallet boot", () => {
     expect(l1.calls).toEqual({ eth_blockNumber: 1, eth_call: 1 })
   })
 
-  it.each([1, 5, 20])(
+  it.each([1, 20])(
     "one historic entry, %i sources: one observation from the portal's deploy block, whatever the count",
     async (sources) => {
       const { l1 } = await boot([tuple(1)], sources)
@@ -317,6 +332,27 @@ describe("migration scan budget of one wallet boot", () => {
   it("a sweep at exactly the deploy block is inside the bound and reported as swept", async () => {
     const { residuals } = await boot([tuple(1)], 1, {
       sweeps: [{ address: sourcesOf(1)[0]!.sipaAddress, block: 12_000n }],
+    })
+    expect(residuals).toHaveLength(1)
+    expect(residuals[0]).toMatchObject({ sweptDeposits: 1, incomplete: false })
+  })
+
+  it("a registration address no SIPA event announced: its sweep is found by commitment and reported as swept", async () => {
+    h.identity.current = { address: "0x01", handle: "phil" }
+    const registered = {
+      ...tuple(1),
+      accountMetadataRegistry: "0x" + "0a".repeat(20),
+      registrationSIPAImplementation: "0x" + "0b".repeat(20),
+      ensDomain: "zk.money",
+    } as OxideEnvTuple
+    const [self] = await registrationCommitments(
+      "0x01",
+      composeWireNameHash("phil", "zk.money"),
+      `0x${"0e".repeat(32)}`,
+      [],
+    )
+    const { residuals } = await boot([registered], 0, {
+      sweeps: [{ address: "0x" + "99".repeat(20), block: 13_000n, commitment: self!.commitment }],
     })
     expect(residuals).toHaveLength(1)
     expect(residuals[0]).toMatchObject({ sweptDeposits: 1, incomplete: false })

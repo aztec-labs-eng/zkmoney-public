@@ -1,4 +1,4 @@
-import { FaucetAction } from "./transactions"
+import type { FaucetAction } from "./transactions"
 
 export type Token = {
   address: string

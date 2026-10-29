@@ -1,5 +1,5 @@
 import { writeFileSync } from "fs"
-import { JwtInput } from "../../../src/email/utils.js"
+import type { JwtInput } from "../../../src/email/utils.js"
 
 /**
  * Serialize a JwtInput + caller address to the zkJWT circuit's Prover.toml layout.

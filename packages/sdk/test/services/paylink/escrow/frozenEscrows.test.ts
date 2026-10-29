@@ -22,7 +22,7 @@ import {
 } from "../../../../src/services/paylink/escrow/frozenEscrows.js"
 import {
   deriveDeterministicPaylinkKeys,
-  derivePaylinkKeys,
+  type derivePaylinkKeys,
 } from "../../../../src/services/paylink/escrow/paylinkKeys.js"
 
 const ARTIFACT = loadContractArtifact(

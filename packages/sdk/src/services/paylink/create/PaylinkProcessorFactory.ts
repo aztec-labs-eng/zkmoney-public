@@ -1,5 +1,5 @@
-import { ContractName, DEFAULT_CONTRACTS } from "../../../index.js"
-import { BasePaylinkProcessor } from "./processors/BasePaylinkProcessor.js"
+import { type ContractName, DEFAULT_CONTRACTS } from "../../../index.js"
+import type { BasePaylinkProcessor } from "./processors/BasePaylinkProcessor.js"
 import { DirectPaylinkProcessor } from "./processors/DirectPaylinkProcessor.js"
 import { EmailPaylinkProcessor } from "./processors/EmailPaylinkProcessor.js"
 

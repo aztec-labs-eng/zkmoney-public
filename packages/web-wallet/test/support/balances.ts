@@ -1,6 +1,5 @@
-import type { Balances, BalanceView } from "@obsidion/front-core"
 // The store primitive itself, never a module mock of it.
-import { memoryStore } from "@obsidion/front-core/dist/engine/store.js"
+import { memoryStore, type Balances, type BalanceView } from "@obsidion/front-core"
 
 const UNKNOWN: BalanceView = {
   main: null,

@@ -1,8 +1,8 @@
-import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
-import { FieldLike } from "@aztec-labs/aztec.js/abi"
+import type { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import type { FieldLike } from "@aztec-labs/aztec.js/abi"
 import { Fr } from "@aztec-labs/aztec.js/fields"
-import { ContractName } from "@obsidion/contracts"
-import { CommitmentInput, ClaimInput, PaylinkWindow } from "../../types.js"
+import type { ContractName } from "@obsidion/contracts"
+import type { CommitmentInput, ClaimInput, PaylinkWindow } from "../../types.js"
 import { packPaylinkData, paylinkSenderHash, type RawPaylinkNote } from "../../escrow/paylinkNoteData.js"
 
 /**

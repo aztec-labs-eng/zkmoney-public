@@ -1,9 +1,8 @@
 import { Fr } from "@aztec-labs/aztec.js/fields"
-import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
-import type { EthAddress } from "@aztec-labs/foundation/eth-address"
+import type { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import { PublicKeys } from "@aztec-labs/stdlib/keys"
 import {
-  ContractArtifact,
+  type ContractArtifact,
   FunctionCall,
   FunctionSelector,
   FunctionType,
@@ -17,7 +16,6 @@ import {
   MAX_SPONSORED_CALLS,
   buildIntentCapsule,
   buildSponsoredCallBatch,
-  padIntentHashes,
 } from "./sponsoredCall.js"
 import type { BootstrapKeyProof } from "./bootstrapKeyWitness.js"
 

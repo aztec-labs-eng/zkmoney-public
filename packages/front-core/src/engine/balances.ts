@@ -1,6 +1,6 @@
-import { balanceScope, type BalanceRecord } from "src/core/storages/BalanceStorage"
+import { balanceScope, type BalanceRecord } from "../core/storages/BalanceStorage"
 import type { BalanceSync } from "./milestones"
-import { isWalletTokenSymbol } from "src/utils/tokenIdentity"
+import { isWalletTokenSymbol } from "../utils/tokenIdentity"
 import type { Sourced } from "./legacyStore"
 import { memoryStore, derived, type ReadonlyStore } from "./store"
 

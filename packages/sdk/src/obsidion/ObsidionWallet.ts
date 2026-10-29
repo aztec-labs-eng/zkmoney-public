@@ -9,7 +9,7 @@ import {
   ContractService,
   DEFAULT_CONTRACTS,
   getSimulatedAlphaAccountArtifact,
-  ContractName,
+  type ContractName,
 } from "@obsidion/contracts"
 import { getContractClassFromArtifact } from "@aztec-labs/stdlib/contract"
 import { SimulationOverrides, type ContractOverrides } from "@aztec-labs/stdlib/tx"
@@ -25,43 +25,50 @@ import {
   getStubEcdsaAccountContractArtifact,
 } from "@aztec-labs/accounts/ecdsa/stub/lazy"
 import { getPXEConfig, type PXEConfig } from "@aztec-labs/pxe/config"
-import { createPXE as createPXELazy, PXE, PXECreationOptions } from "@aztec-labs/pxe/client/lazy"
+import {
+  createPXE as createPXELazy,
+  type PXE,
+  type PXECreationOptions,
+} from "@aztec-labs/pxe/client/lazy"
 import { ObsidionAccount } from "./alpha/account/ObsidionAccount.js"
 import {
   ObsidionAccountContractManager,
-  AlphaContractManagerOptions,
+  type AlphaContractManagerOptions,
 } from "./alpha/account/ObsidionAccountContractManager.js"
 import { alphaPasskeySet } from "./alpha/account/alphaPasskeySet.js"
-import { AlphaAuthProvider } from "./alpha/auth/AlphaAuthProvider.js"
+import type { AlphaAuthProvider } from "./alpha/auth/AlphaAuthProvider.js"
 import {
   collectOffchainEffects,
-  ExecutionPayload,
+  type ExecutionPayload,
   mergeExecutionPayloads,
   type TxExecutionRequest,
   type TxProfileResult,
   type UtilityExecutionResult,
 } from "@aztec-labs/stdlib/tx"
 import { CallAuthorizationRequest } from "@aztec-labs/aztec.js/authorization"
-import { AztecNode } from "@aztec-labs/aztec.js/node"
+import type { AztecNode } from "@aztec-labs/aztec.js/node"
 import { Fr } from "@aztec-labs/aztec.js/fields"
 import {
-  Aliased,
+  type Aliased,
   TxSimulationResultWithAppOffset,
   type ExecuteUtilityOptions,
   type PrivateEvent,
   type PrivateEventFilter,
   type ProfileOptions,
 } from "@aztec-labs/aztec.js/wallet"
-import { Account, NO_FROM } from "@aztec-labs/aztec.js/account"
-import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
-import { SendInteractionOptions, SimulateInteractionOptions } from "@aztec-labs/aztec.js/contracts"
-import { CompleteAddress } from "@aztec-labs/aztec.js/addresses"
+import { type Account, NO_FROM } from "@aztec-labs/aztec.js/account"
+import type { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import type {
+  SendInteractionOptions,
+  SimulateInteractionOptions,
+} from "@aztec-labs/aztec.js/contracts"
+import type { CompleteAddress } from "@aztec-labs/aztec.js/addresses"
 import type { NodeInfo } from "@aztec-labs/stdlib/contract"
 import type { ChainInfo } from "@aztec-labs/entrypoints/interfaces"
-import {
+import type {
   ContractArtifact,
   FunctionCall,
-  type EventMetadataDefinition,
+  EventMetadataDefinition,
 } from "@aztec-labs/stdlib/abi"
 import { FEE_MULTIPLIER, getBlockBaseMaxFees } from "../utils/index.js"
 import { DEFAULT_WAIT_OPTS } from "../utils/constants.js"
@@ -72,7 +79,6 @@ import {
 } from "@aztec-labs/entrypoints/account"
 import { Gas, GasSettings } from "@aztec-labs/stdlib/gas"
 import { assertProvenGasWithinLimits, type PayloadFinalizer } from "./stagedExecution.js"
-import { ObsidionFeeJuicePaymentMethod } from "../feePaymentMethod/index.js"
 import { FeeUnavailableError } from "./FeeUnavailableError.js"
 import {
   ProvingStage,

@@ -1,22 +1,22 @@
 import { EventEmitter } from "eventemitter3"
-import { ContractService, ContractName } from "@obsidion/contracts"
-import { ObsidionWallet } from "../obsidion/ObsidionWallet.js"
-import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import { ContractService, type ContractName } from "@obsidion/contracts"
+import type { ObsidionWallet } from "../obsidion/ObsidionWallet.js"
+import type { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import {
-  BatchCall,
+  type BatchCall,
   Contract,
-  ContractBase,
+  type ContractBase,
   ContractFunctionInteraction,
-  DeployInstantiationOptions,
-  DeployMethod,
-  DeployOptions,
+  type DeployInstantiationOptions,
+  type DeployMethod,
+  type DeployOptions,
   type OffchainOutput,
-  SendInteractionOptions,
-  SimulateInteractionOptions,
+  type SendInteractionOptions,
+  type SimulateInteractionOptions,
   NO_WAIT,
 } from "@aztec-labs/aztec.js/contracts"
-import { Account } from "@aztec-labs/aztec.js/account"
-import { TxReceipt, TxHash, TxProfileResult } from "@aztec-labs/stdlib/tx"
+import type { Account } from "@aztec-labs/aztec.js/account"
+import { type TxReceipt, TxHash, type TxProfileResult } from "@aztec-labs/stdlib/tx"
 import { waitForTx } from "@aztec-labs/aztec.js/node"
 import { TESTNET_TIMEOUT } from "../utils/constants.js"
 import { QueueStatus, TransactionProgress } from "@obsidion/core/constants"

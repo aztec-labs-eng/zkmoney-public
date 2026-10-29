@@ -1,14 +1,14 @@
-import { ContractArtifact } from "@aztec-labs/aztec.js/abi"
+import type { ContractArtifact } from "@aztec-labs/aztec.js/abi"
 import { Fr } from "@aztec-labs/aztec.js/fields"
 import { DomainSeparator } from "@aztec-labs/constants"
 import { poseidon2HashWithSeparator } from "@aztec-labs/foundation/crypto/poseidon"
 import { sha512ToGrumpkinScalar } from "@aztec-labs/foundation/crypto/sha512"
-import { GrumpkinScalar } from "@aztec-labs/foundation/curves/grumpkin"
-import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import type { GrumpkinScalar } from "@aztec-labs/foundation/curves/grumpkin"
+import type { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import { computeSharedTaggingSecret } from "@aztec-labs/stdlib/logs"
 import {
   CompleteAddress,
-  ContractInstanceWithAddress,
+  type ContractInstanceWithAddress,
   computePartialAddress,
 } from "@aztec-labs/stdlib/contract"
 import { KeyValidationRequest } from "@aztec-labs/stdlib/kernel"
@@ -25,7 +25,7 @@ import {
   type PublicKey,
 } from "@aztec-labs/stdlib/keys"
 import { DEFAULT_CONTRACTS, registerContractInPXE, type ContractName } from "@obsidion/contracts"
-import { ObsidionWallet } from "../../../obsidion/ObsidionWallet.js"
+import type { ObsidionWallet } from "../../../obsidion/ObsidionWallet.js"
 import {
   type LinkKey,
   LinkKind,

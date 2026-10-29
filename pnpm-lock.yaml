@@ -36,6 +36,9 @@ importers:
         specifier: ^4.4.3
         version: 4.4.3
     devDependencies:
+      '@obsidion/lint-config':
+        specifier: workspace:*
+        version: link:../lint-config
       '@types/node':
         specifier: ^22.19.6
         version: 22.19.20
@@ -371,6 +374,9 @@ importers:
         specifier: ^5.0.1
         version: 5.0.4
     devDependencies:
+      '@obsidion/lint-config':
+        specifier: workspace:*
+        version: link:../lint-config
       '@types/node':
         specifier: ^18.19.83
         version: 18.19.130

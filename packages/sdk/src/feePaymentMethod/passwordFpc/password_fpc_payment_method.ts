@@ -1,4 +1,4 @@
-import { FeePaymentMethod } from "@aztec-labs/aztec.js/fee"
+import type { FeePaymentMethod } from "@aztec-labs/aztec.js/fee"
 import { Fr } from "@aztec-labs/foundation/curves/bn254"
 import {
   FunctionCall,
@@ -7,7 +7,7 @@ import {
   encodeArguments,
   type FunctionAbi,
 } from "@aztec-labs/stdlib/abi"
-import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import type { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import type { GasSettings } from "@aztec-labs/stdlib/gas"
 import { ExecutionPayload } from "@aztec-labs/stdlib/tx"
 

@@ -6,8 +6,8 @@ import {
 } from "@aztec-labs/accounts/schnorr"
 import { AccountManager, ContractInitializationStatus } from "@aztec-labs/aztec.js/wallet"
 import { NO_FROM } from "@aztec-labs/aztec.js/account"
-import { Account, BaseAccount, type Salt } from "@aztec-labs/aztec.js/account"
-import { Fr, Fq } from "@aztec-labs/aztec.js/fields"
+import type { Account, Salt } from "@aztec-labs/aztec.js/account"
+import { Fr, type Fq } from "@aztec-labs/aztec.js/fields"
 import {
   deriveMasterIncomingViewingSecretKey,
   deriveMasterMessageSigningSecretKey,
@@ -20,7 +20,6 @@ import {
   type ObsidionWalletOptions,
 } from "./ObsidionWallet.js"
 import type { AlphaAuthProvider } from "./alpha/auth/AlphaAuthProvider.js"
-import { TESTNET_TIMEOUT } from "../utils/constants.js"
 import { ObsidionFeeJuicePaymentMethod } from "../feePaymentMethod/obsidion_feepayment_method.js"
 import {
   createPXE,
@@ -29,7 +28,7 @@ import {
   type PXEConfig,
   type PXECreationOptions,
 } from "@aztec-labs/pxe/server"
-import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import type { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import { ContractFunctionInteraction } from "@aztec-labs/aztec.js/contracts"
 import type { SendInteractionOptions, WaitOpts } from "@aztec-labs/aztec.js/contracts"
 import type { FeePaymentMethod } from "@aztec-labs/aztec.js/fee"

@@ -4,10 +4,14 @@ import {
   type CreateWalletOptions,
   type ObsidionWalletOptions,
 } from "./ObsidionWallet.js"
-import { DEFAULT_CONTRACTS, ContractName } from "@obsidion/contracts"
+import { DEFAULT_CONTRACTS, type ContractName } from "@obsidion/contracts"
 import { getPXEConfig, type PXEConfig } from "@aztec-labs/pxe/config"
-import { createPXE as createPXELazy, PXE, PXECreationOptions } from "@aztec-labs/pxe/client/lazy"
-import { AztecNode } from "@aztec-labs/aztec.js/node"
+import {
+  createPXE as createPXELazy,
+  type PXE,
+  type PXECreationOptions,
+} from "@aztec-labs/pxe/client/lazy"
+import type { AztecNode } from "@aztec-labs/aztec.js/node"
 
 /**
  * Test wallet variant that uses the obsidionAccountAlphaTest contract

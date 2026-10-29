@@ -290,3 +290,21 @@ export async function fetchHistoricalSipaResolverOperators(
     ).values(),
   ]
 }
+
+/**
+ * Every resolver key the registry published over `range`, from any operator. A registration address
+ * salted before the self-SIPA key used the signup resolver's key of its day, which a later rotation
+ * may have replaced.
+ */
+export async function fetchHistoricalResolverPublicKeys(
+  publicClient: PublicClient,
+  accountMetadataRegistry: Address,
+  range: { fromBlock: bigint; toBlock: bigint },
+): Promise<SipaK1Point[]> {
+  const history = await operatorHistory(publicClient, accountMetadataRegistry, range)
+  return [
+    ...new Map(
+      history.map(({ entry: { publicKey } }) => [`${publicKey.x}:${publicKey.y}`, publicKey]),
+    ).values(),
+  ]
+}

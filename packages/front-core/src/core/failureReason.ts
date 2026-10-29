@@ -1,5 +1,5 @@
 import { PaylinkActionEnum } from "@obsidion/core/constants"
-import type { Transaction } from "src/types"
+import type { Transaction } from "../types"
 
 /** Why a pre-submit row failed when its tab closed, per action: the row's Reason and the bell both say it. */
 export const INTERRUPTED_ERRORS = {

@@ -17,7 +17,7 @@ import type { BroadcastL1Operation } from "@oxide/oxide-lib/l1_operation_calldat
 import { encodePlainWithdrawalPayload } from "@oxide/oxide-lib/plain_withdrawal_executor.js"
 import {
   BroadcasterContract,
-  ContractService,
+  type ContractService,
   ensureContractRegisteredInPXE,
   getBroadcasterArtifact,
 } from "@obsidion/contracts"

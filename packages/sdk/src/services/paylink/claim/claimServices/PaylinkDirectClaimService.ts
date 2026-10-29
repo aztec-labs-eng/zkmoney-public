@@ -1,12 +1,12 @@
 import { emptyTransferMeta } from "@obsidion/core/constants"
-import { ObsidionWallet } from "../../../../obsidion/ObsidionWallet.js"
-import { MethodOptions, ServiceBase } from "../../../ServiceBase.js"
+import type { ObsidionWallet } from "../../../../obsidion/ObsidionWallet.js"
+import { type MethodOptions, ServiceBase } from "../../../ServiceBase.js"
 import type { ClaimService, ClaimSubmitContext, ClaimTransactionResult } from "../../types.js"
 import { preparePaylinkClaimSubmit } from "../paylinkClaimSubmit.js"
-import { Account } from "@aztec-labs/aztec.js/account"
+import type { Account } from "@aztec-labs/aztec.js/account"
 import { Fr } from "@aztec-labs/aztec.js/fields"
-import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
-import { ContractBase } from "@aztec-labs/aztec.js/contracts"
+import type { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import type { ContractBase } from "@aztec-labs/aztec.js/contracts"
 import assert from "assert"
 
 /**
@@ -18,12 +18,10 @@ import assert from "assert"
  * capsules in the same batched tx.
  */
 export class PaylinkDirectClaimService extends ServiceBase implements ClaimService {
-  private sender: Account
   public contractAddress?: AztecAddress
 
-  constructor(wallet: ObsidionWallet, sender: Account) {
+  constructor(wallet: ObsidionWallet, _sender: Account) {
     super(wallet)
-    this.sender = sender
   }
 
   public async claimPayment(

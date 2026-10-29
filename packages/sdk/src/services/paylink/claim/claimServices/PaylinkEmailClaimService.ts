@@ -1,11 +1,11 @@
 import { emptyTransferMeta } from "@obsidion/core/constants"
-import { ObsidionWallet } from "../../../../obsidion/ObsidionWallet.js"
-import { MethodOptions, ServiceBase } from "../../../ServiceBase.js"
+import type { ObsidionWallet } from "../../../../obsidion/ObsidionWallet.js"
+import { type MethodOptions, ServiceBase } from "../../../ServiceBase.js"
 import type { ClaimService, ClaimSubmitContext, ZkProofClaimInput } from "../../types.js"
 import { preparePaylinkClaimSubmit } from "../paylinkClaimSubmit.js"
-import { Account } from "@aztec-labs/aztec.js/account"
-import { TxReceipt } from "@aztec-labs/aztec.js/tx"
-import { ContractBase } from "@aztec-labs/aztec.js/contracts"
+import type { Account } from "@aztec-labs/aztec.js/account"
+import type { TxReceipt } from "@aztec-labs/aztec.js/tx"
+import type { ContractBase } from "@aztec-labs/aztec.js/contracts"
 import { Fr } from "@aztec-labs/aztec.js/fields"
 import assert from "assert"
 
@@ -16,11 +16,8 @@ import assert from "assert"
  * `preparePaylinkClaimSubmit` helper for TEE-aware preparation.
  */
 export class PaylinkEmailClaimService extends ServiceBase implements ClaimService {
-  private sender: Account
-
-  constructor(wallet: ObsidionWallet, sender: Account) {
+  constructor(wallet: ObsidionWallet, _sender: Account) {
     super(wallet)
-    this.sender = sender
   }
 
   public async claimPayment(

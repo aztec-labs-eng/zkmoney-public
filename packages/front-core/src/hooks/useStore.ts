@@ -1,5 +1,5 @@
 import { useRef, useSyncExternalStore } from "react"
-import type { ReadonlyStore } from "src/engine/store"
+import type { ReadonlyStore } from "../engine/store"
 
 /**
  * Reads a store, or a selection of it, and re-renders when that changes. A selection keeps its

@@ -6,7 +6,7 @@ import {
   type Network,
   type ObsidionWallet,
 } from "@obsidion/sdk"
-import { logger } from "src/utils/logger"
+import { logger } from "../utils/logger"
 import { WalletError } from "./errors"
 import { resource, type Backoff, type Resource } from "./resource"
 

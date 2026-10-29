@@ -124,7 +124,6 @@ export function signUpOptionsFor(input: SignUpOptionsInput): SignUpOptions {
   // With no 1Password option beside it, This Mac reaches 1Password through the Mac's window.
   const macOnePassword = mac && listsOnePassword && !viaExtension
   const macWindow = macOnePassword && onePasswordAlone
-  const offersComputer = own.length > 0 || macWindow
   const offersOnePassword = viaExtension && listsOnePassword
   const phone = reach === "no-hybrid" ? undefined : ignoresHints ? "phone-or-key" : "phone"
   const computerLabel = mac ? copy.computer.macLabel : copy.computer.label

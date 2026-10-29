@@ -429,10 +429,9 @@ export function reorgEvent(
   const { txHash } = outcome
   switch (outcome.type) {
     case "failed":
-      // A withdrawal's failure is its record's to report.
-      if (outcome.source === "withdrawal") return null
-    // falls through
     case "grace-expired":
+      // A withdrawal's failure is its record's to report.
+      if (outcome.type === "failed" && outcome.source === "withdrawal") return null
       return {
         id: reorgFailedId(hash, outcome.reorgEpoch),
         at,

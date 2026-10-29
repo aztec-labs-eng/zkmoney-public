@@ -1,5 +1,5 @@
 import type { ContractArtifact } from "@aztec-labs/stdlib/abi"
-import { ContractName, Network } from "@obsidion/sdk"
+import { type ContractName, Network } from "@obsidion/sdk"
 import { describe, expect, it } from "vitest"
 import { BrowserContractServiceStorage } from "../../../src/platform/contracts/BrowserContractServiceStorage"
 

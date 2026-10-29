@@ -8,9 +8,9 @@ import type { WithdrawOperation } from "../../oxide/withdrawal/plainWithdrawal.j
 // This is an MVP for a service that will be used for all the repeatable
 // boilerplate code for all the different paylink types
 
-import { Account, NO_FROM } from "@aztec-labs/aztec.js/account"
+import { type Account, NO_FROM } from "@aztec-labs/aztec.js/account"
 import { computeAuthWitMessageHash } from "@aztec-labs/aztec.js/authorization"
-import { ObsidionWallet, type TxHashCallback } from "../../obsidion/ObsidionWallet.js"
+import type { ObsidionWallet, TxHashCallback } from "../../obsidion/ObsidionWallet.js"
 import { ObsidionAccount } from "../../obsidion/alpha/account/ObsidionAccount.js"
 import {
   buildSponsoredTeeOperation,
@@ -34,18 +34,17 @@ import type { Operation } from "../../oxide/index.js"
 import { paylinkL1ClaimArgs, type PaylinkL1Proof } from "./claim/paylinkL1Claim.js"
 import { makePaylinkSpendMetadataResolver } from "./claim/paylinkSpendMetadata.js"
 import { getUserPayloadHash } from "@oxide/oxide-lib/content_hash.js"
-import { MethodOptions, ServiceBase } from "../ServiceBase.js"
+import { type MethodOptions, ServiceBase } from "../ServiceBase.js"
 import { prepareDepositSubmit } from "./create/paylinkDepositSubmit.js"
 import { TokenService } from "../token/TokenService.js"
-import { ContractArtifact, FieldLike } from "@aztec-labs/aztec.js/abi"
+import type { FieldLike } from "@aztec-labs/aztec.js/abi"
 import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import {
-  ContractService,
+  type ContractService,
   DEFAULT_CONTRACTS,
-  ContractName,
+  type ContractName,
   ensureContractRegisteredInPXE,
 } from "@obsidion/contracts"
-import { emptyTransferMeta } from "@obsidion/core/constants"
 import { OxideTokenContract, type Transfer as TransferEvent } from "@obsidion/contracts"
 import {
   buildTransferMetaForSend,
@@ -55,19 +54,19 @@ import {
 } from "../token/transferMeta.js"
 import type { ScannedTransferEvent } from "../token/transferEventSource.js"
 import {
-  ContractInstanceWithAddress,
+  type ContractInstanceWithAddress,
   getContractInstanceFromInstantiationParams,
 } from "@aztec-labs/stdlib/contract"
 import { Fr } from "@aztec-labs/aztec.js/fields"
-import { type PublicKey } from "@aztec-labs/stdlib/keys"
+import type { PublicKey } from "@aztec-labs/stdlib/keys"
 import type { EthAddress } from "@aztec-labs/aztec.js/addresses"
-import { TxReceipt } from "@aztec-labs/aztec.js/tx"
+import type { TxReceipt } from "@aztec-labs/aztec.js/tx"
 import {
   Contract,
-  ContractBase,
+  type ContractBase,
   type ContractFunctionInteraction,
 } from "@aztec-labs/aztec.js/contracts"
-import { TxEffect, TxHash } from "@aztec-labs/stdlib/tx"
+import type { TxEffect, TxHash } from "@aztec-labs/stdlib/tx"
 import assert from "assert"
 import { poseidon2Hash } from "@zkpassport/poseidon2"
 import { computeSiloedPrivateInitializationNullifier, siloNullifier } from "@aztec-labs/stdlib/hash"
@@ -75,12 +74,12 @@ import { epochDay } from "../../utils/helper.js"
 import { MerkleTreeId } from "@aztec-labs/stdlib/trees"
 import { PaylinkProcessorFactory } from "./create/PaylinkProcessorFactory.js"
 import type { DepositArg } from "./create/processors/BasePaylinkProcessor.js"
-import {
+import type {
   CommitmentInput,
   ClaimInput,
-  type ClaimService,
-  type ClaimSubmitContext,
-  type ZkProofClaimInput,
+  ClaimService,
+  ClaimSubmitContext,
+  ZkProofClaimInput,
   PaylinkWindow,
 } from "./types.js"
 import { preparePaylinkClaimSubmit } from "./claim/paylinkClaimSubmit.js"
@@ -90,7 +89,7 @@ import {
   decodePaylinkInline,
   encodePaylinkLocatorPayload,
 } from "./link/paylinkInlineCodec.js"
-import { FeePaymentMethod } from "@aztec-labs/aztec.js/fee"
+import type { FeePaymentMethod } from "@aztec-labs/aztec.js/fee"
 import { PaylinkDirectClaimService, PaylinkEmailClaimService } from "../index.js"
 import type { SpendMetadataResolver } from "@oxide/oxide-client/token_operations_collector.js"
 import type { DepositSpendMetadataResolver } from "../../oxide/index.js"
@@ -1554,7 +1553,7 @@ export class PaylinkService extends ServiceBase {
     const { escrow, user, meta, terms } = prepared
     const voucherBurn = options?.voucher?.withdraw
     const broadcasts = options?.broadcasts ?? []
-    if (!isEmail && voucherBurn && escrow.methods.claim_with_withdrawal) {
+    if (!isEmail && voucherBurn && "claim_with_withdrawal" in escrow.methods) {
       return (await this.claimWithWithdrawal(prepared, voucherBurn, sponsor, options, broadcasts))
         .txHash
     }

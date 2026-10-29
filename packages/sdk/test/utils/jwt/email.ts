@@ -3,7 +3,7 @@
  * Used by both payToEmail and email registry tests
  */
 import path from "path"
-import { loadKeyPairs, generateJwks, generateJwt, KeyPair } from "./jwt.js"
+import { loadKeyPairs, generateJwks, generateJwt, type KeyPair } from "./jwt.js"
 import { setupFetchInterceptor } from "./customizableFetchInterceptor.js"
 import type { AztecNode } from "@aztec-labs/aztec.js/node"
 

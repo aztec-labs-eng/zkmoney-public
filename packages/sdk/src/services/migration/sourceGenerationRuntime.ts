@@ -9,10 +9,10 @@ import type {
 } from "@obsidion/core/types"
 import type { PublicClient } from "viem"
 import { sameAddress } from "../../oxide/address.js"
-import {
-  type FrozenMigrationRuntime,
-  type FrozenRefundRecipient,
-  type MigrationExecutorRoute,
+import type {
+  FrozenMigrationRuntime,
+  FrozenRefundRecipient,
+  MigrationExecutorRoute,
 } from "./FrozenMetadataMigrationSource.js"
 import { MigrationSubsidyReader } from "./migrationSubsidy.js"
 

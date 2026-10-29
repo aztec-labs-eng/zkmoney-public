@@ -8,7 +8,7 @@
 import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import { Fr } from "@aztec-labs/aztec.js/fields"
 import {
-  ContractService,
+  type ContractService,
   nextOperationId,
   type ObsidionAccount,
   type ObsidionWallet,

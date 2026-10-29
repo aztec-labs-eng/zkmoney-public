@@ -20,7 +20,7 @@ import {
   assertRegistrationUnfunded,
   reopenRefundedDeposit,
 } from "./registrationQuoteRecovery"
-import { Fr } from "@aztec-labs/aztec.js/fields"
+import type { Fr } from "@aztec-labs/aztec.js/fields"
 import { toBytes, toHex, type Hex, type PublicClient } from "viem"
 import type { PrivateKeyAccount } from "viem/accounts"
 import {
@@ -76,15 +76,15 @@ import {
 import { updateTicketSignup, type TicketSignupStash } from "../paylink/claimStash"
 import { redeemGoldenTicketForLink } from "./goldenTicket"
 import { rememberRegistrationPayload } from "../broadcasts/broadcasts"
-import {
+import type {
   ContractService,
-  type ObsidionWallet,
-  type ObsidionAccount,
-  type AlphaAuthProvider,
-  type NameClaimWitness,
-  type OxideAccountBinding,
-  type PrfSlot,
-  type RecoverPasskeyResult,
+  ObsidionWallet,
+  ObsidionAccount,
+  AlphaAuthProvider,
+  NameClaimWitness,
+  OxideAccountBinding,
+  PrfSlot,
+  RecoverPasskeyResult,
 } from "@obsidion/sdk"
 import {
   getOxideTuple,

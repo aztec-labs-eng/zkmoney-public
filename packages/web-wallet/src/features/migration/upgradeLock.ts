@@ -21,8 +21,9 @@ const lockKey = (account: string) => `webwallet.upgradeLock/${account.toLowerCas
 const versionKey = (account: string) => `webwallet.version/${account.toLowerCase()}`
 const createdKey = (account: string) => `webwallet.createdOn/${account.toLowerCase()}`
 const pinned = () => getConfig().oxideProfile.portal.toLowerCase()
+// v2: a read settled before registration commitments were scanned is read again.
 const sourceReadKey = (account: string, source: string) =>
-  `webwallet.retiredSourceRead/${pinned()}/${source.toLowerCase()}/${account.toLowerCase()}`
+  `webwallet.retiredSourceRead.v2/${pinned()}/${source.toLowerCase()}/${account.toLowerCase()}`
 const changes = createExternalState(0)
 const changed = () => changes.set(changes.get() + 1)
 // Accounts whose saved runs were read this page, so the lock can be trusted.

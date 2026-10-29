@@ -1,5 +1,5 @@
 import { Fr } from "@aztec-labs/aztec.js/fields"
-import { type Contract, type ContractFunctionInteraction } from "@aztec-labs/aztec.js/contracts"
+import type { Contract, ContractFunctionInteraction } from "@aztec-labs/aztec.js/contracts"
 import type { Capsule } from "@aztec-labs/stdlib/tx"
 import { getTransferMetaLen } from "@oxide/oxide-client/l2_operations.js"
 import { getUserPayloadHash } from "@oxide/oxide-lib/content_hash.js"

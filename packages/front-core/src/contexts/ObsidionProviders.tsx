@@ -1,8 +1,8 @@
-import { ReactNode } from "react"
+import type { ReactNode } from "react"
 import { ContractServiceProvider } from "./useContractServiceContext"
 import type { ContractService } from "@obsidion/sdk"
-import type { IStorageAdapter, NetworkStorageConfig } from "src/core"
-import type { Resource } from "src/engine/resource"
+import type { IStorageAdapter, NetworkStorageConfig } from "../core"
+import type { Resource } from "../engine/resource"
 import { StorageProvider, useStorageContext } from "./useStorageContext"
 
 /** The storage singletons and the page's contract service. */

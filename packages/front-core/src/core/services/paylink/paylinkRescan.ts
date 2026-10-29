@@ -21,7 +21,7 @@ import type {
   ScannedTransferEvent,
   TransferEventSource,
 } from "@obsidion/sdk"
-import type { OnNetwork, PaylinkTransaction, Transaction } from "src/types"
+import type { OnNetwork, PaylinkTransaction, Transaction } from "../../../types"
 import type { Activity } from "../../../engine/activity"
 import type { Database, Write } from "../../../engine/database"
 import {
@@ -29,7 +29,7 @@ import {
   payoutRow,
   TRANSFER_SCAN_REORG_MARGIN,
 } from "../transactions/TransferEventScanner"
-import { logger } from "src/utils/logger"
+import { logger } from "../../../utils/logger"
 
 const CURSOR_STORAGE_KEY = "@obsidion/paylink-rescan/cursor/v2"
 

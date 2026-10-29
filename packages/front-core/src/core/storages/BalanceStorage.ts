@@ -1,7 +1,7 @@
 import type { IStorageAdapter } from "./adapter"
 import { RecordStorage } from "../services/bridge/RecordStorage"
 import { BALANCE_STORAGE_KEY } from "./constants"
-import { logger } from "src/utils/logger"
+import { logger } from "../../utils/logger"
 
 /**
  * One cached balance. `scope` is `balanceScope(network, accountCompleteAddress)`, so a cached

@@ -16,7 +16,7 @@ import type { Address, Hex } from "viem"
 import { createPublicClient, formatUnits, parseUnits } from "viem"
 import { WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
 import {
-  ContractService,
+  type ContractService,
   createWithdrawEventSource,
   L1SwapEscrowReader,
   L1WithdrawalFinalizationReader,

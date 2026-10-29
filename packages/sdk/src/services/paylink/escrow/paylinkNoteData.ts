@@ -1,7 +1,7 @@
 import type { ContractArtifact, FieldLike } from "@aztec-labs/aztec.js/abi"
 import { Fr } from "@aztec-labs/aztec.js/fields"
 import { poseidon2Hash, poseidon2HashWithSeparator } from "@aztec-labs/foundation/crypto/poseidon"
-import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import type { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 
 /** Unpacked `PaylinkNote.data` — amount + claim window timestamps. */
 export type PaylinkNoteData = {

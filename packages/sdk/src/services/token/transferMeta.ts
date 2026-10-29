@@ -35,7 +35,7 @@ import { Fr } from "@aztec-labs/aztec.js/fields"
 import type { FieldLike } from "@aztec-labs/aztec.js/abi"
 import { MAX_TAG_LENGTH, TRANSFER_META_LEN } from "@obsidion/core/constants"
 import { plainText } from "@obsidion/core/text"
-import { BYTES_PER_FIELD, metaCapacity, packMetaFields, unpackMetaFields } from "./metaFields.js"
+import { metaCapacity, packMetaFields, unpackMetaFields } from "./metaFields.js"
 
 export { fieldLikeToFr } from "./metaFields.js"
 

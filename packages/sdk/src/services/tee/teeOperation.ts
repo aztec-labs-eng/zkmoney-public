@@ -1,12 +1,16 @@
-import { BatchCall, Contract, ContractFunctionInteraction } from "@aztec-labs/aztec.js/contracts"
+import {
+  BatchCall,
+  type Contract,
+  type ContractFunctionInteraction,
+} from "@aztec-labs/aztec.js/contracts"
 import type { AztecNode } from "@aztec-labs/aztec.js/node"
-import { FeePaymentMethod } from "@aztec-labs/aztec.js/fee"
-import { Capsule } from "@aztec-labs/stdlib/tx"
-import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import type { FeePaymentMethod } from "@aztec-labs/aztec.js/fee"
+import type { Capsule } from "@aztec-labs/stdlib/tx"
+import type { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import { Fr } from "@aztec-labs/aztec.js/fields"
 import { createLogger } from "@aztec-labs/foundation/log"
-import { EthAddress } from "@aztec-labs/foundation/eth-address"
-import { type ViemClient } from "@aztec-labs/ethereum/types"
+import type { EthAddress } from "@aztec-labs/foundation/eth-address"
+import type { ViemClient } from "@aztec-labs/ethereum/types"
 import type { Hex } from "viem"
 import {
   buildNoteSignatureCapsules,
@@ -58,17 +62,6 @@ import { readTimingBenchFlag } from "../../obsidion/proving-progress-helpers.js"
 // Re-export `RegisteredTeeSigner` from the SDK barrel so front-core callers can consume it without
 // depending on `@oxide/oxide-client` directly.
 export type { RegisteredTeeSigner }
-
-/**
- * Default network timeout for `RemoteTeeSigner.connect()` and subsequent
- * RPCs when callers don't override. The signer holds a single timeout for
- * both the background connect and every signing round-trip, so this must
- * leave headroom for the heavyweight sign RPC on a flaky network —
- * 10s was observed timing out real claims mid-dispatch. The oxide vendor
- * default is 60s; backend / script callers that want that ceiling can pass
- * `opts.timeoutMs` explicitly.
- */
-const DEFAULT_TEE_SIGNER_TIMEOUT_MS = 20_000
 
 /** Mirrors `ACCOUNT_MAX_CALLS` in `contracts/alpha/lib/src/payloads.nr` — the entrypoint AppPayload
  *  holds this many FunctionCalls. */

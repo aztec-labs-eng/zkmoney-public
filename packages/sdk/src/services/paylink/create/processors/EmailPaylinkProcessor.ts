@@ -2,8 +2,8 @@ import type { RawPaylinkNote } from "../../escrow/paylinkNoteData.js"
 import {
   BasePaylinkProcessor,
   commonDepositNote,
-  DepositArg,
-  PaylinkConstructorArgs,
+  type DepositArg,
+  type PaylinkConstructorArgs,
   toField,
 } from "./BasePaylinkProcessor.js"
 import {
@@ -14,14 +14,14 @@ import {
 } from "@obsidion/core/constants"
 import type { ContractName } from "@obsidion/core/types"
 import {
-  CommitmentInput,
-  EmailCommitmentInput,
-  ClaimInput,
+  type CommitmentInput,
+  type EmailCommitmentInput,
+  type ClaimInput,
   isZkProofClaimInput,
-  ZkProofClaimInput,
+  type ZkProofClaimInput,
 } from "../../types.js"
 import { EMAIL_LEN, poseidon2HashPackedString } from "../../../../email/utils.js"
-import { FieldLike } from "@aztec-labs/aztec.js/abi"
+import type { FieldLike } from "@aztec-labs/aztec.js/abi"
 import assert from "assert"
 
 /**

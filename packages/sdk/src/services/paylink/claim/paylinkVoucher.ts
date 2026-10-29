@@ -8,11 +8,11 @@ import { nestedWithdrawal, planPayout, type WithdrawalOptions } from "../../with
  */
 import { NO_FROM } from "@aztec-labs/aztec.js/account"
 import type { EthAddress } from "@aztec-labs/aztec.js/addresses"
-import { Contract, type ContractFunctionInteraction } from "@aztec-labs/aztec.js/contracts"
-import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import { Contract } from "@aztec-labs/aztec.js/contracts"
+import type { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import type { RegisteredTeeSigner } from "@oxide/oxide-client/types.js"
 import {
-  ContractService,
+  type ContractService,
   DEFAULT_CONTRACTS,
   ensureContractRegisteredInPXE,
 } from "@obsidion/contracts"

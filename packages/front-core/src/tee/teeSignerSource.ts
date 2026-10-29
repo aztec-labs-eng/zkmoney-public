@@ -1,7 +1,7 @@
 import { createPublicClient, fallback, http, type Chain, type Hex } from "viem"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import { ContractService, loadTeeSigner, type RegisteredTeeSigner } from "@obsidion/sdk"
-import { logger } from "src/utils/logger"
+import { logger } from "../utils/logger"
 
 /**
  * A resolvable source of a `RegisteredTeeSigner`, injected into the `teeSigner` resource so it

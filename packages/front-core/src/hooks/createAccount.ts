@@ -1,14 +1,14 @@
 import type { SignInRoute } from "@obsidion/core/types"
-import { AccountStorage, NetworkStorage, selectRecoveredMsk } from "src/core"
+import { AccountStorage, NetworkStorage, selectRecoveredMsk } from "../core"
 import {
   TESTNET_TIMEOUT,
-  ObsidionAccount,
-  ObsidionWallet,
-  AUTH_TYPE,
-  AlphaAuthService,
+  type ObsidionAccount,
+  type ObsidionWallet,
+  type AUTH_TYPE,
+  type AlphaAuthService,
 } from "@obsidion/sdk"
-import { WalletError } from "src/engine/errors"
-import { logger } from "src/utils/logger"
+import { WalletError } from "../engine/errors"
+import { logger } from "../utils/logger"
 
 /**
  * Creates the passkey and its account, or recovers both from an existing passkey, then commits the

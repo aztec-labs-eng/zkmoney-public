@@ -23,7 +23,7 @@ import {
   type SwapEscrowReader,
   type SwapRecovery,
 } from "@obsidion/sdk"
-import { logger } from "src/utils/logger"
+import { logger } from "../utils/logger"
 
 import { swapEscrowTarget } from "../core/services/bridge/swapEscrowArgs"
 import type { WithdrawalRecord } from "../core/services/bridge/types"

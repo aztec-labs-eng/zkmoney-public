@@ -2,8 +2,8 @@ import { assert } from "ts-essentials"
 import type { Token } from "@obsidion/sdk"
 import { TOKENS_LOCAL_STORAGE_KEY } from "./storage-constants.js"
 import type { IStorageAdapter } from "./adapter.js"
-import { memoryStore } from "src/engine/store"
-import { legacyStore } from "src/engine/legacyStore"
+import { memoryStore } from "../../engine/store"
+import { legacyStore } from "../../engine/legacyStore"
 
 type StoredEntries = [string, Token][]
 

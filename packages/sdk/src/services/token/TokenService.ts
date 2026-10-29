@@ -1,14 +1,14 @@
 import { planWithdrawal, type WithdrawalOptions } from "../withdrawal/plainWithdrawal.js"
 import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
-import { EthAddress } from "@aztec-labs/aztec.js/addresses"
+import type { EthAddress } from "@aztec-labs/aztec.js/addresses"
 import { BlockNumber, Fr } from "@aztec-labs/aztec.js/fields"
-import { Account, NO_FROM } from "@aztec-labs/aztec.js/account"
-import { AuthWitness, computeAuthWitMessageHash } from "@aztec-labs/aztec.js/authorization"
+import { type Account, NO_FROM } from "@aztec-labs/aztec.js/account"
+import { type AuthWitness, computeAuthWitMessageHash } from "@aztec-labs/aztec.js/authorization"
 import { decodeFromAbi, type FieldLike } from "@aztec-labs/aztec.js/abi"
-import { type Contract, type ContractFunctionInteraction } from "@aztec-labs/aztec.js/contracts"
-import { Capsule, TxHash, type TxReceipt } from "@aztec-labs/stdlib/tx"
+import type { Contract } from "@aztec-labs/aztec.js/contracts"
+import type { TxHash, TxReceipt } from "@aztec-labs/stdlib/tx"
 import { formatUnits, parseUnits } from "viem"
-import { MethodOptions, ServiceContractBase } from "../ServiceBase.js"
+import { type MethodOptions, ServiceContractBase } from "../ServiceBase.js"
 import { isAlreadyClaimedDepositError } from "./depositReceipt.js"
 import { buildTeeOperation, requireSpendMetadataResolver } from "../tee/teeOperation.js"
 import { buildSponsoredTeeOperation } from "../tee/sponsoredTeeOperation.js"
@@ -28,9 +28,9 @@ import {
   ensureContractRegisteredInPXE,
   type Transfer as TransferEvent,
 } from "@obsidion/contracts"
-import { emptyTransferMeta, WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
+import { emptyTransferMeta } from "@obsidion/core/constants"
 import { WalletError } from "@obsidion/core/errors"
-import { ObsidionWallet, type TxHashCallback } from "../../obsidion/ObsidionWallet.js"
+import type { ObsidionWallet, TxHashCallback } from "../../obsidion/ObsidionWallet.js"
 import { buildTransferMetaForSend, decodeTransferMeta } from "./transferMeta.js"
 import type {
   DepositSpendMetadataResolver,

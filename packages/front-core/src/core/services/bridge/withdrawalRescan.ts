@@ -12,9 +12,9 @@
 import { formatUnits, type Hash, type Hex } from "viem"
 import { SkyRoute } from "@oxide/experiments/sky/sky_savings.js"
 import type { ScannedWithdrawEvent, WithdrawEventSource } from "@obsidion/sdk"
-import { syncCatchUp } from "src/engine/catchUp"
-import { newWithdrawalLocalId, type Withdrawals } from "src/engine/withdrawals"
-import type { OnNetwork } from "src/types/networkStamp"
+import { syncCatchUp } from "../../../engine/catchUp"
+import { newWithdrawalLocalId, type Withdrawals } from "../../../engine/withdrawals"
+import type { OnNetwork } from "../../../types/networkStamp"
 import type { WithdrawalDeployment, WithdrawalRecord } from "./types"
 
 export interface WithdrawalRescanDeps {

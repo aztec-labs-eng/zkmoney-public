@@ -9,6 +9,7 @@ import { configDefaults, defineConfig } from "vitest/config"
 // Coverage measured here spans only the sandbox-free tests, so the number understates the sdk's real
 // coverage. No threshold is enforced for that reason.
 export default defineConfig({
+  resolve: { conditions: ["source"] },
   test: {
     globals: true,
     environment: "node",
