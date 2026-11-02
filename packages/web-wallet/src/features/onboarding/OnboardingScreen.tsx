@@ -137,6 +137,7 @@ import { useRegistrationSpeed } from "../paylink/registrationProverTip"
 import { SpeedRow } from "../withdraw/speedChoice"
 import { belowTicketThresholdCopy, ticketEligibility } from "../paylink/ticketThreshold"
 import { getAuthService } from "../../platform/auth/useAuthenticator"
+import { hasOpeningBreadcrumb } from "../../platform/auth/WebPasskeyIdentityMap"
 import { getActiveCredentialId, getActiveStorageId } from "../../platform/storage/activeStorage"
 import {
   buildRetrySignDeps,
@@ -536,6 +537,7 @@ export function OnboardingScreen({
       !hasRouteGrant &&
       !loadWalletIdentity(),
   )
+  const [returning] = useState(() => freshStart && hasOpeningBreadcrumb(config.rpId))
   // A tag settled on before a reload: a kept draw or a past user's pick is still the drawn offer.
   const [restored] = useState(() => {
     const chosen = draftTag ? loadChosenTag() : undefined
@@ -584,7 +586,7 @@ export function OnboardingScreen({
         "",
     ) ?? "",
   )
-  // "Open account", tapped while the wallet started: busy from the first frame, run once below.
+  // "Create Account", tapped while the wallet started: busy from the first frame, run once below.
   const [startedBeforeBoot] = useState(() => freshStart && peekPreBootCreate())
   const [inviteBusy, setInviteBusy] = useState(startedBeforeBoot)
   // Embedded, the pill is in the host page's frame, out of reach of a prop.
@@ -914,7 +916,7 @@ export function OnboardingScreen({
   const toLinkSignup = (fragment: string) =>
     navigate(`/link#${fragment}`, { replace: true, state: RECEIVE_TO_ACCOUNT })
 
-  /** "Open account": the claim server draws the tag, and the passkey and claim run at once. */
+  /** "Create Account": the claim server draws the tag, and the passkey and claim run at once. */
   const createDrawnWallet = async () => {
     setInviteNotice(undefined)
     setInviteBusy(true)
@@ -3309,6 +3311,7 @@ export function OnboardingScreen({
       ) : freshStart ? (
         <CreateWalletStep
           busy={inviteBusy}
+          returning={returning}
           notice={step === "invite" ? inviteNotice : undefined}
           onCreate={() => void createDrawnWallet()}
           onLogIn={logIn}

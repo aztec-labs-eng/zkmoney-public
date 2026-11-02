@@ -55,6 +55,7 @@ vi.mock("@obsidion/front-core", async (original) => ({
   deploymentScanRange: async () => ({ fromBlock: 1n, toBlock: 1n }),
   setupSipaDiscovery: h.setupSipaDiscovery,
   retiredDatabaseOf: (_version: string, db: unknown) => db,
+  sourceTagResolver: () => undefined,
 }))
 vi.mock("@obsidion/sdk", async (original) => ({
   ...(await original<typeof import("@obsidion/sdk")>()),
@@ -498,7 +499,7 @@ describe("probeAccountResiduals — another Aztec generation", () => {
       incomplete: false,
       hasResiduals: false,
     }
-    const replayKey = `imported/0xv5rollup/${v5.l2Token}`
+    const replayKey = `imported/0xv5rollup/${v5.l2Token}/tags`
     beforeEach(() => {
       h.importOnce.mockImplementation(async () => null)
       h.detect.mockResolvedValue({ current, historic: [v5], destinations: new Map() })
@@ -554,7 +555,10 @@ describe("probeAccountResiduals — another Aztec generation", () => {
         destinations: new Map([["0xv5susds", savings]]),
       })
       h.settled.mockImplementation((...[, source]) => source === v5Savings.portal)
-      const history = vi.fn<(scan: { deployments: unknown[] }) => Promise<object>>(async () => ({}))
+      const history = vi.fn<(scan: { deployments: unknown[] }) => Promise<object>>(async () => ({
+        entries: {},
+        short: [],
+      }))
       h.sourceChain.mockResolvedValue({
         kind: "generation",
         session: { ...session, rollupAddress: "0xv5rollup", history },

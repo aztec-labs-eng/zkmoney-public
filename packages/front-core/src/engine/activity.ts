@@ -1,4 +1,4 @@
-import { PaylinkActionEnum, QueueStatus } from "@obsidion/core/constants"
+import { PaylinkActionEnum, QueueStatus, TokenActionEnum } from "@obsidion/core/constants"
 import type { PaylinkTransaction, TokenTransaction, Transaction } from "../types/transactions"
 import type { OnNetwork } from "../types/networkStamp"
 import { TRANSACTIONS_STORAGE_KEY, ACCOUNT_STORAGE_KEY } from "../core/storages/constants"
@@ -118,8 +118,8 @@ export interface Activity {
   /**
    * Rows from a retired rollup's database, in the legacy format. Nothing here can finish one, so an
    * unfinished row lands failed. A row whose hash, or link, is already here is skipped, and so is
-   * one with neither. Rows keep the network they were stamped with. Resolves, once saved, to how
-   * many were added.
+   * one with neither, though a held row takes a counterparty tag the new copy verified. Rows keep the
+   * network they were stamped with. Resolves, once saved, to how many were added.
    */
   importHistoricRows(rows: readonly object[]): Promise<number>
 }
@@ -356,6 +356,13 @@ export function createActivity(deps: ActivityDeps): Activity {
           const hash = row.txHash ? lower(row.txHash) : undefined
           const link = isLink(row) ? (row as PaylinkTransaction).paylink : undefined
           if (!hash && !link) continue
+          const held = hash ? await byHash(hash, w) : undefined
+          if (held) {
+            const next = withCounterpartyTag(held, row)
+            if (next)
+              await store.apply(held.id, (current) => current && keepOwned(current, next), w)
+            continue
+          }
           if ((hash && hashes.has(hash)) || (link && links.has(link)) || ids.has(row.id)) continue
           index(row)
           await store.put(row, w)
@@ -364,6 +371,26 @@ export function createActivity(deps: ActivityDeps): Activity {
         return added
       }),
   }
+}
+
+/** `held` with the counterparty tag a later read of the same transfer verified; undefined when none is new. */
+function withCounterpartyTag(held: Transaction, row: Transaction): Transaction | undefined {
+  if (held.action !== row.action) return undefined
+  const into = held as TokenTransaction
+  const from = row as TokenTransaction
+  if (row.action === TokenActionEnum.SEND && from.toTag && !into.toTag) {
+    return { ...held, toTag: from.toTag } as Transaction
+  }
+  if (
+    row.action === TokenActionEnum.RECEIVE &&
+    from.from &&
+    from.senderL2Address &&
+    from.from !== from.senderL2Address &&
+    into.from?.toLowerCase() === from.senderL2Address.toLowerCase()
+  ) {
+    return { ...held, from: from.from } as Transaction
+  }
+  return undefined
 }
 
 const isLink = (row: Transaction) =>

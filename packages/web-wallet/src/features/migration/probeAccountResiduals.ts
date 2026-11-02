@@ -15,6 +15,7 @@ import {
   PendingPaylinkMigrationService,
   PendingPaylinkMigrationStore,
   retiredDatabaseOf,
+  sourceTagResolver,
 } from "@obsidion/front-core"
 import {
   detectHistoricDeployments,
@@ -322,29 +323,32 @@ export async function probeAccountResiduals(
       .then(async (chain) => {
         if (chain.kind !== "generation") return true
         const { session } = chain
+        // `/tags`: a source read before counterparty tags were checked is read once more for them.
         const key = `${HISTORIC_ACTIVITY_IMPORTED_KEY}/${
           session.rollupAddress
-        }/${tuple.l2Token.toLowerCase()}`
+        }/${tuple.l2Token.toLowerCase()}/tags`
         const replay = importHistoricActivityOnce(storageId, {
           key,
-          read: async () =>
-            retiredDatabaseOf(
-              tuple.rollupVersion,
-              await session.history({
-                ...(await sourceSipaScanParams({
-                  tuple,
-                  publicClient,
-                  masterSecret: msk,
-                  scanHead,
-                })),
-                accountTag: loadWalletIdentity()?.handle ?? session.address,
-                linkBase: `${location.origin}/link#`,
-                // A settled source still names the portal of a Savings move made through it.
-                deployments: [...historic, ...settled].filter(
-                  (t) => t.rollupVersion === tuple.rollupVersion,
-                ),
-              }),
-            ),
+          read: async () => {
+            const { entries, short } = await session.history({
+              ...(await sourceSipaScanParams({
+                tuple,
+                publicClient,
+                masterSecret: msk,
+                scanHead,
+              })),
+              accountTag: loadWalletIdentity()?.handle ?? session.address,
+              linkBase: `${location.origin}/link#`,
+              // A settled source still names the portal of a Savings move made through it.
+              deployments: [...historic, ...settled].filter(
+                (t) => t.rollupVersion === tuple.rollupVersion,
+              ),
+              resolveTag: sourceTagResolver(publicClient, tuple, scanHead),
+            })
+            if (short.length)
+              console.warn(`[migration] ${tuple.portal} read short: ${short.join(", ")}`)
+            return retiredDatabaseOf(tuple.rollupVersion, entries, short.length > 0)
+          },
         }).catch((error) =>
           console.warn(`[migration] history replay failed for ${tuple.portal}:`, error),
         )

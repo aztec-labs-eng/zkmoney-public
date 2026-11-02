@@ -153,7 +153,7 @@ describe("the landing before the wallet is up", () => {
 
   it("is the /claim landing too, but not a resumed or recovery visit", async () => {
     await mountAt("/claim")
-    expect(host.textContent).toContain("Open account")
+    expect(host.textContent).toContain("Create Account")
     act(() => root.unmount())
     root = createRoot(container)
     await mountAt("/claim?resume=1")
@@ -205,15 +205,15 @@ describe("the landing before the wallet is up", () => {
 
   it("gives way once the wallet draws its first screen", async () => {
     await mountAt("/")
-    expect(host.textContent).toContain("Open account")
+    expect(host.textContent).toContain("Create Account")
     h.shown = true
     await act(async () => root.render(<PreBootLayer key="again" />))
     expect(host.childNodes.length).toBe(0)
   })
 
-  it("holds Open account busy for the wallet, and Cancel lets it go", async () => {
+  it("holds Create Account busy for the wallet, and Cancel lets it go", async () => {
     await mountAt("/")
-    await act(async () => button("Open account")!.click())
+    await act(async () => button("Create Account")!.click())
     expect(peekPreBootCreate()).toBe(true)
     expect(button("Cancel")).toBeDefined()
     expect(host.textContent).not.toContain("I already have an account")
@@ -235,7 +235,7 @@ describe("the landing before the wallet is up", () => {
   it("stays up when its wordmark links to the landing it already is", async () => {
     await mountAt("/claim")
     await act(async () => host.querySelector<HTMLAnchorElement>("a.ww-brand")!.click())
-    expect(host.textContent).toContain("Open account")
+    expect(host.textContent).toContain("Create Account")
     applyPreBootNavigation()
     expect(window.location.pathname).toBe("/")
   })

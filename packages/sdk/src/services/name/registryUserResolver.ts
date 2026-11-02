@@ -13,9 +13,11 @@
 
 import type { Address, Hex, PublicClient } from "viem"
 import {
+  AccountMetadataRegistryAbi,
   getBootstrapOwner,
   getUserRecord,
   hasUserRecord,
+  NameRegistryAbi,
   readUserAddress,
   type K1PointArg,
 } from "@oxide/l1-contracts"
@@ -91,4 +93,48 @@ export async function recordNamesOtherAccount(
     record.rollupVersion !== rollupVersion ||
     record.l2Address.toLowerCase() !== l2Address.toLowerCase()
   )
+}
+
+/**
+ * The L2 address `nameHash`'s account recorded on `rollupVersion` as of L1 block `blockNumber`. The
+ * record names only the rollup the account last moved to, so an older rollup's address needs an
+ * older block, and the RPC must serve archive state. Null when the name owned no account then, or
+ * the account's record named another rollup; a transport failure throws.
+ */
+export async function readUserL2AddressAt(
+  publicClient: PublicClient,
+  nameRegistry: Address,
+  accountMetadataRegistry: Address,
+  nameHash: Hex,
+  rollupVersion: bigint,
+  blockNumber: bigint,
+): Promise<Hex | null> {
+  const account = await publicClient.readContract({
+    address: nameRegistry,
+    abi: NameRegistryAbi,
+    functionName: "ownerOf",
+    args: [nameHash],
+    blockNumber,
+  })
+  if (account.toLowerCase() === ZERO_ADDRESS) return null
+  const registry = {
+    address: accountMetadataRegistry,
+    abi: AccountMetadataRegistryAbi,
+    blockNumber,
+  }
+  if (
+    !(await publicClient.readContract({
+      ...registry,
+      functionName: "hasUserRecord",
+      args: [account],
+    }))
+  ) {
+    return null
+  }
+  const record = await publicClient.readContract({
+    ...registry,
+    functionName: "getUserRecord",
+    args: [account],
+  })
+  return record.rollupVersion === rollupVersion ? record.l2Address : null
 }

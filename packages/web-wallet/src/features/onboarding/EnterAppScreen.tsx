@@ -67,6 +67,7 @@ import {
 } from "../../platform/auth/WebAlphaAuthService"
 import { getAuthService } from "../../platform/auth/useAuthenticator"
 import {
+  hasOpeningBreadcrumb,
   listRetiredUsertagCandidates,
   listUsertagCandidates,
   usertagFor,
@@ -1489,7 +1490,13 @@ export function EnterAppScreen() {
 
   // The landing card the visitor came from stays behind the sign-in modals.
   const backdrop = (
-    <CreateWalletStep busy={false} onCreate={() => {}} onLogIn={() => {}} onCancel={() => {}} />
+    <CreateWalletStep
+      busy={false}
+      returning={hasOpeningBreadcrumb(config.rpId)}
+      onCreate={() => {}}
+      onLogIn={() => {}}
+      onCancel={() => {}}
+    />
   )
   if (gateState.kind === "awaiting-action" && !confirming) {
     return (

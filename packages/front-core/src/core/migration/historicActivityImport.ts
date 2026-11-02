@@ -39,16 +39,20 @@ export interface RetiredDatabase {
   get(key: string): string | undefined
   /** This account's keys under `prefix`. */
   keys(prefix: string): string[]
+  /** The source read short: what it read is imported, and the marker waits for a full read. */
+  partial?: boolean
 }
 
 /** A database held as plain entries, as a source generation's `history` hands one over. */
 export function retiredDatabaseOf(
   version: string,
   entries: Readonly<Record<string, string>>,
+  partial?: boolean,
 ): RetiredDatabase {
   const items = new Map(Object.entries(entries))
   return {
     version,
+    partial,
     get: (key) => items.get(key),
     keys: (prefix) => [...items.keys()].filter((key) => key.startsWith(prefix)),
   }
@@ -89,6 +93,7 @@ interface Snapshot {
   deposits: SIPADepositRecord[]
   withdrawals: WithdrawalRecord[]
   savingsMoves: SavingsMoveRecord[]
+  partial?: boolean
 }
 
 /** Imports once per account; null when already done. */
@@ -155,6 +160,10 @@ export async function importHistoricActivity(
       }
     }
     assertOwner()
+    if (snapshots.some((s) => s.partial)) {
+      logger.warn(`${LOG_PREFIX} a source read short; the rest is imported again next boot`)
+      return result
+    }
     await deps.storage.setItem(
       key,
       JSON.stringify({ at: Date.now(), databases: snapshots.map((s) => s.version) }),
@@ -191,7 +200,15 @@ function snapshotOf(db: RetiredDatabase): Snapshot {
     )
   }
   const [networkId] = networks.size === 1 ? networks : []
-  return { version: db.version, networkId, rows, deposits, withdrawals, savingsMoves }
+  return {
+    version: db.version,
+    networkId,
+    rows,
+    deposits,
+    withdrawals,
+    savingsMoves,
+    partial: db.partial,
+  }
 }
 
 const isRecord = (value: unknown): value is object => typeof value === "object" && value !== null

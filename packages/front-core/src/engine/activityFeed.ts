@@ -372,9 +372,11 @@ function txItems(
       let contact: ContactRow | undefined
       let counterpartyTag: string | undefined
       if (!view && tx.action === "send") {
-        const to = (tx as TokenTransaction).to
-        contact = to ? resolveContactByCounterparty(to, directory) : undefined
-        counterpartyTag = (tx as TokenTransaction).toTag
+        const { to, toTag } = tx as TokenTransaction
+        contact =
+          (to ? resolveContactByCounterparty(to, directory) : undefined) ??
+          (toTag ? directory.lookup(toTag) : undefined)
+        counterpartyTag = toTag
       } else if (!view && tx.action !== "faucet") {
         const { from, senderL2Address } = tx as TokenTransaction
         contact =

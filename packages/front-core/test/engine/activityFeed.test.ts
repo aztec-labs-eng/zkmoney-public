@@ -203,6 +203,13 @@ describe("selectFeed", () => {
     expect(kinds(feedOf({ requests }).items)).toEqual(["paidLink:link"])
   })
 
+  it("names the contact a send to a retired address carries by tag", () => {
+    const feed = feedOf({
+      rows: [tx({ action: "send", to: "0xold", toTag: "ada", txHash: "0xs" })],
+    })
+    expect(feed.items[0]).toMatchObject({ kind: "tx", contact: ada })
+  })
+
   it("shows only open requests a contact made, unexpired and never listed codes", () => {
     const items = feedOf({
       requests: [

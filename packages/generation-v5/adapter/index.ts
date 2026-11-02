@@ -8,7 +8,7 @@ import { InboxContract } from "@aztec/ethereum/contracts"
 import type { ViemClient } from "@aztec/ethereum/types"
 import { createLogger } from "@aztec/foundation/log"
 import { createArtifactCatalog } from "@obsidion/config-client"
-import { DEFAULT_CONTRACTS, PaylinkActionEnum } from "@obsidion/core/constants"
+import { DEFAULT_CONTRACTS, PaylinkActionEnum, TokenActionEnum } from "@obsidion/core/constants"
 import type { ContractServiceConfig, OxideEnvTuple } from "@obsidion/core/types"
 import {
   creatorLinksFromRows,
@@ -490,11 +490,12 @@ function session(o: {
     address: account.getAddress().toString(),
     rollupAddress: o.rollupAddress,
 
-    // v5's own sync, each part as the v5 wallet runs it on boot, over one store of its own. Each
-    // part must read to the end, or the history rejects and the import retries it next boot.
+    // v5's own sync, each part as the v5 wallet runs it on boot, over one store of its own. A part
+    // that reads short is named in `short`, and the import retries the history next boot.
     history: (scan) =>
       takeTurn(async () => {
         const { tuple } = scan
+        const short: string[] = []
         await holdAtFreeze(tuple)
         const tokenService = await prepareSipaScan(scan)
         setActiveNetworkId(o.rollupAddress)
@@ -519,15 +520,26 @@ function session(o: {
           contractService,
         })
 
-        // ponytail: no v5 tag registry or contacts here, so a row names its counterparty by
-        // address.
+        // Counterparty tags the host verified on this rollup, by lowercase L2 address.
+        const tagged = new Map<string, string>()
         let caughtUp = false
         const scanner = new TransferEventScanner({
           source,
           storage,
           transactionStore: transactions,
-          tags: { resolveL2: async () => null },
-          contacts: { findByL2Address: async () => null },
+          tags: {
+            resolveL2: async (tag) => {
+              const l2Address = await scan.resolveTag?.(tag)
+              return l2Address ? { l2Address } : null
+            },
+          },
+          contacts: {
+            findByL2Address: async (address) => {
+              const tag = tagged.get(address.toLowerCase())
+              return tag ? { tag } : null
+            },
+            registerL2: async ({ tag, l2Address }) => void tagged.set(l2Address.toLowerCase(), tag),
+          },
           token,
           onCaughtUp: () => {
             caughtUp = true
@@ -542,7 +554,17 @@ function session(o: {
         } finally {
           scanner.stop()
         }
-        if (!caughtUp) throw new Error("The source transfers could not all be read")
+        if (!caughtUp) short.push("transfers")
+        // A send row keeps the recipient's address in `to`; the view names it by `toTag`.
+        for (const tx of await transactions.getTransactions()) {
+          const to = tx.action === TokenActionEnum.SEND ? (tx as { to?: string }).to : undefined
+          const tag = to && tagged.get(to.toLowerCase())
+          if (!tag) continue
+          await transactions.updateTransaction(
+            (row) => row.txHash === tx.txHash,
+            (row) => void ((row as { toTag?: string }).toTag = tag),
+          )
+        }
 
         // The rescan defers a link whose note it cannot read, and holds its cursor for a later
         // pass.
@@ -567,7 +589,7 @@ function session(o: {
           store: transactions,
           token,
         })
-        if (deferredLink) throw new Error("A source payment link could not be read")
+        if (deferredLink) short.push("payment links")
         for (const txHash of await refundedLinks(tuple, await transactions.getTransactions()))
           await markPaylinkMigrated(txHash, transactions)
 
@@ -604,7 +626,7 @@ function session(o: {
             record.phase === "l2_mined" ||
             (record.phase === "finalizing_l1" &&
               (!record.withdrawalId || (await finalization.isSpent(record.withdrawalId))))
-          if (missed) throw new Error(`The source withdrawal ${record.l2TxHash} could not be read`)
+          if (missed) short.push(`withdrawal ${record.l2TxHash}`)
         }
 
         // v5's Savings pass over those burns. Its claim is a `store_deposit` simulation.
@@ -646,9 +668,13 @@ function session(o: {
         for (;;) {
           await settleSavingsMoves(moves, settleDeps, withdrawals.list())
           // The pass logs a failed search and moves on; a refused claim leaves the move unclaimed.
-          for (const move of moves.list())
-            if (move.lastCheck?.message.startsWith("search failed"))
-              throw new Error(`The source Savings move ${move.escrow} could not be read`)
+          const failed = moves
+            .list()
+            .filter((move) => move.lastCheck?.message.startsWith("search failed"))
+          if (failed.length) {
+            short.push(...failed.map((move) => `Savings move ${move.escrow}`))
+            break
+          }
           const next = JSON.stringify(
             moves.list().flatMap((move) => (move.deposit ? [] : [move.depositScanFrom])),
           )
@@ -702,13 +728,14 @@ function session(o: {
         for (let pass = 0; ; pass++) {
           const known = deposits.list().length
           const synced = await syncDeposits()
-          if (synced.failed > 0 || nodeFailed)
-            throw new Error("The source deposits could not all be read")
-          if (deposits.list().length === known) break
-          if (pass === 3) throw new Error("The source deposits kept growing")
+          if (!synced.failed && !nodeFailed && deposits.list().length === known) break
+          if (synced.failed > 0 || nodeFailed || pass === 3) {
+            short.push("deposits")
+            break
+          }
         }
 
-        return Object.fromEntries(items)
+        return { entries: Object.fromEntries(items), short }
       }),
 
     async balance({ tuple }) {

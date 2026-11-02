@@ -110,7 +110,7 @@ export type OnboardingEvent =
   | "login_opened"
   | "login_succeeded"
   | "login_failed"
-  // Each "Open account" click (`attempt` 1 or 2+), and the claim server's drawn tag (`shuffle` on a
+  // Each "Create Account" click (`attempt` 1 or 2+), and the claim server's drawn tag (`shuffle` on a
   // re-roll).
   | "onboarding_create_attempted"
   | "onboarding_tag_drawn"

@@ -197,7 +197,7 @@ const render = (path: string, element: ReactNode) =>
 /** The tag field, or the tag-less landing a fresh visitor gets. */
 const wizardShown = () =>
   container.querySelector("input[placeholder]") !== null ||
-  (container.textContent ?? "").includes("Open account")
+  (container.textContent ?? "").includes("Create Account")
 const crash = () => container.querySelector('[data-testid="crash"]')?.textContent ?? null
 
 describe("the signup wizard that starts no token", () => {

@@ -137,6 +137,16 @@ describe("selectContactChat", () => {
     expect(chat({ rows }, [], upgraded).map(([id]) => id)).toEqual(["0xold", "0xnew"])
   })
 
+  it("matches a retired rollup's transfers by the contact's tag", () => {
+    const upgraded = { ...ada, address: "0xnew" }
+    const rows = [
+      tx({ action: "send", to: "0xold", toTag: "Ada", txHash: "0xs", timestamp: 2 }),
+      tx({ action: "receive", from: "ada", senderL2Address: "0xold", txHash: "0xr", timestamp: 3 }),
+      tx({ action: "send", to: "0xold", toTag: "bob", txHash: "0xb", timestamp: 4 }),
+    ]
+    expect(chat({ rows }, [], upgraded).map(([id]) => id)).toEqual(["0xs", "0xr"])
+  })
+
   it("shows a paid request as its payment, and a paid incoming one as paid", () => {
     const rows = [
       tx({

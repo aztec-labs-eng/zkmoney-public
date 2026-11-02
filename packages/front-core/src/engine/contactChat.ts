@@ -158,19 +158,23 @@ function l1Items(feed: Feed, address: string): ChatItem[] {
   })
 }
 
-function l2Items(feed: Feed, addresses: ReadonlySet<string | undefined>): ChatItem[] {
+/** Rows naming one of `addresses`, or the contact's `tag`: a retired rollup's row may carry only the tag. */
+function l2Items(feed: Feed, addresses: ReadonlySet<string | undefined>, tag: string): ChatItem[] {
   return feed.items.flatMap((item): ChatItem[] => {
     if (item.kind !== "tx") return []
     const { tx } = item
     // A cancel aborted during proving never reached the chain.
     if (tx.detailedStatus === QueueStatus.CANCELLED && !tx.txHash) return []
     const send = tx.action === "send"
-    const { to, from, senderL2Address } = tx as {
+    const { to, toTag, from, senderL2Address } = tx as {
       to?: string
+      toTag?: string
       from?: string
       senderL2Address?: string
     }
-    const matches = send ? addresses.has(to) : addresses.has(from) || addresses.has(senderL2Address)
+    const matches = send
+      ? addresses.has(to) || lower(toTag) === tag
+      : addresses.has(from) || addresses.has(senderL2Address) || lower(from) === tag
     if (!matches) return []
     const status = transferStatus(tx)
     const memo = (tx as { memo?: string }).memo
@@ -237,7 +241,11 @@ export function selectContactChat(
     return l1Items(feed, contact.address.toLowerCase()).sort((a, b) => a.ts - b.ts)
   }
   const transfers = contact.address
-    ? l2Items(feed, new Set([contact.address, ...(contact.retiredAddresses ?? [])]))
+    ? l2Items(
+        feed,
+        new Set([contact.address, ...(contact.retiredAddresses ?? [])]),
+        contact.tag.toLowerCase(),
+      )
     : []
   const hashes = new Set(
     transfers.flatMap((item) =>

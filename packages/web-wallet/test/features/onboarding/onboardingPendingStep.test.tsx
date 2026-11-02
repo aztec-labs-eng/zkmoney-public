@@ -3085,12 +3085,12 @@ describe("the wallet owns signup", () => {
       await render("/claim")
       await settleReads()
       expect(assign).not.toHaveBeenCalled()
-      expect(container.textContent).toContain("Open account")
+      expect(container.textContent).toContain("Create Account")
       expect(container.textContent).not.toContain("landing-signin")
     })
   })
 
-  it("runs an Open account tapped while the wallet started, once, busy from its first frame", async () => {
+  it("runs an Create Account tapped while the wallet started, once, busy from its first frame", async () => {
     await withStubbedAssign(async () => {
       setPreBootCreate(true)
       let land!: (draw: Awaited<ReturnType<typeof h.drawTag>>) => void
@@ -3262,7 +3262,7 @@ describe("the wallet owns signup", () => {
     })
   })
 
-  it("reports each Open account click and the drawn tag on the onboarding stream", async () => {
+  it("reports each Create Account click and the drawn tag on the onboarding stream", async () => {
     const onboarding = () =>
       h.fireEvent.mock.calls.filter(([event]) =>
         ["onboarding_create_attempted", "onboarding_tag_drawn", "onboarding_failed"].includes(
@@ -3272,9 +3272,9 @@ describe("the wallet owns signup", () => {
     h.drawTag.mockRejectedValueOnce(new Error("offline"))
     await withStubbedAssign(async () => {
       await render("/claim")
-      await click("Open account")
+      await click("Create Account")
       await settleReads()
-      await click("Open account")
+      await click("Create Account")
       await settleReads()
       expect(onboarding()).toEqual([
         ["onboarding_create_attempted", { attempt: "1" }],
@@ -3289,10 +3289,10 @@ describe("the wallet owns signup", () => {
     h.drawTag.mockRejectedValueOnce(new Error("offline"))
     await withStubbedAssign(async () => {
       await render("/claim")
-      await click("Open account")
+      await click("Create Account")
       await settleReads()
       expect(container.textContent).toContain("Couldn't pick a tag for you")
-      expect(container.textContent).toContain("Open account")
+      expect(container.textContent).toContain("Create Account")
       expect(sessionStorage.getItem("obsidion.name-grant")).toBeNull()
     })
   })
@@ -3397,10 +3397,10 @@ describe("the wallet owns signup", () => {
         state: { receive: "account" },
       })
 
-    it("Open account with the link still open lands on the link's own signup, never a drawn tag", async () => {
+    it("Create Account with the link still open lands on the link's own signup, never a drawn tag", async () => {
       await withStubbedAssign(async () => {
         await render("/claim")
-        await click("Open account")
+        await click("Create Account")
         await settleReads()
         expect(h.drawTag).not.toHaveBeenCalled()
         toLinkSignup()
@@ -3408,11 +3408,11 @@ describe("the wallet owns signup", () => {
       })
     })
 
-    it("Open account draws a tag as before once the link is claimed", async () => {
+    it("Create Account draws a tag as before once the link is claimed", async () => {
       h.viewLink.mockResolvedValue({ flavor: "direct", status: "claimed" })
       await withStubbedAssign(async () => {
         await render("/claim")
-        await click("Open account")
+        await click("Create Account")
         await settleReads()
         expect(h.drawTag).toHaveBeenCalledTimes(1)
         expect(h.navigate).toHaveBeenCalledWith("/")
@@ -5496,7 +5496,7 @@ describe("deposit terms step — before any passkey prompt", () => {
       // The ordinary landing, not the three-step modal; the marker is left where it was.
       expect(container.textContent).not.toContain("Pick any name, free")
       expect(container.querySelector("dialog")).toBeNull()
-      expect(container.textContent).toContain("Open account")
+      expect(container.textContent).toContain("Create Account")
       expect(h.claimTag).not.toHaveBeenCalled()
       expect(sessionStorage.getItem(TICKET_STASH_KEY)).not.toBeNull()
     })

@@ -441,6 +441,77 @@ describe("importHistoricActivity from a source generation", () => {
     expect(await storage.getItem(HISTORIC_ACTIVITY_IMPORTED_KEY)).toBeNull()
     expect(await importHistoricActivity({ ...deps([db]), key })).toBeNull()
   })
+
+  it("imports a short read's rows and leaves the marker for a full read", async () => {
+    const { storage, transactions, deps } = setup()
+    const db = { ...database("7", { scanned: [OLD], rows: [row({})] }), partial: true }
+    const key = `${HISTORIC_ACTIVITY_IMPORTED_KEY}/${OLD}/0xtoken`
+
+    expect(await importHistoricActivity({ ...deps([db]), key })).toMatchObject({ transactions: 1 })
+    expect(await transactions.all()).toHaveLength(1)
+    expect(await storage.getItem(key)).toBeNull()
+
+    const full = database("7", { scanned: [OLD], rows: [row({})] })
+    expect(await importHistoricActivity({ ...deps([full]), key })).toMatchObject({
+      transactions: 0,
+    })
+    expect(await storage.getItem(key)).not.toBeNull()
+  })
+
+  it("names a held row's counterparty by the tag a later read verified", async () => {
+    const { transactions, deps } = setup()
+    const sender = "0x" + "5e".repeat(32)
+    const recipient = "0x" + "7e".repeat(32)
+    const send = row({ txHash: "0xA1", to: recipient })
+    const receive = row({
+      txHash: "0xA2",
+      action: "receive",
+      from: sender,
+      senderL2Address: sender,
+      to: ACCOUNT,
+    })
+    const untagged = database("7", { scanned: [OLD], rows: [send, receive] })
+    await importHistoricActivity({ ...deps([untagged]), key: "first" })
+
+    const tagged = database("7", {
+      scanned: [OLD],
+      rows: [
+        { ...send, toTag: "bob" },
+        { ...receive, from: "alice" },
+      ],
+    })
+    const result = await importHistoricActivity({ ...deps([tagged]), key: "second" })
+
+    expect(result).toMatchObject({ transactions: 0 })
+    const rows = await transactions.all()
+    expect(rows.find((r) => r.txHash === "0xA1")).toMatchObject({ to: recipient, toTag: "bob" })
+    expect(rows.find((r) => r.txHash === "0xA2")).toMatchObject({
+      from: "alice",
+      senderL2Address: sender,
+    })
+  })
+
+  it("keeps a held row's tag over a later read's address", async () => {
+    const { transactions, deps } = setup()
+    const sender = "0x" + "5e".repeat(32)
+    const receive = row({
+      txHash: "0xA2",
+      action: "receive",
+      from: "alice",
+      senderL2Address: sender,
+      to: ACCOUNT,
+    })
+    await importHistoricActivity({
+      ...deps([database("7", { scanned: [OLD], rows: [receive] })]),
+      key: "first",
+    })
+    await importHistoricActivity({
+      ...deps([database("7", { scanned: [OLD], rows: [{ ...receive, from: sender }] })]),
+      key: "second",
+    })
+
+    expect((await transactions.all())[0]).toMatchObject({ from: "alice" })
+  })
 })
 
 describe("transferScanNetworkOf", () => {
