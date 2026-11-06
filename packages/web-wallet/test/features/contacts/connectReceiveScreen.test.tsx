@@ -9,8 +9,12 @@ const mocks = vi.hoisted(() => ({
   take: vi.fn(),
   report: vi.fn(),
 }))
-vi.mock("@obsidion/sdk", () => ({ CONNECT_BACK_VERSION: 1 }))
-vi.mock("@obsidion/front-core", () => ({
+vi.mock("@obsidion/sdk", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@obsidion/sdk")>()),
+  CONNECT_BACK_VERSION: 1,
+}))
+vi.mock("@obsidion/front-core", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@obsidion/front-core")>()),
   ContactStorage: {},
   PendingConnectBackStorage: {},
   decodeInline: vi.fn(),
@@ -28,9 +32,6 @@ vi.mock("@obsidion/web-ds", () => ({
   ),
 }))
 vi.mock("../../../src/errors/errorModal", () => ({ showReportableError: mocks.report }))
-vi.mock("../../../src/features/identity/walletIdentity", () => ({
-  loadWalletIdentity: () => ({ handle: "me" }),
-}))
 vi.mock("../../../src/platform/xmtp/xmtpLifecycle", () => ({ getXmtpSender: () => null }))
 vi.mock("../../../src/features/contacts/registryResolution", () => ({ verifyTag: vi.fn() }))
 vi.mock("../../../src/features/contacts/ContactsScreen/ContactsScreen", () => ({
@@ -45,6 +46,8 @@ vi.mock("../../../src/features/contacts/connectReceive", () => ({
 }))
 
 const { ConnectReceiveScreen } = await import("../../../src/features/contacts/ConnectReceiveScreen")
+const { openTestSession } = await import("../../support/session")
+const { setIdentity } = await import("../../support/identity")
 let root: Root
 let container: HTMLDivElement
 const preview = {
@@ -52,8 +55,10 @@ const preview = {
   preview: { contact: { tag: "alice", name: "Alice" }, verified: true },
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.resetAllMocks()
+  openTestSession()
+  await setIdentity({ handle: "me" })
   mocks.take.mockReturnValue({ hash: "#packet" })
   container = document.createElement("div")
   document.body.appendChild(container)

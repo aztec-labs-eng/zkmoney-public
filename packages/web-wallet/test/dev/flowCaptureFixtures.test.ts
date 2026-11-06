@@ -1,7 +1,9 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { testCore, testPage } from "../support/page"
 import { ContactStorage, type IStorageAdapter, type PaylinkTransaction } from "@obsidion/front-core"
-import { activeNamespace, closeSession, switchSession, session } from "../../src/platform/session"
+import { activeNamespace, closeSession, switchSession, session } from "../../src/session/session"
+import { pageSessionDeps } from "../../src/app/sessionDeps"
 import { PaylinkActionEnum } from "@obsidion/core/constants"
 import { decodePaylinkInline } from "@obsidion/sdk"
 import { provingProgress } from "@obsidion/proving-progress"
@@ -10,7 +12,7 @@ import { capturePaylinkRows, claimSponsoredLink, createSponsoredLink } from "../
 import { runContactPay as runCaptureContactPay } from "../../scripts/ui-capture/fixtures/contact-pay"
 import { demoClaimFragments, demoFundingTxHash } from "../../src/dev/demoFixtures"
 import { EmailPaylinkUnsupportedError, type SponsoredPaylinkDeps } from "../../src/features/paylink/sponsoredPaylink"
-import { getSipaDepositGateway } from "../../scripts/ui-capture/fixtures/deposits"
+import { fundDeposit } from "../../scripts/ui-capture/fixtures/deposits"
 import { SIPA } from "../../scripts/ui-capture/fixtures/data"
 import { DesktopSendUnresolvedError } from "../../src/platform/desktopBridge"
 
@@ -19,11 +21,6 @@ vi.mock("../../src/dev/demoFlag", () => ({ isDemoMode: () => demo.enabled }))
 vi.mock("../../src/config/env", async (importOriginal) => ({
   ...await importOriginal<object>(),
   getConfig: () => ({ network: "sandbox" }),
-}))
-// The capture gateway wraps the real one only for records; this file drives its fixture path alone.
-vi.mock("../../src/features/deposit/sipaGateway", async (importOriginal) => ({
-  ...await importOriginal<object>(),
-  getSipaDepositGateway: () => ({}),
 }))
 
 const deps = {
@@ -74,9 +71,7 @@ describe("capture service boundary contracts", () => {
     ContactStorage.get(adapter)
     provingProgress.on("signing-start", start)
     provingProgress.on("signing-end", end)
-    // No document here: the page is always visible.
-    vi.stubGlobal("document", { visibilityState: "visible", addEventListener() {}, removeEventListener() {} })
-    switchSession(activeNamespace())
+    switchSession(activeNamespace(testCore().device), pageSessionDeps(testPage()))
   })
 
   afterEach(() => {
@@ -189,7 +184,8 @@ describe("capture service boundary contracts", () => {
     // No account rows here, and the session's clock would keep every timer running.
     closeSession()
     const calls: string[] = []
-    const sent = handled(getSipaDepositGateway().deposit({
+    // The fixture sends nothing, so it reads no deps.
+    const sent = handled(fundDeposit({
       target: { address: SIPA, name: "demo.sandbox.oxide" },
       amountDisplay: "24",
       onStage: (stage) => calls.push(stage),
@@ -197,7 +193,7 @@ describe("capture service boundary contracts", () => {
       beforeApprove: async (submission) => {
         calls.push(`approve:${submission}`)
       },
-    }))
+    }, {} as never))
     await vi.runAllTimersAsync()
     const { error } = await sent
     expect(error).toBeInstanceOf(DesktopSendUnresolvedError)

@@ -2,9 +2,9 @@ import { useEffect, useState, type ReactNode } from "react"
 import { WALLET_TOKEN_SYMBOL } from "@obsidion/core/constants"
 import { Modal } from "../../ui/Modal"
 import { useSponsoredAllowance } from "../allowance/useSponsoredAllowance"
-import { useDepositTokens } from "../deposit/loadDepositFacts"
+import { useDepositTokens } from "../sipa/loadDepositFacts"
 import type { SipaCapacityKey } from "@obsidion/front-core"
-import { sipaProcessingObserver } from "../deposit/sipaProcessing"
+import { session } from "../../session/session"
 import { AboutLimitsContent, type LimitsDetails } from "./AboutLimitsContent"
 import { sourceFromSipaKey } from "./capacitySources"
 import { useAboutLimitsCapacity, type CapacitySource } from "./useAboutLimitsCapacity"
@@ -145,7 +145,7 @@ export function PendingLimitsLink({
 }) {
   const capacity = sourceFromSipaKey(
     capacityKey,
-    () => void sipaProcessingObserver()?.retry(sipaAddress),
+    () => void session().sipaProcessingObserver?.retry(sipaAddress),
   )
   return (
     <LimitsInfoButton

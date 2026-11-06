@@ -15,7 +15,7 @@ import {
   type ActivityFilter,
   type ActivityPages,
 } from "@obsidion/front-core"
-import { useSession } from "../../../platform/session"
+import { useSession } from "../../../session/session"
 import { isDemoMode } from "../../../dev/demoFlag"
 import { GradientText, Icon } from "@obsidion/web-ds"
 import { NonContactRequestsEntry } from "../../../features/requests/NonContactRequestsScreen"

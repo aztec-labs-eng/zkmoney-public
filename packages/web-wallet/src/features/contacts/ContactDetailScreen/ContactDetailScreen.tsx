@@ -12,7 +12,7 @@ import {
   updateSavedL1WalletContact,
   useStore,
   type Contact,
-  type SIPADepositRecord,
+  type SipaDeposit,
   useResource,
 } from "@obsidion/front-core"
 import { TRANSFER_MEMO_MAX_BYTES, truncateUtf8 } from "@obsidion/sdk"
@@ -33,8 +33,7 @@ import { fireEvent, requestAmountBucket } from "../../../lib/analytics"
 import { useBack } from "../../../ui/hooks"
 import { pageBottom, revealAboveKeyboard, useKeyboardInset } from "../../../ui/keyboardInset"
 import { usePhoneLayout } from "../../../ui/usePhoneLayout"
-import { loadWalletIdentity } from "../../identity/walletIdentity"
-import { useSession } from "../../../platform/session"
+import { useSession } from "../../../session/session"
 import { wallClock } from "../../../lib/clock"
 import {
   ActivityDetailHost,
@@ -95,6 +94,7 @@ function ContactDetail() {
   const { idOrTag } = useParams()
   const tokenService = useResource(session.token)
   const networkId = useResource(session.wallet)?.networkId
+  const ownTag = useStore(session.identity, (s) => s.value?.handle)
   const [entry, setEntry] = useState<Contact | null | undefined>(undefined)
   const [saved, setSaved] = useState(true)
   const [lookingUp, setLookingUp] = useState(false)
@@ -135,7 +135,7 @@ function ContactDetail() {
   const messages = useMemo(() => thread.items.map(chatMessageOf), [thread])
   const [txDetail, setTxDetail] = useState<{ row: ActivityRowView; note?: string }>()
   const [depositDetail, setDepositDetail] = useState<{
-    record: SIPADepositRecord
+    record: SipaDeposit
     amount: string
   }>()
   const inboxState = useSyncExternalStore(subscribeXmtpInboxState, getXmtpInboxState)
@@ -194,7 +194,10 @@ function ContactDetail() {
         return
       }
       setLookingUp(true)
-      const unsaved = await lookUpUnsavedContact(idOrTag ?? "")
+      const unsaved = await lookUpUnsavedContact(
+        idOrTag ?? "",
+        session.identity.get().value?.handle,
+      )
       if (cancelled) return
       setSaved(!unsaved)
       setEntry(unsaved)
@@ -225,7 +228,7 @@ function ContactDetail() {
       cancelled = true
       unsubscribe()
     }
-  }, [idOrTag])
+  }, [idOrTag, session.identity])
 
   const addToContacts = async () => {
     if (!entry || saved || adding) return
@@ -340,7 +343,7 @@ function ContactDetail() {
       })
       setRequestDraft(undefined)
       const broadcaster = getRequestBroadcaster()
-      const requesterTag = loadWalletIdentity()?.handle
+      const requesterTag = session.identity.get().value?.handle
       const tokenAddress = tokenService?.tokenAddress?.toString()
       if (!broadcaster || !requesterTag || !tokenAddress || !networkId) return
       void announceOutgoingRequest(row, {
@@ -460,7 +463,7 @@ function ContactDetail() {
   const avatarKey = isL1 ? header.title : handle
   const avatarName = isL1 ? header.title : l2ContactLabel(entry) ?? handle
   const renamable = saved && (isL1 || Boolean(entry.tag))
-  const ownHandle = loadWalletIdentity()?.handle ?? copy.me
+  const ownHandle = ownTag ?? copy.me
   // Payment rails need a completed handshake (payable L2 address) and a tag registered on the
   // current zk.money. L1 contacts are the bridge counterparty — Deposit + Withdraw only.
   const chat = chatContactOf(entry)

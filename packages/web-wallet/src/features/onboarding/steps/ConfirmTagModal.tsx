@@ -5,7 +5,7 @@ import type { SignInKeyChoice } from "@obsidion/passkey-web"
 import type { RememberedAccount } from "../../../platform/auth/WebPasskeyIdentityMap"
 import { KeyCards } from "../../identity/KeyCards"
 import { OnboardingCard } from "../OnboardingCard"
-import { tagError } from "../tagError"
+import { tagError } from "../../registration/tagError"
 
 /** What a typed tag came to, shown under the field: a row it duplicates, or what the L1 read said. */
 export type ByTagNotice =
@@ -357,7 +357,12 @@ export function ConfirmTagModal({
   ) : (
     <p className="ww-invite-modal-foot">
       Not your account?{" "}
-      <button type="button" className="zkm-btn-reset ww-invite__link" data-testid="confirm-back" onClick={onBack}>
+      <button
+        type="button"
+        className="zkm-btn-reset ww-invite__link"
+        data-testid="confirm-back"
+        onClick={onBack}
+      >
         Go back
       </button>
     </p>

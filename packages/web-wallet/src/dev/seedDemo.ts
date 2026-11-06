@@ -12,26 +12,25 @@ import { WALLET_TOKEN_SYMBOL } from "@obsidion/core/constants"
 import { Fr } from "@aztec-labs/aztec.js/fields"
 import { AUTH_TYPE, EcdsaK256AlphaAuthProvider } from "@obsidion/sdk"
 import {
-  AccountStorage,
   BalanceStorage,
   ContactStorage,
-  SIPADepositStore,
   TokenStorage,
-  type SIPADepositRecord,
+  readIdentity,
+  type SipaDeposit,
   type Transaction,
   type WithdrawalRecord,
 } from "@obsidion/front-core"
 import { getConfig } from "../config/env"
 import { primeOxideDeployment, primeOxideTuple } from "../config/oxideTuple"
-import { loadWalletIdentity, saveWalletIdentity } from "../features/identity/walletIdentity"
-import { getAuthService } from "../platform/auth/useAuthenticator"
+import { saveIdentity } from "../session/account"
 import { WebPasskeyIdentityMap } from "../platform/auth/WebPasskeyIdentityMap"
 import { activateTab } from "../platform/storage/activeTab"
 import { contactsWriteLock } from "../platform/storage/contactsLock"
 import { WebStorageAdapter, WEB_STORAGE_PREFIX } from "../platform/storage/WebStorageAdapter"
 import { deviceStorage } from "../platform/storage/rollupStorage"
 import { walletStorage } from "../platform/storage/walletStorage"
-import { activeNamespace, session, switchSession } from "../platform/session"
+import { openPage, pageSessionDeps, type Page } from "../app/sessionDeps"
+import { activeNamespace, followSavedSession, session, signedInAccount } from "../session/session"
 import {
   disableDemoMode,
   DEMO_DEFAULT_SCENARIO,
@@ -62,6 +61,8 @@ import {
 import { longDemoContacts } from "./contactDemo"
 import { installFakeEthereum } from "./fakeEthereum"
 import { createL1RpcHandler, installL1RpcStub, registerDemoSipaPrediction } from "./fakeL1Rpc"
+import { mockOnboarding as onboardingMock } from "./mockOnboarding"
+import { demoDepositAddress } from "./demoDeposit"
 
 /**
  * Demo mode owns this origin's wallet state — seeding on top of whatever is there would duplicate
@@ -82,30 +83,31 @@ async function resetWalletStorage(): Promise<void> {
  * `getSecretKey()` (and the stealth-key derivation the recovery flow runs on it) answers normally.
  * The breadcrumb + identity record are what the wallet route gate reads.
  */
-async function seedIdentity(rpId: string): Promise<void> {
-  await getAuthService().commitSecret({
+async function seedIdentity(page: Page, rpId: string): Promise<void> {
+  await page.auth.commitSecret({
     secretKey: Fr.fromHexString(DEMO_MSK_HEX),
     authProvider: new EcdsaK256AlphaAuthProvider(Buffer.from(DEMO_SIGNING_KEY_HEX, "hex")),
   })
-  await new WebPasskeyIdentityMap(new WebStorageAdapter(), rpId).upsert({
+  await new WebPasskeyIdentityMap(page.database, rpId).upsert({
     credentialId: DEMO_CREDENTIAL_ID,
     l2Address: DEMO_L2_ADDRESS,
     pubkey: DEMO_PASSKEY_PUBKEY_HEX,
     isMskRoot: true,
   })
-  await AccountStorage.get(new WebStorageAdapter()).setAccount({
-    name: DEMO_HANDLE,
+  await signedInAccount().save({
     completeAddress: DEMO_COMPLETE_ADDRESS,
     signKeyConfig: {
       type: AUTH_TYPE.WEB_AUTHN,
       webauthnData: { credentialId: DEMO_CREDENTIAL_ID, pubkey: DEMO_PASSKEY_PUBKEY_HEX },
     },
   })
-  await saveWalletIdentity({ handle: DEMO_HANDLE, address: DEMO_L2_ADDRESS, claimedAt: Date.now() })
+  await saveIdentity(page, { handle: DEMO_HANDLE, address: DEMO_L2_ADDRESS, claimedAt: Date.now() })
 }
 
 /** Token row + scoped balance record — the pair the balances store reads the home figure from. */
 async function seedBalance(networkType: string, balance: bigint): Promise<void> {
+  // The fixture has no sync: a balance written once the session's balances start is its read.
+  void session().balances
   const adapter = new WebStorageAdapter()
   await TokenStorage.get(adapter).addToken({
     address: DEMO_L2_TOKEN,
@@ -120,14 +122,13 @@ async function seedBalance(networkType: string, balance: bigint): Promise<void> 
   )
 }
 
-async function seedDeposits(records: SIPADepositRecord[]): Promise<void> {
-  const store = SIPADepositStore.get(new WebStorageAdapter())
+async function seedDeposits(records: SipaDeposit[]): Promise<void> {
+  const store = session().sipaDeposits
   for (const record of records) {
-    const { sipaAddress, phase, ...rest } = record
-    await store.upsert(sipaAddress, { ...rest, phase }, { ...rest, networkId: DEMO_NETWORK_ID })
+    await store.adopt({ ...record, networkId: DEMO_NETWORK_ID })
     // Teach the fake Registry this fixture's CREATE2 answer — the self-sweep refuses to deploy
     // unless `predictSIPA` reproduces the record's own address.
-    registerDemoSipaPrediction(record.recipientHash, sipaAddress)
+    registerDemoSipaPrediction(record.recipientHash, record.sipaAddress)
   }
 }
 
@@ -163,12 +164,13 @@ async function seedContactsAndRequests(
  * handle AND the breadcrumb of a passkey that opens it. An onboarding that died between the two
  * leaves only the breadcrumb, and the passkey behind it is still a real account key.
  */
-async function foreignWalletState(rpId: string): Promise<string | null> {
-  const identity = loadWalletIdentity()
+async function foreignWalletState(page: Page, rpId: string): Promise<string | null> {
+  await page.device.load()
+  const identity = await readIdentity(page.database.scoped(activeNamespace(page.device).prefix))
   if (identity && identity.address !== DEMO_L2_ADDRESS) {
     return `a wallet identity ("${identity.handle}")`
   }
-  const opening = await new WebPasskeyIdentityMap(new WebStorageAdapter(), rpId).getOpeningRecord()
+  const opening = await new WebPasskeyIdentityMap(page.database, rpId).getOpeningRecord()
   if (opening && opening.l2Address !== DEMO_L2_ADDRESS) return "a passkey for another account"
   return null
 }
@@ -192,12 +194,16 @@ function demoHelp(): string {
   ].join("\n")
 }
 
-/** Seeds the scenario; false when this origin holds a real wallet and was left untouched. */
-export async function seedDemo(scenario: DemoScenario): Promise<boolean> {
+/**
+ * Seeds the scenario on a page it builds; null when this origin holds a real wallet and was left
+ * untouched.
+ */
+export async function seedDemo(scenario: DemoScenario): Promise<Page | null> {
   const config = getConfig()
+  const page = openPage(config, { onboardingMock, demoDepositAddress })
   // Never replace a real wallet. Only an origin with no wallet state — or one holding the demo's
   // own from a prior seed — may be seeded; anything else refuses and boots the real app.
-  const foreign = await foreignWalletState(config.rpId)
+  const foreign = await foreignWalletState(page, config.rpId)
   if (foreign) {
     console.error(
       `[demo] refusing to seed: this origin already holds ${foreign}. ` +
@@ -205,7 +211,7 @@ export async function seedDemo(scenario: DemoScenario): Promise<boolean> {
         "Booting the real app.",
     )
     disableDemoMode()
-    return false
+    return null
   }
 
   // Demo mode runs no active-tab lifecycle, so the seed marks this page as the active tab.
@@ -215,18 +221,19 @@ export async function seedDemo(scenario: DemoScenario): Promise<boolean> {
   console.info(demoHelp())
 
   await resetWalletStorage()
+  await page.device.load()
   primeOxideTuple(config, DEMO_OXIDE_TUPLE)
   primeOxideDeployment(config, DEMO_OXIDE_DEPLOYMENT)
-  switchSession(activeNamespace())
+  await followSavedSession(page.device, pageSessionDeps(page))
   // Onboarding uses mockOnboarding's local transitions and starts without an identity or provider.
   // Its token lists still read the table.
   if (scenario === "onboarding") {
     installL1RpcStub(config.l1RpcUrl, createL1RpcHandler(config.l1ChainId))
-    return true
+    return page
   }
   installL1RpcStub(config.l1RpcUrl, installFakeEthereum(config.l1ChainId))
 
-  await seedIdentity(config.rpId)
+  await seedIdentity(page, config.rpId)
   await seedBalance(config.network, scenario === "empty" ? 0n : DEMO_BALANCE_RAW)
 
   if (scenario === "recovery") {
@@ -247,5 +254,5 @@ export async function seedDemo(scenario: DemoScenario): Promise<boolean> {
       `[demo] claimable paylinks:\n  direct: /link#${claims.direct}\n  email:  /link#${claims.email}`,
     )
   }
-  return true
+  return page
 }

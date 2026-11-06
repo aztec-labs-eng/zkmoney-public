@@ -1,22 +1,25 @@
+import { bestEffort } from "@obsidion/core/errors"
 import {
-  PendingRegistrationStore,
+  currentRegistration,
   fundsIn,
   isTerminalRegistrationPhase,
+  loadRecords,
+  registrationSpentLink,
   type PendingRegistrationRecord,
+  type RegistrationTerms,
 } from "@obsidion/front-core"
 import type { RegistrationSchedule } from "@obsidion/core/types"
 import {
-  loadRegistrationTerms,
-  saveRegistrationTerms,
+  updateRegistrationTerms,
   PAYLINK_TICKET_REFUSED_MESSAGE,
   quoteExpired,
   registrationOffer,
   signedSchedule,
-  type RegistrationTerms,
-} from "../onboarding/registrationTerms"
-import { readRegistrationStage } from "../onboarding/openRegistration"
+} from "../registration/registrationTerms"
+import { readRegistrationStage } from "../registration/openRegistration"
 import { getConfig } from "../../config/env"
-import { webStorage } from "../../platform/storage/WebStorageAdapter"
+import { session } from "../../session/session"
+import { loadedRegistrations } from "../registration/webRegistration"
 import { peekClaimStash, peekTicketSignup, type TicketSignupStash } from "./claimStash"
 import { linkIdentity } from "./linkIdentity"
 import { isTicketSignupCreating, loadTicketSignupAttempt } from "./ticketSignupAccount"
@@ -77,20 +80,15 @@ export function boundTicketSignup(
  * are bound to is stashed here. Without that link nothing claims, so the address is the ledger's to
  * publish, as any registration's is once a surface shows it.
  */
-export function claimPublishesAddress(record: { account: string; tag: string }): boolean {
-  return boundTicketSignup(loadRegistrationTerms(record.account, record.tag)) !== null
-}
-
-/** Fires as the open registrations change, when what a ticket-funded signup may do is read again. */
-export function onTicketRegistrationsChanged(listener: () => void): () => void {
-  return PendingRegistrationStore.get(webStorage).onListChanged(listener)
+export function claimPublishesAddress(record: Pick<PendingRegistrationRecord, "terms">): boolean {
+  return boundTicketSignup(record.terms) !== null
 }
 
 /** The open reservation on this browser is one a payment link funds: its pending step claims that link. */
 export function pendingTicketRegistration(): boolean {
-  const record = PendingRegistrationStore.get(webStorage).current()
+  const record = currentRegistration(loadedRegistrations(session().registrations))
   if (!record) return false
-  return registrationOffer(loadRegistrationTerms(record.account, record.tag)).funding === "paylink"
+  return registrationOffer(record.terms).funding === "paylink"
 }
 
 /** Find the registration whose terms name this link, optionally restricted to its bound account. */
@@ -101,13 +99,13 @@ export function ticketSignupRegistration(
   const paylinkId = identityOf(fragment)
   if (!paylinkId) return null
   return (
-    PendingRegistrationStore.get(webStorage)
-      .list()
+    [...loadedRegistrations(session().registrations)]
+      .sort((a, b) => b.startTime - a.startTime)
       .find(
         (record) =>
           !isTerminalRegistrationPhase(record.phase) &&
           (l2Address === undefined || record.l2Address.toLowerCase() === l2Address.toLowerCase()) &&
-          loadRegistrationTerms(record.account, record.tag)?.paylinkId === paylinkId,
+          record.terms?.paylinkId === paylinkId,
       ) ?? null
   )
 }
@@ -116,9 +114,11 @@ export function ticketSignupRegistration(
  * The link closed before its claim paid the deposit it was to fund: the deposit is asked of the
  * user again. A ticket's registration stays bound, since only its link prices it.
  */
-export function releaseLinkDeposit(record: { account: string; tag: string }): void {
-  const terms = loadRegistrationTerms(record.account, record.tag)
-  if (terms?.paylinkDeposit) void saveRegistrationTerms({ ...terms, paylinkFunded: false })
+export function releaseLinkDeposit(
+  record: Pick<PendingRegistrationRecord, "sipaAddress" | "terms">,
+): void {
+  if (!record.terms?.paylinkDeposit) return
+  void bestEffort("unknown", session().registrations.releaseLink(record.sipaAddress))
 }
 
 /**
@@ -130,11 +130,11 @@ export function unfundedRegistration(
   withdrawals: readonly { recipient: string; phase: string }[],
   nowMs: number = Date.now(),
 ): { record: PendingRegistrationRecord; schedule: RegistrationSchedule } | null {
-  const record = PendingRegistrationStore.get(webStorage).current(l2Address)
+  const record = currentRegistration(loadedRegistrations(session().registrations), l2Address)
   if (!record || record.phase !== "awaiting_deposit" || record.fundedAt !== undefined) return null
-  if (readRegistrationStage(record, withdrawals) !== "reserved" || unpublishable(record))
+  if (readRegistrationStage(session(), record, withdrawals) !== "reserved" || unpublishable(record))
     return null
-  const terms = loadRegistrationTerms(record.account, record.tag)
+  const terms = record.terms ?? null
   const schedule = signedSchedule(terms)
   if (!schedule || quoteExpired(terms, nowMs) || registrationOffer(terms).funding === "paylink")
     return null
@@ -144,15 +144,13 @@ export function unfundedRegistration(
 /** The link pays the registration's deposit, with the tip its review committed: Home's claim of it
  *  burns that slice to the deposit address. */
 export function bindLinkDeposit(
-  record: { account: string; tag: string },
+  record: Pick<PendingRegistrationRecord, "sipaAddress" | "terms">,
   link: { fragment: string; amount?: bigint; senderTag?: string },
   proverTip: bigint,
   speed: "standard" | "faster",
 ): Promise<void> | undefined {
-  const terms = loadRegistrationTerms(record.account, record.tag)
-  if (!terms) return undefined
-  return saveRegistrationTerms({
-    ...terms,
+  if (!record.terms) return undefined
+  return updateRegistrationTerms(session().registrations, record, {
     paylinkFunded: true,
     paylinkDeposit: true,
     paylinkId: linkIdentity(link.fragment),
@@ -183,12 +181,24 @@ export function fundingRefusalCopy(err: unknown): string | undefined {
 }
 
 /** Resolves once this browser's registrations are read, so an absent one is known absent. */
-export const loadRegistrations = (): Promise<void> =>
-  PendingRegistrationStore.get(webStorage).load()
+export const loadRegistrations = async (): Promise<void> =>
+  void (await loadRecords(session().registrations.view))
 
-/** The loaded account has a registration whose terms name this link. */
+/** An open registration on this browser names this link. */
 export function ticketSignupCommitted(fragment: string): boolean {
   return ticketSignupRegistration(fragment) !== null
+}
+
+/** A registration on this browser, a closed one too, names this link and its claim went out. */
+export function ticketSignupSpent(
+  fragment: string,
+  withdrawals: readonly { recipient: string; phase: string }[],
+): boolean {
+  const paylinkId = identityOf(fragment)
+  return (
+    !!paylinkId &&
+    registrationSpentLink(loadedRegistrations(session().registrations), paylinkId, withdrawals)
+  )
 }
 
 /**
@@ -236,7 +246,7 @@ function ticketState(
 ): TicketActivation | null {
   const offer = registrationOffer(terms)
   if (offer.funding !== "paylink") return null
-  const stage = readRegistrationStage(record, withdrawals)
+  const stage = readRegistrationStage(session(), record, withdrawals)
   if (stage === "funding" || fundsIn(stage)) return { state: "submitted" }
   if (offer.blocked) return { state: "blocked", stash }
   const schedule = signedSchedule(terms)
@@ -276,7 +286,7 @@ export function ticketSignupContinuation(
   nowMs: number = Date.now(),
 ): TicketSignupContinuation | null {
   if (l2Address === undefined) return null
-  const record = PendingRegistrationStore.get(webStorage).current(l2Address)
+  const record = currentRegistration(loadedRegistrations(session().registrations), l2Address)
   if (!record) return null
   // A registration this account's own burn funds keeps its continuation, submitted, until the
   // name confirms: the review is where the claim and the registration report. One funded or swept
@@ -285,8 +295,8 @@ export function ticketSignupContinuation(
   const burnFunded = withdrawals.some(
     (w) => w.recipient.toLowerCase() === sipa && w.phase !== "failed",
   )
-  if (fundsIn(readRegistrationStage(record, withdrawals)) && !burnFunded) return null
-  const terms = loadRegistrationTerms(record.account, record.tag)
+  if (fundsIn(readRegistrationStage(session(), record, withdrawals)) && !burnFunded) return null
+  const terms = record.terms ?? null
   const stash = terms && markerFor(terms, fragment)
   if (!stash) return null
   const activation = ticketState(record, terms, stash, withdrawals, nowMs)

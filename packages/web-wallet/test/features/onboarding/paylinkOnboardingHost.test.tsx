@@ -11,7 +11,7 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/front-core")>()),
   useContractServiceContext: () => ({ contractService: { service: true } }),
 }))
-vi.mock("../../../src/features/onboarding/OnboardingScreen", () => ({
+vi.mock("../../../src/features/onboarding/OnboardingScreen/OnboardingScreen", () => ({
   OnboardingScreen: ({
     paylinkKit,
     ticketSignup,
@@ -28,7 +28,7 @@ vi.mock("../../../src/features/onboarding/OnboardingScreen", () => ({
 const { PaylinkOnboardingScreen } = await import(
   "../../../src/features/paylink/PaylinkOnboardingScreen"
 )
-const { closeSession } = await import("../../../src/platform/session")
+const { closeSession } = await import("../../../src/session/session")
 const { openTestSession } = await import("../../support/session")
 
 const wallet = { wallet: true, networkId: "0xrollup" }

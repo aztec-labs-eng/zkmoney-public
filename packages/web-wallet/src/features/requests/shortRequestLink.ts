@@ -30,10 +30,10 @@ import {
   claimSponsorContext,
   noteSubscribed,
   type ClaimSponsorDeps,
-} from "../onboarding/claimSponsorship"
-import { RAIL_REGISTERED } from "../onboarding/rails"
+} from "../registration/claimSponsorship"
+import { RAIL_REGISTERED } from "../registration/rails"
 import { shortRequestUrl } from "../shortLinks"
-import { session, useSession } from "../../platform/session"
+import { session, useSession } from "../../session/session"
 import type { ReceiveCode } from "../receive/receiveCode"
 
 /** What a short link publishes: a request, its full link and its amount. A Receive code is one. */

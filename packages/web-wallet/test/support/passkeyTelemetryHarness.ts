@@ -14,6 +14,7 @@ import type {
   PasskeyRequestHook,
   PasskeyRequestScope,
   PasskeyRequestSignal,
+  PasskeyTelemetry,
 } from "@obsidion/passkey-web"
 
 type Kind = PasskeyRequestSignal["kind"]
@@ -88,9 +89,15 @@ class HeldCeremony implements PasskeyCeremony {
   }
 }
 
-/** Build it from the same module registry as the screen, so both share one tracker. */
-export async function passkeyTelemetryHarness() {
-  const { passkeyTelemetry } = await import("../../src/lib/passkeyTelemetry")
+/**
+ * Build it from the same module registry as the screen, so both share one tracker, or over the
+ * tracker a flow was handed.
+ */
+export async function passkeyTelemetryHarness(
+  tracker?: Pick<PasskeyTelemetry, "requestHook" | "wrap">,
+) {
+  const passkeyTelemetry =
+    tracker ?? (await import("../../src/lib/passkeyTelemetry")).passkeyTelemetry
   const held = new HeldCeremony((signal) => passkeyTelemetry.requestHook(signal))
   const ceremony = passkeyTelemetry.wrap(held)
 

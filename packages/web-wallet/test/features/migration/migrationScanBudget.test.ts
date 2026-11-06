@@ -177,15 +177,14 @@ const h = vi.hoisted(() => ({
   identity: { current: null as { address: string; handle: string } | null },
 }))
 
-vi.mock("../../../src/features/identity/walletIdentity", () => ({
-  loadWalletIdentity: () => h.identity.current,
-}))
-
-vi.mock("../../../src/platform/session", () => ({
+vi.mock("../../../src/session/session", () => ({
   session: () => ({
+    namespace: { id: "acct" },
+    device: { get: () => ({ storageId: "acct" }) },
     activity: { all: async () => [] },
     withdrawals: { ready: Promise.resolve(), all: async () => [] },
     notifications: {},
+    auth: { getSecretKey: async () => "0x01" },
   }),
 }))
 vi.mock("@obsidion/front-core", async (importOriginal) => ({
@@ -203,7 +202,7 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
 vi.mock("@obsidion/sdk", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   detectHistoricDeployments: h.detect,
-  fetchHistoricalResolverPublicKeys: async () => [],
+  fetchHistoricalResolverKeys: async () => [],
   getBroadcasterArtifact: async () => ({}),
   fetchSipaEvents: async () => [],
   readSipaDepositsConsumed: async (_node: unknown, _scope: unknown, keys: unknown[]) =>
@@ -230,11 +229,7 @@ vi.mock("../../../src/config/oxideTuple", () => ({
 vi.mock("../../../src/features/savings/savingsGateway", () => ({
   getSavingsTuple: async () => undefined,
 }))
-vi.mock("../../../src/platform/auth/useAuthenticator", () => ({
-  getAuthService: () => ({ getSecretKey: async () => "0x01" }),
-}))
 vi.mock("../../../src/platform/storage/WebStorageAdapter", () => ({ webStorage: {} }))
-vi.mock("../../../src/platform/storage/activeStorage", () => ({ getActiveStorageId: () => "acct" }))
 vi.mock("../../../src/features/paylink/chainTime", () => ({
   latestChainSeconds: async () => 1_700_000_000,
 }))
@@ -297,7 +292,7 @@ async function boot(
     if (chain.rejectSources) throw new Error("exceed maximum block range: 50000")
     return sourcesOf(sources)
   })
-  const found = await probeAccountResiduals(wallet, account)
+  const found = await probeAccountResiduals(wallet, account, h.identity.current?.handle)
   return { l1, residuals: found?.residuals ?? [] }
 }
 

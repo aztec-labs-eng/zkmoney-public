@@ -13,10 +13,10 @@ import type { SIPADepositPhase, WithdrawalPhase } from "@obsidion/core/types"
 import type { Transaction, TransactionStatus } from "../../../types/transactions"
 import { requestLinkedSipaAddresses } from "../../paymentRequest/sipaRequestFulfillment"
 import type { PaymentRequest } from "../../../engine/requests"
-import type { ActivityItem } from "../bridge/BridgeActivityFeed"
+import type { ActivityItem } from "../../../engine/feedRules"
 import type { WithdrawalRecord } from "../bridge/types"
 import { withdrawalAmounts } from "../bridge/withdrawalAmounts"
-import type { SIPADepositRecord, SIPASweep } from "../deposits/SIPADepositStore"
+import type { SipaDeposit, SIPASweep } from "../../../engine/sipaDeposits"
 import { savingsMoveBasis } from "../savings/savingsBasis"
 import type { SavingsMoveRecord } from "../savings/types"
 import type { UpgradeBatchItem } from "../../migration/upgradeActivity"
@@ -209,7 +209,7 @@ function withdrawalKind(record: WithdrawalRecord): WithdrawalKind {
   return record.source ?? "balance"
 }
 
-type DepositKind = NonNullable<SIPADepositRecord["intent"]> | "migration" | "request" | "deposit"
+type DepositKind = NonNullable<SipaDeposit["intent"]> | "migration" | "request" | "deposit"
 
 const DEPOSIT_TYPE: Record<DepositKind, ActivityCsvType> = {
   "deposit": "Deposit",
@@ -442,7 +442,7 @@ function upgradeRow(batch: UpgradeBatchItem, token: ActivityCsvToken): ActivityC
  * since a re-used address is mid-sweep again while its earlier credits stand. A record claimed
  * before the ledger existed has its latest, with no gross, once it is settled.
  */
-function settledSweeps(record: SIPADepositRecord): readonly Partial<SIPASweep>[] {
+function settledSweeps(record: SipaDeposit): readonly Partial<SIPASweep>[] {
   if (record.sweeps?.length) return record.sweeps
   if (!DEPOSIT_SETTLED[record.phase]) return []
   return [
@@ -451,7 +451,7 @@ function settledSweeps(record: SIPADepositRecord): readonly Partial<SIPASweep>[]
 }
 
 /** One row per claimed sweep: a re-used address is credited once per sweep. */
-function depositRows(record: SIPADepositRecord, ctx: ItemContext): ActivityCsvRow[] {
+function depositRows(record: SipaDeposit, ctx: ItemContext): ActivityCsvRow[] {
   const address = record.sipaAddress.toLowerCase()
   const type =
     DEPOSIT_TYPE[
@@ -485,7 +485,6 @@ function depositRows(record: SIPADepositRecord, ctx: ItemContext): ActivityCsvRo
       received: money(gross ?? net ?? 0n, decimals, currency),
       fee: gross === undefined ? undefined : money(gross - net!, decimals, currency),
       counterparty,
-      aztecTxHash: sweep.inboxIndex === record.inboxIndex ? record.claimTxHash : undefined,
       // The funding transfer is the user's own transaction, and it belongs to the first sweep.
       ethereumTxHash: (i === 0 ? record.fundingTxHash : undefined) ?? sweep.sweepTxHash,
     }

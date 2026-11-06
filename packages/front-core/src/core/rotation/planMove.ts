@@ -83,6 +83,16 @@ export function fundingFits(
   return { kind: "short", chunk }
 }
 
+/** The shape once transfers of `amounts` land on it, such as paylink refunds, each as one note. */
+export function withNotes(shape: SpendShape, amounts: readonly bigint[]): SpendShape {
+  const added = amounts.filter((amount) => amount > 0n)
+  return {
+    notes: [...shape.notes, ...added].sort(descending),
+    depositTotal: shape.depositTotal,
+    balance: shape.balance + sum(added),
+  }
+}
+
 /**
  * The chunks that move `shape.balance`, each cut over what the previous ones leave: notes largest
  * first, then deposits smallest first, the change of a chunk back as a note. With an unknown set the

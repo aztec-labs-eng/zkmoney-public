@@ -57,14 +57,13 @@ import {
 } from "../../config/oxideTuple"
 import { createExternalState } from "../../lib/externalState"
 import { withTimeout } from "../../lib/withTimeout"
-import { getAuthService } from "../../platform/auth/useAuthenticator"
 import {
   assertWithinWithdrawalLimit,
   sharesBurnLimitProblem,
   withdrawalLimitRefusal,
 } from "../limits/withdrawalLimit"
-import { claimSponsorContext } from "../onboarding/claimSponsorship"
-import { RAIL_REGISTERED } from "../onboarding/rails"
+import { claimSponsorContext } from "../registration/claimSponsorship"
+import { RAIL_REGISTERED } from "../registration/rails"
 import { runOperation, type OperationHandle } from "../operations/operations"
 import {
   noteSponsoredMine,
@@ -82,7 +81,7 @@ import { getSavingsMoveStore } from "./savingsMoveStore"
 import { SavingsQuoteChangedError } from "./quoteChanged"
 import { teeSignerOfToken, txAmountCap } from "../token/oxideToken"
 import { l2TokenService } from "../token/l2TokenService"
-import { session } from "../../platform/session"
+import { session } from "../../session/session"
 
 const savingsAvailable = createExternalState(false)
 
@@ -530,7 +529,7 @@ export function createSavingsSource(deps: SavingsDeps, savings: OxideEnvTuple): 
 
   let waitingForKey = false
   const settle = async () => {
-    const masterSecret = await getAuthService().getSecretKey()
+    const masterSecret = await session().auth.getSecretKey()
     if (!masterSecret) {
       // Locked: the pass runs again on the next tick once the key is back.
       if (!waitingForKey) console.info("[savingsGateway] settle pass waits for the unlocked key")

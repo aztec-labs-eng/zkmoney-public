@@ -13,20 +13,19 @@ import {
   sipaRecordRoute,
   sipaRequiredCredit,
   sipaRouteKey,
-  SIPADepositStore,
-  useCachedRecords,
+  useStore,
   type CapacityEligibility,
   type PortalCapacityKey,
   type PortalCapacityState,
   type PortalCapacityStore,
   type RequiredCredit,
-  type SIPADepositRecord,
+  type SipaDeposit,
   type SipaRecordRoute,
 } from "@obsidion/front-core"
 import { getConfig } from "../../config/env"
+import { useSession } from "../../session/session"
 import { l1PublicClient } from "../../config/oxideTuple"
-import { loadDepositTokens, settlementToken } from "./loadDepositFacts"
-import { webStorage } from "../../platform/storage/WebStorageAdapter"
+import { loadDepositTokens, settlementToken } from "../sipa/loadDepositFacts"
 import { activeCapacityKey, depositCapacityStore } from "./capacityStore"
 
 export type CapacityTarget =
@@ -48,7 +47,7 @@ export interface TargetCapacity {
   store?: PortalCapacityStore
   state?: PortalCapacityState
   /** A recorded target's record and its row's terms, once read. */
-  record?: SIPADepositRecord
+  record?: SipaDeposit
   terms?: SipaPortalTerms
   /** Set while no store can be named: why capacity is not known for this address. */
   unknown?: CapacityEligibility
@@ -99,20 +98,17 @@ const noState = () => undefined
 type Resolved = { id: string; key?: PortalCapacityKey; terms?: SipaPortalTerms; error?: unknown }
 
 export function useTargetCapacity(target: CapacityTarget): TargetCapacity {
-  const depositStore = useMemo(() => SIPADepositStore.get(webStorage), [])
-  const { records, hydrated } = useCachedRecords(depositStore)
+  const { records, loaded, failed } = useStore(useSession().sipaDeposits.view)
   const sipa = target.kind === "recorded" ? target.sipaAddress.toLowerCase() : undefined
   const record = sipa ? records.find((r) => r.sipaAddress.toLowerCase() === sipa) : undefined
   // Until the stored records load, a missing record is not yet evidence of a missing origin.
-  const recordLoading = !!sipa && !record && !hydrated
+  const recordLoading = !!sipa && !record && (!loaded || failed)
   const route = useMemo(() => (record ? sipaRecordRoute(record) : undefined), [record])
-  // A record from another L1 names a bucket this client cannot read.
-  const otherChain = !!record && record.l1ChainId !== getConfig().l1ChainId
   const activeToken = target.kind === "active" ? target.token?.toLowerCase() : undefined
   const id =
     target.kind === "active"
       ? `active|${activeToken ?? ""}`
-      : route && !otherChain
+      : route
       ? recordedRowKey(route, record?.tokenAddress)
       : undefined
 
@@ -160,12 +156,6 @@ export function useTargetCapacity(target: CapacityTarget): TargetCapacity {
   const unknown: CapacityEligibility | undefined = !id
     ? recordLoading
       ? { kind: "checking" }
-      : otherChain
-      ? {
-          kind: "unsupported",
-          reason: "chain-mismatch",
-          detail: "The address is on another network.",
-        }
       : UNPROVEN
     : current?.error !== undefined
     ? {

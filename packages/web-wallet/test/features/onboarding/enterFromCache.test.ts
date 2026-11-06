@@ -8,6 +8,10 @@ import type { RecoverPasskeyResult } from "@obsidion/sdk"
 import { predictAccountAddressLocally } from "@oxide/l1-contracts"
 import { getContractAddress, type Address } from "viem"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { openTestSession } from "../../support/session"
+import { testCore } from "../../support/page"
+import { session } from "../../../src/session/session"
+import { recordingAccounts } from "../../support/accountRecord"
 
 const h = vi.hoisted(() => ({
   adoptAccountPasskey: vi.fn(),
@@ -22,23 +26,22 @@ const h = vi.hoisted(() => ({
   recordedL2: vi.fn(),
 }))
 
-vi.mock("../../../src/platform/auth/useAuthenticator", () => ({
-  getAuthService: () => ({
-    rpId: "localhost",
-    adoptAccountPasskey: h.adoptAccountPasskey,
-    beginRecovery: h.beginRecovery,
-    recoverFromCache: h.recoverFromCache,
-    commitSecret: h.commitSecret,
-    sessionHeld: () => true,
-    sessionAddress: async () => undefined,
-    markRecordsStale: () => {},
-    recordRecoveryMetadata: h.recordRecoveryMetadata,
-    rootCredentialId: h.rootCredentialId,
-    answeredLocally: () => false,
-    // A held key answered no route, so a record mismatch is never the certain wrong key.
-    mismatchVerdict: () => "not-reproduced",
-  }),
-}))
+const fakeAuth = () => ({
+  rpId: "localhost",
+  device: testCore().device,
+  adoptAccountPasskey: h.adoptAccountPasskey,
+  beginRecovery: h.beginRecovery,
+  recoverFromCache: h.recoverFromCache,
+  commitSecret: h.commitSecret,
+  sessionHeld: () => true,
+  sessionAddress: async () => undefined,
+  markRecordsStale: () => {},
+  recordRecoveryMetadata: h.recordRecoveryMetadata,
+  rootCredentialId: h.rootCredentialId,
+  answeredLocally: () => false,
+  // A held key answered no route, so a record mismatch is never the certain wrong key.
+  mismatchVerdict: () => "not-reproduced",
+})
 vi.mock("../../../src/config/oxideTuple", () => ({
   getOxideTuple: async () => ({
     accountFactory: `0x${"11".repeat(20)}`,
@@ -79,7 +82,7 @@ const reader = {
     getContractAddress({ from: factory as Address, nonce: 1n }),
 }
 const published = { catalog: CATALOG as unknown[] }
-vi.mock("../../../src/features/onboarding/oxideGenerations", () => ({
+vi.mock("../../../src/features/registration/oxideGenerations", () => ({
   loadOxideGenerations: async () => ({
     reader,
     registry: REGISTRY,
@@ -90,13 +93,11 @@ vi.mock("../../../src/features/onboarding/oxideGenerations", () => ({
 }))
 vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/front-core")>()),
-  AccountStorage: { get: () => ({ addWebauthnAccount: h.addWebauthnAccount }) },
   createOxideL1Reader: () => reader,
 }))
 
-const { enterWithPasskey, reusePasskeyAccount } = await import(
-  "../../../src/features/onboarding/oxideOnboarding"
-)
+const { enterWithPasskey } = await import("../../../src/features/onboarding/oxideOnboarding")
+const { reusePasskeyAccount } = await import("../../../src/features/identity/passkeyAccount")
 const { isGateCancelled } = await import("../../../src/features/identity/ceremonyGate")
 
 const ADDR = `0x${"aa".repeat(32)}`
@@ -129,6 +130,15 @@ const held: RecoverPasskeyResult = {
   authenticatorType: "platform",
 }
 
+const accounts = recordingAccounts((state) => h.addWebauthnAccount(state))
+/** What a sign-in reads beside its request: the account records and the page's auth. */
+const signInDeps = {
+  accounts,
+  get auth() {
+    return session().auth
+  },
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   h.recoverFromCache.mockResolvedValue(held)
@@ -139,10 +149,13 @@ beforeEach(() => {
 
 afterEach(() => vi.unstubAllGlobals())
 
+beforeEach(() => void openTestSession({ auth: fakeAuth() }))
+
 describe("enterWithPasskey from the session's key", () => {
   it("a zero Registry record is a nameless account, adopted with no ceremony and no gate", async () => {
     h.readNameOf.mockResolvedValue(`0x${"0".repeat(64)}`)
     const result = await enterWithPasskey(wallet, config, undefined, {
+      ...signInDeps,
       contractService: {} as never,
       gate,
       tiers: [],
@@ -175,6 +188,7 @@ describe("enterWithPasskey from the session's key", () => {
     h.recoverFromCache.mockResolvedValue({ ...held, passkeys, backup })
     h.readNameOf.mockResolvedValue(`0x${"0".repeat(64)}`)
     const result = await enterWithPasskey(wallet, config, undefined, {
+      ...signInDeps,
       contractService: {} as never,
       gate,
       tiers: [],
@@ -197,9 +211,9 @@ describe("enterWithPasskey from the session's key", () => {
       op.abort()
       return { toString: () => ADDR }
     })
-    await expect(reusePasskeyAccount(wallet, ADDR, undefined, gate, op.signal)).rejects.toSatisfy(
-      isGateCancelled,
-    )
+    await expect(
+      reusePasskeyAccount(wallet, signInDeps, ADDR, undefined, gate, op.signal),
+    ).rejects.toSatisfy(isGateCancelled)
     expect(gate).toHaveBeenCalledTimes(1)
     expect(h.recordRecoveryMetadata).not.toHaveBeenCalled()
     expect(h.commitSecret).not.toHaveBeenCalled()
@@ -212,9 +226,9 @@ describe("enterWithPasskey from the session's key", () => {
       op.abort()
       return { toString: () => ADDR }
     })
-    await expect(reusePasskeyAccount(wallet, ADDR, undefined, gate, op.signal)).rejects.toSatisfy(
-      isGateCancelled,
-    )
+    await expect(
+      reusePasskeyAccount(wallet, signInDeps, ADDR, undefined, gate, op.signal),
+    ).rejects.toSatisfy(isGateCancelled)
     expect(gate).not.toHaveBeenCalled()
     expect(h.recordRecoveryMetadata).not.toHaveBeenCalled()
     expect(h.commitSecret).not.toHaveBeenCalled()
@@ -226,6 +240,7 @@ describe("enterWithPasskey from the session's key", () => {
     h.readNameOf.mockResolvedValue(`0x${"0".repeat(64)}`)
     await expect(
       enterWithPasskey(wallet, config, undefined, {
+        ...signInDeps,
         contractService: {} as never,
         gate,
         tiers: [],
@@ -240,6 +255,7 @@ describe("enterWithPasskey from the session's key", () => {
     h.beginRecovery.mockResolvedValue(held)
     h.readNameOf.mockResolvedValue(`0x${"0".repeat(64)}`)
     await enterWithPasskey(wallet, config, undefined, {
+      ...signInDeps,
       contractService: {} as never,
       gate,
       tiers: [],
@@ -257,6 +273,7 @@ describe("enterWithPasskey from the session's key", () => {
     h.beginRecovery.mockResolvedValue(held)
     h.readNameOf.mockResolvedValue(`0x${"0".repeat(64)}`)
     await enterWithPasskey(wallet, config, undefined, {
+      ...signInDeps,
       contractService: {} as never,
       gate,
       tiers: [],
@@ -275,6 +292,7 @@ describe("enterWithPasskey from the session's key", () => {
     h.beginRecovery.mockResolvedValue(held)
     h.readNameOf.mockResolvedValue(`0x${"0".repeat(64)}`)
     await enterWithPasskey(wallet, config, undefined, {
+      ...signInDeps,
       contractService: {} as never,
       gate,
       tiers: [],
@@ -302,6 +320,7 @@ describe("enterWithPasskey as the arrival probe", () => {
       vi.stubGlobal("navigator", { userAgent: ua })
       h.recoverFromCache.mockResolvedValue(undefined)
       const result = await enterWithPasskey(wallet, config, undefined, {
+        ...signInDeps,
         contractService: {} as never,
         gate,
         tiers: [],
@@ -320,6 +339,7 @@ describe("enterWithPasskey as the arrival probe", () => {
     h.recoverFromCache.mockResolvedValueOnce(held).mockResolvedValueOnce(undefined)
     h.readNameOf.mockResolvedValue(nameless)
     const result = await enterWithPasskey(wallet, config, undefined, {
+      ...signInDeps,
       contractService: {} as never,
       gate,
       tiers: [],
@@ -335,6 +355,7 @@ describe("enterWithPasskey as the arrival probe", () => {
     vi.stubGlobal("navigator", { userAgent: LAPTOP })
     h.readNameOf.mockResolvedValue(nameless)
     await enterWithPasskey(wallet, config, undefined, {
+      ...signInDeps,
       contractService: {} as never,
       gate,
       tiers: [],
@@ -348,6 +369,7 @@ describe("enterWithPasskey as the arrival probe", () => {
     h.beginRecovery.mockResolvedValue(held)
     h.readNameOf.mockResolvedValue(nameless)
     await enterWithPasskey(wallet, config, undefined, {
+      ...signInDeps,
       contractService: {} as never,
       gate,
       tiers: [],
@@ -362,6 +384,7 @@ describe("enterWithPasskey as the arrival probe", () => {
     h.readNameOf.mockRejectedValueOnce(new Error("rpc down"))
     await expect(
       enterWithPasskey(wallet, config, undefined, {
+        ...signInDeps,
         contractService: {} as never,
         gate,
         tiers: [],
@@ -374,6 +397,7 @@ describe("enterWithPasskey as the arrival probe", () => {
     h.addWebauthnAccount.mockRejectedValueOnce(new Error("disk full"))
     await expect(
       enterWithPasskey(wallet, config, undefined, {
+        ...signInDeps,
         contractService: {} as never,
         gate,
         tiers: [],
@@ -396,6 +420,7 @@ describe("an account the previous factory holds, after the factory roll", () => 
     await rolledOver()
 
     const result = await enterWithPasskey(wallet, config, "alice", {
+      ...signInDeps,
       contractService: {} as never,
       gate,
       tiers: [],
@@ -411,6 +436,7 @@ describe("an account the previous factory holds, after the factory roll", () => 
 
     await expect(
       enterWithPasskey(wallet, config, "alice", {
+        ...signInDeps,
         contractService: {} as never,
         gate,
         tiers: [],
@@ -426,6 +452,7 @@ describe("evidence the wallet cannot read is never read as a new user", () => {
 
     await expect(
       enterWithPasskey(wallet, config, undefined, {
+        ...signInDeps,
         contractService: {} as never,
         gate,
         tiers: [],
@@ -441,6 +468,7 @@ describe("evidence the wallet cannot read is never read as a new user", () => {
 
     await expect(
       enterWithPasskey(wallet, config, undefined, {
+        ...signInDeps,
         contractService: {} as never,
         gate,
         tiers: [{ name: "registry", probes: [async () => "anchored" as const] }],

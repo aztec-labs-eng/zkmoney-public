@@ -1,7 +1,7 @@
 /**
  * The page's watcher of a rotated wallet's previous one-key account: what it finds and registers
  * per session, when its claims passes and balance reads run, how it keeps the watch, and how it
- * settles and runs the move with one signature per chunk.
+ * settles and runs the move with one signature per chunk, Savings shares after the fee token.
  */
 import { act, createElement } from "react"
 import { createRoot } from "react-dom/client"
@@ -48,14 +48,18 @@ const h = vi.hoisted(() => {
     unlocked: undefined as unknown,
     record: undefined as unknown,
     boot: Promise.resolve() as Promise<void>,
-    gateway: {
-      syncRecipient: vi.fn(),
-      records: vi.fn((): unknown[] => []),
-    },
+    /** The session pipeline's pass over another account. */
+    passFor: vi.fn(),
     balance: 0n,
+    /** Savings shares at the previous account. */
+    savingsBalance: 0n,
+    /** What a backup add moves; unreadable while `tokensUnread`. */
+    tokens: [] as string[],
+    tokensUnread: false,
     txStatus: "pending" as string,
     signGate: undefined as Promise<void> | undefined,
     tokenService: {} as Record<string, ReturnType<typeof vi.fn>>,
+    savingsService: {} as Record<string, ReturnType<typeof vi.fn>>,
     sponsor: vi.fn(),
     identity: vi.fn(),
     shape: vi.fn(),
@@ -72,17 +76,20 @@ const h = vi.hoisted(() => {
   }
 })
 
-vi.mock("../../../src/platform/auth/useAuthenticator", () => ({ getAuthService: () => h.auth }))
-vi.mock("../../../src/platform/session", async () => {
+const fakeAuth = () => h.auth
+vi.mock("../../../src/session/session", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../src/session/session")>()
   const { fixed } = await import("@obsidion/front-core")
   return {
+    ...actual,
     // The page's wallet, as the mount reads it.
     useSession: () => ({ wallet: fixed("wallet", h.wallet) }),
+    // The real session, with the boot and the history this file drives.
     openedSession: {
       get: () =>
         h.noSession
           ? null
-          : {
+          : Object.assign(Object.create(actual.session()), {
               milestones: { after: () => h.boot.then(() => true) },
               activity: {
                 query: () => ({
@@ -90,7 +97,7 @@ vi.mock("../../../src/platform/session", async () => {
                   subscribe: () => () => {},
                 }),
               },
-            },
+            }),
       subscribe: () => () => {},
     },
   }
@@ -99,13 +106,9 @@ vi.mock("../../../src/platform/storage/WebStorageAdapter", async (importOriginal
   ...(await importOriginal<typeof import("../../../src/platform/storage/WebStorageAdapter")>()),
   webStorage: h.storage,
 }))
-vi.mock("../../../src/features/onboarding/registrationResume", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../src/features/onboarding/registrationResume")>()),
+vi.mock("../../../src/features/registration/registrationResume", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../src/features/registration/registrationResume")>()),
   unlockedSessionKeys: async () => h.unlocked,
-}))
-vi.mock("../../../src/features/deposit/sipaGateway", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../src/features/deposit/sipaGateway")>()),
-  getSipaDepositGateway: () => h.gateway,
 }))
 vi.mock("../../../src/config/env", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../src/config/env")>()),
@@ -124,21 +127,27 @@ vi.mock("../../../src/config/oxideTuple", async (importOriginal) => ({
 }))
 vi.mock("../../../src/config/classArtifacts", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../src/config/classArtifacts")>()),
-  getWebOxideToken: async () => ({ token: true }),
+  getWebOxideToken: async (_wallet: unknown, _contracts: unknown, token: string) => ({ token }),
+}))
+vi.mock("../../../src/features/backupPasskey/backupMoveTokens", () => ({
+  backupMoveTokens: async () => {
+    if (h.tokensUnread) throw new Error("Savings unreadable")
+    return h.tokens
+  },
+  moveCap: async (token: string) => (token === SAVINGS_TOKEN ? 2n * ONE : 10n ** 19n),
 }))
 vi.mock("../../../src/features/token/l2TokenService", () => ({ l2TokenService: h.l2TokenService }))
 vi.mock("../../../src/features/token/oxideToken", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../src/features/token/oxideToken")>()),
-  currentTxAmountCap: async () => 10n ** 19n,
   teeSignerOfToken: async () => ({ signer: true }),
 }))
-vi.mock("../../../src/features/onboarding/claimSponsorship", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../src/features/onboarding/claimSponsorship")>()),
+vi.mock("../../../src/features/registration/claimSponsorship", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../src/features/registration/claimSponsorship")>()),
   claimSponsorContext: h.sponsor,
 }))
 vi.mock("../../../src/features/fees/fpcRefuel", () => ({ maybeRefuelFpc: h.refuel }))
-vi.mock("../../../src/features/onboarding/oxideGenerations", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../src/features/onboarding/oxideGenerations")>()),
+vi.mock("../../../src/features/registration/oxideGenerations", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../src/features/registration/oxideGenerations")>()),
   loadOxideGenerations: async () => ({
     rollupVersion: "7",
     admissibleRollupVersions: new Set(["6", "7"]),
@@ -158,6 +167,8 @@ const { getPreviousAccountWatcher, PREVIOUS_PASS_MS, resetPreviousAccountWatcher
 const { PreviousAccountWatchMount } = await import(
   "../../../src/features/backupPasskey/PreviousAccountWatchMount"
 )
+const { openTestSession } = await import("../../support/session")
+const { patchSipaDeposit, seedSipaDeposit } = await import("../../support/sipaDeposits")
 
 const ROOT = "aa".repeat(64)
 const BACKUP = "bb".repeat(64)
@@ -170,6 +181,8 @@ const HASH = `0x${"0a".repeat(32)}`
 const DAY = 24 * 60 * 60 * 1000
 const T0 = 1_800_000_000_000
 const FEE_TOKEN = "0x00000000000000000000000000000000000000d1"
+const FEE_L2 = `0x${"01".repeat(32)}`
+const SAVINGS_TOKEN = `0x${"5a".repeat(32)}`
 const ONE = 10n ** 18n
 const DUST = 10n ** 16n
 
@@ -297,8 +310,11 @@ beforeEach(() => {
   h.feeTuple = {
     portal: "0x00000000000000000000000000000000000000a0",
     token: FEE_TOKEN,
-    l2Token: `0x${"01".repeat(32)}`,
+    l2Token: FEE_L2,
   }
+  h.tokens = [FEE_L2]
+  h.tokensUnread = false
+  h.savingsBalance = 0n
   h.pinnedTuple = { ...h.feeTuple }
   h.rows = []
   h.noSession = false
@@ -317,8 +333,8 @@ beforeEach(() => {
     .mockReset()
     .mockImplementation((p: { pubkeyHex: string }) => keyProvider(p.pubkeyHex))
   h.unlocked = undefined
-  h.gateway.syncRecipient.mockReset().mockResolvedValue({ completed: true })
-  h.gateway.records.mockReset().mockReturnValue([])
+  h.passFor.mockReset().mockResolvedValue({ completed: true })
+  openTestSession({ auth: fakeAuth(), sipaPipeline: { passFor: h.passFor } })
   h.tokenService = {
     getBalance: vi.fn(async () => h.balance),
     fetchTokenInformation: vi.fn(async () => ({ decimals: 18 })),
@@ -338,14 +354,34 @@ beforeEach(() => {
       },
     ),
   }
-  h.l2TokenService.mockReset().mockImplementation(async () => h.tokenService)
+  h.savingsService = {
+    getBalance: vi.fn(async () => h.savingsBalance),
+    fetchTokenInformation: vi.fn(async () => ({ decimals: 18 })),
+    setTeeSigner: vi.fn(),
+    sendTokenSponsored: vi.fn(
+      async (
+        _to: unknown,
+        amount: string,
+        _sponsor: unknown,
+        opts: { onTxHash: TxHashCallback },
+      ) => {
+        await opts.onTxHash(`0x${"0b".repeat(32)}`, { expiresAtMs: Date.now() + 60_000 })
+        h.savingsBalance -= BigInt(amount)
+        h.txStatus = TxStatus.FINALIZED
+      },
+    ),
+  }
+  h.l2TokenService
+    .mockReset()
+    .mockImplementation(async (_wallet: unknown, _account: unknown, token: string) =>
+      token === SAVINGS_TOKEN ? h.savingsService : h.tokenService,
+    )
   h.sponsor.mockReset().mockResolvedValue({ fpcAddress: "fpc", fpcArtifact: { artifact: true } })
   h.identity.mockReset().mockResolvedValue({ kind: "verified", identity: {} })
-  h.shape.mockReset().mockImplementation(async () => ({
-    notes: h.balance > 0n ? [h.balance] : [],
-    depositTotal: 0n,
-    balance: h.balance,
-  }))
+  h.shape.mockReset().mockImplementation(async (_wallet: unknown, oxide: { token: string }) => {
+    const balance = oxide.token === SAVINGS_TOKEN ? h.savingsBalance : h.balance
+    return { notes: balance > 0n ? [balance] : [], depositTotal: 0n, balance }
+  })
   h.refuel.mockReset()
   vi.spyOn(ContractService, "getInstance").mockReturnValue({ contracts: true } as never)
 })
@@ -383,7 +419,7 @@ describe("finding and registering the previous account", () => {
     expect(watcher.getSnapshot()).toEqual({ signs: false, open: false, moving: false })
     expect(pxe.derive).not.toHaveBeenCalled()
     expect(pxe.created).toHaveLength(0)
-    expect(h.gateway.syncRecipient).not.toHaveBeenCalled()
+    expect(h.passFor).not.toHaveBeenCalled()
   })
 
   it("searches again on the next tick after two failed searches, leaving no rejection unhandled", async () => {
@@ -460,7 +496,7 @@ describe("finding and registering the previous account", () => {
     await vi.waitFor(() => expect(watcher.getSnapshot().address).toBe(PREVIOUS_KEY))
 
     const bridgeWarnings = warn.mock.calls.filter(([line]) =>
-      String(line).includes("only the fee token is watched"),
+      String(line).includes("only the fee token and Savings shares are watched"),
     )
     expect(bridgeWarnings).toHaveLength(1)
   })
@@ -471,20 +507,19 @@ describe("the previous account's passes", () => {
     const boot = deferred()
     h.boot = boot.promise
     const pass = deferred<{ completed: boolean }>()
-    h.gateway.syncRecipient.mockReturnValueOnce(pass.promise)
+    h.passFor.mockReturnValueOnce(pass.promise)
     const pxe = fakeWallet()
     signIn(ROOT)
     const watcher = getPreviousAccountWatcher()
     watcher.start(pxe.wallet)
     await idle()
     expect(await watchOf()).not.toBeNull()
-    expect(h.gateway.syncRecipient).not.toHaveBeenCalled()
+    expect(h.passFor).not.toHaveBeenCalled()
     expect(pxe.created).toHaveLength(0)
 
     boot.resolve()
-    await vi.waitFor(() => expect(h.gateway.syncRecipient).toHaveBeenCalledTimes(1))
-    const [wallet, recipient, tokenServiceFor] = h.gateway.syncRecipient.mock.calls[0]!
-    expect(wallet).toBe(pxe.wallet)
+    await vi.waitFor(() => expect(h.passFor).toHaveBeenCalledTimes(1))
+    const [recipient, tokenServiceFor] = h.passFor.mock.calls[0]!
     expect(String(recipient)).toBe(PREVIOUS_KEY)
     await tokenServiceFor("0xtoken")
     expect(h.l2TokenService).toHaveBeenLastCalledWith(pxe.wallet, pxe.previousAccount, "0xtoken")
@@ -494,11 +529,11 @@ describe("the previous account's passes", () => {
     await idle()
     h.now = T0 + PREVIOUS_PASS_MS - 1
     await watcher.tick()
-    expect(h.gateway.syncRecipient).toHaveBeenCalledTimes(1)
+    expect(h.passFor).toHaveBeenCalledTimes(1)
 
     h.now = T0 + PREVIOUS_PASS_MS
     await watcher.tick()
-    expect(h.gateway.syncRecipient).toHaveBeenCalledTimes(2)
+    expect(h.passFor).toHaveBeenCalledTimes(2)
   })
 
   it("reads the balance after each pass and publishes it", async () => {
@@ -515,9 +550,39 @@ describe("the previous account's passes", () => {
     expect((await watchOf())?.watchUntilMs).toBe(T0 + WATCH_WINDOW_MS)
   })
 
+  it("reads Savings shares beside the fee token, and holds the watch open for them", async () => {
+    await seed({ watchUntilMs: T0 - 1 })
+    h.tokens = [FEE_L2, SAVINGS_TOKEN]
+    h.savingsBalance = 2n * ONE
+    const pxe = fakeWallet()
+    signIn(ROOT)
+    const watcher = getPreviousAccountWatcher()
+    watcher.start(pxe.wallet)
+
+    await vi.waitFor(() =>
+      expect(watcher.getSnapshot()).toMatchObject({ amount: 0n, savings: true, open: true }),
+    )
+    expect((await watchOf())?.watchUntilMs).toBeGreaterThan(T0)
+  })
+
+  it("keeps the watch open past its window while the moved tokens can't be listed", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {})
+    await seed({ watchUntilMs: T0 - 1 })
+    h.tokensUnread = true
+    h.balance = 0n
+    const pxe = fakeWallet()
+    signIn(ROOT)
+    const watcher = getPreviousAccountWatcher()
+    watcher.start(pxe.wallet)
+
+    await vi.waitFor(() => expect(watcher.getSnapshot().amount).toBe(0n))
+    await idle()
+    expect(await watchOf()).toEqual({ address: PREVIOUS_KEY, watchUntilMs: T0 - 1 })
+  })
+
   it("keeps the watch open past its window while a pass falls short", async () => {
     await seed({ watchUntilMs: T0 - 1 })
-    h.gateway.syncRecipient.mockResolvedValue({ completed: false })
+    h.passFor.mockResolvedValue({ completed: false })
     const pxe = fakeWallet()
     signIn(ROOT)
     getPreviousAccountWatcher().start(pxe.wallet)
@@ -565,20 +630,28 @@ describe("the previous account's passes", () => {
 
   it("holds the watch for a deposit to the previous account still holding money, and not for another account's", async () => {
     await seed({ watchUntilMs: T0 - 1 })
-    const deposit = (recipient: string) => ({
-      sipaAddress: "0x00000000000000000000000000000000000000e1",
+    const sipaAddress = "0x00000000000000000000000000000000000000e1"
+    await seedSipaDeposit({
+      sipaAddress,
       phase: "pendingClaim",
-      recipientL2Address: recipient,
+      recipientL2Address: PREVIOUS_KEY,
       tokenAddress: FEE_TOKEN,
+      messageSecret: "0x01",
+      recipientHash: "0x02",
+      recoveryAddress: "",
+      l1ChainId: 31337,
+      networkId: "0xnet",
+      amount: "5",
+      tokenSymbol: "DAI",
+      startTime: T0,
     })
-    h.gateway.records.mockReturnValue([deposit(PREVIOUS_KEY)])
     const pxe = fakeWallet()
     signIn(ROOT)
     const watcher = getPreviousAccountWatcher()
     watcher.start(pxe.wallet)
     await vi.waitFor(async () => expect((await watchOf())?.watchUntilMs).toBe(T0 + WATCH_WINDOW_MS))
 
-    h.gateway.records.mockReturnValue([deposit(SESSION.toString())])
+    await patchSipaDeposit(sipaAddress, { recipientL2Address: SESSION.toString() })
     h.now = T0 + WATCH_WINDOW_MS + PREVIOUS_PASS_MS
     await watcher.tick()
     expect((await watchOf())?.closed).toBe(true)
@@ -593,27 +666,27 @@ describe("the previous account's passes", () => {
     const watcher = getPreviousAccountWatcher()
     watcher.start(pxe.wallet)
     await idle()
-    expect(h.gateway.syncRecipient).not.toHaveBeenCalled()
+    expect(h.passFor).not.toHaveBeenCalled()
 
     await watcher.tick()
-    expect(h.gateway.syncRecipient).not.toHaveBeenCalled()
+    expect(h.passFor).not.toHaveBeenCalled()
     h.now = T0 + PREVIOUS_PASS_MS
     await watcher.tick()
     await vi.waitFor(async () =>
       expect((await watchOf())?.lastCheckAtMs).toBe(T0 + PREVIOUS_PASS_MS),
     )
-    expect(h.gateway.syncRecipient).toHaveBeenCalledTimes(1)
+    expect(h.passFor).toHaveBeenCalledTimes(1)
   })
 
   it("checks a closed watch again at the open cadence when a session change cuts its pass short", async () => {
     await seed({ watchUntilMs: T0 - 3 * DAY, closed: true, lastCheckAtMs: T0 - 2 * DAY })
     const pass = deferred<{ completed: boolean }>()
-    h.gateway.syncRecipient.mockReturnValueOnce(pass.promise)
+    h.passFor.mockReturnValueOnce(pass.promise)
     const pxe = fakeWallet()
     signIn(ROOT)
     const watcher = getPreviousAccountWatcher()
     watcher.start(pxe.wallet)
-    await vi.waitFor(() => expect(h.gateway.syncRecipient).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(h.passFor).toHaveBeenCalledTimes(1))
 
     signIn(ROOT)
     await watcher.tick()
@@ -626,7 +699,7 @@ describe("the previous account's passes", () => {
     await vi.waitFor(async () =>
       expect((await watchOf())?.lastCheckAtMs).toBe(T0 + PREVIOUS_PASS_MS),
     )
-    expect(h.gateway.syncRecipient).toHaveBeenCalledTimes(2)
+    expect(h.passFor).toHaveBeenCalledTimes(2)
   })
 })
 
@@ -691,6 +764,30 @@ describe("settling and moving", () => {
         amount: 0n,
         lastResult: { kind: "done" },
       }),
+    )
+  })
+
+  it("moves the fee token, then Savings shares under their own cap, reading the L1 record once", async () => {
+    h.tokens = [FEE_L2, SAVINGS_TOKEN]
+    h.balance = 5n * ONE
+    h.savingsBalance = 3n * ONE
+    const pxe = fakeWallet()
+    signIn(ROOT)
+    const watcher = getPreviousAccountWatcher()
+    watcher.start(pxe.wallet)
+    await vi.waitFor(() => expect(watcher.getSnapshot().savings).toBe(true))
+
+    expect(await watcher.move()).toEqual({ kind: "done" })
+    const sent = (service: Record<string, ReturnType<typeof vi.fn>>) =>
+      service.sendTokenSponsored!.mock.calls.map(([, amount]) => amount)
+    expect(sent(h.tokenService)).toEqual([(5n * ONE).toString()])
+    expect(sent(h.savingsService)).toEqual([(2n * ONE).toString(), ONE.toString()])
+    expect(h.tokenService.sendTokenSponsored!.mock.invocationCallOrder[0]).toBeLessThan(
+      h.savingsService.sendTokenSponsored!.mock.invocationCallOrder[0]!,
+    )
+    expect(h.identity).toHaveBeenCalledTimes(1)
+    await vi.waitFor(() =>
+      expect(watcher.getSnapshot()).toMatchObject({ amount: 0n, savings: false, moving: false }),
     )
   })
 

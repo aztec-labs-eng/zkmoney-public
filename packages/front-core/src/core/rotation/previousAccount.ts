@@ -8,8 +8,8 @@ import type { PaylinkTransaction } from "../../types/transactions"
 import {
   isSettledSipaPhase,
   isUnfundedSipaDeposit,
-  type SIPADepositRecord,
-} from "../services/deposits/SIPADepositStore"
+  type SipaDeposit,
+} from "../../engine/sipaDeposits"
 import type { PreviousAccountWatch } from "../storages/PreviousAccountWatchStore"
 
 const DAY_MS = 24 * 60 * 60 * 1000
@@ -59,7 +59,7 @@ export interface MovedTokenRow {
 }
 
 /** A record that names no token yet may be the row's. */
-function onRow(record: SIPADepositRecord, row: MovedTokenRow): boolean {
+function onRow(record: SipaDeposit, row: MovedTokenRow): boolean {
   const token = record.rowToken ?? record.tokenAddress
   if (token === undefined || sameAddress(token, row.token)) return true
   return !!record.pendingSweeps?.some(
@@ -71,11 +71,7 @@ function onRow(record: SIPADepositRecord, row: MovedTokenRow): boolean {
  * Whether a deposit record still holds money of the moved token. A `recoverable` payment sits below
  * the sweep fee and only an L1 recovery moves it, so it never holds the watch.
  */
-export function recordHoldsMoney(
-  record: SIPADepositRecord,
-  row: MovedTokenRow,
-  dust: bigint,
-): boolean {
+export function recordHoldsMoney(record: SipaDeposit, row: MovedTokenRow, dust: bigint): boolean {
   if (!onRow(record, row) || record.phase === "recoverable") return false
   if (record.pendingSweeps?.length || record.phase === "pendingClaim") return true
   if (record.heldBalance !== undefined && !isDust(BigInt(record.heldBalance), dust)) return true

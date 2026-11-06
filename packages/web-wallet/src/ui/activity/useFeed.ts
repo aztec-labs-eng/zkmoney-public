@@ -15,7 +15,7 @@ import {
 import { getPreviousAccountWatcher } from "../../features/backupPasskey/previousAccountWatcher"
 import { useOldVersionHoldings } from "../../features/migration/oldVersionBalance"
 import { usePolledChainSeconds } from "../../features/paylink/chainTime"
-import { useSession, type Session } from "../../platform/session"
+import { useSession, type Session } from "../../session/session"
 import { feedSources, mergedRows } from "./feedSources"
 
 /** The feed's records: the rows listed, Home's by default, joined by a deep-linked row's hash. */
@@ -54,11 +54,15 @@ export function useFeed({
 } {
   const { contacts, hydrated, failed } = useContactsDirectory()
   const session = useSession()
-  const records = useStore(session.registrations)
+  const records = useStore(session.registrations.view, (view) => view.records)
   const handle = useStore(session.identity, (identity) => identity.value?.handle)
   const chainNow = usePolledChainSeconds(chainNode)
   const mainReadAt = useStore(useSession().balances.view, (v) => v.readAt)
   const position = useSavingsPosition().position
+  // Pending until the session knows whether Savings has a row; null where it has none.
+  const savings = useResource(session.savings)
+  const savingsToken = savings?.assetAddress
+  const savingsUnknown = savings === undefined
   const { main: oldMain, savings: oldSavings } = useOldVersionHoldings()
   const watcher = getPreviousAccountWatcher()
   const previousAccount = useSyncExternalStore(
@@ -78,6 +82,8 @@ export function useFeed({
       account,
       balanceReadAt: { main: mainReadAt, savings: position?.sharesReadAt },
       sharePrice: position?.sharePrice,
+      savingsToken,
+      savingsUnknown,
       oldVersions: { main: oldMain, savings: oldSavings },
       previousAccount,
     }
@@ -93,6 +99,8 @@ export function useFeed({
     chainNow,
     mainReadAt,
     position,
+    savingsToken,
+    savingsUnknown,
     oldMain,
     oldSavings,
     activeNetworkId,

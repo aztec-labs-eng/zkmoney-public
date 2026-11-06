@@ -1,18 +1,24 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { seedDeviceKeys, testPage } from "../../support/page"
 const h = vi.hoisted(() => ({ stale: false, reload: vi.fn() }))
-vi.mock("../../../src/platform/auth/useAuthenticator", () => ({
-  getAuthService: () => ({ recordsStale: () => h.stale }),
-}))
-import { reloadIfSessionSwitched } from "../../../src/features/onboarding/sessionReload"
-import { setActiveStorageId } from "../../../src/platform/storage/activeStorage"
+const fakeAuth = () => ({ recordsStale: () => h.stale })
+import { reloadIfSessionSwitched } from "../../../src/session/sessionReload"
 import { walletStorage } from "../../../src/platform/storage/walletStorage"
+import { savedIdentity, setIdentity } from "../../support/identity"
 import {
-  loadWalletIdentity,
-  saveWalletIdentity,
-} from "../../../src/features/identity/walletIdentity"
-import { closeSession, switchSession } from "../../../src/platform/session"
+  closeSession,
+  namespaceOf,
+  openSession,
+  switchSession,
+  type Session,
+} from "../../../src/session/session"
+import { pageSessionDeps } from "../../../src/app/sessionDeps"
 
 const address = `0x${"ab".repeat(32)}`
+let open: Session
+/** A session for `id` this page has not made current: one a sign-in started under. */
+const startedUnder = (id: string) =>
+  openSession(pageSessionDeps(testPage(fakeAuth()))(namespaceOf(id)))
 
 describe("reloadIfSessionSwitched", () => {
   beforeEach(() => {
@@ -21,53 +27,60 @@ describe("reloadIfSessionSwitched", () => {
     h.reload.mockClear()
     vi.stubGlobal("window", { location: { reload: h.reload }, dispatchEvent: vi.fn() })
     vi.stubGlobal("location", { reload: h.reload })
+    open = switchSession({ id: null, prefix: "" }, pageSessionDeps(testPage(fakeAuth())))
   })
-  afterEach(() => vi.unstubAllGlobals())
+  afterEach(() => {
+    closeSession()
+    vi.unstubAllGlobals()
+  })
 
-  it("reloads after an account switch and clears the unrelated entered identity", async () => {
-    await saveWalletIdentity({ address: "other-account", claimedAt: 1 })
-    setActiveStorageId("new-account")
-    await walletStorage.flush()
-    expect(reloadIfSessionSwitched("old-account", address)).toBe(true)
+  it("reloads after a switch once the committed account's unrelated identity is gone", async () => {
+    await seedDeviceKeys({ storageId: "new-account" })
+    await setIdentity({ address: "other-account" })
+    const own = startedUnder("old-account")
+    expect(reloadIfSessionSwitched(own, address)).toBe(true)
+    own.close()
     await vi.waitFor(() => expect(h.reload).toHaveBeenCalledTimes(1))
-    expect(loadWalletIdentity()).toBeNull()
+    expect(await savedIdentity()).toBeNull()
   })
 
   it("reloads when recovery into an existing namespace left stores stale without an old pointer", async () => {
     h.stale = true
-    setActiveStorageId("existing-account")
+    await seedDeviceKeys({ storageId: "existing-account" })
     await walletStorage.flush()
-    expect(reloadIfSessionSwitched(null, address)).toBe(true)
+    expect(reloadIfSessionSwitched(open, address)).toBe(true)
     await vi.waitFor(() => expect(h.reload).toHaveBeenCalledTimes(1))
   })
 
   it("keeps a fresh or unchanged account on the current page", async () => {
-    setActiveStorageId("same-account")
+    await seedDeviceKeys({ storageId: "same-account" })
     await walletStorage.flush()
-    expect(reloadIfSessionSwitched(null, address)).toBe(false)
-    expect(reloadIfSessionSwitched("same-account", address)).toBe(false)
+    expect(reloadIfSessionSwitched(open, address)).toBe(false)
+    const own = startedUnder("same-account")
+    expect(reloadIfSessionSwitched(own, address)).toBe(false)
+    own.close()
     await walletStorage.flush()
     expect(h.reload).not.toHaveBeenCalled()
   })
 
   // Last: from here on this page has served "acct-a".
   it("reloads a passkey reuse that committed another account than the page serves", async () => {
-    switchSession({ id: "acct-a", prefix: "a." })
-    setActiveStorageId("acct-b")
+    open = switchSession({ id: "acct-a", prefix: "a." }, pageSessionDeps(testPage(fakeAuth())))
+    await seedDeviceKeys({ storageId: "acct-b" })
     await walletStorage.flush()
-    expect(reloadIfSessionSwitched(null, address)).toBe(true)
+    expect(reloadIfSessionSwitched(open, address)).toBe(true)
     await vi.waitFor(() => expect(h.reload).toHaveBeenCalledTimes(1))
     closeSession()
   })
 
   it("reloads a sign-in after a dropped key when the page served another account", async () => {
-    switchSession({ id: "acct-a", prefix: "a." })
+    switchSession({ id: "acct-a", prefix: "a." }, pageSessionDeps(testPage(fakeAuth())))
     // The dropped key: the page falls back to the anonymous namespace.
     closeSession()
-    switchSession({ id: null, prefix: "" })
-    setActiveStorageId("acct-b")
+    open = switchSession({ id: null, prefix: "" }, pageSessionDeps(testPage(fakeAuth())))
+    await seedDeviceKeys({ storageId: "acct-b" })
     await walletStorage.flush()
-    expect(reloadIfSessionSwitched(null, address)).toBe(true)
+    expect(reloadIfSessionSwitched(open, address)).toBe(true)
     await vi.waitFor(() => expect(h.reload).toHaveBeenCalledTimes(1))
     closeSession()
   })

@@ -31,6 +31,7 @@ import { prfSalts } from "../src/derivation.js"
 import { candidatesFrom } from "../src/rules/evidence.js"
 import { type UserAgentInfo, parseUserAgent } from "../src/browser/userAgentInfo.js"
 import {
+  NoPrfError,
   PhoneRequiredError,
   RelatedOriginPasskeyError,
   UnsupportedProviderError,
@@ -110,6 +111,7 @@ describe("runPasskeyCreation on the laptop's own route", () => {
     const result = await run
     expect(result.slot).toBe("second")
     expect(result.securityKey).toBe(false)
+    expect(result.backupEligible).toBe(true)
     expect(bytesToHex(result.prfOutput)).toBe(
       bytesToHex(ceremony.prfFor(result.created.credentialId, "second")),
     )
@@ -542,6 +544,87 @@ describe("runPasskeyCreation on the laptop's own route", () => {
       expect.objectContaining({ name: "LaptopPasskeyRefusedError", kind: "not-local" }),
     )
     expect(ceremony.assertRequests[0]!.hints).toEqual(["client-device", "security-key"])
+  })
+})
+
+describe("Windows Hello on Chrome on Windows 11's row", () => {
+  const WINDOWS_HELLO_AAGUIDS = [
+    "08987058-cadc-4b81-b6e1-30de50dcbe96",
+    "9ddd1817-af5a-4672-a2b9-3e3dd95000a9",
+    "6028b017-b1d4-4c02-b4b3-afcdafc96bb2",
+  ]
+  const row = { managers: ["gpm", "windows_hello", "1password"] as const }
+  const hello = (fake: FakeCeremonyOptions = {}, aaguid = WINDOWS_HELLO_AAGUIDS[0]) =>
+    create(
+      "laptop",
+      { route: "local", aaguid, backupEligible: false, ...fake },
+      { localCreation: row },
+    )
+
+  it.each(WINDOWS_HELLO_AAGUIDS)(
+    "binds its device-bound passkey, past the backup gate, and says so: %s",
+    async (aaguid) => {
+      const { ceremony, run } = hello({}, aaguid)
+      const result = await run
+      expect(result).toMatchObject({ slot: "second", securityKey: false, backupEligible: false })
+      expect(bytesToHex(result.prfOutput)).toBe(
+        bytesToHex(ceremony.prfFor(result.created.credentialId, "second")),
+      )
+      expect(ceremony.assertRequests).toHaveLength(0)
+    },
+  )
+
+  it("is refused where the row does not name it", async () => {
+    const { run } = create(
+      "laptop",
+      { route: "local", aaguid: WINDOWS_HELLO_AAGUIDS[0], backupEligible: false },
+      { localCreation: { managers: ["gpm", "1password"] } },
+    )
+    await expect(run).rejects.toMatchObject({
+      name: "UnsupportedProviderError",
+      providerName: WINDOWS_HELLO,
+    })
+  })
+
+  it("is refused on a phone's route, labelled as another device", async () => {
+    const { run } = create("laptop", {
+      route: "cross-device",
+      aaguid: WINDOWS_HELLO_AAGUIDS[0],
+      backupEligible: false,
+      transports: ["internal"],
+    })
+    await expect(run).rejects.toThrow(named("UnsupportedProviderError"))
+  })
+
+  it("exempts no other device-bound passkey on the same row", async () => {
+    const { run } = create(
+      "laptop",
+      { route: "local", manager: "gpm", aaguid: GPM_AAGUID, backupEligible: false },
+      { localCreation: row },
+    )
+    await expect(run).rejects.toThrow(named("DeviceBoundPasskeyError"))
+  })
+
+  it("keeps the key-material gate, naming the row's other managers", async () => {
+    const { ceremony, run } = hello({ prfAtCreate: false, prfAtAssert: false })
+    const others = new NoPrfError({ manager: "windows_hello", localManagers: ["gpm", "1password"] })
+    await expect(run).rejects.toMatchObject({
+      name: "NoPrfError",
+      manager: "windows_hello",
+      message: others.message,
+    })
+    expect(others.message).not.toBe(new NoPrfError({ localManagers: ["gpm", "1password"] }).message)
+    expect(ceremony.asserts).toHaveLength(1)
+  })
+
+  it("binds the follow-up's key when creation returned none", async () => {
+    const { ceremony, run } = hello({ prfAtCreate: false })
+    const result = await run
+    expect(result.chained?.credentialId).toBe(result.created.credentialId)
+    expect(result.backupEligible).toBe(false)
+    expect(bytesToHex(result.prfOutput)).toBe(
+      bytesToHex(ceremony.prfFor(result.created.credentialId, "second")),
+    )
   })
 })
 
@@ -1289,6 +1372,7 @@ describe("security keys at creation", () => {
       const complete = create("laptop", trezor())
       const atCreate = await complete.run
       expect(atCreate.securityKey).toBe(true)
+      expect(atCreate.backupEligible).toBe(false)
       expect(complete.ceremony.assertRequests).toHaveLength(0)
       expect(atCreate.slot).toBe("first")
       expect(atCreate.created.aaguid).toBeUndefined()
@@ -1299,6 +1383,8 @@ describe("security keys at creation", () => {
       const { ceremony, run } = create("laptop", trezor({ prfAtCreate: false }))
       const chained = await run
       expect(chained.securityKey).toBe(true)
+      // Read from the follow-up, which stood in for the creation.
+      expect(chained.backupEligible).toBe(false)
       expect(chained.slot).toBe("first")
       expect(ceremony.creates[0]!.residentKey).toBe("preferred")
       expect(ceremony.assertRequests).toHaveLength(1)

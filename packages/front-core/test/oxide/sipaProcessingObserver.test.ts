@@ -2,13 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { Address, Hex } from "viem"
 import type { PortalCapacitySnapshot, SipaPortalTerms } from "@obsidion/sdk"
 
-import { InMemoryStorageAdapter } from "../__test-helpers__/InMemoryStorageAdapter"
-import { resetSingleton } from "../__test-helpers__/resetSingleton"
-import {
-  SIPADepositStore,
-  type SIPADepositFields,
-  type SIPADepositRecord,
-} from "../../src/core/services/deposits/SIPADepositStore"
+import type { RecordSet } from "../../src/engine/persistentStore"
+import type { SipaDeposit } from "../../src/engine/sipaDeposits"
+import { memoryStore } from "../../src/engine/store"
 import { sipaSweepAllowed } from "../../src/core/services/deposits/sipaProcessing"
 import {
   createPortalCapacityRegistry,
@@ -59,10 +55,10 @@ function snapshot(portal: Address, availableAtomic: bigint): PortalCapacitySnaps
   }
 }
 
-function fallback(
-  over: Partial<SIPADepositRecord> = {},
-): SIPADepositFields {
+function fallback(over: Partial<SipaDeposit> = {}): SipaDeposit {
   return {
+    sipaAddress: SIPA,
+    phase: "sweeping",
     networkId: "0xnet",
     recipientL2Address: "0x" + "11".repeat(32),
     messageSecret: "0x" + "22".repeat(32),
@@ -91,8 +87,7 @@ function fallback(
 }
 
 function setup() {
-  resetSingleton(SIPADepositStore as unknown as { instance: SIPADepositStore | null })
-  const deposits = SIPADepositStore.get(new InMemoryStorageAdapter())
+  const deposits = memoryStore<RecordSet<SipaDeposit>>({ records: [], loaded: true, failed: false })
   const capacity = new Map<string, bigint | Error>([
     [ACTIVE_PORTAL, 50_000n * E18],
     [OLD_PORTAL, 50n * E18],
@@ -114,15 +109,17 @@ function setup() {
     return TERMS[forwardingTable]!
   })
   const observer = createSipaProcessingObserver({
-    deposits,
+    deposits: deposits.readonly,
     capacity: (key) => registry.store(key),
     readTerms,
     l1ChainId: CHAIN,
   })
-  const upsert = (
-    over: Partial<SIPADepositRecord> = {},
-    phase: SIPADepositRecord["phase"] = "sweeping",
-  ) => deposits.upsert(SIPA, { phase, ...over }, fallback(over))
+  const upsert = (over: Partial<SipaDeposit> = {}, phase: SipaDeposit["phase"] = "sweeping") => {
+    const [held] = deposits.get().records
+    const record = held ? { ...held, phase, ...over } : { ...fallback(over), phase, ...over }
+    deposits.set({ records: [record], loaded: true, failed: false })
+    return Promise.resolve()
+  }
   return { deposits, observer, read, readTerms, capacity, termsFailures, upsert }
 }
 
@@ -136,7 +133,7 @@ describe("createSipaProcessingObserver", () => {
   it("reads the deposit's own portal, not the selected deployment's", async () => {
     const { observer, read, upsert } = setup()
     await upsert()
-    const stop = observer.subscribe(() => {})
+    const stop = observer.states.subscribe(() => {})
     await vi.advanceTimersByTimeAsync(0)
 
     expect(read.mock.calls.map(([key]) => key.portal)).toEqual([OLD_PORTAL])
@@ -185,7 +182,7 @@ describe("createSipaProcessingObserver", () => {
       termsFailures.add(OLD_TABLE)
       await upsert({}, phase)
       const listener = vi.fn()
-      const stop = observer.subscribe(listener)
+      const stop = observer.states.subscribe(listener)
       observer.capacityKeyFor(SIPA)
       await vi.advanceTimersByTimeAsync(0)
       expect(observer.capacityKeyFor(SIPA)).toEqual({ status: "unknown", retryable: true })
@@ -209,7 +206,7 @@ describe("createSipaProcessingObserver", () => {
     const { observer, termsFailures, upsert, read } = setup()
     termsFailures.add(OLD_TABLE)
     await upsert()
-    const stop = observer.subscribe(() => {})
+    const stop = observer.states.subscribe(() => {})
     await vi.advanceTimersByTimeAsync(0)
     expect(read).not.toHaveBeenCalled()
     termsFailures.clear()
@@ -229,13 +226,17 @@ describe("createSipaProcessingObserver", () => {
     })
     await upsert({ l1ChainId: CHAIN, origin: undefined })
     expect(observer.capacityKeyFor(SIPA)).toEqual({ status: "unknown", retryable: false })
-    const { forwardingTable: _table, recoveryAccount: _account, ...origin } = fallback().origin as {
+    const {
+      forwardingTable: _table,
+      recoveryAccount: _account,
+      ...origin
+    } = fallback().origin as {
       forwardingTable: Address
       recoveryAccount: Address
     }
     await upsert({
       origin: { ...origin, protocol: "legacy-eoa", recoveryAddress: `0x${"44".repeat(20)}` },
-    } as Partial<SIPADepositRecord>)
+    } as Partial<SipaDeposit>)
     expect(observer.capacityKeyFor(SIPA)).toEqual({ status: "unknown", retryable: false })
     expect(readTerms).not.toHaveBeenCalled()
   })
@@ -249,7 +250,7 @@ describe("createSipaProcessingObserver", () => {
   it("has no portal for a deposit on another chain or without its origin", async () => {
     const { observer, read, readTerms, upsert } = setup()
     await upsert({ l1ChainId: 1 })
-    const stop = observer.subscribe(() => {})
+    const stop = observer.states.subscribe(() => {})
     await vi.advanceTimersByTimeAsync(0)
     expect(observer.stateFor(SIPA)?.reason).toEqual({
       kind: "unavailable",
@@ -272,7 +273,7 @@ describe("createSipaProcessingObserver", () => {
     const { observer, termsFailures, upsert } = setup()
     termsFailures.add(OLD_TABLE)
     await upsert()
-    const stop = observer.subscribe(() => {})
+    const stop = observer.states.subscribe(() => {})
     await vi.advanceTimersByTimeAsync(0)
     expect(observer.stateFor(SIPA)?.reason).toEqual({
       kind: "unavailable",
@@ -288,7 +289,7 @@ describe("createSipaProcessingObserver", () => {
   it("keeps a confirmed blocker through a failed read and clears it on a later fit", async () => {
     const { observer, capacity, upsert } = setup()
     await upsert()
-    const stop = observer.subscribe(() => {})
+    const stop = observer.states.subscribe(() => {})
     await vi.advanceTimersByTimeAsync(0)
     expect(sipaSweepAllowed(observer.stateFor(SIPA))).toBe(false)
 
@@ -311,7 +312,7 @@ describe("createSipaProcessingObserver", () => {
   it("starts a new read before a manual sweep", async () => {
     const { observer, read, upsert } = setup()
     await upsert()
-    const stop = observer.subscribe(() => {})
+    const stop = observer.states.subscribe(() => {})
     await vi.advanceTimersByTimeAsync(0)
     const before = read.mock.calls.length
     await observer.refreshForSweep(SIPA)
@@ -338,7 +339,7 @@ describe("createSipaProcessingObserver", () => {
       availableAtomic: 50n * E18,
     })
     expect(sipaSweepAllowed(state)).toBe(false)
-    expect(deposits.get(SIPA)).toBeNull()
+    expect(deposits.get().records).toEqual([])
   })
 
   it("reads a stored record's own origin over a description", async () => {
@@ -381,7 +382,7 @@ describe("createSipaProcessingObserver", () => {
   it("checks a topped-up record at the balance a sweep read, and keeps it for later reads", async () => {
     const { observer, capacity, upsert } = setup()
     await upsert({ amount: "40" })
-    const stop = observer.subscribe(() => {})
+    const stop = observer.states.subscribe(() => {})
     await vi.advanceTimersByTimeAsync(0)
     expect(observer.stateFor(SIPA)?.reason.kind).toBe("processing")
 
@@ -446,7 +447,7 @@ describe("createSipaProcessingObserver", () => {
     const { observer, capacity, upsert } = setup()
     await upsert()
     const listener = vi.fn()
-    const stop = observer.subscribe(listener)
+    const stop = observer.states.subscribe(listener)
     await vi.advanceTimersByTimeAsync(0)
     const settled = listener.mock.calls.length
     expect(settled).toBeGreaterThan(0)
@@ -461,26 +462,10 @@ describe("createSipaProcessingObserver", () => {
     stop()
   })
 
-  it("never writes the deposit record", async () => {
-    const { deposits, observer, capacity, upsert } = setup()
-    await upsert()
-    const before = deposits.get(SIPA)
-    const write = vi.spyOn(deposits, "upsert")
-    const stop = observer.subscribe(() => {})
-    await vi.advanceTimersByTimeAsync(0)
-    capacity.set(OLD_PORTAL, 100n * E18)
-    await observer.retry(SIPA)
-    await observer.refreshForSweep(SIPA)
-    await vi.advanceTimersByTimeAsync(60_000)
-    expect(write).not.toHaveBeenCalled()
-    expect(deposits.get(SIPA)).toEqual(before)
-    stop()
-  })
-
   it("stops reading capacity when the last subscriber leaves", async () => {
     const { observer, read, upsert } = setup()
     await upsert()
-    const stop = observer.subscribe(() => {})
+    const stop = observer.states.subscribe(() => {})
     await vi.advanceTimersByTimeAsync(0)
     stop()
     const count = read.mock.calls.length
@@ -492,7 +477,7 @@ describe("createSipaProcessingObserver", () => {
     const { observer, upsert } = setup()
     await upsert()
     const listener = vi.fn()
-    const stop = observer.subscribe(listener)
+    const stop = observer.states.subscribe(listener)
     await vi.advanceTimersByTimeAsync(0)
     expect(observer.stateFor(SIPA)).toBeDefined()
     await upsert({ inboxIndex: "4", sweepTxHash: `0x${"02".repeat(32)}` }, "pendingClaim")

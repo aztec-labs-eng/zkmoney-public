@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 import type { PublicClient } from "viem"
-import { passClient } from "../../src/oxide/sipaClaims"
+import { passClient } from "../../src/oxide/sipaScan"
 
 function client() {
   const getBlock = vi.fn(async (args?: { blockNumber?: bigint }) => ({

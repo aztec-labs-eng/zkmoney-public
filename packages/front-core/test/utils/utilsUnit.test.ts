@@ -8,7 +8,6 @@ import {
   validateAmount,
   validateEthereumAddress,
   isZeroAddress,
-  completeAddressWireFormat,
 } from "../../src/utils"
 
 const VALID_ADDRESS = "0x2b9d7dc8dea863ae525610940367c386cdbad3e4c693802e0d9cb5c0509e5380"
@@ -119,19 +118,6 @@ describe("utilsUnitTests", () => {
   describe("shortenTxHash", () => {
     it("should shorten tx hash", () => {
       expect(shortenTxHash(VALID_ADDRESS)).toBe("0x2b9d7dc8...c0509e5380")
-    })
-  })
-
-  describe("completeAddressWireFormat", () => {
-    it("detects v5 (288-byte) and v4 (320-byte) blobs", () => {
-      expect(completeAddressWireFormat("0x" + "ab".repeat(288))).toBe("v5")
-      expect(completeAddressWireFormat("0x" + "ab".repeat(320))).toBe("v4")
-      expect(completeAddressWireFormat("ab".repeat(288))).toBe("v5")
-    })
-
-    it("returns unknown for odd length or other sizes", () => {
-      expect(completeAddressWireFormat("0xabc")).toBe("unknown")
-      expect(completeAddressWireFormat("0x" + "ab".repeat(64))).toBe("unknown")
     })
   })
 })

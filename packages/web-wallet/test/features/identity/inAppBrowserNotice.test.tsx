@@ -20,6 +20,8 @@ const { InAppBrowserNotice } = await import("../../../src/features/identity/InAp
 const { subscribeErrorModal } = await import("../../../src/errors/errorModal")
 const { stashClaimLink } = await import("../../../src/features/paylink/claimStash")
 const { resetInAppCardCountsForTests } = await import("../../../src/features/identity/inAppCardTelemetry")
+const { openTestSession } = await import("../../support/session")
+const { closeSession } = await import("../../../src/session/session")
 
 const UA = {
   // A phone's Chrome far behind stable, with no marker: the card's mode decides what it is.
@@ -41,6 +43,7 @@ beforeEach(() => {
   root = createRoot(container)
   fireOnboarding.mockClear()
   resetInAppCardCountsForTests()
+  openTestSession()
 })
 afterEach(() => {
   act(() => root.unmount())
@@ -48,6 +51,7 @@ afterEach(() => {
   vi.restoreAllMocks()
   window.history.replaceState(null, "", startUrl)
   sessionStorage.clear()
+  closeSession()
 })
 
 const byTestId = (id: string) => container.querySelector<HTMLElement>(`[data-testid="${id}"]`)

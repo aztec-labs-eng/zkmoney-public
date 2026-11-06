@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { useNavigate } from "react-router-dom"
+import { useLocation, useNavigate } from "react-router-dom"
 import { getAddress, isAddress, type Address } from "viem"
 import {
   Card,
@@ -11,8 +11,8 @@ import {
 } from "@obsidion/web-ds"
 import { fireEvent } from "../../../lib/analytics"
 import { fmt } from "../../../lib/fmt"
-import { shortL1Addr } from "../../../ui/format"
 import { useBack } from "../../../ui/hooks"
+import { Blockie, L1AddressText } from "../../../ui/L1AddressText"
 import { Modal } from "../../../ui/Modal"
 import { ScreeningNotice, useScreenedAddress } from "../../../ui/screening"
 import { Warning } from "../../../ui/Warning"
@@ -46,9 +46,11 @@ export function WithdrawEtherfiScreen() {
   const navigate = useNavigate()
   const close = useBack("/withdraw")
   const saved = useSavedEtherfiAddress()
-  const [query, setQuery] = useState("")
+  // A Cash address another withdraw route turned away arrives here filled in.
+  const prefill = (useLocation().state ?? {}) as { recipient?: string }
+  const [query, setQuery] = useState(prefill.recipient ?? "")
   // Entering a new address over a saved one.
-  const [replacing, setReplacing] = useState(false)
+  const [replacing, setReplacing] = useState(!!prefill.recipient)
   const [keep, setKeep] = useState(true)
   const [chosen, setChosen] = useState<Address>()
 
@@ -86,6 +88,7 @@ export function WithdrawEtherfiScreen() {
         receiveAsset={ETHERFI_DEFAULT_ASSET}
         receiveAssets={ETHERFI_RECEIVE_ASSETS}
         assetNote={fmt(copy.assetNote, { assets: ETHERFI_ASSETS_COPY })}
+        recipientWarning={verdict.kind === "unknown" ? copy.verdict.unknown : undefined}
         onClose={() => setChosen(undefined)}
         onDone={() => navigate("/")}
       />
@@ -109,15 +112,13 @@ export function WithdrawEtherfiScreen() {
             <div className="ww-withdraw__saved">
               <div className="ww-deposit__actions" style={{ borderRadius: 8 }}>
                 <span
-                  className="ww-deposit__connect"
+                  className="zkm-btn-reset ww-deposit__connect ww-paymethod"
                   style={{ flex: 1, paddingBlock: 12, background: "none" }}
                 >
-                  <span className="ww-deposit__connect-icon" style={{ width: 44, height: 44 }}>
-                    <Icon name="bank" size={20} color="#fff" />
-                  </span>
+                  <Blockie address={saved} size={44} />
                   <span className="ww-deposit__connect-text">
                     <b>{ETHERFI_CONTACT_NAME}</b>
-                    <span>{shortL1Addr(saved)}</span>
+                    <L1AddressText address={saved} cut />
                   </span>
                 </span>
                 <button
@@ -193,8 +194,19 @@ export function WithdrawEtherfiScreen() {
             </label>
           </>
         )}
-        {target && verdict.kind === "checking" && (
-          <span className="ww-fund__label">{copy.checking}</span>
+        {target && !screened.cleared ? (
+          <ScreeningNotice
+            verdict={screened.verdict}
+            checkingCopy={copy.screening.checking}
+            blockedFallback={copy.screening.blocked}
+            errorCopy={copy.screening.error}
+            onRetry={screened.rescreen}
+          />
+        ) : (
+          target &&
+          verdict.kind === "checking" && (
+            <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>{copy.checking}</span>
+          )
         )}
         {notice && (
           <Warning
@@ -204,15 +216,6 @@ export function WithdrawEtherfiScreen() {
           >
             <p>{notice.body}</p>
           </Warning>
-        )}
-        {target && !screened.cleared && (
-          <ScreeningNotice
-            verdict={screened.verdict}
-            checkingCopy={copy.screening.checking}
-            blockedFallback={copy.screening.blocked}
-            errorCopy={copy.screening.error}
-            onRetry={screened.rescreen}
-          />
         )}
       </div>
       <PrimaryGradientButton

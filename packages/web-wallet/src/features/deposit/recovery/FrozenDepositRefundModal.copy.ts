@@ -1,0 +1,28 @@
+export default {
+  title: "Refund a v5 deposit",
+  doneTitle: "Deposit refunded",
+  intro:
+    "This deposit reached v5 after it closed. Refund it to an Ethereum address, or move it to v6.",
+  sendTo: "Send to",
+  placeholder: "Your connected wallet, or paste an address",
+  placeholderBridge: "0x…",
+  invalidAddress: "That isn't a valid Ethereum address",
+  screening: {
+    checking: "Checking the address…",
+    blocked: "This address can't receive funds from zk.money.",
+    error: "Couldn't check the address.",
+  },
+  amount: "Amount",
+  units: "{amount} {symbol}",
+  depositAddress: "Deposit address",
+  to: "To",
+  network: "Network",
+  proving: "Making the refund proof…",
+  refund: "Refund",
+  moveInstead: "Move it to v6 instead",
+  operationSummary: "Refund v5 deposit",
+  helperTitle: "Refund your v5 deposit",
+  stopped: "Refund stopped",
+  upgradeBusy: "An upgrade of your v5 funds is running. Try again when it finishes.",
+  done: "{amount} refunded to {to}.",
+} as const

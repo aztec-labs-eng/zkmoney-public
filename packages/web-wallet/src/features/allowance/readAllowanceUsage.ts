@@ -11,8 +11,8 @@ import {
   type AllowanceRead,
   type AllowanceUsage,
 } from "@obsidion/front-core"
-import type { ClaimSponsorDeps } from "../onboarding/claimSponsorship"
-import { getSipaDepositGateway } from "../deposit/sipaGateway"
+import type { ClaimSponsorDeps } from "../registration/claimSponsorship"
+import { broadcastTxHashes } from "../broadcasts/slotExecutor"
 
 /** The split of `read`'s allowance, on the instance and rail that read used. */
 export async function readAllowanceUsage(
@@ -39,10 +39,9 @@ export async function readAllowanceUsage(
     const current = currentAllowanceNotes(notes)
     if (current.length === 0) return undefined
     const fromBlock = Math.min(...current.map((note) => note.blockNumber))
-    const gateway = getSipaDepositGateway()
     const broadcasts = new Set<string>()
     for (const account of payer.equals(user) ? [user] : [payer, user]) {
-      for (const hash of await gateway.broadcastTxHashes(deps.wallet, account, fromBlock)) {
+      for (const hash of await broadcastTxHashes(deps.wallet, account, fromBlock)) {
         broadcasts.add(hash)
       }
     }

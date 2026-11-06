@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react"
 import { getConfig } from "../../config/env"
-import { getAuthService } from "../../platform/auth/useAuthenticator"
-import { accountServiceFor } from "../onboarding/oxideOnboarding"
+import { accountServiceFor } from "../registration/registrationDeps"
+import { session } from "../../session/session"
 
 /** The invite host beside this wallet's: `wallet.<zone>` invites at `invite.<zone>`. Anywhere
  * else (a preview, a dev server) names production's. */
@@ -16,7 +16,7 @@ export interface Invite {
 }
 
 async function loadInvite(): Promise<Invite> {
-  const secretKey = await getAuthService().getSecretKey()
+  const secretKey = await session().auth.getSecretKey()
   if (!secretKey) return { credited: false }
   const client = accountServiceFor(getConfig(), { secretKey })
   const [code, status] = await Promise.all([client.inviteCode(), client.inviteStatus()])

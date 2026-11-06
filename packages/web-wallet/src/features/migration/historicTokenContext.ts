@@ -17,6 +17,7 @@ import { l1PublicClient } from "../../config/oxideTuple"
 import { portalContract, teeSignerOfToken } from "../token/oxideToken"
 import { openSourceRollupWallet, type SourceRollupWallet } from "../../platform/sourceRollupWallet"
 import { isOtherGeneration, openSourceGenerationSession } from "../../platform/sourceGeneration"
+import type { WebAlphaAuthService } from "../../platform/auth/WebAlphaAuthService"
 
 /** The retired deployment whose l2Token is `tokenAddress`, or null when none in the manifest has it. */
 export async function findHistoricTuple(tokenAddress: string): Promise<OxideEnvTuple | null> {
@@ -43,6 +44,7 @@ export async function sourceChain(
   active: SourceRollupWallet,
   current: OxideEnvTuple,
   historic: OxideEnvTuple,
+  auth: Pick<WebAlphaAuthService, "getSecretKey" | "sessionKeys">,
 ): Promise<SourceChain> {
   if (historic.rollupVersion === current.rollupVersion) return { kind: "pxe", ...active }
   const nodeUrl = getConfig().sourceRollupNodes?.get(historic.portal.toLowerCase())
@@ -51,9 +53,9 @@ export async function sourceChain(
   if (await isOtherGeneration(nodeUrl))
     return {
       kind: "generation",
-      session: await openSourceGenerationSession(nodeUrl, active.account),
+      session: await openSourceGenerationSession(nodeUrl, active.account, auth),
     }
-  return { kind: "pxe", ...(await openSourceRollupWallet(nodeUrl, active.account)) }
+  return { kind: "pxe", ...(await openSourceRollupWallet(nodeUrl, active.account, auth)) }
 }
 
 /**

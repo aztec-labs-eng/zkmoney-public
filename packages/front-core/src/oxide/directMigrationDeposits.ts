@@ -12,7 +12,7 @@
 import { Fr } from "@aztec-labs/aztec.js/fields"
 import type { MigrationDirectDeposit } from "@obsidion/core/types"
 import type { Address, Hex } from "viem"
-import { directDepositKey, type SIPADepositStore } from "../core/services/deposits/SIPADepositStore"
+import { directDepositKey, type SipaDeposits } from "../engine/sipaDeposits"
 import type { UpgradeBatchItem } from "../core/migration/upgradeActivity"
 import { logger } from "../utils/logger"
 import { sipaRowByPortal, type SipaRow } from "./sipaRows"
@@ -20,7 +20,7 @@ import { sipaRowByPortal, type SipaRow } from "./sipaRows"
 type DirectBatch = Pick<UpgradeBatchItem, "run" | "direct" | "fromBlock" | "amount">
 
 export interface DirectMigrationDepositDeps {
-  store: Pick<SIPADepositStore, "load" | "get" | "create" | "update">
+  store: Pick<SipaDeposits, "get" | "apply">
   /** The sent direct batches (`UpgradeActivity.directBatches`). */
   batches(): Promise<readonly DirectBatch[]>
   /** The rail's rows: a direct deposit is claimed on the row of the portal it lands in. */
@@ -47,26 +47,25 @@ export interface DirectMigrationDepositDeps {
 export async function ensureDirectMigrationDepositRecords(
   deps: DirectMigrationDepositDeps,
 ): Promise<number> {
-  await deps.store.load()
   let written = 0
   for (const batch of await deps.batches()) {
     const direct = batch.direct
     if (!direct) continue
     const key = directDepositKey(direct.recipientCommitment)
-    const existing = deps.store.get(key)
     try {
+      const existing = await deps.store.get(key)
       if (!existing) {
         if (await ensure(deps, batch, direct)) written += 1
       } else if (existing.direct && existing.direct.expected === undefined) {
-        await deps.store.update(key, (current) =>
-          current.direct && current.direct.expected === undefined
-            ? {
-                phase: current.phase,
-                reorgEpoch: current.reorgEpoch,
-                direct: { ...current.direct, expected: batch.amount },
-              }
-            : null,
-        )
+        // The batch's amount fills in on a record its announcement wrote.
+        await deps.store.apply(key, {
+          type: "directBatch",
+          fields: {
+            ...existing,
+            networkId: deps.networkId,
+            direct: { ...existing.direct, expected: batch.amount },
+          },
+        })
       }
     } catch (err) {
       logger.warn(
@@ -92,8 +91,11 @@ async function ensure(
     throw new Error("the batch's commitment does not derive from its coordinates")
   const from = BigInt(batch.fromBlock ?? 0).toString()
   // An address handed out and not yet paid: the rail's first sight of the deposit fills the rest.
-  const created = await deps.store.create(directDepositKey(commitment), {
-    phase: "broadcast",
+  const key = directDepositKey(commitment)
+  if (await deps.store.get(key)) return false
+  const fields = {
+    sipaAddress: key,
+    phase: "broadcast" as const,
     recipientL2Address: deps.recipient,
     messageSecret: new Fr(sharedSecret).toString(),
     recipientHash: commitment,
@@ -110,6 +112,6 @@ async function ensure(
     // The rail reads the commitment's deposits from the batch's block on.
     observedFrom: from,
     rescanFrom: from,
-  })
-  return !!created
+  }
+  return !!(await deps.store.apply(key, { type: "directBatch", fields }))
 }

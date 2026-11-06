@@ -9,7 +9,7 @@ import {
 import { Modal } from "../../ui/Modal"
 import { usePickerDismiss } from "../../ui/usePickerDismiss"
 import { CoinIcon } from "./DepositAddressSheet"
-import type { DepositTokenOption } from "./loadDepositFacts"
+import type { DepositTokenOption } from "../sipa/loadDepositFacts"
 
 /** The coin the user sends, with what the deposit costs and its least amount, before the address. */
 export function DepositCoinModal({

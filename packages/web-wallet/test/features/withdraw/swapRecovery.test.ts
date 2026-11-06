@@ -6,6 +6,7 @@
  * where the wiring must open a real commitment.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { testPage, testCore } from "../../support/page"
 import { pad, toHex, type Address, type Hex } from "viem"
 import type { WithdrawalRecord } from "@obsidion/front-core"
 
@@ -68,24 +69,22 @@ vi.mock("@obsidion/sdk", async (importOriginal) => ({
   },
   decodePaylinkInline: () => ({ secret: SECRET }),
 }))
-vi.mock("../../../src/features/deposit/l1Wallet", () => ({
+vi.mock("../../../src/session/l1Wallet", () => ({
   getL1Clients: async () => ({
     walletClient: { signMessage: h.signMessage },
     account: h.connected.current,
   }),
 }))
-vi.mock("../../../src/features/deposit/sipaRecovery", () => ({
+vi.mock("../../../src/features/sipa/l1ExitChannels", () => ({
   injectedWalletChannel: h.injectedWalletChannel,
   desktopBridgeChannel: h.desktopBridgeChannel,
 }))
 vi.mock("../../../src/platform/desktopBridge", () => ({
   isDesktopL1SubmitActive: () => h.bridgeActive.current,
 }))
-vi.mock("../../../src/platform/auth/useAuthenticator", () => ({
-  getAuthService: () => ({
-    sessionKeys: async () => ({ secretKey: SECRET, authProvider: h.provider }),
-  }),
-}))
+const fakeAuth = () => ({
+  sessionKeys: async () => ({ secretKey: SECRET, authProvider: h.provider }),
+})
 vi.mock("../../../src/platform/auth/oxideAccountPasskey", () => ({
   oxideAccountPasskey: h.oxideAccountPasskey,
 }))
@@ -107,8 +106,9 @@ vi.mock("../../../src/features/withdraw/withdrawGateway", () => ({
 
 const { swapExitReasonFor } = await import("@obsidion/front-core")
 const { activeNamespace, closeSession, switchSession, session } = await import(
-  "../../../src/platform/session"
+  "../../../src/session/session"
 )
+const { pageSessionDeps } = await import("../../../src/app/sessionDeps")
 afterEach(closeSession)
 const { executeSwapWithdrawal, recoverSwapWithdrawal } = await import(
   "../../../src/features/withdraw/swapRecovery"
@@ -176,7 +176,7 @@ beforeEach(async () => {
   h.signMessage.mockReset().mockResolvedValue(`0x${"05".repeat(65)}`)
   h.connected.current = RECIPIENT
   h.sendTransaction.mockReset().mockResolvedValue(HASH)
-  await switchSession(activeNamespace()).withdrawals.create({ ...record(), networkId: "0xnet" })
+  await switchSession(activeNamespace(testCore().device), pageSessionDeps(testPage(fakeAuth()))).withdrawals.create({ ...record(), networkId: "0xnet" })
   h.bridgeActive.current = false
 })
 

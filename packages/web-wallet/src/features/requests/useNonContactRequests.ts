@@ -1,13 +1,13 @@
 import { useMemo } from "react"
 import {
   nonContactInbox,
-  useConfigValue,
   useContactsDirectory,
   useStore,
   type PaymentRequest,
 } from "@obsidion/front-core"
 import { wallClock } from "../../lib/clock"
-import { useSession } from "../../platform/session"
+import { saveSetting } from "../../platform/storage/deviceKeys"
+import { useSession } from "../../session/session"
 
 /** Pending requests from people outside the contact book. Empty while the Settings toggle is off. */
 export function useNonContactRequests(): {
@@ -17,9 +17,9 @@ export function useNonContactRequests(): {
   allowed: boolean
   setAllowed: (allowed: boolean) => Promise<void>
 } {
-  const { value: allowed, setValue: setAllowed } = useConfigValue("allowNonContactRequests")
+  const { requests: store, database, device } = useSession()
+  const allowed = useStore(device, (s) => s.allowNonContactRequests)
   const { contacts, hydrated, failed } = useContactsDirectory()
-  const { requests: store } = useSession()
   const all = useStore(store.view)
   const loaded = useStore(store.loaded)
   const now = useStore(wallClock)
@@ -30,5 +30,10 @@ export function useNonContactRequests(): {
     () => (allowed && current ? nonContactInbox(all, contacts, now) : []),
     [allowed, current, all, contacts, now],
   )
-  return { requests, unavailable: allowed && failed, allowed, setAllowed }
+  return {
+    requests,
+    unavailable: allowed && failed,
+    allowed,
+    setAllowed: (on) => saveSetting(database, "allowNonContactRequests", on),
+  }
 }

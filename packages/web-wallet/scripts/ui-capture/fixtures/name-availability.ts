@@ -1,6 +1,6 @@
-import * as actual from "../../../src/features/onboarding/nameAvailability"
+import * as actual from "../../../src/features/registration/nameAvailability"
 import { fixtureState } from "./control"
-export * from "../../../src/features/onboarding/nameAvailability"
+export * from "../../../src/features/registration/nameAvailability"
 
 const STATUSES = ["available", "reserved", "blocked", "blocked-reserved", "unknown"] as const
 

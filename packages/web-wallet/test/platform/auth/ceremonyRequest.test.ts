@@ -1,12 +1,13 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest"
+import { testPage, pageOver } from "../../support/page"
 import { WebAlphaAuthService } from "../../../src/platform/auth/WebAlphaAuthService"
-import { FakePasskeyCeremony, MemoryStorage } from "../../support/fakePasskeyCeremony"
+import { FakePasskeyCeremony } from "../../support/fakePasskeyCeremony"
 
 function laptop() {
   const ceremony = new FakePasskeyCeremony({ route: "cross-device" })
   const service = new WebAlphaAuthService({
-    storage: new MemoryStorage(),
+    ...pageOver(testPage().database),
     rpId: "localhost",
     ceremony,
     posture: () => "laptop",

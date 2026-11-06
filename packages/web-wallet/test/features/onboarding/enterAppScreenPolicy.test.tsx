@@ -9,7 +9,6 @@ import { MemoryRouter } from "react-router-dom"
 import { namehash } from "viem/ens"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { onePasswordCreate, otherCreate } from "../../support/passkeyExtensionStubs"
-import { setActiveCredentialId } from "../../../src/platform/storage/activeStorage"
 import { walletStorage } from "../../../src/platform/storage/walletStorage"
 import {
   type HeldRequest,
@@ -33,10 +32,9 @@ const h = vi.hoisted(() => ({
   claimStash: undefined as string | undefined,
   showReportableError: vi.fn(),
   fireEvent: vi.fn(),
-  saveWalletIdentity: vi.fn(),
+  saveIdentity: vi.fn(),
   getConfig: vi.fn(),
   reservedNameHashes: vi.fn(),
-  nameGrantToken: vi.fn(),
   boundNameGrantOwner: vi.fn(),
   confirmTag: vi.fn(),
   /** What the confirm modal stand-in submits; its seed when unset. */
@@ -54,10 +52,10 @@ vi.mock("react-router-dom", async (importOriginal) => ({
   ...(await importOriginal<typeof import("react-router-dom")>()),
   useNavigate: () => h.navigate,
 }))
-vi.mock("@obsidion/front-core", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@obsidion/front-core")>()),
-  useContractServiceContext: () => ({ contractService: {} }),
-}))
+vi.mock("@obsidion/front-core", async (importOriginal) => {
+  const core = await importOriginal<typeof import("@obsidion/front-core")>()
+  return { ...core, contractServiceResource: () => core.fixed("contractService", {}) }
+})
 vi.mock("../../../src/config/env", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../src/config/env")>()),
   getConfig: h.getConfig,
@@ -66,19 +64,11 @@ vi.mock("../../../src/features/onboarding/oxideOnboarding", async () => {
   const { matchWireNameHash } = await import("@obsidion/front-core")
   return {
     enterWithPasskey: h.enterWithPasskey,
-    nameGrantToken: h.nameGrantToken,
     confirmTag: h.confirmTag,
-    isCommittedFailure: (err: unknown) =>
-      typeof err === "object" &&
-      err !== null &&
-      (err as { committed?: boolean }).committed === true,
     // The real matching, without the module that drags the Aztec stack in.
     reservedTagMatch: (hashes: `0x${string}`[], ensDomain: string, handle: string) =>
       hashes.map((hash) => matchWireNameHash(handle, ensDomain, hash)).find(Boolean) ?? null,
     // The class the screen matches by instanceof; the real one drags the Aztec stack in.
-    PasskeyMismatchError: class PasskeyMismatchError extends Error {
-      name = "PasskeyMismatchError"
-    },
     PasskeySetUnreadError: class PasskeySetUnreadError extends Error {
       name = "PasskeySetUnreadError"
     },
@@ -98,24 +88,10 @@ vi.mock("../../../src/features/onboarding/recoveryProbes", () => ({
   reservedNameHashes: h.reservedNameHashes,
   boundNameGrantOwner: h.boundNameGrantOwner,
 }))
-vi.mock("../../../src/platform/auth/useAuthenticator", () => ({
-  getAuthService: () => ({
-    probePhoneReach: async () => h.reach,
-    recoverFromCache: h.recoverFromCache,
-  }),
-  peekAuthService: () =>
-    h.recordsStale === undefined ? undefined : { recordsStale: () => h.recordsStale },
-}))
-vi.mock("../../../src/features/identity/walletIdentity", async (importOriginal) => ({
+vi.mock("../../../src/session/account", async (importOriginal) => ({
   // The session's own identity view.
-  ...(await importOriginal<typeof import("../../../src/features/identity/walletIdentity")>()),
-  saveWalletIdentity: h.saveWalletIdentity,
-  loadWalletIdentity: () => null,
-}))
-vi.mock("../../../src/features/onboarding/webRegistration", async (importOriginal) => ({
-  // The session's feed reads the rest.
-  ...(await importOriginal<typeof import("../../../src/features/onboarding/webRegistration")>()),
-  getPendingStore: () => ({ list: () => [], load: async () => {}, onListChanged: () => () => {} }),
+  ...(await importOriginal<typeof import("../../../src/session/account")>()),
+  saveIdentity: h.saveIdentity,
 }))
 vi.mock("../../../src/features/paylink/claimStash", () => ({ peekClaimStash: () => h.claimStash }))
 vi.mock("../../../src/features/paylink/linkIdentity", () => ({
@@ -253,10 +229,28 @@ type Entry = { pathname: string; search?: string; state?: unknown }
  * The page as the active tab leaves it: its wallet up, and the anonymous session open. Every
  * session the screen's sign-in opens reads the same wallet.
  */
+/** The passkey the session pointers name. */
+async function seedCredential(credentialId: string) {
+  const { writeDeviceKeys } = await import("../../../src/platform/storage/deviceKeys")
+  const { testPage } = await import("../../support/page")
+  await writeDeviceKeys(testPage().database, { credentialId })
+}
+
+/** Saves device keys through the page's database, so its device store hears them. */
+const seedDevice = async (values: Record<string, string | null>) =>
+  (await import("../../support/page")).seedDeviceKeys(values)
+
 async function openPage() {
+  // The page loads its device keys from what storage holds, as a boot does.
+  const { walletStorage: saved } = await import("../../../src/platform/storage/walletStorage")
+  await saved.flush()
+  await (await import("../../support/page")).reloadDevice()
   const { activateTab } = await import("../../../src/platform/storage/activeTab")
   const { startPageWallet } = await import("../../../src/platform/wallet")
-  const { namespaceOf, switchSession } = await import("../../../src/platform/session")
+  const { namespaceOf, switchSession } = await import("../../../src/session/session")
+  const { pageSessionDeps } = await import("../../../src/app/sessionDeps")
+  const { testPage } = await import("../../support/page")
+  const { contractServiceResource } = await import("@obsidion/front-core")
   activateTab()
   const target = { kind: "pxe", identity: {}, bootStartedAt: 0, attempts: 1 } as never
   const wallet = startPageWallet(
@@ -266,11 +260,25 @@ async function openPage() {
   )
   wallet.demand()
   await vi.waitFor(() => expect(wallet.get().status).toBe("ready"))
-  switchSession(namespaceOf(null))
+  const auth = {
+    probePhoneReach: async () => h.reach,
+    recoverFromCache: h.recoverFromCache,
+    recordsStale: () => h.recordsStale === true,
+  }
+  // The session of the account the device names, as boot opens it; its account tasks left out.
+  // The suite's stand-in contract service (the front-core mock above), as the page would build it.
+  const page = { ...testPage(auth), contractService: () => contractServiceResource({} as never) }
+  const deps = pageSessionDeps(page)
+  switchSession(namespaceOf(page.device.get().storageId), (namespace) => ({
+    ...deps(namespace),
+    signIn: undefined,
+  }))
 }
 
 async function render(path: string | Entry = "/enter") {
-  const { EnterAppScreen } = await import("../../../src/features/onboarding/EnterAppScreen")
+  const { EnterAppScreen } = await import(
+    "../../../src/features/onboarding/EnterAppScreen/EnterAppScreen"
+  )
   await openPage()
   await act(async () => {
     root.render(
@@ -358,9 +366,8 @@ beforeEach(() => {
   h.diagnoseMiss.mockReset()
   h.showReportableError.mockClear()
   h.fireEvent.mockClear()
-  h.saveWalletIdentity.mockClear()
+  h.saveIdentity.mockClear()
   h.reservedNameHashes.mockReset().mockResolvedValue([])
-  h.nameGrantToken.mockReset().mockReturnValue(undefined)
   h.boundNameGrantOwner.mockReset().mockResolvedValue(false)
   h.confirmTag.mockReset()
   h.typedTag = undefined
@@ -517,16 +524,16 @@ describe("EnterAppScreen refusals", () => {
       held: () => true,
     })
     let release!: () => void
-    h.saveWalletIdentity.mockImplementationOnce(() => new Promise<void>((r) => (release = r)))
+    h.saveIdentity.mockImplementationOnce(() => new Promise<void>((r) => (release = r)))
     await render()
-    expect(h.saveWalletIdentity).toHaveBeenCalledTimes(1)
+    expect(h.saveIdentity).toHaveBeenCalledTimes(1)
     expect(h.navigate).not.toHaveBeenCalled()
 
     await act(async () => byTestId("spinner-cancel")!.click())
     await flush()
     expect(leftForSignInStart()).toBe(true)
     // The save asks this before writing the passkey hint under the map lock.
-    const owns = h.saveWalletIdentity.mock.calls[0][1] as () => boolean
+    const owns = h.saveIdentity.mock.calls[0][2] as () => boolean
     expect(owns()).toBe(false)
 
     await act(async () => release())
@@ -539,7 +546,7 @@ describe("EnterAppScreen refusals", () => {
     await render()
     expect(h.reservedNameHashes).toHaveBeenCalledTimes(1)
     expect(refused()?.dataset.reason).toBe("GrantedRegistrationError")
-    expect(h.saveWalletIdentity).not.toHaveBeenCalled()
+    expect(h.saveIdentity).not.toHaveBeenCalled()
     expect(leftForSignInStart()).toBe(false)
 
     await act(async () => byTestId("enter-continue")!.click())
@@ -953,7 +960,7 @@ describe("EnterAppScreen reservation", () => {
     expect(h.navigate).not.toHaveBeenCalled()
     await click("enter-continue")
     expect(h.navigate).toHaveBeenCalledWith("/claim/cris?resume=1", { replace: true })
-    expect(h.saveWalletIdentity).not.toHaveBeenCalled()
+    expect(h.saveIdentity).not.toHaveBeenCalled()
   })
 
   it("the reserved card's Back returns to the screen and forgets the reservation", async () => {
@@ -1175,7 +1182,8 @@ describe("EnterAppScreen reservation", () => {
     await act(async () => byTestId("confirm-tag-submit")!.click())
     await flush()
     expect(h.confirmTag).toHaveBeenCalledTimes(1)
-    expect(h.saveWalletIdentity).toHaveBeenCalledWith(
+    expect(h.saveIdentity).toHaveBeenCalledWith(
+      expect.anything(),
       expect.objectContaining({ handle: "alice", address: L2 }),
       expect.any(Function),
     )
@@ -1207,7 +1215,7 @@ describe("EnterAppScreen reservation", () => {
     await flush()
     expect(h.confirmTag).not.toHaveBeenCalled()
     await click("enter-continue")
-    expect(h.saveWalletIdentity).not.toHaveBeenCalled()
+    expect(h.saveIdentity).not.toHaveBeenCalled()
     expect(h.navigate).toHaveBeenCalledWith("/claim/cris?resume=1", { replace: true })
   })
 })
@@ -1258,7 +1266,7 @@ describe("EnterAppScreen account switch", () => {
   /** A recovery that commits `id`; `stale` is what the auth service then reports. */
   const commits = (id: string, result: unknown = nameless(), stale = false) =>
     h.enterWithPasskey.mockImplementationOnce(async () => {
-      await walletStorage.commitItem("webwallet.storageId", id)
+      await seedDevice({ storageId: id })
       h.recordsStale = stale
       return result
     })
@@ -1268,7 +1276,7 @@ describe("EnterAppScreen account switch", () => {
   beforeEach(async () => {
     assign.mockClear()
     vi.stubGlobal("location", { assign, origin: "https://wallet.test" })
-    await walletStorage.commitItem("webwallet.storageId", "storage-a")
+    await seedDevice({ storageId: "storage-a" })
   })
   afterEach(() => vi.unstubAllGlobals())
 
@@ -1276,7 +1284,7 @@ describe("EnterAppScreen account switch", () => {
     commits("storage-a", named)
     await render()
     expect(assign).not.toHaveBeenCalled()
-    expect(h.saveWalletIdentity).toHaveBeenCalledTimes(1)
+    expect(h.saveIdentity).toHaveBeenCalledTimes(1)
   })
 
   it("replaces the document before the reservation lookup when a different account is committed", async () => {
@@ -1296,7 +1304,7 @@ describe("EnterAppScreen account switch", () => {
     "%s that lands after a different account was committed still replaces the document",
     async (_label, error) => {
       h.enterWithPasskey.mockImplementationOnce(async () => {
-        await walletStorage.commitItem("webwallet.storageId", "storage-b")
+        await seedDevice({ storageId: "storage-b" })
         throw error
       })
       await render()
@@ -1336,7 +1344,7 @@ describe("EnterAppScreen account switch", () => {
   })
 
   it("the reloaded document still finishes at the carried destination", async () => {
-    await walletStorage.commitItem("webwallet.storageId", "storage-b")
+    await seedDevice({ storageId: "storage-b" })
     commits("storage-b", named)
     await render({ pathname: "/enter", search: "?next=%2Frequest%23gift" })
     expect(assign).not.toHaveBeenCalled()
@@ -1350,7 +1358,9 @@ describe("EnterAppScreen account switch", () => {
     // Nothing is asked of account-service against the previous account's loaded records.
     expect(h.reservedNameHashes).not.toHaveBeenCalled()
 
+    // The reloaded document: its modules load again.
     act(() => root.unmount())
+    vi.resetModules()
     root = createRoot(container)
     commits("storage-b")
     h.reservedNameHashes.mockResolvedValueOnce([namehash("cris.zk.money")])
@@ -1361,14 +1371,14 @@ describe("EnterAppScreen account switch", () => {
   })
 
   it("a carried destination that leaves this wallet is not followed", async () => {
-    await walletStorage.commitItem("webwallet.storageId", "storage-b")
+    await seedDevice({ storageId: "storage-b" })
     commits("storage-b", named)
     await render({ pathname: "/enter", search: "?next=https%3A%2F%2Fevil.test%2Fsteal" })
     expect(h.navigate).toHaveBeenCalledWith("/", { replace: true })
   })
 
   describe("signed out, as after a logout", () => {
-    beforeEach(() => walletStorage.commitRemove("webwallet.storageId"))
+    beforeEach(() => seedDevice({ storageId: null }))
 
     it("replaces the document before the reservation lookup when the account's records are stale", async () => {
       commits("storage-b", nameless(), true)
@@ -1383,7 +1393,7 @@ describe("EnterAppScreen account switch", () => {
       commits("storage-b", named, true)
       await render()
       expect(assign).toHaveBeenCalledWith("/enter")
-      expect(h.saveWalletIdentity).not.toHaveBeenCalled()
+      expect(h.saveIdentity).not.toHaveBeenCalled()
     })
 
     it("replaces the document before asking which tag to confirm", async () => {
@@ -1407,7 +1417,7 @@ describe("EnterAppScreen account switch", () => {
       let land!: () => void
       h.enterWithPasskey.mockImplementationOnce(async () => {
         await new Promise<void>((resolve) => (land = resolve))
-        await walletStorage.commitItem("webwallet.storageId", "storage-b")
+        await seedDevice({ storageId: "storage-b" })
         h.recordsStale = true
         return named
       })
@@ -1417,14 +1427,14 @@ describe("EnterAppScreen account switch", () => {
       await act(async () => land())
       await flush()
       expect(assign).toHaveBeenCalledWith("/enter")
-      expect(h.saveWalletIdentity).not.toHaveBeenCalled()
+      expect(h.saveIdentity).not.toHaveBeenCalled()
     })
 
     it("continues in place on a browser that never held the account", async () => {
       commits("storage-b", named)
       await render()
       expect(assign).not.toHaveBeenCalled()
-      expect(h.saveWalletIdentity).toHaveBeenCalledTimes(1)
+      expect(h.saveIdentity).toHaveBeenCalledTimes(1)
       expect(h.navigate).toHaveBeenCalledWith("/", { replace: true })
     })
 
@@ -1438,22 +1448,22 @@ describe("EnterAppScreen account switch", () => {
     it("treats a page with no auth service as fresh", async () => {
       h.recordsStale = undefined
       h.enterWithPasskey.mockImplementationOnce(async () => {
-        await walletStorage.commitItem("webwallet.storageId", "storage-b")
+        await seedDevice({ storageId: "storage-b" })
         return named
       })
       await render()
       expect(assign).not.toHaveBeenCalled()
-      expect(h.saveWalletIdentity).toHaveBeenCalledTimes(1)
+      expect(h.saveIdentity).toHaveBeenCalledTimes(1)
     })
   })
 
   it("replaces the document when an earlier commit on this page left the records stale", async () => {
     // A remount after an attempt that committed and then failed: the same account, already active.
-    await walletStorage.commitItem("webwallet.storageId", "storage-b")
+    await seedDevice({ storageId: "storage-b" })
     commits("storage-b", named, true)
     await render()
     expect(assign).toHaveBeenCalledWith("/enter")
-    expect(h.saveWalletIdentity).not.toHaveBeenCalled()
+    expect(h.saveIdentity).not.toHaveBeenCalled()
   })
 })
 
@@ -1559,9 +1569,9 @@ describe("EnterAppScreen in an app's built-in browser", () => {
   it.each([
     ["a remembered account", () => remember("cred-bob", "bob")],
     ["a nameless account", () => remember("cred-nameless")],
-    ["the credential the session was entered with", () => setActiveCredentialId("cred-held")],
+    ["the credential the session was entered with", () => seedCredential("cred-held")],
   ])("%s means a passkey worked here: the screen, with no card", async (_name, seed) => {
-    seed()
+    await seed()
     await open(UA.iosInstagram)
     expect(notice()).toBeNull()
     expect(screen()).not.toBeNull()
@@ -1581,7 +1591,7 @@ describe("EnterAppScreen in an app's built-in browser", () => {
 
     await act(async () => root.unmount())
     root = createRoot(container)
-    setActiveCredentialId("cred-held")
+    await seedCredential("cred-held")
     await open(UA.iosInstagram, "/enter?choose=1")
     expect(notice()).toBeNull()
     expect(screen()).not.toBeNull()
@@ -1818,9 +1828,7 @@ describe("EnterAppScreen passkey telemetry", () => {
   })
 
   it("a pinned sign-in the wrong passkey answered reads as a passkey mismatch", async () => {
-    const { PasskeyMismatchError } = await import(
-      "../../../src/features/onboarding/oxideOnboarding"
-    )
+    const { PasskeyMismatchError } = await import("../../../src/features/identity/passkeyAccount")
     await toFoundPasskey()
     answeredEntry(() => {
       throw new PasskeyMismatchError()
@@ -1877,11 +1885,11 @@ describe("EnterAppScreen passkey telemetry", () => {
   it("a sign-in that replaces the document has reported before it does", async () => {
     const assign = vi.fn()
     vi.stubGlobal("location", { assign, origin: "https://wallet.test" })
-    await walletStorage.commitItem("webwallet.storageId", "storage-a")
+    await seedDevice({ storageId: "storage-a" })
     try {
       await toScreen()
       answeredEntry(async () => {
-        await walletStorage.commitItem("webwallet.storageId", "storage-b")
+        await seedDevice({ storageId: "storage-b" })
         return ENTERED
       })
       await click("sign-in-show-passkeys")

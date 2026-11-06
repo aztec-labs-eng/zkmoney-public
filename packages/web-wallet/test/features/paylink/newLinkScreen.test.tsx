@@ -2,6 +2,7 @@ import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { MemoryRouter, Routes, Route, useLocation } from "react-router-dom"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { setIdentity } from "../../support/identity"
 import { balancesOf } from "../../support/balances"
 import { fireEvent } from "../../../src/lib/analytics"
 import { provingProgress } from "@obsidion/proving-progress"
@@ -36,12 +37,6 @@ vi.mock("../../../src/features/paylink/usePaylinkDeps", () => ({ usePaylinkDeps:
 vi.mock("../../../src/lib/analytics", () => ({ fireEvent: vi.fn(), failureCode: () => "x" }))
 const errorModal = vi.fn()
 subscribeErrorModal(errorModal)
-
-const identity = vi.hoisted(() => ({ handle: undefined as string | undefined }))
-vi.mock("../../../src/features/identity/walletIdentity", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../src/features/identity/walletIdentity")>()),
-  loadWalletIdentity: () => ({ address: "0xabc", claimedAt: 1, handle: identity.handle }),
-}))
 
 type Stage = (s: string) => void
 type Opts = {
@@ -111,9 +106,9 @@ describe("NewLinkScreen", () => {
     await mount()
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     allowanceGate.reason = undefined
-    identity.handle = undefined
+    await setIdentity({ address: "0xabc" })
     ticket.offer = null
     act(() => root.unmount())
     container.remove()
@@ -159,7 +154,7 @@ describe("NewLinkScreen", () => {
     const sentTag = () => createSponsoredLink.mock.lastCall?.[3].senderTag
 
     it("leaves the tag off a link the creator turns it off for", async () => {
-      identity.handle = "river"
+      await setIdentity({ address: "0xabc", handle: "river" })
       await remount()
       await act(async () => setInput("25"))
       await act(async () => button("Next")?.click())

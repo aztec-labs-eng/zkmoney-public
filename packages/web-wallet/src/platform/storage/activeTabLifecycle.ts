@@ -11,9 +11,16 @@
  * OPFS is unavailable, takes no pool lock, but it belongs to its page alone, so there is nothing
  * the new tab could see the old one write.
  */
-import { WebLocksUnavailableError } from "./webLock"
 
 export const ACTIVE_TAB_LOCK = "webwallet.active-tab"
+
+/** A browser realm without Web Locks: the passkey policy admits none, so the wallet refuses it. */
+export class WebLocksUnavailableError extends Error {
+  constructor() {
+    super("Web Locks are unavailable in this browser")
+    this.name = "WebLocksUnavailableError"
+  }
+}
 
 /** Between attempts to open a database another tab still holds. */
 export const BUSY_RETRY_MS = 100

@@ -199,17 +199,42 @@ describe("laptopCreationFor", () => {
     expect(laptopCreationFor(firefox("152.0"))).toEqual(phone)
   })
 
-  it("offers Windows Chrome Google Password Manager and 1Password on any Windows", () => {
-    const expected: LaptopCreation = {
+  it("offers Chrome on Windows 11 Google Password Manager, Windows Hello and 1Password", () => {
+    expect(laptopCreationFor(windows())).toEqual({
+      local: true,
+      os: "windows",
+      row: "windowsChrome",
+      managers: ["gpm", "windows_hello", "1password"],
+      withdrawn: [],
+    })
+  })
+
+  it("keeps Windows Hello off Chrome on Windows 10, and marks the row so the sheet says why", () => {
+    expect(laptopCreationFor(windows(chrome, "10.0.0"))).toEqual({
       local: true,
       os: "windows",
       row: "windowsChrome",
       managers: ["gpm", "1password"],
       withdrawn: [],
+      windows10: true,
+    })
+  })
+
+  it("admits Windows Hello on no other row: other Windows browsers are unmeasured", () => {
+    const others = [
+      windows(edge),
+      windows(brave),
+      windows(chromium),
+      parseUserAgent({ userAgent: WINDOWS_FIREFOX_UA }),
+      parseUserAgent({ userAgent: WINDOWS_CHROME_UA }),
+    ]
+    for (const ua of others) {
+      for (const withdrawn of [WITHDRAWN, FIREFOX_ADMITTED]) {
+        const creation = laptopCreationFor(ua, withdrawn)
+        expect(creation.local && creation.managers).not.toContain("windows_hello")
+      }
     }
-    for (const ua of [windows(), windows(chrome, "10.0.0")]) {
-      expect(laptopCreationFor(ua)).toEqual(expected)
-    }
+    expect(laptopCreationFor(linux())).toMatchObject({ managers: ["gpm", "1password"] })
   })
 
   it("offers another Chromium on Windows 1Password alone, with the Chrome tip", () => {
@@ -324,8 +349,17 @@ describe("laptopCreationFor", () => {
         local: true,
         os: "windows",
         row: "windowsChrome",
-        managers: ["gpm"],
+        managers: ["gpm", "windows_hello"],
         withdrawn: ["1password"],
+      })
+      expect(
+        laptopCreationFor(windows(), withdrawing({ windowsChrome: ["windows_hello"] })),
+      ).toEqual({
+        local: true,
+        os: "windows",
+        row: "windowsChrome",
+        managers: ["gpm", "1password"],
+        withdrawn: ["windows_hello"],
       })
     })
 
@@ -336,12 +370,14 @@ describe("laptopCreationFor", () => {
     })
 
     it("offers a row left with 1Password alone, with the Chrome tip", () => {
-      expect(laptopCreationFor(windows(), withdrawing({ windowsChrome: ["gpm"] }))).toEqual({
+      expect(
+        laptopCreationFor(windows(), withdrawing({ windowsChrome: ["gpm", "windows_hello"] })),
+      ).toEqual({
         local: true,
         os: "windows",
         row: "windowsChrome",
         managers: ["1password"],
-        withdrawn: ["gpm"],
+        withdrawn: ["gpm", "windows_hello"],
       })
       expect(
         laptopCreationFor(mac("26.4.1", edge), withdrawing({ macEdgeBrave: ["apple"] })),
@@ -396,7 +432,7 @@ describe("laptopCreationFor", () => {
       // Chrome's own row is untouched by it.
       expect(
         laptopCreationFor(windows(), withdrawing({ windowsEdgeBrave: ["1password"] })),
-      ).toMatchObject({ managers: ["gpm", "1password"] })
+      ).toMatchObject({ managers: ["gpm", "windows_hello", "1password"] })
     })
 
     it("gives Safari and Firefox on a Mac no Chrome tip", () => {

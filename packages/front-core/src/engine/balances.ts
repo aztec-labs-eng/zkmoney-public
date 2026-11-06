@@ -157,7 +157,8 @@ export function exceedsBalance(view: BalanceView, amount: bigint | undefined): b
 
 /**
  * Home's Main figure. Funds on their way count where they land. A held upgrade lock shows what the
- * upgrade will land instead.
+ * upgrade will land instead. `updating` marks a cached figure no read from this session confirmed:
+ * it can be stale.
  */
 export function selectHomeMain(
   view: BalanceView,
@@ -166,11 +167,13 @@ export function selectHomeMain(
     lock: { checked: boolean; held: boolean; main?: bigint }
     upgradesLoaded: boolean
   },
-): { shown: bigint | undefined; known: boolean } {
+): { shown: bigint | undefined; known: boolean; updating: boolean } {
   const { lock } = home
+  const known = lock.checked && (lock.held || (view.known && home.upgradesLoaded))
   return {
     shown: lock.held ? lock.main : (view.main?.atomic ?? 0n) + home.arriving,
-    known: lock.checked && (lock.held || (view.known && home.upgradesLoaded)),
+    known,
+    updating: known && !lock.held && !view.live,
   }
 }
 

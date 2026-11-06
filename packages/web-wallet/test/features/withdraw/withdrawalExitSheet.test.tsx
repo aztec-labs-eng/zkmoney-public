@@ -34,7 +34,7 @@ vi.mock("../../../src/lib/analytics", () => ({
   lapTimer: () => () => 0,
 }))
 vi.mock("../../../src/errors/errorModal", () => ({ showReportableError: h.showReportableError }))
-vi.mock("../../../src/features/deposit/l1Wallet", () => ({
+vi.mock("../../../src/session/l1Wallet", () => ({
   isWalletRejection: (e: { code?: number }) => e?.code === 4001,
   useL1Wallet: () => l1,
 }))
@@ -69,6 +69,7 @@ vi.mock("@obsidion/web-ds", () => ({
 }))
 
 const { WithdrawalExitModal } = await import("../../../src/features/withdraw/WithdrawalExitModal")
+const { ManualExitSheet } = await import("../../../src/features/withdraw/ManualExitSheet")
 
 declare global {
   // eslint-disable-next-line no-var
@@ -98,6 +99,104 @@ beforeEach(() => {
     wallet: { node: {} },
     account: { getAddress: () => ({}) },
     teeSigner: {},
+  })
+})
+
+describe("ManualExitSheet", () => {
+  type Run = React.ComponentProps<typeof ManualExitSheet>["run"]
+  const SECOND_TX = `0x${"cd".repeat(32)}` as Hex
+  const onError = vi.fn()
+  let container: HTMLDivElement
+  let root: Root
+
+  const send = () =>
+    act(async () =>
+      Array.from(container.querySelectorAll("button"))
+        .find((b) => b.textContent === "Send")!
+        .click(),
+    )
+  const slotOpen = () =>
+    container.querySelector<HTMLElement>('[data-testid="wallet-slot"]')!.dataset.open
+  const render = (props: { run: Run; blocked?: boolean; refusal?: () => string | undefined }) =>
+    act(async () =>
+      root.render(
+        <>
+          <ManualExitSheet
+            label="Exit"
+            title="Exit"
+            doneTitle="Sent"
+            explainer=""
+            facts={null}
+            buttonTitle="Send"
+            preparing="Proving"
+            onError={onError}
+            done="All sent"
+            onClose={vi.fn()}
+            {...props}
+          />
+          <SlotProbe />
+        </>,
+      ),
+    )
+
+  beforeEach(() => {
+    globalThis.IS_REACT_ACT_ENVIRONMENT = true
+    l1.account = CONNECTED
+    l1.wrongChain = false
+    container = document.createElement("div")
+    document.body.appendChild(container)
+    root = createRoot(container)
+  })
+
+  afterEach(async () => {
+    await act(async () => root.unmount())
+    container.remove()
+    clearWalletPrompt()
+    vi.clearAllMocks()
+  })
+
+  it("holds the wallet slot for each batch's request, and lists each hash", async () => {
+    let next = () => {}
+    let stage = (_: "signing" | "confirming") => {}
+    let finish = (_: Hex[]) => {}
+    await render({
+      run: (opts) => {
+        next = opts.nextRequest
+        stage = opts.onStage
+        return new Promise<Hex[]>((resolve) => (finish = resolve))
+      },
+    })
+    await send()
+    await act(async () => stage("confirming"))
+    expect(slotOpen()).toBe("false")
+    await act(async () => next())
+    expect(slotOpen()).toBe("true")
+    expect(container.textContent).toContain("Proving")
+    await act(async () => finish([L1_TX, SECOND_TX]))
+    expect(slotOpen()).toBe("false")
+    expect(container.textContent).toContain("All sent")
+    expect(container.querySelectorAll(`a[href*="0x"]`).length).toBe(2)
+  })
+
+  it("shows a refusal on the form without reporting it", async () => {
+    await render({
+      run: async () => {
+        throw new Error("busy")
+      },
+      refusal: () => "Try again later",
+    })
+    await send()
+    expect(container.querySelector('[data-testid="withdrawal-exit-refused"]')?.textContent).toBe(
+      "Try again later",
+    )
+    expect(onError).not.toHaveBeenCalled()
+  })
+
+  it("holds the button while blocked", async () => {
+    const run = vi.fn<Run>(async () => L1_TX)
+    await render({ run, blocked: true })
+    await send()
+    expect(run).not.toHaveBeenCalled()
   })
 })
 

@@ -1,7 +1,7 @@
 import { upgradeApprovals, type MigrationQueueJob } from "../runMigrationQueue"
 import { backgroundSend, runGatedMigrationQueue } from "../gatedMigration"
 import { reloadPage, walletStoreIsPersistent } from "../../../platform/storage/walletStorage"
-import { peekAuthService } from "../../../platform/auth/useAuthenticator"
+import type { WebAlphaAuthService } from "../../../platform/auth/WebAlphaAuthService"
 import { Modal } from "../../../ui/Modal"
 /**
  * Boot-time migration detection: derives where the signed-in account's upgrade stands from what it
@@ -26,6 +26,7 @@ import {
   checkSpentViaPaylinkService,
   type After,
   dataKey,
+  loadRecords,
   useContractServiceContext,
   useSavingsPosition,
   useStore,
@@ -63,6 +64,13 @@ import { l1PublicClient } from "../../../config/oxideTuple"
 import { showReportableError } from "../../../errors/errorModal"
 import { BootSplash } from "../../../ui/PxeBoot"
 import { fireEvent } from "../../../lib/analytics"
+import {
+  migrationSource,
+  reportMigrationError,
+  reportMigrationPrompted,
+  reportMigrationStart,
+  useMigrationFunnel,
+} from "../migrationFunnel"
 import { webStorage } from "../../../platform/storage/WebStorageAdapter"
 import type { HistoricResidualSummary } from "../historicResiduals"
 import {
@@ -78,7 +86,7 @@ import {
   watchForFreeze,
 } from "../freezeWatch"
 import { itemNote, lockedUntil, money } from "../residualNotes"
-import { useSession } from "../../../platform/session"
+import { useSession } from "../../../session/session"
 import {
   isFlowCancelled,
   runListedOperation,
@@ -136,12 +144,10 @@ import {
   type UpgradeState,
 } from "../migrationDialog"
 import { setWithdrawableSources, useOldVersionWithdrawals } from "../oldVersionWithdraw"
-import { loadWalletIdentity } from "../../identity/walletIdentity"
 import {
   useSponsoredRailPending,
   useSponsoredRailReadFailed,
-} from "../../onboarding/sponsoredRailReadiness"
-import { getPendingStore } from "../../onboarding/webRegistration"
+} from "../../registration/sponsoredRailReadiness"
 import {
   markOldHoldingsRead,
   markUpgradeMovesFunds,
@@ -192,7 +198,8 @@ function useProfileRepoint(): boolean {
 }
 
 /** The new version signs this session in from its cached key, which only a persistent store keeps. */
-const reloadKeepsSession = () => walletStoreIsPersistent() && !!peekAuthService()?.keyCached()
+const reloadKeepsSession = (auth: WebAlphaAuthService) =>
+  walletStoreIsPersistent() && auth.keyCached()
 
 /** A frozen paylink the upgrade refunds: its escrow still holds funds. */
 function escrowed(row: HistoricResidualSummary["frozenLinks"][number]): boolean {
@@ -204,7 +211,8 @@ export function MigrationDetectionMount() {
   const obsidionWallet = useResource(useSession().wallet)
   const obsidionAccount = useResource(useSession().account)
   const tokenService = useResource(useSession().token)
-  const { balances } = useSession()
+  const { auth, balances, sipaDeposits, registrations, device, namespace, identity } = useSession()
+  const named = useStore(identity, (s) => !!s.value?.handle)
   const { contractService } = useContractServiceContext()
   const { notifications, milestones } = useSession()
   const [residuals, setResiduals] = useState<HistoricResidualSummary[]>([])
@@ -387,7 +395,11 @@ export function MigrationDetectionMount() {
       setRefreshing(true)
       let found: Awaited<ReturnType<typeof probeAccountResiduals>>
       try {
-        found = await probeAccountResiduals(obsidionWallet, obsidionAccount)
+        found = await probeAccountResiduals(
+          obsidionWallet,
+          obsidionAccount,
+          identity.get().value?.handle,
+        )
       } catch (error) {
         console.warn("[migration] re-probe failed:", error)
         if (error instanceof ManifestUnavailableError && scan === scans.current) {
@@ -415,7 +427,7 @@ export function MigrationDetectionMount() {
       // A source that froze since the last probe is historic now.
       setHistoric(found.historic ?? [])
     },
-    [obsidionWallet, obsidionAccount],
+    [obsidionWallet, obsidionAccount, identity],
   )
   useEffect(() => () => clearTimeout(probeRetry.current), [refresh])
 
@@ -428,7 +440,11 @@ export function MigrationDetectionMount() {
     void (async () => {
       if (!(await milestones.after(PROBE_AFTER)) || cancelled) return
       logStep("probe start")
-      const found = await probeAccountResiduals(obsidionWallet, obsidionAccount)
+      const found = await probeAccountResiduals(
+        obsidionWallet,
+        obsidionAccount,
+        identity.get().value?.handle,
+      )
       logStep("probe answer")
       if (cancelled) return
       setScanRevision((n) => n + 1)
@@ -458,7 +474,7 @@ export function MigrationDetectionMount() {
       cancelled = true
       clearTimeout(retry)
     }
-  }, [obsidionWallet, obsidionAccount, checks, milestones])
+  }, [obsidionWallet, obsidionAccount, checks, milestones, identity])
 
   // The sources that wait for their migration feature: a saved run of one waits with it.
   const featurePending = residuals
@@ -496,6 +512,10 @@ export function MigrationDetectionMount() {
           {
             wallet: obsidionWallet,
             account: obsidionAccount,
+            deposits: sipaDeposits,
+            auth,
+            own: { device, namespace },
+            handle: identity.get().value?.handle,
             contractService,
             toTokenService: await destinationTokenService(
               obsidionWallet,
@@ -718,6 +738,10 @@ export function MigrationDetectionMount() {
             {
               wallet: obsidionWallet,
               account: obsidionAccount,
+              deposits: sipaDeposits,
+              auth,
+              own: { device, namespace },
+              handle: identity.get().value?.handle,
               contractService,
               toTokenService: await destinationTokenService(
                 obsidionWallet,
@@ -754,6 +778,11 @@ export function MigrationDetectionMount() {
       reading.abort()
     }
   }, [
+    auth,
+    device,
+    namespace,
+    identity,
+    sipaDeposits,
     residuals,
     historic,
     scanned,
@@ -822,6 +851,10 @@ export function MigrationDetectionMount() {
                 return createWebMetadataMigration({
                   wallet: obsidionWallet,
                   account: obsidionAccount,
+                  deposits: sipaDeposits,
+                  auth,
+                  own: { device, namespace },
+                  handle: identity.get().value?.handle,
                   contractService,
                   toTokenService: await destinationTokenService(
                     obsidionWallet,
@@ -840,6 +873,10 @@ export function MigrationDetectionMount() {
                 createWebMetadataMigration({
                   wallet: obsidionWallet,
                   account: obsidionAccount,
+                  deposits: sipaDeposits,
+                  auth,
+                  own: { device, namespace },
+                  handle: identity.get().value?.handle,
                   contractService,
                   toTokenService: tokenService,
                   historic: current,
@@ -957,6 +994,10 @@ export function MigrationDetectionMount() {
         {
           wallet: ask.obsidionWallet,
           account: ask.obsidionAccount,
+          deposits: sipaDeposits,
+          auth,
+          own: { device, namespace },
+          handle: identity.get().value?.handle,
           contractService: ask.contractService,
           toTokenService: ask.tokenService,
           historic: ask.current,
@@ -984,7 +1025,7 @@ export function MigrationDetectionMount() {
       cancelled = true
       reading.abort()
     }
-  }, [registrationAsk])
+  }, [auth, device, namespace, registrationAsk, sipaDeposits, identity])
   // Only a named account that would otherwise read as finishing needs this browser's records. A
   // nameless one has no registration to finish.
   const askRegisteredHere =
@@ -993,23 +1034,21 @@ export function MigrationDetectionMount() {
     registrationNeeded === false &&
     railPending === true &&
     !railUnread &&
-    !!loadWalletIdentity()?.handle
+    named
   useEffect(() => {
     if (!obsidionAccount || !askRegisteredHere) return
     let cancelled = false
     const address = obsidionAccount.getAddress().toString().toLowerCase()
-    const store = getPendingStore()
-    void store
-      .load()
-      .then(() => {
+    void loadRecords(registrations.view)
+      .then((records) => {
         if (cancelled) return
-        setRegisteredHere(store.list().some((r) => r.l2Address.toLowerCase() === address))
+        setRegisteredHere(records.some((r) => r.l2Address.toLowerCase() === address))
       })
       .catch((error) => console.warn("[migration] registration record read failed:", error))
     return () => {
       cancelled = true
     }
-  }, [obsidionAccount, askRegisteredHere])
+  }, [obsidionAccount, askRegisteredHere, registrations])
   // Home waits until a check reads every old version, unless the deployment counts none. With the
   // wallet locked nothing can be read in this page.
   useEffect(() => {
@@ -1081,6 +1120,12 @@ export function MigrationDetectionMount() {
           (a, b) => Number(destinationOf(b) === current) - Number(destinationOf(a) === current),
         )
       : []
+  // The old versions whose funds starting now moves.
+  const legSources = registers ? followers : upgradeSources
+  const legs = legSources.length
+  const funnelSource = migrationSource(legSources.map((tuple) => tuple.version))
+  const runSource =
+    source && oldVersion(source.portal) ? migrationSource([source.version]) : undefined
   // Starting now queues only this version's run, which moves nothing.
   const queuesUpdateOnly = metadataFlow && registers && upgradeSources.length === 1 && !oldRunGoesOn
   const sourceQuote = !(resumeSource && metadataRecord) && executing && quoteOf(executing)
@@ -1381,6 +1426,13 @@ export function MigrationDetectionMount() {
       }),
     )
   }, [needsYou, movedOn, notifications])
+  useMigrationFunnel({
+    account,
+    record: metadataRecord,
+    stop: needsYou,
+    source: runSource ?? funnelSource,
+    done: celebrate || state === "none",
+  })
 
   // Past the hand-off the migration outlives the modal: its activity rows and the bell report it.
   const left = useRef(false)
@@ -1402,6 +1454,10 @@ export function MigrationDetectionMount() {
       {
         wallet: obsidionWallet!,
         account: obsidionAccount!,
+        deposits: sipaDeposits,
+        auth,
+        own: { device, namespace },
+        handle: identity.get().value?.handle,
         contractService: contractService!,
         toTokenService: await destinationTokenService(
           obsidionWallet!,
@@ -1479,6 +1535,11 @@ export function MigrationDetectionMount() {
     }
     const run = new AbortController()
     migrationRun.current = run
+    reportMigrationStart(obsidionAccount.getAddress().toString(), {
+      source: funnelSource,
+      batches: summary?.approvals,
+      legs,
+    })
     // The click that started the run opens its first prompt.
     resetApprovals()
     grantApproval()
@@ -1570,6 +1631,10 @@ export function MigrationDetectionMount() {
         {
           wallet: obsidionWallet,
           account: obsidionAccount,
+          deposits: sipaDeposits,
+          auth,
+          own: { device, namespace },
+          handle: identity.get().value?.handle,
           contractService,
           toTokenService: await destinationTokenService(
             obsidionWallet,
@@ -1676,6 +1741,7 @@ export function MigrationDetectionMount() {
         !isFlowCancelled(error) &&
         !(error instanceof UpgradeStopped)
       ) {
+        reportMigrationError(obsidionAccount.getAddress().toString(), error, runSource)
         showReportableError(error, "migration:upgrade")
       }
     } finally {
@@ -1704,7 +1770,7 @@ export function MigrationDetectionMount() {
             {copy.repoint.title}
           </GradientText>
           <p className="ww-logout__body">
-            {reloadKeepsSession() ? copy.repoint.reload : copy.repoint.reloadSignIn}
+            {reloadKeepsSession(auth) ? copy.repoint.reload : copy.repoint.reloadSignIn}
           </p>
           <div className="ww-logout__actions">
             <PrimaryGradientButton
@@ -1836,6 +1902,7 @@ export function MigrationDetectionMount() {
         void onMigrate()
       }}
       onClose={() => {
+        if (account) reportMigrationPrompted(account, "closed", { source: funnelSource, legs })
         setSignOpen(false)
         setRequested(false)
         setActionAsked(undefined)
@@ -1867,7 +1934,10 @@ export function MigrationDetectionMount() {
       return (
         <UpgradeLeft
           balance={balance}
-          onStart={() => setSignOpen(true)}
+          onStart={() => {
+            if (account) reportMigrationPrompted(account, "upgrade", { source: funnelSource, legs })
+            setSignOpen(true)
+          }}
           overlay={signOpen && sign}
         />
       )
@@ -1878,7 +1948,10 @@ export function MigrationDetectionMount() {
         balance={balance}
         paylinks={paylinks}
         waiting={networkWait}
-        onUpgrade={() => setSignOpen(true)}
+        onUpgrade={() => {
+          if (account) reportMigrationPrompted(account, "upgrade", { source: funnelSource, legs })
+          setSignOpen(true)
+        }}
         overlay={
           signOpen
             ? sign
@@ -1900,6 +1973,8 @@ export function MigrationDetectionMount() {
   // 1 Choose stands in for Home while an upgrade has funds to move. A record update alone shows only
   // on request. An action's request keeps its own sheet.
   const choose = metadataFlow && state === "offered" && (funded || requested || signOpen)
+  // It stands in for Home on its own, or opens on the user's request.
+  const promptTrigger = requested || signOpen ? "click" : "auto"
   if ((choose || expected) && !withdrawing && !actionAsked) {
     return (
       <UpgradeChoose
@@ -1907,9 +1982,28 @@ export function MigrationDetectionMount() {
         paylinks={paylinks}
         waiting={networkWait}
         checking={expected}
-        onUpgrade={() => setSignOpen(true)}
+        onShown={
+          account
+            ? () =>
+                reportMigrationPrompted(account, "shown", {
+                  source: funnelSource,
+                  trigger: promptTrigger,
+                  legs,
+                })
+            : undefined
+        }
+        onUpgrade={() => {
+          if (account) reportMigrationPrompted(account, "upgrade", { source: funnelSource, legs })
+          setSignOpen(true)
+        }}
         onWithdraw={
-          updateOnly && withdrawable.length === 0 ? undefined : () => navigate("/withdraw")
+          updateOnly && withdrawable.length === 0
+            ? undefined
+            : () => {
+                if (account)
+                  reportMigrationPrompted(account, "withdraw", { source: funnelSource, legs })
+                navigate("/withdraw")
+              }
         }
         overlay={!expected && (signOpen || requested) && sign}
       />

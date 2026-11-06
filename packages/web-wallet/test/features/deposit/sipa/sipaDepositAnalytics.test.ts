@@ -1,14 +1,11 @@
 import { describe, expect, it } from "vitest"
-import type { SIPADepositRecord } from "@obsidion/front-core"
-import { failureCode } from "../../../../src/lib/analytics"
+import type { SipaDeposit } from "@obsidion/front-core"
 import {
   createClaimSweepReporter,
   createSyncFailureReporter,
-  newlyClaimedRecords,
-  settlesBootBalance,
-} from "../../../../src/features/deposit/useSipaDeposits"
+} from "../../../../src/features/deposit/sipaTasks"
 
-function record(over: Partial<SIPADepositRecord>): SIPADepositRecord {
+function record(over: Partial<SipaDeposit>): SipaDeposit {
   return {
     sipaAddress: "0xaaaa",
     recipientL2Address: "0x1",
@@ -22,21 +19,8 @@ function record(over: Partial<SIPADepositRecord>): SIPADepositRecord {
     startTime: 1_000,
     endTime: 61_000,
     ...over,
-  } as SIPADepositRecord
+  } as SipaDeposit
 }
-
-describe("newlyClaimedRecords", () => {
-  it("ignores non-terminal phases and pre-seeded history", () => {
-    const seen = new Set<string>(["0xold"])
-    const snapshot = [
-      record({ sipaAddress: "0xold" }),
-      record({ sipaAddress: "0xpending", phase: "pendingClaim" }),
-      record({ sipaAddress: "0xnew" }),
-    ]
-    const fresh = newlyClaimedRecords(snapshot, seen)
-    expect(fresh.map((r) => r.sipaAddress)).toEqual(["0xnew"])
-  })
-})
 
 describe("createClaimSweepReporter", () => {
   const SINCE = 100_000
@@ -46,7 +30,9 @@ describe("createClaimSweepReporter", () => {
 
   it("reports a claim that settles after `since`, exactly once", () => {
     const report = createClaimSweepReporter(SINCE)
-    report([history])
+    expect(report([history, record({ sipaAddress: "0xpending", phase: "pendingClaim" })])).toEqual(
+      [],
+    )
     expect(report([history, settledNow]).map((r) => r.sipaAddress)).toEqual(["0xnew"])
     expect(report([history, settledNow])).toEqual([])
   })
@@ -60,34 +46,6 @@ describe("createClaimSweepReporter", () => {
   it("treats a claimed record with no endTime as history", () => {
     const report = createClaimSweepReporter(SINCE)
     expect(report([record({ sipaAddress: "0xnoend", endTime: undefined })])).toEqual([])
-  })
-})
-
-describe("deposit failure codes", () => {
-  it("labels a locked-session resolve", () => {
-    expect(
-      failureCode(new Error("no account for this session — enter with your passkey first")),
-    ).toBe("wallet_locked")
-  })
-})
-
-describe("settlesBootBalance", () => {
-  const result = (failed: number) => ({
-    discovered: 2,
-    active: 0,
-    skipped: 0,
-    claimed: 1,
-    pendingSettlement: 0,
-    recoverable: 0,
-    reconciled: 0,
-    failed,
-    complete: failed === 0,
-  })
-
-  it("settles on a clean pass only", () => {
-    expect(settlesBootBalance(result(0))).toBe(true)
-    expect(settlesBootBalance(result(1))).toBe(false)
-    expect(settlesBootBalance(null)).toBe(false)
   })
 })
 

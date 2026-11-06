@@ -61,9 +61,9 @@ describe("redeemLinkedGoldenTicket", () => {
     ticket()
     const redeem = () => redeemLinkedGoldenTicket(keys, config, wallet, peekTicketSignup())
     h.redeem.mockResolvedValueOnce({ status: "below_threshold", amount: DAI })
-    await expect(redeem()).rejects.toThrow(/below the amount that waives/)
+    await expect(redeem()).rejects.toMatchObject({ code: "registration.ticketBelowThreshold" })
     h.redeem.mockResolvedValueOnce({ status: "cannot_cover", amount: DAI })
-    await expect(redeem()).rejects.toThrow(/cannot cover the account deposit/)
+    await expect(redeem()).rejects.toMatchObject({ code: "registration.ticketCannotCover" })
   })
 
   it("prices the burn from the advertised schedule before the ticket is spent, and keeps the amount", async () => {

@@ -5,7 +5,7 @@
  * casing the caller arrived with.
  */
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { composeWireNameHash } from "@obsidion/front-core"
 
 import {
@@ -14,8 +14,7 @@ import {
   tagMatches,
   type EnteredClaim,
 } from "../../../../src/features/onboarding/oxideOnboarding"
-import { resolveLocalTag } from "../../../../src/features/onboarding/webRegistration"
-import { saveWalletIdentity } from "../../../../src/features/identity/walletIdentity"
+import { resolveLocalTag } from "../../../../src/features/registration/webRegistration"
 
 const DOMAIN = "oxidestaging.eth"
 
@@ -43,7 +42,7 @@ describe("tagMatches / confirmTag", () => {
   })
 
   it("confirmTag persists the matched form, not the caller's casing", () => {
-    // finish() spreads this straight into saveWalletIdentity, so the returned handle is
+    // finish() spreads this straight into saveIdentity, so the returned handle is
     // what every later detection tick re-hashes.
     expect(confirmTag(claim("alice"), "Alice")).toEqual({
       handle: "alice",
@@ -77,17 +76,15 @@ describe("reservedTagMatch", () => {
 })
 
 describe("resolveLocalTag (production detection resolver)", () => {
-  beforeEach(() => localStorage.clear())
+  const identity = (handle: string) => ({ handle, address: "0x" + "11".repeat(32), claimedAt: 1 })
 
   it("delegates to the shared matcher: a stored handle resolves folded, whatever its case", async () => {
-    saveWalletIdentity({ handle: "Alice", address: "0x" + "11".repeat(32), claimedAt: 1 })
     const nameHash = composeWireNameHash("Alice", DOMAIN)
-    await expect(resolveLocalTag(nameHash, {} as never)).resolves.toBe("alice")
+    await expect(resolveLocalTag(nameHash, {} as never, identity("Alice"))).resolves.toBe("alice")
   })
 
   it("returns null when the stored handle cannot reach the registered node", async () => {
-    saveWalletIdentity({ handle: "alice", address: "0x" + "11".repeat(32), claimedAt: 1 })
     const otherHash = composeWireNameHash("bob", DOMAIN)
-    await expect(resolveLocalTag(otherHash, {} as never)).resolves.toBeNull()
+    await expect(resolveLocalTag(otherHash, {} as never, identity("alice"))).resolves.toBeNull()
   })
 })

@@ -1,7 +1,7 @@
 import * as actual from "../../../src/features/contacts/contactPay"
 import { ContactStorage } from "@obsidion/front-core"
 import { parseUnits } from "viem"
-import { session } from "../../../src/platform/session"
+import { session } from "../../../src/session/session"
 import { fixtureState, inOperation, operation } from "./control"
 import { field, TOKEN_INFO, TX_HASH, ROLLUP } from "./data"
 export * from "../../../src/features/contacts/contactPay"

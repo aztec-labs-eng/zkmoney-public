@@ -4,7 +4,7 @@ import type { PersistedRotation } from "@obsidion/sdk"
 import type { Address, Hex } from "viem"
 import { PASSKEY_ENVELOPE_BYTES } from "../../oxide/passkeyEnvelope.js"
 import { RecordStorage } from "../services/bridge/RecordStorage.js"
-import type { SipaOrigin } from "../services/deposits/SIPADepositStore.js"
+import type { SipaOrigin } from "../../engine/sipaDeposits"
 import { BACKUP_ROTATION_STORAGE_KEY } from "./storage-constants.js"
 import type { IStorageAdapter } from "./adapter.js"
 
@@ -60,13 +60,17 @@ export interface BackupRotationPlan {
   /** Atomic token units, as decimal strings. */
   fundingAmount: string
   /**
-   * What reaches the deposit address: the funding less the withdrawal's own charges. The recovery
-   * card shows this, not the funding, which never all lands. A record without it shows no amount.
+   * What reaches the deposit address: the funding less the withdrawal's own charges. Less the
+   * funding margin, it is the floor below which the flow takes money there as someone else's. The
+   * recovery card shows it, not the funding, which never all lands. A record without it shows no
+   * amount.
    */
   deposited?: string
   credited: string
-  /** Prompts now, then prompts to move the balance. */
+  /** Prompts now, then prompts to take back open paylinks and to move the balance. */
   approvals: number
+  /** A record planned before the add took back paylinks has none. */
+  refunds?: number
   moves: number
 }
 
@@ -279,19 +283,42 @@ export interface BackupPublish {
 /** `mined` once an L1 checkpoint holds the transaction; the sequencer alone can drop the tiers before. */
 export type MoveChunkState = "planned" | "claimed" | "submitted" | "included" | "mined"
 
-export interface MoveChunkRecord {
-  token: string
-  /** Atomic units, decimal. */
-  amount: string
-  state: MoveChunkState
-  /** The send holding the chunk before its hash; a claim from another life of the wallet is released. */
+/** One sponsored send of the move, from its plan until an L1 checkpoint holds it. */
+export interface MoveSend<State extends string = MoveChunkState> {
+  state: State
+  /** The send holding it before its hash; a claim from another life of the wallet is released. */
   claim?: { id: string; session: string }
   txHash?: Hex
   expiresAtMs?: number
-  /** The block an `included` chunk was seen in; re-read until it is `mined`. */
+  /** The block an `included` send was seen in; re-read until it is `mined`. */
   inclusion?: { blockNumber: number; blockHash: string }
-  /** An included chunk whose transaction reverted; nothing moved, re-read like any inclusion. */
+  /** An included send whose transaction reverted; nothing moved, re-read like any inclusion. */
   effect?: "reverted"
+}
+
+export interface MoveChunkRecord extends MoveSend {
+  token: string
+  /** Atomic units, decimal. */
+  amount: string
+}
+
+/**
+ * An open paylink the move takes back: its refund pays the one-key account, which the move then
+ * empties. `skipped` once the link was spent another way, by a claim or another refund.
+ */
+export interface LinkRefundRecord extends MoveSend<MoveChunkState | "skipped"> {
+  /**
+   * The link's fragment, which its refund takes. Its create row drops the fragment once a refund
+   * is included, and a reorg can still drop that refund.
+   */
+  link: string
+}
+
+/** The open paylinks the move takes back before its first run, listed once. */
+export interface LinkRefunds {
+  /** The user closed the prompt for the next refund; nothing is sent until they ask again. */
+  declined?: true
+  links: LinkRefundRecord[]
 }
 
 /** One forwarding run: `m` chunks planned together, counted as "n of m". */
@@ -332,6 +359,7 @@ export interface BackupRotationRecord {
   /** The re-root's checkpoints, each written as it completes. */
   reroot?: { batch?: Hex; switched?: boolean; rebound?: boolean; receiveCode?: boolean }
   move?: { runs: MoveRun[] }
+  refunds?: LinkRefunds
   createdAt: number
   updatedAt: number
 }
@@ -366,6 +394,7 @@ const CHUNK_STATES: readonly MoveChunkState[] = [
   "included",
   "mined",
 ]
+const REFUND_STATES: readonly LinkRefundRecord["state"][] = [...CHUNK_STATES, "skipped"]
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
   !!v && typeof v === "object" && !Array.isArray(v)
@@ -393,6 +422,7 @@ function isPlan(v: unknown): v is BackupRotationPlan {
     optional(v.deposited, isDecimal) &&
     isDecimal(v.credited) &&
     isNum(v.approvals) &&
+    optional(v.refunds, isNum) &&
     isNum(v.moves)
   )
 }
@@ -480,12 +510,9 @@ function isPublish(v: unknown): v is BackupPublish {
   )
 }
 
-function isChunk(v: unknown): v is MoveChunkRecord {
+function isSend(v: Record<string, unknown>, states: readonly string[]): boolean {
   return (
-    isObj(v) &&
-    isStr(v.token) &&
-    isDecimal(v.amount) &&
-    oneOf(CHUNK_STATES, v.state) &&
+    oneOf(states, v.state) &&
     optional(v.claim, (k) => isObj(k) && isStr(k.id) && isStr(k.session)) &&
     optional(v.txHash, isWord) &&
     optional(v.expiresAtMs, isNum) &&
@@ -493,6 +520,17 @@ function isChunk(v: unknown): v is MoveChunkRecord {
     optional(v.effect, (e) => e === "reverted")
   )
 }
+
+const isChunk = (v: unknown): v is MoveChunkRecord =>
+  isObj(v) && isStr(v.token) && isDecimal(v.amount) && isSend(v, CHUNK_STATES)
+
+const isRefunds = (v: unknown): v is LinkRefunds =>
+  isObj(v) &&
+  optional(v.declined, (d) => d === true) &&
+  arrayOf(
+    v.links,
+    (l): l is LinkRefundRecord => isObj(l) && isStr(l.link) && isSend(l, REFUND_STATES),
+  )
 
 const isRun = (v: unknown): v is MoveRun =>
   isObj(v) &&
@@ -552,6 +590,7 @@ function isRecord(v: unknown, key: string): v is BackupRotationRecord {
   )
     return false
   if (!optional(v.move, (m) => isObj(m) && arrayOf(m.runs, isRun))) return false
+  if (!optional(v.refunds, isRefunds)) return false
   return isNum(v.createdAt) && isNum(v.updatedAt)
 }
 
@@ -599,9 +638,26 @@ export function moveProgress(
   return { included, total: run.m, depositBound: run.depositBound }
 }
 
-/** Whether the move waits for the user to ask again after they closed a chunk's prompt. */
-export const moveDeclined = (record: Pick<BackupRotationRecord, "phase" | "move">): boolean =>
-  (record.phase === "rerooted" || record.phase === "moved") && !!record.move?.runs.at(-1)?.declined
+/** The refunds' progress as "n of m" while one has yet to land; undefined once none has. */
+export function refundProgress(
+  record: Pick<BackupRotationRecord, "refunds">,
+): { landed: number; total: number } | undefined {
+  const links = record.refunds?.links ?? []
+  const landed = links.filter(
+    (l) =>
+      l.state === "skipped" ||
+      l.state === "mined" ||
+      (l.state === "included" && l.effect !== "reverted"),
+  ).length
+  return landed < links.length ? { landed, total: links.length } : undefined
+}
+
+/** Whether the move waits for the user to ask again after they closed a refund's or a chunk's prompt. */
+export const moveDeclined = (
+  record: Pick<BackupRotationRecord, "phase" | "move" | "refunds">,
+): boolean =>
+  (record.phase === "rerooted" || record.phase === "moved") &&
+  (!!record.move?.runs.at(-1)?.declined || !!record.refunds?.declined)
 
 /**
  * Whether the balance move can be spending now: from the re-root's switch until the move ends. Its

@@ -1,11 +1,9 @@
 import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 
 export async function compAddrToAztecAddr(compAddr: string) {
-  // The address is the first 32-byte field of the serialized CompleteAddress in
-  // every generation. CompleteAddress.fromString() instead RE-DERIVES the address
-  // from the keys (validate() → grumpkin mul/add/sqrt) with the CURRENT stack's
-  // derivation — wasted work, and on a v4-generation account the v5 math rejects
-  // the v4-format keys ("Input point_b must be on the curve").
+  // The address is the first 32-byte field of the serialized CompleteAddress.
+  // CompleteAddress.fromString() instead RE-DERIVES the address from the keys
+  // (validate() → grumpkin mul/add/sqrt), which is wasted work.
   return AztecAddress.fromStringUnsafe(compAddr.slice(0, 66))
 }
 

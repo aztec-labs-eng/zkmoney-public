@@ -36,6 +36,24 @@ const NO_COPY = [
   copy("TemplateLiteral:has(TemplateElement[value.raw=/\\s/])"),
 ]
 const COPY_ATTR = "JSXAttribute[name.name=/^(title|label|placeholder|aria-label|alt)$/]"
+// Preamble "Storage": only platform storage touches browser storage or walletStorage's copy.
+const STORAGE = "Read and write through a persistent store on the Database, or the platform storage helpers."
+const STORAGE_GLOBALS = ["localStorage", "sessionStorage", "indexedDB"]
+const STORAGE_IMPORTS = {
+  group: ["**/walletStorage", "**/walletStorage.js"],
+  importNames: ["walletStorage"],
+  message: STORAGE,
+}
+const NO_STORAGE_IMPORT = { selector: "ImportExpression[source.value=/walletStorage/]", message: STORAGE }
+const STORAGE_RULES = {
+  "no-restricted-globals": ["error", ...STORAGE_GLOBALS.map((name) => ({ name, message: STORAGE }))],
+  "no-restricted-properties": [
+    "error",
+    ...["window", "globalThis", "self"].flatMap((object) =>
+      STORAGE_GLOBALS.map((property) => ({ object, property, message: STORAGE })),
+    ),
+  ],
+}
 const jsxCopy = (selector) => ({ selector, message: "Render copy from the component's Foo.copy.ts." })
 const NO_JSX_COPY = [
   jsxCopy("JSXText[value=/[A-Za-z]/]"),
@@ -52,9 +70,30 @@ const NO_JSX_COPY = [
  * @param {string[]} [migrated.views] components in folders: also no copy literals in JSX
  * @param {string[]} [migrated.tests] tests: no module mocks
  * @param {boolean} [migrated.copyFreeTests] tests also never assert copy
+ * @param {string[]} [migrated.platformStorage] the platform storage code, which may touch storage directly
+ * @param {string[]} [migrated.storageBaseline] migrated files that still touch storage directly; may only shrink
  */
-export function migrated({ tsconfigRootDir, engine = [], react = [], views = [], tests = [], copyFreeTests = false }) {
+export function migrated({
+  tsconfigRootDir,
+  engine = [],
+  react = [],
+  views = [],
+  tests = [],
+  copyFreeTests = false,
+  platformStorage = [],
+  storageBaseline = [],
+}) {
   const all = [...engine, ...react, ...views, ...tests]
+  const storageExempt = [...platformStorage, ...storageBaseline]
+  // The rule for `files`, with the storage bans added for each file that is not storage-exempt.
+  const exempting = (files, rule, options) =>
+    files.length === 0
+      ? []
+      : [
+          { files, rules: { [rule]: options(false) } },
+          { files, ignores: storageExempt, rules: { [rule]: options(true) } },
+        ]
+  const syntax = (selectors) => (storage) => ["error", ...selectors, ...(storage ? [NO_STORAGE_IMPORT] : [])]
   return tseslint.config(
     { ignores: ["dist/**"] },
     {
@@ -70,32 +109,36 @@ export function migrated({ tsconfigRootDir, engine = [], react = [], views = [],
     engine.length > 0 && {
       files: engine,
       languageOptions: { parserOptions: { projectService: true, tsconfigRootDir } },
-      rules: {
-        "@typescript-eslint/no-floating-promises": "error",
-        "no-restricted-syntax": ["error", ...NO_SWALLOW, NO_THROW],
-        "no-restricted-imports": [
-          "error",
-          {
-            patterns: [
-              { group: ["react", "react-dom", "react/*"], message: "The engine runs without React." },
-              { group: ["eventemitter3", "**/GlobalEventEmitter"], message: "State changes go through stores." },
-            ],
-          },
+      rules: { "@typescript-eslint/no-floating-promises": "error" },
+    },
+    ...exempting(engine, "no-restricted-syntax", syntax([...NO_SWALLOW, NO_THROW])),
+    ...exempting(engine, "no-restricted-imports", (storage) => [
+      "error",
+      {
+        patterns: [
+          { group: ["react", "react-dom", "react/*"], message: "The engine runs without React." },
+          { group: ["eventemitter3", "**/GlobalEventEmitter"], message: "State changes go through stores." },
+          ...(storage ? [STORAGE_IMPORTS] : []),
         ],
       },
+    ]),
+    engine.length + react.length + views.length > 0 && {
+      files: [...engine, ...react, ...views],
+      ignores: storageExempt,
+      rules: STORAGE_RULES,
+    },
+    react.length + views.length > 0 && {
+      files: [...react, ...views],
+      ignores: [...storageExempt, ...engine],
+      rules: { "no-restricted-imports": ["error", { patterns: [STORAGE_IMPORTS] }] },
     },
     react.length + views.length > 0 && {
       files: [...react, ...views],
       plugins: { "react-hooks": reactHooks },
-      rules: {
-        ...reactHooks.configs.recommended.rules,
-        "no-restricted-syntax": ["error", ...NO_SWALLOW, NO_THROW],
-      },
+      rules: reactHooks.configs.recommended.rules,
     },
-    views.length > 0 && {
-      files: views,
-      rules: { "no-restricted-syntax": ["error", ...NO_SWALLOW, NO_THROW, ...NO_JSX_COPY] },
-    },
+    ...exempting([...react, ...views], "no-restricted-syntax", syntax([...NO_SWALLOW, NO_THROW])),
+    ...exempting(views, "no-restricted-syntax", syntax([...NO_SWALLOW, NO_THROW, ...NO_JSX_COPY])),
     tests.length > 0 && {
       files: tests,
       rules: {

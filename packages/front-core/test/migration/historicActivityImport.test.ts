@@ -1,32 +1,33 @@
 import { describe, expect, it, vi } from "vitest"
+import { InMemoryStorageAdapter } from "../__test-helpers__/InMemoryStorageAdapter"
 import { QueueStatus } from "@obsidion/sdk"
 import {
   ACCOUNT_STORAGE_KEY,
-  AccountStorage,
   HISTORIC_ACTIVITY_IMPORTED_KEY,
   importHistoricActivity,
   KEY_SAVINGS_MOVES,
-  KEY_SIPA_DEPOSITS,
   retiredDatabaseOf,
+  retiredSipaDeposit,
   SavingsMoveStorage,
-  SIPADepositStore,
   TRANSACTIONS_STORAGE_KEY,
   TRANSFER_SCAN_CURSOR_PREFIX,
   transferScanNetworkOf,
   type RetiredDatabase,
   type SavingsMoveRecord,
-  type SIPADepositRecord,
   type WithdrawalRecord,
 } from "../../src/core"
 import { createActivity } from "../../src/engine/activity"
 import { openDatabase } from "../../src/engine/database"
 import { memoryBackend } from "../../src/engine/memoryBackend"
 import { scannedRow } from "../../src/core/services/transactions/TransferEventScanner"
-import { encodeRecord } from "../../src/engine/persistentStore"
+import { encodeRecord, loadRecords } from "../../src/engine/persistentStore"
+import {
+  createSipaDeposits,
+  KEY_SIPA_DEPOSITS,
+  type SipaDeposit,
+} from "../../src/engine/sipaDeposits"
 import { createWithdrawals, KEY_WITHDRAWALS } from "../../src/engine/withdrawals"
 import type { TokenInTxService, TokenTransaction, Transaction } from "../../src/types"
-import { InMemoryStorageAdapter } from "../__test-helpers__/InMemoryStorageAdapter"
-import { resetSingleton } from "../__test-helpers__/resetSingleton"
 
 const ACTIVE = "0xactive"
 const OLD = "0xold"
@@ -56,7 +57,7 @@ const row = (overrides: Partial<TokenTransaction> & { queueId?: string }): Token
     ...overrides,
   } as TokenTransaction)
 
-const deposit = (overrides: Partial<SIPADepositRecord>): SIPADepositRecord =>
+const deposit = (overrides: Partial<SipaDeposit>): SipaDeposit =>
   ({
     sipaAddress: "0xsipa1",
     recipientL2Address: ACCOUNT,
@@ -69,7 +70,7 @@ const deposit = (overrides: Partial<SIPADepositRecord>): SIPADepositRecord =>
     phase: "claimed",
     startTime: 1_000,
     ...overrides,
-  } as SIPADepositRecord)
+  } as SipaDeposit)
 
 const withdrawal = (overrides: Partial<WithdrawalRecord>): WithdrawalRecord =>
   ({
@@ -88,7 +89,7 @@ function database(
   version: string,
   o: {
     rows?: Transaction[]
-    deposits?: SIPADepositRecord[]
+    deposits?: SipaDeposit[]
     withdrawals?: WithdrawalRecord[]
     savingsMoves?: SavingsMoveRecord[]
     scanned?: string[]
@@ -119,12 +120,10 @@ const readOf =
     Promise.resolve(dbs.map(read))
 
 function setup() {
-  resetSingleton(AccountStorage as unknown as { instance: AccountStorage | null })
-  resetSingleton(SIPADepositStore as unknown as { instance: SIPADepositStore | null })
   const storage = new InMemoryStorageAdapter()
-  AccountStorage.get(storage)
   const transactions = createActivity({ db: openDatabase(memoryBackend()) })
-  const sipaDeposits = SIPADepositStore.get(storage)
+  const sipaBackend = memoryBackend()
+  const sipaDeposits = createSipaDeposits({ db: openDatabase(sipaBackend), account: true })
   const withdrawals = createWithdrawals({ db: openDatabase(memoryBackend()) })
   const savingsMoves = new SavingsMoveStorage(storage)
   const deps = (dbs: RetiredDatabase[], ownsStorage?: () => boolean) => ({
@@ -136,7 +135,7 @@ function setup() {
     savingsMoves,
     ownsStorage,
   })
-  return { storage, transactions, sipaDeposits, withdrawals, savingsMoves, deps }
+  return { storage, transactions, sipaDeposits, sipaBackend, withdrawals, savingsMoves, deps }
 }
 
 describe("importHistoricActivity", () => {
@@ -183,7 +182,8 @@ describe("importHistoricActivity", () => {
     })
     expect(unfinished.operationId).toBeUndefined()
     expect("queueId" in unfinished).toBe(false)
-    expect(sipaDeposits.list().map((d) => [d.sipaAddress, d.networkId])).toEqual([["0xsipa1", OLD]])
+    const imported = await loadRecords(sipaDeposits.view)
+    expect(imported.map((d) => [d.sipaAddress, d.networkId])).toEqual([["0xsipa1", OLD]])
     expect(
       [...(await withdrawals.all())]
         .sort((a, b) => b.startTime - a.startTime)
@@ -215,7 +215,7 @@ describe("importHistoricActivity", () => {
         networkId: ACTIVE,
       }),
     )
-    await sipaDeposits.create("0xsipa1", { ...deposit({ amount: "1" }), networkId: ACTIVE })
+    await sipaDeposits.adopt({ ...deposit({ amount: "1" }), networkId: ACTIVE })
     const db = database("7", {
       scanned: [OLD],
       rows: [row({ txHash: "0xA1" }), row({ txHash: "0xA2", networkId: "0xother" })],
@@ -230,7 +230,7 @@ describe("importHistoricActivity", () => {
       ["0xa1", ACTIVE],
       ["0xA2", "0xother"],
     ])
-    expect(sipaDeposits.get("0xsipa1")).toMatchObject({ amount: "1", networkId: ACTIVE })
+    expect(await sipaDeposits.get("0xsipa1")).toMatchObject({ amount: "1", networkId: ACTIVE })
   })
 
   it("carries a settled withdrawal's Savings move as retired, over a move adopted from its burn", async () => {
@@ -301,7 +301,7 @@ describe("importHistoricActivity", () => {
       ["0xA1", undefined],
       ["0xB1", undefined],
     ])
-    expect(sipaDeposits.list().map((d) => d.sipaAddress)).toEqual(["0xsipa8"])
+    expect((await loadRecords(sipaDeposits.view)).map((d) => d.sipaAddress)).toEqual(["0xsipa8"])
     expect([...(await withdrawals.all())].sort((a, b) => b.startTime - a.startTime)).toEqual([])
   })
 
@@ -360,6 +360,23 @@ describe("importHistoricActivity", () => {
     ])
   })
 
+  it("reads the deposits a database's deposit store saved, ahead of its legacy blob", async () => {
+    const { sipaDeposits, deps } = setup()
+    const db = retired("8", {
+      "acct/sipaDeposits/0xsipa1": encodeRecord(deposit({ networkId: OLD })),
+      "acct/sipaDeposits/0xsipa2": encodeRecord(
+        deposit({ sipaAddress: "0xsipa2" as never, networkId: OLD }),
+      ),
+      [KEY_SIPA_DEPOSITS]: JSON.stringify({
+        "0xsipa1": deposit({ phase: "sweeping", networkId: OLD }),
+      }),
+    })
+
+    expect((await importHistoricActivity(deps([db])))?.deposits).toBe(2)
+    expect((await sipaDeposits.get("0xsipa1"))?.phase).toBe("claimed")
+    expect(await sipaDeposits.get("0xsipa2")).toBeDefined()
+  })
+
   it("skips malformed values and rows with neither hash nor link", async () => {
     const { storage, deps } = setup()
     const db = retired("7", {
@@ -398,13 +415,12 @@ describe("importHistoricActivity writes", () => {
   })
 
   it("a record write that does not reach storage fails the import and leaves no marker", async () => {
-    const { storage, deps } = setup()
-    const setItem = storage.setItem.bind(storage)
-    storage.setItem = (key, value) =>
-      key === KEY_SIPA_DEPOSITS ? Promise.reject(new Error("disk full")) : setItem(key, value)
+    const { storage, sipaBackend, sipaDeposits, deps } = setup()
+    await sipaDeposits.ready
+    sipaBackend.failing.commits = true
     const db = database("7", { scanned: [OLD], rows: [row({})], deposits: [deposit({})] })
 
-    await expect(importHistoricActivity(deps([db]))).rejects.toThrow("disk full")
+    await expect(importHistoricActivity(deps([db]))).rejects.toThrow()
     expect(await storage.getItem(HISTORIC_ACTIVITY_IMPORTED_KEY)).toBeNull()
   })
 })
@@ -511,6 +527,25 @@ describe("importHistoricActivity from a source generation", () => {
     })
 
     expect((await transactions.all())[0]).toMatchObject({ from: "alice" })
+  })
+})
+
+describe("retiredSipaDeposit", () => {
+  it("finds an unswept deposit the import skips, stamped with the database's network", () => {
+    const unswept = deposit({ sipaAddress: "0xSIPA9", phase: "broadcast" })
+    const db = database("7", { scanned: [OLD], deposits: [unswept] })
+
+    expect(retiredSipaDeposit(db, "0xsipa9")).toEqual({ ...unswept, networkId: OLD })
+    expect(retiredSipaDeposit(db, "0xother")).toBeNull()
+  })
+
+  it("returns null for a record whose network cannot be told", () => {
+    const db = database("7", {
+      scanned: [OLD, "0xolder"],
+      deposits: [deposit({ phase: "broadcast" })],
+    })
+
+    expect(retiredSipaDeposit(db, "0xsipa1")).toBeNull()
   })
 })
 

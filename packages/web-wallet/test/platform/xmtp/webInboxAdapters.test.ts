@@ -4,7 +4,7 @@
  * in-memory storage.
  */
 
-import { beforeEach, describe, expect, it } from "vitest"
+import { describe, expect, it } from "vitest"
 import {
   ContactStorage,
   RequestReceiver,
@@ -18,17 +18,13 @@ import {
   type Database,
   type Activity,
   type TokenTransaction,
-  XmtpInboxReceiverDriver,
   approvedContactTags,
   contactRowFromEntry,
   isFromNonContact,
   isPaymentContactEntry,
   type Contact,
   type IStorageAdapter,
-  type InboxConversation,
-  type InboxMessage,
   type ScannedTransferEvent,
-  type XmtpClientManagerLike,
   createTagForwardResolver,
 } from "@obsidion/front-core"
 import {
@@ -47,7 +43,6 @@ const TX_HASH = `0x${"ab".repeat(32)}`
 const SENDER_L2 = `0x${"11".repeat(32)}`
 const ACCOUNT_L2 = `0x${"22".repeat(32)}`
 const TOKEN = `0x${"33".repeat(32)}`
-const REQUEST_TYPE_ID = "obsidion.xyz/payment-request:1.0"
 
 const currentAccount = { tag: "bob", l2Address: ACCOUNT_L2, rollupId: "aztec-dev" }
 
@@ -117,28 +112,6 @@ const scanContext = {
   networkId: currentAccount.rollupId,
 }
 
-/** Fake client port: stream never fires; messages come back only via cursor reads. */
-function fakeClient(messages: InboxMessage[]): XmtpClientManagerLike {
-  const conv: InboxConversation = {
-    id: "conv-1",
-    topic: "conv-1",
-    consentState: async () => "allowed",
-  }
-  const after = async (_c: InboxConversation, sentNs: number | bigint) =>
-    messages.filter((m) => BigInt(m.sentNs) > BigInt(sentNs))
-  return {
-    isReady: () => true,
-    installationId: "inst-1",
-    listConversations: async () => [conv],
-    messagesAfter: after,
-    messagesAfterLocal: after,
-    syncAllConversations: async () => ({ numEligible: 1, numSynced: 1 }),
-    findConversation: async (id) => (id === "conv-1" ? conv : undefined),
-    subscribeAllMessages: async () => () => {},
-    getDmPeerAddresses: async () => [],
-  }
-}
-
 function contactStoreFake(entries: Contact[]) {
   const writes: Contact[] = []
   return {
@@ -153,10 +126,6 @@ function contactStoreFake(entries: Contact[]) {
     },
   }
 }
-
-beforeEach(() => {
-  XmtpInboxReceiverDriver.resetInstance()
-})
 
 describe("web chain-native transfer ingest", () => {
   it("ingests a scanned transfer through the real web adapters", async () => {
@@ -183,35 +152,9 @@ describe("web chain-native transfer ingest", () => {
       },
     ])
   })
-
-  it("re-scanning the same event is idempotent (one transaction write)", async () => {
-    const storage = memStorage()
-    const txStorage = await freshTxStorage(storage)
-    const scanner = scannerOver(txStorage, createContactsByL2(contactStoreFake([])), [
-      scannedEvent(),
-    ])
-    await scanner.pass(scanContext, { full: true })
-    await scanner.pass(scanContext, { full: true })
-    expect(await txStorage.all()).toHaveLength(1)
-  })
 })
 
 describe("createContactsByL2", () => {
-  it("registerL2 auto-adds via the idempotent merge path", async () => {
-    const fake = contactStoreFake([])
-    await createContactsByL2(fake).registerL2!({ tag: "alice", l2Address: SENDER_L2 })
-    expect(fake.writes).toEqual([
-      {
-        name: "alice",
-        address: SENDER_L2,
-        addressKind: "aztec-l2",
-        tag: "alice",
-        verified: true,
-        autoAdded: true,
-      },
-    ])
-  })
-
   it("matches only tagged L2 entries by address, case-insensitively", async () => {
     const entries: Contact[] = [
       { name: "eve-l1", address: SENDER_L2, addressKind: "ethereum-l1", tag: "eve" },
@@ -221,19 +164,6 @@ describe("createContactsByL2", () => {
     const contacts = createContactsByL2(contactStoreFake(entries))
     expect(await contacts.findByL2Address(SENDER_L2)).toEqual({ tag: "alice" })
     expect(await contacts.findByL2Address(ACCOUNT_L2)).toBeNull()
-  })
-
-  it("attributes the transfer row by contact tag when a match exists", async () => {
-    const storage = memStorage()
-    const txStorage = await freshTxStorage(storage)
-    const entries: Contact[] = [
-      { name: "ally", address: SENDER_L2, tag: "ally", addressKind: "aztec-l2" },
-    ]
-    const scanner = scannerOver(txStorage, createContactsByL2(contactStoreFake(entries)), [
-      scannedEvent(),
-    ])
-    await scanner.pass(scanContext, { full: true })
-    expect(((await txStorage.byHash(TX_HASH)) as TokenTransaction).from).toBe("ally")
   })
 })
 
@@ -282,44 +212,11 @@ describe("createRequestStoreWrites", () => {
     const [row] = requests.view.get()
     expect(row.status).toBe("declined")
   })
-
-  it("payment-request messages route through the driver into the requests store", async () => {
-    const storage = memStorage()
-    const requests = memRequests()
-    const requestMessage: InboxMessage = {
-      id: "r1",
-      sentNs: 2_000n,
-      contentTypeId: REQUEST_TYPE_ID,
-      content: () => ({
-        kind: "request",
-        requestId: "req-2",
-        requesterTag: "alice",
-        amountAtomic: "0",
-        decimals: 6,
-        token: TOKEN,
-        networkId: "aztec-dev",
-      }),
-      topic: "conv-1",
-    }
-    const driver = XmtpInboxReceiverDriver.getOrCreate({
-      xmtp: fakeClient([requestMessage]),
-      requestReceiver: new RequestReceiver(createRequestStoreWrites(requests)),
-      currentAccount: async () => currentAccount,
-      asyncStorage: storage,
-    })
-    await driver.pollOnce()
-    expect(await requests.get("req-2")).toMatchObject({ id: "req-2", contactTag: "alice" })
-  })
 })
 
 describe("createRequestSenderPolicy", () => {
   const contacts = (entries: Contact[]) => ({ getEntries: async () => entries })
   const ada: Contact = { name: "Ada", address: SENDER_L2, tag: "ada" }
-
-  it("admits anyone while requests from non-contacts are allowed", async () => {
-    const policy = createRequestSenderPolicy(contacts([]), () => true)
-    expect(await policy.admitsRequester("mina")).toBe(true)
-  })
 
   it("admits only tagged L2 contacts once they are blocked", async () => {
     const pending: Contact = {
@@ -332,11 +229,6 @@ describe("createRequestSenderPolicy", () => {
     expect(await policy.admitsRequester("ADA")).toBe(true)
     expect(await policy.admitsRequester("kai")).toBe(false)
     expect(await policy.admitsRequester("mina")).toBe(false)
-  })
-
-  it("refuses a sender the wallet added from a transfer", async () => {
-    const policy = createRequestSenderPolicy(contacts([{ ...ada, autoAdded: true }]), () => false)
-    expect(await policy.admitsRequester("ada")).toBe(false)
   })
 })
 

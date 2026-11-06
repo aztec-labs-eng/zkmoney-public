@@ -67,6 +67,60 @@ describe("useCachedRecords", () => {
     const { result } = renderHook(() => useCachedRecords(source))
     await waitFor(() => expect(result.current.hydrated).toBe(true))
     expect(result.current.records).toEqual([])
+    expect(result.current.failed).toBe(true)
+  })
+
+  it("reports a load that read nothing as failed, and a clean one as not", async () => {
+    const { source, release } = makeSource()
+    let loaded = false
+    const retrying = { ...source, isLoaded: () => loaded }
+    release()
+
+    const unread = renderHook(() => useCachedRecords(retrying))
+    await waitFor(() => expect(unread.result.current.hydrated).toBe(true))
+    expect(unread.result.current.failed).toBe(true)
+
+    loaded = true
+    const read = renderHook(() => useCachedRecords({ ...retrying }))
+    await waitFor(() => expect(read.result.current.hydrated).toBe(true))
+    expect(read.result.current.failed).toBe(false)
+  })
+
+  it("clears failed once another reader's load reads storage", async () => {
+    const { source, write, release } = makeSource()
+    let loaded = false
+    const retrying = { ...source, isLoaded: () => loaded }
+    release()
+
+    const { result } = renderHook(() => useCachedRecords(retrying))
+    await waitFor(() => expect(result.current.failed).toBe(true))
+    // A write before any read landed keeps it failed.
+    act(() => write([{ id: "written" }]))
+    expect(result.current.failed).toBe(true)
+
+    loaded = true
+    act(() => write([{ id: "written" }, { id: "read" }]))
+    expect(result.current.failed).toBe(false)
+  })
+
+  it("reads again on retry, failed until that read answers", async () => {
+    let loaded = false
+    let answer: () => void = () => {}
+    const source: CachedRecordSource<Rec> = {
+      load: () => new Promise<void>((resolve) => (answer = resolve)),
+      isLoaded: () => loaded,
+      list: () => [],
+      onListChanged: () => () => {},
+    }
+    const { result } = renderHook(() => useCachedRecords(source))
+    act(() => answer())
+    await waitFor(() => expect(result.current.failed).toBe(true))
+
+    loaded = true
+    act(() => result.current.retry())
+    expect(result.current.failed).toBe(true)
+    act(() => answer())
+    await waitFor(() => expect(result.current.failed).toBe(false))
   })
 
   it("stops updating after unmount", async () => {

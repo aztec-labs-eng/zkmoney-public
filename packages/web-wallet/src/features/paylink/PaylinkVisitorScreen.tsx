@@ -49,7 +49,7 @@ import { useLinkVoucher, useLinkWithdrawal } from "./usePaylinkDeps"
 import { CLOSED_LINK_COPY } from "./claimWindow"
 import { senderLine } from "./senderLine"
 import type { PaymentLink } from "./types"
-import { useSession } from "../../platform/session"
+import { useSession } from "../../session/session"
 
 /** A typed name's own schedule, base units: what a link with no ticket pays for it. */
 const NAME_SCHEDULE = {

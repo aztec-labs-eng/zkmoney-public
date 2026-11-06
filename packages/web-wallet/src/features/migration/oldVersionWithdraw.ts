@@ -11,7 +11,6 @@ import { FrozenMetadataMigrationSource } from "@obsidion/sdk"
 import { getConfig } from "../../config/env"
 import { l1PublicClient } from "../../config/oxideTuple"
 import { createExternalState } from "../../lib/externalState"
-import { getActiveStorageId } from "../../platform/storage/activeStorage"
 import type { FrozenExitRuntime } from "../withdraw/frozenExitRun"
 import type { createWebMetadataMigration } from "./createWebMetadataMigration"
 
@@ -28,9 +27,10 @@ export interface WithdrawableSource {
 
 const withdrawable = createExternalState<readonly WithdrawableSource[]>([])
 let published: readonly WithdrawableSource[] = []
-// Each account's portals whose funds no refund batch can take, such as a note above the portal's cap.
+// Portals whose funds no refund batch can take, such as a note above the portal's cap. A page serves
+// one account.
 const unrefundable = new Set<string>()
-const skipKey = (portal: string) => `${getActiveStorageId()}:${portal.toLowerCase()}`
+const skipKey = (portal: string) => portal.toLowerCase()
 
 /** Published by the migration check: frozen old versions with funds and no upgrade run. */
 export function setWithdrawableSources(next: readonly WithdrawableSource[]): void {
@@ -73,6 +73,8 @@ export interface OldVersionExit {
   runtime: FrozenExitRuntime
   /** The upgrade run's lock, so a withdrawal never refunds the funds a run plans. */
   lock: <T>(fn: () => Promise<T>) => Promise<T>
+  /** `lock`, refused with `SourceBusyError` while a run holds it. */
+  lockNow: <T>(fn: () => Promise<T>) => Promise<T>
   /** The L1 token the source portal refunds. */
   symbol: string
   decimals: number
@@ -80,7 +82,7 @@ export interface OldVersionExit {
 
 /** A source's refund runtime. Without `recipient`, which submits each refund, it only reads. */
 export async function openOldVersionExit(
-  { source, open }: WithdrawableSource,
+  { source, open }: Pick<WithdrawableSource, "source" | "open">,
   recipient?: Address,
 ): Promise<OldVersionExit> {
   const client = l1PublicClient(getConfig())
@@ -92,5 +94,11 @@ export async function openOldVersionExit(
   ])
   if (!(session.source instanceof FrozenMetadataMigrationSource))
     throw new Error("This version's funds can't be withdrawn yet")
-  return { runtime: session.source.runtime, lock: session.lock, symbol, decimals }
+  return {
+    runtime: session.source.runtime,
+    lock: session.lock,
+    lockNow: session.lockNow,
+    symbol,
+    decimals,
+  }
 }

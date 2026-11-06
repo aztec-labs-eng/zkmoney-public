@@ -1,6 +1,7 @@
 import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { setIdentity } from "../../support/identity"
 import type { RegistryTagResolution } from "@obsidion/front-core"
 
 const mocks = vi.hoisted(() => ({
@@ -10,15 +11,12 @@ const mocks = vi.hoisted(() => ({
   entries: vi.fn(),
   probe: vi.fn(),
 }))
-vi.mock("../../../src/features/onboarding/nameAvailability", () => ({
+vi.mock("../../../src/features/registration/nameAvailability", () => ({
   probeNameAvailability: mocks.probe,
 }))
 vi.mock("../../../src/features/contacts/registryResolution", () => ({
   resolveTagViaRegistry: mocks.resolve,
   resolveTagForCommit: mocks.fresh,
-}))
-vi.mock("../../../src/features/identity/walletIdentity", () => ({
-  loadWalletIdentity: () => ({ handle: "me" }),
 }))
 vi.mock("@obsidion/front-core", async (original) => ({
   ...(await original<typeof import("@obsidion/front-core")>()),
@@ -54,6 +52,14 @@ function Probe({ query }: { query: string }) {
     </p>
   )
 }
+
+const { openTestSession } = await import("../../support/session")
+const { closeSession } = await import("../../../src/session/session")
+beforeEach(async () => {
+  openTestSession()
+  await setIdentity({ handle: "me" })
+})
+afterEach(closeSession)
 
 describe("shared inline contact verification", () => {
   let root: Root

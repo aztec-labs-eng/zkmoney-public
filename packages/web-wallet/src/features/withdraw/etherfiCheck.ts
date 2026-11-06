@@ -7,6 +7,7 @@
  * balance.
  */
 import { useEffect, useState } from "react"
+import { makeBackoff, retry } from "@aztec-labs/foundation/retry"
 import { createPublicClient, http, parseAbi, type Address, type PublicClient } from "viem"
 import { mainnet, optimism } from "viem/chains"
 import { Network } from "@obsidion/core/constants"
@@ -29,26 +30,40 @@ export type EtherfiAddressVerdict =
   | { kind: "rejected" } // neither factory knows it
   | { kind: "unknown" } // a read did not answer, and none confirmed it
 
+/** Whether either factory knows the address as an ether.fi Cash account. */
+export const isEtherfiCash = (kind: EtherfiAddressVerdict["kind"]) =>
+  kind === "confirmed" || kind === "account"
+
 type Reader = Pick<PublicClient, "readContract">
 
 export interface EtherfiCheckDeps {
   mainnet: Reader
   optimism: Reader
+  /** Seconds between attempts at a failed read. */
+  retryDelaysS?: readonly number[]
 }
 
 const DEBOUNCE_MS = 300
+const RETRY_DELAYS_S = [0.5, 1]
 
 export async function checkEtherfiAddress(
   address: Address,
   deps: EtherfiCheckDeps,
 ): Promise<EtherfiAddressVerdict> {
   const ask = (client: Reader, functionName: "isTopUpContract" | "isEtherFiSafe") =>
-    client.readContract({
-      address: ETHERFI_FACTORY,
-      abi: ETHERFI_FACTORY_ABI,
-      functionName,
-      args: [address],
-    })
+    retry(
+      () =>
+        client.readContract({
+          address: ETHERFI_FACTORY,
+          abi: ETHERFI_FACTORY_ABI,
+          functionName,
+          args: [address],
+        }),
+      `ether.fi ${functionName}`,
+      makeBackoff([...(deps.retryDelaysS ?? RETRY_DELAYS_S)]),
+      undefined,
+      true,
+    )
   const [topUp, safe] = await Promise.allSettled([
     ask(deps.mainnet, "isTopUpContract"),
     ask(deps.optimism, "isEtherFiSafe"),
@@ -57,6 +72,20 @@ export async function checkEtherfiAddress(
   if (safe.status === "fulfilled" && safe.value) return { kind: "account" }
   if (topUp.status === "rejected" || safe.status === "rejected") return { kind: "unknown" }
   return { kind: "rejected" }
+}
+
+/**
+ * Asked as a withdrawal is confirmed: true to go on. An address ether.fi knows calls `toEtherfi`
+ * instead, since Cash credits neither DAI nor ETH. One ether.fi could not be asked about goes on;
+ * the flow has warned the user.
+ */
+export function confirmNotEtherfi(
+  kind: EtherfiAddressVerdict["kind"],
+  toEtherfi: () => void,
+): boolean {
+  if (!isEtherfiCash(kind)) return true
+  toEtherfi()
+  return false
 }
 
 /** Open RPCs that serve browsers from any origin, for builds that name none of their own. */
@@ -95,25 +124,27 @@ export function useEtherfiAddressVerdict(
   address: Address | null,
   waitMs?: number,
 ): EtherfiAddressVerdict {
-  const [verdict, setVerdict] = useState<EtherfiAddressVerdict>({ kind: "idle" })
+  const [result, setResult] = useState<{ address: Address; verdict: EtherfiAddressVerdict }>()
 
   useEffect(() => {
-    if (!address) {
-      setVerdict({ kind: "idle" })
-      return
-    }
+    if (!address) return
     let active = true
-    setVerdict({ kind: "checking" })
     const timer = setTimeout(() => {
       checkEtherfiAddress(address, liveDeps())
         .catch((): EtherfiAddressVerdict => ({ kind: "unknown" }))
-        .then((result) => {
-          if (active) setVerdict(result)
+        .then((verdict) => {
+          if (active) setResult({ address, verdict })
         })
     }, DEBOUNCE_MS)
     const cap =
       waitMs &&
-      setTimeout(() => setVerdict((v) => (v.kind === "checking" ? { kind: "unknown" } : v)), waitMs)
+      setTimeout(
+        () =>
+          setResult((r) =>
+            r?.address === address ? r : { address, verdict: { kind: "unknown" } },
+          ),
+        waitMs,
+      )
     return () => {
       active = false
       clearTimeout(timer)
@@ -121,5 +152,7 @@ export function useEtherfiAddressVerdict(
     }
   }, [address, waitMs])
 
-  return verdict
+  // Keyed by address, so the render that brings a new address never carries the last one's verdict.
+  if (!address) return { kind: "idle" }
+  return result?.address === address ? result.verdict : { kind: "checking" }
 }

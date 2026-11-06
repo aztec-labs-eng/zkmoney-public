@@ -9,15 +9,16 @@ const h = vi.hoisted(() => ({
   sign: vi.fn(async () => ({ signature: "0x01" })),
 }))
 
-vi.mock("@obsidion/front-core", () => ({
+vi.mock("@obsidion/front-core", async (importOriginal) => ({
+  ...(({ openDatabase, memoryStore }) => ({ openDatabase, memoryStore }))(
+    await importOriginal<typeof import("@obsidion/front-core")>(),
+  ),
   createMetadataMigrationSession: h.session,
   pubkeyToR1KeyArg: (hex: string) => ({ qx: hex, qy: hex }),
   UpgradeActivity: { get: () => ({}) },
-  SIPADepositStore: { get: () => ({}) },
   BalanceStorage: { get: () => ({}) },
   WalletSyncCoordinator: {},
   BROADCASTS_STORAGE_KEY: "broadcasts",
-  NETWORK_STORAGE_KEY: "network",
   OPERATIONS_STORAGE_KEY: "operations",
 }))
 vi.mock("@obsidion/sdk", () => ({
@@ -26,20 +27,18 @@ vi.mock("@obsidion/sdk", () => ({
   frozenRuntimeFromSourceGeneration: vi.fn(),
 }))
 vi.mock("../../../src/config/env", () => ({ getConfig: () => ({ network: "sandbox" }) }))
-vi.mock("../../../src/platform/session", () => ({
+vi.mock("../../../src/session/session", () => ({
   session: () => ({ activity: { all: async () => [] } }),
 }))
 vi.mock("../../../src/config/oxideTuple", () => ({
   l1MulticallClient: () => ({}),
   getFeeTokenBridgeTuple: async () => ({ portal: `0x${"ab".repeat(20)}` }),
 }))
-vi.mock("../../../src/platform/auth/useAuthenticator", () => ({
-  getAuthService: () => ({ signMetadataChallenge: h.sign }),
-}))
-vi.mock("../../../src/features/onboarding/oxideOnboarding", () => ({
+vi.mock("../../../src/session/account", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../src/session/account")>()),
   collectOnboardingKeys: async () => ({ secretKey: {}, pubkeyHex: "0x04ab", authProvider: {} }),
 }))
-vi.mock("../../../src/features/onboarding/claimSponsorship", () => ({
+vi.mock("../../../src/features/registration/claimSponsorship", () => ({
   claimSponsorContext: vi.fn(),
 }))
 vi.mock("../../../src/features/token/oxideToken", () => ({ portalContract: vi.fn() }))
@@ -54,14 +53,15 @@ vi.mock("../../../src/features/migration/sourceSipaSources", () => ({
 const { createWebMetadataMigration } = await import(
   "../../../src/features/migration/createWebMetadataMigration"
 )
-const { setActiveCredentialId, setActiveStorageId } = await import(
-  "../../../src/platform/storage/activeStorage"
-)
-const { walletStorage } = await import("../../../src/platform/storage/walletStorage")
+const { seedDeviceKeys, testCore } = await import("../../support/page")
 const { webStorage } = await import("../../../src/platform/storage/WebStorageAdapter")
 const { SessionChangedError } = await import("../../../src/platform/auth/sessionErrors")
+const { FakeLocks } = await import("../../support/fakeLocks")
+const { SourceBusyError } = await import("../../../src/features/migration/migrationErrors")
 
 type Run = {
+  lock<T>(fn: () => Promise<T>): Promise<T>
+  lockNow<T>(fn: () => Promise<T>): Promise<T>
   storage: { setItem(key: string, value: string): Promise<void> }
   passkey: { signChallenge(digest: `0x${string}`, opts?: unknown): Promise<unknown> }
 }
@@ -75,12 +75,14 @@ beforeEach(() => {
 })
 
 async function compose(): Promise<Run> {
-  setActiveStorageId("wallet-1")
-  setActiveCredentialId("cred-a")
-  await walletStorage.flush()
+  await seedDeviceKeys({ storageId: "wallet-1", credentialId: "cred-a" })
   const run = await createWebMetadataMigration({
     wallet: {} as never,
     account,
+    deposits: { get: async () => undefined },
+    auth: { signMetadataChallenge: h.sign } as never,
+    own: { namespace: { id: "wallet-1" }, device: testCore().device } as never,
+    handle: undefined,
     contractService: {} as never,
     toTokenService: {} as never,
     historic: tuple,
@@ -100,17 +102,27 @@ describe("the browser's migration run", () => {
 
   it("ends once the account is signed in under another passkey", async () => {
     const run = await compose()
-    setActiveCredentialId("cred-b")
-    await walletStorage.flush()
+    await seedDeviceKeys({ credentialId: "cred-b" })
     await expect(run.storage.setItem("k", "v")).rejects.toThrow(SessionChangedError)
     expect(() => run.passkey.signChallenge("0xaa")).toThrow(SessionChangedError)
     expect(h.sign).not.toHaveBeenCalled()
   })
 
+  it("refuses lockNow while a pass holds the lock, and runs it once the pass ends", async () => {
+    vi.stubGlobal("navigator", { ...navigator, locks: new FakeLocks() })
+    const run = await compose()
+    let endPass = () => {}
+    const pass = run.lock(() => new Promise<void>((resolve) => (endPass = resolve)))
+    await expect(run.lockNow(async () => "ran")).rejects.toThrow(SourceBusyError)
+    endPass()
+    await pass
+    await expect(run.lockNow(async () => "ran")).resolves.toBe("ran")
+    vi.unstubAllGlobals()
+  })
+
   it("ends once another account is signed in", async () => {
     const run = await compose()
-    setActiveStorageId("wallet-2")
-    await walletStorage.flush()
+    await seedDeviceKeys({ storageId: "wallet-2" })
     await expect(run.storage.setItem("k", "v")).rejects.toThrow(SessionChangedError)
   })
 })

@@ -1,11 +1,7 @@
 import type { IStorageAdapter } from "@obsidion/front-core"
-import {
-  BROADCASTS_STORAGE_KEY,
-  NETWORK_STORAGE_KEY,
-  OPERATIONS_STORAGE_KEY,
-} from "@obsidion/front-core"
+import { OPERATIONS_STORAGE_KEY } from "@obsidion/front-core"
 import { CONFIG_STORAGE_KEY_PREFIX } from "@obsidion/core/constants"
-import { getActiveStorageId } from "./activeStorage"
+import { DEVICE_KEYS } from "./deviceKeys"
 import { PASSKEY_IDENTITY_MAP_KEY, WEB_STORAGE_PREFIX } from "./storageKeys"
 import { loadFromOtherDatabases, walletStorage } from "./walletStorage"
 
@@ -13,16 +9,17 @@ export { PASSKEY_IDENTITY_MAP_KEY, WEB_STORAGE_PREFIX }
 
 /**
  * Per-device keys: written before any account exists (the consent prompt answers on the claim
- * page), shared by every account on this browser. Operations and broadcasts carry their own scope,
+ * page), shared by every account on this browser. Operations carry their own scope,
  * so a visitor's and an account's survive a sign-in between them.
  */
-const GLOBAL_KEYS = new Set([
-  PASSKEY_IDENTITY_MAP_KEY,
-  NETWORK_STORAGE_KEY,
-  OPERATIONS_STORAGE_KEY,
-  BROADCASTS_STORAGE_KEY,
-])
+const GLOBAL_KEYS = new Set([PASSKEY_IDENTITY_MAP_KEY, OPERATIONS_STORAGE_KEY])
 const isGlobal = (key: string) => GLOBAL_KEYS.has(key) || key.startsWith(CONFIG_STORAGE_KEY_PREFIX)
+
+/**
+ * The committed account this adapter writes under. The adapter is the page's one instance, shared by
+ * stores no session owns yet, so it reads the saved pointer from `walletStorage` it writes through.
+ */
+export const adapterAccount = (): string | null => walletStorage.getCommitted(DEVICE_KEYS.storageId)
 
 /**
  * `IStorageAdapter` over the rollup's wallet database (`walletStorage.ts`). A returned promise
@@ -35,7 +32,7 @@ const isGlobal = (key: string) => GLOBAL_KEYS.has(key) || key.startsWith(CONFIG_
  */
 export class WebStorageAdapter implements IStorageAdapter {
   private scoped(key: string): string {
-    const id = isGlobal(key) ? null : getActiveStorageId()
+    const id = isGlobal(key) ? null : adapterAccount()
     return WEB_STORAGE_PREFIX + (id ? `${id}.` : "") + key
   }
 
@@ -80,7 +77,7 @@ export class WebStorageAdapter implements IStorageAdapter {
 
   /** Wipes the active account's namespace, not other accounts' or the global keys. No-op without an account. */
   async clear(): Promise<void> {
-    const id = getActiveStorageId()
+    const id = adapterAccount()
     if (!id) return
     await walletStorage.commitRemoveUnder(`${WEB_STORAGE_PREFIX}${id}.`)
   }

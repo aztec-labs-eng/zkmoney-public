@@ -26,18 +26,17 @@ import {
 import { getConfig } from "../../config/env"
 import { getOxideTuple, l1PublicClient, requireTupleField } from "../../config/oxideTuple"
 import { oxideAccountPasskey } from "../../platform/auth/oxideAccountPasskey"
-import { getAuthService } from "../../platform/auth/useAuthenticator"
 import { isDesktopL1SubmitActive } from "../../platform/desktopBridge"
 import {
   desktopBridgeChannel,
   injectedWalletChannel,
   type L1ExitChannel,
   type L1ExitStage,
-} from "../deposit/sipaRecovery"
-import { getL1Clients } from "../deposit/l1Wallet"
+} from "../sipa/l1ExitChannels"
+import { getL1Clients } from "../../session/l1Wallet"
 import { getSavingsMoveStore } from "../savings/savingsMoveStore"
 import { ownSwapRecoverer, type SwapRecoverer } from "./withdrawGateway"
-import { session } from "../../platform/session"
+import { session } from "../../session/session"
 
 
 export interface SwapExitOptions {
@@ -223,7 +222,7 @@ type Recoverer = SwapRecoverer & { signAccount: (account: Address, digest: Hex) 
 
 async function walletRecoverer(l1: ReturnType<typeof l1PublicClient>): Promise<Recoverer> {
   const config = getConfig()
-  const keys = await getAuthService().sessionKeys()
+  const keys = await session().auth.sessionKeys()
   if (!keys) throw new Error("Unlock your wallet with your passkey and try again.")
   const { account, secret } = await ownSwapRecoverer(await getOxideTuple(config), keys.secretKey)
   const passkey = await oxideAccountPasskey(keys.authProvider)

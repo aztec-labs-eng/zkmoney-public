@@ -8,9 +8,11 @@ import {
   BackupRotationUnreadableError,
   RotationStrippedError,
   fundingLocalId,
+  moveDeclined,
   moveProgress,
   movesBalance,
   persistedRotation,
+  refundProgress,
   rerootAhead,
   storeRotation,
   stripSettled,
@@ -205,6 +207,14 @@ describe("BackupRotationStore", () => {
             },
           ],
         },
+        refunds: {
+          declined: true,
+          links: [
+            { link: "row-1", state: "mined", txHash: word(46), expiresAtMs: 80 },
+            { link: "row-2", state: "skipped" },
+            { link: "row-3", state: "planned" },
+          ],
+        },
       })
     for (const phase of BACKUP_ROTATION_PHASES) {
       const saved =
@@ -305,6 +315,10 @@ describe("BackupRotationStore", () => {
           ],
         },
       }),
+      blob(key, { ...saved, refunds: { links: [{ link: "row-1", state: "sent" }] } }),
+      blob(key, { ...saved, refunds: { links: [{ state: "planned" }] } }),
+      blob(key, { ...saved, refunds: { declined: false, links: [] } }),
+      blob(key, { ...saved, plan: { ...saved.plan, refunds: "2" } }),
       blob(key, { ...saved, backup: { ...saved.backup, prfSlot: "third" } }),
       blob(key, { ...saved, backup: { ...saved.backup, envelopeHex: undefined } }),
       blob(key, { ...signed, backup: { ...saved.backup, envelopeHex: "zz" } }),
@@ -519,6 +533,43 @@ describe("moveProgress", () => {
         },
       }),
     ).toEqual({ included: 1, total: 2, depositBound: false })
+  })
+})
+
+describe("refundProgress", () => {
+  it("counts the links taken back or spent another way while one has yet to land", () => {
+    expect(refundProgress({ refunds: undefined })).toBeUndefined()
+    expect(
+      refundProgress({
+        refunds: {
+          links: [
+            { link: "a", state: "mined" },
+            { link: "b", state: "skipped" },
+            { link: "c", state: "included", effect: "reverted" },
+            { link: "d", state: "planned" },
+          ],
+        },
+      }),
+    ).toEqual({ landed: 2, total: 4 })
+    expect(
+      refundProgress({
+        refunds: {
+          links: [
+            { link: "a", state: "included" },
+            { link: "b", state: "skipped" },
+          ],
+        },
+      }),
+    ).toBeUndefined()
+  })
+})
+
+describe("moveDeclined", () => {
+  it("holds over a declined refund as over a declined chunk, while the move runs", () => {
+    const refunds = { declined: true as const, links: [{ link: "a", state: "planned" as const }] }
+    expect(moveDeclined({ phase: "rerooted", refunds })).toBe(true)
+    expect(moveDeclined({ phase: "done", refunds })).toBe(false)
+    expect(moveDeclined({ phase: "rerooted", refunds: { links: refunds.links } })).toBe(false)
   })
 })
 

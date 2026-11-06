@@ -14,7 +14,7 @@ import {
   type UpgradePricing,
   type UpgradeLeg,
   type UpgradeRun,
-  type SIPADepositRecord,
+  type SipaDeposit,
   type UpgradeBatchItem,
 } from "@obsidion/front-core"
 import { whenLabel } from "../detailRows"
@@ -44,7 +44,7 @@ export function UpgradeRunDetailModal({
   title: string
   pricing: UpgradePricing
   /** Open the leg's own detail sheet in place of this one: its deposit once that speaks for it. */
-  onViewDeposit: (deposit: SIPADepositRecord) => void
+  onViewDeposit: (deposit: SipaDeposit) => void
   onViewBatch: (batch: UpgradeBatchItem) => void
   onClose: () => void
 }) {

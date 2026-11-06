@@ -25,9 +25,9 @@ import {
 } from "@obsidion/sdk"
 import { getConfig } from "../../config/env"
 import { SessionChangedError } from "../../platform/auth/sessionErrors"
-import { getActiveStorageId, withSessionLock } from "../../platform/storage/activeStorage"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
-import { session } from "../../platform/session"
+import { session, type Session, type SessionDeps } from "../../session/session"
+import { stillCommitted } from "../../session/stillCommitted"
 import { isHistoricPaylinkRow } from "./historicResiduals"
 
 /** The escrows of the source's links, registered in the source chain's wallet. */
@@ -65,7 +65,7 @@ export async function markRefundedSourceLinks(o: {
   session: SourceGenerationSession
   tuple: OxideEnvTuple
   current: OxideEnvTuple
-  storageId: string
+  own: Session
 }): Promise<void> {
   const refunded = await o.session.refundedLinks({
     tuple: o.tuple,
@@ -76,15 +76,15 @@ export async function markRefundedSourceLinks(o: {
       }),
   })
   if (!refunded.length) return
-  await withSessionLock(async () => {
-    if (getActiveStorageId() !== o.storageId) throw new SessionChangedError()
+  await o.own.sessionLock(async () => {
+    if (!stillCommitted(o.own)) throw new SessionChangedError()
     const { activity } = session()
     for (const txHash of refunded) await markPaylinkMigrated(txHash, activity)
   })
 }
 
 /**
- * The source's links among this browser's rows of the account `storageId` names. A legacy row's link
+ * The source's links among this browser's rows of the account `own` serves. A legacy row's link
  * from another chain is not the source's. An account switch during the read fails it, so one
  * account's link secrets never reach another's refund.
  */
@@ -92,12 +92,12 @@ export async function sourceLinkRows(o: {
   tuple: OxideEnvTuple
   /** The current deployment, whose creation dates a legacy row with no token address. */
   current: OxideEnvTuple
-  storageId: string
+  own: Pick<SessionDeps, "device" | "namespace">
   /** The rows to pick from; by default every database's. */
   rows?: () => Promise<Transaction[]>
 }): Promise<Transaction[]> {
   const checkSession = () => {
-    if (getActiveStorageId() !== o.storageId) throw new SessionChangedError()
+    if (!stillCommitted(o.own)) throw new SessionChangedError()
   }
   checkSession()
   const since = Date.parse(o.current.timestamp)

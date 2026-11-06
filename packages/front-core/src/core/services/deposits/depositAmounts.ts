@@ -1,7 +1,7 @@
 import { formatUnits } from "viem"
 import { DEFAULT_DECIMALS } from "@obsidion/core/constants"
 import { parseEscrowAmount } from "../../../utils/escrowAmount"
-import type { SIPADepositRecord } from "./SIPADepositStore"
+import type { SipaDeposit } from "../../../engine/sipaDeposits"
 
 /**
  * Gross / net / fee for a SIPA deposit, in exact base units plus 2dp-safe
@@ -25,7 +25,7 @@ export interface DepositAmounts {
   feeDisplay: string
 }
 
-type DepositAmountFields = Pick<SIPADepositRecord, "amount" | "netAmount" | "fee">
+type DepositAmountFields = Pick<SipaDeposit, "amount" | "netAmount" | "fee">
 
 /** `decimals`: the row token's, which `netAmount` and `fee` are in; 18 where the caller cannot name the row. */
 export function depositAmounts(

@@ -3,7 +3,7 @@
  * row's. Relayers never rewrite an operation: a token the broadcast leaves out is never swept.
  */
 // @vitest-environment node
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { Address } from "viem"
 import { MAINNET_DAI, MAINNET_USDC, MAINNET_USDT } from "@oxide/l1-contracts"
 import { Network } from "@obsidion/core/constants"
@@ -79,7 +79,7 @@ const {
   getSipaDeploymentTable: vi.fn(),
 }))
 
-vi.mock("../../../src/features/deposit/sipaSweep", () => ({ readSipaDeployed }))
+vi.mock("../../../src/features/sipa/sipaSweep", () => ({ readSipaDeployed }))
 
 vi.mock("@obsidion/sdk", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/sdk")>()),
@@ -93,7 +93,6 @@ vi.mock("@obsidion/sdk", async (importOriginal) => ({
 vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/front-core")>()),
   composeWireNameHash: () => `0x${"aa".repeat(32)}`,
-  NameClaimStore: { get: () => ({ put: async () => {} }) },
 }))
 vi.mock("../../../src/config/oxideTuple", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../src/config/oxideTuple")>()),
@@ -106,7 +105,7 @@ vi.mock("../../../src/config/classArtifacts", () => ({
   getWebBroadcasterArtifact,
   getWebOxideToken: async (_wallet: unknown, _contracts: unknown, l2Token: string) => ({ l2Token }),
 }))
-vi.mock("../../../src/features/onboarding/claimSponsorship", () => ({
+vi.mock("../../../src/features/registration/claimSponsorship", () => ({
   claimSponsorContext: async () => ({
     fpcAddress: AztecAddress.ZERO,
     fpcArtifact: {},
@@ -117,7 +116,10 @@ vi.mock("../../../src/features/onboarding/claimSponsorship", () => ({
 }))
 
 import { OxideSipaIntent } from "@obsidion/sdk"
-import { createWebRegistrationBroadcaster } from "../../../src/features/onboarding/webRegistrationBroadcast"
+import { createWebRegistrationBroadcaster } from "../../../src/features/registration/webRegistrationBroadcast"
+import { closeSession } from "../../../src/session/session"
+import { openTestSession } from "../../support/session"
+import { seedDeviceKeys } from "../../support/page"
 
 const PAYLOAD = {
   sipaAddress: `0x${"9f".repeat(20)}`,
@@ -147,6 +149,7 @@ async function broadcastCall(network: Network) {
     contractService: {} as never,
     config: { network, l1ChainId: network === Network.MAINNET ? 1 : 31337 } as never,
     handle: "alice",
+    nameClaims: { put: async () => {} },
   })
   await broadcast(PAYLOAD as never)
   expect(buildSipaSweepBroadcasts).toHaveBeenCalledTimes(1)
@@ -160,7 +163,11 @@ async function broadcastTokens(network: Network): Promise<string[]> {
 }
 
 describe("createWebRegistrationBroadcaster funding tokens", () => {
-  beforeEach(() => {
+  afterEach(closeSession)
+  beforeEach(async () => {
+    // The broadcast caches its fresh claim in the account's session.
+    await seedDeviceKeys({ storageId: "a1" })
+    openTestSession()
     assertSubsidySweepsSipa.mockReset().mockResolvedValue(undefined)
     buildSipaSweepBroadcasts.mockReset().mockReturnValue([])
     sendTx.mockReset().mockResolvedValue({ receipt: { txHash: { toString: () => "0x01" } } })
@@ -209,6 +216,7 @@ describe("createWebRegistrationBroadcaster funding tokens", () => {
       contractService: {} as never,
       config: { network: Network.SANDBOX, l1ChainId: 31337 } as never,
       handle: "alice",
+      nameClaims: { put: async () => {} },
     })
     await expect(broadcast(PAYLOAD as never)).rejects.toThrow("would deploy")
     expect(buildSipaSweepBroadcasts).not.toHaveBeenCalled()

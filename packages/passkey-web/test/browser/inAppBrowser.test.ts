@@ -5,6 +5,7 @@ import {
   brandEvidence,
   currentIsIosInAppBrowser,
   currentAppDropsOpenLink,
+  currentIsXInAppBrowser,
   currentInAppUpFront,
   currentIsInAppBrowser,
   currentOpenInBrowserHref,
@@ -352,13 +353,16 @@ describe("the live browser", () => {
     const androidX = `${UA.androidWebView} TwitterAndroid`
     for (const userAgent of [UA.iosX, androidX]) {
       vi.stubGlobal("navigator", { userAgent })
+      expect(currentIsXInAppBrowser()).toBe(true)
       expect(currentAppDropsOpenLink()).toBe(true)
     }
     for (const userAgent of [UA.iosInstagram, UA.androidWebView]) {
       vi.stubGlobal("navigator", { userAgent })
+      expect(currentIsXInAppBrowser()).toBe(false)
       expect(currentAppDropsOpenLink()).toBe(false)
     }
     vi.stubGlobal("navigator", { userAgent: UA.iosX, standalone: true })
+    expect(currentIsXInAppBrowser()).toBe(false)
     expect(currentAppDropsOpenLink()).toBe(false)
   })
 })

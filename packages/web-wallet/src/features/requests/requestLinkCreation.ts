@@ -1,17 +1,15 @@
-import type { Address } from "viem"
 import {
   mintableOrigin,
   mintRequestLink,
   sipaDeploymentTag,
   sipaLinkPreimage,
-  SIPADepositStore,
   type MintedRequestLink,
   type MintRequestLinkArgs,
   type StoredRequest,
   type SipaOrigin,
 } from "@obsidion/front-core"
 import { getConfig } from "../../config/env"
-import { webStorage } from "../../platform/storage/WebStorageAdapter"
+import { session } from "../../session/session"
 
 /** Request links land on this deploy's pay page, unless a scanner would refuse its origin. */
 export function requestLinkOrigin(): string {
@@ -24,9 +22,7 @@ export interface RequestLinkStore {
 
 /** What this wallet recorded when it derived `sipa`. */
 async function recordedSipaOrigin(sipa: string): Promise<SipaOrigin | undefined> {
-  const deposits = SIPADepositStore.get(webStorage)
-  await deposits.load()
-  return deposits.get(sipa as Address)?.origin
+  return (await session().sipaDeposits.get(sipa))?.origin
 }
 
 /**

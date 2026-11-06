@@ -4,16 +4,13 @@
  * and store write belong to front-core's `runSipaRecovery` and are covered there — here it is a
  * fake, so what these tests assert is the wiring.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { zeroAddress, type Address, type Hex } from "viem"
 import {
-  encodeAbiParameters,
-  encodeEventTopics,
-  erc20Abi,
-  zeroAddress,
-  type Address,
-  type Hex,
-} from "viem"
-import type { SIPADepositRecord } from "@obsidion/front-core"
+  sipaDepositTransition,
+  type SipaDeposit,
+  type SipaDepositEvent,
+} from "@obsidion/front-core"
 import { LIMIT_USD } from "../../../support/publicLimit"
 
 const SIPA = `0x${"11".repeat(20)}` as Address
@@ -26,31 +23,26 @@ const HASH = `0x${"ab".repeat(32)}` as Hex
 const l1Clients = vi.hoisted(() => ({ getL1Clients: vi.fn() }))
 const bridge = vi.hoisted(() => ({ submitViaDesktopBridge: vi.fn() }))
 
-vi.mock("../../../../src/features/deposit/l1Wallet", () => l1Clients)
-// The refund memo the recovery leaves lists the tokens the registration accepts, per network.
-vi.mock("../../../../src/config/env", async (original) => ({
-  ...(await original<object>()),
-  getConfig: () => ({ l1ChainId: 11155111 }),
-}))
-// The registration's table lists only its own token.
-vi.mock("../../../../src/features/deposit/loadDepositFacts", async (importOriginal) => {
-  const { mockLoadDepositFacts, singleToken } = await import("../../../support/depositTokens")
-  return mockLoadDepositFacts(importOriginal, () => singleToken(RECORD_TOKEN))
-})
+vi.mock("../../../../src/session/l1Wallet", () => l1Clients)
 vi.mock("../../../../src/platform/desktopBridge", () => ({
   isDesktopL1SubmitActive: () => false,
   ...bridge,
 }))
 
-const { desktopBridgeChannel, injectedWalletChannel, recoverSipaDeposit } = await import(
-  "../../../../src/features/deposit/sipaRecovery"
+const { recoverSipaDeposit } = await import(
+  "../../../../src/features/deposit/recovery/sipaRecovery"
 )
-type L1ExitStage = import("../../../../src/features/deposit/sipaRecovery").L1ExitStage
+const { desktopBridgeChannel, injectedWalletChannel } = await import(
+  "../../../../src/features/sipa/l1ExitChannels"
+)
+type L1ExitStage = import("../../../../src/features/sipa/l1ExitChannels").L1ExitStage
 const { unsweepableCopy } = await import("../../../../src/features/deposit/unsweepableCopy")
+const { closeSession } = await import("../../../../src/session/session")
+afterEach(closeSession)
 
 const NOW = 1_700_000_000_000
 
-const record = (patch: Partial<SIPADepositRecord> = {}): SIPADepositRecord =>
+const record = (patch: Partial<SipaDeposit> = {}): SipaDeposit =>
   ({
     sipaAddress: SIPA,
     recipientL2Address: "0xaa",
@@ -63,7 +55,7 @@ const record = (patch: Partial<SIPADepositRecord> = {}): SIPADepositRecord =>
     phase: "recoverable",
     startTime: NOW,
     ...patch,
-  } as SIPADepositRecord)
+  } as SipaDeposit)
 
 describe("recoverSipaDeposit", () => {
   const channel = {
@@ -72,7 +64,7 @@ describe("recoverSipaDeposit", () => {
     waitForReceipt: vi.fn(async () => true),
   }
   const run = vi.fn(async () => HASH)
-  const store = { get: vi.fn(() => null), upsert: vi.fn(), update: vi.fn() }
+  const store = { apply: vi.fn() }
   const stealthKey = { scalar: 7n, publicKey: { x: 1n, y: 2n } }
 
   const deployment = {
@@ -91,23 +83,10 @@ describe("recoverSipaDeposit", () => {
     tokens: tokens as [typeof DAI, ...(typeof DAI)[]],
     readBalance,
     readEthBalance: vi.fn(async () => eth),
-    readReceipt: async () =>
-      ({
-        status: "success",
-        logs: [
-          {
-            address: RECORD_TOKEN,
-            topics: encodeEventTopics({
-              abi: erc20Abi,
-              eventName: "Transfer",
-              args: { from: SIPA, to: WALLET },
-            }),
-            data: encodeAbiParameters([{ type: "uint256" }], [5n * 10n ** 18n]),
-          },
-        ],
-      } as never),
+    readReceipt: vi.fn(),
     deployment,
     store,
+    refunds: { confirmed: async () => {} },
     stealthKey: async () => stealthKey as never,
     run: run as never,
   })
@@ -120,7 +99,7 @@ describe("recoverSipaDeposit", () => {
     const readBalance = balances({ [TUPLE_TOKEN]: 5n })
     await expect(
       recoverSipaDeposit(record({ messageSecret: "" }), deps(readBalance)),
-    ).rejects.toThrow(/still looking up this deposit's details/)
+    ).rejects.toMatchObject({ code: "recovery.detailsPending" })
     expect(readBalance).not.toHaveBeenCalled()
     expect(run).not.toHaveBeenCalled()
   })
@@ -128,14 +107,16 @@ describe("recoverSipaDeposit", () => {
   it("aborts on an empty SIPA rather than settling a deposit it never moved", async () => {
     await expect(
       recoverSipaDeposit(record({ tokenAddress: RECORD_TOKEN }), deps()),
-    ).rejects.toThrow(/already been swept/)
+    ).rejects.toMatchObject({ code: "deposit.alreadySwept" })
     expect(run).not.toHaveBeenCalled()
   })
 
   it("flags the current-token fallback as inconclusive on a zero balance", async () => {
     // Without its own tokenAddress the read hit the CURRENT deployment's token — wrong contract
     // for a historic-generation SIPA, so zero must not read as "swept".
-    await expect(recoverSipaDeposit(record(), deps())).rejects.toThrow(/predates token tracking/)
+    await expect(recoverSipaDeposit(record(), deps())).rejects.toMatchObject({
+      code: "deposit.untrackedEmpty",
+    })
     expect(run).not.toHaveBeenCalled()
   })
 
@@ -173,7 +154,7 @@ describe("recoverSipaDeposit", () => {
 
   it("refuses an ETH deposit whose address holds no ETH", async () => {
     const rec = record({ ...ETH_RECORD, ...ACCOUNT })
-    await expect(recoverSipaDeposit(rec, deps())).rejects.toThrow(/holds no ETH/)
+    await expect(recoverSipaDeposit(rec, deps())).rejects.toMatchObject({ code: "recovery.noEth" })
     expect(run).not.toHaveBeenCalled()
   })
 
@@ -182,9 +163,9 @@ describe("recoverSipaDeposit", () => {
     await expect(recoverSipaDeposit(record(ETH_RECORD), d)).resolves.toBe(HASH)
     expect(run).toHaveBeenCalledWith(expect.objectContaining({ tokens: [TUPLE_TOKEN] }))
     expect(d.readEthBalance).not.toHaveBeenCalled()
-    await expect(recoverSipaDeposit(record(ETH_RECORD), deps())).rejects.toThrow(
-      /cannot recover ETH/,
-    )
+    await expect(recoverSipaDeposit(record(ETH_RECORD), deps())).rejects.toMatchObject({
+      code: "recovery.ethUnsupported",
+    })
   })
 
   it("moves the accepted token that holds the funds, not the one the record names", async () => {
@@ -215,28 +196,24 @@ describe("recoverSipaDeposit", () => {
   describe("a token named in Settings", () => {
     const stranded = { address: RECORD_TOKEN, symbol: "WETH", decimals: 18 }
     const readBalance = () => balances({ [TUPLE_TOKEN]: 5n, [RECORD_TOKEN]: 7n })
-    /** One stored record; `update` writes a patch unless it answers null, as the real store does. */
-    const liveStore = (phase: SIPADepositRecord["phase"]) => {
+    /** One stored record, changed through the transition as the real store does. */
+    const liveStore = (phase: SipaDeposit["phase"]) => {
       const live = record({ phase, tokenAddress: TUPLE_TOKEN })
       return {
         live,
-        get: () => live,
-        upsert: vi.fn(),
-        update: vi.fn(async (_sipa: Address, patch: (r: SIPADepositRecord) => object | null) => {
-          const next = patch(live)
-          return next ? Object.assign(live, next) : null
+        apply: vi.fn(async (_sipa: Address, event: SipaDepositEvent) => {
+          const next = sipaDepositTransition(live, event, NOW)
+          return next ? Object.assign(live, next) : undefined
         }),
       }
     }
     /** A run that writes `recovered` once its transaction confirms, as runSipaRecovery does. */
     const runWrites = (onSigned?: () => void) =>
-      vi.fn(
-        async (d: { store: { upsert: (sipa: Address, patch: object) => Promise<unknown> } }) => {
-          onSigned?.()
-          await d.store.upsert(SIPA, { phase: "recovered" })
-          return HASH
-        },
-      )
+      vi.fn(async (d: { store: { apply: (sipa: Address, e: SipaDepositEvent) => unknown } }) => {
+        onSigned?.()
+        await d.store.apply(SIPA, { type: "recoverySent", txHash: HASH, confirmed: true })
+        return HASH
+      })
 
     it("is recovered with the deposit tokens", async () => {
       const store = liveStore("recoverable")
@@ -261,57 +238,17 @@ describe("recoverSipaDeposit", () => {
         run: signedThenClaimed as never,
       })
       expect(settling.live.phase).toBe("claimed")
-      expect(settling.upsert).not.toHaveBeenCalled()
+      expect(settling.live.recoveryTxHash).toBeUndefined()
     })
 
     it("refuses when the address no longer holds it", async () => {
       const store = liveStore("claimed")
       const d = { ...deps(balances({ [TUPLE_TOKEN]: 5n })), store, stranded }
-      await expect(recoverSipaDeposit(store.live, d)).rejects.toThrow(/no longer holds any WETH/)
+      await expect(recoverSipaDeposit(store.live, d)).rejects.toMatchObject({
+        code: "recovery.strandedEmpty",
+        data: { symbol: "WETH" },
+      })
     })
-  })
-
-  it("remembers a registration deposit's recovery as its refund, whatever surface ran it", async () => {
-    const { getPendingStore } = await import("../../../../src/features/onboarding/webRegistration")
-    const { registrationRefunded } = await import(
-      "../../../../src/features/onboarding/registrationQuoteRecovery"
-    )
-    localStorage.clear()
-    const pending = await getPendingStore().upsert(
-      WALLET,
-      {},
-      {
-        tag: "demo",
-        nameHash: HASH,
-        l2Address: "0xaa",
-        l1ChainId: 11155111,
-        sipaAddress: SIPA,
-        fee: "1",
-        beneficiary: WALLET,
-        depositToken: RECORD_TOKEN,
-        broadcast: true,
-        phase: "funded",
-        fundedAt: NOW,
-        retries: 0,
-        startTime: NOW,
-      },
-    )
-    expect(registrationRefunded(pending)).toBe(false)
-    // Another token recovered off the address is not the registration's refund.
-    await recoverSipaDeposit(record(), deps(balances({ [TUPLE_TOKEN]: 5n })))
-    expect(registrationRefunded(pending)).toBe(false)
-    expect(getPendingStore().get(WALLET)?.phase).toBe("funded")
-    // The refund is read off an accepted token even when the recovery names ETH first.
-    await recoverSipaDeposit(
-      record({ ...ETH_RECORD, ...ACCOUNT }),
-      deps(
-        balances({ [RECORD_TOKEN]: 5n }),
-        [DAI, { address: RECORD_TOKEN, symbol: "DAI", decimals: 18 }],
-        1n,
-      ),
-    )
-    expect(registrationRefunded(pending)).toBe(true)
-    expect(getPendingStore().get(WALLET)).toMatchObject({ phase: "awaiting_deposit" })
   })
 })
 
@@ -403,7 +340,7 @@ describe("injectedWalletChannel", () => {
       })
       const submission = channel.sendTransaction(SIPA, "0xdeadbeef")
       if (failure === "revert") await expect(submission).rejects.toBe(revert)
-      else await expect(submission).rejects.toThrow(/exceeds.*gas limit/i)
+      else await expect(submission).rejects.toMatchObject({ code: "tx.overGasLimit" })
       expect(sendTransaction).not.toHaveBeenCalled()
       expect(onStage).not.toHaveBeenCalled()
     },
@@ -454,7 +391,7 @@ describe("desktopBridgeChannel", () => {
 describe("unsweepableCopy", () => {
   const ONE_DAI = "1000000000000000000"
   const TX_AMOUNT_CAP = 5166n * 10n ** 18n
-  const copy = (patch: Partial<SIPADepositRecord>) => unsweepableCopy(record(patch), TX_AMOUNT_CAP)
+  const copy = (patch: Partial<SipaDeposit>) => unsweepableCopy(record(patch), TX_AMOUNT_CAP)
 
   it("names the fee when the deposit is at or below the floor", () => {
     for (const amount of ["0.4", "1"]) {

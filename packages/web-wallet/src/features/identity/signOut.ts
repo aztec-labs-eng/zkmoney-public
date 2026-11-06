@@ -1,13 +1,20 @@
-import { forgetRetiredSession } from "../../platform/auth/retiredSession"
-import { peekAuthService } from "../../platform/auth/useAuthenticator"
+import { stageIdentity, type Database, type ReadonlyStore } from "@obsidion/front-core"
+import type { WebAlphaAuthService } from "../../platform/auth/WebAlphaAuthService"
 import {
-  clearActiveStorage,
-  clearCachedMsk,
+  NO_SESSION,
   clearSessionEverywhere,
-  withSessionLock,
+  type SessionLock,
 } from "../../platform/storage/activeStorage"
-import { walletStorage } from "../../platform/storage/walletStorage"
-import { clearWalletIdentity } from "./walletIdentity"
+import { stageDeviceKeys, type DeviceState } from "../../platform/storage/deviceKeys"
+import { activeNamespace } from "../../session/session"
+
+/** The page's auth service, database, device keys and session lock: the session a sign-out ends. */
+export interface SignOutPage {
+  auth: Pick<WebAlphaAuthService, "lockOut">
+  database: Database
+  device: ReadonlyStore<DeviceState>
+  sessionLock: SessionLock
+}
 
 export type SignOutOptions = {
   keepPointers?: boolean
@@ -19,20 +26,19 @@ export type SignOutOptions = {
  * The destructive half of signing out, with no navigation. The in-memory key and the retired
  * session go at once, with a fence that keeps any cache from restoring the key until the next
  * commit. Then, under the session lock a sign-in's commit also takes, the session tuple leaves every
- * other rollup's database and any copy an older build left in `localStorage`, and this rollup's
- * identity, cached key and pointers go as one transaction. It resolves once everything is saved, so
- * callers that navigate await it. The passkey and the on-chain claim survive. The onboarding wizard
- * keeps the pointers, because its pending registration record lives under them.
+ * other rollup's database and any copy an older build left in `localStorage`, and the committed
+ * account's identity, this rollup's cached key and its pointers go as one transaction. It resolves
+ * once everything is saved, so callers that navigate await it. The passkey and the on-chain claim
+ * survive. The onboarding wizard keeps the pointers, because its pending registration record lives
+ * under them.
  */
-export async function signOut(options: SignOutOptions = {}): Promise<void> {
-  peekAuthService()?.lockOut()
-  forgetRetiredSession()
-  await withSessionLock(async () => {
+export async function signOut(page: SignOutPage, options: SignOutOptions = {}): Promise<void> {
+  page.auth.lockOut()
+  await page.sessionLock(async () => {
     if (!options.localOnly) await clearSessionEverywhere()
-    await walletStorage.batch(() => {
-      clearWalletIdentity()
-      clearCachedMsk()
-      if (!options.keepPointers) clearActiveStorage()
+    await page.database.write(async (w) => {
+      stageIdentity(w, activeNamespace(page.device).prefix, null)
+      stageDeviceKeys(w, options.keepPointers ? { msk: null } : NO_SESSION)
     })
   })
 }

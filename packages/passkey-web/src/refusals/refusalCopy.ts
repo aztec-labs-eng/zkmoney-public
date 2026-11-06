@@ -287,6 +287,7 @@ export const bitwardenLineFor = (host: string): string =>
 export const SUPPORTED_NAMES: Readonly<Record<LocalManager, string>> = {
   "apple": "iCloud Keychain",
   "gpm": "Google Password Manager",
+  "windows_hello": "Windows Hello",
   "1password": "1Password",
 }
 
@@ -371,6 +372,17 @@ export const SIGN_UP_SHEET_COPY = {
     savedIn: "Saved in",
     /** A Mac row with 1Password alone and no extension-backed 1Password option. */
     macWindow: "Saved in 1Password through your Mac's passkey window",
+    /** Where Client Hints say Windows 10, whose Windows Hello gives no key, before the prompt. */
+    windows10:
+      "On Windows 10, Windows Hello can't hold your passkey. When Chrome asks where to save it, " +
+      "pick Google Password Manager.",
+    /** Where the row admits Windows Hello, which keeps the only copy, as a key does. */
+    helloWarning: {
+      label: "About Windows Hello",
+      note:
+        "Windows Hello keeps your passkey on this computer only. Resetting Windows or moving to " +
+        "a new computer deletes it, and your wallet with it.",
+    },
   },
   phone: {
     label: "Your phone",

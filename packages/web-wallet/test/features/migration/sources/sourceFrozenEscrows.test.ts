@@ -27,7 +27,7 @@ vi.mock("@obsidion/sdk", () => ({
   PaylinkService: class {},
   TokenService: { create: async () => ({}) },
 }))
-vi.mock("../../../../src/platform/session", () => ({
+vi.mock("../../../../src/session/session", () => ({
   session: () => ({
     activity: {
       all: async () => {
@@ -58,13 +58,6 @@ vi.mock("../../../../src/platform/storage/WebStorageAdapter", () => ({
     },
   },
 }))
-vi.mock("../../../../src/platform/storage/activeStorage", () => ({
-  getActiveStorageId: () => h.storageId,
-  withSessionLock: async <T>(fn: () => Promise<T>) => {
-    h.locked++
-    return fn()
-  },
-}))
 vi.mock("../../../../src/config/env", () => ({ getConfig: () => ({ l1ChainId: 31337 }) }))
 
 const { markRefundedSourceLinks, sourceFrozenEscrows, sourceLinkRows } = await import(
@@ -87,7 +80,16 @@ const row = (name: string, over: Record<string, unknown> = {}) => ({
   ...over,
 })
 const names = (rows: Array<{ link: { name: string } }>) => rows.map((r) => r.link.name)
-const read = () => sourceLinkRows({ tuple, current, storageId: "acct-a" })
+/** The session the rows are read for, account "acct-a"; `h.storageId` is the committed account. */
+const own = {
+  namespace: { id: "acct-a" },
+  device: { get: () => ({ storageId: h.storageId }) },
+  sessionLock: async <T>(fn: () => Promise<T>) => {
+    h.locked++
+    return fn()
+  },
+} as never
+const read = () => sourceLinkRows({ tuple, current, own })
 
 describe("sourceLinkRows", () => {
   beforeEach(() => {
@@ -150,7 +152,7 @@ describe("markRefundedSourceLinks", () => {
       session: { refundedLinks } as never,
       tuple,
       current,
-      storageId: "acct-a",
+      own,
     })
 
   beforeEach(() => {

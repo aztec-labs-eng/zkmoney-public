@@ -6,11 +6,8 @@
 import { createRoot } from "react-dom/client"
 import { MemoryRouter, Outlet, Route, Routes } from "react-router-dom"
 import { afterEach, expect, it, vi } from "vitest"
+import { seedBootConfig } from "../../support/seedBootConfig"
 
-vi.mock("../../../src/features/identity/walletIdentity", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../src/features/identity/walletIdentity")>()),
-  loadOnboardedIdentity: () => null,
-}))
 vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/front-core")>()),
   useContractServiceContext: () => ({ contractService: undefined }),
@@ -22,6 +19,7 @@ vi.mock("../../../src/ui/PxeBoot", async (importOriginal) => ({
 
 const { WalletEntryGate } = await import("../../../src/App")
 const { BootSplash, useFirstScreenShown } = await import("../../../src/ui/PxeBoot")
+const { openTestSession } = await import("../../support/session")
 
 const reactEnv = globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
 const added: HTMLElement[] = []
@@ -49,6 +47,7 @@ function Shell() {
 }
 
 it("keeps the boot screen up through the redirect to the landing", async () => {
+  openTestSession()
   const standIn = element("pre-boot")
   standIn.append(document.createElement("div"))
   const app = element("root")
@@ -86,3 +85,26 @@ it("keeps the boot screen up through the redirect to the landing", async () => {
   expect(document.body.dataset.booting).toBe("full")
   root.unmount()
 })
+it("holds the signed-in page while a sign-out leaves it", async () => {
+  const open = openTestSession()
+  open.leaving.set(true)
+  const app = element()
+  reactEnv.IS_REACT_ACT_ENVIRONMENT = false
+  const root = createRoot(app)
+  root.render(
+    <MemoryRouter initialEntries={["/"]}>
+      <Routes>
+        <Route element={<WalletEntryGate />}>
+          <Route index element={<i data-testid="home" />} />
+        </Route>
+        <Route path="claim" element={<i data-testid="claim" />} />
+      </Routes>
+    </MemoryRouter>,
+  )
+  await new Promise((resolve) => setTimeout(resolve, 30))
+  expect(app.querySelector('[data-testid="home"]')).not.toBeNull()
+  expect(app.querySelector('[data-testid="claim"]')).toBeNull()
+  root.unmount()
+})
+
+await seedBootConfig()

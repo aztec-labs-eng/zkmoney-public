@@ -1,16 +1,15 @@
 import { act, createElement } from "react"
 import { createRoot } from "react-dom/client"
-import { beforeAll, describe, expect, it, vi } from "vitest"
+import { beforeAll, describe, expect, it, vi, beforeEach, afterEach } from "vitest"
+import { setIdentity } from "../support/identity"
 
-vi.mock("../../src/features/onboarding/openRegistration", () => ({
+vi.mock("../../src/features/registration/openRegistration", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../src/features/registration/openRegistration")>()),
   useNameClaimPending: () => false,
   useRegistrationDepositOwed: () => false,
 }))
-vi.mock("../../src/features/onboarding/sponsoredRailReadiness", () => ({
+vi.mock("../../src/features/registration/sponsoredRailReadiness", () => ({
   useSponsoredRailPending: () => false,
-}))
-vi.mock("../../src/features/identity/walletIdentity", () => ({
-  loadWalletIdentity: () => ({ address: "0xabc", handle: "taga" }),
 }))
 vi.mock("../../src/config/env", () => ({
   getConfig: () => ({ oxideProfile: { portal: "0x" + "11".repeat(20) } }),
@@ -47,6 +46,14 @@ const ACTIONS: Action[] = [
   "savings",
   "claim",
 ]
+
+const { openTestSession } = await import("../support/session")
+const { closeSession } = await import("../../src/session/session")
+beforeEach(async () => {
+  openTestSession()
+  await setIdentity({ address: "0xabc", handle: "taga" })
+})
+afterEach(closeSession)
 
 describe("whether an action may start", () => {
   it.each(ACTIONS)("starts %s once nothing waits", (action) => {
@@ -134,13 +141,15 @@ describe("whether an action may start", () => {
       expect(actionVerdict(action, { ...ready, railPending: true })).toBe("open")
   })
 
-  it("holds a new link, and nothing else, while a backup passkey add has yet to switch the account", () => {
+  it("holds a new link and a Savings move, and nothing else, while a backup passkey add has yet to switch the account", () => {
     const adding = { ...ready, rerootPending: true }
-    expect(actionVerdict("link", adding)).toBe("backup")
-    for (const action of ACTIONS.filter((a) => a !== "link"))
+    for (const action of ["link", "savings"] as const) {
+      expect(actionVerdict(action, adding)).toBe("backup")
+      expect(actionVerdict(action, { ...adding, upgrade: "offered" })).toBe("upgrade")
+      expect(actionVerdict(action, { ...adding, demo: true })).toBe("open")
+    }
+    for (const action of ACTIONS.filter((a) => a !== "link" && a !== "savings"))
       expect(actionVerdict(action, adding)).toBe("open")
-    expect(actionVerdict("link", { ...adding, upgrade: "offered" })).toBe("upgrade")
-    expect(actionVerdict("link", { ...adding, demo: true })).toBe("open")
   })
 
   it("pauses only the actions that spend through the sponsor while a balance moves", () => {

@@ -1,3 +1,4 @@
+import { currentIsInAppBrowser, currentIsXInAppBrowser } from "@obsidion/passkey-web"
 import { deviceStorage } from "../platform/storage/rollupStorage"
 
 /** The link a visitor arrived on. `ticket` is a payment link that pays for the account. */
@@ -61,9 +62,10 @@ function channelOf(url: URL): Channel {
 /**
  * The link from the path, the source from a known utm_source, else the referrer. An unknown
  * utm_source is still a tagged visit, so it counts as `other`. `ref` is the referrer's host as a
- * hop that became the referrer saw it (paylink-web). Only the resolved values leave this function.
+ * hop that became the referrer saw it (paylink-web). `inX`: X's own browser, which can send no
+ * referrer. Only the resolved values leave this function.
  */
-export function attribution(href: string, referrer: string): Attribution {
+export function attribution(href: string, referrer: string, inX = false): Attribution {
   let url: URL
   try {
     url = new URL(href)
@@ -72,8 +74,8 @@ export function attribution(href: string, referrer: string): Attribution {
   }
   const utm = url.searchParams.get("utm_source")
   const host = url.searchParams.get("ref") || referrerHost(referrer)
-  const source = isTagged(utm) ? utm : utm && utm !== "direct" ? "other" : referrerSource(host)
-  return { channel: channelOf(url), source }
+  const tagged = isTagged(utm) ? utm : utm && utm !== "direct" ? "other" : referrerSource(host)
+  return { channel: channelOf(url), source: tagged === "direct" && inX ? "x-post" : tagged }
 }
 
 const STORAGE_KEY = "webwallet.attribution"
@@ -109,7 +111,7 @@ let landing: Attribution = NO_ATTRIBUTION
  * stays attributed.
  */
 export function captureLandingSource(now = Date.now()): void {
-  const current = attribution(window.location.href, document.referrer)
+  const current = attribution(window.location.href, document.referrer, currentIsXInAppBrowser())
   const stored = readStored(now)
   landing = {
     channel: current.channel !== "none" ? current.channel : stored.channel,
@@ -117,10 +119,35 @@ export function captureLandingSource(now = Date.now()): void {
   }
   // Only a tagged visit restarts the hour; untagged visits read it without extending it.
   if (current.channel !== "none" || current.source !== "direct") store(landing, now)
+  stampLandingSource()
 }
 
 export function landingAttribution(): Attribution {
   return landing
+}
+
+/**
+ * `url` with the landing's source as its utm_source, unless it has one. An app's browser keeps
+ * its storage and referrer to itself, so the phone's browser sees only what the link carries.
+ */
+export function withLandingSource(url: string): string {
+  if (landing.source === "direct") return url
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
+    return url
+  }
+  if (parsed.searchParams.has("utm_source")) return url
+  parsed.searchParams.set("utm_source", landing.source)
+  return parsed.toString()
+}
+
+/** Puts the landing's source in the address bar, which an app's own Open in browser menu opens. */
+export function stampLandingSource(): void {
+  if (!currentIsInAppBrowser()) return
+  const href = withLandingSource(window.location.href)
+  if (href !== window.location.href) window.history.replaceState(window.history.state, "", href)
 }
 
 /** A payment link turned out to pay for the account. */

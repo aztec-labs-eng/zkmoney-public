@@ -12,7 +12,7 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
 }))
 
 const { ContractAddressesModal } = await import("../../../src/ui/ContractAddressesModal")
-const { closeSession } = await import("../../../src/platform/session")
+const { closeSession } = await import("../../../src/session/session")
 const { openTestSession } = await import("../../support/session")
 
 const addr = (hex: string) => ({ toString: () => hex })

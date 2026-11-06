@@ -1,7 +1,5 @@
-export * from "./useConfigContext"
 export * from "./useContractServiceContext"
 export * from "./useOidcKeyRegistryContext"
 export * from "./useScreeningContext"
 export * from "./ObsidionProviders"
-export * from "./useStorageContext"
 export * from "./useSavingsContext"

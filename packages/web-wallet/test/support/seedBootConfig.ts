@@ -6,9 +6,10 @@
  */
 import { sandboxProfile, testnetProfile } from "../fixtures/sandboxProfile"
 
-/** Resolve the boot config from an in-process profile. Safe to call more than once. */
-export const seedBootConfig = () =>
-  seed(sandboxProfile(), "http://localhost:8083/profiles/sandbox.json")
+/** Resolve the boot config from an in-process profile, `env` over its own. Safe to call again. */
+export const seedBootConfigWith = (env: Record<string, string>) =>
+  seed(sandboxProfile(), "http://localhost:8083/profiles/sandbox.json", env)
+export const seedBootConfig = () => seedBootConfigWith({})
 
 /** The same on testnet, whose L1 has a public explorer. */
 export const seedTestnetBootConfig = () =>
@@ -17,6 +18,7 @@ export const seedTestnetBootConfig = () =>
 async function seed(
   profile: { profileId: string; network: string },
   profileUrl: string,
+  env: Record<string, string> = {},
 ): Promise<void> {
   const { resolveBootConfig } = await import("../../src/config/env")
   await resolveBootConfig({
@@ -24,6 +26,7 @@ async function seed(
       VITE_NETWORK: profile.network,
       VITE_CONFIG_PROFILE_URL: profileUrl,
       VITE_CONFIG_EXPECTED_PROFILE_ID: profile.profileId,
+      ...env,
     },
     fetchImpl: (async () =>
       new Response(JSON.stringify(profile), {

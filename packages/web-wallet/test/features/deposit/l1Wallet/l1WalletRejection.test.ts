@@ -2,10 +2,10 @@ import { describe, expect, it, vi } from "vitest"
 import { ContractFunctionExecutionError, UserRejectedRequestError, erc20Abi, type Hex } from "viem"
 
 vi.mock("wagmi/actions", () => ({ getAccount: () => ({}), switchChain: vi.fn() }))
-vi.mock("../../../../src/features/deposit/wagmi", () => ({ wagmiConfig: () => ({}) }))
+vi.mock("../../../../src/session/wagmi", () => ({ wagmiConfig: () => ({}) }))
 
 const { getL1Clients, isWalletRejection, isWrongNetwork } = await import(
-  "../../../../src/features/deposit/l1Wallet"
+  "../../../../src/session/l1Wallet"
 )
 
 describe("isWalletRejection", () => {

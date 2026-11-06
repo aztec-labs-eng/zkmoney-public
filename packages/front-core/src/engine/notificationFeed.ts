@@ -5,7 +5,7 @@
 import type { ConfirmationOutcome } from "../core/services/coordination/ReorgMonitor"
 import type { OldVersionWithdrawal } from "../core/migration/OldVersionWithdrawalStorage"
 import type { OperationRecord } from "../core/services/operations/OperationStore"
-import type { PendingRegistrationRecord } from "../core/services/registration/PendingRegistrationStore"
+import type { PendingRegistrationRecord } from "./registrationRecord"
 import {
   depositOwed,
   registrationStage,

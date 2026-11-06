@@ -8,14 +8,10 @@ const mocks = vi.hoisted(() => ({
   generate: vi.fn(),
   assertEmail: vi.fn(),
   nonce: vi.fn(() => "nonce"),
-  auth: vi.fn(() => {
-    throw new Error("Account access is forbidden")
-  }),
 }))
 vi.mock("../../../../src/features/paylink/googleAuth", () => ({ signInWithGoogleIdToken: mocks.login }))
 vi.mock("../../../../src/features/paylink/zkJwtProver", () => ({ WebZkJwtProver: class {} }))
 vi.mock("../../../../src/config/env", () => ({ getConfig: () => ({ googleClientId: "google-client" }) }))
-vi.mock("../../../../src/platform/auth/useAuthenticator", () => ({ getAuthService: mocks.auth }))
 vi.mock("../../../../src/platform/storage/WebStorageAdapter", () => ({ webStorage: {} }))
 vi.mock("../../../../src/platform/storage/MskWebCryptoProvider", () => ({ MskWebCryptoProvider: class {} }))
 vi.mock("@obsidion/sdk", async (importOriginal) => {
@@ -97,7 +93,6 @@ describe("email withdrawal verification", () => {
       caller.toString(),
       expect.any(Function),
     )
-    expect(mocks.auth).not.toHaveBeenCalled()
   })
 
   it("discards a late proof and rejects a mismatched returned destination", async () => {

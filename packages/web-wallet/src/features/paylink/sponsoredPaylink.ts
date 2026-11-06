@@ -1,3 +1,4 @@
+import { WalletError } from "@obsidion/core/errors"
 import { assertPaylinkSwapSource, readPaylinkSource } from "./paylinkSource"
 import { paylinkRowUrl, paylinkShareUrl } from "../shortLinks"
 /**
@@ -18,6 +19,8 @@ import { formatUnits, getAddress, parseUnits, type Address, type Hex } from "vie
 import type { PaylinkL1Proof } from "@obsidion/sdk"
 import {
   bestEffort,
+  broadcastAttemptEnded,
+  broadcastJob,
   isRefundInFlight,
   withdrawalFailure,
   loadRecords,
@@ -50,6 +53,7 @@ import {
   type ObsidionWallet,
   type RegisteredTeeSigner,
   type TokenService,
+  type TxHashCallback,
   type WithdrawalOptions,
 } from "@obsidion/sdk"
 import {
@@ -75,8 +79,7 @@ import {
   paylinkWindows,
   withdrawalAmounts,
   withdrawalRecipients,
-  PendingRegistrationStore,
-  recordRegistrationBroadcastSent,
+  currentRegistration,
   goldenTicketCoverage,
   withRefundInFlight,
   allowanceCovers,
@@ -85,19 +88,17 @@ import {
 } from "@obsidion/front-core"
 import {
   committedProverTip,
-  loadRegistrationTerms,
   PAYLINK_TICKET_REFUSED_MESSAGE,
   quoteExpired,
   registrationOffer,
   signedSchedule,
-} from "../onboarding/registrationTerms"
+} from "../registration/registrationTerms"
 import { recordBurnDuration } from "../withdraw/burnTiming"
 import { isFlowCancelled, runOperation, type OperationHandle } from "../operations/operations"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
-import { session } from "../../platform/session"
+import { session } from "../../session/session"
 import { walletStorage } from "../../platform/storage/walletStorage"
 import { deadline, TimeoutError, withTimeout } from "../../lib/withTimeout"
-import { getAuthService } from "../../platform/auth/useAuthenticator"
 import {
   firePaylinkEvent,
   paylinkAmountBucket,
@@ -115,11 +116,11 @@ import {
   claimSponsorContext,
   claimSponsorRail,
   noteSubscribed,
-} from "../onboarding/claimSponsorship"
+} from "../registration/claimSponsorship"
 import { latestChainSeconds } from "./chainTime"
 import { resolveTagViaRegistry } from "../contacts/registryResolution"
 import { owePaylinkClaim, reportPaylinkClaims } from "./paylinkClaimReport"
-import { RAIL_REGISTERED, RAIL_VOUCHER } from "../onboarding/rails"
+import { RAIL_REGISTERED, RAIL_VOUCHER } from "../registration/rails"
 import { isPasskeyCancelled } from "@obsidion/passkey-web"
 import { canCancelAt, linkMadeBy } from "@obsidion/front-core"
 import type { WithdrawalReceiveAsset } from "../withdraw/withdrawAssets"
@@ -137,15 +138,13 @@ import {
 import type { CreateStage, LinkFlavor, PaymentLink } from "./types"
 import { sponsorshipErrorCopy } from "../allowance/sponsorshipError"
 import { txAmountCap } from "../token/oxideToken"
-import { broadcastAttemptEnded, freshPayloads, getBroadcastLedger } from "../broadcasts/broadcasts"
 import { registrationBroadcastPayload } from "../broadcasts/registrationExecutor"
 import {
   cacheFreshClaim,
   createWebRegistrationBroadcaster,
   registrationBroadcastCalls,
-} from "../onboarding/webRegistrationBroadcast"
-import { getPendingStore } from "../onboarding/webRegistration"
-import { getActiveStorageId } from "../../platform/storage/activeStorage"
+} from "../registration/webRegistrationBroadcast"
+import { loadedRegistrations } from "../registration/webRegistration"
 
 /** How long a fresh link stays claimable when the creator picks no expiry. */
 export const DEFAULT_CLAIM_WINDOW_DAYS = 30
@@ -695,8 +694,8 @@ async function createSponsoredLinkFlow(
   const { atomic: amount, human } = parseEscrowAmount(amountDisplay, decimals)
   // A locked session would derive random secrets, and the signing ceremony that unlocks it runs
   // too late to help. Fail before any funds move.
-  const masterSecret = await getAuthService().getSecretKey()
-  if (!masterSecret) throw new Error("wallet is locked — unlock before creating a paylink")
+  const masterSecret = await session().auth.getSecretKey()
+  if (!masterSecret) throw new WalletError("account.locked", "no master secret to create a paylink")
 
   // Anchor the windows AFTER the passkey ceremony — a slow approval must not eat the grace
   // period the creator is promised. Proving/inclusion delay still shortens it, but that is
@@ -1060,7 +1059,8 @@ export async function registrationSlice(
   nowMs: number = Date.now(),
 ): Promise<RegistrationSlice | undefined> {
   if (!required) return undefined
-  const record = PendingRegistrationStore.get(webStorage).current(
+  const record = currentRegistration(
+    loadedRegistrations(session().registrations),
     deps.account.getAddress().toString(),
   )
   if (!record || record.phase !== "awaiting_deposit" || record.fundedAt !== undefined) {
@@ -1069,7 +1069,7 @@ export async function registrationSlice(
       "this account has no registration waiting for the link's deposit",
     )
   }
-  const terms = loadRegistrationTerms(record.account, record.tag)
+  const terms = record.terms ?? null
   const offer = registrationOffer(terms)
   if (offer.funding !== "paylink") {
     throw new RegistrationFundingError(
@@ -1148,10 +1148,12 @@ async function registrationPublish(
 ) {
   const config = getConfig()
   const address = record.sipaAddress.toLowerCase()
-  const ledger = getBroadcastLedger()
-  await ledger.load()
+  const own = session()
+  const { sipaDeposits: store, holdBroadcast, nameClaims, registrationPayloads } = own
+  await store.ready
+  const job = () => broadcastJob(store.view.get().records, address)
   try {
-    await withTimeout(broadcastAttemptEnded(address), PUBLISH_SETTLE_MS)
+    await withTimeout(broadcastAttemptEnded(store.view, address), PUBLISH_SETTLE_MS)
   } catch (err) {
     throw new RegistrationFundingError(
       "unpublished",
@@ -1160,17 +1162,17 @@ async function registrationPublish(
     )
   }
   const landed = async (): Promise<void> => {
-    freshPayloads.delete(address)
-    await recordRegistrationBroadcastSent(getPendingStore(), record.account, address)
-    if (ledger.get(address)) await ledger.markLanded(address)
+    registrationPayloads.delete(address)
+    await session().registrations.broadcastSent(address)
+    if (job()) await store.apply(address, { type: "broadcastLanded" })
   }
-  if (ledger.get(address)?.state === "landed") {
+  if (job()?.state === "landed") {
     await landed()
     return undefined
   }
   let built: Awaited<ReturnType<typeof registrationBroadcastPayload>>
   try {
-    built = await registrationBroadcastPayload(deps.wallet, config, record)
+    built = await registrationBroadcastPayload(deps.wallet, config, record, own)
   } catch (err) {
     throw new RegistrationFundingError(
       "unpublished",
@@ -1185,15 +1187,14 @@ async function registrationPublish(
     contractService: deps.contractService,
     config,
     handle: record.tag,
+    nameClaims,
   }
   await cacheFreshClaim(sender, built.payload)
   const calls = batched ? await registrationBroadcastCalls(sender, built.payload) : undefined
-  if (ledger.get(address)) await ledger.remove(address)
+  if (job()) await store.apply(address, { type: "broadcastAbandoned" })
   const owed = (txHash: string) =>
-    ledger.enqueue({
-      address,
+    store.oweBroadcast(address, {
       kind: "registration",
-      scope: getActiveStorageId(),
       source: { type: "registration", account: record.account },
       txHash,
     })
@@ -1206,7 +1207,7 @@ async function registrationPublish(
      */
     async alone(): Promise<void> {
       let noted: Promise<unknown> | undefined
-      const release = ledger.hold(address)
+      const release = holdBroadcast(address)
       try {
         await createWebRegistrationBroadcaster(sender)(built.payload, {
           onTxHash: async (txHash) => {
@@ -1218,8 +1219,10 @@ async function registrationPublish(
         release()
         if (!noted) throw err
         await noted
-        await withTimeout(broadcastAttemptEnded(address), PUBLISH_SETTLE_MS).catch(() => {})
-        if (ledger.get(address)?.state !== "landed") throw err
+        await withTimeout(broadcastAttemptEnded(store.view, address), PUBLISH_SETTLE_MS).catch(
+          () => {},
+        )
+        if (job()?.state !== "landed") throw err
       }
       try {
         await landed()
@@ -1560,6 +1563,8 @@ export function recoverSponsoredLink(
   deps: SponsoredPaylinkDeps,
   fragment: string,
   onStage?: (stage: CreateStage) => void,
+  /** Runs at the submit boundary before the rows learn the hash; a throw aborts the send. */
+  onTxHash?: TxHashCallback,
 ): Promise<string> {
   return runOperation(
     {
@@ -1570,10 +1575,28 @@ export function recoverSponsoredLink(
     // The link reads as refunding from here: its row learns the refund's hash only at submit.
     (op) =>
       withRefundInFlight(decodePaylinkInline(fragment).secret.toString(), () =>
-        recoverSponsoredLinkFlow(op, deps, fragment, onStage),
+        recoverSponsoredLinkFlow(op, deps, fragment, onStage, onTxHash),
       ),
     (txHash) => txHash,
   )
+}
+
+/**
+ * Whether the creator can take the link back now, only once it expires, or not at all because its
+ * escrow is spent: `spending` until an L1 checkpoint holds the spend, since a reorg can reopen the
+ * link. Read from the chain, as `recoverSponsoredLink` decides the same.
+ */
+export async function linkRefundable(
+  deps: ViewLinkDeps,
+  row: PaylinkTransaction | null,
+  fragment: string,
+): Promise<"now" | "later" | "spending" | "spent"> {
+  const spentAt = await statusService(deps).paylinkClaimBlock(decodePaylinkInline(fragment))
+  if (spentAt !== undefined)
+    return spentAt <= (await deps.wallet.node.getBlockNumber("checkpointed")) ? "spent" : "spending"
+  const now = await latestChainSeconds(deps.wallet.node)
+  if (row?.untilClaimable != null && now > row.untilClaimable) return "now"
+  return row?.refundableUntil != null && canCancelAt(row.refundableUntil, now) ? "now" : "later"
 }
 
 /**
@@ -1604,6 +1627,7 @@ async function recoverSponsoredLinkFlow(
   liveDeps: SponsoredPaylinkDeps,
   fragment: string,
   onStage?: (stage: CreateStage) => void,
+  onTxHash?: TxHashCallback,
 ): Promise<string> {
   onStage?.("building")
   const params = decodePaylinkInline(fragment)
@@ -1647,8 +1671,10 @@ async function recoverSponsoredLinkFlow(
       operationId,
       // The creator row learns of the refund before submit too: after a reload the claim
       // reconciler would otherwise read the spent note as a recipient's claim.
-      onTxHash: (hash) =>
-        saveRefundSubmitted(operationId, secret, flavor, account, hash, refundKind),
+      onTxHash: async (hash, tx) => {
+        await onTxHash?.(hash, tx)
+        await saveRefundSubmitted(operationId, secret, flavor, account, hash, refundKind)
+      },
     })
     if (sponsor.subscribe) noteSubscribed(deps.account, sponsor.fpcAddress, sponsor.railId)
     maybeRefuelFpc({ ...deps, fpc: { address: sponsor.fpcAddress, artifact: sponsor.fpcArtifact } })

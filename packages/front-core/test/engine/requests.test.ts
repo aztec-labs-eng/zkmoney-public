@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
-import type { SIPADepositRecord } from "../../src/core/services/deposits/SIPADepositStore"
+import type { SipaDeposit } from "../../src/engine/sipaDeposits"
 import { REQUEST_STORAGE_KEY } from "../../src/core/storages/storage-constants"
 import { createActivity } from "../../src/engine/activity"
 import { openDatabase } from "../../src/engine/database"
@@ -54,20 +54,20 @@ const receive = (over: Partial<TokenTransaction> = {}): TokenTransaction => ({
   ...over,
 })
 
-const deposit = (over: Partial<SIPADepositRecord> = {}) =>
+const deposit = (over: Partial<SipaDeposit> = {}) =>
   ({
     sipaAddress: SIPA,
     phase: "claimed",
     amount: "1",
     netAmount: "1000000",
-    claimTxHash: "0xclaim",
+    sweepTxHash: "0xclaim",
     ...over,
-  } as SIPADepositRecord)
+  } as SipaDeposit)
 
 const resolve = (
   requests: StoredRequest[],
   rows: Transaction[] = [],
-  deposits: SIPADepositRecord[] = [],
+  deposits: SipaDeposit[] = [],
 ) => Object.fromEntries(resolveRequests(requests, { rows, deposits }).map((r) => [r.id, r]))
 
 const NO_PAYMENTS: RequestPayments = { rows: [], deposits: [] }
@@ -329,7 +329,7 @@ describe("resolveRequests", () => {
       expect([replaced.a.status, replaced.b.status]).toEqual(["fulfilled", "pending"])
       const swept = deposit({
         phase: "sweeping",
-        claimTxHash: undefined,
+        sweepTxHash: undefined,
         sweeps: [{ inboxIndex: "1", sweepTxHash: "0xs", netAmount: "1000000", settledAt: 10_000 }],
       })
       const past = resolve([link("a", "cancelled", 0), link("b", "pending", later)], [], [swept])
@@ -365,7 +365,7 @@ describe("resolveRequests", () => {
     const sweep = (l2Token: string) =>
       deposit({
         phase: "sweeping",
-        claimTxHash: undefined,
+        sweepTxHash: undefined,
         sweeps: [{ inboxIndex: "1", sweepTxHash: "0xs", netAmount: "1000000", l2Token }],
       })
     expect(resolve([link], [], [sweep("0x" + "bb".repeat(32))])[REQ].status).toBe("pending")
@@ -423,9 +423,9 @@ describe("a request paid before payments were read from the chain", () => {
       resolve([link], [], [deposit({ sweepTxHash: "0xsweep", sweeps: [sweep] })])[REQ],
     ).toMatchObject({
       status: "fulfilled",
-      fulfillmentTxHash: "0xclaim",
+      fulfillmentTxHash: "0xsweep",
     })
-    const fundedAgain = deposit({ phase: "sweeping", claimTxHash: undefined, sweeps: [sweep] })
+    const fundedAgain = deposit({ phase: "sweeping", sweepTxHash: undefined, sweeps: [sweep] })
     expect(resolve([link], [], [fundedAgain])[REQ]).toMatchObject({
       status: "fulfilled",
       fulfillmentTxHash: "0xsweep",
@@ -453,9 +453,9 @@ describe("a request paid before payments were read from the chain", () => {
       { inboxIndex: "1", sweepTxHash: "0xsweep", netAmount: "1000000" },
       { inboxIndex: "2", sweepTxHash: "0xsweep2", netAmount: "1000000" },
     ]
-    const fundedAgain = deposit({ claimTxHash: "0xclaim2", sweepTxHash: "0xsweep2", sweeps })
+    const fundedAgain = deposit({ sweepTxHash: "0xsweep2", sweeps })
     const resolved = resolve(stored, [], [fundedAgain])
-    expect(resolved.next).toMatchObject({ status: "fulfilled", fulfillmentTxHash: "0xclaim2" })
+    expect(resolved.next).toMatchObject({ status: "fulfilled", fulfillmentTxHash: "0xsweep2" })
     expect(resolved.later.status).toBe("cancelled")
   })
 })

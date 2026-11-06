@@ -4,7 +4,7 @@
 import type { FrozenDepositDescriptor, FrozenRefundKind, OxideEnvTuple } from "./index.js"
 
 /** The version of this boundary. Change it on any change a built bundle cannot serve. */
-export const SOURCE_GENERATION_PROTOCOL = 9
+export const SOURCE_GENERATION_PROTOCOL = 10
 
 /** The account's passkey. The page signs, so a generation never touches WebAuthn itself. */
 export interface SourcePasskey {
@@ -180,6 +180,18 @@ export interface SourceGenerationSession {
       resolveTag?(tag: string): Promise<string | null>
     },
   ): Promise<{ entries: Record<string, string>; short: string[] }>
+  /**
+   * `sipa`'s deposit record, as the source wallet seeds a registration address it re-derives for
+   * `handle`: the store's entries, empty when no candidate is `sipa`. Covers an address no `SIPA`
+   * event announced.
+   */
+  registrationDeposit(o: {
+    tuple: OxideEnvTuple
+    sipa: string
+    handle: string
+    /** Every source resolver operator with a key it published, decimal coordinates. */
+    resolvers: { operator: string; publicKey: { x: string; y: string } }[]
+  }): Promise<Record<string, string>>
   /** Savings moves recovered from this account's withdrawals on the source token. */
   savingsMoves(o: { tuple: OxideEnvTuple }): Promise<SourceSavingsMove[]>
   /** What a frozen portal can still refund, or `undefined` while it is live. Amounts decimal. */
@@ -227,6 +239,15 @@ export interface SourceGenerationModule {
       publicKeyHex: string
     } & Pick<SourceGenerationOpenParams, "network" | "contracts">,
   ): Promise<string>
+  /** The source factory's `deploySIPA` calldata for an account-protocol SIPA's CREATE2 args. Hex. */
+  encodeSipaDeploy(args: {
+    implementation: string
+    intentHash: string
+    recoveryCommitment: string
+    /** Decimal. */
+    rollupVersion: string
+    resweepable: boolean
+  }): string
   /** One session per node for the page's lifetime. */
   open(params: SourceGenerationOpenParams): Promise<SourceGenerationSession>
 }

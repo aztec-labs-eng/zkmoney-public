@@ -12,7 +12,7 @@ import {
 } from "@obsidion/sdk"
 import { Card, ScreenNavBar, Spinner } from "@obsidion/web-ds"
 import { showReportableError } from "../../errors/errorModal"
-import { loadOnboardedIdentity } from "../identity/walletIdentity"
+import { enteredIdentity } from "../../session/account"
 import { OnboardingLayout } from "../../ui/OnboardingLayout"
 import { BootSplash } from "../../ui/PxeBoot"
 import { warmNoirWasm } from "../../platform/noirProver"
@@ -24,7 +24,7 @@ import { usePolledChainSeconds } from "./chainTime"
 import { withExpiry } from "./claimWindow"
 import type { PaymentLink } from "./types"
 import { useShortLinkLookup } from "../shortLinks"
-import { useSession } from "../../platform/session"
+import { useSession } from "../../session/session"
 
 /**
  * `/link#fragment`. A short link's fragment is looked up on chain first and replaced by the full
@@ -103,7 +103,10 @@ function FullLinkView({ fragment }: { fragment: string }) {
     }
   }, [fragment])
   // Pinned to this mount: the signup wizard writing an identity must not unmount itself.
-  const [visitor] = useState(() => !loadOnboardedIdentity())
+  const { identity, device } = useSession()
+  const [visitor] = useState(
+    () => enteredIdentity(identity.get(), device.get().passkeyMap) === null,
+  )
   const handoff = !visitor && decoded !== null
 
   useEffect(() => {

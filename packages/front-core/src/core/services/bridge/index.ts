@@ -48,14 +48,6 @@ export {
   isWithdrawalDelayed,
 } from "./withdrawalPhases"
 
-export {
-  ActivityFeed,
-  BridgeActivityFeed,
-  isBridgeActivityItem,
-  itemStartTime,
-} from "./BridgeActivityFeed"
-export type { ActivityItem, BridgeActivityItem, SipaProcessingSource } from "./BridgeActivityFeed"
-
 export { resolveWithdrawalWiring } from "./withdrawalWiring"
 export type { WithdrawalWiring } from "./withdrawalWiring"
 

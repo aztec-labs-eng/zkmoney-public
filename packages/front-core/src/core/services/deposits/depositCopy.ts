@@ -5,7 +5,7 @@
  * Crediting.
  */
 import type { SIPADepositPhase } from "@obsidion/core/types"
-import { isUnfundedSipaDeposit, type SIPADepositRecord } from "./SIPADepositStore"
+import { isUnfundedSipaDeposit, type SipaDeposit } from "../../../engine/sipaDeposits"
 
 export interface DepositPhaseCopy {
   /** Activity pill. Undefined where the row carries no status. */
@@ -34,6 +34,6 @@ export const DEPOSIT_PHASE_COPY: Readonly<Record<SIPADepositPhase, DepositPhaseC
 }
 
 /** A deposit address nobody has sent to yet is awaiting funds, whatever phase it was created in. */
-export function depositPhaseCopy(record: SIPADepositRecord): DepositPhaseCopy {
+export function depositPhaseCopy(record: SipaDeposit): DepositPhaseCopy {
   return isUnfundedSipaDeposit(record) ? AWAITING : DEPOSIT_PHASE_COPY[record.phase]
 }

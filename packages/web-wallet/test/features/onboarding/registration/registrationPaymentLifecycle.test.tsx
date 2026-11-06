@@ -13,7 +13,7 @@ const h = vi.hoisted(() => ({
   balance: vi.fn(),
 }))
 const ACCOUNT = "0x00000000000000000000000000000000000000aa"
-vi.mock("../../../../src/features/deposit/l1Wallet", () => ({
+vi.mock("../../../../src/session/l1Wallet", () => ({
   isWalletRejection: (e: { code?: number }) => e?.code === 4001,
   isWalletDisconnect: (e: { code?: number }) => e?.code === 6000,
   isWrongNetwork: (e: { name?: string }) => e?.name === "ChainMismatchError",
@@ -41,7 +41,7 @@ vi.mock("../../../../src/errors/errorModal", () => ({
   showErrorModal: h.modal,
 }))
 vi.mock("../../../../src/ui/hooks", () => ({ useCopy: () => ({ copied: false, copy: vi.fn() }) }))
-vi.mock("../../../../src/features/onboarding/registrationFunnel", () => ({
+vi.mock("../../../../src/features/registration/registrationFunnel", () => ({
   reportRegistrationDepositShown: vi.fn(),
 }))
 vi.mock("@obsidion/web-ds", () => ({
@@ -72,12 +72,12 @@ vi.mock("../../../../src/config/env", () => ({
 vi.mock("../../../../src/config/oxideTuple", () => ({
   l1PublicClient: () => ({ waitForTransactionReceipt: h.receipt }),
 }))
-vi.mock("../../../../src/features/deposit/loadDepositFacts", async (importOriginal) => {
+vi.mock("../../../../src/features/sipa/loadDepositFacts", async (importOriginal) => {
   const { mockLoadDepositFacts, singleToken } = await import("../../../support/depositTokens")
   const tokens = singleToken("0x00000000000000000000000000000000000000dd")
   return mockLoadDepositFacts(importOriginal, () => tokens)
 })
-import { DepositPayBlock } from "../../../../src/features/onboarding/steps/DepositAddress"
+import { DepositPayBlock } from "../../../../src/features/onboarding/steps/DepositAddress/DepositAddress"
 import { clearWalletPrompt } from "../../../../src/features/deposit/walletPrompt"
 import { createPortalCapacityStore, type RequiredCredit } from "@obsidion/front-core"
 import { CAPACITY_UNAVAILABLE } from "../../../../src/features/limits/limitsCopy"

@@ -68,5 +68,6 @@ export default {
     transaction: "Open transaction details",
     tagPurchase: "Open tag purchase details",
     oldVersionWithdrawal: "Open the withdrawal on Ethereum",
+    registration: "Open registration deposit details",
   },
 } as const

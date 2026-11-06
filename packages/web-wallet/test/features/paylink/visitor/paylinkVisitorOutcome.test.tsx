@@ -1,4 +1,5 @@
 import React, { act } from "react"
+import { testPage, testCore } from "../../../support/page"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { WithdrawalRecord } from "@obsidion/front-core"
@@ -18,7 +19,10 @@ vi.mock("../../../../src/features/paylink/usePaylinkDeps", async (importOriginal
 vi.mock("../../../../src/features/withdraw/withdrawFunnel", () => ({
   reportWithdrawFunnel: vi.fn(),
 }))
-vi.mock("../../../../src/platform/storage/WebStorageAdapter", () => ({ webStorage: {} }))
+vi.mock("../../../../src/platform/storage/WebStorageAdapter", () => ({
+  webStorage: {},
+  adapterAccount: () => null,
+}))
 vi.mock("../../../../src/features/paylink/paylinkExit", () => ({
   cashOutLink: m.cashOut,
   linkWithdrawalIdentity: () => ({ id: "paylink-id" }),
@@ -47,7 +51,7 @@ vi.mock("../../../../src/ui/screens/WithdrawalDetailModal", () => ({
 vi.mock("../../../../src/features/onboarding/InvitationChrome", () => ({
   InvitationChrome: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
 }))
-vi.mock("../../../../src/features/onboarding/OnboardingScreen", () => ({
+vi.mock("../../../../src/features/onboarding/OnboardingScreen/OnboardingScreen", () => ({
   OnboardingScreen: () => null,
 }))
 vi.mock("../../../../src/ui/NotificationsBell/NotificationsBell", () => ({
@@ -58,7 +62,7 @@ vi.mock("../../../../src/ui/screening", () => ({
   useScreenedAddress: () => ({ cleared: true, screener: {} }),
   ScreeningNotice: () => null,
 }))
-vi.mock("../../../../src/features/deposit/l1Wallet", () => ({ useL1Wallet: () => ({}) }))
+vi.mock("../../../../src/session/l1Wallet", () => ({ useL1Wallet: () => ({}) }))
 vi.mock("../../../../src/features/withdraw/WithdrawScreen", () => ({ useSavedL1Wallets: () => [] }))
 // A priced direct route: the modal only offers Confirm once the fee is known.
 vi.mock("../../../../src/features/withdraw/withdrawQuote", () => ({
@@ -90,7 +94,8 @@ import {
   closeSession,
   switchSession,
   session,
-} from "../../../../src/platform/session"
+} from "../../../../src/session/session"
+import { pageSessionDeps } from "../../../../src/app/sessionDeps"
 
 const recipient = "0x2222222222222222222222222222222222222222"
 const record: WithdrawalRecord = {
@@ -148,7 +153,7 @@ async function startCashOut() {
 beforeEach(() => {
   globalThis.IS_REACT_ACT_ENVIRONMENT = true
   vi.clearAllMocks()
-  switchSession(activeNamespace())
+  switchSession(activeNamespace(testCore().device), pageSessionDeps(testPage()))
   m.uses = 1
   m.cashOut.mockImplementation(
     () =>

@@ -8,7 +8,7 @@ import {
   type BackupRotationRecord,
   type BackupRotationStored,
   type FundingRow,
-  type SIPADepositRecord,
+  type SipaDeposit,
   type SweepSeen,
 } from "@obsidion/front-core"
 import { isPasskeyCancelled } from "@obsidion/passkey-web"
@@ -271,7 +271,7 @@ export function makeFlowDeps(
     },
     prepare: vi.fn(async () => ({ prepared, plan: PLAN, fromBlock: 50 })),
     strandedDeposit: vi.fn(async () => ({
-      record: { sipaAddress: SIPA } as SIPADepositRecord,
+      record: { sipaAddress: SIPA } as SipaDeposit,
       token: { address: SIPA, symbol: "DAI", decimals: 18 },
       balance: "1.4",
     })),
@@ -289,8 +289,11 @@ export function makeFlowDeps(
       tokens: vi.fn(async () => ["tok"]),
       shape: vi.fn(async () => world.shape),
       deposits: vi.fn(async () => ({ kind: "exact" as const, amounts: [] })),
-      cap: 2n * DAI,
+      cap: vi.fn(async () => 2n * DAI),
       usesLeft: vi.fn(async () => true),
+      links: vi.fn(async () => []),
+      refundable: vi.fn(async () => "now" as const),
+      refund: vi.fn(async () => undefined),
       // The one-key balance leaves with each chunk, as one note.
       send: vi.fn(async (_token: string, amount: bigint, onTxHash) => {
         const hash = nextHash()

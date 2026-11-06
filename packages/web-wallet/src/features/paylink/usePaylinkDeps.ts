@@ -4,7 +4,7 @@ import { useWithdrawals } from "../withdraw/useWithdrawals"
 import { linkWithdrawalIdentity, linkVoucherUses, type PaylinkExitDeps } from "./paylinkExit"
 import type { SponsoredPaylinkDeps } from "./sponsoredPaylink"
 import type { PaymentLink } from "./types"
-import { useSession } from "../../platform/session"
+import { useSession } from "../../session/session"
 
 /** PXE + contracts + enclave, before an account exists to sign with. */
 export type PaylinkKit = Omit<SponsoredPaylinkDeps, "account">

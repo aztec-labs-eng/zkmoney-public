@@ -14,6 +14,7 @@
  * screen must surface the floor for any-amount links.
  */
 import { erc20Abi, type Address, type Hex, type PublicClient } from "viem"
+import { WalletError, type ErrorCode } from "@obsidion/core/errors"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import {
   deploymentSipaRoute,
@@ -177,6 +178,7 @@ export async function resolveAccountlessRequest(
   if (!sipaAddress) {
     // A CCIP address is derived from the live tag, so an unresolvable tag has no payee at all.
     if (pin.notUpgraded) throw new RequesterNotUpgradedError(packet.requesterTag)
+    if (pin.code) throw new WalletError(pin.code, pin.error, { data: { tag: packet.requesterTag } })
     if (pin.error) throw new Error(pin.error)
     sipaAddress = await resolveSipaViaCcip(packet, deps)
     deployment = "active"
@@ -259,20 +261,26 @@ async function resolveSipaViaCcip(
 async function pinRequester(
   packet: RequestInlinePacket,
   deps: { resolveRequester(tag: string): Promise<RegistryTagResolution> },
-): Promise<{ error?: string; notUpgraded?: true }> {
+): Promise<{ error?: string; code?: ErrorCode; notUpgraded?: true }> {
   try {
     const resolution = await deps.resolveRequester(packet.requesterTag)
     if (resolution.status === "staleRollup") {
       return { error: recipientNotUpgradedCopy.title(packet.requesterTag), notUpgraded: true }
     }
     if (resolution.status !== "resolved") {
-      return { error: `@${packet.requesterTag} is no longer registered` }
+      return {
+        error: `@${packet.requesterTag} is no longer registered`,
+        code: "contact.unregistered",
+      }
     }
     if (
       packet.requesterAddress &&
       resolution.l2Address.toLowerCase() !== packet.requesterAddress.toLowerCase()
     ) {
-      return { error: `@${packet.requesterTag} no longer matches this payment request` }
+      return {
+        error: `@${packet.requesterTag} no longer matches this payment request`,
+        code: "contact.requestMismatch",
+      }
     }
     return {}
   } catch (e) {

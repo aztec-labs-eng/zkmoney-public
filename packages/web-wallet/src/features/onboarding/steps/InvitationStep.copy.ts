@@ -1,0 +1,17 @@
+export default {
+  tagLabel: "Your tag",
+  tagPlaceholder: "tag",
+  at: "@",
+  domain: ".zk.money",
+  checking: "Checking availability…",
+  continueWithPasskey: "Continue with passkey",
+  createAccount: "Create account",
+  cancelSignIn: "Cancel sign-in",
+  haveAccount: "Already have an account?",
+  logIn: "Log in",
+  title: "You're in!",
+  startInteracting: "Start interacting with zk.money",
+  createYours: "Create your zk.money account",
+  continueArrow: "Continue with passkey →",
+  activateArrow: "Activate account →",
+} as const

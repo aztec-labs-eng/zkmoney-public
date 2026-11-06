@@ -2,6 +2,7 @@ import React, { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { MemoryRouter } from "react-router-dom"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { setIdentity } from "../../support/identity"
 
 vi.mock("@obsidion/web-ds", () => ({
   ComingSoonPill: () => null,
@@ -29,19 +30,14 @@ vi.mock("@obsidion/web-ds", () => ({
     <button aria-label={ariaLabel} onClick={onClick} />
   ),
 }))
-vi.mock("@obsidion/front-core", () => ({
-  useConfigValue: () => ({ value: false, setValue: vi.fn() }),
-}))
 vi.mock("../../../src/config/env", () => ({ getConfig: () => ({ network: "sandbox" }) }))
 const name = vi.hoisted(() => ({ owed: false }))
-vi.mock("../../../src/features/identity/walletIdentity", () => ({
-  loadWalletIdentity: () => ({ handle: "brave-otter-42" }),
-}))
-vi.mock("../../../src/features/onboarding/openRegistration", () => ({
+vi.mock("../../../src/features/registration/openRegistration", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
   useNameClaimPending: () => false,
   useRegistrationTagChangeable: () => name.owed,
 }))
-vi.mock("../../../src/features/onboarding/ChooseNameSheet", () => ({
+vi.mock("../../../src/features/deposit/ChooseNameSheet/ChooseNameSheet", () => ({
   ChooseNameSheet: ({ tag }: { tag: string }) => <div data-testid="choose-name">{tag}</div>,
 }))
 vi.mock("../../../src/lib/analytics", () => ({ appVersion: "0.0.0" }))
@@ -71,7 +67,7 @@ vi.mock("../../../src/ui/EndpointsModal", () => ({
   customEndpointsLabel: () => undefined,
 }))
 vi.mock("../../../src/ui/ResetScreen", () => ({ RESET_PATH: "/reset" }))
-vi.mock("../../../src/features/deposit/StrandedRecoveryModal", () => ({
+vi.mock("../../../src/features/deposit/recovery/StrandedRecoveryModal", () => ({
   StrandedRecoveryModal: () => null,
 }))
 // The wallet container reads the chain; the row only needs a real sheet to open and close.
@@ -100,6 +96,8 @@ vi.mock("../../../src/features/limits/AboutLimitsSheet", async () => {
 })
 
 const { SettingsScreen } = await import("../../../src/ui/screens/SettingsScreen")
+const { openTestSession } = await import("../../support/session")
+beforeEach(() => openTestSession().registrations.ready)
 const { SHEET_TITLE } = await import("../../../src/features/limits/limitsCopy")
 
 let root: Root
@@ -136,6 +134,8 @@ const row = () =>
   [...container.querySelectorAll("button")].find((el) => el.textContent === "Limits")!
 const dialog = () =>
   document.querySelector<HTMLDialogElement>(`dialog[aria-label="${SHEET_TITLE}"]`)
+
+beforeEach(() => setIdentity({ handle: "brave-otter-42" }))
 
 describe("SettingsScreen Limits row", () => {
   it("opens the About limits sheet and returns focus to the row on Escape", async () => {
@@ -231,7 +231,8 @@ describe("SettingsScreen Tag row", () => {
     )
   })
 
-  it("keeps the tag locked once the first deposit has landed", () => {
+  it("keeps the tag locked once the first deposit has landed", async () => {
+    await render()
     expect(container.querySelector('[data-row="Tag"]')?.textContent).toBe("Tag@brave-otter-42")
     expect(change()).toBeUndefined()
   })

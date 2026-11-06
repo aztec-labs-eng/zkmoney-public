@@ -9,9 +9,13 @@ import type { Fr } from "@aztec-labs/aztec.js/fields"
 import type { AnchorTier, CandidateProbe } from "@obsidion/front-core"
 import { getContractAddress } from "viem"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { testPage, committed, pageOver } from "../../support/page"
+import { openTestSession } from "../../support/session"
+import { session } from "../../../src/session/session"
+import { recordingAccounts } from "../../support/accountRecord"
 import { WebAlphaAuthService } from "../../../src/platform/auth/WebAlphaAuthService"
-import { getActiveStorageId, readCachedMsk } from "../../../src/platform/storage/activeStorage"
-import { FakePasskeyCeremony, MemoryStorage } from "../../support/fakePasskeyCeremony"
+import { cachedMsk } from "../../../src/platform/storage/activeStorage"
+import { FakePasskeyCeremony } from "../../support/fakePasskeyCeremony"
 
 const h = vi.hoisted(() => ({
   service: undefined as unknown,
@@ -23,7 +27,6 @@ const h = vi.hoisted(() => ({
   generations: undefined as unknown,
 }))
 
-vi.mock("../../../src/platform/auth/useAuthenticator", () => ({ getAuthService: () => h.service }))
 vi.mock("../../../src/config/oxideTuple", () => ({
   getOxideTuple: async () => ({
     accountFactory: `0x${"11".repeat(20)}`,
@@ -56,7 +59,7 @@ const unnamedGenerations = {
     },
   ],
 }
-vi.mock("../../../src/features/onboarding/oxideGenerations", () => ({
+vi.mock("../../../src/features/registration/oxideGenerations", () => ({
   loadOxideGenerations: async () => h.generations ?? unnamedGenerations,
   generationFactories: () => [FACTORY],
 }))
@@ -74,11 +77,17 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
 }))
 
 const { enterWithPasskey } = await import("../../../src/features/onboarding/oxideOnboarding")
-const { AccountStorage, credentialIdToMetadata, deriveBootstrapKey } = await import(
-  "@obsidion/front-core"
-)
-const { webStorage } = await import("../../../src/platform/storage/WebStorageAdapter")
-const accounts = AccountStorage.get(webStorage)
+const { credentialIdToMetadata, deriveBootstrapKey } = await import("@obsidion/front-core")
+let accounts = recordingAccounts()
+/** What a sign-in reads beside its request: the account records and the page's auth. */
+const signInDeps = {
+  get accounts() {
+    return accounts
+  },
+  get auth() {
+    return session().auth
+  },
+}
 const { predictAccountAddressLocally } = await import("@oxide/l1-contracts")
 /** The L1 account the installed-key read predicts for a master key under the catalog's factory. */
 const accountOf = (secret: Fr) =>
@@ -104,7 +113,7 @@ function gateFor(route?: "this-device" | "phone" | "security-key") {
 
 const serviceOver = (ceremony: FakePasskeyCeremony) =>
   new WebAlphaAuthService({
-    storage: new MemoryStorage(),
+    ...pageOver(testPage().database),
     rpId: "localhost",
     ceremony,
     posture: () => "phone",
@@ -113,7 +122,7 @@ const serviceOver = (ceremony: FakePasskeyCeremony) =>
 /** A laptop whose browser labels a cross-device answer as its own, or one that does not. */
 const laptopOver = (ceremony: FakePasskeyCeremony, misreportsCrossDevice: boolean) =>
   new WebAlphaAuthService({
-    storage: new MemoryStorage(),
+    ...pageOver(testPage().database),
     rpId: "localhost",
     ceremony,
     posture: () => "laptop",
@@ -125,6 +134,7 @@ async function freshBrowserWithPasskey(manager: "icloud" | "gpm" = "icloud") {
   const ceremony = new FakePasskeyCeremony({ route: "local", manager })
   const created = await serviceOver(ceremony).createPasskey("@alice")
   h.service = serviceOver(ceremony)
+  openTestSession({ auth: h.service })
   ceremony.asserts.length = 0
   const createObsidionAccount = vi.fn(async () => account)
   // Only the passkey's own master key AND its own signing key derive the account.
@@ -143,6 +153,9 @@ const store = new Map<string, string>()
  */
 const held = () => JSON.stringify([...store].filter(([k]) => k !== "webwallet.passkeyEnv").sort())
 
+beforeEach(() => {
+  accounts = recordingAccounts()
+})
 beforeEach(() => {
   vi.clearAllMocks()
   store.clear()
@@ -188,6 +201,7 @@ describe("a sign-in anchored only by the master key adopts the credential's real
     installed(created)
     const { gate } = gateFor()
     const result = await enterWithPasskey(wallet as never, config, undefined, {
+      ...signInDeps,
       contractService: {} as never,
       gate,
       tiers: masterKeyOnly(created.secretKey),
@@ -201,8 +215,7 @@ describe("a sign-in anchored only by the master key adopts the credential's real
       new Set([created.pubkey]),
     )
     expect(createObsidionAccount).toHaveBeenCalledWith(created.secretKey, expect.anything())
-    expect(await accounts.getAccount()).toMatchObject({
-      name: "Account 1",
+    expect(await accounts().get()).toMatchObject({
       completeAddress: `${ADDR}:complete`,
       signKeyConfig: {
         webauthnData: { credentialId: created.credentialId, pubkey: created.pubkey },
@@ -223,6 +236,7 @@ describe("a sign-in anchored only by the master key adopts the credential's real
     const before = held()
     await expect(
       enterWithPasskey(wallet as never, config, undefined, {
+        ...signInDeps,
         contractService: {} as never,
         gate,
         tiers: masterKeyOnly(created.secretKey),
@@ -232,7 +246,7 @@ describe("a sign-in anchored only by the master key adopts the credential's real
     expect(ceremony.asserts).toHaveLength(1)
     expect(gate).toHaveBeenCalledTimes(1)
     expect(createObsidionAccount).not.toHaveBeenCalled()
-    expect(await accounts.getAccount()).toBeUndefined()
+    expect(await accounts().get()).toBeUndefined()
     expect(held()).toBe(before)
   })
 
@@ -242,6 +256,7 @@ describe("a sign-in anchored only by the master key adopts the credential's real
     installed(created)
     const { gate } = gateFor()
     const result = await enterWithPasskey(wallet as never, config, undefined, {
+      ...signInDeps,
       contractService: {} as never,
       gate,
       tiers: masterKeyOnly(created.secretKey),
@@ -256,8 +271,7 @@ describe("a sign-in anchored only by the master key adopts the credential's real
       new Set([created.pubkey]),
     )
     expect(createObsidionAccount).toHaveBeenCalledWith(created.secretKey, expect.anything())
-    expect(await accounts.getAccount()).toMatchObject({
-      name: "Account 1",
+    expect(await accounts().get()).toMatchObject({
       completeAddress: `${ADDR}:complete`,
       signKeyConfig: {
         webauthnData: { credentialId: created.credentialId, pubkey: created.pubkey },
@@ -277,6 +291,7 @@ describe("a sign-in anchored only by the master key adopts the credential's real
     })
     const { gate } = gateFor()
     const result = await enterWithPasskey(wallet as never, config, undefined, {
+      ...signInDeps,
       contractService: {} as never,
       gate,
       tiers: masterKeyOnly(created.secretKey),
@@ -300,6 +315,7 @@ describe("a sign-in anchored only by the master key adopts the credential's real
     }
     const { gate } = gateFor()
     const result = await enterWithPasskey(wallet as never, config, undefined, {
+      ...signInDeps,
       contractService: {} as never,
       gate,
       tiers: masterKeyOnly(created.secretKey),
@@ -318,11 +334,13 @@ describe("a sign-in anchored only by the master key adopts the credential's real
       setup.ceremony.opts.route = route
       setup.ceremony.opts.attachment = "platform"
       h.service = laptopOver(setup.ceremony, misreports)
+      openTestSession({ auth: h.service })
       const recorded = vi.spyOn(h.service as WebAlphaAuthService, "recordRecoveryMetadata")
       return { ...setup, recorded }
     }
     const signIn = (wallet: unknown, tiers: AnchorTier[]) =>
       enterWithPasskey(wallet as never, config, undefined, {
+        ...signInDeps,
         contractService: {} as never,
         gate: gateFor("phone").gate,
         tiers,
@@ -339,25 +357,24 @@ describe("a sign-in anchored only by the master key adopts the credential's real
     ) => {
       expect(createObsidionAccount).toHaveBeenCalledTimes(1)
       expect(createObsidionAccount).toHaveBeenCalledWith(created.secretKey, expect.anything())
-      expect(await accounts.getAccount()).toMatchObject({
-        name: "Account 1",
+      expect(await accounts().get()).toMatchObject({
         completeAddress: `${ADDR}:complete`,
         signKeyConfig: { webauthnData: { pubkey: created.pubkey } },
       })
       const service = h.service as WebAlphaAuthService
       expect((await service.getSecretKey())?.toString()).toBe(created.secretKey.toString())
-      expect(readCachedMsk()).toMatchObject({
+      expect(cachedMsk(committed())).toMatchObject({
         credentialId: created.credentialId,
         msk: created.secretKey.toString(),
       })
-      expect(getActiveStorageId()).toBe(readCachedMsk()?.storageId)
+      expect(committed().storageId).toBe(cachedMsk(committed())?.storageId)
     }
     const committedNothing = async (
       createObsidionAccount: ReturnType<typeof vi.fn>,
       before: string,
     ) => {
       expect(createObsidionAccount).not.toHaveBeenCalled()
-      expect(await accounts.getAccount()).toBeUndefined()
+      expect(await accounts().get()).toBeUndefined()
       expect(held()).toBe(before)
     }
 
@@ -414,6 +431,7 @@ describe("a sign-in anchored only by the master key adopts the credential's real
     describe("steered to the phone", () => {
       const phoneSignIn = (wallet: unknown, tiers: AnchorTier[], hints?: object) =>
         enterWithPasskey(wallet as never, config, undefined, {
+          ...signInDeps,
           contractService: {} as never,
           gate: gateFor().gate,
           tiers,
@@ -427,7 +445,7 @@ describe("a sign-in anchored only by the master key adopts the credential's real
           "cross-device",
         )
         await signIn(wallet, masterKeyOnly(created.secretKey))
-        expect(readCachedMsk()).toBeTruthy()
+        expect(cachedMsk(committed())).toBeTruthy()
         const asked = ceremony.assertRequests.length
         createObsidionAccount.mockClear()
         const result = await phoneSignIn(wallet, masterKeyOnly(created.secretKey))

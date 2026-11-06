@@ -1,8 +1,8 @@
 /**
  * RecordStorage — Generic persistence + subscription kernel for domain stores.
  *
- * Extracted from the (since-removed) legacy bridge stores so every domain
- * store — today `SIPADepositStore` — shares one implementation of:
+ * Shared by every domain store not yet on a persistent store (`OperationStore`, ...), which share
+ * one implementation of:
  *   - lazy load-from-storage with shared promise to prevent double-load
  *   - single-key persistence as a JSON object keyed by the record's
  *     caller-chosen string key

@@ -1,19 +1,16 @@
 // @vitest-environment node
 import { passkeyWritten } from "@obsidion/passkey-web"
 import { describe, expect, it } from "vitest"
+import { testPage, pageOver } from "../../../support/page"
 import { WebAlphaAuthService } from "../../../../src/platform/auth/WebAlphaAuthService"
-import {
-  FakePasskeyCeremony,
-  type FakeCeremonyOptions,
-  MemoryStorage,
-} from "../../../support/fakePasskeyCeremony"
+import { FakePasskeyCeremony, type FakeCeremonyOptions } from "../../../support/fakePasskeyCeremony"
 
 const BITWARDEN = "d548826e-79b4-db40-a3d8-11116f7e8349"
 
 function laptop(fake: FakeCeremonyOptions) {
   const ceremony = new FakePasskeyCeremony({ route: "cross-device", ...fake })
   const service = new WebAlphaAuthService({
-    storage: new MemoryStorage(),
+    ...pageOver(testPage().database),
     rpId: "localhost",
     ceremony,
     posture: () => "laptop",

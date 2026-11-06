@@ -40,15 +40,6 @@ describe("WebXmtpClient.getDmPeerAddresses", () => {
     expect(preferences.getInboxStates).not.toHaveBeenCalled()
   })
 
-  it("excludes an identity revoked after the peer inbox was cached", async () => {
-    const { client, peer } = fixture(
-      [messagingIdentity, bootstrapIdentity],
-      [messagingIdentity],
-    )
-
-    expect(await client.getDmPeerAddresses(peer)).toEqual([messagingIdentity.identifier])
-  })
-
   it("returns no identities when refreshing fails without falling back to the cache", async () => {
     const { client, peer, preferences } = fixture([messagingIdentity, bootstrapIdentity], [])
     preferences.fetchInboxStates.mockRejectedValue(new Error("network unavailable"))

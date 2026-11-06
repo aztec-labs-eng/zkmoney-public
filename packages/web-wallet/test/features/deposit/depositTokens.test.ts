@@ -17,7 +17,7 @@ vi.mock("../../../src/config/env", async (importOriginal) => ({
 }))
 
 const { loadDepositDisplayFacts, loadDepositTokens, recoveryProbeTokens, sipaFundingTokens } =
-  await import("../../../src/features/deposit/loadDepositFacts")
+  await import("../../../src/features/sipa/loadDepositFacts")
 
 const RPC_URL = "http://l1.test/"
 const TABLE = `0x${"fb".repeat(20)}` as Address

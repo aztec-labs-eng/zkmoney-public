@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { EARNED_QUOTE_ERROR, assertEarnedQuote } from "../../../src/features/onboarding/earnedQuote"
+import { assertEarnedQuote } from "../../../src/features/registration/earnedQuote"
 import { PAID, RANDOM, RANDOM_ASK } from "../../support/registrationPrices"
 
 describe("earned registration quote", () => {
@@ -9,12 +9,14 @@ describe("earned registration quote", () => {
     // Reduced, but its floor is over the earned ask.
     { reduced: true, fee: String(RANDOM.fee), minDeposit: String(RANDOM_ASK) },
   ])("rejects missing, paid or stale higher quotes", (terms) => {
-    expect(() => assertEarnedQuote(terms)).toThrow(EARNED_QUOTE_ERROR)
+    expect(() => assertEarnedQuote(terms)).toThrow(
+      expect.objectContaining({ code: "registration.earnedUnconfirmed" }),
+    )
   })
 
   it("refuses a quote that prices nothing", () => {
     expect(() => assertEarnedQuote({ reduced: true, fee: "0", minDeposit: "0" })).toThrow(
-      EARNED_QUOTE_ERROR,
+      expect.objectContaining({ code: "registration.earnedUnconfirmed" }),
     )
   })
 })

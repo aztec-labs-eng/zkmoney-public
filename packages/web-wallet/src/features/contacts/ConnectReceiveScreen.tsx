@@ -17,7 +17,7 @@ import {
 import { showReportableError } from "../../errors/errorModal"
 import { Modal } from "../../ui/Modal"
 import { getXmtpSender } from "../../platform/xmtp/xmtpLifecycle"
-import { loadWalletIdentity } from "../identity/walletIdentity"
+import { useSession } from "../../session/session"
 import { ContactsScreen } from "./ContactsScreen/ContactsScreen"
 import {
   confirmConnect,
@@ -43,6 +43,7 @@ const handleOf = (contact: Contact) => (contact.tag ? `@${contact.tag}` : contac
  *  sheet over the contacts directory, which is where a dismiss lands. */
 export function ConnectReceiveScreen() {
   const navigate = useNavigate()
+  const { identity: own } = useSession()
   const [state, setState] = useState<ViewState>({ kind: "loading" })
   const [adding, setAdding] = useState(false)
   // The stash is consume-once; StrictMode's dev double-effect must not take it twice.
@@ -65,7 +66,7 @@ export function ConnectReceiveScreen() {
       navigate("/contacts", { replace: true })
       return
     }
-    const identity = loadWalletIdentity()
+    const identity = own.get().value
     previewConnect(stashToPayload(stash), {
       decodeInline,
       verifyTag,
@@ -86,7 +87,7 @@ export function ConnectReceiveScreen() {
         })
         setState({ kind: "error", message: "Couldn't read this code" })
       })
-  }, [navigate])
+  }, [navigate, own])
 
   const dismiss = () => navigate("/contacts", { replace: true })
 
@@ -98,7 +99,7 @@ export function ConnectReceiveScreen() {
       sendConnectBack: sender ? (peer, content) => sender.sendConnectBack(peer, content) : undefined,
       queueConnectBack: (entry) => PendingConnectBackStorage.get().enqueue(entry),
       connectBackVersion: CONNECT_BACK_VERSION,
-      ownTag: loadWalletIdentity()?.handle,
+      ownTag: own.get().value?.handle,
     })
     setAdding(false)
     if (result.kind === "added") {

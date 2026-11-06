@@ -8,7 +8,7 @@ import {
 } from "@obsidion/core/oxide"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import type { Address } from "viem"
-import type { SIPADepositRecord } from "../core/services/deposits/SIPADepositStore"
+import type { SipaDeposit } from "../engine/sipaDeposits"
 
 const INTENT_NAMES: Record<SipaIntent, SipaIntentName | undefined> = {
   [SipaIntent.None]: undefined,
@@ -50,7 +50,7 @@ export type SipaRecordRoute = Omit<SipaRoute, "token">
  * The record intent of a factory intent; a deposit's is the record's default. Null for an intent the
  * wallet never records.
  */
-export function sipaRecordIntentOf(intent: SipaIntent): SIPADepositRecord["intent"] | null {
+export function sipaRecordIntentOf(intent: SipaIntent): SipaDeposit["intent"] | null {
   if (intent === SipaIntent.Deposit) return undefined
   if (intent === SipaIntent.Registration) return "registration"
   if (intent === SipaIntent.UserOp) return "user-op"
@@ -58,7 +58,7 @@ export function sipaRecordIntentOf(intent: SipaIntent): SIPADepositRecord["inten
 }
 
 /** The factory intent a recorded SIPA commits to. */
-export function sipaRecordIntent(intent: SIPADepositRecord["intent"]): SipaIntent {
+export function sipaRecordIntent(intent: SipaDeposit["intent"]): SipaIntent {
   if (intent === "registration") return SipaIntent.Registration
   if (intent === "user-op") return SipaIntent.UserOp
   return SipaIntent.Deposit
@@ -66,7 +66,7 @@ export function sipaRecordIntent(intent: SIPADepositRecord["intent"]): SipaInten
 
 /** The row a recorded SIPA's sweeps route through. Undefined without an origin that names its table. */
 export function sipaRecordRoute(
-  record: Pick<SIPADepositRecord, "origin" | "intent">,
+  record: Pick<SipaDeposit, "origin" | "intent">,
 ): SipaRecordRoute | undefined {
   const origin = record.origin
   if (origin?.protocol !== "account" || !origin.forwardingTable) return undefined

@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest"
-import { entryBlock, type EntryConditions } from "../../../src/features/backupPasskey/backupPasskeyEntry"
+import {
+  entryBlock,
+  type EntryConditions,
+} from "../../../src/features/backupPasskey/backupPasskeyEntry"
 
 const DAI = 10n ** 18n
 const amount = (atomic: bigint) => `${atomic / DAI} DAI`
@@ -9,8 +12,8 @@ const ready: EntryConditions = {
   verified: true,
   routeLive: true,
   registered: true,
+  savingsMoving: false,
   withdrawalInFlight: false,
-  openLink: false,
   historicBalance: false,
   balance: 10n * DAI,
   fundingAmount: 2n * DAI,
@@ -19,7 +22,9 @@ const ready: EntryConditions = {
   usesLeft: true,
 }
 
-const block = (over: Partial<EntryConditions>) => entryBlock({ ...ready, ...over }, amount)
+const date = (sec: number) => `day ${sec}`
+
+const block = (over: Partial<EntryConditions>) => entryBlock({ ...ready, ...over }, amount, date)
 
 describe("the add entry's conditions", () => {
   it("names each unmet condition", () => {
@@ -30,13 +35,28 @@ describe("the add entry's conditions", () => {
       line: "Sponsored transactions are not set up",
       action: "sponsorship",
     })
+    expect(block({ savingsMoving: true })).toEqual({
+      line: "Finish your Savings move first",
+      action: "savings",
+    })
     expect(block({ withdrawalInFlight: true })).toEqual({
       line: "Finish your withdrawal first",
       action: "activity",
     })
-    expect(block({ openLink: true })).toEqual({
-      line: "Finish your open paylinks first. Once a backup is added, links you made before can't be cancelled or reclaimed.",
+    expect(block({ linkHold: { kind: "creating" } })).toEqual({
+      line: "Finish creating your paylink first",
       action: "activity",
+    })
+    expect(block({ linkHold: { kind: "token" } })).toEqual({
+      line: "Cancel your paylinks from before the upgrade first",
+      action: "activity",
+    })
+    expect(block({ linkHold: { kind: "cancel" } })).toEqual({
+      line: "Cancel your paylink in Activity first",
+      action: "activity",
+    })
+    expect(block({ linkHold: { kind: "expiry", until: 2000 } })).toEqual({
+      line: "A paylink you made can't be cancelled until it expires on day 2000. Try again then.",
     })
     expect(block({ historicBalance: true })).toEqual({
       line: "Finish your migration first",
@@ -51,6 +71,12 @@ describe("the add entry's conditions", () => {
     )
     expect(block({ usesLeft: false })?.line).toBe(
       "Not enough sponsored transactions left this period",
+    )
+  })
+
+  it("names a Savings move's burn as the move, not as a withdrawal", () => {
+    expect(block({ savingsMoving: true, withdrawalInFlight: true })?.line).toBe(
+      "Finish your Savings move first",
     )
   })
 

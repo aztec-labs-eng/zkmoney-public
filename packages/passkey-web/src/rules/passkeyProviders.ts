@@ -39,6 +39,13 @@ export const CHROMIUM_VIRTUAL_AUTHENTICATOR_AAGUID = "01020304-0506-0708-0102-03
 /** The name a refusal gives Windows' own passkey store; its copy is about Windows' prompt. */
 export const WINDOWS_HELLO = "Windows Hello"
 
+/** The ids Windows Hello reports, one per authenticator Windows may run it on. */
+const WINDOWS_HELLO_AAGUIDS = [
+  "08987058-cadc-4b81-b6e1-30de50dcbe96",
+  "9ddd1817-af5a-4672-a2b9-3e3dd95000a9",
+  "6028b017-b1d4-4c02-b4b3-afcdafc96bb2",
+] as const
+
 /** The name a refusal gives Proton Pass; its iPhone app has copy of its own. */
 export const PROTON_PASS = "Proton Pass"
 
@@ -56,9 +63,12 @@ const PROVIDERS: Readonly<Record<string, { name: string; slug: PasskeyProvider }
     slug: "icloud_keychain",
   },
   [GPM_AAGUID]: { name: "Google Password Manager", slug: "google_password_manager" },
-  "08987058-cadc-4b81-b6e1-30de50dcbe96": { name: WINDOWS_HELLO, slug: "windows_hello" },
-  "9ddd1817-af5a-4672-a2b9-3e3dd95000a9": { name: WINDOWS_HELLO, slug: "windows_hello" },
-  "6028b017-b1d4-4c02-b4b3-afcdafc96bb2": { name: WINDOWS_HELLO, slug: "windows_hello" },
+  ...Object.fromEntries(
+    WINDOWS_HELLO_AAGUIDS.map((id) => [
+      id,
+      { name: WINDOWS_HELLO, slug: "windows_hello" as const },
+    ]),
+  ),
   [ONEPASSWORD_AAGUID]: { name: "1Password", slug: "1password" },
   "d548826e-79b4-db40-a3d8-11116f7e8349": { name: "Bitwarden", slug: "bitwarden" },
   "b84e4048-15dc-4dd0-8640-f4f60813c8af": { name: "NordPass", slug: "nordpass" },
@@ -132,17 +142,19 @@ export function providerAllowed(
   return extra.some((allowed) => allowed.toLowerCase() === id)
 }
 
-/** The id each manager a laptop may create on reports. */
-export const LOCAL_MANAGER_AAGUIDS: Readonly<Record<LocalManager, string>> = {
-  "apple": APPLE_ICLOUD_AAGUID,
-  "gpm": GPM_AAGUID,
-  "1password": ONEPASSWORD_AAGUID,
+/** The ids each manager a laptop may create on reports. */
+export const LOCAL_MANAGER_AAGUIDS: Readonly<Record<LocalManager, readonly string[]>> = {
+  "apple": [APPLE_ICLOUD_AAGUID],
+  "gpm": [GPM_AAGUID],
+  "windows_hello": WINDOWS_HELLO_AAGUIDS,
+  "1password": [ONEPASSWORD_AAGUID],
 }
 
 /** What the copy calls each of them, with what Google Password Manager needs first. */
 export const LOCAL_MANAGER_NAMES: Readonly<Record<LocalManager, string>> = {
   "apple": "Apple Passwords",
   "gpm": "Google Password Manager (sign in to Chrome first)",
+  "windows_hello": WINDOWS_HELLO,
   "1password": "1Password",
 }
 
@@ -156,8 +168,9 @@ export function localManagersClause(managers: readonly LocalManager[]): string {
 /** The manager a laptop may create on that reports this id, when one does. */
 export function localManagerFor(aaguid: string | undefined): LocalManager | undefined {
   const id = aaguid?.toLowerCase()
-  return (Object.keys(LOCAL_MANAGER_AAGUIDS) as LocalManager[]).find(
-    (m) => LOCAL_MANAGER_AAGUIDS[m] === id,
+  if (id === undefined) return undefined
+  return (Object.keys(LOCAL_MANAGER_AAGUIDS) as LocalManager[]).find((m) =>
+    LOCAL_MANAGER_AAGUIDS[m].includes(id),
   )
 }
 

@@ -23,7 +23,9 @@ const { notificationRoute } = await import("../../src/ui/NotificationsPanel/Noti
 const { bridgeDetailTarget, findBridgeItem, savingsMoveExitOffer } = await import(
   "@obsidion/front-core"
 )
-const { detailNoticeFor } = await import("../../src/ui/activity/ActivityDetailHost/ActivityDetailHost")
+const { detailNoticeFor } = await import(
+  "../../src/ui/activity/ActivityDetailHost/ActivityDetailHost"
+)
 
 const SIPA = "0xAbCdEf0000000000000000000000000000000001"
 
@@ -46,7 +48,7 @@ function entry(target: NotificationEntry["target"]): NotificationEntry {
 
 const items = [
   { kind: "bridge.withdrawal", record: { localId: "w1", l2TxHash: "0xBurn" } },
-  { kind: "bridge.sipaDeposit", record: { sipaAddress: SIPA, claimTxHash: "0xClaim" } },
+  { kind: "bridge.sipaDeposit", record: { sipaAddress: SIPA } },
   { kind: "transfer", record: { txHash: "0xt" } },
 ] as unknown as ActivityItem[]
 
@@ -101,7 +103,9 @@ describe("notification target -> activity detail", () => {
     expect(notificationRoute(entry({ type: "contact.added", contactId: "bob" }))).toEqual({
       to: "/contacts/bob",
     })
-    expect(notificationRoute(entry({ type: "contact.added" } as NotificationEntry["target"]))).toBeNull()
+    expect(
+      notificationRoute(entry({ type: "contact.added" } as NotificationEntry["target"])),
+    ).toBeNull()
   })
 
   it("opens the migration dialog, in place, for funds left on an old version", () => {
@@ -125,7 +129,9 @@ describe("notification target -> activity detail", () => {
     expect(notificationRoute(entry({ type: "registration.pending", tag: "alice" }))).toEqual({
       to: "/claim/alice",
     })
-    expect(notificationRoute(entry({ type: "registration.pending" } as NotificationEntry["target"]))).toBeNull()
+    expect(
+      notificationRoute(entry({ type: "registration.pending" } as NotificationEntry["target"])),
+    ).toBeNull()
   })
 
   it("opens Home and the link's review for a registration a payment link funds", () => {
@@ -162,7 +168,7 @@ describe("notification target -> activity detail", () => {
   })
 
   it("opens a Savings move's burn in the Savings detail its row opens, and a fresh leg as its group", () => {
-    const withdrawal = (record: object) => ({ kind: "bridge.withdrawal", record }) as never
+    const withdrawal = (record: object) => ({ kind: "bridge.withdrawal", record } as never)
     expect(
       bridgeDetailTarget(withdrawal({ localId: "m1", skyMove: { direction: "out" } })),
     ).toEqual({ kind: "savings", id: "m1" })
@@ -179,7 +185,6 @@ describe("notification target -> activity detail", () => {
 
   it("resolves a reorg notice's tx hash to the bridge row it was taken from", () => {
     expect(findBridgeItem(items, { openTxHash: "0xburn" })?.kind).toBe("bridge.withdrawal")
-    expect(findBridgeItem(items, { openTxHash: "0xclaim" })?.kind).toBe("bridge.sipaDeposit")
     expect(findBridgeItem(items, { openTxHash: "0xt" })).toBeUndefined()
     expect(findBridgeItem(items, {})).toBeUndefined()
   })
@@ -204,7 +209,7 @@ describe("savingsMoveExitOffer", () => {
         phaseEnteredAt: 0,
         skyMove: sky,
         ...extra,
-      }) as never
+      } as never)
     const move = (direction: "in" | "out", extra: object = {}) =>
       ({
         direction,
@@ -212,7 +217,7 @@ describe("savingsMoveExitOffer", () => {
         escrow: "0x00000000000000000000000000000000000000ee",
         nonce: sky.nonce,
         ...extra,
-      }) as never
+      } as never)
     for (const direction of ["in", "out"] as const)
       expect(savingsMoveExitOffer(move(direction), burn({ phase: "finalizing_l1" }), later)).toBe(
         "finalize",

@@ -1,6 +1,6 @@
 import type { Address, Hex } from "viem"
 
-import type { SIPADepositRecord } from "../../src/core/services/deposits/SIPADepositStore"
+import type { SipaDeposit } from "../../src/engine/sipaDeposits"
 import type { FundingBurn, PendingRegistrationRecord } from "../../src/core/services/registration"
 
 const ACCOUNT: Address = "0x00000000000000000000000000000000000000aa"
@@ -33,7 +33,7 @@ export function pendingRegistration(
 }
 
 /** The registration's rail deposit, as discovered and not yet swept. */
-export function sipaDeposit(over: Partial<SIPADepositRecord> = {}): SIPADepositRecord {
+export function sipaDeposit(over: Partial<SipaDeposit> = {}): SipaDeposit {
   return {
     sipaAddress: SIPA,
     recipientL2Address: L2,

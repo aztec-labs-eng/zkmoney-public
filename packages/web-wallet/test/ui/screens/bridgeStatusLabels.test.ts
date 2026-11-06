@@ -8,7 +8,7 @@ import type { Hex } from "viem"
 import {
   WITHDRAWAL_PHASE_COPY,
   type SIPADepositPhase,
-  type SIPADepositRecord,
+  type SipaDeposit,
 } from "@obsidion/front-core"
 import { depositRowStatusLabel } from "../../../src/ui/screens/activityView"
 import { depositStatus } from "../../../src/ui/screens/DepositDetailModal"
@@ -20,7 +20,7 @@ const WITHDRAWAL_PHASE_LABEL = Object.fromEntries(
 
 const SWEEP_TX = `0x${"5e".repeat(32)}` as Hex
 
-const deposit = (phase: SIPADepositPhase, sweepTxHash?: Hex): SIPADepositRecord =>
+const deposit = (phase: SIPADepositPhase, sweepTxHash?: Hex): SipaDeposit =>
   ({
     sipaAddress: `0x${"11".repeat(20)}`,
     recipientL2Address: `0x${"0a".repeat(32)}`,
@@ -33,7 +33,7 @@ const deposit = (phase: SIPADepositPhase, sweepTxHash?: Hex): SIPADepositRecord 
     phase,
     startTime: 1,
     sweepTxHash,
-  } as SIPADepositRecord)
+  } as SipaDeposit)
 
 const DEPOSIT_PHASES: SIPADepositPhase[] = [
   "resolved",

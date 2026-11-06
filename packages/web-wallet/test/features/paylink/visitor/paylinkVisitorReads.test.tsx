@@ -66,9 +66,6 @@ vi.mock("react-router-dom", async (importOriginal) => ({
   ...(await importOriginal<typeof import("react-router-dom")>()),
   useNavigate: () => vi.fn(),
 }))
-vi.mock("../../../../src/features/identity/walletIdentity", () => ({
-  loadOnboardedIdentity: () => null,
-}))
 vi.mock("../../../../src/features/paylink/goldenTicketOffer", () => ({
   useGoldenTicketOffer: () => ({ offer: null, failed: false, retry: vi.fn() }),
 }))
@@ -98,7 +95,7 @@ vi.mock("../../../../src/ui/screens/WithdrawalDetailModal", () => ({
 vi.mock("../../../../src/features/onboarding/InvitationChrome", () => ({
   InvitationChrome: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
 }))
-vi.mock("../../../../src/features/onboarding/OnboardingScreen", () => ({
+vi.mock("../../../../src/features/onboarding/OnboardingScreen/OnboardingScreen", () => ({
   OnboardingScreen: () => <div data-testid="signup" />,
 }))
 vi.mock("../../../../src/features/paylink/ClaimToL1Modal", () => ({

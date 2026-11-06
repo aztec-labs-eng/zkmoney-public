@@ -167,6 +167,23 @@ describe("PreviousAccountLine", () => {
     expect(line()).toBeUndefined()
   })
 
+  it("names Savings funds beside the amount, and alone when only shares sit there", async () => {
+    h.state = { ...ROOT, savings: true }
+    await mount()
+    expect(line()).toContain("$12.34 and Savings funds arrived at your previous account")
+    expect(buttons()).toEqual(["Move them"])
+
+    await act(async () => publish({ amount: 0n }))
+    expect(line()).toContain("Savings funds arrived at your previous account")
+    expect(line()).not.toContain("$")
+
+    await act(async () =>
+      publish({ lastResult: { kind: "refused", reason: "spend", amount: CENT } }),
+    )
+    expect(line()).toContain("Savings funds are still on your previous account")
+    expect(line()).toContain("They could not be moved in one go.")
+  })
+
   it("masks the amount while Home hides balances", async () => {
     h.hideBal = true
     await mount()

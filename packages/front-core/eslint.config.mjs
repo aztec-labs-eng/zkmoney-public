@@ -11,6 +11,10 @@ export default migrated({
     "src/core/services/transactions/WalletSyncCoordinator.ts",
     "src/core/services/paylink/paylinkRescan.ts",
     "src/core/services/bridge/withdrawalPhases.ts",
+    "src/oxide/sipaClaim.ts",
+    "src/oxide/sipaScan.ts",
+    "src/oxide/sipaRows.ts",
+    "src/oxide/registrationRefunds.ts",
   ],
   react: [
     "src/hooks/useStore.ts",
@@ -33,5 +37,9 @@ export default migrated({
     "test/hooks/useSavings.test.tsx",
     "test/utils/activityFixture.ts",
     "test/services/pendingPaylinkMigration.test.ts",
+    "test/oxide/pipeline/*.ts",
+    "test/oxide/registrationRecovery.test.ts",
+    "test/oxide/oxideRegistrationFakes.ts",
+    "test/oxide/oxideRegistrationResume.test.ts",
   ],
 })

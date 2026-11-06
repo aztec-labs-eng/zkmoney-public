@@ -2,6 +2,7 @@ import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { MemoryRouter, Route, Routes } from "react-router-dom"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { setIdentity } from "../../support/identity"
 import { balancesOf } from "../../support/balances"
 
 const m = vi.hoisted(() => ({
@@ -33,9 +34,6 @@ vi.mock("../../../src/errors/errorModal", () => ({ showReportableError: m.report
 vi.mock("../../../src/ui/format", () => ({ parseAmount: Number, floorToCents: () => "100" }))
 vi.mock("../../../src/ui/PayModalChrome", () => ({ PayModalChrome: () => null }))
 vi.mock("../../../src/platform/xmtp/MessagingBanner", () => ({ MessagingBanner: () => null }))
-vi.mock("../../../src/features/identity/walletIdentity", () => ({
-  loadWalletIdentity: () => ({ handle: "me" }),
-}))
 vi.mock("../../../src/features/contacts/contactsView", () => ({ findContactEntry: () => m.entry }))
 vi.mock("../../../src/features/contacts/unsavedContact", () => ({
   lookUpUnsavedContact: async () => null,
@@ -110,6 +108,8 @@ afterEach(() => {
   act(() => root.unmount())
   container.remove()
 })
+
+beforeEach(() => setIdentity({ handle: "me" }))
 
 describe("send outcome tracking", () => {
   it.each([true, false])(

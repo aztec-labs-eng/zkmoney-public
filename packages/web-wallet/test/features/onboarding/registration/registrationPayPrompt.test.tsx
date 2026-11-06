@@ -24,7 +24,7 @@ const h = vi.hoisted(() => ({
   retry: vi.fn(),
 }))
 const ACCOUNT = "0x00000000000000000000000000000000000000aa"
-vi.mock("../../../../src/features/deposit/l1Wallet", () => ({
+vi.mock("../../../../src/session/l1Wallet", () => ({
   isWalletRejection: (e: { code?: number }) => e?.code === 4001,
   isWalletDisconnect: () => false,
   isWrongNetwork: () => false,
@@ -57,7 +57,7 @@ vi.mock("../../../../src/errors/errorModal", () => ({
   showErrorModal: vi.fn(),
 }))
 vi.mock("../../../../src/ui/hooks", () => ({ useCopy: () => ({ copied: false, copy: vi.fn() }) }))
-vi.mock("../../../../src/features/onboarding/registrationFunnel", () => ({
+vi.mock("../../../../src/features/registration/registrationFunnel", () => ({
   reportRegistrationDepositShown: vi.fn(),
 }))
 vi.mock("@obsidion/web-ds", () => ({
@@ -88,7 +88,7 @@ vi.mock("../../../../src/config/env", () => ({
 vi.mock("../../../../src/config/oxideTuple", () => ({
   l1PublicClient: () => ({ waitForTransactionReceipt: h.receipt }),
 }))
-vi.mock("../../../../src/features/deposit/loadDepositFacts", async (importOriginal) => {
+vi.mock("../../../../src/features/sipa/loadDepositFacts", async (importOriginal) => {
   const { mockLoadDepositFacts, singleToken, usdcFeeTokens } = await import(
     "../../../support/depositTokens"
   )
@@ -101,7 +101,7 @@ vi.mock("../../../../src/features/deposit/loadDepositFacts", async (importOrigin
     () => ({ failed: h.failed, retry: h.retry }),
   )
 })
-import { DepositPayBlock } from "../../../../src/features/onboarding/steps/DepositAddress"
+import { DepositPayBlock } from "../../../../src/features/onboarding/steps/DepositAddress/DepositAddress"
 
 const OPEN = "Your wallet still has the previous request open. Approve or reject it there first."
 const HOLDING = "Your wallet still holds this payment. Approve or reject it there."

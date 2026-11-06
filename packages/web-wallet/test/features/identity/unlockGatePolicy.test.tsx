@@ -10,14 +10,14 @@ import { createRoot, type Root } from "react-dom/client"
 import { MemoryRouter, Route, Routes } from "react-router-dom"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { AUTH_TYPE } from "@obsidion/sdk"
-import { walletStorage } from "../../../src/platform/storage/walletStorage"
-import { InMemoryStorageAdapter } from "../../support/memoryStorage"
 import {
   type HeldRequest,
   pageHide,
   passkeyEvents,
   passkeyTelemetryHarness,
 } from "../../support/passkeyTelemetryHarness"
+import { committed, seedDeviceKeys } from "../../support/page"
+import catalogCopy from "../../../src/errors/catalog.copy"
 
 declare global {
   // eslint-disable-next-line no-var
@@ -50,16 +50,6 @@ const h = vi.hoisted(() => ({
   fireEvent: vi.fn(),
 }))
 
-vi.mock("../../../src/platform/auth/useAuthenticator", () => {
-  const auth = () => ({
-    unlock: h.unlock,
-    probePhoneReach: h.probePhoneReach,
-    suggestedRoute: h.suggestedRoute,
-    clear: h.clear,
-    lockOut: h.clear,
-  })
-  return { getAuthService: auth, peekAuthService: auth }
-})
 vi.mock("../../../src/config/env", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../src/config/env")>()),
   getConfig: () => ({ rpId: "localhost" }),
@@ -95,18 +85,27 @@ const flush = () => act(async () => new Promise((r) => setTimeout(r, 0)))
  * with `h.unlockError`, and each retry runs `h.retryUnlock` first.
  */
 async function openLockedSession() {
-  const { AccountStorage, resource } = await import("@obsidion/front-core")
+  const { resource } = await import("@obsidion/front-core")
   const { openTestSession } = await import("../../support/session")
-  const accounts = AccountStorage.get(new InMemoryStorageAdapter())
-  await accounts.setAccount({
-    name: "Account 1",
-    completeAddress: "0xacct",
-    signKeyConfig: {
-      type: AUTH_TYPE.WEB_AUTHN,
-      webauthnData: { credentialId: "cred", pubkey: "p" },
+  const { giveAccountRecord } = await import("../../support/accountRecord")
+  const auth = {
+    unlock: h.unlock,
+    probePhoneReach: h.probePhoneReach,
+    suggestedRoute: h.suggestedRoute,
+    clear: h.clear,
+    lockOut: h.clear,
+  }
+  const session = openTestSession({ wallet: h.wallet, auth })
+  await giveAccountRecord(
+    {
+      completeAddress: "0xacct",
+      signKeyConfig: {
+        type: AUTH_TYPE.WEB_AUTHN,
+        webauthnData: { credentialId: "cred", pubkey: "p" },
+      },
     },
-  })
-  const session = openTestSession({ wallet: h.wallet })
+    session,
+  )
   let builds = 0
   const account = resource("account", { from: [], backoff: "manual" }, async () => {
     if (builds++ > 0) await h.retryUnlock()
@@ -116,7 +115,7 @@ async function openLockedSession() {
 }
 
 async function render(entry: string | { pathname: string; state: unknown } = "/") {
-  const { UnlockGate } = await import("../../../src/features/identity/UnlockGate")
+  const { UnlockGate } = await import("../../../src/features/identity/UnlockGate/UnlockGate")
   await openLockedSession()
   const gate = (
     <UnlockGate>
@@ -139,18 +138,15 @@ async function render(entry: string | { pathname: string; state: unknown } = "/"
 
 /** This browser's record for the active passkey, the way a commit leaves it. */
 async function seedRecord(credentialId = "cred") {
-  const { setActiveCredentialId, setActiveStorageId } = await import(
-    "../../../src/platform/storage/activeStorage"
-  )
-  setActiveStorageId("aaa")
-  setActiveCredentialId(credentialId)
-  walletStorage.setItem(
-    "obsidion.obsidion_web_passkey_identity_map",
-    JSON.stringify({
+  const { writeDeviceKeys } = await import("../../../src/platform/storage/deviceKeys")
+  const { testPage } = await import("../../support/page")
+  await writeDeviceKeys(testPage().database, { storageId: "aaa", credentialId })
+  await seedDeviceKeys({
+    passkeyMap: JSON.stringify({
       version: 1,
       entries: { cred: { credentialId: "cred", rpId: "localhost", l2Address: "0xabc" } },
     }),
-  )
+  })
 }
 
 const byTestId = (id: string) => container.querySelector<HTMLElement>(`[data-testid="${id}"]`)
@@ -216,7 +212,7 @@ describe("UnlockGate", () => {
     const ROOT = "aa".repeat(64)
     const SPARE = "bb".repeat(64)
     /** The session's root record with both keys in its set, and, when `spare`, the backup's record. */
-    function seedWallet(spare: boolean, session = "cred") {
+    async function seedWallet(spare: boolean, session = "cred") {
       const entries: Record<string, unknown> = {
         cred: {
           credentialId: "cred",
@@ -238,10 +234,7 @@ describe("UnlockGate", () => {
           passkeySet: [ROOT, SPARE],
         }
       }
-      walletStorage.setItem(
-        "obsidion.obsidion_web_passkey_identity_map",
-        JSON.stringify({ version: 1, entries }),
-      )
+      await seedDeviceKeys({ passkeyMap: JSON.stringify({ version: 1, entries }) })
       return session
     }
     const otherKey = () => byTestId("unlock-other-key") as HTMLButtonElement | null
@@ -253,7 +246,7 @@ describe("UnlockGate", () => {
 
     it("offers the backup this browser recorded and unlocks with that key alone; its refusal offers the other key", async () => {
       const { PhoneRequiredError } = await import("@obsidion/passkey-web")
-      seedWallet(true)
+      await seedWallet(true)
       h.wallet = new FakeWallet()
       h.unlock
         .mockRejectedValueOnce(new PhoneRequiredError())
@@ -306,7 +299,7 @@ describe("UnlockGate", () => {
         configurable: true,
       })
       try {
-        seedWallet(true)
+        await seedWallet(true)
         h.wallet = new FakeWallet()
         h.unlock.mockRejectedValueOnce(wrongKey()).mockRejectedValueOnce(wrongKey())
         await render()
@@ -324,7 +317,7 @@ describe("UnlockGate", () => {
     })
 
     it("a backup this browser holds no record of is found on /enter, from the row's keys", async () => {
-      seedWallet(false)
+      await seedWallet(false)
       h.wallet = new FakeWallet()
       await render()
       expect(otherKey()?.textContent).toBe("Use your backup passkey")
@@ -349,7 +342,7 @@ describe("UnlockGate", () => {
           },
         },
       }
-      walletStorage.setItem("obsidion.obsidion_web_passkey_identity_map", JSON.stringify(map))
+      await seedDeviceKeys({ passkeyMap: JSON.stringify(map) })
       h.wallet = new FakeWallet()
       await render()
       expect(otherKey()?.textContent).toBe("Use another passkey")
@@ -380,10 +373,7 @@ describe("UnlockGate", () => {
         spare: backup("spare", SPARE),
         third: backup("third", THIRD),
       }
-      walletStorage.setItem(
-        "obsidion.obsidion_web_passkey_identity_map",
-        JSON.stringify({ version: 1, entries }),
-      )
+      await seedDeviceKeys({ passkeyMap: JSON.stringify({ version: 1, entries }) })
       h.wallet = new FakeWallet()
       await render()
       expect(
@@ -431,9 +421,8 @@ describe("UnlockGate", () => {
 
     // "Use a different passkey" signs out and reloads into the chooser.
     await act(async () => byTestId("unlock-choose-passkey")!.click())
-    const { getActiveCredentialId } = await import("../../../src/platform/storage/activeStorage")
     expect(h.clear).toHaveBeenCalledTimes(1)
-    expect(getActiveCredentialId()).toBeNull()
+    expect(committed().credentialId).toBeNull()
     expect(h.assign).toHaveBeenCalledWith("/enter?choose=1")
   })
 
@@ -582,7 +571,7 @@ describe("UnlockGate", () => {
   })
 
   it("no record for the active passkey goes straight to /enter", async () => {
-    walletStorage.removeItem("obsidion.obsidion_web_passkey_identity_map")
+    await seedDeviceKeys({ passkeyMap: null })
     h.wallet = new FakeWallet()
     await render()
     expect(container.textContent).toContain("enter route")
@@ -601,7 +590,7 @@ describe("UnlockGate", () => {
     expect(unlockButton()).toBeDefined()
   })
 
-  it("a passkey that worked but an account that would not install shows front-core's reason", async () => {
+  it("a passkey that worked but an account that would not install shows the generic words", async () => {
     h.wallet = new FakeWallet()
     await render()
     expect(byTestId("unlock-install-failed")).toBeNull()
@@ -612,9 +601,7 @@ describe("UnlockGate", () => {
     })
     await tapUnlock()
     expect(unlockButton()).toBeDefined()
-    expect(byTestId("unlock-install-failed")?.textContent).toContain(
-      "Historical contract instance is missing",
-    )
+    expect(byTestId("unlock-install-failed")?.textContent).toContain(catalogCopy.unknown)
 
     // The next tap starts clean.
     h.unlock.mockRejectedValueOnce(Object.assign(new Error("closed"), { name: "NotAllowedError" }))

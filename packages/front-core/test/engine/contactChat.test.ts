@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 import { QueueStatus } from "@obsidion/core/constants"
 import type { Hex } from "viem"
 import type { WithdrawalRecord } from "../../src/core/services/bridge/types"
-import type { SIPADepositRecord } from "../../src/core/services/deposits/SIPADepositStore"
+import type { SipaDeposit } from "../../src/engine/sipaDeposits"
 import { selectFeed, type FeedSources } from "../../src/engine/activityFeed"
 import { sameChat, selectContactChat } from "../../src/engine/contactChat"
 import { memoryStore, derived } from "../../src/engine/store"
@@ -49,7 +49,7 @@ const request = (over: Partial<StoredRequest>): StoredRequest => ({
 function feedAt(
   sources: {
     rows?: Transaction[]
-    deposits?: SIPADepositRecord[]
+    deposits?: SipaDeposit[]
     withdrawals?: WithdrawalRecord[]
     contacts?: ContactRow[]
   },
@@ -60,7 +60,7 @@ function feedAt(
     {
       rows: { records: sources.rows ?? [], loaded: true, failed: false },
       requests,
-      deposits: { records: sources.deposits ?? [], hydrated: true },
+      deposits: { records: sources.deposits ?? [], loaded: true, failed: false },
       withdrawals: { records: sources.withdrawals ?? [], hydrated: true },
       upgrades: { items: [], recipients: new Set(), loaded: true },
       moves: { records: [], hydrated: true },
@@ -80,7 +80,7 @@ function feedAt(
 function chat(
   sources: {
     rows?: Transaction[]
-    deposits?: SIPADepositRecord[]
+    deposits?: SipaDeposit[]
     withdrawals?: WithdrawalRecord[]
   },
   stored: StoredRequest[],
@@ -190,7 +190,7 @@ describe("selectContactChat", () => {
         startTime: 2,
       },
       { sipaAddress: "0x2", walletAddress: WALLET, phase: "resolved", amount: "0", startTime: 3 },
-    ] as SIPADepositRecord[]
+    ] as SipaDeposit[]
     const withdrawals = [
       burn({ localId: "gas", groupLeg: "gas", phase: "done" }),
       burn({ localId: "funds", groupLeg: "funds", phase: "failed" }),
@@ -242,7 +242,7 @@ describe("selectContactChat", () => {
         tokenDecimals: 6,
         startTime: 3,
       },
-    ] as SIPADepositRecord[]
+    ] as SipaDeposit[]
     const requests = resolveRequests([], { rows: [], deposits })
     const feed = feedAt({ deposits }, requests, NOW)
     const amounts = selectContactChat(feed, requests, {

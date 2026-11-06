@@ -11,19 +11,18 @@ import { usePhoneLayout } from "../../ui/usePhoneLayout"
 import { useBack, useLinkSharing, useWakeLock } from "../../ui/hooks"
 import { requestShareText } from "../requests/shareView"
 import { useShortRequestLink } from "../requests/shortRequestLink"
-import { useRegistrationDepositOwed } from "../onboarding/openRegistration"
+import { useRegistrationDepositOwed } from "../registration/openRegistration"
 import { REQUESTS_PATH } from "../requests/nonContactView"
 import { RecipientNotUpgradedError, requestFromContact } from "../contacts/contactPay"
 import { errorCopy } from "../../errors/catalog"
 import { recipientNotUpgradedCopy } from "../migration/upgradeCopy"
-import { loadWalletIdentity } from "../identity/walletIdentity"
 import { PrintedCard, printedCodeHost, useSaveCard } from "./PrintedCard"
 import { CODE_LOGO, ReceiveCodeCard, ReceivePaid } from "./ReceiveCodeFace"
 import { parseRequestAmount } from "./receiveView"
 import { RequestContactPicker } from "./RequestContactPicker/RequestContactPicker"
 import { useCodeForm } from "./useCodeForm"
 import { useReceiveCode } from "./useReceiveCode"
-import { useSession } from "../../platform/session"
+import { useSession } from "../../session/session"
 
 /**
  * New request, routed at /receive: the amount and note, then who from. A contact gets it in their
@@ -94,6 +93,7 @@ export function ReceiveScreen() {
   const card = useSaveCard(tag ?? "")
   const tokenService = useResource(useSession().token)
   const wallet = useResource(useSession().wallet)
+  const { identity } = useSession()
   const [who, setWho] = useState<"contact" | "anyone">("anyone")
   const [sending, setSending] = useState<string>()
   const [sendError, setSendError] = useState("")
@@ -103,7 +103,7 @@ export function ReceiveScreen() {
   const amount = parseRequestAmount(form.amount)
 
   const requestContact = async (contact: string) => {
-    const requesterTag = loadWalletIdentity()?.handle
+    const requesterTag = identity.get().value?.handle
     if (!amount) {
       setShake(true)
       amountInput.current?.focus()

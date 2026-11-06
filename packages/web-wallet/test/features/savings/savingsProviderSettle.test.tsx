@@ -30,7 +30,7 @@ vi.mock("../../../src/features/savings/savingsMoveStore", () => ({
 const { WebSavingsProvider } = await import(
   "../../../src/features/savings/SavingsProvider/SavingsProvider"
 )
-const { closeSession } = await import("../../../src/platform/session")
+const { closeSession } = await import("../../../src/session/session")
 const { openTestSession } = await import("../../support/session")
 
 const burn = (localId: string, sky: boolean): OnNetwork<WithdrawalRecord> =>

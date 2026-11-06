@@ -3,10 +3,12 @@ import { normalizeTag } from "@obsidion/front-core"
 import { GradientText, Icon, PrimaryGradientButton, TopNavIconButton } from "@obsidion/web-ds"
 import { fireOnboardingEvent } from "../../lib/analytics"
 import { Modal } from "../../ui/Modal"
-import { PAY_PRICE, useReportHandleCheck } from "./ChooseNameSheet"
-import { useNameAvailability } from "./nameAvailability"
-import { TagAvailabilityNotes } from "./steps/TagAvailabilityNotes"
-import { loadTagDraft, saveTagDraft } from "./tagPick"
+import { PAY_PRICE, useReportHandleCheck } from "../deposit/ChooseNameSheet/ChooseNameSheet"
+import { useNameAvailability } from "../registration/nameAvailability"
+import { TagAvailabilityNotes } from "../registration/TagAvailabilityNotes/TagAvailabilityNotes"
+import { useSession } from "../../session/session"
+import { errorMessage } from "../../errors/catalog"
+import copy from "./OwnTagSheet.copy"
 
 /** The own-tag pick, before or after the passkey. What is typed is kept for the tab. */
 export function OwnTagSheet(props: {
@@ -22,7 +24,8 @@ export function OwnTagSheet(props: {
   /** The tag already held, which a pick must differ from. */
   current?: string
 }) {
-  const [typed, setTyped] = useState(loadTagDraft)
+  const { signup } = useSession()
+  const [typed, setTyped] = useState(() => signup.state.get().tagDraft)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string>()
   const name = normalizeTag(typed)
@@ -37,44 +40,48 @@ export function OwnTagSheet(props: {
     <Modal
       variant="bare"
       className="ww-deposit-warning ww-deposit-sheet ww-pick-tag"
-      label="Choose your zk.money @tag"
+      label={copy.label}
       onClose={busy ? undefined : props.onClose}
     >
       <div className="ww-deposit-warning__close">
-        <TopNavIconButton icon="x" ariaLabel="Close" onClick={busy ? undefined : props.onClose} />
+        <TopNavIconButton
+          icon="x"
+          ariaLabel={copy.close}
+          onClick={busy ? undefined : props.onClose}
+        />
       </div>
       <span className="ww-pick-tag__icon">
         <Icon name="user-search" size={32} color="#fff" />
       </span>
       <GradientText size={24} weight={700}>
-        Choose your
+        {copy.title.lead}
         <br />
-        zk.money @tag
+        {copy.title.tag}
       </GradientText>
       <label className="ww-choose-name__name">
-        <span className="ww-invite-field__label">Your tag</span>
+        <span className="ww-invite-field__label">{copy.tagLabel}</span>
         <span className="ww-invite-field__input ww-choose-name__field">
-          <span>@</span>
+          <span>{copy.at}</span>
           <input
-            aria-label="Your tag"
-            placeholder="tag"
+            aria-label={copy.tagLabel}
+            placeholder={copy.tagPlaceholder}
             value={typed}
             autoFocus
             disabled={busy}
             onChange={(e) => {
               const next = e.target.value.replace(/^@/, "").toLowerCase()
               setTyped(next)
-              saveTagDraft(next)
+              signup.setTagDraft(next)
             }}
           />
           {available && <Icon name="check-circle" size={16} color="var(--accent-green)" />}
-          <span>.zk.money</span>
+          <span>{copy.domain}</span>
           <b className="ww-pick-tag__price" data-free={props.free || undefined}>
-            {props.free ? "Free" : PAY_PRICE}
+            {props.free ? copy.free : PAY_PRICE}
           </b>
         </span>
         {available ? (
-          <p className="ww-choose-name__ok">Tag available</p>
+          <p className="ww-choose-name__ok">{copy.available}</p>
         ) : (
           <TagAvailabilityNotes
             typed={typed}
@@ -102,7 +109,7 @@ export function OwnTagSheet(props: {
           try {
             await props.onPick(name)
           } catch (e) {
-            setError(e instanceof Error ? e.message : String(e))
+            setError(errorMessage(e))
           } finally {
             setBusy(false)
           }
@@ -110,7 +117,7 @@ export function OwnTagSheet(props: {
       />
       {props.onVerify && !props.free && (
         <p className="ww-invite-modal-foot">
-          Used zk.money before?{" "}
+          {copy.usedBefore}{" "}
           <button
             type="button"
             className="zkm-btn-reset ww-invite__link"
@@ -118,20 +125,20 @@ export function OwnTagSheet(props: {
             disabled={busy}
             onClick={props.onVerify}
           >
-            Verify for free
+            {copy.verify}
           </button>
         </p>
       )}
       {props.onLogIn && (
         <p className="ww-invite-modal-foot">
-          Already have an account?{" "}
+          {copy.haveAccount}{" "}
           <button
             type="button"
             className="zkm-btn-reset ww-invite__link"
             disabled={busy}
             onClick={props.onLogIn}
           >
-            Sign in
+            {copy.signIn}
           </button>
         </p>
       )}

@@ -865,12 +865,25 @@ button.ww-cutover__account {
   width: 141px;
   height: 141px;
 }
+/* Each glow ends by the box's nearest edge, so no edge shows. Offsets follow the badge shading. */
 .ww-cutover__hero::before {
   content: "";
   position: absolute;
   inset: -40px;
-  background: radial-gradient(circle, rgba(156, 4, 255, 0.35), transparent 60%),
-    radial-gradient(circle at 70% 70%, rgba(6, 147, 255, 0.3), transparent 60%);
+  background: radial-gradient(
+      circle closest-side at 44% 44%,
+      rgba(156, 4, 255, 0.45),
+      rgba(156, 4, 255, 0.2) 45%,
+      rgba(156, 4, 255, 0.06) 75%,
+      transparent
+    ),
+    radial-gradient(
+      circle closest-side at 58% 58%,
+      rgba(6, 147, 255, 0.35),
+      rgba(6, 147, 255, 0.15) 45%,
+      rgba(6, 147, 255, 0.04) 75%,
+      transparent
+    );
   pointer-events: none;
 }
 .ww-cutover__hero img {

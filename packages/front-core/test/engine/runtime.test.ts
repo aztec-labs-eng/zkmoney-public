@@ -169,6 +169,60 @@ describe("task runtime", () => {
     expect(run).toHaveBeenCalledTimes(2)
   })
 
+  it("runs again after the delay a clean run returns, in place of its cadence", async () => {
+    const delays = [1_000, 30_000]
+    const run = vi.fn(async () => ({ nextMs: delays.shift() ?? 5_000 }))
+    start([t({ every: 5_000, run })])
+    await flush()
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(run).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(29_999)
+    expect(run).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(run).toHaveBeenCalledTimes(3)
+  })
+
+  it("backs off a failed run, however short the delay the clean ones return", async () => {
+    let failing = false
+    const run = vi.fn(async () => {
+      if (failing) throw new Error("down")
+      return { nextMs: 1_000 }
+    })
+    start([t({ every: 5_000, backoff: { baseMs: 10_000, maxMs: 10_000 }, run })])
+    await flush()
+    failing = true
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(run).toHaveBeenCalledTimes(2)
+    failing = false
+    await vi.advanceTimersByTimeAsync(9_999)
+    expect(run).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(run).toHaveBeenCalledTimes(3)
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(run).toHaveBeenCalledTimes(4)
+  })
+
+  it("holds a returned delay to the hidden pace while hidden, and keeps a longer one", async () => {
+    const visible = memoryStore(true)
+    const delays = [4_000, 60_000]
+    const run = vi.fn(async () => ({ nextMs: delays.shift() ?? 4_000 }))
+    start([t({ every: 4_000, whenHidden: 12_000, run })], { visible: visible.readonly })
+    await flush()
+    visible.set(false)
+    // The shown run's 4 s ends hidden; that run asks 60 s, longer than the hidden 12 s.
+    await vi.advanceTimersByTimeAsync(4_000)
+    expect(run).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(59_999)
+    expect(run).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(run).toHaveBeenCalledTimes(3)
+    // It asks 4 s; hidden, it waits 12 s.
+    await vi.advanceTimersByTimeAsync(11_999)
+    expect(run).toHaveBeenCalledTimes(3)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(run).toHaveBeenCalledTimes(4)
+  })
+
   it("pauses while hidden, aborting the run in flight, and runs at once on show", async () => {
     const visible = memoryStore(true)
     const run = vi.fn<(ctx: { signal: AbortSignal }) => Promise<void>>(async () => {})

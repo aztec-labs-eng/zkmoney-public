@@ -4,9 +4,9 @@ import type { UpgradeBatchItem } from "../../src/core/migration/upgradeActivity"
 import type { OldVersionWithdrawal } from "../../src/core/migration/OldVersionWithdrawalStorage"
 import type { WithdrawalRecord } from "../../src/core/services/bridge/types"
 import { DEPOSIT_PHASE_COPY } from "../../src/core/services/deposits/depositCopy"
-import type { SIPADepositRecord } from "../../src/core/services/deposits/SIPADepositStore"
+import type { SipaDeposit } from "../../src/engine/sipaDeposits"
 import type { OperationRecord } from "../../src/core/services/operations/OperationStore"
-import type { PendingRegistrationRecord } from "../../src/core/services/registration/PendingRegistrationStore"
+import type { PendingRegistrationRecord } from "../../src/engine/registrationRecord"
 import { WITHDRAWAL_PHASE_COPY } from "../../src/core/services/bridge/withdrawalCopy"
 import { LIVE_DEPOSIT_PHASES, LIVE_WITHDRAWAL_PHASES } from "../../src/engine/notificationBridge"
 import { isNativeEth } from "../../src/oxide/sipaFunding"
@@ -51,7 +51,7 @@ const burn = (over: Partial<WithdrawalRecord> = {}): WithdrawalRecord =>
     ...over,
   } as WithdrawalRecord)
 
-const deposit = (over: Partial<SIPADepositRecord> = {}): SIPADepositRecord =>
+const deposit = (over: Partial<SipaDeposit> = {}): SipaDeposit =>
   ({
     sipaAddress: addr("D1"),
     phase: "claimed",
@@ -62,7 +62,7 @@ const deposit = (over: Partial<SIPADepositRecord> = {}): SIPADepositRecord =>
     startTime: NOW - 2 * HOUR,
     endTime: NOW - HOUR,
     ...over,
-  } as SIPADepositRecord)
+  } as SipaDeposit)
 
 const receive = (over: Partial<Transaction> = {}): Transaction =>
   ({
@@ -169,7 +169,7 @@ describe("bridge entries", () => {
 
   it("leaves a backup passkey rotation's deposit and funding burn to the settings panel", () => {
     const s = sources({
-      deposits: loaded([deposit({ intent: "user-op" } as Partial<SIPADepositRecord>)]),
+      deposits: loaded([deposit({ intent: "user-op" } as Partial<SipaDeposit>)]),
       withdrawals: loaded([burn({ intent: "backup" } as Partial<WithdrawalRecord>)]),
     })
     expect(ids(s)).toEqual([])
@@ -245,7 +245,7 @@ describe("bridge entries", () => {
       e.id.endsWith(":3:done"),
     )!
     expect(earlier.about).toMatchObject({ item: { record: { netAmount: first.netAmount } } })
-    const record = (earlier.about as { item: { record: SIPADepositRecord } }).item.record
+    const record = (earlier.about as { item: { record: SipaDeposit } }).item.record
     expect(isNativeEth(record.tokenAddress)).toBe(false)
   })
 
@@ -259,7 +259,7 @@ describe("bridge entries", () => {
 
   it("leaves a registration's deposit and burn to the registration", () => {
     const s = sources({
-      deposits: loaded([deposit({ intent: "registration" } as Partial<SIPADepositRecord>)]),
+      deposits: loaded([deposit({ intent: "registration" } as Partial<SipaDeposit>)]),
       withdrawals: loaded([burn({ intent: "registration" } as Partial<WithdrawalRecord>)]),
     })
     expect(ids(s)).toEqual([])
@@ -295,7 +295,7 @@ describe("bridge entries", () => {
       first: true,
       startTime: NOW - 2 * HOUR,
     }
-    const s = (phase: SIPADepositRecord["phase"], more: UpgradeBatchItem[] = []) =>
+    const s = (phase: SipaDeposit["phase"], more: UpgradeBatchItem[] = []) =>
       sources({
         upgrades: {
           items: [batch as unknown as UpgradeBatchItem, ...more],
@@ -314,7 +314,7 @@ describe("bridge entries", () => {
   })
 
   it("reports an upgrade read off its direct deposits once, however many legs join", () => {
-    const direct = deposit({ direct: { portal: addr("f1") } } as Partial<SIPADepositRecord>)
+    const direct = deposit({ direct: { portal: addr("f1") } } as Partial<SipaDeposit>)
     const done = deriveNotifications(sources({ deposits: loaded([direct]) }), new Map(), NOW).find(
       (e) => e.id.endsWith(":done"),
     )

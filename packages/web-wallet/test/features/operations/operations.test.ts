@@ -4,6 +4,7 @@
  * active that never got a hash fails at once; one with a hash is left to the chain.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { testPage, testCore } from "../../support/page"
 import { ProvingStage, provingProgress } from "@obsidion/proving-progress"
 import {
   TRANSACTIONS_STORAGE_KEY,
@@ -11,7 +12,8 @@ import {
   trackSubmission,
   WalletError,
 } from "@obsidion/front-core"
-import { activeNamespace, closeSession, switchSession } from "../../../src/platform/session"
+import { activeNamespace, closeSession, switchSession } from "../../../src/session/session"
+import { pageSessionDeps } from "../../../src/app/sessionDeps"
 import { walletStorage } from "../../../src/platform/storage/walletStorage"
 import { testWalletDbs } from "../../support/fakeWalletDb"
 import {
@@ -43,7 +45,7 @@ afterEach(() => {
   closeSession()
 })
 
-const opened = () => switchSession(activeNamespace())
+const opened = () => switchSession(activeNamespace(testCore().device), pageSessionDeps(testPage()))
 const activity = () => opened().activity
 const sweepStores = () => {
   const { db, activity, withdrawals } = opened()

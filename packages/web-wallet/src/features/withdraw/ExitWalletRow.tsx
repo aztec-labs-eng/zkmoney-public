@@ -6,7 +6,7 @@
 import { Icon } from "@obsidion/web-ds"
 import connectIcon from "../../assets/deposit/eth-fill.svg"
 import { shortL1Addr } from "../../ui/format"
-import type { useL1Wallet } from "../deposit/l1Wallet"
+import type { useL1Wallet } from "../../session/l1Wallet"
 
 type ExitWallet = Pick<
   ReturnType<typeof useL1Wallet>,

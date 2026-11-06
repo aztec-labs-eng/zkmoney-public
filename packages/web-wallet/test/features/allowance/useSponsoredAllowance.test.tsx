@@ -28,7 +28,7 @@ vi.mock("../../../src/features/allowance/readAllowanceUsage", () => ({
 const { useSponsoredAllowance } = await import(
   "../../../src/features/allowance/useSponsoredAllowance"
 )
-const { closeSession } = await import("../../../src/platform/session")
+const { closeSession } = await import("../../../src/session/session")
 const { openTestSession } = await import("../../support/session")
 
 /** The session `account` is signed in to; none is signed out. */

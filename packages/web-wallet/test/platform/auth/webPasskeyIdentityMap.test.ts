@@ -2,6 +2,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import {
   WebPasskeyIdentityMap,
+  backupRecordFor,
   hasOpeningBreadcrumb,
   hasRecordFor,
   listRetiredUsertagCandidates,
@@ -10,7 +11,6 @@ import {
   usertagFor,
   walletKeysFor,
 } from "../../../src/platform/auth/WebPasskeyIdentityMap"
-import { WebStorageAdapter } from "../../../src/platform/storage/WebStorageAdapter"
 import {
   closeWalletStore,
   openWalletStore,
@@ -18,6 +18,9 @@ import {
 } from "../../../src/platform/storage/walletStorage"
 import { sandboxProfile } from "../../fixtures/sandboxProfile"
 import { testWalletDbs } from "../../support/fakeWalletDb"
+import { testPage, committed } from "../../support/page"
+
+const deviceDb = testPage().database
 
 const RP = "localhost"
 const entry = (credentialId: string) => ({
@@ -37,7 +40,7 @@ describe("WebPasskeyIdentityMap creation list", () => {
   beforeEach(() => localStorage.clear())
 
   it("two writers racing with different lists: the first to take the lock is kept", async () => {
-    const map = new WebPasskeyIdentityMap(new WebStorageAdapter(), RP)
+    const map = new WebPasskeyIdentityMap(deviceDb, RP)
     expect(await map.get("a")).toBeUndefined()
     await Promise.all([
       map.upsert({ ...entry("a"), transports: ["hybrid", "internal"] }),
@@ -54,17 +57,17 @@ describe("WebPasskeyIdentityMap under concurrent writers", () => {
   beforeEach(() => localStorage.clear())
 
   it("a usertag hint racing an upsert keeps both effects", async () => {
-    const map = new WebPasskeyIdentityMap(new WebStorageAdapter(), RP)
+    const map = new WebPasskeyIdentityMap(deviceDb, RP)
     await map.upsert(entry("a"))
-    await Promise.all([map.upsert(entry("b")), rememberUsertag(RP, "a", "alice")])
-    expect(usertagFor(RP, "a")).toBe("alice")
-    expect(hasRecordFor(RP, "b")).toBe(true)
+    await Promise.all([map.upsert(entry("b")), rememberUsertag(deviceDb, RP, "a", "alice")])
+    expect(usertagFor(committed().passkeyMap, RP, "a")).toBe("alice")
+    expect(hasRecordFor(committed().passkeyMap, RP, "b")).toBe(true)
   })
 
   it("an inferred list lands only on an entry with no creation list and no inference", async () => {
-    const map = new WebPasskeyIdentityMap(new WebStorageAdapter(), RP)
+    const map = new WebPasskeyIdentityMap(deviceDb, RP)
     await map.upsert({ ...entry("a"), prfSlot: "first" })
-    await rememberUsertag(RP, "a", "alice")
+    await rememberUsertag(deviceDb, RP, "a", "alice")
     const before = stored("a")
 
     await map.setInferredTransports("a", ["usb", "nfc"])
@@ -83,12 +86,12 @@ describe("WebPasskeyIdentityMap under concurrent writers", () => {
   })
 
   it("an entry under another RP is neither healed nor cleared", async () => {
-    const other = new WebPasskeyIdentityMap(new WebStorageAdapter(), "other.example")
+    const other = new WebPasskeyIdentityMap(deviceDb, "other.example")
     await other.upsert(entry("a"))
     await other.setInferredTransports("a", ["nfc"])
     const before = stored("a")
     expect(before.inferredTransports).toEqual(["nfc"])
-    const map = new WebPasskeyIdentityMap(new WebStorageAdapter(), RP)
+    const map = new WebPasskeyIdentityMap(deviceDb, RP)
     await map.setInferredTransports("a", undefined)
     expect(stored("a")).toEqual(before)
     await map.setInferredTransports("a", ["usb"])
@@ -96,7 +99,7 @@ describe("WebPasskeyIdentityMap under concurrent writers", () => {
   })
 
   it("a re-record keeps a stored inference and cannot write one of its own", async () => {
-    const map = new WebPasskeyIdentityMap(new WebStorageAdapter(), RP)
+    const map = new WebPasskeyIdentityMap(deviceDb, RP)
     await map.upsert(entry("a"))
     await map.setInferredTransports("a", ["usb"])
     await map.upsert({ ...entry("a"), inferredTransports: ["ble"] })
@@ -106,7 +109,7 @@ describe("WebPasskeyIdentityMap under concurrent writers", () => {
   })
 
   it("healing an older root never makes it the newest", async () => {
-    const map = new WebPasskeyIdentityMap(new WebStorageAdapter(), RP)
+    const map = new WebPasskeyIdentityMap(deviceDb, RP)
     await map.upsert(entry("old"))
     await new Promise((resolve) => setTimeout(resolve, 2))
     await map.upsert(entry("new"))
@@ -115,7 +118,7 @@ describe("WebPasskeyIdentityMap under concurrent writers", () => {
   })
 
   it("the record for an account is the one that opened it, not the newest; none when this browser has none for it", async () => {
-    const map = new WebPasskeyIdentityMap(new WebStorageAdapter(), RP)
+    const map = new WebPasskeyIdentityMap(deviceDb, RP)
     await map.upsert(entry("old"))
     await new Promise((resolve) => setTimeout(resolve, 2))
     await map.upsert(entry("new"))
@@ -127,7 +130,7 @@ describe("WebPasskeyIdentityMap under concurrent writers", () => {
   })
 
   it("a creation list that lands first vetoes a heal issued against an older snapshot", async () => {
-    const map = new WebPasskeyIdentityMap(new WebStorageAdapter(), RP)
+    const map = new WebPasskeyIdentityMap(deviceDb, RP)
     await map.upsert(entry("a"))
     await Promise.all([
       map.upsert({ ...entry("a"), transports: ["usb"] }),
@@ -137,21 +140,21 @@ describe("WebPasskeyIdentityMap under concurrent writers", () => {
   })
 
   it("rememberUsertag asks stillOwns under the lock", async () => {
-    const map = new WebPasskeyIdentityMap(new WebStorageAdapter(), RP)
+    const map = new WebPasskeyIdentityMap(deviceDb, RP)
     await map.upsert(entry("a"))
     let owns = true
     const writes = Promise.all([
       map.upsert(entry("b")),
-      rememberUsertag(RP, "a", "alice", () => owns),
+      rememberUsertag(deviceDb, RP, "a", "alice", () => owns),
     ])
     owns = false
     await writes
-    expect(usertagFor(RP, "a")).toBeUndefined()
-    expect(hasRecordFor(RP, "b")).toBe(true)
+    expect(usertagFor(committed().passkeyMap, RP, "a")).toBeUndefined()
+    expect(hasRecordFor(committed().passkeyMap, RP, "b")).toBe(true)
   })
 
   it("a clear racing an upsert leaves the map empty or whole, never half", async () => {
-    const map = new WebPasskeyIdentityMap(new WebStorageAdapter(), RP)
+    const map = new WebPasskeyIdentityMap(deviceDb, RP)
     await map.upsert(entry("a"))
     await Promise.all([map.upsert(entry("b")), map.clear()])
     const raw = walletStorage.getItem("obsidion.obsidion_web_passkey_identity_map")
@@ -178,13 +181,13 @@ describe("the remembered accounts a sign-in screen lists", () => {
   }
 
   it("every root record with a claimed tag, newest first, in the candidate's key form", async () => {
-    const map = new WebPasskeyIdentityMap(new WebStorageAdapter(), RP)
+    const map = new WebPasskeyIdentityMap(deviceDb, RP)
     await upsertAt(map, 1000, { ...entry("a"), pubkey: `0x${"AB".repeat(64)}` })
     await upsertAt(map, 2000, entry("b"))
     await upsertAt(map, 3000, entry("c"))
-    await rememberUsertag(RP, "a", "alice")
-    await rememberUsertag(RP, "c", "carol")
-    expect(listUsertagCandidates(RP)).toEqual([
+    await rememberUsertag(deviceDb, RP, "a", "alice")
+    await rememberUsertag(deviceDb, RP, "c", "carol")
+    expect(listUsertagCandidates(committed().passkeyMap, RP)).toEqual([
       {
         credentialId: "c",
         usertag: "carol",
@@ -203,12 +206,12 @@ describe("the remembered accounts a sign-in screen lists", () => {
   })
 
   it("a backup record with a tag is listed and says so; a rotated signing record is not", async () => {
-    const map = new WebPasskeyIdentityMap(new WebStorageAdapter(), RP)
+    const map = new WebPasskeyIdentityMap(deviceDb, RP)
     await upsertAt(map, 1000, { ...entry("b"), isMskRoot: false, backup: BACKUP })
-    await rememberUsertag(RP, "b", "bob")
+    await rememberUsertag(deviceDb, RP, "b", "bob")
     await upsertAt(map, 2000, { ...entry("r"), isMskRoot: false })
-    await rememberUsertag(RP, "r", "rotated")
-    expect(listUsertagCandidates(RP)).toEqual([
+    await rememberUsertag(deviceDb, RP, "r", "rotated")
+    expect(listUsertagCandidates(committed().passkeyMap, RP)).toEqual([
       {
         credentialId: "b",
         usertag: "bob",
@@ -220,17 +223,19 @@ describe("the remembered accounts a sign-in screen lists", () => {
   })
 
   it("another RP, a non-root record, a record with no address and one with no tag are left out", async () => {
-    const map = new WebPasskeyIdentityMap(new WebStorageAdapter(), RP)
+    const map = new WebPasskeyIdentityMap(deviceDb, RP)
     await map.upsert(entry("untagged"))
     await map.upsert({ ...entry("nonroot"), isMskRoot: false })
-    await rememberUsertag(RP, "nonroot", "nobody")
+    await rememberUsertag(deviceDb, RP, "nonroot", "nobody")
     await map.upsert({ ...entry("homeless"), l2Address: "" })
-    await rememberUsertag(RP, "homeless", "drifter")
-    await new WebPasskeyIdentityMap(new WebStorageAdapter(), "auth.zk.money").upsert(entry("z"))
-    await rememberUsertag("auth.zk.money", "z", "zed")
+    await rememberUsertag(deviceDb, RP, "homeless", "drifter")
+    await new WebPasskeyIdentityMap(deviceDb, "auth.zk.money").upsert(entry("z"))
+    await rememberUsertag(deviceDb, "auth.zk.money", "z", "zed")
     await map.upsert(entry("kept"))
-    await rememberUsertag(RP, "kept", "keeper")
-    expect(listUsertagCandidates(RP).map((c) => c.usertag)).toEqual(["keeper"])
+    await rememberUsertag(deviceDb, RP, "kept", "keeper")
+    expect(listUsertagCandidates(committed().passkeyMap, RP).map((c) => c.usertag)).toEqual([
+      "keeper",
+    ])
   })
 })
 
@@ -250,7 +255,7 @@ describe("a remembered wallet's keys", () => {
   }
 
   it("lists the set in its order, each key with this browser's record for the same wallet", async () => {
-    const map = new WebPasskeyIdentityMap(new WebStorageAdapter(), RP)
+    const map = new WebPasskeyIdentityMap(deviceDb, RP)
     await map.upsert({ ...root, passkeySet: [ROOT, `0x${SPARE.toUpperCase()}`] })
     await map.upsert({ ...spare, passkeySet: [ROOT, SPARE] })
     const keys = [
@@ -260,12 +265,12 @@ describe("a remembered wallet's keys", () => {
         record: { credentialId: "spare", backup: true, aaguid: spare.prfAaguid },
       },
     ]
-    expect(walletKeysFor(RP, "root")).toEqual(keys)
-    expect(walletKeysFor(RP, "spare")).toEqual(keys)
+    expect(walletKeysFor(committed().passkeyMap, RP, "root")).toEqual(keys)
+    expect(walletKeysFor(committed().passkeyMap, RP, "spare")).toEqual(keys)
   })
 
   it("carries when each key last opened the wallet here, stamped only on an entry that exists", async () => {
-    const map = new WebPasskeyIdentityMap(new WebStorageAdapter(), RP)
+    const map = new WebPasskeyIdentityMap(deviceDb, RP)
     await map.upsert({ ...root, passkeySet: [ROOT, SPARE] })
     await map.upsert({ ...spare, passkeySet: [ROOT, SPARE] })
     const now = vi.spyOn(Date, "now").mockReturnValue(4242)
@@ -275,31 +280,33 @@ describe("a remembered wallet's keys", () => {
     } finally {
       now.mockRestore()
     }
-    expect(walletKeysFor(RP, "root")?.map((k) => k.record?.usedAt)).toEqual([undefined, 4242])
+    expect(walletKeysFor(committed().passkeyMap, RP, "root")?.map((k) => k.record?.usedAt)).toEqual(
+      [undefined, 4242],
+    )
     expect(await map.get("missing")).toBeUndefined()
     // A later re-record keeps the stamp.
     await map.upsert({ ...spare, passkeySet: [ROOT, SPARE] })
-    expect(walletKeysFor(RP, "root")?.[1]?.record?.usedAt).toBe(4242)
+    expect(walletKeysFor(committed().passkeyMap, RP, "root")?.[1]?.record?.usedAt).toBe(4242)
   })
 
   it("leaves a key without a record here bare, and a record for another wallet does not count", async () => {
-    const map = new WebPasskeyIdentityMap(new WebStorageAdapter(), RP)
+    const map = new WebPasskeyIdentityMap(deviceDb, RP)
     await map.upsert({ ...root, passkeySet: [ROOT, SPARE] })
     await map.upsert({ ...spare, l2Address: "0xelsewhere" })
-    expect(walletKeysFor(RP, "root")).toEqual([
+    expect(walletKeysFor(committed().passkeyMap, RP, "root")).toEqual([
       { pubkeyHex: ROOT, record: { credentialId: "root", backup: false } },
       { pubkeyHex: SPARE },
     ])
   })
 
   it("is one key for a record without a set, and nothing for a credential that opens no wallet here", async () => {
-    const map = new WebPasskeyIdentityMap(new WebStorageAdapter(), RP)
+    const map = new WebPasskeyIdentityMap(deviceDb, RP)
     await map.upsert(root)
     await map.upsert({ ...entry("signer"), isMskRoot: false })
-    expect(walletKeysFor(RP, "root")).toHaveLength(1)
-    expect(walletKeysFor(RP, "signer")).toBeUndefined()
-    expect(walletKeysFor(RP, "missing")).toBeUndefined()
-    expect(walletKeysFor("other.rp", "root")).toBeUndefined()
+    expect(walletKeysFor(committed().passkeyMap, RP, "root")).toHaveLength(1)
+    expect(walletKeysFor(committed().passkeyMap, RP, "signer")).toBeUndefined()
+    expect(walletKeysFor(committed().passkeyMap, RP, "missing")).toBeUndefined()
+    expect(walletKeysFor(committed().passkeyMap, "other.rp", "root")).toBeUndefined()
   })
 })
 
@@ -307,19 +314,19 @@ describe("records that open the wallet", () => {
   beforeEach(() => localStorage.clear())
 
   it("a backup record opens it: found, counted as a breadcrumb; a rotated record does neither", async () => {
-    const map = new WebPasskeyIdentityMap(new WebStorageAdapter(), RP)
+    const map = new WebPasskeyIdentityMap(deviceDb, RP)
     await map.upsert({ ...entry("rotated"), isMskRoot: false })
     expect(await map.getOpeningRecord()).toBeUndefined()
     expect(await map.getOpeningRecord(entry("rotated").l2Address)).toBeUndefined()
-    expect(hasOpeningBreadcrumb(RP)).toBe(false)
+    expect(hasOpeningBreadcrumb(committed().passkeyMap, RP)).toBe(false)
     await map.upsert({ ...entry("backup"), isMskRoot: false, backup: BACKUP })
     expect((await map.getOpeningRecord())?.credentialId).toBe("backup")
     expect((await map.getOpeningRecord(entry("backup").l2Address))?.credentialId).toBe("backup")
-    expect(hasOpeningBreadcrumb(RP)).toBe(true)
+    expect(hasOpeningBreadcrumb(committed().passkeyMap, RP)).toBe(true)
   })
 
   it("a write without an envelope drops a stored one, root or not; the record then opens nothing", async () => {
-    const map = new WebPasskeyIdentityMap(new WebStorageAdapter(), RP)
+    const map = new WebPasskeyIdentityMap(deviceDb, RP)
     await map.upsert({ ...entry("b"), isMskRoot: false, backup: BACKUP })
     expect((await map.getOpeningRecord())?.credentialId).toBe("b")
     await map.upsert({ ...entry("b"), isMskRoot: false })
@@ -333,7 +340,7 @@ describe("records that open the wallet", () => {
   })
 
   it("a set that lacks the record's own key is refused, and nothing is written", async () => {
-    const map = new WebPasskeyIdentityMap(new WebStorageAdapter(), RP)
+    const map = new WebPasskeyIdentityMap(deviceDb, RP)
     await expect(map.upsert({ ...entry("a"), passkeySet: ["cd".repeat(64)] })).rejects.toThrow(
       "passkey set",
     )
@@ -351,11 +358,11 @@ describe("WebPasskeyIdentityMap answered", () => {
   beforeEach(() => localStorage.clear())
 
   it("no entry, another RP's entry, or an attempt that ended: nothing is written", async () => {
-    const map = new WebPasskeyIdentityMap(new WebStorageAdapter(), RP)
+    const map = new WebPasskeyIdentityMap(deviceDb, RP)
     await map.setAnswered("missing", "remote")
     expect(await map.get("missing")).toBeUndefined()
 
-    await new WebPasskeyIdentityMap(new WebStorageAdapter(), "other.example").upsert(entry("b"))
+    await new WebPasskeyIdentityMap(deviceDb, "other.example").upsert(entry("b"))
     await map.setAnswered("b", "remote")
     expect(stored("b")).not.toHaveProperty("answered")
 
@@ -365,18 +372,54 @@ describe("WebPasskeyIdentityMap answered", () => {
   })
 
   it("a re-record, a tag hint and a cleared inference all keep it", async () => {
-    const map = new WebPasskeyIdentityMap(new WebStorageAdapter(), RP)
+    const map = new WebPasskeyIdentityMap(deviceDb, RP)
     await map.upsert(entry("a"))
     await map.setAnswered("a", "remote")
     await map.setInferredTransports("a", ["usb"])
     await map.setInferredTransports("a", undefined)
-    await rememberUsertag(RP, "a", "alice")
+    await rememberUsertag(deviceDb, RP, "a", "alice")
     await map.upsert({ ...entry("a"), l2Address: "0xmoved" })
     expect(stored("a")).toMatchObject({
       answered: "remote",
       usertag: "alice",
       l2Address: "0xmoved",
     })
+  })
+})
+
+describe("WebPasskeyIdentityMap backup flag", () => {
+  beforeEach(() => localStorage.clear())
+
+  it("is written once: a re-record, a reroot onto a set and a later reading all keep the first", async () => {
+    const map = new WebPasskeyIdentityMap(deviceDb, RP)
+    await map.upsert({ ...entry("a"), backupEligible: false })
+    await map.upsert({ ...entry("a"), backupEligible: true })
+    await map.setBackupEligible("a", true)
+    const pubkey = entry("a").pubkey
+    await map.upsert({ ...entry("a"), l2Address: "0xmoved", passkeySet: [pubkey, "cd".repeat(64)] })
+    expect(stored("a")).toMatchObject({ backupEligible: false, l2Address: "0xmoved" })
+    expect(backupRecordFor(committed().passkeyMap, "a")).toMatchObject({
+      backupEligible: false,
+      passkeySet: [pubkey, "cd".repeat(64)],
+    })
+  })
+
+  it("a reading fills a record without one; no entry, another RP's or an ended attempt get none", async () => {
+    const map = new WebPasskeyIdentityMap(deviceDb, RP)
+    await map.upsert(entry("a"))
+    await map.setBackupEligible("a", false)
+    expect(stored("a")).toMatchObject({ backupEligible: false })
+
+    await map.setBackupEligible("missing", false)
+    expect(await map.get("missing")).toBeUndefined()
+
+    await new WebPasskeyIdentityMap(deviceDb, "other.example").upsert(entry("b"))
+    await map.setBackupEligible("b", false)
+    expect(stored("b")).not.toHaveProperty("backupEligible")
+
+    await map.upsert(entry("c"))
+    await map.setBackupEligible("c", false, () => false)
+    expect(stored("c")).not.toHaveProperty("backupEligible")
   })
 })
 
@@ -424,6 +467,17 @@ describe("remembered accounts on earlier rollups", () => {
         backup: false,
       },
     ])
-    expect(listUsertagCandidates(RP)).toEqual([])
+    expect(listUsertagCandidates(committed().passkeyMap, RP)).toEqual([])
+  })
+
+  it("reads nothing from a store that is not persistent", async () => {
+    const dbs = testWalletDbs()
+    dbs.db("1000000001").state.set(
+      MAP_KEY,
+      JSON.stringify({ version: 1, entries: { c: remembered("c", "carol", 1) } }),
+    )
+    const list = vi.spyOn(dbs, "list")
+    expect(await listRetiredUsertagCandidates(RP)).toEqual([])
+    expect(list).not.toHaveBeenCalled()
   })
 })

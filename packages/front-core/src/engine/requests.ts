@@ -1,7 +1,7 @@
 import { REQUEST_STORAGE_KEY } from "../core/storages/storage-constants"
 import type { SipaLinkPreimage } from "../core/paymentRequest/requestInlineCodec"
 import { sipaDepositFulfillsRequest } from "../core/paymentRequest/sipaRequestFulfillment"
-import type { SIPADepositRecord } from "../core/services/deposits/SIPADepositStore"
+import type { SipaDeposit } from "./sipaDeposits"
 import type { TokenTransaction, Transaction } from "../types/transactions"
 import { fulfillmentSatisfiesRequest } from "../xmtp/RequestReceiver"
 import type { Database, Write } from "./database"
@@ -90,18 +90,11 @@ export interface Requests {
 }
 
 type SipaEvidence = Pick<
-  SIPADepositRecord,
-  | "phase"
-  | "sipaAddress"
-  | "amount"
-  | "netAmount"
-  | "fee"
-  | "claimTxHash"
-  | "sweepTxHash"
-  | "sweeps"
+  SipaDeposit,
+  "phase" | "sipaAddress" | "amount" | "netAmount" | "fee" | "sweepTxHash" | "sweeps"
 > &
   /** When the payment was funded: chain time, or when this device first saw it, never before. */
-  Partial<Pick<SIPADepositRecord, "startTime">> & {
+  Partial<Pick<SipaDeposit, "startTime">> & {
     /** The L2 token a past sweep credited, the units of its `netAmount`. */
     l2Token?: string
   }
@@ -340,14 +333,15 @@ export function resolveRequests(
   }
 
   const used = new Set([...paid.values()].flatMap((hash) => (hash ? [hash.toLowerCase()] : [])))
-  const deposits = payments.deposits.flatMap(sipaPayments)
+  const addresses = new Set(stored.flatMap((r) => (r.sipaAddress ? [lower(r.sipaAddress)] : [])))
+  const deposits = payments.deposits
+    .filter((d) => addresses.has(d.sipaAddress.toLowerCase()))
+    .flatMap(sipaPayments)
   const known = new Set(
-    deposits.flatMap((d) =>
-      [d.claimTxHash, d.sweepTxHash].flatMap((h) => (h ? [h.toLowerCase()] : [])),
-    ),
+    deposits.flatMap((d) => (d.sweepTxHash ? [d.sweepTxHash.toLowerCase()] : [])),
   )
-  // A past sweep keeps no L2 claim hash, so a migrated paid request missing from `known` holds the
-  // earliest payment at its address.
+  // A migrated paid request whose hash no payment here carries holds the earliest payment at its
+  // address.
   const held = new Set<SipaEvidence>()
   for (const r of stored) {
     if (r.status !== "paid" || !r.sipaAddress || known.has(lower(r.fulfillmentTxHash) ?? ""))
@@ -359,7 +353,7 @@ export function resolveRequests(
   const rank = (r: StoredRequest) => (r.status === "cancelled" ? 0 : 1)
   for (const record of deposits) {
     if (held.has(record)) continue
-    const txHash = record.claimTxHash ?? record.sweepTxHash
+    const txHash = record.sweepTxHash
     const address = record.sipaAddress.toLowerCase()
     const consumed = txHash
       ? used.has(txHash.toLowerCase())

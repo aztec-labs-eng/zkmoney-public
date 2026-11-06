@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import type { Address, Hash } from "viem"
 import { sipaCredits } from "../../../src/core/services/deposits/sipaCredits"
-import type { SIPADepositRecord } from "../../../src/core/services/deposits/SIPADepositStore"
+import type { SipaDeposit } from "../../../src/engine/sipaDeposits"
 
 const DAI = "0x6b175474e89094c44da98b954eedeac495271d0f" as Address
 const USDC = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48" as Address
@@ -16,7 +16,7 @@ const daiSweep = {
   tokenDecimals: 18,
 }
 
-function record(over: Partial<SIPADepositRecord>): SIPADepositRecord {
+function record(over: Partial<SipaDeposit>): SipaDeposit {
   return {
     sipaAddress: "0x00000000000000000000000000000000000000bb" as Address,
     recipientL2Address: "0x01",

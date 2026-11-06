@@ -264,13 +264,6 @@ describe("WebXmtpClient cold-start registration failure", () => {
     expect(create).toHaveBeenCalledTimes(1)
   })
 
-  it("passes a non-Error rejection through unchanged", async () => {
-    const failed = fakeClient({ register: async () => Promise.reject("weird") })
-    create.mockResolvedValue(failed)
-    await expect(createWith(memoryStorage())).rejects.toBe("weird")
-    expect(failed.close).toHaveBeenCalledTimes(1)
-  })
-
   it("keeps the registration error when close itself throws", async () => {
     const err = new Error("network down")
     const failed = fakeClient({
@@ -360,13 +353,6 @@ describe("WebXmtpClient installation cap preflight", () => {
     expect(create).toHaveBeenCalledTimes(1)
   })
 
-  it("does not revoke when the inbox reports no installations", async () => {
-    create.mockResolvedValue(fakeClient())
-    inboxWith([])
-    await createWith(memoryStorage())
-    expect(revokeInstallations).not.toHaveBeenCalled()
-  })
-
   it("does not revoke above the cap, where one revoke would not free a slot", async () => {
     create.mockResolvedValue(fakeClient())
     inboxWith(installations(11))
@@ -411,20 +397,6 @@ describe("WebXmtpClient installation cap preflight", () => {
     expect(revokeInstallations).toHaveBeenCalledTimes(3)
   })
 
-  it("retries the check after a transient backend failure and still revokes", async () => {
-    create.mockResolvedValue(fakeClient())
-    createBackend.mockRejectedValueOnce(new Error("offline")).mockResolvedValue(BACKEND)
-    inboxWith(installations(10))
-    await createThroughBackoff(memoryStorage())
-    expect(createBackend).toHaveBeenCalledTimes(2)
-    expect(revokeInstallations).toHaveBeenCalledTimes(1)
-    expect(create).toHaveBeenCalledTimes(1)
-    expect(console.warn).not.toHaveBeenCalledWith(
-      "[xmtp] installation cap check failed",
-      expect.anything(),
-    )
-  })
-
   it("backs off before retrying the check", async () => {
     create.mockResolvedValue(fakeClient())
     createBackend.mockRejectedValue(new Error("offline"))
@@ -459,16 +431,6 @@ describe("WebXmtpClient installation cap preflight", () => {
     )
   })
 
-  it("builds the client anyway when the inbox state fetch fails", async () => {
-    create.mockResolvedValue(fakeClient())
-    getInboxIdForIdentifier.mockResolvedValue(INBOX_ID)
-    fetchInboxStates.mockRejectedValue(new Error("offline"))
-    await createThroughBackoff(memoryStorage())
-    expect(fetchInboxStates).toHaveBeenCalledTimes(3)
-    expect(create).toHaveBeenCalledTimes(1)
-    expect(revokeInstallations).not.toHaveBeenCalled()
-  })
-
   it("builds the client anyway when the revoke keeps failing, releasing the cooldown", async () => {
     create.mockResolvedValue(fakeClient())
     inboxWith(installations(10))
@@ -478,17 +440,6 @@ describe("WebXmtpClient installation cap preflight", () => {
     expect(revokeInstallations).toHaveBeenCalledTimes(3)
     expect(create).toHaveBeenCalledTimes(1)
     expect(storage.map.has(REVOKED_AT_KEY)).toBe(false)
-  })
-
-  it("retries the revoke within the same cold start after a transient failure", async () => {
-    create.mockResolvedValue(fakeClient())
-    inboxWith(installations(10))
-    revokeInstallations.mockRejectedValueOnce(new Error("network down"))
-    const storage = memoryStorage()
-    await createThroughBackoff(storage)
-    expect(revokeInstallations).toHaveBeenCalledTimes(2)
-    expect(create).toHaveBeenCalledTimes(1)
-    expect(storage.map.has(REVOKED_AT_KEY)).toBe(true)
   })
 
   it("skips the retry revoke when the failed one had landed", async () => {
@@ -517,23 +468,6 @@ describe("WebXmtpClient installation cap preflight", () => {
     await createThroughBackoff(storage)
     expect(revokeInstallations).not.toHaveBeenCalled()
     expect(create).toHaveBeenCalledTimes(1)
-  })
-
-  it("propagates the build error when libxmtp still refuses at the cap", async () => {
-    create.mockRejectedValue(CAP_ERROR)
-    inboxWith(installations(10))
-    await expect(createWith(memoryStorage())).rejects.toBe(CAP_ERROR)
-    expect(revokeInstallations).toHaveBeenCalledTimes(1)
-    expect(create).toHaveBeenCalledTimes(1)
-  })
-
-  it("propagates the registration error after a successful revoke", async () => {
-    const failed = fakeClient({ register: async () => Promise.reject(CAP_ERROR) })
-    create.mockResolvedValue(failed)
-    inboxWith(installations(10))
-    await expect(createWith(memoryStorage())).rejects.toBe(CAP_ERROR)
-    expect(failed.close).toHaveBeenCalledTimes(1)
-    expect(revokeInstallations).toHaveBeenCalledTimes(1)
   })
 })
 

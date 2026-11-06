@@ -10,8 +10,7 @@ import {
   type ReadonlyStore,
 } from "@obsidion/front-core"
 import { isPasskeyCancelled } from "@obsidion/passkey-web"
-import { webStorage } from "../../platform/storage/WebStorageAdapter"
-import { getActiveStorageId, onActiveStorageIdChange } from "../../platform/storage/activeStorage"
+import { adapterAccount, webStorage } from "../../platform/storage/WebStorageAdapter"
 import { createExternalState } from "../../lib/externalState"
 import { runUserFlow, trackBackgroundProve } from "../provingGate"
 import { flowCopy } from "./operationCopy"
@@ -71,7 +70,7 @@ export function runOperation<T>(
   txHashOf?: (result: T) => string | undefined,
 ): Promise<T> {
   const store = getOperationStore()
-  const begun = store.begin({ ...input, scope: getActiveStorageId() })
+  const begun = store.begin({ ...input, scope: adapterAccount() })
   // Awaited inside the gate; this only keeps a failed write from reading as unhandled meanwhile.
   begun.catch(() => {})
   return runUserFlow(async () => {
@@ -93,7 +92,7 @@ export async function runListedOperation<T>(
   run: (op: OperationHandle) => Promise<T>,
 ): Promise<T> {
   const store = getOperationStore()
-  await store.begin({ ...input, scope: getActiveStorageId() })
+  await store.begin({ ...input, scope: adapterAccount() })
   return operate(store, input.operationId, run)
 }
 
@@ -108,7 +107,7 @@ export function runBackgroundOperation<T>(
 ): Promise<T> {
   const store = getOperationStore()
   return trackBackgroundProve(async () => {
-    await store.begin({ ...input, scope: getActiveStorageId(), background: true })
+    await store.begin({ ...input, scope: adapterAccount(), background: true })
     return operate(store, input.operationId, run)
   })
 }
@@ -174,37 +173,49 @@ let watching = false
 /** Which records a flow in this page owns, as of the last snapshot. */
 let liveKey = ""
 
+/** Brings every snapshot up to the store, the live set and the active scope. */
+function refresh(): void {
+  const store = getOperationStore()
+  const scope = adapterAccount()
+  // Background operations are the wallet's own bookkeeping: no notification lists them.
+  const scoped = store.list().filter((r) => r.scope === scope && !r.background)
+  const next = scoped.filter((r) => r.state === "local" || r.state === "sent")
+  const ended = scoped.filter((r) => r.endedAt !== undefined)
+  if (JSON.stringify(ended) !== JSON.stringify(endedRecords.get())) endedRecords.set(ended)
+  const current = inProgress.get()
+  const live = next.map((r) => store.isLive(r.operationId)).join()
+  const same =
+    live === liveKey &&
+    next.length === current.length &&
+    next.every((r, i) => r === current[i] || JSON.stringify(r) === JSON.stringify(current[i]))
+  liveKey = live
+  if (!same) inProgress.set(next)
+  const bound = tabBoundOperation(store.list())
+  if (bound?.operationId !== tabBound.get()?.operationId) tabBound.set(bound)
+}
+
 /** Keeps every snapshot current with the store, the live set and the active scope. */
 function watchOperations(): void {
   if (watching) return
   watching = true
   const store = getOperationStore()
-  const refresh = () => {
-    const scope = getActiveStorageId()
-    // Background operations are the wallet's own bookkeeping: no notification lists them.
-    const scoped = store.list().filter((r) => r.scope === scope && !r.background)
-    const next = scoped.filter((r) => r.state === "local" || r.state === "sent")
-    const ended = scoped.filter((r) => r.endedAt !== undefined)
-    if (JSON.stringify(ended) !== JSON.stringify(endedRecords.get())) endedRecords.set(ended)
-    const current = inProgress.get()
-    const live = next.map((r) => store.isLive(r.operationId)).join()
-    const same =
-      live === liveKey &&
-      next.length === current.length &&
-      next.every((r, i) => r === current[i] || JSON.stringify(r) === JSON.stringify(current[i]))
-    liveKey = live
-    if (!same) inProgress.set(next)
-    const bound = tabBoundOperation(store.list())
-    if (bound?.operationId !== tabBound.get()?.operationId) tabBound.set(bound)
-  }
   store.onListChanged(refresh)
   store.onLiveChanged(refresh)
-  onActiveStorageIdChange(refresh)
   void store.load().then(() => {
     refresh()
     loadedState.set(true)
   })
   refresh()
+}
+
+/** Follows the page's committed account, whose operations the lists show. */
+export function followOperationScope(device: ReadonlyStore<{ storageId: string | null }>): void {
+  let id = device.get().storageId
+  device.subscribe(() => {
+    if (device.get().storageId === id) return
+    id = device.get().storageId
+    if (watching) refresh()
+  })
 }
 
 export function getOperationsInProgress(): OperationRecord[] {

@@ -2,9 +2,9 @@ import { describe, expect, it, vi } from "vitest"
 import { ContractFunctionExecutionError, UnknownRpcError } from "viem"
 
 vi.mock("wagmi/actions", () => ({ getAccount: () => ({}), switchChain: vi.fn() }))
-vi.mock("../../../../src/features/deposit/wagmi", () => ({ wagmiConfig: () => ({}) }))
+vi.mock("../../../../src/session/wagmi", () => ({ wagmiConfig: () => ({}) }))
 
-const { isWalletDisconnect } = await import("../../../../src/features/deposit/l1Wallet")
+const { isWalletDisconnect } = await import("../../../../src/session/l1Wallet")
 
 describe("isWalletDisconnect", () => {
   it("sees a wallet session that ended while a request waited", () => {

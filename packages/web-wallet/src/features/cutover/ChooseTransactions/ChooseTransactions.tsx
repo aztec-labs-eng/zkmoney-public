@@ -7,7 +7,7 @@ import {
   type ActivityPages,
   type FeedItem,
 } from "@obsidion/front-core"
-import { useSession } from "../../../platform/session"
+import { useSession } from "../../../session/session"
 import {
   ActivityDetailHost,
   useActivityHost,

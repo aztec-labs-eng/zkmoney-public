@@ -1,0 +1,18 @@
+export default {
+  title: "Choose your name",
+  close: "Close",
+  at: "@",
+  nameLabel: "Your name",
+  namePlaceholder: "name",
+  available: "@{name} is available",
+  routesLabel: "How to get it",
+  pastUser: "Used zk.money before",
+  free: "Free",
+  pay: "Pay",
+  depositAs: "Deposit now as @{tag}",
+  makeDeposit: "Make my deposit {price}",
+  claim: "Claim {name}for free",
+  claimName: "@{name} ",
+  verifyToClaim: "Verify to claim for free",
+  keep: "Keep @{tag}",
+} as const

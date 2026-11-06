@@ -1,7 +1,7 @@
 import React from "react"
 import { PrimaryGradientButton } from "@obsidion/web-ds"
 import { ActiveTabGate } from "./ActiveTabGate/ActiveTabGate"
-import type { WebBootConfig } from "./config/env"
+import type { PageBoot } from "./app/sessionDeps"
 import { GOOGLE_CALLBACK_PATH, GoogleCallbackScreen } from "./features/paylink/googleAuth"
 import { getDesktopSettingsPath } from "./platform/desktopBridge"
 import { BOOT_ERROR_LAYOUT } from "./ui/BootErrorScreen"
@@ -9,11 +9,11 @@ import { PreBootLayer } from "./ui/PreBootLayer"
 import { BootSplash } from "./ui/PxeBoot"
 import { PreviewDraftRecovery } from "./dev/PreviewDraftRecovery"
 
-export function BootGate({ resolveBoot }: { resolveBoot: () => Promise<WebBootConfig> }) {
-  const [boot, setBoot] = React.useState<WebBootConfig>()
+export function BootGate({ resolveBoot }: { resolveBoot: () => Promise<PageBoot> }) {
+  const [boot, setBoot] = React.useState<PageBoot>()
   const [error, setError] = React.useState<Error>()
   const [attempt, setAttempt] = React.useState(0)
-  const bootAttempt = React.useRef<Promise<WebBootConfig> | undefined>(undefined)
+  const bootAttempt = React.useRef<Promise<PageBoot> | undefined>(undefined)
 
   React.useEffect(() => {
     let live = true

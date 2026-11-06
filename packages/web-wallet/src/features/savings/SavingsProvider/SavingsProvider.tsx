@@ -10,7 +10,7 @@ import {
   type After,
 } from "@obsidion/front-core"
 import { getSavingsMoveStore } from "../savingsMoveStore"
-import { useSession } from "../../../platform/session"
+import { useSession } from "../../../session/session"
 
 /** How often a pending move's deposit is looked for. */
 const SAVINGS_SETTLE_INTERVAL_MS = 30_000

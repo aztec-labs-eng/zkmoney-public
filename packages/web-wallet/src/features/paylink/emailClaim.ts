@@ -22,7 +22,6 @@ import {
   type CachedZkProof,
 } from "@obsidion/front-core"
 import { getConfig } from "../../config/env"
-import { getAuthService } from "../../platform/auth/useAuthenticator"
 import { MskWebCryptoProvider } from "../../platform/storage/MskWebCryptoProvider"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
 import { signInWithGoogleIdToken } from "./googleAuth"
@@ -30,16 +29,15 @@ import { WebZkJwtProver } from "./zkJwtProver"
 
 const ZKJWT_STORE_DOMAIN = "zkjwt-store"
 
+type DerivedKeys = ConstructorParameters<typeof MskWebCryptoProvider>[0]
+
 let service: ZkJwtService | null = null
 
-function zkJwtService(): ZkJwtService {
+function zkJwtService(keys: DerivedKeys): ZkJwtService {
   service ??= new ZkJwtService({
     prover: new WebZkJwtProver(),
     storage: new ZkJwtStorage(
-      new EncryptedStorageAdapter(
-        webStorage,
-        new MskWebCryptoProvider(getAuthService(), ZKJWT_STORE_DOMAIN),
-      ),
+      new EncryptedStorageAdapter(webStorage, new MskWebCryptoProvider(keys, ZKJWT_STORE_DOMAIN)),
     ),
   })
   return service
@@ -114,6 +112,7 @@ export async function obtainEmailL1Proof(
  * the result is cached for the week the registry accepts it.
  */
 export async function obtainEmailClaimProof(
+  keys: DerivedKeys,
   claimerAddress: { toString(): string; toBigInt(): bigint },
   params: EmailLock,
   onStage?: (stage: EmailClaimStage) => void,
@@ -122,7 +121,7 @@ export async function obtainEmailClaimProof(
   const commitment = params.commitment
   if (!commitment) throw new Error("This link's escrow has not been read yet — try again")
   const caller = claimerAddress.toString()
-  const svc = zkJwtService()
+  const svc = zkJwtService(keys)
 
   const cached = await svc.matchProofForPaylink(caller, params.paylinkType, commitment)
   if (cached) return cached

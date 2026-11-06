@@ -43,10 +43,10 @@ import {
   injectedWalletChannel,
   type L1ExitChannel,
   type L1ExitStage,
-} from "../deposit/sipaRecovery"
+} from "../sipa/l1ExitChannels"
 import { isDesktopL1SubmitActive } from "../../platform/desktopBridge"
 import { portalDomain } from "../token/oxideToken"
-import { session } from "../../platform/session"
+import { session } from "../../session/session"
 
 /** Said whenever the withdrawal turns out to be released already, from either check. */
 const ALREADY_RELEASED =

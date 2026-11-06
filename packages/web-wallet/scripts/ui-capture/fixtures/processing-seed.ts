@@ -1,10 +1,10 @@
-import { SIPADepositStore } from "@obsidion/front-core"
+import type { SipaDepositFields } from "@obsidion/front-core"
 import type { Address } from "viem"
 import { getConfig } from "../../../src/config/env"
-import { getPendingStore } from "../../../src/features/onboarding/webRegistration"
-import { webStorage } from "../../../src/platform/storage/WebStorageAdapter"
+import { currentRegistration } from "@obsidion/front-core"
+import { session } from "../../../src/session/session"
 import { DEMO_L1_TOKEN, DEMO_L2_ADDRESS } from "../../../src/dev/demoFixtures"
-import { seedRegistration } from "./registration-seed"
+import { putRegistration, seedRegistration } from "./registration-seed"
 import { ROLLUP, SIPA, field } from "./data"
 import { DEMO_ORIGIN } from "./processing-origin"
 
@@ -18,8 +18,15 @@ const CONVERSION_SIPA = "0xc0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0" as Address
  *   waiting for its manual sweep.
  */
 export async function seedProcessing(kind: string) {
-  const deposits = SIPADepositStore.get(webStorage)
-  await deposits.load()
+  const deposits = session().sipaDeposits
+  // A record the demo already holds is only moved to its sweep.
+  const seed = async (fields: SipaDepositFields) => {
+    if (await deposits.adopt(fields)) return
+    await deposits.apply(fields.sipaAddress, {
+      type: "observed",
+      fields: { phase: fields.phase },
+    })
+  }
   const { l1ChainId } = getConfig()
   const base = {
     recipientL2Address: DEMO_L2_ADDRESS,
@@ -31,44 +38,39 @@ export async function seedProcessing(kind: string) {
     networkId: ROLLUP,
   }
   if (kind === "conversion") {
-    await deposits.upsert(
-      CONVERSION_SIPA,
-      { phase: "sweeping" },
-      {
-        ...base,
-        amount: "250",
-        tokenSymbol: "USDC",
-        tokenAddress: MAINNET_USDC,
-        tokenDecimals: 6,
-        startTime: Date.now() - 30_000,
-      },
-    )
+    await seed({
+      ...base,
+      sipaAddress: CONVERSION_SIPA,
+      phase: "sweeping",
+      amount: "250",
+      tokenSymbol: "USDC",
+      tokenAddress: MAINNET_USDC,
+      tokenDecimals: 6,
+      startTime: Date.now() - 30_000,
+    })
     return
   }
   if (kind === "earned-sweep") {
     await seedRegistration("awaiting")
-    const pending = getPendingStore()
-    const record = pending.current()!
-    await pending.upsert(record.account, {
+    const record = currentRegistration(session().registrations.view.get().records)!
+    await putRegistration({
       ...record,
       broadcast: false,
       fundedAt: Date.now() - 5 * 60_000,
       replaced: { sipaAddress: field("0f").slice(0, 42), refunded: true, broadcastSpent: true },
     })
-    await deposits.upsert(
-      SIPA,
-      { phase: "sweeping" },
-      {
-        ...base,
-        amount: "10",
-        tokenSymbol: "DAI",
-        tokenAddress: DEMO_L1_TOKEN,
-        tokenDecimals: 18,
-        intent: "registration",
-        registrationFee: record.fee ?? "0",
-        startTime: Date.now() - 6 * 60_000,
-      },
-    )
+    await seed({
+      ...base,
+      sipaAddress: SIPA,
+      phase: "sweeping",
+      amount: "10",
+      tokenSymbol: "DAI",
+      tokenAddress: DEMO_L1_TOKEN,
+      tokenDecimals: 18,
+      intent: "registration",
+      registrationFee: record.fee ?? "0",
+      startTime: Date.now() - 6 * 60_000,
+    })
     return
   }
   throw new Error(`Unknown processing fixture: ${kind}`)

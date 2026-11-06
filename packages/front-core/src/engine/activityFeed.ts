@@ -3,11 +3,7 @@
  * newest first. Views render from `selectFeed` and the selectors over it, never from the records.
  */
 import { DEFAULT_DECIMALS, PaylinkActionEnum } from "@obsidion/core/constants"
-import {
-  hiddenBehindOwnWithdrawal,
-  itemStartTime,
-  type ActivityItem,
-} from "../core/services/bridge/BridgeActivityFeed"
+import { hiddenBehindOwnWithdrawal, itemStartTime, type ActivityItem } from "./feedRules"
 import type { WithdrawalRecord } from "../core/services/bridge/types"
 import { WITHDRAWAL_TERMINAL_PHASES } from "../core/services/bridge/types"
 import {
@@ -26,8 +22,8 @@ import {
   isAccountMoveSipa,
   isSettledSipaPhase,
   isUnfundedSipaDeposit,
-  type SIPADepositRecord,
-} from "../core/services/deposits/SIPADepositStore"
+  type SipaDeposit,
+} from "./sipaDeposits"
 import { requestLinkedSipaAddresses } from "../core/paymentRequest/sipaRequestFulfillment"
 import { upgradeRecipients, upgradeRunsOf, type UpgradeRun } from "../core/migration/upgradeRuns"
 import { chainUpgradeBatches } from "../core/migration/chainUpgradeBatches"
@@ -95,7 +91,7 @@ export interface FeedSources {
   requests: readonly PaymentRequest[]
   /** False until the saved requests load. */
   requestsLoaded?: boolean
-  deposits: Loaded<SIPADepositRecord>
+  deposits: RecordSet<SipaDeposit>
   withdrawals: Loaded<WithdrawalRecord>
   /** `recipients`: every deposit address a run pays, a live source's included. */
   upgrades: {
@@ -129,6 +125,10 @@ export interface FeedContext {
   /** When each stored balance's read resolved, ms. */
   balanceReadAt?: { main?: number; savings?: number }
   sharePrice?: bigint
+  /** The L1 token of Savings' row: a deposit swept on it lands in Savings. */
+  savingsToken?: string
+  /** Whether Savings has a row is not known yet, so no swept deposit can be placed. */
+  savingsUnknown?: boolean
   /** What the account holds on old versions. */
   oldVersions?: ArrivingFunds
   /** A rotated wallet's previous account; deposits to it show on its own Home line. */
@@ -190,7 +190,7 @@ export type FeedItem = Base &
       }
     | {
         kind: "deposit"
-        record: SIPADepositRecord
+        record: SipaDeposit
         /** Another token the address credited, split out of its record. */
         credit?: string
         processing?: SipaProcessingState
@@ -202,7 +202,7 @@ export type FeedItem = Base &
         /** A migration's arrival before its funds land; no figure while a fee is unknown. */
         arriving?: { net?: bigint }
       }
-    | { kind: "tagPurchase"; record: SIPADepositRecord; tag: string; price: bigint }
+    | { kind: "tagPurchase"; record: SipaDeposit; tag: string; price: bigint }
     | { kind: "registration" }
     | { kind: "oldVersionWithdrawal"; record: OldVersionWithdrawal }
   )
@@ -410,7 +410,7 @@ function txItems(
 function requestItems(
   requests: readonly PaymentRequest[],
   rows: readonly Transaction[],
-  deposits: readonly SIPADepositRecord[],
+  deposits: readonly SipaDeposit[],
   directory: TxContactDirectory,
   ctx: FeedContext,
   now: number,
@@ -643,17 +643,21 @@ function groupItems(groups: readonly WithdrawalGroup[], now: number): FeedItem[]
 
 /**
  * Funds each balance is owed but does not hold yet, at what will land, so a balance never drops
- * when funds arrive. A deposit counts once its sweep fixes the net; a migration or a Savings move
- * once its burn has left the source, at its quote, then at its deposit once the escrow has run,
- * until its destination's balance is read after this device stored the claim. A move rebuilt from
+ * when funds arrive. A deposit counts in the balance its row credits once its sweep fixes the net,
+ * Savings' at the share price. A migration or a Savings move counts once its burn has left the
+ * source, at its quote, then at its deposit once the escrow has run, until its destination's
+ * balance is read after this device stored the claim. A move rebuilt from
  * a rescan has no quote and counts only from its deposit. An upgrade's own deposits never count:
  * the upgrade lock holds Home's figure until the balance holds them.
  */
 export function arrivingFunds(input: {
-  deposits: readonly SIPADepositRecord[]
+  deposits: readonly SipaDeposit[]
   burns: readonly WithdrawalRecord[]
   moves: readonly SavingsMoveRecord[]
   sharePrice?: bigint
+  savingsToken?: string
+  /** A deposit is held until its row can be placed: the balance rises late, never drops. */
+  savingsUnknown?: boolean
   rows: readonly Transaction[]
   balanceReadAt?: { main?: number; savings?: number }
   upgradeRecipients?: ReadonlySet<string>
@@ -664,23 +668,32 @@ export function arrivingFunds(input: {
   const upgrades = input.upgradeRecipients ?? new Set<string>()
   let main = input.oldVersions?.main ?? 0n
   let savings = input.oldVersions?.savings ?? 0n
-  const swept = (record: SIPADepositRecord) =>
-    record.phase === "pendingClaim" && record.netAmount != null
+  const swept = (record: SipaDeposit) => record.phase === "pendingClaim" && record.netAmount != null
+  // A spent deposit is history the balance already holds or spent.
+  const spent = (record: SipaDeposit) =>
+    !!record.pendingSweeps?.some((s) => s.inboxIndex === record.inboxIndex && s.spent)
   const depositBySipa = new Map(deposits.map((d) => [lower(d.sipaAddress), d] as const))
   // A burn still proving has not left its source yet.
   const left = (burn?: WithdrawalRecord) =>
     !!burn && burn.phase !== "submitting" && burn.phase !== "failed"
   // A read resolved after a claim landed holds it, though the record still awaits `claimed`.
-  const held = ({ claimLanded, inboxIndex }: SIPADepositRecord) =>
+  const held = ({ claimLanded, inboxIndex }: SipaDeposit, into: keyof ArrivingFunds) =>
     !!claimLanded &&
     claimLanded.inboxIndex === inboxIndex &&
-    (balanceReadAt.main ?? 0) >= claimLanded.at
+    (balanceReadAt[into] ?? 0) >= claimLanded.at
   const previous = input.previousAccount && lower(input.previousAccount)
+  const savingsToken = input.savingsToken && lower(input.savingsToken)
   for (const record of deposits) {
     // A SIPA the account pays itself is not a deposit the user waits on.
     const upgrade = isAccountMoveSipa(record) || upgrades.has(lower(record.sipaAddress))
     const toPrevious = !!previous && lower(record.recipientL2Address ?? "") === previous
-    if (swept(record) && !held(record) && !upgrade && !toPrevious) main += BigInt(record.netAmount!)
+    if (!swept(record) || spent(record) || upgrade || toPrevious || input.savingsUnknown) continue
+    // A swept record reads as its row's token.
+    const into = lower(record.tokenAddress ?? "") === savingsToken ? "savings" : "main"
+    if (held(record, into)) continue
+    const net = BigInt(record.netAmount!)
+    if (into === "main") main += net
+    else if (sharePrice !== undefined) savings += savingsValue(net, sharePrice)
   }
   for (const burn of burns) {
     if (burn.intent !== "migration" || !left(burn)) continue
@@ -810,7 +823,8 @@ export function selectFeed(sources: FeedSources, ctx: FeedContext): Feed {
       sources.rows.loaded &&
       !sources.rows.failed &&
       sources.requestsLoaded !== false &&
-      sources.deposits.hydrated &&
+      sources.deposits.loaded &&
+      !sources.deposits.failed &&
       sources.upgrades.loaded &&
       sources.withdrawals.hydrated &&
       (ctx.contacts.hydrated || ctx.contacts.failed) &&
@@ -822,6 +836,8 @@ export function selectFeed(sources: FeedSources, ctx: FeedContext): Feed {
       burns: withdrawals,
       moves,
       sharePrice: ctx.sharePrice,
+      savingsToken: ctx.savingsToken,
+      savingsUnknown: ctx.savingsUnknown,
       rows,
       balanceReadAt: ctx.balanceReadAt,
       upgradeRecipients: sources.upgrades.recipients,

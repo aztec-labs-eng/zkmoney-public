@@ -7,8 +7,15 @@ import { createRoot, type Root } from "react-dom/client"
 import { MemoryRouter } from "react-router-dom"
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import { l1AddressParts, shortL1Addr } from "../../../src/ui/format"
-import { ScreeningProvider, passThroughScreener } from "@obsidion/front-core"
+import {
+  ScreeningProvider,
+  memoryStore,
+  passThroughScreener,
+  type ResourceState,
+} from "@obsidion/front-core"
+import type { OxideEnvTuple } from "@obsidion/core/types"
 import type { Hex } from "viem"
+import type { SipaKeys } from "../../../src/features/deposit/sipaRail"
 import { LIMIT, LIMIT_USD, grouped } from "../../support/publicLimit"
 
 const L2_ADDRESS = `0x${"cd".repeat(32)}` as Hex
@@ -17,12 +24,17 @@ const ADDRESS = "0x7b3E9c41aD02f8B5c6E1d7a9F04c3B8e2A61d9F0"
 const ENDS = [l1AddressParts(ADDRESS).head, l1AddressParts(ADDRESS).tail]
 const ACCOUNT = `0x${"a1".repeat(20)}` as Hex
 const USDC = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+const TUPLE = {
+  rollupVersion: "7",
+  portal: "0x00000000000000000000000000000000000000a0",
+  forwardingTable: "0x00000000000000000000000000000000000000fb",
+} as OxideEnvTuple
 
 const aztec = { obsidionWallet: { networkId: "0xnet" } }
 const contracts = { contractService: {} }
 // The open's pool read hits: the coin row shows the address with no derivation.
 const depositAddress = vi.fn(async () => ({ address: ADDRESS, name: "alice.oxide.eth" }))
-const gateway = { depositAddress, observe: vi.fn() }
+const gateway = { depositAddress }
 
 const navigate = vi.hoisted(() => vi.fn())
 const fireEvent = vi.hoisted(() => vi.fn())
@@ -56,11 +68,8 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/front-core")>()),
   useContractServiceContext: () => contracts,
 }))
-vi.mock("../../../src/features/deposit/sipaGateway", () => ({
-  getSipaDepositGateway: () => gateway,
-}))
 // The mainnet coin list: DAI settles, USDC and USDT are swapped into it.
-vi.mock("../../../src/features/deposit/loadDepositFacts", async (importOriginal) => {
+vi.mock("../../../src/features/sipa/loadDepositFacts", async (importOriginal) => {
   const { MAINNET_DAI, mainnetTokens, mockLoadDepositFacts } = await import(
     "../../support/depositTokens"
   )
@@ -91,26 +100,29 @@ const l1 = vi.hoisted(() => ({
   }),
   disconnect: vi.fn(),
 }))
-vi.mock("../../../src/features/deposit/l1Wallet", () => ({ useL1Wallet: () => l1 }))
+vi.mock("../../../src/session/l1Wallet", () => ({ useL1Wallet: () => l1 }))
 // Which surface shows is the question; the funding sheet has its own suite.
 vi.mock("../../../src/features/deposit/DepositFromWalletModal", () => ({
   DepositFromWalletModal: () => <div data-testid="fund-sheet" />,
 }))
 
-const { DepositScreen } = await import("../../../src/features/deposit/DepositScreen")
-const { saveWalletIdentity } = await import("../../../src/features/identity/walletIdentity")
+const { DepositScreen } = await import("../../../src/features/deposit/DepositScreen/DepositScreen")
+const { setIdentity } = await import("../../support/identity")
+const noClaim = () => async () => {}
 const { seedBootConfig } = await import("../../support/seedBootConfig")
 const { provideFakeDepositRail } = await import("../../support/fakeDepositRail")
-const { SIPADepositStore } = await import("@obsidion/front-core")
 
 const byTestId = (id: string) => document.querySelector<HTMLElement>(`[data-testid='${id}']`)
 const button = (text: string) =>
   [...document.querySelectorAll("button")].find((b) => b.textContent === text)
 const sheet = () => document.querySelector("dialog[aria-label='Deposit address']")
 
-const { closeSession } = await import("../../../src/platform/session")
+const { closeSession } = await import("../../../src/session/session")
 const { openTestSession } = await import("../../support/session")
-beforeEach(() => void openTestSession({ wallet: aztec.obsidionWallet }))
+beforeEach(
+  () =>
+    openTestSession({ wallet: aztec.obsidionWallet, sipaAddresses: gateway }).registrations.ready,
+)
 afterEach(closeSession)
 
 describe("DepositScreen with the address sheet", () => {
@@ -118,14 +130,14 @@ describe("DepositScreen with the address sheet", () => {
 
   let container: HTMLDivElement
   let root: Root
-  let observe: ReturnType<typeof provideFakeDepositRail>
+  let check: ReturnType<typeof provideFakeDepositRail>
 
   const render = () =>
     act(async () => {
       root.render(
         <MemoryRouter>
           <ScreeningProvider screener={passThroughScreener}>
-            <DepositScreen />
+            <DepositScreen claimName={noClaim} />
           </ScreeningProvider>
         </MemoryRouter>,
       )
@@ -139,7 +151,7 @@ describe("DepositScreen with the address sheet", () => {
     act(async () => sheet()!.querySelector<HTMLButtonElement>("[aria-label='Close']")!.click())
   const tick = (ms: number) => act(async () => void (await vi.advanceTimersByTimeAsync(ms)))
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     held.mockResolvedValue(0n)
     capacity.availableAtomic = 40_000n * 10n ** 18n
@@ -151,11 +163,10 @@ describe("DepositScreen with the address sheet", () => {
     l1.pickerOpen = false
     layout.phone = false
     localStorage.clear()
-    ;(SIPADepositStore as unknown as { instance: unknown }).instance = null
-    observe = provideFakeDepositRail({ addresses: () => [ADDRESS], held, token: () => USDC as Hex })
+    check = provideFakeDepositRail({ addresses: () => [ADDRESS], held, token: () => USDC as Hex })
     localStorage.setItem("webwallet.hide-deposit-privacy-disclaimer", "true")
     Object.assign(navigator, { clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } })
-    saveWalletIdentity({ handle: "alice", address: L2_ADDRESS, claimedAt: 1 })
+    await setIdentity({ handle: "alice", address: L2_ADDRESS, claimedAt: 1 })
     container = document.createElement("div")
     document.body.appendChild(container)
     root = createRoot(container)
@@ -347,9 +358,9 @@ describe("DepositScreen with the address sheet", () => {
 
     // The pill spins for a moment after a press before it takes another.
     await tick(800)
-    const passes = observe.mock.calls.length
+    const passes = check.mock.calls.length
     await act(async () => byTestId("deposit-check-again")!.click())
-    expect(observe).toHaveBeenCalledTimes(passes + 1)
+    expect(check).toHaveBeenCalledTimes(passes + 1)
     expect(byTestId("deposit-balance")!.textContent).toBe(
       "Balance at this address: $0 USDC · Last checked 0s ago",
     )
@@ -445,5 +456,56 @@ describe("DepositScreen with the address sheet", () => {
     await openCoin("USDT")
     expect(sheet()!.textContent).toContain("Send USDT to this address")
     expect(sheet()!.textContent).not.toContain("Waiting for your")
+  })
+
+  describe("before the account's keys are ready", () => {
+    // The derivation's first L2 read: it shows the derivation started, and holds it there.
+    const getBlock = vi.fn(() => new Promise<never>(() => {}))
+    const keys = memoryStore<ResourceState<SipaKeys>>({ status: "pending" })
+    const failed = () =>
+      fireEvent.mock.calls.filter(([event]) => event === "address_resolve_failed")
+
+    beforeEach(async () => {
+      const { getConfig } = await import("../../../src/config/env")
+      const { primeOxideTuple } = await import("../../../src/config/oxideTuple")
+      const { createSipaAddresses } = await import("../../../src/features/deposit/sipaAddresses")
+      primeOxideTuple(getConfig(), TUPLE)
+      getBlock.mockClear()
+      keys.set({ status: "pending" })
+      const open = openTestSession({ wallet: { networkId: "0xnet", node: { getBlock } } })
+      await openTestSession({
+        sipaAddresses: createSipaAddresses({
+          store: open.sipaDeposits,
+          wallet: open.wallet,
+          keys: { ...keys.readonly, name: "sipaKeys", demand() {}, retry() {}, close() {} },
+          discovery: open.sipaDiscovery,
+          identity: open.identity,
+          railPending: open.railPending,
+          wakeBroadcasts: () => {},
+          wake: async () => {},
+        }),
+      }).registrations.ready
+    })
+
+    it("waits for them with no failure, then derives the address", async () => {
+      await render()
+      await openCoin("DAI")
+      for (let i = 0; i < 3; i++) await act(async () => {})
+      expect(failed()).toEqual([])
+      expect(getBlock).not.toHaveBeenCalled()
+
+      await act(async () => keys.set({ status: "ready", value: {} as SipaKeys }))
+      await vi.waitFor(() => expect(getBlock).toHaveBeenCalledOnce())
+      expect(failed()).toEqual([])
+    })
+
+    it("stops waiting when the screen closes, and reports nothing", async () => {
+      await render()
+      await openCoin("DAI")
+      await act(async () => root.unmount())
+      for (let i = 0; i < 3; i++) await act(async () => {})
+      expect(failed()).toEqual([])
+      root = createRoot(container)
+    })
   })
 })

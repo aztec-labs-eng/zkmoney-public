@@ -6,7 +6,7 @@ import { act } from "react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createRoot, type Root } from "react-dom/client"
 import type { Address, Hash, Hex } from "viem"
-import type { SIPADepositRecord } from "@obsidion/front-core"
+import type { SipaDeposit } from "@obsidion/front-core"
 
 vi.mock("../../../src/config/env", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../src/config/env")>()),
@@ -17,7 +17,7 @@ vi.mock("../../../src/features/token/useTxAmountCap", () => ({
   useRowTxAmountCap: () => 5166n * 10n ** 18n,
 }))
 // A two-row table: DAI and USDC each settle on their own row.
-vi.mock("../../../src/features/deposit/loadDepositFacts", async (importOriginal) => {
+vi.mock("../../../src/features/sipa/loadDepositFacts", async (importOriginal) => {
   const { mockLoadDepositFacts, twoRowTokens } = await import("../../support/depositTokens")
   return mockLoadDepositFacts(importOriginal, () => twoRowTokens())
 })
@@ -25,6 +25,10 @@ vi.mock("../../../src/features/deposit/loadDepositFacts", async (importOriginal)
 const { sentDepositRecord } = await import("../../../src/features/deposit/sentDepositRecord")
 const { DepositDetailModal } = await import("../../../src/ui/screens/DepositDetailModal")
 const { usdFigure } = await import("../../../src/ui/format")
+const { closeSession } = await import("../../../src/session/session")
+const { openTestSession } = await import("../../support/session")
+beforeEach(() => void openTestSession())
+afterEach(closeSession)
 const { ROW_DAI, ROW_USDC } = await import("../../support/depositTokens")
 
 declare global {
@@ -58,7 +62,7 @@ const SENT = {
 }
 
 /** What discovery writes for a pooled address before anything is sent to it. */
-const placeholder = (patch: Partial<SIPADepositRecord> = {}): SIPADepositRecord =>
+const placeholder = (patch: Partial<SipaDeposit> = {}): SipaDeposit =>
   ({
     sipaAddress: SIPA,
     phase: "broadcast",
@@ -71,7 +75,7 @@ const placeholder = (patch: Partial<SIPADepositRecord> = {}): SIPADepositRecord 
     recipientHash: "0x02",
     recoveryAddress: `0x${"bb".repeat(20)}`,
     ...patch,
-  } as SIPADepositRecord)
+  } as SipaDeposit)
 
 describe("sentDepositRecord", () => {
   it("keeps the charged figures over a freshly resolved address", () => {

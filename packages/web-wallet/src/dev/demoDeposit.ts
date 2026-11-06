@@ -4,7 +4,7 @@
  * address and the Show / Copy / Deposit affordances become reviewable.
  */
 import type { Address } from "viem"
-import type { DepositAddress } from "../features/deposit/sipaGateway"
+import type { DepositAddress } from "../features/sipa/depositTarget"
 import { DEMO_HANDLE } from "./demoFixtures"
 
 /** SIPA-shaped, and deliberately none of the seeded deposits' addresses. */

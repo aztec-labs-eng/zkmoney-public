@@ -11,11 +11,11 @@
  * will not help and points to the published per-deposit limit instead.
  */
 import { WALLET_TOKEN_SYMBOL } from "@obsidion/core/constants"
-import { depositAmounts, isNativeEth, type SIPADepositRecord } from "@obsidion/front-core"
+import { depositAmounts, isNativeEth, type SipaDeposit } from "@obsidion/front-core"
 import { DEPOSIT_LIMIT_BASIS, formatPublicLimit, nominalValuationNote } from "../limits/publicLimit"
 
-type UnsweepableRecord = Pick<SIPADepositRecord, "amount" | "netAmount" | "fee" | "messageSecret"> &
-  Partial<Pick<SIPADepositRecord, "tokenSymbol" | "tokenAddress">>
+type UnsweepableRecord = Pick<SipaDeposit, "amount" | "netAmount" | "fee" | "messageSecret"> &
+  Partial<Pick<SipaDeposit, "tokenSymbol" | "tokenAddress">>
 
 /** `decimals`: the row token's, which the record's amounts and `txAmountCap` are in. */
 export function unsweepableCopy(

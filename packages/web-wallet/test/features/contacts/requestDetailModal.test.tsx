@@ -1,4 +1,5 @@
 import { WALLET_TOKEN_SYMBOL } from "@obsidion/core/constants"
+import { testPage, testCore } from "../../support/page"
 import React, { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -61,8 +62,9 @@ const { RequestDetailModal } = await import(
   "../../../src/features/contacts/RequestDetailModal/RequestDetailModal"
 )
 const { activeNamespace, closeSession, switchSession, session } = await import(
-  "../../../src/platform/session"
+  "../../../src/session/session"
 )
+const { pageSessionDeps } = await import("../../../src/app/sessionDeps")
 
 declare global {
   // eslint-disable-next-line no-var
@@ -92,7 +94,10 @@ describe("RequestDetailModal", () => {
     container = document.createElement("div")
     document.body.appendChild(container)
     root = createRoot(container)
-    await switchSession(activeNamespace()).requests.add(pendingRow)
+    await switchSession(
+      activeNamespace(testCore().device),
+      pageSessionDeps(testPage()),
+    ).requests.add(pendingRow)
   })
 
   afterEach(() => {

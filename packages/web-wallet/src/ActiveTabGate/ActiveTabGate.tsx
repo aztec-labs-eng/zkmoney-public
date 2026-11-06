@@ -8,20 +8,24 @@ import { BlockNumber } from "@aztec-labs/foundation/branded-types"
 import { NoRetryError, makeBackoff, retry } from "@aztec-labs/foundation/retry"
 import type { AztecSQLiteOPFSStore } from "@aztec-labs/kv-store/sqlite-opfs"
 import type { ChainIdentity } from "@obsidion/core/types"
-import { LocalConfigStore, WalletError } from "@obsidion/front-core"
+import { WalletError, stageIdentity } from "@obsidion/front-core"
 import { createNode } from "@obsidion/sdk"
 import { PrimaryGradientButton, Spinner } from "@obsidion/web-ds"
 import { App, type ActiveTabBoot } from "../App"
-import { getConfig, type WebBootConfig } from "../config/env"
+import { getConfig } from "../config/env"
 import { isDemoMode } from "../dev/demoFlag"
 import { ErrorModalHost } from "../errors/ErrorModalHost"
-import { stashInboundNameGrant } from "../features/onboarding/oxideOnboarding"
-import { bindAnalyticsConsent } from "../lib/analytics"
 import { discardIncompatiblePasskeyState } from "../platform/auth/discardIncompatiblePasskeyState"
-import { findRetiredSession } from "../platform/auth/retiredSession"
+import { bindSavedConsent } from "../lib/bootConsent"
 import { warmBarretenberg } from "../platform/bbWasm"
 import { bindWalletAuth } from "../platform/auth/useAuthenticator"
-import { activeNamespace, switchSession } from "../platform/session"
+import {
+  accountsOfSession,
+  activeNamespace,
+  sessionLoaded,
+  switchSession,
+} from "../session/session"
+import { pageSessionDeps, type Page, type PageBoot } from "../app/sessionDeps"
 import { activateTab, revokeTab, sendOnlyWhileActive } from "../platform/storage/activeTab"
 import { ActiveTabLifecycle, type ActiveTabDeps } from "../platform/storage/activeTabLifecycle"
 import { createPxeStore, opfsAvailable } from "../platform/storage/createPxeStore"
@@ -34,7 +38,6 @@ import {
   openWalletStore,
   reloadPage,
 } from "../platform/storage/walletStorage"
-import { webStorage } from "../platform/storage/WebStorageAdapter"
 import { startPageWallet } from "../platform/wallet"
 import { BootErrorScreen } from "../ui/BootErrorScreen"
 import {
@@ -67,18 +70,6 @@ const PXE_OPEN_BACKOFF_S = [1, 1, 2]
 let bootStartedAt: number | undefined
 let pxeOpenAttempts = 0
 
-/**
- * The app binds the live consent once it mounts. Until then a boot failure reports under the
- * stored consent, which the wallet database holds.
- */
-async function bindStoredConsent(): Promise<void> {
-  const settings = new LocalConfigStore(webStorage)
-  await settings.init()
-  const consent = settings.get("analyticsConsent")
-  settings.dispose()
-  bindAnalyticsConsent(() => consent)
-}
-
 /** Under the rollup L1 names, and a custom node's under its own digest, so no two nodes share one. */
 async function openPxeStore(
   identity: ChainIdentity,
@@ -97,34 +88,35 @@ async function openPxeStore(
   )
 }
 
-function walletDeps(): ActiveTabDeps<OpenedWallet> {
+function walletDeps(page: Page): ActiveTabDeps<OpenedWallet> {
   const config = getConfig()
   const node = sendOnlyWhileActive(createNode(config.nodeUrl, config.nodeApiKey))
   let reads: ReturnType<typeof identityReads> | undefined
   let identity: Promise<ChainIdentity> | undefined
   let l1RpcSimulates: Promise<void> | undefined
+  // The genesis block and hashing WASM the PXE starts with.
+  const warmPxe = () => {
+    void node.getBlock(BlockNumber.ZERO)
+    void warmBarretenberg()
+  }
   return {
     locks: (navigator as Navigator & { locks?: LockManager }).locks,
     // The wallet database first: the PXE store is only worth opening for a wallet this tab holds.
     open: async () => {
       const startedAt = (bootStartedAt ??= performance.now())
       // None of these needs a store, so they load while the stores open: the chain reads the
-      // identity check judges, and the genesis block and hashing WASM the PXE starts with.
+      // identity check judges, and the PXE's warmup. Whether a pay page's boot waits reads the
+      // session's identity, so its warmup waits for `prepare`.
       reads ??= identityReads(config, node)
-      const warmPxe = () => {
-        void node.getBlock(BlockNumber.ZERO)
-        void warmBarretenberg()
-      }
-      // Whether the PXE boot waits needs the wallet database; only a pay page can wait.
-      const payPage = isPayPath(location.pathname)
-      if (!payPage) warmPxe()
+      if (!isPayPath(location.pathname)) warmPxe()
       // The fresh-origin check must not see this page's own database.
       await originWasFresh()
       await openWalletStore(activeRollup(), { persistent: await opfsAvailable() })
-      if (payPage && !bootWaitsForDemand()) warmPxe()
       try {
-        await carryRetiredConfig()
-        await bindStoredConsent()
+        await page.device.load()
+        await carryRetiredConfig(page.database)
+        // A boot failure reports under the saved consent, which the wallet database holds.
+        bindSavedConsent(page.device)
         // Checked once per page, after consent is bound so the check's events are sent. The wallet
         // database is named after the profile's rollup, which the check holds to L1's.
         identity ??= verifiedIdentity(config, node, reads)
@@ -162,10 +154,17 @@ function walletDeps(): ActiveTabDeps<OpenedWallet> {
       } catch (e) {
         console.warn("[ActiveTabGate] could not remove old wallet keys:", e)
       }
-      await discardIncompatiblePasskeyState(config.rpId)
-      await findRetiredSession(config.rpId)
-      bindWalletAuth(startPageWallet(opened.node, opened.pxeBoot))
-      switchSession(activeNamespace())
+      await discardIncompatiblePasskeyState(page.database, page.device, config.rpId, (w) =>
+        stageIdentity(w, activeNamespace(page.device).prefix, null),
+      )
+      await page.auth.findRetiredSession()
+      bindWalletAuth(page.auth, startPageWallet(opened.node, opened.pxeBoot), accountsOfSession)
+      const session = switchSession(activeNamespace(page.device), pageSessionDeps(page))
+      // The tag's pending state derives from these stores, and the first render reads them. A
+      // failed open is the store's `failed` view.
+      await sessionLoaded(session)
+      const path = location.pathname
+      if (isPayPath(path) && !bootWaitsForDemand(session.identity.get(), path)) warmPxe()
     },
     activate: activateTab,
     revoke: revokeTab,
@@ -176,15 +175,15 @@ function walletDeps(): ActiveTabDeps<OpenedWallet> {
 let lifecycle: ActiveTabLifecycle<OpenedWallet> | undefined
 
 /** One per page, so StrictMode's replayed effects share it. */
-function walletLifecycle(): ActiveTabLifecycle<OpenedWallet> {
-  lifecycle ??= new ActiveTabLifecycle(walletDeps())
+function walletLifecycle(page: Page): ActiveTabLifecycle<OpenedWallet> {
+  lifecycle ??= new ActiveTabLifecycle(walletDeps(page))
   return lifecycle
 }
 
-export function ActiveTabGate({ boot }: { boot: WebBootConfig }) {
+export function ActiveTabGate({ boot }: { boot: PageBoot }) {
   // Retain an inbound name grant and take the bearer token out of the URL, even in a tab that
   // waits on the other-tab screen.
-  useState(stashInboundNameGrant)
+  useState(() => boot.page.signup.stashInbound())
   return isDemoMode() ? <DemoWallet boot={boot} /> : <ActiveTabWallet boot={boot} />
 }
 
@@ -192,7 +191,7 @@ export function ActiveTabGate({ boot }: { boot: WebBootConfig }) {
  * Demo mode boots no PXE and takes no lock: its wallet database is in memory and belongs to this
  * page alone. The tab counts as active from page load.
  */
-function DemoWallet({ boot }: { boot: WebBootConfig }) {
+function DemoWallet({ boot }: { boot: PageBoot }) {
   const [activeTab] = useState<ActiveTabBoot>(() => {
     const config = getConfig()
     return {
@@ -204,8 +203,8 @@ function DemoWallet({ boot }: { boot: WebBootConfig }) {
   return <App boot={boot} activeTab={activeTab} />
 }
 
-function ActiveTabWallet({ boot }: { boot: WebBootConfig }) {
-  const tab = walletLifecycle()
+function ActiveTabWallet({ boot }: { boot: PageBoot }) {
+  const tab = walletLifecycle(boot.page)
   const state = useSyncExternalStore(tab.subscribe, tab.getState)
   useEffect(() => tab.start(), [tab])
 

@@ -1,8 +1,7 @@
 import { Modal } from "../../ui/Modal"
 /**
- * The confirm sheet for sending, from the user's own L1 wallet, a withdrawal no relayer sent. The
- * withdrawal already fixed the recipient and the amount, so there is nothing to choose: the copy,
- * the facts, and a button.
+ * The confirm sheet for sending funds out from the user's own L1 wallet, such as a withdrawal no
+ * relayer sent: the copy, the facts, and a button.
  */
 import { useState, type ReactNode } from "react"
 import type { Hex } from "viem"
@@ -12,8 +11,8 @@ import { lapTimer } from "../../lib/analytics"
 import { isDesktopL1SubmitActive } from "../../platform/desktopBridge"
 import { HashRow, l1TxUrl } from "../../ui/detailRows"
 import { useCopy } from "../../ui/hooks"
-import { isWalletRejection, useL1Wallet } from "../deposit/l1Wallet"
-import type { L1ExitStage } from "../deposit/sipaRecovery"
+import { isWalletRejection, useL1Wallet } from "../../session/l1Wallet"
+import type { L1ExitStage } from "../sipa/l1ExitChannels"
 import {
   useWalletPrompt,
   useWalletPromptStall,
@@ -34,6 +33,8 @@ export interface ManualExitRunOptions {
   from?: Hex
   onHelperOpened: (submitUrl: string) => void
   onStage: (stage: L1ExitStage) => void
+  /** A run of several transactions: the next one is a new wallet request. */
+  nextRequest: () => void
 }
 
 export function ManualExitSheet({
@@ -43,8 +44,12 @@ export function ManualExitSheet({
   explainer,
   facts,
   buttonTitle,
+  blocked = false,
+  preparing = "Preparing…",
+  secondary,
   run,
   onSent,
+  refusal,
   onError,
   done,
   onClose,
@@ -55,9 +60,17 @@ export function ManualExitSheet({
   explainer: ReactNode
   facts: ReactNode
   buttonTitle: string
-  /** Sends the transaction; resolves to its L1 hash. */
-  run: (opts: ManualExitRunOptions) => Promise<Hex>
+  /** Holds the button, such as while the recipient is unchecked. */
+  blocked?: boolean
+  /** Shown while no wallet stage runs. */
+  preparing?: string
+  /** Under the button, such as another way out. */
+  secondary?: ReactNode
+  /** Sends the transactions; resolves to their L1 hashes. */
+  run: (opts: ManualExitRunOptions) => Promise<Hex | Hex[]>
   onSent?: (elapsedMs: number) => void
+  /** The words for a failure the user can act on. Any other failure goes to `onError`. */
+  refusal?: (e: unknown) => string | undefined
   /** Reports a failure the user did not cause by cancelling. */
   onError: (e: unknown) => void
   done: ReactNode
@@ -72,7 +85,7 @@ export function ManualExitSheet({
   const [phase, setPhase] = useState<"form" | "working" | "done">("form")
   const [stage, setStage] = useState<L1ExitStage>()
   const [submitUrl, setSubmitUrl] = useState<string>()
-  const [txHash, setTxHash] = useState<Hex>()
+  const [hashes, setHashes] = useState<Hex[]>([])
   const [refused, setRefused] = useState<string>()
   const prompt = useWalletPrompt()
   const stalled = useWalletPromptStall(phase === "working" && stage === "signing")
@@ -101,12 +114,17 @@ export function ManualExitSheet({
     }
     try {
       request = prompt.begin()
-      const hash = await run({
+      const sent = await run({
         from: (l1.account as Hex | null) ?? undefined,
         onHelperOpened: setSubmitUrl,
         onStage,
+        nextRequest: () => {
+          request = prompt.begin()
+          setStage(undefined)
+          setPhase("working")
+        },
       })
-      setTxHash(hash)
+      setHashes([sent].flat())
       setPhase("done")
       onSent?.(elapsed())
     } catch (e) {
@@ -116,7 +134,9 @@ export function ManualExitSheet({
         return
       }
       if (prompt.cancelled(request) || isWalletRejection(e)) return
-      onError(e)
+      const words = refusal?.(e)
+      if (words) setRefused(words)
+      else onError(e)
     } finally {
       prompt.settle(request)
     }
@@ -152,9 +172,10 @@ export function ManualExitSheet({
           )}
           <PrimaryGradientButton
             title={buttonTitle}
-            isDisabled={!ready}
+            isDisabled={!ready || blocked}
             onClick={() => void submit()}
           />
+          {secondary}
         </div>
       )}
 
@@ -162,7 +183,7 @@ export function ManualExitSheet({
         <div style={{ padding: "24px 0" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <Spinner size={20} />
-            <span style={{ fontSize: 15 }}>{stage ? STAGE_LABEL[stage] : "Preparing…"}</span>
+            <span style={{ fontSize: 15 }}>{stage ? STAGE_LABEL[stage] : preparing}</span>
           </div>
           {stalled && <WalletPromptNote walletName={l1.walletName} onCancel={cancelPrompt} />}
           {stage === "awaiting-browser" && submitUrl && (
@@ -204,7 +225,9 @@ export function ManualExitSheet({
               {done}
             </p>
           </div>
-          {txHash && <HashRow label="Transaction ID" hash={txHash} url={l1TxUrl(txHash)} />}
+          {hashes.map((hash) => (
+            <HashRow key={hash} label="Transaction ID" hash={hash} url={l1TxUrl(hash)} />
+          ))}
           <PrimaryGradientButton title="Done" onClick={onClose} />
         </div>
       )}

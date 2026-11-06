@@ -1,13 +1,14 @@
 import { BootGate } from "./BootGate"
 import bakedProfile from "virtual:baked-config-profile"
-import { resolveBootConfig, type ResolveBootConfigInput, type WebBootConfig } from "./config/env"
+import { getConfig, resolveBootConfig, type ResolveBootConfigInput } from "./config/env"
 import { profileFetch } from "./config/profilePrefetch"
 import { demoScenario } from "./dev/demoFlag"
 import { markInAppBrowser } from "./features/identity/inAppHost"
 import { warmBoot } from "./bootWarmup"
-import { setSponsorAccountsResolver } from "./features/onboarding/claimSponsorship"
-import { sessionSponsorAccounts } from "./features/onboarding/sponsorAccounts"
+import { setSponsorAccountsResolver } from "./features/registration/claimSponsorship"
+import { sessionSponsorAccounts } from "./features/registration/sponsorAccounts"
 import { prefetchLiveSavingsApy } from "./features/savings/savingsGateway"
+import { openPage, type PageBoot } from "./app/sessionDeps"
 
 // Design-system styles + the Sen brand font (source CSS; the vite alias maps the
 // component imports to source too). After the wallet's imports, so they win ties with its CSS.
@@ -16,7 +17,6 @@ import "../../design-system/src/styles/cards-modals.css"
 
 void warmBoot(location.pathname)
 markInAppBrowser()
-setSponsorAccountsResolver(sessionSponsorAccounts)
 
 /**
  * Profile first, fixtures last: `seedDemo` reads `getConfig()`, which exists only once
@@ -26,7 +26,7 @@ setSponsorAccountsResolver(sessionSponsorAccounts)
  * `import.meta.env.DEV` is a build-time literal — production drops the branch and the chunks
  * behind it.
  */
-async function resolveAndSeed(): Promise<WebBootConfig> {
+async function resolveAndSeed(): Promise<PageBoot> {
   const previewInput = async (input: ResolveBootConfigInput): Promise<ResolveBootConfigInput> =>
     import.meta.env.VITE_CONFIG_EDITOR === "true"
       ? {
@@ -40,16 +40,24 @@ async function resolveAndSeed(): Promise<WebBootConfig> {
         await previewInput((await import("./dev/demoProfile")).demoBootInput()),
       )
     : await resolveBootConfig(await previewInput({ bakedProfile, fetchImpl: profileFetch }))
-  if (!scenario) return resolved
-  const { seedDemo } = await import("./dev/seedDemo")
+  const seeded = scenario && (await (await import("./dev/seedDemo")).seedDemo(scenario))
+  if (seeded) return withSponsorAccounts({ ...resolved, page: seeded })
   // A refusal (this origin holds a real wallet) boots the real app from the real profile.
-  return (await seedDemo(scenario))
-    ? resolved
-    : resolveBootConfig(await previewInput({ bakedProfile }))
+  const config = scenario ? await resolveBootConfig(await previewInput({ bakedProfile })) : resolved
+  const onboardingMock = import.meta.env.DEV
+    ? (await import("./dev/mockOnboarding")).mockOnboarding
+    : undefined
+  return withSponsorAccounts({ ...config, page: openPage(getConfig(), { onboardingMock }) })
+}
+
+/** Sponsored batches name their payer through the page's auth service. */
+function withSponsorAccounts(boot: PageBoot): PageBoot {
+  setSponsorAccountsResolver(sessionSponsorAccounts(boot.page.auth))
+  return boot
 }
 
 /** The landing's rate needs only the config, so its read starts with it rather than with the app. */
-async function resolveAndPrefetch(): Promise<WebBootConfig> {
+async function resolveAndPrefetch(): Promise<PageBoot> {
   const resolved = await resolveAndSeed()
   prefetchLiveSavingsApy()
   return resolved

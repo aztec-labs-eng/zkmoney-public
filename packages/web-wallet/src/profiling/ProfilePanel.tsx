@@ -19,7 +19,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from "react"
 import { createPortal } from "react-dom"
 import { useResource } from "@obsidion/front-core"
 import { profiler, type ProfileReport, type ProfileRecord, type Category } from "./index"
-import { useSession } from "../platform/session"
+import { useSession } from "../session/session"
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 

@@ -7,7 +7,6 @@
 import {
   importHistoricActivity,
   importHistoricContacts,
-  SIPADepositStore,
   task,
   type ContactStorage,
   type HistoricActivityImported,
@@ -15,9 +14,9 @@ import {
   type RetiredDatabase,
   type Task,
 } from "@obsidion/front-core"
-import { getActiveStorageId, withSessionLock } from "../../platform/storage/activeStorage"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
-import { session } from "../../platform/session"
+import { session, type SessionDeps } from "../../session/session"
+import { stillCommitted } from "../../session/stillCommitted"
 import { getSavingsMoveStore } from "../savings/savingsMoveStore"
 
 const imports = new Map<string, Promise<HistoricActivityImported | null>>()
@@ -36,18 +35,19 @@ export function importHistoricActivityOnce(
   const memo = `${from?.key ?? ""}\n${storageId}`
   let run = imports.get(memo)
   if (!run) {
+    const own = session()
     run = importHistoricActivity({
       storage: webStorage,
       key: from?.key,
       readOtherDatabases: from
         ? async (read) => [read(await from.read())]
         : (read) => webStorage.readOtherDatabases(read),
-      transactions: session().activity,
-      sipaDeposits: SIPADepositStore.get(webStorage),
-      withdrawals: session().withdrawals,
+      transactions: own.activity,
+      sipaDeposits: own.sipaDeposits,
+      withdrawals: own.withdrawals,
       savingsMoves: getSavingsMoveStore(),
-      ownsStorage: () => getActiveStorageId() === storageId,
-      holdSession: withSessionLock,
+      ownsStorage: () => stillCommitted(own),
+      holdSession: own.sessionLock,
     })
     imports.set(memo, run)
     run.catch(() => {
@@ -64,15 +64,16 @@ export function importHistoricActivityOnce(
 export function historicImports(
   wallet: Resource<unknown>,
   { storageId, contacts }: { storageId: string; contacts: ContactStorage },
+  own: Pick<SessionDeps, "device" | "namespace" | "sessionLock">,
   imports = {
     activity: importHistoricActivityOnce,
-    contacts: (storageId: string, contacts: ContactStorage) =>
+    contacts: (_storageId: string, contacts: ContactStorage) =>
       importHistoricContacts({
         storage: webStorage,
         readOtherDatabases: (read) => webStorage.readOtherDatabases(read),
         contacts,
-        ownsStorage: () => getActiveStorageId() === storageId,
-        holdSession: withSessionLock,
+        ownsStorage: () => stillCommitted(own),
+        holdSession: own.sessionLock,
       }),
   },
 ): Task[] {

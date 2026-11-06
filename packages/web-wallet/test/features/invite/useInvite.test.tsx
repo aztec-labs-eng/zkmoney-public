@@ -1,6 +1,7 @@
 import { act } from "react"
 import { createRoot } from "react-dom/client"
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { openTestSession } from "../../support/session"
 
 const h = vi.hoisted(() => ({
   secretKey: "sk" as string | null,
@@ -8,14 +9,14 @@ const h = vi.hoisted(() => ({
   inviteStatus: vi.fn(async () => ({ pending: 1, credited: 0 })),
 }))
 vi.mock("../../../src/config/env", () => ({ getConfig: () => ({}) }))
-vi.mock("../../../src/platform/auth/useAuthenticator", () => ({
-  getAuthService: () => ({ getSecretKey: async () => h.secretKey }),
-}))
-vi.mock("../../../src/features/onboarding/oxideOnboarding", () => ({
+const fakeAuth = () => ({ getSecretKey: async () => h.secretKey })
+vi.mock("../../../src/features/registration/registrationDeps", () => ({
   accountServiceFor: () => ({ inviteCode: h.inviteCode, inviteStatus: h.inviteStatus }),
 }))
 
 const { useInvite, inviteLink } = await import("../../../src/features/invite/useInvite")
+
+beforeEach(() => void openTestSession({ auth: fakeAuth() }))
 
 describe("inviteLink", () => {
   it("names the invite host beside the wallet's own, and production's anywhere else", () => {

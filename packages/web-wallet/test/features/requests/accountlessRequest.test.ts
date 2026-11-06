@@ -229,7 +229,7 @@ describe("resolveAccountlessRequest", () => {
         packet(),
         deps(async () => ({ status: "notFound" })),
       ),
-    ).rejects.toThrow(/no longer registered/)
+    ).rejects.toMatchObject({ code: "contact.unregistered" })
     expect(resolveSipaAddressMock).not.toHaveBeenCalled()
   })
 

@@ -6,13 +6,17 @@ import {
   holdsAccountRecords,
 } from "../../../src/platform/storage/WebStorageAdapter"
 import { opfsBackend, walletStorage } from "../../../src/platform/storage/walletStorage"
-import { clearActiveStorage, setActiveStorageId } from "../../../src/platform/storage/activeStorage"
 import { testWalletDbs } from "../../support/fakeWalletDb"
+import { writeDeviceKeys } from "../../../src/platform/storage/deviceKeys"
+import { NO_SESSION, writeSessionTuple } from "../../../src/platform/storage/activeStorage"
+import { testPage } from "../../support/page"
+
+const deviceDb = testPage().database
 
 /** The namespace moves once the pointer is saved. */
 const bind = async (storageId: string | null) => {
-  if (storageId) setActiveStorageId(storageId)
-  else clearActiveStorage()
+  if (storageId) await writeDeviceKeys(deviceDb, { storageId })
+  else await writeSessionTuple(deviceDb, NO_SESSION)
   await walletStorage.flush()
 }
 
@@ -65,11 +69,11 @@ describe("WebStorageAdapter", () => {
     await bind("aaa")
     await adapter.setItem("obsidion_contacts", "A")
     await adapter.setItem(PASSKEY_IDENTITY_MAP_KEY, "shared")
-    await adapter.setItem("obsidion_config:analyticsAsked", "true")
+    await adapter.setItem("obsidion_config:analyticsConsent", "true")
     await bind("bbb")
     expect(await adapter.getItem("obsidion_contacts")).toBeNull()
     expect(await adapter.getItem(PASSKEY_IDENTITY_MAP_KEY)).toBe("shared")
-    expect(await adapter.getItem("obsidion_config:analyticsAsked")).toBe("true")
+    expect(await adapter.getItem("obsidion_config:analyticsConsent")).toBe("true")
     await adapter.setItem("obsidion_contacts", "B")
     await adapter.clear()
     await bind("aaa")
@@ -118,7 +122,7 @@ describe("WebStorageAdapter", () => {
     it("ignores shared keys and keys written with no account", async () => {
       await bind(ID)
       await adapter.setItem(PASSKEY_IDENTITY_MAP_KEY, "shared")
-      await adapter.setItem("obsidion_config:analyticsAsked", "true")
+      await adapter.setItem("obsidion_config:analyticsConsent", "true")
       await bind(null)
       await adapter.setItem("obsidion_withdrawals", "{}")
       expect(await holdsAccountRecords(ID)).toBe(false)
@@ -171,31 +175,5 @@ describe("WebStorageAdapter durability", () => {
     await expect(records.setRecord("a", { id: "a", v: 2 })).rejects.toThrow("disk")
     testWalletDbs().onApply = undefined
     expect(records.getByKey("a")).toEqual({ id: "a", v: 1 })
-  })
-
-  it("keeps every account's owed broadcasts when the account switches under a loaded ledger", async () => {
-    const { BroadcastLedger } = await import("@obsidion/front-core")
-    const job = (n: number, scope: string) => ({
-      address: `0x${n.toString(16).padStart(40, "0")}`,
-      kind: "deposit" as const,
-      scope,
-      source: { type: "slot" as const, cacheKey: "k", day: 1, nonce: n },
-    })
-    await bind("bbb")
-    await new BroadcastLedger(new WebStorageAdapter()).enqueue(job(1, "bbb"))
-    await bind("aaa")
-    const ledger = new BroadcastLedger(new WebStorageAdapter())
-    await ledger.enqueue(job(2, "aaa"))
-    await bind("bbb")
-    await ledger.enqueue(job(3, "bbb"))
-
-    const reloaded = new BroadcastLedger(new WebStorageAdapter())
-    await reloaded.load()
-    const saved = reloaded.list().map((j) => [j.address.slice(-1), j.scope])
-    expect(saved.sort()).toEqual([
-      ["1", "bbb"],
-      ["2", "aaa"],
-      ["3", "bbb"],
-    ])
   })
 })

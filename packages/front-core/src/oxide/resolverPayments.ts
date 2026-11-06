@@ -4,11 +4,11 @@
  * A sender who pays a tag through the ENS resolver funds an address the resolver derived for one
  * `(day, nonce)`: an ECDH salt between the resolver's key and the account's registered stealth key,
  * where `day` is the L1 block's UTC day and the nonce counts up from 0 per account and day, one per
- * resolve. The ECDH is symmetric, so the wallet derives the same addresses from its own key. It
- * polls the ones the resolver could have handed out and records a funded one as an incoming
- * deposit straight away, instead of waiting for the resolver's L2 broadcast to reach discovery.
+ * resolve. The ECDH is symmetric, so the wallet derives the same addresses from its own key. The
+ * scan reads the ones the resolver could have handed out and records a funded one as an
+ * incoming deposit straight away, instead of waiting for the resolver's L2 broadcast to reach discovery.
  *
- * The record carries the salt and the full origin, so the sync pass claims it like any other, and
+ * The record carries the salt and the full origin, so the pipeline claims it like any other, and
  * the event discovery later finds is pinned to it by salt rather than recorded again.
  */
 
@@ -22,7 +22,6 @@ import {
   epochDay,
   readAccountResolution,
   readDepositSIPAImplementation,
-  type SipaHoldingRead,
 } from "@obsidion/sdk"
 import { logger } from "../utils/logger"
 
@@ -32,17 +31,8 @@ import {
   deriveSharedSecret,
   type SipaK1Point,
 } from "../core/services/deposits/sipa/stealth"
-import type {
-  SIPADepositRecord,
-  SIPADepositStore,
-} from "../core/services/deposits/SIPADepositStore"
+import type { SipaDeposit, SipaDepositFields } from "../engine/sipaDeposits"
 import { NATIVE_ETH, type SipaFundingToken } from "./sipaFunding"
-
-/** One L1 block: a balance cannot change between two reads closer together than that. */
-export const RESOLVER_PAYMENT_POLL_MS = 12_000
-
-/** Longest wait after consecutive failed reads. */
-export const RESOLVER_PAYMENT_MAX_BACKOFF_MS = 5 * 60_000
 
 /**
  * Unused nonces watched past the highest one in use. Every resolve takes a nonce, paid or not (a
@@ -132,7 +122,10 @@ export async function readResolverDeployments(deps: {
       portal: source.tuple.portal as Address,
       sipaFactory: sipaFactory as Address,
       forwardingTable: source.tuple.forwardingTable as Address,
-      implementation: await readDepositSIPAImplementation(deps.publicClient, sipaFactory as Address),
+      implementation: await readDepositSIPAImplementation(
+        deps.publicClient,
+        sipaFactory as Address,
+      ),
       rollupVersion: resolution.rollupVersion,
       resolverPublicKey: resolution.operator.resolverPublicKey,
       recoveryAccount: deps.recoveryAccount,
@@ -158,7 +151,7 @@ export interface ResolverCandidate {
   sipaAddress: Address
   messageSecret: string
   recipientHash: string
-  origin: NonNullable<SIPADepositRecord["origin"]>
+  origin: NonNullable<SipaDeposit["origin"]>
 }
 
 /** The address `deployment`'s resolver hands out at `(day, nonce)`, derived offline. */
@@ -209,94 +202,27 @@ export async function deriveResolverCandidate(
   }
 }
 
-export interface ResolverPaymentWatcherDeps {
-  /** Deployments whose resolver can hand out this account's addresses. */
-  deployments: () => Promise<readonly ResolverDeployment[]>
-  /** Null while the wallet is locked. */
-  keys: () => Promise<ResolverPaymentKeys | null>
-  /** Every holding and the L1 block timestamp, in one call (`readSipaHoldingsAtHead`). */
-  readHoldings: (
-    holdings: SipaHoldingRead[],
-  ) => Promise<{ timestamp: bigint; balances: Map<string, Map<string, bigint>> }>
-  store: Pick<SIPADepositStore, "get" | "list" | "create">
-  l1ChainId: number
-  /** The wallet's network, stamped on the records a tick creates. */
-  networkId: string
-  /** The records a tick created, so the caller can run the sync pass now. */
-  onFunded?: (records: SIPADepositRecord[]) => void
-  now?: () => number
-}
-
 /**
- * Polls the addresses the resolver could have handed out for today and yesterday (it watches an
- * unpaid one into the next day) with one Multicall3 call per tick. Per deployment and day, the
- * window is every nonce up to {@link RESOLVER_NONCE_LOOKAHEAD} past the highest one with a record:
- * a nonce below that was handed out and may still be paid. A recorded address is the sync pass's
- * to follow, so it is not polled.
+ * The addresses the resolver could have handed out for today and yesterday (it watches an unpaid one
+ * into the next day). Per deployment and day, the window is every nonce up to
+ * {@link RESOLVER_NONCE_LOOKAHEAD} past the highest one with a record: a nonce below that was handed
+ * out and may still be paid. A recorded address is the scan's to follow, so it is left out.
+ * Derivations are kept for the days the window still covers.
  */
-export class ResolverPaymentWatcher {
-  private day: number | undefined
-  private failures = 0
-  private readonly derived = new Map<string, ResolverCandidate>()
-
-  constructor(private readonly deps: ResolverPaymentWatcherDeps) {}
-
-  /** One poll. Resolves to the delay before the next one; never rejects. */
-  async tick(): Promise<number> {
-    try {
-      const created = await this.poll()
-      this.failures = 0
-      if (created.length) this.deps.onFunded?.(created)
-      return RESOLVER_PAYMENT_POLL_MS
-    } catch (err) {
-      this.failures += 1
-      logger.warn("[resolverPayments] poll failed, backing off:", err)
-      return Math.min(
-        RESOLVER_PAYMENT_POLL_MS * 2 ** this.failures,
-        RESOLVER_PAYMENT_MAX_BACKOFF_MS,
-      )
-    }
-  }
-
-  private async window(
-    keys: ResolverPaymentKeys,
-    deployments: readonly ResolverDeployment[],
-  ): Promise<ResolverCandidate[]> {
-    const now = this.deps.now?.() ?? Date.now()
-    // The chain's day once a read has returned one; the clock's until then.
-    const today = this.day ?? epochDay(Math.floor(now / 1000))
-    const days = today > 0 ? [today - 1, today] : [today]
-    for (const key of this.derived.keys()) {
-      if (!days.includes(Number(key.split(":")[1]))) this.derived.delete(key)
-    }
-    const secrets = new Set(
-      this.deps.store
-        .list()
-        .flatMap((r) => (r.messageSecret ? [r.messageSecret.toLowerCase()] : [])),
-    )
-    const recorded = (c: ResolverCandidate) =>
-      !!this.deps.store.get(c.sipaAddress) || secrets.has(c.messageSecret.toLowerCase())
-    const out: ResolverCandidate[] = []
-    for (const deployment of deployments) {
-      for (const day of days) {
-        let end = RESOLVER_NONCE_LOOKAHEAD
-        for (let nonce = 0; nonce < Math.min(end, RESOLVER_MAX_NONCES_PER_DAY); nonce++) {
-          const candidate = await this.candidate(deployment, keys, day, nonce)
-          if (recorded(candidate)) end = nonce + 1 + RESOLVER_NONCE_LOOKAHEAD
-          else out.push(candidate)
-        }
-      }
-    }
-    return out
-  }
-
-  private async candidate(
+export function createResolverWindow(): (
+  keys: ResolverPaymentKeys,
+  deployments: readonly ResolverDeployment[],
+  records: readonly SipaDeposit[],
+  now: number,
+) => Promise<ResolverCandidate[]> {
+  const derived = new Map<string, ResolverCandidate>()
+  const candidate = async (
     deployment: ResolverDeployment,
     keys: ResolverPaymentKeys,
     day: number,
     nonce: number,
-  ): Promise<ResolverCandidate> {
-    // The day stays second: `window()` prunes by it. The rest is every input to the address.
+  ) => {
+    // The day stays second: the window prunes by it. The rest is every input to the address.
     const key = [
       deployment.portal,
       day,
@@ -312,65 +238,76 @@ export class ResolverPaymentWatcher {
     ]
       .join(":")
       .toLowerCase()
-    let candidate = this.derived.get(key)
-    if (!candidate) {
-      candidate = await deriveResolverCandidate(deployment, keys, day, nonce)
-      this.derived.set(key, candidate)
+    let found = derived.get(key)
+    if (!found) {
+      found = await deriveResolverCandidate(deployment, keys, day, nonce)
+      derived.set(key, found)
     }
-    return candidate
+    return found
   }
-
-  private async poll(): Promise<SIPADepositRecord[]> {
-    const keys = await this.deps.keys()
-    if (!keys) return []
-    const candidates = await this.window(keys, await this.deps.deployments())
-    // Read even with no candidates: the block's timestamp is what moves the window to a new day.
-    const { timestamp, balances } = await this.deps.readHoldings(
-      candidates.map((c) => ({
-        sipa: c.sipaAddress,
-        tokens: c.deployment.tokens.map((t) => t.address),
-      })),
-    )
-    this.day = epochDay(timestamp)
-    const created: SIPADepositRecord[] = []
-    for (const candidate of candidates) {
-      const held = holding(candidate, balances.get(candidate.sipaAddress.toLowerCase()))
-      if (!held) continue
-      const { token, balance } = held
-      // Another writer may have recorded the address since the window was read.
-      const record = await this.deps.store.create(candidate.sipaAddress, {
-        phase: "sweeping",
-        recipientL2Address: keys.recipient.toString(),
-        messageSecret: candidate.messageSecret,
-        recipientHash: candidate.recipientHash,
-        recoveryAddress: "",
-        origin: candidate.origin,
-        l1ChainId: this.deps.l1ChainId,
-        networkId: this.deps.networkId,
-        amount: formatUnits(balance, token.decimals),
-        tokenAddress: token.address,
-        tokenSymbol: token.symbol,
-        tokenDecimals: token.decimals,
-        fundingTokenSymbol: token.symbol,
-        startTime: this.deps.now?.() ?? Date.now(),
-      })
-      if (!record) continue
-      created.push(record)
-      logger.log(
-        `[resolverPayments] ${candidate.sipaAddress.slice(0, 10)}… holds ${token.symbol} ` +
-          `(day ${candidate.day}, nonce ${candidate.nonce})`,
-      )
+  return async (keys, deployments, records, now) => {
+    const today = epochDay(Math.floor(now / 1000))
+    const days = today > 0 ? [today - 1, today] : [today]
+    for (const key of derived.keys()) {
+      if (!days.includes(Number(key.split(":")[1]))) derived.delete(key)
     }
-    return created
+    const addresses = new Set(records.map((r) => r.sipaAddress.toLowerCase()))
+    const secrets = new Set(
+      records.flatMap((r) => (r.messageSecret ? [r.messageSecret.toLowerCase()] : [])),
+    )
+    const recorded = (c: ResolverCandidate) =>
+      addresses.has(c.sipaAddress.toLowerCase()) || secrets.has(c.messageSecret.toLowerCase())
+    const out: ResolverCandidate[] = []
+    for (const deployment of deployments) {
+      for (const day of days) {
+        let end = RESOLVER_NONCE_LOOKAHEAD
+        for (let nonce = 0; nonce < Math.min(end, RESOLVER_MAX_NONCES_PER_DAY); nonce++) {
+          const found = await candidate(deployment, keys, day, nonce)
+          if (recorded(found)) end = nonce + 1 + RESOLVER_NONCE_LOOKAHEAD
+          else out.push(found)
+        }
+      }
+    }
+    return out
+  }
+}
+
+/**
+ * The record a resolver payment opens: the address holds one of its deployment's tokens, else ETH.
+ * Undefined while it holds nothing.
+ */
+export function resolverPaymentFields(
+  candidate: ResolverCandidate,
+  balances: ReadonlyMap<string, bigint>,
+  context: { recipient: AztecAddress; l1ChainId: number; networkId: string; now: number },
+): SipaDepositFields | undefined {
+  const held = holding(candidate, balances)
+  if (!held) return undefined
+  const { token, balance } = held
+  return {
+    sipaAddress: candidate.sipaAddress,
+    phase: "sweeping",
+    recipientL2Address: context.recipient.toString(),
+    messageSecret: candidate.messageSecret,
+    recipientHash: candidate.recipientHash,
+    recoveryAddress: "",
+    origin: candidate.origin,
+    l1ChainId: context.l1ChainId,
+    networkId: context.networkId,
+    amount: formatUnits(balance, token.decimals),
+    tokenAddress: token.address,
+    tokenSymbol: token.symbol,
+    tokenDecimals: token.decimals,
+    fundingTokenSymbol: token.symbol,
+    startTime: context.now,
   }
 }
 
 /** The first of the deployment's tokens the address holds, else its ETH. */
 function holding(
   candidate: ResolverCandidate,
-  balances: Map<string, bigint> | undefined,
+  balances: ReadonlyMap<string, bigint>,
 ): { token: SipaFundingToken; balance: bigint } | undefined {
-  if (!balances) return undefined
   for (const token of [...candidate.deployment.tokens, NATIVE_ETH]) {
     const balance = balances.get(token.address.toLowerCase()) ?? 0n
     if (balance > 0n) return { token, balance }

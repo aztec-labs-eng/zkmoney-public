@@ -117,6 +117,23 @@ describe("candidatesFrom", () => {
       candidatesFrom({ authenticatorAttachment: "cross-platform", prfFirst: first }),
     ).toThrow(expect.objectContaining({ name: "DeviceBoundPasskeyError" }))
   })
+
+  it("accepts this device's answer that cannot be backed up on Windows alone, for Windows Hello", () => {
+    const local: Evidence = {
+      backupEligible: false,
+      authenticatorAttachment: "platform",
+      prfSecond: second,
+    }
+    expect(candidatesFrom(local, "windows")).toEqual({ second })
+    for (const os of ["macos", "linux", "android", "ios", "unknown", undefined] as const) {
+      expect(() => candidatesFrom(local, os)).toThrow(
+        expect.objectContaining({ name: "DeviceBoundPasskeyError" }),
+      )
+    }
+    expect(() =>
+      candidatesFrom({ authenticatorAttachment: "platform", prfSecond: second }, "windows"),
+    ).toThrow(expect.objectContaining({ name: "DeviceBoundPasskeyError" }))
+  })
 })
 
 describe("prfOutputsOf", () => {

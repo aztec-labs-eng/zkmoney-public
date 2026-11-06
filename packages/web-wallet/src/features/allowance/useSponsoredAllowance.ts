@@ -9,7 +9,7 @@ import {
 import { getConfig } from "../../config/env"
 import { readSponsoredAllowance } from "./readAllowance"
 import { readAllowanceUsage } from "./readAllowanceUsage"
-import { useSession } from "../../platform/session"
+import { useSession } from "../../session/session"
 
 const store = new SponsoredAllowanceStore()
 

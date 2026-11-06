@@ -4,7 +4,7 @@
  * what the recipient is left with, since nothing reads it back off chain.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { walletStorage } from "../../../src/platform/storage/walletStorage"
+import { testPage, testCore } from "../../support/page"
 import { custom, getAddress, parseUnits, type Address, type Hex } from "viem"
 import { WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
 import type { ScannedWithdrawEvent } from "@obsidion/sdk"
@@ -78,18 +78,25 @@ vi.mock("../../../src/features/token/oxideToken", () => ({
   currentTxAmountCap: async () => TX_AMOUNT_CAP,
   portalDomainOfToken: async () => ({}),
 }))
-vi.mock("../../../src/features/onboarding/claimSponsorship", () => ({
+vi.mock("../../../src/features/registration/claimSponsorship", () => ({
   claimSponsorContext: async () => ({ fpcAddress: {}, policy: {} }),
   noteSubscribed: vi.fn(),
 }))
 vi.mock("../../../src/features/fees/fpcRefuel", () => ({ maybeRefuelFpc: vi.fn() }))
+// The L1 token a burn's amount counts; its symbol differs from the L2 token's.
+const SUSDS = `0x${"5d".repeat(20)}`
+const l1Symbol = async (token: string) => (token === SUSDS ? "sUSDS" : "DAI")
+vi.mock("../../../src/features/sipa/loadDepositFacts", () => ({
+  tokenMetadata: async (_config: unknown, token: string) => ({
+    symbol: await l1Symbol(token),
+    decimals: 18,
+  }),
+}))
 // The escrow's recovery account and salt derive from the passkey secret; an unlocked session
 // answers it.
 const MASTER_SECRET = { toString: () => `0x${"11".repeat(32)}` }
 const mockSecretKey = vi.fn(async () => MASTER_SECRET as never)
-vi.mock("../../../src/platform/auth/useAuthenticator", () => ({
-  getAuthService: () => ({ getSecretKey: mockSecretKey }),
-}))
+const fakeAuth = () => ({ getSecretKey: mockSecretKey })
 
 // planSwapOnWithdraw stays real, which is what makes the escrow assertions below meaningful. The
 // rescan's event source reads PXE; the test hands it the events directly.
@@ -111,9 +118,13 @@ const { planSwapLeg, rescanWithdrawals, submitSponsoredWithdrawal } = await impo
 
 const { getOperationStore } = await import("../../../src/features/operations/operations")
 const { activeNamespace, closeSession, switchSession, session } = await import(
-  "../../../src/platform/session"
+  "../../../src/session/session"
 )
-beforeEach(() => void switchSession(activeNamespace()))
+const { pageSessionDeps } = await import("../../../src/app/sessionDeps")
+beforeEach(
+  () =>
+    void switchSession(activeNamespace(testCore().device), pageSessionDeps(testPage(fakeAuth()))),
+)
 afterEach(closeSession)
 const withdrawals = () => session().withdrawals
 const clearWithdrawals = () =>
@@ -130,7 +141,7 @@ const deps = () =>
     contractService: {},
     screener: { screen: async () => ({ compliant: true }) },
     tokenService: {
-      fetchTokenInformation: async () => ({ symbol: "DAI", decimals: 18 }),
+      fetchTokenInformation: async () => ({ symbol: "oxDAI", decimals: 18 }),
       getTokenContract: vi.fn(async () => ({} as never)),
       exitToL1PrivateSponsored: vi.fn(async () => ({
         txHash: L2_TX,
@@ -141,6 +152,13 @@ const deps = () =>
       })),
     },
   } as unknown as Parameters<typeof submitSponsoredWithdrawal>[0])
+
+const rescanDeps = () => ({
+  store: withdrawals(),
+  deployment: async () => WIRED_TUPLE as never,
+  l1Symbol,
+  wake: () => {},
+})
 
 describe("submitSponsoredWithdrawal", () => {
   beforeEach(async () => {
@@ -154,6 +172,7 @@ describe("submitSponsoredWithdrawal", () => {
     expect(record.phase).toBe("l2_mined")
     expect(record.rawAmount).toBe(parseUnits("120", 18).toString())
     expect(record.relayerTip).toBe(WITHDRAW_RELAYER_TIP.toString())
+    expect(record.tokenSymbol).toBe("DAI")
     const stored = await withdrawals().get(record.localId)
     expect(stored?.relayerTip).toBe(WITHDRAW_RELAYER_TIP.toString())
   })
@@ -391,10 +410,6 @@ describe("submitSponsoredWithdrawal — swap-on-withdraw", () => {
   })
 
   it("rebuilds the records a rescan finds and skips the burns already stored", async () => {
-    walletStorage.setItem(
-      "webwallet.identity",
-      JSON.stringify({ address: `0x${"1a".repeat(32)}`, claimedAt: 0 }),
-    )
     // The rescan reads the account's burns only where the withdrawal rails resolve.
     mockTuple.mockReturnValue(WIRED_TUPLE)
     const d = deps()
@@ -425,11 +440,14 @@ describe("submitSponsoredWithdrawal — swap-on-withdraw", () => {
       },
     ])
 
-    const rebuilt = await rescanWithdrawals(d.wallet, [{ tokenService: d.tokenService }])
+    const rebuilt = await rescanWithdrawals(rescanDeps())(d.wallet, d.account, [
+      { tokenService: d.tokenService },
+    ])
 
     expect(rebuilt).toHaveLength(1)
     // The events name the address the burn pays, so a rebuilt escrow burn shows the escrow.
     expect(rebuilt[0]).toMatchObject({
+      tokenSymbol: "DAI",
       l2TxHash: `0x${"0b".repeat(32)}`,
       phase: "l2_mined",
       amount: "60",
@@ -449,75 +467,54 @@ describe("submitSponsoredWithdrawal — swap-on-withdraw", () => {
     expect([...(await withdrawals().all())].sort((a, b) => b.startTime - a.startTime)).toHaveLength(
       2,
     )
-    // Memoized per page load and token: a second call is the same pass, and a token a later call
-    // adds is scanned then.
-    const scans = scannedEvents.mock.calls.length
-    scannedEvents.mockResolvedValue([])
-    const savings = {
-      fetchTokenInformation: async () => ({
-        ...(await d.tokenService.fetchTokenInformation()),
-        symbol: "sUSDS",
-      }),
-      getTokenContract: vi.fn(async () => ({} as never)),
-    }
-    const again = await rescanWithdrawals(d.wallet, [
-      { tokenService: d.tokenService },
+  })
+
+  it("names a Savings burn in its bridge's underlying shares, not the token it pays out", async () => {
+    mockTuple.mockReturnValue(WIRED_TUPLE)
+    const d = deps()
+    scannedEvents.mockResolvedValue([
       {
-        tokenService: savings,
-        tuple: { ...WIRED_TUPLE, l2Token: `0x${"5a".repeat(32)}` } as never,
+        txHash: `0x${"0c".repeat(32)}`,
+        blockNumber: 60,
+        executor: getAddress(WIRED_TUPLE.plainWithdrawalExecutor),
+        withdrawalFee: 0n,
+        l1Recipient: RECIPIENT,
+        amount: parseUnits("10", 18),
+        proverTip: 0n,
+        relayerTip: WITHDRAW_RELAYER_TIP,
       },
     ])
-    expect(again).toEqual(rebuilt)
-    expect(scannedEvents.mock.calls.length).toBe(scans + 1)
+
+    const [record] = await rescanWithdrawals(rescanDeps())(d.wallet, d.account, [
+      {
+        tokenService: d.tokenService,
+        tuple: { ...WIRED_TUPLE, l2Token: `0x${"5c".repeat(32)}`, underlying: SUSDS } as never,
+      },
+    ])
+
+    expect(record?.tokenSymbol).toBe("sUSDS")
+    scannedEvents.mockResolvedValue([])
   })
 
   it("scans a token again when its pass could not read a burn's executor", async () => {
-    walletStorage.setItem(
-      "webwallet.identity",
-      JSON.stringify({ address: `0x${"1a".repeat(32)}`, claimedAt: 0 }),
-    )
     mockTuple.mockReturnValue(WIRED_TUPLE)
     const d = deps()
-    const token = {
-      tokenService: d.tokenService,
-      tuple: { ...WIRED_TUPLE, l2Token: `0x${"5b".repeat(32)}` } as never,
-    }
     scannedEvents.mockImplementation(async (source) => {
       await source.readExecutor(getAddress(WIRED_TUPLE.plainWithdrawalExecutor)).catch(() => {})
       return []
     })
     executorAt.mockRejectedValueOnce(new Error("L1 read timed out"))
+    const rescan = rescanWithdrawals(rescanDeps())
+    const token = { tokenService: d.tokenService }
     const scans = scannedEvents.mock.calls.length
 
-    await rescanWithdrawals(d.wallet, [token])
-    await rescanWithdrawals(d.wallet, [token])
-    await rescanWithdrawals(d.wallet, [token])
+    await rescan(d.wallet, d.account, [token])
+    await rescan(d.wallet, d.account, [token])
+    await rescan(d.wallet, d.account, [token])
 
     // The read that failed drops the pass; the next one reads its executor and is kept.
     expect(scannedEvents.mock.calls.length).toBe(scans + 2)
     scannedEvents.mockImplementation(async () => [])
-  })
-
-  it("fails a pass run without every executor, so the next call scans the token again", async () => {
-    walletStorage.setItem(
-      "webwallet.identity",
-      JSON.stringify({ address: `0x${"1a".repeat(32)}`, claimedAt: 0 }),
-    )
-    const d = deps()
-    scannedEvents.mockResolvedValue([])
-    const token = {
-      tokenService: d.tokenService,
-      tuple: { ...WIRED_TUPLE, l2Token: `0x${"6b".repeat(32)}` } as never,
-    }
-    const scans = scannedEvents.mock.calls.length
-
-    await expect(rescanWithdrawals(d.wallet, [{ ...token, partial: true }])).rejects.toThrow(
-      "without every executor",
-    )
-    await rescanWithdrawals(d.wallet, [token])
-    await rescanWithdrawals(d.wallet, [token])
-
-    expect(scannedEvents.mock.calls.length).toBe(scans + 2)
   })
 
   it("persists the confirm-time simulation for the detail sheet", async () => {

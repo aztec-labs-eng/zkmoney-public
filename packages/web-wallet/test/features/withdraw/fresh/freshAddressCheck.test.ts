@@ -4,6 +4,7 @@
  * pinned to the address still in the field. Nothing here blocks; the screener does that.
  */
 import { act, createElement } from "react"
+import { testPage, testCore } from "../../../support/page"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { getAddress, type Address } from "viem"
@@ -26,9 +27,12 @@ const { checkFreshAddress, useFreshAddressVerdict } = await import(
   "../../../../src/features/withdraw/freshAddressCheck"
 )
 const { activeNamespace, closeSession, switchSession, session } = await import(
-  "../../../../src/platform/session"
+  "../../../../src/session/session"
 )
-beforeEach(() => void switchSession(activeNamespace()))
+const { pageSessionDeps } = await import("../../../../src/app/sessionDeps")
+beforeEach(
+  () => void switchSession(activeNamespace(testCore().device), pageSessionDeps(testPage())),
+)
 afterEach(closeSession)
 
 const TARGET = getAddress(`0x${"dd".repeat(20)}`)
@@ -112,9 +116,11 @@ describe("useFreshAddressVerdict", () => {
   let container: HTMLDivElement
   let root: Root
   let seen: FreshAddressVerdict | undefined
+  let renders: FreshAddressVerdict[]
 
   const Probe = ({ address, waitMs }: { address: Address | null; waitMs?: number }) => {
     seen = useFreshAddressVerdict(address, waitMs)
+    renders.push(seen)
     return null
   }
   const render = (address: Address | null, waitMs?: number) =>
@@ -132,6 +138,7 @@ describe("useFreshAddressVerdict", () => {
     document.body.appendChild(container)
     root = createRoot(container)
     seen = undefined
+    renders = []
     h.client.getTransactionCount.mockReset().mockResolvedValue(0)
     h.client.getBalance.mockReset().mockResolvedValue(0n)
     h.client.getCode.mockReset().mockResolvedValue("0x")
@@ -168,6 +175,15 @@ describe("useFreshAddressVerdict", () => {
     await elapse(1)
     expect(seen).toEqual({ kind: "withdrew-before" })
     expect(h.getEntries).toHaveBeenCalled()
+  })
+
+  it("never shows a new address the last one's verdict", async () => {
+    await render(TARGET)
+    await elapse(300)
+    expect(seen).toEqual({ kind: "fresh" })
+    renders = []
+    await render(OTHER)
+    expect(renders[0]).toEqual({ kind: "checking" })
   })
 
   it("drops a result for an address no longer in the field", async () => {

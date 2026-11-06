@@ -11,15 +11,19 @@ import {
   parseKeyMetadata,
   sealMasterKey,
   selectRecoveredMsk,
+  memoryBackend,
+  openDatabase,
+  type Database,
 } from "@obsidion/front-core"
 import { provingProgress } from "@obsidion/proving-progress"
 import { deriveMskFromPrfOutput } from "@obsidion/sdk"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { walletStorage } from "../../../src/platform/storage/walletStorage"
+import { opfsBackend, walletStorage } from "../../../src/platform/storage/walletStorage"
 import {
   bytesToBase64Url,
   type DevicePosture,
   type LaptopCreation,
+  type LocalManager,
   NoPrfError,
   PhoneRequiredError,
   type PasskeyAssertRequest,
@@ -28,27 +32,24 @@ import {
   type UserAgentInfo,
   parseUserAgent,
 } from "@obsidion/passkey-web"
+import { backupReminderApplies } from "../../../src/features/backupPasskey/backupReminder"
 import type { BackupCreationDriver } from "../../../src/platform/auth/backupCreation"
 import { localRefusalCount, noteLocalRefusal } from "../../../src/platform/auth/localRefusals"
 import { statusForAttempt } from "../../../src/platform/auth/passkeyAttemptScope"
 import { WebAlphaAuthService, isUnsettled } from "../../../src/platform/auth/WebAlphaAuthService"
 import { WebPasskeyIdentityMap } from "../../../src/platform/auth/WebPasskeyIdentityMap"
-import {
-  clearActiveStorage,
-  getActiveCredentialId,
-  getActiveStorageId,
-  readCachedMsk,
-  setActiveCredentialId,
-  setActiveStorageId,
-  storageIdFromSecret,
-} from "../../../src/platform/storage/activeStorage"
+import { storageIdFromSecret, cachedMsk } from "../../../src/platform/storage/activeStorage"
 import {
   FakePasskeyCeremony,
   type FakeCeremonyOptions,
   type FakeRoute,
-  MemoryStorage,
 } from "../../support/fakePasskeyCeremony"
 import { testWalletDbs } from "../../support/fakeWalletDb"
+import { writeDeviceKeys } from "../../../src/platform/storage/deviceKeys"
+import { NO_SESSION, writeSessionTuple } from "../../../src/platform/storage/activeStorage"
+import { testPage, pageOver, testCore } from "../../support/page"
+
+const deviceDb = testPage().database
 
 const h = vi.hoisted(() => ({ noteBackupSignIn: vi.fn() }))
 vi.mock("../../../src/features/onboarding/backupSignIn", () => ({
@@ -70,9 +71,9 @@ function makeService({
   ...fake
 }: ServiceOptions = {}) {
   const ceremony = new FakePasskeyCeremony(fake)
-  const storage = new MemoryStorage()
+  const storage = testPage().database
   const service = new WebAlphaAuthService({
-    storage,
+    ...pageOver(storage),
     rpId: "localhost",
     ceremony,
     posture: () => posture,
@@ -202,7 +203,7 @@ describe("metadata consent challenge", () => {
       const assert = ceremony.assert.bind(ceremony)
       vi.spyOn(ceremony, "assert").mockImplementation(async (request) => {
         const result = await assert(request)
-        setActiveStorageId("another-account")
+        await writeDeviceKeys(deviceDb, { storageId: "another-account" })
         return result
       })
       await expect(service.signMetadataChallenge(`0x${"42".repeat(32)}`)).rejects.toMatchObject({
@@ -290,17 +291,23 @@ const KEY: FakeCeremonyOptions = {
 }
 /** What a sign-in browser infers for a key: every physical route but `ble`. */
 const PHYSICAL = ["usb", "nfc", "smart-card"]
-const MAP_KEY = "obsidion_web_passkey_identity_map"
+const MAP_KEY = "obsidion.obsidion_web_passkey_identity_map"
 
 /** Another browser holding the same authenticators: a service over its own storage. */
 const freshOver = (
   ceremony: PasskeyCeremony,
-  storage: MemoryStorage = new MemoryStorage(),
+  storage: Database = openDatabase(memoryBackend()),
   posture: DevicePosture = "laptop",
-) => new WebAlphaAuthService({ storage, rpId: "localhost", ceremony, posture: () => posture })
+) =>
+  new WebAlphaAuthService({
+    ...pageOver(storage),
+    rpId: "localhost",
+    ceremony,
+    posture: () => posture,
+  })
 
-const storedEntry = async (storage: MemoryStorage, credentialId: string) =>
-  JSON.parse((await storage.getItem(MAP_KEY)) ?? '{"entries":{}}').entries[credentialId]
+const storedEntry = async (storage: Database, credentialId: string) =>
+  JSON.parse((await storage.get(MAP_KEY)) ?? '{"entries":{}}').entries[credentialId]
 
 const signWith = (provider: { createAuthWit: (m: Fr) => Promise<unknown> }) =>
   provider.createAuthWit(Fr.random())
@@ -322,17 +329,24 @@ function refusable(opts: FakeCeremonyOptions) {
   return { ceremony, state, last: () => requests.at(-1)! }
 }
 
-/** Storage whose identity-map writes can be held or refused. */
-class GatedStorage extends MemoryStorage {
-  gate?: () => Promise<void>
-  override async setItem(key: string, value: string) {
-    if (key === MAP_KEY && this.gate) await this.gate()
-    return super.setItem(key, value)
-  }
+/** A device database whose identity-map commits can be held or refused. */
+/** A write of the session pointers, not of the identity map beside them. */
+const isSessionWrite = (ops: readonly (readonly [string, string | null])[]) =>
+  ops.some(([key]) => key === "webwallet.storageId")
+
+function gatedDatabase(): Database & { gate?: () => Promise<void> } {
+  const backend = opfsBackend
+  const db: Database & { gate?: () => Promise<void> } = openDatabase({
+    ...backend,
+    async apply(ops) {
+      if (ops.some(([key]) => key === MAP_KEY) && db.gate) await db.gate()
+      return backend.apply(ops)
+    },
+  })
+  return db
 }
 
 describe("WebAlphaAuthService signing steering", () => {
-
   it("a browser that signed in with a key is steered in the same session; a recorded list wins", async () => {
     const { service, ceremony } = laptop(KEY)
     const created = await service.createPasskey("@alice")
@@ -375,7 +389,7 @@ describe("WebAlphaAuthService signing steering", () => {
   it("a heal the store refuses never fails the signature; the memo still steers", async () => {
     const { service, ceremony } = laptop(KEY)
     const created = await service.createPasskey("@alice")
-    const storage = new GatedStorage()
+    const storage = gatedDatabase()
     const fresh = freshOver(ceremony, storage)
     await fresh.recordRecoveryMetadata({
       credentialId: created.credentialId,
@@ -406,7 +420,7 @@ describe("WebAlphaAuthService signing steering", () => {
     }
 
     // Refused: the clear never lands, so the stored inference outlives this session.
-    const storage = new GatedStorage()
+    const storage = gatedDatabase()
     const fresh = freshOver(ceremony, storage)
     await fresh.recordRecoveryMetadata({
       credentialId: created.credentialId,
@@ -439,7 +453,7 @@ describe("WebAlphaAuthService signing steering", () => {
     // Held: the attempt issued before the clear lands is already unsteered.
     let release!: () => void
     const held = new Promise<void>((resolve) => (release = resolve))
-    const slow = new GatedStorage()
+    const slow = gatedDatabase()
     const slowService = freshOver(ceremony, slow)
     await slowService.recordRecoveryMetadata({
       credentialId: created.credentialId,
@@ -464,6 +478,177 @@ describe("WebAlphaAuthService signing steering", () => {
     await signWith(slowProvider)
     await flush()
     expect((await storedEntry(slow, created.credentialId)).inferredTransports).toEqual(PHYSICAL)
+  })
+})
+
+describe("WebAlphaAuthService records the backup flag", () => {
+  const flagOf = async (storage: Database, credentialId: string) =>
+    (await storedEntry(storage, credentialId))?.backupEligible
+  const recordWithout = (
+    service: WebAlphaAuthService,
+    created: Awaited<ReturnType<WebAlphaAuthService["createPasskey"]>>,
+  ) =>
+    service.recordRecoveryMetadata({
+      credentialId: created.credentialId,
+      l2Address: "0xacct",
+      pubkey: created.pubkey,
+      isMskRoot: true,
+    })
+
+  it("a sign-up records what its creation passed: unset for a key, set for a synced passkey", async () => {
+    const key = laptop(KEY)
+    const made = await key.service.createPasskey("@alice")
+    await record(key.service, made, "0xacct")
+    expect(await flagOf(key.storage, made.credentialId)).toBe(false)
+
+    const synced = phone()
+    const other = await synced.service.createPasskey("@alice")
+    await record(synced.service, other, "0xacct")
+    expect(await flagOf(synced.storage, other.credentialId)).toBe(true)
+  })
+
+  it("a record without it learns it from the next prompt, written before or after", async () => {
+    const { service, ceremony } = laptop(KEY)
+    const created = await service.createPasskey("@alice")
+
+    const before = openDatabase(memoryBackend())
+    const older = freshOver(ceremony, before)
+    await recordWithout(older, created)
+    expect(await flagOf(before, created.credentialId)).toBeUndefined()
+    await older.recoverPasskey({ credentialId: created.credentialId })
+    await flush()
+    expect(await flagOf(before, created.credentialId)).toBe(false)
+
+    const after = openDatabase(memoryBackend())
+    const fresh = freshOver(ceremony, after)
+    await fresh.recoverPasskey({ credentialId: created.credentialId })
+    await recordWithout(fresh, created)
+    expect(await flagOf(after, created.credentialId)).toBe(false)
+  })
+
+  it("a sign-in record written while the map is busy still carries the prompt's flag", async () => {
+    const { service, ceremony } = laptop(KEY)
+    const created = await service.createPasskey("@alice")
+    const storage = gatedDatabase()
+    const fresh = freshOver(ceremony, storage)
+    let release!: () => void
+    storage.gate = () => new Promise<void>((resolve) => (release = resolve))
+    // Another record's write holds the map, so the prompt's own write waits behind it.
+    const busy = fresh.recordRecoveryMetadata({
+      credentialId: "other",
+      l2Address: "0xother",
+      pubkey: created.pubkey,
+      isMskRoot: true,
+    })
+    await fresh.recoverPasskey({ credentialId: created.credentialId })
+    const written = recordWithout(fresh, created)
+    storage.gate = undefined
+    release()
+    await Promise.all([busy, written])
+    await flush()
+    expect(await flagOf(storage, created.credentialId)).toBe(false)
+  })
+
+  it("a signature teaches a record without it", async () => {
+    const { service, ceremony } = laptop(KEY)
+    const created = await service.createPasskey("@alice")
+    const storage = openDatabase(memoryBackend())
+    const fresh = freshOver(ceremony, storage)
+    await recordWithout(fresh, created)
+    const provider = fresh.providerFor({
+      credentialId: created.credentialId,
+      pubkeyHex: created.pubkey,
+      passkeys: [created.pubkey],
+    })
+    await signWith(provider)
+    await flush()
+    expect(await flagOf(storage, created.credentialId)).toBe(false)
+  })
+})
+
+describe("a Windows Hello account from Chrome on Windows 11", () => {
+  const ROW: LaptopCreation = {
+    local: true,
+    os: "windows",
+    row: "windowsChrome",
+    managers: ["gpm", "windows_hello", "1password"],
+    withdrawn: [],
+  }
+  const WINDOWS_CHROME_UA =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36"
+  const on = (userAgent: string) => async () => parseUserAgent({ userAgent })
+  /** This computer's own device-bound answer, as Windows Hello gives it. */
+  const HELLO: ServiceOptions = {
+    posture: "laptop",
+    route: "local",
+    aaguid: WINDOWS_HELLO_AAGUID,
+    backupEligible: false,
+    trustsAttachmentLabel: true,
+    userAgent: on(WINDOWS_CHROME_UA),
+  }
+  const signUp = async () => {
+    const made = makeService(HELLO)
+    made.service.useLaptopCreation(ROW)
+    const created = await made.service.createPasskey("@alice", undefined, { route: "this-device" })
+    await record(made.service, created, "0xacct")
+    return { ...made, created }
+  }
+  const browser = (ceremony: PasskeyCeremony, userAgent: string) =>
+    new WebAlphaAuthService({
+      ...pageOver(openDatabase(memoryBackend())),
+      rpId: "localhost",
+      ceremony,
+      posture: () => "laptop",
+      userAgent: on(userAgent),
+    })
+
+  it("records the backup flag unset, so Home reminds it to add a backup", async () => {
+    const { storage, created } = await signUp()
+    const entry = await new WebPasskeyIdentityMap(storage, "localhost").get(created.credentialId)
+    expect(entry?.backupEligible).toBe(false)
+    expect(
+      backupReminderApplies({
+        enabled: true,
+        record: entry,
+        noAddSaved: true,
+        backupOnChain: false,
+        dismissed: false,
+      }),
+    ).toBe(true)
+  })
+
+  it("signs back in with the same secret on Windows: on its record, by tag, and with no record", async () => {
+    const { service, ceremony, created } = await signUp()
+    service.clear()
+    const recovered = await service.recoverPasskey({ credentialId: created.credentialId })
+    expect(recovered.candidates.second?.toString()).toBe(created.secretKey.toString())
+    const adopted = await service.adoptAccountPasskey(accountOf(rootKey(created)))
+    expect(adopted.candidates.second?.toString()).toBe(created.secretKey.toString())
+    const fresh = await browser(ceremony, WINDOWS_CHROME_UA).recoverPasskey({})
+    expect(fresh.candidates.second?.toString()).toBe(created.secretKey.toString())
+  })
+
+  it("is refused at sign-in off Windows, where creation admits no device-bound passkey of its own", async () => {
+    const { ceremony, created } = await signUp()
+    await expect(
+      browser(ceremony, MAC_CHROME_UA).recoverPasskey({ credentialId: created.credentialId }),
+    ).rejects.toMatchObject({ name: "DeviceBoundPasskeyError" })
+  })
+
+  it("is offered only where the build withdraws nothing", async () => {
+    const service = (withdrawnManagers?: readonly LocalManager[]) =>
+      new WebAlphaAuthService({
+        ...pageOver(openDatabase(memoryBackend())),
+        rpId: "localhost",
+        posture: () => "laptop",
+        laptopCreation: async () => ROW,
+        ...(withdrawnManagers ? { withdrawnManagers } : {}),
+      })
+    expect(await service().probeLaptopCreation()).toEqual(ROW)
+    expect(await service(["windows_hello"]).probeLaptopCreation()).toEqual({
+      ...ROW,
+      managers: ["gpm", "1password"],
+    })
   })
 })
 
@@ -494,7 +679,7 @@ describe("WebAlphaAuthService learns transports from sign-in", () => {
   it("a record written after a key sign-in on a fresh browser carries the inference", async () => {
     const { service, ceremony } = laptop(KEY)
     const created = await service.createPasskey("@alice")
-    const storage = new MemoryStorage()
+    const storage = testPage().database
     const fresh = freshOver(ceremony, storage)
     await fresh.recoverPasskey({ credentialId: created.credentialId })
     await recordWithout(fresh, created)
@@ -518,7 +703,7 @@ describe("WebAlphaAuthService learns transports from sign-in", () => {
     const restore = stubLocalStorage()
     try {
       const ceremony = new FakePasskeyCeremony({ route: "cross-device", ...KEY })
-      const storage = new GatedStorage()
+      const storage = gatedDatabase()
       const service = freshOver(ceremony, storage)
       const created = await service.createPasskey("@alice")
       await recordWithout(service, created)
@@ -541,7 +726,7 @@ describe("WebAlphaAuthService learns transports from sign-in", () => {
     const restore = stubLocalStorage()
     try {
       const { ceremony, state, last } = refusable(KEY)
-      const storage = new GatedStorage()
+      const storage = gatedDatabase()
       const service = freshOver(ceremony, storage)
       const created = await service.createPasskey("@alice")
       await recordWithout(service, created)
@@ -565,10 +750,11 @@ describe("WebAlphaAuthService learns transports from sign-in", () => {
       await expect(signWith(provider)).rejects.toMatchObject({ name: "NotAllowedError" })
       state.refuse = false
       service.clear()
-      // The unlock completes while the clear still holds the map: its heal is queued, not awaited.
-      await service.unlock(deriveFor(created, "0xacct"), {})
-      expect(service.isUnlocked()).toBe(true)
+      // The unlock's commit waits behind the clear's map write; its heal is queued, not awaited.
+      const unlocking = service.unlock(deriveFor(created, "0xacct"), {})
       release()
+      await unlocking
+      expect(service.isUnlocked()).toBe(true)
       await flush()
       expect((await storedEntry(storage, created.credentialId)).inferredTransports).toEqual(
         PHYSICAL,
@@ -584,7 +770,7 @@ describe("WebAlphaAuthService learns transports from sign-in", () => {
 })
 
 describe("WebAlphaAuthService learns where a synced passkey answered", () => {
-  const answered = async (storage: MemoryStorage, credentialId: string) =>
+  const answered = async (storage: Database, credentialId: string) =>
     (await storedEntry(storage, credentialId))?.answered
 
   /** A service holding a record for a passkey a phone made over QR. */
@@ -646,11 +832,10 @@ describe("WebAlphaAuthService learns where a synced passkey answered", () => {
   it("a cancelled sign-in records nothing, then or when the record is next written", async () => {
     const restore = stubLocalStorage()
     try {
-      const { withWebLock } = await import("../../../src/platform/storage/webLock")
       const { service, storage, created } = await recorded()
       let release!: () => void
       const held = new Promise<void>((resolve) => (release = resolve))
-      const holding = withWebLock("webwallet.passkey-identity-map", () => held)
+      const holding = storage.write(() => held)
       const ctrl = new AbortController()
       await service.recoverPasskey({ credentialId: created.credentialId, signal: ctrl.signal })
       ctrl.abort()
@@ -668,9 +853,9 @@ describe("WebAlphaAuthService learns where a synced passkey answered", () => {
 
   it("an answer seen by an attempt cancelled afterwards never reaches a later record", async () => {
     const { ceremony, created } = await recorded()
-    const storage = new MemoryStorage()
+    const storage = testPage().database
     const fresh = new WebAlphaAuthService({
-      storage,
+      ...pageOver(storage),
       rpId: "localhost",
       ceremony,
       posture: () => "laptop",
@@ -697,9 +882,9 @@ describe("WebAlphaAuthService learns where a synced passkey answered", () => {
 
   it("the key-settling second assertion teaches too", async () => {
     const { ceremony, created } = await recorded()
-    const storage = new MemoryStorage()
+    const storage = openDatabase(memoryBackend())
     const fresh = new WebAlphaAuthService({
-      storage,
+      ...pageOver(storage),
       rpId: "localhost",
       ceremony,
       posture: () => "laptop",
@@ -722,7 +907,7 @@ describe("WebAlphaAuthService learns where a synced passkey answered", () => {
 
   it("a write the store refuses never fails the signature", async () => {
     const { ceremony, created } = await recorded()
-    const storage = new GatedStorage()
+    const storage = gatedDatabase()
     const fresh = freshOver(ceremony, storage)
     await fresh.recordRecoveryMetadata({
       credentialId: created.credentialId,
@@ -744,7 +929,6 @@ describe("WebAlphaAuthService learns where a synced passkey answered", () => {
 })
 
 describe("WebAlphaAuthService.createPasskey", () => {
-
   it("laptop: waits five minutes, under the signal its caller can end", async () => {
     const { service, ceremony } = laptop()
     const controller = new AbortController()
@@ -771,7 +955,7 @@ describe("WebAlphaAuthService.createPasskey", () => {
     })
     try {
       const service = new WebAlphaAuthService({
-        storage: new MemoryStorage(),
+        ...pageOver(testPage().database),
         rpId: "localhost",
         ceremony: new FakePasskeyCeremony({ route: "local", aaguid: WINDOWS_HELLO_AAGUID }),
         posture: () => "laptop",
@@ -903,9 +1087,7 @@ describe("WebAlphaAuthService.createPasskey", () => {
       ).rejects.toThrow("laptop creation was not offered")
     })
 
-    it.each([
-      ["Safari's row", "macSafari", true],
-    ] as const)(
+    it.each([["Safari's row", "macSafari", true]] as const)(
       "an Apple answer with no key is refused with no follow-up, and the next probe on %s keeps 1Password alone",
       async (_, name, trusted) => {
         const managers = ["apple", "1password"] as const
@@ -925,7 +1107,7 @@ describe("WebAlphaAuthService.createPasskey", () => {
           prfAtAssert: false,
         })
         const service = new WebAlphaAuthService({
-          storage: new MemoryStorage(),
+          ...pageOver(testPage().database),
           rpId: "localhost",
           ceremony,
           posture: () => "laptop",
@@ -956,7 +1138,7 @@ describe("WebAlphaAuthService.createPasskey", () => {
         withdrawn: ["apple"],
       }
       const service = new WebAlphaAuthService({
-        storage: new MemoryStorage(),
+        ...pageOver(testPage().database),
         rpId: "localhost",
         ceremony: new FakePasskeyCeremony({ route: "local", aaguid: APPLE_ICLOUD_AAGUID }),
         posture: () => "laptop",
@@ -973,7 +1155,7 @@ describe("WebAlphaAuthService.createPasskey", () => {
     it("under the e2e seam the request still asks this device, with no hints", async () => {
       const ceremony = new FakePasskeyCeremony({ route: "local", aaguid: GPM_AAGUID })
       const service = new WebAlphaAuthService({
-        storage: new MemoryStorage(),
+        ...pageOver(testPage().database),
         rpId: "localhost",
         ceremony,
         posture: () => "laptop",
@@ -1056,7 +1238,7 @@ describe("WebAlphaAuthService.createPasskey", () => {
       })
       try {
         const service = new WebAlphaAuthService({
-          storage: new MemoryStorage(),
+          ...pageOver(testPage().database),
           rpId: "localhost",
           ceremony: new FakePasskeyCeremony({ route: "local", aaguid: GPM_AAGUID }),
           posture: () => "laptop",
@@ -1123,7 +1305,7 @@ describe("WebAlphaAuthService on a browser that mislabels a cross-device answer"
         attachment: "platform",
       })
       const service = new WebAlphaAuthService({
-        storage: new MemoryStorage(),
+        ...pageOver(testPage().database),
         rpId: "localhost",
         ceremony,
         posture: () => "laptop",
@@ -1140,7 +1322,6 @@ describe("WebAlphaAuthService on a browser that mislabels a cross-device answer"
 })
 
 describe("WebAlphaAuthService.recoverPasskey", () => {
-
   it("laptop: a locally answered assertion is admitted, and the recovery alone commits nothing", async () => {
     const restore = stubLocalStorage()
     try {
@@ -1158,7 +1339,7 @@ describe("WebAlphaAuthService.recoverPasskey", () => {
       expect(recovered.expectedAddress).toBe("0xabc")
       // Nothing moves until the caller anchors and commits the candidate.
       expect(await service.getSecretKey()).toBeUndefined()
-      expect(getActiveCredentialId()).toBe(created.credentialId)
+      expect(testCore().device.get().credentialId).toBe(created.credentialId)
     } finally {
       restore()
     }
@@ -1214,7 +1395,7 @@ describe("WebAlphaAuthService.recoverPasskey", () => {
     const created = await service.createPasskey("@alice")
     // New service over EMPTY storage — same ceremony (the "synced credential").
     const fresh = new WebAlphaAuthService({
-      storage: new MemoryStorage(),
+      ...pageOver(testPage().database),
       rpId: "localhost",
       ceremony,
       posture: () => "laptop",
@@ -1236,7 +1417,7 @@ describe("WebAlphaAuthService.beginRecovery", () => {
     const { service, ceremony } = laptop(opts)
     const created = await service.createPasskey("@alice")
     const fresh = new WebAlphaAuthService({
-      storage: new MemoryStorage(),
+      ...pageOver(testPage().database),
       rpId: "localhost",
       ceremony,
       posture: () => "laptop",
@@ -1441,7 +1622,7 @@ describe("WebAlphaAuthService.unlock", () => {
     const restore = stubLocalStorage()
     try {
       const { service, ceremony } = laptop()
-      setActiveCredentialId("unknown-credential")
+      await writeDeviceKeys(deviceDb, { credentialId: "unknown-credential" })
       await expect(service.unlock(async () => "0x", {})).rejects.toThrow(/enter with your passkey/)
       expect(ceremony.assertRequests).toHaveLength(0)
     } finally {
@@ -1457,10 +1638,10 @@ describe("WebAlphaAuthService.unlock", () => {
       await record(service, a, "0xa")
       const b = await service.createPasskey("@bob")
       await record(service, b, "0xb")
-      setActiveStorageId("storage-of-a")
+      await writeDeviceKeys(deviceDb, { storageId: "storage-of-a" })
       await expect(service.unlock(async () => "0xb", {})).rejects.toThrow(/enter with your passkey/)
       expect(ceremony.assertRequests).toHaveLength(0)
-      expect(getActiveStorageId()).toBe("storage-of-a")
+      expect(testCore().device.get().storageId).toBe("storage-of-a")
       expect(await service.getSecretKey()).toBeUndefined()
     } finally {
       restore()
@@ -1519,7 +1700,7 @@ describe("WebAlphaAuthService.unlock", () => {
       release()
       await expect(pending).rejects.toMatchObject({ name: "SessionChangedError" })
       expect((await service.getSecretKey())?.toString()).toBe(b.secretKey.toString())
-      expect(readCachedMsk()?.credentialId).toBe(b.credentialId)
+      expect(cachedMsk(testCore().device.get())?.credentialId).toBe(b.credentialId)
     } finally {
       restore()
     }
@@ -1532,13 +1713,13 @@ describe("WebAlphaAuthService.unlock", () => {
       const a = await service.createPasskey("@alice")
       await record(service, a, "0xa")
       await service.commitSecret({ secretKey: a.secretKey, authProvider: a.authProvider })
-      expect(getActiveCredentialId()).toBe(a.credentialId)
+      expect(testCore().device.get().credentialId).toBe(a.credentialId)
 
       service.clear()
       const b = await service.createPasskey("@bob")
       await record(service, b, "0xb")
       // Bob is now the newest root on the device, but Alice's session is the active one.
-      setActiveCredentialId(a.credentialId)
+      await writeDeviceKeys(deviceDb, { credentialId: a.credentialId })
       service.clear()
       await service.unlock(deriveFor(a, "0xa"), {})
       expect((await service.getSecretKey())?.toString()).toBe(a.secretKey.toString())
@@ -1566,7 +1747,7 @@ describe("WebAlphaAuthService.unlock", () => {
       ).rejects.toMatchObject({
         name: "RotatedCredentialError",
       })
-      expect(getActiveCredentialId()).toBe(a.credentialId)
+      expect(testCore().device.get().credentialId).toBe(a.credentialId)
     } finally {
       restore()
     }
@@ -1574,7 +1755,6 @@ describe("WebAlphaAuthService.unlock", () => {
 })
 
 describe("WebAlphaAuthService key/session management", () => {
-
   it("getDerivedKey: unknown domain throws pre-unlock; known domain derives 32 bytes post-commit", async () => {
     const { service } = laptop()
     await expect(service.getDerivedKey("nope")).rejects.toThrow(/Unknown derived-key domain/)
@@ -1616,7 +1796,6 @@ describe("WebAlphaAuthService key/session management", () => {
 })
 
 describe("WebAlphaAuthService — one prompt, no picker", () => {
-
   it("a discoverable recovery names no passkey, so one this browser never recorded may answer", async () => {
     const { service, ceremony } = laptop()
     const created = await service.createPasskey("@bob")
@@ -2167,7 +2346,7 @@ describe("WebAlphaAuthService backup passkeys", () => {
       expect(h.noteBackupSignIn).toHaveBeenCalledTimes(1)
       expect(h.noteBackupSignIn).toHaveBeenCalledWith("cancelled", { backupEligible: true })
       expect(service.isUnlocked()).toBe(false)
-      expect(getActiveCredentialId()).toBe(backup.credentialId)
+      expect(testCore().device.get().credentialId).toBe(backup.credentialId)
     } finally {
       restore()
     }
@@ -2346,7 +2525,7 @@ describe("WebAlphaAuthService a chosen key", () => {
       service.clear()
       await service.unlock(deriveFor(root, ADDR, passkeys), { credentialId: root.credentialId })
       expect(write).not.toHaveBeenCalled()
-      expect(getActiveCredentialId()).toBe(root.credentialId)
+      expect(testCore().device.get().credentialId).toBe(root.credentialId)
       service.clear()
       await service.unlock(deriveFor(root, ADDR, passkeys), { credentialId: backup.credentialId })
       expect(write).toHaveBeenCalledWith({
@@ -2356,7 +2535,7 @@ describe("WebAlphaAuthService a chosen key", () => {
       })
 
       const reloaded = new WebAlphaAuthService({
-        storage,
+        ...pageOver(storage),
         rpId: "localhost",
         ceremony,
         posture: () => "phone",
@@ -2366,7 +2545,7 @@ describe("WebAlphaAuthService a chosen key", () => {
       const asked = ceremony.assertRequests.length
       expect((await reloaded.getSecretKey())?.toString()).toBe(root.secretKey.toString())
       expect(ceremony.assertRequests.length).toBe(asked)
-      expect(getActiveCredentialId()).toBe(backup.credentialId)
+      expect(testCore().device.get().credentialId).toBe(backup.credentialId)
     } finally {
       restore()
     }
@@ -2407,7 +2586,7 @@ describe("WebAlphaAuthService a chosen key", () => {
     })
     const reload = (signer: { credentialId: string; pubkey: string }) => {
       const fresh = new WebAlphaAuthService({
-        storage: made.storage,
+        ...pageOver(made.storage),
         rpId: "localhost",
         ceremony,
         posture: () => "phone",
@@ -2427,7 +2606,7 @@ describe("WebAlphaAuthService a chosen key", () => {
       )
       service.clear()
       await service.unlock(deriveFor(root, ADDR, passkeys), { credentialId: backup.credentialId })
-      expect(getActiveCredentialId()).toBe(backup.credentialId)
+      expect(testCore().device.get().credentialId).toBe(backup.credentialId)
       const fresh = reload({ credentialId: root.credentialId, pubkey: root.pubkey })
       expect((await fresh.getSecretKey())?.toString()).toBe(root.secretKey.toString())
     } finally {
@@ -2442,12 +2621,12 @@ describe("WebAlphaAuthService a chosen key", () => {
       service.clear()
       // No writer: the stored account still names the sign-up key.
       await service.unlock(deriveFor(root, ADDR, passkeys), { credentialId: backup.credentialId })
-      expect(getActiveCredentialId()).toBe(backup.credentialId)
+      expect(testCore().device.get().credentialId).toBe(backup.credentialId)
       const asked = ceremony.assertRequests.length
       const fresh = reload({ credentialId: root.credentialId, pubkey: root.pubkey })
       expect((await fresh.getSecretKey())?.toString()).toBe(root.secretKey.toString())
       expect(ceremony.assertRequests.length).toBe(asked)
-      expect(getActiveCredentialId()).toBe(backup.credentialId)
+      expect(testCore().device.get().credentialId).toBe(backup.credentialId)
     } finally {
       restore()
     }
@@ -2462,7 +2641,7 @@ describe("WebAlphaAuthService a chosen key", () => {
       // The sign-up key's record names a key the cache's record does not.
       const stranger = reload({ credentialId: bob.credentialId, pubkey: bob.pubkey })
       expect(await stranger.getSecretKey()).toBeUndefined()
-      expect(getActiveStorageId()).toBeNull()
+      expect(testCore().device.get().storageId).toBeNull()
     } finally {
       restore()
     }
@@ -2512,7 +2691,7 @@ describe("WebAlphaAuthService a chosen key", () => {
         )
       }
       expect(ceremony.assertRequests).toEqual([])
-      expect(getActiveCredentialId()).toBe(root.credentialId)
+      expect(testCore().device.get().credentialId).toBe(root.credentialId)
     } finally {
       restore()
     }
@@ -2548,7 +2727,7 @@ describe("WebAlphaAuthService cached key restore", () => {
     await record(service, created, opts.address ?? ADDR)
     await service.commitSecret({ secretKey: created.secretKey, authProvider: created.authProvider })
     const fresh = new WebAlphaAuthService({
-      storage,
+      ...pageOver(storage),
       rpId: "localhost",
       ceremony,
       posture: () => "laptop",
@@ -2638,21 +2817,26 @@ describe("WebAlphaAuthService cached key restore", () => {
   })
 
   it.each([
-    ["the storage pointer moved", () => setActiveStorageId("someone-else")],
-    ["the credential pointer moved", () => setActiveCredentialId("someone-else")],
+    ["the storage pointer moved", () => writeDeviceKeys(deviceDb, { storageId: "someone-else" })],
+    [
+      "the credential pointer moved",
+      () => writeDeviceKeys(deviceDb, { credentialId: "someone-else" }),
+    ],
   ])(
     "%s: the cache is dropped, this tab's own pointers stay, the service stays locked",
     async (_name, disturb) => {
       const { restore, fresh, inject } = await committed()
       try {
-        disturb()
-        await walletStorage.flush()
-        const session = { storageId: getActiveStorageId()!, credentialId: getActiveCredentialId() }
+        await disturb()
+        const session = {
+          storageId: testCore().device.get().storageId!,
+          credentialId: testCore().device.get().credentialId,
+        }
         inject()
         expect(await fresh.getSecretKey()).toBeUndefined()
         expect(walletStorage.getItem("webwallet.msk")).toBeNull()
-        expect(getActiveStorageId()).toBe(session.storageId)
-        expect(getActiveCredentialId()).toBe(session.credentialId)
+        expect(testCore().device.get().storageId).toBe(session.storageId)
+        expect(testCore().device.get().credentialId).toBe(session.credentialId)
       } finally {
         restore()
       }
@@ -2704,10 +2888,9 @@ describe("WebAlphaAuthService cached key restore", () => {
   it("a key that does not re-derive the storage id is dropped", async () => {
     const { restore, fresh, inject } = await committed()
     try {
-      const cache = JSON.parse(walletStorage.getItem("webwallet.msk")!)
+      const cache = JSON.parse(testCore().device.get().msk!)
       cache.msk = Fr.random().toString()
-      walletStorage.setItem("webwallet.msk", JSON.stringify(cache))
-      await walletStorage.flush()
+      await writeDeviceKeys(deviceDb, { msk: JSON.stringify(cache) })
       inject()
       expect(await fresh.getSecretKey()).toBeUndefined()
       expect(walletStorage.getItem("webwallet.msk")).toBeNull()
@@ -2729,7 +2912,7 @@ describe("WebAlphaAuthService cached key restore", () => {
       expect(await fresh.getSecretKey()).toBeUndefined()
       expect(fresh.isUnlocked()).toBe(false)
       expect(walletStorage.getItem("webwallet.msk")).toBeNull()
-      expect(getActiveStorageId()).toBeNull()
+      expect(testCore().device.get().storageId).toBeNull()
     } finally {
       restore()
     }
@@ -2755,7 +2938,7 @@ describe("WebAlphaAuthService cached key restore", () => {
       await hung.ready
       // The user finished a ceremony for another account in this tab meanwhile.
       const other = new WebAlphaAuthService({
-        storage,
+        ...pageOver(storage),
         rpId: "localhost",
         ceremony,
         posture: () => "laptop",
@@ -2788,7 +2971,7 @@ describe("WebAlphaAuthService cached key restore", () => {
       const pending = fresh.getSecretKey()
       await hung.ready
       fresh.clear()
-      clearActiveStorage()
+      await writeSessionTuple(deviceDb, NO_SESSION)
       hung.release()
       expect(await pending).toBeUndefined()
       expect(fresh.isUnlocked()).toBe(false)
@@ -2804,7 +2987,7 @@ describe("WebAlphaAuthService cached key restore", () => {
       inject()
       fresh.lockOut()
       expect(await fresh.getSecretKey()).toBeUndefined()
-      expect(readCachedMsk()).not.toBeNull()
+      expect(cachedMsk(testCore().device.get())).not.toBeNull()
       await fresh.commitSecret({
         secretKey: created.secretKey,
         authProvider: fresh.providerFor({
@@ -2833,7 +3016,7 @@ describe("WebAlphaAuthService cached key restore", () => {
       service.clear()
       expect((await service.getSecretKey())?.toString()).toBe(created.secretKey.toString())
       const { clearCachedMsk } = await import("../../../src/platform/storage/activeStorage")
-      clearCachedMsk()
+      await clearCachedMsk(deviceDb)
       await walletStorage.flush()
       service.clear()
       expect(await service.getSecretKey()).toBeUndefined()
@@ -2854,7 +3037,10 @@ describe("WebAlphaAuthService cached key restore", () => {
         secretKey: first.secretKey,
         authProvider: first.authProvider,
       })
-      const held = { id: getActiveStorageId(), cred: getActiveCredentialId() }
+      const held = {
+        id: testCore().device.get().storageId,
+        cred: testCore().device.get().credentialId,
+      }
 
       // The namespace write lands, the credential write does not: the pair must not be left split
       // across two accounts, which would run this key against the other one's records.
@@ -2868,9 +3054,12 @@ describe("WebAlphaAuthService cached key restore", () => {
       ).rejects.toThrow()
       refused = []
 
-      expect(getActiveStorageId()).toBe(held.id)
-      expect(getActiveCredentialId()).toBe(held.cred)
-      expect(readCachedMsk()).toMatchObject({ storageId: held.id, credentialId: held.cred })
+      expect(testCore().device.get().storageId).toBe(held.id)
+      expect(testCore().device.get().credentialId).toBe(held.cred)
+      expect(cachedMsk(testCore().device.get())).toMatchObject({
+        storageId: held.id,
+        credentialId: held.cred,
+      })
       // The session that was there is still the one this tab holds.
       expect((await service.getSecretKey())?.toString()).toBe(first.secretKey.toString())
     } finally {
@@ -2889,9 +3078,9 @@ describe("WebAlphaAuthService cached key restore", () => {
       }),
     ).rejects.toThrow()
     expect(service.isUnlocked()).toBe(false)
-    expect(getActiveStorageId()).toBeNull()
-    expect(getActiveCredentialId()).toBeNull()
-    expect(readCachedMsk()).toBeNull()
+    expect(testCore().device.get().storageId).toBeNull()
+    expect(testCore().device.get().credentialId).toBeNull()
+    expect(cachedMsk(testCore().device.get())).toBeNull()
     expect(service.keyCached()).toBe(false)
   })
 
@@ -2912,8 +3101,8 @@ describe("WebAlphaAuthService cached key restore", () => {
       })
       expect(service.isUnlocked()).toBe(true)
       expect(walletStorage.getItem("webwallet.msk")).toBeNull()
-      expect(getActiveStorageId()).not.toBeNull()
-      expect(getActiveCredentialId()).toBeNull()
+      expect(testCore().device.get().storageId).not.toBeNull()
+      expect(testCore().device.get().credentialId).toBeNull()
     } finally {
       restore()
     }
@@ -2948,7 +3137,7 @@ describe("WebAlphaAuthService and the account's key set", () => {
 
   /** A second instance over the same storage, with the wallet's deriver and account reader injected. */
   const restorer = (
-    base: { ceremony: FakePasskeyCeremony; storage: MemoryStorage },
+    base: { ceremony: FakePasskeyCeremony; storage: Database },
     created: Created,
     derive: (msk: Fr, passkeys: readonly string[]) => Promise<string>,
   ) => {
@@ -3020,7 +3209,7 @@ describe("WebAlphaAuthService and the account's key set", () => {
       const fresh = freshOver(ceremony, storage)
       expect(await pubkeyOf((await fresh.getAuthProvider())!)).toBe(alice.pubkey)
       // With no session open, the newest opening record stands in.
-      clearActiveStorage()
+      await writeSessionTuple(deviceDb, NO_SESSION)
       await walletStorage.flush()
       const idle = freshOver(ceremony, storage)
       expect(await pubkeyOf((await idle.getAuthProvider())!)).toBe(bob.pubkey)
@@ -3117,13 +3306,16 @@ describe("WebAlphaAuthService and the account's key set", () => {
     const held = new Promise<void>((resolve) => (release = resolve))
     let reached!: () => void
     const published = new Promise<void>((resolve) => (reached = resolve))
-    const batch = walletStorage.batch.bind(walletStorage)
-    const spy = vi.spyOn(walletStorage, "batch").mockImplementationOnce((write) =>
-      batch(write).then(async () => {
+    const apply = opfsBackend.apply.bind(opfsBackend)
+    let armed = true
+    const spy = vi.spyOn(opfsBackend, "apply").mockImplementation((ops) => {
+      if (!armed || !isSessionWrite(ops)) return apply(ops)
+      armed = false
+      return apply(ops).then(async () => {
         reached()
         await held
-      }),
-    )
+      })
+    })
     return { published, release, restore: () => spy.mockRestore() }
   }
 
@@ -3133,11 +3325,15 @@ describe("WebAlphaAuthService and the account's key set", () => {
     const held = new Promise<void>((resolve) => (release = resolve))
     let reach!: () => void
     const reached = new Promise<void>((resolve) => (reach = resolve))
-    const batch = walletStorage.batch.bind(walletStorage)
-    const spy = vi.spyOn(walletStorage, "batch").mockImplementationOnce(async (write) => {
-      reach()
-      await held
-      return batch(write)
+    const apply = opfsBackend.apply.bind(opfsBackend)
+    let armed = true
+    const spy = vi.spyOn(opfsBackend, "apply").mockImplementation(async (ops) => {
+      if (armed && isSessionWrite(ops)) {
+        armed = false
+        reach()
+        await held
+      }
+      return apply(ops)
     })
     return { reached, release, restore: () => spy.mockRestore() }
   }
@@ -3169,7 +3365,7 @@ describe("WebAlphaAuthService and the account's key set", () => {
         authProvider: provider,
       })
       await hold.reached
-      expect(getActiveCredentialId()).toBe(alice.credentialId)
+      expect(testCore().device.get().credentialId).toBe(alice.credentialId)
       // The root's pointers still stand, and the signer read waits for the backup's commit.
       const asked = service.signMetadataChallenge(`0x${"42".repeat(32)}`)
       hold.release()
@@ -3414,7 +3610,7 @@ describe("WebAlphaAuthService ceremony-free sources", () => {
       expect(ceremony.assertRequests).toHaveLength(before)
       service.clear()
       const { clearCachedMsk } = await import("../../../src/platform/storage/activeStorage")
-      clearCachedMsk()
+      await clearCachedMsk(deviceDb)
       expect(await service.recoverFromCache()).toBeUndefined()
     } finally {
       restore()
@@ -3442,7 +3638,7 @@ describe("WebAlphaAuthService ceremony-free sources", () => {
       expect(await service.recoverFromCache({ restore: false })).toBeUndefined()
       expect(proof).not.toHaveBeenCalled()
       // The disk cache is left for the next restoring read.
-      expect(readCachedMsk()?.credentialId).toBe(created.credentialId)
+      expect(cachedMsk(testCore().device.get())?.credentialId).toBe(created.credentialId)
     } finally {
       restore()
     }
@@ -3465,7 +3661,6 @@ describe("WebAlphaAuthService ceremony-free sources", () => {
 })
 
 describe("the wallet's own checks around the shared ceremony sequence", () => {
-
   it("a rotated credential is refused before the gates, on recovery and on adoption", async () => {
     // Another device's answer is exempt from the backup gate, so the gate this ordering has to
     // beat is the unreadable-flag one.
@@ -3499,9 +3694,9 @@ function dualRoute(over: FakeCeremonyOptions = {}) {
     routeFromRequest: true,
     ...over,
   })
-  const storage = new MemoryStorage()
+  const storage = testPage().database
   const service = new WebAlphaAuthService({
-    storage,
+    ...pageOver(storage),
     rpId: "localhost",
     ceremony,
     posture: () => "laptop",
@@ -3510,7 +3705,6 @@ function dualRoute(over: FakeCeremonyOptions = {}) {
 }
 
 describe("WebAlphaAuthService laptop recovery", () => {
-
   it("a laptop admits the local copy, sends no transports even with a hybrid-only record, and observes platform", async () => {
     const { service, ceremony } = dualRoute()
     const created = await service.createPasskey("@alice")
@@ -3539,14 +3733,14 @@ describe("WebAlphaAuthService laptop recovery", () => {
   it("a key-settling second assertion keeps the first attempt's observation", async () => {
     const { ceremony } = dualRoute()
     const owner = new WebAlphaAuthService({
-      storage: new MemoryStorage(),
+      ...pageOver(testPage().database),
       rpId: "localhost",
       ceremony,
       posture: () => "laptop",
     })
     const created = await owner.createPasskey("@alice")
     const fresh = new WebAlphaAuthService({
-      storage: new MemoryStorage(),
+      ...pageOver(testPage().database),
       rpId: "localhost",
       ceremony,
       posture: () => "laptop",
@@ -3563,14 +3757,14 @@ describe("WebAlphaAuthService laptop recovery", () => {
   it("a fresh browser this-device answer has no expected address and never commits unanchored", async () => {
     const { ceremony } = dualRoute()
     const owner = new WebAlphaAuthService({
-      storage: new MemoryStorage(),
+      ...pageOver(testPage().database),
       rpId: "localhost",
       ceremony,
       posture: () => "laptop",
     })
     const created = await owner.createPasskey("@alice")
     const fresh = new WebAlphaAuthService({
-      storage: new MemoryStorage(),
+      ...pageOver(testPage().database),
       rpId: "localhost",
       ceremony,
       posture: () => "laptop",
@@ -3627,7 +3821,6 @@ describe("WebAlphaAuthService early-refusal observation", () => {
 })
 
 describe("WebAlphaAuthService.unlock — verdicts and flights", () => {
-
   it("an answer that never evaluated the bound slot is not-reproduced", async () => {
     const restore = stubLocalStorage()
     try {
@@ -3656,9 +3849,8 @@ describe("WebAlphaAuthService.unlock — verdicts and flights", () => {
   it("a key's transports learned by a cancelled attempt never reach the record", async () => {
     const restore = stubLocalStorage()
     try {
-      const { withWebLock } = await import("../../../src/platform/storage/webLock")
       const { ceremony } = refusable(KEY)
-      const storage = new MemoryStorage()
+      const storage = testPage().database
       const service = freshOver(ceremony, storage)
       const created = await service.createPasskey("@alice")
       // A record with no creation list, the shape a sign-in's inference is offered to.
@@ -3670,7 +3862,7 @@ describe("WebAlphaAuthService.unlock — verdicts and flights", () => {
       })
       let release!: () => void
       const held = new Promise<void>((resolve) => (release = resolve))
-      const holding = withWebLock("webwallet.passkey-identity-map", () => held)
+      const holding = storage.write(() => held)
       const ctrl = new AbortController()
       await service.recoverPasskey({ credentialId: created.credentialId, signal: ctrl.signal })
       ctrl.abort()
@@ -3800,7 +3992,7 @@ describe("WebAlphaAuthService steered to the phone", () => {
         divergent: true,
       })
       const service = new WebAlphaAuthService({
-        storage: new MemoryStorage(),
+        ...pageOver(testPage().database),
         rpId: "localhost",
         ceremony,
         posture: () => "laptop",
@@ -3853,7 +4045,7 @@ describe("WebAlphaAuthService attempt scope", () => {
     const { service } = laptop()
     const created = await service.createPasskey("@alice")
     const fresh = new WebAlphaAuthService({
-      storage: new MemoryStorage(),
+      ...pageOver(testPage().database),
       rpId: "localhost",
       ceremony: (service as unknown as { ceremony: PasskeyCeremony }).ceremony,
       posture: () => "laptop",

@@ -1,11 +1,7 @@
 import type { MigrationDirectDeposit, MigrationFundingBatch } from "@obsidion/core/types"
 import type { IStorageAdapter } from "../storages/adapter"
 import { depositAmounts } from "../services/deposits/depositAmounts"
-import {
-  directDepositKey,
-  isSettledSipaPhase,
-  type SIPADepositRecord,
-} from "../services/deposits/SIPADepositStore"
+import { directDepositKey, isSettledSipaPhase, type SipaDeposit } from "../../engine/sipaDeposits"
 import { logger } from "../../utils/logger"
 
 /** One refund batch of an upgrade, as activity shows it. */
@@ -35,7 +31,7 @@ export interface UpgradeBatchItem {
 }
 
 /** A batch has arrived once its deposit is credited; a recovery to Ethereum or a failure is not. */
-export function upgradeBatchArrived(arrival?: Pick<SIPADepositRecord, "phase">): boolean {
+export function upgradeBatchArrived(arrival?: Pick<SipaDeposit, "phase">): boolean {
   return arrival?.phase === "claimed"
 }
 
@@ -45,7 +41,7 @@ export function upgradeBatchArrived(arrival?: Pick<SIPADepositRecord, "phase">):
  */
 export function upgradeBatchFigure(
   batch: Pick<UpgradeBatchItem, "amount">,
-  arrival?: SIPADepositRecord,
+  arrival?: SipaDeposit,
 ): bigint {
   if (upgradeBatchArrived(arrival) || arrival?.netAmount != null)
     return depositAmounts(arrival!).netAtomic
@@ -56,7 +52,7 @@ export function upgradeBatchFigure(
 export function upgradeRunTotal(
   legs: readonly {
     batch: Pick<UpgradeBatchItem, "amount">
-    arrival?: SIPADepositRecord
+    arrival?: SipaDeposit
   }[],
 ): bigint {
   return legs.reduce(

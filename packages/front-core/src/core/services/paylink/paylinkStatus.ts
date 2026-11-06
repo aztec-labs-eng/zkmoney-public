@@ -17,8 +17,7 @@ export const PAYLINK_STATUS_LABEL = {
  * `claimed`: claim and refund share one nullifier, and the reconciler is the
  * primary guard against a self-refund being marked `isClaimed` — this ordering is
  * defense-in-depth so a refunded row can never read as "Claimed". `migrated` ranks
- * below both (a row the v4-era reconciler already flagged keeps its truthful label)
- * and above `expired` = unclaimed past `untilClaimable`.
+ * below both and above `expired` = unclaimed past `untilClaimable`.
  */
 export function paylinkStatusFor(tx: PaylinkTransaction, nowSec: number): PaylinkStatusKind {
   if (tx.isRefunded) return "refunded"

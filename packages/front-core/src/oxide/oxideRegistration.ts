@@ -41,11 +41,19 @@ import {
 } from "@obsidion/sdk"
 
 import { composeWireNameHash } from "../core/services/wireDomain"
-import { isTerminalRegistrationPhase } from "../core/services/registration"
-import type {
-  PendingRegistrationPhase,
-  PendingRegistrationRecord,
-} from "../core/services/registration"
+import {
+  isTerminalRegistrationPhase,
+  type PendingRegistrationRecord,
+  type RegistrationRoute,
+  type RegistrationTerms,
+} from "../engine/registrationRecord"
+import {
+  currentRegistration,
+  latestRegistration,
+  type RegistrationEvent,
+  type RegistrationStore,
+} from "../engine/registrations"
+import { loadRecords } from "../engine/persistentStore"
 import type { NameClaimResponse, SignedTermsResponse } from "@obsidion/core/types"
 import type { AccountServiceClient } from "./accountServiceClient"
 import {
@@ -58,7 +66,8 @@ import { deriveBootstrapKey, type FieldLike } from "./oxideAccountKeys"
 import { credentialIdToMetadata } from "./oxideWebAuthn"
 import { consentDigest } from "./oxideRegistrationData"
 import { signAccountDigest, type AccountPasskey } from "./accountSignature"
-import type { SipaOrigin } from "../core/services/deposits/SIPADepositStore"
+import type { SipaOrigin } from "../engine/sipaDeposits"
+import { bestEffort } from "../engine/errors"
 import { logger } from "../utils/logger"
 
 /**
@@ -253,8 +262,8 @@ function retryDelayMs(err: unknown, floorMs: number): number {
     : floorMs
 }
 
-// Detection cadences. Confirmation (registry read) opens the in-app gate, so the loops sit at
-// seconds; a failing dependency gets the transient window.
+// Detection cadences. Confirmation (registry read) opens the in-app gate, so ticks run seconds
+// apart; a dependency that cannot answer yet gets the transient window.
 export const RESUME_TRANSIENT_RETRY_MS = 30_000
 const RESUME_DETECT_POLL_MS = 5_000
 
@@ -374,18 +383,11 @@ async function recordHoldsL2Address(
 
 // ── Store surface + detection collaborators ─────────────────────────────────────
 
-/** The store surface the session + tick drive; PendingRegistrationStore satisfies it. */
-export interface PendingRegistrationStoreLike {
-  current(): PendingRegistrationRecord | null
-  get(account: string): PendingRegistrationRecord | null
-  upsert(
-    account: string,
-    patch: Partial<PendingRegistrationRecord>,
-    fallback?: Omit<PendingRegistrationRecord, "account">,
-  ): Promise<PendingRegistrationRecord>
-  close(account: string, phase: PendingRegistrationPhase): Promise<PendingRegistrationRecord>
-  remove(account: string): Promise<void>
-}
+/** The registrations the session and the tick drive. */
+export type RegistrationRecords = Pick<RegistrationStore, "view" | "get" | "apply" | "start">
+
+/** A close that loses the name, or settles it. */
+export type RegistrationClose = Extract<RegistrationEvent, { type: "closed" | "replaced" }>
 
 /**
  * L1 deposit/sweep reads for a registration SIPA — the progress signal behind the registry read.
@@ -459,24 +461,26 @@ export interface OxideRegistrationDeps {
 }
 
 export interface OxideRegistrationSessionDeps extends OxideRegistrationDeps {
-  pendingStore: PendingRegistrationStoreLike
+  registrations: RegistrationRecords
   /** Maps an on-chain nameHash to a locally-known plaintext tag (adoption gate). */
   resolveLocalTag?: (nameHash: Hex) => Promise<string | null>
-  /** ms clock, injectable for tests. */
-  now?: () => number
   /** Written with the record at its checkpoint: the entry a verified refund of the prior address bought. */
   refundedEntry?: PendingRegistrationRecord["refundedEntry"]
   /** Written with the record at its checkpoint: the address this session replaces. */
   replaced?: PendingRegistrationRecord["replaced"]
-  /** Runs once the record is durable, before the L1 reads that can still fail the session. */
-  onCheckpoint?: (record: PendingRegistrationRecord) => Promise<void>
+  /** The terms the claim states, written with the record. */
+  termsOf?: (claim: NameClaimResponse) => RegistrationTerms
+  /** How the tag was got, written with the record. */
+  route?: RegistrationRoute
 }
 
 export interface OxideResumeDeps {
   env: OxideRegistrationEnv
   l1: RegistrationL1Reads
   deposits: RegistrationDepositReader
-  pendingStore: PendingRegistrationStoreLike
+  registrations: RegistrationRecords
+  /** Writes a close; the page closes a lost name and retracts its identity in one write. */
+  close: (record: PendingRegistrationRecord, event: RegistrationClose) => Promise<void>
   /** Lazy + account-scoped: called only for a forced tick renewing a spent-rail record's claim.
    *  Return null (or throw) when secrets are unavailable — the tick stays pending. */
   getSignDeps?: (record: PendingRegistrationRecord) => Promise<OxideSignDeps | null>
@@ -489,7 +493,8 @@ export interface OxideResumeDeps {
     owed?: { payload?: RegistrationBroadcastPayload; now?: boolean },
   ) => Promise<void>
   resolveLocalTag?: (nameHash: Hex) => Promise<string | null>
-  now?: () => number
+  /** Files a sweep the tick saw on the address's deposit record. */
+  sweepSent?: (sipa: Address, txHash: Hex) => Promise<void>
 }
 
 /**
@@ -592,8 +597,7 @@ export function startOxideRegistrationSession(
 }
 
 async function sessionBody(deps: OxideRegistrationSessionDeps): Promise<OxideSessionResult> {
-  const { env, l1, accountService, pendingStore } = deps
-  const now = deps.now ?? Date.now
+  const { env, l1, accountService, registrations } = deps
   const name = `${deps.tag}.${env.ensDomain}`
   const t0 = Date.now()
 
@@ -606,7 +610,9 @@ async function sessionBody(deps: OxideRegistrationSessionDeps): Promise<OxideSes
   logger.info("[oxideRegistration] session start:", name, "as", oxideAccount)
 
   if (eqAddr(existing, oxideAccount)) {
-    await pendingStore.close(oxideAccount, "confirmed").catch(() => {})
+    const open = latestRegistration(await loadRecords(registrations.view), oxideAccount)
+    if (open && !isTerminalRegistrationPhase(open.phase))
+      await registrations.apply(open.sipaAddress, { type: "closed", outcome: "confirmed" })
     return { status: "registered", name, oxideAccount }
   }
   if (existing !== zeroAddress) {
@@ -655,19 +661,14 @@ async function sessionBody(deps: OxideRegistrationSessionDeps): Promise<OxideSes
   // cannot identify a registration deposit, so this local seed is what credits the funds.
   await deps.seedSipaDeposit?.(seed)
 
-  // Durable checkpoint BEFORE the claim: a crash in claim / broadcast leaves an `awaiting_deposit`
-  // record the resume tick re-drives. A live record for the SAME name keeps its deposit bookmarks —
-  // but only while its address still derives: a system iteration moves the derivation, owes prior
-  // records nothing, and the fresh base simply replaces one whose address no longer reproduces.
-  const prior = pendingStore.get(oxideAccount)
-  const reentry =
-    prior !== null &&
-    !isTerminalRegistrationPhase(prior.phase) &&
-    prior.nameHash.toLowerCase() === nameHash.toLowerCase() &&
-    eqAddr(prior.sipaAddress, derivation.sipaAddress)
-  let checkpoint = prior
-  if (!reentry) {
-    const base: Omit<PendingRegistrationRecord, "account"> = {
+  // Durable checkpoint BEFORE the consent: a crash in the signing leaves an `awaiting_deposit`
+  // record the resume tick re-drives. A live record at the same address is a re-entry: it keeps its
+  // deposit bookmarks and takes the renewed terms. The account's other open records close as
+  // replaced, and stay recoverable.
+  await registrations.start({
+    type: "started",
+    record: {
+      account: oxideAccount,
       tag: deps.tag,
       nameHash,
       l2Address: deps.l2Address,
@@ -678,26 +679,12 @@ async function sessionBody(deps: OxideRegistrationSessionDeps): Promise<OxideSes
       fee: fee.toString(),
       beneficiary: deps.beneficiary,
       depositToken: env.feeToken,
-      broadcast: false,
-      phase: "awaiting_deposit",
-      retries: 0,
-      startTime: now(),
-      fundedAt: undefined,
-      fundingTxHash: undefined,
-      sweptAt: undefined,
-      sweepTxHash: undefined,
-      nextAttemptAt: undefined,
-      endTime: undefined,
       ...(deps.refundedEntry ? { refundedEntry: deps.refundedEntry } : {}),
       ...(deps.replaced ? { replaced: deps.replaced } : {}),
-    }
-    checkpoint = await pendingStore.upsert(oxideAccount, base, base)
-  }
-  try {
-    if (checkpoint) await deps.onCheckpoint?.(checkpoint)
-  } catch (err) {
-    logger.warn("[oxideRegistration] onCheckpoint failed:", err)
-  }
+    },
+    ...(deps.termsOf ? { terms: deps.termsOf(claim) } : {}),
+    ...(deps.route ? { route: deps.route } : {}),
+  })
   try {
     await deps.persistStealthScalar?.(derivation.stealthScalar)
   } catch (err) {
@@ -751,78 +738,70 @@ export interface ResumeOptions {
   expectedRecord?: { account: string; nameHash: string }
 }
 
+/** A tick's outcome, and the least time before the next tick may help. */
+export interface OxideResume {
+  outcome: OxideResumeOutcome
+  nextMs: number
+}
+
 export function resumeOxideRegistration(
   deps: OxideResumeDeps,
   opts: ResumeOptions = {},
-): Promise<OxideResumeOutcome> {
+): Promise<OxideResume> {
   return serialize(() => resumeTick(deps, opts))
 }
 
-async function resumeTick(deps: OxideResumeDeps, opts: ResumeOptions): Promise<OxideResumeOutcome> {
-  const now = deps.now ?? Date.now
+const settled = (outcome: OxideResumeOutcome): OxideResume => ({ outcome, nextMs: 0 })
+
+async function resumeTick(deps: OxideResumeDeps, opts: ResumeOptions): Promise<OxideResume> {
+  const records = await loadRecords(deps.registrations.view)
   const record = opts.expectedRecord
-    ? deps.pendingStore.get(opts.expectedRecord.account)
-    : deps.pendingStore.current()
-  if (!record) return opts.expectedRecord ? "pending" : "idle"
-  if (isTerminalRegistrationPhase(record.phase)) return "idle"
+    ? latestRegistration(records, opts.expectedRecord.account)
+    : currentRegistration(records)
+  if (!record) return settled(opts.expectedRecord ? "pending" : "idle")
+  if (isTerminalRegistrationPhase(record.phase)) return settled("idle")
   const t0 = Date.now()
-  try {
-    const outcome = await resumeTickBody(deps, opts, record)
-    logger.info(
-      "[oxideRegistration] resume tick:",
-      outcome,
-      "for",
-      record.account,
-      `phase=${record.phase} ${Date.now() - t0}ms`,
-    )
-    return outcome
-  } catch (err) {
-    logger.warn("[oxideRegistration] resume tick failed:", err)
-    await deps.pendingStore
-      .upsert(record.account, { nextAttemptAt: now() + RESUME_TRANSIENT_RETRY_MS })
-      .catch(() => {})
-    return "pending"
-  }
+  const resume = await resumeTickBody(deps, opts, record)
+  logger.info(
+    "[oxideRegistration] resume tick:",
+    resume.outcome,
+    "for",
+    record.account,
+    `phase=${record.phase} ${Date.now() - t0}ms`,
+  )
+  return resume
 }
 
 async function resumeTickBody(
   deps: OxideResumeDeps,
   opts: ResumeOptions,
   record: PendingRegistrationRecord,
-): Promise<OxideResumeOutcome> {
-  const { env, l1, deposits, pendingStore } = deps
-  const now = deps.now ?? Date.now
+): Promise<OxideResume> {
+  const { env, l1, deposits, registrations } = deps
   if (
     opts.expectedRecord &&
     (record.account.toLowerCase() !== opts.expectedRecord.account.toLowerCase() ||
       record.nameHash.toLowerCase() !== opts.expectedRecord.nameHash.toLowerCase())
   ) {
-    return "pending"
-  }
-  if (record.l1ChainId !== env.l1ChainId) return "pending"
-
-  if (!opts.force && record.nextAttemptAt !== undefined && now() < record.nextAttemptAt) {
-    return "pending"
+    return settled("pending")
   }
 
   const account = record.account as Address
   const nameHash = record.nameHash as Hex
   const sipa = record.sipaAddress as Address
-  const backoff = async (ms: number): Promise<OxideResumeOutcome> => {
-    await pendingStore.upsert(account, { nextAttemptAt: now() + ms }).catch(() => {})
-    return "pending"
+  const backoff = (ms: number): OxideResume => ({ outcome: "pending", nextMs: ms })
+  const closed = async (
+    outcome: OxideResumeOutcome,
+    event: RegistrationClose,
+  ): Promise<OxideResume> => {
+    await deps.close(record, event)
+    return settled(outcome)
   }
 
   // ── Registry confirmation — authoritative. The sweep writes it, so this is the only "done". ──
   const owner = await l1.readUserAddress(env.registry, nameHash)
-  if (eqAddr(owner, account)) {
-    await pendingStore.close(account, "confirmed")
-    return "confirmed"
-  }
-  if (owner !== zeroAddress) {
-    await pendingStore.close(account, "failed_taken")
-    return "taken"
-  }
+  if (eqAddr(owner, account)) return closed("confirmed", { type: "closed", outcome: "confirmed" })
+  if (owner !== zeroAddress) return closed("taken", { type: "closed", outcome: "taken" })
 
   // Reverse lookup: the account may hold a DIFFERENT name — the chain wins. Adopt only when a local
   // source maps the hash to a tag AND the metadata record's l2Address matches; otherwise route to
@@ -834,21 +813,23 @@ async function resumeTickBody(
       localTag !== null &&
       (await recordHoldsL2Address(l1, env.registry, account, record.l2Address))
     ) {
-      await pendingStore.upsert(account, { tag: localTag, nameHash: heldName })
-      await pendingStore.close(account, "confirmed")
-      return "confirmed"
+      return closed("confirmed", {
+        type: "closed",
+        outcome: "confirmed",
+        tag: localTag,
+        nameHash: heldName,
+      })
     }
-    await pendingStore.upsert(account, { nameHash: heldName })
-    await pendingStore.close(account, "confirmed")
-    return "needs_recovery"
+    return closed("needs_recovery", { type: "closed", outcome: "recovery", nameHash: heldName })
   }
 
   // ── Deposit / sweep observation — progress, not confirmation. ──
   const depositToken = record.depositToken as Address
+  // A balance or floor read that cannot answer is unknown: the funding verdict waits for it.
   const [balance, sweeps, floor] = await Promise.all([
-    deposits.readBalance(sipa, depositToken).catch(() => undefined),
+    bestEffort("unknown", deposits.readBalance(sipa, depositToken)),
     deposits.readSweeps(sipa),
-    deposits.floor(depositToken, record.account).catch(() => undefined),
+    bestEffort("unknown", deposits.floor(depositToken, record.account)),
   ])
   // Funded is what the address holds now: a recovery leaves the incoming transfers behind, so
   // their sum overstates a refunded address. An unread balance or an unknown floor leaves the
@@ -865,22 +846,19 @@ async function resumeTickBody(
     // The sweep landed but the registry read above is still zero (RPC lag / reorg window): stamp it
     // and keep polling the registry, which is the authoritative close. A sweep only succeeds on a
     // deposit at the floor, so a swept record is funded even when no tick saw the funds first.
-    await pendingStore
-      .upsert(account, {
-        sweptAt: now(),
-        sweepTxHash: sweeps[0].txHash,
-        fundedAt: record.fundedAt ?? now(),
-        phase: "funded",
-      })
-      .catch(() => {})
+    await registrations.apply(sipa, { type: "swept", txHash: sweeps[0].txHash })
+    if (deps.sweepSent) await bestEffort("unknown", deps.sweepSent(sipa, sweeps[0].txHash))
     return backoff(RESUME_DETECT_POLL_MS)
   }
   if (funded === true && record.fundedAt === undefined) {
-    const funding = await deposits.readFunding(sipa, depositToken).catch(() => [])
-    await pendingStore
-      .upsert(account, { fundedAt: now(), fundingTxHash: funding[0]?.txHash, phase: "funded" })
-      .catch(() => {})
+    // An unread funding transfer leaves the record funded without its hash.
+    const funding = (await bestEffort("unknown", deposits.readFunding(sipa, depositToken))) ?? []
+    await registrations.apply(sipa, { type: "funded", fundingTxHash: funding[0]?.txHash })
   }
+  // The quote ran out with nothing at the address: the funnel hears it once.
+  const deadline = record.terms?.deadline ?? 0
+  if (funded === false && !swept && deadline > 0 && Date.now() > deadline * 1000)
+    await registrations.apply(sipa, { type: "lapsed" })
 
   // ── The broadcast is the ledger's, owed by the surface that shows the address; a tick only reads.
   //    A forced tick (the user refreshing a lapsed quote, or retrying) re-signs the claim now and
@@ -899,13 +877,18 @@ async function resumeTickBody(
     signDeps = null
   }
   if (!signDeps) {
-    if (!spent) await deps.oweBroadcast?.(record, { now: true }).catch(() => {})
+    if (!spent && deps.oweBroadcast)
+      await bestEffort("deposit.broadcastFailed", deps.oweBroadcast(record, { now: true }))
     return backoff(RESUME_TRANSIENT_RETRY_MS)
   }
   const rebuilt = await rebuildBody(deps, record, signDeps)
-  if (rebuilt.kind === "closed") return rebuilt.outcome
+  if (rebuilt.kind === "closed") return settled(rebuilt.outcome)
   if (rebuilt.kind === "payload") {
-    await deps.oweBroadcast?.(record, { payload: rebuilt.payload, now: true }).catch(() => {})
+    if (deps.oweBroadcast)
+      await bestEffort(
+        "deposit.broadcastFailed",
+        deps.oweBroadcast(record, { payload: rebuilt.payload, now: true }),
+      )
   }
   return backoff(rebuilt.kind === "wait" ? rebuilt.ms : RESUME_DETECT_POLL_MS)
 }
@@ -936,7 +919,8 @@ export async function deriveRecordedRegistrationSipa(
 ): Promise<RegistrationDerivation> {
   const derivation = await derive(input)
   if (eqAddr(derivation.sipaAddress, sipaAddress)) return derivation
-  const salt = await seededSalt?.(sipaAddress).catch(() => undefined)
+  // An unread seed is no salt: the wallet key's derivation stands.
+  const salt = seededSalt && (await bestEffort("unknown", seededSalt(sipaAddress)))
   if (!salt) return derivation
   const replayed = await derive({ ...input, sharedSecretSalt: salt })
   return eqAddr(replayed.sipaAddress, sipaAddress) ? replayed : derivation
@@ -948,24 +932,25 @@ export async function deriveRecordedRegistrationSipa(
  * request claims.
  */
 export function rebuildRegistrationBroadcast(
-  deps: Pick<OxideResumeDeps, "env" | "l1" | "deposits" | "pendingStore" | "now">,
+  deps: Pick<OxideResumeDeps, "env" | "l1" | "deposits" | "registrations" | "close">,
   record: PendingRegistrationRecord,
   signDeps: OxideSignDeps,
 ): Promise<RegistrationRebuild> {
-  return serialize(() => {
-    const current = deps.pendingStore.get(record.account)
+  return serialize(async () => {
+    const current = await deps.registrations.get(record.sipaAddress)
     if (!current || isTerminalRegistrationPhase(current.phase))
-      return Promise.resolve<RegistrationRebuild>({ kind: "closed", outcome: "failed" })
+      return { kind: "closed", outcome: "failed" } satisfies RegistrationRebuild
     return rebuildBody(deps, current, signDeps)
   })
 }
 
 async function rebuildBody(
-  deps: Pick<OxideResumeDeps, "env" | "l1" | "deposits" | "pendingStore" | "now">,
+  deps: Pick<OxideResumeDeps, "env" | "l1" | "deposits" | "registrations" | "close">,
   record: PendingRegistrationRecord,
   signDeps: OxideSignDeps,
 ): Promise<RegistrationRebuild> {
-  const { env, l1, deposits, pendingStore } = deps
+  const { env, l1, deposits, registrations } = deps
+  const sipa = record.sipaAddress as Address
   const account = record.account as Address
   const nameHash = record.nameHash as Hex
   const wait = (ms: number, reason: string): RegistrationRebuild => ({ kind: "wait", ms, reason })
@@ -977,44 +962,28 @@ async function rebuildBody(
     return wait(RESUME_TRANSIENT_RETRY_MS, "Another account is unlocked")
 
   // Counted before anything is spent; a strict-write failure aborts.
-  try {
-    await pendingStore.upsert(account, { retries: record.retries + 1 })
-  } catch {
-    return wait(RESUME_TRANSIENT_RETRY_MS, "Could not save the registration")
-  }
+  await registrations.apply(sipa, { type: "retried" })
 
-  // The record's own committed payment, never a fresh quote: the SIPA address commits to it. A
-  // record written before the intent committed its payment cannot re-derive its address at all,
-  // and takes the same path as a derivation that moved.
-  const committed =
-    record.fee !== undefined && record.beneficiary !== undefined
-      ? { fee: BigInt(record.fee), beneficiary: record.beneficiary as Address }
-      : null
-  const derivation = committed
-    ? await deriveRecordedRegistrationSipa(
-        signDeps.deriveRegistrationSipa,
-        {
-          owner: account,
-          nameHash,
-          l2Address: record.l2Address,
-          fee: committed.fee,
-          beneficiary: committed.beneficiary,
-          masterSecret: signDeps.masterSecret,
-        },
-        record.sipaAddress as Address,
-        signDeps.seededSipaSalt,
-      )
-    : null
+  // The record's own committed payment, never a fresh quote: the SIPA address commits to it.
+  const committed = { fee: BigInt(record.fee), beneficiary: record.beneficiary as Address }
+  const derivation = await deriveRecordedRegistrationSipa(
+    signDeps.deriveRegistrationSipa,
+    {
+      owner: account,
+      nameHash,
+      l2Address: record.l2Address,
+      fee: committed.fee,
+      beneficiary: committed.beneficiary,
+      masterSecret: signDeps.masterSecret,
+    },
+    record.sipaAddress as Address,
+    signDeps.seededSipaSalt,
+  )
   // A derivation that no longer lands at the recorded SIPA means the system iterated under the
-  // record (new derivation scheme, redeployed stack). No backwards compatibility for a CLEAN
-  // record: it is removed and the caller falls back to a fresh claim. A record money already
-  // touched is never dropped — funds follow the address, so it holds for manual recovery instead
-  // of being silently forgotten.
-  if (
-    committed === null ||
-    derivation === null ||
-    !eqAddr(derivation.sipaAddress, record.sipaAddress)
-  ) {
+  // record (new derivation scheme, redeployed stack). A clean record closes as replaced, and the
+  // caller falls back to a fresh claim. A record money already touched holds for manual recovery:
+  // funds follow the address.
+  if (!eqAddr(derivation.sipaAddress, record.sipaAddress)) {
     const custodial =
       record.fundedAt !== undefined ||
       record.sweptAt !== undefined ||
@@ -1025,35 +994,39 @@ async function rebuildBody(
     // trace on it, and the record reads as clean. Ask the chain before discarding: money at the
     // old address makes the record custodial no matter what the flags say. An unread balance is
     // no proof the address is empty, so the record holds for a read that can tell.
-    const held = await deposits
-      .readBalance(record.sipaAddress as Address, env.feeToken as Address)
-      .catch(() => undefined)
+    const held = await bestEffort(
+      "unknown",
+      deposits.readBalance(record.sipaAddress as Address, env.feeToken as Address),
+    )
     if (held === undefined || held > 0n)
       return wait(RESUME_TRANSIENT_RETRY_MS, "The address no longer derives")
-    await pendingStore.remove(account).catch(() => {})
+    // Closed, not dropped: the old address stays recoverable on the registration route.
+    await deps.close(record, { type: "replaced" })
     return { kind: "closed", outcome: "failed" }
   }
-  await signDeps
-    .seedSipaDeposit?.({
-      sipaAddress: derivation.sipaAddress,
-      messageSecret: derivation.sharedSecretSalt,
-      recipientHash: derivation.recipientCommitment,
-      origin: derivation.origin,
-      recipientL2Address: record.l2Address,
-      registrationFee: committed.fee,
-    })
-    .catch(() => {})
+  if (signDeps.seedSipaDeposit)
+    await bestEffort(
+      "unknown",
+      signDeps.seedSipaDeposit({
+        sipaAddress: derivation.sipaAddress,
+        messageSecret: derivation.sharedSecretSalt,
+        recipientHash: derivation.recipientCommitment,
+        origin: derivation.origin,
+        recipientL2Address: record.l2Address,
+        registrationFee: committed.fee,
+      }),
+    )
 
   let claim: NameClaimResponse
   try {
     claim = await signDeps.accountService.signDomain({ nameHash, userAddress: account })
   } catch (err) {
     if (isClaimAttemptsExhausted(err)) {
-      await pendingStore.close(account, "failed_terminal")
+      await deps.close(record, { type: "closed", outcome: "failed" })
       return { kind: "closed", outcome: "failed" }
     }
     if (isNameReserved(err) || isNameBlocked(err)) {
-      await pendingStore.close(account, "failed_taken")
+      await deps.close(record, { type: "closed", outcome: "taken" })
       return { kind: "closed", outcome: "taken" }
     }
     return wait(retryDelayMs(err, RESUME_TRANSIENT_RETRY_MS), "The claim server did not answer")
@@ -1088,33 +1061,11 @@ async function rebuildBody(
     signDeps.r1Key,
     signDeps.credentialId,
   )
-  await signDeps.persistStealthScalar?.(derivation.stealthScalar).catch(() => {})
+  // The scalar re-derives from the master secret.
+  if (signDeps.persistStealthScalar)
+    await bestEffort("unknown", signDeps.persistStealthScalar(derivation.stealthScalar))
   return {
     kind: "payload",
     payload: assemblePayload(derivation, claim, consentSig, r1Install, bootstrap.address),
   }
-}
-
-/**
- * Stamps a sent registration broadcast on its record. One sent after the account moved to another
- * address spent the account's one-shot rail on this address: the current record says so instead of
- * claiming the broadcast.
- */
-export async function recordRegistrationBroadcastSent(
-  pendingStore: PendingRegistrationStoreLike,
-  account: string,
-  sipaAddress: string,
-): Promise<void> {
-  const current = pendingStore.get(account)
-  if (!current) return
-  const patch: Partial<PendingRegistrationRecord> = eqAddr(current.sipaAddress, sipaAddress)
-    ? { broadcast: true }
-    : {
-        replaced: {
-          sipaAddress: current.replaced?.sipaAddress ?? sipaAddress,
-          refunded: current.replaced?.refunded ?? false,
-          broadcastSpent: true,
-        },
-      }
-  await pendingStore.upsert(account, patch)
 }

@@ -1,26 +1,31 @@
 /**
  * Whether the signed-in account may start an action now, and why not. One policy for the action
  * routes and the presses that start an action: a name first, then the tag claim, then the upgrade,
- * then a backup passkey's balance move, then the sponsored rail. A new link also waits while a
- * backup passkey add has yet to switch the account. A deposit stays open to the registration that
- * owes it. Withdraw refunds an old version's funds to L1 before anything else, since that needs none
+ * then a backup passkey's balance move, then the sponsored rail. A new link or Savings move also
+ * waits while a backup passkey add has yet to switch the account. A deposit stays open to the
+ * registration that owes it. Withdraw refunds an old version's funds to L1 before anything else, since that needs none
  * of them.
  */
 import { useCallback, useEffect, useRef } from "react"
 import { isDemoMode } from "../dev/demoFlag"
 import { showErrorModal } from "../errors/errorModal"
-import { balanceMovingCopy } from "./backupPasskey/backupPasskeyCopy"
+import {
+  balanceMovingCopy,
+  linkWaitsCopy,
+  savingsWaitsCopy,
+} from "./backupPasskey/backupPasskeyCopy"
 import { useBalanceMoving, useRerootPending } from "./backupPasskey/backupRotationStore"
 import { useUpgradeLock } from "./migration/upgradeLock"
-import { loadWalletIdentity } from "./identity/walletIdentity"
+import { useStore } from "@obsidion/front-core"
+import { useSession } from "../session/session"
 import {
   openMigrationDialog,
   useUpgradeStatus,
   type UpgradeState,
 } from "./migration/migrationDialog"
 import { useWithdrawableSources } from "./migration/oldVersionWithdraw"
-import { useNameClaimPending, useRegistrationDepositOwed } from "./onboarding/openRegistration"
-import { useSponsoredRailPending } from "./onboarding/sponsoredRailReadiness"
+import { useNameClaimPending, useRegistrationDepositOwed } from "./registration/openRegistration"
+import { useSponsoredRailPending } from "./registration/sponsoredRailReadiness"
 
 export type WalletAction =
   | "send"
@@ -41,7 +46,8 @@ export type WalletAction =
  * - `checking`: whether the sponsored rail carries the account is not known yet.
  * - `registering`: the account's registration has yet to reach the rollup.
  * - `refund`: withdraw refunds an old version's funds to L1.
- * - `backup`: a backup passkey add has yet to switch the account; a link made now stays the old one's.
+ * - `backup`: a backup passkey add has yet to switch the account; a link or Savings move made now
+ *   stays the old one's.
  */
 export type ActionVerdict =
   | "open"
@@ -79,16 +85,21 @@ export interface ActionState {
 
 /**
  * What each action needs besides the upgrade. `sponsor`: the action pays with the subscription note,
- * so it waits while a backup passkey rotation's balance move spends that note.
+ * so it waits while a backup passkey rotation's balance move spends that note. `switched`: what the
+ * action makes is bound to the account that made it and lands after a backup passkey add could
+ * switch the account, where nothing claims or reclaims it, so it waits for the switch.
  */
-const NEEDS: Record<WalletAction, { name?: true; claim?: true; rail?: true; sponsor?: true }> = {
+const NEEDS: Record<
+  WalletAction,
+  { name?: true; claim?: true; rail?: true; sponsor?: true; switched?: true }
+> = {
   send: { name: true, claim: true, rail: true, sponsor: true },
   withdraw: { name: true, claim: true, rail: true, sponsor: true },
-  link: { name: true, claim: true, rail: true, sponsor: true },
+  link: { name: true, claim: true, rail: true, sponsor: true, switched: true },
   deposit: { name: true, claim: true },
   receive: { claim: true },
   requests: { claim: true },
-  savings: { sponsor: true },
+  savings: { sponsor: true, switched: true },
   claim: { sponsor: true },
 }
 
@@ -101,7 +112,7 @@ export function actionVerdict(action: WalletAction, s: ActionState): ActionVerdi
   const upgrade = s.demo ? undefined : upgradeVerdict(s)
   if (upgrade) return upgrade
   if (needs.sponsor && s.moving && !s.demo) return "moving"
-  if (action === "link" && s.rerootPending && !s.demo) return "backup"
+  if (needs.switched && s.rerootPending && !s.demo) return "backup"
   if (!needs.rail || s.demo) return "open"
   if (s.railPending === undefined) return "checking"
   return s.railPending ? "registering" : "open"
@@ -135,7 +146,7 @@ export function upgradeVerdict({
 }
 
 export function useActionState(): ActionState {
-  const identity = loadWalletIdentity()
+  const identity = useStore(useSession().identity).value
   const lock = useUpgradeLock(identity?.address)
   return {
     named: !identity || !!identity.handle,
@@ -160,8 +171,8 @@ export function useActionVerdict(action: WalletAction): ActionVerdict {
 /**
  * Starts an action from a press. An upgrade the account must make opens first, titled for the
  * action; while that is not known the sheet holds the action and starts it if no upgrade is needed,
- * unless the screen that pressed it is gone. A balance move says why the action waits. Anything
- * else the action's own route answers.
+ * unless the screen that pressed it is gone. A balance move, or an add that has yet to switch the
+ * account, says why the action waits. Anything else the action's own route answers.
  */
 export function useActionGuard(): (action: WalletAction, run: () => void) => void {
   const state = useRef<ActionState>(undefined as never)
@@ -179,6 +190,8 @@ export function useActionGuard(): (action: WalletAction, run: () => void) => voi
     else if (verdict === "holding")
       openMigrationDialog({ action, then: () => mounted.current && run() })
     else if (verdict === "moving") showErrorModal(balanceMovingCopy)
+    else if (verdict === "backup")
+      showErrorModal(action === "savings" ? savingsWaitsCopy : linkWaitsCopy)
     else run()
   }, [])
 }

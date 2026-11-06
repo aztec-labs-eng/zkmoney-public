@@ -1,5 +1,5 @@
 /** The upgrade's screens (Figma "Migration" page, LobEQ1bmcPDw0ahexKy1iI). */
-import { useState, type ReactNode } from "react"
+import { useEffect, useState, type ReactNode } from "react"
 import { GradientSpinner, PrimaryGradientButton } from "@obsidion/web-ds"
 import doneBadge from "../../assets/cutover/done-badge.png"
 import { usdAtomicFloor } from "../../ui/format"
@@ -119,10 +119,16 @@ export function UpgradeChoose(props: {
   waiting?: { until: string }
   /** The check that offers the upgrade is still running, so neither choice can start yet. */
   checking?: boolean
+  /** The offer is on screen, its check answered. */
+  onShown?: () => void
   overlay?: ReactNode
 }) {
   // A phone that sleeps suspends the run, so every migration screen keeps it awake.
   useWakeLock(true)
+  const { checking, onShown } = props
+  useEffect(() => {
+    if (!checking) onShown?.()
+  }, [checking, onShown])
   const shown = amounts(props.balance)
   const { waiting } = props
   const [transactionsOpen, setTransactionsOpen] = useState(false)

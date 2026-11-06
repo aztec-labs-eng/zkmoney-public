@@ -1,43 +1,63 @@
 import { vi } from "vitest"
 import type { Address } from "viem"
-import { SIPADepositStore, type SipaDepositSyncResult } from "@obsidion/front-core"
-import { observeDeposits, resetDepositPassesForTests } from "../../src/features/deposit/depositPasses"
-import { getSipaDepositGateway } from "../../src/features/deposit/sipaGateway"
-import { webStorage } from "../../src/platform/storage/WebStorageAdapter"
+import { memoryStore, type Task } from "@obsidion/front-core"
+import { session } from "../../src/session/session"
+import { patchSipaDeposit, seedSipaDeposit, testSipaDeposits } from "./sipaDeposits"
+
+/** The check task's pace while a screen shows an address. */
+const CHECK_MS = 4_000
 
 /**
- * Stands in for the rail's observe-only pass, behind the real scheduler: each pass writes what
- * `held` answers, in fee-token units, onto the record of each address `addresses` names. A pass
- * that sees nothing new writes nothing, as the rail's does.
+ * Stands in for the session's check task: each pass writes what `held` answers, in fee-token
+ * units, onto the record of each address `addresses` names. A pass that sees nothing new writes
+ * nothing, as the task's does. A watch runs a pass at once, then on the check pace. Call it once the
+ * test session is open.
  */
 export function provideFakeDepositRail(opts: {
   addresses: () => readonly (string | undefined)[]
   held: (address: Address) => bigint | Promise<bigint>
   token?: (address: Address) => Address | undefined
 }) {
-  resetDepositPassesForTests()
-  const observe = vi.spyOn(getSipaDepositGateway(), "observe").mockImplementation(async () => {
-    const store = SIPADepositStore.get(webStorage)
-    await store.load()
+  const open = session()
+  const observedAt = memoryStore<number | undefined>(undefined)
+  const check = vi.fn(async () => {
     for (const address of opts.addresses()) {
       if (!address) continue
       const balance = await opts.held(address as Address)
-      const stored = store.get(address as Address)
+      const stored = await testSipaDeposits().get(address)
       if (stored?.observedFrom && stored.heldBalance === balance.toString()) continue
       const token = opts.token?.(address as Address)
-      await store.upsert(
-        address as Address,
-        {
-          phase: stored?.phase ?? "resolved",
-          observedFrom: "1",
-          heldBalance: balance.toString(),
-          ...(balance > 0n && token ? { tokenAddress: token } : {}),
-        },
-        { networkId: "0xnet", amount: "0", startTime: Date.now() } as never,
-      )
+      const seen = {
+        observedFrom: "1",
+        heldBalance: balance.toString(),
+        ...(balance > 0n && token ? { tokenAddress: token } : {}),
+      }
+      if (stored) await patchSipaDeposit(address, seen)
+      else
+        await seedSipaDeposit({
+          sipaAddress: address as Address,
+          phase: "resolved",
+          networkId: "0xnet",
+          amount: "0",
+          startTime: Date.now(),
+          ...seen,
+        } as never)
     }
-    return {} as SipaDepositSyncResult
+    observedAt.set(Date.now())
   })
-  observeDeposits({} as never, `0x${"cd".repeat(32)}`)
-  return observe
+  const task = { name: "sipaCheck" } as unknown as Task
+  const wake = open.wake
+  const define = (name: string, value: unknown) =>
+    Object.defineProperty(open, name, { configurable: true, value })
+  define("tasks", { ...open.tasks, sipaCheck: task })
+  define("wake", (target: Task) => (target === task ? check() : wake(target)))
+  define("sipaPipeline", {
+    observedAt: observedAt.readonly,
+    watch() {
+      void check()
+      const timer = setInterval(() => void check(), CHECK_MS)
+      return () => clearInterval(timer)
+    },
+  })
+  return check
 }

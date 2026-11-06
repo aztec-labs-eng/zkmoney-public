@@ -131,8 +131,7 @@ function bridgeEnded(about: Extract<NotificationAbout, { kind: "bridgeEnded" }>)
       : done
       ? copy.bridge.depositComplete
       : copy.bridge.depositFailed
-  const failure =
-    item.kind === "bridge.withdrawal" ? withdrawalFailureText(item.record) : item.record.error
+  const failure = item.kind === "bridge.withdrawal" ? withdrawalFailureText(item.record) : undefined
   if (!done) return { title, description: failure ?? copy.bridge.tapForDetails }
   const amount = bridgeAmount(item)
   // A move's release is in; the move itself finishes when the destination claims the deposit.

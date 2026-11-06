@@ -13,10 +13,8 @@ Concrete examples already in this package:
 
 - `ContactStorage`, `TokenStorage`, `BalanceStorage`,
   `AccountStorage` — JSON-DTO persistence classes.
-- `SIPADepositStore`, `RecordStorage` — bridge state with subscription
-  kernel.
-- `BridgeActivityFeed` — in-memory aggregator projecting the store into a
-  unified subscribe-able feed.
+- `createSipaDeposits` — the session's SIPA deposit records on the `Database`.
+- `selectFeed` — the activity feed as a pure selector over the stores.
 - `accountResource`, `tokenResource`, `teeSignerResource` — session resources over the wallet;
   `useResource` and `useStore` read them and the stores in React.
 

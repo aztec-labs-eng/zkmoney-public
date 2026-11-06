@@ -19,9 +19,10 @@ export type SignKeyConfig = {
 }
 
 export type AccountState = {
-  name: string
   completeAddress: string
   signKeyConfig: SignKeyConfig
+  /** When the wallet was first entered on this device, ms epoch; 0 for an older build's mark. */
+  enteredAt?: number
 }
 
 export type Account = {

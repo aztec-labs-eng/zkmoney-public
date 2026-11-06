@@ -6,7 +6,8 @@ import { type PasskeyRequestHook, parseUserAgent } from "@obsidion/passkey-web"
 import { act, createElement } from "react"
 import { createRoot } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest"
-import { FakePasskeyCeremony, MemoryStorage } from "../support/fakePasskeyCeremony"
+import { testPage, pageOver } from "../support/page"
+import { FakePasskeyCeremony } from "../support/fakePasskeyCeremony"
 
 vi.setConfig({ testTimeout: 30_000 })
 
@@ -127,10 +128,10 @@ describe("sending", () => {
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36",
       userAgentData: { platform: "macOS", brands: [] },
     })
-    const storage = new MemoryStorage()
+    const storage = testPage().database
     const service = (ceremony: typeof fake | ReturnType<typeof passkeyTelemetry.wrap>) =>
       new WebAlphaAuthService({
-        storage,
+        ...pageOver(storage),
         rpId: "localhost",
         ceremony,
         posture: () => "laptop",
@@ -153,7 +154,7 @@ describe("the wallet's own errors", () => {
     const { PasskeyEnvelopeError, StoredAddressMismatchError } = await import(
       "@obsidion/front-core"
     )
-    const { PasskeyMismatchError } = await import("../../src/features/onboarding/oxideOnboarding")
+    const { PasskeyMismatchError } = await import("../../src/features/identity/passkeyAccount")
     const { HintedKeyMismatchError } = await import("../../src/platform/auth/WebAlphaAuthService")
     const { SignerKeyMismatchError } = await import("../../src/platform/auth/webauthnSigning")
     const { NoPasskeySessionError, SessionChangedError } = await import(
@@ -198,9 +199,14 @@ describe("the wallet's own errors", () => {
       route: "cross-device",
       onRequest: passkeyTelemetry.requestHook,
     })
-    const storage = new MemoryStorage()
+    const storage = testPage().database
     const service = (ceremony: typeof fake | ReturnType<typeof passkeyTelemetry.wrap>) =>
-      new WebAlphaAuthService({ storage, rpId: "localhost", ceremony, posture: () => "laptop" })
+      new WebAlphaAuthService({
+        ...pageOver(storage),
+        rpId: "localhost",
+        ceremony,
+        posture: () => "laptop",
+      })
     // Set up on the bare fake, so nothing of it is counted.
     const setup = service(fake)
     const created = await setup.createPasskey("@alice")
@@ -234,7 +240,7 @@ describe("the wallet's own errors", () => {
     inner.opts.route = "cross-device"
     // A browser with no record of the passkey: its key is settled by a second assertion.
     const service = new WebAlphaAuthService({
-      storage: new MemoryStorage(),
+      ...pageOver(testPage().database),
       rpId: "localhost",
       ceremony: passkeyTelemetry.wrap(inner),
       posture: () => "laptop",

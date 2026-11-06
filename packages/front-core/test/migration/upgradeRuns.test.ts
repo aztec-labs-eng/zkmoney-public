@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import type { SIPADepositPhase } from "@obsidion/core/types"
-import type { ActivityItem } from "../../src/core/services/bridge/BridgeActivityFeed"
-import type { SIPADepositRecord } from "../../src/core/services/deposits/SIPADepositStore"
+import type { ActivityItem } from "../../src/engine/feedRules"
+import type { SipaDeposit } from "../../src/engine/sipaDeposits"
 import type { UpgradeBatchItem } from "../../src/core/migration/upgradeActivity"
 import {
   upgradeBatchStatus,
@@ -33,7 +33,7 @@ const batch = (
   },
 })
 
-const deposit = (sipa: string, phase: SIPADepositPhase, over: Partial<SIPADepositRecord> = {}) =>
+const deposit = (sipa: string, phase: SIPADepositPhase, over: Partial<SipaDeposit> = {}) =>
   ({
     kind: "bridge.sipaDeposit",
     record: {
@@ -45,7 +45,7 @@ const deposit = (sipa: string, phase: SIPADepositPhase, over: Partial<SIPADeposi
       startTime: 1_100,
       ...(phase === "claimed" ? { endTime: 1_200 } : {}),
       ...over,
-    } as SIPADepositRecord,
+    } as SipaDeposit,
   } as ActivityItem)
 
 describe("upgrade runs", () => {
@@ -98,7 +98,7 @@ describe("upgrade runs", () => {
   it("speaks for a leg in its deposit's words once that is funded, for every batch state", () => {
     const leg = (state: UpgradeBatchItem["state"], arrival?: ActivityItem): UpgradeLeg => ({
       batch: (batch("remaining-1", state) as { batch: UpgradeBatchItem }).batch,
-      arrival: (arrival as { record: SIPADepositRecord } | undefined)?.record,
+      arrival: (arrival as { record: SipaDeposit } | undefined)?.record,
     })
     const unfunded = deposit("0xremaining-1", "resolved", { amount: "0" })
     const phases: [SIPADepositPhase, string][] = [
@@ -167,7 +167,7 @@ describe("upgrade dollar values", () => {
   const mainToken = "0xDai"
   const savingsToken = "0xSavings"
   const pricing = { mainToken, savingsToken, sharePrice: (125n * DAI) / 100n }
-  const run = (tokenAddress: string, extra: Partial<SIPADepositRecord> = {}) =>
+  const run = (tokenAddress: string, extra: Partial<SipaDeposit> = {}) =>
     upgradeRunsOf([
       batch("remaining-0", "received"),
       deposit("0xremaining-0", "claimed", {

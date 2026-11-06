@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest"
 import type { MigrationFundingBatch } from "@obsidion/core/types"
 import { UpgradeActivity } from "../../src/core/migration/upgradeActivity"
-import { directDepositKey } from "../../src/core/services/deposits/SIPADepositStore"
+import { directDepositKey } from "../../src/engine/sipaDeposits"
 
 const RUN = "metadata-migration/0xnew/0xold/0xaccount"
 

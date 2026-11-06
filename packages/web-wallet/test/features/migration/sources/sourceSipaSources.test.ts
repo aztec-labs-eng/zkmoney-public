@@ -10,16 +10,12 @@ import {
 import { seedBootConfig } from "../../../support/seedBootConfig"
 
 const h = vi.hoisted(() => ({
-  identity: { current: null as { address: string; handle?: string } | null },
   keys: vi.fn(async () => [] as unknown[]),
-}))
-vi.mock("../../../../src/features/identity/walletIdentity", () => ({
-  loadWalletIdentity: () => h.identity.current,
 }))
 vi.mock("@obsidion/sdk", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   fetchHistoricalSipaResolverOperators: async () => [],
-  fetchHistoricalResolverPublicKeys: h.keys,
+  fetchHistoricalResolverKeys: h.keys,
 }))
 vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -30,7 +26,6 @@ const { sourceSipaSources } = await import("../../../../src/features/migration/s
 
 beforeAll(seedBootConfig)
 beforeEach(() => {
-  h.identity.current = null
   h.keys.mockReset().mockResolvedValue([])
 })
 
@@ -54,6 +49,7 @@ const scan = (announced: unknown[]) => {
       publicClient: {} as never,
       masterSecret: SECRET,
       scanHead: 42n,
+      handle: undefined as string | undefined,
     },
   }
 }
@@ -68,11 +64,10 @@ describe("sourceSipaSources", () => {
   })
 
   it("finds a registration address no SIPA event announced by its commitment, under every salt", async () => {
-    h.identity.current = { address: "0x01", handle: "phil" }
-    h.keys.mockResolvedValue([RESOLVER_KEY])
+    h.keys.mockResolvedValue([{ owner: "0x" + "0c".repeat(20), resolverPublicKey: RESOLVER_KEY }])
     const { params } = scan([])
 
-    const sources = await sourceSipaSources(params)
+    const sources = await sourceSipaSources({ ...params, handle: "phil" })
 
     const expected = await registrationCommitments(
       SECRET,
@@ -90,6 +85,14 @@ describe("sourceSipaSources", () => {
         direct: true,
       })),
     )
+  })
+
+  it("refuses a registration scan on a deployment with no resolver registry", async () => {
+    const { params } = scan([])
+    const tuple = { ...TUPLE, accountMetadataRegistry: undefined } as never
+    await expect(sourceSipaSources({ ...params, tuple, handle: "phil" })).rejects.toMatchObject({
+      code: "migration.noResolverRegistry",
+    })
   })
 
   it("adds no registration source for an account with no handle", async () => {

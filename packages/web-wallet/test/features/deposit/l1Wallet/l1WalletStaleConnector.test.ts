@@ -14,9 +14,9 @@ vi.mock("wagmi/actions", () => ({
   getAccount: () => ({ connector: STALE, chainId: CHAIN_ID, addresses: [ACCOUNT] }),
   switchChain: vi.fn(),
 }))
-vi.mock("../../../../src/features/deposit/wagmi", () => ({ wagmiConfig: () => ({}) }))
+vi.mock("../../../../src/session/wagmi", () => ({ wagmiConfig: () => ({}) }))
 
-const { getL1Clients } = await import("../../../../src/features/deposit/l1Wallet")
+const { getL1Clients } = await import("../../../../src/session/l1Wallet")
 
 describe("getL1Clients with a storage-rehydrated connector", () => {
   it("ignores the stub and prompts the injected wallet instead of throwing", async () => {

@@ -14,7 +14,8 @@ import { BalanceStorage } from "@obsidion/front-core"
 import { parseUnits } from "viem"
 import { DEMO_COMPLETE_ADDRESS, DEMO_L2_TOKEN } from "../../../src/dev/demoFixtures"
 import { webStorage } from "../../../src/platform/storage/WebStorageAdapter"
-import { loadWalletIdentity, saveWalletIdentity } from "../../../src/features/identity/walletIdentity"
+import { saveIdentity } from "../../../src/session/account"
+import { session } from "../../../src/session/session"
 export * from "../../../src/dev/seedDemo"
 export const seedDemo: typeof actual = async (scenario) => {
   const seeded = await actual(scenario)
@@ -29,8 +30,8 @@ export const seedDemo: typeof actual = async (scenario) => {
   const identity = query.get("identityFixture")
   if (identity) {
     if (identity !== "pending") throw new Error(`Unknown identity fixture: ${identity}`)
-    const current = loadWalletIdentity()
-    if (current) await saveWalletIdentity({ ...current, pending: true })
+    const current = session().identity.get().value
+    if (current) await saveIdentity(seeded, { ...current, pending: true })
   }
   const processing = query.get("processingFixture")
   if (processing) await seedProcessing(processing)

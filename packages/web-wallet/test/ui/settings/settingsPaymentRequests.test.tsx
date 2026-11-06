@@ -35,17 +35,14 @@ vi.mock("@obsidion/web-ds", () => ({
 // The real module underneath: this screen's import chain reads storage keys from it at import.
 vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/front-core")>()),
-  useConfigValue: () => ({ value: false, setValue: vi.fn() }),
 }))
 vi.mock("../../../src/config/env", () => ({ getConfig: () => ({ network: "sandbox" }) }))
-vi.mock("../../../src/features/identity/walletIdentity", () => ({
-  loadWalletIdentity: () => undefined,
-}))
-vi.mock("../../../src/features/onboarding/openRegistration", () => ({
+vi.mock("../../../src/features/registration/openRegistration", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
   useNameClaimPending: () => false,
   useRegistrationTagChangeable: () => false,
 }))
-vi.mock("../../../src/features/onboarding/ChooseNameSheet", () => ({ ChooseNameSheet: () => null }))
+vi.mock("../../../src/features/deposit/ChooseNameSheet/ChooseNameSheet", () => ({ ChooseNameSheet: () => null }))
 vi.mock("../../../src/lib/analytics", () => ({ appVersion: "0.0.0" }))
 vi.mock("../../../src/ui/prefs", () => ({ useHideBalances: () => [false, vi.fn()] }))
 vi.mock("../../../src/ui/FeedbackModals", () => ({
@@ -65,7 +62,7 @@ vi.mock("../../../src/ui/EndpointsModal", () => ({
   customEndpointsLabel: () => undefined,
 }))
 vi.mock("../../../src/ui/ResetScreen", () => ({ RESET_PATH: "/reset" }))
-vi.mock("../../../src/features/deposit/StrandedRecoveryModal", () => ({
+vi.mock("../../../src/features/deposit/recovery/StrandedRecoveryModal", () => ({
   StrandedRecoveryModal: () => null,
 }))
 const inbox = vi.hoisted(() => ({
@@ -79,6 +76,8 @@ vi.mock("../../../src/features/requests/useNonContactRequests", () => ({
 
 import { sent, signedRecord } from "../../support/backupAdd"
 const { SettingsScreen } = await import("../../../src/ui/screens/SettingsScreen")
+const { openTestSession } = await import("../../support/session")
+beforeEach(() => openTestSession().registrations.ready)
 const { getBackupRotationStore, resetBackupRotationStoreForTests } = await import(
   "../../../src/features/backupPasskey/backupRotationStore"
 )

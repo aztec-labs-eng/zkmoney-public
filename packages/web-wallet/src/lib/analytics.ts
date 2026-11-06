@@ -1,4 +1,5 @@
 import { sha256 } from "@noble/hashes/sha2"
+import { WalletError, type ErrorCode } from "@obsidion/core/errors"
 import { isDemoMode } from "../dev/demoFlag"
 import { deviceStorage } from "../platform/storage/rollupStorage"
 import { firstInTab, landingAttribution } from "./trafficSource"
@@ -94,6 +95,13 @@ export type AnalyticsEvent =
   // One per backup passkey add attempt and per backup passkey sign-in (lib/backupPasskeyTelemetry.ts).
   | "backup_passkey_add"
   | "backup_passkey_sign_in"
+  // ── v5 to v6 upgrade funnel (features/migration/migrationFunnel.ts) ──
+  | "migration_prompted"
+  | "migration_started"
+  | "migration_stage"
+  | "migration_step_failed"
+  | "migration_resumed"
+  | "migration_completed"
 
 /**
  * The onboarding stream (docs/analytics/signup-funnel-events.md): sent on the signup platform
@@ -142,13 +150,6 @@ export type OnboardingEvent =
   | "registration_deposit_funded"
   | "registration_deposit_swept"
   | "registration_lapsed"
-  // A registered user changing tag (features/onboarding/tagChangeFunnel.ts).
-  | "tag_change_opened"
-  | "tag_change_route_chosen"
-  | "tag_change_confirmed"
-  | "tag_change_funded"
-  | "tag_change_registered"
-  | "tag_change_abandoned"
   // The in-app browser card (features/identity/inAppCardTelemetry.ts): its first display per page
   // load per moment, and each control tapped.
   | "onboarding_in_app_shown"
@@ -565,6 +566,12 @@ const WALLET_FAILURE_CODES: Record<string, FailureCode> = {
   PasskeyEnvelopeError: "backup_envelope_failed",
 }
 
+/** The coded failures the funnel names, by their `WalletError` codes. */
+const ERROR_CODE_FAILURES: Partial<Record<ErrorCode, FailureCode>> = {
+  "account.locked": "wallet_locked",
+  "onboarding.tagMismatch": "tag_mismatch",
+}
+
 /** The passkey policy's refusals, by their stable error names. */
 const POLICY_REFUSAL_CODES: Record<string, FailureCode> = {
   PhoneRequiredError: "passkey_wrong_device",
@@ -586,11 +593,9 @@ const POLICY_REFUSAL_CODES: Record<string, FailureCode> = {
 
 const FAILURE_PATTERNS: [RegExp, FailureCode][] = [
   [/is already taken/, "tag_taken"],
-  [/is not the tag this passkey claimed/, "tag_mismatch"],
   [/sign-in was cancelled/, "signin_cancelled"],
   [/sign-in timed out/, "signin_timeout"],
   [/popup was blocked/, "popup_blocked"],
-  [/wallet is locked/, "wallet_locked"],
   [/wallet not ready/, "wallet_not_ready"],
   [/returned no key material/, "passkey_no_key_material"],
   [/state lost|without claim artifacts/, "state_lost"],
@@ -600,7 +605,6 @@ const FAILURE_PATTERNS: [RegExp, FailureCode][] = [
   [/no r1 key was installed/, "key_not_installed"],
   [/not found on-chain|not registered in PXE/, "contract_missing"],
   [/UserNotFound|User not found/, "user_not_registered"],
-  [/no account for this session/, "wallet_locked"],
   [/reservation (has )?(expired|lapsed)/i, "reservation_lapsed"],
   [/below the (registration )?minimum|minimum deposit/i, "deposit_below_minimum"],
   [/admission (check |verify )?(unreachable|failed)/i, "admission_unreachable"],
@@ -613,6 +617,8 @@ export function failureCode(error: unknown): FailureCode {
   if (error instanceof Error && WALLET_FAILURE_CODES[error.name]) {
     return WALLET_FAILURE_CODES[error.name]!
   }
+  const coded = error instanceof WalletError ? ERROR_CODE_FAILURES[error.code] : undefined
+  if (coded) return coded
   const message = error instanceof Error ? error.message : String(error)
   for (const [pattern, code] of FAILURE_PATTERNS) if (pattern.test(message)) return code
   return "unknown"

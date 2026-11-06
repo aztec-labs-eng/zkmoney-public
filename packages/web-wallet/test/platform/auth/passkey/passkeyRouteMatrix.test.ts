@@ -8,13 +8,13 @@ import { Fr } from "@aztec-labs/aztec.js/fields"
 import { GPM_AAGUID } from "@obsidion/core/constants"
 import { selectRecoveredMsk } from "@obsidion/front-core"
 import { describe, expect, it } from "vitest"
+import { testPage, pageOver } from "../../../support/page"
 import { WebAlphaAuthService } from "../../../../src/platform/auth/WebAlphaAuthService"
 import type { DevicePosture } from "@obsidion/passkey-web"
 import {
   FakePasskeyCeremony,
   type FakeManager,
   type FakeRoute,
-  MemoryStorage,
 } from "../../../support/fakePasskeyCeremony"
 
 const MANAGERS: FakeManager[] = ["icloud", "1password", "gpm"]
@@ -26,7 +26,7 @@ const deriveAddress = async (msk: Fr) => msk.toString()
 
 function service(ceremony: FakePasskeyCeremony, posture: DevicePosture) {
   return new WebAlphaAuthService({
-    storage: new MemoryStorage(),
+    ...pageOver(testPage().database),
     rpId: "localhost",
     ceremony,
     posture: () => posture,

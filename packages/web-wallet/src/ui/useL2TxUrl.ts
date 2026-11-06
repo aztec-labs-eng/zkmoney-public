@@ -1,7 +1,7 @@
 import { l2ExplorerTxEffectsBase, useResource } from "@obsidion/front-core"
 import { useEffect, useState } from "react"
 import { getConfig } from "../config/env"
-import { useSession } from "../platform/session"
+import { useSession } from "../session/session"
 import { retiredRollupMajor } from "../platform/sourceGeneration"
 
 /**

@@ -28,10 +28,7 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
 const gateway = {
   depositAddress: vi.fn(async () => ({ address: "0xp001ed", name: "alice.oxide.eth" })),
 }
-vi.mock("../../../src/features/deposit/sipaGateway", () => ({
-  getSipaDepositGateway: () => gateway,
-}))
-vi.mock("../../../src/features/deposit/loadDepositFacts", async (importOriginal) => {
+vi.mock("../../../src/features/sipa/loadDepositFacts", async (importOriginal) => {
   const { mockLoadDepositFacts, singleToken } = await import("../../support/depositTokens")
   const tokens = singleToken(MANIFEST_TOKEN, "TEST")
   return mockLoadDepositFacts(importOriginal, () => tokens, loadDepositDisplayFacts)
@@ -46,12 +43,14 @@ const l1 = vi.hoisted(() => ({
   connect: vi.fn(),
   disconnect: vi.fn(),
 }))
-vi.mock("../../../src/features/deposit/l1Wallet", () => ({ useL1Wallet: () => l1 }))
+vi.mock("../../../src/session/l1Wallet", () => ({ useL1Wallet: () => l1 }))
 
-const { DepositScreen, FEE_UNAVAILABLE_NOTE, QUOTE_PENDING } = await import(
-  "../../../src/features/deposit/DepositScreen"
+const { DepositScreen } = await import("../../../src/features/deposit/DepositScreen/DepositScreen")
+const noClaim = () => async () => {}
+const { default: depositCopy } = await import(
+  "../../../src/features/deposit/DepositScreen/DepositScreen.copy"
 )
-const { saveWalletIdentity } = await import("../../../src/features/identity/walletIdentity")
+const { setIdentity } = await import("../../support/identity")
 const { tokenFigure } = await import("../../../src/ui/format")
 import { seedBootConfig } from "../../support/seedBootConfig"
 
@@ -62,9 +61,9 @@ const FACTS = {
   txAmountCap: 5166n * 10n ** 18n,
 }
 
-const { closeSession } = await import("../../../src/platform/session")
+const { closeSession } = await import("../../../src/session/session")
 const { openTestSession } = await import("../../support/session")
-beforeEach(() => void openTestSession({ wallet: {} }))
+beforeEach(() => openTestSession({ wallet: {}, sipaAddresses: gateway }).registrations.ready)
 afterEach(closeSession)
 
 describe("DepositScreen — deposit quote", () => {
@@ -93,7 +92,7 @@ describe("DepositScreen — deposit quote", () => {
       root.render(
         <MemoryRouter>
           <ScreeningProvider screener={passThroughScreener}>
-            <DepositScreen />
+            <DepositScreen claimName={noClaim} />
           </ScreeningProvider>
         </MemoryRouter>,
       )
@@ -103,7 +102,7 @@ describe("DepositScreen — deposit quote", () => {
     vi.clearAllMocks()
     l1.account = null
     localStorage.clear()
-    saveWalletIdentity({ handle: "alice", address: L2_ADDRESS, claimedAt: 1 })
+    await setIdentity({ handle: "alice", address: L2_ADDRESS, claimedAt: 1 })
     container = document.createElement("div")
     document.body.appendChild(container)
     root = createRoot(container)
@@ -145,7 +144,7 @@ describe("DepositScreen — deposit quote", () => {
     await openDrawer()
     expect(gateway.depositAddress).toHaveBeenCalledOnce()
     expect(copyButton()?.disabled).toBe(true)
-    expect(note()?.textContent).toBe(FEE_UNAVAILABLE_NOTE)
+    expect(note()?.textContent).toBe(depositCopy.feeUnavailableNote)
 
     loadDepositDisplayFacts.mockResolvedValue(FACTS)
     await act(async () => retry()!.click())
@@ -165,7 +164,7 @@ describe("DepositScreen — deposit quote", () => {
     await act(async () => retry()!.click())
 
     expect(retry()).toBeNull()
-    expect(feeValue()).toBe(QUOTE_PENDING)
+    expect(feeValue()).toBe(depositCopy.quotePending)
   })
 
   it("holds the funding controls while the quote is still out, with nothing to retry", async () => {

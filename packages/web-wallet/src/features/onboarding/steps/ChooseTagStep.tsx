@@ -4,7 +4,11 @@ import { PrimaryGradientButton } from "@obsidion/web-ds"
 import { normalizeTag } from "@obsidion/front-core"
 import { usePhoneLayout } from "../../../ui/usePhoneLayout"
 import { OnboardingCard } from "../OnboardingCard"
-import { nameIsUnavailable, useNameAvailability, type RouteNameGrant } from "../nameAvailability"
+import {
+  nameIsUnavailable,
+  useNameAvailability,
+  type RouteNameGrant,
+} from "../../registration/nameAvailability"
 import {
   GoldenTicketArt,
   GoldenTicketHead,
@@ -13,7 +17,11 @@ import {
   ticketIntroShows,
 } from "./GoldenTicketHead"
 import { SignupStepper } from "./SignupStepper"
-import { TagAvailabilityNotes, type InviteNotice } from "./TagAvailabilityNotes"
+import copy from "./ChooseTagStep.copy"
+import {
+  TagAvailabilityNotes,
+  type InviteNotice,
+} from "../../registration/TagAvailabilityNotes/TagAvailabilityNotes"
 
 /**
  * Step one of a paylink-funded signup (mockup frame 6): the golden ticket, what the link pays, and
@@ -98,12 +106,12 @@ export function ChooseTagStep({
           <SignupStepper current={0} />
           <GoldenTicketHead {...ticket} />
           <label className="ww-invite-field">
-            <span className="ww-invite-field__label">Your tag</span>
+            <span className="ww-invite-field__label">{copy.tagLabel}</span>
             <span className="ww-invite-field__input">
-              <span>@</span>
+              <span>{copy.at}</span>
               <input
-                aria-label="Your tag"
-                placeholder="tag"
+                aria-label={copy.tagLabel}
+                placeholder={copy.tagPlaceholder}
                 value={typed}
                 ref={field}
                 autoFocus={!phone && !initialHandle && !covered}
@@ -111,7 +119,7 @@ export function ChooseTagStep({
                 onChange={(e) => setTyped(e.target.value.replace(/^@/, "").toLowerCase())}
                 disabled={busy}
               />
-              <span>.zk.money</span>
+              <span>{copy.domain}</span>
             </span>
           </label>
           <TagAvailabilityNotes
@@ -132,7 +140,7 @@ export function ChooseTagStep({
             <PrimaryGradientButton
               title={
                 recoverBoundGrant
-                  ? "Continue with passkey"
+                  ? copy.continueWithPasskey
                   : (valid &&
                       ticketClaimLabel(
                         typed,
@@ -140,7 +148,7 @@ export function ChooseTagStep({
                         ticket.tokenDecimals,
                         ticket.tokenSymbol,
                       )) ||
-                    "Claim tag"
+                    copy.claimTag
               }
               isDisabled={!submittable || held}
               isLoading={busy}
@@ -152,13 +160,13 @@ export function ChooseTagStep({
                 className="zkm-btn-reset zkm-pressable ww-invite-cancel"
                 onClick={onCancel}
               >
-                Cancel
+                {copy.cancel}
               </button>
             )}
             <p className="ww-invite-modal-foot">
-              Already have an account?{" "}
+              {copy.haveAccount}{" "}
               <button type="button" className="zkm-btn-reset ww-invite__link" onClick={onLogIn}>
-                Show passkeys
+                {copy.showPasskeys}
               </button>
             </p>
           </div>

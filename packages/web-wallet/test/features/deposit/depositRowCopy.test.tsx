@@ -17,10 +17,10 @@ import {
   usdcFeeTokens,
 } from "../../support/depositTokens"
 
-const { settlementToken } = await import("../../../src/features/deposit/loadDepositFacts")
+const { settlementToken } = await import("../../../src/features/sipa/loadDepositFacts")
 const { tokenFigure } = await import("../../../src/ui/format")
 const { DepositTermsRows, fundingAssetsLabel, swapAssetsLabel } = await import(
-  "../../../src/features/onboarding/steps/DepositTermsRows"
+  "../../../src/features/deposit/DepositTermsRows/DepositTermsRows"
 )
 
 describe("what a row's token credits", () => {

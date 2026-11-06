@@ -2,7 +2,9 @@
 import { describe, expect, it } from "vitest"
 import { WALLET_TOKEN_SYMBOL } from "@obsidion/core/constants"
 import { AUTH_TYPE } from "@obsidion/sdk"
-import { AccountStorage } from "../../src/core/storages/AccountStorage"
+import { createAccountRecord } from "../../src/engine/account"
+import { openDatabase } from "../../src/engine/database"
+import { memoryBackend } from "../../src/engine/memoryBackend"
 import { BalanceStorage } from "../../src/core/storages/BalanceStorage"
 import { TokenStorage } from "../../src/core/storages/TokenStorage"
 import type { BalanceSync } from "../../src/engine/milestones"
@@ -144,15 +146,25 @@ describe("selectHomeMain", () => {
   const args = { arriving: 3n, lock: open, upgradesLoaded: true }
 
   it("adds funds on their way to Main's balance", () => {
-    expect(selectHomeMain(live(10n), args)).toEqual({ shown: 13n, known: true })
+    expect(selectHomeMain(live(10n), args)).toEqual({ shown: 13n, known: true, updating: false })
     expect(selectHomeMain(live(0n, { main: null }), args).shown).toBe(3n)
+  })
+
+  it("marks a cached figure updating until a read from this session lands", () => {
+    expect(selectHomeMain(live(10n, { live: false }), args)).toEqual({
+      shown: 13n,
+      known: true,
+      updating: true,
+    })
+    expect(selectHomeMain(live(10n, { live: false, known: false }), args).updating).toBe(false)
   })
 
   it("shows what a held upgrade will land, known once the lock is read", () => {
     const lock = { checked: true, held: true, main: 99n }
-    expect(selectHomeMain(live(10n, { known: false }), { ...args, lock })).toEqual({
+    expect(selectHomeMain(live(10n, { known: false, live: false }), { ...args, lock })).toEqual({
       shown: 99n,
       known: true,
+      updating: false,
     })
   })
 
@@ -164,12 +176,15 @@ describe("selectHomeMain", () => {
   )
 
   it("does not wait on the old versions' reads", () => {
-    expect(selectHomeMain(live(10n, { syncing: true }), args)).toEqual({ shown: 13n, known: true })
+    expect(selectHomeMain(live(10n, { syncing: true }), args)).toEqual({
+      shown: 13n,
+      known: true,
+      updating: false,
+    })
   })
 })
 
 const ACCOUNT = {
-  name: "Account 1",
   completeAddress: "0xacct",
   signKeyConfig: { type: AUTH_TYPE.WEB_AUTHN, webauthnData: { credentialId: "c", pubkey: "p" } },
 }
@@ -182,11 +197,12 @@ describe("createBalances", () => {
     seed: { account?: boolean; row?: boolean; symbol?: string; active?: string | null } = {},
   ) {
     const adapter = new InMemoryStorageAdapter()
-    if (seed.account ?? true) await new AccountStorage(adapter).setAccount(ACCOUNT)
+    const db = openDatabase(memoryBackend())
+    if (seed.account ?? true) await createAccountRecord({ db }).save(ACCOUNT)
     if (seed.row ?? true)
       await new TokenStorage(adapter).addToken({ ...ROW, symbol: seed.symbol ?? ROW.symbol })
     const storage = new BalanceStorage(adapter)
-    const accounts = new AccountStorage(adapter)
+    const accounts = createAccountRecord({ db })
     const tokens = new TokenStorage(adapter)
     const sync = memoryStore<BalanceSync>(SETTLED)
     const active = memoryStore<string | null>(seed.active === undefined ? MAIN : seed.active)
@@ -195,7 +211,7 @@ describe("createBalances", () => {
       storage,
       {
         network: "sandbox",
-        account: accounts.current,
+        account: accounts.view,
         tokens: tokens.rows,
         activeToken: active,
       },
@@ -253,7 +269,7 @@ describe("createBalances", () => {
     const { storage, accounts, balances } = await setup({ account: false })
     await storage.updateBalance(SCOPE, MAIN, 5n, 10)
     expect(balances.view.get()).toMatchObject({ main: null, known: false })
-    await accounts.setAccount(ACCOUNT)
+    await accounts.save(ACCOUNT)
     await settle()
     expect(balances.view.get()).toMatchObject({ main: { atomic: 5n }, known: true })
   })
@@ -281,7 +297,7 @@ describe("createBalances", () => {
       storage,
       {
         network: "sandbox",
-        account: accounts.current,
+        account: accounts.view,
         tokens: tokens.rows,
         activeToken: active,
       },

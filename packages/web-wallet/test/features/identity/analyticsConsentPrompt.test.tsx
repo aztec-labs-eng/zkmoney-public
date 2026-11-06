@@ -1,46 +1,43 @@
 import React, { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { committed, testPage } from "../../support/page"
 
-const h = vi.hoisted(() => ({
-  asked: false,
-  setAsked: vi.fn(async () => {}),
-  setConsent: vi.fn(async () => {}),
-}))
+const deviceDb = testPage().database
 
-vi.mock("@obsidion/front-core", () => ({
-  useConfigValue: (key: string) =>
-    key === "analyticsAsked"
-      ? { value: h.asked, setValue: h.setAsked }
-      : { value: false, setValue: h.setConsent },
-}))
 vi.mock("@obsidion/web-ds", () => ({
   Card: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
   PrimaryGradientButton: ({ title, onClick }: { title: string; onClick: () => void }) => (
     <button onClick={onClick}>{title}</button>
   ),
 }))
-const { saveWalletIdentity } = await import("../../../src/features/identity/walletIdentity")
+const { setIdentity } = await import("../../support/identity")
+const { saveSetting, writeDeviceKeys } = await import("../../../src/platform/storage/deviceKeys")
+const { L2_ADDRESS, SIPA, pendingRecord, seedRegistration } = await import(
+  "../../support/registrationFixtures"
+)
+const { openTestSession } = await import("../../support/session")
+const { closeSession } = await import("../../../src/session/session")
 const { AnalyticsConsentPrompt } = await import(
-  "../../../src/features/onboarding/AnalyticsConsentModal"
+  "../../../src/features/onboarding/AnalyticsConsentModal/AnalyticsConsentModal"
 )
 
 let container: HTMLDivElement
 let root: Root
 
-beforeEach(() => {
+beforeEach(async () => {
   HTMLDialogElement.prototype.showModal = vi.fn()
-  h.asked = false
-  h.setAsked.mockClear()
-  h.setConsent.mockClear()
+  await writeDeviceKeys(deviceDb, { analyticsConsent: null, storageId: "a1" })
   container = document.createElement("div")
   document.body.appendChild(container)
   root = createRoot(container)
+  openTestSession()
 })
 
 afterEach(async () => {
   await act(async () => root.unmount())
   container.remove()
+  closeSession()
 })
 
 const render = () => act(async () => root.render(<AnalyticsConsentPrompt />))
@@ -48,23 +45,27 @@ const prompt = () => container.querySelector("dialog")
 
 describe("AnalyticsConsentPrompt", () => {
   it("waits for the tag to confirm, then asks once and saves the answer", async () => {
-    await saveWalletIdentity({ address: "0x1", claimedAt: 1, handle: "taga", pending: true })
+    await seedRegistration(pendingRecord())
+    await setIdentity({ address: L2_ADDRESS, claimedAt: 1, handle: "taga" })
     await render()
     expect(prompt()).toBeNull()
 
-    await act(() => saveWalletIdentity({ address: "0x1", claimedAt: 1, handle: "taga" }))
+    const { registrations } = openTestSession()
+    await act(
+      async () => void (await registrations.apply(SIPA, { type: "closed", outcome: "confirmed" })),
+    )
     expect(prompt()).not.toBeNull()
 
     await act(async () => container.querySelector<HTMLButtonElement>("button:last-child")!.click())
-    expect(h.setConsent).toHaveBeenCalledWith(false)
-    expect(h.setAsked).toHaveBeenCalledWith(true)
+    expect(committed()).toMatchObject({ consentAsked: true, analyticsConsent: false })
+    expect(prompt()).toBeNull()
   })
 
   it("asks nothing before a wallet exists or after an answer", async () => {
     await render()
     expect(prompt()).toBeNull()
-    await saveWalletIdentity({ address: "0x1", claimedAt: 1, handle: "taga" })
-    h.asked = true
+    await setIdentity({ address: "0x1", claimedAt: 1, handle: "taga" })
+    await saveSetting(deviceDb, "analyticsConsent", true)
     await render()
     expect(prompt()).toBeNull()
   })

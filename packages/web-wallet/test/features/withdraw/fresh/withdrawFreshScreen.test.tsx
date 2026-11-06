@@ -7,11 +7,21 @@ import { createRoot, type Root } from "react-dom/client"
 import { MemoryRouter, useLocation } from "react-router-dom"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { getAddress } from "viem"
+import copy from "../../../../src/features/withdraw/WithdrawFreshScreen.copy"
+import etherfiCopy from "../../../../src/features/withdraw/etherfiCheck.copy"
 
-type ModalProps = { recipient: string; walletName?: string; onClose(): void; onDone(): void }
+type ModalProps = {
+  recipient: string
+  walletName?: string
+  recipientWarning?: { title: string; body: string }
+  confirmRecipient?: () => boolean
+  onClose(): void
+  onDone(): void
+}
 
 const h = vi.hoisted(() => ({
   verdict: { kind: "idle" } as { kind: string },
+  etherfi: "rejected",
   explorerUrl: undefined as string | undefined,
   cleared: true,
   hook: vi.fn(),
@@ -24,6 +34,15 @@ vi.mock("../../../../src/features/withdraw/freshAddressCheck", async (importOrig
   ...(await importOriginal<typeof import("../../../../src/features/withdraw/freshAddressCheck")>()),
   useFreshAddressVerdict: (address: unknown) => (h.hook(address), h.verdict),
 }))
+async function etherfiCheckMock(
+  importOriginal: () => Promise<typeof import("../../../../src/features/withdraw/etherfiCheck")>,
+) {
+  return {
+    ...(await importOriginal()),
+    useEtherfiAddressVerdict: (address: unknown) => ({ kind: address ? h.etherfi : "idle" }),
+  }
+}
+vi.mock("../../../../src/features/withdraw/etherfiCheck", etherfiCheckMock) // slice-check-ignore: unmigrated screen
 vi.mock("../../../../src/ui/detailRows", () => ({ l1AddressUrl: () => h.explorerUrl }))
 vi.mock("../../../../src/ui/screening", () => ({
   ScreeningNotice: () => <output data-screening />,
@@ -44,10 +63,21 @@ vi.mock("@obsidion/web-ds", async (importOriginal) => ({
   ),
 }))
 
-const { WithdrawFreshScreen } = await import("../../../../src/features/withdraw/WithdrawFreshScreen")
-const { FRESH_ADDRESS_VERDICT_COPY } = await import("../../../../src/features/withdraw/freshAddressCheck")
+const { WithdrawFreshScreen } = await import(
+  "../../../../src/features/withdraw/WithdrawFreshScreen"
+)
+const { FRESH_ADDRESS_VERDICT_COPY } = await import(
+  "../../../../src/features/withdraw/freshAddressCheck"
+)
 
-const Probe = () => <output data-location>{useLocation().pathname}</output>
+const Probe = () => {
+  const location = useLocation()
+  return (
+    <output data-location data-state={JSON.stringify(location.state ?? null)}>
+      {location.pathname}
+    </output>
+  )
+}
 
 const LOWER = `0x${"ab".repeat(20)}`
 const CHECKSUMMED = getAddress(LOWER)
@@ -83,6 +113,7 @@ describe("WithdrawFreshScreen", () => {
 
   beforeEach(() => {
     h.verdict = { kind: "idle" }
+    h.etherfi = "rejected"
     h.cleared = true
     vi.clearAllMocks()
     container = document.createElement("div")
@@ -134,5 +165,74 @@ describe("WithdrawFreshScreen", () => {
     expect(modalProps().walletName).toBe("Ghost in mempool")
     await act(async () => modalProps().onDone())
     expect(container.querySelector("[data-location]")?.textContent).toBe("/")
+  })
+
+  it("holds Continue while ether.fi's factory is still answering", async () => {
+    h.verdict = { kind: "fresh" }
+    h.etherfi = "checking"
+    await render()
+    await type(addressInput(), LOWER)
+    expect(continueButton().disabled).toBe(true)
+    expect(card()).toBeNull()
+  })
+
+  it.each([
+    [false, false],
+    [true, true],
+  ] as const)("screening cleared %s: the history status shows %s", async (cleared, shown) => {
+    h.verdict = { kind: "checking" }
+    h.cleared = cleared
+    await render()
+    await type(addressInput(), LOWER)
+    expect(container.textContent?.includes(copy.checking)).toBe(shown)
+    expect(!!container.querySelector("[data-screening]")).toBe(!cleared)
+  })
+
+  it.each([
+    ["unknown", true],
+    ["rejected", false],
+  ] as const)("ether.fi %s: the could-not-check warning shows %s", async (kind, shown) => {
+    h.verdict = { kind: "fresh" }
+    h.etherfi = kind
+    await render()
+    await type(addressInput(), LOWER)
+    expect(container.textContent?.includes(etherfiCopy.unknown.title)).toBe(shown)
+    await click(continueButton())
+    expect(modalProps().recipientWarning).toEqual(shown ? etherfiCopy.unknown : undefined)
+  })
+
+  it.each(["confirmed", "account"])(
+    "turns an ether.fi Cash address (%s) away to the ether.fi route, address carried over",
+    async (kind) => {
+      h.verdict = { kind: "fresh" }
+      h.etherfi = kind
+      await render()
+      await type(addressInput(), LOWER)
+      expect(card()?.textContent).toContain(copy.etherfi.title)
+      expect(continueButton()).toBeUndefined()
+      const route = Array.from(container.querySelectorAll("button")).find(
+        (b) => b.textContent === copy.etherfi.action,
+      )!
+      await click(route)
+      const probe = container.querySelector<HTMLElement>("[data-location]")!
+      expect(probe.textContent).toBe("/withdraw/etherfi")
+      expect(JSON.parse(probe.dataset.state!)).toEqual({ recipient: CHECKSUMMED })
+    },
+  )
+
+  it("stops the submit and turns away an address ether.fi confirms while the sheet is open", async () => {
+    h.verdict = { kind: "fresh" }
+    await render()
+    await type(addressInput(), LOWER)
+    await click(continueButton())
+    expect(modalProps().confirmRecipient!()).toBe(true)
+    h.etherfi = "account"
+    await render()
+    let going = true
+    await act(async () => void (going = modalProps().confirmRecipient!()))
+    expect(going).toBe(false)
+    const probe = container.querySelector<HTMLElement>("[data-location]")!
+    expect(probe.textContent).toBe("/withdraw/etherfi")
+    expect(JSON.parse(probe.dataset.state!)).toEqual({ recipient: CHECKSUMMED })
   })
 })

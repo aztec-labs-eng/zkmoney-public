@@ -4,11 +4,11 @@
  */
 import {
   UpgradeActivity,
+  bestEffort,
   derived,
   onRefundInFlightChanged,
   OPEN,
   PENDING,
-  processingStates,
   legacyRecords,
   refundsInFlight,
   legacyStore,
@@ -18,31 +18,26 @@ import {
   type FeedSources,
   type Loaded,
   type OldVersionWithdrawal,
-  type PendingRegistrationRecord,
   type ReadonlyStore,
   type RecordSet,
-  type Registrations,
   type Requests,
-  type SipaProcessingObserver,
+  type SipaDeposits,
+  type SipaProcessingState,
   type Sourced,
   type Transaction,
   type Withdrawals,
 } from "@obsidion/front-core"
-import { bridgeActivityFeed } from "../../features/deposit/sipaProcessing"
-import {
-  getPendingStore,
-  replacedRegistrationRecords,
-} from "../../features/onboarding/webRegistration"
 import { getSavingsMoveStore } from "../../features/savings/savingsMoveStore"
 import { getOldVersionWithdrawalStore } from "../../features/withdraw/oldVersionWithdrawals"
 import { wallClock } from "../../lib/clock"
-import { depositRecords } from "../../platform/storage/requests"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
 
 const NO_UPGRADES: FeedSources["upgrades"] = { items: [], recipients: new Set(), loaded: false }
 
+/** The account's upgrade runs: each session's feed loads its own account's. */
 function upgradesStore(): ReadonlyStore<Sourced<FeedSources["upgrades"]>> {
   const upgrades = UpgradeActivity.get(webStorage)
+  void bestEffort("unknown", upgrades.changed())
   return legacyStore(
     {
       read: () => ({
@@ -58,11 +53,9 @@ function upgradesStore(): ReadonlyStore<Sourced<FeedSources["upgrades"]>> {
 
 // A record source mirrors its list for the page's life, so each is built once per page.
 let moves: ReadonlyStore<FeedSources["moves"]> | undefined
-let pending: ReadonlyStore<Loaded<PendingRegistrationRecord>> | undefined
 let oldVersionWithdrawals: ReadonlyStore<Loaded<OldVersionWithdrawal>> | undefined
 
 const savingsMoves = () => (moves ??= legacyRecords(getSavingsMoveStore()))
-export const pendingRegistrations = () => (pending ??= legacyRecords(getPendingStore()))
 export const oldVersionWithdrawalRecords = () =>
   (oldVersionWithdrawals ??= legacyRecords(getOldVersionWithdrawalStore()))
 
@@ -101,10 +94,9 @@ export type FeedBase = Omit<FeedSources, "rows">
 export function feedBase(
   requests: Requests,
   withdrawals: Withdrawals,
-  observer: SipaProcessingObserver | undefined,
+  sipaDeposits: SipaDeposits,
+  processing: ReadonlyStore<ReadonlyMap<string, SipaProcessingState>>,
 ): ReadonlyStore<FeedBase> {
-  // Attaches the processing observer and loads the upgrade runs, for the bell's feed too.
-  bridgeActivityFeed(observer)
   const refunds: ReadonlyStore<ReadonlySet<string>> = {
     get: refundsInFlight,
     subscribe: onRefundInFlightChanged,
@@ -113,12 +105,12 @@ export function feedBase(
     [
       requests.view,
       requests.loaded,
-      depositRecords(),
+      sipaDeposits.view,
       withdrawals.list,
       upgradesStore(),
       savingsMoves(),
       oldVersionWithdrawalRecords(),
-      processingStates(depositRecords(), observer),
+      processing,
       refunds,
       syncCatchUp.status,
       wallClock,
@@ -167,14 +159,6 @@ export function peerRows(
   return mergedRows(addresses.map((address) => activity.query("peer", address.toLowerCase())))
 }
 
-/** This wallet's registrations, live and replaced. */
-export function registrationRecords(): ReadonlyStore<Registrations["records"]> {
-  return derived(
-    [pendingRegistrations(), replacedRegistrationRecords()] as const,
-    (pending, replaced) => [...pending.records, ...replaced.value],
-  )
-}
-
 /** The newest rows the recent people are read from. */
 const RECENT_PEOPLE_ROWS = 100
 
@@ -183,10 +167,11 @@ export function contactActivity(
   activity: Activity,
   requests: Requests,
   withdrawals: Withdrawals,
+  sipaDeposits: SipaDeposits,
 ): ReadonlyStore<ContactActivitySources> {
   const recent = activity.query("time", { reverse: true, limit: RECENT_PEOPLE_ROWS })
   return derived(
-    [recent, requests.view, depositRecords(), withdrawals.list] as const,
+    [recent, requests.view, sipaDeposits.view, withdrawals.list] as const,
     (transactions, requests, deposits, burns) => ({
       transactions: transactions.records,
       requests,

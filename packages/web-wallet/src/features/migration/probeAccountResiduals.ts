@@ -14,8 +14,6 @@ import {
   HISTORIC_ACTIVITY_IMPORTED_KEY,
   PendingPaylinkMigrationService,
   PendingPaylinkMigrationStore,
-  retiredDatabaseOf,
-  sourceTagResolver,
 } from "@obsidion/front-core"
 import {
   detectHistoricDeployments,
@@ -32,18 +30,17 @@ import {
   invalidateOxideDeployment,
   l1MulticallClient,
 } from "../../config/oxideTuple"
-import { getAuthService } from "../../platform/auth/useAuthenticator"
-import { getActiveStorageId } from "../../platform/storage/activeStorage"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
-import { loadWalletIdentity } from "../identity/walletIdentity"
-import { session as openSession } from "../../platform/session"
+import { session as openSession, type Session } from "../../session/session"
+import { stillCommitted } from "../../session/stillCommitted"
 import { latestChainSeconds } from "../paylink/chainTime"
 import { getSavingsTuple } from "../savings/savingsGateway"
 import { isReadableSource, sourceChain } from "./historicTokenContext"
 import { markRefundedSourceLinks, sourceFrozenEscrows, sourceLinkRows } from "./sourceFrozenEscrows"
 import { sourceSavingsDeposits } from "./sourceSavingsDeposits"
 import { importHistoricActivityOnce } from "./historicActivityImport"
-import { sourceSipaScanParams, sourceSipaSources } from "./sourceSipaSources"
+import { readSourceHistory } from "./sourceHistoryReplay"
+import { sourceSipaSources } from "./sourceSipaSources"
 import { ManifestUnavailableError } from "./freezeWatch"
 
 /** A frozen source's links its refunds paid out on L1: escrow note reads, after the history import. */
@@ -66,8 +63,8 @@ import {
   type HistoricResidualSummary,
 } from "./historicResiduals"
 
-function pendingPaylinkService(storageId: string | null, checkSpent?: CheckSpent) {
-  const { activity, notifications } = openSession()
+function pendingPaylinkService(own: Session, checkSpent?: CheckSpent) {
+  const { activity, notifications } = own
   return {
     activity,
     pendingPaylinks: new PendingPaylinkMigrationService({
@@ -75,7 +72,7 @@ function pendingPaylinkService(storageId: string | null, checkSpent?: CheckSpent
       notifications,
       accountTransactions: () => activity.all(),
       checkSpent,
-      ownsStorage: () => getActiveStorageId() === storageId,
+      ownsStorage: () => stillCommitted(own),
     }),
   }
 }
@@ -86,13 +83,10 @@ export async function reconcilePendingPaylinks(
   wallet: ObsidionWallet,
   checkSpent?: CheckSpent,
 ): Promise<void> {
-  const storageId = getActiveStorageId()
+  const own = openSession()
   const sec = await chainSeconds(wallet)
   if (sec != null)
-    await pendingPaylinkService(storageId, checkSpent).pendingPaylinks.reconcile(
-      sec,
-      wallet.networkId,
-    )
+    await pendingPaylinkService(own, checkSpent).pendingPaylinks.reconcile(sec, wallet.networkId)
 }
 
 /** Whether `destination`'s deployment publishes a usable migration route for `source`. */
@@ -143,6 +137,8 @@ export interface ResidualDestination {
 export async function probeAccountResiduals(
   wallet: ObsidionWallet,
   account: ObsidionAccount,
+  /** The account's name: its registration addresses are found from it. */
+  handle: string | undefined,
 ): Promise<{
   current: OxideEnvTuple
   historic: OxideEnvTuple[]
@@ -168,7 +164,8 @@ export async function probeAccountResiduals(
     )
   // Folds the contract reads of the scan, and of the migration subsidy, into Multicall3 calls.
   const publicClient = l1MulticallClient(config)
-  const storageId = getActiveStorageId()
+  const own = openSession()
+  const storageId = own.namespace.id
   // Unread, its sources would read as no history: the probe fails as a manifest that cannot be read.
   const otherSources = await getOtherManifestSources(config).catch((error) => {
     throw new ManifestUnavailableError(error)
@@ -217,15 +214,15 @@ export async function probeAccountResiduals(
     }
   }
 
-  const { activity, pendingPaylinks } = pendingPaylinkService(storageId)
+  const { activity, pendingPaylinks } = pendingPaylinkService(own)
   const chainSec = await chainSeconds(wallet)
-  const msk = await getAuthService().getSecretKey()
+  const msk = await own.auth.getSecretKey()
   if (!msk || !storageId) {
     console.info("[migration] wallet locked — probe skipped")
     return null
   }
   // The key and the link rows must be the account the probe started for.
-  if (getActiveStorageId() !== storageId) {
+  if (!stillCommitted(own)) {
     console.info("[migration] account changed — probe skipped")
     return null
   }
@@ -235,7 +232,8 @@ export async function probeAccountResiduals(
   )(recipient as never)
   const scanHead = await publicClient.getBlockNumber({ cacheTime: 0 })
   // A retired deployment on another rollup is read through that rollup's node and PXE.
-  const chainFor = (tuple: OxideEnvTuple) => sourceChain({ wallet, account }, current, tuple)
+  const chainFor = (tuple: OxideEnvTuple) =>
+    sourceChain({ wallet, account }, current, tuple, own.auth)
   const found = await probeHistoricResiduals({
     wallet,
     account,
@@ -260,7 +258,7 @@ export async function probeAccountResiduals(
         })),
       ]
       const unverifiedMoves = () => (unverified.size ? { unverifiedMoves: unverified.size } : {})
-      const paylinkRows = () => sourceLinkRows({ tuple, current, storageId })
+      const paylinkRows = () => sourceLinkRows({ tuple, current, own })
       if (chain.kind === "pxe") {
         const summary = await frozenSourceSummary({
           client: publicClient,
@@ -296,6 +294,7 @@ export async function probeAccountResiduals(
           publicClient,
           masterSecret: msk,
           scanHead,
+          handle,
         }),
       consumed: async (tuple, deposits) => {
         const chain = await chainFor(tuple)
@@ -329,34 +328,27 @@ export async function probeAccountResiduals(
         }/${tuple.l2Token.toLowerCase()}/tags`
         const replay = importHistoricActivityOnce(storageId, {
           key,
-          read: async () => {
-            const { entries, short } = await session.history({
-              ...(await sourceSipaScanParams({
-                tuple,
-                publicClient,
-                masterSecret: msk,
-                scanHead,
-              })),
-              accountTag: loadWalletIdentity()?.handle ?? session.address,
-              linkBase: `${location.origin}/link#`,
+          read: () =>
+            readSourceHistory({
+              session,
+              tuple,
+              publicClient,
+              masterSecret: msk,
+              scanHead,
+              handle,
               // A settled source still names the portal of a Savings move made through it.
               deployments: [...historic, ...settled].filter(
                 (t) => t.rollupVersion === tuple.rollupVersion,
               ),
-              resolveTag: sourceTagResolver(publicClient, tuple, scanHead),
-            })
-            if (short.length)
-              console.warn(`[migration] ${tuple.portal} read short: ${short.join(", ")}`)
-            return retiredDatabaseOf(tuple.rollupVersion, entries, short.length > 0)
-          },
+            }),
         }).catch((error) =>
           console.warn(`[migration] history replay failed for ${tuple.portal}:`, error),
         )
-        if (!(await openSession().milestones.after(REFUNDED_AFTER))) return false
+        if (!(await own.milestones.after(REFUNDED_AFTER))) return false
         // Its boot stage reports a failed import of this browser's databases.
         await Promise.allSettled([replay, importHistoricActivityOnce(storageId)])
-        await markRefundedSourceLinks({ session, tuple, current, storageId })
-        if (getActiveStorageId() !== storageId) return false
+        await markRefundedSourceLinks({ session, tuple, current, own })
+        if (!stillCommitted(own)) return false
         // A link row either import brings in later would miss its refund check.
         const imported = await Promise.all(
           [key, HISTORIC_ACTIVITY_IMPORTED_KEY].map((k) => webStorage.getItem(k)),
@@ -402,11 +394,11 @@ export async function probeAccountResiduals(
     }),
   )
   // A scan that outlived its account writes nothing; the next account's probe reads its own.
-  if (getActiveStorageId() !== storageId) {
+  if (!stillCommitted(own)) {
     console.info("[migration] account changed — probe results dropped")
     return null
   }
-  const { withdrawals } = openSession()
+  const { withdrawals } = own
   await withdrawals.ready
   const pending = found.flatMap((r) => r.paylinkCandidates)
   await pendingPaylinks.recordPending(pending, wallet.networkId)
@@ -434,7 +426,7 @@ export async function probeAccountResiduals(
     }
     void (passes.get(r.tuple.portal.toLowerCase()) ?? Promise.resolve(true))
       .then(async (done) => {
-        if (!done || getActiveStorageId() !== storageId) return
+        if (!done || !stillCommitted(own)) return
         // Read once the source's reads are done, so it is past every refund they saw.
         const tip = await publicClient.getBlock({ blockTag: "latest" })
         recordRetiredSourceRead(accountId, r.tuple.portal, {

@@ -12,7 +12,7 @@ import type { Address, PublicClient } from "viem"
 import { ContactStorage, type Contact, type WithdrawalRecord } from "@obsidion/front-core"
 import { getConfig } from "../../config/env"
 import { l1PublicClient } from "../../config/oxideTuple"
-import { session } from "../../platform/session"
+import { session } from "../../session/session"
 
 export type FreshAddressVerdict =
   | { kind: "idle" } // no parseable address
@@ -152,25 +152,27 @@ export function useFreshAddressVerdict(
   address: Address | null,
   waitMs?: number,
 ): FreshAddressVerdict {
-  const [verdict, setVerdict] = useState<FreshAddressVerdict>({ kind: "idle" })
+  const [result, setResult] = useState<{ address: Address; verdict: FreshAddressVerdict }>()
 
   useEffect(() => {
-    if (!address) {
-      setVerdict({ kind: "idle" })
-      return
-    }
+    if (!address) return
     let active = true
-    setVerdict({ kind: "checking" })
     const timer = setTimeout(() => {
       checkFreshAddress(address, liveDeps())
         .catch((): FreshAddressVerdict => ({ kind: "unknown" }))
-        .then((result) => {
-          if (active) setVerdict(result)
+        .then((verdict) => {
+          if (active) setResult({ address, verdict })
         })
     }, DEBOUNCE_MS)
     const cap =
       waitMs &&
-      setTimeout(() => setVerdict((v) => (v.kind === "checking" ? { kind: "unknown" } : v)), waitMs)
+      setTimeout(
+        () =>
+          setResult((r) =>
+            r?.address === address ? r : { address, verdict: { kind: "unknown" } },
+          ),
+        waitMs,
+      )
     return () => {
       active = false
       clearTimeout(timer)
@@ -178,5 +180,7 @@ export function useFreshAddressVerdict(
     }
   }, [address, waitMs])
 
-  return verdict
+  // Keyed by address, so the render that brings a new address never carries the last one's verdict.
+  if (!address) return { kind: "idle" }
+  return result?.address === address ? result.verdict : { kind: "checking" }
 }

@@ -3,7 +3,7 @@
 // every front-core node-RPC caller. It is a build-time value that already ships inside the
 // client bundle, so it is deliberately NOT written to storage -- a rotated key then takes
 // effect on the next launch rather than sticking in a persisted network record.
-// Mirrors setActiveGenerationNode / setNoircGeneration.
+// Mirrors setActiveGenerationNode.
 
 let apiKey: string | undefined
 

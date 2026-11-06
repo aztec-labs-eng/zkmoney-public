@@ -3,17 +3,14 @@ import type { ContactRow } from "../hooks/useContactsDirectory"
 import type { Transaction } from "../types/transactions"
 import type { PaymentRequest } from "../engine/requests"
 import { l1WalletProvidersMatch } from "../core/storages/ContactStorage"
-import {
-  isUnfundedSipaDeposit,
-  type SIPADepositRecord,
-} from "../core/services/deposits/SIPADepositStore"
+import { isUnfundedSipaDeposit, type SipaDeposit } from "../engine/sipaDeposits"
 import type { WithdrawalRecord } from "../core/services/bridge/types"
 import { normalizeTag } from "./normalizeTag"
 
 export interface ContactActivitySources {
   transactions?: readonly Transaction[]
   requests?: readonly PaymentRequest[]
-  sipaDeposits?: readonly SIPADepositRecord[]
+  sipaDeposits?: readonly SipaDeposit[]
   withdrawals?: readonly WithdrawalRecord[]
 }
 
@@ -80,7 +77,7 @@ export function recentContacts(
   }
   for (const deposit of sources.sipaDeposits ?? []) {
     if (!isUnfundedSipaDeposit(deposit))
-      recordL1(deposit.walletAddress, deposit.walletProvider, deposit.startTime)
+      recordL1(deposit.walletAddress, undefined, deposit.startTime)
   }
   for (const withdrawal of sources.withdrawals ?? []) {
     if (withdrawal.phase === "failed" && withdrawal.cancelReason !== undefined) continue

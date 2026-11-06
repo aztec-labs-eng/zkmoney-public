@@ -6,7 +6,7 @@ import type { SipaIntentName } from "@obsidion/core/oxide"
 import {
   useDepositTokensRead,
   type DepositTokens,
-} from "../../../src/features/deposit/loadDepositFacts"
+} from "../../../src/features/sipa/loadDepositFacts"
 import { singleToken } from "../../support/depositTokens"
 
 const DEPOSIT = singleToken("0x00000000000000000000000000000000000000d1", "DAI")

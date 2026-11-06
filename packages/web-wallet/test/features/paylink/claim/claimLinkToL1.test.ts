@@ -4,6 +4,7 @@
  * tx, and the record carries the escrow args plus the confirm-time quote the detail sheet renders.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { testPage, testCore } from "../../../support/page"
 import { formatUnits, parseUnits, type Address, type Hex } from "viem"
 import { DEFAULT_CONTRACTS, WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
 import { TxStatus } from "@aztec-labs/stdlib/tx"
@@ -69,7 +70,7 @@ vi.mock("../../../../src/features/withdraw/withdrawalFee", () => ({
   withdrawalExecutorFee: async () => FEE,
   withdrawalExecutor: async () => ({ fee: FEE }),
 }))
-vi.mock("../../../../src/features/onboarding/claimSponsorship", () => ({
+vi.mock("../../../../src/features/registration/claimSponsorship", () => ({
   claimSponsorContext: async () => ({ fpcAddress: {}, policy: {} }),
   noteSubscribed: vi.fn(),
 }))
@@ -79,11 +80,9 @@ vi.mock("../../../../src/features/migration/historicTokenContext", () => ({
   historicSponsorTargets: vi.fn(),
   historicTokenContext: vi.fn(),
 }))
-vi.mock("../../../../src/platform/auth/useAuthenticator", () => ({
-  getAuthService: () => ({
-    getSecretKey: async () => ({ toString: () => `0x${"07".repeat(32)}` }),
-  }),
-}))
+const fakeAuth = () => ({
+  getSecretKey: async () => ({ toString: () => `0x${"07".repeat(32)}` }),
+})
 const firePaylinkEvent = vi.hoisted(() => vi.fn())
 vi.mock("../../../../src/lib/analytics", () => ({
   analyticsEnabled: () => true,
@@ -130,10 +129,14 @@ const { claimLinkToL1, claimSponsoredLink, createSponsoredLink, recoverSponsored
   await import("../../../../src/features/paylink/sponsoredPaylink")
 const { TxInFlightError } = await import("@obsidion/front-core")
 const { activeNamespace, closeSession, switchSession, session } = await import(
-  "../../../../src/platform/session"
+  "../../../../src/session/session"
 )
+const { pageSessionDeps } = await import("../../../../src/app/sessionDeps")
 const { getOperationStore } = await import("../../../../src/features/operations/operations")
-beforeEach(() => void switchSession(activeNamespace()))
+beforeEach(
+  () =>
+    void switchSession(activeNamespace(testCore().device), pageSessionDeps(testPage(fakeAuth()))),
+)
 afterEach(closeSession)
 const withdrawals = () => session().withdrawals
 const clearWithdrawals = () =>

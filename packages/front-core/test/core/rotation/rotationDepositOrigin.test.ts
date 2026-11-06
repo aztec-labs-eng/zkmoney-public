@@ -8,7 +8,7 @@ import { SIPAFactoryAbi } from "@oxide/l1-contracts"
 import { deriveRecoveryCommitment } from "@oxide/oxide-lib/sipa_recovery.js"
 import { decodeFunctionData, multicall3Abi, type Address, type Hex } from "viem"
 import { describe, expect, it, vi } from "vitest"
-import type { SIPADepositRecord } from "../../../src/core/services/deposits/SIPADepositStore"
+import type { SipaDeposit } from "../../../src/engine/sipaDeposits"
 import { rotationDepositOrigin } from "../../../src/core/storages/BackupRotationStore"
 import { runSipaRecovery, sipaDeployArgCandidates } from "../../../src/oxide/sipaRecovery"
 import { addr, SIPA, storedRotation, word } from "../../__test-helpers__/backupRotation"
@@ -41,7 +41,7 @@ function recover(rotation: ReturnType<typeof storedRotation>) {
     recoveryAddress: "",
     tokenAddress: TOKEN,
     origin: rotationDepositOrigin(rotation, FACTORIES),
-  } as SIPADepositRecord
+  } as SipaDeposit
   const signAccount = vi.fn(async () => `0x${"11".repeat(65)}` as Hex)
   const sendTransaction = vi.fn(async (_to: Address, _data: Hex) => word(0xab))
   const run = runSipaRecovery({
@@ -58,7 +58,7 @@ function recover(rotation: ReturnType<typeof storedRotation>) {
     },
     sendTransaction,
     waitForReceipt: async () => true,
-    store: { get: () => record, upsert: async () => record } as never,
+    store: { apply: async () => record } as never,
     makeNonce: () => new Uint8Array(32),
   })
   return { run, signAccount, sendTransaction }

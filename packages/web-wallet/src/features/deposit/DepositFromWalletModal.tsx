@@ -22,15 +22,17 @@ import {
   InsufficientL1BalanceError,
   type L1TokenBalance,
 } from "./l1DepositTokenBalance"
-import { isWalletRejection, type useL1Wallet } from "./l1Wallet"
+import { isWalletRejection, type useL1Wallet } from "../../session/l1Wallet"
 import {
   depositCreditNote,
   settlementOf,
   useDepositTokens,
   type DepositTokenOption,
-} from "./loadDepositFacts"
-import { getSipaDepositGateway, type DepositAddress, type DepositStage } from "./sipaGateway"
-import type { DepositTarget } from "./depositTarget"
+} from "../sipa/loadDepositFacts"
+import { session } from "../../session/session"
+import type { DepositStage } from "./sipaAddresses"
+import type { DepositAddress } from "../sipa/depositTarget"
+import type { DepositTarget } from "../sipa/depositTarget"
 import ethIcon from "../../assets/deposit/ethereum.webp"
 import { useL1TokenBalance } from "./useL1TokenBalance"
 import { FundingCapacityPanel } from "./FundingCapacityPanel"
@@ -280,7 +282,7 @@ export function DepositFromWalletModal({
     const { store, required } = capacity
     try {
       request = prompt.begin()
-      await getSipaDepositGateway().deposit({
+      await session().fundDeposit({
         target: deposit,
         amountDisplay: charged!,
         from: l1.account ?? undefined,

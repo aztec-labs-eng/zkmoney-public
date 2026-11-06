@@ -14,6 +14,8 @@ export class SavingsMoveStorage extends RecordStorage<SavingsMoveRecord> {
       sortBy: (record) => record.startTime,
       label: "SavingsMoveStorage",
       strict: true,
+      // A list that could not be read is not an empty one: the backup add waits on these moves.
+      retryLoadOnReadError: true,
     })
   }
 

@@ -23,6 +23,8 @@ const errors = await import("@obsidion/passkey-web")
 const { subscribeErrorModal } = await import("../../../src/errors/errorModal")
 const { stashClaimLink } = await import("../../../src/features/paylink/claimStash")
 const { CONNECT_STASH_KEY } = await import("../../../src/features/contacts/connectReceive")
+const { openTestSession } = await import("../../support/session")
+const { closeSession } = await import("../../../src/session/session")
 
 let container: HTMLDivElement
 let root: Root
@@ -340,6 +342,8 @@ describe("PasskeyRefusal in an app's built-in browser", () => {
   }
 
   async function show(ui: ReactNode, state?: unknown, strict = false) {
+    closeSession()
+    openTestSession()
     const tree = <MemoryRouter initialEntries={[{ pathname: "/", state }]}>{ui}</MemoryRouter>
     await act(async () => root.render(strict ? <StrictMode>{tree}</StrictMode> : tree))
   }

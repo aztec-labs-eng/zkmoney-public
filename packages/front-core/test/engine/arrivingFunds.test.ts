@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from "vitest"
 import { PaylinkActionEnum } from "@obsidion/core/constants"
-import type { SIPADepositRecord } from "../../src/core/services/deposits/SIPADepositStore"
+import type { SipaDeposit } from "../../src/engine/sipaDeposits"
 import type { WithdrawalPhase, WithdrawalRecord } from "../../src/core/services/bridge/types"
 import type { SavingsMoveRecord } from "../../src/core/services/savings/types"
 import type { Transaction } from "../../src/types/transactions"
@@ -12,10 +12,11 @@ import { arrivingFunds } from "../../src/engine/activityFeed"
 
 const E18 = 10n ** 18n
 const SIPA = `0x${"5a".repeat(20)}` as const
+const SUSDS = "0xa3931d71877c0e7a3148cb7eb4463524fec27fbd"
 const none = { deposits: [], burns: [], moves: [], rows: [] }
 
-const deposit = (patch: Partial<SIPADepositRecord>): SIPADepositRecord =>
-  ({ sipaAddress: SIPA, phase: "broadcast", amount: "800", ...patch } as SIPADepositRecord)
+const deposit = (patch: Partial<SipaDeposit>): SipaDeposit =>
+  ({ sipaAddress: SIPA, phase: "broadcast", amount: "800", ...patch } as SipaDeposit)
 
 /** 85 gross, 0.1 tip, 0.3 arrival fee: 84.6 reaches the new balance. */
 const migration = (phase: WithdrawalPhase): WithdrawalRecord =>
@@ -62,7 +63,7 @@ const claim = (status: Transaction["status"], action: string = PaylinkActionEnum
 describe("arrivingFunds", () => {
   it("counts a deposit from its sweep, at its net, until it is claimed", () => {
     const net = (7995n * E18) / 10n
-    const at = (patch: Partial<SIPADepositRecord>) =>
+    const at = (patch: Partial<SipaDeposit>) =>
       arrivingFunds({ ...none, deposits: [deposit(patch)] }).main
     expect(at({ phase: "broadcast" })).toBe(0n)
     expect(at({ phase: "sweeping" })).toBe(0n)
@@ -79,7 +80,7 @@ describe("arrivingFunds", () => {
       netAmount: net.toString(),
       claimLanded: { inboxIndex: "26", at: 500 },
     })
-    const at = (record: SIPADepositRecord, main?: number) =>
+    const at = (record: SipaDeposit, main?: number) =>
       arrivingFunds({ ...none, deposits: [record], balanceReadAt: { main } }).main
     expect(at(landed)).toBe(net)
     expect(at(landed, 499)).toBe(net)
@@ -88,9 +89,30 @@ describe("arrivingFunds", () => {
     expect(at({ ...landed, inboxIndex: "28" }, 500)).toBe(net)
   })
 
+  it("stops counting a Savings deposit once Savings, not Main, is read after its claim landed", () => {
+    const shares = 5n * E18
+    const landed = deposit({
+      phase: "pendingClaim",
+      tokenAddress: SUSDS,
+      inboxIndex: "26",
+      netAmount: shares.toString(),
+      claimLanded: { inboxIndex: "26", at: 500 },
+    })
+    const at = (balanceReadAt: { main?: number; savings?: number }) =>
+      arrivingFunds({
+        ...none,
+        deposits: [landed],
+        savingsToken: SUSDS,
+        sharePrice: 2n * E18,
+        balanceReadAt,
+      })
+    expect(at({ main: 500 })).toEqual({ main: 0n, savings: 2n * shares })
+    expect(at({ savings: 500 })).toEqual({ main: 0n, savings: 0n })
+  })
+
   it("counts a migration from its burn, then from its deposit's own net, never both", () => {
     const net = (846n * E18) / 10n
-    const at = (burn: WithdrawalRecord, arrival?: Partial<SIPADepositRecord>) =>
+    const at = (burn: WithdrawalRecord, arrival?: Partial<SipaDeposit>) =>
       arrivingFunds({ ...none, burns: [burn], deposits: arrival ? [deposit(arrival)] : [] }).main
     expect(at(migration("l2_mined"))).toBe(net)
     expect(at(migration("l2_mined"), { phase: "broadcast", amount: "0" })).toBe(net)
@@ -182,7 +204,7 @@ describe("arrivingFunds", () => {
 /** An upgrade's own deposits never count: the upgrade lock holds Home's figure until the balance holds them. */
 describe("arrivingFunds beside an upgrade", () => {
   const NET = 99n * E18
-  const swept = (patch: Partial<SIPADepositRecord>) =>
+  const swept = (patch: Partial<SipaDeposit>) =>
     deposit({ phase: "pendingClaim", netAmount: NET.toString(), ...patch })
 
   it("counts no deposit an upgrade's batch pays", () => {

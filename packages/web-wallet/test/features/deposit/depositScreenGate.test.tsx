@@ -3,12 +3,13 @@ import { createRoot, type Root } from "react-dom/client"
 import { MemoryRouter } from "react-router-dom"
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import {
-  PendingRegistrationStore,
+  type PendingRegistrationRecord,
+  type RegistrationTerms,
   ScreeningProvider,
   passThroughScreener,
 } from "@obsidion/front-core"
 import { formatUnits, type Hex } from "viem"
-import type { DepositAddress } from "../../../src/features/deposit/sipaGateway"
+import type { DepositAddress } from "../../../src/features/sipa/depositTarget"
 import { MAINNET_USDC, tokenOption } from "../../support/depositTokens"
 
 const ACCOUNT = "0x00000000000000000000000000000000000000aa"
@@ -16,7 +17,7 @@ const L2_ADDRESS = `0x${"cd".repeat(32)}` as Hex
 
 /** The pool reads empty (the open's limit-0 read refuses), and the coin row derives. */
 const resolveDefault = async (...args: unknown[]): Promise<DepositAddress> => {
-  if ((args[3] as { publishingLimit?: number } | undefined)?.publishingLimit === 0) {
+  if ((args[1] as { publishingLimit?: number } | undefined)?.publishingLimit === 0) {
     throw new AddressesPublishingError()
   }
   return { address: "0xdeadbeef", name: "alice.oxide.eth" }
@@ -35,7 +36,7 @@ const held = vi.hoisted(() => vi.fn(async (): Promise<bigint> => 0n))
 const fireEvent = vi.hoisted(() => vi.fn())
 /** Coins offered past the network's own. */
 const extraCoins = vi.hoisted(
-  () => [] as import("../../../src/features/deposit/loadDepositFacts").DepositTokenOption[],
+  () => [] as import("../../../src/features/sipa/loadDepositFacts").DepositTokenOption[],
 )
 // Plenty of shared capacity, read from a fake bucket instead of the network.
 const capacity = vi.hoisted(() => ({ availableAtomic: 40_000n * 10n ** 18n }))
@@ -55,12 +56,9 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/front-core")>()),
   useContractServiceContext: () => contracts,
 }))
-// One instance, like the real singleton — the screen keys effects off the gateway identity.
-const gateway = { depositAddress, observe: vi.fn() }
-vi.mock("../../../src/features/deposit/sipaGateway", () => ({
-  getSipaDepositGateway: () => gateway,
-}))
-vi.mock("../../../src/features/deposit/loadDepositFacts", async (importOriginal) => {
+// One instance, like the session's: the screen keys effects off its identity.
+const gateway = { depositAddress }
+vi.mock("../../../src/features/sipa/loadDepositFacts", async (importOriginal) => {
   const { mockLoadDepositFacts, singleToken } = await import("../../support/depositTokens")
   const own = singleToken(MANIFEST_TOKEN, "TEST")
   return mockLoadDepositFacts(
@@ -82,13 +80,11 @@ vi.mock("../../../src/errors/errorModal", () => ({ showReportableError: vi.fn() 
 // A test's own target stands in for the registration's, so the screen's handling of a target is
 // tested apart from how a registration makes one.
 const targeted = vi.hoisted(() => ({
-  target: undefined as
-    | import("../../../src/features/deposit/depositTarget").DepositTarget
-    | undefined,
+  target: undefined as import("../../../src/features/sipa/depositTarget").DepositTarget | undefined,
 }))
-vi.mock("../../../src/features/onboarding/registrationDepositTarget", async (importOriginal) => {
+vi.mock("../../../src/features/registration/registrationDepositTarget", async (importOriginal) => {
   const real = await importOriginal<
-    typeof import("../../../src/features/onboarding/registrationDepositTarget")
+    typeof import("../../../src/features/registration/registrationDepositTarget")
   >()
   return {
     useRegistrationDepositTarget: (
@@ -113,47 +109,47 @@ const l1 = vi.hoisted(() => ({
   }),
   disconnect: vi.fn(),
 }))
-vi.mock("../../../src/features/deposit/l1Wallet", () => ({
+vi.mock("../../../src/session/l1Wallet", () => ({
   useL1Wallet: () => l1,
 }))
 
-const { DepositScreen } = await import("../../../src/features/deposit/DepositScreen")
-const { saveWalletIdentity } = await import("../../../src/features/identity/walletIdentity")
-const { applyIdentityOutcome, getPendingStore, runBootDetection } = await import(
-  "../../../src/features/onboarding/webRegistration"
-)
+const { DepositScreen } = await import("../../../src/features/deposit/DepositScreen/DepositScreen")
+const { setIdentity } = await import("../../support/identity")
+const noClaim = () => async () => {}
+const { seedRegistration } = await import("../../support/registrationFixtures")
 const { RegistrationPendingError } = await import(
-  "../../../src/features/onboarding/registrationRail"
+  "../../../src/features/registration/registrationRail"
 )
 const { showReportableError } = await import("../../../src/errors/errorModal")
 const { AddressesPublishingError } = await import(
   "../../../src/features/deposit/addressesPublishing"
 )
-const { getBroadcastLedger, resetBroadcastsForTests } = await import(
-  "../../../src/features/broadcasts/broadcasts"
-)
 const { getConfig } = await import("../../../src/config/env")
-const { saveRegistrationTerms } = await import("../../../src/features/onboarding/registrationTerms")
 const { provideFakeDepositRail } = await import("../../support/fakeDepositRail")
-const { SIPADepositStore } = await import("@obsidion/front-core")
 import { seedBootConfig } from "../../support/seedBootConfig"
 import { usdFigure } from "../../../src/ui/format"
 import { PAID_ASK, RANDOM, RANDOM_ASK, usd } from "../../support/registrationPrices"
+
 
 /**
  * The deposit gates are effectful, not cosmetic: no address may be derived or published while the
  * tag is unconfirmed. A settled tag reads the pool on open and derives one on the coin row, which
  * opens the address sheet.
  */
-const { closeSession } = await import("../../../src/platform/session")
+const { closeSession, session } = await import("../../../src/session/session")
 const { openTestSession } = await import("../../support/session")
-beforeEach(
-  () =>
-    void openTestSession({
-      wallet: aztec.obsidionWallet,
-      account: { getAddress: () => "0xaztec" },
-    }),
-)
+const { writeDeviceKeys } = await import("../../../src/platform/storage/deviceKeys")
+const { testPage } = await import("../../support/page")
+const deviceDb = testPage().database
+beforeEach(async () => {
+  // An account's session: a visitor's files no registration.
+  await writeDeviceKeys(deviceDb, { storageId: "a1" })
+  await openTestSession({
+    wallet: aztec.obsidionWallet,
+    account: { getAddress: () => "0xaztec" },
+    sipaAddresses: gateway,
+  }).registrations.ready
+})
 afterEach(closeSession)
 
 describe("DepositScreen — claiming gate", () => {
@@ -162,31 +158,38 @@ describe("DepositScreen — claiming gate", () => {
   let container: HTMLDivElement
   let root: Root
 
+  let seeded: PendingRegistrationRecord
+  /** Lays `patch` over the seeded record, as the writers would leave it. */
+  const patch = (fields: Partial<PendingRegistrationRecord>) =>
+    seedRegistration((seeded = { ...seeded, ...fields }))
+  const saveTerms = (terms: RegistrationTerms) => patch({ terms })
+
   async function seedPendingClaim(
     over: { fundedAt?: number; l1ChainId?: number; broadcast?: boolean } = { fundedAt: Date.now() },
   ) {
-    ;(PendingRegistrationStore as unknown as { instance: unknown }).instance = null
     localStorage.clear()
-    const store = getPendingStore()
-    await store.upsert(
-      ACCOUNT,
-      {},
-      {
-        tag: "alice",
-        nameHash: `0x${"77".repeat(32)}` as Hex,
-        l2Address: L2_ADDRESS,
-        l1ChainId: 11155111,
-        sipaAddress: `0x${"5a".repeat(20)}`,
-        depositToken: `0x${"bb".repeat(20)}` as Hex,
-        broadcast: true,
-        phase: "awaiting_deposit",
-        retries: 0,
-        startTime: Date.now(),
-        ...over,
-      },
-    )
-    saveWalletIdentity({ handle: "alice", address: L2_ADDRESS, claimedAt: 1, pending: true })
-    return store
+    seeded = {
+      account: ACCOUNT,
+      tag: "alice",
+      nameHash: `0x${"77".repeat(32)}` as Hex,
+      l2Address: L2_ADDRESS,
+      l1ChainId: 11155111,
+      sipaAddress: `0x${"5a".repeat(20)}`,
+      fee: String(RANDOM.fee),
+      beneficiary: ACCOUNT as Hex,
+      depositToken: `0x${"bb".repeat(20)}` as Hex,
+      broadcast: true,
+      phase: "awaiting_deposit",
+      retries: 0,
+      startTime: Date.now(),
+      ...over,
+    }
+    await seedRegistration(seeded)
+    await setIdentity({ handle: "alice", address: L2_ADDRESS, claimedAt: 1, pending: true })
+    return {
+      close: () => patch({ phase: "confirmed", endTime: Date.now() }),
+      upsert: patch,
+    }
   }
 
   const render = () =>
@@ -194,7 +197,7 @@ describe("DepositScreen — claiming gate", () => {
       root.render(
         <MemoryRouter initialEntries={["/deposit"]}>
           <ScreeningProvider screener={passThroughScreener}>
-            <DepositScreen />
+            <DepositScreen claimName={noClaim} />
           </ScreeningProvider>
         </MemoryRouter>,
       )
@@ -214,17 +217,15 @@ describe("DepositScreen — claiming gate", () => {
       gotIt?.click()
     })
 
-  let observe: ReturnType<typeof provideFakeDepositRail>
+  let check: ReturnType<typeof provideFakeDepositRail>
   beforeEach(() => {
     vi.clearAllMocks()
     held.mockResolvedValue(0n)
-    ;(SIPADepositStore as unknown as { instance: unknown }).instance = null
-    observe = provideFakeDepositRail({
+    check = provideFakeDepositRail({
       addresses: () => ["0xdeadbeef", `0x${"5a".repeat(20)}`, "0xfeedbeef"],
       held,
       token: () => MANIFEST_TOKEN as Hex,
     })
-    resetBroadcastsForTests()
     l1.account = null
     l1.pickerOpen = false
     container = document.createElement("div")
@@ -246,20 +247,19 @@ describe("DepositScreen — claiming gate", () => {
     expect(tagRow()).toBeNull()
     expect(depositAddress).not.toHaveBeenCalled()
 
-    // Confirmation as detection applies it: the identity write, then the record close whose
-    // listener is what re-renders this screen.
+    // Confirmation is the record's close, whose listener re-renders this screen.
     await act(async () => {
-      applyIdentityOutcome("confirmed")
-      await store.close(ACCOUNT, "confirmed")
+      await store.close()
     })
 
     expect(container.textContent).not.toContain("still being claimed")
     expect(tagRow()).toBeNull()
     // Settling reads the pool, which is empty, and derives nothing: generation waits for the coin row.
     expect(depositAddress).toHaveBeenCalledTimes(1)
-    expect(depositAddress).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), "alice", {
+    expect(depositAddress).toHaveBeenLastCalledWith("alice", {
       onStage: expect.any(Function),
       publishingLimit: 0,
+      signal: expect.any(AbortSignal),
     })
     expect(container.innerHTML).not.toContain("0xdeadbeef")
 
@@ -267,9 +267,10 @@ describe("DepositScreen — claiming gate", () => {
     expect(generate).not.toBeNull()
     await act(async () => generate!.click())
     expect(depositAddress).toHaveBeenCalledTimes(2)
-    expect(depositAddress).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), "alice", {
+    expect(depositAddress).toHaveBeenLastCalledWith("alice", {
       onStage: expect.any(Function),
       publishingLimit: 2,
+      signal: expect.any(AbortSignal),
     })
     expect(container.textContent).toContain("0xdeadbeef")
     expect([...container.querySelectorAll("button")].map((b) => b.textContent)).not.toContain(
@@ -278,15 +279,14 @@ describe("DepositScreen — claiming gate", () => {
   })
 
   it("resolves one address per open, even when its effects run twice", async () => {
-    ;(PendingRegistrationStore as unknown as { instance: unknown }).instance = null
     localStorage.clear()
-    saveWalletIdentity({ handle: "alice", address: L2_ADDRESS, claimedAt: 1 })
+    await setIdentity({ handle: "alice", address: L2_ADDRESS, claimedAt: 1 })
     await act(async () => {
       root.render(
         <React.StrictMode>
           <MemoryRouter>
             <ScreeningProvider screener={passThroughScreener}>
-              <DepositScreen />
+              <DepositScreen claimName={noClaim} />
             </ScreeningProvider>
           </MemoryRouter>
         </React.StrictMode>,
@@ -300,9 +300,8 @@ describe("DepositScreen — claiming gate", () => {
   })
 
   it("reports a resolve that fails on the coin row, and resolves again on the next press", async () => {
-    ;(PendingRegistrationStore as unknown as { instance: unknown }).instance = null
     localStorage.clear()
-    saveWalletIdentity({ handle: "alice", address: L2_ADDRESS, claimedAt: 1 })
+    await setIdentity({ handle: "alice", address: L2_ADDRESS, claimedAt: 1 })
     depositAddress.mockImplementation(async () => {
       throw new Error("node unreachable")
     })
@@ -318,16 +317,13 @@ describe("DepositScreen — claiming gate", () => {
   })
 
   it("waits while too many shown addresses are still publishing, and resolves once one lands", async () => {
-    ;(PendingRegistrationStore as unknown as { instance: unknown }).instance = null
     localStorage.clear()
-    saveWalletIdentity({ handle: "alice", address: L2_ADDRESS, claimedAt: 1 })
-    const ledger = getBroadcastLedger()
+    await setIdentity({ handle: "alice", address: L2_ADDRESS, claimedAt: 1 })
+    const { sipaDeposits } = session()
     const owed = (n: number, kind: "deposit" | "pool") =>
-      ledger.enqueue({
-        address: `0x${n.toString(16).padStart(40, "0")}`,
+      sipaDeposits.oweBroadcast(`0x${n.toString(16).padStart(40, "0")}`, {
         kind,
-        scope: null,
-        source: { type: "slot", cacheKey: "k", day: 1, nonce: n },
+        source: { type: "slot" },
       })
     await owed(1, "deposit")
     await owed(2, "deposit")
@@ -336,20 +332,24 @@ describe("DepositScreen — claiming gate", () => {
       throw new AddressesPublishingError()
     })
     await act(async () => coinRow()!.click())
-    expect(depositAddress).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), "alice", {
+    expect(depositAddress).toHaveBeenLastCalledWith("alice", {
       onStage: expect.any(Function),
       publishingLimit: 2,
+      signal: expect.any(AbortSignal),
     })
     expect(container.textContent).toContain(CREATING)
     expect(container.textContent).toContain(new AddressesPublishingError().message)
     expect(showReportableError).not.toHaveBeenCalled()
     const calls = depositAddress.mock.calls.length
 
-    // Ledger activity that frees nothing does not try again.
+    // Broadcast activity that frees nothing does not try again.
     await act(async () => void (await owed(3, "pool")))
     expect(depositAddress).toHaveBeenCalledTimes(calls)
 
-    await act(async () => void (await ledger.markLanded(`0x${"1".padStart(40, "0")}`)))
+    await act(
+      async () =>
+        void (await sipaDeposits.apply(`0x${"1".padStart(40, "0")}`, { type: "broadcastLanded" })),
+    )
     expect(depositAddress).toHaveBeenCalledTimes(calls + 1)
     expect(container.textContent).toContain("0xdeadbeef")
   })
@@ -391,9 +391,8 @@ describe("DepositScreen — claiming gate", () => {
     expect(tagRow()?.textContent).toBe("Your name@alice")
     await act(async () => coinRow()!.click())
     expect(container.innerHTML).toContain(`0x${"5a".repeat(20)}`)
-    const shown = fireEvent.mock.calls.map(([e]) => e)
-    expect(shown).toContain("registration_deposit_shown")
-    expect(shown).not.toContain("deposit_address_shown")
+    // The registration's address reports from its record's creation, never as a plain deposit's.
+    expect(fireEvent.mock.calls.map(([e]) => e)).not.toContain("deposit_address_shown")
     expect(container.querySelector("[data-testid='activation-sheet']")).toBeNull()
 
     const connect = container.querySelector<HTMLButtonElement>(
@@ -412,13 +411,15 @@ describe("DepositScreen — claiming gate", () => {
     expect(navigate).not.toHaveBeenCalledWith("/", { replace: true })
 
     await act(async () => {
-      await store.upsert(ACCOUNT, { fundedAt: Date.now() })
+      await store.upsert({ fundedAt: Date.now() })
     })
     expect(navigate).toHaveBeenCalledWith("/", { replace: true })
   })
 
   it("sends an owed registration the deposit screen cannot take to its pending step", async () => {
-    await seedPendingClaim({ l1ChainId: 1 })
+    // A lapsed quote needs a re-sign, which only the pending step runs.
+    await seedPendingClaim({ l1ChainId: getConfig().l1ChainId })
+    await saveTerms({ deadline: 1 })
     await render()
 
     expect(container.textContent).toContain("Registration needs a checkCheck on @alice")
@@ -433,13 +434,8 @@ describe("DepositScreen — claiming gate", () => {
   it("asks only for what is left once part of the deposit is at the address", async () => {
     const seen = RANDOM_ASK / 2n
     await seedPendingClaim({ l1ChainId: getConfig().l1ChainId })
-    await saveRegistrationTerms({
-      account: ACCOUNT,
-      tag: "alice",
-      deadline: 0,
-      feeWaived: true,
-      depositAmount: seen.toString(),
-    })
+    await saveTerms({ deadline: 0, feeWaived: true })
+    held.mockResolvedValue(seen)
     await render()
     expect(container.querySelector("[data-testid='deposit-registration-ask']")?.textContent).toBe(
       `${usd(seen)} of ${usd(RANDOM_ASK)} received. Deposit at least ${usd(
@@ -453,18 +449,13 @@ describe("DepositScreen — claiming gate", () => {
     extraCoins.push(tokenOption("USDC", MAINNET_USDC, 6, MANIFEST_TOKEN))
     try {
       await seedPendingClaim({ l1ChainId: getConfig().l1ChainId })
-      await saveRegistrationTerms({
-        account: ACCOUNT,
-        tag: "alice",
-        deadline: 0,
-        feeWaived: true,
-        depositAmount: (RANDOM_ASK / 2n).toString(),
-      })
+      await saveTerms({ deadline: 0, feeWaived: true })
+      held.mockResolvedValue(RANDOM_ASK / 2n)
       await act(async () => {
         root.render(
           <MemoryRouter initialEntries={["/"]}>
             <ScreeningProvider screener={passThroughScreener}>
-              <DepositScreen onClose={() => {}} />
+              <DepositScreen claimName={noClaim} onClose={() => {}} />
             </ScreeningProvider>
           </MemoryRouter>,
         )
@@ -485,22 +476,9 @@ describe("DepositScreen — claiming gate", () => {
     }
   })
 
-  it("stays shut after a boot that found no record to settle the pending identity", async () => {
-    // Fail closed: a missing record is not evidence the name was won, and this screen is where
-    // that difference costs a derivation and a broadcast.
-    const store = await seedPendingClaim()
-    await store.remove(ACCOUNT)
-    expect(await runBootDetection({} as never)).toBe("idle")
-
-    await render()
-    expect(container.textContent).toContain("still being claimed")
-    expect(depositAddress).not.toHaveBeenCalled()
-  })
-
   it("shows a confirmed tag's address at once while its broadcast waits on the registration, and lets the wallet fund it", async () => {
-    ;(PendingRegistrationStore as unknown as { instance: unknown }).instance = null
     localStorage.clear()
-    saveWalletIdentity({ handle: "alice", address: L2_ADDRESS, claimedAt: 1 })
+    await setIdentity({ handle: "alice", address: L2_ADDRESS, claimedAt: 1 })
     const publish = vi.fn(async () => {
       throw new RegistrationPendingError({ pending: "import", messageHash: {} as never })
     })
@@ -516,7 +494,7 @@ describe("DepositScreen — claiming gate", () => {
     const generate = coinRow()
     await act(async () => generate!.click())
     expect(publish).toHaveBeenCalledOnce()
-    // The ledger publishes it; the sheet shows the address at once. Its broadcast shows once funds wait on it.
+    // The broadcasts task publishes it; the sheet shows the address at once. Its broadcast shows once funds wait on it.
     expect(container.innerHTML).toContain("0xdeadbeef")
     expect(container.textContent).not.toContain(CREATING)
     expect(container.querySelector("[data-testid='broadcast-status']")).toBeNull()
@@ -534,9 +512,8 @@ describe("DepositScreen — claiming gate", () => {
   })
 
   it("keeps the address on screen when an attempt fails, reporting it without an error modal", async () => {
-    ;(PendingRegistrationStore as unknown as { instance: unknown }).instance = null
     localStorage.clear()
-    saveWalletIdentity({ handle: "alice", address: L2_ADDRESS, claimedAt: 1 })
+    await setIdentity({ handle: "alice", address: L2_ADDRESS, claimedAt: 1 })
     depositAddress.mockResolvedValueOnce({
       address: "0xdeadbeef",
       name: "alice.oxide.eth",
@@ -557,9 +534,8 @@ describe("DepositScreen — claiming gate", () => {
   })
 
   it("encodes an EIP-681 transfer URI so a wallet scan pre-fills send", async () => {
-    ;(PendingRegistrationStore as unknown as { instance: unknown }).instance = null
     localStorage.clear()
-    saveWalletIdentity({ handle: "alice", address: L2_ADDRESS, claimedAt: 1 })
+    await setIdentity({ handle: "alice", address: L2_ADDRESS, claimedAt: 1 })
     await render()
     await dismissDisclaimer()
 
@@ -577,9 +553,7 @@ describe("DepositScreen — claiming gate", () => {
     await seedPendingClaim({ l1ChainId: getConfig().l1ChainId })
     // The earned schedule's minimum is above the 0.1 cut, so its floor is the fee plus the minimum.
     const floor = RANDOM.fee + RANDOM.min
-    await saveRegistrationTerms({
-      account: ACCOUNT,
-      tag: "alice",
+    await saveTerms({
       deadline: 0,
       fee: String(RANDOM.fee),
       minDeposit: String(RANDOM.min),
@@ -592,7 +566,7 @@ describe("DepositScreen — claiming gate", () => {
       await act(async () => coinRow()!.click())
       held.mockResolvedValue(floor - 1n)
       await act(async () => void (await vi.advanceTimersByTimeAsync(10_000)))
-      expect(observe).toHaveBeenCalled()
+      expect(check).toHaveBeenCalled()
       expect(container.textContent).not.toContain("spotted")
       expect(fireEvent).not.toHaveBeenCalledWith("deposit_funded", expect.anything())
       // At the floor the sweep accepts it, so the screen spots it.
@@ -605,9 +579,8 @@ describe("DepositScreen — claiming gate", () => {
   })
 
   it("reports the funds once the address it handed out is funded, and Close goes Home", async () => {
-    ;(PendingRegistrationStore as unknown as { instance: unknown }).instance = null
     localStorage.clear()
-    saveWalletIdentity({ handle: "alice", address: L2_ADDRESS, claimedAt: 1 })
+    await setIdentity({ handle: "alice", address: L2_ADDRESS, claimedAt: 1 })
     vi.useFakeTimers()
     try {
       await render()
@@ -616,7 +589,7 @@ describe("DepositScreen — claiming gate", () => {
 
       // An unfunded address is the steady state — the screen stays put.
       await act(async () => void (await vi.advanceTimersByTimeAsync(10_000)))
-      expect(observe).toHaveBeenCalled()
+      expect(check).toHaveBeenCalled()
       expect(container.textContent).not.toContain("spotted")
       expect(navigate).not.toHaveBeenCalled()
 
@@ -639,9 +612,8 @@ describe("DepositScreen — claiming gate", () => {
   })
 
   it("emits deposit_funded once, however many passes see the funds", async () => {
-    ;(PendingRegistrationStore as unknown as { instance: unknown }).instance = null
     localStorage.clear()
-    saveWalletIdentity({ handle: "alice", address: L2_ADDRESS, claimedAt: 1 })
+    await setIdentity({ handle: "alice", address: L2_ADDRESS, claimedAt: 1 })
     vi.useFakeTimers()
     try {
       await render()
@@ -652,7 +624,7 @@ describe("DepositScreen — claiming gate", () => {
       await act(async () => void (await vi.advanceTimersByTimeAsync(10_000)))
       held.mockResolvedValue(6n)
       await act(async () => void (await vi.advanceTimersByTimeAsync(10_000)))
-      expect(observe.mock.calls.length).toBeGreaterThan(1)
+      expect(check.mock.calls.length).toBeGreaterThan(1)
 
       expect(fireEvent.mock.calls.filter(([e]) => e === "deposit_funded")).toHaveLength(1)
       expect(container.textContent).toContain("spotted")
@@ -662,9 +634,8 @@ describe("DepositScreen — claiming gate", () => {
   })
 
   it("carries one connect click through to the funding sheet when the wallet lands", async () => {
-    ;(PendingRegistrationStore as unknown as { instance: unknown }).instance = null
     localStorage.clear()
-    saveWalletIdentity({ handle: "alice", address: L2_ADDRESS, claimedAt: 1 })
+    await setIdentity({ handle: "alice", address: L2_ADDRESS, claimedAt: 1 })
     // A pool hit gives the sheet an address to fund without a derivation.
     depositAddress.mockResolvedValueOnce({ address: "0xp001ed", name: "alice.oxide.eth" })
     await render()
@@ -698,8 +669,8 @@ describe("DepositScreen — a target", () => {
   const onFunded = vi.fn()
   const fee = 5n * 10n ** 17n
   const target = (
-    over: Partial<import("../../../src/features/deposit/depositTarget").DepositTarget> = {},
-  ): import("../../../src/features/deposit/depositTarget").DepositTarget => ({
+    over: Partial<import("../../../src/features/sipa/depositTarget").DepositTarget> = {},
+  ): import("../../../src/features/sipa/depositTarget").DepositTarget => ({
     kind: "registration",
     address: { address: "0xfeedbeef", name: "alice" },
     fee,
@@ -715,7 +686,7 @@ describe("DepositScreen — a target", () => {
       root.render(
         <MemoryRouter initialEntries={["/"]}>
           <ScreeningProvider screener={passThroughScreener}>
-            <DepositScreen onClose={() => {}} />
+            <DepositScreen claimName={noClaim} onClose={() => {}} />
           </ScreeningProvider>
         </MemoryRouter>,
       )
@@ -726,12 +697,10 @@ describe("DepositScreen — a target", () => {
       [...document.querySelectorAll("button")].find((b) => b.textContent === title)!.click(),
     )
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
-    resetBroadcastsForTests()
-    ;(PendingRegistrationStore as unknown as { instance: unknown }).instance = null
     localStorage.clear()
-    saveWalletIdentity({ handle: "alice", address: L2_ADDRESS, claimedAt: 1 })
+    await setIdentity({ handle: "alice", address: L2_ADDRESS, claimedAt: 1 })
     container = document.createElement("div")
     document.body.appendChild(container)
     root = createRoot(container)
@@ -776,6 +745,11 @@ describe("DepositScreen — a target", () => {
 
   it("spots funds only at the target's floor, and tells the target", async () => {
     vi.useFakeTimers()
+    provideFakeDepositRail({
+      addresses: () => ["0xfeedbeef"],
+      held,
+      token: () => MANIFEST_TOKEN as Hex,
+    })
     try {
       await render(target())
       await press("Continue")

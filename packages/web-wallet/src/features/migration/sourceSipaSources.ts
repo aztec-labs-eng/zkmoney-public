@@ -15,10 +15,11 @@ import {
   registrationCommitments,
   scanSweptDeposits,
   setupSipaDiscovery,
+  WalletError,
   type RefundableSipaSource,
 } from "@obsidion/front-core"
 import {
-  fetchHistoricalResolverPublicKeys,
+  fetchHistoricalResolverKeys,
   fetchHistoricalSipaResolverOperators,
   resolverSelectionPolicy,
   fetchSipaEvents,
@@ -27,7 +28,6 @@ import {
 import type { Address, Hex, PublicClient } from "viem"
 import { getWebBroadcasterArtifact } from "../../config/classArtifacts"
 import { getConfig } from "../../config/env"
-import { loadWalletIdentity } from "../identity/walletIdentity"
 import type { SourceChain } from "./historicTokenContext"
 
 export interface SourceSipaScan {
@@ -39,6 +39,9 @@ export interface SourceSipaScan {
   /** One L1 head bounds every scan of one pass. */
   scanHead: bigint
 }
+
+/** A scan that also finds the registration addresses of the account's name, `handle`. */
+export type SourceSipaSearch = SourceSipaScan & { handle: string | undefined }
 
 /** The owner's L1 account, which an account-protocol deployment's SIPAs commit to. */
 async function sipaRecoveryAccount(o: Omit<SourceSipaScan, "chain">) {
@@ -57,8 +60,7 @@ export async function sourceSipaScanParams(
   o: Omit<SourceSipaScan, "chain">,
 ): Promise<SourceSipaScanParams> {
   const { tuple, publicClient } = o
-  if (!tuple.accountMetadataRegistry)
-    throw new Error("The source deployment has no resolver registry")
+  if (!tuple.accountMetadataRegistry) throw new WalletError("migration.noResolverRegistry")
   const stealthPublicKey = deriveStealthKey(o.masterSecret).publicKey
   const senders = (
     await fetchHistoricalSipaResolverOperators(
@@ -80,28 +82,38 @@ export async function sourceSipaScanParams(
   }
 }
 
+/** Every resolver operator and key the registry published on `tuple`'s deployment. */
+export async function sourceResolverKeys(
+  o: Pick<SourceSipaScan, "publicClient" | "tuple" | "scanHead">,
+) {
+  const { tuple, publicClient } = o
+  if (!tuple.accountMetadataRegistry) throw new WalletError("migration.noResolverRegistry")
+  return fetchHistoricalResolverKeys(
+    publicClient,
+    tuple.accountMetadataRegistry as Address,
+    await deploymentScanRange(publicClient, tuple, o.scanHead),
+  )
+}
+
 /**
  * The account's registration addresses, by the commitment their sweeps deposit to. An address the
  * wallet never announced has no `SIPA` event, but its funds wait in the portal all the same.
  */
 async function registrationSources(
-  o: Omit<SourceSipaScan, "chain">,
+  o: Omit<SourceSipaSearch, "chain">,
   recipient: string,
 ): Promise<RefundableSipaSource[]> {
-  const handle = loadWalletIdentity()?.handle
-  const { tuple, publicClient } = o
+  const { tuple, handle } = o
   if (!handle || !tuple.ensDomain || !tuple.registrationSIPAImplementation) return []
-  if (!tuple.accountMetadataRegistry)
-    throw new Error("The source deployment has no resolver registry")
+  // One key under two operators commits to the same addresses.
+  const keys = new Map(
+    (await sourceResolverKeys(o)).map(({ resolverPublicKey: k }) => [`${k.x}:${k.y}`, k] as const),
+  )
   const found = await registrationCommitments(
     o.masterSecret,
     composeWireNameHash(handle, tuple.ensDomain),
     recipient as Hex,
-    await fetchHistoricalResolverPublicKeys(
-      publicClient,
-      tuple.accountMetadataRegistry as Address,
-      await deploymentScanRange(publicClient, tuple, o.scanHead),
-    ),
+    [...keys.values()],
   )
   return found.map(({ salt, commitment }) => ({
     sipaAddress: directDepositKey(commitment),
@@ -112,7 +124,7 @@ async function registrationSources(
   }))
 }
 
-export async function sourceSipaSources(o: SourceSipaScan) {
+export async function sourceSipaSources(o: SourceSipaSearch) {
   const { chain, tuple } = o
   // A deployment without SIPAs, such as Sky savings, has no resolver record to look up.
   if (!tuple.depositSIPAImplementation && !tuple.registrationSIPAImplementation) return []
@@ -173,8 +185,15 @@ async function pxeSipaEvents(o: SourceSipaScan & { chain: Extract<SourceChain, {
 }
 
 /** Every swept deposit of the deployment's SIPAs, plus those still holding L1 funds. Any gap throws. */
-export async function sourceSweptDeposits(o: SourceSipaScan) {
-  const sources = await sourceSipaSources(o)
+export async function sourceSweptDeposits(o: SourceSipaSearch) {
+  return sweptDepositsOf(o, await sourceSipaSources(o))
+}
+
+/** `sources`' swept deposits into the deployment's portal. */
+export async function sweptDepositsOf(
+  o: Pick<SourceSipaScan, "publicClient" | "tuple" | "scanHead">,
+  sources: readonly RefundableSipaSource[],
+) {
   const range = await deploymentScanRange(o.publicClient, o.tuple, o.scanHead)
   return scanSweptDeposits(
     {

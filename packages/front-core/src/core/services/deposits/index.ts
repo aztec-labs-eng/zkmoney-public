@@ -1,4 +1,4 @@
-export * from "./SIPADepositStore"
+export * from "../../../engine/sipaDeposits"
 export * from "./sipaCredits"
 export * from "./depositAmounts"
 export * from "./depositArrival"

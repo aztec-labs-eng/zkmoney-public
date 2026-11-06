@@ -1,9 +1,10 @@
 // @vitest-environment node
 import { lastPasskeyEnvironment } from "@obsidion/passkey-web"
 import { afterEach, describe, expect, it, vi } from "vitest"
+import { testPage, pageOver } from "../../../support/page"
 import { PASSKEY_ENVIRONMENT_KEY } from "../../../../src/platform/auth/passkeyEnvironmentKey"
 import { WebAlphaAuthService } from "../../../../src/platform/auth/WebAlphaAuthService"
-import { FakePasskeyCeremony, MemoryStorage } from "../../../support/fakePasskeyCeremony"
+import { FakePasskeyCeremony } from "../../../support/fakePasskeyCeremony"
 
 const ICLOUD = "fbfc3007-154e-4ecc-8c0b-6e020557d7bd"
 const MAC_SAFARI =
@@ -22,8 +23,13 @@ function stubBrowser(navigatorExtras: Record<string, unknown> = {}) {
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 const last = () => lastPasskeyEnvironment(PASSKEY_ENVIRONMENT_KEY)
 
-function laptop(ceremony: FakePasskeyCeremony, storage = new MemoryStorage()) {
-  return new WebAlphaAuthService({ storage, rpId: "localhost", ceremony, posture: () => "laptop" })
+function laptop(ceremony: FakePasskeyCeremony, storage = testPage().database) {
+  return new WebAlphaAuthService({
+    ...pageOver(storage),
+    rpId: "localhost",
+    ceremony,
+    posture: () => "laptop",
+  })
 }
 
 describe("passkey environment collection in the auth service", () => {
@@ -38,7 +44,7 @@ describe("passkey environment collection in the auth service", () => {
       attachment: "platform",
     })
     const service = new WebAlphaAuthService({
-      storage: new MemoryStorage(),
+      ...pageOver(testPage().database),
       rpId: "localhost",
       ceremony,
       posture: () => "laptop",

@@ -1,12 +1,9 @@
 /** A deep-linked row joins Home's rows: opening its sheet hides nothing else Home lists. */
 import { afterEach, describe, expect, it, vi } from "vitest"
+import { testPage, testCore } from "../../support/page"
 import { scannedRow } from "@obsidion/front-core"
-import {
-  activeNamespace,
-  closeSession,
-  switchSession,
-  session,
-} from "../../../src/platform/session"
+import { activeNamespace, closeSession, switchSession, session } from "../../../src/session/session"
+import { pageSessionDeps } from "../../../src/app/sessionDeps"
 import { feedRows } from "../../../src/ui/activity/useFeed"
 
 afterEach(closeSession)
@@ -23,7 +20,7 @@ const token = {
 
 describe("useFeed", () => {
   it("keeps Home's older open link while a row outside the window is opened by its hash", async () => {
-    switchSession(activeNamespace())
+    switchSession(activeNamespace(testCore().device), pageSessionDeps(testPage()))
     const { activity } = session()
     const now = Date.now()
     const received = (txHash: string, timestamp: number) =>

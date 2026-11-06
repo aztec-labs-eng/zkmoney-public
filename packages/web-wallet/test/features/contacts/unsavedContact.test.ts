@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { testPage, testCore } from "../../support/page"
 import type { OnNetwork, Transaction } from "@obsidion/front-core"
 
 const m = vi.hoisted(() => ({
@@ -6,15 +7,11 @@ const m = vi.hoisted(() => ({
   typeAhead: vi.fn(),
   commit: vi.fn(),
   addContact: vi.fn(),
-  ownHandle: "me" as string | undefined,
 }))
 
 vi.mock("@obsidion/front-core", async (original) => ({
   ...(await original<typeof import("@obsidion/front-core")>()),
   ContactStorage: { get: () => ({ getEntries: async () => m.entries }) },
-}))
-vi.mock("../../../src/features/identity/walletIdentity", () => ({
-  loadWalletIdentity: () => (m.ownHandle ? { handle: m.ownHandle } : null),
 }))
 vi.mock("../../../src/features/contacts/registryResolution", () => ({
   resolveTagViaRegistry: m.typeAhead,
@@ -26,40 +23,41 @@ vi.mock("../../../src/features/contacts/useInlineContactSearch", () => ({
 
 const { TagValidationError } = await import("@obsidion/front-core")
 const { activeNamespace, closeSession, switchSession, session } = await import(
-  "../../../src/platform/session"
+  "../../../src/session/session"
 )
+const { pageSessionDeps } = await import("../../../src/app/sessionDeps")
 const { lookUpUnsavedContact, pastAddressOf, saveUnsavedContact, unsavedContact } = await import(
   "../../../src/features/contacts/unsavedContact"
 )
 
 const ADDRESS = `0x${"2c".repeat(32)}`
+const OWN = "me"
 const resolved = (l2Address = ADDRESS) => ({ status: "resolved", l2Address })
 
 beforeEach(() => {
   vi.clearAllMocks()
   m.entries = []
-  m.ownHandle = "me"
   m.addContact.mockResolvedValue({ success: true })
-  switchSession(activeNamespace())
+  switchSession(activeNamespace(testCore().device), pageSessionDeps(testPage()))
 })
 afterEach(closeSession)
 
 describe("lookUpUnsavedContact", () => {
   it("opens a registered tag as an unsaved L2 contact", async () => {
     m.typeAhead.mockResolvedValue(resolved())
-    expect(await lookUpUnsavedContact("Grace")).toEqual(unsavedContact("grace", ADDRESS))
+    expect(await lookUpUnsavedContact("Grace", OWN)).toEqual(unsavedContact("grace", ADDRESS))
     expect(m.typeAhead).toHaveBeenCalledWith("grace")
   })
 
   it("finds nothing for an unregistered tag, an invalid tag, or the user's own tag", async () => {
     m.typeAhead.mockResolvedValue({ status: "notFound" })
-    expect(await lookUpUnsavedContact("nobody")).toBeNull()
+    expect(await lookUpUnsavedContact("nobody", OWN)).toBeNull()
 
     m.typeAhead.mockRejectedValue(new TagValidationError("bad tag"))
-    expect(await lookUpUnsavedContact("bad-tag")).toBeNull()
+    expect(await lookUpUnsavedContact("bad-tag", OWN)).toBeNull()
 
     m.typeAhead.mockClear()
-    expect(await lookUpUnsavedContact("me")).toBeNull()
+    expect(await lookUpUnsavedContact("me", OWN)).toBeNull()
     expect(m.typeAhead).not.toHaveBeenCalled()
   })
 
@@ -72,15 +70,16 @@ describe("lookUpUnsavedContact", () => {
       timestamp: 1,
       networkId: "0xnet",
     } as OnNetwork<Transaction>)
-    expect(await lookUpUnsavedContact("grace")).toEqual(unsavedContact("grace", ADDRESS))
+    expect(await lookUpUnsavedContact("grace", OWN)).toEqual(unsavedContact("grace", ADDRESS))
 
     await session().activity.remove("row")
-    expect(await lookUpUnsavedContact("grace")).toEqual(unsavedContact("grace", ""))
+    expect(await lookUpUnsavedContact("grace", OWN)).toEqual(unsavedContact("grace", ""))
   })
 
   it("lets a network failure through so the page can say so", async () => {
-    m.typeAhead.mockRejectedValue(new Error("rpc down"))
-    await expect(lookUpUnsavedContact("grace")).rejects.toThrow("rpc down")
+    const down = new Error("rpc down")
+    m.typeAhead.mockRejectedValue(down)
+    await expect(lookUpUnsavedContact("grace", OWN)).rejects.toBe(down)
   })
 })
 

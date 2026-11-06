@@ -87,7 +87,7 @@ vi.mock("../../../src/features/operations/operations", async (importOriginal) =>
   useOperationsInProgress: () => [],
   useTabBoundOperation: () => undefined,
 }))
-vi.mock("../../../src/features/onboarding/OnboardingScreen", () => ({
+vi.mock("../../../src/features/onboarding/OnboardingScreen/OnboardingScreen", () => ({
   OnboardingScreen: () => null,
 }))
 vi.mock("../../../src/features/paylink/ClaimToL1Modal", () => ({ ClaimToL1Modal: () => null }))

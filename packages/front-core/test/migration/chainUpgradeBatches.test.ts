@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import type { Address, Hex } from "viem"
-import type { SIPADepositRecord } from "../../src/core/services/deposits/SIPADepositStore"
-import type { ActivityItem } from "../../src/core/services/bridge/BridgeActivityFeed"
+import type { SipaDeposit } from "../../src/engine/sipaDeposits"
+import type { ActivityItem } from "../../src/engine/feedRules"
 import { chainUpgradeBatches, chainUpgradeRun } from "../../src/core/migration/chainUpgradeBatches"
 import { upgradeRunsOf } from "../../src/core/migration/upgradeRuns"
 
@@ -13,7 +13,7 @@ const SAVINGS_PORTAL = "0x2222222222222222222222222222222222222222" as Address
 const RUN = chainUpgradeRun(MAIN_PORTAL)
 const direct = { recipientCommitment: ("0x" + "ab".repeat(32)) as Hex, portal: MAIN_PORTAL }
 
-const record = (key: string, over: Partial<SIPADepositRecord> = {}) =>
+const record = (key: string, over: Partial<SipaDeposit> = {}) =>
   ({
     sipaAddress: key,
     phase: "claimed",
@@ -28,7 +28,7 @@ const record = (key: string, over: Partial<SIPADepositRecord> = {}) =>
     startTime: 1_000,
     endTime: 1_100,
     ...over,
-  } as SIPADepositRecord)
+  } as SipaDeposit)
 
 describe("chain upgrade batches", () => {
   it("lists each direct deposit as a batch of one run, oldest first", () => {

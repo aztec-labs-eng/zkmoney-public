@@ -1,7 +1,8 @@
 import { formatUnits } from "viem"
 import { ConfirmationSheetDetailRow } from "@obsidion/web-ds"
 import type { PaylinkSignupQuote } from "../../paylink/paylinkSignupQuote"
-import { DEPOSIT_TERMS_PENDING } from "./DepositTermsRows"
+import { DEPOSIT_TERMS_PENDING } from "../../deposit/DepositTermsRows/DepositTermsRows"
+import copy from "./PaylinkSignupRows.copy"
 
 /** `0.50 DAI`: at least cents, and every digit a fee carries beyond them. */
 function centsAmount(amount: bigint, decimals: number, symbol: string): string {
@@ -44,7 +45,7 @@ export function PaylinkSignupRows({
         quote?.tagWaived === undefined ? (
           DEPOSIT_TERMS_PENDING
         ) : quote.tagWaived ? (
-          <span style={{ color: "var(--accent-green)" }}>Free with ticket</span>
+          <span style={{ color: "var(--accent-green)" }}>{copy.freeWithTicket}</span>
         ) : (
           amount(quote.tagFee)
         ),

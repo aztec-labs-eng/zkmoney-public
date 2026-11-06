@@ -20,21 +20,13 @@ vi.setConfig({ testTimeout: 30_000 })
 let container: HTMLDivElement
 let root: Root
 
-/** Storage whose reads never land. */
-const unread = {
-  getItem: () => new Promise<string | null>(() => {}),
-  setItem: async () => {},
-  removeItem: async () => {},
-  clear: async () => {},
-}
-
 async function render(): Promise<string> {
-  const { UnlockGate } = await import("../../../src/features/identity/UnlockGate")
-  const { AccountStorage } = await import("@obsidion/front-core")
+  const { UnlockGate } = await import("../../../src/features/identity/UnlockGate/UnlockGate")
+  const { memoryStore } = await import("@obsidion/front-core")
   const { openTestSession } = await import("../../support/session")
-  // A cold session before the storage probe lands: no wallet, no account, no error to retry from.
-  AccountStorage.get(unread)
-  openTestSession()
+  // A cold session before the account record loads: no wallet, no account, no error to retry from.
+  const unread = memoryStore({ value: undefined, loaded: false }).readonly
+  openTestSession({ accountRecord: { view: unread } })
   await act(async () => {
     root.render(
       <MemoryRouter>

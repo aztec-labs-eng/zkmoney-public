@@ -84,33 +84,6 @@
     },
     {
       "action": "goto",
-      "path": "/claim?demo=onboarding&flowFixture=success&registrationFixture=wrong-network"
-    },
-    {
-      "action": "waitFor",
-      "selector": ".ww-invite"
-    },
-    {
-      "action": "waitFor",
-      "selector": ".ww-reg-sheet__card"
-    },
-    {
-      "action": "screenshot",
-      "file": "wrong-network.png",
-      "state": "wrong network"
-    },
-    {
-      "action": "scroll",
-      "selector": ".ww-reg-sheet__card",
-      "top": "end"
-    },
-    {
-      "action": "screenshot",
-      "file": "wrong-network-bottom.png",
-      "state": "wrong network bottom"
-    },
-    {
-      "action": "goto",
       "path": "/claim?demo=onboarding&flowFixture=success&registrationFixture=retry"
     },
     {

@@ -69,7 +69,7 @@ async function bootConfig() {
 async function seed(scenario: string): Promise<boolean> {
   await bootConfig()
   const { seedDemo } = await import("../../src/dev/seedDemo")
-  return seedDemo(scenario as never)
+  return (await seedDemo(scenario as never)) !== null
 }
 
 /** Move the wall clock the fake L1 ages its transactions and its head against. */
@@ -88,14 +88,21 @@ beforeEach(async () => {
 })
 
 /** The open session's withdrawals, once its migration is saved. */
+/** The session's deposit records, once loaded. */
+async function depositRecords() {
+  const { loadRecords } = await import("@obsidion/front-core")
+  const { session } = await import("../../src/session/session")
+  return [...(await loadRecords(session().sipaDeposits.view))]
+}
+
 async function withdrawalStore() {
-  const store = (await import("../../src/platform/session")).session().withdrawals
+  const store = (await import("../../src/session/session")).session().withdrawals
   await store.ready
   return store
 }
 
 afterEach(async () => {
-  ;(await import("../../src/platform/session")).closeSession()
+  ;(await import("../../src/session/session")).closeSession()
   globalThis.fetch = originalFetch
   vi.restoreAllMocks()
 })
@@ -173,6 +180,29 @@ describe("explorer links", () => {
   })
 })
 
+/** The open session's entered identity, as the wallet-route gate reads it. */
+async function entered() {
+  const { enteredIdentity } = await import("../../src/session/account")
+  const { session } = await import("../../src/session/session")
+  const { identity, device } = session()
+  await identity.ready
+  return enteredIdentity(identity.get(), device.get().passkeyMap)
+}
+
+/** An entered identity in the open wallet database, as a real wallet saves it, and its reader. */
+async function saveAlice() {
+  const { openDatabase, readIdentity, stageIdentity } = await import("@obsidion/front-core")
+  const { opfsBackend } = await import("../../src/platform/storage/walletStorage")
+  const { namespaceOf } = await import("../../src/session/session")
+  const db = openDatabase(opfsBackend)
+  const { prefix } = namespaceOf("alice-storage")
+  await db.write(async (w) => {
+    w.put("webwallet.storageId", "alice-storage")
+    stageIdentity(w, prefix, { handle: "alice", address: `0x${"a1".repeat(32)}`, claimedAt: 1 })
+  })
+  return () => readIdentity(db.scoped(prefix))
+}
+
 describe("seeded session", () => {
   it("keeps onboarding identity-free without replacing the provider", async () => {
     const provider = { request: vi.fn() }
@@ -183,12 +213,12 @@ describe("seeded session", () => {
       globalThis.fetch = fetchBefore
       window.history.replaceState({}, "", "/?demo=onboarding")
       await seed("onboarding")
-      const { loadWalletIdentity } = await import("../../src/features/identity/walletIdentity")
+      const { session } = await import("../../src/session/session")
       const { getOxideTuple } = await import("../../src/config/oxideTuple")
-      const { loadDepositTokens } = await import("../../src/features/deposit/loadDepositFacts")
+      const { loadDepositTokens } = await import("../../src/features/sipa/loadDepositFacts")
       const { getConfig } = await import("../../src/config/env")
       const { DEMO_OXIDE_TUPLE } = await import("../../src/dev/demoFixtures")
-      expect(loadWalletIdentity()).toBeNull()
+      expect(session().identity.get().value).toBeNull()
       expect(window.ethereum).toBe(provider)
       expect(await getOxideTuple(getConfig())).toEqual(DEMO_OXIDE_TUPLE)
       // Only the L1 endpoint is answered locally, so the token lists read the table.
@@ -211,10 +241,9 @@ describe("seeded session", () => {
     "opens the wallet route gate for the %s scenario",
     async (scenario) => {
       await seed(scenario)
-      const { loadOnboardedIdentity } = await import("../../src/features/identity/walletIdentity")
-      const { getAuthService } = await import("../../src/platform/auth/useAuthenticator")
-      expect(loadOnboardedIdentity()?.handle).toBe("demo")
-      expect(getAuthService().isUnlocked()).toBe(true)
+      expect((await entered())?.handle).toBe("demo")
+      const { session } = await import("../../src/session/session")
+      expect(session().auth.isUnlocked()).toBe(true)
     },
   )
 
@@ -256,18 +285,14 @@ describe("seeded session", () => {
     const { getConfig } = await import("../../src/config/env")
     const scope = `${getConfig().network}:${DEMO_COMPLETE_ADDRESS}`
     expect(await BalanceStorage.get().getBalance(scope, DEMO_L2_TOKEN)).toBe(0n)
-    expect((await (await import("../../src/platform/session")).session().activity.all())).toEqual([])
+    expect(await (await import("../../src/session/session")).session().activity.all()).toEqual([])
   })
 
   it("leaves the fresh scenario with nothing in the feed", async () => {
     await seed("fresh")
-    const { SIPADepositStore } = await import("@obsidion/front-core")
-    const { WebStorageAdapter } = await import("../../src/platform/storage/WebStorageAdapter")
-    const adapter = new WebStorageAdapter()
-    await SIPADepositStore.get(adapter).load()
-    expect(SIPADepositStore.get().list()).toEqual([])
+    expect(await depositRecords()).toEqual([])
     expect((await withdrawalStore()).list.get().records).toEqual([])
-    expect((await (await import("../../src/platform/session")).session().activity.all())).toEqual([])
+    expect(await (await import("../../src/session/session")).session().activity.all()).toEqual([])
   })
 })
 
@@ -280,16 +305,13 @@ describe("existing wallet guard", () => {
 
     setActiveRollup(DEMO_ROLLUP)
     await openWalletStore(DEMO_ROLLUP, { persistent: false })
-    const { saveWalletIdentity, loadWalletIdentity } = await import(
-      "../../src/features/identity/walletIdentity"
-    )
-    saveWalletIdentity({ handle: "alice", address: `0x${"a1".repeat(32)}`, claimedAt: 1 })
+    const alice = await saveAlice()
     localStorage.setItem("obsidion.marker", "untouched")
 
     expect(await seed("recovery")).toBe(false)
 
     expect(error).toHaveBeenCalledWith(expect.stringContaining("refusing to seed"))
-    expect(loadWalletIdentity()?.handle).toBe("alice")
+    expect((await alice())?.handle).toBe("alice")
     expect(localStorage.getItem("obsidion.marker")).toBe("untouched")
     expect(isDemoMode()).toBe(false)
     expect(sessionStorage.getItem("webwallet.demo")).toBe(null)
@@ -300,17 +322,18 @@ describe("existing wallet guard", () => {
     const rollup = sandboxProfile().shared.rollupVersion
     await closeWalletStore()
     await openWalletStore(rollup, { persistent: true })
-    const { saveWalletIdentity } = await import("../../src/features/identity/walletIdentity")
-    saveWalletIdentity({ handle: "alice", address: `0x${"a1".repeat(32)}`, claimedAt: 1 })
+    await saveAlice()
     await walletStorage.flush()
-    const real = testWalletDbs().db(rollup).state.get("webwallet.identity")
-    expect(real).toBeDefined()
+    const saved = () =>
+      [...testWalletDbs().db(rollup).state].filter(([k]) => k.includes("identity"))
+    const real = saved()
+    expect(real).toHaveLength(2)
 
     expect(await seed("recovery")).toBe(true)
 
-    expect(testWalletDbs().db(rollup).state.get("webwallet.identity")).toBe(real)
-    const { loadWalletIdentity } = await import("../../src/features/identity/walletIdentity")
-    expect(loadWalletIdentity()?.handle).not.toBe("alice")
+    expect(saved()).toEqual(real)
+    const { session } = await import("../../src/session/session")
+    expect(session().identity.get().value?.handle).not.toBe("alice")
   })
 
   it("refuses on a passkey from an onboarding that never claimed a handle", async () => {
@@ -319,11 +342,12 @@ describe("existing wallet guard", () => {
     await bootConfig()
     const { isDemoMode } = await import("../../src/dev/demoFlag")
     const { WebPasskeyIdentityMap } = await import("../../src/platform/auth/WebPasskeyIdentityMap")
-    const { WebStorageAdapter } = await import("../../src/platform/storage/WebStorageAdapter")
+    const { openDatabase } = await import("@obsidion/front-core")
+    const { opfsBackend } = await import("../../src/platform/storage/walletStorage")
     const { getConfig } = await import("../../src/config/env")
     // Half-onboarded: the passkey exists and holds the account key, the handle never landed. The
     // identity record alone would read this origin as empty and seed over a real wallet's key.
-    await new WebPasskeyIdentityMap(new WebStorageAdapter(), getConfig().rpId).upsert({
+    await new WebPasskeyIdentityMap(openDatabase(opfsBackend), getConfig().rpId).upsert({
       credentialId: "alice-credential",
       l2Address: `0x${"a1".repeat(32)}`,
       pubkey: "ff".repeat(64),
@@ -343,8 +367,7 @@ describe("existing wallet guard", () => {
     expect(await seed("fresh")).toBe(true)
     vi.resetModules()
     await seed("recovery")
-    const { loadOnboardedIdentity } = await import("../../src/features/identity/walletIdentity")
-    expect(loadOnboardedIdentity()?.handle).toBe("demo")
+    expect((await entered())?.handle).toBe("demo")
     expect(error).not.toHaveBeenCalled()
   })
 })
@@ -359,11 +382,8 @@ describe("recovery scenario", () => {
 
   it("covers every branch of the recovery affordance", async () => {
     await seed("recovery")
-    const { SIPADepositStore } = await import("@obsidion/front-core")
-    const { WebStorageAdapter } = await import("../../src/platform/storage/WebStorageAdapter")
     const { recoveryReasonFor } = await import("@obsidion/front-core")
-    await SIPADepositStore.get(new WebStorageAdapter()).load()
-    const records = SIPADepositStore.get().list()
+    const records = await depositRecords()
     expect(records).toHaveLength(7)
     // d1 under the fee floor, d2 stuck, d3 too young, d4 recovered, d5 claimed, d7 has a self-sweep
     // already in flight, d8 is over the per-transaction cap.
@@ -380,15 +400,11 @@ describe("recovery scenario", () => {
 
   it("stamps the fee on every funded deposit, as the sync writes it", async () => {
     await seed("recovery")
-    const { SIPADepositStore, depositAmounts } = await import("@obsidion/front-core")
-    const { WebStorageAdapter } = await import("../../src/platform/storage/WebStorageAdapter")
+    const { depositAmounts } = await import("@obsidion/front-core")
     const { DEMO_DEPOSIT_FEE } = await import("../../src/dev/fakeL1Rpc")
-    await SIPADepositStore.get(new WebStorageAdapter()).load()
     // The gross amount and the fee are written together the moment the funding read lands, so a
     // funded record carrying only one of them is a shape the sync cannot produce.
-    const funded = SIPADepositStore.get()
-      .list()
-      .filter((r) => Number(r.amount) > 0)
+    const funded = (await depositRecords()).filter((r) => Number(r.amount) > 0)
     expect(funded.length).toBeGreaterThan(0)
     expect(funded.every((r) => r.fee === DEMO_DEPOSIT_FEE.toString())).toBe(true)
     expect(funded.every((r) => depositAmounts(r).feeAtomic === DEMO_DEPOSIT_FEE)).toBe(true)
@@ -396,12 +412,9 @@ describe("recovery scenario", () => {
 
   it("offers the self-sweep exactly where the sweep can still land", async () => {
     await seed("recovery")
-    const { SIPADepositStore } = await import("@obsidion/front-core")
-    const { WebStorageAdapter } = await import("../../src/platform/storage/WebStorageAdapter")
     const { canSelfSweep } = await import("@obsidion/front-core")
-    await SIPADepositStore.get(new WebStorageAdapter()).load()
     // Only d2: d1/d8 are unsweepable, d3 is young, d4/d5 are settled, d7 is submitted.
-    expect(bySeed(SIPADepositStore.get().list(), (r) => canSelfSweep(r, Date.now()))).toEqual([
+    expect(bySeed(await depositRecords(), (r) => canSelfSweep(r, Date.now()))).toEqual([
       false,
       true,
       false,
@@ -416,7 +429,7 @@ describe("recovery scenario", () => {
     await seed("recovery")
     const { getConfig } = await import("../../src/config/env")
     const { getOxideTuple } = await import("../../src/config/oxideTuple")
-    const { sweepManifestFrom } = await import("../../src/features/deposit/sipaSweep")
+    const { sweepManifestFrom } = await import("../../src/features/sipa/sipaSweep")
     const tuple = await getOxideTuple(getConfig())
     // Thin fixtures would fail here, naming the field — not at the wallet prompt.
     expect(sweepManifestFrom(tuple).sipaFactory).toBe(tuple.sipaFactory)
@@ -426,12 +439,9 @@ describe("recovery scenario", () => {
     await seed("recovery")
     const { Fr } = await import("@aztec-labs/aztec.js/fields")
     const { deriveRecoveryAddress } = await import("@obsidion/sdk")
-    const { SIPADepositStore } = await import("@obsidion/front-core")
-    const { WebStorageAdapter } = await import("../../src/platform/storage/WebStorageAdapter")
     const { demoStealthKey } = await import("../../src/dev/demoFixtures")
-    await SIPADepositStore.get(new WebStorageAdapter()).load()
 
-    const records = SIPADepositStore.get().list()
+    const records = await depositRecords()
     // Discovery derives the secret and the address together, so every record carries both.
     expect(records.every((record) => record.messageSecret)).toBe(true)
     for (const record of records) {
@@ -454,15 +464,12 @@ describe("recovery scenario", () => {
 describe("activity scenario", () => {
   it("seeds a mixed feed across every source the activity list reads", async () => {
     await seed("activity")
-    const { ContactStorage, SIPADepositStore, SEND_SUBMIT_TIMEOUT_MS } = await import(
-      "@obsidion/front-core"
-    )
-    const { session } = await import("../../src/platform/session")
+    const { ContactStorage, SEND_SUBMIT_TIMEOUT_MS } = await import("@obsidion/front-core")
+    const { session } = await import("../../src/session/session")
     const { WebStorageAdapter } = await import("../../src/platform/storage/WebStorageAdapter")
     const adapter = new WebStorageAdapter()
-    await SIPADepositStore.get(adapter).load()
 
-    const transactions = (await session().activity.all())
+    const transactions = await session().activity.all()
     expect(transactions.map((tx) => tx.status)).toContain("pending")
     expect(transactions.map((tx) => tx.status)).toContain("failed")
     // One pre-submit send is two hours old: the load-time sweep fails it and leaves the live one.
@@ -471,12 +478,10 @@ describe("activity scenario", () => {
     const { walletStorage } = await import("../../src/platform/storage/walletStorage")
     await walletStorage.flush()
     expect(
-      (await session().activity.all()).filter(
-        (tx) => tx.status === "pending" && !tx.txHash,
-      ),
+      (await session().activity.all()).filter((tx) => tx.status === "pending" && !tx.txHash),
     ).toHaveLength(1)
     expect((await withdrawalStore()).list.get().records.length).toBeGreaterThan(0)
-    expect(SIPADepositStore.get().list().length).toBeGreaterThan(0)
+    expect((await depositRecords()).length).toBeGreaterThan(0)
     expect(await ContactStorage.get(adapter).getEntries()).toHaveLength(6)
 
     const requests = session().requests.view.get()
@@ -499,9 +504,9 @@ describe("activity scenario", () => {
   it("writes a sender tag, never an address, on every receive", async () => {
     await seed("activity")
     const { validateAddress } = await import("@obsidion/front-core")
-    const rows = (await (await import("../../src/platform/session")).session().activity.all()).filter(
-      (tx) => tx.action === "receive",
-    ) as { from?: string; senderL2Address?: string }[]
+    const rows = (
+      await (await import("../../src/session/session")).session().activity.all()
+    ).filter((tx) => tx.action === "receive") as { from?: string; senderL2Address?: string }[]
 
     expect(rows.length).toBeGreaterThan(0)
     for (const row of rows) {
@@ -524,9 +529,9 @@ describe("activity scenario", () => {
     const { creatorLinkAction } = await import("@obsidion/front-core")
     const { DEMO_L2_ADDRESS } = await import("../../src/dev/demoFixtures")
 
-    const rows = (await (await import("../../src/platform/session")).session().activity.all()).filter(
-      (tx) => tx.action === "Pay To Email",
-    ) as PaylinkTransaction[]
+    const rows = (
+      await (await import("../../src/session/session")).session().activity.all()
+    ).filter((tx) => tx.action === "Pay To Email") as PaylinkTransaction[]
     const nowSec = Math.floor(Date.now() / 1000)
     const offered = rows.map((row) =>
       creatorLinkAction(row, {
@@ -560,14 +565,13 @@ describe("activity scenario", () => {
 
   it("seeds a deposit for every phase and exit affordance the feed can show", async () => {
     await seed("activity")
-    const { SIPADepositStore, depositAmounts, isSettledSipaPhase, isUnfundedSipaDeposit } =
-      await import("@obsidion/front-core")
-    const { WebStorageAdapter } = await import("../../src/platform/storage/WebStorageAdapter")
+    const { depositAmounts, isSettledSipaPhase, isUnfundedSipaDeposit } = await import(
+      "@obsidion/front-core"
+    )
     const { recoveryReasonFor } = await import("@obsidion/front-core")
     const { canSelfSweep } = await import("@obsidion/front-core")
     const { DEMO_TX_AMOUNT_CAP } = await import("../../src/dev/fakeL1Rpc")
-    await SIPADepositStore.get(new WebStorageAdapter()).load()
-    const records = SIPADepositStore.get().list()
+    const records = await depositRecords()
 
     // The published-but-never-paid address is the one record the feed drops.
     const visible = records.filter((r) => !isUnfundedSipaDeposit(r))
@@ -608,7 +612,6 @@ describe("activity scenario", () => {
     expect(visible.some((r) => r.endTime)).toBe(true)
     expect(visible.some((r) => r.fundingTxHash)).toBe(true)
     expect(visible.some((r) => r.sweepTxHash)).toBe(true)
-    expect(visible.some((r) => r.claimTxHash)).toBe(true)
     expect(visible.some((r) => r.recoveryTxHash)).toBe(true)
   })
 
@@ -772,7 +775,7 @@ describe("fake L1", () => {
     window.history.replaceState({}, "", "/?demo=fresh")
     await seed("fresh")
     const { createPublicClient, custom, erc20Abi } = await import("viem")
-    const { loadDepositTokens } = await import("../../src/features/deposit/loadDepositFacts")
+    const { loadDepositTokens } = await import("../../src/features/sipa/loadDepositFacts")
     const { DEMO_L1_ACCOUNT, DEMO_L1_TOKENS } = await import("../../src/dev/fakeL1Rpc")
     const { getConfig } = await import("../../src/config/env")
     const client = createPublicClient({ transport: custom(window.ethereum!) })
@@ -802,7 +805,7 @@ describe("fake L1", () => {
     window.history.replaceState({}, "", "/?demo=fresh")
     await seed("fresh")
     const { decodeAbiParameters, encodeFunctionData, parseAbi } = await import("viem")
-    const { loadDepositTokens } = await import("../../src/features/deposit/loadDepositFacts")
+    const { loadDepositTokens } = await import("../../src/features/sipa/loadDepositFacts")
     const { DEMO_DEPOSIT_FEE, DEMO_TX_AMOUNT_CAP, DEMO_TOKEN_DECIMALS } = await import(
       "../../src/dev/fakeL1Rpc"
     )
@@ -908,16 +911,13 @@ describe("fake L1", () => {
   it("answers the reads the self-sweep makes before it signs", async () => {
     await seed("recovery")
     const { decodeAbiParameters, encodeFunctionData, parseAbi } = await import("viem")
-    const { SIPADepositStore } = await import("@obsidion/front-core")
-    const { WebStorageAdapter } = await import("../../src/platform/storage/WebStorageAdapter")
     const { getConfig } = await import("../../src/config/env")
     const { DEMO_DEPOSIT_FEE, DEMO_L1_TOKEN, DEMO_SIPA_BALANCE } = await import(
       "../../src/dev/fakeL1Rpc"
     )
-    await SIPADepositStore.get(new WebStorageAdapter()).load()
-    const stuck = SIPADepositStore.get()
-      .list()
-      .find((r) => r.phase === "sweeping" && !r.sweepTxHash && r.amount === "18")!
+    const stuck = (await depositRecords()).find(
+      (r) => r.phase === "sweeping" && !r.sweepTxHash && r.amount === "18",
+    )!
 
     const call = async (data: string) => {
       const response = await fetch(getConfig().l1RpcUrl, {
@@ -1042,7 +1042,7 @@ describe("withdrawal self-finalize", () => {
   it("drives the delayed record to a finalization hash without advancing its phase", async () => {
     await seed("activity")
     const { getConfig } = await import("../../src/config/env")
-    const { injectedWalletChannel } = await import("../../src/features/deposit/sipaRecovery")
+    const { injectedWalletChannel } = await import("../../src/features/sipa/l1ExitChannels")
     const { selfFinalizeWithdrawal } = await import("../../src/features/withdraw/selfFinalize")
     const { demoFinalizationBuilder } = await import("../../src/dev/demoFinalization")
     const { DEMO_OXIDE_TUPLE } = await import("../../src/dev/demoFixtures")

@@ -9,6 +9,7 @@ import {
   type NavigateFunction,
 } from "react-router-dom"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { setIdentity, seedOnboarded } from "../../support/identity"
 import type { Address } from "viem"
 import type { ChainIdentity } from "@obsidion/core/types"
 import { encodeRequestInline, type RequestInlinePacket } from "@obsidion/front-core"
@@ -37,11 +38,10 @@ function fragmentFor(over: Partial<RequestInlinePacket> = {}): string {
   })
 }
 
-const { resolve, tagLookup, identity, portal, nodeIsDefault, fireEvent } = vi.hoisted(() => ({
+const { resolve, tagLookup, portal, nodeIsDefault, fireEvent } = vi.hoisted(() => ({
   fireEvent: vi.fn(),
   resolve: vi.fn(),
   tagLookup: vi.fn(),
-  identity: { value: null as object | null },
   portal: vi.fn(),
   nodeIsDefault: { value: true },
 }))
@@ -53,14 +53,12 @@ vi.mock("../../../src/lib/analytics", async (importOriginal) => ({
 vi.mock("../../../src/features/contacts/registryResolution", () => ({
   resolveTagForCommit: (tag: string) => tagLookup(tag),
 }))
-vi.mock("../../../src/features/identity/walletIdentity", () => ({
-  loadOnboardedIdentity: () => identity.value,
-}))
 vi.mock("../../../src/config/env", async () => {
   const { http } = await import("viem")
   const { foundry } = await import("viem/chains")
   return {
     getConfig: () => ({
+      rpId: "localhost",
       network: "sandbox",
       nodeUrl: "http://127.0.0.1:8080",
       l1ChainId: CHAIN_ID,
@@ -81,7 +79,7 @@ vi.mock("../../../src/config/oxideTuple", () => ({
   requireTupleField: (tuple: Record<string, unknown>, key: string) => tuple[key],
   l1PublicClient: () => "l1-client",
 }))
-vi.mock("../../../src/features/deposit/loadDepositFacts", (importOriginal) =>
+vi.mock("../../../src/features/sipa/loadDepositFacts", (importOriginal) =>
   mockLoadDepositFacts(importOriginal, () => singleToken(L1_TOKEN as Address)),
 )
 vi.mock("@obsidion/sdk", async (importOriginal) => ({
@@ -116,6 +114,7 @@ vi.mock("@obsidion/web-ds", () => ({
 const { RequestLandingScreen } = await import("../../../src/features/requests/RequestLandingScreen")
 const { L1IdentityUnavailableError } = await import("@obsidion/front-core")
 
+const { openTestSession } = await import("../../support/session")
 /** The node's answer, agreeing with the portal; only the default node's L1-outage fallback boots on it. */
 const getNodeInfo = vi.fn(async () => ({
   l1ChainId: CHAIN_ID,
@@ -156,7 +155,7 @@ describe("RequestLandingScreen accountless landing", () => {
     return <div data-testid="enter-next">{(state as { next?: string } | null)?.next}</div>
   }
 
-  beforeEach(() => {
+  beforeEach(async () => {
     globalThis.IS_REACT_ACT_ENVIRONMENT = true
     resolve.mockReset()
     fireEvent.mockReset()
@@ -171,7 +170,9 @@ describe("RequestLandingScreen accountless landing", () => {
       rollupAddress: ROLLUP,
       inboxAddress: `0x${"b".repeat(40)}`,
     })
-    identity.value = null
+    await setIdentity(null)
+    // The identity gate reads the passkey map from the open session's device keys.
+    openTestSession()
     nodeIsDefault.value = true
     getNodeInfo.mockClear()
     container = document.createElement("div")
@@ -242,6 +243,37 @@ describe("RequestLandingScreen accountless landing", () => {
     expect(container.textContent).not.toContain("Try again")
   })
 
+  it("words a mismatched requester with the page's own copy", async () => {
+    const { WalletError } = await import("@obsidion/core/errors")
+    const { fmt } = await import("../../../src/lib/fmt")
+    const { default: copy } = await import(
+      "../../../src/features/requests/RequestLandingScreen.copy"
+    )
+    resolve.mockRejectedValue(
+      new WalletError("contact.requestMismatch", "moved", { data: { tag: "alice" } }),
+    )
+    await render(fragmentFor())
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe(
+      fmt(copy.requestMismatch, { tag: "alice" }),
+    )
+  })
+
+  it("ends on a registry identity refusal with its words and no retry", async () => {
+    const { WalletError } = await import("@obsidion/core/errors")
+    const { errorMessage } = await import("../../../src/errors/catalog")
+    const refusal = new WalletError("contact.unregistered", "gone", { data: { tag: "alice" } })
+    resolve.mockRejectedValue(refusal)
+    await render(fragmentFor())
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe(errorMessage(refusal))
+  })
+
+  it("offers a retry for a failure the registry did not decide", async () => {
+    resolve.mockRejectedValue(new Error("rpc down"))
+    await render(fragmentFor())
+    expect(container.querySelector('[role="alert"]')).toBeNull()
+    expect(container.querySelectorAll("button").length).toBeGreaterThan(0)
+  })
+
   it("validates the packet against the portal's rollup, with no identity pinned", async () => {
     // No wallet has booted, so no network id is known yet.
     resolve.mockReturnValue(new Promise(() => {}))
@@ -274,7 +306,7 @@ describe("RequestLandingScreen accountless landing", () => {
   })
 
   it("hands a signed-in payer to the send sheet once the portal's rollup matches", async () => {
-    identity.value = {}
+    await seedOnboarded({}, "localhost")
     await render(fragmentFor())
 
     expect(portal).toHaveBeenCalledWith("l1-client", PORTAL, CHAIN_ID)
@@ -282,7 +314,7 @@ describe("RequestLandingScreen accountless landing", () => {
   })
 
   it("falls back to the default node when L1 gives no answer, as boot does", async () => {
-    identity.value = {}
+    await seedOnboarded({}, "localhost")
     portal.mockRejectedValue(
       new L1IdentityUnavailableError({ call: "ROLLUP", cause: new TypeError("Failed to fetch") }),
     )
@@ -293,7 +325,7 @@ describe("RequestLandingScreen accountless landing", () => {
   })
 
   it("refuses a default node on another chain when L1 gives no answer, as boot does", async () => {
-    identity.value = {}
+    await seedOnboarded({}, "localhost")
     portal.mockRejectedValue(
       new L1IdentityUnavailableError({ call: "ROLLUP", cause: new TypeError("Failed to fetch") }),
     )
@@ -307,7 +339,7 @@ describe("RequestLandingScreen accountless landing", () => {
   })
 
   it("never takes a custom node's word when L1 gives no answer", async () => {
-    identity.value = {}
+    await seedOnboarded({}, "localhost")
     nodeIsDefault.value = false
     portal.mockRejectedValue(
       new L1IdentityUnavailableError({ call: "ROLLUP", cause: new TypeError("Failed to fetch") }),
@@ -515,7 +547,7 @@ describe("RequestLandingScreen accountless landing", () => {
   })
 
   it("offers a signed-in payer the send sheet back instead of a log-in prompt", async () => {
-    identity.value = {}
+    await seedOnboarded({}, "localhost")
     resolve.mockReturnValue(new Promise(() => {}))
     await render(fragmentFor(), false, { external: true })
 
@@ -589,7 +621,7 @@ describe("RequestLandingScreen accountless landing", () => {
       ["a visitor", null],
       ["a signed-in payer", {}],
     ])("tells %s when nobody holds the tag", async (_who, id) => {
-      identity.value = id
+      void (id ? seedOnboarded(id, "localhost") : setIdentity(null))
       await render("", false, undefined, "/pay/nobody")
       expect(container.textContent).toContain("Pay @nobody")
       expect(container.textContent).toContain("no zk.money account with this name")
@@ -607,7 +639,7 @@ describe("RequestLandingScreen accountless landing", () => {
     })
 
     it("shows the payee their own page as payers see it, with a share link", async () => {
-      identity.value = { handle: "River" }
+      await seedOnboarded({ handle: "River" }, "localhost")
       await render("", false, undefined, "/pay/river")
       expect(container.textContent).toContain("Choose how to pay")
       expect(container.textContent).toContain("Share link")
@@ -618,7 +650,7 @@ describe("RequestLandingScreen accountless landing", () => {
     })
 
     it("hands a signed-in payer to the send sheet with the page to come back to", async () => {
-      identity.value = {}
+      await seedOnboarded({}, "localhost")
       await render("", false, undefined, "/pay/river")
       expect(container.querySelector('[data-testid="send"]')?.textContent).toBe(
         "send-sheet 0 /pay/river standing",
@@ -651,7 +683,7 @@ describe("RequestLandingScreen accountless landing", () => {
     })
 
     it("reports nothing to the payee on their own page", async () => {
-      identity.value = { handle: "yan" }
+      await seedOnboarded({ handle: "yan" }, "localhost")
       resolve.mockResolvedValue({
         sipaAddress: SIPA,
         decimals: 6,

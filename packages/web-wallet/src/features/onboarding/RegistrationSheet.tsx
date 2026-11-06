@@ -5,13 +5,13 @@ import { Icon } from "@obsidion/web-ds"
 import { formatDateLabel, formatTimeLabel } from "@obsidion/front-core"
 import type { PaylinkSignupQuote } from "../paylink/paylinkSignupQuote"
 import { OnboardingCard } from "./OnboardingCard"
-import { BroadcastStatusRow } from "../broadcasts/BroadcastStatusRow"
+import { BroadcastStatusRow } from "../broadcasts/BroadcastStatusRow/BroadcastStatusRow"
 import {
   DepositAddressRow,
   DepositPayBlock,
   registrationOverLimit,
   useRegistrationFunding,
-} from "./steps/DepositAddress"
+} from "./steps/DepositAddress/DepositAddress"
 import { AddressCapacityPanel } from "../deposit/AddressCapacity"
 import { ADDRESS_RECHECK_NOTE } from "../limits/limitsCopy"
 import { CheckAgainPill, WaitingBlock } from "../deposit/WaitingBlock"
@@ -22,12 +22,11 @@ import type { LimitsTopic } from "../limits/aboutLimitsView"
 import {
   DepositTermsRows,
   formatDepositAmount,
-  formatDepositDue,
-  formatDepositSeen,
   fundingAssetsLabel,
-} from "./steps/DepositTermsRows"
+} from "../deposit/DepositTermsRows/DepositTermsRows"
+import { formatDepositDue, formatDepositSeen } from "../registration/depositAmounts"
 import { PaylinkSignupRows } from "./steps/PaylinkSignupRows"
-import { useDepositTokens } from "../deposit/loadDepositFacts"
+import { useDepositTokens } from "../sipa/loadDepositFacts"
 import { useRowTxAmountCap } from "../token/useTxAmountCap"
 import ethIcon from "../../assets/deposit/ethereum.webp"
 

@@ -4,7 +4,7 @@
  * does not say why an earlier sweep attempt failed, and it does not promise that a relayer will sweep the deposit
  * once capacity returns.
  */
-import { isUnfundedSipaDeposit, type SIPADepositRecord } from "./SIPADepositStore"
+import { isUnfundedSipaDeposit, type SipaDeposit } from "../../../engine/sipaDeposits"
 import { isStuckSweep } from "./sipaStuck"
 
 /** Settlement-token amounts in base units, with the decimals to show them. */
@@ -75,11 +75,11 @@ export interface SipaProcessingState {
 
 /** Funds sit at the deposit address and no sweep of them has been seen. */
 export function isAwaitingSweep(
-  record: Pick<SIPADepositRecord, "phase" | "amount" | "sweepTxHash" | "inboxIndex" | "netAmount">,
+  record: Pick<SipaDeposit, "phase" | "amount" | "sweepTxHash" | "inboxIndex" | "netAmount">,
 ): boolean {
   return (
     (record.phase === "funded" || record.phase === "broadcast" || record.phase === "sweeping") &&
-    !isUnfundedSipaDeposit(record as SIPADepositRecord) &&
+    !isUnfundedSipaDeposit(record as SipaDeposit) &&
     !record.sweepTxHash &&
     !record.inboxIndex &&
     record.netAmount == null
@@ -125,7 +125,7 @@ export function nextSipaSweepBlocker(
  */
 export function sipaReasonShown(
   state: SipaProcessingState | undefined,
-  record: Pick<SIPADepositRecord, "phase" | "startTime" | "sweepTxHash">,
+  record: Pick<SipaDeposit, "phase" | "startTime" | "sweepTxHash">,
   now: number = Date.now(),
 ): state is SipaProcessingState {
   if (!state) return false

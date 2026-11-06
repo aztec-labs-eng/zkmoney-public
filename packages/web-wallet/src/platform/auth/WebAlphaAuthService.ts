@@ -11,7 +11,7 @@ import {
   deriveKeyFromSecret,
   envelopeSlot,
   selectRecoveredMsk,
-  type IStorageAdapter,
+  type Database,
   type RecoveredCandidates,
   type WebAuthnData,
   WalletError,
@@ -23,6 +23,7 @@ import {
   type DevicePosture,
   LAPTOP_LOCAL_HINTS,
   type LaptopCreation,
+  type LocalManager,
   LaptopPasskeyRefusedError,
   type PasskeyAssertResult,
   type PasskeyAttachment,
@@ -61,23 +62,16 @@ import { type BackupSignInFacts, noteBackupSignIn } from "../../features/onboard
 import type { BackupCreation, BackupCreationDriver } from "./backupCreation"
 import { openBackupEnvelope } from "./backupEnvelope"
 import {
-  clearActiveCredentialId,
-  clearActiveStorage,
+  NO_SESSION,
+  cachedMsk,
   clearCachedMsk,
-  getActiveCredentialId,
-  getActiveStorageId,
-  readCachedMsk,
-  readCommittedSession,
-  readSessionTuple,
-  setActiveCredentialId,
-  setActiveStorageId,
   storageIdFromSecret,
-  withSessionLock,
-  writeCachedMsk,
+  tupleOf,
   writeSessionTuple,
   type CachedMsk,
+  type SessionLock,
 } from "../storage/activeStorage"
-import { walletStorage } from "../storage/walletStorage"
+import type { Device } from "../storage/deviceKeys"
 import { holdsAccountRecords } from "../storage/WebStorageAdapter"
 import {
   type AlphaAuthProvider,
@@ -91,7 +85,7 @@ import {
   deriveMskFromPrfOutput,
 } from "@obsidion/sdk"
 import { countingLocalRefusals } from "./localRefusals"
-import { type RetiredSession, retiredSession } from "./retiredSession"
+import { type RetiredSession, findRetiredSession } from "./retiredSession"
 import { scopeOfStatus } from "./passkeyAttemptScope"
 import { PASSKEY_ENVIRONMENT_KEY } from "./passkeyEnvironmentKey"
 import { NoPasskeySessionError, SessionChangedError } from "./sessionErrors"
@@ -287,7 +281,12 @@ const backupFactsOf = (
 /** The wallet's address derivation from a master key and the account's key set. */
 export type AddressDeriver = (msk: Fr, passkeys: readonly string[]) => Promise<string>
 export type WebAlphaAuthServiceOptions = {
-  storage: IStorageAdapter
+  /** Holds the passkey identity map. */
+  database: Database
+  /** The page's device keys, over `database`. */
+  device: Device
+  /** The page's session lock, which sign-outs also take. */
+  sessionLock: SessionLock
   /** Production: `"auth.zk.money"` (via related-origins). Dev/e2e: `"localhost"`. */
   rpId: string
   rpName?: string
@@ -308,8 +307,13 @@ export type WebAlphaAuthServiceOptions = {
   /** Whether this laptop may create on its own password manager; tests fix it, production reads
    * the browser's claims. */
   laptopCreation?: () => Promise<LaptopCreation>
-  /** Hears each saved change of the session pointers: a commit, and a rejected cache's removal. */
-  onSessionSaved?: () => void
+  /** Managers this build takes off every laptop row, as a release gate would. */
+  withdrawnManagers?: readonly LocalManager[]
+  /**
+   * Hears each saved change of the session pointers: a commit, and a rejected cache's removal. A
+   * commit returns once what it returns settles.
+   */
+  onSessionSaved?: () => Promise<void>
 }
 
 /**
@@ -334,17 +338,23 @@ export type WebAlphaAuthServiceOptions = {
 export class WebAlphaAuthService implements AlphaAuthService {
   private readonly ceremony: PasskeyCeremony
   private readonly identityMap: WebPasskeyIdentityMap
+  private readonly database: Database
+  /** The page's device keys: the session tuple and the passkey map. */
+  readonly device: Device
+  private readonly withSessionLock: SessionLock
   readonly rpId: string
   private readonly rpName: string
+  private retired: RetiredSession | undefined
   private readonly posture: () => DevicePosture
   private readonly misreportsCrossDevice: () => boolean
   private readonly trustsAttachmentLabel: () => boolean
   private readonly userAgent: () => Promise<UserAgentInfo>
   private readonly laptopHints: null | undefined
   private readonly extraProviders: readonly string[] | undefined
-  private readonly onSessionSaved: () => void
+  private readonly onSessionSaved: () => Promise<void>
   private readonly probeEnabled: boolean
   private readonly laptopCreation: () => Promise<LaptopCreation>
+  private readonly withdrawnManagers: readonly LocalManager[]
   /** The gate's answer and the sheet's pick, for the next creation only; `createPasskey` consumes both. */
   private heldCreation?: { creation: LaptopCreation; choice?: SignUpChoice }
   /** Apple Passwords gave no key on this page, so a retry stops offering it here. */
@@ -374,7 +384,10 @@ export class WebAlphaAuthService implements AlphaAuthService {
 
   constructor(options: WebAlphaAuthServiceOptions) {
     this.ceremony = options.ceremony ?? new BrowserPasskeyCeremony()
-    this.identityMap = new WebPasskeyIdentityMap(options.storage, options.rpId)
+    this.database = options.database
+    this.device = options.device
+    this.withSessionLock = options.sessionLock
+    this.identityMap = new WebPasskeyIdentityMap(options.database, options.rpId)
     this.rpId = options.rpId
     this.rpName = options.rpName ?? PASSKEY_RP_NAME
     this.posture = options.posture ?? currentDevicePosture
@@ -385,7 +398,8 @@ export class WebAlphaAuthService implements AlphaAuthService {
     this.extraProviders = options.extraProviders
     this.probeEnabled = options.laptopHints !== null
     this.laptopCreation = options.laptopCreation ?? (() => currentLaptopCreation(this.posture()))
-    this.onSessionSaved = options.onSessionSaved ?? (() => {})
+    this.withdrawnManagers = options.withdrawnManagers ?? []
+    this.onSessionSaved = options.onSessionSaved ?? (async () => {})
   }
 
   /**
@@ -426,6 +440,12 @@ export class WebAlphaAuthService implements AlphaAuthService {
 
   /** The passkeys this session created that the driver judged security keys, for their records. */
   private readonly createdSecurityKeys = new Set<string>()
+
+  /**
+   * Each credential's backup flag as this session first read it, at creation or on a prompt, for
+   * a record written later.
+   */
+  private readonly backupFlags = new Map<string, boolean>()
 
   /** Where each credential's passkey answered from this session, and the attempt that saw it. */
   private readonly answers = new Map<string, { where: PasskeyAnswer; owns?: () => boolean }>()
@@ -485,10 +505,29 @@ export class WebAlphaAuthService implements AlphaAuthService {
   }
 
   /**
-   * Learn from any assertion this credential answered: where a synced passkey answered from, and a
-   * key's transports, are offered to the record. Never awaited by a ceremony: a slow or refused
-   * write costs the hint, not the sign-in. `owns` is the assertion's ownership: a cancelled attempt
-   * teaches nothing, in session or on disk.
+   * Offer the backup flag a prompt reported to a record that has none, which is how an account
+   * created before the flag was recorded, or on another browser, gets one. The session copy is set
+   * before the write, so the record a sign-in writes next carries it however slow the write is.
+   */
+  private async learnBackupFlag(
+    evidence: { credentialId: string; backupEligible?: boolean },
+    owns?: () => boolean,
+  ): Promise<void> {
+    const { credentialId, backupEligible } = evidence
+    if (backupEligible === undefined || (owns && !owns())) return
+    const kept = !this.backupFlags.has(credentialId)
+    if (kept) this.backupFlags.set(credentialId, backupEligible)
+    await this.identityMap
+      .setBackupEligible(credentialId, backupEligible, owns)
+      .catch((err) => console.warn("passkey backup flag not recorded", err))
+    if (kept && owns && !owns()) this.backupFlags.delete(credentialId)
+  }
+
+  /**
+   * Learn from any assertion this credential answered: where a synced passkey answered from, the
+   * backup flag, and a key's transports, are offered to the record. Never awaited by a ceremony: a
+   * slow or refused write costs the hint, not the sign-in. `owns` is the assertion's ownership: a
+   * cancelled attempt teaches nothing, in session or on disk.
    */
   private async learn(
     evidence: {
@@ -498,7 +537,10 @@ export class WebAlphaAuthService implements AlphaAuthService {
     },
     owns?: () => boolean,
   ): Promise<void> {
+    // Started first: its session copy is set before anything here awaits.
+    const flag = this.learnBackupFlag(evidence, owns)
     await this.learnAnswer(evidence, owns)
+    await flag
     const transports = impliedKeyTransports(evidence)
     if (!transports) return
     if (owns && !owns()) return
@@ -712,8 +754,11 @@ export class WebAlphaAuthService implements AlphaAuthService {
    * A browser that never answers gets phone creation.
    */
   probeLaptopCreation(): Promise<LaptopCreation> {
+    const gone: readonly LocalManager[] = this.appleRefused
+      ? [...this.withdrawnManagers, "apple"]
+      : this.withdrawnManagers
     const creation = this.laptopCreation().then((c) =>
-      this.appleRefused ? withoutManager(c, "apple") : c,
+      gone.reduce((row, manager) => withoutManager(row, manager), c),
     )
     return answeredInTime(creation, { local: false, chromeTip: false })
   }
@@ -851,7 +896,7 @@ export class WebAlphaAuthService implements AlphaAuthService {
     await this.sessionSettled()
     if (this.authProvider) return this.authProvider
     const epoch = this.epoch
-    const credentialId = getActiveCredentialId()
+    const credentialId = this.device.get().credentialId
     const record = credentialId
       ? await this.identityMap.get(credentialId)
       : await this.identityMap.getOpeningRecord()
@@ -889,10 +934,10 @@ export class WebAlphaAuthService implements AlphaAuthService {
 
   /** Sign an Oxide metadata digest as the WebAuthn challenge, without a UserOp or personal-sign wrapper. */
   async signMetadataChallenge(challenge: `0x${string}`, opts?: { signal?: AbortSignal }) {
-    const storageId = getActiveStorageId()
-    const credentialId = getActiveCredentialId()
+    const storageId = this.device.get().storageId
+    const credentialId = this.device.get().credentialId
     const moved = () =>
-      getActiveStorageId() !== storageId || getActiveCredentialId() !== credentialId
+      this.device.get().storageId !== storageId || this.device.get().credentialId !== credentialId
     const provider = await this.getAuthProvider()
     if (!storageId || !credentialId || !(provider instanceof WebAuthnAlphaAuthProvider))
       throw new NoPasskeySessionError()
@@ -935,7 +980,9 @@ export class WebAlphaAuthService implements AlphaAuthService {
   private async runRestore(): Promise<void> {
     // Saved values only, and none while a session write is in flight: it may yet fail.
     if (this.sessionWritesInFlight > 0) return
-    const { cache, storageId, credentialId } = readCommittedSession()
+    const device = this.device.get()
+    const { storageId, credentialId } = device
+    const cache = cachedMsk(device)
     if (!cache) return
     const epoch = this.epoch
     const writes = this.sessionWrites
@@ -974,11 +1021,11 @@ export class WebAlphaAuthService implements AlphaAuthService {
   ): Promise<void> {
     // Saved before the restore settles, so nothing after it reads the rejected session.
     if (storageId && cache.storageId === storageId && cache.credentialId === credentialId) {
-      await walletStorage.batch(() => clearActiveStorage())
+      await writeSessionTuple(this.database, NO_SESSION)
       return this.onSessionSaved()
     }
     // A blob for another session, or one with no session at all: the blob goes, nothing else.
-    return walletStorage.batch(() => clearCachedMsk())
+    return clearCachedMsk(this.database)
   }
 
   /**
@@ -1146,7 +1193,7 @@ export class WebAlphaAuthService implements AlphaAuthService {
         }
       },
     })
-    const { created, slot, prfOutput, securityKey } = await (localCreation
+    const { created, slot, prfOutput, securityKey, backupEligible } = await (localCreation
       ? countingLocalRefusals(creating)
       : creating
     ).catch((err: unknown) => {
@@ -1158,6 +1205,7 @@ export class WebAlphaAuthService implements AlphaAuthService {
     const authProvider = this.buildProvider(created.pubkey, created.credentialId, [pubkey])
     this.createdHandles.set(created.credentialId, bytesToBase64Url(created.userHandle))
     if (securityKey) this.createdSecurityKeys.add(created.credentialId)
+    this.backupFlags.set(created.credentialId, backupEligible)
 
     return {
       authProvider,
@@ -1236,11 +1284,13 @@ export class WebAlphaAuthService implements AlphaAuthService {
   ): Promise<void> {
     const userHandle = meta.userHandle ?? this.createdHandles.get(meta.credentialId)
     const securityKey = meta.securityKey || this.createdSecurityKeys.has(meta.credentialId)
+    const backupEligible = meta.backupEligible ?? this.backupFlags.get(meta.credentialId)
     await this.identityMap.upsert(
       {
         ...meta,
         ...(userHandle ? { userHandle } : {}),
         ...(securityKey ? { securityKey: true } : {}),
+        ...(backupEligible !== undefined ? { backupEligible } : {}),
       },
       stillOwns,
     )
@@ -1279,8 +1329,8 @@ export class WebAlphaAuthService implements AlphaAuthService {
 
   /** Whether this session's key is cached, so the next reload opens without a passkey prompt. */
   keyCached(): boolean {
-    const id = getActiveStorageId()
-    return id !== null && readCachedMsk()?.storageId === id
+    const device = this.device.get()
+    return device.storageId !== null && cachedMsk(device)?.storageId === device.storageId
   }
 
   /**
@@ -1308,7 +1358,7 @@ export class WebAlphaAuthService implements AlphaAuthService {
 
   /** The address this browser's record names for the session's credential; none without a passkey session. */
   async sessionAddress(): Promise<string | undefined> {
-    const credentialId = getActiveCredentialId()
+    const credentialId = this.device.get().credentialId
     return credentialId ? (await this.identityMap.get(credentialId))?.l2Address : undefined
   }
 
@@ -1316,14 +1366,14 @@ export class WebAlphaAuthService implements AlphaAuthService {
   private sessionMoved(epoch: number, credentialId: string | null): boolean {
     return (
       this.epoch !== epoch ||
-      getActiveCredentialId() !== credentialId ||
+      this.device.get().credentialId !== credentialId ||
       this.sessionWritesInFlight > 0
     )
   }
 
   /** Resolves once the session write in flight, if any, has finished its turn under the lock. */
   private sessionSettled(): Promise<void> {
-    return this.sessionWritesInFlight > 0 ? withSessionLock(async () => {}) : Promise.resolve()
+    return this.sessionWritesInFlight > 0 ? this.withSessionLock(async () => {}) : Promise.resolve()
   }
 
   /** `stillOwns` lets a ceremony that outlived its session (a commit or clear landed while its
@@ -1337,11 +1387,12 @@ export class WebAlphaAuthService implements AlphaAuthService {
     const fence = this.fence
     const storageId = await storageIdFromSecret(new Uint8Array(input.secretKey.toBuffer()))
     const credentialId = this.providerCredential.get(input.authProvider)
-    const committed = await withSessionLock(async () => {
+    let followed: Promise<void> | undefined
+    const committed = await this.withSessionLock(async () => {
       if (this.fence !== fence) return false
       if (stillOwns && !stillOwns()) return false
-      const held = getActiveStorageId()
-      const replaced = readSessionTuple()
+      const replaced = tupleOf(this.device.get())
+      const held = replaced.storageId
       // Read before anything is written under the new account, which the sign-in does right after.
       const leavesStale =
         held !== storageId && (held !== null || (await holdsAccountRecords(storageId)))
@@ -1350,15 +1401,17 @@ export class WebAlphaAuthService implements AlphaAuthService {
       this.sessionWrites++
       this.sessionWritesInFlight++
       try {
-        await walletStorage.batch(() => {
-          setActiveStorageId(storageId)
-          if (credentialId) {
-            setActiveCredentialId(credentialId)
-            writeCachedMsk({ v: 1, storageId, credentialId, msk: input.secretKey.toString() })
-          } else {
-            clearActiveCredentialId()
-            clearCachedMsk()
-          }
+        await writeSessionTuple(this.database, {
+          storageId,
+          credentialId: credentialId ?? null,
+          msk: credentialId
+            ? JSON.stringify({
+                v: 1,
+                storageId,
+                credentialId,
+                msk: input.secretKey.toString(),
+              } satisfies CachedMsk)
+            : null,
         })
         // A sign-out queued its removals behind this write; they undo it.
         if (this.fence !== fence) return false
@@ -1367,7 +1420,7 @@ export class WebAlphaAuthService implements AlphaAuthService {
           // since: put back the session this one replaced. If that fails, nothing restores the
           // cancelled one.
           try {
-            await walletStorage.batch(() => writeSessionTuple(replaced))
+            await writeSessionTuple(this.database, replaced)
           } catch (err) {
             this.clear()
             this.restoreSuppressed = true
@@ -1377,7 +1430,7 @@ export class WebAlphaAuthService implements AlphaAuthService {
         }
 
         if (leavesStale) this.staleRecords = true
-        this.onSessionSaved()
+        followed = this.onSessionSaved()
         this.epoch++
         this.restoreSuppressed = false
         this.msk = input.secretKey
@@ -1394,6 +1447,8 @@ export class WebAlphaAuthService implements AlphaAuthService {
         .setUsed(credentialId)
         .catch((err) => console.warn("passkey use not recorded", err))
     }
+    // What a sign-in reads next is the new session's, loaded.
+    await followed
     return committed
   }
 
@@ -1437,8 +1492,8 @@ export class WebAlphaAuthService implements AlphaAuthService {
 
   private async runUnlock(deriveAddress: AddressDeriver, options: UnlockOptions): Promise<void> {
     const { signal, own, phone, credentialId: asked } = options
-    const storageId = getActiveStorageId()
-    const sessionId = getActiveCredentialId()
+    const storageId = this.device.get().storageId
+    const sessionId = this.device.get().credentialId
     const epoch = this.epoch
     const session = sessionId ? await this.identityMap.get(sessionId) : undefined
     if (!storageId || !sessionId || !session?.l2Address) throw new NoPasskeySessionError()
@@ -1487,7 +1542,7 @@ export class WebAlphaAuthService implements AlphaAuthService {
       // The stored signer follows the session. Already committed: if this write fails, the restore
       // still accepts the stored key as another of the wallet's.
       if (credentialId !== sessionId) {
-        await withSessionLock(async () => {
+        await this.withSessionLock(async () => {
           if (!this.sessionHeld(committed)) return
           await this.writeSigner?.({
             credentialId,
@@ -1622,9 +1677,10 @@ export class WebAlphaAuthService implements AlphaAuthService {
         opened: { backup: record.backup, backupFacts: opened.backupFacts },
       })
     }
+    const { osFamily } = await this.userAgent()
     let candidates: RecoverPasskeyResult["candidates"]
     try {
-      candidates = toFrCandidates(candidatesFrom(assertion))
+      candidates = toFrCandidates(candidatesFrom(assertion, osFamily))
     } catch (err) {
       // The observation rides the error so the screen can diagnose the miss.
       throw this.withObservation(err, assertion, steered, record)
@@ -1747,9 +1803,10 @@ export class WebAlphaAuthService implements AlphaAuthService {
     const passkeys = recorded && strictlyContains(recorded, listed) ? recorded : listed
     const staleSet = recorded && strictlyContains(listed, recorded) ? recorded : undefined
     if (answer.by === "raw" || answer.key.parsed.kind !== "envelope-prefixed") {
+      const { osFamily } = await this.userAgent()
       let candidates: RecoverPasskeyResult["candidates"]
       try {
-        candidates = toFrCandidates(candidatesFrom(assertion))
+        candidates = toFrCandidates(candidatesFrom(assertion, osFamily))
       } catch (err) {
         throw this.withObservation(err, assertion, steered, record)
       }
@@ -1785,9 +1842,9 @@ export class WebAlphaAuthService implements AlphaAuthService {
     // One session's key, signer and credential, taken before the record's read: a session that
     // moved, or is still moving, during the read is read again.
     const { msk, authProvider, epoch } = this
-    const credentialId = getActiveCredentialId()
+    const credentialId = this.device.get().credentialId
     if (!msk && options?.restore !== false && !this.restoreSuppressed) {
-      const retired = retiredSession()
+      const retired = this.retiredSession()
       if (retired && this.sessionWritesInFlight === 0) return this.retiredRecovery(retired)
     }
     if (!msk || !authProvider || !credentialId) return undefined
@@ -1851,5 +1908,16 @@ export class WebAlphaAuthService implements AlphaAuthService {
     this.clear()
     this.fence++
     this.restoreSuppressed = true
+    this.retired = undefined
+  }
+
+  /** Reads a retired rollup's session (`retiredSession.ts`) once this tab holds the database. */
+  async findRetiredSession(): Promise<void> {
+    this.retired = await findRetiredSession(this.device, this.rpId)
+  }
+
+  /** The retired session, while this rollup holds no session of its own. */
+  retiredSession(): RetiredSession | undefined {
+    return this.retired && this.device.get().storageId === null ? this.retired : undefined
   }
 }

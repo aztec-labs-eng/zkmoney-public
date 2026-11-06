@@ -1,15 +1,14 @@
 import { beforeEach, describe, expect, it } from "vitest"
 import type { Address, Hex } from "viem"
 import {
-  PendingRegistrationStore,
   canManualRegistrationSweep,
   type PendingRegistrationRecord,
 } from "@obsidion/front-core"
-import { assertScreened, registrationRecordForSipa } from "../../../../src/features/onboarding/registrationSweep"
-import {
-  archiveReplacedRegistration,
-  getPendingStore,
-} from "../../../../src/features/onboarding/webRegistration"
+import { assertScreened } from "../../../../src/features/registration/registrationSweep"
+import { registrationRecordForSipa } from "../../../../src/features/registration/webRegistration"
+import { openTestSession } from "../../../support/session"
+import { accountRecords, seedRegistration } from "../../../support/registrationFixtures"
+import { session } from "../../../../src/session/session"
 
 describe("canManualRegistrationSweep", () => {
   const base = { phase: "awaiting_deposit", sweptAt: undefined, sweepTxHash: undefined } as const
@@ -35,16 +34,16 @@ describe("assertScreened", () => {
     await assertScreened(async () => ({ compliant: true }), ADDR)
   })
 
-  it("throws Predicate's message on a blocked verdict", async () => {
+  it("throws Predicate's reason on a blocked verdict", async () => {
     await expect(
       assertScreened(
         async () => ({ compliant: false, reason: { code: "blocked", message: "Address blocked" } }),
         ADDR,
       ),
-    ).rejects.toThrow("Address blocked")
-    await expect(assertScreened(async () => ({ compliant: false }), ADDR)).rejects.toThrow(
-      "This address can't be used here",
-    )
+    ).rejects.toMatchObject({ code: "sweep.addressRefused", data: { reason: "Address blocked" } })
+    await expect(assertScreened(async () => ({ compliant: false }), ADDR)).rejects.toMatchObject({
+      code: "sweep.addressBlocked",
+    })
   })
 })
 
@@ -70,22 +69,22 @@ describe("registrationRecordForSipa", () => {
   }
 
   beforeEach(() => {
-    ;(PendingRegistrationStore as unknown as { instance: unknown }).instance = null
     localStorage.clear()
+    openTestSession()
   })
 
   it("finds the pending registration behind a rail-tracked SIPA, case-insensitively", async () => {
-    await getPendingStore().upsert(ACCOUNT, {}, record())
-    expect(registrationRecordForSipa(SIPA)?.tag).toBe("alice")
-    expect(registrationRecordForSipa(SIPA.toUpperCase() as Address)?.tag).toBe("alice")
+    await accountRecords.upsert(ACCOUNT, {}, record())
+    expect(registrationRecordForSipa(session().registrations, SIPA)?.tag).toBe("alice")
+    expect(registrationRecordForSipa(session().registrations, SIPA.toUpperCase() as Address)?.tag).toBe("alice")
   })
 
   it("finds a registration the earned quote replaced, closed to any sweep; a live record wins", async () => {
-    archiveReplacedRegistration({ ...record(), account: ACCOUNT })
-    const archived = registrationRecordForSipa(SIPA)!
+    await seedRegistration({ ...record(), account: ACCOUNT, phase: "failed_terminal", endTime: 1 })
+    const archived = registrationRecordForSipa(session().registrations, SIPA)!
     expect(archived).toMatchObject({ tag: "alice", fee: "1", phase: "failed_terminal" })
     expect(canManualRegistrationSweep(archived)).toBe(false)
-    await getPendingStore().upsert(ACCOUNT, {}, { ...record(), tag: "alice-live" })
-    expect(registrationRecordForSipa(SIPA)?.tag).toBe("alice-live")
+    await seedRegistration({ ...record(), account: ACCOUNT, tag: "alice-live" })
+    expect(registrationRecordForSipa(session().registrations, SIPA)?.tag).toBe("alice-live")
   })
 })

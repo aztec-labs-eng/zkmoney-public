@@ -26,7 +26,6 @@ import {
 } from "../../../lib/analytics"
 import { MessagingBanner } from "../../../platform/xmtp/MessagingBanner"
 import { fireRequestOpened } from "../../requests/requestOpened"
-import { loadWalletIdentity } from "../../identity/walletIdentity"
 import { PayModalChrome } from "../../../ui/PayModalChrome"
 import { useBack, useProvingOutcome } from "../../../ui/hooks"
 import { OperationHandOff } from "../../operations/OperationHandOff"
@@ -41,7 +40,7 @@ import { PayAmountForm } from "../PayAmountForm"
 import { PayConfirmForm } from "../PayConfirmForm"
 import { PayWorking } from "../PayWorking"
 import { sendLimitError } from "../../limits/withdrawalLimit"
-import { useSession } from "../../../platform/session"
+import { useSession } from "../../../session/session"
 import copy from "./ContactPayScreen.copy"
 import { fmt } from "../../../lib/fmt"
 
@@ -92,6 +91,7 @@ function ContactPayFlow({ mode }: { mode: "send" | "request" }) {
   const obsidionAccount = useResource(useSession().account)
   const tokenService = useResource(useSession().token)
   const balances = useSession().balances
+  const { identity } = useSession()
   const { contractService } = useContractServiceContext()
   const balance = useStore(balances.view)
   const main = balance.main
@@ -114,7 +114,9 @@ function ContactPayFlow({ mode }: { mode: "send" | "request" }) {
       .getEntries()
       .then(async (entries) => {
         const found = findContactEntry(entries, idOrTag ?? "")
-        const next = found ?? (request ? null : await lookUpUnsavedContact(idOrTag ?? ""))
+        const next =
+          found ??
+          (request ? null : await lookUpUnsavedContact(idOrTag ?? "", identity.get().value?.handle))
         if (current) setEntry(next)
       })
       .catch((e) => {
@@ -222,7 +224,7 @@ function ContactPayFlow({ mode }: { mode: "send" | "request" }) {
     try {
       const tag = targetTag
       // Behind WalletGate, which already applied the stricter onboarded-identity read.
-      const senderTag = loadWalletIdentity()?.handle
+      const senderTag = identity.get().value?.handle
       // The confirm CTA gates on `ready`, so the wallet, account and services are present here.
       if (
         !tag ||
@@ -375,6 +377,7 @@ function ContactPayFlow({ mode }: { mode: "send" | "request" }) {
               walletBalance={fixedCents(main && { ...main, decimals })}
               maxAmount={main ? floorToCents(main.atomic, decimals) : undefined}
               overspent={overspent}
+              balanceUnconfirmed={!balance.live}
               limitError={limitError}
               validAmount={validAmount}
               onAmount={setAmount}
@@ -392,6 +395,7 @@ function ContactPayFlow({ mode }: { mode: "send" | "request" }) {
               ready={ready}
               busy={busy}
               overspent={overspent}
+              balanceUnconfirmed={!balance.live}
               limitError={limitError}
               isSend={isSend}
               payee={paying ? { tag: handle, savesContact: savesPayee } : undefined}

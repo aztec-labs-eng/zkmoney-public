@@ -1,7 +1,7 @@
 import { act } from "react"
 import { createRoot } from "react-dom/client"
 import { describe, expect, it, vi } from "vitest"
-import type { SIPADepositRecord, UpgradeBatchItem } from "@obsidion/front-core"
+import type { SipaDeposit, UpgradeBatchItem } from "@obsidion/front-core"
 import { statusBadgeStyle } from "@obsidion/web-ds"
 
 declare global {
@@ -9,7 +9,9 @@ declare global {
   var IS_REACT_ACT_ENVIRONMENT: boolean
 }
 
-const { UpgradeRunDetailModal, legStatus } = await import("../../../src/ui/screens/UpgradeRunDetailModal")
+const { UpgradeRunDetailModal, legStatus } = await import(
+  "../../../src/ui/screens/UpgradeRunDetailModal"
+)
 const { upgradeRowStatusLabel } = await import("../../../src/ui/screens/activityView")
 const { upgradeRunsOf } = await import("@obsidion/front-core")
 const { upgradeRunTitle } = await import("../../../src/features/migration/upgradeCopy")
@@ -42,7 +44,7 @@ const arrival = {
     tokenAddress: "0xDai",
     startTime: 1_100,
     endTime: 1_200,
-  } as unknown as SIPADepositRecord,
+  } as unknown as SipaDeposit,
 }
 
 describe("an upgrade's sheet", () => {

@@ -2,7 +2,7 @@
  * Reset the `instance` field on a singleton class between tests.
  *
  * Usage:
- *   resetSingleton(SIPADepositStore as unknown as { instance: SIPADepositStore | null })
+ *   resetSingleton(BalanceStorage as unknown as { instance: BalanceStorage | null })
  *
  * The `as unknown as { instance: ... }` cast at the call site is deliberate —
  * the field is `private static`, and this helper keeps the non-goal "no

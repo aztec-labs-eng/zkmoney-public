@@ -20,17 +20,14 @@ import {
   deriveRecoveryPrivateKey,
   type SipaK1Point,
 } from "../core/services/deposits/sipa/stealth"
-import type {
-  SIPADepositRecord,
-  SIPADepositStore,
-} from "../core/services/deposits/SIPADepositStore"
+import type { SipaDeposit, SipaDeposits } from "../engine/sipaDeposits"
 
 export interface SipaRecoveryDeps {
   record: Pick<
-    SIPADepositRecord,
+    SipaDeposit,
     "sipaAddress" | "phase" | "messageSecret" | "recoveryAddress" | "tokenAddress" | "origin"
   > &
-    Partial<Pick<SIPADepositRecord, "tokenSymbol" | "tokenDecimals">>
+    Partial<Pick<SipaDeposit, "tokenSymbol" | "tokenDecimals">>
   /** The user's stealth keypair (`deriveStealthKey(masterSecret)`). */
   stealthKey: { scalar: bigint; publicKey: SipaK1Point }
   /** Where the recovered funds go — the connected wallet's address. */
@@ -51,15 +48,15 @@ export interface SipaRecoveryDeps {
     /** Whether the SIPA already has code (`getCode` non-empty). */
     readDeployed: (sipa: Address) => Promise<boolean>
     /** Candidate CREATE2 origins (e.g. per manifest generation × resweepable flag). */
-    candidates: SipaRecoverCandidate[]
+    candidates: (SipaRecoverCandidate | EncodedSipaDeploy)[]
     /** CREATE2 prediction for one candidate, against its own factory. */
-    predict: (candidate: SipaRecoverCandidate) => Promise<Address>
+    predict: (candidate: SipaRecoverCandidate | EncodedSipaDeploy) => Promise<Address>
   }
   /** L1 submission channel (connected wallet); resolves to the tx hash. */
   sendTransaction: (to: Address, data: Hex) => Promise<Hex>
   /** Confirmation wait; throws or returns false on a reverted tx. */
   waitForReceipt: (hash: Hex) => Promise<boolean>
-  store: Pick<SIPADepositStore, "get" | "upsert">
+  store: Pick<SipaDeposits, "apply">
   /** Injectable for tests; defaults to crypto.getRandomValues. */
   makeNonce?: () => Uint8Array
 }
@@ -69,6 +66,9 @@ export type SipaRecoverCandidate =
   | { protocol: "legacy-eoa"; sipaFactory: Address; args: LegacySipaDeployArgs }
   | { protocol: "account"; sipaFactory: Address; args: SipaDeployArgs }
 
+/** A `deploySIPA` call another generation encoded: its factory's ABI is that generation's. */
+export type EncodedSipaDeploy = { protocol: "account"; sipaFactory: Address; deployCall: Hex }
+
 /**
  * CREATE2 candidates for `record` over the deployments it may have been derived under (the current
  * manifest tuple, plus historic ones for a deposit that predates a roll) × both `resweepable`
@@ -76,7 +76,7 @@ export type SipaRecoverCandidate =
  * record lacks its identity fields (pre-discovery).
  */
 export function sipaDeployArgCandidates(
-  record: Pick<SIPADepositRecord, "recipientHash" | "recoveryAddress" | "origin">,
+  record: Pick<SipaDeposit, "recipientHash" | "recoveryAddress" | "origin">,
   deployments: {
     sipaFactory: Address
     rollupVersion: bigint
@@ -134,7 +134,7 @@ export function sipaDeployArgCandidates(
 async function matchDeployArgs(
   deployment: SipaRecoveryDeps["deployment"],
   sipa: Address,
-): Promise<SipaRecoverCandidate | null> {
+): Promise<SipaRecoverCandidate | EncodedSipaDeploy | null> {
   for (const candidate of deployment.candidates) {
     if ((await deployment.predict(candidate)).toLowerCase() === sipa.toLowerCase()) {
       return candidate
@@ -153,7 +153,7 @@ export async function runSipaRecovery(deps: SipaRecoveryDeps): Promise<Hex> {
   for (const token of rest) recoveries.push(await signRecovery(deps, messageSecret, token))
 
   const deployed = await deps.deployment.readDeployed(record.sipaAddress)
-  let origin: SipaRecoverCandidate | null = null
+  let origin: SipaRecoverCandidate | EncodedSipaDeploy | null = null
   if (!deployed) {
     origin = await matchDeployArgs(deps.deployment, record.sipaAddress)
     if (!origin) {
@@ -179,10 +179,7 @@ export async function runSipaRecovery(deps: SipaRecoveryDeps): Promise<Hex> {
   const hash = await deps.sendTransaction(call.to, call.data)
   // Stamped before the receipt wait: a session that ends mid-wait must still find the hash. The
   // live phase is kept — a sweep may have been claimed while the wallet signature was pending.
-  await deps.store.upsert(record.sipaAddress, {
-    phase: deps.store.get(record.sipaAddress)?.phase ?? record.phase,
-    recoveryTxHash: hash,
-  })
+  await deps.store.apply(record.sipaAddress, { type: "recoverySent", txHash: hash })
   logger.log(`[sipaRecovery] recovery tx ${hash} sent — awaiting receipt`)
   const confirmed = await deps.waitForReceipt(hash)
   if (!confirmed) {
@@ -190,12 +187,15 @@ export async function runSipaRecovery(deps: SipaRecoveryDeps): Promise<Hex> {
   }
   // The record names the token the recovery moved; what it displayed may have been another token
   // that reached the address.
-  await deps.store.upsert(record.sipaAddress, {
-    phase: "recovered",
-    recoveryTxHash: hash,
-    tokenAddress: deps.tokens[0],
-    ...(record.tokenSymbol !== undefined ? { tokenSymbol: record.tokenSymbol } : {}),
-    ...(record.tokenDecimals !== undefined ? { tokenDecimals: record.tokenDecimals } : {}),
+  await deps.store.apply(record.sipaAddress, {
+    type: "recoverySent",
+    txHash: hash,
+    confirmed: true,
+    token: {
+      tokenAddress: deps.tokens[0],
+      tokenSymbol: record.tokenSymbol,
+      tokenDecimals: record.tokenDecimals,
+    },
   })
   logger.log(`[sipaRecovery] recovered ${record.sipaAddress.slice(0, 10)}… in tx ${hash}`)
   return hash

@@ -52,7 +52,7 @@ import { HashRow } from "../detailRows"
 import { useCopy } from "../hooks"
 import { linkFragmentOf, type ActivityRowView } from "./activityView"
 import { StatusWithReason } from "./DepositStatusValue"
-import { useSession } from "../../platform/session"
+import { useSession } from "../../session/session"
 
 // Styles match the feed row's STATUS_STYLE for the same labels, so one state never wears two colors.
 const PAYLINK_BADGE_STYLE: Record<PaylinkRowStatusLabel, StatusBadgeStyle> = {

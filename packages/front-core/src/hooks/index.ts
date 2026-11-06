@@ -1,7 +1,5 @@
 export * from "./createAccount"
-export * from "./useConfig"
 export * from "./readPaylinkNote"
-export * from "./useStorage"
 export * from "./useAfter"
 export * from "./useCachedRecords"
 export * from "./useContactsDirectory"

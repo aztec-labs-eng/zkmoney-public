@@ -448,8 +448,21 @@ export function ActivityRow({ item, compact = false }: { item: FeedItem; compact
           ariaLabel={copy.aria.tagPurchase}
         />
       )
-    case "registration":
-      return <>{host.registrationNode}</>
+    case "registration": {
+      const entry = host.registration
+      return entry ? (
+        <ActivityListRow
+          counterparty={fmt(copy.counterparty.tag, { tag: entry.tag })}
+          counterpartyBadge={copy.badge.registration}
+          timestamp={rowTimestamp(entry.ts)}
+          amount={entry.amount}
+          statusLabel={copy.status.pending}
+          avatarIcon="arrow-down-circle"
+          onClick={entry.open}
+          ariaLabel={copy.aria.registration}
+        />
+      ) : null
+    }
     case "oldVersionWithdrawal":
       return <OldVersionWithdrawalRow item={item} />
   }

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { PaymentLink } from "../../../../src/features/paylink/types"
 
 import { LIMIT, LIMIT_USD } from "../../../support/publicLimit"
+import { openTestSession } from "../../../support/session"
 
 vi.mock("../../../../src/lib/analytics", () => ({ fireEvent: vi.fn(), failureCode: vi.fn() }))
 
@@ -29,7 +30,7 @@ vi.mock("../../../../src/ui/screening", () => ({
   useScreenedAddress: () => m.screening,
   ScreeningNotice: () => <p>Screening</p>,
 }))
-vi.mock("../../../../src/features/deposit/l1Wallet", () => ({ useL1Wallet: () => ({}) }))
+vi.mock("../../../../src/session/l1Wallet", () => ({ useL1Wallet: () => ({}) }))
 vi.mock("../../../../src/features/withdraw/WithdrawScreen", () => ({ useSavedL1Wallets: () => [] }))
 // A priced direct route with no swap. `route` switches it to the two states where the fee is
 // missing — still being read, and reported as unreadable.
@@ -124,6 +125,7 @@ async function review() {
   await click("Claim")
 }
 beforeEach(() => {
+  openTestSession()
   globalThis.IS_REACT_ACT_ENVIRONMENT = true
   vi.clearAllMocks()
   m.close.mockReset()

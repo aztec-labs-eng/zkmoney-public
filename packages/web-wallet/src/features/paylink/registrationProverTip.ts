@@ -5,6 +5,7 @@
  * ahead before the quote answers commits Standard.
  */
 import { useEffect, useRef } from "react"
+import { bestEffort } from "@obsidion/core/errors"
 import type { RegistrationSchedule } from "@obsidion/core/types"
 import { goldenTicketCoverage, type WithdrawalSpeedupNode } from "@obsidion/front-core"
 import {
@@ -31,6 +32,8 @@ export interface RegistrationSpeed {
    * before the quote answers. The choice moves to Standard too, so a later quote keeps it.
    */
   settle: () => void
+  /** The last commit's save; a claim that burns the tip waits for it. */
+  saved: () => Promise<void>
 }
 
 /**
@@ -55,7 +58,7 @@ export function useRegistrationSpeed({
   /** The source executor's withdrawal fee. */
   withdrawalFee?: bigint
   initialSpeed?: WithdrawalSpeed
-  onCommit: (tip: bigint, speed: WithdrawalSpeed) => void
+  onCommit: (tip: bigint, speed: WithdrawalSpeed) => Promise<void> | void
   commitKey?: string
   load?: LoadFasterWithdrawal
 }): RegistrationSpeed {
@@ -76,17 +79,27 @@ export function useRegistrationSpeed({
   const unread = !schedule || choice.loading || (offer !== undefined && noteAmount === undefined)
   const tip = unread ? undefined : outcome.proverTip
   const committed = useRef<bigint>(undefined)
+  const saving = useRef(Promise.resolve())
+  const commit = (tip: bigint, speed: WithdrawalSpeed) => {
+    committed.current = tip
+    saving.current = Promise.resolve(onCommit(tip, speed))
+    void bestEffort("unknown", saving.current)
+  }
   useEffect(() => {
     if (!active || tip === undefined) return
-    committed.current = tip
-    onCommit(tip, choice.speed)
+    commit(tip, choice.speed)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- commits each decision once per target
   }, [active, tip, choice.speed, commitKey])
   const settle = () => {
     if (!active || tip !== undefined) return
     choice.setSpeed("standard")
-    committed.current = 0n
-    onCommit(0n, "standard")
+    commit(0n, "standard")
   }
-  return { choice, outcome, proverTip: active ? tip : committed.current, settle }
+  return {
+    choice,
+    outcome,
+    proverTip: active ? tip : committed.current,
+    settle,
+    saved: () => saving.current,
+  }
 }

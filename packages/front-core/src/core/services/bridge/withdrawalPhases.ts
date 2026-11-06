@@ -35,7 +35,7 @@ export function isPostMineNonTerminal(phase: WithdrawalPhase): boolean {
   return POST_MINE_NONTERMINAL_PHASES.has(phase)
 }
 
-/** Proven-or-later: Aztec v4 receipts can skip past `proven` straight to `finalized`. */
+/** Proven-or-later: a receipt can skip past `proven` straight to `finalized`. */
 export function isAtLeastProven(status: TxStatus): boolean {
   return status === TxStatus.PROVEN || status === TxStatus.FINALIZED
 }

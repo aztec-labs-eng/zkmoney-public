@@ -59,8 +59,9 @@ import {
 import { LimitsInfoButton } from "../../limits/AboutLimitsSheet"
 import { withdrawalLimitProblem } from "../../limits/withdrawalLimit"
 import { useTxAmountCap } from "../../token/useTxAmountCap"
-import { useSession } from "../../../platform/session"
+import { useSession } from "../../../session/session"
 import copy from "./WithdrawToWalletModal.copy"
+import balanceCopy from "../../../ui/balance.copy"
 import { fmt } from "../../../lib/fmt"
 
 /**
@@ -80,6 +81,8 @@ export function WithdrawToWalletModal({
   receiveAssets,
   assetNote,
   recipientIsContract,
+  recipientWarning,
+  confirmRecipient,
   onClose,
   onDone,
 }: {
@@ -95,6 +98,10 @@ export function WithdrawToWalletModal({
   assetNote?: string
   /** The ETH route pays with a plain transfer, which a contract can reject. */
   recipientIsContract?: boolean
+  /** What the caller could not settle about the recipient, shown with the amount. */
+  recipientWarning?: { title: string; body: string }
+  /** Asked on confirm; false stops the withdrawal, the caller having sent the user elsewhere. */
+  confirmRecipient?: () => boolean
   onClose: () => void
   onDone: () => void
 }) {
@@ -189,7 +196,7 @@ export function WithdrawToWalletModal({
       })
     : undefined
   const maxAmount =
-    max?.status === "available" && max.atomic >= minimum
+    wallet.live && max?.status === "available" && max.atomic >= minimum
       ? formatUnits(max.atomic, DEFAULT_DECIMALS)
       : undefined
   if (maxed && maxAmount !== undefined && maxAmount !== amount) setAmount(maxAmount)
@@ -234,6 +241,7 @@ export function WithdrawToWalletModal({
 
   const run = async () => {
     if (!valid || burnAtomic === undefined) return
+    if (confirmRecipient && !confirmRecipient()) return
     if (failedOnce) fireEvent("retry_clicked", { flow: "withdraw" })
     outcome.start("building")
     setPhase("working")
@@ -326,7 +334,9 @@ export function WithdrawToWalletModal({
               <span>{copy.amountToSend}</span>
               <span>
                 {copy.available}{" "}
-                <b>{usdFigureGrouped(fixedCents(wallet.main && { ...wallet.main, decimals }))}</b>
+                <b className="ww-available" aria-busy={!wallet.live}>
+                  {usdFigureGrouped(fixedCents(wallet.main && { ...wallet.main, decimals }))}
+                </b>
               </span>
             </span>
             <label className="ww-deposit__input ww-fund__amount">
@@ -410,6 +420,9 @@ export function WithdrawToWalletModal({
             {recipientIsContract && receiveAsset === "ETH" && (
               <Warning title={copy.contract.title}>{copy.contract.body}</Warning>
             )}
+            {recipientWarning && (
+              <Warning title={recipientWarning.title}>{recipientWarning.body}</Warning>
+            )}
             {!cleared && (
               <ScreeningNotice
                 verdict={verdict}
@@ -421,8 +434,8 @@ export function WithdrawToWalletModal({
             )}
           </div>
           <PrimaryGradientButton
-            title={copy.review}
-            isDisabled={!valid || overspent || !cleared}
+            title={wallet.live ? copy.review : balanceCopy.checking}
+            isDisabled={!wallet.live || !valid || overspent || !cleared}
             onClick={() => setPhase("confirm")}
             style={{ width: "100%", height: 48 }}
           />

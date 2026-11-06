@@ -11,14 +11,15 @@ import {
   rememberUsertag,
   usertagFor,
 } from "../../../../src/platform/auth/WebPasskeyIdentityMap"
-import { WebStorageAdapter } from "../../../../src/platform/storage/WebStorageAdapter"
-import {
-  clearActiveStorage,
-  setActiveCredentialId,
-  setActiveStorageId,
-} from "../../../../src/platform/storage/activeStorage"
-import { clearWalletIdentity, saveWalletIdentity } from "../../../../src/features/identity/walletIdentity"
+import { saveIdentity } from "../../../../src/session/account"
 import { seedBootConfig } from "../../../support/seedBootConfig"
+import { writeDeviceKeys } from "../../../../src/platform/storage/deviceKeys"
+import { NO_SESSION, writeSessionTuple } from "../../../../src/platform/storage/activeStorage"
+import { openTestSession } from "../../../support/session"
+import { setIdentity } from "../../../support/identity"
+import { testPage, committed } from "../../../support/page"
+
+const deviceDb = testPage().database
 
 /** The sandbox profile's RP. */
 const RP = "localhost"
@@ -26,7 +27,7 @@ const RP = "localhost"
 const CREDENTIAL = "cred-1"
 
 function map(rpId = RP) {
-  return new WebPasskeyIdentityMap(new WebStorageAdapter(), rpId)
+  return new WebPasskeyIdentityMap(deviceDb, rpId)
 }
 
 async function seedBreadcrumb(rpId = RP) {
@@ -41,49 +42,49 @@ async function seedBreadcrumb(rpId = RP) {
 describe("usertag hint", () => {
   beforeAll(seedBootConfig)
 
-  beforeEach(() => {
+  beforeEach(async () => {
     localStorage.clear()
-    setActiveStorageId("s")
-    setActiveCredentialId(CREDENTIAL)
+    await writeDeviceKeys(deviceDb, { storageId: "s", credentialId: CREDENTIAL })
+    openTestSession()
   })
 
   it("survives logout and a later re-recording of the same credential", async () => {
     await seedBreadcrumb()
-    await saveWalletIdentity({ handle: "alice", address: "0x1", claimedAt: 1 })
-    clearWalletIdentity()
-    clearActiveStorage()
+    await saveIdentity(testPage(), { handle: "alice", address: "0x1", claimedAt: 1 })
+    await setIdentity(null)
+    await writeSessionTuple(deviceDb, NO_SESSION)
     await seedBreadcrumb() // what /enter's adopt step does
-    expect(usertagFor(RP, CREDENTIAL)).toBe("alice")
+    expect(usertagFor(committed().passkeyMap, RP, CREDENTIAL)).toBe("alice")
   })
 
   it("is not written for a pending claim, which can still lose the name race", async () => {
     await seedBreadcrumb()
-    await saveWalletIdentity({ handle: "alice", address: "0x1", claimedAt: 1, pending: true })
-    expect(usertagFor(RP, CREDENTIAL)).toBeUndefined()
+    await saveIdentity(testPage(), { handle: "alice", address: "0x1", claimedAt: 1, pending: true })
+    expect(usertagFor(committed().passkeyMap, RP, CREDENTIAL)).toBeUndefined()
   })
 
   it("is untouched by a later nameless save", async () => {
     await seedBreadcrumb()
-    await saveWalletIdentity({ handle: "alice", address: "0x1", claimedAt: 1 })
-    await saveWalletIdentity({ address: "0x1", claimedAt: 2 })
-    expect(usertagFor(RP, CREDENTIAL)).toBe("alice")
+    await saveIdentity(testPage(), { handle: "alice", address: "0x1", claimedAt: 1 })
+    await saveIdentity(testPage(), { address: "0x1", claimedAt: 2 })
+    expect(usertagFor(committed().passkeyMap, RP, CREDENTIAL)).toBe("alice")
   })
 
   it("is not written when the sign-in saving the identity has ended", async () => {
     await seedBreadcrumb()
-    await saveWalletIdentity({ handle: "alice", address: "0x1", claimedAt: 1 }, () => false)
-    expect(usertagFor(RP, CREDENTIAL)).toBeUndefined()
+    await saveIdentity(testPage(), { handle: "alice", address: "0x1", claimedAt: 1 }, () => false)
+    expect(usertagFor(committed().passkeyMap, RP, CREDENTIAL)).toBeUndefined()
   })
 
   it("is invisible under another RP", async () => {
     await seedBreadcrumb("obsidion.xyz")
-    await rememberUsertag("obsidion.xyz", CREDENTIAL, "alice")
-    expect(usertagFor(RP, CREDENTIAL)).toBeUndefined()
-    expect(usertagFor("obsidion.xyz", CREDENTIAL)).toBe("alice")
+    await rememberUsertag(deviceDb, "obsidion.xyz", CREDENTIAL, "alice")
+    expect(usertagFor(committed().passkeyMap, RP, CREDENTIAL)).toBeUndefined()
+    expect(usertagFor(committed().passkeyMap, "obsidion.xyz", CREDENTIAL)).toBe("alice")
   })
 
   it("is absent on a browser with no breadcrumb for the credential", async () => {
-    await rememberUsertag(RP, CREDENTIAL, "alice")
-    expect(usertagFor(RP, CREDENTIAL)).toBeUndefined()
+    await rememberUsertag(deviceDb, RP, CREDENTIAL, "alice")
+    expect(usertagFor(committed().passkeyMap, RP, CREDENTIAL)).toBeUndefined()
   })
 })

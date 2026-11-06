@@ -10,8 +10,9 @@ import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import { TxHash } from "@aztec-labs/stdlib/tx"
 import { bridgeUnderlying } from "@obsidion/core/oxide"
 import {
-  BroadcastAbandoned,
+  BROADCAST_WAIT_MS,
   BroadcastDeferred,
+  WalletError,
   isFailedSubmission,
   persistedRotation,
   PUBLISH_BOUND,
@@ -22,7 +23,7 @@ import {
   RotationStrippedError,
   type BackupRotationRecord,
   type BroadcastExecutor,
-  type BroadcastJob,
+  type BroadcastJobOf,
 } from "@obsidion/front-core"
 import {
   buildClaimSponsorPayload,
@@ -40,20 +41,37 @@ import { getWebOxideToken } from "../../config/classArtifacts"
 import type { WebWalletConfig } from "../../config/env"
 import { getFeeTokenBridgeTuple, l1PublicClient, requireTupleField } from "../../config/oxideTuple"
 import { getBackupRotationStore } from "../backupPasskey/backupRotationStore"
-import { readSipaDeployed } from "../deposit/sipaSweep"
-import { getSipaSweepRoutes } from "../deposit/sipaSweepRoutes"
+import { readSipaDeployed } from "../sipa/sipaSweep"
+import { getSipaSweepRoutes } from "../sipa/sipaSweepRoutes"
 import { maybeRefuelFpc } from "../fees/fpcRefuel"
-import { claimSponsorContext, noteSubscribed } from "../onboarding/claimSponsorship"
-import { RAIL_REGISTERED } from "../onboarding/rails"
-import { unlockedSessionKeys } from "../onboarding/registrationResume"
-import { registeredBroadcaster } from "../onboarding/webRegistrationBroadcast"
-import { WAIT_MS, WAITING_FOR_UNLOCK } from "./broadcasts"
+import { claimSponsorContext, noteSubscribed } from "../registration/claimSponsorship"
+import { RAIL_REGISTERED } from "../registration/rails"
+import { unlockedSessionKeys } from "../registration/registrationResume"
+import { registeredBroadcaster } from "../registration/webRegistrationBroadcast"
+import { session } from "../../session/session"
 
-const ENDED = "The backup passkey attempt ended"
+/**
+ * Owe a backup passkey rotation's deposit-address broadcast; the record under `owner` rebuilds it.
+ * `republishSince`, for an address paid again: only a landing at or past that block settles it.
+ */
+export async function oweRotationBroadcast(
+  owner: string,
+  sipaAddress: string,
+  republishSince?: number,
+): Promise<void> {
+  const { sipaDeposits, tasks, wake } = session()
+  await sipaDeposits.oweBroadcast(sipaAddress, {
+    kind: "deposit",
+    source: { type: "rotation", owner },
+    ...(republishSince === undefined ? {} : { republishSince }),
+  })
+  void wake(tasks.sipaBroadcasts)
+}
+
+const ended = () => new WalletError("deposit.addressRetired", "backup passkey attempt ended")
 
 /** The record whose deposit address the job publishes, or null once it is gone or moved. */
-async function recordOf(job: BroadcastJob): Promise<BackupRotationRecord | null> {
-  if (job.source.type !== "rotation") return null
+async function recordOf(job: BroadcastJobOf<"rotation">): Promise<BackupRotationRecord | null> {
   const record = await getBackupRotationStore().get(job.source.owner)
   return record?.rotation?.sipa.toLowerCase() === job.address ? record : null
 }
@@ -62,7 +80,7 @@ function signedRotation(record: BackupRotationRecord): PersistedRotation {
   try {
     return persistedRotation(record.rotation!)
   } catch (err) {
-    if (err instanceof RotationStrippedError) throw new BroadcastAbandoned(ENDED)
+    if (err instanceof RotationStrippedError) throw ended()
     throw err
   }
 }
@@ -70,7 +88,7 @@ function signedRotation(record: BackupRotationRecord): PersistedRotation {
 export function rotationExecutor(
   wallet: ObsidionWallet,
   config: WebWalletConfig,
-): BroadcastExecutor {
+): BroadcastExecutor<BroadcastJobOf<"rotation">> {
   const bookkeeping = () => ({ store: getBackupRotationStore(), now: Date.now })
   return {
     landed: async (job) => {
@@ -79,12 +97,12 @@ export function rotationExecutor(
     },
     send: async (job, attempt) => {
       const record = await recordOf(job)
-      if (!record?.plan) throw new BroadcastAbandoned(ENDED)
+      if (!record?.plan) throw ended()
       // The flow gives a funded, unswept address up at this count; nothing more is proved for it.
-      if ((record.publish?.count ?? 0) >= PUBLISH_BOUND) throw new BroadcastAbandoned(ENDED)
+      if ((record.publish?.count ?? 0) >= PUBLISH_BOUND) throw ended()
       const rotation = signedRotation(record)
       const keys = await unlockedSessionKeys(wallet)
-      if (!keys) throw new BroadcastDeferred(Date.now() + WAIT_MS, WAITING_FOR_UNLOCK)
+      if (!keys) throw new BroadcastDeferred(Date.now() + BROADCAST_WAIT_MS, "unlock")
       const contractService = ContractService.getInstance()
       const tuple = await getFeeTokenBridgeTuple(config)
       const sipa = rotation.sipa

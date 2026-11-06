@@ -6,12 +6,9 @@
 import { describe, expect, it } from "vitest"
 import { parseUnits, type Address } from "viem"
 import type { WithdrawalRecord } from "../../../src/core/services/bridge/types"
-import type {
-  SIPADepositRecord,
-  SIPASweep,
-} from "../../../src/core/services/deposits/SIPADepositStore"
+import type { SipaDeposit, SIPASweep } from "../../../src/engine/sipaDeposits"
 import type { SavingsMoveRecord } from "../../../src/core/services/savings/types"
-import type { ActivityItem } from "../../../src/core/services/bridge/BridgeActivityFeed"
+import type { ActivityItem } from "../../../src/engine/feedRules"
 import type { Transaction } from "../../../src/types/transactions"
 import {
   ACTIVITY_CSV_COLUMNS,
@@ -95,7 +92,7 @@ function sweep(
   }
 }
 
-function deposit(extra: Partial<SIPADepositRecord> = {}): ActivityItem {
+function deposit(extra: Partial<SipaDeposit> = {}): ActivityItem {
   return {
     kind: "bridge.sipaDeposit",
     record: {
@@ -112,9 +109,8 @@ function deposit(extra: Partial<SIPADepositRecord> = {}): ActivityItem {
       fundingFromAddress: "0x00000000000000000000000000000000000000cc",
       fundingTokenSymbol: "DAI",
       fundingTxHash: "0xfund",
-      claimTxHash: "0xclaim",
       ...extra,
-    } as SIPADepositRecord,
+    } as SipaDeposit,
   }
 }
 
@@ -191,7 +187,7 @@ const DEPOSIT_PHASES: Record<string, boolean> = {
 const SIPA = "0x00000000000000000000000000000000000000bb"
 const DEPOSIT_KINDS: Record<
   string,
-  [Partial<ActivityCsvSources>, Partial<SIPADepositRecord>, ActivityCsvRow["type"]]
+  [Partial<ActivityCsvSources>, Partial<SipaDeposit>, ActivityCsvRow["type"]]
 > = {
   "deposit": [{}, {}, "Deposit"],
   "registration": [{}, { intent: "registration" }, "Name registration"],
@@ -328,7 +324,7 @@ describe("deposits", () => {
   it.each(Object.entries(DEPOSIT_PHASES))(
     "a record with no ledger at phase %s exported: %s",
     (phase, exported) => {
-      const record = { phase: phase as SIPADepositRecord["phase"], sweeps: undefined }
+      const record = { phase: phase as SipaDeposit["phase"], sweeps: undefined }
       expect(!!only({ items: [deposit(record)] })).toBe(exported)
     },
   )
@@ -336,7 +332,7 @@ describe("deposits", () => {
   it.each(Object.keys(DEPOSIT_PHASES))(
     "a claimed sweep stays exported while its address is %s again",
     (phase) => {
-      const row = only({ items: [deposit({ phase: phase as SIPADepositRecord["phase"] })] })
+      const row = only({ items: [deposit({ phase: phase as SipaDeposit["phase"] })] })
       expect(row).toMatchObject({ received: { amount: "20", currency: "DAI" } })
     },
   )
@@ -357,7 +353,6 @@ describe("deposits", () => {
       timestampMs: T0,
       received: { amount: "20", currency: "DAI" },
       fee: { amount: "1", currency: "DAI" },
-      aztecTxHash: "0xclaim",
       ethereumTxHash: "0xfund",
     })
   })
@@ -387,7 +382,6 @@ describe("deposits", () => {
         timestampMs: T0 + 5000,
         received: { amount: "5", currency: "DAI" },
         fee: { amount: "0.5", currency: "DAI" },
-        aztecTxHash: "0xclaim",
         ethereumTxHash: "0xsweep9",
       },
     ])
@@ -431,7 +425,7 @@ describe("deposits across rows", () => {
   it("reports a token split out of its address's record once, among the record's sweeps", () => {
     const split: ActivityItem = {
       kind: "bridge.sipaDeposit",
-      record: (twoTokens as { record: SIPADepositRecord }).record,
+      record: (twoTokens as { record: SipaDeposit }).record,
       credit: "0x6b175474e89094c44da98b954eedeac495271d0f",
     }
     expect(buildActivityCsvRows({ ...EMPTY, items: [twoTokens, split] })).toHaveLength(2)
@@ -495,7 +489,6 @@ describe("fees come from chain amounts only", () => {
     expect(row).toMatchObject({
       timestampMs: T0,
       received: { amount: "19", currency: "DAI" },
-      aztecTxHash: "0xclaim",
       ethereumTxHash: "0xfund",
     })
     expect(row?.fee).toBeUndefined()

@@ -10,7 +10,6 @@ import { Fr } from "@aztec-labs/foundation/curves/bn254"
 import { EthAddress } from "@aztec-labs/foundation/eth-address"
 import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import {
-  type R1PublicKeyArg,
   type SipaDeployArgs,
   NamePortalAbi,
   OxideAccountAbi,
@@ -32,7 +31,7 @@ import type { OxideEnvTuple, RegistrationIntent, RegistrationSchedule } from "@o
 import { registrationFloor } from "@obsidion/core/constants"
 import { requireNonZeroL1Address, sipaIntentToken } from "@obsidion/core/oxide"
 import { readResolverOperatorRecords } from "./resolverOperatorRecords"
-import type { SIPADepositStore } from "../core/services/deposits/SIPADepositStore"
+import type { SipaDeposits } from "../engine/sipaDeposits"
 import {
   MAX_NONCE,
   deriveRecoveryAddress,
@@ -49,7 +48,6 @@ import {
 } from "@obsidion/sdk"
 import { logger } from "../utils/logger"
 
-import { AccountStorage } from "../core/storages/AccountStorage"
 import type {
   BoundedAuthKeys,
   OxideL1Reader,
@@ -63,7 +61,6 @@ import {
   encodeUserRecord,
   registrationCommitment,
 } from "./oxideRegistrationData"
-import { pubkeyToR1KeyArg } from "./oxideWebAuthn"
 
 /**
  * The operator EOA to record into `UserRecord.resolverOperator` at signup, read from the live
@@ -398,12 +395,9 @@ export function createRegistrationDepositReader(deps: {
    *  material); undefined prices the floor off the immutable schedule. */
   termsFor?: (account: string) => { fee: bigint; minDeposit: bigint } | undefined
   /** The rail's records, one per SIPA, the registration address's among them. */
-  store: Pick<SIPADepositStore, "get" | "load">
+  store: Pick<SipaDeposits, "get">
 }): RegistrationDepositReader {
-  const recordOf = async (sipa: Address) => {
-    await deps.store.load()
-    return deps.store.get(sipa)
-  }
+  const recordOf = (sipa: Address) => deps.store.get(sipa)
   const scheduleHolder = deps.registrationController ?? deps.registry
   let immutables: Promise<RegistrationSchedule | undefined> | undefined
   const registrationImmutables = () =>
@@ -550,23 +544,4 @@ async function readAuthKeysBounded(
     ),
   )
   return { entries, authKeyCount }
-}
-
-/**
- * The current account's passkey public key as an oxide r1 key, or undefined if none is
- * stored yet. Reads the STORED key only — no passkey ceremony — so registration installs
- * the first r1 key popup-free in the sponsored batch.
- */
-export async function resolveStoredR1Key(): Promise<R1PublicKeyArg | undefined> {
-  const data = await AccountStorage.get().getWebAuthnDataForCurrentAccount()
-  return data ? pubkeyToR1KeyArg(data.pubkey) : undefined
-}
-
-/**
- * The current account's passkey credential id — the install's `addAuthKey` metadata. Reads the
- * STORED value only, so registration installs the first r1 key popup-free.
- */
-export async function resolveStoredCredentialId(): Promise<string | undefined> {
-  const data = await AccountStorage.get().getWebAuthnDataForCurrentAccount()
-  return data?.credentialId
 }

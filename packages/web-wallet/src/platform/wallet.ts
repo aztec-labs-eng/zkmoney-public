@@ -19,6 +19,7 @@ import { provingDevice } from "../lib/provingDevice"
 import type { PxeBootTarget } from "../ui/PxeBoot"
 import { barretenbergWasm } from "./bbWasmPath"
 import { isActiveTab } from "./storage/activeTab"
+import { tabStash } from "./storage/tabStash"
 import { reloadPage } from "./storage/walletStorage"
 
 export type PxeTarget = Extract<PxeBootTarget, { kind: "pxe" }>
@@ -59,9 +60,9 @@ function isModuleDownloadFailure(e: unknown): boolean {
 
 function takeDownloadReload(): boolean {
   try {
-    const reloads = Number(sessionStorage.getItem(DOWNLOAD_RELOADS_KEY)) || 0
+    const reloads = Number(tabStash.get(DOWNLOAD_RELOADS_KEY)) || 0
     if (reloads >= MAX_DOWNLOAD_RELOADS) return false
-    sessionStorage.setItem(DOWNLOAD_RELOADS_KEY, String(reloads + 1))
+    tabStash.set(DOWNLOAD_RELOADS_KEY, String(reloads + 1))
     return true
   } catch {
     return false
@@ -70,7 +71,7 @@ function takeDownloadReload(): boolean {
 
 function clearDownloadReloads(): void {
   try {
-    sessionStorage.removeItem(DOWNLOAD_RELOADS_KEY)
+    tabStash.remove(DOWNLOAD_RELOADS_KEY)
   } catch {
     return
   }

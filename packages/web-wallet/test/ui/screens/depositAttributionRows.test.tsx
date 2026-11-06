@@ -6,12 +6,14 @@ import { act } from "react"
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import { createRoot, type Root } from "react-dom/client"
 import type { Address, Hash } from "viem"
-import type { SIPADepositRecord } from "@obsidion/front-core"
+import type { SipaDeposit } from "@obsidion/front-core"
 import { shortL1Addr } from "../../../src/ui/format"
 
 import { DepositDetailModal } from "../../../src/ui/screens/DepositDetailModal"
 import { whenLabel } from "../../../src/ui/detailRows"
 import { seedTestnetBootConfig } from "../../support/seedBootConfig"
+import { closeSession } from "../../../src/session/session"
+import { openTestSession } from "../../support/session"
 
 declare global {
   // eslint-disable-next-line no-var
@@ -24,7 +26,7 @@ const FUNDING_TX = `0x${"e6".repeat(32)}` as Hash
 // Everything the deposit does not credit.
 const FEE = "750000000000000000"
 
-const record = (patch: Partial<SIPADepositRecord> = {}): SIPADepositRecord =>
+const record = (patch: Partial<SipaDeposit> = {}): SipaDeposit =>
   ({
     sipaAddress: `0x${"11".repeat(20)}`,
     recipientL2Address: `0x${"0a".repeat(32)}`,
@@ -41,7 +43,10 @@ const record = (patch: Partial<SIPADepositRecord> = {}): SIPADepositRecord =>
     endTime: 1_700_000_000_000,
     walletName: "Rainbow",
     ...patch,
-  } as SIPADepositRecord)
+  } as SipaDeposit)
+
+beforeEach(() => void openTestSession())
+afterEach(closeSession)
 
 describe("DepositDetailModal", () => {
   let container: HTMLDivElement
@@ -60,7 +65,7 @@ describe("DepositDetailModal", () => {
   /** The date under that figure. */
   const subtitle = () => container.querySelector(".ww-sheet__title small")?.textContent?.trim()
 
-  const show = (r: SIPADepositRecord) =>
+  const show = (r: SipaDeposit) =>
     act(async () => {
       root.render(<DepositDetailModal record={r} onClose={vi.fn()} />)
     })
@@ -138,14 +143,12 @@ describe("DepositDetailModal", () => {
   it("keeps the deposit address and every on-chain leg as explorer rows", async () => {
     const sweep = `0x${"5e".repeat(32)}` as Hash
     const recovery = `0x${"4e".repeat(32)}` as Hash
-    const claim = `0x${"c1".repeat(64)}`
     await show(
       record({
         fundingFromAddress: FUNDER,
         fundingTxHash: FUNDING_TX,
         sweepTxHash: sweep,
         recoveryTxHash: recovery,
-        claimTxHash: claim,
       }),
     )
 
@@ -157,7 +160,6 @@ describe("DepositDetailModal", () => {
     ).toBe(true)
     expect(valueOf("Sweep tx")).toContain(sweep.slice(0, 6))
     expect(valueOf("Recovery tx")).toContain(recovery.slice(0, 6))
-    expect(valueOf("Claim tx")).toContain(claim.slice(0, 6))
   })
 
   it("shows a pending wallet deposit's amount rather than a dash", async () => {

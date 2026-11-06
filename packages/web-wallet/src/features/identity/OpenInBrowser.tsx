@@ -10,9 +10,11 @@ import {
 } from "@obsidion/passkey-web"
 import { PrimaryGradientButton } from "@obsidion/web-ds"
 import { useCopy } from "../../ui/hooks"
+import words from "./OpenInBrowser.copy"
 import { hasConnectStash } from "../contacts/connectReceive"
-import { pageNameGrantToken } from "../onboarding/nameGrant"
 import { peekClaimStash } from "../paylink/claimStash"
+import { useSession } from "../../session/session"
+import { stampLandingSource, withLandingSource } from "../../lib/trafficSource"
 import { inAppCardShown, inAppCardTapped, type InAppCardContext } from "./inAppCardTelemetry"
 
 const REOPEN = "Open the link you were sent again, in your phone's browser."
@@ -29,13 +31,12 @@ type WayOut =
  * fragment; the app's own menu opens the whole address; nothing carries this browser's storage or
  * router memory, so there only the link the user was sent can start again.
  */
-function wayOut(path: string | undefined, routerState: unknown): WayOut {
+function wayOut(path: string | undefined, routerState: unknown, grant: string | undefined): WayOut {
   const { origin, pathname, search, hash } = window.location
-  const url = `${origin}${path ?? `${pathname}${search}`}`
+  const url = withLandingSource(`${origin}${path ?? `${pathname}${search}`}`)
   const href = currentOpenInBrowserHref(url)
   if (!href) return { kind: "none" }
   if (hash || new URLSearchParams(search).get("next")?.includes("#")) return { kind: "hint" }
-  const grant = pageNameGrantToken(new URL(window.location.href))
   if (routerState != null || peekClaimStash() || hasConnectStash() || grant) {
     return { kind: "reopen" }
   }
@@ -62,15 +63,21 @@ export function OpenInBrowser({
   telemetry?: InAppCardContext
 }) {
   const { state } = useLocation()
-  const way = wayOut(path, state)
+  const { signup } = useSession()
+  const way = wayOut(path, state, signup.pageGrantToken(new URL(window.location.href)))
   const linkDropped = currentAppDropsOpenLink()
   const { copied, copy } = useCopy()
   const [copyFailed, setCopyFailed] = useState(false)
   /** Bumped per copy: any copy that lands clears the failure, only the latest can report one. */
   const latestCopy = useRef(0)
   const counted = telemetry && way.kind !== "none" ? telemetry : undefined
+  // Routing may have dropped the landing's stamp; the app's own menu opens the address bar.
+  useEffect(() => {
+    if (way.kind !== "none") stampLandingSource()
+  }, [way.kind])
   useEffect(() => {
     if (counted) inAppCardShown(counted)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once per card and screen
   }, [counted?.when, counted?.screen])
 
   const copyLink = async (url: string) => {
@@ -156,11 +163,11 @@ export function OpenInBrowser({
             disabled={retry.busy}
             onClick={retry.onClick}
           >
-            Try again
+            {words.retry}
           </button>
         ) : (
           <PrimaryGradientButton
-            title="Try again"
+            title={words.retry}
             testId={retry.testId}
             isLoading={retry.busy}
             onClick={retry.onClick}

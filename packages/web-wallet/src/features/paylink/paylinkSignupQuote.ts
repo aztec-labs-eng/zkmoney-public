@@ -9,7 +9,7 @@
 import { GOLDEN_TICKET_BRIDGE_REMAINDER, WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
 import type { RegistrationSchedule } from "@obsidion/core/types"
 import { goldenTicketBurn, goldenTicketCoverage } from "@obsidion/front-core"
-import { ticketTagCharge } from "../onboarding/registrationAsk"
+import { ticketTagCharge } from "../registration/registrationAsk"
 
 export interface PaylinkSignupQuote {
   paylink?: bigint

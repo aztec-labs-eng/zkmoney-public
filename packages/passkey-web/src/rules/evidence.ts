@@ -1,6 +1,7 @@
 import type { PrfSlot } from "@obsidion/core/types"
 import type { PasskeyAttachment } from "../ceremony/passkeyCeremony.js"
 import type { LocalManager } from "./laptopCreation.js"
+import type { OsFamily } from "../browser/userAgentInfo.js"
 import { DeviceBoundPasskeyError, NoPrfError, SingleSaltProviderError } from "../refusals/passkeyErrors.js"
 import { slotForAttachment } from "./slotRule.js"
 
@@ -29,8 +30,8 @@ export const isComplete = (e: Evidence, slot: PrfSlot): boolean =>
 
 /**
  * The backup gate. A passkey no other device can read protects nothing, so it is refused — unless
- * it is exempt: a security key holds the only copy by design. A flag that could not be read is
- * never exempt, since nothing was attested to excuse.
+ * it is exempt: a security key or Windows Hello holds the only copy by design. A flag that could
+ * not be read is never exempt, since nothing was attested to excuse.
  */
 function checkBackup(
   evidence: Evidence,
@@ -45,16 +46,17 @@ function checkBackup(
 /**
  * The PRF output the account binds to: the backup gate first, then the slot. A value in the other
  * slot only is a provider that evaluated one salt, and it is not the one this route binds to.
- * `securityKey` exempts a hardware key from the backup gate; creation decides it from its response.
- * `localManagers` marks a laptop's own route, so each refusal names the managers it admits.
+ * `deviceBound` exempts a security key or Windows Hello from the backup gate; creation decides it
+ * from its response. `localManagers` marks a laptop's own route, so each refusal names the
+ * managers it admits.
  */
 export function prfOutputFor(
   evidence: Evidence,
   slot: PrfSlot,
-  securityKey = false,
+  deviceBound = false,
   localManagers?: readonly LocalManager[],
 ): Uint8Array {
-  checkBackup(evidence, securityKey, localManagers)
+  checkBackup(evidence, deviceBound, localManagers)
   const prfOutput = prfOf(evidence, slot)
   if (!prfOutput) {
     const other = slot === "first" ? evidence.prfSecond : evidence.prfFirst
@@ -88,13 +90,17 @@ export function prfOutputsOf(assertion: Evidence): PrfCandidates {
  * Both candidate keys' PRF outputs from one assertion, behind the backup gate. Refuses what no
  * anchor could rescue.
  *
- * An assertion carries no transports, so a security key cannot be told from a phone here. Another
- * device's answer is exempt from the backup gate on that account: creation only ever admits a
- * synced passkey or a security key, and the caller's anchors decide which account, if any, the
- * candidates open. The device's own answer gets no such benefit.
+ * An assertion carries no transports or provider id, so a security key cannot be told from a phone
+ * here, nor Windows Hello from another manager. Another device's answer is exempt from the backup
+ * gate on that account: creation only ever admits a synced passkey or a security key from there,
+ * and the caller's anchors decide which account, if any, the candidates open. The device's own
+ * answer is exempt only on Windows (`osFamily`), where creation admits Windows Hello.
  */
-export function candidatesFrom(assertion: Evidence): PrfCandidates {
-  checkBackup(assertion, assertion.authenticatorAttachment === "cross-platform")
+export function candidatesFrom(assertion: Evidence, osFamily?: OsFamily): PrfCandidates {
+  checkBackup(
+    assertion,
+    assertion.authenticatorAttachment === "cross-platform" || osFamily === "windows",
+  )
   const candidates = prfOutputsOf(assertion)
   if (!candidates.first && !candidates.second) throw new NoPrfError()
   return candidates

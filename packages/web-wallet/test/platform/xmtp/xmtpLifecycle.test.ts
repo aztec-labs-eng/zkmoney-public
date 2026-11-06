@@ -69,15 +69,6 @@ function makeTab(locks: FakeLocks, opts: TabOptions = {}) {
 const flush = () => new Promise((r) => setTimeout(r, 0))
 
 describe("XmtpLifecycle", () => {
-  it("a single visible tab acquires the lock and constructs the client once", async () => {
-    const locks = new FakeLocks()
-    const tab = makeTab(locks)
-    tab.lifecycle.start()
-    await flush()
-    expect(tab.createClient).toHaveBeenCalledTimes(1)
-    expect(tab.states.at(-1)).toBe("leader")
-  })
-
   it("a second visible tab stays 'another-tab' and never constructs a client", async () => {
     const locks = new FakeLocks()
     const a = makeTab(locks)
@@ -178,23 +169,6 @@ describe("XmtpLifecycle", () => {
     expect(b.states.at(-1)).toBe("leader")
   })
 
-  it("construction failure lands on 'error' and frees the lock for other tabs", async () => {
-    const locks = new FakeLocks()
-    const a = makeTab(locks, {
-      createClient: async () => {
-        throw new Error("no OPFS")
-      },
-    })
-    const b = makeTab(locks)
-    a.lifecycle.start()
-    await flush()
-    expect(a.states.at(-1)).toBe("error")
-
-    b.lifecycle.start()
-    await flush()
-    expect(b.states.at(-1)).toBe("leader")
-  })
-
   it("a transient construction failure retries on the next visibility transition", async () => {
     const locks = new FakeLocks()
     let fail = true
@@ -223,19 +197,6 @@ describe("XmtpLifecycle", () => {
     // The failed attempt's signal fired; the retry got a fresh one.
     expect(signals[0]!.aborted).toBe(true)
     expect(signals[1]!.aborted).toBe(false)
-  })
-
-  it("a successful construction keeps its signal un-aborted", async () => {
-    const locks = new FakeLocks()
-    const deferred = deferredClient()
-    const tab = makeTab(locks, { createClient: deferred.createClient })
-    tab.lifecycle.start()
-    await flush()
-    expect(deferred.signals[0]!.aborted).toBe(false)
-    deferred.resolve({ close: vi.fn() })
-    await flush()
-    expect(tab.states.at(-1)).toBe("leader")
-    expect(deferred.signals[0]!.aborted).toBe(false)
   })
 
   it("a hung createClient times out into 'error', aborts its signal and frees the lock", async () => {

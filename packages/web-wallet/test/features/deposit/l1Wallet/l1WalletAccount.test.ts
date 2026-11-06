@@ -13,9 +13,9 @@ const REVOKED = `0x${"99".repeat(20)}` as Hex
 
 // No wagmi session: getL1Clients falls back to the injected provider.
 vi.mock("wagmi/actions", () => ({ getAccount: () => ({}), switchChain: vi.fn() }))
-vi.mock("../../../../src/features/deposit/wagmi", () => ({ wagmiConfig: () => ({}) }))
+vi.mock("../../../../src/session/wagmi", () => ({ wagmiConfig: () => ({}) }))
 
-const { getL1Clients } = await import("../../../../src/features/deposit/l1Wallet")
+const { getL1Clients } = await import("../../../../src/session/l1Wallet")
 
 /** Only the methods the injected path calls; anything else is a test bug, not a fallback. */
 function injectWallet(accounts: Hex[]) {

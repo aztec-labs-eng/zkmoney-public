@@ -13,27 +13,28 @@ import {
   StatusBadge,
   type IconName,
 } from "@obsidion/web-ds"
-import { useConfigValue } from "@obsidion/front-core"
+import { useStore } from "@obsidion/front-core"
+import { saveSetting } from "../../platform/storage/deviceKeys"
 import { getConfig } from "../../config/env"
-import { loadWalletIdentity } from "../../features/identity/walletIdentity"
+import { useSession } from "../../session/session"
 import { appVersion } from "../../lib/analytics"
 import { BugReportModal, FeedbackModal } from "../FeedbackModals"
 import { ContractAddressesModal } from "../ContractAddressesModal"
-import { PasskeysModal } from "../PasskeysModal"
+import { PasskeysSheet } from "../PasskeysSheet/PasskeysSheet"
 import { useBackupRotation } from "../../features/backupPasskey/backupRotationStore"
-import { openMigrationDialog } from "../../features/migration/migrationDialog"
 import { allowanceRowValue } from "../../features/allowance/allowanceView"
 import { useSponsoredAllowance } from "../../features/allowance/useSponsoredAllowance"
 import { WalletAboutLimitsSheet } from "../../features/limits/AboutLimitsSheet"
 import { EndpointsModal, customEndpointsLabel } from "../EndpointsModal"
-import { StrandedRecoveryModal } from "../../features/deposit/StrandedRecoveryModal"
+import { StrandedRecoveryModal } from "../../features/deposit/recovery/StrandedRecoveryModal"
 import { NON_CONTACT_REQUESTS_PATH } from "../../features/requests/nonContactView"
 import { useNonContactRequests } from "../../features/requests/useNonContactRequests"
 import { RESET_PATH } from "../ResetScreen"
 import { useHideBalances } from "../prefs"
 import { ConfigProfileModal } from "../../dev/ConfigProfileModal"
-import { useRegistrationTagChangeable } from "../../features/onboarding/openRegistration"
-import { ChooseNameSheet } from "../../features/onboarding/ChooseNameSheet"
+import { useRegistrationTagChangeable } from "../../features/registration/openRegistration"
+import { ChooseNameSheet } from "../../features/deposit/ChooseNameSheet/ChooseNameSheet"
+import { claimChosenName } from "../../features/onboarding/oxideOnboarding"
 
 // ponytail: hoist to config once a FAQ page exists.
 const FAQ_URL = "https://docs.zk.money/docs/faq"
@@ -70,9 +71,10 @@ function Section({ label, children }: { label: ReactNode; children: ReactNode })
 export function SettingsScreen() {
   const navigate = useNavigate()
   const config = getConfig()
-  const identity = loadWalletIdentity()
   const [hideBal, setHideBal] = useHideBalances()
-  const { value: consent, setValue: setConsent } = useConfigValue("analyticsConsent")
+  const { database, device, identity: entered } = useSession()
+  const identity = useStore(entered).value
+  const consent = useStore(device, (s) => s.analyticsConsent)
   const nonContact = useNonContactRequests()
   const [modal, setModal] = useState<
     | "feedback"
@@ -146,7 +148,12 @@ export function SettingsScreen() {
           <SettingsRow
             icon="database"
             label="Share anonymous usage data"
-            trailing={<GradientToggle isOn={consent} onChange={(on) => void setConsent(on)} />}
+            trailing={
+              <GradientToggle
+                isOn={consent}
+                onChange={(on) => void saveSetting(database, "analyticsConsent", on)}
+              />
+            }
           />
           <SettingsRow
             icon="at"
@@ -299,21 +306,7 @@ export function SettingsScreen() {
       {modal === "feedback" && <FeedbackModal onClose={() => setModal(undefined)} />}
       {modal === "bug" && <BugReportModal onClose={() => setModal(undefined)} />}
       {modal === "contracts" && <ContractAddressesModal onClose={() => setModal(undefined)} />}
-      {modal === "passkeys" && (
-        <PasskeysModal
-          onClose={() => setModal(undefined)}
-          onAction={(action) => {
-            if (action === "sponsorship") setModal("allowance")
-            else if (action === "activity") {
-              setModal(undefined)
-              navigate("/activity")
-            } else {
-              setModal(undefined)
-              openMigrationDialog()
-            }
-          }}
-        />
-      )}
+      {modal === "passkeys" && <PasskeysSheet onClose={() => setModal(undefined)} />}
       {modal === "allowance" && (
         <WalletAboutLimitsSheet
           topic="sponsorship"
@@ -330,7 +323,11 @@ export function SettingsScreen() {
       )}
       {modal === "recover" && <StrandedRecoveryModal onClose={() => setModal(undefined)} />}
       {modal === "name" && identity?.handle && (
-        <ChooseNameSheet tag={identity.handle} onClose={() => setModal(undefined)} />
+        <ChooseNameSheet
+          tag={identity.handle}
+          claim={claimChosenName}
+          onClose={() => setModal(undefined)}
+        />
       )}
     </div>
   )

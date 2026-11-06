@@ -8,7 +8,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest"
 import {
   DEPOSIT_TOKENS_RETRY_MS,
   useDepositTokensRead,
-} from "../../../src/features/deposit/loadDepositFacts"
+} from "../../../src/features/sipa/loadDepositFacts"
 import { singleToken } from "../../support/depositTokens"
 
 const TOKENS = singleToken("0x00000000000000000000000000000000000000c6", "USDC", 6)

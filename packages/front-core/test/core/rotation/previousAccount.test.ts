@@ -15,7 +15,7 @@ import {
   watchCheckDue,
   type WatchObservation,
 } from "../../../src/core/rotation/previousAccount"
-import type { SIPADepositRecord } from "../../../src/core/services/deposits/SIPADepositStore"
+import type { SipaDeposit } from "../../../src/engine/sipaDeposits"
 import type { PreviousAccountWatch } from "../../../src/core/storages/PreviousAccountWatchStore"
 import type { PaylinkTransaction } from "../../../src/types/transactions"
 
@@ -289,7 +289,7 @@ const SWEEP = {
   portal: PORTAL as `0x${string}`,
 }
 
-const deposit = (over: Partial<SIPADepositRecord> = {}): SIPADepositRecord => ({
+const deposit = (over: Partial<SipaDeposit> = {}): SipaDeposit => ({
   sipaAddress: "0x0000000000000000000000000000000000005150",
   recipientL2Address: ONE_KEY,
   messageSecret: "0x01",

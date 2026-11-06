@@ -1,9 +1,11 @@
 import { TxExecutionResult, TxStatus } from "@aztec-labs/stdlib/tx"
 import {
+  BACKUP_FUNDING_MARGIN,
   BackupSetConflictError,
   VerificationUnavailableError,
   type PersistedRotationVerdict,
   type SpendShape,
+  type TxHashCallback,
 } from "@obsidion/sdk"
 import { describe, expect, it, vi } from "vitest"
 import {
@@ -39,7 +41,9 @@ import {
   moveProgress,
   persistedRotation,
   type BackupPublish,
+  type BackupRotationRecord,
 } from "../../../src/core/storages/BackupRotationStore"
+import { PaylinkWindowClosedError } from "../../../src/core/services/paylink/refundRevert"
 import { InMemoryStorageAdapter } from "../../__test-helpers__/InMemoryStorageAdapter"
 import {
   addr,
@@ -56,6 +60,15 @@ import {
 const VERIFIED = { verdict: "verified" } as unknown as PersistedRotationVerdict
 const CORRUPT: PersistedRotationVerdict = { verdict: "corrupt", reason: "the signature" }
 const DAI = 10n ** 18n
+/** A plan whose funding leaves 2 DAI at the deposit address. */
+const DEPOSITING = {
+  ...PLAN,
+  fundingAmount: ((21n * DAI) / 10n).toString(),
+  deposited: (2n * DAI).toString(),
+  credited: ((14n * DAI) / 10n).toString(),
+}
+/** The floor of `DEPOSITING`: its deposit less its credit's margin. */
+const FLOOR = 2n * DAI - BACKUP_FUNDING_MARGIN
 const receipt = (status: TxStatus, reverted = false, block = 9) => ({
   status,
   executionResult: reverted ? TxExecutionResult.REVERTED : TxExecutionResult.SUCCESS,
@@ -81,6 +94,9 @@ interface World {
   releaseFinal: boolean
   shape: SpendShape
   hashes: number
+  /** The open paylinks the one-key account made. */
+  links: string[]
+  refundable: Record<string, "now" | "later" | "spending" | "spent">
 }
 
 function harness(over: Partial<World> = {}) {
@@ -94,6 +110,8 @@ function harness(over: Partial<World> = {}) {
     releaseFinal: true,
     shape: { notes: [3n * DAI], depositTotal: 0n, balance: 3n * DAI },
     hashes: 0,
+    links: [],
+    refundable: {},
     ...over,
   }
   const storage = new InMemoryStorageAdapter()
@@ -142,9 +160,16 @@ function harness(over: Partial<World> = {}) {
       tokens: vi.fn(async () => ["tok"]),
       shape: vi.fn(async () => world.shape),
       deposits: vi.fn(async () => ({ kind: "exact" as const, amounts: [] })),
-      cap: 2n * DAI,
+      cap: vi.fn(async () => 2n * DAI),
       usesLeft: vi.fn(async () => true),
       send: vi.fn(async (_t: string, _a: bigint, onTxHash) => {
+        const hash = nextHash()
+        world.receipts.set(hash, receipt(TxStatus.PENDING))
+        await onTxHash(hash, { expiresAtMs: 5000 })
+      }),
+      links: vi.fn(async () => world.links),
+      refundable: vi.fn(async (link: string) => world.refundable[link] ?? "now"),
+      refund: vi.fn(async (_l: string, onTxHash) => {
         const hash = nextHash()
         world.receipts.set(hash, receipt(TxStatus.PENDING))
         await onTxHash(hash, { expiresAtMs: 5000 })
@@ -659,6 +684,31 @@ describe("funding", () => {
     expect(deps.fund).not.toHaveBeenCalled()
   })
 
+  it("sends the funding over less than the plan's deposit less its margin, and none over that", async () => {
+    const { deps, store, world } = harness({ balance: FLOOR - 1n })
+    await store.put(signedRecord("published", { plan: DEPOSITING }))
+    const funded = (await fundRotation(deps, (await store.get(OWNER))!)).record
+    expect(funded.phase).toBe("funded")
+    expect(funded.fundings[0]?.txHash).toBeDefined()
+    expect(deps.fund).toHaveBeenCalledTimes(1)
+    world.balance = FLOOR
+    await store.put(signedRecord("published", { plan: DEPOSITING }))
+    expect((await fundRotation(deps, (await store.get(OWNER))!)).record.phase).toBe("funded")
+    expect(deps.fund).toHaveBeenCalledTimes(1)
+  })
+
+  it("sends the funding over nothing, and none over any money, for a plan whose deposit is within the margin", async () => {
+    const { deps, store, world } = harness()
+    const plan = { ...PLAN, deposited: BACKUP_FUNDING_MARGIN.toString() }
+    await store.put(signedRecord("published", { plan }))
+    expect((await fundRotation(deps, (await store.get(OWNER))!)).record.phase).toBe("funded")
+    expect(deps.fund).toHaveBeenCalledTimes(1)
+    world.balance = 1n
+    await store.put(signedRecord("published", { plan }))
+    expect((await fundRotation(deps, (await store.get(OWNER))!)).record.phase).toBe("funded")
+    expect(deps.fund).toHaveBeenCalledTimes(1)
+  })
+
   it("sends the funding when the deposit address holds nothing", async () => {
     const { deps, store } = harness()
     await store.put(signedRecord("published"))
@@ -697,6 +747,32 @@ describe("funding", () => {
       attention: "stranded",
       suspended: "published",
     })
+    expect(deps.fund).not.toHaveBeenCalled()
+  })
+
+  it("restarts a superseded change over less than its funding, and strands one over that not yet final", async () => {
+    const { deps, store } = harness({ balance: FLOOR - 1n })
+    ;(deps.fundability as ReturnType<typeof vi.fn>).mockResolvedValue("superseded")
+    for (const [phase, step] of [
+      ["signed", publishRotation],
+      ["published", fundRotation],
+    ] as const) {
+      await store.put(signedRecord(phase, { plan: DEPOSITING }))
+      expect((await step(deps, (await store.get(OWNER))!)).record).toMatchObject({
+        phase: "created",
+        rotation: undefined,
+      })
+    }
+    balances(deps, FLOOR, 0n)
+    await store.put(signedRecord("published", { plan: DEPOSITING }))
+    const parked = (await fundRotation(deps, (await store.get(OWNER))!)).record
+    expect(parked).toMatchObject({
+      phase: "attention",
+      attention: "stranded",
+      suspended: "published",
+    })
+    expect(parked.rotation?.sharedSecretSalt).toBe(storedRotation().sharedSecretSalt)
+    expect(deps.publish).not.toHaveBeenCalled()
     expect(deps.fund).not.toHaveBeenCalled()
   })
 
@@ -820,6 +896,47 @@ describe("resume: reconciliation before any precondition", () => {
     world.balance = 0n
     await store.put(signedRecord("published"))
     expect((await resumeRotation(deps, (await store.get(OWNER))!)).record.phase).toBe("published")
+  })
+
+  it("returns a change judged funded by less than its funding to published", async () => {
+    const { deps, store } = harness({ balance: FLOOR - 1n })
+    await store.put(signedRecord("funded", { plan: DEPOSITING }))
+    expect((await resumeRotation(deps, (await store.get(OWNER))!)).record.phase).toBe("published")
+  })
+
+  it("judges a change funded once its funding's floor is settled at the deposit address", async () => {
+    const { deps, store } = harness({ balance: FLOOR })
+    for (const phase of ["published", "funded"] as const) {
+      await store.put(signedRecord(phase, { plan: DEPOSITING }))
+      expect((await resumeRotation(deps, (await store.get(OWNER))!)).record.phase).toBe("funded")
+    }
+    expect(deps.fund).not.toHaveBeenCalled()
+  })
+
+  it("ends a change that cannot run over less than its funding, and strands one over that not yet final", async () => {
+    for (const [verdict, stop] of [
+      ["superseded", "created"],
+      ["conflict", "conflict"],
+    ] as const) {
+      const { deps, store } = harness({ balance: FLOOR - 1n })
+      const fundability = deps.fundability as ReturnType<typeof vi.fn>
+      if (verdict === "conflict") {
+        fundability.mockRejectedValue(new BackupSetConflictError("keys", [], []))
+      } else {
+        fundability.mockResolvedValue(verdict)
+      }
+      await store.put(signedRecord("published", { plan: DEPOSITING }))
+      expect((await resumeRotation(deps, (await store.get(OWNER))!)).record.phase).toBe(stop)
+      balances(deps, FLOOR, 0n)
+      await store.put(signedRecord("published", { plan: DEPOSITING }))
+      const parked = (await resumeRotation(deps, (await store.get(OWNER))!)).record
+      expect(parked).toMatchObject({
+        phase: "attention",
+        attention: "stranded",
+        suspended: "published",
+      })
+      expect(parked.rotation?.sharedSecretSalt).toBe(storedRotation().sharedSecretSalt)
+    }
   })
 
   it("returns a stranded attempt to the funding decision once its send died with nothing landed", async () => {
@@ -2151,6 +2268,43 @@ describe("the move", () => {
     expect(deps.move.shape).toHaveBeenLastCalledWith("tok2")
   })
 
+  /** Main Account's token and Savings' shares, each under its own portal's cap. */
+  const twoTokens = (deps: ReturnType<typeof harness>["deps"], shapes: Record<string, bigint>) => {
+    const caps: Record<string, bigint> = { main: 2n * DAI, savings: 4n * DAI }
+    ;(deps.move.tokens as ReturnType<typeof vi.fn>).mockResolvedValue(["main", "savings"])
+    ;(deps.move.cap as ReturnType<typeof vi.fn>).mockImplementation(async (t: string) => caps[t])
+    ;(deps.move.shape as ReturnType<typeof vi.fn>).mockImplementation(async (t: string) => ({
+      notes: shapes[t]! > 0n ? [shapes[t]] : [],
+      depositTotal: 0n,
+      balance: shapes[t],
+    }))
+  }
+  const planned = (record: BackupRotationRecord) =>
+    record.move?.runs[0]?.chunks.map((c) => [c.token, BigInt(c.amount)])
+
+  it("moves Main Account's balance and the Savings shares, each cut to its own cap", async () => {
+    const { deps, store } = harness()
+    twoTokens(deps, { main: 3n * DAI, savings: 5n * DAI })
+    await store.put(signedRecord("rerooted"))
+    const { record } = await moveRotation(deps, (await store.get(OWNER))!)
+    expect(planned(record)).toEqual([
+      ["main", 2n * DAI],
+      ["main", DAI],
+      ["savings", 4n * DAI],
+      ["savings", DAI],
+    ])
+    expect(record.move?.runs[0]?.m).toBe(4)
+  })
+
+  it("moves Savings shares alone, down to a single share, when Main Account holds nothing", async () => {
+    const { deps, store } = harness()
+    twoTokens(deps, { main: 0n, savings: 1n })
+    await store.put(signedRecord("rerooted"))
+    const { record } = await moveRotation(deps, (await store.get(OWNER))!)
+    expect(planned(record)).toEqual([["savings", 1n]])
+    expect(deps.move.send).toHaveBeenCalledWith("savings", 1n, expect.any(Function), undefined)
+  })
+
   it("stops on a refused envelope as attention until the user tries again, and pauses when the sponsored uses ran out", async () => {
     const { deps, store } = harness()
     ;(deps.move.send as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
@@ -2179,6 +2333,230 @@ describe("the move", () => {
     await store.put(signedRecord("rerooted"))
     expect((await moveRotation(deps, (await store.get(OWNER))!)).record.phase).toBe("done")
     expect(deps.move.send).not.toHaveBeenCalled()
+  })
+})
+
+describe("taking back paylinks", () => {
+  it("takes back each open link, one refund at a time, and plans the move once every refund is checkpointed", async () => {
+    const { deps, store, world } = harness({ links: ["row-a", "row-b"] })
+    await store.put(signedRecord("rerooted"))
+    const first = await moveRotation(deps, (await store.get(OWNER))!)
+    expect(first.wait).toBe("chunk")
+    expect(first.record.refunds?.links).toMatchObject([
+      { link: "row-a", state: "submitted", txHash: word(0x101) },
+      { link: "row-b", state: "planned" },
+    ])
+    world.receipts.set(word(0x101), receipt(TxStatus.CHECKPOINTED))
+    const second = await moveRotation(deps, first.record)
+    expect(second.record.refunds?.links.map((l) => l.state)).toEqual(["mined", "submitted"])
+    world.receipts.set(word(0x102), receipt(TxStatus.PROPOSED))
+    const included = await moveRotation(deps, second.record)
+    expect(included.wait).toBe("chunk")
+    expect(included.record.move).toBeUndefined()
+    expect(deps.move.send).not.toHaveBeenCalled()
+    world.receipts.set(word(0x102), receipt(TxStatus.CHECKPOINTED))
+    const moving = await moveRotation(deps, included.record)
+    expect(moving.record.move?.runs[0]?.chunks[0]).toMatchObject({ txHash: word(0x103) })
+    expect(deps.move.refund).toHaveBeenCalledTimes(2)
+    expect(deps.move.links).toHaveBeenCalledTimes(1)
+  })
+
+  it("skips a link spent another way, and one claimed between its check and its refund", async () => {
+    const { deps, store, world } = harness({
+      links: ["row-a", "row-b", "row-c"],
+      refundable: { "row-a": "spent" },
+    })
+    ;(deps.move.refund as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => {
+      world.refundable["row-b"] = "spent"
+      throw new Error("already spent")
+    })
+    await store.put(signedRecord("rerooted"))
+    const first = await moveRotation(deps, (await store.get(OWNER))!)
+    expect(first.wait).toBe("chunk")
+    expect(first.record.refunds?.links).toEqual([
+      { link: "row-a", state: "skipped" },
+      { link: "row-b", state: "skipped" },
+      { link: "row-c", state: "planned" },
+    ])
+    const second = await moveRotation(deps, first.record)
+    expect(second.record.refunds?.links[2]).toMatchObject({ state: "submitted" })
+    expect(deps.move.refund).toHaveBeenCalledTimes(2)
+  })
+
+  it("waits on a link spent in a block no checkpoint holds, and takes it back if a reorg reopens it", async () => {
+    const { deps, store, world } = harness({
+      links: ["row-a", "row-b"],
+      refundable: { "row-a": "spending", "row-b": "spending" },
+    })
+    await store.put(signedRecord("rerooted"))
+    const waiting = await moveRotation(deps, (await store.get(OWNER))!)
+    expect(waiting.wait).toBe("chunk")
+    expect(waiting.record.refunds?.links.map((l) => l.state)).toEqual(["planned", "planned"])
+    expect(deps.move.refund).not.toHaveBeenCalled()
+    world.refundable["row-a"] = "spent"
+    world.refundable["row-b"] = "now"
+    const after = await moveRotation(deps, waiting.record)
+    expect(after.record.refunds?.links).toMatchObject([
+      { link: "row-a", state: "skipped" },
+      { link: "row-b", state: "submitted" },
+    ])
+  })
+
+  it("keeps a link whose refund failed over a spend no checkpoint holds, to read it again", async () => {
+    const { deps, store, world } = harness({ links: ["row-a"] })
+    ;(deps.move.refund as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => {
+      world.refundable["row-a"] = "spending"
+      throw new Error("already spent")
+    })
+    await store.put(signedRecord("rerooted"))
+    const waiting = await moveRotation(deps, (await store.get(OWNER))!)
+    expect(waiting.wait).toBe("chunk")
+    expect(waiting.record.refunds?.links).toEqual([{ link: "row-a", state: "planned" }])
+  })
+
+  it("leaves a refund that failed over an open link to try again, and throws", async () => {
+    const { deps, store } = harness({ links: ["row-a"] })
+    ;(deps.move.refund as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("proof failed"))
+    await store.put(signedRecord("rerooted"))
+    await expect(moveRotation(deps, (await store.get(OWNER))!)).rejects.toThrow("proof failed")
+    expect((await store.get(OWNER))?.refunds?.links).toEqual([{ link: "row-a", state: "planned" }])
+  })
+
+  it("keeps a refund whose hash was saved before it failed, and settles it by that hash", async () => {
+    const { deps, store, world } = harness({ links: ["row-a"] })
+    const refund = deps.move.refund as ReturnType<typeof vi.fn>
+    refund.mockImplementationOnce(async (_l: string, onTxHash: TxHashCallback) => {
+      world.receipts.set(word(0x1a), receipt(TxStatus.PENDING))
+      await onTxHash(word(0x1a), { expiresAtMs: 5000 })
+      throw new Error("node down")
+    })
+    await store.put(signedRecord("rerooted"))
+    await expect(moveRotation(deps, (await store.get(OWNER))!)).rejects.toThrow("node down")
+    const kept = (await store.get(OWNER))!
+    expect(kept.refunds?.links).toMatchObject([
+      { link: "row-a", state: "submitted", txHash: word(0x1a) },
+    ])
+    world.receipts.set(word(0x1a), receipt(TxStatus.CHECKPOINTED))
+    const settled = await moveRotation(deps, kept)
+    expect(settled.record.refunds?.links[0]).toMatchObject({ state: "mined" })
+    expect(refund).toHaveBeenCalledTimes(1)
+  })
+
+  it("waits for the expiry of a link whose cancel window closed under its refund, then reclaims it", async () => {
+    const { deps, store, world } = harness({ links: ["row-a"] })
+    ;(deps.move.refund as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => {
+      world.refundable["row-a"] = "later"
+      throw new PaylinkWindowClosedError()
+    })
+    await store.put(signedRecord("rerooted"))
+    const waiting = await moveRotation(deps, (await store.get(OWNER))!)
+    expect(waiting.wait).toBe("link")
+    expect(waiting.record.refunds?.links).toEqual([{ link: "row-a", state: "planned" }])
+    world.refundable["row-a"] = "now"
+    const reclaimed = await moveRotation(deps, waiting.record)
+    expect(reclaimed.record.refunds?.links[0]).toMatchObject({ state: "submitted" })
+  })
+
+  it("stops a refund the transfer's envelope refused as attention, until the user tries again", async () => {
+    const { deps, store } = harness({ links: ["row-a"] })
+    const refund = deps.move.refund as ReturnType<typeof vi.fn>
+    refund.mockRejectedValueOnce(new Error("Balance too low"))
+    await store.put(signedRecord("rerooted"))
+    const parked = (await moveRotation(deps, (await store.get(OWNER))!)).record
+    expect(parked).toMatchObject({ phase: "attention", attention: "move", suspended: "rerooted" })
+    expect(parked.refunds?.links).toEqual([{ link: "row-a", state: "planned" }])
+    const retried = await retryMove(deps, parked)
+    expect(retried.record.refunds?.links[0]).toMatchObject({ state: "submitted" })
+    expect(refund).toHaveBeenCalledTimes(2)
+  })
+
+  it("puts a refund back to wait for a tap when its screen closes before the prompt opens", async () => {
+    const { deps, store } = harness({ links: ["row-a"] })
+    const open = new AbortController()
+    ;(deps.move.refund as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      async (_l: string, _h: TxHashCallback, signal?: AbortSignal) => {
+        open.abort()
+        signal?.throwIfAborted()
+      },
+    )
+    await store.put(signedRecord("rerooted"))
+    const closed = await moveRotation(deps, (await store.get(OWNER))!, {
+      prompt: true,
+      signal: open.signal,
+    })
+    expect(closed.wait).toBe("approval")
+    expect(moveDeclined(closed.record)).toBe(false)
+    expect(closed.record.refunds?.links).toEqual([{ link: "row-a", state: "planned" }])
+  })
+
+  it("plans again a refund another session claimed, then skips it once its link is spent", async () => {
+    const { deps, store } = harness({ links: ["row-a"], refundable: { "row-a": "spent" } })
+    const claim = { id: "claim-1", session: "life-0" }
+    await store.put({
+      ...signedRecord("rerooted"),
+      refunds: { links: [{ link: "row-a", state: "claimed", claim }] },
+    })
+    const after = await moveRotation(deps, (await store.get(OWNER))!)
+    expect(after.record.refunds?.links).toEqual([{ link: "row-a", state: "skipped" }])
+    expect(deps.move.links).not.toHaveBeenCalled()
+    expect(deps.move.refund).not.toHaveBeenCalled()
+  })
+
+  it("waits for a link too close to its expiry to cancel, then reclaims it", async () => {
+    const { deps, store, world } = harness({
+      links: ["row-a"],
+      refundable: { "row-a": "later" },
+    })
+    await store.put(signedRecord("rerooted"))
+    const waiting = await moveRotation(deps, (await store.get(OWNER))!)
+    expect(waiting.wait).toBe("link")
+    expect(deps.move.refund).not.toHaveBeenCalled()
+    world.refundable["row-a"] = "now"
+    const reclaimed = await moveRotation(deps, waiting.record)
+    expect(reclaimed.record.refunds?.links[0]).toMatchObject({ state: "submitted" })
+  })
+
+  it("asks for a tap before a refund's prompt, but skips a spent link without one", async () => {
+    const { deps, store } = harness({
+      links: ["row-a", "row-b"],
+      refundable: { "row-a": "spent" },
+    })
+    await store.put(signedRecord("rerooted"))
+    const resumed = await resumeRotation(deps, (await store.get(OWNER))!)
+    expect(resumed.wait).toBe("approval")
+    expect(resumed.record.refunds?.links.map((l) => l.state)).toEqual(["skipped", "planned"])
+    expect(deps.move.refund).not.toHaveBeenCalled()
+  })
+
+  it("waits for the user after a declined refund prompt, sending nothing until they try again", async () => {
+    const { deps, store } = harness({ links: ["row-a"] })
+    const refund = deps.move.refund as ReturnType<typeof vi.fn>
+    refund.mockRejectedValueOnce(new DOMException("closed", "NotAllowedError"))
+    await store.put(signedRecord("rerooted"))
+    const declined = await moveRotation(deps, (await store.get(OWNER))!)
+    expect(declined.wait).toBe("declined")
+    expect(moveDeclined(declined.record)).toBe(true)
+    expect(declined.record.refunds?.links).toEqual([{ link: "row-a", state: "planned" }])
+    expect((await resumeRotation(deps, declined.record)).wait).toBe("declined")
+    const retried = await retryMove(deps, (await store.get(OWNER))!)
+    expect(retried.wait).toBe("chunk")
+    expect(moveDeclined(retried.record)).toBe(false)
+    expect(retried.record.refunds?.links[0]).toMatchObject({ state: "submitted" })
+    expect(refund).toHaveBeenCalledTimes(2)
+  })
+
+  it("takes back nothing on a record whose move already planned a run", async () => {
+    const { deps, store, world } = harness({ links: ["row-a"] })
+    await store.put(signedRecord("rerooted"))
+    world.links = []
+    const first = await moveRotation(deps, (await store.get(OWNER))!)
+    const { refunds: _r, ...planned } = first.record
+    await store.put(planned)
+    world.links = ["row-a"]
+    world.receipts.set(word(0x101), receipt(TxStatus.CHECKPOINTED))
+    const next = await moveRotation(deps, (await store.get(OWNER))!)
+    expect(next.record.refunds).toBeUndefined()
+    expect(deps.move.refund).not.toHaveBeenCalled()
   })
 })
 
@@ -2229,14 +2607,52 @@ describe("cancelling", () => {
     )
   })
 
-  it("judges a published change funded by settled money at its deposit address, whatever the plan credits", async () => {
-    const { deps, store } = harness({ balance: 5n })
-    await store.put(signedRecord("published", { plan: { ...PLAN, credited: "0" } }))
-    const record = (await resumeRotation(deps, (await store.get(OWNER))!)).record
-    expect(record.phase).toBe("funded")
-    expect(cancellable(record)).toBe(false)
-    await expect(cancelRotation(deps, record)).rejects.toThrow("cannot be cancelled")
+  it("drops a change over less than its funding at the deposit address, and keeps one over that", async () => {
+    const { deps, store, world } = harness({ balance: FLOOR - 1n })
+    for (const record of [
+      signedRecord("signed", { plan: DEPOSITING }),
+      signedRecord("published", { plan: DEPOSITING }),
+      signedRecord("conflict", { plan: DEPOSITING }),
+      signedRecord("attention", { attention: "route", suspended: "published", plan: DEPOSITING }),
+    ]) {
+      await store.put(record)
+      await cancelRotation(deps, record)
+      expect(await store.get(OWNER)).toBeNull()
+    }
+    world.balance = FLOOR
+    const record = signedRecord("signed", { plan: DEPOSITING })
+    await store.put(record)
+    await expect(cancelRotation(deps, record)).rejects.toThrow("may have reached")
     expect(await store.get(OWNER)).toEqual(record)
+  })
+
+  it("keeps a change over its funding's floor mined at the deposit address but not yet final", async () => {
+    const { deps, store } = harness()
+    balances(deps, FLOOR, FLOOR - 1n)
+    const record = signedRecord("published", { plan: DEPOSITING })
+    await store.put(record)
+    await expect(cancelRotation(deps, record)).rejects.toThrow("may have reached")
+    expect(await store.get(OWNER)).toEqual(record)
+  })
+
+  it("keeps a change over less than its funding once a sweep took money from the deposit address", async () => {
+    const { deps, store } = harness({
+      balance: FLOOR - 1n,
+      sweep: { index: "3", blockNumber: 60, blockHash: word(0x60), credited: 1400n },
+    })
+    const record = signedRecord("published", { plan: DEPOSITING })
+    await store.put(record)
+    await expect(cancelRotation(deps, record)).rejects.toThrow("may have reached")
+    expect(await store.get(OWNER)).toEqual(record)
+  })
+
+  it("keeps a corrupt record over less than its funding at the deposit address", async () => {
+    const { deps, store } = harness({ balance: 5n })
+    ;(deps.verify as ReturnType<typeof vi.fn>).mockResolvedValue(CORRUPT)
+    await store.put(signedRecord("published", { plan: DEPOSITING }))
+    const corrupt = (await resumeRotation(deps, (await store.get(OWNER))!)).record
+    expect(corrupt).toMatchObject({ phase: "attention", attention: "corrupt" })
+    await expect(cancelRotation(deps, corrupt)).rejects.toThrow("may have reached")
   })
 
   it("judges the record the store holds, not the snapshot handed in", async () => {

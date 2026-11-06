@@ -3,6 +3,7 @@
  * another account's refund is refused before anything is proven or recorded.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { testPage, testCore } from "../../support/page"
 import { DEFAULT_CONTRACTS } from "@obsidion/core/constants"
 import type { PaylinkTransaction } from "@obsidion/front-core"
 
@@ -25,7 +26,7 @@ vi.mock("@obsidion/sdk", async (importOriginal) => ({
   }),
 }))
 await (await import("../../support/seedBootConfig")).seedBootConfig()
-vi.mock("../../../src/features/onboarding/claimSponsorship", () => ({
+vi.mock("../../../src/features/registration/claimSponsorship", () => ({
   claimSponsorContext: async () => ({ fpcAddress: {}, policy: {} }),
   noteSubscribed: vi.fn(),
 }))
@@ -33,8 +34,9 @@ vi.mock("../../../src/features/fees/fpcRefuel", () => ({ maybeRefuelFpc: vi.fn()
 
 const { recoverSponsoredLink } = await import("../../../src/features/paylink/sponsoredPaylink")
 const { activeNamespace, closeSession, switchSession, session } = await import(
-  "../../../src/platform/session"
+  "../../../src/session/session"
 )
+const { pageSessionDeps } = await import("../../../src/app/sessionDeps")
 
 const link: PaylinkTransaction = {
   action: "Pay To Email",
@@ -74,7 +76,10 @@ const deps = (account: string) =>
 
 beforeEach(async () => {
   refund.mockClear()
-  await switchSession(activeNamespace()).activity.importHistoricRows([link])
+  await switchSession(
+    activeNamespace(testCore().device),
+    pageSessionDeps(testPage()),
+  ).activity.importHistoricRows([link])
 })
 afterEach(closeSession)
 

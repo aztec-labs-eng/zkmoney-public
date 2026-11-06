@@ -1,5 +1,5 @@
 /**
- * Accepted-token fixtures for tests that mock `features/deposit/loadDepositFacts`: the mainnet shape (the DAI row and
+ * Accepted-token fixtures for tests that mock `features/sipa/loadDepositFacts`: the mainnet shape (the DAI row and
  * the USDC and USDT that swap into it) and a one-row table. `mockLoadDepositFacts` keeps the module's pure helpers and
  * answers its table reads from a fixture.
  */
@@ -8,7 +8,7 @@ import type {
   DepositDisplayFacts,
   DepositTokenOption,
   DepositTokens,
-} from "../../src/features/deposit/loadDepositFacts"
+} from "../../src/features/sipa/loadDepositFacts"
 
 export const MAINNET_DAI = "0x6B175474E89094C44Da98b954EedeAC495271d0F" as Address
 export const MAINNET_USDC = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" as Address
@@ -93,7 +93,7 @@ export async function mockLoadDepositFacts(
   read?: () => { failed: boolean; retry: () => void },
 ) {
   const actual =
-    (await importOriginal()) as typeof import("../../src/features/deposit/loadDepositFacts")
+    (await importOriginal()) as typeof import("../../src/features/sipa/loadDepositFacts")
   const loaded = async () => {
     const value = tokens()
     if (!value) throw new Error("no accepted tokens in this test")

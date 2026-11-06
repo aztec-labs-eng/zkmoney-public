@@ -4,6 +4,7 @@
  * owns, in the same store as the wallet's own, so the tracker finalizes it like any other.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { testPage, testCore } from "../../../support/page"
 import { formatUnits, parseUnits, type Address, type Hex } from "viem"
 import { WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
 import { TxStatus } from "@aztec-labs/stdlib/tx"
@@ -47,14 +48,14 @@ vi.mock("../../../../src/features/withdraw/withdrawalFee", () => ({
 const { claimSponsorRail } = vi.hoisted(() => ({
   claimSponsorRail: vi.fn(async () => ({ sponsor: { railId: 2 }, rail: { railId: 2 } })),
 }))
-vi.mock("../../../../src/features/onboarding/claimSponsorship", () => ({ claimSponsorRail }))
+vi.mock("../../../../src/features/registration/claimSponsorship", () => ({ claimSponsorRail }))
 
 vi.mock("../../../../src/features/migration/historicTokenContext", () => ({
   findHistoricTuple: vi.fn(async () => null),
   historicTeeSigner: vi.fn(async () => ({ _id: "enclave" })),
 }))
 
-vi.mock("../../../../src/platform/auth/useAuthenticator", () => ({ getAuthService: vi.fn() }))
+const fakeAuth = () => ({})
 
 const PH = "f0".repeat(32)
 const analytics = vi.hoisted(() => ({ enabled: true, firePaylinkEvent: vi.fn() }))
@@ -125,9 +126,13 @@ const { getOperationStore } = await import("../../../../src/features/operations/
 const { reportPaylinkClaims } = await import("../../../../src/features/paylink/paylinkClaimReport")
 const { webStorage } = await import("../../../../src/platform/storage/WebStorageAdapter")
 const { activeNamespace, closeSession, switchSession, session } = await import(
-  "../../../../src/platform/session"
+  "../../../../src/session/session"
 )
-beforeEach(() => void switchSession(activeNamespace()))
+const { pageSessionDeps } = await import("../../../../src/app/sessionDeps")
+beforeEach(
+  () =>
+    void switchSession(activeNamespace(testCore().device), pageSessionDeps(testPage(fakeAuth()))),
+)
 afterEach(closeSession)
 const withdrawals = () => session().withdrawals
 const clearWithdrawals = () =>

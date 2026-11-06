@@ -6,7 +6,7 @@ import { getConfig } from "../config/env"
 import { l1PublicClient } from "../config/oxideTuple"
 import { pauseWhenHidden } from "../platform/visibilityScheduler"
 import { Warning } from "./Warning"
-import { useSession } from "../platform/session"
+import { useSession } from "../session/session"
 
 const HIGH_GAS = parseGwei("1")
 const POLL_MS = 60_000

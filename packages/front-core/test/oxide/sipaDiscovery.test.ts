@@ -74,7 +74,7 @@ const SANDBOX = Network.SANDBOX
 
 function makePxe() {
   return {
-    registerSender: vi.fn(async (sender: unknown) => sender),
+    registerTaggingSecretSource: vi.fn(async (source: unknown) => source),
     registerContractClass: vi.fn(async () => undefined),
     registerContract: vi.fn(async () => undefined),
   }
@@ -115,9 +115,7 @@ describe("setupSipaDiscovery", () => {
       failOnAmbiguousMatch: false,
     })
 
-    expect(pxe.registerSender).toHaveBeenCalledTimes(1)
-    const sender = pxe.registerSender.mock.calls[0]![0] as { toString(): string }
-    expect(sender.toString()).toBe(RESOLVER_RECORD.l2Address)
+    expect(pxe.registerTaggingSecretSource).toHaveBeenCalledTimes(1)
 
     expect(node.getContract).toHaveBeenCalledTimes(1)
     expect((node.getContract.mock.calls[0]![0] as { toString(): string }).toString()).toBe(
@@ -132,9 +130,8 @@ describe("setupSipaDiscovery", () => {
 
   // The resolver tags SIPA events from address keys, with no handshake, so a PXE that skips this
   // registration never finds a deposit sent to the user's name.
-  it("registers the resolver as an address-derived tagging source on a v5 PXE", async () => {
-    const { registerSender: _, ...rest } = makePxe()
-    const pxe = { ...rest, registerTaggingSecretSource: vi.fn(async () => undefined) }
+  it("registers the resolver as an address-derived tagging source", async () => {
+    const pxe = makePxe()
 
     await setupSipaDiscovery({
       pxe,
@@ -191,8 +188,8 @@ describe("setupSipaDiscovery", () => {
       historical: true,
     })
     expect(
-      pxe.registerSender.mock.calls.map(([sender]) =>
-        (sender as { toString(): string }).toString(),
+      pxe.registerTaggingSecretSource.mock.calls.map(([source]) =>
+        (source as { sender: { toString(): string } }).sender.toString(),
       ),
     ).toEqual([RESOLVER_RECORD.l2Address, rotated.l2Address])
     expect(fetchRecordsMock).not.toHaveBeenCalled()
@@ -219,7 +216,7 @@ describe("setupSipaDiscovery", () => {
       }),
     ).rejects.toThrow("no historical resolver matches")
     expect(fetchRecordsMock).not.toHaveBeenCalled()
-    expect(pxe.registerSender).not.toHaveBeenCalled()
+    expect(pxe.registerTaggingSecretSource).not.toHaveBeenCalled()
   })
 
   it("rejects a non-matching current tuple", async () => {
@@ -250,7 +247,7 @@ describe("setupSipaDiscovery", () => {
           network: SANDBOX,
         }),
       ).rejects.toThrow(/SIPA surface/)
-      expect(pxe.registerSender).not.toHaveBeenCalled()
+      expect(pxe.registerTaggingSecretSource).not.toHaveBeenCalled()
       expect(pxe.registerContract).not.toHaveBeenCalled()
     }
   })
@@ -262,7 +259,7 @@ describe("setupSipaDiscovery", () => {
       setupSipaDiscovery({ pxe, node: makeNode(), publicClient: CLIENT, tuple, network: SANDBOX }),
     ).rejects.toThrow(/lacks forwardingTable/)
     expect(selectResolverMock).not.toHaveBeenCalled()
-    expect(pxe.registerSender).not.toHaveBeenCalled()
+    expect(pxe.registerTaggingSecretSource).not.toHaveBeenCalled()
   })
 
   it("throws when the node has no instance at l2Broadcaster; the Broadcaster stays unregistered", async () => {

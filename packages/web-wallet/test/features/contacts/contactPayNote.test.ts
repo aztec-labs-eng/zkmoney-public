@@ -4,6 +4,7 @@
  * and the activity row the rail writes before proving and advances in place.
  */
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest"
+import { testPage, testCore } from "../../support/page"
 import type { Activity } from "@obsidion/front-core"
 import type { WalletSendOptions } from "../../support/submitBoundary"
 
@@ -83,7 +84,7 @@ vi.mock("../../../src/platform/xmtp/xmtpLifecycle", () => ({
   xmtpUnavailableCode: () => "messaging.starting",
 }))
 vi.mock("../../../src/features/fees/fpcRefuel", () => ({ maybeRefuelFpc: () => {} }))
-vi.mock("../../../src/features/onboarding/claimSponsorship", () => ({
+vi.mock("../../../src/features/registration/claimSponsorship", () => ({
   claimSponsorContext: async () => ({ subscribe: false }),
   noteSubscribed: () => {},
 }))
@@ -98,12 +99,13 @@ const { runContactPay, RecipientNotUpgradedError } = await import(
   "../../../src/features/contacts/contactPay"
 )
 const { activeNamespace, closeSession, switchSession } = await import(
-  "../../../src/platform/session"
+  "../../../src/session/session"
 )
+const { pageSessionDeps } = await import("../../../src/app/sessionDeps")
 const { walletStorage } = await import("../../../src/platform/storage/walletStorage")
 
 beforeEach(() => {
-  const opened = switchSession(activeNamespace())
+  const opened = switchSession(activeNamespace(testCore().device), pageSessionDeps(testPage()))
   h.activity = opened.activity
   vi.spyOn(h.activity, "insertPending")
   h.requestAdd = vi.spyOn(opened.requests, "add")

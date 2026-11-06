@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import type { Address } from "viem"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import { Network } from "@obsidion/core/constants"
-import { AccountStorage } from "../../src/core/storages/AccountStorage"
 
 const sdkMocks = vi.hoisted(() => ({
   fetchSipaResolverOperators: vi.fn(),
@@ -24,7 +23,6 @@ import {
   NO_NAME_PORTAL_RECIPIENT,
   oxideEnvFromTuple,
   resolveOxideAccountFactory,
-  resolveStoredR1Key,
 } from "../../src/oxide/oxideRegistrationDeps"
 
 const FACTORY = "0x0000000000000000000000000000000000000002" as Address
@@ -147,28 +145,6 @@ describe("fetchSignupResolverOperator", () => {
       /resolver-selection surface/,
     )
     expect(sdkMocks.fetchSipaResolverOperators).not.toHaveBeenCalled()
-  })
-})
-
-describe("resolveStoredR1Key", () => {
-  afterEach(() => vi.restoreAllMocks())
-
-  const stubStorage = (data: { pubkey: string } | null) =>
-    vi
-      .spyOn(AccountStorage, "get")
-      .mockReturnValue({ getWebAuthnDataForCurrentAccount: async () => data } as never)
-
-  it("maps a stored passkey public key to an oxide r1 key (no ceremony)", async () => {
-    stubStorage({ pubkey: `0x${"ab".repeat(32)}${"cd".repeat(32)}` })
-    expect(await resolveStoredR1Key()).toEqual({
-      qx: `0x${"ab".repeat(32)}`,
-      qy: `0x${"cd".repeat(32)}`,
-    })
-  })
-
-  it("returns undefined when no passkey is stored (k1-only onboarding)", async () => {
-    stubStorage(null)
-    expect(await resolveStoredR1Key()).toBeUndefined()
   })
 })
 

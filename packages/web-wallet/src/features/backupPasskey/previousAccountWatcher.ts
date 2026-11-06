@@ -1,13 +1,16 @@
 /**
  * The page's one owner of a rotated wallet's previous one-key account: it finds the account from
- * the session's record, registers it, keeps its watch, runs its claims pass, reads its balance,
- * settles a stored move chunk and runs the move, and publishes one state for Home's line.
+ * the session's record, registers it, keeps its watch, runs its claims pass, reads its balances,
+ * settles a stored move chunk and runs the move, and publishes one state for Home's line. It reads
+ * and moves every token a backup add moves, so Savings shares a reorg returns are moved too.
  */
+import { WalletError } from "@obsidion/core/errors"
 import type { Fr } from "@aztec-labs/aztec.js/fields"
 import type { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import { bridgeUnderlying } from "@obsidion/core/oxide"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import {
+  bestEffort,
   deriveBootstrapKey,
   isDust,
   loadRecords,
@@ -43,19 +46,17 @@ import { getWebOxideToken } from "../../config/classArtifacts"
 import { getConfig } from "../../config/env"
 import { getFeeTokenBridgeTuple, getOxideTuple, requireTupleField } from "../../config/oxideTuple"
 import { SessionChangedError } from "../../platform/auth/sessionErrors"
-import { getAuthService } from "../../platform/auth/useAuthenticator"
-import { openedSession } from "../../platform/session"
+import { openedSession, session as current } from "../../session/session"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
 import { usdAtomicFloor } from "../../ui/format"
-import { getSipaDepositGateway } from "../deposit/sipaGateway"
 import { maybeRefuelFpc } from "../fees/fpcRefuel"
-import { claimSponsorContext } from "../onboarding/claimSponsorship"
-import { loadOxideGenerations } from "../onboarding/oxideGenerations"
-import { RAIL_REGISTERED } from "../onboarding/rails"
-import { unlockedSessionKeys } from "../onboarding/registrationResume"
-import { singleKeyAccount } from "../onboarding/sponsorAccounts"
+import { claimSponsorContext } from "../registration/claimSponsorship"
+import { loadOxideGenerations } from "../registration/oxideGenerations"
+import { RAIL_REGISTERED } from "../registration/rails"
+import { unlockedSessionKeys } from "../registration/registrationResume"
+import { singleKeyAccount } from "../registration/sponsorAccounts"
 import { l2TokenService } from "../token/l2TokenService"
-import { currentTxAmountCap } from "../token/oxideToken"
+import { backupMoveTokens, moveCap } from "./backupMoveTokens"
 import { sponsoredTokenService, walletOutcomeNode } from "./backupPasskeyRuntime"
 
 /** How often an open watch runs the previous account's claims pass. */
@@ -68,10 +69,12 @@ export type PreviousMoveOutcome = PreviousMoveResult | { kind: "failed"; error: 
 export interface PreviousAccountState {
   /** The previous account; absent while none is found. */
   address?: string
-  /** Its balance of the moved token at the last read, atomic units. */
+  /** Its balance of the fee token at the last read, atomic units. */
   amount?: bigint
   /** The smallest amount Home shows of that token; known once the account is registered. */
   dust?: bigint
+  /** Savings shares above dust sat there at the last read. */
+  savings?: boolean
   /** The session signs for it: the session's key is its root key. */
   signs: boolean
   open: boolean
@@ -101,7 +104,7 @@ function warnOnSecondBridge(fee: OxideEnvTuple, pinned: OxideEnvTuple): void {
   warnedSecondBridge = true
   console.warn(
     `[previousAccount] the deposit bridge ${pinned.portal} is not the fee token's ${fee.portal}; ` +
-      "only the fee token is watched",
+      "only the fee token and Savings shares are watched",
   )
 }
 
@@ -114,6 +117,7 @@ interface Previous {
   root: string
   address: AztecAddress
   signs: boolean
+  /** The fee token: Home's line shows its amount. */
   l2Token: string
   row: MovedTokenRow
   registered?: Promise<Registered>
@@ -121,6 +125,15 @@ interface Previous {
 
 interface Registered {
   account: ObsidionAccount
+  /** The fee token's dust floor. */
+  dust: bigint
+  /** `token`'s dust floor, read once. */
+  dustOf(token: string): Promise<bigint>
+}
+
+/** A token's balance at the previous account, and the smallest amount worth moving. */
+interface Balance {
+  balance: bigint
   dust: bigint
 }
 
@@ -192,7 +205,7 @@ export class PreviousAccountWatcher {
       return
     }
     try {
-      const keys = await getAuthService().sessionKeys()
+      const keys = await current().auth.sessionKeys()
       if (life !== this.life) return
       if (keys?.authProvider !== found.signer) return this.restart(life)
       if (found.previous) await this.check(life, found.previous)
@@ -294,7 +307,7 @@ export class PreviousAccountWatcher {
     }
     const signer = keys.authProvider
     const session = keys.account.getAddress()
-    const record = await getAuthService().accountRecord(session.toString())
+    const record = await current().auth.accountRecord(session.toString())
     const root = record && previousRootKey(record)
     if (!record || !root) {
       this.clear(life)
@@ -323,8 +336,8 @@ export class PreviousAccountWatcher {
       current ? null : openWatch(key, Date.now()),
     )
     if (life === this.life) {
-      const { amount, dust } = this.state.address === key ? this.state : NONE
-      this.set({ ...NONE, amount, dust, address: key, signs: previous.signs })
+      const { amount, dust, savings } = this.state.address === key ? this.state : NONE
+      this.set({ ...NONE, amount, dust, savings, address: key, signs: previous.signs })
       if (watch) this.publishWatch(watch)
     }
     return { signer, previous }
@@ -382,11 +395,13 @@ export class PreviousAccountWatcher {
     this.passes.set(key, pass)
     try {
       const registered = await this.registered(previous)
-      const { completed } = await getSipaDepositGateway().syncRecipient(
-        previous.wallet,
-        previous.address,
-        (l2Token) => l2TokenService(previous.wallet, registered.account, l2Token),
-      )
+      const claims = openedSession
+        .get()
+        ?.sipaPipeline?.passFor(previous.address, (l2Token) =>
+          l2TokenService(previous.wallet, registered.account, l2Token),
+        )
+      const completed = !!(await bestEffort("unknown", claims ?? Promise.resolve(undefined)))
+        ?.completed
       // A pass a new session cut short recorded nothing, so the next check comes early.
       if (life !== this.life || !(await this.observe(life, previous, registered, completed))) {
         pass.failed = true
@@ -410,46 +425,79 @@ export class PreviousAccountWatcher {
 
   private async register(previous: Previous): Promise<Registered> {
     const account = await singleKeyAccount(
-      { wallet: previous.wallet, session: getAuthService() },
+      { wallet: previous.wallet, session: current().auth },
       previous.record,
       previous.root,
       previous.signs ? "sign" : "held",
     )
-    const service = await l2TokenService(previous.wallet, account, previous.l2Token)
-    const dust = dustFloor((await service.fetchTokenInformation()).decimals)
+    const floors = new Map<string, Promise<bigint>>()
+    const dustOf = (token: string) => {
+      const key = token.toLowerCase()
+      let floor = floors.get(key)
+      if (!floor) {
+        const read = l2TokenService(previous.wallet, account, token).then(async (service) =>
+          dustFloor((await service.fetchTokenInformation()).decimals),
+        )
+        read.catch(() => floors.get(key) === read && floors.delete(key))
+        floors.set(key, (floor = read))
+      }
+      return floor
+    }
+    const dust = await dustOf(previous.l2Token)
     if (this.state.address === previous.address.toString()) this.set({ ...this.state, dust })
-    return { account, dust }
+    return { account, dust, dustOf }
   }
 
   /**
-   * Reads the balance, which syncs the account's notes, and applies what the check found to the
+   * Each moved token's balance, the fee token's first; undefined for one whose read failed. The
+   * fee token alone, and `complete` false, while the moved tokens can't be listed.
+   */
+  private async balances(
+    previous: Previous,
+    { account, dustOf }: Registered,
+  ): Promise<{ read: (Balance | undefined)[]; complete: boolean }> {
+    const tokens = await backupMoveTokens().catch((err: unknown) => {
+      console.warn("[previousAccount] moved tokens unread", err)
+      return undefined
+    })
+    const read = await Promise.all(
+      (tokens ?? [previous.l2Token]).map(async (token) => {
+        try {
+          const [service, dust] = await Promise.all([
+            l2TokenService(previous.wallet, account, token),
+            dustOf(token),
+          ])
+          return { balance: await service.getBalance(), dust }
+        } catch (err) {
+          console.warn("[previousAccount] balance read failed", err)
+          return undefined
+        }
+      }),
+    )
+    return { read, complete: !!tokens && read.every((r) => r !== undefined) }
+  }
+
+  /**
+   * Reads the balances, which syncs the account's notes, and applies what the check found to the
    * watch. A record or a refund of the previous account still holding money holds it too. Answers
    * whether the check was complete.
    */
   private async observe(
     life: Life,
     previous: Previous,
-    { account, dust }: Registered,
+    registered: Registered,
     passCompleted: boolean,
   ): Promise<boolean> {
     const address = previous.address.toString()
-    let balance: bigint | undefined
-    try {
-      balance = await (
-        await l2TokenService(previous.wallet, account, previous.l2Token)
-      ).getBalance()
-    } catch (err) {
-      console.warn("[previousAccount] balance read failed", err)
-    }
-    const recordHolds = getSipaDepositGateway()
-      .records()
-      .some(
-        (record) =>
-          !!record.recipientL2Address &&
-          sameHex(record.recipientL2Address, address) &&
-          recordHoldsMoney(record, previous.row, dust),
-      )
-    // With no session open, or a failed read, its paylink rows are unread: the check is incomplete.
+    const { dust } = registered
+    const { read, complete } = await this.balances(previous, registered)
+    const holds = (r: Balance | undefined) => !!r && !isDust(r.balance, r.dust)
+    const balance = read[0]?.balance
+    // With no session open, or a failed read, its deposits and paylink rows are unread: the check is
+    // incomplete.
+    const deposits = openedSession.get()?.sipaDeposits
+    const records = deposits && (await bestEffort("unknown", deposits.byRecipient(address)))
+    const recordHolds = !!records?.some((record) => recordHoldsMoney(record, previous.row, dust))
     const activity = openedSession.get()?.activity
     const links = activity
       ? await loadRecords(activity.query("link", {})).catch((err: unknown) => {
@@ -459,8 +507,8 @@ export class PreviousAccountWatcher {
       : undefined
     const refunding = !!links?.some((row) => refundOnItsWay(row as PaylinkTransaction, address))
     const observation = {
-      completed: passCompleted && balance !== undefined && !!links,
-      held: (balance !== undefined && !isDust(balance, dust)) || recordHolds || refunding,
+      completed: passCompleted && complete && !!links && !!records,
+      held: read.some(holds) || recordHolds || refunding,
       inFlight: !!this.running,
     }
     const now = Date.now()
@@ -469,7 +517,10 @@ export class PreviousAccountWatcher {
       return next === current ? null : next
     })
     if (life === this.life) {
-      if (balance !== undefined) this.set({ ...this.state, amount: balance })
+      if (balance !== undefined) {
+        const savings = complete ? read.slice(1).some(holds) : this.state.savings
+        this.set({ ...this.state, amount: balance, savings })
+      }
       if (watch) this.publishWatch(watch)
     }
     return observation.completed
@@ -481,12 +532,18 @@ export class PreviousAccountWatcher {
     signal: AbortSignal,
   ): Promise<PreviousMoveResult> {
     await this.settling?.catch(() => {})
-    if (!life) throw new Error("the wallet is locked")
+    if (!life) throw new WalletError("account.locked", "no unlocked life to move from")
     const { previous } = await life.found
     if (!previous) throw new Error("no previous account to move from")
     if (!previous.signs) throw new Error("the first passkey must be signed in to move the balance")
     const registered = await this.registered(previous)
-    return movePreviousBalance(await moveDeps(previous, registered, cap, signal), signal)
+    const depsOf = await moveDeps(previous, registered, cap, signal)
+    // One token at a time: a chunk stored for one is settled by its hash before the next is cut.
+    for (const token of await backupMoveTokens()) {
+      const result = await movePreviousBalance(await depsOf(token), signal)
+      if (result.kind !== "done") return result
+    }
+    return { kind: "done" }
   }
 
   /** Publishes how a move ended, unless a new session took over while it ran. */
@@ -518,25 +575,33 @@ export class PreviousAccountWatcher {
 }
 
 /**
- * The forward's dependencies: the rotation's send sequence with the previous account acting, to
- * the live session account, which must derive from its record's set, differ from the source, and
- * be the account the L1 user record names.
+ * The forward's dependencies, per token: the rotation's send sequence with the previous account
+ * acting, to the live session account, which must derive from its record's set, differ from the
+ * source, and be the account the L1 user record names. The L1 record is read once per run.
  */
 async function moveDeps(
   previous: Previous,
-  { account, dust }: Registered,
+  { account, dustOf }: Registered,
   cap: bigint | undefined,
   signal: AbortSignal,
-): Promise<PreviousMoveDeps> {
+): Promise<(token: string) => Promise<PreviousMoveDeps>> {
   const { wallet } = previous
   const session = await unlockedSessionKeys(wallet)
-  if (!session) throw new Error("the wallet is locked")
+  if (!session) throw new WalletError("account.locked", "no unlocked session to move into")
   if (session.authProvider !== previous.signer) throw new SessionChangedError()
   const destination = session.account.getAddress()
   const source = previous.address.toString()
   const contractService = ContractService.getInstance()
   let named: Promise<boolean> | undefined
-  return {
+  const destinationOk = async () => {
+    const record = await current().auth.accountRecord(destination.toString())
+    if (!record?.passkeySet) return false
+    const derived = await wallet.deriveAccountAddress(session.secretKey, record.passkeySet)
+    if (!derived.equals(destination) || destination.equals(previous.address)) return false
+    named ??= namedOnL1(wallet, session.secretKey, destination.toString())
+    return named
+  }
+  return async (token) => ({
     store: watches(),
     address: source,
     source,
@@ -544,14 +609,14 @@ async function moveDeps(
     shape: async () =>
       readSpendShape(
         wallet,
-        await getWebOxideToken(wallet, contractService, previous.l2Token),
+        await getWebOxideToken(wallet, contractService, token),
         account.getAddress(),
       ),
-    cap: cap ?? (await currentTxAmountCap()),
-    dust,
+    cap: cap ?? (await moveCap(token)),
+    dust: await dustOf(token),
     send: async (amount, onTxHash, signal) => {
       const [tokenService, sponsor] = await Promise.all([
-        sponsoredTokenService(wallet, account, previous.l2Token),
+        sponsoredTokenService(wallet, account, token),
         claimSponsorContext({ wallet, account, contractService }, RAIL_REGISTERED),
       ])
       if (signal.aborted) throw new Error("the move was stopped")
@@ -568,17 +633,10 @@ async function moveDeps(
       })
     },
     outcome: outcomeOf(wallet),
-    destinationOk: async () => {
-      const record = await getAuthService().accountRecord(destination.toString())
-      if (!record?.passkeySet) return false
-      const derived = await wallet.deriveAccountAddress(session.secretKey, record.passkeySet)
-      if (!derived.equals(destination) || destination.equals(previous.address)) return false
-      named ??= namedOnL1(wallet, session.secretKey, destination.toString())
-      return named
-    },
+    destinationOk,
     sleep: (ms) => sleep(ms, signal),
     now: Date.now,
-  }
+  })
 }
 
 /** Whether the L1 user record of the MSK's bootstrap owner names `l2Address` on this rollup. */

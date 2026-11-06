@@ -1,6 +1,6 @@
 /**
  * Which recovery a creator's own paylink row offers, in the activity list and its detail sheet, and
- * which links a backup passkey add waits for.
+ * which links a backup passkey add takes back or waits on.
  *
  * Both recoveries spend the escrow's single nullifier, so at most one is ever on offer and neither
  * survives a claim: `cancel` is the in-window refund (`now <= refundableUntil`, a window that opens
@@ -13,7 +13,7 @@
  * `isPaylinkInRefundWindow` / `paylinkRefundEligibility`.
  */
 import { PAYLINK_CANCEL_MARGIN_SECONDS, PaylinkActionEnum } from "@obsidion/core/constants"
-import type { PaylinkTransaction } from "../../../types/transactions"
+import type { PaylinkTransaction, Transaction } from "../../../types/transactions"
 import type { PaylinkStatusKind } from "./paylinkStatus"
 import { isPaylinkInRefundWindow, paylinkRefundEligibility } from "./refundParamsFromRow"
 
@@ -54,8 +54,8 @@ export function linkMadeBy(row: PaylinkTransaction, account: string): boolean {
 
 /**
  * A link `account` made on `network` whose escrow it can still take back, now or after expiry. Only
- * the creator can, so once a backup passkey add moves the wallet off `account` such a link is
- * stranded. A create still in flight counts, since its escrow may land.
+ * the creator can, so a backup passkey add takes such a link back before it moves the wallet off
+ * `account`. A create still in flight counts, since its escrow may land.
  */
 export function isOpenCreatorLink(
   row: PaylinkTransaction,
@@ -68,6 +68,76 @@ export function isOpenCreatorLink(
   if (row.status === "pending") return true
   // A time past every expiry lifts the window checks, leaving only spent and missing material.
   return paylinkRefundEligibility(row, Number.POSITIVE_INFINITY).eligible
+}
+
+/** Why a backup passkey add waits on an open link instead of taking it back itself. */
+export type BackupLinkHold =
+  /** Its create is still in flight. */
+  | { kind: "creating" }
+  /** It escrows a retired deployment's token, which the move does not carry. */
+  | { kind: "token" }
+  /** Its cancel window closes before its expiry, so the user cancels it while it still can be. */
+  | { kind: "cancel" }
+  /** It can't be cancelled before its expiry, `until` in seconds, and only then reclaimed. */
+  | { kind: "expiry"; until: number }
+
+/**
+ * Whether an open link holds the add. The add cancels a link inside its refund window and reclaims
+ * an expired one; a link whose window closes before its expiry, or that records none, would be out
+ * of the add's reach in between, so the user cancels it while they still can, or the add waits for
+ * its expiry. Links made today close both at once.
+ */
+export function backupLinkHold(
+  row: PaylinkTransaction,
+  nowSec: number,
+  token: string,
+): BackupLinkHold | undefined {
+  if (row.status === "pending") return { kind: "creating" }
+  if (row.tokenAddress && row.tokenAddress.toLowerCase() !== token.toLowerCase())
+    return { kind: "token" }
+  const until = row.untilClaimable ?? 0
+  const gap = row.refundableUntil == null || row.refundableUntil < until
+  if (!gap || nowSec > until) return undefined
+  return row.refundableUntil != null && canCancelAt(row.refundableUntil, nowSec)
+    ? { kind: "cancel" }
+    : { kind: "expiry", until }
+}
+
+type ExpiryHold = Extract<BackupLinkHold, { kind: "expiry" }>
+
+/**
+ * The open links `account` made on `network` that a backup add takes back, and what holds the add
+ * instead: a create in flight first, then a retired token, then a link to cancel, then the latest
+ * expiry it waits for. `claimed` are the links a recipient's claim spent, in the moved token: a
+ * reorg that undoes the claim reopens the link.
+ */
+export function backupLinks(
+  rows: readonly Transaction[],
+  opts: { account: string; network: string | undefined; token: string; nowSec: number },
+): { open: PaylinkTransaction[]; claimed: PaylinkTransaction[]; hold?: BackupLinkHold } {
+  const open: PaylinkTransaction[] = []
+  const claimed: PaylinkTransaction[] = []
+  const holds: BackupLinkHold[] = []
+  for (const row of rows as readonly PaylinkTransaction[]) {
+    if (row.isClaimed) {
+      if (
+        isOpenCreatorLink({ ...row, isClaimed: false }, opts.account, opts.network) &&
+        (!row.tokenAddress || row.tokenAddress.toLowerCase() === opts.token.toLowerCase())
+      )
+        claimed.push(row)
+      continue
+    }
+    if (!isOpenCreatorLink(row, opts.account, opts.network)) continue
+    const hold = backupLinkHold(row, opts.nowSec, opts.token)
+    if (hold) holds.push(hold)
+    else open.push(row)
+  }
+  const hold =
+    holds.find((h) => h.kind === "creating") ??
+    holds.find((h) => h.kind === "token") ??
+    holds.find((h) => h.kind === "cancel") ??
+    holds.filter((h): h is ExpiryHold => h.kind === "expiry").sort((a, b) => b.until - a.until)[0]
+  return hold ? { open, claimed, hold } : { open, claimed }
 }
 
 export function creatorLinkAction(

@@ -2,7 +2,7 @@ import { createLogger } from "@aztec-labs/foundation/log"
 import { createNode, ObsidionWallet, type ObsidionAccount } from "@obsidion/sdk"
 import { getConfig } from "../config/env"
 import { SessionChangedError } from "./auth/sessionErrors"
-import { getAuthService } from "./auth/useAuthenticator"
+import type { WebAlphaAuthService } from "./auth/WebAlphaAuthService"
 import { createPxeStore } from "./storage/createPxeStore"
 
 export interface SourceRollupWallet {
@@ -21,10 +21,11 @@ const opened = new Map<string, Promise<SourceRollupWallet>>()
 export async function openSourceRollupWallet(
   nodeUrl: string,
   account: ObsidionAccount,
+  auth: SessionKeys,
 ): Promise<SourceRollupWallet> {
   let source = opened.get(nodeUrl)
   if (!source) {
-    source = open(nodeUrl, account)
+    source = open(nodeUrl, account, auth)
     opened.set(nodeUrl, source)
     source.catch(() => opened.delete(nodeUrl))
   }
@@ -33,15 +34,17 @@ export async function openSourceRollupWallet(
   if (held.account.getAuthProvider() === signer) return held
   // The session signs with another key now: the source account takes it, or stays as it was.
   const first = source
-  const resigned = signedAs(held, account)
+  const resigned = signedAs(held, account, auth)
   opened.set(nodeUrl, resigned)
   resigned.catch(() => opened.set(nodeUrl, first))
   return resigned
 }
 
+type SessionKeys = Pick<WebAlphaAuthService, "sessionKeys">
+
 /** The session's key and signer, for an account that signs with that signer. */
-async function sessionPair(account: ObsidionAccount) {
-  const keys = await getAuthService().sessionKeys()
+async function sessionPair(account: ObsidionAccount, auth: SessionKeys) {
+  const keys = await auth.sessionKeys()
   if (!keys) throw new Error("Unlock the wallet to read the old network")
   if (keys.authProvider !== account.getAuthProvider()) throw new SessionChangedError()
   return keys
@@ -50,16 +53,21 @@ async function sessionPair(account: ObsidionAccount) {
 async function signedAs(
   source: SourceRollupWallet,
   account: ObsidionAccount,
+  auth: SessionKeys,
 ): Promise<SourceRollupWallet> {
-  const { secretKey, authProvider } = await sessionPair(account)
+  const { secretKey, authProvider } = await sessionPair(account, auth)
   return {
     wallet: source.wallet,
     account: await source.wallet.createObsidionAccount(secretKey, authProvider),
   }
 }
 
-async function open(nodeUrl: string, account: ObsidionAccount): Promise<SourceRollupWallet> {
-  const { secretKey, authProvider } = await sessionPair(account)
+async function open(
+  nodeUrl: string,
+  account: ObsidionAccount,
+  auth: SessionKeys,
+): Promise<SourceRollupWallet> {
+  const { secretKey, authProvider } = await sessionPair(account, auth)
   const { proverEnabled, sourceRollupApiKey, sourceNodeEndpointDigest } = getConfig()
   const node = createNode(nodeUrl, sourceRollupApiKey)
   const { rollupAddress } = await node.getL1ContractAddresses()

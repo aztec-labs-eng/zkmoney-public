@@ -5,11 +5,13 @@
  * toasts what is first seen while it is up.
  */
 import { act } from "react"
+import { testCore, testPage } from "../support/page"
 import { createRoot, type Root } from "react-dom/client"
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { scannedRow, type NotificationEntry, type NotificationEvent } from "@obsidion/front-core"
-import { activeNamespace, closeSession, switchSession, session } from "../../src/platform/session"
+import { activeNamespace, closeSession, switchSession, session } from "../../src/session/session"
+import { pageSessionDeps } from "../../src/app/sessionDeps"
 import { useMigrationDialogRequest } from "../../src/features/migration/migrationDialog"
 import { NotificationsBell } from "../../src/ui/NotificationsBell/NotificationsBell"
 import {
@@ -81,7 +83,7 @@ beforeEach(() => {
   container = document.createElement("div")
   document.body.appendChild(container)
   root = createRoot(container)
-  switchSession(activeNamespace())
+  switchSession(activeNamespace(testCore().device), pageSessionDeps(testPage()))
 })
 
 afterEach(async () => {

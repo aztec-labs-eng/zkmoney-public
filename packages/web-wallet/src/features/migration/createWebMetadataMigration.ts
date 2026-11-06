@@ -6,9 +6,9 @@ import {
   readSavingsPrice,
   readSavingsVault,
   savingsValue,
-  SIPADepositStore,
   UpgradeActivity,
   WalletSyncCoordinator,
+  type SipaDeposits,
 } from "@obsidion/front-core"
 import {
   createLocalMetadataMigrationSource,
@@ -20,7 +20,7 @@ import {
   type ObsidionWallet,
   type TokenService,
 } from "@obsidion/sdk"
-import type { OxideEnvTuple } from "@obsidion/core/types"
+import type { FrozenDepositDescriptor, OxideEnvTuple } from "@obsidion/core/types"
 import type { Address } from "viem"
 import { getConfig } from "../../config/env"
 import {
@@ -30,12 +30,12 @@ import {
   getRetiredRollupSources,
   l1MulticallClient,
 } from "../../config/oxideTuple"
-import { getAuthService } from "../../platform/auth/useAuthenticator"
 import { withSourceSigner } from "../../platform/sourceGeneration"
-import { getActiveCredentialId, getActiveStorageId } from "../../platform/storage/activeStorage"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
 import { SessionChangedError } from "../../platform/auth/sessionErrors"
-import { collectOnboardingKeys } from "../onboarding/oxideOnboarding"
+import { collectOnboardingKeys } from "../../session/account"
+import type { SessionDeps } from "../../session/session"
+import { stillCommitted } from "../../session/stillCommitted"
 import { portalContract } from "../token/oxideToken"
 import { historicTokenContext, sourceChain } from "./historicTokenContext"
 import { sourceFrozenEscrows, sourceLinkRows } from "./sourceFrozenEscrows"
@@ -43,6 +43,8 @@ import { sourceSavingsDeposits } from "./sourceSavingsDeposits"
 import { sourceSweptDeposits } from "./sourceSipaSources"
 import { oldVersionScope } from "./oldVersionBalance"
 import { FREEZE_POLL_MS, ManifestUnavailableError, pause } from "./freezeWatch"
+import { SourceBusyError } from "./migrationErrors"
+import type { WebAlphaAuthService } from "../../platform/auth/WebAlphaAuthService"
 
 export const webMetadataMigrationKey = (
   current: OxideEnvTuple,
@@ -72,6 +74,13 @@ export async function webAccountRecordStale(account: ObsidionAccount): Promise<b
 export async function createWebMetadataMigration(params: {
   wallet: ObsidionWallet
   account: ObsidionAccount
+  /** The session's deposit records: the rail claims the migration's direct deposits. */
+  deposits: Pick<SipaDeposits, "get">
+  auth: Pick<WebAlphaAuthService, "getSecretKey" | "sessionKeys" | "signMetadataChallenge">
+  /** The session the run is for. */
+  own: Pick<SessionDeps, "device" | "namespace">
+  /** The account's name: its registration addresses are found from it. */
+  handle: string | undefined
   contractService: ContractService
   toTokenService: TokenService
   historic: OxideEnvTuple
@@ -81,17 +90,20 @@ export async function createWebMetadataMigration(params: {
   withdrawal?: boolean
   /** A withdrawal's L1 submitter, which takes the source's subsidy. */
   tipRecipient?: Address
+  /** Swept deposits the account's own scan misses, such as an address no `SIPA` event announced. */
+  extraDeposits?: FrozenDepositDescriptor[]
 }) {
   const config = getConfig()
   // Folds contract reads, such as the migration subsidy's, into Multicall3 calls.
   const client = l1MulticallClient(config)
   const keys = await collectOnboardingKeys(params.account)
-  const storageId = getActiveStorageId()
-  const credentialId = getActiveCredentialId()
-  if (!storageId) throw new SessionChangedError()
+  const { own } = params
+  const storageId = own.namespace.id
+  const { credentialId } = own.device.get()
+  if (!storageId || !stillCommitted(own)) throw new SessionChangedError()
   // The run is one session's: another account, or this account under another passkey, ends it.
   const checkSession = () => {
-    if (getActiveStorageId() !== storageId || getActiveCredentialId() !== credentialId) {
+    if (!stillCommitted(own) || own.device.get().credentialId !== credentialId) {
       throw new SessionChangedError()
     }
   }
@@ -102,6 +114,7 @@ export async function createWebMetadataMigration(params: {
         { wallet: params.wallet, account: params.account },
         params.current,
         params.historic,
+        params.auth,
       )
     : undefined
   const sourceContext =
@@ -115,6 +128,7 @@ export async function createWebMetadataMigration(params: {
       publicClient: client,
       masterSecret: keys.secretKey,
       scanHead: await client.getBlockNumber({ cacheTime: 0 }),
+      handle: params.handle,
     }
     const [sipas, savings] = await Promise.all([
       sourceSweptDeposits(scan),
@@ -123,7 +137,8 @@ export async function createWebMetadataMigration(params: {
         sourceTuples: [params.historic, ...(await getRetiredRollupSources(config))],
       }),
     ])
-    return [...new Map([...sipas.descriptors, ...savings].map((d) => [d.messageKey, d])).values()]
+    const all = [...sipas.descriptors, ...savings, ...(params.extraDeposits ?? [])]
+    return [...new Map(all.map((d) => [d.messageKey, d])).values()]
   }
   /**
    * The destination deployment and the source's migration route on it. A feature for the source
@@ -150,10 +165,16 @@ export async function createWebMetadataMigration(params: {
       return { deployment: undefined, route: undefined }
     }
   }
-  const paylinkRows = () =>
-    sourceLinkRows({ tuple: params.historic, current: params.current, storageId })
+  const paylinkRows = () => sourceLinkRows({ tuple: params.historic, current: params.current, own })
+  const lockName = `${storageId}/${key}`
   const lock = <T>(fn: () => Promise<T>) =>
-    navigator.locks.request(`${storageId}/${key}`, async () => {
+    navigator.locks.request(lockName, async () => {
+      checkSession()
+      return fn()
+    })
+  const lockNow = <T>(fn: () => Promise<T>) =>
+    navigator.locks.request(lockName, { ifAvailable: true }, async (held) => {
+      if (!held) throw new SourceBusyError()
       checkSession()
       return fn()
     })
@@ -172,7 +193,7 @@ export async function createWebMetadataMigration(params: {
     secretKey: keys.secretKey,
     key,
     activity: UpgradeActivity.get(webStorage),
-    deposits: SIPADepositStore.get(webStorage),
+    deposits: params.deposits,
     confirmBalance: () => WalletSyncCoordinator.confirmBalance(),
     holdings: async (amount, anchor) => {
       checkSession()
@@ -210,13 +231,14 @@ export async function createWebMetadataMigration(params: {
     // A pass holds this lock from start to end, and a gated send inside it waits for its turn on
     // the prover. A user flow that then asks for this lock would wait on that send, which waits on
     // the user flow. The mount prevents it: a followed source is never offered or queued. Keep it
-    // so, or take the prover turn before the lock.
+    // so, or take the prover turn before the lock. A user flow the mount does not offer takes
+    // `lockNow`.
     lock,
     passkey: {
       publicKey: pubkeyToR1KeyArg(keys.pubkeyHex),
       signChallenge: (digest, opts) => {
         checkSession()
-        return getAuthService().signMetadataChallenge(digest, opts)
+        return params.auth.signMetadataChallenge(digest, opts)
       },
     },
     source: async (context, batches, savedRefundSigner, beforeSourceApproval) => {
@@ -300,7 +322,7 @@ export async function createWebMetadataMigration(params: {
     },
   })
   /** Held by an upgrade run, so a withdrawal never refunds the funds a run plans. */
-  return { ...session, lock }
+  return { ...session, lock, lockNow }
 }
 
 /**

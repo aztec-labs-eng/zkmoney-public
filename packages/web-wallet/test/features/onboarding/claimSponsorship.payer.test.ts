@@ -25,22 +25,23 @@ const { collectOnboardingKeys, buildClaimSubscribeWitness } = vi.hoisted(() => (
   collectOnboardingKeys: vi.fn(),
   buildClaimSubscribeWitness: vi.fn(),
 }))
-vi.mock("../../../src/features/onboarding/oxideOnboarding", () => ({
+vi.mock("../../../src/session/account", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../src/session/account")>()),
   collectOnboardingKeys,
-  buildClaimSubscribeWitness,
 }))
-const { nameClaimRecord } = vi.hoisted(() => ({ nameClaimRecord: vi.fn() }))
-vi.mock("@obsidion/front-core", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@obsidion/front-core")>()),
-  NameClaimStore: { get: () => ({ get: nameClaimRecord }) },
+vi.mock("../../../src/features/registration/registrationDeps", () => ({
+  buildClaimSubscribeWitness,
 }))
 
 import {
   claimSponsorContext,
   setSponsorAccountsResolver,
   type SponsorAccounts,
-} from "../../../src/features/onboarding/claimSponsorship"
-import { RAIL_REGISTERED } from "../../../src/features/onboarding/rails"
+} from "../../../src/features/registration/claimSponsorship"
+import { RAIL_REGISTERED } from "../../../src/features/registration/rails"
+import { closeSession } from "../../../src/session/session"
+import { openTestSession } from "../../support/session"
+import { seedDeviceKeys } from "../../support/page"
 
 const RAIL = { railId: 1, name: RAIL_REGISTERED, gate: "nameClaim", policy: { root: "0xp" } }
 const REGISTERED = { name: "ClaimFPC:registered" }
@@ -50,7 +51,7 @@ const account = (at: string) => ({ getAddress: () => address(at) } as never)
 let fpcSerial = 0
 
 /** One instance per case: a subscribed answer is memoized per (account, instance, rail). */
-function setup(subscribed: string[], accounts: SponsorAccounts) {
+async function setup(subscribed: string[], accounts: SponsorAccounts) {
   vi.clearAllMocks()
   const fpc = `0x${(0x1000 + ++fpcSerial).toString(16).padStart(64, "0")}`
   loadClaimFpcPolicy.mockResolvedValue({ rail: RAIL, fpcAddress: address(fpc) })
@@ -58,7 +59,18 @@ function setup(subscribed: string[], accounts: SponsorAccounts) {
   hasClaimFpcSubscription.mockImplementation(async (_w, _f, _a, user: { toString(): string }) =>
     subscribed.includes(user.toString()),
   )
-  nameClaimRecord.mockResolvedValue({ handle: "tag", signature: "0xs", nonce: "1", deadline: "2" })
+  await seedDeviceKeys({ storageId: "a1" })
+  const { nameClaims } = openTestSession()
+  for (const { getAddress } of [accounts.payer, accounts.acting] as never as {
+    getAddress: () => { toString(): string }
+  }[])
+    await nameClaims.put({
+      address: getAddress().toString(),
+      handle: "tag",
+      signature: "0xs",
+      nonce: "1",
+      deadline: "2",
+    })
   collectOnboardingKeys.mockResolvedValue({ secretKey: "0xmsk", pubkeyHex: "0xpub" })
   buildClaimSubscribeWitness.mockResolvedValue({ nameHash: new Uint8Array(32) })
   return {
@@ -72,13 +84,16 @@ function setup(subscribed: string[], accounts: SponsorAccounts) {
 const askedFor = () => hasClaimFpcSubscription.mock.calls.map(([, , , user]) => user.toString())
 
 describe("the payer of a sponsored batch", () => {
-  afterEach(() => setSponsorAccountsResolver(undefined))
+  afterEach(() => {
+    setSponsorAccountsResolver(undefined)
+    closeSession()
+  })
 
   it("is the acting account on its own note when the payer's is gone", async () => {
     const payer = account("0xpayer2")
     const acting = account("0xacting2")
     const sponsor = await claimSponsorContext(
-      setup(["0xacting2"], { payer, acting }),
+      await setup(["0xacting2"], { payer, acting }),
       RAIL_REGISTERED,
     )
     expect(sponsor.payer).toBeUndefined()
@@ -89,7 +104,7 @@ describe("the payer of a sponsored batch", () => {
   it("is the acting account subscribing itself when neither holds a note", async () => {
     const payer = account("0xpayer3")
     const acting = account("0xacting3")
-    const sponsor = await claimSponsorContext(setup([], { payer, acting }), RAIL_REGISTERED)
+    const sponsor = await claimSponsorContext(await setup([], { payer, acting }), RAIL_REGISTERED)
     expect(sponsor.payer).toBeUndefined()
     expect(sponsor.subscribe).toBeDefined()
     expect(collectOnboardingKeys).toHaveBeenCalledWith(acting)
@@ -98,7 +113,7 @@ describe("the payer of a sponsored batch", () => {
   it("comes from the installed resolver when the deps name none", async () => {
     const payer = account("0xpayer5")
     const acting = account("0xacting5")
-    const deps = setup(["0xpayer5"], { payer, acting })
+    const deps = await setup(["0xpayer5"], { payer, acting })
     delete (deps as { payerFor?: unknown }).payerFor
     setSponsorAccountsResolver(async () => ({ payer, acting }))
     expect((await claimSponsorContext(deps, RAIL_REGISTERED)).payer?.toString()).toBe("0xpayer5")

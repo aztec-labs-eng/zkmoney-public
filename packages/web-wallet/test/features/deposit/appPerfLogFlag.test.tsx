@@ -13,7 +13,7 @@ vi.mock("wagmi", async (importOriginal) => ({
   ...(await importOriginal<typeof import("wagmi")>()),
   WagmiProvider: () => null,
 }))
-vi.mock("../../../src/features/deposit/wagmi", () => ({
+vi.mock("../../../src/session/wagmi", () => ({
   wagmiConfig: () => ({}),
   rainbowkitTheme: {},
 }))

@@ -11,7 +11,6 @@ import {
 } from "@obsidion/front-core"
 import { createExternalState } from "../../lib/externalState"
 import { fmt } from "../../lib/fmt"
-import { getActiveStorageId } from "../../platform/storage/activeStorage"
 import { rowTimestamp } from "../format"
 import { Modal } from "../Modal"
 import { usePhoneLayout } from "../usePhoneLayout"
@@ -20,7 +19,7 @@ import { notificationText } from "../notificationText"
 import { flowCopy } from "../../features/operations/operationCopy"
 import { openMigrationDialog } from "../../features/migration/migrationDialog"
 import type { Bell } from "../../features/notifications/notifications"
-import { useSession } from "../../platform/session"
+import { useSession } from "../../session/session"
 import { operationIdOf } from "../../features/operations/operationEntries"
 import { openTicketClaimReview } from "../../features/paylink/claimPrompt"
 import { pendingTicketRegistration } from "../../features/paylink/ticketContinuation"
@@ -197,7 +196,7 @@ export function useNotificationList(scope?: NotificationScope) {
     },
     [scope],
   )
-  const { bell, notifications } = useSession()
+  const { bell, notifications, device } = useSession()
   const { running, entries, state, stamped } = useStore(bell, select)
   const loaded = useStore(operationsLoaded)
   const dismiss = useCallback(
@@ -233,8 +232,8 @@ export function useNotificationList(scope?: NotificationScope) {
   // Running operations and live rows stay: their work has not ended.
   const clearAll = useCallback(() => {
     for (const e of entries) if (!e.pending) dismiss(e.id)
-    if (!scope) void getOperationStore().dismissEnded(getActiveStorageId()).catch(console.warn)
-  }, [scope, entries, dismiss])
+    if (!scope) void getOperationStore().dismissEnded(device.get().storageId).catch(console.warn)
+  }, [scope, entries, dismiss, device])
   return {
     entries,
     running,

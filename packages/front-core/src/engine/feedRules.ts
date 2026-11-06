@@ -2,9 +2,9 @@
  * The rules the activity feed and its detail sheets read off one record, with every clock passed
  * in. They name an action, never its words.
  */
-import { formatUnits } from "viem"
+import { formatUnits, type Address } from "viem"
 import { REGISTRATION_SCHEDULE_DEFAULTS } from "@obsidion/core/constants"
-import type { ActivityItem, BridgeActivityItem } from "../core/services/bridge/BridgeActivityFeed"
+import type { UpgradeBatchItem } from "../core/migration/upgradeActivity"
 import type { WithdrawalRecord } from "../core/services/bridge/types"
 import { withdrawalAmounts } from "../core/services/bridge/withdrawalAmounts"
 import {
@@ -22,11 +22,55 @@ import {
   isAccountMoveSipa,
   isUnfundedSipaDeposit,
   type SIPADepositPhase,
-  type SIPADepositRecord,
-} from "../core/services/deposits/SIPADepositStore"
-import type { PendingRegistrationRecord } from "../core/services/registration/PendingRegistrationStore"
+  type SipaDeposit,
+} from "./sipaDeposits"
+import type { PendingRegistrationRecord } from "./registrationRecord"
 import type { SavingsMoveRecord } from "../core/services/savings/types"
 import { canSelfRunSkyEscrow } from "../oxide/skyEscrowExit"
+
+export type BridgeActivityItem =
+  /**
+   * `processing` is set while the deposit waits for a sweep and the observer explains why.
+   * `credit` is set on a deposit split out of its address's record: another token it credited.
+   */
+  | {
+      kind: "bridge.sipaDeposit"
+      record: SipaDeposit
+      processing?: SipaProcessingState
+      credit?: Address
+    }
+  | { kind: "bridge.withdrawal"; record: WithdrawalRecord }
+
+/** A refund batch of an upgrade: its exit from the old version, paired with its arrival by recipient. */
+export type UpgradeActivityItem = { kind: "upgrade.batch"; batch: UpgradeBatchItem }
+
+export type ActivityItem = BridgeActivityItem | UpgradeActivityItem
+
+export function itemStartTime(item: ActivityItem): number {
+  return "record" in item ? item.record.startTime : item.batch.startTime
+}
+
+/**
+ * A SIPA this wallet funded with its own burn (a paylink-paid registration) reads as one story:
+ * the withdrawal row. The deposit record stays off the feed only while it needs nothing from the
+ * user; a failed or recoverable deposit, a sweep that has stalled, or one whose funding burn
+ * failed, surfaces so its error and recovery actions are reachable. The hidden record still drives
+ * the claim in the background.
+ */
+export function hiddenBehindOwnWithdrawal(
+  record: SipaDeposit,
+  withdrawals: readonly WithdrawalRecord[],
+  now: number,
+): boolean {
+  if (record.phase === "failed" || record.phase === "recoverable") return false
+  if (isStuckSweep(record, now)) return false
+  const sipa = record.sipaAddress.toLowerCase()
+  // A migration's arrival is a row of its own: the move is two legs, and the arrival ends it.
+  const funding = withdrawals.filter(
+    (w) => w.recipient.toLowerCase() === sipa && w.intent !== "migration",
+  )
+  return funding.length > 0 && funding.some((w) => w.phase !== "failed")
+}
 
 /** No sweep can move a `recoverable` deposit, and a `recovered` one went back out on L1. */
 export function neverCreditsL2(phase: SIPADepositPhase): boolean {
@@ -41,7 +85,7 @@ export type RecoveryReason = "unsweepable" | "stuck" | "registration-quote" | "s
  * half the recovery key, so a record discovered without one cannot sign at all.
  */
 export function recoveryReasonFor(
-  record: Pick<SIPADepositRecord, "phase" | "messageSecret" | "startTime" | "sweepTxHash">,
+  record: Pick<SipaDeposit, "phase" | "messageSecret" | "startTime" | "sweepTxHash">,
   now: number,
 ): RecoveryReason | null {
   if (!record.messageSecret) return null
@@ -55,7 +99,7 @@ export function recoveryReasonFor(
  */
 export function canSelfSweep(
   record: Pick<
-    SIPADepositRecord,
+    SipaDeposit,
     "phase" | "startTime" | "sweepTxHash" | "recipientHash" | "recoveryAddress" | "origin"
   >,
   now: number,
@@ -104,7 +148,7 @@ export function registrationFor(
 export function registrationTagForSipa(
   registrations: Registrations,
   sipaAddress: string,
-  deposit?: Pick<SIPADepositRecord, "intent">,
+  deposit?: Pick<SipaDeposit, "intent">,
 ): string | undefined {
   const pending = registrationFor(registrations, sipaAddress)
   if (pending) return pending.tag
@@ -117,7 +161,7 @@ export function registrationTagForSipa(
  */
 export function registrationTagForDeposit(
   registrations: Registrations,
-  deposit: Pick<SIPADepositRecord, "sipaAddress" | "intent" | "phase">,
+  deposit: Pick<SipaDeposit, "sipaAddress" | "intent" | "phase">,
 ): string | undefined {
   const pending = registrationFor(registrations, deposit.sipaAddress)
   const refunded =
@@ -154,7 +198,7 @@ export interface DepositContext {
  * capacity blocker withholds the sweep, never the recovery.
  */
 export function depositExitOffer(
-  record: SIPADepositRecord,
+  record: SipaDeposit,
   { processing, registration, now }: DepositContext,
 ): DepositOffer | null {
   if (isUnfundedSipaDeposit(record) || isAccountMoveSipa(record)) return null
@@ -174,7 +218,7 @@ export function depositExitOffer(
  * the user wait out the row's stuck clock.
  */
 export function depositDetailOffer(
-  record: SIPADepositRecord,
+  record: SipaDeposit,
   context: DepositContext,
 ): DepositOffer | null {
   const clocked = depositExitOffer(record, context)
@@ -294,19 +338,18 @@ export function findBridgeItem(
           (!!txHash && item.record.l2TxHash?.toLowerCase() === txHash))) ||
       (item.kind === "bridge.sipaDeposit" &&
         !item.credit &&
-        (item.record.sipaAddress.toLowerCase() === deposit ||
-          (!!txHash && item.record.claimTxHash?.toLowerCase() === txHash))),
+        item.record.sipaAddress.toLowerCase() === deposit),
   )
 }
 
 type DepositBridgeItem = Extract<ActivityItem, { kind: "bridge.sipaDeposit" }>
 
 /** The token a deposit row shows: the one it splits out, else the record's own. */
-const depositRowToken = (item: { record: SIPADepositRecord; credit?: string }) =>
+const depositRowToken = (item: { record: SipaDeposit; credit?: string }) =>
   (item.credit ?? item.record.rowToken ?? item.record.tokenAddress)?.toLowerCase()
 
 /** A deposit row's detail id: its address, and the token the row shows. */
-export function depositDetailId(item: { record: SIPADepositRecord; credit?: string }): string {
+export function depositDetailId(item: { record: SipaDeposit; credit?: string }): string {
   const token = depositRowToken(item)
   return token ? `${item.record.sipaAddress}:${token}` : item.record.sipaAddress
 }

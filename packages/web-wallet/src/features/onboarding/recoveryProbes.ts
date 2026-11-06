@@ -6,7 +6,6 @@ import {
   deriveBootstrapKey,
   registryCandidateProbe,
   type AnchorTier,
-  type BootstrapKeyProvider,
   type CandidateProbe,
   type L2AddressOn,
   type OxideIdentityDeps,
@@ -14,6 +13,7 @@ import {
 } from "@obsidion/front-core"
 import { getConfig, type WebWalletConfig } from "../../config/env"
 import { AmbiguousPasskeyError, NoWalletForPasskeyError } from "@obsidion/passkey-web"
+import { bootstrapKeyProvider } from "../registration/registrationDeps"
 
 /**
  * The on-chain anchor a browser that has never held an account can ask: the L1 Registry record
@@ -49,15 +49,6 @@ export function anchorTiers(
 
 /** One reservation lookup, reply included. */
 const RESERVATION_TIMEOUT_MS = 15_000
-
-/** Account-service request auth signed by the bootstrap key itself. */
-export function bootstrapKeyProvider(bootstrap: PrivateKeyAccount): BootstrapKeyProvider {
-  return {
-    subject: bootstrap.address.toLowerCase(),
-    signClientDataHash: (hash) =>
-      bootstrap.sign({ hash: `0x${Buffer.from(hash).toString("hex")}` as Hex }),
-  }
-}
 
 /** The name hashes account-service has claimed under `bootstrap`, asked fresh; any non-answer throws. */
 export function reservedNameHashes(bootstrap: PrivateKeyAccount): Promise<Hex[]> {
