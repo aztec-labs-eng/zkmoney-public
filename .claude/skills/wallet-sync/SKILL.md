@@ -11,7 +11,8 @@ This repository is the public export of the private wallet repository `obsidion-
 
 - Get approval from the user before each action that leaves this computer: a push, a PR, a change to a secret, a release asset, a tag, a gate approval, or a publish. One approval covers only the action that it names.
 - Sync only to the commit that mainnet runs. Do not sync to the tip of `next`. A sync to `next` puts code in the desktop app that no website user runs.
-- Do not put SSM parameter names, AWS or CloudFront hosts, internal IPs, private-repository URLs, ticket IDs, API keys or tokens in this repository.
+- Do not put SSM parameter names, AWS or CloudFront hosts, internal IPs, private-repository URLs, Linear or Slack links, ticket IDs, API keys or tokens in this repository.
+- Do not cite a private PR or issue by its number, in a file or in a PR description. GitHub links `#1` to the item with that number in this repository.
 
 ## 1. Find the base and the target
 
@@ -63,7 +64,7 @@ The exporter stops if a checkout has tracked changes or if the Oxide checkout is
    diff <(git diff tmp-delta~1 origin/main | grep -v '^index ') <(git diff tmp-delta HEAD | grep -v '^index ')
    ```
 2. Run `node "$WALLET/public-export/check-public-only.mjs" . "$SCRATCH/exp-$TARGET"`. Each file that it flags must be a file that the private repository deleted, or a public edit that step 1 shows. The check also flags the files of this skill, until the private exporter has them in `public-export/overlay/`.
-3. Scan the added lines for the items in [Rules](#rules): `git diff origin/main -U0 | grep '^+'`.
+3. Scan the added lines for the items in [Rules](#rules): `node .claude/skills/wallet-sync/scan.mjs origin/main..HEAD`. The script prints each item with its file and line, and exits with 1 when it finds an item. It does not report a line that the sync only moves. Remove each item that it reports, unless it cites a public item, such as an issue of `aztec-packages`. If an item is a standard name, such as `SHA-256`, add its prefix to `STANDARDS` in `scan.mjs`.
 4. Make sure that `EXPORT-MANIFEST.json` names the target as `source`.
 5. Make sure that `packages/generation-v5/scripts/fetch.mjs` has `BUNDLE_RELEASE`. Without it, `fetch:bundle` reads only `source-generations`, and a new bundle cannot reach this repository. `BUNDLE_RELEASE` is a public edit that the private repository does not have. If the sync has a conflict in `fetch.mjs`, keep it.
 
@@ -84,7 +85,7 @@ The script clones the branch. It then runs the `bundle` job and the Linux row of
 | `classids` | Each built class ID is the same as the live profile. |
 | `circuits` | The 3 refund circuits match their L1 verifiers. |
 | `relayer`, `relayer-help` | The relayer builds and starts. |
-| `typecheck-*`, `test-*` | The typecheck and the tests of each package pass. |
+| `typecheck-*`, `test-*` | The typecheck and the tests of each package, and the tests of this skill, pass. |
 | Clean tree | `git status --porcelain` is empty after the build. |
 
 Use `SOURCE_GENERATIONS_REPO=aztec-labs-eng/obsidion-wallet` until this repository has the bundle of the target (see [6](#6-the-v5-bundle)).

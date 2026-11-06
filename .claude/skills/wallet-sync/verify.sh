@@ -85,6 +85,7 @@ grep -E ' matches ' "$L/circuits.log" >>"$SUM"
 if [[ "$TESTS" == 1 ]]; then
   step relayer pnpm build:relayer
   step relayer-help node vendor/oxide/yarn-project/oxide-relayer/dest/bin/oxide-relayer.js run --help
+  step test-wallet-sync node --test '.claude/skills/wallet-sync/*.test.mjs'
   # packages/web-wallet-desktop is not a workspace member. The installers row tests it.
   for dir in packages/*/; do
     grep -qxF "  - ${dir%/}" pnpm-workspace.yaml || continue
