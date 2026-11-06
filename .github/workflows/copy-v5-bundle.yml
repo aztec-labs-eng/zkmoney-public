@@ -1,0 +1,31 @@
+name: Copy the v5 bundle
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: copy-v5-bundle
+  cancel-in-progress: false
+
+jobs:
+  copy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Copy a new v5 bundle to its own release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SOURCE_TOKEN: ${{ secrets.OBSIDION_WALLET_READ_TOKEN }}
+        run: .claude/skills/wallet-sync/copy-bundle.sh
