@@ -1,5 +1,5 @@
 /**
- * Registration-deposit funnel reporters (ULT-777): shown, funded, swept and lapsed. Each fires from
+ * Registration-deposit funnel reporters: shown, funded, swept and lapsed. Each fires from
  * the store write that first sets its field, so reloads and the surfaces that observe one
  * registration never double-count. No event carries the address or the account.
  */
