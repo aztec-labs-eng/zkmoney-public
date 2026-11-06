@@ -1,4 +1,6 @@
 import { execFileSync } from "node:child_process"
+import { readdirSync, readFileSync } from "node:fs"
+import path from "node:path"
 
 const STANDARDS = new Set(
   "AES AGPL BIP BSD EIP ENSIP ERC GPL ISO LGPL MPL RFC RSA SHA USD UTF".split(" "),
@@ -66,15 +68,42 @@ function addedLines(range) {
   })
 }
 
+const filesIn = (dir) =>
+  readdirSync(dir, { recursive: true, withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => path.join(entry.parentPath, entry.name))
+    .sort()
+
+const textLines = (dir) =>
+  filesIn(dir).flatMap((file) => {
+    const data = readFileSync(file)
+    if (data.includes(0)) return []
+    const name = path.relative(dir, file)
+    return data
+      .toString("utf8")
+      .split("\n")
+      .map((text, i) => ({ file: name, line: i + 1, text }))
+  })
+
+const key = ({ kind, item }) => `${kind}\0${item}`
+
 const args = process.argv.slice(2)
-if (args.length !== 1) {
-  console.error("Usage: node scan.mjs <git range>")
+if (args.length < 1 || args.length > 2) {
+  console.error(
+    "Usage: node scan.mjs <git range>, or node scan.mjs <bundle dir> <baseline bundle dir>",
+  )
   process.exit(2)
 }
+const [target, baseline] = args
+const lines = baseline ? textLines(target) : addedLines(target)
+const known = new Set(
+  baseline ? textLines(baseline).flatMap(({ file, text }) => findings(file, text).map(key)) : [],
+)
 let count = 0
-for (const { file, line, text } of addedLines(args[0]))
-  for (const { kind, item } of findings(file, text)) {
-    console.log(`${file}:${line}: ${kind}: ${item}`)
+for (const { file, line, text } of lines)
+  for (const finding of findings(file, text)) {
+    if (known.has(key(finding))) continue
+    console.log(`${file}:${line}: ${finding.kind}: ${finding.item}`)
     count++
   }
 console.error(`${count} forbidden items`)

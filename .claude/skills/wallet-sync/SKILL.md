@@ -104,14 +104,25 @@ node -e 'import("./scripts/check.mjs").then((m) => console.log(m.assetName))'
 
 `fetch:bundle` reads the asset from the `source-generations` release, else from the release whose tag is the asset name without `.tar.zst`. The releases of this repository are immutable: nobody can add an asset to a published release, and nobody can use the tag of a deleted release again. So each new bundle gets its own release. Before a desktop release, this repository must have the asset. To add it:
 
-1. Download the asset from the private `source-generations` release into a new, empty directory.
-2. Scan its contents for the items in [Rules](#rules).
+1. Download the asset from the private `source-generations` release into a new, empty directory `$DIR`. `$TAG` is the asset name without `.tar.zst`.
+   ```shell
+   gh release download source-generations -R aztec-labs-eng/obsidion-wallet -p "$TAG.tar.zst" -D "$DIR"
+   ```
+2. Scan the asset against the newest bundle in this repository. The published bundles contain Linear and Slack links in compiled Noir sources, so the scan reports only the items that the newest bundle does not have.
+   ```shell
+   OLD=$(gh release list --limit 100 --json tagName,createdAt \
+     -q '[.[] | select(.tagName | startswith("generation-v5-"))] | max_by(.createdAt) | .tagName')
+   gh release download "$OLD" -D "$DIR"
+   mkdir "$DIR/old" "$DIR/new"
+   tar --zstd -xf "$DIR/$OLD.tar.zst" -C "$DIR/old"
+   tar --zstd -xf "$DIR/$TAG.tar.zst" -C "$DIR/new"
+   node .claude/skills/wallet-sync/scan.mjs "$DIR/new" "$DIR/old"
+   ```
 3. With approval, create the release with the asset in one command. `gh release create` uploads the asset before it publishes the release:
    ```shell
    gh release create "$TAG" "$DIR/$TAG.tar.zst" --target main --prerelease --latest=false \
      --title "v5 bundle <inputs hash>" --notes "<wallet commit, protocol and inputs hash>"
    ```
-   `$TAG` is the asset name without `.tar.zst`.
 4. Run `fetch:bundle` and `check:bundle` against this repository.
 
 ## 7. Release
