@@ -63,7 +63,7 @@ The exporter stops if a checkout has tracked changes or if the Oxide checkout is
    ```shell
    diff <(git diff tmp-delta~1 origin/main | grep -v '^index ') <(git diff tmp-delta HEAD | grep -v '^index ')
    ```
-2. Run `node "$WALLET/public-export/check-public-only.mjs" . "$SCRATCH/exp-$TARGET"`. Each file that it flags must be a file that the private repository deleted, or a public edit that step 1 shows. The check also flags the files of this skill, until the private exporter has them in `public-export/overlay/`.
+2. Run `node "$WALLET/public-export/check-public-only.mjs" . "$SCRATCH/exp-$TARGET"`. Each file that it flags must be a file that the private repository deleted, or a public edit that step 1 shows. The check also flags the files of this skill and `.github/workflows/copy-v5-bundle.yml`, until the private exporter has them in `public-export/overlay/`.
 3. Scan the added lines for the items in [Rules](#rules): `node .claude/skills/wallet-sync/scan.mjs origin/main..HEAD`. The script prints each item with its file and line, and exits with 1 when it finds an item. It does not report a line that the sync only moves. Remove each item that it reports, unless it cites a public item, such as an issue of `aztec-packages`. If an item is a standard name, such as `SHA-256`, add its prefix to `STANDARDS` in `scan.mjs`.
 4. Make sure that `EXPORT-MANIFEST.json` names the target as `source`.
 5. Make sure that `packages/generation-v5/scripts/fetch.mjs` has `BUNDLE_RELEASE`. Without it, `fetch:bundle` reads only `source-generations`, and a new bundle cannot reach this repository. `BUNDLE_RELEASE` is a public edit that the private repository does not have. If the sync has a conflict in `fetch.mjs`, keep it.
@@ -102,7 +102,19 @@ The wallet reads v5 accounts through a prebuilt v5 wallet bundle. The name of th
 node -e 'import("./scripts/check.mjs").then((m) => console.log(m.assetName))'
 ```
 
-`fetch:bundle` reads the asset from the `source-generations` release, else from the release whose tag is the asset name without `.tar.zst`. The releases of this repository are immutable: nobody can add an asset to a published release, and nobody can use the tag of a deleted release again. So each new bundle gets its own release. Before a desktop release, this repository must have the asset. To add it:
+`fetch:bundle` reads the asset from the `source-generations` release, else from the release whose tag is the asset name without `.tar.zst`. The releases of this repository are immutable: nobody can add an asset to a published release, and nobody can use the tag of a deleted release again. So each new bundle gets its own release. Before a desktop release, this repository must have the asset.
+
+The `Copy the v5 bundle` workflow (`.github/workflows/copy-v5-bundle.yml`) adds the asset after each push to `main`. Its script `copy-bundle.sh` does these steps:
+
+1. If this repository has the release whose tag is the asset name without `.tar.zst`, stop with success.
+2. Download the asset from the private `source-generations` release. The repository secret `OBSIDION_WALLET_READ_TOKEN` gives read access to the releases of `obsidion-wallet`.
+3. Check each file of the bundle against `manifest.json` with `check.mjs`.
+4. Scan the asset against the newest v5 bundle release of this repository, with `scan.mjs`. The log of the workflow is public, so it shows only the count of items.
+5. Create a pre-release with the asset. The release is not marked latest.
+
+An absent asset stops the workflow before step 5. When the private CI publishes the asset later, run `gh workflow run copy-v5-bundle.yml` with approval. After the release, run `fetch:bundle` and `check:bundle` against this repository.
+
+A scan finding also stops the workflow. To read the items and add the asset by hand:
 
 1. Download the asset from the private `source-generations` release into a new, empty directory `$DIR`. `$TAG` is the asset name without `.tar.zst`.
    ```shell
@@ -118,7 +130,7 @@ node -e 'import("./scripts/check.mjs").then((m) => console.log(m.assetName))'
    tar --zstd -xf "$DIR/$TAG.tar.zst" -C "$DIR/new"
    node .claude/skills/wallet-sync/scan.mjs "$DIR/new" "$DIR/old"
    ```
-3. With approval, create the release with the asset in one command. `gh release create` uploads the asset before it publishes the release:
+3. If an item is private, stop and tell the user: the private repository must remove it. Else, with approval, create the release with the asset in one command. `gh release create` uploads the asset before it publishes the release:
    ```shell
    gh release create "$TAG" "$DIR/$TAG.tar.zst" --target main --prerelease --latest=false \
      --title "v5 bundle <inputs hash>" --notes "<wallet commit, protocol and inputs hash>"
