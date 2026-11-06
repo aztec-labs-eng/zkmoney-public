@@ -109,6 +109,22 @@ test("reports each kind of private item", () => {
   })
 })
 
+test("reports only the bundle items that the baseline does not have", () => {
+  const baseline = mkdtempSync(path.join(tmpdir(), "scan-baseline-"))
+  const bundle = mkdtempSync(path.join(tmpdir(), "scan-bundle-"))
+  const known = "// https://linear.app/team/issue/AB-1/x\n"
+  write(baseline, { "assets/old-A1.js": known })
+  write(bundle, {
+    "assets/old-B2.js": `changed ${known}`,
+    "assets/new-C3.js": "a\nb // TODO(ABC-12)\n",
+    "assets/logo.png": Buffer.from([0x89, 0x50, 0x00, 0x4c, 0x4d, 0x2d, 0x32]),
+  })
+  assert.deepEqual(run(tmpdir(), bundle, baseline), {
+    status: 1,
+    lines: ["assets/new-C3.js:2: ticket ID: ABC-12"],
+  })
+})
+
 test("fails with usage text for a wrong count of arguments", () => {
   assert.equal(run(tmpdir()).status, 2)
 })
