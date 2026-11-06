@@ -6,14 +6,21 @@ const STANDARDS = new Set(
   "AES AGPL BIP BSD EIP ENSIP ERC GPL ISO LGPL MPL RFC RSA SHA USD UTF".split(" "),
 )
 
+const standard = (match) => STANDARDS.has(match[0].split("-")[0].toUpperCase())
+const isCss = (file) => /\.s?css$/.test(file)
+
 const RULES = [
   [
     "private link",
     /\blinear\.app\/[\w/.-]*|\b[\w-]+\.slack\.com\b[\w/.-]*|\bgithub\.com\/aztec-labs-eng\/(?!(?:zkmoney-public|aztec-node)(?![\w.-]))[\w.-]+/gi,
   ],
-  ["ticket ID", /(?<![\w.$-])([A-Z]{2,5})-\d+(?!\w)/g],
-  ["ticket ID", /(?<![\w.$-])(?:gk|ktd|ox|ult|zkm)-[1-9]\d*(?!\w|\.\d)/gi],
-  ["ticket ID", /(?<![\w.$-])F-[1-9]\d+(?!\w)/g],
+  ["ticket ID", /(?<![\w.$-])[A-Z]{2,5}-\d{2,}(?!\w)/g, { skip: standard }],
+  [
+    "ticket ID",
+    /(?<![\w.$-])(?:gk|ktd|ox|ult|zkm)-[1-9]\d*(?!\w|\.\d)/gi,
+    { skip: (match) => standard(match) || /^[A-Z]+-\d{2,}$/.test(match[0]) },
+  ],
+  ["ticket ID", /(?<![\w.$-])F-[1-9]\d+(?!\w)/g, { skip: standard }],
   ["AWS host", /\b[\w.-]+\.(?:cloudfront\.net|amazonaws\.com)\b/gi],
   [
     "internal IP",
@@ -24,23 +31,38 @@ const RULES = [
     "token",
     /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b|\bgh[pousr]_\w{36,}|\bgithub_pat_\w{22,}|\bxox[abposr]-[\w-]{10,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|\blin_api_\w{20,}|\bsk-ant-[\w-]{20,}|alchemy\.com\/v2\/[\w-]{16,}|infura\.io\/v3\/[0-9a-f]{32}/g,
   ],
-  ["PR number", /(?<=^|[\s(])#\d{2,5}(?=$|[\s).,:])/g, (file) => /\.s?css$/.test(file)],
+  ["PR number", /(?<=^|[\s(])#\d{2,5}(?=$|[\s).,:])/g, { inComments: true }],
 ]
 
-const commentStart = (text) => {
-  const at = text.search(/\/[*/]/)
-  return at < 0 ? text.length : at
+const findings = ({ text, comments = text }) =>
+  RULES.flatMap(([kind, pattern, { skip = () => false, inComments = false } = {}]) =>
+    [...(inComments ? comments : text).matchAll(pattern)]
+      .filter((match) => !skip(match))
+      .map((match) => ({ kind, item: match[0], at: match.index })),
+  ).sort((a, b) => a.at - b.at)
+
+const commentsOf = (content) => {
+  let open = false
+  return content.split("\n").map((line) => {
+    let rest = false
+    return line.replace(/\/\*|\*\/|\/\/|[^]/g, (token) => {
+      if (token === "/*" && !rest) open = true
+      else if (token === "//" && !open) rest = true
+      const kept = open || rest
+      if (token === "*/") open = false
+      return kept ? token : " ".repeat(token.length)
+    })
+  })
 }
 
-const findings = (file, text) =>
-  RULES.flatMap(([kind, pattern, commentsOnly]) => {
-    const from = commentsOnly?.(file) ? commentStart(text) : 0
-    return [...text.slice(from).matchAll(pattern)]
-      .filter((match) => kind !== "ticket ID" || !STANDARDS.has(match[1]))
-      .map((match) => ({ kind, item: match[0], at: from + match.index }))
+const newSide = (range, file) => {
+  const head = range.split(/\.\.\.?/)[1]
+  if (head === undefined) return readFileSync(file, "utf8")
+  return execFileSync("git", ["show", `${head || "HEAD"}:${file}`], {
+    encoding: "utf8",
+    maxBuffer: 1 << 30,
   })
-    .filter((a, i, all) => all.findIndex((b) => b.at === a.at && b.item === a.item) === i)
-    .sort((a, b) => a.at - b.at)
+}
 
 function addedLines(range) {
   const diff = execFileSync(
@@ -61,10 +83,14 @@ function addedLines(range) {
       removed.set(key, (removed.get(key) ?? 0) + 1)
     }
   }
-  return added.filter(({ text }) => {
-    const count = removed.get(text.trim())
-    if (count) removed.set(text.trim(), count - 1)
-    return !count
+  const comments = new Map()
+  return added.filter((entry) => {
+    const count = removed.get(entry.text.trim())
+    if (count) removed.set(entry.text.trim(), count - 1)
+    if (count || !isCss(entry.file)) return !count
+    if (!comments.has(entry.file)) comments.set(entry.file, commentsOf(newSide(range, entry.file)))
+    entry.comments = comments.get(entry.file)[entry.line - 1]
+    return true
   })
 }
 
@@ -79,10 +105,11 @@ const textLines = (dir) =>
     const data = readFileSync(file)
     if (data.includes(0)) return []
     const name = path.relative(dir, file)
-    return data
-      .toString("utf8")
+    const content = data.toString("utf8")
+    const comments = isCss(name) ? commentsOf(content) : []
+    return content
       .split("\n")
-      .map((text, i) => ({ file: name, line: i + 1, text }))
+      .map((text, i) => ({ file: name, line: i + 1, text, comments: comments[i] }))
   })
 
 const key = ({ kind, item }) => `${kind}\0${item}`
@@ -97,13 +124,13 @@ if (args.length < 1 || args.length > 2) {
 const [target, baseline] = args
 const lines = baseline ? textLines(target) : addedLines(target)
 const known = new Set(
-  baseline ? textLines(baseline).flatMap(({ file, text }) => findings(file, text).map(key)) : [],
+  baseline ? textLines(baseline).flatMap((entry) => findings(entry).map(key)) : [],
 )
 let count = 0
-for (const { file, line, text } of lines)
-  for (const finding of findings(file, text)) {
+for (const entry of lines)
+  for (const finding of findings(entry)) {
     if (known.has(key(finding))) continue
-    console.log(`${file}:${line}: ${finding.kind}: ${finding.item}`)
+    console.log(`${entry.file}:${entry.line}: ${finding.kind}: ${finding.item}`)
     count++
   }
 console.error(`${count} forbidden items`)
