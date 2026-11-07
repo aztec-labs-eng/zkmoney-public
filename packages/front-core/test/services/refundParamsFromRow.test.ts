@@ -6,12 +6,7 @@ import {
   refundParamsFromRow,
   isPaylinkInRefundWindow,
   paylinkWindows,
-  eligibleEscrowRows,
 } from "../../src/core/services/paylink/refundParamsFromRow"
-import {
-  markRefundInFlight,
-  clearRefundInFlight,
-} from "../../src/core/services/paylink/refundInFlight"
 import type { PaylinkTransaction } from "../../src/types"
 
 // `refundParamsFromRow` delegates the link decode to
@@ -105,80 +100,6 @@ describe("creatorLinksFromRows", () => {
       baseRow({ paylink: "https://x/#frag", fallbackSecret: "not-a-field" }),
     ]
     expect(await creatorLinksFromRows(rows)).toEqual([])
-  })
-})
-
-describe("eligibleEscrowRows", () => {
-  const escrowRow = (overrides: Partial<PaylinkTransaction> = {}): PaylinkTransaction =>
-    baseRow({
-      paylink: "https://x/#frag",
-      fallbackSecret: Fr.random().toString(),
-      payToEmailSecret: "0xsecret-escrow",
-      ...overrides,
-    })
-
-  it("includes a row with decodable material and no lifecycle flags", async () => {
-    vi.spyOn(PaylinkService, "parsePaylinkUrl").mockResolvedValue(decodedParams())
-    const rows = await eligibleEscrowRows([escrowRow()])
-    expect(rows).toHaveLength(1)
-    expect(rows[0].txHash).toBe("0xrow")
-  })
-
-  it("excludes migrated and refund-in-flight rows", async () => {
-    vi.spyOn(PaylinkService, "parsePaylinkUrl").mockResolvedValue(decodedParams())
-    markRefundInFlight("0xinflight")
-    try {
-      const rows = await eligibleEscrowRows([
-        escrowRow({ txHash: "0xc", isMigrated: true }),
-        escrowRow({ txHash: "0xd", payToEmailSecret: "0xinflight" }),
-      ])
-      expect(rows).toEqual([])
-    } finally {
-      clearRefundInFlight("0xinflight")
-    }
-  })
-
-  // Local claim/refund flags can reflect pending-chain txs demoted at cutover — the exit runtime
-  // decides spentness from frozen chain state, so these rows must still cross the seam.
-  it("includes locally-claimed and locally-refunded rows", async () => {
-    vi.spyOn(PaylinkService, "parsePaylinkUrl").mockResolvedValue(decodedParams())
-    const rows = await eligibleEscrowRows([
-      escrowRow({ txHash: "0xa", isClaimed: true }),
-      escrowRow({ txHash: "0xb", isRefunded: true }),
-    ])
-    expect(rows.map((r) => r.txHash)).toEqual(["0xa", "0xb"])
-  })
-
-  it("excludes rows missing material or a create txHash", async () => {
-    vi.spyOn(PaylinkService, "parsePaylinkUrl").mockResolvedValue(decodedParams())
-    const rows = await eligibleEscrowRows([
-      escrowRow({ txHash: "0xa", paylink: undefined }),
-      escrowRow({ txHash: "0xb", fallbackSecret: undefined }),
-      escrowRow({ txHash: "" }),
-    ])
-    expect(rows).toEqual([])
-  })
-
-  // a malformed-but-present link is dropped at the gate — it must never reach the exit
-  // runtime, where a parse failure would fail the whole migration record.
-  it("drops a row whose link does not decode, keeping decodable siblings", async () => {
-    vi.spyOn(PaylinkService, "parsePaylinkUrl").mockImplementation(async (url: string) => {
-      if (url === "https://x/#garbage") throw new Error("Invalid paylink link")
-      return decodedParams()
-    })
-    const rows = await eligibleEscrowRows([
-      escrowRow({ txHash: "0xbad", paylink: "https://x/#garbage" }),
-      escrowRow({ txHash: "0xgood" }),
-    ])
-    expect(rows.map((r) => r.txHash)).toEqual(["0xgood"])
-  })
-
-  it("ignores non-PAY rows", async () => {
-    const spy = vi.spyOn(PaylinkService, "parsePaylinkUrl")
-    const claimRow = escrowRow({ txHash: "0xclaim" })
-    ;(claimRow as { emailPaymentAction: string }).emailPaymentAction = "Claim Back"
-    expect(await eligibleEscrowRows([claimRow])).toEqual([])
-    expect(spy).not.toHaveBeenCalled()
   })
 })
 

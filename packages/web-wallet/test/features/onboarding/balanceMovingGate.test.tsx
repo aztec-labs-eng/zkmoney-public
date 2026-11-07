@@ -3,17 +3,17 @@ import { createRoot, type Root } from "react-dom/client"
 import { MemoryRouter, Route, Routes } from "react-router-dom"
 import type { BackupRotationRecord } from "@obsidion/front-core"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { setIdentity } from "../../support/identity"
 import { signedRecord, storedRotation, TWO_KEY, word } from "../../support/backupAdd"
 
 const ONE_KEY = word(10)
 const OTHER = word(0x99)
-const identity = { address: TWO_KEY as string, handle: "taga" }
-vi.mock("../../../src/features/identity/walletIdentity", () => ({ loadWalletIdentity: () => identity }))
-vi.mock("../../../src/features/onboarding/openRegistration", () => ({
+vi.mock("../../../src/features/registration/openRegistration", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../src/features/registration/openRegistration")>()),
   useNameClaimPending: () => false,
   useRegistrationDepositOwed: () => false,
 }))
-vi.mock("../../../src/features/onboarding/sponsoredRailReadiness", () => ({
+vi.mock("../../../src/features/registration/sponsoredRailReadiness", () => ({
   useSponsoredRailPending: () => false,
 }))
 vi.mock("../../../src/config/env", async (importOriginal) => ({
@@ -23,7 +23,7 @@ vi.mock("../../../src/config/env", async (importOriginal) => ({
 vi.mock("../../../src/features/contacts/ContactDetailScreen/ContactDetailScreen", () => ({
   ContactDetailScreen: () => <div>contact page</div>,
 }))
-const showErrorModal = vi.fn()
+const { showErrorModal } = vi.hoisted(() => ({ showErrorModal: vi.fn() }))
 vi.mock("../../../src/errors/errorModal", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../src/errors/errorModal")>()),
   showErrorModal,
@@ -31,7 +31,9 @@ vi.mock("../../../src/errors/errorModal", async (importOriginal) => ({
 
 const { ActionGate, ContactRoute } = await import("../../../src/App")
 const { useActionGuard } = await import("../../../src/features/actionGate")
-const { useBalanceMovingPause } = await import("../../../src/features/backupPasskey/balanceMovingPause")
+const { useBalanceMovingPause } = await import(
+  "../../../src/features/backupPasskey/balanceMovingPause"
+)
 const { getBackupRotationStore, resetBackupRotationStoreForTests } = await import(
   "../../../src/features/backupPasskey/backupRotationStore"
 )
@@ -47,6 +49,8 @@ const moving = () => record({ phase: "rerooted", reroot: { switched: true } })
  * same note the balance move's chunks spend. Each sponsored action waits from the re-root's switch
  * until the move ends, and says why.
  */
+const { openTestSession } = await import("../../support/session")
+const { closeSession } = await import("../../../src/session/session")
 describe("sponsored spends during a backup passkey's balance move", () => {
   let host: HTMLDivElement
   let root: Root
@@ -58,7 +62,8 @@ describe("sponsored spends during a backup passkey's balance move", () => {
     await checkUpgradeLock(OTHER)
     localStorage.clear()
     resetBackupRotationStoreForTests()
-    identity.address = TWO_KEY
+    openTestSession()
+    await setIdentity({ address: TWO_KEY, handle: "taga" })
     setUpgradeStatus({ state: "none", registration: false })
     showErrorModal.mockReset()
     host = document.createElement("div")
@@ -67,6 +72,7 @@ describe("sponsored spends during a backup passkey's balance move", () => {
   })
   afterEach(() => {
     act(() => root.unmount())
+    closeSession()
     host.remove()
   })
 
@@ -123,10 +129,10 @@ describe("sponsored spends during a backup passkey's balance move", () => {
 
   it("pauses the one-key account too, and leaves another account alone", async () => {
     await save(moving())
-    identity.address = ONE_KEY
+    await setIdentity({ address: ONE_KEY, handle: "taga" })
     await mount("withdraw")
     expect(paused()).toBe(true)
-    identity.address = OTHER
+    await setIdentity({ address: OTHER, handle: "taga" })
     await mount("withdraw")
     expect(host.textContent).toContain("withdraw screen")
   })
@@ -164,6 +170,29 @@ describe("sponsored spends during a backup passkey's balance move", () => {
       expect.objectContaining({ title: "Moving your balance" }),
     )
     act(() => guard("deposit", run))
+    expect(run).toHaveBeenCalledOnce()
+  })
+
+  it("holds a Savings move's press while the add has yet to switch, and says why", async () => {
+    // A move started now would land for the one-key account after the switch, unclaimed.
+    await save(record({ phase: "funded" }))
+    await setIdentity({ address: ONE_KEY, handle: "taga" })
+    let guard!: ReturnType<typeof useActionGuard>
+    function Probe() {
+      guard = useActionGuard()
+      return null
+    }
+    await render(<Probe />)
+    const run = vi.fn()
+    act(() => guard("savings", run))
+    expect(run).not.toHaveBeenCalled()
+    expect(showErrorModal).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "Finish adding your backup passkey" }),
+    )
+    await save(record({ phase: "rerooted", reroot: { switched: true } }))
+    await setIdentity({ address: TWO_KEY, handle: "taga" })
+    await save(record({ phase: "done" }))
+    act(() => guard("savings", run))
     expect(run).toHaveBeenCalledOnce()
   })
 

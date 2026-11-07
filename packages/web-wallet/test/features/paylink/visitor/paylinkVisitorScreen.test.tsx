@@ -120,7 +120,7 @@ vi.mock("../../../../src/features/onboarding/InvitationChrome", () => ({
     </div>
   ),
 }))
-vi.mock("../../../../src/features/onboarding/OnboardingScreen", () => ({
+vi.mock("../../../../src/features/onboarding/OnboardingScreen/OnboardingScreen", () => ({
   OnboardingScreen: ({
     inviteHeader,
     onExit,
@@ -173,7 +173,7 @@ vi.mock("@obsidion/web-ds", () => ({
 const { PaylinkVisitorScreen } = await import(
   "../../../../src/features/paylink/PaylinkVisitorScreen"
 )
-const { closeSession } = await import("../../../../src/platform/session")
+const { closeSession } = await import("../../../../src/session/session")
 const { openTestSession } = await import("../../../support/session")
 
 const link = (over: Record<string, unknown> = {}) =>

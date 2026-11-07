@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import type { Hex } from "viem"
 import { WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
-import type { SIPADepositRecord } from "../../src/core/services/deposits/SIPADepositStore"
+import type { SipaDeposit } from "../../src/engine/sipaDeposits"
 import type { SipaProcessingState } from "../../src/core/services/deposits/sipaProcessing"
 import { STUCK_SWEEP_MS } from "../../src/core/services/deposits/sipaStuck"
 import {
@@ -27,7 +27,7 @@ const stuck = {
   tokenSymbol: "DAI",
   phase: "sweeping",
   startTime: NOW - 10 * 60_000,
-} as SIPADepositRecord
+} as SipaDeposit
 
 const blocked: SipaProcessingState = {
   reason: {
@@ -127,7 +127,7 @@ describe("depositDetailOffer", () => {
 })
 
 describe("recoveryReasonFor", () => {
-  const at = (patch: Partial<SIPADepositRecord>) => ({
+  const at = (patch: Partial<SipaDeposit>) => ({
     ...stuck,
     startTime: NOW - STUCK_SWEEP_MS,
     ...patch,

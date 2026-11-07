@@ -33,6 +33,7 @@ const tuple = (portal: string, rollupVersion: string) =>
   ({ portal, rollupVersion } as OxideEnvTuple)
 const account = {} as never
 const active = { wallet: {}, account } as never
+const auth = {} as never
 const current = tuple("0x" + "01".repeat(20), "7")
 const retired = tuple("0x" + "AB".repeat(20), "6")
 
@@ -46,30 +47,30 @@ describe("sourceChain", () => {
   it("opens a rollup of this generation through the node the profile names for the portal", async () => {
     h.nodes.set("0x" + "ab".repeat(20), "https://old.rpc.example")
     h.open.mockResolvedValue({ wallet: "source", account: "sourceAccount" })
-    await expect(sourceChain(active, current, retired)).resolves.toEqual({
+    await expect(sourceChain(active, current, retired, auth)).resolves.toEqual({
       kind: "pxe",
       wallet: "source",
       account: "sourceAccount",
     })
-    expect(h.open).toHaveBeenCalledWith("https://old.rpc.example", account)
+    expect(h.open).toHaveBeenCalledWith("https://old.rpc.example", account, auth)
   })
 
   it("opens another generation's rollup through that generation's session", async () => {
     h.nodes.set("0x" + "ab".repeat(20), "https://v5.rpc.example")
     h.otherGeneration.mockResolvedValue(true)
     h.switchSession.mockResolvedValue("session")
-    await expect(sourceChain(active, current, retired)).resolves.toEqual({
+    await expect(sourceChain(active, current, retired, auth)).resolves.toEqual({
       kind: "generation",
       session: "session",
     })
-    expect(h.switchSession).toHaveBeenCalledWith("https://v5.rpc.example", account)
+    expect(h.switchSession).toHaveBeenCalledWith("https://v5.rpc.example", account, auth)
     expect(h.open).not.toHaveBeenCalled()
   })
 
   it("refuses a portal on another rollup that no profile version reaches", async () => {
-    await expect(sourceChain(active, current, tuple("0x" + "cd".repeat(20), "6"))).rejects.toThrow(
-      /No node is configured/,
-    )
+    await expect(
+      sourceChain(active, current, tuple("0x" + "cd".repeat(20), "6"), auth),
+    ).rejects.toThrow(/No node is configured/)
   })
 })
 

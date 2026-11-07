@@ -3,6 +3,7 @@ import { usd } from "../../ui/format"
 import { LocalPasskeyHint } from "../../ui/LocalPasskeyHint"
 import { useBusyLabel } from "../operations/operations"
 import { SponsoredActionNotice, useSponsoredActionBlock } from "../allowance/SponsoredActionNotice"
+import balanceCopy from "../../ui/balance.copy"
 
 export function PayConfirmForm({
   title,
@@ -11,6 +12,7 @@ export function PayConfirmForm({
   ready,
   busy,
   overspent,
+  balanceUnconfirmed,
   limitError,
   isSend,
   payee,
@@ -23,6 +25,7 @@ export function PayConfirmForm({
   /** Another tx flow is running; the wallet is single-flight. */
   busy: boolean
   overspent: boolean
+  balanceUnconfirmed: boolean
   limitError?: string
   isSend: boolean
   /** Paying a request or a pay page: the amount leads, and the rows say who, what fee, how private. */
@@ -31,6 +34,8 @@ export function PayConfirmForm({
 }) {
   const busyLabel = useBusyLabel()
   const unsponsored = useSponsoredActionBlock(isSend)
+  // A send waits for this session's balance read; paying a request opens here.
+  const checking = isSend && balanceUnconfirmed
   const cta = payee ? `Pay ${usd(amount)}` : `Confirm & ${isSend ? "send" : "request"}`
   return (
     <div className="ww-pay__form">
@@ -72,8 +77,8 @@ export function PayConfirmForm({
       {/* A request is not signed with the passkey. */}
       {isSend && <LocalPasskeyHint />}
       <PrimaryGradientButton
-        title={busy ? busyLabel : ready ? cta : "Connecting…"}
-        isDisabled={!ready || overspent || !!limitError || busy || !!unsponsored}
+        title={busy ? busyLabel : !ready ? "Connecting…" : checking ? balanceCopy.checking : cta}
+        isDisabled={!ready || checking || overspent || !!limitError || busy || !!unsponsored}
         onClick={onConfirm}
       />
     </div>

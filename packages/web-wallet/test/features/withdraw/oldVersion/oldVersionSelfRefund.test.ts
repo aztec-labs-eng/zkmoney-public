@@ -5,7 +5,7 @@ import { WITHDRAW_RELAYER_TIP as TIP } from "@obsidion/core/constants"
 
 vi.mock("../../../../src/config/env", () => ({ getConfig: () => ({}) }))
 vi.mock("../../../../src/config/oxideTuple", () => ({ l1PublicClient: () => ({}) }))
-vi.mock("../../../../src/features/deposit/sipaRecovery", () => ({}))
+vi.mock("../../../../src/features/deposit/recovery/sipaRecovery", () => ({}))
 vi.mock("../../../../src/features/migration/oldVersionWithdraw", () => ({}))
 vi.mock("../../../../src/features/withdraw/oldVersionWithdrawals", () => ({}))
 

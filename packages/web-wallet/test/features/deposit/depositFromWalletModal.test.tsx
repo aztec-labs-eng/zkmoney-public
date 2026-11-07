@@ -20,7 +20,7 @@ import {
 } from "@obsidion/front-core"
 import type { PortalCapacitySnapshot } from "@obsidion/sdk"
 import type { L1TokenBalance } from "../../../src/features/deposit/l1DepositTokenBalance"
-import type { DepositTokenOption } from "../../../src/features/deposit/loadDepositFacts"
+import type { DepositTokenOption } from "../../../src/features/sipa/loadDepositFacts"
 import {
   MAINNET_DAI,
   MAINNET_USDC,
@@ -66,9 +66,6 @@ vi.mock("../../../src/features/deposit/useL1TokenBalance", () => ({ useL1TokenBa
 vi.mock("../../../src/ui/screening", () => ({
   useScreenedAddress: () => ({ verdict: undefined, cleared: screening.cleared, rescreen: vi.fn() }),
   ScreeningNotice: () => <span>screening-notice</span>,
-}))
-vi.mock("../../../src/features/deposit/sipaGateway", () => ({
-  getSipaDepositGateway: () => ({ deposit }),
 }))
 
 const DAI = 10n ** 18n
@@ -124,7 +121,7 @@ vi.mock("../../../src/errors/errorModal", () => ({ showReportableError: vi.fn() 
 vi.mock("../../../src/config/oxideTuple", () => ({
   getOxideTuple: () => Promise.reject(new Error("no manifest in this suite")),
 }))
-vi.mock("../../../src/features/deposit/loadDepositFacts", (importOriginal) =>
+vi.mock("../../../src/features/sipa/loadDepositFacts", (importOriginal) =>
   mockLoadDepositFacts(importOriginal, () => (rowCap.twoRows ? twoRowTokens() : mainnetTokens())),
 )
 vi.mock("../../../src/features/allowance/useSponsoredAllowance", () => ({
@@ -138,7 +135,13 @@ vi.mock("../../../src/lib/analytics", () => ({
   amountBucket: () => "b",
 }))
 
-const { DepositFromWalletModal } = await import("../../../src/features/deposit/DepositFromWalletModal")
+const { DepositFromWalletModal } = await import(
+  "../../../src/features/deposit/DepositFromWalletModal"
+)
+const { closeSession } = await import("../../../src/session/session")
+const { openTestSession } = await import("../../support/session")
+beforeEach(() => void openTestSession({ fundDeposit: deposit }))
+afterEach(closeSession)
 
 const l1 = {
   account: ACCOUNT,

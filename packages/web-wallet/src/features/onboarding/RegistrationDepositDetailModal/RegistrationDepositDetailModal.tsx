@@ -1,13 +1,12 @@
 import { Modal } from "../../../ui/Modal"
 import { useEffect, useRef, useState, type MutableRefObject } from "react"
 import { Link } from "react-router-dom"
-import { useDepositAdmission } from "../../identity/admission"
+import { useDepositAdmission, useDepositShown } from "../../registration/admission"
 import type { Address } from "viem"
 import { tokenDecimalsForNetwork } from "@obsidion/core/constants"
 import type { RegistrationKind } from "@obsidion/core/types"
 import { WALLET_TOKEN_SYMBOL } from "@obsidion/core/constants"
 import {
-  depositOwed,
   fundsIn,
   isTerminalRegistrationPhase,
   sipaSweepAllowed,
@@ -17,9 +16,9 @@ import {
   type RegistrationStage,
   useResource,
 } from "@obsidion/front-core"
-import { errorCopy } from "../../../errors/catalog"
-import { useRegistrationStage } from "../openRegistration"
-import { useSipaRecord } from "../useDepositWatch"
+import { errorCopy, errorMessage } from "../../../errors/catalog"
+import { useRegistrationStage } from "../../registration/openRegistration"
+import { useSipaRecord } from "../../sipa/useDepositWatch"
 import {
   ConfirmationSheetDetailRow,
   StatusBadge,
@@ -36,8 +35,8 @@ import {
   whenLabel,
 } from "../../../ui/detailRows"
 import { isDesktopL1SubmitActive } from "../../../platform/desktopBridge"
-import { useL1Wallet } from "../../deposit/l1Wallet"
-import type { L1ExitStage } from "../../deposit/sipaRecovery"
+import { useL1Wallet } from "../../../session/l1Wallet"
+import type { L1ExitStage } from "../../sipa/l1ExitChannels"
 import {
   useWalletPrompt,
   useWalletPromptStall,
@@ -49,36 +48,39 @@ import { isGateCancelled, useCeremonyGate } from "../../identity/ceremonyGate"
 import { PasskeyRefusal, type RefusalState } from "../../identity/PasskeyRefusal"
 import { isPasskeyPolicyError, type PasskeyAttemptHandle } from "@obsidion/passkey-web"
 import { GateStep } from "../../identity/PhoneSteps"
-import { reusePasskeyAccount } from "../oxideOnboarding"
-import { reloadIfSessionSwitched } from "../sessionReload"
+import { reusePasskeyAccount } from "../../identity/passkeyAccount"
+import { reloadIfSessionSwitched } from "../../../session/sessionReload"
 import { failureCode, fireEvent } from "../../../lib/analytics"
 import { passkeyTelemetry } from "../../../lib/passkeyTelemetry"
 import { canManualRegistrationSweep } from "@obsidion/front-core"
-import { manualRegistrationSweep } from "../registrationSweep"
-import { reservedUntil, type RegistrationTerms } from "../registrationTerms"
-import { registrationNeedsRefund, useRegistrationRefunded } from "../registrationQuoteRecovery"
+import { registrationDepositState } from "./registrationDepositState"
+import { manualRegistrationSweep } from "../../registration/registrationSweep"
+import type { RegistrationTerms } from "@obsidion/front-core"
+import { reservedUntil } from "../../registration/registrationTerms"
+import { useRegistrationRefunded } from "../../registration/registrationRecovery"
 import { DepositProcessingNotice } from "../../deposit/DepositProcessingNotice"
 import exitCopy from "../../deposit/DepositExitModal/DepositExitModal.copy"
 import { useSipaProcessing } from "../../deposit/sipaProcessing"
-import { useDepositTokens } from "../../deposit/loadDepositFacts"
-import { useOweRegistrationBroadcast } from "../../broadcasts/useOweRegistrationBroadcast"
-import { BroadcastStatusRow } from "../../broadcasts/BroadcastStatusRow"
-import { registrationAddressPublished } from "../webRegistration"
+import { useDepositTokens } from "../../sipa/loadDepositFacts"
+import { BroadcastStatusRow } from "../../broadcasts/BroadcastStatusRow/BroadcastStatusRow"
 import {
   DepositAddressRow,
   DepositPayBlock,
   registrationOverLimit,
   useRegistrationFunding,
-} from "../steps/DepositAddress"
+} from "../steps/DepositAddress/DepositAddress"
 import { AddressCapacityPanel } from "../../deposit/AddressCapacity"
 import { ADDRESS_RECHECK_NOTE } from "../../limits/limitsCopy"
 import { PendingLimitsLink, WalletAboutLimitsSheet } from "../../limits/AboutLimitsSheet"
 import { sourceFromTarget } from "../../limits/capacitySources"
-import { DepositLimitRows, type DepositTerms } from "../steps/DepositTermsRows"
+import {
+  DepositLimitRows,
+  type DepositTerms,
+} from "../../deposit/DepositTermsRows/DepositTermsRows"
 import { InfoButton } from "../../limits/InfoButton"
 import type { LimitsTopic } from "../../limits/aboutLimitsView"
-import type { RegistrationFunding } from "../registrationFunding"
-import { useSession } from "../../../platform/session"
+import type { RegistrationFunding } from "../../registration/registrationFunding"
+import { useSession, signedInAccount } from "../../../session/session"
 import copy from "./RegistrationDepositDetailModal.copy"
 import { fmt } from "../../../lib/fmt"
 
@@ -116,7 +118,8 @@ export function RegistrationDepositDetailModal({
   sweepFee,
   amount,
   deposited,
-  feeLabel,
+  fee,
+  feeWaived,
   pay,
   onClose,
 }: {
@@ -129,12 +132,13 @@ export function RegistrationDepositDetailModal({
    *  rather than guessing. */
   sweepFee?: bigint
   /** Headline figure, as the feed row shows it: the credit the sweep produces. */
-  amount: string
+  amount?: string
   /** What the sender actually put at the address (gross), when known. */
   deposited?: string
-  /** The fee the deposit covers; an earned tag's says the tag price was waived. Absent until the
-   *  schedule that prices it is known. */
-  feeLabel?: string
+  /** The fee the deposit covers; absent until the schedule that prices it is known. */
+  fee?: string
+  /** An earned tag's: its fee row says the tag price was waived. */
+  feeWaived?: boolean
   /** Set while the address still needs funds: renders the pay QR + address inline. */
   pay?: {
     token: Address
@@ -151,23 +155,19 @@ export function RegistrationDepositDetailModal({
 }) {
   const feeSymbol = useDepositTokens("registration")?.settlement.symbol ?? WALLET_TOKEN_SYMBOL
   const depositAdmitted = useDepositAdmission(record)
+  const seen = useDepositShown(record)
   const refunded = useRegistrationRefunded(record)
   const stage = useRegistrationStage(record)
-  const needsRefund = registrationNeedsRefund(record, terms, depositAdmitted || refunded, sweepFee)
+  const { needsRefund, publishing, fundingOpen } = registrationDepositState(
+    record,
+    terms,
+    stage,
+    { depositAdmitted, refunded, seen },
+    sweepFee,
+  )
   const status = needsRefund
     ? { label: copy.status.refund, badge: "pending" as const }
     : stage && registrationDepositStatus(record.tag, stage)
-  // The detail shows the address, so it owes the address's broadcast; one whose deposit must be
-  // recovered instead is not published.
-  useOweRegistrationBroadcast(record, !needsRefund)
-  // Only once funds wait on it.
-  const publishing =
-    stage !== undefined &&
-    fundsIn(stage) &&
-    !needsRefund &&
-    !registrationAddressPublished(record) &&
-    !isTerminalRegistrationPhase(record.phase) &&
-    record.sweptAt === undefined
   const fundingTxHash = record.fundingTxHash ?? funding?.txHash
   const { shown: processing, capacityKey } = useSipaProcessing(record.sipaAddress)
   const sweepTxHash = useSweepTx(record)
@@ -179,10 +179,6 @@ export function RegistrationDepositDetailModal({
   }
   // Unknown while the withdrawals load; the row that opens this waits for them too.
   if (!stage || !status) return null
-  // While the address still takes funds, its only copy is the pay block's, which the limits and
-  // capacity gate; the record row shows the address without offering it. Every state that shows
-  // the pay block is one of these.
-  const fundingOpen = depositOwed(stage) && !depositAdmitted && !needsRefund
   const holdEnds = isTerminalRegistrationPhase(record.phase)
     ? undefined
     : reservedUntil(terms, Date.now())
@@ -202,7 +198,7 @@ export function RegistrationDepositDetailModal({
         <TopNavIconButton icon="x" ariaLabel={copy.close} onClick={close} />
       </div>
       <div style={{ textAlign: "center", padding: "16px 0 20px" }}>
-        <div style={{ fontSize: 36, fontWeight: 700 }}>{amount}</div>
+        <div style={{ fontSize: 36, fontWeight: 700 }}>{amount || copy.amountFallback}</div>
         <div style={{ marginTop: 10, display: "flex", justifyContent: "center" }}>
           <StatusBadge label={status.label} badgeStyle={status.badge} />
         </div>
@@ -241,10 +237,14 @@ export function RegistrationDepositDetailModal({
           value={<span data-testid="registration-detail-deposited">{deposited}</span>}
         />
       )}
-      {feeLabel && (
+      {fee && (
         <ConfirmationSheetDetailRow
           label={copy.rows.fee}
-          value={<span data-testid="registration-detail-fee">{feeLabel}</span>}
+          value={
+            <span data-testid="registration-detail-fee">
+              {feeWaived ? fmt(copy.rows.feeWaived, { fee }) : fee}
+            </span>
+          }
         />
       )}
       {holdEnds !== undefined && (
@@ -400,7 +400,9 @@ export function ManualSweepAction({
   showReason?: boolean
 }) {
   const feeSymbol = useDepositTokens("registration")?.settlement.symbol ?? WALLET_TOKEN_SYMBOL
-  const obsidionWallet = useResource(useSession().wallet)
+  const own = useSession()
+  const { auth } = own
+  const obsidionWallet = useResource(own.wallet)
   const screener = useScreener()
   const { gate, state: gateState, cancel: cancelGate } = useCeremonyGate()
   // Closing the modal is the user's cancel: a sign-in still short of its keys must not go on to
@@ -471,13 +473,21 @@ export function ManualSweepAction({
       const signIn = passkeyTelemetry.begin({ ceremony: "unlock", flow: "deposit" })
       attempt.current = signIn
       const keys = await signIn.run((own) =>
-        reusePasskeyAccount(obsidionWallet, record.l2Address, undefined, gate, signal, own),
+        reusePasskeyAccount(
+          obsidionWallet,
+          { auth, accounts: signedInAccount },
+          record.l2Address,
+          undefined,
+          gate,
+          signal,
+          own,
+        ),
       )
-      if (reloadIfSessionSwitched(null, record.l2Address)) return
+      if (reloadIfSessionSwitched(own, record.l2Address)) return
       const opts = isDesktopL1SubmitActive() ? { destination: destination as Address } : {}
       // The paid address (typed destination or the connected account) is only known once the
       // channel resolves, so it is screened at submit rather than in the form.
-      await manualRegistrationSweep(record, {
+      await manualRegistrationSweep(own, record, {
         keys,
         ...opts,
         screen: (a) => screener.screen(a),
@@ -488,18 +498,16 @@ export function ManualSweepAction({
     } catch (err) {
       setStage("idle")
       if (err instanceof WalletPromptOpenError) {
-        setError(err.message)
+        setError(errorMessage(err))
         return
       }
       if (isGateCancelled(err) || prompt.cancelled(request)) return
       fireEvent("action_failed", { action: "registration_deposit", code: failureCode(err) })
       if (isPasskeyPolicyError(err)) {
-        setRefusal({ name: err.name, message: err.message })
+        setRefusal({ name: err.name, message: errorMessage(err) })
         return
       }
-      setError(
-        errorCopy(err) ?? (err instanceof Error ? err.message.split("\n")[0] : copy.sweepFailed), // slice-check-ignore: an uncoded error keeps its own words until its source throws a code
-      )
+      setError(errorCopy(err) ?? copy.sweepFailed)
     } finally {
       prompt.settle(request)
     }

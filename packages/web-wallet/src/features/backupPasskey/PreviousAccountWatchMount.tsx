@@ -1,7 +1,7 @@
 import { useEffect } from "react"
 import { PREVIOUS_MOVE_POLL_MS, useResource } from "@obsidion/front-core"
 import { getPreviousAccountWatcher } from "./previousAccountWatcher"
-import { useSession } from "../../platform/session"
+import { useSession } from "../../session/session"
 
 /**
  * Watches a rotated wallet's previous account on every wallet route, so a stored move chunk settles

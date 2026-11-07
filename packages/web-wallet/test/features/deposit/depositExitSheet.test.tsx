@@ -7,11 +7,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createRoot, type Root } from "react-dom/client"
 import {
   passThroughScreener,
-  PendingRegistrationStore,
   ScreeningProvider,
   type AddressScreener,
   type PendingRegistrationRecord,
-  type SIPADepositRecord,
+  type SipaDeposit,
 } from "@obsidion/front-core"
 import type { Address, Hex } from "viem"
 import { clearWalletPrompt, useWalletPrompt } from "../../../src/features/deposit/walletPrompt"
@@ -22,6 +21,7 @@ import {
   passkeyTelemetryHarness,
 } from "../../support/passkeyTelemetryHarness"
 import * as copy from "../../../src/features/limits/limitsCopy"
+import errorWords from "../../../src/errors/catalog.copy"
 
 const EXPLORER = "https://sepolia.etherscan.io"
 const SWEEP_HASH = `0x${"5e".repeat(32)}` as Hex
@@ -50,8 +50,8 @@ vi.mock("../../../src/config/env", async (importOriginal) => ({
     l1Chain: { name: "Sepolia", blockExplorers: { default: { url: EXPLORER } } },
   }),
 }))
-vi.mock("../../../src/features/deposit/l1Wallet", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../src/features/deposit/l1Wallet")>()),
+vi.mock("../../../src/session/l1Wallet", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../src/session/l1Wallet")>()),
   useL1Wallet: () => ({
     account: "0x00000000000000000000000000000000000000aa",
     connecting: false,
@@ -60,11 +60,11 @@ vi.mock("../../../src/features/deposit/l1Wallet", async (importOriginal) => ({
     switchNetwork: vi.fn(),
   }),
 }))
-vi.mock("../../../src/features/deposit/sipaSweep", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../src/features/deposit/sipaSweep")>()),
+vi.mock("../../../src/features/sipa/sipaSweep", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../src/features/sipa/sipaSweep")>()),
   selfSweep: h.selfSweep,
 }))
-vi.mock("../../../src/features/deposit/sipaRecovery", () => ({
+vi.mock("../../../src/features/deposit/recovery/sipaRecovery", () => ({
   recoverDeposit: vi.fn(),
   readStrandedToken: h.readStrandedToken,
 }))
@@ -75,7 +75,6 @@ vi.mock("../../../src/features/deposit/sipaProcessing", () => ({
     shown: h.processing.current,
     capacityKey: h.capacityKey.current,
   }),
-  sipaProcessingObserver: () => h.observer,
 }))
 // About limits reads its bucket from the shared registry; these fake stores record which bucket was asked for.
 const capacity = vi.hoisted(() => ({
@@ -89,7 +88,7 @@ vi.mock("../../../src/features/deposit/capacityStore", async () =>
 // No table is read unless a case lists its rows.
 const rows = vi.hoisted(() => ({ twoRows: false, asked: [] as (string | undefined)[] }))
 const ROW_USDC_TOKEN = vi.hoisted(() => "0x00000000000000000000000000000000000000c6")
-vi.mock("../../../src/features/deposit/loadDepositFacts", async (importOriginal) => {
+vi.mock("../../../src/features/sipa/loadDepositFacts", async (importOriginal) => {
   const { mockLoadDepositFacts, twoRowTokens } = await import("../../support/depositTokens")
   return mockLoadDepositFacts(importOriginal, () => (rows.twoRows ? twoRowTokens() : undefined))
 })
@@ -106,13 +105,15 @@ vi.mock("../../../src/features/allowance/useSponsoredAllowance", () => ({
   useSponsoredAllowance: () => ({ snapshot: { status: "signed-out" }, refresh: () => {} }),
 }))
 // The passkey helper drags the onboarding flow in; the registration tests only need its keys.
-vi.mock("../../../src/features/onboarding/oxideOnboarding", () => ({
+vi.mock("../../../src/features/identity/passkeyAccount", () => ({
   reusePasskeyAccount: h.reusePasskeyAccount,
 }))
 // Keep registrationRecordForSipa/canManualRegistrationSweep real — the seeded pending store is
 // what drives the routing under test; only the L1-touching sweep itself is stubbed.
-vi.mock("../../../src/features/onboarding/registrationSweep", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../src/features/onboarding/registrationSweep")>()),
+vi.mock("../../../src/features/registration/registrationSweep", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("../../../src/features/registration/registrationSweep")
+  >()),
   manualRegistrationSweep: h.manualRegistrationSweep,
 }))
 vi.mock("../../../src/lib/analytics", () => ({
@@ -121,9 +122,7 @@ vi.mock("../../../src/lib/analytics", () => ({
   lapTimer: () => () => 0,
 }))
 vi.mock("../../../src/errors/errorModal", () => ({ showReportableError: h.showReportableError }))
-vi.mock("../../../src/platform/auth/useAuthenticator", () => ({
-  getAuthService: () => ({ probePhoneReach: async () => "unknown" }),
-}))
+const fakeAuth = () => ({ probePhoneReach: async () => "unknown", recordsStale: () => false })
 // The DS drags in liquid-glass optics jsdom can't render; this test is about the sheet's content.
 vi.mock("@obsidion/web-ds", () => ({
   ConfirmationSheetDetailRow: ({ label, value }: { label: string; value: React.ReactNode }) => (
@@ -134,6 +133,7 @@ vi.mock("@obsidion/web-ds", () => ({
   ),
   DoubleCheckIcon: () => null,
   GradientText: ({ children }: { children?: React.ReactNode }) => <span>{children}</span>,
+  GradientToggle: () => null,
   Icon: () => null,
   PrimaryGradientButton: ({
     title,
@@ -151,6 +151,7 @@ vi.mock("@obsidion/web-ds", () => ({
     </button>
   ),
   NumberedStepRow: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
+  SettingsRow: ({ label }: { label: string }) => <div>{label}</div>,
   Spinner: () => null,
   TextField: ({
     label,
@@ -168,11 +169,11 @@ const { DepositExitModal, waitedLabel } = await import(
   "../../../src/features/deposit/DepositExitModal/DepositExitModal"
 )
 const { StrandedRecoveryModal } = await import(
-  "../../../src/features/deposit/StrandedRecoveryModal"
+  "../../../src/features/deposit/recovery/StrandedRecoveryModal"
 )
-const { SweepRefusedError } = await import("../../../src/features/deposit/sipaSweep")
-const { getPendingStore } = await import("../../../src/features/onboarding/webRegistration")
-const { closeSession } = await import("../../../src/platform/session")
+const { SweepRefusedError } = await import("../../../src/features/sipa/sipaSweep")
+const { seedRegistration } = await import("../../support/registrationFixtures")
+const { closeSession } = await import("../../../src/session/session")
 const { openTestSession } = await import("../../support/session")
 
 declare global {
@@ -193,9 +194,12 @@ const stuck = {
   tokenSymbol: "DAI",
   phase: "sweeping",
   startTime: STARTED_AT,
-} as SIPADepositRecord
+} as SipaDeposit
 
-beforeEach(() => void openTestSession())
+beforeEach(
+  () =>
+    openTestSession({ auth: fakeAuth(), sipaProcessingObserver: h.observer }).registrations.ready,
+)
 afterEach(closeSession)
 
 describe("waitedLabel", () => {
@@ -424,20 +428,18 @@ describe("DepositExitModal — network capacity", () => {
   })
 
   it("shows a refused sweep beside the action instead of reporting a fault", async () => {
-    h.selfSweep.mockRejectedValueOnce(
-      new SweepRefusedError("Network capacity is currently insufficient for this deposit."),
-    )
+    h.selfSweep.mockRejectedValueOnce(new SweepRefusedError("sweep.capacity"))
     await render({ reason: "stuck", canSweep: true })
     await act(async () => button("Sweep now")!.click())
     expect(container.querySelector('[data-testid="deposit-sweep-refused"]')?.textContent).toBe(
-      "Network capacity is currently insufficient for this deposit.",
+      errorWords["sweep.capacity"],
     )
     expect(h.showReportableError).not.toHaveBeenCalled()
     expect(button("Recover to an Ethereum address")!.disabled).toBe(false)
   })
 
   it("hands a confirmed recovery's hash to the caller, and never a sweep's", async () => {
-    const { recoverDeposit } = await import("../../../src/features/deposit/sipaRecovery")
+    const { recoverDeposit } = await import("../../../src/features/deposit/recovery/sipaRecovery")
     const recovery = `0x${"ab".repeat(32)}` as Hex
     vi.mocked(recoverDeposit).mockResolvedValueOnce(recovery)
     const onRecovered = vi.fn()
@@ -477,12 +479,15 @@ describe("DepositExitModal — registration-backed deposit", () => {
 
   const registration = (
     over: Partial<PendingRegistrationRecord> = {},
-  ): Omit<PendingRegistrationRecord, "account"> => ({
+  ): PendingRegistrationRecord => ({
+    account: ACCOUNT,
     tag: "alice",
     nameHash: `0x${"77".repeat(32)}` as Hex,
     l2Address: stuck.recipientL2Address as Hex,
     l1ChainId: 11155111,
     sipaAddress: stuck.sipaAddress,
+    fee: "1",
+    beneficiary: ACCOUNT,
     depositToken: "0x00000000000000000000000000000000000000d4" as Hex,
     broadcast: true,
     phase: "awaiting_deposit",
@@ -507,12 +512,11 @@ describe("DepositExitModal — registration-backed deposit", () => {
     await act(() => new Promise((r) => setTimeout(r, 1)))
   }
 
-  beforeEach(() => {
+  beforeEach(async () => {
     globalThis.IS_REACT_ACT_ENVIRONMENT = true
-    ;(PendingRegistrationStore as unknown as { instance: unknown }).instance = null
     localStorage.clear()
     h.wallet.current = {}
-    openTestSession({ wallet: h.wallet.current })
+    await openTestSession({ auth: fakeAuth(), wallet: h.wallet.current }).registrations.ready
     h.reusePasskeyAccount.mockResolvedValue({ secretKey: "0x1" })
     h.manualRegistrationSweep.mockResolvedValue(SWEEP_HASH)
   })
@@ -520,7 +524,6 @@ describe("DepositExitModal — registration-backed deposit", () => {
   afterEach(async () => {
     await act(async () => root.unmount())
     container.remove()
-    ;(PendingRegistrationStore as unknown as { instance: unknown }).instance = null
     localStorage.clear()
     h.wallet.current = undefined
     vi.clearAllMocks()
@@ -534,7 +537,7 @@ describe("DepositExitModal — registration-backed deposit", () => {
   /** A recovery that waits at the gate the way the real one does. */
   const gatedRecovery = (then: () => unknown) =>
     h.reusePasskeyAccount.mockImplementation(
-      async (_w: unknown, _a: unknown, _h: unknown, gate: Gate) => {
+      async (_w: unknown, _signIn: unknown, _a: unknown, _h: unknown, gate: Gate) => {
         await gate()
         return then()
       },
@@ -542,7 +545,7 @@ describe("DepositExitModal — registration-backed deposit", () => {
 
   it("on a laptop the sweep holds at the phone steps until Continue", async () => {
     gatedRecovery(() => ({ secretKey: "0x1" }))
-    await getPendingStore().upsert(ACCOUNT, {}, registration())
+    await seedRegistration(registration())
     await render()
     await act(async () => button("Sweep now")!.click())
     await flush()
@@ -556,7 +559,7 @@ describe("DepositExitModal — registration-backed deposit", () => {
 
   it("Cancel at the phone steps returns to the form with nothing reported", async () => {
     gatedRecovery(() => ({ secretKey: "0x1" }))
-    await getPendingStore().upsert(ACCOUNT, {}, registration())
+    await seedRegistration(registration())
     await render()
     await act(async () => button("Sweep now")!.click())
     await flush()
@@ -573,7 +576,7 @@ describe("DepositExitModal — registration-backed deposit", () => {
     gatedRecovery(() => {
       throw new PhoneRequiredError()
     })
-    await getPendingStore().upsert(ACCOUNT, {}, registration())
+    await seedRegistration(registration())
     await render()
     await act(async () => button("Sweep now")!.click())
     await flush()
@@ -590,7 +593,7 @@ describe("DepositExitModal — registration-backed deposit", () => {
     gatedRecovery(() => {
       throw new RotatedCredentialError()
     })
-    await getPendingStore().upsert(ACCOUNT, {}, registration())
+    await seedRegistration(registration())
     await render()
     await act(async () => button("Sweep now")!.click())
     await flush()
@@ -614,18 +617,17 @@ describe("DepositExitModal — registration-backed deposit", () => {
       // A fresh page load: its own tracker, so attempt numbers and once-per-page events start over.
       vi.resetModules()
       const { ScreeningProvider: Screening } = await import("@obsidion/front-core")
-      const { getPendingStore: pendingStore } = await import(
-        "../../../src/features/onboarding/webRegistration"
-      )
+      const fixtures = await import("../../support/registrationFixtures")
       const { DepositExitModal: Exit } = await import(
         "../../../src/features/deposit/DepositExitModal/DepositExitModal"
       )
       // The fresh page's own session.
       const fresh = await import("../../support/session")
-      fresh.openTestSession({ wallet: h.wallet.current })
+      await fresh.openTestSession({ auth: fakeAuth(), wallet: h.wallet.current }).registrations
+        .ready
       harness = await passkeyTelemetryHarness()
       toSignInStep = async () => {
-        await pendingStore().upsert(ACCOUNT, {}, registration())
+        await fixtures.seedRegistration(registration())
         await render(Exit, Screening)
         await act(async () => button("Sweep now")!.click())
         await flush()
@@ -638,6 +640,7 @@ describe("DepositExitModal — registration-backed deposit", () => {
       h.reusePasskeyAccount.mockImplementation(
         async (
           _w: unknown,
+          _signIn: unknown,
           _a: unknown,
           _h: unknown,
           gate: GateWithAgain,
@@ -675,10 +678,10 @@ describe("DepositExitModal — registration-backed deposit", () => {
   })
 
   it("stops before the passkey when the registration settled while the sheet was open", async () => {
-    await getPendingStore().upsert(ACCOUNT, {}, registration())
+    await seedRegistration(registration())
     await render()
     // The detection tick stamps the sweep after the sheet rendered its offer.
-    await getPendingStore().upsert(ACCOUNT, { sweepTxHash: SWEEP_HASH })
+    await seedRegistration(registration({ sweepTxHash: SWEEP_HASH }))
     await act(async () => button("Sweep now")!.click())
     expect(h.reusePasskeyAccount).not.toHaveBeenCalled()
     expect(h.manualRegistrationSweep).not.toHaveBeenCalled()
@@ -766,7 +769,7 @@ describe("DepositExitModal — opened from Recover", () => {
   })
 
   it("keeps a recovery the user started from turning into a sweep", async () => {
-    const { recoverDeposit } = await import("../../../src/features/deposit/sipaRecovery")
+    const { recoverDeposit } = await import("../../../src/features/deposit/recovery/sipaRecovery")
     vi.mocked(recoverDeposit).mockRejectedValueOnce(new Error("wallet unreachable"))
     h.processing.current = held
     await render(true)
@@ -800,7 +803,7 @@ describe("DepositExitModal — opened from Recover", () => {
       expect(container.querySelector(`[data-testid="${id}"]`)).toBeNull()
     }
     expect(button("Recover to 0x00000…000AA")!.disabled).toBe(false)
-    const { recoverDeposit } = await import("../../../src/features/deposit/sipaRecovery")
+    const { recoverDeposit } = await import("../../../src/features/deposit/recovery/sipaRecovery")
     await act(async () => button("Recover to 0x00000…000AA")!.click())
     expect(recoverDeposit).toHaveBeenCalledWith(stuck, expect.anything())
     expect(h.selfSweep).not.toHaveBeenCalled()
@@ -965,7 +968,7 @@ describe("DepositExitModal — a USDC row's deposit", () => {
       tokenSymbol: "USDC",
       tokenAddress: ROW_USDC,
       tokenDecimals: 6,
-    } as SIPADepositRecord
+    } as SipaDeposit
     await act(async () => {
       root.render(
         <ScreeningProvider screener={passThroughScreener}>
@@ -995,7 +998,7 @@ describe("DepositExitModal — a USDC row's deposit", () => {
       phase: "recoverable",
       amount: "3000",
       fee: "250000000000000000",
-    } as SIPADepositRecord
+    } as SipaDeposit
     await act(async () => {
       root.render(
         <ScreeningProvider screener={passThroughScreener}>
@@ -1027,9 +1030,12 @@ describe("StrandedRecoveryModal", () => {
     input.dispatchEvent(new Event("input", { bubbles: true }))
   }
 
-  beforeEach(() => {
+  beforeEach(async () => {
     globalThis.IS_REACT_ACT_ENVIRONMENT = true
-    openTestSession({ wallet: { networkId: "0x00000000000000000000000000000000000000e1" } })
+    await openTestSession({
+      auth: fakeAuth(),
+      wallet: { networkId: "0x00000000000000000000000000000000000000e1" },
+    }).registrations.ready
     container = document.createElement("div")
     document.body.appendChild(container)
     root = createRoot(container)
@@ -1068,6 +1074,7 @@ describe("StrandedRecoveryModal", () => {
       stuck.sipaAddress,
       "0x00000000000000000000000000000000000000d4",
       "0x00000000000000000000000000000000000000e1",
+      false,
     )
     expect(document.body.querySelector("input")).toBeNull()
     expect(document.body.textContent).toContain("DAI")

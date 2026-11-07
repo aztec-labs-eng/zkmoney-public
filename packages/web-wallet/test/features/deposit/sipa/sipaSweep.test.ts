@@ -16,8 +16,11 @@ import {
 import {
   createPortalCapacityRegistry,
   createSipaProcessingObserver,
+  memoryStore,
+  sipaDepositTransition,
   type PortalCapacityKey,
-  type SIPADepositRecord,
+  type SipaDeposit,
+  type SipaDepositEvent,
 } from "@obsidion/front-core"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 
@@ -45,21 +48,15 @@ const bridge = vi.hoisted(() => ({
   isDesktopL1SubmitActive: vi.fn(() => false),
 }))
 
-vi.mock("../../../../src/features/deposit/l1Wallet", () => l1Clients)
+vi.mock("../../../../src/session/l1Wallet", () => l1Clients)
 vi.mock("../../../../src/platform/desktopBridge", () => bridge)
 
 const { SELF_BROADCAST_RESWEEPABLE, buildDepositIntent, encodeSweep, MULTICALL3_ADDRESS } =
   await import("@obsidion/sdk")
-const {
-  AlreadySweptError,
-  selfSweepDeposit,
-  sweepChannel,
-  sweepDeployArgs,
-  sweepManifestFrom,
-  SweepRefusedError,
-} = await import("../../../../src/features/deposit/sipaSweep")
+const { selfSweepDeposit, sweepChannel, sweepDeployArgs, sweepManifestFrom, SweepRefusedError } =
+  await import("../../../../src/features/sipa/sipaSweep")
 const { encodeErrorResult, toFunctionSelector } = await import("viem")
-const { STUCK_SWEEP_MS } = await import("../../../../src/features/deposit/sipaRecovery")
+const { STUCK_SWEEP_MS } = await import("../../../../src/features/deposit/recovery/sipaRecovery")
 
 /** The deposit intent this wallet's stealth `recipientHash` (COMMITMENT) commits to. */
 const depositIntent = buildDepositIntent({ implementation: IMPL, recipientCommitment: COMMITMENT })
@@ -79,7 +76,7 @@ const sweepCalldata = (token: Address, relayer: Address): Hex =>
 
 const NOW = 1_700_000_000_000
 
-const record = (patch: Partial<SIPADepositRecord> = {}): SIPADepositRecord =>
+const record = (patch: Partial<SipaDeposit> = {}): SipaDeposit =>
   ({
     sipaAddress: SIPA,
     recipientL2Address: "0xaa",
@@ -92,7 +89,7 @@ const record = (patch: Partial<SIPADepositRecord> = {}): SIPADepositRecord =>
     phase: "sweeping",
     startTime: NOW - STUCK_SWEEP_MS,
     ...patch,
-  } as SIPADepositRecord)
+  } as SipaDeposit)
 
 const manifest = {
   sipaFactory: SIPA_FACTORY,
@@ -180,7 +177,15 @@ describe("selfSweepDeposit", () => {
     sendTransaction: vi.fn(async () => HASH),
     waitForReceipt: vi.fn(async () => true),
   }
-  const store = { upsert: vi.fn(), get: vi.fn(() => null as SIPADepositRecord | null) }
+  /** The record the store holds; its writes go through the transition, as the real store's do. */
+  let held: SipaDeposit | null = null
+  const store = {
+    apply: vi.fn(async (_sipa: string, event: SipaDepositEvent) => {
+      const next = held ? sipaDepositTransition(held, event, NOW) : undefined
+      if (next) held = next
+      return next ?? undefined
+    }),
+  }
   const predict = vi.fn(async () => SIPA)
 
   const deps = (
@@ -218,37 +223,34 @@ describe("selfSweepDeposit", () => {
     vi.clearAllMocks()
     channel.sendTransaction.mockResolvedValue(HASH)
     channel.waitForReceipt.mockResolvedValue(true)
-    store.get.mockReturnValue(null)
+    held = null
   })
 
   it("refuses a deposit whose derived address inputs are missing", async () => {
     const d = deps()
-    await expect(selfSweepDeposit(record({ recipientHash: "" }), d)).rejects.toThrow(
-      /still looking up this deposit's details/,
-    )
+    await expect(selfSweepDeposit(record({ recipientHash: "" }), d)).rejects.toMatchObject({
+      code: "sweep.detailsPending",
+    })
     expect(d.readFunding).not.toHaveBeenCalled()
   })
 
   it("aborts on an empty SIPA — the relayer won the race", async () => {
     await expect(
       selfSweepDeposit(record({ tokenAddress: RECORD_TOKEN }), deps({ balance: 0n })),
-    ).rejects.toBeInstanceOf(AlreadySweptError)
+    ).rejects.toMatchObject({ code: "deposit.alreadySwept" })
     expect(channel.sendTransaction).not.toHaveBeenCalled()
   })
 
   it("keeps an empty read on a record without its own token reportable", async () => {
     const sweep = selfSweepDeposit(record(), deps({ balance: 0n }))
-    await expect(sweep).rejects.not.toBeInstanceOf(AlreadySweptError)
-    await expect(sweep).rejects.toThrow(/predates token tracking/)
+    await expect(sweep).rejects.toMatchObject({ code: "deposit.untrackedEmpty" })
     expect(channel.sendTransaction).not.toHaveBeenCalled()
   })
 
   it("aborts on a balance that no longer clears the deposit fee, and says so", async () => {
     const floor = selfSweepDeposit(record(), deps({ balance: FEE }))
     await expect(floor).rejects.toBeInstanceOf(SweepRefusedError)
-    await expect(floor).rejects.toThrow(
-      /at or below the network's deposit fee, so it can't be moved into your private balance/,
-    )
+    await expect(floor).rejects.toMatchObject({ code: "sweep.belowFee" })
     expect(channel.sendTransaction).not.toHaveBeenCalled()
     // One unit above the fee is the first balance that moves.
     await expect(selfSweepDeposit(record(), deps({ balance: FEE + 1n }))).resolves.toBe(HASH)
@@ -260,10 +262,7 @@ describe("selfSweepDeposit", () => {
     const over = deps({ balance: TX_AMOUNT_CAP + FEE + 1n })
     const sweep = selfSweepDeposit(record(), over)
     await expect(sweep).rejects.toBeInstanceOf(SweepRefusedError)
-    await expect(sweep).rejects.toThrow(
-      /larger than the network can process in one deposit, so it can't be swept\. Recover it/,
-    )
-    await expect(sweep).rejects.not.toThrow(/cap|2[,.]?583/)
+    await expect(sweep).rejects.toMatchObject({ code: "sweep.operationCap" })
     expect(channel.sendTransaction).not.toHaveBeenCalled()
     // Exactly at it still sweeps.
     await expect(selfSweepDeposit(record(), deps({ balance: TX_AMOUNT_CAP + FEE }))).resolves.toBe(
@@ -279,9 +278,9 @@ describe("selfSweepDeposit", () => {
       scale: 10n ** 12n,
       fee: parseEther("0.25"),
     })
-    await expect(selfSweepDeposit(record(), usdc)).rejects.toThrow(
-      /larger than the network can process in one deposit/,
-    )
+    await expect(selfSweepDeposit(record(), usdc)).rejects.toMatchObject({
+      code: "sweep.operationCap",
+    })
     expect(channel.sendTransaction).not.toHaveBeenCalled()
   })
 
@@ -311,7 +310,9 @@ describe("selfSweepDeposit", () => {
 
   it("refuses to deploy when the args predict a different address", async () => {
     const d = deps({ predicted: OTHER_SIPA })
-    await expect(selfSweepDeposit(record(), d)).rejects.toThrow(/different address/)
+    await expect(selfSweepDeposit(record(), d)).rejects.toMatchObject({
+      code: "sweep.addressMismatch",
+    })
     expect(d.predict).toHaveBeenCalledWith(sweepDeployArgs(record(), manifest, IMPL))
     expect(channel.sendTransaction).not.toHaveBeenCalled()
   })
@@ -319,23 +320,25 @@ describe("selfSweepDeposit", () => {
   // A sweep only reaches the portal; the claim rides the next scan of this tx's Sweep log. Rewinding a
   // claim that landed while the receipt was awaited would never heal: later scans skip the claimed index.
   it.each([
-    ["no newer record", null, "sweeping"],
+    ["a record before its sweep", record({ phase: "funded" }), "sweeping"],
     ["a claim that landed meanwhile", record({ phase: "claimed" }), "claimed"],
   ] as const)(
     "marks the sweep submitted over %s, leaving the phase %s",
     async (_, stored, phase) => {
-      store.get.mockReturnValue(stored)
+      held = stored
       await selfSweepDeposit(record(), deps())
-      expect(store.upsert).toHaveBeenCalledWith(SIPA, { phase, sweepTxHash: HASH })
+      expect(store.apply).toHaveBeenCalledWith(SIPA, { type: "sweepSent", txHash: HASH })
+      expect(held).toMatchObject({ phase, sweepTxHash: HASH })
     },
   )
 
   it("reports a reverted sweep as unexplained, a race being one possibility, and writes nothing", async () => {
     channel.waitForReceipt.mockResolvedValue(false)
-    await expect(selfSweepDeposit(record(), deps())).rejects.toThrow(
-      /could not determine why\. A relayer may have swept this deposit first/,
-    )
-    expect(store.upsert).not.toHaveBeenCalled()
+    await expect(selfSweepDeposit(record(), deps())).rejects.toMatchObject({
+      code: "sweep.reverted",
+      data: { hash: HASH },
+    })
+    expect(store.apply).not.toHaveBeenCalled()
   })
 
   describe("network capacity", () => {
@@ -378,18 +381,15 @@ describe("selfSweepDeposit", () => {
     })
 
     it("names a portal refusal decoded from the estimate", async () => {
-      for (const [error, copy] of [
-        [
-          "Caps__GlobalLimitSurpassed",
-          /capacity is currently insufficient for this deposit, so the sweep did not go through/,
-        ],
-        ["Caps__TxLimitSurpassed", /larger than the network can process in one deposit/],
-        ["OxidePortal__FrozenPortal", /not accepting deposits right now/],
+      for (const [error, code] of [
+        ["Caps__GlobalLimitSurpassed", "sweep.globalLimit"],
+        ["Caps__TxLimitSurpassed", "sweep.operationCap"],
+        ["OxidePortal__FrozenPortal", "sweep.frozen"],
       ] as const) {
         channel.sendTransaction.mockRejectedValueOnce(revert(error))
         const sweep = selfSweepDeposit(record(), deps())
         await expect(sweep).rejects.toBeInstanceOf(SweepRefusedError)
-        await expect(sweep).rejects.toThrow(copy)
+        await expect(sweep).rejects.toMatchObject({ code })
       }
     })
 
@@ -408,7 +408,7 @@ describe("selfSweepDeposit", () => {
     })
 
     /** Sweeps `stored` through the production observer against a portal with 100 atomic left. */
-    const sweepAgainstObserver = async (stored: SIPADepositRecord) => {
+    const sweepAgainstObserver = async (stored: SipaDeposit) => {
       const read = vi.fn(async (key: PortalCapacityKey) => ({
         ...key,
         decimals: 18,
@@ -431,11 +431,7 @@ describe("selfSweepDeposit", () => {
         txAmountCap: TX_AMOUNT_CAP,
       }))
       const observer = createSipaProcessingObserver({
-        deposits: {
-          get: () => stored,
-          list: () => [stored],
-          onListChanged: () => () => {},
-        } as never,
+        deposits: memoryStore({ records: [stored], loaded: true, failed: false }).readonly,
         capacity: (key) => registry.store(key),
         readTerms,
         l1ChainId: 11155111,
@@ -489,11 +485,9 @@ describe("selfSweepDeposit", () => {
         .mockResolvedValueOnce({ reason: blocked.reason })
         .mockResolvedValueOnce(blocked)
       const sweep = selfSweepDeposit(record(), { ...deps(), checkCapacity })
-      await expect(sweep).rejects.toThrow(
-        /could not determine why\..* Network capacity is currently insufficient for this deposit\.$/,
-      )
+      await expect(sweep).rejects.toMatchObject({ code: "sweep.revertedCapacity" })
       await expect(sweep).rejects.not.toBeInstanceOf(SweepRefusedError)
-      expect(store.upsert).not.toHaveBeenCalled()
+      expect(store.apply).not.toHaveBeenCalled()
     })
   })
 })
@@ -550,7 +544,7 @@ describe("sweepChannel", () => {
     bridge.isDesktopL1SubmitActive.mockReturnValue(true)
     await expect(
       sweepChannel({ config, record: record(), publicClient: {} as never, opts: {} }),
-    ).rejects.toThrow(/network tip/)
+    ).rejects.toMatchObject({ code: "sweep.tipDestinationMissing" })
     await expect(
       sweepChannel({
         config,
@@ -558,6 +552,6 @@ describe("sweepChannel", () => {
         publicClient: {} as never,
         opts: { destination: "0xnope" as Address },
       }),
-    ).rejects.toThrow(/network tip/)
+    ).rejects.toMatchObject({ code: "sweep.tipDestinationMissing" })
   })
 })

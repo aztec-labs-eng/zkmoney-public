@@ -4,11 +4,12 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest"
 
 const remindRequestById = vi.fn<(id: string, token?: string) => Promise<boolean>>()
 vi.mock("../../../src/features/contacts/requestActions", () => ({
-  remindRequestById: (id: string, token?: string) => remindRequestById(id, token),
+  remindRequestById: (id: string, _tag?: string, token?: string) => remindRequestById(id, token),
 }))
 
 const { REMIND_TITLE, useRemind } = await import("../../../src/features/contacts/useRemind")
 const { REMIND_INTERVAL_MS } = await import("@obsidion/front-core")
+const { openTestSession } = await import("../../support/session")
 
 let hook: ReturnType<typeof useRemind>
 function Probe() {
@@ -19,6 +20,7 @@ function Probe() {
 let root: Root
 beforeEach(() => {
   remindRequestById.mockReset()
+  openTestSession()
   root = createRoot(document.createElement("div"))
   act(() => root.render(<Probe />))
 })

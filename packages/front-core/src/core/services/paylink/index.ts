@@ -4,19 +4,21 @@ export {
   paylinkWindows,
   isPaylinkInRefundWindow,
   paylinkRefundEligibility,
-  eligibleEscrowRows,
 } from "./refundParamsFromRow"
 export type { PaylinkRefundEligibility, PaylinkRefundIneligibleReason } from "./refundParamsFromRow"
 export { paylinkStatusFor, PAYLINK_STATUS_LABEL } from "./paylinkStatus"
 export type { PaylinkStatusKind } from "./paylinkStatus"
 export { paylinkRowView } from "./paylinkRowView"
 export {
+  backupLinkHold,
+  backupLinks,
   canCancelAt,
   creatorLinkAction,
   isOpenCreatorLink,
   isOtherRollupLink,
   linkMadeBy,
   paylinkStatusIsUnspent,
+  type BackupLinkHold,
   type CreatorLinkAction,
 } from "./creatorLinkAction"
 export type { PaylinkRecovery, PaylinkRowStatusLabel, PaylinkRowView } from "./paylinkRowView"

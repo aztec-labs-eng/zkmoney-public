@@ -1,13 +1,14 @@
 import { act, StrictMode, type ReactNode } from "react"
+import { seedDeviceKeys, testPage, testCore } from "../support/page"
 import { createRoot, type Root } from "react-dom/client"
 import { MemoryRouter, Route, Routes, useNavigate } from "react-router-dom"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { saveSetting } from "../../src/platform/storage/deviceKeys"
 
 const state = vi.hoisted(() => ({
   savings: false,
   unlocked: true,
   handle: "alice" as string | undefined,
-  pending: false,
   owed: false,
   blocked: false,
   onboarded: true,
@@ -33,8 +34,8 @@ vi.mock("../../src/features/savings/savingsGateway", () => ({
 vi.mock("../../src/features/operations/operations", async () =>
   (await import("../support/fakeOperations")).fakeOperationsModule(),
 )
-vi.mock("../../src/features/onboarding/openRegistration", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../src/features/onboarding/openRegistration")>()),
+vi.mock("../../src/features/registration/openRegistration", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../src/features/registration/openRegistration")>()),
   openRegistration: () => null,
   useRegistrationTagChangeable: () => false,
   useNameClaimPending: () => false,
@@ -44,7 +45,6 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/front-core")>()),
   nameL1ContactsByEns: () => () => {},
   useCachedRecords: () => ({ records: [] }),
-  useConfigValue: () => ({ value: true, setValue: async () => {} }),
 }))
 vi.mock("@obsidion/web-ds", () => ({
   GradientInitialAvatar: () => null,
@@ -62,15 +62,7 @@ vi.mock("@obsidion/web-ds", () => ({
   ZkMoneyRoot: ({ children }: { children: ReactNode }) => children,
 }))
 vi.mock("../../src/dev/demoFlag", () => ({ isDemoMode: () => false }))
-vi.mock("../../src/features/identity/walletIdentity", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../src/features/identity/walletIdentity")>()),
-  loadWalletIdentity: () => ({ handle: state.handle, address: "0x123", pending: state.pending }),
-  loadOnboardedIdentity: () =>
-    state.onboarded ? { handle: state.handle, address: "0x123", pending: state.pending } : null,
-}))
-vi.mock("../../src/platform/auth/useAuthenticator", () => ({
-  getAuthService: () => ({ getSecretKey: async () => new Uint8Array([1]) }),
-}))
+const fakeAuth = () => ({ getSecretKey: async () => new Uint8Array([1]) })
 vi.mock("../../src/platform/desktopBridge", () => ({
   getDesktopL1Bridge: () => (state.launcher ? { l1SubmitPath: "/bridge" } : null),
 }))
@@ -83,8 +75,8 @@ vi.mock("../../src/features/scan/ScannerModal", () => ({
 }))
 vi.mock("../../src/features/scan/scanPayload", () => ({ scanPayload: vi.fn() }))
 vi.mock("../../src/features/identity/logout", () => ({ logout: state.logout }))
-vi.mock("../../src/features/onboarding/webRegistration", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../src/features/onboarding/webRegistration")>()),
+vi.mock("../../src/features/registration/webRegistration", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../src/features/registration/webRegistration")>()),
   isLogoutBlockedByRegistration: () => state.blocked,
 }))
 vi.mock("../../src/features/contacts/TagSearchBar", () => ({
@@ -121,8 +113,22 @@ vi.mock("../../src/ui/LogoutBlockedModal", () => ({
 }))
 import { SidebarLayout, useShellActions } from "../../src/ui/AppShell/AppShell"
 import { MobileMenu } from "../../src/ui/MobileMenu"
-import { activeNamespace, closeSession, switchSession } from "../../src/platform/session"
+import { activeNamespace, closeSession, switchSession } from "../../src/session/session"
+import { pageSessionDeps } from "../../src/app/sessionDeps"
 import { openTestSession } from "../support/session"
+import { pendingRecord, seedRegistration } from "../support/registrationFixtures"
+import { seedOnboarded, setIdentity } from "../support/identity"
+import { seedBootConfig } from "../support/seedBootConfig"
+
+/** The session's identity, and the passkey record that entered it while `state.onboarded`. */
+async function seedIdentityState() {
+  const identity = { handle: state.handle, address: "0x123" }
+  if (state.onboarded) return seedOnboarded(identity, "localhost")
+  await setIdentity(identity)
+  await seedDeviceKeys({ passkeyMap: null })
+}
+
+const deviceDb = testPage().database
 
 let host: HTMLDivElement
 let root: Root
@@ -156,7 +162,7 @@ const render = (
 ) =>
   act(() => {
     // The session's account: unlocked, or none.
-    openTestSession({ account: state.unlocked ? {} : null })
+    openTestSession({ auth: fakeAuth(), account: state.unlocked ? {} : null })
     root.render(
       <MemoryRouter initialEntries={[path]}>
         <Routes>
@@ -194,13 +200,14 @@ const render = (
     )
   })
 beforeEach(async () => {
+  // The analytics question was answered, so the shell renders without it.
+  await saveSetting(deviceDb, "analyticsConsent", false)
   state.upgrade = new Set()
   state.asked = []
   state.savings = false
   state.phone = true
   state.unlocked = true
   state.handle = "alice"
-  state.pending = false
   state.owed = false
   state.blocked = false
   state.onboarded = true
@@ -209,13 +216,18 @@ beforeEach(async () => {
   state.markAllRead.mockClear()
   state.logout.mockClear()
   // The bell over this suite's operations, with no records and no notification state.
-  const { bell, notifications, milestones } = switchSession(activeNamespace())
+  const { bell, notifications, milestones } = switchSession(
+    activeNamespace(testCore().device),
+    pageSessionDeps(testPage(fakeAuth())),
+  )
   // Booted to the bell's milestones: its list is complete, so new entries toast.
   milestones.mark("firstBalance")
   milestones.mark("depositsReplayed")
   milestones.mark("historyAtHead")
   vi.spyOn(notifications, "markRead").mockImplementation(state.markAllRead)
   await vi.waitFor(() => expect(bell.get().sources.loaded).toBe(true))
+  await seedBootConfig()
+  await seedIdentityState()
   vi.stubGlobal("matchMedia", () => ({
     get matches() {
       return state.phone
@@ -606,10 +618,13 @@ describe("phone scanner entry guards", () => {
   })
   it.each(["phone", "unlocked", "onboarded", "handle", "pending", "launcher"] as const)(
     "does not expose Scan when %s fails its gate",
-    (gate) => {
+    async (gate) => {
       if (gate === "handle") state.handle = undefined
-      else if (gate === "pending" || gate === "launcher") state[gate] = true
+      else if (gate === "launcher") state.launcher = true
+      else if (gate === "pending")
+        await seedRegistration(pendingRecord({ tag: "alice", l2Address: "0x123" }))
       else state[gate] = false
+      await seedIdentityState()
       render("/", [], false, true)
       if (state.phone) click("Open menu")
       expect(button("Scan QR code")).toBeUndefined()

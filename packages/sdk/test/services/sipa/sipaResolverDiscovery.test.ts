@@ -8,7 +8,7 @@
 import { describe, expect, it } from "vitest"
 import type { PublicClient } from "viem"
 import {
-  fetchHistoricalResolverPublicKeys,
+  fetchHistoricalResolverKeys,
   fetchSipaResolverOperators,
   readAccountResolution,
   selectManifestResolverOperator,
@@ -299,8 +299,8 @@ describe("readAccountResolution", () => {
   })
 })
 
-describe("fetchHistoricalResolverPublicKeys", () => {
-  it("returns every key the registry published, a rotated one under the same sender included", async () => {
+describe("fetchHistoricalResolverKeys", () => {
+  it("returns every operator and key the registry published, a rotated key included", async () => {
     const entry = (owner: string, l2Address: string, publicKey: { x: bigint; y: bigint }) => ({
       args: {
         resolverOperator: owner,
@@ -319,10 +319,11 @@ describe("fetchHistoricalResolverPublicKeys", () => {
       ],
     } as unknown as PublicClient
 
-    expect(await fetchHistoricalResolverPublicKeys(client, METADATA_REGISTRY, RANGE)).toEqual([
-      { x: 1n, y: 2n },
-      { x: 7n, y: 8n },
-      { x: 3n, y: 4n },
+    expect(await fetchHistoricalResolverKeys(client, METADATA_REGISTRY, RANGE)).toEqual([
+      { owner: OWNER_LIVE, resolverPublicKey: { x: 1n, y: 2n } },
+      { owner: OWNER_LIVE, resolverPublicKey: { x: 7n, y: 8n } },
+      { owner: OWNER_STALE, resolverPublicKey: { x: 1n, y: 2n } },
+      { owner: OWNER_STALE, resolverPublicKey: { x: 3n, y: 4n } },
     ])
   })
 })

@@ -33,7 +33,7 @@ vi.mock("../../../src/config/env", async (importOriginal) => ({
     },
   }),
 }))
-vi.mock("../../../src/features/deposit/l1Wallet", () => ({
+vi.mock("../../../src/session/l1Wallet", () => ({
   isWalletRejection: (e: { code?: number }) => e?.code === 4001,
   useL1Wallet: () => ({
     account: "0x00000000000000000000000000000000000000aa",

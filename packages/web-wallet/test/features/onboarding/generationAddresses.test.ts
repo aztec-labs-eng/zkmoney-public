@@ -14,7 +14,7 @@ vi.mock("../../../src/platform/sourceGeneration", () => ({
   nodeAztecMajor: async () => "5",
 }))
 
-const { generationAddresses } = await import("../../../src/features/onboarding/generationAddresses")
+const { generationAddresses } = await import("../../../src/features/registration/generationAddresses")
 
 const V5_PORTAL = "0x" + "ab".repeat(20)
 const V5_NODE = "https://v5.rpc.example"

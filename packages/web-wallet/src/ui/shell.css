@@ -377,10 +377,12 @@
 .ww-home__balance .ww-home__earned small {
   font-size: 0.85em;
 }
-/* The loading shimmer clipped to the glyphs, in step with the "Syncing deposits" pill: the figure
-   is real but may still rise as replayed deposits land. A pay method's line waiting on its answer
-   pulses the same way, over its own color: its disabled row already dims it. */
+/* The loading shimmer clipped to the glyphs: the figure may still rise as replayed deposits land
+   (beside the "Syncing deposits" pill), or is cached and not yet read this session. A spend
+   sheet's "Available" figure shimmers the same way until that read. A pay method's line waiting on
+   its answer pulses the same way, over its own color: its disabled row already dims it. */
 .ww-home__balance-value--syncing,
+.ww-available[aria-busy="true"],
 .ww-deposit__connect-text > [aria-busy="true"] {
   --glyph-shimmer-base: rgba(253, 253, 253, 0.55);
   width: fit-content;
@@ -403,6 +405,7 @@
 }
 @media (prefers-reduced-motion: reduce) {
   .ww-home__balance-value--syncing,
+  .ww-available[aria-busy="true"],
   .ww-deposit__connect-text > [aria-busy="true"] {
     animation: none;
   }
@@ -769,15 +772,6 @@
   top: 50%;
   transform: translateY(-50%);
   z-index: 1;
-}
-/* The deposit panel is narrower than Home: a smaller coin lane. */
-.ww-shell .ww-banner--activate.ww-deposit__claiming {
-  padding-right: 200px;
-}
-.ww-shell .ww-deposit__claiming img {
-  right: 40px;
-  top: -24px;
-  width: 170px;
 }
 /* The art is decoration: below 640 the copy gets the width, up to the pinned chevron's lane. */
 @media (max-width: 640px) {
@@ -2823,12 +2817,6 @@
   flex-direction: column;
   gap: 4px;
 }
-.ww-deposit-feedback {
-  color: var(--text-secondary);
-  font-size: 13px;
-  line-height: 1.5;
-  text-align: center;
-}
 .ww-deposit-actions {
   display: flex;
   flex-direction: column;
@@ -3509,10 +3497,6 @@
   padding: 24px;
   border-radius: 12px;
 }
-/* A list that reads top-down, however short. */
-.ww-deposit__stealth--top {
-  justify-content: flex-start;
-}
 .ww-deposit__fields {
   width: 100%;
   display: flex;
@@ -3892,13 +3876,6 @@
 }
 
 /* Deposit screen: the coin list, the network row and the information points. */
-.ww-deposit__label {
-  align-self: flex-start;
-  margin: 0;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-primary);
-}
 .ww-deposit__ask {
   align-self: flex-start;
   margin: 0;
@@ -3912,16 +3889,6 @@
 .ww-deposit-sheet__head .ww-deposit__ask {
   align-self: center;
   text-align: center;
-}
-.ww-deposit__coins {
-  display: flex;
-  flex-direction: column;
-  width: 100%;
-  box-sizing: border-box;
-  padding: 8px;
-  border-radius: 12px;
-  background: var(--surface-card);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
 }
 .zkm-btn-reset.ww-deposit__coin {
   display: flex;
@@ -3952,26 +3919,6 @@
   font-weight: 400;
   color: var(--text-secondary);
 }
-.ww-deposit__tag {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  width: 100%;
-  box-sizing: border-box;
-  padding: 12px 16px;
-  border-radius: 12px;
-  background: var(--surface-card);
-  box-shadow: inset 0 0 0 1px var(--accent-gold);
-  font-size: 14px;
-  color: var(--text-secondary);
-}
-.ww-deposit__tag b {
-  font-weight: 600;
-  color: var(--text-primary);
-}
-.ww-deposit__tag .ww-deposit__link {
-  margin-left: auto;
-}
 .ww-choose-name__name {
   display: flex;
   flex-direction: column;
@@ -3999,19 +3946,6 @@
   color: var(--accent-green);
 }
 .ww-choose-name__label {
-  color: var(--text-secondary);
-}
-.ww-deposit__confirm {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  width: 100%;
-}
-.ww-deposit__confirm p {
-  margin: 0;
-  font-size: 13px;
-  line-height: 1.45;
-  text-align: center;
   color: var(--text-secondary);
 }
 .ww-choose-name__routes {
@@ -4053,28 +3987,6 @@
   border-radius: 50%;
   box-shadow: inset 0 0 0 5px var(--purple-500);
   transition: box-shadow 0.15s;
-}
-.ww-deposit__network {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  width: 100%;
-  box-sizing: border-box;
-  padding: 12px 16px;
-  border-radius: 12px;
-  background: var(--surface-card);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
-  font-size: 14px;
-  color: var(--text-secondary);
-}
-.ww-deposit__network > span {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-.ww-deposit__network b {
-  font-weight: 600;
-  color: var(--text-primary);
 }
 .ww-deposit__info {
   display: flex;
@@ -5135,6 +5047,10 @@
   line-height: 1;
   white-space: nowrap;
 }
+.zkm-btn-reset.ww-withdraw__paste:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
 .zkm-btn-reset.ww-withdraw__clear {
   display: inline-flex;
   align-items: center;
@@ -5749,21 +5665,6 @@ details[open] .ww-withdraw__warning-chevron {
   }
 }
 
-/* Sign-in has no modal behind it, so its passkey states take their own sheet instead of sitting
-   as loose text on the gradient. */
-.ww-passkey-sheet {
-  box-sizing: border-box;
-  width: min(400px, calc(100vw - 32px));
-  padding: var(--space-24);
-  border-radius: var(--radius-32);
-  background: var(--surface-sheet);
-  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.55), inset 0 0 0 1px rgba(255, 255, 255, 0.06);
-}
-.ww-passkey-sheet .ww-invite-spinner {
-  padding: 0;
-  gap: 14px;
-}
-
 .ww-passkey-refusal__title {
   font-size: 20px;
   font-weight: 700;
@@ -6003,6 +5904,10 @@ details[open] .ww-withdraw__warning-chevron {
   font-weight: 700;
   letter-spacing: 0.04em;
   color: var(--text-primary);
+}
+.ww-pay__max:disabled {
+  cursor: default;
+  opacity: 0.5;
 }
 .ww-pay__summary {
   display: flex;

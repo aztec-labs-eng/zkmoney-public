@@ -1,11 +1,15 @@
 import {
+  bridgeUnderlying,
   SIPA_INTENT_NAMES,
   type OxideDeploymentTable,
   type SipaIntentName,
 } from "@obsidion/core/oxide"
+import type { OxideEnvTuple } from "@obsidion/core/types"
 import type { Address } from "viem"
+import type { SipaDeposit, SIPASweep } from "../engine/sipaDeposits"
 import { depositTokenRoutes } from "./depositTokenRoutes"
 import type { SipaFundingToken } from "./sipaFunding"
+import { sipaIntentName, sipaRecordIntent } from "./sipaRoute"
 
 /** A forwarding-table row as the deposit sync reads it: where its sweeps land and what they credit. */
 export interface SipaRow {
@@ -99,4 +103,53 @@ export function sipaRowFundingTokens(rows: readonly SipaRow[]): SipaFundingToken
       seen.add(key)
       return true
     })
+}
+
+/** The rows a sweep for the record's intent settles on: a registration's is the fee token's alone. */
+export function sipaIntentRows(rows: readonly SipaRow[], intent: SipaDeposit["intent"]): SipaRow[] {
+  const name = sipaIntentName(sipaRecordIntent(intent))
+  return rows.filter((row) => row.intents.includes(name))
+}
+
+/**
+ * The row a SIPA's record is shown in before any sweep names one: the pinned bridge's for a deposit,
+ * else the first row that settles the intent.
+ */
+export function sipaDefaultRow(
+  tuple: OxideEnvTuple,
+  rows: readonly SipaRow[],
+  intent: SipaDeposit["intent"],
+): SipaRow {
+  const settling = sipaIntentRows(rows, intent)
+  return (
+    (sipaIntentName(sipaRecordIntent(intent)) === "deposit" &&
+      sipaRowByFunding(settling, bridgeUnderlying(tuple))) ||
+    settling[0] ||
+    rows[0]!
+  )
+}
+
+/** The row a sweep settled on: its portal's, or the record's default row for a sweep saved without one. */
+export function sipaSweepRow(
+  tuple: OxideEnvTuple,
+  rows: readonly SipaRow[],
+  sweep: { portal?: string },
+  intent: SipaDeposit["intent"],
+): SipaRow {
+  return (
+    (sweep.portal && sipaRowByPortal(rows, sweep.portal)) || sipaDefaultRow(tuple, rows, intent)
+  )
+}
+
+/** What a sweep through `row` credits: the row's portal, L2 token and token. */
+export function sipaRowCredit(
+  row: SipaRow,
+): Pick<SIPASweep, "portal" | "l2Token" | "tokenAddress" | "tokenSymbol" | "tokenDecimals"> {
+  return {
+    portal: row.portal,
+    l2Token: row.l2Token,
+    tokenAddress: row.token.address,
+    tokenSymbol: row.token.symbol,
+    tokenDecimals: row.token.decimals,
+  }
 }

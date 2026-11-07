@@ -40,8 +40,8 @@ import { getConfig } from "../../config/env"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
 import { runOperation, type OperationHandle } from "../operations/operations"
 import { withTimeout } from "../../lib/withTimeout"
-import { claimSponsorRail } from "../onboarding/claimSponsorship"
-import { RAIL_VOUCHER } from "../onboarding/rails"
+import { claimSponsorRail } from "../registration/claimSponsorship"
+import { RAIL_VOUCHER } from "../registration/rails"
 import { l1PublicClient } from "../../config/oxideTuple"
 import { owePaylinkClaim, reportPaylinkClaims } from "./paylinkClaimReport"
 import { assertPaylinkSwapSource, paylinkTuple, readPaylinkSource } from "./paylinkSource"
@@ -60,7 +60,7 @@ import {
   type WithdrawStage,
 } from "../withdraw/withdrawGateway"
 import { oxideTokenImmutablesOf, txAmountCap } from "../token/oxideToken"
-import { session } from "../../platform/session"
+import { session } from "../../session/session"
 
 /** Wallet + contracts + the enclave signer: everything a bearer exit needs, and no account. */
 export interface PaylinkExitDeps {

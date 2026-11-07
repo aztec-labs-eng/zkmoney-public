@@ -1,6 +1,6 @@
-import type { ActivityItem } from "../services/bridge/BridgeActivityFeed"
+import type { ActivityItem } from "../../engine/feedRules"
 import { DEPOSIT_PHASE_COPY, depositPhaseCopy } from "../services/deposits/depositCopy"
-import { isSettledSipaPhase, type SIPADepositRecord } from "../services/deposits/SIPADepositStore"
+import { isSettledSipaPhase, type SipaDeposit } from "../../engine/sipaDeposits"
 import { savingsValue } from "../services/savings/savingsMath"
 import {
   upgradeBatchArrived,
@@ -12,7 +12,7 @@ import {
 /** One batch of an upgrade, with the deposit that brings it once one is seen. */
 export interface UpgradeLeg {
   batch: UpgradeBatchItem
-  arrival?: SIPADepositRecord
+  arrival?: SipaDeposit
 }
 
 /** One upgrade run over its batches, as Activity's row and the bell's entry show it. */
@@ -87,7 +87,7 @@ export function upgradeRecipients(items: readonly ActivityItem[]): ReadonlySet<s
 }
 
 /** The deposit that speaks for a leg: seen, and funded or swept. */
-export function legDeposit(leg: UpgradeLeg): SIPADepositRecord | undefined {
+export function legDeposit(leg: UpgradeLeg): SipaDeposit | undefined {
   const arrival = leg.arrival
   return arrival && (arrival.sweepTxHash || Number(arrival.amount) > 0) ? arrival : undefined
 }

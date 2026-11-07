@@ -11,6 +11,7 @@
  */
 import { EthAddress } from "@aztec-labs/aztec.js/addresses"
 import { Fr } from "@aztec-labs/aztec.js/fields"
+import { bridgeUnderlying } from "@obsidion/core/oxide"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import type { Address, Hex } from "viem"
 import { createPublicClient, formatUnits, parseUnits } from "viem"
@@ -48,6 +49,7 @@ import {
   bestEffort,
   task,
   within,
+  WalletError,
   withdrawalFailure,
   type Resource,
   type Task,
@@ -56,18 +58,18 @@ import {
   type FieldLike,
   type TrackerRails,
   type WithdrawalRecord,
+  type Withdrawals,
 } from "@obsidion/front-core"
 import { getConfig, l1Transport, type WebWalletConfig } from "../../config/env"
 import { getOxideTuple, l1PublicClient, requireTupleField } from "../../config/oxideTuple"
-import { getAuthService } from "../../platform/auth/useAuthenticator"
+import { tokenMetadata } from "../sipa/loadDepositFacts"
 import { currentTxAmountCap, portalDomainOfToken } from "../token/oxideToken"
 import { usdBalance } from "../../ui/format"
 import { isFlowCancelled, runOperation, type OperationHandle } from "../operations/operations"
-import { session } from "../../platform/session"
+import { session } from "../../session/session"
 import { maybeRefuelFpc } from "../fees/fpcRefuel"
-import { loadWalletIdentity } from "../identity/walletIdentity"
-import { claimSponsorContext, noteSubscribed } from "../onboarding/claimSponsorship"
-import { RAIL_REGISTERED } from "../onboarding/rails"
+import { claimSponsorContext, noteSubscribed } from "../registration/claimSponsorship"
+import { RAIL_REGISTERED } from "../registration/rails"
 import { assertWithinWithdrawalLimit } from "../limits/withdrawalLimit"
 import type { WithdrawalReceiveAsset } from "./withdrawAssets"
 import { withdrawalExecutorAt, withdrawalExecutorFee } from "./withdrawalFee"
@@ -146,78 +148,99 @@ export interface RescanToken {
   partial?: boolean
 }
 
-/**
- * Each token's pass, kept for the page load. A failed one, or one that skipped a burn whose
- * executor it could not read, is dropped so a later call tries again.
- */
-const rescans = new Map<string, Promise<WithdrawalRecord[]>>()
+/** What a session's rescans read and write beside the wallet and account each call names. */
+export interface RescanDeps {
+  store: Withdrawals
+  /** Main's deployment, for a token that names none. */
+  deployment(): Promise<OxideEnvTuple>
+  /** An L1 token's ERC-20 symbol. */
+  l1Symbol(token: Address): Promise<string>
+  /** Runs the tracker over the records a rescan rebuilt. */
+  wake(): void
+}
 
 /**
- * Once per page load and token: rebuild the records this browser lost from the account's own
+ * Once per session and token: rebuild the records this browser lost from the account's own
  * recovery events on every token it holds, Savings' included, and wake the tracker for them.
  * Reading the events syncs PXE first, so a fresh device gets its whole history. Tokens run one at a
- * time; a token missing from an earlier call is scanned when a later call names it. Resolves to the
- * records created.
+ * time; a token missing from an earlier call is scanned when a later call names it. A failed pass,
+ * or one that skipped a burn whose executor it could not read, is dropped so a later call tries
+ * again. Resolves to the records created.
  */
-export async function rescanWithdrawals(
-  wallet: ObsidionWallet,
-  tokens: RescanToken[],
-): Promise<WithdrawalRecord[]> {
-  const rebuilt: WithdrawalRecord[] = []
-  for (const token of tokens) {
-    const key = token.tuple?.l2Token ?? "main"
-    let pass = rescans.get(key)
-    if (!pass) {
-      const forget = () => {
-        if (rescans.get(key) === made) rescans.delete(key)
+export function rescanWithdrawals(deps: RescanDeps, scan = rescanToken) {
+  const passes = new Map<string, Promise<WithdrawalRecord[]>>()
+  return async (
+    wallet: ObsidionWallet,
+    account: ObsidionAccount,
+    tokens: RescanToken[],
+  ): Promise<WithdrawalRecord[]> => {
+    const rebuilt: WithdrawalRecord[] = []
+    for (const token of tokens) {
+      const key = token.tuple?.l2Token ?? "main"
+      let pass = passes.get(key)
+      if (!pass) {
+        const forget = () => {
+          if (passes.get(key) === made) passes.delete(key)
+        }
+        const made = scan(deps, wallet, account, token, forget).then((records) => {
+          if (token.partial)
+            throw new WalletError(
+              "scan.incomplete",
+              `rescan ${token.label ?? key} ran without every executor`,
+            )
+          return records
+        })
+        passes.set(key, made)
+        made.catch(forget)
+        pass = made
       }
-      const made = rescanToken(wallet, token, forget).then((records) => {
-        if (token.partial)
-          throw new Error(`rescan ${token.label ?? key} ran without every executor`)
-        return records
-      })
-      rescans.set(key, made)
-      made.catch(forget)
-      pass = made
+      rebuilt.push(...(await pass))
     }
-    rebuilt.push(...(await pass))
+    return rebuilt
   }
-  return rebuilt
 }
 
 /** Rebuilds Main's withdrawals once per session; not retried, as the Savings replay runs it again. */
 export function withdrawalRescan(
-  needs: { wallet: Resource<ObsidionWallet>; token: Resource<TokenService> },
-  rescan = rescanWithdrawals,
+  needs: {
+    wallet: Resource<ObsidionWallet>
+    account: Resource<ObsidionAccount>
+    token: Resource<TokenService>
+  },
+  rescan: ReturnType<typeof rescanWithdrawals>,
 ): Task {
   return task("withdrawalRescan", {
     needs,
     after: { firstBalance: true, depositsReplayed: { whenCatchingUp: 0 } },
     every: "once",
-    async run({ wallet, token, signal }) {
-      await within(rescan(wallet, [{ tokenService: token }]), "withdrawalRescan", { signal })
+    async run({ wallet, account, token, signal }) {
+      await within(rescan(wallet, account, [{ tokenService: token }]), "withdrawalRescan", {
+        signal,
+      })
     },
   })
 }
 
 async function rescanToken(
+  deps: RescanDeps,
   wallet: ObsidionWallet,
+  account: ObsidionAccount,
   { tokenService, tuple, label, executorKind = () => "plain" }: RescanToken,
   forget: () => void,
 ): Promise<WithdrawalRecord[]> {
-  const identity = loadWalletIdentity()
-  if (!identity) return []
   const token = await tokenService.fetchTokenInformation()
-  const deployment = tuple ?? (await getOxideTuple(getConfig()))
+  const deployment = tuple ?? (await deps.deployment())
   const wiring = resolveWithdrawalWiring(deployment)
   if (!wiring) return []
+  // The L1 token the burned amounts count, not the L2 token's own symbol.
+  const tokenSymbol = await deps.l1Symbol(bridgeUnderlying(deployment) as Address)
   // Reading the token's events runs its sync, which needs its immutables stored in this PXE.
   await tokenService.getTokenContract()
   const rebuilt = await rebuildWithdrawals({
     source: createWithdrawEventSource({
       wallet,
       portal: await portalDomainOfToken(deployment.l2Token),
-      accountAddress: identity.address,
+      accountAddress: account.getAddress().toString(),
       // Every executor the account's burns name, not only the one the bridge lists today.
       readExecutor: (address) =>
         withdrawalExecutorAt(address, executorKind(address)).catch((err) => {
@@ -225,8 +248,8 @@ async function rescanToken(
           throw err
         }),
     }),
-    store: session().withdrawals,
-    tokenSymbol: token.symbol,
+    store: deps.store,
+    tokenSymbol,
     tokenDecimals: token.decimals,
     networkId: wallet.networkId,
     deployment: { portal: wiring.portal, l2Token: wiring.l2Token },
@@ -240,7 +263,7 @@ async function rescanToken(
       ),
   })
   // Most rebuilt burns settled long ago; until a pass reads that, their rows show in progress.
-  if (rebuilt.length > 0) wakeWithdrawalTracker()
+  if (rebuilt.length > 0) deps.wake()
   return rebuilt
 }
 
@@ -554,8 +577,9 @@ export async function burnContext(deps: WithdrawDeps, recipient: Address) {
   const sponsor = await claimSponsorContext(deps, RAIL_REGISTERED)
 
   const tuple = await getOxideTuple(getConfig())
+  const unit = await tokenMetadata(getConfig(), bridgeUnderlying(tuple) as Address)
   return {
-    tokenSymbol: token.symbol,
+    tokenSymbol: unit.symbol,
     tokenDecimals: token.decimals,
     sponsor,
     tuple,
@@ -667,7 +691,7 @@ export function noteSponsoredMine(
 
 /** This wallet's Oxide account and its secret: the one handed in, else the unlocked passkey secret. */
 export async function ownSwapRecoverer(tuple: OxideEnvTuple, secret?: Fr): Promise<SwapRecoverer> {
-  const msk = secret ?? (await getAuthService().getSecretKey())
+  const msk = secret ?? (await session().auth.getSecretKey())
   if (!msk) throw new Error("Unlock your wallet with your passkey and try again.")
   const account = await predictAccountAddress(
     l1PublicClient(getConfig()),

@@ -5,6 +5,7 @@ import { MemoryRouter } from "react-router-dom"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { HistoricResidualSummary } from "../../../src/features/migration/historicResiduals"
 import type { MigrationSourceQuote } from "@obsidion/sdk"
+import type { IdentityView, Store, WalletIdentity } from "@obsidion/front-core"
 import { startTabBoundOperation } from "../../support/operations"
 
 const BOOTED_PORTAL = "0x" + "AA".repeat(20)
@@ -36,6 +37,11 @@ const h = vi.hoisted(() => ({
   keyFor: undefined as undefined | ((portal: string) => string),
 }))
 
+/** The session's identity, which `enter` sets. */
+const entered = vi.hoisted(() => ({ store: undefined as unknown as Store<IdentityView> }))
+const enter = (value: WalletIdentity | null) =>
+  entered.store.set({ value, loaded: true, failed: false })
+
 // A real notification store on memory, so a dismiss and the next scan's report meet as they would.
 // `store` reads an entry with its words; `upsert` sees every report the mount makes, worded.
 type Row = { id: string; title: string; description: string; dismissedAt?: number }
@@ -48,7 +54,7 @@ const notes = vi.hoisted(() => ({
   },
   bell: undefined as unknown as import("@obsidion/front-core").Notifications,
 }))
-vi.mock("../../../src/platform/session", async () => {
+vi.mock("../../../src/session/session", async () => {
   const core = await import("@obsidion/front-core")
   const { notificationText } = await import("../../../src/ui/notificationText")
   const bell = core.createNotifications(core.openDatabase(core.memoryBackend()))
@@ -59,7 +65,7 @@ vi.mock("../../../src/platform/session", async () => {
   const sources = {
     rows: [],
     oldVersionWithdrawals: [],
-    deposits: none,
+    deposits: { records: [], loaded: true, failed: false },
     withdrawals: none,
     upgrades: { items: [], recipients: new Set<string>(), loaded: true },
     processing: new Map(),
@@ -98,15 +104,26 @@ vi.mock("../../../src/platform/session", async () => {
     progress: () => {},
   }
   const { balancesOf } = await import("../../support/balances")
+  // Stable, like the session's.
+  const registrations = {
+    view: {
+      get: () => ({ records: h.registrations, loaded: true, failed: false }),
+      subscribe: () => () => {},
+    },
+  }
+  entered.store = core.memoryStore<IdentityView>({ value: null, loaded: true, failed: false })
   // The page's wallet, the account, the token and the balances, read at each render.
   return {
+    session: () => ({ identity: entered.store }),
     useSession: () => ({
+      identity: entered.store,
       notifications: bell,
       milestones,
       wallet: core.fixed("wallet", h.aztec.obsidionWallet),
       account: core.fixed("account", h.account.obsidionAccount),
       token: core.fixed("token", h.asset.current.tokenService),
       balances: balancesOf(h.balance),
+      registrations,
     }),
   }
 })
@@ -213,13 +230,9 @@ vi.mock("../../../src/features/migration/createWebMetadataMigration", () => {
         : "migration-test"),
   }
 })
-vi.mock("../../../src/features/onboarding/sponsoredRailReadiness", () => ({
+vi.mock("../../../src/features/registration/sponsoredRailReadiness", () => ({
   useSponsoredRailPending: () => h.railPending,
   useSponsoredRailReadFailed: () => h.railReadFailed,
-}))
-vi.mock("../../../src/features/onboarding/webRegistration", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../src/features/onboarding/webRegistration")>()),
-  getPendingStore: () => ({ load: async () => {}, list: () => h.registrations }),
 }))
 vi.mock("../../../src/dev/demoFlag", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../src/dev/demoFlag")>()),
@@ -242,7 +255,7 @@ const { showReportableError } = await import("../../../src/errors/errorModal")
 const { webStorage } = await import("../../../src/platform/storage/WebStorageAdapter")
 const { walletStorage } = await import("../../../src/platform/storage/walletStorage")
 const { getOperationStore } = await import("../../../src/features/operations/operations")
-await import("../../../src/features/notifications/notifications")
+await import("../../../src/session/session")
 const upsert = vi.spyOn(notes.store, "upsert")
 const dismiss = vi.spyOn(notes.store, "dismiss")
 const remove = vi.spyOn(notes.store, "remove")
@@ -291,6 +304,7 @@ let root: Root
 let client: QueryClient
 
 beforeEach(() => {
+  enter(null)
   vi.useFakeTimers()
   vi.clearAllMocks()
   h.networkReady = true
@@ -478,8 +492,40 @@ describe("MigrationDetectionMount — the record update with nothing to move", (
     }
   })
 
+  it("reports the upgrade's start and its end, with no funds moved", async () => {
+    sessionStorage.clear()
+    withTokenService()
+    const needsMigration = vi.fn(async () => true)
+    h.metadataSession.mockResolvedValue({
+      controller: { load: async () => {}, getSnapshot: () => null, subscribe: () => () => {} },
+      service: { ...registrationService(), needsMigration },
+    })
+    h.railPending = false
+    probed()
+    h.runMetadata.mockImplementation(async (_c, opts: { prepareOnly?: boolean }) => {
+      if (opts.prepareOnly) return { phase: "broadcasting", plan: "signed-plan" }
+      needsMigration.mockResolvedValue(false)
+      return { phase: "done", plan: "signed-plan" }
+    })
+    try {
+      await render()
+      await startUpgrade()
+      await act(async () => vi.advanceTimersByTimeAsync(50))
+      const funnel = h.event.mock.calls.map(([event]) => event).filter((e) => /^migration_/.test(e))
+      expect(funnel).toEqual([
+        "migration_prompted",
+        "migration_started",
+        "migration_stage",
+        "migration_completed",
+      ])
+    } finally {
+      h.railPending = undefined
+      h.runMetadata.mockReset()
+    }
+  })
+
   it("holds Main without the old version's dust, which the upgrade leaves behind", async () => {
-    walletStorage.setItem("webwallet.identity", JSON.stringify({ address: "0xabc", claimedAt: 0 }))
+    enter({ address: "0xabc", claimedAt: 0 })
     markOldHoldingsRead("0xabc")
     h.balance = { main: 2n * 10n ** 18n, known: true }
     const dust: HistoricResidualSummary = {
@@ -517,7 +563,7 @@ describe("MigrationDetectionMount — the record update with nothing to move", (
       expect(upgradeLock("0xabc")).toEqual({ state: "held", main: 2n * 10n ** 18n })
     } finally {
       h.balance = { main: 0n, known: true }
-      walletStorage.removeItem("webwallet.identity")
+      enter(null)
       walletStorage.removeItem(`webwallet.oldHoldingsRead/${BOOTED_PORTAL.toLowerCase()}/0xabc`)
       await BalanceStorage.get(webStorage).updateBalance(
         oldVersionScope(dust.tuple.portal, "0xabc"),
@@ -2130,11 +2176,19 @@ describe("MigrationDetectionMount — the dialog opens only on request", () => {
     })
 
   it("shows 1 Choose on every launch, and Withdraw leaves it for Withdraw", async () => {
+    sessionStorage.clear()
     probe(source)
     await render({ request: false })
     expect(detectedModal()?.textContent).toContain("Upgrade to keep using zk.money")
+    const prompted = (action: string) =>
+      expect(h.event).toHaveBeenCalledWith(
+        "migration_prompted",
+        expect.objectContaining({ action }),
+      )
+    prompted("shown")
     await act(async () => button("Withdraw funds instead")!.click())
     expect(detectedModal()).toBeNull()
+    prompted("withdraw")
     act(() => root.unmount())
     root = createRoot(container)
     await render({ request: false })
@@ -2365,7 +2419,7 @@ describe("MigrationDetectionMount — the dialog opens only on request", () => {
 
   it("is never finishing for an account with no name", async () => {
     h.railPending = true
-    walletStorage.setItem("webwallet.identity", JSON.stringify({ address: "0xabc", claimedAt: 0 }))
+    enter({ address: "0xabc", claimedAt: 0 })
     probe()
     await render({ request: false })
     expect(upgradeStatus()).toEqual({ state: "none", registration: false })
@@ -2373,10 +2427,7 @@ describe("MigrationDetectionMount — the dialog opens only on request", () => {
 
   it("is finishing while the current registration waits to reach the rollup", async () => {
     h.railPending = true
-    walletStorage.setItem(
-      "webwallet.identity",
-      JSON.stringify({ address: "0xabc", handle: "taga", claimedAt: 0 }),
-    )
+    enter({ address: "0xabc", handle: "taga", claimedAt: 0 })
     probe()
     await render()
     expect(upgradeStatus()).toEqual({ state: "finishing", registration: true })
@@ -2387,10 +2438,7 @@ describe("MigrationDetectionMount — the dialog opens only on request", () => {
   it("keeps checking, not finishing, while the readiness read fails", async () => {
     h.railPending = true
     h.railReadFailed = true
-    walletStorage.setItem(
-      "webwallet.identity",
-      JSON.stringify({ address: "0xabc", handle: "taga", claimedAt: 0 }),
-    )
+    enter({ address: "0xabc", handle: "taga", claimedAt: 0 })
     h.account.obsidionAccount = { getAddress: () => ({ toString: () => "0xabc" }) }
     try {
       probe()
@@ -2403,10 +2451,7 @@ describe("MigrationDetectionMount — the dialog opens only on request", () => {
 
   it("is nothing to do for an account this browser registered on this version", async () => {
     h.railPending = true
-    walletStorage.setItem(
-      "webwallet.identity",
-      JSON.stringify({ address: "0xabc", handle: "taga", claimedAt: 0 }),
-    )
+    enter({ address: "0xabc", handle: "taga", claimedAt: 0 })
     h.registrations = [{ l2Address: "0xABC" }]
     probe()
     await render({ request: false })
@@ -2462,7 +2507,7 @@ describe("MigrationDetectionMount — old-version holdings", () => {
   beforeEach(() => {
     holdings.mockClear()
     quote.mockClear()
-    walletStorage.setItem("webwallet.identity", JSON.stringify({ address: "0xabc", claimedAt: 0 }))
+    enter({ address: "0xabc", claimedAt: 0 })
     walletStorage.removeItem(`webwallet.oldHoldingsRead/${BOOTED_PORTAL.toLowerCase()}/0xabc`)
   })
 
@@ -3006,10 +3051,7 @@ describe("MigrationDetectionMount — the upgrade lock", () => {
         balance: 50n * wad,
       }
       const savingsDestination = { ...current, portal: "0x" + "05".repeat(20) }
-      walletStorage.setItem(
-        "webwallet.identity",
-        JSON.stringify({ address: "0xabc", claimedAt: 0 }),
-      )
+      enter({ address: "0xabc", claimedAt: 0 })
       if (alreadyCurrent)
         walletStorage.setItem("webwallet.version/0xabc", BOOTED_PORTAL.toLowerCase())
       markOldHoldingsRead("0xabc")
@@ -3078,7 +3120,7 @@ describe("MigrationDetectionMount — the upgrade lock", () => {
   )
 
   it("starts only once the figure it holds is known", async () => {
-    walletStorage.setItem("webwallet.identity", JSON.stringify({ address: "0xabc", claimedAt: 0 }))
+    enter({ address: "0xabc", claimedAt: 0 })
     markOldHoldingsRead("0xabc")
     h.balance = { main: 0n, known: false }
     withTokenService()

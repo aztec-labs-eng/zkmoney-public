@@ -2,15 +2,21 @@
 import { isAddress, type Address, type Hex } from "viem"
 import type { NameClaimResponse, SignedTermsResponse } from "@obsidion/core/types"
 import {
-  PendingRegistrationStore,
-  SIPADepositStore,
+  currentRegistration,
+  encodeRecord,
+  latestRegistration,
+  loadRecords,
+  registrationAt,
+  registrationId,
   type PendingRegistrationRecord,
-  type SIPADepositRecord,
+  type RegistrationTerms,
+  type SipaDeposit,
 } from "@obsidion/front-core"
-import type { RegistrationTerms } from "../../src/features/onboarding/registrationTerms"
 import { RANDOM } from "./registrationPrices"
 import type { TicketSignupStash } from "../../src/features/paylink/claimStash"
-import { webStorage } from "../../src/platform/storage/WebStorageAdapter"
+import { openedSession } from "../../src/session/session"
+import { openTestSession } from "./session"
+import { seedSipaDeposit } from "./sipaDeposits"
 
 export const DAI = 10n ** 18n
 /** DAI to the cent, in base units. */
@@ -35,6 +41,8 @@ export const pendingRecord = (
   l2Address: L2_ADDRESS,
   l1ChainId: 11155111,
   sipaAddress: SIPA,
+  fee: String(RANDOM.fee),
+  beneficiary: "0x00000000000000000000000000000000000000b5",
   depositToken: TOKEN,
   broadcast: true,
   phase: "awaiting_deposit",
@@ -63,8 +71,6 @@ export function nameClaim(over: Partial<NameClaimResponse> = {}): NameClaimRespo
 
 /** Stored terms for one registration, live for two more hours. */
 export const registrationTerms = (over: Partial<RegistrationTerms> = {}): RegistrationTerms => ({
-  account: ACCOUNT,
-  tag: "taga",
   deadline: Math.floor(Date.now() / 1000) + 7200,
   ...over,
 })
@@ -91,15 +97,14 @@ export const ticketSignupStash = (over: Partial<TicketSignupStash> = {}): Ticket
 /** Seeds the rail record the registration's deposit address keeps. */
 export async function seedRegistrationRail(
   record: PendingRegistrationRecord,
-  patch: Parameters<SIPADepositStore["upsert"]>[1],
-  over: Partial<Omit<SIPADepositRecord, "sipaAddress" | "phase">> = {},
+  patch: Partial<SipaDeposit> & Pick<SipaDeposit, "phase">,
+  over: Partial<Omit<SipaDeposit, "sipaAddress" | "phase">> = {},
 ): Promise<void> {
   const sipa = record.sipaAddress
   if (!isAddress(sipa)) throw new Error(`not an address: ${sipa}`)
   const token: Address = record.depositToken
-  const rail = SIPADepositStore.get(webStorage)
-  await rail.load()
-  await rail.upsert(sipa, patch, {
+  await seedSipaDeposit({
+    sipaAddress: sipa,
     networkId: "0xnet",
     recipientL2Address: record.l2Address,
     tokenAddress: token,
@@ -112,11 +117,65 @@ export async function seedRegistrationRail(
     startTime: 1,
     intent: "registration",
     ...over,
+    ...patch,
   })
 }
 
-/** Drops the store singletons, so the next `get` reads storage afresh as a reloaded page would. */
-export function resetRegistrationStores(): void {
-  Reflect.set(PendingRegistrationStore, "instance", null)
-  Reflect.set(SIPADepositStore, "instance", null)
+/** The open session; opens the namespace's session when none is. */
+const sessionNow = () => openedSession.get() ?? openTestSession()
+
+/**
+ * Saves `record` as is, past every fence the transition keeps: a fixture's state, not an event a
+ * writer sends. Resolves once the session's view holds it.
+ */
+export async function seedRegistration(record: PendingRegistrationRecord): Promise<void> {
+  const { db, registrations } = sessionNow()
+  await registrations.ready
+  await db.write(async (w) =>
+    w.put(`acct/registrations/${registrationId(record.sipaAddress)}`, encodeRecord(record)),
+  )
+}
+
+/** The session's record at `sipa`, once its records load. */
+export async function storedRegistration(sipa: string = SIPA) {
+  return registrationAt(await loadRecords(sessionNow().registrations.view), sipa)
+}
+
+/**
+ * One account's record as suites written against an account-keyed store seed it: `upsert` lays a
+ * patch over the account's newest record. A new address replaces the old one, which stays closed.
+ */
+export const accountRecords = {
+  current(): PendingRegistrationRecord | null {
+    return currentRegistration(sessionNow().registrations.view.get().records)
+  },
+  get(account: string): PendingRegistrationRecord | null {
+    return latestRegistration(sessionNow().registrations.view.get().records, account)
+  },
+  async upsert(
+    account: string,
+    patch: Partial<PendingRegistrationRecord>,
+    base?: Omit<PendingRegistrationRecord, "account">,
+  ): Promise<PendingRegistrationRecord> {
+    const current = accountRecords.get(account)
+    const moved =
+      current !== null &&
+      registrationId(current.sipaAddress) !==
+        registrationId(patch.sipaAddress ?? current.sipaAddress)
+    const next = {
+      ...(current ?? base),
+      ...patch,
+      account,
+      ...(moved ? { startTime: current.startTime + 1 } : {}),
+    } as PendingRegistrationRecord
+    const { db, registrations } = sessionNow()
+    await registrations.ready
+    const put = (r: PendingRegistrationRecord) =>
+      [`acct/registrations/${registrationId(r.sipaAddress)}`, encodeRecord(r)] as const
+    await db.write(async (w) => {
+      if (moved) w.put(...put({ ...current, phase: "replaced", endTime: Date.now() }))
+      w.put(...put(next))
+    })
+    return next
+  },
 }

@@ -1,8 +1,8 @@
 import { useState } from "react"
-import { OnboardingScreen, type OnboardingScreenProps } from "../onboarding/OnboardingScreen"
+import { OnboardingScreen, type OnboardingScreenProps } from "../onboarding/OnboardingScreen/OnboardingScreen"
 import { pendingTicketRegistration } from "./ticketContinuation"
 import { usePaylinkKit } from "./usePaylinkDeps"
-import { useAssetDemand } from "../../platform/session"
+import { useAssetDemand } from "../../session/session"
 
 /**
  * The signup wizard with the paylink services a ticket-funded signup claims its link with. For a

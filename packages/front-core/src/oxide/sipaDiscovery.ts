@@ -17,22 +17,14 @@ import {
 import { deploymentScanRange } from "./deploymentScanRange"
 import { readResolverOperatorRecords } from "./resolverOperatorRecords"
 
-/** The narrow PXE surface the setup drives. Registration shape is per-generation:
- * the 4.3.0 PXE takes the combined `{ instance, artifact }`, the v5 PXE splits
- * class and instance registration. */
+/** The narrow PXE surface the setup drives. */
 export interface SipaDiscoveryPxe {
-  /** 4.3.0 sender registration; the v5 PXE replaced it with registerTaggingSecretSource. */
-  registerSender?(sender: AztecAddress): Promise<unknown>
-  registerTaggingSecretSource?(source: {
+  registerTaggingSecretSource(source: {
     kind: "address-derived"
     sender: AztecAddress
   }): Promise<unknown>
   registerContractClass(artifact: ContractArtifact): Promise<unknown>
-  registerContract(
-    contract:
-      | ContractInstanceWithAddress
-      | { instance: ContractInstanceWithAddress; artifact: ContractArtifact },
-  ): Promise<unknown>
+  registerContract(contract: ContractInstanceWithAddress): Promise<unknown>
   getContractInstance?(address: AztecAddress): Promise<unknown>
   getContractArtifact?(classId: unknown): Promise<unknown>
 }
@@ -51,7 +43,7 @@ export interface SipaDiscoverySetup {
 
 /**
  * Wire SIPA event discovery into the PXE against the resolved oxide env tuple.
- * Idempotent: `registerSender` / `registerContract` are PXE upserts, so
+ * Idempotent: `registerTaggingSecretSource` / `registerContract` are PXE upserts, so
  * re-running on a later boot is safe.
  */
 export async function setupSipaDiscovery(deps: {
@@ -124,16 +116,6 @@ export async function setupSipaDiscovery(deps: {
   return { resolver, broadcaster }
 }
 
-// Duck-typed like registerContractInPXE: the v5 PXE registers senders via
-// registerTaggingSecretSource; the 4.3.0 PXE via registerSender.
 async function registerSender(pxe: SipaDiscoveryPxe, sender: AztecAddress): Promise<void> {
-  if (typeof pxe.registerTaggingSecretSource === "function") {
-    await pxe.registerTaggingSecretSource({ kind: "address-derived", sender })
-  } else if (typeof pxe.registerSender === "function") {
-    await pxe.registerSender(sender)
-  } else {
-    throw new Error(
-      "SIPA discovery: PXE exposes neither registerTaggingSecretSource nor registerSender",
-    )
-  }
+  await pxe.registerTaggingSecretSource({ kind: "address-derived", sender })
 }

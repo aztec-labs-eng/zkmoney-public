@@ -1,16 +1,12 @@
 import { beforeEach, describe, expect, it } from "vitest"
 import { signOut } from "../../../src/features/identity/signOut"
-import {
-  findRetiredSession,
-  forgetRetiredSession,
-  retiredSession,
-} from "../../../src/platform/auth/retiredSession"
+import { pageOver, reloadDevice, testPage } from "../../support/page"
 import { WebAlphaAuthService } from "../../../src/platform/auth/WebAlphaAuthService"
 import { storageIdFromSecret } from "../../../src/platform/storage/activeStorage"
 import { setActiveRollup } from "../../../src/platform/storage/rollupStorage"
 import { closeWalletStore, openWalletStore } from "../../../src/platform/storage/walletStorage"
 import { sandboxProfile } from "../../fixtures/sandboxProfile"
-import { FakePasskeyCeremony, MemoryStorage } from "../../support/fakePasskeyCeremony"
+import { FakePasskeyCeremony } from "../../support/fakePasskeyCeremony"
 import { testWalletDbs } from "../../support/fakeWalletDb"
 
 const dbs = testWalletDbs()
@@ -19,7 +15,7 @@ const RP = "localhost"
 
 const service = () =>
   new WebAlphaAuthService({
-    storage: new MemoryStorage(),
+    ...pageOver(testPage().database),
     rpId: RP,
     ceremony: new FakePasskeyCeremony({ route: "local" }),
     posture: () => "phone",
@@ -61,14 +57,17 @@ async function boot() {
   await closeWalletStore()
   setActiveRollup(ACTIVE)
   await openWalletStore(ACTIVE, { persistent: true })
-  await findRetiredSession(RP)
+  await reloadDevice()
+  await auth.findRetiredSession()
 }
 
-beforeEach(() => forgetRetiredSession())
+let auth: WebAlphaAuthService
+beforeEach(() => {
+  auth = service()
+})
 
 describe("retired session", () => {
   it("answers the cache source with the retired key, its tag, and no address", async () => {
-    const auth = service()
     const created = await auth.createPasskey("@alice")
     await seedRetired("111", created)
     await boot()
@@ -87,7 +86,7 @@ describe("retired session", () => {
     await seedRetired("111", await service().createPasskey("@alice"))
     await seedRetired("222", await service().createPasskey("@bob"))
     await boot()
-    expect(retiredSession()).toBeUndefined()
+    expect(auth.retiredSession()).toBeUndefined()
   })
 
   it("is none for a key that does not derive its storage id", async () => {
@@ -96,7 +95,7 @@ describe("retired session", () => {
     const cache = JSON.parse(state.get("webwallet.msk")!)
     state.set("webwallet.msk", JSON.stringify({ ...cache, msk: `0x${"01".repeat(32)}` }))
     await boot()
-    expect(retiredSession()).toBeUndefined()
+    expect(auth.retiredSession()).toBeUndefined()
   })
 
   it.each([
@@ -107,16 +106,16 @@ describe("retired session", () => {
     await seedRetired("111", created, passkeySet)
     await seedRetired("222", created)
     await boot()
-    expect(retiredSession()?.credentialId).toBe(created.credentialId)
+    expect(auth.retiredSession()?.credentialId).toBe(created.credentialId)
   })
 
   it("is gone after a sign-out, which also removes it from the retired database", async () => {
     await seedRetired("111", await service().createPasskey("@alice"))
     await boot()
-    expect(retiredSession()).toBeDefined()
-    await signOut()
-    expect(retiredSession()).toBeUndefined()
-    await findRetiredSession(RP)
-    expect(retiredSession()).toBeUndefined()
+    expect(auth.retiredSession()).toBeDefined()
+    await signOut({ ...testPage(), auth })
+    expect(auth.retiredSession()).toBeUndefined()
+    await auth.findRetiredSession()
+    expect(auth.retiredSession()).toBeUndefined()
   })
 })

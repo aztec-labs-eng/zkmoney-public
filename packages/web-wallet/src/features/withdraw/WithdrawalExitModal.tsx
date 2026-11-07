@@ -20,7 +20,7 @@ import { withdrawKind } from "./withdrawFunnel"
 import { isDesktopL1SubmitActive } from "../../platform/desktopBridge"
 import { ManualExitSheet } from "./ManualExitSheet"
 import { selfFinalize } from "./selfFinalize"
-import { useSession } from "../../platform/session"
+import { useSession } from "../../session/session"
 
 const WALLET_LEAD = "This withdrawal has already been deducted from your Aztec balance. "
 const PAYLINK_LEAD = "The link's funds have already left Aztec. "

@@ -3,6 +3,7 @@
  * and swaps the gas share to ETH, its route floor on top of what the recipient should receive.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { testPage, testCore } from "../../../support/page"
 import { formatUnits, getAddress, parseUnits, type Address, type Hex } from "viem"
 import { SwapRoute } from "@oxide/l1-contracts"
 import { LIMIT, LIMIT_USD } from "../../../support/publicLimit"
@@ -63,24 +64,26 @@ vi.mock("../../../../src/features/token/oxideToken", () => ({
   currentTxAmountCap: async () => TX_AMOUNT_CAP,
 }))
 const claimSponsorContext = vi.fn(async () => ({ fpcAddress: {}, policy: {} }))
-vi.mock("../../../../src/features/onboarding/claimSponsorship", () => ({
+vi.mock("../../../../src/features/registration/claimSponsorship", () => ({
   claimSponsorContext: (...args: unknown[]) => claimSponsorContext(...(args as [])),
   noteSubscribed: vi.fn(),
 }))
 vi.mock("../../../../src/features/fees/fpcRefuel", () => ({ maybeRefuelFpc: vi.fn() }))
 const MASTER_SECRET = { toString: () => `0x${"11".repeat(32)}` }
 const mockSecretKey = vi.fn(async () => MASTER_SECRET as never)
-vi.mock("../../../../src/platform/auth/useAuthenticator", () => ({
-  getAuthService: () => ({ getSecretKey: mockSecretKey }),
-}))
+const fakeAuth = () => ({ getSecretKey: mockSecretKey })
 
 const { submitFreshAddressWithdrawal } = await import(
   "../../../../src/features/withdraw/freshAddressGateway"
 )
 const { activeNamespace, closeSession, switchSession, session } = await import(
-  "../../../../src/platform/session"
+  "../../../../src/session/session"
 )
-beforeEach(() => void switchSession(activeNamespace()))
+const { pageSessionDeps } = await import("../../../../src/app/sessionDeps")
+beforeEach(
+  () =>
+    void switchSession(activeNamespace(testCore().device), pageSessionDeps(testPage(fakeAuth()))),
+)
 afterEach(closeSession)
 const withdrawals = () => session().withdrawals
 

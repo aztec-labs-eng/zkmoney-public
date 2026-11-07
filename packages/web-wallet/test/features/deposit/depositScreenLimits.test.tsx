@@ -50,11 +50,8 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
 const gateway = {
   depositAddress: vi.fn(async () => ({ address: "0xp001ed", name: "alice.oxide.eth" })),
 }
-vi.mock("../../../src/features/deposit/sipaGateway", () => ({
-  getSipaDepositGateway: () => gateway,
-}))
 // The sandbox's one coin, or the mainnet coins (DAI settling) in the demo.
-vi.mock("../../../src/features/deposit/loadDepositFacts", async (importOriginal) => {
+vi.mock("../../../src/features/sipa/loadDepositFacts", async (importOriginal) => {
   const {
     mainnetTokens,
     mockLoadDepositFacts,
@@ -85,7 +82,7 @@ vi.mock("../../../src/features/deposit/loadDepositFacts", async (importOriginal)
     () => ({ failed: demo.failed, retry: demo.retry }),
   )
 })
-vi.mock("../../../src/features/deposit/l1Wallet", () => ({
+vi.mock("../../../src/session/l1Wallet", () => ({
   useL1Wallet: () => ({
     account: null,
     accounts: [],
@@ -104,8 +101,12 @@ vi.mock("../../../src/config/oxideTuple", async (importOriginal) => ({
   getOxideTuple: async () => ({ token: MANIFEST_TOKEN }),
 }))
 
-const { DepositScreen, QUOTE_PENDING } = await import("../../../src/features/deposit/DepositScreen")
-const { saveWalletIdentity } = await import("../../../src/features/identity/walletIdentity")
+const { DepositScreen } = await import("../../../src/features/deposit/DepositScreen/DepositScreen")
+const noClaim = () => async () => {}
+const { default: depositCopy } = await import(
+  "../../../src/features/deposit/DepositScreen/DepositScreen.copy"
+)
+const { setIdentity } = await import("../../support/identity")
 const { depositCapacityStore } = await import("../../../src/features/deposit/capacityStore")
 const { FAKE_ACTIVE_KEY } = await import("../../support/fakeCapacity")
 import { seedBootConfig } from "../../support/seedBootConfig"
@@ -120,9 +121,9 @@ const FACTS = {
   txAmountCap: 5166n * 10n ** 18n,
 }
 
-const { closeSession } = await import("../../../src/platform/session")
+const { closeSession } = await import("../../../src/session/session")
 const { openTestSession } = await import("../../support/session")
-beforeEach(() => void openTestSession({ wallet: {} }))
+beforeEach(() => openTestSession({ wallet: {}, sipaAddresses: gateway }).registrations.ready)
 afterEach(closeSession)
 
 describe("DepositScreen limits in the address sheet", () => {
@@ -168,7 +169,7 @@ describe("DepositScreen limits in the address sheet", () => {
       root.render(
         <MemoryRouter>
           <ScreeningProvider screener={passThroughScreener}>
-            <DepositScreen />
+            <DepositScreen claimName={noClaim} />
           </ScreeningProvider>
         </MemoryRouter>,
       )
@@ -178,13 +179,13 @@ describe("DepositScreen limits in the address sheet", () => {
       root.render(
         <MemoryRouter>
           <ScreeningProvider screener={passThroughScreener}>
-            <DepositScreen onClose={() => {}} />
+            <DepositScreen claimName={noClaim} onClose={() => {}} />
           </ScreeningProvider>
         </MemoryRouter>,
       )
     })
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     capacity.availableAtomic = 40_000n * 10n ** 18n
     capacity.readFails = false
@@ -200,7 +201,7 @@ describe("DepositScreen limits in the address sheet", () => {
     capacity.rowTokens = []
     localStorage.clear()
     localStorage.setItem("webwallet.hide-deposit-privacy-disclaimer", "true")
-    saveWalletIdentity({ handle: "alice", address: L2_ADDRESS, claimedAt: 1 })
+    await setIdentity({ handle: "alice", address: L2_ADDRESS, claimedAt: 1 })
     container = document.createElement("div")
     document.body.appendChild(container)
     root = createRoot(container)
@@ -259,8 +260,8 @@ describe("DepositScreen limits in the address sheet", () => {
     await openSheet()
     await openDrawer()
 
-    expect(byTestId("deposit-fee")?.textContent).toBe(QUOTE_PENDING)
-    expect(maxSend(await openLimit())).toBe(QUOTE_PENDING)
+    expect(byTestId("deposit-fee")?.textContent).toBe(depositCopy.quotePending)
+    expect(maxSend(await openLimit())).toBe(depositCopy.quotePending)
   })
 
   it("names no maximum and holds copy and scan while the fee is unavailable", async () => {
@@ -296,7 +297,6 @@ describe("DepositScreen limits in the address sheet", () => {
   })
 
   describe("shared capacity", () => {
-
     it("says zero capacity above Copy, with Check again and its details in the drawer", async () => {
       capacity.availableAtomic = 0n
       loadDepositFacts()
@@ -412,7 +412,6 @@ describe("DepositScreen limits in the address sheet", () => {
   })
 
   describe("a table with a Savings row", () => {
-
     it("starts the coin pick on Main's DAI when the profile pins sUSDS", async () => {
       demo.pinnedSavings = true
       loadDepositFacts()

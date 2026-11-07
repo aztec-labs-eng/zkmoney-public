@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Builds the web wallet with the desktop network target baked in and copies the
 # result to web/ for the Electron launcher. Mirrors the deploy workflow
-# (.github/workflows/deploy-web-wallet.yml): same build chain, same env keys,
+# (.github/workflows/deploy-new-version.yml): same build chain, same env keys,
 # same presence guard on the baked values.
 #
 # Env compose: config/desktop.env supplies the committed defaults; values already
@@ -105,7 +105,7 @@ fi
 # Bake the network target. Written (and removed again below) rather than passed as
 # shell env so the vite build reads exactly what the deploy workflow would.
 BAKE_KEYS=("${REQUIRED_KEYS[@]}" VITE_APP_VERSION VITE_DESKTOP_BUILD)
-# Optional keys, baked only when set — mirrors deploy-web-wallet.yml's optional block.
+# Optional keys, baked only when set — mirrors deploy-new-version.yml's optional block.
 for optional in VITE_ACCOUNT_SERVICE_URL VITE_ZKMONEY_API_URL VITE_GOOGLE_CLIENT_ID \
                 VITE_NODE_API_KEY VITE_V5_ARCHIVE_NODE_URL VITE_V5_ARCHIVE_NODE_API_KEY VITE_PASSKEY_RP_ID \
                 VITE_PREDICATE_VERIFICATION_HASH VITE_PREDICATE_CHAIN VITE_PREDICATE_DISABLED; do

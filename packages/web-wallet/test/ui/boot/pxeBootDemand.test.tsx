@@ -8,6 +8,7 @@ import { BrowserRouter, useNavigate, type NavigateFunction } from "react-router-
 import type { AztecNode } from "@aztec-labs/aztec.js/node"
 import type { AztecSQLiteOPFSStore } from "@aztec-labs/kv-store/sqlite-opfs"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { setIdentity } from "../../support/identity"
 import { resetModulesAsActiveTab } from "../../support/activeTab"
 
 vi.setConfig({ testTimeout: 30_000 })
@@ -20,9 +21,6 @@ const h = vi.hoisted(() => ({
 vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/front-core")>()),
   useContractServiceContext: () => ({ contractService: undefined }),
-}))
-vi.mock("../../../src/features/identity/walletIdentity", () => ({
-  loadWalletIdentity: () => h.walletIdentity,
 }))
 vi.mock("../../../src/lib/analytics", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../src/lib/analytics")>()),
@@ -50,6 +48,8 @@ let status: string
 async function mount(path: string, { hold = false } = {}) {
   history.replaceState(null, "", path)
   await resetModulesAsActiveTab()
+  const { openTestSession } = await import("../../support/session")
+  await openTestSession().identity.ready
   const { BootDemand, PxeBootProvider, usePxeBoot } = await import("../../../src/ui/PxeBoot")
   const { BootHold } = await import("../../../src/App")
   const { startPageWallet } = await import("../../../src/platform/wallet")
@@ -77,9 +77,9 @@ async function mount(path: string, { hold = false } = {}) {
 
 const flush = () => act(async () => new Promise((r) => setTimeout(r, 0)))
 
-beforeEach(() => {
+beforeEach(async () => {
   h.createWallet.mockReset().mockResolvedValue({ node: {} })
-  h.walletIdentity = null
+  await setIdentity(null)
   container = document.createElement("div")
   document.body.appendChild(container)
   root = createRoot(container)
@@ -101,7 +101,7 @@ describe("PXE boot on a pay page", () => {
     ["/claim", false, true],
     ["/pay/river/extra", false, true],
   ])("at %s, wallet stored: %s, boots at once: %s", async (path, wallet, boots) => {
-    h.walletIdentity = wallet ? { address: "0x1" } : null
+    await setIdentity(wallet ? { address: "0x1" } : null)
     await mount(path)
     expect(h.createWallet).toHaveBeenCalledTimes(boots ? 1 : 0)
     expect(status).toBe(boots ? "ready" : "idle")

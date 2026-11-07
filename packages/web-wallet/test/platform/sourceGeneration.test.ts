@@ -22,9 +22,6 @@ vi.mock("../../src/config/env", () => ({
     sourceRollups: [{ nodeUrl: "https://v6r.rpc.example" }, { nodeUrl: "https://v5r.rpc.example" }],
   }),
 }))
-vi.mock("../../src/platform/auth/useAuthenticator", () => ({
-  getAuthService: () => ({ getSecretKey: h.getSecretKey }),
-}))
 
 const { WebAuthnAlphaAuthProvider } = await import("@obsidion/sdk")
 const {
@@ -142,7 +139,12 @@ describe("withSourceSigner", () => {
       getPubkeys: async () => [Buffer.from("01", "hex"), Buffer.from("02", "hex")],
       signChallenge: async (challenge: Buffer) => `raw ${challenge.toString("hex")}`,
     })
-    const keys = await sourceAccountKeys({ getAuthProvider: () => auth } as never)
+    const keys = await sourceAccountKeys(
+      { getAuthProvider: () => auth } as never,
+      {
+        getSecretKey: h.getSecretKey,
+      } as never,
+    )
     const through = (run: string) =>
       ((sign: (c: Uint8Array) => Promise<unknown>) => async (c: Uint8Array) =>
         `${run}: ${await sign(c)}`) as never

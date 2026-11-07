@@ -18,8 +18,7 @@ import {
 } from "@obsidion/front-core"
 import { PaylinkService, encodePaylinkInline } from "@obsidion/sdk"
 import { getConfig } from "../../../config/env"
-import { getAuthService } from "../../../platform/auth/useAuthenticator"
-import { useSession } from "../../../platform/session"
+import { useSession } from "../../../session/session"
 import { markPaylinksRescanned, providePaylinkRescan } from "../../paylink/paylinkRescanState"
 
 const SWEEP_MS = 60_000
@@ -37,7 +36,7 @@ export function PaylinkClaimMount(): null {
   const obsidionAccount = useResource(useSession().account)
   const tokenService = useResource(useSession().token)
   const { contractService } = useContractServiceContext()
-  const { activity, db, milestones } = useSession()
+  const { activity, auth, db, milestones } = useSession()
 
   useEffect(() => {
     if (!obsidionWallet || !obsidionAccount || !tokenService || !contractService) return
@@ -59,7 +58,7 @@ export function PaylinkClaimMount(): null {
     const rescan = async (): Promise<boolean> => {
       if (!(await milestones.after(RESCAN_AFTER, controller.signal))) return false
       // Cached once the account is unlocked; a locked wallet skips this pass.
-      const masterSecret = await getAuthService().getSecretKey()
+      const masterSecret = await auth.getSecretKey()
       if (!masterSecret || controller.signal.aborted) return false
       // The rows this rebuild writes are scoped to the wallet's network.
       const { networkId } = obsidionWallet
@@ -108,7 +107,16 @@ export function PaylinkClaimMount(): null {
       document.removeEventListener("visibilitychange", run)
       if (active === reconciler) active = undefined
     }
-  }, [obsidionWallet, obsidionAccount, tokenService, contractService, activity, db, milestones])
+  }, [
+    obsidionWallet,
+    obsidionAccount,
+    tokenService,
+    contractService,
+    activity,
+    auth,
+    db,
+    milestones,
+  ])
 
   return null
 }

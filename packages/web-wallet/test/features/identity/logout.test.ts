@@ -1,21 +1,24 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { walletStorage } from "../../../src/platform/storage/walletStorage"
 import { testWalletDbs } from "../../support/fakeWalletDb"
+import { openTestSession } from "../../support/session"
+import { closeSession, openedSession, session } from "../../../src/session/session"
 
 import { type ErrorModalPayload, subscribeErrorModal } from "../../../src/errors/errorModal"
 import { logout } from "../../../src/features/identity/logout"
-import {
-  saveWalletIdentity,
-  loadWalletIdentity,
-} from "../../../src/features/identity/walletIdentity"
-import {
-  getActiveCredentialId,
-  getActiveStorageId,
-  readCachedMsk,
-  setActiveCredentialId,
-  setActiveStorageId,
-  writeCachedMsk,
-} from "../../../src/platform/storage/activeStorage"
+import { setIdentity, savedIdentity } from "../../support/identity"
+import { cachedMsk } from "../../../src/platform/storage/activeStorage"
+import { writeDeviceKeys } from "../../../src/platform/storage/deviceKeys"
+import { testPage, committed } from "../../support/page"
+
+const page = testPage()
+const deviceDb = page.database
+const CACHE = JSON.stringify({
+  v: 1,
+  storageId: "aaa",
+  credentialId: "cred-a",
+  msk: `0x${"11".repeat(32)}`,
+})
 
 describe("logout", () => {
   const assign = vi.fn()
@@ -33,30 +36,48 @@ describe("logout", () => {
   afterEach(() => unsubscribe())
 
   it("clears the active session, stops the PXE, then hard-reloads", async () => {
-    saveWalletIdentity({ handle: "@alice", address: "0xa", claimedAt: 1 })
-    setActiveStorageId("aaa")
-    setActiveCredentialId("cred-a")
-    writeCachedMsk({ v: 1, storageId: "aaa", credentialId: "cred-a", msk: `0x${"11".repeat(32)}` })
+    await writeDeviceKeys(deviceDb, { storageId: "aaa", credentialId: "cred-a", msk: CACHE })
+    await setIdentity({ handle: "@alice", address: "0xa", claimedAt: 1 })
     walletStorage.setItem("obsidion.aaa.obsidion_contacts", "keep")
-    await logout(stopPxe)
-    expect(loadWalletIdentity()).toBeNull()
-    expect(getActiveStorageId()).toBeNull()
-    expect(getActiveCredentialId()).toBeNull()
-    expect(readCachedMsk()).toBeNull()
+    stopPxe.mockImplementationOnce(async () => void expect(page.leaving.get()).toBe(true))
+    await logout(page, stopPxe)
+    expect(await savedIdentity("aaa")).toBeNull()
+    expect(committed().storageId).toBeNull()
+    expect(committed().credentialId).toBeNull()
+    expect(cachedMsk(committed())).toBeNull()
     expect(walletStorage.getItem("obsidion.aaa.obsidion_contacts")).toBe("keep")
     expect(stopPxe).toHaveBeenCalledOnce()
     expect(assign).toHaveBeenCalledWith("/claim")
     expect(stopPxe.mock.invocationCallOrder[0]).toBeLessThan(assign.mock.invocationCallOrder[0])
   })
 
+  it("keeps a session for every read until the page leaves", async () => {
+    await writeDeviceKeys(deviceDb, { storageId: "aaa" })
+    const open = openTestSession()
+    const reads: unknown[] = []
+    const stop = openedSession.subscribe(() => {
+      try {
+        reads.push(session())
+      } catch (e) {
+        reads.push(e)
+      }
+    })
+    await logout(page, stopPxe)
+    stop()
+    expect(assign).toHaveBeenCalledWith("/claim")
+    expect(reads.every((read) => read === open)).toBe(true)
+    expect(session()).toBe(open)
+    closeSession()
+  })
+
   it("a store that refuses the removal is reported and nothing reloads", async () => {
-    setActiveStorageId("aaa")
-    writeCachedMsk({ v: 1, storageId: "aaa", credentialId: "cred-a", msk: `0x${"11".repeat(32)}` })
+    await writeDeviceKeys(deviceDb, { storageId: "aaa", msk: CACHE })
     await walletStorage.flush()
     testWalletDbs().onApply = () => {
       throw new Error("blocked")
     }
-    await logout(stopPxe)
+    await logout(page, stopPxe)
+    expect(page.leaving.get()).toBe(false)
     expect(reports).toEqual([
       expect.objectContaining({
         context: "identity:logout",
@@ -67,15 +88,23 @@ describe("logout", () => {
     expect(assign).not.toHaveBeenCalled()
   })
 
-  it("reports a PXE shutdown failure and does not reload into a locked store", async () => {
+  it("holds the signed-out page on a PXE shutdown failure, and its retry finishes the exit", async () => {
+    await writeDeviceKeys(deviceDb, { storageId: "aaa", msk: CACHE })
     const failure = new Error("PXE did not stop")
     stopPxe.mockRejectedValueOnce(failure)
 
-    await logout(stopPxe)
+    await logout(page, stopPxe)
 
+    expect(committed().storageId).toBeNull()
+    expect(page.leaving.get()).toBe(true)
     expect(reports).toEqual([
       expect.objectContaining({ context: "identity:logout", detail: failure.stack }),
     ])
     expect(assign).not.toHaveBeenCalled()
+
+    reports[0]!.retry!.run()
+    await vi.waitFor(() => expect(assign).toHaveBeenCalledWith("/claim"))
+    expect(stopPxe).toHaveBeenCalledTimes(2)
+    expect(page.leaving.get()).toBe(true)
   })
 })

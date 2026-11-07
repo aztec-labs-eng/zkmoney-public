@@ -1,5 +1,4 @@
 import {
-  SIPADepositStore,
   loadRecords,
   receivesForRequest,
   isUnfundedSipaDeposit,
@@ -12,14 +11,12 @@ import {
   type ContactRow,
   type Requests,
   useResource,
+  useStore,
 } from "@obsidion/front-core"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { isDemoMode } from "../../dev/demoFlag"
-import { webStorage } from "../../platform/storage/WebStorageAdapter"
-import { useSession } from "../../platform/session"
-import { getSipaDepositGateway } from "../deposit/sipaGateway"
-import { useDepositWatch } from "../onboarding/useDepositWatch"
-import { loadWalletIdentity } from "../identity/walletIdentity"
+import { session, useSession } from "../../session/session"
+import { useDepositWatch } from "../sipa/useDepositWatch"
 import { createAndStoreRequestLink, requestLinkOrigin } from "../requests/requestLinkCreation"
 import {
   CODE_ADDRESS_MAX_AGE_MS,
@@ -55,9 +52,7 @@ type PaidCode = Omit<CodePayment, "added"> & { payerId?: string }
 /** What a claimed deposit to the code's address credited; the request's own amount without one. */
 async function sweptAmount(code: ReceiveCode, requested: number): Promise<number> {
   if (!code.address) return requested
-  const store = SIPADepositStore.get(webStorage)
-  await store.load()
-  const credited = Number(store.get(code.address)?.amount)
+  const credited = Number((await session().sipaDeposits.get(code.address))?.amount)
   return credited > 0 ? credited : requested
 }
 
@@ -121,13 +116,13 @@ export function watchRequestPayment(
  * transfers; a payment moves the code to the next ready address.
  */
 export function useReceiveCode(enabled: boolean) {
-  const identity = loadWalletIdentity()
+  const identity = useStore(useSession().identity).value
   const tag = identity?.handle
   const obsidionWallet = useResource(useSession().wallet)
   const rollupAddress = obsidionWallet?.networkId
   const { contractService } = useContractServiceContext()
   const tokenService = useResource(useSession().token)
-  const { activity, requests } = useSession()
+  const { activity, requests, sipaDeposits, sipaAddresses } = useSession()
   const [code, setCode] = useState<ReceiveCode>()
   const [paidWith, setPayment] = useState<PaidCode>()
   const [failed, setFailed] = useState(false)
@@ -144,17 +139,23 @@ export function useReceiveCode(enabled: boolean) {
   }, [paidWith, payerContact])
 
   const walletDeps = useMemo((): CodeDeps | null => {
-    if (!enabled || !tag || !rollupAddress || !obsidionWallet || !contractService || !tokenService)
+    if (
+      !enabled ||
+      !tag ||
+      !rollupAddress ||
+      !obsidionWallet ||
+      !contractService ||
+      !tokenService ||
+      !sipaAddresses
+    )
       return null
     return {
       key: receiveCodeKey(rollupAddress, tag),
       readyAddress: () =>
-        getSipaDepositGateway()
-          .readyAddress(obsidionWallet, contractService, tag, CODE_ADDRESS_MAX_AGE_MS)
-          .catch((err) => {
-            console.warn("[receive] no ready address:", err)
-            return null
-          }),
+        sipaAddresses.readyAddress(CODE_ADDRESS_MAX_AGE_MS).catch((err) => {
+          console.warn("[receive] no ready address:", err)
+          return null
+        }),
       mint: async (args) => {
         const token = await tokenService.fetchTokenInformation()
         return createAndStoreRequestLink(
@@ -178,9 +179,7 @@ export function useReceiveCode(enabled: boolean) {
         const saved = (await requests.all()).find((r) => r.id === code.requestId)
         if (saved?.status === "fulfilled") return true
         if (!code.address) return false
-        const store = SIPADepositStore.get(webStorage)
-        await store.load()
-        const record = store.get(code.address)
+        const record = await sipaDeposits.get(code.address)
         return !!record && !isUnfundedSipaDeposit(record)
       },
     }
@@ -193,6 +192,8 @@ export function useReceiveCode(enabled: boolean) {
     tokenService,
     identity?.address,
     requests,
+    sipaDeposits,
+    sipaAddresses,
   ])
   // Dev demo has no wallet; a production build drops this body and the import with it.
   const [demoDeps, setDemoDeps] = useState<CodeDeps>()

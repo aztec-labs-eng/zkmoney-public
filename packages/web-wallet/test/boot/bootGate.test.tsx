@@ -6,6 +6,7 @@
 import React, { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
+import type { PageBoot } from "../../src/app/sessionDeps"
 import type { WebBootConfig } from "../../src/config/env"
 import { GOOGLE_CALLBACK_PATH } from "../../src/features/paylink/googleAuth"
 import { ACTIVE_TAB_LOCK, STALLED_AFTER_MS } from "../../src/platform/storage/activeTabLifecycle"
@@ -148,12 +149,20 @@ const CLOSE_OTHER_TAB = "The other tab hasn't released the wallet yet. Close it 
 const identityMap = async () =>
   (await import("../../src/platform/auth/WebPasskeyIdentityMap")).WebPasskeyIdentityMap.prototype
 
-async function render(resolveBoot: () => Promise<WebBootConfig> = async () => boot) {
+/** The boot over a page from this test's module graph. */
+const booted = async (): Promise<PageBoot> => ({
+  ...boot,
+  page: (await import("../support/page")).testPage(),
+})
+
+async function render(resolveBoot?: () => Promise<PageBoot>) {
   const { BootGate } = await import("../../src/BootGate")
+  const page = (await import("../support/page")).testPage()
+  const resolve = resolveBoot ?? (async () => ({ ...boot, page }))
   await act(async () => {
     root.render(
       <React.StrictMode>
-        <BootGate resolveBoot={resolveBoot} />
+        <BootGate resolveBoot={resolve} />
       </React.StrictMode>,
     )
   })
@@ -224,8 +233,7 @@ describe("BootGate", () => {
     await render()
     expect(container.textContent).toContain("zk.money is open in another tab")
     expect(location.pathname + location.search).toBe("/claim/alice?entry=passkey")
-    const { nameGrantToken } = await import("../../src/features/onboarding/nameGrant")
-    expect(nameGrantToken("alice")).toBe("secret")
+    expect(sessionStorage.getItem("obsidion.name-grant")).toBe("secret")
   })
 
   it("closes the wallet database and retries while another tab holds the PXE store", async () => {
@@ -472,8 +480,8 @@ describe("BootGate", () => {
     })
     const { resolveBootConfig } = await import("../../src/config/env")
     const fetchImpl = vi.fn()
-    const resolve = vi.fn(() =>
-      resolveBootConfig({
+    const resolve = vi.fn(async () => ({
+      ...(await resolveBootConfig({
         env: {
           VITE_NETWORK: "testnet",
           VITE_DESKTOP_BUILD: "true",
@@ -481,8 +489,9 @@ describe("BootGate", () => {
         },
         fetchImpl,
         runtime: { configProfileUrl: "https://elsewhere.example/profile.json" },
-      }),
-    )
+      })),
+      page: (await import("../support/page")).testPage(),
+    }))
     await render(resolve)
     expect(container.textContent).toContain("zk.money Desktop is refused")
     expect(container.textContent).toContain("/profiles/<generation>/<current|x.y.z>.json")
@@ -494,9 +503,9 @@ describe("BootGate", () => {
   it("retries a configuration failure", async () => {
     stubLocks(new FakeLocks())
     const resolveBoot = vi
-      .fn<() => Promise<WebBootConfig>>()
+      .fn<() => Promise<PageBoot>>()
       .mockRejectedValueOnce(new Error("profile unreachable"))
-      .mockResolvedValueOnce(boot)
+      .mockImplementationOnce(booted)
     await render(resolveBoot)
     expect(container.textContent).toContain("profile unreachable")
     expect(h.app).not.toHaveBeenCalled()

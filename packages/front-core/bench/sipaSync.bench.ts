@@ -1,7 +1,7 @@
 // @vitest-environment node
 /**
  * Deposit sync benchmark: one account with a history of deposits, synced through the real
- * `syncSipaDeposits` against a local JSON-RPC L1 and a fake L2 node, each answering after a fixed
+ * scan and claim passes against a local JSON-RPC L1 and a fake L2 node, each answering after a fixed
  * latency. One HTTP request costs one latency however many JSON-RPC calls it batches, as it does
  * against a real RPC. Run it on two checkouts to compare pipelines; the storage a run leaves can seed
  * the other's "previous storage" layout.
@@ -37,6 +37,7 @@ import { AztecAddress } from "@aztec-labs/aztec.js/addresses"
 import { EthAddress } from "@aztec-labs/foundation/eth-address"
 import { keccak256 } from "@aztec-labs/foundation/crypto/keccak"
 import { deriveMasterNullifierHidingSecretKey } from "@aztec-labs/stdlib/keys"
+import { OxidePortalAbi } from "@oxide/l1-contracts"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 
 const LATENCY_MS = Number(process.env.SIPA_BENCH_LATENCY_MS ?? 200)
@@ -59,10 +60,13 @@ vi.mock("@obsidion/sdk", async (importOriginal) => {
 })
 
 import { computeStealthRecipientHash, deriveRecoveryAddress } from "@obsidion/sdk"
-import { SIPADepositStore } from "../src/core/services/deposits/SIPADepositStore"
+import { openDatabase, type Database } from "../src/engine/database"
+import { memoryBackend } from "../src/engine/memoryBackend"
+import { createSipaDeposits, type SipaDeposits } from "../src/engine/sipaDeposits"
 import { computeSIPAAddress } from "../src/core/services/deposits/sipa/sipaAddress"
 import { deriveStealthKey } from "../src/oxide/oxideAccountKeys"
-import { syncSipaDeposits } from "../src/oxide/sipaClaims"
+import { scanSipaDeposits } from "../src/oxide/sipaScan"
+import { claimSipaDeposits } from "../src/oxide/sipaClaim"
 
 const HEAD = 21_000_000n
 const DEPLOYED = HEAD - 500_000n
@@ -73,6 +77,7 @@ const IMPLEMENTATION = "0x39dd57b9f2b16e5c9e9e35e18b73c8a2a5d1f7c4" as Address
 const TABLE = "0x00000000000000000000000000000000000000d1" as Address
 const RELAYER = "0x00000000000000000000000000000000000000e1" as Address
 const FUNDER = "0x00000000000000000000000000000000000000f1" as Address
+const RECOVERY_ACCOUNT = "0x00000000000000000000000000000000000000a1" as Address
 const MULTICALL3 = "0xca11bde05977b3631167028862be2a173976ca11" as Address
 const ROLLUP_VERSION = 4127419662n
 const DEPOSIT_FEE = 25n * 10n ** 16n
@@ -205,16 +210,19 @@ const stats = { http: 0, calls: new Map<string, number>() }
 const selectors = {
   balanceOf: toFunctionSelector("balanceOf(address)"),
   getEthBalance: toFunctionSelector("getEthBalance(address)"),
+  getCurrentBlockTimestamp: toFunctionSelector("getCurrentBlockTimestamp()"),
   implementationFor: toFunctionSelector("implementationFor(uint8)"),
   rowFor: toFunctionSelector("rowFor(address,uint8)"),
   txAmountCap: toFunctionSelector("TX_AMOUNT_CAP()"),
 }
+const blockTime = (n: bigint) => 1_700_000_000n + n * 12n
 const word = (hex: string) => `0x${hex.slice(2).padStart(64, "0")}` as Hex
 
 function answerCall(to: string, data: Hex): Hex {
   const selector = data.slice(0, 10)
   if (selector === selectors.balanceOf) return uint(balances.get(`0x${data.slice(34, 74)}`) ?? 0n)
   if (selector === selectors.getEthBalance) return uint(0n)
+  if (selector === selectors.getCurrentBlockTimestamp) return uint(blockTime(HEAD))
   if (selector === selectors.implementationFor) return word(IMPLEMENTATION)
   // The deposit row: the tip is the whole fee.
   if (selector === selectors.rowFor)
@@ -298,7 +306,7 @@ function handle(method: string, params: unknown[]): unknown {
         number: toHex(n),
         hash: pad(toHex(n), { size: 32 }),
         parentHash: pad(toHex(n - 1n), { size: 32 }),
-        timestamp: toHex(1_700_000_000n + n * 12n),
+        timestamp: toHex(blockTime(n)),
         transactions: [],
         gasLimit: "0x0",
         gasUsed: "0x0",
@@ -385,29 +393,15 @@ afterAll(() => {
 
 // ── Runs ──────────────────────────────────────────────────────────────────────
 
-class MemoryStorage {
-  data = new Map<string, string>()
-  async getItem(key: string) {
-    return this.data.get(key) ?? null
-  }
-  async setItem(key: string, value: string) {
-    this.data.set(key, value)
-  }
-  async removeItem(key: string) {
-    this.data.delete(key)
-  }
-  async clear() {
-    this.data.clear()
-  }
-}
+type Saved = { store: SipaDeposits; db: Database }
 
 async function freshStore(seed?: Record<string, string>) {
-  ;(SIPADepositStore as unknown as { instance: unknown }).instance = null
-  const storage = new MemoryStorage()
-  for (const [key, value] of Object.entries(seed ?? {})) storage.data.set(key, value)
-  const store = SIPADepositStore.get(storage)
-  await store.load()
-  return { store, storage }
+  const backend = memoryBackend()
+  for (const [key, value] of Object.entries(seed ?? {})) backend.entries.set(key, value)
+  const db = openDatabase(backend)
+  const store = createSipaDeposits({ db, account: true })
+  await store.ready
+  return { saved: { store, db }, storage: backend.entries }
 }
 
 /** Every deposit was claimed on another device; the one still unswept has nothing to claim. */
@@ -437,12 +431,6 @@ const node = {
   },
 }
 
-/** The previous pipeline rescans a settled SIPA once its 5-minute slow-lane interval passes. */
-async function slowLaneTurn(store: SIPADepositStore) {
-  for (const record of store.list())
-    await store.upsert(record.sipaAddress, { phase: record.phase, lastScanAt: 0 } as never)
-}
-
 type Row = {
   label: string
   layout: string
@@ -453,10 +441,10 @@ type Row = {
   l2: number
   result: string
 }
-const rows: Row[] = []
+const table: Row[] = []
 
 async function pass(
-  store: SIPADepositStore,
+  { store, db }: Saved,
   layout: string,
   n: number,
   opts: { observeOnly?: boolean } = {},
@@ -468,38 +456,63 @@ async function pass(
     chain: mainnet,
     transport: http(url, { batch: true, retryCount: 0 }),
   })
-  const started = performance.now()
-  const result = await syncSipaDeposits({
-    publicClient: publicClient as never,
-    node: node as never,
-    wallet: {} as never,
-    tokenServiceFor: async () => tokenService as never,
-    refreshBalance: async () => {
-      l2.calls += 1
-      await sleep(LATENCY_MS)
+  const rows = [
+    {
+      portal: PORTAL,
+      l2Token: TUPLE.l2Token,
+      token: { address: DAI, symbol: "DAI", decimals: 18 },
+      swapped: [],
+      intents: ["deposit", "registration", "metadata"] as const,
     },
+  ]
+  const started = performance.now()
+  const scanned = await scanSipaDeposits({
+    publicClient: publicClient as never,
+    wallet: {} as never,
+    node: node as never,
+    masterNullifierHidingKey: deriveMasterNullifierHidingSecretKey(new Fr(7n)),
+    discover: !opts.observeOnly,
     store,
+    db,
     tuple: TUPLE,
     recipient: RECIPIENT,
     stealthPublicKey: STEALTH,
-    masterNullifierHidingKey: deriveMasterNullifierHidingSecretKey(new Fr(7n)),
-    rows: [
-      {
-        portal: PORTAL,
-        l2Token: TUPLE.l2Token,
-        token: { address: DAI, symbol: "DAI", decimals: 18 },
-        swapped: [],
-        intents: ["deposit", "registration", "metadata"],
-      },
-    ],
+    recoveryAccount: RECOVERY_ACCOUNT,
+    rows: rows as never,
     l1ChainId: 1,
+    networkId: "0x00000000000000000000000000000000000000e1",
     historyStartBlock: async () => DEPLOYED,
-    ...opts,
-  } as never)
+    txAmountCap: (row) =>
+      publicClient.readContract({
+        address: row.portal,
+        abi: OxidePortalAbi,
+        functionName: "TX_AMOUNT_CAP",
+      }),
+  })
+  const claimed = opts.observeOnly
+    ? { claimed: 0, reconciled: 0, failed: 0 }
+    : await claimSipaDeposits({
+        store,
+        node: node as never,
+        recipient: RECIPIENT,
+        tuple: TUPLE,
+        rows: rows as never,
+        tokenServiceFor: async () => tokenService as never,
+        refreshBalance: async () => {
+          l2.calls += 1
+          await sleep(LATENCY_MS)
+        },
+      })
+  const result = {
+    claimed: claimed.claimed,
+    reconciled: claimed.reconciled,
+    recoverable: scanned.recoverable,
+    failed: scanned.failed + claimed.failed,
+  }
   const ms = Math.round(performance.now() - started)
   const rpc = [...stats.calls.values()].reduce((a, b) => a + b, 0)
   const summary = `claimed ${result.claimed}, reconciled ${result.reconciled}, recoverable ${result.recoverable}, failed ${result.failed}`
-  rows.push({
+  table.push({
     label: LABEL,
     layout,
     pass: n,
@@ -523,15 +536,14 @@ describe(`SIPA deposit sync, ${
 } SIPAs, ${LATENCY_MS} ms per L1 request and L2 call`, () => {
   it("runs every storage layout", async () => {
     const fresh = await freshStore()
-    await pass(fresh.store, "fresh device (empty storage)", 1)
-    await pass(fresh.store, "fresh device (empty storage)", 2)
-    await slowLaneTurn(fresh.store)
-    await pass(fresh.store, "fresh device (empty storage), slow-lane turn", 3)
-    await pass(fresh.store, "watched tick, no new block", 4, { observeOnly: true })
+    await pass(fresh.saved, "fresh device (empty storage)", 1)
+    await pass(fresh.saved, "fresh device (empty storage)", 2)
+    await pass(fresh.saved, "fresh device (empty storage), steady", 3)
+    await pass(fresh.saved, "watched tick, no new block", 4, { observeOnly: true })
     if (process.env.SIPA_BENCH_STATE_OUT) {
       writeFileSync(
         process.env.SIPA_BENCH_STATE_OUT,
-        JSON.stringify(Object.fromEntries(fresh.storage.data)),
+        JSON.stringify(Object.fromEntries(fresh.storage)),
       )
     }
     if (process.env.SIPA_BENCH_STATE_IN) {
@@ -540,10 +552,10 @@ describe(`SIPA deposit sync, ${
         string
       >
       const previous = await freshStore(seed)
-      await pass(previous.store, "previous pipeline's storage", 1)
-      await pass(previous.store, "previous pipeline's storage", 2)
+      await pass(previous.saved, "previous pipeline's storage", 1)
+      await pass(previous.saved, "previous pipeline's storage", 2)
     }
     if (process.env.SIPA_BENCH_OUT)
-      writeFileSync(process.env.SIPA_BENCH_OUT, JSON.stringify(rows, null, 2))
+      writeFileSync(process.env.SIPA_BENCH_OUT, JSON.stringify(table, null, 2))
   }, 3_600_000)
 })

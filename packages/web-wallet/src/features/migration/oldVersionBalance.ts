@@ -9,6 +9,7 @@ import {
   balanceScope,
   BalanceStorage,
   useCachedRecords,
+  useStore,
   type BalanceRecord,
 } from "@obsidion/front-core"
 import { getConfig } from "../../config/env"
@@ -16,7 +17,7 @@ import { isDemoMode } from "../../dev/demoFlag"
 import { createExternalState } from "../../lib/externalState"
 import { walletStorage } from "../../platform/storage/walletStorage"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
-import { loadWalletIdentity } from "../identity/walletIdentity"
+import { useSession } from "../../session/session"
 import { useUpgradeLock } from "./upgradeLock"
 
 const pinned = () => getConfig().oxideProfile.portal.toLowerCase()
@@ -117,7 +118,7 @@ export function useOldVersionHoldings(): {
     () => scanned ?? (saved === null ? undefined : new Set<string>(JSON.parse(saved))),
     [scanned, saved],
   )
-  const account = loadWalletIdentity()?.address
+  const account = useStore(useSession().identity, (s) => s.value?.address)
   const lock = useUpgradeLock(account).state
   return useMemo(() => {
     const held = account ? oldVersionRecords(records, account) : []

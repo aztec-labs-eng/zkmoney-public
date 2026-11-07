@@ -9,18 +9,21 @@ import { Fr } from "@aztec-labs/aztec.js/fields"
 import type { AnchorTier, CandidateProbe } from "@obsidion/front-core"
 import { getContractAddress } from "viem"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { walletStorage } from "../../../src/platform/storage/walletStorage"
+import { testPage, pageOver, testCore } from "../../support/page"
+import { openTestSession } from "../../support/session"
+import { session } from "../../../src/session/session"
+import { AUTH_TYPE } from "@obsidion/sdk"
+import { recordingAccounts } from "../../support/accountRecord"
+import { opfsBackend, walletStorage } from "../../../src/platform/storage/walletStorage"
 import { WebAlphaAuthService } from "../../../src/platform/auth/WebAlphaAuthService"
-import { WebPasskeyIdentityMap } from "../../../src/platform/auth/WebPasskeyIdentityMap"
 import {
-  getActiveCredentialId,
-  getActiveStorageId,
-  readCachedMsk,
-} from "../../../src/platform/storage/activeStorage"
-import { withWebLock } from "../../../src/platform/storage/webLock"
+  WebPasskeyIdentityMap,
+  rememberUsertag,
+} from "../../../src/platform/auth/WebPasskeyIdentityMap"
+import { cachedMsk } from "../../../src/platform/storage/activeStorage"
 import { isGateCancelled } from "../../../src/features/identity/ceremonyGate"
 import { SessionChangedError } from "../../../src/platform/auth/sessionErrors"
-import { FakePasskeyCeremony, MemoryStorage } from "../../support/fakePasskeyCeremony"
+import { FakePasskeyCeremony } from "../../support/fakePasskeyCeremony"
 
 const h = vi.hoisted(() => ({
   service: undefined as unknown,
@@ -35,7 +38,6 @@ const h = vi.hoisted(() => ({
   readUserRecord: vi.fn(async () => ({ l2Address: ADDR, rollupVersion: 1n })),
 }))
 
-vi.mock("../../../src/platform/auth/useAuthenticator", () => ({ getAuthService: () => h.service }))
 const FACTORY = `0x${"11".repeat(20)}` as const
 const identityReader = {
   readNameOf: (...args: unknown[]) => h.readNameOf(...(args as [])),
@@ -44,7 +46,7 @@ const identityReader = {
   readNamePortalRegistry: async () => `0x${"22".repeat(20)}`,
   readFactoryImplementation: async () => getContractAddress({ from: FACTORY, nonce: 1n }),
 }
-vi.mock("../../../src/features/onboarding/oxideGenerations", () => ({
+vi.mock("../../../src/features/registration/oxideGenerations", () => ({
   loadOxideGenerations: async () => ({
     reader: identityReader,
     registry: `0x${"22".repeat(20)}`,
@@ -74,13 +76,14 @@ vi.mock("../../../src/features/contacts/registryResolution", () => ({
   resolveSignInTagForCommit: h.resolveSignInTagForCommit,
 }))
 vi.mock("../../../src/platform/storage/activeStorage", async (importOriginal) => {
-  const original = await importOriginal<typeof import("../../../src/platform/storage/activeStorage")>()
+  const original = await importOriginal<
+    typeof import("../../../src/platform/storage/activeStorage")
+  >()
   h.storageIdFromSecret.mockImplementation(original.storageIdFromSecret)
   return { ...original, storageIdFromSecret: h.storageIdFromSecret }
 })
 vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/front-core")>()),
-  AccountStorage: { get: () => ({ addWebauthnAccount: h.addWebauthnAccount }) },
   createOxideL1Reader: () => ({
     readNameOf: h.readNameOf,
     readAuthKeys: h.readAuthKeys,
@@ -89,8 +92,11 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
   }),
 }))
 
-const { collectOnboardingKeys, enterWithPasskey, isCommittedFailure, PasskeyMismatchError } =
-  await import("../../../src/features/onboarding/oxideOnboarding")
+const { enterWithPasskey } = await import("../../../src/features/onboarding/oxideOnboarding")
+const { isCommittedFailure, PasskeyMismatchError } = await import(
+  "../../../src/features/identity/passkeyAccount"
+)
+const { collectOnboardingKeys } = await import("../../../src/session/account")
 const { diagnoseMiss, diagnoseUnknown, lookupPasskeyByTag } = await import(
   "../../../src/features/onboarding/findPasskeyByTag"
 )
@@ -160,17 +166,18 @@ function walletFor(secret: Fr, over: Record<string, unknown> = {}) {
   } as never
 }
 
-/** A phone answering with its own passkey; the service under test is the one `getAuthService` hands out. */
+/** A phone answering with its own passkey; the service under test is the session's. */
 function phone() {
   const ceremony = new FakePasskeyCeremony({ route: "local" })
-  const storage = new MemoryStorage()
+  const storage = testPage().database
   const service = new WebAlphaAuthService({
-    storage,
+    ...pageOver(storage),
     rpId: "localhost",
     ceremony,
     posture: () => "phone",
   })
   h.service = service
+  openTestSession({ auth: h.service })
   const map = new WebPasskeyIdentityMap(storage, "localhost")
   return { service, ceremony, storage, map }
 }
@@ -185,14 +192,15 @@ function laptop(over: { divergent?: boolean; assertAttachment?: "cross-platform"
     routeFromRequest: true,
     ...over,
   })
-  const storage = new MemoryStorage()
+  const storage = testPage().database
   const service = new WebAlphaAuthService({
-    storage,
+    ...pageOver(storage),
     rpId: "localhost",
     ceremony,
     posture: () => "laptop",
   })
   h.service = service
+  openTestSession({ auth: h.service })
   const map = new WebPasskeyIdentityMap(storage, "localhost")
   return { service, ceremony, storage, map }
 }
@@ -215,7 +223,7 @@ async function committed(service: WebAlphaAuthService, created: Created) {
 
 /** The tag this browser remembers for a credential, as `usertagFor` reads it from local storage. */
 function remember(created: Created, usertag: string) {
-  walletStorage.setItem(
+  return walletStorage.commitItem(
     "obsidion.obsidion_web_passkey_identity_map",
     JSON.stringify({
       version: 1,
@@ -261,6 +269,15 @@ const nothingAdopted = (wallet: { createObsidionAccount: ReturnType<typeof vi.fn
   expect(h.addWebauthnAccount).not.toHaveBeenCalled()
 }
 
+const accounts = recordingAccounts((state) => h.addWebauthnAccount(state))
+/** What a sign-in reads beside its request: the account records and the page's auth. */
+const signInDeps = {
+  accounts,
+  get auth() {
+    return session().auth
+  },
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   const store = new Map<string, string>()
@@ -282,6 +299,7 @@ describe("enterWithPasskey under a credential hint", () => {
     ceremony.asserts.length = 0
     const wallet = walletFor(a.secretKey)
     const result = await enterWithPasskey(wallet, config, "alice", {
+      ...signInDeps,
       contractService: {} as never,
       gate: gateFor().gate,
       tiers: registry,
@@ -291,13 +309,15 @@ describe("enterWithPasskey under a credential hint", () => {
     expect(ceremony.asserts).toEqual([[a.credentialId]])
     expect(ceremony.assertRequests[0]!.prfSecondSalt).toBeDefined()
     expect((await service.getSecretKey())?.toString()).toBe(a.secretKey.toString())
-    expect(getActiveCredentialId()).toBe(a.credentialId)
+    expect(testCore().device.get().credentialId).toBe(a.credentialId)
     expect(service.recordsStale()).toBe(false)
-    expect(h.addWebauthnAccount).toHaveBeenCalledWith(
-      "Account 1",
-      `${ADDR}:complete`,
-      expect.objectContaining({ credentialId: a.credentialId, pubkey: a.pubkey }),
-    )
+    expect(h.addWebauthnAccount).toHaveBeenCalledWith({
+      completeAddress: `${ADDR}:complete`,
+      signKeyConfig: {
+        type: AUTH_TYPE.WEB_AUTHN,
+        webauthnData: expect.objectContaining({ credentialId: a.credentialId, pubkey: a.pubkey }),
+      },
+    })
   })
 
   it("the pinned request does not depend on the posture the wallet reads", async () => {
@@ -306,6 +326,7 @@ describe("enterWithPasskey under a credential hint", () => {
     const a = await service.createPasskey("@alice")
     ceremony.asserts.length = 0
     await enterWithPasskey(walletFor(a.secretKey), config, "alice", {
+      ...signInDeps,
       contractService: {} as never,
       gate: gateFor().gate,
       tiers: registry,
@@ -321,6 +342,7 @@ describe("enterWithPasskey under a credential hint", () => {
     ceremony.asserts.length = 0
     const { gate } = gateFor()
     const result = await enterWithPasskey(walletFor(a.secretKey), config, "alice", {
+      ...signInDeps,
       contractService: {} as never,
       gate,
       tiers: registry,
@@ -339,6 +361,7 @@ describe("enterWithPasskey under a credential hint", () => {
     const wallet = walletFor(a.secretKey)
     await expect(
       enterWithPasskey(wallet, config, "alice", {
+        ...signInDeps,
         contractService: {} as never,
         gate: gateFor().gate,
         tiers: registry,
@@ -360,6 +383,7 @@ describe("enterWithPasskey under a credential hint", () => {
     ceremony.opts.assertOverride = () => b.credentialId
     const wallet = walletFor(a.secretKey)
     const result = await enterWithPasskey(wallet, config, "alice", {
+      ...signInDeps,
       contractService: {} as never,
       gate: gateFor().gate,
       tiers: registry,
@@ -369,7 +393,7 @@ describe("enterWithPasskey under a credential hint", () => {
     // The sheet is held to the root's raw id and the backup's appended id.
     expect(ceremony.asserts).toEqual([[a.credentialId, b.credentialId]])
     expect((await service.getSecretKey())?.toString()).toBe(a.secretKey.toString())
-    expect(getActiveCredentialId()).toBe(b.credentialId)
+    expect(testCore().device.get().credentialId).toBe(b.credentialId)
     expect(await map.get(b.credentialId)).toMatchObject({
       pubkey: b.pubkey,
       isMskRoot: false,
@@ -379,11 +403,13 @@ describe("enterWithPasskey under a credential hint", () => {
       },
       passkeySet: [a.pubkey, b.pubkey],
     })
-    expect(h.addWebauthnAccount).toHaveBeenCalledWith(
-      "Account 1",
-      `${ADDR}:complete`,
-      expect.objectContaining({ credentialId: b.credentialId, pubkey: b.pubkey }),
-    )
+    expect(h.addWebauthnAccount).toHaveBeenCalledWith({
+      completeAddress: `${ADDR}:complete`,
+      signKeyConfig: {
+        type: AUTH_TYPE.WEB_AUTHN,
+        webauthnData: expect.objectContaining({ credentialId: b.credentialId, pubkey: b.pubkey }),
+      },
+    })
   })
 
   it("a backup passkey whose envelope does not open is the envelope refusal, nothing written", async () => {
@@ -396,6 +422,7 @@ describe("enterWithPasskey under a credential hint", () => {
     const wallet = walletFor(a.secretKey)
     await expect(
       enterWithPasskey(wallet, config, "alice", {
+        ...signInDeps,
         contractService: {} as never,
         gate: gateFor().gate,
         tiers: registry,
@@ -411,6 +438,7 @@ describe("enterWithPasskey under a credential hint", () => {
     const a = await service.createPasskey("@alice")
     const wallet = walletFor(a.secretKey)
     const result = await enterWithPasskey(wallet, config, "alice", {
+      ...signInDeps,
       contractService: {} as never,
       gate: gateFor().gate,
       tiers: registry,
@@ -444,6 +472,7 @@ describe("enterWithPasskey under a credential hint", () => {
     ]
     await expect(
       enterWithPasskey(wallet, config, undefined, {
+        ...signInDeps,
         contractService: {} as never,
         gate: gateFor().gate,
         tiers: anchorsOther,
@@ -453,6 +482,7 @@ describe("enterWithPasskey under a credential hint", () => {
     // Pinned to the account's keys, the key is settled by the read: the mismatch stays the identity's.
     await expect(
       enterWithPasskey(wallet, config, "alice", {
+        ...signInDeps,
         contractService: {} as never,
         gate: gateFor().gate,
         tiers: anchorsOther,
@@ -475,6 +505,7 @@ describe("enterWithPasskey under a credential hint", () => {
     const wallet = walletFor(a.secretKey)
     await expect(
       enterWithPasskey(wallet, config, "alice", {
+        ...signInDeps,
         contractService: {} as never,
         gate: gateFor().gate,
         tiers: registry,
@@ -491,6 +522,7 @@ describe("enterWithPasskey under a credential hint", () => {
     ceremony.opts.prfAtAssert = false
     await expect(
       enterWithPasskey(walletFor(a.secretKey), config, "alice", {
+        ...signInDeps,
         contractService: {} as never,
         gate: gateFor().gate,
         tiers: registry,
@@ -502,6 +534,7 @@ describe("enterWithPasskey under a credential hint", () => {
     controller.abort()
     await expect(
       enterWithPasskey(walletFor(a.secretKey), config, "alice", {
+        ...signInDeps,
         contractService: {} as never,
         gate,
         tiers: registry,
@@ -514,8 +547,9 @@ describe("enterWithPasskey under a credential hint", () => {
     const { service } = phone()
     const a = await service.createPasskey("@alice")
     h.readNameOf.mockResolvedValue(nameOf("bob"))
-    remember(a, "bob")
+    await remember(a, "bob")
     const result = await enterWithPasskey(walletFor(a.secretKey), config, "alice", {
+      ...signInDeps,
       contractService: {} as never,
       gate: gateFor().gate,
       tiers: registry,
@@ -529,6 +563,7 @@ describe("enterWithPasskey under a credential hint", () => {
     const a = await service.createPasskey("@alice")
     const wallet = walletFor(a.secretKey)
     const result = await enterWithPasskey(wallet, config, "alice", {
+      ...signInDeps,
       contractService: {} as never,
       gate: gateFor().gate,
       tiers: [],
@@ -558,6 +593,7 @@ describe("enterWithPasskey under a credential hint", () => {
     await record(service, a, ELSEWHERE)
     const wallet = walletFor(a.secretKey)
     const result = await enterWithPasskey(wallet, config, "alice", {
+      ...signInDeps,
       contractService: {} as never,
       gate: gateFor().gate,
       tiers: registry,
@@ -601,6 +637,7 @@ describe("enterWithPasskey under a credential hint", () => {
     ceremony.opts.assertOverride = () => a.credentialId
     await expect(
       enterWithPasskey(wallet, config, "alice", {
+        ...signInDeps,
         contractService: {} as never,
         gate: gateFor().gate,
         tiers: registry,
@@ -610,7 +647,7 @@ describe("enterWithPasskey under a credential hint", () => {
     ).rejects.toSatisfy(isGateCancelled)
     expect(await map.get(a.credentialId)).toMatchObject({ l2Address: ELSEWHERE })
     expect((await map.get(a.credentialId))?.passkeySet).toBeUndefined()
-    expect(getActiveCredentialId()).toBe(a.credentialId)
+    expect(testCore().device.get().credentialId).toBe(a.credentialId)
     expect((await service.getSecretKey())?.toString()).toBe(a.secretKey.toString())
     nothingAdopted(wallet)
   })
@@ -633,6 +670,7 @@ describe("enterWithPasskey under a credential hint", () => {
     } as never
     // Nothing cancels the first entry: only the second's commit ends it.
     const enteringA = enterWithPasskey(wallet, config, "alice", {
+      ...signInDeps,
       contractService: {} as never,
       gate: gateFor().gate,
       tiers: registry,
@@ -641,6 +679,7 @@ describe("enterWithPasskey under a credential hint", () => {
     await until(() => createObsidionAccount.mock.calls.length === 1)
     ceremony.opts.assertOverride = () => b.credentialId
     const enteredB = await enterWithPasskey(wallet, config, "alice", {
+      ...signInDeps,
       contractService: {} as never,
       gate: gateFor().gate,
       tiers: registry,
@@ -651,12 +690,14 @@ describe("enterWithPasskey under a credential hint", () => {
     await expect(enteringA).rejects.toSatisfy(isCommittedFailure)
     expect(createObsidionAccount).toHaveBeenCalledTimes(2)
     expect(h.addWebauthnAccount).toHaveBeenCalledTimes(1)
-    expect(h.addWebauthnAccount).toHaveBeenCalledWith(
-      "Account 1",
-      `${ADDR}:complete`,
-      expect.objectContaining({ credentialId: b.credentialId }),
-    )
-    expect(getActiveCredentialId()).toBe(b.credentialId)
+    expect(h.addWebauthnAccount).toHaveBeenCalledWith({
+      completeAddress: `${ADDR}:complete`,
+      signKeyConfig: {
+        type: AUTH_TYPE.WEB_AUTHN,
+        webauthnData: expect.objectContaining({ credentialId: b.credentialId }),
+      },
+    })
+    expect(testCore().device.get().credentialId).toBe(b.credentialId)
     expect((await service.getSecretKey())?.toString()).toBe(b.secretKey.toString())
   })
 
@@ -676,6 +717,7 @@ describe("enterWithPasskey under a credential hint", () => {
       createObsidionAccount,
     } as never
     const enteringA = enterWithPasskey(wallet, config, "alice", {
+      ...signInDeps,
       contractService: {} as never,
       gate: gateFor().gate,
       tiers: registry,
@@ -685,10 +727,10 @@ describe("enterWithPasskey under a credential hint", () => {
     // The second session's pointers are saved, and the first build lands before the second's commit
     // has moved the generation.
     let released = false
-    const batch = walletStorage.batch.bind(walletStorage)
-    const saving = vi.spyOn(walletStorage, "batch").mockImplementation((write) =>
-      batch(write).then(async () => {
-        if (released || getActiveCredentialId() !== b.credentialId) return
+    const apply = opfsBackend.apply.bind(opfsBackend)
+    const saving = vi.spyOn(opfsBackend, "apply").mockImplementation((ops) =>
+      apply(ops).then(async () => {
+        if (released || testCore().device.get().credentialId !== b.credentialId) return
         released = true
         building.resolve(account)
         await tick()
@@ -697,6 +739,7 @@ describe("enterWithPasskey under a credential hint", () => {
     try {
       ceremony.opts.assertOverride = () => b.credentialId
       const enteredB = await enterWithPasskey(wallet, config, "alice", {
+        ...signInDeps,
         contractService: {} as never,
         gate: gateFor().gate,
         tiers: registry,
@@ -709,12 +752,14 @@ describe("enterWithPasskey under a credential hint", () => {
     expect(released).toBe(true)
     await expect(enteringA).rejects.toSatisfy(isCommittedFailure)
     expect(h.addWebauthnAccount).toHaveBeenCalledTimes(1)
-    expect(h.addWebauthnAccount).toHaveBeenCalledWith(
-      "Account 1",
-      `${ADDR}:complete`,
-      expect.objectContaining({ credentialId: b.credentialId }),
-    )
-    expect(getActiveCredentialId()).toBe(b.credentialId)
+    expect(h.addWebauthnAccount).toHaveBeenCalledWith({
+      completeAddress: `${ADDR}:complete`,
+      signKeyConfig: {
+        type: AUTH_TYPE.WEB_AUTHN,
+        webauthnData: expect.objectContaining({ credentialId: b.credentialId }),
+      },
+    })
+    expect(testCore().device.get().credentialId).toBe(b.credentialId)
   })
 
   it("a newer commit of the same key under a larger set fences the build that preceded it", async () => {
@@ -751,6 +796,7 @@ describe("enterWithPasskey under a credential hint", () => {
     // there and its build waits.
     h.readUserRecord.mockResolvedValueOnce({ l2Address: ELSEWHERE, rollupVersion: 1n })
     const first = enterWithPasskey(wallet, config, "alice", {
+      ...signInDeps,
       contractService: {} as never,
       gate: gateFor().gate,
       tiers: named,
@@ -759,6 +805,7 @@ describe("enterWithPasskey under a credential hint", () => {
     await until(() => createObsidionAccount.mock.calls.length === 1)
     // The same key and credential under the chain's two-key list: a newer session, same storage id.
     const second = await enterWithPasskey(wallet, config, "alice", {
+      ...signInDeps,
       contractService: {} as never,
       gate: gateFor().gate,
       tiers: named,
@@ -768,11 +815,13 @@ describe("enterWithPasskey under a credential hint", () => {
     building.resolve(elsewhere)
     await expect(first).rejects.toSatisfy(isCommittedFailure)
     expect(h.addWebauthnAccount).toHaveBeenCalledTimes(1)
-    expect(h.addWebauthnAccount).toHaveBeenCalledWith(
-      "Account 1",
-      `${ADDR}:complete`,
-      expect.objectContaining({ credentialId: a.credentialId }),
-    )
+    expect(h.addWebauthnAccount).toHaveBeenCalledWith({
+      completeAddress: `${ADDR}:complete`,
+      signKeyConfig: {
+        type: AUTH_TYPE.WEB_AUTHN,
+        webauthnData: expect.objectContaining({ credentialId: a.credentialId }),
+      },
+    })
     expect(await map.get(a.credentialId)).toMatchObject({
       l2Address: ADDR,
       passkeySet: [a.pubkey, b.pubkey],
@@ -780,8 +829,8 @@ describe("enterWithPasskey under a credential hint", () => {
     expect(service.recordsStale()).toBe(true)
   })
 
-  it("a sign-out while the stale record waits on the map's lock: nothing written, nothing built", async () => {
-    const { service, ceremony, map } = phone()
+  it("a sign-out while the stale record waits on the map's write: nothing written, nothing built", async () => {
+    const { service, ceremony, map, storage } = phone()
     const a = await service.createPasskey("@alice")
     const b = await service.createPasskey("@alice")
     const envelope = await sealFor(ceremony, b, a)
@@ -796,24 +845,27 @@ describe("enterWithPasskey under a credential hint", () => {
       createObsidionAccount,
     })
     const held = deferred<void>()
-    const holding = withWebLock("webwallet.passkey-identity-map", () => held.promise)
+    let holding: Promise<void> | undefined
     const queued = deferred<void>()
     const upsert = WebPasskeyIdentityMap.prototype.upsert
     vi.spyOn(WebPasskeyIdentityMap.prototype, "upsert").mockImplementation(function (
       this: WebPasskeyIdentityMap,
       ...args
     ) {
+      // Held ahead of the rewrite, on the database the commit wrote through.
+      holding ??= storage.write(() => held.promise)
       queued.resolve()
       return upsert.apply(this, args)
     })
     ceremony.opts.assertOverride = () => a.credentialId
     const entering = enterWithPasskey(wallet, config, "alice", {
+      ...signInDeps,
       contractService: {} as never,
       gate: gateFor().gate,
       tiers: registry,
       hints: hint(a, [rootKey(a), backupKey(b, envelope)]),
     })
-    // The commit stood; the record's rewrite is queued behind the lock when the session ends.
+    // The commit stood; the record's rewrite is queued behind the held write when the session ends.
     await queued.promise
     service.lockOut()
     held.resolve()
@@ -845,6 +897,7 @@ describe("enterWithPasskey under a credential hint", () => {
     ceremony.opts.assertOverride = () => b.credentialId
     const cancel = new AbortController()
     const entering = enterWithPasskey(wallet, config, "alice", {
+      ...signInDeps,
       contractService: {} as never,
       gate: gateFor().gate,
       tiers: registry,
@@ -857,17 +910,19 @@ describe("enterWithPasskey under a credential hint", () => {
     cancel.abort()
     building.resolve(account)
     await expect(entering).rejects.toSatisfy(isGateCancelled)
-    expect(h.addWebauthnAccount).toHaveBeenCalledWith(
-      "Account 1",
-      `${ADDR}:complete`,
-      expect.objectContaining({ credentialId: b.credentialId }),
-    )
+    expect(h.addWebauthnAccount).toHaveBeenCalledWith({
+      completeAddress: `${ADDR}:complete`,
+      signKeyConfig: {
+        type: AUTH_TYPE.WEB_AUTHN,
+        webauthnData: expect.objectContaining({ credentialId: b.credentialId }),
+      },
+    })
     expect(await map.get(b.credentialId)).toMatchObject({
       l2Address: ADDR,
       isMskRoot: false,
       passkeySet: [a.pubkey, b.pubkey],
     })
-    expect(getActiveCredentialId()).toBe(b.credentialId)
+    expect(testCore().device.get().credentialId).toBe(b.credentialId)
   })
 
   it("a backup record a later backup left behind enters under the three-key set and is rewritten to it", async () => {
@@ -897,6 +952,7 @@ describe("enterWithPasskey under a credential hint", () => {
     })
     ceremony.opts.assertOverride = () => b.credentialId
     const result = await enterWithPasskey(wallet, config, "alice", {
+      ...signInDeps,
       contractService: {} as never,
       gate: gateFor().gate,
       tiers: registry,
@@ -949,6 +1005,7 @@ describe("enterWithPasskey under a credential hint", () => {
     })
     ceremony.opts.assertOverride = () => a.credentialId
     const result = await enterWithPasskey(wallet, config, "alice", {
+      ...signInDeps,
       contractService: {} as never,
       gate: gateFor().gate,
       tiers: registry,
@@ -966,6 +1023,7 @@ describe("enterWithPasskey under a credential hint", () => {
     h.readNameOf.mockResolvedValue(`0x${"0".repeat(64)}`)
     const wallet = walletFor(a.secretKey)
     const result = await enterWithPasskey(wallet, config, "alice", {
+      ...signInDeps,
       contractService: {} as never,
       gate: gateFor().gate,
       tiers: registry,
@@ -998,6 +1056,7 @@ describe("enterWithPasskey under a credential hint", () => {
     })
     ceremony.opts.assertOverride = () => a.credentialId
     const result = await enterWithPasskey(wallet, config, "alice", {
+      ...signInDeps,
       contractService: {} as never,
       gate: gateFor().gate,
       tiers: registry,
@@ -1026,6 +1085,7 @@ describe("enterWithPasskey under a credential hint", () => {
     // A laptop sign-in admits the local copy, so the browser answers with a `platform` attachment;
     // a bound-slot mismatch from it is the certain wrong key.
     const result = await enterWithPasskey(wallet, config, "alice", {
+      ...signInDeps,
       contractService: {} as never,
       gate: gateFor().gate,
       tiers: registry,
@@ -1046,6 +1106,7 @@ describe("enterWithPasskey under a credential hint", () => {
     const a = await service.createPasskey("@alice")
     const wallet = walletFor(a.secretKey)
     const result = await enterWithPasskey(wallet, config, "alice", {
+      ...signInDeps,
       contractService: {} as never,
       gate: gateFor().gate,
       tiers: registry,
@@ -1102,6 +1163,7 @@ describe("enterWithPasskey under a credential hint", () => {
       h.addWebauthnAccount.mockImplementationOnce(async () => cancel.abort())
       await expect(
         enterWithPasskey(walletFor(a.secretKey), config, "alice", {
+          ...signInDeps,
           contractService: {} as never,
           gate: gateFor().gate,
           tiers: registry,
@@ -1122,6 +1184,7 @@ describe("enterWithPasskey under a credential hint", () => {
     h.addWebauthnAccount.mockImplementationOnce(async () => service.lockOut())
     await expect(
       enterWithPasskey(walletFor(a.secretKey), config, "alice", {
+        ...signInDeps,
         contractService: {} as never,
         gate: gateFor().gate,
         tiers: registry,
@@ -1137,6 +1200,7 @@ describe("enterWithPasskey under a credential hint", () => {
     const a = await service.createPasskey("@alice")
     const b = await service.createPasskey("@bob")
     const result = await enterWithPasskey(walletFor(a.secretKey), config, "alice", {
+      ...signInDeps,
       contractService: {} as never,
       gate: gateFor().gate,
       tiers: registry,
@@ -1145,9 +1209,9 @@ describe("enterWithPasskey under a credential hint", () => {
     if (!result.entered) throw new Error("not entered")
     expect(result.held()).toBe(true)
     let whileSaving: boolean | undefined
-    const batch = walletStorage.batch.bind(walletStorage)
-    const saving = vi.spyOn(walletStorage, "batch").mockImplementationOnce((write) =>
-      batch(write).then(() => {
+    const apply = opfsBackend.apply.bind(opfsBackend)
+    const saving = vi.spyOn(opfsBackend, "apply").mockImplementationOnce((ops) =>
+      apply(ops).then(() => {
         whileSaving = result.held()
       }),
     )
@@ -1167,17 +1231,19 @@ describe("enterWithPasskey under a credential hint", () => {
     const createObsidionAccount = vi.fn(async () => account)
     let bobsCommit: Promise<number | false> | undefined
     let bobOwns = true
-    const batch = walletStorage.batch.bind(walletStorage)
-    const saving = vi.spyOn(walletStorage, "batch").mockImplementation((write) =>
-      batch(write).then(async () => {
-        if (!bobsCommit && getActiveCredentialId() === a.credentialId) {
+    const apply = opfsBackend.apply.bind(opfsBackend)
+    const saves = (ops: readonly (readonly [string, string | null])[], credentialId: string) =>
+      ops.some(([key, value]) => key === "webwallet.credentialId" && value === credentialId)
+    const saving = vi.spyOn(opfsBackend, "apply").mockImplementation((ops) =>
+      apply(ops).then(async () => {
+        if (!bobsCommit && saves(ops, a.credentialId)) {
           // Alice's pointers are saved: Bob's commit queues behind her turn before it ends.
           bobsCommit = service.commitSecret(
             { secretKey: b.secretKey, authProvider: b.authProvider },
             () => bobOwns,
           )
           for (let i = 0; i < 3; i++) await tick()
-        } else if (getActiveCredentialId() === b.credentialId) {
+        } else if (saves(ops, b.credentialId)) {
           // Bob's pointers are saved and his attempt is cancelled: his turn puts Alice's back.
           bobOwns = false
         }
@@ -1188,7 +1254,13 @@ describe("enterWithPasskey under a credential hint", () => {
         walletFor(a.secretKey, { createObsidionAccount }),
         config,
         "alice",
-        { contractService: {} as never, gate: gateFor().gate, tiers: registry, hints: hint(a) },
+        {
+          ...signInDeps,
+          contractService: {} as never,
+          gate: gateFor().gate,
+          tiers: registry,
+          hints: hint(a),
+        },
       )
       expect(result).toMatchObject({ entered: true, address: ADDR })
       if (!result.entered) throw new Error("not entered")
@@ -1197,14 +1269,16 @@ describe("enterWithPasskey under a credential hint", () => {
       saving.mockRestore()
     }
     expect(await bobsCommit).toBe(false)
-    expect(getActiveCredentialId()).toBe(a.credentialId)
+    expect(testCore().device.get().credentialId).toBe(a.credentialId)
     expect((await service.getSecretKey())?.equals(a.secretKey)).toBe(true)
     expect(createObsidionAccount).toHaveBeenCalledTimes(1)
-    expect(h.addWebauthnAccount).toHaveBeenCalledWith(
-      "Account 1",
-      `${ADDR}:complete`,
-      expect.objectContaining({ credentialId: a.credentialId }),
-    )
+    expect(h.addWebauthnAccount).toHaveBeenCalledWith({
+      completeAddress: `${ADDR}:complete`,
+      signKeyConfig: {
+        type: AUTH_TYPE.WEB_AUTHN,
+        webauthnData: expect.objectContaining({ credentialId: a.credentialId }),
+      },
+    })
   })
 
   it("the collected keys are the session pair for its own account, refused for an account the session left", async () => {
@@ -1225,6 +1299,7 @@ describe("enterWithPasskey under a credential hint", () => {
     const a = await service.createPasskey("@alice")
     await record(service, a, ADDR)
     const result = await enterWithPasskey(walletFor(a.secretKey), config, "alice", {
+      ...signInDeps,
       contractService: {} as never,
       gate: gateFor().gate,
       tiers: registry,
@@ -1244,6 +1319,7 @@ describe("enterWithPasskey under a credential hint", () => {
     })
     await expect(
       enterWithPasskey(wallet, config, "alice", {
+        ...signInDeps,
         contractService: {} as never,
         gate: gateFor().gate,
         tiers: registry,
@@ -1257,6 +1333,7 @@ describe("enterWithPasskey under a credential hint", () => {
     const a = await service.createPasskey("@alice")
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
     const result = await enterWithPasskey(walletFor(a.secretKey), config, undefined, {
+      ...signInDeps,
       contractService: {} as never,
       gate: gateFor().gate,
       tiers: [],
@@ -1280,13 +1357,15 @@ describe("enterWithPasskey under a credential hint", () => {
 
 describe("strictTag on the session's own key", () => {
   it("refuses the remembered tag and lands on confirm; the plain entry takes it", async () => {
-    const { service } = phone()
+    const { service, storage } = phone()
     const a = await service.createPasskey("@alice")
     await committed(service, a)
     h.readNameOf.mockResolvedValue(nameOf("bob"))
-    remember(a, "bob")
+    // Through the map's own writes, which the commit's are queued with.
+    await rememberUsertag(storage, "localhost", a.credentialId, "bob")
     const wallet = walletFor(a.secretKey)
     const strict = await enterWithPasskey(wallet, config, "alice", {
+      ...signInDeps,
       contractService: {} as never,
       gate: gateFor().gate,
       tiers: registry,
@@ -1295,6 +1374,7 @@ describe("strictTag on the session's own key", () => {
     })
     expect(strict).toMatchObject({ entered: false, reason: "confirm" })
     const plain = await enterWithPasskey(wallet, config, "alice", {
+      ...signInDeps,
       contractService: {} as never,
       gate: gateFor().gate,
       tiers: registry,
@@ -1304,8 +1384,6 @@ describe("strictTag on the session's own key", () => {
 })
 
 describe("a cancel ends the hinted sign-in wherever it lands", () => {
-  const LOCK = "webwallet.passkey-identity-map"
-
   it("before the gate: neither the gate nor the prompt starts", async () => {
     const { service, ceremony } = phone()
     const a = await service.createPasskey("@alice")
@@ -1316,6 +1394,7 @@ describe("a cancel ends the hinted sign-in wherever it lands", () => {
     const cancel = new AbortController()
     const { gate } = gateFor()
     const entering = enterWithPasskey(wallet, config, "alice", {
+      ...signInDeps,
       contractService: {} as never,
       gate,
       tiers: registry,
@@ -1333,6 +1412,7 @@ describe("a cancel ends the hinted sign-in wherever it lands", () => {
     ended.abort()
     await expect(
       enterWithPasskey(wallet, config, "alice", {
+        ...signInDeps,
         contractService: {} as never,
         gate,
         tiers: registry,
@@ -1364,6 +1444,7 @@ describe("a cancel ends the hinted sign-in wherever it lands", () => {
     const cancel = new AbortController()
     const wallet = walletFor(a.secretKey)
     const entering = enterWithPasskey(wallet, config, "alice", {
+      ...signInDeps,
       contractService: {} as never,
       gate: gateFor().gate,
       tiers: tier,
@@ -1376,7 +1457,7 @@ describe("a cancel ends the hinted sign-in wherever it lands", () => {
     await expect(entering).rejects.toSatisfy(isGateCancelled)
     nothingAdopted(wallet)
     expect(await service.rootCredentialId()).toBeUndefined()
-    expect(getActiveStorageId()).toBeNull()
+    expect(testCore().device.get().storageId).toBeNull()
   })
 
   it("during the name read: nothing adopted", async () => {
@@ -1387,6 +1468,7 @@ describe("a cancel ends the hinted sign-in wherever it lands", () => {
     const cancel = new AbortController()
     const wallet = walletFor(a.secretKey)
     const entering = enterWithPasskey(wallet, config, "alice", {
+      ...signInDeps,
       contractService: {} as never,
       gate: gateFor().gate,
       tiers: registry,
@@ -1409,6 +1491,7 @@ describe("a cancel ends the hinted sign-in wherever it lands", () => {
     const wallet = walletFor(a.secretKey, { createObsidionAccount })
     const cancel = new AbortController()
     const entering = enterWithPasskey(wallet, config, "alice", {
+      ...signInDeps,
       contractService: {} as never,
       gate: gateFor().gate,
       tiers: registry,
@@ -1423,18 +1506,20 @@ describe("a cancel ends the hinted sign-in wherever it lands", () => {
     // stored account to keep it.
     expect(await service.rootCredentialId()).toBe(a.credentialId)
     expect(service.isUnlocked()).toBe(true)
-    expect(h.addWebauthnAccount).toHaveBeenCalledWith(
-      "Account 1",
-      `${ADDR}:complete`,
-      expect.objectContaining({ credentialId: a.credentialId }),
-    )
+    expect(h.addWebauthnAccount).toHaveBeenCalledWith({
+      completeAddress: `${ADDR}:complete`,
+      signKeyConfig: {
+        type: AUTH_TYPE.WEB_AUTHN,
+        webauthnData: expect.objectContaining({ credentialId: a.credentialId }),
+      },
+    })
   })
 
-  it("while the record waits on the identity map's lock: no record written", async () => {
-    const { service } = phone()
+  it("while the record waits on the identity map's write: no record written", async () => {
+    const { service, storage } = phone()
     const a = await service.createPasskey("@alice")
     const held = deferred<void>()
-    const holding = withWebLock(LOCK, () => held.promise)
+    const holding = storage.write(() => held.promise)
     const queued = deferred<void>()
     const upsert = WebPasskeyIdentityMap.prototype.upsert
     vi.spyOn(WebPasskeyIdentityMap.prototype, "upsert").mockImplementation(function (
@@ -1446,6 +1531,7 @@ describe("a cancel ends the hinted sign-in wherever it lands", () => {
     })
     const cancel = new AbortController()
     const entering = enterWithPasskey(walletFor(a.secretKey), config, "alice", {
+      ...signInDeps,
       contractService: {} as never,
       gate: gateFor().gate,
       tiers: registry,
@@ -1469,6 +1555,7 @@ describe("a cancel ends the hinted sign-in wherever it lands", () => {
     h.storageIdFromSecret.mockImplementationOnce(() => deriving.promise)
     const cancel = new AbortController()
     const entering = enterWithPasskey(walletFor(a.secretKey), config, "alice", {
+      ...signInDeps,
       contractService: {} as never,
       gate: gateFor().gate,
       tiers: registry,
@@ -1480,9 +1567,9 @@ describe("a cancel ends the hinted sign-in wherever it lands", () => {
     deriving.resolve("storage-id")
     await expect(entering).rejects.toSatisfy(isGateCancelled)
     expect(await service.rootCredentialId()).toBe(a.credentialId)
-    expect(getActiveStorageId()).toBeNull()
-    expect(getActiveCredentialId()).toBeNull()
-    expect(readCachedMsk()).toBeNull()
+    expect(testCore().device.get().storageId).toBeNull()
+    expect(testCore().device.get().credentialId).toBeNull()
+    expect(cachedMsk(testCore().device.get())).toBeNull()
     expect(service.isUnlocked()).toBe(false)
     expect(h.addWebauthnAccount).not.toHaveBeenCalled()
   })
@@ -1492,9 +1579,9 @@ describe("a cancel ends the hinted sign-in wherever it lands", () => {
     const a = await service.createPasskey("@alice")
     await committed(service, a)
     const before = {
-      storageId: getActiveStorageId(),
-      credentialId: getActiveCredentialId(),
-      cache: readCachedMsk(),
+      storageId: testCore().device.get().storageId,
+      credentialId: testCore().device.get().credentialId,
+      cache: cachedMsk(testCore().device.get()),
     }
     const name = deferred<string>()
     h.readNameOf.mockImplementationOnce(() => name.promise)
@@ -1505,6 +1592,7 @@ describe("a cancel ends the hinted sign-in wherever it lands", () => {
     const cancel = new AbortController()
     const wallet = walletFor(a.secretKey)
     const entering = enterWithPasskey(wallet, config, "alice", {
+      ...signInDeps,
       contractService: {} as never,
       gate,
       tiers: registry,
@@ -1517,9 +1605,9 @@ describe("a cancel ends the hinted sign-in wherever it lands", () => {
     await expect(entering).rejects.toSatisfy(isGateCancelled)
     expect(gate).not.toHaveBeenCalled()
     nothingAdopted(wallet)
-    expect(getActiveStorageId()).toBe(before.storageId)
-    expect(getActiveCredentialId()).toBe(before.credentialId)
-    expect(readCachedMsk()).toEqual(before.cache)
+    expect(testCore().device.get().storageId).toBe(before.storageId)
+    expect(testCore().device.get().credentialId).toBe(before.credentialId)
+    expect(cachedMsk(testCore().device.get())).toEqual(before.cache)
   })
 })
 

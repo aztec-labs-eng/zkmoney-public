@@ -26,10 +26,7 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
 const gateway = {
   depositAddress: vi.fn(async () => ({ address: "0xp001ed", name: "alice.oxide.eth" })),
 }
-vi.mock("../../../src/features/deposit/sipaGateway", () => ({
-  getSipaDepositGateway: () => gateway,
-}))
-vi.mock("../../../src/features/deposit/loadDepositFacts", async (importOriginal) => {
+vi.mock("../../../src/features/sipa/loadDepositFacts", async (importOriginal) => {
   const { mockLoadDepositFacts, singleToken } = await import("../../support/depositTokens")
   const tokens = singleToken(MANIFEST_TOKEN, "TEST")
   return mockLoadDepositFacts(
@@ -72,15 +69,16 @@ const l1 = vi.hoisted(() => ({
   }),
   disconnect: vi.fn(),
 }))
-vi.mock("../../../src/features/deposit/l1Wallet", () => ({ useL1Wallet: () => l1 }))
+vi.mock("../../../src/session/l1Wallet", () => ({ useL1Wallet: () => l1 }))
 
-const { DepositScreen } = await import("../../../src/features/deposit/DepositScreen")
-const { saveWalletIdentity } = await import("../../../src/features/identity/walletIdentity")
+const { DepositScreen } = await import("../../../src/features/deposit/DepositScreen/DepositScreen")
+const { setIdentity } = await import("../../support/identity")
+const noClaim = () => async () => {}
 import { seedBootConfig } from "../../support/seedBootConfig"
 
-const { closeSession } = await import("../../../src/platform/session")
+const { closeSession } = await import("../../../src/session/session")
 const { openTestSession } = await import("../../support/session")
-beforeEach(() => void openTestSession({ wallet: {} }))
+beforeEach(() => openTestSession({ wallet: {}, sipaAddresses: gateway }).registrations.ready)
 afterEach(closeSession)
 
 describe("DepositScreen — funding click held across the wallet picker", () => {
@@ -99,7 +97,7 @@ describe("DepositScreen — funding click held across the wallet picker", () => 
       root.render(
         <MemoryRouter>
           <ScreeningProvider screener={passThroughScreener}>
-            <DepositScreen />
+            <DepositScreen claimName={noClaim} />
           </ScreeningProvider>
         </MemoryRouter>,
       )
@@ -127,7 +125,7 @@ describe("DepositScreen — funding click held across the wallet picker", () => 
     l1.pickerOpen = false
     bridge.active = false
     localStorage.clear()
-    saveWalletIdentity({ handle: "alice", address: L2_ADDRESS, claimedAt: 1 })
+    await setIdentity({ handle: "alice", address: L2_ADDRESS, claimedAt: 1 })
     container = document.createElement("div")
     document.body.appendChild(container)
     root = createRoot(container)

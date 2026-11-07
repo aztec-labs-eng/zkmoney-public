@@ -23,6 +23,7 @@ import {
   type RegistryTagResolution,
   type RequestInlinePacket,
   useContractServiceContext,
+  useStore,
 } from "@obsidion/front-core"
 import type { ChainIdentity } from "@obsidion/core/types"
 import { bundledLinkLocator, decodeLinkFragment, LinkKind } from "@obsidion/sdk"
@@ -40,7 +41,8 @@ import { fireEvent, reportLanding, requestAmountBucket } from "../../lib/analyti
 import { usdBalance, usdFigure } from "../../ui/format"
 import { useBack, useLinkSharing } from "../../ui/hooks"
 import { BootSplash, usePxeBoot, verifiedIdentity } from "../../ui/PxeBoot"
-import { loadOnboardedIdentity } from "../identity/walletIdentity"
+import { enteredIdentity } from "../../session/account"
+import { useSession } from "../../session/session"
 import { resolveTagForCommit } from "../contacts/registryResolution"
 import { recipientNotUpgradedCopy } from "../migration/upgradeCopy"
 import { InvitationChrome } from "../onboarding/InvitationChrome"
@@ -51,11 +53,21 @@ import {
   type AccountlessResolveResult,
 } from "./accountlessRequest"
 import { ExternalWalletPayModal } from "./ExternalWalletPayModal"
-import { loadDepositTokens } from "../deposit/loadDepositFacts"
+import { loadDepositTokens } from "../sipa/loadDepositFacts"
 import { requestAmountDisplay, validateRequestPacket, type RequestLinkProblem } from "./requestLink"
 import { fireRequestOpened } from "./requestOpened"
 import { resolveShortRequest } from "./shortRequestLink"
 import { useShortLinkLookup } from "../shortLinks"
+import { errorMessage } from "../../errors/catalog"
+import { fmt } from "../../lib/fmt"
+import copy from "./RequestLandingScreen.copy"
+import { WalletError, type ErrorCode } from "@obsidion/core/errors"
+
+/** The registry's identity refusals: final, so the payer gets no retry. */
+const FINAL_CODES: ReadonlySet<ErrorCode> = new Set([
+  "contact.unregistered",
+  "contact.requestMismatch",
+])
 
 /**
  * `unknownPayee`: a pay page for a tag nobody holds, such as a mistyped `<tag>.zk.money`.
@@ -141,6 +153,8 @@ function FullRequestLanding({
   const fragment = location.hash.replace(/^#/, "")
   // A signed-in payer who chose the Ethereum route on the send sheet comes back here for it.
   const forceExternal = (location.state as { external?: boolean } | null)?.external === true
+  const session = useSession()
+  const entered = enteredIdentity(useStore(session.identity), useStore(session.device).passkeyMap)
   const standing = !fragment && pathTag !== undefined
   const packet = useMemo(() => {
     // The link is untrusted input and its tag derives the payee's deposit address, which a
@@ -159,9 +173,9 @@ function FullRequestLanding({
       return null
     }
   }, [fragment, pathTag])
-  // Synchronous branch: stored identity + MSK breadcrumb, no gate needed.
-  const identity = loadOnboardedIdentity()
-  const hasIdentity = !!identity
+  // The loaded identity + MSK breadcrumb. An unreadable identity is not a visitor's.
+  const identity = entered ?? undefined
+  const hasIdentity = entered !== null
 
   if (!packet) {
     return (
@@ -400,10 +414,15 @@ function AccountlessRequest({
           if (e instanceof RequesterNotUpgradedError) {
             return { kind: "problem", problem: "notUpgraded" }
           }
-          const message = e instanceof Error ? e.message : String(e)
           // Registry identity failures are final and worded for the payer; anything else retries and
           // stays in the console.
-          if (message.includes("no longer")) return { kind: "error", final: message }
+          if (e instanceof WalletError && FINAL_CODES.has(e.code)) {
+            const final =
+              e.code === "contact.requestMismatch"
+                ? fmt(copy.requestMismatch, { tag: e.data?.tag ?? "" })
+                : errorMessage(e)
+            return { kind: "error", final }
+          }
           console.error("Payment address failed to prepare", e)
           return { kind: "error" }
         }

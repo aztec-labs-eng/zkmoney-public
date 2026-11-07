@@ -6,7 +6,7 @@
  */
 import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
-import { MemoryRouter } from "react-router-dom"
+import { MemoryRouter, Route, Routes } from "react-router-dom"
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import { ScreeningProvider, passThroughScreener } from "@obsidion/front-core"
 import type { Hex } from "viem"
@@ -20,13 +20,9 @@ const capacity = vi.hoisted(() => ({ availableAtomic: 40_000n * 10n ** 18n }))
 vi.mock("../../../src/features/deposit/capacityStore", async () =>
   (await import("../../support/fakeCapacity")).fakeCapacityStore(capacity),
 )
-const feed = vi.hoisted(() => ({
-  records: [] as { sipaAddress: string; phase: string; amount: string; sweepTxHash?: string }[],
-}))
 vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/front-core")>()),
   useContractServiceContext: () => ({ contractService: {} }),
-  useCachedRecords: () => ({ records: feed.records }),
 }))
 const pool = vi.hoisted(() => ({ next: [] as string[] }))
 const gateway = {
@@ -38,9 +34,6 @@ const gateway = {
       : new Promise<never>(() => {})
   }),
 }
-vi.mock("../../../src/features/deposit/sipaGateway", () => ({
-  getSipaDepositGateway: () => gateway,
-}))
 const loadDepositDisplayFacts = vi.hoisted(() =>
   vi.fn(async () => ({
     fee: "0.25",
@@ -49,7 +42,7 @@ const loadDepositDisplayFacts = vi.hoisted(() =>
     txAmountCap: 5166n * 10n ** 18n,
   })),
 )
-vi.mock("../../../src/features/deposit/loadDepositFacts", async (importOriginal) => {
+vi.mock("../../../src/features/sipa/loadDepositFacts", async (importOriginal) => {
   const { mockLoadDepositFacts, singleToken } = await import("../../support/depositTokens")
   const tokens = singleToken("0x00000000000000000000000000000000000000bb", "TEST")
   return mockLoadDepositFacts(importOriginal, () => tokens, loadDepositDisplayFacts)
@@ -57,13 +50,11 @@ vi.mock("../../../src/features/deposit/loadDepositFacts", async (importOriginal)
 vi.mock("../../../src/errors/errorModal", () => ({ showReportableError: vi.fn() }))
 // A test's own target stands in for the registration's.
 const targeted = vi.hoisted(() => ({
-  target: undefined as
-    | import("../../../src/features/deposit/depositTarget").DepositTarget
-    | undefined,
+  target: undefined as import("../../../src/features/sipa/depositTarget").DepositTarget | undefined,
 }))
-vi.mock("../../../src/features/onboarding/registrationDepositTarget", async (importOriginal) => {
+vi.mock("../../../src/features/registration/registrationDepositTarget", async (importOriginal) => {
   const real = await importOriginal<
-    typeof import("../../../src/features/onboarding/registrationDepositTarget")
+    typeof import("../../../src/features/registration/registrationDepositTarget")
   >()
   return {
     useRegistrationDepositTarget: (
@@ -154,7 +145,7 @@ vi.mock("../../../src/ui/screens/DepositDetailModal", () => ({
     </div>
   ),
 }))
-vi.mock("../../../src/features/deposit/l1Wallet", () => ({
+vi.mock("../../../src/session/l1Wallet", () => ({
   useL1Wallet: () => ({
     account: null,
     accounts: [],
@@ -167,8 +158,9 @@ vi.mock("../../../src/features/deposit/l1Wallet", () => ({
   }),
 }))
 
-const { DepositScreen } = await import("../../../src/features/deposit/DepositScreen")
-const { saveWalletIdentity } = await import("../../../src/features/identity/walletIdentity")
+const { DepositScreen } = await import("../../../src/features/deposit/DepositScreen/DepositScreen")
+const { setIdentity } = await import("../../support/identity")
+const noClaim = () => async () => {}
 import { seedBootConfig } from "../../support/seedBootConfig"
 import { shortL1Addr } from "../../../src/ui/format"
 import { sandboxProfile } from "../../fixtures/sandboxProfile"
@@ -183,9 +175,12 @@ const dbs = testWalletDbs()
 const ROLLUP = sandboxProfile().shared.rollupVersion
 const openSaved = () => openWalletStore(ROLLUP, { persistent: true })
 
-const { closeSession } = await import("../../../src/platform/session")
+const { closeSession } = await import("../../../src/session/session")
 const { openTestSession } = await import("../../support/session")
-beforeEach(() => void openTestSession({ wallet: {} }))
+const { patchSipaDeposit, seedSipaDeposit } = await import("../../support/sipaDeposits")
+beforeEach(() => openTestSession({ wallet: {}, sipaAddresses: gateway }).registrations.ready)
+/** The address as discovery recorded it: its own casing, not the pool's. */
+const FIRST_RECORDED = FIRST.toUpperCase().replace("0X", "0x")
 afterEach(closeSession)
 
 describe("DepositScreen after an unresolved desktop send", () => {
@@ -201,7 +196,7 @@ describe("DepositScreen after an unresolved desktop send", () => {
       root.render(
         <MemoryRouter>
           <ScreeningProvider screener={passThroughScreener}>
-            <DepositScreen />
+            <DepositScreen claimName={noClaim} />
           </ScreeningProvider>
         </MemoryRouter>,
       )
@@ -266,10 +261,25 @@ describe("DepositScreen after an unresolved desktop send", () => {
     approvals.pending = Promise.resolve()
     await closeWalletStore()
     await openSaved()
+    // The session reads the database just opened.
+    closeSession()
+    await openTestSession({ wallet: {}, sipaAddresses: gateway }).registrations.ready
     // Discovery records every published address before anything is sent to it.
-    feed.records = [{ sipaAddress: FIRST, phase: "broadcast", amount: "0" }]
+    await seedSipaDeposit({
+      sipaAddress: FIRST_RECORDED as `0x${string}`,
+      phase: "broadcast",
+      amount: "0",
+      networkId: "0xnet",
+      recipientL2Address: L2_ADDRESS,
+      messageSecret: "0x01",
+      recipientHash: "0x02",
+      recoveryAddress: "",
+      l1ChainId: 1,
+      tokenSymbol: "DAI",
+      startTime: 1,
+    })
     pool.next = [FIRST, SECOND]
-    saveWalletIdentity({ handle: "alice", address: L2_ADDRESS, claimedAt: 1 })
+    await setIdentity({ handle: "alice", address: L2_ADDRESS, claimedAt: 1 })
     container = document.createElement("div")
     document.body.appendChild(container)
     root = createRoot(container)
@@ -344,12 +354,10 @@ describe("DepositScreen after an unresolved desktop send", () => {
     expect(byTestId("deposit-send-unresolved")).not.toBeNull()
 
     // The late transfer lands and discovery records it funded.
-    feed.records = [
-      { sipaAddress: FIRST.toUpperCase().replace("0X", "0x"), phase: "funded", amount: "24" },
-    ]
+    await patchSipaDeposit(FIRST, { phase: "funded", amount: "24" })
     await render()
     expect(byTestId("deposit-send-unresolved")).toBeNull()
-    expect(byTestId("deposit-detail")!.textContent).toBe(FIRST.toUpperCase().replace("0X", "0x"))
+    expect(byTestId("deposit-detail")!.textContent).toBe(FIRST_RECORDED)
     await reload()
     expect(byTestId("deposit-send-unresolved")).toBeNull()
   })
@@ -526,6 +534,59 @@ describe("DepositScreen after an unresolved desktop send", () => {
     expect(byTestId("fund-sheet")!.dataset.address).toBe(SECOND)
     await click("sent")
     expect(sentFacts.at(-1)).toMatchObject({ sweepFeeAtomic: fee })
+  })
+
+  /** The screen on /deposit, with Home a route away. */
+  const renderRouted = async () => {
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={["/deposit"]}>
+          <Routes>
+            <Route
+              path="/deposit"
+              element={
+                <ScreeningProvider screener={passThroughScreener}>
+                  <DepositScreen claimName={noClaim} />
+                </ScreeningProvider>
+              }
+            />
+            <Route path="/" element={<i data-testid="home" />} />
+          </Routes>
+        </MemoryRouter>,
+      )
+    })
+    for (let i = 0; i < 3; i++) await act(async () => {})
+  }
+
+  it("ends the screen when a registration's sent detail closes, so its deposit is not asked again", async () => {
+    const fee = 5n * 10n ** 17n
+    targeted.target = {
+      kind: "registration",
+      address: { address: SECOND as Hex, name: "alice" },
+      fee,
+      floor: fee + 1n,
+      ask: 10n ** 18n,
+      onFunded: () => {},
+      onShown: () => {},
+    }
+    await renderRouted()
+    await act(async () => buttonContaining("deposit from your browser")!.click())
+    await click("sent")
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>("[aria-label='close detail']")!.click(),
+    )
+    expect(byTestId("home")).not.toBeNull()
+  })
+
+  it("keeps the screen when a plain deposit's sent detail closes", async () => {
+    await renderRouted()
+    await openSheet()
+    await click("approve")
+    await click("sent")
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>("[aria-label='close detail']")!.click(),
+    )
+    expect(byTestId("home")).toBeNull()
   })
 
   it("reloads the fee when a send stops on a changed fee", async () => {

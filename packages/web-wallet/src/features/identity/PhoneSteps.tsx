@@ -102,22 +102,27 @@ function WarningMark() {
   )
 }
 
-/** What a key means for the wallet, behind a line like the advice above it. */
+/**
+ * What a passkey that keeps the only copy means for the wallet, a key's or Windows Hello's, behind
+ * a line like the advice above it.
+ */
 export function KeyWarningLine({
   warning,
+  testId = "phone-steps-key-warning",
 }: {
-  warning: { label: string; note: string; models: string }
+  warning: { label: string; note: string; models?: string }
+  testId?: string
 }) {
   return (
     <TipRow
-      testId="phone-steps-key-warning"
+      testId={testId}
       className="ww-phone-steps__tiprow"
       mark={<Icon name="info-circle" size={14} />}
       label={warning.label}
     >
       <strong>{warning.label}</strong>
       <p>{warning.note}</p>
-      <p>{warning.models}</p>
+      {warning.models && <p>{warning.models}</p>}
     </TipRow>
   )
 }
@@ -294,6 +299,9 @@ export function PhoneSteps({
           ))}
         </div>
         {option.keyWarning && <KeyWarningLine warning={option.keyWarning} />}
+        {option.helloWarning && (
+          <KeyWarningLine warning={option.helloWarning} testId="phone-steps-hello-warning" />
+        )}
       </div>
       <PrimaryGradientButton
         title={SIGN_UP_SHEET_COPY.continueLabel}

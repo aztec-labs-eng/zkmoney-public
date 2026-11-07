@@ -26,18 +26,6 @@ const obsidionWalletStub = {
 }
 
 const addWebauthnAccountMock = vi.fn(async () => undefined)
-const hasAccountMock = vi.fn(async () => false)
-const isProdMock = vi.fn(async () => false)
-vi.mock("src/core", async () => {
-  const actual = await vi.importActual<typeof import("src/core")>("src/core")
-  return {
-    ...actual,
-    AccountStorage: {
-      get: () => ({ addWebauthnAccount: addWebauthnAccountMock, hasAccount: hasAccountMock }),
-    },
-    NetworkStorage: { get: () => ({ isProd: isProdMock }) },
-  }
-})
 
 import { createAccount } from "src/hooks/createAccount"
 import { AUTH_TYPE } from "@obsidion/sdk"
@@ -64,7 +52,14 @@ function makeAuthService(authenticatorType: "platform" | "security-key") {
 function renderCreate(authService: never) {
   type Args = Parameters<typeof createAccount> extends [unknown, ...infer A] ? A : never
   return (...args: Args) =>
-    createAccount({ wallet: obsidionWalletStub as never, authService }, ...args)
+    createAccount(
+      {
+        wallet: obsidionWalletStub as never,
+        authService,
+        accounts: () => ({ save: addWebauthnAccountMock }),
+      },
+      ...args,
+    )
 }
 
 describe("createAccount — no-backup warning gate", () => {
@@ -80,7 +75,7 @@ describe("createAccount — no-backup warning gate", () => {
     const create = renderCreate(makeAuthService("security-key"))
 
     await expect(
-      create(false, AUTH_TYPE.WEB_AUTHN, () => {}, "@x", undefined, {
+      create(AUTH_TYPE.WEB_AUTHN, () => {}, "@x", {
         mode: "combined",
         onSecurityKeyDetected: async () => false,
       }),
@@ -99,7 +94,7 @@ describe("createAccount — no-backup warning gate", () => {
       return true
     })
 
-    await create(false, AUTH_TYPE.WEB_AUTHN, () => {}, "@x", undefined, {
+    await create(AUTH_TYPE.WEB_AUTHN, () => {}, "@x", {
       mode: "combined",
       onSecurityKeyDetected,
     })
@@ -116,7 +111,7 @@ describe("createAccount — no-backup warning gate", () => {
     const create = renderCreate(makeAuthService("platform"))
     const onSecurityKeyDetected = vi.fn(async () => true)
 
-    await create(false, AUTH_TYPE.WEB_AUTHN, () => {}, "@x", undefined, {
+    await create(AUTH_TYPE.WEB_AUTHN, () => {}, "@x", {
       mode: "platform",
       onSecurityKeyDetected,
     })
@@ -130,7 +125,7 @@ describe("createAccount — no-backup warning gate", () => {
     const create = renderCreate(authService)
     const controller = new AbortController()
 
-    await create(false, AUTH_TYPE.WEB_AUTHN, () => {}, "@x", undefined, {
+    await create(AUTH_TYPE.WEB_AUTHN, () => {}, "@x", {
       signal: controller.signal,
     })
 
@@ -161,7 +156,7 @@ describe("createAccount — caller recovery checkpoint", () => {
       expect(account).toEqual({ credentialId: "cred-1", l2Address: "0xacct" })
       saved = true
     })
-    await create(false, AUTH_TYPE.WEB_AUTHN, () => {}, "alice", undefined, {
+    await create(AUTH_TYPE.WEB_AUTHN, () => {}, "alice", {
       onAccountCreated: checkpoint,
     })
     expect(checkpoint).toHaveBeenCalledTimes(1)
@@ -172,7 +167,7 @@ describe("createAccount — caller recovery checkpoint", () => {
     const create = renderCreate(makeAuthService("platform"))
     const refused = new Error("storage refused")
     await expect(
-      create(false, AUTH_TYPE.WEB_AUTHN, () => {}, "alice", undefined, {
+      create(AUTH_TYPE.WEB_AUTHN, () => {}, "alice", {
         onAccountCreated: () => {
           throw refused
         },
@@ -189,7 +184,7 @@ describe("createAccount — caller recovery checkpoint", () => {
     const refused = new Error("commit refused")
     commitSecretMock.mockRejectedValueOnce(refused)
     await expect(
-      create(false, AUTH_TYPE.WEB_AUTHN, () => {}, "alice", undefined, {
+      create(AUTH_TYPE.WEB_AUTHN, () => {}, "alice", {
         onAccountCreated: checkpoint,
       }),
     ).rejects.toBe(refused)

@@ -129,7 +129,10 @@ vi.mock("../../../src/features/operations/OperationHandOff", () => ({
     return <div>Working</div>
   },
 }))
-vi.mock("../../../src/features/provingGate", () => ({ useUserFlowActive: () => false }))
+vi.mock("../../../src/features/provingGate", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../src/features/provingGate")>()),
+  useUserFlowActive: () => false,
+}))
 vi.mock("../../../src/features/savings/savingsMoveTiming", () => ({
   useSavingsMoveTiming: () => state.timing,
   savingsEtaCopy: (eta: { seconds: number; remaining: boolean }) =>

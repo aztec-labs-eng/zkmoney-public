@@ -1,17 +1,24 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { Hex } from "viem"
-import { AccountServiceError, NameClaimStore, type NameClaimRecord } from "@obsidion/front-core"
-import { webStorage } from "../../../../src/platform/storage/WebStorageAdapter"
-import { CLAIM_WAIT_NOTICE, requireNameClaim } from "../../../../src/features/onboarding/nameClaim"
+import { AccountServiceError, type NameClaimRecord } from "@obsidion/front-core"
+import { closeSession, session } from "../../../../src/session/session"
+import { openTestSession } from "../../../support/session"
 import {
-  loadRegistrationTerms,
-  saveRegistrationTerms,
-} from "../../../../src/features/onboarding/registrationTerms"
-import { earnedTerms, nameClaim } from "../../../support/registrationFixtures"
+  CLAIM_WAIT_NOTICE,
+  requireNameClaim,
+} from "../../../../src/features/registration/nameClaim"
+import {
+  earnedTerms,
+  nameClaim,
+  pendingRecord,
+  seedRegistration,
+  storedRegistration,
+} from "../../../support/registrationFixtures"
+import { seedDeviceKeys } from "../../../support/page"
 
 const mocks = vi.hoisted(() => ({ signDomain: vi.fn() }))
 
-vi.mock("../../../../src/features/onboarding/oxideOnboarding", async (importOriginal) => ({
+vi.mock("../../../../src/features/registration/registrationDeps", async (importOriginal) => ({
   ...(await importOriginal<object>()),
   accountServiceFor: () => ({ signDomain: mocks.signDomain }),
 }))
@@ -20,12 +27,13 @@ vi.mock("../../../../src/config/env", async (importOriginal) => ({
   getConfig: () => ({}),
 }))
 
-const RECORD = {
+const RECORD = pendingRecord({
   account: "0x00000000000000000000000000000000000000aa",
   tag: "alice",
   nameHash: `0x${"77".repeat(32)}` as Hex,
   l2Address: `0x${"cd".repeat(32)}` as Hex,
-}
+  fee: "1",
+})
 
 const KEYS = { secretKey: {} as never }
 
@@ -41,50 +49,50 @@ function cachedClaim(overrides: Partial<NameClaimRecord> = {}): NameClaimRecord 
   }
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   localStorage.clear()
-  NameClaimStore.resetForTests()
-  NameClaimStore.get(webStorage)
+  await seedDeviceKeys({ storageId: "a1" })
+  openTestSession()
   mocks.signDomain.mockReset()
 })
+afterEach(closeSession)
 
 describe("requireNameClaim", () => {
   it("keeps the reservation the screen shows in step with a re-issued claim", async () => {
-    saveRegistrationTerms({
-      account: RECORD.account,
-      tag: "alice",
-      deadline: 1,
-      fee: "1",
-      minDeposit: "4",
-      feeWaived: true,
-      depositAmount: "5",
-    })
+    const record = {
+      ...RECORD,
+      terms: { deadline: 1, fee: "1", minDeposit: "4", feeWaived: true, proverTip: "5" },
+    }
+    await seedRegistration(record)
     const deadline = String(Math.floor(Date.now() / 1000) + 3600)
     mocks.signDomain.mockResolvedValue(
       nameClaim({ deadline, terms: earnedTerms({ fee: "1", minDeposit: "4" }) }),
     )
-    await requireNameClaim({ ...RECORD, fee: "1" }, KEYS)
-    expect(loadRegistrationTerms(RECORD.account, "alice")).toMatchObject({
-      deadline: Number(deadline),
-      fee: "1",
-      feeWaived: true,
-      depositAmount: "5",
-    })
+    await requireNameClaim(session(), record, KEYS)
+    await vi.waitFor(async () =>
+      expect((await storedRegistration(RECORD.sipaAddress))?.terms).toMatchObject({
+        deadline: Number(deadline),
+        fee: "1",
+        feeWaived: true,
+        proverTip: "5",
+      }),
+    )
   })
 
   it("leaves the stored terms alone when the re-issued quote prices another fee", async () => {
-    saveRegistrationTerms({ account: RECORD.account, tag: "alice", deadline: 1, feeWaived: false })
+    const record = { ...RECORD, terms: { deadline: 1, feeWaived: false } }
+    await seedRegistration(record)
     mocks.signDomain.mockResolvedValue(nameClaim({ terms: earnedTerms({ fee: "2" }) }))
-    await requireNameClaim({ ...RECORD, fee: "1" }, KEYS)
-    expect(loadRegistrationTerms(RECORD.account, "alice")?.deadline).toBe(1)
+    await requireNameClaim(session(), record, KEYS)
+    expect((await storedRegistration(RECORD.sipaAddress))?.terms?.deadline).toBe(1)
   })
 
   it("re-requests past an expired or mismatched cached claim", async () => {
     mocks.signDomain.mockResolvedValue(nameClaim({ signature: "0xbeef" }))
-    await NameClaimStore.get().put(cachedClaim({ deadline: "1" }))
-    expect((await requireNameClaim(RECORD, KEYS)).signature).toBe("0xbeef")
-    await NameClaimStore.get().put(cachedClaim({ nameHash: `0x${"88".repeat(32)}` }))
-    expect((await requireNameClaim(RECORD, KEYS)).signature).toBe("0xbeef")
+    await session().nameClaims.put(cachedClaim({ deadline: "1" }))
+    expect((await requireNameClaim(session(), RECORD, KEYS)).signature).toBe("0xbeef")
+    await session().nameClaims.put(cachedClaim({ nameHash: `0x${"88".repeat(32)}` }))
+    expect((await requireNameClaim(session(), RECORD, KEYS)).signature).toBe("0xbeef")
   })
 })
 
@@ -95,36 +103,44 @@ describe("requireNameClaim against a terms-less cache", () => {
   const priced = (fee: string) => nameClaim({ signature: "0xbeef", ...withTerms(fee) })
 
   it("sweeps the committed fee off the controller's own fee, with no request", async () => {
-    await NameClaimStore.get().put(cachedClaim())
+    await session().nameClaims.put(cachedClaim())
 
-    const claim = await requireNameClaim({ ...RECORD, fee: "1" }, KEYS, { controllerFee: 1n })
+    const claim = await requireNameClaim(session(), { ...RECORD, fee: "1" }, KEYS, {
+      controllerFee: 1n,
+    })
 
     expect(claim.signature).toBe("0xcafe")
     expect(mocks.signDomain).not.toHaveBeenCalled()
   })
 
   it("re-signs when the controller prices another fee, and caches what lands", async () => {
-    await NameClaimStore.get().put(cachedClaim())
+    await session().nameClaims.put(cachedClaim())
     mocks.signDomain.mockResolvedValue(priced("1"))
 
-    const claim = await requireNameClaim({ ...RECORD, fee: "1" }, KEYS, { controllerFee: 9n })
+    const claim = await requireNameClaim(session(), { ...RECORD, fee: "1" }, KEYS, {
+      controllerFee: 9n,
+    })
 
     expect(claim.signature).toBe("0xbeef")
     expect(claim.terms?.fee).toBe("1")
-    expect((await NameClaimStore.get().get(RECORD.l2Address))?.signature).toBe("0xbeef")
+    expect((await session().nameClaims.get(RECORD.l2Address))?.signature).toBe("0xbeef")
   })
 
   it("re-signs while the controller's fee is unread", async () => {
-    await NameClaimStore.get().put(cachedClaim())
+    await session().nameClaims.put(cachedClaim())
     mocks.signDomain.mockResolvedValue(priced("1"))
 
-    expect((await requireNameClaim({ ...RECORD, fee: "1" }, KEYS)).signature).toBe("0xbeef")
+    expect((await requireNameClaim(session(), { ...RECORD, fee: "1" }, KEYS)).signature).toBe(
+      "0xbeef",
+    )
     expect(mocks.signDomain).toHaveBeenCalledTimes(1)
   })
 
   it("serves a cache priced at the record's fee without a request", async () => {
-    await NameClaimStore.get().put(cachedClaim(withTerms("1")))
-    expect((await requireNameClaim({ ...RECORD, fee: "1" }, KEYS)).signature).toBe("0xcafe")
+    await session().nameClaims.put(cachedClaim(withTerms("1")))
+    expect((await requireNameClaim(session(), { ...RECORD, fee: "1" }, KEYS)).signature).toBe(
+      "0xcafe",
+    )
     expect(mocks.signDomain).not.toHaveBeenCalled()
   })
 
@@ -133,11 +149,11 @@ describe("requireNameClaim against a terms-less cache", () => {
     ["a cache priced at another fee", withTerms("10"), undefined],
     ["an expired cache the controller's fee would price", { deadline: "1" }, 1n],
   ])("throws when the re-sign fails rather than serve %s", async (_, cached, controllerFee) => {
-    await NameClaimStore.get().put(cachedClaim(cached))
+    await session().nameClaims.put(cachedClaim(cached))
     mocks.signDomain.mockRejectedValue(OFFLINE)
 
     await expect(
-      requireNameClaim({ ...RECORD, fee: "1" }, KEYS, { controllerFee }),
+      requireNameClaim(session(), { ...RECORD, fee: "1" }, KEYS, { controllerFee }),
     ).rejects.toMatchObject({ cause: OFFLINE })
   })
 })
@@ -158,22 +174,23 @@ describe("requireNameClaim refusal handling", () => {
       .mockResolvedValueOnce(CLAIM)
     const onNotice = vi.fn()
 
-    const pending = requireNameClaim(RECORD, KEYS, { onNotice })
+    const pending = requireNameClaim(session(), RECORD, KEYS, { onNotice })
     await vi.advanceTimersByTimeAsync(1_000)
 
     expect((await pending).signature).toBe("0xbeef")
     expect(mocks.signDomain).toHaveBeenCalledTimes(2)
     expect(onNotice.mock.calls).toEqual([[CLAIM_WAIT_NOTICE]])
-    expect((await NameClaimStore.get().get(RECORD.l2Address))?.signature).toBe("0xbeef")
+    expect((await session().nameClaims.get(RECORD.l2Address))?.signature).toBe("0xbeef")
   })
 
   it("fails fast on a terminal refusal, with no wait and no second request", async () => {
     mocks.signDomain.mockRejectedValue(refusal(409, "name_reserved"))
     const onNotice = vi.fn()
 
-    await expect(requireNameClaim(RECORD, KEYS, { onNotice })).rejects.toThrow(
-      "Couldn't refresh the reservation for this name: refused",
-    )
+    await expect(requireNameClaim(session(), RECORD, KEYS, { onNotice })).rejects.toMatchObject({
+      code: "registration.claimUnrefreshed",
+      data: { reason: "refused" },
+    })
     expect(mocks.signDomain).toHaveBeenCalledTimes(1)
     expect(onNotice).not.toHaveBeenCalled()
   })
@@ -181,17 +198,14 @@ describe("requireNameClaim refusal handling", () => {
   it("blames the hold, not the name, once the wait runs out", async () => {
     mocks.signDomain.mockRejectedValue(refusal(409, "claim_conflict"))
 
-    const pending = requireNameClaim(RECORD, KEYS).then(
+    const pending = requireNameClaim(session(), RECORD, KEYS).then(
       () => {
         throw new Error("expected the refusal to outlast the wait")
       },
-      (e: Error) => e,
+      (e: unknown) => e,
     )
     await vi.advanceTimersByTimeAsync(60_000)
-    const err = await pending
 
-    expect(err.message).toMatch(/reserved to another address on this device/)
-    expect(err.message).toMatch(/clears by itself/)
-    expect(err.message).not.toMatch(/taken|reserved by another user/)
+    expect(await pending).toMatchObject({ code: "registration.claimConflict" })
   })
 })

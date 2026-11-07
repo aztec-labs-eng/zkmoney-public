@@ -1,4 +1,5 @@
 import { logger } from "../utils/logger"
+import { WalletError } from "./errors"
 import { memoryStore, type ReadonlyStore } from "./store"
 
 /**
@@ -49,6 +50,34 @@ export type Values<From> = { [K in keyof From]: From[K] extends Resource<infer V
 export function valueOf<T>(r: ReadonlyStore<ResourceState<T>>): T | undefined {
   const state = r.get()
   return state.status === "ready" ? state.value : undefined
+}
+
+/**
+ * `r`'s value once ready; demands it. Rejects with the build's error when it fails, and stops
+ * waiting once `signal` aborts.
+ */
+export function readyValue<T>(r: Resource<T>, signal?: AbortSignal): Promise<T> {
+  r.demand()
+  return new Promise((resolve, reject) => {
+    let done = false
+    const end = (settle: () => void) => {
+      done = true
+      off()
+      signal?.removeEventListener("abort", aborted)
+      settle()
+    }
+    const aborted = () => end(() => reject(new WalletError("aborted", `${r.name} aborted`)))
+    const check = () => {
+      if (done) return
+      const state = r.get()
+      if (state.status === "ready") end(() => resolve(state.value))
+      else if (state.status === "failed") end(() => reject(state.error))
+    }
+    const off = r.subscribe(check)
+    if (signal?.aborted) return aborted()
+    signal?.addEventListener("abort", aborted)
+    check()
+  })
 }
 
 /** A resource ready from the start: a page's fixed input. */

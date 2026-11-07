@@ -1,11 +1,13 @@
 /** New request → A contact: who the request can go to. */
 import { act } from "react"
+import { testPage, testCore } from "../../support/page"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { ContactStorage } from "@obsidion/front-core"
 import { RequestContactPicker } from "../../../src/features/receive/RequestContactPicker/RequestContactPicker"
-import { saveWalletIdentity } from "../../../src/features/identity/walletIdentity"
-import { activeNamespace, closeSession, switchSession } from "../../../src/platform/session"
+import { setIdentity } from "../../support/identity"
+import { activeNamespace, closeSession, switchSession } from "../../../src/session/session"
+import { pageSessionDeps } from "../../../src/app/sessionDeps"
 import { InMemoryStorageAdapter } from "../../support/memoryStorage"
 
 describe("RequestContactPicker", () => {
@@ -32,8 +34,8 @@ describe("RequestContactPicker", () => {
       address: `0x${"ab".repeat(20)}`,
       addressKind: "ethereum-l1",
     })
-    await saveWalletIdentity({ handle: "river", address: `0x${"2c".repeat(32)}`, claimedAt: 0 })
-    switchSession(activeNamespace())
+    await setIdentity({ handle: "river", address: `0x${"2c".repeat(32)}`, claimedAt: 0 })
+    switchSession(activeNamespace(testCore().device), pageSessionDeps(testPage()))
     onRequest.mockClear()
     container = document.createElement("div")
     document.body.appendChild(container)

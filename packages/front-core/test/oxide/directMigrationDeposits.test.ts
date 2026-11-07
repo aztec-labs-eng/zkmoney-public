@@ -1,26 +1,16 @@
 // @vitest-environment node
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import type { Address, Hex } from "viem"
-
-const h = vi.hoisted(() => ({
-  readPortalDeposits: vi.fn(),
-  readTokenTransfers: vi.fn(),
-  readSipaBalancesMany: vi.fn(),
-}))
-vi.mock("@obsidion/sdk", () => ({
-  readPortalDeposits: h.readPortalDeposits,
-  readTokenTransfers: h.readTokenTransfers,
-  readSipaBalancesMany: h.readSipaBalancesMany,
-}))
-
-import { observeSipas } from "../../src/oxide/sipaObservation"
 import { ensureDirectMigrationDepositRecords } from "../../src/oxide/directMigrationDeposits"
+import { openDatabase } from "../../src/engine/database"
+import { memoryBackend } from "../../src/engine/memoryBackend"
 import {
-  directDepositClaimed,
+  claimedSweepsTotal,
+  createSipaDeposits,
   directDepositKey,
   directDepositSettled,
-  type SIPADepositRecord,
-} from "../../src/core/services/deposits/SIPADepositStore"
+  type SipaDeposit,
+} from "../../src/engine/sipaDeposits"
 import type { SipaRow } from "../../src/oxide/sipaRows"
 
 const DAI_PORTAL = "0x00000000000000000000000000000000000000a0" as Address
@@ -60,32 +50,18 @@ const direct = {
   recipientCommitment: COMMITMENT,
 }
 
+/** The deposit store over memory, its records as a map once loaded, and a spy on its writes. */
 function makeStore() {
-  const records = new Map<string, SIPADepositRecord>()
-  return {
-    records,
-    load: vi.fn(async () => {}),
-    get: (address: Address) => records.get(address.toLowerCase()) ?? null,
-    create: vi.fn(async (address: Address, record: Omit<SIPADepositRecord, "sipaAddress">) => {
-      if (records.has(address.toLowerCase())) return null
-      const created = { ...record, sipaAddress: address } as SIPADepositRecord
-      records.set(address.toLowerCase(), created)
-      return created
-    }),
-    update: vi.fn(
-      async (
-        address: Address,
-        patch: (current: SIPADepositRecord) => Partial<SIPADepositRecord> | null,
-      ) => {
-        const current = records.get(address.toLowerCase())
-        const next = current && patch(current)
-        if (!current || !next) return null
-        const updated = { ...current, ...next } as SIPADepositRecord
-        records.set(address.toLowerCase(), updated)
-        return updated
-      },
-    ),
+  const store = createSipaDeposits({ db: openDatabase(memoryBackend()), account: true })
+  const held = {
+    ...store,
+    get records() {
+      return new Map(store.view.get().records.map((r) => [r.sipaAddress.toLowerCase(), r]))
+    },
+    seed: (record: Partial<SipaDeposit>) =>
+      store.adopt({ networkId: "0x00000000000000000000000000000000000000e1", ...record } as never),
   }
+  return Object.assign(held, { apply: vi.fn(held.apply) })
 }
 
 const RUN = `metadata-migration/${SUSDS_PORTAL}/0xold/${RECIPIENT}`
@@ -122,23 +98,6 @@ const noReads = new Proxy({} as Record<string, unknown>, {
   },
 })
 
-const landed = {
-  portal: SUSDS_PORTAL,
-  recipientCommitment: COMMITMENT,
-  amount: 5n * 10n ** 18n,
-  key: `0x${"0e".repeat(32)}` as Hex,
-  index: 42n,
-  blockNumber: 1_600n,
-  txHash: `0x${"ab".repeat(32)}` as Hex,
-  logIndex: 3,
-}
-
-beforeEach(() => {
-  h.readPortalDeposits.mockReset().mockResolvedValue([])
-  h.readTokenTransfers.mockReset().mockResolvedValue([])
-  h.readSipaBalancesMany.mockReset().mockResolvedValue(new Map())
-})
-
 describe("ensureDirectMigrationDepositRecords", () => {
   it("records a sent batch before its deposit lands, as an unpaid address, reading no chain", async () => {
     const { deps, store, secret } = makeDeps()
@@ -148,7 +107,6 @@ describe("ensureDirectMigrationDepositRecords", () => {
     ).toBe(1)
 
     expect(secret).toHaveBeenCalledWith(direct)
-    expect(h.readPortalDeposits).not.toHaveBeenCalled()
     const record = store.records.get(directDepositKey(COMMITMENT).toLowerCase())!
     expect(record).toMatchObject({
       phase: "broadcast",
@@ -172,26 +130,24 @@ describe("ensureDirectMigrationDepositRecords", () => {
   it("writes nothing for a batch already recorded", async () => {
     const { deps, store } = makeDeps()
     await ensureDirectMigrationDepositRecords(deps)
-    store.create.mockClear()
+    store.apply.mockClear()
 
     expect(await ensureDirectMigrationDepositRecords(deps)).toBe(0)
-    expect(store.create).not.toHaveBeenCalled()
-    expect(store.update).not.toHaveBeenCalled()
+    expect(store.apply).not.toHaveBeenCalled()
   })
 
   it("gives a record written from the deposit's announcement the batch's amount", async () => {
     const { deps, store } = makeDeps()
     const key = directDepositKey(COMMITMENT).toLowerCase()
-    store.records.set(key, {
-      sipaAddress: key,
+    await store.seed({
+      sipaAddress: key as Address,
       phase: "claimed",
       claimedInboxIndexes: ["1"],
       direct: { recipientCommitment: COMMITMENT },
-    } as never)
+    })
 
     expect(await ensureDirectMigrationDepositRecords(deps)).toBe(0)
 
-    expect(store.create).not.toHaveBeenCalled()
     expect(store.records.get(key)).toMatchObject({
       phase: "claimed",
       claimedInboxIndexes: ["1"],
@@ -204,7 +160,7 @@ describe("ensureDirectMigrationDepositRecords", () => {
     secret.mockResolvedValue({ recipientCommitment: `0x${"0d".repeat(32)}`, sharedSecret: SECRET })
 
     expect(await ensureDirectMigrationDepositRecords(deps)).toBe(0)
-    expect(store.create).not.toHaveBeenCalled()
+    expect(store.apply).not.toHaveBeenCalled()
   })
 
   it("isolates a batch whose destination has no rail row", async () => {
@@ -222,75 +178,23 @@ describe("ensureDirectMigrationDepositRecords", () => {
     expect(await ensureDirectMigrationDepositRecords(deps)).toBe(1)
     expect(store.records.has(directDepositKey(COMMITMENT).toLowerCase())).toBe(true)
   })
-
-  it("joins the batched observation, which finds its deposit by the commitment topic", async () => {
-    const { deps, store } = makeDeps()
-    await ensureDirectMigrationDepositRecords(deps)
-    const key = directDepositKey(COMMITMENT)
-    const record = store.records.get(key.toLowerCase())!
-    h.readPortalDeposits.mockResolvedValue([landed])
-
-    const { observed } = await observeSipas({} as never, {
-      portals: [DAI_PORTAL, SUSDS_PORTAL],
-      tokens: [ROWS[0]!.token.address],
-      head: 2_000n,
-      subjects: [
-        {
-          address: key,
-          commitment: record.recipientHash as Hex,
-          fromBlock: BigInt(record.rescanFrom!),
-          inflows: false,
-          direct: true,
-        },
-      ],
-    })
-
-    expect(h.readPortalDeposits).toHaveBeenCalledWith(
-      {},
-      [DAI_PORTAL, SUSDS_PORTAL],
-      [COMMITMENT],
-      1_500n,
-      2_000n,
-    )
-    expect(observed.get(key.toLowerCase())!.sweeps).toEqual([
-      {
-        portal: SUSDS_PORTAL,
-        index: 42n,
-        amount: landed.amount,
-        messageKey: landed.key,
-        blockNumber: 1_600n,
-        txHash: landed.txHash,
-      },
-    ])
-    expect(h.readTokenTransfers.mock.calls.every((c) => c[3].length === 0)).toBe(true)
-    expect(h.readSipaBalancesMany).toHaveBeenCalledWith({}, [], [ROWS[0]!.token.address])
-  })
 })
 
-describe("directDepositClaimed", () => {
-  it("is the total the rail claimed under the commitment, with no deposit it has only seen", async () => {
-    const store = makeStore()
-    expect(await directDepositClaimed(store, COMMITMENT)).toBe(0n)
-
-    const key = directDepositKey(COMMITMENT).toLowerCase()
-    store.records.set(key, {
-      phase: "pendingClaim",
-      inboxIndex: "42",
-      pendingSweeps: [{ inboxIndex: "42" }],
-    } as never)
-    expect(await directDepositClaimed(store, COMMITMENT)).toBe(0n)
-
+describe("claimedSweepsTotal", () => {
+  it("is the total the rail claimed under the commitment, with no deposit it has only seen", () => {
+    expect(claimedSweepsTotal(undefined)).toBe(0n)
+    const seen = { phase: "pendingClaim", inboxIndex: "42", pendingSweeps: [{ inboxIndex: "42" }] }
+    expect(claimedSweepsTotal(seen as never)).toBe(0n)
     // Another sender's dust is claimed first; the batch's deposit waits for its claim.
-    store.records.set(key, {
+    const first = {
       phase: "pendingClaim",
       inboxIndex: "43",
       claimedInboxIndexes: ["42"],
       sweeps: [{ inboxIndex: "42", netAmount: "1" }],
       pendingSweeps: [{ inboxIndex: "43" }],
-    } as never)
-    expect(await directDepositClaimed(store, COMMITMENT)).toBe(1n)
-
-    store.records.set(key, {
+    }
+    expect(claimedSweepsTotal(first as never)).toBe(1n)
+    const both = {
       phase: "claimed",
       inboxIndex: "43",
       claimedInboxIndexes: ["42", "43"],
@@ -298,13 +202,12 @@ describe("directDepositClaimed", () => {
         { inboxIndex: "42", netAmount: "1" },
         { inboxIndex: "43", netAmount: AMOUNT },
       ],
-    } as never)
-    expect(await directDepositClaimed(store, COMMITMENT)).toBe(BigInt(AMOUNT) + 1n)
+    }
+    expect(claimedSweepsTotal(both as never)).toBe(BigInt(AMOUNT) + 1n)
     // The key is the commitment's, whatever its case.
-    expect(
-      await directDepositClaimed(store, COMMITMENT.toUpperCase().replace("0X", "0x") as Hex),
-    ).toBe(BigInt(AMOUNT) + 1n)
-    expect(store.load).toHaveBeenCalled()
+    expect(directDepositKey(COMMITMENT.toUpperCase().replace("0X", "0x") as Hex)).toBe(
+      directDepositKey(COMMITMENT),
+    )
   })
 })
 

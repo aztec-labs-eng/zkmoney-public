@@ -15,7 +15,7 @@ const { claimSponsorRail } = vi.hoisted(() => ({
     rail: {},
   })),
 }))
-vi.mock("../../../../src/features/onboarding/claimSponsorship", () => ({
+vi.mock("../../../../src/features/registration/claimSponsorship", () => ({
   claimSponsorRail,
   claimSponsorContext: vi.fn(),
   noteSubscribed: vi.fn(),

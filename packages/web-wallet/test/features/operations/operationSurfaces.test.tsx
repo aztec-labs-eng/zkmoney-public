@@ -4,6 +4,7 @@
  * switch shows exactly what the store holds for the active account.
  */
 import { act } from "react"
+import { testPage, testCore } from "../../support/page"
 import { createRoot, type Root } from "react-dom/client"
 import { MemoryRouter } from "react-router-dom"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
@@ -16,15 +17,13 @@ import {
   reorgEvent,
   type OperationRecord,
 } from "@obsidion/front-core"
-import { clearActiveStorage, setActiveStorageId } from "../../../src/platform/storage/activeStorage"
 import { PAYLINK_NOT_CLAIMABLE_YET_MESSAGE } from "../../../src/features/paylink/claimWindow"
-import { getOperationStore } from "../../../src/features/operations/operations"
 import {
-  activeNamespace,
-  closeSession,
-  switchSession,
-  session,
-} from "../../../src/platform/session"
+  followOperationScope,
+  getOperationStore,
+} from "../../../src/features/operations/operations"
+import { activeNamespace, closeSession, switchSession, session } from "../../../src/session/session"
+import { pageSessionDeps } from "../../../src/app/sessionDeps"
 import { operationEntry } from "../../support/operations"
 import {
   NotificationsPanel,
@@ -34,6 +33,10 @@ import { OPERATION_COPY } from "../../../src/features/operations/operationCopy"
 import { tabLineText } from "../../../src/features/operations/TabLine"
 import copy from "../../../src/ui/notifications.copy"
 import { fmt } from "../../../src/lib/fmt"
+import { writeDeviceKeys } from "../../../src/platform/storage/deviceKeys"
+import { NO_SESSION, writeSessionTuple } from "../../../src/platform/storage/activeStorage"
+
+const deviceDb = testPage().database
 
 const hash = `0x${"ab".repeat(32)}`
 const SUMMARY = "$25 to @alice"
@@ -61,7 +64,7 @@ afterEach(async () => {
   await act(async () => root.unmount())
   container.remove()
   closeSession()
-  clearActiveStorage()
+  await writeSessionTuple(deviceDb, NO_SESSION)
   // Every test starts from an empty panel for the visitor scope.
   await getOperationStore().dismissEnded(null)
 })
@@ -79,7 +82,7 @@ function Unread() {
 
 // Opened as late as a boot would: the records an earlier page left are saved by then.
 const renderPanel = () => {
-  switchSession(activeNamespace())
+  switchSession(activeNamespace(testCore().device), pageSessionDeps(testPage()))
   return act(async () =>
     root.render(
       <MemoryRouter>
@@ -191,7 +194,12 @@ describe("the panel", () => {
     await act(async () => getOperationStore().markSent("op-dropped", hash))
     await act(async () => getOperationStore().fail("op-dropped", "boom"))
     const notice = reorgEvent({ type: "failed", txHash: hash }, Date.now(), () => false)!
-    await act(async () => switchSession(activeNamespace()).notifications.record(notice))
+    await act(async () =>
+      switchSession(
+        activeNamespace(testCore().device),
+        pageSessionDeps(testPage()),
+      ).notifications.record(notice),
+    )
     await renderPanel()
     expect(items()).toHaveLength(1)
     await click(items()[0].querySelector('[aria-label="Dismiss"]'))
@@ -201,13 +209,14 @@ describe("the panel", () => {
   })
 
   it("never lists another account's operations", async () => {
-    setActiveStorageId("acct-b")
+    followOperationScope(testCore().device)
+    await writeDeviceKeys(deviceDb, { storageId: "acct-b" })
     await begin("op-of-a", "send", "acct-a")
     await act(async () => getOperationStore().settle("op-of-a", hash))
     await begin("op-a-running", "send", "acct-a")
     await renderPanel()
     expect(items()).toHaveLength(0)
-    await act(async () => setActiveStorageId("acct-a"))
+    await act(async () => writeDeviceKeys(deviceDb, { storageId: "acct-a" }))
     expect(items()).toHaveLength(2)
     await act(async () => getOperationStore().remove("op-a-running"))
     await getOperationStore().dismissEnded("acct-a")

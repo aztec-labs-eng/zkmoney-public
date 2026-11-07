@@ -77,6 +77,7 @@ const UA = {
   macFirefox: macFirefox("153.0"),
   macFirefoxOld: macFirefox("139.0"),
   windowsChrome: hinted(WINDOWS_CHROME_UA, "Windows", "15.0.0", chrome),
+  windows10Chrome: hinted(WINDOWS_CHROME_UA, "Windows", "10.0.0", chrome),
   /** Windows Chrome without Client Hints: phone creation, still on Windows. */
   windowsChromeUnhinted: parseUserAgent({ userAgent: WINDOWS_CHROME_UA }),
   windowsEdge: hinted(WINDOWS_CHROME_UA, "Windows", "15.0.0", edge),
@@ -115,7 +116,12 @@ const option = (s: SignUpOptions, id: SignUpChoice) => {
 
 const L = PHONE_STEPS_COPY.local
 const C = SIGN_UP_SHEET_COPY
-const { "apple": ICLOUD, "gpm": GPM, "1password": ONE_PASSWORD } = SUPPORTED_NAMES
+const {
+  "apple": ICLOUD,
+  "gpm": GPM,
+  "windows_hello": WINDOWS_HELLO,
+  "1password": ONE_PASSWORD,
+} = SUPPORTED_NAMES
 const KEY = PHONE_STEPS_COPY.supported.providers.filter(
   (p) => !Object.values(SUPPORTED_NAMES).includes(p),
 )
@@ -278,7 +284,7 @@ describe("signUpOptionsFor", () => {
     })
     expect(option(sheet(UA.windowsChrome), "computer")).toMatchObject({
       label: C.computer.label,
-      supported: [GPM],
+      supported: [GPM, WINDOWS_HELLO],
     })
   })
 
@@ -510,6 +516,40 @@ describe("signUpOptionsFor", () => {
         PHONE_STEPS_COPY.extension,
       ])
     }
+  })
+
+  describe("Windows Hello", () => {
+    it("warns under This computer that Windows Hello keeps the only copy", () => {
+      for (const extension of ["none", "1password"] as const) {
+        const s = sheet(UA.windowsChrome, { extension })
+        expect(option(s, "computer").helloWarning).toEqual(C.computer.helloWarning)
+        for (const o of s.options.filter((o) => o.id !== "computer")) {
+          expect(o.helloWarning).toBeUndefined()
+        }
+      }
+    })
+
+    it("warns nowhere the row does not admit it", () => {
+      const withdrawn = withoutManager(laptopCreationFor(UA.windowsChrome), "windows_hello")
+      const rows = [
+        sheet(UA.windowsChrome, { creation: withdrawn }),
+        sheet(UA.windows10Chrome),
+        sheet(UA.linuxChrome),
+        sheet(UA.macChrome),
+      ]
+      for (const s of rows) {
+        expect(option(s, "computer").helloWarning).toBeUndefined()
+      }
+      expect(option(rows[0]!, "computer").supported).toEqual([GPM])
+    })
+
+    it("says on Windows 10, before the prompt, that Windows Hello can't hold the passkey", () => {
+      expect(option(sheet(UA.windows10Chrome), "computer")).toMatchObject({
+        supported: [GPM],
+        advice: [C.computer.windows10, L.installExtension],
+      })
+      expect(option(sheet(UA.windowsChrome), "computer").advice).toEqual([L.installExtension])
+    })
   })
 
   it("warns about keys wherever a key can be picked", () => {

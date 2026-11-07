@@ -6,13 +6,7 @@
  */
 
 import type { Address, Hex, PublicClient } from "viem"
-import {
-  encodeFunctionData,
-  erc20Abi,
-  multicall3Abi,
-  toFunctionSelector,
-  zeroAddress,
-} from "viem"
+import { encodeFunctionData, erc20Abi, multicall3Abi, toFunctionSelector, zeroAddress } from "viem"
 import { Fr } from "@aztec-labs/aztec.js/fields"
 import type { AztecAddress } from "@aztec-labs/aztec.js/addresses"
 import type { AztecNode } from "@aztec-labs/aztec.js/node"
@@ -46,6 +40,7 @@ import { readSipaPortalTerms, type SipaRoute } from "../../oxide/portal/sipaPort
 import { readSipaEvents, type SipaEvent } from "@oxide/oxide-client/sipa_event_calls.js"
 import type { PrivateEventFilter, Wallet } from "@aztec-labs/aztec.js/wallet"
 import { OxideTokenContract } from "@obsidion/contracts"
+import type { ObsidionAccount } from "../../obsidion/alpha/account/ObsidionAccount.js"
 
 export type { SipaEvent }
 
@@ -58,6 +53,7 @@ const BALANCE_CALLS_PER_MULTICALL = 1_000
 /** What every deposit of one recipient through one token shares in its consumed check. */
 export interface SipaDepositClaimScope {
   l2Token: AztecAddress
+  /** The recipient's key as its PXE holds it. An Obsidion account's comes from its account secret. */
   masterNullifierHidingKey: GrumpkinScalar
 }
 
@@ -65,7 +61,8 @@ export interface SipaDepositClaimScope {
  * Which deposits the chain has consumed, in order, by their L1→L2 message hashes: the `key` each
  * portal `Deposit` log carries. Each nullifier is derived from that hash and the recipient's NHK,
  * and they go to the node in batched `findLeavesIndexes` lookups, as many as one request takes,
- * every request at once.
+ * every request at once. Only the spend that consumes a deposit's message emits its nullifier.
+ * `store_deposit` emits none, so a stored deposit reads as not consumed.
  */
 export async function readSipaDepositsConsumed(
   node: Pick<AztecNode, "findLeavesIndexes">,
@@ -91,6 +88,14 @@ export async function readSipaDepositsConsumed(
     ),
   )
   return found.flat().map((leaf) => leaf !== undefined)
+}
+
+/** `account`'s `SipaDepositClaimScope` key, as its PXE holds it. */
+export async function sipaNullifierHidingKey(
+  account: Pick<ObsidionAccount, "getAddress" | "makeDepositSpendMetadataResolver">,
+): Promise<GrumpkinScalar> {
+  const resolve = await account.makeDepositSpendMetadataResolver()
+  return (await resolve(account.getAddress())).masterNullifierHidingKey
 }
 
 /** Cap on the backward sweep scan when no explicit `fromBlock` is given. ~7 days of Sepolia blocks. */
@@ -257,8 +262,8 @@ export interface SipaHoldingRead {
 
 /**
  * Each SIPA's balance of its own tokens plus its ETH under `zeroAddress`, and the block's timestamp,
- * in exactly one Multicall3 `aggregate3` `eth_call` (up to `BALANCE_CALLS_PER_MULTICALL` inner
- * calls; more throws). Keyed like {@link readSipaBalancesMany}. A failed timestamp read throws.
+ * through Multicall3: one `eth_call` per `BALANCE_CALLS_PER_MULTICALL` inner calls, the timestamp in
+ * the first. Keyed like {@link readSipaBalancesMany}. A failed timestamp read throws.
  */
 export async function readSipaHoldingsAtHead(
   publicClient: PublicClient,
@@ -283,8 +288,6 @@ export async function readSipaHoldingsAtHead(
       args: [sipa],
     },
   ])
-  if (reads.length + 1 > BALANCE_CALLS_PER_MULTICALL)
-    throw new Error(`${reads.length + 1} balance reads exceed one Multicall3 call`)
   const results = (await publicClient.multicall({
     contracts: [
       { address: multicall3, abi: multicall3Abi, functionName: "getCurrentBlockTimestamp" },
@@ -292,8 +295,7 @@ export async function readSipaHoldingsAtHead(
     ],
     multicallAddress: multicall3,
     allowFailure: true,
-    // Zero turns viem's chunking off.
-    batchSize: 0,
+    batchSize: BALANCE_CALLS_PER_MULTICALL * 36,
   } as never)) as { status: string; result?: unknown; error?: unknown }[]
   const [stamp, ...answers] = results
   if (stamp?.status !== "success") throw stamp?.error ?? new Error("block timestamp read failed")
@@ -413,6 +415,8 @@ export const encodeRecoverErc20Call = encodeRecoverCall
 type RecoveryDeployment =
   | { protocol: "legacy-eoa"; sipaFactory: Address; args: LegacySipaDeployArgs }
   | { protocol: "account"; sipaFactory: Address; args: SipaDeployArgs }
+  /** Encoded by the generation whose factory it calls. */
+  | { protocol: "account"; sipaFactory: Address; deployCall: Hex }
 
 /** One transaction that recovers each of `recoveries`, one token each, from the same SIPA. */
 export function buildSipaRecoverCall(params: {
@@ -446,7 +450,9 @@ export function buildSipaRecoverCall(params: {
       target: deployment.sipaFactory,
       allowFailure: false,
       callData:
-        deployment.protocol === "legacy-eoa"
+        "deployCall" in deployment
+          ? deployment.deployCall
+          : deployment.protocol === "legacy-eoa"
           ? encodeLegacySipaDeploy(deployment.args)
           : encodeDeploySIPA(deployment.args),
     })

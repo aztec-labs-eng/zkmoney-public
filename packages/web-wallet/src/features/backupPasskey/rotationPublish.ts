@@ -1,14 +1,15 @@
 import { WALLET_TOKEN_SYMBOL } from "@obsidion/core/constants"
 import {
+  WalletError,
+  broadcastSettled,
   rotationDepositOrigin,
-  SIPADepositStore,
   type BackupRotationRecord,
-  type SIPADepositRecord,
+  type SipaDeposit,
 } from "@obsidion/front-core"
 import type { PersistedRotation } from "@obsidion/sdk"
 import type { Address } from "viem"
-import { webStorage } from "../../platform/storage/WebStorageAdapter"
-import { broadcastLanded, getBroadcastLedger, oweRotationBroadcast } from "../broadcasts/broadcasts"
+import { session } from "../../session/session"
+import { oweRotationBroadcast } from "../broadcasts/rotationBroadcastExecutor"
 
 export interface RotationDepositInput {
   record: BackupRotationRecord
@@ -26,39 +27,39 @@ export interface RotationDepositInput {
  * (`rotationDepositOrigin`); the rail record keeps the salt. A record written without the origin
  * gains it, even after the attempt dropped its own salt.
  */
-export async function seedRotationDeposit(input: RotationDepositInput): Promise<SIPADepositRecord> {
+export async function seedRotationDeposit(input: RotationDepositInput): Promise<SipaDeposit> {
   const { plan, rotation } = input.record
   if (!rotation) throw new Error("nothing signed to publish")
   const origin = rotationDepositOrigin(rotation, input)
   const sipa = rotation.sipa
-  const deposits = SIPADepositStore.get(webStorage)
-  await deposits.load()
-  const existing = deposits.get(sipa)
+  const deposits = session().sipaDeposits
+  const existing = await deposits.get(sipa)
   if (existing?.origin) return existing
   if (existing) {
-    return (
-      (await deposits.update(sipa, (c) => (c.origin ? null : { phase: c.phase, origin }))) ??
-      existing
-    )
+    const event = {
+      type: "rotationSeeded",
+      fields: { ...existing, networkId: input.networkId, origin },
+    } as const
+    return (await deposits.apply(sipa, event)) ?? existing
   }
   if (!plan || !rotation.sharedSecretSalt) throw new Error("nothing signed to publish")
-  return deposits.upsert(
-    sipa,
-    { phase: "broadcast", origin },
-    {
-      recipientL2Address: plan.address,
-      messageSecret: rotation.sharedSecretSalt,
-      recipientHash: rotation.intent.recipientCommitment,
-      recoveryAddress: "",
-      l1ChainId: input.l1ChainId,
-      networkId: input.networkId,
-      amount: "0",
-      tokenSymbol: WALLET_TOKEN_SYMBOL,
-      startTime: Date.now(),
-      tokenAddress: input.token,
-      intent: "user-op",
-    },
-  )
+  const fields = {
+    sipaAddress: sipa,
+    phase: "broadcast" as const,
+    origin,
+    recipientL2Address: plan.address,
+    messageSecret: rotation.sharedSecretSalt,
+    recipientHash: rotation.intent.recipientCommitment,
+    recoveryAddress: "",
+    l1ChainId: input.l1ChainId,
+    networkId: input.networkId,
+    amount: "0",
+    tokenSymbol: WALLET_TOKEN_SYMBOL,
+    startTime: Date.now(),
+    tokenAddress: input.token,
+    intent: "user-op" as const,
+  }
+  return (await deposits.apply(sipa, { type: "rotationSeeded", fields })) ?? fields
 }
 
 /**
@@ -72,7 +73,11 @@ export async function publishRotationAddress(
   const sipa = input.rotation.sipa
   await seedRotationDeposit(input)
   await oweRotationBroadcast(input.owner, sipa)
-  await broadcastLanded(sipa.toLowerCase())
+  const { view } = session().sipaDeposits
+  while (!(await broadcastSettled(view, sipa))) {
+    if (!(await session().sipaDeposits.get(sipa))?.broadcast)
+      throw new WalletError("deposit.addressUnpublished")
+  }
 }
 
 /**
@@ -86,13 +91,19 @@ export async function republishRotationAddress(
 ): Promise<boolean> {
   const sipa = record.rotation?.sipa.toLowerCase()
   if (!sipa) return false
-  const ledger = getBroadcastLedger()
-  await ledger.load()
-  const job = ledger.get(sipa)
+  const { sipaDeposits, tasks, wake } = session()
+  const job = (await sipaDeposits.get(sipa))?.broadcast
   if (!job) {
     await oweRotationBroadcast(owner, sipa, await sinceBlock())
     return true
   }
   if (job.state !== "landed") return false
-  return ledger.republish(sipa, await sinceBlock())
+  const at = Date.now()
+  const reopened = await sipaDeposits.apply(sipa, {
+    type: "broadcastRepublish",
+    sinceBlock: await sinceBlock(),
+    at,
+  })
+  void wake(tasks.sipaBroadcasts)
+  return !!reopened
 }

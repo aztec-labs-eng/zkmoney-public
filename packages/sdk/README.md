@@ -16,7 +16,7 @@ therefore `@obsidion/core`) for backward compatibility.
 What does NOT belong here:
 
 - Storage classes, HTTP services, in-memory aggregators, or any persistence-/orchestration-layer
-  code → `@obsidion/front-core`. All current storage classes including `NetworkStorage` live in
+  code → `@obsidion/front-core`. All current storage classes live in
   front-core; this package no longer hosts persistence.
 - Browser-only runtime adapters → `web-wallet/src/`.
 - Noir source or codegen pipeline → `@obsidion/contracts`.

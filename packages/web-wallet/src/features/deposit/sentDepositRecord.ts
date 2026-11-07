@@ -5,9 +5,9 @@
  * placeholder record, stamped from the manifest token before anything was sent there, so the merge
  * keeps the charged figures over a placeholder's and takes every other field the store holds.
  */
-import type { SIPADepositRecord } from "@obsidion/front-core"
+import type { SipaDeposit } from "@obsidion/front-core"
 import type { SentDeposit } from "./DepositFromWalletModal"
-import type { DepositDisplayFacts } from "./loadDepositFacts"
+import type { DepositDisplayFacts } from "../sipa/loadDepositFacts"
 
 /**
  * Display-only stand-in for the record event discovery has not created yet. It carries the quoted
@@ -17,7 +17,7 @@ export function pendingDepositRecord(
   sent: SentDeposit,
   l1ChainId: number,
   facts: DepositDisplayFacts,
-): SIPADepositRecord {
+): SipaDeposit {
   return {
     sipaAddress: sent.address,
     phase: "funding",
@@ -49,23 +49,23 @@ const PLACEHOLDER_PHASES = ["resolved", "broadcast"]
 /** Fields the store actually knows. A placeholder carries a zero amount in a phase that precedes
  *  any transfer. A zero amount in any other phase is settled, a recovered deposit among them, and
  *  keeps its own fields. */
-function knownFields(stored: SIPADepositRecord): Partial<SIPADepositRecord> {
+function knownFields(stored: SipaDeposit): Partial<SipaDeposit> {
   const placeholder = PLACEHOLDER_PHASES.includes(stored.phase) && Number(stored.amount) === 0
   const entries = Object.entries(stored).filter(([key, value]) => {
     if (value === undefined || value === null || value === "") return false
     return !(placeholder && PLACEHOLDER_FIELDS.includes(key))
   })
-  return Object.fromEntries(entries) as Partial<SIPADepositRecord>
+  return Object.fromEntries(entries) as Partial<SipaDeposit>
 }
 
 /** The charged figures under whatever the store has learned since. Undefined while the quote is
  *  still loading and the store holds nothing for the address. */
 export function sentDepositRecord(
   sent: SentDeposit,
-  stored: SIPADepositRecord | undefined,
+  stored: SipaDeposit | undefined,
   l1ChainId: number,
   facts?: DepositDisplayFacts,
-): SIPADepositRecord | undefined {
+): SipaDeposit | undefined {
   if (!facts) return stored
   const pending = pendingDepositRecord(sent, l1ChainId, facts)
   return stored ? { ...pending, ...knownFields(stored) } : pending

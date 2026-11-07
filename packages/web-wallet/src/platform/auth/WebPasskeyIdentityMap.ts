@@ -1,21 +1,23 @@
-import { withFeePayer, type IStorageAdapter } from "@obsidion/front-core"
+import { withFeePayer, type Database } from "@obsidion/front-core"
 import type { AccountKey } from "@obsidion/passkey-web"
 import type { FeePayerEntry, RecoveryMetadata } from "@obsidion/sdk"
-import { PASSKEY_IDENTITY_MAP_KEY as STORAGE_KEY, WEB_STORAGE_PREFIX } from "../storage/storageKeys"
-import { readFromOtherDatabases, walletStorage } from "../storage/walletStorage"
-import { withWebLock } from "../storage/webLock"
+import { DEVICE_KEYS } from "../storage/deviceKeys"
+import { readFromOtherDatabases } from "../storage/walletStorage"
 const MAP_VERSION = 1
-const LOCK_NAME = "webwallet.passkey-identity-map"
-
-/** Every mutation of the map runs under one lock, so two tabs cannot erase each other's writes. */
-const withMapLock = <T>(fn: () => Promise<T>) => withWebLock(LOCK_NAME, fn)
+const MAP_KEY = DEVICE_KEYS.passkeyMap
 
 /**
  * The record as a reader sees it. `userHandle` is the passkey's `user.id`, base64url, from its
  * creation. `securityKey` is the creation driver's verdict, kept apart from `authenticatorType`,
- * which every sign-up record writes as platform.
+ * which every sign-up record writes as platform. `backupEligible` is the authenticator's flag, from
+ * creation or, for a passkey this browser did not create, its first prompt here; false means the
+ * passkey lives on one device.
  */
-export type StoredRecoveryMetadata = RecoveryMetadata & { userHandle?: string; securityKey?: true }
+export type StoredRecoveryMetadata = RecoveryMetadata & {
+  userHandle?: string
+  securityKey?: true
+  backupEligible?: boolean
+}
 
 /** Where a synced passkey answered a laptop's prompt from: a phone over QR, or this computer. */
 export type PasskeyAnswer = "remote" | "local"
@@ -41,9 +43,53 @@ function parseMap(raw: string | null): StoredMap | undefined {
   }
 }
 
-function readMap(): StoredMap | undefined {
-  return parseMap(walletStorage.getItem(WEB_STORAGE_PREFIX + STORAGE_KEY))
+/** The saved map's entries; `map` is the page device's `passkeyMap`. */
+const entriesOf = (map: string | null): Record<string, StoredEntry | undefined> =>
+  parseMap(map)?.entries ?? {}
+
+/** The map a write starts from: one of another version, or unreadable, starts empty. */
+function writable(raw: string | null | undefined): StoredMap {
+  const parsed = parseMap(raw ?? null)
+  return parsed?.version === MAP_VERSION && !Array.isArray(parsed.entries)
+    ? parsed
+    : { version: MAP_VERSION, entries: {} }
 }
+
+/**
+ * Edits the map in one write, alone among `db`'s writes. `stillOwns` is asked inside it: an
+ * operation that ended while waiting writes nothing, as does an `edit` that returns false.
+ */
+function editMap(
+  db: Database,
+  edit: (map: StoredMap) => boolean | void,
+  stillOwns?: () => boolean,
+): Promise<void> {
+  return db.write(async (w) => {
+    const map = writable(await w.get(MAP_KEY))
+    if (stillOwns && !stillOwns()) return
+    if (edit(map) === false) return
+    w.put(MAP_KEY, JSON.stringify(map))
+  })
+}
+
+/** {@link editMap} on `rpId`'s entry for `credentialId`: no entry, or a false `change`, writes nothing. */
+const editEntry = (
+  db: Database,
+  rpId: string,
+  credentialId: string,
+  change: (entry: StoredEntry) => StoredEntry | false,
+  stillOwns?: () => boolean,
+) =>
+  editMap(
+    db,
+    (map) => {
+      const entry = map.entries[credentialId]
+      const next = entry?.rpId === rpId && change(entry)
+      if (!next) return false
+      map.entries[credentialId] = next
+    },
+    stillOwns,
+  )
 
 /** Raw 64-byte `x‖y` as lowercase hex without `0x`, the form every key comparison uses. */
 const normalKey = (hex: string) => hex.replace(/^0x/i, "").toLowerCase()
@@ -58,19 +104,26 @@ export function opensWallet(record: Pick<RecoveryMetadata, "isMskRoot" | "backup
 
 /**
  * Sync probe for route gating: does this device hold a breadcrumb for a passkey that opens a
- * wallet under `rpId`? Reads the partition directly (the adapter is async but backed by the same
- * store) so the router can gate without a loading frame. A breadcrumb only proves a passkey WAS
- * recorded here — deletion at the authenticator is invisible until an assertion fails.
+ * wallet under `rpId`? A breadcrumb only proves a passkey WAS recorded here — deletion at the
+ * authenticator is invisible until an assertion fails.
  */
-export function hasOpeningBreadcrumb(rpId: string): boolean {
-  return Object.values(readMap()?.entries ?? {}).some((e) => e?.rpId === rpId && opensWallet(e))
+export function hasOpeningBreadcrumb(map: string | null, rpId: string): boolean {
+  return Object.values(entriesOf(map)).some((e) => e?.rpId === rpId && opensWallet(e))
+}
+
+/** The address of this device's record for `credentialId` under `rpId`, if it holds one. */
+export function recordAddress(
+  map: string | null,
+  rpId: string,
+  credentialId: string,
+): string | undefined {
+  const entry = entriesOf(map)[credentialId]
+  return (entry?.rpId === rpId && entry.l2Address) || undefined
 }
 
 /** Sync probe: does this device hold a record with an address for `credentialId` under `rpId`? */
-export function hasRecordFor(rpId: string, credentialId: string): boolean {
-  const entry = readMap()?.entries[credentialId]
-  return entry?.rpId === rpId && Boolean(entry.l2Address)
-}
+export const hasRecordFor = (map: string | null, rpId: string, credentialId: string): boolean =>
+  recordAddress(map, rpId, credentialId) !== undefined
 
 /** What the payment screen's passkey advice reads from a record. */
 export type AnswerRecord = Pick<
@@ -83,8 +136,25 @@ export type AnswerRecord = Pick<
  * authenticator. Takes no RP: it is asked about the session's own credential, and `answered` is
  * only ever written under the entry's RP.
  */
-export function answerRecordFor(credentialId: string): AnswerRecord | undefined {
-  return readMap()?.entries[credentialId]
+export function answerRecordFor(
+  map: string | null,
+  credentialId: string,
+): AnswerRecord | undefined {
+  return entriesOf(map)[credentialId]
+}
+
+/** What the backup reminder reads from a record. */
+export type BackupRecord = Pick<
+  StoredEntry,
+  "backupEligible" | "securityKey" | "backup" | "passkeySet"
+>
+
+/** Sync probe: what this browser knows of a credential's backups. No RP, as `answerRecordFor`. */
+export function backupRecordFor(
+  map: string | null,
+  credentialId: string,
+): BackupRecord | undefined {
+  return entriesOf(map)[credentialId]
 }
 
 /**
@@ -94,14 +164,22 @@ export function answerRecordFor(credentialId: string): AnswerRecord | undefined 
  * identity. Absent on a browser that has never held this account (the tag lives
  * on-chain as a hash and nowhere else), which is why /enter keeps the prompt.
  */
-export function usertagFor(rpId: string, credentialId: string): string | undefined {
-  const entry = readMap()?.entries[credentialId]
+export function usertagFor(
+  map: string | null,
+  rpId: string,
+  credentialId: string,
+): string | undefined {
+  const entry = entriesOf(map)[credentialId]
   return entry?.rpId === rpId ? entry.usertag : undefined
 }
 
 /** The handle this credential was created under on this browser; the key a rename needs. */
-export function userHandleFor(rpId: string, credentialId: string): string | undefined {
-  const entry = readMap()?.entries[credentialId]
+export function userHandleFor(
+  map: string | null,
+  rpId: string,
+  credentialId: string,
+): string | undefined {
+  const entry = entriesOf(map)[credentialId]
   return entry?.rpId === rpId ? entry.userHandle : undefined
 }
 
@@ -112,9 +190,12 @@ export type AuthenticatorRecord = Pick<
 >
 
 /** The authenticator this browser recorded for the passkey holding `pubkeyHex`, if it ever held one. */
-export function authenticatorFor(pubkeyHex: string): AuthenticatorRecord | undefined {
+export function authenticatorFor(
+  map: string | null,
+  pubkeyHex: string,
+): AuthenticatorRecord | undefined {
   const key = normalKey(pubkeyHex)
-  return Object.values(readMap()?.entries ?? {}).find(
+  return Object.values(entriesOf(map)).find(
     (e) => typeof e?.pubkey === "string" && normalKey(e.pubkey) === key,
   )
 }
@@ -140,12 +221,16 @@ export type WalletKey = { pubkeyHex: string; record?: AccountKey }
  * The keys of the set `credentialId`'s record names, in its order. Undefined unless that record
  * opens a wallet under `rpId`. Sync, for the screens that offer a choice among them.
  */
-export function walletKeysFor(rpId: string, credentialId: string): WalletKey[] | undefined {
-  const map = readMap()?.entries ?? {}
-  const own = map[credentialId]
+export function walletKeysFor(
+  map: string | null,
+  rpId: string,
+  credentialId: string,
+): WalletKey[] | undefined {
+  const entries = entriesOf(map)
+  const own = entries[credentialId]
   if (!wellFormedUnder(own, rpId) || !opensWallet(own)) return undefined
   const address = own.l2Address.toLowerCase()
-  const opening = Object.values(map).filter(
+  const opening = Object.values(entries).filter(
     (e): e is WellFormedEntry =>
       wellFormedUnder(e, rpId) && opensWallet(e) && e.l2Address.toLowerCase() === address,
   )
@@ -181,8 +266,8 @@ const accountKeyOf = (e: WellFormedEntry): AccountKey => ({
  * sign-in screen's remembered-account rows. Sync, like the probes above, so the screen renders
  * without a loading frame. No cap — the screen shows five rows and scrolls the rest.
  */
-export function listUsertagCandidates(rpId: string): RememberedAccount[] {
-  return candidatesIn(readMap(), rpId, opensWallet)
+export function listUsertagCandidates(map: string | null, rpId: string): RememberedAccount[] {
+  return candidatesIn(parseMap(map), rpId, opensWallet)
 }
 
 /**
@@ -193,7 +278,7 @@ export function listUsertagCandidates(rpId: string): RememberedAccount[] {
  * nothing is copied over, and a malformed map lists nothing.
  */
 export async function listRetiredUsertagCandidates(rpId: string): Promise<RememberedAccount[]> {
-  const maps = await readFromOtherDatabases(WEB_STORAGE_PREFIX + STORAGE_KEY)
+  const maps = await readFromOtherDatabases(MAP_KEY)
   return maps.flatMap((raw) => candidatesIn(parseMap(raw), rpId, (e) => Boolean(e.isMskRoot)))
 }
 
@@ -241,21 +326,21 @@ function candidatesIn(
     }))
 }
 
-/** `stillOwns` is asked under the lock: a hint whose sign-in ended while waiting is not written. */
+/** `stillOwns` is asked inside the write: a hint whose sign-in ended while waiting is not written. */
 export function rememberUsertag(
+  db: Database,
   rpId: string,
   credentialId: string,
   usertag: string,
   stillOwns?: () => boolean,
 ): Promise<void> {
-  return withMapLock(async () => {
-    if (stillOwns && !stillOwns()) return
-    const map = readMap()
-    const entry = map?.entries[credentialId]
-    if (!map || entry?.rpId !== rpId || entry.usertag === usertag) return
-    map.entries[credentialId] = { ...entry, usertag }
-    await walletStorage.commitItem(WEB_STORAGE_PREFIX + STORAGE_KEY, JSON.stringify(map))
-  })
+  return editEntry(
+    db,
+    rpId,
+    credentialId,
+    (entry) => entry.usertag !== usertag && { ...entry, usertag },
+    stillOwns,
+  )
 }
 
 /**
@@ -266,121 +351,120 @@ export function rememberUsertag(
  * RP they were registered under and ignored when read under a different RP.
  */
 export class WebPasskeyIdentityMap {
-  constructor(private readonly storage: IStorageAdapter, private readonly rpId: string) {}
+  constructor(private readonly db: Database, private readonly rpId: string) {}
 
   private async load(): Promise<StoredMap> {
-    try {
-      const raw = await this.storage.getItem(STORAGE_KEY)
-      if (!raw) return { version: MAP_VERSION, entries: {} }
-      const parsed = JSON.parse(raw) as StoredMap
-      if (
-        parsed.version !== MAP_VERSION ||
-        !parsed.entries ||
-        typeof parsed.entries !== "object" ||
-        Array.isArray(parsed.entries)
-      ) {
-        return { version: MAP_VERSION, entries: {} }
-      }
-      return parsed
-    } catch {
-      return { version: MAP_VERSION, entries: {} }
-    }
+    return writable(await this.db.get(MAP_KEY))
   }
 
   /**
-   * `stillOwns` is asked under the lock, before the write: a caller whose operation ended writes
-   * nothing. A set that lacks the record's own key is a programming error and is refused before
-   * the lock. A write without a `backup` drops a stored one; a `backup` write is stored as a non-root.
+   * `stillOwns` is asked inside the write: a caller whose operation ended writes nothing. A set
+   * that lacks the record's own key is a programming error and is refused before the write. A write
+   * without a `backup` drops a stored one; a `backup` write is stored as a non-root.
    */
   async upsert(meta: StoredRecoveryMetadata, stillOwns?: () => boolean): Promise<void> {
     if (meta.passkeySet && !meta.passkeySet.some((k) => normalKey(k) === normalKey(meta.pubkey))) {
       throw new Error("the passkey set does not contain the record's own key")
     }
-    await withMapLock(async () => {
-      if (stillOwns && !stillOwns()) return
-      const map = await this.load()
-      if (stillOwns && !stillOwns()) return
-      // Spread the existing entry first: re-recording a credential (every /enter) must not drop
-      // the usertag hint written after the claim.
-      const stored = map.entries[meta.credentialId]
-      const previous = stored?.rpId === this.rpId ? stored : undefined
-      // An inference is only ever written by `setInferredTransports`; a stored one survives here.
-      // A creation list is written once: a stored one stays, whatever this write carries.
-      const { inferredTransports: _, transports: incoming, backup: _backup, ...record } = meta
-      const transports = previous?.transports ?? incoming
-      const { backup: _stored, ...kept } = previous ?? {}
-      map.entries[meta.credentialId] = {
-        ...kept,
-        ...record,
-        ...(transports ? { transports } : {}),
-        ...(meta.backup ? { backup: meta.backup, isMskRoot: false } : {}),
-        rpId: this.rpId,
-        createdAt: Date.now(),
-      }
-      await this.storage.setItem(STORAGE_KEY, JSON.stringify(map))
-    })
+    await editMap(
+      this.db,
+      (map) => {
+        // Spread the existing entry first: re-recording a credential (every /enter) must not drop
+        // the usertag hint written after the claim.
+        const stored = map.entries[meta.credentialId]
+        const previous = stored?.rpId === this.rpId ? stored : undefined
+        // An inference is only ever written by `setInferredTransports`; a stored one survives here.
+        // A creation list and the backup flag are written once: a stored one stays, whatever this
+        // write carries.
+        const {
+          inferredTransports: _,
+          transports: incoming,
+          backupEligible: flag,
+          backup: _backup,
+          ...record
+        } = meta
+        const transports = previous?.transports ?? incoming
+        const backupEligible = previous?.backupEligible ?? flag
+        const { backup: _stored, ...kept } = previous ?? {}
+        map.entries[meta.credentialId] = {
+          ...kept,
+          ...record,
+          ...(transports ? { transports } : {}),
+          ...(backupEligible !== undefined ? { backupEligible } : {}),
+          ...(meta.backup ? { backup: meta.backup, isMskRoot: false } : {}),
+          rpId: this.rpId,
+          createdAt: Date.now(),
+        }
+      },
+      stillOwns,
+    )
   }
 
   /**
    * Set the transports this browser's assertions implied, on an entry that exists for this RP and
    * carries neither a creation list nor an inference yet; `undefined` removes the inference. Judged
-   * under the lock, so a racing creation-list write wins and a queued clear lands before a later
-   * set. `stillOwns` is asked under the lock too: an attempt that ended while waiting writes nothing.
-   * Nothing else on the entry changes.
+   * inside the write, so a racing creation-list write wins and a queued clear lands before a later
+   * set. `stillOwns` is asked there too. Nothing else on the entry changes.
    */
   async setInferredTransports(
     credentialId: string,
     transports: readonly string[] | undefined,
     stillOwns?: () => boolean,
   ): Promise<void> {
-    await withMapLock(async () => {
-      if (stillOwns && !stillOwns()) return
-      const map = await this.load()
-      if (stillOwns && !stillOwns()) return
-      const entry = map.entries[credentialId]
-      if (entry?.rpId !== this.rpId) return
-      if (transports) {
-        if (entry.transports || entry.inferredTransports) return
-        map.entries[credentialId] = { ...entry, inferredTransports: transports }
-      } else {
-        if (!entry.inferredTransports) return
-        const { inferredTransports: _, ...rest } = entry
-        map.entries[credentialId] = rest
-      }
-      await this.storage.setItem(STORAGE_KEY, JSON.stringify(map))
-    })
+    await editEntry(
+      this.db,
+      this.rpId,
+      credentialId,
+      ({ inferredTransports, ...entry }) => {
+        if (transports)
+          return (
+            !entry.transports && !inferredTransports && { ...entry, inferredTransports: transports }
+          )
+        return !!inferredTransports && entry
+      },
+      stillOwns,
+    )
   }
 
   /**
    * Record where the passkey last answered from, on an entry that exists for this RP. `stillOwns`
-   * is asked under the lock, as in `setInferredTransports`.
+   * is asked inside the write, as in `setInferredTransports`.
    */
   async setAnswered(
     credentialId: string,
     where: PasskeyAnswer,
     stillOwns?: () => boolean,
   ): Promise<void> {
-    await withMapLock(async () => {
-      if (stillOwns && !stillOwns()) return
-      const map = await this.load()
-      if (stillOwns && !stillOwns()) return
-      const entry = map.entries[credentialId]
-      if (entry?.rpId !== this.rpId) return
-      if (entry.answered === where) return
-      map.entries[credentialId] = { ...entry, answered: where }
-      await this.storage.setItem(STORAGE_KEY, JSON.stringify(map))
-    })
+    await editEntry(
+      this.db,
+      this.rpId,
+      credentialId,
+      (entry) => entry.answered !== where && { ...entry, answered: where },
+      stillOwns,
+    )
+  }
+
+  /**
+   * Record the backup flag a prompt reported, on an entry that exists for this RP and carries none
+   * yet: the flag never changes for a credential, so the first reading stands.
+   */
+  async setBackupEligible(
+    credentialId: string,
+    backupEligible: boolean,
+    stillOwns?: () => boolean,
+  ): Promise<void> {
+    await editEntry(
+      this.db,
+      this.rpId,
+      credentialId,
+      (entry) => entry.backupEligible === undefined && { ...entry, backupEligible },
+      stillOwns,
+    )
   }
 
   /** Stamp the passkey as the one a session just committed with, on an entry that exists for this RP. */
   async setUsed(credentialId: string): Promise<void> {
-    await withMapLock(async () => {
-      const map = await this.load()
-      const entry = map.entries[credentialId]
-      if (entry?.rpId !== this.rpId) return
-      map.entries[credentialId] = { ...entry, usedAt: Date.now() }
-      await this.storage.setItem(STORAGE_KEY, JSON.stringify(map))
-    })
+    await editEntry(this.db, this.rpId, credentialId, (entry) => ({ ...entry, usedAt: Date.now() }))
   }
 
   /**
@@ -388,16 +472,10 @@ export class WebPasskeyIdentityMap {
    * on the entry changes, so the record keeps its place among the opening records.
    */
   async setFeePayer(credentialId: string, fpc: string, payer: FeePayerEntry): Promise<void> {
-    await withMapLock(async () => {
-      const map = await this.load()
-      const entry = map.entries[credentialId]
-      if (entry?.rpId !== this.rpId) return
-      map.entries[credentialId] = {
-        ...entry,
-        feePayer: withFeePayer(entry, fpc, payer),
-      }
-      await this.storage.setItem(STORAGE_KEY, JSON.stringify(map))
-    })
+    await editEntry(this.db, this.rpId, credentialId, (entry) => ({
+      ...entry,
+      feePayer: withFeePayer(entry, fpc, payer),
+    }))
   }
 
   async get(credentialId: string): Promise<StoredRecoveryMetadata | undefined> {
@@ -430,18 +508,15 @@ export class WebPasskeyIdentityMap {
   }
 
   async discardOtherRps(): Promise<void> {
-    await withMapLock(async () => {
-      const map = await this.load()
-      const entries = Object.fromEntries(
-        Object.entries(map.entries).filter(([, entry]) => entry?.rpId === this.rpId),
-      )
-      if (Object.keys(entries).length !== Object.keys(map.entries).length) {
-        await this.storage.setItem(STORAGE_KEY, JSON.stringify({ ...map, entries }))
-      }
+    await editMap(this.db, (map) => {
+      const entries = Object.entries(map.entries)
+      const kept = entries.filter(([, entry]) => entry?.rpId === this.rpId)
+      if (kept.length === entries.length) return false
+      map.entries = Object.fromEntries(kept)
     })
   }
 
   async clear(): Promise<void> {
-    await withMapLock(() => this.storage.removeItem(STORAGE_KEY))
+    await this.db.write(async (w) => w.remove(MAP_KEY))
   }
 }

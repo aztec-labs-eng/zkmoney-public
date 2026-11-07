@@ -6,7 +6,7 @@ import {
 } from "@obsidion/core/types"
 import { createNode, WebAuthnAlphaAuthProvider, type ObsidionAccount } from "@obsidion/sdk"
 import { getConfig } from "../config/env"
-import { getAuthService } from "./auth/useAuthenticator"
+import type { WebAlphaAuthService } from "./auth/WebAlphaAuthService"
 
 /** Where the build serves each source generation's bundle, by Aztec major version. */
 const BUNDLES: Readonly<Record<string, string>> = { "5": "generations/v5/index.js" }
@@ -124,9 +124,14 @@ export function withSourceSigner<T>(
   return run
 }
 
+type SecretKey = Pick<WebAlphaAuthService, "getSecretKey">
+
 /** The unlocked account's keys, in the plain form a source generation takes. */
-export async function sourceAccountKeys(account: ObsidionAccount): Promise<SourceAccountKeys> {
-  const secretKey = await getAuthService().getSecretKey()
+export async function sourceAccountKeys(
+  account: ObsidionAccount,
+  keys: SecretKey,
+): Promise<SourceAccountKeys> {
+  const secretKey = await keys.getSecretKey()
   if (!secretKey) throw new Error("Unlock the wallet to read the old network")
   const auth = account.getAuthProvider()
   if (!(auth instanceof WebAuthnAlphaAuthProvider))
@@ -148,24 +153,25 @@ const sessions = new Map<string, Promise<SourceGenerationSession>>()
 export function openSourceGenerationSession(
   nodeUrl: string,
   account: ObsidionAccount,
+  auth: SecretKey,
 ): Promise<SourceGenerationSession> {
   const key = `${nodeUrl}\n${account.getAddress()}`
   let session = sessions.get(key)
   if (!session) {
-    session = open(nodeUrl, account)
+    session = open(nodeUrl, account, auth)
     sessions.set(key, session)
     session.catch(() => sessions.delete(key))
   }
   return session
 }
 
-async function open(nodeUrl: string, account: ObsidionAccount) {
+async function open(nodeUrl: string, account: ObsidionAccount, auth: SecretKey) {
   const config = getConfig()
   const rollup = config.sourceRollups?.find((r) => r.nodeUrl === nodeUrl)
   if (!rollup) throw new Error(`No profile version names the node ${nodeUrl}`)
   const module = await loadSourceGeneration(await nodeAztecMajor(nodeUrl))
   return module.open({
-    account: await sourceAccountKeys(account),
+    account: await sourceAccountKeys(account, auth),
     nodeUrl,
     nodeApiKey: config.sourceRollupApiKey,
     l1RpcUrl: config.l1RpcUrl,

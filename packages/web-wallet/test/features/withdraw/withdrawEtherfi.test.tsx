@@ -140,6 +140,7 @@ describe("WithdrawEtherfiScreen", () => {
         walletName: "ether.fi Cash",
         receiveAsset: "USDC",
         receiveAssets: ["USDC", "USDT"],
+        recipientWarning: undefined,
       }),
     )
   })
@@ -173,6 +174,22 @@ describe("WithdrawEtherfiScreen", () => {
     await type(RECIPIENT)
     expect(button(copy.continue).disabled).toBe(false)
     expect(text()).toContain(copy.verdict.unknown.title)
+    await click(button(copy.continue))
+    expect(modal).toHaveBeenLastCalledWith(
+      expect.objectContaining({ recipientWarning: copy.verdict.unknown }),
+    )
+  })
+
+  it.each([
+    [false, false],
+    [true, true],
+  ] as const)("screening cleared %s: the ether.fi status shows %s", async (cleared, shown) => {
+    factory.kind = "checking"
+    screening.cleared = cleared
+    await render()
+    await type(RECIPIENT)
+    expect(text().includes(copy.checking)).toBe(shown)
+    expect(!!container.querySelector("[data-screening]")).toBe(!cleared)
   })
 
   it("holds Continue while the screener has the address", async () => {

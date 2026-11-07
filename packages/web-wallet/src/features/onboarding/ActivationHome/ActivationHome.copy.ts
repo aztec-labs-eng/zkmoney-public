@@ -1,0 +1,33 @@
+export default {
+  titles: {
+    passkey: "Save your account",
+    deposit: "Deposit funds",
+  },
+  tagPitch: "Complete these 2 steps to use private payments.",
+  passkeyPitch: "No password, syncs across your devices.",
+  depositPitch: "Activate your account with a {amount} deposit.",
+  back: "Back",
+  welcome: "Hi, you’re",
+  tag: "@{tag}",
+  stepOf: "Step {step} of {count}",
+  rerollLabel: "Swap @{tag} for another random tag",
+  reroll: "Shuffle tag",
+  chooseOwnFree: "Choose your own for free",
+  chooseOwnPaid: "Choose your own · {price}",
+  addPasskey: "Add passkey",
+  pastUser: {
+    verifiedTitle: "Verified as past zk.money user",
+    title: "Used zk.money before?",
+    verifiedBody: "Welcome back old friend, activate your account to continue.",
+    body: "Verify your old wallet and choose your own tag for free.",
+    checking: "Checking…",
+    verify: "Verify",
+  },
+  pastUserSubtitle: "Your own tag, free as a past zk.money user.{verified}",
+  pastUserVerified: " Verified {address}.",
+  depositProgress:
+    "{seen} of {total} received. Deposit at least {remaining} more to activate your account.",
+  deposit: "Deposit {amount}",
+  claimFree: "Claim for free",
+  makeDeposit: "Make my deposit {price}",
+} as const

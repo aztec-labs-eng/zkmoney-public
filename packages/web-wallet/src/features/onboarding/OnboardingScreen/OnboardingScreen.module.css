@@ -1,0 +1,7 @@
+/* A status line under the onboarding sheet's body: a pause, a check or a notice. */
+.feedback {
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+  text-align: center;
+}

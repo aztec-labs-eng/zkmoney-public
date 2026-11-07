@@ -6,7 +6,7 @@
 import { encodePacked, keccak256, type Address } from "viem"
 import { parseEscrowAmount } from "../../utils/escrowAmount"
 import type { StoredRequest } from "../../engine/requests"
-import type { SipaOrigin } from "../services/deposits/SIPADepositStore"
+import type { SipaOrigin } from "../../engine/sipaDeposits"
 import { encodeRequestInline, type SipaLinkPreimage } from "./requestInlineCodec"
 
 /** The payee's pay page carrying this request: `<wallet origin>/pay/<tag>#<fragment>`. */

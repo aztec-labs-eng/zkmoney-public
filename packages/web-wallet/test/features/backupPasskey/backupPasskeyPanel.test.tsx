@@ -61,11 +61,19 @@ vi.mock("../../../src/features/deposit/DepositExitModal/DepositExitModal", () =>
   ),
 }))
 
-import { BackupPasskeyPanel, errorLine } from "../../../src/features/backupPasskey/BackupPasskeyPanel"
+import {
+  BackupPasskeyPanel,
+  errorLine,
+} from "../../../src/features/backupPasskey/BackupPasskeyPanel"
 import { startBackupAdd } from "../../../src/features/backupPasskey/backupPasskeyAdd"
-import { DepositReadError, EmptyDepositError } from "../../../src/features/deposit/depositReadErrors"
+import {
+  DepositReadError,
+  EmptyDepositError,
+} from "../../../src/features/deposit/depositReadErrors"
 import type { BackupFlowDeps } from "../../../src/features/backupPasskey/backupPasskeyRuntime"
 import { getRotationDriver } from "../../../src/features/backupPasskey/rotationDrive"
+import { closeSession } from "../../../src/session/session"
+import { openTestSession } from "../../support/session"
 import {
   OWNER,
   PLAN,
@@ -179,6 +187,8 @@ function drive(made: Made, pollMs: number) {
 }
 
 async function render(made: Made, strict: boolean, pollMs = 0, approver?: string) {
+  // The deposit address's broadcast row reads the session's deposit records.
+  openTestSession()
   drive(made, pollMs)
   container = document.createElement("div")
   document.body.appendChild(container)
@@ -269,6 +279,7 @@ afterEach(async () => {
   getRotationDriver().stop()
   await act(async () => root.unmount())
   container.remove()
+  closeSession()
   vi.clearAllMocks()
 })
 
@@ -357,7 +368,8 @@ describe("BackupPasskeyPanel", () => {
   })
 
   it("refuses to cancel once the deposit address shows money, and says so", async () => {
-    const made = makeFlowDeps({ world: { balance: 1n } })
+    // Cancel ignores less than the plan's deposit, less its fee margin, as someone else's dust.
+    const made = makeFlowDeps({ world: { balance: BigInt(PLAN.fundingAmount) } })
     made.deps.publish = vi.fn(() => new Promise<void>(() => {}))
     await made.store.put(signedRecord())
     await render(made, false)

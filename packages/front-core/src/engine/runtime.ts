@@ -8,11 +8,12 @@ import type { ReadonlyStore } from "./store"
 /**
  * Background work as declared tasks. A task waits for its milestones, the bounds counted from its
  * needs first being ready, and runs only while every need is ready, one run at a time: once, or
- * every `every` ms, and at once when woken. A need leaving ready, or replaced, aborts the run in
- * flight; ready again, the task runs, after any backoff. A failed run backs off, and the backoff
- * outlives a restart. Hiding the page aborts a pausing task's run in flight; a task with a hidden
- * pace keeps running at it. Showing the page runs either at once, ahead of any backoff. A wake
- * settles at once when its run is aborted, or when it finds its task hidden or a need not ready.
+ * every `every` ms or the `nextMs` a clean run returns, and at once when woken. A need leaving
+ * ready, or replaced, aborts the run in flight; ready again, the task runs, after any backoff. A
+ * failed run backs off, and the backoff outlives a restart. Hiding the page aborts a pausing task's
+ * run in flight; a task with a hidden pace keeps running at it. Showing the page runs either at
+ * once, ahead of any backoff. A wake settles at once when its run is aborted, or when it finds its
+ * task hidden or a need not ready.
  */
 
 export type Needs = Record<string, Resource<unknown>>
@@ -35,11 +36,15 @@ export interface TaskSpec<N extends Needs> {
   after?: After
   /** Ms between runs; "once": one clean run per runtime. */
   every: number | "once"
-  /** "pause" (default): hiding aborts the run, and showing runs it again. A number: ms between runs while hidden. */
+  /**
+   * "pause" (default): hiding aborts the run, and showing runs it again. A number: ms between runs
+   * while hidden, or a returned `nextMs` if longer.
+   */
   whenHidden?: "pause" | number
   /** Kept in the runtime's database. */
   backoff?: Backoff
-  run(ctx: RunCtx<N>): Promise<void>
+  /** `nextMs`: the delay to the next run in place of `every`. A failed run backs off instead. */
+  run(ctx: RunCtx<N>): Promise<void | { nextMs: number }>
 }
 
 /** A task's handle: what a runtime runs and wakes. */
@@ -162,7 +167,7 @@ export function startRuntime(tasks: readonly Task[], deps: RuntimeDeps): Runtime
   }
 
   /** The delay before the next run, if any. */
-  const settle = (slot: Slot, failed: boolean) => {
+  const settle = (slot: Slot, failed: boolean, next: number | undefined) => {
     const { spec, task } = slot
     if (failed && spec.backoff) {
       slot.failures++
@@ -186,7 +191,8 @@ export function startRuntime(tasks: readonly Task[], deps: RuntimeDeps): Runtime
       slot.done = !failed
       return undefined
     }
-    return !shown && typeof spec.whenHidden === "number" ? spec.whenHidden : spec.every
+    if (shown || typeof spec.whenHidden !== "number") return next ?? spec.every
+    return Math.max(next ?? 0, spec.whenHidden)
   }
 
   const execute = async (slot: Slot) => {
@@ -203,14 +209,16 @@ export function startRuntime(tasks: readonly Task[], deps: RuntimeDeps): Runtime
     run.signal.addEventListener("abort", release)
     const ready = Object.fromEntries(Object.keys(spec.needs).map((key, i) => [key, values[i]]))
     let failed = false
+    let next: number | undefined
     try {
-      await spec.run({
+      const result = await spec.run({
         ...ready,
         signal: run.signal,
         woken: slot.woken,
         wake,
         reached: (m) => deps.milestones.reached(m),
       })
+      next = result?.nextMs
     } catch (e) {
       failed = !run.signal.aborted
       if (failed) logger.warn(`[runtime] ${task.name} failed:`, e)
@@ -218,7 +226,7 @@ export function startRuntime(tasks: readonly Task[], deps: RuntimeDeps): Runtime
     slot.run = undefined
     release()
     if (stopped) return
-    const delay = run.signal.aborted ? undefined : settle(slot, failed)
+    const delay = run.signal.aborted ? undefined : settle(slot, failed, next)
     const again = slot.rerun
     slot.rerun = false
     if (!holds(slot)) return

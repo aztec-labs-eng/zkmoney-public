@@ -20,11 +20,15 @@ setActiveRollup(sandboxProfile().shared.rollupVersion)
 // Every test starts on an empty in-memory wallet database for that rollup. Suites that need
 // persistence, failures or several rollups reopen through `testWalletDbs()`.
 const walletDbs = testWalletDbs()
+const TEST_PAGE = Symbol.for("zk.money/test-page")
 __setWalletDbBackendForTests(walletDbs)
 beforeEach(async () => {
   await closeWalletStore()
   walletDbs.reset()
   await openWalletStore(sandboxProfile().shared.rollupVersion, { persistent: false })
+  // The page a suite built (`support/page.ts`) reads the empty database's device keys.
+  const page = (globalThis as { [TEST_PAGE]?: { device: { load(): Promise<void> } } })[TEST_PAGE]
+  await page?.device.load()
 })
 
 // Suites run as the active tab; takeover suites change this.

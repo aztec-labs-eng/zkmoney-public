@@ -15,14 +15,15 @@ import {
   type NotificationSources,
   type NotificationState,
   type ReadonlyStore,
+  type PendingRegistrationRecord,
   type RecordSet,
   type Sourced,
+  type WalletIdentity,
   type Transaction,
 } from "@obsidion/front-core"
 import { mergedRows } from "../../ui/activity/feedSources"
 import { wallClock } from "../../lib/clock"
-import { pendingRegistrations, type FeedBase } from "../../ui/activity/feedSources"
-import type { WalletIdentity } from "../identity/walletIdentity"
+import type { FeedBase } from "../../ui/activity/feedSources"
 import { flowCopy } from "../operations/operationCopy"
 import { listsEnding } from "../operations/operationEntries"
 import { endedOperations, runningOperations } from "../operations/operations"
@@ -120,12 +121,13 @@ export function notificationSources(
   rows: ReadonlyStore<RecordSet<Transaction>>,
   identity: ReadonlyStore<Sourced<WalletIdentity | null>>,
   milestones: Pick<Milestones, "after">,
+  registrationRecords: ReadonlyStore<RecordSet<PendingRegistrationRecord>>,
 ): ReadonlyStore<NotificationSources> {
   return derived(
     [
       feed,
       rows,
-      pendingRegistrations(),
+      registrationRecords,
       identity,
       endedOperations,
       runningOperations,
@@ -138,7 +140,8 @@ export function notificationSources(
       withdrawals: feed.withdrawals,
       upgrades: feed.upgrades,
       processing: feed.processing,
-      registrations: registrations.records,
+      // Newest first: the bell speaks for the account's latest registration.
+      registrations: [...registrations.records].sort((a, b) => b.startTime - a.startTime),
       account: identity.value?.address,
       operations: {
         ended: ended.filter(listsEnding),
@@ -150,10 +153,12 @@ export function notificationSources(
       loaded:
         rows.loaded &&
         !rows.failed &&
-        feed.deposits.hydrated &&
+        feed.deposits.loaded &&
+        !feed.deposits.failed &&
         feed.withdrawals.hydrated &&
         feed.upgrades.loaded &&
-        registrations.hydrated &&
+        registrations.loaded &&
+        !registrations.failed &&
         identity.loaded &&
         started,
     }),

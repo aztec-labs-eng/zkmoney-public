@@ -36,8 +36,6 @@ import { sepolia } from "viem/chains"
 const MANIFEST_URL =
   process.env.OXIDE_MANIFEST_URL ?? "https://d1g9k2awa2mp7i.cloudfront.net/staging.v4.json"
 const PORTAL = process.env.OXIDE_PORTAL
-// Staging's L2 lives on the testnet Aztec node (same node the class-id sentinel reads).
-const DEFAULT_AZTEC_NODE_URL = "https://v4.testnet.rpc.aztec-labs.com"
 
 const EXPECTED_DECIMALS = 18
 
@@ -68,7 +66,8 @@ async function readL1Decimals(token: Address): Promise<number> {
 }
 
 async function readL2Decimals(l2Token: string): Promise<number> {
-  const nodeUrl = process.env.AZTEC_NODE_URL ?? DEFAULT_AZTEC_NODE_URL
+  const nodeUrl = process.env.AZTEC_NODE_URL
+  if (!nodeUrl) throw new Error("missing AZTEC_NODE_URL — the node staging's L2 runs on")
   const artifact = await getHardcodedArtifact(DEFAULT_CONTRACTS.oxideToken)
   const slot = artifact.storageLayout.decimals?.slot
   if (!slot) {

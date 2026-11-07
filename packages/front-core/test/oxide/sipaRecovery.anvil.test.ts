@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest"
+import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { readFileSync } from "node:fs"
 import { createExtendedL1Client } from "@aztec-labs/ethereum/client"
 import { deployMulticall3 } from "@aztec-labs/ethereum/contracts"
@@ -50,6 +50,31 @@ import {
   type SipaRecoveryDeps,
 } from "../../src/oxide/sipaRecovery"
 import { signAccountDigest } from "../../src/oxide/accountSignature"
+import { openDatabase } from "../../src/engine/database"
+import { memoryBackend } from "../../src/engine/memoryBackend"
+import { createSipaDeposits, type SipaDeposit } from "../../src/engine/sipaDeposits"
+
+/** A real store holding `record` as the recovery screen finds it. */
+async function savedDeposit(record: Pick<SipaDeposit, "sipaAddress"> & Partial<SipaDeposit>) {
+  const store = createSipaDeposits({ db: openDatabase(memoryBackend()), account: true })
+  await store.apply(record.sipaAddress, {
+    type: "discovered",
+    fields: {
+      phase: "recoverable",
+      recipientL2Address: "0x01",
+      messageSecret: "",
+      recipientHash: "",
+      recoveryAddress: "",
+      l1ChainId: foundry.id,
+      networkId: "0x01",
+      amount: "1",
+      tokenSymbol: "TOK",
+      startTime: 0,
+      ...record,
+    },
+  })
+  return store
+}
 
 const deployer = privateKeyToAccount(
   "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
@@ -175,7 +200,7 @@ it("recovers a saved account deposit with both contracts initially undeployed, t
   for (let attempt = 0; attempt < 2; attempt++) {
     await mint(sipa)
     const before = await balance(target)
-    const upsert = vi.fn(async () => undefined)
+    const store = await savedDeposit(record)
     await runSipaRecovery({
       record,
       stealthKey: stealth,
@@ -214,14 +239,14 @@ it("recovers a saved account deposit with both contracts initially undeployed, t
       },
       sendTransaction,
       waitForReceipt,
-      store: { get: () => undefined, upsert },
+      store,
     })
     expect(await balance(target)).toBe(before + amount)
     expect(await balance(sipa)).toBe(0n)
-    expect(upsert).toHaveBeenCalledWith(
-      sipa,
-      expect.objectContaining({ phase: "recovered", recoveryTxHash: expect.any(String) }),
-    )
+    expect(await store.get(sipa)).toMatchObject({
+      phase: "recovered",
+      recoveryTxHash: expect.any(String),
+    })
   }
 })
 
@@ -306,7 +331,7 @@ it("recovers ETH and a token sent to an undeployed account deposit in one transa
     },
     sendTransaction,
     waitForReceipt,
-    store: { get: () => undefined, upsert: vi.fn(async () => undefined) },
+    store: await savedDeposit(record),
   }
   await expect(runSipaRecovery({ ...deps, tokens: [zeroAddress, token] })).rejects.toThrow()
   expect(await client.getBalance({ address: sipa })).toBe(parseEther("0.5"))
@@ -386,7 +411,7 @@ describe.each([false, true])("historical persisted deposit (resweepable=%s)", (r
     for (let attempt = 0; attempt < 2; attempt++) {
       await mint(sipa)
       const before = await balance(target)
-      const upsert = vi.fn(async () => undefined)
+      const store = await savedDeposit(record)
       await runSipaRecovery({
         record,
         stealthKey: stealth,
@@ -409,14 +434,14 @@ describe.each([false, true])("historical persisted deposit (resweepable=%s)", (r
         },
         sendTransaction,
         waitForReceipt,
-        store: { get: () => undefined, upsert },
+        store,
       })
       expect(await balance(target)).toBe(before + amount)
       expect(await balance(sipa)).toBe(0n)
-      expect(upsert).toHaveBeenCalledWith(
-        sipa,
-        expect.objectContaining({ phase: "recovered", recoveryTxHash: expect.any(String) }),
-      )
+      expect(await store.get(sipa)).toMatchObject({
+        phase: "recovered",
+        recoveryTxHash: expect.any(String),
+      })
     }
   })
 })

@@ -8,7 +8,10 @@ import { useBack } from "../../ui/hooks"
 import { ScreeningNotice, useScreenedAddress } from "../../ui/screening"
 import { Warning } from "../../ui/Warning"
 import { FRESH_ADDRESS_VERDICT_COPY, useFreshAddressVerdict } from "./freshAddressCheck"
+import { confirmNotEtherfi, isEtherfiCash, useEtherfiAddressVerdict } from "./etherfiCheck"
 import { WithdrawFreshModal } from "./WithdrawFreshModal/WithdrawFreshModal"
+import copy from "./WithdrawFreshScreen.copy"
+import etherfiCopy from "./etherfiCheck.copy"
 
 export type VerdictKind = keyof typeof FRESH_ADDRESS_VERDICT_COPY
 
@@ -31,10 +34,14 @@ export function VerdictCard({ kind, address }: { kind: VerdictKind; address: Add
   )
 }
 
+/** How long the ether.fi factory read may hold Continue before the address goes through unconfirmed. */
+const ETHERFI_WAIT_MS = 5_000
+
 /**
  * Fresh-address withdrawal: paste a fresh L1 address, read its verdict, name it if wanted, then
  * fund it and add gas in two burns through `WithdrawFreshModal`. There is no connected-wallet
- * pick here: a connected wallet has history.
+ * pick here: a connected wallet has history. An ether.fi Cash address is turned away to the
+ * ether.fi route: Cash credits neither the DAI nor the ETH for gas this flow sends.
  */
 export function WithdrawFreshScreen() {
   const [recipient, setRecipient] = useState("")
@@ -45,6 +52,10 @@ export function WithdrawFreshScreen() {
 
   const parsed = isAddress(recipient) ? getAddress(recipient) : null
   const verdict = useFreshAddressVerdict(parsed)
+  const etherfi = useEtherfiAddressVerdict(parsed, ETHERFI_WAIT_MS).kind
+  const etherfiCash = !!parsed && isEtherfiCash(etherfi)
+  const toEtherfi = () =>
+    navigate("/withdraw/etherfi", { replace: true, state: { recipient: parsed } })
   const {
     verdict: screening,
     cleared: recipientCleared,
@@ -100,12 +111,9 @@ export function WithdrawFreshScreen() {
                 </button>
               )}
             </span>
-            {verdict.kind === "checking" && <span>Checking address history…</span>}
           </label>
-          {parsed && verdict.kind !== "idle" && verdict.kind !== "checking" && (
-            <VerdictCard kind={verdict.kind} address={parsed} />
-          )}
-          {parsed && !recipientCleared && (
+          {/* One status at a time, in one place. */}
+          {parsed && !recipientCleared ? (
             <ScreeningNotice
               verdict={screening}
               checkingCopy="Checking address…"
@@ -113,6 +121,24 @@ export function WithdrawFreshScreen() {
               errorCopy="Couldn't verify this address. Check your internet connection or try another address."
               onRetry={rescreen}
             />
+          ) : (
+            (verdict.kind === "checking" || etherfi === "checking") && (
+              <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>{copy.checking}</span>
+            )
+          )}
+          {/* The history card waits for ether.fi, whose answer would replace it. */}
+          {etherfiCash ? (
+            <Warning title={copy.etherfi.title} tone="error">
+              <p>{copy.etherfi.body}</p>
+            </Warning>
+          ) : (
+            parsed &&
+            etherfi !== "checking" &&
+            verdict.kind !== "idle" &&
+            verdict.kind !== "checking" && <VerdictCard kind={verdict.kind} address={parsed} />
+          )}
+          {parsed && etherfi === "unknown" && (
+            <Warning title={etherfiCopy.unknown.title}>{etherfiCopy.unknown.body}</Warning>
           )}
           <label className="ww-withdraw__field">
             <span>Name this address (optional)</span>
@@ -124,12 +150,20 @@ export function WithdrawFreshScreen() {
               />
             </span>
           </label>
-          <PrimaryGradientButton
-            title="Continue"
-            isDisabled={!parsed || !recipientCleared}
-            onClick={() => setAmountOpen(true)}
-            style={{ width: "100%", height: 48 }}
-          />
+          {etherfiCash ? (
+            <PrimaryGradientButton
+              title={copy.etherfi.action}
+              onClick={toEtherfi}
+              style={{ width: "100%", height: 48 }}
+            />
+          ) : (
+            <PrimaryGradientButton
+              title={copy.continue}
+              isDisabled={!parsed || !recipientCleared || etherfi === "checking"}
+              onClick={() => setAmountOpen(true)}
+              style={{ width: "100%", height: 48 }}
+            />
+          )}
         </div>
       </div>
 
@@ -137,6 +171,8 @@ export function WithdrawFreshScreen() {
         <WithdrawFreshModal
           recipient={parsed}
           walletName={walletName.trim() || undefined}
+          recipientWarning={etherfi === "unknown" ? etherfiCopy.unknown : undefined}
+          confirmRecipient={() => confirmNotEtherfi(etherfi, toEtherfi)}
           onClose={() => setAmountOpen(false)}
           onDone={() => navigate("/")}
         />

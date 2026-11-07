@@ -4,11 +4,7 @@
  * funding burn are the registration's story; an upgrade's deposits are its run's.
  */
 import { WALLET_TOKEN_SYMBOL } from "@obsidion/core/constants"
-import {
-  hiddenBehindOwnWithdrawal,
-  type ActivityItem,
-  type BridgeActivityItem,
-} from "../core/services/bridge/BridgeActivityFeed"
+import { hiddenBehindOwnWithdrawal, type ActivityItem, type BridgeActivityItem } from "./feedRules"
 import type { WithdrawalPhase, WithdrawalRecord } from "../core/services/bridge/types"
 import {
   isWithdrawalGroupTerminal,
@@ -31,11 +27,12 @@ import {
   isAccountMoveSipa,
   isUnfundedSipaDeposit,
   type SIPADepositPhase,
-  type SIPADepositRecord,
+  type SipaDeposit,
   type SIPASweep,
-} from "../core/services/deposits/SIPADepositStore"
+} from "./sipaDeposits"
 import type { UpgradeBatchItem } from "../core/migration/upgradeActivity"
 import type { Loaded } from "./recordSource"
+import type { RecordSet } from "./persistentStore"
 
 /** Withdrawal phases a live row reports. */
 export const LIVE_WITHDRAWAL_PHASES: ReadonlySet<WithdrawalPhase> = new Set<WithdrawalPhase>([
@@ -94,7 +91,7 @@ export interface BridgeEntry {
 }
 
 export interface BridgeSources {
-  deposits: Loaded<SIPADepositRecord>
+  deposits: RecordSet<SipaDeposit>
   withdrawals: Loaded<WithdrawalRecord>
   /** `recipients`: every deposit address a run of this device pays. */
   upgrades: {
@@ -199,7 +196,7 @@ export function bridgeLiveId(item: BridgeActivityItem): string {
  * One claim of a re-used address, from its sweep ledger. A sweep credits its row's token, the
  * wallet token where it names none, never ETH; the record's own token may name a later funding.
  */
-function claimOf(record: SIPADepositRecord, sweep: SIPASweep): BridgeActivityItem {
+function claimOf(record: SipaDeposit, sweep: SIPASweep): BridgeActivityItem {
   return {
     kind: "bridge.sipaDeposit",
     record: {
@@ -364,7 +361,7 @@ export function bridgeEntries(sources: BridgeSources, now: number): BridgeEntry[
     const outcome = terminalPhase(item)
     const endTime = item.record.endTime
     if (!outcome || endTime == null) continue
-    if (outcome === "done" && ofRun(item) && upgradeBatchArrived(item.record as SIPADepositRecord))
+    if (outcome === "done" && ofRun(item) && upgradeBatchArrived(item.record as SipaDeposit))
       continue
     const migration = isMigration(item)
     // A migration's exit is half of one move; its arrival reports the move.

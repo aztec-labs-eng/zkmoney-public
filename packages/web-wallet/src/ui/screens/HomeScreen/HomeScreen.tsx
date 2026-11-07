@@ -22,16 +22,14 @@ import { DepositArt } from "../../DepositArt"
 import { HighGasNotice, HighL2FeeNotice } from "../../HighGasNotice"
 import { PhoneIcon } from "../../PhoneIcon"
 import { usePhoneLayout } from "../../usePhoneLayout"
-import { LostRegistrationNoticeCard } from "../../../features/onboarding/LostRegistrationNoticeCard"
+import { LostRegistrationNoticeCard } from "../../../features/onboarding/LostRegistrationNoticeCard/LostRegistrationNoticeCard"
 import { inviteLink, useInvite } from "../../../features/invite/useInvite"
-import { RegisterNameCard } from "../../../features/onboarding/SecureNameNoticeCard"
-import { ActivationHome } from "../../../features/onboarding/ActivationHome"
-import { useNameClaimPending } from "../../../features/onboarding/openRegistration"
+import { RegisterNameCard } from "../../../features/onboarding/SecureNameNoticeCard/SecureNameNoticeCard"
+import { ActivationHome } from "../../../features/onboarding/ActivationHome/ActivationHome"
+import { useNameClaimPending } from "../../../features/registration/openRegistration"
 import { useActionGuard } from "../../../features/actionGate"
 import { getConfig } from "../../../config/env"
-import { useSession } from "../../../platform/session"
-import { healRegistrationDeposits } from "../../../features/onboarding/registrationDepositSeed"
-import { discoverRegistrationDeposits } from "../../../features/onboarding/registrationRederive"
+import { useSession } from "../../../session/session"
 import { peekClaimStash } from "../../../features/paylink/claimStash"
 import {
   takeClaimPromptRequest,
@@ -63,13 +61,13 @@ import { ActivityRow, SavingsActivityRow } from "../../activity/ActivityRow/Acti
 import earnCoin from "../../../assets/home/earn-coin.webp"
 import gift from "../../../assets/home/gift.webp"
 import { UpgradeBanner } from "../../../features/migration/UpgradeIntro"
+import { BackupReminderLine } from "../../../features/backupPasskey/BackupReminderLine/BackupReminderLine"
 import { PreviousAccountLine } from "../../../features/backupPasskey/PreviousAccountLine"
 import { RotationApprovalLine } from "../../../features/backupPasskey/RotationApprovalLine"
 import { useOldVersionHoldings } from "../../../features/migration/oldVersionBalance"
 import { OldVersionLeftoversNotice } from "../../../features/migration/OldVersionLeftoversNotice"
 import { oldVersionLeftovers } from "../../../features/migration/oldVersionLeftovers"
 import { useUpgradeLock } from "../../../features/migration/upgradeLock"
-import { loadWalletIdentity } from "../../../features/identity/walletIdentity"
 import iosApp from "../../../assets/home/ios-app.webp"
 import quickFresh from "../../../assets/home/quick-fresh.webp"
 import quickPaylink from "../../../assets/home/quick-paylink.webp"
@@ -261,18 +259,8 @@ export function HomeScreen() {
 }
 
 function Home() {
-  const { milestones } = useSession()
+  const { identity } = useSession()
   const networkId = useResource(useSession().wallet)?.networkId
-  // Track registration deposits once their claim inputs are available.
-  useEffect(() => {
-    if (!networkId) return
-    const warn = (err: unknown) => console.warn("[home] registration deposits not tracked:", err)
-    const heal = () => void healRegistrationDeposits(getConfig(), networkId).catch(warn)
-    const timer = setTimeout(heal, 4_000) // slice-check-ignore: a one-shot delay Home owns until the heal is a task
-    void discoverRegistrationDeposits(getConfig(), networkId, milestones).catch(warn)
-    return () => clearTimeout(timer)
-  }, [milestones, networkId])
-
   const navigate = useNavigate()
   const phone = usePhoneLayout()
   const [inviteOpen, setInviteOpen] = useState(true)
@@ -286,7 +274,7 @@ function Home() {
   const balance = useStore(useSession().balances.view)
   // A first look at what old versions hold, with nothing recorded yet, could only show too little.
   const oldHoldings = useOldVersionHoldings()
-  const address = loadWalletIdentity()?.address
+  const address = useStore(identity, (s) => s.value?.address)
   const lock = useUpgradeLock(address)
   // Held, Main stays at what the upgrade will land, with nothing from the new version.
   const frozen = lock.state === "held"
@@ -319,7 +307,11 @@ function Home() {
     network: networkId,
   })
   // Funds on their way count where they land, flat: they neither tick nor earn until they arrive.
-  const { shown: mainShown, known: mainKnown } = selectHomeMain(balance, {
+  const {
+    shown: mainShown,
+    known: mainKnown,
+    updating: mainUpdating,
+  } = selectHomeMain(balance, {
     arriving: arriving.main,
     lock: { checked: lock.checked, held: frozen, main: frozen ? lock.main : undefined },
     upgradesLoaded,
@@ -394,6 +386,7 @@ function Home() {
   const balanceShown = onSavings ? savingsFrozen || savings.hydrated : mainKnown
   // A device catching up can be short on either account: a rebuilt move's deposit lands in either.
   const syncing = balanceShown && balance.syncing
+  const updating = !onSavings && mainUpdating
   const openDeposit = () => guard("deposit", () => navigate("/deposit"))
   // An inbound paylink stashed by /link — prompts until claimed or dismissed.
   const [claimFragment, setClaimFragment] = useState(peekClaimStash)
@@ -527,9 +520,9 @@ function Home() {
           <span
             className={`ww-home__balance-value${
               phone && balanceText.length > 12 ? ` ${styles.homeBalanceValueLong}` : ""
-            }${syncing ? " ww-home__balance-value--syncing" : ""}`}
+            }${syncing || updating ? " ww-home__balance-value--syncing" : ""}`}
             data-testid={onSavings ? "savings-balance" : "wallet-balance"}
-            aria-busy={syncing}
+            aria-busy={syncing || updating}
           >
             {onSavings && !hideBal && savingsValueText !== undefined && !savingsFrozen ? (
               <TickingUsd position={savings.position} at={(value) => value + arriving.savings} />
@@ -572,6 +565,7 @@ function Home() {
       <UpgradeBanner />
       <RotationApprovalLine />
       <PreviousAccountLine />
+      <BackupReminderLine />
       <HomeActions actions={actions} phone={phone} />
       {onSavings ? (
         savingsHydrated && savingsItems.length === 0 ? (

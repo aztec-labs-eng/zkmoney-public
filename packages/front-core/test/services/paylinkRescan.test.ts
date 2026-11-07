@@ -499,7 +499,7 @@ describe("a rebuilt claim in the bell", () => {
     const sources = {
       rows: [...(await storage.all())],
       oldVersionWithdrawals: [],
-      deposits: { records: [], hydrated: true },
+      deposits: { records: [], loaded: true, failed: false },
       withdrawals: { records: [], hydrated: true },
       upgrades: { items: [], recipients: new Set<string>(), loaded: true },
       processing: new Map(),

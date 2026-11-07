@@ -1,8 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { createClock } from "../../src/engine/clock"
-import type { SipaProcessingSource } from "../../src/core/services/bridge/BridgeActivityFeed"
-import { processingStates, legacyRecords } from "../../src/engine/recordSource"
-import { memoryStore } from "../../src/engine/store"
+import { legacyRecords } from "../../src/engine/recordSource"
 
 afterEach(() => vi.useRealTimers())
 
@@ -35,33 +33,5 @@ describe("legacyRecords", () => {
     await Promise.resolve()
     await Promise.resolve()
     expect(store.get()).toEqual({ records: [1], hydrated: true })
-  })
-})
-
-describe("processingStates", () => {
-  const waiting = { reason: { kind: "checking" } }
-  const deposits = () =>
-    memoryStore({ records: [{ sipaAddress: "0xAA" }] as never[], hydrated: true })
-
-  it("lists nothing without an observer", () => {
-    expect(processingStates(deposits().readonly, undefined).get().size).toBe(0)
-  })
-
-  it("reads the source again on each change it signals, and stops listening once unwatched", () => {
-    let state: unknown
-    const listeners = new Set<() => void>()
-    const observer: SipaProcessingSource = {
-      stateFor: () => state as never,
-      subscribe: (l) => (listeners.add(l), () => void listeners.delete(l)),
-    }
-    const states = processingStates(deposits().readonly, observer)
-    state = waiting
-    const off = states.subscribe(() => {})
-    expect(states.get().get("0xaa")).toBe(waiting)
-    state = undefined
-    listeners.forEach((l) => l())
-    expect(states.get().size).toBe(0)
-    off()
-    expect(listeners.size).toBe(0)
   })
 })

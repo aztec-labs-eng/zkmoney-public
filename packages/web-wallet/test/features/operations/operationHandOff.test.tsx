@@ -14,6 +14,7 @@ import {
   OperationHandOff,
   type OperationHandOffHandle,
 } from "../../../src/features/operations/OperationHandOff"
+import { openTestSession } from "../../support/session"
 
 const hash = `0x${"ab".repeat(32)}`
 
@@ -23,6 +24,7 @@ let onLeave: ReturnType<typeof vi.fn>
 let ids: string[]
 
 beforeEach(() => {
+  openTestSession()
   container = document.createElement("div")
   root = createRoot(container)
   onLeave = vi.fn()

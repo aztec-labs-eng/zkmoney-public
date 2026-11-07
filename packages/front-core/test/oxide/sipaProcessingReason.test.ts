@@ -16,7 +16,7 @@ import {
   type SipaProcessingReason,
 } from "../../src/core/services/deposits/sipaProcessing"
 import { STUCK_SWEEP_MS } from "../../src/core/services/deposits/sipaStuck"
-import type { SIPADepositRecord } from "../../src/core/services/deposits/SIPADepositStore"
+import type { SipaDeposit } from "../../src/engine/sipaDeposits"
 
 const E18 = 10n ** 18n
 const DAI = `0x${"da".repeat(20)}` as Address
@@ -32,7 +32,7 @@ const terms: SipaPortalTerms = {
   txAmountCap: 5_166n * E18,
 }
 
-const deposit = (over: Partial<SIPADepositRecord> = {}) => ({
+const deposit = (over: Partial<SipaDeposit> = {}) => ({
   amount: "100",
   tokenAddress: DAI,
   tokenDecimals: 18,

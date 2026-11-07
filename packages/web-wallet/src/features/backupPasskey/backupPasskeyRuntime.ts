@@ -1,17 +1,19 @@
 import { EthAddress } from "@aztec-labs/aztec.js/addresses"
+import { AUTH_TYPE } from "@obsidion/sdk"
 import { TxHash } from "@aztec-labs/stdlib/tx"
 import { WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
 import {
-  AccountStorage,
+  backupLinks,
   deriveBootstrapKey,
   deriveStealthKey,
   observeSipas,
-  planMove,
   pubkeyToR1KeyArg,
   signAccountUserOp,
   unreadDeposits,
+  withNotes,
   type BackupRotationRecord,
   type OutcomeNode,
+  type PaylinkTransaction,
   type RotationFlowDeps,
   type SignInput,
 } from "@obsidion/front-core"
@@ -59,30 +61,36 @@ import {
   oxideEnvFor,
   requireTupleField,
 } from "../../config/oxideTuple"
+import { errorMessage } from "../../errors/catalog"
 import { trackBackupPasskeyAdd } from "../../lib/backupPasskeyTelemetry"
 import { activeTabSince } from "../../platform/activeTabSince"
 import { oxideAccountPasskey } from "../../platform/auth/oxideAccountPasskey"
-import { getAuthService } from "../../platform/auth/useAuthenticator"
 import { SessionChangedError } from "../../platform/auth/sessionErrors"
-import { getActiveCredentialId } from "../../platform/storage/activeStorage"
 import { DepositReadError, EmptyDepositError } from "../deposit/depositReadErrors"
-import { readStrandedToken, type StrandedToken } from "../deposit/sipaRecovery"
+import { readStrandedToken, type StrandedToken } from "../deposit/recovery/sipaRecovery"
 import { maybeRefuelFpc } from "../fees/fpcRefuel"
-import { loadWalletIdentity, saveWalletIdentity } from "../identity/walletIdentity"
+import { saveIdentity } from "../../session/account"
 import { markCreatedHere } from "../migration/upgradeLock"
-import { claimSponsorContext } from "../onboarding/claimSponsorship"
-import { generationFactories, loadOxideGenerations } from "../onboarding/oxideGenerations"
-import { RAIL_REGISTERED } from "../onboarding/rails"
-import { unlockedSessionKeys } from "../onboarding/registrationResume"
+import { claimSponsorContext } from "../registration/claimSponsorship"
+import { generationFactories, loadOxideGenerations } from "../registration/oxideGenerations"
+import { RAIL_REGISTERED } from "../registration/rails"
+import { unlockedSessionKeys } from "../registration/registrationResume"
 import { runOperation } from "../operations/operations"
+import {
+  creatorRowFor,
+  linkRefundable,
+  recoverSponsoredLink,
+  type SponsoredPaylinkDeps,
+} from "../paylink/sponsoredPaylink"
 import { l2TokenService } from "../token/l2TokenService"
-import { currentTxAmountCap, teeSignerOfToken } from "../token/oxideToken"
+import { teeSignerOfToken } from "../token/oxideToken"
 import {
   currentDeployment,
   noteSponsoredMine,
   runBurn,
   withdrawalOptions,
 } from "../withdraw/withdrawGateway"
+import { backupMoveTokens, moveCap, moveCount, readMoveBalances } from "./backupMoveTokens"
 import { passkeyDeclined, type BackupAddDeps } from "./backupPasskeyAdd"
 import { getBackupRotationStore } from "./backupRotationStore"
 import { rerootToPasskeySet } from "./rerootToPasskeySet"
@@ -91,7 +99,8 @@ import {
   republishRotationAddress,
   seedRotationDeposit,
 } from "./rotationPublish"
-import { session as openedStores } from "../../platform/session"
+import { session as openedStores, signedInAccount } from "../../session/session"
+import { linkFragmentOf } from "../../ui/screens/activityView"
 
 /** One id per load of the page: the life of the wallet its sends are seeded under. */
 const WALLET_LIFE = crypto.randomUUID()
@@ -172,9 +181,9 @@ export async function buildBackupAddDeps(input: {
   owner: Address
   choice?: BackupAddChoice
 }): Promise<BackupAddDeps> {
-  const auth = getAuthService()
+  const { auth, identity } = openedStores()
   const { keys } = await sessionRootKey(input.wallet)
-  const userName = backupUserName(loadWalletIdentity()?.handle, input.owner)
+  const userName = backupUserName(identity.get().value?.handle, input.owner)
   return {
     owner: input.owner,
     masterKey: () => new Uint8Array(keys.secretKey.toBuffer()),
@@ -248,16 +257,16 @@ export async function buildBackupFlowDeps(input: {
   const { wallet, owner } = input
   const config = getConfig()
   const client = l1PublicClient(config)
-  const auth = getAuthService()
-  const credentialId = getActiveCredentialId()
+  const own = openedStores()
+  const { auth, device } = own
+  const { credentialId } = device.get()
   if (!credentialId) throw new Error("wallet locked")
   const session = await sessionRootKey(wallet)
   const { keys, rootPubkeyHex } = session
   const envTuple = await getFeeTokenBridgeTuple(config)
-  const [tuple, env, cap] = await Promise.all([
+  const [tuple, env] = await Promise.all([
     readBridgeDestination(client, envTuple),
     oxideEnvFor(config),
-    currentTxAmountCap(),
   ])
   const plainWithdrawalExecutor = requireTupleField(envTuple, "plainWithdrawalExecutor") as Address
   const l2Token = requireTupleField(envTuple, "l2Token")
@@ -360,6 +369,35 @@ export async function buildBackupFlowDeps(input: {
     sipaFactory: tuple.factory,
     accountFactory: await ownerFactory(),
   })
+  /** The paylinks `account` made that the add takes back, from this device's rows. */
+  const linksOf = async (account: string) => {
+    const { activity } = openedStores()
+    await activity.ready
+    return backupLinks(await activity.all(), {
+      account,
+      network: wallet.networkId,
+      token: l2Token,
+      nowSec: Math.floor(Date.now() / 1000),
+    })
+  }
+  const fragmentOf = (row: PaylinkTransaction) => (row.paylink ? linkFragmentOf(row.paylink) : null)
+  /** Paylink calls as the one-key account: only the link's creator can take it back. */
+  const linkDeps = async (): Promise<SponsoredPaylinkDeps> => {
+    const account = await oneKeyAccount((await signedChange()).source)
+    const [tokenService, teeSigner] = await Promise.all([
+      l2TokenService(wallet, account, l2Token),
+      teeSignerOfToken(l2Token),
+    ])
+    tokenService.setTeeSigner(teeSigner)
+    return {
+      wallet,
+      account,
+      tokenService,
+      contractService,
+      teeSigner,
+      rollupAddress: wallet.networkId,
+    }
+  }
   /** Reads pinned to the finalized block, for the portal's release check. */
   const finalizedClient = {
     ...client,
@@ -483,7 +521,7 @@ export async function buildBackupFlowDeps(input: {
     prepare: async (record) => {
       const envelopeHex = record.backup.envelopeHex
       if (!envelopeHex) throw new Error("the backup's envelope has left the record")
-      const identity = loadWalletIdentity()
+      const identity = own.identity.get().value
       if (!identity) throw new Error("no wallet identity")
       const add: BackupPasskeyAdd = {
         pubkey: pubkeyToR1KeyArg(record.backup.pubkeyHex),
@@ -491,8 +529,7 @@ export async function buildBackupFlowDeps(input: {
         envelope: `0x${envelopeHex}`,
       }
       const recipient = await twoKeyAddress(wallet, session, record.backup.pubkeyHex)
-      const token = await getWebOxideToken(wallet, contractService, l2Token)
-      const [prepared, funding, shape, cap, head] = await Promise.all([
+      const [prepared, funding, balances, head, links] = await Promise.all([
         prepareBackupRotation(client, {
           tuple,
           owner,
@@ -505,11 +542,12 @@ export async function buildBackupFlowDeps(input: {
           recipient,
         }),
         liveFunding(),
-        readSpendShape(wallet, token, keys.account.getAddress()),
-        currentTxAmountCap(),
+        readMoveBalances(wallet, contractService, keys.account.getAddress()),
         client.getBlockNumber(),
+        linksOf(keys.account.getAddress().toString()).then(({ open }) => open),
       ])
       const { rotation } = prepared
+      const refunds = links.map((row) => row.amountAtomic)
       return {
         prepared: {
           owner,
@@ -529,7 +567,11 @@ export async function buildBackupFlowDeps(input: {
           deposited: depositedAmount(funding, funding.amount).toString(),
           credited: funding.credited.toString(),
           approvals: 1,
-          moves: planMove(shape, cap, unreadDeposits(shape)).m,
+          refunds: links.length,
+          // Main Account's token comes first, and the refunds land in it.
+          moves: moveCount(
+            balances.map((b, i) => (i === 0 ? { ...b, shape: withNotes(b.shape, refunds) } : b)),
+          ),
         },
         fromBlock: Number(head),
       }
@@ -558,7 +600,7 @@ export async function buildBackupFlowDeps(input: {
       const { sipaAddress } = await seedRotationDeposit(await depositInput(record))
       return readStrandedToken(sipaAddress, tuple.token, wallet.networkId).catch((err: unknown) => {
         if (err instanceof EmptyDepositError) throw err
-        throw new DepositReadError(err instanceof Error ? err.message : String(err))
+        throw new DepositReadError(errorMessage(err))
       })
     },
     republish: async (record) => {
@@ -634,23 +676,28 @@ export async function buildBackupFlowDeps(input: {
           commit: async (authProvider) => {
             const generation = await auth.commitSecret(
               { secretKey: keys.secretKey, authProvider },
-              () => getActiveCredentialId() === credentialId,
+              () => device.get().credentialId === credentialId,
             )
             if (generation === false) throw new SessionChangedError()
             return () => auth.sessionHeld(generation)
           },
           account: (authProvider) => wallet.createObsidionAccount(keys.secretKey, authProvider),
           persist: async (account) => {
-            const accounts = AccountStorage.get()
-            const stored = await accounts.getAccount()
-            await accounts.addWebauthnAccount(
-              stored?.name ?? "Account 1",
-              account.getCompleteAddress().toString(),
-              stored?.signKeyConfig.webauthnData ?? { credentialId, pubkey: rootPubkeyHex },
-            )
-            const identity = loadWalletIdentity()
+            const accounts = signedInAccount()
+            const stored = await accounts.get()
+            await accounts.save({
+              completeAddress: account.getCompleteAddress().toString(),
+              signKeyConfig: {
+                type: AUTH_TYPE.WEB_AUTHN,
+                webauthnData: stored?.signKeyConfig.webauthnData ?? {
+                  credentialId,
+                  pubkey: rootPubkeyHex,
+                },
+              },
+            })
+            const identity = own.identity.get().value
             if (identity)
-              await saveWalletIdentity({ ...identity, address: account.getAddress().toString() })
+              await saveIdentity(own, { ...identity, address: account.getAddress().toString() })
             // New on this version: nothing older to upgrade.
             markCreatedHere(account.getAddress().toString())
           },
@@ -660,7 +707,7 @@ export async function buildBackupFlowDeps(input: {
         checkpoint,
       ),
     move: {
-      tokens: async () => [l2Token],
+      tokens: backupMoveTokens,
       shape: async (token) => {
         const { source } = await signedChange()
         return readSpendShape(
@@ -671,7 +718,7 @@ export async function buildBackupFlowDeps(input: {
       },
       // Stored deposits are not enumerated: a balance held in them moves as note-only chunks, then one attempt.
       deposits: async (_token, shape) => unreadDeposits(shape),
-      cap,
+      cap: moveCap,
       // The sponsor refuses a send past the allowance; nothing is read ahead.
       usesLeft: async () => true,
       send: async (token, amount, onTxHash, signal) => {
@@ -693,6 +740,30 @@ export async function buildBackupFlowDeps(input: {
             contractService,
             fpc: { address: sponsor.fpcAddress, artifact: sponsor.fpcArtifact },
           })
+        } finally {
+          sending = undefined
+        }
+      },
+      // The row is found by the link's secret, which a refund and a rebuilt history both keep. A
+      // claimed link is listed while no checkpoint holds its claim, so the flow waits on it.
+      links: async () => {
+        const { open, claimed } = await linksOf((await signedChange()).source)
+        const unsettled = await Promise.all(
+          claimed.map(async (row) => {
+            const fragment = fragmentOf(row)
+            const spend =
+              fragment && (await linkRefundable({ wallet, contractService }, row, fragment))
+            return spend && spend !== "spent" ? fragment : null
+          }),
+        )
+        return [...open.map(fragmentOf), ...unsettled].filter((f): f is string => !!f)
+      },
+      refundable: async (fragment) =>
+        linkRefundable({ wallet, contractService }, await creatorRowFor(fragment), fragment),
+      refund: async (fragment, onTxHash, signal) => {
+        sending = signal
+        try {
+          await recoverSponsoredLink(await linkDeps(), fragment, undefined, onTxHash)
         } finally {
           sending = undefined
         }

@@ -2,10 +2,9 @@ import { useEffect, useState } from "react"
 import { createPortal } from "react-dom"
 import { Router, useNavigate } from "react-router-dom"
 import { isDemoMode } from "../dev/demoFlag"
-import { mockOnboarding } from "../dev/mockOnboarding"
 import { hasConnectStash } from "../features/contacts/connectReceive"
 import { InvitationChrome } from "../features/onboarding/InvitationChrome"
-import { drawnOfferTag } from "../features/onboarding/nameGrant"
+import { readDrawnOffer } from "../features/registration/signupStash"
 import { CreateWalletStep } from "../features/onboarding/steps/CreateWalletStep"
 import { useLandingRate } from "../features/onboarding/steps/LandingFeatureCards"
 import { stashClaimLink } from "../features/paylink/claimStash"
@@ -18,6 +17,7 @@ import { seededLink } from "../features/paylink/linkStatus"
 import { PaylinkVisitorPending } from "../features/paylink/PaylinkVisitorScreen"
 import type { PaymentLink } from "../features/paylink/types"
 import { useOriginWasFresh } from "../platform/storage/freshOrigin"
+import { tabStash } from "../platform/storage/tabStash"
 import { ShellRoot } from "./AppShell/AppShell"
 import { IdleBell } from "./NotificationsBell/NotificationsBell"
 import { preBootNavigator, setPreBootCreate, usePreBootCreate, usePreBootLeft } from "./preBootTaps"
@@ -28,7 +28,9 @@ type PreBootPage = { kind: "landing" } | { kind: "link"; link: PaymentLink }
 /** The page the wallet opens on for a visitor with nothing stored, where one can stand in for it. */
 function preBootPage(): PreBootPage | undefined {
   try {
-    if (isDemoMode() || mockOnboarding() || drawnOfferTag() || hasConnectStash()) return undefined
+    // A dev build's `?mock=` onboarding preview opens its own modals.
+    const preview = import.meta.env.DEV && new URLSearchParams(location.search).has("mock")
+    if (isDemoMode() || preview || readDrawnOffer(tabStash) || hasConnectStash()) return undefined
     const { pathname, search, hash } = location
     if (pathname === "/") return { kind: "landing" }
     if (pathname === "/claim") {

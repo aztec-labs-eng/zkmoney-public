@@ -45,7 +45,7 @@ function viewOf(
   if (state.moving) return "moving"
   const { amount, dust, address } = state
   if (!state.open || !address || amount === undefined || dust === undefined) return undefined
-  if (isDust(amount, dust)) return undefined
+  if (isDust(amount, dust) && !state.savings) return undefined
   if (!state.signs) return "backupSession"
   if (typeof rotations === "string") return "unchecked"
   const owns = (record: BackupRotationRecord) =>
@@ -60,8 +60,9 @@ function viewOf(
 }
 
 /**
- * Home's line for money that reached the account the wallet ran on before its backup passkey, with
- * the one action this session has over it. Leaving Home stops a move before its next prompt.
+ * Home's line for money that reached the account the wallet ran on before its backup passkey,
+ * Savings shares included, with the one action this session has over it. Leaving Home stops a
+ * move before its next prompt.
  */
 export function PreviousAccountLine() {
   const watcher = getPreviousAccountWatcher()
@@ -79,8 +80,9 @@ export function PreviousAccountLine() {
   }, [watcher])
 
   const view = viewOf(state, rotations, tries)
+  const main = state.dust !== undefined && !isDust(state.amount ?? 0n, state.dust)
   const amount = hideBal ? HIDDEN : usdAtomicFloor(state.amount ?? 0n)
-  const copy = view && previousAccountCopy(view, amount)
+  const copy = view && previousAccountCopy(view, main ? amount : undefined, !!state.savings)
   const move = () =>
     void watcher
       .move({ cap: tries.cap, signal: leave.current?.signal })

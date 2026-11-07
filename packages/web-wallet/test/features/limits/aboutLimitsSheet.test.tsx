@@ -31,7 +31,7 @@ const freshStore = {
   retry: vi.fn(),
 }
 
-vi.mock("../../../src/features/deposit/loadDepositFacts", () => ({
+vi.mock("../../../src/features/sipa/loadDepositFacts", () => ({
   useDepositTokens: () => ({ settlement: { symbol: "DAI" } }),
 }))
 const allowance = vi.hoisted(() => ({
@@ -47,9 +47,6 @@ vi.mock("../../../src/features/deposit/capacityStore", () => ({
   depositCapacityStore: capacity.store,
 }))
 const observer = vi.hoisted(() => ({ retry: vi.fn() }))
-vi.mock("../../../src/features/deposit/sipaProcessing", () => ({
-  sipaProcessingObserver: () => observer,
-}))
 vi.mock("../../../src/features/allowance/useSponsoredAllowance", () => ({
   useSponsoredAllowance: () => ({ snapshot: allowance.snapshot, refresh: allowance.refresh }),
 }))
@@ -57,6 +54,8 @@ vi.mock("../../../src/features/allowance/useSponsoredAllowance", () => ({
 const { LimitsInfoButton, PendingLimitsLink, WalletAboutLimitsSheet } = await import(
   "../../../src/features/limits/AboutLimitsSheet"
 )
+const { closeSession } = await import("../../../src/session/session")
+const { openTestSession } = await import("../../support/session")
 
 let root: Root
 let container: HTMLDivElement
@@ -76,6 +75,7 @@ afterEach(async () => {
   await act(async () => root.unmount())
   container.remove()
   vi.restoreAllMocks()
+  closeSession()
 })
 
 const dialog = () =>
@@ -187,6 +187,7 @@ describe("PendingLimitsLink", () => {
 
   it("retries a failed portal lookup through the processing observer", async () => {
     observer.retry.mockClear()
+    openTestSession({ sipaProcessingObserver: observer })
     await act(async () =>
       root.render(
         <PendingLimitsLink

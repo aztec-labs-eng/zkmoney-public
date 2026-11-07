@@ -20,6 +20,7 @@ import {
   resolveOxideIdentity,
   useContractServiceContext,
   type ParsedKeyMetadata,
+  type ReadonlyStore,
   useResource,
 } from "@obsidion/front-core"
 import {
@@ -40,7 +41,12 @@ import { l1PublicClient } from "../config/oxideTuple"
 import { useSponsoredAllowance } from "../features/allowance/useSponsoredAllowance"
 import { BACKUP_ADD_ICONS, backupAddSheetOptions } from "../features/backupPasskey/backupAddOptions"
 import { startBackupAdd } from "../features/backupPasskey/backupPasskeyAdd"
-import { approveCopy, entryCopy, panelCopy } from "../features/backupPasskey/backupPasskeyCopy"
+import {
+  approveCopy,
+  entryCopy,
+  linksCopy,
+  panelCopy,
+} from "../features/backupPasskey/backupPasskeyCopy"
 import {
   entryBlock,
   type EntryAction,
@@ -58,20 +64,21 @@ import {
   buildBackupFlowDeps,
   type BackupFlowDeps,
 } from "../features/backupPasskey/backupPasskeyRuntime"
+import { backupSeenOnChain } from "../features/backupPasskey/backupReminder"
 import {
   rereadBackupRotation,
   useBackupRotation,
 } from "../features/backupPasskey/backupRotationStore"
 import { KeyWarningLine, StepsNote } from "../features/identity/PhoneSteps"
 import { SignUpChoiceSelect } from "../features/identity/SignUpChoiceSelect"
-import { loadWalletIdentity } from "../features/identity/walletIdentity"
-import { generationAddresses } from "../features/onboarding/generationAddresses"
-import { loadOxideGenerations } from "../features/onboarding/oxideGenerations"
-import { getAuthService } from "../platform/auth/useAuthenticator"
+import { generationAddresses } from "../features/registration/generationAddresses"
+import { loadOxideGenerations } from "../features/registration/oxideGenerations"
+import type { WebAlphaAuthService } from "../platform/auth/WebAlphaAuthService"
+import type { DeviceState } from "../platform/storage/deviceKeys"
 import { authenticatorFor, type AuthenticatorRecord } from "../platform/auth/WebPasskeyIdentityMap"
 import { Modal } from "./Modal"
 import { MAX_PASSKEY_NAME, readPasskeyNames, savePasskeyName } from "./passkeyNames"
-import { handOffAccount, useSession } from "../platform/session"
+import { handOffAccount, useSession } from "../session/session"
 
 type KeyLabel = "Sign-up" | "Backup" | "Unknown key"
 
@@ -105,11 +112,13 @@ export function keyLabel(parsed: ParsedKeyMetadata): KeyLabel {
 }
 
 async function readAccountKeys(
+  auth: WebAlphaAuthService,
+  device: ReadonlyStore<DeviceState>,
   wallet: ObsidionWallet,
   contractService: ContractService,
+  address: string | undefined,
 ): Promise<AccountKeys | "unverified"> {
-  const keys = await getAuthService().sessionKeys()
-  const address = loadWalletIdentity()?.address
+  const keys = await auth.sessionKeys()
   if (!keys || !address) throw new Error("wallet locked")
   const config = getConfig()
   const generations = await loadOxideGenerations(wallet, contractService, config)
@@ -136,7 +145,7 @@ async function readAccountKeys(
       pubkeyHex,
       label: keyLabel(parseKeyMetadata(entry.metadata)),
       signsHere: pubkeyHex === session,
-      provider: providerFor(authenticatorFor(pubkeyHex)),
+      provider: providerFor(authenticatorFor(device.get().passkeyMap, pubkeyHex)),
     }
   })
   return { rows, authKeyCount, owner: identity.identity.account, session }
@@ -159,11 +168,12 @@ const actionLabel: Record<EntryAction, string> = {
   sponsorship: "Sponsored transactions",
   activity: "Activity",
   migration: "Upgrade",
+  savings: "Savings",
 }
 
 type EntryState = "checking" | "unreadable" | "ready" | EntryBlock
 
-/** The sponsored sends the whole flow takes besides the moves: the publish and the funding. */
+/** The sponsored sends the whole flow takes besides the refunds and moves: the publish and the funding. */
 const FIXED_USES = 2
 
 /**
@@ -203,6 +213,7 @@ function BackupEntry({
       live = false
     }
   }, [])
+  const { auth } = useSession()
   const [laptop] = useState(() => currentDevicePosture() === "laptop")
   const [reach, setReach] = useState<PhoneReach>()
   const [picked, setPicked] = useState<BackupAddChoice>()
@@ -210,7 +221,7 @@ function BackupEntry({
   useEffect(() => {
     if (!laptop) return
     let cancelled = false
-    void getAuthService()
+    void auth
       .probePhoneReach()
       .catch((): PhoneReach => "unknown")
       .then((answer) => {
@@ -219,7 +230,7 @@ function BackupEntry({
     return () => {
       cancelled = true
     }
-  }, [laptop])
+  }, [auth, laptop])
   // The page's own reads are taken once, when the probe settles.
   const sheet = useMemo(
     () => (laptop && reach ? backupAddSheetOptions({ reach }) : undefined),
@@ -246,7 +257,7 @@ function BackupEntry({
           sessionIsRoot,
           verified: keys !== "unverified",
           registered: snapshot.state.kind !== "not-subscribed",
-          usesLeft: allowanceCovers(snapshot.state, FIXED_USES + facts.moves),
+          usesLeft: allowanceCovers(snapshot.state, FIXED_USES + facts.links + facts.moves),
         },
         formatDai,
       ) ?? "ready"
@@ -322,6 +333,11 @@ function BackupEntry({
       {entry === "ready" && (
         <p className="ww-sheet__note" data-testid="backup-add-ahead">
           {approveCopy.ahead}
+        </p>
+      )}
+      {entry === "ready" && typeof facts === "object" && facts.links > 0 && (
+        <p className="ww-sheet__note" data-testid="backup-add-links">
+          {linksCopy(facts.links)}
         </p>
       )}
       <div className="ww-contacts__group">
@@ -490,8 +506,9 @@ const UNREGISTERED_FACTS: EntryFacts = {
   chunk: { kind: "fits" },
   plan: true,
   moves: 0,
+  savingsMoving: false,
   withdrawalInFlight: false,
-  openLink: false,
+  links: 0,
   historicBalance: false,
 }
 
@@ -505,6 +522,7 @@ export function PasskeysModal({
   onAction?: (action: EntryAction) => void
 }) {
   const { contractService } = useContractServiceContext()
+  const { auth, device, identity } = useSession()
   const obsidionWallet = useResource(useSession().wallet)
   const [keys, setKeys] = useState<AccountKeys | "unreadable" | "unverified">()
   const [names, setNames] = useState(readPasskeyNames)
@@ -529,9 +547,17 @@ export function PasskeysModal({
       return
     }
     let cancelled = false
-    readAccountKeys(obsidionWallet, contractService).then(
+    readAccountKeys(
+      auth,
+      device,
+      obsidionWallet,
+      contractService,
+      identity.get().value?.address,
+    ).then(
       (read) => {
-        if (!cancelled) setKeys(read)
+        if (cancelled) return
+        setKeys(read)
+        if (typeof read === "object" && read.authKeyCount > 1) backupSeenOnChain.set(true)
       },
       () => {
         if (!cancelled) setKeys("unreadable")
@@ -540,7 +566,7 @@ export function PasskeysModal({
     return () => {
       cancelled = true
     }
-  }, [contractService, obsidionWallet, reads])
+  }, [auth, device, identity, contractService, obsidionWallet, reads])
 
   const sameOwner = (a: string, b: string) => a.toLowerCase() === b.toLowerCase()
 

@@ -5,6 +5,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { testPage, testCore } from "../../support/page"
 import { PaylinkActionEnum } from "@obsidion/sdk"
 import {
   TxInFlightError,
@@ -12,7 +13,8 @@ import {
   type PaylinkTransaction,
   type Transaction,
 } from "@obsidion/front-core"
-import { activeNamespace, closeSession, switchSession } from "../../../src/platform/session"
+import { activeNamespace, closeSession, switchSession } from "../../../src/session/session"
+import { pageSessionDeps } from "../../../src/app/sessionDeps"
 import { walletStorage } from "../../../src/platform/storage/walletStorage"
 import {
   failPaylinkRow,
@@ -57,7 +59,7 @@ async function savedRows() {
 let store: Activity
 
 beforeEach(() => {
-  store = switchSession(activeNamespace()).activity
+  store = switchSession(activeNamespace(testCore().device), pageSessionDeps(testPage())).activity
 })
 afterEach(closeSession)
 

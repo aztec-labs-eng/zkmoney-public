@@ -1,5 +1,5 @@
 import { selectNotifications, type OperationRecord } from "@obsidion/front-core"
-import { getActiveStorageId } from "../../src/platform/storage/activeStorage"
+import { testCore } from "./page"
 import { getOperationStore } from "../../src/features/operations/operations"
 import { listsEnding, operationText } from "../../src/features/operations/operationEntries"
 
@@ -9,7 +9,12 @@ export async function startTabBoundOperation(
   flow = "withdraw",
 ): Promise<() => Promise<void>> {
   const store = getOperationStore()
-  await store.begin({ operationId, flow, summary: "$25 to Ethereum", scope: getActiveStorageId() })
+  await store.begin({
+    operationId,
+    flow,
+    summary: "$25 to Ethereum",
+    scope: testCore().device.get().storageId,
+  })
   return () => store.remove(operationId)
 }
 
@@ -21,7 +26,7 @@ export function operationEntry(record: OperationRecord) {
     {
       rows: [],
       oldVersionWithdrawals: [],
-      deposits: none,
+      deposits: { records: [], loaded: true, failed: false },
       withdrawals: none,
       upgrades: { items: [], recipients: new Set<string>(), loaded: true },
       processing: new Map(),

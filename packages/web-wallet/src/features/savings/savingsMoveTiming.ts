@@ -15,7 +15,7 @@ import { l1PublicClient } from "../../config/oxideTuple"
 import { loadArrivalGrid } from "../deposit/depositArrival"
 import { etaLabel } from "../withdraw/WithdrawalSpeedPicker"
 import { speedupEstimator } from "../withdraw/useFasterWithdrawal"
-import { useSession } from "../../platform/session"
+import { useSession } from "../../session/session"
 
 /** A burn that has landed: its release is estimated from where it sits in its epoch. */
 const LANDED = { expected: 0, earliest: 0, latest: 0 }

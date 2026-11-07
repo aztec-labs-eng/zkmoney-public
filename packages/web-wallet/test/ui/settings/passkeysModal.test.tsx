@@ -1,6 +1,7 @@
 import React, { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { setIdentity } from "../../support/identity"
 
 vi.mock("@obsidion/web-ds", () => ({
   GradientText: ({ children }: { children: React.ReactNode }) => <span>{children}</span>,
@@ -53,18 +54,13 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
 }))
 vi.mock("../../../src/config/env", () => ({ getConfig: () => h.config }))
 vi.mock("../../../src/config/oxideTuple", () => ({ l1PublicClient: () => ({}) }))
-vi.mock("../../../src/features/identity/walletIdentity", () => ({
-  loadWalletIdentity: () => h.identity,
-}))
-vi.mock("../../../src/features/onboarding/oxideGenerations", () => ({
+vi.mock("../../../src/features/registration/oxideGenerations", () => ({
   loadOxideGenerations: async () => GENERATIONS,
 }))
-vi.mock("../../../src/features/onboarding/generationAddresses", () => ({
+vi.mock("../../../src/features/registration/generationAddresses", () => ({
   generationAddresses: h.generationAddresses,
 }))
-vi.mock("../../../src/platform/auth/useAuthenticator", () => ({
-  getAuthService: () => ({ sessionKeys: h.sessionKeys }),
-}))
+const fakeAuth = () => ({ sessionKeys: h.sessionKeys })
 
 import { credentialIdHash, credentialIdToMetadata } from "@obsidion/front-core"
 const { PasskeysModal } = await import("../../../src/ui/PasskeysModal")
@@ -118,9 +114,9 @@ const labels = () => rows().map((el) => el.querySelector("[data-label]")?.textCo
 const signsHere = () =>
   rows().map((el) => el.querySelector("[data-pill]")?.textContent === "Signed in with")
 
-beforeEach(() => {
-  openTestSession({ wallet: h.obsidionWallet })
-  h.identity = { address: L2_ADDRESS }
+beforeEach(async () => {
+  openTestSession({ auth: fakeAuth(), wallet: h.obsidionWallet })
+  await setIdentity({ address: L2_ADDRESS })
   h.sessionKeys.mockResolvedValue(sessionWith())
   h.generationAddresses.mockReturnValue(h.addressesFor)
   h.addressesFor.mockReturnValue(RETIRED_ADDRESSES)
@@ -211,7 +207,7 @@ describe("PasskeysModal", () => {
     await mount()
     // The wallet changes under the open modal: a second read starts and the first is stale.
     h.obsidionWallet = {}
-    openTestSession({ wallet: h.obsidionWallet })
+    openTestSession({ auth: fakeAuth(), wallet: h.obsidionWallet })
     await act(async () => {
       root.render(<PasskeysModal onClose={onClose} />)
     })

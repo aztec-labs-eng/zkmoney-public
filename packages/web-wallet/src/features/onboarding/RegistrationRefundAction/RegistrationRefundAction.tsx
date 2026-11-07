@@ -1,11 +1,11 @@
 import { useEffect, useState } from "react"
 import {
   type PendingRegistrationRecord,
-  type SIPADepositRecord,
+  type SipaDeposit,
   useResource,
   WalletError,
 } from "@obsidion/front-core"
-import { errorCopy } from "../../../errors/catalog"
+import { errorCopy, errorMessage } from "../../../errors/catalog"
 import { tokenDecimalsForNetwork } from "@obsidion/core/constants"
 import { PrimaryGradientButton } from "@obsidion/web-ds"
 import { getConfig } from "../../../config/env"
@@ -14,12 +14,13 @@ import { isGateCancelled, useCeremonyGate } from "../../identity/ceremonyGate"
 import { GateStep } from "../../identity/PhoneSteps"
 import { PasskeyRefusal, type RefusalState } from "../../identity/PasskeyRefusal"
 import { isPasskeyCancelled, isPasskeyPolicyError } from "@obsidion/passkey-web"
-import { reusePasskeyAccount, type OnboardingKeys } from "../oxideOnboarding"
-import { reloadIfSessionSwitched } from "../sessionReload"
-import { prepareRegistrationRefund, useRegistrationRefunded } from "../registrationQuoteRecovery"
-import { askedTotal } from "../registrationAsk"
-import { formatDepositDue } from "../steps/DepositTermsRows"
-import { useSession } from "../../../platform/session"
+import { type OnboardingKeys } from "../../../session/account"
+import { reusePasskeyAccount } from "../../identity/passkeyAccount"
+import { reloadIfSessionSwitched } from "../../../session/sessionReload"
+import { useRegistrationRefunded } from "../../registration/registrationRecovery"
+import { askedTotal } from "../../registration/registrationAsk"
+import { formatDepositDue } from "../../registration/depositAmounts"
+import { useSession, signedInAccount } from "../../../session/session"
 import copy from "./RegistrationRefundAction.copy"
 import { fmt } from "../../../lib/fmt"
 
@@ -40,7 +41,8 @@ export function RegistrationRefundAction({
   /** The live registration-token balance is not zero. */
   holdsFunds?: boolean
 }) {
-  const obsidionWallet = useResource(useSession().wallet)
+  const own = useSession()
+  const obsidionWallet = useResource(own.wallet)
   const { gate, state, cancel } = useCeremonyGate()
   const recovered = useRegistrationRefunded(record)
   const restart = !holdsFunds && (recovered || unfunded)
@@ -49,7 +51,7 @@ export function RegistrationRefundAction({
     tokenDecimalsForNetwork(getConfig().network),
   )
   useEffect(() => cancel, [cancel])
-  const [deposit, setDeposit] = useState<SIPADepositRecord>()
+  const [deposit, setDeposit] = useState<SipaDeposit>()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string>()
   const [refusal, setRefusal] = useState<RefusalState>()
@@ -60,18 +62,20 @@ export function RegistrationRefundAction({
     setRefusal(undefined)
     try {
       if (!obsidionWallet) throw new WalletError("wallet.notReady")
-      const keys = await reusePasskeyAccount(obsidionWallet, record.l2Address, undefined, gate)
-      if (reloadIfSessionSwitched(null, record.l2Address)) return
+      const keys = await reusePasskeyAccount(
+        obsidionWallet,
+        { auth: own.auth, accounts: signedInAccount },
+        record.l2Address,
+        undefined,
+        gate,
+      )
+      if (reloadIfSessionSwitched(own, record.l2Address)) return
       if (restart) await onRestart(keys)
-      else
-        setDeposit(await prepareRegistrationRefund(record, getConfig(), obsidionWallet.networkId))
+      else setDeposit(await own.registrationRecovery.prepare(record, obsidionWallet.networkId))
     } catch (err) {
       if (isGateCancelled(err) || isPasskeyCancelled(err)) return
-      if (isPasskeyPolicyError(err)) setRefusal({ name: err.name, message: err.message })
-      else
-        setError(
-          errorCopy(err) ?? (err instanceof Error ? err.message : copy.failed), // slice-check-ignore: an uncoded error keeps its own words until its source throws a code
-        )
+      if (isPasskeyPolicyError(err)) setRefusal({ name: err.name, message: errorMessage(err) })
+      else setError(errorCopy(err) ?? copy.failed)
     } finally {
       setBusy(false)
     }

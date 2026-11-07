@@ -24,7 +24,6 @@ vi.mock("@obsidion/front-core", () => ({
   createMetadataMigrationSession: h.session,
   pubkeyToR1KeyArg: () => "r1",
   UpgradeActivity: { get: () => ({}) },
-  SIPADepositStore: { get: () => ({}) },
   BalanceStorage: { get: () => ({ updateBalance: h.updateBalance }) },
   readSavingsPrice: h.readSavingsPrice,
   readSavingsVault: h.readSavingsVault,
@@ -50,20 +49,15 @@ vi.mock("../../../src/config/oxideTuple", () => ({
   getFeeTokenBridgeTuple: () => h.feeBridge(),
   getOxideDeployment: () => h.deployment(),
 }))
-vi.mock("../../../src/platform/auth/useAuthenticator", () => ({ getAuthService: () => ({}) }))
-vi.mock("../../../src/platform/storage/activeStorage", () => ({
-  getActiveStorageId: () => "store",
-  getActiveCredentialId: () => "cred",
-}))
 vi.mock("../../../src/platform/storage/WebStorageAdapter", () => ({ webStorage: {} }))
 vi.mock("../../../src/platform/auth/sessionErrors", () => ({ SessionChangedError: class {} }))
-vi.mock("../../../src/features/onboarding/oxideOnboarding", () => ({
+vi.mock("../../../src/session/account", () => ({
   collectOnboardingKeys: async () => ({ secretKey: "msk", pubkeyHex: "0xpub" }),
 }))
-vi.mock("../../../src/features/onboarding/claimSponsorship", () => ({
+vi.mock("../../../src/features/registration/claimSponsorship", () => ({
   claimSponsorContext: vi.fn(),
 }))
-vi.mock("../../../src/features/onboarding/rails", () => ({ RAIL_REGISTERED: "registered" }))
+vi.mock("../../../src/features/registration/rails", () => ({ RAIL_REGISTERED: "registered" }))
 vi.mock("../../../src/features/token/oxideToken", () => ({
   portalContract: () => ({ getUnderlying: async () => ({ toString: () => "0xdai" }) }),
 }))
@@ -91,6 +85,10 @@ const { createWebMetadataMigration, createWebMetadataMigrationQuietly } = await 
 const { ManifestUnavailableError } = await import("../../../src/features/migration/freezeWatch")
 
 const account = { getAddress: () => "0xacct" } as never
+const own = {
+  namespace: { id: "store", prefix: "" },
+  device: { get: () => ({ storageId: "store", credentialId: "cred" }) },
+} as never
 const destinationDeployment = { features: [], bridges: [] }
 const route = { executor: "0xroute", subsidy: "0xsubsidy" }
 const current = { portal: "0xcurrent", rollupVersion: "7" } as never
@@ -104,6 +102,10 @@ async function sourceFor(destination = current, withdrawal?: { tipRecipient?: `0
   await createWebMetadataMigration({
     wallet: {} as never,
     account,
+    deposits: { get: async () => undefined },
+    auth: {} as never,
+    own,
+    handle: undefined,
     contractService: {} as never,
     toTokenService: {} as never,
     historic,
@@ -148,7 +150,7 @@ describe("createWebMetadataMigration — a source of another Aztec generation", 
     expect(call.tipRecipient).toBe("0xexecutor")
     await expect(call.depositDescriptors()).resolves.toEqual(["d"])
     await expect(call.paylinkRows()).resolves.toEqual(["row"])
-    expect(h.linkRows).toHaveBeenCalledWith({ tuple: historic, current, storageId: "store" })
+    expect(h.linkRows).toHaveBeenCalledWith({ tuple: historic, current, own })
     expect(h.sweptDeposits.mock.calls[0]![0].chain).toEqual({
       kind: "generation",
       session: { refundRuntime },
@@ -179,7 +181,7 @@ describe("createWebMetadataMigration — a source this release reads", () => {
     })
     expect(h.frozenSource).not.toHaveBeenCalled()
     await h.localSource.mock.calls[0]![0].escrows()
-    expect(h.linkRows).toHaveBeenCalledWith({ tuple: historic, current, storageId: "store" })
+    expect(h.linkRows).toHaveBeenCalledWith({ tuple: historic, current, own })
     expect(h.escrows).toHaveBeenCalledWith(
       expect.objectContaining({ chain, tuple: historic, rows: ["row"] }),
     )
@@ -221,6 +223,10 @@ it("passes an ordinary-recovery queue role through to the shared session", async
   await createWebMetadataMigration({
     wallet: {} as never,
     account,
+    deposits: { get: async () => undefined },
+    auth: {} as never,
+    own,
+    handle: undefined,
     contractService: {} as never,
     toTokenService: {} as never,
     historic,
@@ -250,6 +256,10 @@ describe("a manifest that can't be read", () => {
   const params = {
     wallet: {} as never,
     account,
+    deposits: { get: async () => undefined },
+    auth: {} as never,
+    own,
+    handle: undefined,
     contractService: {} as never,
     toTokenService: {} as never,
     historic,

@@ -74,8 +74,9 @@ import { LimitLine, LimitNotice, usdFigureGrouped } from "../../limits/publicLim
 import { LimitsInfoButton } from "../../limits/AboutLimitsSheet"
 import { withdrawalLimitProblem } from "../../limits/withdrawalLimit"
 import { useTxAmountCap } from "../../token/useTxAmountCap"
-import { useSession } from "../../../platform/session"
+import { useSession } from "../../../session/session"
 import copy from "./WithdrawFreshModal.copy"
+import balanceCopy from "../../../ui/balance.copy"
 import { fmt } from "../../../lib/fmt"
 
 /** Dollars of the wallet asset that land as ETH, on top of the funds. Each is at most `MAX_DAI_FOR_GAS`. */
@@ -101,12 +102,18 @@ const dollars = (atomic?: bigint) =>
 export function WithdrawFreshModal({
   recipient,
   walletName,
+  recipientWarning,
+  confirmRecipient,
   onClose,
   onDone,
 }: {
   recipient: Address
   /** User label for the destination; saved with the contact on success. */
   walletName?: string
+  /** What the caller could not settle about the recipient, shown with the amount. */
+  recipientWarning?: { title: string; body: string }
+  /** Asked on confirm; false stops the withdrawal, the caller having sent the user elsewhere. */
+  confirmRecipient?: () => boolean
   onClose: () => void
   onDone: () => void
 }) {
@@ -224,7 +231,7 @@ export function WithdrawFreshModal({
       })
     : undefined
   const maxAmount =
-    max?.status === "available" && max.atomic >= minimum
+    wallet.live && max?.status === "available" && max.atomic >= minimum
       ? formatUnits(max.atomic, DEFAULT_DECIMALS)
       : undefined
   if (maxed && maxAmount !== undefined && maxAmount !== amount) setAmount(maxAmount)
@@ -255,6 +262,7 @@ export function WithdrawFreshModal({
 
   const run = async () => {
     if (!valid || !committed || charged === undefined) return
+    if (confirmRecipient && !confirmRecipient()) return
     if (failedOnce) fireEvent("retry_clicked", { flow: "withdraw" })
     outcome.start("building")
     setPhase("working")
@@ -357,7 +365,10 @@ export function WithdrawFreshModal({
           <div className="ww-fund__fields">
             <span className="ww-fund__label ww-withdraw__amount-label">
               <span>
-                {copy.available} <b>${fixedCents(wallet.main && { ...wallet.main, decimals })}</b>
+                {copy.available}{" "}
+                <b className="ww-available" aria-busy={!wallet.live}>
+                  ${fixedCents(wallet.main && { ...wallet.main, decimals })}
+                </b>
               </span>
             </span>
             <label className="ww-deposit__input ww-fund__amount">
@@ -380,6 +391,7 @@ export function WithdrawFreshModal({
                 <button
                   type="button"
                   className="zkm-btn-reset ww-withdraw__paste"
+                  disabled={!wallet.live}
                   onClick={() => setMaxed(true)}
                 >
                   {copy.max}
@@ -454,6 +466,9 @@ export function WithdrawFreshModal({
                 />
               )}
             </div>
+            {recipientWarning && (
+              <Warning title={recipientWarning.title}>{recipientWarning.body}</Warning>
+            )}
             {!cleared && (
               <ScreeningNotice
                 verdict={verdict}
@@ -465,8 +480,8 @@ export function WithdrawFreshModal({
             )}
           </div>
           <PrimaryGradientButton
-            title={copy.review}
-            isDisabled={!valid || overspent || !cleared}
+            title={wallet.live ? copy.review : balanceCopy.checking}
+            isDisabled={!wallet.live || !valid || overspent || !cleared}
             onClick={() => setPhase("confirm")}
             style={{ width: "100%", height: 48 }}
           />

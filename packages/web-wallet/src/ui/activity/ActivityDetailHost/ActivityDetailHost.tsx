@@ -40,7 +40,7 @@ import {
   type SipaProcessingState,
   type SavingsMoveEta,
   type SavingsMoveRecord,
-  type SIPADepositRecord,
+  type SipaDeposit,
   type SwapExitReason,
   type UpgradePricing,
   type WithdrawalExit,
@@ -57,10 +57,14 @@ import { RequestDetailModal } from "../../../features/contacts/RequestDetailModa
 import { declineRequestById } from "../../../features/contacts/requestActions"
 import { useRemind, type RemindState } from "../../../features/contacts/useRemind"
 import { DepositExitModal } from "../../../features/deposit/DepositExitModal/DepositExitModal"
-import { settlementDecimals, useDepositTokens } from "../../../features/deposit/loadDepositFacts"
+import { settlementDecimals, useDepositTokens } from "../../../features/sipa/loadDepositFacts"
 import { upgradeRunTitle } from "../../../features/migration/upgradeCopy"
 import { upgradeRunAccount, upgradeRunToken } from "../../../features/migration/upgradeRunAccount"
-import { useRegistrationDepositEntry } from "../../../features/onboarding/useRegistrationDepositEntry"
+import { RegistrationDepositDetailModal } from "../../../features/onboarding/RegistrationDepositDetailModal/RegistrationDepositDetailModal"
+import {
+  useRegistrationDepositEntry,
+  type RegistrationDepositEntry,
+} from "../../../features/onboarding/useRegistrationDepositEntry"
 import { LinkRecoverModal } from "../../../features/paylink/LinkRecoverModal"
 import { usePaylinkDeps } from "../../../features/paylink/usePaylinkDeps"
 import { CancelRequestLinkModal } from "../../../features/requests/CancelRequestLinkModal"
@@ -91,7 +95,7 @@ import {
 import copy from "../ActivityRow.copy"
 import { exitTitle } from "../ActivityRow/ActivityRow"
 import { useFeed } from "../useFeed"
-import { useSession } from "../../../platform/session"
+import { useSession } from "../../../session/session"
 
 type TxItem = Extract<FeedItem, { kind: "tx" }>
 
@@ -131,7 +135,7 @@ export type DetailTarget =
  * it, and a sheet mid-submit must not go with it.
  */
 type Exit =
-  | ({ kind: "deposit"; record: SIPADepositRecord } & DepositOffer)
+  | ({ kind: "deposit"; record: SipaDeposit } & DepositOffer)
   /** `savings`: a move out's burn, finalized on the Savings deployment and its co-signer. */
   | { kind: "withdrawal"; record: WithdrawalRecord; savings?: boolean }
   | { kind: "swap"; record: WithdrawalRecord; reason: SwapExitReason }
@@ -169,7 +173,7 @@ export interface ActivityHost {
   shareLink(url: string, text: string): void
   copyLink(id: string, url: string): void
   copiedLinkId: string | null
-  registrationNode?: ReactNode
+  registration?: RegistrationDepositEntry
   sharePrice?: bigint
   /** What values an upgrade run in its credited asset. */
   upgradePricing: UpgradePricing
@@ -315,7 +319,7 @@ export function ActivityDetailHost({
     offer.kind === "finalize"
       ? { kind: "withdrawal", record }
       : { kind: "swap", record, reason: offer.reason }
-  const depositExit = (record: SIPADepositRecord, processing?: SipaProcessingState) => {
+  const depositExit = (record: SipaDeposit, processing?: SipaProcessingState) => {
     const offer = depositDetailOffer(record, {
       processing,
       registration: registrationFor(regs, record.sipaAddress),
@@ -427,7 +431,7 @@ export function ActivityDetailHost({
     shareLink,
     copyLink: (id, url) => void copyLink(id, url),
     copiedLinkId,
-    registrationNode: registrationDeposit?.node,
+    registration: registrationDeposit ?? undefined,
     sharePrice,
     upgradePricing,
     depositDecimals: (token) => settlementDecimals(depositTokens, token),
@@ -750,7 +754,9 @@ export function ActivityDetailHost({
   return (
     <HostContext.Provider value={host}>
       {children}
-      {registrationDeposit?.modal}
+      {registrationDeposit?.detail && (
+        <RegistrationDepositDetailModal {...registrationDeposit.detail} />
+      )}
       {modal()}
     </HostContext.Provider>
   )

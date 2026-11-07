@@ -7,9 +7,8 @@ import { resolveAssetConstants, valueOf } from "@obsidion/front-core"
 import { getConfig } from "../../config/env"
 import { isDemoMode } from "../../dev/demoFlag"
 import { fireEvent, requestAmountBucket } from "../../lib/analytics"
-import { session } from "../../platform/session"
+import { session } from "../../session/session"
 import { getRequestBroadcaster } from "../../platform/xmtp/xmtpLifecycle"
-import { loadWalletIdentity } from "../identity/walletIdentity"
 import { verifyTag } from "./registryResolution"
 import { announceOutgoingRequest, declineIncomingRequest } from "./requestFlow"
 
@@ -45,9 +44,13 @@ export async function cancelRequestById(id: string): Promise<boolean> {
 
 /**
  * Re-announce a stored outgoing request over XMTP, recording the reminder once it is delivered.
- * `tokenAddress` comes from the session's token.
+ * `requesterTag` is the identity's, and `tokenAddress` comes from the session's token.
  */
-export async function remindRequestById(id: string, tokenAddress?: string): Promise<boolean> {
+export async function remindRequestById(
+  id: string,
+  requesterTag: string | undefined,
+  tokenAddress?: string,
+): Promise<boolean> {
   const store = session().requests
   // Demo mounts no XMTP; the reminder is acknowledged without a delivery.
   if (import.meta.env.DEV && isDemoMode()) {
@@ -56,7 +59,6 @@ export async function remindRequestById(id: string, tokenAddress?: string): Prom
   }
   const target = await store.get(id)
   const broadcaster = getRequestBroadcaster()
-  const requesterTag = loadWalletIdentity()?.handle
   const networkId = valueOf(session().wallet)?.networkId
   if (!target || !broadcaster || !requesterTag || !tokenAddress || !networkId) return false
   const config = getConfig()

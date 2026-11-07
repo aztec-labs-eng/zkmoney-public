@@ -37,7 +37,7 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
 const { useLinkVoucher, useLinkWithdrawal } = await import(
   "../../../src/features/paylink/usePaylinkDeps"
 )
-const { closeSession } = await import("../../../src/platform/session")
+const { closeSession } = await import("../../../src/session/session")
 const { openTestSession } = await import("../../support/session")
 
 /** A visitor's session over the wallet and signer `CTX` holds; one left out is not up yet. */

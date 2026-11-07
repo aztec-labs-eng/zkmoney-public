@@ -7,16 +7,11 @@ import {
   type ObsidionWallet,
 } from "@obsidion/sdk"
 
-vi.mock("../../../src/platform/auth/useAuthenticator", () => ({
-  getAuthService: () => {
-    throw new Error("the session resolver is not under test")
-  },
-}))
-
-const { singleKeyAccount, sponsorAccounts } = await import(
-  "../../../src/features/onboarding/sponsorAccounts"
-)
-const { SessionChangedError } = await import("../../../src/platform/auth/sessionErrors")
+import {
+  singleKeyAccount,
+  sponsorAccounts,
+} from "../../../src/features/registration/sponsorAccounts"
+import { SessionChangedError } from "../../../src/platform/auth/sessionErrors"
 type Deps = Parameters<typeof sponsorAccounts>[0]
 type Session = Deps["session"]
 
@@ -203,7 +198,7 @@ describe("sponsorAccounts", () => {
       record: record({ feePayer: { [FPC]: { address: "0xa", passkey: KEY_A } } }),
       sessionKey: null,
     })
-    await expect(payerOf(h)).rejects.toThrow("locked")
+    await expect(payerOf(h)).rejects.toMatchObject({ code: "account.locked" })
   })
 
   it("lets a one-key account pay itself without probing", async () => {

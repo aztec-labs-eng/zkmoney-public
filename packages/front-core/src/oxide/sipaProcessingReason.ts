@@ -4,7 +4,7 @@
  */
 import { parseUnits, type Address } from "viem"
 import type { SipaPortalTerms } from "@obsidion/sdk"
-import type { SIPADepositRecord } from "../core/services/deposits/SIPADepositStore"
+import type { SipaDeposit } from "../engine/sipaDeposits"
 import type { SipaProcessingReason } from "../core/services/deposits/sipaProcessing"
 import type { CapacityEligibility, RequiredCredit } from "./portalCapacityEligibility"
 
@@ -17,7 +17,7 @@ import type { CapacityEligibility, RequiredCredit } from "./portalCapacityEligib
  */
 export function sipaRequiredCredit(
   record: Pick<
-    SIPADepositRecord,
+    SipaDeposit,
     "amount" | "tokenAddress" | "tokenDecimals" | "intent" | "registrationFee"
   >,
   terms: SipaPortalTerms,

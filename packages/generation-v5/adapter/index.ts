@@ -28,7 +28,6 @@ import {
   TransferEventScanner,
   WithdrawalStorage,
   WithdrawalTrackingService,
-  type IStorageAdapter,
   type PaylinkTransaction,
   type Transaction,
 } from "@obsidion/front-core"
@@ -83,6 +82,10 @@ import {
   type SourceRefundRuntime,
   type SourceSipaScan,
 } from "./protocol"
+import { encodeSipaDeploy, registrationDeposit } from "./sipa"
+import { fresh, memoryStorage, takeTurn } from "./stores"
+
+export { encodeSipaDeploy }
 
 declare const __AZTEC_VERSION__: string
 
@@ -149,18 +152,6 @@ const DEPOSIT_NODE_READS: ReadonlySet<PropertyKey> = new Set([
   "getL1ToL2MessageCheckpoint",
   "getBlockData",
 ])
-
-// v5's stores stamp each record with the bundle's one active network, so histories take turns.
-let historyTurn: Promise<unknown> = Promise.resolve()
-function takeTurn<T>(run: () => Promise<T>): Promise<T> {
-  const turn = historyTurn.then(run)
-  historyTurn = turn.catch(() => {})
-  return turn
-}
-
-/** A store of the source wallet's own over `arg`, beside any the bundle already holds. */
-const fresh = <T, A>(store: { prototype: T }, arg: A): T =>
-  new (store as unknown as new (arg: A) => T)(arg)
 
 /** The portal binding reads the chain id from its client, as the v5 wallet's `l1ChainFor` gives it. */
 const l1Chain = (id: number): Chain =>
@@ -254,6 +245,7 @@ export const open: SourceGenerationModule["open"] = async (params) => {
     l1ChainId: params.l1ChainId,
     masterSecret: Fr.fromString(params.account.secretKey),
     rollupAddress: rollupAddress.toString(),
+    contracts: params.contracts as ContractServiceConfig,
     hold,
   })
 }
@@ -266,6 +258,7 @@ function session(o: {
   l1ChainId: number
   masterSecret: Fr
   rollupAddress: string
+  contracts: ContractServiceConfig
   hold: (tip: L2TipId | undefined) => void
 }): SourceGenerationSession {
   const { wallet, account, client } = o
@@ -500,12 +493,7 @@ function session(o: {
         const tokenService = await prepareSipaScan(scan)
         setActiveNetworkId(o.rollupAddress)
         const items = new Map<string, string>()
-        const storage: IStorageAdapter = {
-          getItem: async (key) => items.get(key) ?? null,
-          setItem: async (key, value) => void items.set(key, value),
-          removeItem: async (key) => void items.delete(key),
-          clear: async () => items.clear(),
-        }
+        const storage = memoryStorage(items)
         const transactions = fresh(TransactionStorage, storage)
         const withdrawals = fresh(WithdrawalStorage, storage)
         const deposits = fresh(SIPADepositStore, storage)
@@ -779,6 +767,19 @@ function session(o: {
         })),
       )
     },
+
+    registrationDeposit: (request) =>
+      registrationDeposit(
+        {
+          client,
+          l1ChainId: o.l1ChainId,
+          masterSecret: o.masterSecret,
+          contracts: o.contracts,
+          rollupAddress: o.rollupAddress,
+          l2Address: account.getAddress().toString() as Hex,
+        },
+        request,
+      ),
 
     async savingsMoves({ tuple }) {
       await holdAtFreeze(tuple)
@@ -1064,4 +1065,10 @@ function plainRuntime(
   }
 }
 
-void ({ protocol, aztecVersion, accountAddress, open } satisfies SourceGenerationModule)
+void ({
+  protocol,
+  aztecVersion,
+  accountAddress,
+  encodeSipaDeploy,
+  open,
+} satisfies SourceGenerationModule)

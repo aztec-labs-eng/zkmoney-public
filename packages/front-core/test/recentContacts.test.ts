@@ -180,15 +180,7 @@ describe("recentContacts", () => {
       provider: "manual",
     })
     const sources = {
-      sipaDeposits: [
-        {
-          walletAddress: "0xABC",
-          walletProvider: "rainbow",
-          startTime: 25,
-          phase: "funded",
-          amount: "1",
-        },
-      ],
+      withdrawals: [{ recipient: "0xABC", walletProvider: "rainbow", startTime: 25 }],
     } as ContactActivitySources
     expect(ids(recentContacts([contact], sources))).toEqual(["manual"])
   })

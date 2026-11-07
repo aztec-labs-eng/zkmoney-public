@@ -7,7 +7,6 @@ import {
   fundingLanding,
   fundRotation,
   moveDeclined,
-  moveProgress,
   noteRecovery,
   recordMoved,
   RotationFlowError,
@@ -21,10 +20,10 @@ import { formatUnits } from "viem"
 import { l1AddressUrl, l1TxUrl, whenLabel } from "../../ui/detailRows"
 import { shortAddr, tokenFigure } from "../../ui/format"
 import { DepositFact } from "../../ui/screens/DepositFact"
-import { BroadcastStatusRow } from "../broadcasts/BroadcastStatusRow"
+import { BroadcastStatusRow } from "../broadcasts/BroadcastStatusRow/BroadcastStatusRow"
 import { DepositExitModal } from "../deposit/DepositExitModal/DepositExitModal"
 import { DepositReadError, EmptyDepositError } from "../deposit/depositReadErrors"
-import type { StrandedToken } from "../deposit/sipaRecovery"
+import type { StrandedToken } from "../deposit/recovery/sipaRecovery"
 import { BackupStepError, LeftoverPasskeyError, passkeyDeclined } from "./backupPasskeyAdd"
 import {
   approveCopy,
@@ -175,7 +174,7 @@ function FundScreen({
           <b>{formatDai(amount - credited)}</b>
         </DepositFact>
         <DepositFact label={fundCopy.approvals}>
-          <b>{fundCopy.approvalsValue(plan.approvals, plan.moves)}</b>
+          <b>{fundCopy.approvalsValue(plan.approvals, plan.moves, plan.refunds)}</b>
         </DepositFact>
         <DepositFact label={fundCopy.takes}>
           <b>{fundCopy.takesValue}</b>
@@ -659,7 +658,11 @@ export function BackupPasskeyPanel({
           record={record}
           approver={approver}
           waiting={
-            wait === "approval" || declinedMove ? moveCopy.line(moveProgress(record)) : undefined
+            wait === "approval" || declinedMove
+              ? moveCopy.line(record)
+              : wait === "link"
+              ? moveCopy.linkExpiring
+              : undefined
           }
         />
       )}

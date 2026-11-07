@@ -21,6 +21,7 @@ type Route = Asset | "DAI_GAS"
 const submit = vi.fn()
 const cfg = { network: "sandbox" }
 const walletAsset = { balanceAtomic: parseUnits("100", 18) }
+let live = true
 const priced = (floor: string, tip: string) => ({
   floor: parseUnits(floor, 18),
   tip: parseUnits(tip, 18),
@@ -127,6 +128,7 @@ const sheet = await import(
   "../../../../src/features/withdraw/WithdrawFreshModal/WithdrawFreshModal"
 )
 const speedCopy = await import("../../../../src/features/withdraw/speedChoice")
+const { default: balanceCopy } = await import("../../../../src/ui/balance.copy")
 
 const RECIPIENT = "0x1111111111111111111111111111111111111111" as const
 const MINED = { phase: "l2_mined" }
@@ -189,11 +191,12 @@ describe("WithdrawFreshModal", () => {
     onDone.mockReset()
     routes = freshRoutes()
     cfg.network = "sandbox"
+    live = true
     openTestSession({
       wallet: {},
       account: {},
       token: { metadata: { decimals: 18 } },
-      balances: liveBalances(() => ({ main: walletAsset.balanceAtomic, live: true, known: true })),
+      balances: liveBalances(() => ({ main: walletAsset.balanceAtomic, live, known: true })),
     })
     container = document.createElement("div")
     document.body.appendChild(container)
@@ -305,6 +308,21 @@ describe("WithdrawFreshModal", () => {
     expect(button("Review").disabled).toBe(true)
     await click("$15")
     expect(input().value).toBe("89.66")
+  })
+
+  it("holds MAX and Review until this session's balance read lands", async () => {
+    const available = () => container.querySelector(".ww-available")!
+    live = false
+    await mount()
+    await type("20")
+    expect(available().getAttribute("aria-busy")).toBe("true")
+    expect(button("MAX").disabled).toBe(true)
+    expect(button(balanceCopy.checking).disabled).toBe(true)
+    live = true
+    await type("20.5")
+    expect(available().getAttribute("aria-busy")).toBe("false")
+    expect(button("MAX").disabled).toBe(false)
+    expect(button("Review").disabled).toBe(false)
   })
 
   it.each([

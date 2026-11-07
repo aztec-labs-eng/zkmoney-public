@@ -29,12 +29,12 @@ import { usdBalance, shortL1Addr, tokenFigure } from "../../ui/format"
 import { useCopy } from "../../ui/hooks"
 import { DepositFromWalletModal } from "../deposit/DepositFromWalletModal"
 import { DepositQrSheet } from "../deposit/DepositQrSheet"
-import { useL1Wallet } from "../deposit/l1Wallet"
+import { useL1Wallet } from "../../session/l1Wallet"
 import {
   settlementToken,
   useDepositTokens,
   type DepositTokenOption,
-} from "../deposit/loadDepositFacts"
+} from "../sipa/loadDepositFacts"
 import testIcon from "../../assets/deposit/ethereum.webp"
 import {
   OneTimeAddressPoints,

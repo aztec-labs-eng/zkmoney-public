@@ -9,11 +9,9 @@
  */
 import { parseUnits, type Address } from "viem"
 import type { SipaPortalTerms } from "@obsidion/sdk"
-import {
-  isUnfundedSipaDeposit,
-  type SIPADepositRecord,
-  type SIPADepositStore,
-} from "../core/services/deposits/SIPADepositStore"
+import type { RecordSet } from "../engine/persistentStore"
+import { isUnfundedSipaDeposit, type SipaDeposit } from "../engine/sipaDeposits"
+import { memoryStore, type ReadonlyStore } from "../engine/store"
 import {
   isAwaitingSweep,
   nextSipaSweepBlocker,
@@ -36,7 +34,7 @@ import { sipaRecordRoute, sipaRouteKey, type SipaRecordRoute } from "./sipaRoute
 const TERMS_RETRY_MS = 15_000
 
 export interface SipaProcessingObserverOptions {
-  deposits: Pick<SIPADepositStore, "get" | "list" | "onListChanged">
+  deposits: ReadonlyStore<RecordSet<SipaDeposit>>
   /** The one shared store for a capacity bucket. */
   capacity: (key: PortalCapacityKey) => PortalCapacityStore
   /** Usually `readSipaPortalTerms` on the configured L1 client, for the deployment's settlement token. */
@@ -48,7 +46,7 @@ export interface SipaProcessingObserverOptions {
 
 /** What a capacity read of one deposit needs from its record. */
 export type SipaSweepSubject = Pick<
-  SIPADepositRecord,
+  SipaDeposit,
   | "sipaAddress"
   | "l1ChainId"
   | "origin"
@@ -75,10 +73,13 @@ export type SipaCapacityKey =
   | { status: "unknown"; retryable: boolean }
 
 export interface SipaProcessingObserver {
+  /**
+   * Why each deposit waiting for its sweep waits, by lowercase address; a new value also when a portal lookup settles.
+   * The first watcher starts the capacity reads for the pending deposits; the last one stops them.
+   */
+  readonly states: ReadonlyStore<ReadonlyMap<string, SipaProcessingState>>
   /** Undefined for a deposit that is not waiting for a sweep. */
   stateFor(sipaAddress: string): SipaProcessingState | undefined
-  /** The first subscriber starts the capacity reads for the pending deposits; the last one stops them. */
-  subscribe(listener: () => void): () => void
   /** The key this observer reads the deposit's capacity with, from the same portal lookup. */
   capacityKeyFor(sipaAddress: string): SipaCapacityKey
   /**
@@ -105,7 +106,7 @@ type TermsEntry =
 type LiveFunding = Omit<SipaSweepSubject, "sipaAddress">
 
 /** No sweep, claim or credit is recorded, and the phase comes before one. */
-function beforeSweep(record: SIPADepositRecord): boolean {
+function beforeSweep(record: SipaDeposit): boolean {
   return (
     ["resolved", "funding", "funded", "broadcast", "sweeping"].includes(record.phase) &&
     !record.sweepTxHash &&
@@ -133,7 +134,7 @@ function holdsAtLeast(
  * larger amount is the current one. A self-initiated record can still say `resolved` or `funding` then; for this check
  * it is funded.
  */
-function withLiveFunding(stored: SIPADepositRecord, live: LiveFunding): SipaSweepSubject {
+function withLiveFunding(stored: SipaDeposit, live: LiveFunding): SipaSweepSubject {
   const read = {
     amount: live.amount,
     tokenAddress: live.tokenAddress ?? stored.tokenAddress,
@@ -171,7 +172,8 @@ export function createSipaProcessingObserver(
   const blockers = new Map<string, SipaSweepBlocker>()
   /** The largest funding a manual sweep read, per deposit, kept in memory while it can be newer than the store. */
   const liveFunding = new Map<string, LiveFunding>()
-  const listeners = new Set<() => void>()
+  const state = memoryStore<ReadonlyMap<string, SipaProcessingState>>(new Map())
+  let watchers = 0
   const buckets = new Map<string, () => void>()
   let stopDeposits: (() => void) | undefined
   let emitted = ""
@@ -228,7 +230,7 @@ export function createSipaProcessingObserver(
     const id = record.sipaAddress.toLowerCase()
     if (!isAwaitingSweep(record)) {
       // An unfunded record keeps what a sweep's live read confirmed.
-      if (!isUnfundedSipaDeposit(record as SIPADepositRecord)) {
+      if (!isUnfundedSipaDeposit(record as SipaDeposit)) {
         blockers.delete(id)
         liveFunding.delete(id)
       }
@@ -260,11 +262,11 @@ export function createSipaProcessingObserver(
     return { state: blocker ? { reason, blocker } : { reason }, key }
   }
 
-  /** Recomputes every pending deposit, follows the buckets they need and tells subscribers about a change. */
-  function update(notify = true) {
+  /** Recomputes every pending deposit, follows the buckets they need and publishes a change. */
+  function update() {
     const states: [string, SipaProcessingState][] = []
     const keys = new Map<string, PortalCapacityKey>()
-    for (const stored of options.deposits.list()) {
+    for (const stored of options.deposits.get().records) {
       const record = subjectOf(stored.sipaAddress)
       if (!record) continue
       const computed = compute(record)
@@ -272,7 +274,7 @@ export function createSipaProcessingObserver(
       states.push([record.sipaAddress.toLowerCase(), computed.state])
       if (computed.key) keys.set(portalCapacityKeyId(computed.key), computed.key)
     }
-    if (listeners.size === 0) return
+    if (watchers === 0) return
     for (const [id, stop] of buckets) {
       if (keys.has(id)) continue
       stop()
@@ -290,10 +292,13 @@ export function createSipaProcessingObserver(
     )
     if (serialized === emitted) return
     emitted = serialized
-    if (notify) for (const listener of [...listeners]) listener()
+    state.set(new Map(states))
   }
 
-  const recordOf = (sipaAddress: string) => options.deposits.get(sipaAddress as Address)
+  const recordOf = (sipaAddress: string) => {
+    const id = sipaAddress.toLowerCase()
+    return options.deposits.get().records.find((r) => r.sipaAddress.toLowerCase() === id)
+  }
 
   /** The stored record with any live funding. `standIn` lets live funding stand for a record the store lacks. */
   const subjectOf = (sipaAddress: string, standIn = false): SipaSweepSubject | undefined => {
@@ -339,6 +344,28 @@ export function createSipaProcessingObserver(
   }
 
   return {
+    states: {
+      get: state.get,
+      subscribe(listener) {
+        const off = state.subscribe(listener)
+        if (watchers++ === 0) {
+          stopDeposits = options.deposits.subscribe(() => update())
+          update()
+        }
+        let done = false
+        return () => {
+          if (done) return
+          done = true
+          off()
+          if (--watchers > 0) return
+          stopDeposits?.()
+          stopDeposits = undefined
+          for (const stop of buckets.values()) stop()
+          buckets.clear()
+          emitted = ""
+        }
+      },
+    },
     stateFor,
     capacityKeyFor(sipaAddress) {
       const record = recordOf(sipaAddress)
@@ -346,21 +373,6 @@ export function createSipaProcessingObserver(
       if (typeof portal === "object") return { status: "known", key: portal.key }
       if (portal === "pending") return { status: "pending" }
       return { status: "unknown", retryable: portal === "failed" }
-    },
-    subscribe(listener) {
-      listeners.add(listener)
-      if (listeners.size === 1) {
-        stopDeposits = options.deposits.onListChanged(() => update())
-        update(false)
-      }
-      return () => {
-        if (!listeners.delete(listener) || listeners.size > 0) return
-        stopDeposits?.()
-        stopDeposits = undefined
-        for (const stop of buckets.values()) stop()
-        buckets.clear()
-        emitted = ""
-      }
     },
     retry: (sipaAddress) => reread(sipaAddress, (store) => store.retry()),
     refreshForSweep: (sipaAddress, live) =>

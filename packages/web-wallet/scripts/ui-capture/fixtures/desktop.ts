@@ -1,5 +1,5 @@
 import { WALLET_TOKEN_SYMBOL } from "@obsidion/core/constants"
-import { SIPADepositStore, type SIPADepositRecord } from "@obsidion/front-core"
+import type { SipaDeposit } from "@obsidion/front-core"
 import { Fr } from "@aztec-labs/aztec.js/fields"
 import { deriveRecoveryAddress } from "@obsidion/sdk"
 import type { Address } from "viem"
@@ -10,7 +10,7 @@ import {
   DEMO_L2_ADDRESS,
   demoStealthKey,
 } from "../../../src/dev/demoFixtures"
-import { webStorage } from "../../../src/platform/storage/WebStorageAdapter"
+import { session } from "../../../src/session/session"
 import { ROLLUP, SIPA, SIPA_NEXT } from "./data"
 
 // The desktop launcher's approved send that never reports a hash. `unresolved-funded` also lands the late transfer.
@@ -44,12 +44,12 @@ export function installDesktopBridge(): void {
   delete (window as { ethereum?: unknown }).ethereum
 }
 
-const store = () => SIPADepositStore.get(webStorage)
+const store = () => session().sipaDeposits
 
 /** Discovery's record of a published address before anything was sent to it. */
 export async function seedPublishedAddress(sipaAddress: Address): Promise<void> {
   const messageSecret = Fr.random()
-  const record: SIPADepositRecord = {
+  const record: SipaDeposit = {
     sipaAddress,
     recipientL2Address: DEMO_L2_ADDRESS,
     messageSecret: messageSecret.toString(),
@@ -62,8 +62,7 @@ export async function seedPublishedAddress(sipaAddress: Address): Promise<void> 
     phase: "broadcast",
     startTime: Date.now(),
   }
-  const { phase, ...rest } = record
-  await store().upsert(sipaAddress, { ...rest, phase }, { ...rest, networkId: ROLLUP })
+  await store().adopt({ ...record, networkId: ROLLUP })
 }
 
 /** Addresses whose send ended without a hash; the pool never hands them out again. */
@@ -78,11 +77,14 @@ export function sendUnresolved(target: Address): void {
   unresolved.add(target.toLowerCase())
   if (desktopState() !== "unresolved-funded") return
   setTimeout(() => {
-    void store().upsert(target, {
-      phase: "funded",
-      amount: "24",
-      fundingTxHash: `0x${"0d".repeat(32)}`,
-      fundingFromAddress: DEMO_L1_FUNDER,
+    void store().apply(target, {
+      type: "observed",
+      fields: {
+        phase: "funded",
+        amount: "24",
+        fundingTxHash: `0x${"0d".repeat(32)}`,
+        fundingFromAddress: DEMO_L1_FUNDER,
+      },
     })
   }, LATE_TRANSFER_MS)
 }

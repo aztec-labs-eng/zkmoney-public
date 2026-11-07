@@ -1,3 +1,4 @@
+import { WalletError } from "@obsidion/core/errors"
 import { describe, expect, it, vi } from "vitest"
 import {
   baseMetricsId,
@@ -201,6 +202,15 @@ describe("failureCode", () => {
 
   it("accepts non-Error throws", () => {
     expect(failureCode("Google sign-in was cancelled")).toBe("signin_cancelled")
+  })
+
+  it("names a locked wallet by its code", () => {
+    expect(failureCode(new WalletError("account.locked", "no session keys"))).toBe("wallet_locked")
+  })
+
+  it("names a tag the passkey did not claim by its code", () => {
+    const err = new WalletError("onboarding.tagMismatch", undefined, { data: { handle: "bob" } })
+    expect(failureCode(err)).toBe("tag_mismatch")
   })
 
   it("maps a backup passkey whose envelope did not open by the error's name", () => {

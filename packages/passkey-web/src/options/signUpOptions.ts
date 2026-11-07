@@ -10,6 +10,8 @@ export type SignUpChoice = "1password" | "computer" | "phone" | "key" | "phone-o
 
 export type KeyWarning = typeof SIGN_UP_SHEET_COPY.keyWarning
 
+export type HelloWarning = typeof SIGN_UP_SHEET_COPY.computer.helloWarning
+
 export type SignUpOption = {
   id: SignUpChoice
   label: string
@@ -17,6 +19,8 @@ export type SignUpOption = {
   advice: readonly string[]
   /** On every option that can reach a key, which keeps the only copy. */
   keyWarning?: KeyWarning
+  /** On This computer where the row admits Windows Hello, which keeps the only copy too. */
+  helloWarning?: HelloWarning
   /** The managers behind this option; an early pick is re-checked against it. */
   supported: readonly string[]
 }
@@ -147,9 +151,11 @@ export function signUpOptionsFor(input: SignUpOptionsInput): SignUpOptions {
       label: computerLabel,
       description: `${copy.computer.savedIn} ${either(managers)}`,
       advice: lines(
+        row?.windows10 && copy.computer.windows10,
         script ? localCopy.extension : listsOnePassword && !mac && localCopy.installExtension,
         refusedOften && localCopy.refusedOften,
       ),
+      ...(own.includes("windows_hello") ? { helloWarning: copy.computer.helloWarning } : {}),
       supported: managers,
     })
   } else if (macWindow) {

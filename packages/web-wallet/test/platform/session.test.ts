@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import {
   createActivity,
   encodeRecord,
+  loadRecords,
   memoryBackend,
   openDatabase,
   scannedRow,
@@ -16,8 +17,9 @@ import {
   switchSession,
   type Namespace,
   type Session,
-} from "../../src/platform/session"
-import { pageSessionDeps } from "../../src/platform/sessionDeps"
+} from "../../src/session/session"
+import { pageSessionDeps } from "../../src/app/sessionDeps"
+import { testPage } from "../support/page"
 
 // A page serves one account: every test here opens "a" as it.
 const a = { id: "a", prefix: "a." }
@@ -48,17 +50,18 @@ const pending = (id: string) => ({
 const commitRow = (db: Database, prefix: string, id: string) =>
   createActivity({ db: db.scoped(prefix) }).insertPending(pending(id))
 
+const deps = pageSessionDeps(testPage())
 const opened: Session[] = []
 /** The namespace's session over `db`, not current. */
 const sessionOn = (namespace: Namespace, db: Database) => {
   // Assigned, not spread: the deps' getters read config only when the session does.
-  const open = openSession(Object.assign(pageSessionDeps(namespace), { database: db }))
+  const open = openSession(Object.assign(deps(namespace), { database: db }))
   opened.push(open)
   return open
 }
 
 /** The database `switchSession` opens sessions over. */
-const pageDb = () => pageSessionDeps(anonymous).database
+const pageDb = () => deps(anonymous).database
 
 /** A fresh page's storage. */
 const page = () => {
@@ -81,27 +84,27 @@ describe("switchSession", () => {
   })
 
   it("returns the open session for the same account", () => {
-    const first = switchSession(a)
-    expect(switchSession(a)).toBe(first)
+    const first = switchSession(a, deps)
+    expect(switchSession(a, deps)).toBe(first)
     expect(session()).toBe(first)
   })
 
   it("never opens another account's session on this page, and says so", () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {})
-    const first = switchSession(a)
-    expect(switchSession({ id: "b", prefix: "b." })).toBe(first)
+    const first = switchSession(a, deps)
+    expect(switchSession({ id: "b", prefix: "b." }, deps)).toBe(first)
     // Signed out in between: the page still served "a".
     closeSession()
-    const open = switchSession(anonymous)
-    expect(switchSession({ id: "b", prefix: "b." })).toBe(open)
+    const open = switchSession(anonymous, deps)
+    expect(switchSession({ id: "b", prefix: "b." }, deps)).toBe(open)
     expect(openedSession.get()?.namespace.id).toBeNull()
     expect(error).toHaveBeenCalledTimes(2)
   })
 
   it("replaces the anonymous session with the first account's, and the old one stops hearing", async () => {
-    const before = switchSession(anonymous)
+    const before = switchSession(anonymous, deps)
     await vi.waitFor(() => expect(before.activity.view.get().loaded).toBe(true))
-    const after = switchSession(a)
+    const after = switchSession(a, deps)
     expect(after === before).toBe(false)
     expect(session()).toBe(after)
     await commitRow(pageDb(), "", "op-late")
@@ -134,7 +137,7 @@ describe("switchSession", () => {
 
   it("hears its namespace until it closes", async () => {
     const db = pageDb()
-    const open = switchSession(a)
+    const open = switchSession(a, deps)
     await vi.waitFor(() => expect(open.activity.view.get().loaded).toBe(true))
     await commitRow(db, "a.", "op-1")
     expect(open.activity.view.get().records.map((r) => r.id)).toEqual(["op-1"])
@@ -142,6 +145,39 @@ describe("switchSession", () => {
     await commitRow(db, "a.", "op-2")
     expect(open.activity.view.get().records.map((r) => r.id)).toEqual(["op-1"])
     expect(session).toThrow()
+  })
+
+  it("carries an account's registrations with the page's side keys, and refuses a visitor's", async () => {
+    const { backend, db } = page()
+    const sipa = "0x00000000000000000000000000000000000000a1"
+    const record = {
+      account: "0xacct",
+      tag: "alice",
+      nameHash: "0x11",
+      l2Address: "0x22",
+      l1ChainId: 1,
+      sipaAddress: sipa,
+      fee: "10",
+      beneficiary: "0xbe",
+      depositToken: "0xdai",
+      broadcast: true,
+      phase: "awaiting_deposit",
+      retries: 0,
+      startTime: 1,
+    }
+    backend.entries.set(
+      "a.@obsidion/pending-registration/records",
+      JSON.stringify({ "0xacct": record }),
+    )
+    backend.entries.set("webwallet.registration.confirmed", JSON.stringify([sipa]))
+
+    const account = sessionOn(a, db).registrations
+    expect(await loadRecords(account.view)).toEqual([{ ...record, tagConfirmed: true }])
+    const visitor = sessionOn(anonymous, db).registrations
+    await visitor.ready
+    await expect(visitor.apply(sipa, { type: "retried" })).rejects.toMatchObject({
+      code: "wallet.notReady",
+    })
   })
 
   describe("the bell's rows", () => {

@@ -11,6 +11,7 @@ import {
 } from "@obsidion/core/oxide"
 import { MULTICALL3_ADDRESS, readDeploymentTable } from "@obsidion/sdk"
 import {
+  WalletError,
   deploymentScanRange,
   fetchSignupResolverRecord,
   loadOxideManifestTuple,
@@ -36,6 +37,9 @@ export const oxideProfileKey = (config: WebWalletConfig) =>
 
 /** Dev demo seam: satisfy the profile from a fixture so nothing dials the env registry. */
 export function primeOxideTuple(config: WebWalletConfig, tuple: OxideEnvTuple): void {
+  // The manifest parser's check, which a fixture skips: the SIPA derivation binds to it.
+  if (!/^\d+$/.test(tuple.rollupVersion))
+    throw new WalletError("config.invalid", `non-numeric rollupVersion "${tuple.rollupVersion}"`)
   cached = { key: oxideProfileKey(config), tuple: Promise.resolve(tuple) }
 }
 

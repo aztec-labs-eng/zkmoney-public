@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import type { Address, Hash } from "viem"
 
-import type { SIPADepositRecord } from "../../src/core/services/deposits/SIPADepositStore"
+import type { SipaDeposit } from "../../src/engine/sipaDeposits"
 import {
   requestLinkedSipaAddresses,
   sipaDepositFulfillsRequest,
@@ -10,7 +10,6 @@ import type { StoredRequest } from "../../src/engine/requests"
 
 const SIPA = "0xAbCdEf0123456789abcdef0123456789abcdef01" as Address
 const OTHER = "0x0000000000000000000000000000000000000001" as Address
-const CLAIM = "0x" + "ab".repeat(32)
 const SWEEP = ("0x" + "cd".repeat(32)) as Hash
 const NET = "1000000000000000000"
 
@@ -31,7 +30,7 @@ function pendingLink(overrides: Partial<StoredRequest> = {}): StoredRequest {
   }
 }
 
-function deposit(overrides: Partial<SIPADepositRecord> = {}): SIPADepositRecord {
+function deposit(overrides: Partial<SipaDeposit> = {}): SipaDeposit {
   return {
     sipaAddress: SIPA,
     recipientL2Address: "0x1",
@@ -44,7 +43,6 @@ function deposit(overrides: Partial<SIPADepositRecord> = {}): SIPADepositRecord 
     phase: "claimed",
     startTime: 1,
     netAmount: NET,
-    claimTxHash: CLAIM,
     sweepTxHash: SWEEP,
     ...overrides,
   }

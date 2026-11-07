@@ -369,7 +369,7 @@ describe("saving", () => {
     const n = await open(backend)
     const sources = memoryStore<NotificationSources>({
       rows: [],
-      deposits: { records: [], hydrated: true },
+      deposits: { records: [], loaded: true, failed: false },
       withdrawals: { records: [], hydrated: true },
       upgrades: { items: [], recipients: new Set<string>(), loaded: true },
       oldVersionWithdrawals: [],
@@ -566,7 +566,7 @@ describe("watchNotifications", () => {
 
   const quiet = (rows: readonly Transaction[]): NotificationSources => ({
     rows,
-    deposits: { records: [], hydrated: true },
+    deposits: { records: [], loaded: true, failed: false },
     withdrawals: { records: [], hydrated: true },
     upgrades: { items: [], recipients: new Set<string>(), loaded: true },
     oldVersionWithdrawals: [],

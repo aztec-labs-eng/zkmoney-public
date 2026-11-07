@@ -30,7 +30,7 @@ vi.mock("@obsidion/sdk", async (importOriginal) => ({
     return { request: async () => ({ calls: [] }) }
   },
 }))
-vi.mock("../../../src/features/onboarding/claimSponsorship", () => ({
+vi.mock("../../../src/features/registration/claimSponsorship", () => ({
   claimSponsorContext: async () => ({ fpcAddress: "0xfpc", railId: 1, policy: {} }),
   noteSubscribed: () => {},
 }))
@@ -44,7 +44,7 @@ const { decodeLinkFragment } = await import("@obsidion/sdk")
 const { useShortRequestLink } = await import("../../../src/features/requests/shortRequestLink")
 const { getOperationStore } = await import("../../../src/features/operations/operations")
 const { operationEntry } = await import("../../support/operations")
-const { closeSession } = await import("../../../src/platform/session")
+const { closeSession } = await import("../../../src/session/session")
 const { openTestSession } = await import("../../support/session")
 
 /** The bell's record of the latest publish. */

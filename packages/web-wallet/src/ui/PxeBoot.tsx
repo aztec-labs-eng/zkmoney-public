@@ -2,11 +2,13 @@ import {
   L1IdentityUnavailableError,
   NodeIdentityMismatchError,
   PortalIdentityMismatchError,
+  memoryStore,
   profileRollupSkew,
   useStore,
   verifyNodeIdentity,
   type NodeIdentityField,
   type NodeIdentityInfo,
+  type IdentityView,
 } from "@obsidion/front-core"
 import { readPortalChainIdentity } from "@obsidion/sdk"
 import { L1RpcSimulationUnsupportedError, assertL1RpcSimulates } from "@obsidion/core/oxide"
@@ -27,7 +29,7 @@ import {
 import { getConfig, type WebWalletConfig } from "../config/env"
 import { l1PublicClient } from "../config/oxideTuple"
 import { outOfMemoryCopy, showReportableError } from "../errors/errorModal"
-import { loadWalletIdentity } from "../features/identity/walletIdentity"
+import { openedSession } from "../session/session"
 import { networkHasSwapStack } from "../features/withdraw/freshAddressAvailability"
 import { fireEvent } from "../lib/analytics"
 import { createExternalState } from "../lib/externalState"
@@ -77,6 +79,7 @@ export function usePxeBoot(): PxeBootState {
   const target = useContext(PxeBootContext)
   const state = useStore(pageWallet())
   const demanded = useStore(walletDemanded)
+  const identity = useStore(useOpenIdentity())
   const bootError = useMemo(
     () => (state.status === "failed" ? describeBootError(state.error) : undefined),
     [state],
@@ -85,7 +88,7 @@ export function usePxeBoot(): PxeBootState {
     return { bootStatus: "ready", retryBoot, demandBoot }
   }
   if (state.status === "failed") return { bootStatus: "error", bootError, retryBoot, demandBoot }
-  const waits = target !== undefined && !demanded && bootWaitsForDemand()
+  const waits = target !== undefined && !demanded && bootWaitsForDemand(identity)
   return { bootStatus: waits ? "idle" : "booting", retryBoot, demandBoot }
 }
 
@@ -325,12 +328,17 @@ export type PxeBootTarget =
 export const isPayPath = (pathname: string): boolean =>
   /^\/(?:pay\/[^/]+|request|r)\/?$/.test(pathname)
 
+const NO_IDENTITY = memoryStore<IdentityView>({ value: null, loaded: true, failed: false }).readonly
+
+/** The open session's identity; none before the active tab opens one. */
+const useOpenIdentity = () => useStore(openedSession)?.identity ?? NO_IDENTITY
+
 /**
  * A signed-out visitor on a pay page shows nothing the PXE serves, so the boot waits until a screen
- * needs it. Reads the wallet database, so only once it is open.
+ * needs it. An identity that cannot be read is not a visitor's.
  */
-export function bootWaitsForDemand(pathname = location.pathname): boolean {
-  return isPayPath(pathname) && !loadWalletIdentity()
+export function bootWaitsForDemand(identity: IdentityView, pathname = location.pathname): boolean {
+  return isPayPath(pathname) && !identity.value && !identity.failed
 }
 
 /** Reports a failed boot of the page wallet; `pxeBoot` is the store the active tab opened. */
@@ -351,9 +359,11 @@ export function PxeBootProvider({
 /** Inside the router: demands the boot on any route where it does not wait. */
 export function BootDemand() {
   const { pathname } = useLocation()
+  const identity = useOpenIdentity()
+  // On a route change only: an identity saved on a pay page waits for the screen that needs it.
   useEffect(() => {
-    if (!bootWaitsForDemand(pathname)) demandBoot()
-  }, [pathname])
+    if (!bootWaitsForDemand(identity.get(), pathname)) demandBoot()
+  }, [identity, pathname])
   return null
 }
 

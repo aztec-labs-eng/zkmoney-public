@@ -49,7 +49,7 @@ applies it as a whole-bundle pass, which the dev server has no equivalent of).
 
 To profile the deployed bundle itself — CDN asset latency included, which is the one thing the local
 loop cannot show — bake the flag into a deploy: `VITE_PROFILER` alongside the other `VITE_*` in the
-build step of `deploy-web-wallet.yml` (staging only) or `ci-web-wallet-preview.yml`, whose previews
+deploy step of `deploy-new-version.yml` (staging only) or `ci-web-wallet-preview.yml`, whose previews
 already share staging's backend. Never on the production environment.
 
 Every report stamps the network, node URL, app version, origin, core count and whether zone tracking

@@ -1,17 +1,8 @@
-import { useRef, useState } from "react"
 import { installedCredentials } from "@obsidion/front-core"
 import { type AccountKey, type SignInKeyChoice, signInKeyChoices } from "@obsidion/passkey-web"
 import type { AccountPasskeys } from "../../platform/auth/WebAlphaAuthService"
-import {
-  type RememberedAccount,
-  type WalletKey,
-  authenticatorFor,
-  walletKeysFor,
-} from "../../platform/auth/WebPasskeyIdentityMap"
-import { resolveSignInTag } from "../contacts/registryResolution"
-import { lookupPasskeyByTag } from "./findPasskeyByTag"
+import { type RememberedAccount, authenticatorFor } from "../../platform/auth/WebPasskeyIdentityMap"
 import type { SignInHints } from "./oxideOnboarding"
-import type { RowKeys } from "./steps/ConfirmTagModal"
 
 /** What a tap pins the sign-in to: the tag's account and keys as L1 lists them, or a remembered credential. */
 export type Found = {
@@ -31,7 +22,7 @@ export type KeyOption = SignInKeyChoice & { target: Found }
 export type AccountFound = Found & { hints: AccountPasskeys }
 
 /** A sign-in pinned to a credential this browser holds an opening record for. */
-const recordTarget = (
+export const recordTarget = (
   { tag, l2Address }: Pick<Found, "tag" | "l2Address">,
   credentialId: string,
 ): Found => ({ tag, l2Address, hints: { credentialId, chosen: true } })
@@ -42,13 +33,14 @@ const recordTarget = (
  * holds an opening record for is pinned by that record instead.
  */
 export function keyOptions(
+  map: string | null,
   found: AccountFound,
   recorded?: readonly AccountKey[],
 ): KeyOption[] | undefined {
   const installed = installedCredentials(found.hints.keys)
   const choices = signInKeyChoices(
     installed.map(({ credentialId, backup, key }) => {
-      const known = authenticatorFor(key.pubkeyHex)
+      const known = authenticatorFor(map, key.pubkeyHex)
       return { credentialId, backup, aaguid: known?.prfAaguid, usedAt: known?.usedAt }
     }),
   )
@@ -79,80 +71,4 @@ export function oneRowPerWallet(
     }
   }
   return rows.filter((row) => kept.get(row.l2Address.toLowerCase())?.row === row)
-}
-
-/** A remembered row's keys as the screen holds them, each option with its sign-in. */
-type RowChoice = Omit<RowKeys, "credentialId" | "choices"> & {
-  account: RememberedAccount
-  options: KeyOption[]
-}
-
-/**
- * The selected remembered row's keys, shown in place of Login. Records this browser holds name them
- * at once; a key it holds none for is found by reading the row's tag, so its option pins the tag's
- * account. Only the latest read lands.
- */
-export function useRowKeys(rpId: string) {
-  const [choice, setChoice] = useState<RowChoice>()
-  const gen = useRef(0)
-
-  const open = (account: RememberedAccount, keys: WalletKey[]) => {
-    const mine = ++gen.current
-    const row = { tag: account.usertag, l2Address: account.l2Address }
-    const recorded = keys.flatMap((k) => (k.record ? [k.record] : []))
-    if (recorded.length === keys.length) {
-      const options = (signInKeyChoices(recorded) ?? []).map((c) => ({
-        ...c,
-        target: recordTarget(row, c.credentialId),
-      }))
-      setChoice({ account, options })
-      return
-    }
-    const failed = () => mine === gen.current && setChoice({ account, options: [], failed: true })
-    setChoice({ account, options: [], reading: true })
-    void lookupPasskeyByTag(account.usertag, { resolveTag: resolveSignInTag }).then((read) => {
-      if (mine !== gen.current) return
-      if (read.kind !== "resolved") return failed()
-      const options = keyOptions(
-        {
-          ...row,
-          l2Address: read.l2Address,
-          hints: { account: read.account, l2Address: read.l2Address, keys: read.keys },
-          moreKeys: read.moreKeys,
-        },
-        recorded,
-      )
-      if (!options) return failed()
-      setChoice({ account, options })
-    }, failed)
-  }
-
-  const close = () => {
-    gen.current++
-    setChoice(undefined)
-  }
-
-  const again = () => {
-    if (!choice) return
-    const keys = walletKeysFor(rpId, choice.account.credentialId)
-    if (keys && keys.length > 1) open(choice.account, keys)
-  }
-
-  const rowKeys: RowKeys | undefined = choice && {
-    credentialId: choice.account.credentialId,
-    choices: choice.options,
-    reading: choice.reading,
-    failed: choice.failed,
-  }
-
-  return {
-    /** The selected row's account, when one is selected. */
-    selected: choice?.account,
-    rowKeys,
-    open,
-    close,
-    again,
-    optionFor: (credentialId: string) =>
-      choice?.options.find((o) => o.credentialId === credentialId),
-  }
 }

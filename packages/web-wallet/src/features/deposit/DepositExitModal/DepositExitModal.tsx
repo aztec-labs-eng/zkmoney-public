@@ -15,9 +15,10 @@ import { isAddress, type Address, type Hex } from "viem"
 import {
   depositAmounts,
   sipaSweepAllowed,
-  type SIPADepositRecord,
+  type SipaDeposit,
   type SipaFundingToken,
   useResource,
+  useStore,
   WalletError,
 } from "@obsidion/front-core"
 import {
@@ -30,6 +31,7 @@ import {
 } from "@obsidion/web-ds"
 import { getConfig, l1ChainFor } from "../../../config/env"
 import { showErrorModal, showReportableError } from "../../../errors/errorModal"
+import { errorMessage } from "../../../errors/catalog"
 import { failureCode, fireEvent, lapTimer } from "../../../lib/analytics"
 import { passkeyTelemetry } from "../../../lib/passkeyTelemetry"
 import { isDesktopL1SubmitActive } from "../../../platform/desktopBridge"
@@ -44,14 +46,15 @@ import {
   type PasskeyAttemptHandle,
 } from "@obsidion/passkey-web"
 import { GateStep } from "../../identity/PhoneSteps"
-import { reusePasskeyAccount } from "../../onboarding/oxideOnboarding"
-import { reloadIfSessionSwitched } from "../../onboarding/sessionReload"
+import { reusePasskeyAccount } from "../../identity/passkeyAccount"
+import { reloadIfSessionSwitched } from "../../../session/sessionReload"
 import { canManualRegistrationSweep, type RecoveryReason } from "@obsidion/front-core"
-import { manualRegistrationSweep } from "../../onboarding/registrationSweep"
-import { registrationRecordForSipa } from "../../onboarding/webRegistration"
-import { isWalletRejection, useL1Wallet } from "../l1Wallet"
-import { recoverDeposit, type L1ExitStage } from "../sipaRecovery"
-import { AlreadySweptError, selfSweep, SweepRefusedError } from "../sipaSweep"
+import { manualRegistrationSweep } from "../../registration/registrationSweep"
+import { registrationRecordForSipa } from "../../registration/webRegistration"
+import { isWalletRejection, useL1Wallet } from "../../../session/l1Wallet"
+import { recoverDeposit } from "../recovery/sipaRecovery"
+import type { L1ExitStage } from "../../sipa/l1ExitChannels"
+import { selfSweep, SweepRefusedError } from "../../sipa/sipaSweep"
 import { unsweepableCopy } from "../unsweepableCopy"
 import {
   useWalletPrompt,
@@ -69,9 +72,9 @@ import {
   settlementSymbol,
   settlementToken,
   useDepositTokens,
-} from "../loadDepositFacts"
+} from "../../sipa/loadDepositFacts"
 import { useRowTxAmountCap } from "../../token/useTxAmountCap"
-import { useSession } from "../../../platform/session"
+import { useSession, signedInAccount } from "../../../session/session"
 import styles from "./DepositExitModal.module.css"
 import copy from "./DepositExitModal.copy"
 import { fmt } from "../../../lib/fmt"
@@ -110,7 +113,7 @@ export function DepositExitModal({
   onRecovered,
   onClose,
 }: {
-  record: SIPADepositRecord
+  record: SipaDeposit
   /** The recovery exit's grounds, or null when only the sweep is on offer. */
   reason: RecoveryReason | null
   /** Whether the sheet opens with the sweep on offer. */
@@ -129,10 +132,16 @@ export function DepositExitModal({
   const txAmountCap = useRowTxAmountCap(settlementToken(depositTokens, record.tokenAddress))
   const bridgeMode = isDesktopL1SubmitActive()
   const l1 = useL1Wallet({ expectedChainId: config.l1ChainId, rpcUrl: config.l1RpcUrl })
-  const obsidionWallet = useResource(useSession().wallet)
+  const own = useSession()
+  const { auth } = own
+  const obsidionWallet = useResource(own.wallet)
   const { copied, copy: copyLink } = useCopy()
-  // Routes the sweep action; see registrationRecordForSipa for why registration SIPAs differ.
-  const registration = registrationRecordForSipa(record.sipaAddress)
+  // Routes the sweep action; see registrationRecordForSipa for why registration SIPAs differ. The
+  // submit reads the records again, and holds while they cannot be read.
+  const unread = useStore(own.registrations.view, (view) => view.failed)
+  const registration = unread
+    ? null
+    : registrationRecordForSipa(own.registrations, record.sipaAddress)
 
   const [destination, setDestination] = useState("")
   const [phase, setPhase] = useState<"form" | "working" | "done">("form")
@@ -246,7 +255,7 @@ export function DepositExitModal({
     // while the sheet is open, and a stale record would sign a doomed sweep.
     const runRegistrationSweep = async () => {
       if (!obsidionWallet) throw new WalletError("wallet.notReady")
-      const reg = registrationRecordForSipa(record.sipaAddress)
+      const reg = registrationRecordForSipa(own.registrations, record.sipaAddress)
       if (!reg || !canManualRegistrationSweep(reg))
         throw new WalletError("deposit.registrationMoved")
       op.current?.abort()
@@ -255,18 +264,26 @@ export function DepositExitModal({
       const signIn = passkeyTelemetry.begin({ ceremony: "unlock", flow: "deposit" })
       attemptRef.current = signIn
       const keys = await signIn.run((own) =>
-        reusePasskeyAccount(obsidionWallet, reg.l2Address, undefined, gate, signal, own),
+        reusePasskeyAccount(
+          obsidionWallet,
+          { auth, accounts: signedInAccount },
+          reg.l2Address,
+          undefined,
+          gate,
+          signal,
+          own,
+        ),
       )
       // The page is reloading: nothing settles before it goes.
-      if (reloadIfSessionSwitched(null, reg.l2Address)) return new Promise<never>(() => {})
-      return manualRegistrationSweep(reg, { keys, ...opts, onNotice: setNotice })
+      if (reloadIfSessionSwitched(own, reg.l2Address)) return new Promise<never>(() => {})
+      return manualRegistrationSweep(own, reg, { keys, ...opts, onNotice: setNotice })
     }
     try {
       request = prompt.begin()
       const hash =
         next === "recover"
           ? await recoverDeposit(record, opts)
-          : registration
+          : registrationRecordForSipa(own.registrations, record.sipaAddress)
           ? await runRegistrationSweep()
           : await selfSweep(record, opts)
       setTxHash(hash)
@@ -294,15 +311,12 @@ export function DepositExitModal({
         return
       }
       if (e instanceof SweepRefusedError) {
-        setRefused(e.message)
+        setRefused(errorMessage(e))
         return
       }
-      if (e instanceof AlreadySweptError) {
+      if (e instanceof WalletError && e.code === "deposit.alreadySwept") {
         onClose()
-        showErrorModal({
-          title: copy.errors.alreadySwept,
-          message: e.message, // slice-check-ignore: the error's own words, as before; only the title moved
-        })
+        showErrorModal({ title: copy.errors.alreadySwept, message: errorMessage(e) })
         return
       }
       showReportableError(

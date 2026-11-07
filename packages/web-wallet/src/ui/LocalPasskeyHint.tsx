@@ -9,8 +9,9 @@ import {
 } from "@obsidion/passkey-web"
 import { provingProgress } from "@obsidion/proving-progress"
 import { type AnswerRecord, answerRecordFor } from "../platform/auth/WebPasskeyIdentityMap"
-import { getActiveCredentialId } from "../platform/storage/activeStorage"
+import type { DeviceState } from "../platform/storage/deviceKeys"
 import { deviceStorage } from "../platform/storage/rollupStorage"
+import { useSession } from "../session/session"
 
 const SHOWN_KEY = "webwallet.local-passkey-hint-shown"
 /** Signature attempts the line accompanies before it stops by itself. */
@@ -38,15 +39,13 @@ type Readers = {
   osFamily: () => OsFamily
 }
 
-const LIVE: Readers = {
+/** The readers over the page's saved device keys. */
+export const liveHintReaders = ({ credentialId, passkeyMap }: DeviceState): Readers => ({
   posture: currentDevicePosture,
   shown: shownCount,
-  record: () => {
-    const credentialId = getActiveCredentialId()
-    return credentialId ? answerRecordFor(credentialId) : undefined
-  },
+  record: () => (credentialId ? answerRecordFor(passkeyMap, credentialId) : undefined),
   osFamily: () => currentUserAgentInfoSync().osFamily,
-}
+})
 
 /**
  * Whether to tell a laptop user that this computer's copy of the passkey may answer. `remote` says
@@ -54,7 +53,7 @@ const LIVE: Readers = {
  * the copy, not proof one exists: a known hardware key and an iCloud Keychain passkey off a Mac are
  * left out, since neither can have one here.
  */
-export function localPasskeyHintApplies(read: Readers = LIVE): boolean {
+export function localPasskeyHintApplies(read: Readers): boolean {
   if (read.posture() !== "laptop" || read.shown() >= MAX_SHOWN) return false
   const record = read.record()
   if (record?.answered !== "remote") return false
@@ -74,9 +73,10 @@ export const localPasskeyHintCopy = (osFamily: OsFamily) =>
  * sits beside is one showing; it stays through the last one.
  */
 export function LocalPasskeyHint() {
+  const { device } = useSession()
   const [show, setShow] = useState(() => {
     try {
-      return localPasskeyHintApplies()
+      return localPasskeyHintApplies(liveHintReaders(device.get()))
     } catch {
       return false
     }

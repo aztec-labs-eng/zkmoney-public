@@ -1,8 +1,8 @@
 import { useSyncExternalStore } from "react"
-import * as actual from "../../../src/features/deposit/l1Wallet"
+import * as actual from "../../../src/session/l1Wallet"
 import { DEMO_L1_ACCOUNT } from "../../../src/dev/fakeL1Rpc"
 import { fixtureState, pause } from "./control"
-export * from "../../../src/features/deposit/l1Wallet"
+export * from "../../../src/session/l1Wallet"
 let connected = false
 // The stand-in picker: up from the connect click until the fake wallet lands.
 let picking = false

@@ -5,7 +5,7 @@
 import { useEffect, useSyncExternalStore } from "react"
 import { useResource } from "@obsidion/front-core"
 import { createExternalState } from "../../lib/externalState"
-import { useSession } from "../../platform/session"
+import { useSession } from "../../session/session"
 
 const POLL_MS = 30_000
 

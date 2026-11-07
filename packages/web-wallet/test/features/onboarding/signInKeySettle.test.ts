@@ -14,6 +14,10 @@ import { PhoneUnreachableError } from "@obsidion/passkey-web"
 import { predictAccountAddressLocally } from "@oxide/l1-contracts"
 import { BaseError, RpcRequestError, getContractAddress } from "viem"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { openTestSession } from "../../support/session"
+import { testCore } from "../../support/page"
+import { session } from "../../../src/session/session"
+import { recordingAccounts } from "../../support/accountRecord"
 
 const h = vi.hoisted(() => ({
   beginRecovery: vi.fn(),
@@ -31,19 +35,18 @@ const h = vi.hoisted(() => ({
   enterTiers: vi.fn(),
 }))
 
-vi.mock("../../../src/platform/auth/useAuthenticator", () => ({
-  getAuthService: () => ({
-    rpId: "localhost",
-    beginRecovery: h.beginRecovery,
-    adoptAccountPasskey: h.adoptAccountPasskey,
-    recoverFromCache: h.recoverFromCache,
-    commitSecret: h.commitSecret,
-    sessionHeld: () => true,
-    sessionAddress: async () => undefined,
-    markRecordsStale: () => {},
-    recordRecoveryMetadata: h.recordRecoveryMetadata,
-  }),
-}))
+const fakeAuth = () => ({
+  rpId: "localhost",
+  device: testCore().device,
+  beginRecovery: h.beginRecovery,
+  adoptAccountPasskey: h.adoptAccountPasskey,
+  recoverFromCache: h.recoverFromCache,
+  commitSecret: h.commitSecret,
+  sessionHeld: () => true,
+  sessionAddress: async () => undefined,
+  markRecordsStale: () => {},
+  recordRecoveryMetadata: h.recordRecoveryMetadata,
+})
 vi.mock("../../../src/config/oxideTuple", () => ({
   getOxideTuple: async () => ({
     accountFactory: `0x${"11".repeat(20)}`,
@@ -66,7 +69,7 @@ const identityReader = {
   readNamePortalRegistry: async () => REGISTRY,
   readFactoryImplementation: async () => getContractAddress({ from: FACTORY, nonce: 1n }),
 }
-vi.mock("../../../src/features/onboarding/oxideGenerations", () => ({
+vi.mock("../../../src/features/registration/oxideGenerations", () => ({
   loadOxideGenerations: async () => ({
     reader: identityReader,
     registry: REGISTRY,
@@ -88,7 +91,6 @@ vi.mock("@obsidion/front-core", async (importOriginal) => {
   h.readInstalledPasskeyKey.mockImplementation(actual.readInstalledPasskeyKey)
   return {
     ...actual,
-    AccountStorage: { get: () => ({ addWebauthnAccount: h.addWebauthnAccount }) },
     createOxideL1Reader: () => ({
       readNameOf: h.installedNameOf,
       getCode: h.getCode,
@@ -102,8 +104,9 @@ vi.mock("@obsidion/front-core", async (importOriginal) => {
   }
 })
 
-const { enterWithPasskey, reusePasskeyAccount, PasskeyMismatchError } = await import(
-  "../../../src/features/onboarding/oxideOnboarding"
+const { enterWithPasskey } = await import("../../../src/features/onboarding/oxideOnboarding")
+const { reusePasskeyAccount, PasskeyMismatchError } = await import(
+  "../../../src/features/identity/passkeyAccount"
 )
 const { GateCancelledError, isGateCancelled } = await import(
   "../../../src/features/identity/ceremonyGate"
@@ -214,6 +217,7 @@ const enter = (
   options: { chooser?: boolean; signal?: AbortSignal; tiers?: AnchorTier[] } = {},
 ) =>
   enterWithPasskey(wallet, config, undefined, {
+    ...signInDeps,
     contractService: {} as never,
     gate,
     tiers: options.tiers ?? registry,
@@ -274,6 +278,15 @@ const drain = () => new Promise((resolve) => setTimeout(resolve, 0))
 const stopHandedToRead = () => h.readInstalledPasskeyKey.mock.calls.at(-1)?.[2]?.stop as AbortSignal
 let warn: ReturnType<typeof vi.spyOn>
 
+const accounts = recordingAccounts((state) => h.addWebauthnAccount(state))
+/** What a sign-in reads beside its request: the account records and the page's auth. */
+const signInDeps = {
+  accounts,
+  get auth() {
+    return session().auth
+  },
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   h.recoverFromCache.mockResolvedValue(undefined)
@@ -289,6 +302,8 @@ afterEach(() => {
   vi.unstubAllGlobals()
   warn.mockRestore()
 })
+
+beforeEach(() => void openTestSession({ auth: fakeAuth() }))
 
 describe("enterWithPasskey settles the key from the L1 accounts", () => {
   it("plain entry, key installed: one gate, one prompt, adopted with that key", async () => {
@@ -328,6 +343,7 @@ describe("enterWithPasskey settles the key from the L1 accounts", () => {
     h.enterTiers.mockReturnValue(registry)
     const { gate } = gateFor()
     await enterWithPasskey(wallet, config, "alice", {
+      ...signInDeps,
       contractService: {} as never,
       gate,
       chooser: true,
@@ -855,7 +871,7 @@ describe("reusePasskeyAccount settles before the address match", () => {
     const begun = unsettled()
     h.beginRecovery.mockResolvedValue(begun)
     const { gate, controller } = gateFor()
-    const keys = await reusePasskeyAccount(wallet, ADDR, undefined, gate)
+    const keys = await reusePasskeyAccount(wallet, signInDeps, ADDR, undefined, gate)
     expect(gate).toHaveBeenCalledTimes(2)
     expect(begun.settle).toHaveBeenCalledWith(undefined, controller.signal)
     expect(keysDerivedUnder()).toEqual(new Set([REAL]))
@@ -868,9 +884,9 @@ describe("reusePasskeyAccount settles before the address match", () => {
     begun.settle.mockResolvedValue(settled(WRONG))
     h.beginRecovery.mockResolvedValue(begun)
     const { gate } = gateFor()
-    await expect(reusePasskeyAccount(wallet, ADDR, undefined, gate)).rejects.toBeInstanceOf(
-      PasskeyMismatchError,
-    )
+    await expect(
+      reusePasskeyAccount(wallet, signInDeps, ADDR, undefined, gate),
+    ).rejects.toBeInstanceOf(PasskeyMismatchError)
     expect(keysDerivedUnder()).toEqual(new Set([WRONG]))
     expectNothingAdopted()
   })
@@ -886,7 +902,7 @@ describe("reusePasskeyAccount settles before the address match", () => {
     }
     begun.settle.mockResolvedValue(result)
     h.beginRecovery.mockResolvedValue(begun)
-    await expect(reusePasskeyAccount(wallet, ADDR, undefined, gate)).rejects.toSatisfy(
+    await expect(reusePasskeyAccount(wallet, signInDeps, ADDR, undefined, gate)).rejects.toSatisfy(
       isGateCancelled,
     )
     expect(h.commitSecret).toHaveBeenCalledTimes(1)
@@ -900,7 +916,7 @@ describe("reusePasskeyAccount settles before the address match", () => {
       controller.abort()
       return 1
     })
-    await expect(reusePasskeyAccount(wallet, ADDR, undefined, gate)).rejects.toSatisfy(
+    await expect(reusePasskeyAccount(wallet, signInDeps, ADDR, undefined, gate)).rejects.toSatisfy(
       isGateCancelled,
     )
     expect(h.commitSecret).toHaveBeenCalledTimes(1)
@@ -949,7 +965,7 @@ describe("adoption builds the account only after the commit", () => {
       return account
     })
     const { gate } = gateFor()
-    await reusePasskeyAccount(wallet, ADDR, undefined, gate)
+    await reusePasskeyAccount(wallet, signInDeps, ADDR, undefined, gate)
     expect(order).toEqual(["commit", "account"])
     expect(h.recordRecoveryMetadata).toHaveBeenCalledWith(
       expect.objectContaining({

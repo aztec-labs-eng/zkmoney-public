@@ -19,7 +19,6 @@ import { loadRecords, timeKey } from "../../../engine/persistentStore"
 import { PENDING, type Activity } from "../../../engine/activity"
 import type { Withdrawals } from "../../../engine/withdrawals"
 import type { WithdrawalRecord } from "../bridge/types"
-import type { SIPADepositStore } from "../deposits/SIPADepositStore"
 import type { Transaction } from "../../../types"
 import { stampedOn } from "../../../types/networkStamp"
 import { makeLimiter } from "../../../utils/makeLimiter"
@@ -43,7 +42,6 @@ export type ReorgTransactionStore = Pick<
   "query" | "byHash" | "apply" | "demoteByTxHash" | "settleByHash"
 >
 export type ReorgWithdrawalStore = Pick<Withdrawals, "all" | "apply">
-export type ReorgSipaStore = Pick<SIPADepositStore, "load" | "list" | "demote">
 
 /** What a pass reads the chain through. */
 export interface ReorgChain {
@@ -56,7 +54,6 @@ export interface ReorgMonitorDeps {
   /** Injected store surfaces; an omitted store's surface is skipped. */
   transactionStorage?: ReorgTransactionStore
   withdrawalStorage?: ReorgWithdrawalStore
-  sipaDepositStore?: ReorgSipaStore
   concurrency?: number
   /** How long a demoted payment may stay un-re-included before the alert fires. */
   graceWindowMs?: number
@@ -159,18 +156,6 @@ export class ReorgMonitor {
       }
     }
 
-    // A tx hash whose receipt regressing undoes the phase it advanced. `gone` covers dropped AND
-    // included-but-reverted — either way the tx's effect is not on chain.
-    const checkRegression = (txHash: string, undo: (gone: boolean) => Promise<void>) =>
-      push(async () => {
-        const receipt = await fetchReceipt(txHash)
-        if (!receipt) return
-        const gone = receipt.status === TxStatus.DROPPED || isRevertedInclusion(receipt)
-        if (gone || receipt.status === TxStatus.PENDING) {
-          await undo(gone)
-        }
-      })
-
     // Withdrawals: post-mine phases re-verify the burn receipt, and a dropped-burn failure stays
     // in the walk so its burn showing up revives it. Phase advancement stays owned by the
     // withdrawal tracker.
@@ -186,22 +171,6 @@ export class ReorgMonitor {
       )
       for (const row of rows) {
         push(() => this.reconcileWithdrawal(withdrawalStore, row, fetchReceipt, summary))
-      }
-    }
-
-    // SIPA deposits: only the L2-derived `claimed` phase is receipt-checkable.
-    const sipaStore = this.deps.sipaDepositStore
-    if (sipaStore) {
-      await sipaStore.load()
-      const rows = sipaStore
-        .list()
-        .filter((r) => r.phase === "claimed" && !!r.claimTxHash && stampedOn(r, networkId))
-      for (const row of rows) {
-        checkRegression(row.claimTxHash as string, async () => {
-          await sipaStore.demote(row.sipaAddress, "pendingClaim")
-          summary.demoted++
-          this.emit({ type: "demoted", txHash: row.claimTxHash as string })
-        })
       }
     }
 

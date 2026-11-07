@@ -128,6 +128,8 @@ export type PasskeyCreation = {
   prfOutput: Uint8Array
   /** A hardware key answered, so this wallet's only copy of the key lives on it. */
   securityKey: boolean
+  /** The flag the backup gate passed; false means no other device can ever read the passkey. */
+  backupEligible: boolean
 }
 
 /**
@@ -225,7 +227,12 @@ export async function runPasskeyCreation(
       localManagers,
       advice,
     )
-    if (!providerAllowed(created.aaguid, securityKey, options.extraProviders)) {
+    // Windows Hello is admitted only where the row names it, never on a phone's route.
+    const windowsHello =
+      !securityKey &&
+      localManagers?.includes("windows_hello") === true &&
+      localManagerFor(created.aaguid) === "windows_hello"
+    if (!windowsHello && !providerAllowed(created.aaguid, securityKey, options.extraProviders)) {
       throw new UnsupportedProviderError(refusalKindFor(created.aaguid, securityKey), {
         providerName: providerNameFor(created.aaguid),
         keyOfferable: true,
@@ -317,7 +324,14 @@ export async function runPasskeyCreation(
       chained,
       slot,
       securityKey,
-      prfOutput: readPrfOrRefuseKey(evidence, slot, securityKey, localManagers, created.aaguid),
+      prfOutput: readPrfOrRefuseKey(evidence, slot, {
+        securityKey,
+        windowsHello,
+        localManagers,
+        createdAaguid: created.aaguid,
+      }),
+      // Read after the gate above, so false is a device-bound passkey the gate exempted.
+      backupEligible: evidence.backupEligible === true,
     }
   } catch (err) {
     forgetCredential(rpId, reported.credentialId)
@@ -330,28 +344,34 @@ export async function runPasskeyCreation(
  * unreadable backup flag and a value in the wrong slot keep their own refusals. A key gets its own
  * refusal; on this computer's route Apple Passwords gets the Apple refusal, whose retry offers the
  * row's other managers; any other platform passkey keeps `NoPrfError`, naming the laptop manager
- * the creation reported.
+ * the creation reported, and Windows Hello's names the row's others.
  */
 function readPrfOrRefuseKey(
   evidence: Evidence,
   slot: PrfSlot,
-  securityKey: boolean,
-  localManagers: readonly LocalManager[] | undefined,
-  createdAaguid: string | undefined,
+  answer: {
+    securityKey: boolean
+    /** Admitted by the row: device-bound by design, so exempt from the backup gate like a key. */
+    windowsHello: boolean
+    localManagers: readonly LocalManager[] | undefined
+    createdAaguid: string | undefined
+  },
 ): Uint8Array {
+  const { securityKey, windowsHello, localManagers } = answer
   try {
-    return prfOutputFor(evidence, slot, securityKey, localManagers)
+    return prfOutputFor(evidence, slot, securityKey || windowsHello, localManagers)
   } catch (err) {
     if (!(err instanceof NoPrfError)) throw err
     if (securityKey) throw new SecurityKeyNoPrfError()
-    const manager = localManagerFor(createdAaguid)
+    const manager = localManagerFor(answer.createdAaguid)
     if (localManagers && manager === "apple") {
       throw new LaptopPasskeyRefusedError(
         "apple",
         localManagers.filter((m) => m !== "apple"),
       )
     }
-    throw new NoPrfError({ localManagers, manager })
+    const others = windowsHello ? localManagers?.filter((m) => m !== manager) : localManagers
+    throw new NoPrfError({ localManagers: others, manager })
   }
 }
 

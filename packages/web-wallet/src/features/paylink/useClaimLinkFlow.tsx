@@ -18,8 +18,7 @@ import { getConfig } from "../../config/env"
 import { TimeoutError } from "../../lib/withTimeout"
 import { showErrorModal, showReportableError } from "../../errors/errorModal"
 import { failureCode, fireEvent } from "../../lib/analytics"
-import { useDepositSkim } from "../onboarding/registrationTerms"
-import { loadWalletIdentity } from "../identity/walletIdentity"
+import { useRegistrationPricing } from "../registration/registrationPricing"
 import { ClaimReviewStep } from "../onboarding/steps/ClaimReviewStep"
 import type { WithdrawStage } from "../withdraw/withdrawGateway"
 import { usePolledChainSeconds } from "./chainTime"
@@ -64,7 +63,7 @@ import {
   commitRegistrationProverTip,
   committedProverTip,
   useRegistrationTerms,
-} from "../onboarding/registrationTerms"
+} from "../registration/registrationTerms"
 import {
   claimLinkToL1,
   planLinkClaimSwap,
@@ -78,18 +77,19 @@ import {
   bindLinkDeposit,
   fundingRefusalCopy,
   loadRegistrations,
-  onTicketRegistrationsChanged,
   releaseLinkDeposit,
   ticketHoldNotice,
   ticketSignupCommitted,
   ticketSignupContinuation,
+  ticketSignupSpent,
   unfundedRegistration,
 } from "./ticketContinuation"
 import type { PaymentLink } from "./types"
 import { useLinkVoucher, usePaylinkDeps } from "./usePaylinkDeps"
 import { useActionGuard, useActionVerdict } from "../actionGate"
 import { balanceMovingCopy } from "../backupPasskey/backupPasskeyCopy"
-import { session, useSession } from "../../platform/session"
+import { session, useSession } from "../../session/session"
+import { errorMessage } from "../../errors/catalog"
 
 export interface ClaimLinkFlow {
   /** The claim prompt, or the sheet for the beats that need the user, when one is on screen. */
@@ -142,19 +142,22 @@ export function resetRunningClaimsForTests(): void {
   autoClaimed.clear()
 }
 
-/** Resolves to the claim tx hash. */
+/** Resolves to the claim tx hash. `saved`: the terms write the burn is priced off. */
 async function runClaim(
   deps: SponsoredPaylinkDeps,
   fragment: string,
   link: PaymentLink,
   onStage: (stage: ClaimStage) => void,
   fundRegistration: boolean,
+  saved: Promise<void>,
   signal?: AbortSignal,
 ): Promise<string> {
   try {
+    await saved
     let zkProof
     if (link.flavor === "email") {
       zkProof = await obtainEmailClaimProof(
+        session().auth,
         deps.account.getAddress(),
         {
           paylinkType: DEFAULT_CONTRACTS.paylinkEmail,
@@ -241,7 +244,8 @@ export function useClaimLinkFlow(
   // This account's registration still waiting for its deposit, when no registration is this
   // link's yet: the link pays it when its note covers the deposit, the fees and the tip.
   // Read off the entered identity too, so the wallet's own boot does not decide the modal.
-  const accountAddress = claimDeps?.account.getAddress().toString() ?? loadWalletIdentity()?.address
+  const entered = useStore(useSession().identity, (s) => s.value?.address)
+  const accountAddress = claimDeps?.account.getAddress().toString() ?? entered
   const unfunded =
     fragment &&
     accountAddress &&
@@ -261,30 +265,24 @@ export function useClaimLinkFlow(
   }, [])
   const [, rerender] = useReducer((n: number) => n + 1, 0)
   // The signup moves under Home: its address publishes, or its burn goes out from another surface.
-  useEffect(() => {
-    if (!fragment) return
-    const offRegistrations = onTicketRegistrationsChanged(rerender)
-    const offBurns = session().withdrawals.list.subscribe(rerender)
-    return () => {
-      offRegistrations()
-      offBurns()
-    }
-  }, [fragment])
+  const { registrations, withdrawals } = useSession()
+  useStore(registrations.view)
+  useStore(withdrawals.list)
   // A claim of this link at work, from this mount or an earlier one.
   const running = useClaimRunning(fragment)
   const failure = useClaimFailure(fragment)
-  // The link's registration moved past the claim, its funds seen and the name confirmed: the link
-  // is done with, and so is its review.
+  // A registration took the link, its claim's burn went out, and it owes the link nothing more: the
+  // link is done with, and so is its review.
   useEffect(() => {
     if (!fragment || !claimDeps || !burnsLoaded || continuation !== null) return
-    if (!ticketSignupCommitted(fragment)) return
+    if (!ticketSignupSpent(fragment, burns)) return
     clearClaimStash(fragment)
     onDone()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fragment, claimDeps, burnsLoaded, continuation === null])
   const navigate = useNavigate()
   const config = getConfig()
-  const sweepFee = useDepositSkim(config, continuation !== null || !!unfunded)
+  const { sweepFee } = useRegistrationPricing(continuation !== null || !!unfunded)
   const [beat, setBeat] = useState<ClaimBeat>()
   const [l1Open, setL1Open] = useState(false)
   const signInAbort = useRef<AbortController | null>(null)
@@ -363,9 +361,7 @@ export function useClaimLinkFlow(
       },
       (e) =>
         showReportableError(e, "paylink:status", {
-          message: `Could not check the link's status: ${
-            e instanceof Error ? e.message : String(e)
-          }`,
+          message: `Could not check the link's status: ${errorMessage(e)}`,
         }),
       (noteRead) => {
         setReadSettled(true)
@@ -413,7 +409,11 @@ export function useClaimLinkFlow(
    * Starts the claim; false when nothing could start. `auto`: Home's own try, retried, which may
    * start off this tab's earlier read.
    */
-  const claim = (auto = false, fundRegistration = continuation !== null): boolean => {
+  const claim = (
+    auto = false,
+    fundRegistration = continuation !== null,
+    saved = reviewSpeed.saved(),
+  ): boolean => {
     if (
       !fragment ||
       !link ||
@@ -460,6 +460,7 @@ export function useClaimLinkFlow(
           if (live() && s !== "proving" && s !== "submitting") setBeat(s)
         },
         fundRegistration,
+        saved,
         signIn.signal,
       ).then(
         () => {
@@ -498,7 +499,7 @@ export function useClaimLinkFlow(
           const reason =
             windowCopy?.message ??
             fundingRefusalCopy(e) ??
-            (e instanceof Error ? e.message : "Something went wrong")
+            (e instanceof Error ? errorMessage(e) : "Something went wrong")
           // The review says why wherever it opens next, its Claim the retry.
           claimFailed(owned, reason)
           // Failed before the hand-off: the reopened prompt is the retry, and the sheet says why.
@@ -700,10 +701,8 @@ export function useClaimLinkFlow(
     schedule: reviewSchedule,
     withdrawalFee: reviewWithdrawalFee,
     initialSpeed: reviewTerms?.speed,
-    onCommit: (tip, speed) => {
-      if (reviewRecord)
-        commitRegistrationProverTip(reviewRecord.account, reviewRecord.tag, tip, speed)
-    },
+    onCommit: (tip, speed) =>
+      reviewRecord && commitRegistrationProverTip(registrations, reviewRecord, tip, speed),
     commitKey: reviewRecord && `${reviewRecord.account}:${reviewRecord.tag}`,
   })
   // The registration this link may fund: its split, shown before the claim, with the speed choice
@@ -776,14 +775,13 @@ export function useClaimLinkFlow(
     if (!unfunded || !fragment || fundQuote?.covers !== true || !voucher.uses) return
     fundSpeed.settle()
     const committed = fundTip.current ?? { tip: 0n, speed: "standard" as const }
-    // The terms read back at once: the claim's slice is priced off this binding.
-    void bindLinkDeposit(
+    const bound = bindLinkDeposit(
       unfunded.record,
       { fragment, amount: paylinkAmount, senderTag: link?.senderTag },
       committed.tip,
       committed.speed,
     )
-    claim(false, true)
+    claim(false, true, bound ?? Promise.resolve())
   }
 
   // A review opened over a running or sent claim shows the tip that claim burns.

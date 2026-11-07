@@ -209,6 +209,11 @@ export class IncompleteCreationError extends PasskeyPolicyError {
   }
 }
 
+/** By reports, Windows Hello gives key material only from Windows 11's February 2026 update. */
+const WINDOWS_HELLO_NO_PRF =
+  "Windows Hello on this PC didn't give the key a wallet needs. It needs Windows 11 with the " +
+  "February 2026 update or later. "
+
 /** The provider returned no PRF output at creation nor on the follow-up assertion. */
 export class NoPrfError extends PasskeyPolicyError {
   /** The laptop manager a creation's answer named; a sign-in names none. */
@@ -216,7 +221,9 @@ export class NoPrfError extends PasskeyPolicyError {
 
   constructor(options: { manager?: LocalManager } & LocalRouteOptions = {}) {
     super(
-      "This passkey provider can't create a wallet key. " +
+      (options.manager === "windows_hello"
+        ? WINDOWS_HELLO_NO_PRF
+        : "This passkey provider can't create a wallet key. ") +
         (options.localManagers
           ? tryAgainLocally(options.localManagers)
           : "Try again and pick a different passkey provider in the browser's sheet."),

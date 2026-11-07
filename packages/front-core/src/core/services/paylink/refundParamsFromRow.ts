@@ -6,7 +6,6 @@ import {
   type PaylinkWindow,
 } from "@obsidion/sdk"
 import { isPaylinkTransaction, type PaylinkTransaction, type Transaction } from "../../../types"
-import { isRefundInFlight } from "./refundInFlight"
 
 /**
  * The link a creator-side refund reconstructs the escrow from, decoded from the row's persisted
@@ -103,31 +102,4 @@ export function paylinkRefundEligibility(
   }
   if (isPaylinkInRefundWindow(row, nowSec) || nowSec > row.untilClaimable) return { eligible: true }
   return { eligible: false, reason: "within-window" }
-}
-
-/**
- * Creator PAY rows whose escrow the v4->v5 migration should attempt: refund material intact AND
- * decodable, no local in-flight/migrated signal, and a create `txHash` (the spend-metadata anchor
- * and the row key). Local `isClaimed`/`isRefunded` flags are deliberately NOT trusted: a claim or
- * refund seen only in the pending chain is demoted at cutover (the portal freezes at the proven
- * checkpoint), so the exit runtime derives spentness from frozen chain state — a truly spent
- * escrow resolves to an empty unit there. The decode gate keeps a malformed-but-present link from
- * ever reaching the exit runtime — such rows are skipped with a log, never failed on. The
- * decoded params are discarded; only raw row strings cross the migration seam.
- */
-export async function eligibleEscrowRows(rows: Transaction[]): Promise<PaylinkTransaction[]> {
-  const out: PaylinkTransaction[] = []
-  for (const tx of rows) {
-    const row = tx as PaylinkTransaction
-    if (row.emailPaymentAction !== "Pay To Email") continue
-    if (row.isMigrated) continue
-    if (!row.paylink || !row.fallbackSecret || !row.txHash) continue
-    if (isRefundInFlight(row.payToEmailSecret ?? "")) continue
-    if ((await refundParamsFromRow(row)) === null) {
-      console.warn(`[MigrationEscrow] row ${row.txHash} skipped: paylink material does not decode`)
-      continue
-    }
-    out.push(row)
-  }
-  return out
 }

@@ -4,7 +4,7 @@
  * instance is picked yet, so the current instance answers (it reports no subscription).
  */
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { RegistrationPendingError } from "../../../src/features/onboarding/registrationRail"
+import { RegistrationPendingError } from "../../../src/features/registration/registrationRail"
 
 const { claimSponsorContext, claimSponsorRail, readClaimFpcAllowance } = vi.hoisted(() => ({
   claimSponsorContext: vi.fn(),
@@ -16,7 +16,7 @@ const { claimSponsorContext, claimSponsorRail, readClaimFpcAllowance } = vi.hois
     refillPeriod: 86_400,
   })),
 }))
-vi.mock("../../../src/features/onboarding/claimSponsorship", () => ({
+vi.mock("../../../src/features/registration/claimSponsorship", () => ({
   claimSponsorContext,
   claimSponsorRail,
 }))

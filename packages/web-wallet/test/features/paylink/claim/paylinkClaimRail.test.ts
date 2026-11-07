@@ -13,7 +13,7 @@ const { claimSponsorRail, claimSponsorContext } = vi.hoisted(() => ({
   claimSponsorRail: vi.fn(),
   claimSponsorContext: vi.fn(),
 }))
-vi.mock("../../../../src/features/onboarding/claimSponsorship", () => ({
+vi.mock("../../../../src/features/registration/claimSponsorship", () => ({
   claimSponsorRail,
   claimSponsorContext,
   noteSubscribed: vi.fn(),

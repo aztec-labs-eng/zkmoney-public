@@ -3,7 +3,8 @@
  * the payer's own before a rotation, the acting account's after it.
  */
 import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
+import type { OxideEnvTuple } from "@obsidion/core/types"
 
 const { readClaimFpcSubscriptionNotes, broadcastTxHashes } = vi.hoisted(() => ({
   readClaimFpcSubscriptionNotes: vi.fn(),
@@ -12,12 +13,25 @@ const { readClaimFpcSubscriptionNotes, broadcastTxHashes } = vi.hoisted(() => ({
 vi.mock("@obsidion/sdk", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/sdk")>()),
   readClaimFpcSubscriptionNotes,
-}))
-vi.mock("../../../src/features/deposit/sipaGateway", () => ({
-  getSipaDepositGateway: () => ({ broadcastTxHashes }),
+  readSipaBroadcastTxHashes: (wallet: unknown, _token: unknown, user: unknown, from: number) =>
+    broadcastTxHashes(wallet, user, from),
 }))
 
 const { readAllowanceUsage } = await import("../../../src/features/allowance/readAllowanceUsage")
+const { getConfig } = await import("../../../src/config/env")
+const { primeOxideTuple } = await import("../../../src/config/oxideTuple")
+const { closeSession } = await import("../../../src/session/session")
+const { openTestSession } = await import("../../support/session")
+const { seedBootConfig } = await import("../../support/seedBootConfig")
+
+beforeAll(async () => {
+  await seedBootConfig()
+  primeOxideTuple(getConfig(), {
+    rollupVersion: "1",
+    l2Token: `0x${"01".repeat(32)}`,
+  } as OxideEnvTuple)
+})
+afterEach(closeSession)
 
 const acting = AztecAddress.fromNumberUnsafe(0x11)
 const payer = AztecAddress.fromNumberUnsafe(0x22)
@@ -40,7 +54,10 @@ const read = (payerAddress: AztecAddress) => ({
 })
 
 describe("readAllowanceUsage", () => {
-  beforeEach(() => vi.clearAllMocks())
+  beforeEach(() => {
+    vi.clearAllMocks()
+    openTestSession({ sipaDiscovery: {} })
+  })
 
   it("reads the broadcasts of the one account that pays and acts", async () => {
     readClaimFpcSubscriptionNotes.mockResolvedValueOnce([note(99, "0xa"), note(98, "0xb")])

@@ -28,12 +28,11 @@ vi.mock("../../../src/config/env", () => ({ getConfig: () => ({ nodeEndpointDige
 const { PaylinkClaimMount } = await import(
   "../../../src/features/notifications/PaylinkClaimMount/PaylinkClaimMount"
 )
-const { closeSession } = await import("../../../src/platform/session")
+const { closeSession } = await import("../../../src/session/session")
 const { openTestSession } = await import("../../support/session")
-const { getAuthService } = await import("../../../src/platform/auth/useAuthenticator")
 beforeEach(() => {
-  vi.spyOn(getAuthService(), "getSecretKey").mockResolvedValue("0xsecret" as never)
   const { milestones } = openTestSession({
+    auth: { getSecretKey: async () => "0xsecret" },
     wallet: { networkId: NETWORK_ID },
     account: { getAddress: () => ({ toString: () => "0xaccount" }) },
     token: { fetchTokenInformation: h.fetchTokenInformation },

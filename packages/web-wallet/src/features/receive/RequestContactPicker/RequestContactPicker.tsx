@@ -3,8 +3,7 @@ import { normalizeTag, useContactsDirectory, useStore } from "@obsidion/front-co
 import { ContactRow, TextField, avatarColors } from "@obsidion/web-ds"
 import { filterContacts } from "../../contacts/contactsView"
 import { recentPeople } from "../../contacts/recentPeople"
-import { useSession } from "../../../platform/session"
-import { loadWalletIdentity } from "../../identity/walletIdentity"
+import { useSession } from "../../../session/session"
 import styles from "./RequestContactPicker.module.css"
 import copy from "./RequestContactPicker.copy"
 
@@ -25,7 +24,7 @@ export function RequestContactPicker({
   const { contacts } = useContactsDirectory()
   const sources = useStore(useSession().contactActivity)
   const [query, setQuery] = useState("")
-  const ownTag = loadWalletIdentity()?.handle
+  const ownTag = useStore(useSession().identity, (s) => s.value?.handle)
 
   // Requests travel over messaging, so only zk.money tags can get one.
   const people = useMemo(

@@ -14,15 +14,18 @@ import { OperationHandOff } from "../../src/features/operations/OperationHandOff
 import { getOperationStore } from "../../src/features/operations/operations"
 import { WebAlphaAuthService } from "../../src/platform/auth/WebAlphaAuthService"
 import { WebPasskeyIdentityMap } from "../../src/platform/auth/WebPasskeyIdentityMap"
-import { setActiveCredentialId } from "../../src/platform/storage/activeStorage"
 import { deviceStorage } from "../../src/platform/storage/rollupStorage"
-import { WebStorageAdapter } from "../../src/platform/storage/WebStorageAdapter"
-import { walletStorage } from "../../src/platform/storage/walletStorage"
 import {
   LocalPasskeyHint,
+  liveHintReaders,
   localPasskeyHintApplies,
   localPasskeyHintCopy,
 } from "../../src/ui/LocalPasskeyHint"
+import { writeDeviceKeys } from "../../src/platform/storage/deviceKeys"
+import { committed, pageOver, testPage } from "../support/page"
+import { openTestSession } from "../support/session"
+
+const deviceDb = testPage().database
 
 const RP = "localhost"
 const SHOWN_KEY = "webwallet.local-passkey-hint-shown"
@@ -31,10 +34,10 @@ const hash = `0x${"ab".repeat(32)}`
 
 /** A session whose passkey this browser saw answer from `answered`; `null` for no answer yet. */
 async function session(answered: "remote" | "local" | null = "remote") {
-  const map = new WebPasskeyIdentityMap(new WebStorageAdapter(), RP)
+  const map = new WebPasskeyIdentityMap(deviceDb, RP)
   await map.upsert({ credentialId: "cred", l2Address: "0xacct", pubkey: "ab", isMskRoot: true })
   if (answered) await map.setAnswered("cred", answered)
-  await walletStorage.batch(() => setActiveCredentialId("cred"))
+  await writeDeviceKeys(deviceDb, { credentialId: "cred" })
 }
 const shown = () => localStorage.getItem(SHOWN_KEY)
 const attempt = () => act(async () => provingProgress.emitSigningStart())
@@ -109,7 +112,7 @@ describe("from a real signature to the line", () => {
       transports: ["hybrid", "internal"],
     })
     const service = new WebAlphaAuthService({
-      storage: new WebStorageAdapter(),
+      ...pageOver(deviceDb),
       rpId: RP,
       ceremony,
       posture: () => "laptop",
@@ -126,14 +129,14 @@ describe("from a real signature to the line", () => {
       transports: created.transports,
     })
     await service.commitSecret({ secretKey: created.secretKey, authProvider: created.authProvider })
-    expect(localPasskeyHintApplies()).toBe(false)
+    expect(localPasskeyHintApplies(liveHintReaders(committed()))).toBe(false)
 
     if (!(created.authProvider instanceof WebAuthnAlphaAuthProvider)) {
       throw new Error("Expected a WebAuthn auth provider")
     }
     await created.authProvider.signChallenge(Fr.random().toBuffer())
     await new Promise((resolve) => setTimeout(resolve, 0))
-    expect(localPasskeyHintApplies()).toBe(true)
+    expect(localPasskeyHintApplies(liveHintReaders(committed()))).toBe(true)
   })
 })
 
@@ -154,6 +157,7 @@ describe("LocalPasskeyHint", () => {
 
   beforeEach(() => {
     localStorage.clear()
+    openTestSession()
     container = document.createElement("div")
     document.body.append(container)
     root = createRoot(container)
@@ -235,17 +239,10 @@ describe("LocalPasskeyHint", () => {
 
   it("a store that cannot be read renders nothing", async () => {
     await session()
-    const read = vi.spyOn(walletStorage, "getCommitted").mockImplementation(() => {
-      throw new Error("wallet store closed")
-    })
-    await mount()
-    expect(container.textContent).toBe("")
-
-    read.mockRestore()
     vi.spyOn(deviceStorage, "getItem").mockImplementation(() => {
       throw new Error("SecurityError")
     })
-    await remount()
+    await mount()
     expect(container.textContent).toBe("")
   })
 
@@ -270,6 +267,7 @@ describe("the working beat", () => {
 
   beforeEach(() => {
     localStorage.clear()
+    openTestSession()
     container = document.createElement("div")
     root = createRoot(container)
     ids = []

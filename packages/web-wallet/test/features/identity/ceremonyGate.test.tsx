@@ -8,6 +8,7 @@
 import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { openTestSession } from "../../support/session"
 import {
   nativeCreate,
   nativeGet,
@@ -72,14 +73,12 @@ const h = vi.hoisted(() => ({
   rootCredentialId: vi.fn(async () => undefined),
   suggestedRoute: vi.fn(async () => "this-device"),
 }))
-vi.mock("../../../src/platform/auth/useAuthenticator", () => ({
-  getAuthService: () => ({
-    probePhoneReach: h.probePhoneReach,
-    probeLaptopCreation: h.probeLaptopCreation,
-    rootCredentialId: h.rootCredentialId,
-    suggestedRoute: h.suggestedRoute,
-  }),
-}))
+const fakeAuth = () => ({
+  probePhoneReach: h.probePhoneReach,
+  probeLaptopCreation: h.probeLaptopCreation,
+  rootCredentialId: h.rootCredentialId,
+  suggestedRoute: h.suggestedRoute,
+})
 
 const { useCeremonyGate, isGateCancelled } = await import("../../../src/features/identity/ceremonyGate")
 
@@ -111,6 +110,8 @@ afterEach(() => {
   vi.restoreAllMocks()
   delete (navigator as { credentials?: unknown }).credentials
 })
+
+beforeEach(() => void openTestSession({ auth: fakeAuth() }))
 
 describe("useCeremonyGate", () => {
   it("a phone passes without probing or changing state", async () => {
@@ -353,24 +354,14 @@ describe("useCeremonyGate", () => {
     await act(async () => handle.cancel())
   })
 
-  it("a creation probe that throws or answers nothing counts as phone creation", async () => {
+  it("a creation probe that throws counts as phone creation", async () => {
     h.probeLaptopCreation.mockRejectedValue(new Error("no hints"))
     await mount("laptop")
     await act(async () => {
       void handle.gate({ purpose: "create" }).catch(() => {})
     })
     await flush()
-    let state = handle.state
-    if (state.kind !== "awaiting-action") throw new Error("expected the steps")
-    expect(state.creation).toEqual(PHONE)
-    await act(async () => handle.cancel())
-
-    h.probeLaptopCreation.mockResolvedValue(undefined as never)
-    await act(async () => {
-      void handle.gate({ purpose: "create" }).catch(() => {})
-    })
-    await flush()
-    state = handle.state
+    const state = handle.state
     if (state.kind !== "awaiting-action") throw new Error("expected the steps")
     expect(state.creation).toEqual(PHONE)
     await act(async () => handle.cancel())

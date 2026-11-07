@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from "vitest"
-import { fixed, resource, valueOf, type Resource } from "../../src/engine/resource"
+import { fixed, readyValue, resource, valueOf, type Resource } from "../../src/engine/resource"
 import { fakeClock, flush, later } from "./taskTable"
 
 function deferred<T>() {
@@ -156,5 +156,17 @@ describe("resource", () => {
 
   it("is ready from the start when fixed", () => {
     expect(valueOf(fixed("wallet", 5))).toBe(5)
+  })
+
+  it("waits for a lazy resource's value, and lets go once the signal aborts", async () => {
+    const a = later<number>("a")
+    const r = resource("r", { from: [a.resource], lazy: true, backoff: "manual" }, async ([n]) => n)
+    const ready = readyValue(r)
+    const aborts = new AbortController()
+    const abandoned = readyValue(r, aborts.signal)
+    aborts.abort()
+    await expect(abandoned).rejects.toMatchObject({ code: "aborted" })
+    a.ready(3)
+    await expect(ready).resolves.toBe(3)
   })
 })

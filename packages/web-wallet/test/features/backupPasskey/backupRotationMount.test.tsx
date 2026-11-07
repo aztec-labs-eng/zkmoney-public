@@ -2,6 +2,7 @@ import { StrictMode, act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { TxStatus } from "@aztec-labs/stdlib/tx"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { setIdentity } from "../../support/identity"
 
 const boot = vi.hoisted(() => ({
   status: "booting" as "booting" | "ready",
@@ -10,9 +11,6 @@ const boot = vi.hoisted(() => ({
 }))
 
 vi.mock("../../../src/ui/PxeBoot", () => ({ usePxeBoot: () => ({ bootStatus: boot.status }) }))
-vi.mock("../../../src/features/identity/walletIdentity", () => ({
-  loadWalletIdentity: () => boot.identity,
-}))
 vi.mock("../../../src/features/backupPasskey/backupRotationStore", () => ({
   getBackupRotationStore: () => boot.made.store,
 }))
@@ -36,7 +34,7 @@ import {
 
 /** The one-key account the test records' change was built over. */
 const ONE_KEY = word(10)
-const { closeSession, handOffAccount } = await import("../../../src/platform/session")
+const { closeSession, handOffAccount } = await import("../../../src/session/session")
 const { openTestSession } = await import("../../support/session")
 beforeEach(() => openTestSession({ wallet: { tag: "wallet" } }).milestones.mark("firstBalance"))
 afterEach(closeSession)
@@ -60,9 +58,9 @@ async function render() {
   await flush()
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   boot.status = "booting"
-  boot.identity = { address: ONE_KEY }
+  await setIdentity({ address: ONE_KEY })
   boot.made = makeFlowDeps()
   container = document.createElement("div")
   document.body.appendChild(container)
@@ -130,7 +128,7 @@ describe("BackupRotationMount", () => {
 
   it("leaves a record of another account alone", async () => {
     boot.status = "ready"
-    boot.identity = { address: word(0x99) }
+    await setIdentity({ address: word(0x99) })
     await boot.made.store.put(signedRecord({ phase: "funded", ...sent() }))
     await render()
     await flush(5)

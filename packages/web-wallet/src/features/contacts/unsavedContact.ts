@@ -6,8 +6,7 @@ import {
   type Contact,
   type Transaction,
 } from "@obsidion/front-core"
-import { session } from "../../platform/session"
-import { loadWalletIdentity } from "../identity/walletIdentity"
+import { session } from "../../session/session"
 import { addContact } from "./useInlineContactSearch"
 import { resolveTagForCommit, resolveTagViaRegistry } from "./registryResolution"
 
@@ -38,9 +37,11 @@ export function pastAddressOf(
  * The unsaved contact a route names, or null when it is not someone else's registered tag. A tag
  * still on an older zk.money opens at the address its past transfers used, so its history shows.
  */
-export async function lookUpUnsavedContact(idOrTag: string): Promise<Contact | null> {
+export async function lookUpUnsavedContact(
+  idOrTag: string,
+  own: string | undefined,
+): Promise<Contact | null> {
   const tag = normalizeTag(idOrTag)
-  const own = loadWalletIdentity()?.handle
   if (!tag || (own && normalizeTag(own) === tag)) return null
   try {
     const resolution = await resolveTagViaRegistry(tag)

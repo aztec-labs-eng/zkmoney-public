@@ -11,7 +11,7 @@ import {
 } from "../../support/depositTokens"
 import type { Address } from "viem"
 
-const { recordedSweepRow, sweepRowOf } = await import("../../../src/features/deposit/sipaSweep")
+const { recordedSweepRow, sweepRowOf } = await import("../../../src/features/sipa/sipaSweep")
 
 describe("a manual sweep's row", () => {
   it("reads the token's own row, unscaled, for a row token", () => {

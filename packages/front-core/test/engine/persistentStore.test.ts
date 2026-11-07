@@ -4,6 +4,7 @@ import { memoryBackend, type MemoryBackend } from "../../src/engine/memoryBacken
 import {
   decodeRecord,
   encodeRecord,
+  loadRecords,
   persistentStore,
   timeKey,
   type PersistentStoreSpec,
@@ -148,6 +149,7 @@ describe("persistentStore", () => {
     await expect(rows.ready).rejects.toThrow()
     await settle()
     expect(rows.view.get()).toEqual({ records: [], loaded: false, failed: true })
+    await expect(loadRecords(rows.view)).rejects.toBeInstanceOf(WalletError)
     await expect(rows.put(row("a", 1))).rejects.toThrow()
   })
 

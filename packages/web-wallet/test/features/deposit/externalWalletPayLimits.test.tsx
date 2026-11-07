@@ -53,7 +53,7 @@ vi.mock("../../../src/config/oxideTuple", async (importOriginal) => ({
   getOxideTuple: async () => ({ token: L1_TOKEN }),
 }))
 // The sandbox's one-row table.
-vi.mock("../../../src/features/deposit/loadDepositFacts", (importOriginal) =>
+vi.mock("../../../src/features/sipa/loadDepositFacts", (importOriginal) =>
   mockLoadDepositFacts(importOriginal, () =>
     capacity.mainnet
       ? mainnetTokens()
@@ -86,7 +86,7 @@ const l1 = vi.hoisted(() => ({
   pickerOpen: false,
   connect: undefined as unknown as () => Promise<void>,
 }))
-vi.mock("../../../src/features/deposit/l1Wallet", () => ({ useL1Wallet: () => l1 }))
+vi.mock("../../../src/session/l1Wallet", () => ({ useL1Wallet: () => l1 }))
 const walletSend = vi.hoisted(() => ({ props: undefined as Record<string, any> | undefined }))
 vi.mock("../../../src/features/deposit/DepositFromWalletModal", () => ({
   DepositFromWalletModal: (props: Record<string, any>) => {
@@ -95,9 +95,15 @@ vi.mock("../../../src/features/deposit/DepositFromWalletModal", () => ({
   },
 }))
 
-const { ExternalWalletPayModal } = await import("../../../src/features/requests/ExternalWalletPayModal")
+const { ExternalWalletPayModal } = await import(
+  "../../../src/features/requests/ExternalWalletPayModal"
+)
 const { depositCapacityStore } = await import("../../../src/features/deposit/capacityStore")
 const { FAKE_ACTIVE_KEY } = await import("../../support/fakeCapacity")
+const { closeSession } = await import("../../../src/session/session")
+const { openTestSession } = await import("../../support/session")
+beforeEach(() => void openTestSession())
+afterEach(closeSession)
 
 /** A new read of the active bucket, as the store's poll or Check again would make. */
 const reread = async () => {
@@ -326,7 +332,6 @@ describe("ExternalWalletPayModal limits", () => {
   })
 
   describe("link deployment", () => {
-
     it("says an expired link has expired and offers nothing to pay it", async () => {
       await render(packet("100"), "expired")
       expect(document.querySelector("[data-testid='request-expired']")?.textContent).toContain(
@@ -406,7 +411,6 @@ describe("ExternalWalletPayModal limits", () => {
   })
 
   describe("shared capacity", () => {
-
     it("opens About limits as unavailable for a link's own address, with no active read or Retry", async () => {
       vi.spyOn(console, "warn").mockImplementation(() => {})
       await render(packet("100"))

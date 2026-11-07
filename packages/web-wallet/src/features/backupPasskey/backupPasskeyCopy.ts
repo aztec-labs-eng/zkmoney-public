@@ -3,6 +3,7 @@ import {
   fundingLanding,
   moveProgress,
   recoverable,
+  refundProgress,
   type BackupRotationAttention,
   type BackupRotationRecord,
 } from "@obsidion/front-core"
@@ -59,9 +60,13 @@ export function stepDetail(record: BackupRotationRecord): string | undefined {
       return finalityWait
     case "rerooted":
     case "moved": {
+      const refunds = refundProgress(record)
+      if (refunds) return `Cancelling your payment links (${refunds.landed} of ${refunds.total}).`
       const moved = moveProgress(record)
       if (!moved)
-        return record.phase === "rerooted" ? "Installing the key." : "Moving your balance."
+        return record.phase === "rerooted" && !record.refunds
+          ? "Installing the key."
+          : "Moving your balance."
       return moved.included < moved.total
         ? `Moving your balance (${moved.included} of ${moved.total}).`
         : "Moving your balance."
@@ -100,14 +105,26 @@ export const approveCopy = {
       : ["Use the passkey you signed in with. The new backup can't approve itself.", "", ""],
 }
 
-/** The move: each chunk's send waits for a tap, then asks the passkey the account was built over. */
+/**
+ * The move: each open payment link's refund, then each chunk's send, waits for a tap, then asks the
+ * passkey the account was built over.
+ */
 export const moveCopy = {
-  line: (moved?: { included: number; total: number }) =>
-    moved && moved.total > 1
+  line: (record: BackupRotationRecord) => {
+    const refunds = refundProgress(record)
+    if (refunds)
+      return refunds.total > 1
+        ? `Approve cancelling payment link ${refunds.landed + 1} of ${refunds.total}.`
+        : "Approve cancelling your open payment link."
+    const moved = moveProgress(record)
+    return moved && moved.total > 1
       ? `Approve moving part ${moved.included + 1} of ${
           moved.total
         } of your balance to your new account.`
-      : "Approve moving your balance to your new account.",
+      : "Approve moving your balance to your new account."
+  },
+  /** A link too close to its expiry to cancel is reclaimed once it expires. */
+  linkExpiring: "A payment link is about to expire. It's reclaimed once it does.",
   /** Home's line while the move waits for the user. */
   home: "Your backup passkey is almost ready",
   homeDetail: "Approve moving your balance to finish.",
@@ -120,6 +137,12 @@ export const entryCopy = {
   unreadable: "Could not check, try again",
 }
 
+/** What the add does with the account's open payment links: their funds land before the move. */
+export const linksCopy = (count: number) =>
+  count === 1
+    ? "Your open payment link will be cancelled. Its funds move with your balance."
+    : `Your ${count} open payment links will be cancelled. Their funds move with your balance.`
+
 /** Why a new paylink waits for the add: its escrow would refund only the account the add moves off. */
 export const linkWaitsCopy = {
   title: "Finish adding your backup passkey",
@@ -127,12 +150,24 @@ export const linkWaitsCopy = {
     "A paylink made now couldn't be cancelled or reclaimed once your backup passkey is added. Finish adding it in Settings first.",
 }
 
+// Proposed: new copy for a Savings move held while an add has yet to switch the account.
+export const savingsWaitsCopy = {
+  title: "Finish adding your backup passkey",
+  message:
+    "Funds moved in or out of Savings now couldn't reach your account once your backup passkey is added. Finish adding it in Settings first.",
+}
+
 export const fundCopy = {
   destination: "Your new account",
   fees: "Fees",
   receive: "You'll receive",
   approvals: "Approvals",
-  approvalsValue: (now: number, moves: number) => `${now} now, then ${moves} to move your balance`,
+  approvalsValue: (now: number, moves: number, refunds = 0) =>
+    refunds > 0
+      ? `${now} now, then ${refunds} to cancel your payment ${
+          refunds === 1 ? "link" : "links"
+        } and ${moves} to move your balance`
+      : `${now} now, then ${moves} to move your balance`,
   takes: "Takes",
   takesValue: "Up to 40 minutes",
   afterSend: "Once sent, the funding cannot be cancelled. You can close this tab while it waits.",
@@ -262,13 +297,18 @@ export const previousAccountActions = {
   retry: panelCopy.tryAgain,
 }
 
-/** What Home's line says about money at the previous account, `amount` as shown, and its action. */
+/**
+ * What Home's line says about money at the previous account and its action. `amount` is Main
+ * Account's as shown, absent when only Savings shares sit there; `savings` adds them.
+ */
 export function previousAccountCopy(
   view: PreviousAccountView,
-  amount: string,
+  amount: string | undefined,
+  savings = false,
 ): { line: string; detail?: string; action?: keyof typeof previousAccountActions } {
-  const arrived = `${amount} arrived at your previous account`
-  const left = `${amount} is still on your previous account`
+  const what = savings ? (amount ? `${amount} and Savings funds` : "Savings funds") : amount ?? ""
+  const arrived = `${what} arrived at your previous account`
+  const left = `${what} ${savings ? "are" : "is"} still on your previous account`
   switch (view) {
     case "moving":
       return { line: "Moving your previous account's balance…" }
@@ -285,7 +325,11 @@ export function previousAccountCopy(
     case "backupSession":
       return { line: arrived, detail: "Sign in with your first passkey to move them." }
     case "refused":
-      return { line: left, detail: "It could not be moved in one go.", action: "retry" }
+      return {
+        line: left,
+        detail: `${savings ? "They" : "It"} could not be moved in one go.`,
+        action: "retry",
+      }
     case "stuck":
       return { line: left, detail: "It can't be moved from the wallet yet." }
     case "failed":

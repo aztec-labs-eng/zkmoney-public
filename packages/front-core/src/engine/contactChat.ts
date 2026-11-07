@@ -11,7 +11,7 @@ import {
   worstWithdrawalPhase,
 } from "../core/services/bridge/withdrawalGroups"
 import { depositAmounts } from "../core/services/deposits/depositAmounts"
-import type { SIPADepositRecord } from "../core/services/deposits/SIPADepositStore"
+import type { SipaDeposit } from "./sipaDeposits"
 import type { Transaction } from "../types/transactions"
 import { decimalPlaces } from "../utils/validate"
 import type { Feed, FeedItem, Money } from "./activityFeed"
@@ -83,7 +83,7 @@ function withdrawalStatus(phase: WithdrawalRecord["phase"]): {
   return phase === "done" ? { role: "confirmed" } : { role: "pending", status: "pending" }
 }
 
-function depositBubble(record: SIPADepositRecord): Pick<ChatItem, "role" | "status" | "amount"> {
+function depositBubble(record: SipaDeposit): Pick<ChatItem, "role" | "status" | "amount"> {
   const role: TransferStatus =
     record.phase === "failed"
       ? "failed"

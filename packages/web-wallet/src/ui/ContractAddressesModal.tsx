@@ -6,7 +6,7 @@ import { DEFAULT_CONTRACTS_NAME } from "@obsidion/core/constants"
 import type { ContractName, OxideEnvTuple } from "@obsidion/core/types"
 import { Modal } from "./Modal"
 import { useCopy } from "./hooks"
-import { useSession } from "../platform/session"
+import { useSession } from "../session/session"
 
 type Chain = "L1" | "L2"
 

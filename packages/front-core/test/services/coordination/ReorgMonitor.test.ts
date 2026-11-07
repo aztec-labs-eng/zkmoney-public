@@ -1,8 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { QueueStatus } from "@obsidion/sdk"
 import { TxStatus } from "@aztec-labs/stdlib/tx"
-import { AccountStorage } from "../../../src/core/storages/AccountStorage"
-import { NetworkStorage } from "../../../src/core/storages/NetworkStorage"
 import { createActivity, type Activity } from "../../../src/engine/activity"
 import { openDatabase } from "../../../src/engine/database"
 import { memoryBackend } from "../../../src/engine/memoryBackend"
@@ -12,7 +10,6 @@ import {
   withdrawalStepper,
   type WithdrawalTrackerNode,
 } from "../../../src/engine/withdrawalTracker"
-import { SIPADepositStore } from "../../../src/core/services/deposits/SIPADepositStore"
 import {
   REORG_MARGIN_MS,
   ReorgMonitor,
@@ -48,11 +45,7 @@ const sampleToken = (): TokenInTxService => ({
   hasUnknownAmount: false,
 })
 
-const resetSingletons = () => {
-  resetSingleton(AccountStorage as unknown as { instance: AccountStorage | null })
-  resetSingleton(NetworkStorage as unknown as { instance: NetworkStorage | null })
-  resetSingleton(SIPADepositStore as unknown as { instance: SIPADepositStore | null })
-}
+const resetSingletons = () => {}
 
 let activity: Activity
 
@@ -118,7 +111,6 @@ const setTier = async (txHash: string, tier: TxStatus) =>
 function setup() {
   resetSingletons()
   const adapter = new InMemoryStorageAdapter()
-  AccountStorage.get(adapter)
   activity = createActivity({ db: openDatabase(memoryBackend()) })
   const chain = makeNode()
   const outcomes: ConfirmationOutcome[] = []
@@ -504,79 +496,6 @@ describe("ReorgMonitor.runPass", () => {
       { type: "demoted", txHash: TX },
       { type: "failed", txHash: TX, reorgEpoch: 1 },
     ])
-  })
-
-  it("withdrawal and SIPA records reconcile through their own demote paths", async () => {
-    const { chain, outcomes, deps } = setup()
-    const adapter = new InMemoryStorageAdapter()
-    const withdrawals = createWithdrawals({ db: openDatabase(memoryBackend()) })
-    await withdrawals.create({
-      localId: "wdraw_1",
-      networkId: NET,
-      recipient: "0x" + "11".repeat(20),
-      recipientProvenance: "saved-recipient",
-      amount: "1",
-      tokenSymbol: "DAI",
-      phase: "submitting",
-      startTime: 1,
-    } as Parameters<typeof withdrawals.create>[0])
-    await withdrawals.apply("wdraw_1", {
-      type: "mined",
-      l2TxHash: TX as `0x${string}`,
-      blockNumber: 42,
-      rawAmount: "1000",
-    })
-
-    const sipa = SIPADepositStore.get(adapter)
-    await sipa.upsert(
-      ("0x" + "22".repeat(20)) as `0x${string}`,
-      { phase: "claimed", claimTxHash: TX2 },
-      {
-        recipientL2Address: "0xl2",
-        messageSecret: "0x1",
-        recipientHash: "0x2",
-        recoveryAddress: "0x3",
-        l1ChainId: 1,
-        networkId: NET,
-        amount: "1",
-        tokenSymbol: "DAI",
-        startTime: 1,
-      },
-    )
-
-    chain.script(TX, { status: "dropped" }) // withdrawal burn dropped
-    // SIPA claim re-included but reverted: gone from chain effect-wise, same undo as dropped
-    chain.script(TX2, {
-      status: "proposed",
-      blockNumber: 60,
-      blockHash: "0xb60",
-      executionResult: "reverted",
-    })
-
-    let clock = 1_000_000
-    const monitor = monitorOver({
-      ...deps,
-      withdrawalStorage: withdrawals,
-      sipaDepositStore: sipa,
-      now: () => clock,
-    })
-    const first = await monitor.runPass()
-
-    expect((await withdrawals.get("wdraw_1"))?.phase).toBe("l2_mined") // first look only
-    expect(sipa.get(("0x" + "22".repeat(20)) as `0x${string}`)?.phase).toBe("pendingClaim")
-    expect(first).toMatchObject({ failed: 0, demoted: 1 }) // SIPA
-
-    clock += BURN_SETTLE_MS
-    const second = await monitor.runPass()
-
-    expect((await withdrawals.get("wdraw_1"))?.phase).toBe("failed")
-    expect(second?.failed).toBe(1) // the burn
-    expect(outcomes).toContainEqual({
-      type: "failed",
-      txHash: TX,
-      reorgEpoch: 1,
-      source: "withdrawal",
-    })
   })
 })
 

@@ -7,6 +7,7 @@
  */
 import { TxExecutionResult, TxStatus } from "@aztec-labs/stdlib/tx"
 import {
+  BACKUP_FUNDING_MARGIN,
   BackupSetConflictError,
   isSpendEnvelopeRefusal,
   VerificationUnavailableError,
@@ -32,8 +33,11 @@ import {
   type BackupRotationPlan,
   type BackupRotationRecord,
   type BackupRotationStore,
+  type LinkRefundRecord,
+  type LinkRefunds,
   type MoveChunkRecord,
   type MoveRun,
+  type MoveSend,
 } from "../storages/BackupRotationStore"
 import { planMove, type MoveDeposits } from "./planMove"
 
@@ -150,14 +154,25 @@ export interface MoveDeps {
   /** The one-key account's shape on `token`, read while no chunk is in flight. */
   shape(token: string): Promise<SpendShape>
   deposits(token: string, shape: SpendShape): Promise<MoveDeposits>
-  cap: bigint
+  /** The most one transfer of `token` moves: its own portal caps its notes. */
+  cap(token: string): Promise<bigint>
   usesLeft(): Promise<boolean>
   /**
    * One sponsored transfer of `amount` to the two-key account; the root key signs it. Once `signal`
    * aborts, the root key is not asked and the send rejects with its reason.
    */
   send(token: string, amount: bigint, onTxHash: TxHashCallback, signal?: AbortSignal): Promise<void>
-  /** Whether `send` failed because the user closed the root key's prompt. */
+  /** The open paylinks the one-key account made, which the move takes back first. */
+  links(): Promise<string[]>
+  /**
+   * Whether the link can be taken back now, only once it expires (too close to its end to cancel),
+   * or not at all because it was spent another way; `spending` while that spend is in a block no
+   * L1 checkpoint holds yet, which a reorg can still undo.
+   */
+  refundable(link: string): Promise<"now" | "later" | "spending" | "spent">
+  /** One sponsored refund of the link to the one-key account, signed and aborted as `send` is. */
+  refund(link: string, onTxHash: TxHashCallback, signal?: AbortSignal): Promise<void>
+  /** Whether `send` or `refund` failed because the user closed the root key's prompt. */
   declined(err: unknown): boolean
 }
 
@@ -214,8 +229,10 @@ export type FlowWait =
   | "uses"
   | "recovery"
   | "declined"
-  /** A planned chunk waits for the user to approve its send. */
+  /** A planned refund or chunk waits for the user to approve its send. */
   | "approval"
+  /** A paylink too close to its expiry to cancel waits for it, then is reclaimed. */
+  | "link"
 
 export interface FlowResult {
   record: BackupRotationRecord
@@ -420,7 +437,7 @@ export async function signRotation(
  * The checks before anything is published or funded: the route and the quote, then the
  * fundability read. Answers the phase the record goes to instead, or nothing to proceed. A change
  * the factory no longer clones restarts the attempt at `created`, since a funding of it would
- * strand; money already at its deposit address strands it instead. Every answer is written over
+ * strand; money there that could be the funding strands it instead. Every answer is written over
  * the record as read here, so a record that moved during the reads declines it.
  */
 async function preconditions(
@@ -441,7 +458,7 @@ async function preconditions(
     case "applied-pending":
       return { patch: fenced(() => ({})), wait: "applied-pending" }
     case "superseded": {
-      const held = await depositHeld(deps, rotation.sipa)
+      const held = (await readDeposit(deps, rotation.sipa, fundingFloor(record.plan))).held
       return { patch: fenced((c) => (held ? attention(c, "stranded") : RESTART)) }
     }
     default:
@@ -476,7 +493,7 @@ export async function publishRotation(
  * written to the record and the tracker's row before the node takes the transaction; a write that
  * fails aborts the send, as does a record a resume parked meanwhile. A throw before the hash marks
  * the entry `never-sent`; the phase moves on the hash alone. A deposit address that already holds
- * settled money moves on with no send.
+ * the funding, settled, moves on with no send.
  */
 export async function fundRotation(
   deps: RotationFlowDeps,
@@ -655,10 +672,10 @@ export async function rerootRotation(
   )
 }
 
-const chunkDone = (c: MoveChunkRecord) =>
+const sendDone = (c: MoveSend<string>) =>
   c.state === "mined" || (c.state === "included" && c.effect !== "reverted")
-/** A chunk a send holds or the node still decides: claimed, submitted, or included with its transfer reverted and not checkpointed. */
-const chunkOpen = (c: MoveChunkRecord) =>
+/** A send a claim holds or the node still decides: claimed, submitted, or included with its transaction reverted and not checkpointed. */
+const sendOpen = (c: MoveSend<string>) =>
   c.state === "claimed" ||
   c.state === "submitted" ||
   (c.state === "included" && c.effect === "reverted")
@@ -677,30 +694,32 @@ const runsWith = (
 }
 
 /**
- * The run's chunks after their transactions are read again; nothing is read for a chunk with no
- * hash, and one saved with no expiry ends by receipt alone. A chunk is `mined` once an L1 checkpoint
- * holds it; one that reverted there is planned again. A claim from another life of the wallet has
+ * The sends after their transactions are read again; nothing is read for a send with no hash, and
+ * one saved with no expiry ends by receipt alone. A send is `mined` once an L1 checkpoint holds it;
+ * one that reverted there is planned again by `replan`. A claim from another life of the wallet has
  * no send behind it and is planned again.
  */
-async function readChunks(deps: RotationFlowDeps, run: MoveRun): Promise<MoveChunkRecord[]> {
+async function readSends<T extends MoveSend<string>>(
+  deps: RotationFlowDeps,
+  sends: readonly T[],
+  replan: (send: T) => T,
+): Promise<T[]> {
   return Promise.all(
-    run.chunks.map(async (chunk): Promise<MoveChunkRecord> => {
-      if (chunk.state === "claimed") {
-        return chunk.claim?.session === deps.session
-          ? chunk
-          : { token: chunk.token, amount: chunk.amount, state: "planned" }
+    sends.map(async (send): Promise<T> => {
+      if (send.state === "claimed") {
+        return send.claim?.session === deps.session ? send : replan(send)
       }
-      if (!chunk.txHash || chunk.state === "mined") return chunk
-      const outcome = await txOutcome(deps.node, chunk.txHash, chunk.expiresAtMs, deps.now())
+      if (!send.txHash || send.state === "mined") return send
+      const outcome = await txOutcome(deps.node, send.txHash, send.expiresAtMs, deps.now())
       switch (outcome.kind) {
         case "included":
           if (outcome.checkpointed) {
             return outcome.effect === "reverted"
-              ? { token: chunk.token, amount: chunk.amount, state: "planned" }
-              : { ...chunk, state: "mined", effect: undefined }
+              ? replan(send)
+              : { ...send, state: "mined", effect: undefined }
           }
           return {
-            ...chunk,
+            ...send,
             state: "included",
             inclusion: { blockNumber: outcome.blockNumber, blockHash: outcome.blockHash },
             ...(outcome.effect === "reverted"
@@ -708,35 +727,42 @@ async function readChunks(deps: RotationFlowDeps, run: MoveRun): Promise<MoveChu
               : { effect: undefined }),
           }
         case "mined":
-          return { ...chunk, state: "mined", effect: undefined }
+          return { ...send, state: "mined", effect: undefined }
         case "reverted":
         case "dead":
-          return { token: chunk.token, amount: chunk.amount, state: "planned" }
+          return replan(send)
         case "pending":
-          return chunk.state === "included"
-            ? { ...chunk, state: "submitted", inclusion: undefined, effect: undefined }
-            : chunk
+          return send.state === "included"
+            ? { ...send, state: "submitted", inclusion: undefined, effect: undefined }
+            : send
         default:
-          return chunk
+          return send
       }
     }),
   )
 }
+
+const replanChunk = (c: MoveChunkRecord): MoveChunkRecord => ({
+  token: c.token,
+  amount: c.amount,
+  state: "planned",
+})
+const replanRefund = (r: LinkRefundRecord): LinkRefundRecord => ({ link: r.link, state: "planned" })
 
 /** A fresh cut of what the run still owes, over the live shape. */
 async function cut(deps: RotationFlowDeps, token: string, owed: bigint) {
   const shape = await deps.move.shape(token)
   const deposits = await deps.move.deposits(token, shape)
   const balance = owed < shape.balance ? owed : shape.balance
-  return planMove({ ...shape, balance }, deps.move.cap, deposits)
+  return planMove({ ...shape, balance }, await deps.move.cap(token), deposits)
 }
 
 /**
- * `rerooted` → `moved` → `done`: the one-key account's balance forwarded in chunks, one sponsored
- * transfer per chunk, each re-cut from the live shape and sent only while no chunk of the run is
- * in flight and the user has not closed the run's last prompt. `moved` once every chunk is
- * included; `done` once every chunk is checkpointed and nothing is left to move. With `prompt` off, or
- * its `signal` aborted, the next send waits at `approval`.
+ * `rerooted` → `moved` → `done`: the one-key account's open paylinks taken back first, then its
+ * balance forwarded in chunks, one sponsored transfer per chunk, each re-cut from the live shape and
+ * sent only while no chunk of the run is in flight and the user has not closed the run's last
+ * prompt. `moved` once every chunk is included; `done` once every chunk is checkpointed and nothing
+ * is left to move. With `prompt` off, or its `signal` aborted, the next send waits at `approval`.
  */
 export async function moveRotation(
   deps: RotationFlowDeps,
@@ -749,20 +775,25 @@ export async function moveRotation(
   let runs = record.move?.runs ?? []
   let run = runs.at(-1)
   let current = record
+  if (!run) {
+    const links = await takeBackLinks(deps, current, { prompt, signal })
+    if ("stop" in links) return links.stop
+    current = links.settled
+  }
   /** Writes over the runs as this step read them; a chunk another step moved since declines it. */
   const write =
     (snapshot: BackupRotationRecord, fields: Partial<BackupRotationRecord>): Patch =>
     (c) =>
       c.phase === snapshot.phase && sameRuns(c, snapshot) ? fields : null
   if (run) {
-    const chunks = await readChunks(deps, run)
+    const chunks = await readSends(deps, run.chunks, replanChunk)
     run = { ...run, chunks }
     runs = [...runs.slice(0, -1), run]
     current = await save(deps, current, write(current, { move: { runs } }))
-    if (chunks.some(chunkOpen)) return { record: current, wait: "chunk" }
+    if (chunks.some(sendOpen)) return { record: current, wait: "chunk" }
     const planned = chunks.filter((c) => c.state === "planned")
     if (planned.length > 0) {
-      const kept = chunks.filter(chunkDone)
+      const kept = chunks.filter(sendDone)
       const recut: MoveChunkRecord[] = []
       let depositBound = run.depositBound
       for (const token of new Set(planned.map((c) => c.token))) {
@@ -791,7 +822,7 @@ export async function moveRotation(
       current = await save(deps, current, write(current, { move: { runs } }))
     }
   }
-  if (!run || run.chunks.every(chunkDone)) {
+  if (!run || run.chunks.every(sendDone)) {
     if (run && !run.chunks.every((c) => c.state === "mined")) {
       // Nothing new until the run is checkpointed: a chunk that drops out is resent in this run.
       return {
@@ -805,7 +836,8 @@ export async function moveRotation(
     let depositBound = false
     for (const token of await deps.move.tokens()) {
       const shape = await deps.move.shape(token)
-      const plan = planMove(shape, deps.move.cap, await deps.move.deposits(token, shape))
+      const deposits = await deps.move.deposits(token, shape)
+      const plan = planMove(shape, await deps.move.cap(token), deposits)
       depositBound ||= plan.bound === "upper"
       fresh.push(
         ...plan.chunks.map((c) => ({
@@ -879,6 +911,128 @@ async function sendNextChunk(
   }
 }
 
+/** Whether the refunds still read as the snapshot a step decided over. */
+const sameRefunds = (c: BackupRotationRecord, snapshot: BackupRotationRecord) =>
+  JSON.stringify(c.refunds ?? null) === JSON.stringify(snapshot.refunds ?? null)
+
+/** The refunds with `fields` written on the link at `at`, and `extra` on the list. */
+const refundsWith = (
+  c: BackupRotationRecord,
+  at: number,
+  fields: Partial<LinkRefundRecord>,
+  extra: Partial<LinkRefunds> = {},
+): Partial<BackupRotationRecord> => {
+  const refunds = c.refunds!
+  const links = refunds.links.map((x, i) => (i === at ? { ...x, ...fields } : x))
+  return { refunds: { ...refunds, ...extra, links } }
+}
+
+/**
+ * The open paylinks taken back before the first run: listed once, one sponsored refund each, sent
+ * while none is in flight and the user has not closed the last prompt. The run is planned once
+ * every refund is checkpointed or its link was spent another way, so no chunk spends a refund the
+ * sequencer could still drop.
+ */
+async function takeBackLinks(
+  deps: RotationFlowDeps,
+  record: BackupRotationRecord,
+  options: RunOptions,
+): Promise<{ settled: BackupRotationRecord } | { stop: FlowResult }> {
+  /** Writes over the refunds as this step read them, while no run is planned. */
+  const write =
+    (snapshot: BackupRotationRecord, fields: Partial<BackupRotationRecord>): Patch =>
+    (c) =>
+      c.phase === snapshot.phase && !c.move?.runs.length && sameRefunds(c, snapshot) ? fields : null
+  let current = record
+  if (!current.refunds) {
+    const links = (await deps.move.links()).map((link) => ({ link, state: "planned" as const }))
+    current = await save(deps, current, write(current, { refunds: { links } }))
+  }
+  const links = await readSends(deps, current.refunds!.links, replanRefund)
+  const left = links.some((l) => l.state === "planned")
+  // A decline holds only over a refund still to send.
+  const declined = left && current.refunds!.declined
+  current = await save(
+    deps,
+    current,
+    write(current, { refunds: { links, ...(declined && { declined }) } }),
+  )
+  if (links.some(sendOpen)) return { stop: { record: current, wait: "chunk" } }
+  if (left) return { stop: await sendNextRefund(deps, current, options) }
+  if (links.every((l) => l.state === "mined" || l.state === "skipped")) return { settled: current }
+  return { stop: { record: current, wait: "chunk" } }
+}
+
+/**
+ * The next planned refund, after a link spent another way is skipped and one too close to its
+ * expiry waits for it. A refund that fails over a link spent meanwhile is skipped too. A spend no
+ * checkpoint holds yet waits, since its link reopens if a reorg drops it.
+ */
+async function sendNextRefund(
+  deps: RotationFlowDeps,
+  record: BackupRotationRecord,
+  { prompt, signal }: RunOptions,
+): Promise<FlowResult> {
+  if (record.refunds!.declined) return { record, wait: "declined" }
+  let current = record
+  const skip = (snapshot: BackupRotationRecord, at: number, link: string) =>
+    save(deps, snapshot, (c) =>
+      sameRefunds(c, snapshot) ? refundsWith(c, at, { link, state: "skipped" }) : null,
+    )
+  let at: number
+  for (;;) {
+    at = current.refunds!.links.findIndex((l) => l.state === "planned")
+    if (at < 0) return { record: current, wait: "chunk" }
+    const refundable = await deps.move.refundable(current.refunds!.links[at]!.link)
+    if (refundable === "later") return { record: current, wait: "link" }
+    if (refundable === "spending") return { record: current, wait: "chunk" }
+    if (refundable === "now") break
+    current = await skip(current, at, current.refunds!.links[at]!.link)
+  }
+  if (!(await deps.move.usesLeft())) return { record: current, wait: "uses" }
+  if (!prompt || signal?.aborted) return { record: current, wait: "approval" }
+  const { link } = current.refunds!.links[at]!
+  const claim = { id: deps.mintAttemptId(), session: deps.session }
+  const claimed = await save(deps, current, (c) =>
+    sameRefunds(c, current) ? refundsWith(c, at, { state: "claimed", claim }) : null,
+  )
+  /** Writes `fields` on the link, and `extra` on the list, while this send still holds it. */
+  const patchHeld = (fields: Partial<LinkRefundRecord>, extra?: Partial<LinkRefunds>) =>
+    save(deps, claimed, (c) =>
+      c.refunds?.links[at]?.claim?.id === claim.id ? refundsWith(c, at, fields, extra) : null,
+    )
+  const onTxHash: TxHashCallback = async (txHash, { expiresAtMs }) => {
+    await patchHeld({ state: "submitted", claim: undefined, txHash: txHash as Hex, expiresAtMs })
+  }
+  let withdrawn = false
+  let later = false
+  try {
+    await deps.move.refund(link, onTxHash, signal)
+  } catch (err) {
+    withdrawn = !!signal?.aborted && err === signal.reason
+    const declined = !withdrawn && deps.move.declined(err)
+    const refundable =
+      withdrawn || declined ? "now" : await deps.move.refundable(link).catch(() => "now" as const)
+    later = refundable === "later"
+    await patchHeld(
+      refundable === "spent"
+        ? { link, state: "skipped", claim: undefined }
+        : { state: "planned", claim: undefined },
+      declined ? { declined: true } : undefined,
+    ).catch(() => undefined)
+    if (isSpendEnvelopeRefusal(err)) {
+      return { record: await save(deps, current, (c) => attention(c, "move")) }
+    }
+    if (!declined && !withdrawn && refundable === "now") throw err
+  }
+  const after = await deps.store.get(record.owner)
+  if (after?.attemptId !== record.attemptId) throw new RotationFlowError("gone", "attempt is gone")
+  return {
+    record: after,
+    wait: withdrawn ? "approval" : moveDeclined(after) ? "declined" : later ? "link" : "chunk",
+  }
+}
+
 /**
  * `moved` → `done`: the signature and the envelope leave the record, and the salt once no funding
  * can land unswept and the deposit address holds nothing, read now. An attempt with money there and
@@ -914,8 +1068,13 @@ export async function retryMove(
       deps,
       await save(deps, record, (c) => {
         if (!moveDeclined(c)) return null
-        const runs = c.move!.runs
-        return { move: { runs: [...runs.slice(0, -1), { ...runs.at(-1)!, declined: undefined }] } }
+        const runs = c.move?.runs ?? []
+        return {
+          ...(runs.length > 0 && {
+            move: { runs: [...runs.slice(0, -1), { ...runs.at(-1)!, declined: undefined }] },
+          }),
+          ...(c.refunds && { refunds: { ...c.refunds, declined: undefined } }),
+        }
       }),
       { signal },
     )
@@ -948,20 +1107,24 @@ export async function fundingEvidence(
 }
 
 /**
- * The deposit address, read once at both block tags. Every decision about money there takes one of
- * two answers: `held` (money on the latest or the finalized block) guards whatever drops or strips
- * the salt; `settled` (money on the finalized block) is what the flow counts on past the sweep
- * window.
+ * The deposit address, read once at both block tags against `floor`, the least that counts. Every
+ * decision about money there takes one of two answers: `held` (on the latest or the finalized
+ * block) guards whatever drops or strips the salt; `settled` (on the finalized block) is what the
+ * flow counts on past the sweep window.
  */
 interface Deposit {
   held: boolean
   settled: boolean
 }
 
-async function readDeposit(deps: Pick<RotationFlowDeps, "l1">, sipa: Address): Promise<Deposit> {
+async function readDeposit(
+  deps: Pick<RotationFlowDeps, "l1">,
+  sipa: Address,
+  floor = 1n,
+): Promise<Deposit> {
   const latest = await deps.l1.sipaBalance(sipa, "latest")
   const finalized = await deps.l1.sipaBalance(sipa)
-  return { held: latest > 0n || finalized > 0n, settled: finalized > 0n }
+  return { held: latest >= floor || finalized >= floor, settled: finalized >= floor }
 }
 
 async function depositHeld(deps: Pick<RotationFlowDeps, "l1">, sipa: Address): Promise<boolean> {
@@ -969,27 +1132,39 @@ async function depositHeld(deps: Pick<RotationFlowDeps, "l1">, sipa: Address): P
 }
 
 /**
- * Whether this wallet's funding already reached the deposit address, so none need go out. Nothing
- * else pays that address, and what lands is the plan's amount less the withdrawal's fees, so any
- * settled balance is the funding.
+ * The least that counts as this wallet's funding at the deposit address: the plan's deposit less
+ * its credit's margin, which was the least the sweep could take when the plan was saved. The
+ * funding lands at the plan's deposit, since the withdrawal's charges are fixed. Anyone can pay
+ * the address once it is published, so less is someone else's and cannot finish the change. A
+ * plan saved without its deposit counts any money.
  */
+function fundingFloor(plan: BackupRotationPlan | undefined): bigint {
+  const floor = plan?.deposited ? BigInt(plan.deposited) - BACKUP_FUNDING_MARGIN : 0n
+  return floor > 0n ? floor : 1n
+}
+
+/** Whether this wallet's funding already reached the deposit address, so none need go out. */
 async function depositFunded(
   deps: Pick<RotationFlowDeps, "l1">,
   record: BackupRotationRecord,
 ): Promise<boolean> {
   const sipa = record.rotation?.sipa
   if (!sipa) return false
-  return (await readDeposit(deps, sipa)).settled
+  return (await readDeposit(deps, sipa, fundingFloor(record.plan))).settled
 }
 
-/** Whether money sits at the deposit address, or a sweep took some since the attempt began. */
+/**
+ * Whether at least `floor` sits at the deposit address, or a sweep took some since the attempt
+ * began.
+ */
 async function depositSeen(
   deps: Pick<RotationFlowDeps, "l1">,
   record: BackupRotationRecord,
+  floor = 1n,
 ): Promise<boolean> {
   const sipa = record.rotation?.sipa
   if (!sipa) return false
-  if (await depositHeld(deps, sipa)) return true
+  if ((await readDeposit(deps, sipa, floor)).held) return true
   return (await deps.l1.sweep(sipa, record.fromBlock ?? 0)) !== undefined
 }
 
@@ -1144,8 +1319,8 @@ async function resumeOnce(
           if (verdict === "applied") {
             then = await installedPatch(deps, rotation)
           } else if (verdict === "superseded" || verdict === "conflict") {
-            // Money already sent to the deposit address of a change that cannot run is the user's to recover.
-            const held = await depositHeld(deps, sipa)
+            // Money that could be the funding of a change that cannot run is the user's to recover.
+            const held = (await readDeposit(deps, sipa, fundingFloor(snapshot.plan))).held
             const stop = verdict === "conflict" ? CONFLICT : RESTART
             then = (c) => (acting(c) === "funded" || held ? attention(c, "stranded") : stop)
           }
@@ -1395,8 +1570,9 @@ export function cancellable(record: BackupRotationRecord): boolean {
 
 /**
  * Drops the attempt. The stored record decides: it is read, judged and removed as read. The salt
- * leaves with the record, so one is dropped only while nothing shows money at its deposit address; a
- * corrupt record also stays over any trace of a funding.
+ * leaves with the record, so one is dropped only while its deposit address holds nothing that could
+ * be the funding; no funding of this wallet's is landing by then. A corrupt record, whose plan is
+ * not trusted, stays over any trace of a funding.
  */
 export async function cancelRotation(
   deps: Pick<RotationFlowDeps, "store" | "tracker" | "l1">,
@@ -1410,7 +1586,9 @@ export async function cancelRotation(
   if (!cancellable(current))
     throw new RotationFlowError("not-cancellable", `${current.phase} cannot be cancelled`)
   const seen =
-    current.attention === "corrupt" ? fundingEvidence(deps, current) : depositSeen(deps, current)
+    current.attention === "corrupt"
+      ? fundingEvidence(deps, current)
+      : depositSeen(deps, current, fundingFloor(current.plan))
   if (await seen) {
     throw new RotationFlowError("not-cancellable", "money may have reached the deposit address")
   }

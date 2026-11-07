@@ -1,11 +1,13 @@
 import React, { act } from "react"
+import { testPage, testCore } from "../support/page"
 import { createRoot, type Root } from "react-dom/client"
 import { MemoryRouter, Route, Routes } from "react-router-dom"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { startTabBoundOperation } from "../support/operations"
 import { BakedProfileNotice, CustomProfileNotice } from "../../src/ui/ConfigNotice"
 import { AppShell } from "../../src/ui/AppShell/AppShell"
-import { activeNamespace, closeSession, switchSession } from "../../src/platform/session"
+import { activeNamespace, closeSession, switchSession } from "../../src/session/session"
+import { pageSessionDeps } from "../../src/app/sessionDeps"
 
 let container: HTMLDivElement
 let root: Root
@@ -87,7 +89,9 @@ describe("CustomProfileNotice", () => {
 })
 
 describe("AppShell", () => {
-  beforeEach(() => void switchSession(activeNamespace()))
+  beforeEach(
+    () => void switchSession(activeNamespace(testCore().device), pageSessionDeps(testPage())),
+  )
   afterEach(closeSession)
 
   const render = (notice?: React.ReactNode) =>

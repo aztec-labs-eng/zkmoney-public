@@ -28,7 +28,7 @@ import {
 } from "../../oxide/metadataMigrationBinding"
 import { readResolverOperatorRecords } from "../../oxide/resolverOperatorRecords"
 import type { IStorageAdapter, StorageLock } from "../storages/adapter"
-import { directDepositClaimed, type SIPADepositStore } from "../services/deposits/SIPADepositStore"
+import { claimedSweepsTotal, directDepositKey, type SipaDeposits } from "../../engine/sipaDeposits"
 import { MetadataMigrationController } from "./MetadataMigrationController"
 import type { MetadataMigrationSteps } from "./metadataMigrationFlow"
 import { MigrationFundingStore } from "./MigrationFundingStore"
@@ -65,7 +65,7 @@ export interface MetadataMigrationSessionOptions {
   /** Told of every write, so activity lists this run's batches. */
   activity?: UpgradeActivity
   /** The deposit rail's records: the rail claims the migration's direct deposits. */
-  deposits: Pick<SIPADepositStore, "load" | "get">
+  deposits: Pick<SipaDeposits, "get">
   /** Whether a balance read begun now is stored: a run is done only once it holds all it imported. */
   confirmBalance?(): Promise<boolean>
   /** Stores what the source holds; `anchor` is the L1 block its read began at, so no older read lands last. */
@@ -103,8 +103,8 @@ export interface MetadataMigrationSessionOptions {
 async function accountOwner(
   o: Pick<MetadataMigrationSessionOptions, "client" | "current" | "secretKey">,
 ) {
-  // Registration helpers also load AccountStorage. Defer them until composition so exporting
-  // this factory from core does not initialize storage through a circular barrel import.
+  // Deferred until composition, so exporting this factory from core does not load the registration
+  // helpers through a circular barrel import.
   const { createOxideL1Reader, resolveOxideAccountFactory } = await import(
     "../../oxide/oxideRegistrationDeps"
   )
@@ -200,7 +200,7 @@ export async function createMetadataMigrationSession(o: MetadataMigrationSession
       ...context,
       destination: depositDestination,
       directDepositClaimed: (recipientCommitment) =>
-        directDepositClaimed(o.deposits, recipientCommitment),
+        o.deposits.get(directDepositKey(recipientCommitment)).then(claimedSweepsTotal),
       // The coordinates of every direct batch the account's runs saved on this device, planned
       // ones included, so no new batch repeats one. Storage only, no chain read.
       reservedCoordinates: async () => {

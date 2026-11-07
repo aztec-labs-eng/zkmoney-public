@@ -8,6 +8,7 @@ import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { deriveAllowanceState, type AllowanceSnapshot } from "@obsidion/front-core"
 import type { ClaimFpcAllowance } from "@obsidion/sdk"
+import { openTestSession } from "../../support/session"
 
 const { allowance } = vi.hoisted(() => ({
   allowance: { snapshot: undefined as unknown, refresh: vi.fn() },
@@ -15,7 +16,10 @@ const { allowance } = vi.hoisted(() => ({
 vi.mock("../../../src/features/allowance/useSponsoredAllowance", () => ({
   useSponsoredAllowance: () => allowance,
 }))
-vi.mock("../../../src/features/operations/operations", () => ({ useBusyLabel: () => "Busy" }))
+vi.mock("../../../src/features/operations/operations", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../src/features/operations/operations")>()),
+  useBusyLabel: () => "Busy",
+}))
 vi.mock("@obsidion/web-ds", () => ({
   ConfirmationSheetDetailRow: () => null,
   PrimaryGradientButton: ({
@@ -53,6 +57,7 @@ let root: Root
 let container: HTMLDivElement
 
 beforeEach(() => {
+  openTestSession()
   container = document.createElement("div")
   document.body.appendChild(container)
   root = createRoot(container)
@@ -74,6 +79,7 @@ const render = (isSend: boolean) =>
         ready
         busy={false}
         overspent={false}
+        balanceUnconfirmed={false}
         isSend={isSend}
         onConfirm={() => {}}
       />,

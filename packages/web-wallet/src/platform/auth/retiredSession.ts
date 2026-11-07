@@ -5,12 +5,9 @@
  * sign-in. Nothing is copied here: that sign-in writes this rollup's session.
  */
 import { Fr } from "@aztec-labs/aztec.js/fields"
-import {
-  SESSION_TUPLE_KEYS,
-  getActiveStorageId,
-  sessionCacheIn,
-  storageIdFromSecret,
-} from "../storage/activeStorage"
+import type { ReadonlyStore } from "@obsidion/front-core"
+import { SESSION_TUPLE_KEYS, sessionCacheIn, storageIdFromSecret } from "../storage/activeStorage"
+import type { DeviceState } from "../storage/deviceKeys"
 import { PASSKEY_IDENTITY_MAP_KEY, WEB_STORAGE_PREFIX } from "../storage/storageKeys"
 import { readEntriesFromOtherDatabases } from "../storage/walletStorage"
 import { openingRecordIn, type RetiredRecord } from "./WebPasskeyIdentityMap"
@@ -24,16 +21,17 @@ export type RetiredSession = {
 
 const MAP_KEY = WEB_STORAGE_PREFIX + PASSKEY_IDENTITY_MAP_KEY
 
-let found: RetiredSession | undefined
-
 /** Looked up once this tab holds the wallet database, before the app mounts. Never throws. */
-export async function findRetiredSession(rpId: string): Promise<void> {
-  found = undefined
-  if (getActiveStorageId() !== null) return
+export async function findRetiredSession(
+  device: ReadonlyStore<DeviceState>,
+  rpId: string,
+): Promise<RetiredSession | undefined> {
+  if (device.get().storageId !== null) return undefined
   try {
-    found = await readRetiredSession(rpId)
+    return await readRetiredSession(rpId)
   } catch (e) {
     console.warn("[retiredSession] could not read retired sessions:", e)
+    return undefined
   }
 }
 
@@ -60,13 +58,4 @@ async function readRetiredSession(rpId: string): Promise<RetiredSession | undefi
     (s) => s.storageId === first?.storageId && s.credentialId === first.credentialId,
   )
   return agree ? first : undefined
-}
-
-/** The retired session, while this rollup holds no session of its own. */
-export function retiredSession(): RetiredSession | undefined {
-  return found && getActiveStorageId() === null ? found : undefined
-}
-
-export function forgetRetiredSession(): void {
-  found = undefined
 }

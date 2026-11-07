@@ -3,6 +3,7 @@
  * again after a failed connect; a move whose fees rose since its review stops before burning.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { testPage, testCore } from "../../support/page"
 import {
   SavingsMoveStorage,
   SkyFactoryMismatchError,
@@ -102,7 +103,7 @@ vi.mock("../../../src/features/limits/withdrawalLimit", async (importOriginal) =
   ...(await importOriginal<typeof import("../../../src/features/limits/withdrawalLimit")>()),
   assertWithinWithdrawalLimit: () => {},
 }))
-vi.mock("../../../src/features/onboarding/claimSponsorship", () => ({
+vi.mock("../../../src/features/registration/claimSponsorship", () => ({
   claimSponsorContext: async () => ({}),
 }))
 vi.mock("../../../src/features/operations/operations", async (importOriginal) => ({
@@ -115,9 +116,7 @@ vi.mock("../../../src/features/withdraw/withdrawGateway", () => ({
   runBurn: h.runBurn,
   withdrawalOptions: () => ({}),
 }))
-vi.mock("../../../src/platform/auth/useAuthenticator", () => ({
-  getAuthService: () => ({ getSecretKey: async () => ({}) }),
-}))
+const fakeAuth = () => ({ getSecretKey: async () => ({}) })
 vi.mock("../../../src/features/savings/savingsMoveStore", () => ({
   getSavingsMoveStore: () => moves,
 }))
@@ -127,9 +126,13 @@ const { createSavingsSource, savingsFinalizeDeployment } = await import(
 )
 const { SavingsQuoteChangedError } = await import("../../../src/features/savings/quoteChanged")
 const { activeNamespace, closeSession, switchSession } = await import(
-  "../../../src/platform/session"
+  "../../../src/session/session"
 )
-beforeEach(() => void switchSession(activeNamespace()))
+const { pageSessionDeps } = await import("../../../src/app/sessionDeps")
+beforeEach(
+  () =>
+    void switchSession(activeNamespace(testCore().device), pageSessionDeps(testPage(fakeAuth()))),
+)
 afterEach(closeSession)
 
 const quoteOf = (net: bigint): SavingsQuote => ({

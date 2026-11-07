@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { seedDeviceKeys, testCore, testPage } from "../../support/page"
 import {
   HISTORIC_ACTIVITY_IMPORTED_KEY,
   TRANSACTIONS_STORAGE_KEY,
@@ -10,12 +11,12 @@ import {
   closeSession,
   switchSession,
   session,
-} from "../../../src/platform/session"
+} from "../../../src/session/session"
+import { pageSessionDeps } from "../../../src/app/sessionDeps"
 import { setActiveRollup } from "../../../src/platform/storage/rollupStorage"
 import {
   closeWalletStore,
   openWalletStore,
-  walletStorage,
 } from "../../../src/platform/storage/walletStorage"
 import { WEB_STORAGE_PREFIX, webStorage } from "../../../src/platform/storage/WebStorageAdapter"
 import { testWalletDbs } from "../../support/fakeWalletDb"
@@ -29,7 +30,7 @@ const CURSOR = `@obsidion/transfer-scan/cursor/v1/${OLD_NETWORK}/0xacc`
 const scoped = (id: string, key: string) => `${WEB_STORAGE_PREFIX}${id}.${key}`
 
 /** The active account, committed, as a booted wallet has it. */
-const activate = (id: string) => walletStorage.commitItem("webwallet.storageId", id)
+const activate = (id: string) => seedDeviceKeys({ storageId: id })
 
 const row = (txHash: string): Transaction =>
   ({
@@ -97,7 +98,7 @@ describe("importHistoricActivityOnce", () => {
 
   it("carries the account's rows from the retired rollup's database into this one, once", async () => {
     await activate("acct1")
-    switchSession(activeNamespace())
+    switchSession(activeNamespace(testCore().device), pageSessionDeps(testPage()))
     const old = dbs.db(OLD_ROLLUP).state
     old.set(scoped("acct1", TRANSACTIONS_STORAGE_KEY), JSON.stringify([row("0xA1")]))
     old.set(scoped("acct1", CURSOR), "10")

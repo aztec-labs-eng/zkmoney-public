@@ -125,7 +125,7 @@ describe("readSipaHoldingsAtHead", () => {
   const SUSDS = "0x5a1e0c2f3b4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f" as Address
   const SIPA_2 = "0x9999999999999999999999999999999999999999" as Address
 
-  it("reads the block timestamp and each SIPA's own tokens plus ETH in one unchunked call", async () => {
+  it("reads the block timestamp and each SIPA's own tokens plus ETH in one call", async () => {
     const multicall = vi.fn<(request: object) => Promise<unknown[]>>(async () => [
       { status: "success", result: 1_700_000_000n },
       { status: "success", result: 7n },
@@ -144,7 +144,7 @@ describe("readSipaHoldingsAtHead", () => {
     expect(multicall.mock.calls[0]![0]).toMatchObject({
       multicallAddress: MULTICALL3_ADDRESS,
       allowFailure: true,
-      batchSize: 0,
+      batchSize: 36_000,
       contracts: [
         { address: MULTICALL3_ADDRESS, functionName: "getCurrentBlockTimestamp" },
         { address: DAI, functionName: "balanceOf", args: [SIPA] },
@@ -176,15 +176,6 @@ describe("readSipaHoldingsAtHead", () => {
     await expect(readSipaHoldingsAtHead(client, [{ sipa: SIPA, tokens: [DAI] }])).rejects.toBe(
       failure,
     )
-  })
-
-  it("refuses more reads than one call carries instead of splitting them", async () => {
-    const multicall = vi.fn()
-    const client = { multicall } as unknown as PublicClient
-    const holdings = Array.from({ length: 500 }, () => ({ sipa: SIPA, tokens: [DAI] }))
-
-    await expect(readSipaHoldingsAtHead(client, holdings)).rejects.toThrow(/one Multicall3 call/)
-    expect(multicall).not.toHaveBeenCalled()
   })
 })
 
@@ -394,6 +385,23 @@ describe("buildSipaRecoverCall", () => {
       [sipaFactory, false, encodeDeploySIPA(args)],
       [SIPA, false, encodeRecoverCall(eth).data],
       [SIPA, false, encodeRecoverCall(usdc).data],
+    ])
+  })
+
+  it("sends a deploy another generation encoded as it is, before the recovery", () => {
+    const sipaFactory = "0x0b903b955dbc0c97252f1ce9e43f8c26e8f5635f" as Address
+    const deployCall = "0xdeadbeef" as Hex
+    const call = buildSipaRecoverCall({
+      deployed: false,
+      deployment: { protocol: "account", sipaFactory, deployCall },
+      recoveries: [usdc],
+    })
+    const [calls] = decodeFunctionData({ abi: multicall3Abi, data: call.data }).args as [
+      { target: Address; allowFailure: boolean; callData: Hex }[],
+    ]
+    expect(calls.map((c) => [c.target.toLowerCase(), c.callData])).toEqual([
+      [sipaFactory, deployCall],
+      [SIPA, encodeRecoverCall(usdc).data],
     ])
   })
 

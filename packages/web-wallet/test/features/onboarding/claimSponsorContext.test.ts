@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
 const { loadClaimFpcPolicy, loadClaimFpcPolicyAt, registerSponsorFpc, hasClaimFpcSubscription } =
   vi.hoisted(() => ({
@@ -28,19 +28,20 @@ vi.mock("../../../src/config/env", async (importOriginal) => ({
   getConfig: () => ({ network: "sandbox" }),
 }))
 const { registrationGateWitness } = vi.hoisted(() => ({ registrationGateWitness: vi.fn() }))
-vi.mock("../../../src/features/onboarding/registrationRail", () => ({ registrationGateWitness }))
+vi.mock("../../../src/features/registration/registrationRail", () => ({ registrationGateWitness }))
 const { collectOnboardingKeys, buildClaimSubscribeWitness } = vi.hoisted(() => ({
   collectOnboardingKeys: vi.fn(),
   buildClaimSubscribeWitness: vi.fn(),
 }))
-vi.mock("../../../src/features/onboarding/oxideOnboarding", () => ({
+vi.mock("../../../src/session/account", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../src/session/account")>()),
   collectOnboardingKeys,
+}))
+vi.mock("../../../src/features/registration/registrationDeps", () => ({
   buildClaimSubscribeWitness,
 }))
-const { nameClaimRecord } = vi.hoisted(() => ({ nameClaimRecord: vi.fn() }))
 vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/front-core")>()),
-  NameClaimStore: { get: () => ({ get: nameClaimRecord }) },
   deriveBootstrapKey: () => ({ address: "0x" + "11".repeat(20) }),
   resolveOxideIdentity: async () => ({
     kind: "verified",
@@ -55,15 +56,21 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
   }),
 }))
 
-vi.mock("../../../src/features/onboarding/oxideGenerations", () => ({
+vi.mock("../../../src/features/registration/oxideGenerations", () => ({
   loadOxideGenerations: async () => ({}),
 }))
 let currentFpc = ""
 
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import { railByName } from "@obsidion/sdk"
-import { claimSponsorContext } from "../../../src/features/onboarding/claimSponsorship"
-import { RAIL_REGISTRATION_BROADCAST, RAIL_REGISTERED } from "../../../src/features/onboarding/rails"
+import { claimSponsorContext } from "../../../src/features/registration/claimSponsorship"
+import {
+  RAIL_REGISTRATION_BROADCAST,
+  RAIL_REGISTERED,
+} from "../../../src/features/registration/rails"
+import { closeSession } from "../../../src/session/session"
+import { openTestSession } from "../../support/session"
+import { seedDeviceKeys } from "../../support/page"
 
 const tuple = (version: string, fpcBeneficiary: string) =>
   ({ version, fpcBeneficiary, l2Token: "0x" + "01".repeat(32) } as unknown as OxideEnvTuple)
@@ -144,7 +151,9 @@ const DEPLOYED_RAILS = [
 const NAME_CLAIM = { nameHash: new Uint8Array(32) }
 const REGISTRATION_GATE = { kind: "registration", keyWitness: "0x1", leafIndex: "0x9" }
 
-function manifestDeps(fpc: string, account: string) {
+afterEach(closeSession)
+
+async function manifestDeps(fpc: string, account: string) {
   vi.clearAllMocks()
   currentFpc = fpc
   loadClaimFpcPolicy.mockImplementation(async (_service: unknown, name: string) => ({
@@ -153,7 +162,9 @@ function manifestDeps(fpc: string, account: string) {
   }))
   registerSponsorFpc.mockResolvedValue(REGISTERED)
   hasClaimFpcSubscription.mockResolvedValue(false)
-  nameClaimRecord.mockResolvedValue({
+  await seedDeviceKeys({ storageId: "a1" })
+  await openTestSession().nameClaims.put({
+    address: account,
     handle: "taga",
     signature: "0xsig",
     nonce: "1",
@@ -173,7 +184,10 @@ function manifestDeps(fpc: string, account: string) {
 describe("the rail a flow declares decides what its subscribe leg carries", () => {
   it("mints a NameClaim witness on the broadcast rail, and nothing else", async () => {
     const sponsor = await claimSponsorContext(
-      manifestDeps("0x00000000000000000000000000000000000000000000000000000000000001f8", "0xacc4"),
+      await manifestDeps(
+        "0x00000000000000000000000000000000000000000000000000000000000001f8",
+        "0xacc4",
+      ),
       RAIL_REGISTRATION_BROADCAST,
     )
 
@@ -185,10 +199,10 @@ describe("the rail a flow declares decides what its subscribe leg carries", () =
   })
 
   it("builds the registration witness for the acting account, not the session's", async () => {
-    const deps = manifestDeps(
+    const deps = (await manifestDeps(
       "0x00000000000000000000000000000000000000000000000000000000000001fb",
       "0xacc8",
-    ) as Record<string, unknown>
+    )) as Record<string, unknown>
     const acting = { getAddress: () => address("0xacc9") }
     const sponsor = await claimSponsorContext(
       { ...deps, payerFor: async () => ({ payer: deps.account, acting }) } as never,
@@ -201,7 +215,7 @@ describe("the rail a flow declares decides what its subscribe leg carries", () =
 
 describe("the deployment generation a flow names decides which ClaimFPC it rides", () => {
   it("selects the named generation's FPC and hands its tuple to the gate", async () => {
-    const deps = manifestDeps(
+    const deps = await manifestDeps(
       "0x00000000000000000000000000000000000000000000000000000000000001fb",
       "0xacc8",
     )
@@ -223,7 +237,10 @@ describe("the deployment generation a flow names decides which ClaimFPC it rides
 
   it("hands the current tuple to the gate when no generation is named", async () => {
     await claimSponsorContext(
-      manifestDeps("0x00000000000000000000000000000000000000000000000000000000000001fc", "0xacc9"),
+      await manifestDeps(
+        "0x00000000000000000000000000000000000000000000000000000000000001fc",
+        "0xacc9",
+      ),
       RAIL_REGISTERED,
     )
 
@@ -235,7 +252,7 @@ describe("the deployment generation a flow names decides which ClaimFPC it rides
     const nameless = { version: "v6" } as unknown as OxideEnvTuple
     await expect(
       claimSponsorContext(
-        manifestDeps(
+        await manifestDeps(
           "0x00000000000000000000000000000000000000000000000000000000000001fd",
           "0xacc11",
         ),
@@ -247,7 +264,7 @@ describe("the deployment generation a flow names decides which ClaimFPC it rides
   })
 
   it("refuses a retired rail whose gate this wallet can only satisfy on the current deployment", async () => {
-    const deps = manifestDeps(
+    const deps = await manifestDeps(
       "0x00000000000000000000000000000000000000000000000000000000000001fb",
       "0xacc10",
     )

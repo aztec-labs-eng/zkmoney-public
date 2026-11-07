@@ -9,7 +9,7 @@ import {
   type RefundedDeposit,
 } from "@obsidion/sdk"
 import type { Address, Hex } from "viem"
-import type { L1ExitChannel } from "../deposit/sipaRecovery"
+import type { L1ExitChannel } from "../sipa/l1ExitChannels"
 import { noteRefundedSavingsMoves } from "../savings/savingsMoveStore"
 
 export type FrozenExitRuntime = Pick<FrozenMigrationRuntime, "candidates" | "build">
@@ -66,13 +66,14 @@ let running = false
 let pending: { hash: Hex; deposits: RefundedDeposit[]; to: Address } | undefined
 
 /**
- * Refunds batches until none is left. A batch that reverts or comes back after its own refund
- * stops the run. Resolves to what moved and what is left behind.
+ * Refunds batches to `recipient`, by default the submitter, until none is left. A batch that
+ * reverts or comes back after its own refund stops the run. Resolves to what moved and what is left.
  */
 export async function runFrozenExit(
   runtime: FrozenExitRuntime,
   channel: L1ExitChannel,
   onBatch?: (progress: FrozenExitProgress) => void,
+  recipient: Address = channel.target,
 ) {
   if (running) throw new Error("A withdrawal is already running. Wait for it to finish.")
   running = true
@@ -82,7 +83,7 @@ export async function runFrozenExit(
       if (await channel.waitForReceipt(hash)) await noteRefundedSavingsMoves(deposits, to, hash)
       pending = undefined
     }
-    return await refundAll(runtime, channel, onBatch)
+    return await refundAll(runtime, channel, recipient, onBatch)
   } finally {
     running = false
   }
@@ -91,22 +92,23 @@ export async function runFrozenExit(
 async function refundAll(
   runtime: FrozenExitRuntime,
   channel: L1ExitChannel,
+  recipient: Address,
   onBatch?: (progress: FrozenExitProgress) => void,
 ) {
   const progress: FrozenExitProgress = { refunded: 0n, hashes: [] }
   const sent = new Set<string>()
   for (let fresh = true; ; fresh = false) {
-    const next = await nextFrozenSelfRefund(runtime, channel.target, { fresh })
+    const next = await nextFrozenSelfRefund(runtime, recipient, { fresh })
     if (!next.refund) return { ...progress, stranded: next.remaining, waiting: next.waiting }
     const { ids, amount, to, data } = next.refund
     if (ids.some((id) => sent.has(id)))
       throw new Error("A refund already sent is still unconfirmed. Wait a minute and try again.")
     const hash = await channel.sendTransaction(to, data)
-    pending = { hash, deposits: next.refund.deposits, to: channel.target }
+    pending = { hash, deposits: next.refund.deposits, to: recipient }
     const ok = await channel.waitForReceipt(hash)
     pending = undefined
     if (!ok) throw new Error(`Refund transaction ${hash} reverted, so nothing moved. Try again.`)
-    await noteRefundedSavingsMoves(next.refund.deposits, channel.target, hash)
+    await noteRefundedSavingsMoves(next.refund.deposits, recipient, hash)
     ids.forEach((id) => sent.add(id))
     progress.refunded += amount
     progress.hashes.push(hash)

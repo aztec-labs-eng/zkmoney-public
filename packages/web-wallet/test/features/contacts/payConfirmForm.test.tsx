@@ -38,6 +38,7 @@ const render = (payee?: { tag: string; savesContact: boolean }) =>
         ready
         busy={false}
         overspent={false}
+        balanceUnconfirmed={false}
         isSend
         payee={payee}
         onConfirm={() => {}}

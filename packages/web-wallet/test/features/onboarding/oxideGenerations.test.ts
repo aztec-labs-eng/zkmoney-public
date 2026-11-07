@@ -27,7 +27,7 @@ import {
   requireVerifiedIdentity,
   resolveOxideIdentity,
 } from "@obsidion/front-core"
-import { loadOxideGenerations } from "../../../src/features/onboarding/oxideGenerations"
+import { loadOxideGenerations } from "../../../src/features/registration/oxideGenerations"
 
 const REGISTRY = "0x1111111111111111111111111111111111111111"
 const TUPLE = { registry: REGISTRY }

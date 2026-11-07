@@ -16,7 +16,7 @@ import {
   injectedWalletChannel,
   type L1ExitChannel,
   type L1ExitStage,
-} from "../deposit/sipaRecovery"
+} from "../sipa/l1ExitChannels"
 import {
   noteOldVersionWithdrawn,
   openOldVersionExit,

@@ -8,6 +8,7 @@ export default {
   },
   label: "Registration deposit details",
   title: "Registration deposit",
+  amountFallback: "Deposit",
   close: "Close",
   rows: {
     name: "Name",
@@ -17,6 +18,7 @@ export default {
     swept: "Swept",
     deposited: "Deposited",
     fee: "Registration fee",
+    feeWaived: "{fee} (tag price waived)",
     reserved: "Reserved until",
     address: "Deposit address",
     funder: "Funder",

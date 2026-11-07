@@ -2,6 +2,7 @@ import React, { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { TxStatus } from "@aztec-labs/stdlib/tx"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { setIdentity } from "../../support/identity"
 
 // Before any import evaluates the feature flags.
 vi.hoisted(() => vi.stubEnv("VITE_BACKUP_PASSKEY_SETTINGS", "false"))
@@ -58,18 +59,13 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
 }))
 vi.mock("../../../src/config/env", () => ({ getConfig: () => ({}) }))
 vi.mock("../../../src/config/oxideTuple", () => ({ l1PublicClient: () => ({}) }))
-vi.mock("../../../src/features/identity/walletIdentity", () => ({
-  loadWalletIdentity: () => ({ address: `0x${"12".repeat(32)}`, handle: "brave-otter-42" }),
-}))
-vi.mock("../../../src/features/onboarding/oxideGenerations", () => ({
+vi.mock("../../../src/features/registration/oxideGenerations", () => ({
   loadOxideGenerations: async () => ({ kind: "generations" }),
 }))
-vi.mock("../../../src/features/onboarding/generationAddresses", () => ({
+vi.mock("../../../src/features/registration/generationAddresses", () => ({
   generationAddresses: () => () => ({}),
 }))
-vi.mock("../../../src/platform/auth/useAuthenticator", () => ({
-  getAuthService: () => ({ sessionKeys: h.sessionKeys }),
-}))
+const fakeAuth = () => ({ sessionKeys: h.sessionKeys })
 vi.mock("../../../src/features/backupPasskey/backupPasskeyRuntime", () => ({
   buildBackupAddDeps: h.buildBackupAddDeps,
   buildBackupFlowDeps: async () => {
@@ -114,7 +110,7 @@ const entry = () => byTestId("backup-add")
 const press = (id: string) => act(async () => byTestId(id)!.click())
 
 beforeEach(() => {
-  openTestSession({ wallet: h.obsidionWallet })
+  openTestSession({ auth: fakeAuth(), wallet: h.obsidionWallet })
   localStorage.clear()
   resetBackupRotationStoreForTests()
   h.depsBuilt = 0
@@ -147,6 +143,8 @@ afterEach(async () => {
   container.remove()
   vi.clearAllMocks()
 })
+
+beforeEach(() => setIdentity({ address: `0x${"12".repeat(32)}`, handle: "brave-otter-42" }))
 
 describe("the Passkeys modal with the backup flag off", () => {
   it("offers no add on a one-key account with no saved rotation", async () => {

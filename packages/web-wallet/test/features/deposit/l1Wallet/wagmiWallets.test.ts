@@ -52,8 +52,8 @@ vi.mock("../../../../src/config/env", () => ({
 vi.mock("../../../../src/dev/demoFlag", () => ({ isDemoMode: () => false }))
 
 const { getDefaultConfig } = await import("@rainbow-me/rainbowkit")
-const { wagmiConfig } = await import("../../../../src/features/deposit/wagmi")
-const { rabbyWallet } = await import("../../../../src/features/deposit/rabbyWallet")
+const { wagmiConfig } = await import("../../../../src/session/wagmi")
+const { rabbyWallet } = await import("../../../../src/session/rabbyWallet")
 
 type Params = { projectId: string }
 type Group = { groupName: string; wallets: Array<(params: Params) => { id: string }> }

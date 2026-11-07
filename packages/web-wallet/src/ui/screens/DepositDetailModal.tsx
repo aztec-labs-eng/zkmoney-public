@@ -10,7 +10,7 @@ import {
   isNativeEth,
   neverCreditsL2,
   type SIPADepositPhase,
-  type SIPADepositRecord,
+  type SipaDeposit,
 } from "@obsidion/front-core"
 import { GradientText, Icon, PrimaryGradientButton, type StatusBadgeStyle } from "@obsidion/web-ds"
 import walletLineIcon from "../../assets/deposit/wallet-line.svg"
@@ -20,14 +20,12 @@ import {
   settlementSymbol as settledSymbol,
   settlementToken,
   useDepositTokens,
-} from "../../features/deposit/loadDepositFacts"
-import { getConfig } from "../../config/env"
+} from "../../features/sipa/loadDepositFacts"
 import { Modal } from "../Modal"
 import { unsweepableCopy } from "../../features/deposit/unsweepableCopy"
 import { DepositProcessingNotice } from "../../features/deposit/DepositProcessingNotice"
 import { useSipaProcessing } from "../../features/deposit/sipaProcessing"
 import { PendingLimitsLink } from "../../features/limits/AboutLimitsSheet"
-import { l2TxUrl } from "../../lib/explorer"
 import { l1AddressUrl, l1TxUrl, whenLabel } from "../detailRows"
 import { tokenFigure, usdFigure } from "../format"
 import { L1AddressLabel } from "../L1AddressLabel"
@@ -51,7 +49,7 @@ const PHASE_BADGE: Record<SIPADepositPhase, StatusBadgeStyle> = {
   failed: "failed",
 }
 
-export function depositStatus(record: SIPADepositRecord): {
+export function depositStatus(record: SipaDeposit): {
   label: string
   badge: StatusBadgeStyle
 } {
@@ -68,7 +66,7 @@ export function DepositDetailModal({
 }: {
   /** Full text of the notification that opened this detail. */
   notice?: string
-  record: SIPADepositRecord
+  record: SipaDeposit
   /** Set when this SIPA registered a name: the detail names the registration identity. */
   registrationTag?: string
   /** The exit the row offers, if any. A sweep is an escape hatch, so it is not the gradient button. */
@@ -77,7 +75,6 @@ export function DepositDetailModal({
   onBack?: () => void
   onClose: () => void
 }) {
-  const config = getConfig()
   const depositTokens = useDepositTokens()
   const txAmountCap = useRowTxAmountCap(settlementToken(depositTokens, record.tokenAddress))
   const rowDecimals = settlementDecimals(depositTokens, record.tokenAddress)
@@ -212,13 +209,6 @@ export function DepositDetailModal({
             url={l1TxUrl(record.recoveryTxHash)}
           />
         )}
-        {record.claimTxHash && (
-          <DepositHashFact
-            label="Claim tx"
-            hash={record.claimTxHash}
-            url={l2TxUrl(config.network, config.nodeUrl, record.claimTxHash)}
-          />
-        )}
         {showBreakdown && (
           <>
             <hr className="ww-divider" />
@@ -252,7 +242,7 @@ export function TagPurchaseModal({
   price,
   onClose,
 }: {
-  record: SIPADepositRecord
+  record: SipaDeposit
   tag: string
   /** Display units. */
   price: string

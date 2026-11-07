@@ -1,13 +1,14 @@
 /**
  * The "no funds" guards: paylink / withdraw / contact-send for more than the balance can't be
- * started (all fail-open while the balance is still unknown — the balance loads after mount, and a
- * false block is worse than a late one). The unpaid-deposit-address guard the feed applies is
- * `isUnfundedSipaDeposit`, covered in front-core alongside the store it reads.
+ * started, and none takes an amount until a read from this session confirms the balance: a cached
+ * one can be stale. The unpaid-deposit-address guard the feed applies is `isUnfundedSipaDeposit`,
+ * covered in front-core alongside the store it reads.
  */
 import React, { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { MemoryRouter, Route, Routes } from "react-router-dom"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { seedOnboarded } from "../support/identity"
 import { liveBalances } from "../support/balances"
 import { ScreeningProvider, passThroughScreener } from "@obsidion/front-core"
 import { openTestSession } from "../support/session"
@@ -59,10 +60,6 @@ vi.mock("../../src/features/actionGate", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../src/features/actionGate")>()),
   useActionVerdict: () => "open",
 }))
-vi.mock("../../src/features/identity/walletIdentity", () => ({
-  loadOnboardedIdentity: () => ({ handle: "me" }),
-  loadWalletIdentity: () => ({ handle: "me", address: "0xme", claimedAt: 1 }),
-}))
 // An offline manifest and L1 client, whose portal cap is above every amount here.
 vi.mock("../../src/config/oxideTuple", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../src/config/oxideTuple")>()),
@@ -70,13 +67,19 @@ vi.mock("../../src/config/oxideTuple", async (importOriginal) => ({
   l1PublicClient: () => ({ readContract: async () => 10n ** 30n }),
 }))
 vi.mock("../../src/config/env", () => ({
-  getConfig: () => ({ l1ChainId: 11155111, l1RpcUrl: "http://localhost:8545", network: "sandbox" }),
+  getConfig: () => ({
+    l1ChainId: 11155111,
+    l1RpcUrl: "http://localhost:8545",
+    network: "sandbox",
+    rpId: "localhost",
+  }),
 }))
 vi.mock("../../src/lib/analytics", () => ({
   fireEvent: vi.fn(),
   failureCode: () => "x",
   lapTimer: () => () => 0,
   amountBucket: () => "under_50",
+  requestAmountBucket: () => "under_50",
 }))
 vi.mock("../../src/errors/errorModal", () => ({ showReportableError: vi.fn() }))
 // The DS drags in liquid-glass optics jsdom can't render; this test is about the CTA gate.
@@ -146,6 +149,11 @@ function typeInto(input: HTMLInputElement, value: string) {
   input.dispatchEvent(new Event("input", { bubbles: true }))
 }
 
+/** Each amount step ends on its CTA, whose label changes while the balance is checked. */
+const lastButton = (c: HTMLDivElement) => Array.from(c.querySelectorAll("button")).at(-1)!
+const max = (c: HTMLDivElement) =>
+  c.querySelector<HTMLButtonElement>(".ww-pay__max, .ww-withdraw__paste")!
+
 function mountHarness(ui: React.ReactElement) {
   const container = document.createElement("div")
   document.body.appendChild(container)
@@ -163,8 +171,6 @@ describe.each([
     ),
     // Paylink has a single amount field.
     amountInput: (c: HTMLDivElement) => c.querySelector("input") as HTMLInputElement,
-    cta: (c: HTMLDivElement) =>
-      Array.from(c.querySelectorAll("button")).find((b) => b.textContent === "Next")!,
     prep: async (_c: HTMLDivElement) => {},
     upTo: "10",
   },
@@ -180,8 +186,6 @@ describe.each([
       </ScreeningProvider>
     ),
     amountInput: (c: HTMLDivElement) => c.querySelector("input") as HTMLInputElement,
-    cta: (c: HTMLDivElement) =>
-      Array.from(c.querySelectorAll("button")).find((b) => b.textContent === "Review")!,
     prep: async (_c: HTMLDivElement) => {
       // The sheet screens the recipient before its CTA can enable.
       await act(async () => {
@@ -201,8 +205,6 @@ describe.each([
       </MemoryRouter>
     ),
     amountInput: (c: HTMLDivElement) => c.querySelector("input") as HTMLInputElement,
-    cta: (c: HTMLDivElement) =>
-      Array.from(c.querySelectorAll("button")).find((b) => b.textContent !== "MAX")!,
     // ContactStorage.getEntries resolves on the next microtask before the amount field mounts.
     prep: async (c: HTMLDivElement) => {
       await act(async () => {
@@ -212,7 +214,7 @@ describe.each([
     },
     upTo: "10",
   },
-])("$name — overspend gate", ({ render, amountInput, cta, prep, upTo }) => {
+])("$name — overspend gate", ({ render, amountInput, prep, upTo }) => {
   let container: HTMLDivElement
   let root: Root
 
@@ -239,23 +241,29 @@ describe.each([
 
   it("blocks an empty account — the balance is known to be $0", async () => {
     await type("5")
-    expect(cta(container).disabled).toBe(true)
+    expect(lastButton(container).disabled).toBe(true)
     expect(container.textContent).toMatch(/Not enough funds|Balance not enough/)
   })
 
   it("blocks more than the balance, allows up to it", async () => {
     balance.walletAsset = { balanceAtomic: 10n * 10n ** 18n }
     await type("25")
-    expect(cta(container).disabled).toBe(true)
+    expect(lastButton(container).disabled).toBe(true)
     await type(upTo)
-    expect(cta(container).disabled).toBe(false)
+    expect(lastButton(container).disabled).toBe(false)
     expect(container.textContent).not.toMatch(/Not enough funds|Balance not enough/)
   })
 
-  it("stays open while the balance is still loading", async () => {
+  it("holds a cached balance until this session's read lands", async () => {
+    balance.walletAsset = { balanceAtomic: 10n * 10n ** 18n }
     assetsLoaded = false
-    await type("25")
-    expect(cta(container).disabled).toBe(false)
+    await type(upTo)
+    expect(lastButton(container).disabled).toBe(true)
+    expect(max(container).disabled).toBe(true)
+    assetsLoaded = true
+    await act(async () => root.render(render()))
+    expect(lastButton(container).disabled).toBe(false)
+    expect(max(container).disabled).toBe(false)
   })
 })
 
@@ -275,6 +283,8 @@ beforeEach(() => {
     })),
   })
 })
+
+beforeEach(() => seedOnboarded({ handle: "me", address: "0xme" }, "localhost"))
 
 describe("NewLinkScreen — MAX precision", () => {
   let container: HTMLDivElement
@@ -346,5 +356,37 @@ describe("NewLinkScreen — parked deposits", () => {
     })
     expect((container.querySelector("button") as HTMLButtonElement).disabled).toBe(false)
     expect(container.textContent).not.toMatch(/Not enough funds|Balance not enough/)
+  })
+})
+
+describe("ContactPayScreen — paying a request", () => {
+  let container: HTMLDivElement
+  let root: Root
+  const request = { id: "request", tag: "alice", amount: 5 }
+  const render = () => (
+    <MemoryRouter initialEntries={[{ pathname: "/contacts/alice/send", state: { request } }]}>
+      <Routes>
+        <Route path="/contacts/:idOrTag/send" element={<ContactPayScreen mode="send" />} />
+      </Routes>
+    </MemoryRouter>
+  )
+
+  beforeEach(async () => {
+    balance.walletAsset = { balanceAtomic: 10n * 10n ** 18n }
+    ;({ container, root } = mountHarness(<div />))
+  })
+
+  afterEach(async () => {
+    await act(async () => root.unmount())
+    container.remove()
+  })
+
+  it("holds a cached balance until this session's read lands", async () => {
+    assetsLoaded = false
+    await act(async () => root.render(render()))
+    expect(lastButton(container).disabled).toBe(true)
+    assetsLoaded = true
+    await act(async () => root.render(render()))
+    expect(lastButton(container).disabled).toBe(false)
   })
 })

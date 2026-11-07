@@ -1,4 +1,5 @@
 import type { Fr } from "@aztec-labs/aztec.js/fields"
+import { committed, pageOver, testCore, testPage } from "../../support/page"
 import { afterEach, describe, expect, it } from "vitest"
 import { signOut } from "../../../src/features/identity/signOut"
 import { WebAlphaAuthService } from "../../../src/platform/auth/WebAlphaAuthService"
@@ -7,18 +8,27 @@ import {
   followSavedSession,
   switchSession,
   openedSession,
-} from "../../../src/platform/session"
-import {
-  getActiveStorageId,
-  readCommittedSession,
-  withSessionLock,
-} from "../../../src/platform/storage/activeStorage"
+} from "../../../src/session/session"
+import { pageSessionDeps } from "../../../src/app/sessionDeps"
+import { cachedMsk } from "../../../src/platform/storage/activeStorage"
+
 import { walletStorage } from "../../../src/platform/storage/walletStorage"
-import { FakePasskeyCeremony, MemoryStorage } from "../../support/fakePasskeyCeremony"
+import { FakePasskeyCeremony } from "../../support/fakePasskeyCeremony"
 import { testWalletDbs } from "../../support/fakeWalletDb"
+import { seedBootConfig } from "../../support/seedBootConfig"
 
 const dbs = testWalletDbs()
 const ADDR = "0xacct"
+
+/** The session the page's device keys hold. */
+const saved = () => {
+  const device = committed()
+  return {
+    storageId: device.storageId,
+    credentialId: device.credentialId,
+    cache: cachedMsk(device),
+  }
+}
 
 afterEach(closeSession)
 
@@ -32,12 +42,12 @@ function gate() {
   return { promise, open, fail }
 }
 
-async function setup(onSessionSaved?: () => void) {
+async function setup(onSessionSaved?: () => Promise<void>) {
   const ceremony = new FakePasskeyCeremony({ route: "local" })
-  const storage = new MemoryStorage()
+  const storage = testPage().database
   const make = () =>
     new WebAlphaAuthService({
-      storage,
+      ...pageOver(storage),
       rpId: "localhost",
       ceremony,
       posture: () => "phone",
@@ -79,8 +89,8 @@ function holdNextWrite() {
   const held = gate()
   const reached = gate()
   let armed = true
-  dbs.onApply = async () => {
-    if (!armed) return
+  dbs.onApply = async (_version, ops) => {
+    if (!armed || !ops.some(([key]) => key === "webwallet.storageId")) return
     armed = false
     reached.open()
     await held.promise
@@ -95,7 +105,7 @@ describe("session commit against the wallet database", () => {
       throw new Error("disk")
     }
     await expect(service.commitSecret(input)).rejects.toThrow("disk")
-    expect(getActiveStorageId()).toBeNull()
+    expect(committed().storageId).toBeNull()
     expect(await service.getSecretKey()).toBeUndefined()
   })
 
@@ -105,12 +115,12 @@ describe("session commit against the wallet database", () => {
     const commit = service.commitSecret(input, () => true)
     await held.entered
     service.lockOut()
-    const out = signOut()
+    const out = signOut({ ...testPage(), auth: service })
     held.open()
     expect(await commit).toBe(false)
     await out
     expect(await service.getSecretKey()).toBeUndefined()
-    expect(readCommittedSession()).toEqual({ storageId: null, credentialId: null, cache: null })
+    expect(saved()).toEqual({ storageId: null, credentialId: null, cache: null })
   })
 
   it("ends signed out with nothing re-written when the overlapped commit fails", async () => {
@@ -119,11 +129,11 @@ describe("session commit against the wallet database", () => {
     const commit = service.commitSecret(input, () => true)
     await held.entered
     service.lockOut()
-    const out = signOut()
+    const out = signOut({ ...testPage(), auth: service })
     held.fail(new Error("disk"))
     await expect(commit).rejects.toThrow("disk")
     await out
-    expect(readCommittedSession()).toEqual({ storageId: null, credentialId: null, cache: null })
+    expect(saved()).toEqual({ storageId: null, credentialId: null, cache: null })
   })
 
   it("writes nothing when a sign-out lands before the save starts", async () => {
@@ -141,19 +151,33 @@ describe("session commit against the wallet database", () => {
   it("writes nothing when a sign-out lands while the commit waits for the session lock", async () => {
     const { service, input } = await setup()
     const held = gate()
-    const holder = withSessionLock(() => held.promise)
+    const holder = testCore().sessionLock(() => held.promise)
     const commit = service.commitSecret(input, () => true)
     await new Promise((r) => setTimeout(r, 0))
     service.lockOut()
     held.open()
     await holder
     expect(await commit).toBe(false)
-    expect(getActiveStorageId()).toBeNull()
+    expect(committed().storageId).toBeNull()
+  })
+
+  it("returns once the account's session is current and its registrations have loaded", async () => {
+    await seedBootConfig()
+    const { service, input } = await setup(() =>
+      followSavedSession(testCore().device, pageSessionDeps(testPage())),
+    )
+    const anonymous = switchSession({ id: null, prefix: "" }, pageSessionDeps(testPage()))
+    await service.commitSecret(input)
+    const open = openedSession.get()
+    expect(open).not.toBe(anonymous)
+    expect(open?.registrations.view.get().loaded).toBe(true)
   })
 
   it("removes what it saved when its attempt is cancelled mid-save, and opens no session", async () => {
-    const { service, input } = await setup(followSavedSession)
-    const anonymous = switchSession({ id: null, prefix: "" })
+    const { service, input } = await setup(() =>
+      followSavedSession(testCore().device, pageSessionDeps(testPage())),
+    )
+    const anonymous = switchSession({ id: null, prefix: "" }, pageSessionDeps(testPage()))
     let live = true
     const held = holdNextWrite()
     const commit = service.commitSecret(input, () => live)
@@ -162,7 +186,7 @@ describe("session commit against the wallet database", () => {
     held.open()
     expect(await commit).toBe(false)
     expect(await service.getSecretKey()).toBeUndefined()
-    expect(readCommittedSession()).toEqual({ storageId: null, credentialId: null, cache: null })
+    expect(saved()).toEqual({ storageId: null, credentialId: null, cache: null })
     expect(openedSession.get()).toBe(anonymous)
   })
 
@@ -170,7 +194,7 @@ describe("session commit against the wallet database", () => {
     const { service, input } = await setup()
     await service.commitSecret(input)
     await walletStorage.flush()
-    const before = readCommittedSession()
+    const before = saved()
     const other = await service.createPasskey("@bob")
     let live = true
     const held = holdNextWrite()
@@ -182,7 +206,7 @@ describe("session commit against the wallet database", () => {
     live = false
     held.open()
     expect(await commit).toBe(false)
-    expect(readCommittedSession()).toEqual(before)
+    expect(saved()).toEqual(before)
     expect((await service.getSecretKey())?.toString()).toBe(input.secretKey.toString())
   })
 
@@ -215,13 +239,13 @@ describe("session commit against the wallet database", () => {
     const held = holdNextWrite()
     const commit = service.commitSecret(input, () => true)
     await held.entered
-    expect(getActiveStorageId()).toBeNull()
+    expect(committed().storageId).toBeNull()
     held.fail(new Error("disk"))
     await expect(commit).rejects.toThrow("disk")
-    expect(getActiveStorageId()).toBeNull()
+    expect(committed().storageId).toBeNull()
     dbs.onApply = undefined
     await service.commitSecret(input)
-    expect(getActiveStorageId()).not.toBeNull()
+    expect(committed().storageId).not.toBeNull()
   })
 
   it("keeps a later attempt's identical session when an earlier one is cancelled", async () => {
@@ -235,8 +259,8 @@ describe("session commit against the wallet database", () => {
     held.open()
     expect(await first).toBe(false)
     expect(await second).toBeTypeOf("number")
-    expect(readCommittedSession().storageId).not.toBeNull()
-    expect(readCommittedSession().cache).not.toBeNull()
+    expect(saved().storageId).not.toBeNull()
+    expect(saved().cache).not.toBeNull()
   })
 
   it("does not restore from a cache while a session write is still saving", async () => {
@@ -267,7 +291,7 @@ describe("session commit against the wallet database", () => {
     expect(settled).toBe(false)
     held.open()
     expect(await restored).toBeUndefined()
-    expect(getActiveStorageId()).toBeNull()
+    expect(committed().storageId).toBeNull()
   })
 
   it("restores from the saved cache once no write is in flight", async () => {

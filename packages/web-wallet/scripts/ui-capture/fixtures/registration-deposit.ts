@@ -1,7 +1,7 @@
-import * as actual from "../../../src/features/onboarding/useDepositWatch"
+import * as actual from "../../../src/features/sipa/useDepositWatch"
 import { fixtureState } from "./control"
 
-export * from "../../../src/features/onboarding/useDepositWatch"
+export * from "../../../src/features/sipa/useDepositWatch"
 export const useDepositWatch: typeof actual.useDepositWatch = (address) => {
   const active = fixtureState()
   const observed = actual.useDepositWatch(active ? null : address)

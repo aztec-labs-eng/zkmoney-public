@@ -7,7 +7,7 @@
 import type { Address, Hex, PublicClient } from "viem"
 import {
   readPortalDeposits,
-  readSipaBalancesMany,
+  readSipaHoldingsAtHead,
   readSweepEmitters,
   readTokenTransfers,
   type PortalDeposit,
@@ -45,7 +45,7 @@ export interface ObservedSweep {
   txHash: Hex
 }
 
-export interface SipaObserved {
+export interface ObservedSipa {
   sweeps: ObservedSweep[]
   /** Every transfer out of the SIPA: sweep legs and recoveries. */
   outflows: TokenTransfer[]
@@ -53,15 +53,15 @@ export interface SipaObserved {
   recoveries: TokenTransfer[]
   /** Transfers into the SIPA; undefined when not read. */
   inflows?: TokenTransfer[]
-  /** Balances keyed by lowercased token, ETH under the zero address; undefined when the read failed. */
-  balances?: Map<string, bigint>
+  /** Balances keyed by lowercased token, ETH under the zero address. */
+  balances: Map<string, bigint>
 }
 
 /**
  * Observes `subjects` through `head`, on every one of `portals`. Subjects that share a commitment are read from the earliest of
  * their starts, so a deposit to that commitment always meets the outflow that names its SIPA. Each
- * window is read on its own: a subject whose window failed is missing from the result, and the rest
- * are observed.
+ * window is read on its own: a subject whose window or holdings failed is missing from the result,
+ * and the rest are observed.
  */
 export async function observeSipas(
   publicClient: PublicClient,
@@ -70,13 +70,20 @@ export async function observeSipas(
     tokens: readonly Address[]
     subjects: readonly SipaSubject[]
     head: bigint
+    /** Untracked addresses whose holdings ride the same balance read. */
+    holdings?: readonly Address[]
   },
 ): Promise<{
-  observed: Map<string, SipaObserved>
+  observed: Map<string, ObservedSipa>
   /** Deposits to a tracked commitment that no tracked SIPA sent: their SIPAs are not tracked yet. */
   strays: PortalDeposit[]
+  /** What each of `holdings` holds, keyed like `balances`; empty when the read failed. */
+  held: Map<string, Map<string, bigint>>
+  /** The head's timestamp, seconds, when the balance read ran. */
+  chainTime?: bigint
 }> {
   const { portals, tokens, head } = params
+  const holdings = params.holdings ?? []
   const subjects = dedupe(params.subjects)
   const startOf = new Map<string, bigint>()
   for (const s of subjects) {
@@ -90,7 +97,7 @@ export async function observeSipas(
     windows.set(from, [...(windows.get(from) ?? []), s])
   }
 
-  const [settled, balances] = await Promise.all([
+  const [settled, holdingsRead] = await Promise.all([
     Promise.allSettled(
       [...windows].map(async ([from, group]) => {
         const addresses = group.filter((s) => !s.direct).map((s) => s.address)
@@ -115,31 +122,34 @@ export async function observeSipas(
         return { group, deposits, outflows, inflows }
       }),
     ),
-    readSipaBalancesMany(
+    readHoldings(
       publicClient,
-      subjects.filter((s) => !s.direct).map((s) => s.address),
+      [...subjects.filter((s) => !s.direct).map((s) => s.address), ...holdings],
       tokens,
-    ).catch((err: unknown) => {
-      logger.warn("[sipaObservation] holdings read failed:", err)
-      return undefined
-    }),
+    ),
   ])
+  const balances = holdingsRead?.balances
 
   const reads = settled.flatMap((read, i) => {
     if (read.status === "fulfilled") return [read.value]
     logger.warn(`[sipaObservation] window from ${[...windows.keys()][i]} failed:`, read.reason)
     return []
   })
-  const out = new Map<string, SipaObserved>()
+  const out = new Map<string, ObservedSipa>()
+  // SIPAs whose holdings or Sweep logs did not read: unobserved this pass, once their deposits are
+  // told apart.
+  const unread = new Set<string>()
   for (const s of reads.flatMap((read) => read.group)) {
     const key = s.address.toLowerCase()
+    // A direct deposit's key holds nothing, so it is never read.
+    const held = s.direct ? new Map<string, bigint>() : balances?.get(key)
+    if (!held) unread.add(key)
     out.set(key, {
       sweeps: [],
       outflows: [],
       recoveries: [],
       ...(s.inflows ? { inflows: [] } : {}),
-      // A direct deposit's key holds nothing, so it is never read.
-      balances: s.direct ? new Map() : balances?.get(key),
+      balances: held ?? new Map(),
     })
   }
   const deposits = new Map<string, PortalDeposit>()
@@ -156,8 +166,6 @@ export async function observeSipas(
     byCommitment.set(key, [...(byCommitment.get(key) ?? []), s])
   }
   const strays: PortalDeposit[] = []
-  // Senders in a transaction whose Sweep logs could not be read: unobserved this pass.
-  const unread = new Set<string>()
   // One sender swept the deposit. Several in one transaction are told apart by the Sweep log each
   // emits: the deposit is the sender that emitted one (any contract can emit the log, so an emitter
   // that is no sender proves nothing), a stray when no sender did, and left for the next pass, with
@@ -200,7 +208,26 @@ export async function observeSipas(
     const swept = new Set(observed.sweeps.map((s) => s.txHash.toLowerCase()))
     observed.recoveries = observed.outflows.filter((flow) => !swept.has(flow.txHash.toLowerCase()))
   }
-  return { observed: out, strays }
+  const held = new Map(
+    balances ? holdings.map((a) => [a.toLowerCase(), balances.get(a.toLowerCase())!]) : [],
+  )
+  return { observed: out, strays, held, chainTime: holdingsRead?.timestamp }
+}
+
+/** Every address's balances and the head's timestamp in one read; undefined when it failed. */
+async function readHoldings(
+  publicClient: PublicClient,
+  addresses: readonly Address[],
+  tokens: readonly Address[],
+): Promise<{ timestamp?: bigint; balances: Map<string, Map<string, bigint>> } | undefined> {
+  if (addresses.length === 0) return { balances: new Map() }
+  return readSipaHoldingsAtHead(
+    publicClient,
+    addresses.map((sipa) => ({ sipa, tokens })),
+  ).catch((err: unknown) => {
+    logger.warn("[sipaObservation] holdings read failed:", err)
+    return undefined
+  })
 }
 
 /**
@@ -212,7 +239,7 @@ export async function observeSipas(
 function sendersOf(
   deposit: PortalDeposit,
   candidates: readonly SipaSubject[],
-  observed: Map<string, SipaObserved>,
+  observed: Map<string, ObservedSipa>,
 ): string[] {
   const tx = deposit.txHash.toLowerCase()
   const senders = candidates

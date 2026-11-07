@@ -49,7 +49,7 @@ npm run build:web
 # SKIP_MONOREPO_BUILD=1 npm run build:web     # fast path when front-core is already built
 
 # For a real tier, override the target via shell env (shell wins over desktop.env),
-# e.g. testnet — the same values deploy-web-wallet.yml bakes (account-service is optional); the two RPC URLs
+# e.g. testnet — the same values deploy-new-version.yml bakes (account-service is optional); the two RPC URLs
 # are keyed-provider secrets:
 VITE_NETWORK=testnet VITE_NODE_URL=https://… VITE_L1_RPC_URL=https://… \
   VITE_CONFIG_PROFILE_URL=https://cdn.staging.zk.money/profiles/v5/current.json \

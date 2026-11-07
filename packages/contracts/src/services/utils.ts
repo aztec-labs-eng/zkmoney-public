@@ -33,11 +33,7 @@ export const isContractArtifact = (obj: any): obj is ContractArtifact => {
 }
 
 /**
- * Register a contract class + instance in PXE across both PXE generations:
- * the v5 PXE takes the bare instance after a separate registerContractClass,
- * the v4 PXE takes one { instance, artifact } call. Duck-typed (retry, then
- * rethrow the original error) rather than generation-flagged so it keeps
- * working across a runtime cutover flip.
+ * Register a contract class + instance in PXE.
  *
  * Skips work the PXE already has: registerContractClass recomputes the full
  * contract class (artifact hash + per-function VK hashing) on EVERY call
@@ -46,9 +42,7 @@ export const isContractArtifact = (obj: any): obj is ContractArtifact => {
  * hashing needed — and falls through to full registration on any miss or on
  * a PXE that doesn't expose the getters.
  */
-// Loose shape: the two PXE generations disagree on registerContract's arg
-// and on which getters exist.
-export type CrossGenerationPXE = {
+export type RegistrationPXE = {
   registerContractClass(artifact: ContractArtifact): Promise<unknown>
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   registerContract(contract: any): Promise<unknown>
@@ -70,7 +64,7 @@ function shared(pxe: object, key: string, run: () => Promise<void>): Promise<voi
 }
 
 export const registerContractInPXE = async (
-  pxe: CrossGenerationPXE,
+  pxe: RegistrationPXE,
   instance: unknown,
   artifact: ContractArtifact,
 ): Promise<void> => {
@@ -96,15 +90,7 @@ export const registerContractInPXE = async (
     }
     await (classId ? shared(pxe, `class:${String(classId)}`, register) : register())
   }
-  try {
-    await pxe.registerContract(instance)
-  } catch (err) {
-    try {
-      await pxe.registerContract({ instance, artifact })
-    } catch {
-      throw err
-    }
-  }
+  await pxe.registerContract(instance)
 }
 
 /**
@@ -115,7 +101,7 @@ export const registerContractInPXE = async (
  * Concurrent calls for one address share one registration.
  */
 export const ensureContractRegisteredInPXE = (
-  pxe: CrossGenerationPXE,
+  pxe: RegistrationPXE,
   node: { getContract(address: AztecAddress): Promise<unknown> },
   address: AztecAddress,
   getArtifact: () => Promise<ContractArtifact>,
@@ -125,7 +111,7 @@ export const ensureContractRegisteredInPXE = (
   )
 
 async function registerUnlessKnown(
-  pxe: CrossGenerationPXE,
+  pxe: RegistrationPXE,
   node: { getContract(address: AztecAddress): Promise<unknown> },
   address: AztecAddress,
   getArtifact: () => Promise<ContractArtifact>,

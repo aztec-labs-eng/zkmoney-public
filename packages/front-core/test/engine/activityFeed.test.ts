@@ -3,7 +3,7 @@ import type { Hex } from "viem"
 import type { UpgradeBatchItem } from "../../src/core/migration/upgradeActivity"
 import type { OldVersionWithdrawal } from "../../src/core/migration/OldVersionWithdrawalStorage"
 import type { WithdrawalRecord } from "../../src/core/services/bridge/types"
-import type { SIPADepositRecord } from "../../src/core/services/deposits/SIPADepositStore"
+import type { SipaDeposit } from "../../src/engine/sipaDeposits"
 import type { ContactRow } from "../../src/hooks/useContactsDirectory"
 import {
   selectActivity,
@@ -57,7 +57,7 @@ const request = (over: Partial<PaymentRequest> = {}): PaymentRequest => ({
   ...over,
 })
 
-const deposit = (over: Partial<SIPADepositRecord> = {}): SIPADepositRecord =>
+const deposit = (over: Partial<SipaDeposit> = {}): SipaDeposit =>
   ({
     sipaAddress: addr("d1"),
     phase: "claimed",
@@ -66,7 +66,7 @@ const deposit = (over: Partial<SIPADepositRecord> = {}): SIPADepositRecord =>
     fee: "0",
     startTime: NOW - 3 * HOUR,
     ...over,
-  } as SIPADepositRecord)
+  } as SipaDeposit)
 
 const burn = (over: Partial<WithdrawalRecord> = {}): WithdrawalRecord =>
   ({
@@ -92,7 +92,7 @@ function feedOf(
   over: Partial<{
     rows: Transaction[]
     requests: PaymentRequest[]
-    deposits: SIPADepositRecord[]
+    deposits: SipaDeposit[]
     withdrawals: WithdrawalRecord[]
     upgrades: UpgradeBatchItem[]
     upgradesLoaded: boolean
@@ -104,7 +104,7 @@ function feedOf(
   const sources: FeedSources = {
     rows: { records: over.rows ?? [], loaded: true, failed: false },
     requests: over.requests ?? [],
-    deposits: { records: over.deposits ?? [], hydrated: true },
+    deposits: { records: over.deposits ?? [], loaded: true, failed: false },
     withdrawals: { records: over.withdrawals ?? [], hydrated: true },
     upgrades: {
       items: over.upgrades ?? [],

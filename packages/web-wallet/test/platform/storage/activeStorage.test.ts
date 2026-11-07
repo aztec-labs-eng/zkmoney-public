@@ -2,15 +2,17 @@
 import { Fr } from "@aztec-labs/aztec.js/fields"
 import { beforeEach, describe, expect, it } from "vitest"
 import {
-  clearActiveStorage,
+  NO_SESSION,
+  cachedMsk,
   clearCachedMsk,
-  readCachedMsk,
-  setActiveCredentialId,
-  setActiveStorageId,
   storageIdFromSecret,
-  writeCachedMsk,
+  writeSessionTuple,
 } from "../../../src/platform/storage/activeStorage"
 import { walletStorage } from "../../../src/platform/storage/walletStorage"
+import { writeDeviceKeys } from "../../../src/platform/storage/deviceKeys"
+import { committed, testPage } from "../../support/page"
+
+const deviceDb = testPage().database
 
 const MSK = `0x${"1f".repeat(32)}`
 
@@ -28,23 +30,26 @@ describe("cached master key", () => {
     ],
   ])(
     "reads a blob this wallet did not write (%s) as no cache, and leaves it for the next commit",
-    (_name, raw) => {
-      walletStorage.setItem("webwallet.msk", raw)
-      expect(readCachedMsk()).toBeNull()
+    async (_name, raw) => {
+      await writeDeviceKeys(deviceDb, { msk: raw })
+      expect(cachedMsk(committed())).toBeNull()
       expect(walletStorage.getItem("webwallet.msk")).toBe(raw)
-      writeCachedMsk({ v: 1, storageId: "s", credentialId: "c", msk: MSK })
-      expect(readCachedMsk()).not.toBeNull()
+      await writeDeviceKeys(deviceDb, {
+        msk: JSON.stringify({ v: 1, storageId: "s", credentialId: "c", msk: MSK }),
+      })
+      expect(cachedMsk(committed())).not.toBeNull()
     },
   )
 
-  it("goes with the pointers", () => {
-    setActiveStorageId("s")
-    setActiveCredentialId("c")
-    writeCachedMsk({ v: 1, storageId: "s", credentialId: "c", msk: MSK })
-    clearActiveStorage()
-    expect(readCachedMsk()).toBeNull()
+  it("goes with the pointers", async () => {
+    await writeDeviceKeys(deviceDb, { storageId: "s", credentialId: "c" })
+    await writeDeviceKeys(deviceDb, {
+      msk: JSON.stringify({ v: 1, storageId: "s", credentialId: "c", msk: MSK }),
+    })
+    await writeSessionTuple(deviceDb, NO_SESSION)
+    expect(cachedMsk(committed())).toBeNull()
     expect(walletStorage.getItem("webwallet.storageId")).toBeNull()
-    clearCachedMsk()
+    await clearCachedMsk(deviceDb)
   })
 })
 

@@ -6,16 +6,10 @@ import {
   skipUnrefundableSource,
   useWithdrawableSources,
 } from "../../../../src/features/migration/oldVersionWithdraw"
-import { walletStorage } from "../../../../src/platform/storage/walletStorage"
-
-/** The active account, committed, as a booted wallet has it. */
-const activate = (id: string) => walletStorage.commitItem("webwallet.storageId", id)
-
 const source = (portal: string) => ({ source: { portal }, savings: false, open: vi.fn() } as never)
 
 describe("withdrawable sources", () => {
-  it("skips an unrefundable portal for its account only", async () => {
-    await activate("alice")
+  it("skips an unrefundable portal, and only it, on a later publish", async () => {
     const sources = [source("0xA"), source("0xB")]
     setWithdrawableSources(sources)
     skipUnrefundableSource({ portal: "0xa" } as never)
@@ -35,8 +29,7 @@ describe("withdrawable sources", () => {
     }
     expect(shown().map((s) => s.source.portal)).toEqual(["0xB"])
 
-    await activate("bob")
     setWithdrawableSources(sources)
-    expect(shown().map((s) => s.source.portal)).toEqual(["0xA", "0xB"])
+    expect(shown().map((s) => s.source.portal)).toEqual(["0xB"])
   })
 })

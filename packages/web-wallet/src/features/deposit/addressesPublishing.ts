@@ -4,10 +4,9 @@ import type { BroadcastJob } from "@obsidion/front-core"
  * Addresses the user was shown that nobody funded and whose broadcast has not landed. One that
  * failed more than once is left out, so a broadcast that keeps failing cannot hold the sheet.
  */
-export function addressesPublishing(jobs: readonly BroadcastJob[], scope: string | null): number {
+export function addressesPublishing(jobs: readonly BroadcastJob[]): number {
   return jobs.filter(
     (job) =>
-      job.scope === scope &&
       job.kind === "deposit" &&
       job.source.type === "slot" &&
       job.state !== "landed" &&

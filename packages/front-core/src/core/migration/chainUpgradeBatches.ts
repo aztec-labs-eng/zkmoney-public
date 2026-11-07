@@ -1,8 +1,5 @@
 import { depositAmounts } from "../services/deposits/depositAmounts"
-import {
-  isUnfundedSipaDeposit,
-  type SIPADepositRecord,
-} from "../services/deposits/SIPADepositStore"
+import { isUnfundedSipaDeposit, type SipaDeposit } from "../../engine/sipaDeposits"
 import type { UpgradeBatchItem } from "./upgradeActivity"
 
 /**
@@ -16,7 +13,7 @@ export const chainUpgradeRun = (portal: string) => `chain-upgrade/${portal.toLow
  * The portal a direct deposit lands in: its deposit's once seen, else its announcement's. A record
  * that names no portal groups by its asset.
  */
-function destinationOf(record: SIPADepositRecord): string {
+function destinationOf(record: SipaDeposit): string {
   return (
     record.sweeps?.at(-1)?.portal ??
     record.pendingSweeps?.[0]?.portal ??
@@ -35,7 +32,7 @@ function destinationOf(record: SIPADepositRecord): string {
  * pay; those stay theirs.
  */
 export function chainUpgradeBatches(
-  records: readonly SIPADepositRecord[],
+  records: readonly SipaDeposit[],
   known: ReadonlySet<string>,
 ): UpgradeBatchItem[] {
   const runs = new Map<string, number>()

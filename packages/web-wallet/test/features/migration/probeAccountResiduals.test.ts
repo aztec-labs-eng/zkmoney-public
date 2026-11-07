@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { testPage } from "../../support/page"
 
 const h = vi.hoisted(() => ({
   resolverSender: `0x${"ab".repeat(32)}`,
@@ -82,14 +83,12 @@ vi.mock("../../../src/config/oxideTuple", () => ({
 vi.mock("../../../src/features/savings/savingsGateway", () => ({
   getSavingsTuple: h.savingsTuple,
 }))
-vi.mock("../../../src/platform/auth/useAuthenticator", () => ({
-  getAuthService: () => ({
-    getSecretKey: async () => {
-      h.onSecretKey()
-      return "0x01"
-    },
-  }),
-}))
+const fakeAuth = () => ({
+  getSecretKey: async () => {
+    h.onSecretKey()
+    return "0x01"
+  },
+})
 vi.mock("../../../src/platform/storage/WebStorageAdapter", () => ({
   webStorage: { getItem: h.getItem },
 }))
@@ -100,9 +99,6 @@ vi.mock("../../../src/features/migration/upgradeLock", () => ({
 }))
 vi.mock("../../../src/features/migration/sourceSavingsDeposits", () => ({
   sourceSavingsDeposits: h.savingsDeposits,
-}))
-vi.mock("../../../src/platform/storage/activeStorage", () => ({
-  getActiveStorageId: () => h.storageId,
 }))
 vi.mock("../../../src/features/migration/historicTokenContext", () => ({
   sourceChain: h.sourceChain,
@@ -130,7 +126,8 @@ const { migrationFeatureListed, probeAccountResiduals, reconcilePendingPaylinks 
   "../../../src/features/migration/probeAccountResiduals"
 )
 const { ManifestUnavailableError } = await import("../../../src/features/migration/freezeWatch")
-const { closeSession, switchSession } = await import("../../../src/platform/session")
+const { closeSession, switchSession } = await import("../../../src/session/session")
+const { pageSessionDeps } = await import("../../../src/app/sessionDeps")
 
 const NETWORK = "0xrollup"
 const wallet = { node: {}, pxe: {}, networkId: NETWORK } as never
@@ -164,7 +161,13 @@ beforeEach(() => {
   vi.clearAllMocks()
   h.config = { oxideProfile: {}, network: "sandbox", l1ChainId: 1, assets: [] }
   closeSession()
-  const { milestones } = switchSession({ id: null, prefix: "" })
+  // The account's session, its own tasks left out; `h.storageId` is the device's committed account.
+  const page = { ...testPage(fakeAuth()), device: { get: () => ({ storageId: h.storageId }) } }
+  const deps = pageSessionDeps(page as never)
+  const { milestones } = switchSession({ id: "acct", prefix: "obsidion.acct." }, (namespace) => ({
+    ...deps(namespace),
+    signIn: undefined,
+  }))
   milestones.mark("firstBalance")
   milestones.mark("depositsReplayed")
   milestones.mark("historyAtHead")
@@ -202,7 +205,7 @@ describe("probeAccountResiduals — frozen sources", () => {
       notes: 0n,
       deposits: (await depositDescriptors()).length,
     }))
-    await probeAccountResiduals(wallet, account)
+    await probeAccountResiduals(wallet, account, undefined)
     await expect(h.probe.mock.calls[0]![0].frozenSource(tuple, async () => [])).resolves.toEqual({
       notes: 0n,
       deposits: 1,
@@ -220,7 +223,7 @@ describe("probeAccountResiduals — frozen sources", () => {
       hasResiduals: false,
     }
     h.probe.mockResolvedValue([summary])
-    const result = await probeAccountResiduals(wallet, account)
+    const result = await probeAccountResiduals(wallet, account, undefined)
     expect(result?.residuals).toEqual([summary])
   })
 
@@ -229,7 +232,7 @@ describe("probeAccountResiduals — frozen sources", () => {
     h.detect.mockResolvedValue({ current, historic: [tuple], destinations: new Map() })
     h.probe.mockResolvedValue([])
     h.frozenSourceSummary.mockResolvedValue({ notes: 9n, deposits: 1 })
-    await probeAccountResiduals(wallet, account)
+    await probeAccountResiduals(wallet, account, undefined)
     const depositDescriptors = async () => []
     await expect(
       h.probe.mock.calls[0]![0].frozenSource(tuple, depositDescriptors),
@@ -238,7 +241,7 @@ describe("probeAccountResiduals — frozen sources", () => {
       expect.objectContaining({ wallet, account, tuple, depositDescriptors: expect.any(Function) }),
     )
     await h.frozenSourceSummary.mock.calls[0]![0].escrows()
-    expect(h.sourceLinkRows).toHaveBeenCalledWith({ tuple, current, storageId: "acct" })
+    expect(h.sourceLinkRows).toHaveBeenCalledWith({ tuple, current, own: expect.anything() })
     expect(h.sourceFrozenEscrows).toHaveBeenCalledWith({
       chain: { kind: "pxe", wallet, account },
       tuple,
@@ -254,7 +257,7 @@ describe("probeAccountResiduals — frozen sources", () => {
       return { current, historic: [tuple], destinations: new Map() }
     })
     try {
-      expect(await probeAccountResiduals(wallet, account)).toBeNull()
+      expect(await probeAccountResiduals(wallet, account, undefined)).toBeNull()
       expect(h.probe).not.toHaveBeenCalled()
     } finally {
       h.detect.mockReset()
@@ -269,7 +272,7 @@ describe("probeAccountResiduals — frozen sources", () => {
       h.storageId = "other"
     }
     try {
-      expect(await probeAccountResiduals(wallet, account)).toBeNull()
+      expect(await probeAccountResiduals(wallet, account, undefined)).toBeNull()
       expect(h.probe).not.toHaveBeenCalled()
     } finally {
       h.onSecretKey = () => {}
@@ -285,7 +288,7 @@ describe("probeAccountResiduals — frozen sources", () => {
       return [{ tuple, frozenLinks: [{ txHash: "0xa" }], paylinkCandidates: [{ txHash: "0xb" }] }]
     })
     try {
-      expect(await probeAccountResiduals(wallet, account)).toBeNull()
+      expect(await probeAccountResiduals(wallet, account, undefined)).toBeNull()
       expect(h.recordPending).not.toHaveBeenCalled()
       expect(h.retire).not.toHaveBeenCalled()
     } finally {
@@ -298,7 +301,7 @@ describe("probeAccountResiduals — frozen sources", () => {
     h.detect.mockResolvedValue({ current, historic: [tuple], destinations: new Map() })
     h.storageId = null
     try {
-      expect(await probeAccountResiduals(wallet, account)).toBeNull()
+      expect(await probeAccountResiduals(wallet, account, undefined)).toBeNull()
       expect(h.probe).not.toHaveBeenCalled()
     } finally {
       h.storageId = "acct"
@@ -313,7 +316,7 @@ describe("probeAccountResiduals — frozen sources", () => {
       { tuple, frozenLinks: [legacy, { txHash: "0xb" }], paylinkCandidates: [] },
       { tuple, frozenLinks: [], paylinkCandidates: [legacy] },
     ])
-    await probeAccountResiduals(wallet, account)
+    await probeAccountResiduals(wallet, account, undefined)
     expect(h.recordPending).toHaveBeenCalledWith([legacy], NETWORK)
     expect(h.retire).toHaveBeenCalledWith(["0xb"])
   })
@@ -341,14 +344,14 @@ describe("probeAccountResiduals — another Aztec generation", () => {
       historic: [],
       destinations: new Map([["0xv5susds", savings]]),
     })
-    const found = await probeAccountResiduals(wallet, account)
+    const found = await probeAccountResiduals(wallet, account, undefined)
     expect(h.detect.mock.calls[0]![0].products).toEqual([savings])
     expect(found!.destinations.get(v5.portal)).toEqual({ tuple: savings, symbol: "sUSDS" })
   })
 
   it("fails, rather than reads no history, when another generation's manifest can't be read", async () => {
     h.otherSources.mockRejectedValue(new Error("timed out"))
-    await expect(probeAccountResiduals(wallet, account)).rejects.toBeInstanceOf(
+    await expect(probeAccountResiduals(wallet, account, undefined)).rejects.toBeInstanceOf(
       ManifestUnavailableError,
     )
     expect(h.detect).not.toHaveBeenCalled()
@@ -367,7 +370,7 @@ describe("probeAccountResiduals — another Aztec generation", () => {
         },
       ],
     }
-    await expect(probeAccountResiduals(wallet, account)).rejects.toBeInstanceOf(
+    await expect(probeAccountResiduals(wallet, account, undefined)).rejects.toBeInstanceOf(
       ManifestUnavailableError,
     )
     expect(h.detect).not.toHaveBeenCalled()
@@ -378,7 +381,7 @@ describe("probeAccountResiduals — another Aztec generation", () => {
     h.isReadableSource.mockResolvedValue(false)
     const balance = vi.fn(async () => "7")
     h.sourceChain.mockResolvedValue({ kind: "generation", session: { ...session, balance } })
-    const found = await probeAccountResiduals(wallet, account)
+    const found = await probeAccountResiduals(wallet, account, undefined)
     expect(found).toMatchObject({ historic: [] })
     expect(found?.residuals).toEqual([
       expect.objectContaining({ tuple, balance: 7n, awaitingFreeze: true, frozen: false }),
@@ -393,7 +396,7 @@ describe("probeAccountResiduals — another Aztec generation", () => {
       throw new Error("node down")
     })
     h.sourceChain.mockResolvedValue({ kind: "generation", session: { ...session, balance } })
-    const found = await probeAccountResiduals(wallet, account)
+    const found = await probeAccountResiduals(wallet, account, undefined)
     expect(found?.residuals).toEqual([
       expect.objectContaining({ balance: 0n, awaitingFreeze: true, incomplete: true }),
     ])
@@ -411,19 +414,19 @@ describe("probeAccountResiduals — another Aztec generation", () => {
       h.route.mockImplementation(() => {
         throw new Error("More than one migration feature serves the portal")
       })
-      const found = await probeAccountResiduals(wallet, account)
+      const found = await probeAccountResiduals(wallet, account, undefined)
       expect(found?.residuals).toEqual([expect.objectContaining({ awaitingFeature: true })])
     })
 
     it("is ready once the manifest lists a usable feature", async () => {
       h.route.mockReturnValue({ executor: "0xexec" })
-      const found = await probeAccountResiduals(wallet, account)
+      const found = await probeAccountResiduals(wallet, account, undefined)
       expect(found?.residuals[0]?.awaitingFeature).toBeUndefined()
     })
 
     it("fails, rather than reads a source as waiting, when the manifest can't be read", async () => {
       h.deployment.mockRejectedValue(new Error("fetch failed"))
-      await expect(probeAccountResiduals(wallet, account)).rejects.toBeInstanceOf(
+      await expect(probeAccountResiduals(wallet, account, undefined)).rejects.toBeInstanceOf(
         ManifestUnavailableError,
       )
       expect(h.recordPending).not.toHaveBeenCalled()
@@ -439,7 +442,7 @@ describe("probeAccountResiduals — another Aztec generation", () => {
       waiting: 2,
       waitingAmount: "7",
     })
-    await probeAccountResiduals(wallet, account)
+    await probeAccountResiduals(wallet, account, undefined)
     const depositDescriptors = async () => []
     await expect(
       h.probe.mock.calls[0]![0].frozenSource(tuple, depositDescriptors),
@@ -453,7 +456,7 @@ describe("probeAccountResiduals — another Aztec generation", () => {
     await expect(session.frozenSummary.mock.calls[0]![0].paylinkRows()).resolves.toEqual([
       { link: "row" },
     ])
-    expect(h.sourceLinkRows).toHaveBeenCalledWith({ tuple, current, storageId: "acct" })
+    expect(h.sourceLinkRows).toHaveBeenCalledWith({ tuple, current, own: expect.anything() })
     expect(h.frozenSourceSummary).not.toHaveBeenCalled()
   })
 
@@ -467,13 +470,13 @@ describe("probeAccountResiduals — another Aztec generation", () => {
     h.markRefundedSourceLinks.mockImplementation(async () => {
       order.push("mark")
     })
-    await probeAccountResiduals(wallet, account)
+    await probeAccountResiduals(wallet, account, undefined)
     await vi.waitFor(() => expect(h.markRefundedSourceLinks).toHaveBeenCalled())
     expect(h.markRefundedSourceLinks).toHaveBeenCalledWith({
       session,
       tuple,
       current,
-      storageId: "acct",
+      own: expect.anything(),
     })
     expect(order).toEqual(["replay", "browser", "mark"])
   })
@@ -484,7 +487,7 @@ describe("probeAccountResiduals — another Aztec generation", () => {
       if (from) throw new Error("short read")
       return null
     })
-    await probeAccountResiduals(wallet, account)
+    await probeAccountResiduals(wallet, account, undefined)
     await vi.waitFor(() => expect(h.markRefundedSourceLinks).toHaveBeenCalled())
   })
 
@@ -519,7 +522,7 @@ describe("probeAccountResiduals — another Aztec generation", () => {
         h.probe.mockResolvedValue([empty])
         h.candidate.mockReturnValue(candidate)
         h.getItem.mockResolvedValue("{}")
-        await probeAccountResiduals(wallet, account)
+        await probeAccountResiduals(wallet, account, undefined)
         await vi.waitFor(() =>
           expect(h.recordRead).toHaveBeenCalledWith("0xacct", v5.portal, {
             empty: true,
@@ -540,7 +543,7 @@ describe("probeAccountResiduals — another Aztec generation", () => {
         if (args.blockTag === "latest") order.push("tip")
         return read(args)
       })
-      await probeAccountResiduals(wallet, account)
+      await probeAccountResiduals(wallet, account, undefined)
       await vi.waitFor(() => expect(h.recordRead).toHaveBeenCalled())
       expect(order).toEqual(["links", "tip"])
     })
@@ -567,14 +570,14 @@ describe("probeAccountResiduals — another Aztec generation", () => {
         await from?.read()
         return null
       })
-      await probeAccountResiduals(wallet, account)
+      await probeAccountResiduals(wallet, account, undefined)
       await vi.waitFor(() => expect(history).toHaveBeenCalled())
       expect(history.mock.calls[0]![0]).toMatchObject({ deployments: [v5, v5Savings] })
     })
 
     it("does not settle while its history replay is missing", async () => {
       h.probe.mockResolvedValue([empty])
-      await probeAccountResiduals(wallet, account)
+      await probeAccountResiduals(wallet, account, undefined)
       await vi.waitFor(() => expect(h.getItem).toHaveBeenCalledWith(replayKey))
       await new Promise((resolve) => setTimeout(resolve))
       expect(h.recordRead).not.toHaveBeenCalled()
@@ -585,7 +588,7 @@ describe("probeAccountResiduals — another Aztec generation", () => {
       async (_case, over) => {
         h.probe.mockResolvedValue([{ ...empty, ...over }])
         h.getItem.mockResolvedValue("{}")
-        await probeAccountResiduals(wallet, account)
+        await probeAccountResiduals(wallet, account, undefined)
         await vi.waitFor(() => expect(h.markRefundedSourceLinks).toHaveBeenCalled())
         await new Promise((resolve) => setTimeout(resolve))
         expect(h.recordRead).not.toHaveBeenCalled()
@@ -597,7 +600,7 @@ describe("probeAccountResiduals — another Aztec generation", () => {
       async (_case, over) => {
         h.probe.mockResolvedValue([{ ...empty, ...over }])
         h.getItem.mockResolvedValue("{}")
-        await probeAccountResiduals(wallet, account)
+        await probeAccountResiduals(wallet, account, undefined)
         expect(h.recordRead).toHaveBeenCalledWith("0xacct", v5.portal, { empty: false })
         expect(h.recordRead).toHaveBeenCalledTimes(1)
       },
@@ -608,7 +611,7 @@ describe("probeAccountResiduals — another Aztec generation", () => {
     h.detect.mockResolvedValue({ current, historic: [tuple], destinations: new Map() })
     const source = { sipaAddress: "0xsipa", recipientL2Address: "0xv5acct", messageSecret: "0x05" }
     session.sipaSources.mockResolvedValue([source])
-    await probeAccountResiduals(wallet, account)
+    await probeAccountResiduals(wallet, account, undefined)
     await expect(h.probe.mock.calls[0]![0].sipaDiscovery.sources(tuple)).resolves.toEqual([
       { ...source, origin: "sipa-event" },
     ])
@@ -629,7 +632,7 @@ describe("probeAccountResiduals — pending paylinks", () => {
     h.latestChainSeconds.mockRejectedValue(new Error("node down"))
     h.detect.mockResolvedValue({ current, historic: [tuple], destinations: new Map() })
     h.probe.mockResolvedValue([lockedSummary])
-    const result = await probeAccountResiduals(wallet, account)
+    const result = await probeAccountResiduals(wallet, account, undefined)
     expect(h.probe.mock.calls[0]![0].nowSec).toBeNull()
     expect(result?.chainTimeUnknown).toBe(true)
     expect(result?.residuals).toEqual([lockedSummary])
@@ -654,7 +657,7 @@ describe("probeAccountResiduals — pending paylinks", () => {
     h.detect.mockResolvedValue({ current, historic: [tuple], destinations: new Map() })
     h.probe.mockResolvedValue([lockedSummary])
     h.serviceDeps.length = 0
-    await probeAccountResiduals(wallet, account)
+    await probeAccountResiduals(wallet, account, undefined)
     await reconcilePendingPaylinks(wallet)
     // The services each path built, over one real store, run on the network each path passed.
     const store = new real.PendingPaylinkMigrationStore(new InMemoryStorageAdapter())
@@ -691,7 +694,7 @@ describe("probeAccountResiduals — historic SIPA derivation", () => {
     h.latestChainSeconds.mockResolvedValue(1_700_000_000)
     h.detect.mockResolvedValue({ current, historic: [tuple], destinations: new Map() })
     h.probe.mockResolvedValue([lockedSummary])
-    await probeAccountResiduals(wallet, account)
+    await probeAccountResiduals(wallet, account, undefined)
 
     h.fetchSipaEvents.mockResolvedValue([
       { sharedSecretSalt: { toString: () => "0x05" }, resweepable: true, intentHash: "0x00" },
@@ -720,7 +723,7 @@ describe("probeAccountResiduals — historic SIPA derivation", () => {
       destinations: new Map(),
     })
     h.probe.mockResolvedValue([])
-    await probeAccountResiduals(wallet, account)
+    await probeAccountResiduals(wallet, account, undefined)
     await h.probe.mock.calls[0]![0].sipaDiscovery.sources({ ...tuple, fpcBeneficiary: fpc })
     expect(h.setupSipaDiscovery.mock.calls[0]![0].sponsorFpc.toString()).toBe(fpc)
   })

@@ -1,16 +1,19 @@
 import { GradientInitialAvatar, Icon, ZkMoneyRoot } from "@obsidion/web-ds"
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { Outlet, useLocation, useNavigate } from "react-router-dom"
-import { AnalyticsConsentPrompt } from "../../features/onboarding/AnalyticsConsentModal"
-import { useRegistrationDepositOwed } from "../../features/onboarding/openRegistration"
+import { AnalyticsConsentPrompt } from "../../features/onboarding/AnalyticsConsentModal/AnalyticsConsentModal"
+import { useRegistrationDepositOwed } from "../../features/registration/openRegistration"
 import { useActionGuard, type WalletAction } from "../../features/actionGate"
 import { useTagUnpicked } from "../../features/onboarding/tagPick"
 import { TagSearchBar } from "../../features/contacts/TagSearchBar"
-import { loadOnboardedIdentity, loadWalletIdentity } from "../../features/identity/walletIdentity"
+import { enteredIdentity } from "../../session/account"
 import { logout } from "../../features/identity/logout"
-import { isLogoutBlockedByRegistration } from "../../features/onboarding/webRegistration"
-import { getAuthService } from "../../platform/auth/useAuthenticator"
-import { openedSession, useSession } from "../../platform/session"
+import {
+  isLogoutBlockedByRegistration,
+  isTagPresentationPending,
+  useTagPresentationPending,
+} from "../../features/registration/webRegistration"
+import { openedSession, useSession } from "../../session/session"
 import { getDesktopL1Bridge } from "../../platform/desktopBridge"
 import { ScannerModal } from "../../features/scan/ScannerModal"
 import { scanPayload } from "../../features/scan/scanPayload"
@@ -155,7 +158,11 @@ export function SidebarLayout({
 }) {
   const navigate = useNavigate()
   const location = useLocation()
-  const identity = loadWalletIdentity()
+  const session = useSession()
+  const identityView = useStore(session.identity)
+  const identity = identityView.value
+  const { passkeyMap } = useStore(session.device)
+  const tagPending = useTagPresentationPending()
   const awaitingActivation = useRegistrationDepositOwed()
   const guard = useActionGuard()
   // An unpicked drawn tag is never shown: no account button and no share.
@@ -168,10 +175,10 @@ export function SidebarLayout({
   const main = useRef<HTMLElement>(null)
   const menuOpener = useRef<HTMLElement | null>(null)
   const handoff = useScanNavigation()
-  const obsidionWallet = useResource(useSession().wallet)
+  const obsidionWallet = useResource(session.wallet)
   const finishLogout = useCallback(
-    () => logout(() => obsidionWallet?.pxe.stop() ?? Promise.resolve()),
-    [obsidionWallet],
+    () => logout(session, () => obsidionWallet?.pxe.stop() ?? Promise.resolve()),
+    [session, obsidionWallet],
   )
   // Same unlock condition as UnlockGate: the bell must not surface stored notifications
   // above the locked pane.
@@ -183,8 +190,8 @@ export function SidebarLayout({
     phone &&
     unlocked &&
     !!identity?.handle &&
-    !identity.pending &&
-    !!loadOnboardedIdentity() &&
+    !tagPending &&
+    !!enteredIdentity(identityView, passkeyMap) &&
     getDesktopL1Bridge() === null
   const scanShare = useScanShare({
     routeKey: location.key,
@@ -196,13 +203,16 @@ export function SidebarLayout({
       return target
     },
     resolve: async (payload) => {
-      const currentIdentity = loadOnboardedIdentity()
+      const currentIdentity = enteredIdentity(
+        session.identity.get(),
+        session.device.get().passkeyMap,
+      )
       if (
         !currentIdentity?.handle ||
-        currentIdentity.pending ||
+        isTagPresentationPending(session.registrations, currentIdentity) ||
         currentIdentity.address !== identity?.address ||
         currentIdentity.handle !== identity.handle ||
-        !(await getAuthService().getSecretKey())
+        !(await session.auth.getSecretKey())
       ) {
         return { kind: "error", message: copy.scanLocked }
       }
@@ -385,7 +395,9 @@ export function SidebarLayout({
         onClick={() => {
           setOpen(false)
           setNotificationsOpen(false)
-          setLogoutPrompt(unlocked && isLogoutBlockedByRegistration() ? "blocked" : "confirm")
+          setLogoutPrompt(
+            unlocked && isLogoutBlockedByRegistration(session) ? "blocked" : "confirm",
+          )
         }}
       >
         {phone ? <PhoneIcon name="logout" /> : <Icon name="logout" size={24} />}

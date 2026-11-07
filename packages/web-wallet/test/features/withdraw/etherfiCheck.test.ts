@@ -27,9 +27,8 @@ vi.mock("viem", async (importOriginal) => ({
   }),
 }))
 
-const { checkEtherfiAddress, ETHERFI_FACTORY, useEtherfiAddressVerdict } = await import(
-  "../../../src/features/withdraw/etherfiCheck"
-)
+const { checkEtherfiAddress, confirmNotEtherfi, ETHERFI_FACTORY, useEtherfiAddressVerdict } =
+  await import("../../../src/features/withdraw/etherfiCheck")
 
 const TARGET = getAddress(`0x${"dd".repeat(20)}`)
 const FACTORY = ETHERFI_FACTORY
@@ -42,7 +41,11 @@ describe("checkEtherfiAddress", () => {
         : vi.fn().mockResolvedValue(answer),
   })
   const check = (mainnet: boolean | Error, optimism: boolean | Error) =>
-    checkEtherfiAddress(TARGET, { mainnet: reader(mainnet), optimism: reader(optimism) })
+    checkEtherfiAddress(TARGET, {
+      mainnet: reader(mainnet),
+      optimism: reader(optimism),
+      retryDelaysS: [],
+    })
   const down = new Error("rpc down")
 
   it("asks the mainnet factory for a top-up contract and the Optimism factory for a safe", async () => {
@@ -72,14 +75,46 @@ describe("checkEtherfiAddress", () => {
   ] as const)("mainnet %s, Optimism %s: %s", async (mainnet, optimism, kind) => {
     await expect(check(mainnet, optimism)).resolves.toEqual({ kind })
   })
+
+  it("retries a failed read", async () => {
+    const mainnet = { readContract: vi.fn().mockRejectedValueOnce(down).mockResolvedValue(true) }
+    const verdict = checkEtherfiAddress(TARGET, {
+      mainnet,
+      optimism: reader(false),
+      retryDelaysS: [0],
+    })
+    await expect(verdict).resolves.toEqual({ kind: "confirmed" })
+    expect(mainnet.readContract).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe("confirmNotEtherfi", () => {
+  it.each(["rejected", "unknown", "checking", "idle"] as const)(
+    "lets a %s verdict confirm",
+    (kind) => {
+      const toEtherfi = vi.fn()
+      expect(confirmNotEtherfi(kind, toEtherfi)).toBe(true)
+      expect(toEtherfi).not.toHaveBeenCalled()
+    },
+  )
+
+  it.each(["confirmed", "account"] as const)("sends a %s address to ether.fi", (kind) => {
+    const toEtherfi = vi.fn()
+    expect(confirmNotEtherfi(kind, toEtherfi)).toBe(false)
+    expect(toEtherfi).toHaveBeenCalledOnce()
+  })
 })
 
 describe("useEtherfiAddressVerdict", () => {
   let container: HTMLDivElement
   let root: Root
+  let renders: string[]
   const kind = () => container.textContent
-  const Probe = ({ address, waitMs }: { address: typeof TARGET | null; waitMs?: number }) =>
-    createElement("span", null, useEtherfiAddressVerdict(address, waitMs).kind)
+  const Probe = ({ address, waitMs }: { address: typeof TARGET | null; waitMs?: number }) => {
+    const verdict = useEtherfiAddressVerdict(address, waitMs).kind
+    renders.push(verdict)
+    return createElement("span", null, verdict)
+  }
   const render = (address: typeof TARGET | null, waitMs?: number) =>
     act(async () => root.render(createElement(Probe, { address, waitMs })))
   const pass = (ms: number) => act(async () => void (await vi.advanceTimersByTimeAsync(ms)))
@@ -90,6 +125,7 @@ describe("useEtherfiAddressVerdict", () => {
     h.readContract.mockReset()
     h.publicRead.mockReset()
     h.optimismRead.mockReset().mockResolvedValue(false)
+    renders = []
     container = document.createElement("div")
     document.body.appendChild(container)
     root = createRoot(container)
@@ -112,10 +148,23 @@ describe("useEtherfiAddressVerdict", () => {
     expect(kind()).toBe("confirmed")
   })
 
+  it("never shows a new address the last one's verdict", async () => {
+    h.readContract.mockResolvedValue(false)
+    await render(TARGET)
+    await pass(300)
+    expect(kind()).toBe("rejected")
+    renders = []
+    await render(getAddress(`0x${"ee".repeat(20)}`))
+    expect(renders[0]).toBe("checking")
+  })
+
   it("reads unknown when the factory does not answer", async () => {
     h.readContract.mockRejectedValue(new Error("rpc down"))
     await render(TARGET)
     await pass(300)
+    expect(kind()).toBe("checking")
+    // Past the retries' backoff.
+    await pass(1_500)
     expect(kind()).toBe("unknown")
   })
 

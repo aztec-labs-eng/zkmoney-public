@@ -6,7 +6,7 @@ import { useState, type ReactNode } from "react"
 import type { SipaProcessingState } from "@obsidion/front-core"
 import { whenLabel } from "../../ui/detailRows"
 import { processingCopy } from "./processingCopy"
-import { sipaProcessingObserver } from "./sipaProcessing"
+import { session } from "../../session/session"
 
 export function DepositProcessingNotice({
   sipaAddress,
@@ -29,7 +29,7 @@ export function DepositProcessingNotice({
   const checkAgain = async () => {
     setChecking(true)
     try {
-      await sipaProcessingObserver()?.retry(sipaAddress)
+      await session().sipaProcessingObserver?.retry(sipaAddress)
     } finally {
       setChecking(false)
     }

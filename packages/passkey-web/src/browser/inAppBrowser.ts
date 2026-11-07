@@ -159,16 +159,21 @@ export function currentOpenInBrowserHref(url: string): string | undefined {
   return openInBrowserHref(url, info.osFamily)
 }
 
-/**
- * Whether the app hosting the page drops the Open in browser link: X's app does on iPhone and on
- * Android, so there no link is offered and the way out is the app's own menu or a copied link.
- */
-export function currentAppDropsOpenLink(): boolean {
+/** Whether the page runs in X's own browser, on iPhone or on Android. */
+export function currentIsXInAppBrowser(): boolean {
   const userAgent = globalThis.navigator?.userAgent ?? ""
   const xIphone = currentIsIosInAppBrowser() && /\bTwitter for iPhone\b/.test(userAgent)
   const xAndroid =
     currentUserAgentInfoSync().osFamily === "android" && /\bTwitterAndroid\b/.test(userAgent)
   return xIphone || xAndroid
+}
+
+/**
+ * Whether the app hosting the page drops the Open in browser link: X's app does, so there no link
+ * is offered and the way out is the app's own menu or a copied link.
+ */
+export function currentAppDropsOpenLink(): boolean {
+  return currentIsXInAppBrowser()
 }
 
 /**

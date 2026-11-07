@@ -18,7 +18,7 @@ import { useBack } from "../../ui/hooks"
 import { Modal } from "../../ui/Modal"
 import { ScreeningNotice, useScreenedAddress } from "../../ui/screening"
 import { Warning } from "../../ui/Warning"
-import { useL1Wallet } from "../deposit/l1Wallet"
+import { useL1Wallet } from "../../session/l1Wallet"
 import { isDesktopL1SubmitActive } from "../../platform/desktopBridge"
 import { WithdrawToWalletModal } from "./WithdrawToWalletModal/WithdrawToWalletModal"
 import { useFreshAddressAvailable } from "./freshAddressAvailability"
@@ -35,6 +35,9 @@ import {
   ETHERFI_RECEIVE_ASSETS,
   isEtherfiContact,
 } from "./etherfi"
+import { confirmNotEtherfi, isEtherfiCash, useEtherfiAddressVerdict } from "./etherfiCheck"
+import etherfiCopy from "./etherfiCheck.copy"
+import freshCopy from "./WithdrawFreshScreen.copy"
 import walletIcon from "../../assets/deposit/wallet-line.svg"
 
 export interface SavedL1Wallet {
@@ -93,7 +96,7 @@ export function WithdrawScreen() {
     recipient: Address
     name?: string
     kind: VerdictKind
-    /** A saved ether.fi Cash address only takes what ether.fi credits. */
+    /** The saved ether.fi Cash address only takes what ether.fi credits. */
     etherfi: boolean
   }>()
 
@@ -128,6 +131,14 @@ export function WithdrawScreen() {
   // The wallet's own records answer at once. The contract copy is about the fresh flow's ETH for gas.
   const kind = (target && tie(target)) || (onchain === "contract" ? "history" : onchain)
   const screened = useScreenedAddress(target, "withdraw", { debounceMs: 300 })
+  // Any other Cash address belongs on the ether.fi route; the saved one is narrowed here.
+  const etherfiContact = !!match && isEtherfiContact(match.entry)
+  const etherfiOnchain = useEtherfiAddressVerdict(
+    etherfiContact ? null : checked,
+    VERDICT_WAIT_MS,
+  ).kind
+  const toEtherfi = (recipient: Address) =>
+    navigate("/withdraw/etherfi", { replace: true, state: { recipient } })
 
   useEffect(() => {
     fireEvent("withdraw_opened", { method: "existing" })
@@ -140,15 +151,15 @@ export function WithdrawScreen() {
 
   useEffect(() => {
     if (!going || !target || !screened.cleared || kind === "idle" || kind === "checking") return
+    if (etherfiOnchain === "checking") return
     setGoing(false)
-    setChosen({
-      recipient: target,
-      name: name || undefined,
-      kind,
-      etherfi: !!match && isEtherfiContact(match.entry),
-    })
+    if (isEtherfiCash(etherfiOnchain)) {
+      toEtherfi(target)
+      return
+    }
+    setChosen({ recipient: target, name: name || undefined, kind, etherfi: etherfiContact })
     setStep(kind === "fresh" ? "amount" : "privacy")
-  }, [going, target, screened.cleared, kind, name])
+  }, [going, target, screened.cleared, kind, name, etherfiOnchain, etherfiContact])
 
   // A name being resolved lists only the wallet it resolves to: a saved wallet of the same name may
   // hold an address the name has moved off (stealth names hand out a fresh one per lookup). Text
@@ -188,6 +199,12 @@ export function WithdrawScreen() {
         receiveAssets={chosen.etherfi ? ETHERFI_RECEIVE_ASSETS : undefined}
         assetNote={chosen.etherfi ? `ether.fi Cash credits ${ETHERFI_ASSETS_COPY}.` : undefined}
         recipientIsContract={onchain === "contract"}
+        recipientWarning={etherfiOnchain === "unknown" ? etherfiCopy.unknown : undefined}
+        confirmRecipient={
+          chosen.etherfi
+            ? undefined
+            : () => confirmNotEtherfi(etherfiOnchain, () => toEtherfi(chosen.recipient))
+        }
         onClose={() => setStep("pick")}
         onDone={() => navigate("/")}
       />
@@ -260,8 +277,10 @@ export function WithdrawScreen() {
                 onRetry={screened.rescreen}
               />
             ) : (
-              kind === "checking" && (
-                <span className="ww-fund__label">Checking address history…</span>
+              (kind === "checking" || etherfiOnchain === "checking") && (
+                <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>
+                  {freshCopy.checking}
+                </span>
               )
             )}
             <button

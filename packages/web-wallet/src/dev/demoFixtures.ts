@@ -15,7 +15,7 @@ import type {
   Contact,
   PaylinkTransaction,
   StoredRequest,
-  SIPADepositRecord,
+  SipaDeposit,
   Transaction,
   WithdrawalRecord,
 } from "@obsidion/front-core"
@@ -23,7 +23,7 @@ import { WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import { deploymentOfTuples, type PinnedOxideDeployment } from "@obsidion/core/oxide"
 import { getAddress, parseUnits, type Address, type Hash, type Hex } from "viem"
-import { STUCK_SWEEP_MS } from "../features/deposit/sipaRecovery"
+import { STUCK_SWEEP_MS } from "../features/deposit/recovery/sipaRecovery"
 import { DEMO_DEPOSIT_FEE, DEMO_L1_TOKEN, DEMO_PORTAL, DEMO_WITHDRAWAL_FEE } from "./fakeL1Rpc"
 export { DEMO_L1_TOKEN }
 
@@ -111,7 +111,7 @@ const keyed = (row: DemoRow): Transaction =>
     ...row,
     id: row.operationId ?? row.txHash,
     amountAtomic: "token" in row && row.token ? parseUnits(String(row.token.amount), 18) : 0n,
-  }) as Transaction
+  } as Transaction)
 
 const daiToken = (amount: number) => ({
   address: DEMO_L2_TOKEN,
@@ -130,7 +130,7 @@ export function demoStealthKey() {
 
 interface DepositSpec {
   seed: string
-  phase: SIPADepositRecord["phase"]
+  phase: SipaDeposit["phase"]
   amount: string
   ageMs: number
   netAmount?: string
@@ -140,11 +140,10 @@ interface DepositSpec {
   /** Set only on the self-initiated deposits — a third-party sender's transfer is unknown. */
   fundingTxHash?: Hash
   sweepTxHash?: Hash
-  claimTxHash?: string
   recoveryTxHash?: Hash
 }
 
-function depositFrom(spec: DepositSpec, now: number): SIPADepositRecord {
+function depositFrom(spec: DepositSpec, now: number): SipaDeposit {
   const messageSecret = Fr.random()
   const recoveryAddress = deriveRecoveryAddress(
     demoStealthKey().publicKey,
@@ -174,10 +173,8 @@ function depositFrom(spec: DepositSpec, now: number): SIPADepositRecord {
     fundingFromAddress: spec.fundingTxHash ? DEMO_L1_FUNDER : undefined,
     // The funder is the "Rainbow" L1 contact, so its chat shows these deposits.
     walletAddress: spec.fundingTxHash ? DEMO_L1_FUNDER : undefined,
-    walletProvider: spec.fundingTxHash ? "rainbow" : undefined,
     walletName: spec.fundingTxHash ? "Rainbow" : undefined,
     sweepTxHash: spec.sweepTxHash,
-    claimTxHash: spec.claimTxHash,
     recoveryTxHash: spec.recoveryTxHash,
   }
 }
@@ -195,7 +192,7 @@ const DEMO_FEE = DEMO_DEPOSIT_FEE.toString()
  * terminal phases), and neither again once a self-sweep has been submitted and is waiting on the
  * claim scan.
  */
-export function recoveryDeposits(now: number): SIPADepositRecord[] {
+export function recoveryDeposits(now: number): SipaDeposit[] {
   return [
     {
       seed: "d1",
@@ -456,7 +453,10 @@ export function demoTransactions(now: number): Transaction[] {
       // The send path keeps the thrown message as detail; this is aztec.js's receipt wait giving up
       // on a transaction the sequencer dropped after it was broadcast.
       status: "failed",
-      failure: { code: "tx.failed", detail: `Transaction ${hash("44")} was dropped. Reason: unknown` },
+      failure: {
+        code: "tx.failed",
+        detail: `Transaction ${hash("44")} was dropped. Reason: unknown`,
+      },
       txHash: hash("44"),
     },
     {
@@ -819,7 +819,7 @@ export function demoRequests(now: number, networkId: string): StoredRequest[] {
  * recovery, and an unfunded address that must stay out of the feed. `failed` (a reverted funding tx)
  * is absent because the web wallet never writes it.
  */
-export function activityDeposits(now: number): SIPADepositRecord[] {
+export function activityDeposits(now: number): SipaDeposit[] {
   return [
     {
       seed: "e1",
@@ -831,7 +831,6 @@ export function activityDeposits(now: number): SIPADepositRecord[] {
       fee: DEMO_FEE,
       fundingTxHash: hash("e6"),
       sweepTxHash: hash("e7"),
-      claimTxHash: hash("e8"),
     },
     {
       seed: "e2",

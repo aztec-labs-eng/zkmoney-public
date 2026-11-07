@@ -3,13 +3,14 @@ import {
   ContactStorage,
   normalizeTag,
   useInlineAddContact,
+  useStore,
   type ContactRow,
   type InlineAddedContact,
 } from "@obsidion/front-core"
-import { loadWalletIdentity } from "../identity/walletIdentity"
+import { useSession } from "../../session/session"
 import { resolveTagForCommit, resolveTagViaRegistry } from "./registryResolution"
 import { freshResolutionConfirms, inlinePanelState, shouldResolveInline } from "./contactsView"
-import { probeNameAvailability } from "../onboarding/nameAvailability"
+import { probeNameAvailability } from "../registration/nameAvailability"
 
 /** Write-through for the shared add-contact hooks over ContactStorage. */
 export async function addContact(
@@ -58,7 +59,7 @@ export function useInlineContactSearch(
   }, [])
   useEffect(() => setVerificationError(""), [query])
 
-  const ownTag = loadWalletIdentity()?.handle
+  const ownTag = useStore(useSession().identity, (s) => s.value?.handle)
   const inline = useInlineAddContact({
     addContact,
     getContacts,

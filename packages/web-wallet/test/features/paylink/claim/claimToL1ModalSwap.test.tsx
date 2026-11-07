@@ -1,6 +1,7 @@
 import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { openTestSession } from "../../../support/session"
 
 vi.mock("../../../../src/lib/analytics", () => ({ fireEvent: vi.fn(), failureCode: vi.fn() }))
 
@@ -13,7 +14,7 @@ const { EXECUTOR } = vi.hoisted(() => ({ EXECUTOR: `0x${"e8".repeat(20)}` }))
 vi.mock("../../../../src/features/paylink/paylinkSource", () => ({
   paylinkTuple: async () => ({ plainWithdrawalExecutor: EXECUTOR }),
 }))
-vi.mock("../../../../src/features/deposit/l1Wallet", () => ({ useL1Wallet: () => ({}) }))
+vi.mock("../../../../src/session/l1Wallet", () => ({ useL1Wallet: () => ({}) }))
 vi.mock("../../../../src/features/withdraw/WithdrawScreen", () => ({ useSavedL1Wallets: () => [] }))
 vi.mock("../../../../src/features/withdraw/WithdrawToWalletModal/WithdrawToWalletModal", () => ({}))
 vi.mock("../../../../src/platform/desktopBridge", () => ({ isDesktopL1SubmitActive: () => false }))
@@ -80,6 +81,7 @@ const button = (text: string) =>
 const click = (text: string) => act(async () => button(text).click())
 
 beforeEach(() => {
+  openTestSession()
   onConfirm.mockReset()
   planSwap.mockClear()
   verify.mockReset()

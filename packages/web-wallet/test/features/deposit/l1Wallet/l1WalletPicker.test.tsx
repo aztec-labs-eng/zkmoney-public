@@ -30,9 +30,9 @@ vi.mock("wagmi/actions", () => ({
   switchChain: vi.fn(),
   disconnect: vi.fn(),
 }))
-vi.mock("../../../../src/features/deposit/wagmi", () => ({ wagmiConfig: () => ({}) }))
+vi.mock("../../../../src/session/wagmi", () => ({ wagmiConfig: () => ({}) }))
 
-const { useL1Wallet } = await import("../../../../src/features/deposit/l1Wallet")
+const { useL1Wallet } = await import("../../../../src/session/l1Wallet")
 
 let latest: ReturnType<typeof useL1Wallet> | undefined
 function Probe() {

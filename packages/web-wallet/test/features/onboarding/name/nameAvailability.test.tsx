@@ -34,7 +34,7 @@ vi.mock("../../../../src/features/onboarding/steps/SignupStepper", () => ({
 }))
 
 const { drawTag, probeNameAvailability } = await import(
-  "../../../../src/features/onboarding/nameAvailability"
+  "../../../../src/features/registration/nameAvailability"
 )
 const { InvitationStep } = await import("../../../../src/features/onboarding/steps/InvitationStep")
 const { ChooseTagStep } = await import("../../../../src/features/onboarding/steps/ChooseTagStep")

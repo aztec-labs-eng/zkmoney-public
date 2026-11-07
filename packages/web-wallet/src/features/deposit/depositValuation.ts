@@ -1,5 +1,5 @@
 import { depositTokenValuation, type UsdValuation } from "@obsidion/front-core"
-import type { DepositTokenOption, DepositTokens } from "./loadDepositFacts"
+import type { DepositTokenOption, DepositTokens } from "../sipa/loadDepositFacts"
 
 /** The picked token's USD valuation for the published limit: nominal for every token Main offers. */
 export function depositValuation(

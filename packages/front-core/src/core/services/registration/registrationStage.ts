@@ -13,8 +13,8 @@
  *
  * Callers combine those with the stage.
  */
-import type { SIPADepositRecord } from "../deposits/SIPADepositStore"
-import type { PendingRegistrationRecord } from "./PendingRegistrationStore"
+import type { SipaDeposit } from "../../../engine/sipaDeposits"
+import type { PendingRegistrationRecord } from "../../../engine/registrationRecord"
 
 export type RegistrationStage =
   | "reserved" // the deposit is owed
@@ -30,7 +30,7 @@ export type RegistrationStage =
 export type FundingBurn = { recipient: string; phase: string }
 
 export interface RegistrationStageInputs {
-  deposit?: SIPADepositRecord | null
+  deposit?: SipaDeposit | null
   burns?: readonly FundingBurn[]
 }
 
@@ -41,7 +41,13 @@ export function registrationStage(
 ): RegistrationStage {
   const rail = deposit?.phase
   if (record.phase === "confirmed") return "registered"
-  if (record.phase === "failed_taken" || record.phase === "failed_terminal") return "failed"
+  // A replaced address is closed like a failed one: a deposit there is only recovered.
+  if (
+    record.phase === "failed_taken" ||
+    record.phase === "failed_terminal" ||
+    record.phase === "replaced"
+  )
+    return "failed"
   if (rail === "pendingClaim" || rail === "claimed") return "crediting"
   // The sweep is what registers the name.
   if (record.sweptAt !== undefined || record.sweepTxHash !== undefined) return "claiming"

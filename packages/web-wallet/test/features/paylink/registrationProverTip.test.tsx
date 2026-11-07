@@ -45,7 +45,7 @@ describe("useRegistrationSpeed", () => {
   let container: HTMLDivElement
   let root: Root
   let seen: RegistrationSpeed
-  const onCommit = vi.fn((_tip: bigint, _speed: string) => {})
+  const onCommit = vi.fn((_tip: bigint, _speed: string): Promise<void> | void => {})
 
   function Harness(props: Partial<Parameters<typeof useRegistrationSpeed>[0]>) {
     seen = useRegistrationSpeed({
@@ -96,6 +96,16 @@ describe("useRegistrationSpeed", () => {
     expect(seen.choice.offer?.proverTip).toBe(TIP)
     expect(seen.proverTip).toBe(0n)
     expect(onCommit).toHaveBeenLastCalledWith(0n, "standard")
+  })
+
+  it("hands a claim the last commit's save, failure included", async () => {
+    let fail: (e: Error) => void = () => {}
+    onCommit.mockReturnValueOnce(new Promise<void>((_, reject) => (fail = reject)))
+    await render({ load: async () => loaded(600) })
+    expect(onCommit).toHaveBeenCalledOnce()
+    const saved = seen.saved()
+    fail(new Error("disk full"))
+    await expect(saved).rejects.toThrow()
   })
 
   it("decides nothing while the schedule is unread", async () => {

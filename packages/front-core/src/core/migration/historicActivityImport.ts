@@ -14,10 +14,11 @@ import { storedActivity, type Activity } from "../../engine/activity"
 import type { Transaction } from "../../types/transactions"
 import {
   isSettledSipaPhase,
-  KEY_SIPA_DEPOSITS,
-  type SIPADepositRecord,
-  type SIPADepositStore,
-} from "../services/deposits/SIPADepositStore"
+  storedSipaDeposits,
+  type SipaDeposit,
+  type SipaDepositFields,
+  type SipaDeposits,
+} from "../../engine/sipaDeposits"
 import { WITHDRAWAL_TERMINAL_PHASES, type WithdrawalRecord } from "../services/bridge/types"
 import { storedWithdrawals, type Withdrawals } from "../../engine/withdrawals"
 import { KEY_SAVINGS_MOVES, type SavingsMoveStorage } from "../services/savings/SavingsMoveStorage"
@@ -66,7 +67,7 @@ export interface HistoricActivityImportDeps {
   /** `read` over each retired rollup's database; rejects when one could not be read. */
   readOtherDatabases<T>(read: (db: RetiredDatabase) => T): Promise<T[]>
   transactions: Pick<Activity, "importHistoricRows">
-  sipaDeposits: Pick<SIPADepositStore, "load" | "get" | "create">
+  sipaDeposits: Pick<SipaDeposits, "adopt">
   withdrawals: Pick<Withdrawals, "ready" | "adopt">
   savingsMoves: Pick<SavingsMoveStorage, "load" | "get" | "put">
   /** Whether the account the import started for is still the active one; false stops it before a write. */
@@ -90,7 +91,7 @@ interface Snapshot {
   /** The network the account scanned or recorded there, when exactly one is named. */
   networkId: string | undefined
   rows: Transaction[]
-  deposits: SIPADepositRecord[]
+  deposits: SipaDeposit[]
   withdrawals: WithdrawalRecord[]
   savingsMoves: SavingsMoveRecord[]
   partial?: boolean
@@ -118,7 +119,7 @@ export async function importHistoricActivity(
       unstamped: 0,
     }
     assertOwner()
-    await Promise.all([deps.sipaDeposits.load(), deps.withdrawals.ready, deps.savingsMoves.load()])
+    await Promise.all([deps.withdrawals.ready, deps.savingsMoves.load()])
     for (const snapshot of snapshots) {
       assertOwner()
       result.transactions += await deps.transactions.importHistoricRows(
@@ -131,12 +132,8 @@ export async function importHistoricActivity(
           result.unstamped++
           continue
         }
-        if (deps.sipaDeposits.get(record.sipaAddress)) continue
         assertOwner()
-        const { sipaAddress, ...rest } = record
-        if (await deps.sipaDeposits.create(sipaAddress, { ...rest, networkId }, { strict: true })) {
-          result.deposits++
-        }
+        if (await deps.sipaDeposits.adopt({ ...record, networkId })) result.deposits++
       }
       for (const record of snapshot.withdrawals) {
         if (!WITHDRAWAL_TERMINAL_PHASES.has(record.phase)) continue
@@ -181,9 +178,7 @@ export async function importHistoricActivity(
 function snapshotOf(db: RetiredDatabase): Snapshot {
   const label = `wallet_${db.version}`
   const rows = storedActivity(db) as Transaction[]
-  const deposits = parseRecords<SIPADepositRecord>(db.get(KEY_SIPA_DEPOSITS), label).filter(
-    (r) => typeof r.sipaAddress === "string" && typeof r.phase === "string",
-  )
+  const deposits = storedSipaDeposits(db)
   const withdrawals = storedWithdrawals(db)
   const savingsMoves = parseRecords<SavingsMoveRecord>(db.get(KEY_SAVINGS_MOVES), label).filter(
     (r) => typeof r.withdrawalLocalId === "string",
@@ -209,6 +204,17 @@ function snapshotOf(db: RetiredDatabase): Snapshot {
     savingsMoves,
     partial: db.partial,
   }
+}
+
+/**
+ * `sipa`'s deposit record in a retired database, in any phase, stamped with that database's network.
+ * Null when absent or when its network cannot be told: an unstamped record would join this rollup's sync.
+ */
+export function retiredSipaDeposit(db: RetiredDatabase, sipa: string): SipaDepositFields | null {
+  const snapshot = snapshotOf(db)
+  const record = snapshot.deposits.find((r) => r.sipaAddress.toLowerCase() === sipa.toLowerCase())
+  const networkId = record?.networkId ?? snapshot.networkId
+  return record && networkId ? { ...record, networkId } : null
 }
 
 const isRecord = (value: unknown): value is object => typeof value === "object" && value !== null

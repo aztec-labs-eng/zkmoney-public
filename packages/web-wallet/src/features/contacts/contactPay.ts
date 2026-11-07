@@ -27,15 +27,15 @@ import {
 import { parseUnits } from "viem"
 import { getConfig } from "../../config/env"
 import { isFlowCancelled, runOperation } from "../operations/operations"
-import { session } from "../../platform/session"
+import { session } from "../../session/session"
 import {
   getXmtpSender,
   getXmtpUiState,
   xmtpUnavailableCode,
 } from "../../platform/xmtp/xmtpLifecycle"
 import { maybeRefuelFpc } from "../fees/fpcRefuel"
-import { claimSponsorContext, noteSubscribed } from "../onboarding/claimSponsorship"
-import { RAIL_REGISTERED } from "../onboarding/rails"
+import { claimSponsorContext, noteSubscribed } from "../registration/claimSponsorship"
+import { RAIL_REGISTERED } from "../registration/rails"
 import { recipientNotUpgradedCopy } from "../migration/upgradeCopy"
 import { resolveTagForCommit, resolveTagViaRegistry } from "./registryResolution"
 

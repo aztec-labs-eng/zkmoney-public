@@ -4,7 +4,7 @@ import type { WithdrawalRecord } from "@obsidion/front-core"
 import { reportWithdrawFunnel } from "./withdrawFunnel"
 import { reportPaylinkClaims } from "../paylink/paylinkClaimReport"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
-import { useSession } from "../../platform/session"
+import { useSession } from "../../session/session"
 
 export interface WithdrawalsState {
   records: readonly WithdrawalRecord[]

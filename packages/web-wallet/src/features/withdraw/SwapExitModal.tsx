@@ -31,8 +31,8 @@ import { HashRow, l1TxUrl, whenLabel } from "../../ui/detailRows"
 import { useCopy } from "../../ui/hooks"
 import { ScreeningNotice, useScreenedAddress } from "../../ui/screening"
 import { waitedLabel } from "../deposit/DepositExitModal/DepositExitModal"
-import { isWalletRejection, useL1Wallet } from "../deposit/l1Wallet"
-import type { L1ExitStage } from "../deposit/sipaRecovery"
+import { isWalletRejection, useL1Wallet } from "../../session/l1Wallet"
+import type { L1ExitStage } from "../sipa/l1ExitChannels"
 import {
   useWalletPrompt,
   useWalletPromptStall,

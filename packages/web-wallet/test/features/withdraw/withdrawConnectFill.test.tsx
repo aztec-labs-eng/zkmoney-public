@@ -8,8 +8,16 @@ import { MemoryRouter, useLocation, useNavigate } from "react-router-dom"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { getAddress } from "viem"
 import { L1_PLACEHOLDER_NAME, type Contact } from "@obsidion/front-core"
+import etherfiCopy from "../../../src/features/withdraw/etherfiCheck.copy"
+import freshCopy from "../../../src/features/withdraw/WithdrawFreshScreen.copy"
 
-type SheetProps = { recipient: string; walletName?: string; onClose(): void; onDone(): void }
+type SheetProps = {
+  recipient: string
+  walletName?: string
+  confirmRecipient?: () => boolean
+  onClose(): void
+  onDone(): void
+}
 
 const h = vi.hoisted(() => ({
   l1: { account: null as string | null, walletName: null as string | null, disconnect: vi.fn() },
@@ -20,11 +28,14 @@ const h = vi.hoisted(() => ({
   hook: vi.fn(),
   sheet: vi.fn(),
   ens: {} as { name?: string; state?: string; address?: string },
+  etherfi: "rejected",
 }))
 
-vi.mock("../../../src/config/env", () => ({ getConfig: () => ({ l1ChainId: 11155111, l1RpcUrl: "" }) }))
+vi.mock("../../../src/config/env", () => ({
+  getConfig: () => ({ l1ChainId: 11155111, l1RpcUrl: "" }),
+}))
 vi.mock("../../../src/config/oxideTuple", () => ({ l1PublicClient: () => ({}) }))
-vi.mock("../../../src/features/deposit/l1Wallet", () => ({ useL1Wallet: () => h.l1 }))
+vi.mock("../../../src/session/l1Wallet", () => ({ useL1Wallet: () => h.l1 }))
 vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/front-core")>()),
   ContactStorage: { get: () => ({ getEntries: async () => h.entries }) },
@@ -42,6 +53,15 @@ vi.mock("../../../src/features/withdraw/freshAddressCheck", async (importOrigina
     h.hook(address, waitMs), address ? h.verdict : { kind: "idle" }
   ),
 }))
+async function etherfiCheckMock(
+  importOriginal: () => Promise<typeof import("../../../src/features/withdraw/etherfiCheck")>,
+) {
+  return {
+    ...(await importOriginal()),
+    useEtherfiAddressVerdict: (address: unknown) => ({ kind: address ? h.etherfi : "idle" }),
+  }
+}
+vi.mock("../../../src/features/withdraw/etherfiCheck", etherfiCheckMock) // slice-check-ignore: unmigrated screen
 vi.mock("../../../src/features/withdraw/WithdrawFreshScreen", () => ({
   VerdictCard: ({ kind }: { kind: string }) => <output data-verdict={kind} />,
 }))
@@ -70,7 +90,12 @@ const { WithdrawScreen } = await import("../../../src/features/withdraw/Withdraw
 let go: ReturnType<typeof useNavigate>
 const Probe = () => {
   go = useNavigate()
-  return <output data-location>{useLocation().pathname}</output>
+  const { pathname, state } = useLocation()
+  return (
+    <output data-location data-state={JSON.stringify(state ?? null)}>
+      {pathname}
+    </output>
+  )
 }
 
 const [ACCOUNT, TYPED, FUNDER, OLDEST] = ["11", "22", "33", "44"].map((byte) =>
@@ -132,6 +157,7 @@ describe("WithdrawScreen", () => {
       cleared: true,
       freshOffered: true,
       ens: {},
+      etherfi: "rejected",
     })
     Object.assign(h.l1, { account: null, walletName: null })
     vi.clearAllMocks()
@@ -304,6 +330,74 @@ describe("WithdrawScreen", () => {
     })
     await act(async () => sheet().onDone())
     expect(location()).toBe("/")
+  })
+
+  it.each(["confirmed", "account"])(
+    "sends a pasted address ether.fi knows (%s) to the ether.fi route, address carried over",
+    async (kind) => {
+      Object.assign(h, { verdict: { kind: "fresh" }, etherfi: "checking" })
+      await render()
+      await type(field(), TYPED)
+      await click(row())
+      expect(left()).toBe(false)
+      h.etherfi = kind
+      await render()
+      expect(location()).toBe("/withdraw/etherfi")
+      const probe = container.querySelector<HTMLElement>("[data-location]")!
+      expect(JSON.parse(probe.dataset.state!)).toEqual({ recipient: TYPED })
+      expect(h.sheet).not.toHaveBeenCalled()
+    },
+  )
+
+  it("leaves the outputs open for an address ether.fi does not know, with a last check", async () => {
+    Object.assign(h, { verdict: { kind: "fresh" }, etherfi: "rejected" })
+    await render()
+    await type(field(), TYPED)
+    await click(row())
+    expect(sheet()).toMatchObject({
+      recipient: TYPED,
+      receiveAssets: undefined,
+      recipientWarning: undefined,
+    })
+    expect(sheet().confirmRecipient!()).toBe(true)
+  })
+
+  it.each([
+    ["checking", true],
+    ["rejected", false],
+  ] as const)("ether.fi %s: the field shows a status %s", async (etherfi, shown) => {
+    Object.assign(h, { verdict: { kind: "fresh" }, etherfi })
+    await render()
+    await type(field(), TYPED)
+    expect(container.textContent?.includes(freshCopy.checking)).toBe(shown)
+  })
+
+  it("warns in the amount sheet when ether.fi could not be asked", async () => {
+    Object.assign(h, { verdict: { kind: "fresh" }, etherfi: "unknown" })
+    await render()
+    await type(field(), TYPED)
+    await click(row())
+    expect(sheet()).toMatchObject({ recipient: TYPED, recipientWarning: etherfiCopy.unknown })
+  })
+
+  it("narrows the saved ether.fi address in place, without asking ether.fi", async () => {
+    const cash: Contact = {
+      name: "ether.fi Cash",
+      address: TYPED,
+      addressKind: "ethereum-l1",
+      l1Wallet: { provider: "etherfi", provenance: "saved-recipient", lastUsedAt: 1 },
+    }
+    Object.assign(h, { entries: [cash], verdict: { kind: "fresh" }, etherfi: "confirmed" })
+    await render()
+    await click(rows()[0])
+    expect(location()).toBe("/withdraw/existing")
+    await click(button("Continue without privacy"))
+    expect(sheet()).toMatchObject({
+      recipient: TYPED,
+      receiveAsset: "USDC",
+      receiveAssets: ["USDC", "USDT"],
+      confirmRecipient: undefined,
+    })
   })
 
   it("the fresh route is one entry past the method step", async () => {

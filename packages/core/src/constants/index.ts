@@ -20,8 +20,7 @@ export function isNetworkScoped(value: object): boolean {
 // ── Contracts catalog ─────────────────────────────────────────────────
 
 // The deployment slot: the deploy salt's preimage and every ContractService's local version
-// stamp. Each generation must resolve its own slot, so this MUST differ from the frozen v4
-// snapshot's baked "0.0.2".
+// stamp.
 export const CONTRACT_SERVICE_VERSION = "0.0.3"
 
 export const DEFAULT_CONTRACTS = {
@@ -568,19 +567,14 @@ export const FROZEN_REFUND_TIP_MARGIN_BPS = 15_000n
 // Declared here (not in ./types) so the defaults object and the shape stay one
 // declaration; ./types re-exports the type, mirroring the Network enum pattern.
 export interface LocalConfig {
-  devMode: boolean
-  /** Opt-in analytics: false (the default) sends nothing. */
+  /** Opt-in analytics: false (the default) sends nothing; absent, the prompt is unanswered. */
   analyticsConsent: boolean
-  /** Whether the consent prompt has been answered — a decline is a persisted `false` consent. */
-  analyticsAsked: boolean
   /** Off: payment requests from people outside the contact book are dropped on receive and hidden. */
   allowNonContactRequests: boolean
 }
 
 export const LOCAL_CONFIG_DEFAULTS: LocalConfig = {
-  devMode: false,
   analyticsConsent: false,
-  analyticsAsked: false,
   allowNonContactRequests: true,
 }
 

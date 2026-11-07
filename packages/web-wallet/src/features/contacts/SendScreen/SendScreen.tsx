@@ -7,7 +7,7 @@ import { voucherAvailable } from "../../paylink/sponsoredPaylink"
 import { usePaylinkDeps } from "../../paylink/usePaylinkDeps"
 import { StableCopy } from "../../../ui/StableCopy"
 import { recentPeople } from "../recentPeople"
-import { useSession } from "../../../platform/session"
+import { useSession } from "../../../session/session"
 import styles from "./SendScreen.module.css"
 import copy from "./SendScreen.copy"
 

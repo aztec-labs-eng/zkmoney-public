@@ -11,9 +11,9 @@ import {
   claimSponsorContext,
   claimSponsorRail,
   type ClaimSponsorDeps,
-} from "../onboarding/claimSponsorship"
-import { RegistrationPendingError } from "../onboarding/registrationRail"
-import { RAIL_REGISTERED } from "../onboarding/rails"
+} from "../registration/claimSponsorship"
+import { RegistrationPendingError } from "../registration/registrationRail"
+import { RAIL_REGISTERED } from "../registration/rails"
 
 export async function readSponsoredAllowance(deps: ClaimSponsorDeps): Promise<AllowanceRead> {
   let sponsor: ClaimSponsorContext

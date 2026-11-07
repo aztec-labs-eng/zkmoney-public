@@ -1,10 +1,18 @@
 import { useState, type ReactNode } from "react"
 import { Icon, PrimaryGradientButton, Spinner } from "@obsidion/web-ds"
 import { normalizeTag } from "@obsidion/front-core"
-import { nameIsUnavailable, useNameAvailability, type RouteNameGrant } from "../nameAvailability"
-import { TagAvailabilityNotes, type InviteNotice } from "./TagAvailabilityNotes"
+import copy from "./InvitationStep.copy"
+import {
+  nameIsUnavailable,
+  useNameAvailability,
+  type RouteNameGrant,
+} from "../../registration/nameAvailability"
+import {
+  TagAvailabilityNotes,
+  type InviteNotice,
+} from "../../registration/TagAvailabilityNotes/TagAvailabilityNotes"
 
-export type { InviteNotice } from "./TagAvailabilityNotes"
+export type { InviteNotice } from "../../registration/TagAvailabilityNotes/TagAvailabilityNotes"
 
 /**
  * Invitation page content (ULT-667): heading, the tag input + "Activate account" control with the
@@ -98,29 +106,29 @@ export function InvitationStep({
       >
         {header}
         <label className="ww-invite-field">
-          <span className="ww-invite-field__label">Your tag</span>
+          <span className="ww-invite-field__label">{copy.tagLabel}</span>
           <span className="ww-invite-field__input">
-            <span>@</span>
+            <span>{copy.at}</span>
             <input
-              aria-label="Your tag"
-              placeholder="tag"
+              aria-label={copy.tagLabel}
+              placeholder={copy.tagPlaceholder}
               value={typed}
               autoFocus={!initialHandle}
               onChange={(e) => setTyped(e.target.value.replace(/^@/, "").toLowerCase())}
               disabled={busy}
             />
-            <span>.zk.money</span>
+            <span>{copy.domain}</span>
           </span>
         </label>
         {checking && (
           <p className="ww-invite__checking">
             <Spinner size={14} />
-            Checking availability…
+            {copy.checking}
           </p>
         )}
         {errors}
         <PrimaryGradientButton
-          title={recoverBoundGrant ? "Continue with passkey" : "Create account"}
+          title={recoverBoundGrant ? copy.continueWithPasskey : copy.createAccount}
           isDisabled={!submittable}
           isLoading={busy}
           onClick={activate}
@@ -131,14 +139,14 @@ export function InvitationStep({
             className="zkm-btn-reset zkm-pressable ww-invite-cancel"
             onClick={onCancelSignIn}
           >
-            Cancel sign-in
+            {copy.cancelSignIn}
           </button>
         )}
         {onLogIn && (
           <p className="ww-invite-modal-foot">
-            Already have an account?{" "}
+            {copy.haveAccount}{" "}
             <button type="button" className="zkm-btn-reset ww-invite__link" onClick={onLogIn}>
-              Log in
+              {copy.logIn}
             </button>
           </p>
         )}
@@ -148,15 +156,13 @@ export function InvitationStep({
 
   return (
     <div className="ww-invite__content">
-      <h1 className="ww-invite__title">You're in!</h1>
-      <p className="ww-invite__subtitle">
-        {valid ? "Start interacting with zk.money" : "Create your zk.money account"}
-      </p>
+      <h1 className="ww-invite__title">{copy.title}</h1>
+      <p className="ww-invite__subtitle">{valid ? copy.startInteracting : copy.createYours}</p>
       <form className="ww-invite__inputrow" onSubmit={submit}>
         <input
           className="ww-invite__input"
-          aria-label="Your tag"
-          placeholder="Your tag"
+          aria-label={copy.tagLabel}
+          placeholder={copy.tagLabel}
           value={typed}
           autoFocus={!initialHandle}
           onChange={(e) => setTyped(e.target.value.replace(/^@/, "").toLowerCase())}
@@ -182,9 +188,9 @@ export function InvitationStep({
           {busy ? (
             <Spinner size={14} color="#fff" />
           ) : recoverBoundGrant ? (
-            <>Continue with passkey &rarr;</>
+            copy.continueArrow
           ) : (
-            <>Activate account &rarr;</>
+            copy.activateArrow
           )}
         </button>
       </form>
@@ -195,14 +201,14 @@ export function InvitationStep({
           className="zkm-btn-reset zkm-pressable ww-invite-cancel"
           onClick={onCancelSignIn}
         >
-          Cancel sign-in
+          {copy.cancelSignIn}
         </button>
       )}
       {onLogIn && (
         <p className="ww-invite__footer">
-          Already have an account?{" "}
+          {copy.haveAccount}{" "}
           <button type="button" className="zkm-btn-reset ww-invite__link" onClick={onLogIn}>
-            Log in
+            {copy.logIn}
           </button>
         </p>
       )}

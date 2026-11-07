@@ -7,7 +7,7 @@ import {
   STALLED_AFTER_MS,
   type ActiveTabDeps,
 } from "../../../src/platform/storage/activeTabLifecycle"
-import { WebLocksUnavailableError } from "../../../src/platform/storage/webLock"
+import { WebLocksUnavailableError } from "../../../src/platform/storage/activeTabLifecycle"
 import { FakeLocks } from "../../support/fakeLocks"
 
 class BusyError extends Error {

@@ -54,8 +54,13 @@ function harness(records: Partial<WithdrawalRecord>[] = [], { hanging = false } 
     reorg({
       wallet: wallet.resource,
       activity: seededActivity(),
-      withdrawals: { all: async () => records as WithdrawalRecord[], apply: vi.fn() },
-      sipaDeposits: { load: async () => void order.push("pass"), list: () => [], demote: vi.fn() },
+      withdrawals: {
+        all: async () => {
+          order.push("pass")
+          return records as WithdrawalRecord[]
+        },
+        apply: vi.fn(),
+      },
       tracker,
       onOutcome: () => {},
     }),

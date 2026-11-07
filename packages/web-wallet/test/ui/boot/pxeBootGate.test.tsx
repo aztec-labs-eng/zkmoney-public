@@ -39,7 +39,10 @@ vi.mock("../../../src/config/env", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../src/config/env")>()),
   getConfig: () => h.config,
 }))
-vi.mock("../../../src/config/oxideTuple", () => ({ l1PublicClient: () => "l1-client" }))
+vi.mock("../../../src/config/oxideTuple", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../src/config/oxideTuple")>()),
+  l1PublicClient: () => "l1-client",
+}))
 vi.mock("../../../src/platform/bbWasmPath", () => ({
   barretenbergWasm: () => ({ wasmPath: "/assets/bb-threads.wasm.gz" }),
 }))

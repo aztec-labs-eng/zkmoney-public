@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client"
 import { beforeAll, beforeEach, expect, it } from "vitest"
 import { BalanceStorage } from "@obsidion/front-core"
 import { getConfig } from "../../../../src/config/env"
-import { saveWalletIdentity } from "../../../../src/features/identity/walletIdentity"
+import { setIdentity } from "../../../support/identity"
 import {
   markOldHoldingsRead,
   markUpgradeMovesFunds,
@@ -18,13 +18,17 @@ import {
 import { walletStorage } from "../../../../src/platform/storage/walletStorage"
 import { webStorage } from "../../../../src/platform/storage/WebStorageAdapter"
 import { seedBootConfig } from "../../../support/seedBootConfig"
+import { openTestSession } from "../../../support/session"
 
 let PINNED = ""
 beforeAll(async () => {
   await seedBootConfig()
   PINNED = getConfig().oxideProfile.portal.toLowerCase()
 })
-beforeEach(() => saveWalletIdentity({ address: "0xabc", claimedAt: 0 }))
+beforeEach(async () => {
+  openTestSession()
+  await setIdentity({ address: "0xabc", claimedAt: 0 })
+})
 
 const wad = 10n ** 18n
 

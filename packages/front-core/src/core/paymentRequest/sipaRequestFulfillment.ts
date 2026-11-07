@@ -5,12 +5,12 @@
  * counts, same bar as L2 send verification.
  */
 import { depositAmounts } from "../services/deposits/depositAmounts.js"
-import type { SIPADepositRecord } from "../services/deposits/SIPADepositStore.js"
+import type { SipaDeposit } from "../../engine/sipaDeposits"
 import type { StoredRequest } from "../../engine/requests.js"
 
 type SipaFulfillmentRecord = Pick<
-  SIPADepositRecord,
-  "phase" | "sipaAddress" | "amount" | "netAmount" | "fee" | "claimTxHash" | "sweepTxHash"
+  SipaDeposit,
+  "phase" | "sipaAddress" | "amount" | "netAmount" | "fee" | "sweepTxHash"
 >
 
 type SipaFulfillmentRequest = Pick<StoredRequest, "direction" | "sipaAddress" | "amountAtomic">

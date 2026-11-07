@@ -26,14 +26,11 @@ import {
   startHistoryImporter,
   useAfter,
   type After,
-  useLocalConfigStore,
   useResource,
 } from "@obsidion/front-core"
 import { getConfig } from "../../config/env"
 import { resolveTagForCommit } from "../../features/contacts/registryResolution"
-import { loadWalletIdentity } from "../../features/identity/walletIdentity"
-import { getAuthService } from "../auth/useAuthenticator"
-import { session, useSession } from "../session"
+import { session, useSession, type Session } from "../../session/session"
 import { webStorage, type WebStorageAdapter } from "../storage/WebStorageAdapter"
 import {
   createRequestBindingResolver,
@@ -58,11 +55,12 @@ const XMTP_CATCH_UP_TIMEOUT_MS = 120_000
 async function createLeaderClient(
   dbEncryptionKey: Uint8Array,
   signal: AbortSignal,
-  allowNonContactRequests: () => boolean,
   networkId: string,
+  { auth, device, identity }: Pick<Session, "auth" | "device" | "identity">,
 ): Promise<XmtpClientHandle> {
   const config = getConfig()
-  const msk = await getAuthService().getSecretKey()
+  const allowNonContactRequests = () => device.get().allowNonContactRequests
+  const msk = await auth.getSecretKey()
   if (!msk) throw new Error("wallet locked — cannot derive the XMTP identity")
   const storage = webStorage
   const client = await WebXmtpClient.create({
@@ -81,7 +79,10 @@ async function createLeaderClient(
   setXmtpSender(client)
 
   try {
-    return await mountReceivePipeline(client, storage, signal, allowNonContactRequests, networkId)
+    return await mountReceivePipeline(client, storage, signal, allowNonContactRequests, {
+      networkId,
+      identity,
+    })
   } catch (err) {
     setXmtpSender(null)
     client.close()
@@ -95,7 +96,7 @@ async function mountReceivePipeline(
   storage: WebStorageAdapter,
   signal: AbortSignal,
   allowNonContactRequests: () => boolean,
-  networkId: string,
+  { networkId, identity }: { networkId: string; identity: Session["identity"] },
 ): Promise<XmtpClientHandle> {
   // KTD-10: a fresh installation pulls history from the account's other installations. Must
   // finish before the driver starts so its cursors still sit at zero. No history server on `local`.
@@ -157,11 +158,11 @@ async function mountReceivePipeline(
     requestReceiver,
     ownXmtpAddress: client.xmtpAddress,
     currentAccount: async () => {
-      const identity = loadWalletIdentity()
+      const own = identity.get().value
       // Nameless accounts have no messaging identity yet: XMTP rows key on the tag.
-      if (!identity?.handle) return null
+      if (!own?.handle) return null
       // The driver stamps received rows with the rollup id.
-      return { tag: identity.handle, l2Address: identity.address, rollupId: networkId }
+      return { tag: own.handle, l2Address: own.address, rollupId: networkId }
     },
     asyncStorage: storage,
   })
@@ -220,7 +221,6 @@ async function mountReceivePipeline(
 /** The client is a large WASM, a database and a network sync. */
 const AFTER: After = { firstBalance: true }
 export function XmtpMount(): null {
-  const config = useLocalConfigStore()
   const session = useSession()
   const ready = useAfter(session.milestones, AFTER)
   const networkId = useResource(session.wallet)?.networkId
@@ -237,14 +237,13 @@ export function XmtpMount(): null {
         document.addEventListener("visibilitychange", listener)
         return () => document.removeEventListener("visibilitychange", listener)
       },
-      deriveDbKey: () => getAuthService().getDerivedKey("xmtp-store"),
-      createClient: (key, signal) =>
-        createLeaderClient(key, signal, () => config.get("allowNonContactRequests"), networkId),
+      deriveDbKey: () => session.auth.getDerivedKey("xmtp-store"),
+      createClient: (key, signal) => createLeaderClient(key, signal, networkId, session),
       onState: setXmtpUiState,
       log: (message, ...args) => console.warn(message, ...args),
     })
     lifecycle.start()
     return () => lifecycle.stop()
-  }, [config, ready, networkId])
+  }, [ready, networkId, session])
   return null
 }

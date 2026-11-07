@@ -21,7 +21,7 @@ import {
   type PaylinkStatusKind,
   type PaylinkTransaction,
   type PaymentRequest,
-  type SIPADepositRecord,
+  type SipaDeposit,
   type TokenTransaction,
   type TransactionStatus,
   type UpgradeRun,
@@ -96,7 +96,7 @@ export function linkFragmentOf(paylink: string): string | null {
 }
 
 /** On-chain funder + funding tx for the deposit detail sheet. Prefers the Transfer sender. */
-export function depositAttribution(record: SIPADepositRecord): {
+export function depositAttribution(record: SipaDeposit): {
   funder?: string
   fundingTxHash?: string
 } {
@@ -108,7 +108,7 @@ export function depositAttribution(record: SIPADepositRecord): {
 }
 
 /** Source-wallet name and funder address the deposit detail sheet puts over the facts. */
-export function depositHeadline(record: SIPADepositRecord): { title?: string; address?: string } {
+export function depositHeadline(record: SipaDeposit): { title?: string; address?: string } {
   return {
     title: record.walletName?.trim() || undefined,
     address: depositAttribution(record).funder,
@@ -120,7 +120,7 @@ export function depositHeadline(record: SIPADepositRecord): { title?: string; ad
  * every ETH digit; a row trims them, or a long figure squeezes out the row's label.
  */
 export function depositGrossFigure(
-  record: SIPADepositRecord,
+  record: SipaDeposit,
   precision: "full" | "row" = "full",
   /** The row token's, which the record's amounts are in. */
   decimals?: number,
@@ -137,7 +137,7 @@ export function depositGrossFigure(
  * want of a net.
  */
 export function depositRowAmount(
-  record: SIPADepositRecord,
+  record: SipaDeposit,
   exitable: boolean,
   /** The row token's, which the record's amounts are in. */
   decimals?: number,
@@ -156,7 +156,7 @@ export function depositRowAmount(
  * The badge under a deposit row's amount, from front-core's `DEPOSIT_PHASE_COPY` so the row, the
  * detail sheet and the bell read the same word. A claimed deposit carries no badge.
  */
-export function depositRowStatusLabel(record: SIPADepositRecord): StatusLabel | undefined {
+export function depositRowStatusLabel(record: SipaDeposit): StatusLabel | undefined {
   return depositPhaseCopy(record).pill as StatusLabel | undefined
 }
 

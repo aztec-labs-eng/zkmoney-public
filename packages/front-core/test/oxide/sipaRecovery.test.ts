@@ -35,7 +35,7 @@ const TOKEN = "0x163a94b604dfcee8fac53ea6d24db032e8f5cd6b"
 const HASH = `0x${"ab".repeat(32)}`
 
 function makeDeps(overrides: Record<string, unknown> = {}) {
-  const store = { get: vi.fn(() => null), upsert: vi.fn(async () => undefined) }
+  const store = { apply: vi.fn(async () => undefined) }
   const deps = {
     record: {
       sipaAddress: SIPA,
@@ -96,10 +96,11 @@ describe("runSipaRecovery", () => {
       }),
     )
     expect(send).toHaveBeenCalledWith(SIPA, "0xdeadbeef")
-    expect(store.upsert).toHaveBeenLastCalledWith(SIPA, {
-      phase: "recovered",
-      recoveryTxHash: HASH,
-      tokenAddress: TOKEN,
+    expect(store.apply).toHaveBeenLastCalledWith(SIPA, {
+      type: "recoverySent",
+      txHash: HASH,
+      confirmed: true,
+      token: { tokenAddress: TOKEN },
     })
   })
 
@@ -118,12 +119,11 @@ describe("runSipaRecovery", () => {
       tokens: [recordToken],
     })
     await runSipaRecovery(deps)
-    expect(store.upsert).toHaveBeenLastCalledWith(SIPA, {
-      phase: "recovered",
-      recoveryTxHash: HASH,
-      tokenAddress: recordToken,
-      tokenSymbol: "DAI",
-      tokenDecimals: 18,
+    expect(store.apply).toHaveBeenLastCalledWith(SIPA, {
+      type: "recoverySent",
+      txHash: HASH,
+      confirmed: true,
+      token: { tokenAddress: recordToken, tokenSymbol: "DAI", tokenDecimals: 18 },
     })
   })
 
@@ -132,23 +132,9 @@ describe("runSipaRecovery", () => {
       waitForReceipt: vi.fn(() => new Promise<boolean>(() => {})),
     })
     const pending = runSipaRecovery(deps)
-    await vi.waitFor(() => expect(store.upsert).toHaveBeenCalled())
-    expect(store.upsert).toHaveBeenCalledWith(SIPA, {
-      phase: "recoverable",
-      recoveryTxHash: HASH,
-    })
-    expect(store.upsert).toHaveBeenCalledTimes(1)
-    void pending
-  })
-
-  it("stamps the hash on the record's live phase, not the one captured before signing", async () => {
-    const { deps, store } = makeDeps({
-      waitForReceipt: vi.fn(() => new Promise<boolean>(() => {})),
-    })
-    store.get.mockReturnValue({ phase: "claimed" } as never)
-    const pending = runSipaRecovery(deps)
-    await vi.waitFor(() => expect(store.upsert).toHaveBeenCalled())
-    expect(store.upsert).toHaveBeenCalledWith(SIPA, { phase: "claimed", recoveryTxHash: HASH })
+    await vi.waitFor(() => expect(store.apply).toHaveBeenCalled())
+    expect(store.apply).toHaveBeenCalledWith(SIPA, { type: "recoverySent", txHash: HASH })
+    expect(store.apply).toHaveBeenCalledTimes(1)
     void pending
   })
 
@@ -159,16 +145,13 @@ describe("runSipaRecovery", () => {
     const { deps, store, send } = makeDeps()
     await expect(runSipaRecovery(deps)).rejects.toThrow(/does not match/)
     expect(send).not.toHaveBeenCalled()
-    expect(store.upsert).not.toHaveBeenCalled()
+    expect(store.apply).not.toHaveBeenCalled()
   })
 
   it("does not mark recovered when the transaction reverts", async () => {
     const { deps, store } = makeDeps({ waitForReceipt: vi.fn(async () => false) })
     await expect(runSipaRecovery(deps)).rejects.toThrow(/reverted/)
-    expect(store.upsert).not.toHaveBeenCalledWith(
-      SIPA,
-      expect.objectContaining({ phase: "recovered" }),
-    )
+    expect(store.apply).not.toHaveBeenCalledWith(SIPA, expect.objectContaining({ confirmed: true }))
   })
 
   it("signs each token with its own nonce and recovers them in one transaction", async () => {
@@ -189,9 +172,9 @@ describe("runSipaRecovery", () => {
       }),
     )
     expect(send).toHaveBeenCalledTimes(1)
-    expect(store.upsert).toHaveBeenLastCalledWith(
+    expect(store.apply).toHaveBeenLastCalledWith(
       SIPA,
-      expect.objectContaining({ tokenAddress: TOKEN }),
+      expect.objectContaining({ token: expect.objectContaining({ tokenAddress: TOKEN }) }),
     )
   })
 
@@ -204,7 +187,7 @@ describe("runSipaRecovery", () => {
     const { deps, store, send } = makeDeps({ tokens: [TOKEN, SIPA] })
     await expect(runSipaRecovery(deps)).rejects.toThrow(/signature refused/)
     expect(send).not.toHaveBeenCalled()
-    expect(store.upsert).not.toHaveBeenCalled()
+    expect(store.apply).not.toHaveBeenCalled()
   })
 
   it("fails closed on an undeployed SIPA no candidate predicts, without submitting", async () => {
@@ -217,7 +200,7 @@ describe("runSipaRecovery", () => {
     })
     await expect(runSipaRecovery(deps)).rejects.toThrow(/has not been deployed/)
     expect(send).not.toHaveBeenCalled()
-    expect(store.upsert).not.toHaveBeenCalled()
+    expect(store.apply).not.toHaveBeenCalled()
   })
 
   it("deploy-and-recovers an undeployed SIPA through the predicted candidate", async () => {

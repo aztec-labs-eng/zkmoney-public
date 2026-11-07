@@ -11,8 +11,8 @@ import {
   mayStartLaptopCeremony,
   routeForChoice,
 } from "@obsidion/passkey-web"
-import { getAuthService } from "../../platform/auth/useAuthenticator"
 import { signUpSheetOptions } from "./signUpSheetOptions"
+import { useSession, type Session } from "../../session/session"
 
 /**
  * The moment before a passkey ceremony. Every flow that can end in one awaits the gate its screen
@@ -110,17 +110,17 @@ export const PHONE_CREATION: LaptopCreation = { local: false, chromeTip: false }
 /** One gate() call; `reject` points at whatever the call is currently waiting on. */
 type Attempt = { reject: (err: Error) => void }
 
-async function probeReach(): Promise<PhoneReach> {
+async function probeReach(auth: Session["auth"]): Promise<PhoneReach> {
   try {
-    return (await getAuthService().probePhoneReach()) ?? "unknown"
+    return await auth.probePhoneReach()
   } catch {
     return "unknown"
   }
 }
 
-async function probeCreation(): Promise<LaptopCreation> {
+async function probeCreation(auth: Session["auth"]): Promise<LaptopCreation> {
   try {
-    return (await getAuthService().probeLaptopCreation?.()) ?? PHONE_CREATION
+    return await auth.probeLaptopCreation()
   } catch {
     return PHONE_CREATION
   }
@@ -129,8 +129,8 @@ async function probeCreation(): Promise<LaptopCreation> {
 type Probed = { reach: PhoneReach; creation: LaptopCreation }
 
 /** Both probes for one attempt, so a creation sheet never opens on half an answer. */
-async function probe(): Promise<Probed> {
-  const [reach, creation] = await Promise.all([probeReach(), probeCreation()])
+async function probe(auth: Session["auth"]): Promise<Probed> {
+  const [reach, creation] = await Promise.all([probeReach(auth), probeCreation(auth)])
   return { reach, creation }
 }
 
@@ -150,6 +150,7 @@ export function useCeremonyGate(
   /** The sheet goes — the screen is moving on — but an attempt past its prompt runs on. */
   dismiss: () => void
 } {
+  const { auth } = useSession()
   const [state, setState] = useState<GateState>(IDLE)
   const pending = useRef<Attempt | undefined>(undefined)
   const attempt = useRef<AbortController | undefined>(undefined)
@@ -198,7 +199,7 @@ export function useCeremonyGate(
       let openOn = params.openOn
       if (params.probeFirst) {
         setState({ kind: "probing" })
-        probed = await Promise.race([probe(), cancelled])
+        probed = await Promise.race([probe(auth), cancelled])
         if (pending.current !== waiter) throw new GateCancelledError()
         if (params.purpose === "create" && !mayStartLaptopCeremony(probed.reach)) {
           pending.current = undefined
@@ -241,7 +242,7 @@ export function useCeremonyGate(
       if (!mounted.current) throw new GateCancelledError()
       return { ...probed, choice }
     },
-    [],
+    [auth],
   )
 
   const gate = useCallback<CeremonyGate>(

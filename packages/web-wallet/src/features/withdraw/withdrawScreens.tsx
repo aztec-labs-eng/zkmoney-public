@@ -24,7 +24,7 @@ import {
   Title,
   type Step,
 } from "../cutover/parts"
-import type { L1ExitStage } from "../deposit/sipaRecovery"
+import type { L1ExitStage } from "../sipa/l1ExitChannels"
 import type { ZkMoneyExitStage } from "./zkMoneyExit"
 
 export type WithdrawRoute = "zk-money" | "wallet"

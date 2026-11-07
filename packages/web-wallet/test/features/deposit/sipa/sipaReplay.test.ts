@@ -1,5 +1,5 @@
 /**
- * Two decisions the deposit gateway makes without the chain: how many of today's slots are spent,
+ * Two decisions the deposit addresses make without the chain: how many of today's slots are spent,
  * read off this wallet's own salts, and what an address shown earlier still publishes once it no
  * longer re-derives.
  */
@@ -7,8 +7,9 @@ import { describe, expect, it } from "vitest"
 import { Fr } from "@aztec-labs/aztec.js/fields"
 import { getAddress, type Hex } from "viem"
 import { buildDepositIntent, deriveSelfSipaSecret, selfSipaNonce } from "@obsidion/sdk"
-import type { SIPADepositRecord } from "@obsidion/front-core"
-import { publishInputsFromRecord, slotFloor } from "../../../../src/features/deposit/sipaGateway"
+import type { SipaDeposit } from "@obsidion/front-core"
+import { publishInputsFromRecord } from "../../../../src/features/broadcasts/slotExecutor"
+import { slotFloor } from "../../../../src/features/deposit/sipaAddresses"
 
 const KEY = new Fr(0x5e1fn)
 const DAY = 20662
@@ -36,8 +37,7 @@ const base = {
   recipientHash: COMMITMENT,
 }
 const origin = { sipaFactory: FACTORY, implementation: IMPL, intentHash: INTENT.intentHash }
-const record = (over: Record<string, unknown>) =>
-  ({ ...base, ...over } as unknown as SIPADepositRecord)
+const record = (over: Record<string, unknown>) => ({ ...base, ...over } as unknown as SipaDeposit)
 
 describe("publishInputsFromRecord", () => {
   it("rebuilds a legacy-eoa address's publish inputs from its record alone", () => {

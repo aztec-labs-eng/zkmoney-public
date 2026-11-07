@@ -56,11 +56,11 @@ import {
   SponsoredActionNotice,
   useSponsoredActionBlock,
 } from "../../allowance/SponsoredActionNotice"
-import { loadWalletIdentity } from "../../identity/walletIdentity"
 import { paylinkRowUrl } from "../../shortLinks"
-import { useSession } from "../../../platform/session"
+import { useSession } from "../../../session/session"
 import styles from "./NewLinkScreen.module.css"
 import copy from "./NewLinkScreen.copy"
+import balanceCopy from "../../../ui/balance.copy"
 import { fmt } from "../../../lib/fmt"
 
 type Phase = "amount" | "options" | "confirm" | "working"
@@ -90,7 +90,8 @@ export function NewLinkScreen() {
   const [expiryDays, setExpiryDays] = useState(DEFAULT_CLAIM_WINDOW_DAYS)
   const [protectEnabled, setProtectEnabled] = useState(false)
   const [email, setEmail] = useState("")
-  const [handle] = useState(() => loadWalletIdentity()?.handle)
+  const { identity } = useSession()
+  const [handle] = useState(() => identity.get().value?.handle)
   const [showTag, setShowTag] = useState(true)
   const senderTag = handle && showTag ? handle : undefined
   const [stage, setStage] = useState<CreateStage>("building")
@@ -129,7 +130,7 @@ export function NewLinkScreen() {
   const overspent =
     !hasPendingDeposits() &&
     exceedsBalance(balance, validAmount ? parseEscrowAmount(amount, decimals ?? 0).atomic : 0n)
-  const canNext = validAmount && !overspent
+  const canNext = balance.live && validAmount && !overspent
   const canConfirm = !protectEnabled || validEmail
   // The token and co-signer connect async after mount; the CTA waits for the full deps set.
   const ready = !!deps
@@ -262,7 +263,7 @@ export function NewLinkScreen() {
                 <div className="ww-pay__field">
                   <span className="ww-pay__available">
                     {copy.available}{" "}
-                    <b>
+                    <b className="ww-available" aria-busy={!balance.live}>
                       ${fixedCents(main && { ...main, decimals: decimals ?? DEFAULT_DECIMALS })}
                     </b>
                   </span>
@@ -285,6 +286,7 @@ export function NewLinkScreen() {
                       <button
                         type="button"
                         className="zkm-btn-reset ww-pay__max"
+                        disabled={!balance.live}
                         onClick={() =>
                           main &&
                           decimals !== undefined &&
@@ -310,7 +312,7 @@ export function NewLinkScreen() {
                   </span>
                 )}
                 <PrimaryGradientButton
-                  title={copy.next}
+                  title={balance.live ? copy.next : balanceCopy.checking}
                   isDisabled={!canNext}
                   onClick={() => setPhase("options")}
                 />

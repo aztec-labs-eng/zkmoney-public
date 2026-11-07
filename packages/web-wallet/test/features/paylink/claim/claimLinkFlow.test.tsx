@@ -1,4 +1,5 @@
 import React, { act } from "react"
+import { testPage, testCore } from "../../../support/page"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
@@ -7,6 +8,7 @@ import {
 } from "../../../../src/features/migration/upgradeCopy"
 import { asOperation } from "../../../support/handOff"
 import { subscribeErrorModal } from "../../../../src/errors/errorModal"
+import { later } from "../../../../../front-core/test/engine/taskTable"
 
 vi.mock("../../../../src/features/operations/operations", async () =>
   (await import("../../../support/fakeOperations")).fakeOperationsModule(),
@@ -93,7 +95,7 @@ vi.mock("@obsidion/front-core", async (importOriginal) => {
 const aztec = {
   /** The session's wallet; undefined leaves the session's own, not yet up. */
   set obsidionWallet(wallet: unknown) {
-    openTestSession({ wallet })
+    openTestSession({ wallet, sweepFee: fee.resource })
   },
 }
 const contracts: { contractService?: unknown } = {}
@@ -147,8 +149,14 @@ vi.mock("../../../../src/features/paylink/usePaylinkDeps", () => ({
   // The link's voucher read, which a registration it funds needs for the claim batch.
   useLinkVoucher: (link: unknown) => ({ uses: voucherPending.value ? undefined : link ? 1 : 0 }),
 }))
-/** The live sweep fee; undefined while it is read. */
-const skim: { value: bigint | undefined } = { value: 5n }
+/** The session's sweep fee; undefined while it is read. */
+const fee = later<bigint>("sweepFee")
+const skim = {
+  set value(value: bigint | undefined) {
+    if (value === undefined) fee.lose()
+    else fee.ready(value)
+  },
+}
 /** This browser's registrations, as Home loads them. */
 const registrationsLoad: { value: Promise<void> } = { value: Promise.resolve() }
 /** The voucher read has not answered. */
@@ -185,6 +193,7 @@ vi.mock("../../../../src/features/paylink/ticketContinuation", () => ({
   ticketSignupContinuation: (f: string, l2: string | undefined, w: unknown) =>
     ticketSignupContinuation(f, l2, w),
   ticketSignupCommitted: () => committed.value,
+  ticketSignupSpent: () => committed.value,
   onTicketRegistrationsChanged: (listener: () => void) => {
     registrationListeners.add(listener)
     return () => registrationListeners.delete(listener)
@@ -205,11 +214,13 @@ vi.mock("../../../../src/features/broadcasts/useOweRegistrationBroadcast", () =>
 
 const navigate = vi.fn()
 vi.mock("react-router-dom", () => ({ useNavigate: () => navigate }))
-const commitTip = vi.fn((_account: string, _tag: string, _tip: bigint) => {})
-vi.mock("../../../../src/features/onboarding/registrationTerms", () => ({
-  useDepositSkim: () => skim.value,
-  commitRegistrationProverTip: (account: string, tag: string, tip: bigint) =>
-    commitTip(account, tag, tip),
+const commitTip = vi.fn((_account: string, _tag: string, _tip: bigint): Promise<void> | void => {})
+vi.mock("../../../../src/features/registration/registrationTerms", () => ({
+  commitRegistrationProverTip: (
+    _registrations: unknown,
+    record: { account: string; tag: string },
+    tip: bigint,
+  ) => commitTip(record.account, record.tag, tip),
   useRegistrationTerms: () => null,
   committedProverTip: () => 0n,
 }))
@@ -226,12 +237,13 @@ vi.mock("../../../../src/features/paylink/registrationProverTip", () => ({
     onCommit,
   }: {
     active: boolean
-    onCommit: (tip: bigint, speed: string) => void
+    onCommit: (tip: bigint, speed: string) => Promise<void> | void
   }) => {
     const tip = active ? reviewTip.value : undefined
     if (active) speedActive.value = true
+    const saving = React.useRef(Promise.resolve())
     React.useEffect(() => {
-      if (tip !== undefined) onCommit(tip, "faster")
+      if (tip !== undefined) saving.current = Promise.resolve(onCommit(tip, "faster"))
     }, [tip])
     return {
       choice: {
@@ -244,6 +256,7 @@ vi.mock("../../../../src/features/paylink/registrationProverTip", () => ({
       outcome: { proverTip: 0n },
       proverTip: tip,
       settle: () => {},
+      saved: () => saving.current,
     }
   },
 }))
@@ -322,11 +335,14 @@ const { TxInFlightError } = (await import("@obsidion/front-core")) as unknown as
   TxInFlightError: new (txHash: string, cause?: unknown) => Error
 }
 const { activeNamespace, closeSession, switchSession, session } = await import(
-  "../../../../src/platform/session"
+  "../../../../src/session/session"
 )
+const { pageSessionDeps } = await import("../../../../src/app/sessionDeps")
 const { testWalletDbs } = await import("../../../support/fakeWalletDb")
 const { openTestSession } = await import("../../../support/session")
-beforeEach(() => void switchSession(activeNamespace()))
+beforeEach(
+  () => void switchSession(activeNamespace(testCore().device), pageSessionDeps(testPage())),
+)
 afterEach(closeSession)
 const burns = () => session().withdrawals.list.get().records
 
@@ -670,6 +686,8 @@ describe("useClaimLinkFlow", () => {
       expect(container.textContent).toContain(`paylink ${100n * ONE}`)
       expect(container.textContent).toContain(`proving ${ONE}`)
       expect(claimSponsoredLink).not.toHaveBeenCalled()
+      let bound = () => {}
+      bindLinkDeposit.mockReturnValueOnce(new Promise<void>((r) => (bound = r)))
       await act(async () => button("Claim")!.click())
       expect(bindLinkDeposit).toHaveBeenCalledWith(
         record,
@@ -677,6 +695,9 @@ describe("useClaimLinkFlow", () => {
         ONE,
         "faster",
       )
+      // The burn is priced off the binding, so the claim waits for its write.
+      expect(claimSponsoredLink).not.toHaveBeenCalled()
+      await act(async () => bound())
       expect(claimSponsoredLink).toHaveBeenCalledWith(
         paylinkDeps,
         "frag",
@@ -899,14 +920,16 @@ describe("useClaimLinkFlow", () => {
       closeSession()
       const { walletStorage } = await import("../../../../src/platform/storage/walletStorage")
       await walletStorage.batch(() =>
-        walletStorage.removeItem(`${activeNamespace().prefix}acct/meta/withdrawals`),
+        walletStorage.removeItem(
+          `${activeNamespace(testCore().device).prefix}acct/meta/withdrawals`,
+        ),
       )
       let land!: () => void
       const landed = new Promise<void>((resolve) => (land = resolve))
       testWalletDbs().onApply = async (_version, ops) => {
         if (ops.some(([key]) => key.endsWith("acct/meta/withdrawals"))) await landed
       }
-      switchSession(activeNamespace())
+      openTestSession({ sweepFee: fee.resource })
       await render()
       await settle()
       expect(ticketSignupContinuation).not.toHaveBeenCalled()
@@ -967,6 +990,18 @@ describe("useClaimLinkFlow", () => {
         undefined,
         { fundRegistration: true },
       )
+    })
+
+    it("claims nothing when the review's tip fails to save", async () => {
+      entered()
+      claimSponsoredLink.mockRejectedValueOnce(cancelled())
+      await render()
+      await settle()
+      commitTip.mockRejectedValueOnce(new Error("disk full"))
+      await remount()
+      await act(async () => button("Claim")!.click())
+      expect(claimSponsoredLink).toHaveBeenCalledOnce()
+      expect(errorModal).toHaveBeenCalled()
     })
 
     it("tries twice more after a voucher read that timed out, then hands the review back", async () => {

@@ -1,6 +1,7 @@
 import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { setIdentity } from "../../../support/identity"
 
 const m = vi.hoisted(() => ({
   zk: { fee: vi.fn(), run: vi.fn() },
@@ -50,16 +51,13 @@ vi.mock("../../../../src/ui/screening", () => ({
   ScreeningNotice: () => null,
 }))
 vi.mock("../../../../src/ui/detailRows", () => ({ HashRow: () => null, l1TxUrl: () => undefined }))
-vi.mock("../../../../src/features/identity/walletIdentity", () => ({
-  loadWalletIdentity: () => ({ handle: "brave-otter-42" }),
-}))
-vi.mock("../../../../src/features/deposit/l1Wallet", () => ({
+vi.mock("../../../../src/session/l1Wallet", () => ({
   useL1Wallet: () => m.l1,
   isWalletRejection: () => false,
 }))
-vi.mock("../../../../src/features/deposit/sipaRecovery", () => ({}))
+vi.mock("../../../../src/features/deposit/recovery/sipaRecovery", () => ({}))
 vi.mock("../../../../src/features/identity/logout", () => ({ logout: vi.fn() }))
-vi.mock("../../../../src/features/onboarding/webRegistration", () => ({
+vi.mock("../../../../src/features/registration/webRegistration", () => ({
   isLogoutBlockedByRegistration: () => false,
 }))
 vi.mock("../../../../src/features/migration/migrationDialog", () => ({
@@ -74,7 +72,8 @@ vi.mock("../../../../src/features/migration/oldVersionWithdraw", () => ({
   skipUnrefundableSource: vi.fn(),
   useWithdrawableSources: () => [m.source, ...m.extra],
 }))
-vi.mock("../../../../src/features/operations/operations", () => ({
+vi.mock("../../../../src/features/operations/operations", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../../src/features/operations/operations")>()),
   isFlowCancelled: () => false,
   runOperation: (_op: unknown, fn: () => Promise<unknown>) => fn(),
 }))
@@ -136,6 +135,14 @@ afterEach(() => {
   act(() => root.unmount())
   host.remove()
 })
+
+const { openTestSession } = await import("../../../support/session")
+const { closeSession } = await import("../../../../src/session/session")
+beforeEach(async () => {
+  openTestSession()
+  await setIdentity({ handle: "brave-otter-42" })
+})
+afterEach(closeSession)
 
 describe("withdrawing an old version's funds", () => {
   it("withdraws privately by default, to the address the user checked last", async () => {

@@ -1,4 +1,4 @@
-import type { SIPADepositRecord } from "./SIPADepositStore"
+import type { SipaDeposit } from "../../../engine/sipaDeposits"
 
 /** How long a `sweeping` record has to sit before it offers recovery. Anchored on `startTime`. */
 export const STUCK_SWEEP_MS = 4 * 60_000
@@ -11,7 +11,7 @@ export const STUCK_SWEEP_MS = 4 * 60_000
  * and the next sync scan advances the record, so it is waiting, not stuck.
  */
 export function isStuckSweep(
-  record: Pick<SIPADepositRecord, "phase" | "startTime" | "sweepTxHash">,
+  record: Pick<SipaDeposit, "phase" | "startTime" | "sweepTxHash">,
   now: number = Date.now(),
 ): boolean {
   return (

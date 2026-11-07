@@ -498,23 +498,6 @@ export function removeFromOtherDatabases(keys: readonly string[]): Promise<void>
 }
 
 /**
- * Removes every key `match` selects from every other rollup's database. A database another document
- * holds, or one that fails, is skipped and left whole; a later call finishes it.
- */
-export function removeMatchingFromOtherDatabases(match: (key: string) => boolean): Promise<void> {
-  return onOtherDatabases(async () => {
-    await visitOtherDatabases(
-      async (_, db) => {
-        const { state } = await db.load()
-        const ops = [...state.keys()].filter(match).map((key): WalletOp => [key, null])
-        if (ops.length) await db.apply(ops)
-      },
-      { verb: "edit" },
-    )
-  })
-}
-
-/**
  * Reads `key` from every other rollup's database: what this browser kept before the wallet moved to
  * another rollup. A database another document holds, one that fails to read, or one without the key
  * is skipped; with `strict`, the first two fail the read, so a caller that needs every copy never
@@ -599,7 +582,7 @@ export function loadFromOtherDatabases<T>(
  */
 async function visitOtherDatabases<T>(
   visit: (version: string, db: WalletDb) => Promise<T>,
-  opts: { strict?: boolean; verb?: string } = {},
+  opts: { strict?: boolean } = {},
 ): Promise<T[]> {
   if (!walletStoreIsPersistent()) return []
   const others = (await store.backend.list()).filter((version) => version !== store.version)
@@ -612,7 +595,7 @@ async function visitOtherDatabases<T>(
     } catch (error) {
       if (opts.strict) throw error
       if (!isWalletOpenElsewhere(error))
-        console.warn(`[wallet-store] could not ${opts.verb ?? "read"} wallet_${version}:`, error)
+        console.warn(`[wallet-store] could not read wallet_${version}:`, error)
     } finally {
       await db?.close().catch(() => {})
     }
@@ -716,9 +699,13 @@ function installTestHook(): { opened(): void } | undefined {
     write: (key, value) => walletStorage.commitItem(key, value),
     remove: (key) => walletStorage.commitRemove(key),
     flush: () => walletStorage.flush(),
-    seedOther: (version, entries) => withOther(version, (db) => db.apply(Object.entries(entries))),
+    // In turn with the page's own reads of other databases, which hold each one while they run.
+    seedOther: (version, entries) =>
+      onOtherDatabases(() => withOther(version, (db) => db.apply(Object.entries(entries)))),
     readOther: (version) =>
-      withOther(version, async (db) => Object.fromEntries((await db.load()).state)),
+      onOtherDatabases(() =>
+        withOther(version, async (db) => Object.fromEntries((await db.load()).state)),
+      ),
   }
   return { opened: () => opened() }
 }

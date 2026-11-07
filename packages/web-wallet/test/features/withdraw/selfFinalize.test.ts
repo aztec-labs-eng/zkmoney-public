@@ -5,6 +5,7 @@
  * the recipient.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { testPage, testCore } from "../../support/page"
 import type { Address, Hex } from "viem"
 import {
   memoryBackend,
@@ -33,7 +34,7 @@ const sdk = vi.hoisted(() => ({
   portalDomain: vi.fn(async (portal: string) => ({ l1Portal: portal })),
 }))
 
-vi.mock("../../../src/features/deposit/l1Wallet", () => l1Clients)
+vi.mock("../../../src/session/l1Wallet", () => l1Clients)
 vi.mock("@obsidion/sdk", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/sdk")>()),
   buildWithdrawFinalizationCall: sdk.buildWithdrawFinalizationCall,
@@ -77,9 +78,13 @@ const record = (patch: Partial<WithdrawalRecord> = {}): WithdrawalRecord => ({
 })
 
 const { activeNamespace, closeSession, switchSession } = await import(
-  "../../../src/platform/session"
+  "../../../src/session/session"
 )
-beforeEach(() => void switchSession(activeNamespace()))
+
+const { pageSessionDeps } = await import("../../../src/app/sessionDeps")
+beforeEach(
+  () => void switchSession(activeNamespace(testCore().device), pageSessionDeps(testPage())),
+)
 afterEach(closeSession)
 
 describe("selfFinalizeWithdrawal", () => {

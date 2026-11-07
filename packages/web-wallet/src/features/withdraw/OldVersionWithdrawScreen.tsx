@@ -15,12 +15,12 @@ import { showReportableError } from "../../errors/errorModal"
 import { isDesktopL1SubmitActive } from "../../platform/desktopBridge"
 import { usdAtomicFloor } from "../../ui/format"
 import { useScreenedAddress } from "../../ui/screening"
-import { isWalletRejection, useL1Wallet } from "../deposit/l1Wallet"
+import { isWalletRejection, useL1Wallet } from "../../session/l1Wallet"
 import {
   desktopBridgeChannel,
   injectedWalletChannel,
   type L1ExitStage,
-} from "../deposit/sipaRecovery"
+} from "../sipa/l1ExitChannels"
 import {
   noteOldVersionWithdrawn,
   openOldVersionExit,

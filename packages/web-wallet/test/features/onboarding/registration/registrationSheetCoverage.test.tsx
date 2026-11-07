@@ -21,29 +21,34 @@ vi.mock("@obsidion/web-ds", () => ({
 vi.mock("../../../../src/features/onboarding/OnboardingCard", () => ({
   OnboardingCard: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
 }))
-vi.mock("../../../../src/features/onboarding/steps/DepositAddress", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../../src/features/onboarding/steps/DepositAddress")>()),
-  DepositAddressRow: ({ overLimit }: { overLimit?: string }) => (
-    <div data-testid="address-row" data-over-limit={overLimit ?? ""} />
-  ),
-  DepositPayBlock: ({
-    total,
-    note,
-    overLimit,
-  }: {
-    total: bigint
-    note?: React.ReactNode
-    overLimit?: string
-  }) => (
-    <div data-testid="pay-block" data-total={String(total)} data-over-limit={overLimit ?? ""}>
-      {note}
-    </div>
-  ),
-}))
+vi.mock(
+  "../../../../src/features/onboarding/steps/DepositAddress/DepositAddress",
+  async (importOriginal) => ({
+    ...(await importOriginal<
+      typeof import("../../../../src/features/onboarding/steps/DepositAddress/DepositAddress")
+    >()),
+    DepositAddressRow: ({ overLimit }: { overLimit?: string }) => (
+      <div data-testid="address-row" data-over-limit={overLimit ?? ""} />
+    ),
+    DepositPayBlock: ({
+      total,
+      note,
+      overLimit,
+    }: {
+      total: bigint
+      note?: React.ReactNode
+      overLimit?: string
+    }) => (
+      <div data-testid="pay-block" data-total={String(total)} data-over-limit={overLimit ?? ""}>
+        {note}
+      </div>
+    ),
+  }),
+)
 
 // The mainnet table: DAI settles, USDC and USDT are swapped into it. `usdcFee`: a table whose fee token is USDC.
 const table = vi.hoisted(() => ({ usdcFee: false }))
-vi.mock("../../../../src/features/deposit/loadDepositFacts", async (importOriginal) => {
+vi.mock("../../../../src/features/sipa/loadDepositFacts", async (importOriginal) => {
   const { mainnetTokens, mockLoadDepositFacts, usdcFeeTokens } = await import(
     "../../../support/depositTokens"
   )
@@ -78,13 +83,16 @@ vi.mock("../../../../src/features/limits/AboutLimitsSheet", () => ({
 }))
 
 const { RegistrationSheet } = await import("../../../../src/features/onboarding/RegistrationSheet")
-const {
-  DEPOSIT_TERMS_PENDING,
-  formatDepositAmount,
-  formatDepositDue,
-  formatDepositSeen,
-  swapAssetsLabel,
-} = await import("../../../../src/features/onboarding/steps/DepositTermsRows")
+const { DEPOSIT_TERMS_PENDING, formatDepositAmount, swapAssetsLabel } = await import(
+  "../../../../src/features/deposit/DepositTermsRows/DepositTermsRows"
+)
+const { formatDepositDue, formatDepositSeen } = await import(
+  "../../../../src/features/registration/depositAmounts"
+)
+const { closeSession } = await import("../../../../src/session/session")
+const { openTestSession } = await import("../../../support/session")
+beforeEach(() => void openTestSession())
+afterEach(closeSession)
 
 const dai = (n: number) => BigInt(Math.round(n * 100)) * 10n ** 16n
 /** Figures are built from the formatters the sheet prices with, never from its sentences. */
@@ -142,7 +150,6 @@ afterEach(() => {
 })
 
 describe("the sheet asks the quoted deposit and settles on the floor", () => {
-
   it("takes a deposit that clears the floor without reaching the ask", async () => {
     await render({ received: dai(14.7) })
     expect(container.textContent).toContain(seen(dai(14.7)))

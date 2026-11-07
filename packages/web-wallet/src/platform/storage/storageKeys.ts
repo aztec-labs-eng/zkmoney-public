@@ -7,6 +7,9 @@
  */
 export const WEB_STORAGE_PREFIX = "obsidion."
 
+/** Where older builds kept each view's deposit address and the pool, outside the account's keys. */
+export const SIPA_SLOTS_PREFIX = "webwallet.sipa.address."
+
 /** A key an account's persistent stores keep (`obsidion.[<id>.]acct/…`), read only through the database. */
 export const isStoreKey = (key: string): boolean => /^obsidion\.(?:[0-9a-f]+\.)?acct\//.test(key)
 export const PASSKEY_IDENTITY_MAP_KEY = "obsidion_web_passkey_identity_map"

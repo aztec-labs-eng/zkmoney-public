@@ -5,6 +5,7 @@ import {
   atLeast,
   currentUserAgentInfo,
   macosGivesApplePrf,
+  windowsReleaseFromHints,
 } from "../browser/userAgentInfo.js"
 
 /**
@@ -18,10 +19,12 @@ import {
  * macOS 15. Safari and Firefox cannot report the version: they admit Apple from the browser version
  * that labels the answer truthfully (Safari 26.4) or names its provider (Firefox 153), and an
  * Apple answer there that brings no key is refused after creation. Google Password Manager lives
- * in Chrome. 1Password's extension and the macOS passkey window both answer under its id with key
- * material, while its Windows app returns none and is refused after creation. It needs no trusted
- * attachment label: the Mac's window offers no phone for a creation on this Mac, so a 1Password
- * answer on Firefox's Mac row is this Mac's, and one without its key is refused with no follow-up.
+ * in Chrome. Windows Hello is admitted in Chrome on Windows 11, the one browser measured; it keeps
+ * the only copy, as a security key does, and on Windows 10 it returns no key material. 1Password's
+ * extension and the macOS passkey window both answer under its id with key material, while its
+ * Windows app returns none and is refused after creation. It needs no trusted attachment label:
+ * the Mac's window offers no phone for a creation on this Mac, so a 1Password answer on Firefox's
+ * Mac row is this Mac's, and one without its key is refused with no follow-up.
  * Its Firefox extension gives up on production's related-origin requests, so that row offers
  * 1Password through the Mac's window alone (`extensionWithdrawn`), and Firefox on Windows and
  * Linux, which sends no Client Hints and whose row (1Password alone through the extension) is read
@@ -29,7 +32,7 @@ import {
  * what is admitted.
  */
 
-export type LocalManager = "apple" | "gpm" | "1password"
+export type LocalManager = "apple" | "gpm" | "windows_hello" | "1password"
 
 export type Row =
   | "macChrome"
@@ -66,6 +69,8 @@ export type LaptopCreation =
       chromeTip?: ChromeTip
       /** The sheet offers no extension-backed 1Password option: the Mac's window is its surface. */
       extensionWithdrawn?: true
+      /** Client Hints say Windows 10, whose Windows Hello gives no key; the sheet says so first. */
+      windows10?: true
     }
 
 /** A `LaptopCreation` that offers the local route. */
@@ -156,7 +161,13 @@ export function laptopCreationFor(
   if (ua.osFamily === "windows" || ua.osFamily === "linux") {
     const windows = ua.osFamily === "windows"
     const chromeKey: Row = windows ? "windowsChrome" : "linuxChrome"
-    if (googleChrome) return row(ua.osFamily, chromeKey, ["gpm", "1password"], withdrawn)
+    if (googleChrome) {
+      const release = windowsReleaseFromHints(ua)
+      const base: LocalManager[] =
+        release === "11" ? ["gpm", "windows_hello", "1password"] : ["gpm", "1password"]
+      const creation = row(ua.osFamily, chromeKey, base, withdrawn)
+      return creation.local && release === "10" ? { ...creation, windows10: true } : creation
+    }
     const gpmTip = admits(chromeKey, "gpm") ? "gpm" : undefined
     if (ua.browserFamily === "firefox") {
       const key: Row = windows ? "windowsFirefox" : "linuxFirefox"

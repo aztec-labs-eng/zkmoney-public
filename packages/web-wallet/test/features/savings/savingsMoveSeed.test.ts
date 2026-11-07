@@ -3,6 +3,7 @@
  * seed through `runBurn`, and follows the seed's fate when the burn never goes out.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { testPage, testCore } from "../../support/page"
 import {
   SavingsMoveStorage,
   type SavingsMoveRecord,
@@ -24,17 +25,19 @@ vi.mock("../../../src/config/env", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../src/config/env")>()),
   getConfig: () => ({ network: "sandbox", l1ChainId: 31337 }),
 }))
-vi.mock("../../../src/platform/auth/useAuthenticator", () => ({
-  getAuthService: () => ({ getSecretKey: async () => undefined }),
-}))
+const fakeAuth = () => ({ getSecretKey: async () => undefined })
 
 const { runBurn } = await import("../../../src/features/withdraw/withdrawGateway")
 const { dropMoveWithSeed } = await import("../../../src/features/savings/savingsGateway")
 const { savingsMoveStatus } = await import("../../../src/features/savings/SavingsMoveRow")
 const { activeNamespace, closeSession, switchSession, session } = await import(
-  "../../../src/platform/session"
+  "../../../src/session/session"
 )
-beforeEach(() => void switchSession(activeNamespace()))
+const { pageSessionDeps } = await import("../../../src/app/sessionDeps")
+beforeEach(
+  () =>
+    void switchSession(activeNamespace(testCore().device), pageSessionDeps(testPage(fakeAuth()))),
+)
 afterEach(closeSession)
 const withdrawals = () => session().withdrawals
 

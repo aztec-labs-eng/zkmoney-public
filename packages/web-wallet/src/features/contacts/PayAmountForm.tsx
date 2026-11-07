@@ -1,6 +1,7 @@
 import { amountError, decimalInput } from "../../ui/format"
 import { PrimaryGradientButton, TextField } from "@obsidion/web-ds"
 import { TRANSFER_MEMO_MAX_BYTES, truncateUtf8 } from "@obsidion/sdk"
+import balanceCopy from "../../ui/balance.copy"
 
 export function PayAmountForm({
   amount,
@@ -9,6 +10,7 @@ export function PayAmountForm({
   walletBalance,
   maxAmount,
   overspent,
+  balanceUnconfirmed,
   limitError,
   validAmount,
   onAmount,
@@ -24,6 +26,7 @@ export function PayAmountForm({
   /** Balance floored to cents, for MAX. */
   maxAmount?: string
   overspent: boolean
+  balanceUnconfirmed: boolean
   limitError?: string
   validAmount: boolean
   onAmount: (value: string) => void
@@ -31,13 +34,17 @@ export function PayAmountForm({
   onContinue: () => void
   submitLabel?: string
 }) {
-  const blocked = !validAmount || overspent || !!limitError
+  const checking = isSend && balanceUnconfirmed
+  const blocked = !validAmount || overspent || !!limitError || checking
   const go = () => !blocked && onContinue()
   return (
     <div className="ww-pay__form">
       <div className="ww-pay__field">
         <span className="ww-pay__available">
-          Available: <b>${walletBalance}</b>
+          Available:{" "}
+          <b className="ww-available" aria-busy={balanceUnconfirmed}>
+            ${walletBalance}
+          </b>
         </span>
         <TextField
           label="Amount"
@@ -54,6 +61,7 @@ export function PayAmountForm({
               <button
                 type="button"
                 className="zkm-btn-reset ww-pay__max"
+                disabled={checking}
                 onClick={() => maxAmount != null && onAmount(maxAmount)}
               >
                 MAX
@@ -70,7 +78,9 @@ export function PayAmountForm({
         onSubmit={go}
       />
       <PrimaryGradientButton
-        title={submitLabel ?? (isSend ? "Send funds" : "Request funds")}
+        title={
+          checking ? balanceCopy.checking : submitLabel ?? (isSend ? "Send funds" : "Request funds")
+        }
         isDisabled={blocked}
         onClick={onContinue}
       />

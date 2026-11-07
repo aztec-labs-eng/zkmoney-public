@@ -1,0 +1,14 @@
+/* Sign-in has no modal behind it, so its passkey states take their own sheet instead of sitting
+   as loose text on the gradient. */
+.sheet {
+  box-sizing: border-box;
+  width: min(400px, calc(100vw - 32px));
+  padding: var(--space-24);
+  border-radius: var(--radius-32);
+  background: var(--surface-sheet);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.55), inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+.sheet :global(.ww-invite-spinner) {
+  padding: 0;
+  gap: 14px;
+}

@@ -5,9 +5,8 @@
 import { useEffect } from "react"
 import { useAfter, type After, useResource } from "@obsidion/front-core"
 import type { Address } from "viem"
-import { handOffAccount, useSession } from "../../platform/session"
+import { handOffAccount, useSession } from "../../session/session"
 import { usePxeBoot } from "../../ui/PxeBoot"
-import { loadWalletIdentity } from "../identity/walletIdentity"
 import { warnFailure } from "./BackupPasskeyPanel"
 import { buildBackupFlowDeps } from "./backupPasskeyRuntime"
 import { getBackupRotationStore } from "./backupRotationStore"
@@ -17,7 +16,8 @@ const AFTER: After = { firstBalance: true }
 export function BackupRotationMount(): null {
   const obsidionWallet = useResource(useSession().wallet)
   const booted = usePxeBoot().bootStatus === "ready"
-  const ready = useAfter(useSession().milestones, AFTER)
+  const { milestones, identity } = useSession()
+  const ready = useAfter(milestones, AFTER)
   useEffect(() => {
     if (!booted || !ready || !obsidionWallet) return
     const driver = getRotationDriver()
@@ -29,10 +29,10 @@ export function BackupRotationMount(): null {
           owner: owner as Address,
           switchAccount: handOffAccount,
         }),
-      owns: (record) => ownsRotation(record, loadWalletIdentity()?.address),
+      owns: (record) => ownsRotation(record, identity.get().value?.address),
       report: warnFailure,
     })
     return () => driver.stop()
-  }, [booted, ready, obsidionWallet])
+  }, [booted, ready, obsidionWallet, identity])
   return null
 }

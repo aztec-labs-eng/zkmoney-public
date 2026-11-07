@@ -1,6 +1,8 @@
 import React, { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
+import { MemoryRouter, useLocation } from "react-router-dom"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { setIdentity } from "../../support/identity"
 
 // Before any import evaluates the feature flags.
 vi.hoisted(() => vi.stubEnv("VITE_BACKUP_PASSKEY_SETTINGS", "true"))
@@ -111,19 +113,14 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
 }))
 vi.mock("../../../src/config/env", () => ({ getConfig: () => ({}) }))
 vi.mock("../../../src/config/oxideTuple", () => ({ l1PublicClient: () => ({}) }))
-vi.mock("../../../src/features/identity/walletIdentity", () => ({
-  loadWalletIdentity: () => h.identity,
-}))
-vi.mock("../../../src/features/onboarding/oxideGenerations", () => ({
+vi.mock("../../../src/features/registration/oxideGenerations", () => ({
   loadOxideGenerations: async () => GENERATIONS,
 }))
 vi.mock("../../../src/platform/auth/WebPasskeyIdentityMap", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../src/platform/auth/WebPasskeyIdentityMap")>()),
-  authenticatorFor: (pubkeyHex: string) => h.authenticators[pubkeyHex],
+  authenticatorFor: (_map: string | null, pubkeyHex: string) => h.authenticators[pubkeyHex],
 }))
-vi.mock("../../../src/platform/auth/useAuthenticator", () => ({
-  getAuthService: () => ({ sessionKeys: h.sessionKeys, probePhoneReach: h.probePhoneReach }),
-}))
+const fakeAuth = () => ({ sessionKeys: h.sessionKeys, probePhoneReach: h.probePhoneReach })
 vi.mock("../../../src/features/allowance/useSponsoredAllowance", () => ({
   useSponsoredAllowance: () => ({ snapshot: h.allowance, refresh: h.refresh }),
 }))
@@ -148,10 +145,17 @@ vi.mock("../../../src/features/backupPasskey/backupPasskeyFacts", () => ({
 import { BACKUP_ROTATION_STORAGE_KEY, credentialIdToMetadata } from "@obsidion/front-core"
 import { SIGN_UP_SHEET_COPY } from "@obsidion/passkey-web"
 import {
+  backupReminderDismissed,
+  backupSeenOnChain,
+} from "../../../src/features/backupPasskey/backupReminder"
+import {
   getBackupRotationStore,
   resetBackupRotationStoreForTests,
 } from "../../../src/features/backupPasskey/backupRotationStore"
-import type { AuthenticatorRecord } from "../../../src/platform/auth/WebPasskeyIdentityMap"
+import {
+  WebPasskeyIdentityMap,
+  type AuthenticatorRecord,
+} from "../../../src/platform/auth/WebPasskeyIdentityMap"
 import { webStorage } from "../../../src/platform/storage/WebStorageAdapter"
 import {
   OWNER,
@@ -161,8 +165,12 @@ import {
   sent,
   signedRecord,
 } from "../../support/backupAdd"
+import { seedDeviceKeys, testCore } from "../../support/page"
 import { openTestSession } from "../../support/session"
 const { PasskeysModal } = await import("../../../src/ui/PasskeysModal")
+const { BackupReminderLine } = await import(
+  "../../../src/features/backupPasskey/BackupReminderLine/BackupReminderLine"
+)
 
 const BOOTSTRAP = `0x${"b0".repeat(20)}`
 const L2_ADDRESS = `0x${"12".repeat(32)}`
@@ -195,8 +203,9 @@ const FACTS = {
   chunk: { kind: "fits" },
   plan: true,
   moves: 2,
+  savingsMoving: false,
   withdrawalInFlight: false,
-  openLink: false,
+  links: 0,
   historicBalance: false,
 }
 
@@ -253,8 +262,8 @@ function listKeys(count: number) {
   })
 }
 
-beforeEach(() => {
-  openTestSession({ wallet: h.obsidionWallet })
+beforeEach(async () => {
+  openTestSession({ auth: fakeAuth(), wallet: h.obsidionWallet })
   localStorage.clear()
   resetBackupRotationStoreForTests()
   page.extension = "none"
@@ -265,7 +274,7 @@ beforeEach(() => {
   h.probePhoneReach.mockResolvedValue("ok")
   h.addInputs.length = 0
   h.authenticators = {}
-  h.identity = { address: L2_ADDRESS, handle: "brave-otter-42" }
+  await setIdentity({ address: L2_ADDRESS, handle: "brave-otter-42" })
   h.sessionKeys.mockResolvedValue({ secretKey: {}, authProvider: providerFor(ROOT_KEY) })
   h.depsFailures = 0
   h.depsBuilt = 0
@@ -471,6 +480,33 @@ describe("the Passkeys modal's add entry", () => {
     expect(action?.textContent).toBe("Sponsored transactions")
     await act(async () => action!.click())
     expect(onAction).toHaveBeenCalledWith("sponsorship")
+  })
+
+  it("sends the user to Savings while a Savings move has yet to land", async () => {
+    h.facts = { ...FACTS, savingsMoving: true }
+    await mount()
+    expect(entry()?.disabled).toBe(true)
+    expect(entryLine()).toBe("Finish your Savings move first")
+    const action = container.querySelector<HTMLButtonElement>('[data-testid="backup-entry-action"]')
+    expect(action?.textContent).toBe("Savings")
+    await act(async () => action!.click())
+    expect(onAction).toHaveBeenCalledWith("savings")
+  })
+
+  it("says the add cancels the open payment links, and counts their refunds against the allowance", async () => {
+    h.facts = { ...FACTS, links: 2 }
+    await mount()
+    expect(entry()?.disabled).toBe(false)
+    expect(container.querySelector('[data-testid="backup-add-links"]')?.textContent).toBe(
+      "Your 2 open payment links will be cancelled. Their funds move with your balance.",
+    )
+    await act(async () => root.unmount())
+    container.remove()
+    // The publish, the funding, two refunds and two moves: one more than five uses.
+    h.allowance = { ...ready, state: { kind: "available", available: 5 } }
+    await mount()
+    expect(entryLine()).toBe("Not enough sponsored transactions left this period")
+    expect(container.querySelector('[data-testid="backup-add-links"]')).toBeNull()
   })
 
   it("says it is checking while a read is pending, and to try again when one failed", async () => {
@@ -726,5 +762,82 @@ describe("the Passkeys modal's add entry", () => {
       "stays on your device but does not open this account",
     )
     expect(entry()).not.toBeNull()
+  })
+})
+
+describe("Home's backup reminder and the sheet it opens", () => {
+  /** Home on a session whose only passkey is device-bound. */
+  async function mountReminder() {
+    backupReminderDismissed.set(false)
+    backupSeenOnChain.set(false)
+    await new WebPasskeyIdentityMap(testCore().database, "localhost").upsert({
+      credentialId: "cred",
+      l2Address: L2_ADDRESS,
+      pubkey: hexOf(ROOT_KEY),
+      isMskRoot: true,
+      backupEligible: false,
+    })
+    await seedDeviceKeys({ credentialId: "cred" })
+    container = document.createElement("div")
+    document.body.appendChild(container)
+    root = createRoot(container)
+    await act(async () =>
+      root.render(
+        <MemoryRouter>
+          <BackupReminderLine />
+          <Where />
+        </MemoryRouter>,
+      ),
+    )
+    await flush(2)
+  }
+
+  function Where() {
+    return <span data-testid="where">{useLocation().pathname}</span>
+  }
+
+  const reminder = () => container.querySelector('[data-testid="backup-reminder-line"]')
+
+  it("the tap opens Passkeys on the add", async () => {
+    await mountReminder()
+    expect(entry()).toBeNull()
+    await press("backup-reminder-add")
+    await flush(2)
+    expect(entry()?.disabled).toBe(false)
+    expect(reminder()).not.toBeNull()
+  })
+
+  it("a sheet that reads a second key hides the line, and stays open", async () => {
+    listKeys(2)
+    await mountReminder()
+    await press("backup-reminder-add")
+    await flush(2)
+    expect(reminder()).toBeNull()
+    expect(rowTitles()).toHaveLength(2)
+  })
+
+  it("a blocked add's link opens what clears the block", async () => {
+    h.allowance = {
+      ...ready,
+      read: { allowance: { refillPeriod: 0, maxTx: 10 } },
+      state: { kind: "not-subscribed", maxTx: 10, renews: true },
+    }
+    await mountReminder()
+    await press("backup-reminder-add")
+    await flush(2)
+    expect(entry()?.disabled).toBe(true)
+    await press("backup-entry-action")
+    expect(entry()).toBeNull()
+    expect(container.querySelector('[data-testid="about-limits-sheet"]')).not.toBeNull()
+  })
+
+  it("a Savings move still landing sends the user to Savings", async () => {
+    h.facts = { ...FACTS, savingsMoving: true }
+    await mountReminder()
+    await press("backup-reminder-add")
+    await flush(2)
+    await press("backup-entry-action")
+    expect(entry()).toBeNull()
+    expect(container.querySelector('[data-testid="where"]')?.textContent).toBe("/savings")
   })
 })

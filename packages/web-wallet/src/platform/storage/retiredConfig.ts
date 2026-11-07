@@ -7,14 +7,13 @@ import {
   LOCAL_CONFIG_DEFAULTS,
   type LocalConfig,
 } from "@obsidion/core/constants"
+import type { Database } from "@obsidion/front-core"
 import { WEB_STORAGE_PREFIX } from "./storageKeys"
-import { readEntriesFromOtherDatabases, walletStorage, type WalletOp } from "./walletStorage"
+import { readEntriesFromOtherDatabases } from "./walletStorage"
 
 /** What a setting takes when retired databases disagree: the answer that shares the least. */
 const ON_DISAGREEMENT: LocalConfig = {
-  devMode: false,
   analyticsConsent: false,
-  analyticsAsked: true,
   allowNonContactRequests: false,
 }
 
@@ -26,11 +25,11 @@ const storageKey = (setting: keyof LocalConfig) =>
  * Copies the retired databases' settings into this rollup's database while it holds none, before
  * the app reads them. Never throws: a setting that is not carried keeps its default.
  */
-export async function carryRetiredConfig(): Promise<void> {
+export async function carryRetiredConfig(db: Database): Promise<void> {
   try {
-    if (SETTINGS.some((s) => walletStorage.getItem(storageKey(s)) !== null)) return
+    if ((await db.getMany(SETTINGS.map(storageKey))).some((v) => v !== undefined)) return
     const retired = await readEntriesFromOtherDatabases(SETTINGS.map(storageKey))
-    const ops: WalletOp[] = []
+    const ops: [string, string][] = []
     for (const setting of SETTINGS) {
       const values = new Set(
         retired.map((entries) => decode(setting, entries.get(storageKey(setting)))),
@@ -40,7 +39,8 @@ export async function carryRetiredConfig(): Promise<void> {
       const value = values.size === 1 ? [...values][0] : ON_DISAGREEMENT[setting]
       ops.push([storageKey(setting), JSON.stringify(value)])
     }
-    if (ops.length > 0) await walletStorage.commitTransaction(ops)
+    if (ops.length > 0)
+      await db.write(async (w) => ops.forEach(([key, value]) => w.put(key, value)))
   } catch (e) {
     console.warn("[retiredConfig] could not carry retired settings:", e)
   }
