@@ -45,6 +45,7 @@ it("clears: the bucket is empty until a capacity Check again, then full and newe
   const { depositCapacityStore } = await import("../../scripts/ui-capture/fixtures/capacity")
   history.replaceState(null, "", "/?demo=activity&flowFixture=success&capacityFixture=clears")
   const store = depositCapacityStore(
+    {} as never,
     portalCapacityKey({ chainId: 31337, portal: `0x${"ab".repeat(20)}`, token: `0x${"cd".repeat(20)}` }),
   )
   // A read clears a confirmed capacity blocker only when its fetchedAt is later than the blocker's.

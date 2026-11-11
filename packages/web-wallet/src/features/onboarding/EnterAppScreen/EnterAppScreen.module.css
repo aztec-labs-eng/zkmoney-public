@@ -1,14 +1,34 @@
 /* Sign-in has no modal behind it, so its passkey states take their own sheet instead of sitting
    as loose text on the gradient. */
 .sheet {
+  position: relative;
   box-sizing: border-box;
   width: min(400px, calc(100vw - 32px));
   padding: var(--space-24);
   border-radius: var(--radius-32);
   background: var(--surface-sheet);
-  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.55), inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.55), inset 0 0 0 1px rgba(var(--ink-rgb), 0.06);
 }
 .sheet :global(.ww-invite-spinner) {
   padding: 0;
   gap: 14px;
+}
+
+/* A refusal's close sits in the sheet's corner, clear of the title. */
+.close {
+  position: absolute;
+  top: var(--space-16);
+  right: var(--space-16);
+}
+.sheet:has(.close) :global(.ww-passkey-refusal__title) {
+  padding: 0 40px;
+}
+
+/* Another tag is a quiet way back, under the buttons. */
+.otherTag {
+  align-self: center;
+  margin-top: 4px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-secondary);
 }

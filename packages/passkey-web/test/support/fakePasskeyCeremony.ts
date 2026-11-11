@@ -3,6 +3,7 @@ import { hmac } from "@noble/hashes/hmac"
 import { encodeUserHandle } from "../../src/ceremony/userHandle.js"
 import { sha256 as nobleSha256 } from "@noble/hashes/sha256"
 import { MSK_PRF_SALT, ZERO_AAGUID } from "@obsidion/core/constants"
+import { bestEffortSync } from "@obsidion/core/errors"
 import { bytesToBase64Url } from "../../src/ceremony/bytes.js"
 import type {
   PasskeyAssertRequest,
@@ -212,11 +213,7 @@ export class FakePasskeyCeremony implements PasskeyCeremony {
 
   /** A hook that throws is ignored, as the browser ceremony ignores it. */
   private notify(signal: PasskeyRequestSignal): void {
-    try {
-      this.opts.onRequest?.(signal)
-    } catch {
-      // Ignored.
-    }
+    bestEffortSync(() => this.opts.onRequest?.(signal), undefined)
   }
 
   async create(request: PasskeyCreateRequest): Promise<PasskeyCreateResult> {

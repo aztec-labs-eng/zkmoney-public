@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest"
 import type { Address } from "viem"
 import { CompleteAddress } from "@aztec-labs/stdlib/contract"
 import { ACCOUNT_STORAGE_KEY } from "../../src/core/storages/constants"
-import { PENDING_REGISTRATION_STORAGE_KEY } from "../../src/engine/registrationRecord"
+import { PENDING_REGISTRATION_STORAGE_KEY } from "../../src/storageMigrations/registrations"
 import { openDatabase } from "../../src/engine/database"
 import { memoryBackend, type MemoryBackend } from "../../src/engine/memoryBackend"
 import { loadRecords } from "../../src/engine/persistentStore"
@@ -12,11 +12,8 @@ import {
   registrationSpentLink,
   type PendingRegistrationRecord,
 } from "../../src/engine/registrations"
-import {
-  createSipaDeposits,
-  KEY_SIPA_DEPOSITS,
-  type SipaDeposit,
-} from "../../src/engine/sipaDeposits"
+import { createSipaDeposits, type SipaDeposit } from "../../src/engine/sipaDeposits"
+import { KEY_SIPA_DEPOSITS } from "../../src/storageMigrations/sipaDeposits"
 
 const NS = "obsidion.ns."
 const ACCOUNT = "0x00000000000000000000000000000000000000C3"
@@ -67,8 +64,8 @@ function seed(
 function open(backend: MemoryBackend, account = true) {
   const page = openDatabase(backend)
   const db = page.scoped(NS)
-  const deposits = createSipaDeposits({ db, account })
-  const store = createRegistrations({ db, legacy: page, deposits, account })
+  const deposits = createSipaDeposits({ db, account, now: () => Date.now() })
+  const store = createRegistrations({ db, legacy: page, deposits, account, now: () => Date.now() })
   const byAddress = async (address: string) =>
     (await loadRecords(store.view)).find(
       (r) => r.sipaAddress.toLowerCase() === address.toLowerCase(),
@@ -347,8 +344,14 @@ describe("createRegistrations ready", () => {
       },
     })
     const db = page.scoped(NS)
-    const deposits = createSipaDeposits({ db, account: true })
-    const store = createRegistrations({ db, legacy: page, deposits, account: true })
+    const deposits = createSipaDeposits({ db, account: true, now: () => Date.now() })
+    const store = createRegistrations({
+      db,
+      legacy: page,
+      deposits,
+      account: true,
+      now: () => Date.now(),
+    })
     const { phase, broadcast, retries, startTime, ...start } = legacyRecord()
     void [phase, broadcast, retries, startTime]
     await store.start({ type: "started", record: start })
@@ -420,6 +423,7 @@ describe("createRegistrations writes", () => {
       paylinkDeposit: true,
       proverTip: "4",
       speed: "faster" as const,
+      withdrawalFee: "9",
       earnedExpected: true,
     }
     const backend = memoryBackend()
@@ -439,7 +443,13 @@ describe("createRegistrations writes", () => {
   ])(
     "drops a released link's binding and, for %s, owes the broadcast in that write",
     async (_, over, broadcast) => {
-      const terms = { deadline: 1, paylinkFunded: true, paylinkId: "l", paylinkDeposit: true }
+      const terms = {
+        deadline: 1,
+        paylinkFunded: true,
+        paylinkId: "l",
+        paylinkDeposit: true,
+        withdrawalFee: "9",
+      }
       const backend = memoryBackend()
       seed(backend, [legacyRecord({ terms, ...over })])
       const { store, deposits, byAddress } = open(backend)
@@ -458,7 +468,7 @@ describe("createRegistrations writes", () => {
     seed(backend, [legacyRecord()])
     const page = openDatabase(backend)
     const db = page.scoped(NS)
-    const deposits = createSipaDeposits({ db, account: true })
+    const deposits = createSipaDeposits({ db, account: true, now: () => Date.now() })
     const store = createRegistrations({
       db,
       legacy: page,
@@ -469,6 +479,7 @@ describe("createRegistrations writes", () => {
         expect(store.view.get().records.find((r) => r.phase === "funded")).toBeDefined()
         heard.push(changes.flatMap((c) => c.first))
       },
+      now: () => Date.now(),
     })
     await store.ready
 

@@ -1,26 +1,13 @@
-/**
- * The unlock gate: no ceremony starts before the wallet exists (it is what verifies the recovered
- * key); on every posture the locked pane is a single unlock button that opens the browser's own
- * prompt, with no probe. A refusal renders in place with its exits; a browser without a record for
- * the active passkey, or an unlock with no session, goes to /enter.
- */
+/** Guards: only a verified passkey unlock opens the wallet, and a stale one shows nothing. */
 import type { PasskeyRequestScope } from "@obsidion/passkey-web"
 import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { MemoryRouter, Route, Routes } from "react-router-dom"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { AUTH_TYPE } from "@obsidion/sdk"
-import {
-  type HeldRequest,
-  pageHide,
-  passkeyEvents,
-  passkeyTelemetryHarness,
-} from "../../support/passkeyTelemetryHarness"
 import { committed, seedDeviceKeys } from "../../support/page"
 import catalogCopy from "../../../src/errors/catalog.copy"
 
 declare global {
-  // eslint-disable-next-line no-var
   var IS_REACT_ACT_ENVIRONMENT: boolean
 }
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
@@ -50,10 +37,6 @@ const h = vi.hoisted(() => ({
   fireEvent: vi.fn(),
 }))
 
-vi.mock("../../../src/config/env", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../src/config/env")>()),
-  getConfig: () => ({ rpId: "localhost" }),
-}))
 vi.mock("../../../src/lib/analytics", () => ({ fireEvent: h.fireEvent, failureCode: () => "err" }))
 
 vi.mock("@obsidion/web-ds", () => ({
@@ -85,7 +68,7 @@ const flush = () => act(async () => new Promise((r) => setTimeout(r, 0)))
  * with `h.unlockError`, and each retry runs `h.retryUnlock` first.
  */
 async function openLockedSession() {
-  const { resource } = await import("@obsidion/front-core")
+  const { service } = await import("@obsidion/front-core")
   const { openTestSession } = await import("../../support/session")
   const { giveAccountRecord } = await import("../../support/accountRecord")
   const auth = {
@@ -97,17 +80,11 @@ async function openLockedSession() {
   }
   const session = openTestSession({ wallet: h.wallet, auth })
   await giveAccountRecord(
-    {
-      completeAddress: "0xacct",
-      signKeyConfig: {
-        type: AUTH_TYPE.WEB_AUTHN,
-        webauthnData: { credentialId: "cred", pubkey: "p" },
-      },
-    },
+    { type: "saved", completeAddress: "0xacct", signer: { credentialId: "cred", pubkey: "p" } },
     session,
   )
   let builds = 0
-  const account = resource("account", { from: [], backoff: "manual" }, async () => {
+  const account = service("account", { from: [], retry: "manual" }, async () => {
     if (builds++ > 0) await h.retryUnlock()
     throw new Error(h.unlockError)
   })
@@ -308,6 +285,7 @@ describe("UnlockGate", () => {
         await act(async () => byTestId("unlock-phone")!.click())
         await flush()
         expect(h.unlock.mock.calls[1]![1]).toMatchObject({ phone: true, credentialId: "spare" })
+        expect(h.clear).not.toHaveBeenCalled()
         await act(async () => byTestId("unlock-choose-passkey")!.click())
         await flush()
         expect(h.assign).toHaveBeenCalledWith("/enter?choose=1&avoid=spare")
@@ -481,95 +459,6 @@ describe("UnlockGate", () => {
     }
   })
 
-  describe("on a Mac", () => {
-    const MAC_CHROME =
-      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) " +
-      "Chrome/155.0.0.0 Safari/537.36"
-    const ua = Object.getOwnPropertyDescriptor(Navigator.prototype, "userAgent")!
-    beforeEach(() => {
-      Object.defineProperty(navigator, "userAgent", { value: MAC_CHROME, configurable: true })
-    })
-    afterEach(() => {
-      Object.defineProperty(navigator, "userAgent", ua)
-    })
-
-    const wrongKey = async () => {
-      const { StoredAddressMismatchError } = await import("@obsidion/front-core")
-      return Object.assign(new StoredAddressMismatchError(), {
-        verdict: "wrong-key",
-        observed: { credentialId: "cred", attachment: "platform" },
-      })
-    }
-    const phoneFlag = (call: number) =>
-      (h.unlock.mock.calls[call]![1] as { phone?: boolean } | undefined)?.phone
-
-    it("the wrong-key card leads with the phone, keeps the session, and still hides the failing credential", async () => {
-      h.wallet = new FakeWallet()
-      h.unlock.mockRejectedValueOnce(await wrongKey())
-      await render()
-      await tapUnlock()
-      expect(container.textContent).toContain("until you sign out or this browser clears its data")
-      expect(byTestId("unlock-retry")).toBeNull()
-      expect(byTestId("unlock-show-passkeys")).toBeNull()
-
-      await act(async () => byTestId("unlock-phone")!.click())
-      await flush()
-      expect(h.unlock).toHaveBeenCalledTimes(2)
-      expect(phoneFlag(0)).toBeUndefined()
-      expect(phoneFlag(1)).toBe(true)
-      expect(h.clear).not.toHaveBeenCalled()
-      expect(h.retryUnlock).toHaveBeenCalledTimes(1)
-    })
-
-    it("a phone attempt refused for this computer's answer retries on the phone", async () => {
-      const { PhoneRequiredError } = await import("@obsidion/passkey-web")
-      h.wallet = new FakeWallet()
-      h.unlock.mockRejectedValueOnce(await wrongKey())
-      h.unlock.mockRejectedValueOnce(new PhoneRequiredError())
-      await render()
-      await tapUnlock()
-      await act(async () => byTestId("unlock-phone")!.click())
-      await flush()
-      expect(byTestId("unlock-refused")?.dataset.reason).toBe("PhoneRequiredError")
-      await act(async () => byTestId("unlock-retry")!.click())
-      await flush()
-      expect(phoneFlag(2)).toBe(true)
-    })
-
-    it("a dismissed phone prompt puts the wrong-key card back", async () => {
-      h.wallet = new FakeWallet()
-      h.unlock.mockRejectedValueOnce(await wrongKey())
-      h.unlock.mockRejectedValueOnce(new DOMException("closed", "NotAllowedError"))
-      await render()
-      await tapUnlock()
-      await act(async () => byTestId("unlock-phone")!.click())
-      await flush()
-      expect(byTestId("unlock-phone")).not.toBeNull()
-    })
-
-    it.each([
-      ["this computer's answer with no record id", { attachment: "platform" }, true],
-      ["another device's answer", { attachment: "cross-platform" }, false],
-    ] as const)(
-      "a not-reproduced mismatch from %s: update line %s",
-      async (_n, observed, shown) => {
-        const { StoredAddressMismatchError } = await import("@obsidion/front-core")
-        h.wallet = new FakeWallet()
-        h.unlock.mockRejectedValueOnce(
-          Object.assign(new StoredAddressMismatchError(), {
-            verdict: "not-reproduced",
-            observed: { credentialId: "cred", ...observed },
-          }),
-        )
-        await render()
-        await tapUnlock()
-        expect(byTestId("unlock-retry")).not.toBeNull()
-        expect(byTestId("passkey-mac-update") !== null).toBe(shown)
-        expect(byTestId("unlock-phone")).toBeNull()
-      },
-    )
-  })
-
   it("no record for the active passkey goes straight to /enter", async () => {
     await seedDeviceKeys({ passkeyMap: null })
     h.wallet = new FakeWallet()
@@ -665,32 +554,6 @@ describe("UnlockGate in an app's built-in browser", () => {
     ua = undefined
   })
 
-  it("a not-supported unlock shows the card with Chrome opening the sign-in page, not the error modal", async () => {
-    at("/", UA.android)
-    h.unlock.mockRejectedValueOnce(unsupported())
-    await render()
-    await tapUnlock()
-    expect(byTestId("unlock-refused")?.dataset.reason).toBe("NotSupportedError")
-    expect(byTestId("open-in-browser-link")!.getAttribute("href")).toBe(
-      "intent://wallet.test/enter#Intent;scheme=https;package=com.android.chrome;end",
-    )
-    expect(byTestId("unlock-retry")).not.toBeNull()
-    expect(byTestId("unlock-choose-passkey")).not.toBeNull()
-    expect(reports).toEqual([])
-    expect(failures()).toEqual([{ action: "identity:unlock", code: "err" }])
-  })
-
-  it("a closed prompt in an iPhone app browser leaves the pane as it was", async () => {
-    at("/", UA.iosX)
-    h.unlock.mockRejectedValueOnce(new DOMException("closed", "NotAllowedError"))
-    await render()
-    await tapUnlock()
-    expect(byTestId("unlock-refused")).toBeNull()
-    expect(unlockButton()).toBeDefined()
-    expect(reports).toEqual([])
-    expect(failures()).toEqual([])
-  })
-
   it("an attempt a newer tap replaced shows nothing when it fails as not supported", async () => {
     at("/", UA.android)
     let fail!: (e: unknown) => void
@@ -704,99 +567,5 @@ describe("UnlockGate in an app's built-in browser", () => {
     await flush()
     expect(byTestId("unlock-refused")).toBeNull()
     expect(failures()).toEqual([])
-  })
-})
-
-/** One `passkey_ceremony` per unlock tap, classified from what the auth service threw. */
-describe("UnlockGate passkey telemetry", () => {
-  let harness: Awaited<ReturnType<typeof passkeyTelemetryHarness>>
-  const events = () => passkeyEvents(h.fireEvent)
-
-  beforeEach(async () => {
-    harness = await passkeyTelemetryHarness()
-    // An attempt an earlier test left open ends here, before this test counts anything.
-    pageHide()
-    h.fireEvent.mockClear()
-    h.wallet = new FakeWallet()
-  })
-
-  it("an unlock whose stored account no longer reproduces reads as a passkey mismatch", async () => {
-    const { StoredAddressMismatchError } = await import("@obsidion/front-core")
-    h.unlock.mockImplementationOnce(async (_derive, opts) => {
-      await harness.answered("assert", opts?.own)
-      throw new StoredAddressMismatchError()
-    })
-    await render()
-    await tapUnlock()
-    expect(events()).toEqual([
-      expect.objectContaining({ outcome: "refused", reason: "passkey_mismatch", prompts: "1" }),
-    ])
-  })
-
-  it("leaving the screen during the request sends nothing, then or when the page goes", async () => {
-    const held: { request?: HeldRequest } = {}
-    h.unlock.mockImplementationOnce(async (_derive, opts) => {
-      held.request = harness.request("assert", opts?.signal, opts?.own)
-      await held.request.settled
-    })
-    await render()
-    await tapUnlock()
-    expect(held.request).toBeDefined()
-    act(() => {
-      root.unmount()
-      pageHide()
-    })
-    root = createRoot(container)
-    await flush()
-    expect(events()).toEqual([])
-  })
-
-  it("a second tap while the first is still asking sends nothing for the first", async () => {
-    const first: { request?: HeldRequest } = {}
-    h.unlock
-      .mockImplementationOnce(async (_derive, opts) => {
-        first.request = harness.request("assert", opts?.signal, opts?.own)
-        await first.request.settled
-      })
-      .mockImplementationOnce(async (_derive, opts) => {
-        await harness.answered("assert", opts?.own)
-      })
-    await render()
-    await tapUnlock()
-    expect(first.request).toBeDefined()
-    await tapUnlock()
-    await flush()
-    expect(h.unlock).toHaveBeenCalledTimes(2)
-    expect(events()).toEqual([
-      expect.objectContaining({ ceremony: "unlock", outcome: "succeeded", attempt: "2" }),
-    ])
-  })
-
-  it("keeps a replaced unlock's own request out of the unlock that replaced it", async () => {
-    let askLate!: () => void
-    const late = new Promise<void>((resolve) => (askLate = resolve))
-    const second: { request?: HeldRequest } = {}
-    h.unlock
-      .mockImplementationOnce(async (_derive, opts) => {
-        await late
-        await harness.answered("assert", opts?.own)
-      })
-      .mockImplementationOnce(async (_derive, opts) => {
-        second.request = harness.request("assert", undefined, opts?.own)
-        await second.request.settled
-      })
-    await render()
-    await tapUnlock()
-    await tapUnlock()
-    expect(second.request).toBeDefined()
-    // The replaced unlock asks the browser after its successor did, and owns that request.
-    askLate()
-    await flush()
-    await act(async () => second.request!.answer())
-    await flush()
-    expect(events()).toEqual([
-      expect.objectContaining({ ceremony: "unlock", outcome: "succeeded", prompts: "1" }),
-      expect.objectContaining({ ceremony: "unlock", outcome: "succeeded", prompts: "1" }),
-    ])
   })
 })

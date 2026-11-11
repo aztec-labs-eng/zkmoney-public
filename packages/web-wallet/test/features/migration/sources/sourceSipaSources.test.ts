@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 import { Fr } from "@aztec-labs/foundation/curves/bn254"
 import {
   composeWireNameHash,
@@ -7,7 +7,6 @@ import {
   directDepositKey,
   registrationCommitments,
 } from "@obsidion/front-core"
-import { seedBootConfig } from "../../../support/seedBootConfig"
 
 const h = vi.hoisted(() => ({
   keys: vi.fn(async () => [] as unknown[]),
@@ -17,14 +16,8 @@ vi.mock("@obsidion/sdk", async (importOriginal) => ({
   fetchHistoricalSipaResolverOperators: async () => [],
   fetchHistoricalResolverKeys: h.keys,
 }))
-vi.mock("@obsidion/front-core", async (importOriginal) => ({
-  ...(await importOriginal<Record<string, unknown>>()),
-  deploymentScanRange: async () => ({ fromBlock: 1n, toBlock: 42n }),
-}))
-
 const { sourceSipaSources } = await import("../../../../src/features/migration/sourceSipaSources")
 
-beforeAll(seedBootConfig)
 beforeEach(() => {
   h.keys.mockReset().mockResolvedValue([])
 })
@@ -33,6 +26,7 @@ const SECRET = new Fr(7n)
 const ACCOUNT = `0x${"0e".repeat(32)}` as const
 const TUPLE = {
   portal: "0xabc",
+  deployedAtBlock: "1",
   accountMetadataRegistry: "0x" + "0a".repeat(20),
   registrationSIPAImplementation: "0x" + "0b".repeat(20),
   ensDomain: "zkmoney.eth",
@@ -44,6 +38,9 @@ const scan = (announced: unknown[]) => {
   return {
     sipaSources,
     params: {
+      page: {
+        config: { network: "sandbox" },
+      } as never,
       chain: { kind: "generation", session: { address: ACCOUNT, sipaSources } } as never,
       tuple: TUPLE as never,
       publicClient: {} as never,

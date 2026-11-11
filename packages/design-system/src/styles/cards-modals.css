@@ -12,7 +12,7 @@
   flex-direction: column;
   gap: 12px;
   padding: 16px;
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(var(--ink-rgb), 0.1);
   box-shadow: 0 0 22.4px rgba(0, 0, 0, 0.05);
 }
 .zkm-amount-source__header {
@@ -130,7 +130,7 @@
   width: 64px;
   height: 4px;
   border-radius: 9999px;
-  background: #fff;
+  background: var(--ink);
   flex: none;
 }
 
@@ -173,7 +173,7 @@
   font-size: 20px;
   font-weight: 600;
   letter-spacing: 0.3px;
-  color: #fff;
+  color: var(--ink);
 }
 .zkm-confirm-sheet-header__back {
   position: absolute;
@@ -197,7 +197,7 @@
   padding: 12px;
   border-radius: var(--radius-12);
   background: var(--surface-card);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(var(--ink-rgb), 0.1);
 }
 .zkm-confirm-party-card__id {
   display: flex;
@@ -259,7 +259,7 @@
   font-family: var(--font-body);
   font-size: 14px;
   font-weight: 500;
-  color: #fff;
+  color: var(--ink);
   margin-left: auto;
   min-width: 0;
   text-align: right;
@@ -275,7 +275,7 @@
   position: absolute;
   inset: 0;
   overflow: hidden;
-  background: #070707;
+  background: var(--surface-dark);
 }
 .zkm-bg__content {
   position: relative;
@@ -288,7 +288,7 @@
     radial-gradient(480px at 55% 5%, rgba(153, 7, 255, 0.5), transparent 70%),
     radial-gradient(480px at 50% 30%, rgba(83, 73, 255, 0.4), transparent 70%),
     radial-gradient(480px at 45% 55%, rgba(3, 150, 255, 0.25), transparent 70%),
-    #070707;
+    var(--surface-dark);
 }
 
 .zkm-bg--modal {
@@ -301,6 +301,15 @@
       transparent 100%
     ),
     #0b0b0b;
+}
+:root[data-theme="light"] .zkm-bg--modal {
+  background: radial-gradient(
+      620px at 19% 0%,
+      rgba(99, 58, 255, 0.18),
+      rgba(99, 58, 255, 0.1) 25%,
+      transparent 60%
+    ),
+    var(--surface-sheet);
 }
 
 /* Circle glow, radius 80% of the container height, centered past the anchored edge. */
@@ -315,8 +324,8 @@
     #a000ff 0%,
     #a000ff 40%,
     #0099ff 65%,
-    rgba(7, 7, 7, 0.5) 85%,
-    #070707 100%
+    rgba(var(--canvas-rgb), 0.5) 85%,
+    var(--surface-dark) 100%
   );
 }
 .zkm-bg-radial-glow--top {
@@ -376,37 +385,39 @@
    Effects
    ============================================================ */
 
+/* Each block's light is placed against the Shimmer, not the block, so one light crosses every
+   block at once. The block's clip-path still clips it; overflow would not. The Shimmer's own clip
+   keeps the parked light from widening the page's scroll area. */
 .zkm-shimmer {
   position: relative;
+  overflow-x: clip;
 }
-.zkm-shimmer--active > .zkm-shimmer__content {
-  opacity: 0.35;
+.zkm-skeleton {
+  background: var(--surface-card);
 }
-.zkm-shimmer__band {
-  position: absolute;
-  inset: 0;
-  overflow: hidden;
-  pointer-events: none;
+@media (prefers-reduced-motion: no-preference) {
+  .zkm-shimmer--active .zkm-skeleton::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 50%;
+    background-image: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.1), transparent);
+    animation: zkm-shimmer-slide 2s ease-in-out infinite;
+    will-change: transform;
+  }
 }
 /* Moved by transform, not background-position, so it slides on the compositor while the main
-   thread is busy. 55% wide: -100% parks it fully off-left, 182% (100 / 55) fully off-right. */
-.zkm-shimmer__band::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 0;
-  width: 55%;
-  background-image: linear-gradient(90deg, transparent 0%, rgba(255, 255, 255, 0.4) 50%, transparent 100%);
-  animation: zkm-shimmer-slide 1.4s linear infinite;
-  will-change: transform;
-}
+   thread is busy. 50% wide: -100% parks it fully off-left, 200% fully off-right, where it rests for
+   the last quarter. */
 @keyframes zkm-shimmer-slide {
-  from {
+  0% {
     transform: translateX(-100%);
   }
-  to {
-    transform: translateX(182%);
+  75%,
+  100% {
+    transform: translateX(200%);
   }
 }
 /* The glyph-clipped shimmer can only move its background: a 55% band maps position % to the
@@ -469,4 +480,643 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 13px;
+}
+
+/* ============================================================
+   Guided-flow sheet parts (SheetShell and the boxes inside it)
+   ============================================================ */
+
+.zkm-sheet-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  width: 100%;
+  color: var(--text-primary);
+  font-family: var(--font-body);
+}
+.zkm-sheet-shell__head {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  text-align: center;
+}
+.zkm-sheet-shell__key {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 64px;
+  border-radius: var(--radius-full);
+  background: var(--gradient-brand);
+  box-shadow: 0 0 17px 5px rgba(0, 0, 0, 0.1);
+}
+.zkm-sheet-shell__titles {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+.zkm-sheet-shell__title {
+  margin: 0;
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1.3;
+  letter-spacing: 0.3px;
+  text-wrap: balance;
+}
+.zkm-sheet-shell__lead {
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  text-wrap: balance;
+}
+.zkm-sheet-shell__body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+}
+.zkm-sheet-shell__body:empty {
+  display: none;
+}
+.zkm-sheet-shell__body > .zkm-sheet-link {
+  align-self: center;
+}
+.zkm-sheet-shell__secondary {
+  align-self: center;
+  padding: 2px;
+  border-radius: var(--radius-full);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 24px;
+  color: var(--text-primary);
+}
+.zkm-sheet-shell__secondary:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+.zkm-sheet-shell__secondary:focus-visible,
+.zkm-sheet-link:focus-visible,
+.zkm-fact-hint__button:focus-visible,
+.zkm-next-steps__summary:focus-visible,
+.zkm-nudge-card__action:focus-visible,
+.zkm-nudge-card__dismiss:focus-visible {
+  outline: 2px solid var(--blue-400);
+  outline-offset: 2px;
+}
+/* Its own rule: a browser without :has() would drop the whole list above. */
+.zkm-choice-card:has(.zkm-choice-card__input:focus-visible) {
+  outline: 2px solid var(--blue-400);
+  outline-offset: 2px;
+}
+
+.zkm-sheet-card {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin: 0;
+  padding: 16px;
+  border: 1px solid rgba(var(--ink-rgb), 0.1);
+  border-radius: var(--radius-12);
+  background: var(--surface-card);
+}
+.zkm-sheet-card-group {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.zkm-sheet-card-group__label {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: normal;
+  color: var(--text-secondary);
+}
+
+.zkm-sheet-link {
+  flex: none;
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: normal;
+  color: var(--text-primary);
+  text-decoration: underline;
+  text-underline-position: from-font;
+  white-space: nowrap;
+}
+
+/* Step tracker */
+.zkm-step-tracker {
+  padding: 18px 20px;
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-16);
+  background: rgba(var(--ink-rgb), 0.04);
+}
+.zkm-step-tracker__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 16px;
+  font-size: 13px;
+  line-height: 1.3;
+}
+.zkm-step-tracker__label {
+  font-weight: 500;
+  color: var(--text-muted);
+}
+.zkm-step-tracker__progress {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.zkm-step-tracker__steps {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.zkm-step-tracker__step {
+  display: flex;
+  gap: 14px;
+}
+.zkm-step-tracker__rail {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+.zkm-step-tracker__mark {
+  display: flex;
+  flex: none;
+}
+/* Grows with a detail that wraps, so the rail stays joined to the next step. */
+.zkm-step-tracker__line {
+  flex: 1 0 30px;
+  width: 2px;
+  border-radius: 1px;
+  background: rgba(var(--ink-rgb), 0.12);
+}
+.zkm-step-tracker__step--done .zkm-step-tracker__line {
+  background: color-mix(in srgb, var(--accent-green) 50%, transparent);
+}
+.zkm-step-tracker__text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding-top: 2px;
+}
+.zkm-step-tracker__step-label {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--text-primary);
+}
+.zkm-step-tracker__step--todo .zkm-step-tracker__step-label {
+  font-weight: 500;
+  color: var(--text-muted);
+}
+.zkm-step-tracker__detail {
+  font-size: 13px;
+  line-height: 1.35;
+}
+.zkm-step-tracker__detail--muted {
+  color: var(--text-muted);
+}
+.zkm-step-tracker__detail--progress {
+  color: var(--accent-violet);
+}
+.zkm-step-tracker__detail--warning {
+  color: var(--accent-gold);
+}
+.zkm-step-tracker__detail--error {
+  color: var(--accent-pink);
+}
+
+/* Next-steps disclosure */
+.zkm-next-steps {
+  padding: 12px;
+  border: 1px dashed rgba(var(--ink-rgb), 0.15);
+  border-radius: var(--radius-12);
+  background: var(--surface-card);
+}
+.zkm-next-steps__summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--text-primary);
+  list-style: none;
+  cursor: pointer;
+}
+.zkm-next-steps__summary::-webkit-details-marker {
+  display: none;
+}
+.zkm-next-steps__chevron {
+  flex: none;
+  transform: rotate(180deg);
+  transition: transform 0.2s ease;
+}
+.zkm-next-steps[open] .zkm-next-steps__chevron {
+  transform: none;
+}
+.zkm-next-steps__list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin: 16px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.zkm-next-steps__item {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.zkm-next-steps__number {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 28px;
+  height: 28px;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  border-radius: var(--radius-full);
+  background: var(--gradient-brand);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.3;
+  color: #fff;
+}
+.zkm-next-steps__text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.zkm-next-steps__label {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--text-primary);
+}
+.zkm-next-steps__detail {
+  font-size: 13px;
+  line-height: 1.35;
+  color: var(--text-secondary);
+}
+
+/* Fact box */
+.zkm-fact-box {
+  gap: 12px;
+}
+.zkm-fact-box__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 14px;
+  line-height: normal;
+}
+.zkm-fact-box__label {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-secondary);
+}
+.zkm-fact-box__value {
+  margin: 0;
+  font-weight: 600;
+  text-align: right;
+  color: var(--text-primary);
+}
+.zkm-fact-hint {
+  display: inline-flex;
+}
+.zkm-fact-hint__button {
+  display: flex;
+  margin: -4px;
+  padding: 4px;
+  border-radius: var(--radius-full);
+  color: var(--text-secondary);
+}
+.zkm-fact-hint__tip {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 14px;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-sizing: border-box;
+  width: min(280px, calc(100vw - 64px));
+  padding: 12px 14px;
+  border-radius: var(--radius-12);
+  background: #2b2b2b;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  font-size: 12px;
+  line-height: normal;
+  color: var(--text-secondary);
+}
+/* The display: flex above would otherwise beat the hidden attribute. */
+.zkm-fact-hint__tip[hidden] {
+  display: none;
+}
+.zkm-fact-hint__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.zkm-fact-hint__row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+.zkm-fact-hint__row-label {
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+/* Info box */
+.zkm-info-box {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid color-mix(in srgb, var(--accent-bluegrey) 35%, transparent);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--accent-bluegrey) 8%, transparent);
+}
+.zkm-info-box__icon {
+  flex: none;
+  margin: 2px 0;
+  color: var(--text-secondary);
+}
+.zkm-info-box__text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.zkm-info-box__title {
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.3;
+  color: var(--text-primary);
+}
+.zkm-info-box__body {
+  font-size: 13px;
+  line-height: 1.4;
+  color: rgba(var(--ink-rgb), 0.85);
+}
+
+/* Choice card */
+.zkm-choice-card {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid rgba(var(--ink-rgb), 0.1);
+  border-radius: var(--radius-12);
+  background: var(--surface-card);
+  line-height: normal;
+  cursor: pointer;
+}
+.zkm-choice-card--checked {
+  padding: 15.5px;
+  border: 1.5px solid transparent;
+  background: color-mix(in srgb, var(--purple-500) 8%, transparent);
+}
+/* The brand-gradient border: the mask keeps the ring between the border box and the padding box. */
+.zkm-choice-card--checked::before {
+  content: "";
+  position: absolute;
+  inset: -1.5px;
+  padding: 1.5px;
+  border-radius: inherit;
+  background: var(--gradient-brand);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  pointer-events: none;
+}
+.zkm-choice-card--disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+.zkm-choice-card__input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+.zkm-choice-card__radio {
+  flex: none;
+  box-sizing: border-box;
+  width: 20px;
+  height: 20px;
+  border: 1.5px solid color-mix(in srgb, var(--text-secondary) 60%, transparent);
+  border-radius: var(--radius-full);
+}
+.zkm-choice-card--checked .zkm-choice-card__radio {
+  border: none;
+  background: radial-gradient(circle, var(--text-primary) 4px, transparent 4.5px),
+    var(--gradient-brand);
+}
+.zkm-choice-card__text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.zkm-choice-card__title-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.zkm-choice-card__label {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.zkm-choice-card__badge {
+  padding: 4px 10px;
+  border-radius: var(--radius-full);
+  background: rgba(var(--ink-rgb), 0.08);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.zkm-choice-card__description {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+/* Checklist row */
+.zkm-checklist-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.zkm-checklist-row > svg {
+  flex: none;
+}
+.zkm-checklist-row__text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  line-height: normal;
+}
+.zkm-checklist-row__label {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.zkm-checklist-row--muted .zkm-checklist-row__label {
+  color: var(--text-secondary);
+}
+.zkm-checklist-row__detail {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+/* Key status row */
+.zkm-key-status-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 0;
+}
+.zkm-key-status-row > svg {
+  flex: none;
+}
+.zkm-key-status-row__icon {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-full);
+  background: rgba(var(--ink-rgb), 0.08);
+}
+.zkm-key-status-row__text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  line-height: normal;
+}
+.zkm-key-status-row__name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.zkm-key-status-row__detail {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.zkm-key-status-row__added {
+  display: flex;
+  flex: none;
+  padding: 4px;
+  border-radius: var(--radius-full);
+  background: var(--accent-green);
+  color: var(--surface-canvas);
+}
+
+/* Nudge card */
+.zkm-nudge-card {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--accent-gold) 35%, transparent);
+  border-radius: var(--radius-16);
+  background: color-mix(in srgb, var(--accent-gold) 14%, transparent);
+  font-family: var(--font-body);
+}
+.zkm-nudge-card__icon {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+}
+.zkm-nudge-card__content {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+  min-width: 0;
+}
+.zkm-nudge-card--dismissible .zkm-nudge-card__content {
+  padding-right: 30px;
+}
+.zkm-nudge-card__text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.zkm-nudge-card__title {
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--text-primary);
+}
+.zkm-nudge-card__body {
+  font-size: 12px;
+  line-height: 1.3;
+  color: var(--text-secondary);
+}
+.zkm-nudge-card__action {
+  padding: 2px;
+  border-radius: var(--radius-full);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 19px;
+  color: var(--accent-warning);
+}
+.zkm-nudge-card__dismiss {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: var(--radius-full);
+  background: rgba(var(--ink-rgb), 0.12);
+  color: rgba(var(--ink-rgb), 0.6);
+}
+/* A 16px circle is too small to tap; the hit area reaches 8px past it. */
+.zkm-nudge-card__dismiss::after {
+  content: "";
+  position: absolute;
+  inset: -8px;
 }

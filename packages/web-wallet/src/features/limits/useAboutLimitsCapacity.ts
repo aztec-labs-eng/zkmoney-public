@@ -1,10 +1,13 @@
-import { useEffect, useMemo, useState, useSyncExternalStore } from "react"
+import { useMemo, useSyncExternalStore } from "react"
 import {
   evaluateCapacityEligibility,
+  UNREAD,
+  useStore,
   type PortalCapacityKey,
   type PortalCapacityState,
 } from "@obsidion/front-core"
-import { activeCapacityKey, depositCapacityStore } from "../deposit/capacityStore"
+import { useSession } from "../../session/session"
+import { depositCapacityStore } from "../deposit/capacityStore"
 import { fundingCapacityView } from "../deposit/fundingCapacity"
 import { capacityFacts } from "./aboutLimitsFacts"
 import type { CapacityFacts } from "./aboutLimitsView"
@@ -32,33 +35,13 @@ export function useAboutLimitsCapacity(
   source: CapacitySource,
   symbol: string,
 ): { facts: CapacityFacts; retry?: () => void } {
-  const active = source.kind === "active"
-  const activeToken = source.kind === "active" ? source.token : undefined
-  const [activeKey, setActiveKey] = useState<PortalCapacityKey>()
-  const [keyFailed, setKeyFailed] = useState(false)
-  const [keyAttempt, setKeyAttempt] = useState(0)
+  const { page } = useSession()
+  const keyRead = source.kind === "active" ? page.chain.capacityKey(source.token) : undefined
+  const keyState = useStore(keyRead ?? UNREAD)
+  const activeKey = keyState.status === "ready" ? keyState.value : undefined
 
-  useEffect(() => {
-    if (!active) return
-    let stale = false
-    setKeyFailed(false)
-    setActiveKey(undefined)
-    activeCapacityKey(activeToken).then(
-      (key) => {
-        if (!stale) setActiveKey(key)
-      },
-      (error: unknown) => {
-        console.warn("[limits] could not resolve the deployment's capacity key", error)
-        if (!stale) setKeyFailed(true)
-      },
-    )
-    return () => {
-      stale = true
-    }
-  }, [active, activeToken, keyAttempt])
-
-  const key = source.kind === "key" ? source.key : active ? activeKey : undefined
-  const store = useMemo(() => (key ? depositCapacityStore(key) : undefined), [key])
+  const key = source.kind === "key" ? source.key : activeKey
+  const store = useMemo(() => (key ? depositCapacityStore(page, key) : undefined), [key, page])
   const state: PortalCapacityState | undefined = useSyncExternalStore(
     store ? store.subscribe : noSubscribe,
     store ? store.getState : noState,
@@ -66,8 +49,8 @@ export function useAboutLimitsCapacity(
 
   if (source.kind === "pending") return { facts: { state: "loading" } }
   if (source.kind === "unresolved") return { facts: { state: "unavailable" }, retry: source.retry }
-  if (active && keyFailed) {
-    return { facts: { state: "unavailable" }, retry: () => setKeyAttempt((n) => n + 1) }
+  if (keyRead && keyState.status === "failed") {
+    return { facts: { state: "unavailable" }, retry: keyRead.refresh }
   }
   // The funding panel's rules and words for a current read with no amount: low, or none available.
   const eligibility =

@@ -9,116 +9,17 @@ import type { WithdrawalRecord } from "../../../src/core/services/bridge/types"
 import type { SipaDeposit, SIPASweep } from "../../../src/engine/sipaDeposits"
 import type { SavingsMoveRecord } from "../../../src/core/services/savings/types"
 import type { ActivityItem } from "../../../src/engine/feedRules"
-import type { Transaction } from "../../../src/types/transactions"
 import {
   ACTIVITY_CSV_COLUMNS,
   ACTIVITY_CSV_COVERAGE,
   activityCsv,
   activityCsvFileName,
   buildSavingsCsvRows,
-  savingsCsv,
   buildActivityCsvRows,
   type ActivityCsvRow,
   type ActivityCsvSources,
 } from "../../../src/core/services/activity/activityCsv"
-
-const T0 = Date.UTC(2026, 0, 2, 3, 4, 5)
-const TOKEN = {
-  address: "0x1",
-  name: "Dai",
-  symbol: "DAI",
-  decimals: 18,
-  logo: "",
-  amount: 12.5,
-  price: 1,
-}
-const DAI = { symbol: "DAI", decimals: 18 }
-const EMPTY: ActivityCsvSources = { walletToken: DAI, transactions: [], items: [], requests: [] }
-
-function tx(action: string, extra: Record<string, unknown> = {}): Transaction {
-  return {
-    action,
-    emailPaymentAction: action,
-    status: "success",
-    timestamp: T0,
-    txHash: `0x${action.length}`,
-    token: TOKEN,
-    ...extra,
-  } as unknown as Transaction
-}
-
-function withdrawal(extra: Partial<WithdrawalRecord> = {}): ActivityItem {
-  return {
-    kind: "bridge.withdrawal",
-    record: {
-      localId: "wdraw_1",
-      recipient: "0x00000000000000000000000000000000000000aa",
-      recipientProvenance: "saved-recipient",
-      amount: "10",
-      rawAmount: parseUnits("10", 18).toString(),
-      relayerTip: parseUnits("0.5", 18).toString(),
-      tokenSymbol: "DAI",
-      tokenDecimals: 18,
-      phase: "done",
-      startTime: T0,
-      endTime: T0 + 1000,
-      l2TxHash: "0xl2",
-      l1TxHash: "0xl1",
-      receivedAmount: parseUnits("9.5", 18).toString(),
-      ...extra,
-    } as WithdrawalRecord,
-  }
-}
-
-/** A claimed sweep that took `gross` DAI off the address and credited `net`; no gross when never read. */
-function sweep(
-  inboxIndex: string,
-  gross: string | undefined,
-  net: string,
-  extra: Partial<SIPASweep> = {},
-): SIPASweep {
-  return {
-    inboxIndex,
-    sweepTxHash: `0xsweep${inboxIndex}` as SIPASweep["sweepTxHash"],
-    netAmount: parseUnits(net, 18).toString(),
-    ...(gross === undefined
-      ? {}
-      : {
-          grossAmount: parseUnits(gross, 18).toString(),
-          fundingTokenSymbol: "DAI",
-          fundingTokenDecimals: 18,
-        }),
-    ...extra,
-  }
-}
-
-function deposit(extra: Partial<SipaDeposit> = {}): ActivityItem {
-  return {
-    kind: "bridge.sipaDeposit",
-    record: {
-      sipaAddress: "0x00000000000000000000000000000000000000Bb",
-      amount: "20",
-      netAmount: parseUnits("19", 18).toString(),
-      fee: parseUnits("1", 18).toString(),
-      tokenSymbol: "DAI",
-      phase: "claimed",
-      startTime: T0,
-      inboxIndex: "7",
-      claimedInboxIndexes: ["7"],
-      sweeps: [sweep("7", "20", "19")],
-      fundingFromAddress: "0x00000000000000000000000000000000000000cc",
-      fundingTokenSymbol: "DAI",
-      fundingTxHash: "0xfund",
-      ...extra,
-    } as SipaDeposit,
-  }
-}
-
-function only(sources: Partial<ActivityCsvSources>): ActivityCsvRow | undefined {
-  const rows = buildActivityCsvRows({ ...EMPTY, ...sources })
-  expect(rows.length).toBeLessThanOrEqual(1)
-  return rows[0]
-}
+import { DAI, EMPTY, T0, TOKEN, deposit, only, sweep, tx, withdrawal } from "./csvFixtures"
 
 type Expected = Pick<ActivityCsvRow, "type"> & { side: "sent" | "received" }
 
@@ -151,6 +52,7 @@ const WITHDRAWAL_PHASES: Record<string, boolean> = {
   awaiting_proven: false,
   finalizing_l1: false,
   swapping: false,
+  bridging: false,
   recoverable: false,
   failed: false,
 }
@@ -191,8 +93,12 @@ const DEPOSIT_KINDS: Record<
 > = {
   "deposit": [{}, {}, "Deposit"],
   "registration": [{}, { intent: "registration" }, "Name registration"],
-  "user-op": [{}, { intent: "user-op" }, "Backup passkey added"],
-  "request": [{ requests: [{ sipaAddress: SIPA } as never] }, {}, "Payment request paid"],
+  "add-passkey": [{}, { intent: "add-passkey" }, "Backup passkey added"],
+  "request": [
+    { requests: [{ paidByDeposit: { sipaAddress: SIPA, inboxIndex: "7" } } as never] },
+    {},
+    "Payment request paid",
+  ],
   "migration": [
     {
       items: [
@@ -387,6 +293,26 @@ describe("deposits", () => {
     ])
     expect(rows[0]?.aztecTxHash).toBeUndefined()
   })
+
+  it("reports only the payment that paid a request as the request's", () => {
+    const paid = { sipaAddress: SIPA, paidByDeposit: { sipaAddress: SIPA, inboxIndex: "7" } }
+    const rows = buildActivityCsvRows({
+      ...EMPTY,
+      // A second request at the address that no payment paid.
+      requests: [paid as never, { sipaAddress: SIPA } as never],
+      items: [
+        deposit({
+          inboxIndex: "9",
+          claimedInboxIndexes: ["7", "9"],
+          sweeps: [
+            sweep("7", "20", "19", { settledAt: T0 + 1000 }),
+            sweep("9", "5", "4.5", { settledAt: T0 + 5000 }),
+          ],
+        }),
+      ],
+    })
+    expect(rows.map((r) => r.type)).toEqual(["Payment request paid", "Deposit"])
+  })
 })
 
 describe("deposits across rows", () => {
@@ -422,11 +348,18 @@ describe("deposits across rows", () => {
     ])
   })
 
-  it("reports a token split out of its address's record once, among the record's sweeps", () => {
+  it("reports a sweep that names no token in the wallet token, whatever the address took since", () => {
+    const sweptBeforeRows = sweep("7", undefined, "19")
+    const paidInEth = { phase: "recoverable", tokenSymbol: "ETH", tokenDecimals: 18 } as const
+    const row = only({ items: [deposit({ ...paidInEth, sweeps: [sweptBeforeRows] })] })
+    expect(row?.received).toEqual({ amount: "19", currency: "DAI" })
+  })
+
+  it("reports a past payment split out of its address's record once, among the record's sweeps", () => {
     const split: ActivityItem = {
       kind: "bridge.sipaDeposit",
       record: (twoTokens as { record: SipaDeposit }).record,
-      credit: "0x6b175474e89094c44da98b954eedeac495271d0f",
+      payment: "7",
     }
     expect(buildActivityCsvRows({ ...EMPTY, items: [twoTokens, split] })).toHaveLength(2)
   })
@@ -531,111 +464,6 @@ describe("counterparty", () => {
       transactions: [tx("send", { toTag: "bob", to: "0xabc", memo: "rent" })],
     })
     expect(csv).toContain(",Payment sent · bob · 0xabc · rent,")
-  })
-})
-
-describe("savings", () => {
-  const BURN = "burn-1"
-  const burn = {
-    localId: BURN,
-    recipient: "0x00000000000000000000000000000000000000ee",
-    recipientProvenance: "saved-recipient",
-    amount: "10",
-    tokenSymbol: "DAI",
-    tokenDecimals: 18,
-    phase: "done",
-    startTime: T0,
-    l2TxHash: "0xburn",
-    minedAt: T0 + 500,
-  } as WithdrawalRecord
-  const burns = new Map([[BURN, burn]])
-
-  /** A move in of 10 DAI whose vault took 9.9 for 9.5 shares, claimed on the Savings side. */
-  function move(extra: Partial<SavingsMoveRecord> = {}): SavingsMoveRecord {
-    return {
-      direction: "in",
-      withdrawalLocalId: BURN,
-      escrow: "0x00000000000000000000000000000000000000ee",
-      nonce: "0x01",
-      recipientCommitment: "0x02",
-      amount: parseUnits("10", 18).toString(),
-      startTime: T0,
-      deposit: {
-        inboxIndex: "3",
-        amount: parseUnits("9.5", 18).toString(),
-        claimed: true,
-        txHash: "0xrun",
-        at: T0 + 1000,
-      },
-      vault: {
-        txHash: "0xrun",
-        assets: parseUnits("9.9", 18).toString(),
-        shares: parseUnits("9.5", 18).toString(),
-      },
-      ...extra,
-    }
-  }
-
-  it("a move in receives what the vault took, dated when its deposit landed", () => {
-    expect(buildSavingsCsvRows({ walletToken: DAI, moves: [move()], burns })).toEqual([
-      {
-        timestampMs: T0 + 1000,
-        type: "Savings deposit",
-        received: { amount: "9.9", currency: "DAI" },
-        aztecTxHash: "0xburn",
-        ethereumTxHash: "0xrun",
-      },
-    ])
-  })
-
-  it("a move in with no vault figures receives the quoted net, else the burn's gross", () => {
-    const quoted = move({ vault: undefined, net: parseUnits("9.8", 18).toString() })
-    expect(
-      buildSavingsCsvRows({ walletToken: DAI, moves: [quoted], burns })[0]?.received?.amount,
-    ).toBe("9.8")
-    const unread = move({ vault: undefined })
-    expect(
-      buildSavingsCsvRows({ walletToken: DAI, moves: [unread], burns })[0]?.received?.amount,
-    ).toBe("10")
-  })
-
-  it("a move out sends what landed on Main, with the rest of what the vault paid as the fee, dated at its burn", () => {
-    const out = move({ direction: "out", amount: parseUnits("9.5", 18).toString() })
-    expect(buildSavingsCsvRows({ walletToken: DAI, moves: [out], burns })).toEqual([
-      {
-        timestampMs: T0 + 500,
-        type: "Savings withdrawal",
-        sent: { amount: "9.5", currency: "DAI" },
-        fee: { amount: "0.4", currency: "DAI" },
-        aztecTxHash: "0xburn",
-        ethereumTxHash: "0xrun",
-      },
-    ])
-    const unread = move({ direction: "out", vault: undefined })
-    const row = buildSavingsCsvRows({ walletToken: DAI, moves: [unread], burns })[0]
-    expect(row?.sent).toEqual({ amount: "9.5", currency: "DAI" })
-    expect(row?.fee).toBeUndefined()
-  })
-
-  it("a move whose deposit is not yet claimed has no row", () => {
-    const pending = move({ deposit: { inboxIndex: "3", amount: "1", claimed: false } })
-    expect(
-      buildSavingsCsvRows({
-        walletToken: DAI,
-        moves: [pending, move({ deposit: undefined })],
-        burns,
-      }),
-    ).toEqual([])
-  })
-
-  it("has its own file", () => {
-    const lines = savingsCsv({ walletToken: DAI, moves: [move()], burns })
-      .trimEnd()
-      .split("\r\n")
-    expect(lines[1]).toBe("2026-01-02 03:04:06 UTC,,,9.9,DAI,,,,,,Savings deposit,0xrun")
-    expect(activityCsvFileName(new Date(T0), "savings")).toBe(
-      "zkmoney-savings-activity-2026-01-02.csv",
-    )
   })
 })
 

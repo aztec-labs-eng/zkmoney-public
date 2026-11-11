@@ -3,12 +3,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { Address } from "viem"
 import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import type { OxideEnvTuple } from "@obsidion/core/types"
-import { OperationStore, broadcastJob, type SipaDepositFields } from "@obsidion/front-core"
-import { getConfig } from "../../../src/config/env"
-import { primeOxideTuple } from "../../../src/config/oxideTuple"
+import { broadcastJob, fixed, type SipaDepositFields } from "@obsidion/front-core"
 import { slotExecutor } from "../../../src/features/broadcasts/slotExecutor"
-import { closeSession, session as openSession } from "../../../src/session/session"
-import { seedBootConfig } from "../../support/seedBootConfig"
+import { pageSessionDeps } from "../../../src/app/sessionDeps"
+import {
+  closeSession,
+  namespaceOf,
+  openSession as buildSession,
+} from "../../../src/session/session"
+import { testPage } from "../../support/page"
 import { openTestSession } from "../../support/session"
 import { seedSipaDeposit } from "../../support/sipaDeposits"
 
@@ -59,13 +62,12 @@ const recordFor = (recipient?: string) =>
     startTime: 1,
   } as Omit<SipaDepositFields, "sipaAddress" | "phase">)
 
+const primed = { tuple: TUPLE }
 beforeEach(async () => {
-  await seedBootConfig()
-  primeOxideTuple(getConfig(), TUPLE)
-  OperationStore.reset()
   openTestSession({
     sipaKeys: { recipient: AztecAddress.fromStringUnsafe(SESSION) },
     sipaDiscovery: {},
+    primed,
   })
 })
 
@@ -74,7 +76,7 @@ afterEach(() => closeSession())
 describe("a deposit address's broadcast", () => {
   it("lands by its record's recipient, read from the block a republish names", async () => {
     await seedSipaDeposit({ sipaAddress: sipa(3), phase: "sweeping", ...recordFor(PREVIOUS) })
-    const { sipaDeposits } = openSession()
+    const { sipaDeposits } = openTestSession()
     await sipaDeposits.oweBroadcast(sipa(3), { kind: "deposit", source: { type: "slot" } })
     await sipaDeposits.apply(sipa(3), { type: "broadcastLanded" })
     await sipaDeposits.apply(sipa(3), {
@@ -86,7 +88,9 @@ describe("a deposit address's broadcast", () => {
     expect(job).toMatchObject({ state: "queued", republishSince: 40 })
     const { wallet, getPrivateEvents } = walletWithEventsOf(PREVIOUS)
 
-    expect(await slotExecutor(wallet).landed({ ...job, source: { type: "slot" } })).toBe(true)
+    expect(
+      await slotExecutor(wallet, openTestSession()).landed({ ...job, source: { type: "slot" } }),
+    ).toBe(true)
     const [, filter] = getPrivateEvents.mock.calls[0]!
     expect(filter).toMatchObject({ contractAddress: AztecAddress.fromStringUnsafe(TUPLE.l2Token) })
     expect(String(filter.scopes[0])).toBe(PREVIOUS)
@@ -97,7 +101,28 @@ describe("a deposit address's broadcast", () => {
     await seedSipaDeposit({ sipaAddress: sipa(4), phase: "sweeping", ...recordFor() })
     const { wallet, getPrivateEvents } = walletWithEventsOf(SESSION)
 
-    expect(await slotExecutor(wallet).landed({ address: sipa(4) } as never)).toBe(true)
+    expect(
+      await slotExecutor(wallet, openTestSession()).landed({ address: sipa(4) } as never),
+    ).toBe(true)
     expect(String(getPrivateEvents.mock.calls[0]![1].scopes[0])).toBe(SESSION)
+  })
+
+  it("reads the deposits of the session it was built with, not the current one", async () => {
+    const other = buildSession(
+      pageSessionDeps(testPage(undefined, undefined, primed))(namespaceOf("other")),
+    )
+    await other.sipaDeposits.adopt({ sipaAddress: sipa(5), phase: "sweeping", ...recordFor() })
+    const session = Object.assign(Object.create(other), {
+      sipaKeys: fixed("sipaKeys", { recipient: AztecAddress.fromStringUnsafe(SESSION) }),
+      sipaDiscovery: () => fixed("sipaDiscovery", {}),
+    })
+    const { wallet } = walletWithEventsOf(SESSION)
+
+    try {
+      expect(await slotExecutor(wallet, session).landed({ address: sipa(5) } as never)).toBe(true)
+      expect(await openTestSession().sipaDeposits.get(sipa(5))).toBeUndefined()
+    } finally {
+      other.close()
+    }
   })
 })

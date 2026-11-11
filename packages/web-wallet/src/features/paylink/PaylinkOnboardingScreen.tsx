@@ -2,7 +2,7 @@ import { useState } from "react"
 import { OnboardingScreen, type OnboardingScreenProps } from "../onboarding/OnboardingScreen/OnboardingScreen"
 import { pendingTicketRegistration } from "./ticketContinuation"
 import { usePaylinkKit } from "./usePaylinkDeps"
-import { useAssetDemand } from "../../session/session"
+import { useStartAssets, useSession } from "../../session/session"
 
 /**
  * The signup wizard with the paylink services a ticket-funded signup claims its link with. For a
@@ -21,7 +21,8 @@ export function PaylinkOnboardingScreen(props: Omit<OnboardingScreenProps, "payl
  * signup does. Decided at mount: a ticket-funded reservation only ever starts on the link page.
  */
 export function ClaimRoute() {
-  const [ticketFunded] = useState(pendingTicketRegistration)
-  useAssetDemand(ticketFunded)
+  const session = useSession()
+  const [ticketFunded] = useState(() => pendingTicketRegistration(session))
+  useStartAssets(ticketFunded)
   return ticketFunded ? <PaylinkOnboardingScreen /> : <OnboardingScreen />
 }

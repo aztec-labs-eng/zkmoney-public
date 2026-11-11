@@ -5,8 +5,14 @@
  */
 
 import { useEffect, useRef, useState } from "react"
-import type { AztecNode } from "@aztec-labs/aztec.js/node"
-import { isPaylinkWindowNotOpenRevert, isPaylinkWindowRevert } from "@obsidion/front-core"
+import {
+  isPaylinkWindowNotOpenRevert,
+  isPaylinkWindowRevert,
+  memoryStore,
+  useStore,
+} from "@obsidion/front-core"
+import type { ReadonlyStore } from "@obsidion/front-core"
+import type { Session } from "../../session/session"
 import type { LinkStatus, PaymentLink } from "./types"
 
 /** A link that can no longer be claimed has nothing else to offer: its message is the whole page. */
@@ -99,6 +105,12 @@ interface SlotGrid {
   slotDuration: number
 }
 
+const NO_CLOCK = memoryStore(0).readonly
+
+/** The clock a countdown reads: the page's `seconds` while a wait is set, a still one otherwise. */
+export const countdownClock = (wait: number | undefined, seconds: ReadonlyStore<number>) =>
+  wait ? seconds : NO_CLOCK
+
 /**
  * Device-clock seconds until the block that opens a claim at chain time `target` lands. A block
  * carries its slot's start time and lands `lead` seconds before it, so the window opens with the
@@ -118,45 +130,34 @@ export function secondsToOpeningBlock(target: number, now: number, grid: SlotGri
 export function useClaimCountdown(
   claimWait: number | undefined,
   chainNow: number | undefined,
-  node: AztecNode | undefined,
+  page: Pick<Session["page"], "slotGrid" | "seconds">,
 ): string | undefined {
-  const [grid, setGrid] = useState<SlotGrid>()
-  useEffect(() => {
-    if (!node) return
-    let live = true
-    Promise.resolve()
-      .then(() => node.getL1Constants())
-      .then(
-        (c) => live && setGrid({ genesis: Number(c.l1GenesisTime), slotDuration: c.slotDuration }),
-        () => {}, // No grid: the label steps with each block.
-      )
-    return () => {
-      live = false
-    }
-  }, [node])
+  // Without the grid the label steps with each block.
+  const arrival = useStore(page.slotGrid)
+  const grid: SlotGrid | undefined =
+    arrival.status === "ready"
+      ? {
+          genesis: arrival.value.l1GenesisTime,
+          slotDuration: arrival.value.slotDuration,
+        }
+      : undefined
 
   // How far ahead of the device clock a block's timestamp is when it lands. Measured on a block seen
   // arriving, never on the first read, which may be of a block that landed a slot ago; the label
   // says "about" until then.
   const [lead, setLead] = useState<number>()
   const firstRead = useRef<number>(undefined)
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (chainNow === undefined) return
     if (firstRead.current === undefined) firstRead.current = chainNow
     else if (chainNow !== firstRead.current) setLead(chainNow - Date.now() / 1000)
   }, [chainNow])
 
-  const [now, setNow] = useState<number>()
-  useEffect(() => {
-    if (!claimWait) return
-    const read = () => setNow(Date.now() / 1000)
-    read()
-    const timer = setInterval(read, 1000)
-    return () => clearInterval(timer)
-  }, [claimWait])
+  const now = useStore(countdownClock(claimWait, page.seconds)) / 1000
 
   if (!claimWait || chainNow === undefined) return undefined
-  const onGrid = now !== undefined && grid && Math.abs(chainNow - now) < 2 * grid.slotDuration
+  const onGrid = grid && Math.abs(chainNow - now) < 2 * grid.slotDuration
   const left = onGrid
     ? secondsToOpeningBlock(chainNow + claimWait, now, grid, lead ?? 0)
     : claimWait

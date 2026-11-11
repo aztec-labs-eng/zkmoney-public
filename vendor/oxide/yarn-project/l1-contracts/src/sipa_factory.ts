@@ -1,4 +1,14 @@
-import { type Address, type Hex, type PublicClient, encodeFunctionData } from 'viem';
+import {
+  type Address,
+  type Hex,
+  type PublicClient,
+  concatHex,
+  encodeAbiParameters,
+  encodeFunctionData,
+  getContractAddress,
+  numberToHex,
+  zeroHash,
+} from 'viem';
 
 import { SIPAFactoryAbi } from './artifacts.js';
 
@@ -16,12 +26,13 @@ export interface SipaDeployArgs {
   forwardingTable: Address;
 }
 
-/** `SIPABase.Intent` — the family an implementation declares and the factory records against it. */
+/** The Solidity `Intent` (`Intent.sol`) — the family an implementation declares and the factory records against it. */
 export enum SipaIntent {
   None = 0,
   Deposit = 1,
   Registration = 2,
-  UserOp = 3,
+  // 3 was UserOp, now deprecated. Do not reuse it: a factory that blessed UserOpSIPA keeps it as intent 3.
+  AddPasskey = 4,
 }
 
 export function encodeDeploySIPA(args: SipaDeployArgs): Hex {
@@ -102,4 +113,39 @@ export async function predictSIPA(
     functionName: 'predictSIPA',
     args: [implementation, intentHash, recoveryCommitment, rollupVersion, resweepable, forwardingTable],
   } as any)) as Address;
+}
+
+/** The SIPA args that `SIPAFactory._args` encodes: `abi.encode(SIPABase.Args)`. */
+const SIPA_ARGS = [
+  { type: 'bytes32' },
+  { type: 'bytes32' },
+  { type: 'uint256' },
+  { type: 'bool' },
+  { type: 'address' },
+] as const;
+
+/**
+ * The address that `sipaFactory.predictSIPA(args)` returns, computed without a call. The factory deploys each SIPA as an
+ * OpenZeppelin clone with immutable args and a zero salt, so the address is the create2 address of the clone code. Use
+ * it to test many candidate factories and implementations against an address. It does not check that the recovery
+ * commitment fits the L2 field, which `predictSIPA` requires.
+ */
+export function computeSIPAAddress(sipaFactory: Address, args: SipaDeployArgs): Address {
+  const encoded = encodeAbiParameters(SIPA_ARGS, [
+    args.intentHash,
+    args.recoveryCommitment,
+    args.rollupVersion,
+    args.resweepable,
+    args.forwardingTable,
+  ]);
+  const argsLength = (encoded.length - 2) / 2;
+  const bytecode = concatHex([
+    '0x61',
+    numberToHex(argsLength + 0x2d, { size: 2 }),
+    '0x3d81600a3d39f3363d3d373d3d3d363d73',
+    args.implementation,
+    '0x5af43d82803e903d91602b57fd5bf3',
+    encoded,
+  ]);
+  return getContractAddress({ opcode: 'CREATE2', from: sipaFactory, salt: zeroHash, bytecode });
 }

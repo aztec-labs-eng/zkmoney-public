@@ -1,16 +1,16 @@
 /**
- * The detail sheet's view of a deposit this wallet just broadcast, before the SIPA sync loop has a
- * record of it. It carries the figures the user was charged and upgrades field by field as
- * discovery, the sweep and the claim land in the store. Discovery of a pooled address writes a
- * placeholder record, stamped from the manifest token before anything was sent there, so the merge
- * keeps the charged figures over a placeholder's and takes every other field the store holds.
+ * The detail sheet's view of a deposit this wallet just broadcast, before the SIPA sync loop fills
+ * its record. It carries the figures the user was charged and upgrades field by field as
+ * discovery, the sweep and the claim land in the store. Until discovery the address's record is a
+ * placeholder, stamped from the manifest token before anything was sent there, so the merge keeps
+ * the charged figures over a placeholder's and takes every other field the store holds.
  */
 import type { SipaDeposit } from "@obsidion/front-core"
-import type { SentDeposit } from "./DepositFromWalletModal"
+import type { SentDeposit } from "./DepositFromWalletModal/DepositFromWalletModal"
 import type { DepositDisplayFacts } from "../sipa/loadDepositFacts"
 
 /**
- * Display-only stand-in for the record event discovery has not created yet. It carries the quoted
+ * Display-only stand-in for the deposit discovery has not recorded yet. It carries the quoted
  * fee in its row token's base units, the units a record's amounts are in, so it reproduces the charge.
  */
 export function pendingDepositRecord(

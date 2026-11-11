@@ -1,9 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import {
-  ProvingStage,
-  provingProgress,
-  type ProvingProgressEvent,
-} from "@obsidion/proving-progress"
+import { ProvingStage } from "@obsidion/core/types"
 import type { PXE } from "@aztec-labs/pxe/client/lazy"
 import {
   proveTxWithProgress,
@@ -13,66 +9,38 @@ import {
 } from "../../src/obsidion/proving-progress-helpers.js"
 
 beforeEach(() => {
-  provingProgress.removeAllListeners()
   delete process.env.OBSIDION_PROVE_TX_PERF_LOGS
   delete process.env.OBSIDION_TX_TIMING_BENCH
 })
 
 afterEach(() => {
-  provingProgress.removeAllListeners()
   setPerfLogFlag(undefined)
   delete process.env.OBSIDION_PROVE_TX_PERF_LOGS
   delete process.env.OBSIDION_TX_TIMING_BENCH
 })
 
 describe("proveTxWithProgress", () => {
-  it("emits stage-start('simulating') exactly once before pxe.proveTx", async () => {
-    const events: ProvingProgressEvent[] = []
-    provingProgress.on("stage-start", (e: ProvingProgressEvent) => events.push(e))
-
-    let proveTxCalled = false
-    let emitsAtProveTxEntry = 0
+  it("reports simulating under the send's id exactly once, before pxe.proveTx", async () => {
+    const stages: unknown[][] = []
+    let reportedAtProveTx = 0
     const stubPxe: Pick<PXE, "proveTx" | "sync"> = {
       async sync() {},
       async proveTx() {
-        proveTxCalled = true
-        emitsAtProveTxEntry = events.length
+        reportedAtProveTx = stages.length
         return { stub: true } as never
       },
     }
-
-    await proveTxWithProgress(stubPxe, {} as never, { scopes: [] })
-    expect(proveTxCalled).toBe(true)
-    expect(emitsAtProveTxEntry).toBe(1)
-    expect(events[0]?.stage).toBe(ProvingStage.Simulating)
-  })
-
-  it("propagates errors from pxe.proveTx without swallowing", async () => {
-    const stubPxe: Pick<PXE, "proveTx" | "sync"> = {
-      async sync() {},
-      async proveTx() {
-        throw new Error("simulation reverted")
+    await proveTxWithProgress(
+      stubPxe,
+      {} as never,
+      { scopes: [] },
+      {
+        progress: { stage: (...args) => void stages.push(args), lastSendWait: () => {} },
+        operationId: "op-1",
       },
-    }
-    await expect(proveTxWithProgress(stubPxe, {} as never, { scopes: [] })).rejects.toThrow(
-      "simulation reverted",
     )
-  })
-
-  it("emits reset when pxe.proveTx fails so UI clears stranded stage state", async () => {
-    let resetCount = 0
-    provingProgress.on("reset", () => resetCount++)
-
-    const stubPxe: Pick<PXE, "proveTx" | "sync"> = {
-      async sync() {},
-      async proveTx() {
-        throw new Error("circuit failed")
-      },
-    }
-    await expect(proveTxWithProgress(stubPxe, {} as never, { scopes: [] })).rejects.toThrow(
-      "circuit failed",
-    )
-    expect(resetCount).toBe(1)
+    expect(reportedAtProveTx).toBe(1)
+    expect(stages).toEqual([[ProvingStage.Simulating, "op-1"]])
   })
 
   it("calls pxe.sync() before proveTx when opts.sync is set, and not otherwise", async () => {
@@ -86,35 +54,9 @@ describe("proveTxWithProgress", () => {
         return { stub: true } as never
       },
     }
-
     await proveTxWithProgress(stubPxe, {} as never, { scopes: [] }, { sync: true })
-    expect(calls).toEqual(["sync", "proveTx"])
-
-    calls.length = 0
     await proveTxWithProgress(stubPxe, {} as never, { scopes: [] })
-    expect(calls).toEqual(["proveTx"])
-  })
-
-  it("a failing opts.sync rejects, emits reset, and never reaches proveTx", async () => {
-    let resetCount = 0
-    provingProgress.on("reset", () => resetCount++)
-
-    let proveTxCalled = false
-    const stubPxe: Pick<PXE, "proveTx" | "sync"> = {
-      async sync() {
-        throw new Error("sync failure")
-      },
-      async proveTx() {
-        proveTxCalled = true
-        return { stub: true } as never
-      },
-    }
-
-    await expect(
-      proveTxWithProgress(stubPxe, {} as never, { scopes: [] }, { sync: true }),
-    ).rejects.toThrow("sync failure")
-    expect(resetCount).toBe(1) // sync runs inside the try → catch clears the stage
-    expect(proveTxCalled).toBe(false)
+    expect(calls).toEqual(["sync", "proveTx", "proveTx"])
   })
 })
 

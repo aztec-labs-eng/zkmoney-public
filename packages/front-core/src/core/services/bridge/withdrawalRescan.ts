@@ -1,8 +1,8 @@
 /**
  * Rebuild the withdrawal records a store lost from the account's own recovery events. Every burn
  * the account made delivered its finalization data to it, which names the executor and the L1
- * address the burn pays, the amount and the relayer tip, and a swap's or a Sky move's memo also
- * carries the escrow args, so a fresh device gets its history back — and with it a stuck escrow's
+ * address the burn pays, the amount and the relayer tip, and a swap's, a Sky move's or a
+ * bridge-out's memo also carries the escrow args, so a fresh device gets its history back — and with it a stuck escrow's
  * exits — from chain alone.
  * Records the store already holds (by burn tx hash) keep their state, and one written before
  * executor stamps gets its burn's executor; the rest are created at `l2_mined` for the tracker to
@@ -11,7 +11,11 @@
 
 import { formatUnits, type Hash, type Hex } from "viem"
 import { SkyRoute } from "@oxide/experiments/sky/sky_savings.js"
-import type { ScannedWithdrawEvent, WithdrawEventSource } from "@obsidion/sdk"
+import {
+  acrossBridgeRoute,
+  type ScannedWithdrawEvent,
+  type WithdrawEventSource,
+} from "@obsidion/sdk"
 import { syncCatchUp } from "../../../engine/catchUp"
 import { newWithdrawalLocalId, type Withdrawals } from "../../../engine/withdrawals"
 import type { OnNetwork } from "../../../types/networkStamp"
@@ -28,8 +32,12 @@ export interface WithdrawalRescanDeps {
   deployment?: Omit<WithdrawalDeployment, "executor">
   /** First block to scan. Default 1, the lowest PXE accepts. */
   fromBlock?: number
+  /** The burns to rebuild; every one when absent. */
+  keep?: (event: ScannedWithdrawEvent) => boolean
   /** Stands in for a burn whose block time cannot be read. Defaults to Date.now. */
   now?: () => number
+  /** The name a bridge-out's destination chain shows under; its chain id where the profile has none. */
+  chainName?: (chainId: number) => string | undefined
   /** Told what the scan found, for the console of a device whose history is being rebuilt. */
   report?: (summary: WithdrawalRescanSummary) => void
 }
@@ -59,7 +67,7 @@ export async function rebuildWithdrawals(deps: WithdrawalRescanDeps): Promise<Wi
   })
   const held = await Promise.all(events.map((event) => deps.store.byHash(event.txHash)))
   const missing = events
-    .filter((_, i) => !held[i])
+    .filter((event, i) => !held[i] && (deps.keep?.(event) ?? true))
     .sort((a, b) => a.blockNumber - b.blockNumber)
   // Rebuilt rows join an in-progress chain catch-up so they land behind the activity skeleton.
   const end =
@@ -93,13 +101,13 @@ function rebuiltRecord(
   deps: WithdrawalRescanDeps,
   startTimeEstimated: boolean,
 ): OnNetwork<WithdrawalRecord> {
-  const { swap, sky } = event
+  const { swap, sky, bridge } = event
   return {
-    localId: newWithdrawalLocalId(),
+    localId: newWithdrawalLocalId((deps.now ?? Date.now)()),
     networkId: deps.networkId,
     l2TxHash: event.txHash as Hash,
     blockNumber: event.blockNumber,
-    recipient: swap?.recipient ?? event.l1Recipient,
+    recipient: swap?.recipient ?? bridge?.recipient ?? event.l1Recipient,
     recipientProvenance: "saved-recipient",
     amount: formatUnits(event.amount, deps.tokenDecimals),
     rawAmount: event.amount.toString(),
@@ -126,6 +134,25 @@ function rebuiltRecord(
           swapRelayerTip: swap.relayerTip.toString(),
           ...(swap.daiForGas > 0n ? { swapDaiForGas: swap.daiForGas.toString() } : {}),
           ...(swap.minEthForGas > 0n ? { swapMinEthForGas: swap.minEthForGas.toString() } : {}),
+        }
+      : {}),
+    ...(bridge
+      ? {
+          swapOutput: bridge.token,
+          swapOutputDecimals: acrossBridgeRoute(bridge.token, bridge.chainId)
+            ?.acrossOutputTokenDecimals,
+          swapEscrow: event.l1Recipient,
+          swapEscrowFactory: bridge.factory,
+          bridgeOut: {
+            provider: bridge.provider,
+            chainId: bridge.chainId,
+            chainName: deps.chainName?.(bridge.chainId) ?? String(bridge.chainId),
+            minReceived: bridge.minReceived.toString(),
+            acrossFee: bridge.fee.toString(),
+            nonce: bridge.nonce,
+            recoveryCommitment: bridge.recoveryCommitment,
+            relayerTip: bridge.relayerTip.toString(),
+          },
         }
       : {}),
     ...(sky

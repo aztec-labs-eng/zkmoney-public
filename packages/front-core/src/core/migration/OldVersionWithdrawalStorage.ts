@@ -41,7 +41,9 @@ export interface OldVersionWithdrawal {
 }
 
 /** The withdrawals this front made from old versions. Strict: a sent refund must be durable. */
+// eslint-disable-next-line local/legacy-store -- debt
 export class OldVersionWithdrawalStorage extends RecordStorage<OldVersionWithdrawal> {
+  // eslint-disable-next-line local/legacy-store -- debt
   constructor(storage: IStorageAdapter) {
     super({
       storage,

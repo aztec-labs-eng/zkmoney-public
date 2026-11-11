@@ -1,0 +1,21 @@
+/* The network value: the route and the arrival time each stay whole; the time drops to its own
+   line when the row is narrow. The time reads like the To row's address. */
+.route {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 2px 4px;
+  font-size: 14px;
+}
+.route > * {
+  white-space: nowrap;
+}
+.arrow {
+  font-weight: 400;
+}
+.route small {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}

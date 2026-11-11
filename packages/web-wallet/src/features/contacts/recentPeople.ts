@@ -46,3 +46,21 @@ export function recentPeople(
     .slice(0, Math.max(0, limit - recent.length))
   return [...recent, ...fill]
 }
+
+/**
+ * `latest` without moving a row already shown: a tap must reach the person it was aimed at. A person
+ * found later takes a free slot, or waits for the next visit.
+ */
+export function holdOrder(
+  shown: readonly ContactRow[],
+  latest: readonly ContactRow[],
+  contacts: readonly ContactRow[],
+  limit: number,
+): readonly ContactRow[] {
+  // `contacts` refreshes a row that fell out of `latest`.
+  const byId = new Map([...contacts, ...latest].map((row) => [row.id, row]))
+  const kept = shown.map((row) => byId.get(row.id) ?? row)
+  const ids = new Set(shown.map((row) => row.id))
+  const next = [...kept, ...latest.filter((row) => !ids.has(row.id))].slice(0, limit)
+  return next.length === shown.length && next.every((row, i) => row === shown[i]) ? shown : next
+}

@@ -8,7 +8,6 @@ import {
   currentRegistration,
   isRegistrationEscalated,
   loadRecords,
-  readyValue,
   selectPendingEntry,
   selectSipaDeposit,
   task,
@@ -16,13 +15,13 @@ import {
   within,
   type IdentityView,
   type PendingRegistrationRecord,
+  type QueryEntry,
   type ReadonlyStore,
   type RegistrationRecovery,
   type RegistrationStore,
-  type Resource,
+  type Service,
   type SipaDeposit,
   type SipaDeposits,
-  type Store,
   type Task,
   type WalletIdentity,
 } from "@obsidion/front-core"
@@ -33,14 +32,16 @@ import {
   type ObsidionWallet,
 } from "@obsidion/sdk"
 import type { Hex } from "viem"
-import type { WebWalletConfig } from "../../config/env"
+import type { PageFacts } from "../../session/pageChain"
 import { depositAdmitted, depositShown, expectsEarned } from "./admission"
 import { readRegistrationStage } from "./openRegistration"
 import { askedTotal, signedSchedule, signedWithoutSchedule, termsUnpriced } from "./registrationAsk"
 import { healRegistrationDeposits, type RegistrationSeedStores } from "./registrationDepositSeed"
 import type { RegistrationPricing } from "./registrationPricing"
 import { registrationCandidates, seedRegistrationCandidates } from "./registrationRederive"
-import { sponsoredRailPending, type RailPending } from "./sponsoredRailReadiness"
+import type { ClaimSponsorDeps } from "./claimSponsorship"
+import { sponsoredRailPending } from "./sponsoredRailReadiness"
+import type { RegistrationPending } from "./registrationRail"
 import { hasCustody, runDetectionTick, type WebDetectionDeps } from "./webRegistration"
 
 const FAST_MS = 5_000
@@ -50,18 +51,23 @@ const SLOW_MS = 45_000
  * The delay to the next detection tick: fast while the user waits on a deposit that landed, slow
  * for a record the cadence cannot help, and never under the tick's own floor.
  */
-export function detectionCadence(record: PendingRegistrationRecord | null, nextMs: number): number {
-  const fast = record !== null && hasCustody(record) && !isRegistrationEscalated(record)
+export function detectionCadence(
+  record: PendingRegistrationRecord | null,
+  nextMs: number,
+  now: number,
+): number {
+  const fast = record !== null && hasCustody(record) && !isRegistrationEscalated(record, now)
   return Math.max(fast ? FAST_MS : SLOW_MS, nextMs)
 }
 
 /**
- * Carries the open registration to its close. No open record, no RPC: `reads` is demanded only
+ * Carries the open registration to its close. No open record, no RPC: `reads` is started only
  * for one. A failed tick backs off.
  */
 export function registrationDetection(
   registrations: Pick<RegistrationStore, "view">,
-  reads: Resource<WebDetectionDeps>,
+  reads: () => Service<WebDetectionDeps>,
+  now: () => number,
   tick?: typeof runDetectionTick,
 ): Task {
   return task("registrationDetection", {
@@ -72,12 +78,11 @@ export function registrationDetection(
     async run({ signal }) {
       const records = await within(loadRecords(registrations.view), "registrations", { signal })
       if (!currentRegistration(records)) return
-      if (reads.get().status === "failed") reads.retry()
-      const deps = await readyValue(reads, signal)
+      const deps = await reads().ready(signal)
       const ticked = (tick ?? runDetectionTick)(deps)
       const { nextMs } = await within(ticked, "registrationDetection", { signal })
       const open = currentRegistration(registrations.view.get().records)
-      return { nextMs: detectionCadence(open, nextMs) }
+      return { nextMs: detectionCadence(open, nextMs, now()) }
     },
   })
 }
@@ -85,8 +90,8 @@ export function registrationDetection(
 /** Seeding runs once per session; it waits for the identity and the secret it derives under. */
 const SEEDING = { every: "once", backoff: { baseMs: 60_000, maxMs: 3_600_000 } } as const
 
-/** What a seeding task reads: the account's stores and key, and the page's config. */
-type SeedingDeps = RegistrationSeedStores & { config: () => WebWalletConfig }
+/** What a seeding task reads: the account's stores and key, and the page. */
+type SeedingDeps = RegistrationSeedStores & { page: PageFacts }
 
 async function unlocked(own: RegistrationSeedStores, signal: AbortSignal) {
   const identity = own.identity.get().value
@@ -100,7 +105,7 @@ async function unlocked(own: RegistrationSeedStores, signal: AbortSignal) {
  * deposit sync watches the ones a fresh device has no record of.
  */
 export function registrationRederive(
-  needs: { wallet: Resource<ObsidionWallet> },
+  needs: { wallet: Service<ObsidionWallet> },
   own: SeedingDeps,
   candidates?: typeof registrationCandidates,
 ): Task {
@@ -111,7 +116,7 @@ export function registrationRederive(
     async run({ wallet, signal }) {
       const { handle, address, secret } = await unlocked(own, signal)
       const seeded = (candidates ?? registrationCandidates)(
-        own.config(),
+        own.page,
         wallet.networkId,
         secret,
         handle,
@@ -125,7 +130,7 @@ export function registrationRederive(
 
 /** Seeds the claim inputs the account's registrations miss on this device. */
 export function registrationHeal(
-  needs: { wallet: Resource<ObsidionWallet> },
+  needs: { wallet: Service<ObsidionWallet> },
   own: SeedingDeps,
   heal?: typeof healRegistrationDeposits,
 ): Task {
@@ -135,7 +140,7 @@ export function registrationHeal(
     after: { firstBalance: true },
     async run({ wallet, signal }) {
       await unlocked(own, signal)
-      const healed = (heal ?? healRegistrationDeposits)(own, own.config(), wallet.networkId)
+      const healed = (heal ?? healRegistrationDeposits)(own, own.page, wallet.networkId)
       await within(healed, "registrationHeal", { signal })
     },
   })
@@ -221,10 +226,10 @@ export function registrationEntry(
       const record = currentRegistration(records)
       if (!record || record.tagConfirmed === true) return
       // Only an earned tag's refund reads the sweep fee; only an unsigned quote reads the schedule.
-      const prices: Resource<unknown>[] = []
+      const prices: QueryEntry<unknown>[] = []
       if (expectsEarned(record)) prices.push(own.sweepFee)
       if (signedWithoutSchedule(record.terms)) prices.push(own.registrationSchedule)
-      await Promise.all(prices.map((r) => readyValue(r, signal)))
+      await Promise.all(prices.map((r) => r.read(signal)))
       if (!pendingEntry(own, record, Date.now(), own.linkFunds).settles) return
       await within(own.confirmTag(record), "registrationEntry", { signal })
     },
@@ -284,32 +289,42 @@ const RAIL_RECHECK_MS = 12_000
 
 /**
  * The one reader of whether the account can ride the sponsored rail: the route gate and the upgrade
- * read `railPending`. Asked again while pending, so a held screen opens on its own; a message the
- * rollup has yet to import is waited on through the node.
+ * subscribe to it. Asked again while pending and subscribed, so a held screen opens on its own; a
+ * message the rollup has yet to import is waited on through the node, then asked again.
  */
 export function sponsoredRail(
   needs: {
-    wallet: Resource<ObsidionWallet>
-    account: Resource<ObsidionAccount>
-    contractService: Resource<ContractService>
+    wallet: Service<ObsidionWallet>
+    account: Service<ObsidionAccount>
+    contractService: Service<ContractService>
   },
-  railPending: Store<RailPending>,
-  rail?: { read: typeof sponsoredRailPending; imported: typeof waitForRegistrationMessage },
-): Task {
-  return task("sponsoredRail", {
-    needs,
-    every: RAIL_RECHECK_MS,
-    async run({ wallet, account, contractService, signal }) {
-      if (railPending.get() === false) return
-      const read = (rail?.read ?? sponsoredRailPending)({ wallet, account, contractService })
-      const waiting = await within(read, "sponsoredRail", { signal })
-      railPending.set(waiting)
-      if (!waiting || waiting.pending !== "import") return
-      const wait = rail?.imported ?? waitForRegistrationMessage
+  session: ClaimSponsorDeps["session"],
+  rail = { read: sponsoredRailPending, imported: waitForRegistrationMessage },
+): QueryEntry<RegistrationPending | false> {
+  return session.page.query<[], RegistrationPending | false>("sponsoredRail", {
+    async load(signal) {
+      const [wallet, account, contractService] = await Promise.all([
+        needs.wallet.ready(signal),
+        needs.account.ready(signal),
+        needs.contractService.ready(signal),
+      ])
+      const read = () =>
+        within(rail.read({ session, wallet, account, contractService }), "sponsoredRail", {
+          signal,
+        })
+      const waiting = await read()
+      if (!waiting || waiting.pending !== "import") return waiting
       const timeoutSeconds = RAIL_RECHECK_MS / 1000
-      const imported = wait(wallet.node, waiting.messageHash, { timeoutSeconds })
+      const imported = rail.imported(
+        wallet.node,
+        waiting.messageHash,
+        { timeoutSeconds },
+        wallet.pace,
+      )
       await bestEffort("timeout", within(imported, "registration message", { signal }))
-      return { nextMs: 0 }
+      return read()
     },
-  })
+    poll: RAIL_RECHECK_MS,
+    final: (waiting) => waiting === false,
+  })()
 }

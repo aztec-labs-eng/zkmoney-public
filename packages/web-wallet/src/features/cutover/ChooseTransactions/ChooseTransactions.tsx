@@ -1,10 +1,10 @@
 /** The transactions sheet over the wallet's activity feed. */
 import { useMemo } from "react"
 import {
-  activityPages,
+  transferPages,
   formatDateLabel,
   useStore,
-  type ActivityPages,
+  type TransferPages,
   type FeedItem,
 } from "@obsidion/front-core"
 import { useSession } from "../../../session/session"
@@ -31,10 +31,13 @@ export function groupByDay(items: readonly FeedItem[]): TransactionGroup[] {
 }
 
 export function ChooseTransactions({ onClose }: { onClose: () => void }) {
-  const { activity, reads } = useSession()
-  const pages = useMemo(() => activityPages(activity), [activity])
+  const { transfers, reads } = useSession()
+  const pages = useMemo(() => transferPages(transfers), [transfers])
   // A paid link's row dates it, wherever the row sits.
-  const rows = useMemo(() => mergedRows([pages.rows, reads.paying]), [pages, reads])
+  const rows = useMemo(
+    () => mergedRows([pages.rows, reads.paying, reads.transfers]),
+    [pages, reads],
+  )
   return (
     <ActivityDetailHost rows={rows}>
       <Transactions pages={pages} onClose={onClose} />
@@ -42,7 +45,7 @@ export function ChooseTransactions({ onClose }: { onClose: () => void }) {
   )
 }
 
-function Transactions({ pages, onClose }: { pages: ActivityPages; onClose: () => void }) {
+function Transactions({ pages, onClose }: { pages: TransferPages; onClose: () => void }) {
   const { feed } = useActivityHost()
   const page = useStore(pages.rows)
   return (

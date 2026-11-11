@@ -1,18 +1,20 @@
-import { useEffect } from "react"
 import type { Address } from "viem"
 import { WALLET_TOKEN_SYMBOL, tokenDecimalsForNetwork } from "@obsidion/core/constants"
 import {
   inRowUnits,
-  resource,
+  liveStore,
+  memoryStore,
   selectSipaDeposit,
-  useResource,
+  useStore,
   type PendingRegistrationRecord,
-  type Resource,
+  type QueryFactory,
+  type QueryState,
+  type ReadonlyStore,
   type SipaDeposits,
   type SipaFundingToken,
 } from "@obsidion/front-core"
 import { readFundingTransfers, type SipaFundingTransfer } from "@obsidion/sdk"
-import type { WebWalletConfig } from "../../config/env"
+import type { PageFacts } from "../../session/pageChain"
 import { l1PublicClient } from "../../config/oxideTuple"
 import { useSession } from "../../session/session"
 import { sipaFundingTokens } from "../sipa/loadDepositFacts"
@@ -63,55 +65,62 @@ const FUNDING_BACKOFF = { baseMs: 24_000, maxMs: 300_000 }
 
 type FundingRead = (token: Address, sipa: Address) => Promise<RegistrationFunding | null>
 
+type FundingState = QueryState<RegistrationFunding | null>
+
+const UNREAD = memoryStore<FundingState>({ status: "pending" }).readonly
+
 /**
- * The session's funding reads, one per registration address, each built on its first demand and
- * retried on `FUNDING_BACKOFF`. A rise in the address's held amount reads again: a top-up adds to
- * the total.
+ * The session's funding reads, one per registration address, read while subscribed and retried on
+ * `FUNDING_BACKOFF`. A rise in the address's held amount reads again: a top-up adds to the total.
  */
-export function fundingTransfers(read: FundingRead, deposits: Pick<SipaDeposits, "view">) {
-  const reads = new Map<string, Resource<RegistrationFunding | null>>()
+export function fundingTransfers(
+  query: QueryFactory,
+  read: FundingRead,
+  deposits: Pick<SipaDeposits, "view">,
+) {
+  const reads = query<[sipa: string, token: string], RegistrationFunding | null>(
+    "fundingTransfer",
+    { load: (sipa, token) => read(token as Address, sipa as Address), retry: FUNDING_BACKOFF },
+  )
+  const views = new Map<string, ReadonlyStore<FundingState>>()
   const heldAt = (sipa: string) =>
     BigInt(selectSipaDeposit(deposits.view.get(), sipa)?.heldBalance ?? 0)
   return {
     of(record: Pick<PendingRegistrationRecord, "depositToken" | "sipaAddress">) {
       const sipa = record.sipaAddress.toLowerCase()
-      let r = reads.get(sipa)
-      if (r) return r
-      r = resource(
-        "fundingTransfer",
-        {
-          from: [],
-          lazy: true,
-          backoff: FUNDING_BACKOFF,
-          changes(onChange) {
-            let held = heldAt(sipa)
-            return deposits.view.subscribe(() => {
-              const now = heldAt(sipa)
-              const rose = now > held
-              held = now
-              if (rose) onChange()
-            })
-          },
+      let view = views.get(sipa)
+      if (view) return view
+      const entry = reads(sipa, record.depositToken)
+      let held = heldAt(sipa)
+      /** Reads again when the amount held rose since the last look. */
+      const rose = () => {
+        const now = heldAt(sipa)
+        if (now > held) entry.refresh()
+        held = now
+      }
+      view = liveStore<FundingState>(entry.get(), {
+        whileSubscribed(set) {
+          const offEntry = entry.subscribe(() => set(entry.get()))
+          set(entry.get())
+          rose()
+          const offDeposits = deposits.view.subscribe(rose)
+          return () => (offEntry(), offDeposits())
         },
-        () => read(record.depositToken as Address, record.sipaAddress as Address),
-      )
-      reads.set(sipa, r)
-      return r
-    },
-    close() {
-      for (const r of reads.values()) r.close()
+      })
+      views.set(sipa, view)
+      return view
     },
   }
 }
 
 /** Reads the address's funding from every accepted token's Transfer logs. */
 export const chainFunding =
-  (config: () => WebWalletConfig): FundingRead =>
+  (page: () => PageFacts): FundingRead =>
   async (token, sipa) => {
-    const c = config()
+    const c = page().config
     const client = l1PublicClient(c)
     const tokens = await sipaFundingTokens(
-      c,
+      page(),
       { address: token, symbol: WALLET_TOKEN_SYMBOL, decimals: tokenDecimalsForNetwork(c.network) },
       "registration",
     )
@@ -130,7 +139,6 @@ export const chainFunding =
  */
 export function useFundingTransfer(record: PendingRegistrationRecord | null) {
   const { fundingTransfers } = useSession()
-  const read = record ? fundingTransfers.of(record) : null
-  useEffect(() => read?.demand(), [read])
-  return useResource(read)
+  const funding = useStore(record ? fundingTransfers.of(record) : UNREAD)
+  return funding.status === "ready" ? funding.value : undefined
 }

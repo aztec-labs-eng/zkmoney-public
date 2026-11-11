@@ -8,21 +8,15 @@ import {
   type StoredRequest,
   type SipaOrigin,
 } from "@obsidion/front-core"
-import { getConfig } from "../../config/env"
-import { session } from "../../session/session"
+import type { Network } from "@obsidion/sdk"
 
 /** Request links land on this deploy's pay page, unless a scanner would refuse its origin. */
-export function requestLinkOrigin(): string {
-  return mintableOrigin(location.origin, getConfig().network)
+export function requestLinkOrigin(network: Network): string {
+  return mintableOrigin(location.origin, network)
 }
 
 export interface RequestLinkStore {
   add(row: StoredRequest): Promise<void>
-}
-
-/** What this wallet recorded when it derived `sipa`. */
-async function recordedSipaOrigin(sipa: string): Promise<SipaOrigin | undefined> {
-  return (await session().sipaDeposits.get(sipa))?.origin
 }
 
 /**
@@ -33,7 +27,8 @@ async function recordedSipaOrigin(sipa: string): Promise<SipaOrigin | undefined>
 export async function createAndStoreRequestLink(
   input: MintRequestLinkArgs,
   store: RequestLinkStore,
-  originOf: (sipa: string) => Promise<SipaOrigin | undefined> = recordedSipaOrigin,
+  /** What this wallet recorded when it derived `sipa`. */
+  originOf: (sipa: string) => Promise<SipaOrigin | undefined>,
 ): Promise<MintedRequestLink> {
   const origin = input.sipaAddress ? await originOf(input.sipaAddress) : undefined
   const minted = mintRequestLink({

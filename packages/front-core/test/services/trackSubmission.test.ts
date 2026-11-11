@@ -1,18 +1,23 @@
 import { expect, it, vi } from "vitest"
 import { TxStatus, TxExecutionResult } from "@aztec-labs/stdlib/tx"
-import { provingProgress, ProvingStage } from "@obsidion/proving-progress"
+import { ProvingStage } from "@obsidion/core/types"
+import { createProver } from "../../src/engine/prover"
 import {
   conflictingPendingTx,
   trackSubmission,
 } from "../../src/core/services/transactions/trackSubmission"
 
 const hash = `0x${"11".repeat(32)}` as const
+const prover = createProver({ now: () => Date.now() })
+/** The wallet's send reaching Mining with its hash, in its own turn. */
+const mining = (operationId: string, txHash: string) =>
+  prover.turn(async (progress) => progress.stage(ProvingStage.Mining, operationId, txHash))
 const receipt = (status: TxStatus, executionResult?: TxExecutionResult) => ({
   getTxReceipt: vi.fn(async () => ({ status, executionResult })),
 })
 
 it("reports nothing submitted when the boundary was never crossed", async () => {
-  const submission = trackSubmission("op")
+  const submission = trackSubmission(prover.progress, "op")
   try {
     expect(submission.txHash).toBeUndefined()
     expect(await submission.survived(receipt(TxStatus.SUCCESS) as never)).toBeNull()
@@ -22,9 +27,9 @@ it("reports nothing submitted when the boundary was never crossed", async () => 
 })
 
 it("survives a receipt that does not prove failure", async () => {
-  const submission = trackSubmission("op")
+  const submission = trackSubmission(prover.progress, "op")
   try {
-    provingProgress.emitStageStart(ProvingStage.Mining, "op", hash)
+    await mining("op", hash)
     const node = receipt(TxStatus.PROVEN, TxExecutionResult.SUCCESS)
     expect(await submission.survived(node as never)).toBe(hash)
   } finally {
@@ -36,9 +41,9 @@ it.each([
   ["dropped", TxStatus.DROPPED, undefined],
   ["reverted", TxStatus.PROVEN, TxExecutionResult.REVERTED],
 ])("does not survive a %s receipt", async (_label, status, execution) => {
-  const submission = trackSubmission("op")
+  const submission = trackSubmission(prover.progress, "op")
   try {
-    provingProgress.emitStageStart(ProvingStage.Mining, "op", hash)
+    await mining("op", hash)
     expect(await submission.survived(receipt(status, execution) as never)).toBeNull()
   } finally {
     submission.stop()
@@ -47,14 +52,14 @@ it.each([
 
 // The bug this exists for: an unreachable node is not evidence the transfer failed.
 it("keeps the hash when the receipt lookup itself fails", async () => {
-  const submission = trackSubmission("op")
+  const submission = trackSubmission(prover.progress, "op")
   const node = {
     getTxReceipt: vi.fn(async () => {
       throw new Error("offline")
     }),
   }
   try {
-    provingProgress.emitStageStart(ProvingStage.Mining, "op", hash)
+    await mining("op", hash)
     expect(await submission.survived(node as never)).toBe(hash)
   } finally {
     submission.stop()
@@ -62,9 +67,9 @@ it("keeps the hash when the receipt lookup itself fails", async () => {
 })
 
 it("ignores another operation's boundary", async () => {
-  const submission = trackSubmission("op")
+  const submission = trackSubmission(prover.progress, "op")
   try {
-    provingProgress.emitStageStart(ProvingStage.Mining, "other", hash)
+    await mining("other", hash)
     expect(submission.txHash).toBeUndefined()
     expect(await submission.survived(receipt(TxStatus.PROVEN) as never)).toBeNull()
   } finally {
@@ -72,29 +77,11 @@ it("ignores another operation's boundary", async () => {
   }
 })
 
-it("stops listening after stop", () => {
-  const submission = trackSubmission("op")
+it("stops listening after stop", async () => {
+  const submission = trackSubmission(prover.progress, "op")
   submission.stop()
-  provingProgress.emitStageStart(ProvingStage.Mining, "op", hash)
+  await mining("op", hash)
   expect(submission.txHash).toBeUndefined()
-})
-
-// The wallet emits Mining only once the flow's `onTxHash` saved the hash, so Mining is the save.
-it.each([
-  ["by default", {}, [{ operationId: "op", txHash: hash }]],
-  ["not for a record riding another's tx", { announce: false }, []],
-])("announces the hash as saved at the boundary, once, %s", async (_label, opts, expected) => {
-  const saved = vi.fn()
-  provingProgress.on("tx-hash-saved", saved)
-  const submission = trackSubmission("op", opts)
-  try {
-    provingProgress.emitStageStart(ProvingStage.Mining, "op", hash)
-    provingProgress.emitStageStart(ProvingStage.Mining, "op", hash)
-    expect(saved.mock.calls.map(([event]) => event)).toEqual(expected)
-  } finally {
-    submission.stop()
-    provingProgress.off("tx-hash-saved", saved)
-  }
 })
 
 it("names the pending transaction a node refused a conflicting one for, through any cause", () => {

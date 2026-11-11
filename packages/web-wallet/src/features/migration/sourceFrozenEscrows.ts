@@ -8,31 +8,32 @@ import type { Fr } from "@aztec-labs/aztec.js/fields"
 import type { OxideEnvTuple, SourceGenerationSession } from "@obsidion/core/types"
 import {
   creatorLinksFromRows,
+  linkedActivity,
   markPaylinkMigrated,
-  storedActivity,
+  storedTransfers,
   type PaylinkTransaction,
   type Transaction,
 } from "@obsidion/front-core"
 import {
-  ContractService,
   createTransferEventSource,
   discoverFrozenEscrows,
   PaylinkService,
   TokenService,
+  type ContractService,
   type FrozenEscrow,
   type ObsidionAccount,
   type ObsidionWallet,
 } from "@obsidion/sdk"
-import { getConfig } from "../../config/env"
 import { SessionChangedError } from "../../platform/auth/sessionErrors"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
-import { session, type Session, type SessionDeps } from "../../session/session"
+import type { Session } from "../../session/session"
 import { stillCommitted } from "../../session/stillCommitted"
 import { isHistoricPaylinkRow } from "./historicResiduals"
 
 /** The escrows of the source's links, registered in the source chain's wallet. */
 export async function sourceFrozenEscrows(o: {
   chain: { wallet: ObsidionWallet; account: ObsidionAccount }
+  contractService: ContractService
   tuple: OxideEnvTuple
   masterSecret: Fr
   /** The source's link rows, from {@link sourceLinkRows}. */
@@ -41,7 +42,7 @@ export async function sourceFrozenEscrows(o: {
   const { wallet, account } = o.chain
   const token = AztecAddress.fromStringUnsafe(o.tuple.l2Token)
   const tokenService = await TokenService.create(wallet, account, token)
-  const contractService = ContractService.getInstance()
+  const { contractService } = o
   return discoverFrozenEscrows({
     paylinkService: new PaylinkService(wallet, account, tokenService, contractService),
     escrows: { wallet, contractService },
@@ -72,14 +73,14 @@ export async function markRefundedSourceLinks(o: {
     paylinkRows: () =>
       sourceLinkRows({
         ...o,
-        rows: async () => [...(await session().activity.all())],
+        rows: () => linkedActivity(o.own.transfers, o.own.paylinks, o.own.operations),
       }),
   })
   if (!refunded.length) return
   await o.own.sessionLock(async () => {
     if (!stillCommitted(o.own)) throw new SessionChangedError()
-    const { activity } = session()
-    for (const txHash of refunded) await markPaylinkMigrated(txHash, activity)
+    const { paylinks } = o.own
+    for (const txHash of refunded) await markPaylinkMigrated(txHash, paylinks)
   })
 }
 
@@ -92,7 +93,7 @@ export async function sourceLinkRows(o: {
   tuple: OxideEnvTuple
   /** The current deployment, whose creation dates a legacy row with no token address. */
   current: OxideEnvTuple
-  own: Pick<SessionDeps, "device" | "namespace">
+  own: Session
   /** The rows to pick from; by default every database's. */
   rows?: () => Promise<Transaction[]>
 }): Promise<Transaction[]> {
@@ -101,7 +102,7 @@ export async function sourceLinkRows(o: {
   }
   checkSession()
   const since = Date.parse(o.current.timestamp)
-  const rows = (await (o.rows ?? browserRows)()).filter((row) =>
+  const rows = (await (o.rows ?? (() => browserRows(o.own)))()).filter((row) =>
     isHistoricPaylinkRow(row as PaylinkTransaction, o.tuple, since),
   )
   checkSession()
@@ -110,7 +111,7 @@ export async function sourceLinkRows(o: {
     const [link] = await creatorLinksFromRows([row])
     if (
       link &&
-      link.chainId === getConfig().l1ChainId &&
+      link.chainId === o.own.page.config.l1ChainId &&
       link.rollupVersion === Number(o.tuple.rollupVersion)
     )
       onSource.push(row)
@@ -123,7 +124,8 @@ export async function sourceLinkRows(o: {
  * This account's rows here and in every other rollup's database. A database that can't be read
  * fails the read, so a hint is never silently missing.
  */
-async function browserRows(): Promise<Transaction[]> {
-  const others = await webStorage.readOtherDatabases(storedActivity)
-  return [...(await session().activity.all()), ...(others.flat() as Transaction[])]
+async function browserRows(session: Session): Promise<Transaction[]> {
+  const others = await webStorage.readOtherDatabases(storedTransfers)
+  const own = await linkedActivity(session.transfers, session.paylinks, session.operations)
+  return [...own, ...(others.flat() as Transaction[])]
 }

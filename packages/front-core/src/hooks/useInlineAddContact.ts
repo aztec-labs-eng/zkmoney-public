@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from "react"
-import type { Contact, RegistryTagResolution } from "../core"
+import type { RegistryTagResolution } from "../core"
+import type { Contact } from "../engine/contacts"
 import { normalizeTag } from "../utils"
 
 interface AddContactResponse {
@@ -15,8 +16,7 @@ interface UseInlineAddContactArgs {
     verified?: boolean,
     tag?: string,
   ) => Promise<AddContactResponse>
-  getContacts: () => Promise<Contact[]>
-  refreshContacts: () => Promise<void>
+  getContacts: () => Promise<readonly Contact[]>
   /** Platform binding of Registry tag resolution (chain, RPC, manifest). */
   resolveTag: (tag: string) => Promise<RegistryTagResolution>
   /** The user's own tag; adding it is rejected. */
@@ -52,13 +52,12 @@ export interface InlineAddedContact {
  *
  *   • `saveResolvedTag(tag)` — fired on the Add-CTA tap. Uses the cached
  *     address from `lastResolved` to skip a second RPC, writes through
- *     `addContact`, refreshes the directory, and returns
+ *     `addContact`, and returns
  *     `{tag, address}` so the caller can open the new contact's chat.
  */
 export function useInlineAddContact({
   addContact,
   getContacts,
-  refreshContacts,
   resolveTag: resolveTagViaRegistry,
   ownTag,
 }: UseInlineAddContactArgs) {
@@ -140,9 +139,9 @@ export function useInlineAddContact({
           return null
         }
 
-        await refreshContacts()
         return { tag, address }
       } catch (err) {
+        // eslint-disable-next-line local/message-in-state -- debt
         setSaveError(err instanceof Error ? err.message : "Could not add contact")
         return null
       } finally {
@@ -150,7 +149,7 @@ export function useInlineAddContact({
         setIsSaving(false)
       }
     },
-    [addContact, getContacts, lastResolved, refreshContacts, ownTag],
+    [addContact, getContacts, lastResolved, ownTag],
   )
 
   return { lastResolved, isSaving, saveError, resolveTag, saveResolvedTag }

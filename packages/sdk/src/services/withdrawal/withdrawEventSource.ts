@@ -7,7 +7,6 @@
 
 import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import { BlockNumber } from "@aztec-labs/foundation/branded-types"
-import { predictSkyEscrowAddressLocally } from "@oxide/experiments/sky/sky_savings.js"
 import { recoverWithdrawals } from "@oxide/oxide-client/withdrawal_recovery.js"
 import { decodePlainWithdrawalPayload } from "@oxide/oxide-lib/plain_withdrawal_executor.js"
 import type { PortalDomain } from "@oxide/oxide-lib/types.js"
@@ -15,11 +14,13 @@ import { getAddress, isAddressEqual, type Address } from "viem"
 import { OxideTokenContract } from "@obsidion/contracts"
 import type { ObsidionWallet } from "../../obsidion/ObsidionWallet.js"
 import type { WithdrawalExecutor } from "../../oxide/withdrawal/withdrawalExecutor.js"
-import { predictSwapEscrow, swapRouteForOutput } from "../../oxide/escrow/swapOnWithdraw.js"
 import {
   decodeWithdrawalMemo,
+  memoDerivesEscrow,
+  type BridgeWithdrawalMemo,
   type SkyWithdrawalMemo,
   type SwapWithdrawalMemo,
+  type WithdrawalMemo,
 } from "./withdrawalMemo.js"
 
 /** One recovered withdrawal of the scanned account, through one of its portal's withdrawal executors. */
@@ -30,7 +31,7 @@ export interface ScannedWithdrawEvent {
   executor: Address
   /** What that executor takes from the withdrawal. */
   withdrawalFee: bigint
-  /** The L1 address the executor pays: the recipient, or the escrow of a swap or a Sky move. */
+  /** The L1 address the executor pays: the recipient, or the escrow of a swap, a Sky move or a bridge-out. */
   l1Recipient: Address
   /** Raw base-unit amount the burn removed. */
   amount: bigint
@@ -40,6 +41,8 @@ export interface ScannedWithdrawEvent {
   swap?: SwapWithdrawalMemo
   /** The Sky savings move the burn funds, on the same condition. */
   sky?: SkyWithdrawalMemo
+  /** The bridge-out the burn funds, on the same condition. */
+  bridge?: BridgeWithdrawalMemo
 }
 
 export interface WithdrawEventSource {
@@ -50,31 +53,11 @@ export interface WithdrawEventSource {
   blockTimestampMs(blockNumber: number): Promise<number | undefined>
 }
 
-/**
- * `swap` when its args derive `escrow` from its factory, else undefined: the memo is what the wallet asserted at burn
- * time, and only args the burn actually paid into are worth acting on.
- */
-export function swapMemoForEscrow(
-  swap: SwapWithdrawalMemo | undefined,
-  escrow: Address,
-): SwapWithdrawalMemo | undefined {
-  if (!swap) return undefined
-  const { output, factory, ...args } = swap
-  const predicted = predictSwapEscrow(factory, {
-    layout: "v2",
-    args: { ...args, route: swapRouteForOutput(output) },
-  })
-  return predicted.toLowerCase() === escrow.toLowerCase() ? swap : undefined
-}
-
-/** `sky` when its args derive `escrow` from its factory, else undefined, as for a swap. */
-export function skyMemoForEscrow(
-  sky: SkyWithdrawalMemo | undefined,
-  escrow: Address,
-): SkyWithdrawalMemo | undefined {
-  if (!sky) return undefined
-  const predicted = predictSkyEscrowAddressLocally(sky.factory, sky)
-  return predicted.toLowerCase() === escrow.toLowerCase() ? sky : undefined
+/** `memo` when its escrow's args derive `escrow` from its factory, else no escrow. */
+export function memoForEscrow(memo: WithdrawalMemo, escrow: Address): WithdrawalMemo {
+  const { swap, sky, bridge } = memo
+  const named = swap ? { swap } : sky ? { sky } : bridge ? { bridge } : undefined
+  return named && memoDerivesEscrow(named, escrow) ? named : {}
 }
 
 export function createWithdrawEventSource(deps: {
@@ -117,7 +100,6 @@ export function createWithdrawEventSource(deps: {
         if (blockNumber === undefined) continue
         const { recipient, relayerTip } = decodePlainWithdrawalPayload(finalizationData.userPayload)
         const l1Recipient = getAddress(recipient.toString())
-        const { swap, sky } = decodeWithdrawalMemo(memo)
         scanned.push({
           txHash: txHash.toString(),
           blockNumber: Number(blockNumber),
@@ -127,8 +109,7 @@ export function createWithdrawEventSource(deps: {
           amount: finalizationData.amount,
           proverTip: finalizationData.proverTip,
           relayerTip,
-          swap: swapMemoForEscrow(swap, l1Recipient),
-          sky: skyMemoForEscrow(sky, l1Recipient),
+          ...memoForEscrow(decodeWithdrawalMemo(memo), l1Recipient),
         })
       }
       return scanned

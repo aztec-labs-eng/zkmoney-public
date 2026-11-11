@@ -1,10 +1,10 @@
-import { useEffect, useState, type ReactNode } from "react"
+import { useState, type ReactNode } from "react"
 import { WALLET_TOKEN_SYMBOL } from "@obsidion/core/constants"
 import { Modal } from "../../ui/Modal"
 import { useSponsoredAllowance } from "../allowance/useSponsoredAllowance"
 import { useDepositTokens } from "../sipa/loadDepositFacts"
 import type { SipaCapacityKey } from "@obsidion/front-core"
-import { session } from "../../session/session"
+import { useSession } from "../../session/session"
 import { AboutLimitsContent, type LimitsDetails } from "./AboutLimitsContent"
 import { sourceFromSipaKey } from "./capacitySources"
 import { useAboutLimitsCapacity, type CapacitySource } from "./useAboutLimitsCapacity"
@@ -15,7 +15,7 @@ import type {
   LimitsTopic,
   SponsorshipFacts,
 } from "./aboutLimitsView"
-import { InfoButton } from "./InfoButton"
+import { InfoButton } from "../../ui/InfoButton/InfoButton"
 import { SHEET_TITLE } from "./limitsCopy"
 
 /** The About limits sheet, drawn from the facts it is given. */
@@ -102,11 +102,6 @@ function PolicyAndCapacitySheet({
 /** Adds the signed-in account's allowance, which needs the account context. */
 function AccountAboutLimitsSheet(props: WalletSheetProps) {
   const { snapshot, refresh } = useSponsoredAllowance()
-  useEffect(() => {
-    // Uses change with every sponsored batch, so opening the sheet reads again.
-    refresh()
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- read once per opening
-  }, [])
   return (
     <PolicyAndCapacitySheet
       {...props}
@@ -143,9 +138,10 @@ export function PendingLimitsLink({
   settlementSymbol?: string
   detail?: ReactNode
 }) {
+  const session = useSession()
   const capacity = sourceFromSipaKey(
     capacityKey,
-    () => void session().sipaProcessingObserver?.retry(sipaAddress),
+    () => void session.sipaProcessingObserver?.retry(sipaAddress),
   )
   return (
     <LimitsInfoButton

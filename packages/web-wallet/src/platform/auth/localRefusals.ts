@@ -1,17 +1,17 @@
+import type { Database } from "@obsidion/front-core"
 import {
   LaptopPasskeyRefusedError,
   UnsupportedProviderError,
   extensionAnswersPasskeys,
 } from "@obsidion/passkey-web"
-import { deviceStorage } from "../storage/rollupStorage"
+import { updateLocalRefusals } from "../storage/deviceKeys"
 
 /**
  * How often this browser's sign-ups on this computer were refused because a manager the row does
- * not admit answered, while an extension answers the page's passkeys. The sign-up sheet reads it to
- * stop leading with a route that keeps leaving a refused passkey behind.
+ * not admit answered, while an extension answers the page's passkeys, is the device's
+ * `localRefusals`. The sign-up sheet reads it to stop leading with a route that keeps leaving a
+ * refused passkey behind.
  */
-
-const STORAGE_KEY = "webwallet.local-refusals"
 
 /** Above this many refusals the sheet changes. */
 export const LOCAL_REFUSAL_LIMIT = 2
@@ -22,46 +22,23 @@ export function countsAsLocalRefusal(err: unknown): boolean {
   return err instanceof LaptopPasskeyRefusedError && !err.appleRefusedHere
 }
 
-export function localRefusalCount(): number {
-  try {
-    const count = Number(deviceStorage.getItem(STORAGE_KEY))
-    return Number.isInteger(count) && count > 0 ? count : 0
-  } catch {
-    return 0
-  }
-}
-
-export function noteLocalRefusal(): void {
-  try {
-    deviceStorage.setItem(STORAGE_KEY, String(localRefusalCount() + 1))
-  } catch {
-    // A browser that keeps nothing counts nothing.
-  }
-}
-
-export function clearLocalRefusals(): void {
-  try {
-    deviceStorage.removeItem(STORAGE_KEY)
-  } catch {
-    // Nothing was kept.
-  }
-}
-
 /** Whether the sheet stops leading with this computer: past the limit, and an extension still answers. */
-export const localRefusalsOverLimit = (extension: boolean): boolean =>
-  extension && localRefusalCount() > LOCAL_REFUSAL_LIMIT
+export const localRefusalsOverLimit = (extension: boolean, refusals: number): boolean =>
+  extension && refusals > LOCAL_REFUSAL_LIMIT
 
 /**
  * Keeps the count for a creation on this computer, where the creation driver settles: an accepted
  * passkey clears it whatever the sign-up does next, and a refusal another manager caused adds one.
+ * A count that cannot be saved is lost, never the creation's result.
  */
-export async function countingLocalRefusals<T>(creation: Promise<T>): Promise<T> {
+export async function countingLocalRefusals<T>(db: Database, creation: Promise<T>): Promise<T> {
   try {
     const made = await creation
-    clearLocalRefusals()
+    updateLocalRefusals(db, () => 0)
     return made
   } catch (err) {
-    if (extensionAnswersPasskeys("create") && countsAsLocalRefusal(err)) noteLocalRefusal()
+    if (extensionAnswersPasskeys("create") && countsAsLocalRefusal(err))
+      updateLocalRefusals(db, (refusals) => refusals + 1)
     throw err
   }
 }

@@ -5,8 +5,8 @@ import { MemoryRouter } from "react-router-dom"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { HistoricResidualSummary } from "../../../src/features/migration/historicResiduals"
 import type { MigrationSourceQuote } from "@obsidion/sdk"
-import type { IdentityView, Store, WalletIdentity } from "@obsidion/front-core"
-import { startTabBoundOperation } from "../../support/operations"
+import type { BalanceStore, IdentityView, Store, WalletIdentity } from "@obsidion/front-core"
+import { operationRecord, startTabBoundOperation, testOperations } from "../../support/operations"
 
 const BOOTED_PORTAL = "0x" + "AA".repeat(20)
 const ACCOUNT = { getAddress: () => ({ toString: () => "0xabc" }) }
@@ -16,6 +16,7 @@ const h = vi.hoisted(() => ({
   probe: vi.fn(),
   reconcile: vi.fn(),
   live: vi.fn(),
+  config: { oxideProfile: { portal: "0x" + "AA".repeat(20) } } as never,
   metadataSession: vi.fn(),
   runMetadata: vi.fn(),
   aztec: { obsidionWallet: {} },
@@ -39,6 +40,8 @@ const h = vi.hoisted(() => ({
 
 /** The session's identity, which `enter` sets. */
 const entered = vi.hoisted(() => ({ store: undefined as unknown as Store<IdentityView> }))
+/** The session's balance store, on memory. */
+const stored = vi.hoisted(() => ({ balances: undefined as unknown as BalanceStore }))
 const enter = (value: WalletIdentity | null) =>
   entered.store.set({ value, loaded: true, failed: false })
 
@@ -57,17 +60,22 @@ const notes = vi.hoisted(() => ({
 vi.mock("../../../src/session/session", async () => {
   const core = await import("@obsidion/front-core")
   const { notificationText } = await import("../../../src/ui/notificationText")
-  const bell = core.createNotifications(core.openDatabase(core.memoryBackend()))
+  const bell = core.createNotifications({
+    db: core.openDatabase(core.memoryBackend()),
+    now: () => Date.now(),
+  })
   // Watched, as the session's are, so its loaded records follow its writes.
   bell.state.subscribe(() => {})
   bell.events.subscribe(() => {})
-  const none = { records: [], hydrated: true }
   const sources = {
     rows: [],
+    links: [],
     oldVersionWithdrawals: [],
     deposits: { records: [], loaded: true, failed: false },
-    withdrawals: none,
+    withdrawals: { records: [], hydrated: true },
+    bridgeIns: { records: [], hydrated: true },
     upgrades: { items: [], recipients: new Set<string>(), loaded: true },
+    upgradePricing: { settled: true },
     processing: new Map(),
     registrations: [],
     operations: { ended: [], running: [] },
@@ -112,19 +120,47 @@ vi.mock("../../../src/session/session", async () => {
     },
   }
   entered.store = core.memoryStore<IdentityView>({ value: null, loaded: true, failed: false })
-  // The page's wallet, the account, the token and the balances, read at each render.
+  const operations = core.createOperations({
+    db: core.openDatabase(core.memoryBackend()),
+    now: () => Date.now(),
+  })
+  stored.balances = core.createBalanceStore({
+    db: core.openDatabase(core.memoryBackend()),
+    now: () => Date.now(),
+  })
+  // Stable, like the session's; the page's wallet, the account, the token and the balances are
+  // read at each render.
+  const session = {
+    identity: entered.store,
+    operations,
+    page: {
+      prover: core.createProver({ now: () => Date.now() }),
+      config: h.config,
+      liveProfilePortal: h.live,
+      pace: (await import("@obsidion/core/cadence")).createPace(),
+    },
+    notifications: bell,
+    milestones,
+    get wallet() {
+      return core.fixed("wallet", h.aztec.obsidionWallet)
+    },
+    get account() {
+      return core.fixed("account", h.account.obsidionAccount)
+    },
+    get token() {
+      return core.fixed("token", h.asset.current.tokenService)
+    },
+    contractService: core.fixed("contractService", h.contracts.contractService),
+    get balances() {
+      return balancesOf(h.balance)
+    },
+    balanceStore: stored.balances,
+    registrations,
+    savingsHolding: { get: () => h.savings, subscribe: () => () => {} },
+  }
   return {
-    session: () => ({ identity: entered.store }),
-    useSession: () => ({
-      identity: entered.store,
-      notifications: bell,
-      milestones,
-      wallet: core.fixed("wallet", h.aztec.obsidionWallet),
-      account: core.fixed("account", h.account.obsidionAccount),
-      token: core.fixed("token", h.asset.current.tokenService),
-      balances: balancesOf(h.balance),
-      registrations,
-    }),
+    openedSession: core.memoryStore({ operations }).readonly,
+    useSession: () => session,
   }
 })
 vi.mock("@obsidion/front-core", async (importOriginal) => {
@@ -135,8 +171,6 @@ vi.mock("@obsidion/front-core", async (importOriginal) => {
     WalletSyncCoordinator: Object.assign(Object.create(real.WalletSyncCoordinator), {
       refresh: () => h.asset.current.loadAssets(),
     }),
-    useSavingsPosition: () => h.savings,
-    useContractServiceContext: () => h.contracts,
     checkSpentViaPaylinkService: () => async () => new Map(),
     runMetadataMigration: h.runMetadata,
     readSavingsVault: async () => "0x" + "0e".repeat(20),
@@ -170,6 +204,7 @@ vi.mock("@obsidion/web-ds", () => ({
   GradientSpinner: () => null,
   ProgressSpinner: () => null,
   Shimmer: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  SkeletonBlock: () => <div aria-hidden />,
   ConfirmationSheetDetailRow: ({ label, value }: { label: string; value: React.ReactNode }) => (
     <div>
       {label} {value}
@@ -188,10 +223,6 @@ vi.mock("../../../src/features/cutover/networkReady", () => ({
 vi.mock("../../../src/config/oxideTuple", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../src/config/oxideTuple")>()),
   l1PublicClient: () => ({}),
-}))
-vi.mock("../../../src/config/env", () => ({
-  getConfig: () => ({ oxideProfile: { portal: "0x" + "AA".repeat(20) } }),
-  fetchLiveProfilePortal: h.live,
 }))
 vi.mock("../../../src/features/migration/probeAccountResiduals", () => ({
   probeAccountResiduals: h.probe,
@@ -241,7 +272,7 @@ vi.mock("../../../src/dev/demoFlag", async (importOriginal) => ({
 const freeze = vi.hoisted(() => ({ onFrozen: () => {} }))
 vi.mock("../../../src/features/migration/freezeWatch", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../src/features/migration/freezeWatch")>()),
-  watchForFreeze: (_tuples: unknown, onFrozen: () => void) => {
+  watchForFreeze: (_config: unknown, _tuples: unknown, onFrozen: () => void) => {
     freeze.onFrozen = onFrozen
     return () => {}
   },
@@ -254,7 +285,6 @@ vi.mock("../../../src/lib/analytics", async (importOriginal) => ({
 const { showReportableError } = await import("../../../src/errors/errorModal")
 const { webStorage } = await import("../../../src/platform/storage/WebStorageAdapter")
 const { walletStorage } = await import("../../../src/platform/storage/walletStorage")
-const { getOperationStore } = await import("../../../src/features/operations/operations")
 await import("../../../src/session/session")
 const upsert = vi.spyOn(notes.store, "upsert")
 const dismiss = vi.spyOn(notes.store, "dismiss")
@@ -274,7 +304,7 @@ const { openMigrationDialog, useUpgradeStatus } = await import(
 const { UpgradeKeepOpenBanner } = await import("../../../src/features/migration/UpgradeIntro")
 const { markOldHoldingsRead, markUpgradeMovesFunds, oldVersionScope, useOldVersionHoldings } =
   await import("../../../src/features/migration/oldVersionBalance")
-const { BalanceStorage } = await import("@obsidion/front-core")
+const { loadRecords, selectEntry } = await import("@obsidion/front-core")
 const { ManifestUnavailableError } = await import("../../../src/features/migration/freezeWatch")
 const { acquireUpgradeLock, upgradeLock } = await import(
   "../../../src/features/migration/upgradeLock"
@@ -526,7 +556,7 @@ describe("MigrationDetectionMount — the record update with nothing to move", (
 
   it("holds Main without the old version's dust, which the upgrade leaves behind", async () => {
     enter({ address: "0xabc", claimedAt: 0 })
-    markOldHoldingsRead("0xabc")
+    markOldHoldingsRead(h.config, "0xabc")
     h.balance = { main: 2n * 10n ** 18n, known: true }
     const dust: HistoricResidualSummary = {
       ...incomplete,
@@ -535,8 +565,8 @@ describe("MigrationDetectionMount — the record update with nothing to move", (
       incomplete: false,
       balance: 10n ** 17n,
     }
-    await BalanceStorage.get(webStorage).updateBalance(
-      oldVersionScope(dust.tuple.portal, "0xabc"),
+    await stored.balances.write(
+      oldVersionScope(h.config, dust.tuple.portal, "0xabc"),
       dust.tuple.l2Token,
       10n ** 17n,
     )
@@ -560,13 +590,13 @@ describe("MigrationDetectionMount — the record update with nothing to move", (
       await render()
       await startUpgrade()
 
-      expect(upgradeLock("0xabc")).toEqual({ state: "held", main: 2n * 10n ** 18n })
+      expect(upgradeLock(h.config, "0xabc")).toEqual({ state: "held", main: 2n * 10n ** 18n })
     } finally {
       h.balance = { main: 0n, known: true }
       enter(null)
       walletStorage.removeItem(`webwallet.oldHoldingsRead/${BOOTED_PORTAL.toLowerCase()}/0xabc`)
-      await BalanceStorage.get(webStorage).updateBalance(
-        oldVersionScope(dust.tuple.portal, "0xabc"),
+      await stored.balances.write(
+        oldVersionScope(h.config, dust.tuple.portal, "0xabc"),
         dust.tuple.l2Token,
         0n,
       )
@@ -636,7 +666,7 @@ describe("MigrationDetectionMount — a registration run left at boot", () => {
     let step: unknown
     h.runMetadata.mockImplementationOnce(async (_c: unknown, opts: RunOptions) => {
       await opts.exclusive!(async (operationId) => {
-        step = getOperationStore().get(operationId!)
+        step = operationRecord(operationId!)
       })
       return { ...snapshot, phase: "done" }
     })
@@ -667,7 +697,7 @@ describe("MigrationDetectionMount — a registration run left at boot", () => {
   it("reads the saved runs once a follower can start, and is still checking until then", async () => {
     snapshot = registration({ phase: "arriving" })
     saved(snapshot)
-    await acquireUpgradeLock("0xabc")
+    await acquireUpgradeLock(h.config, "0xabc")
     h.runMetadata.mockImplementationOnce((_c: unknown, opts: RunOptions) =>
       untilAborted(opts.signal),
     )
@@ -1020,7 +1050,9 @@ describe("MigrationDetectionMount — frozen sources", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(30_000)
     })
-    expect(h.featureListed).toHaveBeenCalledWith([{ source: waiting.tuple, destination: current }])
+    expect(h.featureListed).toHaveBeenCalledWith(undefined, [
+      { source: waiting.tuple, destination: current },
+    ])
     expect(h.probe.mock.calls.length).toBe(probes)
 
     // The manifest gains the feature: the poll sees it and the probe runs once more.
@@ -1789,9 +1821,9 @@ describe("MigrationDetectionMount — the upgrade's run", () => {
   let saved: { mockRestore(): void } | undefined
   const runRow = () => notes.store.get("migration:run")
   const operation = () =>
-    getOperationStore()
-      .list()
-      .find((r) => r.flow === "migration")
+    testOperations()
+      .view.get()
+      .records.find((r) => r.flow === "migration")
   /** Runs until the mount aborts it, as on unmount. */
   const untilAborted = (signal: AbortSignal) =>
     new Promise((resolve) => signal.addEventListener("abort", () => resolve(snapshot)))
@@ -1831,7 +1863,8 @@ describe("MigrationDetectionMount — the upgrade's run", () => {
     publish = () => {}
     quote = vi.fn(async () => ({ movable: 20n * 10n ** 18n, stranded: 0n, waiting: 0n }))
     await notes.store.remove("migration:run")
-    for (const r of getOperationStore().list()) await getOperationStore().remove(r.operationId)
+    for (const r of testOperations().view.get().records)
+      await testOperations().remove(r.operationId)
     h.metadataSession.mockResolvedValue({
       controller: {
         load: async () => {},
@@ -2117,7 +2150,7 @@ describe("MigrationDetectionMount — the upgrade's run", () => {
     boot({ phase: "needsAttention", plan: "p", error: "x", bootstrapTx: "0xb" } as RunRecord)
     await render()
     expect(detectedModal()?.textContent).toContain("Something went wrong")
-    await act(async () => button("Contact support")!.click())
+    await act(async () => button("Report this issue")!.click())
     expect(document.body.textContent).toContain("Report a bug")
     await act(async () => {
       document
@@ -2268,13 +2301,13 @@ describe("MigrationDetectionMount — the dialog opens only on request", () => {
     expect(detectedModal()?.textContent).toContain("Upgrade to withdraw")
     expect(detectedModal()?.textContent).toContain("Checking whether your account needs to upgrade")
     expect(run).not.toHaveBeenCalled()
-    expect(upgradeLock("0xabc").state === "released").toBe(false)
+    expect(upgradeLock(h.config, "0xabc").state === "released").toBe(false)
     await act(async () => answer({ current, historic: [], residuals: [], pendingWithdrawals: 0 }))
     expect(upgradeStatus().state).toBe("none")
     expect(run).toHaveBeenCalledOnce()
     expect(detectedModal()).toBeNull()
     // Nothing to upgrade here: later checks never hold this account's actions.
-    expect(upgradeLock("0xabc").state === "released").toBe(true)
+    expect(upgradeLock(h.config, "0xabc").state === "released").toBe(true)
   })
 
   it("never reads the registration check as answered before it answers", async () => {
@@ -2304,7 +2337,7 @@ describe("MigrationDetectionMount — the dialog opens only on request", () => {
     await act(async () => answer({ current, historic: [], residuals: [], pendingWithdrawals: 0 }))
     expect(states).not.toContain("none")
     expect(run).not.toHaveBeenCalled()
-    expect(upgradeLock("0xabc").state === "released").toBe(false)
+    expect(upgradeLock(h.config, "0xabc").state === "released").toBe(false)
     await act(async () => needed(true))
     expect(states.at(-1)).toBe("offered")
     expect(run).not.toHaveBeenCalled()
@@ -2483,7 +2516,14 @@ describe("MigrationDetectionMount — old-version holdings", () => {
       holdings,
     })
   const recorded = (tuple: { portal: string; l2Token: string }) =>
-    BalanceStorage.get(webStorage).getBalance(oldVersionScope(tuple.portal, "0xabc"), tuple.l2Token)
+    loadRecords(stored.balances.view).then(
+      () =>
+        selectEntry(
+          stored.balances.view.get(),
+          oldVersionScope(h.config, tuple.portal, "0xabc"),
+          tuple.l2Token,
+        )?.atomic,
+    )
   let pending = () => false
   function Waiting() {
     const { pending: now } = useOldVersionHoldings()
@@ -2571,7 +2611,9 @@ describe("MigrationDetectionMount — old-version holdings", () => {
   it("says the check failed when storage refuses a source's record", async () => {
     withTokenService()
     session()
-    const write = vi.spyOn(webStorage, "setItem").mockRejectedValueOnce(new Error("QuotaExceeded"))
+    const write = vi
+      .spyOn(stored.balances, "write")
+      .mockRejectedValueOnce(new Error("QuotaExceeded"))
     h.probe.mockResolvedValue({
       current,
       historic: [drained],
@@ -2645,8 +2687,8 @@ describe("MigrationDetectionMount — old-version holdings", () => {
     const loading = () =>
       card().querySelectorAll("[aria-hidden]").length === 3 && !/[$…]/.test(card().textContent!)
     const record = (amount: bigint) =>
-      BalanceStorage.get(webStorage).updateBalance(
-        oldVersionScope(funded.tuple.portal, "0xabc"),
+      stored.balances.write(
+        oldVersionScope(h.config, funded.tuple.portal, "0xabc"),
         funded.tuple.l2Token,
         amount,
       )
@@ -2729,7 +2771,7 @@ describe("MigrationDetectionMount — old-version holdings", () => {
     })
 
     it("leaves Home up after the new-version prompt", async () => {
-      markUpgradeMovesFunds("0xabc", true)
+      markUpgradeMovesFunds(h.config, "0xabc", true)
       await reboot()
       expect(choose()).not.toBeNull()
 
@@ -2742,7 +2784,7 @@ describe("MigrationDetectionMount — old-version holdings", () => {
     })
 
     it("reports a dialog request made while it shows, and stays up", async () => {
-      markUpgradeMovesFunds("0xabc", true)
+      markUpgradeMovesFunds(h.config, "0xabc", true)
       await reboot()
 
       await act(async () => openMigrationDialog("residuals"))
@@ -2948,12 +2990,12 @@ describe("MigrationDetectionMount — one L1 scan per mount", () => {
     await render()
     expect(h.probe).toHaveBeenCalledTimes(1)
     expect(h.reconcile).toHaveBeenCalledTimes(2)
-    expect(h.reconcile.mock.calls.every(([, spent]) => spent === undefined)).toBe(true)
+    expect(h.reconcile.mock.calls.every(([, , spent]) => spent === undefined)).toBe(true)
     withTokenService()
     await render()
     expect(h.probe).toHaveBeenCalledTimes(1)
     expect(h.reconcile).toHaveBeenCalledTimes(3)
-    expect(h.reconcile.mock.calls[2]![1]).toBeTypeOf("function")
+    expect(h.reconcile.mock.calls[2]![2]).toBeTypeOf("function")
   })
 
   it("reconciles with the spent check again after a scan that was in flight when it arrived", async () => {
@@ -2974,7 +3016,7 @@ describe("MigrationDetectionMount — one L1 scan per mount", () => {
     })
     expect(h.probe).toHaveBeenCalledTimes(1)
     expect(h.reconcile).toHaveBeenCalledTimes(3)
-    expect(h.reconcile.mock.calls[2]![1]).toBeTypeOf("function")
+    expect(h.reconcile.mock.calls[2]![2]).toBeTypeOf("function")
   })
 })
 
@@ -3028,7 +3070,7 @@ describe("MigrationDetectionMount — the upgrade lock", () => {
     })
   const nothingLeft = () =>
     h.probe.mockResolvedValue({ current, historic: [], residuals: [], pendingWithdrawals: 0 })
-  const lock = () => upgradeLock("0xabc")
+  const lock = () => upgradeLock(h.config, "0xabc")
   const run = `metadata-migration/${BOOTED_PORTAL.toLowerCase()}/${"0x" + "03".repeat(20)}/0xabc`
 
   beforeEach(() => {
@@ -3054,15 +3096,15 @@ describe("MigrationDetectionMount — the upgrade lock", () => {
       enter({ address: "0xabc", claimedAt: 0 })
       if (alreadyCurrent)
         walletStorage.setItem("webwallet.version/0xabc", BOOTED_PORTAL.toLowerCase())
-      markOldHoldingsRead("0xabc")
+      markOldHoldingsRead(h.config, "0xabc")
       h.balance = { main: 2n * 10n ** 18n, known: true }
-      await BalanceStorage.get(webStorage).updateBalance(
-        oldVersionScope(source.tuple.portal, "0xabc"),
+      await stored.balances.write(
+        oldVersionScope(h.config, source.tuple.portal, "0xabc"),
         source.tuple.l2Token,
         20n * wad,
       )
-      await BalanceStorage.get(webStorage).updateBalance(
-        oldVersionScope(savingsSource.tuple.portal, "0xabc"),
+      await stored.balances.write(
+        oldVersionScope(h.config, savingsSource.tuple.portal, "0xabc"),
         savingsSource.tuple.l2Token,
         60n * wad,
       )
@@ -3110,8 +3152,8 @@ describe("MigrationDetectionMount — the upgrade lock", () => {
       // Main: 2 + 20 - 1. Savings: 3 + 60 - (5 shares at 1.2 DAI).
       expect(atStart).toEqual({ state: "held", main: 21n * wad, savings: 57n * wad })
       await act(async () =>
-        BalanceStorage.get(webStorage).updateBalance(
-          oldVersionScope(savingsSource.tuple.portal, "0xabc"),
+        stored.balances.write(
+          oldVersionScope(h.config, savingsSource.tuple.portal, "0xabc"),
           savingsSource.tuple.l2Token,
           0n,
         ),
@@ -3121,7 +3163,7 @@ describe("MigrationDetectionMount — the upgrade lock", () => {
 
   it("starts only once the figure it holds is known", async () => {
     enter({ address: "0xabc", claimedAt: 0 })
-    markOldHoldingsRead("0xabc")
+    markOldHoldingsRead(h.config, "0xabc")
     h.balance = { main: 0n, known: false }
     withTokenService()
     session()
@@ -3145,7 +3187,7 @@ describe("MigrationDetectionMount — the upgrade lock", () => {
   })
 
   it("tries a release that failed to save again", async () => {
-    await acquireUpgradeLock("0xabc", 7n)
+    await acquireUpgradeLock(h.config, "0xabc", 7n)
     withTokenService()
     session()
     nothingLeft()
@@ -3160,7 +3202,7 @@ describe("MigrationDetectionMount — the upgrade lock", () => {
   })
 
   it("stays held while a probe reads nothing, as on a sign-out mid-check", async () => {
-    await acquireUpgradeLock("0xabc", 7n)
+    await acquireUpgradeLock(h.config, "0xabc", 7n)
     await render({ request: false })
 
     expect(upgradeStatus().state).toBe("checking")
@@ -3168,7 +3210,7 @@ describe("MigrationDetectionMount — the upgrade lock", () => {
   })
 
   it("stays held until this inventory's registration check answers", async () => {
-    await acquireUpgradeLock("0xabc", 7n)
+    await acquireUpgradeLock(h.config, "0xabc", 7n)
     withTokenService()
     let answer!: (needed: boolean) => void
     needed = new Promise((resolve) => (answer = resolve))

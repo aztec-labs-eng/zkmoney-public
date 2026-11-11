@@ -1,23 +1,17 @@
-/**
- * The backup entry's facts on a fresh device. Its links reach storage only once the rescan rebuilds
- * them from chain, after the entry mounted, so the entry waits for that rescan and reads again as
- * rows land. It also waits for the device to sync and the Savings moves replay to end, and counts
- * Savings' shares and the links' refunds in the move.
- */
+/** Guards: the backup entry waits for its reads, fails closed, and counts Savings and refunds. */
 import { act } from "react"
 import { testPage, testCore } from "../../support/page"
+import { assignReads } from "../../support/fakeReads"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { setIdentity } from "../../support/identity"
-import type { PaylinkTransaction } from "@obsidion/front-core"
+import { fixed, memoryStore, recordOf, type PaylinkTransaction } from "@obsidion/front-core"
 
 declare global {
-  // eslint-disable-next-line no-var
   var IS_REACT_ACT_ENVIRONMENT: boolean
 }
 
 const ONE_KEY = `0x${"11".repeat(32)}`
-const OTHER = `0x${"22".repeat(32)}`
 const NOW = 1_800_000_000
 
 vi.mock("../../../src/features/withdraw/useWithdrawals", () => ({
@@ -35,12 +29,7 @@ vi.mock("../../../src/features/registration/registrationResume", () => ({
   }),
 }))
 const DAI = 10n ** 18n
-vi.mock("../../../src/features/token/oxideToken", () => ({
-  currentTxAmountCap: async () => 5n * DAI,
-}))
-vi.mock("../../../src/config/classArtifacts", () => ({ getWebOxideToken: async () => ({}) }))
 vi.mock("../../../src/config/oxideTuple", () => ({
-  getFeeTokenBridgeTuple: async () => ({}),
   l1PublicClient: () => ({}),
   requireTupleField: () => "0x",
 }))
@@ -57,52 +46,24 @@ vi.mock("../../../src/features/backupPasskey/backupMoveTokens", async (importOri
       shape: { notes: [3n * DAI], depositTotal: 0n, balance: 3n * DAI },
     })),
 }))
-/** The Savings moves replay's outcome, and whether their store read storage. */
-let replayed: boolean | undefined = true
-let movesLoaded = true
-vi.mock("../../../src/features/savings/savingsTasks", () => ({
-  useSavingsMovesReplayed: () => replayed,
-}))
-vi.mock("../../../src/features/savings/savingsMoveStore", () => ({
-  getSavingsMoveStore: () => ({
-    load: async () => {},
-    isLoaded: () => movesLoaded,
-    list: () => [],
-    onListChanged: () => () => {},
-  }),
-}))
-/** Wall time as the entry reads it, set by each test. */
-let nowMs = NOW * 1000
-const ticks = new Set<() => void>()
-vi.mock("../../../src/lib/clock", () => ({
-  wallClock: {
-    get: () => nowMs,
-    subscribe: (listener: () => void) => {
-      ticks.add(listener)
-      return () => ticks.delete(listener)
-    },
-  },
-}))
-vi.mock("../../../src/config/env", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../src/config/env")>()),
-  getConfig: () => ({}),
-}))
 vi.mock("@obsidion/sdk", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/sdk")>()),
   readBridgeDestination: async () => ({}),
-  fundingAmount: async () => ({ amount: 2n * DAI, credited: DAI, breakdown: {} }),
+  fundingAmount: async () => ({
+    amount: 2n * DAI,
+    credited: DAI,
+    breakdown: { sweepTip: DAI / 2n },
+  }),
   readSpendShape: async () => ({ notes: [3n * DAI], depositTotal: 0n, balance: 3n * DAI }),
 }))
 
 const { useBackupEntryFacts } = await import(
   "../../../src/features/backupPasskey/backupPasskeyFacts"
 )
-const { markPaylinksRescanned, providePaylinkRescan } = await import(
-  "../../../src/features/paylink/paylinkRescanState"
-)
-const { activeNamespace, closeSession, switchSession, session } = await import(
+const { activeNamespace, closeSession, switchSession } = await import(
   "../../../src/session/session"
 )
+const { openTestSession } = await import("../../support/session")
 const { pageSessionDeps } = await import("../../../src/app/sessionDeps")
 
 /** A link the account made on another device, as the rescan rebuilds it. */
@@ -122,28 +83,49 @@ const rebuilt: PaylinkTransaction = {
   refundableUntil: NOW + 86_400,
 } as PaylinkTransaction
 
-const wallet = {} as never
-const contractService = {} as never
 let entry: ReturnType<typeof useBackupEntryFacts> | undefined
 let facts: ReturnType<typeof useBackupEntryFacts>["facts"] | undefined
 function Probe() {
-  entry = useBackupEntryFacts(wallet, contractService, true)
+  entry = useBackupEntryFacts(true)
   facts = entry.facts
   return null
 }
 
 let container: HTMLDivElement
 let root: Root
+/** The session's paylink sweep: its latest pass's outcome, and the wakes the entry asked for. */
+const rescanned = memoryStore<boolean | undefined>(undefined)
+const wake = vi.fn()
+const markPaylinksRescanned = (complete: boolean) => rescanned.set(complete)
 
 beforeEach(async () => {
   globalThis.IS_REACT_ACT_ENVIRONMENT = true
-  // A pass for another account leaves this one's unread.
-  markPaylinksRescanned(OTHER, true)
-  const { activity } = switchSession(
+  rescanned.set(undefined)
+  wake.mockClear()
+  const open = switchSession(
     activeNamespace(testCore().device),
-    pageSessionDeps(testPage()),
+    pageSessionDeps({
+      ...testPage(),
+      wallClock: memoryStore(NOW * 1000).readonly,
+      speedupEstimator: fixed("speedupEstimator", { calibrate: async () => undefined }) as never,
+    }),
   )
-  for (const row of await activity.all()) await activity.remove(row.id)
+  assignReads(open.page.chain, {
+    currentTxAmountCap: async () => 5n * DAI,
+    feeTokenBridgeTuple: async () => ({}),
+  })
+  Object.assign(open, {
+    wallet: fixed("wallet", {
+      node: { getL1Constants: async () => ({ epochDuration: 32, slotDuration: 36 }) },
+    }),
+    contractService: fixed("contractService", {}),
+    savingsReplayed: memoryStore(true).readonly,
+    paylinkSweep: {
+      rescanned: rescanned.readonly,
+      checking: memoryStore(false).readonly,
+      recheck: wake,
+    },
+  })
   facts = undefined
   container = document.createElement("div")
   document.body.appendChild(container)
@@ -156,25 +138,14 @@ afterEach(async () => {
   container.remove()
   closeSession()
   moving = [{ token: "0xmain", cap: 5n * DAI }]
-  replayed = true
-  movesLoaded = true
-  nowMs = NOW * 1000
 })
 
 const settle = () => act(async () => new Promise((r) => setTimeout(r, 0)))
-const tickTo = (sec: number) =>
-  act(async () => {
-    nowMs = sec * 1000
-    for (const listener of [...ticks]) listener()
-  })
-let mounts = 0
-/** Mounts the entry again, so it reads what the test set since. */
-const remount = () => act(async () => root.render(<Probe key={++mounts} />))
 const links = () => (typeof facts === "object" ? facts.links : facts)
 const sync = () =>
   act(async () => {
-    session().milestones.mark("firstBalance")
-    session().milestones.mark("movesReplayed")
+    openTestSession().milestones.mark("firstBalance")
+    openTestSession().milestones.mark("movesReplayed")
   })
 
 beforeEach(() => setIdentity({ address: ONE_KEY }))
@@ -187,44 +158,29 @@ describe("the backup entry's open paylinks on a fresh device", () => {
     expect(facts).toBe("checking")
 
     await act(async () => {
-      await session().activity.importHistoricRows([rebuilt])
-      markPaylinksRescanned(ONE_KEY, true)
-    })
-    await settle()
-    expect(links()).toBe(1)
-  })
-
-  it("counts a link that lands after the rescan finished", async () => {
-    await act(async () => markPaylinksRescanned(ONE_KEY, true))
-    await settle()
-    expect(links()).toBe(0)
-
-    await act(async () => {
-      await session().activity.importHistoricRows([rebuilt])
+      await openTestSession().transfers.importHistoricRows([rebuilt])
+      markPaylinksRescanned(true)
     })
     await settle()
     expect(links()).toBe(1)
   })
 
   it("reads unreadable while the latest pass failed, and its retry starts another", async () => {
-    const rerun = vi.fn()
-    const withdraw = providePaylinkRescan(rerun)
-    await act(async () => markPaylinksRescanned(ONE_KEY, false))
+    await act(async () => markPaylinksRescanned(false))
     await settle()
     expect(facts).toBe("unreadable")
 
     await act(async () => entry!.refresh())
-    expect(rerun).toHaveBeenCalledOnce()
-    await act(async () => markPaylinksRescanned(ONE_KEY, true))
+    expect(wake).toHaveBeenCalledOnce()
+    await act(async () => markPaylinksRescanned(true))
     await settle()
     expect(links()).toBe(0)
-    withdraw()
   })
 })
 
 describe("the backup entry's chain read", () => {
   it("stays on checking until the device has synced", async () => {
-    await act(async () => markPaylinksRescanned(ONE_KEY, true))
+    await act(async () => markPaylinksRescanned(true))
     await settle()
     expect(facts).toBe("checking")
 
@@ -236,7 +192,7 @@ describe("the backup entry's chain read", () => {
   it("counts the sends that move Savings' shares beside Main Account's", async () => {
     moving = [...moving, { token: "0xsavings", cap: 2n * DAI }]
     await sync()
-    await act(async () => markPaylinksRescanned(ONE_KEY, true))
+    await act(async () => markPaylinksRescanned(true))
     await settle()
     // Each balance reads 3 DAI: one send under Main's cap, two under Savings'.
     expect(typeof facts === "object" && facts.moves).toBe(3)
@@ -245,10 +201,10 @@ describe("the backup entry's chain read", () => {
   it("counts a link's refund into Main Account's move, and holds on a create in flight", async () => {
     await sync()
     await act(async () => {
-      await session().activity.importHistoricRows([
+      await openTestSession().transfers.importHistoricRows([
         { ...rebuilt, amountAtomic: (3n * DAI).toString() },
       ])
-      markPaylinksRescanned(ONE_KEY, true)
+      markPaylinksRescanned(true)
     })
     await settle()
     // 3 DAI held and 3 DAI refunded move in two sends under a 5 DAI cap.
@@ -256,71 +212,18 @@ describe("the backup entry's chain read", () => {
     expect(typeof facts === "object" && facts.linkHold).toBeUndefined()
 
     await act(async () => {
-      await session().activity.insertPending({
-        ...rebuilt,
-        id: "create-1",
-        networkId: "0x01",
+      // A create in flight: its link is filed, its operation not yet sent.
+      const { operations, paylinks } = openTestSession()
+      await operations.begin({ operationId: "create-1", flow: "paylink-create", summary: "$1" })
+      const draft = recordOf({ ...rebuilt, payToEmailSecret: `0x${"66".repeat(32)}` })
+      await paylinks.put({
+        ...draft,
+        operationId: "create-1",
         amountAtomic: DAI,
-        txHash: "",
-        status: "pending",
-        payToEmailSecret: `0x${"66".repeat(32)}`,
+        txHash: undefined,
       })
     })
     await settle()
     expect(facts).toMatchObject({ links: 1, linkHold: { kind: "creating" } })
-  })
-
-  it("lifts a link's expiry hold once it expires, with the entry still open", async () => {
-    await sync()
-    await act(async () => {
-      // Its cancel window has all but closed, well before its expiry.
-      await session().activity.importHistoricRows([
-        { ...rebuilt, refundableUntil: NOW + 10, untilClaimable: NOW + 60 },
-      ])
-      markPaylinksRescanned(ONE_KEY, true)
-    })
-    await settle()
-    expect(facts).toMatchObject({ links: 0, linkHold: { kind: "expiry", until: NOW + 60 } })
-
-    await tickTo(NOW + 61)
-    await settle()
-    expect(facts).toMatchObject({ links: 1 })
-    expect(typeof facts === "object" && facts.linkHold).toBeUndefined()
-  })
-})
-
-describe("the backup entry's Savings moves", () => {
-  beforeEach(async () => {
-    await sync()
-    await act(async () => markPaylinksRescanned(ONE_KEY, true))
-  })
-
-  it("stays on checking until the replay ends, and reads unreadable while it failed", async () => {
-    replayed = undefined
-    await remount()
-    await settle()
-    expect(facts).toBe("checking")
-
-    replayed = false
-    await remount()
-    await settle()
-    expect(facts).toBe("unreadable")
-
-    replayed = true
-    await remount()
-    await settle()
-    expect(links()).toBe(0)
-  })
-
-  it("reads unreadable while their store could not read storage, and its retry reads again", async () => {
-    movesLoaded = false
-    await remount()
-    await settle()
-    expect(facts).toBe("unreadable")
-
-    movesLoaded = true
-    await act(async () => entry!.refresh())
-    await settle()
-    expect(links()).toBe(0)
   })
 })

@@ -53,8 +53,7 @@ export function buildOperationCall(
  * The helper does NOT dispatch directly because `ServiceBase.sendAndWait`
  * is `protected` and the helper is a free function — the caller-side
  * `sendAndWait` invocation is what preserves `operationId`/`kind`
- * threading into the wallet's Mining-stage START emit and the post-receipt
- * `provingProgress.emitStageComplete(Mining, operationId)` fire.
+ * threading into the Mining stage the wallet reports.
  */
 export interface PreparedPaylinkClaimSubmit {
   initFn: () => Promise<{

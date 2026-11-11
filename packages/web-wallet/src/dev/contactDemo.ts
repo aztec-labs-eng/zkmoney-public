@@ -1,14 +1,12 @@
 import type { Contact, RegistryTagResolution } from "@obsidion/front-core"
 import { MAX_TAG_LENGTH } from "@obsidion/core/constants"
-import type { MintMyCodeDeps } from "../features/contacts/myCode"
-import { demoScenario } from "./demoFlag"
 import { demoContacts } from "./demoFixtures"
 
 /** A tag at the length limit, still on a retired rollup. */
 export const LONG_STALE_TAG = "mslongtag".padEnd(MAX_TAG_LENGTH, "x")
 
+// eslint-disable-next-line no-restricted-syntax -- debt
 let retryVerification = 0
-let mintAttempts = 0
 const wait = (milliseconds: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, milliseconds))
 
@@ -56,22 +54,5 @@ export async function demoContactResolution(
     rollupId: "1",
     sipaStealthPublicKey: { x: 1n, y: 2n },
     xmtpAddress: "0x00000000000000000000000000000000000000b0",
-  }
-}
-
-/** Deterministic inputs to the real mint/codec, with an optional recoverable failure. */
-export async function prepareDemoConnectMint(deps: MintMyCodeDeps): Promise<MintMyCodeDeps> {
-  await wait(700)
-  const attempt = ++mintAttempts
-  if (demoScenario() === "share-retry" && attempt === 1) throw new Error("Demo mint unavailable")
-  return {
-    ...deps,
-    ...(demoScenario() === "share-long"
-      ? {
-          ownTag: "a".repeat(MAX_TAG_LENGTH),
-          origin: `https://${"preview".repeat(9)}.${"branch".repeat(10)}.zk.money`,
-        }
-      : {}),
-    uuid: () => `00000000-0000-4000-8000-${attempt.toString(16).padStart(12, "0")}`,
   }
 }

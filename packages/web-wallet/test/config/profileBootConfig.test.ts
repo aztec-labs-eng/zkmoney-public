@@ -1,8 +1,7 @@
 // @vitest-environment node
 /**
  * The boot path: `VITE_CONFIG_PROFILE_URL` names the profile that supplies the endpoints and the
- * contract snapshot, and the config it seeds is what every synchronous `getConfig()` consumer
- * reads.
+ * contract snapshot.
  */
 import { ZKJWT_VKEY_HASH } from "@obsidion/core/constants"
 import { afterEach, describe, expect, it, vi } from "vitest"
@@ -12,12 +11,7 @@ import {
   type EndpointKind,
   type EndpointOverrides,
 } from "../../src/config/endpointOverrides"
-import {
-  fetchLiveProfilePortal,
-  getConfig,
-  resolveBootConfig,
-  type RuntimeEndpoints,
-} from "../../src/config/env"
+import { resolveBootConfig, type RuntimeEndpoints } from "../../src/config/env"
 import { analyticsUrl } from "../../src/lib/analytics"
 import { F32, PORTAL, sandboxProfile, testnetProfile } from "../fixtures/sandboxProfile"
 
@@ -109,7 +103,6 @@ describe("profile mode", () => {
     expect(result.config.accountServiceUrl).toBe("http://profile-account.test")
     expect(result.config.xmtpEnv).toBe("local")
     expect(result.config.sourceRollupIssues).toEqual([])
-    expect(getConfig()).toBe(result.config)
 
     expect(result.contractServiceOptions.source).toBe("profile")
     expect(result.contractServiceOptions.config?.contracts.paylinkDirect).toEqual({
@@ -994,7 +987,7 @@ describe("the v5 archive node", () => {
   })
 })
 
-describe("fetchLiveProfilePortal", () => {
+describe("liveProfilePortal", () => {
   const NEW_PORTAL = "0x" + "77".repeat(20)
 
   function repointed() {
@@ -1004,26 +997,20 @@ describe("fetchLiveProfilePortal", () => {
   }
 
   it("re-reads the profile with the boot's expectations and returns the portal it pins now", async () => {
-    await boot(PROFILE_ENV, serve(sandboxProfile()))
-    expect(getConfig().oxideProfile.portal).toBe(PORTAL)
-    const live = serve(repointed())
-    await expect(fetchLiveProfilePortal(live)).resolves.toBe(NEW_PORTAL)
-    expect(live).toHaveBeenCalledWith(PROFILE_URL, expect.anything())
-    expect(getConfig().oxideProfile.portal).toBe(PORTAL)
+    const live = serve(sandboxProfile())
+    const booted = await boot(PROFILE_ENV, live)
+    vi.mocked(live).mockImplementation(serve(repointed()))
+    await expect(booted.liveProfilePortal()).resolves.toBe(NEW_PORTAL)
+    expect(live).toHaveBeenLastCalledWith(PROFILE_URL, expect.anything())
+    expect(booted.config.oxideProfile.portal).toBe(PORTAL)
   })
 
   it("applies the identity check, so a wrong document never reports a repoint", async () => {
-    await boot(PROFILE_ENV, serve(sandboxProfile()))
+    const live = serve(sandboxProfile())
+    const booted = await boot(PROFILE_ENV, live)
     const wrong = repointed()
     wrong.profileId = "other"
-    await expect(fetchLiveProfilePortal(serve(wrong))).rejects.toThrow(/identifies as "other"/)
-  })
-
-  it("throws before boot", async () => {
-    vi.resetModules()
-    const fresh = await import("../../src/config/env")
-    await expect(fresh.fetchLiveProfilePortal(serve(sandboxProfile()))).rejects.toThrow(
-      /before resolveBootConfig/,
-    )
+    vi.mocked(live).mockImplementation(serve(wrong))
+    await expect(booted.liveProfilePortal()).rejects.toThrow(/identifies as "other"/)
   })
 })

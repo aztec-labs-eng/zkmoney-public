@@ -17,10 +17,10 @@ import {PlainWithdrawalSubsidy} from "@periphery/PlainWithdrawalSubsidy.sol";
 import {SkyWithdrawalExecutor} from "@periphery/experiments/sky/SkyWithdrawalExecutor.sol";
 import {SkyEscrowFactory} from "@periphery/experiments/sky/SkyEscrowFactory.sol";
 import {SkyRoute} from "@periphery/experiments/sky/SkyTypes.sol";
-import {IDaiUsds} from "@periphery/experiments/sky/interfaces/IDaiUsds.sol";
+import {IDaiUsds} from "@periphery/interfaces/IDaiUsds.sol";
 import {ISUsds} from "@periphery/experiments/sky/interfaces/ISUsds.sol";
 import {OxidePortalBase} from "@test/core/OxidePortalBase.t.sol";
-import {MockDaiUsds} from "@test/periphery/experiments/sky/mocks/MockDaiUsds.sol";
+import {MockDaiUsds} from "@test/mocks/MockDaiUsds.sol";
 import {MockSUsds} from "@test/periphery/experiments/sky/mocks/MockSUsds.sol";
 
 abstract contract SkyHelpers is OxidePortalBase {

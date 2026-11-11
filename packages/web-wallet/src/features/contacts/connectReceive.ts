@@ -1,6 +1,6 @@
 /**
- * /connect receive orchestration: the inbound `/connect#<packet>` fragment is stashed to
- * sessionStorage at the app shell BEFORE any gate redirect can drop it, then replayed post-unlock
+ * /connect receive orchestration: the inbound `/connect#<packet>` fragment is stashed for the tab
+ * at the app shell BEFORE any gate redirect can drop it, then replayed post-unlock
  * as a two-phase flow — `previewConnect` decodes and verifies only; the contact write and the
  * connect-back queue happen in `confirmConnect`, after the user's explicit confirmation (AE10).
  * The fragment is the whole identity: the sharer's tag is inside the packet, not the URL.
@@ -16,6 +16,7 @@ import {
   type HandshakeInlinePacket,
   type QRHandshakePreview,
 } from "@obsidion/front-core"
+import { tabStash } from "../../platform/storage/tabStash"
 
 export const CONNECT_STASH_KEY = "obsidion.pending-connect"
 
@@ -24,12 +25,7 @@ export interface ConnectStash {
   hash: string
 }
 
-/** sessionStorage-shaped seam. */
-interface StringStore {
-  getItem(key: string): string | null
-  setItem(key: string, value: string): void
-  removeItem(key: string): void
-}
+type TabStash = typeof tabStash
 
 interface ConnectLocation {
   pathname: string
@@ -37,22 +33,22 @@ interface ConnectLocation {
 }
 
 /** Stash an inbound /connect fragment. Nothing outside the fragment is read — the URL has no identity. */
-export function captureConnectStash(loc: ConnectLocation, store: StringStore): boolean {
+export function captureConnectStash(loc: ConnectLocation, stash: TabStash): boolean {
   if (loc.pathname !== "/connect" || loc.hash.length < 2) return false
-  const stash: ConnectStash = { hash: loc.hash }
-  store.setItem(CONNECT_STASH_KEY, JSON.stringify(stash))
+  const packet: ConnectStash = { hash: loc.hash }
+  stash.set(CONNECT_STASH_KEY, JSON.stringify(packet))
   return true
 }
 
-export function hasConnectStash(store: StringStore = sessionStorage): boolean {
-  return store.getItem(CONNECT_STASH_KEY) !== null
+export function hasConnectStash(stash: TabStash): boolean {
+  return stash.get(CONNECT_STASH_KEY) !== null
 }
 
 /** Consume-once read: the stash is deleted before it is returned, so a re-render can't replay it. */
-export function takeConnectStash(store: StringStore = sessionStorage): ConnectStash | null {
-  const raw = store.getItem(CONNECT_STASH_KEY)
+export function takeConnectStash(stash: TabStash): ConnectStash | null {
+  const raw = stash.get(CONNECT_STASH_KEY)
   if (raw === null) return null
-  store.removeItem(CONNECT_STASH_KEY)
+  stash.remove(CONNECT_STASH_KEY)
   try {
     const parsed = JSON.parse(raw) as ConnectStash
     return typeof parsed.hash === "string" && parsed.hash.startsWith("#") ? parsed : null
@@ -72,7 +68,7 @@ export function stashToPayload(stash: ConnectStash): string {
 
 /** Browser entry for App: stash, then drop the fragment from the URL (the packet lives in the stash). */
 export function stashInboundConnect(): void {
-  if (captureConnectStash(window.location, window.sessionStorage)) {
+  if (captureConnectStash(window.location, tabStash)) {
     history.replaceState(null, "", window.location.pathname + window.location.search)
   }
 }
@@ -129,25 +125,17 @@ export type ConnectConfirmResult =
 
 export interface ConnectConfirmDeps {
   addOrMergeContact: (entry: Contact) => Promise<Contact>
-  /** The leader tab's live client. Absent while this tab holds no client: the connect-back is
-   *  queued instead and the mount's flusher delivers it once one exists. */
+  /** The leader tab's live client. Absent while this tab holds no client: no connect-back goes. */
   sendConnectBack?: (
     peerXmtp: string,
     content: { version: number; uuid: string; tag?: string },
   ) => Promise<{ ok: boolean; reason?: string }>
-  /** Outbox for a connect-back that could not be sent live; the mount flushes it at leader start. */
-  queueConnectBack: (entry: {
-    uuid: string
-    peerXmtp: string
-    content: { version: number; uuid: string; tag?: string }
-  }) => Promise<void>
   connectBackVersion: number
-  /** Scanner's own tag, stamped onto the queued connect-back when valid. */
+  /** Scanner's own tag, stamped onto the connect-back when valid. */
   ownTag?: string
 }
 
-/** Write side, run only on the user's explicit "Add contact". A failed or impossible send lands in
- *  the outbox; neither a send nor a queue failure blocks the add. */
+/** Write side, run only on the user's explicit "Add contact". A failed send never blocks the add. */
 export async function confirmConnect(
   preview: ConnectPreview,
   deps: ConnectConfirmDeps,
@@ -157,8 +145,7 @@ export async function confirmConnect(
     connectBackVersion: deps.connectBackVersion,
     ownTag: deps.ownTag,
     sendConnectBack: deps.sendConnectBack,
-    enqueueFailedConnectBack: (entry) =>
-      deps.queueConnectBack({ uuid: entry.content.uuid, ...entry }),
+    log: console.warn,
   })
   if (result.kind === "error" || result.kind === "conflict") return result
   return {

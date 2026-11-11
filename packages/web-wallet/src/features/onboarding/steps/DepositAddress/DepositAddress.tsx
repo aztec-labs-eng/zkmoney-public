@@ -1,14 +1,17 @@
-import { WalletError } from "@obsidion/core/errors"
-import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react"
-import { erc20Abi, formatUnits, type Address, type Hex } from "viem"
+import { useState, type ReactNode } from "react"
+import { formatUnits, type Address } from "viem"
 import { tokenDecimalsForNetwork } from "@obsidion/core/constants"
 import {
   addressShareDecision,
   fixedAmountLimits,
   NOMINAL_USD_VALUATION,
   isCapacityAffirmative,
+  registrationAt,
+  registrationPayment,
+  unresolvedSendState,
+  useStore,
+  type DepositAdmission,
   type PortalCapacityStore,
-  type RequiredCredit,
 } from "@obsidion/front-core"
 import {
   GradientText,
@@ -17,26 +20,19 @@ import {
   Spinner,
   TopNavIconButton,
 } from "@obsidion/web-ds"
-import { getConfig, l1ChainFor } from "../../../../config/env"
-import { l1PublicClient } from "../../../../config/oxideTuple"
-import { showErrorModal, showReportableError } from "../../../../errors/errorModal"
 import { shortL1Addr } from "../../../../ui/format"
 import { Blockie, L1AddressText } from "../../../../ui/L1AddressText"
 import { useCopy } from "../../../../ui/hooks"
 import { Modal } from "../../../../ui/Modal"
 import { ScreeningNotice, useScreenedAddress } from "../../../../ui/screening"
-import {
-  getL1Clients,
-  isWalletDisconnect,
-  isWalletRejection,
-  isWrongNetwork,
-  useL1Wallet,
-} from "../../../../session/l1Wallet"
+import { useScreenFlow } from "../../../../ui/useScreenFlow"
+import { useL1Wallet } from "../../../../session/useL1Wallet"
+import { useSession } from "../../../../session/session"
 import { useDepositTokensRead, type DepositTokenOption } from "../../../sipa/loadDepositFacts"
-import { DepositTokensStatus } from "../../../deposit/DepositCoinModal"
+import { DepositTokensStatus } from "../../../deposit/DepositCoinModal/DepositCoinModal"
 import {
   capacityHold,
-  registrationRequiredCredit,
+  registrationAdmission,
   targetEligibility,
   useTargetCapacity,
   type CapacityHold,
@@ -44,16 +40,9 @@ import {
 } from "../../../deposit/targetCapacity"
 import { capacityShareWarning } from "../../../deposit/AddressCapacity"
 import { fundingCapacityView, type FundingCapacityView } from "../../../deposit/fundingCapacity"
-import { FundingPreflightError, runFundingPreflight } from "../../../deposit/fundingPreflight"
-import { readL1DepositTokenBalance } from "../../../deposit/l1DepositTokenBalance"
 import { OneTimeAddressWarning } from "../../../deposit/OneTimeAddressWarning"
-import {
-  useWalletPrompt,
-  useWalletPromptStall,
-  WalletPromptNote,
-  WalletPromptOpenError,
-  type WalletPromptToken,
-} from "../../../deposit/walletPrompt"
+import { useWalletPromptStall } from "../../../../session/walletPrompt"
+import { WalletPromptNote } from "../../../deposit/WalletPromptNote/WalletPromptNote"
 import { formatPublicLimit } from "../../../limits/publicLimit"
 import {
   DEPOSIT_TERMS_PENDING,
@@ -66,6 +55,7 @@ import connectIcon from "../../../../assets/deposit/eth-fill.svg"
 import ethIcon from "../../../../assets/deposit/ethereum.webp"
 import { fmt } from "../../../../lib/fmt"
 import copy from "./DepositAddress.copy"
+import { openRegistrationPayFlow, pickedAmount } from "./registrationPayFlow"
 
 type OverLimit = "public" | "protocol"
 
@@ -78,7 +68,8 @@ const OVER_LIMIT_COPY: Record<OverLimit | CapacityHold, string> = {
 export interface RegistrationFunding {
   /** The bucket of the portal the address forwards to; unset while it is not known. */
   store?: PortalCapacityStore
-  required: RequiredCredit
+  /** The portal's answer for the ask; unset until the address's fee is read. */
+  admission?: DepositAdmission
   /** A fresh reading fits the ask, so a new payment may start. */
   canFund: boolean
   /** Why a new payment is held, when it is. */
@@ -106,8 +97,11 @@ export function useRegistrationFunding(input: {
   const capacity = useTargetCapacity(
     input.address ? { kind: "recorded", sipaAddress: input.address } : { kind: "unproven" },
   )
-  const required = registrationRequiredCredit(capacity, input.askAtomic, input.decimals)
-  const eligibility = targetEligibility(capacity, required)
+  const admission = registrationAdmission(capacity, input.askAtomic, {
+    symbol: input.tokenSymbol,
+    decimals: input.decimals,
+  })
+  const eligibility = targetEligibility(capacity, admission?.required ?? { status: "unknown" })
   const view = fundingCapacityView({
     eligibility,
     mode: "fixed",
@@ -124,7 +118,7 @@ export function useRegistrationFunding(input: {
     capacityWarning: capacityShareWarning(share),
     funding: {
       store: capacity.store,
-      required,
+      admission,
       canFund,
       reason: canFund ? undefined : view.statusText ?? copy.capacityUnconfirmed,
     },
@@ -177,9 +171,7 @@ export function DepositAddressRow({
   const [warning, setWarning] = useState(false)
   const held = overLimit ?? hold
   // An address that becomes known not to fit is no longer offered: an open warning closes.
-  useEffect(() => {
-    if (held) setWarning(false)
-  }, [held])
+  if (held && warning) setWarning(false)
   return (
     <>
       <div className="ww-send-to">
@@ -200,7 +192,7 @@ export function DepositAddressRow({
             {copied ? (
               <Icon name="check-circle" size={16} color="var(--accent-green)" />
             ) : (
-              <Icon name="copy" size={16} color="#fff" />
+              <Icon name="copy" size={16} color="var(--ink)" />
             )}
           </span>
         </button>
@@ -225,12 +217,14 @@ export function DepositAddressRow({
   )
 }
 
-interface PayTarget {
+export interface PayTarget {
   address: Address
   token: Address
   chainId: number
   /** Base units; zero means the sender picks the amount. */
   total: bigint
+  /** The whole ask when `total` is a top-up's remainder: an address holding it is paid. */
+  ask?: bigint
   /** The ask is over a per-deposit limit, so no new payment starts. */
   overLimit?: OverLimit
   funding: RegistrationFunding
@@ -257,169 +251,50 @@ export function DepositPayBlock({
 }
 
 /**
- * `total` (fee-token base units) in `pick`'s base units, rounded up so a coarser token never
- * underpays. The ask sits above the floor by more than the sweep swap's slippage, so parity holds.
- */
-export function pickedAmount(
-  total: bigint,
-  feeDecimals: number,
-  pick: { decimals: number },
-): bigint {
-  const scale = 10n ** BigInt(Math.max(feeDecimals - pick.decimals, 0))
-  return (total + scale - 1n) / scale
-}
-
-// Session-scoped: closing a sheet or disconnecting must not forget an in-flight payment.
-// The target, not the payer or quoted amount, owns the lock across both registration surfaces.
-// `holding`: the sheet stopped waiting on the wallet, which still has the transfer to answer.
-type Payment = {
-  state: "checking" | "sending" | "holding" | "confirming" | "check" | "sent"
-  hash?: Hex
-}
-const payments = new Map<string, Payment>()
-const paymentListeners = new Set<() => void>()
-function subscribePayments(listener: () => void) {
-  paymentListeners.add(listener)
-  return () => {
-    paymentListeners.delete(listener)
-  }
-}
-function setPayment(key: string, payment?: Payment) {
-  if (payment) payments.set(key, payment)
-  else payments.delete(key)
-  paymentListeners.forEach((listener) => listener())
-}
-
-/**
  * The deposit screen's connect row: RainbowKit to connect, then one click transfers `total` from
  * the screened account, in whichever accepted token the user picks (the sweep swaps it into the
  * fee token). The sheet's own check spots the deposit landing.
  */
-function ConnectedWalletPay({
-  address,
-  token,
-  chainId,
-  total,
-  overLimit,
-  funding,
-  heldToken,
-  terms,
-}: PayTarget) {
+function ConnectedWalletPay(target: PayTarget) {
+  const { address, token, chainId, total, overLimit, funding, heldToken, terms } = target
   const l1 = useL1Wallet({ expectedChainId: chainId })
   const { verdict, cleared, rescreen } = useScreenedAddress(l1.account, "deposit")
-  const key = `${chainId}:${token.toLowerCase()}:${address.toLowerCase()}`
-  const payment = useSyncExternalStore(subscribePayments, () => payments.get(key))
-  const state = payment?.state ?? "idle"
-  // The last check refused this payment; nothing was sent.
-  const [refusal, setRefusal] = useState<string>()
+  const session = useSession()
   // The fee token, and the tokens the sweep swaps into it. Nothing is paid before they are read.
   const tokensRead = useDepositTokensRead("registration")
   const registrationTokens = tokensRead.tokens
   const feeToken = registrationTokens?.settlement ?? {
     address: token,
     symbol: "",
-    decimals: tokenDecimalsForNetwork(getConfig().network),
+    decimals: tokenDecimalsForNetwork(session.page.config.network),
     icon: ethIcon,
     settlesIn: token,
     swapped: false,
   }
   const tokens = registrationTokens?.offered ?? [feeToken]
   const [picked, setPicked] = useState<DepositTokenOption>()
-  const [confirming, setConfirming] = useState(false)
-  const prompt = useWalletPrompt()
-  const stalled = useWalletPromptStall(state === "sending")
-  // Back to the ask; the target stays locked until the wallet answers the transfer it still holds.
-  const cancelPrompt = () => {
-    prompt.cancel()
-    setPayment(key, { state: "holding" })
-    setConfirming(false)
-  }
   const held = heldToken
     ? tokens.find((t) => t.address.toLowerCase() === heldToken.toLowerCase())
     : undefined
   const pick = held ?? picked ?? feeToken
   const swapped = pick.swapped
   const amount = pickedAmount(total, feeToken.decimals, pick)
-
-  const pay = async () => {
-    const current = payments.get(key)
-    if (current && current.state !== "check") return
-    if (!current && (overLimit || !funding.canFund || !l1.account || !cleared || total <= 0n)) {
-      return
-    }
-    let hash = current?.hash
-    let failed = false
-    if (!current && prompt.openElsewhere) {
-      setRefusal(prompt.openElsewhere)
-      return
-    }
-    let request: WalletPromptToken | undefined
-    setRefusal(undefined)
-    setPayment(key, { state: hash ? "confirming" : "checking", hash })
-    try {
-      const config = getConfig()
-      if (config.l1ChainId !== chainId) throw new WalletError("deposit.switchNetwork")
-      const publicClient = l1PublicClient(config)
-      if (!hash) {
-        const balance = await readL1DepositTokenBalance(l1.account!, pick.address)
-        if (balance.raw < amount) {
-          setPayment(key, undefined)
-          setRefusal(
-            fmt(copy.pay.lowBalance, {
-              held: balance.display,
-              needed: formatUnits(amount, balance.decimals),
-              symbol: balance.symbol,
-            }),
-          )
-          return
-        }
-        // A new read of the address's own bucket right before the wallet prompt. It reserves nothing.
-        if (!funding.store) throw new FundingPreflightError("capacity", copy.capacityUnconfirmed)
-        await runFundingPreflight({ store: funding.store, required: funding.required })
-        request = prompt.begin()
-        setPayment(key, { state: "sending" })
-        const { walletClient, account, chain } = await getL1Clients(chainId, l1.account!)
-        hash = await walletClient.writeContract({
-          address: pick.address,
-          abi: erc20Abi,
-          functionName: "transfer",
-          args: [address, amount],
-          account,
-          chain,
-        })
-        prompt.settle(request)
-      }
-      setPayment(key, { state: "confirming", hash })
-      setConfirming(false)
-      const receipt = await publicClient.waitForTransactionReceipt({
-        hash,
-        onReplaced: ({ reason, transaction }) => {
-          hash = transaction.hash
-          failed = reason !== "repriced"
-        },
-      })
-      failed ||= receipt.status !== "success"
-      if (failed) throw new WalletError("deposit.fundingFailed", hash)
-      setPayment(key, { state: "sent", hash })
-    } catch (e) {
-      // An RPC error or timeout does not prove failure: recheck the same hash, never resend it.
-      setPayment(key, hash && !failed ? { state: "check", hash } : undefined)
-      if (e instanceof WalletPromptOpenError) setRefusal(e.message)
-      else if (prompt.cancelled(request)) return
-      else if (e instanceof FundingPreflightError) setRefusal(e.message)
-      else if (isWalletDisconnect(e)) {
-        showErrorModal({
-          title: copy.pay.disconnectedTitle,
-          message: copy.pay.disconnectedMessage,
-        })
-      } else if (isWrongNetwork(e)) {
-        const network = l1ChainFor(chainId).name
-        setRefusal(fmt(copy.pay.wrongNetwork, { network }))
-      } else if (!isWalletRejection(e)) showReportableError(e, "registration:fund")
-    } finally {
-      prompt.settle(request)
-    }
+  const inputs = {
+    ...target,
+    account: l1.account,
+    wagmi: l1.wagmi,
+    cleared,
+    feeToken,
+    tokens,
+    pick,
   }
+  const flow = useScreenFlow(inputs, (latest) => openRegistrationPayFlow(session, latest))
+  const { run, refusal, confirming } = useStore(flow.state)
+  const record = useStore(session.registrations.view, (v) => registrationAt(v.records, address))
+  const hold = unresolvedSendState(useStore(session.unresolvedSends.view))
+  const state = registrationPayment(address, record, hold, run?.stage)
+  const stalled = useWalletPromptStall(state === "sending")
+  const { pay, cancelPrompt } = flow
 
   // ponytail: an open amount has no one-click send; the connected wallet pays the address by hand.
   const title =
@@ -486,7 +361,7 @@ function ConnectedWalletPay({
         disabled={disabled}
         aria-busy={rowBusy || undefined}
         onClick={() =>
-          void (state === "check" ? pay() : l1.account ? setConfirming(true) : l1.connect())
+          void (state === "check" ? pay() : l1.account ? flow.confirm() : l1.connect())
         }
       >
         <span className="ww-deposit__connect-icon">
@@ -542,10 +417,7 @@ function ConnectedWalletPay({
           reason={reason}
           note={stallNote}
           onConfirm={() => void pay()}
-          onClose={() => {
-            setRefusal(undefined)
-            setConfirming(false)
-          }}
+          onClose={flow.closeConfirm}
         />
       )}
     </>

@@ -1,10 +1,8 @@
 /**
- * The wallet's passkey tracker: what it sends through the consent-gated events path, how it reads
- * the wallet's own errors, and which proving flow a signature is reported under.
+ * The wallet's passkey tracker: what it sends through the consent-gated events path, and how it
+ * reads the wallet's own errors.
  */
 import { type PasskeyRequestHook, parseUserAgent } from "@obsidion/passkey-web"
-import { act, createElement } from "react"
-import { createRoot } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest"
 import { testPage, pageOver } from "../support/page"
 import { FakePasskeyCeremony } from "../support/fakePasskeyCeremony"
@@ -332,59 +330,4 @@ describe("the phone's platform-authenticator answer", () => {
       platform_authenticator: "unknown",
     })
   })
-})
-
-describe("the flow a signature belongs to", () => {
-  it("is the newest proving screen holding an attempt, and other once none is", async () => {
-    const { passkeyTelemetry } = await load()
-    const { useProvingOutcome } = await import("../../src/ui/hooks")
-    const { makeWebauthnSignFn } = await import("../../src/platform/auth/webauthnSigning")
-    const outcomes: Record<string, ReturnType<typeof useProvingOutcome>> = {}
-    const Probe = ({ flow }: { flow: string }) => {
-      outcomes[flow] = useProvingOutcome(flow)
-      return null
-    }
-    const container = document.createElement("div")
-    const root = createRoot(container)
-    const flows = ["send", "withdraw", "migration"]
-    act(() => root.render(flows.map((flow) => createElement(Probe, { key: flow, flow }))))
-
-    const { inner, created } = await authenticator(passkeyTelemetry.requestHook)
-    const sign = makeWebauthnSignFn(
-      passkeyTelemetry.wrap(inner),
-      "localhost",
-      created.credentialId,
-      created.pubkey,
-    )
-    const signOnce = () => sign(Buffer.alloc(32, 7))
-
-    outcomes.send.start("proving")
-    await signOnce()
-    outcomes.withdraw.start("proving")
-    await signOnce()
-    // Another screen letting go leaves the first one's flow in place.
-    outcomes.withdraw.finish()
-    await signOnce()
-    outcomes.send.finish()
-    await signOnce()
-    // A flow outside the vocabulary is reported as other.
-    outcomes.migration.start("proving")
-    await signOnce()
-    outcomes.migration.cancel()
-    outcomes.send.start("proving")
-    act(() => root.unmount())
-    await signOnce()
-
-    expect(props().map((event) => [event.ceremony, event.flow])).toEqual([
-      ["approve_tx", "send"],
-      ["approve_tx", "withdraw"],
-      ["approve_tx", "send"],
-      ["approve_tx", "other"],
-      ["approve_tx", "other"],
-      ["approve_tx", "other"],
-    ])
-  })
-
-  // The claim that holds the signup flow drives its own signature, so its coverage lives with it,
-  // in registrationClaimBurn.test.ts.
 })

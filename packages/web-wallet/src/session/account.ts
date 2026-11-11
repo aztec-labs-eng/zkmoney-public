@@ -1,14 +1,13 @@
 import type { Fr } from "@aztec-labs/aztec.js/fields"
 import { stageIdentity, type IdentityView, type WalletIdentity } from "@obsidion/front-core"
 import type { AlphaAuthProvider, ObsidionAccount } from "@obsidion/sdk"
-import { getConfig } from "../config/env"
 import { WalletError, bestEffort } from "@obsidion/core/errors"
 import { SessionChangedError } from "../platform/auth/sessionErrors"
 import { hasOpeningBreadcrumb, rememberUsertag } from "../platform/auth/WebPasskeyIdentityMap"
-import { activeNamespace, session, type Session } from "./session"
+import { activeNamespace, type Session } from "./session"
 
 /** Where the page's identity writes go: the committed account's namespace. */
-type IdentityPage = Pick<Session, "database" | "device">
+type IdentityPage = Pick<Session["page"], "database" | "device" | "config">
 
 /**
  * Saves the committed account's identity, whose session may not be open yet, then the passkey
@@ -23,7 +22,7 @@ export async function saveIdentity(
   identity: WalletIdentity,
   stillOwns?: () => boolean,
 ): Promise<void> {
-  const { database, device } = page
+  const { database, device, config } = page
   await database.write(async (w) => {
     const committed = activeNamespace(device)
     if (committed.id !== null) stageIdentity(w, committed.prefix, identity)
@@ -33,7 +32,7 @@ export async function saveIdentity(
   if (identity.pending || !handle || !credentialId) return
   await bestEffort(
     "unknown",
-    rememberUsertag(database, getConfig().rpId, credentialId, handle, stillOwns),
+    rememberUsertag(database, config.rpId, credentialId, handle, stillOwns),
   )
 }
 
@@ -48,8 +47,9 @@ export async function saveIdentity(
 export function enteredIdentity(
   identity: IdentityView,
   passkeyMap: string | null,
+  rpId: string,
 ): WalletIdentity | null | undefined {
-  if (!hasOpeningBreadcrumb(passkeyMap, getConfig().rpId)) return null
+  if (!hasOpeningBreadcrumb(passkeyMap, rpId)) return null
   return identity.loaded && !identity.failed ? identity.value : undefined
 }
 
@@ -75,8 +75,11 @@ export function pubkeyHexFrom(x: Buffer, y: Buffer): string {
  * committed. The pair is the session's, so the account
  * must be too: one built for a session since replaced is refused as `SessionChangedError`.
  */
-export async function collectOnboardingKeys(account: ObsidionAccount): Promise<OnboardingKeys> {
-  const keys = await session().auth.sessionKeys()
+export async function collectOnboardingKeys(
+  session: { auth: Pick<Session["auth"], "sessionKeys"> },
+  account: ObsidionAccount,
+): Promise<OnboardingKeys> {
+  const keys = await session.auth.sessionKeys()
   if (!keys) throw new WalletError("account.locked", "no session keys to continue onboarding")
   if (account.getAuthProvider() !== keys.authProvider) throw new SessionChangedError()
   const { secretKey, authProvider } = keys

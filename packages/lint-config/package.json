@@ -8,6 +8,9 @@
     ".": "./index.mjs",
     "./tsconfig.strict.json": "./tsconfig.strict.json"
   },
+  "scripts": {
+    "test": "node --test"
+  },
   "dependencies": {
     "@eslint/js": "^9.21.0",
     "eslint-plugin-prettier": "4.2.1",

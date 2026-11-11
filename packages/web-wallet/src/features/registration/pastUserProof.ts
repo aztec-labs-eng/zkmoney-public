@@ -3,8 +3,10 @@
  * (the eligible leaves' Poseidon2 hashes, sorted, 32 bytes each). The old address is a private
  * input: it stays in the browser, and only the proof leaves it.
  */
-import { BarretenbergSync } from "@aztec-foundation/bb.js"
+import type { BarretenbergSync } from "@aztec-foundation/bb.js"
 import { ELIGIBILITY_SIGN_MESSAGE } from "@obsidion/core/constants"
+import { syncBackend } from "../../platform/barretenberg"
+import type { IosSettings } from "../../platform/barretenberg"
 import {
   bytesToHex,
   hashMessage,
@@ -66,16 +68,21 @@ const leafOf = (api: BarretenbergSync, address: Hex) =>
   bytesToHex(api.poseidon2Hash({ inputs: [field(PAST_USER), field(address)] }).hash)
 
 /** Whether `address` is on the past-user list, checked without a signature. */
-export async function isPastUserAddress(address: Hex, leaves: Uint8Array): Promise<boolean> {
-  return indexOf(leaves, leafOf(await BarretenbergSync.initSingleton(), address)) >= 0
+export async function isPastUserAddress(
+  address: Hex,
+  leaves: Uint8Array,
+  ios?: IosSettings,
+): Promise<boolean> {
+  return indexOf(leaves, leafOf(await syncBackend(ios), address)) >= 0
 }
 
 export async function pastUserInputs(req: {
   signature: Hex
   owner: Hex
   leaves: Uint8Array
+  ios?: IosSettings
 }): Promise<Record<string, unknown>> {
-  const api = await BarretenbergSync.initSingleton()
+  const api = await syncBackend(req.ios)
   const hash: Hash = (left, right) => api.poseidon2Hash({ inputs: [left, right] }).hash
   const messageHash = hashMessage(ELIGIBILITY_SIGN_MESSAGE)
   const address = await recoverAddress({ hash: messageHash, signature: req.signature })

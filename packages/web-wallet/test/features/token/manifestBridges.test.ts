@@ -5,19 +5,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { Network } from "@obsidion/core/constants"
 import type { WebWalletConfig } from "../../../src/config/env"
+import { testChain } from "../../support/query"
 
-const h = vi.hoisted(() => ({ loadOxideManifestTuple: vi.fn(), config: {} as unknown }))
+const h = vi.hoisted(() => ({ loadOxideManifestTuple: vi.fn() }))
 vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/front-core")>()),
   loadOxideManifestTuple: h.loadOxideManifestTuple,
 }))
-vi.mock("../../../src/config/env", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../src/config/env")>()),
-  getConfig: () => h.config,
-}))
 
-const { getManifestBridges } = await import("../../../src/config/oxideTuple")
-const { bridgeOfToken } = await import("../../../src/features/token/oxideToken")
+const { createPageChain } = await import("../../../src/app/pageChain")
 
 const MANIFEST_URL = "https://oxide.example/manifest.json"
 const token = (n: number) => `0x${n.toString(16).padStart(64, "0")}`
@@ -39,12 +35,15 @@ const manifest = (...bridges: ReturnType<typeof bridge>[]) => ({
   ],
 })
 
-const config = (sourceRollups: unknown[] = [], pin = portal(1)) =>
-  ({
-    oxideProfile: { manifestUrl: MANIFEST_URL, portal: pin },
-    network: Network.TESTNET,
-    sourceRollups,
-  } as unknown as WebWalletConfig)
+const reads = (sourceRollups: unknown[] = [], pin = portal(1)) =>
+  createPageChain(
+    {
+      oxideProfile: { manifestUrl: MANIFEST_URL, portal: pin },
+      network: Network.TESTNET,
+      sourceRollups,
+    } as unknown as WebWalletConfig,
+    testChain(),
+  )
 
 let served: unknown
 const fetchMock = vi.fn(async () => new Response(JSON.stringify(served)))
@@ -56,44 +55,40 @@ beforeEach(() => {
 })
 afterEach(() => vi.unstubAllGlobals())
 
-describe("getManifestBridges", () => {
+describe("manifestBridges", () => {
   it("keeps a complete list for the profile", async () => {
     served = manifest(bridge(1))
-    const once = config()
-    expect((await getManifestBridges(once)).map((b) => b.l2Token)).toEqual([token(1)])
-    await getManifestBridges(once)
+    const { manifestBridges } = reads()
+    expect((await manifestBridges.read()).map((b) => b.l2Token)).toEqual([token(1)])
+    await manifestBridges.read()
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
   it("does not keep a list missing another manifest's bridges", async () => {
     served = manifest(bridge(1))
-    const withOther = config(
+    const { manifestBridges } = reads(
       [{ manifestUrl: "https://oxide.example/v5.json", pins: [{ portal: portal(5) }] }],
       portal(2),
     )
     h.loadOxideManifestTuple.mockRejectedValueOnce(new Error("v5 manifest down"))
-    expect((await getManifestBridges(withOther)).map((b) => b.l2Token)).toEqual([token(1)])
+    expect((await manifestBridges.read()).map((b) => b.l2Token)).toEqual([token(1)])
     h.loadOxideManifestTuple.mockResolvedValueOnce({ ...bridge(5), enclaveUrl: "https://v5/rpc" })
-    expect((await getManifestBridges(withOther)).map((b) => b.l2Token)).toEqual([
-      token(1),
-      token(5),
-    ])
+    expect((await manifestBridges.read()).map((b) => b.l2Token)).toEqual([1, 5].map(token))
   })
 })
 
 describe("bridgeOfToken", () => {
   it("finds a bridge added since the list was fetched", async () => {
-    h.config = config()
+    const pinned = reads()
     served = manifest(bridge(1))
-    await getManifestBridges(h.config as WebWalletConfig, { fresh: true })
+    await pinned.manifestBridges.read()
     served = manifest(bridge(1), bridge(2))
-    expect((await bridgeOfToken(token(2))).portal).toBe(portal(2))
+    expect((await pinned.bridgeOfToken(token(2)).read()).portal).toBe(portal(2))
   })
 
   it("names a token no manifest lists", async () => {
-    h.config = config()
     served = manifest(bridge(1))
-    await expect(bridgeOfToken(token(9))).rejects.toThrow(
+    await expect(reads().bridgeOfToken(token(9)).read()).rejects.toThrow(
       `No oxide bridge lists the token ${token(9)}`,
     )
   })

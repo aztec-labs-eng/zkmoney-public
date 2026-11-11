@@ -31,7 +31,6 @@ vi.mock("@obsidion/sdk", () => ({
   SipaSelfResolver: class {
     userPublicKey = "0xpk"
   },
-  fetchSipaResolverOperators: async () => [],
   resolverSelectionPolicy: () => ({}),
   selectManifestResolverOperator: () => ({ owner: "0xop" }),
 }))
@@ -89,6 +88,7 @@ async function compose(storage: ReturnType<typeof memory>, who: ReturnType<typeo
     network: "sandbox" as never,
     secretKey: {} as never,
     client: {} as never,
+    scans: { operatorRecords: () => ({ read: async () => [] }) },
     storage,
     lock: (fn) => fn(),
     key: "run",

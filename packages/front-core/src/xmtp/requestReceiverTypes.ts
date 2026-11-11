@@ -51,6 +51,8 @@ export interface IncomingRequestInput {
   networkId: string
   note?: string
   expiresAt?: number
+  /** When the requester sent the message (ms), from the XMTP envelope. */
+  sentAt?: number
 }
 
 /** One decoded `AztecPaymentRequestContent` message. */
@@ -58,6 +60,8 @@ export interface RequestReceiveInput {
   content: AztecPaymentRequestContent
   /** Every address on the DM peer's inbox; empty if unresolvable. Used by the tag check. */
   senderXmtpAddresses?: readonly string[]
+  /** The message's XMTP send time (ms). */
+  sentAt?: number
 }
 
 /**

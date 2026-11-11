@@ -1,0 +1,99 @@
+/* "How privacy is rated": the header, the color key, then the questions and levels cards. */
+.sheet.sheet.sheet {
+  gap: 24px;
+  padding: 40px;
+  border-radius: 24px;
+  background: #212121;
+}
+.head {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  text-align: center;
+}
+.head h2 {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 700;
+  color: #fdfdfd;
+}
+.head p {
+  max-width: 362px;
+  margin: 0;
+  font-size: 14px;
+  color: #bfc2d7;
+}
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px 16px;
+  font-size: 12px;
+  color: #bfc2d7;
+}
+.legend span::before {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: #56e79d;
+}
+.legend [data-tone="weak"]::before {
+  background: #f5c542;
+}
+.legend [data-tone="direct"]::before {
+  background: #fe708b;
+}
+.card {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 16px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+  text-align: left;
+}
+.questions {
+  gap: 14px;
+}
+.levels {
+  gap: 12px;
+}
+.question {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.question > span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.question b {
+  font-size: 14px;
+  font-weight: 600;
+  color: #fdfdfd;
+}
+.question small {
+  font-size: 13px;
+  color: #bfc2d7;
+}
+.level {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #bfc2d7;
+}
+.level small {
+  margin-left: auto;
+  font-size: 13px;
+}
+.sheet :global(.ww-deposit-sheet__cta) {
+  width: 100%;
+}

@@ -4,7 +4,7 @@
  */
 import type { ConfirmationOutcome } from "../core/services/coordination/ReorgMonitor"
 import type { OldVersionWithdrawal } from "../core/migration/OldVersionWithdrawalStorage"
-import type { OperationRecord } from "../core/services/operations/OperationStore"
+import type { OperationRecord } from "./operationTransition"
 import type { PendingRegistrationRecord } from "./registrationRecord"
 import {
   depositOwed,
@@ -12,7 +12,11 @@ import {
   type RegistrationStage,
 } from "../core/services/registration/registrationStage"
 import { sipaReasonShown, type SipaProcessingKind } from "../core/services/deposits/sipaProcessing"
-import type { PaylinkTransaction, TokenTransaction, Transaction } from "../types/transactions"
+import type { TokenTransaction, Transaction } from "../types/transactions"
+import type { BridgeInRecord } from "../core/services/crossChain/types"
+import { isBridgeInPending } from "./bridgeIns"
+import type { Loaded } from "./recordSource"
+import type { PaylinkRecord } from "./paylinkTransition"
 import {
   bridgeEntries,
   recoveredWithdrawalIds,
@@ -28,7 +32,8 @@ import {
   type NotificationState,
   type Stampable,
 } from "./notifications"
-import { bestEffort } from "./errors"
+import { isMoveFromPrevious, isReceiveAtPrevious } from "./feedRules"
+import { task, type Task } from "./runtime"
 import { derived, type ReadonlyStore } from "./store"
 
 export type NotificationSeverity = "info" | "success" | "error"
@@ -47,6 +52,7 @@ export type NotificationTarget =
   | { type: "registration.pending"; tag: string }
   | { type: "withdraw.oldVersion"; id: string }
   | { type: "request.share"; requestId: string }
+  | { type: "bridgeIn.detail"; id: string }
 
 export type RegistrationLiveStage = Exclude<RegistrationStage, "reserved" | "registered" | "failed">
 
@@ -61,12 +67,16 @@ export type NotificationAbout =
     }
   | { kind: "registrationEnded"; tag: string; registered: boolean }
   | { kind: "receive"; tx: TokenTransaction }
-  | { kind: "paylinkClaimed"; tx: PaylinkTransaction }
+  | { kind: "paylinkClaimed"; link: PaylinkRecord }
   | { kind: "operation"; record: OperationRecord }
   /** A "Withdraw to Ethereum" run from old versions. */
   | { kind: "oldVersionWithdrawal"; record: OldVersionWithdrawal }
-  /** `tx`: the paylink row a reclaim notice names. */
-  | { kind: "event"; event: NotificationEvent; tx?: PaylinkTransaction }
+  /** A bridge-in from another chain filled, or came back. */
+  | { kind: "bridgeInEnded"; record: BridgeInRecord }
+  /** A bridge-in that pays someone else's deposit address filled, or came back. */
+  | { kind: "paymentBridgeEnded"; record: BridgeInRecord }
+  /** `link`: the link a reclaim notice names. */
+  | { kind: "event"; event: NotificationEvent; link?: PaylinkRecord }
 
 export interface NotificationEntry {
   id: string
@@ -84,8 +94,11 @@ export interface NotificationEntry {
 
 export interface NotificationSources extends BridgeSources {
   rows: readonly Transaction[]
+  /** The links the bell reads: the open ones and those claimed lately. */
+  links: readonly PaylinkRecord[]
   oldVersionWithdrawals: readonly OldVersionWithdrawal[]
   registrations: readonly PendingRegistrationRecord[]
+  bridgeIns: Loaded<BridgeInRecord>
   /** The active wallet's L2 address: its registration is the one reported. */
   account?: string
   /**
@@ -117,9 +130,6 @@ export const claimedNotificationId = (txHash: string) => `paylink:claimed:${lowe
 const claimReversedId = (txHash: string) => `paylink:claim-reversed:${lower(txHash)}`
 
 export const reorgFailedId = (txHash: string, epoch = 0) => `reorg:failed:${lower(txHash)}:${epoch}`
-
-const isPaylinkRow = (tx: Transaction): tx is PaylinkTransaction =>
-  (tx as PaylinkTransaction).emailPaymentAction !== undefined
 
 function registrationEntries(sources: NotificationSources, now: number): DerivedNotification[] {
   const account = sources.account?.toLowerCase()
@@ -192,6 +202,43 @@ function oldVersionWithdrawalEntries(sources: NotificationSources): DerivedNotif
   })
 }
 
+/** One entry per sent bridge-in's ending: filled, refunded, expired or failed. */
+function bridgeInEntries(sources: NotificationSources): DerivedNotification[] {
+  return sources.bridgeIns.records.flatMap((record): DerivedNotification[] => {
+    // A rebuilt one ended on another device, which reported it.
+    if (
+      isBridgeInPending(record) ||
+      record.endTime === undefined ||
+      record.replayed ||
+      !record.originTxHash
+    )
+      return []
+    const filled = record.status === "filled"
+    return [
+      {
+        id: `${record.id}:${record.status}`,
+        about: record.pays
+          ? { kind: "paymentBridgeEnded", record }
+          : { kind: "bridgeInEnded", record },
+        timestampMs: record.endTime,
+        severity: filled ? "success" : "info",
+        icon: filled
+          ? "checkmark.circle.fill"
+          : record.status === "failed"
+          ? "xmark.circle.fill"
+          : "arrow.uturn.backward",
+        pending: false,
+        target: { type: "bridgeIn.detail", id: record.id },
+        settledAt: record.endTime,
+      },
+    ]
+  })
+}
+
+/** A receive the bell leaves out: the wallet's own move, or funds waiting on its previous account. */
+const quietReceive = (tx: Transaction, previousAccount?: string) =>
+  isMoveFromPrevious(tx, previousAccount) || isReceiveAtPrevious(tx, previousAccount)
+
 function rowEntries(
   sources: NotificationSources,
   reversed: ReadonlySet<string>,
@@ -199,7 +246,10 @@ function rowEntries(
   const out: DerivedNotification[] = []
   for (const tx of sources.rows) {
     if (!tx.txHash) continue
-    if ((tx as TokenTransaction).action === "receive") {
+    if (
+      (tx as TokenTransaction).action === "receive" &&
+      !quietReceive(tx, sources.previousAccount)
+    ) {
       out.push({
         id: `transfer:receive:${lower(tx.txHash)}`,
         about: { kind: "receive", tx: tx as TokenTransaction },
@@ -211,37 +261,39 @@ function rowEntries(
         settledAt: tx.timestamp,
       })
     }
-    // A claim a reorg reverted keeps its entry beside the reversal. The creator's own claim is not
-    // news to them.
-    if (
-      isPaylinkRow(tx) &&
-      tx.claimedBy !== "self" &&
-      (tx.isClaimed || reversed.has(lower(tx.txHash)))
-    ) {
-      out.push({
-        id: claimedNotificationId(tx.txHash),
-        about: { kind: "paylinkClaimed", tx },
-        timestampMs: tx.claimedAt,
-        severity: "success",
-        icon: "checkmark.circle",
-        pending: false,
-        target: { type: "paylink.claimed", txHash: tx.txHash },
-        settledAt: tx.claimedAt ?? tx.timestamp,
-      })
-    }
+  }
+  // A claim a reorg reverted keeps its entry beside the reversal. The creator's own claim is not
+  // news to them.
+  for (const link of sources.links) {
+    const { txHash } = link
+    if (!txHash || link.claimedBy === "self") continue
+    if (!link.isClaimed && !reversed.has(lower(txHash))) continue
+    out.push({
+      id: claimedNotificationId(txHash),
+      about: { kind: "paylinkClaimed", link },
+      timestampMs: link.claimedAt,
+      severity: "success",
+      icon: "checkmark.circle",
+      pending: false,
+      target: { type: "paylink.claimed", txHash },
+      settledAt: link.claimedAt ?? link.timestamp,
+    })
   }
   return out
 }
 
-function eventEntry(event: NotificationEvent, rows: readonly Transaction[]): DerivedNotification {
+function eventEntry(
+  event: NotificationEvent,
+  links: readonly PaylinkRecord[],
+): DerivedNotification {
   const entry = (
     severity: NotificationSeverity,
     icon: string,
     target: NotificationTarget,
-    tx?: PaylinkTransaction,
+    link?: PaylinkRecord,
   ): DerivedNotification => ({
     id: event.id,
-    about: { kind: "event", event, ...(tx && { tx }) },
+    about: { kind: "event", event, ...(link && { link }) },
     timestampMs: event.at,
     pending: false,
     severity,
@@ -266,10 +318,8 @@ function eventEntry(event: NotificationEvent, rows: readonly Transaction[]): Der
       })
     case "reclaimable": {
       const { txHash } = event.data
-      const tx = rows.find(
-        (r): r is PaylinkTransaction => isPaylinkRow(r) && lower(r.txHash) === lower(txHash),
-      )
-      return entry("info", "clock.arrow.circlepath", { type: "paylink.reclaimable", txHash }, tx)
+      const link = links.find((l) => !!l.txHash && lower(l.txHash) === lower(txHash))
+      return entry("info", "clock.arrow.circlepath", { type: "paylink.reclaimable", txHash }, link)
     }
     case "migrationResiduals":
       return entry("info", "clock.arrow.circlepath", { type: "migration.residuals" })
@@ -290,12 +340,21 @@ export function deriveNotifications(
   const reversed = new Set(
     [...events.values()].flatMap((e) => (e.kind === "claimReversed" ? [lower(e.data.txHash)] : [])),
   )
+  // A reorg of a receive the bell leaves out is no news either.
+  const quiet = new Set(
+    sources.rows.flatMap((tx) =>
+      tx.txHash && quietReceive(tx, sources.previousAccount) ? [lower(tx.txHash)] : [],
+    ),
+  )
   const all: (DerivedNotification | BridgeEntry)[] = [
     ...bridgeEntries(sources, now),
     ...registrationEntries(sources, now),
     ...oldVersionWithdrawalEntries(sources),
+    ...bridgeInEntries(sources),
     ...rowEntries(sources, reversed),
-    ...[...events.values()].map((event) => eventEntry(event, sources.rows)),
+    ...[...events.values()]
+      .filter((event) => event.kind !== "reorg" || !quiet.has(lower(event.data.txHash)))
+      .map((event) => eventEntry(event, sources.links)),
   ]
   const seen = new Set<string>()
   return all.filter((entry) => !seen.has(entry.id) && !!seen.add(entry.id)) as DerivedNotification[]
@@ -314,10 +373,10 @@ export function notificationsStamped(
   stamped: ReadonlySet<string> = new Set(),
 ): boolean {
   const known = (id: string) => state.has(id) || stamped.has(id)
-  return (
-    sources.loaded &&
-    deriveNotifications(sources, events, now).every((e) => known(e.id) || isOld(e, known, now))
-  )
+  if (!sources.loaded) return false
+  // As the writer lists them: a finished upgrade run counts once stamped, before its value comes.
+  const listed = deriveNotifications({ ...sources, upgradePricing: undefined }, events, now)
+  return listed.every((e) => known(e.id) || isOld(e, known, now))
 }
 
 /** State rows the writer forgets: a recovered withdrawal's failure, so a later one rings anew. */
@@ -451,41 +510,67 @@ export function reorgEvent(
   }
 }
 
+/** True once the views hold sources: a visitor's open on first read. */
+const opened = (sources: ReadonlyStore<NotificationSources | undefined>) =>
+  derived([sources], (held) => held !== undefined)
+
+/** A failed write runs again after 1 s, doubling to a minute. */
+const WRITE_BACKOFF = { baseMs: 1_000, maxMs: 60_000 }
+
 /**
- * The one writer of `firstSeenAt`: whenever the records or the events change, every new entry is
- * stamped (or left out for good when it settled before the window) and recovered failures are
- * forgotten. It also records each claim reversal. Every input holds saved records only, so a write
- * whose save failed causes nothing. Returns the unsubscribe.
+ * The one writer of `firstSeenAt`: on each change of the records, the events or the clock, every
+ * new entry is stamped (or left out for good when it settled before the window) and recovered
+ * failures are forgotten. Every input holds saved records only, so a write whose save failed causes
+ * nothing.
  */
-export function watchNotifications(
-  sources: ReadonlyStore<NotificationSources>,
+export function notificationStamps(
+  sources: ReadonlyStore<NotificationSources | undefined>,
   clock: ReadonlyStore<number>,
   notifications: Notifications,
-): () => void {
-  const inputs = derived([sources, clock, notifications.events] as const, (s, now, events) => ({
-    listed: deriveNotifications(s, events, now),
-    retired: retiredNotifications(s),
-    complete: s.loaded,
-  }))
-  const write = () => {
-    const { listed, retired, complete } = inputs.get()
-    void bestEffort("unknown", notifications.observe(listed, retired, Date.now(), complete))
-  }
-  const reversed = derived(
-    [sources, notifications.state, notifications.events] as const,
-    (s, state, events) => claimReversals(s.rows, state, events),
-    (a, b) => a.join() === b.join(),
-  )
-  const reverse = () => {
-    for (const txHash of reversed.get()) {
-      const event = { id: claimReversedId(txHash), at: Date.now(), kind: "claimReversed" as const }
-      void bestEffort("unknown", notifications.record({ ...event, data: { txHash } }))
-    }
-  }
-  const offs = [inputs.subscribe(write), reversed.subscribe(reverse)]
-  write()
-  reverse()
-  return () => offs.forEach((off) => off())
+  now: () => number,
+): Task {
+  return task("notificationStamps", {
+    needs: {},
+    when: opened(sources),
+    on: { sources, tick: clock, events: notifications.events },
+    every: "once",
+    backoff: WRITE_BACKOFF,
+    run: async ({ sources, tick, events }) => {
+      if (!sources) return
+      await notifications.observe(
+        deriveNotifications(sources, events, tick),
+        retiredNotifications(sources),
+        now(),
+        sources.loaded,
+      )
+    },
+  })
+}
+
+/** Records each claim reversal `claimReversals` names, on each change of what it reads. */
+export function claimReversalReports(
+  sources: ReadonlyStore<NotificationSources | undefined>,
+  notifications: Notifications,
+  now: () => number,
+): Task {
+  return task("claimReversalReports", {
+    needs: {},
+    when: opened(sources),
+    on: { sources, state: notifications.state, events: notifications.events },
+    every: "once",
+    backoff: WRITE_BACKOFF,
+    run: async ({ sources, state, events }) => {
+      if (!sources) return
+      for (const txHash of claimReversals(sources.links, state, events)) {
+        const event = {
+          id: claimReversedId(txHash),
+          at: now(),
+          kind: "claimReversed" as const,
+        }
+        await notifications.record({ ...event, data: { txHash } })
+      }
+    },
+  })
 }
 
 /**
@@ -493,20 +578,19 @@ export function watchNotifications(
  * the link's epoch and clears `isClaimed`; a refund clears it too, so a refunded link is no reversal.
  */
 export function claimReversals(
-  rows: readonly Transaction[],
+  links: readonly PaylinkRecord[],
   state: ReadonlyMap<string, NotificationState>,
   events: ReadonlyMap<string, NotificationEvent>,
 ): string[] {
-  return rows.flatMap((tx) =>
-    isPaylinkRow(tx) &&
-    !!tx.txHash &&
-    !tx.isClaimed &&
-    !tx.isRefunded &&
-    !tx.isMigrated &&
-    (tx.reorgEpoch ?? 0) > 0 &&
-    state.has(claimedNotificationId(tx.txHash)) &&
-    !events.has(claimReversedId(tx.txHash))
-      ? [tx.txHash]
+  return links.flatMap((link) =>
+    !!link.txHash &&
+    !link.isClaimed &&
+    !link.isRefunded &&
+    !link.isMigrated &&
+    (link.reorgEpoch ?? 0) > 0 &&
+    state.has(claimedNotificationId(link.txHash)) &&
+    !events.has(claimReversedId(link.txHash))
+      ? [link.txHash]
       : [],
   )
 }

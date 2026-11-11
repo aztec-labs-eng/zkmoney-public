@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react"
 import { useLocation, useNavigate } from "react-router-dom"
-import { normalizeTag, useContactsDirectory } from "@obsidion/front-core"
+import { normalizeTag } from "@obsidion/front-core"
+import { useContactDirectory } from "../../session/contacts"
 import {
   ContactRow,
   GradientSpinner,
@@ -37,12 +38,12 @@ export function TagSearchBar({
   const location = useLocation()
   const input = useRef<HTMLInputElement>(null)
   const consumed = useRef<string | undefined>(undefined)
-  const { contacts, refresh } = useContactsDirectory()
+  const { contacts } = useContactDirectory()
   const [query, setQuery] = useState(initialQuery)
   const [focused, setFocused] = useState(false)
   const resultId = useId()
   const root = useRef<HTMLDivElement>(null)
-  const inline = useInlineContactSearch(contacts, query, refresh)
+  const inline = useInlineContactSearch(contacts, query)
 
   const dismiss = () => {
     inline.cancel()
@@ -51,6 +52,7 @@ export function TagSearchBar({
   const dismissRef = useRef(dismiss)
   dismissRef.current = dismiss
 
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     const onDown = (e: PointerEvent) => {
       if (!root.current?.contains(e.target as Node)) dismissRef.current()
@@ -59,6 +61,7 @@ export function TagSearchBar({
     return () => document.removeEventListener("pointerdown", onDown)
   }, [])
 
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     const state = location.state as Record<string, unknown> | null
     const seed = typeof state?.searchTag === "string" ? state.searchTag : undefined
@@ -109,7 +112,11 @@ export function TagSearchBar({
           dismiss()
       }}
     >
-      {phone ? <PhoneIcon name="search-field" size={18} color="#fdfdfd" /> : <Icon name="search" size={18} />}
+      {phone ? (
+        <PhoneIcon name="search-field" size={18} color="var(--text-primary)" />
+      ) : (
+        <Icon name="search" size={18} />
+      )}
       <input
         ref={input}
         type="search"
@@ -148,7 +155,11 @@ export function TagSearchBar({
               name={c.name}
               isL1={c.addressKind === "ethereum-l1"}
               colors={avatarColors(c.tag)}
-              trailing={phone ? <PhoneIcon name="chevron-right" size={16} color="#bfc2d7" /> : undefined}
+              trailing={
+                phone ? (
+                  <PhoneIcon name="chevron-right" size={16} color="var(--text-secondary)" />
+                ) : undefined
+              }
               onClick={() => go(c.id)}
             />
           ))}
@@ -172,7 +183,11 @@ export function TagSearchBar({
                 trailing={
                   <span className="ww-search__trailing">
                     Not a contact
-                    {phone ? <PhoneIcon name="chevron-right" size={16} color="#bfc2d7" /> : <RowChevron />}
+                    {phone ? (
+                      <PhoneIcon name="chevron-right" size={16} color="var(--text-secondary)" />
+                    ) : (
+                      <RowChevron />
+                    )}
                   </span>
                 }
               />
@@ -205,7 +220,13 @@ export function TagSearchBar({
                 title={recipientNotUpgradedCopy.title(panel.tag)}
                 subtitle={recipientNotUpgradedCopy.searchSubtitle}
                 leading={<IconCircle name="user-unfollow" glyphSize={24} />}
-                trailing={phone ? <PhoneIcon name="chevron-right" size={16} color="#bfc2d7" /> : <RowChevron />}
+                trailing={
+                  phone ? (
+                    <PhoneIcon name="chevron-right" size={16} color="var(--text-secondary)" />
+                  ) : (
+                    <RowChevron />
+                  )
+                }
               />
             </button>
           )}
@@ -223,7 +244,13 @@ export function TagSearchBar({
                 title="See all contacts"
                 subtitle="Your contacts list"
                 leading={<IconCircle name="person" glyphSize={24} />}
-                trailing={phone ? <PhoneIcon name="chevron-right" size={16} color="#bfc2d7" /> : <RowChevron />}
+                trailing={
+                  phone ? (
+                    <PhoneIcon name="chevron-right" size={16} color="var(--text-secondary)" />
+                  ) : (
+                    <RowChevron />
+                  )
+                }
               />
             </button>
           )}

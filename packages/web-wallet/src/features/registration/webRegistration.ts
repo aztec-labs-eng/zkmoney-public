@@ -34,18 +34,13 @@ import { OxideSipaIntent, readNameClaimLog } from "@obsidion/sdk"
 import { scheduleSource, signedSchedule } from "./registrationTerms"
 import type { Address, Hex, PublicClient } from "viem"
 
-import {
-  getOxideTuple,
-  l1PublicClient,
-  oxideEnvFor,
-  requireTupleField,
-} from "../../config/oxideTuple"
+import { l1PublicClient, requireTupleField } from "../../config/oxideTuple"
 import { WalletError, bestEffort } from "@obsidion/core/errors"
-import { getConfig, type WebWalletConfig } from "../../config/env"
+import type { WebWalletConfig } from "../../config/env"
+import type { PageFacts, PageChain } from "../../session/pageChain"
 import { fireOnboardingEvent } from "../../lib/analytics"
-import { useSession, type Session, type SessionCore, type SessionDeps } from "../../session/session"
+import { useSession, type Session, type SessionDeps } from "../../session/session"
 import { rememberUsertag } from "../../platform/auth/WebPasskeyIdentityMap"
-import { wallClock } from "../../lib/clock"
 import type { SignupStash } from "./signupStash"
 
 /** A session's registrations, as the reads below take them. */
@@ -117,11 +112,11 @@ export function registrationScheduleForSipa(
 /** Maps an on-chain nameHash back to a locally-known plaintext tag (adoption gate). */
 export async function resolveLocalTag(
   nameHash: Hex,
-  config: WebWalletConfig,
+  chain: Pick<PageChain, "oxideTuple">,
   identity: WalletIdentity | null,
 ): Promise<string | null> {
   if (!identity) return null
-  const tuple = await getOxideTuple(config)
+  const tuple = await chain.oxideTuple.read()
   const ensDomain = requireTupleField(tuple, "ensDomain")
   return matchWireNameHash(identity.handle, ensDomain, nameHash)
 }
@@ -130,8 +125,9 @@ export async function resolveLocalTag(
 export interface WebDetectionDeps extends OxideResumeDeps {
   publicClient: PublicClient
   nameClaims: NameClaimCache
-  /** The page's database, where the passkey's tag is remembered, and its device keys. */
+  /** The page's database and rpId, where the passkey's tag is remembered, and its device keys. */
   database: Session["database"]
+  rpId: string
   device: Session["device"]
   identity: Session["identity"]
   signup: DetectionStores["signup"]
@@ -142,8 +138,8 @@ type NameClaimCache = Pick<Session["nameClaims"], "put">
 
 /** The session stores a detection tick reads and writes; a forced tick also owes broadcasts. */
 export type DetectionStores = Pick<
-  SessionCore,
-  "registrations" | "sipaDeposits" | "nameClaims" | "identity"
+  Session,
+  "registrations" | "sipaDeposits" | "nameClaims" | "identity" | "page"
 > &
   Pick<SessionDeps, "namespace" | "database" | "device"> & {
     oweRegistrationBroadcast?: OxideResumeDeps["oweBroadcast"]
@@ -152,22 +148,23 @@ export type DetectionStores = Pick<
 
 export async function buildWebDetectionDeps(
   config: WebWalletConfig,
-  own: DetectionStores,
+  session: DetectionStores,
   extras: Pick<OxideResumeDeps, "getSignDeps"> = {},
 ): Promise<WebDetectionDeps> {
-  const { tuple, env, publicClient } = await oxideEnvFor(config)
-  const { registrations, sipaDeposits, identity } = own
+  const { tuple, env, publicClient } = await session.page.chain.oxideEnv.read()
+  const { registrations, sipaDeposits, identity } = session
   return {
     env,
     l1: createOxideL1Reader(publicClient),
     publicClient,
+    pace: session.page.pace,
     deposits: createRegistrationDepositReader({
       publicClient,
       registrationRoute: deploymentSipaRoute(tuple, OxideSipaIntent.Registration),
       registry: requireTupleField(tuple, "registry") as `0x${string}`,
       // Resolved from the registry, not the manifest: an absent or stale pin makes front-core
       // fall back to the registry, whose controller-era build has no schedule immutables.
-      registrationController: await scheduleSource(config, publicClient as never),
+      registrationController: await scheduleSource(session.page, publicClient as never),
       store: sipaDeposits,
       // The record holds no bearer material; the saved terms carry the signed amounts. The record
       // names the tag those terms priced, which one device's shared account cannot.
@@ -180,16 +177,19 @@ export async function buildWebDetectionDeps(
       },
     }),
     registrations,
-    close: (record, event) => closeRegistration(own, record, event),
-    nameClaims: own.nameClaims,
-    database: own.database,
-    device: own.device,
+    turn: session.page.registrationTurn,
+    close: (record, event) => closeRegistration(session, record, event),
+    nameClaims: session.nameClaims,
+    database: session.database,
+    rpId: config.rpId,
+    device: session.device,
     identity,
-    signup: own.signup,
-    resolveLocalTag: (nameHash) => resolveLocalTag(nameHash, config, identity.get().value),
+    signup: session.signup,
+    resolveLocalTag: (nameHash) =>
+      resolveLocalTag(nameHash, session.page.chain, identity.get().value),
     sweepSent: async (sipa, txHash) =>
       void (await sipaDeposits.apply(sipa, { type: "sweepSent", txHash })),
-    oweBroadcast: own.oweRegistrationBroadcast,
+    oweBroadcast: session.oweRegistrationBroadcast,
     // Only the pending step's forced retry supplies the sign deps a spent-rail renewal needs.
     ...extras,
   }
@@ -200,12 +200,12 @@ export async function buildWebDetectionDeps(
  * identity that presents it, in the same write: a lost name is never shown as owned.
  */
 export async function closeRegistration(
-  own: Pick<Session, "registrations" | "namespace" | "database" | "identity">,
+  session: Pick<Session, "registrations" | "namespace" | "database" | "identity">,
   record: PendingRegistrationRecord,
   event: RegistrationClose,
 ): Promise<void> {
   const lost = event.type === "replaced" || event.outcome !== "confirmed"
-  const { registrations, namespace, database, identity } = own
+  const { registrations, namespace, database, identity } = session
   await database.write(async (w) => {
     await registrations.apply(record.sipaAddress, event, w.scoped(namespace.prefix))
     if (lost && isIdentityRecord(identity.get().value, record))
@@ -299,11 +299,11 @@ export async function cacheNameClaimFromLog(
  */
 export function cacheConfirmedNameClaim(
   nameClaims: NameClaimCache,
-  config: WebWalletConfig,
+  { config, chain }: PageFacts,
   subject: ConfirmedClaimSubject,
 ): void {
   void (async () => {
-    const tuple = await getOxideTuple(config)
+    const tuple = await chain.oxideTuple.read()
     const registry = requireTupleField(tuple, "registry") as Address
     await cacheNameClaimFromLog(nameClaims, l1PublicClient(config), registry, subject)
   })().catch(warnCacheFailure)
@@ -313,19 +313,17 @@ export function cacheConfirmedNameClaim(
 function settleConfirmedTag(
   {
     database,
+    rpId,
     device,
     identity,
     signup,
-  }: Pick<WebDetectionDeps, "database" | "device" | "identity" | "signup">,
+  }: Pick<WebDetectionDeps, "database" | "rpId" | "device" | "identity" | "signup">,
   record: PendingRegistrationRecord,
 ): void {
   if (!isIdentityRecord(identity.get().value, record)) return
   const { credentialId } = device.get()
   if (credentialId) {
-    void bestEffort(
-      "unknown",
-      rememberUsertag(database, getConfig().rpId, credentialId, record.tag),
-    )
+    void bestEffort("unknown", rememberUsertag(database, rpId, credentialId, record.tag))
   }
   signup.clearGrant(record.tag)
 }
@@ -335,13 +333,6 @@ function settleConfirmedTag(
 /** The name is coming: an L1 deposit landed at the SIPA (funded) or the relayer already swept it. */
 export function hasCustody(record: PendingRegistrationRecord): boolean {
   return record.fundedAt !== undefined || record.sweptAt !== undefined
-}
-
-/** The deposit left the address for the portal: only the registry read is still to come. */
-export function registrationSwept(
-  record: Pick<PendingRegistrationRecord, "sweptAt" | "sweepTxHash">,
-): boolean {
-  return record.sweptAt !== undefined || record.sweepTxHash !== undefined
 }
 
 // ── Tag presentation gate ──────────────────────────────────────────────────────
@@ -396,6 +387,7 @@ export function useTagPresentationPending(): boolean {
  */
 export function useRegistrationEscalated(): boolean {
   const registrations = useRegistrationReads()
+  const { wallClock } = useSession().page
   const now = useStore(wallClock)
   return (
     registrationUiState(currentRegistration(loadedRegistrations(registrations)), now) ===
@@ -443,9 +435,9 @@ export function logoutBlockedByRegistration(
 }
 
 export function isLogoutBlockedByRegistration(
-  own: Pick<Session, "registrations" | "identity">,
+  session: Pick<Session, "registrations" | "identity">,
 ): boolean {
-  const { registrations, identity } = own
+  const { registrations, identity } = session
   // Records that cannot be read may hold funds in flight.
   if (registrations.view.get().failed) return true
   return logoutBlockedByRegistration(loadedRegistrations(registrations), identity.get().value)
@@ -500,19 +492,19 @@ export async function acknowledgeLostRegistration(
  * become the user's. Those settle to confirmed or failed on their own, and both have a flow.
  */
 export async function abandonPendingRegistration(
-  own: Pick<Session, "registrations" | "namespace" | "database" | "identity">,
+  session: Pick<Session, "registrations" | "namespace" | "database" | "identity">,
   account?: string,
 ): Promise<boolean> {
-  const records = loadedRegistrations(own.registrations)
+  const records = loadedRegistrations(session.registrations)
   const record = account ? latestRegistration(records, account) : currentRegistration(records)
   if (!record) return true
   if (hasCustody(record)) return false
-  const identity = own.identity.get().value
+  const identity = session.identity.get().value
   // A pending identity must never be presented as owned.
   const retract =
     (!account || isIdentityRecord(identity, record)) &&
-    isTagPresentationPending(own.registrations, identity)
-  const { registrations, namespace, database } = own
+    isTagPresentationPending(session.registrations, identity)
+  const { registrations, namespace, database } = session
   await database.write(async (w) => {
     await registrations.apply(record.sipaAddress, { type: "abandoned" }, w.scoped(namespace.prefix))
     if (retract) stageIdentity(w, namespace.prefix, null)

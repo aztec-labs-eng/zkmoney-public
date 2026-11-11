@@ -13,6 +13,8 @@ import type { OxideEnvTuple } from "@obsidion/core/types"
 import {
   chainEpochDay,
   deriveSelfSipaSecret,
+  epochDay,
+  readDepositSIPAImplementation,
   fetchSipaEvents,
   selfSipaNonce,
   SipaSelfResolver,
@@ -22,8 +24,11 @@ import {
   broadcastJob,
   broadcastJobs,
   deriveSelfSipaKey,
+  findOwnSlot,
   loadRecords,
-  readyValue,
+  RESOLVER_LOOKBACK_DAYS,
+  SELF_SLOTS,
+  selfDeployment,
   selfSipaResolverKeys,
   task,
   WalletError,
@@ -31,18 +36,18 @@ import {
   type After,
   type IdentityView,
   type ReadonlyStore,
-  type Resource,
   type SipaDeposit,
   type SipaDepositFields,
   type SipaDeposits,
   type Task,
+  type Service,
 } from "@obsidion/front-core"
-import { getConfig } from "../../config/env"
-import { getOxideTuple, l1PublicClient, requireTupleField } from "../../config/oxideTuple"
+import { l1PublicClient, requireTupleField } from "../../config/oxideTuple"
+import type { PageFacts } from "../../session/pageChain"
 import { RegistrationPendingError } from "../registration/registrationRail"
-import type { RailPending } from "../registration/sponsoredRailReadiness"
+import { railPendingOf, type RailQuery } from "../registration/sponsoredRailReadiness"
 import { AddressesPublishingError, addressesPublishing } from "./addressesPublishing"
-import { pinnedToken, type SipaDiscovery, type SipaKeys } from "./sipaRail"
+import { pinnedToken, windowKeys, type SipaDiscovery, type SipaKeys } from "./sipaRail"
 import type { DepositAddress } from "../sipa/depositTarget"
 
 /** Progress stages for a wallet-driven deposit. */
@@ -126,6 +131,19 @@ export function nextSipaSlot(
   )
 }
 
+/** `account`'s slots from the self window's days that owe a broadcast not yet landed. */
+export function unpublishedSlots(records: readonly SipaDeposit[], account: string, now: number) {
+  const oldestDay = now / DAY_MS - RESOLVER_LOOKBACK_DAYS
+  return records.filter(
+    (r) =>
+      r.slot &&
+      r.slot.day > oldestDay &&
+      r.broadcast &&
+      r.broadcast.state !== "landed" &&
+      r.recipientL2Address.toLowerCase() === account.toLowerCase(),
+  ).length
+}
+
 /** How many of today's slots are already broadcast: slot k is used when its salt is among `salts`. */
 export function slotFloor(salts: ReadonlySet<string>, selfSipaKey: Fr, day: number): number {
   let used = 0
@@ -139,13 +157,14 @@ export function slotFloor(salts: ReadonlySet<string>, selfSipaKey: Fr, day: numb
  * so the broadcast re-derives it rather than threading state through.
  */
 export async function deriveSipa(
+  page: PageFacts,
   wallet: ObsidionWallet,
   tuple: OxideEnvTuple,
   keys: SipaKeys,
   day: number,
   nonce: number,
 ) {
-  const config = getConfig()
+  const { config } = page
   const selfResolver = new SipaSelfResolver(selfSipaResolverKeys(keys.msk))
   const user = keys.recipient
   const sipaFactory = requireTupleField(tuple, "sipaFactory") as Address
@@ -165,7 +184,7 @@ export async function deriveSipa(
     forwardingTable: requireTupleField(tuple, "forwardingTable") as Address,
     rollupVersion: BigInt(requireTupleField(tuple, "rollupVersion")),
   })
-  const meta = await pinnedToken(config, tuple)
+  const meta = await pinnedToken(page, tuple)
   const fields: SipaDepositFields = {
     sipaAddress: address,
     phase: "resolved",
@@ -200,14 +219,15 @@ export async function deriveSipa(
 }
 
 export interface SipaAddressesDeps {
+  page: PageFacts
   store: SipaDeposits
-  wallet: Resource<ObsidionWallet>
-  keys: Resource<SipaKeys>
-  discovery: Resource<SipaDiscovery>
+  wallet: Service<ObsidionWallet>
+  keys: Service<SipaKeys>
+  discovery: () => Service<SipaDiscovery>
   /** Whose pooled addresses a hand-out takes. */
   identity: ReadonlyStore<IdentityView>
   /** Why the account cannot ride the sponsored rail yet. */
-  railPending: ReadonlyStore<RailPending>
+  railPending: RailQuery
   /** Runs the broadcasts task now: something it owes changed. */
   wakeBroadcasts(): void
   wake(task: Task): Promise<void>
@@ -224,24 +244,28 @@ export function createSipaAddresses(deps: SipaAddressesDeps) {
   /**
    * The records alone would let a fresh device re-derive a slot another device already broadcast
    * today, so the floor is read off the chain, from the salts this wallet's own `SIPA` events carry.
-   * A broadcast still in flight elsewhere is invisible here — a duplicate broadcast of the same
-   * address, never lost funds.
+   * A slot shown elsewhere and never broadcast is invisible here, so this device derives and
+   * broadcasts the same address. From the next day nothing derives it: the scan's self window finds
+   * its funds for {@link RESOLVER_LOOKBACK_DAYS} chain days, and Settings recovery after that.
    */
+  const eventSalts = async (wallet: ObsidionWallet, tuple: OxideEnvTuple, keys: SipaKeys) => {
+    await deps.discovery().ready()
+    const events = await fetchSipaEvents(
+      wallet,
+      AztecAddress.fromStringUnsafe(requireTupleField(tuple, "l2Token")),
+      keys.recipient,
+    )
+    return new Set(events.map((event) => event.sharedSecretSalt.toString()))
+  }
   const nextNonce = async (
     wallet: ObsidionWallet,
     tuple: OxideEnvTuple,
     keys: SipaKeys,
     day: number,
   ) => {
-    await readyValue(deps.discovery)
-    const events = await fetchSipaEvents(
-      wallet,
-      AztecAddress.fromStringUnsafe(requireTupleField(tuple, "l2Token")),
-      keys.recipient,
-    )
-    const salts = new Set(events.map((event) => event.sharedSecretSalt.toString()))
+    const salts = await eventSalts(wallet, tuple, keys)
     const used = slotFloor(salts, deriveSelfSipaKey(keys.msk), day)
-    console.debug(`[sipaAddresses] slot floor ${used} from ${events.length} events`)
+    console.debug(`[sipaAddresses] slot floor ${used} from ${salts.size} events`)
     const records = await loadRecords(store.view)
     return selfSipaNonce(nextSipaSlot(records, keys.recipient.toString(), day, used))
   }
@@ -249,17 +273,22 @@ export function createSipaAddresses(deps: SipaAddressesDeps) {
   /**
    * Derives the account's next address and saves it with its slot and its owed broadcast, in one
    * write: from then on it is never handed out again, and its broadcast lands whatever the page does.
+   * A new slot is refused while `SELF_SLOTS.lookahead` are unpublished; a `shown` one never is.
    */
   const deriveSlot = (
     wallet: ObsidionWallet,
     tuple: OxideEnvTuple,
     keys: SipaKeys,
     owed: { kind: "deposit"; shownAt: number } | { kind: "pool"; deployment: string },
+    shown?: { day: number; nonce: number },
   ): Promise<Address> => {
     const run = deriving.then(async () => {
-      const day = await chainEpochDay(wallet)
-      const nonce = await nextNonce(wallet, tuple, keys, day)
-      const { address, fields } = await deriveSipa(wallet, tuple, keys, day, nonce)
+      const records = await loadRecords(store.view)
+      const unpublished = unpublishedSlots(records, keys.recipient.toString(), Date.now())
+      if (!shown && unpublished >= SELF_SLOTS.lookahead) throw new AddressesPublishingError()
+      const day = shown?.day ?? (await chainEpochDay(wallet))
+      const nonce = shown?.nonce ?? (await nextNonce(wallet, tuple, keys, day))
+      const { address, fields } = await deriveSipa(deps.page, wallet, tuple, keys, day, nonce)
       const slot = { day, nonce, ...(owed.kind === "pool" ? { deployment: owed.deployment } : {}) }
       const owes = owed.kind === "pool" ? { kind: owed.kind } : owed
       await store.applyAll([
@@ -313,7 +342,7 @@ export function createSipaAddresses(deps: SipaAddressesDeps) {
     keys: SipaKeys,
     maxAgeMs: number = SIPA_POOL_MAX_AGE_MS,
   ) => {
-    const tuple = await getOxideTuple(getConfig())
+    const tuple = await deps.page.chain.oxideTuple.read()
     const oldestDay = (Date.now() - maxAgeMs) / DAY_MS
     const account = keys.recipient.toString()
     const pooled = (await loadRecords(store.view)).filter((r) =>
@@ -337,7 +366,9 @@ export function createSipaAddresses(deps: SipaAddressesDeps) {
       if (job.state === "landed") return null
       if (job.state !== "queued") return undefined
       if (job.wait === "registration")
-        return new RegistrationPendingError(deps.railPending.get() || { pending: "message" })
+        return new RegistrationPendingError(
+          railPendingOf(deps.railPending.get()) || { pending: "message" },
+        )
       if (job.failures > failures)
         return new WalletError(job.failure?.code ?? "deposit.broadcastFailed")
       return undefined
@@ -372,7 +403,7 @@ export function createSipaAddresses(deps: SipaAddressesDeps) {
         signal?: AbortSignal
       },
     ): Promise<DepositAddress> {
-      const tuple = await getOxideTuple(getConfig())
+      const tuple = await deps.page.chain.oxideTuple.read()
       const name = tuple.ensDomain ? `${tag}.${tuple.ensDomain}` : tag
       const account = deps.identity.get().value?.address
       const pooled = account && (await handOutPooled(account, tuple, SIPA_POOL_MAX_AGE_MS, true))
@@ -389,8 +420,8 @@ export function createSipaAddresses(deps: SipaAddressesDeps) {
       )
         throw new AddressesPublishingError()
       const [wallet, keys] = await Promise.all([
-        readyValue(deps.wallet, opts?.signal),
-        readyValue(deps.keys, opts?.signal),
+        deps.wallet.ready(opts?.signal),
+        deps.keys.ready(opts?.signal),
       ])
       opts?.onStage?.("resolving")
       // The address is fully determined by the derivation — the proof and broadcast only tell the
@@ -402,13 +433,45 @@ export function createSipaAddresses(deps: SipaAddressesDeps) {
       return { address, name, publish: publish(address, opts?.onStage), source: "derived" }
     },
     /**
+     * Records `sipa` with its slot and owed broadcast when it is one of this account's own addresses,
+     * searched offline from the deployment's first day: Settings recovery's search. False when not.
+     */
+    async recordShown(sipa: Address): Promise<boolean> {
+      const [wallet, keys] = await Promise.all([deps.wallet.ready(), deps.keys.ready()])
+      const tuple = await deps.page.chain.oxideTuple.read()
+      const factory = requireTupleField(tuple, "sipaFactory") as Address
+      const implementation = await readDepositSIPAImplementation(
+        l1PublicClient(deps.page.config),
+        factory,
+      )
+      const deployment = selfDeployment(tuple, implementation, keys.recoveryAccount, [])
+      if (!deployment) return false
+      const [records, salts] = await Promise.all([
+        loadRecords(store.view),
+        eventSalts(wallet, tuple, keys),
+      ])
+      const firstDay = epochDay(Math.floor(Date.parse(tuple.deployedAt) / 1000))
+      const found = await findOwnSlot(
+        windowKeys(keys),
+        deployment,
+        sipa,
+        records,
+        salts,
+        firstDay,
+        await chainEpochDay(wallet),
+      )
+      if (!found) return false
+      await deriveSlot(wallet, tuple, keys, { kind: "deposit", shownAt: Date.now() }, found)
+      return true
+    },
+    /**
      * A pooled address published within `maxAgeMs`, handed out as `depositAddress` hands out a
      * pooled one, else null. Never derives, so never asks for the passkey.
      */
     async readyAddress(maxAgeMs: number): Promise<{ address: Address; day: number } | null> {
       const account = deps.identity.get().value?.address
       if (!account) return null
-      const tuple = await getOxideTuple(getConfig())
+      const tuple = await deps.page.chain.oxideTuple.read()
       const pooled = await handOutPooled(account, tuple, maxAgeMs, false)
       wanted = Math.min(wanted ?? maxAgeMs, maxAgeMs)
       void deps.wake(pool)

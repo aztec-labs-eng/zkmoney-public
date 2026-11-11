@@ -3,14 +3,14 @@
  * the user's own L1 address. The user's L1 wallet submits each refund and pays its gas, so no relayer
  * and no sponsorship on this version is needed.
  */
+import { memoryStore } from "@obsidion/front-core"
 import { useSyncExternalStore } from "react"
 import { erc20Abi, type Address } from "viem"
 import { bridgeUnderlying } from "@obsidion/core/oxide"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import { FrozenMetadataMigrationSource } from "@obsidion/sdk"
-import { getConfig } from "../../config/env"
+import type { WebWalletConfig } from "../../config/env"
 import { l1PublicClient } from "../../config/oxideTuple"
-import { createExternalState } from "../../lib/externalState"
 import type { FrozenExitRuntime } from "../withdraw/frozenExitRun"
 import type { createWebMetadataMigration } from "./createWebMetadataMigration"
 
@@ -25,10 +25,13 @@ export interface WithdrawableSource {
   registration(): ReturnType<typeof createWebMetadataMigration>
 }
 
-const withdrawable = createExternalState<readonly WithdrawableSource[]>([])
+// eslint-disable-next-line no-restricted-syntax -- debt
+const withdrawable = memoryStore<readonly WithdrawableSource[]>([])
+// eslint-disable-next-line no-restricted-syntax -- debt
 let published: readonly WithdrawableSource[] = []
 // Portals whose funds no refund batch can take, such as a note above the portal's cap. A page serves
 // one account.
+// eslint-disable-next-line no-restricted-syntax -- debt
 const unrefundable = new Set<string>()
 const skipKey = (portal: string) => portal.toLowerCase()
 
@@ -57,7 +60,8 @@ export function useWithdrawableSources(): readonly WithdrawableSource[] {
   return useSyncExternalStore(withdrawable.subscribe, withdrawable.get)
 }
 
-const withdrawals = createExternalState(0)
+// eslint-disable-next-line no-restricted-syntax -- debt
+const withdrawals = memoryStore(0)
 
 /** A withdrawal ended: the migration check reads the old versions again. */
 export function noteOldVersionWithdrawn(): void {
@@ -82,10 +86,11 @@ export interface OldVersionExit {
 
 /** A source's refund runtime. Without `recipient`, which submits each refund, it only reads. */
 export async function openOldVersionExit(
+  config: WebWalletConfig,
   { source, open }: Pick<WithdrawableSource, "source" | "open">,
   recipient?: Address,
 ): Promise<OldVersionExit> {
-  const client = l1PublicClient(getConfig())
+  const client = l1PublicClient(config)
   const token = bridgeUnderlying(source) as Address
   const [session, symbol, decimals] = await Promise.all([
     open(recipient),

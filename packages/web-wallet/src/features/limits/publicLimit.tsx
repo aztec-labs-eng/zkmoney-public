@@ -2,6 +2,8 @@ import type { ReactNode } from "react"
 import { PUBLIC_TX_LIMIT_USD } from "@obsidion/core/constants"
 import { Icon } from "@obsidion/web-ds"
 import { groupedCents } from "../../ui/groupedCents"
+import { InfoButton } from "../../ui/InfoButton/InfoButton"
+import { maximumNow, OVER_LIMIT, SHEET_TITLE } from "./limitsCopy"
 import "./aboutLimits.css"
 
 /** `$2,499.65` / `$2,500` / `<$0.01`: dollars with thousands separators, so an amount and the limit
@@ -24,15 +26,13 @@ export function nominalValuationNote(symbol: string): string {
   return `The limit counts 1 ${symbol} as $1. This is a fixed rate, not a market price.`
 }
 
-type Operation = "deposit" | "withdrawal"
+type Operation = "deposit" | "withdrawal" | "move"
 
 /**
- * The limit in the words of the amount it counts: a deposit's send, a withdrawal's debit. A
- * fresh-address withdrawal is two burns, each its own withdrawal under the limit.
+ * The limit in the words of the amount it counts. A fresh-address withdrawal is two burns, each its
+ * own withdrawal under the limit.
  */
-export const LIMIT_LINE: Record<Operation | "address" | "eachWithdrawal", string> = {
-  deposit: `Max sent: ${formatPublicLimit()} incl. fees`,
-  withdrawal: `Max from balance: ${formatPublicLimit()} incl. fees`,
+export const LIMIT_LINE: Record<"address" | "eachWithdrawal", string> = {
   eachWithdrawal: `Max per withdrawal: ${formatPublicLimit()} incl. fees`,
   address: `Deposit limit: ${formatPublicLimit()} incl. fees`,
 }
@@ -40,38 +40,19 @@ export const LIMIT_LINE: Record<Operation | "address" | "eachWithdrawal", string
 /** One compact limit row. `info` is the button that opens the explanation. */
 export function LimitLine({
   kind,
-  minimum,
   info,
   testId = "limit-line",
 }: {
   kind: keyof typeof LIMIT_LINE
-  /** Display figure of the smallest amount accepted. */
-  minimum?: string
   info?: ReactNode
   testId?: string
 }) {
   return (
     <div className="ww-limit-line" data-testid={testId}>
-      <span>
-        {minimum && `Min ${minimum} · `}
-        {LIMIT_LINE[kind]}
-      </span>
+      <span>{LIMIT_LINE[kind]}</span>
       {info}
     </div>
   )
-}
-
-/** Minimum and maximum beside an amount field. */
-export function OperationLimits({
-  operation,
-  minimum,
-  info,
-}: {
-  operation: Operation
-  minimum: string
-  info?: ReactNode
-}) {
-  return <LimitLine kind={operation} minimum={minimum} info={info} testId="operation-limits" />
 }
 
 export type LimitProblem = "public" | "protocol" | "valuation"
@@ -82,41 +63,79 @@ export function LimitNotice({
   problem,
   maximum,
   onUseMaximum,
+  onAboutLimits,
 }: {
   operation: Operation
   problem: LimitProblem
   /** Display figure of the largest amount that passes; never the protocol ceiling itself. */
   maximum?: string
   onUseMaximum?: () => void
+  onAboutLimits?: () => void
 }) {
-  const reason =
-    problem === "valuation"
-      ? `This token can't be checked against the ${formatPublicLimit()} limit, so it can't be sent from here.`
-      : problem === "public"
-      ? `Over the ${formatPublicLimit()} limit`
-      : `Over the network's maximum per ${operation}`
-  const label = maximum ? `Use maximum (${maximum})` : "Use maximum"
-  return <LimitReason reason={reason} action={onUseMaximum && { label, onSelect: onUseMaximum }} />
+  if (problem === "valuation")
+    return (
+      <LimitReason
+        reason={`This token can't be checked against the ${formatPublicLimit()} limit, so it can't be sent from here.`}
+      />
+    )
+  const reason = maximum
+    ? maximumNow(OPERATION_VERB[operation], maximum)
+    : problem === "public"
+    ? `Over the ${formatPublicLimit()} limit`
+    : `Over the network's maximum per ${operation}`
+  return (
+    <LimitReason
+      title={OVER_LIMIT}
+      reason={reason}
+      onAboutLimits={onAboutLimits}
+      action={onUseMaximum && { label: "Use maximum", onSelect: onUseMaximum }}
+    />
+  )
+}
+
+const OPERATION_VERB: Record<Operation, string> = {
+  deposit: "deposit",
+  withdrawal: "withdraw",
+  move: "move",
 }
 
 /** One blocking reason, with the action that resolves it when there is one. */
 export function LimitReason({
+  title,
   reason,
+  onAboutLimits,
   action,
 }: {
+  title?: string
   reason: string
+  /** Opens the About limits sheet from an info icon after the title. */
+  onAboutLimits?: () => void
   action?: { label: string; onSelect: () => void }
 }) {
   return (
-    <div className="ww-limit-reason" role="alert" data-testid="limit-notice">
-      <span className="ww-limit-reason__text">
-        <Icon name="alert-triangle" size={14} />
-        {reason}
-      </span>
+    <div className="ww-limit-notice" role="alert" data-testid="limit-notice">
+      <Icon name="alert-triangle" size={16} className="ww-limit-notice__icon" />
+      <div className="ww-limit-notice__text">
+        {title && (
+          <p className="ww-limit-notice__title">
+            {title}
+            {onAboutLimits && (
+              <InfoButton
+                label={SHEET_TITLE}
+                testId="limit-notice-about"
+                outline
+                onClick={onAboutLimits}
+              />
+            )}
+          </p>
+        )}
+        <p className="ww-limit-notice__body">{reason}</p>
+      </div>
       {action && (
         <button
           type="button"
-          className="zkm-btn-reset ww-limit-reason__action"
+          className="zkm-btn-reset ww-deposit-sheet__check ww-limit-notice__action"
+          data-testid="limit-notice-use-maximum"
           onClick={action.onSelect}
         >
           {action.label}

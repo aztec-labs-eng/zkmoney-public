@@ -1,11 +1,11 @@
 import { createPublicClient, fallback, http, type Chain, type Hex } from "viem"
 import type { OxideEnvTuple } from "@obsidion/core/types"
-import { ContractService, loadTeeSigner, type RegisteredTeeSigner } from "@obsidion/sdk"
+import { loadTeeSigner, type ContractService, type RegisteredTeeSigner } from "@obsidion/sdk"
 import { logger } from "../utils/logger"
 
 /**
- * A resolvable source of a `RegisteredTeeSigner`, injected into the `teeSigner` resource so it
- * stays environment-agnostic. The resource calls `load()`, the token takes the result, and
+ * A resolvable source of a `RegisteredTeeSigner`, injected into the `teeSigner` service so it
+ * stays environment-agnostic. The service calls `load()`, the token takes the result, and
  * `load()` runs again whenever `subscribe` fires. Which concrete source is wired (attested oxide enclave vs. sandbox
  * dev relayer) is decided by the environment-aware app layer.
  */
@@ -39,28 +39,6 @@ export function fleetSignerConnector(l1RpcUrl: string, l1Chain: Chain): FleetSig
   return (fleetUrl, portal) => loadTeeSigner(fleetUrl, portal, client())
 }
 
-/**
- * One signer per fleet and portal domain, shared by every flow that signs for that domain: one fleet serves every
- * token, and a request names its domain. A `FleetSigner` re-pins itself when its enclave goes, so only a failed connect
- * leaves the cache.
- */
-export function sharedFleetSigners(connect: FleetSignerConnector): FleetSignerConnector {
-  const signers = new Map<string, Promise<RegisteredTeeSigner>>()
-  return (fleetUrl, portal) => {
-    const key = `${fleetUrl}|${portal.toLowerCase()}`
-    let signer = signers.get(key)
-    if (!signer) {
-      const pending = connect(fleetUrl, portal)
-      signers.set(key, pending)
-      pending.catch(() => {
-        if (signers.get(key) === pending) signers.delete(key)
-      })
-      signer = pending
-    }
-    return signer
-  }
-}
-
 export interface OxideTeeSignerSourceOptions {
   /** L1 JSON-RPC URL for the chain the TEE binding lives on. */
   l1RpcUrl: string
@@ -78,6 +56,8 @@ export interface OxideTeeSignerSourceOptions {
    * static, and its owner builds a new one when that deployment changes.
    */
   getTuple?(): Pick<OxideEnvTuple, "portal" | "enclaveUrl"> | undefined
+  /** The contract service's manifest client; undefined until the service is built. */
+  oxideClient(): ReturnType<ContractService["getOxideClient"]> | undefined
   /** How the source connects; a fresh signer per load when absent. */
   connect?: FleetSignerConnector
 }
@@ -91,26 +71,17 @@ export interface OxideTeeSignerSourceOptions {
  * An enclave that the portal's `TeeRegistry` does not register is refused at connect and never
  * reaches `TokenService`; the caller's retry re-pins.
  *
- * The client is resolved lazily inside each method — never at construction —
- * so the source can be built before `ContractService` has its singleton.
+ * The client is resolved inside each method, so the source can be built before the contract
+ * service.
  */
 export function createOxideTeeSignerSource(options: OxideTeeSignerSourceOptions): TeeSignerSource {
-  const { l1Chain, transformEnclaveUrl, getTuple } = options
+  const { l1Chain, transformEnclaveUrl, getTuple, oxideClient } = options
   const connect = options.connect ?? fleetSignerConnector(options.l1RpcUrl, l1Chain)
-
-  const getClient = () => {
-    try {
-      return ContractService.getInstance().getOxideClient()
-    } catch {
-      // getInstance throws before the provider constructs the singleton.
-      return undefined
-    }
-  }
 
   return {
     label: `remote:${l1Chain.id}`,
     async load() {
-      const tuple = getTuple ? getTuple() : getClient()?.getCurrentTuple()
+      const tuple = getTuple ? getTuple() : oxideClient()?.getCurrentTuple()
       if (!tuple) return undefined // degraded boot — no manifest tuple yet
       const { portal, enclaveUrl } = tuple
       // Defend against a malformed portal. The client validates the manifest,
@@ -126,17 +97,12 @@ export function createOxideTeeSignerSource(options: OxideTeeSignerSourceOptions)
       return await connect(resolvedEnclaveUrl, portal as Hex)
     },
     subscribe(onChange) {
-      const client = getTuple ? undefined : getClient()
+      const client = getTuple ? undefined : oxideClient()
       if (!client) return () => {}
       return client.subscribe(() => onChange())
     },
     refresh() {
-      if (getTuple) return
-      try {
-        void getClient()?.refresh()
-      } catch {
-        // getInstance can throw in teardown races; degraded state stands.
-      }
+      if (!getTuple) void oxideClient()?.refresh()
     },
   }
 }

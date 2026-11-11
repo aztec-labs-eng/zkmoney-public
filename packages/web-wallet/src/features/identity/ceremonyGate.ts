@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react"
+import { memoryStore } from "@obsidion/front-core"
 import type { SignInRoute } from "@obsidion/core/types"
 import {
   type DevicePosture,
@@ -86,7 +87,7 @@ export type GateOptions = {
   reopened?: SheetReopen
 }
 
-const sameList = (a: readonly string[], b: readonly string[]) =>
+export const sameList = (a: readonly string[], b: readonly string[]) =>
   a.length === b.length && a.every((x, i) => x === b[i])
 
 export type CeremonyGate = (options?: GateOptions) => Promise<GateResult>
@@ -134,6 +135,16 @@ async function probe(auth: Session["auth"]): Promise<Probed> {
   return { reach, creation }
 }
 
+/** A creation sheet's own probes, per showing (useScreenFlow): `answers` is unset until both land. */
+export function openCreationProbe(auth: Session["auth"]) {
+  const answers = memoryStore<Probed | undefined>(undefined)
+  return {
+    answers: answers.readonly,
+    start: (signal: AbortSignal) =>
+      void probe(auth).then((probed) => signal.aborted || answers.set(probed)),
+  }
+}
+
 /**
  * `holdsSignIn: false` is for a screen whose own buttons are the tap before a sign-in's first
  * prompt: the gate then hands out the attempt at once on every posture instead of holding the
@@ -150,7 +161,7 @@ export function useCeremonyGate(
   /** The sheet goes — the screen is moving on — but an attempt past its prompt runs on. */
   dismiss: () => void
 } {
-  const { auth } = useSession()
+  const { auth, device } = useSession()
   const [state, setState] = useState<GateState>(IDLE)
   const pending = useRef<Attempt | undefined>(undefined)
   const attempt = useRef<AbortController | undefined>(undefined)
@@ -167,6 +178,7 @@ export function useCeremonyGate(
     attempt.current?.abort()
   }, [dismiss])
 
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     mounted.current = true
     return () => {
@@ -208,7 +220,8 @@ export function useCeremonyGate(
         }
         if (params.unheld && !openOn) {
           const { choice, supported } = params.unheld
-          const fresh = signUpSheetOptions({ ...probed, preferred: choice })
+          const refusals = device.get().localRefusals
+          const fresh = signUpSheetOptions({ ...probed, preferred: choice, refusals })
           const now = fresh.options.find((o) => o.id === choice)
           if (now && sameList(now.supported, supported)) {
             pending.current = undefined
@@ -218,7 +231,7 @@ export function useCeremonyGate(
           }
           // The pick no longer means what the user saw: the sheet again, never another device in
           // silence. The same option behind other managers is a new pick, so the sheet opens fresh.
-          openOn = now ? signUpSheetOptions(probed).selected : fresh.selected
+          openOn = now ? signUpSheetOptions({ ...probed, refusals }).selected : fresh.selected
         }
       }
       const choice = await new Promise<SignUpChoice | undefined>((resolve, reject) => {
@@ -242,7 +255,7 @@ export function useCeremonyGate(
       if (!mounted.current) throw new GateCancelledError()
       return { ...probed, choice }
     },
-    [auth],
+    [auth, device],
   )
 
   const gate = useCallback<CeremonyGate>(

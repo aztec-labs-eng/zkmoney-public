@@ -6,11 +6,13 @@ import { PHONE_STEPS_COPY, SIGN_UP_SHEET_COPY, SUPPORTED_NAMES } from "../refusa
 import type { OsFamily, UserAgentInfo } from "../browser/userAgentInfo.js"
 
 /** Where the user says the passkey will live. */
-export type SignUpChoice = "1password" | "computer" | "phone" | "key" | "phone-or-key"
+export type SignUpChoice = "1password" | "proton" | "computer" | "phone" | "key" | "phone-or-key"
 
-export type KeyWarning = typeof SIGN_UP_SHEET_COPY.keyWarning
+export type KeyWarning = (typeof SIGN_UP_SHEET_COPY)["keyWarning" | "keyWarningNoBackup"]
 
 export type HelloWarning = typeof SIGN_UP_SHEET_COPY.computer.helloWarning
+
+export type ProtonWarning = typeof SIGN_UP_SHEET_COPY.proton.warning
 
 export type SignUpOption = {
   id: SignUpChoice
@@ -21,6 +23,8 @@ export type SignUpOption = {
   keyWarning?: KeyWarning
   /** On This computer where the row admits Windows Hello, which keeps the only copy too. */
   helloWarning?: HelloWarning
+  /** On Proton Pass. */
+  protonWarning?: ProtonWarning
   /** The managers behind this option; an early pick is re-checked against it. */
   supported: readonly string[]
 }
@@ -49,12 +53,16 @@ export type SignUpOptionsInput = {
   reach: PhoneReach
   /** Which extension's script answers the page's creation. */
   extension: PasskeyExtension
+  /** Whether the page-start lock kept Proton Pass's creation wrapper. */
+  protonKept: boolean
   /** Refusals on this computer are past the limit while an extension answers. */
   refusedOften: boolean
   /** See `ignoresHintsFor`. */
   ignoresHints: boolean
   /** The user agent's, since a phone-only row has none. */
   os: OsFamily
+  /** Whether the front lets the account add a backup passkey once it is in. */
+  backupAddable: boolean
   /** The option a re-open or an earlier pick asks for. */
   preferred?: SignUpChoice
   /** Set when the sheet re-opens after a creation ended with nothing made. */
@@ -63,6 +71,7 @@ export type SignUpOptionsInput = {
 
 const ROUTES: Readonly<Record<SignUpChoice, SignInRoute>> = {
   "1password": "this-device",
+  "proton": "this-device",
   "computer": "this-device",
   "phone": "phone",
   "phone-or-key": "phone",
@@ -85,8 +94,9 @@ const FALLBACK: Readonly<Record<SignUpChoice, readonly SignUpChoice[]>> = {
   "phone": ["phone", "phone-or-key", "key"],
   "phone-or-key": ["phone-or-key", "phone", "key"],
   "key": ["key", "phone-or-key"],
-  "1password": ["1password", "computer"],
-  "computer": ["computer", "1password"],
+  "1password": ["1password", "computer", "proton"],
+  "proton": ["proton", "1password", "computer"],
+  "computer": ["computer", "1password", "proton"],
 }
 
 const names = (managers: readonly LocalManager[]) => managers.map((m) => SUPPORTED_NAMES[m])
@@ -108,17 +118,23 @@ const lines = (...xs: (string | false | undefined)[]): string[] =>
  * computer's own first, then another device, the key last), the option it opens on, and at most one
  * line above it. "This computer" names a security key in its hints so 1Password's extension stands
  * aside; "1Password" names none so it answers, and is offered only where the script answering the
- * page is 1Password's. Where the browser ignores hints, phone and key are one option.
+ * page is 1Password's. "Proton Pass" is offered where the row names it and the page-start lock kept
+ * its creation wrapper, which the pick then calls. Where the browser ignores hints, phone and key
+ * are one option.
  */
 export function signUpOptionsFor(input: SignUpOptionsInput): SignUpOptions {
-  const { creation, reach, extension, refusedOften, ignoresHints, os, preferred, reopened } = input
+  const { creation, reach, extension, protonKept, refusedOften, ignoresHints, os } = input
+  const { preferred, reopened } = input
   const copy = SIGN_UP_SHEET_COPY
+  const keyWarning = input.backupAddable ? copy.keyWarning : copy.keyWarningNoBackup
   const localCopy = PHONE_STEPS_COPY.local
   const row = creation.local ? creation : undefined
-  const own = row?.managers.filter((m) => m !== "1password") ?? []
+  // The extension-only managers have their own options; This computer saves in the rest.
+  const own = row?.managers.filter((m) => m !== "1password" && m !== "proton") ?? []
   const mac = row?.os === "macos"
   const listsOnePassword = row?.managers.includes("1password") ?? false
   const onePasswordAlone = row !== undefined && own.length === 0
+  const offersProton = protonKept && (row?.managers.includes("proton") ?? false)
   const script = extension !== "none"
   // A script the page cannot use: any pop-up it opens must be closed.
   const unsupported = extension === "bitwarden" || extension === "other"
@@ -142,6 +158,16 @@ export function signUpOptionsFor(input: SignUpOptionsInput): SignUpOptions {
       description: copy.onePassword.description,
       advice: [],
       supported: names(["1password"]),
+    })
+  }
+  if (offersProton) {
+    options.push({
+      id: "proton",
+      label: copy.proton.label,
+      description: copy.proton.description,
+      advice: [],
+      protonWarning: copy.proton.warning,
+      supported: names(["proton"]),
     })
   }
   if (own.length > 0) {
@@ -185,7 +211,7 @@ export function signUpOptionsFor(input: SignUpOptionsInput): SignUpOptions {
       label: copy.phoneOrKey.label,
       description: copy.phoneOrKey.description,
       advice: lines(windows && copy.phoneOrKey.windows, crossDevice),
-      keyWarning: copy.keyWarning,
+      keyWarning,
       supported: ALL_SUPPORTED,
     })
   }
@@ -198,7 +224,7 @@ export function signUpOptionsFor(input: SignUpOptionsInput): SignUpOptions {
       label: copy.key.label,
       description: copy.key.description,
       advice: lines(noPhone, crossDevice),
-      keyWarning: copy.keyWarning,
+      keyWarning,
       supported: KEY_SUPPORTED,
     })
   }
@@ -212,13 +238,19 @@ export function signUpOptionsFor(input: SignUpOptionsInput): SignUpOptions {
     refusedOften &&
     row !== undefined &&
     !reopened &&
-    (preferred === undefined || preferred === "computer" || preferred === "1password")
+    (preferred === undefined || routeForChoice(preferred) === "this-device")
   const selected: SignUpChoice = steer
     ? own.length > 0
       ? "computer"
       : anotherDevice
     : (preferred && first(FALLBACK[preferred])) ??
-      (offersOnePassword ? "1password" : own.length > 0 ? "computer" : anotherDevice)
+      (offersOnePassword
+        ? "1password"
+        : offersProton
+        ? "proton"
+        : own.length > 0
+        ? "computer"
+        : anotherDevice)
 
   // The re-open line follows the option the sheet opens on, not the one asked for, and offers the
   // phone only where the sheet has one to offer.
@@ -238,7 +270,7 @@ export function signUpOptionsFor(input: SignUpOptionsInput): SignUpOptions {
       }
     : steer && selected !== "computer"
     ? { kind: "steered", text: localCopy.steered[selected === "key" ? "key" : "phone"] }
-    : onePasswordAlone && !mac && !script
+    : onePasswordAlone && listsOnePassword && !offersProton && !mac && !script
     ? { kind: "install-extension", text: localCopy.installExtension }
     : undefined
   return {

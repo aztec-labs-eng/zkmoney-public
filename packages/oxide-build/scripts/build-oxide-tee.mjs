@@ -17,8 +17,8 @@
 //      (emits src/abis/*.ts from the Foundry JSON).
 //   5. The three refund circuits under
 //      `vendor/oxide/noir-projects/{frozen_notes_refund,frozen_deposits_refund,unprocessed_deposit_refund}/target/`,
-//      which @oxide/refund-proof JSON-imports. A plain build stubs missing ones;
-//      `OXIDE_REFUND_CIRCUITS=required` compiles them with the pinned Aztec toolchain.
+//      which @oxide/refund-proof JSON-imports, extracted from Oxide's pins. A tree without a pin
+//      stubs the circuit, and `OXIDE_REFUND_CIRCUITS=required` fails instead.
 //   6. tsc-build each yarn-project/ package in topological order.
 //
 // With `--relayer`, it then builds the Oxide relayer on top of that subset:
@@ -43,6 +43,8 @@ import {
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { isDeepStrictEqual } from "node:util"
+
+import { extractOxidePin, hasOxidePin } from "./oxide-pins.mjs"
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = resolve(HERE, "../../..")
@@ -200,34 +202,18 @@ if (!allAbisExist) {
 // nothing to compare against later, so writing a stamp would only be misleading.
 if (vendorSha) writeFileSync(VENDOR_SHA_STAMP, `${vendorSha}\n`)
 
-// Only a frozen-source refund executes these circuits, so a plain build stubs missing ones and
-// needs no Aztec toolchain. `required` compiles them, replacing stubs and output from another pin.
-const isCompiledCircuit = (path) => {
-  try {
-    return typeof JSON.parse(readFileSync(path, "utf8")).bytecode === "string"
-  } catch {
-    return false
-  }
-}
+// Only a frozen-source refund executes these circuits, so a tree without their pins stubs them.
 const refundCircuitsRequired = process.env.OXIDE_REFUND_CIRCUITS === "required"
 for (const circuit of REFUND_CIRCUITS) {
-  const target = resolve(NOIR_PROJECTS, circuit, "target")
-  const artifact = resolve(target, `${circuit}.json`)
-  const stamp = resolve(target, ".vendor-sha")
-  if (refundCircuitsRequired) {
-    const pinned =
-      !vendorSha || (existsSync(stamp) && readFileSync(stamp, "utf8").trim() === vendorSha)
-    if (isCompiledCircuit(artifact) && pinned) continue
-    console.error(`vendor/oxide/noir-projects: compile ${circuit}`)
-    run("./bootstrap.sh", [circuit], NOIR_PROJECTS)
-    if (!isCompiledCircuit(artifact)) {
-      console.error(`ERROR: ${circuit} compiled to no circuit bytecode`)
-      process.exit(1)
-    }
-    if (vendorSha) writeFileSync(stamp, `${vendorSha}\n`)
+  const artifact = resolve(NOIR_PROJECTS, circuit, "target", `${circuit}.json`)
+  if (hasOxidePin(circuit)) {
+    extractOxidePin(circuit)
+  } else if (refundCircuitsRequired) {
+    console.error(`ERROR: vendor/oxide/noir-projects/${circuit} has no pinned circuit`)
+    process.exit(1)
   } else if (!existsSync(artifact)) {
-    console.error(`Stubbing ${artifact} (OXIDE_REFUND_CIRCUITS=required compiles it)`)
-    mkdirSync(target, { recursive: true })
+    console.error(`Stubbing ${artifact}: ${circuit} has no Oxide pin`)
+    mkdirSync(dirname(artifact), { recursive: true })
     writeFileSync(artifact, "{}\n")
   }
 }

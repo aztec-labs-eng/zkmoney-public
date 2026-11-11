@@ -9,12 +9,12 @@ import type { OxideEnvTuple, OxideFeature } from "../types/index.js"
 export type { OxideFeature }
 
 /** The intents a forwarding-table row prices, by the name a SIPA record carries. */
-export type SipaIntentName = "deposit" | "registration" | "user-op"
+export type SipaIntentName = "deposit" | "registration" | "add-passkey"
 
 export const SIPA_INTENT_NAMES: readonly SipaIntentName[] = [
   "deposit",
   "registration",
-  "user-op",
+  "add-passkey",
 ]
 
 /** One portal for one token. In an app deployment each bridge is one row of the forwarding table. */
@@ -40,7 +40,7 @@ export interface OxideDeployment {
   rollupVersion: string
   /** The table every SIPA of the deployment commits to; absent on a bridge-only deployment. */
   forwardingTable?: string
-  /** The token registrations, metadata updates and user operations settle in. */
+  /** The token registrations, metadata updates and passkey additions settle in. */
   feeToken?: string
   /** In manifest order. */
   bridges: readonly OxideBridge[]

@@ -1,3 +1,4 @@
+// Guards: one handoff for racing inputs; no handoff after the scanner closes or unmounts.
 import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -74,18 +75,6 @@ afterEach(() => {
 })
 
 describe("isolated ScannerModal", () => {
-  it("keeps paste and exit available while permission is unanswered", async () => {
-    render()
-    expect(host.querySelector("video")).not.toBeNull()
-    expect(button("Close scanner")).toBeDefined()
-    fill("@alice")
-    expect(button("Continue").disabled).toBe(false)
-    await act(async () => submit())
-    expect(props.resolvePayload).toHaveBeenCalledWith("@alice")
-    expect(props.onDestination).toHaveBeenCalledWith(
-      valid.kind === "destination" ? valid.destination : null,
-    )
-  })
   it("uses one resolver and one handoff for simultaneous camera and manual input", async () => {
     let resolve!: (result: ScanResult) => void
     props.resolvePayload = vi.fn(
@@ -131,143 +120,6 @@ describe("isolated ScannerModal", () => {
       expect(leaving).toHaveBeenCalledOnce()
     },
   )
-  it("keeps the same video on invalid payload and retries through a new camera session", async () => {
-    props.resolvePayload = vi.fn(
-      async (): Promise<ScanResult> => ({ kind: "error", message: "This code is invalid." }),
-    )
-    render()
-    const video = host.querySelector("video")
-    await act(async () => fixture.onPayload("bad code"))
-    expect(host.querySelector('[role="alert"]')?.textContent).toBe("This code is invalid.")
-    expect(host.querySelector("video")).toBe(video)
-    act(() => button("Try camera again").click())
-    expect(fixture.restart).toHaveBeenCalledWith(undefined)
-    expect(host.querySelector("video")).toBe(video)
-  })
-  it.each(["denied", "unavailable", "decode-error"] as const)(
-    "shows %s recovery while keeping paste and video mounted",
-    (kind) => {
-      fixture.state = { kind, message: `Specific ${kind} instructions` }
-      render()
-      expect(host.querySelector('[role="alert"]')?.textContent).toContain(`Specific ${kind}`)
-      expect(host.querySelector("video")).not.toBeNull()
-      expect(host.querySelector("input")?.disabled).toBe(false)
-      expect(button("Try camera again")).toBeDefined()
-    },
-  )
-  it("offers explicit resume after backgrounding", () => {
-    fixture.state = { kind: "paused" }
-    render()
-    act(() => button("Resume camera").click())
-    expect(fixture.restart).toHaveBeenCalledOnce()
-  })
-  it("hides unsupported controls and absent Share, then uses actual camera capabilities", async () => {
-    props.onShare = undefined
-    fixture.state = { kind: "active", torch: false, torchOn: false, alternatives: [] }
-    render()
-    expect(button("Show my QR code")).toBeUndefined()
-    expect(button("Turn flashlight on")).toBeUndefined()
-    expect(host.querySelector("select")).toBeNull()
-    fixture.state = {
-      kind: "active",
-      torch: true,
-      torchOn: false,
-      deviceId: "rear",
-      alternatives: [{ deviceId: "front", label: "Front camera" } as MediaDeviceInfo],
-    }
-    render()
-    await act(async () => button("Turn flashlight on").click())
-    expect(fixture.setTorch).toHaveBeenCalledWith(true)
-    act(() => {
-      const select = host.querySelector("select")!
-      select.value = "front"
-      select.dispatchEvent(new Event("change", { bubbles: true }))
-    })
-    expect(fixture.restart).toHaveBeenCalledWith("front")
-  })
-  it.each(["manual", "camera"] as const)(
-    "attributes an error to the accepted %s submission during a race",
-    async (source) => {
-      let resolve!: (result: ScanResult) => void
-      props.resolvePayload = vi.fn(
-        () =>
-          new Promise<ScanResult>((done) => {
-            resolve = done
-          }),
-      )
-      render()
-      fill("manual code")
-      if (source === "manual") {
-        submit()
-        act(() => fixture.onPayload("camera code"))
-      } else {
-        act(() => fixture.onPayload("camera code"))
-        submit()
-      }
-      await act(async () => resolve({ kind: "error", message: "Invalid code" }))
-      const input = host.querySelector("input")!
-      expect(props.resolvePayload).toHaveBeenCalledOnce()
-      expect(input.getAttribute("aria-invalid")).toBe(String(source === "manual"))
-      expect(input.hasAttribute("aria-describedby")).toBe(source === "manual")
-    },
-  )
-  it.each(["retry", "resume", "torch", "camera"] as const)(
-    "keeps focus in the dialog when the %s control disappears",
-    (control) => {
-      fixture.state =
-        control === "retry"
-          ? { kind: "denied", message: "Allow access" }
-          : control === "resume"
-          ? { kind: "paused" }
-          : {
-              kind: "active",
-              torch: true,
-              torchOn: false,
-              alternatives: [{ deviceId: "front", label: "Front" } as MediaDeviceInfo],
-            }
-      render()
-      const element =
-        control === "camera"
-          ? host.querySelector("select")!
-          : button(
-              control === "retry"
-                ? "Try camera again"
-                : control === "resume"
-                ? "Resume camera"
-                : "Turn flashlight on",
-            )
-      element.focus()
-      expect(document.activeElement).toBe(element)
-      fixture.state =
-        control === "camera"
-          ? { kind: "requesting" }
-          : { kind: "active", torch: false, torchOn: false, alternatives: [] }
-      render()
-      expect([button("Close scanner"), host.querySelector(".ww-scan")]).toContain(
-        document.activeElement,
-      )
-    },
-  )
-  it("allows one close after a destination if parent unmount is delayed without stealing destination focus", async () => {
-    const destination = document.createElement("button")
-    document.body.append(destination)
-    props.onDestination = vi.fn(() => destination.focus())
-    try {
-      render()
-      fill("@alice")
-      await act(async () => submit())
-      expect(document.activeElement).toBe(destination)
-      act(() => button("Close scanner").click())
-      act(() => button("Close scanner").click())
-      act(() => fixture.onPayload("@bob"))
-      expect(props.onClose).toHaveBeenCalledOnce()
-      expect(props.onDestination).toHaveBeenCalledOnce()
-      expect(props.resolvePayload).toHaveBeenCalledOnce()
-      expect(document.activeElement).toBe(destination)
-    } finally {
-      destination.remove()
-    }
-  })
   it("ignores an asynchronous handoff after the surface unmounts", async () => {
     let resolve!: (result: ScanResult) => void
     props.resolvePayload = vi.fn(

@@ -8,12 +8,22 @@
  */
 
 import { describe, expect, it } from "vitest"
-import { createPublicClient, http, type Address, type Hex, type PublicClient } from "viem"
+import {
+  ContractFunctionExecutionError,
+  ContractFunctionZeroDataError,
+  createPublicClient,
+  http,
+  type Address,
+  type Hex,
+  type PublicClient,
+} from "viem"
+import { AccountMetadataRegistryAbi } from "@oxide/l1-contracts"
 import { namehash } from "viem/ens"
 import { extractPinnedOxideEnvTuple } from "@obsidion/core/oxide"
 import { getUserRecord, readUserAddress } from "@oxide/l1-contracts"
 import {
   readUserByNameHash,
+  readUserL2AddressHistory,
   recordNamesOtherAccount,
 } from "../../../src/services/name/registryUserResolver.js"
 
@@ -169,5 +179,102 @@ describe("recordNamesOtherAccount", () => {
   it("reads an account with no record as not stale, without reading the record", async () => {
     const { client } = stubClient({ ownerOf: () => ZERO, hasUserRecord: () => false })
     expect(await ask(client, RECORD.l2Address, 4n)).toBe(false)
+  })
+})
+
+describe("readUserL2AddressHistory", () => {
+  const ROTATED = `0x${"22".repeat(32)}` as Hex
+  const range = { fromBlock: 100n, toBlock: 200n }
+
+  function historyClient(atStart: typeof RECORD | null, written: Hex[]) {
+    const reads: { functionName: string; blockNumber?: bigint }[] = []
+    const queries: unknown[] = []
+    const client = {
+      readContract: async (params: { functionName: string; blockNumber?: bigint }) => {
+        reads.push({ functionName: params.functionName, blockNumber: params.blockNumber })
+        if (params.functionName === "hasUserRecord") return atStart !== null
+        if (params.functionName === "getUserRecord") return atStart
+        throw new Error(`unexpected read: ${params.functionName}`)
+      },
+      getContractEvents: async (params: unknown) => {
+        queries.push(params)
+        return written.map((l2Address) => ({ args: { user: ACCOUNT, record: { l2Address } } }))
+      },
+    } as unknown as PublicClient
+    return { client, reads, queries }
+  }
+
+  it("lists the record at the window's start, then each one written in it", async () => {
+    const { client, reads, queries } = historyClient(RECORD, [ROTATED])
+
+    expect(await readUserL2AddressHistory(client, METADATA_REGISTRY, ACCOUNT, range)).toEqual([
+      RECORD.l2Address,
+      ROTATED,
+    ])
+    expect(reads).toEqual([
+      { functionName: "hasUserRecord", blockNumber: 100n },
+      { functionName: "getUserRecord", blockNumber: 100n },
+    ])
+    expect(queries).toEqual([
+      expect.objectContaining({
+        address: METADATA_REGISTRY,
+        eventName: "UserRecordUpdated",
+        args: { user: ACCOUNT },
+        fromBlock: 100n,
+        toBlock: 200n,
+      }),
+    ])
+  })
+
+  it("lists only the records written when the account had none at the window's start", async () => {
+    const { client, reads } = historyClient(null, [RECORD.l2Address, ROTATED])
+
+    expect(await readUserL2AddressHistory(client, METADATA_REGISTRY, ACCOUNT, range)).toEqual([
+      RECORD.l2Address,
+      ROTATED,
+    ])
+    expect(reads.map((r) => r.functionName)).toEqual(["hasUserRecord"])
+  })
+
+  it("reads a registry deployed inside the window as holding no record at its start", async () => {
+    const client = {
+      readContract: async () => {
+        throw new ContractFunctionExecutionError(
+          new ContractFunctionZeroDataError({ functionName: "hasUserRecord" }),
+          { abi: AccountMetadataRegistryAbi, functionName: "hasUserRecord", args: [ACCOUNT] },
+        )
+      },
+      getContractEvents: async () => [{ args: { record: { l2Address: ROTATED } } }],
+    } as unknown as PublicClient
+
+    expect(await readUserL2AddressHistory(client, METADATA_REGISTRY, ACCOUNT, range)).toEqual([
+      ROTATED,
+    ])
+  })
+
+  it("propagates a failed record read as a throw", async () => {
+    const client = {
+      readContract: async () => {
+        throw new Error("RPC down")
+      },
+      getContractEvents: async () => [],
+    } as unknown as PublicClient
+
+    await expect(
+      readUserL2AddressHistory(client, METADATA_REGISTRY, ACCOUNT, range),
+    ).rejects.toThrow(/RPC down/)
+  })
+
+  it("propagates a failed log read as a throw", async () => {
+    const client = {
+      readContract: async () => false,
+      getContractEvents: async () => {
+        throw new Error("RPC down")
+      },
+    } as unknown as PublicClient
+
+    await expect(
+      readUserL2AddressHistory(client, METADATA_REGISTRY, ACCOUNT, range),
+    ).rejects.toThrow(/RPC down/)
   })
 })

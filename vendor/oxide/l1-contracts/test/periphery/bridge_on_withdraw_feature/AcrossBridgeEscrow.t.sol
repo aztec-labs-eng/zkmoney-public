@@ -4,7 +4,7 @@ pragma solidity >=0.8.27;
 import {AcrossBridgeEscrow} from "@periphery/bridge_on_withdraw_feature/AcrossBridgeEscrow.sol";
 import {EscrowBase} from "@periphery/EscrowBase.sol";
 import {IAcrossSpokePool} from "@periphery/interfaces/IAcrossSpokePool.sol";
-import {MockAcrossSpokePool} from "./MockAcrossSpokePool.sol";
+import {MockAcrossSpokePool} from "@test/mocks/MockAcrossSpokePool.sol";
 import {AcrossBridgeEscrowTestBase} from "./AcrossBridgeEscrowTestBase.sol";
 
 contract AcrossBridgeEscrowTest is AcrossBridgeEscrowTestBase {

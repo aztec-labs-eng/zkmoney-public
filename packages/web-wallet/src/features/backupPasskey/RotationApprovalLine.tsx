@@ -1,13 +1,13 @@
 import { useState } from "react"
-import { PasskeysModal } from "../../ui/PasskeysModal"
+import { PasskeysSheet } from "../../ui/PasskeysSheet/PasskeysSheet"
 import { moveCopy } from "./backupPasskeyCopy"
-import { awaitsApproval, useRotationDrives } from "./rotationDrive"
+import { useRotationDrives } from "./rotationDrive"
+import { approvalWaiting } from "./useBackupNudge"
 
 /** Home's line while a rotation's move waits for the user's tap; the tap itself is in Settings. */
 export function RotationApprovalLine() {
-  const drives = useRotationDrives()
+  const waiting = approvalWaiting(useRotationDrives())
   const [sheet, setSheet] = useState(false)
-  const waiting = [...drives.values()].some((drive) => awaitsApproval(drive) && !drive.approving)
   return (
     <>
       {waiting && (
@@ -29,7 +29,7 @@ export function RotationApprovalLine() {
           </button>
         </div>
       )}
-      {sheet && <PasskeysModal onClose={() => setSheet(false)} />}
+      {sheet && <PasskeysSheet onClose={() => setSheet(false)} />}
     </>
   )
 }

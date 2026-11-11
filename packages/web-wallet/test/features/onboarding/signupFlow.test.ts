@@ -1,5 +1,5 @@
 // The signup flow over a real session: its passkey attempts, its lifecycle and its exits.
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest"
 import { fixed } from "@obsidion/front-core"
 
 import {
@@ -15,7 +15,6 @@ import type { GateResult } from "../../../src/features/identity/ceremonyGate"
 import { scopeOfStatus } from "../../../src/platform/auth/passkeyAttemptScope"
 import { writeDeviceKeys } from "../../../src/platform/storage/deviceKeys"
 import { closeSession } from "../../../src/session/session"
-import { __resetPreBootTapsForTests, setPreBootCreate } from "../../../src/ui/preBootTaps"
 import { testWalletDbs } from "../../support/fakeWalletDb"
 import { testCore } from "../../support/page"
 import {
@@ -24,8 +23,10 @@ import {
   type HeldRequest,
 } from "../../support/passkeyTelemetryHarness"
 import { pendingRecord, seedRegistration } from "../../support/registrationFixtures"
+import { peekTicketSignup, stashTicketSignup } from "../../../src/features/paylink/claimStash"
+import { tabStash } from "../../../src/platform/storage/tabStash"
+import { loadRegistrationTerms } from "../../../src/features/registration/registrationTerms"
 import type { PaylinkKit } from "../../../src/features/paylink/usePaylinkDeps"
-import { seedBootConfig } from "../../support/seedBootConfig"
 import { openTestSession } from "../../support/session"
 import { setIdentity } from "../../support/identity"
 
@@ -45,8 +46,6 @@ let harness: Awaited<ReturnType<typeof passkeyTelemetryHarness>>
 let ended: AbortController
 
 beforeEach(async () => {
-  await seedBootConfig()
-  __resetPreBootTapsForTests()
   sessionStorage.clear()
   events = []
 })
@@ -60,12 +59,18 @@ afterEach(() => {
 async function open(
   drawTag = vi.fn(async () => ({ tag: "drawn", grantToken: "g" })),
   draftTag?: string,
+  over: Partial<SignupInputs> = {},
 ) {
-  const own = openTestSession({
+  const session = openTestSession({
     wallet: { networkId: "0xnet" },
-    auth: { useLaptopCreation: vi.fn(), recoverFromCache: async () => undefined },
+    contractService: {},
+    auth: {
+      useLaptopCreation: vi.fn(),
+      recoverFromCache: async () => undefined,
+      recordsStale: () => false,
+    },
   })
-  await own.registrations.ready
+  await session.registrations.ready
   const telemetry = createPasskeyTelemetry({ send: (props) => void events.push(props) })
   harness = await passkeyTelemetryHarness(telemetry)
   const io = {
@@ -77,6 +82,7 @@ async function open(
     drawTag,
     getClaimStatus: vi.fn(async (): Promise<"reserved" | "claimed"> => "reserved"),
     createAccount: vi.fn(),
+    reuse: vi.fn(),
     viewLink: vi.fn(async () => ({ flavor: "direct" })),
     claimLink: vi.fn(async () => {}),
     ticketActivation: vi.fn(() => ({ state: "ready", stash: { fragment: "frag" } })),
@@ -93,13 +99,14 @@ async function open(
     ticketSignup: false,
     pathname: "/claim",
     params: new URLSearchParams(),
+    ...over,
   }
-  const flow = openSignupFlow({ own, io: io as never }, () => inputs)
+  const flow = openSignupFlow({ session, io: io as never }, () => inputs)
   /** A rerender: a new inputs object, as the screen makes each render. */
   const rerender = (patch: Partial<SignupInputs>) => void (inputs = { ...inputs, ...patch })
   ended = new AbortController()
   flow.start(ended.signal)
-  return { flow, io, gate, navigate, own, rerender }
+  return { flow, io, gate, navigate, session, rerender }
 }
 
 /** The next create asks the browser once and waits for the test. */
@@ -202,7 +209,7 @@ describe("the signup's passkey attempts", () => {
 
 describe("the signup's lifecycle", () => {
   it("takes the tap before boot once, in the start a replay keeps, and reports its landing once", async () => {
-    setPreBootCreate(true)
+    openTestSession().page.preBoot.setCreate(true)
     const { flow, io } = await open()
     // The first start is StrictMode's: aborted before its microtask runs.
     ended.abort()
@@ -268,13 +275,13 @@ describe("the pending step's exits", () => {
 
   it("wakes the session to name a funded record's tag, then enters once", async () => {
     const record = await account()
-    const { flow, navigate, own } = await open()
-    const wake = vi.spyOn(own, "wake")
+    const { flow, navigate, session } = await open()
+    const wake = vi.spyOn(session, "wake")
     expect(flow.state.get().step).toBe("pending")
     await seedRegistration({ ...record, phase: "funded", fundedAt: 1 })
     await flush()
-    expect(wake).toHaveBeenCalledWith(own.tasks.registrationIdentity)
-    await vi.waitFor(() => expect(own.identity.get().value?.handle).toBe(record.tag))
+    expect(wake).toHaveBeenCalledWith(session.tasks.registrationIdentity)
+    await vi.waitFor(() => expect(session.identity.get().value?.handle).toBe(record.tag))
     await setIdentity({ handle: record.tag, address: record.l2Address, claimedAt: 2 })
     await flush()
     // No passkey record opened it here: the account is recovered on /enter.
@@ -292,12 +299,179 @@ describe("the pending step's exits", () => {
   it("claims a stashed link with the kit that arrived after it opened", async () => {
     await writeDeviceKeys(testCore().database, { storageId: "a1", msk: "0x01" })
     await seedRegistration(pendingRecord())
-    const { flow, io, rerender, own } = await open()
-    Object.defineProperty(own, "account", { value: fixed("account", { getAddress: () => "0xa" }) })
+    const { flow, io, rerender, session } = await open()
+    Object.defineProperty(session, "account", {
+      value: fixed("account", { getAddress: () => "0xa" }),
+    })
     rerender({ paylinkKit: { kit: true } as unknown as PaylinkKit })
     await flow.settlePendingPaylink()
     expect(io.report).not.toHaveBeenCalled()
     expect(io.viewLink).toHaveBeenCalledWith(expect.objectContaining({ kit: true }), "frag")
+  })
+
+  it("holds the stashed link's claim from its first read, so Home's own claim waits", async () => {
+    await writeDeviceKeys(testCore().database, { storageId: "a1", msk: "0x01" })
+    await seedRegistration(pendingRecord())
+    const { flow, io, rerender, session } = await open()
+    Object.defineProperty(session, "account", {
+      value: fixed("account", { getAddress: () => "0xa" }),
+    })
+    rerender({ paylinkKit: { kit: true } as unknown as PaylinkKit })
+    let held = false
+    io.viewLink.mockImplementationOnce(async () => {
+      held = session.claims.state.get().running.has("frag")
+      return { flavor: "direct" }
+    })
+    await flow.settlePendingPaylink()
+    expect(held).toBe(true)
+    expect(session.claims.state.get().running.has("frag")).toBe(false)
+  })
+
+  it("follows Home's running claim of the stashed link and claims nothing of its own", async () => {
+    await writeDeviceKeys(testCore().database, { storageId: "a1", msk: "0x01" })
+    await seedRegistration(pendingRecord())
+    const { flow, io, rerender, session } = await open()
+    Object.defineProperty(session, "account", {
+      value: fixed("account", { getAddress: () => "0xa" }),
+    })
+    rerender({ paylinkKit: { kit: true } as unknown as PaylinkKit })
+    session.claims.start("frag")
+    const tap = flow.settlePendingPaylink()
+    await flush()
+    expect(flow.state.get().busyStage).toBe("claiming")
+    io.ticketActivation.mockReturnValue({ state: "submitted" } as never)
+    session.claims.end("frag")
+    await tap
+    expect(io.claimLink).not.toHaveBeenCalled()
+    expect(io.report).not.toHaveBeenCalled()
+    expect(flow.state.get().claimLeft).toBe(true)
+  })
+
+  it("claims nothing once Home's own claim sent the burn while the tap waited", async () => {
+    await writeDeviceKeys(testCore().database, { storageId: "a1", msk: "0x01" })
+    await seedRegistration(pendingRecord())
+    const { flow, io, rerender, session } = await open()
+    Object.defineProperty(session, "account", {
+      value: fixed("account", { getAddress: () => "0xa" }),
+    })
+    rerender({ paylinkKit: { kit: true } as unknown as PaylinkKit })
+    const tap = flow.settlePendingPaylink()
+    io.ticketActivation.mockReturnValue({ state: "submitted" } as never)
+    await tap
+    expect(io.claimLink).not.toHaveBeenCalled()
+    expect(flow.state.get().claimLeft).toBe(true)
+  })
+
+  it("claims on the next tap once the followed claim ends without sending", async () => {
+    await writeDeviceKeys(testCore().database, { storageId: "a1", msk: "0x01" })
+    await seedRegistration(pendingRecord())
+    const { flow, io, rerender, session } = await open()
+    Object.defineProperty(session, "account", {
+      value: fixed("account", { getAddress: () => "0xa" }),
+    })
+    rerender({ paylinkKit: { kit: true } as unknown as PaylinkKit })
+    session.claims.start("frag")
+    const tap = flow.settlePendingPaylink()
+    await flush()
+    session.claims.end("frag")
+    await tap
+    expect(io.claimLink).not.toHaveBeenCalled()
+    expect(io.report).not.toHaveBeenCalled()
+    expect(flow.state.get().claimLeft).toBe(false)
+    await flow.settlePendingPaylink()
+    expect(io.claimLink).toHaveBeenCalledTimes(1)
+  })
+
+  it("commits the speed a ticket signup's create tap goes ahead on, and none before it", async () => {
+    // The tag step warms the claim's prover and deployment: no service answers here.
+    vi.stubGlobal("fetch", async () => new Response("{}", { status: 404 }))
+    onTestFinished(() => void vi.unstubAllGlobals())
+    stashTicketSignup(tabStash, { fragment: "frag", schedule: { fee: "1", minDeposit: "2" } })
+    const decided = { tip: 40n, speed: "faster" as const, withdrawalFee: 7n, picks: 0 }
+    const { flow, rerender } = await open(undefined, undefined, {
+      ticketSignup: true,
+      ticketSpeed: { decision: decided, settle: () => decided },
+    })
+    expect(peekTicketSignup(tabStash)?.proverTip).toBeUndefined()
+    flow.leaveTerms(false)
+    expect(peekTicketSignup(tabStash)).toMatchObject({
+      proverTip: "40",
+      speed: "faster",
+      withdrawalFee: "7",
+    })
+
+    // A tap ahead of the quote settles on Standard.
+    const standard = { tip: 0n, speed: "standard" as const, withdrawalFee: 7n, picks: 0 }
+    const settle = vi.fn(() => standard)
+    rerender({ ticketSpeed: { decision: undefined, settle } })
+    flow.leaveTerms(false)
+    expect(settle).toHaveBeenCalledOnce()
+    expect(peekTicketSignup(tabStash)).toMatchObject({ proverTip: "0", speed: "standard" })
+  })
+
+  it("saves the shown speed to the terms before the tapped claim burns", async () => {
+    await writeDeviceKeys(testCore().database, { storageId: "a1", msk: "0x01" })
+    const record = pendingRecord({ terms: { deadline: 9_999_999_999, proverTip: "0" } })
+    await seedRegistration(record)
+    const { flow, io, rerender, session } = await open()
+    Object.defineProperty(session, "account", {
+      value: fixed("account", { getAddress: () => "0xa" }),
+    })
+    const decision = { tip: 40n, speed: "faster" as const, withdrawalFee: 7n, picks: 0 }
+    rerender({
+      paylinkKit: { kit: true } as unknown as PaylinkKit,
+      ticketSpeed: { decision, settle: () => decision },
+    })
+    let burned: unknown
+    io.claimLink.mockImplementationOnce(async () => {
+      burned = loadRegistrationTerms(session.registrations, record.account, record.tag)
+    })
+    await flow.settlePendingPaylink()
+    expect(burned).toMatchObject({ proverTip: "40", speed: "faster", withdrawalFee: "7" })
+  })
+
+  it("burns the speed the claim tap saw, not a quote that refreshed while the passkey ran", async () => {
+    await writeDeviceKeys(testCore().database, { storageId: "a1", msk: "0x01" })
+    const record = pendingRecord({ terms: { deadline: 9_999_999_999, proverTip: "0" } })
+    await seedRegistration(record)
+    const { flow, io, rerender, session } = await open()
+    const seen = { tip: 40n, speed: "faster" as const, withdrawalFee: 7n, picks: 0 }
+    const later = { tip: 90n, speed: "faster" as const, withdrawalFee: 7n, picks: 0 }
+    // No account in the session: the claim tap recovers the keys with a passkey first.
+    const kit = { kit: true } as unknown as PaylinkKit
+    rerender({ paylinkKit: kit, ticketSpeed: { decision: seen, settle: () => seen } })
+    const account = { getAddress: () => ({ toString: () => record.l2Address }) }
+    io.reuse.mockImplementationOnce(async () => {
+      rerender({ paylinkKit: kit, ticketSpeed: { decision: later, settle: () => later } })
+      return { account }
+    })
+    let burned: unknown
+    io.claimLink.mockImplementationOnce(async () => {
+      burned = loadRegistrationTerms(session.registrations, record.account, record.tag)
+    })
+    await flow.settlePendingPaylink()
+    expect(io.reuse).toHaveBeenCalledOnce()
+    expect(burned).toMatchObject({ proverTip: "40" })
+  })
+
+  it("claims nothing when the tapped speed cannot be saved", async () => {
+    await writeDeviceKeys(testCore().database, { storageId: "a1", msk: "0x01" })
+    await seedRegistration(pendingRecord({ terms: { deadline: 9_999_999_999, proverTip: "0" } }))
+    const { flow, io, rerender, session } = await open()
+    Object.defineProperty(session, "account", {
+      value: fixed("account", { getAddress: () => "0xa" }),
+    })
+    const decision = { tip: 40n, speed: "faster" as const, withdrawalFee: 7n, picks: 0 }
+    rerender({
+      paylinkKit: { kit: true } as unknown as PaylinkKit,
+      ticketSpeed: { decision, settle: () => decision },
+    })
+    testWalletDbs().onApply = () => {
+      throw new Error("disk full")
+    }
+    await flow.settlePendingPaylink()
+    testWalletDbs().onApply = undefined
+    expect(io.claimLink).not.toHaveBeenCalled()
   })
 
   it("steers a failed record back to the invitation", async () => {
@@ -308,6 +482,19 @@ describe("the pending step's exits", () => {
     expect(flow.state.get()).toMatchObject({ step: "invite", inviteNote: { kind: "failed" } })
     expect(navigate).toHaveBeenCalledWith("/claim", { replace: true })
   })
+
+  it.each([true, false])(
+    "past the pending step, expects the earned fee as the tag's saved terms say (%s)",
+    async (earnedExpected) => {
+      const record = pendingRecord({ terms: { deadline: 9_999_999_999, earnedExpected } })
+      await seedRegistration(record)
+      const { flow } = await open()
+      await seedRegistration({ ...record, phase: "failed_terminal" })
+      await flush()
+      expect(flow.state.get().step).toBe("invite")
+      expect(flow.expectedEarned()).toBe(earnedExpected)
+    },
+  )
 
   it("reports a signup's completion once, before a save that fails, and enters on the retry", async () => {
     await account()

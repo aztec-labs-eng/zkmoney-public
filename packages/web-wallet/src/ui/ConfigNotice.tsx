@@ -1,6 +1,7 @@
 import { Icon } from "@obsidion/web-ds"
 import { useState } from "react"
 import { useLeavingLosesTransaction } from "../features/operations/operations"
+import { formatUtcDate } from "../lib/date"
 import { reloadPage } from "../platform/storage/walletStorage"
 import "./configNotice.css"
 
@@ -40,14 +41,6 @@ function NoticeStrip({ tone, children, action }: NoticeStripProps) {
   )
 }
 
-function formatDate(iso: string) {
-  return new Date(iso).toLocaleDateString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  })
-}
-
 export interface BakedProfileNoticeProps {
   /** The snapshot's `publishedAt`. */
   publishedAt: string
@@ -73,7 +66,7 @@ export function BakedProfileNotice({
 }: BakedProfileNoticeProps) {
   // A reload would end a running proof.
   const losesTransaction = useLeavingLosesTransaction()
-  const date = formatDate(publishedAt)
+  const date = formatUtcDate(publishedAt)
   const action = forced ? (
     settingsPath && (
       <a className="ww-config-notice__action" href={settingsPath}>

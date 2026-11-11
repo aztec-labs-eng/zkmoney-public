@@ -9,9 +9,11 @@ import { createWithdrawEventSource, readWithdrawalExecutor } from "@obsidion/sdk
 import type { Address, PublicClient } from "viem"
 import { portalContract } from "../token/oxideToken"
 import type { SourceChain } from "./historicTokenContext"
+import type { PageFacts } from "../../session/pageChain"
 
 /** Recover the deposits of Savings moves between the retired rollup's tokens. */
 export async function sourceSavingsDeposits(o: {
+  page: PageFacts
   chain: SourceChain
   tuple: OxideEnvTuple
   sourceTuples: readonly OxideEnvTuple[]

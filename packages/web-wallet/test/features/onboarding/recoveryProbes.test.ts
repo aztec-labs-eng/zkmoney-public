@@ -13,7 +13,6 @@ const h = vi.hoisted(() => ({
 }))
 
 vi.mock("../../../src/config/oxideTuple", () => ({
-  getOxideTuple: vi.fn(async () => h.tuple),
   l1PublicClient: () => ({ readContract: vi.fn() }),
   requireTupleField: (tuple: Record<string, string>, key: string) => {
     const value = tuple[key]
@@ -24,10 +23,6 @@ vi.mock("../../../src/config/oxideTuple", () => ({
 vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/front-core")>()),
   resolveOxideAccountFactory: () => h.tuple.accountFactory,
-}))
-vi.mock("../../../src/config/env", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../src/config/env")>()),
-  getConfig: () => ({ accountServiceUrl: "https://as.test.invalid" }),
 }))
 
 const {
@@ -48,6 +43,7 @@ const { recoverAddress } = await import("viem")
 const { sha256 } = await import("@aztec-labs/foundation/crypto/sha256")
 
 const GENERATIONS = {} as never
+const CONFIG = { accountServiceUrl: "https://as.test.invalid" } as never
 
 describe("enterTiers", () => {
   afterEach(() => vi.unstubAllGlobals())
@@ -78,7 +74,7 @@ describe("boundGrantCandidateProbe", () => {
       async (_hash: Hex, _token: string, bootstrap: PrivateKeyAccount) =>
         bootstrap.address === address,
     )
-    const probe = boundGrantCandidateProbe(nameHash, "grant-token", lookup)
+    const probe = boundGrantCandidateProbe(CONFIG, nameHash, "grant-token", lookup)
 
     expect(await probe(owner, "0xignored")).toBe("anchored")
     expect(await probe(other, "0xignored")).toBe("absent")
@@ -86,6 +82,7 @@ describe("boundGrantCandidateProbe", () => {
       nameHash,
       "grant-token",
       expect.objectContaining({ address }),
+      CONFIG,
     )
     expect(
       await resolveRecoveredMsk(
@@ -105,7 +102,7 @@ describe("reservationCandidateProbe", () => {
   const H = `0x${"ab".repeat(32)}` as Hex
 
   it("a lookup that cannot answer aborts instead of reading as absent", async () => {
-    const probe = reservationCandidateProbe(async () => {
+    const probe = reservationCandidateProbe(CONFIG, async () => {
       throw new AccountServiceTimeoutError("/domain/reservation", 15_000)
     })
     await expect(probe(Fr.random(), "0xignored")).rejects.toBeInstanceOf(AccountServiceTimeoutError)
@@ -122,13 +119,13 @@ describe("reservationCandidateProbe", () => {
     const tiers = [
       { name: "registry", probes: [absent] },
       { name: "campaign", probes: [absent] },
-      { name: "reservation", probes: [reservationCandidateProbe(lookup)] },
+      { name: "reservation", probes: [reservationCandidateProbe(CONFIG, lookup)] },
     ]
     const recovered = { candidates: { first, second }, preferredSlot: "first" } as never
     const result = await resolveRecoveredMsk(recovered, async (m) => m.toString(), tiers)
     expect(result).toMatchObject({ kind: "resolved", slot: "second", tier: "reservation" })
 
-    const both = reservationCandidateProbe(async () => [H])
+    const both = reservationCandidateProbe(CONFIG, async () => [H])
     const ambiguous = await resolveRecoveredMsk(recovered, async (m) => m.toString(), [
       ...tiers.slice(0, 2),
       { name: "reservation", probes: [both] },
@@ -148,7 +145,7 @@ describe("reservedNameHashes", () => {
     vi.stubGlobal("fetch", fetchMock)
     const bootstrap = deriveBootstrapKey(Fr.random())
 
-    expect(await reservedNameHashes(bootstrap)).toEqual([`0x${"cd".repeat(32)}`])
+    expect(await reservedNameHashes(bootstrap, CONFIG)).toEqual([`0x${"cd".repeat(32)}`])
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
     expect(url).toBe("https://as.test.invalid/domain/reservation")
     const body = JSON.parse(init.body as string) as { keyId: string; timestamp: number }

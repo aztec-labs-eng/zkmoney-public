@@ -9,7 +9,7 @@ import {IOxidePortal} from "@core/interfaces/IOxidePortal.sol";
 import {IExecutor} from "@core/interfaces/IExecutor.sol";
 import {PlainWithdrawalSubsidy} from "@periphery/PlainWithdrawalSubsidy.sol";
 import {AggregatorV3Interface} from "@periphery/interfaces/AggregatorV3Interface.sol";
-import {IDaiUsds} from "@periphery/experiments/sky/interfaces/IDaiUsds.sol";
+import {IDaiUsds} from "@periphery/interfaces/IDaiUsds.sol";
 import {SkyRoute} from "@periphery/experiments/sky/SkyTypes.sol";
 import {SkyErrors} from "@periphery/experiments/sky/SkyErrors.sol";
 

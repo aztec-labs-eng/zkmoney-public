@@ -30,6 +30,7 @@ import { AztecAddress } from "@aztec-labs/aztec.js/addresses"
 import { sepolia } from "viem/chains"
 import {
   benchmarkRegistry,
+  type ContractService,
   DEFAULT_CONTRACTS,
   nextOperationId,
   PaylinkService,
@@ -75,8 +76,12 @@ const RELAYER_HEADERS: Record<string, string> | undefined = RELAYER_CLIENT_SECRE
 // (Schnorr creator → signing key derives from the secret; no separate key.)
 const skip = skipUnlessTestnet() || process.env.RUN_PAYLINK_TEE_SMOKE !== "1" || !CREATOR_SK
 
-const loadTeeSigner = (l1RpcUrl: string) =>
-  createOxideTeeSignerSource({ l1RpcUrl, l1Chain: sepolia }).load()
+const loadTeeSigner = (l1RpcUrl: string, contractService: ContractService) =>
+  createOxideTeeSignerSource({
+    l1RpcUrl,
+    l1Chain: sepolia,
+    oxideClient: () => contractService.getOxideClient(),
+  }).load()
 
 describe.skipIf(skip)("direct paylink TEE smoke — testnet de-risk gate", () => {
   let creator: TestnetSetupResult
@@ -111,7 +116,7 @@ describe.skipIf(skip)("direct paylink TEE smoke — testnet de-risk gate", () =>
       loadTeeSigner,
     })
 
-    const contractService = (await import("@obsidion/sdk")).ContractService.getInstance()
+    const contractService = claimer.wallet.contractService
     const resolved = await contractService.getContractAddress(DEFAULT_CONTRACTS.oxideToken)
     if (!resolved)
       throw new Error("[tee-smoke] oxideToken not resolvable through the oxide overlay")
@@ -261,7 +266,6 @@ describe.skipIf(skip)("direct paylink TEE smoke — testnet de-risk gate", () =>
       const claim = await claimerPaylink.claimPaylink(
         DEFAULT_CONTRACTS.paylinkDirect,
         params,
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         {} as any, // empty DirectClaimInput
         {
           profile: false,

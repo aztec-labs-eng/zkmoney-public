@@ -6,7 +6,8 @@
  */
 import { describe, expect, it, vi } from "vitest"
 import type { Address } from "viem"
-import { memoryStore } from "@obsidion/front-core"
+import { createPace } from "@obsidion/core/cadence"
+import { memoryStore, queries } from "@obsidion/front-core"
 import {
   fundingTransfers,
   registrationFunding,
@@ -64,11 +65,23 @@ describe("fundingTransfers", () => {
       loaded: true,
       failed: false,
     })
+  const query = () =>
+    queries({
+      pace: createPace({ signalled: false }),
+      visible: memoryStore(true),
+      now: () => Date.now(),
+    })
+  const funding = (read: () => Promise<RegistrationFunding | null>, view = deposits()) =>
+    fundingTransfers(query(), read, { view } as never)
   const reading = (read: () => Promise<RegistrationFunding | null>, view = deposits()) => {
-    const r = fundingTransfers(read, { view } as never).of(record)
-    r.demand()
-    return r
+    const r = funding(read, view).of(record)
+    return Object.assign(r, { close: r.subscribe(() => {}) })
   }
+  const ready = (value: RegistrationFunding | null) => ({
+    status: "ready",
+    value,
+    refreshing: false,
+  })
 
   it("retries a failed read from 24 s, doubling to 5 minutes, until it recovers", async () => {
     const read = vi.fn(async (): Promise<null> => {
@@ -87,7 +100,7 @@ describe("fundingTransfers", () => {
     read.mockResolvedValue(null)
     await vi.advanceTimersByTimeAsync(300_000)
     expect(read).toHaveBeenCalledTimes(7)
-    expect(r.get()).toEqual({ status: "ready", value: null })
+    expect(r.get()).toEqual(ready(null))
     r.close()
   })
 
@@ -100,7 +113,7 @@ describe("fundingTransfers", () => {
     expect(r.get().status).toBe("pending")
     land(null)
     await flush()
-    expect(r.get()).toEqual({ status: "ready", value: null })
+    expect(r.get()).toEqual(ready(null))
     r.close()
   })
 
@@ -117,34 +130,35 @@ describe("fundingTransfers", () => {
       [[transfer(FUNDER, 1n, 5n), transfer(TOPPER, 2n, 9n)]],
     )
     const read = vi.fn(async (): Promise<RegistrationFunding | null> => first)
-    const reads = fundingTransfers(read, { view } as never)
+    const reads = funding(read, view)
     const r = reads.of(record)
     expect(reads.of({ ...record, sipaAddress: SIPA.toUpperCase() })).toBe(r)
-    r.demand()
+    const off = r.subscribe(() => {})
     held("1")
     await flush()
-    expect(r.get()).toEqual({ status: "ready", value: first })
+    expect(r.get()).toEqual(ready(first))
     read.mockResolvedValue(topped)
     held("3")
     await flush()
-    expect(r.get()).toEqual({ status: "ready", value: topped })
+    expect(r.get()).toEqual(ready(topped))
     expect(topped?.amount).toBe(3n)
     held("3")
     await flush()
     expect(read).toHaveBeenCalledTimes(3)
-    reads.close()
+    off()
   })
 
   it("reads nothing again when the deposit changes phase and holds the same amount", async () => {
     const view = deposits("funded")
     const read = vi.fn(async (): Promise<RegistrationFunding | null> => null)
-    const reads = fundingTransfers(read, { view } as never)
-    reads.of(record).demand()
+    const off = funding(read, view)
+      .of(record)
+      .subscribe(() => {})
     await flush()
     for (const phase of ["sweeping", "broadcast", "claimed"])
       view.set({ ...view.get(), records: [{ sipaAddress: SIPA, phase }] } as never)
     await flush()
     expect(read).toHaveBeenCalledTimes(1)
-    reads.close()
+    off()
   })
 })

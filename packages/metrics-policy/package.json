@@ -14,7 +14,7 @@
     "test": "node --test *.test.mjs"
   },
   "engines": {
-    "node": ">=20.10.0"
+    "node": "24.x"
   },
   "license": "MIT"
 }

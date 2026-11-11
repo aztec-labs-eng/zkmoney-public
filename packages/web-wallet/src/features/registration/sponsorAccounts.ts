@@ -8,7 +8,13 @@
 import { WalletError } from "@obsidion/core/errors"
 import type { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import type { Fr } from "@aztec-labs/aztec.js/fields"
-import { discoverFeePayer, feePayerEntry, type FeePayerEntry } from "@obsidion/front-core"
+import {
+  createKeyedTurn,
+  discoverFeePayer,
+  feePayerEntry,
+  type FeePayerEntry,
+  type KeyedTurn,
+} from "@obsidion/front-core"
 import {
   normalizePubkeyHex,
   ObsidionAccount,
@@ -42,6 +48,7 @@ export interface SponsorSession {
 export interface SponsorAccountsDeps {
   wallet: ObsidionWallet
   session: SponsorSession
+  registering: KeyedTurn
   /** Whether `account` holds the rail's note on the instance. */
   holdsSubscription(account: ObsidionAccount): Promise<boolean>
 }
@@ -93,23 +100,9 @@ async function payerAccount(
 ): Promise<ObsidionAccount> {
   const account = await singleKeyAccount(deps, record, entry.passkey)
   if (!sameAddress(entry.address, account.getAddress())) {
-    throw new Error("the fee payer's key does not derive the account it names")
+    throw new WalletError("invariant", "the fee payer's key does not derive the account it names")
   }
   return account
-}
-
-/** Registrations of one address, per wallet: each starts once the one before it settled. */
-const registrations = new WeakMap<ObsidionWallet, Map<string, Promise<unknown>>>()
-
-function oneAtATime<T>(wallet: ObsidionWallet, address: string, run: () => Promise<T>): Promise<T> {
-  const byAddress = registrations.get(wallet) ?? new Map<string, Promise<unknown>>()
-  registrations.set(wallet, byAddress)
-  const key = address.toLowerCase()
-  const next = (byAddress.get(key) ?? Promise.resolve()).then(run, run)
-  const settled = next.catch(() => {})
-  byAddress.set(key, settled)
-  void settled.then(() => byAddress.get(key) === settled && byAddress.delete(key))
-  return next
 }
 
 /**
@@ -120,7 +113,7 @@ function oneAtATime<T>(wallet: ObsidionWallet, address: string, run: () => Promi
  * lands after a newer session's.
  */
 export async function singleKeyAccount(
-  deps: Pick<SponsorAccountsDeps, "wallet" | "session">,
+  deps: Pick<SponsorAccountsDeps, "wallet" | "session" | "registering">,
   record: RecoveryMetadata,
   passkey: string,
   mode: "held" | "sign" = "held",
@@ -128,13 +121,14 @@ export async function singleKeyAccount(
   const keys = await deps.session.sessionKeys()
   if (!keys) throw new WalletError("account.locked", "no session keys to resolve the fee payer")
   const address = await deps.wallet.deriveAccountAddress(keys.secretKey, [passkey])
-  return oneAtATime(deps.wallet, address.toString(), async () => {
+  return deps.registering(address.toString().toLowerCase(), async () => {
     if (mode === "held") {
       const held = await heldAccount(deps.wallet, address)
       if (held) return held
     }
     const signs = await signsFor(keys.authProvider, record, passkey)
-    if (mode === "sign" && !signs) throw new Error("this session's passkey cannot sign for it")
+    if (mode === "sign" && !signs)
+      throw new WalletError("invariant", "this session's passkey cannot sign for it")
     const provider = providerOver(deps.session, record, passkey, signs)
     if ((await deps.session.sessionKeys())?.authProvider !== keys.authProvider) {
       throw new SessionChangedError()
@@ -186,21 +180,37 @@ function providerOver(
   return new WebAuthnAlphaAuthProvider(
     bytes.subarray(0, 32),
     bytes.subarray(32, 64),
-    () => Promise.reject(new Error("this session's passkey cannot sign for the fee payer")),
+    () =>
+      Promise.reject(
+        new WalletError("invariant", "this session's passkey cannot sign for the fee payer"),
+      ),
     [passkey],
   )
 }
 
-/** The resolver the wallet installs: the page's auth service over the context's own note read. */
-export const sessionSponsorAccounts =
-  (auth: SponsorSession): SponsorAccountsResolver =>
-  (deps, sponsor) =>
-    sponsorAccounts(
-      {
-        wallet: deps.wallet,
-        session: auth,
-        holdsSubscription: (account) => holdsSubscription(deps.wallet, sponsor, account),
-      },
-      deps.account,
-      sponsor,
-    )
+/** The page's sponsor accounts: who pays a batch, and the registrations behind the answer. */
+export interface PageSponsors {
+  accounts: SponsorAccountsResolver
+  /** One registration at a time per address. Not the registration turn: a registration session
+   *  resolves its payer from inside that turn. */
+  registering: KeyedTurn
+}
+
+/** The page's auth service over the context's own note read. */
+export function pageSponsors(auth: SponsorSession): PageSponsors {
+  const registering = createKeyedTurn()
+  return {
+    registering,
+    accounts: (deps, sponsor) =>
+      sponsorAccounts(
+        {
+          wallet: deps.wallet,
+          session: auth,
+          registering,
+          holdsSubscription: (account) => holdsSubscription(deps, sponsor, account),
+        },
+        deps.account,
+        sponsor,
+      ),
+  }
+}

@@ -1,8 +1,9 @@
 // Browser-test harness; this module is never imported by the application.
 import { useState } from "react"
 import { createRoot } from "react-dom/client"
-import { ContactStorage } from "@obsidion/front-core"
 import { Modal } from "../../../src/ui/Modal"
+import { accountContacts } from "../../../src/session/contacts"
+import { captureSession } from "./control"
 
 function Probe() {
   const [open, setOpen] = useState(false)
@@ -29,8 +30,8 @@ export function mountDialogProbe() {
 
 /** Preserve real stored history while removing the payable tag for the footerless case. */
 export async function seedAddressOnlyConversation() {
-  const contacts = ContactStorage.get()
-  const ada = (await contacts.getEntries()).find((entry) => entry.tag === "ada")!
+  const contacts = accountContacts(captureSession())
+  const ada = (await contacts.all()).find((entry) => entry.tag === "ada")!
   await contacts.modifyEntry({ ...ada, tag: undefined }, { address: ada.address })
   window.scrollTo(0, 0)
   window.history.pushState({}, "", `/contacts/${ada.address}`)

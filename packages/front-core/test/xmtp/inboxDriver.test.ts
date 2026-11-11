@@ -2,14 +2,15 @@ import { describe, it, expect, beforeEach, vi } from "vitest"
 
 import {
   XmtpInboxReceiverDriver,
-  type ConnectBackReceiverLike,
   type CurrentAccountInfo,
   type RequestReceiverLike,
 } from "../../src/xmtp/inboxDriver"
 import type { XmtpClientManagerLike } from "../../src/xmtp/types"
-import type { ConnectBackStatus } from "../../src/xmtp/ConnectBackReceiver"
 import type { RequestReceiveStatus } from "../../src/xmtp/requestReceiverTypes"
-import type { IStorageAdapter } from "../../src/core/storages/adapter"
+import { openDatabase } from "../../src/engine/database"
+import { memoryBackend } from "../../src/engine/memoryBackend"
+import { createXmtpCursors } from "../../src/engine/xmtpCursors"
+import { LEGACY_XMTP_CURSORS_KEY } from "../../src/storageMigrations/xmtpCursors"
 
 const REQUEST_TYPE = "obsidion.xyz/payment-request:1.0"
 const TEXT_TYPE = "xmtp.org/text:1.0"
@@ -17,20 +18,25 @@ const CONNECT_BACK_TYPE = "obsidion.xyz/connect-back:1.0"
 // The retired transfer lane's content type — now just another unknown content id.
 const LEGACY_TRANSFER_TYPE = "obsidion.xyz/aztec-send-transfer:2.0"
 
-class InMemoryStorage implements IStorageAdapter {
-  store = new Map<string, string>()
-  async getItem(key: string) {
-    return this.store.get(key) ?? null
+/** An account database: each driver, like each page load, opens its own cursor store over it. */
+class AccountDb {
+  readonly entries: Map<string, string>
+  constructor(seed: Record<string, string> = {}) {
+    this.entries = new Map(Object.entries(seed))
   }
-  async setItem(key: string, value: string) {
-    this.store.set(key, value)
+  cursors() {
+    return createXmtpCursors({ db: openDatabase(memoryBackend(this.entries)) })
   }
-  async removeItem(key: string) {
-    this.store.delete(key)
-  }
-  async clear() {
-    this.store.clear()
-  }
+}
+
+/** The saved cursors, each a number when lossless, as assertions compare them. */
+async function saved(db: AccountDb) {
+  const map = await db.cursors().load()
+  const cursors = Object.entries(map.cursors).map(([id, ns]) => [
+    id,
+    BigInt(Number(ns)) === ns ? Number(ns) : ns,
+  ])
+  return { ...map, cursors: Object.fromEntries(cursors) as Record<string, number | bigint> }
 }
 
 interface FakeMessage {
@@ -199,21 +205,17 @@ const SAMPLE_ACCOUNT: CurrentAccountInfo = {
 function buildDriver(opts: {
   xmtp: XmtpClientManagerLike
   requestReceiver?: RequestReceiverLike
-  connectBackReceiver?: ConnectBackReceiverLike
-  ownXmtpAddress?: string | null
   currentAccount?: () => Promise<CurrentAccountInfo | null>
-  storage?: IStorageAdapter
-  connectBackBudgetPerCycle?: number
+  storage?: AccountDb
+  requestBudgetPerCycle?: number
   pollIntervalMs?: number
 }) {
   return new XmtpInboxReceiverDriver({
     xmtp: opts.xmtp,
     requestReceiver: opts.requestReceiver,
-    connectBackReceiver: opts.connectBackReceiver,
-    ownXmtpAddress: opts.ownXmtpAddress,
     currentAccount: opts.currentAccount ?? (async () => SAMPLE_ACCOUNT),
-    asyncStorage: opts.storage ?? new InMemoryStorage(),
-    connectBackBudgetPerCycle: opts.connectBackBudgetPerCycle,
+    cursors: (opts.storage ?? new AccountDb()).cursors(),
+    requestBudgetPerCycle: opts.requestBudgetPerCycle,
     pollIntervalMs: opts.pollIntervalMs,
     logger: { log: () => {}, warn: () => {} },
   })
@@ -245,16 +247,11 @@ function legacyTransferMsg(id: string, sentNs: number): FakeMessage {
   return { id, sentNs, contentTypeId: LEGACY_TRANSFER_TYPE, contentValue: { token: "0xtoken" } }
 }
 
-function connectBackMsg(id: string, sentNs: number, uuid = "uuid-1", tag?: string): FakeMessage {
-  return {
-    id,
-    sentNs,
-    contentTypeId: CONNECT_BACK_TYPE,
-    contentValue: tag ? { version: 1, uuid, tag } : { version: 1, uuid },
-  }
+function connectBackMsg(id: string, sentNs: number): FakeMessage {
+  return { id, sentNs, contentTypeId: CONNECT_BACK_TYPE, contentValue: { version: 1, uuid: "u1" } }
 }
 
-type RequestReceiveInput = { content: any; senderXmtpAddresses: string[] }
+type RequestReceiveInput = { content: any; senderXmtpAddresses: string[]; sentAt?: number }
 
 /** Accepting request receiver; call log lives on the vi.fn mock. */
 function acceptingRequestReceiver() {
@@ -271,28 +268,6 @@ function acceptingRequestReceiver() {
 /** requestIds fed to an accepting receiver, in call order. */
 function fedRequestIds(receiver: ReturnType<typeof acceptingRequestReceiver>): string[] {
   return receiver.process.mock.calls.map((c) => c[0].content.requestId)
-}
-
-/** Records `process` calls and returns a per-test stubbed status. */
-class FakeConnectBackReceiver implements ConnectBackReceiverLike {
-  calls: Array<{
-    uuid: string
-    senderXmtpAddresses: string[]
-    ownXmtpAddress?: string | null
-    claimedTag?: string | null
-  }> = []
-  impl?: (input: { uuid: string; senderXmtpAddresses: string[] }) => Promise<ConnectBackStatus>
-
-  async process(input: {
-    uuid: string
-    senderXmtpAddresses: string[]
-    ownXmtpAddress?: string | null
-    claimedTag?: string | null
-  }): Promise<ConnectBackStatus> {
-    this.calls.push(input)
-    if (this.impl) return this.impl(input)
-    return { status: "accepted", added: true }
-  }
 }
 
 describe("XmtpInboxReceiverDriver", () => {
@@ -351,6 +326,16 @@ describe("XmtpInboxReceiverDriver", () => {
   })
 
   describe("happy path", () => {
+    it("hands the receiver each request's send time in ms", async () => {
+      const sentMs = 1_700_000_000_123
+      const xmtp = buildFakeXmtp({
+        conversations: [{ id: "convA", messages: [requestMsg("m1", BigInt(sentMs) * 1_000_000n)] }],
+      })
+      const receiver = acceptingRequestReceiver()
+      await buildDriver({ xmtp, requestReceiver: receiver }).pollOnce()
+      expect(receiver.process.mock.calls[0][0]).toMatchObject({ sentAt: sentMs })
+    })
+
     it("processes payment-request messages and advances cursors per conversation", async () => {
       const xmtp = buildFakeXmtp({
         conversations: [
@@ -365,14 +350,14 @@ describe("XmtpInboxReceiverDriver", () => {
         ],
       })
       const receiver = acceptingRequestReceiver()
-      const storage = new InMemoryStorage()
+      const storage = new AccountDb()
       const driver = buildDriver({ xmtp, requestReceiver: receiver, storage })
 
       await driver.pollOnce()
 
       expect(receiver.process).toHaveBeenCalledTimes(3)
       // Both conversations' cursors advanced.
-      const stored = JSON.parse(storage.store.get("@obsidion/xmtp-inbox-driver/cursors/v1")!)
+      const stored = await saved(storage)
       expect(stored.cursors.convA).toBe(200)
       expect(stored.cursors.convB).toBe(150)
       expect(stored.installationId).toBe("install-A")
@@ -412,11 +397,11 @@ describe("XmtpInboxReceiverDriver", () => {
           return { status: "accepted", kind: "request" }
         },
       }
-      const storage = new InMemoryStorage()
+      const storage = new AccountDb()
       const driver = buildDriver({ xmtp, requestReceiver, storage })
 
       await driver.pollOnce()
-      const after1 = JSON.parse(storage.store.get("@obsidion/xmtp-inbox-driver/cursors/v1")!)
+      const after1 = await saved(storage)
       // Cursor stuck at m1.sentNs because m2 deferred.
       expect(after1.cursors.convA).toBe(100)
 
@@ -442,12 +427,12 @@ describe("XmtpInboxReceiverDriver", () => {
           return { status: "accepted", kind: "request" }
         },
       }
-      const storage = new InMemoryStorage()
+      const storage = new AccountDb()
       const driver = buildDriver({ xmtp, requestReceiver, storage })
 
       await driver.pollOnce()
 
-      const stored = JSON.parse(storage.store.get("@obsidion/xmtp-inbox-driver/cursors/v1")!)
+      const stored = await saved(storage)
       expect(stored.cursors.convA).toBe(300)
     })
 
@@ -466,19 +451,17 @@ describe("XmtpInboxReceiverDriver", () => {
           return { status: "accepted", kind: "request" }
         },
       }
-      const storage = new InMemoryStorage()
+      const storage = new AccountDb()
       const driver = buildDriver({ xmtp, requestReceiver, storage })
 
       await driver.pollOnce()
-      const stored = JSON.parse(storage.store.get("@obsidion/xmtp-inbox-driver/cursors/v1")!)
+      const stored = await saved(storage)
       expect(stored.cursors.convA).toBe(100)
     })
   })
 
   describe("content type filtering", () => {
-    it("advances cursor for unknown content (incl. the legacy transfer type) without any receiver call, but DOES dispatch connect-backs and requests", async () => {
-      // text (skip) → legacy transfer (skip — the lane is gone) → connect-back
-      // (dispatch to connectBackReceiver) → request (dispatch to requestReceiver).
+    it("advances cursor for unknown content (incl. connect-backs and the legacy transfer type) without any receiver call, but DOES dispatch requests", async () => {
       const xmtp = buildFakeXmtp({
         conversations: [
           {
@@ -486,201 +469,41 @@ describe("XmtpInboxReceiverDriver", () => {
             messages: [
               textMsg("t1", 100),
               legacyTransferMsg("x1", 120),
-              connectBackMsg("cb1", 150, "uuid-1"),
+              connectBackMsg("cb1", 150),
               requestMsg("m3", 300),
             ],
           },
         ],
       })
       const receiver = acceptingRequestReceiver()
-      const connectBackReceiver = new FakeConnectBackReceiver()
-      const storage = new InMemoryStorage()
-      const driver = buildDriver({ xmtp, requestReceiver: receiver, connectBackReceiver, storage })
+      const storage = new AccountDb()
+      const driver = buildDriver({ xmtp, requestReceiver: receiver, storage })
 
       await driver.pollOnce()
 
       // Request receiver only saw the single payment-request message.
       expect(receiver.process).toHaveBeenCalledTimes(1)
       expect(fedRequestIds(receiver)).toEqual(["m3"])
-      // Connect-back receiver saw the connect-back (not skipped as unknown content).
-      expect(connectBackReceiver.calls).toHaveLength(1)
-      expect(connectBackReceiver.calls[0].uuid).toBe("uuid-1")
-      const stored = JSON.parse(storage.store.get("@obsidion/xmtp-inbox-driver/cursors/v1")!)
+      const stored = await saved(storage)
       expect(stored.cursors.convA).toBe(300)
-    })
-
-    it("connect-back with no connectBackReceiver wired is skipped like unknown content", async () => {
-      const xmtp = buildFakeXmtp({
-        conversations: [
-          {
-            id: "convA",
-            messages: [connectBackMsg("cb1", 100), requestMsg("m2", 200)],
-          },
-        ],
-      })
-      const receiver = acceptingRequestReceiver()
-      const storage = new InMemoryStorage()
-      // No connectBackReceiver supplied.
-      const driver = buildDriver({ xmtp, requestReceiver: receiver, storage })
-
-      await driver.pollOnce()
-
-      expect(receiver.process).toHaveBeenCalledTimes(1)
-      const stored = JSON.parse(storage.store.get("@obsidion/xmtp-inbox-driver/cursors/v1")!)
-      // Cursor advanced past both messages (connect-back skipped, request accepted).
-      expect(stored.cursors.convA).toBe(200)
     })
 
     it("payment-request with no requestReceiver wired is skipped like unknown content", async () => {
       const xmtp = buildFakeXmtp({
         conversations: [{ id: "convA", messages: [requestMsg("m1", 100)] }],
       })
-      const storage = new InMemoryStorage()
+      const storage = new AccountDb()
       const driver = buildDriver({ xmtp, storage })
 
       await driver.pollOnce()
 
-      const stored = JSON.parse(storage.store.get("@obsidion/xmtp-inbox-driver/cursors/v1")!)
+      const stored = await saved(storage)
       expect(stored.cursors.convA).toBe(100)
     })
   })
 
-  describe("connect-back dispatch", () => {
-    it("routes connect-back to the receiver with sender + own address, and advances on accepted", async () => {
-      const xmtp = buildFakeXmtp({
-        conversations: [
-          {
-            id: "convA",
-            messages: [connectBackMsg("cb1", 100, "uuid-1"), requestMsg("m2", 200)],
-            peerAddress: "0xsender",
-          },
-        ],
-      })
-      const requestReceiver = acceptingRequestReceiver()
-      const connectBackReceiver = new FakeConnectBackReceiver()
-      const storage = new InMemoryStorage()
-      const driver = buildDriver({
-        xmtp,
-        requestReceiver,
-        connectBackReceiver,
-        ownXmtpAddress: "0xself",
-        storage,
-      })
-
-      await driver.pollOnce()
-
-      expect(connectBackReceiver.calls).toHaveLength(1)
-      expect(connectBackReceiver.calls[0].uuid).toBe("uuid-1")
-      // Authenticated sender resolved from getDmPeerAddresses; own address passed.
-      expect(connectBackReceiver.calls[0].senderXmtpAddresses).toEqual(["0xsender"])
-      expect(connectBackReceiver.calls[0].ownXmtpAddress).toBe("0xself")
-      // The following request was processed in the same cycle.
-      expect(requestReceiver.process).toHaveBeenCalledTimes(1)
-      const stored = JSON.parse(storage.store.get("@obsidion/xmtp-inbox-driver/cursors/v1")!)
-      expect(stored.cursors.convA).toBe(200)
-    })
-
-    it("forwards a claimed tag from the connect-back payload", async () => {
-      const xmtp = buildFakeXmtp({
-        conversations: [
-          {
-            id: "convA",
-            messages: [connectBackMsg("cb1", 100, "uuid-1", "bob")],
-            peerAddress: "0xsender",
-          },
-        ],
-      })
-      const connectBackReceiver = new FakeConnectBackReceiver()
-      const driver = buildDriver({
-        xmtp,
-        receiver: {
-          processMessage: async () => ({
-            status: "accepted" as const,
-            txHash: "x",
-            transaction: {} as any,
-          }),
-        },
-        connectBackReceiver,
-        storage: new InMemoryStorage(),
-      })
-
-      await driver.pollOnce()
-
-      expect(connectBackReceiver.calls).toHaveLength(1)
-      expect(connectBackReceiver.calls[0].claimedTag).toBe("bob")
-    })
-
-    it("holds the cursor on a deferred connect-back and re-feeds it next cycle", async () => {
-      const xmtp = buildFakeXmtp({
-        conversations: [
-          {
-            id: "convA",
-            messages: [connectBackMsg("cb1", 100, "uuid-1"), requestMsg("m2", 200)],
-          },
-        ],
-      })
-      const requestReceiver = acceptingRequestReceiver()
-      const connectBackReceiver = new FakeConnectBackReceiver()
-      let attempts = 0
-      connectBackReceiver.impl = async () => {
-        attempts += 1
-        if (attempts === 1) return { status: "deferred", reason: "claimed-tag-verifier-unavailable" }
-        return { status: "accepted", added: true }
-      }
-      const storage = new InMemoryStorage()
-      const driver = buildDriver({ xmtp, requestReceiver, connectBackReceiver, storage })
-
-      await driver.pollOnce()
-      // Cursor held at 0 (connect-back deferred); request m2 never reached.
-      const after1 = JSON.parse(storage.store.get("@obsidion/xmtp-inbox-driver/cursors/v1")!)
-      expect(after1.cursors.convA ?? 0).toBe(0)
-      expect(requestReceiver.process).not.toHaveBeenCalled()
-
-      await driver.pollOnce()
-      // Re-fed; second attempt accepted → both messages now processed.
-      expect(connectBackReceiver.calls.length).toBe(2)
-      const after2 = JSON.parse(storage.store.get("@obsidion/xmtp-inbox-driver/cursors/v1")!)
-      expect(after2.cursors.convA).toBe(200)
-      expect(requestReceiver.process).toHaveBeenCalledTimes(1)
-    })
-
-    it("honors the per-cycle connect-back budget (exhaustion holds + resumes)", async () => {
-      const xmtp = buildFakeXmtp({
-        conversations: [
-          {
-            id: "convA",
-            messages: [
-              connectBackMsg("cb1", 100, "u1"),
-              connectBackMsg("cb2", 200, "u2"),
-              connectBackMsg("cb3", 300, "u3"),
-            ],
-          },
-        ],
-      })
-      const connectBackReceiver = new FakeConnectBackReceiver()
-      const storage = new InMemoryStorage()
-      const driver = buildDriver({
-        xmtp,
-        connectBackReceiver,
-        storage,
-        connectBackBudgetPerCycle: 2,
-      })
-
-      await driver.pollOnce()
-      // Two processed, budget exhausted before the third; cursor at cb2.
-      expect(connectBackReceiver.calls.length).toBe(2)
-      let stored = JSON.parse(storage.store.get("@obsidion/xmtp-inbox-driver/cursors/v1")!)
-      expect(stored.cursors.convA).toBe(200)
-      expect(stored.resumeConversationId).toBe("convA")
-
-      await driver.pollOnce()
-      // Third processed on the next cycle.
-      expect(connectBackReceiver.calls.length).toBe(3)
-      stored = JSON.parse(storage.store.get("@obsidion/xmtp-inbox-driver/cursors/v1")!)
-      expect(stored.cursors.convA).toBe(300)
-    })
-
-    it("payment-requests share the connect-back budget (exhaustion holds + resumes)", async () => {
+  describe("request budget", () => {
+    it("honors the per-cycle request budget (exhaustion holds + resumes)", async () => {
       const xmtp = buildFakeXmtp({
         conversations: [
           {
@@ -690,23 +513,23 @@ describe("XmtpInboxReceiverDriver", () => {
         ],
       })
       const receiver = acceptingRequestReceiver()
-      const storage = new InMemoryStorage()
+      const storage = new AccountDb()
       const driver = buildDriver({
         xmtp,
         requestReceiver: receiver,
         storage,
-        connectBackBudgetPerCycle: 2,
+        requestBudgetPerCycle: 2,
       })
 
       await driver.pollOnce()
       expect(receiver.process).toHaveBeenCalledTimes(2)
-      let stored = JSON.parse(storage.store.get("@obsidion/xmtp-inbox-driver/cursors/v1")!)
+      let stored = await saved(storage)
       expect(stored.cursors.convA).toBe(200)
       expect(stored.resumeConversationId).toBe("convA")
 
       await driver.pollOnce()
       expect(receiver.process).toHaveBeenCalledTimes(3)
-      stored = JSON.parse(storage.store.get("@obsidion/xmtp-inbox-driver/cursors/v1")!)
+      stored = await saved(storage)
       expect(stored.cursors.convA).toBe(300)
       expect(stored.resumeConversationId).toBeUndefined()
     })
@@ -757,15 +580,13 @@ describe("XmtpInboxReceiverDriver", () => {
 
   describe("installationId binding", () => {
     it("resets cursor map on installationId mismatch", async () => {
-      const storage = new InMemoryStorage()
-      // Pre-seed with a different installationId and a populated cursor.
-      await storage.setItem(
-        "@obsidion/xmtp-inbox-driver/cursors/v1",
-        JSON.stringify({
+      // An older build's map, under a different installationId.
+      const storage = new AccountDb({
+        [LEGACY_XMTP_CURSORS_KEY]: JSON.stringify({
           installationId: "install-OLD",
           cursors: { convA: 999 },
         }),
-      )
+      })
 
       const xmtp = buildFakeXmtp({
         installationId: "install-NEW",
@@ -778,9 +599,42 @@ describe("XmtpInboxReceiverDriver", () => {
 
       // The reset clears the stale 999, so m1 (sentNs=100) is reprocessed.
       expect(receiver.process).toHaveBeenCalledTimes(1)
-      const stored = JSON.parse(storage.store.get("@obsidion/xmtp-inbox-driver/cursors/v1")!)
+      const stored = await saved(storage)
       expect(stored.installationId).toBe("install-NEW")
       expect(stored.cursors.convA).toBe(100)
+    })
+  })
+
+  describe("carried cursors", () => {
+    it("resumes from an older build's cursor, so nothing replays", async () => {
+      const storage = new AccountDb({
+        [LEGACY_XMTP_CURSORS_KEY]: JSON.stringify({
+          installationId: "install-A",
+          cursors: { convA: 100 },
+        }),
+      })
+      const xmtp = buildFakeXmtp({
+        conversations: [{ id: "convA", messages: [requestMsg("m1", 100), requestMsg("m2", 200)] }],
+      })
+      const receiver = acceptingRequestReceiver()
+      await buildDriver({ xmtp, requestReceiver: receiver, storage }).pollOnce()
+
+      expect(fedRequestIds(receiver)).toEqual(["m2"])
+      expect((await saved(storage)).cursors.convA).toBe(200)
+    })
+
+    it("reads nothing while the older build's cursors do not parse", async () => {
+      const storage = new AccountDb({ [LEGACY_XMTP_CURSORS_KEY]: "{not-json" })
+      const xmtp = buildFakeXmtp({
+        conversations: [{ id: "convA", messages: [requestMsg("m1", 100)] }],
+      })
+      const receiver = acceptingRequestReceiver()
+      const driver = buildDriver({ xmtp, requestReceiver: receiver, storage })
+      await driver.pollOnce()
+      await driver.probeOnce()
+
+      expect(receiver.process).not.toHaveBeenCalled()
+      expect(storage.entries.get(LEGACY_XMTP_CURSORS_KEY)).toBe("{not-json")
     })
   })
 
@@ -823,13 +677,13 @@ describe("XmtpInboxReceiverDriver", () => {
         messagesAfterThrowsFor: new Set(["convA"]),
       })
       const receiver = acceptingRequestReceiver()
-      const storage = new InMemoryStorage()
+      const storage = new AccountDb()
       const driver = buildDriver({ xmtp, requestReceiver: receiver, storage })
 
       await driver.pollOnce()
 
       expect(receiver.process).toHaveBeenCalledTimes(1)
-      const stored = JSON.parse(storage.store.get("@obsidion/xmtp-inbox-driver/cursors/v1")!)
+      const stored = await saved(storage)
       expect(stored.cursors.convA).toBeUndefined()
       expect(stored.cursors.convB).toBe(200)
     })
@@ -1014,8 +868,6 @@ describe("dirty-signal drain (Unit 3)", () => {
     XmtpInboxReceiverDriver.resetInstance()
   })
 
-  const CURSOR_KEY = "@obsidion/xmtp-inbox-driver/cursors/v1"
-
   it("drains only the dirty conversations, not the whole consented set", async () => {
     const xmtp = buildFakeXmtp({
       conversations: [
@@ -1024,14 +876,14 @@ describe("dirty-signal drain (Unit 3)", () => {
       ],
     })
     const receiver = acceptingRequestReceiver()
-    const storage = new InMemoryStorage()
+    const storage = new AccountDb()
     const driver = buildDriver({ xmtp, requestReceiver: receiver, storage })
     ;(driver as any).dirtyIds.add("convA")
 
     await (driver as any).drainDirty()
 
     expect(receiver.process).toHaveBeenCalledTimes(1)
-    const stored = JSON.parse(storage.store.get(CURSOR_KEY)!)
+    const stored = await saved(storage)
     expect(stored.cursors.convA).toBe(100)
     expect(stored.cursors.convB ?? 0).toBe(0) // convB never touched
     // Targeted drain resolves via findConversation — no full-sweep listConversations.
@@ -1068,12 +920,12 @@ describe("dirty-signal drain (Unit 3)", () => {
       ],
     })
     const receiver = acceptingRequestReceiver()
-    const storage = new InMemoryStorage()
+    const storage = new AccountDb()
     const driver = buildDriver({
       xmtp,
       requestReceiver: receiver,
       storage,
-      connectBackBudgetPerCycle: 1,
+      requestBudgetPerCycle: 1,
     })
     ;(driver as any).dirtyIds.add("convU")
     ;(driver as any).dirtyIds.add("convA")
@@ -1083,7 +935,7 @@ describe("dirty-signal drain (Unit 3)", () => {
     // The single budget slot went to the ALLOWED conversation; the unknown one
     // was re-queued.
     expect(receiver.process).toHaveBeenCalledTimes(1)
-    const stored = JSON.parse(storage.store.get(CURSOR_KEY)!)
+    const stored = await saved(storage)
     expect(stored.cursors.convA).toBe(100)
     expect(stored.cursors.convU ?? 0).toBe(0)
     expect((driver as any).dirtyIds.has("convU")).toBe(true)
@@ -1098,7 +950,7 @@ describe("dirty-signal drain (Unit 3)", () => {
     const receiver = acceptingRequestReceiver()
     // Budget = batch cap so the trailing re-drain finds an exhausted budget and
     // just re-queues (deterministic 20 processed).
-    const driver = buildDriver({ xmtp, requestReceiver: receiver, connectBackBudgetPerCycle: 20 })
+    const driver = buildDriver({ xmtp, requestReceiver: receiver, requestBudgetPerCycle: 20 })
     for (const c of convs) (driver as any).dirtyIds.add(c.id)
 
     await (driver as any).drainDirty()
@@ -1183,8 +1035,6 @@ describe("tiered backstop probe (Unit 5)", () => {
     XmtpInboxReceiverDriver.resetInstance()
   })
 
-  const CURSOR_KEY = "@obsidion/xmtp-inbox-driver/cursors/v1"
-
   it("syncs once and reads locally — no per-conversation network sync", async () => {
     const convs = Array.from({ length: 5 }, (_, i) => ({
       id: `c${i}`,
@@ -1231,13 +1081,13 @@ describe("tiered backstop probe (Unit 5)", () => {
       conversations: [{ id: "convA", messages: [requestMsg("m1", 100)] }],
     })
     const receiver = acceptingRequestReceiver()
-    const storage = new InMemoryStorage()
+    const storage = new AccountDb()
     const driver = buildDriver({ xmtp, requestReceiver: receiver, storage })
 
     await driver.probeOnce()
 
     expect(receiver.process).toHaveBeenCalledTimes(1)
-    const stored = JSON.parse(storage.store.get(CURSOR_KEY)!)
+    const stored = await saved(storage)
     expect(stored.cursors.convA).toBe(100)
   })
 
@@ -1259,10 +1109,8 @@ describe("characterization (U3 hoist)", () => {
     XmtpInboxReceiverDriver.resetInstance()
   })
 
-  const CURSOR_KEY = "@obsidion/xmtp-inbox-driver/cursors/v1"
-
   it("cursor map round-trips through storage across driver instances (no re-feed)", async () => {
-    const storage = new InMemoryStorage()
+    const storage = new AccountDb()
     const conversations = [{ id: "convA", messages: [requestMsg("m1", 100)] }]
 
     const receiver1 = acceptingRequestReceiver()
@@ -1285,7 +1133,7 @@ describe("characterization (U3 hoist)", () => {
     await driver2.pollOnce()
     expect(receiver2.process).not.toHaveBeenCalled()
 
-    const stored = JSON.parse(storage.store.get(CURSOR_KEY)!)
+    const stored = await saved(storage)
     expect(stored.cursors.convA).toBe(100)
   })
 
@@ -1294,7 +1142,7 @@ describe("characterization (U3 hoist)", () => {
     // are exactly representable doubles, so they must round-trip storage exactly.
     const NS1 = 2 ** 60
     const NS2 = 2 ** 60 + 256
-    const storage = new InMemoryStorage()
+    const storage = new AccountDb()
     const conversations = [{ id: "convA", messages: [requestMsg("m1", NS1)] }]
 
     const receiver1 = acceptingRequestReceiver()
@@ -1305,7 +1153,7 @@ describe("characterization (U3 hoist)", () => {
     })
     await driver1.pollOnce()
     expect(receiver1.process).toHaveBeenCalledTimes(1)
-    const stored = JSON.parse(storage.store.get(CURSOR_KEY)!)
+    const stored = await saved(storage)
     expect(BigInt(stored.cursors.convA)).toBe(BigInt(NS1))
 
     // Reload from storage: m1 must NOT be re-fed; a strictly-newer m2 must be.
@@ -1320,7 +1168,7 @@ describe("characterization (U3 hoist)", () => {
     await driver2.pollOnce()
     expect(receiver2.process).toHaveBeenCalledTimes(1)
     expect(fedRequestIds(receiver2)).toEqual(["m2"])
-    const stored2 = JSON.parse(storage.store.get(CURSOR_KEY)!)
+    const stored2 = await saved(storage)
     expect(BigInt(stored2.cursors.convA)).toBe(BigInt(NS2))
   })
 
@@ -1329,7 +1177,7 @@ describe("characterization (U3 hoist)", () => {
     // so any number round-trip would collapse them onto 2^60.
     const NS1 = 2n ** 60n + 1n
     const NS2 = 2n ** 60n + 2n
-    const storage = new InMemoryStorage()
+    const storage = new AccountDb()
     const conversations = [{ id: "convA", messages: [requestMsg("m1", NS1)] }]
 
     const receiver1 = acceptingRequestReceiver()
@@ -1340,7 +1188,7 @@ describe("characterization (U3 hoist)", () => {
     })
     await driver1.pollOnce()
     expect(receiver1.process).toHaveBeenCalledTimes(1)
-    const stored = JSON.parse(storage.store.get(CURSOR_KEY)!)
+    const stored = await saved(storage)
     expect(BigInt(stored.cursors.convA)).toBe(NS1)
 
     // Reload: m1 (== cursor) must not re-feed; m2 (cursor + 1) must.
@@ -1355,7 +1203,7 @@ describe("characterization (U3 hoist)", () => {
     await driver2.pollOnce()
     expect(receiver2.process).toHaveBeenCalledTimes(1)
     expect(fedRequestIds(receiver2)).toEqual(["m2"])
-    const stored2 = JSON.parse(storage.store.get(CURSOR_KEY)!)
+    const stored2 = await saved(storage)
     expect(BigInt(stored2.cursors.convA)).toBe(NS2)
   })
 
@@ -1551,7 +1399,7 @@ describe("payment-request dispatch", () => {
         },
       },
       currentAccount: async () => SAMPLE_ACCOUNT,
-      asyncStorage: new InMemoryStorage(),
+      cursors: new AccountDb().cursors(),
       logger: {
         log: () => {},
         warn: (...args: unknown[]) => warns.push(args.map(String).join(" ")),

@@ -28,6 +28,7 @@ export default {
   typeTag: "Type your @tag",
   continueSignup: "Continue signing up",
   back: "Back",
+  otherTag: "Use a different @tag",
   cancel: "Cancel sign-in",
   paymentWaiting: "Your payment is waiting to be claimed.",
   connectWaiting: "Once you're in, you can add the contact someone shared with you.",

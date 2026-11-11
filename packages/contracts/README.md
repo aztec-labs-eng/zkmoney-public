@@ -36,4 +36,4 @@ set, decision tree, and gotchas.
 
 ## Paylink recompilation (`pnpm recompile:paylinks`)
 
-Run it when the paylink Noir source or the zkJWT circuit changes. It refreshes `ZKJWT_VKEY_HASH` in `@obsidion/core/constants` (and the committed vk) from the current zkJWT circuit, then compiles the paylink contracts (email, direct) and prints their class ids. No registry, wallet, PXE, or node connection is needed. The canonical package test runs Check D against the committed verification key and both core pins.
+Run it when the paylink Noir source or the zkJWT circuit changes. It re-pins zkJWT and both paylink contracts (email, direct) with `pin:contracts`, refreshes `ZKJWT_VKEY_HASH` in `@obsidion/core/constants` (and the committed vk) from the new circuit, and prints the paylinks' class ids. No registry, wallet, PXE, or node connection is needed. The canonical package test runs Check D against the committed verification key and both core pins.

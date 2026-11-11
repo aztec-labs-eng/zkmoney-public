@@ -18,7 +18,7 @@
     "build:oxide-circuits": "scripts/build-oxide-circuits.sh"
   },
   "engines": {
-    "node": ">=20.10.0"
+    "node": "24.x"
   },
   "packageManager": "pnpm@9.14.4+sha512.c8180b3fbe4e4bca02c94234717896b5529740a6cbadf19fa78254270403ea2f27d4e1d46a08a0f56c89b63dc8ebfd3ee53326da720273794e6200fcf0d184ab",
   "pnpm": {
@@ -38,7 +38,9 @@
       "@walletconnect/ethereum-provider": "2.23.10"
     },
     "patchedDependencies": {
-      "@aztec-labs/pxe@6.0.0": "patches/@aztec-labs__pxe@6.0.0.patch"
+      "@aztec-labs/pxe@6.0.0": "patches/@aztec-labs__pxe@6.0.0.patch",
+      "@aztec-labs/sqlite3mc-wasm@6.0.0": "patches/@aztec-labs__sqlite3mc-wasm@6.0.0.patch",
+      "@aztec-labs/kv-store@6.0.0": "patches/@aztec-labs__kv-store@6.0.0.patch"
     }
   },
   "devDependencies": {

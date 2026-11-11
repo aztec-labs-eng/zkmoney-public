@@ -5,7 +5,12 @@ import {
   type PortalCapacityState,
 } from "@obsidion/front-core"
 import type { ClaimFpcAllowance } from "@obsidion/sdk"
-import { capacityFacts, sponsorshipFacts } from "../../../src/features/limits/aboutLimitsFacts"
+import { PUBLIC_TX_LIMIT_USD } from "@obsidion/core/constants"
+import {
+  capacityFacts,
+  productLimitFacts,
+  sponsorshipFacts,
+} from "../../../src/features/limits/aboutLimitsFacts"
 import { CAPACITY_LOW } from "../../../src/features/deposit/fundingCapacity"
 
 const DAI = "0x6B175474E89094C44Da98b954EedeAC495271d0F"
@@ -19,7 +24,6 @@ const allowance = (overrides: Partial<ClaimFpcAllowance> = {}): ClaimFpcAllowanc
 
 const ready = (read: ClaimFpcAllowance): AllowanceSnapshot => ({
   status: "ready",
-  scope: "account|sandbox",
   read: { fpcAddress: "0xfpc", railId: 1, payer: "account", allowance: read },
   state: deriveAllowanceState(read),
   refreshing: false,
@@ -27,11 +31,8 @@ const ready = (read: ClaimFpcAllowance): AllowanceSnapshot => ({
 
 describe("sponsorshipFacts", () => {
   it("maps a pending or failed read without inventing a state", () => {
-    expect(sponsorshipFacts({ status: "signed-out" })).toEqual({ state: "loading" })
-    expect(sponsorshipFacts({ status: "loading", scope: "s" })).toEqual({ state: "loading" })
-    expect(
-      sponsorshipFacts({ status: "unavailable", scope: "s", error: new Error("rpc") }),
-    ).toEqual({
+    expect(sponsorshipFacts({ status: "loading" })).toEqual({ state: "loading" })
+    expect(sponsorshipFacts({ status: "unavailable", error: new Error("rpc") })).toEqual({
       state: "unavailable",
     })
   })
@@ -120,5 +121,12 @@ describe("capacityFacts", () => {
     expect(
       capacityFacts({ status: "unsupported", key, reason: "token-mismatch", detail: "x" }, "DAI"),
     ).toEqual({ state: "unsupported" })
+  })
+})
+
+describe("productLimitFacts", () => {
+  it("caps a send, a deposit and a withdrawal at the public per-transaction limit", () => {
+    const maximum = { maximumUsd: String(PUBLIC_TX_LIMIT_USD) }
+    expect(productLimitFacts()).toEqual({ send: maximum, deposit: maximum, withdrawal: maximum })
   })
 })

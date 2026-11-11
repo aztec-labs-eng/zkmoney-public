@@ -8,18 +8,17 @@ import {
   type Abi,
   type AbiEvent,
   BaseError,
+  CallExecutionError,
   ContractFunctionRevertedError,
+  ExecutionRevertedError,
   HttpRequestError,
+  RawContractError,
   getAbiItem,
   toEventSelector,
 } from "viem"
-import {
-  LegacySwapEscrowEventsAbi,
-  LegacySwapEscrowFactoryAbi,
-  SwapEscrowAbi,
-  SwapEscrowFactoryAbi,
-} from "@oxide/l1-contracts"
+import { LegacySwapEscrowEventsAbi, SwapEscrowAbi, SwapEscrowFactoryAbi } from "@oxide/l1-contracts"
 import { L1SwapEscrowReader } from "../../../src/oxide/escrow/swapEscrowReader.js"
+import { encodeSwapEscrowExecute } from "../../../src/oxide/escrow/swapOnWithdraw.js"
 
 const FACTORY = "0x00000000000000000000000000000000000fac70"
 const DAI = "0x6b175474e89094c44da98b954eedeac495271d0f"
@@ -35,7 +34,7 @@ const ARGS = { ...LEGACY_ARGS, daiForGas: 0n, minEthForGas: 0n }
 const V2 = { layout: "v2", args: ARGS } as const
 
 const client = (
-  simulate: () => Promise<unknown>,
+  call: () => Promise<unknown>,
   getContractEvents?: (query: {
     address: string
     eventName: string
@@ -44,7 +43,7 @@ const client = (
   }) => Promise<unknown>,
 ) =>
   ({
-    simulateContract: vi.fn(simulate),
+    call: vi.fn(call),
     readContract: vi.fn(async () => 7n),
     getCode: vi.fn(async () => "0x363d"),
     getBlockNumber: vi.fn(async () => 100n),
@@ -52,40 +51,33 @@ const client = (
   } as never)
 
 describe("L1SwapEscrowReader.deploySimulates", () => {
-  it("simulates as the committed recipient, never the zero address", async () => {
+  const RUN = encodeSwapEscrowExecute(V2)
+
+  it("calls the factory with the run's calldata as the given payee", async () => {
     const c = client(async () => ({}))
     const reader = new L1SwapEscrowReader(c, { dai: DAI })
-    await expect(reader.deploySimulates(FACTORY, V2)).resolves.toBe(true)
-    const call = (c as { simulateContract: ReturnType<typeof vi.fn> }).simulateContract.mock
-      .calls[0]![0] as { account: string; address: string; functionName: string }
-    expect(call.account).toBe(ARGS.recipient)
-    expect(call.address).toBe(FACTORY)
-    expect(call.functionName).toBe("deployAndExecute")
+    await expect(reader.deploySimulates(FACTORY, RUN, ARGS.recipient)).resolves.toBe(true)
+    const call = (c as { call: ReturnType<typeof vi.fn> }).call.mock.calls[0]![0]
+    expect(call).toEqual({ to: FACTORY, data: RUN, account: ARGS.recipient })
   })
 
-  it("simulates a legacy escrow with the legacy factory layout", async () => {
-    const c = client(async () => ({}))
-    const reader = new L1SwapEscrowReader(c, { dai: DAI })
-    await expect(
-      reader.deploySimulates(FACTORY, { layout: "legacy", args: LEGACY_ARGS }),
-    ).resolves.toBe(true)
-    const call = (c as { simulateContract: ReturnType<typeof vi.fn> }).simulateContract.mock
-      .calls[0]![0] as { abi: unknown; args: unknown[] }
-    expect(call.abi).toBe(LegacySwapEscrowFactoryAbi)
-    expect(call.args).toEqual([LEGACY_ARGS])
-  })
-
-  it("reads a contract revert as unfillable", async () => {
-    const revert = new BaseError("execution reverted", {
-      cause: new ContractFunctionRevertedError({ abi: [], functionName: "deployAndExecute" }),
-    })
+  it.each([
+    [
+      "a decoded revert",
+      new BaseError("execution reverted", {
+        cause: new ContractFunctionRevertedError({ abi: [], functionName: "deployAndExecute" }),
+      }),
+    ],
+    ["a node's revert", new CallExecutionError(new ExecutionRevertedError(), {})],
+    ["revert data", new CallExecutionError(new RawContractError({ data: "0x1234" }), {})],
+  ])("reads %s as unfillable", async (_, revert) => {
     const reader = new L1SwapEscrowReader(
       client(async () => {
         throw revert
       }),
       { dai: DAI },
     )
-    await expect(reader.deploySimulates(FACTORY, V2)).resolves.toBe(false)
+    await expect(reader.deploySimulates(FACTORY, RUN, ARGS.recipient)).resolves.toBe(false)
   })
 
   it("lets an RPC failure through, so the caller retries instead of parking the record", async () => {
@@ -95,7 +87,9 @@ describe("L1SwapEscrowReader.deploySimulates", () => {
       }),
       { dai: DAI },
     )
-    await expect(reader.deploySimulates(FACTORY, V2)).rejects.toThrow(/socket hang up/)
+    await expect(reader.deploySimulates(FACTORY, RUN, ARGS.recipient)).rejects.toThrow(
+      /socket hang up/,
+    )
   })
 })
 

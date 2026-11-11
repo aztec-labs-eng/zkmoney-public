@@ -1,8 +1,15 @@
 // An account's tasks run once their needs are ready, once per session. The Savings replay rebuilds
-// both tokens' burns, then settles once, then reaches `movesReplayed`, as does a failed replay, which
-// the backup add's entry still tells apart.
+// both tokens' burns, then wakes the settle task and reaches `movesReplayed` once its run ends, as
+// does a failed replay, which the backup add's entry still tells apart.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { fixed, startRuntime, valueOf, type ContactStorage } from "@obsidion/front-core"
+import {
+  fixed,
+  memoryStore,
+  startRuntime,
+  valueOf,
+  type Contacts,
+  type SettleDue,
+} from "@obsidion/front-core"
 import type { ContractService, ObsidionAccount, ObsidionWallet, TokenService } from "@obsidion/sdk"
 import { historicImports } from "../../src/features/migration/historicActivityImport"
 import { namespaceOf } from "../../src/session/session"
@@ -10,8 +17,8 @@ import { testCore } from "../support/page"
 import {
   SAVINGS_RETRY_MS,
   savingsMovesReplay,
-  savingsMovesReplayed,
-  savingsResource,
+  openSavingsSource,
+  savingsSettle,
 } from "../../src/features/savings/savingsTasks"
 import { withdrawalRescan } from "../../src/features/withdraw/withdrawGateway"
 import { later, onceSteps, sessions, table } from "../../../front-core/test/engine/taskTable"
@@ -40,30 +47,45 @@ function harness(stage: () => Promise<boolean> = async () => true) {
 describe("savingsMovesReplay", () => {
   function replay(stage?: () => Promise<boolean>) {
     const h = harness(stage)
-    const savings = later<{ settle(): Promise<void> } | null>("savings")
+    const savings = later<{ settle(signal: AbortSignal): Promise<void> } | null>("savings")
     const settle = vi.fn(async () => {})
     const mark = vi.fn()
-    const rescan = vi.fn<
-      (wallet: unknown, account: unknown, tokens: unknown[]) => Promise<unknown[]>
-    >(async () => [])
+    const rescan = vi.fn<(wallet: unknown, owner: string, tokens: unknown[]) => Promise<unknown[]>>(
+      async () => [],
+    )
     const savingsToken = vi.fn(async (): Promise<unknown> => ({ label: "sUSDS" }))
     const needs = {
       wallet: fixed("wallet", WALLET),
       account: fixed("account", ACCOUNT),
       token: fixed("token", TOKEN),
-      savings: savings.resource as never,
+      savings: savings.service as never,
     }
-    h.tasks.push(savingsMovesReplay(needs, { mark }, { rescan, savingsToken } as never))
+    // The settle task the replay wakes, with a move already waiting on it.
+    const due = memoryStore<SettleDue>({ due: true, unadopted: 0 })
+    const settleTask = savingsSettle(savings.service as never, due.readonly)
+    const built = savingsMovesReplay(needs, { mark }, { rescan, savingsToken } as never, settleTask)
+    h.tasks.push(settleTask, built.task)
     const ready = () => savings.ready({ settle })
-    return { h, settle, mark, rescan, savingsToken, ready, none: () => savings.ready(null) }
+    const replayed = () => built.replayed.get()
+    return {
+      h,
+      settle,
+      mark,
+      rescan,
+      savingsToken,
+      ready,
+      replayed,
+      none: () => savings.ready(null),
+    }
   }
 
-  it("rebuilds both tokens' burns at its milestones, then one settle pass, then movesReplayed", async () => {
+  it("rebuilds both tokens' burns at its milestones, then movesReplayed once the woken pass ends", async () => {
     let stage!: () => void
-    const r = replay(() => new Promise<boolean>((resolve) => (stage = () => resolve(true))))
+    const staged = new Promise<boolean>((resolve) => (stage = () => resolve(true)))
+    const r = replay(() => staged)
     let rebuilt!: () => void
     r.rescan.mockImplementation(
-      (_wallet, _account, tokens) =>
+      (_wallet, _owner, tokens) =>
         new Promise((resolve) =>
           (tokens[0] as { label?: string }).label === "sUSDS"
             ? (rebuilt = () => resolve([]))
@@ -81,22 +103,26 @@ describe("savingsMovesReplay", () => {
 
     stage()
     await flush()
-    expect(r.rescan.mock.calls.map(([, account, tokens]) => [account, tokens])).toEqual([
-      [ACCOUNT, [{ tokenService: TOKEN }]],
-      [ACCOUNT, [{ label: "sUSDS" }]],
+    expect(r.rescan.mock.calls.map(([, owner, tokens]) => [owner, tokens])).toEqual([
+      [ADDRESS, [{ tokenService: TOKEN }]],
+      [ADDRESS, [{ label: "sUSDS" }]],
     ])
-    // The pass waits for the move out's burn to be rebuilt.
-    expect(r.settle).not.toHaveBeenCalled()
+    // The waiting move's own pass; the next waits for the move out's burn to be rebuilt.
+    expect(r.settle).toHaveBeenCalledTimes(1)
     expect(r.mark).not.toHaveBeenCalled()
 
-    expect(savingsMovesReplayed(ADDRESS)).toBeUndefined()
+    expect(r.replayed()).toBeUndefined()
+    let settled!: () => void
+    r.settle.mockImplementationOnce(() => new Promise<void>((resolve) => (settled = resolve)))
     rebuilt()
     await flush()
+    expect(r.settle).toHaveBeenCalledTimes(2)
+    // The boot sync ends only once the woken pass has stored the claims.
+    expect(r.mark).not.toHaveBeenCalled()
+    settled()
+    await flush()
     expect(r.mark.mock.calls).toEqual([["movesReplayed"]])
-    expect(savingsMovesReplayed(ADDRESS.toUpperCase())).toBe(true)
-    expect(savingsMovesReplayed(`0x${"0b".repeat(32)}`)).toBeUndefined()
-    expect(r.settle).toHaveBeenCalledTimes(1)
-    expect(r.settle.mock.invocationCallOrder[0]).toBeLessThan(r.mark.mock.invocationCallOrder[0]!)
+    expect(r.replayed()).toBe(true)
   })
 
   it("reaches movesReplayed with nothing to replay where the profile has no sUSDS deployment", async () => {
@@ -115,21 +141,19 @@ describe("savingsMovesReplay", () => {
     r.h.start()
     await flush()
     expect(r.mark).toHaveBeenCalledWith("movesReplayed")
-    expect(savingsMovesReplayed(ADDRESS)).toBe(false)
-    expect(r.settle).not.toHaveBeenCalled()
+    expect(r.replayed()).toBe(false)
     await vi.advanceTimersByTimeAsync(SAVINGS_RETRY_MS)
     expect(r.savingsToken).toHaveBeenCalledTimes(2)
-    expect(r.settle).toHaveBeenCalledTimes(1)
-    expect(savingsMovesReplayed(ADDRESS)).toBe(true)
+    expect(r.replayed()).toBe(true)
   })
 
   it("replays once per session, once Savings is ready", async () => {
     const r = replay()
-    await table(onceSteps(r.h, r.ready), () => r.settle.mock.calls.length)
+    await table(onceSteps(r.h, r.ready), () => r.savingsToken.mock.calls.length)
   })
 })
 
-describe("savingsResource", () => {
+describe("openSavingsSource", () => {
   it("opens Savings once Main's token is ready, and reads it again after a failed read", async () => {
     const token = later<TokenService>("token")
     const source = { settle: async () => {} }
@@ -137,11 +161,11 @@ describe("savingsResource", () => {
       .fn()
       .mockRejectedValueOnce(new Error("manifest unreachable"))
       .mockResolvedValue(source)
-    const savings = savingsResource(
+    const savings = openSavingsSource(
       [
         fixed("wallet", WALLET),
         fixed("account", ACCOUNT),
-        token.resource,
+        token.service,
         fixed("contractService", CONTRACTS),
       ],
       open,
@@ -168,7 +192,7 @@ describe("the account's one-shot rescans and imports", () => {
         {
           wallet: fixed("wallet", WALLET),
           account: fixed("account", ACCOUNT),
-          token: token.resource,
+          token: token.service,
         },
         rescan,
       ),
@@ -177,7 +201,7 @@ describe("the account's one-shot rescans and imports", () => {
       onceSteps(h, () => token.ready(TOKEN)),
       () => rescan.mock.calls.length,
     )
-    expect(rescan).toHaveBeenLastCalledWith(WALLET, ACCOUNT, [{ tokenService: TOKEN }])
+    expect(rescan).toHaveBeenLastCalledWith(WALLET, ADDRESS, [{ tokenService: TOKEN }])
   })
 
   it("imports the account's retired activity and contacts once per session, once the wallet is ready", async () => {
@@ -185,9 +209,9 @@ describe("the account's one-shot rescans and imports", () => {
     const wallet = later<ObsidionWallet>("wallet")
     const activity = vi.fn(async () => null)
     const contacts = vi.fn<(storageId: string, contacts: unknown) => Promise<number>>(async () => 0)
-    const account = { storageId: "acct", contacts: {} as ContactStorage }
+    const account = { storageId: "acct", contacts: {} as Contacts }
     const own = { ...testCore(), namespace: namespaceOf("acct") }
-    h.tasks.push(...historicImports(wallet.resource, account, own, { activity, contacts }))
+    h.tasks.push(...historicImports(wallet.service, account, own as never, { activity, contacts }))
     await table(
       onceSteps(h, () => wallet.ready(WALLET)),
       () => activity.mock.calls.length,

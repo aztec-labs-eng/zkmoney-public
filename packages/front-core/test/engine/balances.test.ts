@@ -1,26 +1,22 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest"
 import { WALLET_TOKEN_SYMBOL } from "@obsidion/core/constants"
-import { AUTH_TYPE } from "@obsidion/sdk"
 import { createAccountRecord } from "../../src/engine/account"
 import { openDatabase } from "../../src/engine/database"
 import { memoryBackend } from "../../src/engine/memoryBackend"
-import { BalanceStorage } from "../../src/core/storages/BalanceStorage"
-import { TokenStorage } from "../../src/core/storages/TokenStorage"
 import type { BalanceSync } from "../../src/engine/milestones"
 import {
+  createBalanceStore,
   createBalances,
   exceedsBalance,
   selectBalanceView,
   selectEntry,
   selectHomeMain,
   type BalanceEntry,
-  type BalanceRecords,
   type BalanceView,
   type WalletTokens,
 } from "../../src/engine/balances"
 import { memoryStore } from "../../src/engine/store"
-import { InMemoryStorageAdapter } from "../__test-helpers__/InMemoryStorageAdapter"
 
 const SCOPE = "sandbox:0xacct"
 const MAIN = "0xMain"
@@ -45,37 +41,39 @@ const wallet = (active: string | null, tokens = [MAIN]): WalletTokens => ({
 })
 
 const view = (entries: BalanceEntry[], w: WalletTokens | null, sync = SETTLED) =>
-  selectBalanceView({ hydrated: true, entries }, w, sync, START)
+  selectBalanceView({ records: entries, loaded: true, failed: false }, w, sync, START)
 
 const live = (atomic: bigint, over: Partial<BalanceView> = {}): BalanceView => ({
   main: { atomic },
-  live: true,
+  readThisSession: true,
   known: true,
   syncing: false,
   progress: null,
   readAt: START,
+  token: MAIN,
+  anchor: undefined,
   ...over,
 })
 
 describe("selectBalanceView", () => {
-  // live: read this session; main: a wallet-token figure above zero
+  // main: a wallet-token figure above zero
   it.each([
-    { live: false, syncing: false, main: false, known: false },
-    { live: false, syncing: false, main: true, known: true },
-    { live: false, syncing: true, main: false, known: false },
-    { live: false, syncing: true, main: true, known: false },
-    { live: true, syncing: false, main: false, known: true },
-    { live: true, syncing: false, main: true, known: true },
-    { live: true, syncing: true, main: false, known: true },
-    { live: true, syncing: true, main: true, known: true },
-  ])("known when live=$live syncing=$syncing main=$main: $known", (row) => {
-    const readAt = row.live ? START : START - 1
+    { readThisSession: false, syncing: false, main: false, known: false },
+    { readThisSession: false, syncing: false, main: true, known: true },
+    { readThisSession: false, syncing: true, main: false, known: false },
+    { readThisSession: false, syncing: true, main: true, known: false },
+    { readThisSession: true, syncing: false, main: false, known: true },
+    { readThisSession: true, syncing: false, main: true, known: true },
+    { readThisSession: true, syncing: true, main: false, known: true },
+    { readThisSession: true, syncing: true, main: true, known: true },
+  ])("known when readThisSession=$readThisSession syncing=$syncing main=$main: $known", (row) => {
+    const readAt = row.readThisSession ? START : START - 1
     const v = view(
       [entry(MAIN, row.main ? 5n : 0n, readAt)],
       wallet(MAIN),
       row.syncing ? SYNCING : SETTLED,
     )
-    expect(v.live).toBe(row.live)
+    expect(v.readThisSession).toBe(row.readThisSession)
     expect(v.main !== null).toBe(row.main)
     expect(v.known).toBe(row.known)
   })
@@ -93,7 +91,7 @@ describe("selectBalanceView", () => {
     expect(view([entry(MAIN, 7n), entry(OLD, 0n)], wallet(null, [OLD, MAIN])).main?.atomic).toBe(7n)
   })
 
-  it("holds Savings' shares out of the candidates: they have no token row", () => {
+  it("holds Savings' shares out of the candidates: their reads are not named", () => {
     expect(view([entry(MAIN, 7n), entry(SHARES, 3n)], wallet(null)).main?.atomic).toBe(7n)
   })
 
@@ -103,27 +101,26 @@ describe("selectBalanceView", () => {
 
   it("ignores another scope and keeps a fresh install unknown", () => {
     const other = view([entry(MAIN, 7n, START, "testnet:0xacct")], wallet(MAIN))
-    expect(other).toMatchObject({ main: null, live: false, known: false })
-    expect(view([], null)).toMatchObject({ main: null, live: false, known: false })
+    expect(other).toMatchObject({ main: null, readThisSession: false, known: false })
+    expect(view([], null)).toMatchObject({ main: null, readThisSession: false, known: false })
   })
 
-  it("is not live while neither the token nor a token row names Main", () => {
-    expect(view([entry(MAIN, 7n, START)], wallet(null, [])).live).toBe(false)
+  it("has no read this session while neither the token nor a named read names Main", () => {
+    expect(view([entry(MAIN, 7n, START)], wallet(null, [])).readThisSession).toBe(false)
   })
 
-  it("reports when Main's balance was read, zero balances included", () => {
-    expect(view([entry(MAIN, 0n, 42)], wallet(MAIN)).readAt).toBe(42)
-    expect(view([entry(MAIN, 0n, 42)], wallet(null)).readAt).toBeUndefined()
+  it("reports when and at which block Main's balance was read, zero balances included", () => {
+    const read = [{ ...entry(MAIN, 0n, 42), anchor: 9 }]
+    expect(view(read, wallet(MAIN))).toMatchObject({ readAt: 42, token: MAIN, anchor: 9 })
+    expect(view(read, wallet(null))).toMatchObject({ readAt: undefined, token: MAIN, anchor: 9 })
+    expect(view(read, wallet(null, [OLD, MAIN]))).toMatchObject({ token: null, anchor: undefined })
+    const held = [{ ...entry(MAIN, 7n, 42), anchor: 9 }, entry(OLD, 0n)]
+    expect(view(held, wallet(null, [OLD, MAIN]))).toMatchObject({ token: MAIN, anchor: 9 })
   })
 
-  it("is live by when the read was written, and dated by when it resolved", () => {
+  it("counts a read as this session's by when it was written, and dates it by when it resolved", () => {
     const v = view([{ ...entry(MAIN, 7n, START - 5), updatedAt: START }], wallet(MAIN))
-    expect(v).toMatchObject({ live: true, readAt: START - 5 })
-  })
-
-  it("shows nothing before the records are read", () => {
-    const records: BalanceRecords = { hydrated: false, entries: [entry(MAIN, 7n)] }
-    expect(selectBalanceView(records, wallet(MAIN), SETTLED, START).main).toBeNull()
+    expect(v).toMatchObject({ readThisSession: true, readAt: START - 5 })
   })
 })
 
@@ -137,7 +134,7 @@ describe("exceedsBalance", () => {
   })
 
   it("never trusts a cached figure", () => {
-    expect(exceedsBalance(live(0n, { live: false }), 10n)).toBe(false)
+    expect(exceedsBalance(live(0n, { readThisSession: false }), 10n)).toBe(false)
   })
 })
 
@@ -151,17 +148,21 @@ describe("selectHomeMain", () => {
   })
 
   it("marks a cached figure updating until a read from this session lands", () => {
-    expect(selectHomeMain(live(10n, { live: false }), args)).toEqual({
+    expect(selectHomeMain(live(10n, { readThisSession: false }), args)).toEqual({
       shown: 13n,
       known: true,
       updating: true,
     })
-    expect(selectHomeMain(live(10n, { live: false, known: false }), args).updating).toBe(false)
+    expect(selectHomeMain(live(10n, { readThisSession: false, known: false }), args).updating).toBe(
+      false,
+    )
   })
 
   it("shows what a held upgrade will land, known once the lock is read", () => {
     const lock = { checked: true, held: true, main: 99n }
-    expect(selectHomeMain(live(10n, { known: false, live: false }), { ...args, lock })).toEqual({
+    expect(
+      selectHomeMain(live(10n, { known: false, readThisSession: false }), { ...args, lock }),
+    ).toEqual({
       shown: 99n,
       known: true,
       updating: false,
@@ -185,136 +186,118 @@ describe("selectHomeMain", () => {
 })
 
 const ACCOUNT = {
+  type: "saved",
   completeAddress: "0xacct",
-  signKeyConfig: { type: AUTH_TYPE.WEB_AUTHN, webauthnData: { credentialId: "c", pubkey: "p" } },
-}
-const ROW = { address: MAIN, name: "Main", symbol: WALLET_TOKEN_SYMBOL, decimals: 18 }
+  signer: { credentialId: "c", pubkey: "p" },
+} as const
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0))
 
 describe("createBalances", () => {
   /** Seeds through other instances, so the stores under test must read what is stored. */
-  async function setup(
-    seed: { account?: boolean; row?: boolean; symbol?: string; active?: string | null } = {},
-  ) {
-    const adapter = new InMemoryStorageAdapter()
+  async function setup(seed: { account?: boolean; active?: string | null } = {}) {
     const db = openDatabase(memoryBackend())
-    if (seed.account ?? true) await createAccountRecord({ db }).save(ACCOUNT)
-    if (seed.row ?? true)
-      await new TokenStorage(adapter).addToken({ ...ROW, symbol: seed.symbol ?? ROW.symbol })
-    const storage = new BalanceStorage(adapter)
-    const accounts = createAccountRecord({ db })
-    const tokens = new TokenStorage(adapter)
+    if (seed.account ?? true)
+      await createAccountRecord({ db, now: () => Date.now() }).apply(ACCOUNT)
+    const storage = createBalanceStore({ db, now: () => Date.now() })
+    const accounts = createAccountRecord({ db, now: () => Date.now() })
     const sync = memoryStore<BalanceSync>(SETTLED)
     const active = memoryStore<string | null>(seed.active === undefined ? MAIN : seed.active)
     // Writes stamp the wall clock, long after this session start.
     const balances = createBalances(
-      storage,
-      {
-        network: "sandbox",
-        account: accounts.view,
-        tokens: tokens.rows,
-        activeToken: active,
-      },
+      storage.view,
+      { network: "sandbox", account: accounts.view, activeToken: active },
       sync.readonly,
       () => START,
     )
-    const stop = balances.view.subscribe(() => {})
-    await storage.load()
+    balances.view.subscribe(() => {})
+    await storage.ready
     await settle()
-    return { storage, accounts, tokens, active, sync, balances, stop }
+    return { storage, accounts, active, sync, balances }
   }
 
-  it("hydrates from storage and mirrors every write as a live read", async () => {
+  it("reads the stored records and follows every write as a live read", async () => {
     const { storage, balances } = await setup()
-    expect(balances.records.get().hydrated).toBe(true)
-    expect(balances.view.get()).toMatchObject({ main: null, live: false, known: false })
-    await storage.updateBalance(SCOPE, MAIN, 5n, 10)
-    expect(balances.view.get()).toMatchObject({ main: { atomic: 5n }, live: true, known: true })
+    expect(balances.records.get().loaded).toBe(true)
+    expect(balances.view.get()).toMatchObject({ main: null, readThisSession: false, known: false })
+    await storage.write(SCOPE, MAIN, 5n, 10)
+    expect(balances.view.get()).toMatchObject({
+      main: { atomic: 5n },
+      readThisSession: true,
+      known: true,
+    })
     expect(selectEntry(balances.records.get(), SCOPE, MAIN)).toMatchObject({
       atomic: 5n,
       anchor: 10,
     })
   })
 
-  it("dates a stored read by when it resolved", async () => {
+  it("dates a read by when it resolved and follows a newer block of one balance", async () => {
     const { storage, balances } = await setup()
-    await storage.updateBalance(SCOPE, MAIN, 5n, 10, { readAt: 7 })
-    expect(balances.view.get()).toMatchObject({ live: true, readAt: 7 })
+    await storage.write(SCOPE, MAIN, 5n, 10, 7)
+    expect(balances.view.get()).toMatchObject({ readThisSession: true, readAt: 7, anchor: 10 })
+    await storage.write(SCOPE, MAIN, 5n, 11, 7)
+    expect(balances.view.get()).toMatchObject({ main: { atomic: 5n }, anchor: 11 })
   })
 
-  it("names Main when the token row is saved after the first balance read", async () => {
-    const { storage, tokens, balances } = await setup({ row: false, active: null })
-    await storage.updateBalance(SCOPE, MAIN, 5n, 10)
+  it("names Main before the token builds by the symbol its read saved", async () => {
+    const { storage, balances } = await setup({ active: null })
+    await storage.write(SCOPE, OLD, 7n, 10)
     expect(balances.view.get()).toMatchObject({ main: null, known: false })
-    await tokens.addToken(ROW)
-    await settle()
-    expect(balances.view.get()).toMatchObject({ main: { atomic: 5n }, live: true, known: true })
+    await storage.write(SCOPE, MAIN, 5n, 10, undefined, WALLET_TOKEN_SYMBOL)
+    expect(balances.view.get()).toMatchObject({
+      main: { atomic: 5n },
+      readThisSession: true,
+      known: true,
+    })
   })
 
-  it("names Main's row by the active address, whatever its symbol", async () => {
-    const { storage, balances } = await setup({ symbol: "USDC" })
-    await storage.updateBalance(SCOPE, MAIN, 5n, 10)
-    expect(balances.view.get()).toMatchObject({ main: { atomic: 5n }, live: true, known: true })
+  it("names Main by the active address, whatever symbol its read saved", async () => {
+    const { storage, balances } = await setup()
+    await storage.write(SCOPE, MAIN, 5n, 10, undefined, "USDC")
+    expect(balances.view.get()).toMatchObject({
+      main: { atomic: 5n },
+      readThisSession: true,
+      known: true,
+    })
   })
 
-  it("names Main by the token's address, with no row stored", async () => {
-    const { storage, active, balances } = await setup({ row: false, active: null })
-    await storage.updateBalance(SCOPE, MAIN, 5n, 10)
+  it("names Main by the token's address, with no symbol saved", async () => {
+    const { storage, active, balances } = await setup({ active: null })
+    await storage.write(SCOPE, MAIN, 5n, 10)
     expect(balances.view.get()).toMatchObject({ main: null, known: false })
     active.set(MAIN)
-    expect(balances.view.get()).toMatchObject({ main: { atomic: 5n }, live: true, known: true })
+    expect(balances.view.get()).toMatchObject({
+      main: { atomic: 5n },
+      readThisSession: true,
+      known: true,
+    })
   })
 
   it("resolves when the account is stored after the first balance read", async () => {
     const { storage, accounts, balances } = await setup({ account: false })
-    await storage.updateBalance(SCOPE, MAIN, 5n, 10)
+    await storage.write(SCOPE, MAIN, 5n, 10)
     expect(balances.view.get()).toMatchObject({ main: null, known: false })
-    await accounts.save(ACCOUNT)
+    await accounts.apply(ACCOUNT)
     await settle()
     expect(balances.view.get()).toMatchObject({ main: { atomic: 5n }, known: true })
   })
 
-  it("follows a balance record change after hydration", async () => {
-    const { storage, balances } = await setup()
-    await storage.updateBalance(SCOPE, MAIN, 5n, 10)
-    await storage.updateBalance(SCOPE, MAIN, 7n, 11)
-    expect(balances.view.get().main?.atomic).toBe(7n)
-  })
-
-  it("never lets a read at an older anchor replace a newer one", async () => {
-    const { storage, balances } = await setup()
-    await storage.updateBalance(SCOPE, MAIN, 5n, 10)
-    expect(await storage.updateBalance(SCOPE, MAIN, 4n, 9)).toBe(false)
-    expect(balances.view.get().main?.atomic).toBe(5n)
-    await storage.updateBalance(SCOPE, MAIN, 6n, 11)
-    expect(balances.view.get().main?.atomic).toBe(6n)
-  })
-
   it("joins the boot sync, so a cached figure waits while it runs", async () => {
-    const { storage, accounts, tokens, active, sync } = await setup()
-    await storage.updateBalance(SCOPE, MAIN, 5n, 1)
+    const { storage, accounts, active, sync } = await setup()
+    await storage.write(SCOPE, MAIN, 5n, 1)
     const cached = createBalances(
-      storage,
-      {
-        network: "sandbox",
-        account: accounts.view,
-        tokens: tokens.rows,
-        activeToken: active,
-      },
+      storage.view,
+      { network: "sandbox", account: accounts.view, activeToken: active },
       sync.readonly,
       () => Date.now() + 60_000,
     )
     cached.view.subscribe(() => {})
-    await storage.load()
-    expect(cached.view.get()).toMatchObject({ main: { atomic: 5n }, live: false, known: true })
+    expect(cached.view.get()).toMatchObject({
+      main: { atomic: 5n },
+      readThisSession: false,
+      known: true,
+    })
     sync.set(SYNCING)
     expect(cached.view.get()).toMatchObject({ known: false, syncing: true, progress: 0.25 })
-  })
-
-  it("stops mirroring once nothing watches", async () => {
-    const { storage, balances, stop } = await setup()
-    stop()
-    await storage.updateBalance(SCOPE, MAIN, 5n, 10)
-    expect(balances.view.get().main).toBeNull()
   })
 })

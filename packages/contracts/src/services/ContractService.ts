@@ -95,15 +95,13 @@ export class ContractService {
   // values are overlaid at READ TIME, never folded into the snapshot.
   private oxideProfile: OxideEnvProfile | null = null
   private oxideClient: OxideEnvRegistryClient | null = null
-  // Singleton instance
-  private static instance: ContractService | null = null
+  /** One registration per contract in this service's PXE; a failed one is not kept. */
+  private readonly nameRegistrations = new Map<ContractName, Promise<void>>()
   /** One registration per account and PXE at a time: a second caller awaits the first. */
   private readonly accountRegistrations = new WeakMap<PXE, Map<string, Promise<void>>>()
 
   /**
-   * Get or create the singleton instance.
-   *
-   * @param storage - Storage implementation (required)
+   * @param storage - Storage implementation
    * @param node - Aztec node instance
    * @param pxe - PXE instance
    * @param network - Network (testnet, sandbox, mainnet)
@@ -114,51 +112,18 @@ export class ContractService {
    *
    * @example
    * // Profile mode (both wallets, backend services)
-   * const service = ContractService.getInstance(storage, node, pxe, network, {
+   * const service = new ContractService(storage, node, pxe, network, {
    *   source: "profile",
    *   config: snapshot,
    * })
    *
    * @example
    * // Local-ledger mode (deploy tooling, test harnesses)
-   * const service = ContractService.getInstance(storage, node, pxe, network, {
+   * const service = new ContractService(storage, node, pxe, network, {
    *   source: "local-ledger",
    * })
    */
-  public static getInstance(
-    storage?: IContractServiceStorage,
-    node?: AztecNode,
-    pxe?: PXE,
-    network?: Network,
-    options?: ContractServiceOptions,
-  ): ContractService {
-    if (ContractService.instance) {
-      return ContractService.instance
-    }
-
-    // First call creates the singleton — callers that never touch L2 contracts
-    // can omit storage/node/pxe. Full L2 callers must provide all three.
-    if (!storage && !network) {
-      throw new Error("First call to getInstance requires at least storage or network parameter")
-    }
-
-    ContractService.instance = new ContractService(storage, node, pxe, network, options)
-    console.log("ContractService instance created")
-    return ContractService.instance
-  }
-
-  /**
-   * Reset the singleton instance (primarily for testing).
-   * Disposes the outgoing instance's oxide client so no retry timer or
-   * subscription outlives its instance (the relayer's boot does a
-   * build-read-reset-rebuild dance; tests reset constantly).
-   */
-  public static resetInstance(): void {
-    ContractService.instance?.oxideClient?.dispose()
-    ContractService.instance = null
-  }
-
-  private constructor(
+  public constructor(
     storage: IContractServiceStorage | undefined,
     node: AztecNode | undefined,
     pxe: PXE | undefined,
@@ -759,6 +724,18 @@ export class ContractService {
       console.error(`Error registering contract ${contract}:`, error)
       throw error
     }
+  }
+
+  /** Registers `contract` in this service's PXE once. It settles after a failure, which a later
+   *  call retries. */
+  public registerContractOnce(contract: ContractName): Promise<void> {
+    const known = this.nameRegistrations.get(contract)
+    if (known) return known
+    const registration = this.registerContractWithName(contract).catch(() => {
+      this.nameRegistrations.delete(contract)
+    })
+    this.nameRegistrations.set(contract, registration)
+    return registration
   }
 
   public async registerContractWithAddress(

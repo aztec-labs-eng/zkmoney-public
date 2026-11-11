@@ -87,6 +87,26 @@ export function processIssuer(iss: string): `0x${string}` {
   return fieldToHex(poseidon2HashPackedString(iss, JWT_ISS_MAX_LEN))
 }
 
+/** The zkJWT circuit's `main(jwt, caller)` parameters as an ABI input map. */
+export function zkJwtInputMap(input: JwtInput, caller: string) {
+  const hex = (x: string | bigint) => "0x" + BigInt(x).toString(16)
+  return {
+    caller: fieldToHex(BigInt(caller)),
+    jwt: {
+      base64_decode_offset: input.base64_decode_offset,
+      signature_limbs: input.signature_limbs.map(hex),
+      public_key_e: hex(input.public_key_e),
+      public_key_limbs: input.public_key_limbs.map(hex),
+      public_key_redc_limbs: input.public_key_redc_limbs.map(hex),
+      nonce_preimage: fieldToHex(input.nonce_preimage),
+      header_and_payload: {
+        len: input.header_and_payload.len,
+        storage: input.header_and_payload.storage,
+      },
+    },
+  }
+}
+
 export type JwtProvider = "google" | "apple"
 
 export async function prepareJwtFromProvider(

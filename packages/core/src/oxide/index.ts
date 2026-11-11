@@ -25,54 +25,25 @@ import {
   type OxideBridge,
   type OxideDeployment,
 } from "./deployment.js"
+import { parsePriorSipaGenerations } from "./sipaGenerations.js"
+import {
+  L1_ADDRESS,
+  L2_ADDRESS,
+  isWellFormedNonZeroL1Address,
+  requireNonZeroL1Address,
+  requireNonZeroL2Address,
+} from "./address.js"
+import { OxideManifestValidationError, requirePattern } from "./validation.js"
 
 export { L1RpcSimulationUnsupportedError, assertL1RpcSimulates } from "./l1RpcSimulation.js"
+export { isAllZeroHex, requireNonZeroL1Address, requireNonZeroL2Address } from "./address.js"
+export { OxideManifestValidationError } from "./validation.js"
 export * from "./deployment.js"
-
-// L1 (EVM) addresses are 20 bytes; L2 (Aztec field) addresses are 32 bytes.
-const L1_ADDRESS = /^0x[0-9a-fA-F]{40}$/
-const L2_ADDRESS = /^0x[0-9a-fA-F]{64}$/
-
-/** Validation failure ⇒ `manifest-incompatible` (vs network `fetch-failed`). */
-export class OxideManifestValidationError extends Error {}
+export * from "./holdings.js"
+export { sipaGenerationOf, sipaGenerations } from "./sipaGenerations.js"
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
-}
-
-function requirePattern(value: unknown, pattern: RegExp, field: string): string {
-  if (typeof value !== "string" || !pattern.test(value)) {
-    throw new OxideManifestValidationError(
-      `oxide env registry: ${field} is missing or malformed (got ${JSON.stringify(value)})`,
-    )
-  }
-  return value
-}
-
-/** True for `0x0`, `0x00…0` — any all-zero hex string. */
-export function isAllZeroHex(value: string): boolean {
-  return /^0x0+$/i.test(value)
-}
-
-/** L1 address that is well-formed AND not the zero address (a zero address is truthy). */
-export function requireNonZeroL1Address(value: unknown, field: string): string {
-  const v = requirePattern(value, L1_ADDRESS, field)
-  if (isAllZeroHex(v))
-    throw new OxideManifestValidationError(`oxide env registry: ${field} is the zero address`)
-  return v
-}
-
-/** Non-throwing form of {@link requireNonZeroL1Address}, for a field a caller skips rather than rejects. */
-function isWellFormedNonZeroL1Address(value: unknown): value is string {
-  return typeof value === "string" && L1_ADDRESS.test(value) && !isAllZeroHex(value)
-}
-
-/** L2 address that is well-formed AND not the zero address. */
-export function requireNonZeroL2Address(value: unknown, field: string): string {
-  const v = requirePattern(value, L2_ADDRESS, field)
-  if (isAllZeroHex(v))
-    throw new OxideManifestValidationError(`oxide env registry: ${field} is the zero address`)
-  return v
 }
 
 function requireHttpUrl(value: unknown, field: string): string {
@@ -180,6 +151,12 @@ export function assertProdOxideTuple(
     }
     if (tuple.skyEscrowFactory !== undefined) {
       requireNonZeroL1Address(tuple.skyEscrowFactory, "skyEscrowFactory")
+    }
+    if (tuple.acrossBridgeEscrowFactory !== undefined) {
+      requireNonZeroL1Address(tuple.acrossBridgeEscrowFactory, "acrossBridgeEscrowFactory")
+    }
+    if (tuple.cctpBridgeEscrowFactory !== undefined) {
+      requireNonZeroL1Address(tuple.cctpBridgeEscrowFactory, "cctpBridgeEscrowFactory")
     }
   }
   if (opts.expectedGitSha && tuple.gitSha !== opts.expectedGitSha) {
@@ -352,14 +329,22 @@ export function parseDeployment(entry: Record<string, unknown>): {
     ),
     swapEscrowFactoryV2:
       optionalString(entry.swapEscrowFactoryV2) ??
-      swapFeatureFactory(entry.features, entry.bridgeId),
+      featureFactory(entry.features, entry.bridgeId, "swap", "swapEscrowFactory"),
     skyEscrowFactory: optionalString(entry.skyEscrowFactory),
+    acrossBridgeEscrowFactory:
+      optionalString(entry.acrossBridgeEscrowFactory) ??
+      featureFactory(entry.features, entry.bridgeId, "across", "acrossBridgeEscrowFactory"),
+    cctpBridgeEscrowFactory:
+      optionalString(entry.cctpBridgeEscrowFactory) ??
+      featureFactory(entry.features, entry.bridgeId, "cctp", "cctpBridgeEscrowFactory"),
     features: parseFeatures(entry.features),
     operationExecutor: optionalString(entry.operationExecutor),
     fpcFunder: optionalString(entry.fpcFunder),
     fpcBeneficiary: optionalString(entry.fpcBeneficiary),
     fpcBeneficiarySalt: optionalString(entry.fpcBeneficiarySalt),
   }
+  const prior = parsePriorSipaGenerations(entry, timestampMs)
+  if (prior.length) tuple.priorSipaGenerations = prior
   return { tuple: Object.freeze(tuple), timestampMs }
 }
 
@@ -374,7 +359,9 @@ function parseTokenImmutables(
   }
   const tokenPortal = requireNonZeroL1Address(value.portal, `${field}.portal`)
   if (typeof portal !== "string" || tokenPortal.toLowerCase() !== portal.toLowerCase()) {
-    throw new OxideManifestValidationError(`oxide env registry: ${field}.portal differs from portal`)
+    throw new OxideManifestValidationError(
+      `oxide env registry: ${field}.portal differs from portal`,
+    )
   }
   const teeRegistry = requireNonZeroL1Address(value.teeRegistry, `${field}.teeRegistry`)
   const text = (key: "name" | "symbol"): string => {
@@ -387,12 +374,23 @@ function parseTokenImmutables(
     return text
   }
   const decimals = value.decimals
-  if (typeof decimals !== "number" || !Number.isInteger(decimals) || decimals < 0 || decimals > 255) {
+  if (
+    typeof decimals !== "number" ||
+    !Number.isInteger(decimals) ||
+    decimals < 0 ||
+    decimals > 255
+  ) {
     throw new OxideManifestValidationError(`oxide env registry: ${field}.decimals must fit in a u8`)
   }
-  const maxNoteAmount = requirePattern(value.maxNoteAmount, /^(0|[1-9]\d*)$/, `${field}.maxNoteAmount`)
-  if (BigInt(maxNoteAmount) >= (1n << 128n)) {
-    throw new OxideManifestValidationError(`oxide env registry: ${field}.maxNoteAmount must fit in a u128`)
+  const maxNoteAmount = requirePattern(
+    value.maxNoteAmount,
+    /^(0|[1-9]\d*)$/,
+    `${field}.maxNoteAmount`,
+  )
+  if (BigInt(maxNoteAmount) >= 1n << 128n) {
+    throw new OxideManifestValidationError(
+      `oxide env registry: ${field}.maxNoteAmount must fit in a u128`,
+    )
   }
   return Object.freeze({
     portal: tokenPortal,
@@ -452,22 +450,22 @@ function parseFeatures(value: unknown): readonly OxideFeature[] | undefined {
 }
 
 /**
- * The SwapEscrowFactory of the deployment's `swap` feature that binds this bridge. A deployment without features names
- * the factory in the bridge's own `swapEscrowFactoryV2`. Two swap features for one bridge fail the entry: the escrow
- * address derives from the factory, so a guess could send a withdrawal to an escrow that no factory deploys.
+ * The escrow factory `contract` of the deployment's `project` feature that binds this bridge. A deployment without
+ * features names the factory on the bridge itself. Two such features for one bridge fail the entry: the escrow address
+ * derives from the factory, so a guess could send a withdrawal to an escrow that no factory deploys.
  */
-function swapFeatureFactory(features: unknown, bridgeId: unknown): string | undefined {
+function featureFactory(features: unknown, bridgeId: unknown, project: string, contract: string): string | undefined {
   if (typeof bridgeId !== "string") return undefined
-  const factories = (parseFeatures(features) ?? []).filter(
-    (feature) => feature.project === "swap" && Object.values(feature.bridges).includes(bridgeId),
+  const matches = (parseFeatures(features) ?? []).filter(
+    (feature) => feature.project === project && Object.values(feature.bridges).includes(bridgeId),
   )
-  if (factories.length > 1) {
-    const ids = factories.map((feature) => feature.id).join(", ")
+  if (matches.length > 1) {
+    const ids = matches.map((feature) => feature.id).join(", ")
     throw new OxideManifestValidationError(
-      `oxide env registry: bridge ${bridgeId} has more than one swap feature (${ids})`,
+      `oxide env registry: bridge ${bridgeId} has more than one ${project} feature (${ids})`,
     )
   }
-  return optionalString(factories[0]?.contracts.swapEscrowFactory)
+  return optionalString(matches[0]?.contracts[contract])
 }
 
 function sipaRecoveryProtocol(value: unknown): "legacy-eoa" | "account" {

@@ -1,15 +1,22 @@
 import { TxExecutionResult, TxStatus } from "@aztec-labs/stdlib/tx"
 import { MSK_PRF_SALT } from "@obsidion/core/constants"
 import {
-  BackupRotationStore,
+  createBackupRotations,
+  fundingFits,
   fundingLocalId,
+  memoryBackend,
+  openDatabase,
   moveProgress,
   persistedRotation,
+  unreadDeposits,
   type BackupRotationRecord,
+  type BackupRotations,
   type BackupRotationStored,
+  type MemoryBackend,
   type FundingRow,
   type SipaDeposit,
   type SweepSeen,
+  type WithdrawalSpeedupEstimate,
 } from "@obsidion/front-core"
 import { isPasskeyCancelled } from "@obsidion/passkey-web"
 import type { PersistedRotationVerdict, SpendShape } from "@obsidion/sdk"
@@ -17,8 +24,13 @@ import type { Address } from "viem"
 import { vi } from "vitest"
 import type { BackupAddDeps } from "../../src/features/backupPasskey/backupPasskeyAdd"
 import type { BackupFlowDeps } from "../../src/features/backupPasskey/backupPasskeyRuntime"
+import type { EntryConditions } from "../../src/features/backupPasskey/backupPasskeyEntry"
+import type {
+  FasterWithdrawal,
+  FasterWithdrawalQuote,
+} from "../../src/features/withdraw/useFasterWithdrawal"
 import type { BackupCreationDriver } from "../../src/platform/auth/backupCreation"
-import { FakePasskeyCeremony, MemoryStorage } from "./fakePasskeyCeremony"
+import { FakePasskeyCeremony } from "./fakePasskeyCeremony"
 
 export const OWNER = `0x${"11".repeat(20)}` as Address
 export const MASTER_KEY = new Uint8Array(32).fill(7)
@@ -27,6 +39,26 @@ export const word = (n: number) => `0x${n.toString(16).padStart(64, "0")}` as `0
 export const SIPA = addr(20)
 export const TWO_KEY = word(0x2b)
 const DAI = 10n ** 18n
+
+/** An add entry that nothing holds. */
+export const ENTRY_READY: EntryConditions = {
+  sessionIsRoot: true,
+  verified: true,
+  registering: false,
+  routeLive: true,
+  savingsMoving: false,
+  withdrawalInFlight: false,
+  historicBalance: false,
+  balance: 10n * DAI,
+  fundingAmount: 2n * DAI,
+  chunk: { kind: "fits" },
+  plan: true,
+  usesLeft: true,
+}
+
+/** An account's rotations over `backend`: a store over the same backend is a reload. */
+export const testRotations = (backend: MemoryBackend = memoryBackend()): BackupRotations =>
+  createBackupRotations({ db: openDatabase(backend) })
 
 /** Creates on the fake and hands back the PRF the creation returned, kept aside for the test. */
 export const fakeDriver =
@@ -54,12 +86,12 @@ export function makeBackupAddDeps(
   opts: {
     driver?: BackupCreationDriver
     seal?: BackupAddDeps["seal"]
-    storage?: MemoryStorage
-    store?: BackupRotationStore
+    backend?: MemoryBackend
+    store?: BackupRotations
   } = {},
 ) {
-  const storage = opts.storage ?? new MemoryStorage()
-  const store = opts.store ?? new BackupRotationStore(storage)
+  const backend = opts.backend ?? memoryBackend()
+  const store = opts.store ?? testRotations(backend)
   const ceremony = new FakePasskeyCeremony()
   const seen: { prf?: Uint8Array } = {}
   const outcomes: ("succeeded" | "failed")[] = []
@@ -93,7 +125,7 @@ export function makeBackupAddDeps(
     now: () => ++now,
     attemptId: () => "attempt-1",
   }
-  return { deps, store, storage, ceremony, seen, outcomes }
+  return { deps, store, backend, ceremony, seen, outcomes }
 }
 
 /** A signed change as the store keeps it. */
@@ -101,13 +133,19 @@ export const storedRotation = (over: Partial<BackupRotationStored> = {}): Backup
   owner: OWNER,
   intent: {
     rollupVersion: "6",
-    precondition: { target: addr(2), data: "0x1234", resultHash: word(3) },
-    postcondition: { target: addr(2), data: "0x1234", resultHash: word(4) },
     recipientCommitment: word(5),
     owner: OWNER,
     nonce: "7",
-    callData: "0xabcd",
     accountGasLimits: word(8),
+    record: {
+      l2Address: TWO_KEY,
+      rollupVersion: "6",
+      publicKey: { x: "11", y: "12" },
+      resolverOperator: addr(13),
+    },
+    namePortalRecipient: TWO_KEY,
+    key: { qx: word(21), qy: word(22) },
+    metadata: "0x0134",
   },
   sharedSecretSalt: word(9),
   nonce: "7",
@@ -204,9 +242,13 @@ export interface World {
   balance: bigint
   sweep?: SweepSeen
   recovery?: `0x${string}`
-  final: boolean
-  releaseFinal: boolean
+  settled: boolean
+  releaseSettled: boolean
   shape: SpendShape
+  /** The most one transfer of the one-key balance moves. */
+  cap: bigint
+  /** The Faster offer the Fund step's quote makes; none without one. */
+  faster?: FasterWithdrawal
   hashes: number
   route: "ok" | "route"
   verdict: PersistedRotationVerdict
@@ -214,12 +256,30 @@ export interface World {
 
 const VERIFIED = { verdict: "verified" } as unknown as PersistedRotationVerdict
 
+/** The burn timing and tip reads that make `offer`; without one, a zero tip that offers nothing. */
+export function fasterQuote(offer?: FasterWithdrawal): FasterWithdrawalQuote {
+  const eta = offer ?? { standardEtaSeconds: 1800, tippedEtaSeconds: 1800, worstSpeedupSeconds: 0 }
+  return {
+    estimate: {
+      epoch: 1 as WithdrawalSpeedupEstimate["epoch"],
+      checkpointIndex: 1,
+      standardEtaSeconds: eta.standardEtaSeconds,
+      tippedEtaSeconds: eta.tippedEtaSeconds,
+      speedupSeconds: eta.worstSpeedupSeconds,
+      worstSpeedupSeconds: eta.worstSpeedupSeconds,
+      confidence: offer?.measured === false ? "fallback" : "measured",
+      pastTipCutoff: false,
+    },
+    quote: { proverTip: offer?.proverTip ?? 0n, gasPriceWei: 1n, usdPerEth: 1n, subsidy: 0n },
+  }
+}
+
 /**
  * Flow dependencies over an in-memory world: the sign, publish and fund steps record what they were
  * asked and move the world on; the re-root succeeds at once and the move sends over the fake node.
  */
 export function makeFlowDeps(
-  opts: { storage?: MemoryStorage; store?: BackupRotationStore; world?: Partial<World> } = {},
+  opts: { backend?: MemoryBackend; store?: BackupRotations; world?: Partial<World> } = {},
 ) {
   const world: World = {
     clock: { t: 2000 },
@@ -227,16 +287,17 @@ export function makeFlowDeps(
     finalizedAt: 0,
     rows: new Map(),
     balance: 0n,
-    final: true,
-    releaseFinal: true,
+    settled: true,
+    releaseSettled: true,
     shape: { notes: [3n * DAI], depositTotal: 0n, balance: 3n * DAI },
+    cap: 2n * DAI,
     hashes: 0,
     route: "ok",
     verdict: VERIFIED,
     ...opts.world,
   }
-  const storage = opts.storage ?? new MemoryStorage()
-  const store = opts.store ?? new BackupRotationStore(storage)
+  const backend = opts.backend ?? memoryBackend()
+  const store = opts.store ?? testRotations(backend)
   const nextHash = () => word(0x100 + ++world.hashes)
   const { signature: _signature, ...prepared } = persistedRotation(storedRotation())
   const deps: BackupFlowDeps = {
@@ -249,12 +310,13 @@ export function makeFlowDeps(
     fundability: vi.fn(async () => "fundable" as const),
     route: vi.fn(async () => world.route),
     l1: {
-      finalizedBlock: vi.fn(async () => ({ number: 100, hash: word(0xf1) })),
-      isFinal: vi.fn(async () => world.final),
+      settledBlock: vi.fn(async () => ({ number: 100, hash: word(0xf1) })),
+      isSettled: vi.fn(async () => world.settled),
+      txBlock: vi.fn(async () => ({ blockNumber: 70, blockHash: word(0x70) })),
       sipaBalance: vi.fn(async () => world.balance),
       sweep: vi.fn(async () => world.sweep),
       recovery: vi.fn(async () => world.recovery),
-      releaseFinal: vi.fn(async () => world.releaseFinal),
+      releaseSettled: vi.fn(async () => world.releaseSettled),
     },
     node: {
       getTxReceipt: vi.fn(
@@ -270,6 +332,11 @@ export function makeFlowDeps(
       }),
     },
     prepare: vi.fn(async () => ({ prepared, plan: PLAN, fromBlock: 50 })),
+    fundable: vi.fn(async () => {
+      const { shape, cap } = world
+      return (amount: bigint) =>
+        fundingFits(amount, cap, shape, unreadDeposits(shape)).kind === "fits"
+    }),
     strandedDeposit: vi.fn(async () => ({
       record: { sipaAddress: SIPA } as SipaDeposit,
       token: { address: SIPA, symbol: "DAI", decimals: 18 },
@@ -289,7 +356,7 @@ export function makeFlowDeps(
       tokens: vi.fn(async () => ["tok"]),
       shape: vi.fn(async () => world.shape),
       deposits: vi.fn(async () => ({ kind: "exact" as const, amounts: [] })),
-      cap: vi.fn(async () => 2n * DAI),
+      cap: vi.fn(async () => world.cap),
       usesLeft: vi.fn(async () => true),
       links: vi.fn(async () => []),
       refundable: vi.fn(async () => "now" as const),
@@ -305,5 +372,7 @@ export function makeFlowDeps(
       declined: vi.fn(isPasskeyCancelled),
     },
   }
-  return { deps, world, store, storage }
+  /** What the session's faster option quotes: the world's offer. */
+  const quoteFaster = vi.fn(async () => fasterQuote(world.faster))
+  return { deps, world, store, backend, quoteFaster }
 }

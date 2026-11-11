@@ -32,6 +32,8 @@ import { OxidePortalAbi } from './artifacts.js';
 import { OxidePortalEventsAbi } from './events.js';
 import { type ContractWriteResult, type WriteOptions, writeWithGasLimit } from './write_receipt.js';
 
+export type WithdrawArgs = ContractFunctionArgs<typeof OxidePortalAbi, 'nonpayable', 'withdraw'>[0];
+
 export interface FrozenEvent {
   checkpointNumber: CheckpointNumber;
   epochNumber: EpochNumber;

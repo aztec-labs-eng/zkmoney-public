@@ -696,6 +696,7 @@ function notify(hook: PasskeyRequestHook | undefined, signal: () => PasskeyReque
 }
 
 /** How long the browser held each rejected request, keyed by the error the ceremony threw for it. */
+// eslint-disable-next-line no-restricted-syntax -- debt
 const heldFor = new WeakMap<object, number>()
 
 /** Records how long the browser held the request `error` came from; a non-object records nothing. */

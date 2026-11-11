@@ -1,4 +1,5 @@
 import { stageIdentity, type Database, type ReadonlyStore } from "@obsidion/front-core"
+import type { WebWalletConfig } from "../../config/env"
 import type { WebAlphaAuthService } from "../../platform/auth/WebAlphaAuthService"
 import {
   NO_SESSION,
@@ -10,6 +11,7 @@ import { activeNamespace } from "../../session/session"
 
 /** The page's auth service, database, device keys and session lock: the session a sign-out ends. */
 export interface SignOutPage {
+  config: Pick<WebWalletConfig, "profileRollupVersion">
   auth: Pick<WebAlphaAuthService, "lockOut">
   database: Database
   device: ReadonlyStore<DeviceState>
@@ -35,7 +37,7 @@ export type SignOutOptions = {
 export async function signOut(page: SignOutPage, options: SignOutOptions = {}): Promise<void> {
   page.auth.lockOut()
   await page.sessionLock(async () => {
-    if (!options.localOnly) await clearSessionEverywhere()
+    if (!options.localOnly) await clearSessionEverywhere(page.config.profileRollupVersion)
     await page.database.write(async (w) => {
       stageIdentity(w, activeNamespace(page.device).prefix, null)
       stageDeviceKeys(w, options.keepPointers ? { msk: null } : NO_SESSION)

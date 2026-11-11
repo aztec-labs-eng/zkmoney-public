@@ -1,17 +1,16 @@
 import type { BackupLinkHold, ChunkFit } from "@obsidion/front-core"
-import { lockedUntil } from "../migration/residualNotes"
 
-/** Where the user goes to clear a condition. */
-export type EntryAction = "sponsorship" | "activity" | "migration" | "savings"
+/** Where the user goes to clear a condition; `signOut` to sign in again with the first passkey. */
+export type EntryAction = "activity" | "deposit" | "migration" | "savings" | "signOut"
 
-/** What the entry checks, in the order the first unmet one is shown. */
+/** What the entry checks. */
 export interface EntryConditions {
   /** The session's credential is the account's first passkey. */
   sessionIsRoot: boolean
   verified: boolean
+  /** The sign-up registration has yet to reach the rollup; the publish subscribes through it. */
+  registering: boolean
   routeLive: boolean
-  /** The account holds the sponsored-transaction subscription. */
-  registered: boolean
   /** A Savings move has yet to land; it would land on the one-key account. */
   savingsMoving: boolean
   withdrawalInFlight: boolean
@@ -27,49 +26,65 @@ export interface EntryConditions {
   usesLeft: boolean
 }
 
-export type EntryBlock = { line: string; action?: EntryAction }
+/** An unmet condition, with what its words need. */
+export type EntryCondition =
+  | { id: "firstPasskey" }
+  /** `finishing` once the account is registered and the registration has yet to land. */
+  | { id: "registered"; finishing: boolean }
+  | { id: "route" }
+  | { id: "savings" }
+  | { id: "withdrawal" }
+  | { id: "link"; hold: BackupLinkHold }
+  | { id: "migration" }
+  | { id: "balance"; need: bigint; have: bigint }
+  /** `send`: the self-send that joins the balance's small pieces. */
+  | { id: "pieces"; send: bigint }
+  | { id: "synced" }
+  | { id: "uses" }
 
-function linkHoldBlock(hold: BackupLinkHold, date: (sec: number) => string): EntryBlock {
-  switch (hold.kind) {
-    case "creating":
-      return { line: "Finish creating your paylink first", action: "activity" }
-    case "token":
-      return { line: "Cancel your paylinks from before the upgrade first", action: "activity" }
-    case "cancel":
-      return { line: "Cancel your paylink in Activity first", action: "activity" }
-    case "expiry":
-      return {
-        line: `A paylink you made can't be cancelled until it expires on ${date(
-          hold.until,
-        )}. Try again then.`,
-      }
-  }
-}
+/** A condition that holds the add, and where the user goes to clear it. */
+export type OpenEntryBlock = EntryCondition & { done: false; action?: EntryAction }
 
-/** The first unmet condition, or undefined when the entry is ready to press. */
-export function entryBlock(
-  c: EntryConditions,
-  amount: (atomic: bigint) => string,
-  date: (sec: number) => string = lockedUntil,
-): EntryBlock | undefined {
-  if (!c.sessionIsRoot) return { line: "Use your first passkey to add a backup" }
-  if (!c.verified) return { line: "This account is not registered yet" }
-  if (!c.routeLive) return { line: "Not available on this network yet" }
-  if (!c.registered) return { line: "Sponsored transactions are not set up", action: "sponsorship" }
-  // Before the withdrawal line: a Savings move's burn is a withdrawal too.
-  if (c.savingsMoving) return { line: "Finish your Savings move first", action: "savings" }
-  if (c.withdrawalInFlight) return { line: "Finish your withdrawal first", action: "activity" }
-  if (c.linkHold) return linkHoldBlock(c.linkHold, date)
-  if (c.historicBalance) return { line: "Finish your migration first", action: "migration" }
-  if (c.balance < c.fundingAmount)
-    return { line: `You need at least ${amount(c.fundingAmount)} to add a backup` }
-  if (c.chunk.kind === "short")
-    return {
-      line: `Your balance is in too many small pieces to fund this. Send yourself ${amount(
-        c.chunk.chunk,
-      )} first.`,
-    }
-  if (!c.plan) return { line: "Part of your balance is still syncing. Try again in a moment." }
-  if (!c.usesLeft) return { line: "Not enough sponsored transactions left this period" }
-  return undefined
+export type EntryBlock = OpenEntryBlock | { id: EntryCondition["id"]; done: true }
+
+const met = (id: EntryCondition["id"]): EntryBlock => ({ id, done: true })
+
+const unmet = (condition: EntryCondition, action?: EntryAction): EntryBlock => ({
+  ...condition,
+  done: false,
+  ...(action && { action }),
+})
+
+const check = (ok: boolean, condition: EntryCondition, action?: EntryAction) =>
+  ok ? met(condition.id) : unmet(condition, action)
+
+/**
+ * Every condition, in the order the first unmet one is named. A Savings move's burn is a withdrawal
+ * too, so the withdrawal counts only without one.
+ */
+export function entryBlocks(c: EntryConditions): EntryBlock[] {
+  const hold = c.linkHold
+  const enough = c.balance >= c.fundingAmount
+  return [
+    check(c.sessionIsRoot, { id: "firstPasskey" }),
+    check(c.verified && !c.registering, {
+      id: "registered",
+      finishing: c.verified && c.registering,
+    }),
+    check(c.routeLive, { id: "route" }),
+    check(!c.savingsMoving, { id: "savings" }, "savings"),
+    check(c.savingsMoving || !c.withdrawalInFlight, { id: "withdrawal" }, "activity"),
+    // One that can only expire has nothing to open.
+    hold
+      ? unmet({ id: "link", hold }, hold.kind === "expiry" ? undefined : "activity")
+      : met("link"),
+    check(!c.historicBalance, { id: "migration" }, "migration"),
+    check(enough, { id: "balance", need: c.fundingAmount, have: c.balance }, "deposit"),
+    // A balance short of the funding never fits in one piece; its own row says so.
+    c.chunk.kind === "short" && enough
+      ? unmet({ id: "pieces", send: c.chunk.chunk })
+      : met("pieces"),
+    check(c.plan, { id: "synced" }),
+    check(c.usesLeft, { id: "uses" }),
+  ]
 }

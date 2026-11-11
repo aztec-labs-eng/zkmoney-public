@@ -4,12 +4,8 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { testPage, testCore } from "../../support/page"
-import {
-  SavingsMoveStorage,
-  type SavingsMoveRecord,
-  type WithdrawalRecord,
-} from "@obsidion/front-core"
-import { InMemoryStorageAdapter } from "../../support/memoryStorage"
+import { openTestSession } from "../../support/session"
+import type { SavingsMoveRecord, SavingsMoves, WithdrawalRecord } from "@obsidion/front-core"
 
 vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/front-core")>()),
@@ -21,25 +17,20 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
     stop: () => {},
   }),
 }))
-vi.mock("../../../src/config/env", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../src/config/env")>()),
-  getConfig: () => ({ network: "sandbox", l1ChainId: 31337 }),
-}))
 const fakeAuth = () => ({ getSecretKey: async () => undefined })
 
 const { runBurn } = await import("../../../src/features/withdraw/withdrawGateway")
 const { dropMoveWithSeed } = await import("../../../src/features/savings/savingsGateway")
 const { savingsMoveStatus } = await import("../../../src/features/savings/SavingsMoveRow")
-const { activeNamespace, closeSession, switchSession, session } = await import(
-  "../../../src/session/session"
-)
+const { activeNamespace, closeSession, switchSession } = await import("../../../src/session/session")
 const { pageSessionDeps } = await import("../../../src/app/sessionDeps")
+type Session = import("../../../src/session/session").Session
 beforeEach(
   () =>
     void switchSession(activeNamespace(testCore().device), pageSessionDeps(testPage(fakeAuth()))),
 )
 afterEach(closeSession)
-const withdrawals = () => session().withdrawals
+const withdrawals = () => openTestSession().withdrawals
 
 const ESCROW = "0x00000000000000000000000000000000000000ee" as const
 const seed = (): Omit<WithdrawalRecord, "localId" | "operationId"> => ({
@@ -75,10 +66,12 @@ const moveOf = (record: WithdrawalRecord): SavingsMoveRecord => ({
 describe("a Savings move's row during its burn", () => {
   const op = { operationId: "op-1", leaveToChain: vi.fn() } as never
   const wallet = { networkId: "0xnet", node: {} } as never
-  let moves: SavingsMoveStorage
+  let moves: SavingsMoves
+  let session: Session
   beforeEach(async () => {
-    moves = new SavingsMoveStorage(new InMemoryStorageAdapter())
-    await moves.load()
+    session = openTestSession({ wallet })
+    moves = session.savingsMoves
+    await moves.ready
   })
   afterEach(() => vi.restoreAllMocks())
 
@@ -87,7 +80,7 @@ describe("a Savings move's row during its burn", () => {
     return {
       run: runBurn({
         op,
-        wallet,
+        session,
         record: seed(),
         onSeeded: async (record) => {
           seeded = record
@@ -107,7 +100,7 @@ describe("a Savings move's row during its burn", () => {
     const proving = new Promise<never>((_, reject) => (release = reject))
     const { run, seeded } = burnWithMove(() => proving)
     await vi.waitFor(() => expect(seeded()).toBeDefined())
-    const move = moves.get(seeded()!.localId)
+    const move = await moves.get(seeded()!.localId)
     expect(move?.direction).toBe("out")
     expect(savingsMoveStatus(move!, (await withdrawals().get(seeded()!.localId))!)).toBe(
       "Moving to Main Account",
@@ -122,7 +115,7 @@ describe("a Savings move's row during its burn", () => {
     })
     await expect(run).rejects.toThrow("Cancelled")
     expect(await withdrawals().get(seeded()!.localId)).toBeUndefined()
-    expect(moves.list()).toEqual([])
+    expect(await moves.all()).toEqual([])
   })
 
   it("shows the move as failed, with the reason, when the burn fails after confirm", async () => {
@@ -133,6 +126,6 @@ describe("a Savings move's row during its burn", () => {
     const burn = (await withdrawals().get(seeded()!.localId))!
     expect(burn.phase).toBe("failed")
     expect(burn.failure).toEqual({ code: "withdrawal.failed", detail: "Proof generation failed" })
-    expect(savingsMoveStatus(moves.get(seeded()!.localId)!, burn)).toBe("Failed")
+    expect(savingsMoveStatus((await moves.get(seeded()!.localId))!, burn)).toBe("Failed")
   })
 })

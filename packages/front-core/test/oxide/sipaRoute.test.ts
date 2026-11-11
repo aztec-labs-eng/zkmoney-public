@@ -25,34 +25,34 @@ describe("sipaRoute", () => {
   it("names every factory intent a row prices", () => {
     expect(sipaIntentName(SipaIntent.Deposit)).toBe("deposit")
     expect(sipaIntentName(SipaIntent.Registration)).toBe("registration")
-    expect(sipaIntentName(SipaIntent.UserOp)).toBe("user-op")
+    expect(sipaIntentName(SipaIntent.AddPasskey)).toBe("add-passkey")
     expect(() => sipaIntentName(SipaIntent.None)).toThrow(/no forwarding-table row/)
   })
 
   it("maps a record's intent to the factory intent its address commits to", () => {
     expect(sipaRecordIntent(undefined)).toBe(SipaIntent.Deposit)
     expect(sipaRecordIntent("registration")).toBe(SipaIntent.Registration)
-    expect(sipaRecordIntent("user-op")).toBe(SipaIntent.UserOp)
+    expect(sipaRecordIntent("add-passkey")).toBe(SipaIntent.AddPasskey)
   })
 
   it("records a factory intent only when the wallet pays it", () => {
     expect(sipaRecordIntentOf(SipaIntent.Deposit)).toBeUndefined()
     expect(sipaRecordIntentOf(SipaIntent.Registration)).toBe("registration")
-    expect(sipaRecordIntentOf(SipaIntent.UserOp)).toBe("user-op")
-    expect(sipaRecordIntentOf(SipaIntent.UpdateMetadata)).toBeNull()
+    expect(sipaRecordIntentOf(SipaIntent.AddPasskey)).toBe("add-passkey")
+    expect(sipaRecordIntentOf(3 as SipaIntent)).toBeNull()
     expect(sipaRecordIntentOf(SipaIntent.None)).toBeNull()
   })
 
-  it("settles a user operation on the fee token's row, whatever token funds it", () => {
-    expect(deploymentSipaRoute(TUPLE, SipaIntent.UserOp, SUSDS)).toEqual({
+  it("settles an add-passkey on the fee token's row, whatever token funds it", () => {
+    expect(deploymentSipaRoute(TUPLE, SipaIntent.AddPasskey, SUSDS)).toEqual({
       forwardingTable: FORWARDING_TABLE,
       token: DAI,
-      intent: SipaIntent.UserOp,
+      intent: SipaIntent.AddPasskey,
     })
     expect(deploymentSipaRoute(TUPLE, SipaIntent.Deposit, SUSDS).token).toBe(SUSDS)
   })
 
-  it("routes a recorded user operation through its table's UserOp row, apart from a deposit's", () => {
+  it("routes a recorded add-passkey through its table's AddPasskey row, apart from a deposit's", () => {
     const origin = {
       protocol: "account" as const,
       forwardingTable: FORWARDING_TABLE,
@@ -65,10 +65,10 @@ describe("sipaRoute", () => {
       rollupVersion: "1",
       resweepable: false,
     }
-    const userOp = sipaRecordRoute({ origin, intent: "user-op" })
+    const addPasskey = sipaRecordRoute({ origin, intent: "add-passkey" })
     const deposit = sipaRecordRoute({ origin, intent: undefined })
 
-    expect(userOp).toEqual({ forwardingTable: FORWARDING_TABLE, intent: SipaIntent.UserOp })
-    expect(sipaRouteKey(userOp!)).not.toBe(sipaRouteKey(deposit!))
+    expect(addPasskey).toEqual({ forwardingTable: FORWARDING_TABLE, intent: SipaIntent.AddPasskey })
+    expect(sipaRouteKey(addPasskey!)).not.toBe(sipaRouteKey(deposit!))
   })
 })

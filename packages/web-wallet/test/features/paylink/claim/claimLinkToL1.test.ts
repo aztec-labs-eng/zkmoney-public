@@ -3,7 +3,9 @@
  * withdrawal: the burn pays the planned escrow, the sdk pairs its swap with the release in the same
  * tx, and the record carries the escrow args plus the confirm-time quote the detail sheet renders.
  */
+import { Fr } from "@aztec-labs/aztec.js/fields"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { assignReads } from "../../../support/fakeReads"
 import { testPage, testCore } from "../../../support/page"
 import { formatUnits, parseUnits, type Address, type Hex } from "viem"
 import { DEFAULT_CONTRACTS, WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
@@ -14,6 +16,7 @@ import {
   watchWalletDb,
   type WalletSendOptions,
 } from "../../../support/submitBoundary"
+import { operationRecord, testOperations } from "../../../support/operations"
 
 const RELAYER_TIP = 5n * 10n ** 18n
 const SWAP_COMMIT = { relayerTip: RELAYER_TIP, amountOut: 1n, decimals: 18 }
@@ -34,20 +37,29 @@ const SWAP_TUPLE = {
   l2Broadcaster: `0x${"1b".repeat(32)}`,
 }
 
-const link = () => ({
+// Each fragment is its own link.
+const link = (fragment = "0xsecret") => ({
   paylinkType: DEFAULT_CONTRACTS.paylinkDirect,
-  secret: { toString: () => "0xsecret", toBuffer: () => new Uint8Array(32) },
+  secret: { toString: () => fragment, toBuffer: () => new Uint8Array(32) },
   classId: { toString: () => "0x1234" },
   chainId: 31337,
   rollupVersion: 1,
 })
-const linkParams = link()
+/** A create's link as the sdk prepares it. */
+const prepared = {
+  paylinkType: DEFAULT_CONTRACTS.paylinkDirect,
+  secret: Fr.random(),
+  fallbackSecret: Fr.random(),
+  fallbackKeyHash: Fr.random(),
+  classId: Fr.ZERO,
+  chainId: 31337,
+  rollupVersion: 1,
+}
 // The escrow note the burn spends; the link itself carries no amount.
 let escrowAmount = parseUnits("120", 18)
 
 vi.mock("../../../../src/config/env", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../../src/config/env")>()),
-  getConfig: () => ({ l1ChainId: 11155111, network: "sandbox" }),
   l1Transport: () => ({}),
 }))
 // The portal alone resolves no withdrawal wiring, so the chain watcher is skipped; swap tests
@@ -57,14 +69,10 @@ const PORTAL_ONLY = { portal: `0x${"70".repeat(20)}`, l2Token: SWAP_TUPLE.l2Toke
 const mockTuple = vi.fn<() => Record<string, string>>(() => ({ ...PORTAL_ONLY }))
 vi.mock("../../../../src/config/oxideTuple", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../../src/config/oxideTuple")>()),
-  getOxideTuple: async () => mockTuple(),
   l1PublicClient: () => ({
     readContract: async ({ functionName }: { functionName: string }) =>
       functionName === "predictAccountAddress" ? ACCOUNT : undefined,
   }),
-}))
-vi.mock("../../../../src/features/token/oxideToken", () => ({
-  txAmountCap: async () => TX_AMOUNT_CAP,
 }))
 vi.mock("../../../../src/features/withdraw/withdrawalFee", () => ({
   withdrawalExecutorFee: async () => FEE,
@@ -74,7 +82,6 @@ vi.mock("../../../../src/features/registration/claimSponsorship", () => ({
   claimSponsorContext: async () => ({ fpcAddress: {}, policy: {} }),
   noteSubscribed: vi.fn(),
 }))
-vi.mock("../../../../src/features/fees/fpcRefuel", () => ({ maybeRefuelFpc: vi.fn() }))
 vi.mock("../../../../src/features/migration/historicTokenContext", () => ({
   findHistoricTuple: vi.fn(),
   historicSponsorTargets: vi.fn(),
@@ -112,14 +119,14 @@ vi.mock("@obsidion/sdk", async (importOriginal) => ({
     claimSponsoredPaylink = sends.claimSponsoredPaylink
     refundSponsoredPaylink = sends.refundSponsoredPaylink
   },
-  decodePaylinkInline: () => linkParams,
+  decodePaylinkInline: (fragment: string) => link(fragment),
   readPaylinkEscrowNote: async () => ({
     amount: escrowAmount,
     tokenAddress: { toString: () => SWAP_TUPLE.l2Token },
   }),
 }))
 
-const recordBurnDuration = vi.hoisted(() => vi.fn(async (_ms: number) => {}))
+const recordBurnDuration = vi.hoisted(() => vi.fn(async (_durations: unknown, _ms: number) => {}))
 vi.mock("../../../../src/features/withdraw/burnTiming", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../../src/features/withdraw/burnTiming")>()),
   recordBurnDuration,
@@ -127,18 +134,20 @@ vi.mock("../../../../src/features/withdraw/burnTiming", async (importOriginal) =
 
 const { claimLinkToL1, claimSponsoredLink, createSponsoredLink, recoverSponsoredLink } =
   await import("../../../../src/features/paylink/sponsoredPaylink")
-const { TxInFlightError } = await import("@obsidion/front-core")
-const { activeNamespace, closeSession, switchSession, session } = await import(
-  "../../../../src/session/session"
-)
+const { TxInFlightError, fixed } = await import("@obsidion/front-core")
+const { activeNamespace, closeSession, switchSession } = await import("../../../../src/session/session")
+const { openTestSession } = await import("../../../support/session")
 const { pageSessionDeps } = await import("../../../../src/app/sessionDeps")
-const { getOperationStore } = await import("../../../../src/features/operations/operations")
-beforeEach(
-  () =>
-    void switchSession(activeNamespace(testCore().device), pageSessionDeps(testPage(fakeAuth()))),
-)
+beforeEach(() => {
+  const page = testPage(fakeAuth())
+  assignReads(page.chain, {
+    oxideTuple: async () => mockTuple(),
+    txAmountCap: async () => TX_AMOUNT_CAP,
+  })
+  void switchSession(activeNamespace(testCore().device), pageSessionDeps(page))
+})
 afterEach(closeSession)
-const withdrawals = () => session().withdrawals
+const withdrawals = () => openTestSession().withdrawals
 const clearWithdrawals = () =>
   Promise.all(
     withdrawals()
@@ -146,15 +155,23 @@ const clearWithdrawals = () =>
       .records.map((r) => withdrawals().remove(r.localId)),
   )
 
-const deps = () =>
+const deps = (node: object = { getContract: async () => ({}) }) =>
   ({
-    wallet: { networkId: "0xnet", node: { getContract: async () => ({}) }, pxe: {} },
-    account: { getAddress: () => ({ toString: () => "0xuser" }) },
-    contractService: {},
-    tokenService: { fetchTokenInformation: async () => ({ symbol: "DAI", decimals: 18 }) },
-    teeSigner: {},
     rollupAddress: {},
+    // The session's stores, with the flow's own burn timing and its fakes.
+    session: Object.assign(Object.create(openTestSession()), {
+      burnDurations: BURNS,
+      wallet: fixed("wallet", { networkId: "0xnet", node, pxe: {} }),
+      account: fixed("account", { getAddress: () => ({ toString: (): string => "0xuser" }) }),
+      contractService: fixed("contractService", {}),
+      token: fixed("token", {
+        fetchTokenInformation: async () => ({ symbol: "DAI", decimals: 18 }),
+      }),
+      teeSigner: fixed("teeSigner", {}),
+    }),
   } as unknown as Parameters<typeof claimLinkToL1>[0])
+/** The flow's own burn timing, apart from the session's. */
+const BURNS = { add: async () => {}, samples: async () => [] }
 const screener = { screen: async () => ({ compliant: true }) } as never
 
 const burnArgs = () => {
@@ -165,6 +182,25 @@ const burnArgs = () => {
   ]
   return { recipient: recipient.toString().toLowerCase(), opts }
 }
+
+const { upsertSavedL1WalletContact: saved } = await import("@obsidion/front-core")
+
+describe("claimLinkToL1's saved recipient", () => {
+  beforeEach(() => vi.mocked(saved).mockClear())
+
+  it("goes to the book the deps carry, and nowhere for a visitor", async () => {
+    const contacts = { upsertL1WalletContact: vi.fn() }
+    const d = deps()
+    const session = Object.assign(Object.create(d.session), { contacts })
+    await claimLinkToL1({ ...d, session }, "frag-direct", RECIPIENT, screener, vi.fn())
+    await vi.waitFor(() =>
+      expect(saved).toHaveBeenCalledWith(contacts, expect.objectContaining({ address: RECIPIENT })),
+    )
+    vi.mocked(saved).mockClear()
+    await claimLinkToL1(deps(), "frag-visitor", RECIPIENT, screener, vi.fn())
+    expect(saved).not.toHaveBeenCalled()
+  })
+})
 
 describe("claimLinkToL1", () => {
   beforeEach(async () => {
@@ -216,7 +252,8 @@ describe("claimLinkToL1", () => {
     expect(record.proverTip).toBe(tip.toString())
     expect(record.amount).toBe(formatUnits(escrowAmount - FEE - WITHDRAW_RELAYER_TIP - tip, 18))
     expect(recordBurnDuration).toHaveBeenCalledTimes(1)
-    expect(recordBurnDuration.mock.calls[0]![0]).toBeGreaterThanOrEqual(0)
+    expect(recordBurnDuration.mock.calls[0]![0]).toBe(BURNS)
+    expect(recordBurnDuration.mock.calls[0]![1]).toBeGreaterThanOrEqual(0)
   })
 
   it("refuses a link the fee and the tip would consume, before any record exists", async () => {
@@ -262,9 +299,9 @@ describe("claimLinkToL1", () => {
       0,
     )
     expect(
-      getOperationStore()
-        .list()
-        .filter((op) => op.state === "local"),
+      testOperations()
+        .view.get()
+        .records.filter((op) => op.state === "local"),
     ).toHaveLength(0)
   })
 
@@ -273,14 +310,11 @@ describe("claimLinkToL1", () => {
       await sendLikeTheWallet(args[4] as WalletSendOptions, L2_TX, () => {})
       throw new Error("Receipt timed out")
     })
-    const d = deps()
-    ;(d.wallet as unknown as { node: object }).node = {
-      getTxReceipt: vi.fn(async () => ({ status: TxStatus.PENDING })),
-    }
+    const d = deps({ getTxReceipt: vi.fn(async () => ({ status: TxStatus.PENDING })) })
     const record = await claimLinkToL1(d, "frag-direct", RECIPIENT, screener, vi.fn())
     expect(record).toMatchObject({ phase: "submitting", l2TxHash: L2_TX })
     expect(record.failure).toBeUndefined()
-    expect(getOperationStore().get(record.operationId!)).toMatchObject({
+    expect(operationRecord(record.operationId!)).toMatchObject({
       state: "sent",
       txHash: L2_TX,
     })
@@ -457,15 +491,16 @@ describe("a link's submit boundary", () => {
   const flows = [
     {
       name: "a create",
-      key: "activity",
+      key: "operations",
       sdk: sends.createSponsoredPaylink,
       at: 2,
+      prepared,
       result: L2_TX,
       send: () => createSponsoredLink(on(), "25"),
     },
     {
       name: "a claim",
-      key: "activity",
+      key: "operations",
       sdk: sends.claimSponsoredPaylink,
       at: 2,
       result: L2_TX,
@@ -473,7 +508,7 @@ describe("a link's submit boundary", () => {
     },
     {
       name: "a recovery",
-      key: "activity",
+      key: "operations",
       sdk: sends.refundSponsoredPaylink,
       at: 2,
       result: L2_TX,
@@ -489,9 +524,7 @@ describe("a link's submit boundary", () => {
     },
   ]
   function on() {
-    const d = deps()
-    ;(d.wallet as unknown as { node: object }).node = node
-    return d
+    return deps(node)
   }
 
   beforeEach(() => localStorage.clear())
@@ -501,9 +534,9 @@ describe("a link's submit boundary", () => {
     const db = watchWalletDb()
     let heldAtNode: boolean | undefined
     sdk.mockImplementationOnce(async (...args: unknown[]) => {
-      await sendLikeTheWallet(args[at] as WalletSendOptions, L2_TX, () => {
-        heldAtNode = db.holds(key, L2_TX)
-      })
+      const options = args[at] as WalletSendOptions
+      const prepared = "prepared" in flow ? flow.prepared : undefined
+      await sendLikeTheWallet(options, L2_TX, () => (heldAtNode = db.holds(key, L2_TX)), prepared)
       return result as never
     })
     await run(send)
@@ -515,7 +548,8 @@ describe("a link's submit boundary", () => {
     watchWalletDb().refuse(key, L2_TX)
     const sent = vi.fn()
     sdk.mockImplementationOnce(async (...args: unknown[]) => {
-      await sendLikeTheWallet(args[at] as WalletSendOptions, L2_TX, sent)
+      const prepared = "prepared" in flow ? flow.prepared : undefined
+      await sendLikeTheWallet(args[at] as WalletSendOptions, L2_TX, sent, prepared)
       return result as never
     })
     const err = await run(send)

@@ -6,13 +6,15 @@
  * still passes. A refusal from both blocks the sheet: funds sent elsewhere never reach the Cash
  * balance.
  */
-import { useEffect, useState } from "react"
+import { useLookup, type QueryFactory } from "@obsidion/front-core"
+import { bestEffort } from "@obsidion/core/errors"
 import { makeBackoff, retry } from "@aztec-labs/foundation/retry"
 import { createPublicClient, http, parseAbi, type Address, type PublicClient } from "viem"
 import { mainnet, optimism } from "viem/chains"
 import { Network } from "@obsidion/core/constants"
-import { getConfig } from "../../config/env"
+import type { WebWalletConfig } from "../../config/env"
 import { l1PublicClient } from "../../config/oxideTuple"
+import { useSession } from "../../session/session"
 
 /** ether.fi's factory: TopUpSourceFactory on Ethereum mainnet, EtherFiSafeFactory on Optimism. */
 export const ETHERFI_FACTORY: Address = "0xF4e147Db314947fC1275a8CbB6Cde48c510cd8CF"
@@ -74,20 +76,6 @@ export async function checkEtherfiAddress(
   return { kind: "rejected" }
 }
 
-/**
- * Asked as a withdrawal is confirmed: true to go on. An address ether.fi knows calls `toEtherfi`
- * instead, since Cash credits neither DAI nor ETH. One ether.fi could not be asked about goes on;
- * the flow has warned the user.
- */
-export function confirmNotEtherfi(
-  kind: EtherfiAddressVerdict["kind"],
-  toEtherfi: () => void,
-): boolean {
-  if (!isEtherfiCash(kind)) return true
-  toEtherfi()
-  return false
-}
-
 /** Open RPCs that serve browsers from any origin, for builds that name none of their own. */
 export const PUBLIC_MAINNET_RPC_URL = "https://ethereum-rpc.publicnode.com"
 export const PUBLIC_OPTIMISM_RPC_URL = "https://optimism-rpc.publicnode.com"
@@ -97,8 +85,7 @@ export const PUBLIC_OPTIMISM_RPC_URL = "https://optimism-rpc.publicnode.com"
  * since a testnet or sandbox build's L1 client points at another chain.
  * `VITE_ETHEREUM_MAINNET_RPC_URL` names that RPC; the public one stands in otherwise.
  */
-export function etherfiFactoryClient(): Reader {
-  const config = getConfig()
+export function etherfiFactoryClient(config: WebWalletConfig): Reader {
   if (config.network === Network.MAINNET) return l1PublicClient(config)
   const url = import.meta.env.VITE_ETHEREUM_MAINNET_RPC_URL || PUBLIC_MAINNET_RPC_URL
   return createPublicClient({ chain: mainnet, transport: http(url, { timeout: 15_000 }) })
@@ -110,49 +97,40 @@ export function etherfiOptimismClient(): Reader {
   return createPublicClient({ chain: optimism, transport: http(url, { timeout: 15_000 }) })
 }
 
-const liveDeps = (): EtherfiCheckDeps => ({
-  mainnet: etherfiFactoryClient(),
+const liveDeps = (config: WebWalletConfig): EtherfiCheckDeps => ({
+  mainnet: etherfiFactoryClient(config),
   optimism: etherfiOptimismClient(),
 })
+
+/** Each address's verdict, read again on every read; a read that throws is `unknown`. */
+export function etherfiVerdicts(query: QueryFactory, config: WebWalletConfig) {
+  return query<[Address], EtherfiAddressVerdict>("etherfiVerdict", {
+    load: (address) =>
+      bestEffort("unknown", checkEtherfiAddress(address, liveDeps(config))).then(
+        (v) => v ?? { kind: "unknown" },
+      ),
+    stale: 0,
+  })
+}
 
 /**
  * The verdict for the address in the field: `idle` while there is none, `checking` through the
  * debounce and the read, and a result only for the address still there. With `waitMs`, a read
- * still running by then reads `unknown` until its answer lands.
+ * still running by then reads `unknown` until its answer lands. `retry` reads again.
  */
 export function useEtherfiAddressVerdict(
   address: Address | null,
   waitMs?: number,
-): EtherfiAddressVerdict {
-  const [result, setResult] = useState<{ address: Address; verdict: EtherfiAddressVerdict }>()
-
-  useEffect(() => {
-    if (!address) return
-    let active = true
-    const timer = setTimeout(() => {
-      checkEtherfiAddress(address, liveDeps())
-        .catch((): EtherfiAddressVerdict => ({ kind: "unknown" }))
-        .then((verdict) => {
-          if (active) setResult({ address, verdict })
-        })
-    }, DEBOUNCE_MS)
-    const cap =
-      waitMs &&
-      setTimeout(
-        () =>
-          setResult((r) =>
-            r?.address === address ? r : { address, verdict: { kind: "unknown" } },
-          ),
-        waitMs,
-      )
-    return () => {
-      active = false
-      clearTimeout(timer)
-      clearTimeout(cap)
-    }
-  }, [address, waitMs])
-
-  // Keyed by address, so the render that brings a new address never carries the last one's verdict.
-  if (!address) return { kind: "idle" }
-  return result?.address === address ? result.verdict : { kind: "checking" }
+): EtherfiAddressVerdict & { retry(): void } {
+  const { etherfiVerdict } = useSession().page
+  const lookup = useLookup(address ?? undefined, etherfiVerdict, {
+    delayMs: DEBOUNCE_MS,
+    lateMs: waitMs,
+  })
+  const { retry } = lookup
+  if (!address) return { kind: "idle", retry }
+  if (lookup.status === "answered") return { ...lookup.value, retry }
+  return lookup.status === "waiting" && lookup.late
+    ? { kind: "unknown", retry }
+    : { kind: "checking", retry }
 }

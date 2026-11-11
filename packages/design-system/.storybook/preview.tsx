@@ -37,15 +37,26 @@ const preview: Preview = {
       },
     },
   },
+  globalTypes: {
+    theme: {
+      description: "Color theme",
+      toolbar: { icon: "contrast", items: ["dark", "light"], dynamicTitle: true },
+    },
+  },
   initialGlobals: {
     backgrounds: { value: "canvas" },
+    theme: "dark",
   },
   decorators: [
-    (Story) => (
-      <ZkMoneyRoot>
-        <Story />
-      </ZkMoneyRoot>
-    ),
+    (Story, { globals }) => {
+      if (globals.theme === "light") document.documentElement.dataset.theme = "light"
+      else delete document.documentElement.dataset.theme
+      return (
+        <ZkMoneyRoot>
+          <Story />
+        </ZkMoneyRoot>
+      )
+    },
   ],
 }
 

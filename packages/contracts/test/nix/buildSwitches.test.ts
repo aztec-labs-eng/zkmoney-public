@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process"
+import { createHash } from "node:crypto"
 import {
   chmodSync,
   existsSync,
@@ -12,6 +13,7 @@ import {
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
+import { gzipSync } from "node:zlib"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 
 const repo = fileURLToPath(new URL("../../../../", import.meta.url))
@@ -33,6 +35,7 @@ describe("build_contracts.sh", () => {
   const log = () => join(fixture, "log")
   const artifacts = () => join(fixture, "packages/contracts/src/artifacts")
   const goldenTicket = "packages/contracts/circuits/golden_ticket/target"
+  const pins = "packages/contracts/pinned/pins.json"
 
   const write = (path: string, content: string) => {
     mkdirSync(dirname(join(fixture, path)), { recursive: true })
@@ -50,6 +53,14 @@ describe("build_contracts.sh", () => {
       JSON.stringify({ scripts: { "update-versions": "x --newVersion v1.2.3" } }),
     )
     write("packages/contracts/scripts/transform-artifact.cjs", "")
+    for (const script of [
+      "packages/contracts/scripts/pinned-contracts.mjs",
+      "packages/contracts/scripts/noir-source.mjs",
+      "packages/oxide-build/scripts/oxide-pins.mjs",
+    ]) {
+      write(script, readFileSync(join(repo, script), "utf8"))
+    }
+    write(pins, "{}")
     write(
       "packages/contracts/contracts/app/Nargo.toml",
       '[package]\nname = "app"\ntype = "contract"\n',
@@ -153,6 +164,112 @@ describe("build_contracts.sh", () => {
     expect(result.status).toBe(1)
     expect(result.stdout).toContain("CODEGEN_JOBS must be a positive integer")
     expect(existsSync(spec())).toBe(false)
+    expect(result.calls).toEqual([])
+  })
+
+  describe("with app pinned", () => {
+    const appDir = "packages/contracts/contracts/app"
+    const json = Buffer.from('{"pinned":true}')
+    const pin = (source: string) =>
+      write(
+        pins,
+        JSON.stringify({
+          app: {
+            dir: appDir,
+            source,
+            aztecVersion: "1.2.3",
+            deps: [],
+            artifacts: {
+              "app-App.json": {
+                sha256: createHash("sha256").update(json).digest("hex"),
+                classId: "0x1",
+              },
+            },
+          },
+        }),
+      )
+    const sourceKey = () =>
+      run(
+        [
+          "-c",
+          `node --input-type=module -e 'import { sourceKey } from "./packages/contracts/scripts/pinned-contracts.mjs"; console.log(sourceKey("${appDir}"))'`,
+        ],
+        fixture,
+      ).stdout.trim()
+
+    beforeAll(() => {
+      mkdirSync(join(fixture, "packages/contracts/pinned/app"), { recursive: true })
+      writeFileSync(join(fixture, "packages/contracts/pinned/app/app-App.json.gz"), gzipSync(json))
+    })
+    afterAll(() => write(pins, "{}"))
+
+    it("extracts the pinned artifact instead of compiling it", () => {
+      pin(sourceKey())
+      const result = build({})
+      expect(result.status, result.stderr).toBe(0)
+      expect(result.calls).not.toContain("aztec compile --silence-warnings")
+      expect(readFileSync(join(artifacts(), "target/app/app-App.json"), "utf8")).toBe(
+        '{"pinned":true}',
+      )
+    })
+
+    it("refuses to build when a pinned package's source moved", () => {
+      pin("stale")
+      const result = build({})
+      expect(result.status).toBe(1)
+      expect(result.stderr).toContain(
+        "app: packages/contracts/contracts/app differs from the source",
+      )
+      expect(result.calls).toEqual([])
+    })
+  })
+
+  describe("with the Oxide token pinned upstream", () => {
+    const noirProjects = "vendor/oxide/noir-projects"
+    const file = "oxide_token_contract-OxideToken.json"
+    const sha256 = createHash("sha256").update('{"oxide":true}').digest("hex")
+    const pin = (sha256: string) =>
+      write(
+        pins,
+        JSON.stringify({
+          oxide_token_contract: {
+            dir: `${noirProjects}/oxide_token_contract`,
+            upstream: "oxide_token_contract",
+            artifacts: { [file]: { sha256, classId: "0x1" } },
+          },
+        }),
+      )
+
+    // Oxide's layout: one archive of <package>/<file>, and a manifest of each file's sha256.
+    beforeAll(() => {
+      write(`pin-src/oxide_token_contract/${file}`, '{"oxide":true}')
+      run(["-c", `tar -czf ${noirProjects}/pinned-noir-artifacts.tar.gz -C pin-src .`], fixture)
+      rmSync(join(fixture, "pin-src"), { recursive: true, force: true })
+      write(
+        `${noirProjects}/pinned-noir-artifacts.json`,
+        JSON.stringify({ [`oxide_token_contract/${file}`]: { sha256 } }),
+      )
+    })
+    afterAll(() => {
+      write(pins, "{}")
+      for (const f of ["pinned-noir-artifacts.tar.gz", "pinned-noir-artifacts.json"]) {
+        rmSync(join(fixture, noirProjects, f), { force: true })
+      }
+    })
+
+    it("refuses to build when Oxide re-pinned it", () => {
+      pin("stale")
+      const result = build({})
+      expect(result.status).toBe(1)
+      expect(result.stderr).toContain(`oxide_token_contract/${file}: Oxide re-pinned it`)
+      expect(result.calls).toEqual([])
+    })
+  })
+
+  it("refuses to compile an unpinned package in GitHub Actions", () => {
+    const result = build({ GITHUB_ACTIONS: "true" })
+    expect(result.status).toBe(1)
+    expect(result.stdout).toContain("::error title=Noir compile in CI::")
     expect(result.calls).toEqual([])
   })
 

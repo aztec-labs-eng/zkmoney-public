@@ -20,7 +20,7 @@ import {SkyErrors} from "@periphery/experiments/sky/SkyErrors.sol";
 import {SkyRoute} from "@periphery/experiments/sky/SkyTypes.sol";
 import {ISUsds} from "@periphery/experiments/sky/interfaces/ISUsds.sol";
 import {SkyTestBase, MockERC1271Account} from "@test/periphery/experiments/sky/SkyTestBase.sol";
-import {MockDaiUsds} from "@test/periphery/experiments/sky/mocks/MockDaiUsds.sol";
+import {MockDaiUsds} from "@test/mocks/MockDaiUsds.sol";
 
 contract SkyEscrowTest is SkyTestBase {
   bytes32 internal constant RECIPIENT_COMMITMENT = keccak256("sky-recipient-commitment");

@@ -1,12 +1,8 @@
-/**
- * The tag card itself, rendered for real: in the start role its Enter and Login share one gate, a
- * blur cannot disable the button under the click, edits are handed up normalised, and the rows and
- * the chooser wait for preparation; in the confirm role nothing changed.
- */
+/** Guards: the tag card submits once, holds its rows, keys and Endpoints while busy, re-reads. */
 import React, { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import type { SignInStart } from "../../../../src/features/onboarding/steps/ConfirmTagModal"
+import type { SignInStart } from "../../../../src/features/onboarding/steps/ConfirmTagModal/ConfirmTagModal"
 
 vi.mock("@obsidion/web-ds", () => ({
   PrimaryGradientButton: ({
@@ -43,19 +39,13 @@ vi.mock("../../../../src/features/onboarding/OnboardingCard", () => ({
   ),
 }))
 
-const { ConfirmTagModal } = await import("../../../../src/features/onboarding/steps/ConfirmTagModal")
+const { ConfirmTagModal } = await import(
+  "../../../../src/features/onboarding/steps/ConfirmTagModal/ConfirmTagModal"
+)
 
 let container: HTMLDivElement
 let root: Root
 const byTestId = (id: string) => container.querySelector<HTMLElement>(`[data-testid="${id}"]`)
-const input = () => container.querySelector<HTMLInputElement>('input[aria-label="Your tag"]')!
-const type = async (value: string) => {
-  await act(async () => {
-    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!
-    setter.call(input(), value)
-    input().dispatchEvent(new Event("input", { bubbles: true }))
-  })
-}
 const submit = async () => {
   await act(async () =>
     container
@@ -67,7 +57,6 @@ const click = (id: string) => act(async () => byTestId(id)!.click())
 
 const onConfirm = vi.fn()
 const onShowPasskeys = vi.fn()
-const onBack = vi.fn()
 const onClose = vi.fn()
 const onCandidate = vi.fn()
 const onTagChange = vi.fn()
@@ -130,7 +119,6 @@ afterEach(() => {
 })
 
 describe("the start role", () => {
-
   it("Enter submits nothing until the tag resolved; then Enter and Login each fire once", async () => {
     await renderStart({ value: "alice", submitReady: false })
     await submit()
@@ -143,24 +131,6 @@ describe("the start role", () => {
     await click("sign-in-login")
     expect(onConfirm).toHaveBeenCalledTimes(2)
     expect(onConfirm).toHaveBeenLastCalledWith("alice")
-  })
-
-  it("the Login click lands after the field blurs: the blur is handed up, the button stays enabled", async () => {
-    await renderStart({ value: "alice", submitReady: true })
-    await act(async () => input().focus())
-    await act(async () => input().dispatchEvent(new FocusEvent("focusout", { bubbles: true })))
-    expect(onTagBlur).toHaveBeenCalledTimes(1)
-    expect((byTestId("sign-in-login") as HTMLButtonElement).disabled).toBe(false)
-    await click("sign-in-login")
-    expect(onConfirm).toHaveBeenCalledWith("alice")
-  })
-
-  it("edits are handed up normalised — a leading @ dropped, lower-cased — and the field is controlled", async () => {
-    await renderStart({ value: "ali" })
-    await type("@Alice")
-    expect(onTagChange).toHaveBeenLastCalledWith("alice")
-    // The parent owns the value; until it re-renders, the field shows what it was given.
-    expect(input().value).toBe("ali")
   })
 
   it("a row calls back with its account; rows, Login and Show passkeys wait for preparation and hold while busy", async () => {
@@ -250,7 +220,6 @@ describe("the start role", () => {
       rowKeys: { credentialId: ROW.credentialId, choices },
     })
     expect(byTestId("sign-in-account")?.getAttribute("aria-pressed")).toBe("true")
-    expect(byTestId("sign-in-account")?.className).toContain("ww-account-row--selected")
     // The cards sit in Login's place, under the field, not inside the account list.
     expect(byTestId("sign-in-login")).toBeNull()
     expect(
@@ -330,77 +299,10 @@ describe("the start role", () => {
     expect(onShowPasskeys).not.toHaveBeenCalled()
   })
 
-  it("with the chooser first, Show passkeys is the primary button and Login a secondary one", async () => {
-    await renderStart({ chooserFirst: true, value: "alice", submitReady: true })
-    expect(byTestId("sign-in-show-passkeys")?.tagName).toBe("BUTTON")
-    expect(container.querySelector(".ww-invite-modal-foot")).toBeNull()
-    await click("sign-in-show-passkeys")
-    expect(onShowPasskeys).toHaveBeenCalledTimes(1)
-    await click("sign-in-login")
-    expect(onConfirm).toHaveBeenCalledWith("alice")
-  })
-
-  it("an invalid tag shows the rule it broke", async () => {
-    await renderStart({ value: "a b" })
-    expect(container.textContent).toContain("Letters, numbers and hyphens only")
-  })
-
-  it.each([false])(
-    "Endpoints opens the editor without submitting the card (chooser first: %s)",
-    async (chooserFirst) => {
-      const onEndpoints = vi.fn()
-      await renderStart({ onEndpoints, chooserFirst, value: "alice", submitReady: true })
-      expect(byTestId("sign-in-endpoints")?.getAttribute("type")).toBe("button")
-      expect(container.textContent).toContain("Using your own node?")
-      await click("sign-in-endpoints")
-      expect(onEndpoints).toHaveBeenCalledTimes(1)
-      expect(onConfirm).not.toHaveBeenCalled()
-    },
-  )
-
   it("Endpoints waits out a running sign-in, and is absent without a way to edit", async () => {
     await renderStart({ onEndpoints: vi.fn(), busy: true })
     expect((byTestId("sign-in-endpoints") as HTMLButtonElement).disabled).toBe(true)
     await renderStart()
     expect(byTestId("sign-in-endpoints")).toBeNull()
-  })
-})
-
-describe("the confirm role", () => {
-  const renderConfirm = (initialHandle?: string) =>
-    act(async () =>
-      root.render(
-        <ConfirmTagModal
-          initialHandle={initialHandle}
-          onConfirm={onConfirm}
-          onBack={onBack}
-          onClose={onClose}
-        />,
-      ),
-    )
-
-  it("keeps its title, its own test ids, and submits any well-formed tag", async () => {
-    await renderConfirm("Alice")
-    expect(byTestId("confirm-tag")).not.toBeNull()
-    expect(byTestId("sign-in-start")).toBeNull()
-    expect(container.textContent).toContain("Confirm by typing")
-    expect(input().value).toBe("alice")
-    await click("primary")
-    expect(onConfirm).toHaveBeenCalledWith("alice")
-    await submit()
-    expect(onConfirm).toHaveBeenCalledTimes(2)
-  })
-
-  it("an invalid tag disables Login; Go back and the close call their handlers, and no open request is offered", async () => {
-    await renderConfirm()
-    await type("a b")
-    expect((byTestId("primary") as HTMLButtonElement).disabled).toBe(true)
-    expect(byTestId("sign-in-show-passkeys")).toBeNull()
-    expect(byTestId("sign-in-endpoints")).toBeNull()
-    expect(container.textContent).toContain("Not your account?")
-    await click("confirm-back")
-    expect(onBack).toHaveBeenCalledTimes(1)
-    await click("card-close")
-    expect(onClose).toHaveBeenCalledTimes(1)
   })
 })

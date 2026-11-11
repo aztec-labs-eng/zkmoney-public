@@ -1,23 +1,37 @@
-import { useEffect, useState } from "react"
+import { useMemo } from "react"
+import {
+  UNREAD,
+  useDebouncedKey,
+  useStore,
+  type QueryState,
+  type ReadonlyStore,
+} from "@obsidion/front-core"
 import { DEFAULT_DECIMALS, Network, WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import {
-  SwapOnWithdrawSimulator,
   SwapTipExceedsInputError,
   type RelayerTipEstimate,
   type SwapEscrowOutput,
   type WithdrawalExecutor,
 } from "@obsidion/sdk"
-import { formatUnits, type Address, type PublicClient } from "viem"
+import { formatUnits, type Address } from "viem"
 import { Warning } from "../../ui/Warning"
-import { getConfig } from "../../config/env"
-import { getOxideTuple, l1PublicClient, requireTupleField } from "../../config/oxideTuple"
+import type { PageFacts } from "../../session/pageChain"
+import { useSession } from "../../session/session"
 import { shortL1Addr, tokenAmount, usdFigure } from "../../ui/format"
 import { withdrawalReceiveAsset, type WithdrawalReceiveAsset } from "./withdrawAssets"
-import { activeWithdrawalExecutor, withdrawalExecutor } from "./withdrawalFee"
-
-/** The market fee a swap's relayer tip was priced at. */
-export type SwapGas = Pick<RelayerTipEstimate, "baseFee" | "priorityFee">
+import { withdrawalExecutor } from "./withdrawalFee"
+import {
+  ACTIVE_SOURCE,
+  SWAP_QUOTE_REFRESH_MS,
+  feeOf,
+  priced,
+  sameRoute,
+  shownQuote,
+  swapsTo,
+  type RouteKey,
+  type SwapKey,
+} from "./swapQuotes"
 
 /** The DAI a route takes off the burn, priced live. */
 export interface WithdrawalFee {
@@ -30,8 +44,6 @@ export interface WithdrawalFee {
   /** DAI the escrow commits to paying whoever runs the swap: 1.1x the relayer's simulated floor.
    *  Zero on the direct route, which runs no swap. */
   swapRelayerTip: bigint
-  /** The fee `swapRelayerTip` was priced at. Absent on the direct route. */
-  swapGas?: SwapGas
   /** What the portal pays the first prover of the burn's checkpoint. */
   proverTip: bigint
   /** Every component summed: the whole fee, and the atomic floor an amount has to clear. */
@@ -53,7 +65,7 @@ export interface SwapEstimate {
  * never `status` alone.
  */
 export interface WithdrawalQuoteState {
-  status: "idle" | "loading" | "ready" | "unavailable"
+  status: "loading" | "ready" | "unavailable"
   /** The route's fee. Kept while the same route reloads, so the floor never flickers away. */
   fee?: WithdrawalFee
   /** The output for the exact amount. Absent while only the fee is priced, and for an amount below the floor. */
@@ -66,7 +78,7 @@ export interface SwapQuote {
   estimate?: SwapEstimate
 }
 
-export type SimulateSwap = (args: {
+export type SwapArgs = {
   output: SwapEscrowOutput
   /** Absent prices the route alone, on a reference amount. */
   amountAtomic?: bigint
@@ -75,10 +87,9 @@ export type SimulateSwap = (args: {
   proverTip?: bigint
   /** DAI the escrow swaps to ETH for the recipient before its route. */
   daiForGas?: bigint
-}) => Promise<SwapQuote>
-
-/** How often a priced route is re-simulated: the relayer's own re-quote cadence. */
-export const SWAP_QUOTE_REFRESH_MS = 30_000
+}
+/** A new input holds this long first, so typing simulates only the amount it settles on. */
+export const SWAP_DEBOUNCE_MS = 300
 
 /** A floor that moves by less than this between quotes is kept: one cent of the wallet asset. */
 export const FLOOR_SETTLE_ATOMIC = 10n ** 16n
@@ -107,22 +118,6 @@ const echoEstimate = (amountAtomic?: bigint): SwapEstimate | undefined =>
     ? { amountOut: amountAtomic, decimals: DEFAULT_DECIMALS }
     : undefined
 
-// Caches the deployment reads (escrow implementation, feed, balance slot) across simulations.
-let simulatorCache: { key: string; simulator: SwapOnWithdrawSimulator } | undefined
-
-function swapSimulator(client: PublicClient, tuple: OxideEnvTuple): SwapOnWithdrawSimulator {
-  const addresses = {
-    swapEscrowFactoryV2: requireTupleField(tuple, "swapEscrowFactoryV2") as Address,
-    operationExecutor: requireTupleField(tuple, "operationExecutor") as Address,
-    token: requireTupleField(tuple, "token") as Address,
-  }
-  const key = Object.values(addresses).join("|")
-  if (simulatorCache?.key !== key) {
-    simulatorCache = { key, simulator: new SwapOnWithdrawSimulator(client, addresses) }
-  }
-  return simulatorCache.simulator
-}
-
 /** The executor terms a quote prices: its fee, and who receives it. */
 export type ExecutorTerms = Pick<WithdrawalExecutor, "fee" | "beneficiary">
 
@@ -137,28 +132,25 @@ function routeFee(
     ...(beneficiary ? { feeBeneficiary: beneficiary } : {}),
     withdrawalRelayerTip: WITHDRAW_RELAYER_TIP,
     swapRelayerTip,
-    ...(tip ? { swapGas: { baseFee: tip.baseFee, priorityFee: tip.priorityFee } } : {}),
     proverTip,
     floorAtomic: withdrawalFee + WITHDRAW_RELAYER_TIP + proverTip + swapRelayerTip,
   }
 }
 
 /**
- * Simulate the swap oxide's relayer will run for this withdrawal and price its tip off that. The fee
- * is always answered: an amount the fee leaves nothing of gets its floor back without an estimate, and
- * no amount at all prices the route on a reference amount.
+ * Simulate the swap oxide's relayer will run for this withdrawal on `tuple`'s deployment and price
+ * its tip off that. The fee is always answered: an amount the fee leaves nothing of gets its floor
+ * back without an estimate, and no amount at all prices the route on a reference amount.
  */
-const simulateSwap: SimulateSwap = async (args) =>
-  simulateSwapForTuple(args, await getOxideTuple(getConfig()))
-
 export async function simulateSwapForTuple(
-  args: Parameters<SimulateSwap>[0],
+  args: SwapArgs,
   tuple: OxideEnvTuple,
+  page: PageFacts,
 ): Promise<SwapQuote> {
-  const simulator = swapSimulator(l1PublicClient(getConfig()), tuple)
+  const simulator = await page.chain.swapSimulator(tuple).ready()
   const proverTip = args.proverTip ?? 0n
   const daiForGas = args.daiForGas ?? 0n
-  const executor = await withdrawalExecutor(tuple)
+  const executor = await withdrawalExecutor(page.chain, tuple)
   const withdrawalFee = executor.fee
   const fee = (tip: RelayerTipEstimate): WithdrawalFee => routeFee(proverTip, executor, tip)
   // An amount the withdrawal's fee, its tips and the gas swap consume cannot be simulated; price
@@ -194,159 +186,83 @@ export async function simulateSwapForTuple(
 }
 
 /**
+ * The direct route: the typed amount lands, and the fee is the executor's fee plus the fixed tips.
+ * Unavailable without an executor or once its read failed.
+ */
+export function directQuote(
+  executor: QueryState<ExecutorTerms> | null,
+  proverTip: bigint,
+  amountAtomic: bigint | undefined,
+): WithdrawalQuoteState {
+  if (!executor || executor.status === "failed") return { status: "unavailable" }
+  if (executor.status === "pending") return { status: "loading" }
+  return {
+    status: "ready",
+    fee: routeFee(proverTip, executor.value),
+    estimate: echoEstimate(amountAtomic),
+  }
+}
+
+/**
  * Live pricing for one receive asset: the route's fee and, for an amount, its output estimate. The
- * direct route's fee is the executor's fee and the fixed tips, so it reads only the executor's fee. A swap route, and DAI with a gas swap,
- * runs the simulator on the debounced amount and re-runs it every
- * {@link SWAP_QUOTE_REFRESH_MS} while it stays selected. A simulation that fails leaves the route
- * unavailable — there is no fallback tip to offer the relayer.
+ * direct route's fee is the executor's fee and the fixed tips, so it reads only the executor's fee.
+ * A swap route, and DAI with a gas swap, reads the page's simulation of the inputs the user has held
+ * for {@link SWAP_DEBOUNCE_MS}, re-run every {@link SWAP_QUOTE_REFRESH_MS} while shown.
  */
 export function useSwapSimulation({
   receiveAsset,
   amountAtomic,
   recipient,
   network,
-  sourceKey = "active",
-  simulate = simulateSwap,
-  readExecutor = activeWithdrawalExecutor,
+  sourceKey = ACTIVE_SOURCE,
+  executor,
   proverTip = 0n,
   daiForGas = 0n,
-  debounceMs = 300,
-  refreshMs = SWAP_QUOTE_REFRESH_MS,
+  quotes,
 }: {
   receiveAsset: WithdrawalReceiveAsset
   /** The burn amount. Absent (or non-positive) prices the route alone. */
   amountAtomic?: bigint
   recipient?: Address
   network: Network
-  sourceKey?: string
-  simulate?: SimulateSwap
-  /** The source executor's fee and beneficiary. */
-  readExecutor?: () => Promise<ExecutorTerms>
+  /** The deployment a swap prices on, null while it is unread: a fee never carries to another. */
+  sourceKey?: string | null
+  /** The source executor's fee and beneficiary: the active one's when absent, none when null. */
+  executor?: ReadonlyStore<QueryState<ExecutorTerms>> | null
   /** Offered on the burn; every route's fee includes it. */
   proverTip?: bigint
   /** DAI the escrow swaps to ETH for the recipient; the route then always rides an escrow. */
   daiForGas?: bigint
-  debounceMs?: number
-  refreshMs?: number
+  /** Where a swap key's quote is read: the page's when absent. */
+  quotes?: (key: SwapKey) => ReadonlyStore<QueryState<SwapQuote>>
 }): WithdrawalQuoteState {
-  const scope = JSON.stringify([network, sourceKey])
-  const direct = receiveAsset === "DAI" && daiForGas === 0n
-  // The route a fee belongs to: DAI with a gas swap is an escrow, priced apart from direct DAI.
-  const route = `${receiveAsset}:${daiForGas > 0n ? "gas" : "plain"}`
-  const requestKey = JSON.stringify([
-    receiveAsset,
-    amountAtomic?.toString(),
-    recipient,
-    proverTip.toString(),
-    daiForGas.toString(),
-    scope,
-  ])
-  // A fee and a tip belong to the asset that priced them: another asset's route never inherits
-  // them, so a swap's relayer tip is never charged on the direct route.
-  const [snapshot, setSnapshot] = useState<{
-    key: string
-    scope: string
-    route: string
-    state: WithdrawalQuoteState
-  }>({ key: requestKey, scope, route, state: { status: "idle" } })
-  const [executorRead, setExecutorRead] = useState<{ scope: string; executor?: ExecutorTerms }>()
-  useEffect(() => {
-    let active = true
-    readExecutor().then(
-      (executor) => active && setExecutorRead({ scope, executor }),
-      () => active && setExecutorRead({ scope }),
-    )
-    return () => {
-      active = false
-    }
-  }, [readExecutor, scope])
-  const feeRead = executorRead?.scope === scope ? executorRead : undefined
-  const directState = (amount?: bigint): WithdrawalQuoteState =>
-    !feeRead
-      ? { status: "loading" }
-      : feeRead.executor === undefined
-      ? { status: "unavailable" }
-      : {
-          status: "ready",
-          fee: routeFee(proverTip, feeRead.executor),
-          estimate: echoEstimate(amount),
-        }
+  const { page } = useSession()
+  const feeRead = useStore(executor === undefined ? page.activeExecutorTerms : executor ?? UNREAD)
+  const amount = amountAtomic !== undefined && amountAtomic > 0n ? amountAtomic : undefined
+  const typed = useMemo(
+    (): RouteKey => ({
+      source: sourceKey,
+      output: receiveAsset,
+      amountAtomic: amount,
+      recipient,
+      proverTip,
+      daiForGas,
+    }),
+    [sourceKey, receiveAsset, amount, recipient, proverTip, daiForGas],
+  )
+  const { key, before } = useDebouncedKey(typed, SWAP_DEBOUNCE_MS)
+  // Testnet has no swap stack; sandbox and mainnet both deploy one.
+  const swappable = network === Network.MAINNET || network === Network.SANDBOX
+  const quoted = (k: RouteKey | undefined) =>
+    swappable && k && priced(k) && swapsTo(k) ? (quotes ?? page.swapQuote)(k) : UNREAD
+  const read = useStore(quoted(key))
+  // The key held before carries its fee, read only until the held key has one of its own.
+  const carry = before && sameRoute(before, typed) && !feeOf(read) ? before : undefined
+  const earlier = useStore(quoted(carry))
 
-  useEffect(() => {
-    const setState = (state: WithdrawalQuoteState) =>
-      setSnapshot({ key: requestKey, scope, route, state })
-    const carriedFee = (current: { scope: string; route: string; state: WithdrawalQuoteState }) =>
-      current.scope === scope && current.route === route ? current.state.fee : undefined
-    const amount = amountAtomic !== undefined && amountAtomic > 0n ? amountAtomic : undefined
-    if (direct) {
-      // The typed amount is what lands and the fee is the executor's fee plus the fixed tips.
-      setState(directState(amount))
-      return
-    }
-    // Testnet has no swap stack; sandbox and mainnet both deploy one.
-    if (network !== Network.MAINNET && network !== Network.SANDBOX) {
-      setState({ status: "unavailable" })
-      return
-    }
-
-    let active = true
-    let inFlight = false
-    setSnapshot((current) => ({
-      key: requestKey,
-      scope,
-      route,
-      state: { status: "loading", fee: carriedFee(current) },
-    }))
-    const run = async () => {
-      if (inFlight) return
-      inFlight = true
-      try {
-        const quote = await simulate({
-          output: receiveAsset,
-          amountAtomic: amount,
-          recipient,
-          proverTip,
-          ...(daiForGas > 0n ? { daiForGas } : {}),
-        })
-        if (!active) return
-        setState({ status: "ready", ...quote })
-      } catch {
-        if (active) setState({ status: "unavailable" })
-      } finally {
-        inFlight = false
-      }
-    }
-    const timer = window.setTimeout(() => void run(), debounceMs)
-    const interval = window.setInterval(() => void run(), refreshMs)
-    return () => {
-      active = false
-      window.clearTimeout(timer)
-      window.clearInterval(interval)
-    }
-  }, [
-    amountAtomic,
-    daiForGas,
-    debounceMs,
-    direct,
-    feeRead,
-    network,
-    proverTip,
-    receiveAsset,
-    recipient,
-    refreshMs,
-    route,
-    simulate,
-    requestKey,
-    scope,
-  ])
-
-  // Effects in consumers run before this hook's state reset is rendered. Never expose a ready
-  // quote from the previous inputs during that render, even if its simulation already finished.
-  // The direct route's quote is the new inputs themselves, so it answers without waiting.
-  if (direct) return directState(amountAtomic)
-  if (snapshot.key === requestKey) return snapshot.state
-  const fee = snapshot.scope === scope && snapshot.route === route ? snapshot.state.fee : undefined
-  return { status: "loading", fee }
+  if (!swapsTo(typed)) return directQuote(executor === null ? null : feeRead, proverTip, amount)
+  if (!swappable || !priced(typed)) return { status: "unavailable" }
+  return shownQuote(typed, { key, state: read }, carry && { key: carry, state: earlier })
 }
 
 /**
@@ -382,28 +298,6 @@ export function swapTipIsHigh(state: WithdrawalQuoteState, amountAtomic?: bigint
 export const FEE_UNAVAILABLE_COPY =
   "The fee can't be read right now. Check your connection and try again."
 
-export const SWAP_UNAVAILABLE_COPY = "Swap fee unavailable. Withdraw DAI instead."
-
-/** " at 3.4 gwei": the market fee the tip was priced at, base plus priority. */
-function swapGasDetail(gas: SwapGas | undefined): string {
-  if (!gas) return ""
-  return ` at ${tokenAmount(formatUnits(gas.baseFee + gas.priorityFee, 9), 1)} gwei`
-}
-
-/** What a swap route adds to the fee, and why it closes when it cannot be priced. */
-export function SwapFeeNote({ state }: { state: WithdrawalQuoteState }) {
-  if (state.status === "unavailable") {
-    return <Warning title={SWAP_UNAVAILABLE_COPY} />
-  }
-  if (!state.fee) return null
-  const tip = usdFigure(formatUnits(state.fee.swapRelayerTip, DEFAULT_DECIMALS))
-  return (
-    <small className="ww-withdraw__fee-note">
-      Includes {tip} for L1 gas{swapGasDetail(state.fee.swapGas)}.
-    </small>
-  )
-}
-
 /** The executor's protocol fee inside a quoted fee, and who receives it; nothing when it takes none. */
 export function ProtocolFeeNote({ fee, beneficiary }: { fee?: bigint; beneficiary?: Address }) {
   if (!fee) return null
@@ -419,10 +313,6 @@ export function ProtocolFeeNote({ fee, beneficiary }: { fee?: bigint; beneficiar
       .
     </small>
   )
-}
-
-export function ExecutorFeeNote({ state }: { state: WithdrawalQuoteState }) {
-  return <ProtocolFeeNote fee={state.fee?.withdrawalFee} beneficiary={state.fee?.feeBeneficiary} />
 }
 
 export function SwapGasWarning({
@@ -451,8 +341,6 @@ export function WithdrawalEstimate({
   const option = withdrawalReceiveAsset(receiveAsset)
   const value = (() => {
     switch (state.status) {
-      case "idle":
-        return "—"
       case "loading":
         return "Loading…"
       case "unavailable":

@@ -14,16 +14,20 @@ import {
   type ReactNode,
   type Ref,
 } from "react"
-import { provingProgress } from "@obsidion/proving-progress"
 import type { OperationRecord } from "@obsidion/front-core"
+import { useStore } from "@obsidion/front-core"
 import { PayWorking, type PayWorkingBeat } from "../contacts/PayWorking"
 import { LocalPasskeyHint } from "../../ui/LocalPasskeyHint"
 import { flowCopy } from "./operationCopy"
-import { currentOperation, getOperationStore } from "./operations"
+import copy from "./OperationHandOff.copy"
+import { useSession } from "../../session/session"
+import { currentOperation } from "./operations"
 
 export interface OperationHandOffHandle {
   /** Leave now, as the hand-off would: the bell carries the operation, which runs on. */
   leave(): void
+  /** `signing` while a passkey prompt is up; `proving` once the flow's ceremonies are over. */
+  beat: PayWorkingBeat
 }
 
 export interface OperationHandOffProps {
@@ -39,6 +43,8 @@ export interface OperationHandOffProps {
    * under the stage; absent once the prompt is over.
    */
   renderWorking?: (beat: PayWorkingBeat, label?: string, hint?: ReactNode) => ReactNode
+  /** Each beat the hand-off moves to, for a flow that draws its status elsewhere. */
+  onBeat?: (beat: PayWorkingBeat) => void
   /**
    * `sent` holds the beat through the proof, for a flow whose next screen would compete with it:
    * it leaves once the operation is sent. `prepared` holds it through every ceremony and proof the
@@ -57,12 +63,21 @@ export function OperationHandOff({
   onLeave,
   onCancel,
   renderWorking,
+  onBeat,
   until = "handoff",
   prepared = false,
   ref,
 }: OperationHandOffProps) {
-  const [beat, setBeat] = useState<PayWorkingBeat>("preparing")
+  const [beat, showBeat] = useState<PayWorkingBeat>("preparing")
+  const onBeatRef = useRef(onBeat)
+  onBeatRef.current = onBeat
+  const setBeat = useCallback((next: PayWorkingBeat) => {
+    showBeat(next)
+    onBeatRef.current?.(next)
+  }, [])
   const [, refresh] = useReducer((n: number) => n + 1, 0)
+  const { operations, page } = useSession()
+  const lastSendWait = useStore(page.prover.progress, (p) => p.waitingForLastSend)
   const rootId = useRef<string | undefined>(undefined)
   const left = useRef(false)
   const leaveRef = useRef(onLeave)
@@ -70,20 +85,21 @@ export function OperationHandOff({
   const leave = useCallback(() => {
     if (left.current) return
     left.current = true
-    const store = getOperationStore()
-    if (rootId.current) void store.markHandedOff(rootId.current).catch(() => {})
+    if (rootId.current)
+      void operations.apply(rootId.current, { type: "handedOff", at: Date.now() }).catch(() => {})
     leaveRef.current()
-  }, [])
-  useImperativeHandle(ref, () => ({ leave }), [leave])
+  }, [operations])
+  useImperativeHandle(ref, () => ({ leave, beat }), [leave, beat])
 
   // The flow's operation is the root one running when this mounts, or the first to start after.
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
-    const store = getOperationStore()
     const check = () => {
-      rootId.current ??= currentOperation(store.list())?.operationId
-      const root = rootId.current ? store.get(rootId.current) : null
+      const live = operations.live.get()
+      rootId.current ??= currentOperation(operations.running.get(), live)?.operationId
+      const root = operations.view.get().records.find((r) => r.operationId === rootId.current)
       if (until === "prepared") {
-        if (root && leftPage(root, store.isLive(root.operationId))) leave()
+        if (root && leftPage(root, live.has(root.operationId))) leave()
         else refresh()
         return
       }
@@ -93,43 +109,50 @@ export function OperationHandOff({
         return refresh()
       }
       if (root?.provingStartedAt !== undefined) leave()
-      else if (root && leftPage(root, store.isLive(root.operationId))) leave()
+      else if (root && leftPage(root, live.has(root.operationId))) leave()
       else refresh()
     }
     check()
-    const offLive = store.onLiveChanged(check)
-    const offList = store.onListChanged(check)
+    const offLive = operations.live.subscribe(check)
+    const offList = operations.view.subscribe(check)
     return () => {
       offLive()
       offList()
     }
-  }, [leave, until])
+  }, [leave, until, operations, setBeat])
 
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (until === "prepared" && prepared) leave()
   }, [leave, until, prepared])
 
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
-    const onStart = () => setBeat("signing")
-    const onEnd = (e: { failed?: boolean }) => {
-      if (e.failed) return
-      if (until === "handoff") leave()
-      else setBeat("proving")
-    }
-    provingProgress.on("signing-start", onStart)
-    provingProgress.on("signing-end", onEnd)
-    return () => {
-      provingProgress.off("signing-start", onStart)
-      provingProgress.off("signing-end", onEnd)
-    }
-  }, [leave, until])
+    const { progress } = page.prover
+    let last = progress.get().signing
+    return progress.subscribe(() => {
+      const { signing } = progress.get()
+      const started = signing.started !== last.started
+      const ended = signing.ended !== last.ended
+      last = signing
+      if (started) setBeat("signing")
+      else if (ended && !signing.failed) {
+        if (until === "handoff") leave()
+        else setBeat("proving")
+      }
+    })
+  }, [leave, until, page, setBeat])
 
-  const store = getOperationStore()
   const root = rootId.current
+  const live = operations.live.get()
   const child = root
-    ? store.list().find((r) => r.parent === root && store.isLive(r.operationId))
+    ? operations.view.get().records.find((r) => r.parent === root && live.has(r.operationId))
     : undefined
-  const label = child ? flowCopy(child.flow).live : undefined
+  const label = lastSendWait
+    ? copy.waitingForLastPayment
+    : child
+    ? flowCopy(child.flow).live
+    : undefined
   // Up from the first beat: the browser's sheet is modal, so the line should be up before it.
   const hint = beat === "proving" ? undefined : <LocalPasskeyHint />
   return renderWorking ? (

@@ -1,6 +1,8 @@
 /* ============================================================
    zk.money / Obsidion — Web design system
-   Dark-only. Sen = all text (display and body tokens).
+   Sen = all text (display and body tokens).
+   Themes: :root holds the dark theme, and a theme redefines the color tokens under
+   :root[data-theme="<name>"]. Components read only tokens.
    ============================================================ */
 
 :root {
@@ -9,6 +11,12 @@
   --purple-400: #ad33ff; /* Figma brand-primary-40 */
   --blue-500: #0099ff; /* cardGradientEnd / cyanAccent */
   --blue-400: #47b3ff; /* Figma brand-secondary-40 */
+
+  /* ---- Ink: the foreground channel. Translucent text, lines and fills mix it with an alpha. ---- */
+  --ink-rgb: 255, 255, 255;
+  --ink: rgb(var(--ink-rgb));
+  /* The page's own color, for scrims and frosted bars over it. */
+  --canvas-rgb: 7, 7, 7;
 
   /* ---- Surfaces ---- */
   --surface-canvas: #181818; /* AppTheme.background */
@@ -19,21 +27,43 @@
   --surface-strong: rgba(255, 255, 255, 0.2); /* tabBarActive / addFunds button bg */
   --surface-pink: rgba(230, 101, 126, 0.1); /* AppTheme.pinkSurface — destructive fills */
   --surface-track: #0f100f; /* progressTrackBackground / cardImagePlaceholder */
+  --surface-raised: #2c2c2c; /* menus, tooltips and chips over a sheet */
+  --surface-popover: #2b2b2b; /* dropdown lists */
+  --brand-disabled-base: #1a1a1a; /* under a disabled brand-gradient button's dimmed gradient */
+  --brand-disabled-text: rgba(255, 255, 255, 0.5);
+
+  /* ---- Shadows ---- */
+  --shadow-raised: 0 0 #0000; /* cards and controls lifted off the canvas */
+  --shadow-tabbar: 0 -4px 7.5px 6px rgba(0, 0, 0, 0.5);
+
+  /* ---- On-brand foreground: the same in every theme (see zkm-on-brand) ---- */
+  --on-brand-ink-rgb: 255, 255, 255;
+  --on-brand-text-primary: #fdfdfd;
+  --on-brand-text-secondary: #bfc2d7;
 
   /* ---- Text ---- */
   --text-primary: #fdfdfd; /* AppTheme.primaryText */
   --text-secondary: #bfc2d7; /* AppTheme.secondaryText */
   --text-tab-inactive: #c7cdea; /* AppTheme.inactiveTabText */
+  --text-muted: #8b8fa8; /* finished and upcoming steps */
 
-  /* ---- Semantic accents ---- */
-  --accent-gold: #eed04e; /* warning / awaiting */
-  --accent-green: #56e79d; /* success / credit */
-  --accent-pink: #fe708b; /* destructive / error */
+  /* ---- Semantic accents; the -rgb channels tint fills with an alpha ---- */
+  --accent-gold-rgb: 238, 208, 78;
+  /* warning / awaiting: status text and gold surfaces */
+  --accent-gold: rgb(var(--accent-gold-rgb));
+  --accent-warning: #dec971; /* Figma "warning": alert glyphs and gold text actions */
+  --accent-violet: #b99cff; /* the step in progress */
+  --accent-green-rgb: 86, 231, 157;
+  --accent-green: rgb(var(--accent-green-rgb)); /* success / credit */
+  --accent-pink-rgb: 254, 112, 139;
+  --accent-pink: rgb(var(--accent-pink-rgb)); /* destructive / error */
   --accent-amber: #f5a524; /* tx-race: mined despite cancel */
   --accent-bluegrey: #7aa8c7; /* tx-race: informational */
+  --accent-yellow: #f5d547; /* payment warnings */
 
   /* ---- Borders ---- */
-  --border-hairline: rgba(255, 255, 255, 0.08); /* AppTheme.divider */
+  --border-hairline: rgba(var(--ink-rgb), 0.08); /* AppTheme.divider */
+  --border-solid: #303030;
 
   /* ---- Gradients ---- */
   --gradient-brand: linear-gradient(90deg, #a000ff 0%, #0099ff 100%); /* purpleCyanGradient */
@@ -41,8 +71,8 @@
   --gradient-icon: linear-gradient(to top, #ffffff 0%, #cacaca 71.2%); /* iconGradient */
   --gradient-bg: linear-gradient(
     to top,
-    #070707 0%,
-    #070707 35%,
+    var(--surface-dark) 0%,
+    var(--surface-dark) 35%,
     #0d0b17 55%,
     #1a1046 75%,
     #2e1865 90%,
@@ -50,8 +80,8 @@
   ); /* backgroundGradient */
   --gradient-bg-launch: linear-gradient(
     to bottom,
-    #070707 0%,
-    #070707 35%,
+    var(--surface-dark) 0%,
+    var(--surface-dark) 35%,
     #0d0b17 55%,
     #1a1046 75%,
     #2e1865 90%,
@@ -76,6 +106,89 @@
   /* ---- Type ---- */
   --font-display: "Sen", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --font-body: "Sen", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+/* The light theme: the same color tokens over a pale canvas. */
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --ink-rgb: 27, 25, 48;
+  --canvas-rgb: 244, 243, 249;
+
+  --surface-canvas: #f7f6fb;
+  --surface-dark: #f4f3f9;
+  --surface-sheet: #fbfbfe;
+  --surface-card: rgba(255, 255, 255, 0.8);
+  --surface-faint: rgba(255, 255, 255, 0.72);
+  --surface-strong: rgba(255, 255, 255, 0.95);
+  --surface-pink: rgba(214, 52, 90, 0.08);
+  --surface-track: #e4e2ee;
+  --surface-raised: #ffffff;
+  --surface-popover: #ffffff;
+  --brand-disabled-base: #ffffff;
+  --brand-disabled-text: rgba(var(--ink-rgb), 0.45);
+
+  --shadow-raised: 0 8px 24px -8px rgba(60, 40, 120, 0.12);
+  --shadow-tabbar: 0 -4px 16px rgba(60, 40, 120, 0.08);
+
+  --text-primary: #1b1930;
+  --text-secondary: #5d5b74;
+  --text-tab-inactive: #5d5b74;
+
+  --accent-gold-rgb: 143, 100, 0;
+  --accent-green-rgb: 8, 132, 79;
+  --accent-pink-rgb: 208, 54, 92;
+  --accent-warning: #8a6a00;
+  --accent-violet: #6b46d6;
+  --accent-amber: #a85f00;
+  --accent-bluegrey: #3c6a8a;
+  --accent-yellow: #8a6a00;
+
+  --border-solid: #e1dfea;
+
+  --gradient-title: linear-gradient(52deg, #1b1930 30.5%, #2d2a48 69.5%);
+  --gradient-icon: linear-gradient(to top, #1b1930 0%, #4a4766 71.2%);
+  --gradient-bg: linear-gradient(
+    to top,
+    #f4f3f9 0%,
+    #f4f3f9 35%,
+    #eee8fb 60%,
+    #e5dbfa 85%,
+    #dccdf8 100%
+  );
+  --gradient-bg-launch: linear-gradient(
+    to bottom,
+    #f4f3f9 0%,
+    #f4f3f9 35%,
+    #eee8fb 60%,
+    #e5dbfa 85%,
+    #dccdf8 100%
+  );
+}
+
+/* Fills that keep their color in every theme (brand gradients, tooltips, toasts) keep the dark
+   theme's foreground. Mark such an element with zkm-on-brand, or list its class here. */
+:is(
+    .zkm-on-brand,
+    .zkm-hero-card,
+    .zkm-promo,
+    .zkm-privacy-banner,
+    .zkm-primary-btn--gradient,
+    .zkm-amount-chip--selected,
+    .zkm-coming-soon,
+    .zkm-activity-row__glyph,
+    .zkm-activity-action--gradient,
+    .zkm-search-row__dot,
+    .zkm-next-steps__number,
+    .zkm-alert-badge,
+    .zkm-fact-hint__tip,
+    .zkm-toast
+  ) {
+  --ink-rgb: var(--on-brand-ink-rgb);
+  --ink: rgb(var(--ink-rgb));
+  --text-primary: var(--on-brand-text-primary);
+  --text-secondary: var(--on-brand-text-secondary);
+  color: var(--text-primary);
 }
 
 /* ============================================================
@@ -224,11 +337,11 @@
   flex: none;
 }
 .zkm-glass-circle--faint {
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(var(--ink-rgb), 0.03);
   box-shadow: 0 0 5.5px rgba(0, 0, 0, 0.1);
 }
 .zkm-glass-circle--bright {
-  background: rgba(255, 255, 255, 0.2);
+  background: rgba(var(--ink-rgb), 0.2);
 }
 
 .zkm-glass-pill {
@@ -303,7 +416,7 @@
      overflow hidden its flex min-height is 0, so without this it collapses when the sheet scrolls. */
   flex-shrink: 0;
   border-radius: 9999px;
-  color: #fff;
+  color: var(--ink);
   overflow: hidden;
 }
 .zkm-primary-btn--gradient {
@@ -311,20 +424,27 @@
 }
 .zkm-primary-btn--disabled {
   cursor: default;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--ink-rgb), 0.5);
 }
 .zkm-primary-btn--gradient.zkm-primary-btn--disabled {
-  /* opaque dimmed gradient: brand gradient at 30% composited over #1A1A1A */
+  /* opaque dimmed gradient: brand gradient at 30% composited over the theme's base */
   background: linear-gradient(90deg, rgba(160, 0, 255, 0.3) 0%, rgba(0, 153, 255, 0.3) 100%),
-    #1a1a1a;
-  color: rgba(255, 255, 255, 0.5);
+    var(--brand-disabled-base);
+  color: var(--brand-disabled-text);
 }
 .zkm-primary-btn--danger {
   background: color-mix(in srgb, var(--accent-pink) 5%, transparent);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(var(--ink-rgb), 0.1);
   color: var(--accent-pink);
 }
-.zkm-primary-btn--danger.zkm-primary-btn--disabled {
+/* After the base disabled rule, so the label keeps its color and only the opacity dims it. */
+.zkm-primary-btn--plain {
+  background: rgba(var(--ink-rgb), 0.1);
+  box-shadow: inset 0 0 0 1px rgba(var(--ink-rgb), 0.1);
+  color: var(--ink);
+}
+.zkm-primary-btn--danger.zkm-primary-btn--disabled,
+.zkm-primary-btn--plain.zkm-primary-btn--disabled {
   opacity: 0.4;
 }
 .zkm-primary-btn__label {
@@ -341,8 +461,8 @@
   width: 20px;
   height: 20px;
   border-radius: 9999px;
-  border: 2px solid rgba(255, 255, 255, 0.25);
-  border-top-color: #fff;
+  border: 2px solid rgba(var(--ink-rgb), 0.25);
+  border-top-color: var(--ink);
   animation: zkm-spin 0.8s linear infinite;
   will-change: transform;
 }
@@ -372,7 +492,7 @@
   width: 64px;
   height: 28px;
   border-radius: 9999px;
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(var(--ink-rgb), 0.1);
   flex: none;
 }
 /* Gradients can't transition via `background`; fade the brand track on an overlay instead. */
@@ -423,7 +543,8 @@
   height: 70.5px;
   border-radius: 15.69px;
   background: var(--surface-faint);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06), 0 0 22px rgba(0, 0, 0, 0.05);
+  box-shadow: inset 0 0 0 1px rgba(var(--ink-rgb), 0.06), 0 0 22px rgba(0, 0, 0, 0.05),
+    var(--shadow-raised);
 }
 .zkm-quick-action__caption {
   font-family: var(--font-body);
@@ -460,7 +581,7 @@
   box-shadow: 0 0 4px rgba(0, 0, 0, 0.1);
 }
 .zkm-amount-chip--flat {
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(var(--ink-rgb), 0.06);
 }
 .zkm-amount-chip--selected {
   background: var(--gradient-brand);
@@ -485,7 +606,7 @@
   gap: 4px;
   padding: 4px 8px;
   border-radius: var(--radius-4);
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(var(--ink-rgb), 0.1);
   font-family: var(--font-body);
   font-size: 14px;
   font-weight: 500;
@@ -513,6 +634,25 @@
   font-weight: 500;
 }
 
+.zkm-alert-badge {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 9999px;
+  background: var(--gradient-brand);
+}
+.zkm-alert-badge::before {
+  content: "!";
+  color: #fff;
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
+
 /* ============================================================
    Rows
    ============================================================ */
@@ -529,7 +669,7 @@
   padding: 12px;
   border-radius: var(--radius-12);
   background: var(--surface-card);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(var(--ink-rgb), 0.1);
 }
 .zkm-activity-row__top {
   display: flex;
@@ -613,14 +753,14 @@
   white-space: nowrap;
   height: 38px;
   border-radius: 9999px;
-  color: #fff;
+  color: var(--ink);
   font-family: var(--font-body);
   font-size: 14px;
   font-weight: 600;
 }
 .zkm-activity-action--neutral {
-  background: rgba(255, 255, 255, 0.1);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+  background: rgba(var(--ink-rgb), 0.1);
+  box-shadow: inset 0 0 0 1px rgba(var(--ink-rgb), 0.1);
 }
 .zkm-activity-action--gradient {
   background: var(--gradient-brand);
@@ -705,7 +845,7 @@
   padding: 14px;
   border-radius: var(--radius-16);
   background: rgba(0, 0, 0, 0.45);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(var(--ink-rgb), 0.12);
 }
 .zkm-search-row__avatar {
   display: flex;
@@ -714,7 +854,7 @@
   width: 40px;
   height: 40px;
   border-radius: 9999px;
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(var(--ink-rgb), 0.1);
   flex: none;
 }
 .zkm-search-row__dot {
@@ -734,12 +874,12 @@
   font-family: var(--font-body);
   font-size: 15px;
   font-weight: 600;
-  color: #fff;
+  color: var(--ink);
 }
 .zkm-search-row__subtitle {
   font-family: var(--font-body);
   font-size: 13px;
-  color: rgba(255, 255, 255, 0.6);
+  color: rgba(var(--ink-rgb), 0.6);
 }
 
 .zkm-list-row {
@@ -776,7 +916,7 @@
   flex-direction: column;
   gap: 12px;
   padding: 16px;
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(var(--ink-rgb), 0.1);
   box-shadow: 0 0 22.4px rgba(0, 0, 0, 0.05);
 }
 .zkm-two-party-card__chip-row {
@@ -856,7 +996,7 @@
   font-size: 18px;
   font-weight: 600;
   letter-spacing: 0.3px;
-  color: #fff;
+  color: var(--ink);
 }
 .zkm-top-nav__stacked {
   display: flex;
@@ -913,7 +1053,7 @@
   height: 63px;
   padding: 4px 7px;
   border-radius: 9999px;
-  background: rgba(255, 255, 255, 0.07);
+  background: rgba(var(--ink-rgb), 0.07);
 }
 .zkm-tab-bar__indicator {
   position: absolute;
@@ -921,8 +1061,8 @@
   left: 4px;
   height: 55px;
   border-radius: 9999px;
-  background: rgba(255, 255, 255, 0.1);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.2);
+  background: rgba(var(--ink-rgb), 0.1);
+  box-shadow: inset 0 0 0 1px rgba(var(--ink-rgb), 0.2);
   transition: transform 0.35s cubic-bezier(0.3, 1.1, 0.4, 1);
 }
 .zkm-tab-bar__tab {
@@ -938,7 +1078,7 @@
   z-index: 1;
 }
 .zkm-tab-bar__tab--active {
-  color: #fff;
+  color: var(--ink);
 }
 .zkm-tab-bar__icon {
   display: flex;
@@ -1069,8 +1209,8 @@
   height: 68px;
   border-radius: var(--radius-12);
   background: var(--surface-card);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
-  color: #fff;
+  box-shadow: inset 0 0 0 1px rgba(var(--ink-rgb), 0.06);
+  color: var(--ink);
 }
 .zkm-method-tile--disabled {
   color: #565656;

@@ -1,35 +1,49 @@
-import { Modal } from "../../ui/Modal"
 /**
- * The external-wallet leg of an accountless request payment: what to send, where to send it, and
- * the L1 connect entry. The payer never touches a zk.money account, so this leg is public on
+ * The external-wallet leg of an accountless request payment, in the deposit flow: the network and
+ * coin, then the payee's address or a connected wallet, on Ethereum or bridged in from another chain. The payer never touches a zk.money account, so this leg is public on
  * Ethereum and the chain is the only feedback channel.
  *
  * The address and its EIP-681 URI arrive pre-resolved from the landing. Only the manifest token is
  * offered: the quoted fee and the URI's amount are both in its units, so any other token would need
  * its own fee read and URI.
  */
-import { useEffect, useState } from "react"
+import { useState, type ReactNode } from "react"
 import { WALLET_TOKEN_SYMBOL } from "@obsidion/core/constants"
 import { formatUnits, type Address } from "viem"
 import {
   addressShareDecision,
+  bestEffort,
   depositTokenValuation,
   fixedAmountLimits,
   maximumCreditAtomic,
   maximumSendAtomic,
   maximumSendForCapacity,
+  useStore,
   type AddressRoute,
   type RequestInlinePacket,
   type RequiredCredit,
+  valueOf,
 } from "@obsidion/front-core"
-import { GradientText, Icon, PrimaryGradientButton, TopNavIconButton } from "@obsidion/web-ds"
-import { getConfig } from "../../config/env"
+import { Icon, PrimaryGradientButton, TopNavIconButton } from "@obsidion/web-ds"
 import { isDesktopL1SubmitActive } from "../../platform/desktopBridge"
+import { Modal } from "../../ui/Modal"
 import { usdBalance, shortL1Addr, tokenFigure } from "../../ui/format"
 import { useCopy } from "../../ui/hooks"
-import { DepositFromWalletModal } from "../deposit/DepositFromWalletModal"
+import { useScreenFlow } from "../../ui/useScreenFlow"
+import { DepositFromWalletModal } from "../deposit/DepositFromWalletModal/DepositFromWalletModal"
+import { ChangeWalletPicker } from "../deposit/ChangeWalletPicker/ChangeWalletPicker"
 import { DepositQrSheet } from "../deposit/DepositQrSheet"
-import { useL1Wallet } from "../../session/l1Wallet"
+import { useL1Wallet } from "../../session/useL1Wallet"
+import { useSession } from "../../session/session"
+import { BridgeInModal } from "../deposit/BridgeInModal/BridgeInModal"
+import { bridgeRoutes } from "../deposit/bridgeChains"
+import { profileBridge } from "../../session/walletChains"
+import {
+  DepositFlow,
+  type DepositFlowNav,
+  type DepositFlowSheet,
+  type DepositOrigin,
+} from "../deposit/DepositFlow/DepositFlow"
 import {
   settlementToken,
   useDepositTokens,
@@ -58,8 +72,14 @@ import { formatPublicLimit } from "../limits/publicLimit"
 import type { AccountlessResolveResult } from "./accountlessRequest"
 import { requestAmountDisplay } from "./requestLink"
 import { clearPayment, holdPayment, paymentHeld } from "./unresolvedPayment"
-import ethIcon from "../../assets/deposit/ethereum.webp"
+import { bridgePaymentHold } from "./bridgePaymentHold"
 import { useRowTxAmountCap } from "../token/useTxAmountCap"
+import type { PayStart } from "./payStart"
+import { openPayFlow } from "./payFlow"
+import { payFixedAmounts } from "./payTransition"
+import payCopy from "./ExternalWalletPayModal.copy"
+import chainsCopy from "../../ui/chains.copy"
+import { fmt } from "../../lib/fmt"
 
 /** Why a fixed request cannot be paid. It never suggests more transfers to the same address. */
 const OVER_LIMIT_COPY = {
@@ -77,6 +97,7 @@ export function ExternalWalletPayModal({
   onClose,
   onFeeChanged,
   onPaid,
+  start,
 }: {
   packet: RequestInlinePacket
   result: AccountlessResolveResult
@@ -85,12 +106,15 @@ export function ExternalWalletPayModal({
   onFeeChanged: () => void
   /** The payment confirmed on Ethereum. */
   onPaid?: () => void
+  /** Where the sheets open on their first showing. */
+  start?: PayStart
 }) {
   const depositTokens = useDepositTokens()
   // The request names the token it is paid in: the cap and bucket of the row that token settles on apply.
   const rowToken = settlementToken(depositTokens, result.token) ?? result.token
   const txAmountCap = useRowTxAmountCap(rowToken)
-  const config = getConfig()
+  const { page } = useSession()
+  const { config } = page
   const { copied, copy } = useCopy()
   const [qr, setQr] = useState(false)
   const [aboutLimits, setAboutLimits] = useState<LimitsTopic>()
@@ -100,13 +124,18 @@ export function ExternalWalletPayModal({
   // Desktop launcher: no wallet extension, the transfer is approved in the default browser.
   const bridgeMode = isDesktopL1SubmitActive()
   const canFund = bridgeMode || !!l1.account
-  const [fundOpen, setFundOpen] = useState(false)
-  // A pay click made while disconnected, waiting on the wallet the picker is asking for.
-  const [payOnConnect, setPayOnConnect] = useState(false)
-  const [sent, setSent] = useState(false)
+  // The typed amount, kept while the wallet picker covers the sheet.
   const payee = result.sipaAddress as Address
+  const bridge = profileBridge(config)
+  const bridgeIn = valueOf(page.bridgeInProvider) ?? undefined
   // A payment from this browser that nothing here can show settled: paying again could pay twice.
-  const [unresolved, setUnresolved] = useState(() => paymentHeld(config.network, payee))
+  const { database, device, bridgeIns } = useSession()
+  const deviceHeld = useStore(device, (state) => paymentHeld(state, config.network, payee))
+  // A bridge payment holds from its saved record: the tab may close before its hash comes back.
+  const bridgeHeld = useStore(bridgeIns.list, ({ records }) => bridgePaymentHold(records, payee))
+  // The bridge payment the payer chose to pay again over.
+  const [payingAgain, setPayingAgain] = useState<string>()
+  const held = deviceHeld || (bridgeHeld !== undefined && bridgeHeld !== payingAgain)
   const [infoOpen, setInfoOpen] = useState(false)
 
   const listed = depositTokens?.offered.find(
@@ -143,6 +172,12 @@ export function ExternalWalletPayModal({
     token: result.token,
   })
   const fixed = packet.amountAtomic > 0n
+  const payTitle = fixed
+    ? fmt(payCopy.payFixed, {
+        amount: tokenFigure(amountDisplay, token.symbol),
+        tag: packet.requesterTag,
+      })
+    : fmt(payCopy.payOpen, { tag: packet.requesterTag })
   const maxSend = maximumSendAtomic(route, valuation)
   const expired = result.deployment === "expired"
   const target: CapacityTarget =
@@ -179,6 +214,23 @@ export function ExternalWalletPayModal({
   // The address stays on screen, but nothing offers to pay an amount the limits or known capacity
   // refuse. The amount is never changed to fit.
   const over = fixedAmountLimits(route, valuation)?.over ?? capacityHold(eligibility)
+  const flow = useScreenFlow(
+    {
+      over: !!over,
+      canFund,
+      connected: !!l1.account,
+      openPicker: l1.openPicker,
+      pickerShown: l1.pickerShown,
+    },
+    (latest) => openPayFlow({ l1Wallet: page.l1Wallet, start }, latest),
+  )
+  const pay = useStore(flow.state)
+  const { opening, sent } = pay
+  const unresolved = held || pay.unresolved
+  const close = () => {
+    flow.dispatch({ type: "ended" })
+    onClose()
+  }
   const limits = (
     <>
       <AddressLimits onInfo={() => setAboutLimits("limit")} />
@@ -212,218 +264,271 @@ export function ExternalWalletPayModal({
     if (capacityWarning) setWarning("qr")
     else setQr(true)
   }
-  const payWithWallet = () => {
-    if (over) return
-    if (canFund) return setFundOpen(true)
-    setPayOnConnect(true)
-    void l1.connect()
-  }
-  // As on the deposit screen: the click that opened the picker pays once a wallet connects.
-  useEffect(() => {
-    if (!payOnConnect) return
-    if (canFund) {
-      setPayOnConnect(false)
-      if (!over) setFundOpen(true)
-    } else if (!l1.pickerOpen) {
-      setPayOnConnect(false)
-    }
-  }, [payOnConnect, canFund, l1.pickerOpen, over])
   // A payment that becomes known not to fit is no longer offered: its QR and warning close.
-  useEffect(() => {
-    if (!over) return
+  if (over && (qr || warning !== undefined)) {
     setQr(false)
     setWarning(undefined)
-  }, [over])
+  }
+
+  const l1ChainId = config.l1ChainId
+  const onL1 = (next: DepositOrigin) => next.chainId === l1ChainId
+  // Another chain bridges in what lands as the request's token; a fixed amount is paid on the L1.
+  const routes = bridge && bridgeIn && !bridgeMode && !fixed ? bridgeRoutes(bridge, [token]) : []
+
+  const summary = (
+    <div className="ww-paylink-summary">
+      <span className="ww-paylink-summary__label">Pay @{packet.requesterTag}</span>
+      <span
+        className={`ww-paylink-summary__amount${
+          amountDisplay ? "" : " ww-paylink-summary__amount--open"
+        }`}
+      >
+        {total ? usdBalance(total) : amountDisplay ? usdBalance(amountDisplay) : "Any amount"}
+      </span>
+      {total && (
+        <span className="ww-paylink-summary__note" data-testid="request-fee">
+          Includes a {tokenFigure(fee, token.symbol)} deposit fee
+        </span>
+      )}
+      {packet.note && <span className="ww-paylink-summary__note">{packet.note}</span>}
+    </div>
+  )
+
+  // Why nothing more can be paid here; it replaces the first step's fields.
+  const status: ReactNode = expired ? (
+    <p className="ww-limit-reason" role="alert" data-testid="request-expired">
+      This link has expired. Ask @{packet.requesterTag} for a new one.
+    </p>
+  ) : sent ? (
+    <p className="ww-deposit__note" role="status" data-testid="request-sent">
+      Payment sent. @{packet.requesterTag} receives it once Ethereum confirms it.
+    </p>
+  ) : unresolved ? (
+    <div className="ww-deposit__stealth" data-testid="request-unresolved">
+      <p className="ww-limit-reason" role="status">
+        A payment to this address may already be on its way. Check your wallet&apos;s activity
+        before you pay again.
+      </p>
+      <PrimaryGradientButton
+        title={payCopy.payAgain}
+        buttonStyle="dark"
+        onClick={() => {
+          void bestEffort("unknown", clearPayment(database, config.network, payee))
+          setPayingAgain(bridgeHeld)
+          flow.dispatch({ type: "again" })
+        }}
+      />
+    </div>
+  ) : undefined
+
+  const addressSheet = (nav: DepositFlowNav) => (
+    <Modal
+      variant="bare"
+      label={payCopy.payWithWallet}
+      className="ww-deposit-warning ww-deposit-sheet ww-reqpay"
+      onClose={close}
+    >
+      <div className="ww-deposit-warning__back">
+        <TopNavIconButton
+          icon="chevron-left"
+          ariaLabel="Back"
+          onClick={() => flow.dispatch({ type: "closed" })}
+        />
+      </div>
+      <div className="ww-deposit-warning__close">
+        <TopNavIconButton icon="x" ariaLabel="Close" onClick={close} />
+      </div>
+      {nav.crumb(false)}
+      {summary}
+      <div className="ww-deposit__stealth">
+        <div className="ww-deposit__fields">
+          {!total && (
+            <div className="ww-deposit__facts">
+              <div className="ww-deposit__fact">
+                <span>{payCopy.fee}</span>
+                <b>{tokenFigure(fee, token.symbol)}</b>
+              </div>
+            </div>
+          )}
+          <div className="ww-deposit__input">
+            <span>{payCopy.payTo}</span>
+            <button
+              type="button"
+              className="zkm-btn-reset ww-deposit__addr"
+              disabled={!!over}
+              onClick={copyAddress}
+              title={result.sipaAddress}
+            >
+              {shortL1Addr(result.sipaAddress)}
+              <Icon name={copied ? "check" : "copy"} size={16} />
+            </button>
+          </div>
+          {limits}
+        </div>
+
+        <div className="ww-deposit__actions">
+          <button
+            type="button"
+            className={`zkm-btn-reset ww-deposit__btn${over ? "" : " zkm-pressable"}`}
+            disabled={!!over}
+            onClick={showQr}
+          >
+            Show <Icon name="qr-code" size={24} />
+          </button>
+          <button
+            type="button"
+            className={`zkm-btn-reset ww-deposit__btn${over ? "" : " zkm-pressable"}`}
+            disabled={!!over}
+            onClick={copyAddress}
+          >
+            {copied ? "Copied" : "Copy"}
+          </button>
+        </div>
+
+        {over ? (
+          <p className="ww-limit-reason" role="alert" data-testid="request-over-limit">
+            {OVER_LIMIT_COPY[over]}
+          </p>
+        ) : !total ? (
+          <p className="ww-deposit__note">
+            Send more than {tokenFigure(fee, token.symbol)}. That much is kept as the deposit fee.
+            Anything at or below it is lost.
+          </p>
+        ) : (
+          result.feeAtomic >= packet.amountAtomic && (
+            <p className="ww-deposit__note">{payCopy.feeExceeds}</p>
+          )
+        )}
+      </div>
+
+      <section className="ww-deposit__info">
+        <button
+          type="button"
+          className="zkm-btn-reset ww-deposit__info-head"
+          aria-expanded={infoOpen}
+          onClick={() => setInfoOpen((o) => !o)}
+        >
+          Important information
+          <Icon name={infoOpen ? "chevron-up" : "chevron-down"} size={16} />
+        </button>
+        {infoOpen && <OneTimeAddressPoints points={points} />}
+      </section>
+    </Modal>
+  )
+
+  /** The sheet the flow shows over its own steps. A sheet left for another network closes, and the
+   *  flow opens that network's wallet. */
+  const paySheet = (nav: DepositFlowNav): DepositFlowSheet | undefined => {
+    const fixedAmounts = payFixedAmounts(packet, result)
+    const onOrigin = (next: DepositOrigin) => flow.origin(onL1(next))
+    if (pay.sheet === "fund")
+      return {
+        key: "fund",
+        node: (
+          <DepositFromWalletModal
+            l1={l1}
+            deposit={{ address: payee, name: packet.requesterTag }}
+            token={token}
+            fee={fee}
+            valuation={valuation}
+            payee={packet.requesterTag}
+            fixedAmount={fixedAmounts && formatUnits(fixedAmounts.send, decimals)}
+            onChangeOrigin={fixed ? undefined : nav.change}
+            onChangeWallet={nav.changeWallet}
+            onBack={() => flow.dispatch({ type: "closed" })}
+            onClose={close}
+            // The hold saved before the send stays until the payer chooses to pay again.
+            onSent={() => flow.dispatch({ type: "sent" })}
+            onSendFailed={() => flow.dispatch({ type: "sendFailed" })}
+            onSendUnresolved={() => flow.dispatch({ type: "sendUnresolved" })}
+            onApproving={(submission) => holdPayment(database, config.network, payee, submission)}
+            onNotApproved={(submission) =>
+              void bestEffort("unknown", clearPayment(database, config.network, payee, submission))
+            }
+            onFeeChanged={onFeeChanged}
+            onConfirmed={onPaid}
+          />
+        ),
+        onOrigin,
+      }
+    if (pay.sheet === "bridge" && bridge && bridgeIn)
+      return {
+        key: "bridge",
+        node: (
+          <BridgeInModal
+            bridge={bridge}
+            account={l1.account}
+            l1={l1}
+            walletName={l1.walletName ?? payCopy.wallet}
+            toLabel={packet.requesterTag}
+            requestId={packet.requestId}
+            title={payTitle}
+            fixedAmount={fixedAmounts && formatUnits(fixedAmounts.bridge, decimals)}
+            l1ChainId={l1ChainId}
+            l1ChainName={chainsCopy.ethereum}
+            coins={[token]}
+            recipient={async () => payee}
+            start={opening?.bridge}
+            onSent={(originTxHash) => {
+              // Kept until the payer chooses to pay again: the bridge may still be filling.
+              void bestEffort("unknown", holdPayment(database, config.network, payee, originTxHash))
+              flow.dispatch({ type: "sent" })
+            }}
+            origin={nav.origin}
+            onEthereum={() => {
+              flow.dispatch({ type: "closed", ended: true })
+              nav.restart()
+            }}
+            onRetry={() => {
+              // A bridge that ended short leaves the payment held: the payer chooses to pay again.
+              flow.dispatch({ type: "retry" })
+              nav.restart()
+            }}
+            onChangeOrigin={nav.change}
+            onChangeWallet={nav.changeWallet}
+            onBack={() => flow.dispatch({ type: "closed", ended: true })}
+            onClose={close}
+          />
+        ),
+        onOrigin,
+      }
+    if (pay.sheet === "address" && !status)
+      return { key: "address", node: addressSheet(nav), onOrigin }
+    return undefined
+  }
 
   return (
     <>
-      <Modal
-        variant="bare"
-        label="Pay with an Ethereum wallet"
-        className="ww-deposit-warning ww-reqpay"
-        onClose={onClose}
-      >
-        <div className="ww-deposit-warning__close">
-          <TopNavIconButton icon="x" ariaLabel="Close" onClick={onClose} />
-        </div>
-        <GradientText size={24} weight={700} className="ww-reqpay__title">
-          Pay with Ethereum
-        </GradientText>
-
-        <div className="ww-paylink-summary">
-          <span className="ww-paylink-summary__label">Pay @{packet.requesterTag}</span>
-          <span className="ww-paylink-summary__amount">
-            {total ? usdBalance(total) : amountDisplay ? usdBalance(amountDisplay) : "Any amount"}
-          </span>
-          {total && (
-            <span className="ww-paylink-summary__note" data-testid="request-fee">
-              Includes a {tokenFigure(fee, token.symbol)} deposit fee
-            </span>
-          )}
-          {packet.note && <span className="ww-paylink-summary__note">{packet.note}</span>}
-        </div>
-
-        {expired ? (
-          <p className="ww-limit-reason" role="alert" data-testid="request-expired">
-            This link has expired. Ask @{packet.requesterTag} for a new one.
-          </p>
-        ) : sent ? (
-          <p className="ww-deposit__note" role="status" data-testid="request-sent">
-            Payment sent. @{packet.requesterTag} receives it once Ethereum confirms it.
-          </p>
-        ) : unresolved ? (
-          <div className="ww-deposit__stealth" data-testid="request-unresolved">
-            <p className="ww-limit-reason" role="status">
-              A payment to this address may already be on its way. Check your wallet&apos;s activity
-              before you pay again.
-            </p>
-            <PrimaryGradientButton
-              title="Pay again"
-              buttonStyle="dark"
-              onClick={() => {
-                clearPayment(config.network, payee)
-                setUnresolved(false)
-              }}
-            />
-          </div>
-        ) : (
-          <div className="ww-deposit__stealth">
-            <div className="ww-deposit__fields">
-              <div className="ww-deposit__facts">
-                <div className="ww-deposit__fact">
-                  <span>Token</span>
-                  <b>
-                    <img src={token.icon} alt="" width={16} height={16} />
-                    {token.symbol}
-                  </b>
-                </div>
-                <div className="ww-deposit__fact">
-                  <span>Network</span>
-                  <b>
-                    <img src={ethIcon} alt="" width={16} height={16} />
-                    Ethereum (ERC20)
-                  </b>
-                </div>
-                {!total && (
-                  <>
-                    <hr className="ww-divider" />
-                    <div className="ww-deposit__fact">
-                      <span>Fee</span>
-                      <b>{tokenFigure(fee, token.symbol)}</b>
-                    </div>
-                  </>
-                )}
-              </div>
-              <div className="ww-deposit__input">
-                <span>Pay to</span>
-                <button
-                  type="button"
-                  className="zkm-btn-reset ww-deposit__addr"
-                  disabled={!!over}
-                  onClick={copyAddress}
-                  title={result.sipaAddress}
-                >
-                  {shortL1Addr(result.sipaAddress)}
-                  <Icon name={copied ? "check" : "copy"} size={16} />
-                </button>
-              </div>
-              {limits}
-            </div>
-
-            <div className="ww-deposit__actions">
-              <button
-                type="button"
-                className={`zkm-btn-reset ww-deposit__btn${over ? "" : " zkm-pressable"}`}
-                disabled={!!over}
-                onClick={showQr}
-              >
-                Show <Icon name="qr-code" size={24} />
-              </button>
-              <button
-                type="button"
-                className={`zkm-btn-reset ww-deposit__btn${over ? "" : " zkm-pressable"}`}
-                disabled={!!over}
-                onClick={copyAddress}
-              >
-                {copied ? "Copied" : "Copy"}
-              </button>
-            </div>
-            <PrimaryGradientButton
-              title={bridgeMode ? "Pay from your browser" : "Pay with wallet"}
-              leadingIcon="wallet"
-              isDisabled={!!over}
-              onClick={payWithWallet}
-              testId="request-pay-with-wallet"
-            />
-
-            {over ? (
-              <p className="ww-limit-reason" role="alert" data-testid="request-over-limit">
-                {OVER_LIMIT_COPY[over]}
-              </p>
-            ) : !total ? (
-              <p className="ww-deposit__note">
-                Send more than {tokenFigure(fee, token.symbol)}. That much is kept as the deposit
-                fee. Anything at or below it is lost.
-              </p>
-            ) : (
-              result.feeAtomic >= packet.amountAtomic && (
-                <p className="ww-deposit__note">The fee exceeds what was requested.</p>
-              )
-            )}
-          </div>
-        )}
-
-        {!expired && !sent && !unresolved && (
-          <section className="ww-deposit__info">
-            <button
-              type="button"
-              className="zkm-btn-reset ww-deposit__info-head"
-              aria-expanded={infoOpen}
-              onClick={() => setInfoOpen((o) => !o)}
-            >
-              Important information
-              <Icon name={infoOpen ? "chevron-up" : "chevron-down"} size={16} />
-            </button>
-            {infoOpen && <OneTimeAddressPoints points={points} />}
-          </section>
-        )}
-      </Modal>
-
-      {fundOpen && canFund && (
-        <DepositFromWalletModal
-          l1={l1}
-          deposit={{ address: payee, name: packet.requesterTag }}
-          token={token}
-          fee={fee}
-          valuation={valuation}
-          payee={packet.requesterTag}
-          fixedAmount={fixed ? formatUnits(packet.amountAtomic, decimals) : undefined}
-          onClose={() => setFundOpen(false)}
-          onSent={({ txHash }) => {
-            // Kept until the payer chooses to pay again: the transfer may still be pending.
-            try {
-              holdPayment(config.network, payee, txHash)
-            } catch (err) {
-              console.warn("[pay] could not keep the sent payment", err)
-            }
-            setFundOpen(false)
-            setSent(true)
-          }}
-          onSendFailed={() => {
-            // A failed receipt read does not prove nothing was sent.
-            setSent(false)
-            setUnresolved(true)
-          }}
-          onSendUnresolved={() => {
-            setUnresolved(true)
-            setFundOpen(false)
-          }}
-          onApproving={async (submission) => holdPayment(config.network, payee, submission)}
-          onNotApproved={(submission) => clearPayment(config.network, payee, submission)}
-          onFeeChanged={onFeeChanged}
-          onConfirmed={onPaid}
-        />
-      )}
+      <DepositFlow
+        l1ChainId={l1ChainId}
+        chainName={chainsCopy.ethereum}
+        // The quoted fee and the URI's amount are in the request's token: Ethereum offers only it.
+        coins={[token]}
+        token={token}
+        onPickToken={() => {}}
+        routes={routes}
+        startChainId={opening?.origin?.chainId}
+        startSymbol={opening?.origin?.symbol}
+        originLocked={fixed}
+        intro={{
+          heading: summary,
+          l1Note: fmt(payCopy.l1Note, { symbol: token.symbol, tag: packet.requesterTag }),
+        }}
+        labels={{
+          from: payCopy.payFrom,
+          address: payCopy.paymentAddress,
+          walletBlocked: over ? OVER_LIMIT_COPY[over] : undefined,
+        }}
+        fundReady={!over}
+        bridgeReady={!over}
+        addressReady
+        status={status}
+        onAddress={() => flow.dispatch({ type: "open", sheet: "address" })}
+        onWallet={(kind) => void flow.pay(kind === "fund" ? "fund" : "bridge")}
+        sheet={paySheet}
+        walletPicker={(done) => <ChangeWalletPicker l1={l1} onPicked={done} />}
+        onClose={close}
+      />
 
       {qr && !expired && (
         <DepositQrSheet

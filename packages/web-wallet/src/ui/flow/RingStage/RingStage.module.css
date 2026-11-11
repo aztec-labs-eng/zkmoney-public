@@ -1,0 +1,212 @@
+/* Raised over the host sheet's gap and padding; phones keep the sheet's padding. */
+.sheet.sheet.sheet.sheet {
+  gap: 0;
+}
+@media (min-width: 641px) {
+  .sheet.sheet.sheet.sheet {
+    width: min(500px, calc(100vw - 32px));
+    padding: 48px 48px 40px;
+  }
+}
+/* Centered in a sheet with height to spare. */
+.stage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 24px;
+  width: 100%;
+  margin-block: auto;
+}
+.blocks {
+  display: grid;
+  width: 100%;
+}
+/* Every block in one cell: the tallest sets the height, and a shorter one centers in it. */
+.block {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+  grid-area: 1 / 1;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: scale(0.96);
+  /* Fades out first; once hidden, it leaves the focus order. */
+  transition: opacity 300ms cubic-bezier(0.23, 1, 0.32, 1),
+    transform 300ms cubic-bezier(0.23, 1, 0.32, 1), visibility 0s linear 300ms;
+}
+/* Fades in 100ms after the old block's fade-out ends. Inherits, so a card that hides its step
+   mid-swap hides this block too. */
+.block[data-active] {
+  opacity: 1;
+  visibility: inherit;
+  pointer-events: auto;
+  transform: none;
+  transition: opacity 600ms cubic-bezier(0.23, 1, 0.32, 1) 400ms,
+    transform 600ms cubic-bezier(0.23, 1, 0.32, 1) 400ms;
+}
+/* Once the ring shows arrived: its 150ms lag, then its 900ms arc close. */
+.block[data-active][data-arrived] {
+  transition-delay: 1050ms;
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  margin: 0;
+  padding: 6px 12px;
+  box-sizing: border-box;
+  border-radius: 999px;
+  background: var(--surface-card);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+}
+.chip::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--blue-500);
+  animation: blink 1.2s ease-in-out infinite;
+}
+.chip[data-tone="done"]::before {
+  background: var(--accent-green);
+  animation: none;
+}
+.text {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  text-align: center;
+}
+.lines {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.line {
+  max-width: 302px;
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 14px;
+  line-height: 1.4;
+}
+.note {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.3;
+  text-align: center;
+}
+.note[data-tone] {
+  justify-content: flex-start;
+  min-height: 54px;
+  padding: 16px;
+  border: 1px solid;
+  border-radius: 14px;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.3;
+  text-align: left;
+  /* A tone change in place reads as the banner changing. */
+  transition: background-color 300ms cubic-bezier(0.23, 1, 0.32, 1),
+    border-color 300ms cubic-bezier(0.23, 1, 0.32, 1), color 300ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+.note[data-tone="warning"] {
+  border-color: rgba(255, 224, 113, 0.45);
+  background: rgba(255, 224, 113, 0.1);
+  color: #ffe071;
+}
+.note[data-tone="wait"],
+.note[data-tone="pending"] {
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-primary);
+}
+/* The tone's sign: a warning sign or a blinking dot, cross-faded in one slot. */
+.mark {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+}
+.mark > * {
+  grid-area: 1 / 1;
+  transition: opacity 300ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+.dot {
+  display: block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent-green);
+  animation: blink 1.2s ease-in-out infinite;
+}
+.note[data-tone="wait"] .dot {
+  background: #ffe071;
+}
+.note[data-tone="pending"] {
+  font-weight: 400;
+}
+.note[data-tone="warning"] .mark > span,
+.note[data-tone="wait"] .mark > svg,
+.note[data-tone="pending"] .mark > svg {
+  opacity: 0;
+}
+.note + .button {
+  margin-top: -8px;
+}
+.note svg {
+  flex: none;
+}
+.note a {
+  color: inherit;
+  text-decoration: none;
+}
+.note a:focus-visible {
+  border-radius: 4px;
+  outline: 2px solid var(--blue-400);
+  outline-offset: 3px;
+}
+/* Full width on phones; sized to its label on desktop. */
+@media (min-width: 641px) {
+  .block .button {
+    width: auto;
+    padding-inline: 58px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .block,
+  .block[data-active],
+  .block[data-active][data-arrived] {
+    transform: none;
+    transition: none;
+  }
+  .chip::before,
+  .dot {
+    animation: none;
+  }
+  .note[data-tone],
+  .mark > * {
+    transition: none;
+  }
+}
+
+@keyframes blink {
+  50% {
+    opacity: 0.3;
+  }
+}

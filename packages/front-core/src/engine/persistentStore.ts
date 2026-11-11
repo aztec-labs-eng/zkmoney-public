@@ -1,5 +1,6 @@
 import type { Database, Op, Write } from "./database"
 import { bestEffort, WalletError } from "./errors"
+import { liveStore } from "./liveStore"
 import { memoryStore, type ReadonlyStore } from "./store"
 
 const BIGINT = "$bigint"
@@ -46,10 +47,12 @@ export function loadRecords<R>(query: ReadonlyStore<RecordSet<R>>): Promise<read
       else resolve(records)
       return true
     }
-    const off = query.subscribe(() => {
-      if (settled()) off()
+    // A live set that is already in memory settles inside `subscribe`, before `off` exists.
+    let off: (() => void) | undefined
+    off = query.subscribe(() => {
+      if (settled()) off?.()
     })
-    if (settled()) off()
+    if (done || settled()) off()
   })
 }
 
@@ -76,21 +79,24 @@ export interface PersistentStoreSpec<R, I extends string = never> {
   version: number
   id(record: R): string
   encode?(record: R): string
-  decode?(raw: string): R
+  /** `id` is the key the record is stored under. */
+  decode?(raw: string, id: string): R
   /**
    * Runs when the saved version is not `version`, in the transaction that starts the index
    * rebuild. `from` is the saved version, undefined before the store first opened.
    */
   migrate?(from: number | undefined, w: Write): Promise<void>
+  /** Another store's open that writes this one's records: this open waits for it, and fails with it. */
+  after?: Promise<unknown>
   /** Each record's values per index. Values and ids hold no `/`. */
   indexes?: Record<I, (record: R) => readonly string[]>
   load: Load<I>
 }
 
 /**
- * Saved records, read and written async. `view` and each query hold committed records only, and
- * change once a commit lands. A write without `w` opens its own `db.write`; with one, it joins the
- * caller's transaction.
+ * Saved records, read and written async. `view` and each `where` store hold committed records only,
+ * and change once a commit lands. A write without `w` opens its own `db.write`; with one, it joins
+ * the caller's transaction.
  */
 export interface PersistentStore<R, I extends string = never> {
   /** Resolves once the open's migration and index build are saved; rejects if either failed. */
@@ -107,10 +113,10 @@ export interface PersistentStore<R, I extends string = never> {
     w?: Write,
   ): Promise<R | undefined>
   /**
-   * The records under one index value, or in part of an index. Shared while watched: it reads on
+   * The records under one index value, or in part of an index. Shared while subscribed: it reads on
    * its first subscribe, follows commits, and is dropped after its last unsubscribe.
    */
-  query(index: I, at: string | IndexRange): ReadonlyStore<RecordSet<R>>
+  where(index: I, at: string | IndexRange): ReadonlyStore<RecordSet<R>>
 }
 
 /** Records per index-build transaction. */
@@ -180,6 +186,7 @@ export function persistentStore<R, I extends string = never>(
   }
 
   const open = async () => {
+    await spec.after
     const [saved, pending] = await db.getMany([versionKey, buildKey])
     let build = pending === undefined ? undefined : (JSON.parse(pending) as Build)
     if (build?.to !== spec.version) build = undefined
@@ -216,7 +223,8 @@ export function persistentStore<R, I extends string = never>(
   const buildChunk = async (w: Write, after?: string): Promise<Build | undefined> => {
     const page = await db.range(records, { after: after && records + after, limit: CHUNK })
     for (const [key, raw] of page) {
-      for (const entry of entriesOf(key.slice(records.length), decode(raw))) w.put(entry, "")
+      const id = key.slice(records.length)
+      for (const entry of entriesOf(id, decode(raw, id))) w.put(entry, "")
     }
     if (page.length < CHUNK) return finish(w)
     const next: Build = {
@@ -251,13 +259,7 @@ export function persistentStore<R, I extends string = never>(
   const inLane = <T>(w: Write, fn: (w: Write) => Promise<T>): Promise<T> => {
     const run = (lanes.get(w) ?? Promise.resolve()).then(() => fn(w))
     // The next change waits for this one, whatever its outcome; the caller hears the outcome.
-    lanes.set(
-      w,
-      run.then(
-        () => undefined,
-        () => undefined,
-      ),
-    )
+    lanes.set(w, Promise.allSettled([run]))
     return run
   }
   const writing = async <T>(w: Write | undefined, fn: (w: Write) => Promise<T>): Promise<T> => {
@@ -267,7 +269,7 @@ export function persistentStore<R, I extends string = never>(
   }
   const saved = async (w: Write, id: string) => {
     const raw = await w.get(records + id)
-    return raw === undefined ? undefined : ([decode(raw), raw] as const)
+    return raw === undefined ? undefined : ([decode(raw, id), raw] as const)
   }
 
   const live = (source: Source): LiveSet<R> => {
@@ -288,7 +290,7 @@ export function persistentStore<R, I extends string = never>(
         ? entry.slice(records.length)
         : entry.slice(entry.lastIndexOf("/") + 1)
     const item = (entry: string, id: string, raw: string, known?: Item<R>): Item<R> =>
-      known?.raw === raw ? { ...known, entry } : { entry, id, raw, record: decode(raw) }
+      known?.raw === raw ? { ...known, entry } : { entry, id, raw, record: decode(raw, id) }
     const publish = (failed: boolean) =>
       state.set({ records: items.map((i) => i.record), loaded: true, failed })
 
@@ -426,36 +428,32 @@ export function persistentStore<R, I extends string = never>(
   const view = live(sourceOf(spec.load))
   view.start()
 
-  /** Watched queries by what they read; each is dropped after its last unsubscribe. */
-  const watched = new Map<
+  /** Each subscribed range's one record set, by what it reads; dropped after its last unsubscribe. */
+  const ranges = new Map<
     string,
-    { set: LiveSet<R>; watchers: number; handle: ReadonlyStore<RecordSet<R>> }
+    { records: LiveSet<R>; subscribers: number; store: ReadonlyStore<RecordSet<R>> }
   >()
-  /** A query's store. While watched, every `query` for its range returns the same one. */
-  const handleOf = (key: string, source: Source): ReadonlyStore<RecordSet<R>> => {
-    const handle: ReadonlyStore<RecordSet<R>> = {
-      get: () => watched.get(key)?.set.get() ?? UNLOADED,
-      subscribe(listener) {
-        let entry = watched.get(key)
-        if (!entry) {
-          entry = { set: live(source), watchers: 0, handle }
-          watched.set(key, entry)
-        }
-        const shared = entry
-        const off = shared.set.subscribe(listener)
-        if (shared.watchers++ === 0) shared.set.start()
-        let done = false
+  /** A query's store: it reads while subscribed, through its range's one record set. */
+  const whereOf = (key: string, source: Source): ReadonlyStore<RecordSet<R>> => {
+    const store: ReadonlyStore<RecordSet<R>> = liveStore<RecordSet<R>>(UNLOADED, {
+      whileSubscribed(set) {
+        const range = ranges.get(key) ?? { records: live(source), subscribers: 0, store }
+        const { records } = range
+        const off = records.subscribe(() => set(records.get()))
+        if (range.subscribers++ === 0) {
+          ranges.set(key, range)
+          records.start()
+        } else set(records.get())
         return () => {
-          if (done) return
-          done = true
           off()
-          if (--shared.watchers > 0) return
-          shared.set.stop()
-          watched.delete(key)
+          set(UNLOADED)
+          if (--range.subscribers > 0) return
+          records.stop()
+          ranges.delete(key)
         }
       },
-    }
-    return handle
+    })
+    return store
   }
 
   return {
@@ -465,7 +463,7 @@ export function persistentStore<R, I extends string = never>(
       if (w) return (await saved(joined(w), id))?.[0]
       await ready
       const raw = await db.get(records + id)
-      return raw === undefined ? undefined : decode(raw)
+      return raw === undefined ? undefined : decode(raw, id)
     },
     put: (record, w) =>
       writing(w, async (w) => {
@@ -490,10 +488,10 @@ export function persistentStore<R, I extends string = never>(
         if (raw !== before?.[1]) stage(w, id, before?.[0], [next, raw])
         return next
       }),
-    query(index, at) {
+    where(index, at) {
       const source = indexSource(index, at)
       const key = JSON.stringify(source)
-      return watched.get(key)?.handle ?? handleOf(key, source)
+      return ranges.get(key)?.store ?? whereOf(key, source)
     },
   }
 }

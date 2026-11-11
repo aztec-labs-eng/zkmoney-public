@@ -6,10 +6,9 @@
  *     (read-time derivation, nothing persisted)
  *   - getRegistry* pre-overlay accessors expose the comparison anchors
  *   - sandbox (no profile) → no client constructed, reads byte-identical
- *   - resetInstance() disposes the client; a fresh instance overlays again
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest"
+import { describe, it, expect, afterEach } from "vitest"
 import { readFileSync } from "fs"
 import { fileURLToPath } from "url"
 import { dirname, resolve } from "path"
@@ -76,7 +75,7 @@ function makeService(opts: {
   config?: ContractServiceConfig
 }) {
   const storage = new NodeContractServiceStorage(opts.network ?? Network.TESTNET)
-  const service = ContractService.getInstance(
+  const service = new ContractService(
     storage,
     undefined,
     undefined,
@@ -88,6 +87,7 @@ function makeService(opts: {
       ...(opts.oxideEnvProfile !== undefined ? { oxideEnvProfile: opts.oxideEnvProfile } : {}),
     },
   )
+  services.push(service)
   return { service, storage }
 }
 
@@ -107,11 +107,10 @@ async function makeSeededLedgerService(opts: {
   return built
 }
 
-beforeEach(() => {
-  ContractService.resetInstance()
-})
+/** Disposed after each case, so no boot retry fires into a dead test context. */
+const services: ContractService[] = []
 afterEach(() => {
-  ContractService.resetInstance()
+  for (const service of services.splice(0)) service.getOxideClient()?.dispose()
 })
 
 describe("ContractService oxide overlay", () => {
@@ -190,9 +189,6 @@ describe("ContractService oxide overlay", () => {
     expect(l1.portal).toBe("")
     const read = await service.getContractAddress(DEFAULT_CONTRACTS.oxideToken)
     expect(read?.toString()).toBe(RAW_ASSERTED)
-    // Boot-retry was scheduled (no tuple anywhere); dispose via reset so the
-    // timer cannot fire into a dead test context.
-    ContractService.resetInstance()
   })
 
   // Mainnet has no state where the token address is legitimately unknowable, so the profile
@@ -212,7 +208,6 @@ describe("ContractService oxide overlay", () => {
     expect(String(rejection)).toMatch(/mainnet oxideToken is unresolved/)
     // Only the token fails closed — other profile reads keep the soft path.
     await expect(service.getContractAddress(DEFAULT_CONTRACTS.sponsorFPC)).resolves.toBeUndefined()
-    ContractService.resetInstance()
   })
 
   it("mainnet profile mode with a snapshot oxideToken row: the row is honored, no throw", async () => {
@@ -229,7 +224,6 @@ describe("ContractService oxide overlay", () => {
     })
     const read = await service.getContractAddress(DEFAULT_CONTRACTS.oxideToken)
     expect(read?.toString()).toBe(RAW_ASSERTED)
-    ContractService.resetInstance()
   })
 
   it("off mainnet the same outage degrades softly: oxideToken reads undefined", async () => {
@@ -239,27 +233,5 @@ describe("ContractService oxide overlay", () => {
       manifest: new Error("manifest unreachable"),
     })
     await expect(service.getContractAddress(DEFAULT_CONTRACTS.oxideToken)).resolves.toBeUndefined()
-    ContractService.resetInstance()
-  })
-
-  it("resetInstance() disposes the client; a fresh instance overlays again", async () => {
-    const { service } = await makeSeededLedgerService({ oxideEnvProfile: PROFILE })
-    await service.getContractAddress(DEFAULT_CONTRACTS.oxideToken)
-    const firstClient = service.getOxideClient()
-    expect(firstClient?.getCurrentTuple()).not.toBeNull()
-
-    ContractService.resetInstance()
-
-    // Disposed clients never notify: subscribing post-dispose sees nothing
-    // even if a refresh is forced.
-    let notified = 0
-    firstClient?.subscribe(() => notified++)
-    await firstClient?.refresh()
-    expect(notified).toBe(0)
-
-    const { service: fresh } = await makeSeededLedgerService({ oxideEnvProfile: PROFILE })
-    const read = await fresh.getContractAddress(DEFAULT_CONTRACTS.oxideToken)
-    expect(read?.toString()).toBe(ROLLED_L2_TOKEN)
-    expect(fresh.getOxideClient()).not.toBe(firstClient)
   })
 })

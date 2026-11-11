@@ -5,14 +5,13 @@ import { Modal } from "../../../ui/Modal"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useLocation, useNavigate, useParams } from "react-router-dom"
 import {
-  ContactStorage,
   exceedsBalance,
-  useContractServiceContext,
   useStore,
   TxInFlightError,
   type Contact,
-  useResource,
   WalletError,
+  NO_SERVICE,
+  serviceStatus,
 } from "@obsidion/front-core"
 import { isPasskeyCancelled } from "@obsidion/passkey-web"
 import { Icon } from "@obsidion/web-ds"
@@ -32,7 +31,7 @@ import { OperationHandOff } from "../../operations/OperationHandOff"
 import { RecipientNotUpgradedError, runContactPay, type PayStage } from "../contactPay"
 import { useRecipientUpgraded } from "../useRecipientUpgraded"
 import { recipientNotUpgradedCopy } from "../../migration/upgradeCopy"
-import { useUserFlowActive } from "../../provingGate"
+import { useUserFlowActive } from "../../operations/operations"
 import { useActionVerdict } from "../../actionGate"
 import { findContactEntry } from "../contactsView"
 import { lookUpUnsavedContact } from "../unsavedContact"
@@ -40,6 +39,7 @@ import { PayAmountForm } from "../PayAmountForm"
 import { PayConfirmForm } from "../PayConfirmForm"
 import { PayWorking } from "../PayWorking"
 import { sendLimitError } from "../../limits/withdrawalLimit"
+import { accountContacts } from "../../../session/contacts"
 import { useSession } from "../../../session/session"
 import copy from "./ContactPayScreen.copy"
 import { fmt } from "../../../lib/fmt"
@@ -47,15 +47,15 @@ import { fmt } from "../../../lib/fmt"
 /** Router state: a fulfilling send carries the request (activity-row Send, or a decoded request
  *  link via its pay page); `from` marks entry from the contact detail, which stays as the backdrop
  *  and is popped back to on success instead of pushed again. Link requests add: `source:"link"`
- *  (no local row — the fulfilled signal must not require one), the packet's `requesterAddress`
- *  pin, and the note. amount 0 = any-amount link (starts on the amount phase). */
+ *  (no local row — the fulfilled signal must not require one), the packet's requester pin, and
+ *  the note. amount 0 = any-amount link (starts on the amount phase). */
 interface PayScreenState {
   request?: {
     id: string
     tag?: string
     amount: number
     source?: "link"
-    requesterAddress?: string
+    requesterPin?: string
     note?: string
     /** The pay page's path and hash, so the payer can switch to its Ethereum route. */
     link?: string
@@ -87,12 +87,14 @@ function ContactPayFlow({ mode }: { mode: "send" | "request" }) {
   const { idOrTag } = useParams()
   const routerState = useLocation().state as PayScreenState | null
   const request = routerState?.request
-  const obsidionWallet = useResource(useSession().wallet)
-  const obsidionAccount = useResource(useSession().account)
-  const tokenService = useResource(useSession().token)
-  const balances = useSession().balances
-  const { identity } = useSession()
-  const { contractService } = useContractServiceContext()
+  const session = useSession()
+  const walletBuilt = useStore(session.wallet, serviceStatus) === "ready"
+  const unlocked = useStore(session.account ?? NO_SERVICE, serviceStatus) === "ready"
+  const tokenBuilt = useStore(session.token ?? NO_SERVICE, serviceStatus) === "ready"
+  const contracts = useStore(session.contractService, serviceStatus) === "ready"
+  const allBuilt = walletBuilt && unlocked && tokenBuilt && contracts
+  const balances = session.balances
+  const { identity } = session
   const balance = useStore(balances.view)
   const main = balance.main
 
@@ -107,16 +109,19 @@ function ContactPayFlow({ mode }: { mode: "send" | "request" }) {
   const cancelled = useRef(false)
   const left = useRef(false)
 
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (routerState?.contact) return
     let current = true
-    ContactStorage.get()
-      .getEntries()
+    accountContacts(session)
+      .all()
       .then(async (entries) => {
         const found = findContactEntry(entries, idOrTag ?? "")
         const next =
           found ??
-          (request ? null : await lookUpUnsavedContact(idOrTag ?? "", identity.get().value?.handle))
+          (request
+            ? null
+            : await lookUpUnsavedContact(session, idOrTag ?? "", identity.get().value?.handle))
         if (current) setEntry(next)
       })
       .catch((e) => {
@@ -126,18 +131,19 @@ function ContactPayFlow({ mode }: { mode: "send" | "request" }) {
     return () => {
       current = false
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- the request is fixed for this entry
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- debt the request is fixed for this entry
   }, [idOrTag])
 
   // Funnel top: a fulfilling send is the payer opening a request; a plain send starts at the
   // contact pick.
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (request) {
       fireRequestOpened(requestSource, request.id, request.amount, request.tag)
     } else if (mode === "send") {
       fireEvent("send_contact_selected")
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only funnel entry
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- debt mount-only funnel entry
   }, [])
 
   const outcome = useProvingOutcome("send")
@@ -146,7 +152,7 @@ function ContactPayFlow({ mode }: { mode: "send" | "request" }) {
   const validAmount = Number.isFinite(parsed) && parsed > 0
   const isSend = mode === "send"
   // Only a KNOWN shortfall blocks: a balance still loading reads 0 and would flag every amount.
-  const decimals = tokenService?.metadata.decimals ?? DEFAULT_DECIMALS
+  const decimals = useStore(session.mainToken)?.decimals ?? DEFAULT_DECIMALS
   const overspent =
     isSend && exceedsBalance(balance, validAmount ? parseUnits(amount, decimals) : undefined)
   // A request over the limit is one its payer can't send.
@@ -157,19 +163,18 @@ function ContactPayFlow({ mode }: { mode: "send" | "request" }) {
   // A recipient still on a retired rollup can't be paid or asked. Found before the amount is typed,
   // their chat keeps the history and says why.
   const upgraded = useRecipientUpgraded(targetTag)
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (upgraded !== false) return
     if (routerState?.from === "detail") navigate(-1)
     else navigate(`/contacts/${idOrTag}`, { replace: true })
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- leaves once, on the answer
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- debt leaves once, on the answer
   }, [upgraded])
   // Found at send time, from a fresh manifest the chat's cached read may not agree with: the sheet
   // says why itself.
   const [refused, setRefused] = useState(false)
   const railReady = useActionVerdict("send") === "open"
-  const ready = isSend
-    ? railReady && !!(obsidionWallet && obsidionAccount && tokenService && contractService)
-    : !!tokenService
+  const ready = isSend ? railReady && allBuilt : tokenBuilt
   const busy = useUserFlowActive()
   // Paying a request saves an unsaved payee; a sender the wallet added from a transfer is approved by
   // paying their request.
@@ -190,8 +195,10 @@ function ContactPayFlow({ mode }: { mode: "send" | "request" }) {
   }
 
   // Brief success beat before the chat takes over; cleanup cancels it if the user leaves first.
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (phase !== "sent") return
+    // eslint-disable-next-line local/timer-in-view -- debt
     const timer = setTimeout(finish, 1500)
     return () => clearTimeout(timer)
   }, [phase, finish])
@@ -226,25 +233,12 @@ function ContactPayFlow({ mode }: { mode: "send" | "request" }) {
       // Behind WalletGate, which already applied the stricter onboarded-identity read.
       const senderTag = identity.get().value?.handle
       // The confirm CTA gates on `ready`, so the wallet, account and services are present here.
-      if (
-        !tag ||
-        !senderTag ||
-        !obsidionWallet ||
-        !obsidionAccount ||
-        !tokenService ||
-        !contractService
-      )
-        throw new WalletError("contact.unavailable")
+      if (!tag || !senderTag || !allBuilt) throw new WalletError("contact.unavailable")
       const result = await runContactPay(
         isSend
           ? {
               mode: "send",
-              deps: {
-                wallet: obsidionWallet,
-                account: obsidionAccount,
-                tokenService,
-                contractService,
-              },
+              session,
               tag,
               senderTag,
               amountDisplay: amount,
@@ -254,7 +248,7 @@ function ContactPayFlow({ mode }: { mode: "send" | "request" }) {
             }
           : {
               mode: "request",
-              deps: { tokenService, wallet: obsidionWallet },
+              session,
               tag,
               senderTag,
               amountDisplay: amount,
@@ -377,7 +371,7 @@ function ContactPayFlow({ mode }: { mode: "send" | "request" }) {
               walletBalance={fixedCents(main && { ...main, decimals })}
               maxAmount={main ? floorToCents(main.atomic, decimals) : undefined}
               overspent={overspent}
-              balanceUnconfirmed={!balance.live}
+              balanceUnconfirmed={!balance.readThisSession}
               limitError={limitError}
               validAmount={validAmount}
               onAmount={setAmount}
@@ -395,7 +389,7 @@ function ContactPayFlow({ mode }: { mode: "send" | "request" }) {
               ready={ready}
               busy={busy}
               overspent={overspent}
-              balanceUnconfirmed={!balance.live}
+              balanceUnconfirmed={!balance.readThisSession}
               limitError={limitError}
               isSend={isSend}
               payee={paying ? { tag: handle, savesContact: savesPayee } : undefined}

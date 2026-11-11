@@ -1,3 +1,4 @@
+import type { Pace } from "@obsidion/core/cadence"
 import { Modal } from "../../ui/Modal"
 /**
  * The confirm sheet for sending funds out from the user's own L1 wallet, such as a withdrawal no
@@ -5,21 +6,23 @@ import { Modal } from "../../ui/Modal"
  */
 import { useState, type ReactNode } from "react"
 import type { Hex } from "viem"
+import type { Config } from "wagmi"
 import { DoubleCheckIcon, PrimaryGradientButton, Spinner, TopNavIconButton } from "@obsidion/web-ds"
-import { getConfig } from "../../config/env"
 import { lapTimer } from "../../lib/analytics"
 import { isDesktopL1SubmitActive } from "../../platform/desktopBridge"
-import { HashRow, l1TxUrl } from "../../ui/detailRows"
+import { HashRow, l1Links } from "../../ui/detailRows"
 import { useCopy } from "../../ui/hooks"
-import { isWalletRejection, useL1Wallet } from "../../session/l1Wallet"
+import { isWalletRejection } from "../../session/l1Wallet"
+import { useL1Wallet } from "../../session/useL1Wallet"
+import { useSession } from "../../session/session"
 import type { L1ExitStage } from "../sipa/l1ExitChannels"
 import {
   useWalletPrompt,
   useWalletPromptStall,
-  WalletPromptNote,
   WalletPromptOpenError,
-  type WalletPromptToken,
-} from "../deposit/walletPrompt"
+} from "../../session/walletPrompt"
+import type { WalletPromptToken } from "../../session/walletPrompt"
+import { WalletPromptNote } from "../deposit/WalletPromptNote/WalletPromptNote"
 import { ExitWalletRow } from "./ExitWalletRow"
 
 const STAGE_LABEL: Record<L1ExitStage, string> = {
@@ -29,12 +32,15 @@ const STAGE_LABEL: Record<L1ExitStage, string> = {
 }
 
 export interface ManualExitRunOptions {
+  wagmi: Config
   /** The connected injected wallet, which submits and takes the tip. */
   from?: Hex
   onHelperOpened: (submitUrl: string) => void
   onStage: (stage: L1ExitStage) => void
   /** A run of several transactions: the next one is a new wallet request. */
   nextRequest: () => void
+  /** The page's: the L1 receipt wait polls at its interval. */
+  pace: Pick<Pace, "foreignMs">
 }
 
 export function ManualExitSheet({
@@ -76,7 +82,9 @@ export function ManualExitSheet({
   done: ReactNode
   onClose: () => void
 }) {
-  const config = getConfig()
+  const { page } = useSession()
+  const { config, pace } = page
+  const { l1TxUrl } = l1Links(config)
   const { copied, copy } = useCopy()
   const bridgeMode = isDesktopL1SubmitActive()
   const l1 = useL1Wallet({ expectedChainId: config.l1ChainId, rpcUrl: config.l1RpcUrl })
@@ -115,9 +123,11 @@ export function ManualExitSheet({
     try {
       request = prompt.begin()
       const sent = await run({
+        wagmi: l1.wagmi,
         from: (l1.account as Hex | null) ?? undefined,
         onHelperOpened: setSubmitUrl,
         onStage,
+        pace,
         nextRequest: () => {
           request = prompt.begin()
           setStage(undefined)
@@ -130,6 +140,7 @@ export function ManualExitSheet({
     } catch (e) {
       setPhase("form")
       if (e instanceof WalletPromptOpenError) {
+        // eslint-disable-next-line local/message-in-state -- debt
         setRefused(e.message)
         return
       }

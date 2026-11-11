@@ -1,8 +1,6 @@
 // @vitest-environment node
-import { lastPasskeyEnvironment } from "@obsidion/passkey-web"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { testPage, pageOver } from "../../../support/page"
-import { PASSKEY_ENVIRONMENT_KEY } from "../../../../src/platform/auth/passkeyEnvironmentKey"
+import { testPage, pageOver, testCore } from "../../../support/page"
 import { WebAlphaAuthService } from "../../../../src/platform/auth/WebAlphaAuthService"
 import { FakePasskeyCeremony } from "../../../support/fakePasskeyCeremony"
 
@@ -11,17 +9,15 @@ const MAC_SAFARI =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15"
 
 function stubBrowser(navigatorExtras: Record<string, unknown> = {}) {
-  const map = new Map<string, string>()
-  vi.stubGlobal("localStorage", {
-    getItem: (k: string) => map.get(k) ?? null,
-    setItem: (k: string, v: string) => void map.set(k, v),
-    removeItem: (k: string) => void map.delete(k),
-  })
   vi.stubGlobal("navigator", { userAgent: MAC_SAFARI, ...navigatorExtras })
 }
 
-const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
-const last = () => lastPasskeyEnvironment(PASSKEY_ENVIRONMENT_KEY)
+/** Lets the record's Client Hints read settle, then waits for its write to commit. */
+const flush = async () => {
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  await testCore().database.write(async () => {})
+}
+const last = () => testCore().device.get().passkeyEnv
 
 function laptop(ceremony: FakePasskeyCeremony, storage = testPage().database) {
   return new WebAlphaAuthService({

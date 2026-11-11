@@ -1,8 +1,10 @@
 /**
  * Inbound-paylink handoff: /link stashes the fragment here and sends a signed-in visitor to Home,
- * where ClaimLinkModal replays it (ULT-671 page 6). sessionStorage so the prompt survives a
- * refresh but not the tab; cleared when the modal is declined, closed, or the claim settles.
+ * where ClaimLinkModal replays it. Kept for the tab, so the prompt survives a
+ * refresh; cleared when the modal is declined, closed, or the claim settles.
  */
+import type { tabStash } from "../../platform/storage/tabStash"
+
 export const CLAIM_STASH_KEY = "obsidion.pending-claim"
 
 /**
@@ -41,61 +43,55 @@ export interface TicketSignupStash {
   proverTip?: string
   /** The speed the split committed to with it. */
   speed?: "standard" | "faster"
+  /** The withdrawal fee that split was priced with, base units. */
+  withdrawalFee?: string
 }
 
-/** sessionStorage-shaped seam. */
-interface StringStore {
-  getItem(key: string): string | null
-  setItem(key: string, value: string): void
-  removeItem(key: string): void
-}
+type TabStash = typeof tabStash
 
-export function stashClaimLink(fragment: string, store: StringStore = sessionStorage): void {
-  store.setItem(CLAIM_STASH_KEY, fragment)
+export function stashClaimLink(stash: TabStash, fragment: string): void {
+  stash.set(CLAIM_STASH_KEY, fragment)
 }
 
 /** Non-destructive read — Home keeps prompting until the stash is explicitly cleared. */
-export function peekClaimStash(store: StringStore = sessionStorage): string | null {
-  return store.getItem(CLAIM_STASH_KEY)
+export function peekClaimStash(stash: TabStash): string | null {
+  return stash.get(CLAIM_STASH_KEY)
 }
 
-/** With `fragment`, clears only that link — a settling claim must not drop a newer stash. */
-export function clearClaimStash(fragment?: string, store: StringStore = sessionStorage): void {
-  if (fragment !== undefined && store.getItem(CLAIM_STASH_KEY) !== fragment) return
-  store.removeItem(CLAIM_STASH_KEY)
-  store.removeItem(TICKET_STASH_KEY)
+/** Clears only `fragment`'s link — a settling claim must not drop a newer stash. */
+export function clearClaimStash(stash: TabStash, fragment: string): void {
+  if (stash.get(CLAIM_STASH_KEY) !== fragment) return
+  stash.remove(CLAIM_STASH_KEY)
+  stash.remove(TICKET_STASH_KEY)
 }
 
-export function stashTicketSignup(
-  stash: TicketSignupStash,
-  store: StringStore = sessionStorage,
-): void {
-  store.setItem(CLAIM_STASH_KEY, stash.fragment)
-  store.setItem(TICKET_STASH_KEY, JSON.stringify(stash))
+export function stashTicketSignup(stash: TabStash, ticket: TicketSignupStash): void {
+  stash.set(CLAIM_STASH_KEY, ticket.fragment)
+  stash.set(TICKET_STASH_KEY, JSON.stringify(ticket))
 }
 
 /** The ticket-funded signup waiting on this tab, or null: a marker for another link is stale. */
-export function peekTicketSignup(store: StringStore = sessionStorage): TicketSignupStash | null {
-  const raw = store.getItem(TICKET_STASH_KEY)
+export function peekTicketSignup(stash: TabStash): TicketSignupStash | null {
+  const raw = stash.get(TICKET_STASH_KEY)
   if (raw === null) return null
   try {
-    const stash = JSON.parse(raw) as TicketSignupStash
-    return stash.fragment === store.getItem(CLAIM_STASH_KEY) ? stash : null
+    const ticket = JSON.parse(raw) as TicketSignupStash
+    return ticket.fragment === stash.get(CLAIM_STASH_KEY) ? ticket : null
   } catch {
     return null
   }
 }
 
 export function updateTicketSignup(
+  stash: TabStash,
   patch: Partial<Omit<TicketSignupStash, "fragment">>,
-  store: StringStore = sessionStorage,
 ): void {
-  const stash = peekTicketSignup(store)
-  if (!stash) return
-  store.setItem(TICKET_STASH_KEY, JSON.stringify({ ...stash, ...patch }))
+  const ticket = peekTicketSignup(stash)
+  if (!ticket) return
+  stash.set(TICKET_STASH_KEY, JSON.stringify({ ...ticket, ...patch }))
 }
 
 /** Drops the ticket intent and leaves the link stashed for an ordinary claim on Home. */
-export function clearTicketSignup(store: StringStore = sessionStorage): void {
-  store.removeItem(TICKET_STASH_KEY)
+export function clearTicketSignup(stash: TabStash): void {
+  stash.remove(TICKET_STASH_KEY)
 }

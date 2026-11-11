@@ -5,7 +5,6 @@ import {
   CANONICAL_ENTRY_POINT_V08,
   EntryPointAbi,
   NamePortalAbi,
-  type PackedUserOperation,
   type UserRecordArg,
   userRecordStateHash,
 } from '@oxide/l1-contracts';
@@ -34,7 +33,9 @@ const CONTROLLER: Address = '0x00000000000000000000000000000000000000ee';
 const CLAIM_FPC = AztecAddress.fromBigIntUnsafe(0xf9cn);
 const ROLLUP_VERSION = 6n;
 const NONCE = 7n;
-const USER_OP_HASH: Hex = `0x${'a1'.repeat(32)}`;
+const CHAIN_ID = 31337;
+// The EntryPoint v0.8 hash of the golden user operation on `CHAIN_ID`.
+const USER_OP_HASH: Hex = '0xcca1b24dd05ab451d4b39839b705c369b46f5144d77a43992a44ef02f7801bcf';
 const TX: Hex = `0x${'7e'.repeat(32)}`;
 const RECORD: UserRecordArg = {
   l2Address: `0x${'12'.repeat(32)}`,
@@ -58,7 +59,6 @@ const ASSERTION = {
 
 /** A client of a chain that holds the account, its registries and the EntryPoint. */
 function chain({ nonce = NONCE, stateHash = userRecordStateHash(RECORD), reverts = false } = {}) {
-  const hashed: PackedUserOperation[] = [];
   const reads: Record<string, (address: Address, args: readonly unknown[]) => unknown> = {
     NAME_REGISTRY: () => NAME_REGISTRY,
     accountMetadataRegistry: () => METADATA_REGISTRY,
@@ -66,20 +66,14 @@ function chain({ nonce = NONCE, stateHash = userRecordStateHash(RECORD), reverts
     metadataStateHash: () => stateHash,
     getAuthKeys: () => AUTH_KEYS,
     getNonce: () => nonce,
-    getUserOpHash: (address, [op]) => {
-      if (address !== CANONICAL_ENTRY_POINT_V08) {
-        throw new Error(`getUserOpHash on ${address}`);
-      }
-      hashed.push(op as PackedUserOperation);
-      return USER_OP_HASH;
-    },
   };
   const publicClient = {
+    chain: { id: CHAIN_ID },
     readContract: ({ address, functionName, args }: { address: Address; functionName: string; args?: unknown[] }) =>
       Promise.resolve(reads[functionName](address, args ?? [])),
     call: () => (reverts ? Promise.reject(new Error('execution reverted')) : Promise.resolve({ data: '0x' })),
   } as unknown as PublicClient;
-  return { publicClient, hashed };
+  return { publicClient };
 }
 
 const build = (publicClient: PublicClient, overrides: Partial<Parameters<typeof buildRecordUpdate>[1]> = {}) =>
@@ -96,7 +90,7 @@ const build = (publicClient: PublicClient, overrides: Partial<Parameters<typeof 
 
 describe('buildRecordUpdate', () => {
   it('builds a zero-fee user operation that writes the record and then notifies, signed over the EntryPoint hash', async () => {
-    const { publicClient, hashed } = chain();
+    const { publicClient } = chain();
     const update = await build(publicClient);
 
     expect(update.keyIndex).toBe(1n);
@@ -111,8 +105,13 @@ describe('buildRecordUpdate', () => {
       paymasterAndData: '0x',
       signature: '0x',
     });
-    expect(hashed).toEqual([update.userOp]);
     expect(update.userOpHash).toBe(USER_OP_HASH);
+  });
+
+  it('refuses a client without a configured chain', async () => {
+    await expect(build({ ...chain().publicClient, chain: undefined } as PublicClient)).rejects.toThrow(
+      'The public client needs a configured chain',
+    );
   });
 
   it('writes with the write of another schema', async () => {

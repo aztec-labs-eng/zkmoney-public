@@ -19,21 +19,23 @@ import { railStage, type RailStage } from "./railStage"
 import { Card, Icon, PrimaryGradientButton, Spinner } from "@obsidion/web-ds"
 import { WALLET_TOKEN_SYMBOL, tokenDecimalsForNetwork } from "@obsidion/core/constants"
 import paylinkCoins from "../../../assets/home/paylink-coins.webp"
-import { DepositDetailModal } from "../../../ui/screens/DepositDetailModal"
+import { DepositDetailModal } from "../../../ui/screens/DepositDetailModal/DepositDetailModal"
 import rowCopy from "../../../ui/activity/ActivityRow.copy"
 import { registrationRecordForSipa } from "../../registration/webRegistration"
 import { DepositExitModal } from "../../deposit/DepositExitModal/DepositExitModal"
-import { getConfig } from "../../../config/env"
-import { openClaimPrompt, openTicketClaimReview, useLinkFunding } from "../../paylink/claimPrompt"
+import { usePolledChainSeconds } from "../../paylink/chainTime"
+import { claimWaitSeconds, useClaimCountdown } from "../../paylink/claimWindow"
 import { peekClaimStash } from "../../paylink/claimStash"
+import { tabStash } from "../../../platform/storage/tabStash"
 import {
-  useAutoClaimGaveUp,
-  useAutoClaimHold,
-  useClaimRunning,
-  type AutoClaimHold,
-} from "../../paylink/runningClaims"
-import { decodeLink } from "../../paylink/sponsoredPaylink"
-import { ticketActivation } from "../../paylink/ticketContinuation"
+  claimLinkId,
+  claimRefused,
+  linkOf,
+  ticketClaimGate,
+  ticketClaimView,
+} from "../../paylink/ticketClaim"
+import { useActionVerdict } from "../../actionGate"
+import { openTicketClaimReview, ticketActivation } from "../../paylink/ticketContinuation"
 import { useSipaProcessing } from "../../deposit/sipaProcessing"
 import { useDepositAdmission, useDepositShown } from "../../registration/admission"
 import {
@@ -54,24 +56,14 @@ import { REGISTRATIONS_PAUSED_NOTICE } from "../onboardingErrorCopy"
 import { formatTokenAmount } from "../../deposit/DepositTermsRows/DepositTermsRows"
 import { useRegistrationRefunded } from "../../registration/registrationRecovery"
 import { useSession } from "../../../session/session"
-import { wallClock } from "../../../lib/clock"
 import { fmt } from "../../../lib/fmt"
 import copy from "./SecureNameNoticeCard.copy"
 
 /** A direct link, which Home claims without a tap; an email link's sign-in needs one. */
-function directLink(fragment: string): boolean {
-  try {
-    return decodeLink(fragment).flavor === "direct"
-  } catch {
-    return false
-  }
-}
 
 /** What the hero says while Home's own claim of the link waits to start. */
-function holdBody(hold: AutoClaimHold): string {
-  return hold === "preparing"
-    ? copy.hold.preparing
-    : fmt(copy.hold.countdown, { countdown: hold.countdown })
+function holdBody(countdown: string | undefined): string {
+  return countdown === undefined ? copy.hold.preparing : fmt(copy.hold.countdown, { countdown })
 }
 
 /**
@@ -143,17 +135,18 @@ function LiveDepositDetail(props: { sipaAddress: string; tag: string; onClose: (
  */
 export function SecureNameNoticeCard({ ask }: { ask: (note: string) => ReactNode }) {
   const navigate = useNavigate()
-  const config = getConfig()
+  const session = useSession()
+  const { config } = session.page
   const escalated = useRegistrationEscalated()
+  const { wallClock } = useSession().page
   const nowMs = useStore(wallClock)
   const open = useOpenRegistration()
   const record = open?.record ?? null
-  const own = useSession()
-  const deposits = useStore(own.sipaDeposits.view)
-  const observer = own.sipaProcessingObserver
+  const deposits = useStore(session.sipaDeposits.view)
+  const observer = session.sipaProcessingObserver
   useStore(observer?.states ?? NO_STATES)
   const railAt = railStage(
-    currentRegistration(loadedRegistrations(own.registrations)),
+    currentRegistration(loadedRegistrations(session.registrations)),
     deposits,
     (sipa) => observer?.stateFor(sipa),
     nowMs,
@@ -165,11 +158,16 @@ export function SecureNameNoticeCard({ ask }: { ask: (note: string) => ReactNode
   const refunded = useRegistrationRefunded(record)
   const publishStalled = useRegistrationPublishStalled(record)
   // Whether this page is claiming the stashed link, for a ticket-funded name, or will on its own.
-  const stashed = peekClaimStash()
-  const claimRunning = useClaimRunning(stashed)
-  const autoGaveUp = useAutoClaimGaveUp(stashed)
-  const autoHold = useAutoClaimHold(stashed)
-  const linkFunding = useLinkFunding()
+  const stashed = peekClaimStash(tabStash)
+  const stashedLink = stashed === null ? null : linkOf(config, stashed)
+  const claims = useStore(session.claims.state)
+  const claimRunning = stashed !== null && claims.running.has(stashed)
+  const operations = useStore(session.operations.view, (view) => view.records)
+  const chainNow = usePolledChainSeconds(stashedLink !== null)
+  const opensAt = stashedLink?.claimableFrom ?? undefined
+  const countdown = useClaimCountdown(claimWaitSeconds(opensAt, chainNow), chainNow, session.page)
+  const claimOpen = useActionVerdict("claim") === "open"
+  const linkFunding = claims.funding
   const terms = useRegistrationTerms(record?.account, record?.tag)
   const unsignedFallback = signedWithoutSchedule(terms)
   const { sweepFee, schedule: chainAmounts } = useRegistrationPricing(
@@ -177,7 +175,7 @@ export function SecureNameNoticeCard({ ask }: { ask: (note: string) => ReactNode
     unsignedFallback,
   )
   const [detailOpen, setDetailOpen] = useState(false)
-  const burns = useStore(own.withdrawals.list)
+  const burns = useStore(session.withdrawals.list)
 
   // Unknown while the withdrawals load: the card waits rather than ask for a funded deposit.
   if (!open || !record || open.stage === undefined || !burns.hydrated) return null
@@ -186,7 +184,7 @@ export function SecureNameNoticeCard({ ask }: { ask: (note: string) => ReactNode
   // publishes the SIPA. What it needs is decided before any price: progress while this page claims
   // or the burn is on its way; the claim while the bound link is on this tab; else the way back to
   // the link or the renewal.
-  const ticket = ticketActivation(record, terms, burns.records, nowMs)
+  const ticket = ticketActivation(session, record, terms, burns.records, nowMs)
   if (ticket) {
     const holdEnds = reservedUntil(terms, nowMs)
     const heldFor =
@@ -194,11 +192,26 @@ export function SecureNameNoticeCard({ ask }: { ask: (note: string) => ReactNode
     // The burn's record is written before its batch signs, so `submitted` alone would read as sent
     // too early: the page's own claim covers proving and the send. Home claims a ready direct link
     // by itself, so the tap is asked for only once that try is over without a claim.
+    const auto =
+      ticket.state === "ready"
+        ? ticketClaimView(
+            ticketClaimGate({
+              activation: ticket.state,
+              link: linkOf(config, ticket.stash.fragment),
+              chainNow,
+              open: claimOpen,
+            }),
+            claims,
+            ticket.stash.fragment,
+            claimRefused(operations, claimLinkId(ticket.stash.fragment)),
+          )
+        : undefined
     const claimingLink =
-      (claimRunning && (ticket.state === "ready" || ticket.state === "submitted")) ||
-      (ticket.state === "ready" && !autoGaveUp && directLink(ticket.stash.fragment))
+      (claimRunning && ticket.state === "submitted") ||
+      auto?.kind === "claiming" ||
+      auto?.kind === "hold"
     // Home's own claim has not started: what it waits for, since the bell has nothing yet.
-    const held = claimingLink && !claimRunning ? autoHold : undefined
+    const held = auto?.kind === "hold" ? auto.hold : undefined
     const submitted = claimingLink || ticket.state === "submitted"
     const tag = record.tag
     const title = held
@@ -213,7 +226,7 @@ export function SecureNameNoticeCard({ ask }: { ask: (note: string) => ReactNode
       ? copy.ticket.title.renew
       : copy.ticket.title.open
     const body = held
-      ? holdBody(held)
+      ? holdBody(typeof held === "object" ? countdown : undefined)
       : claimingLink
       ? copy.ticket.body.claiming
       : ticket.state === "submitted"
@@ -234,7 +247,7 @@ export function SecureNameNoticeCard({ ask }: { ask: (note: string) => ReactNode
         data-testid="secure-name-notice"
         data-ticket-state={ticket.state}
         aria-label={fmt(copy.activateLabel, { tag })}
-        onClick={() => openTicketClaimReview() || navigate(`/claim/${record.tag}`)}
+        onClick={() => openTicketClaimReview(session) || navigate(`/claim/${record.tag}`)}
       >
         <span className="ww-banner__text">
           <span className="ww-banner__title">{title}</span>
@@ -307,7 +320,7 @@ export function SecureNameNoticeCard({ ask }: { ask: (note: string) => ReactNode
           data-testid="claiming-notice"
           aria-label={fmt(copy.claiming, { tag: record.tag })}
           onClick={() =>
-            openTicketClaimReview() ||
+            openTicketClaimReview(session) ||
             (selectSipaDeposit(deposits, record.sipaAddress)
               ? setDetailOpen(true)
               : navigate(`/claim/${record.tag}`))
@@ -366,7 +379,7 @@ export function SecureNameNoticeCard({ ask }: { ask: (note: string) => ReactNode
             : fmt(copy.linkFunding.claimLabel, { tag: record.tag })
         }
         disabled={checking}
-        onClick={() => openClaimPrompt(linkFunding.fragment)}
+        onClick={() => session.claims.request(linkFunding.fragment)}
       >
         <span className="ww-banner__text">
           <span className="ww-banner__title">

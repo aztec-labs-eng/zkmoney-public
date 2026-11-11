@@ -4,7 +4,7 @@
 import type { FrozenDepositDescriptor, FrozenRefundKind, OxideEnvTuple } from "./index.js"
 
 /** The version of this boundary. Change it on any change a built bundle cannot serve. */
-export const SOURCE_GENERATION_PROTOCOL = 10
+export const SOURCE_GENERATION_PROTOCOL = 11
 
 /** The account's passkey. The page signs, so a generation never touches WebAuthn itself. */
 export interface SourcePasskey {
@@ -49,6 +49,8 @@ export interface SourceGenerationOpenParams {
    */
   artifacts?: SourceArtifactManifest
   proverEnabled: boolean
+  /** The bb.js memory maximum and SRS size that the host gives this device, when it sets them. */
+  bb?: { memory?: { maximum?: number }; srsSize?: number }
 }
 
 export interface SourceRefundCandidates {
@@ -191,6 +193,15 @@ export interface SourceGenerationSession {
     handle: string
     /** Every source resolver operator with a key it published, decimal coordinates. */
     resolvers: { operator: string; publicKey: { x: string; y: string } }[]
+  }): Promise<Record<string, string>>
+  /** `sipa`'s record if a resolver handed it out on days `fromDay`..`toDay`, else empty. */
+  resolverDeposit(o: {
+    tuple: OxideEnvTuple
+    sipa: string
+    /** Decimal coordinates. */
+    resolvers: { x: string; y: string }[]
+    fromDay: number
+    toDay: number
   }): Promise<Record<string, string>>
   /** Savings moves recovered from this account's withdrawals on the source token. */
   savingsMoves(o: { tuple: OxideEnvTuple }): Promise<SourceSavingsMove[]>

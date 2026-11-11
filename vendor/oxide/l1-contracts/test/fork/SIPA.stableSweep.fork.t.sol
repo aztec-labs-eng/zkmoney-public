@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity >=0.8.27;
 
+import {SweepGasCeilings} from "@test/helpers/SweepGasCeilings.sol";
 import {DepositSIPA} from "@periphery/DepositSIPA.sol";
 import {SIPABase} from "@periphery/SIPABase.sol";
 import {DAI, USDC, USDT, THREE_POOL} from "@periphery/ThreePoolLib.sol";
@@ -31,6 +32,7 @@ import {
   REGISTRATION_SWEEP_TIP
 } from "@test/helpers/ForwardingTableFixture.sol";
 import {RelayerTransaction} from "@test/periphery/RelayerTransaction.sol";
+import {Intents} from "@periphery/Intent.sol";
 
 contract SIPAStableSweepForkTest is MainnetForkFixture, RegistrationTestBase {
   using SafeERC20 for IERC20;
@@ -355,8 +357,7 @@ contract SIPAStableSweepForkTest is MainnetForkFixture, RegistrationTestBase {
   function _listUsdc() internal returns (OxidePortal usdcPortal) {
     usdcPortal = _buildPortal(address(USDC));
     IForwardingTable.IntentFees[] memory intents = new IForwardingTable.IntentFees[](1);
-    intents[0] =
-      IForwardingTable.IntentFees({intent: SIPABase.Intent.Deposit, beneficiaryFee: 0, sweepTip: USDC_SWEEP_TIP});
+    intents[0] = IForwardingTable.IntentFees({intent: Intents.DEPOSIT, beneficiaryFee: 0, sweepTip: USDC_SWEEP_TIP});
     vm.prank(OWNER);
     forwardingTable.addRow(address(USDC), IOxidePortal(address(usdcPortal)), intents);
   }
@@ -366,7 +367,12 @@ contract SIPAStableSweepForkTest is MainnetForkFixture, RegistrationTestBase {
     vm.txGasPrice(4e8);
     MockV3Aggregator aggregator = new MockV3Aggregator(8, 2500e8);
     sm = new DepositSubsidy(
-      OWNER, address(daiPortal), IOperationExecutor(address(operationExecutor)), aggregator, sipaFactory
+      OWNER,
+      address(daiPortal),
+      IOperationExecutor(address(operationExecutor)),
+      aggregator,
+      sipaFactory,
+      SweepGasCeilings.initial()
     );
     vm.prank(OWNER);
     sm.setDepositConfig(uint128(_fee), type(uint128).max, 0);

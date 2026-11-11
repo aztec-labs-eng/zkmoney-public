@@ -4,21 +4,19 @@
  * the read drops the import, and the next boot tries again; the writes hold the session lock, so no
  * switch lands between them.
  */
-import {
-  importHistoricActivity,
-  importHistoricContacts,
-  task,
-  type ContactStorage,
-  type HistoricActivityImported,
-  type Resource,
-  type RetiredDatabase,
-  type Task,
+import { importHistoricActivity, importHistoricContacts, task } from "@obsidion/front-core"
+import type {
+  Contacts,
+  HistoricActivityImported,
+  RetiredDatabase,
+  Task,
+  Service,
 } from "@obsidion/front-core"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
-import { session, type SessionDeps } from "../../session/session"
+import type { Session, SessionDeps } from "../../session/session"
 import { stillCommitted } from "../../session/stillCommitted"
-import { getSavingsMoveStore } from "../savings/savingsMoveStore"
 
+// eslint-disable-next-line no-restricted-syntax -- debt
 const imports = new Map<string, Promise<HistoricActivityImported | null>>()
 
 /** A database from elsewhere, read only when its own marker is absent. */
@@ -27,27 +25,30 @@ export interface HistoricSource {
   read(): Promise<RetiredDatabase>
 }
 
+type ImportSession = Pick<SessionDeps, "device" | "namespace" | "sessionLock"> &
+  Pick<Session, "transfers" | "sipaDeposits" | "withdrawals" | "savingsMoves">
+
 /** This browser's retired databases, or `from` in their place. */
 export function importHistoricActivityOnce(
+  session: ImportSession,
   storageId: string,
   from?: HistoricSource,
 ): Promise<HistoricActivityImported | null> {
   const memo = `${from?.key ?? ""}\n${storageId}`
   let run = imports.get(memo)
   if (!run) {
-    const own = session()
     run = importHistoricActivity({
       storage: webStorage,
       key: from?.key,
       readOtherDatabases: from
         ? async (read) => [read(await from.read())]
         : (read) => webStorage.readOtherDatabases(read),
-      transactions: own.activity,
-      sipaDeposits: own.sipaDeposits,
-      withdrawals: own.withdrawals,
-      savingsMoves: getSavingsMoveStore(),
-      ownsStorage: () => stillCommitted(own),
-      holdSession: own.sessionLock,
+      transactions: session.transfers,
+      sipaDeposits: session.sipaDeposits,
+      withdrawals: session.withdrawals,
+      savingsMoves: session.savingsMoves,
+      ownsStorage: () => stillCommitted(session),
+      holdSession: session.sessionLock,
     })
     imports.set(memo, run)
     run.catch(() => {
@@ -62,12 +63,12 @@ export function importHistoricActivityOnce(
  * a failed import is tried again next boot. They wait for the wallet: the rows carry its network.
  */
 export function historicImports(
-  wallet: Resource<unknown>,
-  { storageId, contacts }: { storageId: string; contacts: ContactStorage },
-  own: Pick<SessionDeps, "device" | "namespace" | "sessionLock">,
+  wallet: Service<unknown>,
+  { storageId, contacts }: { storageId: string; contacts: Contacts },
+  own: ImportSession,
   imports = {
-    activity: importHistoricActivityOnce,
-    contacts: (_storageId: string, contacts: ContactStorage) =>
+    activity: (storageId: string) => importHistoricActivityOnce(own, storageId),
+    contacts: (_storageId: string, contacts: Contacts) =>
       importHistoricContacts({
         storage: webStorage,
         readOtherDatabases: (read) => webStorage.readOtherDatabases(read),

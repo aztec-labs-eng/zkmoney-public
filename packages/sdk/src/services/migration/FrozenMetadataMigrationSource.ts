@@ -15,7 +15,6 @@ import type {
 } from "@obsidion/core/types"
 import { keccak256, parseAbi, toHex, type Address, type Hex } from "viem"
 import { sameAddress } from "../../oxide/address.js"
-import { provingProgress } from "@obsidion/proving-progress"
 import type {
   MetadataMigrationSource,
   MetadataMigrationServiceOptions,
@@ -613,7 +612,7 @@ export class FrozenMetadataMigrationSource implements MetadataMigrationSource {
       })
       const innerCalls = (await broadcastL1Operation(o.broadcaster, operation).request()).calls
       const payload = await buildClaimSponsorPayload({ ...o.registered, innerCalls })
-      await gate(async (operationId) => {
+      await gate(async (operationId, opSent) => {
         signal?.throwIfAborted()
         await o.wallet.sendTx(payload, {
           from: NO_FROM,
@@ -631,7 +630,7 @@ export class FrozenMetadataMigrationSource implements MetadataMigrationSource {
             }
             sent.push(refund)
             await onSent?.(refund)
-            if (operationId) provingProgress.emitTxHashSaved(operationId, txHash)
+            await opSent?.(txHash)
           },
         })
       })
@@ -1047,7 +1046,7 @@ export class FrozenMetadataMigrationSource implements MetadataMigrationSource {
     const payload = await buildClaimSponsorPayload({ ...o.registered, innerCalls })
     let saved = undefined as MigrationFundingBatch | undefined
     try {
-      await gate(async (operationId) => {
+      await gate(async (operationId, opSent) => {
         // A send cancelled while it waited its turn never starts.
         signal?.throwIfAborted()
         await o.wallet.sendTx(payload, {
@@ -1062,7 +1061,7 @@ export class FrozenMetadataMigrationSource implements MetadataMigrationSource {
             await o.batches.set(id, next)
             saved = next
             // The batch holds the hash, so the operation is safe to reload over.
-            if (operationId) provingProgress.emitTxHashSaved(operationId, hash)
+            await opSent?.(hash)
           },
         })
       })

@@ -4,8 +4,10 @@ import {
   type SourceGenerationModule,
   type SourceGenerationSession,
 } from "@obsidion/core/types"
+import { toFailure, WalletError } from "@obsidion/core/errors"
 import { createNode, WebAuthnAlphaAuthProvider, type ObsidionAccount } from "@obsidion/sdk"
-import { getConfig } from "../config/env"
+import type { WebWalletConfig } from "../config/env"
+import { iosSettings } from "./barretenberg"
 import type { WebAlphaAuthService } from "./auth/WebAlphaAuthService"
 
 /** Where the build serves each source generation's bundle, by Aztec major version. */
@@ -13,13 +15,13 @@ const BUNDLES: Readonly<Record<string, string>> = { "5": "generations/v5/index.j
 
 const majorOf = (version: string) => version.replace(/^v/, "").split(".")[0]!
 
+// eslint-disable-next-line no-restricted-syntax -- debt
 const identities = new Map<string, Promise<{ major: string; rollupAddress: string }>>()
 
 /** The Aztec major version and L1 rollup a node runs. `getNodeInfo` reads the same on every version. */
-function nodeIdentity(nodeUrl: string) {
+function nodeIdentity(config: WebWalletConfig, nodeUrl: string) {
   let identity = identities.get(nodeUrl)
   if (!identity) {
-    const config = getConfig()
     const apiKey = nodeUrl === config.nodeUrl ? config.nodeApiKey : config.sourceRollupApiKey
     identity = createNode(nodeUrl, apiKey)
       .getNodeInfo()
@@ -34,35 +36,47 @@ function nodeIdentity(nodeUrl: string) {
 }
 
 /** The Aztec major version a node runs. */
-export function nodeAztecMajor(nodeUrl: string): Promise<string> {
-  return nodeIdentity(nodeUrl).then((identity) => identity.major)
+export function nodeAztecMajor(config: WebWalletConfig, nodeUrl: string): Promise<string> {
+  return nodeIdentity(config, nodeUrl).then((identity) => identity.major)
 }
 
 /**
  * The Aztec major version of the source rollup at `rollupAddress` when it differs from the active
- * node's. Undefined for the active generation, or a rollup no profile version names or whose node
- * does not answer.
+ * node's. Undefined for the active generation, or a rollup no profile version names. Rejects when a
+ * source node does not answer and no other names the rollup, so a caller can read it again.
  */
-export async function retiredRollupMajor(rollupAddress: string): Promise<string | undefined> {
+export async function retiredRollupMajor(
+  config: WebWalletConfig,
+  rollupAddress: string,
+  identityOf = (nodeUrl: string) => nodeIdentity(config, nodeUrl),
+): Promise<string | undefined> {
   const address = rollupAddress.toLowerCase()
-  for (const { nodeUrl } of getConfig().sourceRollups ?? []) {
-    const identity = await nodeIdentity(nodeUrl).catch(() => undefined)
+  let unanswered: unknown
+  for (const { nodeUrl } of config.sourceRollups ?? []) {
+    const identity = await identityOf(nodeUrl).catch(
+      (error: unknown) => void (unanswered ??= error),
+    )
     if (identity?.rollupAddress !== address) continue
-    const active = await nodeAztecMajor(getConfig().nodeUrl).catch(() => undefined)
-    return identity.major !== active ? identity.major : undefined
+    const active = await identityOf(config.nodeUrl).catch(() => undefined)
+    return identity.major !== active?.major ? identity.major : undefined
+  }
+  if (unanswered !== undefined) {
+    const { code, detail } = toFailure(unanswered)
+    throw new WalletError(code, detail, { cause: unanswered })
   }
   return undefined
 }
 
 /** Whether `nodeUrl` runs another Aztec major version than the active node. */
-export async function isOtherGeneration(nodeUrl: string): Promise<boolean> {
+export async function isOtherGeneration(config: WebWalletConfig, nodeUrl: string) {
   const [source, active] = await Promise.all([
-    nodeAztecMajor(nodeUrl),
-    nodeAztecMajor(getConfig().nodeUrl),
+    nodeAztecMajor(config, nodeUrl),
+    nodeAztecMajor(config, config.nodeUrl),
   ])
   return source !== active
 }
 
+// eslint-disable-next-line no-restricted-syntax -- debt
 const modules = new Map<string, Promise<SourceGenerationModule>>()
 
 /** The bundle built for Aztec `major`, loaded once. */
@@ -101,7 +115,9 @@ export function checkedModule(major: string, module: SourceGenerationModule) {
 
 type SourceSign = SourceAccountKeys["passkey"]["sign"]
 
+// eslint-disable-next-line no-restricted-syntax -- debt
 let signThrough: ((sign: SourceSign) => SourceSign) | undefined
+// eslint-disable-next-line no-restricted-syntax -- debt
 let signerTurn: Promise<unknown> = Promise.resolve()
 
 /**
@@ -147,10 +163,12 @@ export async function sourceAccountKeys(
   }
 }
 
+// eslint-disable-next-line no-restricted-syntax -- debt
 const sessions = new Map<string, Promise<SourceGenerationSession>>()
 
 /** The account on another generation's rollup: one session per node for the page's lifetime. */
 export function openSourceGenerationSession(
+  config: WebWalletConfig,
   nodeUrl: string,
   account: ObsidionAccount,
   auth: SecretKey,
@@ -158,18 +176,22 @@ export function openSourceGenerationSession(
   const key = `${nodeUrl}\n${account.getAddress()}`
   let session = sessions.get(key)
   if (!session) {
-    session = open(nodeUrl, account, auth)
+    session = open(config, nodeUrl, account, auth)
     sessions.set(key, session)
     session.catch(() => sessions.delete(key))
   }
   return session
 }
 
-async function open(nodeUrl: string, account: ObsidionAccount, auth: SecretKey) {
-  const config = getConfig()
+async function open(
+  config: WebWalletConfig,
+  nodeUrl: string,
+  account: ObsidionAccount,
+  auth: SecretKey,
+) {
   const rollup = config.sourceRollups?.find((r) => r.nodeUrl === nodeUrl)
   if (!rollup) throw new Error(`No profile version names the node ${nodeUrl}`)
-  const module = await loadSourceGeneration(await nodeAztecMajor(nodeUrl))
+  const module = await loadSourceGeneration(await nodeAztecMajor(config, nodeUrl))
   return module.open({
     account: await sourceAccountKeys(account, auth),
     nodeUrl,
@@ -180,5 +202,6 @@ async function open(nodeUrl: string, account: ObsidionAccount, auth: SecretKey) 
     contracts: rollup.contracts,
     artifacts: rollup.artifacts,
     proverEnabled: config.proverEnabled,
+    bb: iosSettings(),
   })
 }

@@ -4,8 +4,8 @@ pragma solidity >=0.8.27;
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IOxidePortal} from "@core/interfaces/IOxidePortal.sol";
 import {IForwardingTable} from "@periphery/interfaces/IForwardingTable.sol";
-import {SIPABase} from "@periphery/SIPABase.sol";
 import {Errors} from "@periphery/Errors.sol";
+import {Intent, Intents} from "@periphery/Intent.sol";
 
 // solhint-disable oxide/no-comments
 /**
@@ -32,7 +32,7 @@ contract ForwardingTable is IForwardingTable, Ownable {
 
   struct Row {
     IOxidePortal portal;
-    mapping(SIPABase.Intent intent => Fees fees) intents;
+    mapping(Intent intent => Fees fees) intents;
   }
 
   uint256 public immutable ROLLUP_VERSION;
@@ -49,7 +49,7 @@ contract ForwardingTable is IForwardingTable, Ownable {
     }
   }
 
-  function rowFor(address _token, SIPABase.Intent _intent)
+  function rowFor(address _token, Intent _intent)
     external
     view
     returns (IOxidePortal portal, address beneficiary, uint128 beneficiaryFee, uint128 sweepTip)
@@ -58,7 +58,7 @@ contract ForwardingTable is IForwardingTable, Ownable {
     portal = row.portal;
     require(address(portal) != address(0), Errors.ForwardingTable__TokenNotListed(_token));
     Fees memory fees = row.intents[_intent];
-    require(fees.sweepTip > 0, Errors.ForwardingTable__IntentNotListed(_token, uint8(_intent)));
+    require(fees.sweepTip > 0, Errors.ForwardingTable__IntentNotListed(_token, _intent));
     return (portal, $beneficiary, fees.beneficiaryFee, fees.sweepTip);
   }
 
@@ -96,13 +96,11 @@ contract ForwardingTable is IForwardingTable, Ownable {
 
   function _writeIntents(address _token, IntentFees[] memory _intents) private {
     require(_intents.length > 0, Errors.ForwardingTable__NoIntents());
-    mapping(SIPABase.Intent intent => Fees fees) storage intents = $rows[_token].intents;
+    mapping(Intent intent => Fees fees) storage intents = $rows[_token].intents;
     for (uint256 i = 0; i < _intents.length; i++) {
       IntentFees memory entry = _intents[i];
-      require(entry.intent != SIPABase.Intent.None, Errors.ForwardingTable__NoneIntent());
-      require(
-        intents[entry.intent].sweepTip == 0, Errors.ForwardingTable__IntentAlreadyListed(_token, uint8(entry.intent))
-      );
+      require(entry.intent != Intents.NONE, Errors.ForwardingTable__NoneIntent());
+      require(intents[entry.intent].sweepTip == 0, Errors.ForwardingTable__IntentAlreadyListed(_token, entry.intent));
       require(entry.sweepTip > 0, Errors.ForwardingTable__ZeroSweepTip());
       intents[entry.intent] = Fees({beneficiaryFee: entry.beneficiaryFee, sweepTip: entry.sweepTip});
     }

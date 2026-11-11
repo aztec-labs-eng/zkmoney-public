@@ -1,28 +1,32 @@
 import { useSyncExternalStore } from "react"
-import * as actual from "../../../src/session/l1Wallet"
-import { DEMO_L1_ACCOUNT } from "../../../src/dev/fakeL1Rpc"
-import { fixtureState, pause } from "./control"
-export * from "../../../src/session/l1Wallet"
-let connected = false
-// The stand-in picker: up from the connect click until the fake wallet lands.
+import * as actual from "../../../src/session/useL1Wallet"
+import { useSession } from "../../../src/session/session"
+import { fixtureState } from "./control"
+// The stand-in picker: up from the connect click until the page's fake wallet lands.
 let picking = false
 const listeners = new Set<() => void>()
 const subscribe = (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener) } }
-const notify = () => listeners.forEach((listener) => listener())
-const setConnected = (value: boolean) => { connected = value; picking = false; notify() }
+const setPicking = (value: boolean) => { picking = value; listeners.forEach((listener) => listener()) }
+/** The real hook over the demo page's fake wallet, with RainbowKit's picker stood in for. */
 export const useL1Wallet: typeof actual.useL1Wallet = (opts) => {
   const real = actual.useL1Wallet(opts)
-  const active = useSyncExternalStore(subscribe, () => connected)
+  const { page } = useSession()
   const pickerOpen = useSyncExternalStore(subscribe, () => picking)
   if (!fixtureState()) return real
+  const connectAnother: typeof real.connectAnother = (then) => {
+    setPicking(true)
+    void page.l1Wallet.connectAnother(() => {}, () => picking).then((wallet) => {
+      setPicking(false)
+      if (wallet) then?.(wallet)
+    })
+  }
+  const connect = async () => connectAnother()
   return {
-    account: active ? DEMO_L1_ACCOUNT : null,
-    accounts: active ? [DEMO_L1_ACCOUNT] : [],
-    chainId: active ? opts?.expectedChainId ?? 31337 : null,
-    walletName: active ? "Capture wallet" : null,
-    connecting: false, wrongChain: false, pickerOpen,
-    connect: async () => { picking = true; notify(); await pause(300); setConnected(true) },
-    disconnect: () => setConnected(false),
-    switchNetwork: async () => {}, selectAccount: () => {}, switchAccount: async () => {},
+    ...real,
+    pickerOpen,
+    connect,
+    connectAnother,
+    openPicker: connect,
+    pickerShown: () => picking,
   }
 }

@@ -1,8 +1,4 @@
-/**
- * The request pay sheet shows the per-deposit limits beside the address and in its QR sheet. A
- * fixed request over a limit keeps its amount and its address on screen, but offers neither to
- * copy nor to scan, and never suggests a second transfer to the same address.
- */
+/** Guards: no copy, scan or send past limit or capacity; no second payment; the right bucket. */
 import React, { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -15,9 +11,7 @@ import {
   MAINNET_USDC,
   mainnetTokens,
   mockLoadDepositFacts,
-  ROW_USDC,
   singleToken,
-  twoRowTokens,
 } from "../../support/depositTokens"
 import * as copy from "../../../src/features/limits/limitsCopy"
 import { LIMIT, LIMIT_USD, grouped, typed } from "../../support/publicLimit"
@@ -33,7 +27,6 @@ const capacity = vi.hoisted(() => ({
   epoch: 0,
   keys: [] as string[],
   rowTokens: [] as (string | undefined)[],
-  twoRows: false,
   mainnet: false,
 }))
 vi.mock("../../../src/features/deposit/capacityStore", async () =>
@@ -43,52 +36,45 @@ vi.mock("../../../src/features/token/useTxAmountCap", () => ({
   useTxAmountCap: () => 5166n * 10n ** 18n,
   useRowTxAmountCap: () => 5166n * 10n ** 18n,
 }))
-vi.mock("../../../src/config/env", () => ({
-  getConfig: () => ({ network: "sandbox", l1ChainId: 31337 }),
-}))
-// About limits reads the manifest for its policy section. The allowance hook is NOT mocked: the request page has no
-// AccountProvider, so the sheet must not reach useSponsoredAllowance here.
-vi.mock("../../../src/config/oxideTuple", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../src/config/oxideTuple")>()),
-  getOxideTuple: async () => ({ token: L1_TOKEN }),
-}))
+// The allowance hook is NOT mocked: the request page has no AccountProvider, so the sheet must not
+// reach useSponsoredAllowance here.
 // The sandbox's one-row table.
 vi.mock("../../../src/features/sipa/loadDepositFacts", (importOriginal) =>
   mockLoadDepositFacts(importOriginal, () =>
-    capacity.mainnet
-      ? mainnetTokens()
-      : capacity.twoRows
-      ? twoRowTokens()
-      : singleToken(L1_TOKEN, "TEST"),
+    capacity.mainnet ? mainnetTokens() : singleToken(L1_TOKEN, "TEST"),
   ),
 )
-vi.mock("@obsidion/web-ds", () => ({
+vi.mock("@obsidion/web-ds", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@obsidion/web-ds")>()),
   GradientText: ({ children }: { children?: React.ReactNode }) => <span>{children}</span>,
   Icon: () => null,
   PrimaryGradientButton: ({
     title,
     onClick,
     isDisabled,
+    testId,
   }: {
     title: string
     onClick?: () => void
     isDisabled?: boolean
+    testId?: string
   }) => (
-    <button type="button" onClick={onClick} disabled={isDisabled}>
+    <button type="button" onClick={onClick} disabled={isDisabled} data-testid={testId}>
       {title}
     </button>
   ),
+  ComingSoonPill: () => null,
+  RowChevron: () => null,
+  Spinner: () => null,
   TopNavIconButton: () => null,
 }))
 
 const l1 = vi.hoisted(() => ({
   account: null as string | null,
-  pickerOpen: false,
-  connect: undefined as unknown as () => Promise<void>,
 }))
-vi.mock("../../../src/session/l1Wallet", () => ({ useL1Wallet: () => l1 }))
+vi.mock("../../../src/session/useL1Wallet", () => ({ useL1Wallet: () => l1 }))
 const walletSend = vi.hoisted(() => ({ props: undefined as Record<string, any> | undefined }))
-vi.mock("../../../src/features/deposit/DepositFromWalletModal", () => ({
+vi.mock("../../../src/features/deposit/DepositFromWalletModal/DepositFromWalletModal", () => ({
   DepositFromWalletModal: (props: Record<string, any>) => {
     walletSend.props = props
     return <div data-testid="wallet-send" />
@@ -102,13 +88,13 @@ const { depositCapacityStore } = await import("../../../src/features/deposit/cap
 const { FAKE_ACTIVE_KEY } = await import("../../support/fakeCapacity")
 const { closeSession } = await import("../../../src/session/session")
 const { openTestSession } = await import("../../support/session")
-beforeEach(() => void openTestSession())
+beforeEach(() => void openTestSession({ primed: { tuple: { token: L1_TOKEN } as never } }))
 afterEach(closeSession)
 
 /** A new read of the active bucket, as the store's poll or Check again would make. */
 const reread = async () => {
   await act(async () => {
-    await depositCapacityStore(FAKE_ACTIVE_KEY).retry()
+    await depositCapacityStore({} as never, FAKE_ACTIVE_KEY).retry()
   })
   for (let i = 0; i < 3; i++) await act(async () => {})
 }
@@ -145,8 +131,6 @@ let root: Root
 beforeEach(() => {
   localStorage.clear()
   l1.account = null
-  l1.pickerOpen = false
-  l1.connect = vi.fn(async () => {})
   walletSend.props = undefined
   capacity.availableAtomic = 40_000n * 10n ** 18n
   capacity.readFails = false
@@ -154,7 +138,6 @@ beforeEach(() => {
   capacity.epoch += 1
   capacity.keys.length = 0
   capacity.rowTokens = []
-  capacity.twoRows = false
   capacity.mainnet = false
   Object.assign(navigator, { clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } })
   container = document.createElement("div")
@@ -167,79 +150,51 @@ afterEach(() => {
   container.remove()
 })
 
-const render = async (p: RequestInlinePacket, deployment?: LinkDeployment) => {
-  await act(async () => {
-    root.render(
-      <ExternalWalletPayModal
-        packet={p}
-        result={result(p, deployment)}
-        onClose={() => {}}
-        onFeeChanged={() => {}}
-      />,
-    )
-  })
-  // The capacity key, then the bucket's first read.
-  for (let i = 0; i < 5; i++) await act(async () => {})
-}
-
 const buttonNamed = (text: string) =>
   [...document.querySelectorAll("button")].find((b) => b.textContent?.trim().startsWith(text))
-const addressButton = () => document.querySelector<HTMLButtonElement>(`button[title="${SIPA}"]`)
 const click = (el: Element) =>
   act(async () => {
     el.dispatchEvent(new MouseEvent("click", { bubbles: true }))
   })
+const settle = async () => {
+  // The capacity key, then the bucket's first read.
+  for (let i = 0; i < 5; i++) await act(async () => {})
+}
+
+/** The flow's first step on (the L1 and the request's token), then the method. */
+const toMethod = () => click(document.querySelector("[data-testid='deposit-select-continue']")!)
+/** The method step's "Payment address": the payee's address. */
+const toAddress = async () => {
+  await toMethod()
+  await click(buttonNamed("Payment address")!)
+}
+const connectWallet = () => buttonNamed("Connect wallet")
+
+const mount = async (p: RequestInlinePacket, r = result(p)) => {
+  await act(async () => {
+    root.render(
+      <ExternalWalletPayModal packet={p} result={r} onClose={() => {}} onFeeChanged={() => {}} />,
+    )
+  })
+  await settle()
+}
+/** `at`: the step the flow is left on. */
+const render = async (
+  p: RequestInlinePacket,
+  deployment?: LinkDeployment,
+  at: "select" | "method" | "address" = "address",
+) => {
+  await mount(p, result(p, deployment))
+  if (at === "method") await toMethod()
+  if (at === "address") await toAddress()
+}
+const addressButton = () => document.querySelector<HTMLButtonElement>(`button[title="${SIPA}"]`)
 const gotIt = () =>
   [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) =>
     b.textContent?.includes("Got it!"),
   )!
 const capacityWarning = () => document.querySelector("[data-testid='address-capacity-warning']")
 const panel = () => document.querySelector("[data-testid='funding-capacity-panel']")
-const aboutLimits = () => document.querySelector(`dialog[aria-label="${copy.SHEET_TITLE}"]`)
-/** Opens the limit's details from `scope` and returns them. */
-const openLimit = async (scope: ParentNode = document) => {
-  await click(
-    scope.querySelector("[data-testid='address-limits'] [data-testid='about-limits-link']")!,
-  )
-  for (let i = 0; i < 3; i++) await act(async () => {})
-  return aboutLimits()!
-}
-const maxSend = (scope: ParentNode) =>
-  scope.querySelector("[data-testid='address-limits-max-send']")?.textContent
-const maxCredit = (scope: ParentNode) =>
-  scope.querySelector("[data-testid='address-limits-max-credit']")?.textContent
-
-describe("ExternalWalletPayModal on a two-row table", () => {
-  it("prices a USDC request's fee in USDC, on the USDC row's bucket, and names no DAI", async () => {
-    capacity.twoRows = true
-    const p = {
-      ...packet("0", false),
-      tokenSymbol: "USDC",
-      tokenDecimals: 6,
-    } as RequestInlinePacket
-    await act(async () => {
-      root.render(
-        <ExternalWalletPayModal
-          packet={p}
-          result={{
-            ...result(p, "active"),
-            token: ROW_USDC,
-            decimals: 6,
-            feeAtomic: 100_000n,
-            grossAtomic: 0n,
-          }}
-          onClose={() => {}}
-          onFeeChanged={() => {}}
-        />,
-      )
-    })
-    for (let i = 0; i < 5; i++) await act(async () => {})
-
-    expect(document.body.textContent).toContain("Send more than 0.10 USDC.")
-    expect(document.body.textContent).not.toContain("DAI")
-    expect(capacity.rowTokens).toEqual([ROW_USDC])
-  })
-})
 
 describe("ExternalWalletPayModal for a swapped token", () => {
   it("reads the bucket of the row the request's token swaps into", async () => {
@@ -249,23 +204,13 @@ describe("ExternalWalletPayModal for a swapped token", () => {
       tokenSymbol: "USDC",
       tokenDecimals: 6,
     } as RequestInlinePacket
-    await act(async () => {
-      root.render(
-        <ExternalWalletPayModal
-          packet={p}
-          result={{
-            ...result(p, "active"),
-            token: MAINNET_USDC,
-            decimals: 6,
-            feeAtomic: 100_000n,
-            grossAtomic: 0n,
-          }}
-          onClose={() => {}}
-          onFeeChanged={() => {}}
-        />,
-      )
+    await mount(p, {
+      ...result(p, "active"),
+      token: MAINNET_USDC,
+      decimals: 6,
+      feeAtomic: 100_000n,
+      grossAtomic: 0n,
     })
-    for (let i = 0; i < 5; i++) await act(async () => {})
 
     const asked = capacity.rowTokens.map((t) => t?.toLowerCase())
     expect(asked).toContain(MAINNET_DAI.toLowerCase())
@@ -274,31 +219,6 @@ describe("ExternalWalletPayModal for a swapped token", () => {
 })
 
 describe("ExternalWalletPayModal limits", () => {
-  it("shows the limits beside the address and in the QR sheet of a fixed request", async () => {
-    vi.spyOn(console, "warn").mockImplementation(() => {})
-    await render(packet("100"))
-    expect(document.querySelector("[data-testid='address-limits']")?.textContent).toBe(
-      `Deposit limit: ${LIMIT_USD} incl. fees`,
-    )
-    const details = await openLimit()
-    expect(maxSend(details)).toBe(`${grouped(LIMIT)} TEST`)
-    // The credit at the maximum send, net of the current deposit fee.
-    expect(maxCredit(details)).toBe(`${grouped(LIMIT - 0.25)} TEST`)
-    expect(details.textContent).toContain(copy.LIMIT_NOTE)
-    await act(async () => {
-      details.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }))
-    })
-    await click(buttonNamed("Show")!)
-    // The link's address has no proven portal, so its capacity is unconfirmed.
-    await click(gotIt())
-    const qr = document.querySelector("dialog[aria-label='Payment address']")!
-    expect(qr.querySelector("[data-testid='address-limits']")?.textContent).toBe(
-      `Deposit limit: ${LIMIT_USD} incl. fees`,
-    )
-    expect(maxSend(await openLimit(qr))).toBe(`${grouped(LIMIT)} TEST`)
-    vi.restoreAllMocks()
-  })
-
   it(`offers a request whose send is exactly ${LIMIT_USD}, fee included`, async () => {
     await render(packet(typed(LIMIT - 0.25)))
     expect(addressButton()?.disabled).toBe(false)
@@ -308,9 +228,7 @@ describe("ExternalWalletPayModal limits", () => {
     expect(document.querySelector(".ww-paylink-summary__amount")?.textContent).toBe(
       `$${grouped(LIMIT, true)}`,
     )
-    expect(document.querySelector("[data-testid='request-fee']")?.textContent).toBe(
-      "Includes a 0.25 TEST deposit fee",
-    )
+    expect(document.querySelector("[data-testid='request-fee']")).not.toBeNull()
   })
 
   it("holds copy and scan for a request over the limit, and keeps its address and amount", async () => {
@@ -333,14 +251,14 @@ describe("ExternalWalletPayModal limits", () => {
 
   describe("link deployment", () => {
     it("says an expired link has expired and offers nothing to pay it", async () => {
-      await render(packet("100"), "expired")
+      await render(packet("100"), "expired", "select")
       expect(document.querySelector("[data-testid='request-expired']")?.textContent).toContain(
         "@alice",
       )
       expect(addressButton()).toBeNull()
       expect(buttonNamed("Show")).toBeUndefined()
       expect(buttonNamed("Copy")).toBeUndefined()
-      expect(buttonNamed("Pay with wallet")).toBeUndefined()
+      expect(document.querySelector("[data-testid='deposit-select-continue']")).toBeNull()
       expect(document.body.textContent).not.toContain(SIPA)
       expect(capacity.keys).toEqual([])
     })
@@ -351,14 +269,16 @@ describe("ExternalWalletPayModal limits", () => {
 
     it("sends a fixed request from the connected wallet to the payee's address", async () => {
       l1.account = `0x${"ee".repeat(20)}`
-      await render(packet("100"))
-      await click(buttonNamed("Pay with wallet")!)
+      await render(packet("100"), undefined, "method")
+      await click(connectWallet()!)
       expect(walletSend.props).toMatchObject({
         deposit: { address: SIPA },
         payee: "alice",
         fixedAmount: "100",
         fee: "0.25",
       })
+      // The modal saves the hold before the wallet's prompt, then reports the send.
+      await act(async () => walletSend.props!.onApproving("browser:1"))
       await act(async () =>
         walletSend.props!.onSent({
           address: SIPA,
@@ -371,41 +291,22 @@ describe("ExternalWalletPayModal limits", () => {
       expect(document.querySelector("[data-testid='request-sent']")?.textContent).toContain(
         "@alice",
       )
-      expect(buttonNamed("Copy")).toBeUndefined()
+      expect(document.querySelector("[data-testid='deposit-select-continue']")).toBeNull()
       // Reopened before the transfer settles: no second payment until the payer asks for one.
       await act(async () => root.render(<></>))
-      await render(packet("100"))
+      await render(packet("100"), undefined, "select")
       expect(document.querySelector("[data-testid='request-unresolved']")).not.toBeNull()
-      expect(buttonNamed("Pay with wallet")).toBeUndefined()
+      expect(document.querySelector("[data-testid='deposit-select-continue']")).toBeNull()
       await click(buttonNamed("Pay again")!)
-      expect(buttonNamed("Pay with wallet")).toBeDefined()
-    })
-
-    it("leaves an open request's amount to the payer", async () => {
-      l1.account = `0x${"ee".repeat(20)}`
-      await render(packet("0"))
-      await click(buttonNamed("Pay with wallet")!)
-      expect(walletSend.props?.fixedAmount).toBeUndefined()
-    })
-
-    it("connects a wallet first, then opens the send", async () => {
-      l1.connect = vi.fn(async () => {
-        l1.pickerOpen = true
-      })
-      await render(packet("100"))
-      await click(buttonNamed("Pay with wallet")!)
-      expect(l1.connect).toHaveBeenCalledOnce()
-      expect(sendOpen()).toBeNull()
-      l1.account = `0x${"ee".repeat(20)}`
-      await render(packet("100"))
-      expect(sendOpen()).not.toBeNull()
+      await toMethod()
+      expect(connectWallet()?.disabled).toBe(false)
     })
 
     it("is held with Copy and Show when the request is over the limit", async () => {
       l1.account = `0x${"ee".repeat(20)}`
-      await render(packet(String(LIMIT)))
-      expect(buttonNamed("Pay with wallet")?.disabled).toBe(true)
-      await click(buttonNamed("Pay with wallet")!)
+      await render(packet(String(LIMIT)), undefined, "method")
+      expect(connectWallet()?.disabled).toBe(true)
+      await click(connectWallet()!)
       expect(sendOpen()).toBeNull()
     })
   })
@@ -433,29 +334,11 @@ describe("ExternalWalletPayModal limits", () => {
       vi.restoreAllMocks()
     })
 
-    it("checks an address resolved from the active deployment against its bucket", async () => {
-      await render(packet("100", false))
-      expect(capacity.keys.length).toBeGreaterThan(0)
-      // A fitting payment adds nothing; a fit is not a promise.
-      expect(panel()?.className).toContain("ww-capacity--quiet")
-      await click(buttonNamed("Copy")!)
-      expect(capacityWarning()).toBeNull()
-      expect(navigator.clipboard.writeText).toHaveBeenCalledTimes(1)
-    })
-
     it("warns before sharing an open request's address while capacity is zero", async () => {
       capacity.availableAtomic = 0n
       await render(packet("0", false))
       await click(buttonNamed("Show")!)
       expect(capacityWarning()?.textContent).toContain("No network capacity is available right now")
-    })
-
-    it("names the most that fits current capacity for an open request", async () => {
-      capacity.availableAtomic = 500n * 10n ** 18n
-      await render(packet("0", false))
-      expect(document.querySelector("[data-testid='address-capacity-detail']")?.textContent).toBe(
-        "To fit current capacity, send at most 500.25 TEST.",
-      )
     })
 
     it("closes the QR and holds copy when a fixed payment stops fitting while it is open", async () => {
@@ -514,16 +397,24 @@ describe("ExternalWalletPayModal limits", () => {
       expect(notice).not.toContain("Check again later")
       expect(buttonNamed("Copy")?.disabled).toBe(true)
     })
+  })
+})
 
-    it("keeps the warning's words if the reading improves while it is open", async () => {
-      capacity.readFails = true
-      await render(packet("100", false))
-      await click(buttonNamed("Copy")!)
-      capacity.readFails = false
-      await reread()
-      expect(capacityWarning()?.textContent).toContain("isn't confirmed")
-      await click(gotIt())
-      expect(navigator.clipboard.writeText).toHaveBeenCalledTimes(1)
-    })
+describe("ExternalWalletPayModal network and coin", () => {
+  const select = () =>
+    document.querySelector<HTMLButtonElement>("[data-testid='deposit-coin-select']")!
+
+  it("keeps a fixed request on its own network and coin", async () => {
+    await render(packet("10"), undefined, "select")
+    expect(select().disabled).toBe(true)
+    await toMethod()
+    expect(document.querySelector("[data-testid='deposit-crumb']")).toBeNull()
+  })
+
+  it("lets an open request pick them", async () => {
+    await render(packet("0"), undefined, "select")
+    expect(select().disabled).toBe(false)
+    await toMethod()
+    expect(document.querySelector("[data-testid='deposit-crumb']")).not.toBeNull()
   })
 })

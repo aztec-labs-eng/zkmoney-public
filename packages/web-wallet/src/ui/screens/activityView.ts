@@ -2,12 +2,14 @@
  * What the activity rows and their detail sheets say about a feed item: words from the row copy,
  * dollars from base units.
  */
-import { PaylinkActionEnum } from "@obsidion/core/constants"
+import { formatUnits } from "viem"
+import { DEFAULT_DECIMALS, PaylinkActionEnum } from "@obsidion/core/constants"
 import type { StatusLabel } from "@obsidion/web-ds"
 import {
   depositAmounts,
   depositPhaseCopy,
   failureReason,
+  FUNDING_STATUS,
   isNativeEth,
   isZeroAddress,
   neverCreditsL2,
@@ -19,7 +21,7 @@ import {
   type FeedItem,
   type Money,
   type PaylinkStatusKind,
-  type PaylinkTransaction,
+  type PaylinkRecord,
   type PaymentRequest,
   type SipaDeposit,
   type TokenTransaction,
@@ -83,10 +85,10 @@ export interface ActivityRowView {
    */
   creatorAction?: CreatorLinkAction
   /**
-   * The stored row behind a creator paylink row. The detail modal's reclaim/cancel gate reads
-   * fields no view row carries (flavor, claim window, creator, refund material).
+   * The link behind a creator paylink row. The detail modal's reclaim/cancel gate reads fields no
+   * view row carries (flavor, claim window, creator, refund material).
    */
-  paylinkRow?: PaylinkTransaction
+  paylinkRow?: PaylinkRecord
 }
 
 /** Reconstruction fragment of a stored claim URL; null when the URL carries none. */
@@ -141,13 +143,15 @@ export function depositRowAmount(
   exitable: boolean,
   /** The row token's, which the record's amounts are in. */
   decimals?: number,
+  /** The price a tag purchase row lists for this deposit, which the figure adds to its net. */
+  tagPrice = 0n,
 ): string {
   const amounts = depositAmounts(record, decimals)
   const gross = depositGrossFigure(record, "row", decimals)
   if (neverCreditsL2(record.phase)) return gross
   // An exact net needs a stored fee or a stored net; crediting a record with neither hands the user the fee.
   if ((amounts.feeKnown || record.netAmount != null) && amounts.netAtomic > 0n)
-    return `+${usdFigure(amounts.netDisplay)}`
+    return `+${usdFigure(formatUnits(amounts.netAtomic + tagPrice, decimals ?? DEFAULT_DECIMALS))}`
   // A gross of zero on a phase still headed for L2 means the L1 amount is not read yet, never a real zero.
   return exitable || amounts.grossAtomic > 0n ? gross : DETECTING_AMOUNT
 }
@@ -189,11 +193,46 @@ function receiveLabel(from: string | undefined, contact: ContactRow | undefined)
   return from
 }
 
+type LinkItem = Extract<FeedItem, { kind: "link" }>
+
+/** A created link as its row and detail sheet show it. */
+export function linkRowView(item: LinkItem): ActivityRowView {
+  const { link, view, op } = item
+  const status = FUNDING_STATUS[item.funding]
+  const failure = op?.cause === "interrupted" ? { code: "tx.interrupted" as const } : undefined
+  return {
+    id: item.id,
+    counterparty: view.title,
+    avatarIcon: "link",
+    timestamp: rowTimestamp(link.timestamp),
+    timestampMs: link.timestamp,
+    amount: `-${usdCents(item.amount)}`,
+    statusLabel: view.statusLabel,
+    status,
+    error: failureReason({ status, action: PaylinkActionEnum.PAY, failure }),
+    txHash: link.txHash || undefined,
+    networkId: link.networkId,
+    note: link.memo || undefined,
+    paylink: link.paylink,
+    paylinkStatus: item.paylinkStatus,
+    refundTxHash: link.refundTxHash,
+    refundStatus: item.refundStatus,
+    canShare: view.canShare,
+    creatorAction: item.creatorAction,
+    paylinkRow: link,
+  }
+}
+
+/** A transfer or a created link: the items a transaction row shows. */
+export type RowItem = TxItem | LinkItem
+
+/** A row item as its row and detail sheet show it. */
+export const rowView = (item: RowItem): ActivityRowView =>
+  item.kind === "link" ? linkRowView(item) : txRowView(item)
+
 /** A transaction item as its row and detail sheet show it. */
 export function txRowView(item: TxItem): ActivityRowView {
   const { tx, link } = item
-  const create = tx.action === PaylinkActionEnum.PAY
-  const paylinkRow = create ? (tx as PaylinkTransaction) : undefined
   const counterparty = link
     ? link.title
     : tx.action === "faucet"
@@ -224,13 +263,7 @@ export function txRowView(item: TxItem): ActivityRowView {
     txHash: tx.txHash || undefined,
     networkId: tx.networkId,
     note: memo || undefined,
-    paylink: paylinkRow && typeof paylinkRow.paylink === "string" ? paylinkRow.paylink : undefined,
-    paylinkStatus: item.paylinkStatus,
-    refundTxHash: paylinkRow?.refundTxHash,
-    refundStatus: item.refundStatus,
     canShare: link?.canShare,
-    creatorAction: item.creatorAction,
-    paylinkRow,
   }
 }
 

@@ -28,19 +28,19 @@ function statusValue(label: string, badge: StatusBadgeStyle) {
   if (badge === "pending")
     return (
       <b data-tone="pending">
-        <Spinner size={11} color="#eed04e" /> {label}
+        <Spinner size={11} color="var(--accent-gold)" /> {label}
       </b>
     )
   if (badge === "failed")
     return (
       <b data-tone="failed">
-        <Icon name="alert-circle" size={16} color="#fe708b" /> {label}
+        <Icon name="alert-circle" size={16} color="var(--accent-pink)" /> {label}
       </b>
     )
   if (badge === "cancelled") return <b>{label}</b>
   return (
     <b data-tone="done">
-      <Icon name="check-circle" size={16} color="#56e79d" /> {label}
+      <Icon name="check-circle" size={16} color="var(--accent-green)" /> {label}
     </b>
   )
 }

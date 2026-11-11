@@ -8,6 +8,7 @@
  * guarded here to `false` and drops the demo chunk entirely.
  */
 
+import { tabStash } from "../platform/storage/tabStash"
 import scenarios from "./demoScenarios.json"
 
 export type DemoScenario = keyof typeof scenarios
@@ -23,15 +24,17 @@ const SESSION_KEY = "webwallet.demo"
  * the query string, so re-parsing per render would switch demo mode off under the user's feet.
  * `?demo=off` clears the latch.
  */
+// eslint-disable-next-line no-restricted-syntax -- debt
 let latched: DemoScenario | null | undefined
 
 function isScenario(value: string | null): value is DemoScenario {
   return DEMO_SCENARIOS.includes(value as DemoScenario)
 }
 
-function session(): Storage | undefined {
+/** The tab's stash; none where the browser refuses it. */
+function session(): typeof tabStash | undefined {
   try {
-    return window.sessionStorage
+    return window.sessionStorage ? tabStash : undefined
   } catch {
     return undefined
   }
@@ -41,11 +44,11 @@ function resolve(): DemoScenario | null {
   if (!import.meta.env.DEV || typeof window === "undefined") return null
   const param = new URLSearchParams(window.location.search).get("demo")
   if (param === "off") {
-    session()?.removeItem(SESSION_KEY)
+    session()?.remove(SESSION_KEY)
     return null
   }
   const requested =
-    param === "" ? DEMO_DEFAULT_SCENARIO : param ?? session()?.getItem(SESSION_KEY) ?? null
+    param === "" ? DEMO_DEFAULT_SCENARIO : param ?? session()?.get(SESSION_KEY) ?? null
   if (requested !== null && !isScenario(requested)) {
     console.warn(
       `[demo] unknown scenario "${requested}" — expected ${DEMO_SCENARIOS.join(" | ")}; ` +
@@ -53,7 +56,7 @@ function resolve(): DemoScenario | null {
     )
     return null
   }
-  if (requested) session()?.setItem(SESSION_KEY, requested)
+  if (requested) session()?.set(SESSION_KEY, requested)
   return requested
 }
 
@@ -69,7 +72,7 @@ export function isDemoMode(): boolean {
 /** Seeding refusal seam: this origin holds a real wallet — boot the real app instead. */
 export function disableDemoMode(): void {
   latched = null
-  session()?.removeItem(SESSION_KEY)
+  session()?.remove(SESSION_KEY)
 }
 
 /** Test seam — drops the latch so a suite can exercise more than one URL. */

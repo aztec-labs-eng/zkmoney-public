@@ -1,0 +1,408 @@
+import {
+  BACKUP_ADD_TAKES_MS,
+  fundingLocalId,
+  RootPasskeyRequiredError,
+  WalletError,
+  type AllowanceSnapshot,
+  type BackupRotationRecord,
+  type BackupRotationStored,
+  type ResumeAnswer,
+} from "@obsidion/front-core"
+import {
+  backupAddOptionsFor,
+  BackupPasskeyRefusedError,
+  type BackupAddOptions,
+  type UserAgentInfo,
+} from "@obsidion/passkey-web"
+import { EcdsaK256AlphaAuthProvider, pubkeyHexOf, RotationRouteNotLiveError } from "@obsidion/sdk"
+import type { Address, Hex } from "viem"
+import { isDemoMode } from "../../../src/dev/demoFlag"
+import { DEMO_SIGNING_KEY_HEX } from "../../../src/dev/demoFixtures"
+import type { EntryFacts } from "../../../src/features/backupPasskey/backupPasskeyFacts"
+import type {
+  BackupScreenId,
+  BackupScreenInput,
+  EntryInput,
+} from "../../../src/features/backupPasskey/backupScreen"
+
+/*
+ * `?backupFixture=<name>` opens the Passkeys sheet on one screen of the backup passkey flow. Each
+ * fixture is what the selector reads, with the key list the sheet's own read returns; the real
+ * selector picks the screen and its props from it.
+ */
+
+const DAI = 10n ** 18n
+const word = (n: number) => `0x${n.toString(16).padStart(64, "0")}` as Hex
+const addr = (n: number) => `0x${n.toString(16).padStart(40, "0")}` as Address
+
+/** The L1 account the keys are installed on. */
+export const BACKUP_OWNER = addr(0x0b0e)
+const SIPA = addr(0x51)
+const TWO_KEY = word(0x2b)
+const BACKUP_PUBKEY = "b2".repeat(64)
+const OTHER_PUBKEY = "a1".repeat(64)
+
+let sessionPubkey: Promise<string> | undefined
+/** The session's own key, as the sheet's read compares it. */
+export const sessionPubkeyHex = () =>
+  (sessionPubkey ??= pubkeyHexOf(
+    new EcdsaK256AlphaAuthProvider(Buffer.from(DEMO_SIGNING_KEY_HEX, "hex")),
+  ))
+
+/** A key on the account; `session` is the one this session signs with. */
+export interface FixtureKey {
+  role: "sign-up" | "backup"
+  session: boolean
+  name?: string
+}
+
+/** What the sheet's key read answers. */
+export type FixtureKeys = "loading" | "unreadable" | "unverified" | readonly FixtureKey[]
+
+interface BackupFixture {
+  /** The screen the selector must pick, which the capture plans are keyed by. */
+  screen: BackupScreenId
+  keys: FixtureKeys
+  /** What overrides the host's own input. */
+  input: Partial<BackupScreenInput>
+}
+
+const SIGN_UP: FixtureKey = { role: "sign-up", session: true, name: "This Mac" }
+const BOTH: readonly FixtureKey[] = [SIGN_UP, { role: "backup", session: false, name: "iPhone" }]
+/** A session signed in with a key the account doesn't list as installed here. */
+const ELSEWHERE: readonly FixtureKey[] = [{ ...SIGN_UP, session: false }]
+
+/** The installed key's pubkey: the session's own, else one the session doesn't hold. */
+export const keyPubkey = (key: FixtureKey, session: string) =>
+  key.session ? session : key.role === "backup" ? BACKUP_PUBKEY : OTHER_PUBKEY
+
+const ALLOWANCE: AllowanceSnapshot = {
+  status: "ready",
+  read: {
+    fpcAddress: "0x1",
+    railId: 0,
+    payer: "0x2",
+    allowance: { subscribed: true, uses: 10, maxTx: 10, refillPeriod: 0 },
+  },
+  state: { kind: "available", available: 10, renews: false },
+  refreshing: false,
+}
+const FACTS: EntryFacts = {
+  routeLive: true,
+  balance: 120n * DAI,
+  fundingAmount: 2n * DAI,
+  chunk: { kind: "fits" },
+  plan: true,
+  moves: 2,
+  savingsMoving: false,
+  withdrawalInFlight: false,
+  links: 0,
+  historicBalance: false,
+  quote: {
+    total: (6n * DAI) / 10n,
+    fixed: (35n * DAI) / 100n,
+    network: (25n * DAI) / 100n,
+    takesMs: BACKUP_ADD_TAKES_MS,
+  },
+}
+const DEVICE: UserAgentInfo = {
+  osFamily: "macos",
+  osVersionReported: "15",
+  browserFamily: "chrome",
+  browserVersionReported: "140",
+}
+const PLACE: BackupAddOptions = backupAddOptionsFor({
+  reach: "ok",
+  extension: "none",
+  protonKept: false,
+  ignoresHints: false,
+  os: "macos",
+})
+const entry = (over: Partial<EntryInput> = {}): EntryInput => ({
+  allowance: ALLOWANCE,
+  facts: FACTS,
+  railFailed: false,
+  registering: false,
+  device: DEVICE,
+  place: PLACE,
+  ...over,
+})
+const WITHDRAWING = entry({ facts: { ...FACTS, withdrawalInFlight: true } })
+const NO_ROUTE = entry({ facts: { ...FACTS, routeLive: false } })
+/** A one-key account that may start an add. */
+const start = (over: Partial<BackupScreenInput> = {}): Partial<BackupScreenInput> => ({
+  saved: null,
+  addable: true,
+  laptop: true,
+  entry: entry(),
+  ...over,
+})
+
+const ATTEMPT = "capture-attempt"
+const PLAN = {
+  address: TWO_KEY,
+  fundingAmount: (2n * DAI).toString(),
+  deposited: ((18n * DAI) / 10n).toString(),
+  credited: ((14n * DAI) / 10n).toString(),
+  approvals: 1,
+  moves: 2,
+}
+const ROTATION: BackupRotationStored = {
+  owner: BACKUP_OWNER,
+  intent: {
+    rollupVersion: "6",
+    recipientCommitment: word(5),
+    owner: BACKUP_OWNER,
+    nonce: "7",
+    accountGasLimits: word(8),
+    record: {
+      l2Address: TWO_KEY,
+      rollupVersion: "6",
+      publicKey: { x: "11", y: "12" },
+      resolverOperator: addr(13),
+    },
+    namePortalRecipient: TWO_KEY,
+    key: { qx: word(21), qy: word(22) },
+    metadata: "0x0134",
+  },
+  sharedSecretSalt: word(9),
+  nonce: "7",
+  builtOver: {
+    l2Address: word(10),
+    rollupVersion: "6",
+    publicKey: { x: "11", y: "12" },
+    resolverOperator: addr(13),
+  },
+  expectedKeys: [{ key: { qx: word(14), qy: word(15) }, metadata: "0x" }],
+  implementation: addr(16),
+  deployArgs: {
+    implementation: addr(16),
+    intentHash: word(17),
+    recoveryCommitment: word(18),
+    rollupVersion: "6",
+    resweepable: false,
+    forwardingTable: addr(19),
+  },
+  sipa: SIPA,
+  add: { pubkey: { qx: word(21), qy: word(22) }, credentialId: "0x2324", envelope: "0x25" },
+  signature: "0x26",
+}
+const STARTED = Date.parse("2026-09-01T11:48:00.000Z")
+/** The capture's wall time: 15 minutes after the funding went out, inside the quoted time. */
+export const CAPTURE_NOW = STARTED + 19 * 60_000
+
+const created = (over: Partial<BackupRotationRecord> = {}): BackupRotationRecord => ({
+  owner: BACKUP_OWNER,
+  attemptId: ATTEMPT,
+  phase: "created",
+  backup: {
+    credentialId: "capture-backup",
+    pubkeyHex: BACKUP_PUBKEY,
+    envelopeHex: "01".repeat(62),
+    userHandle: "Y2FwdHVyZQ",
+    prfSlot: "first",
+    securityKey: false,
+  },
+  fundings: [],
+  createdAt: STARTED,
+  updatedAt: STARTED,
+  ...over,
+})
+const signed = (over: Partial<BackupRotationRecord> = {}) =>
+  created({ phase: "signed", plan: PLAN, rotation: ROTATION, fromBlock: 50, ...over })
+const funding = (
+  outcome: BackupRotationRecord["fundings"][number]["outcome"] = "pending",
+): Pick<BackupRotationRecord, "fundings"> => ({
+  fundings: [
+    {
+      attemptId: ATTEMPT,
+      localId: fundingLocalId(ATTEMPT),
+      sentAt: STARTED + 4 * 60_000,
+      session: "capture",
+      txHash: word(0x101),
+      expiresAtMs: STARTED + 60 * 60_000,
+      outcome,
+    },
+  ],
+})
+const moving = (over: Partial<BackupRotationRecord> = {}) =>
+  signed({ phase: "moved", ...funding("swept"), ...over })
+const parked = (
+  attention: BackupRotationRecord["attention"],
+  over: Partial<BackupRotationRecord> = {},
+) => signed({ phase: "attention", ...(attention && { attention }), suspended: "funded", ...over })
+
+/** The saved record, with the driver's answer for it. */
+const saved = (
+  record: BackupRotationRecord,
+  resume: ResumeAnswer | null = {},
+  over: Partial<BackupScreenInput> = {},
+): Partial<BackupScreenInput> => ({
+  saved: record,
+  deps: "ready",
+  drive: { record, ...(resume && { resume }), approving: false },
+  ...over,
+})
+/** A fresh attempt whose Approve tap failed with `error`. */
+const approveFailed = (error: unknown) =>
+  saved(created(), null, { failure: { step: "approve", error, attemptId: ATTEMPT } })
+const closed = () => new DOMException("The passkey request was closed", "NotAllowedError")
+
+export const BACKUP_FIXTURES = {
+  "loading": { screen: "loading", keys: "loading", input: {} },
+  "loading-rotation": {
+    screen: "loading",
+    keys: [SIGN_UP],
+    input: { saved: signed(), deps: "building" },
+  },
+  // A1
+  "keys": { screen: "keys", keys: [SIGN_UP], input: start() },
+  "keys-two": { screen: "keys", keys: BOTH, input: { saved: null } },
+  "keys-unregistered": { screen: "keys", keys: "unverified", input: start() },
+  // A2, A3
+  "intro": { screen: "intro", keys: [SIGN_UP], input: start({ start: "intro" }) },
+  "place": { screen: "place", keys: [SIGN_UP], input: start({ start: "place" }) },
+  // B1-B4
+  "blocked": {
+    screen: "blocked",
+    keys: [SIGN_UP],
+    input: start({ start: "intro", entry: WITHDRAWING }),
+  },
+  "unavailable": {
+    screen: "unavailable",
+    keys: [SIGN_UP],
+    input: start({ start: "intro", entry: NO_ROUTE }),
+  },
+  "unavailable-raised": {
+    screen: "unavailable",
+    keys: [SIGN_UP],
+    input: approveFailed(new RotationRouteNotLiveError("capture")),
+  },
+  "unreadable-keys": { screen: "unreadable", keys: "unreadable", input: { saved: null } },
+  "unreadable-entry": {
+    screen: "unreadable",
+    keys: [SIGN_UP],
+    input: start({ start: "intro", entry: entry({ facts: "unreadable" }) }),
+  },
+  "unreadable-deps": {
+    screen: "unreadable",
+    keys: [SIGN_UP],
+    input: { saved: signed(), deps: "failed" },
+  },
+  "first-passkey": { screen: "firstPasskey", keys: ELSEWHERE, input: start({ start: "intro" }) },
+  "first-passkey-raised": {
+    screen: "firstPasskey",
+    keys: ELSEWHERE,
+    input: approveFailed(new RootPasskeyRequiredError()),
+  },
+  // A4, the pay step, C3
+  "approve": { screen: "approve", keys: [SIGN_UP], input: saved(created(), null) },
+  "approve-publish": { screen: "approve", keys: [SIGN_UP], input: saved(signed()) },
+  "approve-pay": {
+    screen: "approve",
+    keys: [SIGN_UP],
+    input: saved(signed({ phase: "published" }), { wait: "funding" }),
+  },
+  "approve-declined": {
+    screen: "approve",
+    keys: [SIGN_UP],
+    input: approveFailed(closed()),
+  },
+  // A5, C6
+  "adding": {
+    screen: "adding",
+    keys: [SIGN_UP],
+    input: saved(signed({ phase: "funded", ...funding() })),
+  },
+  "adding-delayed": {
+    screen: "adding",
+    keys: [SIGN_UP],
+    input: saved(parked("route", funding())),
+  },
+  // A6, C6, C7
+  "finish": {
+    screen: "finish",
+    keys: [SIGN_UP],
+    input: saved(moving(), { wait: "approval" }),
+  },
+  "finish-declined": {
+    screen: "finish",
+    keys: [SIGN_UP],
+    input: saved(
+      moving({
+        move: { runs: [{ plannedAt: 1, m: 1, depositBound: false, declined: true, chunks: [] }] },
+      }),
+      { wait: "declined" },
+    ),
+  },
+  "finish-uses": {
+    screen: "finish",
+    keys: [SIGN_UP],
+    input: saved(moving(), { wait: "uses" }),
+  },
+  "finish-paused": {
+    screen: "finish",
+    keys: [SIGN_UP],
+    input: saved(parked("move", { suspended: "moved", ...funding("swept") })),
+  },
+  // A7
+  "done": { screen: "done", keys: BOTH, input: saved(signed({ phase: "done" })) },
+  // C1, C2, C4, C5, C8
+  "failed-closed": {
+    screen: "failed",
+    keys: [SIGN_UP],
+    input: start({ failure: { step: "add", error: closed() } }),
+  },
+  "failed-refused": {
+    screen: "failed",
+    keys: [SIGN_UP],
+    input: start({
+      picked: "key",
+      failure: {
+        step: "add",
+        error: new BackupPasskeyRefusedError("key-no-prf", { userAgent: DEVICE }),
+      },
+    }),
+  },
+  "failed-changed": {
+    screen: "failed",
+    keys: [SIGN_UP],
+    input: saved(signed({ phase: "conflict" })),
+  },
+  "failed-unknown": {
+    screen: "failed",
+    keys: [SIGN_UP],
+    input: approveFailed(new Error("capture failure")),
+  },
+  "failed-route": {
+    screen: "failed",
+    keys: [SIGN_UP],
+    input: saved(parked("route", { suspended: "signed" })),
+  },
+  // Funding held at the deposit address, on its way back, or back.
+  "recovery": {
+    screen: "recovery",
+    keys: [SIGN_UP],
+    input: saved(parked("stranded", funding("mined"))),
+  },
+  "recovery-sent": {
+    screen: "recovery",
+    keys: [SIGN_UP],
+    input: saved(parked("stranded", { ...funding("mined"), recovery: { txHash: word(0xab) } })),
+  },
+  "recovery-recovered": {
+    screen: "recovery",
+    keys: [SIGN_UP],
+    input: saved(signed({ phase: "recovered", recovery: { txHash: word(0xab) } })),
+  },
+} as const satisfies Record<string, BackupFixture>
+
+/** The fixture this page was opened on, in demo mode only. */
+export function backupFixture(): BackupFixture | null {
+  if (!isDemoMode()) return null
+  const name = new URLSearchParams(location.search).get("backupFixture")
+  if (name === null) return null
+  if (!Object.hasOwn(BACKUP_FIXTURES, name))
+    throw new WalletError("invariant", `Unknown backup fixture: ${name}`)
+  return BACKUP_FIXTURES[name as keyof typeof BACKUP_FIXTURES]
+}

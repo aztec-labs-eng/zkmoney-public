@@ -5,7 +5,6 @@ import {
   SavingsFeeError,
   savingsMoveEta,
   savingsPaybackYears,
-  useSavings,
   useStore,
   type SavingsDirection,
   type SavingsMoveStage,
@@ -42,9 +41,8 @@ import {
   useSponsoredActionBlock,
 } from "../../allowance/SponsoredActionNotice"
 import { SavingsTermsAccept } from "../SavingsTerms"
-import { useBusyLabel } from "../../operations/operations"
+import { useBusyLabel, useUserFlowActive } from "../../operations/operations"
 import { OperationHandOff } from "../../operations/OperationHandOff"
-import { useUserFlowActive } from "../../provingGate"
 import { FEE_UNAVAILABLE_COPY, ProtocolFeeNote } from "../../withdraw/withdrawQuote"
 import { LimitNotice, usdFigureGrouped } from "../../limits/publicLimit"
 import {
@@ -56,9 +54,8 @@ import {
 import { apyPercent } from "../EarningsCalculator"
 import { SavingsQuoteChangedError } from "../quoteChanged"
 import { savingsEtaCopy, useSavingsMoveTiming } from "../savingsMoveTiming"
+import { moveSavings, quoteSavings } from "../savingsFlows"
 import { useTxAmountCap } from "../../token/useTxAmountCap"
-import { getConfig } from "../../../config/env"
-import { getSavingsTuple } from "../savingsGateway"
 import { useSession } from "../../../session/session"
 import styles from "./MoveFundsSheet.module.css"
 import copy from "./MoveFundsSheet.copy"
@@ -104,8 +101,6 @@ export function sharesFor(
  * ceremony is the last beat needing the user: `OperationHandOff` then closes the sheet while the
  * proof and the send carry on under the bell. Cancel is honored only while the burn is still building.
  */
-const savingsDeployment = () => getSavingsTuple(getConfig())
-
 export function MoveFundsSheet({
   direction: initialDirection,
   initialAmount = "",
@@ -116,9 +111,10 @@ export function MoveFundsSheet({
   onClose: () => void
 }) {
   const txAmountCap = useTxAmountCap()
-  const savingsCap = useTxAmountCap(savingsDeployment)
-  const { position, quote, move } = useSavings()
-  const wallet = useStore(useSession().balances.view)
+  const session = useSession()
+  const savingsCap = useTxAmountCap(session.page.chain.savingsTuple)
+  const { position } = useStore(session.savingsHolding)
+  const wallet = useStore(session.balances.view)
   const [direction, setDirection] = useState(initialDirection)
   const [amount, setAmount] = useState(initialAmount)
   const [maxed, setMaxed] = useState(false)
@@ -135,7 +131,8 @@ export function MoveFundsSheet({
   // A move in needs the terms accepted here, each time; a move out is the user's own funds coming back.
   const [accepted, setAccepted] = useState(false)
   const termsNeeded = direction === "in" && !accepted
-  const cancelled = useRef(false)
+  /** Aborted by a cancel, which only the build allows. */
+  const cancelled = useRef<AbortController | undefined>(undefined)
   const left = useRef(false)
   const outcome = useProvingOutcome("savings")
   const busy = useUserFlowActive()
@@ -146,7 +143,7 @@ export function MoveFundsSheet({
   const from = direction === "in" ? copy.main : copy.savings
   const to = direction === "in" ? copy.savings : copy.main
   const available = direction === "in" ? wallet.main?.atomic ?? 0n : position?.value ?? 0n
-  const availableKnown = direction === "in" ? wallet.live : position !== null
+  const availableKnown = direction === "in" ? wallet.readThisSession : position !== null
   const parsed = parseAmount(amount)
   const valueAtomic =
     !amountError(amount) && parsed > 0 ? parseUnits(amount, DEFAULT_DECIMALS) : undefined
@@ -190,21 +187,22 @@ export function MoveFundsSheet({
   const key =
     burnAtomic === undefined ? "" : `${direction}:${burnAtomic}:${feeOnTop ? "top" : "off"}`
 
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!key || burnAtomic === undefined || burnAtomic <= 0n || overspent) {
       setPriced(null)
       setQuoting(false)
       return
     }
-    let stale = false
+    const stale = new AbortController()
     setQuoting(true)
     const priceMove = async () => {
-      if (!feeOnTop) return quote(direction, burnAtomic)
+      if (!feeOnTop) return quoteSavings(session, direction, burnAtomic, stale.signal)
       // Burn the shortfall on top until the net lands at the typed figure; fees can move between quotes.
       let gross = burnAtomic
       for (let attempt = 0; attempt < 4; attempt++) {
         try {
-          const result = await quote("in", gross)
+          const result = await quoteSavings(session, "in", gross, stale.signal)
           if (result.net >= burnAtomic) return result
           gross += burnAtomic - result.net
         } catch (err) {
@@ -214,14 +212,15 @@ export function MoveFundsSheet({
       }
       throw new WalletError("savings.feeUnsettled")
     }
+    // eslint-disable-next-line local/timer-in-view -- debt
     const timer = setTimeout(() => {
       priceMove()
         .then(
           (result) => {
-            if (!stale) setPriced({ key, quote: result })
+            if (!stale.signal.aborted) setPriced({ key, quote: result })
           },
           (err: unknown) =>
-            !stale &&
+            !stale.signal.aborted &&
             setPriced({
               key,
               error:
@@ -230,13 +229,13 @@ export function MoveFundsSheet({
                   : FEE_UNAVAILABLE_COPY,
             }),
         )
-        .finally(() => !stale && setQuoting(false))
+        .finally(() => !stale.signal.aborted && setQuoting(false))
     }, QUOTE_DEBOUNCE_MS)
     return () => {
-      stale = true
+      stale.abort()
       clearTimeout(timer)
     }
-  }, [key, direction, burnAtomic, overspent, feeOnTop, quote])
+  }, [key, direction, burnAtomic, overspent, feeOnTop, session])
 
   const current = priced?.key === key ? priced : null
   const quoted = current?.quote
@@ -285,18 +284,24 @@ export function MoveFundsSheet({
     setPhase("working")
     setStage("building")
     const cancellation = new Error("Cancelled")
-    cancelled.current = false
+    const cancel = (cancelled.current = new AbortController())
     try {
-      await move(direction, quoted.amount, (next) => {
-        // Only here: past the proof the burn is away, and a cancel would erase a real move.
-        if (next === "proving" && cancelled.current) throw cancellation
-        outcome.updateStage(next)
-        setStage(next)
-      })
+      await moveSavings(
+        session,
+        direction,
+        quoted.amount,
+        (next) => {
+          // Only here: past the proof the burn is away, and a cancel would erase a real move.
+          if (next === "proving" && cancel.signal.aborted) throw cancellation
+          outcome.updateStage(next)
+          setStage(next)
+        },
+        cancel.signal,
+      )
       outcome.finish()
       if (!left.current) onClose()
     } catch (e) {
-      if (e === cancellation || isPasskeyCancelled(e)) {
+      if (e === cancellation || cancel.signal.aborted || isPasskeyCancelled(e)) {
         outcome.cancel()
         setPhase("confirm")
         return
@@ -305,6 +310,7 @@ export function MoveFundsSheet({
       if (e instanceof SavingsQuoteChangedError) {
         if (left.current) return
         setPriced({ key, quote: e.quote })
+        // eslint-disable-next-line local/message-in-state -- debt
         setRequoted(e.message)
         setPhase("confirm")
         return
@@ -410,7 +416,7 @@ export function MoveFundsSheet({
               </span>
             ) : limitProblem ?? grossLimitProblem ? (
               <LimitNotice
-                operation="withdrawal"
+                operation="move"
                 problem={(limitProblem ?? grossLimitProblem)!}
                 maximum={maxAmount && usdFigureGrouped(maxAmount)}
                 onUseMaximum={maxAmount ? () => setMaxed(true) : undefined}
@@ -528,13 +534,7 @@ export function MoveFundsSheet({
       {phase === "working" && (
         <OperationHandOff
           onLeave={leave}
-          onCancel={
-            stage === "building"
-              ? () => {
-                  cancelled.current = true
-                }
-              : undefined
-          }
+          onCancel={stage === "building" ? () => cancelled.current?.abort() : undefined}
         />
       )}
     </Modal>

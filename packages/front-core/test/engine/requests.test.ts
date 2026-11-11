@@ -1,7 +1,7 @@
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import type { SipaDeposit } from "../../src/engine/sipaDeposits"
 import { REQUEST_STORAGE_KEY } from "../../src/core/storages/storage-constants"
-import { createActivity } from "../../src/engine/activity"
+import { createTransfers } from "../../src/engine/transfers"
 import { openDatabase } from "../../src/engine/database"
 import { memoryBackend, type MemoryBackend } from "../../src/engine/memoryBackend"
 import { scannedRow } from "../../src/core/services/transactions/TransferEventScanner"
@@ -9,16 +9,18 @@ import {
   createRequests,
   FUNDING_SKEW_MS,
   payersToApprove,
+  payerApprovals,
   requestTransition,
-  watchPayerApprovals,
   resolveRequests,
   type RequestEvent,
   type RequestPayments,
   type RequestStatus,
   type StoredRequest,
 } from "../../src/engine/requests"
+import { startRuntime } from "../../src/engine/runtime"
 import { memoryStore, derived } from "../../src/engine/store"
 import type { TokenTransaction, Transaction } from "../../src/types/transactions"
+import { sessions } from "./taskTable"
 
 const TOKEN = "0x" + "aa".repeat(32)
 const TX = "0x" + "ab".repeat(32)
@@ -73,12 +75,12 @@ const resolve = (
 const NO_PAYMENTS: RequestPayments = { rows: [], deposits: [] }
 
 /** The store over `backend`, once its requests have loaded. */
-async function open(backend: MemoryBackend = memoryBackend(), legacyUnlisted?: () => string[]) {
+async function open(backend: MemoryBackend = memoryBackend()) {
   const payments = memoryStore({ ...NO_PAYMENTS, loaded: true, failed: false })
   const requests = createRequests({
     db: openDatabase(backend),
     payments: payments.readonly,
-    legacyUnlisted,
+    legacy: openDatabase(backend),
   })
   await requests.ready
   await new Promise((resolve) => setTimeout(resolve, 0))
@@ -113,10 +115,12 @@ describe("requests store", () => {
     for (const id of ["0xCODE", "other"]) {
       backend.entries.set(`acct/requests/${id}`, JSON.stringify(request({ id })))
     }
-    const { requests } = await open(backend, () => ["0xcode"])
+    backend.entries.set("webwallet.receiveCode.unlisted", JSON.stringify(["0xCODE"]))
+    const { requests } = await open(backend)
     expect((await requests.get("0xCODE"))?.unlisted).toBe(true)
     expect((await requests.get("other"))?.unlisted).toBeUndefined()
-    const again = (await open(backend, () => ["other"])).requests
+    backend.entries.set("webwallet.receiveCode.unlisted", JSON.stringify(["other"]))
+    const again = (await open(backend)).requests
     expect((await again.get("other"))?.unlisted).toBeUndefined()
   })
 
@@ -207,6 +211,22 @@ describe("requestTransition", () => {
 })
 
 describe("a payment racing a cancel", () => {
+  it("settles when its first read fails, though it never loaded", async () => {
+    const backend = memoryBackend()
+    backend.failing.reads = true
+    const payments = memoryStore({ ...NO_PAYMENTS, loaded: true, failed: false })
+    const requests = createRequests({
+      db: openDatabase(backend),
+      payments: payments.readonly,
+      legacy: openDatabase(backend),
+    })
+    expect(requests.settled.get()).toBe(false)
+    await expect(requests.ready).rejects.toThrow()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(requests.settled.get()).toBe(true)
+    expect(requests.loaded.get()).toBe(false)
+  })
+
   it("reads no status until the payments load, so a cancel never undoes an unread payment", async () => {
     const { requests, payments } = await open()
     await requests.add(request())
@@ -219,6 +239,15 @@ describe("a payment racing a cancel", () => {
     expect(await cancel).toEqual({ applied: false })
     expect((await all).map((r) => r.status)).toEqual(["fulfilled"])
     expect(requests.loaded.get()).toBe(true)
+  })
+
+  it("settles only once the payments are read too", async () => {
+    const { requests, payments } = await open()
+    expect(requests.settled.get()).toBe(true)
+    payments.set({ ...NO_PAYMENTS, loaded: false, failed: false })
+    expect(requests.settled.get()).toBe(false)
+    payments.set({ ...NO_PAYMENTS, loaded: false, failed: true })
+    expect(requests.settled.get()).toBe(true)
   })
 
   it("rejects a read while a payment source failed", async () => {
@@ -480,8 +509,16 @@ describe("payersToApprove", () => {
   })
 })
 
-describe("watchPayerApprovals", () => {
+describe("payerApprovals", () => {
+  afterEach(() => void vi.useRealTimers())
   const settle = () => new Promise((resolve) => setTimeout(resolve))
+  /** The task in a runtime of its own; returns its stop. */
+  const running = (deps: Parameters<typeof payerApprovals>[0]) => {
+    const runtime = sessions(startRuntime)
+    runtime.tasks.push(payerApprovals(deps))
+    runtime.start()
+    return runtime.end
+  }
 
   /** A contacts book where `approve` makes a wallet-added contact full, as `approveAutoAdded` does. */
   async function watch(backend: MemoryBackend = memoryBackend()) {
@@ -491,7 +528,7 @@ describe("watchPayerApprovals", () => {
     const approve = vi.fn(async (address: string) => {
       if (autoAdded.has(address)) autoAdded.set(address, false)
     })
-    const stop = watchPayerApprovals({ requests, rows: rows.readonly, approve })
+    const stop = running({ requests, rows: rows.readonly, approve })
     const receiveAll = (txs: Transaction[]) => {
       rows.set(txs)
       payments.set({ rows: txs, deposits: [], loaded: true, failed: false })
@@ -525,22 +562,23 @@ describe("watchPayerApprovals", () => {
     expect(autoAdded.get("0xalice")).toBe(true)
   })
 
-  it("approves again on the next change after an approval failed, and stops when told", async () => {
+  it("approves again 1 s after an approval failed, and stops when told", async () => {
     const { requests, receiveAll, approve, stop } = await watch()
+    vi.useFakeTimers()
     approve.mockRejectedValueOnce(new Error("locked"))
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
     await requests.add(request())
     receiveAll([receive()])
-    await settle()
+    await vi.advanceTimersByTimeAsync(999)
+    expect(approve).toHaveBeenCalledTimes(1)
     expect((await requests.get(REQ))?.payerApproved).toBeUndefined()
-    receiveAll([receive(), receive({ id: "b", txHash: "0xb", requestId: undefined })])
-    await settle()
+    await vi.advanceTimersByTimeAsync(1)
     expect(approve).toHaveBeenCalledTimes(2)
     expect((await requests.get(REQ))?.payerApproved).toBe(true)
     stop()
     await requests.add(request({ id: "next" }))
     receiveAll([receive(), receive({ id: "c", txHash: "0xc", requestId: "next" })])
-    await settle()
+    await vi.advanceTimersByTimeAsync(60_000)
     expect(approve).toHaveBeenCalledTimes(2)
     warn.mockRestore()
   })
@@ -557,13 +595,13 @@ describe("watchPayerApprovals", () => {
 
   it("approves only from a saved payment: a receive whose save failed names no one until saved", async () => {
     const backend = memoryBackend()
-    const activity = createActivity({ db: openDatabase(backend) })
-    const paying = activity.query("request", {})
+    const transfers = createTransfers({ db: openDatabase(backend), now: () => Date.now() })
+    const paying = transfers.where("request", {})
     const payments = derived([paying], (rows) => ({ ...rows, rows: rows.records, deposits: [] }))
     const requests = createRequests({ db: openDatabase(memoryBackend()), payments })
     await requests.add(request())
     const approve = vi.fn(async () => undefined)
-    watchPayerApprovals({ requests, rows: derived([paying], (rows) => rows.records), approve })
+    const stop = running({ requests, rows: derived([paying], (rows) => rows.records), approve })
     const { txHash, from, senderL2Address, requestId, amountAtomic, token, timestamp } = receive()
     const payment = {
       txHash,
@@ -576,14 +614,15 @@ describe("watchPayerApprovals", () => {
       timestamp,
       networkId: "net",
     }
-    const scan = () => activity.record(scannedRow(payment))
-    await activity.ready
+    const scan = () => transfers.record(scannedRow(payment))
+    await transfers.ready
     backend.failing.commits = true
     await expect(scan()).rejects.toMatchObject({ code: "unknown" })
     expect(approve).not.toHaveBeenCalled()
     backend.failing.commits = false
     await scan()
     await vi.waitFor(() => expect(approve).toHaveBeenCalledWith("0xalice"))
+    stop()
   })
 })
 

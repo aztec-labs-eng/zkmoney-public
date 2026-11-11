@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity >=0.8.27;
+import {SweepGasCeilings} from "@test/helpers/SweepGasCeilings.sol";
 import {console2} from "forge-std/console2.sol";
 import {IERC20} from "@oz/token/ERC20/IERC20.sol";
 
 import {DepositSIPA} from "@periphery/DepositSIPA.sol";
 import {DepositSubsidy} from "@periphery/DepositSubsidy.sol";
 import {OperationExecutor} from "@periphery/OperationExecutor.sol";
-import {SIPABase} from "@periphery/SIPABase.sol";
 import {DAI, USDC, USDT, THREE_POOL} from "@periphery/ThreePoolLib.sol";
 import {IOperationExecutor} from "@periphery/interfaces/IOperationExecutor.sol";
 import {ISIPA} from "@periphery/interfaces/ISIPA.sol";
@@ -14,6 +14,7 @@ import {ISIPA} from "@periphery/interfaces/ISIPA.sol";
 import {DaiRelayForkFixture} from "@test/fork/DaiRelayForkFixture.sol";
 import {RelayerTransaction} from "@test/periphery/RelayerTransaction.sol";
 import {DEPOSIT_SWEEP_TIP} from "@test/helpers/ForwardingTableFixture.sol";
+import {Intents} from "@periphery/Intent.sol";
 
 interface VmCooling {
   function cool(address) external;
@@ -53,7 +54,12 @@ contract DepositSubsidyExecutorPathForkTest is DaiRelayForkFixture {
   function setUp() public override {
     super.setUp();
     sm = new DepositSubsidy(
-      OWNER, address(portal), IOperationExecutor(address(operationExecutor)), CHAINLINK_ETH_USD, sipaFactory
+      OWNER,
+      address(portal),
+      IOperationExecutor(address(operationExecutor)),
+      CHAINLINK_ETH_USD,
+      sipaFactory,
+      SweepGasCeilings.initial()
     );
     _dealDai(address(sm), 1_000_000 ether);
     vm.prank(OWNER);
@@ -169,14 +175,14 @@ contract DepositSubsidyExecutorPathForkTest is DaiRelayForkFixture {
   function test_GivenATypicalResweepRelay_ThenTheDepositCeilingSitsAtOrAboveIt() external {
     _openNextInboxBucket();
     (uint256 txGas,) = _relayFrom(address(resweepSipa), _resweepCd(resweepSipa, DAI, resweepIntent));
-    _assertCeilingSitsAtOrAbove("deposit resweep relay (chain)", txGas, sm.SWEEP_GAS_DEPOSIT_CEILING());
+    _assertCeilingSitsAtOrAbove("deposit resweep relay (chain)", txGas, sm.$sweepGasCeilings(Intents.DEPOSIT));
   }
 
   function test_GivenATypicalUsdcResweepRelay_ThenTheCeilingWithTheUsdcHopSitsAtOrAboveIt() external {
     _openNextInboxBucket();
     (uint256 txGas,) = _relayFrom(address(usdcResweepSipa), _resweepCd(usdcResweepSipa, USDC, usdcResweepIntent));
     _assertCeilingSitsAtOrAbove(
-      "USDC resweep relay (chain)", txGas, sm.SWEEP_GAS_DEPOSIT_CEILING() + sm.SWEEP_GAS_SWAP_USDC_HOP()
+      "USDC resweep relay (chain)", txGas, sm.$sweepGasCeilings(Intents.DEPOSIT) + sm.SWEEP_GAS_SWAP_USDC_HOP()
     );
   }
 
@@ -184,7 +190,7 @@ contract DepositSubsidyExecutorPathForkTest is DaiRelayForkFixture {
     _openNextInboxBucket();
     (uint256 txGas,) = _relayFrom(address(usdtResweepSipa), _resweepCd(usdtResweepSipa, USDT, usdtResweepIntent));
     _assertCeilingSitsAtOrAbove(
-      "USDT resweep relay (chain)", txGas, sm.SWEEP_GAS_DEPOSIT_CEILING() + sm.SWEEP_GAS_SWAP_USDT_HOP()
+      "USDT resweep relay (chain)", txGas, sm.$sweepGasCeilings(Intents.DEPOSIT) + sm.SWEEP_GAS_SWAP_USDT_HOP()
     );
   }
 
@@ -196,7 +202,7 @@ contract DepositSubsidyExecutorPathForkTest is DaiRelayForkFixture {
     _assertCeilingSitsAtOrAbove(
       "first USDC sweep relay (chain)",
       txGas,
-      sm.SWEEP_GAS_DEPOSIT_CEILING() + sm.SWEEP_GAS_DEPLOY_ALLOWANCE() + sm.SWEEP_GAS_SWAP_USDC_HOP()
+      sm.$sweepGasCeilings(Intents.DEPOSIT) + sm.SWEEP_GAS_DEPLOY_ALLOWANCE() + sm.SWEEP_GAS_SWAP_USDC_HOP()
     );
   }
 
@@ -208,7 +214,7 @@ contract DepositSubsidyExecutorPathForkTest is DaiRelayForkFixture {
     _assertCeilingSitsAtOrAbove(
       "first USDT sweep relay (chain)",
       txGas,
-      sm.SWEEP_GAS_DEPOSIT_CEILING() + sm.SWEEP_GAS_DEPLOY_ALLOWANCE() + sm.SWEEP_GAS_SWAP_USDT_HOP()
+      sm.$sweepGasCeilings(Intents.DEPOSIT) + sm.SWEEP_GAS_DEPLOY_ALLOWANCE() + sm.SWEEP_GAS_SWAP_USDT_HOP()
     );
   }
 
@@ -247,7 +253,7 @@ contract DepositSubsidyExecutorPathForkTest is DaiRelayForkFixture {
       DepositSubsidy.deployAndSweepForSubsidy,
       (
         forwardingTable,
-        SIPABase.Intent.Deposit,
+        Intents.DEPOSIT,
         _recoveryCommitment("recovery"),
         true,
         address(_token),

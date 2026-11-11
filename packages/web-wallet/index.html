@@ -9,7 +9,14 @@
     <!-- Chromium browsers tint their chrome with this. Safari 26 ignores it and samples a fixed
          element at the viewport edge instead, which #tint below exists to be. -->
     <meta name="theme-color" content="#49087e" />
-    <meta name="color-scheme" content="dark" />
+    <meta name="color-scheme" content="dark light" />
+    <script>
+      // The saved theme, before anything paints (platform/storage/theme.ts). Dark is the default.
+      try {
+        const theme = localStorage.getItem("webwallet.theme")
+        if (theme && theme !== "dark") document.documentElement.dataset.theme = theme
+      } catch {}
+    </script>
     <title>zk.money</title>
     <link rel="icon" type="image/png" sizes="180x180" href="/favicon.png" />
     <link rel="apple-touch-icon" href="/favicon.png" />
@@ -41,14 +48,26 @@
         font-style: normal;
         font-display: block;
       }
+      /* The page chrome's colors per theme, one block each; the design system's tokens take over
+         once the app's styles load. */
+      :root {
+        --boot-scheme: dark;
+        --boot-bg: #070707;
+        --boot-text: #bfc2d7;
+      }
+      :root[data-theme="light"] {
+        --boot-scheme: light;
+        --boot-bg: #f4f3f9;
+        --boot-text: #5d5b74;
+      }
       /* Page chrome outside the app column; the design system owns everything inside. */
       html,
       body {
         margin: 0;
-        color-scheme: dark;
+        color-scheme: var(--boot-scheme);
         -webkit-text-size-adjust: 100%;
         touch-action: manipulation;
-        background: #070707;
+        background: var(--boot-bg);
         font-family: "Sen", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       }
       /* Safari 26 tints its toolbars from the background-color of fixed elements at the viewport
@@ -60,7 +79,7 @@
         left: 0;
         right: 0;
         height: 1px;
-        background: #070707;
+        background: var(--boot-bg);
         pointer-events: none;
         z-index: -1;
       }
@@ -79,8 +98,8 @@
         align-items: center;
         justify-content: center;
         gap: 16px;
-        color: #bfc2d7;
-        background: #070707;
+        color: var(--boot-text);
+        background: var(--boot-bg);
         pointer-events: none;
         contain: strict;
         transition: opacity 200ms ease-out;

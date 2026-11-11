@@ -4,6 +4,7 @@
  */
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { fakeReads } from "../../support/fakeReads"
 import type { Address } from "viem"
 import { MAINNET_DAI, MAINNET_USDC, MAINNET_USDT } from "@oxide/l1-contracts"
 import { Network } from "@obsidion/core/constants"
@@ -68,15 +69,15 @@ const {
   buildSipaSweepBroadcasts,
   sendTx,
   readSipaDeployed,
-  getWebBroadcasterArtifact,
-  getSipaDeploymentTable,
+  broadcasterArtifact,
+  sipaDeploymentTable,
 } = vi.hoisted(() => ({
   assertSubsidySweepsSipa: vi.fn(),
   buildSipaSweepBroadcasts: vi.fn(),
   sendTx: vi.fn(),
   readSipaDeployed: vi.fn(),
-  getWebBroadcasterArtifact: vi.fn(async (..._args: unknown[]) => ({})),
-  getSipaDeploymentTable: vi.fn(),
+  broadcasterArtifact: vi.fn(async (..._args: unknown[]) => ({})),
+  sipaDeploymentTable: vi.fn(),
 }))
 
 vi.mock("../../../src/features/sipa/sipaSweep", () => ({ readSipaDeployed }))
@@ -96,13 +97,10 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
 }))
 vi.mock("../../../src/config/oxideTuple", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../src/config/oxideTuple")>()),
-  getOxideTuple: async () => TUPLE,
-  getFeeTokenBridgeTuple: async () => TUPLE,
-  getSipaDeploymentTable,
   l1PublicClient: () => ({}),
 }))
 vi.mock("../../../src/config/classArtifacts", () => ({
-  getWebBroadcasterArtifact,
+  webBroadcasterArtifact: () => broadcasterArtifact,
   getWebOxideToken: async (_wallet: unknown, _contracts: unknown, l2Token: string) => ({ l2Token }),
 }))
 vi.mock("../../../src/features/registration/claimSponsorship", () => ({
@@ -138,8 +136,16 @@ const PAYLOAD = {
   r1Install: {},
 }
 
-async function broadcastCall(network: Network) {
-  const broadcast = createWebRegistrationBroadcaster({
+const tuples = { oxideTuple: async () => TUPLE, feeTokenBridgeTuple: async () => TUPLE }
+const session = (config: object) =>
+  ({
+    nameClaims: { put: async () => {} },
+    page: { config, chain: fakeReads({ sipaDeploymentTable, broadcasterArtifact, ...tuples }) },
+  } as never)
+
+function broadcaster(network: Network) {
+  const config = { network, l1ChainId: network === Network.MAINNET ? 1 : 31337 }
+  return createWebRegistrationBroadcaster({
     wallet: {
       pxe: { registerContractClass: async () => {}, registerContract: async () => {} },
       node: { getContract: async () => ({}) },
@@ -147,10 +153,14 @@ async function broadcastCall(network: Network) {
     } as never,
     account: { getAddress: () => AztecAddress.fromStringUnsafe(`0x${"07".repeat(32)}`) } as never,
     contractService: {} as never,
-    config: { network, l1ChainId: network === Network.MAINNET ? 1 : 31337 } as never,
+    config: config as never,
     handle: "alice",
-    nameClaims: { put: async () => {} },
+    session: session(config),
   })
+}
+
+async function broadcastCall(network: Network) {
+  const broadcast = broadcaster(network)
   await broadcast(PAYLOAD as never)
   expect(buildSipaSweepBroadcasts).toHaveBeenCalledTimes(1)
   const [notifier, , params] = buildSipaSweepBroadcasts.mock.calls[0]
@@ -172,7 +182,7 @@ describe("createWebRegistrationBroadcaster funding tokens", () => {
     buildSipaSweepBroadcasts.mockReset().mockReturnValue([])
     sendTx.mockReset().mockResolvedValue({ receipt: { txHash: { toString: () => "0x01" } } })
     readSipaDeployed.mockReset().mockResolvedValue(false)
-    getSipaDeploymentTable.mockReset().mockResolvedValue(twoRows(MANIFEST_TOKEN))
+    sipaDeploymentTable.mockReset().mockResolvedValue(twoRows(MANIFEST_TOKEN))
   })
 
   it("omits the deploy call for a SIPA that already has code", async () => {
@@ -206,18 +216,7 @@ describe("createWebRegistrationBroadcaster funding tokens", () => {
   it("does not publish when the subsidy would deploy another SIPA", async () => {
     assertSubsidySweepsSipa.mockRejectedValue(new Error("would deploy"))
     // The PXE is readied beside the L1 checks, so the wallet answers that half.
-    const broadcast = createWebRegistrationBroadcaster({
-      wallet: {
-        pxe: { registerContractClass: async () => {}, registerContract: async () => {} },
-        node: { getContract: async () => ({}) },
-        sendTx,
-      } as never,
-      account: { getAddress: () => AztecAddress.fromStringUnsafe(`0x${"07".repeat(32)}`) } as never,
-      contractService: {} as never,
-      config: { network: Network.SANDBOX, l1ChainId: 31337 } as never,
-      handle: "alice",
-      nameClaims: { put: async () => {} },
-    })
+    const broadcast = broadcaster(Network.SANDBOX)
     await expect(broadcast(PAYLOAD as never)).rejects.toThrow("would deploy")
     expect(buildSipaSweepBroadcasts).not.toHaveBeenCalled()
     expect(sendTx).not.toHaveBeenCalled()
@@ -231,14 +230,14 @@ describe("createWebRegistrationBroadcaster funding tokens", () => {
         MANIFEST_TOKEN.toLowerCase(),
       ])
       expect(notifier).toEqual({ l2Token: TUPLE.l2Token })
-      expect(getSipaDeploymentTable).toHaveBeenCalledWith(expect.anything(), FORWARDING_TABLE)
+      expect(sipaDeploymentTable).toHaveBeenCalledWith(FORWARDING_TABLE)
       expect(sendTx).toHaveBeenCalledTimes(1)
     },
   )
 
   it("sweeps the mainnet swap inputs through the DAI fee row's subsidy", async () => {
     const table = twoRows(MAINNET_DAI.toString())
-    getSipaDeploymentTable.mockResolvedValue(table)
+    sipaDeploymentTable.mockResolvedValue(table)
     const { params } = await broadcastCall(Network.MAINNET)
     const subsidy = table.rows[0]!.bridge.tuple.depositSubsidy
     expect(

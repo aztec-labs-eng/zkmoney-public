@@ -9,13 +9,10 @@ import { decodeFunctionData, encodeFunctionResult, parseAbi, type Address, type 
 import { foundry } from "viem/chains"
 import { Network } from "@obsidion/core/constants"
 import type { WebWalletConfig } from "../../../src/config/env"
+import type { PageFacts } from "../../../src/session/pageChain"
+import { testChain } from "../../support/query"
 
-const config = vi.hoisted(() => ({ current: undefined as unknown }))
-vi.mock("../../../src/config/env", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../src/config/env")>()),
-  getConfig: () => config.current,
-}))
-
+const { createPageChain } = await import("../../../src/app/pageChain")
 const { loadDepositDisplayFacts, loadDepositTokens, recoveryProbeTokens, sipaFundingTokens } =
   await import("../../../src/features/sipa/loadDepositFacts")
 
@@ -97,7 +94,7 @@ const originalFetch = globalThis.fetch
 function serve(
   document: ReturnType<typeof manifest>,
   assets: { symbol: string; portal: string }[] = [],
-): WebWalletConfig {
+): PageFacts {
   const manifestUrl = `https://oxide.test/${++served}.json`
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url
@@ -111,7 +108,7 @@ function serve(
     })
     return Response.json(Array.isArray(body) ? body.map(one) : one(body))
   }) as typeof fetch
-  const next = {
+  const config = {
     oxideProfile: { manifestUrl, portal: TEST_PORTAL },
     network: Network.SANDBOX,
     l1ChainId: 31337,
@@ -119,8 +116,7 @@ function serve(
     l1RpcUrl: RPC_URL,
     assets,
   } as unknown as WebWalletConfig
-  config.current = next
-  return next
+  return { config, chain: createPageChain(config, testChain()) }
 }
 
 const symbols = (tokens: { options: { symbol: string }[] }) => tokens.options.map((t) => t.symbol)
@@ -186,17 +182,17 @@ describe("loadDepositTokens", () => {
   })
 
   it("quotes each picked token on its own row", async () => {
-    serve(
+    const page = serve(
       manifest([bridge("test", TEST, TEST_PORTAL, "a1"), bridge("usd2", USD2, USD2_PORTAL, "b2")]),
     )
 
-    await expect(loadDepositDisplayFacts({ settlesIn: USD2 })).resolves.toEqual({
+    await expect(loadDepositDisplayFacts(page, { settlesIn: USD2 })).resolves.toEqual({
       fee: "0.000007",
       token: USD2,
       sweepFeeAtomic: 7n,
       txAmountCap: 200n,
     })
-    await expect(loadDepositDisplayFacts()).resolves.toMatchObject({
+    await expect(loadDepositDisplayFacts(page)).resolves.toMatchObject({
       token: TEST,
       txAmountCap: 100n,
     })

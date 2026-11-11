@@ -14,7 +14,7 @@ import { deployContract } from './deploy_contract.js';
  */
 export const DEPOSIT_SWEEP_FEE = 250_000_000_000_000_000n;
 export const REGISTRATION_SWEEP_FEE = 500_000_000_000_000_000n;
-export const USER_OP_SWEEP_FEE = 500_000_000_000_000_000n;
+export const ADD_PASSKEY_SWEEP_FEE = 350_000_000_000_000_000n;
 
 /** The fees of one intent in a forwarding table row. `IForwardingTable.IntentFees`. */
 export interface ForwardingTableIntentFees {
@@ -34,7 +34,7 @@ export interface ForwardingTableInitialRow {
 export const DEFAULT_FORWARDING_TABLE_INTENTS: ForwardingTableIntentFees[] = [
   { intent: SipaIntent.Deposit, beneficiaryFee: 0n, sweepTip: DEPOSIT_SWEEP_FEE },
   { intent: SipaIntent.Registration, beneficiaryFee: 0n, sweepTip: REGISTRATION_SWEEP_FEE },
-  { intent: SipaIntent.UserOp, beneficiaryFee: 0n, sweepTip: USER_OP_SWEEP_FEE },
+  { intent: SipaIntent.AddPasskey, beneficiaryFee: 0n, sweepTip: ADD_PASSKEY_SWEEP_FEE },
 ];
 
 /**

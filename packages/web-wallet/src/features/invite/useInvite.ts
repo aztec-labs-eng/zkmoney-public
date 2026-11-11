@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react"
-import { getConfig } from "../../config/env"
 import { accountServiceFor } from "../registration/registrationDeps"
-import { session } from "../../session/session"
+import { useSession, type Session } from "../../session/session"
 
 /** The invite host beside this wallet's: `wallet.<zone>` invites at `invite.<zone>`. Anywhere
  * else (a preview, a dev server) names production's. */
@@ -15,10 +14,10 @@ export interface Invite {
   credited: boolean
 }
 
-async function loadInvite(): Promise<Invite> {
-  const secretKey = await session().auth.getSecretKey()
+export async function loadInvite(session: Pick<Session, "auth" | "page">): Promise<Invite> {
+  const secretKey = await session.auth.getSecretKey()
   if (!secretKey) return { credited: false }
-  const client = accountServiceFor(getConfig(), { secretKey })
+  const client = accountServiceFor(session.page.config, { secretKey })
   const [code, status] = await Promise.all([client.inviteCode(), client.inviteStatus()])
   return { code, credited: status.credited > 0 }
 }
@@ -26,11 +25,13 @@ async function loadInvite(): Promise<Invite> {
 /** `enabled`: off where no account exists yet, so nothing is read. */
 export function useInvite(enabled = true): Invite {
   const [invite, setInvite] = useState<Invite>({ credited: false })
+  const session = useSession()
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!enabled) return
     let alive = true
     const load = () =>
-      loadInvite().then(
+      loadInvite(session).then(
         (next) => alive && setInvite(next),
         (e) => console.warn("invite lookup failed", e),
       )
@@ -44,6 +45,6 @@ export function useInvite(enabled = true): Invite {
       alive = false
       document.removeEventListener("visibilitychange", shown)
     }
-  }, [enabled])
+  }, [enabled, session])
   return invite
 }

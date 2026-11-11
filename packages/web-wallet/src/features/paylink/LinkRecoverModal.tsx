@@ -24,11 +24,10 @@ import {
 import { showErrorModal, showReportableError } from "../../errors/errorModal"
 import { failureCode, fireEvent } from "../../lib/analytics"
 import { whenLabel } from "../../ui/detailRows"
-import { useUserFlowActive } from "../provingGate"
 import { PAYLINK_WINDOW_MESSAGE } from "./claimWindow"
 import type { CreatorLinkAction } from "@obsidion/front-core"
 import { recoverSponsoredLink, type SponsoredPaylinkDeps } from "./sponsoredPaylink"
-import { useBusyLabel } from "../operations/operations"
+import { useBusyLabel, useUserFlowActive } from "../operations/operations"
 import { OperationHandOff } from "../operations/OperationHandOff"
 
 const ALREADY_SPENT_TITLE = "Already claimed"

@@ -1,0 +1,26 @@
+{
+  "scenario": "activity",
+  "viewport": "402x879,1280x832",
+  "path": "/settings?flowFixture=success&backupFixture=blocked",
+  "ready": {
+    "selector": ".ww-settings__user"
+  },
+  "steps": [
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Passkeys",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": "html[data-backup-screen=blocked]"
+    },
+    {
+      "action": "screenshot",
+      "file": "b1-blocked.png",
+      "state": "B1: a withdrawal in flight holds the add"
+    }
+  ],
+  "finalScreenshot": false
+}

@@ -9,7 +9,7 @@ import { TxStatus } from "@aztec-labs/stdlib/tx"
 import type { WithdrawalRecord } from "../../src/core/services/bridge/types"
 import { reorg } from "../../src/engine/reorg"
 import { startRuntime, task } from "../../src/engine/runtime"
-import { seededActivity } from "../utils/activityFixture"
+import { seededActivity } from "../utils/transferFixture"
 import { later, periodicSteps, sessions, table } from "./taskTable"
 
 const BURN = `0x${"11".repeat(32)}` as const
@@ -40,7 +40,7 @@ function harness(records: Partial<WithdrawalRecord>[] = [], { hanging = false } 
       pxe: { sync: async () => void order.push("sync") },
     } as never)
   const tracker = task("tracker", {
-    needs: { wallet: wallet.resource },
+    needs: { wallet: wallet.service },
     every: "once",
     run: ({ signal }) =>
       new Promise<void>((resolve) => {
@@ -52,8 +52,8 @@ function harness(records: Partial<WithdrawalRecord>[] = [], { hanging = false } 
   h.tasks.push(
     tracker,
     reorg({
-      wallet: wallet.resource,
-      activity: seededActivity(),
+      wallet: wallet.service,
+      transfers: seededActivity(),
       withdrawals: {
         all: async () => {
           order.push("pass")

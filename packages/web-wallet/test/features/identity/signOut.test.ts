@@ -7,12 +7,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import { signOut } from "../../../src/features/identity/signOut"
 import { cachedMsk } from "../../../src/platform/storage/activeStorage"
 import { writeDeviceKeys } from "../../../src/platform/storage/deviceKeys"
-import { activeRollup } from "../../../src/platform/storage/rollupStorage"
 import {
   closeWalletStore,
   openWalletStore,
   walletStorage,
 } from "../../../src/platform/storage/walletStorage"
+import { sandboxProfile } from "../../fixtures/sandboxProfile"
 import { testWalletDbs } from "../../support/fakeWalletDb"
 import { testPage, committed, testCore } from "../../support/page"
 import { savedIdentity, setIdentity } from "../../support/identity"
@@ -20,7 +20,8 @@ import { savedIdentity, setIdentity } from "../../support/identity"
 const deviceDb = testPage().database
 const lockOut = vi.fn()
 const { device, sessionLock } = testCore()
-const page = { auth: { lockOut }, database: deviceDb, device, sessionLock }
+const config = { profileRollupVersion: sandboxProfile().shared.rollupVersion }
+const page = { auth: { lockOut }, config, database: deviceDb, device, sessionLock }
 
 const cache = { v: 1 as const, storageId: "s", credentialId: "c", msk: `0x${"11".repeat(32)}` }
 
@@ -45,7 +46,7 @@ describe("signOut", () => {
     lockOut.mockClear()
     // A persistent store: only one clears other rollups' sessions.
     await closeWalletStore()
-    await openWalletStore(activeRollup(), { persistent: true })
+    await openWalletStore(config.profileRollupVersion, { persistent: true })
     await writeDeviceKeys(deviceDb, {
       storageId: "s",
       credentialId: "c",

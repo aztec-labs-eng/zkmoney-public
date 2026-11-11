@@ -1,8 +1,9 @@
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import type { Address } from "viem"
-import { getConfig } from "../../config/env"
+import type { WebWalletConfig } from "../../config/env"
 import { l1PublicClient } from "../../config/oxideTuple"
 import { portalContract } from "../token/oxideToken"
+import type { Pace } from "@obsidion/core/cadence"
 
 /** How often a live portal of another generation is checked for its freeze. */
 export const FREEZE_POLL_MS = 30_000
@@ -12,11 +13,13 @@ export const FREEZE_POLL_MS = 30_000
  * stops. A failed read is retried at the next poll. Returns the stop function.
  */
 export function watchForFreeze(
+  config: WebWalletConfig,
   tuples: readonly OxideEnvTuple[],
   onFrozen: () => void,
+  pace: Pick<Pace, "every">,
   intervalMs = FREEZE_POLL_MS,
   isFrozen = (tuple: OxideEnvTuple) =>
-    portalContract(l1PublicClient(getConfig()), tuple.portal as Address).isFrozen(),
+    portalContract(l1PublicClient(config), tuple.portal as Address).isFrozen(),
 ): () => void {
   let stopped = false
   const poll = async () => {
@@ -25,10 +28,10 @@ export function watchForFreeze(
     stop()
     onFrozen()
   }
-  const id = setInterval(() => void poll(), intervalMs)
+  const id = pace.every(intervalMs, poll)
   const stop = () => {
     stopped = true
-    clearInterval(id)
+    id()
   }
   return stop
 }
@@ -72,6 +75,7 @@ export function pause(ms: number, signal?: AbortSignal): Promise<void> {
 export function watchForFeature(
   routed: () => Promise<boolean>,
   onRoute: () => void,
+  pace: Pick<Pace, "every">,
   intervalMs = FREEZE_POLL_MS,
 ): () => void {
   let stopped = false
@@ -87,9 +91,9 @@ export function watchForFeature(
       reading = false
     }
   }
-  const id = setInterval(() => void poll(), intervalMs)
+  const id = pace.every(intervalMs, poll)
   return () => {
     stopped = true
-    clearInterval(id)
+    id()
   }
 }

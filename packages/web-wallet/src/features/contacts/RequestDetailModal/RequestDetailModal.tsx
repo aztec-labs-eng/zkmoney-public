@@ -8,7 +8,6 @@ import {
   PrimaryGradientButton,
 } from "@obsidion/web-ds"
 import cancelArt from "../../../assets/contacts/cancel-request.webp"
-import { getConfig } from "../../../config/env"
 import { showReportableError } from "../../../errors/errorModal"
 import { failureCode, fireEvent } from "../../../lib/analytics"
 import { l2TxUrl } from "../../../lib/explorer"
@@ -25,10 +24,10 @@ const STATUS_VIEW: Record<
   PaymentRequest["status"],
   { label: string; icon: string; color: string }
 > = {
-  pending: { label: copy.status.pending, icon: "clock", color: "#eed04e" },
+  pending: { label: copy.status.pending, icon: "clock", color: "var(--accent-gold)" },
   fulfilled: { label: copy.status.fulfilled, icon: "check", color: "#2ecc71" },
-  declined: { label: copy.status.declined, icon: "x", color: "#fe708b" },
-  cancelled: { label: copy.status.cancelled, icon: "x", color: "#fe708b" },
+  declined: { label: copy.status.declined, icon: "x", color: "var(--accent-pink)" },
+  cancelled: { label: copy.status.cancelled, icon: "x", color: "var(--accent-pink)" },
 }
 
 /** The one confirm sheet every request-cancel path goes through. */
@@ -67,7 +66,7 @@ export function RequestCancelledModal() {
     <Modal variant="create" label={copy.cancel.done}>
       <div className="ww-create-modal__body">
         <div className={styles.cancelConfirm}>
-          <Icon name="x" size={28} color="#fe708b" />
+          <Icon name="x" size={28} color="var(--accent-pink)" />
           <span className={styles.cancelConfirmTitle}>{copy.cancel.done}</span>
         </div>
       </div>
@@ -102,7 +101,9 @@ export function RequestDetailModal({
   const [row, setRow] = useState<PaymentRequest>()
   const [step, setStep] = useState<"detail" | "confirm" | "cancelled">(initialStep)
   const [busy, setBusy] = useState(false)
-  const { requests } = useSession()
+  const session = useSession()
+  const { requests } = session
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     let open = true
     // Loads once per open — the modal owns the row for its lifetime.
@@ -118,11 +119,13 @@ export function RequestDetailModal({
     return () => {
       open = false
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- debt
   }, [requestId])
 
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (step !== "cancelled") return
+    // eslint-disable-next-line local/timer-in-view -- debt
     const t = setTimeout(onClose, 1600)
     return () => clearTimeout(t)
   }, [step, onClose])
@@ -131,7 +134,7 @@ export function RequestDetailModal({
     if (busy) return
     setBusy(true)
     try {
-      if (await cancelRequestById(requestId)) {
+      if (await cancelRequestById(session, requestId)) {
         setStep("cancelled")
         return
       }
@@ -158,7 +161,7 @@ export function RequestDetailModal({
     )
   }
 
-  const config = getConfig()
+  const { config } = session.page
   const status = STATUS_VIEW[row.status]
   const txHash = row.fulfillmentTxHash
   const handle = tag ?? row.contactTag

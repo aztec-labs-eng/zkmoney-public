@@ -1,4 +1,7 @@
 {
   "walletCommit": "aeedab65e3716c119c9815f9713edcc3c5dbd39a",
-  "aztecVersion": "5.2.0"
+  "aztecVersion": "5.2.0",
+  "oxidePin": {
+    "commit": "cda0aae4bd841e92a305113e280dc7c1922aba07"
+  }
 }

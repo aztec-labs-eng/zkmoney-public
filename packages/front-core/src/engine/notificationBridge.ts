@@ -3,8 +3,13 @@
  * record still in flight, and one entry per record's ending. A registration's deposit and its
  * funding burn are the registration's story; an upgrade's deposits are its run's.
  */
-import { WALLET_TOKEN_SYMBOL } from "@obsidion/core/constants"
-import { hiddenBehindOwnWithdrawal, type ActivityItem, type BridgeActivityItem } from "./feedRules"
+import {
+  hiddenBehindOwnWithdrawal,
+  isDepositToPrevious,
+  withdrawalIntent,
+  type ActivityItem,
+  type BridgeActivityItem,
+} from "./feedRules"
 import type { WithdrawalPhase, WithdrawalRecord } from "../core/services/bridge/types"
 import {
   isWithdrawalGroupTerminal,
@@ -16,8 +21,13 @@ import {
 } from "../core/services/bridge/withdrawalGroups"
 import { upgradeBatchArrived } from "../core/migration/upgradeActivity"
 import { chainUpgradeBatches } from "../core/migration/chainUpgradeBatches"
-import { sipaCredits } from "../core/services/deposits/sipaCredits"
-import { upgradeRunsOf, type UpgradeRun } from "../core/migration/upgradeRuns"
+import { sipaCredits, sipaPaymentIndex } from "../core/services/deposits/sipaCredits"
+import {
+  upgradeRunValue,
+  upgradeRunsOf,
+  type UpgradePricing,
+  type UpgradeRun,
+} from "../core/migration/upgradeRuns"
 import {
   sipaReasonShown,
   type SipaProcessingKind,
@@ -28,7 +38,6 @@ import {
   isUnfundedSipaDeposit,
   type SIPADepositPhase,
   type SipaDeposit,
-  type SIPASweep,
 } from "./sipaDeposits"
 import type { UpgradeBatchItem } from "../core/migration/upgradeActivity"
 import type { Loaded } from "./recordSource"
@@ -40,6 +49,7 @@ export const LIVE_WITHDRAWAL_PHASES: ReadonlySet<WithdrawalPhase> = new Set<With
   "awaiting_proven",
   "finalizing_l1",
   "swapping",
+  "bridging",
 ])
 
 /** Deposit phases a live row reports, once funds were sent to the address. */
@@ -76,7 +86,8 @@ export type BridgeAbout =
       outcome: "done" | "failed"
       migration: boolean
     }
-  | { kind: "upgradeRun"; run: UpgradeRun; done: boolean }
+  /** `value`: the run's dollar value, unknown until its tokens and Savings price are, if ever. */
+  | { kind: "upgradeRun"; run: UpgradeRun; done: boolean; value?: bigint }
 
 export interface BridgeEntry {
   id: string
@@ -100,6 +111,13 @@ export interface BridgeSources {
     loaded: boolean
   }
   processing: ReadonlyMap<string, SipaProcessingState>
+  /** A rotated wallet's previous account. */
+  previousAccount?: string
+  /**
+   * What values an upgrade run in dollars. The stamping writer reads none: an entry's id and time
+   * do not depend on its value.
+   */
+  upgradePricing?: UpgradePricing
 }
 
 const DONE = { icon: "checkmark.circle.fill", severity: "success" } as const
@@ -107,8 +125,9 @@ const FAILED = { icon: "exclamationmark.triangle.fill", severity: "error" } as c
 
 /**
  * The records as the bridge feed lists them: a deposit funded by its own burn is the burn's, each
- * other token an address credited is a deposit of its own, and an upgrade's direct deposits no run
- * of this device covers are that upgrade's batches once its runs are read.
+ * payment to an address is a deposit of its own, so an earlier claim keeps its ending when the
+ * address is paid again, and an upgrade's direct deposits no run of this device covers are that
+ * upgrade's batches once its runs are read.
  */
 function activityItems(sources: BridgeSources, now: number): ActivityItem[] {
   const withdrawals = sources.withdrawals.records
@@ -120,8 +139,8 @@ function activityItems(sources: BridgeSources, now: number): ActivityItem[] {
     ...sources.deposits.records
       .filter((record) => !hiddenBehindOwnWithdrawal(record, withdrawals, now))
       .flatMap((stored) =>
-        sipaCredits(stored).map(({ record, token }): ActivityItem => {
-          if (token) return { kind: "bridge.sipaDeposit", record, credit: token }
+        sipaCredits(stored).map(({ record, payment }): ActivityItem => {
+          if (payment) return { kind: "bridge.sipaDeposit", record, payment }
           const processing = sources.processing.get(record.sipaAddress.toLowerCase())
           return processing
             ? { kind: "bridge.sipaDeposit", record, processing }
@@ -193,51 +212,9 @@ export function bridgeLiveId(item: BridgeActivityItem): string {
 }
 
 /**
- * One claim of a re-used address, from its sweep ledger. A sweep credits its row's token, the
- * wallet token where it names none, never ETH; the record's own token may name a later funding.
+ * A grouped leg sent again is a new record, so its failure reports anew; a re-used SIPA per payment,
+ * so a later payment recovered unswept does not take its claimed predecessor's id.
  */
-function claimOf(record: SipaDeposit, sweep: SIPASweep): BridgeActivityItem {
-  return {
-    kind: "bridge.sipaDeposit",
-    record: {
-      ...record,
-      phase: "claimed",
-      tokenAddress: sweep.tokenAddress,
-      tokenSymbol: sweep.tokenSymbol ?? WALLET_TOKEN_SYMBOL,
-      tokenDecimals: sweep.tokenDecimals,
-      rowToken: undefined,
-      inboxIndex: sweep.inboxIndex,
-      sweepTxHash: sweep.sweepTxHash,
-      netAmount: sweep.netAmount,
-      fee: undefined,
-      registrationFee: undefined,
-      fundingTokenSymbol: sweep.fundingTokenSymbol,
-      endTime: sweep.settledAt ?? record.startTime,
-    },
-  }
-}
-
-const tokenKey = (token: string | undefined) => token?.toLowerCase() ?? ""
-
-/**
- * Every ending a record reports: a deposit address paid more than once ends once per claim, so an
- * earlier claim keeps its entry when the address is paid again. Another token's claims are that
- * token's own deposit's.
- */
-function endings(item: BridgeActivityItem): BridgeActivityItem[] {
-  if (item.kind !== "bridge.sipaDeposit") return [item]
-  const { record } = item
-  const own = tokenKey(record.rowToken ?? record.tokenAddress)
-  const current = record.phase === "claimed" ? record.inboxIndex : undefined
-  const earlier = (record.sweeps ?? []).filter(
-    (sweep) =>
-      sweep.inboxIndex !== current &&
-      (!sweep.tokenAddress || !own || tokenKey(sweep.tokenAddress) === own),
-  )
-  return [...earlier.map((sweep) => claimOf(record, sweep)), item]
-}
-
-/** A grouped leg sent again is a new record, so its failure reports anew; a re-used SIPA per claim. */
 function endedId(item: BridgeActivityItem, outcome: "done" | "failed"): string {
   if (item.kind === "bridge.withdrawal") {
     const { record } = item
@@ -246,7 +223,7 @@ function endedId(item: BridgeActivityItem, outcome: "done" | "failed"): string {
   }
   const { record } = item
   return `bridge:sipaDeposit:${record.sipaAddress.toLowerCase()}:${
-    record.inboxIndex ?? ""
+    sipaPaymentIndex(record) ?? ""
   }:${outcome}`
 }
 
@@ -261,7 +238,9 @@ function targetOf(item: BridgeActivityItem): BridgeTarget {
     : {
         type: "bridge.txDetail",
         bridgeKind: "deposit",
-        sourceId: item.record.sipaAddress.toLowerCase(),
+        sourceId: `${item.record.sipaAddress.toLowerCase()}${
+          item.payment ? `:${item.payment}` : ""
+        }`,
       }
 }
 
@@ -281,6 +260,10 @@ function migrationMatcher(items: BridgeActivityItem[], upgradeArrivals: Readonly
       : isAccountMoveSipa(item.record) || arrivals.has(item.record.sipaAddress.toLowerCase())
 }
 
+/** A finished run whose value has not come while the pricing may still give one. */
+const awaitsValue = (run: UpgradeRun, value: bigint | undefined, pricing?: UpgradePricing) =>
+  run.complete && value === undefined && pricing?.settled === false
+
 export function bridgeEntries(sources: BridgeSources, now: number): BridgeEntry[] {
   const items = activityItems(sources, now)
   const all = items.filter(
@@ -288,6 +271,11 @@ export function bridgeEntries(sources: BridgeSources, now: number): BridgeEntry[
       i.kind === "bridge.sipaDeposit" || i.kind === "bridge.withdrawal",
   )
   const withdrawals = all.flatMap((i) => (i.kind === "bridge.withdrawal" ? [i.record] : []))
+  // The deposit a burn pays, read from the records: the list above hides it behind that burn.
+  const paid = (record: WithdrawalRecord) =>
+    sources.deposits.records.find(
+      (d) => d.sipaAddress.toLowerCase() === record.recipient.toLowerCase(),
+    )
   // Each fresh-address group stands in for its legs. A backup passkey rotation's deposit address
   // and the burn that funds it are followed by the settings panel that drives them.
   const bridge = all
@@ -295,8 +283,14 @@ export function bridgeEntries(sources: BridgeSources, now: number): BridgeEntry[
       (i) =>
         i.record.intent !== "registration" &&
         !(i.kind === "bridge.withdrawal" && i.record.groupId) &&
-        !(i.kind === "bridge.withdrawal" && i.record.intent === "backup") &&
-        !(i.kind === "bridge.sipaDeposit" && i.record.intent === "user-op"),
+        !(
+          i.kind === "bridge.withdrawal" && withdrawalIntent(i.record, paid(i.record)) === "backup"
+        ) &&
+        !(i.kind === "bridge.sipaDeposit" && i.record.intent === "add-passkey") &&
+        // Funds there never reach the balance on their own; Activity keeps their history.
+        !(
+          i.kind === "bridge.sipaDeposit" && isDepositToPrevious(i.record, sources.previousAccount)
+        ),
     )
     .concat(withdrawalGroupsOf(withdrawals).map(groupAsItem))
   const runs = upgradeRunsOf(items)
@@ -329,24 +323,27 @@ export function bridgeEntries(sources: BridgeSources, now: number): BridgeEntry[
   for (const run of runs) {
     const live = `migration-run:${run.run}`
     const target = { type: "upgrade.run", run: run.run } as const
+    const pricing = sources.upgradePricing
+    const value = pricing && upgradeRunValue(run, pricing)
     if (!run.settled)
       out.push({
         id: live,
-        about: { kind: "upgradeRun", run, done: false },
+        about: { kind: "upgradeRun", run, done: false, value },
         timestampMs: Math.min(...run.legs.map((leg) => leg.batch.startTime)),
         severity: "info",
         icon: "arrow.down.left",
         pending: true,
         target,
       })
-    if (!run.complete || upgrading) continue
+    // Complete reports what the run is worth, so it waits for the value while one may come.
+    if (!run.complete || upgrading || awaitsValue(run, value, pricing)) continue
     // Funds that reach the old version later join the run: its larger whole reports anew. An
     // inferred run's legs join as discovery finds them, so it keeps one report.
     const count = run.inferred ? "" : `:${run.legs.length}`
     const at = Math.max(...run.legs.map((leg) => leg.arrival?.endTime ?? 0))
     out.push({
       id: `${live}:done${count}`,
-      about: { kind: "upgradeRun", run, done: true },
+      about: { kind: "upgradeRun", run, done: true, value },
       timestampMs: at,
       ...DONE,
       pending: false,
@@ -357,7 +354,7 @@ export function bridgeEntries(sources: BridgeSources, now: number): BridgeEntry[
       ...(run.inferred ? {} : { seenWith: live }),
     })
   }
-  for (const item of bridge.flatMap(endings)) {
+  for (const item of bridge) {
     const outcome = terminalPhase(item)
     const endTime = item.record.endTime
     if (!outcome || endTime == null) continue

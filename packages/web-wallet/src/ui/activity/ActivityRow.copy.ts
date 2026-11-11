@@ -1,4 +1,5 @@
 export default {
+  ethereum: "Ethereum",
   counterparty: {
     upgrade: "Upgrade",
     deposit: "Deposit",
@@ -9,20 +10,21 @@ export default {
     unknown: "Unknown",
     unknownSender: "Unknown sender",
     tag: "@{tag}",
-    backupPasskey: "Backup passkey",
+    backupPasskeyAdded: "Backup passkey added",
+    // Proposed: a backup passkey funding's title until its add runs.
+    backupPasskeyFunding: "Backup passkey funding",
+    bridgeIn: "Bridge in",
   },
   badge: {
     leftOldVersion: "Left old version",
     registration: "Registration",
     paylinkToEthereum: "Paylink → Ethereum",
-    withdrawal: "Withdrawal",
     arrived: "Arrived",
     requested: "Requested",
     freshAddress: "Fresh address",
     oneTransfer: "1 transfer",
     transfers: "{count} transfers",
     arrivedOf: "{arrived} of {total} arrived",
-    funding: "Funding",
     oldVersion: "Old version",
   },
   status: {
@@ -68,6 +70,7 @@ export default {
     transaction: "Open transaction details",
     tagPurchase: "Open tag purchase details",
     oldVersionWithdrawal: "Open the withdrawal on Ethereum",
+    bridgeIn: "Open bridge details",
     registration: "Open registration deposit details",
   },
 } as const

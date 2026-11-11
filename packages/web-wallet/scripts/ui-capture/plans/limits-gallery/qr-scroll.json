@@ -4,6 +4,18 @@
   "finalScreenshot": false,
   "steps": [
     {
+      "action": "click",
+      "testId": "deposit-show-address"
+    },
+    {
+      "action": "click",
+      "testId": "deposit-chain-31337"
+    },
+    {
+      "action": "click",
+      "testId": "picker-DAI"
+    },
+    {
       "action": "waitFor",
       "selector": ".ww-deposit-disclaimer"
     },
@@ -14,44 +26,16 @@
     },
     {
       "action": "click",
-      "role": "button",
-      "name": "Got it!",
-      "exact": false
+      "testId": "deposit-privacy-continue"
     },
     {
       "action": "waitFor",
-      "selector": "[data-testid=\"address-limits\"]"
+      "testId": "address-limits"
     },
     {
       "action": "screenshot",
       "file": "02-address.png",
-      "state": "Address, then the compact limit line"
-    },
-    {
-      "action": "click",
-      "role": "button",
-      "name": "Show",
-      "exact": false
-    },
-    {
-      "action": "screenshot",
-      "file": "03-one-time-warning.png",
-      "state": "One-time address warning before the QR"
-    },
-    {
-      "action": "click",
-      "role": "button",
-      "name": "Got it!",
-      "exact": false
-    },
-    {
-      "action": "waitFor",
-      "selector": "dialog[aria-label=\"Deposit address\"] [data-testid=\"address-limits\"]"
-    },
-    {
-      "action": "screenshot",
-      "file": "04-qr.png",
-      "state": "Complete QR with the limit line under it"
+      "state": "Address with its QR, then the Limits and fees line"
     },
     {
       "action": "scroll",
@@ -60,19 +44,12 @@
     },
     {
       "action": "screenshot",
-      "file": "05-qr-after-scroll.png",
-      "state": "QR sheet at its end"
-    },
-    {
-      "action": "press",
-      "selector": "dialog:modal",
-      "key": "Escape"
+      "file": "05-address-after-scroll.png",
+      "state": "Address sheet at its end"
     },
     {
       "action": "reachable",
-      "role": "button",
-      "name": "Connect your wallet",
-      "exact": false
+      "selector": "[data-testid=\"address-limits\"] button[aria-expanded]"
     },
     {
       "action": "screenshot",

@@ -10,7 +10,8 @@ import {
   DEMO_L2_ADDRESS,
   demoStealthKey,
 } from "../../../src/dev/demoFixtures"
-import { session } from "../../../src/session/session"
+import type { Session } from "../../../src/session/session"
+import { captureSession } from "./control"
 import { ROLLUP, SIPA, SIPA_NEXT } from "./data"
 
 // The desktop launcher's approved send that never reports a hash. `unresolved-funded` also lands the late transfer.
@@ -44,10 +45,9 @@ export function installDesktopBridge(): void {
   delete (window as { ethereum?: unknown }).ethereum
 }
 
-const store = () => session().sipaDeposits
 
 /** Discovery's record of a published address before anything was sent to it. */
-export async function seedPublishedAddress(sipaAddress: Address): Promise<void> {
+export async function seedPublishedAddress(session: Session, sipaAddress: Address): Promise<void> {
   const messageSecret = Fr.random()
   const record: SipaDeposit = {
     sipaAddress,
@@ -62,7 +62,7 @@ export async function seedPublishedAddress(sipaAddress: Address): Promise<void> 
     phase: "broadcast",
     startTime: Date.now(),
   }
-  await store().adopt({ ...record, networkId: ROLLUP })
+  await session.sipaDeposits.adopt({ ...record, networkId: ROLLUP })
 }
 
 /** Addresses whose send ended without a hash; the pool never hands them out again. */
@@ -77,7 +77,7 @@ export function sendUnresolved(target: Address): void {
   unresolved.add(target.toLowerCase())
   if (desktopState() !== "unresolved-funded") return
   setTimeout(() => {
-    void store().apply(target, {
+    void captureSession().sipaDeposits.apply(target, {
       type: "observed",
       fields: {
         phase: "funded",

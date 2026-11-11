@@ -2,7 +2,9 @@
  * Drives the saved backup-passkey rotations of the session's account for as long as the session
  * lives, so a rotation advances whichever screen is open. No UI, no React.
  */
-import type { BackupRotationRecord, BackupRotationStore } from "../storages/BackupRotationStore"
+import type { BackupRotationRecord, BackupRotations } from "../../engine/backupRotations"
+import { WalletError } from "../../engine/errors"
+import type { Pace } from "@obsidion/core/cadence"
 import {
   recordMoved,
   resumeRotation,
@@ -27,20 +29,29 @@ export interface ResumeAnswer {
 /** One account's record as the driver holds it. */
 export interface RotationDrive {
   record: BackupRotationRecord
-  /** The last resume's answer for the record as it stands; none while one runs. */
+  /**
+   * The last resume's answer for the record as it stands, kept through a poll and the user's
+   * recheck until the next one lands. None until a run answers for the record.
+   */
   resume?: ResumeAnswer
   /** A step the user started is running. */
   approving: boolean
+  /** The user's recheck is running. */
+  rechecking?: true
+  /** When a run last read the chain for the record in full, epoch ms. */
+  checkedAt?: number
 }
 
 export interface RotationDriveSource {
-  store: Pick<BackupRotationStore, "list" | "onChanged">
+  store: Pick<BackupRotations, "view">
   /** The flow's dependencies for `owner`, in the record's casing; kept until `stop`, built again after a failed build. */
   deps(owner: string): Promise<RotationFlowDeps>
   /** Whether the record changes the session's account. */
   owns(record: BackupRotationRecord): boolean
   report?(what: string, error: unknown): void
   pollMs?: number
+  /** The page's: a resume poll waits on it. */
+  pace: Pick<Pace, "after">
 }
 
 interface Lane {
@@ -53,7 +64,8 @@ interface Lane {
   /** A resume waits behind the current run. */
   queued: boolean
   tail: Promise<void>
-  timer?: ReturnType<typeof setTimeout>
+  /** Cancels the wait for the lane's next resume poll. */
+  timer?: () => void
   deps?: Promise<RotationFlowDeps>
 }
 
@@ -85,7 +97,6 @@ export class RotationDriver {
   private snapshot: ReadonlyMap<string, RotationDrive> = new Map()
   private listeners = new Set<() => void>()
   private unsubscribe?: () => void
-  private readTimer?: ReturnType<typeof setTimeout>
 
   subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener)
@@ -102,21 +113,20 @@ export class RotationDriver {
   start(source: RotationDriveSource): void {
     this.stop()
     this.source = source
-    const generation = this.generation
-    this.unsubscribe = source.store.onChanged((records) => this.sync(records))
-    // A read that fails is tried again on the poll: with no record read, nothing else would.
-    const read = () =>
-      source.store.list().then(
-        (records) => {
-          if (generation === this.generation) this.sync(records)
-        },
-        (err: unknown) => {
-          if (generation !== this.generation) return
-          source.report?.("rotation read failed", err)
-          this.readTimer = setTimeout(read, source.pollMs ?? RESUME_POLL_MS)
-        },
-      )
-    void read()
+    const { view } = source.store
+    let reported = false
+    // Records that do not read stop every lane: nothing is driven over a record the store cannot show.
+    const heard = () => {
+      const { records, loaded, failed } = view.get()
+      if (failed && !reported) {
+        reported = true
+        source.report?.("rotation read failed", new WalletError("unknown", "rotations unreadable"))
+      }
+      if (failed) this.sync([])
+      else if (loaded) this.sync(records)
+    }
+    this.unsubscribe = view.subscribe(heard)
+    heard()
   }
 
   /** Ends the session's driving; a run in flight finishes unobserved. */
@@ -124,8 +134,7 @@ export class RotationDriver {
     this.generation++
     this.unsubscribe?.()
     this.unsubscribe = undefined
-    clearTimeout(this.readTimer)
-    for (const lane of this.lanes.values()) clearTimeout(lane.timer)
+    for (const lane of this.lanes.values()) lane.timer?.()
     this.lanes.clear()
     this.source = undefined
     this.publish()
@@ -134,7 +143,9 @@ export class RotationDriver {
   /** Resumes the record now, for the user's recheck. */
   check(owner: string): void {
     const lane = this.lanes.get(owner.toLowerCase())
-    if (lane) this.kick(lane)
+    if (!lane) return
+    this.update(lane, this.generation, { rechecking: true })
+    this.kick(lane)
   }
 
   /**
@@ -184,13 +195,13 @@ export class RotationDriver {
       if (seen.has(lane.owner)) continue
       lane.active = false
       lane.ran = undefined
-      clearTimeout(lane.timer)
+      lane.timer?.()
     }
     this.publish()
   }
 
   private kick(lane: Lane): void {
-    clearTimeout(lane.timer)
+    lane.timer?.()
     lane.timer = undefined
     if (!lane.active || lane.queued) return
     lane.queued = true
@@ -211,8 +222,9 @@ export class RotationDriver {
     lane.queued = false
     if (generation !== this.generation || !lane.active) return
     const record = lane.drive.record
-    lane.ran = resumeKey(record)
-    this.update(lane, generation, { resume: undefined })
+    const key = resumeKey(record)
+    if (key !== lane.ran) this.update(lane, generation, { resume: undefined })
+    lane.ran = key
     try {
       const deps = await this.depsFor(lane)
       if (generation !== this.generation || !lane.active) return
@@ -231,7 +243,7 @@ export class RotationDriver {
   ): Promise<FlowResult> {
     const lane = this.lanes.get(owner.toLowerCase())
     if (!lane?.active) return Promise.reject(new Error("backup rotation: nothing to drive"))
-    clearTimeout(lane.timer)
+    lane.timer?.()
     const generation = this.generation
     return this.enqueue(lane, async () => {
       this.assertLive(lane, generation)
@@ -271,15 +283,20 @@ export class RotationDriver {
   /** Shows a run's answer unless a newer run is queued, and polls again when the wait is the chain's. */
   private answer(lane: Lane, generation: number, resume: ResumeAnswer | undefined): void {
     if (generation !== this.generation || lane.queued || !lane.active) return
-    if (resume) this.update(lane, generation, { resume })
+    // `unverifiable` answers when the chain could not be read.
+    const read = resume?.error === undefined && resume?.wait !== "unverifiable"
+    // The user's recheck ends with its run, whatever it answered.
+    if (lane.drive.rechecking) this.update(lane, generation, { rechecking: undefined })
+    if (resume) this.update(lane, generation, read ? { resume, checkedAt: Date.now() } : { resume })
     const due =
       !resume ||
       resume.error !== undefined ||
       (resume.wait !== undefined && !USER_WAITS.has(resume.wait)) ||
       parked(lane.drive.record)
-    if (!due) return
-    clearTimeout(lane.timer)
-    lane.timer = setTimeout(() => this.kick(lane), this.source?.pollMs ?? RESUME_POLL_MS)
+    const source = this.source
+    if (!due || !source) return
+    lane.timer?.()
+    lane.timer = source.pace.after(source.pollMs ?? RESUME_POLL_MS, () => this.kick(lane))
   }
 
   private update(lane: Lane, generation: number, fields: Partial<RotationDrive>): void {

@@ -6,7 +6,8 @@
  *   byte 0      format version (0x01)
  *   then        [type: u8][len: u8][value: len bytes] entries —
  *               0x01 memo (UTF-8, ≤ TRANSFER_MEMO_MAX_BYTES), 0x02 reference (the payment-request
- *               id as its 32-byte Fr value), 0x03 sender tag, 0x04 recipient tag (ASCII, ≤ 32 bytes),
+ *               id as its 32-byte Fr value), 0x03 sender tag, 0x04 recipient tag (ASCII,
+ *               ≤ MAX_TAG_LENGTH bytes),
  *               0x10 paylink created: [flavor: u8][day: u16][secret: 32][fallbackKeyHash: 32][email: rest]
  *               0x11 paylink payout: [flavor: u8][secret: 32][fallbackKeyHash: 32]
  *   then        0x00 terminator, zero fill
@@ -163,8 +164,8 @@ export function buildTransferMeta(input: TransferMeta): Fr[] {
 
 /**
  * Send-path variant: a display or join field never fails the payment. A non-field legacy request
- * id and an invalid tag (over 32 bytes, or failing the tag charset after lowercase/trim) are
- * dropped; everything else encodes strictly.
+ * id and an invalid tag (over MAX_TAG_LENGTH bytes, or failing the tag charset after
+ * lowercase/trim) are dropped; everything else encodes strictly.
  */
 export function buildTransferMetaForSend(input: TransferMeta): Fr[] {
   const out: TransferMeta = {}

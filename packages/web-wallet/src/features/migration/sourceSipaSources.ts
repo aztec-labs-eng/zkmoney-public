@@ -6,8 +6,8 @@
 import { AztecAddress } from "@aztec-labs/aztec.js/addresses"
 import type { OxideEnvTuple, SourceSipaScan as SourceSipaScanParams } from "@obsidion/core/types"
 import {
-  composeWireNameHash,
   deploymentScanRange,
+  composeWireNameHash,
   deriveBootstrapKey,
   deriveRefundableSipaSources,
   deriveStealthKey,
@@ -26,11 +26,11 @@ import {
   predictAccountAddress,
 } from "@obsidion/sdk"
 import type { Address, Hex, PublicClient } from "viem"
-import { getWebBroadcasterArtifact } from "../../config/classArtifacts"
-import { getConfig } from "../../config/env"
+import type { PageFacts } from "../../session/pageChain"
 import type { SourceChain } from "./historicTokenContext"
 
 export interface SourceSipaScan {
+  page: PageFacts
   /** Where the deployment's rollup is read. */
   chain: SourceChain
   tuple: OxideEnvTuple
@@ -70,7 +70,7 @@ export async function sourceSipaScanParams(
       {
         forwardingTable: tuple.forwardingTable ?? tuple.portal,
         resolverGatewayUrl: tuple.resolverGatewayUrl,
-        ...resolverSelectionPolicy(getConfig().network),
+        ...resolverSelectionPolicy(o.page.config.network),
       },
     )
   ).map((record) => record.l2Address)
@@ -84,7 +84,7 @@ export async function sourceSipaScanParams(
 
 /** Every resolver operator and key the registry published on `tuple`'s deployment. */
 export async function sourceResolverKeys(
-  o: Pick<SourceSipaScan, "publicClient" | "tuple" | "scanHead">,
+  o: Pick<SourceSipaScan, "page" | "publicClient" | "tuple" | "scanHead">,
 ) {
   const { tuple, publicClient } = o
   if (!tuple.accountMetadataRegistry) throw new WalletError("migration.noResolverRegistry")
@@ -156,12 +156,13 @@ async function pxeSipaEvents(o: SourceSipaScan & { chain: Extract<SourceChain, {
   // Registers the senders the deployment's `SIPA` events are tagged with: the resolver, and the
   // deployment's ClaimFPC for the broadcasts it sponsored.
   await setupSipaDiscovery({
-    artifactFor: (address) => getWebBroadcasterArtifact(chain.wallet, address),
+    artifactFor: (address) => o.page.chain.broadcasterArtifact(chain.wallet, address),
     pxe: chain.wallet.pxe as never,
     node: chain.wallet.node as never,
+    scans: o.page.chain.scans,
     publicClient,
     tuple,
-    network: getConfig().network,
+    network: o.page.config.network,
     historical: true,
     sponsorFpc: tuple.fpcBeneficiary
       ? AztecAddress.fromStringUnsafe(tuple.fpcBeneficiary)
@@ -191,7 +192,7 @@ export async function sourceSweptDeposits(o: SourceSipaSearch) {
 
 /** `sources`' swept deposits into the deployment's portal. */
 export async function sweptDepositsOf(
-  o: Pick<SourceSipaScan, "publicClient" | "tuple" | "scanHead">,
+  o: Pick<SourceSipaScan, "page" | "publicClient" | "tuple" | "scanHead">,
   sources: readonly RefundableSipaSource[],
 ) {
   const range = await deploymentScanRange(o.publicClient, o.tuple, o.scanHead)

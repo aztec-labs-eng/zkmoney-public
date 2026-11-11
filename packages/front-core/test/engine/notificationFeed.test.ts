@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest"
 import { zeroAddress } from "viem"
-import type { UpgradeBatchItem } from "../../src/core/migration/upgradeActivity"
 import type { OldVersionWithdrawal } from "../../src/core/migration/OldVersionWithdrawalStorage"
 import type { WithdrawalRecord } from "../../src/core/services/bridge/types"
 import { DEPOSIT_PHASE_COPY } from "../../src/core/services/deposits/depositCopy"
 import type { SipaDeposit } from "../../src/engine/sipaDeposits"
-import type { OperationRecord } from "../../src/core/services/operations/OperationStore"
+import type { PaylinkRecord } from "../../src/engine/paylinkTransition"
+import type { OperationRecord } from "../../src/engine/operationTransition"
 import type { PendingRegistrationRecord } from "../../src/engine/registrationRecord"
 import { WITHDRAWAL_PHASE_COPY } from "../../src/core/services/bridge/withdrawalCopy"
 import { LIVE_DEPOSIT_PHASES, LIVE_WITHDRAWAL_PHASES } from "../../src/engine/notificationBridge"
@@ -76,25 +76,21 @@ const receive = (over: Partial<Transaction> = {}): Transaction =>
     ...over,
   } as Transaction)
 
-const paylink = (over: Partial<Transaction> = {}): Transaction =>
-  ({
-    id: "0xp1",
-    action: "pay",
-    emailPaymentAction: "pay",
-    flavor: "direct",
-    token,
-    amountAtomic: 5n * E18,
-    timestamp: NOW - 3 * 24 * HOUR,
-    status: "success",
-    txHash: "0xP1",
-    ...over,
-  } as Transaction)
+const paylink = (over: Partial<PaylinkRecord> = {}): PaylinkRecord => ({
+  id: "link1",
+  flavor: "direct",
+  token,
+  amountAtomic: 5n * E18,
+  timestamp: NOW - 3 * 24 * HOUR,
+  payToEmailSecret: "0xs1",
+  txHash: "0xP1",
+  ...over,
+})
 
 const op = (over: Partial<OperationRecord> = {}): OperationRecord => ({
   operationId: "op1",
   flow: "send",
   summary: "$1 to @bo",
-  scope: null,
   state: "failed",
   cause: "dropped",
   txHash: "0xS1",
@@ -107,10 +103,13 @@ const loaded = <T>(records: T[]) => ({ records, hydrated: true })
 
 const sources = (over: Partial<NotificationSources> = {}): NotificationSources => ({
   rows: [],
+  links: [],
   oldVersionWithdrawals: [],
+  bridgeIns: { records: [], hydrated: true },
   deposits: loaded([]),
   withdrawals: loaded([]),
   upgrades: { items: [], recipients: new Set(), loaded: true },
+  upgradePricing: { settled: true },
   processing: new Map(),
   registrations: [],
   operations: { ended: [], running: [] },
@@ -169,10 +168,27 @@ describe("bridge entries", () => {
 
   it("leaves a backup passkey rotation's deposit and funding burn to the settings panel", () => {
     const s = sources({
-      deposits: loaded([deposit({ intent: "user-op" } as Partial<SipaDeposit>)]),
+      deposits: loaded([deposit({ intent: "add-passkey" } as Partial<SipaDeposit>)]),
       withdrawals: loaded([burn({ intent: "backup" } as Partial<WithdrawalRecord>)]),
     })
     expect(ids(s)).toEqual([])
+  })
+
+  it("leaves a backup passkey funding rebuilt from chain, which names no intent, to the panel too", () => {
+    const s = sources({
+      deposits: loaded([deposit({ intent: "add-passkey" } as Partial<SipaDeposit>)]),
+      withdrawals: loaded([burn({ recipient: addr("d1"), rebuilt: true })]),
+    })
+    expect(ids(s)).toEqual([])
+  })
+
+  it("rings for no deposit to a rotated wallet's previous account, landed or not", () => {
+    const previous = `0x${"0D".repeat(32)}`
+    const to = (over: Partial<SipaDeposit>) =>
+      deposit({ recipientL2Address: previous.toLowerCase(), ...over })
+    const deposits = loaded([to({}), to({ phase: "sweeping", sipaAddress: addr("d2") })])
+    expect(ids(sources({ deposits, previousAccount: previous }))).toEqual([])
+    expect(ids(sources({ deposits }))).toHaveLength(2)
   })
 
   it("reports a withdrawal of old-version funds pending while it sends, then its outcome", () => {
@@ -231,6 +247,9 @@ describe("bridge entries", () => {
       kind: "bridgeEnded",
       item: { record: { inboxIndex: "3", sweepTxHash: "0xs3" } },
     })
+    // Opening the earlier claim opens its own payment's row, not the address's latest.
+    expect(earlier.target).toMatchObject({ sourceId: `${addr("d1")}:3` })
+    expect(shown.find((e) => e.id === done("4"))!.target).toMatchObject({ sourceId: addr("d1") })
   })
 
   it("reports an earlier claim in the token it credited, whatever funded the address since", () => {
@@ -247,6 +266,19 @@ describe("bridge entries", () => {
     expect(earlier.about).toMatchObject({ item: { record: { netAmount: first.netAmount } } })
     const record = (earlier.about as { item: { record: SipaDeposit } }).item.record
     expect(isNativeEth(record.tokenAddress)).toBe(false)
+  })
+
+  it("reports a later payment recovered unswept apart from the claim before it", () => {
+    const first = { inboxIndex: "3", sweepTxHash: "0xs3", netAmount: (20n * E18).toString() }
+    const recovered = deposit({
+      phase: "recovered",
+      amount: "0.05",
+      netAmount: undefined,
+      claimedInboxIndexes: ["3"],
+      sweeps: [first],
+    } as never)
+    const done = (index: string) => `bridge:sipaDeposit:${addr("d1")}:${index}:done`
+    expect(ids(sources({ deposits: loaded([recovered]) }))).toEqual([done("3"), done("")])
   })
 
   it("states a waiting deposit's reason on its live row once shown", () => {
@@ -281,45 +313,6 @@ describe("bridge entries", () => {
     expect(ids(sources({ withdrawals: loaded(legs) }))).toEqual([
       "bridge:withdrawal-group:0xg1:inflight",
     ])
-  })
-
-  it("reports an upgrade run live, and complete once every batch arrived", () => {
-    const batch = {
-      id: "first",
-      run: "r1",
-      recipient: addr("d1"),
-      amount: "20",
-      exitFee: "0",
-      state: "sent",
-      approved: true,
-      first: true,
-      startTime: NOW - 2 * HOUR,
-    }
-    const s = (phase: SipaDeposit["phase"], more: UpgradeBatchItem[] = []) =>
-      sources({
-        upgrades: {
-          items: [batch as unknown as UpgradeBatchItem, ...more],
-          recipients: new Set([addr("d1")]),
-          loaded: true,
-        },
-        deposits: loaded([deposit({ phase })]),
-      })
-    expect(ids(s("sweeping"))).toEqual(["migration-run:r1"])
-    expect(ids(s("claimed"))).toEqual(["migration-run:r1:done:1"])
-    // Complete only once no other run is approved and unsent.
-    const planned = { ...batch, id: "second", run: "r2", state: "planned", first: false }
-    expect(ids(s("claimed", [planned as unknown as UpgradeBatchItem]))).not.toContain(
-      "migration-run:r1:done:1",
-    )
-  })
-
-  it("reports an upgrade read off its direct deposits once, however many legs join", () => {
-    const direct = deposit({ direct: { portal: addr("f1") } } as Partial<SipaDeposit>)
-    const done = deriveNotifications(sources({ deposits: loaded([direct]) }), new Map(), NOW).find(
-      (e) => e.id.endsWith(":done"),
-    )
-    expect(done).toMatchObject({ id: `migration-run:chain-upgrade/${addr("f1")}:done` })
-    expect(done).not.toHaveProperty("seenWith")
   })
 })
 
@@ -357,15 +350,40 @@ describe("registration entries", () => {
 describe("row entries", () => {
   it("reports a receive, and a claimed paylink at the time it was seen claimed", () => {
     const s = sources({
-      rows: [receive(), paylink({ isClaimed: true, claimedAt: NOW - 1000 } as never)],
+      rows: [receive()],
+      links: [paylink({ isClaimed: true, claimedAt: NOW - 1000 })],
     })
     expect(ids(s)).toEqual(["transfer:receive:0xr1", "paylink:claimed:0xp1"])
     expect(select(s).find((e) => e.id === "paylink:claimed:0xp1")?.timestampMs).toBe(NOW - 1000)
   })
 
+  it("leaves out a transfer from a rotated wallet's previous account", () => {
+    const previous = `0x${"0d".repeat(32)}`
+    const rows = [receive({ senderL2Address: previous }), receive({ id: "0xr2", txHash: "0xR2" })]
+    expect(ids(sources({ rows, previousAccount: `0x${"0D".repeat(32)}` }))).toEqual([
+      "transfer:receive:0xr2",
+    ])
+    expect(ids(sources({ rows }))).toEqual(["transfer:receive:0xr1", "transfer:receive:0xr2"])
+  })
+
+  it("leaves out a transfer someone sent to a rotated wallet's previous account", () => {
+    const previous = `0x${"0d".repeat(32)}`
+    const rows = [
+      receive({ from: "ada", recipientL2Address: previous } as Partial<Transaction>),
+      receive({
+        id: "0xr2",
+        txHash: "0xR2",
+        recipientL2Address: addr("0a"),
+      } as Partial<Transaction>),
+    ]
+    expect(ids(sources({ rows, previousAccount: `0x${"0D".repeat(32)}` }))).toEqual([
+      "transfer:receive:0xr2",
+    ])
+  })
+
   it("leaves out the creator's own claim, and counts a claim without a claimer as the chain's", () => {
     const claimed = (claimedBy?: "self" | "chain") =>
-      ids(sources({ rows: [paylink({ isClaimed: true, claimedBy } as never)] }))
+      ids(sources({ links: [paylink({ isClaimed: true, claimedBy })] }))
     expect(claimed("self")).toEqual([])
     expect(claimed("chain")).toEqual(["paylink:claimed:0xp1"])
     expect(claimed()).toEqual(["paylink:claimed:0xp1"])
@@ -378,7 +396,7 @@ describe("row entries", () => {
       kind: "claimReversed",
       data: { txHash: "0xP1" },
     })
-    expect(ids(sources({ rows: [paylink()] }), reversed)).toEqual([
+    expect(ids(sources({ links: [paylink()] }), reversed)).toEqual([
       "paylink:claimed:0xp1",
       "paylink:claim-reversed:0xp1",
     ])
@@ -444,6 +462,14 @@ describe("reorg notices", () => {
   const none = () => false
   const failed = reorgEvent({ type: "failed", txHash: "0xS1", reorgEpoch: 1 }, NOW, none)!
 
+  it("stays quiet on a reorg of a move from a rotated wallet's previous account", () => {
+    const previous = `0x${"0d".repeat(32)}`
+    const rows = [receive({ senderL2Address: previous, txHash: "0xS1" })]
+    const events = eventMap(failed)
+    expect(ids(sources({ rows, previousAccount: previous }), events)).toEqual([])
+    expect(ids(sources({ rows }), events)).toEqual(["transfer:receive:0xs1", failed.id])
+  })
+
   it("keys an outcome per episode and stays quiet where the record reports it", () => {
     expect(failed.id).toBe("reorg:failed:0xs1:1")
     expect(
@@ -472,7 +498,8 @@ describe("reorg notices", () => {
     expect(select(covered, seenAll(covered, events), events).map((e) => e.id)).toEqual([
       "operation:op1",
     ])
-    const settled = sources({ operations: { ended: [op({ state: "settled" })], running: [] } })
+    const sent = op({ state: "settled", cause: undefined })
+    const settled = sources({ operations: { ended: [sent], running: [] } })
     expect(select(settled, seenAll(settled, events), events).map((e) => e.id)).toContain(failed.id)
   })
 

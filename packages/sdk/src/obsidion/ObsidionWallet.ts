@@ -6,13 +6,19 @@ import {
   type FeeOptions,
 } from "@aztec-labs/wallet-sdk/base-wallet"
 import {
-  ContractService,
+  type ContractService,
   DEFAULT_CONTRACTS,
   getSimulatedAlphaAccountArtifact,
   type ContractName,
 } from "@obsidion/contracts"
 import { getContractClassFromArtifact } from "@aztec-labs/stdlib/contract"
-import { SimulationOverrides, type ContractOverrides } from "@aztec-labs/stdlib/tx"
+import {
+  SimulationOverrides,
+  TxStatus,
+  type ContractOverrides,
+  type TxHash,
+  type TxReceipt,
+} from "@aztec-labs/stdlib/tx"
 import { StubAlphaAuthProvider } from "./alpha/auth/StubAlphaAuthProvider.js"
 import { ObsidionAccountEntrypoint } from "./alpha/account/ObsidionAccountEntrypoint.js"
 import { BaseAccount } from "@aztec-labs/aztec.js/account"
@@ -80,13 +86,7 @@ import {
 import { Gas, GasSettings } from "@aztec-labs/stdlib/gas"
 import { assertProvenGasWithinLimits, type PayloadFinalizer } from "./stagedExecution.js"
 import { FeeUnavailableError } from "./FeeUnavailableError.js"
-import {
-  ProvingStage,
-  provingProgress,
-  type OriginalFlowKind,
-  type ProvingOperationContext,
-  type TxKind,
-} from "@obsidion/proving-progress"
+import { ProvingStage, type OriginalFlowKind, type TxKind } from "@obsidion/core/types"
 import {
   proveTxWithProgress,
   readPerfLogFlag,
@@ -108,7 +108,9 @@ import {
 } from "@aztec-labs/aztec.js/contracts"
 import { getGasLimits } from "@aztec-labs/wallet-sdk/base-wallet"
 import type { SendOptions } from "@aztec-labs/aztec.js/wallet"
-import { waitForTx } from "@aztec-labs/aztec.js/node"
+import { createPace, type Pace } from "@obsidion/core/cadence"
+import { serialTurns, type SendProgress, type SendTurns } from "./sendTurns.js"
+import { waitForTx } from "../utils/waitForTx.js"
 import { displayDebugLogs } from "@aztec-labs/pxe/client/lazy"
 import { inspect } from "util"
 import {
@@ -144,7 +146,37 @@ export interface ObsidionWalletOptions {
    * taken.
    */
   chainInfo?: WalletChainInfo
+  /** The page's: every receipt wait reads on it. Plain timers when absent. */
+  pace?: Pick<Pace, "wait">
+  /** Builds the wallet's contract service on its first read. */
+  contractService?: ContractServiceFactory
+  /** The page's prover: every send waits its turn on it. Turns in call order when absent. */
+  prover?: SendTurns
 }
+
+/** `sendTx`'s options beside upstream's. */
+export type SendTxOptions<W extends InteractionWaitOptions> = SendOptions<W> & {
+    operationId?: string
+    /** Flow that originated the tx; threaded to op-id minting, scope and pending record. Defaults to `"send"`. */
+    kind?: OriginalFlowKind
+    /**
+     * Staged execution (`stagedExecution.ts`): the given payload is only simulated; the
+     * finalizer's payload is what gets proven and persisted. Gas limits become
+     * `estimate(pre-sim) + gasDelta`, checked against the proven tx before submit. Producer:
+     * `buildTeeOperation`.
+     */
+    finalize?: PayloadFinalizer
+    /**
+     * Lazy-start gate. Sync, pre-simulation, finalize, estimation and zero-witness authwit
+     * capture run before it (node + TEE, no passkey, no scope, no submit); everything after
+     * blocks on it. Reject with an AbortError to abort before signing.
+     */
+    confirmGate?: Promise<unknown>
+    onTxHash?: TxHashCallback
+  }
+
+/** A wallet's contract service, over the wallet's node and PXE. */
+export type ContractServiceFactory = (node: AztecNode, pxe: PXE) => ContractService
 
 /** `networkId` is the pinned rollup address; absent, `create` reads the node's. */
 export type CreateWalletOptions = ObsidionWalletOptions & { networkId?: string }
@@ -166,7 +198,7 @@ const _nextOperationId = (kind: TxKind) => `${kind}_${++_operationCounter}_${Dat
 
 /**
  * Lets the UI mint the op id at Confirm and pass it through `sendTx` opts, so its row and the
- * wallet's `provingProgress` events share one id.
+ * stages the wallet reports share one id.
  */
 export function nextOperationId(kind: TxKind): string {
   return _nextOperationId(kind)
@@ -203,6 +235,15 @@ export async function readNetworkId(
   return opts?.networkId ?? (await node.getNodeInfo()).l1ContractAddresses.rollupAddress.toString()
 }
 
+/** Reads of one snapshot before it gives up on an anchor that keeps moving. */
+const SNAPSHOT_READ_ATTEMPTS = 3
+
+/** The longest a send waits for the last send's tx. If it lands later, the chain rejects the send. */
+const LAST_SEND_WAIT_CAP_MS = 5 * 60_000
+
+/** How long a failed receipt read of the last send's tx waits before it reads again. */
+const RECEIPT_RETRY_MS = 1_000
+
 /** Wallet for the alpha (non-modular) account system. Auth is handled by AlphaAuthProvider. */
 export class ObsidionWallet extends BaseWallet {
   public accounts: Map<string, Account> = new Map()
@@ -219,6 +260,13 @@ export class ObsidionWallet extends BaseWallet {
   public readonly pendingTxStore: IPendingTxStore
 
   private readonly pinnedChainInfo: WalletChainInfo | undefined
+  private readonly contractServiceFactory: ContractServiceFactory | undefined
+  private builtContractService: ContractService | undefined
+
+  /** What every receipt wait reads on. */
+  public readonly pace: Pick<Pace, "wait">
+  /** Grants the anchor pin to one send at a time. */
+  private readonly prover: SendTurns
 
   /** The rollup's L1 address: the network the wallet's records belong to. */
   constructor(
@@ -230,6 +278,15 @@ export class ObsidionWallet extends BaseWallet {
     super(pxe, node)
     this.pendingTxStore = opts?.pendingTxStore ?? new InMemoryPendingTxStore()
     this.pinnedChainInfo = opts?.chainInfo
+    this.pace = opts?.pace ?? createPace()
+    this.prover = opts?.prover ?? serialTurns()
+    this.contractServiceFactory = opts?.contractService
+  }
+
+  /** Where account builds and contract services read artifacts and addresses. */
+  get contractService(): ContractService {
+    if (!this.contractServiceFactory) throw new Error("This wallet has no contract service")
+    return (this.builtContractService ??= this.contractServiceFactory(this.node, this.pxe))
   }
 
   /** The pin as `Fr`s, else the base class's node snapshot; feeds every tx context and authwit. */
@@ -299,7 +356,7 @@ export class ObsidionWallet extends BaseWallet {
   }
 
   protected async getAccountArtifact(): Promise<ContractArtifact> {
-    return ContractService.getInstance().getArtifactForContract(this.getAccountContractName())
+    return this.contractService.getArtifactForContract(this.getAccountContractName())
   }
 
   protected getAccountContractName(): ContractName {
@@ -311,6 +368,7 @@ export class ObsidionWallet extends BaseWallet {
       artifact: await this.getAccountArtifact(),
       contractName: this.getAccountContractName(),
       pxe: this.pxe,
+      contractService: this.contractService,
     }
   }
 
@@ -630,7 +688,7 @@ export class ObsidionWallet extends BaseWallet {
   // hold reads' syncs the same way, so no read moves the anchor a snapshot checks.
   // ────────────────────────────────────────────────────────────────────────
 
-  /** In-flight `sendTx` count. A depth only as re-entrancy hygiene; sends are single-flight. */
+  /** In-flight `sendTx` count: 0 or 1, since the prover grants one send at a time. */
   private anchorPinDepth = 0
   /** A snapshot is reading. Unlike a send's pin, it never blocks a send. */
   private snapshotHeld = false
@@ -700,14 +758,17 @@ export class ObsidionWallet extends BaseWallet {
     this.snapshotHeld = true
     try {
       if (!opts.assumeSynced && this.anchorPinDepth === 0) await this.pxe.sync()
-      const before = await this.pxe.getSyncedBlockHeader()
-      const beforeHash = (await before.hash()).toString()
-      const value = await read()
-      const after = await this.pxe.getSyncedBlockHeader()
-      if ((await after.hash()).toString() !== beforeHash) {
-        throw new Error("PXE anchor changed during wallet snapshot; retry the read")
+      // A sync that started before the hold can still land mid-read: read again at its anchor, a few times.
+      for (let attempt = 1; ; attempt++) {
+        const before = await this.pxe.getSyncedBlockHeader()
+        const beforeHash = (await before.hash()).toString()
+        const value = await read()
+        const after = await this.pxe.getSyncedBlockHeader()
+        if ((await after.hash()).toString() === beforeHash)
+          return { value, anchorBlock: Number(before.globalVariables.blockNumber) }
+        if (attempt === SNAPSHOT_READ_ATTEMPTS)
+          throw new Error("PXE anchor changed during wallet snapshot; retry the read")
       }
-      return { value, anchorBlock: Number(before.globalVariables.blockNumber) }
     } finally {
       this.snapshotHeld = false
     }
@@ -730,49 +791,72 @@ export class ObsidionWallet extends BaseWallet {
   }
 
   /**
-   * Drives provingProgress events around the upstream send.
+   * Builds, proves and submits, and reports to the turn's progress: the wait for the last send's
+   * tx while it lasts, then its stages under its operation id: Simulating right before
+   * `pxe.proveTx`, and Mining after `toTx()` and right before `aztecNode.sendTx`. Persist happens
+   * after a successful submit, so a submit error has nothing to clean up.
    *
-   * Emits: reset on entry; Simulating right before `pxe.proveTx` (inside `proveTxWithProgress`;
-   * Witgen/Proving come only from an injected prover that emits them); Mining after
-   * `toTx()` and right before `aztecNode.sendTx`.
-   *
-   * Builds, proves and submits inside `withProvingScope`. Persist happens after a successful
-   * submit, so a submit error has nothing to clean up.
+   * Waits its turn on the prover, which holds the anchor pin for the send's whole life. A second
+   * send that started inside that window would re-select the notes the first is spending, and the
+   * chain would reject it with "Existing nullifier". A send must not start another send.
    */
-  override async sendTx<W extends InteractionWaitOptions = undefined>(
+  override sendTx<W extends InteractionWaitOptions = undefined>(
     executionPayload: ExecutionPayload,
-    opts: SendOptions<W> & {
-      operationId?: string
-      /** Flow that originated the tx; threaded to op-id minting, scope and pending record. Defaults to `"send"`. */
-      kind?: OriginalFlowKind
-      /**
-       * Staged execution (`stagedExecution.ts`): the given payload is only simulated; the
-       * finalizer's payload is what gets proven and persisted. Gas limits become
-       * `estimate(pre-sim) + gasDelta`, checked against the proven tx before submit. Producer:
-       * `buildTeeOperation`.
-       */
-      finalize?: PayloadFinalizer
-      /**
-       * Lazy-start gate. Sync, pre-simulation, finalize, estimation and zero-witness authwit
-       * capture run before it (node + TEE, no passkey, no scope, no submit); everything after
-       * blocks on it. Reject with an AbortError to abort before signing.
-       */
-      confirmGate?: Promise<unknown>
-      onTxHash?: TxHashCallback
-    },
+    opts: SendTxOptions<W>,
+  ): Promise<SendReturn<W>> {
+    return this.prover.turn(async (progress) => {
+      await this.lastSendIncluded(progress)
+      return this.sendPinned(executionPayload, opts, progress)
+    })
+  }
+
+  /** The tx the last send submitted and when it expires, until a block or the next send sees it. */
+  private submitted: { txHash: TxHash; expiresAtMs: number } | undefined
+
+  /**
+   * The PXE sees a note spent only once a block holds its nullifier, so a send that syncs while the
+   * last send's tx is pending selects the same notes. A `NO_WAIT` send ends at submit. Waits for a
+   * proposed block, the tip the PXE syncs to, until the tx is dropped or expires, or the cap passes.
+   * A failed receipt read is no answer, so it is read again.
+   */
+  private async lastSendIncluded(progress: SendProgress): Promise<void> {
+    const last = this.submitted
+    const waitMs = last ? Math.min(last.expiresAtMs - Date.now(), LAST_SEND_WAIT_CAP_MS) : 0
+    if (last && waitMs > 0) {
+      const deadline = Date.now() + waitMs
+      progress.lastSendWait(true)
+      await waitForTx(
+        { getTxReceipt: (txHash) => this.receiptBy(txHash, deadline) },
+        last.txHash,
+        { waitForStatus: TxStatus.PROPOSED, timeout: waitMs / 1000 },
+        this.pace,
+      ).catch(() => undefined)
+      progress.lastSendWait(false)
+    }
+    this.submitted = undefined
+  }
+
+  /** `txHash`'s receipt. A failed read is read again on the page's cadence until `deadline`. */
+  private async receiptBy(txHash: TxHash, deadline: number): Promise<TxReceipt> {
+    for (;;) {
+      try {
+        return await this.aztecNode.getTxReceipt(txHash)
+      } catch (err) {
+        const left = deadline - Date.now()
+        if (left <= 0) throw err
+        this.log.warn(`Receipt read of ${txHash} failed; reading again`, err)
+        await this.pace.wait(Math.min(RECEIPT_RETRY_MS, left))
+      }
+    }
+  }
+
+  private async sendPinned<W extends InteractionWaitOptions = undefined>(
+    executionPayload: ExecutionPayload,
+    opts: SendTxOptions<W>,
+    progress: SendProgress,
   ): Promise<SendReturn<W>> {
     // Read before the entry sync: the sync is the first timed phase.
     const timingBench = readTimingBenchFlag()
-
-    // Single-flight for the pin's whole lifetime. A second send that starts here re-selects the
-    // notes the first is spending; the chain then rejects it with "Existing nullifier".
-    // withProvingScope cannot close that window — it is entered only after sync, simulation,
-    // finalize, and confirmGate.
-    if (this.anchorPinDepth > 0) {
-      const err = new Error("Another transaction is still in progress")
-      err.name = "LocalProvingInFlight"
-      throw err
-    }
 
     // Pin before the entry sync so no unpinned await exists in the send. Released exactly once on
     // every exit path.
@@ -813,9 +897,6 @@ export class ObsidionWallet extends BaseWallet {
     const opId: string = opts.operationId ?? _nextOperationId(flowKind)
 
     try {
-      // Inside the try: a throwing listener must not leak the pin.
-      provingProgress.emitReset()
-
       if (timingBench) {
         // Bench-only anchor-drift probe; compared against the proven anchor below.
         let simAnchorBlock = "?"
@@ -883,7 +964,7 @@ export class ObsidionWallet extends BaseWallet {
         }),
       )
       // ─── (0b) Staged finalize ───────────────────────────────────────────
-      // Runs outside `withProvingScope`: a throw here is a plain rejection with no terminal emit.
+      // A throw here is a plain rejection: nothing was proven.
       let effectivePayload = executionPayload
       let declaredDeltaGas = Gas.empty()
       if (opts.finalize) {
@@ -989,8 +1070,7 @@ export class ObsidionWallet extends BaseWallet {
       )
       const pre_prove_ms = Date.now() - t_pre_prove_start
 
-      const scopeResult = await this.withProvingScope(
-        async () => {
+      const scopeResult = await (async () => {
           const provenTx = await proveTxWithProgress(
             this.pxe,
             txRequest,
@@ -998,7 +1078,7 @@ export class ObsidionWallet extends BaseWallet {
               scopes: this.scopesFrom(opts.from, opts.additionalScopes ?? [], opts.sendMessagesAs),
               senderForTags: this.senderForTagsFrom(opts.from, opts.sendMessagesAs),
             },
-            { perfLog: proveTxPerfLogs, logger: this.log },
+            { perfLog: proveTxPerfLogs, logger: this.log, progress, operationId: opId },
           )
           const proveTimings = proveTxPerfLogs ? provenTx.stats?.timings : undefined
           // Prove-side benchmark scalars, read+cached in-process BEFORE
@@ -1063,18 +1143,18 @@ export class ObsidionWallet extends BaseWallet {
           if (await this.aztecNode.getTxEffect(txHash)) {
             throw new Error(`A settled tx with equal hash ${txHash.toString()} exists.`)
           }
-          await opts.onTxHash?.(txHash.toString(), {
-            expiresAtMs: txExpiresAtMs(provenTx.publicInputs.expirationTimestamp),
-          })
+          const expiresAtMs = txExpiresAtMs(provenTx.publicInputs.expirationTimestamp)
+          await opts.onTxHash?.(txHash.toString(), { expiresAtMs })
 
           // The op id and the client-side txHash let the caller stamp the real hash on its row
           // before submit (`trackSubmission`), without waiting for the post-mining patch.
-          provingProgress.emitStageStart(ProvingStage.Mining, opId, txHash.toString())
+          progress.stage(ProvingStage.Mining, opId, txHash.toString())
           this.log.debug(`Sending transaction ${txHash}`)
 
           await this.aztecNode.sendTx(tx).catch((err) => {
             throw this.contextualizeError(err, inspect(tx))
           })
+          this.submitted = { txHash, expiresAtMs }
           this.log.info(`Sent transaction ${txHash}`)
 
           // Only after a successful submit (a persist-error tx is still on-chain, so before the
@@ -1111,10 +1191,7 @@ export class ObsidionWallet extends BaseWallet {
           }
 
           return { txHash, offchainOutput, proveTimings }
-        },
-        flowKind,
-        { operationId: opId },
-      )
+      })()
 
       const { txHash, offchainOutput, proveTimings } = scopeResult
 
@@ -1139,51 +1216,22 @@ export class ObsidionWallet extends BaseWallet {
       }
 
       const waitOpts = typeof opts.wait === "object" ? opts.wait : undefined
-      const receipt = await waitForTx(this.aztecNode, txHash, {
-        ...this.defaultWaitOpts,
-        ...waitOpts,
-      })
-      provingProgress.emitStageComplete(ProvingStage.Mining, opId)
+      const receipt = await waitForTx(
+        this.aztecNode,
+        txHash,
+        { ...this.defaultWaitOpts, ...waitOpts },
+        this.pace,
+      )
+      this.submitted = undefined
 
       if (receipt.isMined() && receipt.debugLogs?.length) {
         await displayDebugLogs(receipt.debugLogs, this.getContractName.bind(this))
       }
 
       return { receipt, ...offchainOutput } as SendReturn<W>
-    } catch (err) {
-      provingProgress.emitReset()
-      throw err
     } finally {
       // Also covers a `wait`-ful caller's `waitForTx`.
       releaseAnchorPin()
-    }
-  }
-
-  // ────────────────────────────────────────────────────────────────────────
-  // Proving scope: one registered proving operation at a time
-  // ────────────────────────────────────────────────────────────────────────
-
-  /**
-   * Run `fn` in a fresh `ProvingOperationContext`, so stage events carry this operation's id.
-   * Throws `LocalProvingInFlight` if one is already registered. The context is cleared on exit.
-   */
-  public async withProvingScope<T>(
-    fn: (ctx: ProvingOperationContext) => Promise<T>,
-    kind: TxKind,
-    opts?: { operationId?: string },
-  ): Promise<T> {
-    const ctx: ProvingOperationContext = {
-      operationId: opts?.operationId ?? _nextOperationId(kind),
-      kind,
-    }
-    provingProgress.registerOperationContext(ctx)
-    try {
-      return await fn(ctx)
-    } finally {
-      const live = provingProgress.getCurrentOperationContext()
-      if (live && live.operationId === ctx.operationId) {
-        provingProgress.clearOperationContext()
-      }
     }
   }
 

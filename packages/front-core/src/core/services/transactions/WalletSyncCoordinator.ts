@@ -1,7 +1,7 @@
 /**
  * WalletSyncCoordinator — the one owner of the wallet's chain view. Each pass of its
  * `TransferEventScanner` (the only reader that syncs PXE) reads the private balances at the same
- * anchor and writes them to `BalanceStorage`: Main's token, and any other the source reads
+ * anchor and writes them to the balance store: Main's token, and any other the source reads
  * (Savings' shares). The UI renders from that store; nothing else in the app syncs PXE to read a
  * balance. The `transferScan` runtime task runs the passes.
  *
@@ -15,12 +15,14 @@
  * Its first published balance reaches `firstBalance`; its first pass to reach head, `historyAtHead`.
  */
 
+import { WALLET_TOKEN_SYMBOL } from "@obsidion/core/constants"
 import { type WalletBalanceRead, type WalletSyncSource, TokenActionEnum } from "@obsidion/sdk"
 import type { Transaction } from "../../../types/transactions"
 import type { WithdrawalRecord } from "../bridge/types"
 import type { ReadonlyStore } from "../../../engine/store"
 import type { RecordSet } from "../../../engine/persistentStore"
 import type { Milestones } from "../../../engine/milestones"
+import type { BalanceStore } from "../../../engine/balances"
 import { WalletError } from "../../../engine/errors"
 import {
   TransferEventScanner,
@@ -40,16 +42,7 @@ export interface WalletSyncCoordinatorOptions
   extends Omit<TransferEventScannerOptions, "onSynced" | "onCaughtUp"> {
   source: WalletSyncSource
   balance: {
-    store: {
-      /** False when a newer read is already stored; `strict` rejects a refused write. */
-      updateBalance(
-        scope: string,
-        token: string,
-        balance: bigint,
-        anchor?: number,
-        opts?: { strict?: boolean; readAt?: number },
-      ): Promise<boolean>
-    }
+    store: Pick<BalanceStore, "write">
     scope: string
     /** Main's token: the balance every snapshot must carry, and the one boot waits for. */
     tokenAddress: string
@@ -69,17 +62,19 @@ export interface SyncLink {
   /** Runs a full pass; settles once a pass begun after the call ends. */
   wake(): Promise<void>
   /** Passes may run now: the page is visible. */
-  live(): boolean
+  canRun(): boolean
 }
 
 export class WalletSyncCoordinator {
   // ponytail: one session per process (one wallet at a time); key by account if that changes
+  // eslint-disable-next-line no-restricted-syntax -- debt
   private static session: { coordinator: WalletSyncCoordinator; link: SyncLink } | null = null
+  // eslint-disable-next-line no-restricted-syntax -- debt
   private static pending: { promise: Promise<void>; settle: () => void } | null = null
 
-  private static live(): { coordinator: WalletSyncCoordinator; link: SyncLink } | null {
+  private static runningSession(): { coordinator: WalletSyncCoordinator; link: SyncLink } | null {
     const session = WalletSyncCoordinator.session
-    return session?.link.live() ? session : null
+    return session?.link.canRun() ? session : null
   }
 
   /**
@@ -88,7 +83,7 @@ export class WalletSyncCoordinator {
    * spinner can never hang on a pass that never comes.
    */
   static refresh(): Promise<void> {
-    const live = WalletSyncCoordinator.live()
+    const live = WalletSyncCoordinator.runningSession()
     if (live) return live.link.wake()
     WalletSyncCoordinator.pending ??= WalletSyncCoordinator.request()
     return WalletSyncCoordinator.pending.promise
@@ -112,7 +107,7 @@ export class WalletSyncCoordinator {
 
   /** The balance alone at a fresh anchor; without a running task, same as `refresh()`. */
   static refreshBalance(): Promise<void> {
-    const live = WalletSyncCoordinator.live()
+    const live = WalletSyncCoordinator.runningSession()
     if (!live) return WalletSyncCoordinator.refresh()
     return live.coordinator.readBalanceCoalesced().then(
       () => {},
@@ -127,7 +122,7 @@ export class WalletSyncCoordinator {
    * read.
    */
   static async confirmBalance(): Promise<boolean> {
-    const live = WalletSyncCoordinator.live()
+    const live = WalletSyncCoordinator.runningSession()
     if (!live) return false
     await live.coordinator.drained()
     try {
@@ -252,18 +247,23 @@ export class WalletSyncCoordinator {
   private async writeBalances(
     { balances, readAt }: Partial<WalletBalanceRead> = {},
     anchor: number,
-    opts?: { strict?: boolean },
   ): Promise<boolean> {
     const { store, scope, tokenAddress } = this.opts.balance
     if (balances?.[tokenAddress] === undefined)
       throw new WalletError("balance.unread", "wallet snapshot omitted its balance")
     let stored = false
     for (const [token, value] of Object.entries(balances)) {
-      const wrote = await store.updateBalance(scope, token, value, anchor, {
-        ...opts,
-        readAt: readAt?.[token],
-      })
-      if (token === tokenAddress) stored = wrote
+      const main = token === tokenAddress
+      const wrote = await store.write(
+        scope,
+        token,
+        value,
+        anchor,
+        readAt?.[token],
+        // Named, Main's cached read shows on the next boot before the token builds.
+        main ? WALLET_TOKEN_SYMBOL : undefined,
+      )
+      if (main) stored = wrote
     }
     return stored
   }
@@ -273,7 +273,7 @@ export class WalletSyncCoordinator {
     for (let attempt = 1; ; attempt++) {
       try {
         const { anchorBlock, ...read } = await this.opts.source.readBalanceSnapshot()
-        return await this.writeBalances(read, anchorBlock, { strict: true })
+        return await this.writeBalances(read, anchorBlock)
       } catch (err) {
         if (attempt >= BALANCE_READ_ATTEMPTS) throw err
       }

@@ -1,15 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { QueueStatus } from "@obsidion/sdk"
 import { TxStatus } from "@aztec-labs/stdlib/tx"
-import { createActivity, type Activity } from "../../../src/engine/activity"
+import { createTransfers, type Transfers } from "../../../src/engine/transfers"
 import { openDatabase } from "../../../src/engine/database"
 import { memoryBackend } from "../../../src/engine/memoryBackend"
 import { scannedRow } from "../../../src/core/services/transactions/TransferEventScanner"
 import { createWithdrawals } from "../../../src/engine/withdrawals"
-import {
-  withdrawalStepper,
-  type WithdrawalTrackerNode,
-} from "../../../src/engine/withdrawalTracker"
+import { memoryStore, withdrawalStepper, type WithdrawalTrackerNode } from "../../../src/engine"
 import {
   REORG_MARGIN_MS,
   ReorgMonitor,
@@ -47,7 +44,7 @@ const sampleToken = (): TokenInTxService => ({
 
 const resetSingletons = () => {}
 
-let activity: Activity
+let transfers: Transfers
 
 /** Scripted node: per-hash receipt or "throw"; records call order. */
 function makeNode() {
@@ -79,7 +76,7 @@ async function seedRow(
   } = {},
 ) {
   const status = opts.status ?? "pending"
-  await activity.insertPending({
+  await transfers.record({
     id: "q-" + txHash.slice(-4),
     action: "send",
     token: sampleToken(),
@@ -102,22 +99,22 @@ async function seedRow(
 }
 
 async function rowByHash(txHash: string) {
-  return (await activity.byHash(txHash))!
+  return (await transfers.byHash(txHash))!
 }
 
 const setTier = async (txHash: string, tier: TxStatus) =>
-  activity.apply((await rowByHash(txHash)).id, { type: "anchored", tier })
+  transfers.apply((await rowByHash(txHash)).id, { type: "anchored", tier })
 
 function setup() {
   resetSingletons()
   const adapter = new InMemoryStorageAdapter()
-  activity = createActivity({ db: openDatabase(memoryBackend()) })
+  transfers = createTransfers({ db: openDatabase(memoryBackend()), now: () => Date.now() })
   const chain = makeNode()
   const outcomes: ConfirmationOutcome[] = []
   const deps: Deps = {
     node: chain.node,
     networkId: NET,
-    transactionStorage: activity,
+    transactionStorage: transfers,
     onOutcome: (o) => outcomes.push(o),
   }
   return { adapter, chain, outcomes, deps }
@@ -154,7 +151,7 @@ describe("ReorgMonitor.runPass", () => {
 
   it("a received payment that fails is flagged incoming", async () => {
     const { chain, outcomes, deps } = setup()
-    await activity.record(
+    await transfers.record(
       scannedRow({
         amountAtomic: 0n,
         txHash: TX,
@@ -253,7 +250,7 @@ describe("ReorgMonitor.runPass", () => {
 
   it("rows beyond the four surfaces (faucet, paylink-create) are reconciled", async () => {
     const { chain, deps } = setup()
-    await activity.insertPending({
+    await transfers.record({
       id: TX,
       networkId: NET,
       action: "faucet",
@@ -263,7 +260,7 @@ describe("ReorgMonitor.runPass", () => {
       status: "success",
       txHash: TX,
     })
-    await activity.insertPending({
+    await transfers.record({
       id: TX2,
       networkId: NET,
       amountAtomic: 0n,
@@ -292,7 +289,7 @@ describe("ReorgMonitor.runPass", () => {
       ["old-settled", TX, "success"],
       ["old-pending", TX2, "pending"],
     ] as const) {
-      await activity.insertPending({
+      await transfers.record({
         id,
         networkId: NET,
         action: "send",
@@ -439,44 +436,22 @@ describe("ReorgMonitor.runPass", () => {
     })
   })
 
-  it("holds an in-flight row's first dropped reading for 10 seconds before failing it", async () => {
+  // An older build's own row: its send ended with that build's page, so a dropped reading is final.
+  it("fails an older build's pending row that reads dropped at once", async () => {
     const { chain, outcomes, deps } = setup()
-    // Pending with a hash: stamped before the node received the tx, so the node reads it as dropped.
     await seedRow(TX)
     chain.script(TX, { status: "dropped" })
-    let clock = 1_000_000
-    const monitor = monitorOver({ ...deps, now: () => clock })
-
-    await monitor.runPass()
-    expect((await rowByHash(TX)).status).toBe("pending")
-    clock += 9_999
-    await monitor.runPass()
-    expect((await rowByHash(TX)).status).toBe("pending")
-    expect(outcomes).toEqual([])
-
-    clock += 1
-    await monitor.runPass()
+    await runPass(deps)
     expect((await rowByHash(TX)).status).toBe("failed")
     expect(outcomes).toEqual([{ type: "failed", txHash: TX, reorgEpoch: 1 }])
   })
 
-  it("an in-flight row the node includes inside the settle window confirms and drops the window", async () => {
+  it("confirms an older build's pending row the node includes", async () => {
     const { chain, deps } = setup()
     await seedRow(TX)
-    chain.script(TX, { status: "dropped" })
-    let clock = 1_000_000
-    const monitor = monitorOver({ ...deps, now: () => clock })
-    await monitor.runPass()
-
     chain.script(TX, { status: "proposed", blockNumber: 42, blockHash: "0xb42" })
-    clock += 5_000
-    await monitor.runPass()
+    await runPass(deps)
     expect((await rowByHash(TX)).status).toBe("success")
-    // A later dropped reading is a fresh episode, not the tail of the settled one.
-    chain.script(TX, { status: "dropped" })
-    clock += 200_000
-    await monitor.runPass()
-    expect((await rowByHash(TX)).status).toBe("failed")
   })
 
   it("a demoted row whose receipt reads dropped terminal-fails with the alert", async () => {
@@ -518,7 +493,10 @@ describe("ReorgMonitor withdrawal burns", () => {
   /** One mined withdrawal and a monitor over it on a hand-driven clock. */
   async function setupWithdrawal(opts: { networkId?: string } = {}) {
     const base = setup()
-    const withdrawals = createWithdrawals({ db: openDatabase(memoryBackend()) })
+    const withdrawals = createWithdrawals({
+      db: openDatabase(memoryBackend()),
+      now: () => Date.now(),
+    })
     await withdrawals.create({
       localId: "wdraw_1",
       recipient: "0x" + "11".repeat(20),
@@ -837,11 +815,16 @@ describe("ReorgMonitor withdrawal burns", () => {
     })
     await withdrawals.apply("wdraw_1", { type: "demoted", droppedBurn: true })
     chain.script(BURN, INCLUDED)
-    const pass = withdrawalStepper(withdrawals, {
-      node: { getTxReceipt: async () => INCLUDED } as unknown as WithdrawalTrackerNode,
-      finalizationReader: { isSpent: async () => false, resolveL1TxHash: async () => undefined },
-      deployment: { portal: `0x${"aa".repeat(20)}`, l2Token: `0x${"bb".repeat(32)}` },
-    })
+    const pass = withdrawalStepper(
+      withdrawals,
+      {
+        node: { getTxReceipt: async () => INCLUDED } as unknown as WithdrawalTrackerNode,
+        finalizationReader: { isSpent: async () => false, resolveL1TxHash: async () => undefined },
+        deployment: { portal: `0x${"aa".repeat(20)}`, l2Token: `0x${"bb".repeat(32)}` },
+        live: memoryStore<ReadonlySet<string>>(new Set()).readonly,
+      },
+      () => Date.now(),
+    )
     await pass() // while the only record is failed
 
     await monitor.runPass()

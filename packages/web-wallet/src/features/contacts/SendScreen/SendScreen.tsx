@@ -1,31 +1,46 @@
 import { useEffect, useMemo, useState } from "react"
 import { useNavigate } from "react-router-dom"
-import { useContactsDirectory, useStore } from "@obsidion/front-core"
+import { useStore } from "@obsidion/front-core"
+import type { ContactRow as ContactRowData } from "@obsidion/front-core"
+import { useContactDirectory } from "../../../session/contacts"
 import { ContactRow, GradientText, Icon, avatarColors } from "@obsidion/web-ds"
-import { PaylinkInfoModal, isPaylinkInfoHidden, shownVariant } from "../../paylink/PaylinkInfoModal"
+import { PaylinkInfoModal, shownVariant } from "../../paylink/PaylinkInfoModal"
 import { voucherAvailable } from "../../paylink/sponsoredPaylink"
 import { usePaylinkDeps } from "../../paylink/usePaylinkDeps"
 import { StableCopy } from "../../../ui/StableCopy"
-import { recentPeople } from "../recentPeople"
+import { holdOrder, recentPeople } from "../recentPeople"
 import { useSession } from "../../../session/session"
 import styles from "./SendScreen.module.css"
 import copy from "./SendScreen.copy"
 
 const RECENT_COUNT = 4
 const SEND_LINE = [copy.paylinkLine.account, copy.paylinkLine.anyone]
+const NO_ROWS: readonly ContactRowData[] = []
 
 /** Send entry: paylink shortcut or pick someone recent. */
 export function SendScreen() {
   const navigate = useNavigate()
-  const { contacts } = useContactsDirectory()
-  const sources = useStore(useSession().contactActivity)
-  const recent = useMemo(() => recentPeople(contacts, sources, RECENT_COUNT), [contacts, sources])
+  const { contacts, hydrated, failed } = useContactDirectory()
+  const session = useSession()
+  const { contactActivity, device } = session
+  const sources = useStore(contactActivity)
+  const latest = useMemo(() => recentPeople(contacts, sources, RECENT_COUNT), [contacts, sources])
+  const ready = (hydrated || failed) && !!sources.hydrated
+  // The first complete order stays for this visit, though discovery finds more while it is open.
+  const [held, setHeld] = useState({ session, rows: NO_ROWS })
+  const shown = held.session === session ? held.rows : NO_ROWS
+  const recent = ready ? holdOrder(shown, latest, contacts, RECENT_COUNT) : latest
+  if (ready && (held.session !== session || recent !== held.rows))
+    setHeld({ session, rows: recent })
+  // Hidden until its order is known; "View all" hides too, so it never moves under a finger.
+  const pending = ready ? "" : styles.sendRecentPending
   // "first-use" fronts "Send via paylink" until the user hides it; "explain" is the "Open" button.
   const [info, setInfo] = useState<"first-use" | "explain">()
   const newLink = () => navigate("/links/new")
   const deps = usePaylinkDeps()
   // Undefined while the allowance read is in flight.
   const [voucher, setVoucher] = useState<boolean>()
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     setVoucher(undefined)
     if (!deps) return
@@ -48,7 +63,7 @@ export function SendScreen() {
           <button
             type="button"
             className="zkm-btn-reset ww-send-option"
-            onClick={() => (isPaylinkInfoHidden() ? newLink() : setInfo("first-use"))}
+            onClick={() => (device.get().hidePaylinkInfo ? newLink() : setInfo("first-use"))}
           >
             <span className={styles.sendOptionBody}>
               <span className="ww-send-option__icon">
@@ -80,9 +95,9 @@ export function SendScreen() {
         <div className="ww-contacts__section">
           <span className="ww-contacts__label">{copy.recent}</span>
           {recent.length === 0 ? (
-            <span className="ww-contacts__label ww-contacts__empty">{copy.empty}</span>
+            <span className={`ww-contacts__label ww-contacts__empty ${pending}`}>{copy.empty}</span>
           ) : (
-            <div className="ww-contacts__group">
+            <div className={`ww-contacts__group ${pending}`}>
               {recent.map((c) => {
                 const l1 = c.addressKind === "ethereum-l1"
                 const base = `/contacts/${encodeURIComponent(c.id)}`
@@ -101,7 +116,7 @@ export function SendScreen() {
           )}
           <button
             type="button"
-            className={`zkm-btn-reset ${styles.sendAll}`}
+            className={`zkm-btn-reset ${styles.sendAll} ${pending}`}
             onClick={() => navigate("/contacts")}
           >
             {copy.viewAll}

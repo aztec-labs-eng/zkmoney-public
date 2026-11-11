@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest"
-import { paylinkRowView } from "../../src/core/services/paylink/paylinkRowView"
+import { paylinkRowView as view } from "../../src/core/services/paylink/paylinkRowView"
 import type { PaylinkTransaction } from "../../src/types/transactions"
+
+/** The view of a row as an older build kept it: its status and action are the funding's. */
+const paylinkRowView = (
+  row: PaylinkTransaction,
+  opts: Omit<Parameters<typeof view>[1], "status" | "create">,
+) => view(row, { ...opts, status: row.status, create: row.action === "Pay To Email" })
 
 const NOW_SEC = 1_800_000_000
 const REFUND_HASH = `0x${"cd".repeat(32)}`

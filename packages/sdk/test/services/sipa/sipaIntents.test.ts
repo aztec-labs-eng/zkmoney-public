@@ -1,7 +1,13 @@
 /** The factory, the table and the subsidy as the wallet reads them for a sweep route. */
 import { describe, expect, it, vi } from "vitest"
 import { ForwardingTableAbi, SipaIntent } from "@oxide/l1-contracts"
-import { ContractFunctionRevertedError, type Address, type PublicClient } from "viem"
+import {
+  ContractFunctionRevertedError,
+  createPublicClient,
+  custom,
+  type Address,
+  type PublicClient,
+} from "viem"
 import {
   readBlessedImplementations,
   readDepositSubsidyConfig,
@@ -29,7 +35,7 @@ const ROUTE = {
   forwardingTable: TABLE,
   token: TOKEN,
   depositSubsidy: SUBSIDY,
-  intent: SipaIntent.UserOp,
+  intent: SipaIntent.AddPasskey,
 }
 
 function fakeClient(
@@ -75,9 +81,12 @@ function fakeClient(
 const client = (fake: ReturnType<typeof fakeClient>) => fake as unknown as PublicClient
 
 describe("readSweepRouteLiveness", () => {
-  it("names the first reason the route is dead", async () => {
+  it("names the first reason a deposit route is dead", async () => {
     const dead = async (fake: ReturnType<typeof fakeClient>) => {
-      const liveness = await readSweepRouteLiveness(client(fake), ROUTE)
+      const liveness = await readSweepRouteLiveness(client(fake), {
+        ...ROUTE,
+        intent: SipaIntent.Deposit,
+      })
       return liveness.live ? "live" : liveness.reason
     }
     expect(await dead(fakeClient({ row: null, balance: 0n }))).toBe(
@@ -94,28 +103,39 @@ describe("readSweepRouteLiveness", () => {
     )
     expect(await dead(fakeClient({ balance: 0n }))).toBe("the subsidy holds none of the token")
   })
+
+  it("gates an add-passkey route on its row and tip alone: the subsidy pays nothing for it", async () => {
+    const unfunded = fakeClient({ config: [0n, 0n, ONE_ETH], balance: 0n })
+    expect(await readSweepRouteLiveness(client(unfunded), ROUTE)).toMatchObject({ live: true })
+
+    const untipped = fakeClient({ row: [PORTAL, BENEFICIARY, 0n, 0n] })
+    expect(await readSweepRouteLiveness(client(untipped), ROUTE)).toEqual({
+      live: false,
+      reason: "the row's tip is zero, so no relayer is paid",
+    })
+  })
 })
 
 describe("readBlessedImplementations", () => {
   const logs = [
-    { implementation: OLD_IMPL, intent: SipaIntent.UserOp },
+    { implementation: OLD_IMPL, intent: SipaIntent.AddPasskey },
     { implementation: DEPOSIT_IMPL, intent: SipaIntent.Deposit },
-    { implementation: IMPL, intent: SipaIntent.UserOp },
-    { implementation: ZERO, intent: SipaIntent.UserOp },
-    { implementation: OLD_IMPL, intent: SipaIntent.UserOp },
+    { implementation: IMPL, intent: SipaIntent.AddPasskey },
+    { implementation: ZERO, intent: SipaIntent.AddPasskey },
+    { implementation: OLD_IMPL, intent: SipaIntent.AddPasskey },
   ]
 
   it("lists the current implementation first, then every earlier blessing of the intent, once", async () => {
     const fake = fakeClient({ logs })
 
-    const blessed = await readBlessedImplementations(client(fake), FACTORY, SipaIntent.UserOp)
+    const blessed = await readBlessedImplementations(client(fake), FACTORY, SipaIntent.AddPasskey)
 
     expect(blessed).toEqual([IMPL, OLD_IMPL])
     expect(fake.getContractEvents).toHaveBeenCalledWith({
       address: FACTORY,
       abi: expect.any(Array),
       eventName: "ImplementationBlessed",
-      args: { intent: SipaIntent.UserOp },
+      args: { intent: SipaIntent.AddPasskey },
       fromBlock: 0n,
       toBlock: 100n,
     })
@@ -123,9 +143,9 @@ describe("readBlessedImplementations", () => {
 
   it("reads the whole history first, and the given window when the RPC refuses it", async () => {
     const fake = fakeClient({ logs, implementation: ZERO })
-    expect(await readBlessedImplementations(client(fake), FACTORY, SipaIntent.UserOp, 40n)).toEqual(
-      [OLD_IMPL, IMPL],
-    )
+    expect(
+      await readBlessedImplementations(client(fake), FACTORY, SipaIntent.AddPasskey, 40n),
+    ).toEqual([OLD_IMPL, IMPL])
     expect(fake.getContractEvents.mock.calls.map((c) => c[0])).toMatchObject([
       { fromBlock: 0n, toBlock: 100n },
     ])
@@ -133,13 +153,52 @@ describe("readBlessedImplementations", () => {
     fake.getContractEvents.mockRejectedValueOnce(
       new Error("query returned more than 10000 results"),
     )
-    expect(await readBlessedImplementations(client(fake), FACTORY, SipaIntent.UserOp, 40n)).toEqual(
-      [OLD_IMPL, IMPL],
-    )
+    expect(
+      await readBlessedImplementations(client(fake), FACTORY, SipaIntent.AddPasskey, 40n),
+    ).toEqual([OLD_IMPL, IMPL])
     expect(fake.getContractEvents.mock.calls.slice(1).map((c) => c[0])).toMatchObject([
       { fromBlock: 0n, toBlock: 100n },
       { fromBlock: 40n, toBlock: 100n },
     ])
+  })
+
+  // Through a real client: what viem builds from the RPC error decides the verdict.
+  describe("on a factory from before the add-passkey intent", () => {
+    const over = (failure: unknown) =>
+      createPublicClient({
+        transport: custom(
+          {
+            request: async ({ method }: { method: string }) => {
+              if (method === "eth_call") throw failure
+              if (method === "eth_blockNumber") return "0x64"
+              if (method === "eth_getLogs") return []
+              throw new Error(`unexpected ${method}`)
+            },
+          },
+          { retryCount: 0 },
+        ),
+      })
+    const read = (failure: unknown, intent = SipaIntent.AddPasskey) =>
+      readBlessedImplementations(over(failure), FACTORY, intent)
+    const PANIC_OVERFLOW = `0x4e487b71${"00".repeat(31)}11`
+
+    it("reads the bare revert of the implementation pointer as no implementation", async () => {
+      expect(await read({ code: 3, message: "execution reverted" })).toEqual([])
+      expect(await read({ code: 3, message: "execution reverted", data: "0x" })).toEqual([])
+    })
+
+    it("propagates every other failure, and the bare revert for another intent", async () => {
+      await expect(read({ code: -32603, message: "upstream timeout" })).rejects.toThrow()
+      await expect(read({ code: -32603, message: "execution reverted" })).rejects.toThrow()
+      await expect(
+        read({ code: 3, message: "execution reverted", data: PANIC_OVERFLOW }),
+      ).rejects.toThrow()
+      await expect(read({ code: -32000, message: "header not found" })).rejects.toThrow()
+      await expect(read(new Error("socket hang up"))).rejects.toThrow()
+      await expect(
+        read({ code: 3, message: "execution reverted" }, SipaIntent.Registration),
+      ).rejects.toThrow()
+    })
   })
 })
 

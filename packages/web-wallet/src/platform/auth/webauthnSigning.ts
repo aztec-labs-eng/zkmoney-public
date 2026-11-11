@@ -1,5 +1,5 @@
 import { p256 } from "@noble/curves/p256"
-import { provingProgress } from "@obsidion/proving-progress"
+import type { SigningReport } from "@obsidion/front-core"
 import type { SignChallengeOptions, WebAuthnSignResult } from "@obsidion/sdk"
 import { signedDigest, type PasskeyAssertResult, type PasskeyCeremony } from "@obsidion/passkey-web"
 import { activeSigningFlow, passkeyTelemetry } from "../../lib/passkeyTelemetry"
@@ -51,10 +51,10 @@ export interface SigningSteering {
  * the signature is checked against `pubkey` here, so a wrong recorded key fails before anything
  * is proven or sent.
  *
- * The ceremony is bracketed by `signing-start` / `signing-end`: it is a user-paced system modal,
- * and it is the last beat a send or withdrawal needs the user for. On `signing-end` the flow's
- * modal hands the proof to the bell (`OperationHandOff`). A cancelled or failed assertion ends the
- * bracket with `failed`, so those modals stay for the error. Each signature is one `approve_tx`
+ * The ceremony is reported to `signing` at its start and end: it is a user-paced system modal, and
+ * it is the last beat a send or withdrawal needs the user for. At its end the flow's modal hands
+ * the proof to the bell (`OperationHandOff`). A cancelled or failed assertion ends it as `failed`,
+ * so those modals stay for the error. Each signature is one `approve_tx`
  * passkey attempt, named for the proving flow that holds the screen when the signature is asked for.
  */
 export function makeWebauthnSignFn(
@@ -63,11 +63,12 @@ export function makeWebauthnSignFn(
   credentialId: string,
   pubkey: Uint8Array,
   steering?: SigningSteering,
+  signing?: SigningReport,
 ): (challenge: Buffer, opts?: SignChallengeOptions) => Promise<WebAuthnSignResult> {
   return async (challenge: Buffer, opts?: SignChallengeOptions) => {
     // Before any await: another flow can take the screen while the steering loads.
     const flow = activeSigningFlow()
-    provingProgress.emitSigningStart()
+    signing?.start()
     let result: WebAuthnSignResult
     try {
       const steer = await steering?.transports()
@@ -97,10 +98,10 @@ export function makeWebauthnSignFn(
         return signed
       })
     } catch (e) {
-      provingProgress.emitSigningEnd(undefined, true)
+      signing?.end(true)
       throw e
     }
-    provingProgress.emitSigningEnd()
+    signing?.end()
     return result
   }
 }

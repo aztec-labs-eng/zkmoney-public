@@ -4,12 +4,13 @@
  * never reaches a phone installed later unless another installation hands it over.
  *
  * History exchange over the XMTP history server:
- *   - `importHistory` on a fresh installation: newest accessible archive first, then a live sync request as the fallback.
- *     A brand-new installation needs an existing device online to share the archive keys.
+ *   - `importHistory` on a fresh installation: newest accessible archive first, then a live sync
+ *     request as the fallback. A brand-new installation needs an existing device online to share
+ *     the archive keys.
  *   - `startArchivePublisher` on every running installation: pushes the inbox's archive on a
  *     cadence so the import lane has something to pick up.
  *
- *   - `startHistoryImporter` processes late replies and asks the receiver to replay older messages.
+ *   - `startHistoryImporter` keeps syncing the device sync groups, which brings in late replies.
  *
  * These are best-effort and never throw. The `local` env has no history server.
  */
@@ -22,23 +23,11 @@ export interface DeviceSyncPort {
   syncAllDeviceSyncGroups(): Promise<unknown>
 }
 
-export interface HistorySyncPort extends DeviceSyncPort {
-  /** Newest first, as returned by the SDK. */
-  listSyncArchivePins(): Promise<string[]>
-}
-
 export interface DeviceSyncLogger {
   warn(message: string, ...args: unknown[]): void
 }
 
 export const ARCHIVE_PUBLISH_INTERVAL_MS = 15 * 60_000
-
-/**
- * A browser SDK whose archive listing always throws would otherwise log a panic on every poll.
- * After this many consecutive failures the importer stops asking and relies on the live sync
- * request, which carries the same replies.
- */
-export const ARCHIVE_LIST_FAILURE_LIMIT = 3
 
 /**
  * Pull history into a fresh installation. Must run before the inbox driver starts: archived
@@ -76,73 +65,31 @@ export function startArchivePublisher(
   return () => clearInterval(timer)
 }
 
-// Mark our own publications: archive listings can expose only pins, not sender ids.
+// Each publication's pin names the installation that sent it.
 function archivePinPrefix(port: DeviceSyncPort): string {
   return `wallet:${port.installationId}:`
 }
 
 /**
- * Import late replies and newly published archives while the receiver runs. The SDK may import
- * a live reply itself, but does not expose import completion consistently on both platforms.
- * Explicitly importing by pin gives the receiver a completion boundary for cursor replay.
+ * Sync the device sync groups while the receiver runs, which brings in replies to this
+ * installation's sync request that arrive late. No archive listing: the browser SDK's
+ * (listAvailableArchives) panics in wasm on every call, as its archive timestamps exceed what a
+ * JavaScript number holds (xmtp/libxmtp, bindings/wasm/src/device_sync.rs).
  */
 export function startHistoryImporter(
-  port: HistorySyncPort,
+  port: DeviceSyncPort,
   log: DeviceSyncLogger,
-  onImported: () => void,
   intervalMs = 5_000,
 ): () => void {
   let stopped = false
   let timer: ReturnType<typeof setTimeout> | undefined
-  let initialized = false
-  let listFailures = 0
-  const seen = new Set<string>()
-  const listPins = async (): Promise<string[] | undefined> => {
-    if (listFailures >= ARCHIVE_LIST_FAILURE_LIMIT) return undefined
-    try {
-      const pins = await port.listSyncArchivePins()
-      listFailures = 0
-      return pins.filter((pin) => !pin.startsWith(archivePinPrefix(port)))
-    } catch (err) {
-      listFailures += 1
-      log.warn(
-        listFailures >= ARCHIVE_LIST_FAILURE_LIMIT
-          ? "[xmtp deviceSync] archive list keeps failing; replies now arrive by live sync only"
-          : "[xmtp deviceSync] archive list failed",
-        err,
-      )
-      return undefined
-    }
-  }
   const poll = async (): Promise<void> => {
     try {
       await port.syncAllDeviceSyncGroups()
-      if (stopped) return
-      const pins = await listPins()
-      if (stopped || pins === undefined) return
-      if (!initialized) {
-        // Match initial recovery's newest-archive policy, without downloading a week's
-        // worth of full-history snapshots on every mount. Subsequent replies are all handled.
-        for (const pin of pins.slice(1)) seen.add(pin)
-        initialized = true
-      }
-      for (const pin of [...pins].reverse()) {
-        if (seen.has(pin)) continue
-        try {
-          await port.processSyncArchive(pin)
-          if (stopped) return
-          onImported()
-          seen.add(pin)
-        } catch (err) {
-          // A missing or expired archive must not prevent a newer reply from being imported.
-          log.warn("[xmtp deviceSync] archive refresh failed", err)
-        }
-        if (stopped) return
-      }
     } catch (err) {
       log.warn("[xmtp deviceSync] history refresh failed", err)
     } finally {
-      // Schedule after completion so slow imports never overlap or build up a queue.
+      // Schedule after completion so slow syncs never overlap or build up a queue.
       if (!stopped) timer = setTimeout(() => void poll(), intervalMs)
     }
   }

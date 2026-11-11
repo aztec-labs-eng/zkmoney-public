@@ -10,10 +10,12 @@ import {
   truncateMiddle,
   withdrawalRecipients,
   type WithdrawalRecord,
-  useResource,
+  NO_SERVICE,
+  serviceStatus,
+  useStore,
 } from "@obsidion/front-core"
 import { ConfirmationSheetDetailRow } from "@obsidion/web-ds"
-import { getConfig, l1ChainFor } from "../../config/env"
+import { l1ChainFor } from "../../config/env"
 import { showReportableError } from "../../errors/errorModal"
 import { failureCode, fireEvent } from "../../lib/analytics"
 import { withdrawKind } from "./withdrawFunnel"
@@ -48,15 +50,16 @@ export function WithdrawalExitModal({
   deployment?: () => Promise<{ tuple: OxideEnvTuple; signer: RegisteredTeeSigner }>
   onClose: () => void
 }) {
-  const config = getConfig()
   const amount = `${record.amount} ${record.tokenSymbol}`
   const recipient = record.recipientAlias ?? truncateMiddle(record.recipient, 12)
   const { release, viaEscrow } = withdrawalRecipients(record)
   const swap = viaEscrow ? record.swapOutput : undefined
   const releasedTo = viaEscrow ? truncateMiddle(release, 12) : recipient
-  const obsidionWallet = useResource(useSession().wallet)
-  const obsidionAccount = useResource(useSession().account)
-  const teeSigner = useResource(useSession().teeSigner)
+  const session = useSession()
+  const { config } = session.page
+  const walletBuilt = useStore(session.wallet, serviceStatus) === "ready"
+  const unlocked = useStore(session.account ?? NO_SERVICE, serviceStatus) === "ready"
+  const signerBuilt = useStore(session.teeSigner, serviceStatus) === "ready"
   const bridgeMode = isDesktopL1SubmitActive()
 
   return (
@@ -87,22 +90,28 @@ export function WithdrawalExitModal({
         </>
       }
       buttonTitle="Finalize this withdrawal"
-      run={async ({ from, onHelperOpened, onStage }) => {
+      run={async ({ wagmi, from, onHelperOpened, onStage }) => {
         // Null when the session is locked or still connecting; `selfFinalize` refuses it, except in
         // the dev demo, whose stubbed builder needs no wallet at all.
         const own = deployment ? await deployment() : undefined
-        const signer = own?.signer ?? teeSigner
+        const { account } = session
         const wallet =
-          obsidionWallet && obsidionAccount && signer
-            ? {
-                node: obsidionWallet.node,
+          walletBuilt && unlocked && account && (own?.signer || signerBuilt)
+            ? await Promise.all([
+                session.wallet.ready(),
+                account.ready(),
+                own?.signer ?? session.teeSigner.ready(),
+              ]).then(([built, unlockedAccount, signer]) => ({
+                node: built.node,
                 signer,
-                wallet: obsidionWallet,
-                owner: obsidionAccount.getAddress(),
-              }
+                wallet: built,
+                owner: unlockedAccount.getAddress(),
+              }))
             : null
         return await selfFinalize(record, wallet, {
+          wagmi,
           tuple: own?.tuple,
+          session,
           from,
           onHelperOpened,
           onStage,

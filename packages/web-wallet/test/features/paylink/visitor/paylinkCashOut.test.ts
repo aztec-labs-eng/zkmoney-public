@@ -4,6 +4,7 @@
  * owns, in the same store as the wallet's own, so the tracker finalizes it like any other.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { assignReads } from "../../../support/fakeReads"
 import { testPage, testCore } from "../../../support/page"
 import { formatUnits, parseUnits, type Address, type Hex } from "viem"
 import { WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
@@ -14,6 +15,14 @@ import {
   watchWalletDb,
   type WalletSendOptions,
 } from "../../../support/submitBoundary"
+import { operationRecord, testOperations } from "../../../support/operations"
+import {
+  createOwedClaims,
+  fixed,
+  memoryBackend,
+  openDatabase,
+  type OwedClaims,
+} from "@obsidion/front-core"
 
 const L2_TX = `0x${"0a".repeat(32)}` as Hex
 const RECIPIENT = `0x${"dd".repeat(20)}` as Address
@@ -27,19 +36,13 @@ const L1 = { l1: true }
 
 vi.mock("../../../../src/config/env", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../../src/config/env")>()),
-  getConfig: () => ({ network: "sandbox", l1ChainId: 11155111 }),
   l1Transport: () => ({}),
 }))
 // The portal alone resolves no withdrawal wiring, so the record carries no deployment and the chain
 // watcher is skipped — the assertions here are about what the burn writes, not about finalization.
 vi.mock("../../../../src/config/oxideTuple", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../../src/config/oxideTuple")>()),
-  getOxideTuple: async () => SOURCE,
   l1PublicClient: () => L1,
-}))
-vi.mock("../../../../src/features/token/oxideToken", () => ({
-  txAmountCap: async () => 5166n * 10n ** 18n,
-  oxideTokenImmutablesOf: async () => ({ symbol: "DAI", decimals: 18 }),
 }))
 vi.mock("../../../../src/features/withdraw/withdrawalFee", () => ({
   withdrawalExecutorFee: async () => FEE,
@@ -69,7 +72,7 @@ vi.mock("../../../../src/lib/analytics", async (importOriginal) => ({
 const SWAP_ESCROW = `0x${"ee".repeat(20)}` as Address
 const COMMITMENT = `0x${"c0".repeat(32)}` as Hex
 const { planSwapLeg, linkSecret } = vi.hoisted(() => ({
-  planSwapLeg: vi.fn(async (_wallet: unknown, receiveAsset: string) =>
+  planSwapLeg: vi.fn(async (_reads: unknown, _recoverer: unknown, receiveAsset: string) =>
     receiveAsset === "DAI"
       ? undefined
       : {
@@ -109,8 +112,8 @@ const { exitPaylinkWithVoucher, paylinkVoucherUses, readPaylinkEscrowNote } = vi
 }))
 vi.mock("@obsidion/sdk", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/sdk")>()),
-  decodePaylinkInline: () => ({
-    secret: linkSecret,
+  decodePaylinkInline: (fragment: string) => ({
+    secret: fragment === "fragment" ? linkSecret : { toString: () => fragment },
     paylinkType: "paylink_direct",
     classId: { toString: () => "0xclass" },
     chainId: 31337,
@@ -122,19 +125,26 @@ vi.mock("@obsidion/sdk", async (importOriginal) => ({
 }))
 
 const { cashOutLink } = await import("../../../../src/features/paylink/paylinkExit")
-const { getOperationStore } = await import("../../../../src/features/operations/operations")
 const { reportPaylinkClaims } = await import("../../../../src/features/paylink/paylinkClaimReport")
-const { webStorage } = await import("../../../../src/platform/storage/WebStorageAdapter")
-const { activeNamespace, closeSession, switchSession, session } = await import(
+const { activeNamespace, closeSession, switchSession } = await import(
   "../../../../src/session/session"
 )
+const { openTestSession } = await import("../../../support/session")
 const { pageSessionDeps } = await import("../../../../src/app/sessionDeps")
-beforeEach(
-  () =>
-    void switchSession(activeNamespace(testCore().device), pageSessionDeps(testPage(fakeAuth()))),
-)
+/** The flow's own owed claims, apart from the session's: the claim lands in what the deps carry. */
+let claims: OwedClaims
+beforeEach(() => {
+  claims = createOwedClaims({ db: openDatabase(memoryBackend()) })
+  const page = testPage(fakeAuth())
+  assignReads(page.chain, {
+    oxideTuple: async () => SOURCE,
+    txAmountCap: async () => 5166n * 10n ** 18n,
+    tokenImmutablesOf: async () => ({ symbol: "DAI", decimals: 18 }),
+  })
+  switchSession(activeNamespace(testCore().device), pageSessionDeps(page))
+})
 afterEach(closeSession)
-const withdrawals = () => session().withdrawals
+const withdrawals = () => openTestSession().withdrawals
 const clearWithdrawals = () =>
   Promise.all(
     withdrawals()
@@ -142,16 +152,21 @@ const clearWithdrawals = () =>
       .records.map((r) => withdrawals().remove(r.localId)),
   )
 
-const deps = (compliant = true) =>
+const fakeWallet = () => ({
+  networkId: "0xnet",
+  node: { getTxReceipt: vi.fn(async () => ({ status: TxStatus.PENDING })) },
+  pxe: {},
+})
+const deps = (compliant = true, wallet = fakeWallet()) =>
   ({
-    wallet: {
-      networkId: "0xnet",
-      node: { getTxReceipt: vi.fn(async () => ({ status: TxStatus.PENDING })) },
-      pxe: {},
-    },
-    contractService: { getContractAddress: async () => ({ toString: () => "0xtoken" }) },
-    teeSigner: { _id: "enclave" },
     rollupAddress: `0x${"ab".repeat(20)}`,
+    session: Object.assign(Object.create(openTestSession()), {
+      owedClaims: claims,
+      wallet: fixed("wallet", wallet),
+      contractService: fixed("contractService", {
+        getContractAddress: async () => ({ toString: (): string => "0xtoken" }),
+      }),
+    }),
     screener: { screen: async () => ({ compliant, reason: { message: "Sanctioned address" } }) },
   } as unknown as Parameters<typeof cashOutLink>[0])
 
@@ -172,13 +187,22 @@ describe("cashOutLink", () => {
     // A bearer has no account: recovery commits to the destination, salted from the link secret.
     expect(planSwapLeg).toHaveBeenCalledWith(
       expect.anything(),
+      expect.any(Function),
       "USDC",
       RECIPIENT,
       ESCROW,
       quote,
-      { account: RECIPIENT, secret: linkSecret },
       SOURCE,
     )
+    // The bearer recovers with the link's secret, whatever the deployment.
+    const [, recoverer] = vi.mocked(planSwapLeg).mock.calls[0] as unknown as [
+      unknown,
+      () => Promise<unknown>,
+    ]
+    await expect(recoverer()).resolves.toEqual({
+      account: RECIPIENT,
+      secret: linkSecret,
+    })
     const args = exitPaylinkWithVoucher.mock.calls[0]![0] as {
       l1Recipient: { toString(): string }
       withdrawal: { tuple: unknown; l1: unknown; swap?: unknown }
@@ -262,14 +286,14 @@ describe("cashOutLink", () => {
         [...(await withdrawals().all())].sort((a, b) => b.startTime - a.startTime),
       ).toHaveLength(0)
       expect(
-        getOperationStore()
-          .list()
-          .filter((op) => op.state === "local"),
+        testOperations()
+          .view.get()
+          .records.filter((op) => op.state === "local"),
       ).toHaveLength(0)
       // Nothing was owed for the refused link.
       await reportPaylinkClaims(
         [...(await withdrawals().all())].sort((a, b) => b.startTime - a.startTime),
-        webStorage,
+        claims,
       )
       expect(claimedEvents()).toHaveLength(1)
     } finally {
@@ -286,9 +310,9 @@ describe("cashOutLink", () => {
     expect(record.phase).toBe("submitting")
     expect(record.l2TxHash).toBe(L2_TX)
     expect(record.failure).toBeUndefined()
-    const op = getOperationStore().get(record.operationId!)
+    const op = operationRecord(record.operationId!)
     expect(op).toMatchObject({ state: "sent", txHash: L2_TX, flow: "paylink-claim-l1" })
-    expect(getOperationStore().isLive(record.operationId!)).toBe(false)
+    expect(testOperations().live.get().has(record.operationId!)).toBe(false)
   })
 
   it("saves the burn's hash before the node takes it, and sends nothing when it cannot", async () => {
@@ -300,7 +324,7 @@ describe("cashOutLink", () => {
       })
       return { txHash: L2_TX, blockNumber: 42, amount: ESCROW, l1Recipient: RECIPIENT }
     })
-    await cashOutLink(deps(), "fragment", RECIPIENT)
+    await cashOutLink(deps(), "fragment-2", RECIPIENT)
     expect(heldAtNode).toBe(true)
 
     db.refuse("withdrawals", L2_TX)
@@ -318,11 +342,11 @@ describe("cashOutLink", () => {
       await sendLikeTheWallet(args as WalletSendOptions, L2_TX, () => {})
       throw new Error("Node rejected withdrawal")
     })
-    const dependencies = deps()
-    vi.mocked(dependencies.wallet.node.getTxReceipt).mockResolvedValue({
-      status: TxStatus.DROPPED,
-    } as never)
-    await expect(cashOutLink(dependencies, "fragment", RECIPIENT)).rejects.toThrow(/Node rejected/)
+    const wallet = fakeWallet()
+    wallet.node.getTxReceipt.mockResolvedValue({ status: TxStatus.DROPPED })
+    await expect(cashOutLink(deps(true, wallet), "fragment", RECIPIENT)).rejects.toThrow(
+      /Node rejected/,
+    )
     expect(
       [...(await withdrawals().all())].sort((a, b) => b.startTime - a.startTime)[0]?.phase,
     ).toBe("failed")
@@ -349,7 +373,7 @@ describe("cashOutLink claim reporting", () => {
     // The withdrawals view reporting again finds nothing owed.
     await reportPaylinkClaims(
       [...(await withdrawals().all())].sort((a, b) => b.startTime - a.startTime),
-      webStorage,
+      claims,
     )
     expect(claimedEvents()).toHaveLength(1)
   })
@@ -360,7 +384,7 @@ describe("cashOutLink claim reporting", () => {
     analytics.enabled = true
     await reportPaylinkClaims(
       [...(await withdrawals().all())].sort((a, b) => b.startTime - a.startTime),
-      webStorage,
+      claims,
     )
     expect(claimedEvents()).toHaveLength(0)
   })

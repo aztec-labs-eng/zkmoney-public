@@ -1,16 +1,23 @@
 import {
   type PasskeyClassification,
+  type PasskeyEnvironment,
   type PasskeyFlow,
   createPasskeyTelemetry,
-  lastPasskeyEnvironment,
   providerSlugFor,
 } from "@obsidion/passkey-web"
 import { WalletError } from "@obsidion/core/errors"
-import { PASSKEY_ENVIRONMENT_KEY } from "../platform/auth/passkeyEnvironmentKey"
 import { fireEvent } from "./analytics"
 
 const PASSKEY_MISMATCH: PasskeyClassification = { outcome: "refused", reason: "passkey_mismatch" }
 const SESSION_LOST: PasskeyClassification = { outcome: "failed", reason: "session_lost" }
+
+/** The page's last passkey environment, from its device keys once the page binds them. */
+// eslint-disable-next-line no-restricted-syntax -- debt
+let lastEnvironment = (): PasskeyEnvironment | null => null
+
+export function bindPasskeyEnvironment(read: () => PasskeyEnvironment | null): void {
+  lastEnvironment = read
+}
 
 const walletTracker = () =>
   createPasskeyTelemetry({
@@ -31,8 +38,7 @@ const walletTracker = () =>
         classification: PASSKEY_MISMATCH,
       },
     ],
-    fallbackProvider: () =>
-      providerSlugFor(lastPasskeyEnvironment(PASSKEY_ENVIRONMENT_KEY)?.aaguid),
+    fallbackProvider: () => providerSlugFor(lastEnvironment()?.aaguid),
   })
 
 /**
@@ -40,12 +46,7 @@ const walletTracker = () =>
  * signup flow opened identifier-free and holds every other one behind the analytics answer.
  * A mismatched passkey reads the same on every path.
  */
-export let passkeyTelemetry = walletTracker()
-
-/** Test-only seam: the tracker a fresh page load would hold, with none of its counts or dedupes. */
-export function __resetPasskeyTelemetryForTests(): void {
-  passkeyTelemetry = walletTracker()
-}
+export const passkeyTelemetry = walletTracker()
 
 const SIGNING_FLOWS: readonly PasskeyFlow[] = [
   "send",

@@ -7,19 +7,20 @@ import {IForwardingTable} from "./interfaces/IForwardingTable.sol";
 import {SIPABase} from "./SIPABase.sol";
 import {RecoveryCommitmentLib} from "./RecoveryCommitmentLib.sol";
 import {Errors} from "@periphery/Errors.sol";
+import {Intent, Intents} from "@periphery/Intent.sol";
 
 contract SIPAFactory is Ownable {
   uint256 private constant CLONE_IMPLEMENTATION_OFFSET = 10;
   uint256 private constant CLONE_RUNTIME_PREFIX = 45;
   uint256 private constant ARGS_LENGTH = 5 * 32;
 
-  mapping(address implementation => SIPABase.Intent intent) public intentOf;
+  mapping(address implementation => Intent intent) public intentOf;
 
-  mapping(SIPABase.Intent intent => address implementation) public implementationFor;
+  mapping(Intent intent => address implementation) public implementationFor;
 
   mapping(address table => bool approved) public approvedTable;
 
-  event ImplementationBlessed(address indexed implementation, SIPABase.Intent indexed intent);
+  event ImplementationBlessed(address indexed implementation, Intent indexed intent);
 
   event TableBlessed(address indexed table);
 
@@ -27,8 +28,8 @@ contract SIPAFactory is Ownable {
 
   function blessImplementation(address implementation) external onlyOwner {
     require(implementation != address(0), Errors.SIPAFactory__ZeroImplementation());
-    SIPABase.Intent intent = SIPABase(implementation).INTENT();
-    require(intent != SIPABase.Intent.None, Errors.SIPAFactory__ZeroImplementation());
+    Intent intent = SIPABase(implementation).INTENT();
+    require(intent != Intents.NONE, Errors.SIPAFactory__ZeroImplementation());
 
     intentOf[implementation] = intent;
     implementationFor[intent] = implementation;
@@ -42,27 +43,27 @@ contract SIPAFactory is Ownable {
     emit TableBlessed(address(table));
   }
 
-  function sipaIntentOf(address caller) public view returns (SIPABase.Intent) {
+  function sipaIntentOf(address caller) public view returns (Intent) {
     uint256 codeLength = caller.code.length;
-    if (codeLength < CLONE_RUNTIME_PREFIX || codeLength > 24_576) return SIPABase.Intent.None;
+    if (codeLength < CLONE_RUNTIME_PREFIX || codeLength > 24_576) return Intents.NONE;
 
     address implementation = cloneImplementation(caller);
-    SIPABase.Intent intent = intentOf[implementation];
-    if (intent == SIPABase.Intent.None) return SIPABase.Intent.None;
+    Intent intent = intentOf[implementation];
+    if (intent == Intents.NONE) return Intents.NONE;
 
     bytes memory args = Clones.fetchCloneArgs(caller);
-    if (args.length != ARGS_LENGTH) return SIPABase.Intent.None;
+    if (args.length != ARGS_LENGTH) return Intents.NONE;
 
     bool derives =
       caller == Clones.predictDeterministicAddressWithImmutableArgs(implementation, args, bytes32(0), address(this));
-    if (!derives) return SIPABase.Intent.None;
+    if (!derives) return Intents.NONE;
 
-    if (!approvedTable[address(abi.decode(args, (SIPABase.Args)).table)]) return SIPABase.Intent.None;
+    if (!approvedTable[address(abi.decode(args, (SIPABase.Args)).table)]) return Intents.NONE;
     return intent;
   }
 
   function isBlessed(address caller) external view returns (bool) {
-    return sipaIntentOf(caller) != SIPABase.Intent.None;
+    return sipaIntentOf(caller) != Intents.NONE;
   }
 
   function cloneImplementation(address clone) public view returns (address implementation) {

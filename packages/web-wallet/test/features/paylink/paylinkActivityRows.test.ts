@@ -1,260 +1,319 @@
+// @vitest-environment node
+// The link codec's byte checks need one realm, which jsdom splits.
 /**
- * Paylink activity-row storage: the sponsored create/claim glue writes the same
- * PaylinkTransaction rows (pending synth row → txHash/paylink patch →
- * terminal status), and those rows surface in the activity view.
+ * What the sponsored create and refund glue saves: a created link's record and its operation, and
+ * a refund's operation, read here as other rollups' readers read them.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { testPage, testCore } from "../../support/page"
-import { PaylinkActionEnum } from "@obsidion/sdk"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { Grumpkin } from "@aztec-labs/foundation/crypto/grumpkin"
+import { PaylinkActionEnum, encodePaylinkInline, type PaylinkParams } from "@obsidion/sdk"
 import {
   TxInFlightError,
-  type Activity,
+  linkIdFor,
+  linkedActivity,
+  operationRows,
+  sweepLinks,
+  type Transfers,
   type PaylinkTransaction,
-  type Transaction,
 } from "@obsidion/front-core"
 import { activeNamespace, closeSession, switchSession } from "../../../src/session/session"
+import { openTestSession } from "../../support/session"
 import { pageSessionDeps } from "../../../src/app/sessionDeps"
 import { walletStorage } from "../../../src/platform/storage/walletStorage"
 import {
-  failPaylinkRow,
-  finishPaylinkRow,
-  markCreateRowRefunded,
+  fundLink,
+  markLinkRefunded,
   paylinkFailure,
+  saveLinkTxHash,
   savePreparedLink,
   saveRefundSubmitted,
-  startPaylinkRow,
-  type SponsoredPaylinkDeps,
+  type LinkDraft,
 } from "../../../src/features/paylink/sponsoredPaylink"
-import { PaylinkClaimReconciler } from "@obsidion/front-core"
 import { testWalletDbs } from "../../support/fakeWalletDb"
 
 const TX_HASH = `0x${"ab".repeat(32)}`
 const ACCOUNT = `0x${"22".repeat(32)}`
 const TOKEN_ADDR = `0x${"33".repeat(32)}`
-const SECRET = `0x${"44".repeat(32)}`
+const PARAMS: PaylinkParams = {
+  secret: new Fr(0x44n),
+  paylinkType: "paylinkDirect",
+  classId: new Fr(2n),
+  chainId: 31337,
+  fallbackKeyHash: new Fr(3n),
+  rollupVersion: 1,
+  escrowTagSecret: Grumpkin.generator,
+}
+const SECRET = PARAMS.secret.toString()
 
 /** A display amount at the token's 6 decimals. */
 const usd = (human: number) => ({ atomic: BigInt(human) * 10n ** 6n, human })
 
-const deps = {
-  wallet: { networkId: "0xnet" },
-  tokenService: {
-    fetchTokenInformation: async () => ({
-      address: TOKEN_ADDR,
-      name: "DAI",
-      symbol: "DAI",
-      decimals: 6,
-    }),
-  },
-  account: { getAddress: () => ({ toString: () => ACCOUNT }) },
-} as unknown as SponsoredPaylinkDeps
-
-/** The rows once every background write has landed. */
+/** The rows once every background write has landed, each link funded as its operation says. */
 async function savedRows() {
   await walletStorage.flush()
-  return await store.all()
+  const { paylinks, operations } = openTestSession()
+  return (await linkedActivity(store, paylinks, operations)) as PaylinkTransaction[]
 }
 
-let store: Activity
+let nextOp = 0
+
+/** A create's operation, begun as `runOperation` begins it. */
+async function createOp(): Promise<string> {
+  const operationId = `op-create-${++nextOp}`
+  await openTestSession().operations.begin({ operationId, flow: "paylink-create", summary: "$25 paylink" })
+  return operationId
+}
+
+const draft = (operationId: string, flavor: "direct" | "email" = "direct"): LinkDraft => ({
+  timestamp: 1,
+  operationId,
+  networkId: "0xnet",
+  kind: "paylink-create",
+  amountAtomic: usd(25).atomic,
+  token: {
+    address: TOKEN_ADDR,
+    name: "DAI",
+    symbol: "DAI",
+    decimals: 6,
+    logo: "",
+    amount: 25,
+    price: 1,
+  },
+  tokenAddress: TOKEN_ADDR,
+  flavor,
+  obsidionAccountAddress: ACCOUNT,
+})
+
+const FIELDS = {
+  payToEmailSecret: SECRET,
+  paylink: `https://x/l#${encodePaylinkInline(PARAMS)}`,
+  fallbackSecret: `0x${"55".repeat(32)}`,
+  fromClaimable: 0,
+  untilClaimable: 1234,
+}
+
+/** A create past its submit boundary: its operation and its link hold the hash. */
+async function sentLink(flavor: "direct" | "email" = "direct") {
+  const operationId = await createOp()
+  await savePreparedLink(openTestSession(), draft(operationId, flavor), FIELDS)
+  await saveLinkTxHash(openTestSession(), operationId)(TX_HASH)
+  return operationId
+}
+
+/** A refund's operation, begun and given its transfer as the refund flow does before proving. */
+async function refundRow() {
+  const operationId = `op-refund-${++nextOp}`
+  const { operations } = openTestSession()
+  await operations.begin({ operationId, flow: "paylink-reclaim", summary: "$25 paylink" })
+  await operations.apply(operationId, {
+    type: "transfer",
+    transfer: {
+      kind: "paylink-refund",
+      payload: {
+        networkId: "0xnet",
+        token: draft(operationId).token!,
+        amountAtomic: String(usd(25).atomic),
+        flavor: "direct",
+        linkId: linkIdFor(PARAMS),
+      },
+    },
+  })
+  return { operationId }
+}
+
+/** A flow's rejection before its tx reached the node. */
+const unsent = { survived: async () => null }
+
+let store: Transfers
 
 beforeEach(() => {
-  store = switchSession(activeNamespace(testCore().device), pageSessionDeps(testPage())).activity
+  store = switchSession(activeNamespace(testCore().device), pageSessionDeps(testPage())).transfers
 })
 afterEach(closeSession)
 
 describe("paylink activity rows", () => {
-  it("create: pending synth row → success row with hash + link", async () => {
-    const { operationId } = await startPaylinkRow(
-      deps,
-      "paylink-create",
-      PaylinkActionEnum.PAY,
-      usd(25),
-    )
-
-    let [row] = (await savedRows()) as PaylinkTransaction[]
-    expect(row.status).toBe("pending")
-    expect(row.emailPaymentAction).toBe(PaylinkActionEnum.PAY)
-    expect(row.flavor).toBe("direct")
-    expect(row.kind).toBe("paylink-create")
+  it("create: its prepared link, funded as its operation says, and no activity row", async () => {
+    const operationId = await createOp()
+    await savePreparedLink(openTestSession(), draft(operationId), FIELDS)
+    let [row] = await savedRows()
+    expect(row).toMatchObject({ status: "pending", emailPaymentAction: PaylinkActionEnum.PAY })
+    expect(row).toMatchObject({ flavor: "direct", kind: "paylink-create" })
     expect(row.obsidionAccountAddress).toBe(ACCOUNT)
-    expect(row.token?.amount).toBe(25)
 
-    await finishPaylinkRow(operationId, TX_HASH, {
-      payToEmailSecret: SECRET,
-      paylink: "https://wallet.example/link#frag",
-      untilClaimable: 1234,
+    await saveLinkTxHash(openTestSession(), operationId)(TX_HASH)
+    expect(await openTestSession().operations.get(operationId)).toMatchObject({
+      state: "sent",
+      txHash: TX_HASH,
     })
-    ;[row] = (await savedRows()) as PaylinkTransaction[]
-    expect(row.status).toBe("success")
-    expect(row.txHash).toBe(TX_HASH)
+    await fundLink(openTestSession(), operationId, "https://wallet.example/link#frag")
+    await openTestSession().operations.apply(operationId, { type: "settled", at: 2 })
+    ;[row] = await savedRows()
+    expect(row).toMatchObject({ status: "success", txHash: TX_HASH, untilClaimable: 1234 })
     expect(row.paylink).toBe("https://wallet.example/link#frag")
-    expect(row.untilClaimable).toBe(1234)
+    expect(await store.all()).toEqual([])
   })
 
-  it.each([["cancel", "direct"]] as const)(
-    "%s: the refund folds into the creator's PAY row, which carries both hashes",
-    async (_label, flavor) => {
-      const { operationId: createId } = await startPaylinkRow(
-        deps,
-        "paylink-create",
-        PaylinkActionEnum.PAY,
-        usd(25),
-        { flavor },
-      )
-      await finishPaylinkRow(createId, TX_HASH, {
-        payToEmailSecret: SECRET,
-        paylink: "https://x/l#f",
-        fallbackSecret: `0x${"55".repeat(32)}`,
-        fromClaimable: 0,
-        untilClaimable: 1234,
-      })
+  it("never saves a create's hash without its link, nor on one record alone", async () => {
+    const operationId = await createOp()
+    await expect(saveLinkTxHash(openTestSession(), operationId)(TX_HASH)).rejects.toMatchObject({
+      code: "invariant",
+    })
+    expect(await openTestSession().operations.get(operationId)).toMatchObject({ state: "local" })
+    expect((await openTestSession().operations.get(operationId))?.txHash).toBeUndefined()
+  })
 
-      const { operationId: backId } = await startPaylinkRow(
-        deps,
-        "paylink-refund",
-        PaylinkActionEnum.CLAIM_BACK,
-        usd(25),
-        { flavor },
-      )
-      const refundHash = `0x${"ef".repeat(32)}`
-      await finishPaylinkRow(backId, refundHash)
-      await markCreateRowRefunded(SECRET, flavor, ACCOUNT, refundHash, "cancel")
+  it("cancel: the refund folds into the creator's link, which carries both hashes", async () => {
+    const createId = await sentLink()
+    await fundLink(openTestSession(), createId, "https://x/l#tx")
+    const { operationId: backId } = await refundRow()
+    const refundHash = `0x${"ef".repeat(32)}`
+    await openTestSession().operations.apply(backId, { type: "settled", txHash: refundHash, at: 3 })
+    await markLinkRefunded(openTestSession(), PARAMS, ACCOUNT, refundHash, "cancel")
 
-      const rows = (await savedRows()) as PaylinkTransaction[]
-      const back = rows.find((r) => r.emailPaymentAction === PaylinkActionEnum.CLAIM_BACK)!
-      const create = rows.find((r) => r.emailPaymentAction === PaylinkActionEnum.PAY)!
-      expect(back.status).toBe("success")
-      expect(back.kind).toBe("paylink-refund")
-      expect(create.isRefunded).toBe(true)
-      // Scrubbed with the refund: the link can never be claimed again.
-      expect(create.paylink).toBeUndefined()
-
-      // The refund transaction is readable off the create row, which is the only row left.
-      expect(create.refundTxHash).toBe(refundHash)
-    },
-  )
+    const rows = await savedRows()
+    expect(rows.some((r) => r.emailPaymentAction === PaylinkActionEnum.CLAIM_BACK)).toBe(false)
+    const [back] = operationRows(openTestSession().operations.view.get()).records as PaylinkTransaction[]
+    const create = rows.find((r) => r.emailPaymentAction === PaylinkActionEnum.PAY)!
+    expect(back).toMatchObject({
+      operationId: backId,
+      status: "success",
+      txHash: refundHash,
+      emailPaymentAction: PaylinkActionEnum.CLAIM_BACK,
+    })
+    expect(create).toMatchObject({ isRefunded: true, refundTxHash: refundHash })
+    // Scrubbed with the refund: the link can never be claimed again.
+    expect(create.paylink).toBeUndefined()
+  })
 
   // ULT-876: past the submit boundary the tx may still land, so a rejection is not a failed row —
   // and the caller has to learn that too, or its screen offers to send the same operation again.
-  it("leaves the row alone and surfaces the in-flight hash when the tx reached the node", async () => {
-    const { operationId } = await startPaylinkRow(
-      deps,
-      "paylink-create",
-      PaylinkActionEnum.PAY,
-      usd(5),
-    )
+  it("leaves the link alone and surfaces the in-flight hash when the tx reached the node", async () => {
+    const operationId = await createOp()
+    await savePreparedLink(openTestSession(), draft(operationId), FIELDS)
     const rejection = new Error("socket closed")
     const submission = { survived: async () => TX_HASH as `0x${string}` }
-    const surfaced = await paylinkFailure(operationId, rejection, submission, {} as never)
+    const surfaced = await paylinkFailure(
+      openTestSession(),
+      operationId,
+      rejection,
+      submission,
+      {} as never,
+    )
     expect(surfaced).toBeInstanceOf(TxInFlightError)
     expect(surfaced).toMatchObject({
       txHash: TX_HASH,
       message: rejection.message,
       cause: rejection,
     })
-    const [row] = await savedRows()
-    expect(row.status).not.toBe("failed")
+    expect(await openTestSession().paylinks.get(linkIdFor(PARAMS))).toBeDefined()
   })
 
   it("does not remove or scrub a paylink that already has a transaction hash", async () => {
-    const { operationId } = await startPaylinkRow(
-      deps,
-      "paylink-create",
-      PaylinkActionEnum.PAY,
-      usd(5),
-    )
-    await store.setHash(operationId, TX_HASH)
-    store.patch(operationId, (tx) => ({ ...tx, paylink: "https://x/l#f" } as Transaction))
-    await failPaylinkRow(operationId, new DOMException("Aborted", "AbortError"))
-    expect(await savedRows()).toMatchObject([{ txHash: TX_HASH, paylink: "https://x/l#f" }])
+    const operationId = await sentLink()
+    const aborted = new DOMException("Aborted", "AbortError")
+    await paylinkFailure(openTestSession(), operationId, aborted, unsent, {} as never)
+    expect(await savedRows()).toMatchObject([{ txHash: TX_HASH, paylink: FIELDS.paylink }])
+  })
+
+  it("drops the unsent link when the passkey closes before submit", async () => {
+    const operationId = await createOp()
+    await savePreparedLink(openTestSession(), draft(operationId), FIELDS)
+    const aborted = new DOMException("Aborted", "AbortError")
+    await paylinkFailure(openTestSession(), operationId, aborted, unsent, {} as never)
+    expect(await savedRows()).toEqual([])
+    expect(await openTestSession().paylinks.get(linkIdFor(PARAMS))).toBeUndefined()
   })
 
   // The tab closes after the refund reaches the node: no finish, no refunded flag, only the hash.
   it("a refund submitted before a reload is never read as a recipient's claim", async () => {
-    const { operationId: createId } = await startPaylinkRow(
-      deps,
-      "paylink-create",
-      PaylinkActionEnum.PAY,
-      usd(25),
-      { flavor: "direct" },
+    const createId = await sentLink()
+    await fundLink(openTestSession(), createId, FIELDS.paylink)
+    const { operationId: refundId } = await refundRow()
+    await saveRefundSubmitted(
+      openTestSession(),
+      refundId,
+      PARAMS,
+      ACCOUNT,
+      `0x${"ef".repeat(32)}`,
+      "cancel",
     )
-    await finishPaylinkRow(createId, TX_HASH, {
-      payToEmailSecret: SECRET,
-      paylink: "https://x/l#f",
-      fallbackSecret: `0x${"55".repeat(32)}`,
-      fromClaimable: 0,
-      untilClaimable: 1234,
-    })
-    const { operationId: refundId } = await startPaylinkRow(
-      deps,
-      "paylink-refund",
-      PaylinkActionEnum.CLAIM_BACK,
-      usd(25),
-    )
-    await saveRefundSubmitted(refundId, SECRET, "direct", ACCOUNT, `0x${"ef".repeat(32)}`, "cancel")
 
-    const spent = async (rows: PaylinkTransaction[]) => new Map(rows.map((r) => [r.txHash, true]))
+    const spent = async (rows: readonly { txHash: string }[]) =>
+      new Map(rows.map((r) => [r.txHash, true]))
     await walletStorage.flush()
-    await new PaylinkClaimReconciler({ checkSpent: spent, storage: store }).reconcile("0xnet")
+    const { paylinks, transfers, operations } = openTestSession()
+    await sweepLinks({ checkSpent: spent, links: paylinks, operations, transfers }, "0xnet")
 
-    const create = ((await savedRows()) as PaylinkTransaction[]).find(
-      (r) => r.emailPaymentAction === PaylinkActionEnum.PAY,
-    )!
+    const create = (await savedRows()).find((r) => r.emailPaymentAction === PaylinkActionEnum.PAY)!
     expect(create.isClaimed).toBeFalsy()
     expect(create.refundTxHash).toBe(`0x${"ef".repeat(32)}`)
   })
-  describe("a prepared link", () => {
-    const fields = { payToEmailSecret: SECRET, paylink: "https://x/l#f", untilClaimable: 1234 }
-    const create = () => startPaylinkRow(deps, "paylink-create", PaylinkActionEnum.PAY, usd(25))
 
+  it("a create at the slot an unsent create left takes its link, and saves its hash", async () => {
+    await savePreparedLink(openTestSession(), draft(await createOp()), FIELDS)
+    const operationId = await createOp()
+    await savePreparedLink(openTestSession(), draft(operationId), FIELDS)
+    await saveLinkTxHash(openTestSession(), operationId)(TX_HASH)
+    const link = await openTestSession().paylinks.get(linkIdFor(PARAMS))
+    expect(link).toMatchObject({ operationId, txHash: TX_HASH })
+  })
+
+  it("never takes the slot of a link that was sent", async () => {
+    await sentLink()
+    const operationId = await createOp()
+    await expect(savePreparedLink(openTestSession(), draft(operationId), FIELDS)).rejects.toMatchObject({
+      code: "invariant",
+    })
+  })
+
+  describe("a prepared link", () => {
     it("rejects when its save fails, so the flow stops before it signs", async () => {
-      const { operationId } = await create()
+      const operationId = await createOp()
       testWalletDbs().onApply = (_version, ops) => {
         if (ops.some(([, value]) => value?.includes(SECRET))) throw new Error("disk full")
       }
-      await expect(savePreparedLink(operationId, fields)).rejects.toThrow("disk full")
-      expect(await store.get(operationId)).not.toMatchObject({ paylink: fields.paylink })
+      await expect(savePreparedLink(openTestSession(), draft(operationId), FIELDS)).rejects.toThrow(
+        "disk full",
+      )
+      expect(await openTestSession().paylinks.get(linkIdFor(PARAMS))).toBeUndefined()
     })
   })
 
   describe("a submitted refund's hash", () => {
     const REFUND_HASH = `0x${"ef".repeat(32)}`
 
-    async function linkAndRefund() {
-      const { operationId: createId } = await startPaylinkRow(
-        deps,
-        "paylink-create",
-        PaylinkActionEnum.PAY,
-        usd(25),
-      )
-      await finishPaylinkRow(createId, TX_HASH, {
-        payToEmailSecret: SECRET,
-        paylink: "https://x/l#f",
-        fallbackSecret: `0x${"55".repeat(32)}`,
-      })
+    it("never lands on the refund's operation without the creator link's stamp", async () => {
+      const createId = await sentLink()
+      await fundLink(openTestSession(), createId, FIELDS.paylink)
       await walletStorage.flush()
-      const { operationId: refundId } = await startPaylinkRow(
-        deps,
-        "paylink-refund",
-        PaylinkActionEnum.CLAIM_BACK,
-        usd(25),
-      )
-      return { createId, refundId }
-    }
-
-    it("never lands on the refund row without the creator row's stamp", async () => {
-      const { createId, refundId } = await linkAndRefund()
+      const { operationId: refundId } = await refundRow()
       testWalletDbs().onApply = (_version, ops) => {
         if (ops.some(([, value]) => value?.includes('"refundTxHash"'))) throw new Error("disk full")
       }
       await expect(
-        saveRefundSubmitted(refundId, SECRET, "direct", ACCOUNT, REFUND_HASH, "cancel"),
+        saveRefundSubmitted(openTestSession(), refundId, PARAMS, ACCOUNT, REFUND_HASH, "cancel"),
       ).rejects.toThrow("disk full")
       await walletStorage.flush().catch(() => {})
 
-      expect((await store.get(refundId))?.txHash).toBe("")
-      expect(((await store.get(createId)) as PaylinkTransaction).refundTxHash).toBeUndefined()
+      expect(await openTestSession().operations.get(refundId)).toMatchObject({ state: "local" })
+      expect((await openTestSession().operations.get(refundId))?.txHash).toBeUndefined()
+      const [create] = (await savedRows()).filter((r) => r.payToEmailSecret)
+      expect(create.refundTxHash).toBeUndefined()
+    })
+
+    it("needs the refund's own operation, and a link this device never made", async () => {
+      await expect(
+        saveRefundSubmitted(openTestSession(), "missing", PARAMS, ACCOUNT, REFUND_HASH, "cancel"),
+      ).rejects.toMatchObject({ code: "invariant" })
+      const { operationId: refundId } = await refundRow()
+      await saveRefundSubmitted(openTestSession(), refundId, PARAMS, ACCOUNT, REFUND_HASH, "cancel")
+      expect(await openTestSession().operations.get(refundId)).toMatchObject({
+        state: "sent",
+        txHash: REFUND_HASH,
+      })
     })
   })
 })

@@ -89,12 +89,13 @@ function open() {
     ]),
   )
   db = openDatabase(backend)
-  const sipaDeposits = createSipaDeposits({ db, account: true })
+  const sipaDeposits = createSipaDeposits({ db, account: true, now: () => Date.now() })
   const registrations = createRegistrations({
     db,
     legacy: db,
     deposits: sipaDeposits,
     account: true,
+    now: () => Date.now(),
   })
   const recovery = createRegistrationRecovery({
     registrations,

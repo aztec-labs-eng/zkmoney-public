@@ -1,7 +1,6 @@
 import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import type { WithdrawalSpeedupNode } from "@obsidion/front-core"
 
 const faster = vi.hoisted(() => ({
   offer: undefined as
@@ -17,13 +16,14 @@ const faster = vi.hoisted(() => ({
 }))
 vi.mock("../../../src/features/withdraw/useFasterWithdrawal", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../src/features/withdraw/useFasterWithdrawal")>()),
-  useFasterWithdrawal: () => ({ offer: faster.offer, loading: faster.loading }),
+  useFasterWithdrawal: () => ({ offer: faster.offer, current: true, loading: faster.loading }),
 }))
 
-const { useSpeedChoice, useSpeedOutcome } = await import("../../../src/features/withdraw/speedChoice")
+const { useSpeedChoice, useSpeedOutcome } = await import(
+  "../../../src/features/withdraw/speedChoice"
+)
 
 declare global {
-  // eslint-disable-next-line no-var
   var IS_REACT_ACT_ENVIRONMENT: boolean
 }
 
@@ -49,7 +49,6 @@ describe("useSpeedChoice + useSpeedOutcome", () => {
   function Harness({ initial, covers, amount = AMOUNT }: Props) {
     const choice = useSpeedChoice({
       active: true,
-      node: {} as WithdrawalSpeedupNode,
       amount,
       initialSpeed: initial,
     })

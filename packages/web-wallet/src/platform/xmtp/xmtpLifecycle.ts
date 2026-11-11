@@ -8,9 +8,14 @@
  * the capability probe (browser genuinely can't run the client).
  */
 
-import { RequestBroadcaster, type ErrorCode, type IXmtpSender } from "@obsidion/front-core"
+import { WalletError, bestEffort } from "@obsidion/core/errors"
+import {
+  RequestBroadcaster,
+  type ErrorCode,
+  type IXmtpSender,
+  memoryStore,
+} from "@obsidion/front-core"
 import words from "../../errors/catalog.copy"
-import { createExternalState } from "../../lib/externalState"
 import type { WebXmtpClient } from "./WebXmtpClient"
 
 export type XmtpUiState = "off" | "leader" | "another-tab" | "unsupported" | "error"
@@ -39,7 +44,8 @@ export const XMTP_CREATE_CLIENT_TIMEOUT_MS = 60_000
 
 // ── Shared UI state (banner + screens read this; the lifecycle writes it) ────
 
-const uiState = createExternalState<XmtpUiState>("off")
+// eslint-disable-next-line no-restricted-syntax -- debt
+const uiState = memoryStore<XmtpUiState>("off")
 export const getXmtpUiState = uiState.get
 export const setXmtpUiState = uiState.set
 export const subscribeXmtpUiState = uiState.subscribe
@@ -51,7 +57,8 @@ export const subscribeXmtpUiState = uiState.subscribe
 
 export type XmtpInboxState = "idle" | "catching-up" | "ready"
 
-const inboxState = createExternalState<XmtpInboxState>("idle")
+// eslint-disable-next-line no-restricted-syntax -- debt
+const inboxState = memoryStore<XmtpInboxState>("idle")
 export const getXmtpInboxState = inboxState.get
 export const setXmtpInboxState = inboxState.set
 export const subscribeXmtpInboxState = inboxState.subscribe
@@ -65,6 +72,7 @@ export const subscribeXmtpInboxState = inboxState.subscribe
 /** The leader client's send surface: requests, plus the connect-back a /connect confirm sends. */
 export type LiveXmtpSender = IXmtpSender & Pick<WebXmtpClient, "sendConnectBack">
 
+// eslint-disable-next-line no-restricted-syntax -- debt
 let xmtpSender: LiveXmtpSender | null = null
 
 export function setXmtpSender(next: LiveXmtpSender | null): void {
@@ -125,7 +133,10 @@ export interface XmtpLifecycleDeps {
 export async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)
+    timer = setTimeout(
+      () => reject(new WalletError("timeout", `${label} timed out after ${ms}ms`)),
+      ms,
+    )
   })
   try {
     return await Promise.race([promise, timeout])
@@ -185,9 +196,11 @@ export class XmtpLifecycle {
     // Pending grant means another tab is leader.
     this.setState("another-tab")
     try {
-      await this.deps.locks.request(XMTP_LOCK_NAME, { signal: abort.signal }, () => this.lead())
-    } catch {
-      // AbortError — request withdrawn (hidden / stopped).
+      // An abort withdraws the request (hidden / stopped).
+      await bestEffort(
+        "aborted",
+        this.deps.locks.request(XMTP_LOCK_NAME, { signal: abort.signal }, () => this.lead()),
+      )
     } finally {
       this.requesting = false
       if (this.abort === abort) this.abort = null
@@ -205,7 +218,8 @@ export class XmtpLifecycle {
     let pending: Promise<XmtpClientHandle> | undefined
     try {
       const key = await this.deps.deriveDbKey()
-      if (key.length !== 32) throw new Error(`xmtp db key must be 32 bytes, got ${key.length}`)
+      if (key.length !== 32)
+        throw new WalletError("invariant", `xmtp db key must be 32 bytes, got ${key.length}`)
       if (this.stopped) return
       pending = this.deps.createClient(key, construction.signal)
       this.client = await withTimeout(
@@ -218,7 +232,11 @@ export class XmtpLifecycle {
       construction.abort()
       this.deps.log?.("[XmtpLifecycle] client construction failed", err)
       // A timed-out construction may still settle; close it so the single OPFS connection is freed.
-      void pending?.then((c) => c.close()).catch(() => {})
+      if (pending)
+        void bestEffort(
+          "unknown",
+          pending.then((c) => c.close()),
+        )
       this.errored = true
       if (!this.stopped) this.setState("error")
       return

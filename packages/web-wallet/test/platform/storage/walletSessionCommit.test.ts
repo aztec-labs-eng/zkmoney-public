@@ -15,7 +15,6 @@ import { cachedMsk } from "../../../src/platform/storage/activeStorage"
 import { walletStorage } from "../../../src/platform/storage/walletStorage"
 import { FakePasskeyCeremony } from "../../support/fakePasskeyCeremony"
 import { testWalletDbs } from "../../support/fakeWalletDb"
-import { seedBootConfig } from "../../support/seedBootConfig"
 
 const dbs = testWalletDbs()
 const ADDR = "0xacct"
@@ -115,7 +114,7 @@ describe("session commit against the wallet database", () => {
     const commit = service.commitSecret(input, () => true)
     await held.entered
     service.lockOut()
-    const out = signOut({ ...testPage(), auth: service })
+    const out = signOut({ ...testPage(), auth: service, config: { profileRollupVersion: "r" } })
     held.open()
     expect(await commit).toBe(false)
     await out
@@ -129,7 +128,7 @@ describe("session commit against the wallet database", () => {
     const commit = service.commitSecret(input, () => true)
     await held.entered
     service.lockOut()
-    const out = signOut({ ...testPage(), auth: service })
+    const out = signOut({ ...testPage(), auth: service, config: { profileRollupVersion: "r" } })
     held.fail(new Error("disk"))
     await expect(commit).rejects.toThrow("disk")
     await out
@@ -162,7 +161,6 @@ describe("session commit against the wallet database", () => {
   })
 
   it("returns once the account's session is current and its registrations have loaded", async () => {
-    await seedBootConfig()
     const { service, input } = await setup(() =>
       followSavedSession(testCore().device, pageSessionDeps(testPage())),
     )

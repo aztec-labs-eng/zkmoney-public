@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Builds dist/: the v5 source generation bundle. It checks out the pinned v5 wallet commit in its
-// own worktree with its own install, builds that commit with the Aztec v5 toolchain, then compiles
-// the adapter there. Nothing resolves through this checkout's packages or vendor/oxide.
+// own worktree with its own install, extracts the pinned Noir artifacts there (pins.mjs), builds
+// that commit with the Aztec v5 toolchain, then compiles the adapter there. It compiles no Noir, and
+// nothing resolves through this checkout's packages or vendor/oxide.
 //
 // Env:
 //   GENERATION_V5_SOURCE  checkout to build in (default: .source beside this package)
@@ -21,10 +22,17 @@ import { homedir } from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { boundaryFile, inputsHash, protocol } from "./check.mjs"
+import {
+  WALLET_MANIFEST,
+  extractContracts,
+  extractRefundCircuits,
+  fixPaths,
+  pathRoots,
+} from "./pins.mjs"
 
 const pkg = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const repo = path.resolve(pkg, "../..")
-const { walletCommit, aztecVersion } = JSON.parse(
+const { walletCommit, aztecVersion, oxidePin } = JSON.parse(
   readFileSync(path.join(pkg, "source.json"), "utf8"),
 )
 const source = path.resolve(process.env.GENERATION_V5_SOURCE ?? path.join(pkg, ".source"))
@@ -34,7 +42,9 @@ const dist = path.join(pkg, "dist")
 const env = {
   ...process.env,
   CI: "1",
+  // The CI compile guard stays first, so it also stands in front of the v5 toolchain.
   PATH: [
+    ...(process.env.NOIR_COMPILE_GUARD_DIR ? [process.env.NOIR_COMPILE_GUARD_DIR] : []),
     path.join(toolchain, "bin"),
     path.join(toolchain, "internal-bin"),
     path.join(toolchain, "node_modules/.bin"),
@@ -62,14 +72,20 @@ if (read("git", ["rev-parse", "HEAD"]) !== walletCommit)
   throw new Error(`${source} is not at the pinned v5 commit ${walletCommit}`)
 run("git", ["submodule", "update", "--init", "--recursive", "vendor/oxide"])
 
-// The heavy steps run once per pinned commit.
+// The heavy steps run once per pinned commit and pin.
 const stamp = path.join(source, ".generation-v5-built")
-if (!existsSync(stamp) || readFileSync(stamp, "utf8") !== walletCommit) {
+const built = `${walletCommit} ${oxidePin.commit} ${createHash("sha256")
+  .update(readFileSync(WALLET_MANIFEST))
+  .digest("hex")}`
+if (!existsSync(stamp) || readFileSync(stamp, "utf8") !== built) {
   run("pnpm", ["install", "--frozen-lockfile"])
-  run("pnpm", ["build-contracts"])
+  extractContracts(source)
+  // The plain build stubs the refund circuits. The required build then checks the pinned ones.
+  run("pnpm", ["--filter", "@obsidion/oxide-build", "build"])
+  extractRefundCircuits(source)
   run("pnpm", ["--filter", "@obsidion/oxide-build", "build:refund-circuits"])
   run("pnpm", ["build:web-deps"])
-  writeFileSync(stamp, walletCommit)
+  writeFileSync(stamp, built)
 }
 
 // The adapter compiles beside the v5 wallet, against the protocol this checkout declares.
@@ -80,13 +96,6 @@ writeFileSync(
   path.join(adapter, "protocol.ts"),
   boundary.replace('"./index.js"', '"@obsidion/core/types"'),
 )
-// The Noir artifacts embed the absolute paths of their sources. The bundle names them from fixed
-// roots instead, so its manifest digest does not depend on the checkout or the home directory.
-const pathRoots = [
-  [`${source}/`, "v5-wallet/"],
-  [`${path.join(homedir(), "nargo")}/`, "nargo/"],
-]
-const fixPaths = (text) => pathRoots.reduce((out, [from, to]) => out.replaceAll(from, to), text)
 const webWallet = path.join(source, "packages/web-wallet")
 run("pnpm", ["exec", "tsc", "--noEmit", "-p", "generation-adapter/tsconfig.json"], webWallet)
 execFileSync("pnpm", ["exec", "vite", "build", "--config", "generation-adapter/vite.config.ts"], {
@@ -94,7 +103,7 @@ execFileSync("pnpm", ["exec", "vite", "build", "--config", "generation-adapter/v
   env: {
     ...env,
     GENERATION_OUT_DIR: dist,
-    GENERATION_PATH_ROOTS: JSON.stringify(pathRoots),
+    GENERATION_PATH_ROOTS: JSON.stringify(pathRoots(source)),
     NODE_OPTIONS: "--max-old-space-size=8192",
   },
   stdio: "inherit",
@@ -123,6 +132,7 @@ writeFileSync(
           name,
           digest(
             fixPaths(
+              source,
               readFileSync(
                 path.join(source, `vendor/oxide/noir-projects/${name}/target/${name}.json`),
                 "utf8",

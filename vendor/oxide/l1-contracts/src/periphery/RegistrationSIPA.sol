@@ -7,6 +7,7 @@ import {IRegistrationController} from "./interfaces/IRegistrationController.sol"
 import {ThreePoolLib} from "./ThreePoolLib.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Errors} from "@periphery/Errors.sol";
+import {Intent, Intents} from "@periphery/Intent.sol";
 
 contract RegistrationSIPA is SIPABase {
   INameRegistry public immutable NAME_REGISTRY;
@@ -17,7 +18,7 @@ contract RegistrationSIPA is SIPABase {
   }
 
   function INTENT() public pure override returns (Intent) {
-    return Intent.Registration;
+    return Intents.REGISTRATION;
   }
 
   function _execute(address token, bytes calldata intentData, bytes calldata proofs)

@@ -37,6 +37,7 @@ export function currentInAppBrowser(): InAppBrowser {
   return x ? "android_x" : "android_other"
 }
 
+// eslint-disable-next-line no-restricted-syntax -- debt
 const shown = new Set<InAppCardWhen>()
 
 /** The card's way out rendered. Once per page load per moment: a re-render or a second screen adds nothing. */
@@ -58,9 +59,4 @@ export function inAppCardTapped(context: InAppCardContext, control: InAppCardCon
     in_app: currentInAppBrowser(),
     control,
   })
-}
-
-/** Test seam: forgets which moments this page load has counted. */
-export function resetInAppCardCountsForTests(): void {
-  shown.clear()
 }

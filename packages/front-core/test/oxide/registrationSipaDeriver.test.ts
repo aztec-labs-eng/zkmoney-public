@@ -5,7 +5,7 @@ import { Fr } from "@aztec-labs/foundation/curves/bn254"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 
 const h = vi.hoisted(() => ({
-  fetchSipaResolverOperators: vi.fn(),
+  readSipaResolverOperatorEvents: vi.fn(),
   readRegistrationSIPAImplementation: vi.fn(
     async () => "0x00000000000000000000000000000000000000b2",
   ),
@@ -14,7 +14,7 @@ const h = vi.hoisted(() => ({
 }))
 vi.mock("@obsidion/sdk", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/sdk")>()),
-  fetchSipaResolverOperators: h.fetchSipaResolverOperators,
+  readSipaResolverOperatorEvents: h.readSipaResolverOperatorEvents,
   readRegistrationSIPAImplementation: h.readRegistrationSIPAImplementation,
 }))
 vi.mock("@oxide/l1-contracts/legacy_sipa.js", () => ({ predictLegacySIPA: h.predictLegacySIPA }))
@@ -83,7 +83,7 @@ describe("createRegistrationSipaDeriver", () => {
     const derived = await derive(input(5n))
     expect(derived.sipaAddress).toBe("0x00000000000000000000000000000000000000a1")
     expect(derived.recordData.toLowerCase()).toContain(RESOLVER.slice(2).toLowerCase())
-    expect(h.fetchSipaResolverOperators).not.toHaveBeenCalled()
+    expect(h.readSipaResolverOperatorEvents).not.toHaveBeenCalled()
   })
 
   it("predicts an account-protocol registration SIPA under the deployment's table", async () => {

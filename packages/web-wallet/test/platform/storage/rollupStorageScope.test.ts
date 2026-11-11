@@ -1,9 +1,8 @@
 // @vitest-environment node
 /**
- * Every `localStorage` access in `src/` goes through the storage module, wallet state goes through
- * the wallet database rather than the `localStorage` partition layer, and every full-page exit waits
- * for queued writes. Parsed, not grepped: comments, ordinary strings, types and member names never
- * count.
+ * Every `localStorage` access in `src/` goes through the storage module or a storage migration, and
+ * every full-page exit waits for queued writes. Parsed, not grepped: comments, ordinary strings,
+ * types and member names never count.
  */
 import { readdirSync, readFileSync, statSync } from "node:fs"
 import { join, relative } from "node:path"
@@ -15,16 +14,11 @@ const SRC = fileURLToPath(new URL("../../../src/", import.meta.url))
 
 const ALLOWED = new Set([
   "platform/storage/rollupStorage.ts",
-  // Full-site reset clears every partition, and `/reset` boots without a profile.
+  // Full-site reset clears everything, and `/reset` boots without a profile.
   "platform/storage/clearSiteData.ts",
 ])
-
-/** The `localStorage` partition layer: only the Google relay uses it. */
-const PARTITION_LAYER_ALLOWED = new Set([
-  "platform/storage/rollupStorage.ts",
-  // Email-locked paylinks are hidden in the UI; see `config/features.ts` before surfacing them.
-  "features/paylink/googleAuth.tsx",
-])
+/** Storage migrations read and remove what older builds kept there. */
+const MIGRATIONS = "platform/storage/storageMigrations/"
 
 /** Navigates only after the wallet database has every queued write. */
 const NAVIGATION_ALLOWED = new Set([
@@ -87,20 +81,6 @@ function parse(source: string, fileName: string) {
   )
 }
 
-/** 1-based lines that reach the `localStorage` partition accessors. */
-function partitionLayerUses(source: string, fileName = "sample.ts"): number[] {
-  const file = parse(source, fileName)
-  const lines: number[] = []
-  const visit = (node: ts.Node) => {
-    if (ts.isIdentifier(node) && node.text === "rollupStorage") {
-      lines.push(file.getLineAndCharacterOfPosition(node.getStart(file)).line + 1)
-    }
-    ts.forEachChild(node, visit)
-  }
-  visit(file)
-  return lines
-}
-
 const endsWithLocation = (node: ts.Expression) =>
   (ts.isIdentifier(node) && node.text === "location") ||
   (ts.isPropertyAccessExpression(node) && node.name.text === "location")
@@ -143,12 +123,6 @@ function offendersOf(scan: (source: string, fileName: string) => number[], allow
   return offenders
 }
 
-describe("wallet state stays in the wallet database", () => {
-  it("reaches the localStorage partition layer only from its allowlist", () => {
-    expect(offendersOf(partitionLayerUses, PARTITION_LAYER_ALLOWED)).toEqual([])
-  })
-})
-
 describe("page exits wait for queued writes", () => {
   it("finds no direct navigation outside the exit helpers", () => {
     expect(offendersOf(rawNavigations, NAVIGATION_ALLOWED)).toEqual([])
@@ -169,7 +143,7 @@ describe("localStorage stays inside the storage module", () => {
     const offenders: string[] = []
     for (const path of sourceFiles(SRC)) {
       const name = relative(SRC, path)
-      if (ALLOWED.has(name)) continue
+      if (ALLOWED.has(name) || name.startsWith(MIGRATIONS)) continue
       for (const line of localStorageAccesses(readFileSync(path, "utf8"), path)) {
         offenders.push(`${name}:${line}`)
       }

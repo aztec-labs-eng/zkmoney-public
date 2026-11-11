@@ -12,7 +12,4 @@ export class InMemoryStorageAdapter implements IStorageAdapter {
   async removeItem(key: string) {
     this.data.delete(key)
   }
-  async clear() {
-    this.data.clear()
-  }
 }

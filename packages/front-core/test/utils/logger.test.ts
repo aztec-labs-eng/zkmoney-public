@@ -5,6 +5,8 @@ describe("logger", () => {
   afterEach(() => {
     setLoggingEnabled(true)
     vi.restoreAllMocks()
+    // A later spy on the same console method is this one again, its calls included.
+    vi.clearAllMocks()
   })
 
   it("defaults to enabled", () => {

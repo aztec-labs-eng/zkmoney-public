@@ -8,9 +8,9 @@ import {AccountMetadataRegistry} from "./AccountMetadataRegistry.sol";
 import {INameRegistry} from "./interfaces/INameRegistry.sol";
 import {IForwardingTable} from "./interfaces/IForwardingTable.sol";
 import {SIPAFactory} from "./SIPAFactory.sol";
-import {SIPABase} from "./SIPABase.sol";
 import {RecoveryCommitmentLib} from "./RecoveryCommitmentLib.sol";
 import {Errors} from "@periphery/Errors.sol";
+import {Intents} from "@periphery/Intent.sol";
 
 contract Resolver is IExtendedResolver, SupportsInterface {
   error OffchainLookup(address sender, string[] urls, bytes callData, bytes4 callbackFunction, bytes extraData);
@@ -148,7 +148,7 @@ contract Resolver is IExtendedResolver, SupportsInterface {
     if (!SIPA_FACTORY.approvedTable(address(table))) {
       revert Errors.Resolver__TableNotApproved(address(table));
     }
-    address implementation = SIPA_FACTORY.implementationFor(SIPABase.Intent.Deposit);
+    address implementation = SIPA_FACTORY.implementationFor(Intents.DEPOSIT);
     if (implementation == address(0)) revert Errors.Resolver__NoDepositImplementation();
 
     return SIPA_FACTORY.predictSIPA(

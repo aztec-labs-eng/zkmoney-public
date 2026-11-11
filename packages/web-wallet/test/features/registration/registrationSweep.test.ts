@@ -1,5 +1,7 @@
+import { createPace } from "@obsidion/core/cadence"
 // The manual registration sweep over its injected deployment, L1 reads, claim and channel.
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest"
+import type { Config } from "wagmi"
 import { toFunctionSelector, type Address, type Hex } from "viem"
 import { Fr } from "@aztec-labs/aztec.js/fields"
 import {
@@ -8,6 +10,7 @@ import {
   type NameClaimRecord,
   type PortalCapacityKey,
   type SipaFundingToken,
+  UNKNOWN_HASH_MS,
 } from "@obsidion/front-core"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import {
@@ -29,7 +32,11 @@ import {
 } from "../../support/registrationFixtures"
 import { PAID, RANDOM, RANDOM_ASK } from "../../support/registrationPrices"
 import { viewedSipaDeposit } from "../../support/sipaDeposits"
+import { FakeTransferNode } from "../../../../front-core/test/engine/fakeTransferNode"
+import { testQuery } from "../../support/query"
 
+/** When the saved sweeps were sent. */
+const SENT = Date.now()
 const OWNER = `0x${"11".repeat(20)}` as Address
 const SIPA = `0x${"33".repeat(20)}` as Address
 const TOKEN = `0x${"44".repeat(20)}` as Address
@@ -39,7 +46,6 @@ const PORTAL = `0x${"88".repeat(20)}` as Address
 const TABLE = `0x${"99".repeat(20)}` as Address
 const L2 = `0x${"55".repeat(32)}` as Hex
 const HASH = `0x${"66".repeat(32)}` as Hex
-const TX = `0x${"ab".repeat(32)}` as Hex
 const SALT = `0x${"0c".repeat(32)}` as Hex
 const ENV = {
   registry: OWNER,
@@ -125,7 +131,16 @@ const claimOn = (terms?: NameClaimRecord["terms"]): NameClaimRecord => ({
   ...(terms ? { terms } : {}),
 })
 
-let own: Session
+let session: Session
+/** The L1 node, holding the sweep the wallet sends: `TX`, from `OWNER` at nonce 0. */
+let node: FakeTransferNode
+let TX: Hex
+/** Another transaction of the sender mines at the sweep's nonce: the sweep never lands. */
+const passed = () => {
+  node.drop(TX)
+  node.send({ from: OWNER, to: TABLE, nonce: 0 })
+  node.mine()
+}
 const held = new Map<string, bigint>()
 const send = vi.fn()
 const wait = vi.fn()
@@ -142,10 +157,10 @@ const deps = (): RegistrationSweepDeps => ({
   client: {
     readContract: async ({ address }: { address: string }) => held.get(address.toLowerCase()) ?? 0n,
     getCode: async () => undefined,
+    ...node.client,
   } as never,
   reader: {
     readAccountMetadataRegistry: async () => OWNER,
-    getUserOpHash: async () => HASH,
     readR1InstallGas: async () => ({
       verification: 50_000n,
       callBase: 85_000n,
@@ -161,10 +176,11 @@ const deps = (): RegistrationSweepDeps => ({
   tokens: async () => tokens,
   capacity: (live) => capacity(live),
   channel: async () => ({ target: OWNER, sendTransaction: send, waitForReceipt: wait }),
-  registrations: own.registrations,
-  sipaDeposits: own.sipaDeposits,
+  registrations: session.registrations,
+  sipaDeposits: session.sipaDeposits,
 })
-const sweep = () => runRegistrationSweep(deps(), record, { keys })
+const pace = createPace()
+const sweep = () => runRegistrationSweep(deps(), record, { pace, wagmi: WAGMI, keys })
 const hold = (token: Address, amount: bigint) => held.set(token.toLowerCase(), amount)
 /** What the address showed the rail, as the seeder wrote it. */
 const seedRail = (patch: {
@@ -191,17 +207,19 @@ function portalWithRoom(availableAtomic: bigint) {
       availableAtomic,
       txAmountCapAtomic: 10_000n * DAI,
     }),
-    visibility: { isVisible: () => true, onResume: () => () => {} },
+    query: testQuery(),
     policy: { maxHeadAgeMs: Infinity },
   })
   const observer = createSipaProcessingObserver({
-    deposits: own.sipaDeposits.view,
+    deposits: session.sipaDeposits.view,
     capacity: (key) => registry.store(key),
-    readTerms: async () => ({
-      portal: PORTAL,
-      token: TOKEN,
-      depositFee: DAI / 10n,
-      txAmountCap: 10_000n * DAI,
+    terms: testQuery()("terms", {
+      load: async () => ({
+        portal: PORTAL,
+        token: TOKEN,
+        depositFee: DAI / 10n,
+        txAmountCap: 10_000n * DAI,
+      }),
     }),
     l1ChainId: 11155111,
   })
@@ -211,11 +229,13 @@ const signedNothing = () => expect(send).not.toHaveBeenCalled()
 
 beforeEach(async () => {
   vi.clearAllMocks()
+  node = new FakeTransferNode()
+  TX = node.send({ from: OWNER, to: SIPA })
   held.clear()
   localStorage.clear()
   await seedDeviceKeys({ storageId: "a1" })
-  own = openTestSession()
-  await own.registrations.ready
+  session = openTestSession()
+  await session.registrations.ready
   await seedRegistration(record)
   tokens = [DAI_ROW]
   capacity = async () => undefined
@@ -228,6 +248,8 @@ beforeEach(async () => {
   wait.mockResolvedValue(true)
 })
 afterEach(closeSession)
+
+const WAGMI = {} as Config
 
 describe("runRegistrationSweep", () => {
   it("sweeps a funded address and stamps the record and the rail with the sweep", async () => {
@@ -340,6 +362,111 @@ describe("the capacity gate", () => {
       data: { hash: TX },
     })
     await expect(sweeping).rejects.not.toBeInstanceOf(SweepRefusedError)
-    expect((await storedRegistration(SIPA))?.sweepTxHash).toBeUndefined()
+    const stored = await storedRegistration(SIPA)
+    expect(stored?.sweepTxHash).toBeUndefined()
+    expect(stored?.submittedSweep).toBeUndefined()
+  })
+})
+
+describe("a submitted sweep", () => {
+  const SECOND = `0x${"ba".repeat(32)}` as Hex
+  const submitted = () => ({
+    ...record,
+    submittedSweep: { txHash: TX, at: SENT, from: OWNER, nonce: 0 },
+  })
+
+  it("is saved on the record before its receipt", async () => {
+    let land!: (ok: boolean) => void
+    wait.mockImplementationOnce(() => new Promise((resolve) => (land = resolve)))
+    const sweeping = sweep()
+    await vi.waitFor(() => expect(wait).toHaveBeenCalledWith(TX))
+    expect(await storedRegistration(SIPA)).toMatchObject({
+      submittedSweep: { ...submitted().submittedSweep, at: expect.any(Number) },
+    })
+    land(true)
+    await expect(sweeping).resolves.toBe(TX)
+  })
+
+  it("settles before another is signed: a landed one is stamped, and nothing is sent", async () => {
+    await seedRegistration(submitted())
+    await expect(
+      runRegistrationSweep(deps(), submitted(), { pace, wagmi: WAGMI, keys }),
+    ).resolves.toBe(TX)
+    signedNothing()
+    expect(await storedRegistration(SIPA)).toMatchObject({ sweepTxHash: TX })
+  })
+
+  it("is cleared once its receipt shows it failed; the next run signs a new one", async () => {
+    await seedRegistration(submitted())
+    wait.mockResolvedValueOnce(false)
+    await expect(
+      runRegistrationSweep(deps(), submitted(), { pace, wagmi: WAGMI, keys }),
+    ).rejects.toMatchObject({ code: "registration.sweepReverted" })
+    signedNothing()
+    const cleared = await storedRegistration(SIPA)
+    expect(cleared?.submittedSweep).toBeUndefined()
+    send.mockResolvedValueOnce(SECOND)
+    await expect(
+      runRegistrationSweep(deps(), cleared!, { pace, wagmi: WAGMI, keys }),
+    ).resolves.toBe(SECOND)
+    expect(await storedRegistration(SIPA)).toMatchObject({ sweepTxHash: SECOND })
+  })
+
+  it("is cleared once the sender's nonce passes it unmined, and a new sweep is signed", async () => {
+    // Dropped: nothing swept the address, so it still holds the deposit.
+    await seedRegistration(submitted())
+    passed()
+    send.mockResolvedValueOnce(SECOND)
+    await expect(
+      runRegistrationSweep(deps(), submitted(), { pace, wagmi: WAGMI, keys }),
+    ).resolves.toBe(SECOND)
+    expect(wait).not.toHaveBeenCalledWith(TX)
+    expect(await storedRegistration(SIPA)).toMatchObject({ sweepTxHash: SECOND })
+  })
+
+  it("reads the sender and nonce of a sweep saved by hash alone, and clears it once gone", async () => {
+    const alone = { ...record, submittedSweep: { txHash: TX, at: SENT } }
+    await seedRegistration(alone)
+    // The page closes while the receipt is still out.
+    wait.mockImplementationOnce(() => new Promise(() => {}))
+    void runRegistrationSweep(deps(), alone, { pace, wagmi: WAGMI, keys })
+    await vi.waitFor(async () =>
+      expect((await storedRegistration(SIPA))?.submittedSweep).toEqual(submitted().submittedSweep),
+    )
+    passed()
+    send.mockResolvedValueOnce(SECOND)
+    const learned = (await storedRegistration(SIPA))!
+    await expect(runRegistrationSweep(deps(), learned, { pace, wagmi: WAGMI, keys })).resolves.toBe(
+      SECOND,
+    )
+    expect(await storedRegistration(SIPA)).toMatchObject({ sweepTxHash: SECOND })
+  })
+
+  it("waits on a sweep saved by hash alone that the node never knew, for an hour", async () => {
+    const alone = { ...record, submittedSweep: { txHash: TX, at: SENT } }
+    await seedRegistration(alone)
+    node.drop(TX)
+    wait.mockImplementationOnce(() => new Promise(() => {}))
+    void runRegistrationSweep(deps(), alone, { pace, wagmi: WAGMI, keys })
+    await vi.waitFor(() => expect(wait).toHaveBeenCalledWith(TX))
+    signedNothing()
+    const later = vi.spyOn(Date, "now").mockReturnValue(SENT + UNKNOWN_HASH_MS + 1)
+    onTestFinished(() => later.mockRestore())
+    send.mockResolvedValueOnce(SECOND)
+    await expect(runRegistrationSweep(deps(), alone, { pace, wagmi: WAGMI, keys })).resolves.toBe(
+      SECOND,
+    )
+    expect(await storedRegistration(SIPA)).toMatchObject({ sweepTxHash: SECOND })
+  })
+
+  it("signs nothing once a replacement swept the address", async () => {
+    await seedRegistration(submitted())
+    passed()
+    hold(TOKEN, 0n)
+    await expect(
+      runRegistrationSweep(deps(), submitted(), { pace, wagmi: WAGMI, keys }),
+    ).rejects.toMatchObject({ code: "deposit.alreadySwept" })
+    signedNothing()
+    expect((await storedRegistration(SIPA))?.submittedSweep).toBeUndefined()
   })
 })

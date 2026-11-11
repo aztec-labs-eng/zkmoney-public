@@ -1,8 +1,6 @@
 /**
- * Email-locked claim glue: a claimer-bound zkJWT proof, from the encrypted cache or via Google
- * OAuth (nonce = poseidon2(preimage, claimer address)) + the in-browser WASM prove. The proof
- * cache persists the user's email + address, so it rides an MSK-derived `EncryptedStorageAdapter`
- * (`ZkJwtStorage` refuses a plain adapter).
+ * Email-locked claim glue: a claimer-bound zkJWT proof, from the account's sealed proofs or via
+ * Google OAuth (nonce = poseidon2(preimage, claimer address)) + the in-browser WASM prove.
  */
 import { Fr } from "@aztec-labs/aztec.js/fields"
 import { EthAddress } from "@aztec-labs/aztec.js/addresses"
@@ -14,33 +12,33 @@ import {
   paylinkL1Caller,
   plainUserPayload,
 } from "@obsidion/sdk"
-import {
-  EncryptedStorageAdapter,
-  ZkJwtService,
-  ZkJwtStorage,
-  generateZkJwtProof,
-  type CachedZkProof,
-} from "@obsidion/front-core"
-import { getConfig } from "../../config/env"
+import { generateZkJwtProof, type ZkJwtProof, type ZkJwtProofs } from "@obsidion/front-core"
+import type { Session } from "../../session/session"
 import { MskWebCryptoProvider } from "../../platform/storage/MskWebCryptoProvider"
-import { webStorage } from "../../platform/storage/WebStorageAdapter"
-import { signInWithGoogleIdToken } from "./googleAuth"
+import { signInWithGoogleIdToken } from "./googleRelay"
 import { WebZkJwtProver } from "./zkJwtProver"
 
-const ZKJWT_STORE_DOMAIN = "zkjwt-store"
+/** The proof shape the paylink claim submits. */
+export interface CachedZkProof {
+  vkey: string[]
+  proof: string[]
+  public_inputs: string[]
+  email: string
+  provider: "google" | "apple"
+}
 
-type DerivedKeys = ConstructorParameters<typeof MskWebCryptoProvider>[0]
+const claimProof = ({ proof, vkey, publicInputs, metadata }: ZkJwtProof): CachedZkProof => ({
+  proof,
+  vkey,
+  public_inputs: publicInputs,
+  email: metadata.email,
+  provider: metadata.provider,
+})
 
-let service: ZkJwtService | null = null
-
-function zkJwtService(keys: DerivedKeys): ZkJwtService {
-  service ??= new ZkJwtService({
-    prover: new WebZkJwtProver(),
-    storage: new ZkJwtStorage(
-      new EncryptedStorageAdapter(webStorage, new MskWebCryptoProvider(keys, ZKJWT_STORE_DOMAIN)),
-    ),
-  })
-  return service
+/** What a claim reads its proofs through: the account's key and its sealed proofs. */
+export interface EmailClaimOwner extends Pick<Session, "page"> {
+  auth: ConstructorParameters<typeof MskWebCryptoProvider>[0]
+  zkJwtProofs: ZkJwtProofs
 }
 
 export type EmailClaimStage = "signing-in" | "proving-jwt"
@@ -64,6 +62,7 @@ export function emailL1Caller(executor: Address, payee: Address): Promise<Fr> {
  * {@link emailL1Caller} ahead of it. No account/cache access.
  */
 export async function obtainEmailL1Proof(
+  { config, noirWasm }: Pick<Session["page"], "config" | "noirWasm">,
   caller: Fr,
   params: EmailLock,
   onStage: (stage: EmailClaimStage) => void,
@@ -71,7 +70,7 @@ export async function obtainEmailL1Proof(
   signal?: AbortSignal,
 ): Promise<CachedZkProof> {
   if (!params.commitment) throw new Error("This link's escrow has not been read yet — try again")
-  const clientId = getConfig().googleClientId
+  const clientId = config.googleClientId
   if (!clientId) throw new Error("Google sign-in is not configured here")
   const preimage = Fr.random().toBigInt()
   const nonce = PaylinkService.computeNonce(preimage, caller.toBigInt())
@@ -81,7 +80,7 @@ export async function obtainEmailL1Proof(
   assertJwtEmailMatchesCommitment(jwt, "google", BigInt(params.commitment), params.email)
   onStage("proving-jwt")
   const bundle = await generateZkJwtProof(
-    new WebZkJwtProver(),
+    new WebZkJwtProver(noirWasm),
     jwt,
     "google",
     preimage,
@@ -97,22 +96,16 @@ export async function obtainEmailL1Proof(
   if (BigInt(bundle.publicInputs[2]!) !== BigInt(params.commitment)) {
     throw new EmailMismatchError({ lockedTo: params.email })
   }
-  return {
-    proof: bundle.proof,
-    vkey: bundle.vkey,
-    public_inputs: bundle.publicInputs,
-    email: bundle.metadata.email,
-    provider: "google",
-  }
+  return claimProof(bundle)
 }
 
 /**
- * A zkJWT proof bound to `claimerAddress` for this link's email commitment. Cache hit skips OAuth
- * entirely; otherwise the Google id_token (nonce-bound to the claimer) feeds the WASM prover and
- * the result is cached for the week the registry accepts it.
+ * A zkJWT proof bound to `claimerAddress` for this link's email commitment. A saved proof skips
+ * OAuth entirely; otherwise the Google id_token (nonce-bound to the claimer) feeds the WASM prover
+ * and the proof is saved for the week the registry accepts it.
  */
 export async function obtainEmailClaimProof(
-  keys: DerivedKeys,
+  own: EmailClaimOwner,
   claimerAddress: { toString(): string; toBigInt(): bigint },
   params: EmailLock,
   onStage?: (stage: EmailClaimStage) => void,
@@ -121,12 +114,12 @@ export async function obtainEmailClaimProof(
   const commitment = params.commitment
   if (!commitment) throw new Error("This link's escrow has not been read yet — try again")
   const caller = claimerAddress.toString()
-  const svc = zkJwtService(keys)
+  const sealer = new MskWebCryptoProvider(own.auth, "zkjwt-store")
 
-  const cached = await svc.matchProofForPaylink(caller, params.paylinkType, commitment)
-  if (cached) return cached
+  const saved = await own.zkJwtProofs.find(sealer, caller, commitment)
+  if (saved) return claimProof(saved)
 
-  const clientId = getConfig().googleClientId
+  const clientId = own.page.config.googleClientId
   if (!clientId) {
     throw new Error("Google sign-in is not configured here — claim this link in the zk.money app")
   }
@@ -141,18 +134,8 @@ export async function obtainEmailClaimProof(
   // The claims the registry + circuit check: aud must be in the registry allowlist, iss/jwk
   // must match its seeded keys, email must hash to the link's commitment, iat must be fresh.
   onStage?.("proving-jwt")
-  await new Promise<void>((resolve, reject) => {
-    svc.proveInBackground(jwt, "google", preimage, caller, {
-      onComplete: resolve,
-      onError: reject,
-    })
-  })
-  // The account already matched the commitment above, so a miss here is the cache, not the email:
-  // the prove stored the proof under a key this lookup did not find.
-  const proof = await svc.getCachedZkProof(caller, commitment)
-  if (!proof)
-    throw new Error(
-      "Your email was verified but the proof could not be found afterwards. Try again.",
-    )
-  return proof
+  const prover = new WebZkJwtProver(own.page.noirWasm)
+  const proof = await generateZkJwtProof(prover, jwt, "google", preimage, caller)
+  await own.zkJwtProofs.save(sealer, proof)
+  return claimProof(proof)
 }

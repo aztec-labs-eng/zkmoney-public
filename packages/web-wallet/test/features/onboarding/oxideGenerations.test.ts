@@ -1,11 +1,12 @@
 // @vitest-environment node
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { fakeReads } from "../../support/fakeReads"
 import { getContractAddress, type Address } from "viem"
 
 const h = vi.hoisted(() => ({
   readClaimFpcIdentityCatalog: vi.fn(),
   createOxideL1Reader: vi.fn(),
-  getRetiredRollupSources: vi.fn(async (): Promise<Record<string, unknown>[]> => []),
+  retired: vi.fn(async (): Promise<Record<string, unknown>[]> => []),
 }))
 vi.mock("@obsidion/sdk", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/sdk")>()),
@@ -17,9 +18,7 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
 }))
 vi.mock("../../../src/config/oxideTuple", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../src/config/oxideTuple")>()),
-  getOxideTuple: async () => TUPLE,
   l1PublicClient: () => L1_CLIENT,
-  getRetiredRollupSources: h.getRetiredRollupSources,
 }))
 
 import {
@@ -53,6 +52,7 @@ const wallet = (rollupVersion: number) => ({
   getNodeIdentity: async () => ({ l1ChainId: 11155111, rollupVersion }),
 })
 
+const page = { chain: fakeReads({ oxideTuple: () => TUPLE, retiredRollupSources: h.retired }) }
 const RETIRED_TUPLE = {
   rollupVersion: "6",
   accountFactory: "0x9999999999999999999999999999999999999999",
@@ -62,7 +62,7 @@ const RETIRED_TUPLE = {
 
 describe("loadOxideGenerations", () => {
   beforeEach(() => {
-    h.getRetiredRollupSources.mockReset().mockResolvedValue([])
+    h.retired.mockReset().mockResolvedValue([])
     h.readClaimFpcIdentityCatalog.mockReset()
     h.createOxideL1Reader.mockReset()
   })
@@ -70,9 +70,9 @@ describe("loadOxideGenerations", () => {
   it("merges a retired rollup's manifest-derived candidate without any live read of it", async () => {
     h.readClaimFpcIdentityCatalog.mockResolvedValue(BINDINGS)
     h.createOxideL1Reader.mockReturnValue(READER)
-    h.getRetiredRollupSources.mockResolvedValue([RETIRED_TUPLE])
+    h.retired.mockResolvedValue([RETIRED_TUPLE])
 
-    const deps = await loadOxideGenerations(wallet(3) as never, {} as never, {} as never)
+    const deps = await loadOxideGenerations(wallet(3) as never, {} as never, page as never)
 
     expect(deps.admissibleRollupVersions).toEqual(new Set(["3", "6"]))
     expect(deps.catalog.map((g) => g.rollupVersion)).toEqual(["3", "3", "6"])
@@ -89,9 +89,9 @@ describe("loadOxideGenerations", () => {
   it("keeps the current-rollup catalog but marks it incomplete when the retired-deployments fetch fails", async () => {
     h.readClaimFpcIdentityCatalog.mockResolvedValue(BINDINGS)
     h.createOxideL1Reader.mockReturnValue(READER)
-    h.getRetiredRollupSources.mockRejectedValue(new Error("manifest fetch failed"))
+    h.retired.mockRejectedValue(new Error("manifest fetch failed"))
 
-    const deps = await loadOxideGenerations(wallet(3) as never, {} as never, {} as never)
+    const deps = await loadOxideGenerations(wallet(3) as never, {} as never, page as never)
 
     expect(deps.admissibleRollupVersions).toEqual(new Set(["3"]))
     expect(deps.catalog.map((g) => g.rollupVersion)).toEqual(["3", "3"])
@@ -110,7 +110,7 @@ describe("loadOxideGenerations", () => {
     const signIn = async () => {
       h.readClaimFpcIdentityCatalog.mockResolvedValue(BINDINGS)
       h.createOxideL1Reader.mockReturnValue(unnamedUnderCurrentFactories)
-      const deps = await loadOxideGenerations(wallet(3) as never, {} as never, {} as never)
+      const deps = await loadOxideGenerations(wallet(3) as never, {} as never, page as never)
       const outcome = await resolveOxideIdentity(
         deps,
         "0x00000000000000000000000000000000000000b0",
@@ -121,7 +121,7 @@ describe("loadOxideGenerations", () => {
 
     it("is refused, not offered a name claim, when the retired read fails", async () => {
       // Its account may sit under a factory only a retired rollup lists.
-      h.getRetiredRollupSources.mockRejectedValue(new Error("manifest fetch failed"))
+      h.retired.mockRejectedValue(new Error("manifest fetch failed"))
       expect(await signIn()).toThrow(OxideIdentityUnavailableError)
     })
 

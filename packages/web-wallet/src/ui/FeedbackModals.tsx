@@ -3,6 +3,7 @@ import { useState, type ReactNode } from "react"
 import { GradientText, Icon, PrimaryGradientButton, TopNavIconButton } from "@obsidion/web-ds"
 
 import { sendFeedback } from "../lib/feedback"
+import { useSubmit } from "./hooks"
 
 function Sheet({
   title,
@@ -36,15 +37,6 @@ function Thanks({ onClose }: { onClose: () => void }) {
       <PrimaryGradientButton title="Done" onClick={onClose} />
     </>
   )
-}
-
-function useSubmit(send: () => Promise<boolean>) {
-  const [status, setStatus] = useState<"idle" | "sending" | "failed" | "sent">("idle")
-  const submit = async () => {
-    setStatus("sending")
-    setStatus((await send()) ? "sent" : "failed")
-  }
-  return { status, submit }
 }
 
 function SendFailed() {

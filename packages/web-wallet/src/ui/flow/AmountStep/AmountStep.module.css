@@ -1,0 +1,8 @@
+/* Holds the button, so a press on it while disabled reaches the wrapper. */
+.cta {
+  display: block;
+  width: 100%;
+}
+.cta > button:disabled {
+  pointer-events: none;
+}

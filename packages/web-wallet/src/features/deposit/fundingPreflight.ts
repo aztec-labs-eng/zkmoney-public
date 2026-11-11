@@ -14,6 +14,9 @@ import {
   type UnknownCapacityPolicy,
 } from "./fundingCapacity"
 
+/** Only capacity known not to take the deposit holds it: an unread bucket or an unknown conversion credit does not. */
+export const UNKNOWN_CAPACITY: UnknownCapacityPolicy = "proceed"
+
 /**
  * Under `proceed`, how long the check waits for its read before it uses the store's current state instead. It stays
  * inside the desktop helper's recheck budget, so a slow read cannot refuse a send by running out of time.
@@ -50,7 +53,7 @@ export async function runFundingPreflight(input: {
   ) {
     throw new FundingPreflightError(
       "quote-changed",
-      "The deposit fee changed. Review the new amount before sending.",
+      "The fee changed. Check the new amounts before sending.",
     )
   }
   const policy = input.unknownCapacity ?? "hold"

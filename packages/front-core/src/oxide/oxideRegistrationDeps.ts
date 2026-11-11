@@ -16,7 +16,6 @@ import {
   OxideAccountFactoryAbi,
   getAccountNonce,
   getAuthKeys,
-  getUserOpHash,
   getUserRecord,
   hasUserRecord,
   predictAccountAddress,
@@ -30,7 +29,7 @@ import {
 import type { OxideEnvTuple, RegistrationIntent, RegistrationSchedule } from "@obsidion/core/types"
 import { registrationFloor } from "@obsidion/core/constants"
 import { requireNonZeroL1Address, sipaIntentToken } from "@obsidion/core/oxide"
-import { readResolverOperatorRecords } from "./resolverOperatorRecords"
+import type { DeploymentScans } from "./resolverOperatorRecords"
 import type { SipaDeposits } from "../engine/sipaDeposits"
 import {
   MAX_NONCE,
@@ -46,6 +45,7 @@ import {
   type SipaK1Point,
   type SipaResolverOperatorRecord,
 } from "@obsidion/sdk"
+import { WalletError, bestEffort } from "../engine/errors"
 import { logger } from "../utils/logger"
 
 import type {
@@ -69,31 +69,28 @@ import {
  * Same selection the SIPA discovery path uses, so signup and discovery always agree on the operator.
  */
 export async function fetchSignupResolverOperator(
-  publicClient: PublicClient,
+  scans: DeploymentScans,
   tuple: OxideEnvTuple,
   network: Network,
 ): Promise<Address> {
-  return (await fetchSignupResolverRecord(publicClient, tuple, network)).owner as Address
+  return (await fetchSignupResolverRecord(scans, tuple, network)).owner as Address
 }
 
 /** The resolver operator record {@link fetchSignupResolverOperator} selects. */
 export async function fetchSignupResolverRecord(
-  publicClient: PublicClient,
+  scans: DeploymentScans,
   tuple: OxideEnvTuple,
   network: Network,
 ): Promise<SipaResolverOperatorRecord> {
   const { accountMetadataRegistry, forwardingTable } = tuple
   if (!accountMetadataRegistry || !forwardingTable) {
-    throw new Error(
+    throw new WalletError(
+      "config.invalid",
       "oxide manifest lacks the resolver-selection surface (accountMetadataRegistry / forwardingTable) — " +
         "signup needs it to record a live resolver operator",
     )
   }
-  const records = await readResolverOperatorRecords(
-    publicClient,
-    accountMetadataRegistry as Address,
-    tuple,
-  )
+  const records = await scans.operatorRecords(accountMetadataRegistry as Address, tuple).read()
   const record = selectManifestResolverOperator(records, {
     forwardingTable,
     resolverGatewayUrl: tuple.resolverGatewayUrl,
@@ -144,7 +141,8 @@ export function oxideEnvFromTuple(
   // Registrations settle on the fee token's row.
   const feeToken = sipaIntentToken(tuple, "registration", tuple.token)
   if (!registry || !opts.accountFactory || !ensDomain || !feeToken) {
-    throw new Error(
+    throw new WalletError(
+      "config.invalid",
       "oxide manifest lacks the registration shared block (registry / accountFactory / ensDomain / feeToken) — " +
         "deposit registration requires a dev.json-shaped deployment",
     )
@@ -152,7 +150,8 @@ export function oxideEnvFromTuple(
   // rollupVersion binds the name to a specific rollup (it feeds SP-B's SIPA derivation), so a
   // missing/blank value must fail hard rather than coerce to BigInt("") === 0n and record a 0.
   if (!/^\d+$/.test(tuple.rollupVersion ?? "")) {
-    throw new Error(
+    throw new WalletError(
+      "config.invalid",
       `oxide manifest has a missing or non-numeric rollupVersion ("${tuple.rollupVersion}") — ` +
         "registration needs it to bind the name to the rollup",
     )
@@ -254,8 +253,9 @@ export function createRegistrationSipaDeriver(deps: {
       deps.publicClient,
       sipaFactory,
     ))
-    read.catch(() => {
-      if (implementationRead === read) implementationRead = undefined
+    void bestEffort("unknown", read).then((implementation) => {
+      if (implementation === undefined && implementationRead === read)
+        implementationRead = undefined
     })
     return read
   }
@@ -441,7 +441,8 @@ export function createRegistrationDepositReader(deps: {
     // In fee-token units, the largest across the accepted tokens: what the rail last observed.
     readBalance: async (sipa) => {
       const record = await recordOf(sipa)
-      if (record?.heldBalance === undefined) throw new Error(`${sipa} not observed yet`)
+      if (record?.heldBalance === undefined)
+        throw new WalletError("balance.unread", `${sipa} not observed yet`)
       return BigInt(record.heldBalance)
     },
     readSweeps: async (sipa) => {
@@ -463,7 +464,8 @@ export function createRegistrationDepositReader(deps: {
     },
     scheduleFee: () =>
       registrationImmutables().then((schedule) => {
-        if (schedule === undefined) throw new Error("registration schedule unreadable")
+        if (schedule === undefined)
+          throw new WalletError("unknown", "registration schedule unreadable")
         return schedule.fee
       }),
   }
@@ -484,11 +486,10 @@ export function createOxideL1Reader(publicClient: PublicClient): OxideL1Reader {
       (await hasUserRecord(client, accountMetadataRegistry, account))
         ? await getUserRecord(client, accountMetadataRegistry, account)
         : null,
-    getUserOpHash: (entryPoint, op) =>
-      getUserOpHash(client, entryPoint, op as Parameters<typeof getUserOpHash>[2]),
     // A registry from before the controller split names none and holds the limits itself.
     readR1InstallGas: async (registry) => {
-      const controller = await readRegistrationController(client, registry).catch(() => zeroAddress)
+      const controller =
+        (await bestEffort("unknown", readRegistrationController(client, registry))) ?? zeroAddress
       return readR1InstallGas(client, controller === zeroAddress ? registry : controller)
     },
     getAuthKeys: (account) => getAuthKeys(client, account),

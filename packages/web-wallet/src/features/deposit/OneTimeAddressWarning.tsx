@@ -1,6 +1,7 @@
 import { Modal } from "../../ui/Modal"
-import { useEffect, useState } from "react"
-import { GradientText, Icon, PrimaryGradientButton, TopNavIconButton } from "@obsidion/web-ds"
+import { useState } from "react"
+import { GradientText, Icon, PrimaryGradientButton } from "@obsidion/web-ds"
+import { CornerButton } from "../../ui/flow/CornerButton/CornerButton"
 import { ADDRESS_RECHECK_NOTE } from "../limits/limitsCopy"
 
 export interface OneTimeAddressPoint {
@@ -17,7 +18,7 @@ export function oneTimeAddressPoints(symbol: string): OneTimeAddressPoint[] {
       id: "loss",
       icon: "coins",
       title: "Risk of loss",
-      body: `Only send ${symbol} on Ethereum (ERC20). Sending wrong requires manual recovery.`,
+      body: `Only send ${symbol} on Ethereum. Sending anything else requires manual recovery.`,
     },
     {
       id: "rotates",
@@ -40,7 +41,7 @@ export function OneTimeAddressPoints({ points }: { points: OneTimeAddressPoint[]
       {points.map((p) => (
         <div key={p.id} className="ww-deposit-warning__point">
           <span className="ww-deposit-warning__point-icon">
-            <Icon name={p.icon} size={24} color="#fff" />
+            <Icon name={p.icon} size={24} color="var(--ink)" />
           </span>
           <span className="ww-deposit__connect-text">
             <b>{p.title}</b>
@@ -65,19 +66,17 @@ export function OneTimeAddressWarning({
 }) {
   // A reading that improves while the dialog is open does not empty it: the last warning stays.
   const [shownWarning, setShownWarning] = useState(capacityWarning)
-  useEffect(() => {
-    if (capacityWarning) setShownWarning(capacityWarning)
-  }, [capacityWarning])
+  if (capacityWarning && capacityWarning !== shownWarning) setShownWarning(capacityWarning)
 
   return (
     <Modal
       variant="bare"
-      label="Network capacity" // slice-check-ignore: existing label, unmigrated component
+      label="Network capacity" // debt-check-ignore: existing label, unmigrated component
       className="ww-deposit-warning"
       onClose={onClose}
     >
       <div className="ww-deposit-warning__close">
-        <TopNavIconButton icon="x" ariaLabel="Close" onClick={onClose} />
+        <CornerButton kind="close" onClick={onClose} />
       </div>
       <span className="ww-deposit__connect-icon ww-deposit-warning__icon">
         <Icon name="alert-triangle" size={32} color="#fff" />

@@ -1,8 +1,21 @@
+import { bestEffortSync } from "@obsidion/core/errors"
 import { currentIsInAppBrowser, currentIsXInAppBrowser } from "@obsidion/passkey-web"
 import { deviceStorage } from "../platform/storage/rollupStorage"
+import { tabStash } from "../platform/storage/tabStash"
 
-/** The link a visitor arrived on. `ticket` is a payment link that pays for the account. */
-export const CHANNELS = ["paylink", "ticket", "request_link", "pay_page", "invite", "none"] as const
+/**
+ * The link a visitor arrived on. `ticket` is a payment link that pays for the account; `site` is
+ * a link on zk.money's own website (marketing-web).
+ */
+export const CHANNELS = [
+  "paylink",
+  "ticket",
+  "request_link",
+  "pay_page",
+  "invite",
+  "site",
+  "none",
+] as const
 export type Channel = (typeof CHANNELS)[number]
 
 /** Where the visit came from: a known utm_source, else the referrer's site. */
@@ -56,6 +69,7 @@ function channelOf(url: URL): Channel {
   if (path === "/request" || path === "/r") return "request_link"
   if (path.startsWith("/pay/")) return "pay_page"
   if (url.searchParams.has("invite")) return "invite"
+  if (url.searchParams.get("via") === "site") return "site"
   return "none"
 }
 
@@ -96,13 +110,14 @@ function readStored(now: number): Attribution {
 }
 
 function store(value: Attribution, now: number): void {
-  try {
-    deviceStorage.setItem(STORAGE_KEY, JSON.stringify({ ...value, at: now }))
-  } catch {
-    // Unstored attribution lasts the page.
-  }
+  // Unstored attribution lasts the page.
+  bestEffortSync(
+    () => deviceStorage.setItem(STORAGE_KEY, JSON.stringify({ ...value, at: now })),
+    undefined,
+  )
 }
 
+// eslint-disable-next-line no-restricted-syntax -- debt
 let landing: Attribution = NO_ATTRIBUTION
 
 /**
@@ -127,20 +142,25 @@ export function landingAttribution(): Attribution {
 }
 
 /**
- * `url` with the landing's source as its utm_source, unless it has one. An app's browser keeps
- * its storage and referrer to itself, so the phone's browser sees only what the link carries.
+ * `url` with the landing's source as its utm_source and a website landing's `via=site`, each
+ * unless it has one. An app's browser keeps its storage and referrer to itself, so the phone's
+ * browser sees only what the link carries.
  */
 export function withLandingSource(url: string): string {
-  if (landing.source === "direct") return url
+  const site = landing.channel === "site"
+  if (landing.source === "direct" && !site) return url
   let parsed: URL
   try {
     parsed = new URL(url)
   } catch {
     return url
   }
-  if (parsed.searchParams.has("utm_source")) return url
-  parsed.searchParams.set("utm_source", landing.source)
-  return parsed.toString()
+  const params = parsed.searchParams
+  if (landing.source !== "direct" && !params.has("utm_source"))
+    params.set("utm_source", landing.source)
+  if (site && !params.has("via")) params.set("via", "site")
+  const href = parsed.toString()
+  return href === new URL(url).toString() ? url : href
 }
 
 /** Puts the landing's source in the address bar, which an app's own Open in browser menu opens. */
@@ -157,12 +177,13 @@ export function markTicketChannel(now = Date.now()): void {
 }
 
 /** True the first time `name` is asked for in this tab; tabs without storage answer true per page. */
+// eslint-disable-next-line no-restricted-syntax -- debt
 const askedThisPage = new Set<string>()
 export function firstInTab(name: string): boolean {
-  const key = `zkm.once.${name}`
+  const key = `zkm.once.${name}` as const
   try {
-    if (sessionStorage.getItem(key)) return false
-    sessionStorage.setItem(key, "1")
+    if (tabStash.get(key)) return false
+    tabStash.set(key, "1")
     return true
   } catch {
     if (askedThisPage.has(key)) return false

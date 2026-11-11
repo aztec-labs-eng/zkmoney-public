@@ -1,6 +1,8 @@
+import { createPace } from "@obsidion/core/cadence"
 import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { memoryStore } from "@obsidion/front-core"
 import { setIdentity } from "../../../support/identity"
 
 const m = vi.hoisted(() => ({
@@ -9,6 +11,7 @@ const m = vi.hoisted(() => ({
   extra: [] as unknown[],
   l1: { connect: vi.fn() },
   networkReady: true,
+  refundable: 10n * 10n ** 18n,
 }))
 vi.mock("@obsidion/web-ds", () => ({
   GradientText: (p: { children: React.ReactNode }) => <h2>{p.children}</h2>,
@@ -26,16 +29,7 @@ vi.mock("@obsidion/web-ds", () => ({
   ),
 }))
 vi.mock("react-router-dom", () => ({ useNavigate: () => vi.fn() }))
-vi.mock("@obsidion/front-core", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@obsidion/front-core")>()),
-  savingsValue: (shares: bigint) => shares,
-  useSavingsPosition: () => ({}),
-}))
-vi.mock("../../../../src/config/env", () => ({
-  getConfig: () => ({ l1ChainId: 1, l1Chain: { name: "Ethereum" } }),
-}))
 vi.mock("../../../../src/config/oxideTuple", () => ({
-  getOxideTuple: async () => ({ withdrawalSubsidy: "0xsubsidy" }),
   l1PublicClient: () => ({}),
 }))
 vi.mock("@obsidion/sdk", async (importOriginal) => ({
@@ -50,8 +44,8 @@ vi.mock("../../../../src/ui/screening", () => ({
   useScreenedAddress: () => ({ cleared: true }),
   ScreeningNotice: () => null,
 }))
-vi.mock("../../../../src/ui/detailRows", () => ({ HashRow: () => null, l1TxUrl: () => undefined }))
-vi.mock("../../../../src/session/l1Wallet", () => ({
+vi.mock("../../../../src/ui/detailRows", () => ({ HashRow: () => null, useL1Links: () => ({}) }))
+vi.mock("../../../../src/session/useL1Wallet", () => ({
   useL1Wallet: () => m.l1,
   isWalletRejection: () => false,
 }))
@@ -65,9 +59,9 @@ vi.mock("../../../../src/features/migration/migrationDialog", () => ({
 }))
 vi.mock("../../../../src/features/migration/oldVersionWithdraw", () => ({
   noteOldVersionWithdrawn: vi.fn(),
-  openOldVersionExit: async (ws: { savings: boolean; source: { portal: string } }) => {
+  openOldVersionExit: async (_: unknown, ws: { savings: boolean; source: { portal: string } }) => {
     if (ws.source.portal === "0xdown") throw new Error("savings node down")
-    return { runtime: { candidates: async () => ({}) }, symbol: "DAI" }
+    return { runtime: { candidates: async () => ({}) }, symbol: ws.savings ? "sUSDS" : "DAI" }
   },
   skipUnrefundableSource: vi.fn(),
   useWithdrawableSources: () => [m.source, ...m.extra],
@@ -75,10 +69,10 @@ vi.mock("../../../../src/features/migration/oldVersionWithdraw", () => ({
 vi.mock("../../../../src/features/operations/operations", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../../src/features/operations/operations")>()),
   isFlowCancelled: () => false,
-  runOperation: (_op: unknown, fn: () => Promise<unknown>) => fn(),
+  runOperation: (_ops: unknown, _op: unknown, fn: () => Promise<unknown>) => fn(),
 }))
 vi.mock("../../../../src/features/withdraw/frozenExitRun", () => ({
-  frozenExitSummary: () => ({ refundable: 10n * 10n ** 18n, links: 0n, waiting: 0n }),
+  frozenExitSummary: () => ({ refundable: m.refundable, links: 0n, waiting: 0n }),
   runFrozenExit: vi.fn(),
 }))
 vi.mock("../../../../src/features/withdraw/zkMoneyExit", () => ({ zkMoneyExit: () => m.zk }))
@@ -86,7 +80,7 @@ vi.mock("../../../../src/features/cutover/networkReady", () => ({
   useNetworkReady: () => m.networkReady,
 }))
 
-const { withdrawChoiceCopy, withdrawDoneCopy, withdrawingCopy } = await import(
+const { reviewCopy, withdrawChoiceCopy, withdrawDoneCopy, withdrawingCopy } = await import(
   "../../../../src/features/cutover/cutoverCopy"
 )
 const { shortL1Addr } = await import("../../../../src/ui/format")
@@ -110,10 +104,14 @@ const radio = (name: string) =>
 const button = (title: string) =>
   [...document.querySelectorAll("button")].reverse().find((b) => b.textContent?.trim() === title)!
 const text = () => document.body.textContent
+const received = () =>
+  [...document.querySelectorAll(".ww-cutover__row")]
+    .find((row) => row.firstElementChild?.textContent === reviewCopy.receive)!
+    .querySelector(".ww-cutover__row-value")!
 const press = (title: string) => act(async () => button(title).click())
 
 async function render() {
-  await act(async () => root.render(<OldVersionWithdrawScreen />))
+  await act(async () => root.render(<OldVersionWithdrawScreen pace={createPace()} />))
 }
 
 const type = (value: string) =>
@@ -134,15 +132,19 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount())
   host.remove()
+  // After the unmount: a mounted screen reads the session as it renders.
+  closeSession()
 })
 
 const { openTestSession } = await import("../../../support/session")
 const { closeSession } = await import("../../../../src/session/session")
 beforeEach(async () => {
-  openTestSession()
+  openTestSession({
+    primed: { tuple: { withdrawalSubsidy: "0xsubsidy" } as never },
+    savingsHolding: memoryStore({ position: { sharePrice: 105n * 10n ** 16n } }).readonly,
+  })
   await setIdentity({ handle: "brave-otter-42" })
 })
-afterEach(closeSession)
 
 describe("withdrawing an old version's funds", () => {
   it("withdraws privately by default, to the address the user checked last", async () => {
@@ -160,7 +162,7 @@ describe("withdrawing an old version's funds", () => {
     await render()
     expect(radio("Privately").getAttribute("aria-checked")).toBe("true")
     expect(radio("Privately").textContent).toContain("$0.35")
-    expect(radio("Privately").textContent).toContain("$9.65")
+    expect(radio("Privately").textContent).toContain("9.65 DAI")
     await press("Continue")
 
     await type(`0x${"34".repeat(20)}`)
@@ -172,7 +174,7 @@ describe("withdrawing an old version's funds", () => {
     await tick()
     await press("Continue")
 
-    expect(text()).toContain("$9.65")
+    expect(received().textContent).toBe("9.65 DAI")
     await press("Confirm with passkey")
     expect(m.zk.run).toHaveBeenCalledWith(
       [m.source],
@@ -224,6 +226,9 @@ describe("withdrawing an old version's funds", () => {
     expect(radio("Privately").disabled).toBe(true)
     expect(radio("Publicly").getAttribute("aria-checked")).toBe("true")
     expect(text()).toContain("$11.00")
+    expect(radio("Publicly").textContent).toContain(
+      withdrawChoiceCopy.wallet.lowBody("~$1.65", "10 DAI"),
+    )
   })
 
   it("closes the private route when no refund covers its fee", async () => {
@@ -268,6 +273,56 @@ describe("withdrawing an old version's funds", () => {
     await render()
     expect(radio("Publicly").textContent).not.toContain("~$")
     m.extra = []
+  })
+
+  const SAVINGS = { source: { portal: "0xsavings" }, savings: true, open: async () => ({}) }
+  const BOTH = {
+    moving: { main: 10n * 10n ** 18n, savings: 10n * 10n ** 18n },
+    tips: { main: 35n * 10n ** 16n, savings: 35n * 10n ** 16n },
+  }
+  const PART_CENT = { ...TIPS, moving: { main: 10006n * 10n ** 15n, savings: 0n } }
+  it.each([
+    ["Privately", "Main", [], TIPS, "9.65 DAI"],
+    ["Privately", "Main and Savings", [SAVINGS], BOTH, "9.65 DAI + 9.65 sUSDS"],
+    ["Privately", "part of a cent", [], PART_CENT, "9.65 DAI"],
+    ["Publicly", "Main", [], TIPS, "10 DAI"],
+    ["Publicly", "Main and Savings", [SAVINGS], TIPS, "10 DAI + 10 sUSDS"],
+  ])(
+    "names each token received in the %s review of %s",
+    async (route, _, extra, quote, receive) => {
+      m.zk = { fee: vi.fn(async () => quote), run: vi.fn() }
+      m.extra = extra
+      m.l1 = {
+        connect: vi.fn(),
+        account: ADDRESS,
+        walletName: "Rainbow",
+        wrongChain: false,
+      } as never
+      await render()
+      expect(radio(route).textContent).toContain(receive)
+      await act(async () => radio(route).click())
+      await press("Continue")
+      if (route === "Privately") {
+        await type(ADDRESS)
+        await tick()
+        await press("Continue")
+      }
+      expect(received().textContent).toBe(receive)
+      m.extra = []
+      m.l1 = { connect: vi.fn() }
+    },
+  )
+
+  it("names the token in the banner when the gas is more than the balance", async () => {
+    m.zk = { fee: vi.fn(async () => TIPS), run: vi.fn() }
+    m.refundable = 10n ** 18n
+    m.l1 = { connect: vi.fn(), account: ADDRESS, walletName: "Rainbow", wrongChain: false } as never
+    await render()
+    await act(async () => radio("Publicly").click())
+    await press("Continue")
+    expect(text()).toContain(reviewCopy.lowBanner.body("~$1.65", "1 DAI"))
+    m.refundable = 10n * 10n ** 18n
+    m.l1 = { connect: vi.fn() }
   })
 
   it("offers the own wallet route with its gas estimate, and connects a wallet", async () => {

@@ -1,10 +1,12 @@
 // @vitest-environment node
-import { openMasterKey } from "@obsidion/front-core"
+import { loadRecords, memoryBackend, openMasterKey } from "@obsidion/front-core"
 import { bytesToBase64Url } from "@obsidion/passkey-web"
 import { describe, expect, it } from "vitest"
-import { startBackupAdd } from "../../../src/features/backupPasskey/backupPasskeyAdd"
+import {
+  LeftoverPasskeyError,
+  startBackupAdd,
+} from "../../../src/features/backupPasskey/backupPasskeyAdd"
 import { MASTER_KEY, OWNER, makeBackupAddDeps } from "../../support/backupAdd"
-import { MemoryStorage } from "../../support/fakePasskeyCeremony"
 
 const hex = (bytes: Uint8Array) => Buffer.from(bytes).toString("hex")
 
@@ -44,15 +46,31 @@ describe("starting a backup add", () => {
 
   it("an add ended while the store was being read saves nothing", async () => {
     const abort = new AbortController()
-    class AbortingRead extends MemoryStorage {
-      override async getItem(key: string) {
-        abort.abort()
-        return super.getItem(key)
-      }
+    const { deps, store, backend } = makeBackupAddDeps()
+    await loadRecords(store.view)
+    const get = backend.get
+    backend.get = async (key) => {
+      abort.abort()
+      return get(key)
     }
-    const { deps, store } = makeBackupAddDeps({ storage: new AbortingRead() })
     await expect(startBackupAdd(deps, abort.signal)).rejects.toThrow()
+    backend.get = get
     expect(await store.get(OWNER)).toBeNull()
+  })
+
+  it("an add ended while its record was being written drops that record", async () => {
+    const abort = new AbortController()
+    const { deps, store, backend, outcomes } = makeBackupAddDeps()
+    await store.ready
+    const apply = backend.apply
+    backend.apply = async (ops) => {
+      abort.abort()
+      return apply(ops)
+    }
+    await expect(startBackupAdd(deps, abort.signal)).rejects.toBeInstanceOf(LeftoverPasskeyError)
+    backend.apply = apply
+    expect(await store.get(OWNER)).toBeNull()
+    expect(outcomes).toEqual(["failed"])
   })
 
   it("zeroes the PRF output and its master key copy once the key is sealed", async () => {
@@ -146,15 +164,24 @@ describe("starting a backup add", () => {
     expect(await store.get(OWNER)).toBeNull()
   })
 
-  it("a write storage refuses ends the attempt", async () => {
-    class Refusing extends MemoryStorage {
-      override async setItem(): Promise<void> {
-        throw new Error("quota")
-      }
-    }
-    const { deps, store, outcomes } = makeBackupAddDeps({ storage: new Refusing() })
-    await expect(startBackupAdd(deps)).rejects.toThrow("quota")
+  it("a write the database refuses ends the attempt", async () => {
+    const { deps, store, backend, outcomes } = makeBackupAddDeps()
+    await store.ready
+    backend.failing.commits = true
+    await expect(startBackupAdd(deps)).rejects.toBeInstanceOf(LeftoverPasskeyError)
+    backend.failing.commits = false
     expect(await store.get(OWNER)).toBeNull()
     expect(outcomes).toEqual(["failed"])
+  })
+
+  it("refuses to start over a saved record that does not read, never reading it as none", async () => {
+    const backend = memoryBackend()
+    const key = `acct/backupRotations/${OWNER.toLowerCase()}`
+    backend.entries.set(key, JSON.stringify({ owner: OWNER, phase: "typo" }))
+    const { deps, store, outcomes } = makeBackupAddDeps({ backend })
+    await expect(startBackupAdd(deps)).rejects.toThrow()
+    expect(store.view.get().failed).toBe(true)
+    expect(outcomes).toEqual(["failed"])
+    expect(backend.entries.get(key)).toBe(JSON.stringify({ owner: OWNER, phase: "typo" }))
   })
 })

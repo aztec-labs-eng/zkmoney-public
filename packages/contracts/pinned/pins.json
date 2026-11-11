@@ -1,0 +1,278 @@
+{
+  "alpha_account": {
+    "dir": "packages/contracts/contracts/alpha/alpha_account",
+    "source": "b6d05c35e88488486c2c1c6cccbd33b065e85efb513d000c0de4133c21feb6a8",
+    "aztecVersion": "6.0.0",
+    "deps": [
+      "https://github.com/aztec-labs-eng/aztec-node@v6.0.0:noir-projects/aztec-nr/aztec",
+      "https://github.com/noir-lang/noir_base64@v0.5.1:",
+      "https://github.com/noir-lang/sha256@v0.2.1:"
+    ],
+    "artifacts": {
+      "obsidion_alpha_account-ObsidionAccountAlpha.json": {
+        "sha256": "ece73ab57066591fc06f68f9ed55e183aee3b0788286c394f9cf68c1850faf7a",
+        "classId": "0x03461842e6b1ea47d624dd2b09496d72b047f8809f1dc16aa658df76781ecd84"
+      }
+    }
+  },
+  "alpha_account_simulated": {
+    "dir": "packages/contracts/contracts/alpha/alpha_account_simulated",
+    "source": "97a217a4b5c0f3913850ce6b3a60a9f8df04196ef7713ac1be26b33651040cbd",
+    "aztecVersion": "6.0.0",
+    "deps": [
+      "https://github.com/aztec-labs-eng/aztec-node@v6.0.0:noir-projects/aztec-nr/aztec"
+    ],
+    "artifacts": {
+      "obsidion_alpha_account_simulated-ObsidionAccountAlphaSimulated.json": {
+        "sha256": "922b98d3aa1832ff7325464d7418904d9d4d4fc625b6e47c7e0d62528aaebb89",
+        "classId": "0x29c56900953c2ac3651ae6412ad57d0cdae17ad724dc9e78e55c3cda4526ae01"
+      }
+    }
+  },
+  "alpha_account_test": {
+    "dir": "packages/contracts/contracts/alpha/alpha_account_test",
+    "source": "622c4f506323052a0229d985ced252cf3768079d882c6a0cc394444f044a87b5",
+    "aztecVersion": "6.0.0",
+    "deps": [
+      "https://github.com/aztec-labs-eng/aztec-node@v6.0.0:noir-projects/aztec-nr/aztec",
+      "https://github.com/noir-lang/sha256@v0.2.1:"
+    ],
+    "artifacts": {
+      "obsidion_alpha_account_test-ObsidionAccountAlphaTest.json": {
+        "sha256": "7820d3bcce9bcc48d2359b0994a42709074c87ccbcb6b645e97a4cbea426c717",
+        "classId": "0x04abb9c3fdb9f8ebff0813bd5ee2dab0b09f9f3423e7cf9e0740bfebc9714568"
+      }
+    }
+  },
+  "broadcaster_contract": {
+    "dir": "vendor/oxide/noir-projects/broadcaster_contract",
+    "upstream": "broadcaster_contract",
+    "artifacts": {
+      "broadcaster_contract-Broadcaster.json": {
+        "sha256": "9838abfe4563bcd60ef69cc2651355157641be278e7e7c919c0234b04c59e75e",
+        "classId": "0x24f2762acb13987a767a20c311d980936ed4379147c8bf6db04c193aa93778ae"
+      }
+    }
+  },
+  "claim_fpc": {
+    "dir": "packages/contracts/contracts/fee_paying/claim_fpc",
+    "source": "96cfc6aa3bf788c10b12284a58957f418b83536514a7b62736f2b6e9a8a06d66",
+    "aztecVersion": "6.0.0",
+    "deps": [
+      "https://github.com/aztec-labs-eng/aztec-node@v6.0.0:noir-projects/aztec-nr/aztec",
+      "https://github.com/aztec-labs-eng/aztec-node@v6.0.0:noir-projects/aztec-nr/compressed-string",
+      "https://github.com/aztec-labs-eng/aztec-node@v6.0.0:noir-projects/aztec-nr/fee-juice-interface",
+      "https://github.com/madztheo/noir-date.git@v0.5.6:",
+      "https://github.com/noir-lang/keccak256@v0.1.3:",
+      "https://github.com/noir-lang/noir-bignum@v0.10.0:",
+      "https://github.com/noir-lang/schnorr@v0.4.0:"
+    ],
+    "artifacts": {
+      "claim_fpc-ClaimFPC.json": {
+        "sha256": "ecae64109126b20578bda9f251479663fa8e7201b712915cc500b1df64275ca3",
+        "classId": "0x283d2bc372c29215bd0473948a6e4cad92078d685a9a1236be69968734d02a3b"
+      }
+    }
+  },
+  "deposit": {
+    "dir": "packages/contracts/contracts/deposit",
+    "source": "b96c44153e2c71cfff81bb49cb8f6d610e1d81b1b197e226f7e5ee8db0513059",
+    "aztecVersion": "6.0.0",
+    "deps": [
+      "https://github.com/aztec-labs-eng/aztec-node@v6.0.0:noir-projects/aztec-nr/aztec",
+      "https://github.com/aztec-labs-eng/aztec-node@v6.0.0:noir-projects/aztec-nr/compressed-string",
+      "https://github.com/aztec-labs-eng/aztec-node@v6.0.0:noir-projects/aztec-nr/contract-instance-registry-interface",
+      "https://github.com/noir-lang/keccak256@v0.1.3:",
+      "https://github.com/noir-lang/noir_base64@v0.5.1:",
+      "https://github.com/noir-lang/sha256@v0.2.1:"
+    ],
+    "artifacts": {
+      "deposit_contract-Deposit.json": {
+        "sha256": "ecec843ee8f1420fbdeea126ca0eb3d0b186a66ea651830208bb0fc853946972",
+        "classId": "0x07bfc51ed9641ffb711b05d955c55e9344d4fb495d14e2e34adf77e53f6e5a8e"
+      }
+    }
+  },
+  "eligibility": {
+    "dir": "packages/contracts/circuits/eligibility",
+    "source": "a72331bd367f9e47d7695236389f11d5f985be5d986256742161d1326c353124",
+    "aztecVersion": "6.0.0",
+    "deps": [
+      "https://github.com/noir-lang/keccak256@v0.1.3:",
+      "https://github.com/noir-lang/poseidon@v0.3.0:"
+    ],
+    "artifacts": {
+      "eligibility.json": {
+        "sha256": "0bdf77b8a736c7ad864a94ed55f0ae32195bd64b030a74d1cda3c99f6d172f9e"
+      }
+    }
+  },
+  "golden_ticket": {
+    "dir": "packages/contracts/circuits/golden_ticket",
+    "source": "4e7dca201a91ca1589ca80ed692a4b3d8a7bdc3e01ca037c93f6109373c8e6ed",
+    "aztecVersion": "6.0.0",
+    "deps": [
+      "https://github.com/aztec-labs-eng/aztec-node@v6.0.0:noir-projects/aztec-nr/aztec",
+      "https://github.com/aztec-labs-eng/aztec-node@v6.0.0:noir-projects/aztec-nr/compressed-string",
+      "https://github.com/aztec-labs-eng/aztec-node@v6.0.0:noir-projects/aztec-nr/contract-instance-registry-interface",
+      "https://github.com/noir-lang/keccak256@v0.1.3:",
+      "https://github.com/noir-lang/noir_base64@v0.5.1:",
+      "https://github.com/noir-lang/poseidon@v0.3.0:",
+      "https://github.com/noir-lang/sha256@v0.2.1:"
+    ],
+    "artifacts": {
+      "golden_ticket.json": {
+        "sha256": "cc32b618f67f6faf019ed37033d3cad708794a44ffe4aef1949037a6de41bc52"
+      }
+    }
+  },
+  "link_locator": {
+    "dir": "packages/contracts/contracts/link_locator",
+    "source": "f778d7ec5963accdea52f52803d728060081c0e7f77cd4db787845b2469b87b7",
+    "aztecVersion": "6.0.0",
+    "deps": [
+      "https://github.com/aztec-labs-eng/aztec-node@v6.0.0:noir-projects/aztec-nr/aztec"
+    ],
+    "artifacts": {
+      "link_locator-LinkLocator.json": {
+        "sha256": "02db538f7efdbbdc7634cfcbf904bc8b7e1956385e01c632f1ab7a1ebd41b1ff",
+        "classId": "0x2f64572c012c76450cdf752ab9aca56219b9331efb1747685ae48ab455af620e"
+      }
+    }
+  },
+  "oidc_key_registry": {
+    "dir": "packages/contracts/contracts/oidc_key_registry",
+    "source": "6958a0a0f0042bb0706b0e59c3052864e7bdce5fd30f4442b0d9c4a9232ed4eb",
+    "aztecVersion": "6.0.0",
+    "deps": [
+      "https://github.com/aztec-labs-eng/aztec-node@v6.0.0:noir-projects/aztec-nr/aztec",
+      "https://github.com/noir-lang/poseidon@v0.3.0:"
+    ],
+    "artifacts": {
+      "oidc_key_registry-OidcKeyRegistry.json": {
+        "sha256": "092a05119f756654fbe2888ecf4f6dcf1e8e756bf06ec2bdd420338a3f9977a9",
+        "classId": "0x28572b4e14e21898a92e905f08402b771e15a458ccc325ebdafb0ed034aa6d8a"
+      }
+    }
+  },
+  "oxide_token_contract": {
+    "dir": "vendor/oxide/noir-projects/oxide_token_contract",
+    "upstream": "oxide_token_contract",
+    "artifacts": {
+      "oxide_token_contract-OxideToken.json": {
+        "sha256": "ce98df16a81804ad4352554aee3c5055f87c98c6d82ba21a6572e06e55c361b9",
+        "classId": "0x27df40f914de0e4368b39b4d02821d42573dfe703502c3e7a44f5254345f3949"
+      }
+    }
+  },
+  "password_fpc": {
+    "dir": "packages/contracts/contracts/fee_paying/password_fpc",
+    "source": "b74058693377701eda3d3164fc22b2c023275d00eacc33047c3fc04f2fc67605",
+    "aztecVersion": "6.0.0",
+    "deps": [
+      "https://github.com/aztec-labs-eng/aztec-node@v6.0.0:noir-projects/aztec-nr/address-note",
+      "https://github.com/aztec-labs-eng/aztec-node@v6.0.0:noir-projects/aztec-nr/aztec",
+      "https://github.com/aztec-labs-eng/aztec-node@v6.0.0:noir-projects/aztec-nr/compressed-string",
+      "https://github.com/aztec-labs-eng/aztec-node@v6.0.0:noir-projects/aztec-nr/fee-juice-interface",
+      "https://github.com/madztheo/noir-date.git@v0.5.6:",
+      "https://github.com/noir-lang/poseidon@v0.3.0:",
+      "https://github.com/noir-lang/schnorr@v0.4.0:"
+    ],
+    "artifacts": {
+      "password_fpc-PasswordFPC.json": {
+        "sha256": "420d3783aebe95a85e3429e3bd63bfdbbe2bdd6b2c2348314cbc0b5e2bd0a7e8",
+        "classId": "0x15bfb34047d8023fd35a969d6fbaadde4f35f66b3483a2745a99a70ff0155b7c"
+      }
+    }
+  },
+  "paylink_direct": {
+    "dir": "packages/contracts/contracts/paylink/paylink_direct",
+    "source": "b78c1f9a2ab247802236e8e584da8ed6169f393b6168b1b18a7579cbd44921d3",
+    "aztecVersion": "6.0.0",
+    "deps": [
+      "https://github.com/aztec-labs-eng/aztec-node@v6.0.0:noir-projects/aztec-nr/aztec",
+      "https://github.com/aztec-labs-eng/aztec-node@v6.0.0:noir-projects/aztec-nr/compressed-string",
+      "https://github.com/aztec-labs-eng/aztec-node@v6.0.0:noir-projects/aztec-nr/contract-instance-registry-interface",
+      "https://github.com/noir-lang/keccak256@v0.1.3:",
+      "https://github.com/noir-lang/noir_base64@v0.5.1:",
+      "https://github.com/noir-lang/poseidon@v0.3.0:",
+      "https://github.com/noir-lang/sha256@v0.2.1:"
+    ],
+    "artifacts": {
+      "paylink_direct-PaylinkDirect.json": {
+        "sha256": "60e2cb31ca27762aaa1877b2365aefe1324c028ca0316f6714a8ed5abd5c9c4d",
+        "classId": "0x0a50799bbccaa0d0b8196faf0381804d4d6d11498b95b803faf5b2eb42d4580a"
+      }
+    }
+  },
+  "paylink_email": {
+    "dir": "packages/contracts/contracts/paylink/paylink_email",
+    "source": "6acc9446cdca65e4410b72f997227a8ecf14303399e7c498c7a62d1da3134b44",
+    "aztecVersion": "6.0.0",
+    "deps": [
+      "https://github.com/aztec-labs-eng/aztec-node@v6.0.0:noir-projects/aztec-nr/aztec",
+      "https://github.com/aztec-labs-eng/aztec-node@v6.0.0:noir-projects/aztec-nr/compressed-string",
+      "https://github.com/aztec-labs-eng/aztec-node@v6.0.0:noir-projects/aztec-nr/contract-instance-registry-interface",
+      "https://github.com/noir-lang/keccak256@v0.1.3:",
+      "https://github.com/noir-lang/noir_base64@v0.5.1:",
+      "https://github.com/noir-lang/poseidon@v0.3.0:",
+      "https://github.com/noir-lang/sha256@v0.2.1:"
+    ],
+    "artifacts": {
+      "paylink_email-PaylinkEmail.json": {
+        "sha256": "0dcbd59f914c219c5625c5db91c94c2f9e31f916f90cc33ab94436241afedfa6",
+        "classId": "0x009eadb30bac16703cd1043228f746ed771d483caca544b7a5c825f905addbc6"
+      }
+    }
+  },
+  "sponsor_fpc": {
+    "dir": "packages/contracts/contracts/fee_paying/sponsor_fpc",
+    "source": "f2dbe7b1451249fa971f2ee6dfe2b8a3c4f0bd343a8eb74ba5b0661047f9cf88",
+    "aztecVersion": "6.0.0",
+    "deps": [
+      "https://github.com/aztec-labs-eng/aztec-node@v6.0.0:noir-projects/aztec-nr/address-note",
+      "https://github.com/aztec-labs-eng/aztec-node@v6.0.0:noir-projects/aztec-nr/aztec"
+    ],
+    "artifacts": {
+      "sponsor_fpc-SponsorFPC.json": {
+        "sha256": "e3b5fdca71b80a82eebd98824c859af8a0e79ad1638b183e3cf7e7778ee21577",
+        "classId": "0x2f5af673b5eb7214d73a54e08bc5d985f9373b21506416301d9fd6da289e7c85"
+      }
+    }
+  },
+  "test_token": {
+    "dir": "packages/contracts/contracts/test_token",
+    "source": "908009b09dcc8b70caff914c1a36ec7b20d834283e89c9285c1e69f4a4a07571",
+    "aztecVersion": "6.0.0",
+    "deps": [
+      "https://github.com/aztec-labs-eng/aztec-node@v6.0.0:noir-projects/aztec-nr/aztec",
+      "https://github.com/aztec-labs-eng/aztec-node@v6.0.0:noir-projects/aztec-nr/balance-set",
+      "https://github.com/aztec-labs-eng/aztec-node@v6.0.0:noir-projects/aztec-nr/compressed-string"
+    ],
+    "artifacts": {
+      "test_token-TestToken.json": {
+        "sha256": "6187288fc1966e35d55852400db2e4e15c5cb9a445266ec4a84910f5a5ef4b94",
+        "classId": "0x0b385ade1e9ad629aca1c3b58fdb6182006c8b02c808a7e71125889018af2726"
+      }
+    }
+  },
+  "zkJWT": {
+    "dir": "packages/contracts/circuits/zkJWT",
+    "source": "a9524dff62177f4d47c2af74dc8367209ee418d4947e38be6529817a4537e6cc",
+    "aztecVersion": "6.0.0",
+    "deps": [
+      "https://github.com/aztec-labs-eng/aztec-node@v6.0.0:noir-projects/aztec-nr/aztec",
+      "https://github.com/noir-lang/noir-bignum@v0.10.0:",
+      "https://github.com/noir-lang/noir_base64@v0.5.1:",
+      "https://github.com/noir-lang/poseidon@v0.3.0:",
+      "https://github.com/noir-lang/sha256@v0.2.1:",
+      "https://github.com/olehmisar/nodash@v0.45.0:",
+      "https://github.com/zkpassport/noir_rsa@v0.11.1:"
+    ],
+    "artifacts": {
+      "zkJWT.json": {
+        "sha256": "4abff10ba80be973afb4667185dfa892512ec633c86287934c3038eaae7c5a11"
+      }
+    }
+  }
+}

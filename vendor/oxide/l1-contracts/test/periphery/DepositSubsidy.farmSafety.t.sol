@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity >=0.8.27;
+import {SweepGasCeilings} from "@test/helpers/SweepGasCeilings.sol";
+import {Intents} from "@periphery/Intent.sol";
 import {console2} from "forge-std/console2.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
@@ -35,7 +37,8 @@ contract DepositSubsidyFarmSafetyTest is SweepGasFixture {
       address(portal),
       IOperationExecutor(address(operationExecutor)),
       AggregatorV3Interface(address(feed)),
-      sipaFactory
+      sipaFactory,
+      SweepGasCeilings.initial()
     );
     underlying.mint(address(fm), 1_000_000 ether);
     underlying.mint(relayer, 1);
@@ -99,10 +102,14 @@ contract DepositSubsidyFarmSafetyTest is SweepGasFixture {
     console2.log("registration priced gas", priced);
 
     assertGt(
-      priced, fm.SWEEP_GAS_DEPOSIT_CEILING(), "a registration must price above everything the deposit ceiling can pay"
+      priced,
+      fm.$sweepGasCeilings(Intents.DEPOSIT),
+      "a registration must price above everything the deposit ceiling can pay"
     );
     assertLe(
-      priced, fm.SWEEP_GAS_REGISTRATION_CEILING(), "a registration priced past its own ceiling: the cap is not binding"
+      priced,
+      fm.$sweepGasCeilings(Intents.REGISTRATION),
+      "a registration priced past its own ceiling: the cap is not binding"
     );
   }
 

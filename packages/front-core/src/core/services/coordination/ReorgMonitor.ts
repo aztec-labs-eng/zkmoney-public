@@ -16,8 +16,10 @@ import { loadRecords, timeKey } from "../../../engine/persistentStore"
 // type-only store imports: value imports here would close an import cycle through the
 // services barrel (a store → services index → coordination → this file). `activity` reaches no
 // services module.
-import { PENDING, type Activity } from "../../../engine/activity"
+import { PENDING, type Transfers } from "../../../engine/transfers"
 import type { Withdrawals } from "../../../engine/withdrawals"
+import type { Operations } from "../../../engine/operations"
+import type { OperationRecord } from "../../../engine/operationTransition"
 import type { WithdrawalRecord } from "../bridge/types"
 import type { Transaction } from "../../../types"
 import { stampedOn } from "../../../types/networkStamp"
@@ -38,10 +40,11 @@ export type ConfirmationOutcome = { txHash: string } & (
 export type ConfirmationListener = (outcome: ConfirmationOutcome) => void
 
 export type ReorgTransactionStore = Pick<
-  Activity,
-  "query" | "byHash" | "apply" | "demoteByTxHash" | "settleByHash"
+  Transfers,
+  "where" | "byHash" | "apply" | "demoteByTxHash" | "settleByHash"
 >
 export type ReorgWithdrawalStore = Pick<Withdrawals, "all" | "apply">
+export type ReorgOperationStore = Pick<Operations, "view" | "apply">
 
 /** What a pass reads the chain through. */
 export interface ReorgChain {
@@ -54,6 +57,11 @@ export interface ReorgMonitorDeps {
   /** Injected store surfaces; an omitted store's surface is skipped. */
   transactionStorage?: ReorgTransactionStore
   withdrawalStorage?: ReorgWithdrawalStore
+  /**
+   * This device's operations: a reorg of one's transaction reopens it, and `resolveSent` then
+   * settles or fails it again. No alert speaks for them: the bell shows the operation.
+   */
+  operationStorage?: ReorgOperationStore
   concurrency?: number
   /** How long a demoted payment may stay un-re-included before the alert fires. */
   graceWindowMs?: number
@@ -71,15 +79,8 @@ export interface ReorgPassSummary {
 
 const DEFAULT_CONCURRENCY = 8
 const DEFAULT_GRACE_WINDOW_MS = 90_000
-/** How far back a pass reads settled rows; a pending row is read at any age. */
+/** How far back a pass reads settled rows and ended operations; a pending row is read at any age. */
 export const REORG_MARGIN_MS = 24 * 60 * 60 * 1000
-/**
- * How long to wait before believing a "dropped" answer for a tx that is still being sent. Shorter
- * than the poll interval, so the very next poll is the one that decides: if the node still says
- * dropped then, the tx really was dropped. Far longer than the moment the check guards against,
- * which lasts only as long as one sendTx call.
- */
-const DROPPED_SETTLE_MS = 10_000
 /**
  * How long a withdrawal's burn must keep reading dropped before the record fails. Ten polls and
  * about four mainnet slots, so a replica trailing by blocks has caught up: failing late costs
@@ -140,8 +141,8 @@ export class ReorgMonitor {
     const txStore = this.deps.transactionStorage
     if (txStore) {
       const [recent, pending] = await Promise.all([
-        loadRecords(txStore.query("time", { after: timeKey(this.now() - REORG_MARGIN_MS) })),
-        loadRecords(txStore.query("pending", PENDING)),
+        loadRecords(txStore.where("time", { after: timeKey(this.now() - REORG_MARGIN_MS) })),
+        loadRecords(txStore.where("pending", PENDING)),
       ])
       const read = new Map([...recent, ...pending].map((row) => [row.id, row]))
       const rows = [...read.values()].filter(
@@ -154,6 +155,22 @@ export class ReorgMonitor {
       for (const row of rows) {
         push(() => this.reconcileTxRow(txStore, row, fetchReceipt, summary))
       }
+    }
+
+    const opStore = this.deps.operationStorage
+    if (opStore) {
+      const since = this.now() - REORG_MARGIN_MS
+      const ops = opStore.view
+        .get()
+        .records.filter(
+          (r) =>
+            !!r.txHash &&
+            !r.background &&
+            !r.finalized &&
+            (r.state === "settled" || r.state === "failed") &&
+            (r.endedAt ?? 0) >= since,
+        )
+      for (const op of ops) push(() => this.reconcileOperation(opStore, op, fetchReceipt, summary))
     }
 
     // Withdrawals: post-mine phases re-verify the burn receipt, and a dropped-burn failure stays
@@ -218,19 +235,6 @@ export class ReorgMonitor {
 
     if (status === TxStatus.DROPPED || isRevertedInclusion(receipt)) {
       if (row.status !== "failed") {
-        if (status === TxStatus.DROPPED && row.status === "pending" && !demoted) {
-          // A pending row gets its hash a moment before the node receives the tx, and the node
-          // answers "dropped" for any hash it has not seen. So the first dropped answer for a
-          // pending row may only mean the send has not landed yet. Record when we first saw it
-          // and check again on a later pass; fail the row only if it still reads dropped then. If
-          // the node includes the tx in the meantime, the included branch above clears the entry.
-          const entry = this.grace.get(key)
-          if (!entry) {
-            this.grace.set(key, { deadline: this.now() + DROPPED_SETTLE_MS, alerted: false })
-            return
-          }
-          if (this.now() < entry.deadline) return
-        }
         if (demoted) {
           // Already inside a reorg episode: terminalize without opening a new one, so the
           // failure alert shares the episode's epoch and dedupes against a grace-expired alert.
@@ -278,9 +282,8 @@ export class ReorgMonitor {
     }
 
     if (status === TxStatus.PENDING) {
-      // A confirmed row regressed to the mempool: demote and start the grace window.
-      // Still-pending in-flight rows stay with their flow (its epoch-less settle must not be
-      // fenced by a needless demote); failed rows wait for inclusion.
+      // A confirmed row regressed to the mempool: demote and start the grace window. Failed rows
+      // wait for inclusion.
       if (row.status === "success") {
         await store.demoteByTxHash(txHash)
         summary.demoted++
@@ -298,6 +301,34 @@ export class ReorgMonitor {
       return
     }
     // unknown status value: hold
+  }
+
+  /**
+   * A settled operation whose transaction left the chain, or a failed one the chain now includes,
+   * goes back to `sent`. A final one is marked so no later pass reads it.
+   */
+  private async reconcileOperation(
+    store: ReorgOperationStore,
+    op: OperationRecord,
+    fetchReceipt: (txHash: string) => Promise<ReorgTxReceiptLike | null>,
+    summary: ReorgPassSummary,
+  ): Promise<void> {
+    const receipt = await fetchReceipt(op.txHash as string)
+    if (!receipt) return
+    const { status } = receipt
+    const included = status === TxStatus.FINALIZED || INCLUDED_TIERS.has(status)
+    const failed = status === TxStatus.DROPPED || isRevertedInclusion(receipt)
+    if (op.state === "settled" && status === TxStatus.FINALIZED && !failed) {
+      await store.apply(op.operationId, { type: "finalized" })
+    } else if (
+      op.state === "settled"
+        ? failed || status === TxStatus.PENDING
+        : included && receipt.executionResult === TxExecutionResult.SUCCESS
+    ) {
+      if (!(await store.apply(op.operationId, { type: "demoted" }))) return
+      if (op.state === "settled") summary.demoted++
+      else summary.reConfirmed++
+    }
   }
 
   private async reconcileWithdrawal(

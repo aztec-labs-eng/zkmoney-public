@@ -1,12 +1,10 @@
-import {
-  provingProgress,
-  ProvingStage,
-  type ProvingProgressEvent,
-} from "@obsidion/proving-progress"
+import { ProvingStage } from "@obsidion/core/types"
 import { TxHash, TxStatus } from "@aztec-labs/stdlib/tx"
 import type { AztecNode } from "@aztec-labs/stdlib/interfaces/client"
 import type { Hex } from "viem"
 import { isRevertedInclusion, type ReorgTxReceiptLike } from "../chain/receiptTypes"
+import type { ProvingProgress } from "../../../engine/prover"
+import type { ReadonlyStore } from "../../../engine/store"
 
 /** Only node receipt evidence, never a computed hash or a transport error, determines failure. */
 export function isFailedSubmission(
@@ -64,27 +62,23 @@ export interface SubmissionTracker {
 
 /**
  * Watches one operation across the submit boundary. The wallet awaits the flow's `onTxHash`, which
- * saves the hash, then emits `ProvingStage.Mining` with it just before `aztecNode.sendTx`. A
- * rejection before Mining sent nothing; one after it says nothing about whether the transaction
- * reached the node, and only a receipt does. Mining is announced as `tx-hash-saved`: this is the
- * one place a flow's record becomes safe to reload over. An operation that owns several records
- * saves them all in one `onTxHash` and announces from one tracker; the others pass
- * `announce: false`.
+ * saves the hash on the operation and the flow's own records in one write, then emits
+ * `ProvingStage.Mining` with it just before `aztecNode.sendTx`. A rejection before Mining sent
+ * nothing; one after it says nothing about whether the transaction reached the node, and only a
+ * receipt does.
  */
 export function trackSubmission(
+  progress: ReadonlyStore<ProvingProgress>,
   operationId: string,
-  opts: { announce?: boolean } = {},
 ): SubmissionTracker {
   let txHash: Hex | undefined
 
-  const onMining = (event: ProvingProgressEvent) => {
-    if (event.operationId !== operationId || event.stage !== ProvingStage.Mining || !event.txHash)
-      return
-    if (txHash) return
-    txHash = event.txHash as Hex
-    if (opts.announce !== false) provingProgress.emitTxHashSaved(operationId, txHash)
-  }
-  provingProgress.on("stage-start", onMining)
+  // Heard from now on: a stage an earlier try of the operation left is not this one's.
+  const off = progress.subscribe(() => {
+    const entry = progress.get().stages[operationId]
+    if (txHash || entry?.stage !== ProvingStage.Mining || !entry.txHash) return
+    txHash = entry.txHash as Hex
+  })
 
   return {
     get txHash() {
@@ -99,8 +93,6 @@ export function trackSubmission(
       }
       return txHash
     },
-    stop() {
-      provingProgress.off("stage-start", onMining)
-    },
+    stop: off,
   }
 }

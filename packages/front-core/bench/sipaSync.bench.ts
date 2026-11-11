@@ -59,12 +59,14 @@ vi.mock("@obsidion/sdk", async (importOriginal) => {
   }
 })
 
-import { computeStealthRecipientHash, deriveRecoveryAddress } from "@obsidion/sdk"
+import { deriveRecoveryCommitment } from "@oxide/oxide-lib/sipa_recovery.js"
+import { computeStealthRecipientHash } from "@obsidion/sdk"
 import { openDatabase, type Database } from "../src/engine/database"
 import { memoryBackend } from "../src/engine/memoryBackend"
 import { createSipaDeposits, type SipaDeposits } from "../src/engine/sipaDeposits"
-import { computeSIPAAddress } from "../src/core/services/deposits/sipa/sipaAddress"
-import { deriveStealthKey } from "../src/oxide/oxideAccountKeys"
+import { computeAccountSIPAAddress } from "../src/core/services/deposits/sipa/sipaAddress"
+import { deriveSelfSipaKey, deriveStealthKey } from "../src/oxide/oxideAccountKeys"
+import { createResolverWindow, SELF_SLOTS } from "../src/oxide/resolverPayments"
 import { scanSipaDeposits } from "../src/oxide/sipaScan"
 import { claimSipaDeposits } from "../src/oxide/sipaClaim"
 
@@ -84,12 +86,19 @@ const DEPOSIT_FEE = 25n * 10n ** 16n
 const TX_AMOUNT_CAP = 5166n * 10n ** 18n
 const RECIPIENT = AztecAddress.fromBigIntUnsafe(0xbeefn)
 const STEALTH = deriveStealthKey(new Fr(7n)).publicKey
+const KEYS = {
+  stealthScalar: deriveStealthKey(new Fr(7n)).scalar,
+  selfSipaKey: deriveSelfSipaKey(new Fr(7n)),
+  recipient: RECIPIENT,
+}
 const TUPLE = {
   sipaFactory: FACTORY,
   portal: PORTAL,
   forwardingTable: TABLE,
   token: DAI,
   rollupVersion: ROLLUP_VERSION.toString(),
+  sipaRecoveryProtocol: "account",
+  accountFactory: "0x00000000000000000000000000000000000000af",
   l2Token: "0x0000000000000000000000000000000000000000000000000000000000001234",
 } as unknown as OxideEnvTuple
 
@@ -141,14 +150,15 @@ async function buildHistory() {
     const salt = new Fr(BigInt(0x1000 + i))
     const commitment = await computeStealthRecipientHash(salt, RECIPIENT)
     const intentHash = keccak256(commitment.toBuffer())
-    const sipa = computeSIPAAddress({
+    const sipa = computeAccountSIPAAddress({
       sipaFactory: EthAddress.fromString(FACTORY),
       implementation: EthAddress.fromString(IMPLEMENTATION),
       intentHash,
       rollupVersion: ROLLUP_VERSION,
       resweepable: true,
-      recoveryAddress: deriveRecoveryAddress(STEALTH, salt),
-    } as never)
+      recoveryCommitment: deriveRecoveryCommitment(salt, EthAddress.fromString(RECOVERY_ACCOUNT)),
+      forwardingTable: EthAddress.fromString(TABLE),
+    })
       .toString()
       .toLowerCase() as Address
     l2.events.push({
@@ -394,6 +404,8 @@ afterAll(() => {
 // ── Runs ──────────────────────────────────────────────────────────────────────
 
 type Saved = { store: SipaDeposits; db: Database }
+/** The scan task's self window, kept across passes as the task keeps it. */
+const window = createResolverWindow(SELF_SLOTS)
 
 async function freshStore(seed?: Record<string, string>) {
   const backend = memoryBackend()
@@ -482,6 +494,8 @@ async function pass(
     l1ChainId: 1,
     networkId: "0x00000000000000000000000000000000000000e1",
     historyStartBlock: async () => DEPLOYED,
+    selfCandidates: (deployment, records, salts) =>
+      window(KEYS, [deployment], records, Number(blockTime(HEAD)) * 1000, salts),
     txAmountCap: (row) =>
       publicClient.readContract({
         address: row.portal,

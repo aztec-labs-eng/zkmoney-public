@@ -22,7 +22,13 @@ export interface BenchmarkEntry {
   txInspection?: TxInspection
 }
 
-const OUTPUT_DIR = resolve(__dirname, "../../../benchmark")
+/**
+ * Where reports go: the committed packages/sdk/benchmark, or BENCHMARK_OUTPUT_DIR (scripts/test-env.sh sets it, so a
+ * test run leaves the committed reports alone).
+ */
+export const BENCHMARK_OUTPUT_DIR = process.env.BENCHMARK_OUTPUT_DIR
+  ? resolve(process.env.BENCHMARK_OUTPUT_DIR)
+  : resolve(__dirname, "../../../benchmark")
 
 /**
  * Collect profile steps from a service into BenchmarkEntry fields.
@@ -44,7 +50,7 @@ export function profileStepsFor(
  * Print a summary table to stdout and write results to disk.
  */
 export function writeBenchmarkReport(entries: BenchmarkEntry[], filename: string) {
-  const dir = resolve(OUTPUT_DIR, filename)
+  const dir = resolve(BENCHMARK_OUTPUT_DIR, filename)
   mkdirSync(dir, { recursive: true })
 
   // ── Console table ──

@@ -5,7 +5,6 @@ import {IVerifier} from "@aztec/core/interfaces/IVerifier.sol";
 import {AccountMetadataRegistry} from "@periphery/AccountMetadataRegistry.sol";
 import {Resolver} from "@periphery/Resolver.sol";
 import {DepositSIPA} from "@periphery/DepositSIPA.sol";
-import {SIPABase} from "@periphery/SIPABase.sol";
 import {ForwardingTable} from "@periphery/ForwardingTable.sol";
 import {IForwardingTable} from "@periphery/interfaces/IForwardingTable.sol";
 import {IOxidePortal} from "@core/interfaces/IOxidePortal.sol";
@@ -14,6 +13,7 @@ import {RegistriesTestBase} from "@test/periphery/registries/RegistriesTestBase.
 import {Errors} from "@periphery/Errors.sol";
 import {MockPortal} from "@test/mocks/MockPortal.sol";
 import {ForwardingTableFixture} from "@test/helpers/ForwardingTableFixture.sol";
+import {Intents} from "@periphery/Intent.sol";
 
 contract ResolutionTest is RegistriesTestBase {
   uint256 internal constant SECONDS_PER_DAY = 86_400;
@@ -431,7 +431,7 @@ contract ResolutionTest is RegistriesTestBase {
     bytes memory response = _response(resolution);
     vm.mockCall(
       address(sipaFactory),
-      abi.encodeWithSelector(sipaFactory.implementationFor.selector, SIPABase.Intent.Deposit),
+      abi.encodeWithSelector(sipaFactory.implementationFor.selector, Intents.DEPOSIT),
       abi.encode(address(0))
     );
 

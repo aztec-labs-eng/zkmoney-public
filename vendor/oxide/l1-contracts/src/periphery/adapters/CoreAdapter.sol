@@ -27,6 +27,10 @@ abstract contract CoreAdapter {
     require(_recipient != address(0), Errors.CoreAdapter__ZeroRecipient());
   }
 
+  function _requireRecipient(bytes32 _recipient) internal pure {
+    require(_recipient != bytes32(0), Errors.CoreAdapter__ZeroRecipient());
+  }
+
   function _resolveERC20Amount(IERC20 _token, uint256 _amount) internal view returns (uint256) {
     return _amount == type(uint256).max ? _token.balanceOf(address(this)) : _amount;
   }

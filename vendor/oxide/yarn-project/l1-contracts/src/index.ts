@@ -63,6 +63,7 @@ export {
   type ProverClaim,
   type ProverClaimArgs,
   type ExecutorCall,
+  type WithdrawArgs,
   encodeExecutorCall,
   OxidePortalContract,
 } from './oxide_portal.js';
@@ -202,6 +203,7 @@ export type { K1PointArg, UserRecordArg, ResolverOperatorArg } from './account_m
 export { callResolve, encodeResolve, resolveName, resolveWithProof } from './sipa_resolver.js';
 export {
   SipaIntent,
+  computeSIPAAddress,
   encodeDeploySIPA,
   predictSIPA,
   readApprovedTable,
@@ -240,6 +242,7 @@ export {
   type UserOpJson,
   CANONICAL_ENTRY_POINT_V08,
   buildUserOp,
+  computeUserOpHash,
   getAccountNonce,
   getUserOpHash,
   handleOps,
@@ -292,12 +295,13 @@ export {
   findEscrowExecutionTx,
 } from './escrow.js';
 export * from './migration.js';
+export * from './multi_step/index.js';
 export * from './swap_on_withdraw.js';
 export * from './cctp_bridge_on_withdraw.js';
 export * from './across_bridge_on_withdraw.js';
-export * from './user_op_intent.js';
+export * from './add_passkey_intent.js';
 export { AccountMetadataControllerAbi } from './artifacts.js';
-export { UserOpSIPAAbi, UserOpSIPABytecode } from './artifacts.js';
+export { AddPasskeySIPAAbi, AddPasskeySIPABytecode } from './artifacts.js';
 export {
   EMPTY_SIGNED_TERMS,
   encodeDepositIntentData,
@@ -329,5 +333,5 @@ export {
   depositTokensFor,
 } from './deposit_tokens.js';
 
-export { deployUserOpSIPA } from './deploy/deploy_sipa_implementations.js';
-export { USER_OP_SWEEP_FEE } from './deploy/deploy_forwarding_table.js';
+export { deployAddPasskeySIPA } from './deploy/deploy_sipa_implementations.js';
+export { ADD_PASSKEY_SWEEP_FEE } from './deploy/deploy_forwarding_table.js';

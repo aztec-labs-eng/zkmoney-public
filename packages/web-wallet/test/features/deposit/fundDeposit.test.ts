@@ -3,22 +3,28 @@
  * desktop hand-off, and again each time the desktop helper is about to send. A failed check requests nothing. With the
  * connected-deposit check, capacity that cannot be established does not stop a USDC or USDT transfer.
  */
+import { createPace } from "@obsidion/core/cadence"
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import { parseUnits, type Address, type Hex } from "viem"
 import { createPortalCapacityStore, type PortalCapacityStore } from "@obsidion/front-core"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import type { PortalCapacitySnapshot } from "@obsidion/sdk"
 import {
+  browserSubmission,
   fundDeposit,
+  holdEnds,
   type FundDepositDeps,
   type FundDepositParams,
 } from "../../../src/features/deposit/fundDeposit"
+import { DesktopSendUnresolvedError } from "../../../src/platform/desktopBridge"
 import {
   FundingPreflightError,
   runFundingPreflight,
 } from "../../../src/features/deposit/fundingPreflight"
 import type { L1TokenBalance } from "../../../src/features/deposit/l1DepositTokenBalance"
-import { seedBootConfig } from "../../support/seedBootConfig"
+import { sandboxConfig } from "../../support/seedBootConfig"
+import { testQuery } from "../../support/query"
+const pace = createPace()
 
 const TOKEN = `0x${"ee".repeat(20)}` as Address
 const SIPA = `0x${"ab".repeat(20)}` as Address
@@ -33,9 +39,11 @@ const USDT = `0x${"da".repeat(20)}` as Address
 // The DAI row, with the USDC and USDT its SIPA swaps into DAI.
 const DECIMALS: Record<Address, number> = { [TOKEN]: 18, [USDC]: 6, [USDT]: 6 }
 
-const stamp = vi.fn(async () => {})
+const stamp = vi.fn(async () => undefined)
 const deps: FundDepositDeps = {
-  fundingStamps: { stamp, drain: async () => {} },
+  pace,
+  config: undefined as never,
+  deposits: { apply: stamp },
   wakeBroadcasts: () => {},
   tuple: async () => ({ token: TOKEN, portal: `0x${"70".repeat(20)}` } as OxideEnvTuple),
   publicClient: {
@@ -68,7 +76,7 @@ const deps: FundDepositDeps = {
 const deposit = (params: Record<string, unknown>) =>
   fundDeposit(params as unknown as FundDepositParams, deps)
 
-beforeAll(seedBootConfig)
+beforeAll(async () => void (deps.config = await sandboxConfig()))
 
 beforeEach(() => {
   order.length = 0
@@ -105,6 +113,48 @@ describe("fundDeposit record", () => {
       record,
     })
     expect(stamp).toHaveBeenCalledTimes(stamps)
+  })
+})
+
+describe("fundDeposit hold before the wallet prompt", () => {
+  const params = (beforeSend: () => Promise<void>) => ({
+    target: { address: SIPA, name: "river" },
+    amountDisplay: "2.5",
+    from: `0x${"aa".repeat(20)}`,
+    tokenSymbol: "DAI",
+    preflight: async () => {},
+    record: false,
+    beforeSend,
+  })
+
+  it("saves it after the last check and before the prompt, so a page lost meanwhile keeps it", async () => {
+    await deposit(params(async () => void order.push("held")))
+    expect(order).toEqual(["balance", "held", "transfer"])
+  })
+
+  it.each([
+    ["a browser send the wallet refused", browserSubmission(), { code: 4001 }, true],
+    [
+      "a browser send that failed otherwise, which may have gone out",
+      browserSubmission(),
+      new Error("rpc"),
+      false,
+    ],
+    ["a desktop submission that failed", "desk-1", new Error("rpc"), true],
+    [
+      "a desktop send left unresolved",
+      "desk-1",
+      new DesktopSendUnresolvedError(new Error("lost")),
+      false,
+    ],
+  ])("ends on %s: %s", (_, submission, error, ends) => {
+    expect(holdEnds(submission, error)).toBe(ends)
+  })
+
+  it("requests no transfer when it cannot be saved", async () => {
+    const unsaved = new Error("hold unsaved")
+    await expect(deposit(params(() => Promise.reject(unsaved)))).rejects.toBe(unsaved)
+    expect(writes).toEqual([])
   })
 })
 
@@ -155,7 +205,7 @@ describe("fundDeposit of USDT with the connected-deposit check", () => {
   const storeReading = (read: () => Promise<PortalCapacitySnapshot>) =>
     createPortalCapacityStore(KEY, {
       read,
-      visibility: { isVisible: () => true, onResume: () => () => {} },
+      query: testQuery(),
     })
   const unreadable = () =>
     storeReading(async () => {

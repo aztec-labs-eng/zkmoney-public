@@ -1,15 +1,13 @@
 // A name of the user's own claimed over the registration still owed its deposit.
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { PendingRegistrationRecord } from "@obsidion/front-core"
-import { getConfig } from "../../../src/config/env"
 import { claimWith } from "../../../src/features/onboarding/oxideOnboarding"
 import { chooseOwnName, type ClaimOver } from "../../../src/features/registration/chooseOwnName"
 import { usertagFor } from "../../../src/platform/auth/WebPasskeyIdentityMap"
 import { savedIdentity, setIdentity } from "../../support/identity"
 import { closeSession, type Session } from "../../../src/session/session"
 import { openTestSession } from "../../support/session"
-import { seedDeviceKeys, committed } from "../../support/page"
-import { seedBootConfig } from "../../support/seedBootConfig"
+import { seedDeviceKeys, committed, defaultConfig } from "../../support/page"
 import { accountRecords, nameClaim } from "../../support/registrationFixtures"
 import { HASH, L2, NEW, OLD, OWNER, TOKEN, claimHarness } from "../../support/claimHarness"
 
@@ -20,7 +18,7 @@ const account = {
 } as never
 const DRAWN = "brave-otter-42"
 
-let own: Session
+let session: Session
 /** The claim the sheet runs, over the test session's stores. */
 let over: ClaimOver
 
@@ -42,19 +40,19 @@ async function seed(patch: Partial<PendingRegistrationRecord> = {}) {
   await accountRecords.upsert(OWNER, patch, record)
   await setIdentity({ handle: DRAWN, address: L2, claimedAt: 1, pending: true })
 }
-const choose = () => chooseOwnName(own, "river", account, over)
+const choose = () => chooseOwnName(session, "river", account, over)
 const keptDrawn = async () => {
   expect(accountRecords.current()?.sipaAddress).toBe(OLD)
   expect((await savedIdentity())?.handle).toBe(DRAWN)
 }
-
-beforeAll(seedBootConfig)
 beforeEach(async () => {
   localStorage.clear()
   await seedDeviceKeys({ storageId: "a1" })
-  own = openTestSession({ auth: { sessionKeys: async () => ({ secretKey: 1n, authProvider }) } })
-  await own.registrations.ready
-  const harness = claimHarness(own, "river")
+  session = openTestSession({
+    auth: { sessionKeys: async () => ({ secretKey: 1n, authProvider }) },
+  })
+  await session.registrations.ready
+  const harness = claimHarness(session, "river")
   harness.h.sign.mockResolvedValue(nameClaim())
   over = (tag, keys, replaced) =>
     claimWith(harness.deps, { handle: tag, keys, replacedRecord: replaced, ticket: null })
@@ -72,7 +70,7 @@ describe("chooseOwnName", () => {
 
   it("renames the passkey under the handle it was created with and remembers the new name", async () => {
     await seed()
-    const { rpId } = getConfig()
+    const { rpId } = defaultConfig
     await seedDeviceKeys({
       credentialId: "cred-1",
       passkeyMap: JSON.stringify({
@@ -107,7 +105,7 @@ describe("chooseOwnName", () => {
 
   it("reads the burns before it decides: a ticket's burn to the address keeps the name", async () => {
     await seed()
-    await own.withdrawals.create({
+    await session.withdrawals.create({
       networkId: "0xnet",
       localId: "w1",
       recipient: OLD,
@@ -120,9 +118,9 @@ describe("chooseOwnName", () => {
     })
     // A reload: the page's withdrawals have yet to load when the tap lands.
     closeSession()
-    own = openTestSession()
-    expect(own.withdrawals.list.get().hydrated).toBe(false)
-    await own.registrations.ready
+    session = openTestSession()
+    expect(session.withdrawals.list.get().hydrated).toBe(false)
+    await session.registrations.ready
     await expect(choose()).rejects.toMatchObject({ code: "registration.nameLocked" })
     await keptDrawn()
   })

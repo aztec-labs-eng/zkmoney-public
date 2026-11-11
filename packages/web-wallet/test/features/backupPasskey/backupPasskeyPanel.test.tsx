@@ -1,15 +1,21 @@
+/** Guards: the backup screens offer only safe actions, publish once, and stop once closed. */
+import { createPace } from "@obsidion/core/cadence"
 import { StrictMode, act, useState, useSyncExternalStore } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { TxStatus } from "@aztec-labs/stdlib/tx"
+import { DEFAULT_DECIMALS } from "@obsidion/core/constants"
 import {
-  type BackupRotationStore,
+  type BackupRotations,
   fundingLocalId,
+  memoryStore,
+  queries,
   type BackupRotationRecord,
 } from "@obsidion/front-core"
-import { BackupCredentialIdLengthError, type PersistedRotationVerdict } from "@obsidion/sdk"
+import { formatUnits } from "viem"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-vi.mock("@obsidion/web-ds", () => ({
+vi.mock("@obsidion/web-ds", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@obsidion/web-ds")>()),
   PrimaryGradientButton: ({
     title,
     onClick,
@@ -61,24 +67,32 @@ vi.mock("../../../src/features/deposit/DepositExitModal/DepositExitModal", () =>
   ),
 }))
 
-import {
-  BackupPasskeyPanel,
-  errorLine,
-} from "../../../src/features/backupPasskey/BackupPasskeyPanel"
+import { BackupPasskeyScreens } from "../../../src/features/backupPasskey/BackupPasskeyHost/BackupPasskeyHost"
 import { startBackupAdd } from "../../../src/features/backupPasskey/backupPasskeyAdd"
+import { panelCopy, recoveryCopy } from "../../../src/features/backupPasskey/backupPasskeyCopy"
+import approveCopy from "../../../src/features/backupPasskey/screens/ApproveScreen/ApproveScreen.copy"
+import { BackupStandIn } from "../../../src/features/backupPasskey/BackupPasskeyPanel"
+import type { BackupActions } from "../../../src/features/backupPasskey/backupScreen"
+import { BALANCE_TIP_BLOCKED_COPY } from "../../../src/features/withdraw/speedChoice"
 import {
-  DepositReadError,
-  EmptyDepositError,
-} from "../../../src/features/deposit/depositReadErrors"
+  etaLabel,
+  type WithdrawalSpeed,
+} from "../../../src/features/withdraw/WithdrawalSpeedPicker"
+import speedCopy from "../../../src/features/withdraw/WithdrawalSpeedPicker.copy"
+import { fasterOffers } from "../../../src/features/withdraw/fasterOffers"
+import { fmt } from "../../../src/lib/fmt"
+import { EmptyDepositError } from "../../../src/features/deposit/depositReadErrors"
 import type { BackupFlowDeps } from "../../../src/features/backupPasskey/backupPasskeyRuntime"
 import { getRotationDriver } from "../../../src/features/backupPasskey/rotationDrive"
 import { closeSession } from "../../../src/session/session"
+import { usdFigure } from "../../../src/ui/format"
 import { openTestSession } from "../../support/session"
+import { balancesOf } from "../../support/balances"
 import {
   OWNER,
   PLAN,
   SIPA,
-  createdRecord,
+  fasterQuote,
   makeBackupAddDeps,
   makeFlowDeps,
   phaseLine,
@@ -89,16 +103,16 @@ import {
   type World,
 } from "../../support/backupAdd"
 
-/** The store's first record as an external store, delivered the way the modal's subscription is. */
-function recordState(store: BackupRotationStore) {
+/** The store's first record as an external store, as the modal reads the view. */
+function recordState(store: BackupRotations) {
   let current: BackupRotationRecord | null = null
   const listeners = new Set<() => void>()
-  const set = (records: readonly BackupRotationRecord[]) => {
-    current = records[0] ?? null
+  const set = () => {
+    current = store.view.get().records[0] ?? null
     for (const listener of listeners) listener()
   }
-  store.onChanged(set)
-  void store.list().then(set)
+  store.view.subscribe(set)
+  set()
   return {
     subscribe: (listener: () => void) => {
       listeners.add(listener)
@@ -108,36 +122,41 @@ function recordState(store: BackupRotationStore) {
   }
 }
 
-/** Renders the panel over whatever the store holds, as the modal does. */
+/** Renders the screens over whatever the store holds, as the host does once the deps are built. */
 function Host({
   deps,
   approver,
-  onCancelled,
   onFinished,
 }: {
   deps: BackupFlowDeps
   approver?: string
-  onCancelled: () => void
   onFinished: () => void
 }) {
   const [state] = useState(() => recordState(deps.store))
   const record = useSyncExternalStore(state.subscribe, state.get, state.get)
-  return record ? (
-    <BackupPasskeyPanel
-      record={record}
-      deps={deps}
-      approver={approver}
-      onCancelled={onCancelled}
-      onFinished={onFinished}
+  return (
+    <BackupPasskeyScreens
+      keys={{
+        keys: [
+          {
+            pubkeyHex: "ab",
+            role: "sign-up",
+            signsHere: true,
+            ...(approver && { name: approver }),
+          },
+        ],
+        count: 1,
+      }}
+      saved={record}
+      walletBuilt={false}
+      flow={{ state: "ready", deps, retry: () => {} }}
+      onReadKeys={onFinished}
     />
-  ) : (
-    <p data-testid="no-record" />
   )
 }
 
 let root: Root
 let container: HTMLDivElement
-const onCancelled = vi.fn()
 const onFinished = vi.fn()
 
 const flush = async (rounds = 1) => {
@@ -161,20 +180,22 @@ async function mount(
 }
 
 /** Flushes until the stored record reaches `phase`, or gives up after `cap` rounds. */
-async function untilPhase(store: BackupRotationStore, phase: string, cap = 40) {
+async function untilPhase(store: BackupRotations, phase: string, cap = 40) {
   for (let i = 0; i < cap; i++) {
     if ((await store.get(OWNER))?.phase === phase) return
     await flush()
   }
 }
 
-/** Flushes until the text shows, or gives up after `cap` rounds. */
-async function untilText(line: string, cap = 40) {
+/** Flushes until `found` holds, or gives up after `cap` rounds. */
+async function until(found: () => boolean, cap = 40) {
   for (let i = 0; i < cap; i++) {
-    if (text().includes(line)) return
+    if (found()) return
     await flush()
   }
 }
+
+const untilText = (line: string) => until(() => text().includes(line))
 
 /** The session's driver over the test's store, as the wallet's mount starts it. */
 function drive(made: Made, pollMs: number) {
@@ -183,19 +204,36 @@ function drive(made: Made, pollMs: number) {
     deps: async () => made.deps,
     owns: () => true,
     pollMs,
+    pace: createPace(),
   })
 }
 
+/** Main's balance as the session shows it; the Fund step reads its fit again when it moves. */
+const SHOWN_BALANCE = balancesOf({ main: 3n * 10n ** 18n, readThisSession: true }).view.get()
+const mainBalance = memoryStore(SHOWN_BALANCE)
+/** The pace the faster option re-quotes on: a wake quotes again at once. */
+const offerPace = createPace()
+const openSession = (made: Made) =>
+  openTestSession({
+    config: { l1ChainId: 31337 } as never,
+    // A built wallet: the Fund step's Speed row quotes once it is.
+    wallet: {},
+    balances: { view: mainBalance.readonly, records: balancesOf().records },
+    fasterOffer: fasterOffers(
+      queries({ pace: offerPace, visible: memoryStore(true).readonly, now: () => Date.now() }),
+      made.quoteFaster,
+      () => Date.now(),
+    ),
+  })
+
 async function render(made: Made, strict: boolean, pollMs = 0, approver?: string) {
-  // The deposit address's broadcast row reads the session's deposit records.
-  openTestSession()
+  // The deposit address's broadcast row reads the session's deposit records, its links the L1.
+  openSession(made)
   drive(made, pollMs)
   container = document.createElement("div")
   document.body.appendChild(container)
   root = createRoot(container)
-  const host = (
-    <Host deps={made.deps} approver={approver} onCancelled={onCancelled} onFinished={onFinished} />
-  )
+  const host = <Host deps={made.deps} approver={approver} onFinished={onFinished} />
   await act(async () => {
     root.render(strict ? <StrictMode>{host}</StrictMode> : host)
   })
@@ -204,8 +242,11 @@ async function render(made: Made, strict: boolean, pollMs = 0, approver?: string
 }
 
 const text = () => container.textContent ?? ""
-const button = (label: string) =>
-  [...container.querySelectorAll("button")].find((b) => b.textContent === label)
+/** A button by its label or its test id. */
+const button = (name: string) =>
+  [...container.querySelectorAll("button")].find(
+    (b) => b.textContent === name || b.dataset.testid === name,
+  )
 const click = async (label: string) => {
   const b = button(label)
   if (!b) throw new Error(`no button ${label}`)
@@ -213,67 +254,30 @@ const click = async (label: string) => {
   await flush()
 }
 const current = () => container.querySelector('[aria-current="step"]')?.textContent
-const steps = () =>
-  [...container.querySelectorAll(".ww-backup__step")].map((li) =>
-    li.className.includes("--done")
-      ? "done"
-      : li.className.includes("--current")
-      ? "current"
-      : "todo",
-  )
 const row = (label: string) =>
   [...container.querySelectorAll(".ww-sheet__fact")]
     .find((fact) => fact.firstElementChild?.textContent === label)
     ?.querySelector("b")?.textContent
-const fundScreen = () => container.querySelector('[data-testid="backup-fund"]')
+const fundButton = () =>
+  container.querySelector<HTMLButtonElement>('[data-testid="backup-fund-continue"]')
+/** The Speed row's trigger, reading the chosen speed; absent without an offer. */
+const speed = () => container.querySelector<HTMLButtonElement>('[aria-haspopup="listbox"]')
+const speedOptions = async () => {
+  await act(async () => speed()!.click())
+  return [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')]
+}
+const pickSpeed = async (key: WithdrawalSpeed) => {
+  const option = (await speedOptions()).find((o) => o.textContent?.startsWith(speedCopy[key]))!
+  await act(async () => option.click())
+  await flush()
+}
 const errorText = () => container.querySelector('[data-testid="backup-error"]')?.textContent
 const badge = () => container.querySelector('[data-testid="badge"]')?.textContent
 
 const FIRST_HASH = word(0x101)
-const DONE_LINE = "Your backup passkey is ready."
-const DECLINED = "The passkey request was closed or timed out."
-
-/** Past the re-root, its funding swept, with nothing moved yet. */
-const rerooted = () =>
-  signedRecord({
-    phase: "rerooted",
-    ...sent(5, { outcome: "swept" }),
-    sweep: { index: "1", blockHash: word(0x90), credited: "1400" },
-  })
-
 const approveMove = () =>
   container.querySelector<HTMLButtonElement>('[data-testid="backup-move-approve"]')
-
-/**
- * Finalizes every transaction the fake node holds and approves each chunk's send as it asks, until
- * the record is done or `cap` rounds pass.
- */
-async function settleMove(made: Made, cap = 40) {
-  for (let i = 0; i < cap; i++) {
-    if ((await made.store.get(OWNER))?.phase === "done") return
-    const approve = approveMove()
-    if (approve && !approve.disabled) await act(async () => approve.click())
-    for (const hash of made.world.receipts.keys()) {
-      made.world.receipts.set(hash, receipt(TxStatus.FINALIZED))
-    }
-    await flush()
-  }
-}
-
-/** The world once the funding mined and the sweep ran, so the record moves to swept. */
-async function swept(made: Made) {
-  made.world.receipts.set(FIRST_HASH, receipt(TxStatus.FINALIZED))
-  made.world.sweep = { index: "1", blockNumber: 90, blockHash: word(0x90), credited: 1400n }
-  for (const funding of (await made.store.get(OWNER))?.fundings ?? []) {
-    made.world.rows.set(funding.localId, {
-      phase: "done",
-      l2TxHash: funding.txHash,
-      withdrawalId: word(0x77),
-      startTime: funding.sentAt,
-      recipient: SIPA,
-    })
-  }
-}
+const retryMove = () => container.querySelector('[data-testid="backup-move-retry"]')
 
 afterEach(async () => {
   getRotationDriver().stop()
@@ -281,123 +285,44 @@ afterEach(async () => {
   container.remove()
   closeSession()
   vi.clearAllMocks()
+  vi.useRealTimers()
+  mainBalance.set(SHOWN_BALANCE)
 })
 
-describe("BackupPasskeyPanel", () => {
-  it("walks a created attempt through the approval, the publish, the Fund screen and the funding", async () => {
-    const made = await mount(createdRecord())
-    const { store, deps } = made
-    expect(steps()).toEqual(["done", "current", "todo", "todo", "todo"])
-    expect(current()).toContain("Approve with your current passkey")
-    expect(button("Cancel")).toBeDefined()
-
-    await click("Approve with your current passkey")
-    await untilPhase(store, "published")
-    expect(deps.prepare).toHaveBeenCalledTimes(1)
-    expect(deps.sign).toHaveBeenCalledTimes(1)
-    expect(deps.publish).toHaveBeenCalledTimes(1)
-    await flush(3)
-    expect(current()).toContain("Fund")
-    expect(fundScreen()).not.toBeNull()
-    expect(row("Your new account")).toBe(`${word(0x2b).slice(0, 6)}…${word(0x2b).slice(-4)}`)
-    expect(row("Fees")).toBe("0.60 DAI")
-    expect(row("You'll receive")).toBe("1.40 DAI")
-    expect(row("Approvals")).toBe("1 now, then 2 to move your balance")
-    expect(row("Takes")).toBe("Up to 40 minutes")
-    expect(text()).toContain(
-      "Once sent, the funding cannot be cancelled. You can close this tab while it waits.",
-    )
-    expect(text()).toContain("The approval you gave stays usable until your account next changes.")
-
-    await click("Fund and continue")
-    await flush(3)
-    expect(deps.fund).toHaveBeenCalledTimes(1)
-    const funded = (await store.get(OWNER))!
-    expect(funded.fundings[0]).toMatchObject({ txHash: FIRST_HASH, outcome: "pending" })
-    expect(fundScreen()).toBeNull()
-    expect(current()).toContain("Waiting for the network")
-    expect(text()).toContain("Your funding is on its way.")
-    expect(text()).toContain("can take up to 40 minutes")
-    expect(text()).toContain("You can close this tab and come back later")
-    expect(button("Cancel")).toBeUndefined()
-
-    await swept(made)
-    await untilPhase(store, "rerooted")
-    expect(deps.reroot).toHaveBeenCalledTimes(1)
-    await untilText("Approve moving part 1 of 2 of your balance to your new account.")
-    expect(steps()).toEqual(["done", "done", "done", "done", "current"])
-    expect(button("Cancel")).toBeUndefined()
-    expect(deps.move.send).not.toHaveBeenCalled()
-    await settleMove(made)
-    expect(await store.get(OWNER)).toMatchObject({ phase: "done" })
-    expect(deps.move.send).toHaveBeenCalledTimes(2)
-    await untilText(DONE_LINE)
-    await click("Done")
-    expect(onFinished).toHaveBeenCalledTimes(1)
-    expect(await store.get(OWNER)).toBeNull()
-  })
-
-  it("keeps Check again and Cancel on a parked route whose only funding never went out", async () => {
-    await mount(
-      signedRecord({
-        phase: "attention",
-        attention: "route",
-        suspended: "published",
-        ...sent(5, { outcome: "never-sent" }),
-      }),
-      { world: { route: "route" } },
-      NO_POLL,
-    )
-    await flush(2)
-    expect(text()).toContain("The network is not paying for this right now.")
-    expect(button("Check again")).toBeDefined()
-    expect(button("Cancel")).toBeDefined()
-  })
-
+describe("BackupPasskeyScreens", () => {
   it("keeps Cancel beside Try again when a signed record's checks fail", async () => {
     const made = makeFlowDeps()
     ;(made.deps.route as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("rpc down"))
     await made.store.put(signedRecord())
     await render(made, false)
     await flush(3)
-    expect(errorText()).toBe("Could not check, try again")
+    expect(current()).toContain(panelCopy.unverifiable)
+    // Announced, since the tracker's own line is not a live region.
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe(panelCopy.unverifiable)
     expect(button("Try again")).toBeDefined()
     expect(button("Cancel")).toBeDefined()
     await click("Cancel")
-    expect(onCancelled).toHaveBeenCalledTimes(1)
-  })
-
-  it("refuses to cancel once the deposit address shows money, and says so", async () => {
-    // Cancel ignores less than the plan's deposit, less its fee margin, as someone else's dust.
-    const made = makeFlowDeps({ world: { balance: BigInt(PLAN.fundingAmount) } })
-    made.deps.publish = vi.fn(() => new Promise<void>(() => {}))
-    await made.store.put(signedRecord())
-    await render(made, false)
-    await flush(2)
-    await click("Cancel")
-    expect(errorText()).toContain("money may have reached its deposit address")
-    expect(onCancelled).not.toHaveBeenCalled()
-    expect((await made.store.get(OWNER))?.phase).toBe("signed")
+    expect(await made.store.get(OWNER)).toBeNull()
+    expect(container.querySelector('[data-testid="backup-cancelled"]')).not.toBeNull()
   })
 
   it("a parked route whose recheck fails says so, and the next recheck can still return it", async () => {
     const made = await mount(signedRecord(), { world: { route: "route" } }, NO_POLL)
     await untilPhase(made.store, "attention")
     await flush(2)
-    expect(text()).toContain("The network is not paying for this right now.")
+    expect(errorText()).toBeUndefined()
     const route = made.deps.route as ReturnType<typeof vi.fn>
     route.mockRejectedValueOnce(new Error("rpc down"))
-    await click("Check again")
+    await click("backup-failed-check")
     await flush(3)
-    expect(text()).toContain("Could not check, try again")
-    expect(text()).not.toContain("The network is not paying for this right now.")
+    expect(errorText()).toBe(panelCopy.unverifiable)
     expect((await made.store.get(OWNER))?.attention).toBe("route")
-    expect(button("Cancel")).toBeDefined()
+    expect(button("backup-failed-cancel")).toBeDefined()
     made.world.route = "ok"
-    await click("Check again")
+    await click("backup-failed-check")
     await untilPhase(made.store, "published")
     await flush(3)
-    expect(fundScreen()).not.toBeNull()
+    expect(fundButton()).not.toBeNull()
   })
 
   it("a published record whose funding may still land waits instead of offering the Fund screen", async () => {
@@ -405,7 +330,7 @@ describe("BackupPasskeyPanel", () => {
       world: { receipts: new Map([[FIRST_HASH, receipt(TxStatus.PENDING)]]) },
     })
     await flush(3)
-    expect(fundScreen()).toBeNull()
+    expect(fundButton()).toBeNull()
     expect(current()).toContain("Waiting for the network")
     expect(button("Cancel")).toBeUndefined()
   })
@@ -414,7 +339,8 @@ describe("BackupPasskeyPanel", () => {
     const made = makeFlowDeps()
     await made.store.put(signedRecord())
     const seen: string[] = []
-    made.store.onChanged(([r]) => {
+    made.store.view.subscribe(() => {
+      const r = made.store.view.get().records[0]
       const line = r ? phaseLine(r) : "gone"
       if (line !== "signed" && seen.at(-1) !== line) seen.push(line)
     })
@@ -429,12 +355,13 @@ describe("BackupPasskeyPanel", () => {
     const made = makeFlowDeps({
       world: { receipts: new Map([[FIRST_HASH, receipt(TxStatus.PENDING)]]) },
     })
-    await made.store.put(signedRecord({ phase: "funded", ...sent() }))
+    // Sent now, so the add is still within its time.
+    await made.store.put(signedRecord({ phase: "funded", ...sent(Date.now()) }))
     const sweep = made.deps.l1.sweep as ReturnType<typeof vi.fn>
     sweep.mockRejectedValue(new Error("rpc down"))
     await render(made, false)
     await flush(3)
-    expect(errorText()).toBe("Could not check, try again")
+    expect(current()).toContain(panelCopy.unverifiable)
     expect(container.querySelector('[data-testid="backup-watch-retry"]')).not.toBeNull()
     expect((await made.store.get(OWNER))?.phase).toBe("funded")
     const asked = sweep.mock.calls.length
@@ -442,185 +369,8 @@ describe("BackupPasskeyPanel", () => {
     expect(sweep.mock.calls.length).toBeGreaterThan(asked)
     sweep.mockResolvedValue(undefined)
     await flush(3)
-    expect(errorText()).toBe("")
+    expect(current()).not.toContain(panelCopy.unverifiable)
     expect(current()).toContain("Waiting for the network")
-  })
-
-  it("keeps watching a retried chunk whose send failed after its hash", async () => {
-    const made = makeFlowDeps()
-    const send = made.deps.move.send as ReturnType<typeof vi.fn>
-    const late = word(0x1f0)
-    send.mockRejectedValueOnce(new DOMException("closed", "NotAllowedError"))
-    send.mockImplementationOnce(async (_token: string, _amount: bigint, onTxHash) => {
-      await onTxHash(late, { expiresAtMs: 5000 })
-      made.world.receipts.set(late, receipt(TxStatus.PENDING))
-      throw new Error("wait timed out")
-    })
-    await made.store.put(rerooted())
-    await render(made, false)
-    await untilText("Approve moving")
-    await act(async () => approveMove()!.click())
-    await untilText(DECLINED)
-    await click("Try again")
-    expect(send).toHaveBeenCalledTimes(2)
-    await settleMove(made)
-    expect((await made.store.get(OWNER))?.phase).toBe("done")
-  })
-
-  it("keeps watching the move when a retry overtakes the resume its own phase change started", async () => {
-    const made = makeFlowDeps()
-    // The retry plans first; the resume plans once the retry's send is out, so its write is refused.
-    let retryPlans!: () => void
-    let resumePlans!: () => void
-    let sends!: () => void
-    const retryPlanned = new Promise<void>((resolve) => (retryPlans = resolve))
-    const resumePlanned = new Promise<void>((resolve) => (resumePlans = resolve))
-    const sending = new Promise<void>((resolve) => (sends = resolve))
-    let shapes = 0
-    ;(made.deps.move.shape as ReturnType<typeof vi.fn>).mockImplementation(async () => {
-      const call = ++shapes
-      if (call === 1) await retryPlanned
-      if (call === 2) await resumePlanned
-      return made.world.shape
-    })
-    const send = made.deps.move.send as ReturnType<typeof vi.fn>
-    const live = send.getMockImplementation()!
-    send.mockImplementationOnce(async (...args: Parameters<typeof live>) => {
-      resumePlans()
-      await sending
-      return live(...args)
-    })
-    await made.store.put({
-      ...rerooted(),
-      phase: "attention",
-      attention: "move",
-      suspended: "rerooted",
-    })
-    await render(made, false)
-    await click("Try again")
-    retryPlans()
-    await flush(10)
-    sends()
-    await settleMove(made)
-    expect((await made.store.get(OWNER))?.phase).toBe("done")
-  })
-
-  it("renders each attention reason with only its permitted actions", async () => {
-    const pending = { receipts: new Map([[FIRST_HASH, receipt(TxStatus.PENDING)]]) }
-    const corrupt = {
-      verdict: {
-        verdict: "corrupt",
-        reason: "the signature",
-      } as unknown as PersistedRotationVerdict,
-    }
-    const cases: [BackupRotationRecord, Partial<World>, string, string[]][] = [
-      [
-        signedRecord({ phase: "attention", attention: "stranded", suspended: "funded", ...sent() }),
-        pending,
-        "Adding this backup stopped. Your funding is safe at its deposit address.",
-        ["Recover funds"],
-      ],
-      [
-        signedRecord({
-          phase: "attention",
-          attention: "stranded",
-          suspended: "funded",
-          recovery: { txHash: word(0xab) },
-          ...sent(),
-        }),
-        pending,
-        "Recovery sent. Ethereum finalizes it within about 20 minutes.",
-        ["Check the address"],
-      ],
-      [
-        signedRecord({ phase: "attention", attention: "corrupt", suspended: "funded", ...sent() }),
-        { ...pending, ...corrupt },
-        "This attempt's record is damaged. Its funding is safe at the deposit address.",
-        ["Recover funds"],
-      ],
-      [
-        signedRecord({ phase: "attention", attention: "corrupt", suspended: "signed" }),
-        corrupt,
-        "This attempt's record is damaged.",
-        ["Start over"],
-      ],
-      [
-        signedRecord({ phase: "attention", attention: "move", suspended: "rerooted", ...sent() }),
-        pending,
-        "It stays yours on your previous account.",
-        ["Try again"],
-      ],
-      [
-        signedRecord({ phase: "attention", attention: "route", suspended: "funded", ...sent() }),
-        { ...pending, route: "route" },
-        "The network is not paying for this right now.",
-        [],
-      ],
-      // Funded from outside, with no funding of ours: the money's salt cannot be dropped.
-      [
-        signedRecord({ phase: "attention", attention: "route", suspended: "funded" }),
-        { route: "route", balance: BigInt(PLAN.fundingAmount) },
-        "The network is not paying for this right now.",
-        ["Check again"],
-      ],
-      [
-        createdRecord({ phase: "conflict" }),
-        {},
-        "Your passkeys changed on another device.",
-        ["Start over"],
-      ],
-      [
-        signedRecord({ phase: "conflict", ...sent() }),
-        pending,
-        "Your passkeys changed on another device.",
-        [],
-      ],
-    ]
-    for (const [record, world, line, actions] of cases) {
-      await mount(record, { world }, NO_POLL)
-      await flush(2)
-      expect(text()).toContain(line)
-      expect([...container.querySelectorAll("button")].map((b) => b.textContent)).toEqual(actions)
-      expect(container.querySelector('[aria-current="step"]')).toBeNull()
-      await act(async () => root.unmount())
-      container.remove()
-    }
-    await mount(createdRecord())
-  })
-
-  it("keeps the generic line for an approval that fails for another reason", async () => {
-    const made = await mount(createdRecord(), {}, 0, "Security key")
-    made.deps.sign = vi.fn(async () => {
-      throw new Error("rpc")
-    })
-    await click("Approve with Security key")
-    expect(errorText()).toBe("Could not check, try again")
-  })
-
-  it("names the approving passkey when the approval prompt ends without it", async () => {
-    const made = await mount(createdRecord(), {}, 0, "Security key")
-    made.deps.sign = vi.fn(async () => {
-      throw new DOMException("closed", "NotAllowedError")
-    })
-    await click("Approve with Security key")
-    expect(errorText()).toBe(
-      "Use Security key, the passkey you signed in with. The new backup can't approve itself.",
-    )
-    expect(container.querySelector('[data-testid="backup-error"] b')?.textContent).toBe(
-      "Security key",
-    )
-    expect((await made.store.get(OWNER))?.phase).toBe("created")
-    await act(async () => root.unmount())
-    container.remove()
-
-    const unnamed = await mount(createdRecord())
-    unnamed.deps.sign = vi.fn(async () => {
-      throw new DOMException("closed", "NotAllowedError")
-    })
-    await click("Approve with your current passkey")
-    expect(errorText()).toBe(
-      "Use the passkey you signed in with. The new backup can't approve itself.",
-    )
   })
 
   it("recovers a stranded funding, ends the attempt at recovered once final, and lets a new add start", async () => {
@@ -635,6 +385,7 @@ describe("BackupPasskeyPanel", () => {
     )
     await untilText("Adding this backup stopped.")
     expect(container.querySelector(".ww-backup__step")).toBeNull()
+    expect(container.querySelector(".zkm-sheet-shell h2")?.textContent).toBe(panelCopy.title)
     expect(badge()).toBe("Needs recovery")
     // What reached the address, not the 2.00 DAI sent: the withdrawal kept its charges.
     expect(row("Funding")).toBe("1.80 DAI")
@@ -666,26 +417,6 @@ describe("BackupPasskeyPanel", () => {
     expect(await made.store.get(OWNER)).toBeNull()
     const add = makeBackupAddDeps({ store: made.store })
     await expect(startBackupAdd(add.deps)).resolves.toMatchObject({ phase: "created" })
-  })
-
-  it("says why the recovery cannot open, in the recovery's own words", async () => {
-    const made = await mount(
-      signedRecord({ phase: "attention", attention: "stranded", suspended: "funded", ...sent() }),
-      { world: { receipts: new Map([[FIRST_HASH, receipt(TxStatus.PENDING)]]) } },
-      NO_POLL,
-    )
-    await flush(2)
-    vi.mocked(made.deps.strandedDeposit).mockRejectedValueOnce(
-      new DepositReadError("That address is not an ERC-20 token on this network."),
-    )
-    await click("Recover funds")
-    expect(errorText()).toBe("That address is not an ERC-20 token on this network.")
-    expect(button("Recover 1.4 DAI")).toBeUndefined()
-    vi.mocked(made.deps.strandedDeposit).mockRejectedValueOnce(
-      new Error("no account factory predicts the account from this wallet's keys"),
-    )
-    await click("Recover funds")
-    expect(errorText()).toBe("Could not check, try again")
   })
 
   it("says plainly when the deposit address holds nothing, without an error, and checks again", async () => {
@@ -728,6 +459,43 @@ describe("BackupPasskeyPanel", () => {
     expect((await sentBack.store.get(OWNER))?.recovery?.txHash).toBe(`0x${"ab".repeat(32)}`)
   })
 
+  it("keeps an empty deposit address to the attempt it was checked under", async () => {
+    const stranded = (attemptId: string) =>
+      signedRecord({
+        attemptId,
+        phase: "attention",
+        attention: "stranded",
+        suspended: "funded",
+        ...sent(),
+      })
+    const pending = { receipts: new Map([[FIRST_HASH, receipt(TxStatus.PENDING)]]) }
+    const made = await mount(stranded("attempt-1"), { world: pending }, NO_POLL)
+    await flush(2)
+    vi.mocked(made.deps.strandedDeposit).mockRejectedValueOnce(new EmptyDepositError())
+    await click("Recover funds")
+    expect(text()).toContain(recoveryCopy.nothingYet)
+    await act(async () => void (await made.store.put(stranded("attempt-2"))))
+    await flush(2)
+    expect(text()).not.toContain(recoveryCopy.nothingYet)
+    expect(text()).toContain(recoveryCopy.gas)
+  })
+
+  it("says an attempt was dropped while the key read is out, and once it failed", async () => {
+    openTestSession()
+    container = document.createElement("div")
+    document.body.appendChild(container)
+    root = createRoot(container)
+    const idle = new Proxy({}, { get: () => () => {} }) as BackupActions
+    const cancelled = () => container.querySelector('[data-testid="backup-cancelled"]')
+    for (const screen of [
+      { id: "loading", rotation: false, cancelled: true },
+      { id: "unreadable", read: "keys", cancelled: true },
+    ] as const) {
+      await act(async () => root.render(<BackupStandIn screen={screen} actions={idle} />))
+      expect(cancelled()).not.toBeNull()
+    }
+  })
+
   it("offers a declined move's retry only once no earlier chunk is back in flight", async () => {
     const made = makeFlowDeps()
     const first = word(0x1a0)
@@ -758,33 +526,31 @@ describe("BackupPasskeyPanel", () => {
       deps: () => new Promise((resolve) => (built = resolve)),
       owns: () => true,
       pollMs: NO_POLL,
+      pace: createPace(),
     })
+    openTestSession()
     container = document.createElement("div")
     document.body.appendChild(container)
     root = createRoot(container)
     await act(async () => {
-      root.render(<Host deps={made.deps} onCancelled={onCancelled} onFinished={onFinished} />)
+      root.render(<Host deps={made.deps} onFinished={onFinished} />)
     })
     await flush(3)
     // Checking: the earlier chunk may be back in flight, so no decline is offered yet.
-    expect(button("Try again")).toBeUndefined()
-    expect(errorText()).toBe("")
-    expect(text()).toContain("Moving your balance (0 of 2).")
+    expect(retryMove()).toBeNull()
     built(made.deps)
     await flush(5)
-    expect(button("Try again")).toBeUndefined()
-    expect(errorText()).toBe("")
+    expect(retryMove()).toBeNull()
     made.world.receipts.set(first, receipt(TxStatus.PROPOSED))
     getRotationDriver().check(OWNER)
-    await untilText(DECLINED)
-    expect(button("Try again")).toBeDefined()
-    expect(text()).toContain("Approve moving part 2 of 2 of your balance to your new account.")
+    await until(() => retryMove() !== null)
+    expect(retryMove()).not.toBeNull()
     expect(made.deps.move.send).not.toHaveBeenCalled()
   })
 
   it("asks for no passkey after the panel closes mid-approval", async () => {
     const made = await mount(signedRecord({ phase: "rerooted", ...sent(5, { outcome: "swept" }) }))
-    await untilText("Approve moving part 1 of 2")
+    await until(() => approveMove() !== null)
     const shape = made.deps.move.shape as ReturnType<typeof vi.fn>
     let read!: () => void
     shape.mockImplementationOnce(
@@ -806,26 +572,248 @@ describe("BackupPasskeyPanel", () => {
     const made = makeFlowDeps()
     await made.store.put(signedRecord({ phase: "published" }))
     getRotationDriver().stop()
+    openSession(made)
     container = document.createElement("div")
     document.body.appendChild(container)
     root = createRoot(container)
     await act(async () => {
-      root.render(<Host deps={made.deps} onCancelled={onCancelled} onFinished={onFinished} />)
+      root.render(<Host deps={made.deps} onFinished={onFinished} />)
     })
     await flush(5)
-    expect(text()).toContain("Checking…")
-    expect(text()).not.toContain("Could not check")
+    expect(fundButton()).toBeNull()
+    expect(text()).not.toContain(panelCopy.unverifiable)
     expect(made.deps.verify).not.toHaveBeenCalled()
     drive(made, 0)
     await flush(3)
-    expect(fundScreen()).not.toBeNull()
+    expect(fundButton()).not.toBeNull()
   })
 })
 
-describe("errorLine", () => {
-  it("names a credential id the account cannot store, which no retry changes", () => {
-    expect(errorLine(new BackupCredentialIdLengthError(129))).toBe(
-      "This passkey can't be a backup: its credential id is longer than the account can store. Cancel and use another passkey.",
+describe("the pay step's speed", () => {
+  const DAI = 10n ** 18n
+  const TIP = (4n * DAI) / 10n
+  const OFFER = {
+    proverTip: TIP,
+    standardEtaSeconds: 1800,
+    tippedEtaSeconds: 600,
+    worstSpeedupSeconds: 900,
+    measured: true,
+  }
+  const TIPPED = { fundingAmount: (2n * DAI + TIP).toString(), proverTip: TIP.toString() }
+  const UNTIPPED = { fundingAmount: (2n * DAI).toString() }
+  const usd = (atomic: bigint) => usdFigure(formatUnits(atomic, DEFAULT_DECIMALS))
+  /** The cost over the plan's 2 DAI funding and the 1.4 DAI that comes back, with `tip` on top. */
+  const cost = (tip: bigint) => usd(2n * DAI + tip - BigInt(PLAN.credited))
+  /** The Withdrawal fee in the cost's breakdown, over the plan's 1.8 DAI deposit. */
+  const withdrawalFee = (tip: bigint) => usd(2n * DAI + tip - BigInt(PLAN.deposited))
+  const time = {
+    standard: fmt(speedCopy.eta, { eta: etaLabel(OFFER.standardEtaSeconds) }),
+    faster: fmt(speedCopy.eta, { eta: etaLabel(OFFER.tippedEtaSeconds) }),
+    quoted: fmt(approveCopy.pay.timeValue, { minutes: 40 }),
+  }
+  /** A fact's value by its label. */
+  const fact = (label: string) =>
+    [...container.querySelectorAll(".zkm-fact-box__row")]
+      .find((r) => r.querySelector("dt")?.firstChild?.textContent === label)
+      ?.querySelector("dd")?.textContent
+  const breakdown = () => container.querySelector('[role="tooltip"]')?.textContent ?? ""
+
+  /**
+   * The pay step over a published record; the cap admits the tipped funding unless `world` says
+   * otherwise.
+   */
+  const payStep = async (world: Partial<World> = {}) => {
+    const made = await mount(signedRecord({ phase: "published" }), {
+      world: { cap: 5n * DAI, ...world },
+    })
+    await flush(3)
+    expect(fundButton()).not.toBeNull()
+    return made
+  }
+  const sentPlan = (made: Made) => vi.mocked(made.deps.fund).mock.calls[0]![0].plan
+  const pay = async (made: Made) => {
+    await click("backup-fund-continue")
+    await flush(3)
+    expect(made.deps.fund).toHaveBeenCalledTimes(1)
+    return (await made.store.get(OWNER))!.plan!
+  }
+
+  it("opens on Faster, prices the cost and the time with the tip, and sends it inside the funding", async () => {
+    const made = await payStep({ faster: OFFER })
+    expect(speed()?.textContent).toBe(speedCopy.faster)
+    expect(fact(approveCopy.pay.cost)).toBe(cost(TIP))
+    expect(breakdown()).toContain(withdrawalFee(TIP))
+    expect(fact(approveCopy.pay.time)).toBe(time.faster)
+    expect(fundButton()!.textContent).toBe(fmt(approveCopy.pay.pay, { amount: cost(TIP) }))
+    expect(fundButton()!.disabled).toBe(false)
+    const stored = await pay(made)
+    expect(sentPlan(made)).toMatchObject(TIPPED)
+    expect(stored).toMatchObject({ ...TIPPED, deposited: PLAN.deposited, credited: PLAN.credited })
+    await untilPhase(made.store, "funded")
+    await flush()
+    expect(fundButton()).toBeNull()
+  })
+
+  it("sends no tip once Standard is picked, and says how long Standard takes", async () => {
+    const made = await payStep({ faster: OFFER })
+    await pickSpeed("standard")
+    expect(speed()?.textContent).toBe(speedCopy.standard)
+    expect(fact(approveCopy.pay.cost)).toBe(cost(0n))
+    expect(fact(approveCopy.pay.time)).toBe(time.standard)
+    const stored = await pay(made)
+    expect(sentPlan(made)).toMatchObject(UNTIPPED)
+    expect(stored.proverTip).toBeUndefined()
+  })
+
+  it("refuses Faster when one transfer cannot carry the funding and the tip, and sends none", async () => {
+    // The cap equals the untipped funding, so the tip on top never fits.
+    const made = await payStep({ faster: OFFER, cap: 2n * DAI })
+    expect(speed()?.textContent).toBe(speedCopy.standard)
+    expect(fact(approveCopy.pay.cost)).toBe(cost(0n))
+    expect(fact(approveCopy.pay.time)).toBe(time.standard)
+    const [standard, blocked] = await speedOptions()
+    expect(standard!.textContent).toContain(etaLabel(OFFER.standardEtaSeconds))
+    expect(blocked!.textContent).toContain(BALANCE_TIP_BLOCKED_COPY)
+    expect(blocked!.disabled).toBe(true)
+    await act(async () => standard!.click())
+    const stored = await pay(made)
+    expect(sentPlan(made)).toMatchObject(UNTIPPED)
+    expect(stored.proverTip).toBeUndefined()
+  })
+
+  it("refuses Faster when the balance itself is short of the funding and the tip", async () => {
+    const held = (22n * DAI) / 10n
+    await payStep({ faster: OFFER, shape: { notes: [held], depositTotal: 0n, balance: held } })
+    expect(speed()?.textContent).toBe(speedCopy.standard)
+    const [, blocked] = await speedOptions()
+    expect(blocked!.textContent).toContain(BALANCE_TIP_BLOCKED_COPY)
+    expect(blocked!.disabled).toBe(true)
+  })
+
+  it("reads the fit again once Main's balance moves, so funds that land open Faster", async () => {
+    const held = (22n * DAI) / 10n
+    mainBalance.set({ ...SHOWN_BALANCE, main: { atomic: held } })
+    const made = await payStep({
+      faster: OFFER,
+      shape: { notes: [held], depositTotal: 0n, balance: held },
+    })
+    expect(speed()?.textContent).toBe(speedCopy.standard)
+    made.world.shape = { notes: [3n * DAI], depositTotal: 0n, balance: 3n * DAI }
+    await act(async () => mainBalance.set({ ...SHOWN_BALANCE, main: { atomic: 3n * DAI } }))
+    await flush(3)
+    await pickSpeed("faster")
+    expect(speed()?.textContent).toBe(speedCopy.faster)
+    expect(fact(approveCopy.pay.cost)).toBe(cost(TIP))
+    const stored = await pay(made)
+    expect(sentPlan(made)).toMatchObject(TIPPED)
+    expect(stored).toMatchObject(TIPPED)
+  })
+
+  it("burns no tip on an offer that would not save a minute, and shows Faster closed", async () => {
+    const made = await payStep({ faster: { ...OFFER, worstSpeedupSeconds: 30 } })
+    expect(speed()?.textContent).toBe(speedCopy.faster)
+    expect(speed()?.disabled).toBe(true)
+    expect(fact(approveCopy.pay.cost)).toBe(cost(0n))
+    expect(fact(approveCopy.pay.time)).toBe(time.standard)
+    const stored = await pay(made)
+    expect(sentPlan(made)).toMatchObject(UNTIPPED)
+    expect(stored.proverTip).toBeUndefined()
+  })
+
+  it("holds the button while the first quote is out, then opens on Faster with it", async () => {
+    const made = makeFlowDeps({ world: { cap: 5n * DAI } })
+    let answer = () => {}
+    made.quoteFaster.mockImplementationOnce(
+      () => new Promise((resolve) => (answer = () => resolve(fasterQuote(OFFER)))),
     )
+    await made.store.put(signedRecord({ phase: "published" }))
+    await render(made, false)
+    await flush(3)
+    expect(container.querySelector('[aria-busy="true"]')?.textContent).toContain(speedCopy.checking)
+    expect(fundButton()!.disabled).toBe(true)
+    expect(fact(approveCopy.pay.cost)).toBe(cost(0n))
+    await act(async () => answer())
+    await flush()
+    expect(fundButton()!.disabled).toBe(false)
+    expect(speed()?.textContent).toBe(speedCopy.faster)
+    expect(fact(approveCopy.pay.cost)).toBe(cost(TIP))
+  })
+
+  it("drops the tip with the offer once Faster was chosen", async () => {
+    const made = await payStep({ faster: OFFER })
+    expect(fact(approveCopy.pay.cost)).toBe(cost(TIP))
+    made.world.faster = undefined
+    await act(async () => offerPace.wake())
+    await flush()
+    expect(speed()).toBeNull()
+    expect(fact(approveCopy.pay.cost)).toBe(cost(0n))
+    expect(fact(approveCopy.pay.time)).toBe(time.quoted)
+    const stored = await pay(made)
+    expect(sentPlan(made)).toMatchObject(UNTIPPED)
+    expect(stored.proverTip).toBeUndefined()
+  })
+
+  it("lets the tip through when the fit cannot be read", async () => {
+    const made = makeFlowDeps({ world: { faster: OFFER, cap: 2n * DAI } })
+    vi.mocked(made.deps.fundable).mockRejectedValue(new Error("unreadable"))
+    await made.store.put(signedRecord({ phase: "published" }))
+    await render(made, false)
+    await flush(3)
+    expect(speed()?.textContent).toBe(speedCopy.faster)
+    expect(fundButton()!.disabled).toBe(false)
+    const stored = await pay(made)
+    expect(sentPlan(made)).toMatchObject(TIPPED)
+    expect(stored).toMatchObject(TIPPED)
+  })
+
+  it("holds the button on Faster while the fit is unread, and opens it on Standard", async () => {
+    const made = makeFlowDeps({ world: { faster: OFFER, cap: 5n * DAI } })
+    vi.mocked(made.deps.fundable).mockImplementation(() => new Promise(() => {}))
+    await made.store.put(signedRecord({ phase: "published" }))
+    await render(made, false)
+    await flush(3)
+    expect(speed()?.textContent).toBe(speedCopy.faster)
+    expect(fundButton()!.disabled).toBe(true)
+    await pickSpeed("standard")
+    expect(fundButton()!.disabled).toBe(false)
+    const stored = await pay(made)
+    expect(sentPlan(made)).toMatchObject(UNTIPPED)
+    expect(stored.proverTip).toBeUndefined()
+  })
+
+  /**
+   * Holds the route read the send starts with until the returned release runs: the pay step stays
+   * on screen with its send in flight, as over a slow chain.
+   */
+  const holdRoute = (made: Made) => {
+    const route = vi.mocked(made.deps.route)
+    let release = () => {}
+    route.mockImplementation(
+      () =>
+        new Promise<"ok" | "route">((resolve) => {
+          release = () => {
+            route.mockImplementation(async () => made.world.route)
+            resolve("ok")
+          }
+        }),
+    )
+    return () => act(async () => release())
+  }
+
+  it("keeps the choice and the figures it was sent with while the funding goes out", async () => {
+    const made = await payStep({ faster: OFFER })
+    const release = holdRoute(made)
+    await click("backup-fund-continue")
+    await flush()
+    // The quote stops while the funding goes out: the figures are the choice it was sent with.
+    expect(fundButton()!.disabled).toBe(true)
+    expect(speed()?.textContent).toBe(speedCopy.faster)
+    expect(speed()?.disabled).toBe(true)
+    expect(fact(approveCopy.pay.cost)).toBe(cost(TIP))
+    expect(fact(approveCopy.pay.time)).toBe(time.faster)
+    await release()
+    await untilPhase(made.store, "funded")
+    expect(sentPlan(made)).toMatchObject(TIPPED)
+    expect((await made.store.get(OWNER))!.plan).toMatchObject(TIPPED)
   })
 })

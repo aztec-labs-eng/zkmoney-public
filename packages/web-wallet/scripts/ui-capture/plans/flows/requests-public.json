@@ -3,9 +3,7 @@
   "steps": [
     {
       "action": "waitFor",
-      "role": "button",
-      "name": "Pay with an Ethereum wallet",
-      "exact": false
+      "testId": "request-pay-with-wallet"
     },
     {
       "action": "wait",
@@ -18,9 +16,15 @@
     },
     {
       "action": "click",
-      "role": "button",
-      "name": "Pay with an Ethereum wallet",
-      "exact": false
+      "selector": "[data-testid=\"request-pay-with-wallet\"]:enabled"
+    },
+    {
+      "action": "click",
+      "testId": "deposit-select-continue"
+    },
+    {
+      "action": "click",
+      "testId": "deposit-method-address"
     },
     {
       "action": "screenshot",
@@ -31,12 +35,6 @@
       "action": "click",
       "role": "button",
       "name": "Show",
-      "exact": true
-    },
-    {
-      "action": "click",
-      "role": "button",
-      "name": "Got it!",
       "exact": true
     },
     {

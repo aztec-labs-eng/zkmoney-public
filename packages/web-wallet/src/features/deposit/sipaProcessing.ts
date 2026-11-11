@@ -6,7 +6,6 @@ import {
   type SipaCapacityKey,
   type SipaProcessingState,
 } from "@obsidion/front-core"
-import { wallClock } from "../../lib/clock"
 import { useSession } from "../../session/session"
 
 const NOTHING_WAITS = memoryStore<ReadonlyMap<string, SipaProcessingState>>(new Map()).readonly
@@ -28,6 +27,7 @@ export function useSipaProcessing(sipaAddress: string | undefined): {
   const record = useStore(sipaDeposits.view, ({ records }) =>
     records.find((r) => r.sipaAddress.toLowerCase() === id),
   )
+  const { wallClock } = useSession().page
   const now = useStore(wallClock)
   const state = sipaAddress ? observer?.stateFor(sipaAddress) : undefined
   // With no rail record the deposit is not on the stuck clock: only a blocker is stated.

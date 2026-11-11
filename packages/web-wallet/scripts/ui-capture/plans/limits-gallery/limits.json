@@ -182,70 +182,35 @@
       "path": "/deposit?flowFixture=success&capacityFixture=fits&allowanceFixture=available"
     },
     {
+      "action": "click",
+      "testId": "deposit-new-address"
+    },
+    {
+      "action": "click",
+      "testId": "deposit-chain-31337"
+    },
+    {
+      "action": "click",
+      "testId": "picker-DAI"
+    },
+    {
       "action": "waitFor",
-      "selector": ".ww-deposit-disclaimer"
-    },
-    {
-      "action": "click",
-      "role": "button",
-      "name": "Got it!",
-      "exact": false
-    },
-    {
-      "action": "click",
-      "role": "button",
-      "name": "Connect your wallet",
-      "exact": false
+      "label": "Amount to receive"
     },
     {
       "action": "fill",
-      "selector": ".ww-fund__amount input",
+      "label": "Amount to receive",
       "value": "24"
     },
     {
       "action": "waitFor",
-      "selector": "dialog[aria-label=\"Deposit from wallet\"] [data-testid=\"funding-capacity-panel\"].ww-capacity--quiet",
+      "selector": "dialog[aria-label=\"Deposit\"] [data-testid=\"funding-capacity-panel\"].ww-capacity--quiet",
       "state": "attached"
     },
     {
-      "action": "click",
-      "selector": "dialog[aria-label=\"Deposit from wallet\"] [data-testid=\"operation-limits\"] [data-testid=\"about-limits-link\"]"
-    },
-    {
-      "action": "waitFor",
-      "selector": "dialog[aria-label=\"About limits\"] [data-testid=\"about-limits-operation\"][data-expanded=\"true\"]"
-    },
-    {
-      "action": "waitFor",
-      "selector": "dialog[aria-label=\"About limits\"] [data-testid=\"about-limits-capacity\"][data-state=\"fresh\"][data-expanded=\"false\"]"
-    },
-    {
-      "action": "waitFor",
-      "selector": "dialog[aria-label=\"About limits\"] [data-testid=\"about-limits-sponsorship\"][data-state=\"available\"]"
-    },
-    {
       "action": "screenshot",
-      "file": "07-funding-modal-about-limits.png",
-      "state": "Info from the funding amount: the limit section first; capacity collapsed with its status (active bucket, quiet on the form)"
-    },
-    {
-      "action": "press",
-      "selector": "dialog[aria-label=\"About limits\"]",
-      "key": "Escape"
-    },
-    {
-      "action": "waitFor",
-      "selector": "dialog[aria-label=\"About limits\"]",
-      "state": "hidden"
-    },
-    {
-      "action": "waitFor",
-      "selector": "dialog[aria-label=\"Deposit from wallet\"] [data-testid=\"operation-limits\"]"
-    },
-    {
-      "action": "screenshot",
-      "file": "08-funding-modal-after-close.png",
-      "state": "Back on the funding form after closing the info"
+      "file": "08-funding-modal.png",
+      "state": "The funding form: capacity quiet, no limit line"
     }
   ]
 }

@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it } from "vitest"
 import { LEGACY_IDENTITY_KEY } from "@obsidion/front-core"
 import { pageSessionDeps } from "../../src/app/sessionDeps"
 import { enteredIdentity } from "../../src/session/account"
@@ -9,10 +9,9 @@ import {
   openedSession,
   switchSession,
 } from "../../src/session/session"
-import { bootWaitsForDemand } from "../../src/ui/PxeBoot"
+import { bootWaitsForStart } from "../../src/ui/PxeBoot"
 import { testWalletDbs } from "../support/fakeWalletDb"
 import { seedDeviceKeys, testCore, testPage } from "../support/page"
-import { seedBootConfig } from "../support/seedBootConfig"
 
 const ADDRESS = `0x${"1d".repeat(32)}`
 const LEGACY = { handle: "taga", address: ADDRESS, claimedAt: 1 }
@@ -45,8 +44,6 @@ function holdIdentityOpen(fail = false) {
 }
 
 const follow = () => followSavedSession(testCore().device, pageSessionDeps(testPage()))
-
-beforeAll(seedBootConfig)
 afterEach(closeSession)
 
 describe("the session's identity", () => {
@@ -85,11 +82,11 @@ describe("the session's identity", () => {
     await new Promise((resolve) => setTimeout(resolve, 10))
     expect(openedSession.get()?.namespace.id).toBeNull()
     const unloaded = { value: null, loaded: false, failed: false }
-    expect(enteredIdentity(unloaded, passkeyFor(ADDRESS))).toBeUndefined()
+    expect(enteredIdentity(unloaded, passkeyFor(ADDRESS), "localhost")).toBeUndefined()
     release()
     await following
     const { identity, device } = openedSession.get()!
-    expect(enteredIdentity(identity.get(), device.get().passkeyMap)).toEqual(LEGACY)
+    expect(enteredIdentity(identity.get(), device.get().passkeyMap, "localhost")).toEqual(LEGACY)
   })
 
   it("reads a failed load as unknown, never as onboarding", async () => {
@@ -99,7 +96,7 @@ describe("the session's identity", () => {
     await follow()
     const { identity, device } = openedSession.get()!
     expect(identity.get()).toMatchObject({ failed: true })
-    expect(enteredIdentity(identity.get(), device.get().passkeyMap)).toBeUndefined()
-    expect(bootWaitsForDemand(identity.get(), "/pay/river")).toBe(false)
+    expect(enteredIdentity(identity.get(), device.get().passkeyMap, "localhost")).toBeUndefined()
+    expect(bootWaitsForStart(identity.get(), "/pay/river")).toBe(false)
   })
 })

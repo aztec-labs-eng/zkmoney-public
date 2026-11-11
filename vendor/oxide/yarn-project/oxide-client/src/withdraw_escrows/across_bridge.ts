@@ -129,6 +129,10 @@ export function quoteAcrossBridge(args: AcrossBridgeQuoteArgs, fees: AcrossFees)
 }
 
 export interface AcrossBridgeOnWithdrawArgs extends EscrowWithdrawalArgs {
+  /**
+   * `contracts.acrossBridgeEscrowFactory` of the deployment's `across` feature, or the `acrossBridgeEscrowFactory` key of a
+   * bridge in a deployment without features.
+   */
   acrossBridgeEscrowFactory: EthAddress;
   route: AcrossBridgeRoute;
   recipient: EthAddress;

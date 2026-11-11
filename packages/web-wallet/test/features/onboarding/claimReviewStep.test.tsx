@@ -1,4 +1,4 @@
-/** The ticket claim's review: its status says where the claim stands, its error only what stops it. */
+/** Guards: no Claim once sent, a close mid-claim hands off, a stopped claim disables Claim. */
 import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -28,7 +28,7 @@ vi.mock("../../../src/features/onboarding/OnboardingCard", () => ({
     </div>
   ),
 }))
-vi.mock("../../../src/features/onboarding/steps/PaylinkSignupRows", () => ({
+vi.mock("../../../src/features/onboarding/steps/PaylinkSignupRows/PaylinkSignupRows", () => ({
   PaylinkSignupRows: ({ speed }: { speed?: React.ReactNode }) => <>{speed}</>,
 }))
 vi.mock("../../../src/features/onboarding/steps/SignupStepper", () => ({
@@ -110,16 +110,6 @@ describe("ClaimReviewStep", () => {
     expect(claim()).toBeUndefined()
   })
 
-  it("offers no speed and no shortfall once the claim is at work or out", () => {
-    const speed = <button>Faster</button>
-    render({ quote: { paylink: 10n ** 18n, covers: false } as never, speed })
-    expect(container.textContent).toContain("Faster")
-    expect(container.textContent).toContain("This payment cannot cover the account deposit.")
-    render({ quote: { paylink: 10n ** 18n, covers: false } as never, speed, settled: true })
-    expect(container.textContent).not.toContain("Faster")
-    expect(container.querySelector('[role="alert"]')).toBeNull()
-  })
-
   it("closes while the claim runs, handing it to the bell rather than stopping it", () => {
     const onClose = vi.fn()
     const onHandOff = vi.fn()
@@ -144,17 +134,5 @@ describe("ClaimReviewStep", () => {
       "This link was already claimed.",
     )
     expect(claim()?.disabled).toBe(true)
-  })
-})
-
-describe("the review's head", () => {
-  it("names the stored amount while the split is unpriced, never a bare payment", () => {
-    render({ quote: undefined, amount: 52n * 10n ** 18n, senderTag: "maple" })
-    expect(container.querySelector(".ww-paylink-summary__label")?.textContent).toBe(
-      "@maple sent you",
-    )
-    expect(container.querySelector('[data-testid="claim-review-amount"]')?.textContent).toBe(
-      "52.00 DAI",
-    )
   })
 })

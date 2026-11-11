@@ -1,26 +1,26 @@
-/**
- * A ticket registration's speed starts on Faster, and its burn tips the prover only when that is
- * worth it and the note still covers the burn with the tip; Standard, a failed or a stalled quote, or
- * a signup that goes ahead before the quote, commits none.
- */
+// Guards: Standard when the note cannot cover the tip; no decision on an unread schedule.
 import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import type { WithdrawalSpeedupEstimate, WithdrawalSpeedupNode } from "@obsidion/front-core"
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import type { WithdrawalSpeedupEstimate } from "@obsidion/front-core"
 import type { ProverTipQuote } from "@obsidion/sdk"
 import {
+  afterGate,
   REGISTRATION_TIP_BLOCKED_COPY,
   useRegistrationSpeed,
   type RegistrationSpeed,
 } from "../../../src/features/paylink/registrationProverTip"
+import { fasterOffers } from "../../../src/features/withdraw/fasterOffers"
+import type { FasterWithdrawalQuote } from "../../../src/features/withdraw/useFasterWithdrawal"
+import { closeSession } from "../../../src/session/session"
+import { testQuery } from "../../support/query"
+import { openTestSession } from "../../support/session"
 
 declare global {
-  // eslint-disable-next-line no-var
   var IS_REACT_ACT_ENVIRONMENT: boolean
 }
 
 const dai = (n: number) => BigInt(Math.round(n * 100)) * 10n ** 16n
-const NODE = {} as WithdrawalSpeedupNode
 const TICKET = { fee: dai(0.5), min: 0n }
 /** The source executor's withdrawal fee. */
 const FEE = dai(0.1)
@@ -45,19 +45,23 @@ describe("useRegistrationSpeed", () => {
   let container: HTMLDivElement
   let root: Root
   let seen: RegistrationSpeed
-  const onCommit = vi.fn((_tip: bigint, _speed: string): Promise<void> | void => {})
 
   function Harness(props: Partial<Parameters<typeof useRegistrationSpeed>[0]>) {
     seen = useRegistrationSpeed({
       active: true,
-      node: NODE,
       noteAmount: dai(4),
       schedule: TICKET,
       withdrawalFee: FEE,
-      onCommit,
       ...props,
     })
     return null
+  }
+  /** A session whose faster option quotes off `load`. */
+  const quoting = (load: () => Promise<FasterWithdrawalQuote>) => {
+    void openTestSession({
+      wallet: {},
+      fasterOffer: fasterOffers(testQuery(), load, () => Date.now()),
+    })
   }
   const render = (props: Partial<Parameters<typeof useRegistrationSpeed>[0]>) =>
     act(async () => {
@@ -66,7 +70,6 @@ describe("useRegistrationSpeed", () => {
 
   beforeEach(() => {
     globalThis.IS_REACT_ACT_ENVIRONMENT = true
-    onCommit.mockClear()
     container = document.createElement("div")
     document.body.appendChild(container)
     root = createRoot(container)
@@ -75,42 +78,36 @@ describe("useRegistrationSpeed", () => {
   afterEach(async () => {
     await act(async () => root.unmount())
     container.remove()
-    vi.useRealTimers()
+    closeSession()
   })
 
   it("falls back to Standard when the note cannot cover the tip", async () => {
-    await render({ load: async () => loaded(600), noteAmount: BURN + TIP })
+    quoting(async () => loaded(600))
+    await render({ noteAmount: BURN + TIP })
     expect(seen.outcome.blocked).toBe(REGISTRATION_TIP_BLOCKED_COPY)
     expect(seen.choice.speed).toBe("standard")
     expect(seen.proverTip).toBe(0n)
   })
 
-  it("commits Standard when the signup goes ahead before the quote, and a later quote keeps it", async () => {
+  it("settles a tap before the quote on Standard, and a later quote keeps it", async () => {
     let answer: (value: ReturnType<typeof loaded>) => void = () => {}
-    await render({ load: () => new Promise((resolve) => (answer = resolve)) })
-    expect(seen.proverTip).toBeUndefined()
-    await act(async () => seen.settle())
-    expect(onCommit).toHaveBeenLastCalledWith(0n, "standard")
+    quoting(() => new Promise((resolve) => (answer = resolve)))
+    await render({})
+    expect(seen.decision).toBeUndefined()
+    let settled: unknown
+    await act(async () => void (settled = seen.settle()))
+    expect(settled).toEqual({ tip: 0n, speed: "standard", withdrawalFee: FEE, picks: 0 })
     expect(seen.choice.speed).toBe("standard")
     await act(async () => answer(loaded(600)))
     expect(seen.choice.offer?.proverTip).toBe(TIP)
-    expect(seen.proverTip).toBe(0n)
-    expect(onCommit).toHaveBeenLastCalledWith(0n, "standard")
+    expect(seen.decision).toEqual({ tip: 0n, speed: "standard", withdrawalFee: FEE, picks: 0 })
   })
 
-  it("hands a claim the last commit's save, failure included", async () => {
-    let fail: (e: Error) => void = () => {}
-    onCommit.mockReturnValueOnce(new Promise<void>((_, reject) => (fail = reject)))
-    await render({ load: async () => loaded(600) })
-    expect(onCommit).toHaveBeenCalledOnce()
-    const saved = seen.saved()
-    fail(new Error("disk full"))
-    await expect(saved).rejects.toThrow()
-  })
-
-  it("decides nothing while the schedule is unread", async () => {
-    await render({ load: async () => loaded(600), schedule: undefined })
-    expect(seen.proverTip).toBeUndefined()
-    expect(onCommit).not.toHaveBeenCalled()
+  it("decides nothing while the schedule is unread, or while inactive", async () => {
+    quoting(async () => loaded(600))
+    await render({ schedule: undefined })
+    expect(seen.decision).toBeUndefined()
+    await render({ active: false })
+    expect(seen.decision).toBeUndefined()
   })
 })

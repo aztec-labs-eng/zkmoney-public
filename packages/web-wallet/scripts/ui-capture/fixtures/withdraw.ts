@@ -1,8 +1,8 @@
 import * as actual from "../../../src/features/withdraw/withdrawGateway"
 import { WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
 import type { WithdrawalRecord } from "@obsidion/front-core"
-import { parseUnits, type Address } from "viem"
-import { session } from "../../../src/session/session"
+import { formatUnits, parseUnits, type Address } from "viem"
+import type { Session } from "../../../src/session/session"
 import { fixtureState, inOperation, operation } from "./control"
 import { ROLLUP, TX_HASH, SIPA } from "./data"
 export * from "../../../src/features/withdraw/withdrawGateway"
@@ -10,6 +10,7 @@ let sequence = 0
 /** `extra.rawAmount` carries the burn's gross where it is not the typed amount — a paylink cash-out
  *  types the net and burns the link's whole escrow. */
 export async function captureWithdrawal(
+  session: Pick<Session, "withdrawals" | "operations" | "page">,
   recipient: Address,
   amount: string,
   onStage?: (stage: "building" | "proving" | "submitting") => void,
@@ -17,7 +18,7 @@ export async function captureWithdrawal(
   signing = true,
   flow: "withdraw" | "paylink-claim-l1" = "withdraw",
 ) {
-  const store = session().withdrawals
+  const store = session.withdrawals
   const localId = `capture-withdraw-${++sequence}`
   const rawAmount = extra.rawAmount ?? parseUnits(amount, 18).toString()
   await store.create({
@@ -36,6 +37,7 @@ export async function captureWithdrawal(
   })
   onStage?.("building")
   return inOperation(
+    session,
     flow,
     `$${amount} to ${extra.recipientAlias?.trim() || "Ethereum"}`,
     async () => {
@@ -65,7 +67,7 @@ export const submitSponsoredWithdrawal: typeof actual.submitSponsoredWithdrawal 
   const [deps, recipient, amount, onStage, recipientAlias, receiveAsset, quote] = args
   const verdict = await deps.screener.screen(recipient)
   if (!verdict.compliant) throw new Error("This address cannot receive withdrawals")
-  return captureWithdrawal(recipient, amount, onStage, {
+  return captureWithdrawal(deps.session, recipient, formatUnits(amount, 18), onStage, {
     recipientAlias,
     ...(receiveAsset && receiveAsset !== "DAI"
       ? {

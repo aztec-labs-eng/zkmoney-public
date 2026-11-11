@@ -1,7 +1,7 @@
 import { useState } from "react"
 import { PrimaryGradientButton } from "@obsidion/web-ds"
 import { clearAllEndpointOverrides } from "../config/endpointOverrides"
-import { getConfig } from "../config/env"
+import type { WebWalletConfig } from "../config/env"
 import { leavePage, reloadPage } from "../platform/storage/walletStorage"
 import { EndpointsModal, PreWalletEndpointsModal } from "./EndpointsModal"
 import type { BootError } from "./PxeBoot"
@@ -29,10 +29,12 @@ export function BootErrorScreen({
   error,
   onRetry,
   walletOpen,
+  config,
 }: {
   error?: BootError
   onRetry: () => void
   walletOpen: boolean
+  config: WebWalletConfig
 }) {
   return (
     <div role="alert" data-testid="boot-error" data-kind={error?.kind} style={BOOT_ERROR_LAYOUT}>
@@ -46,6 +48,7 @@ export function BootErrorScreen({
             className="zkm-type-body"
             style={{ color: "var(--text-secondary)", overflowWrap: "anywhere" }}
           >
+            {/* eslint-disable-next-line local/message-in-state -- debt */}
             {error.message}
           </span>
         </>
@@ -59,7 +62,7 @@ export function BootErrorScreen({
       ) : (
         <>
           <PrimaryGradientButton title="Retry" onClick={onRetry} />
-          <BootRecovery walletOpen={walletOpen} />
+          <BootRecovery walletOpen={walletOpen} config={config} />
         </>
       )}
       {import.meta.env.VITE_CONFIG_EDITOR === "true" && <PreviewDraftRecovery />}
@@ -71,10 +74,10 @@ export function BootErrorScreen({
  * The ways out of a boot the endpoints may have caused, since Settings is behind the boot: clear the
  * saved overrides, or open the editor (even with nothing saved, for a dead default node).
  */
-function BootRecovery({ walletOpen }: { walletOpen: boolean }) {
+function BootRecovery({ walletOpen, config }: { walletOpen: boolean; config: WebWalletConfig }) {
   const [clearError, setClearError] = useState<string>()
   const [editing, setEditing] = useState(false)
-  const { endpoints } = getConfig()
+  const { endpoints } = config
   // The boot reads only the node and the RPC, so clearing a custom enclave cannot fix it.
   const fromSettings = [endpoints.node, endpoints.l1Rpc].some(
     (e) => e.source === "settings" && !e.isDefault,
@@ -104,7 +107,7 @@ function BootRecovery({ walletOpen }: { walletOpen: boolean }) {
         testId="boot-change-endpoints"
         onClick={() => setEditing(true)}
       />
-      {editing && <Editor onClose={() => setEditing(false)} />}
+      {editing && <Editor config={config} onClose={() => setEditing(false)} />}
       {clearError && (
         <span
           className="zkm-type-body-sm"

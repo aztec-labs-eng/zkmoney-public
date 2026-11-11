@@ -9,6 +9,7 @@ import {SIPABase} from "./SIPABase.sol";
 import {INameRegistry, DomainAuth} from "./interfaces/INameRegistry.sol";
 import {IRegistrationController, SignedTerms, R1Install} from "./interfaces/IRegistrationController.sol";
 import {Errors} from "@periphery/Errors.sol";
+import {Intents} from "@periphery/Intent.sol";
 
 contract RegistrationRouter {
   using SafeERC20 for IERC20;
@@ -43,7 +44,7 @@ contract RegistrationRouter {
       factory.approvedTable(address(p.forwardingTable)),
       Errors.RegistrationRouter__TableNotApproved(address(p.forwardingTable))
     );
-    address implementation = factory.implementationFor(SIPABase.Intent.Registration);
+    address implementation = factory.implementationFor(Intents.REGISTRATION);
     require(implementation != address(0), Errors.RegistrationRouter__NoRegistrationImplementation());
     sipa = factory.deploySIPA(
       implementation,

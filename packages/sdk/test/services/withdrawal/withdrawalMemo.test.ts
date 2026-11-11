@@ -6,15 +6,17 @@ import { SkyRoute, predictSkyEscrowAddressLocally } from "@oxide/experiments/sky
 import { deriveRecoveryCommitment } from "@oxide/oxide-lib/sipa_recovery.js"
 import { planSwapOnWithdraw } from "../../../src/oxide/escrow/swapOnWithdraw.js"
 import {
+  acrossBridgeEscrowArgs,
+  predictAcrossBridgeEscrowAddressLocally,
+} from "../../../src/oxide/escrow/acrossBridgeOnWithdraw.js"
+import {
   decodeWithdrawalMemo,
   encodeWithdrawalMemo,
+  type BridgeWithdrawalMemo,
   type SkyWithdrawalMemo,
   type SwapWithdrawalMemo,
 } from "../../../src/services/withdrawal/withdrawalMemo.js"
-import {
-  skyMemoForEscrow,
-  swapMemoForEscrow,
-} from "../../../src/services/withdrawal/withdrawEventSource.js"
+import { memoForEscrow } from "../../../src/services/withdrawal/withdrawEventSource.js"
 
 const RECOVERY = { account: getAddress(`0x${"5a".repeat(20)}`), salt: new Fr(9n) }
 
@@ -41,6 +43,23 @@ const SKY: SkyWithdrawalMemo = {
   nonce: `0x${"88".repeat(32)}` as Hex,
 }
 const SKY_ESCROW = predictSkyEscrowAddressLocally(SKY.factory, SKY)
+
+const BRIDGE: BridgeWithdrawalMemo = {
+  provider: "across",
+  chainId: 8453,
+  token: "USDT",
+  recipient: getAddress(`0x${"b1".repeat(20)}`),
+  factory: getAddress(`0x${"fc".repeat(20)}`),
+  fee: 250_000n,
+  minReceived: 98_000_000n,
+  recoveryCommitment: SWAP.recoveryCommitment,
+  relayerTip: 2n * 10n ** 18n,
+  nonce: `0x${"99".repeat(32)}` as Hex,
+}
+const BRIDGE_ESCROW = predictAcrossBridgeEscrowAddressLocally(
+  BRIDGE.factory,
+  acrossBridgeEscrowArgs(BRIDGE.token, BRIDGE.chainId, { ...BRIDGE, acrossFee: BRIDGE.fee })!,
+)
 
 const PLAN = planSwapOnWithdraw({
   swapEscrowFactoryV2: SWAP.factory,
@@ -81,6 +100,23 @@ function skyBytes(route: number = SKY.route): number[] {
     ...entry(0x04, hex(SKY.recoveryCommitment)),
     ...entry(0x05, hex(`0x${SKY.relayerTip.toString(16).padStart(16, "0")}`)),
     ...entry(0x06, hex(SKY.nonce)),
+  ]
+}
+
+/** The bytes `encodeWithdrawalMemo({ bridge: BRIDGE })` lays out. */
+function bridgeBytes(): number[] {
+  return [
+    0x01,
+    ...entry(0x0b, [1]),
+    ...entry(0x0c, hex("0x2105")),
+    ...entry(0x0d, [2]),
+    ...entry(0x02, hex(BRIDGE.recipient)),
+    ...entry(0x03, hex(BRIDGE.factory)),
+    ...entry(0x0e, hex("0x03d090")),
+    ...entry(0x0f, hex("0x05d75c80")),
+    ...entry(0x04, hex(BRIDGE.recoveryCommitment)),
+    ...entry(0x05, hex(`0x${BRIDGE.relayerTip.toString(16).padStart(16, "0")}`)),
+    ...entry(0x06, hex(BRIDGE.nonce)),
   ]
 }
 
@@ -127,8 +163,13 @@ describe("withdrawalMemo", () => {
     expect(decodeWithdrawalMemo(encodeWithdrawalMemo({ sky: stake }))).toEqual({ sky: stake })
   })
 
-  it("encodes no escrow as an empty memo, and decodes an empty or unversioned memo as nothing", () => {
-    expect(encodeWithdrawalMemo({})).toEqual(Buffer.alloc(0))
+  it("round-trips a bridge-out", () => {
+    const memo = encodeWithdrawalMemo({ bridge: BRIDGE })
+    expect([...memo]).toEqual(bridgeBytes())
+    expect(decodeWithdrawalMemo(memo)).toEqual({ bridge: BRIDGE })
+  })
+
+  it("decodes an empty or unversioned memo as nothing", () => {
     expect(decode([])).toEqual({})
     expect(decode([0x01])).toEqual({})
     expect(decode([0x02, ...swapBytes().slice(1)])).toEqual({})
@@ -166,7 +207,23 @@ describe("withdrawalMemo", () => {
     expect(decode([...skyBytes(), ...entry(0x01, [0])])).toEqual({})
   })
 
-  it("refuses to encode a malformed value or two escrows", () => {
+  it("decodes a bridge-out only with a known provider and token, every entry, and no other kind", () => {
+    for (const type of [0x02, 0x03, 0x04, 0x05, 0x06, 0x0c, 0x0d, 0x0e, 0x0f]) {
+      expect(decode(withoutEntry(bridgeBytes(), type))).toEqual({})
+    }
+    const provider = bridgeBytes()
+    provider[3] = 2
+    expect(decode(provider)).toEqual({})
+    const token = bridgeBytes()
+    token[10] = 3
+    expect(decode(token)).toEqual({})
+    const zeroChain = bridgeBytes()
+    zeroChain.fill(0, 6, 8)
+    expect(decode(zeroChain)).toEqual({})
+    expect(decode([...bridgeBytes(), ...entry(0x09, [SkyRoute.Stake])])).toEqual({})
+  })
+
+  it("refuses to encode a malformed value", () => {
     expect(() => encodeWithdrawalMemo({ swap: { ...SWAP, recipient: "0x12" as Address } })).toThrow(
       /recipient/,
     )
@@ -183,30 +240,30 @@ describe("withdrawalMemo", () => {
     expect(() =>
       encodeWithdrawalMemo({ sky: { ...SKY, recipientCommitment: "0x2c" as Hex } }),
     ).toThrow(/recipientCommitment/)
-    expect(() => encodeWithdrawalMemo({ swap: SWAP, sky: SKY })).toThrow(/one escrow/)
   })
 })
 
-describe("swapMemoForEscrow", () => {
-  it("keeps the memo whose args derive the escrow the burn paid", () => {
-    expect(swapMemoForEscrow(SWAP, PLAN.escrow)).toEqual(SWAP)
-    expect(swapMemoForEscrow(SWAP, PLAN.escrow.toLowerCase() as Address)).toEqual(SWAP)
+describe("memoForEscrow", () => {
+  it.each([
+    ["swap", { swap: SWAP }, PLAN.escrow],
+    ["Sky move", { sky: SKY }, SKY_ESCROW],
+    ["bridge-out", { bridge: BRIDGE }, BRIDGE_ESCROW],
+  ])("keeps a %s whose args derive the escrow the burn paid", (_, memo, escrow) => {
+    expect(memoForEscrow(memo, escrow)).toEqual(memo)
+    expect(memoForEscrow(memo, escrow.toLowerCase() as Address)).toEqual(memo)
   })
 
-  it("drops a memo that does not, and no memo at all", () => {
-    expect(swapMemoForEscrow({ ...SWAP, recipient: RECOVERY.account }, PLAN.escrow)).toBe(undefined)
-    expect(swapMemoForEscrow({ ...SWAP, daiForGas: 1n }, PLAN.escrow)).toBe(undefined)
-    expect(swapMemoForEscrow(SWAP, SWAP.factory)).toBe(undefined)
-    expect(swapMemoForEscrow(undefined, PLAN.escrow)).toBe(undefined)
-  })
-})
-
-describe("skyMemoForEscrow", () => {
-  it("keeps the memo whose args derive the escrow the burn paid, and drops any other", () => {
-    expect(skyMemoForEscrow(SKY, SKY_ESCROW)).toEqual(SKY)
-    expect(skyMemoForEscrow(SKY, SKY_ESCROW.toLowerCase() as Address)).toEqual(SKY)
-    expect(skyMemoForEscrow({ ...SKY, nonce: SWAP.nonce }, SKY_ESCROW)).toBe(undefined)
-    expect(skyMemoForEscrow({ ...SKY, route: SkyRoute.Stake }, SKY_ESCROW)).toBe(undefined)
-    expect(skyMemoForEscrow(undefined, SKY_ESCROW)).toBe(undefined)
+  it.each([
+    ["swap", { swap: { ...SWAP, recipient: RECOVERY.account } }, PLAN.escrow],
+    ["swap", { swap: { ...SWAP, daiForGas: 1n } }, PLAN.escrow],
+    ["swap", { swap: SWAP }, SWAP.factory],
+    ["Sky move", { sky: { ...SKY, nonce: SWAP.nonce } }, SKY_ESCROW],
+    ["Sky move", { sky: { ...SKY, route: SkyRoute.Stake } }, SKY_ESCROW],
+    ["bridge-out", { bridge: { ...BRIDGE, minReceived: 1n, fee: 1n } }, BRIDGE_ESCROW],
+    ["bridge-out", { bridge: { ...BRIDGE, chainId: 1 } }, BRIDGE_ESCROW],
+    ["bridge-out", { bridge: { ...BRIDGE, token: "USDC" as const } }, BRIDGE_ESCROW],
+    ["nothing", {}, PLAN.escrow],
+  ])("drops a %s that does not", (_, memo, escrow) => {
+    expect(memoForEscrow(memo, escrow)).toEqual({})
   })
 })

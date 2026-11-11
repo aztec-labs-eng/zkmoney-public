@@ -20,6 +20,7 @@ export async function contextualize(canonical: Uint8Array): Promise<Uint8Array> 
 
 export type PrfSalts = { prfFirstSalt: Uint8Array; prfSecondSalt: Uint8Array }
 
+// eslint-disable-next-line no-restricted-syntax -- debt
 let secondSalt: Promise<Uint8Array> | undefined
 
 /** Both salts every ceremony sends: the canonical salt in `first`, its contextualisation in `second`. */

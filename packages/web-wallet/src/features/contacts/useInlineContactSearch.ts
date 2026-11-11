@@ -1,19 +1,21 @@
-import { useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
-  ContactStorage,
   normalizeTag,
   useInlineAddContact,
   useStore,
   type ContactRow,
+  type Contacts,
   type InlineAddedContact,
 } from "@obsidion/front-core"
+import { accountContacts } from "../../session/contacts"
 import { useSession } from "../../session/session"
 import { resolveTagForCommit, resolveTagViaRegistry } from "./registryResolution"
 import { freshResolutionConfirms, inlinePanelState, shouldResolveInline } from "./contactsView"
 import { probeNameAvailability } from "../registration/nameAvailability"
 
-/** Write-through for the shared add-contact hooks over ContactStorage. */
+/** Write-through for the shared add-contact hooks over the contact book. */
 export async function addContact(
+  contacts: Pick<Contacts, "addEntry">,
   name: string,
   address: string,
   email?: string,
@@ -21,24 +23,19 @@ export async function addContact(
   tag?: string,
 ): Promise<{ success: boolean; errors?: string }> {
   try {
-    await ContactStorage.get().addEntry({ name, address, email, verified, tag })
+    await contacts.addEntry({ name, address, email, verified, tag })
     return { success: true }
   } catch (e) {
+    // eslint-disable-next-line local/message-in-state -- debt
     return { success: false, errors: e instanceof Error ? e.message : String(e) }
   }
 }
-
-export const getContacts = () => ContactStorage.get().getEntries()
 
 /**
  * Registry type-ahead behind any contact search field: debounced resolution of a typed @tag with no
  * local match, plus a save that persists only an address a fresh-manifest resolution confirms.
  */
-export function useInlineContactSearch(
-  contacts: ContactRow[],
-  query: string,
-  refreshContacts: () => Promise<void>,
-) {
+export function useInlineContactSearch(contacts: ContactRow[], query: string) {
   const [verifying, setVerifying] = useState(false)
   const [verificationError, setVerificationError] = useState("")
   const saving = useRef(false)
@@ -50,6 +47,7 @@ export function useInlineContactSearch(
     currentQuery.current = query
     generation.current += 1
   }
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     mounted.current = true
     return () => {
@@ -57,19 +55,32 @@ export function useInlineContactSearch(
       generation.current += 1
     }
   }, [])
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => setVerificationError(""), [query])
 
-  const ownTag = useStore(useSession().identity, (s) => s.value?.handle)
+  const session = useSession()
+  const ownTag = useStore(session.identity, (s) => s.value?.handle)
+  const resolveTag = useCallback(
+    (tag: string) => resolveTagViaRegistry(session.page, tag),
+    [session.page],
+  )
+  const book = useMemo(
+    () => ({
+      addContact: (name: string, address: string, email?: string, verified?: boolean, tag?: string) =>
+        addContact(accountContacts(session), name, address, email, verified, tag),
+      getContacts: () => accountContacts(session).all(),
+    }),
+    [session],
+  )
   const inline = useInlineAddContact({
-    addContact,
-    getContacts,
-    refreshContacts,
-    resolveTag: resolveTagViaRegistry,
+    ...book,
+    resolveTag,
     ownTag,
   })
 
   // The ref dedups re-fires caused by contacts-array refreshes so a registry lookup runs once per tag.
   const lastResolveRequested = useRef<string | null>(null)
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!shouldResolveInline(contacts, query, ownTag)) {
       lastResolveRequested.current = null
@@ -77,6 +88,7 @@ export function useInlineContactSearch(
       return
     }
     if (lastResolveRequested.current === query) return
+    // eslint-disable-next-line local/timer-in-view -- debt
     const timer = setTimeout(() => {
       lastResolveRequested.current = query
       void inline.resolveTag(query)
@@ -93,7 +105,7 @@ export function useInlineContactSearch(
     setVerifying(true)
     setVerificationError("")
     try {
-      const fresh = await resolveTagForCommit(tag)
+      const fresh = await resolveTagForCommit(session.page, tag)
       if (!active()) return null
       if (!freshResolutionConfirms(inline.lastResolved, tag, fresh)) {
         setVerificationError("Contact details changed. Check the result and try again.")
@@ -114,11 +126,12 @@ export function useInlineContactSearch(
   const [answer, setAnswer] = useState<{ tag: string; reserved: boolean } | null>(null)
   const missed = inlinePanelState(contacts, query, inline.lastResolved, ownTag)
   const missedTag = missed.kind === "no-user-found" ? missed.tag : null
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     setAnswer(null)
     if (missedTag === null) return
     let live = true
-    void probeNameAvailability(missedTag).then(({ status }) => {
+    void probeNameAvailability(session.page, missedTag).then(({ status }) => {
       if (live) {
         setAnswer({
           tag: missedTag,
@@ -129,7 +142,7 @@ export function useInlineContactSearch(
     return () => {
       live = false
     }
-  }, [missedTag])
+  }, [missedTag, session.page])
   const held = answer !== null && answer.tag === missedTag ? answer.reserved : null
 
   return {

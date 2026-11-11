@@ -6,10 +6,11 @@
  * the account's subscription note, and the PXE cannot see a pending spend. Each attempt first asks
  * whether the broadcast already landed, and a failed one retries after a backoff, without end.
  */
-import type { OperationStore } from "../core/services/operations/OperationStore"
 import { bestEffort, WalletError, toFailure } from "./errors"
+import type { Database } from "./database"
+import type { Operations } from "./operations"
 import { loadRecords, type RecordSet } from "./persistentStore"
-import type { Resource } from "./resource"
+import type { Service } from "./service"
 import { task, within, type Task } from "./runtime"
 import type {
   BroadcastJob,
@@ -145,12 +146,11 @@ export function watchJob<T>(
 }
 
 export interface SipaBroadcastsDeps<W> {
-  wallet: Resource<W>
+  wallet: Service<W>
+  /** The session's database: a landing and its operation's settle commit together. */
+  db: Pick<Database, "write">
   store: Pick<SipaDeposits, "view" | "ready" | "apply">
-  operations: Pick<
-    OperationStore,
-    "begin" | "resume" | "markSent" | "settle" | "remove" | "release" | "get"
-  >
+  operations: Pick<Operations, "begin" | "resume" | "apply" | "remove" | "release" | "get">
   executors(wallet: W): BroadcastExecutors
   /** Where a sent tx stands. An unreachable node reads as `pending`. */
   txState(wallet: W, txHash: string): Promise<BroadcastTxState>
@@ -160,9 +160,7 @@ export interface SipaBroadcastsDeps<W> {
   busy?(): boolean
   /** The operation a job's attempts run as; none for a job nobody has seen. */
   describe(job: BroadcastJob): { flow: string; summary: string; background?: boolean } | undefined
-  /** The account scope the job's operations carry. */
-  scope: string | null
-  now?(): number
+  now(): number
 }
 
 export interface SipaBroadcastsTask {
@@ -176,7 +174,7 @@ export interface SipaBroadcastsTask {
 
 export function sipaBroadcasts<W>(deps: SipaBroadcastsDeps<W>): SipaBroadcastsTask {
   const { store, operations } = deps
-  const now = deps.now ?? Date.now
+  const { now } = deps
   const held = new Map<string, number>()
 
   const jobs = () => broadcastJobs(store.view.get().records).filter((job) => !held.has(job.address))
@@ -192,8 +190,12 @@ export function sipaBroadcasts<W>(deps: SipaBroadcastsDeps<W>): SipaBroadcastsTa
       })(),
     )
     if (!recorded) return false
-    await store.apply(job.address, { type: "broadcastLanded" })
-    if (job.operationId) await operations.settle(job.operationId, job.txHash)
+    await deps.db.write(async (w) => {
+      await store.apply(job.address, { type: "broadcastLanded" }, w)
+      const { operationId, txHash } = job
+      if (operationId)
+        await operations.apply(operationId, { type: "settled", txHash, at: now() }, w)
+    })
     return true
   }
 
@@ -203,12 +205,13 @@ export function sipaBroadcasts<W>(deps: SipaBroadcastsDeps<W>): SipaBroadcastsTa
    */
   const own = async (job: BroadcastJob): Promise<string | undefined> => {
     const shown = deps.describe(job)
-    const resumed = job.operationId && operations.get(job.operationId) ? job.operationId : undefined
+    const resumed =
+      job.operationId && (await operations.get(job.operationId)) ? job.operationId : undefined
     const operationId = shown && (resumed ?? job.operationId ?? `broadcast_${job.address}_${now()}`)
     await store.apply(job.address, { type: "broadcastProving", operationId })
     if (resumed) await operations.resume(resumed)
     else if (shown && operationId)
-      await operations.begin({ operationId, ...shown, scope: deps.scope, resumable: true }, now())
+      await operations.begin({ operationId, ...shown, resumable: true }, now())
     return operationId
   }
 
@@ -263,7 +266,8 @@ export function sipaBroadcasts<W>(deps: SipaBroadcastsDeps<W>): SipaBroadcastsTa
     }
     await store.apply(job.address, { type: "broadcastSent", txHash })
     // The record holds the hash; the operation's copy only feeds the bell.
-    if (operationId) await bestEffort("unknown", operations.markSent(operationId, txHash))
+    if (operationId)
+      await bestEffort("unknown", operations.apply(operationId, { type: "sent", txHash }))
   }
 
   /** One step. True when another may follow at once. */

@@ -13,6 +13,9 @@ import {
   WITHDRAWAL_TERMINAL_PHASES,
   type WithdrawalRecord,
 } from "@obsidion/front-core"
+import { fmt } from "../../lib/fmt"
+import chainsCopy from "../../ui/chains.copy"
+import copy from "./waitingNote.copy"
 import { unswappableCopy } from "./unswappableCopy"
 import { withdrawalFailureText } from "./withdrawalFailure"
 
@@ -23,7 +26,7 @@ const SUBMITTING =
   "Waiting for the Aztec transaction to be mined. The amount is still in your balance until then."
 
 const RELEASING =
-  "The amount has been deducted from your balance. This withdrawal is being released to Ethereum, which can take up to 40 minutes. Once Ethereum accepts it, a relayer sends the funds to the recipient."
+  "The amount has been deducted from your balance. This withdrawal is being released to {chain}, which can take up to 40 minutes. Once {chain} accepts it, a relayer sends the funds to the recipient."
 
 const AWAITING_RELAYER =
   "The amount has been deducted from your balance and Ethereum has accepted this withdrawal. Waiting for a relayer to send the transaction that pays the recipient."
@@ -48,7 +51,11 @@ export function waitingNote(record: WithdrawalRecord): string | undefined {
       return record.l2TxHash ? SUBMITTING : PROVING
     case "l2_mined":
     case "awaiting_proven":
-      return withSwapLeg(RELEASING, record)
+      // A bridge-out names its destination; every other withdrawal lands on Ethereum.
+      return withSwapLeg(
+        fmt(RELEASING, { chain: record.bridgeOut?.chainName ?? chainsCopy.ethereum }),
+        record,
+      )
     case "finalizing_l1":
       if (record.finalizeTxHash) return withSwapLeg(AWAITING_OWN_FINALIZATION, record)
       return withSwapLeg(
@@ -60,6 +67,8 @@ export function waitingNote(record: WithdrawalRecord): string | undefined {
     case "swapping":
       if (record.swapExecuteTxHash) return AWAITING_OWN_SWAP
       return canSelfExecuteSwap(record) ? `${AWAITING_SWAP} ${RUN_IT_YOURSELF}` : AWAITING_SWAP
+    case "bridging":
+      return copy.awaitingBridge
     case "recoverable":
       return unswappableCopy(record)
     case "failed":

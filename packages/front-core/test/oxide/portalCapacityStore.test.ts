@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { createPace } from "@obsidion/core/cadence"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import { PortalCapacityUnsupportedError, type PortalCapacitySnapshot } from "@obsidion/sdk"
 import {
@@ -10,8 +11,12 @@ import {
   PortalCapacityReferenceError,
   type PortalCapacityKey,
   type PortalCapacityStoreOptions,
-  type VisibilitySource,
 } from "../../src/oxide/portalCapacityStore"
+import { queries } from "../../src/engine/query"
+import { memoryStore } from "../../src/engine/store"
+
+const pageQuery = (visible = memoryStore(true)) =>
+  queries({ pace: createPace(), visible: visible.readonly, now: () => Date.now() })
 
 const T0 = Date.UTC(2026, 8, 25, 12)
 const KEY: PortalCapacityKey = portalCapacityKey({
@@ -49,24 +54,12 @@ function harness(over: Partial<PortalCapacityStoreOptions> = {}) {
         pending.push({ key, resolve, reject }),
       ),
   )
-  const resumeListeners = new Set<() => void>()
-  let visible = true
-  const visibility: VisibilitySource = {
-    isVisible: () => visible,
-    onResume: (listener) => {
-      resumeListeners.add(listener)
-      return () => resumeListeners.delete(listener)
-    },
-  }
+  const visible = memoryStore(true)
   return {
     read,
     pending,
-    options: { read, visibility, ...over } as PortalCapacityStoreOptions,
-    setVisible(value: boolean) {
-      visible = value
-      if (value) for (const listener of resumeListeners) listener()
-    },
-    resumeListeners,
+    options: { read, query: pageQuery(visible), ...over } as PortalCapacityStoreOptions,
+    setVisible: visible.set,
     /** Resolve the oldest open read and let the store apply it. */
     async answer(value: PortalCapacitySnapshot | Error = snapshot()) {
       const next = pending.shift()!
@@ -159,7 +152,7 @@ describe("createPortalCapacityStore", () => {
     expect(store.getState()).toMatchObject({ status: "fresh", snapshot: { availableAtomic: 0n } })
   })
 
-  it("polls every refresh interval while visible, pauses while hidden and reads on resume", async () => {
+  it("polls every refresh interval while subscribed and visible, and reads again once shown", async () => {
     const h = harness()
     const store = createPortalCapacityStore(KEY, h.options)
     const unsubscribe = store.subscribe(() => {})
@@ -180,7 +173,6 @@ describe("createPortalCapacityStore", () => {
     unsubscribe()
     await vi.advanceTimersByTimeAsync(60_000)
     expect(h.read).toHaveBeenCalledTimes(3)
-    expect(h.resumeListeners.size).toBe(0)
   })
 
   it("marks a snapshot stale at the stale age, with or without subscribers", async () => {
@@ -445,7 +437,7 @@ describe("createPortalCapacityStore", () => {
         read: () => {
           throw failure
         },
-        visibility: { isVisible: () => true, onResume: () => () => {} },
+        query: pageQuery(),
       })
       await expect(store.refreshForSubmit()).resolves.toMatchObject({
         status: "unavailable",
@@ -838,6 +830,7 @@ describe("reference L1 time", () => {
 
 describe("policy", () => {
   const read = async () => snapshot()
+  const query = pageQuery()
 
   it("refuses timer values a timer cannot hold, and accepts Infinity only for the head limit", () => {
     for (const field of [
@@ -847,26 +840,26 @@ describe("policy", () => {
       "referenceMaxAgeMs",
     ] as const) {
       for (const value of [Infinity, NaN, 0, -1, 1.5, 2 ** 31]) {
-        expect(() => createPortalCapacityStore(KEY, { read, policy: { [field]: value } })).toThrow(
-          field,
-        )
-        expect(() => createPortalCapacityRegistry({ read, policy: { [field]: value } })).toThrow(
-          field,
-        )
+        expect(() =>
+          createPortalCapacityStore(KEY, { read, query, policy: { [field]: value } }),
+        ).toThrow(field)
+        expect(() =>
+          createPortalCapacityRegistry({ read, query, policy: { [field]: value } }),
+        ).toThrow(field)
       }
       expect(() =>
-        createPortalCapacityStore(KEY, { read, policy: { [field]: 2 ** 31 - 1 } }),
+        createPortalCapacityStore(KEY, { read, query, policy: { [field]: 2 ** 31 - 1 } }),
       ).not.toThrow()
     }
     expect(() =>
-      createPortalCapacityStore(KEY, { read, policy: { maxHeadAgeMs: Infinity } }),
+      createPortalCapacityStore(KEY, { read, query, policy: { maxHeadAgeMs: Infinity } }),
     ).not.toThrow()
-    expect(() => createPortalCapacityStore(KEY, { read, policy: { maxHeadAgeMs: NaN } })).toThrow(
-      "maxHeadAgeMs",
-    )
-    expect(() => createPortalCapacityStore(KEY, { read, policy: { maxHeadAgeMs: -1 } })).toThrow(
-      "maxHeadAgeMs",
-    )
+    expect(() =>
+      createPortalCapacityStore(KEY, { read, query, policy: { maxHeadAgeMs: NaN } }),
+    ).toThrow("maxHeadAgeMs")
+    expect(() =>
+      createPortalCapacityStore(KEY, { read, query, policy: { maxHeadAgeMs: -1 } }),
+    ).toThrow("maxHeadAgeMs")
   })
 })
 

@@ -1,10 +1,11 @@
-import { useEffect, useRef } from "react"
-import type { ActivityPages, FeedItem, Transaction } from "@obsidion/front-core"
+import { useRef } from "react"
+import type { TransferPages, FeedItem, Transaction } from "@obsidion/front-core"
+import { useDomEffect } from "../../useDomEffect"
 
 /** Calls `onReach` whenever the end of the list scrolls into view. */
 export function PageEnd({ onReach }: { onReach: () => void }) {
   const end = useRef<HTMLDivElement>(null)
-  useEffect(() => {
+  useDomEffect(() => {
     const el = end.current
     if (!el || typeof IntersectionObserver === "undefined") return
     const observer = new IntersectionObserver((seen) => {
@@ -19,7 +20,7 @@ export function PageEnd({ onReach }: { onReach: () => void }) {
 /** The items a paged feed lists: while older rows are unread, older items wait for them. */
 export function pagedItems<T extends Pick<FeedItem, "ts">>(
   items: readonly T[],
-  page: ReturnType<ActivityPages["rows"]["get"]>,
+  page: ReturnType<TransferPages["rows"]["get"]>,
 ): readonly T[] {
   if (page.complete) return items
   const oldest = Math.min(...page.records.map((row: Transaction) => row.timestamp))

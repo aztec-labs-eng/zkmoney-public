@@ -76,6 +76,7 @@ export class RequestReceiver {
   private async run({
     content,
     senderXmtpAddresses,
+    sentAt,
   }: RequestReceiveInput): Promise<RequestReceiveStatus> {
     switch (content.kind) {
       case "request": {
@@ -96,6 +97,7 @@ export class RequestReceiver {
           networkId: content.networkId,
           note: content.note && plainText(content.note),
           expiresAt: content.expiresAt,
+          sentAt,
         })
         return inserted ? { status: "accepted", kind: "request" } : { status: "duplicate" }
       }

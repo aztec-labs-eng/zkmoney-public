@@ -157,12 +157,7 @@ describe("versions", () => {
     const doc = stagingDoc()
     const version = doc.versions["0.0.2"]
 
-    for (const field of [
-      "nodeUrl",
-      "l1RpcUrl",
-      "accountServiceUrl",
-      "paylinkDomain",
-    ]) {
+    for (const field of ["nodeUrl", "l1RpcUrl", "accountServiceUrl", "paylinkDomain"]) {
       expect(version[field]).toMatch(/^https?:\/\//)
       delete version[field]
       expect(() => parseConfigProfile(doc)).toThrow(new RegExp(field))
@@ -295,6 +290,75 @@ describe("versions", () => {
       expect(() => parseConfigProfile(unpinned)).toThrow(/0\.0\.2.*no expectedGitSha for sUSDS/)
       expect(() => parseConfigProfile(withAssets([DAI, sUSDS], "mainnet"))).not.toThrow()
     })
+  })
+
+  describe("bridge", () => {
+    const USDC = { symbol: "USDC", address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" }
+    const USDT = { symbol: "USDT", address: "0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2" }
+    const ETH = { symbol: "ETH", native: true, comingSoon: true }
+    const base = { chainId: 8453, name: "Base", etaMinutes: 7, rpcUrl: "https://base.example", in: [USDC, ETH] }
+    const across = (chains: object[]) => ({ provider: "across", apiUrl: "https://across.example/api", chains })
+    const withBridge = (bridge: object) => {
+      const doc = stagingDoc()
+      doc.network = "testnet"
+      doc.shared.l1ChainId = 11155111
+      doc.versions["0.0.1"].oxide.expectedGitSha = "c".repeat(40)
+      doc.versions["0.0.2"].bridge = bridge
+      return doc
+    }
+
+    it("carries one provider with its chains and tokens each way", () => {
+      const bridge = across([{ ...base, out: [USDC, USDT] }])
+      expect(parseConfigProfile(withBridge(bridge)).versions["0.0.2"]).toMatchObject({ bridge })
+    })
+
+    it("may name the Across escrow factory", () => {
+      const bridge = { ...across([]), escrowFactory: `0x${"ac".repeat(20)}` }
+      expect(parseConfigProfile(withBridge(bridge)).versions["0.0.2"]).toMatchObject({ bridge })
+      const short = withBridge({ ...bridge, escrowFactory: "0xac" })
+      expect(() => parseConfigProfile(short)).toThrow(/L1 address/)
+    })
+
+    it("may name Across's contracts per chain, never none, and its L1 multicall handler", () => {
+      const contracts = [`0x${"5b".repeat(20)}`]
+      const bridge = { ...across([{ ...base, out: [], contracts }]), multicallHandler: `0x${"4a".repeat(20)}` }
+      expect(parseConfigProfile(withBridge(bridge)).versions["0.0.2"]).toMatchObject({ bridge })
+      const none = across([{ ...base, out: [], contracts: [] }])
+      expect(() => parseConfigProfile(withBridge(none))).toThrow(/contracts/)
+    })
+
+    it("lets a provider without an oxide escrow bridge in only", () => {
+      const lifi = { provider: "lifi", apiUrl: "https://lifi.example", integrator: "zkmoney", chains: [base] }
+      expect(() => parseConfigProfile(withBridge(lifi))).not.toThrow()
+      expect(() => parseConfigProfile(withBridge({ ...lifi, chains: [{ ...base, out: [USDC] }] }))).toThrow(/bridge/)
+    })
+
+    it.each([
+      ["lands a token oxide's escrows cannot deliver", [{ ...base, out: [{ ...USDC, symbol: "DAI" }] }], /out/],
+      ["sends native ETH out", [{ ...base, out: [ETH] }], /out/],
+      ["names the L1 chain", [{ ...base, chainId: 11155111, out: [] }], /L1 chain 11155111/],
+      ["lists a chain twice", [{ ...base, out: [] }, { ...base, out: [] }], /chain 8453 twice/],
+      ["lists a token twice one way", [{ ...base, in: [USDC, USDC], out: [] }], /USDC twice on chain 8453/],
+      ["serves an rpc over http", [{ ...base, rpcUrl: "http://base.example", out: [] }], /rpcUrl must be https/],
+    ])("refuses a bridge that %s", (_, chains, error) => {
+      expect(() => parseConfigProfile(withBridge(across(chains)))).toThrow(error)
+    })
+  })
+
+  it("lists holdings by oxide feature id, in order, and refuses anything but a list of ids", () => {
+    const withHoldings = (holdings: unknown) => {
+      const doc = stagingDoc()
+      doc.versions["0.0.2"].holdings = holdings
+      return doc
+    }
+    const holdings = ["fea-vault-a-v6", "fea-sky-v6", "sky"]
+    expect(parseConfigProfile(withHoldings(holdings)).versions["0.0.2"]).toMatchObject({
+      holdings,
+    })
+    const bad = [[""], [{ featureId: "sky" }], "sky"]
+    for (const ids of bad) {
+      expect(() => parseConfigProfile(withHoldings(ids))).toThrow(/holdings/)
+    }
   })
 
   it("validates a vkey hash when present, and a version may omit the block entirely", () => {

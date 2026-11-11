@@ -7,6 +7,7 @@
  * of them.
  */
 import { useCallback, useEffect, useRef } from "react"
+import type { WebWalletConfig } from "../config/env"
 import { isDemoMode } from "../dev/demoFlag"
 import { showErrorModal } from "../errors/errorModal"
 import {
@@ -14,12 +15,13 @@ import {
   linkWaitsCopy,
   savingsWaitsCopy,
 } from "./backupPasskey/backupPasskeyCopy"
-import { useBalanceMoving, useRerootPending } from "./backupPasskey/backupRotationStore"
-import { useUpgradeLock } from "./migration/upgradeLock"
-import { useStore } from "@obsidion/front-core"
+import { useBalanceMoving, useRerootPending } from "./backupPasskey/backupRotations"
+import { upgradeLockNow, useUpgradeLock } from "./migration/upgradeLock"
+import { balanceMovingNow, useStore, type BackupRotations } from "@obsidion/front-core"
 import { useSession } from "../session/session"
 import {
   openMigrationDialog,
+  upgradeStatus,
   useUpgradeStatus,
   type UpgradeState,
 } from "./migration/migrationDialog"
@@ -68,8 +70,11 @@ export interface ActionState {
   depositOwed: boolean
   railPending: boolean | undefined
   upgrade: UpgradeState
-  /** A backup passkey add has yet to switch the account onto its two-key account. */
-  rerootPending: boolean
+  /**
+   * A backup passkey add has yet to switch the account onto its two-key account; undefined while
+   * the rotations are not read.
+   */
+  rerootPending: boolean | undefined
   /** The account's upgrade lock is released: it is current on this version. */
   current: boolean
   /** The account's upgrade lock is held: an upgrade it started is not done. */
@@ -112,7 +117,8 @@ export function actionVerdict(action: WalletAction, s: ActionState): ActionVerdi
   const upgrade = s.demo ? undefined : upgradeVerdict(s)
   if (upgrade) return upgrade
   if (needs.sponsor && s.moving && !s.demo) return "moving"
-  if (needs.switched && s.rerootPending && !s.demo) return "backup"
+  if (needs.switched && !s.demo && s.rerootPending !== false)
+    return s.rerootPending ? "backup" : "checking"
   if (!needs.rail || s.demo) return "open"
   if (s.railPending === undefined) return "checking"
   return s.railPending ? "registering" : "open"
@@ -164,6 +170,29 @@ export function useActionState(): ActionState {
   }
 }
 
+/** A claim's verdict outside a render: it waits only on the upgrade and a balance move. */
+export async function claimVerdictNow(
+  config: WebWalletConfig,
+  account: string,
+  rotations: BackupRotations | null,
+): Promise<ActionVerdict> {
+  const lock = upgradeLockNow(config, account)
+  return actionVerdict("claim", {
+    named: true,
+    claimPending: false,
+    depositOwed: false,
+    railPending: false,
+    rerootPending: false,
+    oldWithdrawable: false,
+    upgrade: upgradeStatus().state,
+    current: lock.state === "released",
+    locked: lock.state === "held",
+    lockChecked: lock.checked,
+    demo: isDemoMode(),
+    moving: await balanceMovingNow(rotations, account),
+  })
+}
+
 export function useActionVerdict(action: WalletAction): ActionVerdict {
   return actionVerdict(action, useActionState())
 }
@@ -178,6 +207,7 @@ export function useActionGuard(): (action: WalletAction, run: () => void) => voi
   const state = useRef<ActionState>(undefined as never)
   state.current = useActionState()
   const mounted = useRef(false)
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     mounted.current = true
     return () => {

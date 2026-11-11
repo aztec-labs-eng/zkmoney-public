@@ -14,7 +14,6 @@ vi.mock("@obsidion/sdk", () => ({
   loadTeeSigner: vi.fn(),
   TokenService: {},
 }))
-vi.mock("../../src/config/env", () => ({ getConfig: () => ({ sourceRollupNodes: h.nodes }) }))
 vi.mock("../../src/config/oxideTuple", () => ({ l1PublicClient: vi.fn() }))
 vi.mock("../../src/features/token/oxideToken", () => ({
   portalContract: () => ({ isFrozen: h.isFrozen }),
@@ -34,6 +33,7 @@ const tuple = (portal: string, rollupVersion: string) =>
 const account = {} as never
 const active = { wallet: {}, account } as never
 const auth = {} as never
+const config = { sourceRollupNodes: h.nodes } as never
 const current = tuple("0x" + "01".repeat(20), "7")
 const retired = tuple("0x" + "AB".repeat(20), "6")
 
@@ -47,29 +47,29 @@ describe("sourceChain", () => {
   it("opens a rollup of this generation through the node the profile names for the portal", async () => {
     h.nodes.set("0x" + "ab".repeat(20), "https://old.rpc.example")
     h.open.mockResolvedValue({ wallet: "source", account: "sourceAccount" })
-    await expect(sourceChain(active, current, retired, auth)).resolves.toEqual({
+    await expect(sourceChain(config, active, current, retired, auth)).resolves.toEqual({
       kind: "pxe",
       wallet: "source",
       account: "sourceAccount",
     })
-    expect(h.open).toHaveBeenCalledWith("https://old.rpc.example", account, auth)
+    expect(h.open).toHaveBeenCalledWith(config, "https://old.rpc.example", active, auth)
   })
 
   it("opens another generation's rollup through that generation's session", async () => {
     h.nodes.set("0x" + "ab".repeat(20), "https://v5.rpc.example")
     h.otherGeneration.mockResolvedValue(true)
     h.switchSession.mockResolvedValue("session")
-    await expect(sourceChain(active, current, retired, auth)).resolves.toEqual({
+    await expect(sourceChain(config, active, current, retired, auth)).resolves.toEqual({
       kind: "generation",
       session: "session",
     })
-    expect(h.switchSession).toHaveBeenCalledWith("https://v5.rpc.example", account, auth)
+    expect(h.switchSession).toHaveBeenCalledWith(config, "https://v5.rpc.example", account, auth)
     expect(h.open).not.toHaveBeenCalled()
   })
 
   it("refuses a portal on another rollup that no profile version reaches", async () => {
     await expect(
-      sourceChain(active, current, tuple("0x" + "cd".repeat(20), "6"), auth),
+      sourceChain(config, active, current, tuple("0x" + "cd".repeat(20), "6"), auth),
     ).rejects.toThrow(/No node is configured/)
   })
 })
@@ -78,14 +78,14 @@ describe("isReadableSource", () => {
   beforeEach(() => h.nodes.set("0x" + "ab".repeat(20), "https://v5.rpc.example"))
 
   it("reads a source of this generation, live or frozen", async () => {
-    await expect(isReadableSource(current, retired)).resolves.toBe(true)
+    await expect(isReadableSource(config, current, retired)).resolves.toBe(true)
     expect(h.isFrozen).not.toHaveBeenCalled()
   })
 
   it("reads another generation's source only once its portal is frozen", async () => {
     h.otherGeneration.mockResolvedValue(true)
     h.isFrozen.mockResolvedValueOnce(false).mockResolvedValueOnce(true)
-    await expect(isReadableSource(current, retired)).resolves.toBe(false)
-    await expect(isReadableSource(current, retired)).resolves.toBe(true)
+    await expect(isReadableSource(config, current, retired)).resolves.toBe(false)
+    await expect(isReadableSource(config, current, retired)).resolves.toBe(true)
   })
 })

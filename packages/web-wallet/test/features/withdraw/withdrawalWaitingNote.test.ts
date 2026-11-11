@@ -6,15 +6,32 @@
 import { describe, expect, it } from "vitest"
 import type { Address, Hex } from "viem"
 import type { WithdrawalRecord } from "@obsidion/front-core"
+import { predictSwapEscrow } from "@obsidion/sdk"
 import { releaseNote, waitingNote } from "../../../src/features/withdraw/waitingNote"
 
 const HOUR = 60 * 60 * 1000
 const L2_TX = `0x${"0a".repeat(32)}` as Hex
 const FINALIZE_TX = `0x${"0b".repeat(32)}` as Hex
 
+const RECIPIENT = `0x${"dd".repeat(20)}` as Address
+const FACTORY = `0x${"fa".repeat(20)}` as Address
+const NONCE = `0x${"77".repeat(32)}` as Hex
+const COMMITMENT = `0x${"5a".repeat(32)}` as Hex
+/** The legacy escrow the swap record below commits to. */
+const ESCROW = predictSwapEscrow(FACTORY, {
+  layout: "legacy",
+  args: {
+    route: 0,
+    recipient: RECIPIENT,
+    recoveryCommitment: COMMITMENT,
+    relayerTip: 5n * 10n ** 18n,
+    nonce: NONCE,
+  },
+})
+
 const record = (patch: Partial<WithdrawalRecord> = {}): WithdrawalRecord => ({
   localId: "wdraw_1",
-  recipient: `0x${"dd".repeat(20)}` as Address,
+  recipient: RECIPIENT,
   recipientProvenance: "saved-recipient",
   amount: "210",
   tokenSymbol: "DAI",
@@ -110,10 +127,10 @@ describe("waitingNote", () => {
       record({
         l2TxHash: L2_TX,
         swapOutput: "USDC",
-        swapEscrow: `0x${"e5".repeat(20)}` as Address,
-        swapEscrowFactory: `0x${"fa".repeat(20)}` as Address,
-        swapNonce: `0x${"77".repeat(32)}` as Hex,
-        swapRecoveryCommitment: `0x${"5a".repeat(32)}` as Hex,
+        swapEscrow: ESCROW,
+        swapEscrowFactory: FACTORY,
+        swapNonce: NONCE,
+        swapRecoveryCommitment: COMMITMENT,
         swapRelayerTip: "5000000000000000000",
         ...patch,
       })

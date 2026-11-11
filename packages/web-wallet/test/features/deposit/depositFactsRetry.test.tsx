@@ -1,14 +1,11 @@
-/**
- * The deposit quote is what gates funding: without the fee the wallet would charge the amount
- * alone while the pool still takes its fee. A failed read has to say so and offer another go,
- * rather than leaving every affordance dead.
- */
+/** Guards: funding controls wait on the fee quote; a failed quote shows as failed, not blank. */
 import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { MemoryRouter } from "react-router-dom"
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { ScreeningProvider, passThroughScreener } from "@obsidion/front-core"
 import type { Hex } from "viem"
+import { testScreenings } from "../../support/page"
 
 const L2_ADDRESS = `0x${"cd".repeat(32)}` as Hex
 const MANIFEST_TOKEN = "0x00000000000000000000000000000000000000bb" as Hex
@@ -21,10 +18,6 @@ const capacity = vi.hoisted(() => ({ availableAtomic: 40_000n * 10n ** 18n }))
 vi.mock("../../../src/features/deposit/capacityStore", async () =>
   (await import("../../support/fakeCapacity")).fakeCapacityStore(capacity),
 )
-vi.mock("@obsidion/front-core", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@obsidion/front-core")>()),
-  useContractServiceContext: () => ({ contractService: {} }),
-}))
 const gateway = {
   depositAddress: vi.fn(async () => ({ address: "0xp001ed", name: "alice.oxide.eth" })),
 }
@@ -34,16 +27,6 @@ vi.mock("../../../src/features/sipa/loadDepositFacts", async (importOriginal) =>
   return mockLoadDepositFacts(importOriginal, () => tokens, loadDepositDisplayFacts)
 })
 vi.mock("../../../src/errors/errorModal", () => ({ showReportableError }))
-const l1 = vi.hoisted(() => ({
-  account: null as string | null,
-  accounts: [] as string[],
-  chainId: null as number | null,
-  connecting: false,
-  wrongChain: false,
-  connect: vi.fn(),
-  disconnect: vi.fn(),
-}))
-vi.mock("../../../src/session/l1Wallet", () => ({ useL1Wallet: () => l1 }))
 
 const { DepositScreen } = await import("../../../src/features/deposit/DepositScreen/DepositScreen")
 const noClaim = () => async () => {}
@@ -51,8 +34,10 @@ const { default: depositCopy } = await import(
   "../../../src/features/deposit/DepositScreen/DepositScreen.copy"
 )
 const { setIdentity } = await import("../../support/identity")
-const { tokenFigure } = await import("../../../src/ui/format")
-import { seedBootConfig } from "../../support/seedBootConfig"
+const { usdFigure } = await import("../../../src/ui/format")
+const { backToMethod, openDepositSheet, pickL1Coin, walletMethod } = await import(
+  "../../support/depositFlow"
+)
 
 const FACTS = {
   fee: "0.25",
@@ -63,12 +48,17 @@ const FACTS = {
 
 const { closeSession } = await import("../../../src/session/session")
 const { openTestSession } = await import("../../support/session")
-beforeEach(() => openTestSession({ wallet: {}, sipaAddresses: gateway }).registrations.ready)
+const { fakeL1Wallet, withL1Wallet } = await import("../../support/fakeL1Wallet")
+let wallet: ReturnType<typeof fakeL1Wallet>
+beforeEach(() => {
+  const session = openTestSession({ wallet: {}, contractService: {}, sipaAddresses: gateway })
+  wallet = fakeL1Wallet()
+  withL1Wallet(session, wallet.wallet)
+  return session.registrations.ready
+})
 afterEach(closeSession)
 
 describe("DepositScreen — deposit quote", () => {
-  beforeAll(seedBootConfig)
-
   let container: HTMLDivElement
   let root: Root
 
@@ -79,19 +69,22 @@ describe("DepositScreen — deposit quote", () => {
     container.querySelector<HTMLButtonElement>("[data-testid='deposit-copy']")
   /** Opens the sheet for the one coin the sandbox lists, and its limits drawer, where the fee is. */
   const openDrawer = async () => {
+    await openDepositSheet("TEST")
     await act(async () =>
-      container.querySelector<HTMLButtonElement>("[data-testid='deposit-coin-TEST']")!.click(),
-    )
-    await act(async () =>
-      container.querySelector<HTMLButtonElement>(".ww-deposit-sheet__limits-head")!.click(),
+      container.querySelector<HTMLButtonElement>('[data-testid="address-limits"] button')!.click(),
     )
   }
 
-  const render = () =>
+  /** The flow's first step, then the L1 coin: the method step, whose wallet row funds. */
+  const toMethod = async () => {
+    await render({ startDeposit: true })
+    await pickL1Coin("TEST")
+  }
+  const render = (state?: object) =>
     act(async () => {
       root.render(
-        <MemoryRouter>
-          <ScreeningProvider screener={passThroughScreener}>
+        <MemoryRouter initialEntries={[{ pathname: "/deposit", state }]}>
+          <ScreeningProvider screenings={testScreenings(passThroughScreener)}>
             <DepositScreen claimName={noClaim} />
           </ScreeningProvider>
         </MemoryRouter>,
@@ -100,7 +93,6 @@ describe("DepositScreen — deposit quote", () => {
 
   beforeEach(async () => {
     vi.clearAllMocks()
-    l1.account = null
     localStorage.clear()
     await setIdentity({ handle: "alice", address: L2_ADDRESS, claimedAt: 1 })
     container = document.createElement("div")
@@ -128,19 +120,17 @@ describe("DepositScreen — deposit quote", () => {
 
     expect(loadDepositDisplayFacts).toHaveBeenCalledTimes(2)
     expect(retry()).toBeNull()
-    expect(feeValue()).toBe(tokenFigure(FACTS.fee, "TEST"))
+    expect(feeValue()).toBe(usdFigure(FACTS.fee))
     expect(copyButton()?.disabled).toBe(false)
   })
 
   it("holds the funding controls while the quote is unavailable, and frees them on a good retry", async () => {
     loadDepositDisplayFacts.mockRejectedValueOnce(new Error("rpc down"))
-    l1.account = `0x${"a1".repeat(20)}`
-    await render()
+    wallet.connect(`0x${"a1".repeat(20)}`)
+    await toMethod()
 
-    const connect = () =>
-      container.querySelector<HTMLButtonElement>("[data-testid='deposit-connect-link']")!
     const note = () => container.querySelector("[data-testid='deposit-fee-unavailable']")
-    expect(connect().disabled).toBe(true)
+    expect(walletMethod()!.disabled).toBe(true)
     await openDrawer()
     expect(gateway.depositAddress).toHaveBeenCalledOnce()
     expect(copyButton()?.disabled).toBe(true)
@@ -149,9 +139,10 @@ describe("DepositScreen — deposit quote", () => {
     loadDepositDisplayFacts.mockResolvedValue(FACTS)
     await act(async () => retry()!.click())
 
-    expect(connect().disabled).toBe(false)
     expect(copyButton()?.disabled).toBe(false)
     expect(note()).toBeNull()
+    await backToMethod()
+    expect(walletMethod()!.disabled).toBe(false)
   })
 
   it("keeps the row pending across a retry rather than blanking it", async () => {
@@ -170,12 +161,10 @@ describe("DepositScreen — deposit quote", () => {
   it("holds the funding controls while the quote is still out, with nothing to retry", async () => {
     let land: (facts: typeof FACTS) => void = () => {}
     loadDepositDisplayFacts.mockReturnValue(new Promise((resolve) => (land = resolve)))
-    l1.account = `0x${"a1".repeat(20)}`
-    await render()
+    wallet.connect(`0x${"a1".repeat(20)}`)
+    await toMethod()
 
-    const connect = () =>
-      container.querySelector<HTMLButtonElement>("[data-testid='deposit-connect-link']")!
-    expect(connect().disabled).toBe(true)
+    expect(walletMethod()!.disabled).toBe(true)
     await openDrawer()
     expect(copyButton()?.disabled).toBe(true)
     // Nothing has failed, so the row says pending and carries no note.
@@ -183,7 +172,8 @@ describe("DepositScreen — deposit quote", () => {
 
     await act(async () => land(FACTS))
 
-    expect(connect().disabled).toBe(false)
     expect(copyButton()?.disabled).toBe(false)
+    await backToMethod()
+    expect(walletMethod()!.disabled).toBe(false)
   })
 })

@@ -1,7 +1,9 @@
+import { WalletError } from "@obsidion/core/errors"
+
 /** A bounded wait that ran out. The work behind it may still finish: nothing is cancelled. */
-export class TimeoutError extends Error {
+export class TimeoutError extends WalletError {
   constructor(ms: number) {
-    super(`timed out after ${ms}ms`)
+    super("timeout", `timed out after ${ms}ms`)
     this.name = "TimeoutError"
   }
 }

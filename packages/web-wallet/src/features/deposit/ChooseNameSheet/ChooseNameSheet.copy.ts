@@ -1,7 +1,5 @@
 export default {
   title: "Choose your name",
-  close: "Close",
-  at: "@",
   nameLabel: "Your name",
   namePlaceholder: "name",
   available: "@{name} is available",

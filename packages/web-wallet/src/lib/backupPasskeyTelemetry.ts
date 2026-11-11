@@ -1,3 +1,4 @@
+import { bestEffort, bestEffortSync } from "@obsidion/core/errors"
 import {
   BackupPasskeyRefusedError,
   type BackupPasskeyFacts,
@@ -9,9 +10,11 @@ import {
   type PasskeyRequestHook,
   backupAnswerFacts,
   backupCreationFacts,
+  currentUserAgentInfoSoon,
   isPasskeyCancelled,
   isPasskeyPolicyError,
   providerSlugFor,
+  windowsReleaseFromHints,
 } from "@obsidion/passkey-web"
 import { fireEvent } from "./analytics"
 
@@ -40,13 +43,12 @@ function backupPasskeyCeremony(saved: (evidence: PasskeyAnswerEvidence) => void)
 export function backupPasskeyOutcomeFor(
   error: unknown,
 ): Exclude<BackupPasskeyOutcome, "succeeded"> {
-  try {
+  // An error whose fields throw when read is still a failure.
+  return bestEffortSync<Exclude<BackupPasskeyOutcome, "succeeded">>(() => {
     if (isPasskeyCancelled(error)) return "cancelled"
     if (isPasskeyPolicyError(error)) return "refused"
-  } catch {
-    // An error whose fields throw when read is still a failure.
-  }
-  return "failed"
+    return "failed"
+  }, "failed")
 }
 
 /** The id rides only for an `other` provider whose id is itself unlisted, lowercased. */
@@ -58,20 +60,23 @@ function otherAaguid(facts: BackupPasskeyFacts | undefined): string | undefined 
 function reportBackupPasskeyAdd(
   outcome: BackupPasskeyOutcome,
   facts: BackupPasskeyFacts | undefined,
+  windowsRelease: "10" | "11" | undefined,
   error?: unknown,
 ): void {
-  try {
-    fireEvent("backup_passkey_add", {
-      outcome,
-      provider: facts?.provider ?? "unknown",
-      device_bound: facts?.deviceBound,
-      prf_at_create: facts?.prfAtCreate,
-      reason: error instanceof BackupPasskeyRefusedError ? error.kind : undefined,
-      aaguid: otherAaguid(facts),
-    })
-  } catch {
-    // Telemetry never fails the add.
-  }
+  // Telemetry never fails the add.
+  bestEffortSync(
+    () =>
+      fireEvent("backup_passkey_add", {
+        outcome,
+        provider: facts?.provider ?? "unknown",
+        device_bound: facts?.deviceBound,
+        prf_at_create: facts?.prfAtCreate,
+        reason: error instanceof BackupPasskeyRefusedError ? error.kind : undefined,
+        aaguid: otherAaguid(facts),
+        windows_release: windowsRelease,
+      }),
+    undefined,
+  )
 }
 
 /**
@@ -85,26 +90,29 @@ export async function trackBackupPasskeyAdd<T>(
 ): Promise<T> {
   let saved: PasskeyAnswerEvidence | undefined
   let facts: BackupPasskeyFacts | undefined
+  // Read beside the ceremony, so the prompt still opens on the tap. Windows Hello's key material
+  // depends on the release; the event keeps the release only, never the build.
+  const windowsRelease = bestEffort(
+    "unknown",
+    currentUserAgentInfoSoon().then(windowsReleaseFromHints),
+  )
   const ceremony = backupPasskeyCeremony((evidence) => {
     saved = evidence
   })
   const observe: CeremonyObserver = (event) => {
     if (event.phase !== "created") return
-    try {
-      facts = backupCreationFacts(event.result)
-    } catch {
-      // The add reports with what the browser said, if anything.
-    }
+    // Unreadable facts leave the add with what the browser said, if anything.
+    facts = bestEffortSync(() => backupCreationFacts(event.result), facts)
   }
   let result: T
   try {
     result = await run(ceremony, observe)
   } catch (error) {
     const known = facts ?? (saved && backupAnswerFacts(saved))
-    reportBackupPasskeyAdd(backupPasskeyOutcomeFor(error), known, error)
+    reportBackupPasskeyAdd(backupPasskeyOutcomeFor(error), known, await windowsRelease, error)
     throw error
   }
-  reportBackupPasskeyAdd("succeeded", facts)
+  reportBackupPasskeyAdd("succeeded", facts, await windowsRelease)
   return result
 }
 
@@ -113,14 +121,15 @@ export function reportBackupPasskeySignIn(
   outcome: BackupPasskeyOutcome,
   facts: BackupPasskeyFacts = { provider: "unknown" },
 ): void {
-  try {
-    fireEvent("backup_passkey_sign_in", {
-      outcome,
-      provider: facts.provider,
-      device_bound: facts.deviceBound,
-      aaguid: otherAaguid(facts),
-    })
-  } catch {
-    // Telemetry never fails a sign-in.
-  }
+  // Telemetry never fails a sign-in.
+  bestEffortSync(
+    () =>
+      fireEvent("backup_passkey_sign_in", {
+        outcome,
+        provider: facts.provider,
+        device_bound: facts.deviceBound,
+        aaguid: otherAaguid(facts),
+      }),
+    undefined,
+  )
 }

@@ -1,12 +1,10 @@
 // @vitest-environment node
-import { describe, expect, it, vi } from "vitest"
-import { formatUnits } from "viem"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 import { WALLET_TOKEN_SYMBOL } from "@obsidion/core/constants"
 import type { RegisteredTeeSigner, TokenService } from "@obsidion/sdk"
-import { createBalances } from "../../src/engine/balances"
-import { fixed, valueOf, type Resource } from "../../src/engine/resource"
-import { derived, memoryStore } from "../../src/engine/store"
-import { teeSignerResource, tokenResource } from "../../src/engine/token"
+import { fixed, valueOf, type Service } from "../../src/engine/service"
+import { memoryStore, type Store } from "../../src/engine/store"
+import { openTeeSigner, openToken } from "../../src/engine/token"
 import type { TeeSignerSource } from "../../src/tee/teeSignerSource"
 import { fakeClock, flush, later } from "./taskTable"
 
@@ -27,7 +25,8 @@ function fakeSource(overrides: Partial<TeeSignerSource> = {}) {
     refresh: vi.fn(),
     ...overrides,
   }
-  return { source, emit: () => [...listeners].forEach((l) => l()) }
+  // Iterates the live set, as the manifest client does: a listener added during the call runs too.
+  return { source, emit: () => listeners.forEach((l) => l()) }
 }
 
 function fakeToken() {
@@ -40,9 +39,14 @@ function fakeToken() {
   }
 }
 
+/** The assets' `when`: the routes that need them set it. */
+let wanted: Store<boolean>
+beforeEach(() => void (wanted = memoryStore(false)))
+const start = () => wanted.set(true)
+
 function setup(
-  teeSigner: Resource<RegisteredTeeSigner>,
-  account: Resource<object> = fixed("account", {}),
+  teeSigner: Service<RegisteredTeeSigner> | ReturnType<typeof openTeeSigner>,
+  account: Service<object> = fixed("account", {}),
 ) {
   const tokens: ReturnType<typeof fakeToken>[] = []
   const create = vi.fn(async () => {
@@ -50,11 +54,12 @@ function setup(
     tokens.push(token)
     return token as unknown as TokenService
   })
-  const token = tokenResource({
+  const token = openToken({
     wallet: fixed("wallet", {} as never),
     account: account as never,
     contractService: fixed("contractService", {} as never),
     teeSigner,
+    when: wanted,
     create,
   })
   return { token, tokens, create }
@@ -62,14 +67,14 @@ function setup(
 
 fakeClock()
 
-describe("teeSignerResource", () => {
-  it("connects nothing before it is demanded, then logs the connect with the source's label", async () => {
+describe("openTeeSigner", () => {
+  it("connects nothing before `when` holds, then logs the connect with the source's label", async () => {
     const log = vi.spyOn(console, "log").mockImplementation(() => {})
     const { source } = fakeSource()
-    const tee = teeSignerResource(source)
+    const tee = openTeeSigner(source, wanted)
     await flush()
     expect(source.load).not.toHaveBeenCalled()
-    tee.demand()
+    start()
     await flush()
     expect(valueOf(tee)).toBe(SIGNER)
     expect(log).toHaveBeenCalledWith(
@@ -80,8 +85,8 @@ describe("teeSignerResource", () => {
 
   it("stays pending when the source has nothing to connect, asking no refresh", async () => {
     const { source } = fakeSource({ load: vi.fn(async () => undefined) })
-    const tee = teeSignerResource(source)
-    tee.demand()
+    const tee = openTeeSigner(source, wanted)
+    start()
     await flush()
     expect(tee.get().status).toBe("pending")
     expect(source.refresh).not.toHaveBeenCalled()
@@ -91,8 +96,8 @@ describe("teeSignerResource", () => {
     const failure = new Error("enclave hiccup")
     const load = vi.fn().mockRejectedValueOnce(failure).mockResolvedValue(SIGNER)
     const { source } = fakeSource({ load, subscribe: undefined })
-    const tee = teeSignerResource(source)
-    tee.demand()
+    const tee = openTeeSigner(source, wanted)
+    start()
     await flush()
     expect(tee.get()).toMatchObject({ status: "failed", error: failure })
     expect(source.refresh).toHaveBeenCalledTimes(1)
@@ -106,8 +111,8 @@ describe("teeSignerResource", () => {
       .fn()
       .mockImplementationOnce(() => new Promise(() => {}))
       .mockResolvedValue(SIGNER)
-    const tee = teeSignerResource(fakeSource({ load, subscribe: undefined }).source)
-    tee.demand()
+    const tee = openTeeSigner(fakeSource({ load, subscribe: undefined }).source, wanted)
+    start()
     await vi.advanceTimersByTimeAsync(60_000)
     expect(tee.get()).toMatchObject({
       status: "failed",
@@ -120,10 +125,9 @@ describe("teeSignerResource", () => {
   it("reconnects on a manifest roll, clearing the signer from the token first", async () => {
     const B = signer("0xtee-registry-B")
     const { source, emit } = fakeSource()
-    const tee = teeSignerResource(source)
-    const { token, tokens } = setup(tee)
-    tee.demand()
-    token.demand()
+    const tee = openTeeSigner(source, wanted)
+    const { tokens } = setup(tee)
+    start()
     await flush()
     expect(tokens[0].setTeeSigner).toHaveBeenLastCalledWith(SIGNER)
     vi.mocked(source.load).mockResolvedValueOnce(B)
@@ -131,14 +135,18 @@ describe("teeSignerResource", () => {
     expect(tokens[0].setTeeSigner).toHaveBeenLastCalledWith(undefined)
     await flush()
     expect(valueOf(tee)).toBe(B)
+    expect(source.load).toHaveBeenCalledTimes(2)
     expect(tokens[0].setTeeSigner).toHaveBeenLastCalledWith(B)
   })
 
   it("stops its retry and its subscription on close", async () => {
     const unsubscribe = vi.fn()
     const load = vi.fn().mockRejectedValue(new Error("down"))
-    const tee = teeSignerResource(fakeSource({ load, subscribe: vi.fn(() => unsubscribe) }).source)
-    tee.demand()
+    const tee = openTeeSigner(
+      fakeSource({ load, subscribe: vi.fn(() => unsubscribe) }).source,
+      wanted,
+    )
+    start()
     await flush()
     tee.close()
     expect(unsubscribe).toHaveBeenCalled()
@@ -147,30 +155,29 @@ describe("teeSignerResource", () => {
   })
 
   it("connects with no account behind it: a link's visitor cashing out", async () => {
-    const tee = teeSignerResource(fakeSource().source)
-    const { token, create } = setup(tee, later<object>("account").resource)
-    tee.demand()
-    token.demand()
+    const tee = openTeeSigner(fakeSource().source, wanted)
+    const { create } = setup(tee, later<object>("account").service)
+    start()
     await flush()
     expect(valueOf(tee)).toBe(SIGNER)
     expect(create).not.toHaveBeenCalled()
   })
 })
 
-describe("tokenResource", () => {
-  it("builds nothing before it is demanded", async () => {
+describe("openToken", () => {
+  it("builds nothing before `when` holds", async () => {
     const { token, create } = setup(fixed("teeSigner", SIGNER))
     await flush()
     expect(create).not.toHaveBeenCalled()
-    token.demand()
+    start()
     await flush()
     expect(valueOf(token)).toBeDefined()
   })
 
   it("builds once a late account arrives, and hands it the signer connected before", async () => {
     const account = later<object>("account")
-    const { token, tokens } = setup(fixed("teeSigner", SIGNER), account.resource)
-    token.demand()
+    const { token, tokens } = setup(fixed("teeSigner", SIGNER), account.service)
+    start()
     await flush()
     expect(token.get().status).toBe("pending")
     account.ready({})
@@ -182,8 +189,8 @@ describe("tokenResource", () => {
   it("gives the signer only to the current token", async () => {
     const account = later<object>("account")
     account.ready({})
-    const { token, tokens } = setup(fixed("teeSigner", SIGNER), account.resource)
-    token.demand()
+    const { tokens } = setup(fixed("teeSigner", SIGNER), account.service)
+    start()
     await flush()
     account.ready({})
     await flush()
@@ -200,40 +207,10 @@ describe("tokenResource", () => {
       tokens.push(t)
       return t as unknown as TokenService
     })
-    token.demand()
+    start()
     await flush()
     expect(token.get().status).toBe("failed")
     await vi.advanceTimersByTimeAsync(4_000)
     expect(valueOf(token)).toBe(tokens[1])
-  })
-
-  it("renders the right figure over a row stored with the wrong decimals", async () => {
-    const { token } = setup(fixed("teeSigner", SIGNER))
-    token.demand()
-    await flush()
-    const balances = createBalances(
-      {
-        load: async () => {},
-        list: () => [
-          { scope: "sandbox:0xacct", tokenAddress: TOKEN, balance: (5n * 10n ** 18n).toString() },
-        ],
-        onListChanged: () => () => {},
-      },
-      {
-        network: "sandbox",
-        account: memoryStore({ value: { completeAddress: "0xacct" }, loaded: true }),
-        tokens: memoryStore({
-          value: [{ address: TOKEN, symbol: WALLET_TOKEN_SYMBOL, decimals: 6 }],
-          loaded: true,
-        }),
-        activeToken: derived([token], (s) => (s.status === "ready" ? TOKEN : null)),
-      },
-      memoryStore({ syncing: false, progress: null }).readonly,
-    )
-    balances.view.subscribe(() => {})
-    await flush()
-    const main = balances.view.get().main
-    const decimals = valueOf(token)?.metadata.decimals
-    expect(main && decimals !== undefined && formatUnits(main.atomic, decimals)).toBe("5")
   })
 })

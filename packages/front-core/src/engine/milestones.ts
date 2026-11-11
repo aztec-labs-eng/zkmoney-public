@@ -92,7 +92,7 @@ export function createMilestones(deps: {
   catchUp: CatchUp
   waits?: Partial<{ boot: number; deposits: number; sync: number }>
 }): Milestones {
-  const now = () => globalThis.performance?.now() ?? Date.now()
+  const now = () => performance.now()
   const waits = { boot: BOOT_WAIT_MS, deposits: DEPOSITS_WAIT_MS, sync: BALANCE_SYNC_WAIT_MS }
   Object.assign(waits, deps.waits)
   const state = memoryStore<MilestoneState>({

@@ -1,5 +1,6 @@
 import { z } from "zod"
 import { Fr } from "@aztec-labs/aztec.js/fields"
+import { MAX_TAG_LENGTH } from "@obsidion/core/constants"
 import { TRANSFER_MEMO_MAX_BYTES } from "../services/token/transferMeta.js"
 
 /**
@@ -12,10 +13,10 @@ export const CONNECT_BACK_UUID_MAX_LEN = 128
 
 /**
  * Scanner-claimed tag on a connect-back. Matches front-core's tag charset (X
- * handle alphabet plus `-`, no leading/trailing hyphen, max 32). Optional on
- * the wire so a tag-less scanner and an older sender still decode.
+ * handle alphabet plus `-`, no leading/trailing hyphen, max `MAX_TAG_LENGTH`). Optional on the
+ * wire so a tag-less scanner and an older sender still decode.
  */
-export const CONNECT_BACK_TAG_MAX_LEN = 32
+export const CONNECT_BACK_TAG_MAX_LEN = MAX_TAG_LENGTH
 export const CONNECT_BACK_TAG_REGEX = /^[a-z0-9_](?:[a-z0-9_-]*[a-z0-9_])?$/
 
 /**

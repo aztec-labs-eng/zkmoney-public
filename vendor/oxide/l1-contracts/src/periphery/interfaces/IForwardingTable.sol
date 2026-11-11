@@ -2,11 +2,11 @@
 pragma solidity >=0.8.27;
 
 import {IOxidePortal} from "@core/interfaces/IOxidePortal.sol";
-import {SIPABase} from "@periphery/SIPABase.sol";
+import {Intent} from "@periphery/Intent.sol";
 
 interface IForwardingTable {
   struct IntentFees {
-    SIPABase.Intent intent;
+    Intent intent;
     uint128 beneficiaryFee;
     uint128 sweepTip;
   }
@@ -34,7 +34,7 @@ interface IForwardingTable {
 
   function $beneficiary() external view returns (address);
 
-  function rowFor(address _token, SIPABase.Intent _intent)
+  function rowFor(address _token, Intent _intent)
     external
     view
     returns (IOxidePortal portal, address beneficiary, uint128 beneficiaryFee, uint128 sweepTip);

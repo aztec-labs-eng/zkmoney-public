@@ -1,9 +1,14 @@
-import { useEffect, useState } from "react"
 import type { AztecNode } from "@aztec-labs/aztec.js/node"
-import { depositArrivalMinutes, depositArrivalSeconds } from "@obsidion/front-core"
+import {
+  depositArrivalMinutes,
+  depositArrivalSeconds,
+  memoryStore,
+  useStore,
+} from "@obsidion/front-core"
+import { useSession } from "../../session/session"
 
-/** How often the figure is recomputed, so it follows the slot grid. */
-const TICK_MS = 30_000
+/** A clock that never ticks, read where nothing waits on the time. */
+export const NO_CLOCK = memoryStore(0).readonly
 
 export interface ArrivalGrid {
   l1GenesisTime: number
@@ -22,32 +27,12 @@ export async function loadArrivalGrid(
  * Minutes until a deposit spotted now would credit the balance, from the rollup's slot grid.
  * Unknown while the read is out or once it failed.
  */
-export function useDepositArrivalMinutes(node: AztecNode | undefined): number | undefined {
-  const [grid, setGrid] = useState<ArrivalGrid>()
-  useEffect(() => {
-    if (!node) return
-    let live = true
-    loadArrivalGrid(node).then(
-      (loaded) => live && setGrid(loaded),
-      () => {},
-    )
-    return () => {
-      live = false
-    }
-  }, [node])
-
-  const [minutes, setMinutes] = useState<number>()
-  useEffect(() => {
-    if (!grid) return
-    const compute = () =>
-      setMinutes(
-        depositArrivalMinutes(
-          depositArrivalSeconds({ nowSeconds: Math.floor(Date.now() / 1000), ...grid }),
-        ),
-      )
-    compute()
-    const timer = setInterval(compute, TICK_MS)
-    return () => clearInterval(timer)
-  }, [grid])
-  return minutes
+export function useDepositArrivalMinutes(): number | undefined {
+  const { page } = useSession()
+  const read = useStore(page.slotGrid)
+  const grid = read.status === "ready" ? read.value : undefined
+  // The clock ticks only once the grid is read.
+  const { wallClock } = page
+  const nowSeconds = Math.floor(useStore(grid ? wallClock : NO_CLOCK) / 1000)
+  return grid && depositArrivalMinutes(depositArrivalSeconds({ nowSeconds, ...grid }))
 }

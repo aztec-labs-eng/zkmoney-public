@@ -159,7 +159,7 @@ export async function runSipaRecovery(deps: SipaRecoveryDeps): Promise<Hex> {
     if (!origin) {
       throw new Error(
         "This deposit's address has not been deployed yet, and its deployment details could not " +
-          "be reconstructed. The funds are safe at the deposit address — contact support.",
+          "be reconstructed. The funds are safe at the deposit address.",
       )
     }
   }

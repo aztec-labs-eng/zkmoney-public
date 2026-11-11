@@ -1,8 +1,12 @@
 import { describe, expect, it, vi } from "vitest"
+import { mainnet } from "viem/chains"
+import type { Config } from "wagmi"
 import { ContractFunctionExecutionError, UserRejectedRequestError, erc20Abi, type Hex } from "viem"
 
 vi.mock("wagmi/actions", () => ({ getAccount: () => ({}), switchChain: vi.fn() }))
-vi.mock("../../../../src/session/wagmi", () => ({ wagmiConfig: () => ({}) }))
+
+// wagmi/actions is mocked: only the config's chains are read.
+const WAGMI = { chains: [mainnet] } as unknown as Config
 
 const { getL1Clients, isWalletRejection, isWrongNetwork } = await import(
   "../../../../src/session/l1Wallet"
@@ -55,7 +59,7 @@ describe("isWrongNetwork", () => {
         throw new Error(`unexpected request: ${method}`)
       },
     } as never
-    const { walletClient, chain } = await getL1Clients(1)
+    const { walletClient, chain } = await getL1Clients(WAGMI, 1)
     const err = await walletClient
       .writeContract({
         address: account,
@@ -97,7 +101,7 @@ describe("a WalletConnect cancel", () => {
         throw { code: -32600, message: "JSON is not a valid request object." }
       },
     } as never
-    const { walletClient, chain } = await getL1Clients(1)
+    const { walletClient, chain } = await getL1Clients(WAGMI, 1)
     const err = await walletClient
       .sendTransaction({
         account,

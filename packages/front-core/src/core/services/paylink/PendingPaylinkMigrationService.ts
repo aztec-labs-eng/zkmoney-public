@@ -50,6 +50,7 @@ export interface PendingPaylinkMigrationServiceDeps {
 }
 
 /** Work in flight on each store. Every service over one store runs its changes one at a time. */
+// eslint-disable-next-line no-restricted-syntax -- debt
 const storeWork = new WeakMap<PendingPaylinkMigrationStore, Promise<unknown>>()
 
 function exclusive<T>(store: PendingPaylinkMigrationStore, work: () => Promise<T>): Promise<T> {

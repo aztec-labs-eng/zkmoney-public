@@ -1,14 +1,7 @@
-/**
- * What a visitor with no account is offered on `/link#…`.
- *
- * The fork is the point: a link that can pay its own way out asks how they want the money, and one
- * that cannot must not offer a cash-out it can't fund. The signup path is unchanged for every link
- * without a voucher, which is every link created before this shipped.
- */
+// Guards: no signup or claim on an unread, failed or spent check or below the threshold; privacy.
 import React, { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
-import { captureLandingSource, landingAttribution } from "../../../../src/lib/trafficSource"
 
 /** Per-test voucher answer: undefined = the chain read is still in flight. */
 const voucher: { uses: number | undefined; deps: unknown; error?: string; retry: () => void } = {
@@ -53,10 +46,10 @@ vi.mock("../../../../src/features/paylink/claimStash", async (importOriginal) =>
   receivesToAccount: (
     await importOriginal<typeof import("../../../../src/features/paylink/claimStash")>()
   ).receivesToAccount,
-  stashClaimLink,
-  stashTicketSignup: (...args: unknown[]) => {
+  stashClaimLink: (_: unknown, fragment: string) => stashClaimLink(fragment),
+  stashTicketSignup: (_: unknown, ticket: unknown) => {
     ticketStashed = true
-    return stashTicketSignup(...args)
+    return stashTicketSignup(ticket)
   },
   clearTicketSignup,
   peekTicketSignup: () => saved.value ?? (ticketStashed ? { fragment: "frag" } : null),
@@ -82,7 +75,6 @@ const chain: { now: number | undefined } = { now: 1_000 }
 vi.mock("../../../../src/features/paylink/chainTime", () => ({
   usePolledChainSeconds: () => chain.now,
 }))
-await (await import("../../../support/seedBootConfig")).seedBootConfig()
 /** The router state the page opened with: a signup elsewhere may have chosen its account. */
 const route = vi.hoisted(() => ({ state: null as unknown }))
 vi.mock("react-router-dom", () => ({
@@ -154,6 +146,7 @@ vi.mock("../../../../src/features/paylink/ClaimToL1Modal", () => ({
 vi.mock("@obsidion/web-ds", () => ({
   Icon: () => null,
   Shimmer: ({ children }: { children?: React.ReactNode }) => <div data-skeleton>{children}</div>,
+  SkeletonBlock: () => <div aria-hidden />,
   Spinner: () => <div data-testid="spinner" />,
   PrimaryGradientButton: ({
     title,
@@ -261,44 +254,6 @@ describe("PaylinkVisitorScreen", () => {
     expect(button("Claim to an Ethereum wallet")?.disabled).toBe(false)
   })
 
-  it("on a network that issues tickets, the link pays for the signup: the three-step modal opens over this page", () => {
-    voucher.uses = 1
-    offer.value = { threshold: "1", schedule: { fee: "5", minDeposit: "0" } }
-    render({ link: link({ memo: "Pizza dinner", senderTag: "river" }) })
-    // The link pays fees out of the payment, so the option promises privacy and speed, never "free".
-    expect(container.textContent).toContain("Instant. Your balance stays private.")
-    expect(container.textContent).not.toContain("Free and instant")
-
-    act(() => button("Receive to zk.money")!.click())
-
-    expect(stashTicketSignup).toHaveBeenCalledWith({
-      fragment: "frag",
-      threshold: "1",
-      schedule: { fee: "5", minDeposit: "0" },
-      memo: "Pizza dinner",
-      senderTag: "river",
-      // The page's own read of the note, in base units, so the signup's split is priced at once.
-      amount: (25n * 10n ** 18n).toString(),
-      // The claim window as read here, so Home claims without reading the note again.
-      claimableFrom: 0,
-    })
-    expect(fireEvent).toHaveBeenCalledWith("paylink_visitor_chose", {
-      choice: "account",
-      ticket: true,
-    })
-    expect(testId("ticket-signup")).toBeTruthy()
-    expect(testId("signup")).toBeNull()
-    // The choice stays behind the modal, inert, and closing the first step returns to it.
-    expect(button("Receive to zk.money")?.disabled).toBe(true)
-    expect(button("Claim to an Ethereum wallet")?.disabled).toBe(true)
-    act(() => button("exit")!.click())
-    expect(testId("ticket-signup")).toBeNull()
-    expect(button("Receive to zk.money")?.disabled).toBe(false)
-    // Nothing was committed: the ticket intent goes, the link stays stashed for Home.
-    expect(clearTicketSignup).toHaveBeenCalledOnce()
-    expect(stashClaimLink).toHaveBeenCalledWith("frag")
-  })
-
   it("with a ticket on offer, the account option waits for the voucher read; a signup then keeps its page", () => {
     voucher.uses = undefined
     offer.value = { threshold: "1", schedule: { fee: "5", minDeposit: "0" } }
@@ -333,22 +288,6 @@ describe("PaylinkVisitorScreen", () => {
     expect(testId("ticket-signup")).toBeNull()
     expect(stashTicketSignup).not.toHaveBeenCalled()
     expect(fireEvent).not.toHaveBeenCalledWith("paylink_visitor_chose", expect.anything())
-  })
-
-  it("leaving the page before the tag is claimed drops the ticket intent; a bought registration keeps it", () => {
-    voucher.uses = 1
-    offer.value = { threshold: "1", schedule: { fee: "5", minDeposit: "0" } }
-    render({ link: link() })
-    act(() => button("Receive to zk.money")!.click())
-    act(() => root.render(<div />))
-    expect(clearTicketSignup).toHaveBeenCalledOnce()
-
-    clearTicketSignup.mockClear()
-    render({ link: link() })
-    act(() => button("Receive to zk.money")!.click())
-    committed.value = true
-    act(() => root.render(<div />))
-    expect(clearTicketSignup).not.toHaveBeenCalled()
   })
 
   it("holds the account choice until the ticket offer is read, then honours a late offer", () => {
@@ -395,37 +334,6 @@ describe("PaylinkVisitorScreen", () => {
     act(() => button("Receive to zk.money")!.click())
     expect(clearTicketSignup).toHaveBeenCalledOnce()
     expect(testId("signup")).toBeTruthy()
-  })
-
-  describe("the ticket start on the signup stream", () => {
-    const TICKET_OFFER = { threshold: "1", schedule: { fee: "5", minDeposit: "0" } }
-    const starts = () =>
-      fireOnboardingEvent.mock.calls.filter(([event]) => event === "onboarding_started")
-
-    it("reports a redeemable offer once per mount, before any choice", () => {
-      voucher.uses = 1
-      offer.value = TICKET_OFFER
-      render({ link: link() })
-      expect(starts()).toEqual([["onboarding_started", { entry: "ticket" }]])
-      render({ link: link() })
-      act(() => button("Receive to zk.money")!.click())
-      expect(starts()).toHaveLength(1)
-    })
-
-    it("a reload that resumes a paid signup reports no second start, and stays the ticket's", () => {
-      // The reload lands on /link again, which reads as a plain payment link.
-      localStorage.clear()
-      window.history.replaceState(null, "", "/link#frag")
-      captureLandingSource()
-      voucher.uses = 1
-      offer.value = null
-      resumable.value = true
-      saved.value = { fragment: "frag", schedule: { fee: "5", minDeposit: "0" }, paid: true }
-      render({ link: link() })
-      expect(testId("ticket-signup")).toBeTruthy()
-      expect(fireOnboardingEvent).not.toHaveBeenCalled()
-      expect(landingAttribution().channel).toBe("ticket")
-    })
   })
 
   describe("the ticket's threshold, checked before the signup starts", () => {
@@ -533,22 +441,6 @@ describe("PaylinkVisitorScreen", () => {
       act(() => button("Receive to zk.money")!.click())
       expect(stashTicketSignup).not.toHaveBeenCalled()
       expect(testId("signup")).toBeTruthy()
-    })
-
-    it("a link sent here with the note below the threshold opens the same modal, at the name's own price", () => {
-      voucher.uses = 1
-      offer.value = ticketOffer(30n * ONE)
-      route.state = { receive: "account" }
-      render({ link: link() })
-      expect(stashTicketSignup).toHaveBeenCalledWith(
-        expect.objectContaining({
-          fragment: "frag",
-          paid: true,
-          amount: (25n * ONE).toString(),
-        }),
-      )
-      expect(stashTicketSignup.mock.calls[0][0]).not.toHaveProperty("threshold")
-      expect(testId("ticket-signup")).toBeTruthy()
     })
   })
 

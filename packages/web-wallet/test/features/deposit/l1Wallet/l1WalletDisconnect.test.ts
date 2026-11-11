@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from "vitest"
 import { ContractFunctionExecutionError, UnknownRpcError } from "viem"
 
 vi.mock("wagmi/actions", () => ({ getAccount: () => ({}), switchChain: vi.fn() }))
-vi.mock("../../../../src/session/wagmi", () => ({ wagmiConfig: () => ({}) }))
 
 const { isWalletDisconnect } = await import("../../../../src/session/l1Wallet")
 

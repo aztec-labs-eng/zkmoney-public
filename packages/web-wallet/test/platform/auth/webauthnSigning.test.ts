@@ -1,7 +1,6 @@
 // @vitest-environment node
-import { provingProgress } from "@obsidion/proving-progress"
 import type { PasskeyCeremony } from "@obsidion/passkey-web"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { beforeEach, describe, expect, it, type Mock, vi } from "vitest"
 import {
   type SigningSteering,
   makeWebauthnSignFn,
@@ -20,18 +19,14 @@ const createRequest = {
   prfFirstSalt: new Uint8Array(32),
 }
 
-/** The signing events in order, until `stop`. */
+/** A signing report that records what it heard, in order. */
 function signingEvents() {
   const seen: string[] = []
-  const onStart = () => void seen.push("start")
-  const onEnd = (event: { failed?: boolean }) => void seen.push(event.failed ? "end:failed" : "end")
-  provingProgress.on("signing-start", onStart)
-  provingProgress.on("signing-end", onEnd)
   return {
     seen,
-    stop: () => {
-      provingProgress.off("signing-start", onStart)
-      provingProgress.off("signing-end", onEnd)
+    report: {
+      start: () => void seen.push("start"),
+      end: (failed?: boolean) => void seen.push(failed ? "end:failed" : "end"),
     },
   }
 }
@@ -40,10 +35,16 @@ describe("makeWebauthnSignFn", () => {
   it("a signature by the signer's key is returned, and signing ends as done", async () => {
     const ceremony = new FakePasskeyCeremony()
     const created = await ceremony.create(createRequest)
-    const sign = makeWebauthnSignFn(ceremony, "localhost", created.credentialId, created.pubkey)
     const events = signingEvents()
+    const sign = makeWebauthnSignFn(
+      ceremony,
+      "localhost",
+      created.credentialId,
+      created.pubkey,
+      undefined,
+      events.report,
+    )
     const result = await sign(Buffer.alloc(32, 7))
-    events.stop()
     expect(await signatureMatchesKey(result, created.pubkey)).toBe(true)
     expect(result.signature).toHaveLength(64)
     expect(events.seen).toEqual(["start", "end"])
@@ -107,17 +108,18 @@ describe("makeWebauthnSignFn passkey telemetry", () => {
     const { inner, ceremony } = tracked()
     const created = await inner.create(createRequest)
     const other = await inner.create({ ...createRequest, userName: "@bob" })
+    const events = signingEvents()
     const sign = page.signing.makeWebauthnSignFn(
       ceremony,
       "localhost",
       created.credentialId,
       other.pubkey,
+      undefined,
+      events.report,
     )
-    const events = signingEvents()
     await expect(sign(Buffer.alloc(32, 7))).rejects.toBeInstanceOf(
       page.signing.SignerKeyMismatchError,
     )
-    events.stop()
     expect(events.seen).toEqual(["start", "end:failed"])
     expect(passkeyEvents(fireEvent)).toEqual([
       expect.objectContaining({
@@ -134,12 +136,12 @@ describe("makeWebauthnSignFn steering", () => {
   const steering = (
     steer: { transports: readonly string[]; inferred: boolean } | undefined,
   ): SigningSteering & {
-    learned: ReturnType<typeof vi.fn>
-    refused: ReturnType<typeof vi.fn>
+    learned: Mock<NonNullable<SigningSteering["learned"]>>
+    refused: Mock<NonNullable<SigningSteering["refused"]>>
   } => ({
     transports: async () => steer,
-    learned: vi.fn(),
-    refused: vi.fn(),
+    learned: vi.fn<NonNullable<SigningSteering["learned"]>>(),
+    refused: vi.fn<NonNullable<SigningSteering["refused"]>>(),
   })
 
   it("hands the caller's signal to the ceremony, so a cancel ends it before its prompt opens", async () => {

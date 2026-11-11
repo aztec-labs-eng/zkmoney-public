@@ -145,7 +145,7 @@ export function ReviewSheet(props: {
         <Banner
           tone="warn"
           title={reviewCopy.lowBanner.title}
-          body={reviewCopy.lowBanner.body(figures.fee, figures.total)}
+          body={reviewCopy.lowBanner.body(figures.fee, figures.receive)}
         />
       ) : (
         <WhatHappensNext

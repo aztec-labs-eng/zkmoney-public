@@ -34,8 +34,11 @@ export interface SipaClaimDeps {
   recipient: AztecAddress
   tuple: OxideEnvTuple
   rows: readonly SipaRow[]
-  /** The token service of a row's L2 token: a sweep is claimed on the token of the row it settled on. */
-  tokenServiceFor: (l2Token: string) => Promise<Pick<TokenService, "claimSweptDeposit">>
+  /**
+   * The token service of a row's L2 token: a sweep is claimed on the token of the row it settled
+   * on. Without it the run claims nothing and settles only the sweeps already spent.
+   */
+  tokenServiceFor?: (l2Token: string) => Promise<Pick<TokenService, "claimSweptDeposit">>
   /**
    * Reads the balance once the claims landed. The claims are saved once this settles, so the
    * balance holds a deposit before its record reads `claimed`. A failed read is logged and the
@@ -125,11 +128,13 @@ export async function claimSipaDeposits(deps: SipaClaimDeps): Promise<SipaClaimR
     )
     settle(item)
   }
+  const { tokenServiceFor } = deps
   // The readiness reads run at once; the claims one at a time, since each is a PXE simulation.
   const readiness = await Promise.allSettled(
     due.map(
       async ({ sweep }) =>
         sweep.spent ||
+        !tokenServiceFor ||
         isL1ToL2MessageReady(deps.node as never, Fr.fromHexString(sweep.messageKey) as never),
     ),
   )
@@ -142,13 +147,17 @@ export async function claimSipaDeposits(deps: SipaClaimDeps): Promise<SipaClaimR
         result.reconciled += 1
         continue
       }
+      if (!tokenServiceFor) {
+        result.pendingSettlement += 1
+        continue
+      }
       const ready = readiness[i]!
       if (ready.status === "rejected") throw ready.reason
       if (!ready.value) {
         result.pendingSettlement += 1
         continue
       }
-      const tokenService = await deps.tokenServiceFor(row.l2Token)
+      const tokenService = await tokenServiceFor(row.l2Token)
       await tokenService.claimSweptDeposit({
         inboxIndex: BigInt(sweep.inboxIndex),
         amount: BigInt(sweep.amount),

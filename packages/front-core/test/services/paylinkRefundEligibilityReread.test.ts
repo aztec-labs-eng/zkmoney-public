@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { paylinkRefundEligibility } from "../../src/core/services/paylink/refundParamsFromRow"
 import type { PaylinkTransaction } from "../../src/types"
-import { seededActivity } from "../utils/activityFixture"
+import { seededActivity } from "../utils/transferFixture"
 
 // A successful refund writes `isRefunded` (and scrubs `paylink`) through the activity store; every
 // entry point's CTA re-reads `paylinkRefundEligibility` off the current row, so the same PAY row

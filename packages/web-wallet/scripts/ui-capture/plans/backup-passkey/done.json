@@ -1,0 +1,31 @@
+{
+  "scenario": "activity",
+  "viewport": "402x879,1280x832",
+  "path": "/settings?flowFixture=success&backupFixture=done",
+  "ready": {
+    "selector": ".ww-settings__user"
+  },
+  "steps": [
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Passkeys",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": "html[data-backup-screen=done]"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-passkeys__head",
+      "state": "detached"
+    },
+    {
+      "action": "screenshot",
+      "file": "a7-done.png",
+      "state": "A7: backup passkey added"
+    }
+  ],
+  "finalScreenshot": false
+}

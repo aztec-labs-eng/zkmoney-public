@@ -1,0 +1,154 @@
+/* One From/To amount widget: two stacked cards, the arrow on their seam. */
+.transfer {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+}
+.side {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  border-radius: 12px;
+  background: #2c2c2c;
+}
+.who {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.who b {
+  font-weight: 600;
+  color: #cfa7ff;
+}
+/* Sits on the label row without growing it. */
+:global(.zkm-btn-reset).whoBtn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  margin: -3px 0;
+  padding: 3px 6px 3px 8px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.amount {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  font-size: 28px;
+  font-weight: 700;
+  color: #fdfdfd;
+}
+.amount input {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  outline: none;
+}
+/* "≈" before a derived figure, outside the field's value. */
+.approx {
+  position: relative;
+  display: block;
+  padding-left: 24px;
+}
+.approx > span[aria-hidden] {
+  position: absolute;
+  left: 0;
+  pointer-events: none;
+}
+.approx:has(> input) {
+  padding-left: 0;
+}
+.approx > input {
+  box-sizing: border-box;
+  padding-left: 24px;
+}
+.amount small {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-secondary);
+}
+/* Beats `.zkm-btn-reset { color: inherit }`, which takes the note's secondary color. */
+.amount :global(.ww-pay__max) {
+  padding: 2px 6px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.1);
+  font-size: 8px;
+  color: var(--text-primary);
+}
+.chip,
+:global(.zkm-btn-reset).chip {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  min-width: 130px;
+  box-sizing: border-box;
+  padding: 8px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+}
+.chipText {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  line-height: 1.3;
+}
+.chipText b {
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+}
+.chipText small {
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.arrow {
+  position: absolute;
+  top: -18px;
+  left: 50%;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  box-sizing: border-box;
+  border: 4px solid var(--surface-sheet);
+  border-radius: 50%;
+  background: #2c2c2c;
+  color: var(--text-secondary);
+  transform: translateX(-50%);
+}
+@media (hover: hover) {
+  :global(.zkm-btn-reset).whoBtn:hover,
+  :global(.zkm-btn-reset).chip:hover {
+    background: rgba(255, 255, 255, 0.1);
+  }
+  .amount :global(.ww-pay__max):hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.16);
+  }
+}

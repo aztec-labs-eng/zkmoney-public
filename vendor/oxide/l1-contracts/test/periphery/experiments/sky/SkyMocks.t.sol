@@ -4,7 +4,7 @@ pragma solidity >=0.8.27;
 import {Test} from "forge-std/Test.sol";
 import {Ownable} from "@oz/access/Ownable.sol";
 import {TestERC20} from "@aztec/mock/TestERC20.sol";
-import {MockDaiUsds} from "@test/periphery/experiments/sky/mocks/MockDaiUsds.sol";
+import {MockDaiUsds} from "@test/mocks/MockDaiUsds.sol";
 import {MockSUsds} from "@test/periphery/experiments/sky/mocks/MockSUsds.sol";
 
 contract SkyMocksTest is Test {

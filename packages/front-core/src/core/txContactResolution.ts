@@ -1,4 +1,4 @@
-import type { ContactRow } from "../hooks/useContactsDirectory"
+import type { ContactRow } from "../engine/contacts"
 
 /**
  * Strips the display formatting `@${tag}.zk.money` produces back to a bare tag the contacts
@@ -13,10 +13,8 @@ function bareTagFromCounterparty(counterparty: string): string {
 }
 
 /**
- * Subset of `useContactsDirectory`'s return shape that counterparty resolution needs. Accepting the
- * raw `contacts` array lets the resolvers scan L1 AND L2 entries by address — the directory's
- * `lookupByAddress` deliberately skips L1 rows, which would otherwise leave deposit/withdrawal
- * counterparties unresolved.
+ * What counterparty resolution reads of the contact directory. The raw `contacts` array lets the
+ * resolvers scan L1 and L2 entries by address, so deposit and withdrawal counterparties resolve.
  */
 export interface TxContactDirectory {
   contacts: ContactRow[]

@@ -169,6 +169,25 @@ describe("fundingCapacityView", () => {
     expect(view(low, { status: "unknown" }, "address").statusText).toBe(CAPACITY_LOW)
   })
 
+  it("passes an amount that fits a full bucket without a warning", () => {
+    const full = fresh({ availableAtomic: 50_000n * DAI })
+    expect(view(full, known(100n))).toEqual({
+      tone: "ok",
+      statusText: CAPACITY_FITS,
+      canFund: true,
+      offerRetry: false,
+    })
+  })
+
+  it("adds nothing for an address whose credit is unknown while the bucket is full", () => {
+    const full = fresh({ availableAtomic: 50_000n * DAI })
+    expect(view(full, { status: "unknown" }, "address")).toEqual({
+      tone: "ok",
+      canFund: false,
+      offerRetry: false,
+    })
+  })
+
   it("under hold, blocks a conversion route whose credit is unknown, even with a full bucket", () => {
     const v = view(
       fresh({ availableAtomic: 50_000n * DAI }),

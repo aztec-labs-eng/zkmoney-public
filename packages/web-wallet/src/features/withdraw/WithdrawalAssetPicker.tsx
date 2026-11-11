@@ -8,6 +8,9 @@ import {
   type WithdrawalReceiveAssetOption,
 } from "./withdrawAssets"
 import type { WithdrawalReceiveAsset } from "./withdrawAssets"
+import copy from "./WithdrawalAssetPicker.copy"
+
+const PICKER_NAMES: Partial<Record<WithdrawalReceiveAsset, string>> = copy.pickerNames
 
 /** A labeled listbox over the given output choices; closes on an outside press or Escape. */
 export function AssetPicker<A extends WithdrawalReceiveAsset>({
@@ -74,7 +77,7 @@ export function AssetPicker<A extends WithdrawalReceiveAsset>({
               <img src={option.icon} alt="" width={30} height={30} />
               <span>
                 <b>{option.symbol}</b>
-                <small>{option.name}</small>
+                <small>{PICKER_NAMES[option.id] ?? option.name}</small>
               </span>
             </button>
           ))}

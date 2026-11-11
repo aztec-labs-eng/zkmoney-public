@@ -1,4 +1,5 @@
-import { useEffect, useId, useRef, useState, type ReactNode } from "react"
+import { useId, useRef, useState, type ReactNode } from "react"
+import { useDomEffect } from "./useDomEffect"
 import "./tipRow.css"
 
 /**
@@ -22,7 +23,7 @@ export function TipRow({
   const [open, setOpen] = useState(false)
   const row = useRef<HTMLDivElement>(null)
   const button = useRef<HTMLButtonElement>(null)
-  useEffect(() => {
+  useDomEffect(() => {
     if (!open) return
     const closeOutside = (event: Event) => {
       if (!row.current?.contains(event.target as Node)) setOpen(false)

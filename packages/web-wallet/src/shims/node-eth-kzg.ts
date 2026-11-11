@@ -6,6 +6,8 @@
  * `getBytesPerBlob`/`getBytesPerCommitment`; the context class fails loudly
  * if a runtime path ever reaches actual KZG computation.
  */
+import { WalletError } from "@obsidion/core/errors"
+
 export const BYTES_PER_FIELD_ELEMENT = 32
 export const BYTES_PER_BLOB = 4096 * BYTES_PER_FIELD_ELEMENT // 131072
 export const BYTES_PER_COMMITMENT = 48
@@ -13,7 +15,8 @@ export const BYTES_PER_COMMITMENT = 48
 export class DasContextJs {
   // blob-lib instantiates via the static, never the constructor.
   static create(_opts?: unknown): DasContextJs {
-    throw new Error(
+    throw new WalletError(
+      "invariant",
       "@crate-crypto/node-eth-kzg is not available in the browser (KZG is server-side)",
     )
   }

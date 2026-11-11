@@ -9,7 +9,6 @@ import {
   latestRegistration,
   memoryStore,
   normalizeTag,
-  readyValue,
   selectPendingExit,
   TxInFlightError,
   valueOf,
@@ -18,7 +17,7 @@ import {
   type PendingRegistrationRecord,
   type RegistrationRoute,
 } from "@obsidion/front-core"
-import { bestEffort } from "@obsidion/core/errors"
+import { bestEffort, bestEffortSync } from "@obsidion/core/errors"
 import { Network } from "@obsidion/core/constants"
 import type { NameClaimResponse } from "@obsidion/core/types"
 import { AUTH_TYPE, DEFAULT_CONTRACTS } from "@obsidion/sdk"
@@ -32,8 +31,6 @@ import {
   type SheetReopen,
   type SignUpChoice,
 } from "@obsidion/passkey-web"
-import { getConfig } from "../../../config/env"
-import { oxideEnvFor } from "../../../config/oxideTuple"
 import { errorMessage } from "../../../errors/catalog"
 import { showReportableError } from "../../../errors/errorModal"
 import {
@@ -53,9 +50,8 @@ import {
   saveIdentity,
   type OnboardingKeys,
 } from "../../../session/account"
-import { handOffAccount, signedInAccount, type Session } from "../../../session/session"
+import { chainOf, handOffAccount, signedInAccount, type Session } from "../../../session/session"
 import { reloadIfSessionSwitched } from "../../../session/sessionReload"
-import { peekPreBootCreate, takePreBootCreate } from "../../../ui/preBootTaps"
 import { isGateCancelled, PHONE_CREATION, type CeremonyGate } from "../../identity/ceremonyGate"
 import { isPasskeyNotOffered } from "../../identity/PasskeyRefusal"
 import { PasskeyMismatchError, reusePasskeyAccount } from "../../identity/passkeyAccount"
@@ -68,13 +64,18 @@ import {
   peekClaimStash,
   peekTicketSignup,
   RECEIVE_TO_ACCOUNT,
+  updateTicketSignup,
   type TicketSignupStash,
 } from "../../paylink/claimStash"
+import { tabStash } from "../../../platform/storage/tabStash"
 import { obtainEmailClaimProof } from "../../paylink/emailClaim"
 import { linkIdentity } from "../../paylink/linkIdentity"
 import { openStashedLink } from "../../paylink/linkStatus"
-import type { RegistrationSpeed } from "../../paylink/registrationProverTip"
-import { endClaim, startClaim } from "../../paylink/runningClaims"
+import {
+  afterGate,
+  type RegistrationSpeed,
+  type SpeedDecision,
+} from "../../paylink/registrationProverTip"
 import {
   claimSponsoredLink,
   viewLink,
@@ -92,12 +93,13 @@ import {
   saveTicketSignupAccount,
 } from "../../paylink/ticketSignupAccount"
 import type { PaylinkKit } from "../../paylink/usePaylinkDeps"
-import { runUserFlow } from "../../provingGate"
 import { expectsEarned, hasDepositAdmission } from "../../registration/admission"
-import { drawTag, routeGrantIsCurrent } from "../../registration/nameAvailability"
+import { drawTag, routeGrantIsCurrent, tagField } from "../../registration/nameAvailability"
 import { grantPastUser, PastUserAlreadyUsedError } from "../../registration/pastUserClaim"
 import { buildRetrySignDeps } from "../../registration/registrationDeps"
 import {
+  commitRegistrationProverTip,
+  feeField,
   loadRegistrationTerms,
   rememberReissuedClaim,
   wireTermsFundTicket,
@@ -173,7 +175,7 @@ export interface OnboardingMock {
 
 export interface SignupDeps {
   /** The session the screen opened under. */
-  own: Session
+  session: Session
   io?: Partial<typeof SIGNUP_IO>
   /** The page's preview, in a dev build that asked for one. */
   mock?: OnboardingMock | null
@@ -185,7 +187,7 @@ export interface SignupInputs {
   gate: { gate: CeremonyGate; cancel(): void; dismiss(): void }
   /** The ticket signup's hold and speed, from the paylink's hooks. */
   ticketHeld: boolean
-  ticketSpeed?: RegistrationSpeed
+  ticketSpeed?: Pick<RegistrationSpeed, "decision" | "settle">
   embedded: boolean
   draftTag?: string
   ticketSignup: boolean
@@ -207,12 +209,16 @@ function linkDeposit(marker: TicketSignupStash | null): LinkDeposit | undefined 
     amount: BigInt(marker.amount),
     proverTip: BigInt(marker.proverTip ?? 0),
     ...(marker.speed ? { speed: marker.speed } : {}),
+    ...(marker.withdrawalFee !== undefined ? { withdrawalFee: marker.withdrawalFee } : {}),
     ...(marker.senderTag ? { senderTag: marker.senderTag } : {}),
   }
 }
 
 /** Dev preview only: a claim and record the deposit panel renders, never written anywhere. */
-function previewOf(mock: OnboardingMock | null): {
+function previewOf(
+  mock: OnboardingMock | null,
+  l1ChainId: number,
+): {
   claim: NameClaimResponse | undefined
   record: PendingRegistrationRecord | null
 } {
@@ -239,7 +245,7 @@ function previewOf(mock: OnboardingMock | null): {
       tag: mock.handle,
       nameHash: `0x${"11".repeat(32)}` as Hex,
       l2Address: `0x${"22".repeat(32)}` as Hex,
-      l1ChainId: getConfig().l1ChainId,
+      l1ChainId,
       sipaAddress: `0x${"0".repeat(38)}c3`,
       fee: "0",
       beneficiary: `0x${"0".repeat(38)}b5`,
@@ -253,20 +259,22 @@ function previewOf(mock: OnboardingMock | null): {
   }
 }
 
-export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
+export function openSignupFlow(deps: SignupDeps, latest: () => SignupInputs) {
   const io = { ...SIGNUP_IO, ...deps.io }
   // What the signup is decides at open; the rest is read as it acts.
-  const inputs = live()
+  const inputs = latest()
   const { draftTag, routeHandle, params } = inputs
-  const config = getConfig()
-  const { signup, pastUser } = deps.own
+  const { config } = deps.session.page
+  const { signup, pastUser, claims } = deps.session
   /** The session commands run under: the screen's, then whatever each hand-off returns. */
-  let own = deps.own
+  let session = deps.session
 
-  const fromPaylink = inputs.ticketSignup && Boolean(peekTicketSignup()) && !routeHandle
-  const ticketFragment = fromPaylink ? peekTicketSignup()?.fragment : undefined
+  const fromPaylink = inputs.ticketSignup && Boolean(peekTicketSignup(tabStash)) && !routeHandle
+  const ticketFragment = fromPaylink ? peekTicketSignup(tabStash)?.fragment : undefined
   const readTicketAttempt = () =>
-    ticketFragment ? loadTicketSignupAttempt(config.rpId, linkIdentity(ticketFragment)) : null
+    ticketFragment
+      ? loadTicketSignupAttempt(session, config.rpId, linkIdentity(ticketFragment))
+      : null
   const ticketAttempt = (() => {
     try {
       return readTicketAttempt()
@@ -279,12 +287,16 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
   const recoveryVisit = params.get("recovery") === "1"
   const entryCohort = routeHandle ? "link" : "direct"
   const mock = deps.mock ?? null
-  const preview = previewOf(mock)
+  const preview = previewOf(mock, config.l1ChainId)
   const openRecord = ticketFragment
-    ? ticketSignupRegistration(ticketFragment, resumedTicket ? ticketAttempt.l2Address : undefined)
-    : latestOpenRegistration(loadedRegistrations(own.registrations))
+    ? ticketSignupRegistration(
+        session,
+        ticketFragment,
+        resumedTicket ? ticketAttempt.l2Address : undefined,
+      )
+    : latestOpenRegistration(loadedRegistrations(session.registrations))
   const hasRouteGrant = () => {
-    const tag = live().routeHandle
+    const tag = latest().routeHandle
     return Boolean(tag && signup.grantToken(tag))
   }
   // A visitor with nothing here yet: no account, no record, no link naming a tag.
@@ -297,13 +309,13 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
     !resuming &&
     !recoveryVisit &&
     !hasRouteGrant() &&
-    !own.identity.get().value
+    !session.identity.get().value
   // A tag settled on before a reload: a kept draw or a past user's pick is still the drawn offer.
   const chosen = draftTag ? signup.state.get().chosenTag : undefined
   const restored =
     chosen && (chosen.route === "paid" || chosen.tag === draftTag) ? chosen : undefined
   // "Create Account", tapped while the wallet started: busy from the first frame.
-  const startedBeforeBoot = freshStart && peekPreBootCreate()
+  const startedBeforeBoot = freshStart && session.page.preBoot.taps.get().create
 
   const state = memoryStore<SignupState>({
     step:
@@ -337,6 +349,21 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
   })
   const dispatch = (event: SignupEvent) => state.set(signupTransition(state.get(), event))
   const s = () => state.get()
+
+  /** The tag step's field, or the invitation's, which shows without a draw or a fresh start. */
+  const typed = memoryStore(
+    normalizeTag(fromPaylink ? s().handle : routeHandle ?? openRecord?.tag ?? "") ?? "",
+  )
+  const tagInput = tagField(deps.session.page, typed, { signup, routeHandle }, state, ({ step }) =>
+    step === "invite" ? !draftTag && !freshStart : step === "tag",
+  )
+  /** A return to the tag step shows the tag the signup holds, as the step's first showing does. */
+  let shownStep = s().step
+  const reseedTag = () => {
+    const { step, handle } = s()
+    if (step === "tag" && shownStep !== "tag") typed.set(handle)
+    shownStep = step
+  }
 
   /** Each command's abort: a newer run of it, the user's cancel, or the screen leaving ends it. */
   let invite = new AbortController()
@@ -381,21 +408,21 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
     attempts.set(attempt, op)
     return attempt.run((scope) => fn(scope, attempt)).finally(() => attempts.delete(attempt))
   }
-  const handOff = (keys: OnboardingKeys) => (own = handOffAccount(keys.account))
+  const handOff = (keys: OnboardingKeys) => (session = handOffAccount(session, keys.account))
   const reuse = (
     address: string,
     hints: Parameters<typeof reusePasskeyAccount>[3],
     signal?: AbortSignal,
   ) => {
-    const wallet = valueOf(own.wallet)
+    const wallet = valueOf(session.wallet)
     if (!wallet) throw new WalletError("wallet.notReady")
     return passkeyAttempt(REUSE_PASSKEY, (scope) =>
       io.reuse(
         wallet,
-        { auth: own.auth, accounts: signedInAccount },
+        { session, accounts: () => signedInAccount(session) },
         address,
         hints,
-        live().gate.gate,
+        latest().gate.gate,
         signal,
         scope,
       ),
@@ -403,32 +430,38 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
   }
 
   const go = (to: string) =>
-    live().navigate(to, { replace: true, ...(live().next ? { state: { next: live().next } } : {}) })
+    latest().navigate(to, {
+      replace: true,
+      ...(latest().next ? { state: { next: latest().next } } : {}),
+    })
   // A leftover inbound stash still claims on Home, unless a signup's own claim is spending it.
-  const intoWallet = () => go(peekClaimStash() ? "/" : live().next ?? "/")
+  const intoWallet = () => go(peekClaimStash(tabStash) ? "/" : latest().next ?? "/")
   /** Every signup exit into the wallet; the entry is reported for the account's first one only. */
   const enterWallet = () => {
     const report = () =>
       io.fireOnboarding("wallet_entered", { entry: fromPaylink ? "ticket" : entryCohort })
-    if (own.identity.get().value?.address === undefined) report()
+    if (session.identity.get().value?.address === undefined) report()
     // Only the account's first entry reports; a mark that cannot be read is not a first.
     else
-      void bestEffort("unknown", own.accountRecord?.firstEntry() ?? Promise.resolve(false)).then(
-        (first) => first && report(),
-      )
+      void bestEffort(
+        "unknown",
+        session.accountRecord?.apply({ type: "entered" }) ?? Promise.resolve(undefined),
+      ).then((first) => first && report())
     intoWallet()
   }
 
   /** The record the pending step shows: a dev preview's, else the live one this signup watches. */
   const record = (): PendingRegistrationRecord | null => {
     if (preview.record) return preview.record
-    const records = loadedRegistrations(own.registrations)
+    const records = loadedRegistrations(session.registrations)
     const { oxideAccount, handle, ticketAttempt } = s()
     const pinned = oxideAccount ? latestRegistration(records, oxideAccount) : null
     if (!fromPaylink) return latestOpenRegistration(records) ?? pinned
     const address =
       ticketAttempt && !isTicketSignupCreating(ticketAttempt) ? ticketAttempt.l2Address : undefined
-    const matching = ticketFragment ? ticketSignupRegistration(ticketFragment, address) : null
+    const matching = ticketFragment
+      ? ticketSignupRegistration(session, ticketFragment, address)
+      : null
     // Keep this session's record through settlement or a paused-ticket fallback.
     return (
       matching ??
@@ -439,16 +472,16 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
         : null)
     )
   }
-  const inAppHold = () => walletInAppUpFront(own.device.get(), config.rpId) !== undefined
+  const inAppHold = () => walletInAppUpFront(session.device.get(), config.rpId) !== undefined
   /** The pending step prices the record's own route; the terms step and the claim, the tag's. */
   const expectedEarned = () => {
     const rec = record()
     if (s().step === "pending" && rec && !mock) return expectsEarned(rec)
-    const terms = rec ? loadRegistrationTerms(own.registrations, rec.account, rec.tag) : null
+    const terms = rec ? loadRegistrationTerms(session.registrations, rec.account, rec.tag) : null
     const { route } = s()
     return (
       terms?.earnedExpected === true ||
-      (rec !== null && hasDepositAdmission(own.sipaDeposits, rec)) ||
+      (rec !== null && hasDepositAdmission(session.sipaDeposits, rec)) ||
       route === "random" ||
       route === "past_user"
     )
@@ -496,7 +529,7 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
     const { signal } = invite
     dispatch({ type: "checking", handle })
     try {
-      const status = await io.getClaimStatus(handle)
+      const status = await io.getClaimStatus(session.page, handle)
       if (signal.aborted) return
       io.fireOnboarding("onboarding_handle_checked", {
         status: status === "claimed" ? "taken" : "available",
@@ -505,14 +538,14 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
         // Only this ticket's reservation can be abandoned when the visitor changes its tag.
         const open = record()
         if (fromPaylink && open && open.tag !== handle && !hasCustody(open))
-          await abandonPendingRegistration(own, open.account)
+          await abandonPendingRegistration(session, open.account)
       }
       dispatch({ type: "checked", taken: status === "claimed" })
       if (status === "claimed") return
       if (s().keys) void claimTagStep()
       // On a phone the tag step's claim button is the passkey's button: the welcome step runs it.
       else if (fromPaylink && currentDevicePosture() === "phone" && passkeysSupported())
-        continueSignup()
+        void continueSignup()
     } catch (err) {
       if (signal.aborted) return
       io.fire("action_failed", { action: "unlock_access", code: failureCode(err) })
@@ -528,15 +561,15 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
 
   /** An open stashed link, which a signup started here picks its name on instead of a draw. */
   const stashedLinkOpen = () => {
-    const wallet = valueOf(own.wallet)
-    const contractService = valueOf(own.contractService)
+    const wallet = valueOf(session.wallet)
+    const contractService = valueOf(session.contractService)
     return fromPaylink || !wallet || !contractService
       ? Promise.resolve(null)
-      : openStashedLink({ wallet, contractService })
+      : openStashedLink({ session, wallet, contractService })
   }
   /** The link's own signup, which pays for the name when the link can. */
   const toLinkSignup = (fragment: string) =>
-    live().navigate(`/link#${fragment}`, { replace: true, state: RECEIVE_TO_ACCOUNT })
+    latest().navigate(`/link#${fragment}`, { replace: true, state: RECEIVE_TO_ACCOUNT })
 
   /** The settled tag, kept for the tab; a draw still in flight changes nothing after it. */
   const choose = (chosen: ChosenTag | undefined, handle = s().handle) => {
@@ -557,13 +590,13 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
       const linked = await stashedLinkOpen()
       if (signal.aborted) return
       if (linked) return toLinkSignup(linked)
-      const { tag, grantToken } = await io.drawTag()
+      const { tag, grantToken } = await io.drawTag(session.page)
       if (signal.aborted) return
       io.fireOnboarding("onboarding_tag_drawn")
       signup.stashDrawnGrant(tag, grantToken)
       // Home holds the keep-or-choose, and the passkey runs from there.
       signup.setDrawnOffer(tag)
-      live().navigate("/")
+      latest().navigate("/")
     } catch (err) {
       if (signal.aborted) return
       const code = failureCode(err)
@@ -580,7 +613,7 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
     draw = restart(draw)
     const { signal } = draw
     try {
-      const { tag, grantToken } = await io.drawTag()
+      const { tag, grantToken } = await io.drawTag(session.page)
       if (signal.aborted) return
       io.fireOnboarding("onboarding_tag_drawn", { shuffle: true })
       signup.stashDrawnGrant(tag, grantToken)
@@ -594,7 +627,7 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
 
   /** Keeps the drawn tag: the passkey and the claim run under it. */
   const keepDrawnTag = () => {
-    const drawn = live().draftTag
+    const drawn = latest().draftTag
     // A past user's pick became the draft, so a reload keeps it free.
     const route = drawn && pastUser.state.get().verified?.tag === drawn ? "past_user" : "random"
     choose(drawn ? { tag: drawn, route } : undefined, normalizeTag(drawn || "") ?? "")
@@ -616,7 +649,7 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
     const free = verified !== undefined && verified.tag === undefined
     if (free) {
       try {
-        signup.stashDrawnGrant(name, await grantPastUser(verified, name))
+        signup.stashDrawnGrant(name, await grantPastUser(session.page, verified, name))
       } catch (err) {
         // A spent proof never earns a grant: the pick falls back to the paid price.
         if (!(err instanceof PastUserAlreadyUsedError)) throw err
@@ -632,10 +665,10 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
   }
 
   /** Every ticket claim retry must use its durable account binding and loaded account stores. */
-  const resumeTicketWithKeys = (keys: OnboardingKeys, before = own) => {
+  const resumeTicketWithKeys = async (keys: OnboardingKeys, before = session) => {
     if (!fromPaylink || !ticketFragment) return false
     const ticketId = linkIdentity(ticketFragment)
-    const binding = loadTicketSignupAccount(config.rpId, ticketId)
+    const binding = loadTicketSignupAccount(session, config.rpId, ticketId)
     const address = keys.account.getAddress().toString()
     if (!binding || binding.l2Address.toLowerCase() !== address.toLowerCase())
       throw new WalletError("onboarding.signupUnsaved")
@@ -644,7 +677,7 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
       abandonOp()
       return true
     }
-    const pending = ticketSignupRegistration(ticketFragment, address)
+    const pending = ticketSignupRegistration(session, ticketFragment, address)
     const { handle } = s()
     if (pending) {
       dispatch({ type: "resumed", account: pending.account, handle: pending.tag })
@@ -655,7 +688,7 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
       return true
     }
     if (binding.tag !== handle)
-      saveTicketSignupAccount(config.rpId, ticketId, { ...binding, tag: handle })
+      await saveTicketSignupAccount(session, config.rpId, ticketId, { ...binding, tag: handle })
     return false
   }
 
@@ -668,7 +701,7 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
     op = restart(op)
     const ran = op
     const { signal } = ran
-    const before = own
+    const before = session
     lastAttempt = undefined
     // A pick the screen's own sheet took carries its warning in; every other run starts clean.
     dispatch({ type: "creating", keepWarning: unheld !== undefined })
@@ -687,27 +720,29 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
         mode: lastAttempt === CREATE_PASSKEY ? "create" : "enter",
         route: claimRoute,
       })
-      if (resumeTicketWithKeys(keys, before)) return
+      if ((await resumeTicketWithKeys(keys, before)) || ran !== op || signal.aborted) return
       if (reloadIfSessionSwitched(before, address)) return abandonOp()
       dispatch({ type: "claiming" })
       await claimAndApply(keys, claimRoute)
       // Kept at signup: the tag is settled, so its address may be broadcast.
       const claimed = route === "random" || route === "past_user" ? record() : null
-      if (claimed) await own.confirmTag(claimed)
+      if (claimed) await session.confirmTag(claimed)
       // The account is entered: Home stops hosting the signup and opens on it.
-      if (live().draftTag && enteredIdentity(own.identity.get(), own.device.get().passkeyMap))
+      if (
+        latest().draftTag &&
+        enteredIdentity(session.identity.get(), session.device.get().passkeyMap, config.rpId)
+      )
         signup.setDrawnOffer(undefined)
       signup.setTagDraft("")
       signup.setChosenTag(undefined)
     } catch (err) {
       if (ran !== op || isGateCancelled(err) || signal.aborted) return
-      if (fromPaylink) {
-        try {
-          dispatch({ type: "ticketAttempt", attempt: readTicketAttempt() })
-        } catch {
-          /* The original error is shown below. */
-        }
-      }
+      // An unreadable attempt leaves the original error, shown below.
+      if (fromPaylink)
+        bestEffortSync(
+          () => dispatch({ type: "ticketAttempt", attempt: readTicketAttempt() }),
+          undefined,
+        )
       const code = failureCode(err)
       if (s().keys) return claimFailed(err)
       io.fire("action_failed", { action: "create_account", code })
@@ -718,7 +753,7 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
       // browser that holds an account, needs an account that browser doesn't have.
       const classified = classifyCreateFailure(err, {
         attempted: creating ? attempted : undefined,
-        portable: creating && !own.identity.get().value,
+        portable: creating && !session.identity.get().value,
         fastRefusals,
       })
       attempted = undefined
@@ -745,6 +780,24 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
     if (current && !steerAfterNameRefusal(err)) dispatch({ type: "claimFailed", error: err })
   }
 
+  /** The split's decision at the user's last tap; work after the tap never reads a newer quote. */
+  let tapped: SpeedDecision | undefined
+  const onTap =
+    <A extends unknown[], R>(command: (...args: A) => R) =>
+    (...args: A): R => {
+      tapped = latest().ticketSpeed?.decision
+      return command(...args)
+    }
+  /** A tap's speed: the stash keeps it until the terms take it, then the terms. */
+  const commitTicketSpeed = async (decided: SpeedDecision | undefined) => {
+    if (!decided) return
+    const { tip, speed, withdrawalFee } = decided
+    updateTicketSignup(tabStash, { proverTip: tip.toString(), speed, ...feeField(withdrawalFee) })
+    const rec = record()
+    if (rec)
+      await commitRegistrationProverTip(session.registrations, rec, tip, speed, withdrawalFee)
+  }
+
   /**
    * A new ticket signup creates a passkey; an interrupted one recovers only its bound account.
    * Ordinary signup reuses a nameless identity's account, or the account of a key this tab still
@@ -756,16 +809,19 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
     // no sheet, so the way back to one is dropped.
     const restarting = restartId
     restartId = undefined
-    if (live().ticketHeld) {
+    if (latest().ticketHeld) {
       reopen = undefined
       return
     }
-    if (fromPaylink) live().ticketSpeed?.settle()
-    const identity = own.identity.get().value
+    if (fromPaylink) {
+      tapped ??= latest().ticketSpeed?.settle()
+      void bestEffort("unknown", commitTicketSpeed(tapped))
+    }
+    const identity = session.identity.get().value
     const namelessAddress = identity && !identity.handle ? identity.address : undefined
     const { handle } = s()
     return acquireAndClaim(async (signal) => {
-      const ticket = fromPaylink ? peekTicketSignup() : null
+      const ticket = fromPaylink ? peekTicketSignup(tabStash) : null
       if (fromPaylink && !ticket) throw new WalletError("onboarding.linkMissing")
       const ticketId = ticket ? linkIdentity(ticket.fragment) : undefined
       const adopt = async (address: string, hints: Parameters<typeof reusePasskeyAccount>[3]) => {
@@ -774,7 +830,7 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
         return keys
       }
       if (ticketId && !restarting) {
-        const prior = loadTicketSignupAccount(config.rpId, ticketId)
+        const prior = loadTicketSignupAccount(session, config.rpId, ticketId)
         if (prior) {
           // A bound ticket signs in: the sheet's pick and its warning were for a creation.
           unheld = undefined
@@ -784,10 +840,11 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
       }
       // A cached key is proved against the account it names before it is handed back.
       const fromCache = async () => {
-        const cached = await own.auth.recoverFromCache()
+        const cached = await session.auth.recoverFromCache()
         if (!cached?.expectedAddress) return undefined
         // A key a payment link's signup made belongs to that link's signup, named for its tag.
-        if (!fromPaylink && boundToTicketSignup(config.rpId, cached.credentialId)) return undefined
+        if (!fromPaylink && boundToTicketSignup(session, config.rpId, cached.credentialId))
+          return undefined
         return adopt(cached.expectedAddress, { credentialId: cached.credentialId })
       }
       // Resuming continues this session's signup, so its own key goes before any identity.
@@ -798,14 +855,14 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
       if (!fromPaylink && namelessAddress) {
         // The session's own passkey, else the chooser; a tab with no session takes the record
         // that opened this account.
-        const { credentialId, storageId } = own.device.get()
+        const { credentialId, storageId } = session.device.get()
         return adopt(
           namelessAddress,
           storageId
             ? credentialId
               ? { credentialId }
               : { discover: true, chooser: true }
-            : { credentialId: await own.auth.rootCredentialId(namelessAddress) },
+            : { credentialId: await session.auth.rootCredentialId(namelessAddress) },
         )
       }
       // A stored identity means an account here already: a fresh signup adopts no cached key.
@@ -822,7 +879,7 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
         throw new WalletError("aborted", "resuming through the recovery screen")
       }
       // A ticket-funded signup proves its golden ticket in this PXE before the NameClaim.
-      const wallet = valueOf(own.wallet)
+      const wallet = valueOf(session.wallet)
       if (fromPaylink && !wallet) throw new WalletError("wallet.notReady")
 
       const account = await passkeyAttempt(CREATE_PASSKEY, async (scope, attempt) => {
@@ -831,27 +888,32 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
         unheld = undefined
         const back = reopen
         reopen = undefined
-        const { choice, route, reach, creation } = await live().gate.gate({
+        const { choice, route, reach, creation } = await latest().gate.gate({
           purpose: "create",
           ...(pick ? { unheld: pick } : {}),
           ...back,
         })
+        const gated = fromPaylink ? afterGate(tapped, latest().ticketSpeed?.decision) : tapped
+        if (gated !== tapped) {
+          tapped = gated
+          void bestEffort("unknown", commitTicketSpeed(gated))
+        }
         // A route means a laptop creation, the only gate that checks for a phone.
         if (route) attempt.notePhoneReach(reach)
         const tried: CreateAttempt = { choice, route, reach, creation }
         attempted = tried
         if (ticketId && restarting) {
-          restartTicketSignupAccount(config.rpId, ticketId, restarting)
+          await restartTicketSignupAccount(session, config.rpId, ticketId, restarting)
           dispatch({ type: "ticketAttempt", attempt: null })
         }
         const begun = ticketId
-          ? await beginTicketSignupAccount(config.rpId, ticketId, handle)
+          ? await beginTicketSignupAccount(session, config.rpId, ticketId, handle)
           : null
         if (begun) {
           dispatch({ type: "ticketAttempt", attempt: begun })
           tried.ticketAttemptId = begun.attemptId
         }
-        own.auth.useLaptopCreation(creation ?? PHONE_CREATION, choice)
+        session.auth.useLaptopCreation(creation ?? PHONE_CREATION, choice)
         // Counted when the creation is asked for: a held sheet or a refused ticket restart is none.
         if (fromPaylink) {
           io.fireOnboarding("onboarding_create_attempted", {
@@ -861,7 +923,7 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
         }
         if (!wallet) throw new WalletError("wallet.missing")
         const built = await io.createAccount(
-          { wallet, authService: own.auth, accounts: signedInAccount },
+          { wallet, authService: session.auth, accounts: () => signedInAccount(session) },
           AUTH_TYPE.WEB_AUTHN,
           statusForAttempt(scope),
           handle,
@@ -872,16 +934,22 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
             ...(begun && ticketId
               ? {
                   onAccountCreated: (created: { credentialId: string; l2Address: string }) =>
-                    completeTicketSignupAccount(config.rpId, ticketId, begun.attemptId, created),
+                    completeTicketSignupAccount(
+                      session,
+                      config.rpId,
+                      ticketId,
+                      begun.attemptId,
+                      created,
+                    ),
                 }
               : {}),
           },
         )
-        own = handOffAccount(built)
+        session = handOffAccount(session, built)
         return built
       })
       dispatch({ type: "keys", created: account.getAddress().toString(), recovered: s().recovered })
-      return collectOnboardingKeys(account)
+      return collectOnboardingKeys(session, account)
     })
   }
 
@@ -891,9 +959,10 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
     route?: RegistrationRoute,
     replacing?: { refunded?: PendingRegistrationRecord; replaced?: PendingRegistrationRecord },
   ) => {
-    const wallet = valueOf(own.wallet)
+    const wallet = valueOf(session.wallet)
     if (!wallet) throw new WalletError("wallet.notReady")
-    const ticketMarker = fromPaylink ? peekTicketSignup() : null
+    if (fromPaylink) await commitTicketSpeed(tapped)
+    const ticketMarker = fromPaylink ? peekTicketSignup(tabStash) : null
     const elapsed = lapTimer()
     const lap = lapTimer()
     dispatch({ type: "stage" })
@@ -902,7 +971,7 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
     const { handle } = s()
     const tag = replacing?.refunded?.tag ?? replacing?.replaced?.tag ?? handle
     const outcome = await io.claimTag(
-      own,
+      session,
       tag,
       keys,
       config,
@@ -925,7 +994,7 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
     if (outcome.kind === "custody" && !replacing) {
       io.fireOnboarding("onboarding_tag_claimed", { duration_ms: elapsed() })
       // No detection tick runs for a record that closes here, so this caches the claim.
-      cacheConfirmedNameClaim(own.nameClaims, config, {
+      cacheConfirmedNameClaim(session.nameClaims, session.page, {
         account: outcome.oxideAccount,
         tag: handle,
         l2Address: keys.account.getAddress().toString(),
@@ -938,17 +1007,17 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
   const applyClaimOutcome = async (outcome: ClaimTagOutcome) => {
     dispatch({ type: "claimed", account: outcome.oxideAccount })
     if (outcome.kind === "custody") return enter(s().handle, true)
-    const ticket = fromPaylink ? peekTicketSignup() : null
+    const ticket = fromPaylink ? peekTicketSignup(tabStash) : null
     if (ticket?.paid) {
       // A link that cannot cover the name's own price is claimed on Home as any other.
-      if (!outcome.depositLink) clearTicketSignup()
+      if (!outcome.depositLink) clearTicketSignup(tabStash)
     } else if (ticket && !wireTermsFundTicket(outcome.claim.terms)) {
       if (!outcome.ticketUnavailable) {
-        await abandonPendingRegistration(own)
+        await abandonPendingRegistration(session)
         throw new WalletError("registration.ticketRefused")
       }
       // Tickets paused: the signed price stands, and Home claims the link as any other.
-      clearTicketSignup()
+      clearTicketSignup(tabStash)
       io.fire("paylink_ticket_paused")
       dispatch({ type: "note", note: { kind: "ticketPaused" } })
     }
@@ -963,7 +1032,7 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
   const enter = async (tag: string, live: boolean): Promise<void> => {
     const { oxideAccount, address: keysAddress } = s()
     const pinned = oxideAccount
-      ? latestRegistration(loadedRegistrations(own.registrations), oxideAccount)
+      ? latestRegistration(loadedRegistrations(session.registrations), oxideAccount)
       : null
     const rec = live ? pinned : record()
     const address = (live ? keysAddress : undefined) ?? record()?.l2Address
@@ -977,7 +1046,7 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
     }
     const confirmed = rec?.phase === "confirmed"
     try {
-      await saveIdentity(own, {
+      await saveIdentity(session.page, {
         handle: tag,
         address,
         claimedAt: Date.now(),
@@ -993,10 +1062,13 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
     }
     dispatch({ type: "entry", failed: false })
     // An account created here is new on this version: nothing older to upgrade.
-    if (s().created === address) markNewAccountHere(address)
+    if (s().created === address) markNewAccountHere(config, address)
     if (confirmed) signup.clearGrant(tag)
     // A deposit cannot recreate missing passkey metadata: the account is recovered on /enter.
-    if (!live && !enteredIdentity(own.identity.get(), own.device.get().passkeyMap))
+    if (
+      !live &&
+      !enteredIdentity(session.identity.get(), session.device.get().passkeyMap, config.rpId)
+    )
       go(`/enter?handle=${encodeURIComponent(tag)}`)
     else enterWallet()
   }
@@ -1010,7 +1082,7 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
     const ran = op
     dispatch({ type: "claiming" })
     try {
-      if (resumeTicketWithKeys(keys)) return
+      if ((await resumeTicketWithKeys(keys)) || ran !== op || ran.signal.aborted) return
       const { handle, route } = s()
       await claimAndApply(keys, handle ? (fromPaylink ? "ticket" : route) : undefined)
     } catch (err) {
@@ -1025,7 +1097,7 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
     markAttempts("userCancelled", true)
     const { step, busyPhase } = s()
     abandonOp()
-    live().gate.cancel()
+    latest().gate.cancel()
     dispatch({
       type: "cancelled",
       toTerms: step === "create" && busyPhase === "passkey" && gateOpen,
@@ -1035,9 +1107,9 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
   /** Back to the invitation page, retaining the name on a grant link. */
   const steerToInvite = (note?: InviteNote) => {
     abandonOp()
-    live().gate.cancel()
+    latest().gate.cancel()
     dispatch({ type: "steered", note, step: fromPaylink ? "tag" : "invite" })
-    const { pathname, routeHandle: tag } = live()
+    const { pathname, routeHandle: tag } = latest()
     if (!pathname.startsWith("/claim")) return
     const query = resuming ? "?resume=1" : ""
     go(hasRouteGrant() && tag ? `/claim/${encodeURIComponent(tag)}${query}` : `/claim${query}`)
@@ -1065,7 +1137,7 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
     dispatch({ type: "opEnded" })
     dispatch({ type: "keys", keys: undefined, recovered: false })
     // Steering can leave for the campaign, so it waits until the sign-out is saved.
-    void signOut(own, { keepPointers: true, ...(lost ? { localOnly: true } : {}) }).then(
+    void signOut(session.page, { keepPointers: true, ...(lost ? { localOnly: true } : {}) }).then(
       () => steerToInvite(lost ? { kind: "taken", handle: lost } : undefined),
       (e) => io.report(e, "onboarding:sign-out"),
     )
@@ -1074,18 +1146,18 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
   /** The forced resume tick; the record it leaves routes the step. Sign deps stay lazy. */
   const forcedTick = async (rec: PendingRegistrationRecord) => {
     dispatch({ type: "busyStage", stage: "checking" })
-    const detection = await buildWebDetectionDeps(config, own, {
+    const detection = await buildWebDetectionDeps(config, session, {
       getSignDeps: async () => {
         const { keys } = s()
-        const wallet = valueOf(own.wallet)
+        const wallet = valueOf(session.wallet)
         if (!keys || !wallet) return null
         const signDeps = await buildRetrySignDeps(
           signup.grantToken(rec.tag),
           keys,
-          config,
+          session.page,
           wallet.networkId,
-          own.sipaDeposits,
-          own.accountRecord,
+          session.sipaDeposits,
+          session.accountRecord,
         )
         // The terms follow a re-issued claim; a ticket's refusal is kept for the tick to report.
         const { accountService } = signDeps
@@ -1094,7 +1166,7 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
           accountService: {
             signDomain: async (...args: Parameters<typeof accountService.signDomain>) => {
               const claim = await accountService.signDomain(...args)
-              if (rememberReissuedClaim(own.registrations, rec, claim).ticketRefused)
+              if (rememberReissuedClaim(session.registrations, rec, claim).ticketRefused)
                 renewalRefused = true
               return claim
             },
@@ -1124,7 +1196,7 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
     signal?: AbortSignal,
   ) => {
     dispatch({ type: "busyStage", stage: "passkey" })
-    const before = own
+    const before = session
     const { ticketAttempt } = s()
     const keys = await reuse(
       rec.l2Address,
@@ -1184,32 +1256,47 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
     fragment: string,
     account: SponsoredPaylinkDeps["account"] | undefined,
   ) => {
-    const kit = live().paylinkKit
-    const signer = account ?? (own.account && valueOf(own.account))
+    const kit = latest().paylinkKit
+    const signer = account ?? (session.account && valueOf(session.account))
     if (!kit || !signer) throw new WalletError("wallet.notReady")
-    const paying: SponsoredPaylinkDeps = { ...kit, account: signer }
-    const link = await io.viewLink(paying, fragment)
-    const zkProof =
-      link.flavor === "email"
-        ? await obtainEmailClaimProof(own.auth, paying.account.getAddress(), {
-            paylinkType: DEFAULT_CONTRACTS.paylinkEmail,
-            commitment: link.commitment,
-            email: link.email,
-          })
-        : undefined
-    // Home offers no prompt for a link this claim is spending, even once the wizard has gone.
-    startClaim(fragment)
+    const paying: SponsoredPaylinkDeps = { ...kit, account: signer, session }
+    // Home offers no prompt for a link this claim is spending, and starts no claim of its own, even
+    // once the wizard has gone.
+    claims.start(fragment)
     try {
+      const link = await io.viewLink({ ...paying, ...(await chainOf(session)) }, fragment)
+      const zkProof =
+        link.flavor === "email"
+          ? await obtainEmailClaimProof(session, signer.getAddress(), {
+              paylinkType: DEFAULT_CONTRACTS.paylinkEmail,
+              commitment: link.commitment,
+              email: link.email,
+            })
+          : undefined
       await io.claimLink(paying, fragment, undefined, zkProof, { fundRegistration: true })
     } catch (err) {
       // The node has the batch: offering the link again would spend it twice.
-      if (err instanceof TxInFlightError) clearClaimStash(fragment)
+      if (err instanceof TxInFlightError) clearClaimStash(tabStash, fragment)
       throw err
     } finally {
-      endClaim(fragment)
+      claims.end(fragment)
     }
-    clearClaimStash(fragment)
+    clearClaimStash(tabStash, fragment)
   }
+
+  /** Resolves once no claim of `fragment` runs, or `signal` aborts. */
+  const claimEnded = (fragment: string, signal: AbortSignal) =>
+    new Promise<void>((resolve) => {
+      const done = () => {
+        if (!signal.aborted && claims.state.get().running.has(fragment)) return
+        stop()
+        signal.removeEventListener("abort", done)
+        resolve()
+      }
+      const stop = claims.state.subscribe(done)
+      signal.addEventListener("abort", done)
+      done()
+    })
 
   /** Enters once the link's claim is sent or lands; a later failure is the bell's to report. */
   const enterPastClaim = (tag: string) => {
@@ -1223,10 +1310,10 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
     const rec = record()
     if (!rec || rec.phase !== "awaiting_deposit" || paylinkSettling) return
     // Decided at the click, once the burns load.
-    const burns = own.withdrawals.list.get()
+    const burns = session.withdrawals.list.get()
     if (!burns.hydrated) return
-    const terms = loadRegistrationTerms(own.registrations, rec.account, rec.tag)
-    const ticket = io.ticketActivation(rec, terms, burns.records)
+    const terms = loadRegistrationTerms(session.registrations, rec.account, rec.tag)
+    const ticket = io.ticketActivation(session, rec, terms, burns.records)
     if (!ticket) return
     if (ticket.state !== "ready")
       return dispatch({
@@ -1234,18 +1321,46 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
         note: { kind: "ticketHold", state: ticket.state, tag: rec.tag },
       })
     const fragment = ticket.stash.fragment
+    const claimRunning = () => claims.state.get().running.has(fragment)
     paylinkSettling = true
     dispatch({ type: "claimLeft", left: false })
     return run(
       async () => {
         try {
           dispatch({ type: "note" })
-          const signer = live().paylinkKit && own.account && valueOf(own.account)
-          if (!s().keys && (!signer || fromPaylink) && !(await recoverKeys(rec, s().recovered)))
-            return
+          const signer = latest().paylinkKit && session.account && valueOf(session.account)
+          const keyed = s().keys || (signer && !fromPaylink) || claimRunning()
+          if (!keyed && !(await recoverKeys(rec, s().recovered))) return
           dispatch({ type: "busyStage", stage: "claiming" })
-          await live().ticketSpeed?.saved()
-          await consumeStashedPaylink(fragment, s().keys?.account)
+          await commitTicketSpeed(tapped)
+          // Home's claim of this link runs: the screen shows it, as Home does, and starts none.
+          if (claimRunning()) {
+            const { signal } = op
+            await claimEnded(fragment, signal)
+            const after = io.ticketActivation(
+              session,
+              rec,
+              terms,
+              session.withdrawals.list.get().records,
+            )
+            if (signal.aborted || after?.state !== "submitted") {
+              paylinkSettling = false
+              return
+            }
+          } else {
+            // Read again after the waits: Home's own claim may have sent the burn meanwhile.
+            const now = io.ticketActivation(
+              session,
+              rec,
+              terms,
+              session.withdrawals.list.get().records,
+            )?.state
+            if (now === "ready") await consumeStashedPaylink(fragment, s().keys?.account)
+            else if (now !== "submitted") {
+              paylinkSettling = false
+              return
+            }
+          }
           await enterPastClaim(rec.tag)
         } catch (err) {
           paylinkSettling = false
@@ -1270,9 +1385,9 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
       async () => {
         dispatch({ type: "note" })
         dispatch({ type: "busyStage", stage: "checking" })
-        if ((await io.getClaimStatus(rec.tag)) === "claimed")
-          await closeRegistration(own, rec, { type: "closed", outcome: "taken" })
-        else await own.registrations.apply(rec.sipaAddress, { type: "broadcastReset" })
+        if ((await io.getClaimStatus(session.page, rec.tag)) === "claimed")
+          await closeRegistration(session, rec, { type: "closed", outcome: "taken" })
+        else await session.registrations.apply(rec.sipaAddress, { type: "broadcastReset" })
       },
       "reregister_check",
       "registration:deposit",
@@ -1286,7 +1401,7 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
     if (!rec) return
     return run(
       async () => {
-        const detection = await buildWebDetectionDeps(config, own)
+        const detection = await buildWebDetectionDeps(config, session)
         await bestEffort(
           "unknown",
           runDetectionTick(detection, {
@@ -1321,7 +1436,7 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
   const replaceAtEarnedPrice = async (keys: OnboardingKeys) => {
     const rec = record()
     if (!rec) return
-    const { view } = own.sipaDeposits
+    const { view } = session.sipaDeposits
     const inFlight = () => {
       const job = broadcastJob(view.get().records, rec.sipaAddress)
       return job?.state === "proving" || job?.state === "sent" ? job : undefined
@@ -1332,16 +1447,16 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
         "timeout",
         within(broadcastSettled(view, owed.address), "replace", { ms: REPLACE_SETTLE_MS }),
       )
-    return runUserFlow(async () => {
+    return session.page.prover.runUserFlow(async () => {
       if (inFlight()) throw new WalletError("registration.replaceWaiting")
-      const current = latestRegistration(loadedRegistrations(own.registrations), rec.account)
+      const current = latestRegistration(loadedRegistrations(session.registrations), rec.account)
       if (!current) return
-      await own.registrationRecovery.assertUnfunded(current)
+      await session.registrationRecovery.assertUnfunded(current)
       try {
         await replaceWith(keys, { replaced: current })
       } catch (err) {
         if (!(err instanceof NameTakenError)) throw err
-        await closeRegistration(own, current, { type: "closed", outcome: "taken" })
+        await closeRegistration(session, current, { type: "closed", outcome: "taken" })
       }
     })
   }
@@ -1355,19 +1470,20 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
   }
 
   /** Clears a ticket attempt a closed prompt left; false shows why it could not. */
-  const restartTicketAttempt = (attemptId: string): boolean => {
+  const restartTicketAttempt = async (attemptId: string): Promise<boolean> => {
     if (!ticketFragment) return true
     try {
-      restartTicketSignupAccount(config.rpId, linkIdentity(ticketFragment), attemptId)
+      await restartTicketSignupAccount(
+        session,
+        config.rpId,
+        linkIdentity(ticketFragment),
+        attemptId,
+      )
       dispatch({ type: "ticketAttempt", attempt: null })
       return true
     } catch (err) {
-      let attempt = s().ticketAttempt
-      try {
-        attempt = readTicketAttempt()
-      } catch {
-        /* Show the restart error. */
-      }
+      // An unreadable attempt keeps the saved one, and the restart error shows.
+      const attempt = bestEffortSync(readTicketAttempt, s().ticketAttempt)
       fastRefusals = 0
       dispatch({ type: "ticketAttempt", attempt, error: err })
       return false
@@ -1376,17 +1492,23 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
 
   /** Terms accepted: the passkey is created right away, then the claim, then the address. */
   const leaveTerms = (wantsDeposit: boolean) => {
-    if (live().ticketHeld || inAppHold()) return
+    if (latest().ticketHeld || inAppHold()) return
     dispatch({ type: "to", step: "create" })
     if (mock) return
     io.fire("registration_terms_accepted", { deposit_intent: wantsDeposit })
     void createAccountStep()
   }
 
-  const continueSignup = () => {
-    if (live().ticketHeld) return
+  const continueSignup = async () => {
+    if (latest().ticketHeld) return
     const { ticketAttempt } = s()
-    if (isTicketSignupCreating(ticketAttempt) && !restartTicketAttempt(ticketAttempt.attemptId))
+    const shown = op
+    if (
+      isTicketSignupCreating(ticketAttempt) &&
+      (!(await restartTicketAttempt(ticketAttempt.attemptId)) ||
+        shown !== op ||
+        shown.signal.aborted)
+    )
       return
     unheld = undefined
     leaveTerms(!fromPaylink)
@@ -1399,11 +1521,16 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
   /** The stores of the session commands now run under: a hand-off can open another. */
   let watching: { session: Session; stop(): void } | undefined
   const watch = () => {
-    if (watching?.session === own) return
+    if (watching?.session === session) return
     watching?.stop()
-    const stores = [own.registrations.view, own.sipaDeposits.view, own.identity, own.device]
+    const stores = [
+      session.registrations.view,
+      session.sipaDeposits.view,
+      session.identity,
+      session.device,
+    ]
     const stops = stores.map((store) => store.subscribe(react))
-    watching = { session: own, stop: () => stops.forEach((stop) => stop()) }
+    watching = { session, stop: () => stops.forEach((stop) => stop()) }
   }
   const react = () => {
     watch()
@@ -1416,18 +1543,18 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
     if (rec.phase !== "awaiting_deposit" && left !== rec.sipaAddress) {
       left = rec.sipaAddress
       markAttempts("superseded")
-      live().gate.dismiss()
+      latest().gate.dismiss()
     }
-    const identity = own.identity.get()
-    const device = own.device.get()
+    const identity = session.identity.get()
+    const device = session.device.get()
     const exit = selectPendingExit({
       record: rec,
       identityTag: identity.value?.handle,
-      entered: !!enteredIdentity(identity, device.passkeyMap),
-      admitted: hasDepositAdmission(own.sipaDeposits, rec),
+      entered: !!enteredIdentity(identity, device.passkeyMap, config.rpId),
+      admitted: hasDepositAdmission(session.sipaDeposits, rec),
       refunded: rec.replaced?.refunded === true,
       keysHeld: !!keys && !recovered,
-      signedIn: device.storageId === own.namespace.id && device.msk !== null,
+      signedIn: device.storageId === session.namespace.id && device.msk !== null,
       recoveryVisit,
       entryFailed,
     })
@@ -1435,7 +1562,7 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
     // The session task saves the identity a settled record names; the step waits for it.
     if (exit === "stay" && (rec.phase === "funded" || rec.phase === "confirmed") && woken !== key) {
       woken = key
-      void own.wake(own.tasks.registrationIdentity)
+      void session.wake(session.tasks.registrationIdentity)
     }
     if (exit === "stay" || exited === key) return
     exited = key
@@ -1451,16 +1578,18 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
 
   return {
     state: state.readonly,
+    tagField: tagInput.field,
+    typeTag: (raw: string) => typed.set(raw.replace(/^@/, "").toLowerCase()),
     fromPaylink,
     freshStart,
-    returning: freshStart && hasOpeningBreadcrumb(own.device.get().passkeyMap, config.rpId),
+    returning: freshStart && hasOpeningBreadcrumb(session.device.get().passkeyMap, config.rpId),
     leftoverTag: fromPaylink
       ? undefined
-      : latestOpenRegistration(loadedRegistrations(own.registrations))?.tag,
+      : latestOpenRegistration(loadedRegistrations(session.registrations))?.tag,
     openRecord,
     mock,
     resuming,
-    boundGrantOwner: () => resuming && live().boundGrantOwner === live().routeHandle,
+    boundGrantOwner: () => resuming && latest().boundGrantOwner === latest().routeHandle,
     sweepAttempt,
     record,
     expectedEarned,
@@ -1471,7 +1600,7 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
         op.abort()
         invite.abort()
         draw.abort()
-        live().gate.cancel()
+        latest().gate.cancel()
         markAttempts("unmounted")
         stopState()
         watching?.stop()
@@ -1479,6 +1608,8 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
       const stopState = state.subscribe(react)
       watching = undefined
       react()
+      tagInput.start(signal)
+      signal.addEventListener("abort", state.subscribe(reseedTag))
       // One start per tab; a ticket signup's is the link page's to report.
       if (!fromPaylink && firstInTab("onboarding_started")) {
         io.landing("signup")
@@ -1494,11 +1625,11 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
         !openRecord &&
         !recoveryVisit &&
         !resuming &&
-        !own.identity.get().value
+        !session.identity.get().value
       ) {
         void bestEffort(
           "unknown",
-          io.grantIsCurrent(routeHandle, grant).then((current) => {
+          io.grantIsCurrent(session.page, routeHandle, grant).then((current) => {
             if (signal.aborted) return
             if (current) signup.scopeGrant(routeHandle, grant)
             else signup.clearGrant(routeHandle, grant)
@@ -1508,23 +1639,29 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
       // The tap taken before boot runs once: a start StrictMode discards never takes it.
       if (startedBeforeBoot)
         void Promise.resolve().then(() => {
-          if (!signal.aborted && takePreBootCreate()) void createDrawnWallet()
+          if (!signal.aborted && session.page.preBoot.takeCreate()) void createDrawnWallet()
         })
       // The tag and welcome steps warm what the claim after the passkey needs.
       const { step } = s()
       if (fromPaylink && ticketFragment && !mock && (step === "tag" || step === "terms")) {
         const warm = async () => {
-          const wallet = await readyValue(own.wallet, signal)
-          if (!peekTicketSignup()?.paid) prewarmGoldenTicket(wallet, ticketFragment)
-          await oxideEnvFor(config)
+          const chain = {
+            wallet: await session.wallet.ready(signal),
+
+            contractService: await session.contractService.ready(signal),
+          }
+          if (!peekTicketSignup(tabStash)?.paid)
+            prewarmGoldenTicket(session.page.preparedTicket, chain, ticketFragment)
+          await session.page.chain.oxideEnv.read()
         }
         void bestEffort("unknown", warm())
       }
       // A tag drawn before a link was stashed gives way to the link's signup.
       if (draftTag && !mock) {
         const yielded = async () => {
-          await readyValue(own.wallet, signal)
-          await readyValue(own.contractService, signal)
+          await session.wallet.ready(signal)
+
+          await session.contractService.ready(signal)
           const linked = await stashedLinkOpen()
           if (signal.aborted || !linked) return
           toLinkSignup(linked)
@@ -1535,15 +1672,15 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
       }
     },
     logIn,
-    unlockAccess,
+    unlockAccess: onTap(unlockAccess),
     cancelUnlock,
     createDrawnWallet,
     rerollDrawnTag,
     keepDrawnTag,
-    createChosenAccount,
+    createChosenAccount: onTap(createChosenAccount),
     pickOwnTag,
     picking: (open: boolean) => dispatch({ type: "picking", open }),
-    claimTagStep,
+    claimTagStep: onTap(claimTagStep),
     cancelModalOp,
     /** The X while the passkey runs: stops it as Cancel does, and leaves the sheet too. */
     closeBusySheet(gateOpen: boolean) {
@@ -1563,40 +1700,47 @@ export function openSignupFlow(deps: SignupDeps, live: () => SignupInputs) {
     },
     intoWallet,
     enterGo: go,
-    retryClaim,
-    settlePendingPaylink,
+    retryClaim: onTap(retryClaim),
+    settlePendingPaylink: onTap(settlePendingPaylink),
     refreshExpiredQuote,
     checkPendingStatus,
     reading: (on: boolean) => dispatch({ type: "reading", on }),
     retryEntry: () => void failedEntry?.(),
-    restartAfterRefund,
-    replaceAtEarnedPrice,
+    restartAfterRefund: onTap(restartAfterRefund),
+    replaceAtEarnedPrice: onTap(replaceAtEarnedPrice),
     enterDepositLater,
     enterPastClaim,
     logOut: () => signOutTo(),
     /** A refusal card's way back to the creation sheet, opened on `openOn`, after another try. */
-    backToSheet(openOn?: SignUpChoice) {
-      if (live().ticketHeld) return
+    backToSheet: onTap(async (openOn?: SignUpChoice) => {
+      if (latest().ticketHeld) return
       const refused = s().modalRefusal
-      if (refused?.ticketAttemptId && !restartTicketAttempt(refused.ticketAttemptId)) return
+      const shown = op
+      if (
+        refused?.ticketAttemptId &&
+        (!(await restartTicketAttempt(refused.ticketAttemptId)) ||
+          shown !== op ||
+          shown.signal.aborted)
+      )
+        return
       unheld = undefined
       reopen = openOn ? { openOn } : undefined
       void createAccountStep()
-    },
-    continueSignup,
-    leaveTerms,
+    }),
+    continueSignup: onTap(continueSignup),
+    leaveTerms: onTap(leaveTerms),
     /** The ticket signup's own sheet took the tap: its pick and warning start the creation. */
-    chooseOnSheet(choice: SignUpChoice, supported: readonly string[], warning?: string) {
+    chooseOnSheet: onTap((choice: SignUpChoice, supported: readonly string[], warning?: string) => {
       unheld = { choice, supported }
       dispatch({ type: "warning", warning })
       leaveTerms(false)
-    },
+    }),
     warn: (warning?: string) => dispatch({ type: "warning", warning }),
     /** The pending step's gate cancel: the running retry stops at its prompt. */
     cancelPendingGate() {
       markAttempts("userCancelled", true)
       fastRefusals = 0
-      live().gate.cancel()
+      latest().gate.cancel()
     },
   }
 }

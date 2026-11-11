@@ -28,11 +28,15 @@ const input = {
 describe("createAndStoreRequestLink", () => {
   it("persists the outgoing join row before returning the link", async () => {
     const writes: StoredRequest[] = []
-    const result = await createAndStoreRequestLink(input, {
-      add: async (row) => {
-        writes.push(row)
+    const result = await createAndStoreRequestLink(
+      input,
+      {
+        add: async (row) => {
+          writes.push(row)
+        },
       },
-    })
+      async () => undefined,
+    )
 
     expect(writes).toEqual([result.row])
     expect(decodeRequestInline(result.url.split("#")[1])).toMatchObject({
@@ -85,7 +89,9 @@ describe("createAndStoreRequestLink", () => {
     const error = new Error("quota exceeded")
     const add = vi.fn().mockRejectedValue(error)
 
-    await expect(createAndStoreRequestLink(input, { add })).rejects.toBe(error)
+    await expect(createAndStoreRequestLink(input, { add }, async () => undefined)).rejects.toBe(
+      error,
+    )
     expect(add).toHaveBeenCalledOnce()
   })
 })

@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from "react"
+import { useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { useNavigate } from "react-router-dom"
 import { GradientText, Icon, PrimaryGradientButton, TopNavIconButton } from "@obsidion/web-ds"
-import { useResource } from "@obsidion/front-core"
+import { NO_SERVICE, serviceStatus, useStore } from "@obsidion/front-core"
 import { PAYMENT_REQUEST_NOTE_MAX_LEN } from "@obsidion/sdk"
 import { fireEvent, requestAmountBucket } from "../../lib/analytics"
 import { BrandLockup } from "../../ui/BrandLockup"
@@ -23,6 +23,7 @@ import { RequestContactPicker } from "./RequestContactPicker/RequestContactPicke
 import { useCodeForm } from "./useCodeForm"
 import { useReceiveCode } from "./useReceiveCode"
 import { useSession } from "../../session/session"
+import { useDomEffect } from "../../ui/useDomEffect"
 
 /**
  * New request, routed at /receive: the amount and note, then who from. A contact gets it in their
@@ -69,11 +70,11 @@ export function ReceiveScreen() {
     if (document.fullscreenElement) void document.exitFullscreen().catch(() => {})
   }
   // A payment closes full screen onto the paid state; the next code shows only after Show code.
-  useEffect(() => {
+  useDomEffect(() => {
     if (payment) exitFull()
   }, [payment])
   // Leaving browser full screen leaves ours too, and Escape closes ours where there is none.
-  useEffect(() => {
+  useDomEffect(() => {
     if (!full) return
     const onChange = () => !document.fullscreenElement && setFull(false)
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && setFull(false)
@@ -91,9 +92,9 @@ export function ReceiveScreen() {
   const form = useCodeForm(code, setAmount)
   const phone = usePhoneLayout()
   const card = useSaveCard(tag ?? "")
-  const tokenService = useResource(useSession().token)
-  const wallet = useResource(useSession().wallet)
-  const { identity } = useSession()
+  const session = useSession()
+  const tokenBuilt = useStore(session.token ?? NO_SERVICE, serviceStatus) === "ready"
+  const walletBuilt = useStore(session.wallet, serviceStatus) === "ready"
   const [who, setWho] = useState<"contact" | "anyone">("anyone")
   const [sending, setSending] = useState<string>()
   const [sendError, setSendError] = useState("")
@@ -103,26 +104,23 @@ export function ReceiveScreen() {
   const amount = parseRequestAmount(form.amount)
 
   const requestContact = async (contact: string) => {
-    const requesterTag = identity.get().value?.handle
+    const requesterTag = session.identity.get().value?.handle
     if (!amount) {
       setShake(true)
       amountInput.current?.focus()
       return
     }
-    if (!tokenService || !wallet || !requesterTag) return
+    if (!tokenBuilt || !walletBuilt || !requesterTag) return
     setSending(contact)
     setSendError("")
     setSendHint("")
     try {
-      await requestFromContact(
-        { tokenService, wallet },
-        {
-          tag: contact,
-          requesterTag,
-          amountDisplay: String(amount),
-          note: form.note.trim() || undefined,
-        },
-      )
+      await requestFromContact(session, {
+        tag: contact,
+        requesterTag,
+        amountDisplay: String(amount),
+        note: form.note.trim() || undefined,
+      })
       fireEvent("request_created", {
         source: "contact",
         amount_bucket: requestAmountBucket(amount),
@@ -135,7 +133,8 @@ export function ReceiveScreen() {
         setSendHint(recipientNotUpgradedCopy.requestHint(contact))
       } else {
         setSendError(
-          errorCopy(e) ?? (e instanceof Error ? e.message : "Couldn't send the request"), // slice-check-ignore: an uncoded error keeps its own words until its source throws a code
+          // eslint-disable-next-line local/message-in-state -- debt
+          errorCopy(e) ?? (e instanceof Error ? e.message : "Couldn't send the request"),
         )
       }
       setSending(undefined)

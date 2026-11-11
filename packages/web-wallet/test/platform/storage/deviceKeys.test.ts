@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest"
 import { NO_SESSION, tupleOf, writeSessionTuple } from "../../../src/platform/storage/activeStorage"
 import {
   DEVICE_KEYS,
+  countHintShowing,
   deviceState,
   saveSetting,
   writeDeviceKeys,
@@ -101,5 +102,15 @@ describe("the analytics question", () => {
   it("reads a value of another type as the default, still answered", async () => {
     await writeDeviceKeys(deviceDb, { analyticsConsent: '"yes"' })
     expect(committed()).toMatchObject({ consentAsked: true, analyticsConsent: false })
+  })
+})
+
+describe("the local passkey hint's showings", () => {
+  it("counts each attempt, close together too, and stops at the cap", async () => {
+    const db = openDatabase(memoryBackend())
+    expect(await Promise.all([countHintShowing(db, 3), countHintShowing(db, 3)])).toEqual([0, 1])
+    expect(await countHintShowing(db, 3)).toBe(2)
+    expect(await countHintShowing(db, 3)).toBe(3)
+    expect(await countHintShowing(db, 3)).toBe(3)
   })
 })

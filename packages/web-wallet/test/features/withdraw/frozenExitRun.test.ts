@@ -2,12 +2,19 @@ import { describe, expect, it, vi } from "vitest"
 import type { Address, Hex } from "viem"
 import { EthAddress } from "@aztec-labs/aztec.js/addresses"
 
-import type { SavingsMoveRecord } from "@obsidion/front-core"
-import { getSavingsMoveStore } from "../../../src/features/savings/savingsMoveStore"
+import {
+  createSavingsMoves,
+  memoryBackend,
+  openDatabase,
+  type SavingsMoveRecord,
+} from "@obsidion/front-core"
 
-const { frozenExitSummary, runFrozenExit } = await import("../../../src/features/withdraw/frozenExitRun")
+const { frozenExitSummary, runFrozenExit } = await import(
+  "../../../src/features/withdraw/frozenExitRun"
+)
 
 const USER = `0x${"44".repeat(20)}` as Address
+const moves = createSavingsMoves({ db: openDatabase(memoryBackend()) })
 const PORTAL = `0x${"cc".repeat(20)}`
 
 /** A frozen portal holding `notes`, which refunds whatever a confirmed transaction named. */
@@ -57,7 +64,6 @@ describe("the frozen-portal exit", () => {
   ])(
     "marks an old version's Savings move recovered once its refund runs, %s",
     async (_, timeout) => {
-      const moves = getSavingsMoveStore()
       const move = (id: string, deposit: { inboxIndex: string; amount: string }) =>
         ({
           withdrawalLocalId: id,
@@ -73,17 +79,28 @@ describe("the frozen-portal exit", () => {
       const { runtime, channel } = frozenPortal({ a: 1n }, "frozen-deposit")
       if (timeout) {
         channel.waitForReceipt.mockRejectedValueOnce(new Error("timed out"))
-        await expect(runFrozenExit(runtime as never, channel)).rejects.toThrow(/timed out/)
-        expect(moves.get("a")?.recovered).toBeUndefined()
+        await expect(runFrozenExit(moves, runtime as never, channel)).rejects.toThrow(/timed out/)
+        expect((await moves.get("a"))?.recovered).toBeUndefined()
       }
-      await runFrozenExit(runtime as never, channel)
+      await runFrozenExit(moves, runtime as never, channel)
       const [hash] = await Promise.all(channel.sendTransaction.mock.results.map((r) => r.value))
-      expect(moves.get("a")?.recovered).toEqual({ to: USER, txHashes: [hash] })
-      expect(moves.get("other")?.recovered).toBeUndefined()
+      expect((await moves.get("a"))?.recovered).toEqual({ to: USER, txHashes: [hash] })
+      expect((await moves.get("other"))?.recovered).toBeUndefined()
       await moves.remove("a")
       await moves.remove("other")
     },
   )
+
+  it("keeps a run's progress when the Savings moves cannot be read", async () => {
+    const damaged = createSavingsMoves({
+      db: openDatabase(memoryBackend(new Map([["@obsidion/savings/moves", "{"]]))),
+    })
+    const { runtime, channel } = frozenPortal({ a: 1n }, "frozen-deposit")
+    await expect(runFrozenExit(damaged, runtime as never, channel)).resolves.toMatchObject({
+      refunded: 1n,
+    })
+    expect(channel.sendTransaction).toHaveBeenCalledTimes(1)
+  })
 
   it("counts a note above the portal's cap as not yet withdrawable", async () => {
     const { runtime } = frozenPortal({ a: 1n, big: 5_000n })
@@ -115,29 +132,29 @@ describe("the frozen-portal exit", () => {
   it("stops on a reverted refund", async () => {
     const { runtime, channel } = frozenPortal({ a: 1n })
     channel.waitForReceipt.mockResolvedValueOnce(false)
-    await expect(runFrozenExit(runtime as never, channel)).rejects.toThrow(/reverted/)
+    await expect(runFrozenExit(moves, runtime as never, channel)).rejects.toThrow(/reverted/)
     expect(channel.sendTransaction).toHaveBeenCalledTimes(1)
   })
 
   it("waits for a refund whose receipt timed out before sending again", async () => {
     const { runtime, channel } = frozenPortal({ a: 1n })
     channel.waitForReceipt.mockRejectedValueOnce(new Error("timed out"))
-    await expect(runFrozenExit(runtime as never, channel)).rejects.toThrow(/timed out/)
-    await runFrozenExit(runtime as never, channel)
+    await expect(runFrozenExit(moves, runtime as never, channel)).rejects.toThrow(/timed out/)
+    await runFrozenExit(moves, runtime as never, channel)
     expect(channel.sendTransaction).toHaveBeenCalledTimes(1)
   })
 
   it("refuses a second run while one is in flight", async () => {
     const { runtime, channel } = frozenPortal({ a: 1n })
-    const first = runFrozenExit(runtime as never, channel)
-    await expect(runFrozenExit(runtime as never, channel)).rejects.toThrow(/already running/)
+    const first = runFrozenExit(moves, runtime as never, channel)
+    await expect(runFrozenExit(moves, runtime as never, channel)).rejects.toThrow(/already running/)
     await expect(first).resolves.toMatchObject({ refunded: 1n })
   })
 
   it("never sends a batch again while the portal still lists it", async () => {
     const { runtime, channel } = frozenPortal({ a: 1n })
     channel.waitForReceipt.mockResolvedValue(true)
-    await expect(runFrozenExit(runtime as never, channel)).rejects.toThrow(/already sent/)
+    await expect(runFrozenExit(moves, runtime as never, channel)).rejects.toThrow(/already sent/)
     expect(channel.sendTransaction).toHaveBeenCalledTimes(1)
   })
 })

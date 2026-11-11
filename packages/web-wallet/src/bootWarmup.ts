@@ -1,6 +1,7 @@
+import { bestEffort } from "@obsidion/core/errors"
 import { DEFAULT_CONTRACTS, getHardcodedArtifact } from "@obsidion/sdk"
-import { GOOGLE_CALLBACK_PATH } from "./features/paylink/googleAuth"
-import { warmBarretenberg } from "./platform/bbWasm"
+import { GOOGLE_CALLBACK_PATH } from "./features/paylink/googleRelay"
+import { warmSyncBackend } from "./platform/barretenberg"
 import { ACTIVE_TAB_LOCK } from "./platform/storage/activeTabLifecycle"
 import { originWasFresh } from "./platform/storage/freshOrigin"
 import { isPayPath } from "./ui/PxeBoot"
@@ -24,11 +25,12 @@ export async function warmBoot(pathname: string): Promise<void> {
   if (isPayPath(pathname) || pathname === GOOGLE_CALLBACK_PATH) return
   if (await walletRunsElsewhere()) return
   // The PXE's largest download.
-  const barretenberg = warmBarretenberg()
+  const barretenberg = warmSyncBackend()
   // A payment link's first read loads its escrow's artifact: fetched once that download is in.
   if (pathname === "/link" || pathname === "/p") {
-    void barretenberg
-      .then(() => getHardcodedArtifact(DEFAULT_CONTRACTS.paylinkDirect))
-      .catch(() => {})
+    void bestEffort(
+      "unknown",
+      barretenberg.then(() => getHardcodedArtifact(DEFAULT_CONTRACTS.paylinkDirect)),
+    )
   }
 }

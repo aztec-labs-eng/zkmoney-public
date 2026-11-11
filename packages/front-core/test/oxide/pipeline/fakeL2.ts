@@ -76,7 +76,16 @@ export class FakeL2 {
     },
   }
 
+  /** The L2 head. */
+  block = 30
+  /** Makes the head read throw. */
+  headError: Error | undefined
+
   readonly node = {
+    getBlockNumber: async () => {
+      if (this.headError) throw this.headError
+      return this.block
+    },
     getL1ToL2MessageIndex: async (hash: Fr) => this.messages.get(key(hash)),
     getBlockData: async () => ({
       header: { state: { l1ToL2MessageTree: { nextAvailableLeafIndex: Number(this.leaves) } } },

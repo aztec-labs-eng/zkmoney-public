@@ -1,11 +1,10 @@
 // The sign-in flow on /enter: its arrival, the tag field, the completion writes and the reload guard.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { resource } from "@obsidion/front-core"
+import { service } from "@obsidion/front-core"
 import { RESOLVE_DEBOUNCE_MS } from "../../../src/features/onboarding/EnterAppScreen/signInFlow"
 import { closeSession } from "../../../src/session/session"
 import { savedIdentity } from "../../support/identity"
 import { committed, seedDeviceKeys } from "../../support/page"
-import { seedBootConfigWith } from "../../support/seedBootConfig"
 import {
   ceremonyRequired,
   confirmResult,
@@ -25,10 +24,7 @@ const open = async (...args: Parameters<typeof openSignIn>) => {
   return flow
 }
 
-beforeEach(async () => {
-  await seedBootConfigWith({ VITE_ACCOUNT_SERVICE_TEST_MODE: "false" })
-  sessionStorage.clear()
-})
+beforeEach(() => sessionStorage.clear())
 afterEach(() => {
   for (const { ended } of opened) ended.abort()
   opened = []
@@ -74,12 +70,12 @@ describe("the arrival", () => {
   })
 
   it("a read that failed before anything was asked or written shows the screen, which prepares itself", async () => {
-    const { flow, io, own, failures, navigate } = await open("", { start: false })
+    const { flow, io, session, failures, navigate } = await open("", { start: false })
     io.enterWithPasskey.mockRejectedValueOnce(new Error("rpc down"))
     await opened[0]!.start()
     expect(flow.state.get()).toMatchObject({ shown: true, prepared: "ready" })
     expect(io.warm).toHaveBeenCalledTimes(1)
-    expect(own.auth.recoverFromCache).toHaveBeenCalledTimes(1)
+    expect(session.auth.recoverFromCache).toHaveBeenCalledTimes(1)
     expect(io.report).not.toHaveBeenCalled()
     expect(failures()).toEqual([["enter", "unknown"]])
     expect(navigate).not.toHaveBeenCalled()
@@ -103,7 +99,7 @@ describe("the arrival", () => {
 
   it("?choose=1 skips the probe and prepares the screen; nothing opens once it is ready", async () => {
     let warm!: (value: object) => void
-    const { flow, io, own } = await open("choose=1", { start: false })
+    const { flow, io, session } = await open("choose=1", { start: false })
     io.warm.mockReturnValueOnce(new Promise<object>((r) => (warm = r)))
     await opened[0]!.start()
     expect(io.enterWithPasskey).not.toHaveBeenCalled()
@@ -111,14 +107,14 @@ describe("the arrival", () => {
     warm({})
     await flush()
     expect(flow.state.get().prepared).toBe("ready")
-    expect(own.auth.recoverFromCache).toHaveBeenCalledTimes(1)
+    expect(session.auth.recoverFromCache).toHaveBeenCalledTimes(1)
     expect(io.enterWithPasskey).not.toHaveBeenCalled()
   })
 
   it("waits for a held cache proof, and a failed preparation prepares again", async () => {
     let proved!: (value: undefined) => void
-    const { flow, io, own } = await open("choose=1", { start: false })
-    vi.mocked(own.auth.recoverFromCache).mockReturnValueOnce(
+    const { flow, io, session } = await open("choose=1", { start: false })
+    vi.mocked(session.auth.recoverFromCache).mockReturnValueOnce(
       new Promise<undefined>((r) => (proved = r)),
     )
     io.warm.mockRejectedValueOnce(new Error("offline"))
@@ -174,9 +170,9 @@ describe("the flow's lifecycle", () => {
 
   it("waits for the wallet: nothing runs before it is ready, and leaving first runs nothing", async () => {
     let ready!: (wallet: object) => void
-    const wallet = resource(
+    const wallet = service(
       "wallet",
-      { from: [], backoff: "manual" },
+      { from: [], retry: "manual" },
       () => new Promise<object>((r) => (ready = r)),
     )
     const { io, ended } = await open("", { wallet })
@@ -185,9 +181,9 @@ describe("the flow's lifecycle", () => {
     await flush()
     expect(io.enterWithPasskey).toHaveBeenCalledTimes(1)
 
-    const late = resource(
+    const late = service(
       "wallet",
-      { from: [], backoff: "manual" },
+      { from: [], retry: "manual" },
       () => new Promise<object>(() => {}),
     )
     const left = await open("", { wallet: late })

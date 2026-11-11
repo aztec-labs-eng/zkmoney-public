@@ -82,19 +82,19 @@ export function openDatabase(backend: DatabaseBackend): Database {
     const run = async () => {
       const staged = new Map<string, string | null>()
       let open = true
-      const live = () => {
+      const assertOpen = () => {
         if (!open) throw new WalletError("invariant", "write used after it ended")
       }
       const stagedView = (prefix: string): Write => ({
         prefix,
         async get(key) {
-          live()
+          assertOpen()
           const at = prefix + key
           if (staged.has(at)) return staged.get(at) ?? undefined
           return backend.get(at)
         },
         async getMany(keys) {
-          live()
+          assertOpen()
           const at = keys.map((key) => prefix + key)
           const fetched = at.filter((key) => !staged.has(key))
           const saved = await backend.getMany(fetched)
@@ -102,11 +102,11 @@ export function openDatabase(backend: DatabaseBackend): Database {
           return at.map((key) => (staged.has(key) ? staged.get(key) ?? undefined : read.get(key)))
         },
         put(key, value) {
-          live()
+          assertOpen()
           staged.set(prefix + key, value)
         },
         remove(key) {
-          live()
+          assertOpen()
           staged.set(prefix + key, null)
         },
         scoped: (inner) => stagedView(prefix + inner),
@@ -120,10 +120,7 @@ export function openDatabase(backend: DatabaseBackend): Database {
       }
     }
     const done = queue.then(run, run)
-    queue = done.then(
-      () => undefined,
-      () => undefined,
-    )
+    queue = Promise.allSettled([done])
     return done
   }
 

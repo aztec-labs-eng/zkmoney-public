@@ -10,6 +10,6 @@ export default defineConfig({
     include: ["bench/**/*.bench.ts"],
     testTimeout: 3_600_000,
     pool: "forks",
-    poolOptions: { forks: { singleFork: true } },
+    maxWorkers: 1,
   },
 })

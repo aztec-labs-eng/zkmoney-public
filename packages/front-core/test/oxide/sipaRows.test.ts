@@ -65,7 +65,7 @@ const metadata = async (token: string) => ({
 describe("sipaRows", () => {
   it("lists each row with its token, L2 token, portal and the intents that settle on it", async () => {
     const rows = table([
-      [TEST, ["deposit", "registration", "user-op"]],
+      [TEST, ["deposit", "registration", "add-passkey"]],
       [SECOND, ["deposit", "registration"]],
     ])
     const read = await sipaRows(rows, 31337, metadata)
@@ -75,7 +75,7 @@ describe("sipaRows", () => {
         l2Token: rows.rows[0]!.bridge.l2Token,
         token: { address: TEST, symbol: "TEST", decimals: 18 },
         swapped: [],
-        intents: ["deposit", "registration", "user-op"],
+        intents: ["deposit", "registration", "add-passkey"],
       },
       {
         portal: rows.rows[1]!.bridge.portal,
@@ -108,11 +108,11 @@ describe("sipaRows", () => {
 
   it("takes the swap inputs of a row that settles registrations alone", async () => {
     const rows = table([
-      [DAI, ["registration", "user-op"]],
+      [DAI, ["registration", "add-passkey"]],
       [SUSDS, ["deposit"]],
     ])
     const read = await sipaRows(rows, 1, metadata)
-    expect(read[0]!.intents).toEqual(["registration", "user-op"])
+    expect(read[0]!.intents).toEqual(["registration", "add-passkey"])
     expect(read[0]!.swapped.map((t) => t.symbol)).toEqual(["USDC", "USDT"])
   })
 

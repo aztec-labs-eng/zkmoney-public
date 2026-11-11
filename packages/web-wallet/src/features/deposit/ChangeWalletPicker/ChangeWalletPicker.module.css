@@ -1,0 +1,29 @@
+/* The wallet picker: Switch account, then the saved wallets under their heading. */
+.wallets {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+}
+.walletsSaved {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.walletsHead {
+  font-size: 14px;
+  color: var(--text-secondary);
+}
+.accountRow {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+/* The connected account, on the row's top-right corner. */
+.accountPill {
+  position: absolute;
+  top: -10.5px;
+  right: 0;
+  max-width: 100%;
+}

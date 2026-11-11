@@ -3,7 +3,9 @@ import { DEFAULT_DECIMALS } from "@obsidion/core/constants"
 import {
   ActivityListRow,
   GradientInitialAvatar,
+  Icon,
   avatarColors,
+  type IconName,
   type StatusLabel,
 } from "@obsidion/web-ds"
 import {
@@ -16,34 +18,41 @@ import {
   useEnsName,
   withdrawalGroupAmount,
   worstWithdrawalPhase,
+  type BridgeInRecord,
   type FeedItem,
   type SavingsItem,
   type WithdrawalExit,
   type WithdrawalRecord,
 } from "@obsidion/front-core"
-import { ensClient } from "../../../lib/ens"
 import { fmt } from "../../../lib/fmt"
+import { useSession } from "../../../session/session"
+import { recoveryCopy } from "../../../features/backupPasskey/backupPasskeyCopy"
 import { REMIND_TITLE } from "../../../features/contacts/useRemind"
 import { contactDisplayName } from "../../../features/contacts/contactsView"
 import { SavingsMoveRow } from "../../../features/savings/SavingsMoveRow"
 import { paylinkRowShareUrl } from "../../../features/shortLinks"
 import { upgradeRunTitle } from "../../../features/migration/upgradeCopy"
+import { bridgeInPaid } from "../../../features/deposit/bridgeInView"
 import { upgradeRunAccount } from "../../../features/migration/upgradeRunAccount"
 import {
   oldVersionRefundOffer,
   withdrawalSent,
 } from "../../../features/withdraw/oldVersionWithdrawals"
-import { l1TxUrl } from "../../detailRows"
-import { rowTimestamp, shortL1Addr, usdFigure } from "../../format"
+import { useL1Links } from "../../detailRows"
+import { rowTimestamp, shortL1Addr, tokenFigure, usdFigure } from "../../format"
 import { usePhoneLayout } from "../../usePhoneLayout"
+import { ChainIcon } from "../../ChainIcon/ChainIcon"
 import {
   depositRowAmount,
   depositRowStatusLabel,
   requestAmountText,
-  txRowView,
+  rowView,
+  type RowItem,
   upgradeRowStatusLabel,
 } from "../../screens/activityView"
 import copy from "../ActivityRow.copy"
+import styles from "./ActivityRow.module.css"
+import { backupFundingTitle, withdrawalHeroAmount } from "../../screens/WithdrawalDetailModal"
 import { useActivityHost } from "../ActivityDetailHost/ActivityDetailHost"
 
 type Of<K extends FeedItem["kind"]> = Extract<FeedItem, { kind: K }>
@@ -139,10 +148,10 @@ function RequestRow({ item, compact }: { item: Of<"request">; compact: boolean }
   )
 }
 
-function TxRow({ item }: { item: Of<"tx"> }) {
+function TxRow({ item }: { item: RowItem }) {
   const host = useActivityHost()
   const phone = usePhoneLayout()
-  const row = txRowView(item)
+  const row = rowView(item)
   const figure = row.amount.replace(/^[+-]/, "")
   return (
     <ActivityListRow
@@ -180,14 +189,15 @@ function TxRow({ item }: { item: Of<"tx"> }) {
                     actionStyle: gradient,
                     onClick: () =>
                       host.shareLink(
-                        paylinkRowShareUrl(row.paylink!),
+                        paylinkRowShareUrl(row.paylink!, host.network),
                         fmt(copy.shareText, { amount: figure }),
                       ),
                   }
                 : {
                     title: host.copiedLinkId === row.id ? copy.action.copied : copy.action.copyLink,
                     actionStyle: gradient,
-                    onClick: () => host.copyLink(row.id, paylinkRowShareUrl(row.paylink!)),
+                    onClick: () =>
+                      host.copyLink(row.id, paylinkRowShareUrl(row.paylink!, host.network)),
                   },
             ]
           : []),
@@ -198,11 +208,11 @@ function TxRow({ item }: { item: Of<"tx"> }) {
 
 function WithdrawalRow({ item }: { item: Of<"withdrawal"> }) {
   const host = useActivityHost()
-  const { record, exit, registrationTag, delayed } = item
-  const migration = record.intent === "migration"
-  // A burn to a backup passkey's deposit address pays for the key.
-  const backup = record.intent === "backup"
-  const ensName = useEnsName(record.recipient, ensClient)
+  const { record, intent, exit, registrationTag, delayed, recovery, cost } = item
+  const migration = intent === "migration"
+  // A burn to a backup passkey's deposit address pays for the key; the add has this one row.
+  const backup = intent === "backup"
+  const ensName = useEnsName(record.recipient, useSession().page.chain.ensName)
   const hash = record.l2TxHash
   return (
     <ActivityListRow
@@ -210,7 +220,7 @@ function WithdrawalRow({ item }: { item: Of<"withdrawal"> }) {
         migration
           ? copy.counterparty.upgrade
           : backup
-          ? copy.counterparty.backupPasskey
+          ? backupFundingTitle(item)
           : registrationTag
           ? fmt(copy.counterparty.tag, { tag: registrationTag })
           : record.recipientAlias ?? ensName ?? shortL1Addr(record.recipient)
@@ -222,16 +232,27 @@ function WithdrawalRow({ item }: { item: Of<"withdrawal"> }) {
             ? copy.badge.leftOldVersion
             : undefined
           : backup
-          ? copy.badge.funding
+          ? undefined
           : registrationTag
           ? copy.badge.registration
           : record.source === "paylink"
           ? copy.badge.paylinkToEthereum
-          : copy.badge.withdrawal
+          : undefined
       }
       timestamp={delayed ? copy.stuck : rowTimestamp(item.ts)}
-      amount={`-${usdFigure(record.amount)}`}
-      statusLabel={phaseLabel(record.phase)}
+      amount={withdrawalHeroAmount(record, cost)}
+      statusLabel={recovery ? recoveryCopy.badge[recovery.state] : phaseLabel(record.phase)}
+      avatar={
+        record.bridgeOut ? (
+          <BridgeAvatar
+            chainId={record.bridgeOut.chainId}
+            name={record.bridgeOut.chainName}
+            badge="tray-withdraw"
+          />
+        ) : migration || backup ? undefined : (
+          <EthereumAvatar />
+        )
+      }
       avatarIcon="wallet"
       onClick={() => host.open({ kind: "withdrawal", id: record.localId })}
       ariaLabel={copy.aria.withdrawal}
@@ -264,6 +285,7 @@ function GroupRow({ item }: { item: Of<"withdrawalGroup"> }) {
       timestamp={delayed ? copy.stuck : rowTimestamp(item.ts)}
       amount={`-${usdFigure(withdrawalGroupAmount(group))}`}
       statusLabel={item.unsent ? WITHDRAWAL_FUNDS_UNSENT : phaseLabel(worstWithdrawalPhase(group))}
+      avatar={<EthereumAvatar />}
       avatarIcon="wallet"
       onClick={() => host.open({ kind: "withdrawal", id: group.groupId })}
       ariaLabel={copy.aria.withdrawal}
@@ -291,7 +313,7 @@ function UpgradeRow({ item }: { item: Of<"upgrade"> }) {
   const value = upgradeRunValue(run, host.upgradePricing)
   return (
     <ActivityListRow
-      counterparty={upgradeRunTitle[upgradeRunAccount(run.run)]}
+      counterparty={upgradeRunTitle[upgradeRunAccount(useSession().page.config, run.run)]}
       counterpartyBadge={
         run.complete
           ? total === 1
@@ -323,12 +345,18 @@ function DepositRow({ item }: { item: Of<"deposit"> }) {
           ? fmt(copy.counterparty.tag, { tag: item.tag! })
           : intent === "migration"
           ? copy.counterparty.upgrade
+          : intent === "backup"
+          ? backupFundingTitle(item)
+          : item.bridgeIn
+          ? copy.counterparty.bridgeIn
           : copy.counterparty.deposit
       }
       counterpartyBadge={
         intent === "registration"
           ? copy.badge.registration
-          : intent === "migration" && isSettledSipaPhase(record.phase)
+          : (intent === "migration" || intent === "backup") &&
+            !item.stopped &&
+            isSettledSipaPhase(record.phase)
           ? copy.badge.arrived
           : undefined
       }
@@ -344,9 +372,23 @@ function DepositRow({ item }: { item: Of<"deposit"> }) {
           ? arriving.net !== undefined
             ? `+${usdFigure(formatUnits(arriving.net, DEFAULT_DECIMALS))}`
             : ""
-          : depositRowAmount(record, !!offer, host.depositDecimals(record.tokenAddress))
+          : depositRowAmount(
+              record,
+              !!offer,
+              host.depositDecimals(record.tokenAddress),
+              item.tagPrice,
+            )
       }
       statusLabel={arriving ? copy.status.pending : depositRowStatusLabel(record)}
+      avatar={
+        item.bridgeIn && (
+          <BridgeAvatar
+            chainId={item.bridgeIn.originChainId}
+            name={host.chainName(item.bridgeIn.originChainId)}
+            badge="arrow-down-circle"
+          />
+        )
+      }
       avatarIcon="arrow-down-circle"
       onClick={() => host.open({ kind: "deposit", address: depositDetailId(item) })}
       ariaLabel={copy.aria.deposit}
@@ -367,6 +409,7 @@ function DepositRow({ item }: { item: Of<"deposit"> }) {
 
 /** A "Withdraw to Ethereum" run from old versions; it opens its last refund on Ethereum. */
 function OldVersionWithdrawalRow({ item }: { item: Of<"oldVersionWithdrawal"> }) {
+  const { l1TxUrl } = useL1Links()
   const host = useActivityHost()
   const { record } = item
   const stuck = oldVersionRefundOffer(record)
@@ -379,6 +422,7 @@ function OldVersionWithdrawalRow({ item }: { item: Of<"oldVersionWithdrawal"> })
       timestamp={stuck ? copy.stuck : rowTimestamp(record.startTime)}
       amount={`-${usdFigure(formatUnits(withdrawalSent(record), DEFAULT_DECIMALS))}`}
       statusLabel={record.phase === "done" ? undefined : copy.status.releasing}
+      avatar={<EthereumAvatar />}
       avatarIcon="arrow.up.right"
       onClick={() => url && window.open(url, "_blank", "noopener")}
       ariaLabel={copy.aria.oldVersionWithdrawal}
@@ -393,6 +437,79 @@ function OldVersionWithdrawalRow({ item }: { item: Of<"oldVersionWithdrawal"> })
             ]
           : []
       }
+    />
+  )
+}
+
+const BRIDGE_IN_LABEL: Record<BridgeInRecord["status"], StatusLabel> = {
+  signing: "Pending",
+  pending: "Pending",
+  filled: "Receiving",
+  refunded: "Refunded",
+  expired: "Expired",
+  failed: "Failed",
+}
+
+/** A cross-chain row's avatar: the other chain, badged with the direction. */
+function BridgeAvatar({
+  chainId,
+  name,
+  badge,
+}: {
+  chainId: number
+  name: string
+  badge: IconName
+}) {
+  return (
+    <span className={`${styles.avatar} ww-badged`}>
+      <ChainIcon chainId={chainId} name={name} size={44} />
+      <span className={`zkm-avatar__disc ${styles.badge}`}>
+        <Icon name={badge} size={12} color="#fff" />
+      </span>
+    </span>
+  )
+}
+
+/** A withdrawal to Ethereum. */
+function EthereumAvatar() {
+  const { l1ChainId } = useActivityHost()
+  return <BridgeAvatar chainId={l1ChainId} name={copy.ethereum} badge="tray-withdraw" />
+}
+
+/**
+ * A bridge-in from another chain: what lands while it bridges, the origin amount once it ends short.
+ * One that pays someone else is a payment to them.
+ */
+function BridgeInRow({ item }: { item: Of<"bridgeIn"> }) {
+  const host = useActivityHost()
+  const { record, pays } = item
+  const back = record.status !== "pending" && record.status !== "filled"
+  return (
+    <ActivityListRow
+      counterparty={
+        pays ? fmt(copy.counterparty.tag, { tag: pays.payee }) : copy.counterparty.bridgeIn
+      }
+      timestamp={rowTimestamp(record.startTime)}
+      amount={
+        back
+          ? tokenFigure(
+              formatUnits(BigInt(record.inputAmount), record.inputDecimals),
+              record.symbol,
+            )
+          : `${pays ? "-" : "+"}${usdFigure(
+              formatUnits(BigInt(record.outputAmount), record.outputDecimals),
+            )}`
+      }
+      statusLabel={bridgeInPaid(record) ? copy.status.paid : BRIDGE_IN_LABEL[record.status]}
+      avatar={
+        <BridgeAvatar
+          chainId={record.originChainId}
+          name={host.chainName(record.originChainId)}
+          badge={pays ? "arrow-up-circle" : "arrow-down-circle"}
+        />
+      }
+      onClick={() => host.open({ kind: "bridgeIn", id: record.id })}
+      ariaLabel={copy.aria.bridgeIn}
     />
   )
 }
@@ -416,6 +533,7 @@ export function ActivityRow({ item, compact = false }: { item: FeedItem; compact
         />
       )
     case "tx":
+    case "link":
       return <TxRow item={item} />
     case "upgrade":
       return <UpgradeRow item={item} />
@@ -444,7 +562,7 @@ export function ActivityRow({ item, compact = false }: { item: FeedItem; compact
           timestamp={rowTimestamp(item.ts + 1)}
           amount={`-${usdFigure(formatUnits(item.price, DEFAULT_DECIMALS))}`}
           avatarIcon="at"
-          onClick={() => host.open({ kind: "tag", address: item.record.sipaAddress })}
+          onClick={() => host.open({ kind: "tag", address: depositDetailId(item) })}
           ariaLabel={copy.aria.tagPurchase}
         />
       )
@@ -465,6 +583,8 @@ export function ActivityRow({ item, compact = false }: { item: FeedItem; compact
     }
     case "oldVersionWithdrawal":
       return <OldVersionWithdrawalRow item={item} />
+    case "bridgeIn":
+      return <BridgeInRow item={item} />
   }
 }
 

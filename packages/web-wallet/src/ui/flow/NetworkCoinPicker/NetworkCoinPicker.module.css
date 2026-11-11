@@ -1,0 +1,18 @@
+.networks {
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+}
+.coinIcon {
+  --badge-size: 12px;
+  --badge-offset: 1px;
+  --badge-gap: 1.5px;
+  position: relative;
+  display: flex;
+  flex: none;
+}
+.coinChain {
+  position: absolute;
+  right: calc(-1 * var(--badge-offset));
+  bottom: calc(-1 * var(--badge-offset));
+  display: flex;
+  border-radius: 50%;
+}

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
-import { bestEffort, toFailure, WalletError } from "../../src/engine/errors"
+import { bestEffort, bestEffortSync, toFailure, WalletError } from "../../src/engine/errors"
 
 describe("toFailure", () => {
   it("keeps a WalletError's code and detail", () => {
@@ -26,6 +26,23 @@ describe("bestEffort", () => {
     const err = new Error("boom")
     expect(await bestEffort("tx.failed", Promise.reject(err))).toBeUndefined()
     expect(warn).toHaveBeenCalledWith("[tx.failed]", err)
+    warn.mockRestore()
+  })
+})
+
+describe("bestEffortSync", () => {
+  it("returns the work's value", () => {
+    expect(bestEffortSync(() => 3, 0)).toBe(3)
+  })
+
+  it("logs a throw and returns the fallback", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    const err = new Error("boom")
+    const fail = (): number => {
+      throw err
+    }
+    expect(bestEffortSync(fail, 7)).toBe(7)
+    expect(warn).toHaveBeenCalledWith("[bestEffort]", err)
     warn.mockRestore()
   })
 })

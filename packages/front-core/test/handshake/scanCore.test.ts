@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest"
+import { createContacts } from "../../src/engine/contacts"
+import { openDatabase } from "../../src/engine/database"
+import { memoryBackend } from "../../src/engine/memoryBackend"
 import {
-  ContactStorage,
   runQRHandshakeScan,
   withReentrancyGuard,
   buildScannedContact,
@@ -289,12 +291,10 @@ describe("runQRHandshakeScan (serverless scanner flow)", () => {
     ["another tag", { name: "Alice", tag: "alice2", address: SHARER_L2 }],
     ["no tag", { name: "alice", address: SHARER_L2 }],
   ])(
-    "conflict: the stored row that matched has %s → conflict, no connect-back, nothing queued",
+    "conflict: the stored row that matched has %s → conflict, no connect-back",
     async (_, existing) => {
-      const enqueueFailedConnectBack = vi.fn(async () => {})
       const { deps, sendConnectBack } = makeDeps({
         addOrMergeContact: (async () => existing) as QRHandshakeScanDeps["addOrMergeContact"],
-        enqueueFailedConnectBack,
       })
 
       const result = await runQRHandshakeScan(CONNECT_LINK, deps)
@@ -302,7 +302,6 @@ describe("runQRHandshakeScan (serverless scanner flow)", () => {
 
       expect(result).toEqual({ kind: "conflict", contact: existing })
       expect(sendConnectBack).not.toHaveBeenCalled()
-      expect(enqueueFailedConnectBack).not.toHaveBeenCalled()
     },
   )
 
@@ -440,55 +439,6 @@ describe("runQRHandshakeScan (serverless scanner flow)", () => {
     expect(result.kind).toBe("handshake")
   })
 
-  it("outbox: a successful (ok:true) send does NOT enqueue", async () => {
-    const enqueueFailedConnectBack = vi.fn(async () => {})
-    const { deps } = makeDeps({ enqueueFailedConnectBack })
-
-    await runQRHandshakeScan(CONNECT_LINK, deps)
-    await flush()
-
-    expect(enqueueFailedConnectBack).not.toHaveBeenCalled()
-  })
-
-  it("outbox: a recipient-not-reachable send enqueues {peerXmtp, content}", async () => {
-    const sendConnectBack = vi.fn(async () => ({ ok: false, reason: "recipient-not-reachable" }))
-    const enqueueFailedConnectBack = vi.fn(async () => {})
-    const { deps } = makeDeps({
-      sendConnectBack: sendConnectBack as unknown as QRHandshakeScanDeps["sendConnectBack"],
-      enqueueFailedConnectBack,
-    })
-
-    const result = await runQRHandshakeScan(CONNECT_LINK, deps)
-    await flush()
-
-    expect(result.kind).toBe("handshake") // scan still succeeds
-    expect(enqueueFailedConnectBack).toHaveBeenCalledTimes(1)
-    expect(enqueueFailedConnectBack).toHaveBeenCalledWith({
-      peerXmtp: SHARER_XMTP,
-      content: { version: CONNECT_BACK_VERSION, uuid: FIXED_UUID },
-    })
-  })
-
-  it("outbox: a throwing send enqueues for retry", async () => {
-    const sendConnectBack = vi.fn(async () => {
-      throw new Error("dm.send blew up")
-    })
-    const enqueueFailedConnectBack = vi.fn(async () => {})
-    const { deps } = makeDeps({
-      sendConnectBack: sendConnectBack as unknown as QRHandshakeScanDeps["sendConnectBack"],
-      enqueueFailedConnectBack,
-    })
-
-    const result = await runQRHandshakeScan(CONNECT_LINK, deps)
-    await flush()
-
-    expect(result.kind).toBe("handshake")
-    expect(enqueueFailedConnectBack).toHaveBeenCalledWith({
-      peerXmtp: SHARER_XMTP,
-      content: { version: CONNECT_BACK_VERSION, uuid: FIXED_UUID },
-    })
-  })
-
   it("tag-less packet without L2: stores a pending handshake row, no tag", async () => {
     const { deps, addOrMergeContact } = makeDeps({
       decodeInline: (() =>
@@ -584,30 +534,17 @@ describe("buildScannedContact / navigateIdFor", () => {
   })
 })
 
-describe("runQRHandshakeScan over ContactStorage: a sender the wallet added from a transfer", () => {
-  const store = () => {
-    ContactStorage.resetForTests()
-    const data = new Map<string, string>()
-    return ContactStorage.get({
-      getItem: async (k) => data.get(k) ?? null,
-      setItem: async (k, v) => {
-        data.set(k, v)
-      },
-      removeItem: async (k) => {
-        data.delete(k)
-      },
-      clear: async () => data.clear(),
-    })
-  }
+describe("runQRHandshakeScan over the contact book: a sender the wallet added from a transfer", () => {
+  const store = () => createContacts({ db: openDatabase(memoryBackend()), now: () => Date.now() })
+  const book = async (contacts: ReturnType<typeof store>) =>
+    (await contacts.all()).map(({ id, ...contact }) => (void id, contact))
 
   it("is approved by scanning their QR", async () => {
     const contacts = store()
     await contacts.addEntry({ name: "alice", tag: "alice", address: SHARER_L2, autoAdded: true })
     const { deps } = makeDeps({ addOrMergeContact: (entry) => contacts.addOrMergeContact(entry) })
     expect((await runQRHandshakeScan(CONNECT_LINK, deps)).kind).toBe("handshake")
-    expect(await contacts.getEntries()).toEqual([
-      { name: "alice", tag: "alice", address: SHARER_L2 },
-    ])
+    expect(await book(contacts)).toEqual([{ name: "alice", tag: "alice", address: SHARER_L2 }])
   })
 
   it.each([
@@ -625,11 +562,11 @@ describe("runQRHandshakeScan over ContactStorage: a sender the wallet added from
       })
       expect(await runQRHandshakeScan(CONNECT_LINK, deps)).toEqual({
         kind: "conflict",
-        contact: fromTransfer,
+        contact: expect.objectContaining(fromTransfer),
       })
       await flush()
       expect(sendConnectBack).not.toHaveBeenCalled()
-      expect(await contacts.getEntries()).toEqual([fromTransfer])
+      expect(await book(contacts)).toEqual([fromTransfer])
     },
   )
 })

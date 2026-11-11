@@ -15,7 +15,7 @@
     "build": "rm -rf dist && tsc -b tsconfig.build.json",
     "clean": "rm -rf ./dist .tsbuildinfo",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json && eslint",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json && eslint --max-warnings 0",
     "typecheck:test": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
@@ -29,7 +29,7 @@
     "eslint": "^9.36.0",
     "jsdom": "^25.0.1",
     "typescript": "5.7.3",
-    "vitest": "^3.0.0"
+    "vitest": "^4.1.12"
   },
   "license": "MIT"
 }

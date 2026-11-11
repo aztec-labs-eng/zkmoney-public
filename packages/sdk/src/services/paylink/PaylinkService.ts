@@ -304,7 +304,7 @@ export type RecoveredPaylink = CreatedPaylinkParams & {
 export class PaylinkService extends ServiceBase {
   private sender: Account
   private tokenService: TokenService
-  private contractService: ContractService // could also just get it from the singleton
+  private contractService: ContractService
   private registryAddress?: AztecAddress // For email and identity verification
   public txEffect?: TxEffect
 

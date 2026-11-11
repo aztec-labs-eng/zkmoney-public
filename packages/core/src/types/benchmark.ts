@@ -12,17 +12,10 @@
 // core stays a logic-free leaf. Oracle names and RPC method names remain
 // excluded; `oracleMs` is a nameless aggregate.
 
-/**
- * The five benchmarked Oxide tx flows. Mirrors `@obsidion/proving-progress`
- * `OriginalFlowKind` — kept as a standalone literal union so `@obsidion/core`
- * stays a dependency-free leaf. Sourced from the `kind` send-option at capture.
- */
-export type BenchmarkFlow =
-  | "send"
-  | "withdraw"
-  | "paylink-create"
-  | "paylink-claim"
-  | "paylink-refund"
+import type { OriginalFlowKind } from "./proving.js"
+
+/** The five benchmarked Oxide tx flows, from the `kind` send-option at capture. */
+export type BenchmarkFlow = OriginalFlowKind
 
 /**
  * Per-sample status. `ok` = all phases present; `incomplete` = a leg or a

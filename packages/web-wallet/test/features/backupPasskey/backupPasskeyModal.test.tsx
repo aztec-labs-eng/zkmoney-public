@@ -1,72 +1,35 @@
-import React, { act } from "react"
+/** Guards: only a one-key account whose reads allow it starts an add, and a pending one stays. */
+import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
-import { MemoryRouter, useLocation } from "react-router-dom"
+import { MemoryRouter } from "react-router-dom"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { setIdentity } from "../../support/identity"
 
 // Before any import evaluates the feature flags.
 vi.hoisted(() => vi.stubEnv("VITE_BACKUP_PASSKEY_SETTINGS", "true"))
 
-vi.mock("@obsidion/web-ds", () => ({
+vi.mock("@obsidion/web-ds", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@obsidion/web-ds")>()),
   GradientText: ({ children }: { children: React.ReactNode }) => <span>{children}</span>,
   Icon: () => null,
-  TopNavIconButton: ({ onClick }: { onClick: () => void }) => (
-    <button aria-label="Close" onClick={onClick} />
-  ),
-  PrimaryGradientButton: ({
-    title,
-    onClick,
-    testId,
-  }: {
+  PrimaryGradientButton: (p: {
     title: string
     onClick?: () => void
+    isDisabled?: boolean
+    isLoading?: boolean
     testId?: string
   }) => (
-    <button onClick={onClick} data-testid={testId}>
-      {title}
-    </button>
-  ),
-  IconCircle: () => null,
-  RowChevron: () => null,
-  GlassCircleButton: ({
-    onClick,
-    ariaLabel,
-    testId,
-    children,
-  }: {
-    onClick?: () => void
-    ariaLabel?: string
-    testId?: string
-    children: React.ReactNode
-  }) => (
-    <button aria-label={ariaLabel} data-testid={testId} onClick={onClick}>
-      {children}
-    </button>
-  ),
-  StatusPill: ({ label }: { label: string }) => <span>{label}</span>,
-  SettingsRow: ({
-    className,
-    label,
-    description,
-    trailing,
-  }: {
-    className?: string
-    label: string
-    description?: React.ReactNode
-    trailing?: React.ReactNode
-  }) => (
-    <div className={className}>
-      <span data-label>{label}</span>
-      {description && <span data-description>{description}</span>}
-      {trailing}
-    </div>
+    <button
+      disabled={p.isDisabled || p.isLoading}
+      onClick={p.onClick}
+      data-testid={p.testId}
+      children={p.title}
+    />
   ),
 }))
 
 const MAC_CHROME_UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36"
-const WINDOWS_CHROME_UA =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36"
 /** What this page reads of the browser: the extension on `create`, the kept wrapper, the device. */
 const page = vi.hoisted(() => ({
   extension: "none" as string,
@@ -92,7 +55,6 @@ const h = vi.hoisted(() => ({
   probePhoneReach: vi.fn(),
   addInputs: [] as unknown[],
   refresh: vi.fn(),
-  allowance: { status: "loading", scope: "s" } as unknown,
   deps: undefined as unknown,
   flowDeps: undefined as unknown,
   facts: undefined as unknown,
@@ -101,17 +63,14 @@ const h = vi.hoisted(() => ({
   depsBuilt: 0,
   identity: null as { address: string; handle?: string } | null,
   authenticators: {} as Record<string, AuthenticatorRecord | undefined>,
-  contractService: {},
   obsidionWallet: {},
 }))
 vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/front-core")>()),
-  useContractServiceContext: () => ({ contractService: h.contractService }),
   createOxideL1Reader: () => ({ readAuthKeysCounted: h.readAuthKeysCounted }),
   resolveOxideIdentity: h.resolveOxideIdentity,
   deriveBootstrapKey: () => ({ address: BOOTSTRAP }),
 }))
-vi.mock("../../../src/config/env", () => ({ getConfig: () => ({}) }))
 vi.mock("../../../src/config/oxideTuple", () => ({ l1PublicClient: () => ({}) }))
 vi.mock("../../../src/features/registration/oxideGenerations", () => ({
   loadOxideGenerations: async () => GENERATIONS,
@@ -121,9 +80,6 @@ vi.mock("../../../src/platform/auth/WebPasskeyIdentityMap", async (importOrigina
   authenticatorFor: (_map: string | null, pubkeyHex: string) => h.authenticators[pubkeyHex],
 }))
 const fakeAuth = () => ({ sessionKeys: h.sessionKeys, probePhoneReach: h.probePhoneReach })
-vi.mock("../../../src/features/allowance/useSponsoredAllowance", () => ({
-  useSponsoredAllowance: () => ({ snapshot: h.allowance, refresh: h.refresh }),
-}))
 vi.mock("../../../src/features/backupPasskey/backupPasskeyRuntime", () => ({
   buildBackupAddDeps: async (input: unknown) => {
     h.addInputs.push(input)
@@ -142,21 +98,23 @@ vi.mock("../../../src/features/backupPasskey/backupPasskeyFacts", () => ({
   useBackupEntryFacts: () => ({ facts: h.facts, refresh: h.factsRefresh }),
 }))
 
-import { BACKUP_ROTATION_STORAGE_KEY, credentialIdToMetadata } from "@obsidion/front-core"
-import { SIGN_UP_SHEET_COPY } from "@obsidion/passkey-web"
 import {
-  backupReminderDismissed,
-  backupSeenOnChain,
-} from "../../../src/features/backupPasskey/backupReminder"
-import {
-  getBackupRotationStore,
-  resetBackupRotationStoreForTests,
-} from "../../../src/features/backupPasskey/backupRotationStore"
-import {
-  WebPasskeyIdentityMap,
-  type AuthenticatorRecord,
-} from "../../../src/platform/auth/WebPasskeyIdentityMap"
-import { webStorage } from "../../../src/platform/storage/WebStorageAdapter"
+  credentialIdToMetadata,
+  loadRecords,
+  memoryBackend,
+  memoryStore,
+  RootPasskeyRequiredError,
+  type AllowanceSnapshot,
+  type BackupRotations,
+  type MemoryBackend,
+  type QueryState,
+  type Store,
+} from "@obsidion/front-core"
+import { RotationRouteNotLiveError } from "@obsidion/sdk"
+import unreadableCopy from "../../../src/features/backupPasskey/screens/UnreadableScreen/UnreadableScreen.copy"
+import type { RegistrationPending } from "../../../src/features/registration/registrationRail"
+import trackerCopy from "../../../src/features/backupPasskey/screens/AddTracker/AddTracker.copy"
+import type { AuthenticatorRecord } from "../../../src/platform/auth/WebPasskeyIdentityMap"
 import {
   OWNER,
   createdRecord,
@@ -164,13 +122,15 @@ import {
   makeFlowDeps,
   sent,
   signedRecord,
+  testRotations,
 } from "../../support/backupAdd"
-import { seedDeviceKeys, testCore } from "../../support/page"
 import { openTestSession } from "../../support/session"
+import introCopy from "../../../src/features/backupPasskey/screens/IntroScreen/IntroScreen.copy"
+import keysCopy from "../../../src/features/backupPasskey/screens/KeysScreen/KeysScreen.copy"
+import { fmt } from "../../../src/lib/fmt"
+import { usdAtomic } from "../../../src/ui/format"
 const { PasskeysModal } = await import("../../../src/ui/PasskeysModal")
-const { BackupReminderLine } = await import(
-  "../../../src/features/backupPasskey/BackupReminderLine/BackupReminderLine"
-)
+const { PasskeysSheet } = await import("../../../src/ui/PasskeysSheet/PasskeysSheet")
 
 const BOOTSTRAP = `0x${"b0".repeat(20)}`
 const L2_ADDRESS = `0x${"12".repeat(32)}`
@@ -184,17 +144,16 @@ const providerFor = (k: Key) => ({
   getPubkeys: async () => [Buffer.from(k.qx.slice(2), "hex"), Buffer.from(k.qy.slice(2), "hex")],
 })
 const ROOT_KEY = key(0x10)
-const hexOf = (k: Key) => `${k.qx.slice(2)}${k.qy.slice(2)}`
-const ICLOUD = { prfAaguid: "fbfc3007-154e-4ecc-8c0b-6e020557d7bd" }
-const UNREPORTED = { prfAaguid: "00000000-0000-0000-0000-000000000000" }
 const ROOT_METADATA = credentialIdToMetadata("root-credential-id-000001")
 const ready = {
   status: "ready",
-  scope: "s",
   read: {},
   state: { kind: "available", available: 10 },
   refreshing: false,
 }
+/** The session's sponsored allowance, as each test sets it. */
+const allowance = memoryStore<AllowanceSnapshot>({ status: "loading" })
+const setAllowance = (snapshot: object) => allowance.set(snapshot as AllowanceSnapshot)
 const DAI = 10n ** 18n
 const FACTS = {
   routeLive: true,
@@ -218,38 +177,35 @@ const flush = async (rounds = 1) => {
   for (let i = 0; i < rounds; i++) await act(() => new Promise((resolve) => setTimeout(resolve, 0)))
 }
 
-async function mount() {
+async function mount(node = <PasskeysModal onClose={onClose} onAction={onAction} />) {
   container = document.createElement("div")
   document.body.appendChild(container)
   root = createRoot(container)
   await act(async () => {
-    root.render(<PasskeysModal onClose={onClose} onAction={onAction} />)
+    root.render(node)
   })
   await flush(2)
 }
 
 const text = () => container.textContent ?? ""
-const entry = () => container.querySelector<HTMLButtonElement>('[data-testid="backup-add"]')
-const entryLine = () => container.querySelector('[data-testid="backup-entry-line"]')?.textContent
-const windowsLine = () =>
-  container.querySelector('[data-testid="backup-windows10-line"]')?.textContent
-const panel = () => container.querySelector('[data-testid="backup-panel"]')
-const ahead = () => container.querySelector('[data-testid="backup-add-ahead"]')?.textContent
-const AHEAD =
-  "You'll use two passkeys: first save the new backup, then approve it with the passkey you signed in with."
-const approveButton = () =>
-  container.querySelector<HTMLButtonElement>('[data-testid="backup-approve"]')
-const choice = () => container.querySelector<HTMLButtonElement>('[data-testid="backup-add-choice"]')
-const chosen = () => choice()?.querySelector(".ww-choice__text b")?.textContent
-const advice = () => container.querySelector('[data-testid="backup-add-advice"]')?.textContent
-const keyWarning = () => container.querySelector('[data-testid="phone-steps-key-warning"]')
-const lastAddInput = () => h.addInputs.at(-1) as { owner?: string; choice?: string } | undefined
-/** Opens the picker's list and names its options in order. */
-const openChoices = async () => {
-  await press("backup-add-choice")
-  return [...container.querySelectorAll<HTMLElement>('[data-testid^="backup-add-option-"]')].map(
-    (el) => el.dataset.testid!.slice("backup-add-option-".length),
-  )
+const byTestId = (id: string) => container.querySelector<HTMLButtonElement>(`[data-testid="${id}"]`)
+/** A1's button. */
+const start = () => byTestId("backup-start")
+/** A2's button. */
+const proceed = () => byTestId("backup-continue")
+/** A3's button, which creates the backup. */
+const save = () => byTestId("backup-add")
+const radios = () => [...container.querySelectorAll<HTMLInputElement>('input[type="radio"]')]
+/** A saved attempt's step tracker. */
+const panel = () => container.querySelector('[aria-current="step"]')
+const approveButton = () => byTestId("backup-approve")
+/** The modal's own key list, which A1 replaces. */
+const rename = () => byTestId("passkey-rename")
+
+/** A1, then A2, then A3 where the device has a picker. */
+async function walkTo(screen: "intro" | "place") {
+  await act(async () => start()!.click())
+  if (screen === "place") await act(async () => proceed()!.click())
 }
 
 function listKeys(count: number) {
@@ -262,10 +218,26 @@ function listKeys(count: number) {
   })
 }
 
+let backend: MemoryBackend
+let rotations: BackupRotations
+let rail: Store<QueryState<RegistrationPending | false>>
+/** The sponsored-rail query's answer. */
+const answer = (value: RegistrationPending | false) =>
+  ({ status: "ready", value, refreshing: false } as const)
+const chain = () => ({ wallet: h.obsidionWallet, contractService: {} })
+
 beforeEach(async () => {
-  openTestSession({ auth: fakeAuth(), wallet: h.obsidionWallet })
+  backend = memoryBackend()
+  rotations = testRotations(backend)
+  rail = memoryStore<QueryState<RegistrationPending | false>>(answer(false))
+  openTestSession({
+    auth: fakeAuth(),
+    ...chain(),
+    backupRotations: rotations,
+    railPending: rail.readonly,
+    sponsoredAllowance: { snapshot: allowance.readonly, refresh: h.refresh },
+  })
   localStorage.clear()
-  resetBackupRotationStoreForTests()
   page.extension = "none"
   page.kept = undefined
   page.posture = "laptop"
@@ -278,7 +250,7 @@ beforeEach(async () => {
   h.sessionKeys.mockResolvedValue({ secretKey: {}, authProvider: providerFor(ROOT_KEY) })
   h.depsFailures = 0
   h.depsBuilt = 0
-  h.allowance = ready
+  setAllowance(ready)
   h.facts = FACTS
   h.factsRefresh.mockReset()
   h.resolveOxideIdentity.mockResolvedValue({
@@ -287,10 +259,10 @@ beforeEach(async () => {
   })
   listKeys(1)
   h.deps = makeBackupAddDeps({
-    store: getBackupRotationStore(),
+    store: rotations,
     seal: async () => new Uint8Array(62).fill(1),
   }).deps
-  h.flowDeps = makeFlowDeps({ store: getBackupRotationStore() }).deps
+  h.flowDeps = makeFlowDeps({ store: rotations }).deps
 })
 
 afterEach(async () => {
@@ -299,155 +271,64 @@ afterEach(async () => {
   vi.clearAllMocks()
 })
 
-const rowTitles = () =>
-  [...container.querySelectorAll(".ww-passkeys__row [data-label]")].map((el) => el.textContent)
-const rowRoles = () =>
-  [...container.querySelectorAll(".ww-passkeys__row")].map(
-    (row) => row.querySelector("[data-description]")?.textContent,
-  )
-const press = (testId: string) =>
-  act(async () => container.querySelector<HTMLButtonElement>(`[data-testid="${testId}"]`)!.click())
-const nameInput = () => container.querySelector<HTMLInputElement>('[data-testid="passkey-name"]')!
-const typeName = (value: string) => {
-  const el = nameInput()
-  act(() => {
-    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(el, value)
-    el.dispatchEvent(new Event("input", { bubbles: true }))
-  })
-}
-
-describe("the Passkeys modal's key list", () => {
-  it("keeps the role as the name where no manager is known", async () => {
-    listKeys(2)
-    h.authenticators = { [hexOf(key(0x21))]: UNREPORTED }
+describe("the Passkeys modal's start screens", () => {
+  it("lists the key with the backup missing, and walks A1, A2 and A3 to the add", async () => {
     await mount()
-    expect(rowTitles()).toEqual(["Sign-up", "Sign-up"])
-    expect(rowRoles()).toEqual([undefined, undefined])
+    expect(text()).toContain(keysCopy.title)
+    expect(text()).toContain(keysCopy.current)
+    expect(text()).toContain(keysCopy.notAdded)
+    expect(rename()).toBeNull()
+    await walkTo("place")
+    expect(radios().find((r) => r.checked)?.value).toBe("phone")
+    await act(async () =>
+      radios()
+        .find((r) => r.value === "key")!
+        .click(),
+    )
+    await act(async () => save()!.click())
+    await flush(2)
+    expect(h.addInputs).toMatchObject([{ choice: "key" }])
   })
 
-  it("calls a hardware key no table names a security key", async () => {
-    listKeys(4)
-    h.authenticators = {
-      [hexOf(ROOT_KEY)]: { ...UNREPORTED, transports: [], securityKey: true },
-      [hexOf(key(0x21))]: { transports: ["usb"] },
-      [hexOf(key(0x22))]: { inferredTransports: ["usb", "nfc"] },
-      [hexOf(key(0x23))]: { authenticatorType: "security-key" },
+  it("quotes the cost and time on A2", async () => {
+    const quote = {
+      total: (7n * DAI) / 10n,
+      fixed: DAI / 2n,
+      network: DAI / 5n,
+      takesMs: 45 * 60_000,
     }
+    h.facts = { ...FACTS, quote }
     await mount()
-    expect(rowTitles()).toEqual(["Security key", "Security key", "Security key", "Security key"])
-    expect(rowRoles()).toEqual(["Sign-up", "Sign-up", "Sign-up", "Sign-up"])
+    await walkTo("intro")
+    expect(text()).toContain(fmt(introCopy.costValue, { amount: usdAtomic(quote.total) }))
+    expect(text()).toContain(fmt(introCopy.timeValue, { minutes: 45 }))
   })
 
-  it("renames a key on this browser, and an empty name goes back to the manager", async () => {
-    h.authenticators = { [hexOf(ROOT_KEY)]: ICLOUD }
-    await mount()
-    await press("passkey-rename")
-    typeName("  Work   laptop ")
-    await press("passkey-name-save")
-    expect(rowTitles()).toEqual(["Work laptop"])
-    expect(rowRoles()).toEqual(["Sign-up"])
-    expect(JSON.parse(localStorage.getItem("webwallet.passkey-names")!)).toEqual({
-      [hexOf(ROOT_KEY)]: "Work laptop",
-    })
-
-    await act(async () => root.unmount())
-    container.remove()
-    await mount()
-    expect(rowTitles()).toEqual(["Work laptop"])
-
-    await press("passkey-rename")
-    expect(nameInput().value).toBe("Work laptop")
-    typeName("")
-    await act(async () => {
-      nameInput().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }))
-    })
-    expect(rowTitles()).toEqual(["iCloud Keychain"])
-    expect(localStorage.getItem("webwallet.passkey-names")).toBe("{}")
-  })
-})
-
-describe("the Passkeys modal's backup picker", () => {
-  it("merges the phone and the key where the browser ignores hints, with the Windows prompt advice", async () => {
-    page.userAgent = WINDOWS_CHROME_UA
-    await mount()
-    expect(chosen()).toBe(SIGN_UP_SHEET_COPY.computer.label)
-    expect(await openChoices()).toEqual(["computer", "phone-or-key"])
-    await press("backup-add-option-phone-or-key")
-    expect(advice()).toContain(SIGN_UP_SHEET_COPY.phoneOrKey.windows)
-    expect(keyWarning()).not.toBeNull()
-  })
-
-  it("shows no picker on a phone, asks no probe, and sends no pick", async () => {
+  it("starts the add from A2 on a phone, which has no picker", async () => {
     page.posture = "phone"
     await mount()
-    expect(choice()).toBeNull()
-    expect(h.probePhoneReach).not.toHaveBeenCalled()
-    expect(entry()?.disabled).toBe(false)
-    expect(ahead()).toBe(AHEAD)
-    await act(async () => entry()!.click())
-    await flush(3)
-    expect(lastAddInput()).not.toHaveProperty("choice")
-  })
-
-  it("a ready entry waits on the phone probe; a blocked one keeps its reason and action", async () => {
-    let answer: (reach: string) => void = () => {}
-    h.probePhoneReach.mockReturnValue(new Promise((resolve) => (answer = resolve)))
-    await mount()
-    expect(entry()?.disabled).toBe(true)
-    expect(entryLine()).toBe("Checking…")
-    expect(choice()).toBeNull()
-    expect(ahead()).toBeUndefined()
-    await act(async () => answer("ok"))
-    expect(entry()?.disabled).toBe(false)
-    expect(entryLine()).toBeUndefined()
-    expect(choice()).not.toBeNull()
-    expect(ahead()).toBe(AHEAD)
-
-    await act(async () => root.unmount())
-    container.remove()
-    h.probePhoneReach.mockReturnValue(new Promise(() => {}))
-    h.allowance = { status: "unavailable", scope: "s", error: new Error("rpc") }
-    await mount()
-    expect(entryLine()).toBe("Could not check, try again")
-    expect(container.querySelector('[data-testid="backup-entry-retry"]')).not.toBeNull()
-    expect(choice()).toBeNull()
-    expect(ahead()).toBeUndefined()
-  })
-
-  it("drops the phone when it can't be reached, and the probe's answer after the sheet closed", async () => {
-    h.probePhoneReach.mockResolvedValue("no-hybrid")
-    await mount()
-    expect(await openChoices()).toEqual(["computer", "key"])
-    await act(async () => root.unmount())
-    container.remove()
-
-    let answer: (reach: string) => void = () => {}
-    h.probePhoneReach.mockReturnValue(new Promise((resolve) => (answer = resolve)))
-    const errors = vi.spyOn(console, "error").mockImplementation(() => {})
-    await mount()
-    await act(async () => root.unmount())
-    container.remove()
-    answer("ok")
-    await flush()
-    expect(errors).not.toHaveBeenCalled()
-    errors.mockRestore()
-    await mount()
+    await walkTo("intro")
+    await act(async () => proceed()!.click())
+    await flush(2)
+    expect(h.addInputs).toHaveLength(1)
+    expect(h.addInputs[0]).not.toHaveProperty("choice")
   })
 
   it("holds the picker while the add runs, and closing the sheet ends the creation", async () => {
     const seen: { signal?: AbortSignal } = {}
     h.deps = makeBackupAddDeps({
-      store: getBackupRotationStore(),
+      store: rotations,
       driver: (_, options) => {
         seen.signal = options.signal
         return new Promise(() => {})
       },
     }).deps
     await mount()
-    await act(async () => entry()!.click())
+    await walkTo("place")
+    await act(async () => save()!.click())
     await flush(2)
-    expect(choice()?.disabled).toBe(true)
-    expect(entry()?.disabled).toBe(true)
+    expect(radios().every((r) => r.disabled)).toBe(true)
+    expect(save()?.disabled).toBe(true)
     expect(seen.signal?.aborted).toBe(false)
     await act(async () => root.unmount())
     container.remove()
@@ -460,384 +341,280 @@ describe("the Passkeys modal's add entry", () => {
   it("shows nothing of the add on a two-key account", async () => {
     listKeys(2)
     await mount()
-    expect(entry()).toBeNull()
-    expect(text()).not.toContain("Google Password Manager")
+    expect(start()).toBeNull()
+    expect(rename()).not.toBeNull()
+    expect(text()).not.toContain(keysCopy.title)
   })
 
-  it("asks for the first passkey when the session signs with a key the account does not list", async () => {
+  it("sends A1's button to what holds the add instead of A2", async () => {
+    // The session signs with a key the account does not list.
     h.sessionKeys.mockResolvedValue({ secretKey: {}, authProvider: providerFor(key(0x40)) })
     await mount()
-    expect(entry()?.disabled).toBe(true)
-    expect(entryLine()).toBe("Use your first passkey to add a backup")
+    await walkTo("intro")
+    expect(start()).toBeNull()
+    expect(proceed()).toBeNull()
   })
 
-  it("sends the user to sponsored transactions when the account has no subscription", async () => {
-    h.allowance = { ...ready, state: { kind: "not-subscribed", maxTx: 10, renews: true } }
+  it("opens on an account with no subscription yet, whose first allowance covers the flow", async () => {
+    // The publish, the funding and two moves.
+    setAllowance({ ...ready, state: { kind: "not-subscribed", maxTx: 4, renews: true } })
     await mount()
-    expect(entry()?.disabled).toBe(true)
-    expect(entryLine()).toBe("Sponsored transactions are not set up")
-    const action = container.querySelector<HTMLButtonElement>('[data-testid="backup-entry-action"]')
-    expect(action?.textContent).toBe("Sponsored transactions")
-    await act(async () => action!.click())
-    expect(onAction).toHaveBeenCalledWith("sponsorship")
+    await walkTo("intro")
+    expect(proceed()?.disabled).toBe(false)
+    await act(async () => root.unmount())
+    container.remove()
+    setAllowance({ ...ready, state: { kind: "not-subscribed", maxTx: 3, renews: true } })
+    await mount()
+    await walkTo("intro")
+    expect(proceed()).toBeNull()
   })
 
-  it("sends the user to Savings while a Savings move has yet to land", async () => {
-    h.facts = { ...FACTS, savingsMoving: true }
+  it("waits while the sign-up registration is still reaching the rollup", async () => {
+    setAllowance({ ...ready, state: { kind: "not-subscribed", maxTx: 10, renews: true } })
+    rail.set(answer({ pending: "message" }))
     await mount()
-    expect(entry()?.disabled).toBe(true)
-    expect(entryLine()).toBe("Finish your Savings move first")
-    const action = container.querySelector<HTMLButtonElement>('[data-testid="backup-entry-action"]')
-    expect(action?.textContent).toBe("Savings")
-    await act(async () => action!.click())
-    expect(onAction).toHaveBeenCalledWith("savings")
+    await walkTo("intro")
+    expect(proceed()).toBeNull()
+    await act(async () => root.unmount())
+    container.remove()
+    rail.set({ status: "pending" })
+    await mount()
+    expect(start()?.disabled).toBe(true)
   })
 
   it("says the add cancels the open payment links, and counts their refunds against the allowance", async () => {
     h.facts = { ...FACTS, links: 2 }
     await mount()
-    expect(entry()?.disabled).toBe(false)
-    expect(container.querySelector('[data-testid="backup-add-links"]')?.textContent).toBe(
-      "Your 2 open payment links will be cancelled. Their funds move with your balance.",
-    )
+    await walkTo("intro")
+    expect(text()).toContain(fmt(introCopy.links.many, { count: 2 }))
     await act(async () => root.unmount())
     container.remove()
     // The publish, the funding, two refunds and two moves: one more than five uses.
-    h.allowance = { ...ready, state: { kind: "available", available: 5 } }
+    setAllowance({ ...ready, state: { kind: "available", available: 5 } })
     await mount()
-    expect(entryLine()).toBe("Not enough sponsored transactions left this period")
-    expect(container.querySelector('[data-testid="backup-add-links"]')).toBeNull()
+    await walkTo("intro")
+    expect(proceed()).toBeNull()
   })
 
-  it("says it is checking while a read is pending, and to try again when one failed", async () => {
-    h.allowance = { status: "loading", scope: "s" }
+  it("holds A1's button while a read is pending", async () => {
+    setAllowance({ status: "loading" })
     await mount()
-    expect(entry()?.disabled).toBe(true)
-    expect(entryLine()).toBe("Checking…")
+    expect(start()?.disabled).toBe(true)
     await act(async () => root.unmount())
     container.remove()
-    h.allowance = { status: "unavailable", scope: "s", error: new Error("rpc") }
+    setAllowance({ status: "unavailable", error: new Error("rpc") })
     await mount()
-    expect(entryLine()).toBe("Could not check, try again")
-    const retry = container.querySelector<HTMLButtonElement>('[data-testid="backup-entry-retry"]')
-    await act(async () => retry!.click())
-    expect(h.refresh).toHaveBeenCalledTimes(1)
-  })
-
-  it("pressing the entry creates the backup and shows the pending panel at the approval step", async () => {
-    await mount()
-    await act(async () => entry()!.click())
-    await flush(3)
-    expect(panel()).not.toBeNull()
-    expect(entry()).toBeNull()
-    expect(container.querySelector('[aria-current="step"]')?.textContent).toContain(
-      "Approve with your current passkey",
-    )
-    expect(container.querySelector(".ww-backup__detail")?.textContent).toBe(
-      "Use the passkey you signed in with. Only a passkey already on your account can add a new one.",
-    )
-    expect(approveButton()?.textContent).toBe("Approve with your current passkey")
-    expect((await getBackupRotationStore().get(OWNER))?.phase).toBe("created")
-    expect(lastAddInput()).toMatchObject({ owner: OWNER, choice: "computer" })
-  })
-
-  it("a failure after the passkey was created says the passkey stays on the device", async () => {
-    h.deps = makeBackupAddDeps({
-      store: getBackupRotationStore(),
-      seal: async () => {
-        throw new Error("seal broke")
-      },
-    }).deps
-    await mount()
-    await act(async () => entry()!.click())
-    await flush(3)
-    expect(panel()).toBeNull()
-    expect(text()).toContain("Could not check, try again")
-    expect(text()).toContain("stays on your device but does not open this account")
-    expect(await getBackupRotationStore().get(OWNER)).toBeNull()
+    await walkTo("intro")
+    expect(proceed()).toBeNull()
   })
 
   it("an attempt abandoned by closing the modal while its record is being written saves nothing", async () => {
-    const write = webStorage.setItem.bind(webStorage)
+    await rotations.ready
+    const apply = backend.apply
     let release: () => void = () => {}
     const held = new Promise<void>((resolve) => (release = resolve))
-    const spy = vi.spyOn(webStorage, "setItem").mockImplementationOnce(async (key, value) => {
-      await held
-      return write(key, value)
-    })
+    let writes = 0
+    backend.apply = async (ops) => {
+      if (writes++ === 0) await held
+      return apply(ops)
+    }
     await mount()
-    await act(async () => entry()!.click())
+    await walkTo("place")
+    await act(async () => save()!.click())
     await flush(3)
-    expect(spy).toHaveBeenCalledTimes(1)
+    expect(writes).toBe(1)
     await act(async () => root.unmount())
     container.remove()
     release()
     await flush(3)
-    expect(await getBackupRotationStore().get(OWNER)).toBeNull()
-    expect(JSON.parse((await webStorage.getItem(BACKUP_ROTATION_STORAGE_KEY)) ?? "{}")).toEqual({})
-    spy.mockRestore()
+    expect(await rotations.get(OWNER)).toBeNull()
+    expect(await loadRecords(rotations.view)).toEqual([])
+    backend.apply = apply
     await mount()
-    expect(entry()?.disabled).toBe(false)
+    expect(start()?.disabled).toBe(false)
   })
 
-  it("a failed creation keeps the entry and says why", async () => {
+  it("a closed prompt raises its sheet, whose Try again asks for the passkey again", async () => {
+    let asked = 0
     h.deps = makeBackupAddDeps({
-      store: getBackupRotationStore(),
+      store: rotations,
       driver: async () => {
+        asked++
         throw new DOMException("Dismissed", "NotAllowedError")
       },
     }).deps
     await mount()
-    await act(async () => entry()!.click())
+    await walkTo("place")
+    await act(async () => save()!.click())
     await flush(3)
     expect(panel()).toBeNull()
-    expect(entry()?.disabled).toBe(false)
-    expect(text()).toContain("The passkey request was closed or timed out.")
+    expect(save()).toBeNull()
+    await act(async () => byTestId("backup-failed-retry")!.click())
+    await flush(3)
+    expect(asked).toBe(2)
+    expect(h.addInputs).toMatchObject([{ choice: "phone" }, { choice: "phone" }])
+    expect(await rotations.get(OWNER)).toBeNull()
   })
 
   it("shows a pending record even once the account lists two keys, with no new entry", async () => {
     listKeys(2)
-    await getBackupRotationStore().put(createdRecord())
+    await rotations.put(createdRecord())
     await mount()
     await flush(2)
     expect(panel()).not.toBeNull()
-    expect(entry()).toBeNull()
+    expect(start()).toBeNull()
+    // The attempt's sheet stands alone, under no title or key list of the modal's.
+    expect(rename()).toBeNull()
   })
 
-  describe("on a Windows Chrome", () => {
-    const WINDOWS_CHROME =
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) " +
-      "Chrome/155.0.0.0 Safari/537.36"
-    const LINE =
-      "On Windows 10, Windows Hello can't hold a backup passkey. Use a security key, Google Password " +
-      "Manager in Chrome, or 1Password."
-
-    function hints(read: () => Promise<{ platformVersion?: string }>) {
-      Object.defineProperty(navigator, "userAgent", { value: WINDOWS_CHROME, configurable: true })
-      Object.defineProperty(navigator, "userAgentData", {
-        value: {
-          platform: "Windows",
-          brands: [{ brand: "Google Chrome", version: "155" }],
-          getHighEntropyValues: read,
-        },
-        configurable: true,
-      })
-    }
-
-    afterEach(() => {
-      delete (navigator as { userAgent?: unknown }).userAgent
-      delete (navigator as { userAgentData?: unknown }).userAgentData
-    })
-
-    it("holds the row at checking until the hints settle, then opens it with the line", async () => {
-      let release: (value: { platformVersion: string }) => void = () => {}
-      hints(() => new Promise((resolve) => (release = resolve)))
-      await mount()
-      expect(entry()?.disabled).toBe(true)
-      expect(entryLine()).toBe("Checking…")
-      expect(windowsLine()).toBeUndefined()
-      release({ platformVersion: "10.0.0" })
-      await flush()
-      expect(entry()?.disabled).toBe(false)
-      expect(entryLine()).toBeUndefined()
-      expect(windowsLine()).toBe(LINE)
-    })
-
-    it("shows no line on Windows 11, and none when the hints read fails", async () => {
-      hints(async () => ({ platformVersion: "19.0.0" }))
-      await mount()
-      expect(windowsLine()).toBeUndefined()
-      expect(entry()?.disabled).toBe(false)
-      await act(async () => root.unmount())
-      container.remove()
-      hints(async () => {
-        throw new Error("denied")
-      })
-      await mount()
-      expect(windowsLine()).toBeUndefined()
-      expect(entry()?.disabled).toBe(false)
-    })
+  it("closes the sheet from a paid add's Close, and the add goes on", async () => {
+    await rotations.put(signedRecord({ phase: "funded", ...sent(Date.now()) }))
+    await mount()
+    await flush(2)
+    const close = container.querySelector<HTMLButtonElement>('[data-testid="backup-close"]')
+    await act(async () => close!.click())
+    expect(onClose).toHaveBeenCalledTimes(1)
+    expect((await rotations.get(OWNER))?.phase).toBe("funded")
   })
 
   it("shows the pending panel when the account's keys cannot be read", async () => {
     h.readAuthKeysCounted.mockRejectedValue(new Error("rpc"))
-    await getBackupRotationStore().put(createdRecord())
+    await rotations.put(createdRecord())
     await mount()
     await flush(2)
-    expect(text()).toContain("Couldn't read the account's keys.")
+    // The pending attempt's screens stand in place of the key read's sheet.
+    expect(text()).not.toContain(unreadableCopy.title.keys)
     expect(panel()).not.toBeNull()
-    expect(entry()).toBeNull()
-    expect(approveButton()?.textContent).toBe("Approve with your current passkey")
+    expect(start()).toBeNull()
+    expect(approveButton()?.textContent).toBe(
+      fmt(trackerCopy.approve, { approver: trackerCopy.yourPasskey }),
+    )
   })
 
   it("shows the pending panel when the account does not verify", async () => {
     h.resolveOxideIdentity.mockResolvedValue({ kind: "unverified" })
-    await getBackupRotationStore().put(createdRecord())
+    await rotations.put(createdRecord())
     await mount()
     await flush(2)
     expect(panel()).not.toBeNull()
-    expect(entry()).toBeNull()
+    expect(start()).toBeNull()
   })
 
-  it("blocks the add while the saved records cannot be read, and reads again on request", async () => {
-    resetBackupRotationStoreForTests()
-    const read = vi.spyOn(webStorage, "getItem").mockRejectedValueOnce(new Error("locked"))
-    h.deps = makeBackupAddDeps({ store: getBackupRotationStore() }).deps
+  it("blocks the add while a saved record does not read, and offers the reload", async () => {
+    backend.entries.set(
+      `acct/backupRotations/${OWNER.toLowerCase()}`,
+      JSON.stringify({ owner: OWNER, phase: "typo" }),
+    )
+    rotations = testRotations(backend)
+    openTestSession({ ...chain(), auth: fakeAuth(), backupRotations: rotations })
+    h.deps = makeBackupAddDeps({ store: rotations }).deps
     await mount()
     await flush(2)
-    expect(entry()).toBeNull()
+    expect(start()).toBeNull()
     expect(panel()).toBeNull()
     const retry = container.querySelector<HTMLButtonElement>('[data-testid="backup-store-retry"]')
-    expect(retry?.textContent).toBe("Try again")
-    await act(async () => retry!.click())
-    await flush(2)
-    expect(entry()?.disabled).toBe(false)
-    read.mockRestore()
+    expect(retry?.textContent).toBe(unreadableCopy.reload)
   })
 
   it("acts on no record while the account read is still out", async () => {
     let settle: (identity: unknown) => void = () => {}
     h.resolveOxideIdentity.mockReturnValue(new Promise((resolve) => (settle = resolve)))
     const other = `0x${"22".repeat(20)}`
-    await getBackupRotationStore().put(signedRecord({ owner: other, phase: "funded", ...sent(1) }))
+    await rotations.put(signedRecord({ owner: other, phase: "funded", ...sent(1) }))
     await mount()
     await flush(3)
     expect(text()).toContain("Loading")
     expect(panel()).toBeNull()
     expect(h.depsBuilt).toBe(0)
-    expect((await getBackupRotationStore().get(other))?.phase).toBe("funded")
+    expect((await rotations.get(other))?.phase).toBe("funded")
     settle({ kind: "verified", identity: { account: OWNER, nameHash: "0x", generations: [] } })
     await flush(3)
     expect(panel()).toBeNull()
-    expect(entry()?.disabled).toBe(false)
+    expect(start()?.disabled).toBe(false)
     expect(h.depsBuilt).toBe(0)
-    expect((await getBackupRotationStore().get(other))?.phase).toBe("funded")
+    expect((await rotations.get(other))?.phase).toBe("funded")
   })
 
   it("treats an identity read that could not conclude as a failed read, with a retry", async () => {
     h.resolveOxideIdentity.mockResolvedValueOnce({ kind: "inconclusive" })
     await mount()
     await flush(2)
-    expect(text()).toContain("Couldn't read the account's keys.")
+    expect(text()).toContain(unreadableCopy.title.keys)
+    expect(container.querySelector('[data-testid="keys-retry"]')).toBeNull()
     expect(text()).not.toContain("not registered yet")
-    expect(entry()).toBeNull()
-    const retry = container.querySelector<HTMLButtonElement>('[data-testid="keys-retry"]')
+    expect(start()).toBeNull()
+    const retry = container.querySelector<HTMLButtonElement>('[data-testid="backup-keys-retry"]')
     await act(async () => retry!.click())
     await flush(3)
-    expect(entry()?.disabled).toBe(false)
-  })
-
-  it("names an account not registered yet under the entry", async () => {
-    h.resolveOxideIdentity.mockResolvedValue({ kind: "unverified" })
-    await mount()
-    await flush(2)
-    expect(text()).not.toContain("Couldn't read the account's keys.")
-    expect(entry()?.disabled).toBe(true)
-    expect(entryLine()).toBe("This account is not registered yet")
+    expect(start()?.disabled).toBe(false)
   })
 
   it("offers a retry when the pending record's dependencies cannot be built", async () => {
     h.depsFailures = 1
-    await getBackupRotationStore().put(createdRecord())
+    await rotations.put(createdRecord())
     await mount()
     await flush(2)
     expect(panel()).toBeNull()
-    expect(text()).toContain("Could not check, try again")
+    expect(text()).toContain(unreadableCopy.title.deps)
+    expect(text()).toContain(unreadableCopy.lead.online)
     const retry = container.querySelector<HTMLButtonElement>('[data-testid="backup-deps-retry"]')
     await act(async () => retry!.click())
     await flush(2)
     expect(panel()).not.toBeNull()
   })
+})
 
-  it("cancelling the attempt brings the entry back with the leftover-passkey line", async () => {
-    await getBackupRotationStore().put(createdRecord())
-    await mount()
-    await flush(2)
-    expect(panel()).not.toBeNull()
-    const cancel = [...container.querySelectorAll("button")].find((b) => b.textContent === "Cancel")
-    await act(async () => cancel!.click())
-    await flush(2)
-    expect(panel()).toBeNull()
-    expect(container.querySelector('[data-testid="backup-cancelled"]')?.textContent).toContain(
-      "stays on your device but does not open this account",
+describe("the Passkeys sheet's sign-out", () => {
+  it("opens the logout prompt from B4 when only the first passkey can approve, and backs out", async () => {
+    await rotations.put(createdRecord())
+    const flow = makeFlowDeps({ store: rotations }).deps
+    vi.mocked(flow.prepare).mockRejectedValueOnce(new RootPasskeyRequiredError())
+    h.flowDeps = flow
+    await mount(
+      <MemoryRouter>
+        <PasskeysSheet onClose={onClose} />
+      </MemoryRouter>,
     )
-    expect(entry()).not.toBeNull()
+    await flush()
+    await act(async () => approveButton()!.click())
+    await flush(3)
+    const signOut = () =>
+      container.querySelector<HTMLButtonElement>('[data-testid="backup-first-passkey-sign-out"]')
+    await act(async () => signOut()!.click())
+    await flush()
+    const prompt = () => document.querySelector('[aria-label="Log out"]')
+    expect(prompt()).not.toBeNull()
+    expect(panel()).toBeNull()
+    // Cancel goes back to B4, and B4's Close back to the step it was raised over.
+    const cancel = [...prompt()!.querySelectorAll("button")].find((b) => b.textContent === "Cancel")
+    await act(async () => cancel!.click())
+    await flush()
+    expect(prompt()).toBeNull()
+    expect(signOut()).not.toBeNull()
+    const close = [...container.querySelectorAll("button")].find((b) => b.textContent === "Close")
+    await act(async () => close!.click())
+    await flush()
+    expect(approveButton()).not.toBeNull()
+    expect(onClose).not.toHaveBeenCalled()
   })
 })
 
-describe("Home's backup reminder and the sheet it opens", () => {
-  /** Home on a session whose only passkey is device-bound. */
-  async function mountReminder() {
-    backupReminderDismissed.set(false)
-    backupSeenOnChain.set(false)
-    await new WebPasskeyIdentityMap(testCore().database, "localhost").upsert({
-      credentialId: "cred",
-      l2Address: L2_ADDRESS,
-      pubkey: hexOf(ROOT_KEY),
-      isMskRoot: true,
-      backupEligible: false,
-    })
-    await seedDeviceKeys({ credentialId: "cred" })
-    container = document.createElement("div")
-    document.body.appendChild(container)
-    root = createRoot(container)
-    await act(async () =>
-      root.render(
-        <MemoryRouter>
-          <BackupReminderLine />
-          <Where />
-        </MemoryRouter>,
-      ),
+describe("the network's sheet raised over a step", () => {
+  it("closes back to the step a missing route stopped", async () => {
+    await rotations.put(createdRecord())
+    const flow = makeFlowDeps({ store: rotations }).deps
+    vi.mocked(flow.prepare).mockRejectedValueOnce(new RotationRouteNotLiveError("off"))
+    h.flowDeps = flow
+    await mount()
+    await flush()
+    await act(async () => approveButton()!.click())
+    await flush(3)
+    expect(approveButton()).toBeNull()
+    const close = container.querySelector<HTMLButtonElement>(
+      '[data-testid="backup-unavailable-close"]',
     )
-    await flush(2)
-  }
-
-  function Where() {
-    return <span data-testid="where">{useLocation().pathname}</span>
-  }
-
-  const reminder = () => container.querySelector('[data-testid="backup-reminder-line"]')
-
-  it("the tap opens Passkeys on the add", async () => {
-    await mountReminder()
-    expect(entry()).toBeNull()
-    await press("backup-reminder-add")
-    await flush(2)
-    expect(entry()?.disabled).toBe(false)
-    expect(reminder()).not.toBeNull()
-  })
-
-  it("a sheet that reads a second key hides the line, and stays open", async () => {
-    listKeys(2)
-    await mountReminder()
-    await press("backup-reminder-add")
-    await flush(2)
-    expect(reminder()).toBeNull()
-    expect(rowTitles()).toHaveLength(2)
-  })
-
-  it("a blocked add's link opens what clears the block", async () => {
-    h.allowance = {
-      ...ready,
-      read: { allowance: { refillPeriod: 0, maxTx: 10 } },
-      state: { kind: "not-subscribed", maxTx: 10, renews: true },
-    }
-    await mountReminder()
-    await press("backup-reminder-add")
-    await flush(2)
-    expect(entry()?.disabled).toBe(true)
-    await press("backup-entry-action")
-    expect(entry()).toBeNull()
-    expect(container.querySelector('[data-testid="about-limits-sheet"]')).not.toBeNull()
-  })
-
-  it("a Savings move still landing sends the user to Savings", async () => {
-    h.facts = { ...FACTS, savingsMoving: true }
-    await mountReminder()
-    await press("backup-reminder-add")
-    await flush(2)
-    await press("backup-entry-action")
-    expect(entry()).toBeNull()
-    expect(container.querySelector('[data-testid="where"]')?.textContent).toBe("/savings")
+    await act(async () => close!.click())
+    await flush()
+    expect(approveButton()).not.toBeNull()
   })
 })

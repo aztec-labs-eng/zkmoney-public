@@ -131,7 +131,7 @@ export async function mockLoadDepositFacts(
         decimals: listed?.decimals ?? 18,
       })
     },
-    tokenMetadata: async (_config: unknown, token: Address) => {
+    tokenMetadata: async (_page: unknown, token: Address) => {
       const listed = tokens()?.options.find((t) => t.address.toLowerCase() === token.toLowerCase())
       return { symbol: listed?.symbol ?? "", decimals: listed?.decimals ?? 18 }
     },

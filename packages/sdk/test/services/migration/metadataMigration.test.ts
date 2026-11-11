@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest"
 import { AztecAddress, EthAddress } from "@aztec-labs/aztec.js/addresses"
 import {
   CANONICAL_ENTRY_POINT_V08,
+  computeUserOpHash,
   depositPayoutTokenFor,
   encodeExecuteBatch,
   encodeSetUserRecord,
@@ -10,7 +11,7 @@ import {
 } from "@oxide/l1-contracts"
 import { recordUpdateCalls } from "@oxide/oxide-client/record_update.js"
 import { L1OperationCondition } from "@oxide/oxide-lib/l1_operation_calldata.js"
-import { keccak256, toHex, zeroHash, type Address, type Hex, type PublicClient } from "viem"
+import { zeroHash, type Address, type Hex, type PublicClient } from "viem"
 import {
   checkRecordUpdate,
   prepareRecordUpdate,
@@ -59,37 +60,36 @@ type Signed = Omit<PreparedRecordUpdate, "operation">
 
 function fixture() {
   const state = { registry: destination.metadataRegistry, hash: zeroHash as Hex, nonce: 3n }
-  const readContract = vi.fn(
-    async ({ functionName, args }: { functionName: string; args?: unknown[] }) => {
-      switch (functionName) {
-        case "NAME_REGISTRY":
-          return destination.nameRegistry
-        case "accountMetadataRegistry":
-          return state.registry
-        case "registrationController":
-          return destination.controller
-        case "nameOf":
-          return field(9)
-        case "metadataStateHash":
-          return state.hash
-        case "getAuthKeys":
-          return [
-            { key: { qx: field(33), qy: field(34) }, metadata: "0x" },
-            { key: passkey, metadata: "0x" },
-          ]
-        case "getNonce":
-          return state.nonce
-        case "getUserOpHash":
-          return keccak256(
-            toHex(JSON.stringify(args![0], (_, v) => (typeof v === "bigint" ? `${v}` : v))),
-          )
-        default:
-          throw new Error(`Unexpected read: ${functionName}`)
-      }
-    },
-  )
+  const readContract = vi.fn(async ({ functionName }: { functionName: string }) => {
+    switch (functionName) {
+      case "NAME_REGISTRY":
+        return destination.nameRegistry
+      case "accountMetadataRegistry":
+        return state.registry
+      case "registrationController":
+        return destination.controller
+      case "nameOf":
+        return field(9)
+      case "metadataStateHash":
+        return state.hash
+      case "getAuthKeys":
+        return [
+          { key: { qx: field(33), qy: field(34) }, metadata: "0x" },
+          { key: passkey, metadata: "0x" },
+        ]
+      case "getNonce":
+        return state.nonce
+      default:
+        throw new Error(`Unexpected read: ${functionName}`)
+    }
+  })
   const call = vi.fn(async () => ({ data: "0x" as Hex }))
-  const client = { getChainId: async () => 31337, readContract, call } as unknown as PublicClient
+  const client = {
+    chain: { id: 31337 },
+    getChainId: async () => 31337,
+    readContract,
+    call,
+  } as unknown as PublicClient
   const sign = vi.fn<(userOpHash: Hex, expectedStateHash: Hex) => Promise<WebAuthnAuthArg>>(
     async () => assertion,
   )
@@ -112,6 +112,9 @@ describe("preparing a record update", () => {
       f.state.hash = hash
       const prepared = await f.prepare()
       const { update } = prepared
+      expect(update.userOpHash).toBe(
+        computeUserOpHash(Number(destination.chainId), CANONICAL_ENTRY_POINT_V08, update.userOp),
+      )
       expect(f.sign).toHaveBeenCalledWith(update.userOpHash, hash)
       expect(prepared).toMatchObject({ expectedStateHash: hash, assertion })
       expect(update).toMatchObject({
@@ -141,7 +144,7 @@ describe("preparing a record update", () => {
       ).toBe(true)
       expect(operation.condition).toEqual(L1OperationCondition.immediate())
       const reads = f.readContract.mock.calls.map(([request]) => request.functionName)
-      for (const read of ["userRecords", "implementationFor", "rowFor"])
+      for (const read of ["userRecords", "implementationFor", "rowFor", "getUserOpHash"])
         expect(reads).not.toContain(read)
     },
   )

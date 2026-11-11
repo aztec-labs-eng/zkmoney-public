@@ -6,16 +6,12 @@ export default defineConfig({
     globals: true,
     environment: "jsdom",
     setupFiles: ["./test/setup.ts"],
-    // Environment-backed suites have their own Node configs: live testnet gates
-    // (vitest.testnet.config.ts) and anvil-backed L1 tests (vitest.anvil.config.ts).
-    exclude: ["test/testnet/**", "**/*.anvil.test.ts", "**/node_modules/**", "**/dist/**"],
+    // Suites with their own Node configs: live testnet gates (vitest.testnet.config.ts) and L1
+    // tests on the in-process L1 sim (vitest.l1.config.ts).
+    exclude: ["test/testnet/**", "**/*.l1.test.ts", "**/node_modules/**", "**/dist/**"],
     // Run tests sequentially to prevent React concurrent rendering issues
     pool: "forks",
-    poolOptions: {
-      forks: {
-        singleFork: true,
-      },
-    },
+    maxWorkers: 1,
     // Limit concurrency to 1 to ensure tests run sequentially
     maxConcurrency: 1,
     environmentOptions: {
@@ -43,7 +39,7 @@ export default defineConfig({
     },
     deps: {
       optimizer: {
-        web: {
+        client: {
           include: ["buffer"],
         },
       },

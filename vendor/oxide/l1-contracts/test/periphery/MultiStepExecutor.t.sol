@@ -2,13 +2,17 @@
 pragma solidity >=0.8.27;
 
 import {IERC20} from "@oz/token/ERC20/IERC20.sol";
+import {TestERC20} from "@aztec/mock/TestERC20.sol";
+import {OxidePortal} from "@core/OxidePortal.sol";
 import {ReentrancyGuardTransient} from "@oz/utils/ReentrancyGuardTransient.sol";
+import {Errors as OZErrors} from "@oz/utils/Errors.sol";
 import {IExecutor} from "@core/interfaces/IExecutor.sol";
 import {IOxidePortal} from "@core/interfaces/IOxidePortal.sol";
 import {Errors} from "@periphery/Errors.sol";
 import {MultiStepExecutor} from "@periphery/MultiStepExecutor.sol";
 import {RecoveryAuthLib} from "@periphery/RecoveryAuthLib.sol";
 import {MockCallTarget} from "@test/mocks/MockCallTarget.sol";
+import {MockRelayPortal} from "@test/mocks/MockRelayPortal.sol";
 import {MultiStepExecutorTestBase} from "@test/periphery/MultiStepExecutorTestBase.sol";
 
 contract MultiStepExecutorTest is MultiStepExecutorTestBase {
@@ -23,12 +27,11 @@ contract MultiStepExecutorTest is MultiStepExecutorTestBase {
     deadline = block.timestamp + 1 days;
   }
 
-  function test_PlainTransferPaysTheRestTheTipAndTheFee() external {
+  function test_PlainTransferPaysTheRestAndTheTip() external {
     _relay(_plainPayload(alice), AMOUNT);
 
     assertEq(dai.balanceOf(alice), NET);
     assertEq(dai.balanceOf(relayer), TIP);
-    assertEq(dai.balanceOf(feeBeneficiary), FEE);
     assertEq(dai.balanceOf(address(portal)), 0);
     _assertNothingSticks();
   }
@@ -84,7 +87,7 @@ contract MultiStepExecutorTest is MultiStepExecutorTestBase {
     assertEq(dai.balanceOf(relayer), 0);
   }
 
-  function test_SelfRelayWithoutATipPaysEverythingAfterTheFee() external {
+  function test_SelfRelayWithoutATipPaysEverything() external {
     MultiStepExecutor.UserPayload memory userPayload = _plainPayload(alice);
     userPayload.relayerTip = 0;
     IOxidePortal.WithdrawArgs memory args =
@@ -93,7 +96,7 @@ contract MultiStepExecutorTest is MultiStepExecutorTestBase {
     vm.prank(alice);
     portal.withdraw(args);
 
-    assertEq(dai.balanceOf(alice), AMOUNT - FEE);
+    assertEq(dai.balanceOf(alice), AMOUNT);
     _assertNothingSticks();
   }
 
@@ -118,10 +121,26 @@ contract MultiStepExecutorTest is MultiStepExecutorTestBase {
     }
 
     assertEq(dai.balanceOf(bob), flowCount * FIXED);
-    assertEq(dai.balanceOf(alice), (NET - FIXED) + (flowCount - 1) * (AMOUNT - TIP - FIXED));
+    assertEq(dai.balanceOf(alice), flowCount * (NET - FIXED));
     assertEq(dai.balanceOf(relayer), flowCount * TIP);
     assertEq(callTarget.recordCount(), flowCount);
     _assertNothingSticks();
+  }
+
+  function test_OneExecutorServesASecondPortalWithItsOwnAsset() external {
+    (TestERC20 usdc, OxidePortal usdcPortal) = _usdcPortal();
+    IOxidePortal.WithdrawArgs memory args = _withdrawArgsFor(
+      usdcPortal, address(executor), AMOUNT, 0, abi.encode(_plainPayload(alice)), abi.encodePacked(relayer)
+    );
+    usdc.mint(address(usdcPortal), AMOUNT);
+
+    vm.prank(relayer);
+    usdcPortal.withdraw(args);
+
+    assertEq(usdc.balanceOf(alice), NET);
+    assertEq(usdc.balanceOf(relayer), TIP);
+    assertEq(usdc.balanceOf(address(executor)), 0);
+    assertEq(dai.balanceOf(alice), 0);
   }
 
   function test_AStepCallingThePortalWithdrawRevertsOnTheReentrancyGuard() external {
@@ -142,7 +161,7 @@ contract MultiStepExecutorTest is MultiStepExecutorTestBase {
     bytes memory signature = _signWithPasskey(_recoveryDigest(inner.withdrawalId, recoveryRecipient, deadline));
     bytes memory recoverData = abi.encodeCall(
       MultiStepExecutor.recover,
-      (inner, RECOVERY_SALT, address(recoveryAccount), signature, recoveryRecipient, deadline)
+      (portal, inner, RECOVERY_SALT, address(recoveryAccount), signature, recoveryRecipient, deadline)
     );
     IOxidePortal.WithdrawArgs memory outer =
       _relayArgs(_stepsPayload(_steps(MultiStepExecutor.Step({target: address(executor), data: recoverData}))), AMOUNT);
@@ -152,7 +171,7 @@ contract MultiStepExecutorTest is MultiStepExecutorTestBase {
     assertEq(dai.balanceOf(recoveryRecipient), 0);
   }
 
-  function test_AStepCallingExecuteRevertsAsUnauthorized() external {
+  function test_AStepCallingExecuteRevertsBecauseTheExecutorIsNoPortal() external {
     bytes memory executeData = abi.encodeCall(
       IExecutor.execute, (IExecutor.Flow.Withdrawal, NET, abi.encode(_plainPayload(bob)), abi.encodePacked(relayer))
     );
@@ -160,11 +179,11 @@ contract MultiStepExecutorTest is MultiStepExecutorTestBase {
     _assertRelayReverts(
       _stepsPayload(_steps(MultiStepExecutor.Step({target: address(executor), data: executeData}))),
       AMOUNT,
-      abi.encodeWithSelector(Errors.FeeChargingExecutorBase__UnauthorizedCaller.selector)
+      abi.encodeWithSelector(OZErrors.FailedCall.selector)
     );
   }
 
-  function test_RecoverPaysTheDaiAfterTheFeeToTheRecipientAndSkipsTheRoute() external {
+  function test_RecoverPaysTheDaiToTheRecipientAndSkipsTheRoute() external {
     IOxidePortal.WithdrawArgs memory args = _relayArgs(
       _payload(
         TIP,
@@ -179,12 +198,11 @@ contract MultiStepExecutorTest is MultiStepExecutorTestBase {
 
     bytes memory signature = _signWithPasskey(_recoveryDigest(args.withdrawalId, recoveryRecipient, deadline));
     vm.expectEmit(true, true, true, true, address(executor));
-    emit MultiStepExecutor.Recovered(args.withdrawalId, recoveryRecipient, AMOUNT - FEE);
+    emit MultiStepExecutor.Recovered(args.withdrawalId, recoveryRecipient, AMOUNT);
     vm.prank(makeAddr("anyone"));
-    executor.recover(args, RECOVERY_SALT, address(recoveryAccount), signature, recoveryRecipient, deadline);
+    executor.recover(portal, args, RECOVERY_SALT, address(recoveryAccount), signature, recoveryRecipient, deadline);
 
-    assertEq(dai.balanceOf(recoveryRecipient), AMOUNT - FEE);
-    assertEq(dai.balanceOf(feeBeneficiary), FEE);
+    assertEq(dai.balanceOf(recoveryRecipient), AMOUNT);
     assertEq(dai.balanceOf(relayer), 0);
     assertEq(dai.balanceOf(bob), 0);
     assertEq(dai.balanceOf(alice), 0);
@@ -193,18 +211,59 @@ contract MultiStepExecutorTest is MultiStepExecutorTestBase {
     _assertNothingSticks();
   }
 
-  function test_RecoverPaysTheAmountLessTheProverTipAndTheFee() external {
+  function test_RecoverPaysTheAmountLessTheProverTip() external {
     IOxidePortal.WithdrawArgs memory args =
       _withdrawArgs(AMOUNT, PROVER_TIP, abi.encode(_plainPayload(alice)), abi.encodePacked(relayer));
     bytes memory signature = _signWithPasskey(_recoveryDigest(args.withdrawalId, recoveryRecipient, deadline));
 
     vm.expectEmit(true, true, true, true, address(executor));
-    emit MultiStepExecutor.Recovered(args.withdrawalId, recoveryRecipient, AMOUNT - PROVER_TIP - FEE);
-    executor.recover(args, RECOVERY_SALT, address(recoveryAccount), signature, recoveryRecipient, deadline);
+    emit MultiStepExecutor.Recovered(args.withdrawalId, recoveryRecipient, AMOUNT - PROVER_TIP);
+    executor.recover(portal, args, RECOVERY_SALT, address(recoveryAccount), signature, recoveryRecipient, deadline);
 
-    assertEq(dai.balanceOf(recoveryRecipient), AMOUNT - PROVER_TIP - FEE);
+    assertEq(dai.balanceOf(recoveryRecipient), AMOUNT - PROVER_TIP);
     assertEq(dai.balanceOf(address(portal)), PROVER_TIP);
     _assertNothingSticks();
+  }
+
+  function test_RecoverOnASecondPortalPaysItsAsset() external {
+    (TestERC20 usdc, OxidePortal usdcPortal) = _usdcPortal();
+    IOxidePortal.WithdrawArgs memory args = _withdrawArgsFor(
+      usdcPortal, address(executor), AMOUNT, 0, abi.encode(_plainPayload(alice)), abi.encodePacked(relayer)
+    );
+    usdc.mint(address(usdcPortal), AMOUNT);
+    bytes memory signature = _signWithPasskey(_recoveryDigest(args.withdrawalId, recoveryRecipient, deadline));
+
+    vm.expectEmit(true, true, true, true, address(executor));
+    emit MultiStepExecutor.Recovered(args.withdrawalId, recoveryRecipient, AMOUNT);
+    executor.recover(usdcPortal, args, RECOVERY_SALT, address(recoveryAccount), signature, recoveryRecipient, deadline);
+
+    assertEq(usdc.balanceOf(recoveryRecipient), AMOUNT);
+    assertEq(usdc.balanceOf(alice), 0);
+    assertEq(usdc.balanceOf(address(executor)), 0);
+  }
+
+  function test_RecoverThroughAnotherPortalCannotTakeAPendingWithdrawal() external {
+    IOxidePortal.WithdrawArgs memory victim = _relayArgs(_plainPayload(alice), AMOUNT);
+    MockRelayPortal relay = new MockRelayPortal(portal, victim);
+    IOxidePortal.WithdrawArgs memory forged = _relayArgs(_plainPayload(recoveryRecipient), AMOUNT);
+    bytes memory signature = _signWithPasskey(_recoveryDigest(forged.withdrawalId, recoveryRecipient, deadline));
+
+    vm.expectRevert(Errors.MultiStepExecutor__NotTheRecoveryPortal.selector);
+    executor.recover(
+      IOxidePortal(address(relay)),
+      forged,
+      RECOVERY_SALT,
+      address(recoveryAccount),
+      signature,
+      recoveryRecipient,
+      deadline
+    );
+
+    assertFalse(portal.$isWithdrawalSpent(victim.withdrawalId));
+    assertEq(dai.balanceOf(recoveryRecipient), 0);
+    vm.prank(relayer);
+    portal.withdraw(victim);
+    assertEq(dai.balanceOf(alice), NET);
   }
 
   function test_RecoverRevertsForAZeroRecipient() external {
@@ -212,7 +271,7 @@ contract MultiStepExecutorTest is MultiStepExecutorTestBase {
     bytes memory signature = _signWithPasskey(_recoveryDigest(args.withdrawalId, address(0), deadline));
 
     vm.expectRevert(Errors.MultiStepExecutor__ZeroRecoveryRecipient.selector);
-    executor.recover(args, RECOVERY_SALT, address(recoveryAccount), signature, address(0), deadline);
+    executor.recover(portal, args, RECOVERY_SALT, address(recoveryAccount), signature, address(0), deadline);
   }
 
   function test_RecoverRevertsWhenTheSignatureIsForAnotherRecipientWithdrawalDeadlineOrChain() external {
@@ -222,14 +281,14 @@ contract MultiStepExecutorTest is MultiStepExecutorTestBase {
     bytes4 invalid = RecoveryAuthLib.RecoveryAuthLib__InvalidSignature.selector;
 
     vm.expectRevert(invalid);
-    executor.recover(args, RECOVERY_SALT, address(recoveryAccount), signature, makeAddr("thief"), deadline);
+    executor.recover(portal, args, RECOVERY_SALT, address(recoveryAccount), signature, makeAddr("thief"), deadline);
     vm.expectRevert(invalid);
-    executor.recover(other, RECOVERY_SALT, address(recoveryAccount), signature, recoveryRecipient, deadline);
+    executor.recover(portal, other, RECOVERY_SALT, address(recoveryAccount), signature, recoveryRecipient, deadline);
     vm.expectRevert(invalid);
-    executor.recover(args, RECOVERY_SALT, address(recoveryAccount), signature, recoveryRecipient, deadline + 1);
+    executor.recover(portal, args, RECOVERY_SALT, address(recoveryAccount), signature, recoveryRecipient, deadline + 1);
     vm.chainId(block.chainid + 1);
     vm.expectRevert(invalid);
-    executor.recover(args, RECOVERY_SALT, address(recoveryAccount), signature, recoveryRecipient, deadline);
+    executor.recover(portal, args, RECOVERY_SALT, address(recoveryAccount), signature, recoveryRecipient, deadline);
   }
 
   function test_RecoverRevertsForAWithdrawalToAnotherExecutor() external {
@@ -239,7 +298,7 @@ contract MultiStepExecutorTest is MultiStepExecutorTestBase {
     bytes memory signature = _signWithPasskey(_recoveryDigest(args.withdrawalId, recoveryRecipient, deadline));
 
     vm.expectRevert(Errors.MultiStepExecutor__NotThisExecutor.selector);
-    executor.recover(args, RECOVERY_SALT, address(recoveryAccount), signature, recoveryRecipient, deadline);
+    executor.recover(portal, args, RECOVERY_SALT, address(recoveryAccount), signature, recoveryRecipient, deadline);
   }
 
   function test_ARelayAfterARecoverInTheSameTransactionRunsTheRoute() external {
@@ -248,7 +307,7 @@ contract MultiStepExecutorTest is MultiStepExecutorTestBase {
 
     _relay(userPayload, AMOUNT);
 
-    assertEq(dai.balanceOf(recoveryRecipient), AMOUNT - FEE);
+    assertEq(dai.balanceOf(recoveryRecipient), AMOUNT);
     assertEq(callTarget.recordCount(), 1);
     assertEq(callTarget.recordAt(0).id, 1);
     assertEq(callTarget.recordAt(0).balance, NET);
@@ -276,8 +335,13 @@ contract MultiStepExecutorTest is MultiStepExecutorTestBase {
     });
   }
 
+  function _usdcPortal() internal returns (TestERC20 usdc, OxidePortal usdcPortal) {
+    usdc = new TestERC20("USD Coin", "USDC", address(this));
+    usdcPortal = _buildPortal(address(usdc));
+  }
+
   function _recover(IOxidePortal.WithdrawArgs memory _withdrawal, address _recipient, uint256 _deadline) internal {
     bytes memory signature = _signWithPasskey(_recoveryDigest(_withdrawal.withdrawalId, _recipient, _deadline));
-    executor.recover(_withdrawal, RECOVERY_SALT, address(recoveryAccount), signature, _recipient, _deadline);
+    executor.recover(portal, _withdrawal, RECOVERY_SALT, address(recoveryAccount), signature, _recipient, _deadline);
   }
 }

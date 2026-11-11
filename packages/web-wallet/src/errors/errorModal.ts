@@ -30,9 +30,11 @@ export type ErrorModalPayload = {
   retry?: { label: string; run: () => void }
 }
 
+// eslint-disable-next-line no-restricted-syntax -- debt
 let listener: ((payload: ErrorModalPayload) => void) | null = null
 // Buffers errors raised before `ErrorModalHost` mounts (early boot); flushed
 // on subscribe so they are not silently dropped.
+// eslint-disable-next-line no-restricted-syntax -- debt
 let pending: ErrorModalPayload[] = []
 const MAX_PENDING = 3
 
@@ -42,8 +44,8 @@ export function showErrorModal(raised: Omit<ErrorModalPayload, "env">): void {
   else if (pending.length < MAX_PENDING) pending.push(payload)
 }
 
-/** The error shows whether or not the device can be described. */
-function reportEnv(): PasskeyReportEnv | undefined {
+/** The device and passkey provider a report sends; undefined when they can't be described. */
+export function reportEnv(): PasskeyReportEnv | undefined {
   try {
     return passkeyReportEnvFor(passkeyTelemetry.snapshot())
   } catch {

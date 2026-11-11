@@ -1,6 +1,6 @@
 import { Network } from "@obsidion/core/constants"
 import type { OxideEnvTuple } from "@obsidion/core/types"
-import { getConfig } from "../../config/env"
+import { useSession } from "../../session/session"
 import { useOxideTuple } from "./useOxideTuple"
 
 /** Testnet has no swap stack; sandbox and mainnet both deploy one. */
@@ -29,7 +29,7 @@ const REQUIRED = [
  * closed.
  */
 export function useFreshAddressAvailable(): boolean | undefined {
-  const swapStack = networkHasSwapStack(getConfig().network)
+  const swapStack = networkHasSwapStack(useSession().page.config.network)
   const tuple = useOxideTuple(!SWAP_ROUTE_SHOWCASE && swapStack)
   if (SWAP_ROUTE_SHOWCASE) return true
   if (!swapStack) return false

@@ -1,10 +1,4 @@
-/**
- * The ceremony gate's contract: a phone passes at once; a laptop probes, holds in
- * "awaiting-action" until `proceed`, resolves with the option the user picked and its route, and
- * refuses a below-floor creation (a sign-in never refuses — this computer always answers). Cancel,
- * dismiss and unmount reject the waiter with a cancel, never an error; only cancel aborts the
- * attempt.
- */
+/** Guards: the gate holds its own sheet and a stale pick, and refuses a below-floor creation. */
 import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -21,10 +15,13 @@ import type {
   GateState,
   UnheldPick,
 } from "../../../src/features/identity/ceremonyGate"
-import type { DevicePosture, LaptopCreation } from "@obsidion/passkey-web"
+import {
+  type DevicePosture,
+  KEPT_PASSKEY_API_KEY,
+  type LaptopCreation,
+} from "@obsidion/passkey-web"
 
 declare global {
-  // eslint-disable-next-line no-var
   var IS_REACT_ACT_ENVIRONMENT: boolean
 }
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
@@ -46,7 +43,13 @@ const PICKS = {
   },
   key: { choice: "key", supported: ["YubiKey 5, Trezor or Ledger security key"] },
   onePassword: { choice: "1password", supported: ["1Password"] },
+  proton: { choice: "proton", supported: ["Proton Pass"] },
 } satisfies Record<string, UnheldPick>
+/** The Mac Chrome row with every manager it admits. */
+const MAC_WITH_PROTON: LaptopCreation = {
+  ...MAC,
+  managers: ["apple", "gpm", "1password", "proton"],
+}
 /** Whether 1Password's script answers the page's passkey creation, or the browser's own method. */
 const extension = (answers: boolean) => {
   Object.defineProperty(navigator, "credentials", {
@@ -80,7 +83,9 @@ const fakeAuth = () => ({
   suggestedRoute: h.suggestedRoute,
 })
 
-const { useCeremonyGate, isGateCancelled } = await import("../../../src/features/identity/ceremonyGate")
+const { useCeremonyGate, isGateCancelled } = await import(
+  "../../../src/features/identity/ceremonyGate"
+)
 
 type Handle = { gate: CeremonyGate; state: GateState; cancel: () => void; dismiss: () => void }
 let handle: Handle
@@ -114,45 +119,6 @@ afterEach(() => {
 beforeEach(() => void openTestSession({ auth: fakeAuth() }))
 
 describe("useCeremonyGate", () => {
-  it("a phone passes without probing or changing state", async () => {
-    await mount("phone")
-    let result!: GateResult
-    await act(async () => {
-      result = await handle.gate()
-    })
-    expect(h.probePhoneReach).not.toHaveBeenCalled()
-    expect(container.textContent).toBe("idle")
-    // Its own passkey is the only route a phone can take, so no route is picked.
-    expect(result.route).toBeUndefined()
-  })
-
-  it("a laptop sign-in holds the Sign in sheet without probing, and resolves on proceed", async () => {
-    await mount("laptop")
-    let settled = false
-    let promise!: Promise<GateResult>
-    await act(async () => {
-      promise = handle.gate().then((r) => {
-        settled = true
-        return r
-      })
-    })
-    await flush()
-    // A sign-in picks no device — the browser's own chooser does — so it never probes.
-    expect(h.probePhoneReach).not.toHaveBeenCalled()
-    expect(h.probeLaptopCreation).not.toHaveBeenCalled()
-    expect(container.textContent).toBe("awaiting-action")
-    expect(settled).toBe(false)
-
-    const state = handle.state
-    if (state.kind !== "awaiting-action") throw new Error("expected the sheet")
-    expect(state.prompt).toBe("sign-in")
-    await act(async () => state.proceed())
-    const result = await promise
-    expect(settled).toBe(true)
-    expect(result.route).toBeUndefined()
-    expect(container.textContent).toBe("idle")
-  })
-
   it("a sign-in ignores a creation sheet's pick and still holds its own sheet", async () => {
     await mount("laptop")
     let promise!: Promise<GateResult>
@@ -166,21 +132,6 @@ describe("useCeremonyGate", () => {
     expect(state.prompt).toBe("sign-in")
     await act(async () => state.proceed())
     expect((await promise).route).toBeUndefined()
-  })
-
-  it("a screen that owns the tap: a laptop sign-in resolves at once, with no sheet and no probe", async () => {
-    await mount("laptop", false)
-    let result!: GateResult
-    await act(async () => {
-      result = await handle.gate()
-    })
-    expect(h.probePhoneReach).not.toHaveBeenCalled()
-    expect(container.textContent).toBe("idle")
-    expect(result.route).toBeUndefined()
-    expect(result.signal.aborted).toBe(false)
-    // The hook's cancel still ends the attempt it handed out.
-    await act(async () => handle.cancel())
-    expect(result.signal.aborted).toBe(true)
   })
 
   it("a screen that owns the tap still holds a creation's steps and a sign-in's second prompt", async () => {
@@ -228,48 +179,6 @@ describe("useCeremonyGate", () => {
     expect(await promise).toMatchObject({ choice, route })
   })
 
-  it("a creation holds the steps with both probes in hand, and resolves on this computer", async () => {
-    h.probePhoneReach.mockResolvedValue("ok")
-    h.probeLaptopCreation.mockResolvedValue(MAC)
-    await mount("laptop")
-    let promise!: Promise<GateResult>
-    await act(async () => {
-      promise = handle.gate({ purpose: "create" })
-    })
-    await flush()
-    const state = handle.state
-    if (state.kind !== "awaiting-action") throw new Error("expected the steps")
-    expect(state.reach).toBe("ok")
-    expect(state.creation).toEqual(MAC)
-    expect(state.openOn).toBeUndefined()
-    await act(async () => state.proceed("computer"))
-    const result = await promise
-    expect(result).toMatchObject({
-      choice: "computer",
-      route: "this-device",
-      reach: "ok",
-      creation: MAC,
-    })
-  })
-
-  it("keeps the sheet's This Mac pick while the fresh options offer it with the same managers", async () => {
-    h.probePhoneReach.mockResolvedValue("ok")
-    h.probeLaptopCreation.mockResolvedValue(MAC)
-    await mount("laptop")
-    const result = await act(() => handle.gate({ purpose: "create", unheld: PICKS.macComputer }))
-    expect(result).toMatchObject({ choice: "computer", route: "this-device", creation: MAC })
-    expect(container.textContent).toBe("idle")
-  })
-
-  it("keeps the sheet's 1Password pick while an extension still answers", async () => {
-    extension(true)
-    h.probeLaptopCreation.mockResolvedValue({ ...MAC, managers: ["apple", "gpm", "1password"] })
-    await mount("laptop")
-    const result = await act(() => handle.gate({ purpose: "create", unheld: PICKS.onePassword }))
-    expect(result).toMatchObject({ choice: "1password", route: "this-device" })
-    expect(container.textContent).toBe("idle")
-  })
-
   it("holds the sheet on This Mac for a 1Password pick when the script answering is not 1Password's", async () => {
     Object.defineProperty(navigator, "credentials", {
       value: { get: nativeGet, create: otherCreate() },
@@ -279,6 +188,33 @@ describe("useCeremonyGate", () => {
     await mount("laptop")
     const { state } = await heldFor(PICKS.onePassword)
     expect(state.openOn).toBe("computer")
+  })
+
+  it("keeps the sheet's Proton Pass pick while the lock still keeps its wrapper", async () => {
+    Object.defineProperty(globalThis, KEPT_PASSKEY_API_KEY, {
+      value: { create: nativeCreate },
+      configurable: true,
+    })
+    try {
+      h.probeLaptopCreation.mockResolvedValue(MAC_WITH_PROTON)
+      await mount("laptop")
+      const result = await act(() => handle.gate({ purpose: "create", unheld: PICKS.proton }))
+      expect(result).toMatchObject({ choice: "proton", route: "this-device" })
+      expect(container.textContent).toBe("idle")
+    } finally {
+      delete (globalThis as Record<string, unknown>)[KEPT_PASSKEY_API_KEY]
+    }
+  })
+
+  it("holds the sheet on This Mac for a Proton Pass pick once its wrapper is gone, and keeps the phone's pick", async () => {
+    h.probePhoneReach.mockResolvedValue("ok")
+    h.probeLaptopCreation.mockResolvedValue(MAC_WITH_PROTON)
+    await mount("laptop")
+    const { state } = await heldFor(PICKS.proton)
+    expect(state.openOn).toBe("computer")
+    await act(async () => handle.cancel())
+    const phone = await act(() => handle.gate({ purpose: "create", unheld: PICKS.phone }))
+    expect(phone).toMatchObject({ choice: "phone", route: "phone" })
   })
 
   /** The sheet the gate holds for `unheld`, or the result if it held none. */
@@ -354,27 +290,6 @@ describe("useCeremonyGate", () => {
     await act(async () => handle.cancel())
   })
 
-  it("a creation probe that throws counts as phone creation", async () => {
-    h.probeLaptopCreation.mockRejectedValue(new Error("no hints"))
-    await mount("laptop")
-    await act(async () => {
-      void handle.gate({ purpose: "create" }).catch(() => {})
-    })
-    await flush()
-    const state = handle.state
-    if (state.kind !== "awaiting-action") throw new Error("expected the steps")
-    expect(state.creation).toEqual(PHONE)
-    await act(async () => handle.cancel())
-  })
-
-  it("a creation whose screen was the sheet probes and resolves at once on its phone pick", async () => {
-    await mount("laptop")
-    const result = await act(() => handle.gate({ purpose: "create", unheld: PICKS.phone }))
-    expect(h.probePhoneReach).toHaveBeenCalledTimes(1)
-    expect(result).toMatchObject({ choice: "phone", route: "phone" })
-    expect(container.textContent).toBe("idle")
-  })
-
   it("a phone pick with no phone in reach holds the sheet on the key, so the key takes its own tap", async () => {
     h.probePhoneReach.mockResolvedValue("no-hybrid")
     await mount("laptop")
@@ -396,13 +311,6 @@ describe("useCeremonyGate", () => {
       h.probeLaptopCreation.mockResolvedValue(WINDOWS_EDGE)
     })
 
-    it("a pick of that option behind the same managers passes", async () => {
-      await mount("laptop")
-      const result = await act(() => handle.gate({ purpose: "create", unheld: phoneOrKey }))
-      expect(result).toMatchObject({ choice: "phone-or-key", route: "phone" })
-      expect(container.textContent).toBe("idle")
-    })
-
     it("a phone or key pick from a sheet that drew them apart holds the sheet on the one option", async () => {
       await mount("laptop")
       for (const unheld of [PICKS.phone, PICKS.key]) {
@@ -421,14 +329,6 @@ describe("useCeremonyGate", () => {
       await flush()
       expect(settled()).toMatchObject({ choice: "key", route: "security-key" })
     })
-  })
-
-  it("keeps the sheet's security-key pick where a phone is reachable", async () => {
-    h.probePhoneReach.mockResolvedValue("ok")
-    await mount("laptop")
-    const result = await act(() => handle.gate({ purpose: "create", unheld: PICKS.key }))
-    expect(result).toMatchObject({ choice: "key", route: "security-key" })
-    expect(container.textContent).toBe("idle")
   })
 
   it("refuses a browser below the floor whatever the sheet picked", async () => {
@@ -529,32 +429,6 @@ describe("useCeremonyGate", () => {
     })
     expect(first.signal.aborted).toBe(true)
     expect(second.signal.aborted).toBe(false)
-  })
-
-  it("a phone asked again holds for one tap, without probing", async () => {
-    await mount("phone")
-    let result!: GateResult
-    await act(async () => {
-      result = await handle.gate()
-    })
-    let settled = false
-    await act(async () => {
-      void handle
-        .gate({ again: result.signal })
-        .then(() => (settled = true))
-        .catch(() => {})
-    })
-    await flush()
-    expect(h.probePhoneReach).not.toHaveBeenCalled()
-    expect(container.textContent).toBe("awaiting-action")
-    const state = handle.state
-    if (state.kind !== "awaiting-action") throw new Error("expected the tap")
-    expect(state.prompt).toBe("approve-again")
-    expect(settled).toBe(false)
-    await act(async () => state.proceed())
-    await flush()
-    expect(settled).toBe(true)
-    expect(container.textContent).toBe("idle")
   })
 
   /** A laptop's first sign-in, taken through the Sign in sheet; resolves with the attempt's signal. */

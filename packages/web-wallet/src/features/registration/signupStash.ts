@@ -1,5 +1,6 @@
+import { bestEffortSync } from "@obsidion/core/errors"
 import { memoryStore, normalizeTag } from "@obsidion/front-core"
-import type { tabStash } from "../../platform/storage/tabStash"
+import type { TabKey, tabStash } from "../../platform/storage/tabStash"
 
 type TabStash = typeof tabStash
 
@@ -9,7 +10,7 @@ const KEYS = {
   drawnOffer: "obsidion.drawn-offer",
   chosenTag: "obsidion.tag-chosen",
   tagDraft: "obsidion.tag-draft",
-}
+} as const
 
 /** The tag settled on before the passkey: a kept draw, a paid pick, or a past user's free one. */
 export interface ChosenTag {
@@ -31,7 +32,7 @@ export interface SignupStashState {
 /** A tab key's value, parsed; undefined when absent or unreadable. */
 export function readStash<T = string>(
   stash: TabStash,
-  key: string,
+  key: TabKey,
   parse = (raw: string) => raw as T,
 ) {
   try {
@@ -68,19 +69,20 @@ export function createSignupStash(stash: TabStash) {
     chosenTag: readStash<ChosenTag>(stash, KEYS.chosenTag, JSON.parse),
     tagDraft: readStash(stash, KEYS.tagDraft) ?? "",
   })
-  const write = (next: Partial<SignupStashState>, keys: Record<string, string | undefined>) => {
+  const put = (key: TabKey, value: string | undefined) =>
+    value ? stash.set(key, value) : stash.remove(key)
+  const write = (next: Partial<SignupStashState>, keys: [TabKey, string | undefined][]) => {
     state.set({ ...state.get(), ...next })
-    try {
-      for (const [key, value] of Object.entries(keys)) {
-        if (value) stash.set(key, value)
-        else stash.remove(key)
-      }
-    } catch {
-      // The page keeps the values.
-    }
+    // Without tab storage the page keeps the values.
+    bestEffortSync(() => {
+      for (const [key, value] of keys) put(key, value)
+    }, undefined)
   }
   const setGrant = (grant?: { token: string; handle?: string }) =>
-    write({ grant }, { [KEYS.token]: grant?.token, [KEYS.handle]: grant?.handle })
+    write({ grant }, [
+      [KEYS.token, grant?.token],
+      [KEYS.handle, grant?.handle],
+    ])
   const grantToken = (handle?: string): string | undefined => {
     const { grant } = state.get()
     if (grant && !grant.handle) {
@@ -124,10 +126,10 @@ export function createSignupStash(stash: TabStash) {
       if (token && grantToken(handle) !== token) return
       setGrant(undefined)
     },
-    setDrawnOffer: (tag?: string) => write({ drawnOffer: tag }, { [KEYS.drawnOffer]: tag }),
+    setDrawnOffer: (tag?: string) => write({ drawnOffer: tag }, [[KEYS.drawnOffer, tag]]),
     setChosenTag: (chosenTag?: ChosenTag) =>
-      write({ chosenTag }, { [KEYS.chosenTag]: chosenTag && JSON.stringify(chosenTag) }),
-    setTagDraft: (tagDraft: string) => write({ tagDraft }, { [KEYS.tagDraft]: tagDraft }),
+      write({ chosenTag }, [[KEYS.chosenTag, chosenTag && JSON.stringify(chosenTag)]]),
+    setTagDraft: (tagDraft: string) => write({ tagDraft }, [[KEYS.tagDraft, tagDraft]]),
   }
 }
 

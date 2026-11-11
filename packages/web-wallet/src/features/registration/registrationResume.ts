@@ -5,16 +5,17 @@ import { fetchSipaEvents, type ObsidionWallet } from "@obsidion/sdk"
 import { WalletError } from "@obsidion/core/errors"
 import type { PendingRegistrationRecord, SipaDeposits } from "@obsidion/front-core"
 
-import type { WebWalletConfig } from "../../config/env"
-import { getOxideTuple, requireTupleField } from "../../config/oxideTuple"
-import { session } from "../../session/session"
+import type { PageFacts } from "../../session/pageChain"
+import { requireTupleField } from "../../config/oxideTuple"
+import type { Session } from "../../session/session"
 import type { OnboardingKeys } from "../../session/account"
 
 /** The unlocked session's keys without a ceremony; undefined while locked. */
 export async function unlockedSessionKeys(
+  session: Pick<Session, "auth">,
   wallet: ObsidionWallet,
 ): Promise<OnboardingKeys | undefined> {
-  const keys = await session().auth.sessionKeys()
+  const keys = await session.auth.sessionKeys()
   if (!keys) return undefined
   const { secretKey, authProvider } = keys
   const [x, y] = await authProvider.getPubkeys()
@@ -34,14 +35,14 @@ export async function unlockedSessionKeys(
 export async function registrationBroadcastSeen(
   deposits: Pick<SipaDeposits, "get">,
   record: PendingRegistrationRecord,
-  config: WebWalletConfig,
+  { chain }: PageFacts,
   wallet: ObsidionWallet,
   sinceBlock?: number,
 ): Promise<boolean> {
   const salt = (await deposits.get(record.sipaAddress))?.messageSecret
   if (!salt)
     throw new WalletError("unknown", `registration deposit ${record.sipaAddress} is not seeded`)
-  const tuple = await getOxideTuple(config)
+  const tuple = await chain.oxideTuple.read()
   const events = await fetchSipaEvents(
     wallet,
     AztecAddress.fromStringUnsafe(requireTupleField(tuple, "l2Token")),

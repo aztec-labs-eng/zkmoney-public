@@ -3,6 +3,7 @@
  * account, one capped batch per transaction, each sent from that account. Nothing is broadcast on L2
  * and no relayer takes part, so the refund carries no tip.
  */
+import { bestEffort, noteRefundedSavingsMoves, type SavingsMoves } from "@obsidion/front-core"
 import {
   nextFrozenSelfRefund,
   type FrozenMigrationRuntime,
@@ -10,7 +11,6 @@ import {
 } from "@obsidion/sdk"
 import type { Address, Hex } from "viem"
 import type { L1ExitChannel } from "../sipa/l1ExitChannels"
-import { noteRefundedSavingsMoves } from "../savings/savingsMoveStore"
 
 export type FrozenExitRuntime = Pick<FrozenMigrationRuntime, "candidates" | "build">
 
@@ -60,9 +60,15 @@ export interface FrozenFunds {
   openLinks: bigint
 }
 
+/** The moves' `recovered` marks only label rows: a run that moved funds never fails on them. */
+const noteRecovered = (...args: Parameters<typeof noteRefundedSavingsMoves>) =>
+  bestEffort("unknown", noteRefundedSavingsMoves(...args))
+
 // Outlives the screen: a second run would resend the first one's unconfirmed batch.
+// eslint-disable-next-line no-restricted-syntax -- debt
 let running = false
 // A sent refund whose receipt never came. The next run waits for it, so it never sends it twice.
+// eslint-disable-next-line no-restricted-syntax -- debt
 let pending: { hash: Hex; deposits: RefundedDeposit[]; to: Address } | undefined
 
 /**
@@ -70,6 +76,7 @@ let pending: { hash: Hex; deposits: RefundedDeposit[]; to: Address } | undefined
  * reverts or comes back after its own refund stops the run. Resolves to what moved and what is left.
  */
 export async function runFrozenExit(
+  moves: SavingsMoves,
   runtime: FrozenExitRuntime,
   channel: L1ExitChannel,
   onBatch?: (progress: FrozenExitProgress) => void,
@@ -80,16 +87,18 @@ export async function runFrozenExit(
   try {
     if (pending) {
       const { hash, deposits, to } = pending
-      if (await channel.waitForReceipt(hash)) await noteRefundedSavingsMoves(deposits, to, hash)
+      const ran = await channel.waitForReceipt(hash)
       pending = undefined
+      if (ran) await noteRecovered(moves, deposits, to, hash)
     }
-    return await refundAll(runtime, channel, recipient, onBatch)
+    return await refundAll(moves, runtime, channel, recipient, onBatch)
   } finally {
     running = false
   }
 }
 
 async function refundAll(
+  moves: SavingsMoves,
   runtime: FrozenExitRuntime,
   channel: L1ExitChannel,
   recipient: Address,
@@ -108,10 +117,10 @@ async function refundAll(
     const ok = await channel.waitForReceipt(hash)
     pending = undefined
     if (!ok) throw new Error(`Refund transaction ${hash} reverted, so nothing moved. Try again.`)
-    await noteRefundedSavingsMoves(next.refund.deposits, recipient, hash)
     ids.forEach((id) => sent.add(id))
     progress.refunded += amount
     progress.hashes.push(hash)
+    await noteRecovered(moves, next.refund.deposits, recipient, hash)
     onBatch?.({ ...progress, hashes: [...progress.hashes] })
   }
 }

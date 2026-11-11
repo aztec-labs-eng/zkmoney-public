@@ -9,7 +9,7 @@ import { pathToFileURL } from "node:url"
 import { gunzipSync } from "node:zlib"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { BB_THREADS_WASM, bbWasmAsset } from "../../bbWasmAsset"
-import { barretenbergWasm } from "../../src/platform/bbWasmPath"
+import { barretenbergWasm } from "../../src/platform/barretenberg"
 
 // The package root, from the asset under dest/<build>/barretenberg_wasm/.
 const BB_BROWSER = path.join(

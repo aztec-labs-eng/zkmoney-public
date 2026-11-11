@@ -47,7 +47,7 @@ export function ConfirmationSheetHeader({ title, onClose }: ConfirmationSheetHea
     <div className="zkm-confirm-sheet-header">
       {onClose && (
         <GlassCircleButton onClick={onClose} ariaLabel="Back" className="zkm-confirm-sheet-header__back">
-          <Icon name="arrow-left" size={16} color="#fff" />
+          <Icon name="arrow-left" size={16} color="var(--ink)" />
         </GlassCircleButton>
       )}
       <span className="zkm-confirm-sheet-header__title">{title}</span>

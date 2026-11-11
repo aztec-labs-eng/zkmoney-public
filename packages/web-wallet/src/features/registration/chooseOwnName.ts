@@ -6,7 +6,6 @@ import {
 import { base64UrlToBytes, renamePasskey } from "@obsidion/passkey-web"
 import { WalletError, bestEffort } from "@obsidion/core/errors"
 import type { ObsidionAccount, ObsidionWallet } from "@obsidion/sdk"
-import { getConfig } from "../../config/env"
 import { rememberUsertag, userHandleFor } from "../../platform/auth/WebPasskeyIdentityMap"
 import { collectOnboardingKeys, saveIdentity, type OnboardingKeys } from "../../session/account"
 import type { Session } from "../../session/session"
@@ -26,7 +25,7 @@ export type ClaimOver = (
 
 /** Builds the session's claim on a chosen name; onboarding supplies it. */
 export type ChosenNameClaim = (
-  own: Session,
+  session: Session,
   wallet: ObsidionWallet,
   earned: boolean,
   route: RegistrationRoute,
@@ -34,15 +33,15 @@ export type ChosenNameClaim = (
 
 /** Replaces the registration still owed its deposit with a claim on `tag`, at a new address. */
 export async function chooseOwnName(
-  own: RegistrationReads & Pick<Session, "database" | "device" | "identity">,
+  session: RegistrationReads & Pick<Session, "database" | "device" | "identity" | "auth" | "page">,
   tag: string,
   account: ObsidionAccount,
   claim: ClaimOver,
 ): Promise<void> {
   // Read once the withdrawals load: a ticket's burn may already fund this address.
-  const burns = await own.withdrawals.all()
-  const open = openRegistration(own, burns)
-  const identity = own.identity.get().value
+  const burns = await session.withdrawals.all()
+  const open = openRegistration(session, burns)
+  const identity = session.identity.get().value
   if (
     !open?.stage ||
     !identity ||
@@ -52,21 +51,21 @@ export async function chooseOwnName(
   ) {
     throw new WalletError("registration.nameLocked")
   }
-  if (registrationTagConfirmed(own, open.record, burns)) {
+  if (registrationTagConfirmed(session, open.record, burns)) {
     throw new WalletError("registration.nameConfirmed")
   }
-  const keys = await collectOnboardingKeys(account)
+  const keys = await collectOnboardingKeys(session, account)
   await claim(tag, keys, open.record)
-  await saveIdentity(own, { ...identity, handle: tag, pending: true })
+  await saveIdentity(session.page, { ...identity, handle: tag, pending: true })
   console.info("[passkey] renaming the passkey to", tag)
-  const { credentialId, passkeyMap } = own.device.get()
+  const { credentialId, passkeyMap } = session.device.get()
   if (!credentialId) {
     console.warn("[passkey] rename skipped: no active credential")
     return
   }
-  const { rpId } = getConfig()
+  const { rpId } = session.page.config
   const userHandle = userHandleFor(passkeyMap, rpId, credentialId)
   if (userHandle) renamePasskey(rpId, base64UrlToBytes(userHandle), tag)
   else console.warn("[passkey] rename skipped: no user handle stored for this passkey")
-  await bestEffort("unknown", rememberUsertag(own.database, rpId, credentialId, tag))
+  await bestEffort("unknown", rememberUsertag(session.database, rpId, credentialId, tag))
 }

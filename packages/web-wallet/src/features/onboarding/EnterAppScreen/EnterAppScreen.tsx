@@ -2,13 +2,13 @@ import { useState } from "react"
 import { useNavigate, useSearchParams } from "react-router-dom"
 import { useStore } from "@obsidion/front-core"
 import { currentDevicePosture, PHONE_STEPS_COPY } from "@obsidion/passkey-web"
-import { getConfig } from "../../../config/env"
+import { PrimaryGradientButton, TopNavIconButton } from "@obsidion/web-ds"
 import { errorMessage } from "../../../errors/catalog"
 import { fmt } from "../../../lib/fmt"
 import { hasOpeningBreadcrumb } from "../../../platform/auth/WebPasskeyIdentityMap"
 import { useSession } from "../../../session/session"
 import { EndpointsModal } from "../../../ui/EndpointsModal"
-import { useHoldEndpoints } from "../../../ui/endpointsHold"
+import { useHoldEndpoints } from "../../../session/endpointsHold"
 import { useNextRoute } from "../../../ui/hooks"
 import { useScreenFlow } from "../../../ui/useScreenFlow"
 import { useCeremonyGate } from "../../identity/ceremonyGate"
@@ -27,14 +27,18 @@ import {
 import { GateStep } from "../../identity/PhoneSteps"
 import { hasConnectStash } from "../../contacts/connectReceive"
 import { peekClaimStash } from "../../paylink/claimStash"
+import { tabStash } from "../../../platform/storage/tabStash"
 import { InvitationChrome } from "../InvitationChrome"
 import { OnboardingSpinnerBody } from "../OnboardingCard"
-import { ConfirmTagModal } from "../steps/ConfirmTagModal"
-import { CreateWalletStep } from "../steps/CreateWalletStep"
+import { ConfirmTagModal } from "../steps/ConfirmTagModal/ConfirmTagModal"
+import { CreateWalletStep } from "../steps/CreateWalletStep/CreateWalletStep"
 import copy from "./EnterAppScreen.copy"
 import styles from "./EnterAppScreen.module.css"
 import { openSignInFlow } from "./signInFlow"
 import type { ConfirmError } from "./signInTransition"
+
+/** The refusal for a passkey that opens no wallet: `NoWalletForPasskeyError`'s name. */
+const NO_WALLET = "NoWalletForPasskeyError"
 
 /** The confirm step's line for why it refused the typed tag. */
 const confirmErrorText = (error: ConfirmError): string =>
@@ -67,9 +71,8 @@ export function EnterAppScreen() {
   const navigate = useNavigate()
   const [params] = useSearchParams()
   const nextRoute = useNextRoute()
-  const config = getConfig()
   const opened = useSession()
-  const { device } = opened
+  const { device, page } = opened
   // The screen's own buttons are the tap before the first prompt; only the second prompt holds.
   const {
     gate,
@@ -80,14 +83,14 @@ export function EnterAppScreen() {
   })
   const flow = useScreenFlow(
     { navigate, params, nextRoute, gate: { gate, cancel: cancelGate } },
-    (live) => openSignInFlow({ own: opened, origin: location.origin }, live),
+    (latest) => openSignInFlow({ session: opened, origin: location.origin }, latest),
   )
   const s = useStore(flow.state)
   const { refusal, confirming, reserved, shown: start, busy } = s
   // A stashed paylink is why most visitors reach this screen. Say so, so the passkey prompt reads
   // as the step between them and the money rather than an unexplained interruption.
-  const claimPending = !!peekClaimStash()
-  const connectPending = hasConnectStash()
+  const claimPending = !!peekClaimStash(tabStash)
+  const connectPending = hasConnectStash(tabStash)
   const [endpointsOpen, setEndpointsOpen] = useState(false)
   const { back, cancel: cancelSignIn, continueSignup, showPasskeys } = flow
 
@@ -120,10 +123,24 @@ export function EnterAppScreen() {
       (notOffered && !laptop) || refusal.name === PASSKEY_NOT_ON_DEVICE
         ? promptCauses(currentDevicePosture())
         : undefined
+    // The plain exits: another passkey (where the phone leads), another tag, and the close.
+    const plainExits = !resumeTag && !resuming && !refusal.committed && !refusal.probeCommitted
+    // A passkey with no wallet has no retry here (NO_RETRY), so the way on is another passkey.
+    const noWallet = plainExits && refusal.name === NO_WALLET
     const retryable = flow.retryable(refusal)
     return (
-      <InvitationChrome landing>
+      <InvitationChrome landing page={page}>
         <div className={styles.sheet}>
+          {plainExits && (
+            <div className={styles.close}>
+              <TopNavIconButton
+                icon="x"
+                ariaLabel={copy.cancel}
+                testId="enter-cancel"
+                onClick={cancelSignIn}
+              />
+            </div>
+          )}
           <IosFloorNotice />
           <PasskeyRefusal
             error={refusal}
@@ -150,6 +167,8 @@ export function EnterAppScreen() {
                     onClick: () => flow.resume(resumeTag),
                     testId: "enter-continue",
                   }
+                : noWallet
+                ? { title: copy.showPasskeys, onClick: showPasskeys, testId: "enter-show-passkeys" }
                 : undefined
             }
             testId="enter-refused"
@@ -173,9 +192,23 @@ export function EnterAppScreen() {
                 pill(copy.cancel, "enter-cancel", cancelSignIn)
               ) : (
                 <>
-                  {refusal.macPhone && pill(copy.showPasskeys, "enter-show-passkeys", showPasskeys)}
-                  {pill(copy.back, "enter-back", back)}
-                  {pill(copy.cancel, "enter-cancel", cancelSignIn)}
+                  {refusal.macPhone && (
+                    <PrimaryGradientButton
+                      title={copy.showPasskeys}
+                      buttonStyle="dark"
+                      testId="enter-show-passkeys"
+                      onClick={showPasskeys}
+                    />
+                  )}
+                  <button
+                    type="button"
+                    className={`zkm-btn-reset ww-invite__link ${styles.otherTag}`}
+                    data-testid="enter-back"
+                    onClick={back}
+                  >
+                    {/* Other cards' text says "go back", so only this one names the tag. */}
+                    {noWallet ? copy.otherTag : copy.back}
+                  </button>
                 </>
               )
             }
@@ -189,7 +222,7 @@ export function EnterAppScreen() {
   const backdrop = (
     <CreateWalletStep
       busy={false}
-      returning={hasOpeningBreadcrumb(device.get().passkeyMap, config.rpId)}
+      returning={hasOpeningBreadcrumb(device.get().passkeyMap, page.config.rpId)}
       onCreate={() => {}}
       onLogIn={() => {}}
       onCancel={() => {}}
@@ -197,7 +230,7 @@ export function EnterAppScreen() {
   )
   if (gateState.kind === "awaiting-action" && !confirming) {
     return (
-      <InvitationChrome landing>
+      <InvitationChrome landing page={page}>
         <div className={styles.sheet}>
           <GateStep state={gateState} onCancel={cancelSignIn} cancelLabel={copy.cancel} />
         </div>
@@ -207,10 +240,11 @@ export function EnterAppScreen() {
   // An app's built-in browser is told before the first prompt, in place of the screen. The
   // remembered-account rows are not the test: a nameless account, or one the screen hides, is
   // still a passkey that worked here.
-  const inAppMode = start && !confirming ? walletInAppUpFront(device.get(), config.rpId) : undefined
+  const inAppMode =
+    start && !confirming ? walletInAppUpFront(device.get(), page.config.rpId) : undefined
   if (inAppMode) {
     return (
-      <InvitationChrome landing>
+      <InvitationChrome landing page={page}>
         <div className={styles.sheet}>
           <InAppBrowserNotice
             mode={inAppMode}
@@ -227,7 +261,7 @@ export function EnterAppScreen() {
     const row = s.row
     const found = s.found
     return (
-      <InvitationChrome bare landing>
+      <InvitationChrome bare landing page={page}>
         {backdrop}
         <>
           <ConfirmTagModal
@@ -263,14 +297,16 @@ export function EnterAppScreen() {
             onClose={cancelSignIn}
           />
           {/* Beside the card, not in it: inside the card's form, Enter in a field would sign in. */}
-          {endpointsOpen && <EndpointsModal onClose={() => setEndpointsOpen(false)} />}
+          {endpointsOpen && (
+            <EndpointsModal config={page.config} onClose={() => setEndpointsOpen(false)} />
+          )}
         </>
       </InvitationChrome>
     )
   }
   if (!confirming) {
     return (
-      <InvitationChrome landing>
+      <InvitationChrome landing page={page}>
         <div className={styles.sheet}>
           <div className="ww-invite-spinner" data-testid="enter-passkey">
             <IosFloorNotice />
@@ -287,7 +323,7 @@ export function EnterAppScreen() {
     )
   }
   return (
-    <InvitationChrome bare landing>
+    <InvitationChrome bare landing page={page}>
       {backdrop}
       <>
         <ConfirmTagModal

@@ -12,6 +12,7 @@ import { Fr, Point } from "@aztec-labs/aztec.js/fields"
 import { deriveRecoveryAddress, encodePaylinkInline } from "@obsidion/sdk"
 import { deriveStealthKey, isSettledSipaPhase } from "@obsidion/front-core"
 import type {
+  BridgeInRecord,
   Contact,
   PaylinkTransaction,
   StoredRequest,
@@ -24,6 +25,7 @@ import type { OxideEnvTuple } from "@obsidion/core/types"
 import { deploymentOfTuples, type PinnedOxideDeployment } from "@obsidion/core/oxide"
 import { getAddress, parseUnits, type Address, type Hash, type Hex } from "viem"
 import { STUCK_SWEEP_MS } from "../features/deposit/recovery/sipaRecovery"
+import { DEMO_PENDING_BRIDGE_IN } from "./fakeBridgeIn"
 import { DEMO_DEPOSIT_FEE, DEMO_L1_TOKEN, DEMO_PORTAL, DEMO_WITHDRAWAL_FEE } from "./fakeL1Rpc"
 export { DEMO_L1_TOKEN }
 
@@ -41,7 +43,7 @@ export const DEMO_PASSKEY_PUBKEY_HEX = "c1".repeat(64)
 export const DEMO_L2_ADDRESS = `0x${"1f".repeat(32)}`
 export const DEMO_COMPLETE_ADDRESS = `0x${"ab".repeat(288)}`
 
-/** L2 oxide token — the address TokenStorage and BalanceStorage agree on. */
+/** L2 oxide token: the address the demo balance is stored under. */
 export const DEMO_L2_TOKEN = `0x${"5c".repeat(32)}`
 
 /** The network every seeded record is stamped with: demo mode boots no wallet. */
@@ -59,6 +61,7 @@ export const DEMO_OXIDE_TUPLE: OxideEnvTuple = {
   gitSha: "0".repeat(40),
   timestamp: new Date(0).toISOString(),
   deployedAt: new Date(0).toISOString(),
+  deployedAtBlock: "0",
   portal: DEMO_PORTAL,
   token: DEMO_L1_TOKEN,
   l2Token: DEMO_L2_TOKEN,
@@ -74,6 +77,8 @@ export const DEMO_OXIDE_TUPLE: OxideEnvTuple = {
   withdrawalSubsidy: "0x5ab500000000000000000000000000000000d1db",
   // Every burn settles into it; the withdrawal rails resolve only when it is present.
   plainWithdrawalExecutor: "0xe8ec000000000000000000000000000000000e8c",
+  // Shows the bridge-out banner over the demo profile's bridge.
+  acrossBridgeEscrowFactory: "0xac40550000000000000000000000000000000fac",
 }
 
 /** The demo's deployment: one bridge, {@link DEMO_OXIDE_TUPLE}'s. */
@@ -294,7 +299,7 @@ const DEMO_PAYLINK = "https://zk.money/link#demo"
  * The creator "Sent via paylink" rows, one per state the detail modal's recovery gate separates: a
  * link still in its grace window (offers Cancel link), an email and a direct link past their
  * windows (offer Reclaim funds), and a claimed and a refunded row that offer neither. The settled two carry no
- * `paylink`: `markCreateRowClaimed` / `markCreateRowRefunded` scrub it as they set the flag. Their
+ * `paylink`: `markLinkClaimed` / `markLinkRefunded` scrub it as they set the flag. Their
  * status pill reads `paylinkStatusFor`, which never looks at the URL.
  */
 function creatorLinkRows(now: number): Omit<PaylinkTransaction, "id" | "amountAtomic">[] {
@@ -632,6 +637,36 @@ export function demoWithdrawals(now: number): WithdrawalRecord[] {
       withdrawalId: hash("d7") as Hex,
       l1TxHash: hash("d6") as Hex,
     },
+    // A bridge-out to Base, paid out by the Across fill.
+    {
+      ...base,
+      localId: "wdraw_demo_10",
+      recipient: l1Recipient("9a"),
+      amount: "60",
+      rawAmount: atomic("60"),
+      phase: "done",
+      startTime: now - 2 * DAY,
+      endTime: now - 2 * DAY + 25 * MINUTE,
+      l2TxHash: hash("e1"),
+      blockNumber: 3480,
+      withdrawalId: hash("e2") as Hex,
+      l1TxHash: hash("e3") as Hex,
+      swapOutput: "USDC",
+      swapEscrow: address("5e"),
+      swapExecuteTxHash: hash("e4") as Hex,
+      bridgeOut: {
+        provider: "across",
+        chainId: 8453,
+        chainName: "Base",
+        minReceived: "59400000",
+        acrossFee: "120000",
+        nonce: hash("e5") as Hex,
+        recoveryCommitment: hash("e6") as Hex,
+        relayerTip: "0",
+        fillTxHash: hash("e7") as Hex,
+        filledAmount: "59610000",
+      },
+    },
     {
       ...base,
       localId: "wdraw_demo_6",
@@ -832,6 +867,18 @@ export function activityDeposits(now: number): SipaDeposit[] {
       fundingTxHash: hash("e6"),
       sweepTxHash: hash("e7"),
     },
+    // Paid by the demo's filled bridge-in from another chain: a "Bridge in" row.
+    {
+      seed: "ec",
+      phase: "claimed" as const,
+      amount: "499.75",
+      ageMs: 40 * MINUTE,
+      netAmount: atomic("499.75"),
+      fee: DEMO_FEE,
+      fundingTxHash: hash("ec"),
+      sweepTxHash: hash("ed"),
+      claimTxHash: hash("ee"),
+    },
     {
       seed: "e2",
       phase: "sweeping" as const,
@@ -893,6 +940,95 @@ export function activityDeposits(now: number): SipaDeposit[] {
     // Address published, never paid — the feed hides it.
     { seed: "e8", phase: "broadcast" as const, amount: "0", ageMs: 30 * MINUTE },
   ].map((spec) => depositFrom(spec, now))
+}
+
+/**
+ * One bridge-in per status, from the profile's bridge chains. A filled one paying the unfunded
+ * "e8" deposit address keeps its row until that deposit is funded.
+ */
+export function demoBridgeIns(now: number, chainIds: readonly number[]): BridgeInRecord[] {
+  const chain = (i: number) => chainIds[i % chainIds.length] ?? 0
+  const bridgeIn = (spec: {
+    hash: Hash
+    chain: number
+    symbol: string
+    amount: string
+    status: BridgeInRecord["status"]
+    ageMs: number
+    recipient?: Address
+    fee?: string
+    fillTxHash?: Hash
+  }): BridgeInRecord => {
+    const startTime = now - spec.ageMs
+    const input = parseUnits(spec.amount, 6)
+    // The fake bridge's 0.1%; each lands as its own symbol, a dollar coin of 6 decimals.
+    const fee = spec.fee ? parseUnits(spec.fee, 6) : input / 1000n
+    return {
+      id: `bridge-in:${spec.hash}`,
+      originTxHash: spec.hash,
+      originChainId: spec.chain,
+      depositor: DEMO_L1_FUNDER,
+      recipient: spec.recipient ?? address("b9"),
+      symbol: spec.symbol,
+      inputAmount: input.toString(),
+      outputAmount: (input - fee).toString(),
+      fee: fee.toString(),
+      inputDecimals: 6,
+      outputSymbol: spec.symbol,
+      outputDecimals: 6,
+      status: spec.status,
+      ...(spec.fillTxHash && { fillTxHash: spec.fillTxHash }),
+      startTime,
+      ...(spec.status !== "pending" && { endTime: startTime + 4 * MINUTE }),
+    }
+  }
+  return [
+    bridgeIn({
+      hash: DEMO_PENDING_BRIDGE_IN,
+      chain: chain(0),
+      symbol: "USDC",
+      amount: "500",
+      status: "pending",
+      ageMs: 2 * MINUTE,
+    }),
+    bridgeIn({
+      hash: hash("b2"),
+      chain: chain(1),
+      symbol: "USDC",
+      amount: "250",
+      status: "filled",
+      ageMs: 15 * MINUTE,
+      recipient: address("e8"),
+    }),
+    // Paid the claimed "ec" deposit, which shows as a completed bridge-in.
+    bridgeIn({
+      hash: hash("b5"),
+      chain: chain(0),
+      symbol: "USDC",
+      amount: "500.5",
+      fee: "0.5",
+      status: "filled",
+      ageMs: 45 * MINUTE,
+      recipient: address("ec"),
+      fillTxHash: hash("ec"),
+    }),
+    bridgeIn({
+      hash: hash("b3"),
+      chain: chain(0),
+      symbol: "USDT",
+      amount: "120",
+      status: "refunded",
+      ageMs: 3 * HOUR,
+    }),
+    bridgeIn({
+      hash: hash("b4"),
+      chain: chain(2),
+      symbol: "USDC",
+      amount: "80",
+      status: "expired",
+      ageMs: DAY,
+    }),
+  ]
 }
 
 /**

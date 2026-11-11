@@ -35,15 +35,17 @@ import {
   markPasskeyWritten,
 } from "./refusals/passkeyErrors.js"
 import {
+  type CreationRoute,
   localManagerFor,
   localProviderVerdict,
+  protonPassAdmitted,
   providerAllowed,
   providerNameFor,
   providerSlugFor,
   refusalKindFor,
 } from "./rules/passkeyProviders.js"
 import { creationProvenanceFor } from "./rules/provenance.js"
-import { bitwardenLineFor } from "./refusals/refusalCopy.js"
+import { SAMSUNG_PASS_PHONE_COPY, bitwardenLineFor } from "./refusals/refusalCopy.js"
 import {
   LAPTOP_CREATION_HINTS,
   LAPTOP_LOCAL_HINTS,
@@ -103,6 +105,16 @@ export type PasskeyCreationOptions = {
     appleWithdrawn?: boolean
     appleKeyAtCreation?: boolean
   }
+  /**
+   * The creation may call the `create` wrapper the page-start lock kept aside; the Proton Pass pick
+   * sets it, and only that pick admits a Proton Pass answer on a laptop.
+   */
+  extensionAllowed?: true
+  /**
+   * Managers this build does not offer. A laptop's row arrives already filtered; a phone has no
+   * row, so the driver refuses them here.
+   */
+  withdrawnManagers?: readonly LocalManager[]
   /** Provider ids admitted beyond the measured set; a test seam, and empty in production. */
   extraProviders?: readonly string[]
   /** The challenge the chained assertion signs; asked for only when creation left a gap. */
@@ -157,6 +169,14 @@ function bitwardenAdvice(posture: DevicePosture, bitwarden: boolean): string | u
   return host ? bitwardenLineFor(host) : undefined
 }
 
+/** Samsung Pass works only on its own phone, so a laptop's QR refusal points there. */
+function samsungPassAdvice(route: CreationRoute, aaguid: string | undefined): string | undefined {
+  if (providerSlugFor(aaguid) !== "samsung_pass") return undefined
+  return route.posture === "laptop" && route.attachment === "cross-platform"
+    ? SAMSUNG_PASS_PHONE_COPY
+    : undefined
+}
+
 /** On a related origin Bitwarden refuses before it creates anything; that refusal keeps the line. */
 function withBitwardenAdvice(error: unknown, posture: DevicePosture): unknown {
   if (!(error instanceof RelatedOriginPasskeyError) || !error.bitwarden) return error
@@ -200,6 +220,7 @@ export async function runPasskeyCreation(
         laptopHints: options.laptopHints,
       }),
       ...(timeoutMs === undefined ? {} : { timeoutMs }),
+      ...(options.extensionAllowed ? { extensionAllowed: true } : {}),
       ...ending,
       ...salts,
     })
@@ -227,27 +248,59 @@ export async function runPasskeyCreation(
       localManagers,
       advice,
     )
-    // Windows Hello is admitted only where the row names it, never on a phone's route.
+    // Two managers pass beside the allowlist: Windows Hello only where the row names it, never on a
+    // phone's route, and Proton Pass where its own rule says.
+    const manager = localManagerFor(created.aaguid)
     const windowsHello =
       !securityKey &&
       localManagers?.includes("windows_hello") === true &&
-      localManagerFor(created.aaguid) === "windows_hello"
-    if (!windowsHello && !providerAllowed(created.aaguid, securityKey, options.extraProviders)) {
+      manager === "windows_hello"
+    const proton =
+      !securityKey &&
+      manager === "proton" &&
+      protonPassAdmitted({
+        posture,
+        osFamily: options.userAgent?.osFamily,
+        localManagers,
+        extensionAllowed: options.extensionAllowed,
+        withdrawn: options.withdrawnManagers,
+      })
+    const route = {
+      posture,
+      attachment: created.authenticatorAttachment,
+      userAgent: options.userAgent,
+    }
+    if (
+      !windowsHello &&
+      !proton &&
+      !providerAllowed(created.aaguid, securityKey, options.extraProviders, route)
+    ) {
       throw new UnsupportedProviderError(refusalKindFor(created.aaguid, securityKey), {
         providerName: providerNameFor(created.aaguid),
         keyOfferable: true,
         localManagers,
-        advice,
+        advice: advice ?? samsungPassAdvice(route, created.aaguid),
+        userAgent: options.userAgent,
       })
     }
     // A laptop's own passkey must come from a manager the row admits, by a name it reported: the
     // provider gate lets a missing id through, and nothing else defends this binding.
     if (localManagers && !securityKey) {
       const verdict = localProviderVerdict(created.aaguid, localManagers, options.extraProviders)
-      if (verdict === "apple" || verdict === "unnamed") {
-        throw new LaptopPasskeyRefusedError(verdict, localManagers, {
+      if (verdict === "apple") {
+        throw new LaptopPasskeyRefusedError("apple", localManagers, {
           appleWithdrawn: options.localCreation?.appleWithdrawn,
         })
+      }
+      if (verdict === "unnamed") {
+        // On a row admitting Windows Hello, a Hello without TPM backing is the one admitted
+        // manager measured to withhold its id, so the retry names the row's other managers.
+        throw localManagers.includes("windows_hello")
+          ? new LaptopPasskeyRefusedError(
+              "windows-hello",
+              localManagers.filter((m) => m !== "windows_hello"),
+            )
+          : new LaptopPasskeyRefusedError("unnamed", localManagers)
       }
       if (verdict === "unsupported") {
         throw new UnsupportedProviderError("manager", {
@@ -271,7 +324,7 @@ export async function runPasskeyCreation(
       // row says so: a phone may have made the passkey, and the copy just synced here could answer
       // with this Mac's wrong key.
       const labelUntrusted = !options.attachmentLabelTrusted || options.misreportsCrossDevice
-      const apple = localManagerFor(created.aaguid) === "apple"
+      const apple = manager === "apple"
       const appleNeedsKey = apple && options.localCreation?.appleKeyAtCreation === true
       if (localManagers && !securityKey && (labelUntrusted || appleNeedsKey)) {
         if (!apple) throw new IncompleteCreationError("unverified")
@@ -344,7 +397,7 @@ export async function runPasskeyCreation(
  * unreadable backup flag and a value in the wrong slot keep their own refusals. A key gets its own
  * refusal; on this computer's route Apple Passwords gets the Apple refusal, whose retry offers the
  * row's other managers; any other platform passkey keeps `NoPrfError`, naming the laptop manager
- * the creation reported, and Windows Hello's names the row's others.
+ * the creation reported, and Windows Hello's and Proton Pass's name the row's others.
  */
 function readPrfOrRefuseKey(
   evidence: Evidence,
@@ -370,7 +423,10 @@ function readPrfOrRefuseKey(
         localManagers.filter((m) => m !== "apple"),
       )
     }
-    const others = windowsHello ? localManagers?.filter((m) => m !== manager) : localManagers
+    const others =
+      windowsHello || manager === "proton"
+        ? localManagers?.filter((m) => m !== manager)
+        : localManagers
     throw new NoPrfError({ localManagers: others, manager })
   }
 }

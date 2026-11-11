@@ -1,5 +1,5 @@
 import { isHash, type Hex } from "viem"
-import { WalletError } from "./errors"
+import { WalletError, type ErrorCode, type Failure } from "./errors"
 import {
   WITHDRAWAL_RECORD_VERSION,
   WITHDRAWAL_TERMINAL_PHASES,
@@ -45,6 +45,7 @@ export type WithdrawalEvent =
 /** Phases reached only by observing the L1 release; nothing local outranks or unwinds them. */
 const RELEASED_PHASES: ReadonlySet<WithdrawalPhase> = new Set<WithdrawalPhase>([
   "swapping",
+  "bridging",
   "recoverable",
   "recovered",
   "done",
@@ -160,4 +161,27 @@ export function withdrawalTransition(
       }
     }
   }
+}
+
+/** The words a failed withdrawal carried before failures were codes, by the code each one is. */
+const FAILURE_TEXTS: readonly (readonly [RegExp, ErrorCode])[] = [
+  [/^This withdrawal was interrupted before it finished\./, "withdrawal.interrupted"],
+  [/^Withdrawal transaction dropped in a reorg$/, "withdrawal.reorged"],
+  [/^The withdrawal transaction was dropped or reverted\./, "withdrawal.dropped"],
+  [/not the active zk\.money tab/i, "withdrawal.inactiveTab"],
+  [/^This transaction was not sent\. Please try again later\.$/, "sponsorship.paused"],
+  [/^This transaction was not sent\. Aztec network fees are too high/, "sponsorship.feesTooHigh"],
+  [
+    /^This transaction was not sent: the account has no sponsored transactions left/,
+    "sponsorship.allowanceExhausted",
+  ],
+]
+
+/** A failure's text as its code: the text stays as debug detail when no code names it. */
+export function withdrawalFailure(text: string): Failure {
+  const code = FAILURE_TEXTS.find(([pattern]) => pattern.test(text))?.[1]
+  if (code) return { code }
+  return text === "Withdrawal failed"
+    ? { code: "withdrawal.failed" }
+    : { code: "withdrawal.failed", detail: text }
 }

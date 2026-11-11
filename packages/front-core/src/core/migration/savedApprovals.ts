@@ -77,6 +77,7 @@ export class ApprovalGate {
  */
 export function savedChallengeSigner<C extends Hex | Uint8Array, T>(
   sign: (challenge: C, opts?: { signal?: AbortSignal }) => Promise<T>,
+  // eslint-disable-next-line local/legacy-store -- debt
   storage: Pick<IStorageAdapter, "getItem" | "setItem">,
   prefix: string,
   codec: ApprovalCodec<T> = jsonCodec,

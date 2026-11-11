@@ -150,8 +150,12 @@ FAILED_CONTRACTS=0
 # Progress spinner characters
 SPINNER=('-' '\' '|' '/')
 
-# 1) Find each folder that has Nargo.toml
-for NARGO_FILE in $(find packages/contracts/contracts -type f -name "Nargo.toml" -not -path '*/node_modules/*' -not -path '*/libs/*' -not -path '*/lib/*' -not -path '*/.git/*'); do
+# 1) Find each folder that has Nargo.toml, including the vendored oxide contracts build_contracts.sh compiles
+OXIDE_ROOTS=()
+for d in vendor/oxide/noir-projects/oxide_token_contract vendor/oxide/noir-projects/broadcaster_contract; do
+  [[ -d "$d" ]] && OXIDE_ROOTS+=("$d")
+done
+for NARGO_FILE in $(find packages/contracts/contracts "${OXIDE_ROOTS[@]}" -type f -name "Nargo.toml" -not -path '*/node_modules/*' -not -path '*/libs/*' -not -path '*/lib/*' -not -path '*/.git/*'); do
   CONTRACT_DIR=$(dirname "$NARGO_FILE")
   
   if [[ "$DEBUG" -eq 1 ]]; then

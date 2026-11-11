@@ -9,21 +9,22 @@
 import { nextOperationId } from "@obsidion/sdk"
 import type { WithdrawalRecord } from "@obsidion/front-core"
 import type { Address } from "viem"
-import { parseUnits } from "viem"
+import { formatUnits } from "viem"
+import { DEFAULT_DECIMALS } from "@obsidion/core/constants"
 import { assertWithinWithdrawalLimit } from "../limits/withdrawalLimit"
 import { runOperation } from "../operations/operations"
 import { usdBalance } from "../../ui/format"
 import type { WithdrawalReceiveAsset } from "./withdrawAssets"
 import {
   burnContext,
-  ownSwapRecoverer,
+  sessionSwapRecoverer,
   planSwapLeg,
   runSponsoredBurn,
   type SwapCommit,
   type WithdrawDeps,
   type WithdrawStage,
 } from "./withdrawGateway"
-import { currentTxAmountCap } from "../token/oxideToken"
+import { accountKitOf } from "../../session/session"
 
 /** What the confirmed quote commits to: the escrow tip, the estimate the record keeps, and the route's floor. */
 export interface FreshQuote extends SwapCommit {
@@ -35,9 +36,12 @@ export interface FreshQuote extends SwapCommit {
 export interface FreshWithdrawalInput {
   recipient: Address
   recipientAlias?: string
-  /** What the recipient should receive, display units of the wallet asset: the funds and the gas share. */
-  fundsDisplay: string
-  gasDisplay: string
+  /** From, in DAI base units: what leaves before the gas share, fees inside it. */
+  amountAtomic: bigint
+  /** The whole burn: From, the gas share and what the gas adds to the fee. */
+  burnAtomic: bigint
+  /** The share the escrow lands as ETH. */
+  gasAtomic: bigint
   /** What the funds land as; the gas share always lands as ETH. */
   fundsAsset: WithdrawalReceiveAsset
   quote: FreshQuote
@@ -48,16 +52,6 @@ export function freshDaiForGas(fundsAsset: WithdrawalReceiveAsset, gasAtomic: bi
   return fundsAsset === "ETH" ? 0n : gasAtomic
 }
 
-/** What the burn removes: the funds and the gas share the recipient should receive, plus the route's floor. */
-export function freshBurnAmount(
-  fundsDisplay: string,
-  gasDisplay: string,
-  floorAtomic: bigint,
-  decimals: number,
-): bigint {
-  return parseUnits(fundsDisplay, decimals) + parseUnits(gasDisplay, decimals) + floorAtomic
-}
-
 /** The burn as one operation, checked against the limit before it is screened or signed. */
 export async function submitFreshAddressWithdrawal(
   deps: WithdrawDeps,
@@ -65,29 +59,31 @@ export async function submitFreshAddressWithdrawal(
   onStage: (stage: WithdrawStage) => void,
 ): Promise<WithdrawalRecord> {
   const { recipient, recipientAlias, fundsAsset, quote } = input
-  const { decimals } = await deps.tokenService.fetchTokenInformation()
-  const amount = freshBurnAmount(input.fundsDisplay, input.gasDisplay, quote.floorAtomic, decimals)
-  const daiForGas = freshDaiForGas(fundsAsset, parseUnits(input.gasDisplay, decimals))
-  const summary = `${usdBalance(input.fundsDisplay)} to ${recipientAlias?.trim() || "Ethereum"}`
+  const kit = { ...deps, ...(await accountKitOf(deps.session)) }
+  const amount = input.burnAtomic
+  const daiForGas = freshDaiForGas(fundsAsset, input.gasAtomic)
+  const funds = usdBalance(formatUnits(input.amountAtomic, DEFAULT_DECIMALS))
+  const summary = `${funds} to ${recipientAlias?.trim() || "Ethereum"}`
   const operation = { operationId: nextOperationId("withdraw"), flow: "withdraw" as const, summary }
-  const { record } = await runOperation(operation, async (op) => {
+  const { record } = await runOperation(deps.session, operation, async (op) => {
     onStage("building")
-    assertWithinWithdrawalLimit(amount, await currentTxAmountCap())
-    const ctx = await burnContext(deps, recipient)
+    assertWithinWithdrawalLimit(amount, await deps.session.page.chain.currentTxAmountCap.read())
+    const ctx = await burnContext(kit, recipient)
     const { proverTip = 0n } = quote
+    const recoverer = await sessionSwapRecoverer(deps.session, ctx.tuple)
     const swap = await planSwapLeg(
-      deps.wallet,
+      deps.session.page.chain,
+      async () => recoverer,
       fundsAsset,
       recipient,
       amount,
       quote,
-      await ownSwapRecoverer(ctx.tuple),
       ctx.tuple,
       proverTip,
       daiForGas,
     )
     const burn = { recipient, recipientAlias, amount, swap, swapCommit: swap && quote, proverTip }
-    return runSponsoredBurn(op, deps, ctx, burn, onStage)
+    return runSponsoredBurn(op, kit, ctx, burn, onStage)
   })
   return record
 }

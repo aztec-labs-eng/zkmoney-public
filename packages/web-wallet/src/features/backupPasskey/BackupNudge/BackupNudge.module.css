@@ -1,0 +1,9 @@
+/* Settings centers its children, so the card asks for the full width. */
+.card {
+  width: 100%;
+}
+
+/* With Settings' 32px gap, the card sits 48px above the banners. */
+.settings {
+  margin-bottom: 16px;
+}

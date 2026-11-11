@@ -3,19 +3,22 @@
  * Ethereum sends them privately to any address. Withdraw with my own wallet sends each refund from
  * the user's Ethereum wallet, which pays the gas. Funds on this version stay.
  */
+import type { Pace } from "@obsidion/core/cadence"
 import { useEffect, useRef, useState } from "react"
 import { useNavigate } from "react-router-dom"
-import { formatUnits, isAddress, type Address, type Hex } from "viem"
-import { DEFAULT_DECIMALS, WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
-import { savingsValue, useSavingsPosition } from "@obsidion/front-core"
+import { isAddress, type Address, type Hex } from "viem"
+import { WALLET_TOKEN_SYMBOL, WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
+import { savingsValue, useStore } from "@obsidion/front-core"
 import { estimateFrozenSelfRefundCost, planFrozenSelfRefunds } from "@obsidion/sdk"
-import { getConfig } from "../../config/env"
-import { getOxideTuple, l1PublicClient } from "../../config/oxideTuple"
+import type { WebWalletConfig } from "../../config/env"
+import { l1PublicClient } from "../../config/oxideTuple"
+import type { PageFacts } from "../../session/pageChain"
 import { showReportableError } from "../../errors/errorModal"
 import { isDesktopL1SubmitActive } from "../../platform/desktopBridge"
-import { usdAtomicFloor } from "../../ui/format"
+import { tokenAtomicFloor, usdAtomicFloor } from "../../ui/format"
 import { useScreenedAddress } from "../../ui/screening"
-import { isWalletRejection, useL1Wallet } from "../../session/l1Wallet"
+import { isWalletRejection } from "../../session/l1Wallet"
+import { useL1Wallet } from "../../session/useL1Wallet"
 import {
   desktopBridgeChannel,
   injectedWalletChannel,
@@ -46,7 +49,13 @@ import { TextButton } from "../cutover/parts"
 import { WINDOW_ENDS } from "../../upgradeFreeze"
 import { DestinationSheet, ReviewSheet } from "../cutover/withdrawSheets"
 import { WalletProgress, WithdrawChoice, WithdrawDone, ZkProgress } from "./withdrawScreens"
-import { zkMoneyExit, type ZkMoneyExitStage, type ZkMoneyQuote } from "./zkMoneyExit"
+import {
+  zkMoneyExit,
+  type AccountAmounts,
+  type ZkMoneyExitStage,
+  type ZkMoneyQuote,
+} from "./zkMoneyExit"
+import { useSession } from "../../session/session"
 
 const NONE: FrozenSourceFunds = { refundable: 0n, links: 0n, waiting: 0n }
 const add = (a: FrozenSourceFunds, b: FrozenSourceFunds) => ({
@@ -58,9 +67,9 @@ const add = (a: FrozenSourceFunds, b: FrozenSourceFunds) => ({
 type SourceRead = { ws: WithdrawableSource; read: FrozenExitRead; symbol: string }
 
 /** Each source's candidates, read once to its tip: every figure on the screen comes from them. */
-async function scanSources(sources: readonly WithdrawableSource[]) {
+async function scanSources(config: WebWalletConfig, sources: readonly WithdrawableSource[]) {
   const read = async (ws: WithdrawableSource): Promise<SourceRead> => {
-    const exit = await openOldVersionExit(ws)
+    const exit = await openOldVersionExit(config, ws)
     return { ws, read: await exit.runtime.candidates({ fresh: true }), symbol: exit.symbol }
   }
   const [main, savings] = await Promise.all([
@@ -82,22 +91,23 @@ async function scanSources(sources: readonly WithdrawableSource[]) {
 }
 
 /** The own-wallet route's gas, in USD: every refund it sends, at the withdrawal subsidy's model. */
-async function refundGasUsd(reads: readonly SourceRead[]) {
-  const config = getConfig()
-  const subsidy = (await getOxideTuple(config)).withdrawalSubsidy
+async function refundGasUsd({ config, chain }: PageFacts, reads: readonly SourceRead[]) {
+  const subsidy = (await chain.oxideTuple.read()).withdrawalSubsidy
   if (!subsidy) return undefined
   const kinds = reads.flatMap(({ read }) => planFrozenSelfRefunds(read).map((batch) => batch.kind))
   if (!kinds.length) return undefined
   return (await estimateFrozenSelfRefundCost(l1PublicClient(config), subsidy as Address, kinds)).usd
 }
 
-export function OldVersionWithdrawScreen() {
-  const config = getConfig()
+/** `pace`: the page's, which the zk.money route's settle wait reads on. */
+export function OldVersionWithdrawScreen({ pace }: { pace: Pick<Pace, "wait" | "foreignMs"> }) {
+  const session = useSession()
+  const { config } = session.page
   const navigate = useNavigate()
   const sources = useWithdrawableSources()
   const l1 = useL1Wallet({ expectedChainId: config.l1ChainId, rpcUrl: config.l1RpcUrl })
   const bridgeMode = isDesktopL1SubmitActive()
-  const sharePrice = useSavingsPosition().position?.sharePrice
+  const sharePrice = useStore(session.savingsHolding, (h) => h.position?.sharePrice)
   // The sources the screen opened with: a scan after the withdrawal must not reset them.
   const opened = useRef(sources)
   const [destination, setDestination] = useState("")
@@ -109,7 +119,8 @@ export function OldVersionWithdrawScreen() {
   const [sent, setSent] = useState<FrozenExitSent>()
   const [done, setDone] = useState<FrozenExitDone>()
   const [view, setView] = useState<"choose" | "destination" | "zk-review" | "review">("choose")
-  const [zk] = useState(zkMoneyExit)
+  const { savingsMoves } = session
+  const [zk] = useState(() => zkMoneyExit(savingsMoves, config, pace))
   const [route, setRoute] = useState<"zk-money" | "wallet">("zk-money")
   const [typed, setTyped] = useState("")
   const [checked, setChecked] = useState(false)
@@ -130,6 +141,7 @@ export function OldVersionWithdrawScreen() {
   const networkReady = useNetworkReady()
   const funds = scanned?.funds
 
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     let live = true
     setScanned(undefined)
@@ -138,7 +150,7 @@ export function OldVersionWithdrawScreen() {
     setQuote(undefined)
     setFeeFailed(false)
     setGasUsd(undefined)
-    scanSources(opened.current)
+    scanSources(config, opened.current)
       .then(({ reads, ...next }) => {
         if (!live) return
         setScanned(next)
@@ -152,7 +164,7 @@ export function OldVersionWithdrawScreen() {
             showReportableError(e, "withdraw:zk-money-fee")
           })
         // The estimate is optional: without it the screens name the gas without a figure.
-        refundGasUsd(reads)
+        refundGasUsd(session.page, reads)
           .then((usd) => live && setGasUsd(usd))
           .catch((e) => console.warn("withdraw: gas estimate failed", e))
       })
@@ -165,8 +177,9 @@ export function OldVersionWithdrawScreen() {
     return () => {
       live = false
     }
-  }, [zk, scan])
+  }, [config, zk, scan])
   // Withdraw stops offering what no batch refunds, such as a note above the portal's cap.
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!funds || done) return
     if (!funds.main.refundable)
@@ -176,12 +189,14 @@ export function OldVersionWithdrawScreen() {
   }, [funds, done])
   // Read again once the user leaves: before that, the gate would replace this screen.
   const mounted = useRef(true)
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(
     () => () => {
       mounted.current = false
     },
     [],
   )
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (done || zkDone) return noteOldVersionWithdrawn
   }, [done, zkDone])
@@ -209,6 +224,7 @@ export function OldVersionWithdrawScreen() {
     setZkStage("preparing")
     try {
       const result = await runOperation(
+        session,
         { operationId: crypto.randomUUID(), flow: "withdraw", summary: "Withdraw old version" },
         () => zk.run(opened.current, to, setZkStage, sourceUsd),
       )
@@ -234,6 +250,7 @@ export function OldVersionWithdrawScreen() {
     let moved = false
     try {
       await runOperation(
+        session,
         { operationId: crypto.randomUUID(), flow: "withdraw", summary: "Withdraw old version" },
         async () => {
           const channel = bridgeMode
@@ -244,8 +261,14 @@ export function OldVersionWithdrawScreen() {
                 publicClient: l1PublicClient(config),
                 display: { title: "Withdraw from zk.money", lines: [["To", to]] },
                 onStage: setStage,
+                pace,
               })
-            : await injectedWalletChannel(config, { from: to, onStage: setStage })
+            : await injectedWalletChannel(config, {
+                wagmi: l1.wagmi,
+                from: to,
+                onStage: setStage,
+                pace,
+              })
           // Main first, then Savings, which pays out its own token.
           const order = [
             ...opened.current.filter((s) => !s.savings),
@@ -253,10 +276,10 @@ export function OldVersionWithdrawScreen() {
           ]
           for (const source of order) {
             const usd = (amount: bigint) => (source.savings ? shareUsd(amount) : amount)
-            const exit = await openOldVersionExit(source, to)
+            const exit = await openOldVersionExit(config, source, to)
             let before = 0n
             const result = await exit.lock(() =>
-              runFrozenExit(exit.runtime, channel, (batch) => {
+              runFrozenExit(savingsMoves, exit.runtime, channel, (batch) => {
                 moved = true
                 progress.refunded += usd(batch.refunded - before)
                 progress.hashes.push(batch.hashes[batch.hashes.length - 1]!)
@@ -346,6 +369,16 @@ export function OldVersionWithdrawScreen() {
         ? total
         : WITHDRAW_RELAYER_TIP
       : fee
+  const zkReceive =
+    !scanned || zkFee === undefined || !quote
+      ? "…"
+      : received(
+          {
+            main: net(quote.moving.main, quote.tips.main),
+            savings: net(quote.moving.savings, quote.tips.savings),
+          },
+          scanned.savingsSymbol,
+        )
   const zkReview = to && (
     <ReviewSheet
       route="zk-money"
@@ -355,8 +388,7 @@ export function OldVersionWithdrawScreen() {
         spendable: usd(quote?.moving.main),
         savings: usd(quote && shareUsd(quote.moving.savings)),
         fee: zkFee === undefined ? "…" : `-${usdAtomicFloor(zkFee)}`,
-        receive:
-          zkFee === undefined ? "…" : usdAtomicFloor(zkAmount > zkFee ? zkAmount - zkFee : 0n),
+        receive: zkReceive,
       }}
       failed={unread || feeFailed}
       disabled={zkFee === undefined || moving === 0n}
@@ -371,18 +403,15 @@ export function OldVersionWithdrawScreen() {
   const missing =
     funds && funds.openLinks > funds.main.links ? funds.openLinks - funds.main.links : 0n
   const waiting = funds ? funds.main.waiting + shareUsd(savingsFunds?.waiting ?? 0n) : 0n
-  // Savings pays out its own token, so both tokens are named only when both pay out.
-  const receive = !savingsFunds?.refundable
-    ? usd(funds?.main.refundable)
-    : [
-        ...(funds?.main.refundable ? [`${usdAtomicFloor(funds.main.refundable)} in DAI`] : []),
-        `${shares(savingsFunds.refundable)} ${scanned?.savingsSymbol ?? "sUSDS"}`,
-      ].join(" + ")
+  const walletReceive = scanned
+    ? received(
+        { main: scanned.funds.main.refundable, savings: savingsFunds?.refundable ?? 0n },
+        scanned.savingsSymbol,
+      )
+    : "…"
   const notes = [
     ...(missing
-      ? [
-          "The refund couldn't find some of your payment links. Contact support before you clear this browser's data.",
-        ]
+      ? ["The refund couldn't find some of your payment links. Don't clear this browser's data."]
       : []),
     ...(funds?.savingsFailed ? ["Couldn't check Savings. Try again later."] : []),
     ...(waiting ? [`${usdAtomicFloor(waiting)} is not withdrawable yet.`] : []),
@@ -400,7 +429,7 @@ export function OldVersionWithdrawScreen() {
         spendable: usd(funds?.main.refundable),
         savings: usd(funds && shareUsd(savingsFunds?.refundable ?? 0n)),
         fee: gasUsd === undefined ? "Gas in ETH" : `~${usdAtomicFloor(gasUsd)}`,
-        receive,
+        receive: walletReceive,
       }}
       notes={
         <div className="ww-cutover__notes">
@@ -442,7 +471,7 @@ export function OldVersionWithdrawScreen() {
       total={funds ? total : undefined}
       zkMoneyFee={zkFee}
       zkMoneyFeeFailed={feeFailed}
-      zkMoneyMoving={moving}
+      receive={{ "zk-money": zkReceive, "wallet": walletReceive }}
       waiting={
         networkReady
           ? undefined
@@ -467,5 +496,10 @@ export function OldVersionWithdrawScreen() {
   )
 }
 
-/** sUSDS share count, to two decimals. */
-const shares = (amount: bigint) => Number(formatUnits(amount, DEFAULT_DECIMALS)).toFixed(2)
+const net = (gross: bigint, tip: bigint) => (gross > tip ? gross - tip : 0n)
+
+const received = ({ main, savings }: AccountAmounts, savingsSymbol: string) =>
+  [
+    ...(main || !savings ? [tokenAtomicFloor(main, WALLET_TOKEN_SYMBOL)] : []),
+    ...(savings ? [tokenAtomicFloor(savings, savingsSymbol)] : []),
+  ].join(" + ")

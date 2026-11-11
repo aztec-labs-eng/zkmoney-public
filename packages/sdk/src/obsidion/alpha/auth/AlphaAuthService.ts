@@ -132,8 +132,7 @@ export interface AlphaAuthService {
    * Derive a 32-byte symmetric key bound to the MSK and a domain string.
    * Implementations MUST use poseidon2 with a domain-separator selector
    * (see `DOMAIN_SEPARATORS` in front-core's `derived-key-domains.ts`).
-   * The derived key is used by the platform `CryptoProvider` to encrypt
-   * persistent stores.
+   * The platform's `ProofSealer` uses it to seal records at rest.
    *
    * Throws if the MSK is not available or the domain is unknown.
    */

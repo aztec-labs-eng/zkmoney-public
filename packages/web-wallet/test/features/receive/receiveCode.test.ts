@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest"
 import type { Address } from "viem"
-import type { MintedRequestLink } from "@obsidion/front-core"
+import {
+  createReceiveCodes,
+  memoryBackend,
+  openDatabase,
+  type MintedRequestLink,
+} from "@obsidion/front-core"
 import {
   CODE_LIFETIME_MS,
   currentCode,
@@ -16,13 +21,17 @@ const TODAY = Math.floor(NOW / DAY_MS)
 const addr = (n: number) => `0x${n.toString(16).padStart(40, "0")}` as Address
 
 let seq = 0
-function harness(ready: Array<ReadyAddress | null> = []) {
-  const key = `webwallet.receiveCode.test.${++seq}`
+/** With `requester`, each code is minted for the account's address then. */
+function harness(ready: Array<ReadyAddress | null> = [], requester?: string) {
+  ++seq
+  const db = openDatabase(memoryBackend())
   const cancelled: string[] = []
   const minted: Array<{ amountInput: string; sipaAddress?: Address }> = []
   const paidIds = new Set<string>()
   const deps: CodeDeps = {
-    key,
+    codes: createReceiveCodes({ db, legacy: db }),
+    id: "test.river",
+    requester,
     readyAddress: async () => ready.shift() ?? null,
     mint: async (args) => {
       minted.push(args)
@@ -30,7 +39,12 @@ function harness(ready: Array<ReadyAddress | null> = []) {
       const amount = Number(args.amountInput) || 0
       return {
         url: `https://wallet.test/pay/river#${id}`,
-        row: { id, amount, expiresAt: args.now + args.durationMs },
+        row: {
+          id,
+          amount,
+          expiresAt: args.now + args.durationMs,
+          requesterAddress: deps.requester,
+        },
         note: args.noteInput || undefined,
       } as MintedRequestLink
     },
@@ -65,11 +79,58 @@ describe("receive code", () => {
     expect(cancelled).toEqual([old.requestId])
   })
 
+  it("replaces a code pinned to an L2 address the account has left, and cancels it", async () => {
+    const before = `0x${"0a".repeat(32)}`
+    const { deps, cancelled } = harness(
+      [
+        { address: addr(9), day: TODAY },
+        { address: addr(10), day: TODAY },
+      ],
+      before,
+    )
+    const old = await currentCode(deps, NOW)
+    expect(await openCode(deps, NOW)).toEqual(old)
+    // A backup passkey moves the account to a new L2 address.
+    deps.requester = `0x${"0b".repeat(32)}`
+    const fresh = await openCode(deps, NOW)
+    expect(fresh.address).toBe(addr(10))
+    expect(cancelled).toEqual([old.requestId])
+  })
+
+  it("replaces a code that records no requester once the account's address is known", async () => {
+    const { deps, cancelled } = harness([
+      { address: addr(11), day: TODAY },
+      { address: addr(12), day: TODAY },
+    ])
+    const old = await currentCode(deps, NOW)
+    deps.requester = `0x${"0a".repeat(32)}`
+    const fresh = await openCode(deps, NOW)
+    expect(fresh).toMatchObject({ address: addr(12), requester: deps.requester })
+    expect(cancelled).toEqual([old.requestId])
+    expect(await openCode(deps, NOW)).toEqual(fresh)
+  })
+
+  it("puts an amount on a code minted for an old L2 address with a new address", async () => {
+    const { deps, cancelled } = harness(
+      [
+        { address: addr(13), day: TODAY },
+        { address: addr(14), day: TODAY },
+      ],
+      `0x${"0a".repeat(32)}`,
+    )
+    const old = await currentCode(deps, NOW)
+    deps.requester = `0x${"0b".repeat(32)}`
+    const priced = await setCodeAmount(deps, { amountInput: "5", noteInput: "" }, NOW)
+    expect(priced).toMatchObject({ address: addr(14), amount: 5, requester: deps.requester })
+    expect(cancelled).toEqual([old.requestId])
+  })
+
   it("puts an amount on the code, then opens on a plain code with the same address", async () => {
     const { deps, cancelled } = harness([{ address: addr(5), day: TODAY }])
     await currentCode(deps, NOW)
-    const priced = await setCodeAmount(deps, { amountInput: "12.5", noteInput: "Lunch" }, NOW)
-    expect(priced).toMatchObject({ address: addr(5), amount: 12.5, note: "Lunch" })
+    const note = "Lunch"
+    const priced = await setCodeAmount(deps, { amountInput: "12.5", noteInput: note }, NOW)
+    expect(priced).toMatchObject({ address: addr(5), amount: 12.5, note })
     const opened = await openCode(deps, NOW)
     expect(opened).toMatchObject({ address: addr(5), amount: 0, note: undefined })
     expect(cancelled).toContain(priced.requestId)

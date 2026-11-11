@@ -1,13 +1,13 @@
-import { GradientInitialAvatar, Icon, ZkMoneyRoot } from "@obsidion/web-ds"
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
+import { GradientInitialAvatar, Icon, ZkMoneyRoot, type IconName } from "@obsidion/web-ds"
+import { useCallback, useRef, useState, type ReactNode } from "react"
 import { Outlet, useLocation, useNavigate } from "react-router-dom"
 import { AnalyticsConsentPrompt } from "../../features/onboarding/AnalyticsConsentModal/AnalyticsConsentModal"
 import { useRegistrationDepositOwed } from "../../features/registration/openRegistration"
 import { useActionGuard, type WalletAction } from "../../features/actionGate"
-import { useTagUnpicked } from "../../features/onboarding/tagPick"
+import { useTagUnpicked } from "../../features/onboarding/useTagUnpicked"
 import { TagSearchBar } from "../../features/contacts/TagSearchBar"
 import { enteredIdentity } from "../../session/account"
-import { logout } from "../../features/identity/logout"
+import { LogoutPrompt, type LogoutKind } from "../../features/identity/LogoutPrompt/LogoutPrompt"
 import {
   isLogoutBlockedByRegistration,
   isTagPresentationPending,
@@ -15,36 +15,30 @@ import {
 } from "../../features/registration/webRegistration"
 import { openedSession, useSession } from "../../session/session"
 import { getDesktopL1Bridge } from "../../platform/desktopBridge"
+import { nextTheme, type Theme } from "../../platform/storage/theme"
 import { ScannerModal } from "../../features/scan/ScannerModal"
 import { scanPayload } from "../../features/scan/scanPayload"
 import { useScanNavigation } from "../../features/scan/ScanNavigation"
 import { useScanShare } from "../../features/scan/useScanShare"
 import { BrandLockup } from "../BrandLockup"
 import { BootSplash } from "../PxeBoot"
-import { LogoutBlockedModal } from "../LogoutBlockedModal"
-import { LogoutModal } from "../LogoutModal"
 import { MobileMenu } from "../MobileMenu"
 import { PhoneIcon, type PhoneIconName } from "../PhoneIcon"
 import { usePhoneLayout } from "../usePhoneLayout"
 import { useNotificationsPanelOpen } from "../NotificationsPanel/NotificationsPanel"
 import { NotificationsBell } from "../NotificationsBell/NotificationsBell"
-import {
-  ContactStorage,
-  nameL1ContactsByEns,
-  useStore,
-  useResource,
-  WalletError,
-} from "@obsidion/front-core"
-import { ensClient } from "../../lib/ens"
+import { NO_SERVICE, serviceStatus, useStore, WalletError } from "@obsidion/front-core"
 import { isDemoMode } from "../../dev/demoFlag"
 import { REQUESTS_PATH } from "../../features/requests/nonContactView"
 import { useSavingsAvailable } from "../../features/savings/savingsGateway"
 import { UpgradeKeepOpenBanner } from "../../features/migration/UpgradeIntro"
+import { BackupNudgeBadge } from "../../features/backupPasskey/BackupNudge/BackupNudge"
 import { createContext, useContext, useMemo } from "react"
 import "../shell.css"
 import styles from "./AppShell.module.css"
 import copy from "./AppShell.copy"
 import { fmt } from "../../lib/fmt"
+import { useDomEffect } from "../useDomEffect"
 
 /**
  * Root frame: dark canvas at full viewport width. Layout comes from the nested layouts below.
@@ -71,6 +65,9 @@ export function ShellRoot({ children }: { children: ReactNode }) {
 }
 
 type NavItem = { label: string; icon: PhoneIconName; path: string }
+
+/** The theme control shows the theme it switches to. */
+const THEME_ICONS: Record<Theme, IconName> = { dark: "moon", light: "sun" }
 
 const NAV_MAIN: NavItem[] = [
   { label: copy.nav.home, icon: "home", path: "/" },
@@ -99,6 +96,7 @@ const NAV_TABS: NavItem[] = NAV_PHONE.filter(
 const navItems = (items: NavItem[], savings: boolean) =>
   items.filter((item) => item.path !== "/savings" || savings)
 /** Routes that move money: with a name still waiting for its deposit they lead to Deposit. */
+// eslint-disable-next-line no-restricted-syntax -- debt
 const ACTIVATION_GATED = new Set(["/deposit", "/send", REQUESTS_PATH, "/withdraw"])
 /** Nav items that start an action. */
 const NAV_ACTIONS: Record<string, WalletAction> = {
@@ -159,6 +157,7 @@ export function SidebarLayout({
   const navigate = useNavigate()
   const location = useLocation()
   const session = useSession()
+  const theme = useStore(session.page.theme.current)
   const identityView = useStore(session.identity)
   const identity = identityView.value
   const { passkeyMap } = useStore(session.device)
@@ -171,18 +170,15 @@ export function SidebarLayout({
   const [open, setOpen] = useState(false)
   const phone = usePhoneLayout()
   const [notificationsOpen, setNotificationsOpen] = useNotificationsPanelOpen()
-  const [logoutPrompt, setLogoutPrompt] = useState<null | "confirm" | "blocked">(null)
+  const [logoutPrompt, setLogoutPrompt] = useState<LogoutKind | null>(null)
   const main = useRef<HTMLElement>(null)
   const menuOpener = useRef<HTMLElement | null>(null)
   const handoff = useScanNavigation()
-  const obsidionWallet = useResource(session.wallet)
-  const finishLogout = useCallback(
-    () => logout(session, () => obsidionWallet?.pxe.stop() ?? Promise.resolve()),
-    [session, obsidionWallet],
-  )
   // Same unlock condition as UnlockGate: the bell must not surface stored notifications
   // above the locked pane.
-  const unlocked = !!useResource(useSession().account) || isDemoMode()
+  const unlocked =
+    useStore(session.account ?? NO_SERVICE, serviceStatus) === "ready" || isDemoMode()
+  // eslint-disable-next-line local/page-singleton -- debt
   const savings = useSavingsAvailable()
   const pageHeader = phone && unlocked && mobilePageHeaderPaths.includes(location.pathname)
   const scannerAvailable =
@@ -191,7 +187,7 @@ export function SidebarLayout({
     unlocked &&
     !!identity?.handle &&
     !tagPending &&
-    !!enteredIdentity(identityView, passkeyMap) &&
+    !!enteredIdentity(identityView, passkeyMap, session.page.config.rpId) &&
     getDesktopL1Bridge() === null
   const scanShare = useScanShare({
     routeKey: location.key,
@@ -206,6 +202,7 @@ export function SidebarLayout({
       const currentIdentity = enteredIdentity(
         session.identity.get(),
         session.device.get().passkeyMap,
+        session.page.config.rpId,
       )
       if (
         !currentIdentity?.handle ||
@@ -219,7 +216,7 @@ export function SidebarLayout({
       return scanPayload(payload, {
         ownTag: currentIdentity.handle,
         ownL2Address: currentIdentity.address,
-        contacts: await ContactStorage.get().getEntries(),
+        contacts: session.contacts ? await session.contacts.all() : [],
       })
     },
     onDestination: handoff,
@@ -248,31 +245,33 @@ export function SidebarLayout({
     else if (!unlocked) navigate("/receive")
     else guard("receive", () => navigate("/receive"))
   }, [awaitingActivation, navigate, setNotificationsOpen, guard, unlocked])
+  const openScanShare = scanShare.open
   const openScanner = useCallback<ShellAction>(
     (event) => {
       if (!scannerAvailable) return
       const opener = captureOpener(event?.currentTarget)
       setOpen(false)
       setNotificationsOpen(false)
-      scanShare.open("scan", opener)
+      openScanShare("scan", opener)
     },
-    [scannerAvailable, setNotificationsOpen, scanShare.open],
+    [scannerAvailable, setNotificationsOpen, openScanShare],
   )
   const shellActions = useMemo(
     () => ({ openMenu, openReceive, openScanner, scannerAvailable }),
     [openMenu, openReceive, openScanner, scannerAvailable],
   )
 
-  useEffect(() => {
+  // A new route, a layout change or the notifications panel closes the menu.
+  const shellKey = `${location.key}:${phone}`
+  const [menuKey, setMenuKey] = useState(shellKey)
+  if (menuKey !== shellKey) {
+    setMenuKey(shellKey)
     setOpen(false)
-  }, [location.key, phone])
-  useEffect(() => {
-    if (notificationsOpen) setOpen(false)
-  }, [notificationsOpen])
-  useEffect(() => nameL1ContactsByEns(ensClient), [])
+  }
+  if (open && notificationsOpen) setOpen(false)
   // The phone header sticks once the page scrolls past its top padding.
   const [stuck, setStuck] = useState(false)
-  useEffect(() => {
+  useDomEffect(() => {
     const scroller = main.current
     if (!phone || !scroller) return
     const update = () => setStuck(scroller.scrollTop > 8)
@@ -301,6 +300,7 @@ export function SidebarLayout({
     >
       {phone ? <PhoneIcon name={item.icon} /> : <Icon name={item.icon} size={24} />}
       <span>{item.label}</span>
+      {item === NAV_SETTINGS && <BackupNudgeBadge className={styles.navBadge} />}
     </button>
   )
 
@@ -330,7 +330,7 @@ export function SidebarLayout({
     <div className={styles.sidebarAccount}>
       <button
         type="button"
-        className={`zkm-btn-reset zkm-pressable ww-iconbtn ${styles.iconbtnBrand}`}
+        className={`zkm-btn-reset zkm-pressable ww-iconbtn zkm-on-brand ${styles.iconbtnBrand}`}
         aria-label={copy.receiveCode}
         onClick={openReceive}
       >
@@ -347,6 +347,18 @@ export function SidebarLayout({
     </div>
   )
 
+  // The phone keeps it in the menu's head, which leaves the top bar's search its width.
+  const themeButton = (
+    <button
+      type="button"
+      className="zkm-btn-reset zkm-pressable ww-iconbtn ww-iconbtn--lg"
+      aria-label={copy.theme[nextTheme(theme)]}
+      onClick={() => session.page.theme.set(nextTheme(theme))}
+    >
+      <Icon name={THEME_ICONS[nextTheme(theme)]} size={22} />
+    </button>
+  )
+
   const navigation = (
     <nav
       className={phone ? "ww-sidebar ww-sidebar--open" : "ww-sidebar"}
@@ -355,10 +367,11 @@ export function SidebarLayout({
       <div className={styles.sidebarHead}>
         {drawerAccount || <BrandLockup />}
         <div className={styles.sidebarHeadActions}>
+          {phone && themeButton}
           {!drawerAccount && !unpicked && (
             <button
               type="button"
-              className={`zkm-btn-reset zkm-pressable ww-iconbtn ${styles.iconbtnBrand}`}
+              className={`zkm-btn-reset zkm-pressable ww-iconbtn zkm-on-brand ${styles.iconbtnBrand}`}
               aria-label={copy.receiveCode}
               onClick={openReceive}
             >
@@ -379,7 +392,11 @@ export function SidebarLayout({
             aria-label={copy.closeMenu}
             onClick={() => setOpen(false)}
           >
-            {phone ? <PhoneIcon name="x" size={32} color="#fff" /> : <Icon name="x" size={24} />}
+            {phone ? (
+              <PhoneIcon name="x" size={32} color="var(--ink)" />
+            ) : (
+              <Icon name="x" size={24} />
+            )}
           </button>
         </div>
       </div>
@@ -472,6 +489,7 @@ export function SidebarLayout({
                   )}
                   {phone && !unlocked && <BrandLockup />}
                   <div className={styles.topbarActions}>
+                    {!phone && themeButton}
                     {unlocked && <NotificationsBell />}
                     {!phone && !unpicked && (
                       <button
@@ -494,7 +512,7 @@ export function SidebarLayout({
                         aria-controls={open ? "wallet-menu" : undefined}
                         onClick={openMenu}
                       >
-                        <PhoneIcon name="menu" size={30} color="#fff" />
+                        <PhoneIcon name="menu" size={30} color="var(--ink)" />
                       </button>
                     )}
                   </div>
@@ -507,12 +525,7 @@ export function SidebarLayout({
         </main>
         {tabBar}
         {unlocked && <AnalyticsConsentPrompt />}
-        {logoutPrompt === "blocked" && (
-          <LogoutBlockedModal onClose={() => setLogoutPrompt(null)} onConfirm={finishLogout} />
-        )}
-        {logoutPrompt === "confirm" && (
-          <LogoutModal onClose={() => setLogoutPrompt(null)} onConfirm={finishLogout} />
-        )}
+        {logoutPrompt && <LogoutPrompt kind={logoutPrompt} onClose={() => setLogoutPrompt(null)} />}
         {scanShare.session?.surface === "scan" && (
           <ScannerModal
             key={scanShare.session.id}

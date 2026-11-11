@@ -3,7 +3,8 @@
  * sends the configured API key, and a node read that never answers does not hold later reads, so Retry recovers.
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
-import type { PortalCapacityState } from "@obsidion/front-core"
+import { memoryStore, type PortalCapacityState } from "@obsidion/front-core"
+import { testQuery } from "../../../support/query"
 
 const config = vi.hoisted(() => ({
   network: "testnet",
@@ -15,7 +16,6 @@ const portal = vi.hoisted(() => ({
   portal: "0xabcdef0123456789abcdef0123456789abcdef01",
   token: "0x2222222222222222222222222222222222222222",
 }))
-vi.mock("../../../../src/config/env", () => ({ getConfig: () => config }))
 vi.mock("../../../../src/config/oxideTuple", () => ({
   l1PublicClient: () => ({
     getChainId: async () => portal.chainId,
@@ -29,7 +29,6 @@ vi.mock("../../../../src/config/oxideTuple", () => ({
         decimals: 18,
       }[functionName]),
   }),
-  getOxideTuple: async () => ({ ...portal, chainId: String(portal.chainId) }),
 }))
 
 /** The node behind `config.nodeUrl`: answers JSON-RPC batches, or, while `silent`, never answers. */
@@ -60,7 +59,13 @@ const nodeFetch = async (url: string, init: { body: string; headers: Record<stri
   }
 }
 
-const load = () => import("../../../../src/features/deposit/capacityStore")
+/** The registry, over fresh mocks, of a page whose wallet never boots. */
+const load = async () =>
+  (await import("../../../../src/features/deposit/capacityRegistry")).capacityRegistry(
+    config as never,
+    memoryStore({ status: "pending" }) as never,
+    testQuery(),
+  )
 
 // The first load compiles the SDK bundle, which can take longer than one test's timeout.
 beforeAll(() => load(), 60_000)
@@ -70,7 +75,6 @@ beforeEach(async () => {
   node.silent = false
   node.requests.length = 0
   vi.stubGlobal("fetch", vi.fn(nodeFetch))
-  ;(await import("@obsidion/front-core")).setActiveGenerationNode(undefined)
 })
 
 afterEach(() => {
@@ -80,8 +84,7 @@ afterEach(() => {
 
 describe("capacityStore before boot", () => {
   it("reads the node with the configured API key", async () => {
-    const { depositCapacityStore } = await load()
-    expect((await depositCapacityStore(portal as never).retry()).status).toBe("fresh")
+    expect((await (await load()).store(portal as never).retry()).status).toBe("fresh")
     expect(node.requests.flatMap((request) => request.methods)).toEqual(
       expect.arrayContaining(["aztec_getChainId", "aztec_getSyncedL1Timestamp"]),
     )
@@ -92,7 +95,7 @@ describe("capacityStore before boot", () => {
 
   it("recovers on Retry after a node read that never answers", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
-    const store = (await load()).depositCapacityStore(portal as never)
+    const store = (await load()).store(portal as never)
     node.silent = true
     const stalled = store.retry()
     await vi.advanceTimersByTimeAsync(store.policy.readTimeoutMs)

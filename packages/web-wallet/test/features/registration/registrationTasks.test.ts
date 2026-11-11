@@ -1,11 +1,12 @@
 // The registration rail's tasks over fakes of their reads: each one's cadence, the milestones it
 // waits for, its backoff, and the work it leaves undone.
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
+import type { MockInstance } from "vitest"
 import { Fr } from "@aztec-labs/aztec.js/fields"
 import {
   createIdentity,
-  createSipaDeposits,
   fixed,
+  createSipaDeposits,
   loadRecords,
   memoryBackend,
   memoryStore,
@@ -16,19 +17,9 @@ import {
   type IdentityView,
   type PendingRegistrationRecord,
 } from "@obsidion/front-core"
-import type {
-  ContractService,
-  ObsidionAccount,
-  ObsidionWallet,
-  waitForRegistrationMessage,
-} from "@obsidion/sdk"
+import type { ObsidionWallet } from "@obsidion/sdk"
 import type { Hex } from "viem"
-import type { RegistrationPending } from "../../../src/features/registration/registrationRail"
 import { makeRegistrationDepositSeeder } from "../../../src/features/registration/registrationDepositSeed"
-import {
-  sponsoredRailPending,
-  type RailPending,
-} from "../../../src/features/registration/sponsoredRailReadiness"
 import {
   detectionCadence,
   registrationDetection,
@@ -36,27 +27,23 @@ import {
   registrationIdentity,
   registrationRederive,
   registrationRefunds,
-  sponsoredRail,
 } from "../../../src/features/registration/registrationTasks"
 import type { WebDetectionDeps } from "../../../src/features/registration/webRegistration"
 import { sessionTasks } from "../../../src/app/sessionTasks"
-import { openSession, type SessionCore } from "../../../src/session/session"
+import { openSession, type SessionDeps } from "../../../src/session/session"
 import { pageSessionDeps } from "../../../src/app/sessionDeps"
 import { testPage } from "../../support/page"
-import { pendingRecord } from "../../support/registrationFixtures"
-import { seedBootConfig } from "../../support/seedBootConfig"
+import { pendingRecord, registrationTerms } from "../../support/registrationFixtures"
+import { PAID } from "../../support/registrationPrices"
 import {
   fakeClock,
   flush,
   later,
   onceSteps,
-  periodicSteps,
   sessions,
   table,
   type Step,
 } from "../../../../front-core/test/engine/taskTable"
-
-beforeAll(seedBootConfig)
 fakeClock()
 const ends: (() => void)[] = []
 afterEach(() => {
@@ -91,7 +78,7 @@ describe("detectionCadence", () => {
     ["no record", null, 0, 45_000],
     ["a tick asking for longer", pendingRecord(funded), 30_000, 30_000],
   ])("waits for %s", (_label, record, nextMs, wait) => {
-    expect(detectionCadence(record, nextMs)).toBe(wait)
+    expect(detectionCadence(record, nextMs, Date.now())).toBe(wait)
   })
 })
 
@@ -99,14 +86,13 @@ describe("registrationDetection", () => {
   function detection(records: PendingRegistrationRecord[] = [pendingRecord()]) {
     const h = harness()
     const registrations = view(records)
-    const reads = later<WebDetectionDeps>("registrationReads")
-    const demand = vi.fn()
+    // Each call asks for the reads.
+    const start = vi.fn(() => fixed("registrationReads", {} as WebDetectionDeps))
     const tick = vi.fn(async () => ({ outcome: "pending" as const, nextMs: 0 }))
-    reads.ready({} as WebDetectionDeps)
     h.tasks.push(
-      registrationDetection({ view: registrations.readonly }, { ...reads.resource, demand }, tick),
+      registrationDetection({ view: registrations.readonly }, start, () => Date.now(), tick),
     )
-    return { h, registrations, demand, tick }
+    return { h, registrations, start, tick }
   }
 
   it("ticks every 45 s while a record waits on a deposit, and pauses while hidden", async () => {
@@ -118,11 +104,11 @@ describe("registrationDetection", () => {
     const d = detection([])
     d.h.start()
     await vi.advanceTimersByTimeAsync(90_000)
-    expect(d.demand).not.toHaveBeenCalled()
+    expect(d.start).not.toHaveBeenCalled()
     expect(d.tick).not.toHaveBeenCalled()
     d.registrations.set({ records: [pendingRecord()], loaded: true, failed: false })
     await vi.advanceTimersByTimeAsync(45_000)
-    expect(d.demand).toHaveBeenCalled()
+    expect(d.start).toHaveBeenCalled()
     expect(d.tick).toHaveBeenCalledTimes(1)
   })
 
@@ -146,37 +132,37 @@ describe("a session's detection", () => {
       every: "once",
       run: async () => void runs++,
     })
-    const features = (core: SessionCore) => {
-      const real = sessionTasks(core, testPage())
+    const features = (core: Parameters<SessionDeps["features"]>[0]) => {
+      const real = sessionTasks(core)
       return { ...real, tasks: [probe], named: { ...real.named, registrationDetection: probe } }
     }
     const deps = pageSessionDeps(testPage())({ id: "a", prefix: "a." })
-    const own = openSession(
+    const session = openSession(
       Object.assign(deps, { database: openDatabase(memoryBackend()), features }),
     )
-    ends.push(own.close)
-    await own.registrations.ready
+    ends.push(session.close)
+    await session.registrations.ready
     await flush()
     expect(runs).toBe(1)
     const { phase, broadcast, retries, startTime, ...record } = pendingRecord()
     void [phase, broadcast, retries, startTime]
-    await own.registrations.start({ type: "started", record })
+    await session.registrations.start({ type: "started", record })
     await flush()
     expect(runs).toBe(2)
-    await own.registrations.apply(record.sipaAddress, { type: "funded" })
+    await session.registrations.apply(record.sipaAddress, { type: "funded" })
     await flush()
     expect(runs).toBe(2)
     // Its address's first funds, as a SIPA pass saves them, and not a later rise.
     const fields = { sipaAddress: record.sipaAddress, networkId: "0xnet", amount: "0" }
-    await own.sipaDeposits.adopt({
+    await session.sipaDeposits.adopt({
       ...fields,
       phase: "resolved",
       startTime: 0,
       intent: "registration",
     } as never)
     const held = (heldBalance: string) =>
-      own.db.write((w) =>
-        own.sipaDeposits.applyAll(
+      session.db.write((w) =>
+        session.sipaDeposits.applyAll(
           [[record.sipaAddress, { type: "observed", fields: { heldBalance } }]],
           w,
         ),
@@ -187,6 +173,41 @@ describe("a session's detection", () => {
     await held("6")
     await flush()
     expect(runs).toBe(3)
+  })
+})
+
+describe("a session's tag confirmation", () => {
+  it("confirms a settled paid tag and wakes the broadcasts its address now owes", async () => {
+    type Core = Parameters<SessionDeps["features"]>[0]
+    let wake: MockInstance<Core["wake"]> | undefined
+    let broadcasts: unknown
+    const features = (core: Core) => {
+      wake = vi.spyOn(core, "wake")
+      const real = sessionTasks(core)
+      broadcasts = real.named.sipaBroadcasts
+      return { ...real, tasks: real.tasks.filter((t) => t.name === "registrationEntry") }
+    }
+    const deps = pageSessionDeps(testPage())({ id: "a", prefix: "a." })
+    const session = openSession(
+      Object.assign(deps, { database: openDatabase(memoryBackend()), features }),
+    )
+    ends.push(session.close)
+    await session.registrations.ready
+    const fee = String(PAID.fee)
+    const { phase, broadcast, retries, startTime, ...record } = pendingRecord()
+    void [phase, broadcast, retries, startTime]
+    const terms = registrationTerms({ fee, minDeposit: String(PAID.min) })
+    await session.registrations.start({
+      type: "started",
+      record: { ...record, fee },
+      terms,
+      route: "paid",
+    })
+    expect(wake).not.toHaveBeenCalledWith(broadcasts)
+    await vi.advanceTimersByTimeAsync(20_000)
+    const [stored] = await loadRecords(session.registrations.view)
+    expect(stored?.tagConfirmed).toBe(true)
+    expect(wake).toHaveBeenCalledWith(broadcasts)
   })
 })
 
@@ -204,7 +225,7 @@ describe("the seeding tasks", () => {
     const own = { identity, auth: { getSecretKey: secret }, config: () => ({}) } as never
     // No candidates for the rederive to seed; the heal's count is unread.
     const work = vi.fn(async () => ({ salts: [], fees: [] } as never))
-    h.tasks.push(factory({ wallet: wallet.resource }, own, work))
+    h.tasks.push(factory({ wallet: wallet.service }, own, work))
     return { h, ready: () => wallet.ready(WALLET), identity, secret, work }
   }
   const FACTORIES = [
@@ -262,6 +283,7 @@ describe("registrationRederive", () => {
     const deposits = createSipaDeposits({
       db: openDatabase(memoryBackend()).scoped("a."),
       account: true,
+      now: () => Date.now(),
     })
     const ENV = { feeToken: "0xf0", l1ChainId: 1, networkId: "0xnet" }
     // A tracked address keeps its progress.
@@ -308,7 +330,7 @@ describe("registrationRederive", () => {
       config: () => ({}),
     } as never
     h.tasks.push(
-      registrationRederive({ wallet: wallet.resource }, own, async () => candidates as never),
+      registrationRederive({ wallet: wallet.service }, own, async () => candidates as never),
     )
     wallet.ready({ networkId: "0xnet" } as ObsidionWallet)
     h.start()
@@ -411,72 +433,5 @@ describe("registrationRefunds", () => {
     expect(r.reconcile).toHaveBeenCalledTimes(2)
     await vi.advanceTimersByTimeAsync(1)
     expect(r.reconcile).toHaveBeenCalledTimes(3)
-  })
-})
-
-describe("sponsoredRail", () => {
-  const MESSAGE: RegistrationPending = { pending: "message" }
-  const IMPORT: RegistrationPending = { pending: "import", messageHash: Fr.ONE }
-  function rail() {
-    const read = vi.fn<typeof sponsoredRailPending>(async () => MESSAGE)
-    const h = harness()
-    const account = later<ObsidionAccount>("account")
-    const railPending = memoryStore<RailPending>(undefined)
-    const imported = vi.fn<typeof waitForRegistrationMessage>(() => new Promise(() => {}))
-    const needs = {
-      wallet: fixed("wallet", { node: {} } as ObsidionWallet),
-      account: account.resource,
-      contractService: fixed("contractService", {} as ContractService),
-    }
-    h.tasks.push(sponsoredRail(needs, railPending, { read, imported }))
-    const ready = () => account.ready({} as ObsidionAccount)
-    return { h, account, railPending, read, imported, ready }
-  }
-
-  it("asks every 12 s while pending, and pauses while hidden", async () => {
-    const r = rail()
-    await table(periodicSteps(r.h, r.ready, 12_000), () => r.read.mock.calls.length)
-    expect(r.railPending.get()).toEqual(MESSAGE)
-  })
-
-  it("stops asking once the account can ride the rail", async () => {
-    const r = rail()
-    r.read.mockResolvedValueOnce(MESSAGE).mockResolvedValue(false)
-    r.ready()
-    r.h.start()
-    await vi.advanceTimersByTimeAsync(12_000)
-    expect(r.railPending.get()).toBe(false)
-    await vi.advanceTimersByTimeAsync(60_000)
-    expect(r.read).toHaveBeenCalledTimes(2)
-  })
-
-  it("keeps a read that cannot answer as read-error", async () => {
-    const r = rail()
-    r.read.mockImplementation(sponsoredRailPending)
-    r.ready()
-    r.h.start()
-    await flush()
-    expect(r.railPending.get()).toEqual({ pending: "read-error" })
-  })
-
-  it("asks again once the message imports, and ends its wait with the run", async () => {
-    const r = rail()
-    r.read.mockResolvedValue(IMPORT)
-    let imported!: () => void
-    r.imported.mockReturnValueOnce(
-      new Promise<boolean>((resolve) => (imported = () => resolve(true))),
-    )
-    r.ready()
-    r.h.start()
-    await flush()
-    expect(r.read).toHaveBeenCalledTimes(1)
-    imported()
-    await flush()
-    expect(r.read).toHaveBeenCalledTimes(2)
-    // The second wait never ends on its own: losing the account ends it.
-    r.account.lose()
-    r.ready()
-    await flush()
-    expect(r.read).toHaveBeenCalledTimes(3)
   })
 })

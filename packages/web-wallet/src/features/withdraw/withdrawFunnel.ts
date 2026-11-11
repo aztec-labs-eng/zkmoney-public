@@ -1,27 +1,25 @@
-import type { IStorageAdapter, WithdrawalRecord } from "@obsidion/front-core"
+import {
+  bestEffort,
+  type ReportedPhases,
+  type WithdrawFunnel,
+  type WithdrawalRecord,
+} from "@obsidion/front-core"
 import { fireEvent, type AnalyticsEvent, type AnalyticsProps } from "../../lib/analytics"
 
 /**
  * L1-leg funnel reporting for withdrawals. The tracker's phases and timestamps live in the
  * persisted record (`phaseEnteredAt` = when finalizing_l1 began, untouched by the `done` patch;
  * `endTime` = terminal stamp), so durations survive reloads — an L1 wait typically outlives the
- * tab. What must NOT survive twice is the report itself, so the reported-phase map persists via
- * the shared storage adapter, keyed by the withdrawal's random localId, and prunes to ids still
- * in the store. Reporting runs under a Web Lock so two tabs re-read and diff in turn instead of
- * both emitting. Only phase names and durations are emitted — never the recipient, amount, or
- * any hash.
+ * tab. What must NOT survive twice is the report itself, so each record's reported phase is saved,
+ * keyed by its random localId, in the write that decides what to emit. Only phase names and
+ * durations are emitted — never the recipient, amount, or any hash.
  */
-
-const REPORTED_KEY = "analytics.withdrawFunnel"
-const REPORT_LOCK = "webwallet.analytics.withdrawFunnel"
-
-/** Highest phase already reported per localId. */
-export type ReportedPhases = Record<string, "finalizing_l1" | "done">
 
 /** Phases past the L1 release: the finalization the funnel measures has happened. */
 const RELEASED: ReadonlySet<WithdrawalRecord["phase"]> = new Set<WithdrawalRecord["phase"]>([
   "done",
   "swapping",
+  "bridging",
   "recoverable",
   "recovered",
 ])
@@ -88,28 +86,17 @@ export function withdrawTransitions(
   return { events, next }
 }
 
-async function readReported(storage: IStorageAdapter): Promise<ReportedPhases> {
-  try {
-    return (JSON.parse((await storage.getItem(REPORTED_KEY)) ?? "{}") as ReportedPhases) ?? {}
-  } catch {
-    return {}
-  }
-}
-
-/** Diff the records against the persisted reported map, emit what's owed, persist the new map. */
-export function reportWithdrawFunnel(
+/** Diff the records against their saved phases, save the new ones, and emit what's owed once saved. */
+export async function reportWithdrawFunnel(
   records: readonly WithdrawalRecord[],
-  storage: IStorageAdapter,
-): void {
-  try {
-    void navigator.locks
-      .request(REPORT_LOCK, async () => {
-        const { events, next } = withdrawTransitions(records, await readReported(storage))
-        for (const e of events) fireEvent(e.event, e.props)
-        await storage.setItem(REPORTED_KEY, JSON.stringify(next))
-      })
-      .catch(() => {})
-  } catch {
-    // Analytics must never break the withdrawals view.
-  }
+  funnel: WithdrawFunnel,
+): Promise<void> {
+  const events = await bestEffort(
+    "unknown",
+    funnel.report(
+      records.map((r) => r.localId),
+      (reported) => withdrawTransitions(records, reported),
+    ),
+  )
+  for (const e of events ?? []) fireEvent(e.event, e.props)
 }

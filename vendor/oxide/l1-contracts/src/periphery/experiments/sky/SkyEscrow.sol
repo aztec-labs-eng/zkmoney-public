@@ -5,7 +5,7 @@ import {IERC20} from "@oz/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@oz/token/ERC20/utils/SafeERC20.sol";
 import {IOxidePortal} from "@core/interfaces/IOxidePortal.sol";
 import {EscrowBase} from "@periphery/EscrowBase.sol";
-import {IDaiUsds} from "@periphery/experiments/sky/interfaces/IDaiUsds.sol";
+import {IDaiUsds} from "@periphery/interfaces/IDaiUsds.sol";
 import {ISUsds} from "@periphery/experiments/sky/interfaces/ISUsds.sol";
 import {SkyRoute, SKY_ROUTE_STAKE, SKY_ROUTE_UNSTAKE, SKY_REFERRAL_CODE} from "@periphery/experiments/sky/SkyTypes.sol";
 import {SkyErrors} from "@periphery/experiments/sky/SkyErrors.sol";

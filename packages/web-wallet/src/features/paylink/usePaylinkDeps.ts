@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { useContractServiceContext, type WithdrawalRecord, useResource } from "@obsidion/front-core"
+import { NO_SERVICE, serviceStatus, useStore, type WithdrawalRecord } from "@obsidion/front-core"
 import { useWithdrawals } from "../withdraw/useWithdrawals"
 import { linkWithdrawalIdentity, linkVoucherUses, type PaylinkExitDeps } from "./paylinkExit"
 import type { SponsoredPaylinkDeps } from "./sponsoredPaylink"
 import type { PaymentLink } from "./types"
 import { useSession } from "../../session/session"
 
-/** PXE + contracts + enclave, before an account exists to sign with. */
+/** The paylink deps once the PXE, contracts and enclave are up, before an account signs. */
 export type PaylinkKit = Omit<SponsoredPaylinkDeps, "account">
 
 /**
@@ -14,17 +14,17 @@ export type PaylinkKit = Omit<SponsoredPaylinkDeps, "account">
  * page, where the PXE is up but the passkey has not been reused yet.
  */
 export function usePaylinkKit(): PaylinkKit | undefined {
-  const obsidionWallet = useResource(useSession().wallet)
-  const rollupAddress = obsidionWallet?.networkId
-  const tokenService = useResource(useSession().token)
-  const teeSigner = useResource(useSession().teeSigner)
-  const { contractService } = useContractServiceContext()
+  const session = useSession()
+  const rollupAddress = useStore(session.page.networkId)
+  const token = useStore(session.token ?? NO_SERVICE, serviceStatus)
+  const teeSigner = useStore(session.teeSigner, serviceStatus)
+  const contracts = useStore(session.contractService, serviceStatus)
+  const ready =
+    !!rollupAddress && token === "ready" && teeSigner === "ready" && contracts === "ready"
+  // A rebuilt service passes through loading, so whatever read the deps reads again.
   return useMemo(
-    () =>
-      obsidionWallet && tokenService && teeSigner && contractService && rollupAddress
-        ? { wallet: obsidionWallet, tokenService, contractService, teeSigner, rollupAddress }
-        : undefined,
-    [obsidionWallet, tokenService, teeSigner, contractService, rollupAddress],
+    () => (ready ? { rollupAddress, session } : undefined),
+    [ready, rollupAddress, session],
   )
 }
 
@@ -34,11 +34,8 @@ export function usePaylinkKit(): PaylinkKit | undefined {
  */
 export function usePaylinkDeps(): SponsoredPaylinkDeps | undefined {
   const kit = usePaylinkKit()
-  const obsidionAccount = useResource(useSession().account)
-  return useMemo(
-    () => (kit && obsidionAccount ? { ...kit, account: obsidionAccount } : undefined),
-    [kit, obsidionAccount],
-  )
+  const unlocked = useStore(useSession().account ?? NO_SERVICE, serviceStatus) === "ready"
+  return useMemo(() => (kit && unlocked ? { ...kit } : undefined), [kit, unlocked])
 }
 
 /**
@@ -46,16 +43,14 @@ export function usePaylinkDeps(): SponsoredPaylinkDeps | undefined {
  * no account, since the whole point is a holder who has none. Undefined until the enclave connects.
  */
 export function useLinkExitDeps(): PaylinkExitDeps | undefined {
-  const obsidionWallet = useResource(useSession().wallet)
-  const rollupAddress = obsidionWallet?.networkId
-  const teeSigner = useResource(useSession().teeSigner)
-  const { contractService } = useContractServiceContext()
+  const session = useSession()
+  const rollupAddress = useStore(session.page.networkId)
+  const teeSigner = useStore(session.teeSigner, serviceStatus)
+  const contracts = useStore(session.contractService, serviceStatus)
+  const ready = !!rollupAddress && teeSigner === "ready" && contracts === "ready"
   return useMemo(
-    () =>
-      obsidionWallet && teeSigner && contractService
-        ? { wallet: obsidionWallet, contractService, teeSigner, rollupAddress }
-        : undefined,
-    [obsidionWallet, teeSigner, contractService, rollupAddress],
+    () => (ready ? { rollupAddress, session } : undefined),
+    [ready, rollupAddress, session],
   )
 }
 
@@ -81,14 +76,10 @@ export function useLinkVoucher(
   retry: () => void
 } {
   const deps = useLinkExitDeps()
-  const obsidionWallet = useResource(useSession().wallet)
-  const { contractService } = useContractServiceContext()
+  const session = useSession()
   // Checking funding requires neither an account nor the signer used for the eventual burn.
-  const readDeps = useMemo(
-    () =>
-      obsidionWallet && contractService ? { wallet: obsidionWallet, contractService } : undefined,
-    [obsidionWallet, contractService],
-  )
+  const walletBuilt = useStore(session.wallet, serviceStatus) === "ready"
+  const contracts = useStore(session.contractService, serviceStatus) === "ready"
   const [uses, setUses] = useState<number>()
   const [error, setError] = useState<string>()
   const [attempt, setAttempt] = useState(0)
@@ -98,6 +89,7 @@ export function useLinkVoucher(
   // The token the page's own read found, so the voucher read skips its own read of the note.
   const token = useRef(link?.tokenAddress)
   token.current = link?.tokenAddress
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     setUses(undefined)
     setError(undefined)
@@ -109,9 +101,10 @@ export function useLinkVoucher(
       setError("We couldn't check Ethereum withdrawal availability. Please try again.")
     }
     // The deadline bounds the chain read, not the wallet boot that precedes it.
-    if (!readDeps) return
+    if (!walletBuilt || !contracts) return
+    // eslint-disable-next-line local/timer-in-view -- debt
     const timer = setTimeout(fail, VOUCHER_ANSWER_MS)
-    void linkVoucherUses(readDeps, fragment, token.current).then(
+    void linkVoucherUses(session, fragment, token.current).then(
       (n) => {
         if (stale) return
         clearTimeout(timer)
@@ -126,7 +119,7 @@ export function useLinkVoucher(
       stale = true
       clearTimeout(timer)
     }
-  }, [eligible, enabled, readDeps, fragment, attempt])
+  }, [eligible, enabled, walletBuilt, contracts, session, fragment, attempt])
   return { uses: eligible ? uses : 0, deps, error: eligible ? error : undefined, retry }
 }
 

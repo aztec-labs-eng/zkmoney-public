@@ -127,11 +127,12 @@ export class DeviceBoundPasskeyError extends PasskeyPolicyError {
 
 /**
  * A laptop's own passkey the local route cannot keep: saved in Apple Passwords where it gives no
- * key or is not admitted (`apple`), by a manager that withheld its id (`unnamed`), or not by a
- * manager on this computer at all (`not-local`, an extension relabelling its in-page answer).
- * Each names the managers the row admits and the phone.
+ * key or is not admitted (`apple`), by a manager that withheld its id (`unnamed`), by one that
+ * withheld it on a row admitting Windows Hello, the only admitted manager measured to do so
+ * (`windows-hello`), or not by a manager on this computer at all (`not-local`, an extension
+ * relabelling its in-page answer). Each names the managers the row admits and the phone.
  */
-export type LaptopRefusalKind = "apple" | "unnamed" | "not-local"
+export type LaptopRefusalKind = "apple" | "unnamed" | "windows-hello" | "not-local"
 
 export class LaptopPasskeyRefusedError extends PasskeyPolicyError {
   /**
@@ -162,6 +163,13 @@ function laptopRefusalLead(kind: LaptopRefusalKind, appleWithdrawn: boolean): st
   }
   if (kind === "unnamed") {
     return "zk.money couldn't tell which passkey manager saved this one, so it can't use it."
+  }
+  if (kind === "windows-hello") {
+    // Proposed: an id-less answer on a row admitting Windows Hello.
+    return (
+      "This PC saved a passkey without the details zk.money needs, most likely in " +
+      `${WINDOWS_HELLO}, so zk.money can't use it.`
+    )
   }
   return (
     "The passkey wasn't saved by a password manager on this computer, so zk.money can't use it " +
@@ -214,50 +222,91 @@ const WINDOWS_HELLO_NO_PRF =
   "Windows Hello on this PC didn't give the key a wallet needs. It needs Windows 11 with the " +
   "February 2026 update or later. "
 
+/** "This device": the same branch answers a laptop's extension and an Android phone's app. */
+// Proposed copy, pending review.
+const PROTON_NO_PRF = `${PROTON_PASS} didn't give the key a wallet needs on this device. `
+
+/** An assertion names no provider, so an iPhone that returned no key gets this as advice. */
+// Proposed copy, pending review.
+const SIGN_IN_ON_IOS =
+  ` If this passkey is saved in ${PROTON_PASS}, it can't open the wallet on an iPhone. Sign in ` +
+  "on the computer or Android phone that made it."
+
+function noPrfLead(manager: LocalManager | undefined): string {
+  if (manager === "windows_hello") return WINDOWS_HELLO_NO_PRF
+  if (manager === "proton") return PROTON_NO_PRF
+  return "This passkey provider can't create a wallet key. "
+}
+
 /** The provider returned no PRF output at creation nor on the follow-up assertion. */
 export class NoPrfError extends PasskeyPolicyError {
   /** The laptop manager a creation's answer named; a sign-in names none. */
   readonly manager?: LocalManager
 
-  constructor(options: { manager?: LocalManager } & LocalRouteOptions = {}) {
+  constructor(options: { manager?: LocalManager; signInOnIos?: true } & LocalRouteOptions = {}) {
     super(
-      (options.manager === "windows_hello"
-        ? WINDOWS_HELLO_NO_PRF
-        : "This passkey provider can't create a wallet key. ") +
+      noPrfLead(options.manager) +
         (options.localManagers
           ? tryAgainLocally(options.localManagers)
-          : "Try again and pick a different passkey provider in the browser's sheet."),
+          : "Try again and pick a different passkey provider in the browser's sheet.") +
+        (options.signInOnIos ? SIGN_IN_ON_IOS : ""),
     )
     this.name = "NoPrfError"
     this.manager = options.manager
   }
 }
 
+type UnsupportedProviderOptions = {
+  providerName?: string
+  keyOfferable?: boolean
+  /** The browser's claims; an iPhone's Proton Pass answer gets copy about its app. */
+  userAgent?: UserAgentInfo
+} & LocalRouteOptions
+
 /**
- * The creation response reported a provider outside the measured set. `keyOfferable` names a
- * security key among the alternatives; every sheet the wallet opens can offer one.
+ * The creation response reported a provider outside the measured set, or Proton Pass where its rule
+ * does not admit it. `keyOfferable` names a security key among the alternatives; every sheet the
+ * wallet opens can offer one.
  */
 export class UnsupportedProviderError extends PasskeyPolicyError {
   readonly providerName?: string
+  readonly advice?: string
 
   constructor(
     readonly kind: "manager" | "security-key",
-    options: { providerName?: string; keyOfferable?: boolean } & LocalRouteOptions & Advice = {},
+    options: UnsupportedProviderOptions & Advice = {},
   ) {
     super(withAdvice(unsupportedProviderMessage(kind, options), options.advice))
     this.providerName = options.providerName
+    this.advice = options.advice
     this.name = "UnsupportedProviderError"
   }
 }
 
 function unsupportedProviderMessage(
   kind: "manager" | "security-key",
-  options: { providerName?: string; keyOfferable?: boolean } & LocalRouteOptions,
+  options: UnsupportedProviderOptions,
 ): string {
   if (kind === "security-key") {
     const lead = "Only YubiKey 5 series, Trezor and Ledger security keys can protect a wallet today."
     if (options.localManagers) return `${lead} ${tryAgainLocally(options.localManagers)}`
     return `${lead} Try again with iCloud Keychain, Google Password Manager, or 1Password.`
+  }
+  if (options.providerName === PROTON_PASS && options.userAgent?.osFamily === "ios") {
+    // Proposed copy, pending review.
+    return (
+      `${PROTON_PASS}'s iPhone app can't protect a wallet: it doesn't return the key a wallet ` +
+      `needs. Try again with iCloud Keychain or 1Password. If ${PROTON_PASS} kept a zk.money ` +
+      "passkey from this attempt, delete it in the app."
+    )
+  }
+  // The row names Proton Pass, but another option was picked: only the sheet's own reaches it.
+  if (options.providerName === PROTON_PASS && options.localManagers?.includes("proton")) {
+    // Proposed copy, pending review.
+    return (
+      `${PROTON_PASS} answered, but only the sheet's ${PROTON_PASS} option can save a wallet ` +
+      `passkey there. ${tryAgainLocally(options.localManagers)}`
+    )
   }
   const lead = `${options.providerName ?? "This passkey manager"} can't protect a wallet yet.`
   if (options.localManagers) return `${lead} ${tryAgainLocally(options.localManagers)}`
@@ -290,9 +339,22 @@ export const BACKUP_REFUSAL_KINDS = [
 ] as const
 export type BackupRefusalKind = (typeof BACKUP_REFUSAL_KINDS)[number]
 
-/** A passkey that cannot be a backup passkey. Screens may branch on `kind` for their own copy. */
+/**
+ * What a refusal sheet says: `title` names what failed, `fix` what to do instead, and `cleanup` where
+ * to delete the passkey the attempt left, in that device's own terms.
+ */
+export interface BackupRefusalCopy {
+  title: string
+  fix: string
+  cleanup?: string
+}
+
+/** A passkey that cannot be a backup passkey, with the words its sheet shows. */
 export class BackupPasskeyRefusedError extends PasskeyPolicyError {
   readonly providerName?: string
+  readonly copy: BackupRefusalCopy
+  /** `copy` says where to delete the leftover passkey. */
+  readonly removalAdvice: boolean
 
   constructor(
     readonly kind: BackupRefusalKind,
@@ -303,71 +365,85 @@ export class BackupPasskeyRefusedError extends PasskeyPolicyError {
       overQr?: boolean
     } = {},
   ) {
-    super(backupRefusalMessage(kind, options.providerName, options.userAgent, options.overQr))
+    const copy = backupRefusalCopy(kind, options.providerName, options.userAgent, options.overQr)
+    super([`${copy.title}.`, copy.fix, copy.cleanup].filter(Boolean).join(" "))
     this.providerName = options.providerName
+    this.copy = copy
+    this.removalAdvice = copy.cleanup !== undefined
     this.name = "BackupPasskeyRefusedError"
   }
 }
 
+const WINDOWS_CLEANUP =
+  "If Windows kept a zk.money passkey from this attempt, remove it in Settings > Accounts > Passkeys."
+
 /** Windows Hello returns key material only on Windows 11 with the February 2026 update or later. */
-function windowsHelloNoPrfMessage(userAgent: UserAgentInfo | undefined): string {
-  const lead =
-    userAgent && windowsReleaseFromHints(userAgent) === "10"
-      ? "Windows Hello on Windows 10 can't make a backup passkey. Try again with a security key, " +
-        "Google Password Manager in Chrome, or 1Password."
-      : "Windows Hello on this PC didn't give the key a backup needs. It needs Windows 11 with the " +
-        "February 2026 update or later. Open Settings > Windows Update, install updates, restart, " +
-        "and try again. Or use a security key, Google Password Manager in Chrome, or 1Password."
-  return (
-    `${lead} If Windows kept a zk.money passkey from this attempt, remove it in Settings > ` +
-    "Accounts > Passkeys."
-  )
+function windowsHelloNoPrfCopy(userAgent: UserAgentInfo | undefined): BackupRefusalCopy {
+  if (userAgent && windowsReleaseFromHints(userAgent) === "10")
+    return {
+      title: "Windows Hello on Windows 10 can't make a backup passkey",
+      fix: "Try again with a security key, Google Password Manager in Chrome, or 1Password.",
+      cleanup: WINDOWS_CLEANUP,
+    }
+  return {
+    title: "Windows Hello on this PC didn't give the key a backup needs",
+    fix:
+      "It needs Windows 11 with the February 2026 update or later. Open Settings > Windows " +
+      "Update, install updates, restart, and try again. Or use a security key, Google Password " +
+      "Manager in Chrome, or 1Password.",
+    cleanup: WINDOWS_CLEANUP,
+  }
 }
 
-function backupRefusalMessage(
+// key-no-prf is the designer's. Proposed copy, pending review: the others' split into title and fix.
+function backupRefusalCopy(
   kind: BackupRefusalKind,
   providerName: string | undefined,
   userAgent: UserAgentInfo | undefined,
   overQr: boolean | undefined,
-): string {
+): BackupRefusalCopy {
+  const manager = providerName ?? "This passkey manager"
   switch (kind) {
     case "provider":
-      if (providerName === PROTON_PASS && userAgent?.osFamily === "ios") {
-        return (
-          "Proton Pass's iPhone app can't make a backup passkey: it doesn't return the key a " +
-          "backup needs. Try again with iCloud Keychain or 1Password. If Proton Pass kept a " +
-          "zk.money passkey from this attempt, delete it in the app."
-        )
+      if (providerName === PROTON_PASS && userAgent?.osFamily === "ios")
+        return {
+          title: "Proton Pass's iPhone app can't make a backup passkey",
+          fix: "It doesn't return the key a backup needs. Try again with iCloud Keychain or 1Password.",
+          cleanup: "If Proton Pass kept a zk.money passkey from this attempt, delete it in the app.",
+        }
+      if (overQr)
+        return {
+          title: `${manager} can't hold a backup passkey from a phone over QR`,
+          fix: "Try again with iCloud Keychain, Google Password Manager, or 1Password on your phone.",
+        }
+      return {
+        title: `${manager} can't hold a backup passkey yet`,
+        fix: "Try again with iCloud Keychain, Google Password Manager, 1Password, or a security key.",
       }
-      if (overQr) {
-        return (
-          `${providerName ?? "This passkey manager"} can't hold a backup passkey from a phone ` +
-          "over QR. Try again with iCloud Keychain, Google Password Manager, or 1Password on " +
-          "your phone."
-        )
-      }
-      return (
-        `${providerName ?? "This passkey manager"} can't hold a backup passkey yet. Try again ` +
-        "with iCloud Keychain, Google Password Manager, 1Password, or a security key."
-      )
     case "no-prf":
-      if (providerName === WINDOWS_HELLO) return windowsHelloNoPrfMessage(userAgent)
-      return (
-        `${providerName ?? "This passkey manager"} can't make a backup key on this device. Try ` +
-        "again with a different passkey manager, or a security key."
-      )
+      if (providerName === WINDOWS_HELLO) return windowsHelloNoPrfCopy(userAgent)
+      return {
+        title: `${manager} can't make a backup key on this device`,
+        fix: "Try again with a different passkey manager, or a security key.",
+      }
     case "key-no-prf":
-      return (
-        "Your security key answered, but this device couldn't get the key material a backup " +
-        "needs. Try another security key, or this device's passkey manager."
-      )
+      return {
+        title: "Your security key can't hold a backup",
+        fix: "It's missing a feature backups need. Most people use their phone instead.",
+        cleanup:
+          "There's now a passkey on your security key that isn't linked to this account. You can " +
+          "delete it in the key's settings.",
+      }
     case "unverified":
-      return (
-        "The passkey was saved without checking it was you, so it can't be a backup. Try again " +
-        "and unlock with your face, fingerprint, or PIN when asked."
-      )
+      return {
+        title: "The passkey was saved without checking it was you",
+        fix: "It can't be a backup. Try again and unlock with your face, fingerprint, or PIN when asked.",
+      }
     case "other-credential":
-      return "A different passkey answered than the one just made. Try again and pick the new one."
+      return {
+        title: "A different passkey answered than the one just made",
+        fix: "Try again and pick the new one.",
+      }
   }
 }
 
@@ -375,8 +451,7 @@ function backupRefusalMessage(
 export class NoWalletForPasskeyError extends PasskeyPolicyError {
   constructor() {
     super(
-      "No wallet was found for this passkey. Open zk.money on the device you signed up on, or " +
-        "contact support.",
+      "Try the passkey you signed up with.",
     )
     this.name = "NoWalletForPasskeyError"
   }
@@ -404,7 +479,10 @@ export class RotatedCredentialError extends PasskeyPolicyError {
 /** More than one candidate key was anchored: nothing was written. */
 export class AmbiguousPasskeyError extends PasskeyPolicyError {
   constructor() {
-    super("This passkey matches more than one wallet. Contact support before continuing.")
+    super(
+      "This passkey matches more than one wallet, so zk.money can't tell which one to open. Nothing " +
+        "was changed. Sign in with a different passkey.",
+    )
     this.name = "AmbiguousPasskeyError"
   }
 }
@@ -423,8 +501,7 @@ export class RelatedOriginPasskeyError extends PasskeyPolicyError {
         options.iosBelowFloor
           ? IOS_FLOOR_COPY
           : "A browser extension, such as a password manager, may have blocked the passkey request on this site. " +
-              "Turn off the extension's passkey option for this site, or use another browser, then try again. " +
-              "If it still fails, contact support.",
+              "Turn off the extension's passkey option for this site, or use another browser, then try again.",
         options.advice,
       ),
       { cause },
@@ -463,6 +540,7 @@ export function isPasskeyCancelled(err: unknown): boolean {
  * Errors thrown after the browser returned a credential: whatever the prompt saved is still there.
  * A side table rather than a property, since the browser's and an extension's errors are not ours.
  */
+// eslint-disable-next-line no-restricted-syntax -- debt
 const written = new WeakSet<object>()
 
 export function markPasskeyWritten<T>(err: T): T {

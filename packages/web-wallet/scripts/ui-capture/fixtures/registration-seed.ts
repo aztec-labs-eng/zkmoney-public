@@ -1,11 +1,10 @@
 import { REGISTRATION_SCHEDULE_DEFAULTS } from "@obsidion/core/constants"
 import { encodeRecord, registrationId, type PendingRegistrationRecord } from "@obsidion/front-core"
-import { getConfig } from "../../../src/config/env"
-import { session } from "../../../src/session/session"
+import type { Session } from "../../../src/session/session"
 import { DEMO_L2_ADDRESS, DEMO_L1_TOKEN, DEMO_L1_FUNDER } from "../../../src/dev/demoFixtures"
 import { SIPA, field } from "./data"
 
-export async function seedRegistration(kind: string) {
+export async function seedRegistration(session: Session, kind: string) {
   const kinds = [
     "awaiting",
     "free",
@@ -24,7 +23,7 @@ export async function seedRegistration(kind: string) {
     tag: "demo",
     nameHash: field("11") as `0x${string}`,
     l2Address: DEMO_L2_ADDRESS as `0x${string}`,
-    l1ChainId: getConfig().l1ChainId,
+    l1ChainId: session.page.config.l1ChainId,
     sipaAddress: SIPA,
     fee,
     beneficiary: DEMO_L1_FUNDER,
@@ -36,7 +35,7 @@ export async function seedRegistration(kind: string) {
     ...(kind === "funded" ? { fundedAt: Date.now() - 60_000 } : {}),
     ...(kind === "swept" ? { sweptAt: Date.now() - 30_000 } : {}),
   }
-  await putRegistration({
+  await putRegistration(session, {
     ...record,
     terms: {
       // The reservation's end: the claim server's seven-day hold.
@@ -49,8 +48,11 @@ export async function seedRegistration(kind: string) {
 }
 
 /** Saves a fixture record as is, past the transition: the screens read it like any other. */
-export function putRegistration(record: PendingRegistrationRecord): Promise<void> {
-  return session().db.write(async (w) =>
+export function putRegistration(
+  session: Session,
+  record: PendingRegistrationRecord,
+): Promise<void> {
+  return session.db.write(async (w) =>
     w.put(`acct/registrations/${registrationId(record.sipaAddress)}`, encodeRecord(record)),
   )
 }

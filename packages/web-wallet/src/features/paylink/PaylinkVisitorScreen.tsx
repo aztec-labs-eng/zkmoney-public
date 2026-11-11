@@ -5,10 +5,10 @@ import {
   canSelfFinalizeWithdrawal,
   withdrawalAmounts,
   type WithdrawalRecord,
-  useResource,
+  memoryStore,
+  useStore,
 } from "@obsidion/front-core"
 import { Icon, PrimaryGradientButton } from "@obsidion/web-ds"
-import { getConfig } from "../../config/env"
 import { fireEvent, fireOnboardingEvent, reportLanding } from "../../lib/analytics"
 import { markTicketChannel } from "../../lib/trafficSource"
 import { shortL1Addr, usdFigure } from "../../ui/format"
@@ -23,6 +23,7 @@ import { SwapExitModal } from "../withdraw/SwapExitModal"
 import { swapExitReasonFor, type SwapExitReason } from "@obsidion/front-core"
 import { WithdrawalExitModal } from "../withdraw/WithdrawalExitModal"
 import { InvitationChrome } from "../onboarding/InvitationChrome"
+import type { BootPage } from "../../ui/PxeBoot"
 import {
   clearTicketSignup,
   peekTicketSignup,
@@ -30,7 +31,9 @@ import {
   stashClaimLink,
   stashTicketSignup,
 } from "./claimStash"
-import { useGoldenTicketOffer, type GoldenTicketOffer } from "./goldenTicketOffer"
+import { tabStash } from "../../platform/storage/tabStash"
+import { useGoldenTicketOffer } from "./goldenTicketOffer"
+import type { GoldenTicketOffer } from "./ticketOffer"
 import { ticketKnownSpent } from "./ticketSpent"
 import { PaylinkOnboardingScreen } from "./PaylinkOnboardingScreen"
 import { ticketSignupCommitted, ticketSignupResumable } from "./ticketContinuation"
@@ -50,6 +53,9 @@ import { CLOSED_LINK_COPY } from "./claimWindow"
 import { senderLine } from "./senderLine"
 import type { PaymentLink } from "./types"
 import { useSession } from "../../session/session"
+import { useOpened } from "../../ui/useScreenFlow"
+
+const NO_CLOCK = memoryStore(0).readonly
 
 /** A typed name's own schedule, base units: what a link with no ticket pays for it. */
 const NAME_SCHEDULE = {
@@ -87,11 +93,13 @@ export function PaylinkVisitorScreen({
 }) {
   const navigate = useNavigate()
   const { state: routeState } = useLocation()
-  const obsidionWallet = useResource(useSession().wallet)
+  const session = useSession()
+  const { config } = session.page
+  const device = useStore(session.device)
   // A claim is offered only once the window is known to be open; the chain refuses one before.
-  const chainNow = usePolledChainSeconds(obsidionWallet?.node)
+  const chainNow = usePolledChainSeconds()
   const claimWait = claimWaitSeconds(link.claimableFrom, chainNow)
-  const countdown = useClaimCountdown(claimWait, chainNow, obsidionWallet?.node)
+  const countdown = useClaimCountdown(claimWait, chainNow, session.page)
   // The status reads stopped without the note, so the cash-out waits on a re-read.
   const unreadable =
     statusSettled && link.status === "unclaimed" && (noteMissed || link.claimableFrom == null)
@@ -104,33 +112,37 @@ export function PaylinkVisitorScreen({
   const [cashOut, setCashOut] = useState(false)
   const [receiptOpen, setReceiptOpen] = useState(false)
   const [exit, setExit] = useState<"finalize" | SwapExitReason | null>(null)
-  // The manual exits open on elapsed time, not on a record write, so the page re-reads the clock.
-  const [now, setNow] = useState(Date.now)
+  // The manual exits open on elapsed time, not on a record write, so the page re-reads the clock
+  // once the burn is sent.
+  const [openedAt] = useState(Date.now)
   const burned = !!withdrawal?.l2TxHash
-  useEffect(() => {
-    if (!burned) return
-    const id = setInterval(() => setNow(Date.now()), 30_000)
-    return () => clearInterval(id)
-  }, [burned])
+  const { wallClock } = useSession().page
+  const now = useStore(burned ? wallClock : NO_CLOCK, (t) => (burned ? t : openedAt))
   // The network's ticket offer decides what "Receive to zk.money" means: the link paying for the
   // account (the three-step signup), or an ordinary signup with the link claimed on Home after. A
   // read that failed decides neither, so the choice retries it instead.
   const { offer: offered, failed: offerFailed, retry: retryOffer } = useGoldenTicketOffer()
   // A ticket this browser already saw refused as spent is no ticket.
-  const offer = offered && ticketKnownSpent(link.fragment) ? null : offered
+  const offer = offered && ticketKnownSpent(device, link.fragment) ? null : offered
 
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
-    stashClaimLink(link.fragment)
+    stashClaimLink(tabStash, link.fragment)
   }, [link.fragment])
-  useEffect(() => reportLanding("paylink"), [])
+  useOpened(() => reportLanding("paylink"))
 
   // Leaving the page (Close, back, another route) before the tag is claimed drops the ticket
   // intent; the link stays stashed for an ordinary claim. Once the ticket bought a registration
   // the marker is that signup's continuation and outlives this page.
+  // The signup hands off to the account's session while this page stays mounted: the leave reads
+  // the session the page holds then.
+  const held = useRef(session)
+  held.current = session
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!ticketSignup) return
     return () => {
-      if (!ticketSignupCommitted(link.fragment)) clearTicketSignup()
+      if (!ticketSignupCommitted(held.current, link.fragment)) clearTicketSignup(tabStash)
     }
   }, [ticketSignup, link.fragment])
 
@@ -175,14 +187,14 @@ export function PaylinkVisitorScreen({
   // Either signup mode is picked only once the voucher read has answered: the link pays for the
   // account, ticket or name price, only through it.
   const voucherUnread = !known
-  const decimals = tokenDecimalsForNetwork(getConfig().network)
+  const decimals = tokenDecimalsForNetwork(config.network)
   // The note's amount as this page read it: it decides whether a new ticket signup may start, and
   // prices the signup's split at once.
   const amount = linkBaseUnits(link.amount, decimals)
   const eligibility = linkTicketEligibility(
     offer,
     amount,
-    canCashOut && !ticketSignupResumable(link.fragment),
+    canCashOut && !ticketSignupResumable(session, link.fragment),
   )
   // Whether the network offered to pay this visitor's registration; unset until that is known.
   const ticketOffered =
@@ -225,7 +237,7 @@ export function PaylinkVisitorScreen({
     if (ticket && paid && amount === undefined) return false
     fireEvent("paylink_visitor_chose", { choice: "account", ticket: !paid && ticketOffered })
     if (ticket) {
-      stashTicketSignup({
+      stashTicketSignup(tabStash, {
         fragment: link.fragment,
         ...(paid || !offer
           ? { paid: true as const, schedule: NAME_SCHEDULE }
@@ -239,7 +251,7 @@ export function PaylinkVisitorScreen({
         ...(link.tokenAddress ? { tokenAddress: link.tokenAddress } : {}),
         ...(link.txHash ? { txHash: link.txHash } : {}),
       })
-    } else clearTicketSignup()
+    } else clearTicketSignup(tabStash)
     if (ticket && paid) reportTicketStart()
     if (ticket) markTicketChannel()
     setTicketSignup(ticket)
@@ -252,13 +264,14 @@ export function PaylinkVisitorScreen({
   // it, as after the reload that follows the passkey's creation; the choice was already made, so
   // this tab's marker keeps its mode, ticket or paid. So does a link a signup elsewhere sent here
   // to pick a name: its free tag when the ticket is eligible, else the name's own price.
-  const resumable = ticketSignupResumable(link.fragment)
+  const resumable = ticketSignupResumable(session, link.fragment)
   const sentHere = receivesToAccount(routeState)
   const resumed = useRef(false)
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (resumed.current || signup || tracking) return
     if (offer === undefined || voucherUnread) return
-    if (resumable && peekTicketSignup()?.fragment === link.fragment) {
+    if (resumable && peekTicketSignup(tabStash)?.fragment === link.fragment) {
       resumed.current = true
       markTicketChannel()
       setTicketSignup(true)
@@ -271,6 +284,7 @@ export function PaylinkVisitorScreen({
     }
   })
 
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!tracking && ticketOffered === true) reportTicketStart()
   })
@@ -288,7 +302,7 @@ export function PaylinkVisitorScreen({
   let page: ReactNode
   if (tracking) {
     page = (
-      <InvitationChrome actions={bell}>
+      <InvitationChrome actions={bell} page={session.page}>
         <div className="ww-invite__content ww-invite__content--landing ww-invite__content--visitor">
           {summary}
           <p className="ww-invite-modal-foot">
@@ -323,7 +337,7 @@ export function PaylinkVisitorScreen({
     // A closed link has nothing to offer: the message is the whole page. A link this browser is
     // cashing out reads as claimed once the burn lands, so that sheet stays up until it resolves.
     page = (
-      <InvitationChrome actions={bell}>
+      <InvitationChrome actions={bell} page={session.page}>
         <div className="ww-invite__content ww-invite__content--landing ww-invite__content--visitor">
           {summary}
         </div>
@@ -344,7 +358,7 @@ export function PaylinkVisitorScreen({
       : "Slower. Public onchain payment."
     const externalPending = !error && (checking || (!unreadable && !countdown && !deps))
     page = (
-      <InvitationChrome actions={bell}>
+      <InvitationChrome actions={bell} page={session.page}>
         <div className="ww-invite__content ww-invite__content--landing ww-invite__content--visitor">
           {summary}
           <VisitorChoices
@@ -412,10 +426,11 @@ export function PaylinkVisitorScreen({
                 choice.quote,
                 choice.zkProof,
                 choice.swap,
+                choice.bridge,
               )
             }
             planSwap={(recipient, receiveAsset, quote, amount) =>
-              planCashOutSwap(deps, link.fragment, amount, recipient, receiveAsset, quote)
+              planCashOutSwap(deps.session, link.fragment, amount, recipient, receiveAsset, quote)
             }
             onClaimInstead={thresholdNote ? undefined : () => startSignup()}
           />
@@ -424,7 +439,7 @@ export function PaylinkVisitorScreen({
     )
   } else {
     page = (
-      <InvitationChrome actions={bell}>
+      <InvitationChrome actions={bell} page={session.page}>
         <PaylinkOnboardingScreen embedded inviteHeader={summary} />
       </InvitationChrome>
     )
@@ -441,6 +456,7 @@ export function PaylinkVisitorScreen({
           record={withdrawal}
           reason={exit}
           linkFragment={link.fragment}
+          pace={session.page.pace}
           onClose={() => setExit(null)}
         />
       )}
@@ -468,15 +484,17 @@ export function PaylinkVisitorPending({
   offer,
   bell,
   onLogIn,
+  page,
 }: {
   link: PaymentLink
   /** The network's ticket offer, once read. */
   offer: GoldenTicketOffer | null | undefined
   bell: ReactNode
   onLogIn: () => void
+  page: BootPage
 }) {
   return (
-    <InvitationChrome actions={bell}>
+    <InvitationChrome actions={bell} page={page}>
       <div className="ww-invite__content ww-invite__content--landing ww-invite__content--visitor">
         <VisitorSummary link={link} statusSettled={false} noVoucher={false} />
         {link.status === "unclaimed" && (

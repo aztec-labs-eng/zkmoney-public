@@ -1,10 +1,12 @@
+import { tabStash } from "../platform/storage/tabStash"
+
 const KEY = "webwallet.preview-config-draft"
 
 type SavedDraft = { profileUrl: string; payload: string }
 
 function stored(): SavedDraft | undefined {
   try {
-    const value: unknown = JSON.parse(sessionStorage.getItem(KEY) ?? "null")
+    const value: unknown = JSON.parse(tabStash.get(KEY) ?? "null")
     if (!value || typeof value !== "object") return undefined
     const record = value as Record<string, unknown>
     if (typeof record.profileUrl !== "string" || typeof record.payload !== "string")
@@ -21,11 +23,11 @@ export function profileDraft(profileUrl: string): string | undefined {
 }
 
 export function saveProfileDraft(profileUrl: string, payload: string): void {
-  sessionStorage.setItem(KEY, JSON.stringify({ profileUrl, payload } satisfies SavedDraft))
+  tabStash.set(KEY, JSON.stringify({ profileUrl, payload } satisfies SavedDraft))
 }
 
 export function clearProfileDraft(): void {
-  sessionStorage.removeItem(KEY)
+  tabStash.remove(KEY)
 }
 
 export function hasProfileDraft(): boolean {

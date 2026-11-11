@@ -15,7 +15,7 @@ import {
   type SipaResolverOperatorRecord,
 } from "@obsidion/sdk"
 import { deploymentScanRange } from "./deploymentScanRange"
-import { readResolverOperatorRecords } from "./resolverOperatorRecords"
+import type { DeploymentScans } from "./resolverOperatorRecords"
 
 /** The narrow PXE surface the setup drives. */
 export interface SipaDiscoveryPxe {
@@ -49,6 +49,7 @@ export interface SipaDiscoverySetup {
 export async function setupSipaDiscovery(deps: {
   pxe: SipaDiscoveryPxe
   node: SipaDiscoveryNode
+  scans: DeploymentScans
   publicClient: PublicClient
   tuple: OxideEnvTuple
   network: Network
@@ -62,7 +63,7 @@ export async function setupSipaDiscovery(deps: {
   artifactFor?: (address: AztecAddress) => Promise<ContractArtifact>
   sponsorFpc?: AztecAddress
   /**
-   * Upper bound for the operator scan. A caller running several scans over one deployment passes
+   * Upper bound for a historical scan. A caller running several scans over one deployment passes
    * the head it bounded the others by, so one pass reports against one tip; absent, the head is
    * read here.
    */
@@ -94,12 +95,7 @@ export async function setupSipaDiscovery(deps: {
       )
     : [
         selectManifestResolverOperator(
-          await readResolverOperatorRecords(
-            publicClient,
-            accountMetadataRegistry as Address,
-            tuple,
-            deps.scanHead,
-          ),
+          await deps.scans.operatorRecords(accountMetadataRegistry as Address, tuple).read(),
           manifest,
         ),
       ]

@@ -7,7 +7,7 @@ import { DEFAULT_DECIMALS } from "@obsidion/core/constants"
 import { upgradeBatchStatus, type UpgradeBatchItem } from "@obsidion/front-core"
 import { GradientText, Icon, type StatusBadgeStyle } from "@obsidion/web-ds"
 import { formatUnits } from "viem"
-import { getConfig } from "../../config/env"
+import { useSession } from "../../session/session"
 import { l2TxUrl } from "../../lib/explorer"
 import { Modal } from "../Modal"
 import { whenLabel } from "../detailRows"
@@ -30,7 +30,7 @@ export function UpgradeBatchDetailModal({
   onBack?: () => void
   onClose: () => void
 }) {
-  const config = getConfig()
+  const { config } = useSession().page
   const figure = (amount: string) => usdFigure(formatUnits(BigInt(amount), DEFAULT_DECIMALS))
   return (
     <Modal

@@ -4,8 +4,13 @@ import { describe, expect, it } from "vitest"
 import { secp256k1 } from "@noble/curves/secp256k1"
 import { Fr } from "@aztec-labs/aztec.js/fields"
 import { zeroAddress, type Address } from "viem"
+import { broadcastJobs, nextBroadcast } from "../../../src/engine/sipaBroadcasts"
 import { isUnfundedSipaDeposit } from "../../../src/engine/sipaDeposits"
-import { createResolverWindow, type ResolverDeployment } from "../../../src/oxide/resolverPayments"
+import {
+  createResolverWindow,
+  RESOLVER_SLOTS,
+  type ResolverDeployment,
+} from "../../../src/oxide/resolverPayments"
 import {
   DAI,
   DEPOSIT_IMPL,
@@ -36,8 +41,8 @@ const deployment: ResolverDeployment = {
 
 /** The resolver's addresses for the chain's day, as the scan task reads them. */
 async function candidates(w: PipelineWorld) {
-  return createResolverWindow()(
-    { stealthScalar: w.stealth.scalar, recipient: RECIPIENT },
+  return createResolverWindow(RESOLVER_SLOTS)(
+    { stealthScalar: w.stealth.scalar, selfSipaKey: new Fr(9n), recipient: RECIPIENT },
     [deployment],
     await w.records(),
     Number(w.l1.timeOf(w.l1.head)) * 1000,
@@ -47,7 +52,9 @@ async function candidates(w: PipelineWorld) {
 describe("resolver payments", () => {
   it("records a funded address as an incoming deposit on the pass that sees it, in the same balance read", async () => {
     const w = await pipelineWorld()
-    const window = await candidates(w)
+    // One day's addresses fit one Multicall3 chunk: the count shows they add no read of their own.
+    const all = await candidates(w)
+    const window = all.filter((c) => c.day === all[0]!.day)
     const paid = window[10]!
     w.l1.setBalance(paid.sipaAddress, DAI, 25n * ONE)
 
@@ -77,11 +84,41 @@ describe("resolver payments", () => {
 
     await w.scan({ resolverCandidates: window })
 
-    expect(await w.get(window[3]!.sipaAddress)).toMatchObject({
-      amount: "0.1",
-      tokenAddress: zeroAddress,
-      tokenSymbol: "ETH",
+    const record = (await w.get(window[3]!.sipaAddress))!
+    expect(record).toMatchObject({ amount: "0.1", tokenAddress: zeroAddress, tokenSymbol: "ETH" })
+    // No sweep moves ETH: nothing to publish.
+    expect(record.broadcast).toBeUndefined()
+  })
+
+  it("owes the broadcast of a payment from days back, ahead of a pool fill", async () => {
+    const w = await pipelineWorld()
+    const window = await candidates(w)
+    const paid = window.find((c) => c.day === window[0]!.day - 10)!
+    w.l1.setBalance(paid.sipaAddress, DAI, 25n * ONE)
+    await w.store.oweBroadcast("0x2222222222222222222222222222222222222222", {
+      kind: "pool",
+      source: { type: "slot" },
     })
+
+    await w.scan({ resolverCandidates: window })
+
+    expect((await w.get(paid.sipaAddress))!.broadcast).toMatchObject({
+      kind: "deposit",
+      source: { type: "slot" },
+      state: "queued",
+    })
+    const next = nextBroadcast(broadcastJobs(await w.records()), Date.now())
+    expect(next?.address).toBe(paid.sipaAddress.toLowerCase())
+  })
+
+  it("owes nothing on a pass over another account's history", async () => {
+    const w = await pipelineWorld()
+    const window = await candidates(w)
+    w.l1.setBalance(window[5]!.sipaAddress, DAI, 25n * ONE)
+
+    await w.scan({ resolverCandidates: window, republishes: false })
+
+    expect((await w.get(window[5]!.sipaAddress))!.broadcast).toBeUndefined()
   })
 
   it("leaves a record that already holds the address", async () => {

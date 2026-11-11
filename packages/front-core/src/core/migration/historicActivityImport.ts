@@ -10,7 +10,7 @@
  * tries again.
  */
 import type { IStorageAdapter } from "../storages/adapter"
-import { storedActivity, type Activity } from "../../engine/activity"
+import { storedTransfers, type Transfers } from "../../engine/transfers"
 import type { Transaction } from "../../types/transactions"
 import {
   isSettledSipaPhase,
@@ -21,12 +21,9 @@ import {
 } from "../../engine/sipaDeposits"
 import { WITHDRAWAL_TERMINAL_PHASES, type WithdrawalRecord } from "../services/bridge/types"
 import { storedWithdrawals, type Withdrawals } from "../../engine/withdrawals"
-import { KEY_SAVINGS_MOVES, type SavingsMoveStorage } from "../services/savings/SavingsMoveStorage"
+import { storedSavingsMoves, type SavingsMoves } from "../../engine/savingsMoves"
 import type { SavingsMoveRecord } from "../services/savings/types"
-import {
-  TRANSFER_SCAN_CURSOR_PREFIX,
-  transferScanNetworkOf,
-} from "../services/transactions/TransferEventScanner"
+import { scannedNetworks } from "../services/transactions/TransferEventScanner"
 import { logger } from "../../utils/logger"
 
 export const HISTORIC_ACTIVITY_IMPORTED_KEY = "@obsidion/historic-activity/imported/v2"
@@ -61,15 +58,16 @@ export function retiredDatabaseOf(
 
 export interface HistoricActivityImportDeps {
   /** The account's storage on the active rollup, where the marker lives. */
+  // eslint-disable-next-line local/legacy-store -- debt
   storage: IStorageAdapter
   /** The marker; {@link HISTORIC_ACTIVITY_IMPORTED_KEY} for this browser's databases. */
   key?: string
   /** `read` over each retired rollup's database; rejects when one could not be read. */
   readOtherDatabases<T>(read: (db: RetiredDatabase) => T): Promise<T[]>
-  transactions: Pick<Activity, "importHistoricRows">
+  transactions: Pick<Transfers, "importHistoricRows">
   sipaDeposits: Pick<SipaDeposits, "adopt">
   withdrawals: Pick<Withdrawals, "ready" | "adopt">
-  savingsMoves: Pick<SavingsMoveStorage, "load" | "get" | "put">
+  savingsMoves: Pick<SavingsMoves, "ready" | "get" | "put">
   /** Whether the account the import started for is still the active one; false stops it before a write. */
   ownsStorage?: () => boolean
   /** Runs the writes while no account switch may commit; absent, they run as they are. */
@@ -119,7 +117,7 @@ export async function importHistoricActivity(
       unstamped: 0,
     }
     assertOwner()
-    await Promise.all([deps.withdrawals.ready, deps.savingsMoves.load()])
+    await Promise.all([deps.withdrawals.ready, deps.savingsMoves.ready])
     for (const snapshot of snapshots) {
       assertOwner()
       result.transactions += await deps.transactions.importHistoricRows(
@@ -148,7 +146,7 @@ export async function importHistoricActivity(
         if (adopted) result.withdrawals++
         const withdrawalLocalId = held.localId
         const move = snapshot.savingsMoves.find((m) => m.withdrawalLocalId === record.localId)
-        const current = deps.savingsMoves.get(withdrawalLocalId)
+        const current = await deps.savingsMoves.get(withdrawalLocalId)
         if (!move || current?.retired) continue
         assertOwner()
         // The retired record's outcome wins over a move this rollup adopted from the burn alone.
@@ -177,17 +175,11 @@ export async function importHistoricActivity(
 
 function snapshotOf(db: RetiredDatabase): Snapshot {
   const label = `wallet_${db.version}`
-  const rows = storedActivity(db) as Transaction[]
+  const rows = storedTransfers(db) as Transaction[]
   const deposits = storedSipaDeposits(db)
   const withdrawals = storedWithdrawals(db)
-  const savingsMoves = parseRecords<SavingsMoveRecord>(db.get(KEY_SAVINGS_MOVES), label).filter(
-    (r) => typeof r.withdrawalLocalId === "string",
-  )
-  const networks = new Set<string>()
-  for (const key of db.keys(TRANSFER_SCAN_CURSOR_PREFIX)) {
-    const id = transferScanNetworkOf(key)
-    if (id) networks.add(id)
-  }
+  const savingsMoves = storedSavingsMoves(db)
+  const networks = scannedNetworks(db)
   for (const r of [...rows, ...deposits, ...withdrawals]) if (r.networkId) networks.add(r.networkId)
   if (networks.size > 1) {
     logger.warn(
@@ -215,23 +207,4 @@ export function retiredSipaDeposit(db: RetiredDatabase, sipa: string): SipaDepos
   const record = snapshot.deposits.find((r) => r.sipaAddress.toLowerCase() === sipa.toLowerCase())
   const networkId = record?.networkId ?? snapshot.networkId
   return record && networkId ? { ...record, networkId } : null
-}
-
-const isRecord = (value: unknown): value is object => typeof value === "object" && value !== null
-
-function parseJson(raw: string | undefined, label: string): unknown {
-  if (raw === undefined) return undefined
-  try {
-    return JSON.parse(raw)
-  } catch {
-    logger.warn(`${LOG_PREFIX} ${label} holds a malformed value; skipped`)
-    return undefined
-  }
-}
-
-function parseRecords<T>(raw: string | undefined, label: string): T[] {
-  const parsed = parseJson(raw, label)
-  return isRecord(parsed) && !Array.isArray(parsed)
-    ? (Object.values(parsed).filter(isRecord) as T[])
-    : []
 }

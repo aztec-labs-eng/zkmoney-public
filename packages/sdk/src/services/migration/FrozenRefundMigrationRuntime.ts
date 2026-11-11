@@ -88,6 +88,8 @@ interface Options {
    * into the destination portal through the route's executor, with no tip.
    */
   migration?: MigrationExecutorRoute
+  /** Starts the bb.js instance that the refund proofs share, so it takes the host's options. */
+  startProver?(): Promise<unknown>
 }
 
 /** The alpha account's passkey as the owner a frozen refund authorizes with. */
@@ -570,6 +572,7 @@ export class FrozenRefundMigrationRuntime implements FrozenMigrationRuntime {
     const direct = typeof recipient !== "string"
     // Refuses a recipient this source cannot pay before anything is read or proven.
     const executorCall = this.executorCall(recipient, relayerTip)
+    await o.startProver?.()
     let amount: bigint
     let calldata: `0x${string}`
     if (kind === "note" || kind === "escrow-note") {
@@ -728,6 +731,7 @@ export async function createLocalMetadataMigrationSource(
      * is refused.
      */
     destinationDeployment?: Pick<OxideDeployment, "features" | "bridges">
+    startProver?: () => Promise<unknown>
   } & Pick<
       ConstructorParameters<typeof FrozenMetadataMigrationSource>[0],
       "directDepositClaimed" | "reservedCoordinates" | "approvalPass" | "approvalsOnly"
@@ -776,6 +780,7 @@ export async function createLocalMetadataMigrationSource(
       tipRecipient: EthAddress.fromString(
         options.tipRecipient ?? options.destination.operationExecutor,
       ),
+      startProver: options.startProver,
       ...(migration ? { migration } : {}),
     }),
   })

@@ -94,7 +94,7 @@ const TABLE: [string, SipaDepositEvent, (from: BroadcastState | "none") => unkno
   [
     "broadcastRepublish",
     { type: "broadcastRepublish", sinceBlock: 9, at: NOW },
-    (from) => (from === "landed" ? "queued" : undefined),
+    (from) => (from === "landed" ? "queued" : from === "none" ? undefined : from),
   ],
 ]
 
@@ -171,6 +171,37 @@ describe("sipaDepositTransition: broadcasts", () => {
       txHash: undefined,
       operationId: undefined,
     })
+  })
+
+  it("marks a broadcast still owed funded when republished, keeping its progress", () => {
+    const next = sipaDepositTransition(
+      record(job("queued", { failures: 2, retryAt: NOW + 9 })),
+      { type: "broadcastRepublish", sinceBlock: 9, at: NOW },
+      NOW,
+    )
+    expect(next?.broadcast).toMatchObject({ fundedAt: NOW, retryAt: undefined, failures: 2 })
+    expect(next?.broadcast?.republishSince).toBeUndefined()
+  })
+
+  it("owes a resweepable address with no broadcast one its record rebuilds", () => {
+    const origin = (resweepable: boolean) =>
+      ({ protocol: "legacy-eoa", resweepable } as SipaDeposit["origin"])
+    const republish: SipaDepositEvent = { type: "broadcastRepublish", sinceBlock: 9, at: NOW }
+
+    expect(
+      sipaDepositTransition({ ...record(), origin: origin(true) }, republish, NOW)?.broadcast,
+    ).toEqual({
+      kind: "deposit",
+      source: { type: "slot" },
+      state: "queued",
+      createdAt: NOW,
+      failures: 0,
+      fundedAt: NOW,
+      republishSince: 9,
+    })
+    expect(
+      sipaDepositTransition({ ...record(), origin: origin(false) }, republish, NOW),
+    ).toBeUndefined()
   })
 
   it("makes a shown pool broadcast the user's, and funds move an owed slot to the front", () => {

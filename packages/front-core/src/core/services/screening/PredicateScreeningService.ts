@@ -1,3 +1,5 @@
+import type { Query, QueryFactory } from "../../../engine/query"
+
 const PREDICATE_BASE_URL = "https://api.predicate.io"
 const DEFAULT_TIMEOUT_MS = 5_000
 // Blocked verdicts are held briefly so a user staring at the field doesn't re-query on every
@@ -47,15 +49,11 @@ interface PredicateAttestationResponse {
  * Predicate `/v2/attestation` client — the same endpoint and policy oxide's relayer enforces at
  * withdrawal-batching time, so this client-side verdict is a pre-flight of the relayer's (a
  * blocked recipient there means a burned-but-never-finalized withdrawal; here it's a disabled
- * button). One check per wallet: a compliant address is cached for the service's lifetime (the
- * relayer re-enforces the policy at commit time), a blocked one for BLOCKED_TTL_MS, and
- * concurrent screens of one address share a single request.
+ * button). Uncached: {@link screenings} keeps the verdicts.
  */
 export class PredicateScreeningService implements AddressScreener {
   private readonly baseUrl: string
   private readonly timeoutMs: number
-  private readonly cache = new Map<string, { verdict: ScreeningVerdict; expiresAt: number }>()
-  private readonly inFlight = new Map<string, Promise<ScreeningVerdict>>()
 
   constructor(private readonly config: PredicateScreeningConfig) {
     this.baseUrl = config.baseUrl ?? PREDICATE_BASE_URL
@@ -63,27 +61,6 @@ export class PredicateScreeningService implements AddressScreener {
   }
 
   async screen(address: string): Promise<ScreeningVerdict> {
-    const key = address.toLowerCase()
-    const cached = this.cache.get(key)
-    if (cached && cached.expiresAt > Date.now()) return cached.verdict
-
-    const pending = this.inFlight.get(key)
-    if (pending) return pending
-
-    const request = this.attest(address)
-      .then((verdict) => {
-        this.cache.set(key, {
-          verdict,
-          expiresAt: verdict.compliant ? Number.POSITIVE_INFINITY : Date.now() + BLOCKED_TTL_MS,
-        })
-        return verdict
-      })
-      .finally(() => this.inFlight.delete(key))
-    this.inFlight.set(key, request)
-    return request
-  }
-
-  private async attest(address: string): Promise<ScreeningVerdict> {
     const response = await fetch(`${this.baseUrl}/v2/attestation`, {
       method: "POST",
       headers: {
@@ -101,8 +78,26 @@ export class PredicateScreeningService implements AddressScreener {
       throw new Error(`Predicate attestation returned ${response.status}`)
     }
     const body = (await response.json()) as PredicateAttestationResponse
-    return body.is_compliant
-      ? { compliant: true }
-      : { compliant: false, reason: body.reason }
+    return body.is_compliant ? { compliant: true } : { compliant: false, reason: body.reason }
   }
 }
+
+/** The page's verdicts per address. */
+export type Screenings = Query<[address: string], ScreeningVerdict>
+
+/**
+ * One check per wallet: a compliant address keeps its verdict for the page's life (the relayer
+ * re-enforces the policy at commit time), a blocked one for BLOCKED_TTL_MS, and a failure is
+ * read again on the next screen.
+ */
+export function screenings(query: QueryFactory, screener: AddressScreener): Screenings {
+  return query<[address: string], ScreeningVerdict>("screening", {
+    load: (address) => screener.screen(address),
+    stale: (verdict, ageMs) => !verdict.compliant && ageMs >= BLOCKED_TTL_MS,
+  })
+}
+
+/** Screens through the page's verdicts. */
+export const screenerOf = (verdicts: Screenings): AddressScreener => ({
+  screen: (address) => verdicts(address.trim()).read(),
+})

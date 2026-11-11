@@ -1,14 +1,12 @@
-import { beforeAll, describe, expect, it } from "vitest"
-import { getConfig } from "../../../../src/config/env"
+import { describe, expect, it } from "vitest"
 import { upgradeRunAccount } from "../../../../src/features/migration/upgradeRunAccount"
-import { seedBootConfig } from "../../../support/seedBootConfig"
-
-beforeAll(seedBootConfig)
+import { sandboxConfig } from "../../../support/seedBootConfig"
 
 describe("upgradeRunAccount", () => {
-  it("names an upgrade another device inferred from its deposits the same way", () => {
-    const main = getConfig().oxideProfile.portal.toLowerCase()
-    expect(upgradeRunAccount(`chain-upgrade/${main}`)).toBe("main")
-    expect(upgradeRunAccount("chain-upgrade/0xsavings")).toBe("savings")
+  it("names an upgrade another device inferred from its deposits the same way", async () => {
+    const config = await sandboxConfig()
+    const main = config.oxideProfile.portal.toLowerCase()
+    expect(upgradeRunAccount(config, `chain-upgrade/${main}`)).toBe("main")
+    expect(upgradeRunAccount(config, "chain-upgrade/0xsavings")).toBe("savings")
   })
 })

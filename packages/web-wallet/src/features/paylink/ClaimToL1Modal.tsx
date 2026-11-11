@@ -1,24 +1,26 @@
 import { Modal } from "../../ui/Modal"
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { formatUnits, getAddress, isAddress, parseUnits, type Address } from "viem"
 import { DEFAULT_CONTRACTS, DEFAULT_DECIMALS } from "@obsidion/core/constants"
+import { bestEffort } from "@obsidion/core/errors"
 import type { Fr } from "@aztec-labs/aztec.js/fields"
-import type { AddressScreener, WithdrawalSpeedupNode } from "@obsidion/front-core"
+import { memoryStore, useLookup, useStore, type AddressScreener } from "@obsidion/front-core"
 import type { PaylinkL1Proof } from "@obsidion/sdk"
 import { isPasskeyCancelled } from "@obsidion/passkey-web"
 import { GradientText, Icon, PrimaryGradientButton, TopNavIconButton } from "@obsidion/web-ds"
 import connectIcon from "../../assets/deposit/eth-fill.svg"
 import ethIcon from "../../assets/deposit/ethereum.webp"
-import { getConfig } from "../../config/env"
 import { showErrorModal, showReportableError } from "../../errors/errorModal"
 import { failureCode, fireEvent } from "../../lib/analytics"
 import { isDesktopL1SubmitActive } from "../../platform/desktopBridge"
-import { usdFigure, shortL1Addr } from "../../ui/format"
+import { usdFigure, shortL1Addr, tokenAtomicFloor } from "../../ui/format"
 import { useProvingOutcome } from "../../ui/hooks"
-import { useUserFlowActive } from "../provingGate"
+import { useScreenFlow } from "../../ui/useScreenFlow"
 import { ScreeningNotice, useScreenedAddress } from "../../ui/screening"
-import { useL1Wallet } from "../../session/l1Wallet"
-import { useSavedL1Wallets, type SavedL1Wallet } from "../withdraw/WithdrawScreen"
+import { useL1Wallet } from "../../session/useL1Wallet"
+import { useSession } from "../../session/session"
+import { useSavedL1Wallets } from "../../session/savedL1Wallets"
+import type { SavedL1Wallet } from "../../session/savedL1Wallets"
 import { WithdrawalAssetPicker } from "../withdraw/WithdrawalAssetPicker"
 import type { FasterWithdrawal } from "../withdraw/useFasterWithdrawal"
 import { SpeedRow, useSpeedChoice, useSpeedOutcome } from "../withdraw/speedChoice"
@@ -28,26 +30,37 @@ import {
   FEE_UNAVAILABLE_COPY,
   swapFloorAtomic,
   useSwapSimulation,
-  simulateSwapForTuple,
-  type SimulateSwap,
   WithdrawalEstimate,
   withdrawalFeeDisplay,
   type WithdrawalQuoteState,
 } from "../withdraw/withdrawQuote"
-import { withdrawalExecutor } from "../withdraw/withdrawalFee"
 import { paylinkTuple } from "./paylinkSource"
 import { requireTupleField } from "../../config/oxideTuple"
 import { claimWindowRevertCopy } from "./claimWindow"
 import type { PaymentLink } from "./types"
 import { closedLinkMessage } from "./claimWindow"
 import { emailL1Caller, obtainEmailL1Proof, type EmailClaimStage } from "./emailClaim"
-import { useBusyLabel } from "../operations/operations"
+import { useBusyLabel, useUserFlowActive } from "../operations/operations"
 import { OperationHandOff } from "../operations/OperationHandOff"
 import { LocalPasskeyHint } from "../../ui/LocalPasskeyHint"
 import { Warning } from "../../ui/Warning"
 import { LimitReason } from "../limits/publicLimit"
 import { withdrawalLimitProblem, withdrawalLimitRefusal } from "../limits/withdrawalLimit"
 import { useTxAmountCap } from "../token/useTxAmountCap"
+import { ChainIcon } from "../../ui/ChainIcon/ChainIcon"
+import { PickerList } from "../../ui/PickerList/PickerList"
+import { AssetPicker } from "../withdraw/WithdrawalAssetPicker"
+import claimCopy from "./ClaimToL1Modal.copy"
+import withdrawCopy from "../withdraw/WithdrawFlow/WithdrawFlow.copy"
+import chainsCopy from "../../ui/chains.copy"
+import { fmt } from "../../lib/fmt"
+import type { BridgeOutChoice } from "../withdraw/bridgeOut"
+import type { BridgeOutChain } from "../withdraw/bridgeOutQuote"
+import { openClaimRouteFlow } from "./claimRouteFlow"
+import { claimBridgeChoice, claimBridgeCovers, selectClaimBridge } from "./claimBridgeView"
+
+const NO_ROUTES: readonly BridgeOutChain[] = []
+const UNREAD = memoryStore<undefined>(undefined).readonly
 
 /** What the caller needs to run `claimLinkToL1` once the user confirms. */
 export interface ClaimToL1Choice {
@@ -61,6 +74,8 @@ export interface ClaimToL1Choice {
   zkProof?: PaylinkL1Proof
   /** Email swap route: the leg the proof was bound to, planned before verification. */
   swap?: SwapLeg
+  /** Another chain: the burn pays an Across escrow for the recipient there. */
+  bridge?: BridgeOutChoice
   /** Paid to the first prover of the burn's checkpoint, out of the burn. */
   proverTip: bigint
 }
@@ -70,8 +85,8 @@ export interface ClaimToL1Choice {
  * saved, or pasted) with the output asset and the fee breakdown, a review sheet, then the burn. The
  * amount is the whole escrow, so there is no amount step; the fee comes out of it, and a link over
  * the per-withdrawal limit is refused rather than split. The passkey ceremony is the last beat
- * needing the user: past it `OperationHandOff` hands the burn to the bell, as in
- * `WithdrawToWalletModal`. A visitor signs no passkey, so theirs hands off once the proof starts.
+ * needing the user: past it `OperationHandOff` hands the burn to the bell. A visitor signs no
+ * passkey, so theirs hands off once the proof starts.
  *
  * An email link's zkJWT proof binds the executor and the payload paying the burn destination, and on
  * a swap route that is the escrow, whose address the plan fixes. So the swap leg is planned here,
@@ -86,7 +101,7 @@ export function ClaimToL1Modal({
   onConfirm,
   planSwap,
   onClaimInstead,
-  node,
+  offersSpeed = false,
 }: {
   link: PaymentLink
   /** The wallet can sign — the confirm CTA waits on it. */
@@ -110,19 +125,26 @@ export function ClaimToL1Modal({
   /** The fee-free route: claim into a zk.money account instead. */
   onClaimInstead?: () => void
   /** Prices the faster option; without it the review offers no speed choice. */
-  node?: WithdrawalSpeedupNode
+  offersSpeed?: boolean
 }) {
   const txAmountCap = useTxAmountCap()
   const busy = useUserFlowActive()
   const busyLabel = useBusyLabel()
-  const config = getConfig()
+  const { page } = useSession()
+  const { config, chain } = page
   const l1 = useL1Wallet({ expectedChainId: config.l1ChainId, rpcUrl: config.l1RpcUrl })
   const saved = useSavedL1Wallets()
   const [recipient, setRecipient] = useState("")
   const [walletName, setWalletName] = useState("")
-  const [receiveAsset, setReceiveAsset] = useState<WithdrawalReceiveAsset>("DAI")
+  const routeFlow = useScreenFlow({}, () => openClaimRouteFlow({ quotes: page.bridgeOutQuote }))
+  const routeState = useStore(routeFlow.state)
+  const { route } = routeState
+  // The bridge burns DAI to its escrow, so the Ethereum route's asset plays no part there.
+  const receiveAsset: WithdrawalReceiveAsset = route.kind === "ethereum" ? route.asset : "DAI"
   const [phase, setPhase] = useState<"recipient" | "confirm" | "working">("recipient")
   const [stage, setStage] = useState<WithdrawStage>("building")
+  /** The confirm's fresh bridge quote came back worse: the review shows it. */
+  const [repriced, setRepriced] = useState(false)
   const cancelled = useRef(false)
   const left = useRef(false)
   const submitting = useRef(false)
@@ -145,6 +167,14 @@ export function ClaimToL1Modal({
   }>()
   const [emailCaller, setEmailCaller] = useState<{ payee: Address; caller: Fr }>()
   const isEmail = link.flavor === "email"
+  // Another chain, for a direct link: its proof binds nothing, so the leg is planned at the burn.
+  const routesRead = useLookup(
+    isEmail ? undefined : link.tokenAddress || undefined,
+    page.bridgeOutRoutes,
+    { delayMs: 0 },
+  )
+  const routes = routesRead.status === "answered" ? routesRead.value : NO_ROUTES
+  const [choosingChain, setChoosingChain] = useState(false)
   const valid = isAddress(recipient)
   const { screener, verdict, cleared, rescreen } = useScreenedAddress(
     valid ? getAddress(recipient) : null,
@@ -152,6 +182,7 @@ export function ClaimToL1Modal({
     { debounceMs: 300 },
   )
 
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     emailAbort.current?.abort()
     attempt.current++
@@ -194,6 +225,7 @@ export function ClaimToL1Modal({
     setEmailError(undefined)
     try {
       const proof = await obtainEmailL1Proof(
+        page,
         caller,
         {
           paylinkType: DEFAULT_CONTRACTS.paylinkEmail,
@@ -208,6 +240,7 @@ export function ClaimToL1Modal({
       )
       if (isActive()) setZkProof(proof)
     } catch (e) {
+      // eslint-disable-next-line local/message-in-state -- debt
       if (isActive()) setEmailError(e instanceof Error ? e.message : "Email verification failed")
     } finally {
       if (isActive()) {
@@ -228,33 +261,44 @@ export function ClaimToL1Modal({
   const receiveOption = withdrawalReceiveAsset(receiveAsset)
   const readSource = useCallback(async () => {
     if (!link.tokenAddress) throw new Error("The link token is not available yet")
-    return paylinkTuple(link.tokenAddress)
-  }, [link.tokenAddress])
-  const simulateSourceSwap = useCallback<SimulateSwap>(
-    async (args) => simulateSwapForTuple(args, await readSource()),
-    [readSource],
-  )
-  const readSourceExecutor = useCallback(
-    async () => withdrawalExecutor(await readSource()),
-    [readSource],
-  )
+    return paylinkTuple({ config, chain }, link.tokenAddress)
+  }, [link.tokenAddress, config, chain])
   // The proof binds a tipped leg's escrow, so the leg keeps its tip and offer until the user
   // picks Standard, whatever later quotes say.
   const speedChoice = useSpeedChoice({
-    active: phase !== "recipient",
-    node,
+    active: offersSpeed && phase !== "recipient",
     amount: amountAtomic,
     held: swapLeg && swapLeg.proverTip > 0n ? swapLeg.offer : undefined,
   })
   const { speed } = speedChoice
+  const bridgeTip = speedChoice.pricedTip
+  const offered =
+    route.kind === "bridge" ? routes.find((r) => r.chain.chainId === route.chainId) : undefined
+  const bridgeChainId = offered && route.kind === "bridge" ? route.chainId : undefined
+  const bridgeToken = offered && route.kind === "bridge" ? route.token : undefined
+  const bridgeAsk = useMemo(
+    () =>
+      offered && bridgeChainId !== undefined && bridgeToken && amountAtomic !== undefined
+        ? {
+            provider: offered.provider,
+            l2Token: offered.l2Token,
+            chainId: bridgeChainId,
+            token: bridgeToken,
+            amount: amountAtomic,
+            proverTip: bridgeTip,
+          }
+        : undefined,
+    [offered, bridgeChainId, bridgeToken, amountAtomic, bridgeTip],
+  )
+  const bridgeRead = useStore(bridgeAsk ? routeFlow.quote(bridgeAsk) : UNREAD)
+  const bridge = selectClaimBridge(routeState, routes, amountAtomic, bridgeRead)
   const quote = useSwapSimulation({
     receiveAsset,
     amountAtomic,
     recipient: valid ? getAddress(recipient) : undefined,
     network: config.network,
-    sourceKey: link.tokenAddress ?? "unresolved-paylink",
-    simulate: simulateSourceSwap,
-    readExecutor: readSourceExecutor,
+    sourceKey: link.tokenAddress ?? null,
+    executor: link.tokenAddress ? chain.paylinkExecutor(link.tokenAddress) : null,
     proverTip: speedChoice.pricedTip,
   })
   // A planned leg fixes the escrow the proof binds to, so the sheet keeps showing the quote that
@@ -263,25 +307,32 @@ export function ClaimToL1Modal({
   // Judged only on a priced fee: an unread one blocks Confirm on its own.
   const speedOutcome = useSpeedOutcome(
     speedChoice,
-    speedChoice.offer && displayQuote.fee
+    bridge
+      ? speedChoice.offer && claimBridgeCovers(bridge, amountAtomic, speedChoice.offer.proverTip)
+      : speedChoice.offer && displayQuote.fee
       ? amountAtomic !== undefined &&
-          amountAtomic >
-            displayQuote.fee.floorAtomic - displayQuote.fee.proverTip + speedChoice.offer.proverTip
+        amountAtomic >
+          displayQuote.fee.floorAtomic - displayQuote.fee.proverTip + speedChoice.offer.proverTip
       : undefined,
   )
   const { proverTip } = speedOutcome
   const swapMinimumAtomic = swapFloorAtomic(displayQuote)
   const belowSwapFloor =
-    !receiveOption.direct && amountAtomic !== undefined && amountAtomic <= swapMinimumAtomic
+    !bridge &&
+    !receiveOption.direct &&
+    amountAtomic !== undefined &&
+    amountAtomic <= swapMinimumAtomic
   const swapCommit =
     !receiveOption.direct && quote.status === "ready" && quote.fee && quote.estimate
       ? { relayerTip: quote.fee.swapRelayerTip, ...quote.estimate }
       : undefined
   // A planned leg's escrow is funded net of its tip, so that tip is the one the burn carries.
   const burnTip = swapLeg?.proverTip ?? proverTip
-  const confirmable =
-    (receiveOption.direct || (isEmail ? swapLeg !== undefined : swapCommit !== undefined)) &&
-    displayQuote.fee?.proverTip === burnTip
+  const bridgeChoice = bridge && claimBridgeChoice(bridge, proverTip)
+  const confirmable = bridge
+    ? !!bridgeChoice
+    : (receiveOption.direct || (isEmail ? swapLeg !== undefined : swapCommit !== undefined)) &&
+      displayQuote.fee?.proverTip === burnTip
 
   // Who the burn pays: the recipient, or the planned escrow on a swap route.
   const emailPayee =
@@ -289,6 +340,7 @@ export function ClaimToL1Modal({
       ? swapLeg?.leg.plan.escrow ?? (receiveOption.direct ? getAddress(recipient) : undefined)
       : undefined
   const caller = emailCaller && emailCaller.payee === emailPayee ? emailCaller.caller : undefined
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!emailPayee) return
     let live = true
@@ -300,6 +352,7 @@ export function ClaimToL1Modal({
         if (live) setEmailCaller({ payee: emailPayee, caller: hashed })
       })
       .catch((e) => {
+        // eslint-disable-next-line local/message-in-state -- debt
         if (live) setEmailError(e instanceof Error ? e.message : "Email verification failed")
       })
     return () => {
@@ -309,6 +362,7 @@ export function ClaimToL1Modal({
 
   // A speed choice that changes the tip moves the escrow, so its plan and the proof bound to it go.
   const replan = !!swapLeg && (speedChoice.held ? speed === "standard" : proverTip > 0n)
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!replan) return
     emailAbort.current?.abort()
@@ -323,6 +377,7 @@ export function ClaimToL1Modal({
 
   // A failed plan stays failed until the address or asset changes: re-planning on every quote
   // refresh would loop on a persistent error.
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!isEmail || receiveOption.direct || !ready || !valid || !cleared || planned.current) return
     if (!swapCommit || belowSwapFloor || amountAtomic === undefined || overLimit) return
@@ -339,6 +394,7 @@ export function ClaimToL1Modal({
       })
       .catch((e) => {
         if (planningAttempt.current === owned)
+          // eslint-disable-next-line local/message-in-state -- debt
           setEmailError(e instanceof Error ? e.message : "Swap unavailable")
       })
   }, [
@@ -385,9 +441,23 @@ export function ClaimToL1Modal({
     outcome.start("building")
     setPhase("working")
     setStage("building")
+    setRepriced(false)
     const cancellation = new Error("Cancelled")
     cancelled.current = false
     try {
+      const bridgeQuote =
+        bridgeChoice && bridgeAsk
+          ? await routeFlow.sendable(
+              { ...bridgeAsk, proverTip: bridgeChoice.proverTip },
+              bridgeChoice.quote,
+            )
+          : undefined
+      if (bridgeChoice && !bridgeQuote) {
+        outcome.cancel()
+        setRepriced(true)
+        setPhase("confirm")
+        return
+      }
       await onConfirm(
         {
           recipient: getAddress(recipient),
@@ -396,8 +466,14 @@ export function ClaimToL1Modal({
           receiveAsset,
           quote: swapLeg?.quote ?? swapCommit,
           zkProof,
-          swap: swapLeg?.leg,
-          proverTip: burnTip,
+          swap: bridgeChoice ? undefined : swapLeg?.leg,
+          proverTip: bridgeChoice?.proverTip ?? burnTip,
+          bridge: bridgeChoice &&
+            bridgeQuote && {
+              chain: bridgeChoice.chain,
+              token: bridgeChoice.token,
+              quote: bridgeQuote,
+            },
         },
         (s) => {
           if (s === "proving" && cancelled.current) throw cancellation
@@ -444,17 +520,18 @@ export function ClaimToL1Modal({
     setZkProof(undefined)
     setEmailStage(undefined)
     setEmailError(undefined)
+    setRepriced(false)
     setPhase("recipient")
   }
 
   const paste = () =>
-    navigator.clipboard
-      .readText()
-      .then((text) => setRecipient(text.trim()))
-      .catch(() => {})
+    void bestEffort(
+      "unknown",
+      navigator.clipboard.readText().then((text) => setRecipient(text.trim())),
+    )
   const pick = (w: SavedL1Wallet) => {
     setRecipient(w.address)
-    setWalletName(w.name)
+    setWalletName(w.name ?? "")
   }
 
   const name = walletName.trim() || undefined
@@ -464,11 +541,13 @@ export function ClaimToL1Modal({
       : shortL1Addr(recipient)
     : ""
 
-  const directFeeAtomic = receiveOption.direct ? displayQuote.fee?.floorAtomic : undefined
+  const directFeeAtomic =
+    receiveOption.direct && !bridge ? displayQuote.fee?.floorAtomic : undefined
   // The direct route cannot be confirmed before its fee is priced.
-  const directFeeUnknown = receiveOption.direct && directFeeAtomic === undefined
+  const directFeeUnknown = !bridge && receiveOption.direct && directFeeAtomic === undefined
   // The direct route's counterpart of `belowSwapFloor`.
   const belowDirectFloor =
+    !bridge &&
     receiveOption.direct &&
     amountAtomic !== undefined &&
     directFeeAtomic !== undefined &&
@@ -478,7 +557,11 @@ export function ClaimToL1Modal({
     amountAtomic !== undefined && directFeeAtomic !== undefined && amountAtomic > directFeeAtomic
       ? amountAtomic - directFeeAtomic
       : 0n
-  const fee = withdrawalFeeDisplay(displayQuote)
+  const fee = bridge
+    ? bridge.feeAtomic !== undefined
+      ? formatUnits(bridge.feeAtomic, DEFAULT_DECIMALS)
+      : undefined
+    : withdrawalFeeDisplay(displayQuote)
   const needsEmailProof = isEmail && !zkProof
   let confirmTitle = "Confirm and claim"
   // The direct route waits on its fee; a read that failed for good says so through the fee copy instead of waiting.
@@ -493,7 +576,20 @@ export function ClaimToL1Modal({
 
   const facts = (
     <div className="ww-deposit__facts">
-      {receiveOption.direct ? (
+      {bridge ? (
+        <div className="ww-deposit__fact">
+          <span>{claimCopy.youReceive}</span>
+          <b data-testid="claim-bridge-receive">
+            {bridge.quote
+              ? fmt(claimCopy.bridgeReceive, {
+                  amount: tokenAtomicFloor(bridge.quote.minReceived, bridge.token, bridge.decimals),
+                })
+              : bridge.failed
+              ? claimCopy.quoteFailed
+              : claimCopy.quoting}
+          </b>
+        </div>
+      ) : receiveOption.direct ? (
         <div className="ww-deposit__fact">
           <span>You receive</span>
           <b>
@@ -517,23 +613,66 @@ export function ClaimToL1Modal({
           <b>{destination}</b>
         </div>
       )}
-      {phase === "recipient" ? (
-        <WithdrawalAssetPicker label="Token" value={receiveAsset} onChange={setReceiveAsset} />
+      {phase === "recipient" && bridge ? (
+        <AssetPicker
+          label={claimCopy.token}
+          value={bridge.token}
+          options={bridge.route.tokens.map((t) => withdrawalReceiveAsset(t.symbol))}
+          onChange={(token) =>
+            routeFlow.choose({
+              kind: "bridge",
+              chainId: bridge.route.chain.chainId,
+              token: token as BridgeOutChoice["token"],
+            })
+          }
+        />
+      ) : phase === "recipient" ? (
+        <WithdrawalAssetPicker
+          label={claimCopy.token}
+          value={receiveAsset}
+          onChange={(asset) => routeFlow.choose({ kind: "ethereum", asset })}
+        />
       ) : (
         <div className="ww-deposit__fact">
           <span>Token</span>
           <b>
-            <img src={receiveOption.icon} alt="" width={16} height={16} />
-            {receiveOption.symbol}
+            <img
+              src={bridge ? withdrawalReceiveAsset(bridge.token).icon : receiveOption.icon}
+              alt=""
+              width={16}
+              height={16}
+            />
+            {bridge ? bridge.token : receiveOption.symbol}
           </b>
         </div>
       )}
       <div className="ww-deposit__fact">
         <span>Network</span>
-        <b>
-          <img src={ethIcon} alt="" width={16} height={16} />
-          Ethereum
-        </b>
+        {phase === "recipient" && routes.length > 0 ? (
+          <button
+            type="button"
+            className="zkm-btn-reset ww-deposit__pill"
+            data-testid="claim-network"
+            onClick={() => setChoosingChain(true)}
+          >
+            {bridge ? (
+              <ChainIcon
+                chainId={bridge.route.chain.chainId}
+                name={bridge.route.chain.name}
+                size={16}
+              />
+            ) : (
+              <img src={ethIcon} alt="" width={16} height={16} />
+            )}
+            {bridge?.route.chain.name ?? chainsCopy.ethereum}
+            <Icon name="chevron-down" size={16} />
+          </button>
+        ) : (
+          <b>
+            <img src={ethIcon} alt="" width={16} height={16} />
+            {bridge?.route.chain.name ?? chainsCopy.ethereum}
+          </b>
+        )}
       </div>
       <hr className="ww-divider" />
       {phase === "confirm" && <SpeedRow choice={speedChoice} outcome={speedOutcome} />}
@@ -543,6 +682,9 @@ export function ClaimToL1Modal({
       </div>
       {receiveOption.direct && displayQuote.status === "unavailable" && (
         <Warning title={FEE_UNAVAILABLE_COPY} />
+      )}
+      {phase === "confirm" && repriced && (
+        <Warning title={withdrawCopy.review.feeChanged} testId="claim-fee-changed" />
       )}
     </div>
   )
@@ -563,12 +705,45 @@ export function ClaimToL1Modal({
             <Icon name="coins" size={24} color="#fff" />
           </span>
           <GradientText size={24} weight={700}>
-            {phase === "confirm" ? "Review your claim" : "Claim to an Ethereum wallet"}
+            {phase === "confirm"
+              ? "Review your claim"
+              : bridge
+              ? fmt(claimCopy.bridgeTitle, { chain: bridge.route.chain.name })
+              : "Claim to an Ethereum wallet"}
           </GradientText>
         </>
       )}
 
-      {phase === "recipient" && (
+      {phase === "recipient" && choosingChain && (
+        <PickerList
+          searchLabel={claimCopy.searchChains}
+          section={claimCopy.chainsSection}
+          selected={String(bridge?.route.chain.chainId ?? config.l1ChainId)}
+          items={[
+            {
+              id: String(config.l1ChainId),
+              icon: <ChainIcon chainId={config.l1ChainId} name={chainsCopy.ethereum} />,
+              title: chainsCopy.ethereum,
+              detail: claimCopy.directDetail,
+            },
+            ...routes.map(({ chain }) => ({
+              id: String(chain.chainId),
+              icon: <ChainIcon chainId={chain.chainId} name={chain.name} />,
+              title: chain.name,
+            })),
+          ]}
+          onPick={(id) => {
+            const next = routes.find((r) => r.chain.chainId === Number(id))
+            const token = next?.tokens[0]?.symbol
+            if (next && token)
+              routeFlow.choose({ kind: "bridge", chainId: next.chain.chainId, token })
+            else if (route.kind === "bridge") routeFlow.choose({ kind: "ethereum", asset: "DAI" })
+            setChoosingChain(false)
+          }}
+        />
+      )}
+
+      {phase === "recipient" && !choosingChain && (
         <>
           <div className="ww-fund__fields">
             <label className="ww-withdraw__field">

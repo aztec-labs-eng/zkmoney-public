@@ -4,6 +4,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { testPage, testCore } from "../../support/page"
+import { openTestSession } from "../../support/session"
 import { DEFAULT_CONTRACTS } from "@obsidion/core/constants"
 import type { PaylinkTransaction } from "@obsidion/front-core"
 
@@ -25,17 +26,13 @@ vi.mock("@obsidion/sdk", async (importOriginal) => ({
     secret: { toString: () => SECRET },
   }),
 }))
-await (await import("../../support/seedBootConfig")).seedBootConfig()
 vi.mock("../../../src/features/registration/claimSponsorship", () => ({
   claimSponsorContext: async () => ({ fpcAddress: {}, policy: {} }),
   noteSubscribed: vi.fn(),
 }))
-vi.mock("../../../src/features/fees/fpcRefuel", () => ({ maybeRefuelFpc: vi.fn() }))
 
 const { recoverSponsoredLink } = await import("../../../src/features/paylink/sponsoredPaylink")
-const { activeNamespace, closeSession, switchSession, session } = await import(
-  "../../../src/session/session"
-)
+const { activeNamespace, closeSession, switchSession } = await import("../../../src/session/session")
 const { pageSessionDeps } = await import("../../../src/app/sessionDeps")
 
 const link: PaylinkTransaction = {
@@ -56,22 +53,26 @@ const link: PaylinkTransaction = {
 
 const deps = (account: string) =>
   ({
-    wallet: {
-      networkId: "0xnet",
-      node: {
-        getBlockData: async () => ({ header: { globalVariables: { timestamp: BigInt(NOW) } } }),
+    session: openTestSession({
+      wallet: {
+        networkId: "0xnet",
+        node: {
+          getBlockData: async () => ({ header: { globalVariables: { timestamp: BigInt(NOW) } } }),
+        },
       },
-    },
-    account: { getAddress: () => ({ toString: () => account }) },
-    tokenService: {
-      tokenAddressOrNull: undefined,
-      fetchTokenInformation: async () => ({
-        address: "0xdai",
-        name: "DAI",
-        symbol: "DAI",
-        decimals: 18,
-      }),
-    },
+      account: { getAddress: () => ({ toString: () => account }) },
+      contractService: {},
+      teeSigner: {},
+      token: {
+        tokenAddressOrNull: undefined,
+        fetchTokenInformation: async () => ({
+          address: "0xdai",
+          name: "DAI",
+          symbol: "DAI",
+          decimals: 18,
+        }),
+      },
+    }),
   } as unknown as Parameters<typeof recoverSponsoredLink>[0])
 
 beforeEach(async () => {
@@ -79,7 +80,7 @@ beforeEach(async () => {
   await switchSession(
     activeNamespace(testCore().device),
     pageSessionDeps(testPage()),
-  ).activity.importHistoricRows([link])
+  ).transfers.importHistoricRows([link])
 })
 afterEach(closeSession)
 
@@ -89,6 +90,6 @@ describe("recoverSponsoredLink", () => {
       "Only the account that made this link can take it back",
     )
     expect(refund).not.toHaveBeenCalled()
-    expect(await session().activity.all()).toHaveLength(1)
+    expect(await openTestSession().transfers.all()).toHaveLength(1)
   })
 })

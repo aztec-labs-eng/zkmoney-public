@@ -57,7 +57,7 @@ export function captureFixtures(manifestUrl) {
   const manifest = {
     schemaVersion: "4",
     deployments: [{
-      label: "demo", deployedAt: timestamp, updatedAt: timestamp, gitSha: "0".repeat(40),
+      label: "demo", deployedAt: timestamp, deployedAtBlock: "0", updatedAt: timestamp, gitSha: "0".repeat(40),
       portal: DEMO_PORTAL, chainId: "31337", rollupVersion: "1",
       token: "0xb0de1000000000000000000000000000000b01d0", l2Token: `0x${"5c".repeat(32)}`,
       enclaveUrl: "https://enclave.invalid", pcr0: "0".repeat(96),

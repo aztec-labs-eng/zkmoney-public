@@ -1,13 +1,27 @@
 // The store primitive itself, never a module mock of it.
-import { memoryStore, type Balances, type BalanceView } from "@obsidion/front-core"
+import {
+  memoryStore,
+  type BalanceEntry,
+  type Balances,
+  type BalanceView,
+  type RecordSet,
+} from "@obsidion/front-core"
+
+const NO_RECORDS = memoryStore<RecordSet<BalanceEntry>>({
+  records: [],
+  loaded: true,
+  failed: false,
+}).readonly
 
 const UNKNOWN: BalanceView = {
   main: null,
-  live: false,
+  readThisSession: false,
   known: false,
   syncing: false,
   progress: null,
   readAt: undefined,
+  token: null,
+  anchor: undefined,
 }
 
 /** The session's balances, holding `view`. */
@@ -22,7 +36,7 @@ export function balancesOf(
   }
   return {
     view: memoryStore(full).readonly,
-    records: memoryStore({ hydrated: true, entries: [] }).readonly,
+    records: NO_RECORDS,
   }
 }
 
@@ -43,6 +57,6 @@ export function liveBalances(view: () => ViewInput): Pick<Balances, "view" | "re
   }
   return {
     view: { get, subscribe: () => () => {} },
-    records: memoryStore({ hydrated: true, entries: [] }).readonly,
+    records: NO_RECORDS,
   }
 }

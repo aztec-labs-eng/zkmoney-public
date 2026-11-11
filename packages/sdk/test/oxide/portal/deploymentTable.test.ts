@@ -73,7 +73,7 @@ describe("readDeploymentTable", () => {
         [DAI]: {
           [SipaIntent.Deposit]: [DAI_PORTAL, 1n, 2n],
           [SipaIntent.Registration]: [DAI_PORTAL, 3n, 4n],
-          [SipaIntent.UserOp]: [DAI_PORTAL, 5n, 6n],
+          [SipaIntent.AddPasskey]: [DAI_PORTAL, 5n, 6n],
         },
         [USDC]: { [SipaIntent.Deposit]: [USDC_PORTAL, 0n, 7n] },
       }),

@@ -5,7 +5,8 @@
  * root and lifts itself above the keyboard; where the page resizes instead, the inset is zero and
  * nothing changes.
  */
-import { useEffect, type RefObject } from "react"
+import type { RefObject } from "react"
+import { useDomEffect } from "./useDomEffect"
 
 export const KEYBOARD_INSET_PROPERTY = "--ww-keyboard-inset"
 export const VISIBLE_HEIGHT_PROPERTY = "--ww-visible-height"
@@ -44,7 +45,7 @@ export function useKeyboardInset(
   active = true,
   bottomOf: (element: HTMLElement) => number = (element) => element.getBoundingClientRect().bottom,
 ): void {
-  useEffect(() => {
+  useDomEffect(() => {
     const viewport = window.visualViewport
     const element = root.current
     if (!active || !viewport || !element) return
@@ -101,8 +102,10 @@ export function viewportSettled(quietMs = 120, maxMs = 600): Promise<void> {
     }
     const bump = () => {
       clearTimeout(quiet)
+      // eslint-disable-next-line local/timer-in-view -- debt
       quiet = setTimeout(done, quietMs)
     }
+    // eslint-disable-next-line local/timer-in-view -- debt
     const limit = setTimeout(done, maxMs)
     viewport.addEventListener("resize", bump)
     bump()

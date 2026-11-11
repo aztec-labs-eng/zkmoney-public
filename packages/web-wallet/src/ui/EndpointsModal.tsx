@@ -1,6 +1,6 @@
 import { useState } from "react"
 import { GradientText, PrimaryGradientButton } from "@obsidion/web-ds"
-import { getConfig } from "../config/env"
+import type { WebWalletConfig } from "../config/env"
 import { useLeavingLosesTransaction } from "../features/operations/operations"
 import type { EndpointKind } from "../config/endpointOverrides"
 import { reloadPage } from "../platform/storage/walletStorage"
@@ -14,7 +14,7 @@ const CONFIG_KEYS = { node: "nodeUrl", l1Rpc: "l1RpcUrl", enclave: "enclaveUrl" 
 const BUSY =
   "A transaction is still being sent, and saving reloads the wallet. Wait for it to finish."
 
-type EndpointsModalProps = { onClose: () => void; reload?: () => void }
+type EndpointsModalProps = { config: WebWalletConfig; onClose: () => void; reload?: () => void }
 
 /**
  * Edits the node (with its API key), L1 RPC and enclave overrides for this browser. Nothing is
@@ -32,11 +32,11 @@ export function PreWalletEndpointsModal(props: EndpointsModalProps) {
 }
 
 function EndpointsDialog({
+  config,
   onClose,
   reload = () => void reloadPage(),
   losesTransaction,
 }: EndpointsModalProps & { losesTransaction: boolean }) {
-  const config = getConfig()
   const [saveError, setSaveError] = useState<string>()
   const [saving, setSaving] = useState(false)
   const editor = useEndpointEditor({ onEdit: () => setSaveError(undefined) })

@@ -1,71 +1,58 @@
 {
   "scenario": "activity",
-  "path": "/withdraw/existing?flowFixture=success&quoteFixture=loading",
+  "path": "/withdraw/fresh?flowFixture=success&quoteFixture=loading",
   "steps": [
     {
       "action": "fill",
-      "placeholder": "Search or paste an address",
+      "testId": "withdraw-address",
       "value": "0x7777777777777777777777777777777777777777"
     },
     {
-      "action": "click",
-      "role": "button",
-      "name": "New address",
-      "exact": false
-    },
-    {
       "action": "fill",
-      "label": "Wallet name (optional)",
+      "label": "Name this address",
       "value": "Weekend savings wallet"
     },
     {
-      "action": "reachable",
-      "selector": "[role=\"dialog\"][aria-label=\"Withdraw\"] button:has-text(\"Continue\")"
+      "action": "waitFor",
+      "selector": "[data-testid=\"withdraw-address-continue\"]:enabled"
     },
     {
       "action": "screenshot",
       "file": "address.png",
-      "state": "address"
+      "state": "address with its privacy card"
     },
     {
       "action": "click",
-      "selector": "[role=\"dialog\"][aria-label=\"Withdraw\"] button:has-text(\"Continue\")"
-    },
-    {
-      "action": "screenshot",
-      "file": "privacy.png",
-      "state": "privacy"
-    },
-    {
-      "action": "click",
-      "role": "button",
-      "name": "Continue without privacy",
-      "exact": true
+      "testId": "withdraw-address-continue"
     },
     {
       "action": "waitFor",
-      "selector": ".ww-fund__amount input"
+      "testId": "withdraw-amount"
     },
     {
       "action": "click",
-      "role": "button",
-      "name": "Receive as",
-      "exact": false
+      "selector": "[data-testid=\"withdraw-to\"] [data-testid=\"transfer-asset\"]"
     },
     {
       "action": "screenshot",
       "file": "unavailable-asset-options.png",
-      "state": "asset options"
+      "state": "network and coin picker"
     },
     {
       "action": "click",
-      "role": "option",
-      "name": "USDC",
-      "exact": false
+      "testId": "withdraw-chain-31337"
+    },
+    {
+      "action": "click",
+      "testId": "picker-USDC"
+    },
+    {
+      "action": "waitFor",
+      "testId": "withdraw-amount"
     },
     {
       "action": "fill",
-      "selector": ".ww-fund__amount input",
+      "testId": "withdraw-amount",
       "value": "24"
     },
     {
@@ -84,11 +71,11 @@
     },
     {
       "action": "goto",
-      "path": "/withdraw/existing?flowFixture=success&quoteFixture=amount-unavailable"
+      "path": "/withdraw/fresh?flowFixture=success&quoteFixture=amount-unavailable"
     },
     {
       "action": "waitFor",
-      "selector": ".ww-withdraw"
+      "testId": "withdraw-address"
     },
     {
       "action": "wait",
@@ -96,54 +83,50 @@
     },
     {
       "action": "fill",
-      "placeholder": "Search or paste an address",
+      "testId": "withdraw-address",
       "value": "0x7777777777777777777777777777777777777777"
     },
     {
-      "action": "click",
-      "role": "button",
-      "name": "New address",
-      "exact": false
-    },
-    {
       "action": "fill",
-      "label": "Wallet name (optional)",
+      "label": "Name this address",
       "value": "Weekend savings wallet"
     },
     {
-      "action": "click",
-      "selector": "[role=\"dialog\"][aria-label=\"Withdraw\"] button:has-text(\"Continue\")"
+      "action": "waitFor",
+      "selector": "[data-testid=\"withdraw-address-continue\"]:enabled"
     },
     {
       "action": "click",
-      "role": "button",
-      "name": "Continue without privacy",
-      "exact": true
+      "testId": "withdraw-address-continue"
     },
     {
       "action": "waitFor",
-      "selector": ".ww-fund__amount input"
+      "testId": "withdraw-amount"
     },
     {
       "action": "click",
-      "role": "button",
-      "name": "Receive as",
-      "exact": false
+      "selector": "[data-testid=\"withdraw-to\"] [data-testid=\"transfer-asset\"]"
     },
     {
       "action": "screenshot",
       "file": "15-unavailable-asset-options.png",
-      "state": "asset options"
+      "state": "network and coin picker"
     },
     {
       "action": "click",
-      "role": "option",
-      "name": "USDC",
-      "exact": false
+      "testId": "withdraw-chain-31337"
+    },
+    {
+      "action": "click",
+      "testId": "picker-USDC"
+    },
+    {
+      "action": "waitFor",
+      "testId": "withdraw-amount"
     },
     {
       "action": "fill",
-      "selector": ".ww-fund__amount input",
+      "testId": "withdraw-amount",
       "value": "24"
     },
     {
@@ -157,11 +140,11 @@
     },
     {
       "action": "waitFor",
-      "selector": "dialog[open] .ww-withdraw__warning:has-text(\"Swap fee unavailable. Withdraw DAI instead.\")"
+      "selector": "dialog[open] .ww-withdraw__warning:has-text(\"The fee can't be read right now\")"
     },
     {
       "action": "waitFor",
-      "selector": "dialog[open] button:disabled:has-text(\"Withdraw funds\")"
+      "selector": "dialog[open] [data-testid=\"withdraw-amount-continue\"]:disabled"
     },
     {
       "action": "screenshot",

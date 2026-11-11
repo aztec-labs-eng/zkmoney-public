@@ -1,12 +1,10 @@
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
   ERR_INVALID,
   ERR_TAG_MISMATCH,
-  PendingConnectBackStorage,
   decodeInline,
   encodeInline,
   type Contact,
-  type IStorageAdapter,
 } from "@obsidion/front-core"
 import {
   CONNECT_STASH_KEY,
@@ -14,10 +12,13 @@ import {
   confirmConnect,
   hasConnectStash,
   previewConnect,
+  stashInboundConnect,
   stashToPayload,
   takeConnectStash,
   type ConnectStash,
 } from "../../../src/features/contacts/connectReceive"
+import { tabStash } from "../../../src/platform/storage/tabStash"
+import { fakeTabStash } from "../../support/tabStash"
 
 /* ----------------------------- fixtures / fakes ---------------------------- */
 
@@ -36,32 +37,6 @@ function packet(overrides: object = {}): string {
     tag: "alice",
     ...overrides,
   })
-}
-
-/** sessionStorage-shaped store. */
-function memoryStore() {
-  const map = new Map<string, string>()
-  return {
-    getItem: (k: string) => map.get(k) ?? null,
-    setItem: (k: string, v: string) => void map.set(k, v),
-    removeItem: (k: string) => void map.delete(k),
-  }
-}
-
-class MemoryAdapter implements IStorageAdapter {
-  private map = new Map<string, string>()
-  async getItem(key: string) {
-    return this.map.get(key) ?? null
-  }
-  async setItem(key: string, value: string) {
-    this.map.set(key, value)
-  }
-  async removeItem(key: string) {
-    this.map.delete(key)
-  }
-  async clear() {
-    this.map.clear()
-  }
 }
 
 const loc = (over: object = {}) => ({
@@ -88,7 +63,7 @@ async function previewOf(payload: string, over: object = {}) {
 
 describe("connect stash (AE6)", () => {
   it("captures the fragment pre-gate and is consumed once", () => {
-    const store = memoryStore()
+    const store = fakeTabStash()
     expect(captureConnectStash(loc(), store)).toBe(true)
     expect(hasConnectStash(store)).toBe(true)
 
@@ -101,14 +76,14 @@ describe("connect stash (AE6)", () => {
   })
 
   it("does not capture without a fragment or off the /connect path", () => {
-    const store = memoryStore()
+    const store = fakeTabStash()
     expect(captureConnectStash(loc({ hash: "" }), store)).toBe(false)
     expect(captureConnectStash(loc({ pathname: "/contacts" }), store)).toBe(false)
-    expect(store.getItem(CONNECT_STASH_KEY)).toBeNull()
+    expect(store.get(CONNECT_STASH_KEY)).toBeNull()
   })
 
   it("stashes only the fragment — no host label can be mistaken for the sharer's tag", () => {
-    const store = memoryStore()
+    const store = fakeTabStash()
     captureConnectStash(loc(), store)
     expect(takeConnectStash(store)).toEqual({ hash: `#${packet()}` })
   })
@@ -116,6 +91,27 @@ describe("connect stash (AE6)", () => {
   it("rebuilds a scan payload the shared parser re-validates", () => {
     const stash: ConnectStash = { hash: "#pkt" }
     expect(stashToPayload(stash)).toBe("https://zk.money/connect#pkt")
+  })
+})
+
+describe("stashInboundConnect", () => {
+  afterEach(() => {
+    sessionStorage.clear()
+    history.replaceState(null, "", "/")
+  })
+
+  it("stashes the tab's /connect fragment and drops it from the URL, keeping the query", () => {
+    history.replaceState(null, "", `/connect?ref=qr#${packet()}`)
+    stashInboundConnect()
+    expect(location.pathname + location.search + location.hash).toBe("/connect?ref=qr")
+    expect(takeConnectStash(tabStash)).toEqual({ hash: `#${packet()}` })
+  })
+
+  it("leaves any other URL and the stash alone", () => {
+    history.replaceState(null, "", "/contacts#section")
+    stashInboundConnect()
+    expect(location.hash).toBe("#section")
+    expect(hasConnectStash(tabStash)).toBe(false)
   })
 })
 
@@ -198,83 +194,58 @@ describe("previewConnect", () => {
 
 describe("confirmConnect", () => {
   let contacts: Contact[]
-  let queue: PendingConnectBackStorage
+  let sent: { peer: string; content: object }[]
 
   beforeEach(() => {
     contacts = []
-    PendingConnectBackStorage.resetForTests()
-    queue = PendingConnectBackStorage.get(new MemoryAdapter())
+    sent = []
   })
 
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0))
   const confirmDeps = (over: object = {}) => ({
     addOrMergeContact: async (entry: Contact) => {
       contacts.push(entry)
       return entry
     },
-    queueConnectBack: (entry: { uuid: string; peerXmtp: string; content: object }) =>
-      queue.enqueue(entry as never),
+    sendConnectBack: async (peer: string, content: object) => {
+      sent.push({ peer: peer.toLowerCase(), content })
+      return { ok: true }
+    },
     connectBackVersion: 1,
     ...over,
   })
 
-  it("dismissal writes no contact and queues no connect-back (AE10)", async () => {
+  it("dismissal writes no contact and sends no connect-back (AE10)", async () => {
     // The full pre-confirm flow: stash → take → preview. Dismiss = simply never confirming.
-    const store = memoryStore()
+    const store = fakeTabStash()
     captureConnectStash(loc(), store)
     const stash = takeConnectStash(store)!
     await previewOf(stashToPayload(stash))
 
     expect(contacts).toEqual([])
-    expect(await queue.list()).toEqual([])
+    expect(sent).toEqual([])
     expect(takeConnectStash(store)).toBeNull() // stash gone — a re-render can't replay it
   })
 
-  it("confirm writes the contact and queues the connect-back", async () => {
+  it("confirm writes the contact and sends the connect-back", async () => {
     const preview = await previewOf(stashToPayload({ hash: `#${packet()}` }))
     const result = await confirmConnect(preview, confirmDeps())
+    await settle()
 
     expect(result).toMatchObject({ kind: "added", navigateId: "alice", pending: false })
     expect(contacts).toHaveLength(1)
-    const queued = await queue.list()
-    expect(queued).toMatchObject([{ uuid: UUID, content: { version: 1, uuid: UUID } }])
     // The codec re-checksums the EVM address; the send target is the same account.
-    expect(queued[0].peerXmtp.toLowerCase()).toBe(PEER_XMTP)
+    expect(sent).toEqual([{ peer: PEER_XMTP, content: { version: 1, uuid: UUID } }])
   })
 
-  it("a live sender delivers the connect-back; only an undeliverable send is queued", async () => {
-    const preview = await previewOf(stashToPayload({ hash: `#${packet()}` }))
-    const sent: string[] = []
-    await confirmConnect(
-      preview,
-      confirmDeps({
-        sendConnectBack: async (peer: string) => {
-          sent.push(peer)
-          return { ok: true }
-        },
-      }),
-    )
-    await new Promise((resolve) => setTimeout(resolve, 0))
-    expect(sent.map((p) => p.toLowerCase())).toEqual([PEER_XMTP])
-    expect(await queue.list()).toEqual([])
-
-    await confirmConnect(
-      preview,
-      confirmDeps({
-        sendConnectBack: async () => ({ ok: false, reason: "recipient-not-reachable" }),
-      }),
-    )
-    await new Promise((resolve) => setTimeout(resolve, 0))
-    expect(await queue.list()).toMatchObject([{ uuid: UUID }])
-  })
-
-  it("confirm stamps the scanner's ownTag onto the queued connect-back", async () => {
+  it("confirm stamps the scanner's ownTag onto the connect-back", async () => {
     const preview = await previewOf(stashToPayload({ hash: `#${packet()}` }))
     await confirmConnect(preview, confirmDeps({ ownTag: "@Bob" }))
-    const queued = await queue.list()
-    expect(queued).toMatchObject([{ content: { version: 1, uuid: UUID, tag: "bob" } }])
+    await settle()
+    expect(sent).toMatchObject([{ content: { version: 1, uuid: UUID, tag: "bob" } }])
   })
 
-  it("a failed add reports an error and queues nothing", async () => {
+  it("a failed add reports an error and sends nothing", async () => {
     const preview = await previewOf(stashToPayload({ hash: `#${packet()}` }))
     const result = await confirmConnect(
       preview,
@@ -284,33 +255,40 @@ describe("confirmConnect", () => {
         },
       }),
     )
+    await settle()
     expect(result).toEqual({ kind: "error", message: ERR_INVALID })
-    expect(await queue.list()).toEqual([])
+    expect(sent).toEqual([])
   })
 
-  it("a stored contact under another tag is a conflict: nothing added, nothing queued", async () => {
+  it("a stored contact under another tag is a conflict: nothing added, nothing sent", async () => {
     const preview = await previewOf(stashToPayload({ hash: `#${packet()}` }))
     const existing: Contact = { name: "old-tag", tag: "old-tag", address: PEER_L2, autoAdded: true }
     const result = await confirmConnect(
       preview,
       confirmDeps({ addOrMergeContact: async () => existing }),
     )
+    await settle()
     expect(result).toEqual({ kind: "conflict", contact: existing })
-    expect(await queue.list()).toEqual([])
+    expect(sent).toEqual([])
   })
 
-  it("a failed queue still reports the contact as added", async () => {
+  it.each([
+    ["an undeliverable", async () => ({ ok: false, reason: "recipient-not-reachable" })],
+    [
+      "a throwing",
+      async () => {
+        throw new Error("network down")
+      },
+    ],
+  ])("%s send still reports the contact as added, and is logged", async (_, sendConnectBack) => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
     const preview = await previewOf(stashToPayload({ hash: `#${packet()}` }))
-    const result = await confirmConnect(
-      preview,
-      confirmDeps({
-        queueConnectBack: async () => {
-          throw new Error("storage down")
-        },
-      }),
-    )
+    const result = await confirmConnect(preview, confirmDeps({ sendConnectBack }))
+    await settle()
     expect(result.kind).toBe("added")
     expect(contacts).toHaveLength(1)
+    expect(warn.mock.calls.some(([msg]) => /connect-?back/i.test(String(msg)))).toBe(true)
+    warn.mockRestore()
   })
 
   it("a pending-handshake confirm navigates by the pending row's id", async () => {

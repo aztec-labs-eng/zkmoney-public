@@ -1,7 +1,7 @@
 /** What a withdrawal record's phase means to the screens and the tracker. */
 
 import { TxStatus } from "@aztec-labs/stdlib/tx"
-import { swapEscrowTarget } from "./swapEscrowArgs"
+import { escrowLeg } from "./escrowLeg"
 import type { WithdrawalPhase, WithdrawalRecord } from "./types"
 
 /**
@@ -87,10 +87,10 @@ export function canSelfFinalizeWithdrawal(
 }
 
 /**
- * Whether the user may run a swap record's escrow themselves. `deployAndExecute` is permissionless and
- * pays its caller the tip, so once the escrow has waited past `SWAP_STUCK_THRESHOLD_MS` with no
- * relayer the user is the relayer. A record that cannot rebuild its escrow args has nothing to
- * run.
+ * Whether the user may run a swap or bridge-out record's escrow themselves. `deployAndExecute` is
+ * permissionless and pays its caller the tip, so once the escrow has waited past
+ * `SWAP_STUCK_THRESHOLD_MS` with no relayer the user is the relayer. A record that cannot rebuild
+ * its escrow leg has nothing to run.
  */
 export function canSelfExecuteSwap(
   record: WithdrawalRecord,
@@ -99,14 +99,14 @@ export function canSelfExecuteSwap(
 ): boolean {
   return (
     record.phase === "swapping" &&
-    swapEscrowTarget(record) !== undefined &&
+    escrowLeg(record) !== undefined &&
     // `swapExecuteTxHash` exists means a self-run is already in flight.
     !record.swapExecuteTxHash &&
     isWithdrawalDelayed(record, now, thresholdMs)
   )
 }
 
-/** Whether the escrow's DAI can be signed back out: parked `recoverable`, with rebuildable args. */
+/** Whether the escrow's DAI can be signed back out: parked `recoverable`, with a rebuildable leg. */
 export function canRecoverSwap(record: WithdrawalRecord): boolean {
-  return record.phase === "recoverable" && swapEscrowTarget(record) !== undefined
+  return record.phase === "recoverable" && escrowLeg(record) !== undefined
 }

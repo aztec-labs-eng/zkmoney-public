@@ -5,9 +5,9 @@
  * feeds `l2Address` to `pxe.registerSender`
  * so the PXE can discover the operator's broadcast SIPA notes.
  *
- * The registry keeps no operator enumeration, so the candidate set comes from the
- * `ResolverOperatorUpdated` history: one log per (re-)registration, deduped by
- * operator address, then each survivor's current record read back on-chain.
+ * The registry keeps no operator enumeration, so the records come from the
+ * `ResolverOperatorUpdated` history. `setResolverOperator` is the only writer and emits the whole
+ * entry, and nothing deletes one, so an operator's last event is its current record.
  *
  * Lives in sdk because these are contract reads; front-core never originates
  * a contract call.
@@ -15,13 +15,12 @@
 
 import type { Address, Hex, PublicClient } from "viem"
 import {
-  AccountMetadataRegistryAbi,
   getUserRecord,
   hasUserRecord,
   readResolverOperator,
+  type ResolverOperatorArg,
 } from "@oxide/l1-contracts"
 import { readResolverOperatorHistory } from "@oxide/l1-contracts/resolver_operator_history.js"
-import { chunkedContractEvents } from "../helpers/l1Logs.js"
 import { Network } from "@obsidion/core/constants"
 import type { SipaK1Point } from "./sipaStealth.js"
 
@@ -39,51 +38,52 @@ export interface SipaResolverOperatorRecord {
   resolverPublicKey: SipaK1Point
 }
 
+/** One `ResolverOperatorUpdated` event: the operator's whole entry, and where it was written. */
+export interface SipaResolverOperatorEvent {
+  record: SipaResolverOperatorRecord
+  blockNumber: bigint
+  logIndex: number
+}
+
+const recordOf = (owner: Address, entry: ResolverOperatorArg): SipaResolverOperatorRecord => ({
+  owner,
+  l2Address: entry.l2Address,
+  url: entry.url,
+  forwardingTable: entry.oxidePortal,
+  resolverPublicKey: entry.publicKey,
+})
+
 /**
- * Every resolver operator the AccountMetadataRegistry recorded in `range`, at its current values.
- * An operator whose record was never written (or was zeroed) is dropped — an empty `url` is the
- * registry's uninitialized sentinel.
+ * The registry's operator writes in `range`, in block order.
  *
  * `range` is required and has no default: selection here is an anti-squatter decision, and a window
  * that hides the legitimate operator while showing a recent impostor turns the preferred-owner
  * tie-break and the mainnet ambiguity check into a silent first-match. Pass a window that starts
  * at or before the deployment whose portal you will select for — its record cannot predate it.
  */
-export async function fetchSipaResolverOperators(
+export async function readSipaResolverOperatorEvents(
   publicClient: PublicClient,
   accountMetadataRegistry: Address,
   range: { fromBlock: bigint; toBlock: bigint },
-): Promise<SipaResolverOperatorRecord[]> {
-  const logs = await chunkedContractEvents(
-    publicClient,
-    {
-      address: accountMetadataRegistry,
-      abi: AccountMetadataRegistryAbi,
-      eventName: "ResolverOperatorUpdated",
-    },
-    range.fromBlock,
-    range.toBlock,
-  )
-  const owners = [
-    ...new Map(
-      logs
-        .map((log) => (log as { args?: { resolverOperator?: Address } }).args?.resolverOperator)
-        .filter((owner): owner is Address => !!owner)
-        .map((owner) => [owner.toLowerCase(), owner] as const),
-    ).values(),
-  ]
-  const records = await Promise.all(
-    owners.map(async (owner) => {
-      const {
-        l2Address,
-        url,
-        oxidePortal: forwardingTable,
-        publicKey: resolverPublicKey,
-      } = await readResolverOperator(publicClient, accountMetadataRegistry, owner)
-      return { owner, l2Address, url, forwardingTable, resolverPublicKey }
-    }),
-  )
-  return records.filter((record) => record.url.length > 0)
+): Promise<SipaResolverOperatorEvent[]> {
+  const history = await readResolverOperatorHistory(publicClient, accountMetadataRegistry, range)
+  return history.map(({ owner, entry, blockNumber, logIndex }) => ({
+    record: recordOf(owner, entry),
+    blockNumber,
+    logIndex,
+  }))
+}
+
+/**
+ * Each operator's current record: its last event, in the order operators first appear. An empty
+ * `url` is the registry's uninitialized sentinel, so that operator is dropped.
+ */
+export function sipaResolverOperatorsOf(
+  events: readonly SipaResolverOperatorEvent[],
+): SipaResolverOperatorRecord[] {
+  const last = new Map<string, SipaResolverOperatorRecord>()
+  for (const { record } of events) last.set(record.owner.toLowerCase(), record)
+  return [...last.values()].filter((record) => record.url.length > 0)
 }
 
 /** What the resolver reads to derive an address for `account`: its user record and the operator it names. */
@@ -266,13 +266,7 @@ export async function fetchHistoricalSipaResolverOperators(
 ): Promise<SipaResolverOperatorRecord[]> {
   const history = await operatorHistory(publicClient, accountMetadataRegistry, range)
   const records = history
-    .map(({ owner, entry }) => ({
-      owner,
-      l2Address: entry.l2Address,
-      url: entry.url,
-      forwardingTable: entry.oxidePortal,
-      resolverPublicKey: entry.publicKey,
-    }))
+    .map(({ owner, entry }) => recordOf(owner, entry))
     .filter(
       (record) =>
         record.forwardingTable.toLowerCase() === manifest.forwardingTable.toLowerCase() &&

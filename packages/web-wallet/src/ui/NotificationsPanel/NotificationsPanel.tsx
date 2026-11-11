@@ -1,5 +1,5 @@
 import { Icon, Spinner, TopNavIconButton } from "@obsidion/web-ds"
-import { useCallback, useSyncExternalStore } from "react"
+import { useCallback } from "react"
 import { useNavigate } from "react-router-dom"
 import {
   bestEffort,
@@ -7,9 +7,9 @@ import {
   selectNotifications,
   useStore,
   type NotificationEntry,
+  type NotificationState,
   type OperationRecord,
 } from "@obsidion/front-core"
-import { createExternalState } from "../../lib/externalState"
 import { fmt } from "../../lib/fmt"
 import { rowTimestamp } from "../format"
 import { Modal } from "../Modal"
@@ -19,19 +19,18 @@ import { notificationText } from "../notificationText"
 import { flowCopy } from "../../features/operations/operationCopy"
 import { openMigrationDialog } from "../../features/migration/migrationDialog"
 import type { Bell } from "../../features/notifications/notifications"
-import { useSession } from "../../session/session"
+import { useSession, type Session } from "../../session/session"
+import { profileBridge } from "../../session/walletChains"
 import { operationIdOf } from "../../features/operations/operationEntries"
-import { openTicketClaimReview } from "../../features/paylink/claimPrompt"
+import { openTicketClaimReview } from "../../features/paylink/ticketContinuation"
 import { pendingTicketRegistration } from "../../features/paylink/ticketContinuation"
 import { TabLine, type TabPlace } from "../../features/operations/TabLine"
-import { getOperationStore, operationsLoaded } from "../../features/operations/operations"
 import styles from "./NotificationsPanel.module.css"
 
-const panelOpen = createExternalState(false)
-
-/** Panel visibility, shared so any flow can open what the bell owns. */
+/** Panel visibility, the page's, so any flow can open what the bell owns. */
 export function useNotificationsPanelOpen(): [boolean, (open: boolean) => void] {
-  return [useSyncExternalStore(panelOpen.subscribe, panelOpen.get), panelOpen.set]
+  const open = useSession().page.notificationsOpen
+  return [useStore(open), open.set]
 }
 
 /** SF Symbol names the entries carry → web-ds glyphs. */
@@ -57,13 +56,18 @@ export interface NotificationRoute {
   activate?: boolean
   /** Open the migration dialog, at the residuals' list for their row. */
   migration?: "residuals" | "run"
+  /** A sent link's detail: ask the chain whether it was claimed since the last sweep. */
+  recheckLinks?: boolean
 }
 
 /**
  * Where a row tap lands: a mutual add opens the contact, funds on an old version the migration
  * dialog, a request link's publish its sheet, everything else the matching activity detail.
  */
-export function notificationRoute(entry: NotificationEntry): NotificationRoute | null {
+export function notificationRoute(
+  entry: NotificationEntry,
+  session: Pick<Session, "registrations"> & Partial<Pick<Session, "page">>,
+): NotificationRoute | null {
   const t = entry.target as {
     type: string
     run?: string
@@ -85,17 +89,22 @@ export function notificationRoute(entry: NotificationEntry): NotificationRoute |
   if (t.type === "registration.pending") {
     // A payment link's registration is Home's: its claim runs there and its review reports it, so
     // the wizard's deposit ask is never the place to land.
-    if (pendingTicketRegistration()) return { to: "/", activate: true }
+    if (pendingTicketRegistration(session)) return { to: "/", activate: true }
     const tag = (entry.target as { tag?: string }).tag
     return tag ? { to: `/claim/${encodeURIComponent(tag)}` } : null
   }
-  const notice = fmt(copy.panel.toast, notificationText(entry))
+  const bridge = session.page && profileBridge(session.page.config)
+  const notice = fmt(copy.panel.toast, notificationText(entry, bridge))
   // A failure alert is stale once a re-inclusion confirms its row or revives its withdrawal. A
   // withdrawal's failed entry is one; "Funds not sent", an error on the same target, is not.
   const failure =
     t.type === "reorg.txDetail" || (t.bridgeKind === "withdrawal" && /:failed(:|$)/.test(entry.id))
   const noticeStale: Record<string, string> =
     failure && entry.severity === "error" ? { noticeStaleOn: "success" } : {}
+  if (t.type === "bridgeIn.detail") {
+    const id = (entry.target as { id?: string }).id
+    return id ? { to: "/activity", state: { openBridgeIn: id, notice } } : null
+  }
   if (t.type === "upgrade.run" && t.run) {
     return { to: "/activity", state: { openUpgradeRun: t.run, notice } }
   }
@@ -108,9 +117,9 @@ export function notificationRoute(entry: NotificationEntry): NotificationRoute |
           : { openDepositAddress: t.sourceId, notice },
     }
   }
-  return t.txHash
-    ? { to: "/activity", state: { openTxHash: t.txHash, notice, ...noticeStale } }
-    : null
+  if (!t.txHash) return null
+  const route = { to: "/activity", state: { openTxHash: t.txHash, notice, ...noticeStale } }
+  return t.type.startsWith("paylink.") ? { ...route, recheckLinks: true } : route
 }
 
 /** What opening an entry does; null when it has nothing to open here. */
@@ -119,19 +128,22 @@ export type EntryOpener = (entry: NotificationEntry) => (() => void) | null
 /** The wallet's opener: every entry's detail is a route. */
 export function useRouteOpener(): EntryOpener {
   const navigate = useNavigate()
+  const session = useSession()
+  const { paylinkSweep: sweep } = session
   return useCallback(
     (entry: NotificationEntry) => {
-      const route = notificationRoute(entry)
+      const route = notificationRoute(entry, session)
       return route
         ? () => {
             if (route.migration)
               openMigrationDialog(route.migration === "residuals" ? "residuals" : undefined)
-            if (route.activate) openTicketClaimReview()
+            if (route.activate) openTicketClaimReview(session)
+            if (route.recheckLinks) sweep.recheck()
             if (route.to) navigate(route.to, route.state ? { state: route.state } : undefined)
           }
         : null
     },
-    [navigate],
+    [navigate, sweep, session],
   )
 }
 
@@ -145,21 +157,66 @@ export function toastKey(entry: NotificationEntry): string {
 
 /**
  * Entries the bell should toast: unread, not yet shown, settled, and either first seen since
- * `since` or seen live by this bell. A live row is status; an entry first seen settled before is
- * the backlog behind the bell.
+ * `since` and not in `backlog`, or seen live by this bell. A live row is status; an entry first seen
+ * settled before is the backlog behind the bell.
  */
 export function freshToasts(
   entries: NotificationEntry[],
   seen: Set<string>,
   since: number,
+  backlog: ReadonlyMap<string, number> = new Map(),
 ): NotificationEntry[] {
   return entries.filter(
     (e) =>
       !e.read &&
       !e.pending &&
       !seen.has(toastKey(e)) &&
-      (e.firstSeenAt >= since || seen.has(toastKey({ ...e, pending: true }))),
+      ((e.firstSeenAt >= since && backlog.get(e.id) !== e.firstSeenAt) ||
+        seen.has(toastKey({ ...e, pending: true }))),
   )
+}
+
+/** A bell's toasts: the listed entries' keys, the queue (head first) and whether the panel is open. */
+export interface Toasts {
+  /** Null until the list first hydrates. */
+  seen: Set<string> | null
+  /**
+   * Each state row's `firstSeenAt` when the list first hydrated, listed or not, such as an upgrade
+   * waiting on its value. That row listed later is backlog.
+   */
+  backlog: ReadonlyMap<string, number>
+  queue: NotificationEntry[]
+  open: boolean
+}
+
+/**
+ * The toasts after the bell reads its list: fresh entries join the queue, opening the panel empties
+ * it, and an entry that left the list leaves the queue. Returns `toasts` itself when nothing changed.
+ * `seen` holds the listed entries' keys only, so an entry forgotten and listed again toasts again.
+ */
+export function nextToasts(
+  toasts: Toasts,
+  list: {
+    entries: NotificationEntry[]
+    state: ReadonlyMap<string, NotificationState>
+    hydrated: boolean
+    open: boolean
+    since: number
+  },
+): Toasts {
+  let { seen, backlog, queue } = toasts
+  if (list.hydrated) {
+    const keys = new Set(list.entries.map(toastKey))
+    const fresh = seen ? freshToasts(list.entries, seen, list.since, backlog) : []
+    if (fresh.length) queue = [...queue, ...fresh]
+    if (!seen) backlog = new Map([...list.state.values()].map((row) => [row.id, row.firstSeenAt]))
+    if (!seen || keys.size !== seen.size || [...keys].some((k) => !seen?.has(k))) seen = keys
+  }
+  if (list.open && !toasts.open && queue.length) queue = []
+  const listed = new Set(list.entries.map((e) => e.id))
+  if (queue.some((e) => !listed.has(e.id))) queue = queue.filter((e) => listed.has(e.id))
+  if (seen === toasts.seen && queue === toasts.queue && list.open === toasts.open) return toasts
+  return { seen, backlog, queue, open: list.open }
 }
 
 /**
@@ -196,16 +253,16 @@ export function useNotificationList(scope?: NotificationScope) {
     },
     [scope],
   )
-  const { bell, notifications, device } = useSession()
+  const { bell, notifications, operations } = useSession()
   const { running, entries, state, stamped } = useStore(bell, select)
-  const loaded = useStore(operationsLoaded)
+  const loaded = useStore(operations.view).loaded
   const dismiss = useCallback(
     (id: string) => {
       const operationId = operationIdOf(id)
       if (!operationId) return void bestEffort("unknown", notifications.dismiss([id]))
-      void getOperationStore().dismiss(operationId).catch(console.warn)
+      void operations.apply(operationId, { type: "dismissed", at: Date.now() }).catch(console.warn)
     },
-    [notifications],
+    [notifications, operations],
   )
   /**
    * Opening an entry: an operation's is marked read, and so are the old-version funds row and a
@@ -214,12 +271,13 @@ export function useNotificationList(scope?: NotificationScope) {
   const opened = useCallback(
     (entry: NotificationEntry) => {
       const operationId = operationIdOf(entry.id)
-      if (operationId) void getOperationStore().markRead([operationId]).catch(console.warn)
+      if (operationId)
+        void operations.apply(operationId, { type: "read", at: Date.now() }).catch(console.warn)
       else if (entry.target.type === "migration.residuals" || entry.target.type === "migration.run")
         void bestEffort("unknown", notifications.markRead([entry.id]))
       else if (!entry.pending) void bestEffort("unknown", notifications.dismiss([entry.id]))
     },
-    [notifications],
+    [notifications, operations],
   )
   const markAllRead = useCallback(() => {
     const unread = scope
@@ -227,16 +285,18 @@ export function useNotificationList(scope?: NotificationScope) {
       : [...entries.filter((e) => !e.read).map((e) => e.id), ...state.keys()]
     void bestEffort("unknown", notifications.markRead(unread.filter((id) => !operationIdOf(id))))
     const ops = unread.map(operationIdOf).filter((id) => id !== undefined)
-    if (ops.length) void getOperationStore().markRead(ops).catch(console.warn)
-  }, [scope, entries, state, notifications])
+    for (const id of ops)
+      void operations.apply(id, { type: "read", at: Date.now() }).catch(console.warn)
+  }, [scope, entries, state, notifications, operations])
   // Running operations and live rows stay: their work has not ended.
   const clearAll = useCallback(() => {
     for (const e of entries) if (!e.pending) dismiss(e.id)
-    if (!scope) void getOperationStore().dismissEnded(device.get().storageId).catch(console.warn)
-  }, [scope, entries, dismiss, device])
+    if (!scope) void operations.dismissEnded().catch(console.warn)
+  }, [scope, entries, dismiss, operations])
   return {
     entries,
     running,
+    state,
     hydrated: loaded && stamped,
     unreadCount: entries.filter((e) => !e.read).length,
     dismiss,
@@ -326,7 +386,7 @@ function EntryRow({
   onOpen: (entry: NotificationEntry) => void
   onDismiss: (id: string) => void
 }) {
-  const { title, description } = notificationText(entry)
+  const { title, description } = notificationText(entry, profileBridge(useSession().page.config))
   return (
     <div className="ww-notifications__item">
       <button

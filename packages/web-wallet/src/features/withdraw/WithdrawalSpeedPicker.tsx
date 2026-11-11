@@ -2,13 +2,13 @@ import { useId, useRef, useState } from "react"
 import { formatUnits } from "viem"
 import { DEFAULT_DECIMALS } from "@obsidion/core/constants"
 import { Icon } from "@obsidion/web-ds"
+import { fmt } from "../../lib/fmt"
 import { tokenAmount } from "../../ui/format"
 import type { FasterWithdrawal } from "./useFasterWithdrawal"
 import { usePickerDismiss } from "../../ui/usePickerDismiss"
+import copy from "./WithdrawalSpeedPicker.copy"
 
 export type WithdrawalSpeed = "standard" | "faster"
-
-export const FASTER_WITHDRAWAL_SETTLED_NOTE = "Already as fast as it can be, so no tip is needed."
 
 export function etaLabel(seconds: number): string {
   const minutes = Math.max(1, Math.round(seconds / 60))
@@ -18,28 +18,31 @@ export function etaLabel(seconds: number): string {
   return rest ? `About ${hours} h ${rest} min` : `About ${hours} h`
 }
 
-export const FASTER_WITHDRAWAL_CHECKING = "Checking…"
-
 /** The Speed row while the first Faster quote is worked out. */
 export function WithdrawalSpeedChecking() {
   return (
     <div className="ww-deposit__fact" aria-busy="true">
-      <span>Speed</span>
+      <span>{copy.speed}</span>
       <span className="ww-deposit__pill ww-deposit__pill--label ww-deposit__pill--pending">
-        {FASTER_WITHDRAWAL_CHECKING}
+        {copy.checking}
       </span>
     </div>
   )
 }
 
-/** Standard (no tip) or Faster (a prover tip), each with its ETA. */
-export function WithdrawalSpeedPicker({
-  value,
-  onChange,
-  faster,
-  settled,
-  fasterBlocked,
-}: {
+/** The checking pill alone, as a fact's value where the row is drawn around it. */
+export function SpeedCheckingPill() {
+  return (
+    <span
+      className="ww-deposit__pill ww-deposit__pill--label ww-deposit__pill--pending"
+      aria-busy="true"
+    >
+      {copy.checking}
+    </span>
+  )
+}
+
+interface SpeedChoiceProps {
   value: WithdrawalSpeed
   onChange: (speed: WithdrawalSpeed) => void
   faster: FasterWithdrawal
@@ -47,9 +50,36 @@ export function WithdrawalSpeedPicker({
   settled?: boolean
   /** Why Faster cannot be chosen now; it is listed but disabled. */
   fasterBlocked?: string
-}) {
-  const [open, setOpen] = useState(false)
+  /** The choice is frozen, as while the burn it priced goes out. */
+  disabled?: boolean
+}
+
+/** Standard (no tip) or Faster (a prover tip), each with its ETA. */
+export function WithdrawalSpeedPicker(props: SpeedChoiceProps) {
   const labelId = useId()
+  return (
+    <>
+      <div className="ww-deposit__fact">
+        <span id={labelId}>{copy.speed}</span>
+        <SpeedChoicePill {...props} labelId={labelId} />
+      </div>
+      {props.settled && <small className="ww-withdraw__fee-note">{copy.settledNote}</small>}
+    </>
+  )
+}
+
+/** The choice's pill and the list it opens, named by the row's `labelId` or by `label` alone. */
+export function SpeedChoicePill({
+  value,
+  onChange,
+  faster,
+  settled,
+  fasterBlocked,
+  disabled,
+  labelId,
+  label,
+}: SpeedChoiceProps & { labelId?: string; label?: string }) {
+  const [open, setOpen] = useState(false)
   const listboxId = useId()
   const anchorRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
@@ -58,69 +88,62 @@ export function WithdrawalSpeedPicker({
   const options: { id: WithdrawalSpeed; name: string; detail: string; disabled?: boolean }[] = [
     {
       id: "standard",
-      name: "Standard",
-      detail: `${etaLabel(faster.standardEtaSeconds)} once confirmed`,
+      name: copy.standard,
+      detail: fmt(copy.eta, { eta: etaLabel(faster.standardEtaSeconds) }),
     },
     {
       id: "faster",
-      name: "Faster",
-      detail: fasterBlocked ?? `${etaLabel(faster.tippedEtaSeconds)} once confirmed · ${tip}`,
+      name: copy.faster,
+      detail:
+        fasterBlocked ?? fmt(copy.fasterDetail, { eta: etaLabel(faster.tippedEtaSeconds), tip }),
       disabled: fasterBlocked !== undefined,
     },
   ]
   const selected = options.find((o) => o.id === (settled ? "faster" : value)) ?? options[0]
+  const named = labelId ? { "aria-labelledby": labelId } : { "aria-label": label }
 
   usePickerDismiss(open, setOpen, anchorRef, triggerRef)
 
   return (
-    <>
-      <div className="ww-deposit__fact" ref={anchorRef}>
-        <span id={labelId}>Speed</span>
-        <button
-          ref={triggerRef}
-          type="button"
-          className="zkm-btn-reset ww-deposit__pill ww-deposit__pill--label"
-          aria-labelledby={labelId}
-          aria-haspopup="listbox"
-          aria-expanded={open}
-          aria-controls={listboxId}
-          disabled={settled}
-          onClick={() => setOpen((current) => !current)}
-        >
-          {selected.name}
-          {!settled && <Icon name={open ? "chevron-up" : "chevron-down"} size={16} />}
-        </button>
-        {open && !settled && (
-          <div
-            id={listboxId}
-            className="ww-deposit__picker"
-            role="listbox"
-            aria-labelledby={labelId}
-          >
-            {options.map((option) => (
-              <button
-                key={option.id}
-                type="button"
-                role="option"
-                className="zkm-btn-reset ww-deposit__picker-row"
-                aria-selected={option.id === value}
-                disabled={option.disabled}
-                onClick={() => {
-                  onChange(option.id)
-                  setOpen(false)
-                  triggerRef.current?.focus()
-                }}
-              >
-                <span>
-                  <b>{option.name}</b>
-                  <small>{option.detail}</small>
-                </span>
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-      {settled && <small className="ww-withdraw__fee-note">{FASTER_WITHDRAWAL_SETTLED_NOTE}</small>}
-    </>
+    <div className="ww-speed-choice" ref={anchorRef}>
+      <button
+        ref={triggerRef}
+        type="button"
+        className="zkm-btn-reset ww-deposit__pill ww-deposit__pill--label"
+        {...named}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls={listboxId}
+        disabled={settled || disabled}
+        onClick={() => setOpen((current) => !current)}
+      >
+        {selected.name}
+        {!settled && <Icon name={open ? "chevron-up" : "chevron-down"} size={16} />}
+      </button>
+      {open && !settled && !disabled && (
+        <div id={listboxId} className="ww-deposit__picker" role="listbox" {...named}>
+          {options.map((option) => (
+            <button
+              key={option.id}
+              type="button"
+              role="option"
+              className="zkm-btn-reset ww-deposit__picker-row"
+              aria-selected={option.id === value}
+              disabled={option.disabled}
+              onClick={() => {
+                onChange(option.id)
+                setOpen(false)
+                triggerRef.current?.focus()
+              }}
+            >
+              <span>
+                <b>{option.name}</b>
+                <small>{option.detail}</small>
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   )
 }

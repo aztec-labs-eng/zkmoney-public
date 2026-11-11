@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
+import { describe, it, expect, vi } from "vitest"
 import { readFileSync } from "fs"
 import { fileURLToPath } from "url"
 import { dirname, resolve } from "path"
@@ -68,16 +68,13 @@ function makeService(
   } = {},
 ) {
   const storage = opts.storage ?? new NodeContractServiceStorage(config.network)
-  const service = ContractService.getInstance(storage, undefined, opts.pxe, config.network, {
+  const service = new ContractService(storage, undefined, opts.pxe, config.network, {
     fetchFunction: opts.fetchFunction ?? noFetch,
     source: "profile",
     config,
   })
   return { service, storage }
 }
-
-beforeEach(() => ContractService.resetInstance())
-afterEach(() => ContractService.resetInstance())
 
 describe("ContractService profile mode — reads", () => {
   it("answers addresses and L1 from the snapshot without touching the network", async () => {
@@ -118,7 +115,7 @@ describe("ContractService profile mode — reads", () => {
     } as unknown as PXE
     const config = makeConfig()
     const storage = new NodeContractServiceStorage(config.network)
-    const service = ContractService.getInstance(storage, undefined, recordingPxe, config.network, {
+    const service = new ContractService(storage, undefined, recordingPxe, config.network, {
       fetchFunction: noFetch,
       source: "profile",
       config,
@@ -142,7 +139,7 @@ describe("ContractService profile mode — reads", () => {
     } as unknown as PXE
     const config = makeConfig()
     const storage = new NodeContractServiceStorage(config.network)
-    const service = ContractService.getInstance(storage, undefined, pxe, config.network, {
+    const service = new ContractService(storage, undefined, pxe, config.network, {
       fetchFunction: noFetch,
       source: "profile",
       config,
@@ -204,7 +201,7 @@ describe("ContractService.getConfiguredClassId", () => {
 
   it("states nothing in local-ledger mode, where no document states a class", () => {
     const storage = new NodeContractServiceStorage(Network.TESTNET)
-    const service = ContractService.getInstance(storage, undefined, undefined, Network.TESTNET, {
+    const service = new ContractService(storage, undefined, undefined, Network.TESTNET, {
       fetchFunction: noFetch,
       source: "local-ledger",
     })
@@ -214,7 +211,7 @@ describe("ContractService.getConfiguredClassId", () => {
 
   it("names no version in local-ledger mode", () => {
     const storage = new NodeContractServiceStorage(Network.TESTNET)
-    const service = ContractService.getInstance(storage, undefined, undefined, Network.TESTNET, {
+    const service = new ContractService(storage, undefined, undefined, Network.TESTNET, {
       fetchFunction: noFetch,
       source: "local-ledger",
     })
@@ -225,48 +222,51 @@ describe("ContractService.getConfiguredClassId", () => {
 
 describe("ContractService profile mode — construction guards", () => {
   it('rejects source: "profile" without a snapshot', () => {
-    expect(() =>
-      ContractService.getInstance(
-        new NodeContractServiceStorage(Network.TESTNET),
-        undefined,
-        undefined,
-        Network.TESTNET,
-        { source: "profile" },
-      ),
+    expect(
+      () =>
+        new ContractService(
+          new NodeContractServiceStorage(Network.TESTNET),
+          undefined,
+          undefined,
+          Network.TESTNET,
+          { source: "profile" },
+        ),
     ).toThrow(/requires a config snapshot/)
   })
 
   it("rejects a snapshot for a different network than the positional one", () => {
-    expect(() =>
-      ContractService.getInstance(
-        new NodeContractServiceStorage(Network.TESTNET),
-        undefined,
-        undefined,
-        Network.TESTNET,
-        {
-          source: "profile",
-          config: makeConfig({ network: Network.MAINNET }),
-        },
-      ),
+    expect(
+      () =>
+        new ContractService(
+          new NodeContractServiceStorage(Network.TESTNET),
+          undefined,
+          undefined,
+          Network.TESTNET,
+          {
+            source: "profile",
+            config: makeConfig({ network: Network.MAINNET }),
+          },
+        ),
     ).toThrow(/network "mainnet"/)
   })
 
   it("rejects construction without a source, naming both", () => {
     // JS callers get the runtime guard; TS callers already fail to compile.
-    expect(() =>
-      ContractService.getInstance(
-        new NodeContractServiceStorage(Network.TESTNET),
-        undefined,
-        undefined,
-        Network.TESTNET,
-        {} as never,
-      ),
+    expect(
+      () =>
+        new ContractService(
+          new NodeContractServiceStorage(Network.TESTNET),
+          undefined,
+          undefined,
+          Network.TESTNET,
+          {} as never,
+        ),
     ).toThrow(/"profile".*"local-ledger"/s)
   })
 
   it("answers a local-ledger address miss with undefined and no fetch", async () => {
     const storage = new NodeContractServiceStorage(Network.TESTNET)
-    const service = ContractService.getInstance(storage, undefined, undefined, Network.TESTNET, {
+    const service = new ContractService(storage, undefined, undefined, Network.TESTNET, {
       fetchFunction: noFetch,
       source: "local-ledger",
       oxideEnvProfile: null,

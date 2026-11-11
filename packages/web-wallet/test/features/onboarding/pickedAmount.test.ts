@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { pickedAmount } from "../../../src/features/onboarding/steps/DepositAddress/DepositAddress"
+import { pickedAmount } from "../../../src/features/onboarding/steps/DepositAddress/registrationPayFlow"
 
 describe("pickedAmount", () => {
   it("keeps the fee token's units", () => {

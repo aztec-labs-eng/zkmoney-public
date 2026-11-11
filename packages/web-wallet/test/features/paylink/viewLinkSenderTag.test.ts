@@ -14,9 +14,9 @@ const resolved = vi.hoisted(() => ({ senderTag: undefined as string | undefined 
 const resolveTagViaRegistry = vi.fn()
 
 vi.stubGlobal("location", { origin: "https://wallet.test" })
-await (await import("../../support/seedBootConfig")).seedBootConfig()
+const config = await (await import("../../support/seedBootConfig")).sandboxConfig()
 vi.mock("../../../src/features/contacts/registryResolution", () => ({
-  resolveTagViaRegistry: (...a: unknown[]) => resolveTagViaRegistry(...a),
+  resolveTagViaRegistry: (_page: unknown, tag: string) => resolveTagViaRegistry(tag),
 }))
 vi.mock("@obsidion/sdk", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/sdk")>()),
@@ -38,7 +38,7 @@ vi.mock("@obsidion/sdk", async (importOriginal) => ({
 }))
 
 const { viewLink } = await import("../../../src/features/paylink/sponsoredPaylink")
-const deps = { wallet: {}, contractService: {} } as never
+const deps = { session: { page: { config } }, wallet: {}, contractService: {} } as never
 
 describe("viewLink's sender tag", () => {
   beforeEach(() => {

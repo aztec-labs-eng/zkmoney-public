@@ -33,7 +33,7 @@ const DEPOSIT_TO_AZTEC_PUBLIC = parseAbiItem(
   "event DepositToAztecPublic(bytes32 indexed to, uint256 amount, bytes32 secretHash, bytes32 key, uint256 index)",
 )
 
-/** The FPC to top up. Resolved lazily per attempt so registry redeploys are picked up. */
+/** The FPC to top up: each portal generation's L1 funder deposits to its own. */
 export interface FpcRefuelTarget {
   address: AztecAddress
   artifact: ContractArtifact
@@ -44,57 +44,25 @@ export interface FpcRefuelOptions {
   threshold: bigint
   /** How far back to scan the portal's L1 logs for candidate deposits. */
   l1ScanBlocks?: bigint
-  /** Minimum spacing between attempts; bursts of user txs share one check. */
-  cooldownMs?: number
 }
 
-/**
- * Fire-and-forget from the post-tx tail of a sponsored flow, strictly AFTER the primary
- * `sendTx` promise settles — the wallet serializes local proving, so a refuel started earlier
- * would throw `LocalProvingInFlight` (and a user tx started while a refuel proves would hit the
- * same; the cooldown plus the few-second refuel proof keep that window small).
- */
+/** One refuel check of an FPC: its caller decides when, and how often, checks run. */
 export class FpcRefuelService {
   private readonly threshold: bigint
   private readonly l1ScanBlocks: bigint
-  private readonly cooldownMs: number
-  private lastAttemptMs = 0
-  private inflight = false
 
   constructor(
     private readonly wallet: ObsidionWallet,
     private readonly node: AztecNode,
-    private readonly resolveFpc: () => Promise<FpcRefuelTarget | undefined>,
     private readonly l1: PublicClient,
     options: FpcRefuelOptions,
   ) {
     this.threshold = options.threshold
     this.l1ScanBlocks = options.l1ScanBlocks ?? 50_000n
-    this.cooldownMs = options.cooldownMs ?? 60_000
   }
 
-  /**
-   * Never throws; a refuel is opportunistic and must not surface into the user's flow.
-   * `target` overrides the constructor resolver — each portal generation's L1 funder deposits to
-   * its own FPC, so a flow sponsored by a retired-generation FPC refuels THAT instance.
-   */
-  async maybeRefuel(target?: FpcRefuelTarget): Promise<void> {
-    if (this.inflight || Date.now() - this.lastAttemptMs < this.cooldownMs) return
-    this.inflight = true
-    this.lastAttemptMs = Date.now()
-    try {
-      await this.checkAndRefuel(target)
-    } catch (error) {
-      log.warn(`refuel attempt failed: ${error}`)
-    } finally {
-      this.inflight = false
-    }
-  }
-
-  private async checkAndRefuel(target?: FpcRefuelTarget): Promise<void> {
-    const fpc = target ?? (await this.resolveFpc())
-    if (!fpc) return
-
+  /** Below the threshold, sends one claimable skim deposit's `refuel`; submits without waiting. */
+  async refuel(fpc: FpcRefuelTarget): Promise<void> {
     const balance = await this.feeJuiceBalance(fpc.address)
     if (balance >= this.threshold) return
     log.info(`ClaimFPC fee juice ${balance} below ${this.threshold}, scanning for skim deposits`)

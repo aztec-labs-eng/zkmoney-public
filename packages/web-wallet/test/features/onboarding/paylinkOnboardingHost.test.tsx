@@ -1,16 +1,8 @@
-/**
- * What the paylink host hands the wizard: the session's paylink services, read by the real
- * `usePaylinkKit`, so a ticket-funded signup can claim its link. The wizard is a probe here; what
- * it does with the services is the pending-step suite's subject.
- */
+/** Guards: the paylink host hands the wizard no kit while the layer still connects. */
 import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-vi.mock("@obsidion/front-core", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@obsidion/front-core")>()),
-  useContractServiceContext: () => ({ contractService: { service: true } }),
-}))
 vi.mock("../../../src/features/onboarding/OnboardingScreen/OnboardingScreen", () => ({
   OnboardingScreen: ({
     paylinkKit,

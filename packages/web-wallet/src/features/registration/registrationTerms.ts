@@ -2,7 +2,8 @@ import { WalletError, bestEffort } from "@obsidion/core/errors"
 import { parseAbi, zeroAddress, type Address, type PublicClient } from "viem"
 import { Network } from "@obsidion/core/constants"
 import type { WebWalletConfig } from "../../config/env"
-import { getOxideTuple, l1PublicClient, requireTupleField } from "../../config/oxideTuple"
+import { l1PublicClient, requireTupleField } from "../../config/oxideTuple"
+import type { PageFacts } from "../../session/pageChain"
 import type { NameClaimResponse, RegistrationSchedule } from "@obsidion/core/types"
 import {
   latestRegistration,
@@ -34,7 +35,13 @@ export {
   type RegistrationOffer,
   type RegistrationQuote,
 } from "./registrationAsk"
-import { registrationOffer, wireTermsFundLink, wireTermsFundTicket } from "./registrationAsk"
+import {
+  registrationOffer,
+  reportShortAsk,
+  signedSchedule,
+  wireTermsFundLink,
+  wireTermsFundTicket,
+} from "./registrationAsk"
 
 /** Why a ticket signup cannot go on: its renewed quote is not one the link can pay. */
 export const PAYLINK_TICKET_REFUSED_MESSAGE = errorWords["registration.ticketRefused"]
@@ -57,6 +64,14 @@ export function claimTerms(
         }
       : {}),
   }
+}
+
+/** The terms a claim writes onto its record; a short signed schedule is reported as it arrives. */
+export function receivedClaimTerms(claim: Pick<NameClaimResponse, "hold" | "terms">) {
+  const terms = claimTerms(claim)
+  const signed = signedSchedule(terms)
+  if (signed) reportShortAsk(signed)
+  return terms
 }
 
 /** The reservation ended, so the deposit needs a re-signed quote. A 0 deadline is unknown, never lapsed. */
@@ -146,7 +161,7 @@ export function rememberReissuedClaim(
   void bestEffort(
     "unknown",
     updateRegistrationTerms(registrations, record, {
-      ...claimTerms(claim),
+      ...receivedClaimTerms(claim),
       ...(funded && claim.terms ? { paylinkBlocked: !fundable } : {}),
     }),
   )
@@ -158,16 +173,31 @@ export function committedProverTip(terms: RegistrationTerms | null | undefined):
   return terms?.proverTip === undefined ? 0n : BigInt(terms.proverTip)
 }
 
-/** Commits the speed and prover tip a review showed to the registration's stored terms. */
+/** The withdrawal fee a split was priced with, as the terms or a marker store it. */
+export const feeField = (fee: bigint | undefined) =>
+  fee === undefined ? {} : { withdrawalFee: fee.toString() }
+
+/**
+ * Commits the speed and prover tip a review showed to the registration's stored terms, with the
+ * withdrawal fee it priced them with.
+ */
 export async function commitRegistrationProverTip(
   registrations: TermsWriter,
   record: Pick<PendingRegistrationRecord, "sipaAddress" | "terms">,
   tip: bigint,
   speed: "standard" | "faster",
+  withdrawalFee: bigint | undefined,
 ): Promise<void> {
   const { terms } = record
-  if (!terms || (terms.proverTip === tip.toString() && terms.speed === speed)) return
-  await updateRegistrationTerms(registrations, record, { proverTip: tip.toString(), speed })
+  const fee = feeField(withdrawalFee)
+  if (
+    !terms ||
+    (terms.proverTip === tip.toString() &&
+      terms.speed === speed &&
+      terms.withdrawalFee === fee.withdrawalFee)
+  )
+    return
+  await updateRegistrationTerms(registrations, record, { proverTip: tip.toString(), speed, ...fee })
 }
 
 export function useRegistrationTerms(
@@ -219,22 +249,17 @@ const REGISTRY_CONTROLLER_ABI = parseAbi([
  * of truth — a manifest pin can be absent or stale, and staging proved both. A pre-split registry
  * does not answer the call and holds the immutables itself.
  */
-export async function scheduleSource(
-  config: WebWalletConfig,
-  client: PublicClient,
-): Promise<Address> {
-  const registry = requireTupleField(await getOxideTuple(config), "registry") as Address
-  try {
-    const controller = await client.readContract({
+export async function scheduleSource({ chain }: PageFacts, client: PublicClient): Promise<Address> {
+  const registry = requireTupleField(await chain.oxideTuple.read(), "registry") as Address
+  const controller = await bestEffort(
+    "unknown",
+    client.readContract({
       address: registry,
       abi: REGISTRY_CONTROLLER_ABI,
       functionName: "registrationController",
-    })
-    if (controller && controller !== zeroAddress) return controller
-  } catch {
-    // Pre-split registry: it holds the immutables itself.
-  }
-  return registry
+    }),
+  )
+  return controller && controller !== zeroAddress ? controller : registry
 }
 
 const BENEFICIARY_ABI = parseAbi([
@@ -251,12 +276,9 @@ const BENEFICIARY_ABI = parseAbi([
  * id's address when the chain has it, else the newest allowlisted one; with none the registration
  * cannot be priced.
  */
-export async function resolveBeneficiary(
-  config: WebWalletConfig,
-  preferred: number,
-): Promise<Address> {
-  const client = l1PublicClient(config)
-  const source = await scheduleSource(config, client)
+export async function resolveBeneficiary(page: PageFacts, preferred: number): Promise<Address> {
+  const client = l1PublicClient(page.config)
+  const source = await scheduleSource(page, client)
   const read = (fn: "beneficiaries" | "nextBeneficiaryId", args?: readonly [bigint]) =>
     client.readContract({
       address: source,
@@ -275,11 +297,9 @@ export async function resolveBeneficiary(
 }
 
 /** The deployment's on-chain default schedule, the amounts a terms-less deposit must cover. */
-export async function readRegistrationSchedule(
-  config: WebWalletConfig,
-): Promise<RegistrationSchedule> {
-  const client = l1PublicClient(config)
-  const address = await scheduleSource(config, client)
+export async function readRegistrationSchedule(page: PageFacts): Promise<RegistrationSchedule> {
+  const client = l1PublicClient(page.config)
+  const address = await scheduleSource(page, client)
   const [min, fee] = await Promise.all([
     client.readContract({ address, abi: REGISTRY_PARAMS_ABI, functionName: "REGISTRATION_MIN" }),
     client.readContract({ address, abi: REGISTRY_PARAMS_ABI, functionName: "REGISTRATION_FEE" }),
@@ -311,16 +331,4 @@ export function registrationDepositCredit(input: {
   if (gross === undefined || floor === undefined || feeOwed === undefined) return { short: false }
   if (gross < floor) return { short: true }
   return { credit: gross > feeOwed ? gross - feeOwed : 0n, short: false }
-}
-
-/** "3 days", "5 hours", "40 minutes" left until `deadlineMs`, or "" once it has passed. */
-export function formatRemaining(deadlineMs: number, nowMs: number): string {
-  const left = deadlineMs - nowMs
-  if (left <= 0) return ""
-  const minutes = Math.ceil(left / 60_000)
-  if (minutes < 60) return `${minutes} minute${minutes === 1 ? "" : "s"}`
-  const hours = Math.round(left / 3_600_000)
-  if (hours < 48) return `${hours} hour${hours === 1 ? "" : "s"}`
-  const days = Math.round(left / 86_400_000)
-  return `${days} day${days === 1 ? "" : "s"}`
 }

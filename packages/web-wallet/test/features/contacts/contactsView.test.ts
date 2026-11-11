@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import type { Contact, ContactRow, InlineResolveResult } from "@obsidion/front-core"
 import {
   addressKindLabel,
+  contactDetail,
   filterContacts,
   findContactEntry,
   freshResolutionConfirms,
@@ -224,5 +225,22 @@ describe("freshResolutionConfirms", () => {
   it("rejects when there is no cached resolution for the tag", () => {
     expect(freshResolutionConfirms(null, "alice", resolved("0xabc"))).toBe(false)
     expect(freshResolutionConfirms(cached, "bob", resolved("0xabc"))).toBe(false)
+  })
+})
+
+describe("contactDetail", () => {
+  const added: Contact = { name: "a", tag: "a", address: ADDR_A, autoAdded: true }
+  const approved: Contact = { name: "a", tag: "a", address: ADDR_A }
+  const unsaved: Contact = { name: "b", tag: "b", address: ADDR_B }
+  it.each<[string, Contact | undefined, Contact | null, Contact | null | undefined, unknown]>([
+    ["a contact is saved", approved, approved, undefined, { entry: approved, saved: true }],
+    ["a row the wallet added reads unsaved", added, added, undefined, { entry: added, saved: false }],
+    ["the wallet's row added while open reads saved", added, null, null, { entry: added, saved: true }],
+    ["the wallet's row changed while open reads saved", { ...added }, added, undefined, { entry: { ...added }, saved: true }],
+    ["a registered tag not stored reads unsaved", undefined, null, unsaved, { entry: unsaved, saved: false }],
+    ["nobody stored or registered", undefined, null, null, { entry: null, saved: true }],
+    ["the registry is still asked", undefined, null, undefined, { entry: undefined, saved: true }],
+  ])("%s", (_, stored, first, registry, expected) => {
+    expect(contactDetail(stored, first, registry)).toEqual(expected)
   })
 })

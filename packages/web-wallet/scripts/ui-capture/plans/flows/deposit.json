@@ -3,8 +3,20 @@
   "path": "/deposit?flowFixture=success",
   "steps": [
     {
+      "action": "click",
+      "testId": "deposit-show-address"
+    },
+    {
+      "action": "click",
+      "testId": "deposit-chain-31337"
+    },
+    {
+      "action": "click",
+      "testId": "picker-DAI"
+    },
+    {
       "action": "waitFor",
-      "selector": ".ww-deposit-disclaimer"
+      "testId": "deposit-privacy-continue"
     },
     {
       "action": "screenshot",
@@ -13,9 +25,15 @@
     },
     {
       "action": "click",
-      "role": "button",
-      "name": "Got it!",
-      "exact": false
+      "testId": "deposit-privacy-continue"
+    },
+    {
+      "action": "waitFor",
+      "testId": "deposit-address"
+    },
+    {
+      "action": "waitFor",
+      "selector": "[data-testid=\"deposit-copy\"]:not([aria-disabled])"
     },
     {
       "action": "screenshot",
@@ -23,41 +41,34 @@
       "state": "address"
     },
     {
-      "action": "click",
-      "role": "button",
-      "name": "Show",
-      "exact": false
-    },
-    {
-      "action": "screenshot",
-      "file": "one-time-warning.png",
-      "state": "one time warning"
-    },
-    {
-      "action": "click",
-      "role": "button",
-      "name": "Got it!",
-      "exact": false
-    },
-    {
-      "action": "screenshot",
-      "file": "qr.png",
-      "state": "qr"
-    },
-    {
       "action": "press",
-      "selector": "dialog:modal",
+      "selector": "dialog[aria-label=\"Deposit\"]",
       "key": "Escape"
     },
     {
+      "action": "waitFor",
+      "selector": "dialog[aria-label=\"Deposit\"]",
+      "state": "hidden"
+    },
+    {
       "action": "click",
-      "role": "button",
-      "name": "Connect your wallet",
-      "exact": false
+      "testId": "deposit-new-address"
+    },
+    {
+      "action": "click",
+      "testId": "deposit-chain-31337"
+    },
+    {
+      "action": "click",
+      "testId": "picker-DAI"
+    },
+    {
+      "action": "waitFor",
+      "label": "Amount to receive"
     },
     {
       "action": "fill",
-      "selector": ".ww-fund__amount input",
+      "label": "Amount to receive",
       "value": "24"
     },
     {
@@ -68,8 +79,14 @@
     {
       "action": "click",
       "role": "button",
-      "name": "Deposit funds",
-      "exact": false
+      "name": "Review",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "role": "button",
+      "name": "Send DAI",
+      "exact": true
     },
     {
       "action": "screenshot",
@@ -79,8 +96,8 @@
     {
       "action": "click",
       "role": "button",
-      "name": "Confirm deposit",
-      "exact": false
+      "name": "Send DAI",
+      "exact": true
     },
     {
       "action": "wait",
@@ -93,12 +110,12 @@
     },
     {
       "action": "waitFor",
-      "selector": ".ww-sheet--detail"
+      "testId": "deposit-sent-status"
     },
     {
       "action": "screenshot",
-      "file": "submitted-detail.png",
-      "state": "submitted detail"
+      "file": "submitted.png",
+      "state": "submitted: waiting for the sent deposit"
     }
   ],
   "finalScreenshot": false,

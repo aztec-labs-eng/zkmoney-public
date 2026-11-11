@@ -11,9 +11,6 @@ vi.mock("../../src/features/registration/openRegistration", async (importOrigina
 vi.mock("../../src/features/registration/sponsoredRailReadiness", () => ({
   useSponsoredRailPending: () => false,
 }))
-vi.mock("../../src/config/env", () => ({
-  getConfig: () => ({ oxideProfile: { portal: "0x" + "11".repeat(20) } }),
-}))
 
 const { actionVerdict, useActionGuard } = await import("../../src/features/actionGate")
 const { migrationDialogReason, setUpgradeStatus } = await import(
@@ -48,6 +45,7 @@ const ACTIONS: Action[] = [
 ]
 
 const { openTestSession } = await import("../support/session")
+const { defaultConfig } = await import("../support/page")
 const { closeSession } = await import("../../src/session/session")
 beforeEach(async () => {
   openTestSession()
@@ -152,6 +150,16 @@ describe("whether an action may start", () => {
       expect(actionVerdict(action, adding)).toBe("open")
   })
 
+  it("checks a new link and a Savings move while the rotations are not read, never opening them", () => {
+    const unread = { ...ready, rerootPending: undefined }
+    for (const action of ["link", "savings"] as const) {
+      expect(actionVerdict(action, unread)).toBe("checking")
+      expect(actionVerdict(action, { ...unread, demo: true })).toBe("open")
+    }
+    for (const action of ACTIONS.filter((a) => a !== "link" && a !== "savings"))
+      expect(actionVerdict(action, unread)).toBe("open")
+  })
+
   it("pauses only the actions that spend through the sponsor while a balance moves", () => {
     const moving = { ...ready, moving: true }
     for (const action of ["send", "withdraw", "link", "savings", "claim"] as const) {
@@ -182,7 +190,7 @@ describe("starting an action from a press", () => {
   // The wallet's mount reads the account's upgrade runs once a page; until then every press waits.
   beforeAll(async () => {
     const { checkUpgradeLock } = await import("../../src/features/migration/upgradeLock")
-    await checkUpgradeLock("0xabc")
+    await checkUpgradeLock(defaultConfig, "0xabc")
   })
   function press(action: Action) {
     let guard!: ReturnType<typeof useActionGuard>
@@ -196,21 +204,6 @@ describe("starting an action from a press", () => {
     act(() => guard(action, run))
     return Object.assign(run, { leave: () => act(() => root.unmount()) })
   }
-
-  it("starts it when nothing waits", () => {
-    setUpgradeStatus({ state: "none", registration: false })
-    const run = press("send")
-    expect(run).toHaveBeenCalledOnce()
-    run.leave()
-  })
-
-  it("opens the upgrade titled for it instead, while an upgrade is needed", () => {
-    setUpgradeStatus({ state: "offered", registration: false })
-    const run = press("withdraw")
-    expect(run).not.toHaveBeenCalled()
-    run.leave()
-    expect(migrationDialogReason()).toEqual({ action: "withdraw" })
-  })
 
   it("holds it in the upgrade sheet while that is not known, ready to start it", () => {
     setUpgradeStatus({ state: "checking", registration: false })

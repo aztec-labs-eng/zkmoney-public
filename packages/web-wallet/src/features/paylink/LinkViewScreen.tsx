@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useLocation, useNavigate } from "react-router-dom"
-import { useContractServiceContext, useResource } from "@obsidion/front-core"
+import { serviceStatus, useStore } from "@obsidion/front-core"
 import {
   DEFAULT_CONTRACTS,
   decodeLinkFragment,
@@ -15,16 +15,16 @@ import { showReportableError } from "../../errors/errorModal"
 import { enteredIdentity } from "../../session/account"
 import { OnboardingLayout } from "../../ui/OnboardingLayout"
 import { BootSplash } from "../../ui/PxeBoot"
-import { warmNoirWasm } from "../../platform/noirProver"
 import { stashClaimLink } from "./claimStash"
+import { tabStash } from "../../platform/storage/tabStash"
 import { PaylinkVisitorScreen } from "./PaylinkVisitorScreen"
-import { EmailPaylinkUnsupportedError, emitLinkOpened, type ViewLinkDeps } from "./sponsoredPaylink"
+import { EmailPaylinkUnsupportedError, emitLinkOpened } from "./sponsoredPaylink"
 import { seededLink, watchLink } from "./linkStatus"
 import { usePolledChainSeconds } from "./chainTime"
 import { withExpiry } from "./claimWindow"
 import type { PaymentLink } from "./types"
 import { useShortLinkLookup } from "../shortLinks"
-import { useSession } from "../../session/session"
+import { chainOf, useSession } from "../../session/session"
 
 /**
  * `/link#fragment`. A short link's fragment is looked up on chain first and replaced by the full
@@ -42,19 +42,21 @@ export function LinkViewScreen() {
 
 function ShortLinkView({ seed }: { seed: Uint8Array }) {
   const navigate = useNavigate()
-  const obsidionWallet = useResource(useSession().wallet)
-  const { contractService } = useContractServiceContext()
-  const node = obsidionWallet?.node
+  const session = useSession()
+  const walletBuilt = useStore(session.wallet, serviceStatus) === "ready"
+  const contracts = useStore(session.contractService, serviceStatus) === "ready"
   const resolve = useMemo(() => {
-    if (!node || !contractService) return undefined
+    if (!walletBuilt || !contracts) return undefined
     return async () => {
-      const params = await resolveShortPaylink({ node, contractService }, seed)
+      const { wallet, contractService } = await chainOf(session)
+      const params = await resolveShortPaylink({ node: wallet.node, contractService }, seed)
       return params && encodePaylinkInline(params)
     }
-  }, [node, contractService, seed])
+  }, [session, walletBuilt, contracts, seed])
   const refused = useShortLinkLookup(
     resolve,
     (fragment) => navigate(`/link#${fragment}`, { replace: true }),
+    // eslint-disable-next-line local/message-in-state -- debt
     (e) => (e instanceof Error && e.message === LINK_CLASS_REFUSAL ? e.message : undefined),
   )
 
@@ -91,35 +93,38 @@ function ShortLinkView({ seed }: { seed: Uint8Array }) {
  */
 function FullLinkView({ fragment }: { fragment: string }) {
   const navigate = useNavigate()
-  const obsidionWallet = useResource(useSession().wallet)
-  const rollupAddress = obsidionWallet?.networkId
-  const { contractService } = useContractServiceContext()
+  const session = useSession()
+  const rollupAddress = useStore(session.page.networkId)
+  const contracts = useStore(session.contractService, serviceStatus) === "ready"
 
   const [decoded, unsupported] = useMemo((): [PaymentLink | null, boolean] => {
     try {
-      return [fragment ? seededLink(fragment) : null, false]
+      return [fragment ? seededLink(session.page.config, fragment) : null, false]
     } catch (e) {
       return [null, e instanceof EmailPaylinkUnsupportedError]
     }
   }, [fragment])
   // Pinned to this mount: the signup wizard writing an identity must not unmount itself.
-  const { identity, device } = useSession()
+  const { identity, device } = session
   const [visitor] = useState(
-    () => enteredIdentity(identity.get(), device.get().passkeyMap) === null,
+    () =>
+      enteredIdentity(identity.get(), device.get().passkeyMap, session.page.config.rpId) === null,
   )
   const handoff = !visitor && decoded !== null
 
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!handoff) return
-    stashClaimLink(fragment)
+    stashClaimLink(tabStash, fragment)
     navigate("/", { replace: true })
   }, [handoff, fragment, navigate])
 
   // Fetched while the PXE registers the escrow's class, which needs no network: the simulator's
   // wasm, and the token and ClaimFPC artifacts an unclaimed link's reads register next.
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (handoff || !decoded) return
-    void warmNoirWasm().catch(() => {})
+    void session.page.noirWasm().catch(() => {})
     for (const contract of [DEFAULT_CONTRACTS.oxideToken, DEFAULT_CONTRACTS.claimFpc]) {
       void getHardcodedArtifact(contract).catch(() => {})
     }
@@ -127,6 +132,7 @@ function FullLinkView({ fragment }: { fragment: string }) {
 
   // Claim-funnel top for the visitor page; a handoff mount stays silent — useClaimLinkFlow emits.
   const openedFragment = useRef<string>(undefined)
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (handoff || !decoded || !rollupAddress || openedFragment.current === fragment) return
     openedFragment.current = fragment
@@ -135,40 +141,47 @@ function FullLinkView({ fragment }: { fragment: string }) {
 
   // Status needs only wallet + contracts, no passkey: the visitor page says when the link is
   // already claimed.
-  const statusDeps: ViewLinkDeps | undefined = useMemo(
-    () =>
-      obsidionWallet && contractService ? { wallet: obsidionWallet, contractService } : undefined,
-    [obsidionWallet, contractService],
-  )
+  const statusReadable = !!rollupAddress && contracts
   const [status, setStatus] = useState<PaymentLink | null>(null)
-  const chainNow = usePolledChainSeconds(obsidionWallet?.node)
+  const chainNow = usePolledChainSeconds()
   // Settled either way: the visitor page's voucher read waits on it, and a failed check must not
   // hold that read forever.
   const [statusSettled, setStatusSettled] = useState(false)
   const [noteMissed, setNoteMissed] = useState(false)
   const [statusAttempt, setStatusAttempt] = useState(0)
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
-    if (handoff || !decoded || !statusDeps) return
+    if (handoff || !decoded || !statusReadable) return
     setStatusSettled(false)
     setNoteMissed(false)
-    return watchLink(
-      statusDeps,
-      fragment,
-      setStatus,
-      // Transport failures keep the decoded view but tell the user the status is unverified.
-      (e: unknown) => {
-        showReportableError(e, "paylink:status", {
-          message: `Could not check the link's status: ${
-            e instanceof Error ? e.message : String(e)
-          }`,
-        })
-      },
-      (noteRead) => {
-        setStatusSettled(true)
-        setNoteMissed(!noteRead)
-      },
-    )
-  }, [handoff, decoded, statusDeps, fragment, statusAttempt])
+    let stopped = false
+    let stop: (() => void) | undefined
+    void chainOf(session).then((chain) => {
+      if (stopped) return
+      stop = watchLink(
+        { session, ...chain },
+        fragment,
+        setStatus,
+        // Transport failures keep the decoded view but tell the user the status is unverified.
+        (e: unknown) => {
+          showReportableError(e, "paylink:status", {
+            message: `Could not check the link's status: ${
+              // eslint-disable-next-line local/message-in-state -- debt
+              e instanceof Error ? e.message : String(e)
+            }`,
+          })
+        },
+        (noteRead) => {
+          setStatusSettled(true)
+          setNoteMissed(!noteRead)
+        },
+      )
+    })
+    return () => {
+      stopped = true
+      stop?.()
+    }
+  }, [handoff, decoded, statusReadable, session, fragment, statusAttempt])
 
   if (handoff) {
     return (

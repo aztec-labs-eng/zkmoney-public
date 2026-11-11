@@ -3,40 +3,42 @@
  * yet moved onto persistent stores, and the shared clock.
  */
 import {
-  UpgradeActivity,
   bestEffort,
   derived,
-  onRefundInFlightChanged,
   OPEN,
   PENDING,
-  legacyRecords,
-  refundsInFlight,
   legacyStore,
+  newestMovesFirst,
+  operationRows,
   syncCatchUp,
-  type Activity,
+  type BackupRotationRecord,
+  type BridgeIns,
+  type Transfers,
   type ContactActivitySources,
   type FeedSources,
   type Loaded,
   type OldVersionWithdrawal,
+  type Operations,
+  type PaylinkRecord,
+  type Paylinks,
   type ReadonlyStore,
   type RecordSet,
   type Requests,
+  type SavingsMoves,
   type SipaDeposits,
   type SipaProcessingState,
   type Sourced,
   type Transaction,
+  type TransferOperation,
+  type UpgradeActivity,
   type Withdrawals,
 } from "@obsidion/front-core"
-import { getSavingsMoveStore } from "../../features/savings/savingsMoveStore"
-import { getOldVersionWithdrawalStore } from "../../features/withdraw/oldVersionWithdrawals"
-import { wallClock } from "../../lib/clock"
-import { webStorage } from "../../platform/storage/WebStorageAdapter"
 
+// eslint-disable-next-line no-restricted-syntax -- debt
 const NO_UPGRADES: FeedSources["upgrades"] = { items: [], recipients: new Set(), loaded: false }
 
 /** The account's upgrade runs: each session's feed loads its own account's. */
-function upgradesStore(): ReadonlyStore<Sourced<FeedSources["upgrades"]>> {
-  const upgrades = UpgradeActivity.get(webStorage)
+function upgradesStore(upgrades: UpgradeActivity): ReadonlyStore<Sourced<FeedSources["upgrades"]>> {
   void bestEffort("unknown", upgrades.changed())
   return legacyStore(
     {
@@ -51,36 +53,42 @@ function upgradesStore(): ReadonlyStore<Sourced<FeedSources["upgrades"]>> {
   )
 }
 
-// A record source mirrors its list for the page's life, so each is built once per page.
-let moves: ReadonlyStore<FeedSources["moves"]> | undefined
-let oldVersionWithdrawals: ReadonlyStore<Loaded<OldVersionWithdrawal>> | undefined
-
-const savingsMoves = () => (moves ??= legacyRecords(getSavingsMoveStore()))
-export const oldVersionWithdrawalRecords = () =>
-  (oldVersionWithdrawals ??= legacyRecords(getOldVersionWithdrawalStore()))
-
 /**
- * The activity rows Home reads beside its window: every pending row, every link still in escrow,
- * and every row that pays a request.
+ * What Home reads beside its window: every pending row, every row that pays a request, the links
+ * still in escrow, and this device's transfers, each of which is its operation.
  */
 export interface ActivityReads {
   pending: ReadonlyStore<RecordSet<Transaction>>
-  open: ReadonlyStore<RecordSet<Transaction>>
+  open: ReadonlyStore<RecordSet<PaylinkRecord>>
   paying: ReadonlyStore<RecordSet<Transaction>>
+  transfers: ReadonlyStore<RecordSet<Transaction>>
 }
 
-export function activityReads(activity: Activity): ActivityReads {
+export function activityReads(
+  transfers: Transfers,
+  paylinks: Paylinks,
+  operations: Pick<Operations, "view">,
+): ActivityReads {
   return {
-    pending: activity.query("pending", PENDING),
-    open: activity.query("open", OPEN),
-    paying: activity.query("request", {}),
+    pending: transfers.where("pending", PENDING),
+    open: paylinks.where("open", OPEN),
+    paying: transfers.where("request", {}),
+    transfers: transferRows(operations),
   }
 }
 
-/** Several row reads as one, each row once: loaded once all are, failed if any is. */
-export function mergedRows(
-  sets: readonly ReadonlyStore<RecordSet<Transaction>>[],
+/** The rows of this device's transfers `keep` lists. */
+function transferRows(
+  operations: Pick<Operations, "view">,
+  keep?: (op: TransferOperation) => boolean,
 ): ReadonlyStore<RecordSet<Transaction>> {
+  return derived([operations.view], (ops) => operationRows(ops, keep))
+}
+
+/** Several reads as one, each record once: loaded once all are, failed if any is. */
+export function mergedRows<R extends { id: string } = Transaction>(
+  sets: readonly ReadonlyStore<RecordSet<R>>[],
+): ReadonlyStore<RecordSet<R>> {
   return derived(sets, (...read) => ({
     records: [...new Map(read.flatMap((set) => set.records.map((row) => [row.id, row]))).values()],
     loaded: read.every((set) => set.loaded),
@@ -90,53 +98,70 @@ export function mergedRows(
 
 export type FeedBase = Omit<FeedSources, "rows">
 
-/** What every feed reads beside its rows. */
+/** What every feed reads beside its rows: every link and every operation among the rest. */
 export function feedBase(
   requests: Requests,
   withdrawals: Withdrawals,
   sipaDeposits: SipaDeposits,
+  bridgeIns: BridgeIns,
   processing: ReadonlyStore<ReadonlyMap<string, SipaProcessingState>>,
+  paylinks: Pick<Paylinks, "view">,
+  operations: Pick<Operations, "view">,
+  savingsMoves: Pick<SavingsMoves, "view">,
+  rollup: {
+    upgrades: UpgradeActivity
+    oldVersionWithdrawals: ReadonlyStore<Loaded<OldVersionWithdrawal>>
+  },
+  rotations: ReadonlyStore<RecordSet<BackupRotationRecord>>,
+  wallClock: ReadonlyStore<number>,
 ): ReadonlyStore<FeedBase> {
-  const refunds: ReadonlyStore<ReadonlySet<string>> = {
-    get: refundsInFlight,
-    subscribe: onRefundInFlightChanged,
-  }
   return derived(
     [
+      paylinks.view,
+      operations.view,
       requests.view,
       requests.loaded,
       sipaDeposits.view,
       withdrawals.list,
-      upgradesStore(),
-      savingsMoves(),
-      oldVersionWithdrawalRecords(),
+      bridgeIns.list,
+      upgradesStore(rollup.upgrades),
+      savingsMoves.view,
+      rollup.oldVersionWithdrawals,
       processing,
-      refunds,
+      rotations,
       syncCatchUp.status,
       wallClock,
     ] as const,
     (
+      links,
+      ops,
       requests,
       requestsLoaded,
       deposits,
       withdrawals,
+      bridgeIns,
       upgrades,
       moves,
       oldVersionWithdrawals,
       processing,
-      refunding,
+      rotations,
       catching,
       now,
     ) => ({
+      links,
+      operations: ops,
       requests,
       requestsLoaded,
       deposits,
       withdrawals,
+      bridgeIns,
       upgrades: upgrades.value,
-      moves,
+      // A failed read counts as read: the feed shows what it has.
+      moves: { records: newestMovesFirst(moves.records), hydrated: moves.loaded || moves.failed },
       oldVersionWithdrawals: oldVersionWithdrawals.records,
       processing,
-      refunding,
+      // A funding whose attempt is not read reads as pending; the Passkeys sheet says why.
+      rotations: rotations.loaded && !rotations.failed ? rotations.records : "unread",
       catchingUp: catching,
       now,
     }),
@@ -151,28 +176,49 @@ export function feedSources(
   return derived([base, rows] as const, (base, rows) => ({ ...base, rows }))
 }
 
-/** The rows exchanged with these L2 addresses. */
+/** The rows exchanged with these L2 addresses, this device's sends to them among them. */
 export function peerRows(
-  activity: Pick<Activity, "query">,
+  transfers: Pick<Transfers, "where">,
+  operations: Pick<Operations, "view">,
   addresses: readonly string[],
 ): ReadonlyStore<RecordSet<Transaction>> {
-  return mergedRows(addresses.map((address) => activity.query("peer", address.toLowerCase())))
+  const peers = new Set(addresses.map((address) => address.toLowerCase()))
+  return mergedRows([
+    ...[...peers].map((address) => transfers.where("peer", address)),
+    transferRows(operations, (op) => op.kind === "send" && peers.has(op.payload.to.toLowerCase())),
+  ])
 }
+
+/** A failed read counts as read: a list shows what it has. */
+const settled = ({ loaded, failed }: { loaded: boolean; failed: boolean }) => loaded || failed
 
 /** The newest rows the recent people are read from. */
 const RECENT_PEOPLE_ROWS = 100
 
 /** What `recentContacts` reads: the newest interactions with contacts, whatever the feed shows. */
 export function contactActivity(
-  activity: Activity,
+  transfers: Transfers,
+  reads: Pick<ActivityReads, "transfers">,
   requests: Requests,
   withdrawals: Withdrawals,
   sipaDeposits: SipaDeposits,
 ): ReadonlyStore<ContactActivitySources> {
-  const recent = activity.query("time", { reverse: true, limit: RECENT_PEOPLE_ROWS })
+  const recent = transfers.where("time", { reverse: true, limit: RECENT_PEOPLE_ROWS })
   return derived(
-    [recent, requests.view, sipaDeposits.view, withdrawals.list] as const,
-    (transactions, requests, deposits, burns) => ({
+    [
+      mergedRows([recent, reads.transfers]),
+      recent,
+      reads.transfers,
+      requests.view,
+      requests.settled,
+      sipaDeposits.view,
+      withdrawals.list,
+      withdrawals.settled,
+    ] as const,
+    (transactions, newest, own, requests, requestsSettled, deposits, burns, burnsSettled) => ({
+      // Each read on its own: `mergedRows` reports a failure while another read is still loading.
+      hydrated:
+        settled(newest) && settled(own) && settled(deposits) && requestsSettled && burnsSettled,
       transactions: transactions.records,
       requests,
       sipaDeposits: deposits.records,

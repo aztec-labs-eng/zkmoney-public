@@ -1,0 +1,118 @@
+{
+  "scenario": "activity",
+  "viewport": "402x879,1280x832",
+  "path": "/settings?flowFixture=success&backupFixture=failed-closed",
+  "ready": {
+    "selector": ".ww-settings__user"
+  },
+  "steps": [
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Passkeys",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": "html[data-backup-screen=failed]"
+    },
+    {
+      "action": "screenshot",
+      "file": "c1-failed-closed.png",
+      "state": "C1: the new passkey's prompt closed"
+    },
+    {
+      "action": "goto",
+      "path": "/settings?flowFixture=success&backupFixture=failed-refused"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-settings__user"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Passkeys",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": "html[data-backup-screen=failed]"
+    },
+    {
+      "action": "screenshot",
+      "file": "c2-failed-refused.png",
+      "state": "C2: a security key without PRF can't be a backup"
+    },
+    {
+      "action": "goto",
+      "path": "/settings?flowFixture=success&backupFixture=failed-changed"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-settings__user"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Passkeys",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": "html[data-backup-screen=failed]"
+    },
+    {
+      "action": "screenshot",
+      "file": "c4-failed-changed.png",
+      "state": "C4: changed on another device"
+    },
+    {
+      "action": "goto",
+      "path": "/settings?flowFixture=success&backupFixture=failed-unknown"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-settings__user"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Passkeys",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": "html[data-backup-screen=failed]"
+    },
+    {
+      "action": "screenshot",
+      "file": "c5-failed-unknown.png",
+      "state": "C5: something went wrong before paying"
+    },
+    {
+      "action": "goto",
+      "path": "/settings?flowFixture=success&backupFixture=failed-route"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-settings__user"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Passkeys",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": "html[data-backup-screen=failed]"
+    },
+    {
+      "action": "screenshot",
+      "file": "c8-failed-route.png",
+      "state": "C8: the route is not paying, nothing charged"
+    }
+  ],
+  "finalScreenshot": false
+}

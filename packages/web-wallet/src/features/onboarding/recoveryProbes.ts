@@ -11,7 +11,7 @@ import {
   type OxideIdentityDeps,
   type ResolvedMsk,
 } from "@obsidion/front-core"
-import { getConfig, type WebWalletConfig } from "../../config/env"
+import type { WebWalletConfig } from "../../config/env"
 import { AmbiguousPasskeyError, NoWalletForPasskeyError } from "@obsidion/passkey-web"
 import { bootstrapKeyProvider } from "../registration/registrationDeps"
 
@@ -42,7 +42,7 @@ export function anchorTiers(
 ): AnchorTier[] {
   const tiers = registryTier(generations, addressesFor)
   if (!config.accountServiceTestMode) {
-    tiers.push({ name: "reservation", probes: [reservationCandidateProbe()] })
+    tiers.push({ name: "reservation", probes: [reservationCandidateProbe(config)] })
   }
   return tiers
 }
@@ -51,8 +51,11 @@ export function anchorTiers(
 const RESERVATION_TIMEOUT_MS = 15_000
 
 /** The name hashes account-service has claimed under `bootstrap`, asked fresh; any non-answer throws. */
-export function reservedNameHashes(bootstrap: PrivateKeyAccount): Promise<Hex[]> {
-  return new AccountServiceClient(getConfig().accountServiceUrl, {
+export function reservedNameHashes(
+  bootstrap: PrivateKeyAccount,
+  config: WebWalletConfig,
+): Promise<Hex[]> {
+  return new AccountServiceClient(config.accountServiceUrl, {
     bootstrapProvider: bootstrapKeyProvider(bootstrap),
   }).claimedNames({ timeoutMs: RESERVATION_TIMEOUT_MS })
 }
@@ -63,8 +66,12 @@ export function reservedNameHashes(bootstrap: PrivateKeyAccount): Promise<Hex[]>
  * `absent`; a lookup that cannot answer aborts. Left out in account-service test mode, where every
  * web claim shares one keyId and both candidates would look like its holder.
  */
-export function reservationCandidateProbe(lookup = reservedNameHashes): CandidateProbe {
-  return async (msk) => ((await lookup(deriveBootstrapKey(msk))).length > 0 ? "anchored" : "absent")
+export function reservationCandidateProbe(
+  config: WebWalletConfig,
+  lookup = reservedNameHashes,
+): CandidateProbe {
+  return async (msk) =>
+    (await lookup(deriveBootstrapKey(msk), config)).length > 0 ? "anchored" : "absent"
 }
 
 /** A bound grant names only the bootstrap key that first used it. */
@@ -72,7 +79,7 @@ export async function boundNameGrantOwner(
   nameHash: Hex,
   token: string,
   bootstrap: PrivateKeyAccount,
-  config: WebWalletConfig = getConfig(),
+  config: WebWalletConfig,
 ): Promise<boolean> {
   const details = await new AccountServiceClient(config.accountServiceUrl, {
     readOnly: true,
@@ -82,12 +89,13 @@ export async function boundNameGrantOwner(
 }
 
 export function boundGrantCandidateProbe(
+  config: WebWalletConfig,
   nameHash: Hex,
   token: string,
   lookup = boundNameGrantOwner,
 ): CandidateProbe {
   return async (msk) =>
-    (await lookup(nameHash, token, deriveBootstrapKey(msk))) ? "anchored" : "absent"
+    (await lookup(nameHash, token, deriveBootstrapKey(msk), config)) ? "anchored" : "absent"
 }
 
 /** A sign-in's outside anchors, with a presented bound grant before the claim ledger. */
@@ -101,7 +109,7 @@ export function enterTiers(
   if (grant && !config.accountServiceTestMode)
     tiers.splice(1, 0, {
       name: "name-grant",
-      probes: [boundGrantCandidateProbe(grant.nameHash, grant.token)],
+      probes: [boundGrantCandidateProbe(config, grant.nameHash, grant.token)],
     })
   return tiers
 }

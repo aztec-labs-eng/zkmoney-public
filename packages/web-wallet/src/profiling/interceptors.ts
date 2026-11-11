@@ -12,6 +12,7 @@ import { findAncestorSpan } from "./context"
 // Categories to skip when re-parenting batched fetches. A batched RPC call is triggered by a
 // setTimeout scheduled inside a `node` method, so it would otherwise nest under that first node
 // call. Skipping `node` makes the batch record a sibling of the node calls it groups.
+// eslint-disable-next-line no-restricted-syntax -- debt
 const SKIP_FOR_BATCH_PARENT = new Set(["node" as const, "rpc" as const])
 
 // ─── Fetch interceptor ──────────────────────────────────────────────────────

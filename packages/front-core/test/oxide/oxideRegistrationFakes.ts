@@ -1,4 +1,5 @@
 // The registration machine's collaborators, faked at their boundaries, over a real store.
+import { createPace } from "@obsidion/core/cadence"
 import { vi } from "vitest"
 import { type Address, type Hex, zeroAddress } from "viem"
 import { openDatabase } from "../../src/engine/database"
@@ -7,6 +8,7 @@ import { encodeRecord, loadRecords } from "../../src/engine/persistentStore"
 import { createRegistrations, registrationAt } from "../../src/engine/registrations"
 import type { PendingRegistrationRecord } from "../../src/engine/registrationRecord"
 import { createSipaDeposits } from "../../src/engine/sipaDeposits"
+import { createTurn } from "../../src/engine/turns"
 import {
   encodeRegistrationData,
   encodeUserRecord,
@@ -66,7 +68,6 @@ export const R1KEY = { qx: `0x${"a1".repeat(32)}` as Hex, qy: `0x${"a2".repeat(3
 export const CREDENTIAL_ID = "Y3JlZC1pZC0wMDE"
 /** A controller deployed before oxide raised the R1 install limits. */
 export const EARLIER_R1_GAS = { verification: 50_000n, callBase: 85_000n, callPerWord: 30_000n }
-export const USER_OP_HASH = `0x${"77".repeat(32)}` as Hex
 
 export const DERIVATION: RegistrationDerivation = {
   sipaAddress: SIPA,
@@ -131,8 +132,14 @@ export function registrationStore(records: readonly PendingRegistrationRecord[] 
     ),
   )
   const db = openDatabase(backend)
-  const deposits = createSipaDeposits({ db, account: true })
-  const registrations = createRegistrations({ db, legacy: db, deposits, account: true })
+  const deposits = createSipaDeposits({ db, account: true, now: () => Date.now() })
+  const registrations = createRegistrations({
+    db,
+    legacy: db,
+    deposits,
+    account: true,
+    now: () => Date.now(),
+  })
   const at = async (sipa: string) => registrationAt(await loadRecords(registrations.view), sipa)
   return { registrations, sipaDeposits: deposits, at }
 }
@@ -143,7 +150,6 @@ const l1Reads = () => ({
   readNameOf: vi.fn(async () => NO_NAME),
   readAccountMetadataRegistry: vi.fn(async () => AMR),
   readUserRecord: vi.fn(async () => ({ ...RECORD.record, l2Address: L2 })),
-  getUserOpHash: vi.fn(async () => USER_OP_HASH),
   readR1InstallGas: vi.fn(async () => EARLIER_R1_GAS),
   getCode: vi.fn(async () => "0x"),
   readAuthKeys: vi.fn(async () => []),
@@ -166,6 +172,7 @@ export function sessionDeps(over: Partial<Record<string, unknown>> = {}) {
     l1,
     deriveRegistrationSipa: vi.fn(async () => DERIVATION),
     registrations: store.registrations,
+    turn: createTurn(),
     ...over,
   }
   return { deps: deps as never, ...store, signDomain, l1 }
@@ -193,6 +200,8 @@ export function resumeDeps(
     registrations: store.registrations,
     close: async (r: PendingRegistrationRecord, event: never) =>
       void (await store.registrations.apply(r.sipaAddress, event)),
+    turn: createTurn(),
+    pace: createPace(),
     ...over,
   }
   return { deps: deps as never, ...store, record: full, deposits, l1 }
@@ -207,7 +216,6 @@ export function signDeps(signDomain = vi.fn(async (): Promise<unknown> => CLAIM)
     credentialId: CREDENTIAL_ID,
     l1: {
       readAccountMetadataRegistry: vi.fn(async () => AMR),
-      getUserOpHash: vi.fn(async () => USER_OP_HASH),
       readR1InstallGas: vi.fn(async () => EARLIER_R1_GAS),
       getCode: vi.fn(async () => "0x"),
       readAuthKeys: vi.fn(async () => []),

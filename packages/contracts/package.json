@@ -17,7 +17,8 @@
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "typecheck": "tsc --noEmit -p tsconfig.scripts.json",
-    "recompile:paylinks": "tsx scripts/recompile-paylinks.ts"
+    "recompile:paylinks": "tsx scripts/recompile-paylinks.ts",
+    "pin:contracts": "node scripts/pinned-contracts.mjs pin"
   },
   "dependencies": {
     "@aztec-labs/aztec.js": "v6.0.0",
@@ -31,9 +32,9 @@
   "devDependencies": {
     "@obsidion/oxide-build": "workspace:*",
     "@types/node": "^18.7.23",
-    "@vitest/coverage-v8": "^2.1.5",
+    "@vitest/coverage-v8": "^4.1.12",
     "tsx": "^4.7.0",
     "typescript": "5.7.3",
-    "vitest": "^2.1.5"
+    "vitest": "^4.1.12"
   }
 }

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity >=0.8.27;
 
-import {IWETH9} from "@uniswap/v4-periphery/src/interfaces/external/IWETH9.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 interface IFeePool {
   struct SpenderConfig {
@@ -28,13 +28,13 @@ interface IFeePool {
 
   event Released(address indexed spender);
 
-  function WETH() external view returns (IWETH9);
+  function TOKEN() external view returns (IERC20);
 
   function append(SpenderConfig calldata _config, uint64 _idleDelay) external;
 
   function pull(uint256 _amount) external returns (uint256 amount);
 
-  function renounce() external payable;
+  function renounce() external;
 
   function release(address _spender) external;
 

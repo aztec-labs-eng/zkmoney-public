@@ -14,9 +14,9 @@ import { PhoneUnreachableError } from "@obsidion/passkey-web"
 import { predictAccountAddressLocally } from "@oxide/l1-contracts"
 import { BaseError, RpcRequestError, getContractAddress } from "viem"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { fakeReads } from "../../support/fakeReads"
 import { openTestSession } from "../../support/session"
 import { testCore } from "../../support/page"
-import { session } from "../../../src/session/session"
 import { recordingAccounts } from "../../support/accountRecord"
 
 const h = vi.hoisted(() => ({
@@ -48,11 +48,6 @@ const fakeAuth = () => ({
   recordRecoveryMetadata: h.recordRecoveryMetadata,
 })
 vi.mock("../../../src/config/oxideTuple", () => ({
-  getOxideTuple: async () => ({
-    accountFactory: `0x${"11".repeat(20)}`,
-    registry: `0x${"22".repeat(20)}`,
-    ensDomain: "zkmoney.eth",
-  }),
   requireTupleField: (tuple: Record<string, string>, key: string) => tuple[key],
   l1PublicClient: () => ({}),
 }))
@@ -136,7 +131,9 @@ const deriveAccountAddress = vi.fn(async (candidate: Fr, passkeys: readonly stri
     candidate.toString() === msk.toString() && passkeys.includes(REAL) ? ADDR : "0xother",
 }))
 const wallet = { deriveAccountAddress, createObsidionAccount } as never
-const config = { rpId: "localhost" } as never
+const tuple = { accountFactory: FACTORY, registry: REGISTRY, ensDomain: "zkmoney.eth" }
+const chain = fakeReads({ oxideTuple: async () => tuple })
+const page = { config: { rpId: "localhost" }, chain } as never
 
 const anchoring: CandidateProbe = async (_msk, address) =>
   address === ADDR ? "anchored" : "absent"
@@ -216,8 +213,8 @@ const enter = (
   gate: ReturnType<typeof gateFor>["gate"],
   options: { chooser?: boolean; signal?: AbortSignal; tiers?: AnchorTier[] } = {},
 ) =>
-  enterWithPasskey(wallet, config, undefined, {
-    ...signInDeps,
+  enterWithPasskey(wallet, page, undefined, {
+    signIn: signInDeps,
     contractService: {} as never,
     gate,
     tiers: options.tiers ?? registry,
@@ -279,11 +276,11 @@ const stopHandedToRead = () => h.readInstalledPasskeyKey.mock.calls.at(-1)?.[2]?
 let warn: ReturnType<typeof vi.spyOn>
 
 const accounts = recordingAccounts((state) => h.addWebauthnAccount(state))
-/** What a sign-in reads beside its request: the account records and the page's auth. */
+/** What a sign-in reads beside its request: the account records and the session it starts in. */
 const signInDeps = {
   accounts,
-  get auth() {
-    return session().auth
+  get session() {
+    return openTestSession()
   },
 }
 
@@ -342,14 +339,14 @@ describe("enterWithPasskey settles the key from the L1 accounts", () => {
     installs(REAL)
     h.enterTiers.mockReturnValue(registry)
     const { gate } = gateFor()
-    await enterWithPasskey(wallet, config, "alice", {
-      ...signInDeps,
+    await enterWithPasskey(wallet, page, "alice", {
+      signIn: signInDeps,
       contractService: {} as never,
       gate,
       chooser: true,
     })
     expect(h.enterTiers).toHaveBeenCalledWith(
-      config,
+      expect.objectContaining({ rpId: "localhost" }),
       expect.objectContaining({ rollupVersion: "1" }),
       undefined,
       expect.any(Function),

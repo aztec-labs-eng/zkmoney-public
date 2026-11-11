@@ -16,7 +16,7 @@
 .ww-about-limits__section + .ww-about-limits__section {
   margin-top: 4px;
   padding-top: 0;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  border-top: 1px solid rgba(var(--ink-rgb), 0.08);
 }
 .ww-about-limits__title {
   margin: 0;
@@ -54,8 +54,7 @@
 .ww-about-limits__toggle:focus-visible,
 .ww-about-limits__status:focus-visible,
 .ww-about-limits__retry:focus-visible,
-.ww-about-limits__more:focus-visible,
-.ww-info-button:focus-visible {
+.ww-about-limits__more:focus-visible {
   outline: 2px solid var(--accent-green, #6c9);
   outline-offset: 2px;
   border-radius: 4px;
@@ -73,9 +72,9 @@
   width: 100%;
   margin: 0;
   padding: 12px 16px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(var(--ink-rgb), 0.1);
   border-radius: 16px;
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(var(--ink-rgb), 0.05);
   font-size: 13px;
 }
 .ww-about-limits__row {
@@ -88,6 +87,10 @@
   color: var(--text-secondary);
 }
 .ww-about-limits__row dd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
   margin: 0;
   color: var(--text-primary);
   font-weight: 500;
@@ -120,26 +123,6 @@
   text-decoration: underline;
 }
 
-/* Info icon after a limit or reason. It inherits the text's metrics: one line tall, glyph one em. */
-.zkm-btn-reset.ww-info-button {
-  display: inline-flex;
-  flex: none;
-  align-items: center;
-  justify-content: center;
-  width: 1lh;
-  height: 1lh;
-  vertical-align: top;
-  border-radius: 50%;
-  color: var(--text-secondary);
-}
-.ww-info-button svg {
-  width: 1em;
-  height: 1em;
-}
-.zkm-btn-reset.ww-info-button:hover {
-  color: var(--text-primary);
-}
-
 /* One compact limit row, such as "Max sent: $5,000 incl. fees". */
 .ww-limit-line {
   display: flex;
@@ -152,7 +135,7 @@
   text-align: left;
 }
 
-/* The one reason an amount or action is blocked, with its correction. */
+/* One blocking reason as a single pink line. */
 .ww-limit-reason {
   display: flex;
   flex-wrap: wrap;
@@ -165,18 +148,50 @@
   line-height: 1.4;
   text-align: left;
 }
-.ww-limit-reason__text {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
+/* The one reason an amount or action is blocked, with its correction. */
+.ww-limit-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0;
+  padding: 12px 16px;
+  border: 1px solid color-mix(in srgb, var(--accent-pink) 30%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--accent-pink) 10%, transparent);
+  text-align: left;
 }
-/* A reason that wraps would otherwise squeeze the icon. */
-.ww-limit-reason__text svg {
+/* Centered on the title's 18px line. */
+.ww-limit-notice__icon {
   flex-shrink: 0;
+  margin-top: 1px;
+  color: var(--accent-pink);
 }
-.zkm-btn-reset.ww-limit-reason__action {
-  min-height: 32px;
-  color: var(--accent-green, #6c9);
-  font-size: 12px;
+.ww-limit-notice__text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.ww-limit-notice__title {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 14px;
   font-weight: 600;
+  line-height: 18px;
+}
+.ww-limit-notice__body {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: normal;
+}
+.ww-limit-notice__action {
+  flex-shrink: 0;
+  align-self: center;
 }

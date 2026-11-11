@@ -1,0 +1,26 @@
+{
+  "scenario": "activity",
+  "viewport": "402x879,1280x832",
+  "path": "/settings?flowFixture=success&backupFixture=place",
+  "ready": {
+    "selector": ".ww-settings__user"
+  },
+  "steps": [
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Passkeys",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": "html[data-backup-screen=place]"
+    },
+    {
+      "action": "screenshot",
+      "file": "a3-place.png",
+      "state": "A3: where the backup lives, on a laptop"
+    }
+  ],
+  "finalScreenshot": false
+}

@@ -8,7 +8,7 @@ import {
 import coinLogo from "../../assets/receive/coin.webp"
 import { requestAmountLabel } from "../../ui/format"
 import { StyledQr } from "../../ui/StyledQr"
-import type { ReceiveCode } from "./receiveCode"
+import type { ReceiveCode } from "@obsidion/front-core"
 import type { CodePayment } from "./useReceiveCode"
 
 export const CODE_LOGO = coinLogo
@@ -61,7 +61,7 @@ export function ReceivePaid({
           <Icon
             name="check"
             size={40}
-            color={ethereum ? "#eed04e" : "var(--accent-green)"}
+            color={ethereum ? "var(--accent-gold)" : "var(--accent-green)"}
             strokeWidth={2.2}
           />
         </span>

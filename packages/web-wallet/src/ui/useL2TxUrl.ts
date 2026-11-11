@@ -1,8 +1,5 @@
-import { l2ExplorerTxEffectsBase, useResource } from "@obsidion/front-core"
-import { useEffect, useState } from "react"
-import { getConfig } from "../config/env"
+import { l2ExplorerTxEffectsBase, UNREAD, useStore } from "@obsidion/front-core"
 import { useSession } from "../session/session"
-import { retiredRollupMajor } from "../platform/sourceGeneration"
 
 /**
  * The L2 explorer link for each hash of a row made on rollup `networkId`: a retired generation's row
@@ -10,21 +7,13 @@ import { retiredRollupMajor } from "../platform/sourceGeneration"
  * wrong explorer.
  */
 export function useL2TxUrl(networkId: string | undefined): ((txHash: string) => string) | null {
-  const { network, nodeUrl } = getConfig()
-  const active = useResource(useSession().wallet)?.networkId
-  const current = !networkId || networkId.toLowerCase() === active?.toLowerCase()
-  const [resolved, setResolved] = useState<{ networkId: string; major?: string }>()
-  useEffect(() => {
-    if (current) return
-    let cancelled = false
-    void retiredRollupMajor(networkId).then(
-      (major) => !cancelled && setResolved({ networkId, major }),
-    )
-    return () => {
-      cancelled = true
-    }
-  }, [current, networkId])
-  if (!current && resolved?.networkId !== networkId) return null
-  const base = l2ExplorerTxEffectsBase(network, nodeUrl, current ? undefined : resolved?.major)
+  const session = useSession()
+  const { config, chain } = session.page
+  const active = useStore(session.page.networkId)
+  const retired = !!networkId && networkId.toLowerCase() !== active?.toLowerCase()
+  const major = useStore(retired ? chain.retiredRollupMajor(networkId) : UNREAD)
+  if (retired && major.status !== "ready") return null
+  const retiredMajor = major.status === "ready" ? major.value ?? undefined : undefined
+  const base = l2ExplorerTxEffectsBase(config.network, config.nodeUrl, retiredMajor)
   return (txHash) => `${base}${txHash}`
 }

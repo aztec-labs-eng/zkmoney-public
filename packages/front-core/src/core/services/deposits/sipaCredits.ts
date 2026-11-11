@@ -1,40 +1,61 @@
-import { formatUnits, type Address } from "viem"
+import { formatUnits } from "viem"
+import { DEFAULT_DECIMALS, WALLET_TOKEN_SYMBOL } from "@obsidion/core/constants"
 import type { SipaDeposit, SIPASweep } from "../../../engine/sipaDeposits"
 
-/** One deposit an address credited: the record as it reads for one token, and that token when split out. */
+/** One payment an address took: the record as it reads for that payment. */
 export interface SipaCredit {
   record: SipaDeposit
-  /** The credited token this view isolates; absent on the record's own view. */
-  token?: Address
+  /** The inbox index of the sweep of a past payment split out of the record; absent on its own view. */
+  payment?: string
 }
 
-const key = (address: string | undefined) => address?.toLowerCase() ?? ""
+/**
+ * The inbox index of the sweep the record's own fields describe. None while its payment has no
+ * sweep yet: an address paid again keeps its last claimed index until the new payment is swept.
+ */
+export function sipaPaymentIndex(
+  record: Pick<SipaDeposit, "phase" | "inboxIndex" | "claimedInboxIndexes" | "sweeps">,
+): string | undefined {
+  const index = record.inboxIndex
+  if (!index || record.phase === "claimed") return index
+  const claimed =
+    !!record.claimedInboxIndexes?.includes(index) ||
+    !!record.sweeps?.some((sweep) => sweep.inboxIndex === index)
+  return claimed ? undefined : index
+}
+
+/** Whether `record` reads as its address's first payment, the one any registration fee came out of. */
+export function isFirstSipaPayment(record: SipaDeposit): boolean {
+  const first = record.sweeps?.[0]?.inboxIndex
+  return !first || sipaPaymentIndex(record) === first
+}
 
 /**
- * The deposits a SIPA record stands for. A SIPA accepts every row's token and sweeps each through
- * its own row, so funds sent in two tokens are two deposits: the record reads as its latest, and
- * each other token its sweeps credited reads as a claimed deposit of its own latest sweep.
+ * The payments a SIPA record stands for, in payment order. An address can be paid again once its
+ * sweep is claimed, and each claimed sweep is in the record's ledger: the record reads as its latest
+ * or in-flight payment, and every other claimed sweep as a claimed payment of its own. The claimed
+ * payments of an address paid more than once are dated by their sweeps, which every device reads
+ * alike.
  */
 export function sipaCredits(record: SipaDeposit): SipaCredit[] {
-  const own = key(record.rowToken ?? record.tokenAddress)
-  const latest = new Map<string, SIPASweep>()
-  for (const sweep of record.sweeps ?? []) {
-    const token = key(sweep.tokenAddress ?? record.tokenAddress)
-    if (token && token !== own) latest.set(token, sweep)
-  }
+  const sweeps = record.sweeps ?? []
+  const current = sipaPaymentIndex(record)
+  const past = sweeps.filter((sweep) => sweep.inboxIndex !== current)
+  if (past.length === 0) return [{ record }]
+  const own = sweeps.find((sweep) => sweep.inboxIndex === current)
   return [
-    { record },
-    ...[...latest.values()].map((sweep) => ({
-      token: sweep.tokenAddress!,
-      record: creditOf(record, sweep),
-    })),
+    ...past.map((sweep) => ({ payment: sweep.inboxIndex, record: creditOf(record, sweep) })),
+    { record: own?.settledAt === undefined ? record : { ...record, startTime: own.settledAt } },
   ]
 }
 
+/**
+ * A past payment: the record as it read once `sweep` was claimed. A sweep that names no token
+ * credited the wallet token, whatever the record's later funding names, ETH included.
+ */
 function creditOf(record: SipaDeposit, sweep: SIPASweep): SipaDeposit {
-  const token = key(sweep.tokenAddress)
-  const sweeps = (record.sweeps ?? []).filter((s) => key(s.tokenAddress) === token)
-  const decimals = sweep.tokenDecimals ?? record.tokenDecimals ?? 18
+  const decimals = sweep.tokenDecimals ?? DEFAULT_DECIMALS
+  const at = sweep.settledAt ?? record.startTime
   return {
     ...record,
     phase: "claimed",
@@ -43,13 +64,16 @@ function creditOf(record: SipaDeposit, sweep: SIPASweep): SipaDeposit {
     fee: sweep.fee,
     tokenAddress: sweep.tokenAddress,
     rowToken: undefined,
-    tokenSymbol: sweep.tokenSymbol ?? record.tokenSymbol,
+    tokenSymbol: sweep.tokenSymbol ?? WALLET_TOKEN_SYMBOL,
     tokenDecimals: decimals,
     fundingTokenSymbol: sweep.fundingTokenSymbol ?? sweep.tokenSymbol,
     inboxIndex: sweep.inboxIndex,
     sweepTxHash: sweep.sweepTxHash,
-    claimedInboxIndexes: sweeps.map((s) => s.inboxIndex),
-    sweeps,
-    ...(sweep.settledAt === undefined ? {} : { endTime: sweep.settledAt }),
+    recoveryTxHash: undefined,
+    claimLanded: undefined,
+    pendingSweeps: undefined,
+    failure: undefined,
+    startTime: at,
+    endTime: at,
   }
 }

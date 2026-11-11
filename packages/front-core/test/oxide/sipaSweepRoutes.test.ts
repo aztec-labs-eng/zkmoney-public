@@ -90,6 +90,32 @@ describe("sipaSweepRoutes", () => {
     ])
   })
 
+  it("sweeps an earlier SIPA set's address through that set's subsidy on each row", () => {
+    const OLD_FACTORY = `0x${"0f".repeat(20)}`
+    const OLD_TABLE = `0x${"0b".repeat(20)}`
+    const current = table([
+      [TEST, ["deposit"]],
+      [SECOND, ["deposit"]],
+    ])
+    const earlier = (subsidy: string) => [
+      { sipaFactory: OLD_FACTORY, forwardingTable: OLD_TABLE, depositSubsidy: subsidy },
+    ]
+    const rows: OxideDeploymentTable = {
+      deployment: { ...current.deployment, forwardingTable: OLD_TABLE },
+      rows: current.rows.map((row, i) => ({
+        ...row,
+        bridge: {
+          ...row.bridge,
+          tuple: { ...row.bridge.tuple, priorSipaGenerations: earlier(`0x${`a${i}`.repeat(20)}`) },
+        },
+      })),
+    }
+    const subsidies = (sipaFactory?: string) =>
+      sipaSweepRoutes(rows, 31337, "deposit", sipaFactory).map((route) => route.depositSubsidy)
+    expect(subsidies(OLD_FACTORY)).toEqual([`0x${"a0".repeat(20)}`, `0x${"a1".repeat(20)}`])
+    expect(subsidies()).toEqual(current.rows.map(({ bridge }) => bridge.tuple.depositSubsidy))
+  })
+
   it("refuses a row without a deposit subsidy, and a table that routes nothing", () => {
     const missing = table([[TEST, ["deposit"]]])
     const bridge = missing.rows[0]!.bridge

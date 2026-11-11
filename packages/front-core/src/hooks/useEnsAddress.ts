@@ -1,11 +1,7 @@
-import { useEffect, useState } from "react"
 import type { Address } from "viem"
-import {
-  ensNameOf,
-  looksLikeEnsName,
-  lookupEnsAddress,
-  type GetEnsClient,
-} from "../core/services/ens"
+import { ensNameOf, looksLikeEnsName } from "../core/services/ens"
+import type { QueryEntry } from "../engine/query"
+import { useLookup } from "./useLookup"
 
 export type EnsLookup =
   | { name?: undefined }
@@ -13,34 +9,18 @@ export type EnsLookup =
   | { name: string; state: "found"; address: Address }
 
 /**
- * Resolves `text` when it is an ENS name, 300 ms after it stops changing. Every new entry of a name
- * looks it up afresh and reads as resolving until then, so a stealth name never reuses an address.
+ * Resolves `text` when it is an ENS name, 300 ms after it stops changing. `addresses` is never
+ * fresh, so every new entry of a name looks it up again and a stealth name never reuses an address.
  */
-export function useEnsAddress(text: string, getClient: GetEnsClient): EnsLookup {
+export function useEnsAddress(
+  text: string,
+  addresses: (name: string) => QueryEntry<Address | null>,
+): EnsLookup {
   const name = ensNameOf(text)
-  const [result, setResult] = useState<Address | null | "error">()
-  const [lookedUp, setLookedUp] = useState(name)
-  if (lookedUp !== name) {
-    setLookedUp(name)
-    setResult(undefined)
-  }
-  useEffect(() => {
-    if (!name) return
-    let live = true
-    const timer = setTimeout(() => {
-      lookupEnsAddress(getClient, name).then(
-        (address) => live && setResult(address),
-        () => live && setResult("error"),
-      )
-    }, 300)
-    return () => {
-      live = false
-      clearTimeout(timer)
-    }
-  }, [name, getClient])
+  const lookup = useLookup(name, addresses, { delayMs: 300 })
   if (!name) return looksLikeEnsName(text) ? { name: text, state: "invalid" } : {}
-  if (result === undefined) return { name, state: "resolving" }
-  if (result === null) return { name, state: "missing" }
-  if (result === "error") return { name, state: "error" }
-  return { name, state: "found", address: result }
+  if (lookup.status === "failed") return { name, state: "error" }
+  if (lookup.status !== "answered") return { name, state: "resolving" }
+  if (lookup.value === null) return { name, state: "missing" }
+  return { name, state: "found", address: lookup.value }
 }

@@ -107,6 +107,7 @@ export function useSaveCard(tag: string) {
       a.href = url
       a.download = `${tag}-zk-money.png`
       a.click()
+      // eslint-disable-next-line local/timer-in-view -- debt
       setTimeout(() => URL.revokeObjectURL(url), 1000)
     } catch (err) {
       console.warn("[receive] card image failed:", err)

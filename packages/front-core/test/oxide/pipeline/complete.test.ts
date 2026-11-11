@@ -1,6 +1,6 @@
 // @vitest-environment node
 /** `complete`: a pass that read everything it should, which is what replays the account's deposits. */
-import { describe, expect, it, vi } from "vitest"
+import { describe, expect, it } from "vitest"
 import { AztecAddress } from "@aztec-labs/aztec.js/addresses"
 import type { Address, Hex } from "viem"
 import { sipaCursorKey } from "../../../src/engine/sipaDeposits"
@@ -17,7 +17,6 @@ import {
 } from "./world"
 
 const ONE = 10n ** 18n
-const HOUR = 3_600_000
 const STRAY_CLONE = "0x00000000000000000000000000000000000000c5" as Address
 const OTHER = AztecAddress.fromBigIntUnsafe(0x9999n)
 
@@ -106,7 +105,7 @@ describe("complete", () => {
     expect(await w.cursor()).toBeUndefined()
   })
 
-  it("is cleared when the republish of a paid-again address throws", async () => {
+  it("is cleared when a paid-again address cannot read the L2 head", async () => {
     const w = await pipelineWorld()
     await setCursor(w, w.l1.head - 1n)
     const sipa = await w.announced(1, { resweepable: true })
@@ -119,31 +118,12 @@ describe("complete", () => {
       observedFrom: (w.l1.head - 1_000n).toString(),
     })
     w.l1.setBalance(sipa.address, DAI, ONE)
-    const onSweptAddressFunded = vi.fn(async () => {
-      throw new Error("node down")
-    })
+    w.l2.headError = new Error("node down")
 
-    expect(await w.scan({ onSweptAddressFunded })).toMatchObject({ failed: 0, complete: false })
-    expect(onSweptAddressFunded).toHaveBeenCalledWith(sipa.address)
-    expect(await w.get(sipa.address)).toMatchObject({ phase: "claimed" })
-  })
-
-  it("is cleared when the republish of an overdue address throws", async () => {
-    const w = await pipelineWorld()
-    await setCursor(w, w.l1.head - 1n)
-    const sipa = await w.announced(1)
-    await w.saved(sipa, {
-      phase: "sweeping",
-      startTime: Date.now() - 2 * HOUR,
-      observedFrom: (w.l1.head - 1_000n).toString(),
-    })
-    w.l1.setBalance(sipa.address, DAI, ONE)
-    const onSweepOverdue = vi.fn(async (): Promise<boolean> => {
-      throw new Error("node down")
-    })
-
-    expect(await w.scan({ onSweepOverdue })).toMatchObject({ failed: 0, complete: false })
-    expect(onSweepOverdue).toHaveBeenCalledWith(sipa.address)
+    expect(await w.scan()).toMatchObject({ failed: 0, complete: false })
+    const record = await w.get(sipa.address)
+    expect(record?.phase).toBe("claimed")
+    expect(record?.broadcast).toBeUndefined()
   })
 
   it("is cleared by a funded address whose sweep it cannot price", async () => {
@@ -162,7 +142,7 @@ describe("complete", () => {
     expect(claimed).toMatchObject({ claimed: 1, failed: 0 })
   })
 
-  it("is cleared when the blessed user-op list cannot be read", async () => {
+  it("is cleared when the blessed add-passkey list cannot be read", async () => {
     const w = await pipelineWorld()
     await w.announced(1, { intentHash: `0x${"88".repeat(32)}`, implementation: REGISTRATION_IMPL })
     w.l1.failing = (c) =>

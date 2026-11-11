@@ -4,10 +4,12 @@
  * recipient changes, as a relayer would name itself: the proof and the enclave's signature leave it
  * open. The channel's `target` takes the tip, as in `selfFinalize`.
  */
+import type { Pace } from "@obsidion/core/cadence"
 import { toHex, type Address, type Hex } from "viem"
+import type { Config } from "wagmi"
 import { WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
-import type { OldVersionRefund, OldVersionWithdrawal } from "@obsidion/front-core"
-import { getConfig } from "../../config/env"
+import type { OldVersionRefund, OldVersionWithdrawal, SavingsMoves } from "@obsidion/front-core"
+import type { WebWalletConfig } from "../../config/env"
 import { l1PublicClient } from "../../config/oxideTuple"
 import { isDesktopL1SubmitActive } from "../../platform/desktopBridge"
 import { usdAtomicFloor } from "../../ui/format"
@@ -87,10 +89,13 @@ export async function selfRefundOldVersionWithdrawal(
 }
 
 export interface SelfRefundOptions {
+  wagmi: Config
   /** Injected-wallet mode: pins the submitting (and tipped) account to the app's selection. */
   from?: Hex
   onHelperOpened?: (submitUrl: string) => void
   onStage?: (stage: L1ExitStage) => void
+  /** The page's: the L1 receipt wait polls at its interval. */
+  pace: Pick<Pace, "foreignMs">
 }
 
 /**
@@ -98,13 +103,18 @@ export interface SelfRefundOptions {
  * calldata is built, so there the tip goes to the withdrawal's own recipient.
  */
 async function refundChannel(
+  config: WebWalletConfig,
   record: OldVersionWithdrawal,
   refund: OldVersionRefund,
   opts: SelfRefundOptions,
 ): Promise<L1ExitChannel> {
-  const config = getConfig()
   if (!isDesktopL1SubmitActive())
-    return await injectedWalletChannel(config, { from: opts.from, onStage: opts.onStage })
+    return await injectedWalletChannel(config, {
+      pace: opts.pace,
+      wagmi: opts.wagmi,
+      from: opts.from,
+      onStage: opts.onStage,
+    })
   return desktopBridgeChannel({
     destination: record.to as Address,
     chainId: config.l1ChainId,
@@ -118,23 +128,26 @@ async function refundChannel(
     },
     onHelperOpened: opts.onHelperOpened,
     onStage: opts.onStage,
+    pace: opts.pace,
   })
 }
 
 /** Send `refund` of `record` over whichever channel this build has. Resolves to the L1 tx hash. */
 export async function selfRefundOldVersion(
+  config: WebWalletConfig,
+  moves: SavingsMoves,
   record: OldVersionWithdrawal,
   refund: OldVersionRefund,
-  opts: SelfRefundOptions = {},
+  opts: SelfRefundOptions,
 ): Promise<Hex> {
   const source = withdrawableSourceFor(refund.portal)
   if (!source)
     throw new Error("Your old version's funds aren't loaded yet. Try again in a little while.")
   const hash = await selfRefundOldVersionWithdrawal(record, refund, {
-    channel: await refundChannel(record, refund, opts),
-    open: (tipRecipient) => openOldVersionExit(source, tipRecipient),
-    settle: (id) => settleOldVersionWithdrawal(id),
-    saveRun: noteSelfRefunded,
+    channel: await refundChannel(config, record, refund, opts),
+    open: (tipRecipient) => openOldVersionExit(config, source, tipRecipient),
+    settle: (id) => settleOldVersionWithdrawal(config, moves, id),
+    saveRun: (id, run, hash) => noteSelfRefunded(moves, id, run, hash),
   })
   // The old version holds less now: Home and Withdraw read it again.
   noteOldVersionWithdrawn()

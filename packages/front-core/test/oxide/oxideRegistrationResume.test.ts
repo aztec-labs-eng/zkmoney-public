@@ -2,7 +2,7 @@
 /** The detection tick, the broadcast rebuild and the late broadcast, over a real store. */
 
 import { describe, expect, it, vi } from "vitest"
-import { type Address, type Hex } from "viem"
+import type { Address, Hex } from "viem"
 
 import { AccountServiceError } from "../../src/oxide/accountServiceClient"
 import {

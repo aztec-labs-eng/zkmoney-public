@@ -1,3 +1,4 @@
+import { createPace } from "@obsidion/core/cadence"
 import { memoryBackend, type MemoryBackend } from "../../src/engine/memoryBackend"
 import { openDatabase } from "../../src/engine/database"
 // @vitest-environment node
@@ -11,9 +12,9 @@ import type {
 } from "@obsidion/sdk"
 import { WalletSyncCoordinator } from "../../src/core/services/transactions/WalletSyncCoordinator"
 import { createCatchUp } from "../../src/engine/catchUp"
-import { seededActivity } from "../utils/activityFixture"
+import { seededActivity } from "../utils/transferFixture"
 import { startRuntime, type Runtime } from "../../src/engine/runtime"
-import { fixed } from "../../src/engine/resource"
+import { fixed } from "../../src/engine/service"
 import { memoryStore } from "../../src/engine/store"
 import { transferScan, type TransferScan } from "../../src/engine/transferScan"
 
@@ -28,7 +29,7 @@ const flush = () => vi.advanceTimersByTimeAsync(0)
 const hung = new Promise<never>(() => {})
 
 function harness() {
-  const activity = seededActivity()
+  const transfers = seededActivity()
   const catchUp = createCatchUp()
   const visible = memoryStore(true)
   const reads = { hang: false, count: 0 }
@@ -58,19 +59,20 @@ function harness() {
           },
           readBalanceSnapshot: async () => ({ balances: await balances(), anchorBlock: 100 }),
         },
-        db: activity.db,
-        transactionStore: activity,
+        db: transfers.db,
+        transactionStore: transfers,
         tags: { resolveL2: async () => null },
         contacts: { findByL2Address: async () => null },
         token: token.metadata,
         balance: {
-          store: { updateBalance: async () => true },
+          store: { write: async () => true },
           scope: "net:me",
           tokenAddress: TOKEN.address,
         },
         boot: { notesSynced: () => {}, historyReplayed: () => {} },
         catchUp,
       })),
+    now: () => Date.now(),
   })
   return {
     visible,
@@ -89,6 +91,8 @@ function run(h: Harness, backend: MemoryBackend = memoryBackend()) {
     db: openDatabase(backend),
     milestones: { after: async () => true, reached: () => false },
     visible: h.visible.readonly,
+    pace: createPace(),
+    now: () => Date.now(),
   })
   running.push({ runtime, scan: h.scan })
   return runtime

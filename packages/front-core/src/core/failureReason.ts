@@ -9,7 +9,10 @@ export const INTERRUPTED_ERRORS = {
   other: "The tab closed before it was sent.",
 } as const
 
-function interruptedErrorFor(tx: Transaction): string {
+/** What a failure's words read off a row. */
+type Failed = Pick<Transaction, "status" | "action" | "failure" | "reorgEpoch" | "blockNumber">
+
+function interruptedErrorFor(tx: Failed): string {
   if (tx.action === "send") return INTERRUPTED_ERRORS.send
   if (tx.action === PaylinkActionEnum.PAY) return INTERRUPTED_ERRORS.paylinkCreate
   if (tx.action === PaylinkActionEnum.CLAIM) return INTERRUPTED_ERRORS.paylinkClaim
@@ -37,7 +40,7 @@ const REORGED_ERRORS: Partial<Record<string, string>> = {
  * A failed row's reason in its action's words: the tab-close text, the reorg that took back a
  * landed row, else a plain line for the user's own send, link or claim.
  */
-export function failureReason(tx: Transaction): string | undefined {
+export function failureReason(tx: Failed): string | undefined {
   if (tx.status !== "failed") return
   if (tx.failure?.code === "tx.interrupted") return interruptedErrorFor(tx)
   // Only the reorg layer bumps the epoch; a block anchor means the row had landed before it failed.

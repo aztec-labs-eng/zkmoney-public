@@ -7,18 +7,18 @@ import {IERC20} from "@oz/token/ERC20/IERC20.sol";
 import {IOxidePortal} from "@core/interfaces/IOxidePortal.sol";
 import {ForwardingTable} from "@periphery/ForwardingTable.sol";
 import {IForwardingTable} from "@periphery/interfaces/IForwardingTable.sol";
-import {SIPABase} from "@periphery/SIPABase.sol";
 import {Errors} from "@periphery/Errors.sol";
 import {MockPortal} from "@test/mocks/MockPortal.sol";
+import {Intent, Intents} from "@periphery/Intent.sol";
 
 contract ForwardingTableTest is Test {
   uint256 internal constant ROLLUP_VERSION = 7;
   uint128 internal constant SWEEP_TIP = 25e16;
   uint128 internal constant BENEFICIARY_FEE = 1e18;
 
-  SIPABase.Intent internal constant DEPOSIT = SIPABase.Intent.Deposit;
-  SIPABase.Intent internal constant REGISTRATION = SIPABase.Intent.Registration;
-  SIPABase.Intent internal constant USER_OP = SIPABase.Intent.UserOp;
+  Intent internal constant DEPOSIT = Intents.DEPOSIT;
+  Intent internal constant REGISTRATION = Intents.REGISTRATION;
+  Intent internal constant ADD_PASSKEY = Intents.ADD_PASSKEY;
 
   address internal owner = makeAddr("owner");
   address internal funder = makeAddr("funder");
@@ -140,7 +140,7 @@ contract ForwardingTableTest is Test {
     intents[0] = IForwardingTable.IntentFees({intent: DEPOSIT, beneficiaryFee: BENEFICIARY_FEE, sweepTip: SWEEP_TIP});
     intents[1] = IForwardingTable.IntentFees({intent: REGISTRATION, beneficiaryFee: 0, sweepTip: 2 * SWEEP_TIP});
     intents[2] =
-      IForwardingTable.IntentFees({intent: USER_OP, beneficiaryFee: 3 * BENEFICIARY_FEE, sweepTip: 3 * SWEEP_TIP});
+      IForwardingTable.IntentFees({intent: ADD_PASSKEY, beneficiaryFee: 3 * BENEFICIARY_FEE, sweepTip: 3 * SWEEP_TIP});
     vm.prank(owner);
     table.addRow(dai, daiPortal, intents);
 
@@ -173,7 +173,7 @@ contract ForwardingTableTest is Test {
       IForwardingTable.IntentFees({intent: REGISTRATION, beneficiaryFee: BENEFICIARY_FEE, sweepTip: SWEEP_TIP});
     intents[2] =
       IForwardingTable.IntentFees({intent: DEPOSIT, beneficiaryFee: 2 * BENEFICIARY_FEE, sweepTip: 2 * SWEEP_TIP});
-    vm.expectRevert(abi.encodeWithSelector(Errors.ForwardingTable__IntentAlreadyListed.selector, dai, uint8(DEPOSIT)));
+    vm.expectRevert(abi.encodeWithSelector(Errors.ForwardingTable__IntentAlreadyListed.selector, dai, DEPOSIT));
     vm.prank(owner);
     table.addRow(dai, daiPortal, intents);
   }
@@ -195,7 +195,7 @@ contract ForwardingTableTest is Test {
   }
 
   function testFuzz_addRowStoresAnyAmounts(uint8 _intent, uint128 _beneficiaryFee, uint128 _sweepTip) public {
-    SIPABase.Intent intent = SIPABase.Intent(bound(_intent, 1, uint256(type(SIPABase.Intent).max)));
+    Intent intent = Intent.wrap(uint8(bound(_intent, 1, type(uint8).max)));
     _sweepTip = uint128(bound(_sweepTip, 1, type(uint128).max));
     vm.prank(owner);
     table.addRow(dai, daiPortal, _one(intent, _beneficiaryFee, _sweepTip));
@@ -233,7 +233,7 @@ contract ForwardingTableTest is Test {
     IForwardingTable.IntentFees[] memory intents = new IForwardingTable.IntentFees[](2);
     intents[0] = IForwardingTable.IntentFees({intent: DEPOSIT, beneficiaryFee: BENEFICIARY_FEE, sweepTip: SWEEP_TIP});
     intents[1] =
-      IForwardingTable.IntentFees({intent: SIPABase.Intent.None, beneficiaryFee: BENEFICIARY_FEE, sweepTip: SWEEP_TIP});
+      IForwardingTable.IntentFees({intent: Intents.NONE, beneficiaryFee: BENEFICIARY_FEE, sweepTip: SWEEP_TIP});
     vm.expectRevert(Errors.ForwardingTable__NoneIntent.selector);
     vm.prank(owner);
     table.addRow(dai, daiPortal, intents);
@@ -261,7 +261,7 @@ contract ForwardingTableTest is Test {
     vm.startPrank(owner);
     table.addRow(dai, daiPortal, _one(DEPOSIT, BENEFICIARY_FEE, SWEEP_TIP));
 
-    vm.expectRevert(abi.encodeWithSelector(Errors.ForwardingTable__IntentAlreadyListed.selector, dai, uint8(DEPOSIT)));
+    vm.expectRevert(abi.encodeWithSelector(Errors.ForwardingTable__IntentAlreadyListed.selector, dai, DEPOSIT));
     table.addIntents(dai, _one(DEPOSIT, _beneficiaryFee, _sweepTip));
     vm.stopPrank();
 
@@ -314,7 +314,7 @@ contract ForwardingTableTest is Test {
     vm.prank(owner);
     table.addRow(dai, daiPortal, _one(DEPOSIT, BENEFICIARY_FEE, SWEEP_TIP));
 
-    vm.expectRevert(abi.encodeWithSelector(Errors.ForwardingTable__IntentNotListed.selector, dai, uint8(REGISTRATION)));
+    vm.expectRevert(abi.encodeWithSelector(Errors.ForwardingTable__IntentNotListed.selector, dai, REGISTRATION));
     table.rowFor(dai, REGISTRATION);
   }
 
@@ -380,7 +380,7 @@ contract ForwardingTableTest is Test {
     return new IForwardingTable.InitialRow[](0);
   }
 
-  function _one(SIPABase.Intent _intent, uint128 _beneficiaryFee, uint128 _sweepTip)
+  function _one(Intent _intent, uint128 _beneficiaryFee, uint128 _sweepTip)
     internal
     pure
     returns (IForwardingTable.IntentFees[] memory intents)

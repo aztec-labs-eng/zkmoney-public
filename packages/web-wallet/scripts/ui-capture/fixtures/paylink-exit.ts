@@ -23,6 +23,7 @@ export const cashOutLink: typeof actual.cashOutLink = async (...args) => {
   const amount = formatUnits(actual.cashOutNet(gross, DEMO_WITHDRAWAL_FEE), TOKEN_INFO.decimals)
   const identity = actual.linkWithdrawalIdentity(fragment)
   return captureWithdrawal(
+    deps.session,
     recipient,
     amount,
     stage,

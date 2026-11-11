@@ -2,25 +2,29 @@ import {
   createAccountRecord,
   memoryBackend,
   openDatabase,
-  type AccountState,
+  type AccountEvent,
 } from "@obsidion/front-core"
-import { session as current, type Session } from "../../src/session/session"
+import type { Session } from "../../src/session/session"
+import { openTestSession } from "./session"
 
-/** Gives the session an account record over a database of its own, holding `state` when given. */
-export async function giveAccountRecord(state?: AccountState, session: Session = current()) {
-  const record = createAccountRecord({ db: openDatabase(memoryBackend()) })
-  if (state) await record.save(state)
+/** Gives the session an account record over a database of its own, after `event` when given. */
+export async function giveAccountRecord(
+  event?: AccountEvent,
+  session: Session = openTestSession(),
+) {
+  const record = createAccountRecord({ db: openDatabase(memoryBackend()), now: () => Date.now() })
+  if (event) await record.apply(event)
   Object.defineProperty(session, "accountRecord", { configurable: true, value: record })
   return record
 }
 
-/** A sign-in's account record over its own database; each save waits on `seen` before it lands. */
-export function recordingAccounts(seen: (state: AccountState) => unknown = () => {}) {
-  const record = createAccountRecord({ db: openDatabase(memoryBackend()) })
-  const save = record.save
-  record.save = async (state) => {
-    await seen(state)
-    return save(state)
+/** A sign-in's account record over its own database; each write waits on `seen` before it lands. */
+export function recordingAccounts(seen: (event: AccountEvent) => unknown = () => {}) {
+  const record = createAccountRecord({ db: openDatabase(memoryBackend()), now: () => Date.now() })
+  const apply = record.apply
+  record.apply = async (event) => {
+    await seen(event)
+    return apply(event)
   }
   return () => record
 }

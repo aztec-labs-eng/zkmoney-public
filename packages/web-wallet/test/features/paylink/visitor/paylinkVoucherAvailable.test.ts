@@ -7,8 +7,8 @@
  * whether the create renews it.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { fixed } from "@obsidion/front-core"
 
-await (await import("../../../support/seedBootConfig")).seedBootConfig()
 const { claimSponsorRail } = vi.hoisted(() => ({
   claimSponsorRail: vi.fn(async (_deps: unknown, rail: string) => ({
     sponsor: { fpcAddress: {}, fpcArtifact: {}, railId: rail === "voucher" ? 2 : 1 },
@@ -30,7 +30,16 @@ vi.mock("@obsidion/sdk", async (importOriginal) => ({
 
 const { voucherAvailable } = await import("../../../../src/features/paylink/sponsoredPaylink")
 
-const deps = { wallet: {}, account: { getAddress: () => ({}) }, contractService: {} } as never
+/** The session's services, each ready. */
+const deps = {
+  session: {
+    wallet: fixed("wallet", {}),
+    account: fixed("account", { getAddress: () => ({}) }),
+    contractService: fixed("contractService", {}),
+    token: fixed("token", {}),
+    teeSigner: fixed("teeSigner", {}),
+  },
+} as never
 
 const allowance = (over: Record<string, unknown>) => ({
   subscribed: true,

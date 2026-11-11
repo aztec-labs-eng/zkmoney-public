@@ -1,4 +1,5 @@
-import { useEffect, type RefObject } from "react"
+import type { RefObject } from "react"
+import { useDomEffect } from "./useDomEffect"
 
 /** Closes an open picker on an outside press, or on Escape with focus back on its trigger. */
 export function usePickerDismiss(
@@ -7,7 +8,7 @@ export function usePickerDismiss(
   anchorRef: RefObject<HTMLElement | null>,
   triggerRef: RefObject<HTMLElement | null>,
 ) {
-  useEffect(() => {
+  useDomEffect(() => {
     if (!open) return
     // A sheet that scrolls clips the list. jsdom has no scrollIntoView.
     anchorRef.current?.lastElementChild?.scrollIntoView?.({ block: "nearest" })

@@ -85,15 +85,3 @@ export async function resolveTagViaRegistry(
   const { resolver, currentRollupVersion } = await buildResolver(opts)
   return resolver.resolveTag(tag, currentRollupVersion, opts.retiredRollupVersions)
 }
-
-/**
- * Availability probe for onboarding: `true` when the name maps to any Registry account (registered,
- * including a record on a stale rollup), `false` when the name is free to claim.
- */
-export async function isTagRegisteredOnRegistry(
-  tag: string,
-  opts: RegistryTagResolutionOpts,
-): Promise<boolean> {
-  const resolution = await resolveTagViaRegistry(tag, opts)
-  return resolution.status !== "notFound"
-}

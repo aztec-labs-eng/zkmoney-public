@@ -102,9 +102,8 @@ export interface FinalizedPayload {
  * Maps the wallet's pre-simulation result to the production payload.
  *
  * Invoked by `ObsidionWallet.sendTx` exactly once per send, after the
- * internal simulation and before fee-option freezing / proving. Runs OUTSIDE
- * the proving scope — a throw here surfaces as a plain `sendTx` rejection
- * with no proving-progress terminal state to clean up.
+ * internal simulation and before fee-option freezing / proving. A throw here
+ * surfaces as a plain `sendTx` rejection: nothing was proven.
  *
  * Contract for implementers:
  *   - MUST NOT call back into `wallet.sendTx` (single-flight proving).

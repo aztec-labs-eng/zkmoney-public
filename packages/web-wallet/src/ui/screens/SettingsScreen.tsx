@@ -1,5 +1,5 @@
 import { leavePage } from "../../platform/storage/walletStorage"
-import { useEffect, useState, type ReactNode } from "react"
+import { useState, type ReactNode } from "react"
 import { useNavigate } from "react-router-dom"
 import {
   ComingSoonPill,
@@ -14,27 +14,33 @@ import {
   type IconName,
 } from "@obsidion/web-ds"
 import { useStore } from "@obsidion/front-core"
-import { saveSetting } from "../../platform/storage/deviceKeys"
-import { getConfig } from "../../config/env"
+import { savePrefs, saveSetting } from "../../platform/storage/deviceKeys"
+import { backupPasskeySettingsEnabled } from "../../config/features"
 import { useSession } from "../../session/session"
 import { appVersion } from "../../lib/analytics"
 import { BugReportModal, FeedbackModal } from "../FeedbackModals"
 import { ContractAddressesModal } from "../ContractAddressesModal"
 import { PasskeysSheet } from "../PasskeysSheet/PasskeysSheet"
-import { useBackupRotation } from "../../features/backupPasskey/backupRotationStore"
+import { useBackupRotation } from "../../features/backupPasskey/backupRotations"
+import {
+  BackupNudgeBadge,
+  SettingsBackupNudge,
+} from "../../features/backupPasskey/BackupNudge/BackupNudge"
 import { allowanceRowValue } from "../../features/allowance/allowanceView"
 import { useSponsoredAllowance } from "../../features/allowance/useSponsoredAllowance"
 import { WalletAboutLimitsSheet } from "../../features/limits/AboutLimitsSheet"
 import { EndpointsModal, customEndpointsLabel } from "../EndpointsModal"
-import { StrandedRecoveryModal } from "../../features/deposit/recovery/StrandedRecoveryModal"
+import { StrandedRecoveryModal } from "../../features/deposit/recovery/StrandedRecoveryModal/StrandedRecoveryModal"
 import { NON_CONTACT_REQUESTS_PATH } from "../../features/requests/nonContactView"
 import { useNonContactRequests } from "../../features/requests/useNonContactRequests"
 import { RESET_PATH } from "../ResetScreen"
-import { useHideBalances } from "../prefs"
 import { ConfigProfileModal } from "../../dev/ConfigProfileModal"
 import { useRegistrationTagChangeable } from "../../features/registration/openRegistration"
 import { ChooseNameSheet } from "../../features/deposit/ChooseNameSheet/ChooseNameSheet"
 import { claimChosenName } from "../../features/onboarding/oxideOnboarding"
+import { selectHistoryRow } from "../../features/backupPasskey/accountHistory"
+import { AccountHistorySheet } from "../../features/backupPasskey/AccountHistorySheet/AccountHistorySheet"
+import historyCopy from "../../features/backupPasskey/AccountHistorySheet/AccountHistorySheet.copy"
 
 // ponytail: hoist to config once a FAQ page exists.
 const FAQ_URL = "https://docs.zk.money/docs/faq"
@@ -70,9 +76,9 @@ function Section({ label, children }: { label: ReactNode; children: ReactNode })
 /** Settings card: identity, feedback banner, general/others/socials groups, version. */
 export function SettingsScreen() {
   const navigate = useNavigate()
-  const config = getConfig()
-  const [hideBal, setHideBal] = useHideBalances()
-  const { database, device, identity: entered } = useSession()
+  const { database, device, identity: entered, page } = useSession()
+  const { config } = page
+  const hideBal = useStore(device, (s) => s.hideBalances)
   const identity = useStore(entered).value
   const consent = useStore(device, (s) => s.analyticsConsent)
   const nonContact = useNonContactRequests()
@@ -87,15 +93,12 @@ export function SettingsScreen() {
     | "config"
     | "name"
     | "passkeys"
+    | "history"
   >()
   const tagChangeable = useRegistrationTagChangeable()
   const allowance = useSponsoredAllowance()
   const backupRotation = useBackupRotation()
-  useEffect(() => {
-    // Uses change with every sponsored batch, so each visit reads again.
-    allowance.refresh()
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- read once per visit
-  }, [])
+  const historyRow = useStore(useSession().accountHistory, selectHistoryRow)
 
   return (
     <div className="ww-panel ww-panel--settings">
@@ -112,6 +115,8 @@ export function SettingsScreen() {
           </GradientText>
           <span className="ww-settings__domain">.zk.money</span>
         </div>
+
+        <SettingsBackupNudge onAdd={() => setModal("passkeys")} />
 
         <div className="ww-settings__banners">
           <button
@@ -143,7 +148,12 @@ export function SettingsScreen() {
           <SettingsRow
             icon="eye-off"
             label="Hide balance"
-            trailing={<GradientToggle isOn={hideBal} onChange={setHideBal} />}
+            trailing={
+              <GradientToggle
+                isOn={hideBal}
+                onChange={(on) => savePrefs(database, { hideBalances: String(on) })}
+              />
+            }
           />
           <SettingsRow
             icon="database"
@@ -184,10 +194,29 @@ export function SettingsScreen() {
                 {backupRotation && typeof backupRotation === "object" && (
                   <StatusBadge label="Pending" badgeStyle="pending" />
                 )}
+                <BackupNudgeBadge />
                 <RowChevron />
               </>
             }
           />
+          {/* Only adding a backup passkey makes an entry. */}
+          {(backupPasskeySettingsEnabled || historyRow !== "none") && (
+            <SettingsRow
+              icon="history-clock"
+              label={historyCopy.title}
+              onClick={() => setModal("history")}
+              trailing={
+                <>
+                  {historyRow === "found" ? (
+                    <StatusBadge label={historyCopy.row.found} badgeStyle="paid" />
+                  ) : (
+                    <Trailing>{historyCopy.row[historyRow]}</Trailing>
+                  )}
+                  <RowChevron />
+                </>
+              }
+            />
+          )}
           <SettingsRow
             icon="link"
             label="Network"
@@ -307,6 +336,7 @@ export function SettingsScreen() {
       {modal === "bug" && <BugReportModal onClose={() => setModal(undefined)} />}
       {modal === "contracts" && <ContractAddressesModal onClose={() => setModal(undefined)} />}
       {modal === "passkeys" && <PasskeysSheet onClose={() => setModal(undefined)} />}
+      {modal === "history" && <AccountHistorySheet onClose={() => setModal(undefined)} />}
       {modal === "allowance" && (
         <WalletAboutLimitsSheet
           topic="sponsorship"
@@ -317,7 +347,9 @@ export function SettingsScreen() {
       {modal === "limits" && (
         <WalletAboutLimitsSheet capacity={false} onClose={() => setModal(undefined)} />
       )}
-      {modal === "endpoints" && <EndpointsModal onClose={() => setModal(undefined)} />}
+      {modal === "endpoints" && (
+        <EndpointsModal config={config} onClose={() => setModal(undefined)} />
+      )}
       {import.meta.env.VITE_CONFIG_EDITOR === "true" && modal === "config" && (
         <ConfigProfileModal onClose={() => setModal(undefined)} />
       )}

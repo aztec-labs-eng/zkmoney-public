@@ -4,7 +4,10 @@
  * channels — including that the desktop one asks for no address, because the burn already named
  * the recipient.
  */
+import { createPace } from "@obsidion/core/cadence"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { fakeReads } from "../../support/fakeReads"
+import type { Config } from "wagmi"
 import { testPage, testCore } from "../../support/page"
 import type { Address, Hex } from "viem"
 import {
@@ -14,6 +17,7 @@ import {
   type WithdrawalRecord,
   type Withdrawals,
 } from "@obsidion/front-core"
+const pace = createPace()
 
 const PORTAL = `0x${"cc".repeat(20)}` as Address
 const RECIPIENT = `0x${"dd".repeat(20)}` as Address
@@ -34,28 +38,18 @@ const sdk = vi.hoisted(() => ({
   portalDomain: vi.fn(async (portal: string) => ({ l1Portal: portal })),
 }))
 
-vi.mock("../../../src/session/l1Wallet", () => l1Clients)
+vi.mock("../../../src/session/l1Wallet", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../src/session/l1Wallet")>()),
+  ...l1Clients,
+}))
 vi.mock("@obsidion/sdk", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/sdk")>()),
   buildWithdrawFinalizationCall: sdk.buildWithdrawFinalizationCall,
 }))
-vi.mock("../../../src/features/token/oxideToken", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../src/features/token/oxideToken")>()),
-  portalDomain: sdk.portalDomain,
-}))
 vi.mock("../../../src/platform/desktopBridge", () => bridge)
 vi.mock("../../../src/config/env", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../src/config/env")>()),
-  getConfig: () => ({ l1ChainId: 11155111 }),
   l1Transport: () => () => ({ request: async () => null }),
-}))
-vi.mock("../../../src/config/oxideTuple", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../src/config/oxideTuple")>()),
-  getOxideTuple: async () => ({
-    portal: `0x${"cc".repeat(20)}`,
-    l2Token: `0x${"0b".repeat(32)}`,
-    plainWithdrawalExecutor: `0x${"e8".repeat(20)}`,
-  }),
 }))
 
 const { WithdrawFinalizationError } = await import("@obsidion/sdk")
@@ -86,6 +80,8 @@ beforeEach(
   () => void switchSession(activeNamespace(testCore().device), pageSessionDeps(testPage())),
 )
 afterEach(closeSession)
+
+const WAGMI = {} as Config
 
 describe("selfFinalizeWithdrawal", () => {
   const channel = {
@@ -119,7 +115,7 @@ describe("selfFinalizeWithdrawal", () => {
     vi.clearAllMocks()
     channel.sendTransaction.mockResolvedValue(L1_TX)
     channel.waitForReceipt.mockResolvedValue(true)
-    store = createWithdrawals({ db: openDatabase(memoryBackend()) })
+    store = createWithdrawals({ db: openDatabase(memoryBackend()), now: () => Date.now() })
     await seed(record())
   })
 
@@ -188,13 +184,31 @@ describe("selfFinalizeWithdrawal", () => {
   })
 })
 
+/** The session whose burns these are. */
+const session = {
+  withdrawals: createWithdrawals({ db: openDatabase(memoryBackend()), now: () => Date.now() }),
+  page: {
+    pace,
+    config: { l1ChainId: 11155111 },
+    chain: fakeReads({
+      oxideTuple: async () => ({
+        portal: PORTAL,
+        l2Token: `0x${"0b".repeat(32)}`,
+        plainWithdrawalExecutor: `0x${"e8".repeat(20)}`,
+      }),
+      portalDomain: sdk.portalDomain,
+    }),
+  } as never,
+}
+
 describe("selfFinalize", () => {
   // A link's burn has no recovery events to build the calldata from.
   it("leaves a paylink claim's burn to the relayer, before asking for the wallet", async () => {
-    await expect(selfFinalize(record({ source: "paylink" }), null)).rejects.toThrow(
+    const opts = { session, wagmi: WAGMI }
+    await expect(selfFinalize(record({ source: "paylink" }), null, opts)).rejects.toThrow(
       "A relayer releases a link's withdrawal.",
     )
-    await expect(selfFinalize(record(), null)).rejects.toThrow(/Unlock your wallet/)
+    await expect(selfFinalize(record(), null, opts)).rejects.toThrow(/Unlock your wallet/)
   })
 
   describe("the executor the release goes through", () => {
@@ -215,7 +229,11 @@ describe("selfFinalize", () => {
 
     const executorOf = async (patch: Partial<WithdrawalRecord>) => {
       await expect(
-        selfFinalize(record({ withdrawalId: undefined, ...patch }), wallet, { from: WALLET }),
+        selfFinalize(record({ withdrawalId: undefined, ...patch }), wallet, {
+          session,
+          wagmi: WAGMI,
+          from: WALLET,
+        }),
       ).rejects.toThrow("stop at the builder")
       return sdk.buildWithdrawFinalizationCall.mock.calls[0]![0].executor
     }
@@ -251,7 +269,7 @@ describe("selfFinalize", () => {
         selfFinalize(
           record({ withdrawalId: undefined, deployment: { portal: retired, l2Token: "0x2a" } }),
           wallet,
-          { from: WALLET },
+          { session, wagmi: WAGMI, from: WALLET },
         ),
       ).rejects.toThrow("made on an earlier deployment")
       expect(sdk.buildWithdrawFinalizationCall).not.toHaveBeenCalled()
@@ -276,7 +294,7 @@ describe("finalizeChannel", () => {
       config,
       record: record(),
       publicClient: { waitForTransactionReceipt } as never,
-      opts: {},
+      opts: { session, wagmi: WAGMI },
     })
 
     // The helper page's account is unknown when the calldata is built, so the recipient is tipped.
@@ -300,7 +318,7 @@ describe("finalizeChannel", () => {
       config,
       record: record({ swapOutput: "USDC", swapEscrow: escrow }),
       publicClient: {} as never,
-      opts: {},
+      opts: { session, wagmi: WAGMI },
     })
     expect(channel.target).toBe(RECIPIENT)
   })

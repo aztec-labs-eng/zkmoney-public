@@ -12,7 +12,7 @@ const BINDINGS_FREE_MODULES = [
   'src/l1_operation_quote.ts',
   'src/l2_operations.ts',
   'src/partial_epoch_proof_profit.ts',
-  'src/passkey_rotation.ts',
+  'src/add_passkey.ts',
   'src/record_update.ts',
   'src/sipa_event_calls.ts',
   'src/submitted_withdrawal.ts',

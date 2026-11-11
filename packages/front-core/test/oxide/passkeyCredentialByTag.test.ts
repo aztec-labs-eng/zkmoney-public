@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest"
 import type { Address, Hex } from "viem"
 import type { AuthKeyEntry } from "@oxide/l1-contracts"
 
-import { passkeyMetadata } from "@oxide/oxide-client/passkey_rotation.js"
+import { passkeyMetadata } from "@oxide/oxide-client/add_passkey.js"
 
 import { credentialIdToMetadata } from "../../src/oxide/oxideWebAuthn"
 import { metadataToCredentialId } from "../../src/oxide/oxideWebAuthn"

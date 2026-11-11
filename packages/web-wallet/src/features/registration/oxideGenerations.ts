@@ -1,3 +1,4 @@
+import { bestEffort } from "@obsidion/core/errors"
 import type { Address } from "viem"
 import {
   readClaimFpcIdentityCatalog,
@@ -9,24 +10,19 @@ import {
   retiredIdentityGenerations,
   type OxideIdentityDeps,
 } from "@obsidion/front-core"
-import type { WebWalletConfig } from "../../config/env"
-import {
-  getOxideTuple,
-  getRetiredRollupSources,
-  l1PublicClient,
-  requireTupleField,
-} from "../../config/oxideTuple"
+import { l1PublicClient, requireTupleField } from "../../config/oxideTuple"
+import type { PageFacts } from "../../session/pageChain"
 
 export async function loadOxideGenerations(
   wallet: ObsidionWallet,
   contractService: ContractService,
-  config: WebWalletConfig,
+  { config, chain }: PageFacts,
 ): Promise<OxideIdentityDeps> {
   const [tuple, identity, bindings, retired] = await Promise.all([
-    getOxideTuple(config),
+    chain.oxideTuple.read(),
     wallet.getNodeIdentity(),
     readClaimFpcIdentityCatalog(wallet, contractService),
-    getRetiredRollupSources(config).catch(() => undefined),
+    bestEffort("unknown", chain.retiredRollupSources.read()),
   ])
   const rollupVersion = String(identity.rollupVersion)
   const retiredSources = retired ?? []

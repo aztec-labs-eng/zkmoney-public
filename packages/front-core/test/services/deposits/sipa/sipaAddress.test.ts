@@ -6,7 +6,7 @@
  *  2. (LIVE_OXIDE=1) the derivation matches the deployed `Registry.predictSIPA`
  *     on Sepolia, using that factory's own `implementationFor` and the
  *     deposit intentHash — deployer = the Registry. The local-Solidity equivalent
- *     runs in `sipaAddress.anvil.test.ts`.
+ *     runs in `sipaAddress.l1.test.ts`.
  */
 
 import { describe, expect, it } from "vitest"

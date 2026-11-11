@@ -28,14 +28,3 @@ export function sipaDepositFulfillsRequest(
   if (requested === 0n) return true
   return depositAmounts(record).netAtomic >= requested
 }
-
-/** Lowercased SIPA addresses stamped on stored requests — Activity hides matching deposits. */
-export function requestLinkedSipaAddresses(
-  requests: ReadonlyArray<Pick<StoredRequest, "sipaAddress">>,
-): Set<string> {
-  const out = new Set<string>()
-  for (const request of requests) {
-    if (request.sipaAddress) out.add(request.sipaAddress.toLowerCase())
-  }
-  return out
-}

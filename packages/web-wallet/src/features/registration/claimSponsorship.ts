@@ -12,8 +12,10 @@
  * local cache is missing; a registration gate takes the NamePortal's L1->L2 message, found by
  * scanning the Inbox (`registrationRail.ts`).
  */
+import { WalletError } from "@obsidion/core/errors"
 import type { Hex } from "viem"
 import {
+  UnverifiedOxideIdentityError,
   createOxideL1Reader,
   deriveBootstrapKey,
   requireVerifiedIdentity,
@@ -43,8 +45,9 @@ import { DEFAULT_CONTRACTS } from "@obsidion/core/constants"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import type { ContractArtifact } from "@aztec-labs/stdlib/abi"
-import { getConfig, type WebWalletConfig } from "../../config/env"
-import { getOxideTuple, l1PublicClient, requireTupleField } from "../../config/oxideTuple"
+import type { WebWalletConfig } from "../../config/env"
+import { l1PublicClient, requireTupleField } from "../../config/oxideTuple"
+import type { PageFacts } from "../../session/pageChain"
 import { collectOnboardingKeys, type OnboardingKeys } from "../../session/account"
 import { buildClaimSubscribeWitness } from "./registrationDeps"
 import {
@@ -55,9 +58,10 @@ import {
 import { loadOxideGenerations } from "./oxideGenerations"
 import { generationAddresses } from "./generationAddresses"
 import { cacheNameClaimFromLog } from "./webRegistration"
-import { session } from "../../session/session"
+import type { Session, SponsorParts } from "../../session/session"
 
 export interface SponsorLegDeps {
+  session: ClaimSponsorDeps["session"]
   wallet: ObsidionWallet
   account: ObsidionAccount
   config: WebWalletConfig
@@ -73,13 +77,8 @@ export interface ClaimSponsorRailDeps {
 }
 
 export interface ClaimSponsorDeps extends ClaimSponsorRailDeps {
+  session: SponsorParts
   account: ObsidionAccount
-  /**
-   * The accounts a batch on the registered instance `sponsor` names: the payer, whose note it
-   * spends, and the acting account. Absent, the installed resolver answers; without one the
-   * account pays with its own note.
-   */
-  payerFor?: SponsorAccountsResolver
 }
 
 /** The payer and the acting account of a sponsored batch; one account when the wallet never rotated. */
@@ -93,19 +92,8 @@ export type SponsorAccountsResolver = (
   sponsor: ClaimSponsorContext,
 ) => Promise<SponsorAccounts>
 
-const selfPays: SponsorAccountsResolver = async (deps) => ({
-  payer: deps.account,
-  acting: deps.account,
-})
-let installedResolver: SponsorAccountsResolver = selfPays
-
-/** Installed once by the wallet's boot; the session's root record decides the payer per instance. */
-export function setSponsorAccountsResolver(resolver: SponsorAccountsResolver | undefined): void {
-  installedResolver = resolver ?? selfPays
-}
-
 const accountsFor = (deps: ClaimSponsorDeps, sponsor: ClaimSponsorContext) =>
-  (deps.payerFor ?? installedResolver)(deps, sponsor)
+  deps.session.page.sponsors.accounts(deps, sponsor)
 
 const sameAccount = (a: ObsidionAccount, b: ObsidionAccount) =>
   a.getAddress().toString() === b.getAddress().toString()
@@ -154,9 +142,8 @@ export async function claimSponsorRail(
 /**
  * One named ClaimFPC instance as a batch rides it, registered in this PXE. Registration leads every
  * read of the FPC. `has_subscription` is a utility call on it, and a PXE that holds neither the
- * instance nor the class throws instead of answering — which the read takes for "unsubscribed",
- * replaying the rail's one-per-identity nullifier. Registration is guarded: a PXE that already holds
- * both pays two store reads, not the class hashing.
+ * instance nor the class throws instead of answering, which fails the batch. Registration is
+ * guarded: a PXE that already holds both pays two store reads, not the class hashing.
  */
 async function sponsorFor(
   deps: ClaimSponsorRailDeps,
@@ -193,9 +180,10 @@ export async function claimSponsorContext(
   opts: ClaimSponsorRailOptions = {},
 ): Promise<ClaimSponsorContext> {
   const { sponsor, rail } = await claimSponsorRail(deps, railName, opts)
-  const config = getConfig()
+  const { config } = deps.session.page
   if (opts.tuple && rail.gate !== "registration") {
-    throw new Error(
+    throw new WalletError(
+      "config.invalid",
       `the ${railName} rail of deployment ${opts.tuple.version} gates on ${rail.gate}, and this ` +
         "wallet can only satisfy that gate on the current deployment",
     )
@@ -220,12 +208,13 @@ export async function claimSponsorContext(
 /** The leg deps of one account on one registered instance. */
 const legFor =
   (
-    deps: ClaimSponsorRailDeps,
+    deps: ClaimSponsorDeps,
     config: WebWalletConfig,
     sponsor: ClaimSponsorContext,
     rail: ClaimFpcRailPolicy,
   ) =>
   (account: ObsidionAccount): SponsorLegDeps => ({
+    session: deps.session,
     wallet: deps.wallet,
     account,
     config,
@@ -251,24 +240,25 @@ async function subscribedPayer(
 // One utility call per (account, FPC, rail), not per transaction. Keying on the FPC address is what
 // makes a redeploy re-ask instead of trusting an answer about a contract that no longer serves us;
 // keying on the rail is what keeps one rail's answer from standing in for another's.
-const subscriptionChecks = new Map<string, Promise<boolean>>()
-
 const subscriptionKey = (account: ObsidionAccount, fpcAddress: AztecAddress, railId: number) =>
   `${account.getAddress().toString()}|${fpcAddress.toString()}|${railId}`
 
 type SubscriptionReadDeps = Pick<
   SponsorLegDeps,
   "wallet" | "account" | "fpcAddress" | "fpcArtifact"
-> & { rail: Pick<ClaimFpcRailPolicy, "railId"> }
+> & { rail: Pick<ClaimFpcRailPolicy, "railId">; session: SubscriptionSession }
+
+type SubscriptionSession = Pick<Session, "subscriptionChecks">
 
 /** Whether `account` holds the rail's note on the registered instance `sponsor` names. */
 export async function holdsSubscription(
-  wallet: ObsidionWallet,
+  deps: { session: SubscriptionSession; wallet: ObsidionWallet },
   sponsor: ClaimSponsorContext,
   account: ObsidionAccount,
 ): Promise<boolean> {
   return !(await needsSubscription({
-    wallet,
+    session: deps.session,
+    wallet: deps.wallet,
     account,
     fpcAddress: sponsor.fpcAddress,
     fpcArtifact: sponsor.fpcArtifact,
@@ -279,35 +269,37 @@ export async function holdsSubscription(
 /** True when this account has no subscription note for this rail of the live ClaimFPC. */
 async function needsSubscription(deps: SubscriptionReadDeps): Promise<boolean> {
   const key = subscriptionKey(deps.account, deps.fpcAddress, deps.rail.railId)
-  const cached = subscriptionChecks.get(key)
-  if (cached) return cached
-  const check = hasClaimFpcSubscription(
-    deps.wallet,
-    deps.fpcAddress,
-    deps.fpcArtifact,
-    deps.account.getAddress(),
-    deps.rail.railId,
-  )
-    .then((has) => !has)
-    // A failed read must not downgrade to `sponsor` against an FPC that would reject it: assume a
-    // subscribe is needed and let the tx be the judge.
-    .catch(() => true)
-  subscriptionChecks.set(key, check)
-  // Only "subscribed" is worth holding on to. A pending subscribe is transient, so drop that answer
-  // and re-read next time rather than pinning the wallet to it.
-  void check.then((needs) => {
-    if (needs) subscriptionChecks.delete(key)
-  })
-  return check
+  const check = { toString: () => key, read: () => readSubscription(deps) }
+  return !(await deps.session.subscriptionChecks.held(check).read())
+}
+
+/**
+ * `has_subscription` for one account. A failed read throws, because neither answer is safe to
+ * guess: "unsubscribed" subscribes again, which replays the rail's one-per-identity nullifier and,
+ * after a rotation, fails the identity check because the L1 record names the two-key account;
+ * "subscribed" rides a note the FPC may not hold.
+ */
+async function readSubscription(deps: SubscriptionReadDeps): Promise<boolean> {
+  try {
+    return await hasClaimFpcSubscription(
+      deps.wallet,
+      deps.fpcAddress,
+      deps.fpcArtifact,
+      deps.account.getAddress(),
+      deps.rail.railId,
+    )
+  } catch (cause) {
+    throw new WalletError("sponsorship.unconfirmed", undefined, { cause })
+  }
 }
 
 /** Record a landed subscribe so the next batch on this rail rides `sponsor` without re-reading. */
 export function noteSubscribed(
-  account: ObsidionAccount,
+  deps: { session: SubscriptionSession; account: ObsidionAccount },
   fpcAddress: AztecAddress,
   railId: number,
 ): void {
-  subscriptionChecks.set(subscriptionKey(account, fpcAddress, railId), Promise.resolve(false))
+  deps.session.subscriptionChecks.landed(subscriptionKey(deps.account, fpcAddress, railId))
 }
 
 /**
@@ -319,9 +311,9 @@ async function recoverNameClaim(
   nameClaims: Pick<NameClaims, "put">,
   secretKey: Parameters<typeof deriveBootstrapKey>[0],
   { address, tag }: { address: string; tag: string },
-  config: WebWalletConfig,
+  { config, chain }: PageFacts,
 ): Promise<NameClaimRecord | null> {
-  const tuple = await getOxideTuple(config)
+  const tuple = await chain.oxideTuple.read()
   const accountFactory = resolveOxideAccountFactory({ tuple })
   const registry = requireTupleField(tuple, "registry") as Hex
   const publicClient = l1PublicClient(config)
@@ -337,26 +329,17 @@ async function recoverNameClaim(
   })
 }
 
-/**
- * The subscribe leg for this batch, or undefined when the account already holds this rail's
- * subscription (or holds no witness the rail's gate accepts). Requires the unlocked wallet: both
- * gates' witnesses carry a binding signature derived from the MSK, minted fresh here — no extra
- * user assertion, the flow's own covers the batch.
- */
-export async function subscribeContext(
-  deps: SponsorLegDeps,
-): Promise<ClaimSubscribeContext | undefined> {
-  if (!(await needsSubscription(deps))) return undefined
-  return subscribeLeg(deps)
-}
-
 /** The leg for an account read as holding no note. */
 async function subscribeLeg(deps: SponsorLegDeps): Promise<ClaimSubscribeContext | undefined> {
-  const keys = await collectOnboardingKeys(deps.account)
+  const keys = await collectOnboardingKeys(deps.session, deps.account)
   const gate = await gateWitness(deps, keys)
   if (!gate) return undefined
   return { gate }
 }
+
+/** The NameClaim the session saved for the account, if it holds one. */
+export const savedNameClaim = (session: Pick<Session, "nameClaims">, account: ObsidionAccount) =>
+  session.nameClaims.get(account.getAddress().toString())
 
 /**
  * The witness this rail's gate consumes, or undefined when this device holds none. The registration
@@ -372,18 +355,18 @@ async function gateWitness(
   if (deps.rail.gate === "none") return undefined
 
   const address = deps.account.getAddress().toString()
-  const { nameClaims, identity } = session()
+  const { nameClaims, identity } = deps.session
   const tag = identity.get().value?.handle ?? ""
   const record =
-    (await nameClaims.get(address)) ??
-    (await recoverNameClaim(nameClaims, keys.secretKey, { address, tag }, deps.config))
+    (await savedNameClaim(deps.session, deps.account)) ??
+    (await recoverNameClaim(nameClaims, keys.secretKey, { address, tag }, deps.session.page))
   if (!record) return undefined
 
   const claim = await buildClaimSubscribeWitness(
     record.handle,
     keys,
     { signature: record.signature as Hex, nonce: record.nonce, deadline: record.deadline },
-    deps.config,
+    deps.session.page,
     record.nameHash as Hex | undefined,
   )
   return { kind: "nameClaim", ...claim }
@@ -394,23 +377,30 @@ async function gateWitness(
  * deployment still publishes. A factory roll moves the account a key predicts, so the account of an
  * existing user sits under the factory of the generation they registered under. A name this device
  * cannot attribute throws rather than reading as "no account": adopting it and registering over it
- * both lose the account. Read fresh per batch, so a name that lands during the session is seen.
+ * both lose the account. Read fresh per batch, so a name that lands during the session is seen. A
+ * name whose record names another address is this page running an account the wallet has moved
+ * past (a backup passkey added elsewhere): the words say so and ask for a reload.
  */
 async function verifiedIdentityFor(
   deps: ClaimSponsorDeps,
   keys: OnboardingKeys,
-  config: WebWalletConfig,
 ): Promise<VerifiedOxideIdentity | undefined> {
   const l2Address = deps.account.getAddress().toString()
-  const generations = await loadOxideGenerations(deps.wallet, deps.contractService, config)
-  return requireVerifiedIdentity(
-    await resolveOxideIdentity(
-      generations,
-      deriveBootstrapKey(keys.secretKey).address,
-      l2Address,
-      generationAddresses(config, keys.pubkeyHex)(keys.secretKey, l2Address),
-    ),
+  const { page } = deps.session
+  const generations = await loadOxideGenerations(deps.wallet, deps.contractService, page)
+  const outcome = await resolveOxideIdentity(
+    generations,
+    deriveBootstrapKey(keys.secretKey).address,
+    l2Address,
+    generationAddresses(page, keys.pubkeyHex)(keys.secretKey, l2Address),
   )
+  try {
+    return requireVerifiedIdentity(outcome)
+  } catch (err) {
+    if (err instanceof UnverifiedOxideIdentityError)
+      throw new WalletError("account.outdated", err.message, { cause: err })
+    throw err
+  }
 }
 
 const sameFpc = (left: string, right: string) => left.toLowerCase() === right.toLowerCase()
@@ -463,7 +453,7 @@ async function registrationSponsor(
   },
 ): Promise<ClaimSponsorContext> {
   const token = AztecAddress.fromStringUnsafe(
-    ctx.tuple?.l2Token ?? (await getOxideTuple(ctx.config)).l2Token,
+    ctx.tuple?.l2Token ?? (await deps.session.page.chain.oxideTuple.read()).l2Token,
   )
   const { acting } = ctx.accounts
   // A note already held on the instance the caller asked for rides as it is: the FPC checks the
@@ -477,14 +467,15 @@ async function registrationSponsor(
     if (holder) return withPayer(ctx.sponsor, holder, acting)
   }
 
-  const keys = await collectOnboardingKeys(acting)
-  const identity = await verifiedIdentityFor(deps, keys, ctx.config)
+  const keys = await collectOnboardingKeys(deps.session, acting)
+  const identity = await verifiedIdentityFor(deps, keys)
   const pinned = ctx.tuple ? ctx.sponsor.fpcAddress.toString() : undefined
   const targets = registrationTargets(ctx.sponsor, identity).filter(
     (generation) => !pinned || sameFpc(generation.fpcAddress, pinned),
   )
   if (pinned && targets.length === 0) {
-    throw new Error(
+    throw new WalletError(
+      "invariant",
       `the ClaimFPC at ${pinned} belongs to no generation that holds this account's name, so it ` +
         "cannot sponsor this batch",
     )
@@ -508,7 +499,7 @@ async function registrationSponsor(
     const found = await registrationGateWitness(
       {
         wallet: deps.wallet,
-        config: ctx.config,
+        page: deps.session.page,
         identity,
         generation: { fpcAddress: generation.fpcAddress, namePortal: generation.namePortal },
       },

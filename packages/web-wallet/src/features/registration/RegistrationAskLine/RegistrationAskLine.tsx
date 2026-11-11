@@ -1,7 +1,6 @@
 import type { Address } from "viem"
 import { tokenDecimalsForNetwork } from "@obsidion/core/constants"
 import { isTicketSignup } from "@obsidion/front-core"
-import { getConfig } from "../../../config/env"
 import { useOpenRegistration } from "../openRegistration"
 import {
   quoteExpired,
@@ -18,6 +17,7 @@ import { useDepositWatch } from "../../sipa/useDepositWatch"
 import { useDepositShown } from "../admission"
 import { useRegistrationPublishStalled } from "../webRegistration"
 import { fmt } from "../../../lib/fmt"
+import { useSession } from "../../../session/session"
 import copy from "./RegistrationAskLine.copy"
 
 export interface RegistrationAsk {
@@ -69,8 +69,8 @@ export function useRegistrationAsk(): RegistrationAsk | null {
 /** The registration's ask on the deposit screen, less what its address already holds. */
 export function RegistrationAskLine() {
   const ask = useRegistrationAsk()
+  const decimals = tokenDecimalsForNetwork(useSession().page.config.network)
   if (!ask) return null
-  const decimals = tokenDecimalsForNetwork(getConfig().network)
   return (
     <p className="ww-deposit__ask" data-testid="deposit-registration-ask">
       {ask.total === undefined ? (

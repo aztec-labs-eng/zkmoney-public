@@ -73,6 +73,24 @@ describe("ObsidionWallet anchor pin", () => {
     expect(stubPxe.sync).toHaveBeenCalledTimes(2)
   })
 
+  it("a snapshot whose anchor moves mid-read reads again at the new one", async () => {
+    const { wallet, stubPxe } = makeStubWallet()
+    const anchors = [40, 41, 41, 41]
+    stubPxe.getSyncedBlockHeader = vi.fn(async () => header(anchors.shift() ?? 41))
+    const read = vi.fn(async () => 5n)
+    expect(await wallet.getSnapshot(read)).toEqual({ value: 5n, anchorBlock: 41 })
+    expect(read).toHaveBeenCalledTimes(2)
+  })
+
+  it("a snapshot whose anchor keeps moving gives up after three reads", async () => {
+    const { wallet, stubPxe } = makeStubWallet()
+    let block = 50
+    stubPxe.getSyncedBlockHeader = vi.fn(async () => header(block++))
+    const read = vi.fn(async () => 5n)
+    await expect(wallet.getSnapshot(read)).rejects.toThrow("PXE anchor changed")
+    expect(read).toHaveBeenCalledTimes(3)
+  })
+
   it("a failed snapshot frees the queue and the read syncs", async () => {
     const { wallet, stubPxe } = makeStubWallet()
     stubPxe.getSyncedBlockHeader = vi.fn(async () => header(10))

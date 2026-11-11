@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it, vi } from "vitest"
+import { fakeReads } from "../../support/fakeReads"
 
 const { loadClaimFpcPolicy, loadClaimFpcPolicyAt, registerSponsorFpc, hasClaimFpcSubscription } =
   vi.hoisted(() => ({
@@ -15,17 +16,6 @@ vi.mock("@obsidion/sdk", async (importOriginal) => ({
   loadClaimFpcPolicyAt,
   registerSponsorFpc,
   hasClaimFpcSubscription,
-}))
-vi.mock("../../../src/config/oxideTuple", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../src/config/oxideTuple")>()),
-  getOxideTuple: async () => CURRENT_TUPLE,
-}))
-// The wallet boots from a config profile, so getConfig() throws until one resolves. This suite is
-// about registration ordering and never reads a config field, so it stubs the accessor rather than
-// standing up a profile fetch.
-vi.mock("../../../src/config/env", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../src/config/env")>()),
-  getConfig: () => ({ network: "sandbox" }),
 }))
 const { registrationGateWitness } = vi.hoisted(() => ({ registrationGateWitness: vi.fn() }))
 vi.mock("../../../src/features/registration/registrationRail", () => ({ registrationGateWitness }))
@@ -43,26 +33,34 @@ vi.mock("../../../src/features/registration/registrationDeps", () => ({
 vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/front-core")>()),
   deriveBootstrapKey: () => ({ address: "0x" + "11".repeat(20) }),
-  resolveOxideIdentity: async () => ({
-    kind: "verified",
-    identity: {
-      account: "0x" + "22".repeat(20),
-      nameHash: "0x" + "33".repeat(32),
-      generations: [
-        currentFpc,
-        "0x00000000000000000000000000000000000000000000000000000000000001f4",
-      ].map((fpcAddress) => ({ fpcAddress, namePortal: "0x" + "44".repeat(20) })),
-    },
-  }),
+  resolveOxideIdentity: async () =>
+    unverifiedAccounts
+      ? { kind: "unverified", accounts: unverifiedAccounts }
+      : {
+          kind: "verified",
+          identity: {
+            account: "0x" + "22".repeat(20),
+            nameHash: "0x" + "33".repeat(32),
+            generations: [
+              currentFpc,
+              "0x00000000000000000000000000000000000000000000000000000000000001f4",
+            ].map((fpcAddress) => ({ fpcAddress, namePortal: "0x" + "44".repeat(20) })),
+          },
+        },
 }))
 
 vi.mock("../../../src/features/registration/oxideGenerations", () => ({
   loadOxideGenerations: async () => ({}),
 }))
 let currentFpc = ""
+/** The L1 accounts the name's record names instead of the session's; the identity verifies without them. */
+let unverifiedAccounts: string[] | undefined
 
+import { WalletError } from "@obsidion/core/errors"
 import type { OxideEnvTuple } from "@obsidion/core/types"
+import { UnverifiedOxideIdentityError } from "@obsidion/front-core"
 import { railByName } from "@obsidion/sdk"
+import { errorMessage } from "../../../src/errors/catalog"
 import { claimSponsorContext } from "../../../src/features/registration/claimSponsorship"
 import {
   RAIL_REGISTRATION_BROADCAST,
@@ -71,6 +69,7 @@ import {
 import { closeSession } from "../../../src/session/session"
 import { openTestSession } from "../../support/session"
 import { seedDeviceKeys } from "../../support/page"
+import { selfPayingSession } from "../../support/sponsors"
 
 const tuple = (version: string, fpcBeneficiary: string) =>
   ({ version, fpcBeneficiary, l2Token: "0x" + "01".repeat(32) } as unknown as OxideEnvTuple)
@@ -84,9 +83,11 @@ const SPONSORED_RAIL = { railId: 1, name: RAIL_REGISTERED, gate: "nameClaim", po
 
 const address = (s: string) => ({ toString: () => s } as never)
 
+const session = selfPayingSession(fakeReads({ oxideTuple: async () => CURRENT_TUPLE }))
 function deps(fpc: string, account: string) {
   loadClaimFpcPolicy.mockResolvedValue({ rail: SPONSORED_RAIL, fpcAddress: address(fpc) })
   return {
+    session,
     wallet: { pxe: {}, node: {} },
     account: { getAddress: () => address(account) },
     contractService: { getArtifactForContract: vi.fn().mockResolvedValue(BUNDLED) },
@@ -110,8 +111,8 @@ describe("claimSponsorContext", () => {
       RAIL_REGISTERED,
     )
 
-    // A read against an unregistered FPC throws, and the throw reads as "unsubscribed" — which
-    // replays the rail's one-per-identity nullifier on any device whose PXE never held the FPC.
+    // A read against an unregistered FPC throws, which would fail every sponsored batch on a device
+    // whose PXE never held the FPC.
     expect(order).toEqual(["register", "read"])
     // The read runs against the registered artifact, not the bundled one it was built from.
     expect(hasClaimFpcSubscription.mock.calls[0][2]).toBe(REGISTERED)
@@ -156,6 +157,7 @@ afterEach(closeSession)
 async function manifestDeps(fpc: string, account: string) {
   vi.clearAllMocks()
   currentFpc = fpc
+  unverifiedAccounts = undefined
   loadClaimFpcPolicy.mockImplementation(async (_service: unknown, name: string) => ({
     rail: railByName(DEPLOYED_RAILS as never, name),
     fpcAddress: address(fpc),
@@ -163,7 +165,8 @@ async function manifestDeps(fpc: string, account: string) {
   registerSponsorFpc.mockResolvedValue(REGISTERED)
   hasClaimFpcSubscription.mockResolvedValue(false)
   await seedDeviceKeys({ storageId: "a1" })
-  await openTestSession().nameClaims.put({
+  const session = openTestSession({ primed: { tuple: CURRENT_TUPLE } })
+  await session.nameClaims.put({
     address: account,
     handle: "taga",
     signature: "0xsig",
@@ -175,6 +178,7 @@ async function manifestDeps(fpc: string, account: string) {
   buildClaimSubscribeWitness.mockResolvedValue(NAME_CLAIM)
   registrationGateWitness.mockResolvedValue({ gate: REGISTRATION_GATE })
   return {
+    session,
     wallet: { pxe: {}, node: {} },
     account: { getAddress: () => address(account) },
     contractService: { getArtifactForContract: vi.fn().mockResolvedValue(BUNDLED) },
@@ -204,12 +208,47 @@ describe("the rail a flow declares decides what its subscribe leg carries", () =
       "0xacc8",
     )) as Record<string, unknown>
     const acting = { getAddress: () => address("0xacc9") }
-    const sponsor = await claimSponsorContext(
-      { ...deps, payerFor: async () => ({ payer: deps.account, acting }) } as never,
-      RAIL_REGISTERED,
-    )
+    const own = deps.session as { page: { sponsors: object } }
+    const payers = { ...own.page.sponsors, accounts: async () => ({ payer: deps.account, acting }) }
+    const session = Object.assign(Object.create(own), { page: { ...own.page, sponsors: payers } })
+    const sponsor = await claimSponsorContext({ ...deps, session } as never, RAIL_REGISTERED)
     expect(sponsor.subscribe).toEqual({ gate: REGISTRATION_GATE })
-    expect(collectOnboardingKeys).toHaveBeenCalledWith(acting)
+    expect(collectOnboardingKeys).toHaveBeenCalledWith(session, acting)
+  })
+
+  it("fails on the sponsored rail when the subscription read fails, before the identity check", async () => {
+    const deps = await manifestDeps(
+      "0x00000000000000000000000000000000000000000000000000000000000001fc",
+      "0xacc10",
+    )
+    hasClaimFpcSubscription.mockRejectedValue(new Error("node timeout"))
+    await expect(claimSponsorContext(deps, RAIL_REGISTERED)).rejects.toMatchObject({
+      code: "sponsorship.unconfirmed",
+    })
+    expect(collectOnboardingKeys).not.toHaveBeenCalled()
+    expect(registrationGateWitness).not.toHaveBeenCalled()
+  })
+})
+
+describe("an account the name's record has moved past", () => {
+  it("fails the sponsored action with the outdated-account words, the identity error as its cause", async () => {
+    const deps = await manifestDeps(
+      "0x00000000000000000000000000000000000000000000000000000000000001fb",
+      "0xacc8",
+    )
+    unverifiedAccounts = [`0x${"55".repeat(20)}`]
+
+    const failed = await claimSponsorContext(deps, RAIL_REGISTERED).then(
+      () => undefined,
+      (err: unknown) => err,
+    )
+
+    expect(failed).toBeInstanceOf(WalletError)
+    expect(failed).toMatchObject({ code: "account.outdated" })
+    expect((failed as WalletError).cause).toBeInstanceOf(UnverifiedOxideIdentityError)
+    expect(errorMessage(failed)).toBe(
+      "This page is running an outdated account for your wallet. Refresh the page to continue.",
+    )
   })
 })
 

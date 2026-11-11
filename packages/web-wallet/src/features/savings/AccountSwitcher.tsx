@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState, type ReactNode } from "react"
+import { useRef, useState, type ReactNode } from "react"
 import { Icon } from "@obsidion/web-ds"
+import { useDomEffect } from "../../ui/useDomEffect"
 
 export type SavingsAccount = "main" | "savings"
 
@@ -24,7 +25,7 @@ export function AccountSwitcher({
 }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
-  useEffect(() => {
+  useDomEffect(() => {
     if (!open) return
     const outside = (e: PointerEvent) => {
       if (!ref.current?.contains(e.target as Node)) setOpen(false)

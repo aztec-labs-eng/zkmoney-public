@@ -6,24 +6,23 @@ import {
   settleSavingsMove,
   type SavingsMoveSettleDeps,
 } from "../../../oxide/savingsMoves"
+import { WalletError } from "../../../engine/errors"
 import { logger } from "../../../utils/logger"
 import type { WithdrawalRecord } from "../bridge/types"
-import type { SavingsMoveStorage } from "./SavingsMoveStorage"
+import type { SavingsMoves } from "../../../engine/savingsMoves"
 import type { SavingsMoveRecord } from "./types"
 
 /** Burns with Sky meta the store does not know: a rescan rebuilt them, or a reload cut the move short. */
-async function adoptSavingsMoves(
-  store: SavingsMoveStorage,
-  withdrawals: WithdrawalRecord[],
-): Promise<SavingsMoveRecord[]> {
-  const adopted: SavingsMoveRecord[] = []
+async function adoptSavingsMoves(store: SavingsMoves, withdrawals: WithdrawalRecord[]) {
+  const known = new Set((await store.all()).map((move) => move.withdrawalLocalId))
   for (const record of withdrawals) {
-    if (record.phase === "failed" || store.get(record.localId)) continue
+    if (record.phase === "failed" || known.has(record.localId)) continue
     const move = savingsMoveOfWithdrawal(record)
-    if (!move) continue
-    adopted.push(await store.put({ ...move, startTime: record.startTime }))
+    if (move)
+      await store.update(record.localId, (current) =>
+        current ? null : { ...move, startTime: record.startTime },
+      )
   }
-  return adopted
 }
 
 /** The first line of a refusal, short enough for a row. */
@@ -66,70 +65,29 @@ function scanRange(current: ScanRange, pass: ScanRange): ScanRange {
 export interface SavingsSettlePassDeps extends SavingsMoveSettleDeps {
   /** Re-reads the balances, so a claim stored now shows in its destination's balance. */
   refreshBalance?: () => Promise<void>
+  /** Stops the pass before its next move. */
+  signal?: AbortSignal
 }
-
-type PassArgs = Parameters<typeof settlePass> extends [SavingsMoveStorage, ...infer Rest]
-  ? Rest
-  : never
-
-/** The pass running on each store, and the one queued behind it with the latest caller's inputs. */
-const running = new WeakMap<SavingsMoveStorage, Promise<void>>()
-type QueuedPass = { args: PassArgs; promise: Promise<void> }
-const queued = new WeakMap<SavingsMoveStorage, QueuedPass>()
 
 /**
  * One pass over every pending move: adopt the ones only the burn records know, then find and claim
  * each one's deposit. A burn that failed is left alone; it funded nothing. Each pass leaves what it
  * found on the record, so a row can say why the move still waits. A claim stored now keeps when, and
  * the balances are read at once; until its destination's balance is read after it, the move still
- * counts as funds on their way. One pass runs per store at a time; a caller during a pass gets the
- * next one, which runs on the latest caller's withdrawals, so a burn rebuilt mid-pass is adopted.
+ * counts as funds on their way. The session's settle task runs one pass at a time.
  */
-export function settleSavingsMoves(
-  store: SavingsMoveStorage,
+export async function settleSavingsMoves(
+  store: SavingsMoves,
   deps: SavingsSettlePassDeps,
   withdrawals: WithdrawalRecord[] = [],
   /** A found deposit the claim refused; the next pass tries again. */
   onClaimError: (move: SavingsMoveRecord, error: unknown) => void = () => {},
   now: () => number = Date.now,
 ): Promise<void> {
-  const args: PassArgs = [deps, withdrawals, onClaimError, now]
-  const next = queued.get(store)
-  if (next) {
-    next.args = args
-    return next.promise
+  const stopIfAborted = () => {
+    if (deps.signal?.aborted) throw new WalletError("aborted", "savings settle pass aborted")
   }
-  const current = running.get(store)
-  if (!current) return run(store, args)
-  const pass: QueuedPass = {
-    args,
-    promise: current
-      .catch(() => {})
-      .then((): Promise<void> => {
-        queued.delete(store)
-        return run(store, pass.args)
-      }),
-  }
-  queued.set(store, pass)
-  return pass.promise
-}
-
-function run(store: SavingsMoveStorage, args: PassArgs): Promise<void> {
-  const pass = settlePass(store, ...args).finally(() => {
-    if (running.get(store) === pass) running.delete(store)
-  })
-  running.set(store, pass)
-  return pass
-}
-
-async function settlePass(
-  store: SavingsMoveStorage,
-  deps: SavingsSettlePassDeps,
-  withdrawals: WithdrawalRecord[],
-  onClaimError: (move: SavingsMoveRecord, error: unknown) => void,
-  now: () => number,
-): Promise<void> {
-  await store.load()
+  // A move list that does not read rejects here: the pass settles nothing over it.
   await adoptSavingsMoves(store, withdrawals)
   // A rebuilt burn whose block time could not be read carries the rebuild's clock, which is after
   // the deposit: the search's floor must come from the destination instead.
@@ -147,7 +105,8 @@ async function settlePass(
   // Claimed before the vault's figures were kept: read them from the move's transaction, before any
   // claim. A move out's release is the tracker's hash, else found by the DAI paid to its escrow.
   if (deps.vault)
-    for (const record of store.list().filter(needsVaultFigures)) {
+    for (const record of (await store.all()).filter(needsVaultFigures)) {
+      stopIfAborted()
       const burn = withdrawals.find((w) => w.localId === record.withdrawalLocalId)
       const { move, error } = await backfillSavingsMoveFigures(
         withFactory(record),
@@ -155,9 +114,6 @@ async function settlePass(
         startedAtOf(record),
         burn,
       ).catch((error: unknown) => ({ move: record, error }))
-      // Removed meanwhile (a cancelled move): not written back.
-      const current = store.get(record.withdrawalLocalId)
-      if (!current) continue
       const learned = {
         ...(move.deposit ? { deposit: move.deposit } : {}),
         ...(move.vault ? { vault: move.vault } : {}),
@@ -166,11 +122,14 @@ async function settlePass(
         ...(move.releaseScanFrom !== undefined ? { releaseScanFrom: move.releaseScanFrom } : {}),
         ...(move.runScanFrom !== undefined ? { runScanFrom: move.runScanFrom } : {}),
       }
-      const changed = (Object.keys(learned) as (keyof typeof learned)[]).some(
-        (key) => JSON.stringify(learned[key]) !== JSON.stringify(current[key]),
-      )
-      if (changed || error)
-        await store.put({
+      // Removed meanwhile (a cancelled move): not written back.
+      await store.update(record.withdrawalLocalId, (current) => {
+        if (!current) return null
+        const changed = (Object.keys(learned) as (keyof typeof learned)[]).some(
+          (key) => JSON.stringify(learned[key]) !== JSON.stringify(current[key]),
+        )
+        if (!changed && !error) return null
+        return {
           ...current,
           ...learned,
           ...(error
@@ -181,10 +140,12 @@ async function settlePass(
                 },
               }
             : {}),
-        })
+        }
+      })
     }
-  for (const record of store.list()) {
+  for (const record of await store.all()) {
     if (!isSavingsMovePending(record)) continue
+    stopIfAborted()
     const burn = withdrawals.find((w) => w.localId === record.withdrawalLocalId)
     const startedAt = startedAtOf(record)
     if (burn?.phase === "failed") continue
@@ -193,47 +154,53 @@ async function settlePass(
       settled = await settleSavingsMove(withFactory(record), deps, startedAt)
     } catch (error) {
       // A chain read that failed for this move: the others still settle.
-      const current = store.get(record.withdrawalLocalId)
-      if (current)
-        await store.put({
-          ...current,
-          lastCheck: { at: now(), message: `search failed: ${claimRefusalMessage(error)}` },
-        })
+      await store.update(record.withdrawalLocalId, (current) =>
+        current
+          ? {
+              ...current,
+              lastCheck: { at: now(), message: `search failed: ${claimRefusalMessage(error)}` },
+            }
+          : null,
+      )
       continue
     }
     const { move, claimError, stored } = settled
+    // When the claim resolved: a balance read that resolves after it holds the claim, and can land
+    // before this queued write.
+    const storedAt = now()
     if (claimError) onClaimError(record, claimError)
     // A claim another writer recorded meanwhile stands, and so does a better search range: neither
     // is written back. A move removed meanwhile stays removed.
-    const current = store.get(record.withdrawalLocalId)
-    if (!current) continue
-    const deposit = current.deposit?.claimed
-      ? current.deposit
-      : move.deposit && stored
-      ? { ...move.deposit, storedAt: now() }
-      : move.deposit
-    const range = scanRange(current, move)
-    const lastCheck = {
-      at: now(),
-      message: deposit?.claimed
-        ? "claimed"
-        : claimError
-        ? `claim refused: ${claimRefusalMessage(claimError)}`
-        : deposit
-        ? "deposit found, claim pending"
-        : `no deposit on the destination portal yet, searched to block ${
-            range.depositScanFrom ?? "0"
-          }`,
-    }
-    await store.put({
-      ...current,
-      ...move,
-      ...(deposit ? { deposit } : {}),
-      ...range,
-      lastCheck,
-      ...(deposit?.claimed ? { endTime: current.endTime ?? now() } : {}),
+    const saved = await store.update(record.withdrawalLocalId, (current) => {
+      if (!current) return null
+      const deposit = current.deposit?.claimed
+        ? current.deposit
+        : move.deposit && stored
+        ? { ...move.deposit, storedAt }
+        : move.deposit
+      const range = scanRange(current, move)
+      const lastCheck = {
+        at: now(),
+        message: deposit?.claimed
+          ? "claimed"
+          : claimError
+          ? `claim refused: ${claimRefusalMessage(claimError)}`
+          : deposit
+          ? "deposit found, claim pending"
+          : `no deposit on the destination portal yet, searched to block ${
+              range.depositScanFrom ?? "0"
+            }`,
+      }
+      return {
+        ...current,
+        ...move,
+        ...(deposit ? { deposit } : {}),
+        ...range,
+        lastCheck,
+        ...(deposit?.claimed ? { endTime: current.endTime ?? now() } : {}),
+      }
     })
-    if (stored)
+    if (saved && stored)
       await deps
         .refreshBalance?.()
         .catch((err: unknown) => logger.warn("[settleSavingsMoves] balance refresh failed:", err))

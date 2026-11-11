@@ -16,7 +16,7 @@ export interface StatusPillProps {
  * Distinct from LiquidGlassPill (capsule, 10px label): this is the prominent
  * state indicator (Successful / Unclaimed / You owe / Unverified).
  */
-export function StatusPill({ label, icon, labelColor = "#fff", iconColor = "#fff", className }: StatusPillProps) {
+export function StatusPill({ label, icon, labelColor = "var(--ink)", iconColor = "var(--ink)", className }: StatusPillProps) {
   return (
     <span className={["zkm-status-pill", className].filter(Boolean).join(" ")}>
       {icon && <Icon name={icon} size={14} color={iconColor} />}
@@ -29,11 +29,11 @@ export type StatusBadgeStyle = "pending" | "awaitingClaim" | "request" | "failed
 
 const BADGE_COLORS: Record<StatusBadgeStyle, string> = {
   pending: "#EE9B4E",
-  awaitingClaim: "#EED04E",
-  request: "#EED04E",
-  failed: "#FE708B",
-  cancelled: "#BFC2D7",
-  paid: "#56E79D",
+  awaitingClaim: "var(--accent-gold)",
+  request: "var(--accent-gold)",
+  failed: "var(--accent-pink)",
+  cancelled: "var(--text-secondary)",
+  paid: "var(--accent-green)",
 }
 
 const BADGE_CLOCK: Record<StatusBadgeStyle, boolean> = {

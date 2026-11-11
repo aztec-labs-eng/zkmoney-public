@@ -1,8 +1,9 @@
 import { formatUnits } from "viem"
-import { InfoButton } from "../limits/InfoButton"
+import { InfoButton } from "../../ui/InfoButton/InfoButton"
 import { LimitsRows } from "../limits/AboutLimitsContent"
 import { LimitLine } from "../limits/publicLimit"
 import { CHECKING, MAX_SEND_ROW, swapCreditNote, UNAVAILABLE } from "../limits/limitsCopy"
+import copy from "./AddressLimits.copy"
 
 /** `2,500 DAI`: exact, with the integer part grouped. */
 export function tokenAmountLabel(atomic: bigint, decimals: number, symbol: string): string {
@@ -20,7 +21,7 @@ export function AddressLimits({ onInfo }: { onInfo?: () => void }) {
     <LimitLine
       kind="address"
       testId="address-limits"
-      info={onInfo && <InfoButton label="About the deposit limit" onClick={onInfo} />}
+      info={onInfo && <InfoButton label={copy.about} outline onClick={onInfo} />}
     />
   )
 }

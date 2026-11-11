@@ -1,15 +1,15 @@
 /**
  * Adding a backup passkey is one user operation the root passkey signs: install the key, point the
- * record at the two-key address, notify the name portal. A user-op SIPA runs it when the relayer
- * sweeps the SIPA, so the wallet prepares and signs it ahead of time, keeps it, checks the account
- * against it before funding anything, and builds the sweep that runs it.
+ * record at the two-key address, notify the name portal. An add-passkey SIPA builds and runs it when
+ * the relayer sweeps the SIPA, so the wallet prepares and signs it ahead of time, keeps it, checks
+ * the account against it before funding anything, and builds the sweep that runs it.
  */
 import type { AztecAddress } from "@aztec-labs/aztec.js/addresses"
 import { EthAddress } from "@aztec-labs/aztec.js/addresses"
 import type { Fr } from "@aztec-labs/aztec.js/fields"
 import { p256 } from "@noble/curves/p256"
 import { sha256 } from "@noble/hashes/sha2"
-import { WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
+import { L1_SETTLED_DEPTH, WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
 import {
   AccountMetadataRegistryAbi,
   CANONICAL_ENTRY_POINT_V08,
@@ -17,29 +17,30 @@ import {
   OxideAccountAbi,
   SIPAFactoryAbi,
   SipaIntent as OxideSipaIntent,
-  conditionHash,
+  computeUserOpHash,
   encodeAddAuthKey,
-  encodeUserOpIntentData,
+  encodeAddPasskeyIntentData,
   getAuthKeys,
-  getUserOpHash,
   getUserRecord,
   hasUserRecord,
   readBlessedIntent,
   readSIPAImplementation,
-  userOpOfIntent,
+  type AddPasskeyIntent,
   type AuthKeyEntry,
   type R1PublicKeyArg,
   type SipaDeployArgs,
-  type UserOpIntent,
   type UserRecordArg,
 } from "@oxide/l1-contracts"
-import { readPlainWithdrawalFee } from "@oxide/oxide-client/executors/plain_withdrawal_executor.js"
 import {
-  buildRotationIntent,
-  buildRotationSweep,
+  MAX_ADD_PASSKEY_CALL_GAS,
+  buildAddPasskeySipa,
+  buildAddPasskeySweep,
+  buildAddPasskeyUserOp,
   passkeyMetadata,
-  type RotationIntent,
-} from "@oxide/oxide-client/passkey_rotation.js"
+  type AddPasskeySipa,
+} from "@oxide/oxide-client/add_passkey.js"
+import { readPlainWithdrawalFee } from "@oxide/oxide-client/executors/plain_withdrawal_executor.js"
+import { USER_OP_VERIFICATION_GAS, configuredChainId } from "@oxide/oxide-client/record_update.js"
 import {
   L1OperationCondition,
   type BroadcastL1Operation,
@@ -52,7 +53,6 @@ import {
   concatHex,
   decodeAbiParameters,
   encodeFunctionData,
-  encodeFunctionResult,
   hexToBytes,
   isAddress,
   isHex,
@@ -66,11 +66,16 @@ import {
   type Hex,
   type PublicClient,
 } from "viem"
+import { RevertingSweepError, UnprofitableSweepError } from "../oxide/tip/l1OperationQuote.js"
 import {
   assertSubsidySweepsSipa,
   readSweepRouteLiveness,
-  readUserOpSIPAImplementation,
+  readAddPasskeySIPAImplementation,
+  SupersededImplementationError,
 } from "./sipa/sipaIntents.js"
+
+/** An add-passkey SIPA with the intent, the deploy args and the hash the root key signs. */
+export type RotationIntent = AddPasskeySipa
 
 /** The deployment a rotation runs on. A `MetadataDestination` satisfies it. */
 export interface BackupRotationTuple {
@@ -95,10 +100,7 @@ export interface BackupPasskeyAdd {
   envelope: Hex
 }
 
-/**
- * The longest credential id a backup may carry: four storage words past the envelope keep the
- * sweep under the subsidy's gas ceiling at oxide's fixed per-add allowance.
- */
+/** The longest credential id a backup may carry: the longest oxide's add-passkey tests run. */
 export const MAX_BACKUP_CREDENTIAL_ID_BYTES = 128
 /** WebAuthn's floor, which the on-chain reader also holds the appended id to. */
 const MIN_BACKUP_CREDENTIAL_ID_BYTES = 16
@@ -116,8 +118,8 @@ export class BackupCredentialIdLengthError extends Error {
 
 /**
  * The bytes the installed key's metadata carries behind oxide's prefix: the envelope, then the raw
- * credential id, so a sign-in can name a passkey the browser cannot list. Refuses an id the
- * rotation's gas cannot store.
+ * credential id, so a sign-in can name a passkey the browser cannot list. Refuses an id outside
+ * the backup length.
  */
 export function backupKeyPayload(add: BackupPasskeyAdd): Hex {
   const bytes = size(add.credentialId)
@@ -148,11 +150,11 @@ export interface PreparedBackupRotation {
   rotation: RotationIntent
   /** The key set the intent was built against: the root key alone, with its metadata. */
   expectedKeys: AuthKeyEntry[]
-  /** The user-op implementation the SIPA clones: the factory's at prepare time. */
+  /** The add-passkey implementation the SIPA clones: the factory's at prepare time. */
   implementation: Address
   /** The factory `implementation` was read from. */
   sipaFactory: Address
-  /** The record the intent was built over; the precondition hashes it. */
+  /** The record the intent was built over; the operation rewrites only its address. */
   builtOver: UserRecordArg
   add: BackupPasskeyAdd
 }
@@ -190,13 +192,23 @@ export class AccountRecordMismatchError extends Error {
   }
 }
 
-/** The forwarding table or the deposit subsidy would not sweep a user-op SIPA of the token. */
+/** The forwarding table or the deposit subsidy would not sweep an add-passkey SIPA of the token. */
 export class RotationRouteNotLiveError extends Error {
   constructor(readonly reason: string) {
     super(`The rotation's sweep route is not live: ${reason}`)
     this.name = "RotationRouteNotLiveError"
   }
 }
+
+/**
+ * Whether `err` is the chain refusing a backup rotation's sweep as it stands, not a read that did
+ * not complete: the wallet parks the attempt on the first and retries the second.
+ */
+export const backupSweepRefused = (err: unknown): boolean =>
+  err instanceof RotationRouteNotLiveError ||
+  err instanceof SupersededImplementationError ||
+  err instanceof RevertingSweepError ||
+  err instanceof UnprofitableSweepError
 
 /** A read the structural check needs did not complete. Not a mismatch: the record is unjudged. */
 export class VerificationUnavailableError extends Error {
@@ -243,7 +255,7 @@ export async function prepareBackupRotation(
   const [hasRecord, keys, implementation] = await Promise.all([
     hasUserRecord(client, tuple.metadataRegistry, owner),
     getAuthKeys(client, owner),
-    readUserOpSIPAImplementation(client, tuple.factory),
+    readAddPasskeySIPAImplementation(client, tuple.factory),
   ])
   if (!hasRecord) throw new AccountRecordMismatchError(recordExpected, undefined)
   const record = await getUserRecord(client, tuple.metadataRegistry, owner)
@@ -257,7 +269,7 @@ export async function prepareBackupRotation(
   if (keys.length !== 1 || !sameKey(keys[0]!.key, args.rootKey)) {
     throw new BackupSetConflictError("the keys are not the root key alone", [args.rootKey], keys)
   }
-  const rotation = await buildRotationIntent(client, {
+  const rotation = await buildAddPasskeySipa(client, {
     sipaFactory: tuple.factory,
     implementation,
     forwardingTable: tuple.forwardingTable,
@@ -267,14 +279,11 @@ export async function prepareBackupRotation(
     owner,
     record,
     recipient: args.recipient,
-    add: [
-      {
-        passkey: add.pubkey,
-        credentialId: add.credentialId,
-        encryptedWalletKey: backupKeyPayload(add),
-      },
-    ],
-    remove: [],
+    add: {
+      passkey: add.pubkey,
+      credentialId: add.credentialId,
+      encryptedWalletKey: backupKeyPayload(add),
+    },
   })
   return {
     rotation,
@@ -286,29 +295,31 @@ export async function prepareBackupRotation(
   }
 }
 
-/** A block tag, or the hash of the block to read at. */
-export type AccountStateAt = "latest" | "finalized" | Hex
+/** The latest block, or the number or hash of the block to read at. */
+export type AccountStateAt = "latest" | bigint | Hex
+
+/** The block `L1_SETTLED_DEPTH` behind `head`, floored at the genesis block. */
+export const settledBlockNumber = (head: bigint): bigint =>
+  head > L1_SETTLED_DEPTH ? head - L1_SETTLED_DEPTH : 0n
 
 /** The block read at was replaced while its state was read: the snapshot would mix two blocks. */
 export class AccountStateReorgedError extends Error {
-  constructor(
-    readonly blockNumber: bigint,
-    readonly expected: Hex,
-    readonly canonical: Hex,
-  ) {
-    super(`block ${blockNumber} changed under the read: expected ${expected}, the chain holds ${canonical}`)
+  constructor(readonly blockNumber: bigint, readonly expected: Hex, readonly canonical: Hex) {
+    super(
+      `block ${blockNumber} changed under the read: expected ${expected}, the chain holds ${canonical}`,
+    )
     this.name = "AccountStateReorgedError"
   }
 }
 
-/** How many times a read at a tag follows the chain to a new block before giving up. */
+/** How many times a read at the latest block follows the chain to a new block before giving up. */
 const ACCOUNT_STATE_ATTEMPTS = 3
 
 /**
  * The account's nonce, keys and record at one block. A contract that did not exist at the block holds
  * nothing: an undeployed account has no keys and no nonce, an undeployed registry no record. The
- * reads go by block number, so the block is read again afterwards: a tag read follows the chain to the
- * new block, a hash read refuses a block the chain no longer holds.
+ * reads go by block number, so the block is read again afterwards: a read at the latest block follows
+ * the chain to the new block, a read at a number or a hash refuses a block the chain no longer holds.
  */
 export interface AccountState {
   blockNumber: bigint
@@ -326,7 +337,11 @@ export async function readAccountState(
   const at = options.at ?? "latest"
   for (let attempt = 1; ; attempt++) {
     const block = await client.getBlock(
-      at.startsWith("0x") ? { blockHash: at as Hex } : { blockTag: at as "latest" | "finalized" },
+      typeof at === "bigint"
+        ? { blockNumber: at }
+        : at === "latest"
+        ? { blockTag: at }
+        : { blockHash: at },
     )
     // A read that fails under a replaced block is the replacement's doing, not the chain's answer.
     const read = await readStateAt(client, owner, options.metadataRegistry, block.number!).then(
@@ -338,7 +353,7 @@ export async function readAccountState(
       if ("error" in read) throw read.error
       return { ...read.state, blockHash: block.hash! }
     }
-    if (at.startsWith("0x") || attempt === ACCOUNT_STATE_ATTEMPTS) {
+    if (at !== "latest" || attempt === ACCOUNT_STATE_ATTEMPTS) {
       throw new AccountStateReorgedError(block.number!, block.hash!, canonical.hash!)
     }
   }
@@ -405,10 +420,10 @@ async function readStateAt(
 }
 
 /**
- * Whether the signed operation can still run. `superseded`: the factory now clones another user-op
+ * Whether the signed operation can still run. `superseded`: the factory now clones another add-passkey
  * implementation, and the subsidy deploys only that one, so funding the SIPA would strand the
- * tokens at a clone no sweep creates. `applied` holds at the finalized block; `applied-pending` is
- * applied at the latest block only.
+ * tokens at a clone no sweep creates. `applied` holds at the settled block (`L1_SETTLED_DEPTH` behind
+ * the tip); `applied-pending` is applied at the latest block only.
  */
 export type RotationFundability = "fundable" | "superseded" | "applied" | "applied-pending"
 
@@ -416,23 +431,22 @@ export type RotationFundability = "fundable" | "superseded" | "applied" | "appli
  * The chain against the prepared rotation: fundable while nonce, keys and record are as the intent
  * was built and the factory still clones its implementation; superseded once the factory clones
  * another; applied once this very operation ran; anything else is a conflict. Read before the
- * broadcast and before every funding attempt. A finalized block that predates the account or the
- * registry reads empty, so it never counts as applied: the answer is `applied-pending` until a
- * finalized block shows the operation.
+ * broadcast and before every funding attempt. A settled block that predates the account or the
+ * registry reads empty, so it never counts as applied: the answer is `applied-pending` until the
+ * settled block shows the operation.
  */
 export async function readRotationFundability(
   client: PublicClient,
   prepared: Pick<
     PreparedBackupRotation,
     "rotation" | "expectedKeys" | "builtOver" | "add" | "implementation" | "sipaFactory"
-  >,
-  options: { at?: "latest" | "finalized" } = {},
+  > & { metadataRegistry: Address },
 ): Promise<RotationFundability> {
   const { rotation, expectedKeys, builtOver, add, implementation, sipaFactory } = prepared
   const { intent } = rotation
   const fundable = async (): Promise<RotationFundability> =>
     sameHex(
-      await readSIPAImplementation(client, sipaFactory, OxideSipaIntent.UserOp),
+      await readSIPAImplementation(client, sipaFactory, OxideSipaIntent.AddPasskey),
       implementation,
     )
       ? "fundable"
@@ -457,9 +471,9 @@ export async function readRotationFundability(
     }
     return undefined
   }
-  const readAt = async (at: "latest" | "finalized") => {
+  const readAt = async (at: AccountStateAt) => {
     const state = await readAccountState(client, intent.owner, {
-      metadataRegistry: intent.precondition.target,
+      metadataRegistry: prepared.metadataRegistry,
       at,
     })
     return { state, verdict: classify(state) }
@@ -477,24 +491,17 @@ export async function readRotationFundability(
       state.keys,
     )
   }
-  if (options.at === "finalized") {
-    const finalized = await readAt("finalized")
-    if (finalized.verdict === "applied") return "applied"
-    const latest = await readAt("latest")
-    if (!latest.verdict) throw conflict(latest.state)
-    return latest.verdict === "applied" ? "applied-pending" : fundable()
-  }
   const latest = await readAt("latest")
   if (!latest.verdict) throw conflict(latest.state)
   if (latest.verdict === "fundable") return fundable()
-  const finalized = await readAt("finalized")
-  return finalized.verdict === "applied" ? "applied" : "applied-pending"
+  const settled = await readAt(settledBlockNumber(latest.state.blockNumber))
+  return settled.verdict === "applied" ? "applied" : "applied-pending"
 }
 
 /** The rotation as a device keeps it between signing and the sweep. */
 export interface PersistedRotation {
   owner: Address
-  intent: UserOpIntent
+  intent: AddPasskeyIntent
   sharedSecretSalt: Fr
   nonce: bigint
   builtOver: UserRecordArg
@@ -530,11 +537,11 @@ export type PersistedRotationVerdict =
   | { verdict: "corrupt"; reason: string }
 
 /**
- * Is the persisted record well formed and the root key's? The intent is rebuilt over the record's
- * own inputs and must match it in every field the chain or the salt does not set; those fields are
- * checked from the persisted inputs. Live nonce, keys and record are not judged here. A read that
- * does not complete throws `VerificationUnavailableError`; only a completed read that disagrees
- * makes the record corrupt.
+ * Is the persisted record well formed and the root key's? Every field is judged against the record's
+ * own inputs, the tuple and the local truth: the intent must be the one the wallet would build over
+ * them, and the signature must cover its hash over the tuple's registry and portal. Live nonce, keys
+ * and record are not judged here. A read that does not complete throws
+ * `VerificationUnavailableError`; only a completed read that disagrees makes the record corrupt.
  */
 export async function verifyPersistedRotation(
   client: PublicClient,
@@ -568,7 +575,7 @@ export async function verifyPersistedRotation(
     })
     encodeAddAuthKey(record.add.pubkey, backupKeyEntry(record.add).metadata)
     for (const expected of record.expectedKeys) encodeAddAuthKey(expected.key, expected.metadata)
-    encodeUserOpIntentData(record.intent)
+    encodeAddPasskeyIntentData(record.intent)
     encodeFunctionData({
       abi: SIPAFactoryAbi,
       functionName: "predictSIPA",
@@ -601,57 +608,15 @@ export async function verifyPersistedRotation(
   if (!sameHex(rootExpected.metadata, rootKey.metadata)) {
     return corrupt("the root key's metadata is not the account's")
   }
-  if (blessedAs !== OxideSipaIntent.UserOp) {
-    return corrupt("the implementation is not a blessed user-op clone")
+  if (blessedAs !== OxideSipaIntent.AddPasskey) {
+    return corrupt("the implementation is not a blessed add-passkey clone")
   }
 
   const [recipient, oneKey] = await Promise.all([
     truth.derive([rootKey.key, record.add.pubkey]),
     truth.derive([rootKey.key]),
   ])
-  const rebuilt = await unavailable("the rotation's rebuild", () =>
-    buildRotationIntent(client, {
-      sipaFactory: tuple.factory,
-      implementation: record.implementation,
-      forwardingTable: tuple.forwardingTable,
-      metadataRegistry: tuple.metadataRegistry,
-      namePortal: tuple.namePortal,
-      rollupVersion: tuple.rollupVersion,
-      owner: record.owner,
-      record: record.builtOver,
-      recipient,
-      add: [
-        {
-          passkey: record.add.pubkey,
-          credentialId: record.add.credentialId,
-          encryptedWalletKey: backupKeyPayload(record.add),
-        },
-      ],
-      remove: [],
-    }),
-  )
-
   const { intent, builtOver } = record
-  const other = rebuilt.intent
-  if (intent.rollupVersion !== other.rollupVersion) return corrupt("the rollup version")
-  if (!sameHex(intent.owner, other.owner)) return corrupt("the owner")
-  if (!sameHex(intent.callData, other.callData)) return corrupt("the call data")
-  if (!sameWord(intent.accountGasLimits, other.accountGasLimits)) return corrupt("the gas limits")
-  if (
-    !sameHex(intent.precondition.target, other.precondition.target) ||
-    !sameHex(intent.precondition.data, other.precondition.data)
-  ) {
-    return corrupt("the precondition call")
-  }
-  if (
-    !sameHex(intent.postcondition.target, other.postcondition.target) ||
-    !sameHex(intent.postcondition.data, other.postcondition.data) ||
-    !sameWord(intent.postcondition.resultHash, other.postcondition.resultHash)
-  ) {
-    return corrupt("the postcondition")
-  }
-  if (intent.nonce !== record.nonce) return corrupt("the nonce")
-
   if (!sameWord(builtOver.l2Address, oneKey.toString() as Hex)) {
     return corrupt("the record built over names another address")
   }
@@ -661,20 +626,10 @@ export async function verifyPersistedRotation(
   if (builtOver.publicKey.x !== truth.publicKey.x || builtOver.publicKey.y !== truth.publicKey.y) {
     return corrupt("the record built over names another public key")
   }
-  const preconditionHash = conditionHash(
-    encodeFunctionResult({
-      abi: AccountMetadataRegistryAbi,
-      functionName: "getUserRecord",
-      result: builtOver,
-    }),
-  )
-  if (
-    BigInt(intent.precondition.resultHash) === 0n ||
-    !sameWord(intent.precondition.resultHash, preconditionHash)
-  ) {
-    return corrupt("the precondition hash")
-  }
 
+  if (!sameHex(intent.owner, record.owner)) return corrupt("the owner")
+  if (intent.rollupVersion !== tuple.rollupVersion) return corrupt("the rollup version")
+  if (intent.nonce !== record.nonce) return corrupt("the nonce")
   const recipientCommitment = await computeRecipientCommitment(record.sharedSecretSalt, recipient)
   if (!sameWord(intent.recipientCommitment, recipientCommitment.toString() as Hex)) {
     return corrupt("the recipient commitment")
@@ -686,7 +641,7 @@ export async function verifyPersistedRotation(
   if (!sameWord(deployArgs.recoveryCommitment, recoveryCommitment.toString() as Hex)) {
     return corrupt("the recovery commitment")
   }
-  const intentHash = keccak256(encodeUserOpIntentData(intent))
+  const intentHash = keccak256(encodeAddPasskeyIntentData(intent))
   if (!sameHex(deployArgs.implementation, record.implementation)) {
     return corrupt("the deploy args' implementation")
   }
@@ -709,9 +664,17 @@ export async function verifyPersistedRotation(
   })
   if (!sameHex(sipa.toString(), record.sipa)) return corrupt("the SIPA address")
 
-  const userOpHash = await unavailable("the user operation hash", () =>
-    getUserOpHash(client, CANONICAL_ENTRY_POINT_V08, userOpOfIntent(intent)),
-  )
+  // The intent fields the wallet sets, against what it would build over the record's own inputs.
+  const newRecord: UserRecordArg = { ...builtOver, l2Address: recipient.toString() as Hex }
+  if (!sameUserRecord(intent.record, newRecord)) return corrupt("the record")
+  if (!sameWord(intent.namePortalRecipient, recipient.toString() as Hex)) {
+    return corrupt("the name-portal recipient")
+  }
+  if (!sameKey(intent.key, record.add.pubkey)) return corrupt("the key")
+  if (!sameHex(intent.metadata, backupKeyEntry(record.add).metadata)) return corrupt("the metadata")
+  if (!isAddPasskeyGasLimits(intent.accountGasLimits)) return corrupt("the gas limits")
+
+  const userOpHash = rotationUserOpHash(client, intent, tuple)
   const check = verifyWebAuthnUserOpSignature(record.signature, rootKey.key, userOpHash)
   if (!check.valid) return corrupt(`the signature: ${check.reason}`)
   if (check.keyIndex !== BigInt(keyIndex)) return corrupt("the signature's key index")
@@ -720,7 +683,7 @@ export async function verifyPersistedRotation(
     verdict: "verified",
     rotation: {
       sharedSecretSalt: record.sharedSecretSalt,
-      newRecord: rebuilt.newRecord,
+      newRecord,
       intent,
       deployArgs,
       sipa: record.sipa,
@@ -730,6 +693,41 @@ export async function verifyPersistedRotation(
     rootKey,
     keyIndex: BigInt(keyIndex),
   }
+}
+
+const U128_MASK = (1n << 128n) - 1n
+
+/**
+ * Whether packed gas limits are ones oxide's add-passkey builder signs: its verification gas, and a
+ * call gas from its chain estimate, which it caps. The only limits the wallet signs or verifies.
+ */
+export function isAddPasskeyGasLimits(accountGasLimits: Hex): boolean {
+  // The operation hash encodes the word as written, so only its 32-byte spelling is the value checked.
+  if (!/^0x[0-9a-fA-F]{64}$/.test(accountGasLimits)) return false
+  const word = BigInt(accountGasLimits)
+  const callGas = word & U128_MASK
+  return (
+    word >> 128n === USER_OP_VERIFICATION_GAS && callGas > 0n && callGas <= MAX_ADD_PASSKEY_CALL_GAS
+  )
+}
+
+/** The clone's immutable targets: the registry the record is written to and the portal it notifies. */
+export interface RotationTargets {
+  metadataRegistry: Address
+  namePortal: Address
+}
+
+/** The hash the root key signs: the canonical entry point's, over the operation for `targets`. */
+export function rotationUserOpHash(
+  client: PublicClient,
+  intent: AddPasskeyIntent,
+  targets: RotationTargets,
+): Hex {
+  return computeUserOpHash(
+    configuredChainId(client),
+    CANONICAL_ENTRY_POINT_V08,
+    buildAddPasskeyUserOp(intent, targets),
+  )
 }
 
 const WEBAUTHN_GET = new TextEncoder().encode('"type":"webauthn.get"')
@@ -833,7 +831,7 @@ export async function buildBackupSweep(
   signature: Hex,
   tuple: BackupRotationTuple,
 ): Promise<BroadcastL1Operation> {
-  const operation = buildRotationSweep(rotation, signature, {
+  const operation = buildAddPasskeySweep(rotation, signature, {
     sipaFactory: tuple.factory,
     token: tuple.token,
     operationExecutor: tuple.operationExecutor,
@@ -846,9 +844,9 @@ export async function buildBackupSweep(
   await assertSubsidySweepsSipa(client, {
     routes: [{ portal: tuple.portal, depositSubsidy: tuple.depositSubsidy }],
     sipaFactory: tuple.factory,
-    intent: OxideSipaIntent.UserOp,
+    intent: OxideSipaIntent.AddPasskey,
     deployArgs: rotation.deployArgs,
-    intentData: encodeUserOpIntentData(rotation.intent),
+    intentData: encodeAddPasskeyIntentData(rotation.intent),
     sipa: rotation.sipa,
   })
   return operation
@@ -889,7 +887,7 @@ export async function fundingAmount(
       forwardingTable: tuple.forwardingTable,
       token: tuple.token,
       depositSubsidy: tuple.depositSubsidy,
-      intent: OxideSipaIntent.UserOp,
+      intent: OxideSipaIntent.AddPasskey,
     }),
   ])
   if (!route.live) throw new RotationRouteNotLiveError(route.reason)
@@ -913,5 +911,3 @@ export async function fundingAmount(
     },
   }
 }
-
-export type { RotationIntent }

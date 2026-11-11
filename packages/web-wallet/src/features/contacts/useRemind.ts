@@ -19,7 +19,7 @@ export function useRemind(tokenAddress?: string) {
   // Covers the moment before the stored row's `remindedAt` reaches the caller.
   const [sentAt, setSentAt] = useState<ReadonlyMap<string, number>>(new Map())
   const inFlight = useRef(new Set<string>())
-  const { identity } = useSession()
+  const session = useSession()
 
   const remind = useCallback(
     (id: string) => {
@@ -27,7 +27,7 @@ export function useRemind(tokenAddress?: string) {
       inFlight.current.add(id)
       setSending((s) => new Set(s).add(id))
       setFailed((s) => without(s, id))
-      void remindRequestById(id, identity.get().value?.handle, tokenAddress)
+      void remindRequestById(session, id, session.identity.get().value?.handle, tokenAddress)
         .catch((err) => {
           console.warn("[remind] failed:", err)
           return false
@@ -39,7 +39,7 @@ export function useRemind(tokenAddress?: string) {
           else setFailed((s) => new Set(s).add(id))
         })
     },
-    [identity, tokenAddress],
+    [session, tokenAddress],
   )
 
   const stateOf = useCallback(
@@ -55,7 +55,7 @@ export function useRemind(tokenAddress?: string) {
   return { remind, stateOf }
 }
 
-function without(set: ReadonlySet<string>, id: string): ReadonlySet<string> {
+export function without(set: ReadonlySet<string>, id: string): ReadonlySet<string> {
   if (!set.has(id)) return set
   const next = new Set(set)
   next.delete(id)

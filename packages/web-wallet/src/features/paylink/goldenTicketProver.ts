@@ -10,6 +10,7 @@ import {
   warmNoirProver,
   type NoirCircuit,
   type NoirProofLap,
+  type NoirWasm,
 } from "../../platform/noirProver"
 
 const goldenTicketCircuit = async (): Promise<NoirCircuit> => {
@@ -20,24 +21,23 @@ const goldenTicketCircuit = async (): Promise<NoirCircuit> => {
 }
 
 /** Loads the circuit and the prover ahead of the proof, which needs the passkey's owner. */
-export function warmGoldenTicketProver(): Promise<void> {
-  return Promise.all([goldenTicketCircuit(), warmNoirProver()]).then(() => undefined)
+export function warmGoldenTicketProver(wasm: NoirWasm): Promise<void> {
+  return Promise.all([goldenTicketCircuit(), warmNoirProver(wasm)]).then(() => undefined)
 }
 
 export async function proveGoldenTicketInBrowser(
   inputs: Record<string, unknown>,
+  wasm: NoirWasm,
 ): Promise<{ proof: Uint8Array; publicInputs: string[] }> {
   const circuit = await goldenTicketCircuit()
   const laps: Partial<Record<NoirProofLap, number>> = {}
   const started = performance.now()
   let status = "failed"
   try {
-    const result = await proveNoirCircuit(
-      circuit,
-      inputs,
-      "golden-ticket",
-      (lap, ms) => (laps[lap] = ms),
-    )
+    const result = await proveNoirCircuit(circuit, inputs, "golden-ticket", {
+      wasm,
+      onLap: (lap, ms) => (laps[lap] = ms),
+    })
     status = "ok"
     return result
   } finally {

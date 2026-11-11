@@ -17,7 +17,7 @@ import {
 const SIPA_INTENTS: Record<SipaIntentName, SipaIntent> = {
   "deposit": SipaIntent.Deposit,
   "registration": SipaIntent.Registration,
-  "user-op": SipaIntent.UserOp,
+  "add-passkey": SipaIntent.AddPasskey,
 }
 
 /** The factory intent of a row intent. */

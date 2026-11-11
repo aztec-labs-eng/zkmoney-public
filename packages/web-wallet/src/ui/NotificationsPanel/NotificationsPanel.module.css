@@ -26,7 +26,7 @@
   font-size: 16px;
   font-weight: 600;
   color: var(--text-primary);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  border-bottom: 1px solid rgba(var(--ink-rgb), 0.07);
 }
 :is(:global(.ww-shell), :global(.ww-invite)) .notificationsNew {
   padding: 3px 10px;

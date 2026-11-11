@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity >=0.8.27;
+import {SweepGasCeilings} from "@test/helpers/SweepGasCeilings.sol";
 import {console2} from "forge-std/console2.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
@@ -8,7 +9,6 @@ import {TestERC20} from "@aztec/mock/TestERC20.sol";
 import {DepositSIPA} from "@periphery/DepositSIPA.sol";
 import {DepositSubsidy} from "@periphery/DepositSubsidy.sol";
 import {OperationExecutor} from "@periphery/OperationExecutor.sol";
-import {SIPABase} from "@periphery/SIPABase.sol";
 import {AggregatorV3Interface} from "@periphery/interfaces/AggregatorV3Interface.sol";
 import {IOperationExecutor} from "@periphery/interfaces/IOperationExecutor.sol";
 import {ISIPA} from "@periphery/interfaces/ISIPA.sol";
@@ -17,6 +17,7 @@ import {SweepGasFixture} from "@test/periphery/SweepGasFixture.sol";
 import {RelayerTransaction} from "@test/periphery/RelayerTransaction.sol";
 import {MockV3Aggregator} from "@test/mocks/MockV3Aggregator.sol";
 import {DEPOSIT_SWEEP_TIP} from "@test/helpers/ForwardingTableFixture.sol";
+import {Intents} from "@periphery/Intent.sol";
 
 interface VmCooling {
   function cool(address) external;
@@ -63,7 +64,8 @@ abstract contract DepositSubsidyExecutorPathFixture is SweepGasFixture {
       address(portal),
       IOperationExecutor(address(operationExecutor)),
       AggregatorV3Interface(address(feed)),
-      sipaFactory
+      sipaFactory,
+      SweepGasCeilings.initial()
     );
     underlying.mint(address(sm), 1_000_000 ether);
     vm.prank(OWNER);
@@ -149,7 +151,7 @@ abstract contract DepositSubsidyExecutorPathFixture is SweepGasFixture {
       DepositSubsidy.deployAndSweepForSubsidy,
       (
         forwardingTable,
-        SIPABase.Intent.Deposit,
+        Intents.DEPOSIT,
         _recoveryCommitment("recovery"),
         true,
         address(underlying),
@@ -236,7 +238,7 @@ contract DepositSubsidyExecutorPathTest is DepositSubsidyExecutorPathFixture {
     _openNextInboxBucket();
     (uint256 txGas,) = _relayFrom(payer, address(resweepSipa), _resweepCd(address(operationExecutor), ""));
     uint256 chainCost = txGas + HARNESS_TO_CHAIN_RELAY;
-    uint256 ceiling = sm.SWEEP_GAS_DEPOSIT_CEILING();
+    uint256 ceiling = sm.$sweepGasCeilings(Intents.DEPOSIT);
     console2.log("deposit resweep relay (chain)", chainCost, "ceiling", ceiling);
     assertGe(ceiling, chainCost, "SWEEP_GAS_DEPOSIT_CEILING sits under a typical resweep relay: it is clipped");
     assertLe(ceiling, (chainCost * 110) / 100, "SWEEP_GAS_DEPOSIT_CEILING has drifted well above a resweep relay");
@@ -246,7 +248,7 @@ contract DepositSubsidyExecutorPathTest is DepositSubsidyExecutorPathFixture {
     _openNextInboxBucket();
     (uint256 txGas,) = _relayFrom(payer, firstSipa, _deployCd(firstIntent));
     uint256 chainCost = txGas + HARNESS_TO_CHAIN_RELAY;
-    uint256 ceiling = sm.SWEEP_GAS_DEPOSIT_CEILING() + sm.SWEEP_GAS_DEPLOY_ALLOWANCE();
+    uint256 ceiling = sm.$sweepGasCeilings(Intents.DEPOSIT) + sm.SWEEP_GAS_DEPLOY_ALLOWANCE();
     console2.log("deposit first sweep relay (chain)", chainCost, "ceiling", ceiling);
     assertGe(ceiling, chainCost, "the deploy allowance sits under a typical first sweep relay: it is clipped");
     assertLe(ceiling, (chainCost * 110) / 100, "the deploy allowance has drifted well above a first sweep relay");
@@ -295,7 +297,7 @@ contract DepositSubsidyExecutorPathTest is DepositSubsidyExecutorPathFixture {
 
   function test_GivenAClippedFirstSweepToAPayerWithNoBalance_ThenTheFreshBalanceIsPaidOnTopOfTheCeiling() external {
     bytes memory padded = _deployCd(firstIntent, new bytes(16_384));
-    uint256 ceiling = sm.SWEEP_GAS_DEPOSIT_CEILING() + sm.SWEEP_GAS_DEPLOY_ALLOWANCE();
+    uint256 ceiling = sm.$sweepGasCeilings(Intents.DEPOSIT) + sm.SWEEP_GAS_DEPLOY_ALLOWANCE();
     uint256 snapshot = vm.snapshotState();
     (, uint256 pricedForHolder) = _relayFrom(payer, firstSipa, padded);
     vm.revertToState(snapshot);

@@ -62,6 +62,10 @@ export interface PendingRegistrationRecord {
   sweptAt?: number
   /** The deploy-and-sweep tx that registered the name. */
   sweepTxHash?: Hex
+  /** This wallet's transfer to the SIPA, saved before its receipt; gone once it fails. */
+  submittedFunding?: SubmittedTx
+  /** This wallet's manual sweep, saved before its receipt; gone once it fails. */
+  submittedSweep?: SubmittedTx
   /** The recovered deposit that bought wallet entry: on the refunded record once its funded stamp
    *  is gone, and on the addresses that replaced it. */
   refundedEntry?: { sipaAddress: string; recoveryTxHash: Hex; amount: string }
@@ -89,8 +93,14 @@ export interface PendingRegistrationRecord {
   lapsedAt?: number
 }
 
-/** The blob older builds kept the records in, keyed by L1 account. */
-export const PENDING_REGISTRATION_STORAGE_KEY = "@obsidion/pending-registration/records"
+/** A transaction this wallet sent, with its sender and nonce when the node reported them. */
+export interface SubmittedTx {
+  txHash: Hex
+  /** When it was sent. */
+  at: number
+  from?: Hex
+  nonce?: number
+}
 
 /** Past either bound the registration reads as escalated: the pending step leads with its retry. */
 export const ESCALATION_MAX_RETRIES = 3
@@ -110,7 +120,7 @@ export function isTerminalRegistrationPhase(phase: PendingRegistrationPhase): bo
 /** Whether the registration is past either escalation bound. */
 export function isRegistrationEscalated(
   record: Pick<PendingRegistrationRecord, "retries" | "startTime">,
-  nowMs: number = Date.now(),
+  nowMs: number,
 ): boolean {
   return (
     record.retries >= ESCALATION_MAX_RETRIES || nowMs - record.startTime > ESCALATION_MAX_AGE_MS
@@ -120,7 +130,7 @@ export function isRegistrationEscalated(
 /** The badge state a record projects to; failure states persist until the user re-enters claiming. */
 export function registrationUiState(
   record: PendingRegistrationRecord | null,
-  nowMs: number = Date.now(),
+  nowMs: number,
 ): RegistrationUiState {
   if (!record) return "none"
   if (record.phase === "confirmed" || record.phase === "replaced") return "none"
@@ -174,6 +184,9 @@ export interface RegistrationTerms {
   proverTip?: string
   /** The speed the review committed; a later review starts from it. */
   speed?: "standard" | "faster"
+  /** The withdrawal fee the split was priced with when the tip was committed, base units: the
+   *  review of a claim at work or sent shows it. */
+  withdrawalFee?: string
   /** Campaign expectation, distinct from the signer's authoritative waiver. Survives reopening. */
   earnedExpected?: boolean
 }
@@ -187,3 +200,5 @@ export interface RegistrationRefunds {
   txHashes: Hex[]
   amounts?: Record<string, string>
 }
+
+export const registrationId = (sipaAddress: string) => sipaAddress.toLowerCase()

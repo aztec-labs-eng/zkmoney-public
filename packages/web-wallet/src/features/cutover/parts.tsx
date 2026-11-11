@@ -396,7 +396,7 @@ export function ProgressRing({
         thickness={9}
         cap="butt"
         gradient
-        color="rgba(255,255,255,0.32)"
+        color="rgba(var(--ink-rgb), 0.32)"
       />
       <span className="ww-cutover__ring-label">
         <b>{Math.round(percent)}%</b>

@@ -1,17 +1,14 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { setIdentity } from "../../../support/identity"
 import { loadRecords, type PendingRegistrationRecord } from "@obsidion/front-core"
 
 const IDENTITY = { address: `0x${"cd".repeat(32)}`, handle: "taga", claimedAt: 1 }
-vi.mock("../../../../src/config/env", () => ({
-  getConfig: () => ({ network: "testnet", l1ChainId: 11155111, l1Chain: { name: "Sepolia" } }),
-}))
 
 const { accountRecords } = await import("../../../support/registrationFixtures")
 const { registrationForFeed, registrationTagForDeposit, registrationTagForSipa } = await import(
   "../../../../src/features/onboarding/useRegistrationDepositEntry"
 )
-const { closeSession, session } = await import("../../../../src/session/session")
+const { closeSession } = await import("../../../../src/session/session")
 const { openTestSession } = await import("../../../support/session")
 const { seedSipaDeposit, testSipaDeposits } = await import("../../../support/sipaDeposits")
 
@@ -66,23 +63,23 @@ beforeEach(() => setIdentity(IDENTITY))
 describe("registration deposit hands over to the rail exactly once", () => {
   it("the registration speaks while the rail holds nothing at broadcast", async () => {
     await seedDeposit("broadcast", "0")
-    expect(registrationForFeed(session())?.tag).toBe("taga")
+    expect(registrationForFeed(openTestSession())?.tag).toBe("taga")
   })
 
   it("falls silent once the rail holds the funds, before any sweep", async () => {
     await seedDeposit("broadcast")
-    expect(registrationForFeed(session())).toBeNull()
+    expect(registrationForFeed(openTestSession())).toBeNull()
   })
 
   it("falls silent once the rail is sweeping, so the feed shows one row", async () => {
     await seedDeposit("sweeping")
-    expect(registrationForFeed(session())).toBeNull()
+    expect(registrationForFeed(openTestSession())).toBeNull()
   })
 
   it("stays silent through every phase past the sweep", async () => {
     for (const phase of ["pendingClaim", "claimed", "recoverable", "recovered", "failed"]) {
       await seedDeposit(phase)
-      expect(registrationForFeed(session()), `phase ${phase}`).toBeNull()
+      expect(registrationForFeed(openTestSession()), `phase ${phase}`).toBeNull()
     }
   })
 
@@ -93,7 +90,7 @@ describe("registration deposit hands over to the rail exactly once", () => {
       record(),
     )
     await seedDeposit("recovered", "0.02")
-    expect(registrationForFeed(session())?.tag).toBe("taga")
+    expect(registrationForFeed(openTestSession())?.tag).toBe("taga")
   })
 
   it("stays silent while the deposit still needs recovery", async () => {
@@ -103,11 +100,11 @@ describe("registration deposit hands over to the rail exactly once", () => {
       record(),
     )
     await seedDeposit("recoverable", "0.02")
-    expect(registrationForFeed(session())).toBeNull()
+    expect(registrationForFeed(openTestSession())).toBeNull()
   })
 
   it("speaks when the rail has no record of the deposit at all", async () => {
-    expect(registrationForFeed(session())?.tag).toBe("taga")
+    expect(registrationForFeed(openTestSession())?.tag).toBe("taga")
   })
 })
 
@@ -123,20 +120,20 @@ describe("a refunded deposit reads as a plain deposit", () => {
   it("drops the tag once recovered and the registration waits for payment", async () => {
     await awaiting()
     await seedDeposit("recovered", "0.02")
-    expect(registrationTagForDeposit(session(), SIPA)).toBeUndefined()
+    expect(registrationTagForDeposit(openTestSession(), SIPA)).toBeUndefined()
   })
 
   it("keeps the registration identity for every other reader", async () => {
     await awaiting()
     await seedDeposit("recovered", "0.02")
-    expect(registrationTagForSipa(session(), SIPA)).toBe("taga")
+    expect(registrationTagForSipa(openTestSession(), SIPA)).toBe("taga")
   })
 
   it("keeps the tag while the deposit still needs recovery or the record is funded", async () => {
     await seedDeposit("recovered", "0.02")
-    expect(registrationTagForDeposit(session(), SIPA), "funded").toBe("taga")
+    expect(registrationTagForDeposit(openTestSession(), SIPA), "funded").toBe("taga")
     await awaiting()
     await seedDeposit("recoverable", "0.02")
-    expect(registrationTagForDeposit(session(), SIPA), "recoverable").toBe("taga")
+    expect(registrationTagForDeposit(openTestSession(), SIPA), "recoverable").toBe("taga")
   })
 })

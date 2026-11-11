@@ -4,6 +4,7 @@ import { showReportableError } from "../../errors/errorModal"
 import { failureCode, fireEvent } from "../../lib/analytics"
 import { Modal } from "../../ui/Modal"
 import { cancelRequestById } from "../contacts/requestActions"
+import { useSession } from "../../session/session"
 
 /**
  * Cancel an unpaid request link. Nothing on chain is revoked: a minted link stays payable until it
@@ -16,6 +17,7 @@ export function CancelRequestLinkModal({
   requestId: string
   onClose: () => void
 }) {
+  const session = useSession()
   const [busy, setBusy] = useState(false)
   // The row settled or left the list while this sat open, so there is nothing to cancel.
   const [gone, setGone] = useState(false)
@@ -24,7 +26,7 @@ export function CancelRequestLinkModal({
     if (busy) return
     setBusy(true)
     try {
-      if (await cancelRequestById(requestId)) {
+      if (await cancelRequestById(session, requestId)) {
         onClose()
         return
       }

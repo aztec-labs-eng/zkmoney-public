@@ -1,45 +1,49 @@
 import { BaseError, ContractFunctionRevertedError, encodeErrorResult, parseAbi } from "viem"
 import { describe, expect, it, vi } from "vitest"
+import { createPace } from "@obsidion/core/cadence"
 import {
+  ensAddresses,
   ensNameOf,
   lookupEnsAddress,
-  lookupEnsName,
+  ensNames,
   type EnsClient,
 } from "../../src/core/services/ens"
+import { queries } from "../../src/engine/query"
+import { memoryStore } from "../../src/engine/store"
 
-// Lookups are cached per address, so each case takes its own.
 const addr = (digit: number) => `0x${String(digit).repeat(40)}` as const
 const client = (getEnsName: () => Promise<string | null>) => () =>
   ({ getEnsName } as unknown as EnsClient)
+const names = (getClient: Parameters<typeof ensNames>[1]) =>
+  ensNames(
+    queries({ pace: createPace(), visible: memoryStore(true).readonly, now: () => Date.now() }),
+    getClient,
+  )
 
-describe("lookupEnsName", () => {
+describe("ensNames", () => {
   it.each([
     ["keeps a normalized name", 1, "vitalik.eth", "vitalik.eth"],
     ["drops a name normalization changes", 2, "Vitalik.eth", null],
     ["drops a confusable name", 3, "vіtalik.eth", null],
     ["reads no record as no name", 4, null, null],
   ])("%s", async (_, digit, primary, expected) => {
-    expect(
-      await lookupEnsName(
-        client(async () => primary),
-        addr(digit),
-      ),
-    ).toBe(expected)
+    expect(await names(client(async () => primary))(addr(digit)).read()).toBe(expected)
   })
 
-  it("reads a failed lookup, or a chain with no ENS registry, as no name", async () => {
-    expect(
-      await lookupEnsName(
-        client(() => Promise.reject(new Error("rpc"))),
-        addr(5),
-      ),
-    ).toBeNull()
-    expect(await lookupEnsName(() => null, addr(6))).toBeNull()
+  it("fails a failed lookup and reads it again next time, and reads no registry as no name", async () => {
+    const getEnsName = vi.fn<() => Promise<string | null>>()
+    getEnsName.mockRejectedValueOnce(new Error("rpc")).mockResolvedValue("nick.eth")
+    const lookup = names(client(getEnsName))
+    await expect(lookup(addr(5)).read()).rejects.toThrow("rpc")
+    expect(await lookup(addr(5)).read()).toBe("nick.eth")
+    expect(await names(() => null)(addr(6)).read()).toBeNull()
   })
 
   it("looks an address up once", async () => {
     const getEnsName = vi.fn(async () => "nick.eth")
-    await Promise.all([1, 2].map(() => lookupEnsName(client(getEnsName), addr(7))))
+    const lookup = names(client(getEnsName))
+    await Promise.all([1, 2].map(() => lookup(addr(7)).read()))
+    await lookup(addr(7)).read()
     expect(getEnsName).toHaveBeenCalledTimes(1)
   })
 })
@@ -88,5 +92,22 @@ describe("lookupEnsAddress", () => {
   it("throws when the lookup itself fails, e.g. an offchain gateway", async () => {
     const gateway = forward(() => Promise.reject(reverted("HttpError", [404, "Not Found"])))
     await expect(lookupEnsAddress(gateway, "alice.fkey.id")).rejects.toThrow()
+  })
+})
+
+describe("ensAddresses", () => {
+  it("looks a name up again on every read, so a stealth name never reuses an address", async () => {
+    let n = 0
+    const query = queries({
+      pace: createPace({ signalled: false }),
+      visible: memoryStore(true),
+      now: () => Date.now(),
+    })
+    const addresses = ensAddresses(
+      query,
+      forward(async () => addr(++n)),
+    )
+    expect(await addresses("alice.fkey.id").read()).toBe(addr(1))
+    expect(await addresses("alice.fkey.id").read()).toBe(addr(2))
   })
 })

@@ -1,13 +1,14 @@
-import { REQUEST_STORAGE_KEY } from "../core/storages/storage-constants"
 import type { SipaLinkPreimage } from "../core/paymentRequest/requestInlineCodec"
 import { sipaDepositFulfillsRequest } from "../core/paymentRequest/sipaRequestFulfillment"
+import { sipaPaymentIndex } from "../core/services/deposits/sipaCredits"
 import type { SipaDeposit } from "./sipaDeposits"
 import type { TokenTransaction, Transaction } from "../types/transactions"
 import { fulfillmentSatisfiesRequest } from "../xmtp/RequestReceiver"
-import type { Database, Write } from "./database"
-import { bestEffort, WalletError } from "./errors"
-import { decodeRecord, encodeRecord, loadRecords, persistentStore } from "./persistentStore"
+import type { Database, Reads, Write } from "./database"
+import { loadRecords, persistentStore } from "./persistentStore"
+import { task, type Task } from "./runtime"
 import { derived, type ReadonlyStore } from "./store"
+import { migrateRequests } from "../storageMigrations/requests"
 
 export type RequestDirection = "outgoing" | "incoming"
 
@@ -66,6 +67,11 @@ export interface StoredRequest {
 /** A request as screens read it: its status with the payment folded in. */
 export interface PaymentRequest extends Omit<StoredRequest, "status"> {
   status: RequestStatus
+  /**
+   * The deposit payment a fulfilled request counts: its address, and its sweep's inbox index when
+   * it has one. Activity and the CSV export show the request in its place.
+   */
+  paidByDeposit?: { sipaAddress: string; inboxIndex?: string }
 }
 
 export interface Requests {
@@ -73,6 +79,8 @@ export interface Requests {
   readonly view: ReadonlyStore<readonly PaymentRequest[]>
   /** The saved requests and their payments loaded: until then a status may be wrong. */
   readonly loaded: ReadonlyStore<boolean>
+  /** The first read of the saved requests and of their payments finished, even if one failed. */
+  readonly settled: ReadonlyStore<boolean>
   readonly ready: Promise<void>
   /** `view` once loaded; rejects when a read failed. */
   all(): Promise<readonly PaymentRequest[]>
@@ -91,7 +99,15 @@ export interface Requests {
 
 type SipaEvidence = Pick<
   SipaDeposit,
-  "phase" | "sipaAddress" | "amount" | "netAmount" | "fee" | "sweepTxHash" | "sweeps"
+  | "phase"
+  | "sipaAddress"
+  | "amount"
+  | "netAmount"
+  | "fee"
+  | "sweepTxHash"
+  | "sweeps"
+  | "inboxIndex"
+  | "claimedInboxIndexes"
 > &
   /** When the payment was funded: chain time, or when this device first saw it, never before. */
   Partial<Pick<SipaDeposit, "startTime">> & {
@@ -99,17 +115,21 @@ type SipaEvidence = Pick<
     l2Token?: string
   }
 
-/** Each claimed sweep at a deposit address is one payment; an address funded again keeps its past ones. */
+/**
+ * Each claimed sweep at a deposit address is one payment, split from its record as Activity splits
+ * it (`sipaCredits`); an address funded again keeps its past ones.
+ */
 function sipaPayments(record: SipaEvidence): SipaEvidence[] {
-  const current = record.sweepTxHash?.toLowerCase()
+  const current = sipaPaymentIndex(record)
   const past = (record.sweeps ?? [])
-    .filter((sweep) => sweep.sweepTxHash.toLowerCase() !== current)
+    .filter((sweep) => sweep.inboxIndex !== current)
     .map((sweep) => ({
       phase: "claimed" as const,
       sipaAddress: record.sipaAddress,
       amount: "0",
       netAmount: sweep.netAmount,
       sweepTxHash: sweep.sweepTxHash,
+      inboxIndex: sweep.inboxIndex,
       startTime: sweep.settledAt,
       l2Token: sweep.l2Token,
     }))
@@ -127,8 +147,8 @@ export interface RequestsDeps {
   db: Database
   /** `loaded` once every payment source loaded; `failed` when one could not be read. */
   payments: ReadonlyStore<RequestPayments & { loaded: boolean; failed: boolean }>
-  /** Lowercase ids of Receive codes minted without an amount, from before the flag was stored. */
-  legacyUnlisted?: () => Iterable<string>
+  /** The page's database, which holds the ids of older builds' Receive codes minted without an amount. */
+  legacy?: Pick<Reads, "get">
 }
 
 /** What the user, or the payer, does to a request. */
@@ -167,66 +187,13 @@ export function requestTransition(
   }
 }
 
-type LegacyRequest = Omit<StoredRequest, "status"> & { status: RequestStatus }
-
-/** The legacy blob's rows. A paid row stays paid, with its payment's hash where it had one. */
-function legacyRequests(raw: string | null): [string, StoredRequest][] {
-  if (raw === null) return []
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(raw)
-  } catch {
-    return []
-  }
-  const rows = (parsed as { requests?: unknown })?.requests
-  if (!Array.isArray(rows)) return []
-  const out = new Map<string, StoredRequest>()
-  for (const legacy of rows as LegacyRequest[]) {
-    if (typeof legacy?.id !== "string" || out.has(legacy.id)) continue
-    const { fulfillmentTxHash, status, ...row } = legacy
-    const paid = status === "fulfilled"
-    out.set(row.id, {
-      ...row,
-      status: paid ? "paid" : status,
-      kind: row.kind ?? "contact",
-      ...(paid && fulfillmentTxHash ? { fulfillmentTxHash } : {}),
-    })
-  }
-  return [...out]
-}
-
-function withUnlisted(
-  records: [string, StoredRequest][],
-  unlisted: ReadonlySet<string>,
-): [string, StoredRequest][] {
-  return records.map(([id, row]) => [
-    id,
-    unlisted.has(id.toLowerCase()) ? { ...row, unlisted: true } : row,
-  ])
-}
-
-export function createRequests({ db, payments, legacyUnlisted }: RequestsDeps): Requests {
+export function createRequests({ db, payments, legacy }: RequestsDeps): Requests {
   const PREFIX = "acct/requests"
   const store = persistentStore<StoredRequest>(db, {
     prefix: PREFIX,
     version: 3,
     id: (request) => request.id,
-    async migrate(from, w) {
-      if (from !== undefined && from !== 1 && from !== 2) {
-        throw new WalletError("invariant", `requests: unknown version ${from}`)
-      }
-      const records =
-        from === undefined ? legacyRequests((await w.get(REQUEST_STORAGE_KEY)) ?? null) : []
-      for (const [key, raw] of await db.range(`${PREFIX}/`))
-        records.push([key.slice(PREFIX.length + 1), decodeRecord(raw) as StoredRequest])
-      // A request paid before the migration had its payer approved when it was paid.
-      const approved = records.map(([id, row]): [string, StoredRequest] => [
-        id,
-        row.status === "paid" ? { ...row, payerApproved: true } : row,
-      ])
-      for (const [id, row] of withUnlisted(approved, new Set(legacyUnlisted?.() ?? [])))
-        w.put(`${PREFIX}/${id}`, encodeRecord(row))
-    },
+    migrate: (from, w) => migrateRequests(from, w, { db, prefix: PREFIX, legacy }),
     load: "all",
   })
   const resolved = derived([store.view, payments] as const, (saved, paid) => ({
@@ -261,6 +228,10 @@ export function createRequests({ db, payments, legacyUnlisted }: RequestsDeps): 
   return {
     view,
     loaded: derived([resolved], ({ loaded, failed }) => loaded && !failed),
+    settled: derived(
+      [store.view, payments] as const,
+      (saved, paid) => (saved.loaded || saved.failed) && (paid.loaded || paid.failed),
+    ),
     ready: store.ready,
     all,
     get: store.get,
@@ -297,7 +268,7 @@ export const FUNDING_SKEW_MS = 2 * 60_000
  * request whose payment another already counts. An edit mints another request at the same address
  * and cancels the one it replaces, which a paid request refuses, so two live requests there mean the
  * older was paid first. A request minted after the deposit was funded takes it only when none minted
- * before can.
+ * before can. A request a deposit pays names that payment.
  */
 export function resolveRequests(
   stored: readonly StoredRequest[],
@@ -340,15 +311,25 @@ export function resolveRequests(
   const known = new Set(
     deposits.flatMap((d) => (d.sweepTxHash ? [d.sweepTxHash.toLowerCase()] : [])),
   )
-  // A migrated paid request whose hash no payment here carries holds the earliest payment at its
-  // address.
+  const receives = new Set(
+    payments.rows.flatMap((tx) =>
+      tx.action === "receive" && tx.txHash ? [tx.txHash.toLowerCase()] : [],
+    ),
+  )
+  const paidBy = new Map<string, SipaEvidence>()
+  // A migrated paid request counts the payment its hash names. One whose hash no payment here
+  // carries holds the earliest payment at its address, unless an L2 receive carries it.
   const held = new Set<SipaEvidence>()
   for (const r of stored) {
-    if (r.status !== "paid" || !r.sipaAddress || known.has(lower(r.fulfillmentTxHash) ?? ""))
-      continue
+    const hash = lower(r.fulfillmentTxHash) ?? ""
+    if (r.status !== "paid" || !r.sipaAddress || receives.has(hash)) continue
     const address = r.sipaAddress.toLowerCase()
-    const payment = deposits.find((d) => !held.has(d) && d.sipaAddress.toLowerCase() === address)
-    if (payment) held.add(payment)
+    const payment = known.has(hash)
+      ? deposits.find((d) => lower(d.sweepTxHash) === hash)
+      : deposits.find((d) => !held.has(d) && d.sipaAddress.toLowerCase() === address)
+    if (!payment) continue
+    if (!known.has(hash)) held.add(payment)
+    paidBy.set(r.id, payment)
   }
   const rank = (r: StoredRequest) => (r.status === "cancelled" ? 0 : 1)
   for (const record of deposits) {
@@ -375,14 +356,22 @@ export function resolveRequests(
     )[0]
     if (!request) continue
     paid.set(request.id, txHash)
+    paidBy.set(request.id, record)
     if (txHash) used.add(txHash.toLowerCase())
   }
 
-  return stored.map(({ status, ...request }) =>
-    paid.has(request.id)
-      ? { ...request, status: "fulfilled", fulfillmentTxHash: paid.get(request.id) }
-      : { ...request, status: status as RequestAction },
-  )
+  return stored.map(({ status, ...request }) => {
+    if (!paid.has(request.id)) return { ...request, status: status as RequestAction }
+    const deposit = paidBy.get(request.id)
+    return {
+      ...request,
+      status: "fulfilled",
+      fulfillmentTxHash: paid.get(request.id),
+      ...(deposit && {
+        paidByDeposit: { sipaAddress: deposit.sipaAddress, inboxIndex: deposit.inboxIndex },
+      }),
+    }
+  })
 }
 
 /** The receives whose `Transfer.meta` named this request. */
@@ -435,23 +424,21 @@ export interface PayerApprovalDeps {
 
 /**
  * Approves the payer of each request `payersToApprove` names, then records it on the request, on
- * start and on every change of what it reads, so an approval that failed runs again. Returns the
- * stop.
+ * each change of what it reads. A failed approval runs again after 1 s, doubling to a minute.
  */
-export function watchPayerApprovals(deps: PayerApprovalDeps): () => void {
-  const due = derived([deps.requests.view, deps.rows] as const, payersToApprove)
-  const running = new Set<string>()
-  const run = () => {
-    for (const { requestId, payer } of due.get()) {
-      if (running.has(requestId)) continue
-      running.add(requestId)
-      const approval = deps.approve(payer).then(() => deps.requests.markPayerApproved(requestId))
-      void bestEffort("unknown", approval).finally(() => running.delete(requestId))
-    }
-  }
-  const stop = due.subscribe(run)
-  run()
-  return stop
+export function payerApprovals(deps: PayerApprovalDeps): Task {
+  return task("payerApprovals", {
+    needs: {},
+    on: { due: derived([deps.requests.view, deps.rows] as const, payersToApprove) },
+    every: "once",
+    backoff: { baseMs: 1_000, maxMs: 60_000 },
+    run: async ({ due }) => {
+      for (const { requestId, payer } of due) {
+        await deps.approve(payer)
+        await deps.requests.markPayerApproved(requestId)
+      }
+    },
+  })
 }
 
 /** A reminder blocks the next one for this long. */

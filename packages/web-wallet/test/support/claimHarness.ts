@@ -71,7 +71,7 @@ export const transfer = (amount: bigint, from: Address = OLD) => ({
   ],
 })
 
-export function claimHarness(own: Session, tag = "demo") {
+export function claimHarness(session: Session, tag = "demo") {
   const h = {
     sign: vi.fn(),
     registeredOwner: vi.fn(),
@@ -85,8 +85,8 @@ export function claimHarness(own: Session, tag = "demo") {
   }
   const payloads = new Map()
   const recovery = createRegistrationRecovery({
-    registrations: own.registrations,
-    sipaDeposits: own.sipaDeposits,
+    registrations: session.registrations,
+    sipaDeposits: session.sipaDeposits,
     l1: () => ({ readContract: h.balance, getTransactionReceipt: h.receipt } as never),
     fundingTokens: async (fee) => [fee],
     decimalsOf: async () => 18,
@@ -95,8 +95,8 @@ export function claimHarness(own: Session, tag = "demo") {
     heal: async () => 0,
   })
   const deps: ClaimDeps = {
-    registrations: own.registrations,
-    nameClaims: own.nameClaims,
+    registrations: session.registrations,
+    nameClaims: session.nameClaims,
     recovery,
     payloads,
     sessionDeps: async (onStage) => ({
@@ -112,7 +112,6 @@ export function claimHarness(own: Session, tag = "demo") {
         readUserAddress: h.registeredOwner,
         readNameOf: h.heldName,
         readAccountMetadataRegistry: h.metadataRegistry,
-        getUserOpHash: async () => HASH,
         readR1InstallGas: async () => ({
           verification: 50_000n,
           callBase: 85_000n,
@@ -122,14 +121,15 @@ export function claimHarness(own: Session, tag = "demo") {
         getCode: async () => undefined,
       } as never,
       deriveRegistrationSipa: h.derive,
-      seedSipaDeposit: makeRegistrationDepositSeeder(own.sipaDeposits, {
+      turn: session.page.registrationTurn,
+      seedSipaDeposit: makeRegistrationDepositSeeder(session.sipaDeposits, {
         feeToken: TOKEN,
         l1ChainId: ENV.l1ChainId,
         networkId: "0xnet",
       }),
       r1Key: { qx: HASH, qy: HASH },
       credentialId: "Y3JlZC1pZC0wMDE",
-      registrations: own.registrations,
+      registrations: session.registrations,
       onStage,
     }),
     redeemTicket: (onProving) => h.redeem(onProving),

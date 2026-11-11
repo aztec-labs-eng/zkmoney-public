@@ -15,11 +15,12 @@ import {
   type EnteredClaim,
 } from "../../../../src/features/onboarding/oxideOnboarding"
 import { resolveLocalTag } from "../../../../src/features/registration/webRegistration"
+import { answered } from "../../../support/query"
 
 const DOMAIN = "oxidestaging.eth"
 
+const reads = { oxideTuple: answered({ ensDomain: DOMAIN }) } as never
 vi.mock("../../../../src/config/oxideTuple", () => ({
-  getOxideTuple: async () => ({ ensDomain: DOMAIN }),
   requireTupleField: (tuple: Record<string, string>, field: string) => tuple[field],
 }))
 
@@ -80,11 +81,11 @@ describe("resolveLocalTag (production detection resolver)", () => {
 
   it("delegates to the shared matcher: a stored handle resolves folded, whatever its case", async () => {
     const nameHash = composeWireNameHash("Alice", DOMAIN)
-    await expect(resolveLocalTag(nameHash, {} as never, identity("Alice"))).resolves.toBe("alice")
+    await expect(resolveLocalTag(nameHash, reads, identity("Alice"))).resolves.toBe("alice")
   })
 
   it("returns null when the stored handle cannot reach the registered node", async () => {
     const otherHash = composeWireNameHash("bob", DOMAIN)
-    await expect(resolveLocalTag(otherHash, {} as never, identity("alice"))).resolves.toBeNull()
+    await expect(resolveLocalTag(otherHash, reads, identity("alice"))).resolves.toBeNull()
   })
 })

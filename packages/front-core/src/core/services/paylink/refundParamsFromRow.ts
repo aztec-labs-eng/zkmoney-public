@@ -5,7 +5,8 @@ import {
   type PaylinkParams,
   type PaylinkWindow,
 } from "@obsidion/sdk"
-import { isPaylinkTransaction, type PaylinkTransaction, type Transaction } from "../../../types"
+import { isPaylinkTransaction } from "../../../types"
+import type { LinkFacts, PaylinkTransaction, Transaction, TransactionStatus } from "../../../types"
 
 /**
  * The link a creator-side refund reconstructs the escrow from, decoded from the row's persisted
@@ -16,7 +17,9 @@ import { isPaylinkTransaction, type PaylinkTransaction, type Transaction } from 
  * `paylink`, missing `fallbackSecret` (a row that never finished creating), or a malformed link. A
  * `null` result drives a disabled refund CTA.
  */
-export async function refundParamsFromRow(row: PaylinkTransaction): Promise<PaylinkParams | null> {
+export async function refundParamsFromRow(
+  row: Pick<PaylinkTransaction, "paylink" | "fallbackSecret">,
+): Promise<PaylinkParams | null> {
   if (!row.paylink || !row.fallbackSecret) return null
   try {
     return await PaylinkService.parsePaylinkUrl(row.paylink)
@@ -61,7 +64,7 @@ export function paylinkWindows(nowSec: bigint, expirySec: bigint, graceSec: bigi
  * only: the contract decides the branch itself from chain time. Rows without a persisted window
  * are never in it. Pure and time-injected for deterministic use.
  */
-export function isPaylinkInRefundWindow(row: PaylinkTransaction, nowSec: number): boolean {
+export function isPaylinkInRefundWindow(row: LinkFacts, nowSec: number): boolean {
   return row.refundableUntil != null && nowSec <= row.refundableUntil
 }
 
@@ -92,8 +95,17 @@ export function paylinkRefundEligibility(
   nowSec: number,
 ): PaylinkRefundEligibility {
   if (row.emailPaymentAction !== "Pay To Email") return { eligible: false, reason: "unavailable" }
+  return linkRefundEligibility(row, row.status, nowSec)
+}
+
+/** {@link paylinkRefundEligibility} of a created link whose funding reads `status`. */
+export function linkRefundEligibility(
+  row: LinkFacts,
+  status: TransactionStatus,
+  nowSec: number,
+): PaylinkRefundEligibility {
   // A failed create never escrowed funds — there is nothing to refund.
-  if (row.status === "failed") return { eligible: false, reason: "unavailable" }
+  if (status === "failed") return { eligible: false, reason: "unavailable" }
   if (row.isRefunded) return { eligible: false, reason: "refunded" }
   if (row.isClaimed) return { eligible: false, reason: "claimed" }
   if (row.isMigrated) return { eligible: false, reason: "migrated" }

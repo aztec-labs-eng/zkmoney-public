@@ -15,6 +15,7 @@ import {
   type PublicClient,
   type TransactionReceipt,
 } from "viem"
+import type { Config } from "wagmi"
 import {
   bestEffort,
   claimRefusalReason,
@@ -47,13 +48,8 @@ import {
 } from "@obsidion/sdk"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import { WalletError } from "@obsidion/core/errors"
-import { getConfig, type WebWalletConfig } from "../../../config/env"
-import {
-  getOxideTuple,
-  l1PublicClient,
-  oxideEnvFor,
-  requireTupleField,
-} from "../../../config/oxideTuple"
+import type { PageFacts } from "../../../session/pageChain"
+import { l1PublicClient, requireTupleField } from "../../../config/oxideTuple"
 import {
   healRegistrationDeposits,
   type RegistrationSeedStores,
@@ -65,7 +61,7 @@ import {
 import { registrationRecordForSipa } from "../../registration/webRegistration"
 import { isDesktopL1SubmitActive } from "../../../platform/desktopBridge"
 import { fmt } from "../../../lib/fmt"
-import { session } from "../../../session/session"
+import type { Session } from "../../../session/session"
 import { EmptyDepositError } from "../depositReadErrors"
 import { emptiedError, readSipaDeployed } from "../../sipa/sipaSweep"
 import { predictSipaCandidate } from "../sipaPredict"
@@ -206,13 +202,15 @@ async function runRecovery(
 }
 
 /** The user's stealth keypair; unavailable while the session is locked. */
-async function webStealthKey(): Promise<SipaRecoveryDeps["stealthKey"]> {
-  const msk = await session().auth.getSecretKey()
+async function webStealthKey(session: Session): Promise<SipaRecoveryDeps["stealthKey"]> {
+  const msk = await session.auth.getSecretKey()
   if (!msk) throw new WalletError("account.unlockWithPasskey")
   return deriveStealthKey(msk)
 }
 
 export interface RecoverDepositOptions {
+  session: Session
+  wagmi: Config
   /** Required in bridge mode: where the recovered funds go. */
   destination?: Address
   /** Injected-wallet mode: pins the submitting (and receiving) account to the app's selection. */
@@ -225,12 +223,12 @@ export interface RecoverDepositOptions {
 /** Recover `record` over whichever channel this build has. Resolves to the L1 recovery tx hash. */
 export async function recoverDeposit(
   record: SipaDeposit,
-  opts: RecoverDepositOptions = {},
+  opts: RecoverDepositOptions,
 ): Promise<Hex> {
-  const config = getConfig()
+  const { config, chain } = opts.session.page
   if (record.l1ChainId !== config.l1ChainId) throw new WalletError("recovery.wrongChain")
   const publicClient = l1PublicClient(config)
-  const tuple = await getOxideTuple(config)
+  const tuple = await chain.oxideTuple.read()
   const token = requireTupleField(tuple, "token") as Address
 
   let channel: L1ExitChannel
@@ -261,12 +259,18 @@ export async function recoverDeposit(
       },
       onHelperOpened: opts.onHelperOpened,
       onStage: opts.onStage,
+      pace: opts.session.page.pace,
     })
   } else {
-    channel = await injectedWalletChannel(config, { from: opts.from, onStage: opts.onStage })
+    channel = await injectedWalletChannel(config, {
+      pace: opts.session.page.pace,
+      wagmi: opts.wagmi,
+      from: opts.from,
+      onStage: opts.onStage,
+    })
   }
 
-  const keys = await session().auth.sessionKeys()
+  const keys = await opts.session.auth.sessionKeys()
   if (!keys) throw new WalletError("recovery.locked")
   const bootstrap = deriveBootstrapKey(keys.secretKey)
   const passkey = await oxideAccountPasskey(keys.authProvider)
@@ -285,11 +289,10 @@ export async function recoverDeposit(
       accountInitCode = encodeAccountInitCode(record.origin.accountFactory, bootstrap.address)
   }
 
-  const { sipaDeposits, registrationRecovery } = session()
   return await recoverSipaDeposit(record, {
     channel,
     chainId: config.l1ChainId,
-    tokens: await recoveryProbeTokens(config, token),
+    tokens: await recoveryProbeTokens(opts.session.page, token),
     readBalance: (sipa, token) =>
       publicClient.readContract({
         address: token,
@@ -299,10 +302,10 @@ export async function recoverDeposit(
       }),
     readEthBalance: (address) => publicClient.getBalance({ address }),
     readReceipt: (hash) => publicClient.getTransactionReceipt({ hash }),
-    deployment: await recoveryDeployment(publicClient, record, tuple),
-    store: sipaDeposits,
-    refunds: registrationRecovery,
-    stealthKey: webStealthKey,
+    deployment: await recoveryDeployment(opts.session, publicClient, record, tuple),
+    store: opts.session.sipaDeposits,
+    refunds: opts.session.registrationRecovery,
+    stealthKey: () => webStealthKey(opts.session),
     accountInitCode,
     stranded: opts.stranded,
     signAccount: (account, hash) =>
@@ -316,6 +319,7 @@ export async function recoverDeposit(
  * factory yields no deposit candidates and the recovery fails closed instead of submitting a no-op.
  */
 async function recoveryDeployment(
+  session: Session,
   publicClient: PublicClient,
   record: SipaDeposit,
   tuple: OxideEnvTuple,
@@ -327,7 +331,7 @@ async function recoveryDeployment(
   // Another generation's factory takes its own args, so only that generation encodes the deploy.
   const major =
     origin?.protocol === "account" && record.networkId
-      ? await retiredRollupMajor(record.networkId)
+      ? await bestEffort("unknown", retiredRollupMajor(session.page.config, record.networkId))
       : undefined
   if (origin?.protocol === "account" && major) {
     const deployCall = (await loadSourceGeneration(major)).encodeSipaDeploy(origin) as Hex
@@ -339,7 +343,7 @@ async function recoveryDeployment(
   }
   const deployments: Parameters<typeof sipaDeployArgCandidates>[1] = []
   if (!record.origin) {
-    const config = getConfig()
+    const { config } = session.page
     const { historic } = await detectHistoricDeployments({
       ...config.oxideProfile,
       network: config.network,
@@ -369,7 +373,7 @@ async function recoveryDeployment(
   const registration =
     record.origin || (await readSipaDeployed(publicClient, record.sipaAddress))
       ? null
-      : await registrationCandidate(record)
+      : await registrationCandidate(session, record)
   return {
     readDeployed,
     candidates: [
@@ -385,14 +389,16 @@ async function recoveryDeployment(
  * commits to the registration intent (registration implementation, non-resweepable), which the
  * pending record does not persist — it is re-derived from the unlocked master secret.
  */
-async function registrationCandidate(record: SipaDeposit): Promise<SipaRecoverCandidate | null> {
-  const pending = registrationRecordForSipa(session().registrations, record.sipaAddress)
+async function registrationCandidate(
+  session: Session,
+  record: SipaDeposit,
+): Promise<SipaRecoverCandidate | null> {
+  const pending = registrationRecordForSipa(session.registrations, record.sipaAddress)
   // Legacy records lack the payment committed into the address; do not substitute a current quote.
   if (!pending || pending.fee === undefined || pending.beneficiary === undefined) return null
-  const msk = await session().auth.getSecretKey()
+  const msk = await session.auth.getSecretKey()
   if (!msk) throw new WalletError("account.unlockWithPasskey")
-  const config = getConfig()
-  const { tuple, env, publicClient } = await oxideEnvFor(config)
+  const { tuple, env, publicClient } = await session.page.chain.oxideEnv.read()
   const derive = createRegistrationSipaDeriver({
     publicClient,
     env,
@@ -427,37 +433,44 @@ export interface StrandedFrozenDeposit {
 
 /** `previousVersion` also looks on the previous Aztec generation, as this account. */
 export async function readStrandedToken(
+  session: Session,
   sipa: Address,
   token: Address,
   networkId: string,
 ): Promise<StrandedToken>
 export async function readStrandedToken(
+  session: Session,
   sipa: Address,
   token: Address,
   networkId: string,
   previousVersion: boolean,
 ): Promise<StrandedToken | StrandedFrozenDeposit>
 export async function readStrandedToken(
+  session: Session,
   sipa: Address,
   token: Address,
   networkId: string,
   previousVersion = false,
 ): Promise<StrandedToken | StrandedFrozenDeposit> {
-  const config = getConfig()
-  const own = session()
-  const stored = async () => (await own.sipaDeposits.get(sipa)) ?? null
+  const { config } = session.page
+  const stored = async () => (await session.sipaDeposits.get(sipa)) ?? null
   // A registration address has a deposit record only once one is seeded: from this device's
   // registration record, else re-derived from the master secret and the wallet's name.
   const ok = () => true
   const failed = () => false
-  const healed = await healRegistrationDeposits(own, config, networkId).then(ok, failed)
+  const healed = await healRegistrationDeposits(session, session.page, networkId).then(ok, failed)
   let record = await stored()
   const rederived =
     record !== null ||
-    (await rederiveRegistrationDeposit(own, config, networkId, sipa).then(ok, failed))
+    (await rederiveRegistrationDeposit(session, session.page, networkId, sipa).then(ok, failed))
+  if (!record) record = await stored()
+  // A locked account cannot search: its addresses read as unchecked, not as no deposit.
+  const ownSlots = session.sipaKeys?.get().status === "ready" ? session.sipaAddresses : null
+  const searched =
+    record !== null || (!!ownSlots && (await ownSlots.recordShown(sipa).then(ok, failed)))
   if (!record) record = await stored()
   if (!record && previousVersion) {
-    await findPreviousVersionDeposit(sipa).catch((error: unknown) => {
+    await findPreviousVersionDeposit(session, sipa).catch((error: unknown) => {
       console.warn("[sipaRecovery] previous version lookup failed:", error)
       throw new WalletError("recovery.previousVersionUnreadable")
     })
@@ -465,7 +478,7 @@ export async function readStrandedToken(
   }
   if (!record) {
     throw new WalletError(
-      !(healed && rederived)
+      !(healed && rederived && searched)
         ? "recovery.addressesUnchecked"
         : previousVersion
         ? "recovery.noDepositAnyVersion"
@@ -486,7 +499,7 @@ export async function readStrandedToken(
       throw new WalletError("recovery.notErc20")
     })
   if (balance === 0n) {
-    const frozen = previousVersion ? await findFrozenDeposit(record) : null
+    const frozen = previousVersion ? await findFrozenDeposit(session, record) : null
     if (frozen) return { record, frozen }
     throw new EmptyDepositError()
   }
@@ -510,7 +523,7 @@ export async function readStrandedToken(
  */
 async function rederiveRegistrationDeposit(
   own: RegistrationSeedStores,
-  config: WebWalletConfig,
+  page: PageFacts,
   networkId: string,
   sipa: Address,
 ) {
@@ -519,7 +532,7 @@ async function rederiveRegistrationDeposit(
   if (!identity?.handle || !secret) return
   const l2Address = identity.address as Hex
   const c = await registrationCandidates(
-    config,
+    page,
     networkId,
     secret,
     identity.handle,

@@ -1,13 +1,13 @@
-import type { Resource, ResourceState } from "../engine/resource"
-import { memoryStore } from "../engine/store"
+import { NO_SERVICE, type ServiceState } from "../engine/service"
+import type { ReadonlyStore } from "../engine/store"
 import { useStore } from "./useStore"
 
-const NONE = memoryStore<ResourceState<never>>({ status: "pending" }).readonly
-
-const readyValue = <T>(state: ResourceState<T>): T | undefined =>
+const held = <T>(state: ServiceState<T>): T | undefined =>
   state.status === "ready" ? state.value : undefined
 
-/** A resource's value once it is ready. Reading never demands it. */
-export function useResource<T>(r: Resource<T> | null | undefined): T | undefined {
-  return useStore<ResourceState<T>, T | undefined>(r ?? NONE, readyValue)
+/** A service's value once it is ready. */
+export function useResource<T>(
+  r: ReadonlyStore<ServiceState<T>> | null | undefined,
+): T | undefined {
+  return useStore<ServiceState<T>, T | undefined>(r ?? NO_SERVICE, held)
 }

@@ -15,6 +15,7 @@
  * Nothing is settled here. A confirmed sweep only moves the funds into the portal; the L2 claim is
  * the sync loop's job on its next pass, which reads the very `Sweep` event this transaction emits.
  */
+import type { Pace } from "@obsidion/core/cadence"
 import {
   createPublicClient,
   formatUnits,
@@ -23,6 +24,7 @@ import {
   type Hex,
   type PublicClient,
 } from "viem"
+import type { Config } from "wagmi"
 import { Fr } from "@aztec-labs/aztec.js/fields"
 import { depositPayoutTokenFor } from "@oxide/l1-contracts"
 import { EthAddress } from "@aztec-labs/foundation/eth-address"
@@ -56,10 +58,10 @@ import {
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import { bridgeUnderlying } from "@obsidion/core/oxide"
 import { WalletError, bestEffort, type ErrorCode } from "@obsidion/core/errors"
-import { getConfig, l1Transport, type WebWalletConfig } from "../../config/env"
-import { getOxideTuple, requireTupleField } from "../../config/oxideTuple"
+import { l1Transport, type WebWalletConfig } from "../../config/env"
+import { requireTupleField } from "../../config/oxideTuple"
 import { isDesktopL1SubmitActive } from "../../platform/desktopBridge"
-import { session } from "../../session/session"
+import type { Session } from "../../session/session"
 import {
   loadDepositTokens,
   settlementOf,
@@ -310,12 +312,16 @@ export function sweepManifestFrom(tuple: OxideEnvTuple): SweepManifest {
 }
 
 export interface SelfSweepOptions {
+  session: Pick<Session, "sipaDeposits" | "sipaProcessingObserver" | "page">
+  wagmi: Config
   /** Required in bridge mode: the address the deposit fee is paid to. */
   destination?: Address
   /** Injected-wallet mode: pins the submitting (and tipped) account to the app's selection. */
   from?: Hex
   onHelperOpened?: (submitUrl: string) => void
   onStage?: (stage: L1ExitStage) => void
+  /** The page's: the L1 receipt wait polls at its interval. */
+  pace: Pick<Pace, "foreignMs">
 }
 
 /**
@@ -328,11 +334,16 @@ export async function sweepChannel(params: {
   record: Pick<SipaDeposit, "sipaAddress" | "tokenSymbol" | "amount" | "netAmount" | "fee">
   /** App-owned client: the helper page's wallet is not ours to poll. */
   publicClient: PublicClient
-  opts: SelfSweepOptions
+  opts: Omit<SelfSweepOptions, "session">
 }): Promise<L1ExitChannel> {
   const { config, record, opts } = params
   if (!isDesktopL1SubmitActive()) {
-    return await injectedWalletChannel(config, { from: opts.from, onStage: opts.onStage })
+    return await injectedWalletChannel(config, {
+      pace: opts.pace,
+      wagmi: opts.wagmi,
+      from: opts.from,
+      onStage: opts.onStage,
+    })
   }
   const destination = opts.destination
   if (!destination || !isAddress(destination)) {
@@ -352,6 +363,7 @@ export async function sweepChannel(params: {
     },
     onHelperOpened: opts.onHelperOpened,
     onStage: opts.onStage,
+    pace: opts.pace,
   })
 }
 
@@ -392,10 +404,10 @@ export async function recordedSweepRow(
 }
 
 /** Self-sweep `record` over whichever channel this build has. Resolves to the L1 sweep tx hash. */
-export async function selfSweep(record: SipaDeposit, opts: SelfSweepOptions = {}): Promise<Hex> {
-  const config = getConfig()
+export async function selfSweep(record: SipaDeposit, opts: SelfSweepOptions): Promise<Hex> {
+  const { config, chain } = opts.session.page
   const publicClient = createPublicClient({ transport: l1Transport(config) })
-  const tuple = await getOxideTuple(config)
+  const tuple = await chain.oxideTuple.read()
   // A record that predates token tracking holds the pinned bridge's row token.
   const manifest = { ...sweepManifestFrom(tuple), token: bridgeUnderlying(tuple) as Address }
   const recorded = sipaRecordRoute(record)
@@ -407,9 +419,9 @@ export async function selfSweep(record: SipaDeposit, opts: SelfSweepOptions = {}
   const token = record.tokenAddress ?? manifest.token
   const row = recorded
     ? await recordedSweepRow(config.l1ChainId, token, (t) =>
-        tokenMetadata(config, t).then((m) => m.decimals),
+        tokenMetadata(opts.session.page, t).then((m) => m.decimals),
       )
-    : sweepRowOf(await loadDepositTokens(config, sipaIntentName(route.intent)), token)
+    : sweepRowOf(await loadDepositTokens(opts.session.page, sipaIntentName(route.intent)), token)
   if (!row) {
     throw record.tokenSymbol
       ? new SweepRefusedError("sweep.noRoute", { symbol: record.tokenSymbol })
@@ -445,9 +457,9 @@ export async function selfSweep(record: SipaDeposit, opts: SelfSweepOptions = {}
       Promise.resolve(
         sipaAddressFromArgs(record.origin?.sipaFactory ?? manifest.sipaFactory, args),
       ),
-    store: session().sipaDeposits,
+    store: opts.session.sipaDeposits,
     checkCapacity: (live) =>
-      session().sipaProcessingObserver?.refreshForSweep(record.sipaAddress, live) ??
+      opts.session.sipaProcessingObserver?.refreshForSweep(record.sipaAddress, live) ??
       Promise.resolve(undefined),
   })
 }

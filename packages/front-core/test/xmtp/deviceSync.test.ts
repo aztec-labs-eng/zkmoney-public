@@ -1,12 +1,10 @@
 import { describe, it, expect, vi } from "vitest"
 
 import {
-  ARCHIVE_LIST_FAILURE_LIMIT,
   importHistory,
   startArchivePublisher,
   startHistoryImporter,
   type DeviceSyncPort,
-  type HistorySyncPort,
 } from "../../src/xmtp/deviceSync"
 
 function fakePort(overrides: Partial<DeviceSyncPort> = {}) {
@@ -91,57 +89,26 @@ describe("startArchivePublisher", () => {
 })
 
 describe("startHistoryImporter", () => {
-  function failingListPort(listSyncArchivePins: () => Promise<string[]>) {
-    const calls: string[] = []
-    const port: HistorySyncPort = {
-      installationId: "self",
-      sendSyncRequest: async () => void calls.push("request"),
-      sendSyncArchive: async () => void calls.push("archive"),
-      processSyncArchive: async () => void calls.push("process"),
-      syncAllDeviceSyncGroups: async () => void calls.push("syncGroups"),
-      listSyncArchivePins: async () => {
-        calls.push("list")
-        return listSyncArchivePins()
-      },
-    }
-    return { port, calls }
-  }
-
-  it("stops listing archives once the SDK keeps rejecting, and keeps syncing", async () => {
+  it("syncs the device sync groups every interval, past a failed sync", async () => {
     vi.useFakeTimers()
     try {
       const warn = vi.fn()
-      const { port, calls } = failingListPort(async () => {
-        throw new Error("1789704007741000000 can't be represented as a JavaScript number")
-      })
-      const stop = startHistoryImporter(port, { warn }, () => undefined, 1_000)
-      await vi.advanceTimersByTimeAsync(10_000)
-      expect(calls.filter((call) => call === "list")).toHaveLength(ARCHIVE_LIST_FAILURE_LIMIT)
-      expect(warn).toHaveBeenCalledTimes(ARCHIVE_LIST_FAILURE_LIMIT)
-      expect(calls.filter((call) => call === "syncGroups").length).toBeGreaterThan(
-        ARCHIVE_LIST_FAILURE_LIMIT,
-      )
-      stop()
-    } finally {
-      vi.useRealTimers()
-    }
-  })
-
-  it("keeps listing when a failure is transient", async () => {
-    vi.useFakeTimers()
-    try {
       let attempt = 0
-      const { port, calls } = failingListPort(async () => {
-        attempt += 1
-        if (attempt === 1) throw new Error("transient")
-        return []
+      const { port, calls } = fakePort({
+        syncAllDeviceSyncGroups: async () => {
+          attempt += 1
+          calls.push("syncGroups")
+          if (attempt === 1) throw new Error("transient")
+        },
       })
-      const stop = startHistoryImporter(port, { warn: () => undefined }, () => undefined, 1_000)
-      await vi.advanceTimersByTimeAsync(10_000)
-      expect(calls.filter((call) => call === "list").length).toBeGreaterThan(
-        ARCHIVE_LIST_FAILURE_LIMIT,
-      )
+      const stop = startHistoryImporter(port, { warn }, 1_000)
+      await vi.advanceTimersByTimeAsync(5_500)
+      expect(calls.filter((call) => call === "syncGroups")).toHaveLength(6)
+      expect(warn).toHaveBeenCalledTimes(1)
+      expect(calls).not.toContain("process")
       stop()
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(calls.filter((call) => call === "syncGroups")).toHaveLength(6)
     } finally {
       vi.useRealTimers()
     }

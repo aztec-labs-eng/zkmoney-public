@@ -1,3 +1,4 @@
+// Guard (privacy): the printed card never carries an address.
 import { act } from "react"
 import { createRoot } from "react-dom/client"
 import { expect, it } from "vitest"

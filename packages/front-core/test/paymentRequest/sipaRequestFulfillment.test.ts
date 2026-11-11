@@ -2,10 +2,7 @@ import { describe, expect, it } from "vitest"
 import type { Address, Hash } from "viem"
 
 import type { SipaDeposit } from "../../src/engine/sipaDeposits"
-import {
-  requestLinkedSipaAddresses,
-  sipaDepositFulfillsRequest,
-} from "../../src/core/paymentRequest/sipaRequestFulfillment"
+import { sipaDepositFulfillsRequest } from "../../src/core/paymentRequest/sipaRequestFulfillment"
 import type { StoredRequest } from "../../src/engine/requests"
 
 const SIPA = "0xAbCdEf0123456789abcdef0123456789abcdef01" as Address
@@ -90,17 +87,5 @@ describe("sipaDepositFulfillsRequest", () => {
     expect(sipaDepositFulfillsRequest(deposit(), pendingLink({ sipaAddress: undefined }))).toBe(
       false,
     )
-  })
-})
-
-describe("requestLinkedSipaAddresses", () => {
-  it("collects lowercased addresses, skipping rows without one", () => {
-    expect(
-      requestLinkedSipaAddresses([
-        pendingLink(),
-        pendingLink({ sipaAddress: undefined }),
-        pendingLink({ sipaAddress: OTHER.toUpperCase() as Address }),
-      ]),
-    ).toEqual(new Set([SIPA.toLowerCase(), OTHER.toLowerCase()]))
   })
 })

@@ -9,6 +9,8 @@ import {
   type PortalCapacitySnapshot,
   type PortalCapacityUnsupportedReason,
 } from "@obsidion/sdk"
+import type { QueryFactory } from "../engine/query"
+import { memoryStore } from "../engine/store"
 
 /**
  * One capacity bucket: a portal on a chain, metered in the portal's settlement token. The bucket lives in the portal
@@ -61,7 +63,7 @@ export function portalCapacityKeyId(key: PortalCapacityKey): string {
  * must be positive whole milliseconds that a timer can hold (at most 2^31 - 1); only `maxHeadAgeMs` accepts `Infinity`.
  */
 export interface PortalCapacityPolicy {
-  /** Poll interval while a subscriber is mounted and the page is visible. */
+  /** Poll interval while subscribed and the page is visible. */
   refreshMs: number
   /** Age, counted from the start of the read, after which a snapshot is no longer current. */
   staleAfterMs: number
@@ -266,31 +268,6 @@ export type PortalCapacityState =
       detail: string
     }
 
-/** Page visibility and focus, injected so tests and non-browser fronts can drive them. */
-export interface VisibilitySource {
-  isVisible(): boolean
-  /** Calls `listener` when the page becomes visible or gains focus. Returns the unsubscribe. */
-  onResume(listener: () => void): () => void
-}
-
-export function browserVisibility(): VisibilitySource {
-  if (typeof document === "undefined") return { isVisible: () => true, onResume: () => () => {} }
-  return {
-    isVisible: () => document.visibilityState !== "hidden",
-    onResume: (listener) => {
-      const onVisibility = () => {
-        if (document.visibilityState === "visible") listener()
-      }
-      document.addEventListener("visibilitychange", onVisibility)
-      window.addEventListener("focus", listener)
-      return () => {
-        document.removeEventListener("visibilitychange", onVisibility)
-        window.removeEventListener("focus", listener)
-      }
-    },
-  }
-}
-
 export interface PortalCapacityStoreOptions {
   /** Usually `(key) => readPortalCapacity(client, key)`. */
   read: (key: PortalCapacityKey) => Promise<PortalCapacitySnapshot>
@@ -304,7 +281,8 @@ export interface PortalCapacityStoreOptions {
   now?: () => number
   /** Elapsed-time clock in ms for the reference's age. Defaults to `performance.now()`. */
   monotonic?: () => number
-  visibility?: VisibilitySource
+  /** The page's: polls run at its pace while subscribed and visible. */
+  query: QueryFactory
 }
 
 export interface PortalCapacityStore {
@@ -312,7 +290,7 @@ export interface PortalCapacityStore {
   readonly policy: PortalCapacityPolicy
   /** Stable between changes, so it can back `useSyncExternalStore`. */
   getState(): PortalCapacityState
-  /** The first subscriber starts polling; the last one stops it. */
+  /** Polls while subscribed. */
   subscribe(listener: () => void): () => void
   /** Reads now, or joins the read already running. Resolves to the resulting state; never rejects. */
   refresh(): Promise<PortalCapacityState>
@@ -350,9 +328,7 @@ function storeFor(
 ): PortalCapacityStore {
   const key = portalCapacityKey(bucket)
   const now = options.now ?? Date.now
-  const visibility = options.visibility ?? browserVisibility()
-  const listeners = new Set<() => void>()
-  let state: PortalCapacityState = { status: "loading", key }
+  const state = memoryStore<PortalCapacityState>({ status: "loading", key })
   /** The newest accepted snapshot, and when its block number last advanced. */
   let accepted: (Observation & { advancedAt: number }) | undefined
   let lastWasFresh = false
@@ -360,26 +336,24 @@ function storeFor(
   let applied = 0
   let running: Promise<PortalCapacityState> | undefined
   let staleTimer: ReturnType<typeof setTimeout> | undefined
-  let pollTimer: ReturnType<typeof setInterval> | undefined
-  let stopResume: (() => void) | undefined
 
   const set = (next: PortalCapacityState) => {
-    state = next
     if (next.status !== "unavailable") lastWasFresh = next.status === "fresh"
-    for (const listener of [...listeners]) listener()
+    state.set(next)
   }
 
   // A timer can fire before the clock shows the full age (a clock step back, a coarse clock), so it checks the age
   // and schedules itself again for the rest.
   function expire() {
     clearTimeout(staleTimer)
-    if (state.status !== "fresh") return
-    const remaining = state.fetchedAt + policy.staleAfterMs - now()
+    const current = state.get()
+    if (current.status !== "fresh") return
+    const remaining = current.fetchedAt + policy.staleAfterMs - now()
     if (remaining > 0) {
       staleTimer = setTimeout(expire, remaining)
       return
     }
-    const { snapshot, fetchedAt } = state
+    const { snapshot, fetchedAt } = current
     set({ status: "stale", key, snapshot, fetchedAt, reason: "age" })
   }
 
@@ -498,7 +472,7 @@ function storeFor(
         applied = seq
         apply()
       }
-      return state
+      return state.get()
     }
     let deadline: ReturnType<typeof setTimeout> | undefined
     const reference = referenceFor(force)
@@ -534,33 +508,21 @@ function storeFor(
 
   const refresh = () => running ?? read(false)
 
-  const poll = () => {
-    if (visibility.isVisible()) void refresh()
-  }
-
-  const start = () => {
-    stopResume = visibility.onResume(() => void refresh())
-    pollTimer = setInterval(poll, policy.refreshMs)
-    expire()
-    if (state.status !== "fresh" || now() - state.fetchedAt >= policy.refreshMs) poll()
-  }
-
-  const stop = () => {
-    clearInterval(pollTimer)
-    stopResume?.()
-    pollTimer = undefined
-    stopResume = undefined
-  }
+  const polls = options.query("portalCapacity", {
+    load: refresh,
+    poll: policy.refreshMs,
+    stale: (_, age) => state.get().status !== "fresh" || age >= policy.refreshMs,
+  })(portalCapacityKeyId(key))
 
   return {
     key,
     policy,
-    getState: () => state,
+    getState: state.get,
     subscribe(listener) {
-      listeners.add(listener)
-      if (listeners.size === 1) start()
+      const offs = [state.subscribe(listener), polls.subscribe(() => {})]
+      expire()
       return () => {
-        if (listeners.delete(listener) && listeners.size === 0) stop()
+        for (const off of offs) off()
       }
     },
     refresh,

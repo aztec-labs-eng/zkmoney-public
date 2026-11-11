@@ -1,13 +1,14 @@
 import { QueueStatus } from "@obsidion/core/constants"
-import type { ContactRow } from "../hooks/useContactsDirectory"
 import type { Transaction } from "../types/transactions"
 import type { PaymentRequest } from "../engine/requests"
-import { l1WalletProvidersMatch } from "../core/storages/ContactStorage"
+import { l1WalletProvidersMatch, type ContactRow } from "../engine/contacts"
 import { isUnfundedSipaDeposit, type SipaDeposit } from "../engine/sipaDeposits"
 import type { WithdrawalRecord } from "../core/services/bridge/types"
 import { normalizeTag } from "./normalizeTag"
 
 export interface ContactActivitySources {
+  /** Every source below is read. Until then, a person may be missing or ranked too low. */
+  hydrated?: boolean
   transactions?: readonly Transaction[]
   requests?: readonly PaymentRequest[]
   sipaDeposits?: readonly SipaDeposit[]

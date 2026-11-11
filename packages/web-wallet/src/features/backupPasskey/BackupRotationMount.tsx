@@ -3,36 +3,38 @@
  * the first balance is in, so it advances with Settings closed and after a reload.
  */
 import { useEffect } from "react"
-import { useAfter, type After, useResource } from "@obsidion/front-core"
+import { serviceStatus, useAfter, useStore, type After } from "@obsidion/front-core"
 import type { Address } from "viem"
 import { handOffAccount, useSession } from "../../session/session"
 import { usePxeBoot } from "../../ui/PxeBoot"
-import { warnFailure } from "./BackupPasskeyPanel"
+import { warnFailure } from "./backupFailure"
 import { buildBackupFlowDeps } from "./backupPasskeyRuntime"
-import { getBackupRotationStore } from "./backupRotationStore"
 import { getRotationDriver, ownsRotation } from "./rotationDrive"
 
 const AFTER: After = { firstBalance: true }
 export function BackupRotationMount(): null {
-  const obsidionWallet = useResource(useSession().wallet)
-  const booted = usePxeBoot().bootStatus === "ready"
-  const { milestones, identity } = useSession()
+  const session = useSession()
+  const walletBuilt = useStore(session.wallet, serviceStatus) === "ready"
+  const booted = usePxeBoot(session.page).bootStatus === "ready"
+  const { milestones, identity, backupRotations } = session
   const ready = useAfter(milestones, AFTER)
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
-    if (!booted || !ready || !obsidionWallet) return
+    if (!booted || !ready || !walletBuilt || !backupRotations) return
     const driver = getRotationDriver()
     driver.start({
-      store: getBackupRotationStore(),
+      store: backupRotations,
       deps: (owner) =>
         buildBackupFlowDeps({
-          wallet: obsidionWallet,
+          session,
           owner: owner as Address,
-          switchAccount: handOffAccount,
+          switchAccount: (account) => handOffAccount(session, account),
         }),
       owns: (record) => ownsRotation(record, identity.get().value?.address),
       report: warnFailure,
+      pace: session.page.pace,
     })
     return () => driver.stop()
-  }, [booted, ready, obsidionWallet, identity])
+  }, [booted, ready, walletBuilt, identity, backupRotations, session])
   return null
 }

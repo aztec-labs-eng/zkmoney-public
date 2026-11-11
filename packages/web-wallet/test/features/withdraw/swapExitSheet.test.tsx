@@ -2,6 +2,7 @@
  * The swap exit sheet a stuck or unswappable swap withdrawal opens: which exits it offers on which
  * grounds, what each promises, and what it says when one lands.
  */
+import { createPace } from "@obsidion/core/cadence"
 import React, { act } from "react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createRoot, type Root } from "react-dom/client"
@@ -12,7 +13,9 @@ import {
   type SavingsMoveRecord,
   type WithdrawalRecord,
 } from "@obsidion/front-core"
-import { clearWalletPrompt, useWalletPrompt } from "../../../src/features/deposit/walletPrompt"
+import { useWalletPrompt } from "../../../src/session/walletPrompt"
+import { testScreenings } from "../../support/page"
+const pace = createPace()
 
 const h = vi.hoisted(() => ({
   executeSwapWithdrawal: vi.fn(),
@@ -22,18 +25,7 @@ const h = vi.hoisted(() => ({
   showReportableError: vi.fn(),
 }))
 
-vi.mock("../../../src/config/env", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../src/config/env")>()),
-  getConfig: () => ({
-    l1ChainId: 11155111,
-    l1RpcUrl: "http://127.0.0.1:8545",
-    l1Chain: {
-      name: "Sepolia",
-      blockExplorers: { default: { url: "https://sepolia.etherscan.io" } },
-    },
-  }),
-}))
-vi.mock("../../../src/session/l1Wallet", () => ({
+vi.mock("../../../src/session/useL1Wallet", () => ({
   isWalletRejection: (e: { code?: number }) => e?.code === 4001,
   useL1Wallet: () => ({
     account: "0x00000000000000000000000000000000000000aa",
@@ -79,6 +71,7 @@ vi.mock("@obsidion/web-ds", () => ({
       {title}
     </button>
   ),
+  RowChevron: () => null,
   Spinner: () => null,
   TextField: ({
     label,
@@ -98,9 +91,10 @@ vi.mock("@obsidion/web-ds", () => ({
 }))
 
 const { SwapExitModal } = await import("../../../src/features/withdraw/SwapExitModal")
+const { closeSession } = await import("../../../src/session/session")
+const { openTestSession } = await import("../../support/session")
 
 declare global {
-  // eslint-disable-next-line no-var
   var IS_REACT_ACT_ENVIRONMENT: boolean
 }
 
@@ -146,8 +140,8 @@ describe("SwapExitModal", () => {
   ) => {
     await act(async () => {
       root.render(
-        <ScreeningProvider screener={passThroughScreener}>
-          <SwapExitModal record={rec} reason={reason} move={move} onClose={vi.fn()} />
+        <ScreeningProvider screenings={testScreenings(passThroughScreener)}>
+          <SwapExitModal record={rec} reason={reason} move={move} pace={pace} onClose={vi.fn()} />
           <SlotProbe />
         </ScreeningProvider>,
       )
@@ -164,6 +158,7 @@ describe("SwapExitModal", () => {
     h.recoverSwapWithdrawal.mockResolvedValue(L1_TX)
     h.runSkyEscrowMove.mockResolvedValue(L1_TX)
     h.recoverSkyEscrowMove.mockResolvedValue(L1_TX)
+    openTestSession()
     container = document.createElement("div")
     document.body.appendChild(container)
     root = createRoot(container)
@@ -172,8 +167,8 @@ describe("SwapExitModal", () => {
   afterEach(async () => {
     await act(async () => root.unmount())
     container.remove()
+    closeSession()
     vi.clearAllMocks()
-    clearWalletPrompt()
   })
 
   describe("a stuck swap", () => {
@@ -287,7 +282,7 @@ describe("SwapExitModal", () => {
 
     it("runs the escrow from the button and says where the funds went", async () => {
       await act(async () => button(/^Run the move now$/)!.click())
-      expect(h.runSkyEscrowMove).toHaveBeenCalledWith(move, burn, expect.anything())
+      expect(h.runSkyEscrowMove).toHaveBeenCalledWith(burn, expect.anything())
       expect(h.executeSwapWithdrawal).not.toHaveBeenCalled()
       expect(container.textContent).toContain("Move sent on")
       expect(container.textContent).toMatch(/Sent on to Main Account/)
@@ -306,6 +301,7 @@ describe("SwapExitModal", () => {
       })
       await act(async () => button(/^Recover DAI to/)!.click())
       expect(h.recoverSkyEscrowMove).toHaveBeenCalledWith(
+        expect.anything(),
         move,
         burn,
         expect.objectContaining({ destination: typed }),

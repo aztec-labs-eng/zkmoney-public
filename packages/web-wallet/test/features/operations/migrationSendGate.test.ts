@@ -11,10 +11,13 @@ import {
   type MetadataMigrationObservation,
   type MetadataMigrationRecord,
   type MetadataMigrationSteps,
+  userFlowActive,
 } from "@obsidion/front-core"
-import { getOperationStore } from "../../../src/features/operations/operations"
-import { runUserFlow, userFlowActive } from "../../../src/features/provingGate"
-import { backgroundSend, runGatedMigrationQueue } from "../../../src/features/migration/gatedMigration"
+import {
+  backgroundSend,
+  runGatedMigrationQueue,
+} from "../../../src/features/migration/gatedMigration"
+import { operationRecord, testOperations, testSession } from "../../support/operations"
 
 const POLL_MS = 5
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
@@ -82,6 +85,7 @@ const observation = (patch: Partial<MetadataMigrationObservation>) => ({
 
 beforeEach(() => {
   localStorage.clear()
+  testOperations()
 })
 
 afterEach(() => {
@@ -107,7 +111,7 @@ describe("an upgrade on the real proving gate", () => {
         {
           waitsForRegistration: true,
           prepare: async () => {
-            expect(userFlowActive()).toBe(true)
+            expect(userFlowActive(testSession().page.prover.state.get())).toBe(true)
             events.push("funds prepared")
             return "funds-plan"
           },
@@ -116,8 +120,8 @@ describe("an upgrade on the real proving gate", () => {
             if (fundsSent) return
             await gate!(async (operationId) => {
               // A background step: no user flow runs, and the step has its own operation.
-              expect(userFlowActive()).toBe(false)
-              expect(getOperationStore().get(operationId!)?.background).toBe(true)
+              expect(userFlowActive(testSession().page.prover.state.get())).toBe(false)
+              expect(operationRecord(operationId!)?.background).toBe(true)
               events.push("funds sent")
               fundsSent = true
             })
@@ -132,8 +136,8 @@ describe("an upgrade on the real proving gate", () => {
     const registration = controllerOf(
       steps(() => observation({ messagesReady: !sponsored, recurringSponsorship: sponsored }), {
         subscribe: async (_plan, onTxHash, operationId) => {
-          expect(userFlowActive()).toBe(false)
-          expect(getOperationStore().get(operationId!)?.background).toBe(true)
+          expect(userFlowActive(testSession().page.prover.state.get())).toBe(false)
+          expect(operationRecord(operationId!)?.background).toBe(true)
           events.push(`subscribe while funds ${fundsPhase}`)
           await onTxHash("0xsubscription")
           sponsored = true
@@ -153,6 +157,7 @@ describe("an upgrade on the real proving gate", () => {
     const signal = new AbortController()
     const operationId = "migration_queue"
     const queue = runGatedMigrationQueue(
+      testSession(),
       { operationId, flow: "migration", summary: "Upgrade" },
       [{ controller: funds }],
       {
@@ -165,15 +170,15 @@ describe("an upgrade on the real proving gate", () => {
     )
     // The send pass waits for the registration; it holds no user flow while it waits.
     await until(() => fundsPhase === "waiting", "the funds run waits")
-    expect(userFlowActive()).toBe(false)
-    expect(getOperationStore().get(operationId)).toMatchObject({ state: "local" })
-    expect(getOperationStore().get(operationId)?.background).toBeFalsy()
+    expect(userFlowActive(testSession().page.prover.state.get())).toBe(false)
+    expect(operationRecord(operationId)).toMatchObject({ state: "local" })
+    expect(operationRecord(operationId)?.background).toBeFalsy()
 
     const follower = runMetadataMigration(registration, {
       signal: signal.signal,
       promptless: true,
       pollMs: POLL_MS,
-      exclusive: backgroundSend,
+      exclusive: backgroundSend(testSession()),
       until: (record) => record.allowance === "registered",
     })
 
@@ -188,7 +193,7 @@ describe("an upgrade on the real proving gate", () => {
       "funds arriving",
     ])
     // The bell row covered the whole upgrade, and ended with it.
-    expect(getOperationStore().get(operationId)?.state).toBe("settled")
+    expect(operationRecord(operationId)?.state).toBe("settled")
   })
 
   it("holds an observe pass's re-send while a user flow runs, and sends it once the flow ends", async () => {
@@ -197,7 +202,7 @@ describe("an upgrade on the real proving gate", () => {
       steps(() => observation({ recurringSponsorship: true, metadataSettled: true, sent: true }), {
         reconcileRemaining: async (_plan, _signal, gate) => {
           await gate!(async (operationId) => {
-            expect(userFlowActive()).toBe(false)
+            expect(userFlowActive(testSession().page.prover.state.get())).toBe(false)
             sent(operationId)
           })
         },
@@ -212,14 +217,14 @@ describe("an upgrade on the real proving gate", () => {
       },
     )
     const userTx = deferred()
-    const flow = runUserFlow(() => userTx.promise)
+    const flow = testSession().page.prover.runUserFlow(() => userTx.promise)
 
     const signal = new AbortController()
     const follow = runMetadataMigration(observed, {
       signal: signal.signal,
       observeOnly: true,
       pollMs: POLL_MS,
-      exclusive: backgroundSend,
+      exclusive: backgroundSend(testSession()),
     })
     for (let i = 0; i < 5; i++) await flush()
     expect(sent).not.toHaveBeenCalled()
@@ -227,7 +232,7 @@ describe("an upgrade on the real proving gate", () => {
     userTx.resolve()
     await flow
     await until(() => sent.mock.calls.length > 0, "the re-send runs")
-    expect(getOperationStore().get(sent.mock.calls[0]![0])?.background).toBe(true)
+    expect(operationRecord(sent.mock.calls[0]![0])?.background).toBe(true)
     signal.abort()
     await follow
   })

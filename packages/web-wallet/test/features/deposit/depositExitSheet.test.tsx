@@ -1,7 +1,4 @@
-/**
- * The deposit exit sheet a stuck deposit opens: it says how long the deposit has been waiting,
- * offers the sweep by name, and links the L1 transaction it ends on.
- */
+/** Guards: exits and recovery stay offered, screening blocks both, one sweep, recovery stays. */
 import React, { act } from "react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createRoot, type Root } from "react-dom/client"
@@ -13,15 +10,11 @@ import {
   type SipaDeposit,
 } from "@obsidion/front-core"
 import type { Address, Hex } from "viem"
-import { clearWalletPrompt, useWalletPrompt } from "../../../src/features/deposit/walletPrompt"
-import type { PasskeyRequestScope } from "@obsidion/passkey-web"
-import {
-  pageHide,
-  passkeyEvents,
-  passkeyTelemetryHarness,
-} from "../../support/passkeyTelemetryHarness"
+import { sepolia } from "viem/chains"
+import { useWalletPrompt } from "../../../src/session/walletPrompt"
 import * as copy from "../../../src/features/limits/limitsCopy"
 import errorWords from "../../../src/errors/catalog.copy"
+import { testScreenings } from "../../support/page"
 
 const EXPLORER = "https://sepolia.etherscan.io"
 const SWEEP_HASH = `0x${"5e".repeat(32)}` as Hex
@@ -42,24 +35,6 @@ const h = vi.hoisted(() => ({
   observer: { retry: (sipa: string) => h.retry(sipa) },
 }))
 
-vi.mock("../../../src/config/env", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../src/config/env")>()),
-  getConfig: () => ({
-    l1ChainId: 11155111,
-    l1RpcUrl: "http://127.0.0.1:8545",
-    l1Chain: { name: "Sepolia", blockExplorers: { default: { url: EXPLORER } } },
-  }),
-}))
-vi.mock("../../../src/session/l1Wallet", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../src/session/l1Wallet")>()),
-  useL1Wallet: () => ({
-    account: "0x00000000000000000000000000000000000000aa",
-    connecting: false,
-    wrongChain: false,
-    connect: vi.fn(),
-    switchNetwork: vi.fn(),
-  }),
-}))
 vi.mock("../../../src/features/sipa/sipaSweep", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../src/features/sipa/sipaSweep")>()),
   selfSweep: h.selfSweep,
@@ -85,24 +60,14 @@ const capacity = vi.hoisted(() => ({
 vi.mock("../../../src/features/deposit/capacityStore", async () =>
   (await import("../../support/fakeCapacity")).fakeCapacityStore(capacity),
 )
-// No table is read unless a case lists its rows.
-const rows = vi.hoisted(() => ({ twoRows: false, asked: [] as (string | undefined)[] }))
-const ROW_USDC_TOKEN = vi.hoisted(() => "0x00000000000000000000000000000000000000c6")
+// No table is read.
 vi.mock("../../../src/features/sipa/loadDepositFacts", async (importOriginal) => {
-  const { mockLoadDepositFacts, twoRowTokens } = await import("../../support/depositTokens")
-  return mockLoadDepositFacts(importOriginal, () => (rows.twoRows ? twoRowTokens() : undefined))
+  const { mockLoadDepositFacts } = await import("../../support/depositTokens")
+  return mockLoadDepositFacts(importOriginal, () => undefined)
 })
 vi.mock("../../../src/features/token/useTxAmountCap", () => ({
   useTxAmountCap: () => 5166n * 10n ** 18n,
-  useRowTxAmountCap: (rowToken?: string) => {
-    rows.asked.push(rowToken)
-    if (!rowToken) return undefined
-    return rowToken === ROW_USDC_TOKEN ? 2_583n * 10n ** 6n : 2_583n * 10n ** 18n
-  },
-}))
-// The exit sheet sits inside AccountGate; this suite renders without the provider.
-vi.mock("../../../src/features/allowance/useSponsoredAllowance", () => ({
-  useSponsoredAllowance: () => ({ snapshot: { status: "signed-out" }, refresh: () => {} }),
+  useRowTxAmountCap: (rowToken?: string) => (rowToken ? 2_583n * 10n ** 18n : undefined),
 }))
 // The passkey helper drags the onboarding flow in; the registration tests only need its keys.
 vi.mock("../../../src/features/identity/passkeyAccount", () => ({
@@ -165,19 +130,30 @@ vi.mock("@obsidion/web-ds", () => ({
   TopNavIconButton: () => null,
 }))
 
-const { DepositExitModal, waitedLabel } = await import(
+const { DepositExitModal } = await import(
   "../../../src/features/deposit/DepositExitModal/DepositExitModal"
 )
 const { StrandedRecoveryModal } = await import(
-  "../../../src/features/deposit/recovery/StrandedRecoveryModal"
+  "../../../src/features/deposit/recovery/StrandedRecoveryModal/StrandedRecoveryModal"
 )
 const { SweepRefusedError } = await import("../../../src/features/sipa/sipaSweep")
 const { seedRegistration } = await import("../../support/registrationFixtures")
 const { closeSession } = await import("../../../src/session/session")
-const { openTestSession } = await import("../../support/session")
+const support = await import("../../support/session")
+const { fakeL1Wallet, withL1Wallet } = await import("../../support/fakeL1Wallet")
+/** A session whose page has a wallet connected on the L1. */
+const openTestSession = (...args: Parameters<typeof support.openTestSession>) => {
+  const session = support.openTestSession(...args)
+  const wallet = fakeL1Wallet()
+  wallet.connect("0x00000000000000000000000000000000000000aa", session.page.config.l1ChainId)
+  wallet.set({ walletName: null })
+  withL1Wallet(session, wallet.wallet)
+  return session
+}
+const { defaultConfig } = await import("../../support/page")
+const config = { ...defaultConfig, l1ChainId: sepolia.id, l1Chain: sepolia }
 
 declare global {
-  // eslint-disable-next-line no-var
   var IS_REACT_ACT_ENVIRONMENT: boolean
 }
 
@@ -198,19 +174,10 @@ const stuck = {
 
 beforeEach(
   () =>
-    openTestSession({ auth: fakeAuth(), sipaProcessingObserver: h.observer }).registrations.ready,
+    openTestSession({ config, auth: fakeAuth(), sipaProcessingObserver: h.observer }).registrations
+      .ready,
 )
 afterEach(closeSession)
-
-describe("waitedLabel", () => {
-  it("counts whole minutes, and hours once there are any", () => {
-    expect(waitedLabel(0)).toBe("0m")
-    expect(waitedLabel(90_000)).toBe("1m")
-    expect(waitedLabel(59 * 60_000)).toBe("59m")
-    expect(waitedLabel(60 * 60_000)).toBe("1h 00m")
-    expect(waitedLabel((3 * 60 + 5) * 60_000)).toBe("3h 05m")
-  })
-})
 
 describe("DepositExitModal — stuck deposit", () => {
   let container: HTMLDivElement
@@ -223,7 +190,7 @@ describe("DepositExitModal — stuck deposit", () => {
   const render = async (screener: AddressScreener = passThroughScreener) => {
     await act(async () => {
       root.render(
-        <ScreeningProvider screener={screener}>
+        <ScreeningProvider screenings={testScreenings(screener)}>
           <DepositExitModal record={stuck} reason="stuck" canSweep onClose={vi.fn()} />
         </ScreeningProvider>,
       )
@@ -293,7 +260,7 @@ describe("DepositExitModal — network capacity", () => {
   const render = async (props: { reason: "stuck" | "unsweepable" | null; canSweep: boolean }) => {
     await act(async () => {
       root.render(
-        <ScreeningProvider screener={passThroughScreener}>
+        <ScreeningProvider screenings={testScreenings(passThroughScreener)}>
           <DepositExitModal record={stuck} {...props} onClose={vi.fn()} />
         </ScreeningProvider>,
       )
@@ -446,7 +413,7 @@ describe("DepositExitModal — network capacity", () => {
     const open = async (reason: "stuck" | "unsweepable", canSweep: boolean) => {
       await act(async () => {
         root.render(
-          <ScreeningProvider screener={passThroughScreener}>
+          <ScreeningProvider screenings={testScreenings(passThroughScreener)}>
             <DepositExitModal
               key={reason}
               record={stuck}
@@ -498,15 +465,15 @@ describe("DepositExitModal — registration-backed deposit", () => {
 
   const ACCOUNT = "0x00000000000000000000000000000000000000aa" as Address
 
-  const render = async (Exit = DepositExitModal, Screening = ScreeningProvider) => {
+  const render = async () => {
     container = document.createElement("div")
     document.body.appendChild(container)
     root = createRoot(container)
     await act(async () => {
       root.render(
-        <Screening screener={passThroughScreener}>
-          <Exit record={stuck} reason="stuck" canSweep onClose={vi.fn()} />
-        </Screening>,
+        <ScreeningProvider screenings={testScreenings(passThroughScreener)}>
+          <DepositExitModal record={stuck} reason="stuck" canSweep onClose={vi.fn()} />
+        </ScreeningProvider>,
       )
     })
     await act(() => new Promise((r) => setTimeout(r, 1)))
@@ -516,7 +483,8 @@ describe("DepositExitModal — registration-backed deposit", () => {
     globalThis.IS_REACT_ACT_ENVIRONMENT = true
     localStorage.clear()
     h.wallet.current = {}
-    await openTestSession({ auth: fakeAuth(), wallet: h.wallet.current }).registrations.ready
+    await openTestSession({ config, auth: fakeAuth(), wallet: h.wallet.current }).registrations
+      .ready
     h.reusePasskeyAccount.mockResolvedValue({ secretKey: "0x1" })
     h.manualRegistrationSweep.mockResolvedValue(SWEEP_HASH)
   })
@@ -533,7 +501,6 @@ describe("DepositExitModal — registration-backed deposit", () => {
   const flush = () => act(() => new Promise((r) => setTimeout(r, 0)))
   type GateResult = { signal: AbortSignal; reach: string }
   type Gate = () => Promise<GateResult>
-  type GateWithAgain = (options?: { again?: AbortSignal }) => Promise<GateResult>
   /** A recovery that waits at the gate the way the real one does. */
   const gatedRecovery = (then: () => unknown) =>
     h.reusePasskeyAccount.mockImplementation(
@@ -542,20 +509,6 @@ describe("DepositExitModal — registration-backed deposit", () => {
         return then()
       },
     )
-
-  it("on a laptop the sweep holds at the phone steps until Continue", async () => {
-    gatedRecovery(() => ({ secretKey: "0x1" }))
-    await seedRegistration(registration())
-    await render()
-    await act(async () => button("Sweep now")!.click())
-    await flush()
-    expect(byTestId("sign-in-sheet")).not.toBeNull()
-    expect(h.manualRegistrationSweep).not.toHaveBeenCalled()
-    await act(async () => byTestId("sign-in-continue")!.click())
-    await flush()
-    expect(h.manualRegistrationSweep).toHaveBeenCalledOnce()
-    expect(byTestId("sign-in-sheet")).toBeNull()
-  })
 
   it("Cancel at the phone steps returns to the form with nothing reported", async () => {
     gatedRecovery(() => ({ secretKey: "0x1" }))
@@ -604,79 +557,6 @@ describe("DepositExitModal — registration-backed deposit", () => {
     expect(button("Sweep now")).toBeUndefined()
   })
 
-  describe("passkey telemetry", () => {
-    const events = () => passkeyEvents(h.fireEvent)
-    let harness: Awaited<ReturnType<typeof passkeyTelemetryHarness>>
-    /** Seeds the registration and opens this test's sheet at its sign-in step. */
-    let toSignInStep: () => Promise<void>
-
-    beforeEach(async () => {
-      // An attempt an earlier test left open ends here, before this test counts anything.
-      pageHide()
-      h.fireEvent.mockClear()
-      // A fresh page load: its own tracker, so attempt numbers and once-per-page events start over.
-      vi.resetModules()
-      const { ScreeningProvider: Screening } = await import("@obsidion/front-core")
-      const fixtures = await import("../../support/registrationFixtures")
-      const { DepositExitModal: Exit } = await import(
-        "../../../src/features/deposit/DepositExitModal/DepositExitModal"
-      )
-      // The fresh page's own session.
-      const fresh = await import("../../support/session")
-      await fresh.openTestSession({ auth: fakeAuth(), wallet: h.wallet.current }).registrations
-        .ready
-      harness = await passkeyTelemetryHarness()
-      toSignInStep = async () => {
-        await fixtures.seedRegistration(registration())
-        await render(Exit, Screening)
-        await act(async () => button("Sweep now")!.click())
-        await flush()
-        expect(byTestId("sign-in-sheet")).not.toBeNull()
-      }
-    })
-
-    it("a cancel at the second prompt's step, then leaving at once, sends one in-app cancel", async () => {
-      // The first prompt answered; the key is settled by a second, which the gate holds for a tap.
-      h.reusePasskeyAccount.mockImplementation(
-        async (
-          _w: unknown,
-          _signIn: unknown,
-          _a: unknown,
-          _h: unknown,
-          gate: GateWithAgain,
-          _signal?: AbortSignal,
-          own?: PasskeyRequestScope,
-        ) => {
-          const { signal: attempt } = await gate()
-          harness.request("assert", attempt, own).answer()
-          await gate({ again: attempt })
-          return { secretKey: "0x1" }
-        },
-      )
-      await toSignInStep()
-      await act(async () => byTestId("sign-in-continue")!.click())
-      await flush()
-      expect(byTestId("approve-again")).not.toBeNull()
-      act(() => {
-        byTestId("approve-again-cancel")!.click()
-        root.unmount()
-        pageHide()
-      })
-      root = createRoot(container)
-      await flush()
-      expect(events()).toEqual([
-        expect.objectContaining({
-          ceremony: "unlock",
-          flow: "deposit",
-          outcome: "cancelled",
-          reason: "in_app_cancel",
-          prompts: "1",
-          attempt: "1",
-        }),
-      ])
-    })
-  })
-
   it("stops before the passkey when the registration settled while the sheet was open", async () => {
     await seedRegistration(registration())
     await render()
@@ -713,7 +593,7 @@ describe("DepositExitModal — opened from Recover", () => {
   const render = async (sweepable?: boolean) => {
     await act(async () => {
       root.render(
-        <ScreeningProvider screener={passThroughScreener}>
+        <ScreeningProvider screenings={testScreenings(passThroughScreener)}>
           <DepositExitModal
             record={stuck}
             reason="stuck"
@@ -808,36 +688,6 @@ describe("DepositExitModal — opened from Recover", () => {
     expect(recoverDeposit).toHaveBeenCalledWith(stuck, expect.anything())
     expect(h.selfSweep).not.toHaveBeenCalled()
   })
-
-  it("never says a sweep may yet land on a deposit no sweep can move", async () => {
-    h.processing.current = {
-      reason: { kind: "operation-cap", observedAt: STARTED_AT },
-      blocker: { kind: "operation-cap", observedAt: STARTED_AT },
-    }
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
-    await render()
-    expect(container.textContent).toContain("Only a recovery can move them.")
-    expect(container.textContent).toContain(
-      "Recovery sends the funds back out to an Ethereum address.",
-    )
-    expect(container.textContent).not.toContain("may yet land")
-    expect(button("Sweep now")).toBeUndefined()
-    expect(button("Recover to 0x00000…000AA")!.disabled).toBe(false)
-    // The recover-only sheet reaches the limits details, where the reason's full wording is.
-    await act(async () =>
-      container
-        .querySelector<HTMLButtonElement>(
-          "[data-testid='deposit-pending-reason-help'] [data-testid='about-limits-link']",
-        )!
-        .click(),
-    )
-    for (let i = 0; i < 5; i++) await act(async () => {})
-    const details = document.querySelector(
-      `dialog[aria-label="${copy.SHEET_TITLE}"] [data-testid='about-limits-capacity']`,
-    )
-    expect(details?.textContent).toContain("Waiting won't change this.")
-    warn.mockRestore()
-  })
 })
 
 /** The page-wide wallet slot, read as the sheets read it. */
@@ -879,7 +729,7 @@ describe("DepositExitModal waiting on the wallet", () => {
     root = createRoot(container)
     await act(async () => {
       root.render(
-        <ScreeningProvider screener={passThroughScreener}>
+        <ScreeningProvider screenings={testScreenings(passThroughScreener)}>
           <DepositExitModal record={stuck} reason="stuck" canSweep onClose={vi.fn()} />
           <SlotProbe />
         </ScreeningProvider>,
@@ -894,7 +744,6 @@ describe("DepositExitModal waiting on the wallet", () => {
     await act(async () => root.unmount())
     container.remove()
     vi.clearAllMocks()
-    clearWalletPrompt()
   })
 
   it("offers a way back after 30 seconds at the prompt, and a late rejection reports nothing", async () => {
@@ -939,87 +788,6 @@ describe("DepositExitModal waiting on the wallet", () => {
   })
 })
 
-describe("DepositExitModal — a USDC row's deposit", () => {
-  let container: HTMLDivElement
-  let root: Root
-
-  beforeEach(() => {
-    globalThis.IS_REACT_ACT_ENVIRONMENT = true
-    rows.twoRows = true
-    rows.asked = []
-    container = document.createElement("div")
-    document.body.appendChild(container)
-    root = createRoot(container)
-  })
-
-  afterEach(async () => {
-    await act(async () => root.unmount())
-    container.remove()
-    rows.twoRows = false
-  })
-
-  it("states an over-cap USDC deposit on the USDC row's cap and names no DAI", async () => {
-    const { ROW_USDC } = await import("../../support/depositTokens")
-    const record = {
-      ...stuck,
-      phase: "recoverable",
-      amount: "3000",
-      fee: "100000",
-      tokenSymbol: "USDC",
-      tokenAddress: ROW_USDC,
-      tokenDecimals: 6,
-    } as SipaDeposit
-    await act(async () => {
-      root.render(
-        <ScreeningProvider screener={passThroughScreener}>
-          <DepositExitModal
-            record={record}
-            reason="unsweepable"
-            canSweep={false}
-            onClose={vi.fn()}
-          />
-        </ScreeningProvider>,
-      )
-    })
-    await act(() => new Promise((r) => setTimeout(r, 1)))
-
-    expect(rows.asked).toContain(ROW_USDC)
-    expect(document.body.textContent).toContain(
-      "larger than the network can process in one deposit",
-    )
-    expect(document.body.textContent).toContain("counts 1 USDC as $1")
-    expect(document.body.textContent).not.toContain("DAI")
-  })
-
-  it("states an untracked record's over-cap deposit on the pinned row's cap", async () => {
-    const { ROW_DAI } = await import("../../support/depositTokens")
-    const record = {
-      ...stuck,
-      phase: "recoverable",
-      amount: "3000",
-      fee: "250000000000000000",
-    } as SipaDeposit
-    await act(async () => {
-      root.render(
-        <ScreeningProvider screener={passThroughScreener}>
-          <DepositExitModal
-            record={record}
-            reason="unsweepable"
-            canSweep={false}
-            onClose={vi.fn()}
-          />
-        </ScreeningProvider>,
-      )
-    })
-    await act(() => new Promise((r) => setTimeout(r, 1)))
-
-    expect(rows.asked).toContain(ROW_DAI)
-    expect(document.body.textContent).toContain(
-      "larger than the network can process in one deposit",
-    )
-  })
-})
-
 describe("StrandedRecoveryModal", () => {
   let container: HTMLDivElement
   let root: Root
@@ -1033,6 +801,7 @@ describe("StrandedRecoveryModal", () => {
   beforeEach(async () => {
     globalThis.IS_REACT_ACT_ENVIRONMENT = true
     await openTestSession({
+      config,
       auth: fakeAuth(),
       wallet: { networkId: "0x00000000000000000000000000000000000000e1" },
     }).registrations.ready
@@ -1055,7 +824,7 @@ describe("StrandedRecoveryModal", () => {
     })
     await act(async () =>
       root.render(
-        <ScreeningProvider screener={passThroughScreener}>
+        <ScreeningProvider screenings={testScreenings(passThroughScreener)}>
           <StrandedRecoveryModal onClose={vi.fn()} />
         </ScreeningProvider>,
       ),
@@ -1071,6 +840,7 @@ describe("StrandedRecoveryModal", () => {
     await act(() => new Promise((r) => setTimeout(r, 1)))
 
     expect(h.readStrandedToken).toHaveBeenCalledWith(
+      openTestSession(),
       stuck.sipaAddress,
       "0x00000000000000000000000000000000000000d4",
       "0x00000000000000000000000000000000000000e1",

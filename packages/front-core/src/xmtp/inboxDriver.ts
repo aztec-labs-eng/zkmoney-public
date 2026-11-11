@@ -1,7 +1,7 @@
 /**
  * XmtpInboxReceiverDriver — foreground-only polling loop that walks all
- * consented XMTP conversations every 5s and dispatches payment-request and
- * connect-back messages to their receivers. (Incoming transfers are
+ * consented XMTP conversations every 5s and dispatches payment-request
+ * messages to their receiver. (Incoming transfers are
  * chain-native — `TransferEventScanner` — and never ride XMTP.)
  *
  * Why this exists: per-conversation chat hooks only process the
@@ -16,7 +16,7 @@
  *
  * Streaming: a stream fast-path plus a tiered backstop. The driver consumes
  * the client port's `subscribeAllMessages` / `syncAllConversations`
- * primitives; the per-conversation cursor + connect-back budget below stay
+ * primitives; the per-conversation cursor + request budget below stay
  * authoritative — the stream is only a "this conversation changed" signal,
  * never a trusted content source.
  *
@@ -28,57 +28,39 @@
  *   - Cursor advances on accepted | rejected | duplicate. On deferred
  *     (or a per-message throw), the cursor stays unmoved and the
  *     message is re-presented on the next cycle.
- *   - Cursor math is bigint (ns timestamps exceed 2^53); persisted values
- *     stay JSON numbers when losslessly representable, decimal strings
- *     otherwise.
- *   - Connect-back budget is global per pollOnce (10); when exhausted,
+ *   - Cursor math is bigint (ns timestamps exceed 2^53).
+ *   - Request budget is global per pollOnce (10); when exhausted,
  *     the next cycle resumes from `resumeConversationId` so under
  *     sustained backlog every conversation is eventually visited.
  *   - All persistence happens in one storage write at end of cycle.
  *     A mid-cycle crash drops the in-memory advances; reprocessed rows
  *     hit the store-layer idempotency.
+ *   - Cursors that do not load stop every cycle: a cycle over empty
+ *     cursors would replay the inbox.
  */
 
 import type { AztecPaymentRequestContent } from "@obsidion/sdk"
 
-import type { IStorageAdapter } from "../core/storages/adapter"
-import type { ConnectBackStatus } from "./ConnectBackReceiver"
+import type { XmtpCursorMap, XmtpCursors } from "../engine/xmtpCursors"
 import type { RequestReceiveStatus } from "./requestReceiverTypes"
 import type { InboxConversation, InboxMessage, XmtpClientManagerLike } from "./types"
 
 /**
- * Structural surface the driver consumes from `ConnectBackReceiver`. A
- * tiny structural type keeps tests trivial — a hand-rolled fake satisfies it
- * and the real receiver does too because the method signature matches.
- */
-export interface ConnectBackReceiverLike {
-  process(input: {
-    uuid: string
-    senderXmtpAddresses: string[]
-    ownXmtpAddress?: string | null
-    claimedTag?: string | null
-  }): Promise<ConnectBackStatus>
-}
-
-/**
- * Structural surface the driver consumes from `RequestReceiver`. Same reasoning
- * as `ConnectBackReceiverLike` — a hand-rolled fake satisfies it and the real
- * receiver does too because the method signature matches.
+ * Structural surface the driver consumes from `RequestReceiver`, so a hand-rolled fake satisfies
+ * it in tests.
  */
 export interface RequestReceiverLike {
   process(input: {
     content: AztecPaymentRequestContent
     senderXmtpAddresses: string[]
+    sentAt: number
   }): Promise<RequestReceiveStatus>
 }
 
 const POLL_INTERVAL_MS = 5_000
-// Per-cycle cap for connect-back handshakes (shared with payment-requests,
-// see PAYMENT_REQUEST_TYPE_ID below). Connect-backs are cheap (a local lookup
-// + at most one registry read + one connect delete) and rare, so a small cap
-// is plenty.
-const CONNECT_BACK_BUDGET_PER_CYCLE = 10
-const CURSOR_STORAGE_KEY = "@obsidion/xmtp-inbox-driver/cursors/v1"
+// Per-cycle cap for payment requests. Each is cheap (a local storage write, no PXE call) and rare,
+// so a small cap is plenty.
+const REQUEST_BUDGET_PER_CYCLE = 10
 
 // Stream-driven dirty drain. Coalesce a burst of markDirty() calls into
 // one drain, and cap how many conversations a single drain syncs so an attacker
@@ -107,13 +89,7 @@ const CONSUMER_DEADLINE_MS = 5 * 60_000
 // Hardcoded to match the string the XMTP SDKs put on the decoded message's
 // content-type id. Bumping the codec version requires updating this string
 // everywhere it is matched.
-// Connect-back handshake content type. Mirrors the codec id
-// `ConnectBackContentTypeId` from `@obsidion/sdk`.
-const CONNECT_BACK_TYPE_ID = "obsidion.xyz/connect-back:1.0"
-// Payment-request content type. Mirrors `AztecPaymentRequestContentTypeId` from
-// `@obsidion/sdk`; hardcoded here for the same reason as the id above.
-// Payment-request messages are cheap (a local storage write, no PXE call), so
-// they share the connect-back per-cycle budget.
+// Payment-request content type. Mirrors `AztecPaymentRequestContentTypeId` from `@obsidion/sdk`.
 const PAYMENT_REQUEST_TYPE_ID = "obsidion.xyz/payment-request:1.0"
 
 export interface CurrentAccountInfo {
@@ -127,28 +103,8 @@ interface DriverLogger {
   warn: (...args: unknown[]) => void
 }
 
-interface CursorMap {
-  installationId: string | null
-  cursors: Record<string, bigint> // conversationId -> lastSentNs
-  resumeConversationId?: string
-}
-
-// On-disk shape: cursor values are JSON numbers when losslessly representable,
-// decimal strings otherwise.
-interface PersistedCursorMap {
-  installationId: string | null
-  cursors: Record<string, number | string>
-  resumeConversationId?: string
-}
-
 export interface XmtpInboxReceiverDriverOptions {
   xmtp: XmtpClientManagerLike
-  /**
-   * Sharer-side connect-back handler. Optional — when omitted, connect-back
-   * messages are treated like any other unhandled content (cursor advances,
-   * no processing).
-   */
-  connectBackReceiver?: ConnectBackReceiverLike
   /**
    * Payment-request handler. Optional — when omitted, payment-request messages
    * are treated like any other unhandled content (cursor advances, no
@@ -156,26 +112,20 @@ export interface XmtpInboxReceiverDriverOptions {
    */
   requestReceiver?: RequestReceiverLike
   /**
-   * This device's own XMTP (Ethereum-format) address, used to ignore
-   * self-sent connect-backs. Optional; the receiver degrades gracefully when
-   * absent.
-   */
-  ownXmtpAddress?: string | null
-  /**
    * Resolves the current Aztec account context (rollup scoping for the
    * request lane). Returns null when no account is available (locked /
    * mid-switch); the driver defers the cycle in that case.
    */
   currentAccount: () => Promise<CurrentAccountInfo | null>
-  asyncStorage: IStorageAdapter
+  cursors: XmtpCursors
   /** Platform logger; defaults to `console`. */
   logger?: DriverLogger
   /** Override for tests; defaults to POLL_INTERVAL_MS. */
   pollIntervalMs?: number
   /** Override for tests; defaults to FULL_SWEEP_INTERVAL_MS (rare full sweep). */
   fullSweepIntervalMs?: number
-  /** Override for tests; defaults to CONNECT_BACK_BUDGET_PER_CYCLE. */
-  connectBackBudgetPerCycle?: number
+  /** Override for tests; defaults to REQUEST_BUDGET_PER_CYCLE. */
+  requestBudgetPerCycle?: number
   /**
    * Verbose per-cycle logging for development. When true, the driver
    * emits a structured trace of every cycle: current account, conversation
@@ -186,6 +136,7 @@ export interface XmtpInboxReceiverDriverOptions {
 }
 
 export class XmtpInboxReceiverDriver {
+  // eslint-disable-next-line no-restricted-syntax -- debt
   private static instance: XmtpInboxReceiverDriver | null = null
 
   /**
@@ -208,28 +159,27 @@ export class XmtpInboxReceiverDriver {
 
   private readonly pollIntervalMs: number
   private readonly fullSweepIntervalMs: number
-  private readonly connectBackBudgetPerCycle: number
+  private readonly requestBudgetPerCycle: number
   private readonly debugEnabled: boolean
   private intervalHandle: ReturnType<typeof setInterval> | null = null
   private sweepIntervalHandle: ReturnType<typeof setInterval> | null = null
   // Single consumer guard: pollOnce (full sweep / probe tick) and drainDirty
   // (stream-driven) both run through `running`, so only one consumer at a time
-  // writes the cursor map + liveConnectBackBudget. This is the load-bearing
+  // writes the cursor map + liveRequestBudget. This is the load-bearing
   // concurrency invariant — a second unguarded entry point would race the cursor.
   private running = false
   private currentRun: Promise<void> | null = null
-  private state: CursorMap = { installationId: null, cursors: {} }
-  private loaded = false
-  private historyReplayPending = false
+  private state: XmtpCursorMap = { installationId: null, cursors: {} }
+  private loading: Promise<boolean> | null = null
 
   // ── Stream-driven dirty drain ──
   private readonly dirtyIds = new Set<string>()
   private drainDebounceHandle: ReturnType<typeof setTimeout> | null = null
   private pendingDrain = false
-  // Connect-back budget shared across triggers, refilled at the top of each
+  // Request budget shared across triggers, refilled at the top of each
   // full sweep / probe tick (NOT per call) so a stream drain and a sweep can't
   // each grab a fresh 10 and silently multiply the DoS bound.
-  private liveConnectBackBudget: number
+  private liveRequestBudget: number
 
   // ── Stream fast-path ──
   private streamCancel: (() => void) | null = null
@@ -246,9 +196,9 @@ export class XmtpInboxReceiverDriver {
   constructor(private readonly opts: XmtpInboxReceiverDriverOptions) {
     this.pollIntervalMs = opts.pollIntervalMs ?? POLL_INTERVAL_MS
     this.fullSweepIntervalMs = opts.fullSweepIntervalMs ?? FULL_SWEEP_INTERVAL_MS
-    this.connectBackBudgetPerCycle = opts.connectBackBudgetPerCycle ?? CONNECT_BACK_BUDGET_PER_CYCLE
+    this.requestBudgetPerCycle = opts.requestBudgetPerCycle ?? REQUEST_BUDGET_PER_CYCLE
     this.debugEnabled = opts.debug ?? false
-    this.liveConnectBackBudget = this.connectBackBudgetPerCycle
+    this.liveRequestBudget = this.requestBudgetPerCycle
   }
 
   /**
@@ -307,7 +257,7 @@ export class XmtpInboxReceiverDriver {
   async pollOnce(): Promise<void> {
     if (this.running) return this.currentRun ?? undefined
     return this.startRun("pollOnce", async () => {
-      this.liveConnectBackBudget = this.connectBackBudgetPerCycle // refill at the tick (shared across triggers)
+      this.liveRequestBudget = this.requestBudgetPerCycle // refill at the tick (shared across triggers)
       await this.runCycle()
     })
   }
@@ -325,11 +275,6 @@ export class XmtpInboxReceiverDriver {
     await this.pollOnce()
   }
 
-  /** Queue a replay after archive import; the next sweep resets cursors under its consumer guard. */
-  requestHistoryReplay(): void {
-    this.historyReplayPending = true
-  }
-
   /**
    * Cheap stall-defense tick (the ~5s timer). One batched network sync of unread
    * conversations, then a local-read sweep (no per-conversation network sync) — so
@@ -340,7 +285,7 @@ export class XmtpInboxReceiverDriver {
   async probeOnce(): Promise<void> {
     if (this.running) return this.currentRun ?? undefined
     return this.startRun("probeOnce", async () => {
-      this.liveConnectBackBudget = this.connectBackBudgetPerCycle // refill at the tick (shared across triggers)
+      this.liveRequestBudget = this.requestBudgetPerCycle // refill at the tick (shared across triggers)
       await this.runProbe()
     })
   }
@@ -569,7 +514,7 @@ export class XmtpInboxReceiverDriver {
   // ── Internal ──────────────────────────────────────────────────────────
 
   private async runCycle(local = false): Promise<void> {
-    await this.loadIfNeeded()
+    if (!(await this.loadIfNeeded())) return
 
     const currentAccount = await this.opts.currentAccount()
     if (!currentAccount) {
@@ -595,12 +540,6 @@ export class XmtpInboxReceiverDriver {
         installationId: liveInstallationId,
         cursors: {},
       }
-    }
-
-    if (this.historyReplayPending) {
-      this.historyReplayPending = false
-      this.state.cursors = {}
-      this.state.resumeConversationId = undefined
     }
 
     this.debug("cycle start", {
@@ -640,7 +579,7 @@ export class XmtpInboxReceiverDriver {
       ...consented.slice(0, startIdx),
     ]
 
-    // The connect-back budget was refilled at the consumer tick (pollOnce /
+    // The request budget was refilled at the consumer tick (pollOnce /
     // probeOnce); the sweep and any stream drains between ticks consume from
     // the same counter.
     const { exhaustedConvId } = await this.drainConversations(ordered, local)
@@ -654,7 +593,7 @@ export class XmtpInboxReceiverDriver {
 
   /**
    * Drain an already-ordered list of conversations under the shared
-   * connect-back budget. Extracted from runCycle so the full sweep, the
+   * request budget. Extracted from runCycle so the full sweep, the
    * stream-driven dirty drain, and the probe share one budget-aware,
    * cursor-aware loop. Does NOT touch `resumeConversationId` — that
    * round-robin checkpoint belongs to the full sweep and stays in runCycle.
@@ -669,13 +608,13 @@ export class XmtpInboxReceiverDriver {
   ): Promise<{ exhaustedConvId?: string }> {
     let exhaustedConvId: string | undefined
     for (const conv of conversations) {
-      // We don't pre-bail on a zero connect-back budget. processConversation
+      // We don't pre-bail on a zero request budget. processConversation
       // handles it and only marks exhaustedMidConversation when it actually
-      // had a connect-back / payment-request message it couldn't process — a
+      // had a payment-request message it couldn't process — a
       // conversation with no such messages costs 0 budget and shouldn't push
       // the checkpoint forward.
-      const result = await this.processConversation(conv, this.liveConnectBackBudget, local)
-      this.liveConnectBackBudget = result.connectBackBudgetRemaining
+      const result = await this.processConversation(conv, this.liveRequestBudget, local)
+      this.liveRequestBudget = result.requestBudgetRemaining
       if (result.exhaustedMidConversation) {
         exhaustedConvId = conv.id
         break
@@ -691,7 +630,7 @@ export class XmtpInboxReceiverDriver {
    * picked up by the trailing-edge re-run.
    */
   private async runDirtyCycle(): Promise<void> {
-    await this.loadIfNeeded()
+    if (!(await this.loadIfNeeded())) return
     const currentAccount = await this.opts.currentAccount()
     if (!currentAccount) return
     if (!this.opts.xmtp.isReady()) return
@@ -734,7 +673,7 @@ export class XmtpInboxReceiverDriver {
       // zero budget) — the next sweep / probe tick refreshes the budget.
       const idx = batch.findIndex((c) => c.id === exhaustedConvId)
       if (idx >= 0) for (const conv of batch.slice(idx)) this.dirtyIds.add(conv.id)
-    } else if (this.dirtyIds.size > 0 && this.liveConnectBackBudget > 0) {
+    } else if (this.dirtyIds.size > 0 && this.liveRequestBudget > 0) {
       // Overflow / new marks remain and budget is left — keep draining.
       this.pendingDrain = true
     }
@@ -809,17 +748,17 @@ export class XmtpInboxReceiverDriver {
 
   /**
    * Process one conversation's messages newer than its cursor, dispatching
-   * payment-request and connect-back content to their receivers under the
-   * shared connect-back budget. Unrecognized or legacy content (text,
-   * reactions, legacy transfer DMs) advances the cursor immediately as
+   * payment-request content to its receiver under the shared request budget.
+   * Any other content (text, reactions, connect-backs, legacy transfer DMs)
+   * advances the cursor immediately as
    * skipped — no receiver call, no budget spent.
    */
   private async processConversation(
     conv: InboxConversation,
-    connectBackBudget: number,
+    requestBudget: number,
     local = false,
   ): Promise<{
-    connectBackBudgetRemaining: number
+    requestBudgetRemaining: number
     exhaustedMidConversation: boolean
   }> {
     const convId = conv.id
@@ -835,7 +774,7 @@ export class XmtpInboxReceiverDriver {
     } catch (err) {
       this.warn("messagesAfter failed", { convId, err })
       return {
-        connectBackBudgetRemaining: connectBackBudget,
+        requestBudgetRemaining: requestBudget,
         exhaustedMidConversation: false,
       }
     }
@@ -859,7 +798,7 @@ export class XmtpInboxReceiverDriver {
 
     const seen = new Set<string>()
     let advancedTo = cursor
-    let connectBackBudgetRemaining = connectBackBudget
+    let requestBudgetRemaining = requestBudget
 
     for (const msg of messages) {
       const sentNs = toNs(msg.sentNs)
@@ -867,118 +806,7 @@ export class XmtpInboxReceiverDriver {
       if (seen.has(dedupKey)) continue
       seen.add(dedupKey)
 
-      // Connect-back handshake (sharer side). Dispatched before the generic
-      // skip-and-advance fallback so a connect-back is never silently skipped.
-      if (msg.contentTypeId === CONNECT_BACK_TYPE_ID) {
-        if (!this.opts.connectBackReceiver) {
-          this.info("connect-back received but no receiver is wired", {
-            convId: shortenId(convId),
-            msgId: shortenId(msg.id),
-            sentNs: msg.sentNs,
-          })
-          // No handler wired — treat like any other unhandled content:
-          // advance the cursor and move on (no re-loop).
-          advancedTo = sentNs
-          continue
-        }
-
-        if (connectBackBudgetRemaining === 0) {
-          // Connect-back budget exhausted; hold the line at the last
-          // successfully-processed message and resume next cycle.
-          this.state.cursors[convId] = advancedTo
-          return {
-            connectBackBudgetRemaining: 0,
-            exhaustedMidConversation: true,
-          }
-        }
-
-        let uuid: string
-        let claimedTag: string | undefined
-        try {
-          const content = msg.content() as { uuid?: unknown; tag?: unknown }
-          if (typeof content?.uuid !== "string" || content.uuid.length === 0) {
-            // Malformed / un-decodable connect-back — skip it (advance).
-            this.warn("malformed connect-back skipped", {
-              convId: shortenId(convId),
-              msgId: shortenId(msg.id),
-              content,
-            })
-            advancedTo = sentNs
-            continue
-          }
-          uuid = content.uuid
-          if (typeof content.tag === "string" && content.tag.length > 0) {
-            claimedTag = content.tag
-          }
-        } catch (err) {
-          this.warn("decoding connect-back failed", { convId, msgId: msg.id, err })
-          advancedTo = sentNs
-          continue
-        }
-
-        // Resolve the authenticated sender. Empty when unresolvable — the receiver
-        // treats that as a terminal no-add.
-        let senderXmtpAddresses: string[]
-        try {
-          senderXmtpAddresses = await this.opts.xmtp.getDmPeerAddresses(conv)
-        } catch (err) {
-          this.warn("getDmPeerAddresses threw for connect-back", { convId, msgId: msg.id, err })
-          senderXmtpAddresses = []
-        }
-
-        this.info("connect-back received", {
-          convId: shortenId(convId),
-          msgId: shortenId(msg.id),
-          uuid,
-          senderXmtpAddresses,
-          ownXmtpAddress: this.opts.ownXmtpAddress ?? null,
-        })
-
-        connectBackBudgetRemaining -= 1
-
-        let cbResult: ConnectBackStatus
-        try {
-          cbResult = await this.opts.connectBackReceiver.process({
-            uuid,
-            senderXmtpAddresses,
-            ownXmtpAddress: this.opts.ownXmtpAddress ?? null,
-            claimedTag,
-          })
-        } catch (err) {
-          // The receiver is designed never to throw; a throw here is treated
-          // as deferred — hold the cursor and re-present next cycle.
-          this.warn("connectBackReceiver.process threw", { convId, msgId: msg.id, err })
-          this.state.cursors[convId] = advancedTo
-          return { connectBackBudgetRemaining, exhaustedMidConversation: false }
-        }
-
-        this.debug("connect-back result", {
-          convId: shortenId(convId),
-          msgId: shortenId(msg.id),
-          status: cbResult.status,
-        })
-        this.info("connect-back processed", {
-          convId: shortenId(convId),
-          msgId: shortenId(msg.id),
-          uuid,
-          senderXmtpAddresses,
-          result: cbResult,
-        })
-
-        if (cbResult.status === "deferred") {
-          // Hold the line — re-present this connect-back next cycle.
-          this.state.cursors[convId] = advancedTo
-          return { connectBackBudgetRemaining, exhaustedMidConversation: false }
-        }
-
-        // accepted (terminal) — advance.
-        advancedTo = sentNs
-        continue
-      }
-
-      // Payment request (announce / fulfilled / declined). Shares the
-      // connect-back per-cycle budget — processing is a local storage write,
-      // never a PXE call.
+      // Payment request (announce / fulfilled / declined), under the per-cycle budget.
       if (msg.contentTypeId === PAYMENT_REQUEST_TYPE_ID) {
         if (!this.opts.requestReceiver) {
           this.info("payment-request received but no receiver is wired", {
@@ -989,10 +817,10 @@ export class XmtpInboxReceiverDriver {
           continue
         }
 
-        if (connectBackBudgetRemaining === 0) {
+        if (requestBudgetRemaining === 0) {
           this.state.cursors[convId] = advancedTo
           return {
-            connectBackBudgetRemaining: 0,
+            requestBudgetRemaining: 0,
             exhaustedMidConversation: true,
           }
         }
@@ -1013,7 +841,7 @@ export class XmtpInboxReceiverDriver {
           continue
         }
 
-        connectBackBudgetRemaining -= 1
+        requestBudgetRemaining -= 1
 
         // Authenticated sender for the receiver's tag check; empty when unresolvable
         // (the receiver then skips the message rather than trusting its content).
@@ -1030,13 +858,14 @@ export class XmtpInboxReceiverDriver {
           requestResult = await this.opts.requestReceiver.process({
             content: requestContent,
             senderXmtpAddresses: requestSenders,
+            sentAt: Number(sentNs / 1_000_000n),
           })
         } catch (err) {
           // The receiver never throws; a throw is treated as deferred — hold
           // the cursor and re-present next cycle.
           this.warn("requestReceiver.process threw", { convId, msgId: msg.id, err })
           this.state.cursors[convId] = advancedTo
-          return { connectBackBudgetRemaining, exhaustedMidConversation: false }
+          return { requestBudgetRemaining, exhaustedMidConversation: false }
         }
 
         this.debug("payment-request result", {
@@ -1047,7 +876,7 @@ export class XmtpInboxReceiverDriver {
 
         if (requestResult.status === "deferred") {
           this.state.cursors[convId] = advancedTo
-          return { connectBackBudgetRemaining, exhaustedMidConversation: false }
+          return { requestBudgetRemaining, exhaustedMidConversation: false }
         }
 
         // accepted | duplicate | ignored: terminal for this message; advance.
@@ -1064,56 +893,32 @@ export class XmtpInboxReceiverDriver {
     this.debug("conv done", {
       convId: shortenId(convId),
       cursorAfter: advancedTo,
-      connectBackBudgetRemaining,
+      requestBudgetRemaining,
     })
-    return { connectBackBudgetRemaining, exhaustedMidConversation: false }
+    return { requestBudgetRemaining, exhaustedMidConversation: false }
   }
 
-  private async loadIfNeeded(): Promise<void> {
-    if (this.loaded) return
-    this.loaded = true
-    try {
-      const json = await this.opts.asyncStorage.getItem(CURSOR_STORAGE_KEY)
-      if (!json) return
-      const parsed = JSON.parse(json) as PersistedCursorMap
-      if (
-        parsed &&
-        typeof parsed === "object" &&
-        parsed.cursors &&
-        typeof parsed.cursors === "object"
-      ) {
-        const cursors: Record<string, bigint> = {}
-        for (const [id, v] of Object.entries(parsed.cursors)) {
-          try {
-            cursors[id] = BigInt(v)
-          } catch {
-            // Unparseable cursor — drop it; the conversation reprocesses and
-            // the store-layer idempotency absorbs duplicates.
-          }
-        }
-        this.state = {
-          installationId: parsed.installationId ?? null,
-          cursors,
-          resumeConversationId: parsed.resumeConversationId,
-        }
-      }
-    } catch (err) {
-      this.warn("loading cursor map failed", err)
-    }
+  /**
+   * False once the saved cursors fail to load. The store never retries its load, so every later
+   * cycle stops here too and the driver receives nothing in this session.
+   */
+  private loadIfNeeded(): Promise<boolean> {
+    return (this.loading ??= this.opts.cursors.load().then(
+      (state) => {
+        this.state = state
+        return true
+      },
+      (err: unknown) => {
+        this.warn("loading cursor map failed", err)
+        this.loading = null
+        return false
+      },
+    ))
   }
 
   private async persist(): Promise<void> {
     try {
-      const cursors: Record<string, number | string> = {}
-      for (const [id, v] of Object.entries(this.state.cursors)) {
-        cursors[id] = serializeNs(v)
-      }
-      const persisted: PersistedCursorMap = {
-        installationId: this.state.installationId,
-        cursors,
-        resumeConversationId: this.state.resumeConversationId,
-      }
-      await this.opts.asyncStorage.setItem(CURSOR_STORAGE_KEY, JSON.stringify(persisted))
+      await this.opts.cursors.save(this.state)
     } catch (err) {
       this.warn("persisting cursor map failed", err)
     }
@@ -1136,12 +941,6 @@ export class XmtpInboxReceiverDriver {
 
 function toNs(v: number | bigint): bigint {
   return typeof v === "bigint" ? v : BigInt(v)
-}
-
-/** Persist a cursor as a JSON number when lossless, else as a decimal string. */
-function serializeNs(v: bigint): number | string {
-  const n = Number(v)
-  return Number.isFinite(n) && BigInt(n) === v ? n : v.toString()
 }
 
 /** First 8 chars of a hex/id-like string + "…" — keeps debug logs compact. */

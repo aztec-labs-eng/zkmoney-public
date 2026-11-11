@@ -1,8 +1,9 @@
 /** A deep-linked row joins Home's rows: opening its sheet hides nothing else Home lists. */
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { testPage, testCore } from "../../support/page"
-import { scannedRow } from "@obsidion/front-core"
-import { activeNamespace, closeSession, switchSession, session } from "../../../src/session/session"
+import { fundingOf, recordOf, scannedRow } from "@obsidion/front-core"
+import { activeNamespace, closeSession, switchSession } from "../../../src/session/session"
+import { openTestSession } from "../../support/session"
 import { pageSessionDeps } from "../../../src/app/sessionDeps"
 import { feedRows } from "../../../src/ui/activity/useFeed"
 
@@ -21,10 +22,10 @@ const token = {
 describe("useFeed", () => {
   it("keeps Home's older open link while a row outside the window is opened by its hash", async () => {
     switchSession(activeNamespace(testCore().device), pageSessionDeps(testPage()))
-    const { activity } = session()
+    const { transfers } = openTestSession()
     const now = Date.now()
     const received = (txHash: string, timestamp: number) =>
-      activity.record(
+      transfers.record(
         scannedRow({
           networkId: "0xnet",
           txHash,
@@ -36,7 +37,7 @@ describe("useFeed", () => {
           timestamp,
         }),
       )
-    await activity.record({
+    const escrowed = {
       id: "0xescrowed",
       networkId: "0xnet",
       action: "Pay To Email",
@@ -47,14 +48,17 @@ describe("useFeed", () => {
       token,
       amountAtomic: 1n,
       timestamp: now - 90 * 24 * 60 * 60 * 1000,
-    } as never)
+      payToEmailSecret: "0xsecret",
+    } as never
+    await openTestSession().paylinks.put(recordOf(escrowed))
+    await transfers.record(fundingOf(escrowed))
     await received("0xold", now - 80 * 24 * 60 * 60 * 1000)
     for (let i = 0; i < 12; i++) await received(`0x${i + 10}`, now - i)
-    const feed = feedRows(session(), undefined, "0xold")
+    const feed = feedRows(openTestSession(), undefined, "0xold")
     const stop = feed.subscribe(() => {})
     const ids = () => feed.get().rows.records.map((row) => row.txHash)
     await vi.waitFor(() => expect(ids()).toContain("0xold"))
-    expect(ids()).toContain("0xescrowed")
+    expect(feed.get().links.records.map((link) => link.txHash)).toContain("0xescrowed")
     stop()
   })
 })

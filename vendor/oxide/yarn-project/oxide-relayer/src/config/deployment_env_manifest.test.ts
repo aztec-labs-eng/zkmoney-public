@@ -1,9 +1,14 @@
 import { AztecAddress } from '@aztec-labs/aztec.js/addresses';
 import { EthAddress } from '@aztec-labs/foundation/eth-address';
+import type { Logger } from '@aztec-labs/foundation/log';
 
-import { describe, expect, it } from '@jest/globals';
+import { describe, expect, it, jest } from '@jest/globals';
 
-import { type ResolveDeploymentEnvManifestOptions, resolveDeploymentEnvManifest } from './deployment_env_manifest.js';
+import {
+  type ResolveDeploymentEnvManifestOptions,
+  resolveDeploymentEnvManifest,
+  waitForDeploymentEnvManifest,
+} from './deployment_env_manifest.js';
 
 const URL = 'https://manifest.example/v1/prod/releases.json';
 const PORTAL = '0x0000000000000000000000000000000000000001';
@@ -273,6 +278,15 @@ describe('manifest entries from other relayer versions', () => {
     expect(result.unreadable).toEqual([]);
   });
 
+  it('reads the current fields of an entry that lists revisions', async () => {
+    const revisions = [
+      { updatedAt: 'first', gitSha: 'sha-1', enclaveUrl: 'https://old', bridges: [{ bridgeId: 'b' }] },
+    ];
+    const result = await resolve(document(entry({ revisions })));
+    expect(result.current.label).toBe('v4');
+    expect(result.unreadable).toEqual([]);
+  });
+
   it('watches a newer entry that has fields the relayer does not read', async () => {
     const newer = entry({ label: 'newer', portal: OTHER_PORTAL, futureContract: '0x' + '0c'.repeat(20) });
     const result = await resolve(document(entry(), newer));
@@ -344,4 +358,93 @@ describe('selection policy', () => {
     expect(manifest.skipped).toEqual([]);
     expect(manifest.unreadable).toEqual([expect.stringContaining('(no-token): token missing')]);
   });
+});
+
+describe('waitForDeploymentEnvManifest', () => {
+  function wait(
+    responses: ((input: Parameters<typeof fetch>[0], init?: RequestInit) => Promise<Response>)[],
+    signal = new AbortController().signal,
+    retryIntervalMs = 0,
+  ) {
+    const log = { info: jest.fn() };
+    const fetchImpl = jest.fn<typeof fetch>();
+    for (const response of responses) {
+      fetchImpl.mockImplementationOnce(response);
+    }
+    const result = waitForDeploymentEnvManifest({
+      deploymentEnvManifestUrl: URL,
+      portal: EthAddress.fromString(PORTAL),
+      fetch: fetchImpl,
+      log: log as unknown as Logger,
+      signal,
+      retryIntervalMs,
+    });
+    return { result, log, fetchImpl };
+  }
+  const respond = (body: string, status: number) => () => Promise.resolve(new Response(body, { status }));
+
+  it('waits through HTTP errors, network errors and a missing portal, then resolves', async () => {
+    const { result, log, fetchImpl } = wait([
+      respond('', 404),
+      respond('', 403),
+      () => Promise.reject(new Error('fetch failed')),
+      respond(document(entry({ portal: OTHER_PORTAL })), 200),
+      respond(document(entry()), 200),
+    ]);
+    const manifest = await result;
+    expect(manifest?.current.publicConfig.portal.toString()).toBe(PORTAL);
+    expect(fetchImpl).toHaveBeenCalledTimes(5);
+    expect(log.info).toHaveBeenCalledTimes(4);
+    expect(log.info).toHaveBeenCalledWith(expect.stringMatching(/^Deployment env manifest not available yet/));
+  });
+
+  it('fails on a manifest that is malformed', async () => {
+    const { result, fetchImpl } = wait([respond('not json', 200)]);
+    await expect(result).rejects.toThrow('is not valid JSON');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops waiting when the signal aborts', async () => {
+    const controller = new AbortController();
+    const { result } = wait(
+      [
+        () => {
+          controller.abort();
+          return Promise.resolve(new Response('', { status: 404 }));
+        },
+      ],
+      controller.signal,
+    );
+    await expect(result).resolves.toBeUndefined();
+  });
+
+  it('stops a pending fetch when the signal aborts', async () => {
+    const controller = new AbortController();
+    const { result, fetchImpl } = wait(
+      [
+        (_input, init) =>
+          new Promise((_resolve, reject) => init?.signal?.addEventListener('abort', () => reject(init.signal?.reason))),
+      ],
+      controller.signal,
+    );
+    await waitUntilCalled(fetchImpl);
+    controller.abort();
+    await expect(result).resolves.toBeUndefined();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops the retry interval when the signal aborts', async () => {
+    const controller = new AbortController();
+    const { result, log, fetchImpl } = wait([respond('', 404)], controller.signal, 3_600_000);
+    await waitUntilCalled(log.info);
+    controller.abort();
+    await expect(result).resolves.toBeUndefined();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  async function waitUntilCalled(fn: { mock: { calls: unknown[] } }): Promise<void> {
+    while (fn.mock.calls.length === 0) {
+      await new Promise(resolve => setImmediate(resolve));
+    }
+  }
 });

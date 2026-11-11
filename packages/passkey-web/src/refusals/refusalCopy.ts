@@ -40,7 +40,7 @@ export const REFUSAL_ROWS: Readonly<Record<string, RefusalRow>> = {
   PhoneUnreachableError: { title: "Update this browser, or use Chrome", retry: false },
   NoWalletForPasskeyError: { title: "No wallet for this passkey", retry: true },
   RotatedCredentialError: { title: "This passkey's key changed", retry: false },
-  AmbiguousPasskeyError: { title: "Contact support", retry: false },
+  AmbiguousPasskeyError: { title: "Can't tell which wallet to open", retry: false },
 }
 
 export const REFUSAL_FALLBACK: RefusalRow = { title: "Couldn't use this passkey", retry: true }
@@ -213,6 +213,10 @@ export const PHONE_STEPS_COPY = {
     /** Heads the collapsed note and models lines. */
     detailsLabel: "About security keys",
     note:
+      "Your security key keeps the only copy of your passkey, and there is no account recovery. " +
+      "Add a backup passkey in Settings once you're in; until then, lose the key, lose the wallet.",
+    /** The note where the front offers no backup passkey. */
+    noteNoBackup:
       "Your security key keeps the only copy of your passkey. A second key can't be added as a " +
       "backup, and there is no account recovery: lose the key, lose the wallet.",
     /** The key families the wallet admits; not every model of each is measured. */
@@ -229,7 +233,7 @@ export const PHONE_STEPS_COPY = {
   local: {
     title: "Create your passkey",
     /** Under Continue, to the help page's list of the passkeys that work. */
-    docs: { label: "Supported passkeys and how they work", anchor: "which-passkeys-work" },
+    docs: { label: "How passkeys work on zk.money", anchor: "which-passkeys-work" },
     /** A Mac row with 1Password alone, where the Mac's passkey window offers it. */
     pickOnePassword: "When your browser asks where to save the passkey, pick 1Password.",
     /** Under it where a phone is reachable: the Mac's provider may be Apple Passwords alone. */
@@ -261,8 +265,8 @@ export const PHONE_STEPS_COPY = {
     },
   },
   /**
-   * Where another browser on Windows or Linux keeps phone creation and Chrome would not: a line over
-   * the picker, its lead set in bold.
+   * Where another browser on Windows or Linux can save only in an extension or Windows Hello and
+   * Chrome would save in Google Password Manager: a line over the picker, its lead set in bold.
    */
   chromeTip: {
     lead: "Chrome recommended.",
@@ -275,6 +279,10 @@ export const PHONE_STEPS_COPY = {
  * (`chromeTip` of `gpm`).
  */
 export const CHROME_REFUSAL_COPY = "Or sign up in Chrome and save it in Google Password Manager."
+
+/** Ends a laptop's refusal of Samsung Pass over QR. */
+export const SAMSUNG_PASS_PHONE_COPY =
+  "To use Samsung Pass, open zk.money on your phone and sign up there."
 
 /**
  * Ends a laptop sign-up's refusal when Bitwarden's extension answered. Its excluded domains match
@@ -289,6 +297,7 @@ export const SUPPORTED_NAMES: Readonly<Record<LocalManager, string>> = {
   "gpm": "Google Password Manager",
   "windows_hello": "Windows Hello",
   "1password": "1Password",
+  "proton": "Proton Pass",
 }
 
 /** The "Supported passkeys" tip: its label, heading, the names listed, and what is refused. */
@@ -361,6 +370,17 @@ export const SIGN_UP_SHEET_COPY = {
     label: "1Password",
     description: "Saved by the 1Password extension in this browser",
   },
+  // Proposed: the Proton Pass option and its warning.
+  proton: {
+    label: "Proton Pass",
+    description: "Saved by the Proton Pass extension in this browser",
+    warning: {
+      label: "About Proton Pass",
+      note:
+        "Your passkey works on this computer through Proton Pass's extension, and on an Android " +
+        "phone with Proton Pass. It can't open your wallet on an iPhone.",
+    },
+  },
   /** Over the running button while a script zk.money cannot use answers the page's creation. */
   extensionWarning:
     "Unsupported browser extension detected! If it opens its own pop-up, close it and use the " +
@@ -381,7 +401,7 @@ export const SIGN_UP_SHEET_COPY = {
       label: "About Windows Hello",
       note:
         "Windows Hello keeps your passkey on this computer only. Resetting Windows or moving to " +
-        "a new computer deletes it, and your wallet with it.",
+        "a new computer deletes it, so add a backup passkey in Settings once you're in.",
     },
   },
   phone: {
@@ -408,21 +428,44 @@ export const SIGN_UP_SHEET_COPY = {
     note: PHONE_STEPS_COPY.noPhone.note,
     models: PHONE_STEPS_COPY.noPhone.models,
   },
+  /** The same line where the front offers no backup passkey. */
+  keyWarningNoBackup: {
+    label: PHONE_STEPS_COPY.noPhone.detailsLabel,
+    note: PHONE_STEPS_COPY.noPhone.noteNoBackup,
+    models: PHONE_STEPS_COPY.noPhone.models,
+  },
 } as const
+
+/** The managers a phone's backup is admitted in over QR; any other is refused by name. */
+const QR_BACKUP_MANAGERS = "iCloud Keychain, Google Password Manager or 1Password"
 
 /** The settings sheet's backup picker; `backupAddOptionsFor` picks among these and the sign-up's. */
 export const BACKUP_ADD_SHEET_COPY = {
-  pickerLabel: "Where should your backup passkey live?",
+  pickerLabel: "Where should your backup live?",
+  /** A backup on the device that holds the other passkey is lost with it. */
+  pickerLead: {
+    mac: "Pick something other than this Mac. That way, losing one device won't lock you out.",
+    computer:
+      "Pick something other than this computer. That way, losing one device won't lock you out.",
+  },
+  recommended: "Recommended",
+  /** To the help page's list of the passkeys that work; each front supplies the URL. */
+  managersLink: {
+    label: "Which passkey managers work?",
+    anchor: PHONE_STEPS_COPY.local.docs.anchor,
+  },
   /** The destination, not the script: on some browsers the extension hands the request back. */
   onePassword: { description: "Saved in 1Password" },
   proton: { label: "Proton Pass", description: "Saved in Proton Pass" },
-  computer: { description: "Saved by your browser's own passkey prompt" },
-  phone: {
-    /** The managers admitted over QR; any other on the phone is refused by name. */
-    managers:
-      "On your phone, save it in iCloud Keychain, Google Password Manager or 1Password. Other " +
-      "passkey managers can't hold a backup over QR.",
+  computer: {
+    macDescription: "Only works if this Mac syncs passkeys to your other devices.",
+    description: "Only works if this computer syncs passkeys to your other devices.",
   },
+  phone: { description: `Scan a QR code and save it to ${QR_BACKUP_MANAGERS}.` },
+  phoneOrKey: {
+    description: `Scan a QR code and save it to ${QR_BACKUP_MANAGERS}, or use a security key.`,
+  },
+  key: { description: "A YubiKey 5 or newer. Some older keys can't hold a backup." },
   /** A key keeps the only copy of the backup; the wallet's other passkey still opens it. */
   keyWarning: {
     label: PHONE_STEPS_COPY.noPhone.detailsLabel,

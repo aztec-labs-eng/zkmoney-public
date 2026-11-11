@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import {
-  createActivity,
+  createTransfers,
+  createPaylinks,
+  fundingOf,
+  recordOf,
   encodeRecord,
   loadRecords,
   memoryBackend,
@@ -13,7 +16,6 @@ import {
   closeSession,
   openSession,
   openedSession,
-  session,
   switchSession,
   type Namespace,
   type Session,
@@ -34,21 +36,22 @@ const token = {
   amount: 1,
   price: 1,
 }
-const pending = (id: string) => ({
-  id,
-  operationId: id,
+/** A chain row, keyed by its hash. */
+const chainRow = (txHash: string) => ({
+  id: txHash,
   networkId: "0xnet",
   action: "send" as const,
   token,
   amountAtomic: 1_000_000n,
   timestamp: 1,
   status: "pending" as const,
-  txHash: "",
+  txHash,
+  to: "0xb0b",
 })
 
 /** A row another writer saves under an account's namespace. */
-const commitRow = (db: Database, prefix: string, id: string) =>
-  createActivity({ db: db.scoped(prefix) }).insertPending(pending(id))
+const commitRow = (db: Database, prefix: string, txHash: string) =>
+  createTransfers({ db: db.scoped(prefix), now: () => Date.now() }).record(chainRow(txHash))
 
 const deps = pageSessionDeps(testPage())
 const opened: Session[] = []
@@ -78,15 +81,15 @@ afterEach(() => {
 describe("switchSession", () => {
   it("keeps the account's rows under its namespace", async () => {
     const { backend, db } = page()
-    await sessionOn(a, db).activity.insertPending(pending("op-a"))
-    expect(backend.entries.get("a.acct/activity/op-a")).toBeDefined()
-    expect(await sessionOn(anonymous, db).activity.all()).toEqual([])
+    await sessionOn(a, db).transfers.record(chainRow("0xaa"))
+    expect(backend.entries.get("a.acct/transfers/0xaa")).toBeDefined()
+    expect(await sessionOn(anonymous, db).transfers.all()).toEqual([])
   })
 
   it("returns the open session for the same account", () => {
     const first = switchSession(a, deps)
     expect(switchSession(a, deps)).toBe(first)
-    expect(session()).toBe(first)
+    expect(openedSession.get()).toBe(first)
   })
 
   it("never opens another account's session on this page, and says so", () => {
@@ -103,18 +106,18 @@ describe("switchSession", () => {
 
   it("replaces the anonymous session with the first account's, and the old one stops hearing", async () => {
     const before = switchSession(anonymous, deps)
-    await vi.waitFor(() => expect(before.activity.view.get().loaded).toBe(true))
+    await vi.waitFor(() => expect(before.transfers.view.get().loaded).toBe(true))
     const after = switchSession(a, deps)
     expect(after === before).toBe(false)
-    expect(session()).toBe(after)
-    await commitRow(pageDb(), "", "op-late")
-    expect(before.activity.view.get().records).toEqual([])
+    expect(openedSession.get()).toBe(after)
+    await commitRow(pageDb(), "", "0xab1e")
+    expect(before.transfers.view.get().records).toEqual([])
   })
 
   it("starts an anonymous session's bell writer only once its bell is read", async () => {
     const { db } = page()
     const open = sessionOn(anonymous, db)
-    await open.activity.record(
+    await open.transfers.record(
       scannedRow({
         networkId: "0xnet",
         action: "receive",
@@ -138,13 +141,13 @@ describe("switchSession", () => {
   it("hears its namespace until it closes", async () => {
     const db = pageDb()
     const open = switchSession(a, deps)
-    await vi.waitFor(() => expect(open.activity.view.get().loaded).toBe(true))
-    await commitRow(db, "a.", "op-1")
-    expect(open.activity.view.get().records.map((r) => r.id)).toEqual(["op-1"])
+    await vi.waitFor(() => expect(open.transfers.view.get().loaded).toBe(true))
+    await commitRow(db, "a.", "0xa1")
+    expect(open.transfers.view.get().records.map((r) => r.id)).toEqual(["0xa1"])
     closeSession()
-    await commitRow(db, "a.", "op-2")
-    expect(open.activity.view.get().records.map((r) => r.id)).toEqual(["op-1"])
-    expect(session).toThrow()
+    await commitRow(db, "a.", "0xa2")
+    expect(open.transfers.view.get().records.map((r) => r.id)).toEqual(["0xa1"])
+    expect(openedSession.get()).toBeNull()
   })
 
   it("carries an account's registrations with the page's side keys, and refuses a visitor's", async () => {
@@ -201,7 +204,7 @@ describe("switchSession", () => {
     /** The rows the bell reads, once they include one received now. */
     const bellRows = async (db: Database) => {
       const open = sessionOn(a, db)
-      await open.activity.record(receive("0xnew", Date.now()))
+      await open.transfers.record(receive("0xnew", Date.now()))
       const stop = open.bell.subscribe(() => {})
       const ids = () => open.bell.get().sources.rows.map((row) => row.id)
       await vi.waitFor(() => expect(ids()).toContain("0xnew"))
@@ -212,20 +215,46 @@ describe("switchSession", () => {
     it("reach back to an unread receive, never to an older entry of another kind", async () => {
       const { db, backend } = page()
       const now = Date.now()
-      const activity = createActivity({ db: db.scoped("a.") })
-      await activity.record(receive("0xold", now - 3 * DAY))
-      await activity.record(receive("0xancient", now - 30 * DAY))
+      const transfers = createTransfers({ db: db.scoped("a."), now: () => Date.now() })
+      await transfers.record(receive("0xold", now - 3 * DAY))
+      await transfers.record(receive("0xancient", now - 30 * DAY))
       entry(backend, "transfer:receive:0xold", now - 3 * DAY)
       entry(backend, "bridge:deposit:0xsipa", now - 90 * DAY)
       expect(await bellRows(db)).toEqual(["0xold"])
     })
   })
-  it("holds for Home its window, pending rows and escrowed links, never an old settled link", async () => {
+  it("reads an incoming request paid by this device's send as paid", async () => {
+    const open = sessionOn(a, page().db)
+    await open.requests.add({
+      id: "0xreq",
+      contactTag: "bob",
+      amount: 1,
+      amountAtomic: "1000000",
+      tokenDecimals: 6,
+      asset: "USD",
+      direction: "incoming",
+      status: "pending",
+      createdAt: 1,
+      kind: "contact",
+    })
+    await open.operations.begin({ operationId: "op-pay", flow: "send", summary: "" })
+    const payload = { networkId: "0xnet", token, amountAtomic: "1000000", to: "0xb0b" }
+    await open.operations.apply("op-pay", {
+      type: "transfer",
+      transfer: { kind: "send", payload: { ...payload, requestId: "0xreq" } },
+    })
+    const stop = open.requests.view.subscribe(() => {})
+    await vi.waitFor(() => expect(open.requests.view.get()[0]?.status).toBe("fulfilled"))
+    stop()
+  })
+
+  it("holds for Home its window and pending rows, and every link apart from its funding row", async () => {
     const { db } = page()
     const now = Date.now()
-    const activity = createActivity({ db: db.scoped("a.") })
-    const link = (txHash: string, over: object) =>
-      activity.record({
+    const transfers = createTransfers({ db: db.scoped("a."), now: () => Date.now() })
+    const paylinks = createPaylinks({ db: db.scoped("a."), transfers })
+    const link = async (txHash: string, over: object) => {
+      const row = {
         id: txHash,
         networkId: "0xnet",
         action: "Pay To Email",
@@ -236,12 +265,16 @@ describe("switchSession", () => {
         token,
         amountAtomic: 1n,
         timestamp: now - 90 * 24 * 60 * 60 * 1000,
+        payToEmailSecret: txHash,
         ...over,
-      } as never)
+      } as never
+      await paylinks.put(recordOf(row))
+      await transfers.record(fundingOf(row))
+    }
     await link("0xescrowed", {})
     await link("0xclaimed", { isClaimed: true, claimedAt: now - 60 * 24 * 60 * 60 * 1000 })
     for (let i = 0; i < 12; i++) {
-      await activity.record(
+      await transfers.record(
         scannedRow({
           networkId: "0xnet",
           txHash: `0x${i + 10}`,
@@ -258,9 +291,11 @@ describe("switchSession", () => {
     const stop = open.feed.subscribe(() => {})
     await vi.waitFor(() => expect(open.feed.get().rows.loaded).toBe(true))
     const ids = open.feed.get().rows.records.map((row) => row.id)
-    expect(ids).toHaveLength(11)
-    expect(ids).toContain("0xescrowed")
-    expect(ids).not.toContain("0xclaimed")
+    expect(ids).toHaveLength(10)
+    expect(ids).not.toContain("0xescrowed")
+    await vi.waitFor(() => expect(open.feed.get().links.loaded).toBe(true))
+    const links = open.feed.get().links.records.map((l) => l.txHash)
+    expect(links.sort()).toEqual(["0xclaimed", "0xescrowed"])
     stop()
   })
 })

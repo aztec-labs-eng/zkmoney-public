@@ -5,7 +5,6 @@ import {
   latestRegistration,
   memoryStore,
   normalizeTag,
-  readyValue,
   valueOf,
   WalletError,
 } from "@obsidion/front-core"
@@ -16,8 +15,6 @@ import {
   signInKeyChoices,
   type PasskeyAttemptHandle,
 } from "@obsidion/passkey-web"
-import { getConfig } from "../../../config/env"
-import { getOxideTuple } from "../../../config/oxideTuple"
 import { showReportableError } from "../../../errors/errorModal"
 import { failureCode, fireEvent, fireOnboardingEvent, reportLanding } from "../../../lib/analytics"
 import { fmt } from "../../../lib/fmt"
@@ -49,6 +46,7 @@ import {
 } from "../../identity/PasskeyRefusal"
 import { resolveSignInTag } from "../../contacts/registryResolution"
 import { peekClaimStash } from "../../paylink/claimStash"
+import { tabStash } from "../../../platform/storage/tabStash"
 import { linkIdentity } from "../../paylink/linkIdentity"
 import { isTicketSignupCreating, loadTicketSignupAttempt } from "../../paylink/ticketSignupAccount"
 import { probeNameAvailability } from "../../registration/nameAvailability"
@@ -132,14 +130,14 @@ export const SIGN_IN_IO = {
   claimTag: ((...args) => claimTag(...args)) as typeof claimTag,
   collectKeys: collectOnboardingKeys,
   confirmTag,
-  warm: getOxideTuple,
+  warm: (page: Session["page"]) => page.chain.oxideTuple.read(),
   retired: listRetiredUsertagCandidates,
   leave: leavePage,
 }
 
 export interface SignInDeps {
   /** The session the screen opened under. */
-  own: Session
+  session: Session
   /** The page's origin: a destination outside it is dropped. */
   origin: string
   io?: Partial<typeof SIGN_IN_IO>
@@ -154,17 +152,17 @@ export interface SignInInputs {
   gate: { gate: CeremonyGate; cancel(): void }
 }
 
-export function openSignInFlow(deps: SignInDeps, live: () => SignInInputs) {
+export function openSignInFlow(deps: SignInDeps, latest: () => SignInInputs) {
   const io = { ...SIGN_IN_IO, ...deps.io }
-  const { own } = deps
-  const { auth, device } = own
-  const config = getConfig()
+  const { session } = deps
+  const { auth, device } = session
+  const { config } = session.page
   const passkeyMap = () => device.get().passkeyMap
   const keysOf = (credentialId: string) => walletKeysFor(passkeyMap(), config.rpId, credentialId)
 
   /** What the URL asks of the screen. */
   const route = () => {
-    const { params, nextRoute } = live()
+    const { params, nextRoute } = latest()
     const handle = normalizeTag(params.get("handle") ?? "") ?? ""
     return {
       handle,
@@ -173,7 +171,8 @@ export function openSignInFlow(deps: SignInDeps, live: () => SignInInputs) {
       next: walletPath(nextRoute ?? params.get("next") ?? undefined, deps.origin),
       /** The passkey's own name, carried over a reload; it names a reservation but never fills the field. */
       named: params.get("named") ?? undefined,
-      grantToken: handle && params.get("bound") === "1" ? own.signup.grantToken(handle) : undefined,
+      grantToken:
+        handle && params.get("bound") === "1" ? session.signup.grantToken(handle) : undefined,
       // `strict=1`: a by-tag entry reloaded after switching accounts; only the URL's tag names the claim.
       strict: params.get("strict") === "1",
       // `?choose=1`: the user asked for a different passkey, so no cached key answers and Show
@@ -276,11 +275,11 @@ export function openSignInFlow(deps: SignInDeps, live: () => SignInInputs) {
   const end = (cause: "userCancelled" | "superseded" | "unmounted") => {
     attempt?.[cause]()
     op?.abort()
-    live().gate.cancel()
+    latest().gate.cancel()
   }
   const promptGate: CeremonyGate = (options) => {
     dispatch({ type: "prompted" })
-    return live().gate.gate(options)
+    return latest().gate.gate(options)
   }
 
   /** Ends the resolve in flight and the pause that would start one; nothing they answer is taken. */
@@ -294,7 +293,7 @@ export function openSignInFlow(deps: SignInDeps, live: () => SignInInputs) {
 
   const claimRoute = (search: string, boundGrantOwner?: string) => {
     const { next } = route()
-    live().navigate(`/claim${search}`, {
+    latest().navigate(`/claim${search}`, {
       replace: true,
       ...(next || boundGrantOwner
         ? { state: { ...(next ? { next } : {}), ...(boundGrantOwner ? { boundGrantOwner } : {}) } }
@@ -304,7 +303,7 @@ export function openSignInFlow(deps: SignInDeps, live: () => SignInInputs) {
   // Replace: onboarding panes must never be back targets once in the wallet (useBack pops history).
   // A stashed inbound paylink claims on Home (ClaimLinkModal), not back on /link's split layout.
   const intoWallet = () =>
-    live().navigate(peekClaimStash() ? "/" : route().next ?? "/", { replace: true })
+    latest().navigate(peekClaimStash(tabStash) ? "/" : route().next ?? "/", { replace: true })
 
   // The account changed while this screen was open, the page served another account before it, or
   // a commit on this page (e.g. a signed-out page entering an account this browser holds) left the
@@ -312,7 +311,7 @@ export function openSignInFlow(deps: SignInDeps, live: () => SignInInputs) {
   const storesStale = () =>
     auth.recordsStale() ||
     servesAnotherAccount(device) ||
-    (own.namespace.id !== null && !stillCommitted(own))
+    (session.namespace.id !== null && !stillCommitted(session))
 
   /**
    * This screen again, for the account recovery just committed. The selected tag and the
@@ -321,7 +320,7 @@ export function openSignInFlow(deps: SignInDeps, live: () => SignInInputs) {
    * another passkey.
    */
   const enterAgain = (entry: { tag: string; strict: boolean; named?: string }) => {
-    const carried = new URLSearchParams(live().params)
+    const carried = new URLSearchParams(latest().params)
     for (const flag of ["choose", "avoid", "pick", "next"]) carried.delete(flag)
     const set = (key: string, value?: string) =>
       value ? carried.set(key, value) : carried.delete(key)
@@ -356,7 +355,11 @@ export function openSignInFlow(deps: SignInDeps, live: () => SignInInputs) {
     method: LoginMethod = "chooser",
   ) => {
     if (!ours()) return
-    await saveIdentity(handOffAccount(account), { ...entered, claimedAt: Date.now() }, ours)
+    await saveIdentity(
+      handOffAccount(session, account).page,
+      { ...entered, claimedAt: Date.now() },
+      ours,
+    )
     if (!ours()) return
     io.fireOnboarding("login_succeeded", { method })
     intoWallet()
@@ -376,11 +379,11 @@ export function openSignInFlow(deps: SignInDeps, live: () => SignInInputs) {
     let outcome: Awaited<ReturnType<typeof claimTag>>
     try {
       if (!ours()) return
-      const keys = await io.collectKeys(result.account)
+      const keys = await io.collectKeys(result.session, result.account)
       if (!ours()) return
-      const wallet = valueOf(result.own.wallet)
+      const wallet = valueOf(result.session.wallet)
       if (!wallet) throw new WalletError("wallet.notReady")
-      outcome = await io.claimTag(result.own, tag, keys, config, wallet)
+      outcome = await io.claimTag(result.session, tag, keys, config, wallet)
     } catch (e) {
       if (!ours()) return
       failEntry(entry.action, failureCode(e))
@@ -393,13 +396,13 @@ export function openSignInFlow(deps: SignInDeps, live: () => SignInInputs) {
       return finish(result.account, { handle: tag, address }, ours, method)
     // The reservation is the tag the signup settled on; this browser just never saw it confirmed.
     const record = latestRegistration(
-      loadedRegistrations(result.own.registrations),
+      loadedRegistrations(result.session.registrations),
       outcome.oxideAccount,
     )
-    if (record) await result.own.confirmTag(record)
+    if (record) await result.session.confirmTag(record)
     if (!ours()) return
     const identity = { handle: tag, address, claimedAt: Date.now(), pending: true }
-    await saveIdentity(handOffAccount(result.account), identity, ours)
+    await saveIdentity(handOffAccount(result.session, result.account).page, identity, ours)
     if (!ours()) return
     io.fireOnboarding("login_succeeded", { method })
     intoWallet()
@@ -416,7 +419,7 @@ export function openSignInFlow(deps: SignInDeps, live: () => SignInInputs) {
     const ours = () => !entry.op.signal.aborted && result.held()
     let nameHashes: Awaited<ReturnType<typeof reservedNameHashes>>
     try {
-      nameHashes = await io.reservedNameHashes(result.bootstrap)
+      nameHashes = await io.reservedNameHashes(result.bootstrap, config)
     } catch (e) {
       if (!ours()) return true
       // The lookup is the way in, so its failure is the committed error with a retry.
@@ -457,10 +460,10 @@ export function openSignInFlow(deps: SignInDeps, live: () => SignInInputs) {
    * the claim keeps its ticket.
    */
   const stashedSignupLink = (result: Unclaimed): string | undefined => {
-    const fragment = peekClaimStash()
+    const fragment = peekClaimStash(tabStash)
     if (!fragment) return undefined
     try {
-      const pending = loadTicketSignupAttempt(config.rpId, linkIdentity(fragment))
+      const pending = loadTicketSignupAttempt(session, config.rpId, linkIdentity(fragment))
       if (!pending || isTicketSignupCreating(pending)) return undefined
       const address = result.account.getAddress().toString().toLowerCase()
       return pending.l2Address.toLowerCase() === address ? fragment : undefined
@@ -472,7 +475,7 @@ export function openSignInFlow(deps: SignInDeps, live: () => SignInInputs) {
   /** A nameless account's way on: its link's signup, its reservation, else the signup it continues. */
   const settleNameless = async (result: Unclaimed, entry: Entry) => {
     const fragment = stashedSignupLink(result)
-    if (fragment) return live().navigate(`/link#${fragment}`, { replace: true })
+    if (fragment) return latest().navigate(`/link#${fragment}`, { replace: true })
     if (await resumeReservation(result, entry)) return
     refuse({ name: GRANTED_REGISTRATION, message: "" })
   }
@@ -497,7 +500,7 @@ export function openSignInFlow(deps: SignInDeps, live: () => SignInInputs) {
       pubkey: result.pubkey,
       addresses: result.addresses ?? [],
     }
-    const diagnosis = await bestEffort("unknown", io.diagnoseMiss(evidence, tag))
+    const diagnosis = await bestEffort("unknown", io.diagnoseMiss(evidence, tag, session.page))
     if (!ours() || !diagnosis) return false
     const card = missDiagnosisCard(diagnosis, tag)
     if (!card) return false
@@ -509,10 +512,16 @@ export function openSignInFlow(deps: SignInDeps, live: () => SignInInputs) {
 
   /** The branches every sign-in result takes, whichever prompt produced it. */
   const settle = async (result: EnterResult, entry: Entry) => {
-    // A reserved recovery commits and reloads to shed record stores this document already read
-    // stale; the passkey's own name rides that reload, so the re-entry (recovered from the cache,
-    // which carries no name) still names the held reservation.
-    const named = !result.entered && result.reason === "unclaimed" ? result.userHandle : undefined
+    // A recovery commits and reloads to shed record stores this document already read stale; the
+    // name it found rides that reload (the tag it entered, or a reserved recovery's passkey name),
+    // so the re-entry (recovered from the cache, which carries no name) still names the claim.
+    const named = result.entered
+      ? result.handle === entry.tag
+        ? undefined
+        : result.handle
+      : result.reason === "unclaimed"
+      ? result.userHandle
+      : undefined
     if (reloadIfSwitched(entry, named)) return
     const ours = () => !entry.op.signal.aborted
     // An entry is committed by the time it is reported; the identity save and the move into the
@@ -590,19 +599,22 @@ export function openSignInFlow(deps: SignInDeps, live: () => SignInInputs) {
     void run(async () => {
       let result: EnterResult
       try {
-        const wallet = valueOf(own.wallet)
-        const contractService = valueOf(own.contractService)
+        const wallet = valueOf(session.wallet)
+        const contractService = valueOf(session.contractService)
         if (!wallet || !contractService) throw new WalletError("wallet.notReady")
         const options = pinned
           ? { hints: pinned.hints, restoreCache: false }
           : action.kind === "probe"
-          ? { strictTag: strict, cacheOnly: true }
+          ? {
+              strictTag: strict,
+              cacheOnly: true,
+              ...(route().named ? { named: route().named } : {}),
+            }
           : { strictTag: strict, chooser: chooseAll || route().chooser, restoreCache: false }
         result = await begun.run(
           (scope) =>
-            io.enterWithPasskey(wallet, config, tag || undefined, {
-              auth,
-              accounts: signedInAccount,
+            io.enterWithPasskey(wallet, session.page, tag || undefined, {
+              signIn: { session, accounts: () => signedInAccount(session) },
               contractService,
               ...(grantToken ? { grantToken } : {}),
               gate: promptGate,
@@ -648,7 +660,7 @@ export function openSignInFlow(deps: SignInDeps, live: () => SignInInputs) {
     const landed = (prepared: SignInState["prepared"]) =>
       !signal.aborted && dispatch({ type: "prepared", prepared })
     void io
-      .warm(config)
+      .warm(session.page)
       .then(() => auth.recoverFromCache())
       .then(
         () => landed("ready"),
@@ -664,7 +676,7 @@ export function openSignInFlow(deps: SignInDeps, live: () => SignInInputs) {
   const readTag = (tag: string) => {
     const { signal } = read
     dispatch({ type: "resolving", on: true })
-    void io.lookup(tag, { resolveTag: resolveSignInTag }).then(
+    void io.lookup(tag, { page: session.page, resolveTag: resolveSignInTag }).then(
       async (found) => {
         if (signal.aborted) return
         if (found.kind === "resolved") {
@@ -684,7 +696,7 @@ export function openSignInFlow(deps: SignInDeps, live: () => SignInInputs) {
           return dispatch({ type: "field", notice: { kind: found.kind, tag } })
         // No account on the network yet: a reserved name is one whose signup still waits for its
         // deposit, and its way in is the passkey it was reserved with.
-        const { status } = await io.probeName(tag)
+        const { status } = await io.probeName(session.page, tag)
         if (signal.aborted) return
         const reserved = status === "reserved" || status === "blocked-reserved"
         dispatch({ type: "field", notice: { kind: reserved ? "reserved" : "notFound", tag } })
@@ -745,15 +757,17 @@ export function openSignInFlow(deps: SignInDeps, live: () => SignInInputs) {
     const failed = () =>
       !signal.aborted && dispatch({ type: "row", row: { account, options: [], failed: true } })
     dispatch({ type: "row", row: { account, options: [], reading: true } })
-    void io.lookup(account.usertag, { resolveTag: resolveSignInTag }).then((found) => {
-      if (signal.aborted) return
-      if (found.kind !== "resolved") return failed()
-      const hints = { account: found.account, l2Address: found.l2Address, keys: found.keys }
-      const target = { ...row, l2Address: found.l2Address, hints, moreKeys: found.moreKeys }
-      const options = keyOptions(passkeyMap(), target, recorded)
-      if (!options) return failed()
-      dispatch({ type: "row", row: { account, options } })
-    }, failed)
+    void io
+      .lookup(account.usertag, { page: session.page, resolveTag: resolveSignInTag })
+      .then((found) => {
+        if (signal.aborted) return
+        if (found.kind !== "resolved") return failed()
+        const hints = { account: found.account, l2Address: found.l2Address, keys: found.keys }
+        const target = { ...row, l2Address: found.l2Address, hints, moreKeys: found.moreKeys }
+        const options = keyOptions(passkeyMap(), target, recorded)
+        if (!options) return failed()
+        dispatch({ type: "row", row: { account, options } })
+      }, failed)
   }
   const closeRow = () => {
     rowRead.abort()
@@ -763,8 +777,9 @@ export function openSignInFlow(deps: SignInDeps, live: () => SignInInputs) {
 
   /** Once the wallet is ready: the chooser and `pick` show the screen; anything else probes. */
   const arrive = async (signal: AbortSignal) => {
-    await readyValue(own.wallet, signal)
-    await readyValue(own.contractService, signal)
+    await session.wallet.ready(signal)
+
+    await session.contractService.ready(signal)
     const { chooser, pick } = route()
     if (!chooser && !pick) return signIn({ kind: "probe" })
     showScreen(true)
@@ -944,10 +959,10 @@ export function openSignInFlow(deps: SignInDeps, live: () => SignInInputs) {
     cancel() {
       end("userCancelled")
       dropResolve()
-      const stashed = peekClaimStash()
+      const stashed = peekClaimStash(tabStash)
       const { next } = route()
-      if (stashed) live().navigate(`/link#${stashed}`, { replace: true })
-      else if (next) live().navigate(next, { replace: true })
+      if (stashed) latest().navigate(`/link#${stashed}`, { replace: true })
+      else if (next) latest().navigate(next, { replace: true })
       else claimRoute("")
     },
     /** The same for a committed account whose signup may hold a tag, where the signup picks it back up. */

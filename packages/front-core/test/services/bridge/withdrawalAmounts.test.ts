@@ -206,6 +206,47 @@ describe("swapWithdrawalAmounts", () => {
     expect(s.estimate).toBeUndefined()
   })
 
+  describe("a bridge-out", () => {
+    const bridgeRecord = {
+      tokenDecimals: 18,
+      amount: "100.25",
+      rawAmount: parseUnits("100.25", 18).toString(),
+      relayerTip: TIP, // 0.1
+      swapOutput: "USDC" as const,
+      swapOutputDecimals: 6,
+      bridgeOut: {
+        provider: "across" as const,
+        chainId: 8453,
+        chainName: "Base",
+        minReceived: "99000000",
+        acrossFee: "50000", // 0.05 USDC
+        nonce: `0x${"01".repeat(32)}` as const,
+        recoveryCommitment: `0x${"02".repeat(32)}` as const,
+        relayerTip: parseUnits("0.1", 18).toString(),
+      },
+    }
+
+    it("counts the escrow tip and Across's cut in the fee", () => {
+      const s = swapWithdrawalAmounts(bridgeRecord)!
+      expect(s.feeAtomic).toBe(parseUnits("0.25", 18))
+      expect(s.swapInputAtomic).toBe(parseUnits("100", 18))
+    })
+
+    it("estimates at the floor until the fill, then reads what the fill paid", () => {
+      expect(swapWithdrawalAmounts(bridgeRecord)!.estimate).toMatchObject({
+        outAtomic: 99_000_000n,
+        outDecimals: 6,
+        outDisplay: "99",
+      })
+      const filled = swapWithdrawalAmounts({
+        ...bridgeRecord,
+        bridgeOut: { ...bridgeRecord.bridgeOut, filledAmount: "99800000" },
+      })!
+      expect(filled.estimate).toMatchObject({ outAtomic: 99_800_000n, outDisplay: "99.8" })
+      expect(filled.estimate?.rate).toBeCloseTo(0.998, 10)
+    })
+  })
+
   it("reports the fee unknown on a record without the relayer tip", () => {
     const s = swapWithdrawalAmounts({ tokenDecimals: 18, ...swapRecord, relayerTip: undefined })!
 

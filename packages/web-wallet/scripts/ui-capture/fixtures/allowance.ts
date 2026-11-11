@@ -1,5 +1,6 @@
 import * as actual from "../../../src/features/allowance/readAllowance"
 import type { ClaimFpcAllowance } from "@obsidion/sdk"
+import { DEMO_L2_ADDRESS } from "../../../src/dev/demoFixtures"
 import { fixtureState } from "./control"
 import { field } from "./data"
 
@@ -67,4 +68,11 @@ export const readSponsoredAllowance: typeof actual.readSponsoredAllowance = asyn
     payer: deps.account.getAddress().toString(),
     allowance: allowanceFor(state === "retry" ? "available" : state),
   }
+}
+
+/** The capture has no PXE to wait for: the fixture read takes the demo account. */
+export const sponsorDeps: typeof actual.sponsorDeps = async (session, signal) => {
+  if (!fixtureState()) return actual.sponsorDeps(session, signal)
+  const address = { toString: () => DEMO_L2_ADDRESS }
+  return { session, account: { getAddress: () => address } } as never
 }

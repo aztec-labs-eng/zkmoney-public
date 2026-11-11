@@ -10,6 +10,7 @@ const NOW = 9_000
 const SIPA = "0x00000000000000000000000000000000000000a1"
 const OLD_SIPA = "0x00000000000000000000000000000000000000b2"
 const TX = `0x${"cd".repeat(32)}` as const
+const OTHER_TX = `0x${"ef".repeat(32)}` as const
 
 const START: RegistrationStart = {
   account: "0x00000000000000000000000000000000000000c3",
@@ -38,6 +39,14 @@ const states: Record<string, Partial<PendingRegistrationRecord> | null> = {
   published: { broadcast: true },
   funded: { phase: "funded", fundedAt: 100, firstFundedAt: 100, fundingTxHash: TX },
   swept: { phase: "funded", fundedAt: 100, firstFundedAt: 100, sweptAt: 200, sweepTxHash: TX },
+  submitted: {
+    phase: "funded",
+    fundedAt: 100,
+    firstFundedAt: 100,
+    fundingTxHash: TX,
+    submittedFunding: { txHash: TX, at: NOW },
+    submittedSweep: { txHash: OTHER_TX, at: NOW },
+  },
   confirmed: { phase: "confirmed", endTime: 300 },
   taken: { phase: "failed_taken", endTime: 300 },
   failed: { phase: "failed_terminal", endTime: 300 },
@@ -52,6 +61,9 @@ const events: Record<string, RegistrationEvent> = {
   "replaced": { type: "replaced" },
   "funded": { type: "funded", fundingTxHash: TX },
   "swept": { type: "swept", txHash: TX },
+  "fundingSubmitted": { type: "fundingSubmitted", tx: { txHash: TX, at: NOW } },
+  "sweepSubmitted": { type: "sweepSubmitted", tx: { txHash: TX, at: NOW } },
+  "submissionFailed": { type: "submissionFailed", txHash: TX },
   "refunded": { type: "refunded", txHash: TX, amount: "10", entry },
   "broadcastSent": { type: "broadcastSent" },
   "predecessorBroadcast": { type: "predecessorBroadcast", sipaAddress: OLD_SIPA },
@@ -76,6 +88,9 @@ const OPEN: Record<string, string> = {
   "replaced": "replaced endTime",
   "funded": "funded firstFundedAt,fundedAt,fundingTxHash",
   "swept": "funded firstFundedAt,fundedAt,sweepTxHash,sweptAt",
+  "fundingSubmitted": "awaiting_deposit submittedFunding",
+  "sweepSubmitted": "awaiting_deposit submittedSweep",
+  "submissionFailed": "-",
   "refunded": "awaiting_deposit refundedEntry,refunds",
   "broadcastSent": "awaiting_deposit broadcast",
   "predecessorBroadcast": "awaiting_deposit replaced",
@@ -98,6 +113,8 @@ const FUNDED: Record<string, string> = {
   started: "funded terms",
   funded: "-",
   swept: "funded sweepTxHash,sweptAt",
+  fundingSubmitted: "funded submittedFunding",
+  sweepSubmitted: "funded submittedSweep",
   refunded: "awaiting_deposit fundedAt,fundingTxHash,refundedEntry,refunds",
   broadcastSent: "funded broadcast",
   predecessorBroadcast: "funded replaced",
@@ -127,6 +144,14 @@ const table: Record<string, Record<string, string>> = {
     ...FUNDED,
     swept: "-",
     refunded: "funded refunds",
+  },
+  // A failed receipt clears only its own hash; a refund that reopens the ask clears the transfer's.
+  submitted: {
+    ...FUNDED,
+    // The same hash again rewrites the record as it is.
+    fundingSubmitted: "funded ",
+    submissionFailed: "funded submittedFunding",
+    refunded: "awaiting_deposit fundedAt,fundingTxHash,refundedEntry,refunds,submittedFunding",
   },
   confirmed: closed("confirmed", "-"),
   taken: closed("failed_taken", "failed_taken notice"),

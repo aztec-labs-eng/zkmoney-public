@@ -6,16 +6,15 @@ import {
   StatusBadge,
 } from "@obsidion/web-ds"
 import googleLogo from "../../assets/paylink/google-logo.png"
-import { getConfig } from "../../config/env"
+import { useSession } from "../../session/session"
 import { l2TxUrl } from "../../lib/explorer"
 import { rowTimestamp, shortAddr } from "../../ui/format"
 import { Modal } from "../../ui/Modal"
 import { BalanceSkeleton, TextSkeleton } from "../../ui/Skeletons"
-import { useUserFlowActive } from "../provingGate"
 import { closedLinkMessage, LINK_STATUS_LABEL } from "./claimWindow"
 import type { CreateStage, LinkStatus, PaymentLink } from "./types"
 import type { EmailClaimStage } from "./emailClaim"
-import { useBusyLabel } from "../operations/operations"
+import { useBusyLabel, useUserFlowActive } from "../operations/operations"
 import { OperationHandOff } from "../operations/OperationHandOff"
 import { WORKING_WARNING } from "../contacts/PayWorking"
 import { actionUpgradeTitle, claimUpgradeLead } from "../migration/upgradeCopy"
@@ -75,7 +74,7 @@ export function ClaimLinkModal({
   /** Open the external-wallet claim sheet instead of claiming into the wallet. */
   onClaimToL1?: () => void
 }) {
-  const config = getConfig()
+  const { config } = useSession().page
   const closed = closedLinkMessage(link.status)
   const busy = useUserFlowActive()
   const busyLabel = useBusyLabel()

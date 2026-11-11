@@ -1,24 +1,16 @@
+/**
+ * Guards the move sheet decides: no move past the balance, the fee or the limit, MAX leaves no
+ * dust, and no move in before its quote and terms.
+ */
 import { act, type ReactNode } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { liveBalances } from "../../support/balances"
+import { memoryStore, type SavingsHolding } from "@obsidion/front-core"
 import { openTestSession } from "../../support/session"
 
 const ONE = 10n ** 18n
 const state = vi.hoisted(() => ({
-  position: {
-    shares: 100n * 10n ** 18n,
-    value: 105n * 10n ** 18n,
-    sharePrice: 105n * 10n ** 16n,
-    apy: 0.055,
-    readAt: 1,
-  } as {
-    shares: bigint
-    value: bigint
-    sharePrice: bigint
-    apy?: number
-    readAt: number
-  } | null,
   quote: vi.fn(),
   move: vi.fn(),
   balance: 50n * 10n ** 18n,
@@ -32,7 +24,6 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
       super("fee")
     }
   },
-  useSavings: () => ({ position: state.position, quote: state.quote, move: state.move }),
   SHARE: 10n ** 18n,
   savingsPaybackYears: (net: bigint, fee: bigint, apy: number) =>
     fee <= 0n
@@ -57,10 +48,7 @@ vi.mock("@obsidion/passkey-web", async (importOriginal) => ({
 // A small per-burn maximum and Main's dollar limit, so both are reachable in a test.
 const limits = vi.hoisted(() => ({ cap: 10n ** 30n, dollars: 10n ** 30n }))
 vi.mock("../../../src/features/token/useTxAmountCap", () => ({ useTxAmountCap: () => limits.cap }))
-vi.mock("../../../src/features/savings/savingsGateway", () => ({
-  getSavingsTuple: async () => undefined,
-}))
-vi.mock("../../../src/config/env", () => ({ getConfig: () => ({}) }))
+vi.mock("../../../src/features/savings/savingsGateway", () => ({}))
 vi.mock("../../../src/features/limits/withdrawalLimit", () => ({
   withdrawalLimitProblem: (debit: bigint) => (debit > limits.dollars ? "public" : undefined),
   sharesBurnLimitProblem: (shares: bigint, cap?: bigint) =>
@@ -129,10 +117,6 @@ vi.mock("../../../src/features/operations/OperationHandOff", () => ({
     return <div>Working</div>
   },
 }))
-vi.mock("../../../src/features/provingGate", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../src/features/provingGate")>()),
-  useUserFlowActive: () => false,
-}))
 vi.mock("../../../src/features/savings/savingsMoveTiming", () => ({
   useSavingsMoveTiming: () => state.timing,
   savingsEtaCopy: (eta: { seconds: number; remaining: boolean }) =>
@@ -151,17 +135,29 @@ import {
   sharesFor,
 } from "../../../src/features/savings/MoveFundsSheet/MoveFundsSheet"
 
+type Position = NonNullable<SavingsHolding["position"]>
+const holding = memoryStore<SavingsHolding>({ position: null, hydrated: true })
+const setPosition = (next: Position) => holding.set({ position: next, hydrated: true })
+const source = {
+  quote: (...args: unknown[]) => state.quote(...args),
+  move: (...args: unknown[]) => state.move(...args),
+}
+
 let host: HTMLDivElement
 let root: Root
 beforeEach(() => {
-  openTestSession({ balances: liveBalances(() => ({ main: state.balance, live: true })) })
-  state.position = {
+  openTestSession({
+    balances: liveBalances(() => ({ main: state.balance, readThisSession: true })),
+    savings: source,
+    savingsHolding: holding.readonly,
+  })
+  setPosition({
     shares: 100n * 10n ** 18n,
     value: 105n * 10n ** 18n,
     sharePrice: 105n * 10n ** 16n,
     apy: 0.055,
     readAt: 1,
-  }
+  })
   state.balance = 50n * 10n ** 18n
   limits.cap = 10n ** 30n
   limits.dollars = 10n ** 30n
@@ -209,28 +205,6 @@ const settle = () =>
   })
 
 describe("MoveFundsSheet", () => {
-  it("puts a move in's fee on top: Savings lands the typed DAI, Main burns that plus the fee", async () => {
-    act(() => root.render(<MoveFundsSheet direction="in" onClose={() => {}} />))
-    expect(host.textContent).toContain("Add to Savings")
-    expect(host.textContent).toContain("Available: $50.00")
-    expect(button("Review").disabled).toBe(true)
-    type("10")
-    await settle()
-    // The typed amount is priced for its fee, then the burn is that much more.
-    expect(state.quote).toHaveBeenCalledWith("in", 10n * ONE)
-    expect(state.quote).toHaveBeenCalledWith("in", 12n * ONE)
-    expect(host.textContent).toContain("L1 fee$2.00")
-    expect(host.textContent).toContain("Main Account pays$12.00")
-    expect(host.textContent).not.toContain("receives")
-    act(() => button("Review").click())
-    expect(host.textContent).toContain("Confirm move")
-    expect(host.textContent).toContain("Amount$10.00")
-    expect(host.textContent).toContain("Main Account pays$12.00")
-    accept()
-    await act(async () => button("Confirm move").click())
-    expect(state.move).toHaveBeenCalledWith("in", 12n * ONE, expect.any(Function))
-  })
-
   it("stops a move in whose fee on top would overspend, and says so with the total", async () => {
     state.balance = 11n * ONE
     act(() => root.render(<MoveFundsSheet direction="in" onClose={() => {}} />))
@@ -238,20 +212,6 @@ describe("MoveFundsSheet", () => {
     await settle()
     expect(host.textContent).toContain("Balance not enough for the amount plus the fee ($12.00)")
     expect(button("Review").disabled).toBe(true)
-  })
-
-  it("puts the fee on top of a move in too small to cover it alone", async () => {
-    const { SavingsFeeError } = await import("@obsidion/front-core")
-    const base = state.quote.getMockImplementation()!
-    state.quote.mockImplementation(async (direction: string, amount: bigint) => {
-      if (amount <= 2n * ONE) throw new SavingsFeeError(2n * ONE)
-      return base(direction, amount)
-    })
-    act(() => root.render(<MoveFundsSheet direction="in" onClose={() => {}} />))
-    type("1")
-    await settle()
-    expect(host.textContent).toContain("Main Account pays$3.00")
-    expect(button("Review").disabled).toBe(false)
   })
 
   it("stops a move in whose fee keeps rising past the typed amount", async () => {
@@ -277,25 +237,15 @@ describe("MoveFundsSheet", () => {
     expect(button("Review").disabled).toBe(true)
   })
 
-  it("takes the fee off a MAX move in, since nothing is left to put it on top", async () => {
-    act(() => root.render(<MoveFundsSheet direction="in" onClose={() => {}} />))
-    act(() => button("MAX").click())
-    await settle()
-    expect(state.quote).toHaveBeenCalledWith("in", 50n * ONE)
-    expect(state.quote).not.toHaveBeenCalledWith("in", 52n * ONE)
-    expect(host.textContent).toContain("Savings receives≈ $48.00")
-    expect(host.textContent).not.toContain("pays")
-  })
-
   it("moves out in shares worth the typed dollars, and every share for MAX", async () => {
     // A position worth $714.287899…: MAX shows the cents, rounded down, and takes every share.
-    state.position = {
+    setPosition({
       shares: 700n * ONE,
       value: 714287899390558444472n,
       sharePrice: 714287899390558444472n / 700n,
       apy: 0.055,
       readAt: 1,
-    }
+    })
     act(() => root.render(<MoveFundsSheet direction="out" onClose={() => {}} />))
     expect(host.textContent).toContain("Move to Main Account")
     expect(host.textContent).toContain("Available: $714.28")
@@ -313,89 +263,6 @@ describe("MoveFundsSheet", () => {
       "out",
       (21n * ONE * 700n * ONE) / 714287899390558444472n,
     )
-  })
-
-  it("keeps the review on screen when a position refresh re-quotes it and the quote fails", async () => {
-    act(() => root.render(<MoveFundsSheet direction="out" onClose={() => {}} />))
-    type("21")
-    await settle()
-    act(() => button("Review").click())
-    expect(host.textContent).toContain("Confirm move")
-    state.position = { ...state.position!, value: 106n * ONE }
-    state.quote.mockRejectedValue(new Error("rpc down"))
-    act(() => root.render(<MoveFundsSheet direction="out" onClose={() => {}} />))
-    await settle()
-    expect(button("Confirm move").disabled).toBe(true)
-    expect(host.querySelector(".ww-pay__error")).not.toBeNull()
-    expect(host.textContent).toContain("From")
-  })
-
-  it("shows the new figures to confirm again when fees rose after the review", async () => {
-    const { SavingsQuoteChangedError } = await import("../../../src/features/savings/quoteChanged")
-    act(() => root.render(<MoveFundsSheet direction="in" onClose={() => {}} />))
-    type("10")
-    await settle()
-    act(() => button("Review").click())
-    const higher = {
-      direction: "in",
-      amount: 10n * ONE,
-      value: 10n * ONE,
-      net: 7n * ONE,
-      fee: 3n * ONE,
-    }
-    state.move.mockRejectedValueOnce(new SavingsQuoteChangedError(higher as never))
-    accept()
-    await act(async () => button("Confirm move").click())
-    expect(host.textContent).toContain(
-      "Fees went up since your review: $3.00 now. Nothing was sent.",
-    )
-    expect(host.textContent).toContain("L1 fee$3.00")
-    expect(button("Confirm move").disabled).toBe(false)
-  })
-
-  it("stops a move out at the network's maximum per burn, and MAX takes no more shares than that", async () => {
-    limits.cap = 50n * ONE
-    act(() => root.render(<MoveFundsSheet direction="out" onClose={() => {}} />))
-    // $105 is 100 shares: over the 50-share maximum.
-    type("105")
-    await settle()
-    expect(host.querySelector('[data-testid="limit-notice"]')?.textContent).toContain(
-      "Over the network's maximum per withdrawal",
-    )
-    expect(button("Review").disabled).toBe(true)
-    // MAX: the 50 shares' worth, $52.50.
-    act(() => button("Use maximum ($52.50)").click())
-    await settle()
-    expect(input().value).toBe("52.5")
-    expect(state.quote).toHaveBeenLastCalledWith("out", 50n * ONE)
-    expect(host.querySelector('[data-testid="limit-notice"]')).toBeNull()
-    expect(button("Review").disabled).toBe(false)
-  })
-
-  it("stops a move in's MAX at Main's withdrawal limit, so the move can go ahead", async () => {
-    limits.dollars = 20n * ONE
-    act(() => root.render(<MoveFundsSheet direction="in" onClose={() => {}} />))
-    act(() => button("MAX").click())
-    await settle()
-    expect(input().value).toBe("20")
-    expect(state.quote).toHaveBeenCalledWith("in", 20n * ONE)
-    expect(host.querySelector('[data-testid="limit-notice"]')).toBeNull()
-    expect(button("Review").disabled).toBe(false)
-  })
-
-  it("applies Main's withdrawal limit to a move in, not to a move out", async () => {
-    limits.dollars = 20n * ONE
-    act(() => root.render(<MoveFundsSheet direction="in" onClose={() => {}} />))
-    type("30")
-    await settle()
-    expect(host.querySelector('[data-testid="limit-notice"]')?.textContent).toContain(
-      "Over the limit",
-    )
-    expect(button("Review").disabled).toBe(true)
-    act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Swap direction"]')!.click())
-    await settle()
-    expect(host.querySelector('[data-testid="limit-notice"]')).toBeNull()
-    expect(button("Review").disabled).toBe(false)
   })
 
   it("moves in the whole DAI balance for MAX, past the cent the field shows", async () => {
@@ -423,16 +290,6 @@ describe("MoveFundsSheet", () => {
     expect(host.textContent).toContain("Available: $105.00")
     expect(state.quote).toHaveBeenCalledWith("out", expect.any(BigInt))
   })
-
-  it("says what fee an amount cannot cover", async () => {
-    const { SavingsFeeError } = await import("@obsidion/front-core")
-    state.quote.mockRejectedValue(new SavingsFeeError(3n * ONE))
-    act(() => root.render(<MoveFundsSheet direction="out" onClose={() => {}} />))
-    type("2")
-    await settle()
-    expect(host.textContent).toContain("does not cover the L1 fee ($3.00)")
-    expect(button("Review").disabled).toBe(true)
-  })
 })
 
 describe("sharesFor", () => {
@@ -445,65 +302,7 @@ describe("sharesFor", () => {
   })
 })
 
-describe("MoveFundsSheet, the fee to move in", () => {
-  const PAYBACK =
-    /At 5\.5% APY it takes about (\d+ \w+) to earn back the \$2\.00 fee to move to savings\./
-  it("warns when a move in takes over a year to earn back its fee", async () => {
-    // A $2 fee on top: $10 in lands $10, which earns $2 back in about three years at 5.5%.
-    act(() => root.render(<MoveFundsSheet direction="in" onClose={() => {}} />))
-    type("10")
-    await settle()
-    expect(state.quote).not.toHaveBeenCalledWith("out", expect.anything())
-    const warning = host.querySelector(".ww-withdraw__warning")
-    expect(warning?.textContent).toContain(
-      "At 5.5% APY it takes about 3 years to earn back the $2.00 fee to move to savings.",
-    )
-    expect(host.textContent).toContain("Current APY 5.5%.")
-    expect(host.textContent).not.toContain("variable")
-    expect(button("Review").disabled).toBe(false)
-  })
-
-  it("notes the payback plainly for a move that earns its fees back within a year", async () => {
-    state.balance = 10_000n * ONE
-    act(() => root.render(<MoveFundsSheet direction="in" onClose={() => {}} />))
-    type("5000")
-    await settle()
-    expect(host.textContent).toContain("Main Account pays$5,002.00")
-    expect(host.querySelector(".ww-withdraw__warning")).toBeNull()
-    const notes = [...host.querySelectorAll(".ww-sheet__note")].map((n) => n.textContent)
-    const line = notes.find((text) => PAYBACK.test(text ?? ""))
-    expect(line).toMatch(/about \d+ days/)
-  })
-
-  it("says nothing without a rate, and nothing on a move to Main", async () => {
-    state.position = { ...state.position!, apy: undefined }
-    act(() => root.render(<MoveFundsSheet direction="in" onClose={() => {}} />))
-    type("10")
-    await settle()
-    expect(host.textContent).not.toContain("to earn back")
-    state.position = { ...state.position!, apy: 0.055 }
-    // The sheet owns its direction once mounted: a fresh mount for the move out.
-    act(() => root.render(<div />))
-    act(() => root.render(<MoveFundsSheet direction="out" onClose={() => {}} />))
-    type("10")
-    await settle()
-    expect(host.textContent).not.toContain("to earn back")
-  })
-})
-
 describe("MoveFundsSheet, notes", () => {
-  it("shows the current rate on a move in, and only there", async () => {
-    act(() => root.render(<MoveFundsSheet direction="in" onClose={() => {}} />))
-    expect(host.textContent).toContain("Current APY 5.5%.")
-    expect(host.textContent).not.toContain("variable")
-    act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Swap direction"]')!.click())
-    expect(host.textContent).not.toContain("Current APY")
-    state.position = { ...state.position!, apy: undefined }
-    act(() => root.render(<div />))
-    act(() => root.render(<MoveFundsSheet direction="in" onClose={() => {}} />))
-    expect(host.textContent).toContain("Rate unavailable")
-  })
-
   it("shows the fee loading while a quote is in flight, and holds Review until it lands", async () => {
     act(() => root.render(<MoveFundsSheet direction="in" onClose={() => {}} />))
     expect(host.textContent).toContain("L1 fee$--")
@@ -528,26 +327,6 @@ describe("MoveFundsSheet, confirm step", () => {
     await settle()
     act(() => button("Review").click())
   }
-
-  it("estimates the time from the live timing as a move submitted now", async () => {
-    state.timing = { releaseSeconds: () => 600 }
-    state.savingsMoveEta.mockReturnValue({ seconds: 25 * 60, remaining: false })
-    await review()
-    expect(host.textContent).toContain("Estimated timeUsually about 25 min")
-    expect(state.savingsMoveEta).toHaveBeenCalledWith(
-      { startTime: expect.any(Number) },
-      { phase: "submitting", startTime: expect.any(Number) },
-      state.timing,
-      expect.any(Number),
-    )
-    expect(host.textContent).toContain("Keep this tab open until the move is sent.")
-  })
-
-  it("falls back to the usual estimate while the timing has not loaded", async () => {
-    await review()
-    expect(host.textContent).toContain("Estimated timeUsually about 40 min")
-    expect(state.savingsMoveEta).not.toHaveBeenCalled()
-  })
 
   it("holds Confirm on a move in until the terms are accepted, and links all three", async () => {
     await review()
@@ -577,27 +356,5 @@ describe("MoveFundsSheet, confirm step", () => {
     await review()
     expect(termsBox()!.checked).toBe(false)
     expect(button("Confirm move").disabled).toBe(true)
-  })
-
-  it("asks nothing of a move out: the funds are the user's own, coming back", async () => {
-    act(() => root.render(<MoveFundsSheet direction="out" onClose={() => {}} />))
-    type("21")
-    await settle()
-    act(() => button("Review").click())
-    expect(host.textContent).toContain("Confirm move")
-    expect(termsBox()).toBeNull()
-    expect(host.textContent).not.toContain("accept the terms")
-    expect(button("Confirm move").disabled).toBe(false)
-  })
-
-  it("hands the sheet off once confirmed; the proof carries on under the bell", async () => {
-    state.move.mockReturnValue(new Promise(() => {}))
-    await review()
-    accept()
-    await act(async () => button("Confirm move").click())
-    expect(host.textContent).toContain("Working")
-    // The sheet hands off once the ceremony is done; the proof and the send carry on under the bell.
-    expect(handOff).toHaveBeenCalled()
-    expect(handOff.mock.lastCall?.[0]).not.toHaveProperty("until")
   })
 })

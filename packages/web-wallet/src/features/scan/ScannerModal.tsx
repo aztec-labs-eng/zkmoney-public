@@ -1,9 +1,10 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent } from "react"
+import { useEffect, useId, useRef, useState, type FormEvent } from "react"
 import { PhoneIcon } from "../../ui/PhoneIcon"
 import { Modal } from "../../ui/Modal"
 import { createScanHandoff } from "./scanHandoff"
 import type { ScanDestination, ScanResult } from "./scanPayload"
 import { useQrCamera } from "./useQrCamera"
+import { useDomLayoutEffect } from "../../ui/useDomEffect"
 import "./scanner.css"
 
 export interface ScannerModalProps {
@@ -36,11 +37,12 @@ export function ScannerModal(props: ScannerModalProps) {
     void handoff.current?.submit(payload)
   })
 
-  useLayoutEffect(() => {
+  useDomLayoutEffect(() => {
     // A removed retry, torch or camera selector must not leave keyboard focus behind the dialog.
     if (!leaving.current && document.activeElement === document.body) closeButton.current?.focus({ preventScroll: true })
   }, [camera.state, error, busy, departing])
 
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     mounted.current = true
     const transfer = createScanHandoff({
@@ -102,6 +104,7 @@ export function ScannerModal(props: ScannerModalProps) {
 
   const paused = camera.state.kind === "paused"
   const controls = camera.state.kind === "active" && !error && !busy && !departing ? camera.state : null
+  // eslint-disable-next-line local/message-in-state -- debt
   const recovery = error?.message ?? ("message" in camera.state ? camera.state.message : null)
   const message = recovery ?? (departing ? "Opening your code…" : busy ? "Checking your code…" : paused
     ? "Camera paused while you were away."
@@ -112,7 +115,7 @@ export function ScannerModal(props: ScannerModalProps) {
     <Modal variant="bare" className="ww-scan" label="Scan QR code" onClose={close}>
       <div className="ww-scan__toolbar">
         <button ref={closeButton} type="button" className="ww-scan__icon-button" aria-label="Close scanner" onClick={close}>
-          <PhoneIcon name="x" size={24} color="rgba(255, 255, 255, 0.6)" />
+          <PhoneIcon name="x" size={24} color="rgba(var(--ink-rgb), 0.6)" />
         </button>
         {controls?.torch && (
           <button type="button" className="ww-scan__icon-button" aria-label={controls.torchOn ? "Turn flashlight off" : "Turn flashlight on"}

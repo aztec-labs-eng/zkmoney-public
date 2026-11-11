@@ -1,4 +1,5 @@
 // v5's SIPA logic that a source session only exposes. Each import resolves as in `index.ts`.
+import { AztecAddress } from "@aztec/aztec.js/addresses"
 import type { Fr } from "@aztec/aztec.js/fields"
 import {
   DEFAULT_CONTRACTS,
@@ -10,11 +11,15 @@ import {
   composeWireNameHash,
   createOxideL1Reader,
   createRegistrationSipaDeriver,
+  depositSipaImplementation,
   deriveBootstrapKey,
   deriveRegistrationAddress,
+  deriveResolverCandidate,
+  deriveStealthKey,
   legacyRegistrationSalt,
   oxideEnvFromTuple,
   resolveOxideAccountFactory,
+  RESOLVER_MAX_NONCES_PER_DAY,
   setActiveNetworkId,
   SIPADepositStore,
   type RegistrationSipaSeed,
@@ -98,6 +103,85 @@ const seedRegistration = (
     )
     return Object.fromEntries(items)
   })
+
+/** A day can use more nonces than v5 watched: each resolve spends one, paid or not. */
+const RESOLVER_SEARCH_NONCES_PER_DAY = 4 * RESOLVER_MAX_NONCES_PER_DAY
+
+/** Finds `sipa` among the account's resolver addresses: a late payment has no `SIPA` event. */
+export async function resolverDeposit(
+  o: {
+    client: PublicClient
+    l1ChainId: number
+    masterSecret: Fr
+    rollupAddress: string
+    l2Address: Hex
+  },
+  {
+    tuple,
+    sipa,
+    resolvers,
+    fromDay,
+    toDay,
+  }: Parameters<SourceGenerationSession["resolverDeposit"]>[0],
+) {
+  const { client } = o
+  if (tuple.sipaRecoveryProtocol !== "account" || !tuple.sipaFactory) return {}
+  const accountFactory = resolveOxideAccountFactory({ tuple })
+  const [implementation, recoveryAccount] = await Promise.all([
+    depositSipaImplementation(client, tuple.sipaFactory as Address, tuple.portal as Address),
+    createOxideL1Reader(client).predictAccountAddress(
+      accountFactory,
+      deriveBootstrapKey(o.masterSecret).address as Address,
+    ),
+  ])
+  const keys = {
+    stealthScalar: deriveStealthKey(o.masterSecret).scalar,
+    recipient: AztecAddress.fromStringUnsafe(o.l2Address),
+  }
+  const token = { address: tuple.token as Address, symbol: WALLET_TOKEN_SYMBOL, decimals: 18 }
+  const target = sipa.toLowerCase()
+  for (let day = toDay; day >= fromDay; day--)
+    for (const key of resolvers) {
+      const deployment = {
+        portal: tuple.portal as Address,
+        sipaFactory: tuple.sipaFactory as Address,
+        implementation,
+        rollupVersion: BigInt(tuple.rollupVersion),
+        resolverPublicKey: { x: BigInt(key.x), y: BigInt(key.y) },
+        recoveryAccount,
+        accountFactory,
+        tokens: [token] as const,
+      }
+      for (let nonce = 0; nonce < RESOLVER_SEARCH_NONCES_PER_DAY; nonce++) {
+        const c = await deriveResolverCandidate(deployment, keys, day, nonce)
+        if (c.sipaAddress.toLowerCase() !== target) continue
+        return takeTurn(async () => {
+          setActiveNetworkId(o.rollupAddress)
+          const items = new Map<string, string>()
+          const deposits = fresh(SIPADepositStore, memoryStorage(items))
+          await deposits.load()
+          await deposits.upsert(
+            c.sipaAddress,
+            { phase: "sweeping" },
+            {
+              recipientL2Address: keys.recipient.toString(),
+              messageSecret: c.messageSecret,
+              recipientHash: c.recipientHash,
+              recoveryAddress: "",
+              origin: c.origin,
+              l1ChainId: o.l1ChainId,
+              amount: "0",
+              tokenAddress: token.address,
+              tokenSymbol: token.symbol,
+              startTime: Date.now(),
+            },
+          )
+          return Object.fromEntries(items)
+        })
+      }
+    }
+  return {}
+}
 
 /**
  * v5's `seedRederivedRegistrations` for one address, over every operator, resolver key, beneficiary

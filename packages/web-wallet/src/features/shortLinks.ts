@@ -1,13 +1,12 @@
 import { useEffect, useRef, useState } from "react"
 import { decodePaylinkInline, encodeLinkFragment, LinkKind, Network } from "@obsidion/sdk"
-import { getConfig } from "../config/env"
 import { zkMoneyLinkHostEnabled } from "../config/features"
 import { requestLinkOrigin } from "./requests/requestLinkCreation"
 
 /** The zk.money apex for this network, once it routes short links. */
-function apex(): string | undefined {
+function apex(network: Network): string | undefined {
   if (!zkMoneyLinkHostEnabled) return undefined
-  return getConfig().network === Network.MAINNET ? "https://zk.money" : "https://staging.zk.money"
+  return network === Network.MAINNET ? "https://zk.money" : "https://staging.zk.money"
 }
 
 function seedOf(fragment: string): Uint8Array | undefined {
@@ -18,9 +17,9 @@ function seedOf(fragment: string): Uint8Array | undefined {
   }
 }
 
-function shortPaylinkUrl(seed: Uint8Array): string {
+function shortPaylinkUrl(seed: Uint8Array, network: Network): string {
   const short = encodeLinkFragment(LinkKind.Paylink, seed)
-  const host = apex()
+  const host = apex(network)
   return host ? `${host}/p#${short}` : `${location.origin}/link#${short}`
 }
 
@@ -30,22 +29,22 @@ export function paylinkRowUrl(fragment: string): string {
 }
 
 /** The URL to share for a row's stored full link: its short link, or the link as stored. */
-export function paylinkRowShareUrl(stored: string): string {
+export function paylinkRowShareUrl(stored: string, network: Network): string {
   const seed = seedOf(stored.slice(stored.indexOf("#") + 1))
-  return seed ? shortPaylinkUrl(seed) : stored
+  return seed ? shortPaylinkUrl(seed, network) : stored
 }
 
 /** The URL to share for a paylink fragment: the short link when the fragment carries its seed. */
-export function paylinkShareUrl(fragment: string): string {
+export function paylinkShareUrl(fragment: string, network: Network): string {
   const seed = seedOf(fragment)
-  return seed ? shortPaylinkUrl(seed) : `${location.origin}/link#${fragment}`
+  return seed ? shortPaylinkUrl(seed, network) : `${location.origin}/link#${fragment}`
 }
 
 /** No tag in the path: a path reaches the host and link-preview bots, and the payload names the payee. */
-export function shortRequestUrl(seed: Uint8Array): string {
+export function shortRequestUrl(seed: Uint8Array, network: Network): string {
   const fragment = encodeLinkFragment(LinkKind.Request, seed)
-  const host = apex()
-  return host ? `${host}/r#${fragment}` : `${requestLinkOrigin()}/request#${fragment}`
+  const host = apex(network)
+  return host ? `${host}/r#${fragment}` : `${requestLinkOrigin(network)}/request#${fragment}`
 }
 
 /** How often a short link that isn't on chain yet is looked up again. */
@@ -64,6 +63,7 @@ export function useShortLinkLookup(
   const latest = useRef({ open, refusal })
   latest.current = { open, refusal }
 
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!resolve) return
     let timer: ReturnType<typeof setTimeout> | undefined
@@ -79,6 +79,7 @@ export function useShortLinkLookup(
         if (message) return setRefused(message)
         console.warn("[short link] lookup failed:", e)
       }
+      // eslint-disable-next-line local/timer-in-view -- debt
       timer = setTimeout(() => void attempt(), SHORT_LINK_RETRY_MS)
     }
     void attempt()

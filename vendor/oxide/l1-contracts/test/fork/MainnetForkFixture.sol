@@ -3,7 +3,7 @@ pragma solidity >=0.8.27;
 import {OxidePortalBase} from "@test/core/OxidePortalBase.t.sol";
 
 abstract contract MainnetForkFixture is OxidePortalBase {
-  uint256 internal constant FORK_BLOCK = 25_600_000;
+  uint256 internal constant FORK_BLOCK = 25_700_000;
 
   function _selectMainnetFork() internal {
     string memory rpc = vm.envOr("MAINNET_FORK_RPC_URL", string(""));

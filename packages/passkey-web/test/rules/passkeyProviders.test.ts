@@ -6,20 +6,27 @@ import {
   ZERO_AAGUID,
 } from "@obsidion/core/constants"
 import { describe, expect, it } from "vitest"
+import { parseUserAgent } from "../../src/browser/userAgentInfo.js"
 import {
   CHROMIUM_VIRTUAL_AUTHENTICATOR_AAGUID,
+  type CreationRoute,
   LOCAL_MANAGER_NAMES,
   PASSKEY_MANAGER_AAGUIDS,
   PROTON_PASS,
+  PROTON_PASS_AAGUID,
+  SAMSUNG_PASS_AAGUID,
   WINDOWS_HELLO as WINDOWS_HELLO_NAME,
   localManagerFor,
   localManagersClause,
   localProviderVerdict,
+  protonPassAdmitted,
   providerAllowed,
   providerNameFor,
   providerSlugFor,
   refusalKindFor,
+  semiDeviceBound,
 } from "../../src/rules/passkeyProviders.js"
+import type { OsFamily } from "../../src/browser/userAgentInfo.js"
 
 const BRAVE = "b5397666-4885-aa6b-cebf-e52262a439a2"
 const WINDOWS_HELLO = "08987058-cadc-4b81-b6e1-30de50dcbe96"
@@ -40,6 +47,11 @@ describe("localProviderVerdict", () => {
     expect(localProviderVerdict(APPLE_ICLOUD_AAGUID, ["gpm"])).toBe("apple")
     expect(localProviderVerdict(GPM_AAGUID, ["apple"])).toBe("unsupported")
     expect(localProviderVerdict(WINDOWS_HELLO, ["gpm"])).toBe("unsupported")
+    expect(localProviderVerdict(PROTON_PASS_AAGUID, ["gpm", "1password"])).toBe("unsupported")
+  })
+
+  it("admits Proton Pass on a row that names it", () => {
+    expect(localProviderVerdict(PROTON_PASS_AAGUID, ["gpm", "proton"])).toBe("admitted")
   })
 
   it("admits the browser-test id through the extra list", () => {
@@ -59,8 +71,68 @@ describe("localManagerFor", () => {
     expect(localManagerFor(ONEPASSWORD_AAGUID)).toBe("1password")
     expect(localManagerFor(GPM_AAGUID.toUpperCase())).toBe("gpm")
     expect(localManagerFor(APPLE_ICLOUD_AAGUID)).toBe("apple")
+    expect(localManagerFor(PROTON_PASS_AAGUID)).toBe("proton")
     expect(localManagerFor(undefined)).toBeUndefined()
     expect(localManagerFor(A_KEY)).toBeUndefined()
+  })
+})
+
+describe("protonPassAdmitted", () => {
+  const row = ["gpm", "1password", "proton"] as const
+
+  it("admits the sheet's Proton Pass pick on a laptop row that names it, and nothing else there", () => {
+    expect(
+      protonPassAdmitted({ posture: "laptop", localManagers: row, extensionAllowed: true }),
+    ).toBe(true)
+    expect(protonPassAdmitted({ posture: "laptop", localManagers: row })).toBe(false)
+    expect(
+      protonPassAdmitted({
+        posture: "laptop",
+        localManagers: ["gpm", "1password"],
+        extensionAllowed: true,
+      }),
+    ).toBe(false)
+    for (const osFamily of ["macos", "android", undefined] as const) {
+      expect(protonPassAdmitted({ posture: "laptop", osFamily, extensionAllowed: true })).toBe(
+        false,
+      )
+    }
+  })
+
+  it("admits a phone's own Proton Pass on every known OS but iOS", () => {
+    const admitted: OsFamily[] = ["android", "macos", "windows", "linux", "chromeos"]
+    for (const osFamily of admitted) {
+      expect(protonPassAdmitted({ posture: "phone", osFamily })).toBe(true)
+    }
+    expect(protonPassAdmitted({ posture: "phone", osFamily: "ios" })).toBe(false)
+    expect(protonPassAdmitted({ posture: "phone", osFamily: "unknown" })).toBe(false)
+    expect(protonPassAdmitted({ posture: "phone" })).toBe(false)
+  })
+
+  it("refuses on a build that withdraws Proton Pass, on either posture", () => {
+    const withdrawn = ["windows_hello", "proton"] as const
+    expect(protonPassAdmitted({ posture: "phone", osFamily: "android", withdrawn })).toBe(false)
+    expect(
+      protonPassAdmitted({
+        posture: "laptop",
+        localManagers: row,
+        extensionAllowed: true,
+        withdrawn,
+      }),
+    ).toBe(false)
+    expect(
+      protonPassAdmitted({ posture: "phone", osFamily: "android", withdrawn: ["windows_hello"] }),
+    ).toBe(true)
+  })
+})
+
+describe("semiDeviceBound", () => {
+  it("is true for Proton Pass's id alone", () => {
+    expect(semiDeviceBound(PROTON_PASS_AAGUID)).toBe(true)
+    expect(semiDeviceBound(PROTON_PASS_AAGUID.toUpperCase())).toBe(true)
+    for (const id of [GPM_AAGUID, WINDOWS_HELLO, ONEPASSWORD_AAGUID, ZERO_AAGUID, undefined]) {
+      expect(semiDeviceBound(id)).toBe(false)
+    }
   })
 })
 
@@ -107,6 +179,10 @@ describe("providerAllowed", () => {
     }
   })
 
+  it("leaves Proton Pass to its own rule", () => {
+    expect(providerAllowed(PROTON_PASS_AAGUID, false)).toBe(false)
+  })
+
   it("admits an id the caller lists on top of the measured set", () => {
     const extra = [CHROMIUM_VIRTUAL_AUTHENTICATOR_AAGUID]
     expect(providerAllowed(CHROMIUM_VIRTUAL_AUTHENTICATOR_AAGUID, false)).toBe(false)
@@ -114,6 +190,140 @@ describe("providerAllowed", () => {
     expect(providerAllowed(UNMEASURED, false, extra)).toBe(false)
     // Ids arrive from a parser that emits lowercase, but a caller's list is hand-written.
     expect(providerAllowed(UNMEASURED, false, [UNMEASURED.toUpperCase()])).toBe(true)
+  })
+
+  describe("Samsung Pass, admitted only on its own Android phone", () => {
+    const ANDROID = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko)"
+    const chromeAndroid = parseUserAgent({
+      userAgent: `${ANDROID} Chrome/155.0.0.0 Mobile Safari/537.36`,
+      userAgentData: {
+        platform: "Android",
+        brands: [
+          { brand: "Chromium", version: "155" },
+          { brand: "Google Chrome", version: "155" },
+        ],
+      },
+    })
+    const samsungInternet = parseUserAgent({
+      userAgent: `${ANDROID} SamsungBrowser/28.0 Chrome/130.0.0.0 Mobile Safari/537.36`,
+      userAgentData: {
+        platform: "Android",
+        brands: [
+          { brand: "Samsung Internet", version: "28.0" },
+          { brand: "Chromium", version: "130" },
+        ],
+      },
+    })
+    // A Chromium fork that names no brand reads as Chrome from the string alone.
+    const unbrandedChromium = parseUserAgent({
+      userAgent: `${ANDROID} Chrome/155.0.0.0 Mobile Safari/537.36`,
+    })
+    const edgeAndroid = parseUserAgent({
+      userAgent: `${ANDROID} Chrome/155.0.0.0 Mobile Safari/537.36 EdgA/155.0.0.0`,
+      userAgentData: {
+        platform: "Android",
+        brands: [
+          { brand: "Chromium", version: "155" },
+          { brand: "Microsoft Edge", version: "155" },
+        ],
+      },
+    })
+    const braveAndroid = parseUserAgent({
+      userAgent: `${ANDROID} Chrome/155.0.0.0 Mobile Safari/537.36`,
+      userAgentData: {
+        platform: "Android",
+        brands: [
+          { brand: "Chromium", version: "155" },
+          { brand: "Brave", version: "155" },
+        ],
+      },
+    })
+    const firefoxAndroid = parseUserAgent({
+      userAgent: "Mozilla/5.0 (Android 14; Mobile; rv:132.0) Gecko/132.0 Firefox/132.0",
+    })
+    const unnamedAndroid = parseUserAgent({
+      userAgent: "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko)",
+    })
+    const iphone = parseUserAgent({
+      userAgent:
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1",
+    })
+    const empty = parseUserAgent({ userAgent: "" })
+    const chromeMac = parseUserAgent({
+      userAgent:
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36",
+      userAgentData: { platform: "macOS", brands: [{ brand: "Google Chrome", version: "155" }] },
+    })
+    const phone = (userAgent: CreationRoute["userAgent"]): CreationRoute => ({
+      posture: "phone",
+      attachment: "platform",
+      userAgent,
+    })
+    const overQr: CreationRoute = {
+      posture: "laptop",
+      attachment: "cross-platform",
+      userAgent: chromeMac,
+    }
+
+    it("in every Android phone browser", () => {
+      const browsers = [
+        chromeAndroid,
+        samsungInternet,
+        unbrandedChromium,
+        edgeAndroid,
+        braveAndroid,
+        firefoxAndroid,
+        unnamedAndroid,
+      ]
+      expect(browsers.map((ua) => ua.browserFamily)).toEqual([
+        "chrome",
+        "samsung",
+        "chrome",
+        "edge",
+        "brave",
+        "firefox",
+        "unknown",
+      ])
+      for (const ua of browsers) {
+        expect(ua.osFamily).toBe("android")
+        expect(providerAllowed(SAMSUNG_PASS_AAGUID, false, [], phone(ua))).toBe(true)
+      }
+      expect(
+        providerAllowed(SAMSUNG_PASS_AAGUID.toUpperCase(), false, [], phone(chromeAndroid)),
+      ).toBe(true)
+    })
+
+    it("refused over QR, in any laptop browser", () => {
+      for (const userAgent of [chromeMac, undefined]) {
+        const route: CreationRoute = { ...overQr, userAgent }
+        expect(providerAllowed(SAMSUNG_PASS_AAGUID, false, [], route)).toBe(false)
+      }
+    })
+
+    it("refused on a phone that isn't Android or made no claims", () => {
+      expect(empty.osFamily).toBe("unknown")
+      for (const ua of [iphone, empty, undefined]) {
+        expect(providerAllowed(SAMSUNG_PASS_AAGUID, false, [], phone(ua))).toBe(false)
+      }
+    })
+
+    it("refused as a laptop's own passkey, as a key's id, another device's on a phone, and with no route", () => {
+      const laptopLocal: CreationRoute = { ...overQr, attachment: "platform" }
+      expect(providerAllowed(SAMSUNG_PASS_AAGUID, false, [], laptopLocal)).toBe(false)
+      expect(providerAllowed(SAMSUNG_PASS_AAGUID, true, [], phone(chromeAndroid))).toBe(false)
+      for (const attachment of [undefined, "cross-platform"] as const) {
+        expect(
+          providerAllowed(SAMSUNG_PASS_AAGUID, false, [], { ...phone(chromeAndroid), attachment }),
+        ).toBe(false)
+      }
+      // The backup gate asks with no route; its own candidates admit Samsung Pass there.
+      expect(providerAllowed(SAMSUNG_PASS_AAGUID, false)).toBe(false)
+    })
+
+    it("admits no other unmeasured manager on those routes", () => {
+      expect(providerAllowed(UNMEASURED, false, [], phone(chromeAndroid))).toBe(false)
+      expect(providerAllowed(UNMEASURED, false, [], overQr)).toBe(false)
+    })
   })
 })
 
@@ -139,14 +349,14 @@ describe("providerNameFor", () => {
   })
 
   it("can name everything it admits", () => {
-    for (const id of [...PASSKEY_MANAGER_AAGUIDS, ...SECURITY_KEY_AAGUIDS]) {
+    for (const id of [...PASSKEY_MANAGER_AAGUIDS, SAMSUNG_PASS_AAGUID, ...SECURITY_KEY_AAGUIDS]) {
       expect(providerNameFor(id)).toBeTruthy()
     }
   })
 
   it("gives Windows Hello and Proton Pass the names their refusal copy keys on", () => {
     expect(providerNameFor(WINDOWS_HELLO)).toBe(WINDOWS_HELLO_NAME)
-    expect(providerNameFor("50726f74-6f6e-5061-7373-50726f746f6e")).toBe(PROTON_PASS)
+    expect(providerNameFor(PROTON_PASS_AAGUID)).toBe(PROTON_PASS)
   })
 })
 

@@ -28,6 +28,7 @@ import {
   type StateOverride,
 } from "viem"
 import {
+  RevertingSweepError,
   UnprofitableSweepError,
   assertBackupSweepProfitable,
   quoteBackupSweep,
@@ -73,9 +74,10 @@ function fakeClient(opts: {
   payout: bigint
   legacy?: boolean
   feedUpdatedAt?: bigint
-  reverts?: boolean
+  /** The run that reverts: the first, with no payout demanded, or the second, demanding it. */
+  reverts?: "run" | "priced"
 }) {
-  const { payout, legacy = false, feedUpdatedAt = NOW, reverts = false } = opts
+  const { payout, legacy = false, feedUpdatedAt = NOW, reverts } = opts
   const abi = legacy ? LegacyOperationExecutorAbi : OperationExecutorAbi
   const selector = toFunctionSelector(getAbiItem({ abi, name: "execute" }))
   return {
@@ -114,14 +116,15 @@ function fakeClient(opts: {
         blocks: { stateOverrides: StateOverride; calls: SimulatedCall[] }[]
       }) => {
         const minPayout = blocks[0]!.calls[0]!.args[3] as bigint
-        if (reverts || minPayout > payout) {
+        const reverted = reverts === (minPayout === 0n ? "run" : "priced")
+        if (reverted || minPayout > payout) {
           return [
             {
               calls: [
                 {
                   status: "failure",
                   error: new Error(
-                    reverts ? "SIPA__SweepBelowCharges" : "OperationExecutor__InsufficientPayout",
+                    reverted ? "SIPA__SweepBelowCharges" : "OperationExecutor__InsufficientPayout",
                   ),
                   gasUsed: 0n,
                 },
@@ -221,12 +224,20 @@ describe("quoteBackupSweep", () => {
     expect(simulated(client)[0]!.calls[0]!.args).toHaveLength(4)
   })
 
-  it("refuses a sweep that reverts, and a stale feed", async () => {
-    await expect(quote(fakeClient({ payout: FLOOR, reverts: true }))).rejects.toThrow(
-      /does not run/,
+  it("refuses a sweep that reverts in either run as a reverting sweep", async () => {
+    const run = quote(fakeClient({ payout: FLOOR, reverts: "run" }))
+    await expect(run).rejects.toThrow(/does not run: SIPA__SweepBelowCharges/)
+    await expect(run).rejects.toBeInstanceOf(RevertingSweepError)
+    const priced = quote(fakeClient({ payout: FLOOR, reverts: "priced" }))
+    await expect(priced).rejects.toThrow(/does not pay its own payout/)
+    await expect(priced).rejects.toBeInstanceOf(RevertingSweepError)
+  })
+
+  it("refuses a stale feed as a failed read, not a reverting sweep", async () => {
+    const stale = quote(
+      fakeClient({ payout: FLOOR, feedUpdatedAt: NOW - ETH_USD_MAX_PRICE_AGE_SECONDS - 1n }),
     )
-    await expect(
-      quote(fakeClient({ payout: FLOOR, feedUpdatedAt: NOW - ETH_USD_MAX_PRICE_AGE_SECONDS - 1n })),
-    ).rejects.toThrow(/stale/)
+    await expect(stale).rejects.toThrow(/stale/)
+    await expect(stale).rejects.not.toBeInstanceOf(RevertingSweepError)
   })
 })

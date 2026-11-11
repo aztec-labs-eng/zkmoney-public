@@ -4,16 +4,18 @@ import type { ReorgNodeLike } from "../core/services/chain/receiptTypes"
 import {
   ReorgMonitor,
   type ConfirmationListener,
+  type ReorgOperationStore,
   type ReorgTransactionStore,
   type ReorgWithdrawalStore,
 } from "../core/services/coordination/ReorgMonitor"
-import type { Resource } from "./resource"
+import type { Service } from "./service"
 import { task, within, type Task } from "./runtime"
 
 export interface ReorgDeps {
-  wallet: Resource<Pick<ObsidionWallet, "node" | "pxe" | "networkId">>
-  activity: ReorgTransactionStore
+  wallet: Service<Pick<ObsidionWallet, "node" | "pxe" | "networkId">>
+  transfers: ReorgTransactionStore
   withdrawals: ReorgWithdrawalStore
+  operations: ReorgOperationStore
   /** The withdrawal tracker: it re-reads each burn's receipt and `$isWithdrawalSpent`. */
   tracker: Task
   onOutcome: ConfirmationListener
@@ -37,10 +39,18 @@ const receipts = (node: ObsidionWallet["node"]): ReorgNodeLike => ({
  * A woken pass then wakes the withdrawal tracker without waiting for it and, once the first balance is in,
  * syncs the PXE.
  */
-export function reorg({ wallet, activity, withdrawals, tracker, onOutcome }: ReorgDeps): Task {
+export function reorg({
+  wallet,
+  transfers,
+  withdrawals,
+  operations,
+  tracker,
+  onOutcome,
+}: ReorgDeps): Task {
   const monitor = new ReorgMonitor({
-    transactionStorage: activity,
+    transactionStorage: transfers,
     withdrawalStorage: withdrawals,
+    operationStorage: operations,
     onOutcome,
   })
   return task("reorg", {

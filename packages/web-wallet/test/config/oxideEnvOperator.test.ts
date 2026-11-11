@@ -1,6 +1,6 @@
 /**
  * Selecting the signup's resolver operator scans the deployment's whole operator log history, so
- * `oxideEnvFor` reuses one selection for a few minutes: the tag step starts it and the claim after
+ * `oxideEnv` reuses one selection for a few minutes: the tag step starts it and the claim after
  * the passkey finds it. A failed scan is never kept.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -25,8 +25,9 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
 }))
 
 import { Network } from "@obsidion/core/constants"
-import { oxideEnvFor, RESOLVER_OPERATOR_REUSE_MS } from "../../src/config/oxideTuple"
+import { createPageChain, RESOLVER_OPERATOR_REUSE_MS } from "../../src/app/pageChain"
 import type { WebWalletConfig } from "../../src/config/env"
+import { testChain } from "../support/query"
 
 const CONFIG = {
   oxideProfile: { manifestUrl: "https://oxide.example/manifest.json", portal: "0xabc" },
@@ -36,7 +37,8 @@ const CONFIG = {
   claimFpcAddress: `0x${"0f".repeat(32)}`,
 } as unknown as WebWalletConfig
 
-describe("oxideEnvFor's resolver operator", () => {
+describe("oxideEnv's resolver operator", () => {
+  const { oxideEnv } = createPageChain(CONFIG, testChain())
   // Each test starts past the previous one's reuse window, so none inherits a selection.
   let clock = Date.now()
   beforeEach(() => {
@@ -50,24 +52,25 @@ describe("oxideEnvFor's resolver operator", () => {
   })
 
   it("scans once for a claim that follows the tag step's read", async () => {
-    const early = await oxideEnvFor(CONFIG)
-    const claim = await oxideEnvFor(CONFIG)
+    const early = await oxideEnv.read()
+    const claim = await oxideEnv.read()
     expect(early.env.resolverOperator).toBe(OPERATOR)
     expect(claim.env.resolverOperator).toBe(OPERATOR)
     expect(h.fetchOperator).toHaveBeenCalledTimes(1)
   })
 
   it("scans again once the selection is older than the reuse window", async () => {
-    await oxideEnvFor(CONFIG)
+    await oxideEnv.read()
     vi.setSystemTime(Date.now() + RESOLVER_OPERATOR_REUSE_MS + 1)
-    await oxideEnvFor(CONFIG)
+    await oxideEnv.read()
     expect(h.fetchOperator).toHaveBeenCalledTimes(2)
   })
 
   it("keeps no failed scan", async () => {
-    h.fetchOperator.mockRejectedValueOnce(new Error("rpc down"))
-    await expect(oxideEnvFor(CONFIG)).rejects.toThrow("rpc down")
-    await expect(oxideEnvFor(CONFIG)).resolves.toMatchObject({
+    const down = new Error("rpc down")
+    h.fetchOperator.mockRejectedValueOnce(down)
+    await expect(oxideEnv.read()).rejects.toBe(down)
+    await expect(oxideEnv.read()).resolves.toMatchObject({
       env: { resolverOperator: OPERATOR },
     })
     expect(h.fetchOperator).toHaveBeenCalledTimes(2)

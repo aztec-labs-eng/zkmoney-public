@@ -1,8 +1,10 @@
-import type { Contact } from "../storages/ContactStorage"
+import type { Contact } from "../../engine/contacts"
 import type { HandshakeInlinePacket } from "./handshakeInlineCodec"
 import { parseConnectLink, parseUserTagFromQRPayload } from "./connectLink"
-import { CONNECT_FORMAT_VERSION } from "./shareCore"
 import { normalizeTag } from "../../utils/normalizeTag"
+
+/** The connect format version this build reads. Coupled with the chain segment. */
+export const CONNECT_FORMAT_VERSION = "1.0"
 
 /** Connect-back wire content. Optional `tag` is the scanner's own handle. */
 export type ConnectBackWire = { version: number; uuid: string; tag?: string }
@@ -87,16 +89,6 @@ export interface QRHandshakeScanDeps {
   sendConnectBack: (peerXmtp: string, content: ConnectBackWire) => Promise<unknown>
   /** Connect-back wire schema version (sdk `CONNECT_BACK_VERSION`). */
   connectBackVersion: number
-  /**
-   * Persist a connect-back whose send FAILED (peer unreachable at scan time, or
-   * a `dm.send` throw) so a later foreground/connectivity flush can resend it.
-   * Optional — when absent, a failed send is simply logged-and-dropped (the
-   * pre-outbox behavior). A successful send never enqueues.
-   */
-  enqueueFailedConnectBack?: (entry: {
-    peerXmtp: string
-    content: ConnectBackWire
-  }) => Promise<void>
   /** Own XMTP handle (lowercased compare) for self-scan detection; may be undefined. */
   ownXmtpHandle?: string
   /** Own L2 address (lowercased compare) for self-scan detection; may be undefined. */
@@ -375,22 +367,16 @@ export type QRHandshakeCommitResult = Extract<
 export interface QRHandshakeCommitDeps {
   addOrMergeContact: QRHandshakeScanDeps["addOrMergeContact"]
   connectBackVersion: number
-  /**
-   * Optional live send. When absent (no client on this device or tab), EVERY
-   * commit goes straight to `enqueueFailedConnectBack` for a later flush.
-   */
+  /** The live send; absent when this tab has no XMTP client, which sends no connect-back. */
   sendConnectBack?: QRHandshakeScanDeps["sendConnectBack"]
-  enqueueFailedConnectBack?: QRHandshakeScanDeps["enqueueFailedConnectBack"]
   log?: QRHandshakeScanDeps["log"]
   /** Scanner's own tag, stamped onto the connect-back when valid. */
   ownTag?: string
 }
 
 /**
- * The write half: add the sharer, then connect back. With `sendConnectBack`
- * the send is fire-and-forget (it never gates the result; a failed send is
- * enqueued for retry). Without it the connect-back is enqueued directly; an
- * enqueue failure never blocks the add. A conflict sends no connect-back.
+ * The write half: add the sharer, then connect back. The send is fire-and-forget: it never gates
+ * the result, and a failed send is logged. A conflict sends no connect-back.
  */
 export async function commitQRHandshake(
   preview: QRHandshakePreview,
@@ -433,37 +419,13 @@ export async function commitQRHandshake(
   })
 
   const content = connectBackContent(deps.connectBackVersion, resolved.uuid, deps.ownTag)
-  const peerXmtp = resolved.xmtpHandle
-  if (deps.sendConnectBack) {
-    // Connect-back is fire-and-forget — a `recipient-not-reachable` (or any
-    // rejection) must NOT error the flow or block navigation. But a FAILED send
-    // (peer offline at scan, or a throw) is enqueued to the retry outbox so the
-    // mutual-add isn't silently dropped; a later flush resends it. The recipient
-    // simply being offline is already handled by XMTP mailbox delivery (a
-    // successful send), so only a non-`ok` / throwing send enqueues.
-    void deps
-      .sendConnectBack(peerXmtp, content)
-      .then(async (res) => {
-        if (isUndeliverable(res)) {
-          log("[useQRHandshakeScan] connect-back undeliverable — enqueuing for retry", res)
-          await deps.enqueueFailedConnectBack?.({ peerXmtp, content })
-        }
-      })
-      .catch(async (err) => {
-        log("[useQRHandshakeScan] sendConnectBack threw — enqueuing for retry", err)
-        try {
-          await deps.enqueueFailedConnectBack?.({ peerXmtp, content })
-        } catch (enqErr) {
-          log("[useQRHandshakeScan] enqueue failed (dropped)", enqErr)
-        }
-      })
-  } else {
-    try {
-      await deps.enqueueFailedConnectBack?.({ peerXmtp, content })
-    } catch (err) {
-      log("[useQRHandshakeScan] connect-back queue failed (dropped)", err)
-    }
-  }
+  // XMTP mailbox delivery covers an offline sharer, so only a non-`ok` or throwing send is logged.
+  void deps
+    .sendConnectBack?.(resolved.xmtpHandle, content)
+    .then((res) => {
+      if (isUndeliverable(res)) log("[useQRHandshakeScan] connect-back undeliverable", res)
+    })
+    .catch((err) => log("[useQRHandshakeScan] sendConnectBack threw", err))
 
   if ((contact.addressKind as string | undefined) === "pending-handshake") {
     return { kind: "handshake-pending", contact }

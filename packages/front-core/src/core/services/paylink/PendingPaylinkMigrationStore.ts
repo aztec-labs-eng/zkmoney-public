@@ -1,8 +1,8 @@
 /**
  * PendingPaylinkMigrationStore — creator paylinks left behind on a retired oxide deployment because
  * the migration ran while their claim window was open. The contract only refunds outside the
- * window, so these wait here until chain time passes `untilClaimable`. The create row in
- * The activity store stays the source of truth; every field here re-derives from it on reconcile.
+ * window, so these wait here until chain time passes `untilClaimable`. The link's record in
+ * `paylinks` stays the source of truth: every field here re-derives from it on reconcile.
  */
 
 import type { IStorageAdapter } from "../../storages/adapter"
@@ -31,10 +31,13 @@ export interface PendingPaylinkMigrationRecord {
 export const PENDING_PAYLINK_MIGRATION_STORAGE_KEY = "@obsidion/paylink-migration/pending"
 
 export class PendingPaylinkMigrationStore {
+  // eslint-disable-next-line no-restricted-syntax -- debt
   private static instance: PendingPaylinkMigrationStore | null = null
   private store: RecordStorage<PendingPaylinkMigrationRecord>
 
+  // eslint-disable-next-line local/legacy-store -- debt
   constructor(storage: IStorageAdapter) {
+    // eslint-disable-next-line local/legacy-store -- debt
     this.store = new RecordStorage<PendingPaylinkMigrationRecord>({
       storage,
       storageKey: PENDING_PAYLINK_MIGRATION_STORAGE_KEY,

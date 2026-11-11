@@ -4,12 +4,12 @@ import type { OxideEnvTuple } from "@obsidion/core/types"
 import { Network } from "@obsidion/core/constants"
 
 const sdkMocks = vi.hoisted(() => ({
-  fetchSipaResolverOperators: vi.fn(),
+  readSipaResolverOperatorEvents: vi.fn(),
   selectManifestResolverOperator: vi.fn(),
 }))
 vi.mock("@obsidion/sdk", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/sdk")>()),
-  fetchSipaResolverOperators: sdkMocks.fetchSipaResolverOperators,
+  readSipaResolverOperatorEvents: sdkMocks.readSipaResolverOperatorEvents,
   selectManifestResolverOperator: sdkMocks.selectManifestResolverOperator,
 }))
 
@@ -24,6 +24,18 @@ import {
   oxideEnvFromTuple,
   resolveOxideAccountFactory,
 } from "../../src/oxide/oxideRegistrationDeps"
+import { deploymentScans } from "../../src/oxide/resolverOperatorRecords"
+import { createPace } from "@obsidion/core/cadence"
+import { openDatabase } from "../../src/engine/database"
+import { memoryBackend } from "../../src/engine/memoryBackend"
+import { queries } from "../../src/engine/query"
+import { memoryStore } from "../../src/engine/store"
+
+const QUERY = queries({
+  pace: createPace(),
+  visible: memoryStore(true).readonly,
+  now: () => Date.now(),
+})
 
 const FACTORY = "0x0000000000000000000000000000000000000002" as Address
 
@@ -109,6 +121,7 @@ describe("fetchSignupResolverOperator", () => {
     resolverGatewayUrl: "https://gw.example",
     forwardingTable: "0x0000000000000000000000000000000000000012",
     deployedAt: new Date(Number(DEPLOY_BLOCK) * BLOCK_SEC * 1000).toISOString(),
+    deployedAtBlock: String(DEPLOY_BLOCK),
   } as unknown as OxideEnvTuple
 
   const client = {
@@ -117,16 +130,19 @@ describe("fetchSignupResolverOperator", () => {
       timestamp: BigInt(blockNumber) * BigInt(BLOCK_SEC),
     }),
   } as never
+  const scans = deploymentScans(QUERY, () => client, openDatabase(memoryBackend()))
 
   it("selects the manifest-matched record (preferring the known operator) and records its owner", async () => {
-    const records = [{ owner: "0xdead" }]
-    sdkMocks.fetchSipaResolverOperators.mockResolvedValue(records)
+    const records = [{ owner: "0xdead", url: "https://gw.example" }]
+    sdkMocks.readSipaResolverOperatorEvents.mockResolvedValue(
+      records.map((record) => ({ record, blockNumber: DEPLOY_BLOCK, logIndex: 0 })),
+    )
     sdkMocks.selectManifestResolverOperator.mockReturnValue({ owner: RESOLVER })
 
-    const owner = await fetchSignupResolverOperator(client, LIVE_TUPLE, Network.TESTNET)
+    const owner = await fetchSignupResolverOperator(scans, LIVE_TUPLE, Network.TESTNET)
 
     expect(owner).toBe(RESOLVER)
-    expect(sdkMocks.fetchSipaResolverOperators).toHaveBeenCalledWith(
+    expect(sdkMocks.readSipaResolverOperatorEvents).toHaveBeenCalledWith(
       client,
       LIVE_TUPLE.accountMetadataRegistry,
       { fromBlock: DEPLOY_BLOCK, toBlock: HEAD },
@@ -141,10 +157,10 @@ describe("fetchSignupResolverOperator", () => {
 
   it("throws before any read when the manifest lacks the resolver-selection surface", async () => {
     const tuple = { ...LIVE_TUPLE, forwardingTable: undefined } as unknown as OxideEnvTuple
-    await expect(fetchSignupResolverOperator({} as never, tuple, Network.TESTNET)).rejects.toThrow(
+    await expect(fetchSignupResolverOperator(scans, tuple, Network.TESTNET)).rejects.toThrow(
       /resolver-selection surface/,
     )
-    expect(sdkMocks.fetchSipaResolverOperators).not.toHaveBeenCalled()
+    expect(sdkMocks.readSipaResolverOperatorEvents).not.toHaveBeenCalled()
   })
 })
 

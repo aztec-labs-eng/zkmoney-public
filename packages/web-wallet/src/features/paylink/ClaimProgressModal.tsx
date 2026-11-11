@@ -7,7 +7,7 @@ import {
 } from "@obsidion/front-core"
 import { GradientText, Icon, TopNavIconButton } from "@obsidion/web-ds"
 import ethIcon from "../../assets/deposit/ethereum.webp"
-import { l1TxUrl, whenLabel } from "../../ui/detailRows"
+import { useL1Links, whenLabel } from "../../ui/detailRows"
 import { shortAddr, tokenAmount, usdFigure, shortL1Addr } from "../../ui/format"
 import { Modal } from "../../ui/Modal"
 import { DepositStatusValue } from "../../ui/screens/DepositStatusValue"
@@ -40,6 +40,7 @@ export function ClaimProgressModal({
   memo?: string
   onClose: () => void
 }) {
+  const { l1TxUrl } = useL1Links()
   const title = SETTLED_TITLE[record.phase]
   if (!title) return null
   const status = withdrawalStatus(record)
@@ -83,7 +84,7 @@ export function ClaimProgressModal({
         <Icon
           name={record.phase === "done" ? "check" : "alert-circle"}
           size={48}
-          color={record.phase === "done" ? "#56e79d" : "#fe708b"}
+          color={record.phase === "done" ? "var(--accent-green)" : "var(--accent-pink)"}
         />
         <GradientText size={22} weight={700}>
           {title}

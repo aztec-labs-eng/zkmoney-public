@@ -1,7 +1,9 @@
 import { AztecAddress } from '@aztec-labs/aztec.js/addresses';
 import { EthAddress } from '@aztec-labs/foundation/eth-address';
+import type { Logger } from '@aztec-labs/foundation/log';
 
 import { readFile } from 'node:fs/promises';
+import { setTimeout as sleep } from 'node:timers/promises';
 
 /**
  * Reader for the published schema v5 `v<major>/<deployment-env>/releases.json` deployment env manifest
@@ -65,6 +67,52 @@ export interface ResolveDeploymentEnvManifestOptions {
   fetch?: typeof fetch;
 }
 
+/** The manifest cannot be read, or it does not list the pinned portal yet. A later read can succeed. */
+export class DeploymentEnvManifestNotAvailableError extends Error {}
+
+export const MANIFEST_WAIT_INTERVAL_MS = 60_000;
+const MANIFEST_WAIT_FETCH_TIMEOUT_MS = 10_000;
+
+export interface WaitForDeploymentEnvManifestOptions extends ResolveDeploymentEnvManifestOptions {
+  log: Logger;
+  /** Stops the wait. */
+  signal: AbortSignal;
+  retryIntervalMs?: number;
+}
+
+/**
+ * Resolve the manifest, and read it again each interval while it is not available. Thus a relayer can start
+ * before its deployment is published. Other errors are fatal. Returns `undefined` when `signal` stops the wait.
+ */
+export async function waitForDeploymentEnvManifest(
+  opts: WaitForDeploymentEnvManifestOptions,
+): Promise<ResolvedDeploymentEnvManifest | undefined> {
+  const { log, signal, retryIntervalMs = MANIFEST_WAIT_INTERVAL_MS } = opts;
+  const fetchFn = opts.fetch ?? fetch;
+  while (!signal.aborted) {
+    try {
+      return await resolveDeploymentEnvManifest({
+        ...opts,
+        fetch: (input, init) =>
+          fetchFn(input, {
+            ...init,
+            signal: AbortSignal.any([signal, AbortSignal.timeout(MANIFEST_WAIT_FETCH_TIMEOUT_MS)]),
+          }),
+      });
+    } catch (err: unknown) {
+      if (signal.aborted) {
+        return undefined;
+      }
+      if (!(err instanceof DeploymentEnvManifestNotAvailableError)) {
+        throw err;
+      }
+      log.info(`Deployment env manifest not available yet, waiting ${retryIntervalMs / 1000}s: ${err.message}`);
+    }
+    await sleep(retryIntervalMs, undefined, { signal }).catch(() => undefined);
+  }
+  return undefined;
+}
+
 interface RawDeployment {
   withdrawalProtocol?: unknown;
   portal?: unknown;
@@ -104,7 +152,7 @@ export async function resolveDeploymentEnvManifest(
   const pinned = entries.find(entry => typeof entry.portal === 'string' && entry.portal.toLowerCase() === portal);
   if (!pinned) {
     const available = entries.map(nameOf).join(', ') || '(none)';
-    throw new Error(
+    throw new DeploymentEnvManifestNotAvailableError(
       `deployment env manifest ${url} has no deployment with portal ${opts.portal} (available: ${available}).`,
     );
   }
@@ -322,15 +370,19 @@ function sameValue(a: unknown, b: unknown): boolean {
 }
 
 async function fetchRaw(url: string, fetchFn: typeof fetch): Promise<string> {
-  if (url.startsWith('file://')) {
-    return readFile(new URL(url), 'utf8');
+  try {
+    if (url.startsWith('file://')) {
+      return await readFile(new URL(url), 'utf8');
+    }
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+      return await readFile(url, 'utf8');
+    }
+    const res = await fetchFn(url);
+    if (!res.ok) {
+      throw new Error(`returned HTTP ${res.status}`);
+    }
+    return await res.text();
+  } catch (err: unknown) {
+    throw new DeploymentEnvManifestNotAvailableError(`deployment env manifest fetch ${url}: ${message(err)}`);
   }
-  if (!url.startsWith('http://') && !url.startsWith('https://')) {
-    return readFile(url, 'utf8');
-  }
-  const res = await fetchFn(url);
-  if (!res.ok) {
-    throw new Error(`deployment env manifest fetch ${url} returned HTTP ${res.status}`);
-  }
-  return res.text();
 }

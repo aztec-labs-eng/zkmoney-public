@@ -3,7 +3,6 @@ import type { Address, Hex } from "viem"
 import { EthAddress } from "@aztec-labs/aztec.js/addresses"
 import { WITHDRAW_RELAYER_TIP as TIP } from "@obsidion/core/constants"
 
-vi.mock("../../../../src/config/env", () => ({ getConfig: () => ({}) }))
 vi.mock("../../../../src/config/oxideTuple", () => ({ l1PublicClient: () => ({}) }))
 vi.mock("../../../../src/features/deposit/recovery/sipaRecovery", () => ({}))
 vi.mock("../../../../src/features/migration/oldVersionWithdraw", () => ({}))

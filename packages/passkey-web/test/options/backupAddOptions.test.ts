@@ -35,30 +35,35 @@ const C = SIGN_UP_SHEET_COPY
 const B = BACKUP_ADD_SHEET_COPY
 
 describe("backupAddOptionsFor", () => {
-  it("offers this computer, the phone and the key, and opens on this computer", () => {
+  it("offers the phone, the key and this computer last, and opens on the recommended phone", () => {
     const s = sheet()
-    expect(ids(s)).toEqual(["computer", "phone", "key"])
-    expect(s.selected).toBe("computer")
-    expect(option(s, "computer")).toMatchObject({ label: C.computer.macLabel, advice: [] })
-    expect(option(sheet({ os: "windows" }), "computer").label).toBe(C.computer.label)
+    expect(ids(s)).toEqual(["phone", "key", "computer"])
+    expect(s.selected).toBe("phone")
+    expect(s.options.filter((o) => o.recommended).map((o) => o.id)).toEqual(["phone"])
+    expect(option(s, "computer")).toMatchObject({
+      label: C.computer.macLabel,
+      description: B.computer.macDescription,
+      advice: [],
+    })
+    expect(option(sheet({ os: "windows" }), "computer")).toMatchObject({
+      label: C.computer.label,
+      description: B.computer.description,
+    })
   })
 
-  it("lists Proton Pass's kept wrapper first and opens on it", () => {
-    const s = sheet({ protonKept: true })
-    expect(ids(s)).toEqual(["proton", "computer", "phone", "key"])
-    expect(s.selected).toBe("proton")
-  })
-
-  it("with both detected, 1Password comes first and opens, Proton Pass stays offered", () => {
+  it("offers the managers detected before this computer, still opening on the phone", () => {
+    expect(ids(sheet({ protonKept: true }))).toEqual(["phone", "key", "proton", "computer"])
     const s = sheet({ extension: "1password", protonKept: true })
-    expect(ids(s)).toEqual(["1password", "proton", "computer", "phone", "key"])
-    expect(s.selected).toBe("1password")
+    expect(ids(s)).toEqual(["phone", "key", "1password", "proton", "computer"])
+    expect(s.selected).toBe("phone")
   })
 
-  it("drops the phone where none can be reached, and says so on the key", () => {
+  it("drops the phone where none can be reached, says so on the key and opens there", () => {
     const s = sheet({ reach: "no-hybrid" })
-    expect(ids(s)).toEqual(["computer", "key"])
-    expect(option(s, "key").advice).toEqual([C.key.noPhone])
+    expect(ids(s)).toEqual(["key", "computer"])
+    expect(s.selected).toBe("key")
+    expect(option(s, "key")).toMatchObject({ advice: [C.key.noPhone] })
+    expect(s.options.some((o) => o.recommended)).toBe(false)
     for (const reach of ["unknown", "below-floor"] as const) {
       expect(ids(sheet({ reach }))).toContain("phone")
     }
@@ -66,10 +71,11 @@ describe("backupAddOptionsFor", () => {
 
   it("merges the phone and the key where the browser ignores hints, with the Windows prompt advice there", () => {
     const mac = sheet({ ignoresHints: true })
-    expect(ids(mac)).toEqual(["computer", "phone-or-key"])
-    expect(option(mac, "phone-or-key").advice).toEqual([B.phone.managers])
+    expect(ids(mac)).toEqual(["phone-or-key", "computer"])
+    expect(mac.selected).toBe("phone-or-key")
+    expect(option(mac, "phone-or-key")).toMatchObject({ advice: [], recommended: true })
     const windows = sheet({ ignoresHints: true, os: "windows" })
-    expect(option(windows, "phone-or-key").advice).toEqual([B.phone.managers, C.phoneOrKey.windows])
+    expect(option(windows, "phone-or-key").advice).toEqual([C.phoneOrKey.windows])
   })
 
   it("warns on every option that can reach a key, in the backup's own words", () => {
@@ -81,9 +87,9 @@ describe("backupAddOptionsFor", () => {
 
   it("warns about a pop-up where a script the page cannot use answers it", () => {
     const s = sheet({ extension: "bitwarden" })
-    expect(ids(s)).toEqual(["computer", "phone", "key"])
+    expect(ids(s)).toEqual(["phone", "key", "computer"])
     expect(option(s, "computer").advice).toEqual([PHONE_STEPS_COPY.local.extension])
-    expect(option(s, "phone").advice).toEqual([B.phone.managers, PHONE_STEPS_COPY.extension])
+    expect(option(s, "phone").advice).toEqual([PHONE_STEPS_COPY.extension])
     expect(option(s, "key").advice).toEqual([PHONE_STEPS_COPY.extension])
   })
 })

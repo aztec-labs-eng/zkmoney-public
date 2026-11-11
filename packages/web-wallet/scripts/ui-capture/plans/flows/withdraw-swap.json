@@ -3,69 +3,60 @@
   "steps": [
     {
       "action": "fill",
-      "placeholder": "Search or paste an address",
+      "testId": "withdraw-address",
       "value": "0x7777777777777777777777777777777777777777"
     },
     {
-      "action": "click",
-      "role": "button",
-      "name": "New address",
-      "exact": false
-    },
-    {
       "action": "fill",
-      "label": "Wallet name (optional)",
+      "label": "Name this address",
       "value": "Weekend savings wallet"
     },
     {
-      "action": "reachable",
-      "selector": "[role=\"dialog\"][aria-label=\"Withdraw\"] button:has-text(\"Continue\")"
+      "action": "waitFor",
+      "selector": "[data-testid=\"withdraw-address-continue\"]:enabled"
     },
     {
       "action": "screenshot",
       "file": "address.png",
-      "state": "address"
+      "state": "address with its privacy card"
     },
     {
       "action": "click",
-      "selector": "[role=\"dialog\"][aria-label=\"Withdraw\"] button:has-text(\"Continue\")"
-    },
-    {
-      "action": "screenshot",
-      "file": "privacy.png",
-      "state": "privacy"
-    },
-    {
-      "action": "click",
-      "role": "button",
-      "name": "Continue without privacy",
-      "exact": true
+      "testId": "withdraw-address-continue"
     },
     {
       "action": "waitFor",
-      "selector": ".ww-fund__amount input"
+      "testId": "withdraw-amount"
     },
     {
       "action": "click",
-      "role": "button",
-      "name": "Receive as",
-      "exact": false
+      "selector": "[data-testid=\"withdraw-to\"] [data-testid=\"transfer-asset\"]"
     },
     {
       "action": "screenshot",
       "file": "asset-options.png",
-      "state": "asset options"
+      "state": "network and coin picker"
     },
     {
       "action": "click",
-      "role": "option",
-      "name": "USDC",
-      "exact": false
+      "testId": "withdraw-chain-31337"
+    },
+    {
+      "action": "click",
+      "testId": "picker-USDC"
+    },
+    {
+      "action": "waitFor",
+      "testId": "withdraw-amount"
     },
     {
       "action": "fill",
-      "selector": ".ww-fund__amount input",
+      "testId": "withdraw-amount",
       "value": "24"
+    },
+    {
+      "action": "waitFor",
+      "selector": "[data-testid=\"withdraw-amount-continue\"]:enabled"
     },
     {
       "action": "screenshot",
@@ -74,9 +65,23 @@
     },
     {
       "action": "click",
-      "role": "button",
-      "name": "Review",
-      "exact": true
+      "testId": "withdraw-amount-continue"
+    },
+    {
+      "action": "waitFor",
+      "testId": "withdraw-gas-continue"
+    },
+    {
+      "action": "click",
+      "selector": "[role=\"group\"][aria-label=\"ETH for gas\"] button:has-text(\"None\")"
+    },
+    {
+      "action": "click",
+      "testId": "withdraw-gas-continue"
+    },
+    {
+      "action": "waitFor",
+      "testId": "withdraw-confirm"
     },
     {
       "action": "screenshot",
@@ -85,9 +90,7 @@
     },
     {
       "action": "click",
-      "role": "button",
-      "name": "Confirm withdrawal",
-      "exact": true
+      "testId": "withdraw-confirm"
     },
     {
       "action": "wait",
@@ -104,8 +107,8 @@
     },
     {
       "action": "screenshot",
-      "file": "handed-off.png",
-      "state": "Handed off to the bell after simulated signing"
+      "file": "status.png",
+      "state": "The status step after simulated signing"
     },
     {
       "action": "wait",
@@ -118,6 +121,6 @@
     }
   ],
   "finalScreenshot": false,
-  "path": "/withdraw/existing?flowFixture=success",
+  "path": "/withdraw/fresh?flowFixture=success",
   "recordHoldMs": 0
 }

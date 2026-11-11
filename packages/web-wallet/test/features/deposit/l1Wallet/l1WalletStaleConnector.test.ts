@@ -4,6 +4,8 @@
  * "getProvider is not a function" mid-deposit, so it must read as no wallet at all.
  */
 import { describe, expect, it, vi } from "vitest"
+import { mainnet } from "viem/chains"
+import type { Config } from "wagmi"
 import type { Hex } from "viem"
 
 const CHAIN_ID = 11155111
@@ -14,7 +16,9 @@ vi.mock("wagmi/actions", () => ({
   getAccount: () => ({ connector: STALE, chainId: CHAIN_ID, addresses: [ACCOUNT] }),
   switchChain: vi.fn(),
 }))
-vi.mock("../../../../src/session/wagmi", () => ({ wagmiConfig: () => ({}) }))
+
+// wagmi/actions is mocked: only the config's chains are read.
+const WAGMI = { chains: [mainnet] } as unknown as Config
 
 const { getL1Clients } = await import("../../../../src/session/l1Wallet")
 
@@ -26,11 +30,11 @@ describe("getL1Clients with a storage-rehydrated connector", () => {
       throw new Error(`unexpected request: ${method}`)
     })
     window.ethereum = { request } as never
-    expect((await getL1Clients(CHAIN_ID)).account.toLowerCase()).toBe(ACCOUNT)
+    expect((await getL1Clients(WAGMI, CHAIN_ID)).account.toLowerCase()).toBe(ACCOUNT)
     delete (window as { ethereum?: unknown }).ethereum
   })
 
   it("reports no wallet rather than a TypeError when nothing else is injected", async () => {
-    await expect(getL1Clients(CHAIN_ID)).rejects.toThrow(/No wallet connected/)
+    await expect(getL1Clients(WAGMI, CHAIN_ID)).rejects.toThrow(/No wallet connected/)
   })
 })

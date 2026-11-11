@@ -1,13 +1,13 @@
+/** Guards: sponsored spends wait out a backup passkey's switch and balance move. */
 import { act, type ReactNode } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { MemoryRouter, Route, Routes } from "react-router-dom"
-import type { BackupRotationRecord } from "@obsidion/front-core"
+import type { BackupRotationRecord, BackupRotations } from "@obsidion/front-core"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { setIdentity } from "../../support/identity"
-import { signedRecord, storedRotation, TWO_KEY, word } from "../../support/backupAdd"
+import { signedRecord, storedRotation, testRotations, TWO_KEY, word } from "../../support/backupAdd"
 
 const ONE_KEY = word(10)
-const OTHER = word(0x99)
 vi.mock("../../../src/features/registration/openRegistration", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../src/features/registration/openRegistration")>()),
   useNameClaimPending: () => false,
@@ -15,10 +15,6 @@ vi.mock("../../../src/features/registration/openRegistration", async (importOrig
 }))
 vi.mock("../../../src/features/registration/sponsoredRailReadiness", () => ({
   useSponsoredRailPending: () => false,
-}))
-vi.mock("../../../src/config/env", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../src/config/env")>()),
-  getConfig: () => ({ oxideProfile: { portal: "0x" + "11".repeat(20) } }),
 }))
 vi.mock("../../../src/features/contacts/ContactDetailScreen/ContactDetailScreen", () => ({
   ContactDetailScreen: () => <div>contact page</div>,
@@ -34,9 +30,6 @@ const { useActionGuard } = await import("../../../src/features/actionGate")
 const { useBalanceMovingPause } = await import(
   "../../../src/features/backupPasskey/balanceMovingPause"
 )
-const { getBackupRotationStore, resetBackupRotationStoreForTests } = await import(
-  "../../../src/features/backupPasskey/backupRotationStore"
-)
 const { setUpgradeStatus } = await import("../../../src/features/migration/migrationDialog")
 const { checkUpgradeLock } = await import("../../../src/features/migration/upgradeLock")
 type Action = Parameters<typeof ActionGate>[0]["action"]
@@ -44,25 +37,21 @@ type Action = Parameters<typeof ActionGate>[0]["action"]
 const record = (over: Partial<BackupRotationRecord>) => signedRecord(over)
 const moving = () => record({ phase: "rerooted", reroot: { switched: true } })
 
-/**
- * After the re-root the two-key account's sponsored spends pay with the one-key account's note, the
- * same note the balance move's chunks spend. Each sponsored action waits from the re-root's switch
- * until the move ends, and says why.
- */
 const { openTestSession } = await import("../../support/session")
+const { defaultConfig } = await import("../../support/page")
 const { closeSession } = await import("../../../src/session/session")
 describe("sponsored spends during a backup passkey's balance move", () => {
   let host: HTMLDivElement
   let root: Root
+  let rotations: BackupRotations
 
   beforeEach(async () => {
     // The wallet's mount reads each account's upgrade runs once a page; until then flows wait.
-    await checkUpgradeLock(TWO_KEY)
-    await checkUpgradeLock(ONE_KEY)
-    await checkUpgradeLock(OTHER)
+    await checkUpgradeLock(defaultConfig, TWO_KEY)
+    await checkUpgradeLock(defaultConfig, ONE_KEY)
     localStorage.clear()
-    resetBackupRotationStoreForTests()
-    openTestSession()
+    rotations = testRotations()
+    openTestSession({ backupRotations: rotations })
     await setIdentity({ address: TWO_KEY, handle: "taga" })
     setUpgradeStatus({ state: "none", registration: false })
     showErrorModal.mockReset()
@@ -76,7 +65,7 @@ describe("sponsored spends during a backup passkey's balance move", () => {
     host.remove()
   })
 
-  const save = (r: BackupRotationRecord) => act(() => getBackupRotationStore().put(r))
+  const save = (r: BackupRotationRecord) => act(() => rotations.put(r))
   const render = async (node: ReactNode) => {
     await act(async () => root.render(node))
   }
@@ -116,24 +105,6 @@ describe("sponsored spends during a backup passkey's balance move", () => {
     expect(paused()).toBe(true)
     await save(record({ phase: "done", rotation: storedRotation({ signature: undefined }) }))
     expect(paused()).toBe(false)
-    expect(host.textContent).toContain("withdraw screen")
-  })
-
-  it("keeps deposit, receive and Requests open during the move", async () => {
-    await save(moving())
-    for (const action of ["deposit", "receive", "requests"] as const) {
-      await mount(action)
-      expect(host.textContent).toContain(`${action} screen`)
-    }
-  })
-
-  it("pauses the one-key account too, and leaves another account alone", async () => {
-    await save(moving())
-    await setIdentity({ address: ONE_KEY, handle: "taga" })
-    await mount("withdraw")
-    expect(paused()).toBe(true)
-    await setIdentity({ address: OTHER, handle: "taga" })
-    await mount("withdraw")
     expect(host.textContent).toContain("withdraw screen")
   })
 

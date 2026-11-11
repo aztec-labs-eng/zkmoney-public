@@ -1,16 +1,17 @@
 /**
- * The session's tasks for user transactions: once the wallet is ready, whatever an earlier tab left
- * `local` ends with its flow's record, and `sent` operations settle from the chain.
+ * The session's tasks for user transactions: the prover's stages mark the records they prove, and
+ * once the wallet is ready, whatever an earlier tab left `local` ends with its flow's record, and
+ * `sent` operations settle from the chain.
  */
 import {
   bestEffort,
   task,
-  type Activity,
-  type Database,
-  type OperationStore,
-  type Resource,
+  type Operations,
+  type ProvingProgress,
+  type ReadonlyStore,
   type Task,
   type Withdrawals,
+  type Service,
 } from "@obsidion/front-core"
 import type { ObsidionWallet } from "@obsidion/sdk"
 
@@ -19,12 +20,36 @@ const RESOLVE_SENT_MS = 10_000
 const warn = (err: unknown) =>
   console.warn("[operations] could not recover interrupted operations:", err)
 
-/** The session's flow records and its operations. */
+/** The session's withdrawals and its operations. */
 interface Stores {
-  db: Database
-  activity: Activity
   withdrawals: Withdrawals
-  operations: OperationStore
+  operations: Operations
+}
+
+/**
+ * Marks the session's operations from the prover's stages: every proof reports a stage under its
+ * operation's id, after the passkey signed. It runs while the page is hidden too, so a proof begun
+ * there is marked, and a reload fails its record rather than dropping it. A failed write runs again
+ * after 1 s, doubling to a minute.
+ */
+export function provingMarks(
+  progress: ReadonlyStore<ProvingProgress>,
+  operations: Pick<Operations, "apply">,
+): Task {
+  let marked = progress.get().stages
+  return task("provingMarks", {
+    needs: {},
+    on: { progress },
+    every: "once",
+    backoff: { baseMs: 1_000, maxMs: 60_000 },
+    run: async ({ progress: { stages } }) => {
+      const changed = Object.entries(stages).filter(([id, entry]) => marked[id] !== entry)
+      await Promise.all(
+        changed.map(([id, entry]) => operations.apply(id, { type: "proving", at: entry.at })),
+      )
+      marked = stages
+    },
+  })
 }
 
 /** Settles `sent` operations from the chain every 10 s while the page is visible. */
@@ -32,8 +57,8 @@ export function operationsSettle({
   wallet,
   operations,
 }: {
-  wallet: Resource<Pick<ObsidionWallet, "node">>
-  operations: Pick<OperationStore, "resolveSent">
+  wallet: Service<Pick<ObsidionWallet, "node">>
+  operations: Pick<Operations, "resolveSent">
 }): Task {
   return task("operationsSettle", {
     needs: { wallet },
@@ -48,7 +73,7 @@ export function interruptedSweep({
   wallet,
   activeSince,
   ...stores
-}: Stores & { wallet: Resource<unknown>; activeSince: () => number }): Task {
+}: Stores & { wallet: Service<unknown>; activeSince: () => number }): Task {
   return task("interruptedSweep", {
     needs: { wallet },
     every: "once",
@@ -57,66 +82,26 @@ export function interruptedSweep({
 }
 
 /**
- * End what an earlier tab left before submit: every operation, and the session's flow records.
+ * End what an earlier tab left before submit: every operation, and the session's withdrawals.
  * One tab runs the wallet and this one starts nothing before `activeSince`, when it became the
- * active tab, so a record that started by then and holds no hash can never be sent. First the
- * operation and its flow's record are made to agree on a hash either one holds, so neither is
- * failed while the other says it is on chain.
+ * active tab, so a record that started by then and holds no hash can never be sent. A flow saves
+ * its hash on its operation and its own record in one write, so the two never disagree.
  */
 export async function recoverInterrupted(
-  { db, activity, withdrawals, operations }: Stores,
+  { withdrawals, operations }: Stores,
   activeSince: number,
   now: number = Date.now(),
 ): Promise<void> {
-  // Hashes are reconciled before anything is failed; a store that did not open is not empty, so
-  // nothing is failed until a later boot reads it.
-  const reconciled = await bestEffort(
-    "unknown",
-    Promise.all([activity.ready, withdrawals.ready])
-      .then(() => reconcileHashes({ db, activity, withdrawals, operations }, activeSince))
-      .then(() => true),
+  // A store that did not open is not empty, so nothing is failed until a later boot reads it.
+  if (
+    !(await bestEffort(
+      "unknown",
+      withdrawals.ready.then(() => true),
+    ))
   )
-  if (!reconciled) return
-  const age = now - activeSince
+    return
   await Promise.all([
-    activity.failInterrupted(now, age).catch(warn),
-    operations.failInterrupted(activeSince, now).catch(warn),
-    withdrawals.failInterrupted(now, age).catch(warn),
+    operations.sweep(activeSince, now).catch(warn),
+    withdrawals.failInterrupted(now, now - activeSince).catch(warn),
   ])
-}
-
-async function reconcileHashes(
-  { db, activity, withdrawals, operations: ops }: Stores,
-  activeSince: number,
-) {
-  await ops.load()
-  const burns = await withdrawals.all()
-  for (const op of ops.list()) {
-    const row = await activity.get(op.operationId)
-    const burn = burns.find((w) => w.operationId === op.operationId)
-    if (op.state === "sent" && op.txHash) {
-      const txHash = op.txHash
-      // The row's hash and its burn's are one fact.
-      await db.write(async (w) => {
-        if (row && !row.txHash) await activity.setHash(op.operationId, txHash, w)
-        if (burn?.phase === "submitting" && !burn.l2TxHash) {
-          await withdrawals.apply(
-            burn.localId,
-            {
-              type: "patch",
-              fields: {
-                phase: "submitting",
-                l2TxHash: txHash as `0x${string}`,
-                reorgEpoch: burn.reorgEpoch,
-              },
-            },
-            w,
-          )
-        }
-      })
-    } else if (op.state === "local" && op.startedAt <= activeSince) {
-      const txHash = row?.txHash || burn?.l2TxHash
-      if (txHash) await ops.markSent(op.operationId, txHash)
-    }
-  }
 }

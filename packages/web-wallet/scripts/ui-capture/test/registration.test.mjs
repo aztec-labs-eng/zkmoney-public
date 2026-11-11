@@ -58,7 +58,7 @@ test("registration keeps phone Close outside scrolling text and preserves paid a
     sourceStatus: execFileSync("git", ["status", "--porcelain"], { cwd: repo, encoding: "utf8" }).trim(),
     sourceHashes: {}, cases: [], failures: [],
   }
-  for (const file of ["src/ui/shell.css", "src/features/onboarding/RegistrationSheet.tsx", "src/features/onboarding/OnboardingCard.tsx", "scripts/ui-capture/test/registration.test.mjs"]) {
+  for (const file of ["src/ui/shell.css", "src/features/onboarding/RegistrationSheet/RegistrationSheet.tsx", "src/features/onboarding/RegistrationSheet/RegistrationSheet.module.css", "src/features/onboarding/OnboardingCard.tsx", "scripts/ui-capture/test/registration.test.mjs"]) {
     report.sourceHashes[file] = hash(await readFile(path.join(walletDir, file)))
   }
   const environments = [

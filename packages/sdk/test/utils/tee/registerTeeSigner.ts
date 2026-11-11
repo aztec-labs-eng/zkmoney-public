@@ -30,6 +30,9 @@ import type { ObsidionWallet } from "../../../src/obsidion/ObsidionWallet.js"
 import { SANDBOX_URL } from "../constants.js"
 import type { TestAttestationFixture } from "./gen_test_attestation.js"
 
+/** EIP-7825: the most gas any L1 transaction may declare. */
+const MAX_L1_TX_GAS = 2n ** 24n
+
 export interface RegisterTeeSignerParams {
   signer: EnclaveIdentity
   teeRegistry: TeeRegistryContract
@@ -83,17 +86,50 @@ export async function registerTeeSigner(params: RegisterTeeSignerParams): Promis
   )
 
   logger.info(`Staging the attestation cert chain on TeeRegistry ${teeRegistry.address}`)
+  // The registry wrapper pads an estimate by 3/2 with no cap. The client cert verify needs about 13M gas, so its
+  // padded limit is over the 2^24 per-tx cap (EIP-7825) that mainnet enforces, so cap the padding.
+  const staged = async (functionName: string, args: readonly unknown[]) => {
+    const call = {
+      address: teeRegistry.address.toString() as Hex,
+      abi: TeeRegistryAbi,
+      functionName,
+      args,
+    }
+    const estimate = await params.l1Client.estimateContractGas({
+      ...call,
+      account: params.l1Client.account,
+    } as never)
+    const gas = (estimate * 3n) / 2n < MAX_L1_TX_GAS ? (estimate * 3n) / 2n : MAX_L1_TX_GAS
+    return { waitForReceipt: true, gas }
+  }
+  const hex = (b: Buffer) => `0x${b.toString("hex")}` as Hex
   const { ca, client, leafCertHash } = getCertStagingEntries(fixture.attestationCose)
   for (const { cert, parentCertHash } of ca) {
-    await teeRegistry.verifyTeeCACert(cert, parentCertHash, { waitForReceipt: true })
+    await teeRegistry.verifyTeeCACert(
+      cert,
+      parentCertHash,
+      await staged("verifyTeeCACert", [hex(cert), parentCertHash.toString()]),
+    )
   }
-  await teeRegistry.verifyTeeClientCert(client.cert, client.parentCertHash, {
-    waitForReceipt: true,
-  })
-  await teeRegistry.verifyTeeAttestationHash(attestationTbs, { waitForReceipt: true })
-  await teeRegistry.verifyTeeAttestationSig(attestationTbsKeccak, signature, leafCertHash, {
-    waitForReceipt: true,
-  })
+  await teeRegistry.verifyTeeClientCert(
+    client.cert,
+    client.parentCertHash,
+    await staged("verifyTeeClientCert", [hex(client.cert), client.parentCertHash.toString()]),
+  )
+  await teeRegistry.verifyTeeAttestationHash(
+    attestationTbs,
+    await staged("verifyTeeAttestationHash", [hex(attestationTbs)]),
+  )
+  await teeRegistry.verifyTeeAttestationSig(
+    attestationTbsKeccak,
+    signature,
+    leafCertHash,
+    await staged("verifyTeeAttestationSig", [
+      attestationTbsKeccak.toString(),
+      hex(signature),
+      leafCertHash.toString(),
+    ]),
+  )
 
   logger.info(`Registering TEE ${signer.ethAddress}`)
   // registerTee sends an Inbox message. A tx mined in a later second than its estimate opens a new

@@ -1,0 +1,43 @@
+/* Joined handle input + unlock button in one capsule. */
+.inputRow {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 6px 6px 6px 20px;
+  box-sizing: border-box;
+  border-radius: 999px;
+  background: rgba(var(--ink-rgb), 0.06);
+  box-shadow: inset 0 0 0 1px rgba(var(--ink-rgb), 0.1);
+}
+.inputRow:focus-within {
+  box-shadow: inset 0 0 0 1px rgba(var(--ink-rgb), 0.28);
+}
+.input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 15px;
+  outline: none;
+}
+.input::placeholder {
+  color: var(--text-secondary);
+}
+.check {
+  display: inline-flex;
+  margin: 0 10px;
+}
+@media (max-width: 640px) {
+  .inputRow {
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 8px;
+    border-radius: var(--radius-24, 24px);
+  }
+  .input {
+    width: 100%;
+    flex: 1 1 100%;
+    padding: 8px 12px;
+  }
+}

@@ -1,13 +1,12 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { testCore, testPage } from "../support/page"
-import { ContactStorage, type IStorageAdapter, type PaylinkTransaction } from "@obsidion/front-core"
-import { activeNamespace, closeSession, switchSession, session } from "../../src/session/session"
-import { pageSessionDeps } from "../../src/app/sessionDeps"
+import { testCore } from "../support/page"
+import { sessionPage } from "../support/session"
+import { operationRows, type PaylinkTransaction } from "@obsidion/front-core"
+import { activeNamespace, closeSession, type Session } from "../../src/session/session"
 import { PaylinkActionEnum } from "@obsidion/core/constants"
 import { decodePaylinkInline } from "@obsidion/sdk"
-import { provingProgress } from "@obsidion/proving-progress"
-import { fixtureState, operation } from "../../scripts/ui-capture/fixtures/control"
+import { captureOn, fixtureState, operation } from "../../scripts/ui-capture/fixtures/control"
 import { capturePaylinkRows, claimSponsoredLink, createSponsoredLink } from "../../scripts/ui-capture/fixtures/paylinks"
 import { runContactPay as runCaptureContactPay } from "../../scripts/ui-capture/fixtures/contact-pay"
 import { demoClaimFragments, demoFundingTxHash } from "../../src/dev/demoFixtures"
@@ -18,13 +17,13 @@ import { DesktopSendUnresolvedError } from "../../src/platform/desktopBridge"
 
 const demo = vi.hoisted(() => ({ enabled: true }))
 vi.mock("../../src/dev/demoFlag", () => ({ isDemoMode: () => demo.enabled }))
-vi.mock("../../src/config/env", async (importOriginal) => ({
-  ...await importOriginal<object>(),
-  getConfig: () => ({ network: "sandbox" }),
-}))
 
+let session: Session
 const deps = {
   account: { getAddress: () => ({ toString: () => `0x${"22".repeat(32)}` }) },
+  get session() {
+    return session
+  },
 } as unknown as SponsoredPaylinkDeps
 
 function state(value: string) {
@@ -37,9 +36,9 @@ const handled = <T,>(promise: Promise<T>) => promise.then(
 )
 
 describe("capture service boundary contracts", () => {
-  const events: { kind: string; operationId?: string; failed?: boolean }[] = []
-  const start = (event: { operationId?: string }) => events.push({ kind: "start", ...event })
-  const end = (event: { operationId?: string; failed?: boolean }) => events.push({ kind: "end", ...event })
+  /** The signatures the page's prover heard, in order. */
+  const events: { kind: string; failed?: boolean }[] = []
+  let offSigning = () => {}
 
   beforeEach(async () => {
     vi.useFakeTimers()
@@ -60,36 +59,34 @@ describe("capture service boundary contracts", () => {
     })
     state("success")
     events.length = 0
-    const values = new Map<string, string>()
-    const adapter: IStorageAdapter = {
-      getItem: async (key) => values.get(key) ?? null,
-      setItem: async (key, value) => { values.set(key, value) },
-      removeItem: async (key) => { values.delete(key) },
-      clear: async () => { values.clear() },
-    }
-    ContactStorage.resetForTests()
-    ContactStorage.get(adapter)
-    provingProgress.on("signing-start", start)
-    provingProgress.on("signing-end", end)
-    switchSession(activeNamespace(testCore().device), pageSessionDeps(testPage()))
+    const page = sessionPage()
+    let last = page.prover.progress.get().signing
+    offSigning = page.prover.progress.subscribe(() => {
+      const { signing } = page.prover.progress.get()
+      if (signing.started !== last.started) events.push({ kind: "start" })
+      if (signing.ended !== last.ended) events.push({ kind: "end", failed: signing.failed })
+      last = signing
+    })
+    captureOn(page)
+    session = page.switchTo(activeNamespace(testCore().device))
   })
 
   afterEach(() => {
     closeSession()
-    provingProgress.off("signing-start", start)
-    provingProgress.off("signing-end", end)
+    offSigning()
     vi.clearAllTimers()
     vi.useRealTimers()
     vi.unstubAllGlobals()
   })
 
-  it("awaits preparation before public signing events and preserves the operation id", async () => {
+  it("awaits preparation before the signature is reported", async () => {
     const stages: string[] = []
     let prepared = false
     let release!: () => void
     const preparation = new Promise<void>((resolve) => { release = resolve })
     const result = handled(operation("ordered-operation", (stage) => stages.push(stage), true, {
       operationId: "ordered-id",
+      session,
       onPrepared: async () => { await preparation; prepared = true },
     }))
     await vi.advanceTimersByTimeAsync(900)
@@ -99,8 +96,8 @@ describe("capture service boundary contracts", () => {
     await vi.advanceTimersByTimeAsync(1400)
     expect(prepared).toBe(true)
     expect(events).toEqual([
-      { kind: "start", operationId: "ordered-id" },
-      { kind: "end", operationId: "ordered-id", failed: false },
+      { kind: "start" },
+      { kind: "end", failed: false },
     ])
     expect(stages).toEqual(["proving"])
     await vi.advanceTimersByTimeAsync(3300)
@@ -111,7 +108,7 @@ describe("capture service boundary contracts", () => {
   it("stops at the cancellation callback before preparation or signing", async () => {
     const cancelled = new Error("test cancellation")
     const prepared = vi.fn()
-    const result = handled(operation("cancelled-operation", () => { throw cancelled }, true, { onPrepared: prepared }))
+    const result = handled(operation("cancelled-operation", () => { throw cancelled }, true, { onPrepared: prepared, session }))
     await vi.advanceTimersByTimeAsync(6000)
     expect((await result).error).toBe(cancelled)
     expect(prepared).not.toHaveBeenCalled()
@@ -120,24 +117,24 @@ describe("capture service boundary contracts", () => {
 
   it("marks failed signing explicitly and gives a retry its own successful end event", async () => {
     state("signing-retry")
-    const first = handled(operation("signing-retry-operation", undefined, true, { operationId: "first" }))
+    const first = handled(operation("signing-retry-operation", undefined, true, { operationId: "first", session }))
     await vi.advanceTimersByTimeAsync(6000)
     expect((await first).error).toBeInstanceOf(Error)
-    const second = handled(operation("signing-retry-operation", undefined, true, { operationId: "second" }))
+    const second = handled(operation("signing-retry-operation", undefined, true, { operationId: "second", session }))
     await vi.advanceTimersByTimeAsync(6000)
     expect((await second).error).toBeUndefined()
     expect(events).toEqual([
-      { kind: "start", operationId: "first" },
-      { kind: "end", operationId: "first", failed: true },
-      { kind: "start", operationId: "second" },
-      { kind: "end", operationId: "second", failed: false },
+      { kind: "start" },
+      { kind: "end", failed: true },
+      { kind: "start" },
+      { kind: "end", failed: false },
     ])
   })
 
   it("can finish without a signing ceremony while still preparing the result", async () => {
     state("no-signing")
     const prepared = vi.fn()
-    const result = handled(operation("no-signing-operation", undefined, true, { onPrepared: prepared }))
+    const result = handled(operation("no-signing-operation", undefined, true, { onPrepared: prepared, session }))
     await vi.advanceTimersByTimeAsync(6000)
     expect((await result).error).toBeUndefined()
     expect(prepared).toHaveBeenCalledOnce()
@@ -147,36 +144,44 @@ describe("capture service boundary contracts", () => {
   it("a cancelled capture send creates no row or signing event", async () => {
     const cancelled = new Error("capture cancellation")
     const result = handled(runCaptureContactPay({
-      mode: "send", deps, tag: "ada", senderTag: "bob", amountDisplay: "24",
+      mode: "send", session, tag: "ada", senderTag: "bob", amountDisplay: "24",
     }, (stage) => { if (stage === "proving") throw cancelled }))
     await vi.advanceTimersByTimeAsync(6000)
     expect((await result).error).toBe(cancelled)
-    expect((await session().activity.all())).toEqual([])
+    expect(session.operations.view.get().records).toEqual([])
     expect(events).toEqual([])
   })
 
   it("a later capture send failure updates only its own operation id", async () => {
-    await session().activity.insertPending({
-      id: "unrelated-send", operationId: "unrelated-send", networkId: "0xnet", action: "send",
-      token: { address: "unrelated", name: "DAI", symbol: "DAI", decimals: 18, amount: 7, price: 1, logo: "" },
-      amountAtomic: 7n, timestamp: Date.now(), status: "pending", txHash: "", to: "other",
+    const { operations } = session
+    await operations.begin({ operationId: "unrelated-send", flow: "send", summary: "$7" })
+    await operations.apply("unrelated-send", {
+      type: "transfer",
+      transfer: {
+        kind: "send",
+        payload: {
+          networkId: "0xnet", amountAtomic: "7", to: "other",
+          token: { address: "unrelated", name: "DAI", symbol: "DAI", decimals: 18, amount: 7, price: 1, logo: "" },
+        },
+      },
     })
     state("signing-failure")
     const result = handled(runCaptureContactPay({
-      mode: "send", deps, tag: "ada", senderTag: "bob", amountDisplay: "24",
+      mode: "send", session, tag: "ada", senderTag: "bob", amountDisplay: "24",
     }, () => {}))
     await vi.advanceTimersByTimeAsync(6000)
     expect((await result).error).toBeInstanceOf(Error)
-    const rows = (await session().activity.all())
-    expect(rows).toHaveLength(2)
-    expect(rows.find((row) => row.id === "unrelated-send")?.status).toBe("pending")
-    const failed = rows.find((row) => row.id.startsWith("capture-send-"))!
-    expect(failed.status).toBe("failed")
+    const sends = operations.view.get().records.filter((op) => op.kind === "send")
+    expect(sends).toHaveLength(2)
+    expect(sends.find((op) => op.operationId === "unrelated-send")?.state).toBe("local")
+    const failed = sends.find((op) => op.operationId.startsWith("capture-op-"))!
+    expect(failed.state).toBe("failed")
     expect(failed.txHash).toBeFalsy()
     expect(events).toEqual([
-      { kind: "start", operationId: failed.id },
-      { kind: "end", operationId: failed.id, failed: true },
+      { kind: "start" },
+      { kind: "end", failed: true },
     ])
+    operations.release("unrelated-send")
   })
 
   it("a desktop send saves its hold at the helper's approval, after the recheck, then ends unresolved", async () => {
@@ -227,7 +232,7 @@ describe("capture service boundary contracts", () => {
     expect(pending.txHash).toBeFalsy()
     const prepared = decodePaylinkInline(observations[0].url.split("#")[1])
     expect(prepared.secret.toString()).toBe(pending.secret)
-    expect(events[0]).toEqual({ kind: "start", operationId: pending.operationId })
+    expect(events[0]).toEqual({ kind: "start" })
     await vi.advanceTimersByTimeAsync(4700)
     const { value, error } = await result
     expect(error).toBeUndefined()
@@ -267,9 +272,13 @@ describe("capture service boundary contracts", () => {
     await vi.advanceTimersByTimeAsync(6000)
     const { value, error } = await result
     expect(error).toBeUndefined()
-    const rows = (await session().activity.all()) as PaylinkTransaction[]
+    // The claim's operation is its only record: the chain files no row for it.
+    expect(await session.transfers.all()).toEqual([])
+    const { operations } = session
+    expect(operations.view.get().records.map((op) => op.kind)).toEqual(["paylink-claim"])
+    const rows = operationRows(operations.view.get()).records as PaylinkTransaction[]
     expect(rows).toHaveLength(1)
-    expect(rows[0]).toMatchObject({ kind: "paylink-claim", emailPaymentAction: PaylinkActionEnum.CLAIM, status: "success", txHash: value, token: { amount: 100 } })
+    expect(rows[0]).toMatchObject({ emailPaymentAction: PaylinkActionEnum.CLAIM, status: "success", txHash: value, token: { amount: 100 } })
     expect(value).toMatch(/^0x[0-9a-f]{64}$/)
     expect(value).not.toBe(funding)
     expect(fixture === "no-signing" ? events.length : events.filter((event) => event.failed === false).length).toBe(fixture === "no-signing" ? 0 : 1)

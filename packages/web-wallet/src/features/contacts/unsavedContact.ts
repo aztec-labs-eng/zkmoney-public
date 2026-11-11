@@ -1,12 +1,13 @@
 import {
-  ContactStorage,
   loadRecords,
   normalizeTag,
   TagValidationError,
+  WalletError,
   type Contact,
+  type Contacts,
   type Transaction,
 } from "@obsidion/front-core"
-import { session } from "../../session/session"
+import type { Session } from "../../session/session"
 import { addContact } from "./useInlineContactSearch"
 import { resolveTagForCommit, resolveTagViaRegistry } from "./registryResolution"
 
@@ -38,17 +39,23 @@ export function pastAddressOf(
  * still on an older zk.money opens at the address its past transfers used, so its history shows.
  */
 export async function lookUpUnsavedContact(
+  session: Pick<Session, "transfers" | "reads" | "page">,
   idOrTag: string,
-  own: string | undefined,
+  self: string | undefined,
 ): Promise<Contact | null> {
   const tag = normalizeTag(idOrTag)
-  if (!tag || (own && normalizeTag(own) === tag)) return null
+  if (!tag || (self && normalizeTag(self) === tag)) return null
   try {
-    const resolution = await resolveTagViaRegistry(tag)
+    const resolution = await resolveTagViaRegistry(session.page, tag)
     if (resolution.status === "resolved") return unsavedContact(tag, resolution.l2Address)
     if (resolution.status === "notFound") return null
-    const rows = await loadRecords(session().activity.query("peer", tag))
-    const oldestFirst = [...rows].sort((a, b) => a.timestamp - b.timestamp)
+    const { transfers, reads } = session
+    // This device's own sends are their operations, beside the chain's rows.
+    const rows = [
+      ...(await loadRecords(transfers.where("peer", tag))),
+      ...(await loadRecords(reads.transfers)),
+    ]
+    const oldestFirst = rows.sort((a, b) => a.timestamp - b.timestamp)
     return unsavedContact(tag, pastAddressOf(tag, oldestFirst) ?? "")
   } catch (e) {
     if (e instanceof TagValidationError) return null
@@ -60,15 +67,19 @@ export async function lookUpUnsavedContact(
  * Save an unsaved contact, but only the address the page showed and a fresh manifest still
  * confirms. "changed" means the registry moved on since the page resolved it.
  */
-export async function saveUnsavedContact(contact: Contact): Promise<"added" | "changed"> {
+export async function saveUnsavedContact(
+  session: Pick<Session, "page">,
+  contacts: Pick<Contacts, "all" | "addEntry">,
+  contact: Contact,
+): Promise<"added" | "changed"> {
   const tag = contact.tag
   if (!tag) return "changed"
-  const fresh = await resolveTagForCommit(tag)
+  const fresh = await resolveTagForCommit(session.page, tag)
   if (fresh.status !== "resolved" || fresh.l2Address !== contact.address) return "changed"
-  const entries = await ContactStorage.get().getEntries()
+  const entries = await contacts.all()
   // A row the wallet added is approved by the add below.
   if (entries.some((e) => e.tag === tag && !e.autoAdded)) return "added"
-  const saved = await addContact(tag, contact.address, undefined, undefined, tag)
-  if (!saved.success) throw new Error(saved.errors ?? "Could not add contact")
+  const saved = await addContact(contacts, tag, contact.address, undefined, undefined, tag)
+  if (!saved.success) throw new WalletError("unknown", saved.errors)
   return "added"
 }

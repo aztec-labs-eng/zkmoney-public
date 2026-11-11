@@ -1,108 +1,97 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { DEFAULT_CONTRACTS, Network, type ObsidionWallet } from "@obsidion/sdk"
 import {
-  contractServiceResource,
-  type ContractServiceDeps,
-  type ContractServiceSingleton,
+  ContractService,
+  DEFAULT_CONTRACTS,
+  Network,
+  ObsidionWallet,
+  type ContractServiceFactory,
+} from "@obsidion/sdk"
+import {
+  contractServiceFactory,
+  openContractService,
+  type OpenContractServiceDeps,
 } from "../../src/engine/contractService"
-import { fixed, resource, valueOf } from "../../src/engine/resource"
+import { fixed, service as buildService, valueOf } from "../../src/engine/service"
 
 const flush = () => vi.advanceTimersByTimeAsync(0)
 
-const wallet = { node: { _id: "node" }, pxe: { _id: "pxe" } } as unknown as ObsidionWallet
+const profileOptions = (network: Network) =>
+  ({ source: "profile", config: { network, contracts: {} } } as never)
 
-const profileOptions = (overrides: Record<string, unknown> = {}) =>
-  ({ source: "profile", config: { network: Network.TESTNET }, ...overrides } as never)
+const walletOver = (contractService: ContractServiceFactory) =>
+  new ObsidionWallet({ id: "a" } as never, { id: "b" } as never, "0xrollup", { contractService })
 
-/** `ContractService`'s singleton: it records each construction and serves the one instance. */
-function fakeSingleton() {
-  const registered = vi.fn(async () => {})
-  const l1Reads = vi.fn(async () => ({ token: "0xtok", portal: "0xportal" }))
-  const fake = {
-    instance: null as unknown,
-    constructions: [] as unknown[][],
-    registered,
-    l1Reads,
-    getInstance: (...args: unknown[]) => {
-      if (args.length === 0) {
-        if (!fake.instance) throw new Error("First call to getInstance requires storage or network")
-        return fake.instance
-      }
-      fake.constructions.push(args)
-      return (fake.instance = {
-        getNetwork: () => "testnet",
-        getL1Addresses: l1Reads,
-        registerContractWithName: registered,
-        getContractAddress: async () => ({ toString: () => "0xfpc" }),
-      })
-    },
+/** A built service's reads: its L1 addresses and the sponsor FPC's registration. */
+function fakeService() {
+  return {
+    getNetwork: () => Network.TESTNET,
+    getL1Addresses: vi.fn(async () => ({ token: "0xtok", portal: "0xportal" })),
+    registerContractWithName: vi.fn(async () => {}),
+    getContractAddress: async () => ({ toString: () => "0xfpc" }),
   }
-  return fake
 }
 
-let singleton: ReturnType<typeof fakeSingleton>
+let service: ReturnType<typeof fakeService>
 
-function build(o: Partial<ContractServiceDeps> = {}) {
-  return contractServiceResource(
-    {
-      wallet: fixed("wallet", wallet),
-      network: Network.TESTNET,
-      storage: {} as never,
-      options: profileOptions(),
-      ...o,
-    },
-    singleton as unknown as ContractServiceSingleton,
-  )
+function build(o: Partial<OpenContractServiceDeps> = {}) {
+  return openContractService({
+    wallet: fixed(
+      "wallet",
+      walletOver(() => service as never),
+    ),
+    options: {},
+    ...o,
+  })
 }
 
-describe("contractServiceResource", () => {
+describe("openContractService", () => {
   beforeEach(() => {
     vi.useFakeTimers()
     vi.spyOn(console, "warn").mockImplementation(() => {})
     vi.spyOn(console, "log").mockImplementation(() => {})
-    singleton = fakeSingleton()
+    service = fakeService()
   })
   afterEach(() => {
     vi.useRealTimers()
     vi.restoreAllMocks()
   })
 
-  it("builds once a late wallet arrives", async () => {
+  it("takes the wallet's service once a late wallet arrives", async () => {
     let ready!: (w: ObsidionWallet) => void
-    const late = resource(
+    const late = buildService(
       "wallet",
-      { from: [], backoff: "manual" },
+      { from: [], retry: "manual" },
       () => new Promise<ObsidionWallet>((r) => (ready = r)),
     )
-    const service = build({ wallet: late })
+    const built = build({ wallet: late })
     await flush()
-    expect(service.get().status).toBe("pending")
-    expect(singleton.constructions).toHaveLength(0)
-    ready(wallet)
+    expect(built.get().status).toBe("pending")
+    ready(walletOver(() => service as never))
     await flush()
-    expect(valueOf(service)).toBe(singleton.instance)
+    expect(valueOf(built)).toBe(service)
   })
 
-  it("constructs over the wallet's node and PXE from the snapshot, with no registry URL", async () => {
-    const service = build()
+  it("builds the wallet's service from the snapshot", async () => {
+    const factory = contractServiceFactory({
+      network: Network.TESTNET,
+      storage: {} as never,
+      options: profileOptions(Network.TESTNET),
+    })
+    const over = vi.fn(factory)
+    const wallet = walletOver(over)
+    const built = build({ wallet: fixed("wallet", wallet) })
     await flush()
-    expect(valueOf(service)).toBe(singleton.instance)
-    // storage, node, pxe, network, options — and deliberately no positional registry URL.
-    expect(singleton.constructions).toEqual([
-      [
-        {},
-        wallet.node,
-        wallet.pxe,
-        Network.TESTNET,
-        expect.objectContaining({ source: "profile" }),
-      ],
-    ])
+    expect(over.mock.calls[0]?.[0]).toBe(wallet.node)
+    expect(over.mock.calls[0]?.[1]).toBe(wallet.pxe)
+    expect(valueOf(built)).toBeInstanceOf(ContractService)
+    expect(valueOf(built)).toBe(wallet.contractService)
+    expect(valueOf(built)?.getNetwork()).toBe(Network.TESTNET)
   })
 
   it("loads L1 addresses from the built service", async () => {
     const onL1AddressesLoaded = vi.fn()
-    build({ options: profileOptions({ onL1AddressesLoaded }) })
+    build({ options: { onL1AddressesLoaded } })
     await flush()
     expect(onL1AddressesLoaded).toHaveBeenCalledWith(
       expect.objectContaining({ portal: "0xportal" }),
@@ -112,36 +101,25 @@ describe("contractServiceResource", () => {
   it("registers the sponsor FPC, unless the host pays no fee through it", async () => {
     build()
     await flush()
-    expect(singleton.registered).toHaveBeenCalledWith(DEFAULT_CONTRACTS.sponsorFPC)
-    singleton = fakeSingleton()
+    expect(service.registerContractWithName).toHaveBeenCalledWith(DEFAULT_CONTRACTS.sponsorFPC)
+    service = fakeService()
     const skipped = build({ registerSponsorFpc: false })
     await flush()
-    expect(valueOf(skipped)).toBe(singleton.instance)
-    expect(singleton.registered).not.toHaveBeenCalled()
+    expect(valueOf(skipped)).toBe(service)
+    expect(service.registerContractWithName).not.toHaveBeenCalled()
   })
 
   it("fails on a snapshot for another network, and retries with a backoff", async () => {
-    const service = build({ options: profileOptions({ config: { network: Network.SANDBOX } }) })
+    const factory = contractServiceFactory({
+      network: Network.TESTNET,
+      storage: {} as never,
+      options: profileOptions(Network.SANDBOX),
+    })
+    const built = build({ wallet: fixed("wallet", walletOver(factory)) })
     await flush()
-    expect(service.get()).toMatchObject({
+    expect(built.get()).toMatchObject({
       status: "failed",
       error: expect.objectContaining({ code: "invariant" }),
-      retryAt: expect.any(Number),
     })
-    expect(singleton.constructions).toHaveLength(0)
-  })
-
-  it("adopts an instance already installed, whatever the deps say", async () => {
-    const installed = {
-      registerContractWithName: singleton.registered,
-      getContractAddress: async () => ({}),
-    }
-    singleton.instance = installed
-    const service = build()
-    await flush()
-    expect(valueOf(service)).toBe(installed)
-    expect(singleton.registered).toHaveBeenCalledWith(DEFAULT_CONTRACTS.sponsorFPC)
-    expect(singleton.constructions).toHaveLength(0)
-    expect(singleton.l1Reads).not.toHaveBeenCalled()
   })
 })

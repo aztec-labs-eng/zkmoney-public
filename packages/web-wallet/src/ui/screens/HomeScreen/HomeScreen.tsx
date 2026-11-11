@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useState, useRef } from "react"
+import { useEffect, useState, useRef } from "react"
 import {
   Icon,
   LiquidGlassPill,
@@ -13,13 +13,11 @@ import {
   savingsEarningsPending,
   selectHome,
   selectHomeMain,
-  useSavings,
   useStore,
-  useResource,
 } from "@obsidion/front-core"
 import { useLocation, useNavigate } from "react-router-dom"
 import { DepositArt } from "../../DepositArt"
-import { HighGasNotice, HighL2FeeNotice } from "../../HighGasNotice"
+import { HighGasNotice, HighL2FeeNotice } from "../../../features/fees/HighGasNotice/HighGasNotice"
 import { PhoneIcon } from "../../PhoneIcon"
 import { usePhoneLayout } from "../../usePhoneLayout"
 import { LostRegistrationNoticeCard } from "../../../features/onboarding/LostRegistrationNoticeCard/LostRegistrationNoticeCard"
@@ -28,27 +26,25 @@ import { RegisterNameCard } from "../../../features/onboarding/SecureNameNoticeC
 import { ActivationHome } from "../../../features/onboarding/ActivationHome/ActivationHome"
 import { useNameClaimPending } from "../../../features/registration/openRegistration"
 import { useActionGuard } from "../../../features/actionGate"
-import { getConfig } from "../../../config/env"
+import { backupPasskeySettingsEnabled } from "../../../config/features"
 import { useSession } from "../../../session/session"
 import { peekClaimStash } from "../../../features/paylink/claimStash"
-import {
-  takeClaimPromptRequest,
-  useClaimPromptRequest,
-} from "../../../features/paylink/claimPrompt"
-import { useClaimLinkFlow } from "../../../features/paylink/useClaimLinkFlow"
+import { tabStash } from "../../../platform/storage/tabStash"
+import { ClaimLinkSheet } from "../../../features/paylink/ClaimLinkSheet/ClaimLinkSheet"
 import { AccountSwitcher, type SavingsAccount } from "../../../features/savings/AccountSwitcher"
 import { EarningsCalculatorSheet, apyPercent } from "../../../features/savings/EarningsCalculator"
 import { MoveFundsSheet } from "../../../features/savings/MoveFundsSheet/MoveFundsSheet"
 import { SavingsArt } from "../../../features/savings/SavingsArt"
 import { SavingsCards } from "../../../features/savings/SavingsCards"
+import { useSavings } from "../../../features/savings/useSavings"
 import {
   ESTIMATE_TITLE,
   splitTicking,
   useSavingsEstimate,
 } from "../../../features/savings/savingsEstimate"
-import { RequestsUnavailableNotice } from "../../../features/requests/RequestsUnavailableNotice"
-import { usdAtomicFloor } from "../../format"
-import { useHideBalances } from "../../prefs"
+import { RequestsUnavailableNotice } from "../../../features/requests/RequestsUnavailableNotice/RequestsUnavailableNotice"
+import { HIDDEN_BALANCE, usdAtomicFloor } from "../../format"
+import { savePrefs } from "../../../platform/storage/deviceKeys"
 import { BalanceSkeleton } from "../../Skeletons"
 import { customEndpointsLabel } from "../../EndpointsModal"
 import { HomeActions, type HomeAction } from "../HomeActions"
@@ -61,9 +57,9 @@ import { ActivityRow, SavingsActivityRow } from "../../activity/ActivityRow/Acti
 import earnCoin from "../../../assets/home/earn-coin.webp"
 import gift from "../../../assets/home/gift.webp"
 import { UpgradeBanner } from "../../../features/migration/UpgradeIntro"
-import { BackupReminderLine } from "../../../features/backupPasskey/BackupReminderLine/BackupReminderLine"
-import { PreviousAccountLine } from "../../../features/backupPasskey/PreviousAccountLine"
+import { BackupNudge } from "../../../features/backupPasskey/BackupNudge/BackupNudge"
 import { RotationApprovalLine } from "../../../features/backupPasskey/RotationApprovalLine"
+import { MovedAccountLine } from "../../../features/identity/MovedAccountLine/MovedAccountLine"
 import { useOldVersionHoldings } from "../../../features/migration/oldVersionBalance"
 import { OldVersionLeftoversNotice } from "../../../features/migration/OldVersionLeftoversNotice"
 import { oldVersionLeftovers } from "../../../features/migration/oldVersionLeftovers"
@@ -73,10 +69,12 @@ import quickFresh from "../../../assets/home/quick-fresh.webp"
 import quickPaylink from "../../../assets/home/quick-paylink.webp"
 import shareTag from "../../../assets/home/share-tag.webp"
 import { useFreshAddressAvailable } from "../../../features/withdraw/freshAddressAvailability"
+import type { WithdrawLocationState } from "../../../session/routeStates"
 import { useCopy, useLinkSharing } from "../../hooks"
 import styles from "./HomeScreen.module.css"
 import copy from "./HomeScreen.copy"
 import { fmt } from "../../../lib/fmt"
+import { useDomLayoutEffect } from "../../useDomEffect"
 
 /**
  * Home. Reached through the identity and unlock gates. Balance comes from
@@ -91,7 +89,8 @@ const QUICK_SLIDES = [
     body: copy.quick.fresh.body,
     className: styles.quickSlideFresh,
     art: quickFresh,
-    path: "/withdraw/fresh",
+    path: "/withdraw",
+    state: { withdraw: {} } satisfies WithdrawLocationState,
     action: "withdraw" as const,
   },
   {
@@ -138,7 +137,7 @@ function QuickActions() {
   // row snapped to; Chromium then re-snaps to that same slide, which is now the last. Lead with
   // the first slide whenever the set changes.
   const slideSet = slides.map((slide) => slide.id).join()
-  useLayoutEffect(() => {
+  useDomLayoutEffect(() => {
     if (row.current) row.current.scrollLeft = 0
   }, [slideSet])
   const scrollRow = (views: number) =>
@@ -156,7 +155,7 @@ function QuickActions() {
               aria-label={copy.quick.back}
               onClick={() => scrollRow(-1)}
             >
-              <Icon name="chevron-right" size={8.5} color="#fff" />
+              <Icon name="chevron-right" size={8.5} color="var(--ink)" />
             </button>
             <button
               type="button"
@@ -164,7 +163,7 @@ function QuickActions() {
               aria-label={copy.quick.forward}
               onClick={() => scrollRow(1)}
             >
-              <Icon name="chevron-right" size={8.5} color="#fff" />
+              <Icon name="chevron-right" size={8.5} color="var(--ink)" />
             </button>
           </span>
         )}
@@ -176,11 +175,12 @@ function QuickActions() {
             type="button"
             className={`zkm-btn-reset ww-banner ${styles.quickSlide} ${slide.className}`}
             aria-label={slide.label}
-            onClick={() =>
-              "action" in slide
-                ? guard(slide.action, () => navigate(slide.path))
-                : navigate(slide.path)
-            }
+            onClick={() => {
+              const go = () =>
+                navigate(slide.path, { state: "state" in slide ? slide.state : null })
+              if ("action" in slide) guard(slide.action, go)
+              else go()
+            }}
           >
             <span className="ww-banner__text">
               <span className="ww-banner__title">{slide.title}</span>
@@ -201,8 +201,6 @@ function QuickActions() {
     </div>
   )
 }
-
-const HIDDEN = "$••••••"
 
 /** Stays up while any endpoint is not the default; leads to where the endpoints are set. */
 function CustomEndpointsPill({
@@ -260,7 +258,7 @@ export function HomeScreen() {
 
 function Home() {
   const { identity } = useSession()
-  const networkId = useResource(useSession().wallet)?.networkId
+  const networkId = useStore(useSession().page.networkId)
   const navigate = useNavigate()
   const phone = usePhoneLayout()
   const [inviteOpen, setInviteOpen] = useState(true)
@@ -279,7 +277,8 @@ function Home() {
   // Held, Main stays at what the upgrade will land, with nothing from the new version.
   const frozen = lock.state === "held"
   const savingsFrozen = frozen && lock.savings !== undefined
-  const [hideBal, setHideBal] = useHideBalances()
+  const { database, device } = useSession()
+  const hideBal = useStore(device, (s) => s.hideBalances)
   const savings = useSavings()
   const { pathname } = useLocation()
   // The route picks the account, so the Savings nav item and slide are shortcuts to this view.
@@ -316,7 +315,11 @@ function Home() {
     lock: { checked: lock.checked, held: frozen, main: frozen ? lock.main : undefined },
     upgradesLoaded,
   })
-  const mainText = hideBal ? HIDDEN : mainShown === undefined ? "—" : usdAtomicFloor(mainShown)
+  const mainText = hideBal
+    ? HIDDEN_BALANCE
+    : mainShown === undefined
+    ? "—"
+    : usdAtomicFloor(mainShown)
   // The last read value; the ticking figures carry it to now in their own components.
   const estimate = useSavingsEstimate(savings.position, false)
   const savingsShown = savingsFrozen
@@ -329,7 +332,7 @@ function Home() {
     savingsShown !== undefined && mainKnown && mainShown !== undefined
       ? mainShown + savingsShown
       : undefined
-  const savingsText = hideBal ? HIDDEN : savingsValueText ?? "—"
+  const savingsText = hideBal ? HIDDEN_BALANCE : savingsValueText ?? "—"
   // What the shares held now have earned: their value (ticking when it ticks) less what they cost.
   // Shown once the position's value is read, while there is a position or a counted move.
   const earnable =
@@ -358,6 +361,7 @@ function Home() {
           savingsLedger?.excluded.map((e) => `${e.withdrawalLocalId}:${e.reason}:${e.backfilling}`),
         ].join("|")
       : undefined
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (hiddenKey === undefined) return
     console.info(
@@ -379,9 +383,13 @@ function Home() {
       }`,
     )
     // Keyed on what the line would say, so it prints once per change.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- debt
   }, [hiddenKey])
-  const totalText = hideBal ? HIDDEN : totalValue === undefined ? "—" : usdAtomicFloor(totalValue)
+  const totalText = hideBal
+    ? HIDDEN_BALANCE
+    : totalValue === undefined
+    ? "—"
+    : usdAtomicFloor(totalValue)
   const balanceText = onSavings ? savingsText : mainText
   const balanceShown = onSavings ? savingsFrozen || savings.hydrated : mainKnown
   // A device catching up can be short on either account: a rebuilt move's deposit lands in either.
@@ -389,26 +397,13 @@ function Home() {
   const updating = !onSavings && mainUpdating
   const openDeposit = () => guard("deposit", () => navigate("/deposit"))
   // An inbound paylink stashed by /link — prompts until claimed or dismissed.
-  const [claimFragment, setClaimFragment] = useState(peekClaimStash)
+  const [claimFragment, setClaimFragment] = useState(() => peekClaimStash(tabStash))
   // An activation surface asked for the claim of a link that funds the pending name: its review
   // opens whatever the claim's state, as the place that reports it.
-  const requestedClaim = useClaimPromptRequest()
-  const [claimAsked, setClaimAsked] = useState(false)
-  useEffect(() => {
-    if (!requestedClaim) return
-    setClaimFragment(takeClaimPromptRequest())
-    setClaimAsked(true)
-  }, [requestedClaim])
-  const claim = useClaimLinkFlow(
-    claimFragment,
-    () => {
-      setClaimFragment(null)
-      setClaimAsked(false)
-    },
-    claimAsked,
-    () => setClaimAsked(false),
-  )
-  const customEndpoints = customEndpointsLabel(getConfig().endpoints)
+  const { claims, page } = useSession()
+  const requestedClaim = useStore(claims.state, (s) => s.requested)
+  const shownClaim = requestedClaim ?? claimFragment
+  const customEndpoints = customEndpointsLabel(page.config.endpoints)
   const { requests: requestItems, feed: feedItems } = selectHome(feed)
 
   const receive: HomeAction = {
@@ -479,7 +474,7 @@ function Home() {
             className="zkm-btn-reset"
             aria-label={copy.toggleBalance}
             style={{ display: "inline-flex", color: "inherit" }}
-            onClick={() => setHideBal(!hideBal)}
+            onClick={() => savePrefs(database, { hideBalances: String(!hideBal) })}
           >
             {phone && !hideBal ? (
               <PhoneIcon name="eye" size={18} />
@@ -563,9 +558,8 @@ function Home() {
         )}
       </div>
       <UpgradeBanner />
-      <RotationApprovalLine />
-      <PreviousAccountLine />
-      <BackupReminderLine />
+      {backupPasskeySettingsEnabled ? <BackupNudge /> : <RotationApprovalLine />}
+      <MovedAccountLine />
       <HomeActions actions={actions} phone={phone} />
       {onSavings ? (
         savingsHydrated && savingsItems.length === 0 ? (
@@ -655,7 +649,7 @@ function Home() {
                 <span className="ww-banner__body">{copy.shareTag.body}</span>
               </span>
               <span className="ww-banner__chevron">
-                <Icon name="chevron-right" size={8.5} color="#fff" />
+                <Icon name="chevron-right" size={8.5} color="var(--ink)" />
               </span>
             </button>
 
@@ -697,7 +691,7 @@ function Home() {
                     onClick={() => void shareInvite()}
                   >
                     {inviteShared ? copy.invite.shared : copy.invite.share}
-                    <Icon name="share-box" size={20} color="#fff" />
+                    <Icon name="share-box" size={20} color="var(--ink)" />
                   </button>
                 </div>
               </div>
@@ -714,7 +708,21 @@ function Home() {
         )}
       </div>
 
-      {claim.modal}
+      {shownClaim && (
+        <ClaimLinkSheet
+          key={shownClaim}
+          fragment={shownClaim}
+          requested={requestedClaim !== null}
+          onDone={() => {
+            claims.request(null)
+            setClaimFragment(null)
+          }}
+          onReviewClosed={() => {
+            setClaimFragment(shownClaim)
+            claims.request(null)
+          }}
+        />
+      )}
       {(sheet === "in" || sheet === "out") && (
         <MoveFundsSheet direction={sheet} onClose={() => setSheet(null)} />
       )}

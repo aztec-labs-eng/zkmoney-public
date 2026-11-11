@@ -2,31 +2,29 @@
 import { formatDateLabel, formatTimeLabel, truncateMiddle } from "@obsidion/front-core"
 import { ConfirmationSheetDetailRow, Icon } from "@obsidion/web-ds"
 import { sepolia } from "viem/chains"
-import { getConfig } from "../config/env"
+import type { WebWalletConfig } from "../config/env"
 import { isDemoMode } from "../dev/demoFlag"
 import { l1AddressUrl as etherscanAddress, l1TxUrl as etherscanTx } from "../lib/explorer"
+import { useSession } from "../session/session"
 import { useCopy } from "./hooks"
 
 export const whenLabel = (ms: number) => `${formatDateLabel(ms)}, ${formatTimeLabel(ms)}`
 
 /**
- * The chain whose Etherscan a link points at. Demo mode runs on the local chain, which has no
- * explorer, so it borrows one: the links are there to show the UI, not to resolve.
+ * The L1's explorer links, undefined on an L1 with no public explorer: the row then shows the bare
+ * hash or address. Demo mode runs on the local chain, which has no explorer, so it borrows one: the
+ * links are there to show the UI, not to resolve.
  */
-function explorerChainId(): number {
-  const { l1ChainId } = getConfig()
-  return etherscanTx(l1ChainId, "0x") === null && isDemoMode() ? sepolia.id : l1ChainId
+export function l1Links({ l1ChainId }: Pick<WebWalletConfig, "l1ChainId">) {
+  const chainId = etherscanTx(l1ChainId, "0x") === null && isDemoMode() ? sepolia.id : l1ChainId
+  return {
+    l1TxUrl: (hash: string) => etherscanTx(chainId, hash) ?? undefined,
+    l1AddressUrl: (address: string) => etherscanAddress(chainId, address) ?? undefined,
+  }
 }
 
-/** Undefined on an L1 with no public explorer — the row then shows the bare hash. */
-export function l1TxUrl(hash: string): string | undefined {
-  return etherscanTx(explorerChainId(), hash) ?? undefined
-}
-
-/** Undefined on an L1 with no public explorer — the row then shows the bare address. */
-export function l1AddressUrl(address: string): string | undefined {
-  return etherscanAddress(explorerChainId(), address) ?? undefined
-}
+/** The session L1's {@link l1Links}. */
+export const useL1Links = () => l1Links(useSession().page.config)
 
 /**
  * A row for a fact the record is expected to carry but has not read yet. It holds its place so the
@@ -38,7 +36,7 @@ export function DetectingRow({ label }: { label: string }) {
 
 /** An L1 address linked to its Etherscan page. */
 export function AddressRow({ label, address }: { label: string; address: string }) {
-  return <HashRow label={label} hash={address} url={l1AddressUrl(address)} />
+  return <HashRow label={label} hash={address} url={useL1Links().l1AddressUrl(address)} />
 }
 
 /** A detail-row value that copies its full text on tap, with a brief "Copied" swap. */

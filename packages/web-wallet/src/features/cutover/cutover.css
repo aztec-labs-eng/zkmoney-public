@@ -94,8 +94,8 @@
   bottom: 0;
   width: 100%;
   padding: 16px 20px calc(16px + var(--ww-safe-area-bottom, 0px));
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(7, 7, 7, 0.7);
+  border-top: 1px solid rgba(var(--ink-rgb), 0.08);
+  background: rgba(var(--canvas-rgb), 0.7);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
 }
@@ -107,7 +107,7 @@
   gap: 8px;
   padding: 6px 14px 6px 6px;
   border-radius: var(--radius-full);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(var(--ink-rgb), 0.08);
   background: var(--surface-card);
 }
 .ww-cutover__avatar {
@@ -171,8 +171,8 @@ button.ww-cutover__account {
   box-sizing: border-box;
   padding: 12px 14px;
   border-radius: var(--radius-12);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  background: #2c2c2c;
+  border: 1px solid rgba(var(--ink-rgb), 0.08);
+  background: var(--surface-raised);
   animation: ww-fade-in 0.18s ease;
 }
 .ww-cutover__menu-item {
@@ -283,8 +283,8 @@ button.ww-cutover__account {
   width: 100%;
   box-sizing: border-box;
   border-radius: var(--radius-16);
-  border: 1px solid rgba(253, 253, 253, 0.08);
-  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(var(--ink-rgb), 0.08);
+  background: rgba(var(--ink-rgb), 0.04);
   text-align: left;
 }
 .ww-cutover__balance-total {
@@ -292,7 +292,7 @@ button.ww-cutover__account {
   flex-direction: column;
   gap: 4px;
   padding: 20px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid rgba(var(--ink-rgb), 0.08);
 }
 .ww-cutover__amount {
   font-size: 46px;
@@ -323,14 +323,14 @@ button.ww-cutover__account {
   height: 1lh;
 }
 .ww-cutover__balance-split > div + div {
-  border-left: 1px solid rgba(255, 255, 255, 0.08);
+  border-left: 1px solid rgba(var(--ink-rgb), 0.08);
 }
 .ww-cutover__note {
   display: flex;
   align-items: flex-start;
   gap: 8px;
   padding: 10px 16px;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  border-top: 1px solid rgba(var(--ink-rgb), 0.08);
   background: rgba(6, 147, 255, 0.05);
   font-size: 12px;
   line-height: 1.4;
@@ -387,7 +387,7 @@ button.ww-cutover__account {
   padding: 6px 12px;
   border-radius: var(--radius-full);
   border: 1px solid rgba(255, 255, 255, 0.3);
-  background: var(--gradient-brand);
+  background: var(--gradient-brand) border-box;
   color: #fff;
   font-size: 12px;
   font-weight: 600;
@@ -412,7 +412,7 @@ button.ww-cutover__account {
 }
 .ww-cutover__row--head {
   padding-bottom: 12px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid rgba(var(--ink-rgb), 0.08);
   color: var(--cutover-muted);
   font-size: 13px;
   font-weight: 500;
@@ -453,8 +453,8 @@ button.ww-cutover__account {
   gap: 6px;
   padding: 6px 12px;
   border-radius: var(--radius-full);
-  border: 1px solid rgba(86, 231, 157, 0.35);
-  background: rgba(86, 231, 157, 0.12);
+  border: 1px solid rgba(var(--accent-green-rgb), 0.35);
+  background: rgba(var(--accent-green-rgb), 0.12);
   color: var(--accent-green);
   font-size: 12px;
   font-weight: 600;
@@ -475,8 +475,8 @@ button.ww-cutover__account {
   text-align: left;
 }
 .ww-cutover__banner[data-tone="ok"] {
-  border-color: rgba(86, 231, 157, 0.4);
-  background: rgba(86, 231, 157, 0.1);
+  border-color: rgba(var(--accent-green-rgb), 0.4);
+  background: rgba(var(--accent-green-rgb), 0.1);
   color: var(--accent-green);
 }
 .ww-cutover__banner > svg {
@@ -495,7 +495,7 @@ button.ww-cutover__account {
 .ww-cutover__banner span span {
   font-size: 13px;
   line-height: 1.4;
-  color: rgba(253, 253, 253, 0.85);
+  color: rgba(var(--ink-rgb), 0.85);
 }
 
 /* Ring */
@@ -575,8 +575,8 @@ button.ww-cutover__account {
   translate: -50% 0;
   padding: 10px 14px;
   border-radius: var(--radius-12);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  background: #2c2c2c;
+  border: 1px solid rgba(var(--ink-rgb), 0.08);
+  background: var(--surface-raised);
   box-shadow: none;
   font-size: 13px;
   text-align: center;
@@ -621,17 +621,17 @@ button.ww-cutover__account {
   width: 2px;
   height: 30px;
   border-radius: 1px;
-  background: rgba(255, 255, 255, 0.12);
+  background: rgba(var(--ink-rgb), 0.12);
 }
 .ww-cutover__step[data-state="done"] .ww-cutover__line {
-  background: rgba(86, 231, 157, 0.5);
+  background: rgba(var(--accent-green-rgb), 0.5);
 }
 .ww-cutover__dot {
   width: 24px;
   height: 24px;
   box-sizing: border-box;
   border-radius: 50%;
-  border: 2px solid rgba(255, 255, 255, 0.2);
+  border: 2px solid rgba(var(--ink-rgb), 0.2);
 }
 .ww-cutover__step-text {
   display: flex;
@@ -671,12 +671,12 @@ button.ww-cutover__account {
 .ww-cutover__next--collapsible {
   padding: 0;
   border-style: dashed;
-  border-color: rgba(255, 255, 255, 0.15);
+  border-color: rgba(var(--ink-rgb), 0.15);
 }
 .ww-cutover__next--collapsible .ww-cutover__next-steps {
   padding: 0 16px 16px;
 }
-.ww-cutover__next-head {
+.zkm-btn-reset.ww-cutover__next-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -724,7 +724,7 @@ button.ww-cutover__account {
   height: 28px;
   border-radius: 50%;
   border: 1px solid rgba(255, 255, 255, 0.4);
-  background: var(--gradient-brand);
+  background: var(--gradient-brand) border-box;
   color: #fff;
   font-size: 13px;
   font-weight: 700;
@@ -740,8 +740,8 @@ button.ww-cutover__account {
   box-sizing: border-box;
   padding: 18px;
   border-radius: var(--radius-16);
-  border: 1px solid rgba(253, 253, 253, 0.08);
-  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(var(--ink-rgb), 0.08);
+  background: rgba(var(--ink-rgb), 0.04);
   text-align: left;
   color: var(--text-secondary);
 }
@@ -758,7 +758,7 @@ button.ww-cutover__account {
   height: 22px;
   box-sizing: border-box;
   border-radius: 50%;
-  border: 1.5px solid rgba(255, 255, 255, 0.3);
+  border: 1.5px solid rgba(var(--ink-rgb), 0.3);
 }
 .ww-cutover__option[aria-checked="true"] .ww-cutover__radio {
   border: 2px solid var(--purple-400);
@@ -900,8 +900,8 @@ button.ww-cutover__account {
   gap: 10px;
   padding: 12px 14px;
   border-radius: var(--radius-12);
-  background: rgba(86, 231, 157, 0.08);
-  border: 1px solid rgba(86, 231, 157, 0.3);
+  background: rgba(var(--accent-green-rgb), 0.08);
+  border: 1px solid rgba(var(--accent-green-rgb), 0.3);
   text-align: left;
   font-size: 12px;
   color: var(--text-secondary);

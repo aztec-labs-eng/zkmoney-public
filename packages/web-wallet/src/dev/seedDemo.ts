@@ -8,37 +8,43 @@
  * deterministic inputs at their service boundaries; persistence and payload encoding remain real.
  */
 import SCENARIO_HELP from "./demoScenarios.json"
-import { WALLET_TOKEN_SYMBOL } from "@obsidion/core/constants"
+import { PaylinkActionEnum, WALLET_TOKEN_SYMBOL } from "@obsidion/core/constants"
 import { Fr } from "@aztec-labs/aztec.js/fields"
-import { AUTH_TYPE, EcdsaK256AlphaAuthProvider } from "@obsidion/sdk"
+import { EcdsaK256AlphaAuthProvider } from "@obsidion/sdk"
 import {
-  BalanceStorage,
-  ContactStorage,
-  TokenStorage,
+  WalletError,
+  fundingOf,
   readIdentity,
+  recordOf,
+  type PaylinkTransaction,
   type SipaDeposit,
+  type TokenTransaction,
   type Transaction,
   type WithdrawalRecord,
 } from "@obsidion/front-core"
-import { getConfig } from "../config/env"
-import { primeOxideDeployment, primeOxideTuple } from "../config/oxideTuple"
+import type { Pace } from "@obsidion/core/cadence"
+import type { WebBootConfig } from "../config/env"
 import { saveIdentity } from "../session/account"
 import { WebPasskeyIdentityMap } from "../platform/auth/WebPasskeyIdentityMap"
 import { activateTab } from "../platform/storage/activeTab"
-import { contactsWriteLock } from "../platform/storage/contactsLock"
-import { WebStorageAdapter, WEB_STORAGE_PREFIX } from "../platform/storage/WebStorageAdapter"
-import { deviceStorage } from "../platform/storage/rollupStorage"
+import { writeDeviceKeys } from "../platform/storage/deviceKeys"
+import { WEB_STORAGE_PREFIX } from "../platform/storage/WebStorageAdapter"
 import { walletStorage } from "../platform/storage/walletStorage"
-import { openPage, pageSessionDeps, type Page } from "../app/sessionDeps"
-import { activeNamespace, followSavedSession, session, signedInAccount } from "../session/session"
+import { openPage, type Page, type PageScreens } from "../app/sessionDeps"
+import { devMockRoute } from "../app/devRoutes"
+import type { PrimedReads } from "../app/pageChain"
+import { activeNamespace, commitSecret, sessionLoaded, signedInAccount } from "../session/session"
+import type { Session } from "../session/session"
 import {
   disableDemoMode,
   DEMO_DEFAULT_SCENARIO,
   DEMO_SCENARIOS,
   type DemoScenario,
 } from "./demoFlag"
+import { profileBridge } from "../session/walletChains"
 import {
   activityDeposits,
+  demoBridgeIns,
   demoClaimFragments,
   demoContacts,
   demoRequests,
@@ -60,9 +66,16 @@ import {
 } from "./demoFixtures"
 import { longDemoContacts } from "./contactDemo"
 import { installFakeEthereum } from "./fakeEthereum"
+import { fakeL1Wallet } from "./fakeL1Wallet"
 import { createL1RpcHandler, installL1RpcStub, registerDemoSipaPrediction } from "./fakeL1Rpc"
 import { mockOnboarding as onboardingMock } from "./mockOnboarding"
 import { demoDepositAddress } from "./demoDeposit"
+import { demoBridgeIn } from "./fakeBridgeIn"
+import { mockQuoteBridgeOut, withdrawMock } from "./mockWithdraw/mockWithdraw"
+import { depositMock } from "./mockDeposit"
+import { payMock } from "./mockPay"
+import type { DemoMock } from "./demoMock"
+import type { WebWalletConfig } from "../config/env"
 
 /**
  * Demo mode owns this origin's wallet state — seeding on top of whatever is there would duplicate
@@ -71,10 +84,9 @@ import { demoDepositAddress } from "./demoDeposit"
 async function resetWalletStorage(): Promise<void> {
   // Both prefixes: front-core's stores go through the adapter, while the identity record and the
   // session are written directly.
+  // eslint-disable-next-line local/legacy-store -- debt
   await walletStorage.commitRemoveUnder(WEB_STORAGE_PREFIX)
   await walletStorage.commitRemoveUnder("webwallet.")
-  // A hidden-balance pref left behind would blank the seeded figure.
-  deviceStorage.removeItem("webwallet.hide-balances")
 }
 
 /**
@@ -83,47 +95,41 @@ async function resetWalletStorage(): Promise<void> {
  * `getSecretKey()` (and the stealth-key derivation the recovery flow runs on it) answers normally.
  * The breadcrumb + identity record are what the wallet route gate reads.
  */
-async function seedIdentity(page: Page, rpId: string): Promise<void> {
-  await page.auth.commitSecret({
+async function seedIdentity(page: Page, rpId: string): Promise<Session> {
+  const unlocked = {
     secretKey: Fr.fromHexString(DEMO_MSK_HEX),
     authProvider: new EcdsaK256AlphaAuthProvider(Buffer.from(DEMO_SIGNING_KEY_HEX, "hex")),
-  })
+  }
+  const scope = { auth: page.auth, device: page.device, page }
+  const committed = await commitSecret(scope, unlocked, () => true)
+  if (!committed) throw new WalletError("wallet.notReady", "the demo commit did not land")
   await new WebPasskeyIdentityMap(page.database, rpId).upsert({
     credentialId: DEMO_CREDENTIAL_ID,
     l2Address: DEMO_L2_ADDRESS,
     pubkey: DEMO_PASSKEY_PUBKEY_HEX,
     isMskRoot: true,
   })
-  await signedInAccount().save({
+  await signedInAccount(committed.session).apply({
+    type: "saved",
     completeAddress: DEMO_COMPLETE_ADDRESS,
-    signKeyConfig: {
-      type: AUTH_TYPE.WEB_AUTHN,
-      webauthnData: { credentialId: DEMO_CREDENTIAL_ID, pubkey: DEMO_PASSKEY_PUBKEY_HEX },
-    },
+    signer: { credentialId: DEMO_CREDENTIAL_ID, pubkey: DEMO_PASSKEY_PUBKEY_HEX },
   })
   await saveIdentity(page, { handle: DEMO_HANDLE, address: DEMO_L2_ADDRESS, claimedAt: Date.now() })
+  return committed.session
 }
 
-/** Token row + scoped balance record — the pair the balances store reads the home figure from. */
-async function seedBalance(networkType: string, balance: bigint): Promise<void> {
+/** The scoped balance record, named, that the balances store reads the home figure from. */
+async function seedBalance(session: Session, networkType: string, balance: bigint): Promise<void> {
   // The fixture has no sync: a balance written once the session's balances start is its read.
-  void session().balances
-  const adapter = new WebStorageAdapter()
-  await TokenStorage.get(adapter).addToken({
-    address: DEMO_L2_TOKEN,
-    name: WALLET_TOKEN_SYMBOL,
-    symbol: WALLET_TOKEN_SYMBOL,
-    decimals: 18,
-  })
-  await BalanceStorage.get(adapter).updateBalance(
-    `${networkType}:${DEMO_COMPLETE_ADDRESS}`,
-    DEMO_L2_TOKEN,
-    balance,
-  )
+  void session.balances
+  const { balanceStore } = session
+  if (!balanceStore) throw new WalletError("wallet.notReady", "the demo seeds an account session")
+  const scope = `${networkType}:${DEMO_COMPLETE_ADDRESS}`
+  await balanceStore.write(scope, DEMO_L2_TOKEN, balance, undefined, undefined, WALLET_TOKEN_SYMBOL)
 }
 
-async function seedDeposits(records: SipaDeposit[]): Promise<void> {
-  const store = session().sipaDeposits
+async function seedDeposits(session: Session, records: SipaDeposit[]): Promise<void> {
+  const store = session.sipaDeposits
   for (const record of records) {
     await store.adopt({ ...record, networkId: DEMO_NETWORK_ID })
     // Teach the fake Registry this fixture's CREATE2 answer — the self-sweep refuses to deploy
@@ -132,29 +138,55 @@ async function seedDeposits(records: SipaDeposit[]): Promise<void> {
   }
 }
 
-async function seedWithdrawals(records: WithdrawalRecord[]): Promise<void> {
-  const store = session().withdrawals
+async function seedWithdrawals(session: Session, records: WithdrawalRecord[]): Promise<void> {
+  const store = session.withdrawals
   for (const record of records) await store.create({ ...record, networkId: DEMO_NETWORK_ID })
 }
 
-/** Past-dated history, written as the rows themselves so every fixture keeps its own time. */
-async function seedTransactions(rows: Transaction[]): Promise<void> {
-  const { activity } = session()
-  for (const row of rows) await activity.insertPending({ ...row, networkId: DEMO_NETWORK_ID })
+async function seedBridgeIns(session: Session, now: number): Promise<void> {
+  const chains = (profileBridge(session.page.config)?.chains ?? []).map((c) => c.chainId)
+  if (!chains.length) return
+  const { bridgeIns } = session
+  for (const record of demoBridgeIns(now, chains)) await bridgeIns.rebuild(record)
+}
+
+/**
+ * Past-dated history, written as the rows themselves so every fixture keeps its own time; a created
+ * link's row files its link and keeps its funding transfer.
+ */
+async function seedTransactions(session: Session, rows: Transaction[]): Promise<void> {
+  const { transfers, paylinks, operations } = session
+  for (const tx of rows) {
+    const row = { ...tx, networkId: DEMO_NETWORK_ID }
+    const link = row as PaylinkTransaction
+    if (link.emailPaymentAction === PaylinkActionEnum.PAY && link.payToEmailSecret) {
+      await paylinks.put(recordOf({ ...link, payToEmailSecret: link.payToEmailSecret }))
+      await transfers.record(fundingOf(row))
+    } else if (row.status === "pending" && row.action === "send") {
+      // This device's own send is its operation.
+      const { token, to = "", toTag } = row as TokenTransaction
+      const operationId = row.operationId ?? `demo-${row.txHash}`
+      const payload = { networkId: DEMO_NETWORK_ID, token, amountAtomic: String(row.amountAtomic) }
+      await operations.begin({ operationId, flow: "send", summary: "" }, row.timestamp)
+      await operations.apply(operationId, {
+        type: "transfer",
+        transfer: { kind: "send", payload: { ...payload, to, toTag } },
+      })
+      if (row.txHash) await operations.apply(operationId, { type: "sent", txHash: row.txHash })
+      operations.release(operationId)
+    } else await transfers.record(row)
+  }
 }
 
 async function seedContactsAndRequests(
+  session: Session,
   now: number,
   networkId: string,
   longContacts = false,
 ): Promise<void> {
-  const adapter = new WebStorageAdapter()
-  // Constructed with the same lock App.tsx passes, so its later `get()` adopts this instance
-  // rather than one that silently lost the cross-tab mutex.
-  const contacts = ContactStorage.get(adapter, contactsWriteLock)
-  await contacts.initialize()
+  const { contacts, requests } = session
+  if (!contacts) throw new WalletError("wallet.notReady", "the demo seeds an account session")
   await contacts.addEntries(longContacts ? longDemoContacts() : demoContacts())
-  const { requests } = session()
   for (const request of demoRequests(now, networkId)) await requests.add(request)
 }
 
@@ -194,13 +226,45 @@ function demoHelp(): string {
   ].join("\n")
 }
 
+/** The `/dev/mock/<area>/<name>` page this URL opens; undefined anywhere else. */
+function urlMock(config: WebWalletConfig): DemoMock | undefined {
+  const route = devMockRoute(window.location.pathname, window.location.search)
+  if (!route) return undefined
+  const { area, name, query } = route
+  if (area === "deposit") return depositMock(name, query, config)
+  if (area === "withdraw") return withdrawMock(name, config)
+  return payMock(name, query, config)
+}
+
 /**
- * Seeds the scenario on a page it builds; null when this origin holds a real wallet and was left
- * untouched.
+ * Seeds the scenario on a page it builds over the boot's `pace`, its reads `primed`, and a
+ * `/dev/mock/` URL's mock over it; null when this origin holds a real wallet and was left untouched.
  */
-export async function seedDemo(scenario: DemoScenario): Promise<Page | null> {
-  const config = getConfig()
-  const page = openPage(config, { onboardingMock, demoDepositAddress })
+export async function seedDemo(
+  scenario: DemoScenario,
+  boot: WebBootConfig,
+  primed: PrimedReads = { tuple: DEMO_OXIDE_TUPLE, deployment: DEMO_OXIDE_DEPLOYMENT },
+  pace?: Pace,
+): Promise<Page | null> {
+  const { config } = boot
+  const mock = urlMock(config)
+  // Filled once the mock's records are seeded: a start names the records it opens on.
+  const screens: PageScreens = {}
+  const page = openPage(boot, {
+    onboardingMock,
+    demoDepositAddress,
+    primed,
+    pace,
+    ...(mock && { screens }),
+    bridgeInProvider: mock?.bridgeInProvider ?? demoBridgeIn(Date.now),
+    loaders: { bridgeOutQuote: (_facts, ask) => mockQuoteBridgeOut(ask), ...mock?.loaders },
+    l1Wallet: (deps) =>
+      fakeL1Wallet(deps, {
+        chainId: config.l1ChainId,
+        connected: mock?.connected,
+        provider: () => window.ethereum,
+      }),
+  })
   // Never replace a real wallet. Only an origin with no wallet state — or one holding the demo's
   // own from a prior seed — may be seeded; anything else refuses and boots the real app.
   const foreign = await foreignWalletState(page, config.rpId)
@@ -222,9 +286,9 @@ export async function seedDemo(scenario: DemoScenario): Promise<Page | null> {
 
   await resetWalletStorage()
   await page.device.load()
-  primeOxideTuple(config, DEMO_OXIDE_TUPLE)
-  primeOxideDeployment(config, DEMO_OXIDE_DEPLOYMENT)
-  await followSavedSession(page.device, pageSessionDeps(page))
+  // A hidden-balance pref the load carried in would blank the seeded figure.
+  await writeDeviceKeys(page.database, { hideBalances: "false" })
+  await sessionLoaded(page.switchTo(activeNamespace(page.device)))
   // Onboarding uses mockOnboarding's local transitions and starts without an identity or provider.
   // Its token lists still read the table.
   if (scenario === "onboarding") {
@@ -233,26 +297,32 @@ export async function seedDemo(scenario: DemoScenario): Promise<Page | null> {
   }
   installL1RpcStub(config.l1RpcUrl, installFakeEthereum(config.l1ChainId))
 
-  await seedIdentity(page, config.rpId)
-  await seedBalance(config.network, scenario === "empty" ? 0n : DEMO_BALANCE_RAW)
+  const session = await seedIdentity(page, config.rpId)
+  await seedBalance(session, config.network, scenario === "empty" ? 0n : DEMO_BALANCE_RAW)
 
   if (scenario === "recovery") {
-    await seedDeposits(recoveryDeposits(now))
-    await seedTransactions(demoTransactions(now).slice(0, 2))
+    await seedDeposits(session, recoveryDeposits(now))
+    await seedTransactions(session, demoTransactions(now).slice(0, 2))
   }
   if (["activity", "contacts", "contact-search", "share-retry", "share-long"].includes(scenario)) {
     await seedContactsAndRequests(
+      session,
       now,
       config.network,
       scenario === "contacts" || scenario === "contact-search",
     )
-    await seedTransactions(demoTransactions(now))
-    await seedWithdrawals(demoWithdrawals(now))
-    await seedDeposits(activityDeposits(now))
+    await seedTransactions(session, demoTransactions(now))
+    await seedWithdrawals(session, demoWithdrawals(now))
+    await seedDeposits(session, activityDeposits(now))
+    await seedBridgeIns(session, now)
     const claims = demoClaimFragments()
     console.info(
       `[demo] claimable paylinks:\n  direct: /link#${claims.direct}\n  email:  /link#${claims.email}`,
     )
+  }
+  if (mock) {
+    if (mock.balance !== undefined) await seedBalance(session, config.network, mock.balance)
+    Object.assign(screens, await mock.seed(session))
   }
   return page
 }

@@ -1,0 +1,30 @@
+/* A way that is not offered on this network: faded, its pill kept bright. */
+/* Beats the shared `.row:disabled`. */
+.soon.soon:disabled {
+  opacity: 1;
+}
+.soon > :global(.ww-move-landing__plus),
+.soon small,
+.soon .rowTitle > :not(.soonPill) {
+  opacity: 0.5;
+}
+/* The title, with its pill at the row's right edge where the chevron would be. */
+.rowTitle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.soonPill {
+  flex: none;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.15);
+  font-size: 10px;
+  font-weight: 600;
+  color: #fff;
+}
+.noteLink.noteLink {
+  color: #fdfdfd;
+  text-decoration: underline;
+}

@@ -2,19 +2,11 @@ import { setPerfLogFlag, TokenService } from "@obsidion/sdk"
 import type { AztecNode } from "@aztec-labs/aztec.js/node"
 import { lazy, Suspense, useEffect, useState, type ReactNode } from "react"
 import {
-  BalanceStorage,
-  ContactStorage,
-  IssuedConnectStorage,
-  ObsidionCoreProvider,
-  PendingConnectBackStorage,
-  PredicateScreeningService,
   ScreeningProvider,
-  TokenStorage,
-  passThroughScreener,
-  setNodeApiKey,
-  useContractServiceContext,
+  serviceStatus,
   useStore,
   type ReadonlyStore,
+  type ServiceState,
 } from "@obsidion/front-core"
 import {
   BrowserRouter,
@@ -26,7 +18,7 @@ import {
   useOutlet,
 } from "react-router-dom"
 import { ScanNavigationProvider } from "./features/scan/ScanNavigation"
-import { getConfig, type WebBootConfig } from "./config/env"
+import type { PageBoot } from "./app/sessionDeps"
 import { proveTxPerfLogsEnabled } from "./config/features"
 import { isDemoMode } from "./dev/demoFlag"
 import { ErrorModalHost } from "./errors/ErrorModalHost"
@@ -58,27 +50,20 @@ import { ContactDetailScreen } from "./features/contacts/ContactDetailScreen/Con
 import { ContactPayScreen } from "./features/contacts/ContactPayScreen/ContactPayScreen"
 import { ConnectReceiveScreen } from "./features/contacts/ConnectReceiveScreen"
 import { hasConnectStash, stashInboundConnect } from "./features/contacts/connectReceive"
-import { WithdrawScreen } from "./features/withdraw/WithdrawScreen"
-import { WithdrawEtherfiScreen } from "./features/withdraw/WithdrawEtherfiScreen/WithdrawEtherfiScreen"
-import { WithdrawMethodScreen } from "./features/withdraw/WithdrawMethodScreen"
-import { WithdrawFreshScreen } from "./features/withdraw/WithdrawFreshScreen"
+import { tabStash } from "./platform/storage/tabStash"
+import { WithdrawMethodScreen } from "./features/withdraw/WithdrawMethodScreen/WithdrawMethodScreen"
 import { OldVersionWithdrawScreen } from "./features/withdraw/OldVersionWithdrawScreen"
 import { XmtpMount } from "./platform/xmtp/XmtpMount"
 import { MigrationDetectionMount } from "./features/migration/MigrationDetectionMount/MigrationDetectionMount"
-import { CutoverLogoutMount } from "./features/cutover/account"
-import { PaylinkClaimMount } from "./features/notifications/PaylinkClaimMount/PaylinkClaimMount"
-import { useAssetDemand, useSession } from "./session/session"
+import { useStartAssets, useSession } from "./session/session"
 import { BackupRotationMount } from "./features/backupPasskey/BackupRotationMount"
-import { PreviousAccountWatchMount } from "./features/backupPasskey/PreviousAccountWatchMount"
-import { contactsWriteLock } from "./platform/storage/contactsLock"
-import { webStorage } from "./platform/storage/WebStorageAdapter"
 import { getDesktopSettingsPath } from "./platform/desktopBridge"
 import { AppShell, SidebarLayout } from "./ui/AppShell/AppShell"
 import { BakedProfileNotice, CustomProfileNotice } from "./ui/ConfigNotice"
 import { BootErrorScreen } from "./ui/BootErrorScreen"
-import { applyPreBootNavigation, PreBootRouterBridge } from "./ui/preBootTaps"
+import { PreBootRouterBridge, type PreBoot } from "./session/preBoot"
 import {
-  BootDemand,
+  BootStarter,
   BootSplash,
   PxeBootProvider,
   usePxeBoot,
@@ -90,8 +75,9 @@ import { RainbowKitProvider } from "@rainbow-me/rainbowkit"
 import { RainbowKitModalLayer } from "./features/deposit/RainbowKitModalLayer"
 import "@rainbow-me/rainbowkit/styles.css"
 import "./features/deposit/rainbowkit.css"
-import { rainbowkitTheme, wagmiConfig } from "./session/wagmi"
+import { rainbowkitTheme } from "./session/wagmi"
 
+// eslint-disable-next-line no-restricted-syntax -- debt
 const queryClient = new QueryClient()
 
 // The profiling overlay and everything it pulls in (canvas waterfall, the interceptors) sit behind
@@ -102,23 +88,23 @@ const ProfilePanel =
   import.meta.env.VITE_PROFILER === "true"
     ? lazy(() => import("./profiling/ProfilePanel").then((m) => ({ default: m.ProfilePanel })))
     : null
-import { WebSavingsProvider } from "./features/savings/SavingsProvider/SavingsProvider"
+// Dev `/dev/mock/<area>/<name>` pages; a production build folds this to null and drops the chunk.
+const DevMock = import.meta.env.DEV
+  ? lazy(() => import("./app/devRoutes").then((m) => ({ default: m.DevMock })))
+  : null
 import { ActivityScreen } from "./ui/screens/ActivityScreen/ActivityScreen"
 import { HomeScreen } from "./ui/screens/HomeScreen/HomeScreen"
 import { NotFoundScreen } from "./ui/screens/NotFoundScreen"
 import { SettingsScreen } from "./ui/screens/SettingsScreen"
 import { LeaveGuardMount } from "./features/operations/LeaveGuardMount"
-import { setActiveTabSince } from "./platform/activeTabSince"
 import type { DeviceState } from "./platform/storage/deviceKeys"
-import { oxideTokenImmutablesOf } from "./features/token/oxideToken"
+import type { PageFacts } from "./session/pageChain"
 
 /** What the active tab hands the app once it may run the wallet. */
 export interface ActiveTabBoot {
   /** The one node client, handed to everything that needs one. */
   node: AztecNode
   pxeBoot: PxeBootTarget
-  /** When this tab became the active tab: no operation of its own started before this. */
-  activeSince: number
 }
 
 /**
@@ -127,50 +113,36 @@ export interface ActiveTabBoot {
  * `main.tsx` instead of white-screening. References stay stable for the app's
  * lifetime.
  */
-function createAppServices(node: AztecNode, device: ReadonlyStore<DeviceState>) {
-  const config = getConfig()
-  const storageAdapter = webStorage
-  TokenService.setImmutablesSource(oxideTokenImmutablesOf)
-  setNodeApiKey(config.nodeApiKey)
-  BalanceStorage.get(storageAdapter)
-  TokenStorage.get(storageAdapter)
-  // Construct the ContactStorage singleton first so it carries the cross-tab write lock and the
-  // storage-event invalidation seam; every later get() reuses this instance.
-  ContactStorage.get(storageAdapter, contactsWriteLock)
-  // Per-device ledger of minted handshake codes (Share @tag); screens reuse via get(). Shares the
-  // contacts-write lock (distinct storage keys, one mutex) so two tabs' writes serialize.
-  IssuedConnectStorage.get(storageAdapter, undefined, contactsWriteLock)
-  // Outbox of connect-backs awaiting the U9 XMTP flusher; the /connect confirm enqueues here.
-  PendingConnectBackStorage.get(storageAdapter, undefined, contactsWriteLock)
+function createAppServices(
+  node: AztecNode,
+  device: ReadonlyStore<DeviceState>,
+  { config, chain }: PageFacts,
+) {
+  TokenService.setImmutablesSource((token) => chain.tokenImmutablesOf(token.toString()).read())
   // Bound before first render so even pre-route events (PXE boot) are consent-gated.
   bindAnalyticsConsent(() => device.get().analyticsConsent)
   wireTxTimingAnalytics()
   setPerfLogFlag(proveTxPerfLogsEnabled)
-  return {
-    config,
-    storageAdapter,
-    // L1 address screening (withdraw recipient, deposit EOA). Unconfigured builds pass everything.
-    screener: config.predicate
-      ? new PredicateScreeningService(config.predicate)
-      : passThroughScreener,
-    node,
-  }
+  return { config, node }
 }
 
 /** The PXE and the contract service are up. Demo mode never boots a PXE, so it has no service. */
 function useBootReady(): boolean {
-  const { bootStatus } = usePxeBoot()
-  const { contractService } = useContractServiceContext()
-  return bootStatus === "ready" && (Boolean(contractService) || isDemoMode())
+  const session = useSession()
+  const { bootStatus } = usePxeBoot(session.page)
+  const contractService = useStore(session.contractService, serviceStatus)
+  return bootStatus === "ready" && (contractService === "ready" || isDemoMode())
 }
 
 /** Holds a surface until the PXE and the contract service are up, starting a boot that waits. */
 export function BootHold() {
-  const { bootStatus, bootError, retryBoot, demandBoot } = usePxeBoot()
+  const { page } = useSession()
+  const { bootStatus, bootError, retryBoot, startBoot } = usePxeBoot(page)
   const ready = useBootReady()
-  useEffect(demandBoot, [demandBoot])
+  // eslint-disable-next-line local/effect-hook -- debt
+  useEffect(startBoot, [startBoot])
   if (bootStatus === "error")
-    return <BootErrorScreen error={bootError} onRetry={retryBoot} walletOpen />
+    return <BootErrorScreen error={bootError} onRetry={retryBoot} walletOpen config={page.config} />
   if (!ready) return <BootSplash />
   return <Outlet />
 }
@@ -187,7 +159,7 @@ export function BootHold() {
  */
 function AssetGate() {
   const ready = useBootReady()
-  useAssetDemand(ready)
+  useStartAssets(ready)
   return <Outlet />
 }
 
@@ -203,7 +175,11 @@ export function WalletEntryGate() {
   const session = useSession()
   const draft = useStore(session.signup.state, (s) => s.drawnOffer)
   const device = useStore(session.device)
-  const entered = enteredIdentity(useStore(session.identity), device.passkeyMap)
+  const entered = enteredIdentity(
+    useStore(session.identity),
+    device.passkeyMap,
+    session.page.config.rpId,
+  )
   const leaving = useStore(session.leaving)
   if (entered === null && !draft && !leaving)
     return (
@@ -229,12 +205,12 @@ function WalletGate() {
   const session = useSession()
   const draft = useStore(session.signup.state, (s) => s.drawnOffer)
   const { passkeyMap } = useStore(session.device)
-  const entered = enteredIdentity(useStore(session.identity), passkeyMap)
+  const entered = enteredIdentity(useStore(session.identity), passkeyMap, session.page.config.rpId)
   if (entered === null && draft) return <DraftHome tag={draft} />
   // A stashed inbound connect replays once the gates pass — e.g. after onboarding routed
   // away from /connect. The stash is consume-once, so this fires at most one redirect. While the
   // name claim is pending, /connect goes back to Home, so the replay waits for the claim.
-  if (!claimPending && location.pathname !== "/connect" && hasConnectStash()) {
+  if (!claimPending && location.pathname !== "/connect" && hasConnectStash(tabStash)) {
     return <Navigate to="/connect" replace />
   }
   return (
@@ -242,16 +218,11 @@ function WalletGate() {
       {/* Unlocked only: the lock/visibility-scoped XMTP client + stage-2 inbox. Demo mode has no
           network identity to register, so it renders the seeded stores as-is. */}
       {!isDemoMode() && <XmtpMount />}
-      {!isDemoMode() && <PaylinkClaimMount />}
-      <PreviousAccountWatchMount />
       {/* Not behind the backup flag: a saved rotation keeps moving with the flag off. */}
       {!isDemoMode() && <BackupRotationMount />}
-      <WebSavingsProvider>
-        <Outlet />
-        {/* Last so the upgrade dialog stacks above route-level sheets. */}
-        <MigrationDetectionMount />
-        <CutoverLogoutMount />
-      </WebSavingsProvider>
+      <Outlet />
+      {/* Last so the upgrade dialog stacks above route-level sheets. */}
+      <MigrationDetectionMount />
     </UnlockGate>
   )
 }
@@ -272,6 +243,7 @@ function ClaimPendingGate() {
  */
 export function ActionGate({ action }: { action: WalletAction }) {
   const verdict = useActionVerdict(action)
+  const { pace } = useSession().page
   switch (verdict) {
     case "open":
       return <Outlet />
@@ -281,7 +253,7 @@ export function ActionGate({ action }: { action: WalletAction }) {
     case "upgrade":
       return <UpgradeFirst action={action} to="/" />
     case "refund":
-      return <OldVersionWithdrawScreen />
+      return <OldVersionWithdrawScreen pace={pace} />
     case "home":
       return <Navigate to="/" replace />
     case "moving":
@@ -295,6 +267,7 @@ export function ActionGate({ action }: { action: WalletAction }) {
 
 /** Leaves an action's route for `to`, asking for the upgrade first. */
 function UpgradeFirst({ action, to }: { action: WalletAction; to: string }) {
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => openMigrationDialog({ action }), [action])
   return <Navigate to={to} replace />
 }
@@ -324,71 +297,98 @@ export function ContactRoute() {
 }
 
 /** The wallet's router, opening on any route the pre-boot screen went to. */
-function AppRouter({ children }: { children: ReactNode }) {
-  useState(applyPreBootNavigation)
+function AppRouter({ preBoot, children }: { preBoot: PreBoot; children: ReactNode }) {
+  useState(() => preBoot.applyNavigation())
   return (
     <BrowserRouter>
-      <PreBootRouterBridge />
+      <PreBootRouterBridge preBoot={preBoot} />
       {children}
     </BrowserRouter>
   )
 }
 
-export function App({ boot, activeTab }: { boot: WebBootConfig; activeTab: ActiveTabBoot }) {
-  setActiveTabSince(activeTab.activeSince)
-  const { contractService, device } = useSession()
-  const [services] = useState(() => createAppServices(activeTab.node, device))
+const failure = (state: ServiceState<unknown>) =>
+  state.status === "failed" ? state.error : undefined
+
+export function App({ boot, activeTab }: { boot: PageBoot; activeTab: ActiveTabBoot }) {
+  const { contractService, device, page } = useSession()
+  const [services] = useState(() => createAppServices(activeTab.node, device, page))
   // Stash an inbound /connect packet before any gate redirect can drop the fragment.
   useState(stashInboundConnect)
+  const serviceFailure = useStore(contractService, failure)
+  const gateFailure = useStore(page.manifestGate, failure)
+  // The error boundary renders a failed service, or a mainnet manifest the client refused.
+  if (serviceFailure) throw serviceFailure
+  if (gateFailure) throw gateFailure
   return (
     // No reconnect on load: a session reads no wallet until the user connects.
-    <WagmiProvider config={wagmiConfig()} reconnectOnMount={false}>
+    <WagmiProvider config={boot.page.wagmi} reconnectOnMount={false}>
       <QueryClientProvider client={queryClient}>
         <RainbowKitProvider theme={rainbowkitTheme} modalSize="compact">
           <RainbowKitModalLayer>
-            <ObsidionCoreProvider contractService={contractService}>
-              <LeaveGuardMount />
-              {ProfilePanel && (
-                <Suspense fallback={null}>
-                  <ProfilePanel />
-                </Suspense>
-              )}
-              <PxeBootProvider pxeBoot={activeTab.pxeBoot}>
-                <AppRouter>
-                  <BootDemand />
-                  {/* L1 address screening (withdraw recipient, deposit EOA, registration payer) on every route. */}
-                  <ScanNavigationProvider>
-                    <ScreeningProvider screener={services.screener}>
-                      <Routes>
-                        <Route
-                          element={
-                            <AppShell
-                              notice={
-                                boot.bootedFromBakedProfile && boot.bakedProfile ? (
-                                  <BakedProfileNotice
-                                    publishedAt={boot.bakedProfile.publishedAt}
-                                    forced={boot.bakedProfile.forced}
-                                    expired={boot.bakedProfile.expired}
-                                    settingsPath={getDesktopSettingsPath() ?? undefined}
-                                  />
-                                ) : boot.customProfileUrl ? (
-                                  <CustomProfileNotice
-                                    url={boot.customProfileUrl}
-                                    settingsPath={getDesktopSettingsPath() ?? undefined}
-                                  />
-                                ) : undefined
-                              }
-                            />
-                          }
-                        >
-                          {/* The pay page, and the older request-link entry. The SIPA pay-QR paints
+            <LeaveGuardMount />
+            {ProfilePanel && (
+              <Suspense fallback={null}>
+                <ProfilePanel />
+              </Suspense>
+            )}
+            <PxeBootProvider pxeBoot={activeTab.pxeBoot} page={page}>
+              <AppRouter preBoot={boot.page.preBoot}>
+                <BootStarter wantWallet={page.wantWallet} />
+                {/* L1 address screening (withdraw recipient, deposit EOA, registration payer) on every route. */}
+                <ScanNavigationProvider>
+                  <ScreeningProvider screenings={page.screening}>
+                    <Routes>
+                      <Route
+                        element={
+                          <AppShell
+                            notice={
+                              boot.bootedFromBakedProfile && boot.bakedProfile ? (
+                                <BakedProfileNotice
+                                  publishedAt={boot.bakedProfile.publishedAt}
+                                  forced={boot.bakedProfile.forced}
+                                  expired={boot.bakedProfile.expired}
+                                  settingsPath={getDesktopSettingsPath() ?? undefined}
+                                />
+                              ) : boot.customProfileUrl ? (
+                                <CustomProfileNotice
+                                  url={boot.customProfileUrl}
+                                  settingsPath={getDesktopSettingsPath() ?? undefined}
+                                />
+                              ) : undefined
+                            }
+                          />
+                        }
+                      >
+                        {/* The pay page, and the older request-link entry. The SIPA pay-QR paints
                       before the PXE is up; the accountless right pane nests the /claim wizard. */}
-                          {["pay/:tag", "request", "r"].map((path) => (
-                            <Route
-                              key={path}
-                              path={path}
-                              element={
-                                <RequestLandingScreen
+                        {["pay/:tag", "request", "r"].map((path) => (
+                          <Route
+                            key={path}
+                            path={path}
+                            element={
+                              <RequestLandingScreen
+                                node={services.node}
+                                chainIdentity={
+                                  activeTab.pxeBoot.kind === "pxe"
+                                    ? activeTab.pxeBoot.identity
+                                    : undefined
+                                }
+                              />
+                            }
+                          >
+                            <Route element={<BootHold />}>
+                              <Route index element={<OnboardingScreen embedded />} />
+                            </Route>
+                          </Route>
+                        ))}
+                        {DevMock && (
+                          <Route
+                            path="dev/mock/pay/:name?"
+                            element={
+                              <Suspense fallback={null}>
+                                <DevMock
+                                  area="pay"
                                   node={services.node}
                                   chainIdentity={
                                     activeTab.pxeBoot.kind === "pxe"
@@ -396,111 +396,119 @@ export function App({ boot, activeTab }: { boot: WebBootConfig; activeTab: Activ
                                       : undefined
                                   }
                                 />
-                              }
-                            >
-                              <Route element={<BootHold />}>
-                                <Route index element={<OnboardingScreen embedded />} />
-                              </Route>
-                            </Route>
-                          ))}
-                          {/* BootHold PXE-gates each surface. */}
-                          <Route>
-                            {/* Onboarding starts no token, except the resume of a registration a
+                              </Suspense>
+                            }
+                          />
+                        )}
+                        {/* BootHold PXE-gates each surface. */}
+                        <Route>
+                          {/* Onboarding starts no token, except the resume of a registration a
                         payment link funds (ClaimRoute). The signup wizard is
                         full-bleed (it carries its own invitation chrome). */}
-                            <Route element={<BootHold />}>
-                              <Route path="claim/:handle?" element={<ClaimRoute />} />
-                              <Route path="enter" element={<EnterAppScreen />} />
-                            </Route>
-                            {/* Wallet + paylink surfaces start the token and its co-signer. */}
-                            <Route element={<AssetGate />}>
-                              {/* Wallet surface: desktop sidebar shell; requires a claimed identity +
+                          <Route element={<BootHold />}>
+                            <Route path="claim/:handle?" element={<ClaimRoute />} />
+                            <Route path="enter" element={<EnterAppScreen />} />
+                          </Route>
+                          {/* Wallet + paylink surfaces start the token and its co-signer. */}
+                          <Route element={<AssetGate />}>
+                            {/* Wallet surface: desktop sidebar shell; requires a claimed identity +
                           unlocked MSK (WalletGate renders the unlock pane inside the shell). */}
-                              <Route element={<WalletEntryGate />}>
-                                <Route element={<BootHold />}>
-                                  <Route
-                                    element={
-                                      <SidebarLayout
-                                        mobilePageHeaderPaths={["/contacts", "/connect"]}
-                                        enablePhoneScan
-                                      />
-                                    }
-                                  >
-                                    <Route element={<WalletGate />}>
-                                      <Route index element={<HomeScreen />} />
-                                      <Route path="savings" element={<HomeScreen />} />
-                                      <Route path="settings" element={<SettingsScreen />} />
-                                      <Route path="activity" element={<ActivityScreen />} />
-                                      <Route element={<ActionGate action="receive" />}>
-                                        <Route path="receive" element={<ReceiveScreen />} />
-                                      </Route>
-                                      <Route element={<ClaimPendingGate />}>
-                                        {/* A picker: each way out is gated on its own. */}
-                                        <Route path="send" element={<SendScreen />} />
-                                        <Route path="contacts" element={<ContactsScreen />} />
-                                        <Route element={<ActionGate action="requests" />}>
-                                          <Route
-                                            path={REQUESTS_PATH}
-                                            element={<RequestsScreen />}
-                                          />
-                                          <Route
-                                            path={NON_CONTACT_REQUESTS_PATH}
-                                            element={<NonContactRequestsScreen />}
-                                          />
-                                        </Route>
-                                        <Route path="connect" element={<ConnectReceiveScreen />} />
-                                        <Route path="contacts/:idOrTag" element={<ContactRoute />}>
-                                          <Route
-                                            path="send"
-                                            element={<ContactPayScreen mode="send" />}
-                                          />
-                                        </Route>
-                                      </Route>
-                                      <Route element={<ActionGate action="deposit" />}>
+                            <Route element={<WalletEntryGate />}>
+                              <Route element={<BootHold />}>
+                                <Route
+                                  element={
+                                    <SidebarLayout
+                                      mobilePageHeaderPaths={["/contacts", "/connect"]}
+                                      enablePhoneScan
+                                    />
+                                  }
+                                >
+                                  <Route element={<WalletGate />}>
+                                    <Route index element={<HomeScreen />} />
+                                    <Route path="savings" element={<HomeScreen />} />
+                                    <Route path="settings" element={<SettingsScreen />} />
+                                    <Route path="activity" element={<ActivityScreen />} />
+                                    <Route element={<ActionGate action="receive" />}>
+                                      <Route path="receive" element={<ReceiveScreen />} />
+                                    </Route>
+                                    <Route element={<ClaimPendingGate />}>
+                                      {/* A picker: each way out is gated on its own. */}
+                                      <Route path="send" element={<SendScreen />} />
+                                      <Route path="contacts" element={<ContactsScreen />} />
+                                      <Route element={<ActionGate action="requests" />}>
+                                        <Route path={REQUESTS_PATH} element={<RequestsScreen />} />
                                         <Route
-                                          path="deposit"
-                                          element={<DepositScreen claimName={claimChosenName} />}
+                                          path={NON_CONTACT_REQUESTS_PATH}
+                                          element={<NonContactRequestsScreen />}
                                         />
                                       </Route>
-                                      <Route element={<ActionGate action="link" />}>
-                                        <Route path="links/new" element={<NewLinkScreen />} />
+                                      <Route path="connect" element={<ConnectReceiveScreen />} />
+                                      <Route path="contacts/:idOrTag" element={<ContactRoute />}>
+                                        <Route
+                                          path="send"
+                                          element={<ContactPayScreen mode="send" />}
+                                        />
                                       </Route>
-                                      <Route element={<ActionGate action="withdraw" />}>
-                                        <Route path="withdraw">
-                                          <Route element={<WithdrawMethodScreen />}>
-                                            <Route index element={null} />
-                                            <Route path="existing" element={<WithdrawScreen />} />
-                                            <Route
-                                              path="etherfi"
-                                              element={<WithdrawEtherfiScreen />}
-                                            />
-                                          </Route>
-                                          <Route path="fresh" element={<WithdrawFreshScreen />} />
-                                        </Route>
+                                    </Route>
+                                    <Route element={<ActionGate action="deposit" />}>
+                                      <Route
+                                        path="deposit"
+                                        element={<DepositScreen claimName={claimChosenName} />}
+                                      />
+                                      {DevMock && (
+                                        <Route
+                                          path="dev/mock/deposit/:name?"
+                                          element={
+                                            <Suspense fallback={null}>
+                                              <DevMock area="deposit" node={services.node} />
+                                            </Suspense>
+                                          }
+                                        />
+                                      )}
+                                    </Route>
+                                    <Route element={<ActionGate action="link" />}>
+                                      <Route path="links/new" element={<NewLinkScreen />} />
+                                    </Route>
+                                    <Route element={<ActionGate action="withdraw" />}>
+                                      <Route path="withdraw" element={<WithdrawMethodScreen />}>
+                                        <Route index element={null} />
+                                        <Route path="fresh" element={null} />
+                                        <Route path="bridge" element={null} />
+                                        <Route path="etherfi" element={null} />
                                       </Route>
+                                      {DevMock && (
+                                        <Route
+                                          path="dev/mock/withdraw/:name?"
+                                          element={
+                                            <Suspense fallback={null}>
+                                              <DevMock area="withdraw" node={services.node} />
+                                            </Suspense>
+                                          }
+                                        />
+                                      )}
                                     </Route>
                                   </Route>
                                 </Route>
                               </Route>
-                              {/* Link view is identity-free but needs the token or co-signer to claim. */}
-                              <Route element={<BootHold />}>
-                                <Route path="link" element={<LinkViewScreen />} />
-                                {/* The zk.money apex's short paylink path. */}
-                                <Route path="p" element={<LinkViewScreen />} />
-                              </Route>
+                            </Route>
+                            {/* Link view is identity-free but needs the token or co-signer to claim. */}
+                            <Route element={<BootHold />}>
+                              <Route path="link" element={<LinkViewScreen />} />
+                              {/* The zk.money apex's short paylink path. */}
+                              <Route path="p" element={<LinkViewScreen />} />
                             </Route>
                           </Route>
-                          {/* Unknown routes: branded 404 outside the PXE gate — no boot splash for a dead URL. */}
-                          <Route path="*" element={<NotFoundScreen />} />
                         </Route>
-                      </Routes>
-                    </ScreeningProvider>
-                  </ScanNavigationProvider>
-                </AppRouter>
-                {/* Global error/info modal — any catch block surfaces it via showErrorModal(). */}
-                <ErrorModalHost />
-              </PxeBootProvider>
-            </ObsidionCoreProvider>
+                        {/* Unknown routes: branded 404 outside the PXE gate — no boot splash for a dead URL. */}
+                        <Route path="*" element={<NotFoundScreen />} />
+                      </Route>
+                    </Routes>
+                  </ScreeningProvider>
+                </ScanNavigationProvider>
+              </AppRouter>
+              {/* Global error/info modal — any catch block surfaces it via showErrorModal(). */}
+              <ErrorModalHost network={page.config.network} />
+            </PxeBootProvider>
           </RainbowKitModalLayer>
         </RainbowKitProvider>
       </QueryClientProvider>

@@ -30,7 +30,9 @@ export interface MemoryBackend extends DatabaseBackend {
 /** A backend that keeps nothing past the process. */
 export function memoryBackend(entries: Map<string, string> = new Map()): MemoryBackend {
   const read = <T>(value: () => T): Promise<T> =>
-    backend.failing.reads ? Promise.reject(new Error("read failed")) : Promise.resolve(value())
+    backend.failing.reads
+      ? Promise.reject(new WalletError("unknown", "read failed"))
+      : Promise.resolve(value())
   const backend: MemoryBackend = {
     entries,
     failing: {},

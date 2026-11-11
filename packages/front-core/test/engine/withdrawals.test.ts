@@ -6,12 +6,11 @@ import { memoryBackend, type MemoryBackend } from "../../src/engine/memoryBacken
 import { encodeRecord } from "../../src/engine/persistentStore"
 import {
   createWithdrawals,
-  decodeWithdrawals,
-  KEY_WITHDRAWALS,
   storedWithdrawals,
   WITHDRAWAL_SUBMIT_TIMEOUT_MS,
-  withdrawalFailure,
 } from "../../src/engine/withdrawals"
+import { withdrawalFailure } from "../../src/engine/withdrawalTransition"
+import { decodeWithdrawals, KEY_WITHDRAWALS } from "../../src/storageMigrations/withdrawals"
 
 const HASH = `0x${"ab".repeat(32)}` as const
 const NO_CREDENTIAL = "Passkey assertion returned no credential"
@@ -71,15 +70,17 @@ const FIXTURE_BLOB = JSON.stringify({
 })
 
 const open = (backend: MemoryBackend = memoryBackend()) =>
-  createWithdrawals({ db: openDatabase(backend) })
+  createWithdrawals({ db: openDatabase(backend), now: () => Date.now() })
 
 /** Every record, newest first, once loaded. */
 const listed = async (store: ReturnType<typeof open>) =>
   [...(await store.all())].sort((a, b) => b.startTime - a.startTime).map((r) => r.localId)
 
 describe("decodeWithdrawals: the KEY_WITHDRAWALS blob", () => {
+  const key = (id: string) => id.toLowerCase()
+
   it("decodes a blob older builds wrote: copies of one record merge, unstamped decimals read 18", () => {
-    const records = new Map(decodeWithdrawals(FIXTURE_BLOB))
+    const records = new Map(decodeWithdrawals(FIXTURE_BLOB, key))
     expect([...records.keys()]).toEqual(["wdraw_a", "wdraw_b"])
     expect(records.get("wdraw_a")).toMatchObject({
       localId: "wdraw_a",
@@ -94,7 +95,7 @@ describe("decodeWithdrawals: the KEY_WITHDRAWALS blob", () => {
 
   it("holds nothing when the blob is absent or malformed", () => {
     for (const raw of [null, undefined, "", "{nope", "[]", "3"])
-      expect(decodeWithdrawals(raw)).toEqual([])
+      expect(decodeWithdrawals(raw, key)).toEqual([])
   })
 
   it("reads another database's store records ahead of its blob", () => {
@@ -226,6 +227,17 @@ describe("withdrawals: reads and writes", () => {
     ).toMatchObject({
       failure,
     })
+  })
+
+  it("settles when its first read fails, though it never hydrated", async () => {
+    const backend = memoryBackend()
+    backend.failing.reads = true
+    const store = open(backend)
+    expect(store.settled.get()).toBe(false)
+    await expect(store.ready).rejects.toThrow()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(store.settled.get()).toBe(true)
+    expect(store.list.get().hydrated).toBe(false)
   })
 
   it("a write that does not land rejects and leaves no trace", async () => {

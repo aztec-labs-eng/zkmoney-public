@@ -1,6 +1,6 @@
 {
-  "source": "d213bf1eb87ec017c443560e55fee551c5da7a96",
-  "oxidePin": "3b5e1f7c8f18e24f74d463911b319aac101f0aee",
+  "source": "211ba618b1a4ebf9873fbded2fd8f30697169a9d",
+  "oxidePin": "21fa8bdb8956b22e6ed54a5151ff97a2d7178c32",
   "walletPackages": [
     "@obsidion/auth-web",
     "@obsidion/config-client",
@@ -12,7 +12,6 @@
     "@obsidion/metrics-policy",
     "@obsidion/oxide-build",
     "@obsidion/passkey-web",
-    "@obsidion/proving-progress",
     "@obsidion/sdk",
     "@obsidion/web-ds",
     "@obsidion/web-wallet"
@@ -35,13 +34,15 @@
   "oxideSourceRoots": [
     "l1-contracts",
     "noir-projects/broadcaster_contract",
-    "noir-projects/frozen_deposit_refund",
+    "noir-projects/frozen_deposits_refund",
     "noir-projects/frozen_notes_refund",
     "noir-projects/name_notification_test_contract",
     "noir-projects/oxide_lib",
     "noir-projects/oxide_token_contract",
     "noir-projects/oxide_token_lib",
     "noir-projects/passkey_test_account_contract",
+    "noir-projects/pinned-noir-artifacts.json",
+    "noir-projects/pinned-noir-artifacts.tar.gz",
     "noir-projects/refund_lib",
     "noir-projects/resolver_circuit",
     "noir-projects/unprocessed_deposit_refund"

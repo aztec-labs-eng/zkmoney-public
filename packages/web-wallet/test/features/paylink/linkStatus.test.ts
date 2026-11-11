@@ -3,17 +3,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 const viewLink = vi.fn()
 vi.mock("../../../src/features/paylink/sponsoredPaylink", () => ({
   viewLink: (...a: unknown[]) => viewLink(...a),
-  decodeLink: (fragment: string) => ({ fragment, status: "unclaimed", flavor: "direct" }),
+  decodeLink: (_config: unknown, fragment: string) => ({
+    fragment,
+    status: "unclaimed",
+    flavor: "direct",
+  }),
 }))
 // Fake fragments never decode; the cache only needs a stable name for one.
 vi.mock("../../../src/features/paylink/linkIdentity", () => ({
   linkIdentity: (fragment: string) => `id:${fragment}`,
 }))
-await (await import("../../support/seedBootConfig")).seedBootConfig()
 
 import { seededLink, watchLink } from "../../../src/features/paylink/linkStatus"
 
-const deps = {} as never
+const config = {} as never
+const deps = { session: { page: { config } } } as never
 const unknownTiming = { status: "unclaimed" as const }
 const known = { status: "unclaimed" as const, claimableFrom: 1_800_000_100 }
 
@@ -75,13 +79,13 @@ describe("the tab's read of a link", () => {
   })
 
   it("shows a reload what the last read found, and keeps reading past a miss for the rest of the note", async () => {
-    expect(seededLink("frag").amount).toBeUndefined()
+    expect(seededLink(config, "frag").amount).toBeUndefined()
     viewLink.mockResolvedValueOnce(read)
     watchLink(deps, "frag", vi.fn(), vi.fn())
     await vi.advanceTimersByTimeAsync(0)
 
     // A reload: the link opens with the amount, window, memo, sender and funding tx, and nothing else.
-    expect(seededLink("frag")).toEqual({
+    expect(seededLink(config, "frag")).toEqual({
       fragment: "frag",
       status: "unclaimed",
       flavor: "direct",

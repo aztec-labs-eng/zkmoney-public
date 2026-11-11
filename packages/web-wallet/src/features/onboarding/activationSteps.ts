@@ -10,6 +10,8 @@ export interface ActivationStep {
 const ORDER: ActivationStepId[] = ["passkey", "deposit"]
 export const ACTIVATION_STEP_COUNT = ORDER.length
 export const activationStepNumber = (id: ActivationStepId) => ORDER.indexOf(id) + 1
+export const activationStepsLeft = (steps: ActivationStep[]) =>
+  steps.filter((step) => !step.done).length
 
 /**
  * The activation steps Home lists. The tag is settled in the card's header before the passkey, which

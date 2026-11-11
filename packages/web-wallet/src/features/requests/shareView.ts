@@ -38,5 +38,7 @@ export function linkExpiryLabel(expiresAt: number | undefined, now: number): str
 
 /** The message a shared request link travels with, so the chat shows a sentence and not a bare URL. */
 export function requestShareText(amount: number): string {
-  return amount > 0 ? `Requesting ${requestAmountLabel(amount)} on zk.money` : "Requesting a payment on zk.money"
+  return amount > 0
+    ? `Requesting ${requestAmountLabel(amount)} on zk.money`
+    : "Requesting a payment on zk.money"
 }

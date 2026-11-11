@@ -41,7 +41,8 @@
  * Snapshot sources return events and balances from one validated PXE anchor. `onSynced` publishes
  * the snapshot before event attribution/persistence, so their failures cannot withhold a balance.
  * A throwing hook fails the pass and forces a full rescan next pass. The `transferScan` runtime
- * task schedules the passes.
+ * task schedules the account's passes, and `previousAccountScan` a rotated wallet's previous
+ * account's.
  */
 
 import type { TokenInTxService } from "../../../types/tokens"
@@ -63,8 +64,13 @@ import type {
 import { syncCatchUp, type CatchUp } from "../../../engine/catchUp"
 import { bestEffort, WalletError } from "../../../engine/errors"
 import type { Database, Write } from "../../../engine/database"
+import type { Operations } from "../../../engine/operations"
 import { within } from "../../../engine/runtime"
 import { logger } from "../../../utils/logger"
+import {
+  LEGACY_TRANSFER_SCAN_CURSOR,
+  carriedScanCursor,
+} from "../../../storageMigrations/scanCursors"
 import { PaylinkActionEnum, TokenActionEnum } from "@obsidion/core/constants"
 
 export type { ScannedTransferEvent, TransferEventSource }
@@ -77,7 +83,7 @@ export const TRANSFER_SCAN_MAX_BLOCKS_PER_TICK = 10_000
 export const TRANSFER_SCAN_CATCH_UP_BLOCKS = 1_000
 export const TRANSFER_SCAN_SOURCE_TIMEOUT_MS = 30_000
 export const TRANSFER_SCAN_CATCH_UP_TIMEOUT_MS = 300_000
-const CURSOR_STORAGE_KEY = "@obsidion/transfer-scan/cursor/v1"
+const CURSOR_PREFIX = "acct/transferScanCursor/"
 /** Failed ingests for one txHash before attribution degrades to the raw sender address. */
 const MAX_INGEST_ATTEMPTS = 3
 /** Full rescan cadence while head is static, so a reorg that rebuilt without advancing head lands. */
@@ -85,22 +91,27 @@ const IDLE_TICKS_PER_FULL_PASS = 12
 
 type ScanScope = Pick<TransferScanContext, "accountAddress" | "networkId">
 
-function cursorKey(ctx: ScanScope & Pick<TransferScanContext, "endpointScope">): string {
+/** A cursor's key after its prefix: `<network>[/<endpoint scope>]/<account>`. */
+function cursorSuffix(ctx: ScanScope & Pick<TransferScanContext, "endpointScope">): string {
   const scope = ctx.endpointScope ? `/${ctx.endpointScope}` : ""
-  return `${CURSOR_STORAGE_KEY}/${ctx.networkId}${scope}/${ctx.accountAddress.toLowerCase()}`
+  return `${ctx.networkId}${scope}/${ctx.accountAddress.toLowerCase()}`
 }
 
-/** Every cursor an account's scans kept starts with this; `transferScanNetworkOf` reads the network off one. */
-export const TRANSFER_SCAN_CURSOR_PREFIX = `${CURSOR_STORAGE_KEY}/`
+const cursorKey = (ctx: TransferScanContext) => CURSOR_PREFIX + cursorSuffix(ctx)
 
-/** The network a stored scan cursor's key names, or undefined for any other key. */
-export function transferScanNetworkOf(key: string): string | undefined {
-  if (!key.startsWith(TRANSFER_SCAN_CURSOR_PREFIX)) return undefined
-  return key.slice(TRANSFER_SCAN_CURSOR_PREFIX.length).split("/")[0] || undefined
+/** The networks a retired database's scan cursors name, in this build's layout and older ones'. */
+export function scannedNetworks(db: { keys(prefix: string): string[] }): Set<string> {
+  const networks = new Set<string>()
+  for (const prefix of [CURSOR_PREFIX, LEGACY_TRANSFER_SCAN_CURSOR]) {
+    for (const key of db.keys(prefix)) {
+      const network = key.slice(prefix.length).split("/")[0]
+      if (network) networks.add(network)
+    }
+  }
+  return networks
 }
 
-async function loadBlock(db: Pick<Database, "get">, key: string): Promise<number | undefined> {
-  const raw = await db.get(key)
+function block(raw: string | undefined): number | undefined {
   const n = raw === undefined ? NaN : Number(raw)
   return Number.isFinite(n) && n > 0 ? n : undefined
 }
@@ -115,6 +126,11 @@ export interface TransferScanContext {
    * default endpoint resumes from. Absent on the default endpoint.
    */
   endpointScope?: string
+  /**
+   * The wallet's other account. A transfer between the two only moves the wallet's own funds, so
+   * this scan files none.
+   */
+  ownAccount?: string
 }
 
 export interface TransferEventScannerOptions {
@@ -122,6 +138,11 @@ export interface TransferEventScannerOptions {
   /** The account's database: the cursor saves in one transaction with the rows it covers. */
   db: Database
   transactionStore: TransactionStoreWrites
+  /**
+   * This device's operations: a transfer one holds the hash of is its record, so the chain's copy
+   * settles it and files no row.
+   */
+  operations?: Pick<Operations, "view" | "apply">
   /** The rows a chunk filed, once saved. */
   onFiled?: (rows: readonly Transaction[]) => void
   tags: ITagForwardResolver
@@ -247,13 +268,14 @@ export class TransferEventScanner {
             readTimeoutMs,
           )
         : {
+            // Sampled before the list, so it never claims blocks the list did not see.
+            anchorBlock: await this.readAnchor(head, signal),
             events: await this.bounded(
               this.opts.source.listIncoming(from, chunkEnd + 1),
               "listIncoming",
               signal,
               readTimeoutMs,
             ),
-            anchorBlock: await this.readAnchor(head, signal),
             balances: undefined,
           }
       synced = true
@@ -364,15 +386,29 @@ export class TransferEventScanner {
     return within(promise, label, { ms, signal })
   }
 
-  /** Self-transfers and events of other accounts are neither. */
+  /**
+   * The operation holding this hash. Operations that have not loaded could hold it, so the chunk
+   * waits for them.
+   */
+  private operationOf(txHash: string): string | undefined {
+    const view = this.opts.operations?.view.get()
+    if (!view) return undefined
+    if (!view.loaded || view.failed)
+      throw new WalletError("scan.incomplete", "operations not loaded")
+    const hash = txHash.toLowerCase()
+    return view.records.find((r) => r.txHash?.toLowerCase() === hash)?.operationId
+  }
+
+  /** Self-transfers, moves with `ownAccount` and other accounts' events are neither. */
   private direction(
     event: ScannedTransferEvent,
     ctx: TransferScanContext,
   ): "send" | "receive" | undefined {
     const me = ctx.accountAddress.toLowerCase()
+    const own = ctx.ownAccount?.toLowerCase()
     const from = event.from.toLowerCase()
     const to = event.to.toLowerCase()
-    if (from === to) return undefined
+    if (from === to || from === own || to === own) return undefined
     if (to === me) return "receive"
     if (from === me) return "send"
     return undefined
@@ -388,6 +424,16 @@ export class TransferEventScanner {
     signal: AbortSignal | undefined,
   ): Promise<Filing | undefined> {
     const store = this.opts.transactionStore
+    const op = this.operationOf(event.txHash)
+    if (op) {
+      const { operations } = this.opts
+      const { memo } = event
+      return async (w) => {
+        await operations?.apply(op, { type: "settled", at: Date.now() }, w)
+        if (memo) await operations?.apply(op, { type: "noted", memo }, w)
+        return undefined
+      }
+    }
     // A verified payout lane: the escrow paid this account's claim. No sender to attribute, and no
     // hash check: the write upgrades a plain receive filed before the lane was read and is a no-op
     // on any other row, so a claim row is never duplicated.
@@ -451,6 +497,7 @@ export class TransferEventScanner {
       from: action === "receive" ? counterparty : ctx.accountTag,
       senderL2Address: event.from,
       to: action === "receive" ? ctx.accountTag : counterparty,
+      recipientL2Address: event.to,
       token: buildTokenInTxService({ ...this.opts.token, rawAmount: event.amount }),
       timestamp,
       memo: event.memo,
@@ -536,8 +583,9 @@ export class TransferEventScanner {
     return true
   }
 
-  private loadCursor(ctx: TransferScanContext): Promise<number | undefined> {
-    return loadBlock(this.opts.db, cursorKey(ctx))
+  private async loadCursor(ctx: TransferScanContext): Promise<number | undefined> {
+    const older = LEGACY_TRANSFER_SCAN_CURSOR + cursorSuffix(ctx)
+    return block(await carriedScanCursor(this.opts.db, cursorKey(ctx), older))
   }
 
   /** A rewind covers no rows, so it saves alone. */
@@ -562,6 +610,7 @@ export function scannedRow(input: NewIncomingTokenTx): OnNetwork<TokenTransactio
     from: input.from,
     to: input.to,
     senderL2Address: input.senderL2Address,
+    recipientL2Address: input.recipientL2Address,
     memo: input.memo,
     networkId: input.networkId,
     blockNumber: input.blockNumber,

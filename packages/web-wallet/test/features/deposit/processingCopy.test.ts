@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import type { SipaProcessingState } from "@obsidion/front-core"
+import { SIPA_PROCESSING_COPY, type SipaProcessingState } from "@obsidion/front-core"
 import {
   capacityAmount,
   heldDepositLine,
@@ -162,5 +162,17 @@ describe("heldDepositLine", () => {
     expect(heldDepositLine({ reason: { kind: "checking" }, blocker })).toBe(
       "Network capacity was insufficient when last checked.",
     )
+  })
+
+  it("takes the current blocker's headline when the read confirms it", () => {
+    const opCap = { kind: "operation-cap" as const, observedAt: AT }
+    expect(heldDepositLine({ reason: opCap, blocker: opCap })).toBe(
+      `${SIPA_PROCESSING_COPY["operation-cap"].headline}.`,
+    )
+  })
+
+  it("is undefined when nothing holds the deposit", () => {
+    expect(heldDepositLine(undefined)).toBeUndefined()
+    expect(heldDepositLine({ reason: { kind: "checking" } })).toBeUndefined()
   })
 })

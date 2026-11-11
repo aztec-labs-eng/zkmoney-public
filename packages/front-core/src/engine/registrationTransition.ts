@@ -5,6 +5,7 @@ import {
   type PendingRegistrationRecord,
   type RegistrationRoute,
   type RegistrationTerms,
+  type SubmittedTx,
 } from "./registrationRecord"
 
 /** What a session commits a new record from; the transition sets its phase and counters. */
@@ -42,6 +43,10 @@ export type RegistrationEvent =
   | { type: "replaced" }
   | { type: "funded"; fundingTxHash?: Hex }
   | { type: "swept"; txHash: Hex }
+  /** This wallet sent a transfer to the address, or its manual sweep; the receipt is to come. */
+  | { type: "fundingSubmitted" | "sweepSubmitted"; tx: SubmittedTx }
+  /** That transaction's receipt shows it did not land. */
+  | { type: "submissionFailed"; txHash: Hex }
   /** A refund off the address; `entry` is the wallet entry it bought, when it bought one. */
   | {
       type: "refunded"
@@ -70,6 +75,7 @@ export interface RegistrationChange {
 }
 
 /** The events a closed record still takes. */
+// eslint-disable-next-line no-restricted-syntax -- debt
 const TERMINAL_EVENTS = new Set<RegistrationEvent["type"]>([
   "started",
   "broadcastSent",
@@ -114,6 +120,7 @@ export const LINK_BINDING = [
   "paylinkBlocked",
   "proverTip",
   "speed",
+  "withdrawalFee",
 ] as const
 
 /**
@@ -182,6 +189,20 @@ function next(
         fundedAt: record.fundedAt ?? now,
         firstFundedAt: record.firstFundedAt ?? record.fundedAt ?? now,
       }
+    case "fundingSubmitted":
+      return { ...record, submittedFunding: event.tx }
+    case "sweepSubmitted":
+      return { ...record, submittedSweep: event.tx }
+    case "submissionFailed": {
+      const funding = record.submittedFunding?.txHash === event.txHash
+      const sweep = record.submittedSweep?.txHash === event.txHash
+      if (!funding && !sweep) return undefined
+      return {
+        ...record,
+        ...(funding ? { submittedFunding: undefined } : {}),
+        ...(sweep ? { submittedSweep: undefined } : {}),
+      }
+    }
     case "refunded": {
       const txHashes = record.refunds?.txHashes ?? []
       const amounts = record.refunds?.amounts ?? {}
@@ -199,6 +220,8 @@ function next(
             txHashes: isNew ? [...txHashes, event.txHash] : txHashes,
             ...(Object.keys(kept).length > 0 ? { amounts: kept } : {}),
           },
+          // A refund settles what this wallet sent: the address may be paid again.
+          ...(isNew ? { submittedFunding: undefined } : {}),
         }
       }
       if (event.entry && !swept(record)) {

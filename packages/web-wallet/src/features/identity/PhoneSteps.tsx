@@ -13,7 +13,9 @@ import {
 } from "@obsidion/passkey-web"
 import { useId, useRef, useState, type ReactNode } from "react"
 import { Icon, PrimaryGradientButton } from "@obsidion/web-ds"
+import { useStore } from "@obsidion/front-core"
 import { PASSKEYS_DOCS_URL, TERMS_URL } from "../../lib/links"
+import { useSession } from "../../session/session"
 import { TipRow } from "../../ui/TipRow"
 import { PHONE_CREATION, type GateState } from "./ceremonyGate"
 import { SignUpChoiceSelect } from "./SignUpChoiceSelect"
@@ -219,9 +221,10 @@ export function PhoneSteps({
   tag?: string
 }) {
   const pickerLabel = useId()
+  const refusals = useStore(useSession().device, (s) => s.localRefusals)
   const sheet = useRef<SignUpOptions>(undefined)
   if (!loading && !busy && sheet.current === undefined) {
-    sheet.current = signUpSheetOptions({ creation, reach, preferred: openOn, reopened })
+    sheet.current = signUpSheetOptions({ creation, reach, preferred: openOn, reopened, refusals })
   }
   const [picked, setPicked] = useState<SignUpChoice>()
   const tagPill = tag && (
@@ -301,6 +304,9 @@ export function PhoneSteps({
         {option.keyWarning && <KeyWarningLine warning={option.keyWarning} />}
         {option.helloWarning && (
           <KeyWarningLine warning={option.helloWarning} testId="phone-steps-hello-warning" />
+        )}
+        {option.protonWarning && (
+          <KeyWarningLine warning={option.protonWarning} testId="phone-steps-proton-warning" />
         )}
       </div>
       <PrimaryGradientButton

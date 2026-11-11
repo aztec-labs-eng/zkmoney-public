@@ -1,0 +1,54 @@
+.landing {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  /* Keeps the pinned legal links clear of the form. */
+  padding-block: 40px;
+}
+@media (min-width: 960px) {
+  /* Two halves: the cards centered in the left, the form in the right. */
+  .landing {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    justify-items: center;
+    box-sizing: border-box;
+  }
+  /* Outranks the shared content column in any load order. */
+  :global(.ww-invite__content).form {
+    width: 435px;
+    align-items: flex-start;
+    text-align: left;
+  }
+  .form :global(.ww-invite__footer),
+  .form :global(.ww-invite-cancel) {
+    align-self: center;
+  }
+}
+/* The landing headline carries a subtitle, with the design's gaps around it. */
+.form :global(.ww-invite__title) {
+  margin-bottom: 12px;
+  line-height: 1.12;
+}
+.form :global(.ww-invite__subtitle) {
+  margin-bottom: 32px;
+  font-size: 16px;
+  line-height: 1.5;
+}
+/* Pinned to the page bottom, centered under the form. */
+.legal {
+  position: absolute;
+  bottom: 24px;
+  align-self: center;
+  display: flex;
+  gap: 26px;
+}
+.legal a {
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+  text-decoration: none;
+}
+.legal a:hover {
+  color: var(--text-primary);
+}

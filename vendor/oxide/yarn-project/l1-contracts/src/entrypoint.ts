@@ -1,4 +1,13 @@
-import { type Address, type Hex, type PublicClient, type WalletClient, concatHex, pad, toHex } from 'viem';
+import {
+  type Address,
+  type Hex,
+  type PublicClient,
+  type WalletClient,
+  concatHex,
+  hashTypedData,
+  pad,
+  toHex,
+} from 'viem';
 import { z } from 'zod';
 
 import { EntryPointAbi } from './artifacts.js';
@@ -125,6 +134,17 @@ export async function getUserOpHash(
   } as any)) as Hex;
 }
 
+/// The EntryPoint v0.8 hash of `userOp` on `chainId`.
+export function computeUserOpHash(chainId: number, entryPoint: Address, userOp: PackedUserOperation): Hex {
+  const { signature: _signature, ...message } = userOp;
+  return hashTypedData({
+    domain: { name: 'ERC4337', version: '1', chainId, verifyingContract: entryPoint },
+    types: { PackedUserOperation: PACKED_USER_OPERATION_TYPE },
+    primaryType: 'PackedUserOperation',
+    message,
+  });
+}
+
 /// Submits user operations through the EntryPoint, paying any prefund from the accounts' balances and
 /// refunding gas to `beneficiary`. This is the relayer/bundler step.
 export async function handleOps(
@@ -143,3 +163,15 @@ export async function handleOps(
   } as any)) as Hex;
   return maybeWaitForReceipt(publicClient, txHash, options);
 }
+
+/// The EIP-712 type of a `PackedUserOperation` in EntryPoint v0.8. The signature is not part of the hash.
+const PACKED_USER_OPERATION_TYPE = [
+  { name: 'sender', type: 'address' },
+  { name: 'nonce', type: 'uint256' },
+  { name: 'initCode', type: 'bytes' },
+  { name: 'callData', type: 'bytes' },
+  { name: 'accountGasLimits', type: 'bytes32' },
+  { name: 'preVerificationGas', type: 'uint256' },
+  { name: 'gasFees', type: 'bytes32' },
+  { name: 'paymasterAndData', type: 'bytes' },
+] as const;

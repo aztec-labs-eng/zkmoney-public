@@ -2,8 +2,6 @@ import { useEffect, useRef, useState } from "react"
 import { Navigate, useNavigate } from "react-router-dom"
 import { CONNECT_BACK_VERSION } from "@obsidion/sdk"
 import {
-  ContactStorage,
-  PendingConnectBackStorage,
   decodeInline,
   type Contact,
 } from "@obsidion/front-core"
@@ -17,6 +15,7 @@ import {
 import { showReportableError } from "../../errors/errorModal"
 import { Modal } from "../../ui/Modal"
 import { getXmtpSender } from "../../platform/xmtp/xmtpLifecycle"
+import { accountContacts } from "../../session/contacts"
 import { useSession } from "../../session/session"
 import { ContactsScreen } from "./ContactsScreen/ContactsScreen"
 import {
@@ -27,6 +26,7 @@ import {
   takeConnectStash,
   type ConnectPreview,
 } from "./connectReceive"
+import { tabStash } from "../../platform/storage/tabStash"
 import { verifyTag } from "./registryResolution"
 
 type ViewState =
@@ -43,25 +43,28 @@ const handleOf = (contact: Contact) => (contact.tag ? `@${contact.tag}` : contac
  *  sheet over the contacts directory, which is where a dismiss lands. */
 export function ConnectReceiveScreen() {
   const navigate = useNavigate()
-  const { identity: own } = useSession()
+  const session = useSession()
+  const { identity: own } = session
   const [state, setState] = useState<ViewState>({ kind: "loading" })
   const [adding, setAdding] = useState(false)
   // The stash is consume-once; StrictMode's dev double-effect must not take it twice.
   const consumed = useRef(false)
   const mounted = useRef(false)
 
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     mounted.current = true
     return () => { mounted.current = false }
   }, [])
 
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (consumed.current) return
     consumed.current = true
     // In-app navigations reach here without passing the App-mount capture — stash-and-strip again
     // (no-op when the fragment is already gone), then consume.
     stashInboundConnect()
-    const stash = takeConnectStash()
+    const stash = takeConnectStash(tabStash)
     if (!stash) {
       navigate("/contacts", { replace: true })
       return
@@ -69,7 +72,7 @@ export function ConnectReceiveScreen() {
     const identity = own.get().value
     previewConnect(stashToPayload(stash), {
       decodeInline,
-      verifyTag,
+      verifyTag: (tag) => verifyTag(session.page, tag),
       ownTag: identity?.handle,
       ownL2Address: identity?.address,
     })
@@ -95,9 +98,8 @@ export function ConnectReceiveScreen() {
     setAdding(true)
     const sender = getXmtpSender()
     const result = await confirmConnect(preview, {
-      addOrMergeContact: (entry) => ContactStorage.get().addOrMergeContact(entry),
+      addOrMergeContact: (entry) => accountContacts(session).addOrMergeContact(entry),
       sendConnectBack: sender ? (peer, content) => sender.sendConnectBack(peer, content) : undefined,
-      queueConnectBack: (entry) => PendingConnectBackStorage.get().enqueue(entry),
       connectBackVersion: CONNECT_BACK_VERSION,
       ownTag: own.get().value?.handle,
     })

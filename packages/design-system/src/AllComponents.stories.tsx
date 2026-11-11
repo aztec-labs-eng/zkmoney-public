@@ -43,6 +43,7 @@ import {
   SheetDragHandle,
   SheetSurface,
   Shimmer,
+  SkeletonBlock,
   Spinner,
   StatusBadge,
   StatusPill,
@@ -428,7 +429,7 @@ export const AllComponents: Story = {
             <Card style={{ width: 260 }} padding={16}>
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                 <span style={{ fontSize: 12, color: "#BFC2D7" }}>Total balance</span>
-                <span style={{ fontSize: 28, fontWeight: 600, color: "#FDFDFD" }}>$1,284.09</span>
+                <SkeletonBlock width={150} height={32} radius={10} />
               </div>
             </Card>
           </Shimmer>

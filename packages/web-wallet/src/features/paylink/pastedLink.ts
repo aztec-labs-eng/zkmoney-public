@@ -1,5 +1,6 @@
 import { decodeLinkFragment, decodePaylinkInline, LinkKind } from "@obsidion/sdk"
 import { decodeRequestInline } from "@obsidion/front-core"
+import { bestEffortSync } from "@obsidion/core/errors"
 
 /**
  * In-app route for pasted link text — a full URL from any host (`…/claim#…`, `…/request#…`,
@@ -14,12 +15,12 @@ export function pastedLinkRoute(text: string): string | null {
   if (!fragment) return null
   const short = decodeLinkFragment(fragment)
   if (short) return short.kind === LinkKind.Paylink ? `/link#${fragment}` : `/request#${fragment}`
-  try {
+  // A paste that is not a paylink may be a request.
+  const paylink = bestEffortSync(() => {
     decodePaylinkInline(fragment)
-    return `/link#${fragment}`
-  } catch {
-    /* not a paylink */
-  }
+    return true
+  }, false)
+  if (paylink) return `/link#${fragment}`
   try {
     decodeRequestInline(fragment)
     return `/request#${fragment}`

@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { assignReads } from "../../../support/fakeReads"
+import type { Config } from "wagmi"
 import { Fr } from "@aztec-labs/aztec.js/fields"
 import type { Address, Hex } from "viem"
 import type { PendingRegistrationRecord, SipaDeposit, SipaRecoveryDeps } from "@obsidion/front-core"
@@ -23,18 +25,9 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
   deriveStealthKey: () => ({ scalar: 1n, publicKey: { x: 1n, y: 2n } }),
   runSipaRecovery: h.run,
 }))
-vi.mock("../../../../src/config/env", () => ({
-  getConfig: () => ({ l1ChainId: 31337, network: "sandbox" }),
-}))
 vi.mock("../../../../src/config/oxideTuple", () => ({
   l1PublicClient: () => ({ readContract: h.readContract }),
-  getOxideTuple: async () => h.tuple,
   requireTupleField: (tuple: Record<string, string>, key: string) => tuple[key],
-  oxideEnvFor: async () => ({
-    tuple: h.tuple,
-    env: {},
-    publicClient: { readContract: h.readContract },
-  }),
 }))
 vi.mock("../../../../src/features/registration/webRegistration", () => ({
   registrationRecordForSipa: () => h.pending,
@@ -45,7 +38,9 @@ const fakeAuth = () => ({
   sessionKeys: async () => ({ secretKey: secret, authProvider: {} }),
 })
 vi.mock("../../../../src/platform/desktopBridge", () => ({ isDesktopL1SubmitActive: () => true }))
-vi.mock("../../../../src/session/l1Wallet", () => ({}))
+vi.mock("../../../../src/session/l1Wallet", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../../src/session/l1Wallet")>()),
+}))
 vi.mock("../../../../src/features/sipa/sipaSweep", () => ({ readSipaDeployed: h.readDeployed }))
 vi.mock("../../../../src/features/sipa/loadDepositFacts", async (importOriginal) => {
   const { mockLoadDepositFacts, singleToken } = await import("../../../support/depositTokens")
@@ -55,7 +50,15 @@ vi.mock("../../../../src/features/sipa/loadDepositFacts", async (importOriginal)
 const { recoverDeposit } = await import("../../../../src/features/deposit/recovery/sipaRecovery")
 const { closeSession } = await import("../../../../src/session/session")
 const { openTestSession } = await import("../../../support/session")
-beforeEach(() => void openTestSession({ auth: fakeAuth() }))
+let session: ReturnType<typeof openTestSession>
+const env = { tuple: h.tuple, env: {}, publicClient: { readContract: h.readContract } }
+beforeEach(() => {
+  session = openTestSession({ auth: fakeAuth() })
+  assignReads(session.page.chain, {
+    oxideTuple: async () => h.tuple,
+    oxideEnv: async () => env,
+  })
+})
 afterEach(closeSession)
 const sipa = `0x${"33".repeat(20)}` as Address
 const owner = `0x${"44".repeat(20)}` as Address
@@ -104,13 +107,17 @@ beforeEach(() => {
   h.run.mockResolvedValue(nameHash)
 })
 
+const WAGMI = {} as Config
+
 describe("registration recovery derivation", () => {
   it.each(["12345678901234567890", "0"])(
     "uses the stored fee %s and beneficiary for the original address",
     async (fee) => {
       h.readDeployed.mockResolvedValueOnce(false)
       h.pending!.fee = fee
-      await expect(recoverDeposit(deposit, { destination: owner })).resolves.toBe(nameHash)
+      await expect(
+        recoverDeposit(deposit, { session, wagmi: WAGMI, destination: owner }),
+      ).resolves.toBe(nameHash)
       expect(h.derive).toHaveBeenCalledTimes(1)
       expect(h.derive).toHaveBeenCalledWith({
         owner,
@@ -130,7 +137,7 @@ describe("registration recovery derivation", () => {
     "does not invent a registration candidate when the stored %s is absent",
     async (field) => {
       delete h.pending![field]
-      await recoverDeposit(deposit, { destination: owner })
+      await recoverDeposit(deposit, { session, wagmi: WAGMI, destination: owner })
       expect(h.makeDeriver).not.toHaveBeenCalled()
       expect(h.run.mock.calls[0][0].deployment.candidates).toEqual([])
       // A deployed legacy address can still use the existing direct-recovery path.

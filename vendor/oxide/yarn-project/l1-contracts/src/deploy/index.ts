@@ -31,7 +31,7 @@ export {
   DEFAULT_FORWARDING_TABLE_INTENTS,
   DEPOSIT_SWEEP_FEE,
   REGISTRATION_SWEEP_FEE,
-  USER_OP_SWEEP_FEE,
+  ADD_PASSKEY_SWEEP_FEE,
   type ForwardingTableInitialRow,
   type ForwardingTableIntentFees,
   deployForwardingTable,
@@ -42,7 +42,7 @@ export {
   blessSIPAImplementation,
   deployDepositSIPA,
   deployRegistrationSIPA,
-  deployUserOpSIPA,
+  deployAddPasskeySIPA,
   deploySIPAImplementations,
 } from './deploy_sipa_implementations.js';
 export { deploySIPAResolver } from './deploy_sipa_resolver.js';

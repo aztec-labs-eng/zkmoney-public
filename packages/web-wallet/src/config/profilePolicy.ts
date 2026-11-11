@@ -6,6 +6,7 @@
 
 import { assertProfileUrlShape, type ResolvedWalletProfile } from "@obsidion/config-client"
 import { Network } from "@obsidion/core/constants"
+import { WalletError } from "@obsidion/core/errors"
 import type { OxideEnvProfile } from "@obsidion/core/types"
 
 const NETWORKS: Record<string, Network> = {
@@ -19,7 +20,10 @@ export function parseNetwork(raw: string | undefined): Network {
   const key = raw ?? "sandbox"
   const network = NETWORKS[key]
   if (network === undefined) {
-    throw new Error(`Unknown VITE_NETWORK "${key}" (expected sandbox|testnet|mainnet)`)
+    throw new WalletError(
+      "config.invalid",
+      `Unknown VITE_NETWORK "${key}" (expected sandbox|testnet|mainnet)`,
+    )
   }
   return network
 }
@@ -33,7 +37,8 @@ export function assertHostProfileUrl(url: string, network: Network): void {
   try {
     assertProfileUrlShape(url)
   } catch (error) {
-    throw new Error(
+    throw new WalletError(
+      "config.invalid",
       `The configuration URL set in zk.money Desktop is refused: ${(error as Error).message}`,
     )
   }
@@ -53,16 +58,21 @@ export function assertProfilePolicy(boot: PolicyInput, network: Network): OxideE
   // No pointer means no token, portal or tag resolution — refuse rather than boot without one.
   const oxide = boot.snapshot.oxide
   if (!oxide) {
-    throw new Error(`profile "${profileId}" version "${boot.versionId}" has no oxide pointer`)
+    throw new WalletError(
+      "config.invalid",
+      `profile "${profileId}" version "${boot.versionId}" has no oxide pointer`,
+    )
   }
   if (network === Network.MAINNET && !oxide.expectedGitSha) {
-    throw new Error(
+    throw new WalletError(
+      "config.invalid",
       `profile "${profileId}" resolves a mainnet oxide pointer with no expectedGitSha` +
         " — the manifest gate would degrade to schema-only and accept a different deploy cut.",
     )
   }
   if (network !== Network.SANDBOX && EPHEMERAL_MANIFEST.test(oxide.manifestUrl)) {
-    throw new Error(
+    throw new WalletError(
+      "config.invalid",
       `profile "${profileId}" resolves the oxide manifest to ${oxide.manifestUrl} — ` +
         "a dev or local manifest must not serve a durable network.",
     )

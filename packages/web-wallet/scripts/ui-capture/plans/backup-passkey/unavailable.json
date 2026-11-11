@@ -1,0 +1,49 @@
+{
+  "scenario": "activity",
+  "viewport": "402x879,1280x832",
+  "path": "/settings?flowFixture=success&backupFixture=unavailable",
+  "ready": {
+    "selector": ".ww-settings__user"
+  },
+  "steps": [
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Passkeys",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": "html[data-backup-screen=unavailable]"
+    },
+    {
+      "action": "screenshot",
+      "file": "b2-unavailable.png",
+      "state": "B2: no route on this network"
+    },
+    {
+      "action": "goto",
+      "path": "/settings?flowFixture=success&backupFixture=unavailable-raised"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-settings__user"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Passkeys",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": "html[data-backup-screen=unavailable]"
+    },
+    {
+      "action": "screenshot",
+      "file": "b2-unavailable-raised.png",
+      "state": "B2: raised over the approve step a missing route stopped"
+    }
+  ],
+  "finalScreenshot": false
+}

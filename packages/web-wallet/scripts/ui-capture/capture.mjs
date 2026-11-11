@@ -27,7 +27,7 @@ Options:
   --scenario NAME        ${scenarioNames.join(", ")} (default: activity)
   --plan FILE            JSON interaction plan; CLI values override plan values
   --preset SIZE|all      390x844 (default), 402x879, 390x667, or all three
-  --viewport WIDTHxHEIGHT  Custom CSS viewport (e.g. 1280x832, or 402x874,1280x832); excludes --preset
+  --viewport WIDTHxHEIGHT  Custom CSS viewport (e.g. 1280x832, or 402x879,1280x832); excludes --preset
   --record               Exact-size WebM recording; requires ffmpeg and ffprobe
   --full-page            Supplemental full-page screenshots (default: viewport only)
   --output-dir DIR       Output outside the repository; default: a unique /tmp directory
@@ -89,7 +89,7 @@ async function main() {
   const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim()
   const cssHash = createHash("sha256").update(await readFile(path.join(walletDir, "src/ui/shell.css"))).digest("hex")
   const require = createRequire(path.join(walletDir, "package.json"))
-  for (const dependency of ["@obsidion/core/constants", "@obsidion/sdk", "@obsidion/front-core", "@obsidion/config-client", "@obsidion/proving-progress"]) {
+  for (const dependency of ["@obsidion/core/constants", "@obsidion/sdk", "@obsidion/front-core", "@obsidion/config-client"]) {
     try { require.resolve(dependency) }
     catch { throw new Error(`Missing build output for ${dependency}. Build the workspace dependencies before running ui:capture (see scripts/ui-capture/README.md).`) }
   }

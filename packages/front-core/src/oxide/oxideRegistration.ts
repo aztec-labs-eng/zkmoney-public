@@ -1,3 +1,4 @@
+import type { Pace } from "@obsidion/core/cadence"
 import type { LegacySipaDeployArgs } from "@oxide/l1-contracts/legacy_sipa.js"
 /**
  * Deposit-gated name registration (registration-fee.md: registration by deposit). The name is
@@ -26,8 +27,8 @@ import type { LegacySipaDeployArgs } from "@oxide/l1-contracts/legacy_sipa.js"
 import { type Address, type Hex, zeroAddress } from "viem"
 import {
   buildR1InstallUserOp,
+  computeUserOpHash,
   type AuthKeyEntry,
-  type PackedUserOperation,
   type R1InstallArg,
   type R1InstallGas,
   type R1PublicKeyArg,
@@ -67,12 +68,13 @@ import { credentialIdToMetadata } from "./oxideWebAuthn"
 import { consentDigest } from "./oxideRegistrationData"
 import { signAccountDigest, type AccountPasskey } from "./accountSignature"
 import type { SipaOrigin } from "../engine/sipaDeposits"
-import { bestEffort } from "../engine/errors"
+import { WalletError, bestEffort } from "../engine/errors"
+import type { Turn } from "../engine/turns"
 import { logger } from "../utils/logger"
 
 /**
  * The shared L1 reader (`createOxideL1Reader`) — used by registration, the passkey-first enter flow,
- * and the migration relay. `getAccountNonce` / `getUserOpHash` serve the minimal 4337 relay
+ * and the migration relay. `getAccountNonce` serves the minimal 4337 relay
  * (`updateUserL2Address`), not registration; registration itself uses only the registry reads below.
  *
  * Names live in the NameRegistry and per-account metadata in the AccountMetadataRegistry it points
@@ -88,8 +90,6 @@ export interface OxideL1Reader {
   readAccountMetadataRegistry(registry: Address): Promise<Address>
   /** The account's metadata record, or null when it has none. */
   readUserRecord(accountMetadataRegistry: Address, account: Address): Promise<UserRecordArg | null>
-  /** EntryPoint.getUserOpHash — the migration relay's op-hash read. */
-  getUserOpHash(entryPoint: Address, op: PackedUserOperation): Promise<Hex>
   /** The R1 install gas limits of the controller the registry names, which rebuilds the op it sweeps. */
   readR1InstallGas(registry: Address): Promise<R1InstallGas>
   /** The account's installed r1 keys — the enter flow's passkey match. */
@@ -125,7 +125,6 @@ export type RegistrationL1Reads = Pick<
   | "readNameOf"
   | "readAccountMetadataRegistry"
   | "readUserRecord"
-  | "getUserOpHash"
   | "readR1InstallGas"
   | "getCode"
   | "readAuthKeys"
@@ -306,7 +305,8 @@ function assemblePayload(
 /** The EntryPoint the install op is bound to; registration needs it present and non-zero. */
 function requireEntryPoint(env: OxideRegistrationEnv): Address {
   if (!env.entryPoint || /^0x0+$/.test(env.entryPoint)) {
-    throw new Error(
+    throw new WalletError(
+      "config.invalid",
       "oxide registration env lacks a non-zero EntryPoint — the sweep installs the passkey through it",
     )
   }
@@ -323,7 +323,7 @@ export async function buildRegistrationR1Install(
   masterSecret: FieldLike,
   owner: Address,
   env: OxideRegistrationEnv,
-  l1: Pick<RegistrationL1Reads, "getUserOpHash" | "readR1InstallGas">,
+  l1: Pick<RegistrationL1Reads, "readR1InstallGas">,
   r1Key: R1PublicKeyArg,
   credentialId: string,
 ): Promise<R1InstallArg> {
@@ -331,7 +331,7 @@ export async function buildRegistrationR1Install(
   const metadata = credentialIdToMetadata(credentialId)
   const gas = await l1.readR1InstallGas(env.registry)
   const op = buildR1InstallUserOp(owner, 0n, r1Key, metadata, gas)
-  const userOpHash = await l1.getUserOpHash(entryPoint, op)
+  const userOpHash = computeUserOpHash(env.l1ChainId, entryPoint, op)
   const bootstrap = deriveBootstrapKey(masterSecret)
   const signature = await bootstrap.sign({ hash: userOpHash })
   return { qx: r1Key.qx, qy: r1Key.qy, metadata, signature }
@@ -461,6 +461,7 @@ export interface OxideRegistrationDeps {
 }
 
 export interface OxideRegistrationSessionDeps extends OxideRegistrationDeps {
+  turn: OxideResumeDeps["turn"]
   registrations: RegistrationRecords
   /** Maps an on-chain nameHash to a locally-known plaintext tag (adoption gate). */
   resolveLocalTag?: (nameHash: Hex) => Promise<string | null>
@@ -475,6 +476,9 @@ export interface OxideRegistrationSessionDeps extends OxideRegistrationDeps {
 }
 
 export interface OxideResumeDeps {
+  /** The one turn every registration session and tick shares: two ticks would double-broadcast,
+   *  and a session racing a tick would double-claim. */
+  turn: Turn
   env: OxideRegistrationEnv
   l1: RegistrationL1Reads
   deposits: RegistrationDepositReader
@@ -495,6 +499,8 @@ export interface OxideResumeDeps {
   resolveLocalTag?: (nameHash: Hex) => Promise<string | null>
   /** Files a sweep the tick saw on the address's deposit record. */
   sweepSent?: (sipa: Address, txHash: Hex) => Promise<void>
+  /** The page's: the next detection read is a poll. */
+  pace: Pick<Pace, "gateMs">
 }
 
 /**
@@ -538,19 +544,6 @@ export type OxideResumeOutcome =
   /** The account holds a name no local source can map — route to the enter/recovery flow. */
   | "needs_recovery"
 
-// ── Serialization tail ──────────────────────────────────────────────────────────
-//
-// Every session and tick runs behind this process-wide tail: two ticks would double-broadcast; a
-// session racing a tick would double-claim. Each call runs after the prior settles.
-
-let resumeTail: Promise<unknown> = Promise.resolve()
-
-function serialize<T>(run: () => Promise<T>): Promise<T> {
-  const next = resumeTail.then(run, run)
-  resumeTail = next.catch(() => undefined)
-  return next
-}
-
 /**
  * This wallet's registration address for `nameHash` at the committed `fee`, with its deposit
  * record's claim inputs. The session commits to it; recovery finds it again with the same call,
@@ -593,7 +586,7 @@ export async function deriveRegistrationAddress(
 export function startOxideRegistrationSession(
   deps: OxideRegistrationSessionDeps,
 ): Promise<OxideSessionResult> {
-  return serialize(() => sessionBody(deps))
+  return deps.turn(() => sessionBody(deps))
 }
 
 async function sessionBody(deps: OxideRegistrationSessionDeps): Promise<OxideSessionResult> {
@@ -685,11 +678,9 @@ async function sessionBody(deps: OxideRegistrationSessionDeps): Promise<OxideSes
     ...(deps.termsOf ? { terms: deps.termsOf(claim) } : {}),
     ...(deps.route ? { route: deps.route } : {}),
   })
-  try {
-    await deps.persistStealthScalar?.(derivation.stealthScalar)
-  } catch (err) {
-    logger.warn("[oxideRegistration] persistStealthScalar failed (re-derivable):", err)
-  }
+  // Re-derivable, so a failed write does not stop the registration.
+  if (deps.persistStealthScalar)
+    await bestEffort("unknown", deps.persistStealthScalar(derivation.stealthScalar))
 
   const consentSig = await consentFor(
     deps.masterSecret,
@@ -748,7 +739,7 @@ export function resumeOxideRegistration(
   deps: OxideResumeDeps,
   opts: ResumeOptions = {},
 ): Promise<OxideResume> {
-  return serialize(() => resumeTick(deps, opts))
+  return deps.turn(() => resumeTick(deps, opts))
 }
 
 const settled = (outcome: OxideResumeOutcome): OxideResume => ({ outcome, nextMs: 0 })
@@ -848,7 +839,7 @@ async function resumeTickBody(
     // deposit at the floor, so a swept record is funded even when no tick saw the funds first.
     await registrations.apply(sipa, { type: "swept", txHash: sweeps[0].txHash })
     if (deps.sweepSent) await bestEffort("unknown", deps.sweepSent(sipa, sweeps[0].txHash))
-    return backoff(RESUME_DETECT_POLL_MS)
+    return backoff(deps.pace.gateMs(RESUME_DETECT_POLL_MS))
   }
   if (funded === true && record.fundedAt === undefined) {
     // An unread funding transfer leaves the record funded without its hash.
@@ -867,15 +858,15 @@ async function resumeTickBody(
   //    renews its claim. ──
   const spent = record.replaced?.broadcastSpent === true
   const sweptBefore = record.sweptAt !== undefined || record.sweepTxHash !== undefined
-  if (swept || sweptBefore || (spent && !opts.force)) return backoff(RESUME_DETECT_POLL_MS)
+  if (swept || sweptBefore || (spent && !opts.force))
+    return backoff(deps.pace.gateMs(RESUME_DETECT_POLL_MS))
   if (!opts.force || (!spent && record.broadcast))
-    return backoff(unreadDeposit ? RESUME_TRANSIENT_RETRY_MS : RESUME_DETECT_POLL_MS)
-  let signDeps: OxideSignDeps | null = null
-  try {
-    signDeps = (await deps.getSignDeps?.(record)) ?? null
-  } catch {
-    signDeps = null
-  }
+    return backoff(
+      unreadDeposit ? RESUME_TRANSIENT_RETRY_MS : deps.pace.gateMs(RESUME_DETECT_POLL_MS),
+    )
+  const signDeps = deps.getSignDeps
+    ? (await bestEffort("unknown", deps.getSignDeps(record))) ?? null
+    : null
   if (!signDeps) {
     if (!spent && deps.oweBroadcast)
       await bestEffort("deposit.broadcastFailed", deps.oweBroadcast(record, { now: true }))
@@ -890,7 +881,7 @@ async function resumeTickBody(
         deps.oweBroadcast(record, { payload: rebuilt.payload, now: true }),
       )
   }
-  return backoff(rebuilt.kind === "wait" ? rebuilt.ms : RESUME_DETECT_POLL_MS)
+  return backoff(rebuilt.kind === "wait" ? rebuilt.ms : deps.pace.gateMs(RESUME_DETECT_POLL_MS))
 }
 
 // ── Rebuilding a broadcast ──────────────────────────────────────────────────────
@@ -932,11 +923,11 @@ export async function deriveRecordedRegistrationSipa(
  * request claims.
  */
 export function rebuildRegistrationBroadcast(
-  deps: Pick<OxideResumeDeps, "env" | "l1" | "deposits" | "registrations" | "close">,
+  deps: Pick<OxideResumeDeps, "env" | "l1" | "deposits" | "registrations" | "close" | "turn">,
   record: PendingRegistrationRecord,
   signDeps: OxideSignDeps,
 ): Promise<RegistrationRebuild> {
-  return serialize(async () => {
+  return deps.turn(async () => {
     const current = await deps.registrations.get(record.sipaAddress)
     if (!current || isTerminalRegistrationPhase(current.phase))
       return { kind: "closed", outcome: "failed" } satisfies RegistrationRebuild

@@ -27,7 +27,7 @@ export default defineConfig({
     hookTimeout: 10_000,
     testTimeout: 10_000,
     pool: "forks",
-    poolOptions: { forks: { singleFork: true } },
+    maxWorkers: 1,
     fileParallelism: false,
     server: { deps: { inline: [/@aztec-labs\/accounts/] } },
     onConsoleLog() {

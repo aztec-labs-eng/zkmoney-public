@@ -20,7 +20,7 @@ export type ScanResult =
 interface ScanIdentity {
   ownTag?: string
   ownL2Address?: string
-  contacts: Contact[]
+  contacts: readonly Contact[]
 }
 
 /** Camera and manual paste share this route adapter; destination screens own confirmation. */
@@ -40,7 +40,7 @@ export async function scanPayload(text: string, identity: ScanIdentity): Promise
     if (preview.kind === "error") return error("This connect code is invalid. Try another code.")
     return route(`/connect#${packet}`)
   }
-  if (/(?:^|\/)connect(?:[\/#?]|$)/i.test(payload)) {
+  if (/(?:^|\/)connect(?:[/#?]|$)/i.test(payload)) {
     return error("This connect link is invalid. Use the complete wallet connect link.")
   }
 
@@ -57,7 +57,7 @@ export async function scanPayload(text: string, identity: ScanIdentity): Promise
     }
     return route(`/pay/${tag}${pay.fragment ? `#${pay.fragment}` : ""}`)
   }
-  if (/zk\.money\/pay(?:[\/#?]|$)/i.test(payload)) {
+  if (/zk\.money\/pay(?:[/#?]|$)/i.test(payload)) {
     return error("This pay link is invalid. Use the complete pay link.")
   }
 
@@ -71,9 +71,7 @@ export async function scanPayload(text: string, identity: ScanIdentity): Promise
     }
     if (identity.ownL2Address?.toLowerCase() === payload.toLowerCase())
       return error("This is your own address.")
-    const contact = contacts.find(
-      (entry) => entry.address.toLowerCase() === payload.toLowerCase(),
-    )
+    const contact = contacts.find((entry) => entry.address.toLowerCase() === payload.toLowerCase())
     return contact
       ? route(`/contacts/${encodeURIComponent(navigateIdFor(contact))}`)
       : error("This address is not a saved contact. Scan a wallet link or registered @tag instead.")

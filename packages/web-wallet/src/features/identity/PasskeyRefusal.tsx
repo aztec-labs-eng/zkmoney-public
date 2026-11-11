@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useState } from "react"
+import type { ReactNode } from "react"
 import type { SignInRoute } from "@obsidion/core/types"
 import {
   APPLE_FLOOR_COPY,
@@ -13,9 +13,6 @@ import {
   MAC_UPDATE_COPY,
   MAC_WRONG_KEY_COPY,
   MISMATCH_COPY,
-  type MacUpdateAdvice,
-  currentUserAgentInfo,
-  currentUserAgentInfoSync,
   macUpdateAdviceFor,
   PHONE_STEPS_COPY,
   type PhoneReach,
@@ -24,11 +21,13 @@ import {
   refusalFor as sharedRefusalFor,
 } from "@obsidion/passkey-web"
 import { PrimaryGradientButton } from "@obsidion/web-ds"
+import { useStore } from "@obsidion/front-core"
+import { useSession } from "../../session/session"
 import { showReportableError } from "../../errors/errorModal"
 import { PASSKEYS_DOCS_URL } from "../../lib/links"
 import type { MismatchVerdict } from "../../platform/auth/WebAlphaAuthService"
 import { inAppCardScreen } from "./inAppCardTelemetry"
-import { OpenInBrowser } from "./OpenInBrowser"
+import { OpenInBrowser } from "./OpenInBrowser/OpenInBrowser"
 
 export type { RefusalState }
 
@@ -58,34 +57,10 @@ export type RouteRefusal = RefusalState & {
   macUpdate?: boolean
 }
 
-/** How long the update line waits for the macOS version before taking the wording that needs none. */
-const MAC_VERSION_WAIT_MS = 1_000
-
 /** The update line, worded by the macOS version Client Hints report; a late answer still counts. */
 function MacUpdateLine() {
-  const [advice, setAdvice] = useState<MacUpdateAdvice>()
-  useEffect(() => {
-    let live = true
-    let answered = false
-    const fromUserAgent = () => macUpdateAdviceFor(currentUserAgentInfoSync())
-    const wait = setTimeout(() => {
-      if (live && !answered) setAdvice(fromUserAgent())
-    }, MAC_VERSION_WAIT_MS)
-    currentUserAgentInfo().then(
-      (ua) => {
-        answered = true
-        if (live) setAdvice(macUpdateAdviceFor(ua))
-      },
-      () => {
-        answered = true
-        if (live) setAdvice(fromUserAgent())
-      },
-    )
-    return () => {
-      live = false
-      clearTimeout(wait)
-    }
-  }, [])
+  const info = useStore(useSession().page.userAgent)
+  const advice = info && macUpdateAdviceFor(info)
   if (!advice) return null
   return (
     <p
@@ -270,6 +245,7 @@ export function promptCauses(posture: DevicePosture): PromptCause[] {
 function reportableCause(error: RouteRefusal): Error {
   if (error.cause instanceof Error) return error.cause
   const { name, message, stack } = (error.cause ?? {}) as Record<string, unknown>
+  // eslint-disable-next-line local/message-in-state -- debt
   const reported = new Error(typeof message === "string" ? message : error.message)
   reported.name = typeof name === "string" ? name : error.name
   if (typeof stack === "string") reported.stack = stack
@@ -347,6 +323,7 @@ export function PasskeyRefusal({
       <div className="ww-invite-spinner" data-testid={testId} data-reason={error.name}>
         <h2 className="ww-passkey-refusal__title">{row.title}</h2>
         <p role="alert" className="ww-paylink-summary__caption ww-passkey-refusal__message">
+          {/* eslint-disable-next-line local/message-in-state -- debt */}
           {row.message ?? error.message}
         </p>
         {error.leftover && <LeftoverPasskeyLine />}
@@ -375,6 +352,7 @@ export function PasskeyRefusal({
     <div className="ww-invite-spinner" data-testid={testId} data-reason={error.name}>
       <h2 className="ww-passkey-refusal__title">{row.title}</h2>
       <p role="alert" className="ww-paylink-summary__caption ww-passkey-refusal__message">
+        {/* eslint-disable-next-line local/message-in-state -- debt */}
         {row.message ?? error.message}
       </p>
       {error.macUpdate && <MacUpdateLine />}

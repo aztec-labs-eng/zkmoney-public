@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest"
+import { liveStore } from "../../src/engine/liveStore"
 import { batch, memoryStore, derived } from "../../src/engine/store"
 
 function counter(subscribe: (listener: () => void) => () => void) {
@@ -124,5 +125,33 @@ describe("derived", () => {
     })
     expect(total.get()).toBe(6n)
     expect(seen.calls()).toBe(1)
+  })
+})
+
+describe("liveStore", () => {
+  it("runs whileSubscribed at the first subscriber and its teardown at the last, then again", () => {
+    const events: string[] = []
+    let write = (_: number) => {}
+    const store = liveStore(0, {
+      whileSubscribed: (set) => {
+        events.push("start")
+        write = set
+        set(1)
+        return () => events.push("stop")
+      },
+    })
+    const first = counter(store.subscribe)
+    // The first subscriber listens before the start writes.
+    expect([store.get(), first.calls()]).toEqual([1, 1])
+    const second = counter(store.subscribe)
+    first.off()
+    first.off()
+    expect(events).toEqual(["start"])
+    write(2)
+    expect(second.calls()).toBe(1)
+    second.off()
+    expect(events).toEqual(["start", "stop"])
+    counter(store.subscribe)
+    expect(events).toEqual(["start", "stop", "start"])
   })
 })

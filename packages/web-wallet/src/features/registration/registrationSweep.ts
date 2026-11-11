@@ -1,3 +1,4 @@
+import type { Pace } from "@obsidion/core/cadence"
 import { oxideAccountPasskey } from "../../platform/auth/oxideAccountPasskey"
 /**
  * Manual sweep for a funded registration deposit: the user submits the relayer's own
@@ -5,14 +6,15 @@ import { oxideAccountPasskey } from "../../platform/auth/oxideAccountPasskey"
  * on-chain registration fee out of the deposit (a broadcast-time waiver is honored), and bridges
  * the remainder — manual only skips the relayer, never the fee.
  *
- * Nothing extra is persisted for this path: one passkey assertion recovers the master secret, the
- * derivation is recomputed and checked against the record's address before anything is signed
- * (fail closed), and the NameClaim comes from the device cache or a claim-server re-request (see
- * `requireNameClaim`). The submission rides the same injected-wallet / desktop-bridge channel as
- * the plain deposit's self-sweep.
+ * Only the submitted transaction is persisted for this path: one passkey assertion recovers the
+ * master secret, the derivation is recomputed and checked against the record's address before
+ * anything is signed (fail closed), and the NameClaim comes from the device cache or a claim-server
+ * re-request (see `requireNameClaim`). The submission rides the same injected-wallet /
+ * desktop-bridge channel as the plain deposit's self-sweep.
  */
 
 import { createPublicClient, formatUnits, type Address, type Hex, type PublicClient } from "viem"
+import type { Config } from "wagmi"
 import { registrationFloor } from "@obsidion/core/constants"
 import { EMPTY_SIGNED_TERMS, type SignedTermsArg } from "@obsidion/sdk"
 import {
@@ -26,6 +28,7 @@ import {
   consentDigest,
   readSipaFunding,
   settledBalance,
+  submissionGone,
   type AddressScreener,
   type OxideL1Reader,
   type OxideRegistrationEnv,
@@ -36,11 +39,12 @@ import {
   type SipaFundingToken,
   type SipaProcessingState,
   type SipaSweepSubject,
+  type SubmittedTx,
 } from "@obsidion/front-core"
 import type { OxideEnvTuple, RegistrationSchedule } from "@obsidion/core/types"
 import { WalletError, bestEffort } from "@obsidion/core/errors"
-import { getConfig, l1Transport } from "../../config/env"
-import { getFeeTokenBridgeTuple, oxideEnvFor, requireTupleField } from "../../config/oxideTuple"
+import { l1Transport, type WebWalletConfig } from "../../config/env"
+import { requireTupleField } from "../../config/oxideTuple"
 import {
   assertSweepCapacity,
   readSipaDeployed,
@@ -56,7 +60,6 @@ import {
   type L1ExitStage,
 } from "../sipa/l1ExitChannels"
 import { isDesktopL1SubmitActive } from "../../platform/desktopBridge"
-import { txAmountCap } from "../token/oxideToken"
 import { readRegistrationSchedule } from "./registrationTerms"
 import { requireNameClaim } from "./nameClaim"
 import { seededRegistrationSalt } from "./registrationDepositSeed"
@@ -78,6 +81,7 @@ export async function assertScreened(
 }
 
 export interface ManualRegistrationSweepOptions {
+  wagmi: Config
   /** Recovered account keys — the caller runs the passkey assertion so the prompt has UI context. */
   keys: Pick<OnboardingKeys, "secretKey" | "account">
   /** Bridge mode: the address the deposit fee is paid to. */
@@ -88,6 +92,8 @@ export interface ManualRegistrationSweepOptions {
   screen?: AddressScreener["screen"]
   onHelperOpened?: (submitUrl: string) => void
   onStage?: (stage: L1ExitStage) => void
+  /** The page's: the L1 receipt wait polls at its interval. */
+  pace: Pick<Pace, "foreignMs">
   /** Progress the sweep makes before it reaches a channel stage, such as waiting out a name-claim refusal. */
   onNotice?: (message: string) => void
 }
@@ -117,15 +123,15 @@ export interface RegistrationSweepDeps {
 
 /** `runRegistrationSweep` over this browser's deployment, L1 reads and exit channel. */
 export async function manualRegistrationSweep(
-  own: Pick<
+  session: Pick<
     Session,
-    "registrations" | "sipaDeposits" | "nameClaims" | "sipaProcessingObserver" | "signup"
+    "registrations" | "sipaDeposits" | "nameClaims" | "sipaProcessingObserver" | "signup" | "page"
   >,
   record: PendingRegistrationRecord,
   opts: ManualRegistrationSweepOptions,
 ): Promise<Hex> {
-  const config = getConfig()
-  const { tuple, env, publicClient } = await oxideEnvFor(config)
+  const { config, chain } = session.page
+  const { tuple, env, publicClient } = await chain.oxideEnv.read()
   return runRegistrationSweep(
     {
       env,
@@ -133,24 +139,25 @@ export async function manualRegistrationSweep(
       client: publicClient,
       reader: createOxideL1Reader(publicClient),
       derive: createRegistrationSipaDeriver({ publicClient, env, tuple }),
-      claim: (...args) => requireNameClaim(own, ...args),
-      schedule: () => readRegistrationSchedule(config),
+      claim: (...args) => requireNameClaim(session, ...args),
+      schedule: () => readRegistrationSchedule(session.page),
       cap: () =>
-        getFeeTokenBridgeTuple(config).then((fee) =>
-          txAmountCap(publicClient, requireTupleField(fee, "portal") as Address),
-        ),
-      tokens: () => sipaFundingTokens(config, record.depositToken as Address, "registration"),
+        chain.feeTokenBridgeTuple
+          .read()
+          .then((fee) => chain.txAmountCap(requireTupleField(fee, "portal") as Address).read()),
+      tokens: () => sipaFundingTokens(session.page, record.depositToken as Address, "registration"),
       capacity: (live) =>
-        own.sipaProcessingObserver?.refreshForSweep(record.sipaAddress, live) ??
+        session.sipaProcessingObserver?.refreshForSweep(record.sipaAddress, live) ??
         Promise.resolve(undefined),
       channel: () =>
         registrationSweepChannel(
+          config,
           record,
           createPublicClient({ transport: l1Transport(config) }),
           opts,
         ),
-      registrations: own.registrations,
-      sipaDeposits: own.sipaDeposits,
+      registrations: session.registrations,
+      sipaDeposits: session.sipaDeposits,
     },
     record,
     opts,
@@ -158,9 +165,8 @@ export async function manualRegistrationSweep(
 }
 
 /**
- * Re-derive, guard, and submit the registration sweep for `record`. Resolves to the L1 tx hash;
- * the record gets `sweepTxHash` stamped and the detection tick confirms from the Sweep event as
- * usual — this path never writes `sweptAt` itself.
+ * Re-derive, guard, and submit the registration sweep for `record`. Resolves to the L1 tx hash. A
+ * sweep already submitted settles before another is signed.
  */
 export async function runRegistrationSweep(
   deps: RegistrationSweepDeps,
@@ -168,6 +174,20 @@ export async function runRegistrationSweep(
   opts: ManualRegistrationSweepOptions,
 ): Promise<Hex> {
   const { env, tuple, client: publicClient } = deps
+  const submitted = record.submittedSweep
+  const learned = (tx: SubmittedTx) =>
+    bestEffort(
+      "unknown",
+      deps.registrations.apply(record.sipaAddress, { type: "sweepSubmitted", tx }),
+    )
+  if (submitted && !(await submissionGone(publicClient, submitted, learned, Date.now())))
+    return settleSweep(deps, record, await deps.channel(), submitted.txHash)
+  // A replaced or dropped sweep is cleared; the balance read below refuses a swept address.
+  if (submitted)
+    await deps.registrations.apply(record.sipaAddress, {
+      type: "submissionFailed",
+      txHash: submitted.txHash,
+    })
   const derivation = await deriveRecordedRegistrationSipa(
     deps.derive,
     {
@@ -319,8 +339,27 @@ export async function runRegistrationSweep(
   )
 
   const hash = await submitSweep(channel, call.to, call.data)
+  const at = Date.now()
+  const sent = await bestEffort("unknown", publicClient.getTransaction({ hash }))
+  const saved = {
+    type: "sweepSubmitted",
+    tx: { txHash: hash, at, from: sent?.from, nonce: sent?.nonce },
+  } as const
+  await bestEffort("unknown", deps.registrations.apply(record.sipaAddress, saved))
+  return settleSweep(deps, record, channel, hash, checkCapacity)
+}
+
+/** Waits out a submitted sweep's receipt: a landed one is stamped, a failed one cleared. */
+async function settleSweep(
+  deps: RegistrationSweepDeps,
+  record: PendingRegistrationRecord,
+  channel: L1ExitChannel,
+  hash: Hex,
+  checkCapacity?: () => Promise<SipaProcessingState | undefined>,
+): Promise<Hex> {
   if (!(await channel.waitForReceipt(hash))) {
-    const state = await bestEffort("unknown", checkCapacity())
+    await deps.registrations.apply(record.sipaAddress, { type: "submissionFailed", txHash: hash })
+    const state = checkCapacity && (await bestEffort("unknown", checkCapacity()))
     throw revertedSweepError(hash, state, [
       "registration.sweepReverted",
       "registration.sweepRevertedCapacity",
@@ -340,13 +379,18 @@ export async function runRegistrationSweep(
 
 /** Same channel split as the plain self-sweep: injected wallet, or the desktop helper page. */
 async function registrationSweepChannel(
+  config: WebWalletConfig,
   record: PendingRegistrationRecord,
   publicClient: PublicClient,
   opts: ManualRegistrationSweepOptions,
 ): Promise<L1ExitChannel> {
-  const config = getConfig()
   if (!isDesktopL1SubmitActive()) {
-    return await injectedWalletChannel(config, { from: opts.from, onStage: opts.onStage })
+    return await injectedWalletChannel(config, {
+      pace: opts.pace,
+      wagmi: opts.wagmi,
+      from: opts.from,
+      onStage: opts.onStage,
+    })
   }
   if (!opts.destination) {
     throw new WalletError("sweep.tipDestinationMissing")
@@ -365,5 +409,6 @@ async function registrationSweepChannel(
     },
     onHelperOpened: opts.onHelperOpened,
     onStage: opts.onStage,
+    pace: opts.pace,
   })
 }

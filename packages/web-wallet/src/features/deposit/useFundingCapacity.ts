@@ -1,13 +1,13 @@
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react"
+import { useCallback, useMemo, useSyncExternalStore } from "react"
 import {
-  DEFAULT_PORTAL_CAPACITY_POLICY,
+  useStore,
   type CapacityEligibility,
-  type PortalCapacityKey,
   type PortalCapacityState,
   type PortalCapacityStore,
   type RequiredCredit,
 } from "@obsidion/front-core"
-import { activeCapacityKey, depositCapacityStore } from "./capacityStore"
+import { useSession } from "../../session/session"
+import { depositCapacityStore } from "./capacityStore"
 import {
   fundingCapacityView,
   fundingEligibility,
@@ -46,44 +46,14 @@ export function useFundingCapacity(input: {
   minimumAtomic?: bigint
   unknownCapacity?: UnknownCapacityPolicy
 }): FundingCapacity {
-  const [key, setKey] = useState<PortalCapacityKey>()
-  const [keyFailed, setKeyFailed] = useState(false)
-  const [keyAttempt, setKeyAttempt] = useState(0)
-  const { rowToken } = input
+  const { page } = useSession()
+  // Each row is its own bucket, its key read once per page.
+  const keyRead = page.chain.capacityKey(input.rowToken)
+  const keyState = useStore(keyRead)
+  const key = keyState.status === "ready" ? keyState.value : undefined
+  const keyFailed = keyState.status === "failed"
 
-  // Another row is another bucket: neither the last key nor its failure carries over.
-  useEffect(() => {
-    setKey(undefined)
-    setKeyFailed(false)
-  }, [rowToken])
-
-  useEffect(() => {
-    let stale = false
-    let again: ReturnType<typeof setTimeout> | undefined
-    activeCapacityKey(rowToken).then(
-      (next) => {
-        if (stale) return
-        setKeyFailed(false)
-        setKey(next)
-      },
-      (err) => {
-        console.warn("[capacity] could not resolve the deployment's capacity key", err)
-        if (stale) return
-        setKeyFailed(true)
-        // Tries again on the store's poll interval, so a failed manifest fetch does not stick until a reload.
-        again = setTimeout(
-          () => setKeyAttempt((n) => n + 1),
-          DEFAULT_PORTAL_CAPACITY_POLICY.refreshMs,
-        )
-      },
-    )
-    return () => {
-      stale = true
-      clearTimeout(again)
-    }
-  }, [keyAttempt, rowToken])
-
-  const store = useMemo(() => (key ? depositCapacityStore(key) : undefined), [key])
+  const store = useMemo(() => (key ? depositCapacityStore(page, key) : undefined), [key, page])
   const state: PortalCapacityState | undefined = useSyncExternalStore(
     store ? store.subscribe : noSubscribe,
     store ? store.getState : noState,
@@ -113,8 +83,8 @@ export function useFundingCapacity(input: {
 
   const retry = useCallback(() => {
     if (store) void store.retry()
-    else setKeyAttempt((n) => n + 1)
-  }, [store])
+    else keyRead.refresh()
+  }, [store, keyRead])
 
   const view = fundingCapacityView({ ...input, eligibility })
   return { view, eligibility, store, required, retry }

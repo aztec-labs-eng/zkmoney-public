@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity >=0.8.27;
 
+import {SweepGasCeilings} from "@test/helpers/SweepGasCeilings.sol";
 import {TestERC20} from "@aztec/mock/TestERC20.sol";
 import {DepositSIPA} from "@periphery/DepositSIPA.sol";
 import {RegistrationSIPA} from "@periphery/RegistrationSIPA.sol";
 import {DepositSubsidy} from "@periphery/DepositSubsidy.sol";
 import {ForwardingTable} from "@periphery/ForwardingTable.sol";
-import {SIPABase} from "@periphery/SIPABase.sol";
 import {IOperationExecutor} from "@periphery/interfaces/IOperationExecutor.sol";
 import {ISIPA} from "@periphery/interfaces/ISIPA.sol";
 import {IForwardingTable} from "@periphery/interfaces/IForwardingTable.sol";
@@ -18,6 +18,7 @@ import {OxidePortalBase} from "@test/core/OxidePortalBase.t.sol";
 import {MockV3Aggregator} from "@test/mocks/MockV3Aggregator.sol";
 import {Errors} from "@periphery/Errors.sol";
 import {ForwardingTableFixture, DEPOSIT_SWEEP_TIP} from "@test/helpers/ForwardingTableFixture.sol";
+import {Intents} from "@periphery/Intent.sol";
 
 contract DepositSIPASweepTest is OxidePortalBase {
   address internal relayer = makeAddr("relayer");
@@ -90,7 +91,12 @@ contract DepositSIPASweepTest is OxidePortalBase {
     vm.fee(4e8);
     MockV3Aggregator aggregator = new MockV3Aggregator(8, 2500e8);
     DepositSubsidy sm = new DepositSubsidy(
-      OWNER, address(portal), IOperationExecutor(address(operationExecutor)), aggregator, sipaFactory
+      OWNER,
+      address(portal),
+      IOperationExecutor(address(operationExecutor)),
+      aggregator,
+      sipaFactory,
+      SweepGasCeilings.initial()
     );
     vm.prank(OWNER);
     sm.setDepositConfig(uint128(fee), type(uint128).max, 0);
@@ -172,15 +178,13 @@ contract DepositSIPASweepTest is OxidePortalBase {
 
   function test_aTokenWithoutADepositRowReverts() external {
     IForwardingTable.IntentFees[] memory intents = new IForwardingTable.IntentFees[](1);
-    intents[0] = IForwardingTable.IntentFees({intent: SIPABase.Intent.Registration, beneficiaryFee: 0, sweepTip: 1});
+    intents[0] = IForwardingTable.IntentFees({intent: Intents.REGISTRATION, beneficiaryFee: 0, sweepTip: 1});
     _switchToNewTable(intents);
     DepositSIPA sipa = _sipa();
     underlying.mint(address(sipa), DEPOSIT_AMOUNT);
 
     vm.expectRevert(
-      abi.encodeWithSelector(
-        Errors.ForwardingTable__IntentNotListed.selector, address(underlying), uint8(SIPABase.Intent.Deposit)
-      )
+      abi.encodeWithSelector(Errors.ForwardingTable__IntentNotListed.selector, address(underlying), Intents.DEPOSIT)
     );
     sipa.sweep(address(underlying), relayer, _depositIntent(), "");
   }
@@ -248,7 +252,7 @@ contract DepositSIPASweepTest is OxidePortalBase {
   function _depositFees(uint128 _beneficiaryFee) internal pure returns (IForwardingTable.IntentFees[] memory intents) {
     intents = new IForwardingTable.IntentFees[](1);
     intents[0] = IForwardingTable.IntentFees({
-      intent: SIPABase.Intent.Deposit, beneficiaryFee: _beneficiaryFee, sweepTip: DEPOSIT_SWEEP_TIP
+      intent: Intents.DEPOSIT, beneficiaryFee: _beneficiaryFee, sweepTip: DEPOSIT_SWEEP_TIP
     });
   }
 

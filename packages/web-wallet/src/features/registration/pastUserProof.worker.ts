@@ -1,11 +1,14 @@
 /// <reference lib="webworker" />
+import { WalletError } from "@obsidion/core/errors"
 import { bytesToHex, type Hex } from "viem"
-import { proveNoirCircuit, type NoirCircuit } from "../../platform/noirProver"
+import type { IosSettings } from "../../platform/barretenberg"
+import { initNoirWasm, proveNoirCircuit, type NoirCircuit } from "../../platform/noirProver"
 import { isPastUserAddress, NotPastUserError, pastUserInputs } from "./pastUserProof"
 
-export type PastUserProofRequest =
+export type PastUserProofRequest = (
   | { kind: "prove"; signature: Hex; owner: Hex; leavesUrl: string }
   | { kind: "lookup"; address: Hex; leavesUrl: string }
+) & { ios: IosSettings }
 
 export type PastUserProofReply =
   | { ok: true; proof: Hex; publicInputs: string[] }
@@ -17,7 +20,11 @@ const log = (msg: string, ...rest: unknown[]) => console.log(`[past-user] ${msg}
 async function loadLeaves(url: string): Promise<Uint8Array> {
   // The list is served with an hour's cache; a dev stack regenerates it on every restart.
   const res = await fetch(url, { cache: import.meta.env.DEV ? "no-cache" : "default" })
-  if (!res.ok) throw new Error(`The past-user list did not load (HTTP ${res.status}).`)
+  if (!res.ok)
+    throw new WalletError(
+      "pastUser.unchecked",
+      `The past-user list did not load (HTTP ${res.status}).`,
+    )
   return new Uint8Array(await res.arrayBuffer())
 }
 
@@ -25,7 +32,7 @@ async function reply(data: PastUserProofRequest): Promise<PastUserProofReply> {
   if (data.kind === "lookup") {
     return {
       ok: true,
-      eligible: await isPastUserAddress(data.address, await loadLeaves(data.leavesUrl)),
+      eligible: await isPastUserAddress(data.address, await loadLeaves(data.leavesUrl), data.ios),
     }
   }
   log("loading circuit and leaves", data.leavesUrl)
@@ -36,9 +43,17 @@ async function reply(data: PastUserProofRequest): Promise<PastUserProofReply> {
     loadLeaves(data.leavesUrl),
   ])
   log(`loaded circuit and ${leaves.length / 32} leaves (${leaves.length} bytes)`)
-  const inputs = await pastUserInputs({ signature: data.signature, owner: data.owner, leaves })
+  const inputs = await pastUserInputs({
+    signature: data.signature,
+    owner: data.owner,
+    leaves,
+    ios: data.ios,
+  })
   log("inputs built", { merkle_root: inputs.merkle_root, owner: inputs.owner })
-  const { proof, publicInputs } = await proveNoirCircuit(circuit, inputs, "past-user")
+  const { proof, publicInputs } = await proveNoirCircuit(circuit, inputs, "past-user", {
+    wasm: initNoirWasm,
+    ios: data.ios,
+  })
   log("proved", { publicInputs })
   return { ok: true, proof: bytesToHex(proof), publicInputs }
 }

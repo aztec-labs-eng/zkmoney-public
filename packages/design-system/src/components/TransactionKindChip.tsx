@@ -38,10 +38,10 @@ export function TransactionKindChip({ kind, className }: TransactionKindChipProp
       label={c.label}
       icon={c.icon}
       iconLeading={c.iconLeading}
-      foreground={c.gold ? GOLD : "#fff"}
+      foreground={c.gold ? "var(--accent-gold)" : "var(--ink)"}
       tint={c.gold ? GOLD : undefined}
       tintOpacity={c.gold ? 0.18 : 0}
-      fallbackFill={c.gold ? "rgba(238,208,78,0.08)" : "rgba(255,255,255,0.03)"}
+      fallbackFill={c.gold ? "rgba(var(--accent-gold-rgb), 0.08)" : "rgba(var(--ink-rgb), 0.03)"}
     />
   )
 }

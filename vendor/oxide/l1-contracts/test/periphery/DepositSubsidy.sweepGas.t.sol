@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity >=0.8.27;
+import {SweepGasCeilings} from "@test/helpers/SweepGasCeilings.sol";
 import {console2} from "forge-std/console2.sol";
 
 import {DepositSIPA} from "@periphery/DepositSIPA.sol";
@@ -17,6 +18,7 @@ import {SweepGasFixture} from "@test/periphery/SweepGasFixture.sol";
 import {RelayerTransaction} from "@test/periphery/RelayerTransaction.sol";
 import {MockV3Aggregator} from "@test/mocks/MockV3Aggregator.sol";
 import {DEPOSIT_SWEEP_TIP, REGISTRATION_SWEEP_TIP} from "@test/helpers/ForwardingTableFixture.sol";
+import {Intents} from "@periphery/Intent.sol";
 
 interface VmCool {
   function cool(address) external;
@@ -47,7 +49,8 @@ contract DepositSubsidySweepGasTest is SweepGasFixture {
       address(portal),
       IOperationExecutor(address(operationExecutor)),
       AggregatorV3Interface(address(feed)),
-      sipaFactory
+      sipaFactory,
+      SweepGasCeilings.initial()
     );
     underlying.mint(address(sm), 1_000_000 ether);
     vm.prank(OWNER);
@@ -89,10 +92,10 @@ contract DepositSubsidySweepGasTest is SweepGasFixture {
       if (priced > dearestPriced) dearestPriced = priced;
     }
 
-    console2.log("deposit, priced at most", dearestPriced, "ceiling", sm.SWEEP_GAS_DEPOSIT_CEILING());
+    console2.log("deposit, priced at most", dearestPriced, "ceiling", sm.$sweepGasCeilings(Intents.DEPOSIT));
     assertLt(
       dearestPriced,
-      sm.SWEEP_GAS_DEPOSIT_CEILING(),
+      sm.$sweepGasCeilings(Intents.DEPOSIT),
       "a warm re-sweep draws the ceiling payout: the cap prices it, not the meter"
     );
   }
@@ -113,7 +116,7 @@ contract DepositSubsidySweepGasTest is SweepGasFixture {
       if (priced > dearestPriced) dearestPriced = priced;
     }
 
-    uint256 ceiling = sm.SWEEP_GAS_DEPOSIT_CEILING() + sm.SWEEP_GAS_DEPLOY_ALLOWANCE();
+    uint256 ceiling = sm.$sweepGasCeilings(Intents.DEPOSIT) + sm.SWEEP_GAS_DEPLOY_ALLOWANCE();
     console2.log("deposit deploy and sweep, priced at most", dearestPriced, "ceiling", ceiling);
     assertLt(
       dearestPriced, ceiling, "a warm deploy and sweep draws the ceiling payout: the cap prices it, not the meter"
@@ -135,7 +138,7 @@ contract DepositSubsidySweepGasTest is SweepGasFixture {
     console2.log("deposit re-sweep through the deploy entry, priced at most", dearestPriced);
     assertLt(
       dearestPriced,
-      sm.SWEEP_GAS_DEPOSIT_CEILING(),
+      sm.$sweepGasCeilings(Intents.DEPOSIT),
       "a warm re-sweep through the deploy entry draws the ceiling payout: the cap prices it, not the meter"
     );
   }
@@ -152,10 +155,10 @@ contract DepositSubsidySweepGasTest is SweepGasFixture {
     uint256 fee = REGISTRATION_SWEEP_TIP;
     uint256 priced = _pricedGas(_submit(cd), fee);
 
-    console2.log("registration, priced", priced, "ceiling", sm.SWEEP_GAS_REGISTRATION_CEILING());
+    console2.log("registration, priced", priced, "ceiling", sm.$sweepGasCeilings(Intents.REGISTRATION));
     assertLt(
       priced,
-      sm.SWEEP_GAS_REGISTRATION_CEILING(),
+      sm.$sweepGasCeilings(Intents.REGISTRATION),
       "the cheapest registration draws the ceiling payout: the cap prices it, not the meter"
     );
   }
@@ -175,14 +178,14 @@ contract DepositSubsidySweepGasTest is SweepGasFixture {
     uint256 typicalCost = _lastCallChainCost(cd);
 
     console2.log("registration, typical (chain)", typicalCost);
-    console2.log("registration, ceiling", sm.SWEEP_GAS_REGISTRATION_CEILING());
+    console2.log("registration, ceiling", sm.$sweepGasCeilings(Intents.REGISTRATION));
     assertGe(
-      sm.SWEEP_GAS_REGISTRATION_CEILING(),
+      sm.$sweepGasCeilings(Intents.REGISTRATION),
       typicalCost,
       "SWEEP_GAS_REGISTRATION_CEILING sits under a typical registration: relayers would be clipped on every one"
     );
     assertLe(
-      sm.SWEEP_GAS_REGISTRATION_CEILING(),
+      sm.$sweepGasCeilings(Intents.REGISTRATION),
       (typicalCost * 110) / 100,
       "SWEEP_GAS_REGISTRATION_CEILING has drifted well above the typical registration"
     );
@@ -221,7 +224,7 @@ contract DepositSubsidySweepGasTest is SweepGasFixture {
       DepositSubsidy.deployAndSweepForSubsidy,
       (
         forwardingTable,
-        SIPABase.Intent.Deposit,
+        Intents.DEPOSIT,
         _recoveryCommitment("recovery"),
         true,
         address(underlying),

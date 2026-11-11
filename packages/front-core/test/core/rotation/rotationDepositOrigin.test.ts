@@ -1,6 +1,6 @@
 /**
  * A stranded rotation's funding leaves through the account recovery: the origin a rotation's record
- * yields must pass that recovery's own checks and deploy the user-op clone.
+ * yields must pass that recovery's own checks and deploy the add-passkey clone.
  */
 import { Fr } from "@aztec-labs/aztec.js/fields"
 import { EthAddress } from "@aztec-labs/foundation/eth-address"
@@ -9,7 +9,7 @@ import { deriveRecoveryCommitment } from "@oxide/oxide-lib/sipa_recovery.js"
 import { decodeFunctionData, multicall3Abi, type Address, type Hex } from "viem"
 import { describe, expect, it, vi } from "vitest"
 import type { SipaDeposit } from "../../../src/engine/sipaDeposits"
-import { rotationDepositOrigin } from "../../../src/core/storages/BackupRotationStore"
+import { rotationDepositOrigin } from "../../../src/engine/backupRotations"
 import { runSipaRecovery, sipaDeployArgCandidates } from "../../../src/oxide/sipaRecovery"
 import { addr, SIPA, storedRotation, word } from "../../__test-helpers__/backupRotation"
 
@@ -65,7 +65,7 @@ function recover(rotation: ReturnType<typeof storedRotation>) {
 }
 
 describe("rotationDepositOrigin", () => {
-  it("lets the account recovery sign with the salt and deploy the user-op clone it was prepared on", async () => {
+  it("lets the account recovery sign with the salt and deploy the add-passkey clone it was prepared on", async () => {
     const rotation = rotationFor(storedRotation().owner)
     const { run, signAccount, sendTransaction } = recover(rotation)
     expect(await run).toBe(word(0xab))

@@ -1,0 +1,197 @@
+/* A phase change shows 150ms late, halfway through the stage's block fade-out. */
+.ring {
+  --lag: 150ms;
+  position: relative;
+  flex: none;
+  width: 168px;
+  height: 168px;
+}
+.ripple {
+  position: absolute;
+  inset: 0;
+  border: 1px solid rgba(253, 253, 253, 0.14);
+  border-radius: 50%;
+  animation: ripple 2.4s ease-out infinite;
+  transition: opacity 0.4s ease var(--lag);
+}
+.ripple + .ripple {
+  animation-delay: 1.2s;
+}
+.track {
+  position: absolute;
+  inset: 16px;
+  width: 136px;
+  height: 136px;
+  transform: rotate(-90deg);
+}
+.stopA {
+  stop-color: var(--purple-500);
+}
+.stopB {
+  stop-color: var(--blue-500);
+}
+.rail,
+.arc {
+  fill: none;
+  stroke-width: 4;
+}
+.rail {
+  stroke: rgba(253, 253, 253, 0.12);
+}
+.arc {
+  stroke-linecap: round;
+  stroke-dasharray: 110 400;
+  transform-origin: 68px 68px;
+  animation: spin 1.2s linear infinite;
+  transition: stroke-dasharray 0.9s ease var(--lag);
+}
+.center {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  perspective: 600px;
+}
+.center > * {
+  grid-area: 1 / 1;
+}
+.token {
+  position: relative;
+  width: 72px;
+  height: 72px;
+}
+.flipper {
+  transform-style: preserve-3d;
+  transition: opacity 0.3s ease var(--lag);
+}
+.face {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 50%;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+.back {
+  transform: rotateY(180deg);
+}
+.dest {
+  opacity: 0;
+  transition: opacity 0.3s ease var(--lag);
+}
+.coin {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  border-radius: 50%;
+}
+.mark {
+  position: absolute;
+  left: -6px;
+  bottom: -6px;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  box-sizing: border-box;
+  border: 2px solid var(--surface-sheet);
+  border-radius: 50%;
+  opacity: 0;
+  transform: scale(0.4);
+  transition: opacity 0.3s ease calc(var(--lag) + 0.3s),
+    transform 0.45s cubic-bezier(0.3, 1.6, 0.5, 1) calc(var(--lag) + 0.3s);
+}
+.check {
+  background: var(--accent-green);
+}
+/* The pink disc's "!" is cut out of it, so the sheet shows through. */
+.alert {
+  background: var(--surface-sheet);
+}
+
+.ring[data-phase="bridging"] .flipper {
+  animation: flip 2.8s cubic-bezier(0.6, 0, 0.3, 1) var(--lag) infinite;
+}
+/* Landed: the flipper rests on its front face and cross-fades to the landing coin. */
+.ring:not([data-phase="bridging"]) .flipper {
+  opacity: 0;
+}
+.ring:not([data-phase="bridging"]) .dest {
+  opacity: 1;
+}
+/* Breathes once the landing coin is in place. */
+.ring[data-phase="arriving"] .center {
+  animation: grow 1.6s ease-in-out calc(var(--lag) + 0.3s) infinite;
+}
+.ring:is([data-phase="arrived"], [data-phase="failed"]) .ripple {
+  opacity: 0;
+  animation: none;
+}
+.ring:is([data-phase="arrived"], [data-phase="failed"]) .arc {
+  stroke-dasharray: 390 400;
+  animation: none;
+}
+.ring[data-phase="failed"] .arc {
+  stroke: rgba(253, 253, 253, 0.2);
+}
+.ring[data-phase="failed"] .coin {
+  filter: grayscale(1);
+  opacity: 0.35;
+}
+.ring[data-phase="arrived"] .check,
+.ring[data-phase="failed"] .alert {
+  opacity: 1;
+  transform: scale(1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ring {
+    --lag: 0s;
+  }
+  .ring,
+  .ring * {
+    animation: none !important;
+  }
+}
+
+@keyframes ripple {
+  from {
+    opacity: 0.9;
+    transform: scale(0.72);
+  }
+  to {
+    opacity: 0;
+    transform: scale(1.08);
+  }
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes flip {
+  0%,
+  32% {
+    transform: rotateY(0);
+  }
+  50%,
+  82% {
+    transform: rotateY(180deg);
+  }
+  100% {
+    transform: rotateY(360deg);
+  }
+}
+@keyframes grow {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.12);
+  }
+}

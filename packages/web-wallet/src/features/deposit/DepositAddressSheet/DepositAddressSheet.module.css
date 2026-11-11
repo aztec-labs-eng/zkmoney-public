@@ -1,0 +1,195 @@
+:global(.ww-deposit-sheet__head) p.subSm {
+  font-size: 12px;
+}
+.card {
+  /* The code and the address share one width. */
+  --deposit-tile: 180px;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  width: 220px;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 20px;
+  border-radius: 12px;
+  background: var(--surface-raised);
+}
+.qrWrap {
+  position: relative;
+}
+/* A white tile: cameras read dark-on-light codes that inverted ones defeat. */
+.qr {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--deposit-tile);
+  height: var(--deposit-tile);
+  box-sizing: border-box;
+  padding: 10px;
+  border-radius: 12px;
+  background: #fff;
+}
+.qr svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.chip {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  border-radius: 12px;
+  border: 1px solid rgba(var(--ink-rgb), 0.1);
+  background: var(--surface-raised);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 500;
+  white-space: nowrap;
+  transform: translate(-50%, -50%);
+}
+.cardLive {
+  width: 372px;
+}
+.coinSpin {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 58px;
+  height: 58px;
+}
+/* The bell's ring and its colors: a thin arc around the coin while something is in flight. */
+.coinRing {
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  pointer-events: none;
+  animation: global(ww-bell-ring-spin) 1.2s linear infinite;
+  will-change: transform;
+}
+.coinRing:global(.is-tab-bound) {
+  border-top-color: var(--accent-gold);
+  border-right-color: var(--accent-gold);
+}
+.coinRing:global(.is-safe) {
+  border-top-color: var(--accent-green);
+  border-right-color: var(--accent-green);
+}
+@media (prefers-reduced-motion: reduce) {
+  .coinRing {
+    animation: none;
+  }
+}
+.chipCheck {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--accent-green);
+}
+.hint {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+/* Outranks the shared ghost button rules in any load order. */
+:global(.zkm-btn-reset.ww-deposit-sheet__ghost).ghostWide {
+  width: 220px;
+  padding: 12px 16px;
+}
+:global(.zkm-btn-reset).wallet {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  transition: color 200ms ease;
+}
+.wallet:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+@media (hover: hover) {
+  .wallet:not(:disabled):hover {
+    color: var(--text-primary);
+  }
+}
+/* The stage, and the broadcast row while the address publishes. */
+.spotted {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 24px;
+  width: 100%;
+  margin-block: auto;
+}
+.limits {
+  width: 100%;
+  box-sizing: border-box;
+  border-radius: 12px;
+  background: var(--surface-raised);
+  text-align: left;
+}
+:global(.zkm-btn-reset).limitsHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 12px 16px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.limitsHead b {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.limitsBody {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 16px 16px;
+  border-top: 1px solid rgba(var(--ink-rgb), 0.08);
+}
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 24px;
+  font-size: 12px;
+}
+.row > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-secondary);
+}
+.row > b {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  color: var(--text-primary);
+  text-align: right;
+}
+@media (max-width: 640px) {
+  /* The card spans the sheet so the address fits one line. */
+  .card {
+    width: 100%;
+    padding: 16px 12px;
+  }
+}
+.rows :global(.ww-send-to__note) {
+  margin-top: 0;
+}

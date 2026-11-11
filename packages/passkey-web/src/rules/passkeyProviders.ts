@@ -11,16 +11,21 @@ import {
   ZERO_AAGUID,
 } from "@obsidion/core/constants"
 import type { LocalManager } from "./laptopCreation.js"
+import type { DevicePosture } from "../browser/devicePosture.js"
+import type { OsFamily, UserAgentInfo } from "../browser/userAgentInfo.js"
+import type { PasskeyAttachment } from "../ceremony/passkeyCeremony.js"
 import type { PasskeyProvider } from "../telemetry/passkeyTelemetryVocabulary.js"
 
 /**
  * Which passkey providers may create a wallet, and what to call the ones that may not.
  *
- * Only providers measured on the routes the wallet uses are admitted, and every other reported id
- * is refused at creation even when it returns key material:
+ * Only providers measured on the routes the wallet uses are admitted here, and every other reported
+ * id is refused at creation even when it returns key material:
  * how an unmeasured provider derives that material is unknown, and a wallet bound to it may be one
  * no other browser can ever reproduce. A security key is checked against the key set and a phone
  * passkey against the managers, so a class and an id that contradict each other are refused too.
+ * Windows Hello, Proton Pass and Samsung Pass pass beside this set under rules of their own: the
+ * laptop rows, `protonPassAdmitted` and `samsungPassRouteAdmitted`.
  *
  * An absent or all-zero id passes either check. iCloud reports zeros on iOS and Chromium zeros
  * every security key's, so refusing a missing id would refuse two of the providers we support. The
@@ -32,6 +37,9 @@ export const PASSKEY_MANAGER_AAGUIDS: ReadonlySet<string> = new Set([
   GPM_AAGUID,
   ONEPASSWORD_AAGUID,
 ])
+
+/** Works on one route only, so it is not in the set above; see `samsungPassRouteAdmitted`. */
+export const SAMSUNG_PASS_AAGUID = "53414d53-554e-4700-0000-000000000000"
 
 /** The id Chromium's virtual authenticators report, which the wallet's browser-test build admits. */
 export const CHROMIUM_VIRTUAL_AUTHENTICATOR_AAGUID = "01020304-0506-0708-0102-030405060708"
@@ -48,6 +56,9 @@ const WINDOWS_HELLO_AAGUIDS = [
 
 /** The name a refusal gives Proton Pass; its iPhone app has copy of its own. */
 export const PROTON_PASS = "Proton Pass"
+
+/** The one id Proton Pass reports, from its extension and its apps alike. */
+export const PROTON_PASS_AAGUID = "50726f74-6f6e-5061-7373-50726f746f6e"
 
 /**
  * The providers a refusal might have to name, and the slug telemetry counts each under.
@@ -79,8 +90,8 @@ const PROVIDERS: Readonly<Record<string, { name: string; slug: PasskeyProvider }
   [YUBIKEY_5_SERIES_AAGUID]: { name: "YubiKey 5 series", slug: "yubikey" },
   "f8a011f3-8c0a-4d15-8006-17111f9edc7d": { name: "Security Key by Yubico", slug: "yubikey" },
   "531126d6-e717-415c-9320-3d9aa6981239": { name: "Dashlane", slug: "dashlane" },
-  "50726f74-6f6e-5061-7373-50726f746f6e": { name: PROTON_PASS, slug: "proton_pass" },
-  "53414d53-554e-4700-0000-000000000000": { name: "Samsung Pass", slug: "samsung_pass" },
+  [PROTON_PASS_AAGUID]: { name: PROTON_PASS, slug: "proton_pass" },
+  [SAMSUNG_PASS_AAGUID]: { name: "Samsung Pass", slug: "samsung_pass" },
 }
 
 /**
@@ -124,21 +135,46 @@ export function refusalKindFor(
   return aaguid && SECURITY_KEY_AAGUIDS.has(aaguid.toLowerCase()) ? "security-key" : "manager"
 }
 
+/** Where a creation was answered, for a manager admitted on some routes only. */
+export type CreationRoute = {
+  posture: DevicePosture
+  attachment: PasskeyAttachment | undefined
+  userAgent: UserAgentInfo | undefined
+}
+
+/**
+ * The one route Samsung Pass is admitted on: its own Android phone, in any browser. Over QR it
+ * failed for a tester's Mac, in Safari and in Chrome. Measured in Chrome on the phone; other
+ * Android browsers reach the same Samsung Pass and are admitted without a run of their own.
+ */
+export function samsungPassRouteAdmitted({
+  posture,
+  attachment,
+  userAgent,
+}: CreationRoute): boolean {
+  return posture === "phone" && attachment === "platform" && userAgent?.osFamily === "android"
+}
+
 /**
  * Whether a reported id may create a wallet, judged against the class that answered. `extra`
  * admits ids beyond the measured set and exists for the browser-test build, whose virtual
- * authenticator reports a fixed id; production passes none.
+ * authenticator reports a fixed id; production passes none. `route` admits Samsung Pass on its one
+ * route; without one it is refused.
  */
 export function providerAllowed(
   aaguid: string | undefined,
   securityKey: boolean,
   extra: readonly string[] = [],
+  route?: CreationRoute,
 ): boolean {
   if (!aaguid) return true
   const id = aaguid.toLowerCase()
   if (id === ZERO_AAGUID) return true
   const measured = securityKey ? SECURITY_KEY_AAGUIDS : PASSKEY_MANAGER_AAGUIDS
   if (measured.has(id)) return true
+  if (!securityKey && id === SAMSUNG_PASS_AAGUID && route && samsungPassRouteAdmitted(route)) {
+    return true
+  }
   return extra.some((allowed) => allowed.toLowerCase() === id)
 }
 
@@ -148,14 +184,20 @@ export const LOCAL_MANAGER_AAGUIDS: Readonly<Record<LocalManager, readonly strin
   "gpm": [GPM_AAGUID],
   "windows_hello": WINDOWS_HELLO_AAGUIDS,
   "1password": [ONEPASSWORD_AAGUID],
+  "proton": [PROTON_PASS_AAGUID],
 }
 
-/** What the copy calls each of them, with what Google Password Manager needs first. */
+/**
+ * What the copy calls each of them, with what Google Password Manager needs first and where Proton
+ * Pass can be reached: only the sheet's own option calls its extension.
+ */
 export const LOCAL_MANAGER_NAMES: Readonly<Record<LocalManager, string>> = {
   "apple": "Apple Passwords",
   "gpm": "Google Password Manager (sign in to Chrome first)",
   "windows_hello": WINDOWS_HELLO,
   "1password": "1Password",
+  // Proposed copy, pending review.
+  "proton": `${PROTON_PASS} (its browser extension, where the sheet offers it)`,
 }
 
 /** "Apple Passwords or Google Password Manager (sign in to Chrome first)", for a sentence. */
@@ -195,3 +237,35 @@ export function localProviderVerdict(
   if (manager && managers.includes(manager)) return "admitted"
   return manager === "apple" ? "apple" : "unsupported"
 }
+
+/**
+ * Where Proton Pass may make the wallet's first passkey, beside `providerAllowed`, whose id-only
+ * check cannot say it. On a laptop, only the sheet's Proton Pass pick (`extensionAllowed`) on a row
+ * that names it: the whole row is handed down for every local pick, and the extension answers that
+ * pick alone. On a phone, the device's own Proton Pass on every known OS but iOS, whose app returns
+ * no key material. Never over QR, and never on a build that withdraws it. The backup table admits
+ * an unknown OS; a first passkey does not, since nothing downstream can catch a wrong binding
+ * before the account exists.
+ */
+export function protonPassAdmitted(input: {
+  posture: DevicePosture
+  osFamily?: OsFamily
+  localManagers?: readonly LocalManager[]
+  extensionAllowed?: boolean
+  withdrawn?: readonly LocalManager[]
+}): boolean {
+  const { posture, osFamily, localManagers, extensionAllowed, withdrawn } = input
+  if (withdrawn?.includes("proton")) return false
+  if (posture === "laptop") {
+    return extensionAllowed === true && (localManagers?.includes("proton") ?? false)
+  }
+  return osFamily !== undefined && osFamily !== "unknown" && osFamily !== "ios"
+}
+
+/**
+ * Whether a passkey under this id keeps the wallet within one device's reach although it syncs
+ * (the iOS case in `protonPassAdmitted`), so Home reminds such an account to add a backup as it
+ * reminds a security key's.
+ */
+export const semiDeviceBound = (aaguid: string | undefined): boolean =>
+  aaguid?.toLowerCase() === PROTON_PASS_AAGUID

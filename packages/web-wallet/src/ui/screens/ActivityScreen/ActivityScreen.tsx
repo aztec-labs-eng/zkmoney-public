@@ -4,22 +4,21 @@ import { DEFAULT_DECIMALS, WALLET_TOKEN_SYMBOL } from "@obsidion/core/constants"
 import {
   activityCsv,
   activityCsvFileName,
-  activityPages,
+  transferPages,
   bestEffort,
   formatDateLabel,
   savingsCsv,
   selectActivity,
-  useResource,
   useStore,
   type ActivityCsvToken,
   type ActivityFilter,
-  type ActivityPages,
+  type TransferPages,
 } from "@obsidion/front-core"
 import { useSession } from "../../../session/session"
 import { isDemoMode } from "../../../dev/demoFlag"
 import { GradientText, Icon } from "@obsidion/web-ds"
 import { NonContactRequestsEntry } from "../../../features/requests/NonContactRequestsScreen"
-import { RequestsUnavailableNotice } from "../../../features/requests/RequestsUnavailableNotice"
+import { RequestsUnavailableNotice } from "../../../features/requests/RequestsUnavailableNotice/RequestsUnavailableNotice"
 import { fmt } from "../../../lib/fmt"
 import {
   ActivityDetailHost,
@@ -61,7 +60,7 @@ const DEMO_WALLET_TOKEN: ActivityCsvToken = {
 
 /** The Main token the exports report in, once its metadata is read; under the wallet token's symbol. */
 function useWalletToken(): ActivityCsvToken | undefined {
-  const decimals = useResource(useSession().token)?.metadata.decimals
+  const decimals = useStore(useSession().mainToken)?.decimals
   return decimals === undefined ? undefined : { symbol: WALLET_TOKEN_SYMBOL, decimals }
 }
 
@@ -70,10 +69,13 @@ function useWalletToken(): ActivityCsvToken | undefined {
  * `?account=savings` it is the Savings account's feed and export, as Savings' Home shows it.
  */
 export function ActivityScreen() {
-  const { activity, reads } = useSession()
-  const pages = useMemo(() => activityPages(activity), [activity])
+  const { transfers, reads } = useSession()
+  const pages = useMemo(() => transferPages(transfers), [transfers])
   // A paid link's row dates it, wherever the row sits.
-  const rows = useMemo(() => mergedRows([pages.rows, reads.paying]), [pages, reads])
+  const rows = useMemo(
+    () => mergedRows([pages.rows, reads.paying, reads.transfers]),
+    [pages, reads],
+  )
   return (
     <ActivityDetailHost rows={rows}>
       <Activity pages={pages} />
@@ -81,9 +83,9 @@ export function ActivityScreen() {
   )
 }
 
-function Activity({ pages }: { pages: ActivityPages }) {
+function Activity({ pages }: { pages: TransferPages }) {
   const { feed } = useActivityHost()
-  const { activity } = useSession()
+  const { transfers, reads } = useSession()
   const page = useStore(pages.rows)
   const items = pagedItems(feed.items, page)
   const walletToken =
@@ -175,10 +177,14 @@ function Activity({ pages }: { pages: ActivityPages }) {
             onClick={() => {
               const name = activityCsvFileName(new Date(), savings ? "savings" : "main")
               if (savings) return downloadCsv(savingsCsv({ ...feed.savingsCsv, walletToken }), name)
-              // Every row, read once for the file.
-              const csv = activity
-                .all()
-                .then((transactions) => activityCsv({ ...feed.csv, transactions, walletToken }))
+              // Every row, read once for the file, and every transfer this device made.
+              const csv = transfers.all().then((rows) =>
+                activityCsv({
+                  ...feed.csv,
+                  transactions: [...rows, ...reads.transfers.get().records],
+                  walletToken,
+                }),
+              )
               void bestEffort(
                 "unknown",
                 csv.then((text) => downloadCsv(text, name)),

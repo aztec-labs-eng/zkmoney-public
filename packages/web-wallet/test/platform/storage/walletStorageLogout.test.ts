@@ -1,14 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { signOut } from "../../../src/features/identity/signOut"
-import { setActiveRollup } from "../../../src/platform/storage/rollupStorage"
 import {
   closeWalletStore,
   openWalletStore,
   walletStorage,
 } from "../../../src/platform/storage/walletStorage"
-import { sandboxProfile } from "../../fixtures/sandboxProfile"
 import { testWalletDbs } from "../../support/fakeWalletDb"
 import { testPage } from "../../support/page"
+
+/** A page on rollup 9, whose database the suite opens. */
+const page = () => testPage(undefined, { profileRollupVersion: "9" } as never)
 
 const dbs = testWalletDbs()
 const TUPLE = ["webwallet.storageId", "webwallet.credentialId", "webwallet.msk"] as const
@@ -27,13 +28,11 @@ beforeEach(async () => {
   seedSession(dbs.db("7").state)
   seedSession(dbs.db("8").state)
   seedSession(dbs.db("9").state)
-  setActiveRollup("9")
   await openWalletStore("9", { persistent: true })
 })
 
 afterEach(() => {
   localStorage.clear()
-  setActiveRollup(sandboxProfile().shared.rollupVersion)
 })
 
 describe("signOut across rollups", () => {
@@ -44,7 +43,7 @@ describe("signOut across rollups", () => {
     }
     const kept = { "zkm_bid": "device", "rollup.analytics.setting": "third-party" }
     for (const [key, value] of Object.entries(kept)) localStorage.setItem(key, value)
-    await signOut(testPage())
+    await signOut(page())
     for (const version of ["7", "8", "9"]) expect(hasTuple(dbs.db(version).state)).toBe(false)
     expect(dbs.db("7").state.get("obsidion.s.contacts")).toBe("[1]")
     expect(Object.fromEntries(Object.entries(localStorage))).toEqual(kept)
@@ -61,10 +60,10 @@ describe("signOut across rollups", () => {
         if (key === "webwallet.msk") throw new Error("SecurityError")
         remove.call(this, key)
       })
-    await expect(signOut(testPage())).rejects.toThrow("SecurityError")
+    await expect(signOut(page())).rejects.toThrow("SecurityError")
     expect(walletStorage.getItem("webwallet.msk")).toBe("k")
     refuse.mockRestore()
-    await signOut(testPage())
+    await signOut(page())
     expect(localStorage.getItem("webwallet.msk")).toBeNull()
     expect(walletStorage.getItem("webwallet.msk")).toBeNull()
   })
@@ -79,7 +78,7 @@ describe("signOut across rollups", () => {
         remove.call(this, key)
       })
     try {
-      await signOut(testPage())
+      await signOut(page())
       expect(walletStorage.getItem("webwallet.msk")).toBeNull()
     } finally {
       refuse.mockRestore()
@@ -89,7 +88,7 @@ describe("signOut across rollups", () => {
   it("removes nothing anywhere when a rollup's database cannot open", async () => {
     const tab7 = await dbs.open("7", true)
     try {
-      await expect(signOut(testPage())).rejects.toMatchObject({ name: "SqlitePoolBusyError" })
+      await expect(signOut(page())).rejects.toMatchObject({ name: "SqlitePoolBusyError" })
       for (const version of ["7", "8", "9"]) expect(hasTuple(dbs.db(version).state)).toBe(true)
       expect(walletStorage.getItem("webwallet.msk")).toBe("k")
       expect(dbs.db("8").held).toBe(false)
@@ -102,12 +101,12 @@ describe("signOut across rollups", () => {
     dbs.onApply = (version) => {
       if (version === "8") throw new Error("disk")
     }
-    await expect(signOut(testPage())).rejects.toThrow("disk")
+    await expect(signOut(page())).rejects.toThrow("disk")
     const cleared = ["7", "8"].filter((version) => !hasTuple(dbs.db(version).state))
     expect(cleared).toHaveLength(1)
     expect(hasTuple(dbs.db("9").state)).toBe(true)
     dbs.onApply = undefined
-    await signOut(testPage())
+    await signOut(page())
     for (const version of ["7", "8", "9"]) expect(hasTuple(dbs.db(version).state)).toBe(false)
   })
 
@@ -115,7 +114,7 @@ describe("signOut across rollups", () => {
     await closeWalletStore()
     await openWalletStore("9", { persistent: false })
     localStorage.setItem("rollup.7.webwallet.msk", "k7")
-    await signOut(testPage())
+    await signOut(page())
     expect(hasTuple(dbs.db("7").state)).toBe(true)
     expect(localStorage.getItem("rollup.7.webwallet.msk")).toBe("k7")
   })

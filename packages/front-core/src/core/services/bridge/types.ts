@@ -9,7 +9,12 @@
  */
 
 import type { WithdrawalGroupLeg, WithdrawalPhase } from "@obsidion/core/types"
-import type { QueueStatus, SwapEscrowLayout, SwapEscrowOutput } from "@obsidion/sdk"
+import type {
+  BridgeOutProviderId,
+  QueueStatus,
+  SwapEscrowLayout,
+  SwapEscrowOutput,
+} from "@obsidion/sdk"
 import type { Address, Hash, Hex } from "viem"
 import type { Failure } from "../../../engine/errors"
 
@@ -56,13 +61,13 @@ export interface WithdrawalRecord {
   localId: string
 
   /**
-   * Op-id minted at submit so proving-progress stage events can correlate to
+   * Op-id minted at submit so the stages the send reports can correlate to
    * this row before the L2 tx hash is known.
    */
   operationId?: string
 
   /**
-   * Pre-mine in-flight status mirrored from proving-progress: SIMULATING →
+   * Pre-mine in-flight status mirrored from the reported stages: SIMULATING →
    * PROVING → MINING. Drives the activity-row in-flight bubble copy. Cleared
    * once the row reaches a terminal phase.
    */
@@ -167,6 +172,28 @@ export interface WithdrawalRecord {
     depositScanFrom?: string
     /** The quote's DAI value of what the move burns; a move out's shares are named by it. Absent on a rebuilt burn. */
     value?: string
+  }
+
+  /**
+   * A bridge-out: the burn pays `swapEscrow`, an Across escrow from `swapEscrowFactory`, which swaps
+   * the DAI into `swapOutput` and deposits it to Across for `recipient` on `chainId`.
+   */
+  bridgeOut?: {
+    /** The bridge that carries it. */
+    provider: BridgeOutProviderId
+    chainId: number
+    chainName: string
+    /** Output-token units the recipient receives at the swap floor (bigint as string). */
+    minReceived: string
+    /** Input-token units Across keeps (bigint as string). */
+    acrossFee: string
+    nonce: Hex
+    recoveryCommitment: Hex
+    relayerTip: string
+    /** The Across fill on `chainId`, once it lands. */
+    fillTxHash?: Hex
+    /** Output-token units the fill paid the recipient (bigint as string), once read. */
+    filledAmount?: string
   }
 
   /** L1 tx of the escrow execution that paid the recipient (set at `done` on a swap). */

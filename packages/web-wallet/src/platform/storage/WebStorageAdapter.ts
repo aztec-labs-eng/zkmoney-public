@@ -12,6 +12,7 @@ export { PASSKEY_IDENTITY_MAP_KEY, WEB_STORAGE_PREFIX }
  * page), shared by every account on this browser. Operations carry their own scope,
  * so a visitor's and an account's survive a sign-in between them.
  */
+// eslint-disable-next-line no-restricted-syntax -- debt
 const GLOBAL_KEYS = new Set([PASSKEY_IDENTITY_MAP_KEY, OPERATIONS_STORAGE_KEY])
 const isGlobal = (key: string) => GLOBAL_KEYS.has(key) || key.startsWith(CONFIG_STORAGE_KEY_PREFIX)
 
@@ -74,13 +75,6 @@ export class WebStorageAdapter implements IStorageAdapter {
       { strict: true },
     )
   }
-
-  /** Wipes the active account's namespace, not other accounts' or the global keys. No-op without an account. */
-  async clear(): Promise<void> {
-    const id = adapterAccount()
-    if (!id) return
-    await walletStorage.commitRemoveUnder(`${WEB_STORAGE_PREFIX}${id}.`)
-  }
 }
 
 /** Whether this browser holds any account-scoped key for `storageId` on this rollup. */
@@ -91,4 +85,4 @@ export async function holdsAccountRecords(storageId: string): Promise<boolean> {
 }
 
 /** The app-wide adapter instance. */
-export const webStorage = new WebStorageAdapter()
+export const webStorage: Readonly<WebStorageAdapter> = new WebStorageAdapter()

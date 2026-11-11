@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity >=0.8.27;
+import {SweepGasCeilings} from "@test/helpers/SweepGasCeilings.sol";
 import {console2} from "forge-std/console2.sol";
 
 import {DepositSIPA} from "@periphery/DepositSIPA.sol";
@@ -27,8 +28,9 @@ import {
   ForwardingTableFixture,
   DEPOSIT_SWEEP_TIP,
   REGISTRATION_SWEEP_TIP,
-  USER_OP_SWEEP_TIP
+  ADD_PASSKEY_SWEEP_TIP
 } from "@test/helpers/ForwardingTableFixture.sol";
+import {Intents} from "@periphery/Intent.sol";
 
 contract ReentrantSIPA {
   DepositSubsidy internal immutable DEPOSIT_SUBSIDY;
@@ -55,7 +57,7 @@ contract DepositSubsidyIntentPricingTest is SweepGasFixture {
 
   DepositSubsidy internal sm;
   MockV3Aggregator internal feed;
-  GasBurningSIPA internal userOpGasBurner;
+  GasBurningSIPA internal addPasskeyGasBurner;
 
   function setUp() public virtual override {
     super.setUp();
@@ -65,7 +67,8 @@ contract DepositSubsidyIntentPricingTest is SweepGasFixture {
       address(portal),
       IOperationExecutor(address(operationExecutor)),
       AggregatorV3Interface(address(feed)),
-      sipaFactory
+      sipaFactory,
+      SweepGasCeilings.initial()
     );
     underlying.mint(address(sm), 1_000_000 ether);
     underlying.mint(relayer, 1);
@@ -74,11 +77,11 @@ contract DepositSubsidyIntentPricingTest is SweepGasFixture {
     sm.setDepositConfig(PRICED_MIN_PROFIT, type(uint128).max, 0);
     vm.fee(PRICED_BASEFEE);
     vm.txGasPrice(PRICED_BASEFEE);
-    userOpGasBurner = new GasBurningSIPA(address(portal), USER_OP_SWEEP_TIP, 1_000_000);
+    addPasskeyGasBurner = new GasBurningSIPA(address(portal), ADD_PASSKEY_SWEEP_TIP, 1_000_000);
     vm.mockCall(
       address(sipaFactory),
-      abi.encodeCall(SIPAFactory.sipaIntentOf, (address(userOpGasBurner))),
-      abi.encode(SIPABase.Intent.UserOp)
+      abi.encodeCall(SIPAFactory.sipaIntentOf, (address(addPasskeyGasBurner))),
+      abi.encode(Intents.ADD_PASSKEY)
     );
   }
 
@@ -144,9 +147,7 @@ contract DepositSubsidyIntentPricingTest is SweepGasFixture {
   function test_GivenANestedSweep_ThenItIsRefusedRatherThanPaidTwice() external {
     ReentrantSIPA attacker = new ReentrantSIPA(sm, address(portal), DEPOSIT_SWEEP_TIP);
     vm.mockCall(
-      address(sipaFactory),
-      abi.encodeWithSelector(SIPAFactory.sipaIntentOf.selector),
-      abi.encode(SIPABase.Intent.Deposit)
+      address(sipaFactory), abi.encodeWithSelector(SIPAFactory.sipaIntentOf.selector), abi.encode(Intents.DEPOSIT)
     );
 
     vm.expectRevert(ReentrancyGuardTransient.ReentrancyGuardReentrantCall.selector);
@@ -201,7 +202,7 @@ contract DepositSubsidyIntentPricingTest is SweepGasFixture {
 
     assertLt(
       priced,
-      sm.SWEEP_GAS_DEPOSIT_CEILING(),
+      sm.$sweepGasCeilings(Intents.DEPOSIT),
       "an ordinary deposit sweep must price on its meter, not on the deposit ceiling"
     );
   }
@@ -218,10 +219,14 @@ contract DepositSubsidyIntentPricingTest is SweepGasFixture {
     console2.log("registration priced gas", priced);
 
     assertGt(
-      priced, sm.SWEEP_GAS_DEPOSIT_CEILING(), "a registration must price above everything the deposit ceiling can pay"
+      priced,
+      sm.$sweepGasCeilings(Intents.DEPOSIT),
+      "a registration must price above everything the deposit ceiling can pay"
     );
     assertLe(
-      priced, sm.SWEEP_GAS_REGISTRATION_CEILING(), "a registration priced past its own ceiling: the cap is not binding"
+      priced,
+      sm.$sweepGasCeilings(Intents.REGISTRATION),
+      "a registration priced past its own ceiling: the cap is not binding"
     );
   }
 
@@ -244,9 +249,7 @@ contract DepositSubsidyIntentPricingTest is SweepGasFixture {
 
   function test_GivenMoreGasOnHand_ThenTheQuoteDoesNotMove() external {
     vm.mockCall(
-      address(sipaFactory),
-      abi.encodeWithSelector(SIPAFactory.sipaIntentOf.selector),
-      abi.encode(SIPABase.Intent.Deposit)
+      address(sipaFactory), abi.encodeWithSelector(SIPAFactory.sipaIntentOf.selector), abi.encode(Intents.DEPOSIT)
     );
     GasBurningSIPA fixedWork = new GasBurningSIPA(address(portal), DEPOSIT_SWEEP_TIP, 100_000);
 
@@ -258,33 +261,33 @@ contract DepositSubsidyIntentPricingTest is SweepGasFixture {
     assertEq(roomy, tight, "the quote follows the gas the sweep consumed, not the gas the call was given");
     assertLt(
       _pricedGas(tight, DEPOSIT_SWEEP_TIP),
-      sm.SWEEP_GAS_DEPOSIT_CEILING(),
+      sm.$sweepGasCeilings(Intents.DEPOSIT),
       "the stand-in must stay under the ceiling, or the cap is what is holding the two quotes level"
     );
   }
 
-  function test_userOpSweepCapsUnderlyingSubsidy() external {
-    _assertUserOpSubsidyCap(address(underlying), 0);
+  function test_addPasskeySweepCapsUnderlyingSubsidy() external {
+    _assertAddPasskeySubsidyCap(address(underlying), 0);
   }
 
-  function test_userOpSweepCapsUsdcSubsidy() external {
-    _assertUserOpSubsidyCap(address(USDC), sm.SWEEP_GAS_SWAP_USDC_HOP());
+  function test_addPasskeySweepCapsUsdcSubsidy() external {
+    _assertAddPasskeySubsidyCap(address(USDC), sm.SWEEP_GAS_SWAP_USDC_HOP());
   }
 
-  function test_userOpSweepCapsUsdtSubsidy() external {
-    _assertUserOpSubsidyCap(address(USDT), sm.SWEEP_GAS_SWAP_USDT_HOP());
+  function test_addPasskeySweepCapsUsdtSubsidy() external {
+    _assertAddPasskeySubsidyCap(address(USDT), sm.SWEEP_GAS_SWAP_USDT_HOP());
   }
 
-  function _assertUserOpSubsidyCap(address token, uint256 swapAllowance) internal {
-    uint256 ceiling = sm.SWEEP_GAS_USER_OP_CEILING() + swapAllowance;
+  function _assertAddPasskeySubsidyCap(address token, uint256 swapAllowance) internal {
+    uint256 ceiling = sm.$sweepGasCeilings(Intents.ADD_PASSKEY) + swapAllowance;
     uint256 expectedSubsidy =
-      (ceiling * PRICED_UNIT_FEE * uint256(PRICED_FEED_ANSWER)) / 1e8 + PRICED_MIN_PROFIT - USER_OP_SWEEP_TIP;
+      (ceiling * PRICED_UNIT_FEE * uint256(PRICED_FEED_ANSWER)) / 1e8 + PRICED_MIN_PROFIT - ADD_PASSKEY_SWEEP_TIP;
     uint256 relayerBefore = underlying.balanceOf(relayer);
 
-    (uint256 subsidy,) = RelayerTransaction.send(relayer, sm, _sweepCd(address(userOpGasBurner), token, "", ""));
+    (uint256 subsidy,) = RelayerTransaction.send(relayer, sm, _sweepCd(address(addPasskeyGasBurner), token, "", ""));
 
-    assertEq(subsidy, expectedSubsidy, "user op subsidy must reach its cap with the token swap allowance");
-    assertEq(_pricedGas(subsidy, USER_OP_SWEEP_TIP), ceiling);
+    assertEq(subsidy, expectedSubsidy, "add-passkey subsidy must reach its cap with the token swap allowance");
+    assertEq(_pricedGas(subsidy, ADD_PASSKEY_SWEEP_TIP), ceiling);
     assertEq(underlying.balanceOf(relayer) - relayerBefore, expectedSubsidy);
   }
 

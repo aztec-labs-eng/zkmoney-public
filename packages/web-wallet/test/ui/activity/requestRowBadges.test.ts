@@ -5,11 +5,12 @@
  */
 import { describe, expect, it } from "vitest"
 import { statusBadgeStyle } from "@obsidion/web-ds"
+import { recoveryCopy } from "../../../src/features/backupPasskey/backupPasskeyCopy"
 import copy from "../../../src/ui/activity/ActivityRow.copy"
 
 describe("feed row badges", () => {
   it("styles every status a row can name", () => {
-    for (const label of Object.values(copy.status))
+    for (const label of [...Object.values(copy.status), ...Object.values(recoveryCopy.badge)])
       expect(statusBadgeStyle(label), label).toBeDefined()
     // Detected must not wear the settled colour: that is the state it has to be told apart from.
     expect(statusBadgeStyle(copy.status.paymentDetected)).not.toBe(

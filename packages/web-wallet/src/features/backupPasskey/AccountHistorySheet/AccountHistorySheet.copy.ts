@@ -1,0 +1,37 @@
+// Proposed copy, pending review.
+export default {
+  title: "Account history",
+  row: {
+    none: "None",
+    one: "1 change",
+    found: "Funds found",
+  },
+  empty:
+    "Nothing here yet. If your account moves to a new address, for example when you add a backup passkey, it shows here.",
+  rotation: "Backup passkey added",
+  earlier: "Earlier address",
+  hint: "Looks for funds sent to this address after you added your backup passkey. Nothing moves until you approve it.",
+  check: "Check for old funds",
+  checking: "Checking the earlier address…",
+  incomplete: "Couldn't check this address",
+  tryAgain: "Try again",
+  unclaimed: "Funds may be waiting here",
+  unclaimedNote: "Sign in with your first passkey to check it.",
+  nothing: "No funds found",
+  checkAgain: "Check again",
+  foundCaption: "found at the earlier address",
+  main: "Main Account",
+  savings: "Savings",
+  unpriced: "Price unavailable",
+  move: "Move funds",
+  approve: "You'll approve each step with your first passkey.",
+  moving: "Moving your previous account's funds…",
+  note: {
+    resume: "Your backup passkey is still being set up.",
+    rotationsUnread: "Your backup passkey's setup can't be read yet.",
+    backupSession: "Sign in with your first passkey to move them.",
+    refused: "They could not be moved in one go.",
+    stuck: "They can't be moved from the wallet yet.",
+    failed: "Could not move them.",
+  },
+} as const

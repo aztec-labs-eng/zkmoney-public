@@ -113,6 +113,7 @@ export const DEMO_L1_TOKENS: Record<string, { decimals: number; symbol: string; 
  * fixture's own address. The self-sweep refuses to deploy anywhere but the predicted address, and
  * the commitment is the only fixture value carried in that call's arguments.
  */
+// eslint-disable-next-line no-restricted-syntax -- debt
 const predictions = new Map<string, Address>()
 
 const commitmentKey = (hex: string) => hex.replace(/^0x/, "").toLowerCase().padStart(64, "0")
@@ -289,6 +290,7 @@ export function createL1RpcHandler(chainId: number): RpcHandler {
         }
       case "eth_estimateGas":
         return quantity(120_000)
+      case "eth_getBalance":
       case "eth_getTransactionCount":
         return "0x0"
       // Every SIPA is counterfactual in the demo, so the self-sweep takes the
@@ -359,6 +361,7 @@ export function installL1RpcStub(rpcUrl: string, handle: RpcHandler): void {
     result: await handle(request.method, request.params),
   })
 
+  // eslint-disable-next-line no-restricted-syntax -- debt
   globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     const url =
       typeof input === "string" ? input : input instanceof URL ? input.href : (input as Request).url

@@ -1,0 +1,19 @@
+/* A cross-chain row's avatar: the other chain, badged with the direction. */
+.avatar {
+  --badge-size: 18px;
+  --badge-offset: 2px;
+  position: relative;
+  display: flex;
+  flex: none;
+  width: 44px;
+  height: 44px;
+}
+/* Beats `.zkm-avatar__disc`. */
+.badge.badge {
+  position: absolute;
+  right: calc(-1 * var(--badge-offset));
+  bottom: calc(-1 * var(--badge-offset));
+  width: var(--badge-size);
+  height: var(--badge-size);
+  background: var(--gradient-brand);
+}

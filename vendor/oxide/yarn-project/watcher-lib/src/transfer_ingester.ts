@@ -25,7 +25,7 @@ export interface TransferIngesterOptions {
   cursorStore: CursorStore;
   /** ERC20s whose Transfer events are ingested, unfiltered by recipient. */
   tokens: EthAddress[];
-  /** Max blocks per `eth_getLogs` call; one call covers every token, and a capped window is retried at half its span. */
+  /** Max blocks per `eth_getLogs` call; one call covers every token, and a failed window is retried at half its span. */
   window: bigint;
   maxReorgDepth?: bigint;
   /** Fail on a missing cursor instead of starting near the tip; for cursors seeded explicitly before the first poll. */

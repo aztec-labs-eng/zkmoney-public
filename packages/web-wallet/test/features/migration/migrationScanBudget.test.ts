@@ -17,15 +17,11 @@ import {
 import { OxidePortalEventsAbi } from "@oxide/l1-contracts"
 import { sepolia } from "viem/chains"
 import type { OxideEnvTuple } from "@obsidion/core/types"
-import {
-  composeWireNameHash,
-  registrationCommitments,
-  resetDeploymentScanRangeForTests,
-} from "@obsidion/front-core"
+import { composeWireNameHash, memoryStore, registrationCommitments } from "@obsidion/front-core"
 import type { HistoricResidualSummary } from "../../../src/features/migration/historicResiduals"
+import { answered } from "../../support/query"
 
 const HEAD = 25_000n
-const HEADER_READ_BUDGET_PER_TUPLE = 16
 const CHAIN_START_SEC = Math.floor(Date.parse("2026-08-01T00:00:00Z") / 1000)
 const SEC_PER_BLOCK = 10
 
@@ -57,7 +53,6 @@ interface Chain {
    * `commitment` overrides the one derived from the address.
    */
   sweeps: { address: string; block: bigint; commitment?: Hex }[]
-  rejectGetBlock?: boolean
   rejectSources?: boolean
 }
 
@@ -143,7 +138,6 @@ function countingClient(chain: Chain): CountingClient {
       }
       if (method === "eth_getCode") return "0x6001"
       if (method === "eth_getBlockByNumber") {
-        if (chain.rejectGetBlock) throw new Error("pruned history unavailable")
         const [block] = params as [string]
         return { number: block, timestamp: toHex(blockTime(BigInt(block))) }
       }
@@ -177,16 +171,33 @@ const h = vi.hoisted(() => ({
   identity: { current: null as { address: string; handle: string } | null },
 }))
 
-vi.mock("../../../src/session/session", () => ({
-  session: () => ({
-    namespace: { id: "acct" },
-    device: { get: () => ({ storageId: "acct" }) },
-    activity: { all: async () => [] },
-    withdrawals: { ready: Promise.resolve(), all: async () => [] },
-    notifications: {},
-    auth: { getSecretKey: async () => "0x01" },
-  }),
-}))
+const pageChain = {
+  otherManifestSources: answered([]),
+  savingsTuple: answered(null),
+}
+/** The session the probe runs in. */
+const session = {
+  page: {
+    config: {
+      oxideProfile: {
+        manifestUrl: "https://manifest.example/staging.v4.json",
+        portal: "0x" + "01".repeat(20),
+      },
+      network: "sandbox",
+      l1ChainId: 11155111,
+      assets: [],
+    },
+    chain: pageChain,
+  },
+  namespace: { id: "acct" },
+  device: { get: () => ({ storageId: "acct" }) },
+  transfers: { all: async () => [] },
+  paylinks: { view: memoryStore({ records: [], loaded: true, failed: false }).readonly },
+  operations: { view: memoryStore({ records: [], loaded: true, failed: false }).readonly },
+  withdrawals: { ready: Promise.resolve(), all: async () => [] },
+  notifications: {},
+  auth: { getSecretKey: async () => "0x01" },
+} as never
 vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   PendingPaylinkMigrationService: class {
@@ -210,24 +221,9 @@ vi.mock("@obsidion/sdk", async (importOriginal) => ({
   readDepositSIPAImplementation: async () => "0x" + "dd".repeat(20),
   TokenService: { create: async () => ({ getBalance: async () => h.balance.current }) },
 }))
-vi.mock("../../../src/config/env", () => ({
-  getConfig: () => ({
-    oxideProfile: {
-      manifestUrl: "https://manifest.example/staging.v4.json",
-      portal: "0x" + "01".repeat(20),
-    },
-    network: "sandbox",
-    l1ChainId: 11155111,
-    assets: [],
-  }),
-}))
 vi.mock("../../../src/config/oxideTuple", () => ({
   l1PublicClient: () => (h.active.current as CountingClient).client,
   l1MulticallClient: () => (h.active.current as CountingClient).client,
-  getOtherManifestSources: async () => [],
-}))
-vi.mock("../../../src/features/savings/savingsGateway", () => ({
-  getSavingsTuple: async () => undefined,
 }))
 vi.mock("../../../src/platform/storage/WebStorageAdapter", () => ({ webStorage: {} }))
 vi.mock("../../../src/features/paylink/chainTime", () => ({
@@ -246,6 +242,7 @@ const tuple = (n: number): OxideEnvTuple =>
     gitSha: "",
     timestamp: new Date(blockTime(HEAD) * 1000).toISOString(),
     deployedAt: new Date(blockTime(DEPLOY_BLOCKS[n] ?? 0n) * 1000).toISOString(),
+    deployedAtBlock: String(DEPLOY_BLOCKS[n] ?? 0n),
     portal: "0x" + n.toString(16).padStart(40, "0"),
     token: "0x" + "cc".repeat(20),
     l2Token: "0x" + n.toString(16).padStart(64, "0"),
@@ -292,19 +289,17 @@ async function boot(
     if (chain.rejectSources) throw new Error("exceed maximum block range: 50000")
     return sourcesOf(sources)
   })
-  const found = await probeAccountResiduals(wallet, account, h.identity.current?.handle)
+  const found = await probeAccountResiduals(session, wallet, account, h.identity.current?.handle)
   return { l1, residuals: found?.residuals ?? [] }
 }
 
 beforeEach(() => {
   vi.clearAllMocks()
   h.identity.current = null
-  // Every row here is the cost of a COLD boot; the deployment-block cache spans a session.
-  resetDeploymentScanRangeForTests()
 })
 
 describe("migration scan budget of one wallet boot", () => {
-  it("one historic entry, 0 sources: the freeze check and the head read only, no block search", async () => {
+  it("one historic entry, 0 sources: the freeze check and the head read only", async () => {
     const { l1 } = await boot([tuple(1)], 0)
     expect(l1.calls).toEqual({ eth_blockNumber: 1, eth_call: 1 })
   })
@@ -317,7 +312,7 @@ describe("migration scan budget of one wallet boot", () => {
       // The portal's freeze check, and one multicall of every balance.
       expect(l1.calls.eth_call).toBe(2)
       expect(l1.calls.eth_getCode).toBeUndefined()
-      expect(l1.calls.eth_getBlockByNumber).toBeLessThanOrEqual(HEADER_READ_BUDGET_PER_TUPLE)
+      expect(l1.calls.eth_getBlockByNumber).toBeUndefined()
       expect(l1.getLogs[0]).toMatchObject({ fromBlock: toHex(12_000n), toBlock: toHex(HEAD) })
       expect(l1.getLogs.at(-1)).toMatchObject({ toBlock: toHex(HEAD) })
       expect(l1.getLogs.every((r) => BigInt(r.fromBlock) >= 12_000n)).toBe(true)
@@ -353,18 +348,18 @@ describe("migration scan budget of one wallet boot", () => {
     expect(residuals[0]).toMatchObject({ sweptDeposits: 1, incomplete: false })
   })
 
-  it("block search fails at zero balance: no sweep scan runs and the row stays incomplete", async () => {
-    const { l1, residuals } = await boot([tuple(1)], 5, {
-      rejectGetBlock: true,
-    })
+  const unplaced = () => ({ ...tuple(1), deployedAtBlock: undefined } as OxideEnvTuple)
+
+  it("an entry naming no start block at zero balance: no sweep scan runs and the row stays incomplete", async () => {
+    const { l1, residuals } = await boot([unplaced()], 5)
     expect(l1.calls.eth_getLogs).toBeUndefined()
     expect(residuals).toEqual([
       expect.objectContaining({ incomplete: true, balance: 0n, hasResiduals: false }),
     ])
   })
 
-  it("block search fails on a funded deployment: the row is reported as incomplete", async () => {
-    const { residuals } = await boot([tuple(1)], 5, { rejectGetBlock: true }, 9n)
+  it("an entry naming no start block on a funded deployment: the row is reported as incomplete", async () => {
+    const { residuals } = await boot([unplaced()], 5, {}, 9n)
     expect(residuals).toHaveLength(1)
     expect(residuals[0]).toMatchObject({ incomplete: true, balance: 9n })
   })

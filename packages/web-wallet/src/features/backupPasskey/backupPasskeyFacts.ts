@@ -1,43 +1,46 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
+import { bestEffortSync, WalletError } from "@obsidion/core/errors"
 import {
+  backupAddFees,
   backupLinks,
+  FUNDING_STATUS,
   fundingFits,
   isSavingsMoveSettled,
+  operationIndex,
   unreadDeposits,
   useAfter,
-  useCachedRecords,
   useStore,
   withNotes,
+  withOperation,
   WITHDRAWAL_TERMINAL_PHASES,
   type After,
+  type BackupAddQuote,
   type BackupLinkHold,
   type ChunkFit,
-  type PaylinkTransaction,
+  type OperationRecord,
+  type PaylinkRecord,
+  type RecordSet,
   type SavingsMoveRecord,
   type WithdrawalRecord,
-  useResource,
+  serviceStatus,
 } from "@obsidion/front-core"
 import {
-  type ContractService,
   fundingAmount,
   readBridgeDestination,
   RotationRouteNotLiveError,
   type FundingAmount,
-  type ObsidionWallet,
   type SpendShape,
 } from "@obsidion/sdk"
 import type { Address } from "viem"
-import { getConfig } from "../../config/env"
-import { getFeeTokenBridgeTuple, l1PublicClient, requireTupleField } from "../../config/oxideTuple"
-import { wallClock } from "../../lib/clock"
-import { useSession } from "../../session/session"
+import { l1PublicClient, requireTupleField } from "../../config/oxideTuple"
+import { useSession, type Session } from "../../session/session"
 import { useOldVersionHoldings } from "../migration/oldVersionBalance"
 import { useUpgradeLock } from "../migration/upgradeLock"
 import { unlockedSessionKeys } from "../registration/registrationResume"
-import { rescanPaylinks, usePaylinksRescanned } from "../paylink/paylinkRescanState"
-import { getSavingsMoveStore } from "../savings/savingsMoveStore"
 import { useSavingsMovesReplayed } from "../savings/savingsTasks"
+import { gatedLinks } from "./backupEntryGate"
 import { useWithdrawals } from "../withdraw/useWithdrawals"
+import { readBackupAddTakesMs } from "./backupAddTime"
 import { moveCount, readMoveBalances, type MoveBalance } from "./backupMoveTokens"
 
 /** What the entry reads off the chain before it can be pressed. */
@@ -50,11 +53,14 @@ export interface ChainFacts {
   plan: boolean
   /** How many sponsored transfers the move takes, at most, Savings' shares included. */
   moves: number
+  /** What the add costs and takes, before it starts; none while the route is not live. */
+  quote?: BackupAddQuote
 }
 
 /** What the entry reads off the chain, before it knows this device's open paylinks. */
 export interface ChainReads {
   funding: FundingAmount | undefined
+  takesMs: number
   /** Main Account's, which pays the funding and takes the paylink refunds. */
   shape: SpendShape
   cap: bigint
@@ -70,38 +76,39 @@ export function chainFacts(
     refunds?: readonly bigint[]
   },
 ): ChainFacts {
-  const { funding, shape, cap, others = [], refunds = [] } = input
+  const { funding, takesMs, shape, cap, others = [], refunds = [] } = input
   const amount = funding?.amount ?? 0n
   const deposits = unreadDeposits(shape)
-  let moves = 0
-  let plan = false
-  try {
-    moves = moveCount([{ shape: withNotes(shape, refunds), cap }, ...others])
-    plan = true
-  } catch {
-    // No plan over this balance and cap; the entry says so.
-  }
+  // A throw means no plan over this balance and cap; the entry says so.
+  const moves = bestEffortSync<number | undefined>(
+    () => moveCount([{ shape: withNotes(shape, refunds), cap }, ...others]),
+    undefined,
+  )
   return {
     routeLive: funding !== undefined,
     balance: shape.balance,
     fundingAmount: amount,
     chunk: fundingFits(amount, cap, shape, deposits),
-    plan,
-    moves,
+    plan: moves !== undefined,
+    moves: moves ?? 0,
+    ...(funding && { quote: { ...backupAddFees(funding), takesMs } }),
   }
 }
 
 /** The chain reads, and Main Account's token, which the paylinks the add takes back pay in. */
 export async function readChainReads(
-  wallet: ObsidionWallet,
-  contractService: ContractService,
+  session: Pick<Session, "auth" | "burnDurations" | "page" | "wallet" | "contractService">,
 ): Promise<ChainReads & { token: string }> {
-  const keys = await unlockedSessionKeys(wallet)
-  if (!keys) throw new Error("wallet locked")
-  const config = getConfig()
+  const [wallet, contractService] = await Promise.all([
+    session.wallet.ready(),
+    session.contractService.ready(),
+  ])
+  const keys = await unlockedSessionKeys(session, wallet)
+  if (!keys) throw new WalletError("account.locked", "wallet locked")
+  const { config, chain } = session.page
   const client = l1PublicClient(config)
-  const envTuple = await getFeeTokenBridgeTuple(config)
-  const [funding, [main, ...others]] = await Promise.all([
+  const envTuple = await chain.feeTokenBridgeTuple.read()
+  const [funding, takesMs, [main, ...others]] = await Promise.all([
     readBridgeDestination(client, envTuple).then((tuple) =>
       fundingAmount(client, {
         tuple,
@@ -112,33 +119,47 @@ export async function readChainReads(
         throw err
       }),
     ),
-    readMoveBalances(wallet, contractService, keys.account.getAddress()),
+    readBackupAddTakesMs(session.burnDurations, session.page, wallet.node),
+    readMoveBalances(chain, wallet, contractService, keys.account.getAddress()),
   ])
-  return { funding, ...main!, others }
+  return { funding, takesMs, ...main!, others }
 }
 
 /**
- * The open paylinks `account` made that the add takes back, and what holds it instead, kept current
- * with the stored rows. Undefined until this page's rescan has rebuilt every link the account made;
- * `unreadable` while the latest pass failed or deferred a link.
+ * The open paylinks `account` made that the add takes back among `links`, each funded as its
+ * operation says, and what holds the add instead. Undefined until a rescan has rebuilt every link
+ * the account made; `unreadable` while the latest pass failed or deferred a link, or a read failed.
  */
+export function selectBackupLinks(
+  rescanned: boolean | undefined,
+  links: RecordSet<PaylinkRecord>,
+  ops: RecordSet<OperationRecord>,
+  opts: { account?: string; network?: string; token?: string; nowSec: number },
+): { open: PaylinkRecord[]; hold?: BackupLinkHold } | "unreadable" | undefined {
+  if (rescanned === false || links.failed || ops.failed) return "unreadable"
+  const { account, network, token, nowSec } = opts
+  if (!rescanned || !links.loaded || !ops.loaded || !account || !token) return undefined
+  const index = operationIndex(ops.records)
+  const statusOf = (link: PaylinkRecord) => FUNDING_STATUS[withOperation(link, index).funding]
+  return backupLinks(links.records, statusOf, { account, network, token, nowSec })
+}
+
 function useBackupLinks(
   account: string | undefined,
   token: string | undefined,
-): { open: PaylinkTransaction[]; hold?: BackupLinkHold } | "unreadable" | undefined {
-  const rescanned = usePaylinksRescanned(account)
-  const network = useResource(useSession().wallet)?.networkId
+): { open: PaylinkRecord[]; hold?: BackupLinkHold } | "unreadable" | undefined {
+  const rescanned = useStore(useSession().paylinkSweep.rescanned)
+  const network = useStore(useSession().page.networkId)
   // The links still in escrow, once loaded: a link not yet read is not "none".
-  const rows = useStore(useSession().reads.open)
+  const links = useStore(useSession().reads.open)
+  const ops = useStore(useSession().operations.view)
   // Ticks, so an expiry or a closing cancel window changes the hold while the sheet stays open.
+  const { wallClock } = useSession().page
   const nowSec = Math.floor(useStore(wallClock) / 1000)
-  const links = useMemo(
-    () =>
-      account && token ? backupLinks(rows.records, { account, network, token, nowSec }) : undefined,
-    [rows.records, account, network, token, nowSec],
+  return useMemo(
+    () => selectBackupLinks(rescanned, links, ops, { account, network, token, nowSec }),
+    [rescanned, links, ops, account, network, token, nowSec],
   )
-  if (rescanned === false || rows.failed) return "unreadable"
-  return rescanned && rows.loaded ? links : undefined
 }
 
 /** Whether a withdrawal of this wallet's is still on its way. */
@@ -173,37 +194,41 @@ export type EntryFacts = ChainFacts & {
   historicBalance: boolean
 }
 
-/** A fresh device stores a Savings move it has no record of only once the replay adopts it. */
+/** A fresh device has a Savings move it has no record of only once the replay rebuilds its burn. */
 const READ_AFTER: After = { firstBalance: true, movesReplayed: true }
 
 /**
  * The entry's facts for the signed-in account: the chain's read once the device has synced, and
- * again on `refresh`; the rest kept current. `checking` while they are read, `unreadable` when a
- * read failed, the Savings moves replay included, since a move it missed would land after the
- * switch, unclaimed; `refresh` also starts a paylink rescan and reads the Savings moves again.
+ * again on `refresh`; the rest kept current and gated by `gatedLinks`. `refresh` also starts a
+ * paylink rescan. Saved Savings moves that do not read stay unreadable until the page reloads.
  */
-export function useBackupEntryFacts(
-  wallet: ObsidionWallet | undefined,
-  contractService: ContractService | null,
-  active: boolean,
-): { facts: "checking" | "unreadable" | EntryFacts; refresh: () => void } {
+export function useBackupEntryFacts(active: boolean): {
+  facts: "checking" | "unreadable" | EntryFacts
+  refresh: () => void
+} {
   const [chain, setChain] = useState<"checking" | "unreadable" | (ChainReads & { token: string })>(
     "checking",
   )
   const [run, setRun] = useState(0)
   const withdrawals = useWithdrawals()
   const holdings = useOldVersionHoldings()
+  const session = useSession()
+  const wallet = useStore(session.wallet, serviceStatus)
+  const contracts = useStore(session.contractService, serviceStatus)
+  const built = wallet === "ready" && contracts === "ready"
   const identity = useStore(useSession().identity, (s) => s.value?.address)
   const upgrade = useUpgradeLock(identity).state
   const links = useBackupLinks(identity, typeof chain === "string" ? undefined : chain.token)
   const synced = useAfter(useSession().milestones, READ_AFTER)
-  const savingsMoves = useCachedRecords(useMemo(getSavingsMoveStore, []))
-  const replayed = useSavingsMovesReplayed(identity)
+  const savingsMoves = useStore(useSession().savingsMoves.view)
+  const replayed = useSavingsMovesReplayed()
+  const adopted = useStore(useSession().savingsSettleDue, (due) => due.unadopted === 0)
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
-    if (!active || !wallet || !contractService || !synced) return
+    if (!active || !built || !synced) return
     let stale = false
     setChain("checking")
-    readChainReads(wallet, contractService).then(
+    readChainReads(session).then(
       (facts) => {
         if (!stale) setChain(facts)
       },
@@ -215,24 +240,28 @@ export function useBackupEntryFacts(
     return () => {
       stale = true
     }
-  }, [active, wallet, contractService, synced, run])
-  const retryMoves = savingsMoves.retry
+  }, [active, session, built, synced, run])
+  const sweep = useSession().paylinkSweep
   const refresh = useCallback(() => {
     setRun((n) => n + 1)
-    rescanPaylinks()
-    retryMoves()
-  }, [retryMoves])
+    sweep.recheck()
+  }, [sweep])
   if (typeof chain === "string") return { facts: chain, refresh }
-  if (links === "unreadable" || replayed === false || savingsMoves.failed)
-    return { facts: "unreadable", refresh }
-  const loaded =
-    withdrawals.hydrated && !holdings.pending && savingsMoves.hydrated && replayed !== undefined
-  if (!synced || !loaded || links === undefined) return { facts: "checking", refresh }
+  const open = gatedLinks({
+    links,
+    replayed,
+    adopted,
+    savingsMoves,
+    withdrawalsHydrated: withdrawals.hydrated,
+    holdingsPending: holdings.pending,
+    synced,
+  })
+  if (typeof open === "string") return { facts: open, refresh }
   return {
     facts: {
-      ...chainFacts({ ...chain, refunds: links.open.map((row) => row.amountAtomic) }),
-      links: links.open.length,
-      ...(links.hold && { linkHold: links.hold }),
+      ...chainFacts({ ...chain, refunds: open.open.map((row) => row.amountAtomic) }),
+      links: open.open.length,
+      ...(open.hold && { linkHold: open.hold }),
       savingsMoving: savingsMoving(savingsMoves.records, withdrawals.records),
       withdrawalInFlight: withdrawalInFlight(withdrawals.records),
       historicBalance: holdings.total > 0n || upgrade === "held",

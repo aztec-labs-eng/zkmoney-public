@@ -5,6 +5,9 @@
 import { DEFAULT_DECIMALS, PaylinkActionEnum } from "@obsidion/core/constants"
 import { hiddenBehindOwnWithdrawal, itemStartTime, type ActivityItem } from "./feedRules"
 import type { WithdrawalRecord } from "../core/services/bridge/types"
+import type { BridgeInPays, BridgeInRecord } from "../core/services/crossChain/types"
+import type { BackupRotationRecord } from "./backupRotations"
+import { bridgeInDelivers, bridgeInPaying } from "./bridgeIns"
 import { WITHDRAWAL_TERMINAL_PHASES } from "../core/services/bridge/types"
 import {
   isFundsLegUnsent,
@@ -17,14 +20,13 @@ import { isWithdrawalDelayed } from "../core/services/bridge/withdrawalPhases"
 import type { ActivityCsvSources, SavingsCsvSources } from "../core/services/activity/activityCsv"
 import { depositAmounts } from "../core/services/deposits/depositAmounts"
 import { sipaReasonShown, type SipaProcessingState } from "../core/services/deposits/sipaProcessing"
-import { sipaCredits } from "../core/services/deposits/sipaCredits"
+import { isFirstSipaPayment, sipaCredits } from "../core/services/deposits/sipaCredits"
 import {
   isAccountMoveSipa,
   isSettledSipaPhase,
   isUnfundedSipaDeposit,
   type SipaDeposit,
 } from "./sipaDeposits"
-import { requestLinkedSipaAddresses } from "../core/paymentRequest/sipaRequestFulfillment"
 import { upgradeRecipients, upgradeRunsOf, type UpgradeRun } from "../core/migration/upgradeRuns"
 import { chainUpgradeBatches } from "../core/migration/chainUpgradeBatches"
 import type { UpgradeBatchItem } from "../core/migration/upgradeActivity"
@@ -45,19 +47,33 @@ import {
   resolveContactForTx,
   type TxContactDirectory,
 } from "../core/txContactResolution"
-import type { ContactRow } from "../hooks/useContactsDirectory"
+import type { ContactRow } from "./contacts"
 import type {
   FaucetTransaction,
   PaylinkTransaction,
   TokenTransaction,
   Transaction,
+  TransactionStatus,
 } from "../types/transactions"
+import { FUNDING_STATUS, operationIndex, withOperation } from "./operations"
+import type { Funding, OperationIndex } from "./operations"
+import type { OperationRecord } from "./operationTransition"
+import type { PaylinkRecord } from "./paylinkTransition"
+import { fundingKeys, isLinkFunding } from "./paylinks"
 import { normalizeTag } from "../utils/normalizeTag"
 import { isZeroAddress, validateAddress } from "../utils/validate"
 import {
+  backupAddCost,
+  backupAdded,
   bridgeItemTime,
   depositExitOffer,
+  depositRowPayment,
+  fundingRecovery,
+  isAddedBackupDeposit,
+  isMoveFromPrevious,
+  isWaitingAtPrevious,
   isSavingsMoveSettled,
+  isStoppedBackupDeposit,
   migrationAmounts,
   neverCreditsL2,
   registrationFor,
@@ -65,7 +81,10 @@ import {
   registrationTagForSipa,
   tagPriceOf,
   withdrawalExit,
+  withdrawalIntent,
+  type BackupAddCost,
   type DepositOffer,
+  type FundingRecovery,
   type Registrations,
   type WithdrawalExit,
 } from "./feedRules"
@@ -82,10 +101,14 @@ export interface Money {
 /** The stored records the feed reads, and wall time. */
 export interface FeedSources {
   /**
-   * The activity rows the feed lists, with every pending row, paylink row and request payment, so
-   * lookups by hash, link or request find theirs. `loaded` once every read landed.
+   * The transfers the feed lists, with every pending one and
+   * request payment, so lookups by hash or request find theirs. `loaded` once every read landed.
    */
   rows: RecordSet<Transaction>
+  /** The links the feed lists; their funding transfers among `rows` show as the link. */
+  links: RecordSet<PaylinkRecord>
+  /** Every operation: a link's funding and refund state are its operations'. */
+  operations: RecordSet<OperationRecord>
   /** The time of the oldest row listed while older rows are not read: older items wait for them. */
   cutoff?: number
   requests: readonly PaymentRequest[]
@@ -93,6 +116,7 @@ export interface FeedSources {
   requestsLoaded?: boolean
   deposits: RecordSet<SipaDeposit>
   withdrawals: Loaded<WithdrawalRecord>
+  bridgeIns: Loaded<BridgeInRecord>
   /** `recipients`: every deposit address a run pays, a live source's included. */
   upgrades: {
     items: readonly UpgradeBatchItem[]
@@ -104,8 +128,8 @@ export interface FeedSources {
   oldVersionWithdrawals: readonly OldVersionWithdrawal[]
   /** Why a deposit waits for its sweep, by lowercase address. */
   processing: ReadonlyMap<string, SipaProcessingState>
-  /** Paylink secrets whose refund this page runs. */
-  refunding: ReadonlySet<string>
+  /** This device's backup passkey attempts: a stopped one's funding reads its recovery. */
+  rotations: readonly BackupRotationRecord[] | "unread"
   catchingUp: boolean
   now: number
 }
@@ -120,7 +144,10 @@ export interface FeedContext {
   chainNowSec?: number
   /** The active rollup's network: a link made on another is retired here. */
   activeNetworkId?: string
-  /** The session's account: a link another account made offers no creator recovery. */
+  /**
+   * The session's account: a link another account made offers no creator recovery, and a send
+   * from the previous account to it is the wallet's own move.
+   */
   account?: string
   /** When each stored balance's read resolved, ms. */
   balanceReadAt?: { main?: number; savings?: number }
@@ -131,7 +158,12 @@ export interface FeedContext {
   savingsUnknown?: boolean
   /** What the account holds on old versions. */
   oldVersions?: ArrivingFunds
-  /** A rotated wallet's previous account; deposits to it show on its own Home line. */
+  /** What a backup passkey add has yet to move into the account, as `balanceToMove` reads it. */
+  backupMove?: BackupMove
+  /**
+   * A rotated wallet's previous account. Transfers from it leave the feed, and so do deposits still
+   * waiting there, which the Passkeys panel's check finds.
+   */
   previousAccount?: string
 }
 
@@ -164,9 +196,19 @@ export type FeedItem = Base &
         contact?: ContactRow
         /** The counterparty's tag, saved or not: its conversation opens by it. */
         counterpartyTag?: string
+        /** A claim of a link: what its row shows. */
         link?: PaylinkRowView
-        paylinkStatus?: PaylinkStatusKind
-        refundStatus?: Transaction["status"]
+      }
+    | {
+        kind: "link"
+        link: PaylinkRecord
+        funding: Funding
+        /** The operation that funded it, while this device keeps it. */
+        op?: OperationRecord
+        amount: Money
+        view: PaylinkRowView
+        paylinkStatus: PaylinkStatusKind
+        refundStatus?: TransactionStatus
         creatorAction?: CreatorLinkAction
       }
     | { kind: "upgrade"; run: UpgradeRun }
@@ -183,28 +225,52 @@ export type FeedItem = Base &
     | {
         kind: "withdrawal"
         record: WithdrawalRecord
+        /** What the burn paid for, as {@link withdrawalIntent} reads it. */
+        intent: WithdrawalRecord["intent"]
         delayed: boolean
         exit?: WithdrawalExit
         /** A burn to this wallet's registration SIPA paid for its tag. */
         registrationTag?: string
+        recovery?: FundingRecovery
+        /** A backup passkey funding whose add ran, as {@link backupAdded} reads it. */
+        added?: true
+        /** A backup passkey funding, once its deposit address credited the rest back. */
+        cost?: BackupAddCost
       }
     | {
         kind: "deposit"
         record: SipaDeposit
-        /** Another token the address credited, split out of its record. */
-        credit?: string
+        /** The inbox index of a past payment to the address, split out of its record. */
+        payment?: string
         processing?: SipaProcessingState
-        intent: "deposit" | "registration" | "migration"
+        intent: "deposit" | "registration" | "migration" | "backup"
+        /** A backup passkey's deposit whose add stopped, shown when no funding here carries it. */
+        stopped?: true
+        /** A backup passkey's deposit that was swept: the add ran. */
+        added?: true
         tag?: string
+        /**
+         * The price its tag purchase row lists, in the record's units. The row's figure adds it to
+         * what landed, so the two rows net what the balance gained.
+         */
+        tagPrice?: bigint
         offer: DepositOffer | null
         /** What the timestamp slot says instead of the time. */
         subline?: { reason: SipaProcessingState["reason"]["kind"] } | "stuck"
         /** A migration's arrival before its funds land; no figure while a fee is unknown. */
         arriving?: { net?: bigint }
+        /** The bridge-in that paid the address from another chain. */
+        bridgeIn?: BridgeInRecord
       }
     | { kind: "tagPurchase"; record: SipaDeposit; tag: string; price: bigint }
     | { kind: "registration" }
     | { kind: "oldVersionWithdrawal"; record: OldVersionWithdrawal }
+    | {
+        kind: "bridgeIn"
+        record: BridgeInRecord
+        /** Set when it pays someone else: an outgoing payment. */
+        pays?: BridgeInPays
+      }
   )
 
 export interface SavingsItem extends Base {
@@ -215,6 +281,12 @@ export interface SavingsItem extends Base {
 export interface ArrivingFunds {
   main: bigint
   savings: bigint
+}
+
+/** Main's atomic units and Savings' shares. */
+export interface BackupMove {
+  main: bigint
+  shares: bigint
 }
 
 export interface Feed {
@@ -311,6 +383,7 @@ const isPaidLink = (r: PaymentRequest) =>
   r.direction === "outgoing" && r.kind === "link" && r.status === "fulfilled"
 
 // A refund is not a movement of its own: the creator's PAY row carries the round trip.
+// eslint-disable-next-line no-restricted-syntax -- debt
 const VISIBLE_ACTIONS = new Set<string>([
   "send",
   "receive",
@@ -324,51 +397,94 @@ type VisibleTx = TokenTransaction | FaucetTransaction | PaylinkTransaction
 const isVisible = (tx: Transaction): tx is VisibleTx =>
   "token" in tx && tx.token != null && VISIBLE_ACTIONS.has(tx.action)
 
+/** The state of the transaction `txHash`, as its operation or its row has it. */
+function statusOf(
+  txHash: string | undefined,
+  ops: OperationIndex,
+  rows: ReadonlyMap<string, TransactionStatus>,
+): TransactionStatus | undefined {
+  if (!txHash) return undefined
+  const { op, funding } = withOperation({ txHash }, ops)
+  return op ? FUNDING_STATUS[funding] : rows.get(lower(txHash))
+}
+
+function linkItems(
+  links: readonly PaylinkRecord[],
+  ops: OperationIndex,
+  statusByHash: ReadonlyMap<string, TransactionStatus>,
+  sources: Pick<FeedSources, "now">,
+  ctx: Pick<FeedContext, "chainNowSec" | "activeNetworkId" | "account">,
+): FeedItem[] {
+  const { chainNowSec } = ctx
+  const clockSec = chainNowSec ?? Math.floor(sources.now / 1000)
+  return links.map((link): FeedItem => {
+    const { op, funding, refunding } = withOperation(link, ops)
+    const status = FUNDING_STATUS[funding]
+    const linkStatus = paylinkStatusFor(link, clockSec)
+    const refundStatus = statusOf(link.refundTxHash, ops, statusByHash)
+    const view = paylinkRowView(link, {
+      status,
+      create: true,
+      linkStatus,
+      offer:
+        chainNowSec != null
+          ? creatorLinkAction(link, status, {
+              nowSec: chainNowSec,
+              liveStatus: linkStatus,
+              account: ctx.account,
+            })
+          : null,
+      refundStatus,
+      refundStarting: !!refunding,
+      retired: isOtherRollupLink(link, ctx.activeNetworkId),
+      nowSec: clockSec,
+    })
+    const paylinkStatus = view.refunded ? "refunded" : linkStatus
+    return {
+      kind: "link",
+      id: link.txHash ? lower(link.txHash) : link.id,
+      ts: link.timestamp,
+      direction: "out",
+      pending: status === "pending" || (status === "success" && paylinkStatus === "awaitingClaim"),
+      link,
+      funding,
+      op,
+      amount: { atomic: link.amountAtomic, decimals: link.token?.decimals ?? DEFAULT_DECIMALS },
+      view,
+      paylinkStatus,
+      refundStatus,
+      creatorAction: view.recovery ?? undefined,
+    }
+  })
+}
+
 function txItems(
   rows: readonly Transaction[],
   requests: readonly PaymentRequest[],
   directory: TxContactDirectory,
-  sources: Pick<FeedSources, "refunding" | "now">,
-  ctx: Pick<FeedContext, "chainNowSec" | "activeNetworkId" | "account">,
+  funded: ReadonlySet<string>,
+  nowSec: number,
+  { previousAccount, account }: Pick<FeedContext, "previousAccount" | "account">,
 ): FeedItem[] {
-  const { chainNowSec } = ctx
   // A receive that paid a request link shows as the paid link.
   const paidByLink = new Set(
     requests.flatMap((r) =>
       isPaidLink(r) && r.fulfillmentTxHash ? [lower(r.fulfillmentTxHash)] : [],
     ),
   )
-  const statusByHash = new Map(
-    rows.flatMap((tx) => (tx.txHash ? [[tx.txHash, tx.status] as const] : [])),
-  )
-  const clockSec = chainNowSec ?? Math.floor(sources.now / 1000)
   return rows
     .filter(isVisible)
+    .filter((tx) => !isLinkFunding(tx, funded))
     .filter((tx) => tx.action !== "receive" || !tx.txHash || !paidByLink.has(lower(tx.txHash)))
+    .filter((tx) => !isMoveFromPrevious(tx, previousAccount, account))
     .sort((a, b) => b.timestamp - a.timestamp)
     .map((tx): FeedItem => {
+      // A created link's row with no link record: one an older build never finished.
       const create = tx.action === PaylinkActionEnum.PAY
-      const isLink = create || tx.action === PaylinkActionEnum.CLAIM
-      const link = isLink ? (tx as PaylinkTransaction) : undefined
-      const linkStatus = create ? paylinkStatusFor(link!, clockSec) : undefined
-      const refundStatus = link?.refundTxHash ? statusByHash.get(link.refundTxHash) : undefined
-      const view = link
-        ? paylinkRowView(link, {
-            linkStatus,
-            offer:
-              linkStatus && chainNowSec != null
-                ? creatorLinkAction(link, {
-                    nowSec: chainNowSec,
-                    liveStatus: linkStatus,
-                    account: ctx.account,
-                  })
-                : null,
-            refundStatus,
-            refundStarting: sources.refunding.has(link.payToEmailSecret ?? ""),
-            retired: isOtherRollupLink(link, ctx.activeNetworkId),
-            nowSec: clockSec,
-          })
-        : undefined
+      const view =
+        create || tx.action === PaylinkActionEnum.CLAIM
+          ? paylinkRowView(tx as PaylinkTransaction, { status: tx.status, create, nowSec })
+          : undefined
       let contact: ContactRow | undefined
       let counterpartyTag: string | undefined
       if (!view && tx.action === "send") {
@@ -386,25 +502,58 @@ function txItems(
         counterpartyTag =
           from && !validateAddress(from) ? normalizeTag(from) ?? undefined : undefined
       }
-      const paylinkStatus = view?.refunded ? "refunded" : linkStatus
-      const out = tx.action === "send" || create
       return {
         kind: "tx",
         id: tx.txHash || tx.id,
         ts: tx.timestamp,
-        direction: out ? "out" : "in",
-        pending:
-          tx.status === "pending" || (tx.status === "success" && paylinkStatus === "awaitingClaim"),
+        direction: tx.action === "send" || create ? "out" : "in",
+        pending: tx.status === "pending",
         tx,
         amount: { atomic: tx.amountAtomic, decimals: tx.token?.decimals ?? DEFAULT_DECIMALS },
         contact,
         counterpartyTag: contact?.addressKind === "aztec-l2" ? contact.tag : counterpartyTag,
         link: view,
-        paylinkStatus,
-        refundStatus,
-        creatorAction: view?.recovery ?? undefined,
       }
     })
+}
+
+type DepositView = Extract<ActivityItem, { kind: "bridge.sipaDeposit" }>
+
+/**
+ * The deposit row a paid request link stands for: the payment `resolveRequests` counted for it, by
+ * its sweep's inbox index, or the address's own row when that payment has none.
+ */
+function paidLinkDeposit(
+  { paidByDeposit: paid }: PaymentRequest,
+  views: readonly DepositView[],
+): DepositView | undefined {
+  if (!paid) return undefined
+  const address = lower(paid.sipaAddress)
+  return views.find(
+    (view) =>
+      lower(view.record.sipaAddress) === address &&
+      (paid.inboxIndex ? depositRowPayment(view) === paid.inboxIndex : !view.payment),
+  )
+}
+
+/**
+ * The deposit rows request links stand for: every payment at an address with a pending request,
+ * and the payment that paid a paid one. Any other payment there is a deposit of its own, at a
+ * cancelled request's address too: a payment that paid it would make it read paid.
+ */
+function requestLinkedDeposits(
+  requests: readonly PaymentRequest[],
+  paidBy: (request: PaymentRequest) => DepositView | undefined,
+): (view: DepositView) => boolean {
+  const pending = new Set<string>()
+  const paying = new Set<DepositView>()
+  for (const request of requests) {
+    if (!request.sipaAddress) continue
+    if (request.status === "pending") pending.add(lower(request.sipaAddress))
+    const paid = request.status === "fulfilled" && paidBy(request)
+    if (paid) paying.add(paid)
+  }
+  return (view) => pending.has(lower(view.record.sipaAddress)) || paying.has(view)
 }
 
 function requestItems(
@@ -414,6 +563,7 @@ function requestItems(
   directory: TxContactDirectory,
   ctx: FeedContext,
   now: number,
+  paidBy: (request: PaymentRequest) => DepositView | undefined,
 ): FeedItem[] {
   const contactsCurrent = ctx.contacts.hydrated && !ctx.contacts.failed
   const tags = approvedContactTags(ctx.contacts.rows)
@@ -454,7 +604,7 @@ function requestItems(
       }
     })
   const paid = requests.filter(isPaidLink).map((request): FeedItem => {
-    const deposit = request.sipaAddress ? bySipa.get(lower(request.sipaAddress)) : undefined
+    const deposit = paidBy(request)?.record
     const receive = fulfillingReceive(request, rows)
     const net = deposit ? depositAmounts(deposit).netAtomic : 0n
     const amount: Money = receive
@@ -488,8 +638,8 @@ function bridgeOf(sources: FeedSources): ActivityItem[] {
     ...sources.deposits.records
       .filter((record) => !hiddenBehindOwnWithdrawal(record, withdrawals, sources.now))
       .flatMap((stored) =>
-        sipaCredits(stored).map(({ record, token }): ActivityItem => {
-          if (token) return { kind: "bridge.sipaDeposit", record, credit: token }
+        sipaCredits(stored).map(({ record, payment }): ActivityItem => {
+          if (payment) return { kind: "bridge.sipaDeposit", record, payment }
           const processing = sources.processing.get(lower(record.sipaAddress))
           return processing
             ? { kind: "bridge.sipaDeposit", record, processing }
@@ -529,17 +679,25 @@ function withdrawalItem(
   const recipient = sources.deposits.records.find(
     (d) => lower(d.sipaAddress) === lower(record.recipient),
   )
+  const recovery = fundingRecovery(record, sources.rotations, recipient)
   return {
     ...base,
     kind: "withdrawal",
     direction: "out",
-    pending: !WITHDRAWAL_TERMINAL_PHASES.has(record.phase),
+    pending:
+      !WITHDRAWAL_TERMINAL_PHASES.has(record.phase) ||
+      recovery?.state === "sent" ||
+      recovery?.state === "unread",
     record,
+    intent: withdrawalIntent(record, recipient),
     delayed:
       isWithdrawalDelayed(record, sources.now) ||
       (exit?.kind === "swap" && exit.reason === "stuck"),
     exit,
     registrationTag: registrationTagForSipa(ctx.registrations, record.recipient, recipient),
+    recovery,
+    ...(backupAdded(record, sources.rotations, recipient) ? { added: true as const } : {}),
+    cost: backupAddCost(record, recipient),
   }
 }
 
@@ -547,17 +705,18 @@ function depositItems(
   item: Extract<ActivityItem, { kind: "bridge.sipaDeposit" }>,
   sources: FeedSources,
   ctx: FeedContext,
-  hide: { linked: ReadonlySet<string>; upgradeArrivals: ReadonlySet<string> },
+  hide: { linked: (view: DepositView) => boolean; upgradeArrivals: ReadonlySet<string> },
 ): FeedItem[] {
-  const { record, processing, credit } = item
+  const { record, processing, payment } = item
   const address = lower(record.sipaAddress)
   if (hide.upgradeArrivals.has(address)) return []
+  const bridgeIn = bridgeInPaying(sources.bridgeIns.records, record.sipaAddress)
   const burn = sources.withdrawals.records.find(
     (r) => r.intent === "migration" && lower(r.recipient) === address,
   )
   const unfunded = isUnfundedSipaDeposit(record)
   // A migration's arrival shows from its exit on; unfunded behind a failed burn it never fills.
-  if (((!burn || burn.phase === "failed") && unfunded) || hide.linked.has(address)) return []
+  if (((!burn || burn.phase === "failed") && unfunded) || hide.linked(item)) return []
   const arriving = !!burn && unfunded
   const exitTime = burn ? burn.endTime ?? burn.startTime : undefined
   // A migration's arrival sits directly above its exit.
@@ -571,15 +730,17 @@ function depositItems(
     registration: registrationFor(ctx.registrations, record.sipaAddress),
     now: sources.now,
   })
+  if (isWaitingAtPrevious(record, ctx.previousAccount, offer)) return []
   const subline = sipaReasonShown(processing, record, sources.now)
     ? { reason: processing.reason.kind }
     : offer?.waiting
     ? ("stuck" as const)
     : undefined
-  // The tag's price came out of the deposit before it reached L2; its own row says where it went.
+  // The tag's price came out of the address's first payment before it reached L2; its own row says
+  // where it went.
   const price = tagPriceOf(record)
   const purchase: FeedItem[] =
-    tag && price && record.phase === "claimed" && !credit
+    tag && price && record.phase === "claimed" && isFirstSipaPayment(record)
       ? [
           {
             kind: "tagPurchase",
@@ -597,21 +758,60 @@ function depositItems(
     ...purchase,
     {
       kind: "deposit",
-      // A token the address credited beside its own is a row of its own.
-      id: credit ? `${record.sipaAddress}:${credit.toLowerCase()}` : record.sipaAddress,
+      // A past payment to the address is a row of its own.
+      id: payment ? `${record.sipaAddress}:${payment}` : record.sipaAddress,
       ts,
       direction: "in",
       pending: !isSettledSipaPhase(record.phase),
       record,
-      ...(credit ? { credit } : {}),
+      ...(payment ? { payment } : {}),
       processing,
-      intent: tag ? "registration" : burn || isAccountMoveSipa(record) ? "migration" : "deposit",
+      intent: tag
+        ? "registration"
+        : burn
+        ? "migration"
+        : isAccountMoveSipa(record)
+        ? "backup"
+        : "deposit",
+      ...(isStoppedBackupDeposit(record)
+        ? { stopped: true as const }
+        : isAddedBackupDeposit(record)
+        ? { added: true as const }
+        : {}),
       tag,
+      ...(purchase.length ? { tagPrice: price } : {}),
       offer,
       subline,
       arriving: arriving ? { net: burn && migrationAmounts(burn)?.netAtomic } : undefined,
+      ...(bridgeIn ? { bridgeIn } : {}),
     },
   ]
+}
+
+/**
+ * Bridge-ins from another chain, once their call is sent. One still delivering shows until its
+ * deposit is funded, then the deposit's row carries it. One that pays someone else is an outgoing
+ * payment.
+ */
+function bridgeInItems(sources: FeedSources): FeedItem[] {
+  const deposits = new Map(sources.deposits.records.map((d) => [lower(d.sipaAddress), d]))
+  return sources.bridgeIns.records.flatMap((record): FeedItem[] => {
+    if (!record.originTxHash) return []
+    const deposit = !record.pays && deposits.get(lower(record.recipient))
+    if (bridgeInDelivers(record) && deposit && !isUnfundedSipaDeposit(deposit)) return []
+    return [
+      {
+        kind: "bridgeIn",
+        id: record.id,
+        ts: record.startTime,
+        direction: record.pays ? "out" : "in",
+        // Filled, it is still swept into the balance; a payment is done.
+        pending: record.status === "pending" || (!record.pays && record.status === "filled"),
+        record,
+        ...(record.pays && { pays: record.pays }),
+      },
+    ]
+  })
 }
 
 function groupItems(groups: readonly WithdrawalGroup[], now: number): FeedItem[] {
@@ -648,7 +848,8 @@ function groupItems(groups: readonly WithdrawalGroup[], now: number): FeedItem[]
  * source, at its quote, then at its deposit once the escrow has run, until its destination's
  * balance is read after this device stored the claim. A move rebuilt from
  * a rescan has no quote and counts only from its deposit. An upgrade's own deposits never count:
- * the upgrade lock holds Home's figure until the balance holds them.
+ * the upgrade lock holds Home's figure until the balance holds them. A backup passkey add's move
+ * counts until the balance holds each chunk.
  */
 export function arrivingFunds(input: {
   deposits: readonly SipaDeposit[]
@@ -662,12 +863,15 @@ export function arrivingFunds(input: {
   balanceReadAt?: { main?: number; savings?: number }
   upgradeRecipients?: ReadonlySet<string>
   oldVersions?: ArrivingFunds
+  backupMove?: BackupMove
   previousAccount?: string
 }): ArrivingFunds {
   const { deposits, burns, moves, sharePrice, balanceReadAt = {} } = input
+  const { backupMove = { main: 0n, shares: 0n } } = input
   const upgrades = input.upgradeRecipients ?? new Set<string>()
-  let main = input.oldVersions?.main ?? 0n
+  let main = (input.oldVersions?.main ?? 0n) + backupMove.main
   let savings = input.oldVersions?.savings ?? 0n
+  if (sharePrice !== undefined) savings += savingsValue(backupMove.shares, sharePrice)
   const swept = (record: SipaDeposit) => record.phase === "pendingClaim" && record.netAmount != null
   // A spent deposit is history the balance already holds or spent.
   const spent = (record: SipaDeposit) =>
@@ -747,9 +951,11 @@ export function selectFeed(sources: FeedSources, ctx: FeedContext): Feed {
   const moves = sources.moves.records
   const groups = withdrawalGroupsOf(withdrawals)
   const upgradeRuns = upgradeRunsOf(bridge)
+  const views = bridge.filter((item): item is DepositView => item.kind === "bridge.sipaDeposit")
+  const paidBy = (request: PaymentRequest) => paidLinkDeposit(request, views)
   const hide = {
     // Request-link SIPAs show as the request.
-    linked: requestLinkedSipaAddresses(sources.requests),
+    linked: requestLinkedDeposits(sources.requests, paidBy),
     // An upgrade is one row over its batches; their deposits are its legs.
     upgradeArrivals: upgradeRecipients(bridge),
   }
@@ -758,9 +964,18 @@ export function selectFeed(sources: FeedSources, ctx: FeedContext): Feed {
     withdrawals.filter((r) => r.intent === "registration").map((r) => lower(r.recipient)),
   )
   const { registration } = ctx
+  const ops = operationIndex(sources.operations.records)
+  const links = sources.links.records
+  const statusByHash = new Map(
+    rows.flatMap((tx) => (tx.txHash ? [[lower(tx.txHash), tx.status] as const] : [])),
+  )
+  // A listed link's funding transfer shows as the link.
+  const funded = fundingKeys(links)
+  const clockSec = ctx.chainNowSec ?? Math.floor(now / 1000)
   const items: FeedItem[] = [
-    ...requestItems(sources.requests, rows, deposits, directory, ctx, now),
-    ...txItems(rows, sources.requests, directory, sources, ctx),
+    ...requestItems(sources.requests, rows, deposits, directory, ctx, now, paidBy),
+    ...linkItems(links, ops, statusByHash, { now }, ctx),
+    ...txItems(rows, sources.requests, directory, funded, clockSec, ctx),
     ...upgradeRuns.map(
       (run): FeedItem => ({
         kind: "upgrade",
@@ -782,6 +997,7 @@ export function selectFeed(sources: FeedSources, ctx: FeedContext): Feed {
       }),
     ),
     ...groupItems(groups, now),
+    ...bridgeInItems(sources),
     ...bridge.flatMap((item): FeedItem[] => {
       if (item.kind === "bridge.withdrawal")
         return item.record.groupId ? [] : [withdrawalItem(item.record, sources, ctx, moves)]
@@ -822,11 +1038,16 @@ export function selectFeed(sources: FeedSources, ctx: FeedContext): Feed {
     hydrated:
       sources.rows.loaded &&
       !sources.rows.failed &&
+      sources.links.loaded &&
+      !sources.links.failed &&
+      sources.operations.loaded &&
+      !sources.operations.failed &&
       sources.requestsLoaded !== false &&
       sources.deposits.loaded &&
       !sources.deposits.failed &&
       sources.upgrades.loaded &&
       sources.withdrawals.hydrated &&
+      sources.bridgeIns.hydrated &&
       (ctx.contacts.hydrated || ctx.contacts.failed) &&
       !sources.catchingUp,
     requestsUnavailable: ctx.contacts.failed,
@@ -842,6 +1063,7 @@ export function selectFeed(sources: FeedSources, ctx: FeedContext): Feed {
       balanceReadAt: ctx.balanceReadAt,
       upgradeRecipients: sources.upgrades.recipients,
       oldVersions: ctx.oldVersions,
+      backupMove: ctx.backupMove,
       previousAccount: ctx.previousAccount,
     }),
     upgradesLoaded: sources.upgrades.loaded,
@@ -850,7 +1072,15 @@ export function selectFeed(sources: FeedSources, ctx: FeedContext): Feed {
       hydrated: sources.moves.hydrated,
       ledger: sources.moves.hydrated ? savingsLedger([...moves], burns) : undefined,
     },
-    csv: { transactions: rows, items: bridge, requests: sources.requests },
+    csv: {
+      transactions: rows,
+      links: links.map((link) => ({
+        link,
+        status: FUNDING_STATUS[withOperation(link, ops).funding],
+      })),
+      items: bridge,
+      requests: sources.requests,
+    },
     savingsCsv: { moves, burns },
   }
 }

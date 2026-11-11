@@ -37,6 +37,18 @@ const TARGETS = {
   DepositSubsidy: { root: FOUNDRY_OUT, rel: 'DepositSubsidy.sol/DepositSubsidy.json' },
   PlainWithdrawalSubsidy: { root: FOUNDRY_OUT, rel: 'PlainWithdrawalSubsidy.sol/PlainWithdrawalSubsidy.json' },
   MigrationExecutor: { root: FOUNDRY_OUT, rel: 'MigrationExecutor.sol/MigrationExecutor.json' },
+  MultiStepExecutor: { root: FOUNDRY_OUT, rel: 'MultiStepExecutor.sol/MultiStepExecutor.json' },
+  // The adapters that `MultiStepExecutor` steps call.
+  MakerPsmAdapter: { root: FOUNDRY_OUT, rel: 'MakerPsmAdapter.sol/MakerPsmAdapter.json' },
+  CurveAdapter: { root: FOUNDRY_OUT, rel: 'CurveAdapter.sol/CurveAdapter.json' },
+  UniswapV3Adapter: { root: FOUNDRY_OUT, rel: 'UniswapV3Adapter.sol/UniswapV3Adapter.json' },
+  WethAdapter: { root: FOUNDRY_OUT, rel: 'WethAdapter.sol/WethAdapter.json' },
+  SkyConverterAdapter: { root: FOUNDRY_OUT, rel: 'SkyConverterAdapter.sol/SkyConverterAdapter.json' },
+  ERC4626Adapter: { root: FOUNDRY_OUT, rel: 'ERC4626Adapter.sol/ERC4626Adapter.json' },
+  PortalDepositAdapter: { root: FOUNDRY_OUT, rel: 'PortalDepositAdapter.sol/PortalDepositAdapter.json' },
+  AcrossAdapter: { root: FOUNDRY_OUT, rel: 'AcrossAdapter.sol/AcrossAdapter.json' },
+  CctpAdapter: { root: FOUNDRY_OUT, rel: 'CctpAdapter.sol/CctpAdapter.json' },
+  LifiIntentAdapter: { root: FOUNDRY_OUT, rel: 'LifiIntentAdapter.sol/LifiIntentAdapter.json' },
   MigrationSubsidy: { root: FOUNDRY_OUT, rel: 'MigrationSubsidy.sol/MigrationSubsidy.json' },
   ProverSubsidy: { root: FOUNDRY_OUT, rel: 'ProverSubsidy.sol/ProverSubsidy.json' },
   MockCertManager: { root: FOUNDRY_OUT, rel: 'MockCertManager.sol/MockCertManager.json' },
@@ -81,7 +93,7 @@ const TARGETS = {
   // blessed on the permanent factory, so the deploy needs bytecode, not just ABI.
   DepositSIPA: { root: FOUNDRY_OUT, rel: 'DepositSIPA.sol/DepositSIPA.json' },
   RegistrationSIPA: { root: FOUNDRY_OUT, rel: 'RegistrationSIPA.sol/RegistrationSIPA.json' },
-  UserOpSIPA: { root: FOUNDRY_OUT, rel: 'UserOpSIPA.sol/UserOpSIPA.json' },
+  AddPasskeySIPA: { root: FOUNDRY_OUT, rel: 'AddPasskeySIPA.sol/AddPasskeySIPA.json' },
   AccountMetadataController: {
     root: FOUNDRY_OUT,
     rel: 'IAccountMetadataController.sol/IAccountMetadataController.json',

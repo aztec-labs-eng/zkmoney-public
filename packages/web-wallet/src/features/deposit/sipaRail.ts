@@ -1,7 +1,6 @@
 /**
- * What every part of the browser's SIPA rail reads: the pinned deployment, its table's rows, and
- * three session resources, the account's SIPA keys, the PXE's SIPA discovery setup and the
- * resolver's deployments.
+ * What every part of the browser's SIPA rail reads: the pinned deployment, its table's rows, the
+ * account's SIPA keys, the PXE's SIPA discovery setup and the resolver's deployments.
  */
 import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import type { Fr } from "@aztec-labs/aztec.js/fields"
@@ -19,39 +18,38 @@ import {
 } from "@obsidion/sdk"
 import {
   deriveBootstrapKey,
+  deriveSelfSipaKey,
   deriveStealthKey,
+  keyedService,
   readResolverDeployments,
-  resource,
+  service,
   setupSipaDiscovery,
+  WalletError,
   sipaRowFundingTokens,
   sipaRows,
+  type KeyedService,
+  type QueryFactory,
   type ResolverDeployment,
-  type Resource,
+  type Service,
   type SipaRow,
 } from "@obsidion/front-core"
-import { getWebBroadcasterArtifact } from "../../config/classArtifacts"
-import { getConfig, type WebWalletConfig } from "../../config/env"
-import {
-  getDeploymentTable,
-  getOxideTuple,
-  l1PublicClient,
-  requireTupleField,
-} from "../../config/oxideTuple"
+import { l1PublicClient, requireTupleField } from "../../config/oxideTuple"
+import type { PageFacts } from "../../session/pageChain"
 import { tokenMetadata } from "../sipa/loadDepositFacts"
 
 /** The pinned deployment's token, which every self-derived address names before it is funded. */
 export async function pinnedToken(
-  config: WebWalletConfig,
+  page: PageFacts,
   tuple: OxideEnvTuple,
 ): Promise<{ address: Address; symbol: string; decimals: number }> {
   const address = requireTupleField(tuple, "token") as Address
-  return { address, ...(await tokenMetadata(config, address)) }
+  return { address, ...(await tokenMetadata(page, address)) }
 }
 
 /** The pinned table's rows the pipeline claims through, each token's metadata read off L1. */
-export async function railRows(config: WebWalletConfig): Promise<SipaRow[]> {
-  const table = await getDeploymentTable(config)
-  return sipaRows(table, config.l1ChainId, (token) => tokenMetadata(config, token))
+export async function railRows({ config, chain }: PageFacts): Promise<SipaRow[]> {
+  const table = await chain.deploymentTable.read()
+  return sipaRows(table, config.l1ChainId, (token) => tokenMetadata({ chain }, token))
 }
 
 /** The unlocked account's keys the rail derives, observes and claims with. */
@@ -64,24 +62,37 @@ export interface SipaKeys {
   nullifierHidingKey: GrumpkinScalar
   /** The account the recovery commitment of every self-derived address binds. */
   recoveryAccount: Address
+  /** The account's address: a query reads keys by it. */
+  toString(): string
 }
 
-/** The account's SIPA keys, rebuilt with the account; pending while the key cannot be read. */
-export function sipaKeysResource(
-  wallet: Resource<ObsidionWallet>,
-  account: Resource<ObsidionAccount>,
+/** The keys the resolver's and the account's own address windows derive with. */
+export const windowKeys = ({ stealthKey, msk, recipient }: SipaKeys) => ({
+  stealthScalar: stealthKey.scalar,
+  selfSipaKey: deriveSelfSipaKey(msk),
+  recipient,
+})
+
+/** The account's SIPA keys, rebuilt with the account. */
+export function openSipaKeys(
+  page: PageFacts,
+  wallet: Service<ObsidionWallet>,
+  account: Service<ObsidionAccount>,
   secretKey: () => Promise<Fr | null | undefined>,
-): Resource<SipaKeys> {
-  return resource(
+): Service<SipaKeys> {
+  return service(
     "sipaKeys",
-    { from: [wallet, account], backoff: { baseMs: 5_000, maxMs: 60_000 } },
-    async ([, account]) => {
+    { from: [wallet, account], retry: { baseMs: 5_000, maxMs: 60_000 } },
+    async ([, account]): Promise<SipaKeys> => {
       const msk = await secretKey()
-      if (!msk) return undefined
-      const tuple = await getOxideTuple(getConfig())
+      // The account unlocks only with the key, so it is held while the account is.
+      if (!msk) throw new WalletError("account.unlockFailed", "no key for the SIPA keys")
+      const tuple = await page.chain.oxideTuple.read()
+      const recipient = account.getAddress()
       return {
         account,
-        recipient: account.getAddress(),
+        recipient,
+        toString: () => recipient.toString(),
         msk,
         stealthKey: deriveStealthKey(msk),
         nullifierHidingKey: await sipaNullifierHidingKey(account),
@@ -102,22 +113,26 @@ export interface SipaDiscovery {
 /**
  * Registers the broadcaster contract, the resolver and the sponsor senders in the PXE. The tagging
  * pass needs their preimages to read this wallet's own `SIPA` events, so a broadcast needs it too.
- * Built on first demand.
+ * Built once something asks for it.
  */
-export function sipaDiscoveryResource(wallet: Resource<ObsidionWallet>): Resource<SipaDiscovery> {
-  return resource(
+export function openSipaDiscovery(
+  { config, chain }: PageFacts,
+  wallet: Service<ObsidionWallet>,
+  contractService: Service<ContractService>,
+): KeyedService<[], SipaDiscovery> {
+  return keyedService(
     "sipaDiscovery",
-    { from: [wallet], lazy: true, backoff: { baseMs: 5_000, maxMs: 300_000 } },
-    async ([wallet]) => {
-      const config = getConfig()
-      const tuple = await getOxideTuple(config)
-      const { address: sponsorFpc } = await ContractService.getInstance().getContractRecord(
+    { from: [wallet, contractService], retry: { baseMs: 5_000, maxMs: 300_000 } },
+    async (_, [wallet, contractService]) => {
+      const tuple = await chain.oxideTuple.read()
+      const { address: sponsorFpc } = await contractService.getContractRecord(
         DEFAULT_CONTRACTS.claimFpc,
       )
       await setupSipaDiscovery({
-        artifactFor: (address) => getWebBroadcasterArtifact(wallet, address),
+        artifactFor: (address) => chain.broadcasterArtifact(wallet, address),
         pxe: wallet.pxe as never,
         node: wallet.node as never,
+        scans: chain.scans,
         publicClient: l1PublicClient(config),
         tuple,
         network: config.network,
@@ -127,7 +142,7 @@ export function sipaDiscoveryResource(wallet: Resource<ObsidionWallet>): Resourc
       // `.at()` registers the contract in the PXE, so it is built once per wallet.
       const broadcaster = BroadcasterContract.at(
         AztecAddress.fromStringUnsafe(address),
-        await getWebBroadcasterArtifact(wallet, address),
+        await chain.broadcasterArtifact(wallet, address),
         wallet as never,
       )
       return { broadcaster }
@@ -135,24 +150,17 @@ export function sipaDiscoveryResource(wallet: Resource<ObsidionWallet>): Resourc
   )
 }
 
-/** The resolver's deployments for the account's keys, and when they were read, ms epoch. */
-export interface ResolverDeploymentsRead {
-  at: number
-  deployments: ResolverDeployment[]
-}
+/** How long one read of the resolver deployments serves the window. */
+const RESOLVER_DEPLOYMENTS_TTL_MS = 15 * 60_000
 
-/** Read on first demand. Its reader rebuilds it once stale or failed: `retry()`. */
-export function resolverDeploymentsResource(
-  keys: Resource<SipaKeys>,
-): Resource<ResolverDeploymentsRead> {
-  return resource(
-    "resolverDeployments",
-    { from: [keys], lazy: true, backoff: "manual" },
-    async ([keys]) => {
-      const config = getConfig()
-      const tuple = await getOxideTuple(config)
-      const [meta, rows] = await Promise.all([pinnedToken(config, tuple), railRows(config)])
-      const deployments = await readResolverDeployments({
+/** The resolver's deployments for the account's keys, read again once stale or after a failure. */
+export function resolverDeployments(query: QueryFactory, page: PageFacts) {
+  const { config, chain } = page
+  return query<[SipaKeys], ResolverDeployment[]>("resolverDeployments", {
+    load: async (keys) => {
+      const tuple = await chain.oxideTuple.read()
+      const [meta, rows] = await Promise.all([pinnedToken(page, tuple), railRows(page)])
+      return readResolverDeployments({
         publicClient: l1PublicClient(config),
         sources: [
           {
@@ -169,7 +177,9 @@ export function resolverDeploymentsResource(
         recipient: keys.recipient,
         stealthPublicKey: keys.stealthKey.publicKey,
       })
-      return { at: Date.now(), deployments }
     },
-  )
+    stale: RESOLVER_DEPLOYMENTS_TTL_MS,
+  })
 }
+
+export type ResolverDeployments = ReturnType<typeof resolverDeployments>

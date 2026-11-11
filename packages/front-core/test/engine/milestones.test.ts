@@ -271,6 +271,8 @@ describe("milestones", () => {
 
   it("ends a wait false on its abort or on stop, and logs the settled balance once", async () => {
     const log = vi.spyOn(console, "log").mockImplementation(() => {})
+    // A spy on console.log from an earlier test is this one again, with its calls.
+    log.mockClear()
     const { m, mark } = boot()
     const aborted = new AbortController()
     const first = m.after(FIRST, aborted.signal)

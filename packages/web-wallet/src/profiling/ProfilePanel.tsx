@@ -17,9 +17,10 @@
 
 import { useState, useEffect, useCallback, useRef, useMemo } from "react"
 import { createPortal } from "react-dom"
-import { useResource } from "@obsidion/front-core"
+import { serviceStatus, useStore } from "@obsidion/front-core"
 import { profiler, type ProfileReport, type ProfileRecord, type Category } from "./index"
 import { useSession } from "../session/session"
+import { useDomEffect } from "../ui/useDomEffect"
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -334,7 +335,7 @@ function WaterfallChart({ report, minDuration }: { report: ProfileReport; minDur
 
   // ── Resize observer ────────────────────────────────────────────────────────
 
-  useEffect(() => {
+  useDomEffect(() => {
     const el = outerRef.current
     if (!el) return
     const ro = new ResizeObserver((entries) => setViewportW(entries[0].contentRect.width))
@@ -343,10 +344,8 @@ function WaterfallChart({ report, minDuration }: { report: ProfileReport; minDur
   }, [])
 
   // Clamp scroll offsets when content or viewport changes.
-  useEffect(() => {
-    setScrollLeft((s) => Math.min(s, maxScrollLeft))
-    setScrollTop((s) => Math.min(s, maxScrollTop))
-  }, [maxScrollLeft, maxScrollTop])
+  if (scrollLeft > maxScrollLeft) setScrollLeft(maxScrollLeft)
+  if (scrollTop > maxScrollTop) setScrollTop(maxScrollTop)
 
   // ── Zoom with scroll-center preservation ───────────────────────────────────
 
@@ -365,7 +364,7 @@ function WaterfallChart({ report, minDuration }: { report: ProfileReport; minDur
 
   // ── Draw label canvas (virtualized: vertical scroll offset applied) ───────
 
-  useEffect(() => {
+  useDomEffect(() => {
     const canvas = labelCanvasRef.current
     if (!canvas) return
     const ctx = canvas.getContext("2d")
@@ -441,7 +440,7 @@ function WaterfallChart({ report, minDuration }: { report: ProfileReport; minDur
 
   // ── Draw chart canvas (virtualized: viewport-sized, drawing translated) ──
 
-  useEffect(() => {
+  useDomEffect(() => {
     const canvas = chartCanvasRef.current
     if (!canvas) return
     const ctx = canvas.getContext("2d")
@@ -1015,7 +1014,7 @@ function SummaryTable({ report, minDuration }: { report: ProfileReport; minDurat
 function ProfilePage({ report, onClose }: { report: ProfileReport; onClose: () => void }) {
   const [minDuration, setMinDuration] = useState(0.5)
 
-  useEffect(() => {
+  useDomEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose()
     }
@@ -1115,20 +1114,23 @@ export function ProfilePanel() {
   const [recording, setRecording] = useState(false)
   const [report, setReport] = useState<ProfileReport | null>(null)
   const [fullscreen, setFullscreen] = useState(false)
-  const obsidionWallet = useResource(useSession().wallet)
+  const session = useSession()
+  const walletBuilt = useStore(session.wallet, serviceStatus) === "ready"
 
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
-    void profiler.install()
+    void profiler.install(session.page.config)
     // The same handle the panel drives, for scripted recordings from the console or a Playwright
     // run: `__profiler.start()` / `.stop()` around a flow, `.download(report)` to save it.
     ;(window as unknown as { __profiler: typeof profiler }).__profiler = profiler
-  }, [])
+  }, [session.page.config])
 
   // instrumentWallet is idempotent per wallet instance, so a re-render cannot double-wrap.
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
-    if (!obsidionWallet) return
-    profiler.instrumentWallet(obsidionWallet)
-  }, [obsidionWallet])
+    if (!walletBuilt) return
+    void session.wallet.ready().then((wallet) => profiler.instrumentWallet(wallet))
+  }, [session, walletBuilt])
 
   const handleToggle = useCallback(() => {
     if (recording) {

@@ -1,12 +1,14 @@
 import * as actual from "../../../src/features/deposit/capacityStore"
+import { createPace } from "@obsidion/core/cadence"
 import {
   createPortalCapacityStore,
+  memoryStore,
   portalCapacityKey,
+  queries,
   type PortalCapacityKey,
   type PortalCapacityStore,
 } from "@obsidion/front-core"
 import type { PortalCapacitySnapshot } from "@obsidion/sdk"
-import { getConfig } from "../../../src/config/env"
 import { isDemoMode } from "../../../src/dev/demoFlag"
 import { DEMO_OXIDE_TUPLE } from "../../../src/dev/demoFixtures"
 import { DEMO_TX_AMOUNT_CAP } from "../../../src/dev/fakeL1Rpc"
@@ -93,23 +95,25 @@ function read(key: PortalCapacityKey): Promise<PortalCapacitySnapshot> {
 const storeNow = () => Date.now() + (checkedAgain && capacityState() === "clears" ? 1_000 : 0)
 
 const stores = new Map<string, PortalCapacityStore>()
+/** The capture page is always shown. */
+const query = queries({ pace: createPace(), visible: memoryStore(true).readonly, now: Date.now })
 
-export const depositCapacityStore: typeof actual.depositCapacityStore = (key) => {
-  if (!isDemoMode()) return actual.depositCapacityStore(key)
+export const depositCapacityStore: typeof actual.depositCapacityStore = (page, key) => {
+  if (!isDemoMode()) return actual.depositCapacityStore(page, key)
   const id = `${key.chainId}|${key.portal.toLowerCase()}|${key.token.toLowerCase()}`
   let store = stores.get(id)
   if (!store) {
-    store = createPortalCapacityStore(key, { read, now: storeNow })
+    store = createPortalCapacityStore(key, { read, now: storeNow, query })
     stores.set(id, store)
   }
   return store
 }
 
 /** The demo tuple has no chain id; the demo's configured L1 chain stands in. */
-export const activeCapacityKey: typeof actual.activeCapacityKey = async (rowToken) => {
-  if (!isDemoMode()) return actual.activeCapacityKey(rowToken)
+export const activeCapacityKey: typeof actual.activeCapacityKey = async (page, rowToken) => {
+  if (!isDemoMode()) return actual.activeCapacityKey(page, rowToken)
   return portalCapacityKey({
-    chainId: getConfig().l1ChainId,
+    chainId: page.config.l1ChainId,
     portal: DEMO_OXIDE_TUPLE.portal,
     token: DEMO_OXIDE_TUPLE.token,
   })
