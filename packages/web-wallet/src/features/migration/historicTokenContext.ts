@@ -12,16 +12,16 @@ import {
   type RegisteredTeeSigner,
 } from "@obsidion/sdk"
 import type { Address } from "viem"
-import { getConfig } from "../../config/env"
+import type { WebWalletConfig } from "../../config/env"
+import type { PageChain } from "../../session/pageChain"
 import { l1PublicClient } from "../../config/oxideTuple"
-import { portalContract, teeSignerOfToken } from "../token/oxideToken"
+import { portalContract } from "../token/oxideToken"
 import { openSourceRollupWallet, type SourceRollupWallet } from "../../platform/sourceRollupWallet"
 import { isOtherGeneration, openSourceGenerationSession } from "../../platform/sourceGeneration"
 import type { WebAlphaAuthService } from "../../platform/auth/WebAlphaAuthService"
 
 /** The retired deployment whose l2Token is `tokenAddress`, or null when none in the manifest has it. */
-export async function findHistoricTuple(tokenAddress: string): Promise<OxideEnvTuple | null> {
-  const config = getConfig()
+export async function findHistoricTuple(config: WebWalletConfig, tokenAddress: string) {
   const { historic } = await detectHistoricDeployments({
     ...config.oxideProfile,
     network: config.network,
@@ -41,21 +41,22 @@ export type SourceChain =
 
 /** The account on a retired tuple's rollup; the active wallet when the tuple is on this rollup. */
 export async function sourceChain(
+  config: WebWalletConfig,
   active: SourceRollupWallet,
   current: OxideEnvTuple,
   historic: OxideEnvTuple,
   auth: Pick<WebAlphaAuthService, "getSecretKey" | "sessionKeys">,
 ): Promise<SourceChain> {
   if (historic.rollupVersion === current.rollupVersion) return { kind: "pxe", ...active }
-  const nodeUrl = getConfig().sourceRollupNodes?.get(historic.portal.toLowerCase())
+  const nodeUrl = config.sourceRollupNodes?.get(historic.portal.toLowerCase())
   if (!nodeUrl)
     throw new Error(`No node is configured for the network of portal ${historic.portal}`)
-  if (await isOtherGeneration(nodeUrl))
+  if (await isOtherGeneration(config, nodeUrl))
     return {
       kind: "generation",
-      session: await openSourceGenerationSession(nodeUrl, active.account, auth),
+      session: await openSourceGenerationSession(config, nodeUrl, active.account, auth),
     }
-  return { kind: "pxe", ...(await openSourceRollupWallet(nodeUrl, active.account, auth)) }
+  return { kind: "pxe", ...(await openSourceRollupWallet(config, nodeUrl, active, auth)) }
 }
 
 /**
@@ -63,22 +64,24 @@ export async function sourceChain(
  * app until it freezes: this build reads such a source only to refund it.
  */
 export async function isReadableSource(
+  config: WebWalletConfig,
   current: OxideEnvTuple,
   historic: OxideEnvTuple,
 ): Promise<boolean> {
   if (historic.rollupVersion === current.rollupVersion) return true
-  const nodeUrl = getConfig().sourceRollupNodes?.get(historic.portal.toLowerCase())
-  if (!nodeUrl || !(await isOtherGeneration(nodeUrl))) return true
-  return portalContract(l1PublicClient(getConfig()), historic.portal as Address).isFrozen()
+  const nodeUrl = config.sourceRollupNodes?.get(historic.portal.toLowerCase())
+  if (!nodeUrl || !(await isOtherGeneration(config, nodeUrl))) return true
+  return portalContract(l1PublicClient(config), historic.portal as Address).isFrozen()
 }
 
 /** Token service + TEE signer for a retired tuple. A dead historic enclave fails loudly here. */
 export async function historicTokenContext(
+  chain: PageChain,
   wallet: ObsidionWallet,
   account: ObsidionAccount,
   historic: OxideEnvTuple,
 ): Promise<{ tokenService: TokenService; teeSigner: RegisteredTeeSigner }> {
-  const teeSigner = await historicTeeSigner(historic)
+  const teeSigner = await historicTeeSigner(chain, historic)
   const tokenService = await TokenService.create(
     wallet,
     account,
@@ -88,6 +91,6 @@ export async function historicTokenContext(
   return { tokenService, teeSigner }
 }
 
-export function historicTeeSigner(historic: OxideEnvTuple): Promise<RegisteredTeeSigner> {
-  return teeSignerOfToken(historic.l2Token)
+export function historicTeeSigner(chain: PageChain, historic: OxideEnvTuple) {
+  return chain.teeSignerOfToken(historic.l2Token)
 }

@@ -1,11 +1,10 @@
 import { useState } from "react"
 import { NumberedStepRow } from "@obsidion/web-ds"
 import { Modal } from "../../ui/Modal"
-import { deviceStorage } from "../../platform/storage/rollupStorage"
+import { savePrefs } from "../../platform/storage/deviceKeys"
+import { useSession } from "../../session/session"
 import envelope from "../../assets/paylink/paylink-envelope.webp"
 import { StableCopy } from "../../ui/StableCopy"
-
-const HIDE_KEY = "webwallet.hide-paylink-info"
 
 /** Without a sponsored cash-out to Ethereum, then with one. */
 const LEAD = [
@@ -32,10 +31,6 @@ const steps = (voucher: boolean | undefined) =>
     ["Not claimed? Take it back", "Only you can reclaim the funds while the link is unclaimed."],
   ] as const
 
-export function isPaylinkInfoHidden(): boolean {
-  return deviceStorage.getItem(HIDE_KEY) === "true"
-}
-
 /**
  * Explains paylinks. `offerHide` adds "Don't show this again", saved on "Got it!" only. Without
  * `voucher` (a sponsored cash-out to Ethereum), the claimer needs a zk.money account. Lines that depend on
@@ -53,6 +48,7 @@ export function PaylinkInfoModal({
   onGotIt: () => void
 }) {
   const [dontShowAgain, setDontShowAgain] = useState(true)
+  const { database } = useSession()
 
   return (
     <Modal
@@ -93,11 +89,7 @@ export function PaylinkInfoModal({
           type="button"
           className="zkm-btn-reset zkm-pressable ww-deposit__btn"
           onClick={() => {
-            try {
-              if (offerHide && dontShowAgain) deviceStorage.setItem(HIDE_KEY, "true")
-            } catch {
-              // Full or blocked storage: the modal shows again next time.
-            }
+            if (offerHide && dontShowAgain) savePrefs(database, { hidePaylinkInfo: "true" })
             onGotIt()
           }}
         >

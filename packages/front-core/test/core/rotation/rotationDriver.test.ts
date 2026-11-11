@@ -1,5 +1,8 @@
+import { createPace } from "@obsidion/core/cadence"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import type { BackupRotationRecord } from "../../../src/core/storages/BackupRotationStore"
+import type { BackupRotationRecord } from "../../../src/engine/backupRotations"
+import type { RecordSet } from "../../../src/engine/persistentStore"
+import { memoryStore } from "../../../src/engine/store"
 import { OWNER, signedRecord } from "../../__test-helpers__/backupRotation"
 
 vi.mock("../../../src/core/rotation/backupRotationFlow", async (actual) => ({
@@ -22,19 +25,20 @@ const retry = vi.mocked(retryMove)
 const POLL = 1000
 const DEPS = { tag: "deps" } as unknown as RotationFlowDeps
 
-/** A store whose records the test sets, delivered the way `onChanged` delivers them. */
+/** A store view the test sets. */
 function fakeStore(initial: BackupRotationRecord[]) {
-  let records = initial
-  const listeners = new Set<(records: BackupRotationRecord[]) => void>()
+  const view = memoryStore<RecordSet<BackupRotationRecord>>({
+    records: initial,
+    loaded: true,
+    failed: false,
+  })
   return {
-    list: vi.fn(async () => records),
-    onChanged: (listener: (records: BackupRotationRecord[]) => void) => {
-      listeners.add(listener)
-      return () => void listeners.delete(listener)
-    },
+    view: view.readonly,
     set(next: BackupRotationRecord[]) {
-      records = next
-      for (const listener of listeners) listener(next)
+      view.set({ records: next, loaded: true, failed: false })
+    },
+    fail() {
+      view.set({ ...view.get(), failed: true })
     },
   }
 }
@@ -62,6 +66,7 @@ function start(records: BackupRotationRecord[], over: Partial<RotationDriveSourc
     owns: () => true,
     report: vi.fn(),
     pollMs: POLL,
+    pace: createPace(),
     ...over,
   }
   driver.start(source)
@@ -141,6 +146,50 @@ describe("RotationDriver", () => {
     }
   })
 
+  it("keeps when a run last read the chain, which a failed or unverified run leaves as it was", async () => {
+    const t0 = Date.now()
+    resume.mockImplementation(async (_d, record) => ({ record, wait: "sweep" }))
+    start([funded()])
+    expect(driver.drive(OWNER)?.checkedAt).toBeUndefined()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(driver.drive(OWNER)?.checkedAt).toBe(t0)
+    resume.mockRejectedValueOnce(new Error("rpc down"))
+    await vi.advanceTimersByTimeAsync(POLL)
+    expect(driver.drive(OWNER)).toMatchObject({
+      checkedAt: t0,
+      resume: { error: expect.anything() },
+    })
+    resume.mockImplementationOnce(async (_d, record) => ({ record, wait: "unverifiable" }))
+    await vi.advanceTimersByTimeAsync(POLL)
+    expect(driver.drive(OWNER)).toMatchObject({ checkedAt: t0, resume: { wait: "unverifiable" } })
+    await vi.advanceTimersByTimeAsync(POLL)
+    expect(driver.drive(OWNER)?.checkedAt).toBe(t0 + 3 * POLL)
+  })
+
+  it("keeps the last answer through a poll and the user's recheck, which shows until it ends", async () => {
+    const poll = held()
+    const recheck = held()
+    resume.mockImplementationOnce(async (_d, record) => ({ record, wait: "uses" }))
+    resume.mockReturnValueOnce(poll.promise)
+    resume.mockReturnValueOnce(recheck.promise)
+    start([funded()])
+    await vi.advanceTimersByTimeAsync(0)
+    expect(driver.drive(OWNER)?.resume).toEqual({ wait: "uses" })
+    await vi.advanceTimersByTimeAsync(POLL)
+    expect(resume).toHaveBeenCalledTimes(2)
+    expect(driver.drive(OWNER)?.resume).toEqual({ wait: "uses" })
+    poll.settle({ record: funded(), wait: "uses" })
+    await vi.advanceTimersByTimeAsync(0)
+    driver.check(OWNER)
+    expect(driver.drive(OWNER)).toMatchObject({ resume: { wait: "uses" }, rechecking: true })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(resume).toHaveBeenCalledTimes(3)
+    recheck.settle({ record: funded(), wait: "sweep" })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(driver.drive(OWNER)?.resume).toEqual({ wait: "sweep" })
+    expect(driver.drive(OWNER)?.rechecking).toBeUndefined()
+  })
+
   it("prompts only on approve, which waits behind the running resume", async () => {
     const background = held()
     resume.mockReturnValueOnce(background.promise)
@@ -212,25 +261,27 @@ describe("RotationDriver", () => {
     expect(retry.mock.calls[0]?.[2]).toEqual({ signal })
   })
 
-  it("reads the records again on the poll after a failed first read, until stopped", async () => {
+  it("drives nothing while the records do not read, and reports it once", async () => {
     resume.mockImplementation(async (_d, record) => ({ record, wait: "funding" }))
     const { store, source } = start([funded()])
-    store.list.mockRejectedValueOnce(new Error("storage busy"))
-    driver.start(source)
     await vi.advanceTimersByTimeAsync(0)
-    expect(source.report).toHaveBeenCalledWith("rotation read failed", expect.any(Error))
-    expect(resume).not.toHaveBeenCalled()
-    await vi.advanceTimersByTimeAsync(POLL)
     expect(resume).toHaveBeenCalledTimes(1)
-    expect(driver.drive(OWNER)?.resume).toEqual({ wait: "funding" })
-
-    store.list.mockRejectedValue(new Error("storage busy"))
-    driver.start(source)
-    await vi.advanceTimersByTimeAsync(0)
-    const reads = store.list.mock.calls.length
-    driver.stop()
+    store.fail()
+    store.fail()
+    expect(source.report).toHaveBeenCalledTimes(1)
+    expect(source.report).toHaveBeenCalledWith("rotation read failed", expect.any(Error))
+    expect(driver.drive(OWNER)).toBeUndefined()
     await vi.advanceTimersByTimeAsync(POLL * 3)
-    expect(store.list.mock.calls.length).toBe(reads)
+    expect(resume).toHaveBeenCalledTimes(1)
+  })
+
+  it("starts no lane over records that never read", async () => {
+    const store = fakeStore([funded()])
+    store.fail()
+    driver.start({ store, deps: vi.fn(async () => DEPS), owns: () => true, pollMs: POLL })
+    await vi.advanceTimersByTimeAsync(POLL)
+    expect(resume).not.toHaveBeenCalled()
+    expect(driver.drive(OWNER)).toBeUndefined()
   })
 
   it("refuses a user step for a record it does not drive", async () => {

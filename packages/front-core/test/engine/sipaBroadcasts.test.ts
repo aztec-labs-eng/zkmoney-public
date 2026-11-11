@@ -1,8 +1,9 @@
+import { createPace } from "@obsidion/core/cadence"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { openDatabase, type DatabaseBackend } from "../../src/engine/database"
+import { openDatabase, type Database, type DatabaseBackend } from "../../src/engine/database"
 import { WalletError } from "../../src/engine/errors"
 import { memoryBackend, type MemoryBackend } from "../../src/engine/memoryBackend"
-import { fixed } from "../../src/engine/resource"
+import { fixed } from "../../src/engine/service"
 import { startRuntime, type Runtime } from "../../src/engine/runtime"
 import {
   BroadcastDeferred,
@@ -18,8 +19,7 @@ import {
   type SipaDeposits,
 } from "../../src/engine/sipaDeposits"
 import { memoryStore } from "../../src/engine/store"
-import { OperationStore } from "../../src/core/services/operations/OperationStore"
-import { InMemoryStorageAdapter } from "../__test-helpers__/InMemoryStorageAdapter"
+import { createOperations, type Operations } from "../../src/engine/operations"
 
 /** The chain the task reads: every tx the prover sent, and what became of it. */
 class FakeChain {
@@ -86,14 +86,12 @@ const registration: Pick<OwedBroadcast, "kind" | "source"> = {
 }
 
 let backend: MemoryBackend
-let operationsStorage: InMemoryStorageAdapter
 let chain: FakeChain
 let clock: number
 const runtimes: Runtime[] = []
 
 beforeEach(() => {
   backend = memoryBackend()
-  operationsStorage = new InMemoryStorageAdapter()
   chain = new FakeChain()
   clock = 1_000_000
 })
@@ -101,8 +99,15 @@ afterEach(() => {
   for (const runtime of runtimes.splice(0)) runtime.stop()
 })
 
-const open = (on: DatabaseBackend = backend) =>
-  createSipaDeposits({ db: openDatabase(on), account: true })
+const record = (operations: Operations, id: string) =>
+  operations.view.get().records.find((r) => r.operationId === id)
+
+const open = (on: DatabaseBackend | Database = backend) =>
+  createSipaDeposits({
+    db: "write" in on ? on : openDatabase(on),
+    account: true,
+    now: () => Date.now(),
+  })
 
 /** The shared database, its records read a moment after the store opens. */
 const slowRecords = (): DatabaseBackend => ({
@@ -121,12 +126,13 @@ function page(
     after?: (after: { firstBalance?: boolean }) => Promise<boolean>
   } = {},
 ) {
-  OperationStore.reset()
-  const operations = OperationStore.get(operationsStorage)
-  const store = open(opts.backend)
+  const db = openDatabase(opts.backend ?? backend)
+  const operations = createOperations({ db, now: () => Date.now() })
+  const store = open(db)
   const prover = new FakeProver(chain, async () => open())
   const broadcasts = sipaBroadcasts<object>({
     wallet: fixed("wallet", {}),
+    db,
     store,
     operations,
     executors: () => ({ slot: prover, registration: prover, rotation: prover }),
@@ -135,13 +141,14 @@ function page(
     busy: opts.busy,
     describe: (job) =>
       job.kind === "pool" ? undefined : { flow: "deposit", summary: "Deposit address" },
-    scope: "acct",
     now: () => clock,
   })
   const runtime = startRuntime([broadcasts.task], {
     db: openDatabase(memoryBackend()),
     milestones: { after: opts.after ?? (async () => true), reached: () => true },
     visible: memoryStore(true).readonly,
+    pace: createPace(),
+    now: () => Date.now(),
   })
   runtimes.push(runtime)
   const job = (n: number) => broadcastJob(store.view.get().records, address(n))
@@ -190,14 +197,14 @@ describe("sipaBroadcasts", () => {
     await settle()
     expect(first.job(1)?.state).toBe("proving")
     const operationId = first.job(1)!.operationId!
-    expect(first.operations.get(operationId)).toMatchObject({ state: "local", resumable: true })
+    expect(record(first.operations, operationId)).toMatchObject({ state: "local", resumable: true })
     first.runtime.stop()
 
     const next = page({ backend: slowRecords() })
     await next.drain()
     expect(next.prover.sent).toEqual([address(1)])
     expect(next.job(1)?.state).toBe("landed")
-    expect(next.operations.get(operationId)?.state).toBe("settled")
+    expect(record(next.operations, operationId)?.state).toBe("settled")
   })
 
   it("asks the chain about a send cut off after its hash was known, and never proves it twice", async () => {
@@ -339,6 +346,24 @@ describe("sipaBroadcasts", () => {
     expect(p.prover.sent).toEqual([address(1)])
   })
 
+  it("lands a job and settles its operation in one write, or does neither", async () => {
+    const p = page()
+    await p.owe(1)
+    const apply = p.operations.apply
+    p.operations.apply = async (id, event, w) => {
+      if (event.type === "settled") throw new Error("storage full")
+      return apply(id, event, w)
+    }
+    await p.drain()
+    const operationId = p.job(1)!.operationId!
+    expect(p.job(1)?.state).toBe("sent")
+    expect(record(p.operations, operationId)?.state).not.toBe("settled")
+    p.operations.apply = apply
+    await p.drain()
+    expect(p.job(1)?.state).toBe("landed")
+    expect(record(p.operations, operationId)?.state).toBe("settled")
+  })
+
   it("drops a job whose owner has nothing left to publish, and reports nothing for it", async () => {
     const p = page()
     await p.owe(1)
@@ -346,7 +371,7 @@ describe("sipaBroadcasts", () => {
     p.prover.next = new WalletError("deposit.addressRetired")
     await p.drain()
     expect(p.job(1)).toBeUndefined()
-    expect(p.operations.list().map((op) => op.state)).toEqual(["settled"])
+    expect(p.operations.view.get().records.map((op) => op.state)).toEqual(["settled"])
     expect(p.job(2)?.state).toBe("landed")
   })
 
@@ -413,8 +438,10 @@ describe("sipaBroadcasts", () => {
   it("keeps a sent hash when the operation cannot record it", async () => {
     const p = page()
     await p.owe(1)
-    p.operations.markSent = async () => {
-      throw new Error("storage full")
+    const apply = p.operations.apply
+    p.operations.apply = async (id, event, w) => {
+      if (event.type === "sent") throw new Error("storage full")
+      return apply(id, event, w)
     }
     await p.runtime.wake(p.broadcasts.task)
     expect(p.job(1)).toMatchObject({ state: "sent", failures: 0 })

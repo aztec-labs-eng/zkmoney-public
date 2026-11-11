@@ -7,7 +7,6 @@ import { PasskeySetUnreadError } from "../../../src/features/onboarding/oxideOnb
 import { closeSession } from "../../../src/session/session"
 import { savedIdentity } from "../../support/identity"
 import { seedDeviceKeys } from "../../support/page"
-import { seedBootConfigWith } from "../../support/seedBootConfig"
 import {
   confirmResult,
   flush,
@@ -41,10 +40,7 @@ const boundGrant = () => {
   sessionStorage.setItem("obsidion.name-grant-handle", "alice")
 }
 
-beforeEach(async () => {
-  await seedBootConfigWith({ VITE_ACCOUNT_SERVICE_TEST_MODE: "false" })
-  sessionStorage.clear()
-})
+beforeEach(() => sessionStorage.clear())
 afterEach(() => {
   for (const end of ended) end.abort()
   ended = []
@@ -53,10 +49,10 @@ afterEach(() => {
 
 describe("a reservation", () => {
   it("the pinned entry's tag names is picked back up at once, never under the URL's", async () => {
-    const { flow, io, own, navigate } = await open("handle=alice")
+    const { flow, io, session, navigate } = await open("handle=alice")
     io.lookup.mockResolvedValueOnce(resolved("bob"))
     await typeTag(flow, "bob")
-    io.enterWithPasskey.mockResolvedValueOnce(nameless(own))
+    io.enterWithPasskey.mockResolvedValueOnce(nameless(session))
     io.reservedNameHashes.mockResolvedValueOnce(hashes("alice", "bob"))
     await seedDeviceKeys({ storageId: "storage-a" })
     flow.login()
@@ -84,8 +80,8 @@ describe("a reservation", () => {
     ],
     ["the name a reload carried", "named=carol", {}, "carol"],
   ])("is named by %s", async (_l, search, extra, tag) => {
-    const { flow, io, own } = await open(search)
-    io.enterWithPasskey.mockResolvedValueOnce(nameless(own, extra))
+    const { flow, io, session } = await open(search)
+    io.enterWithPasskey.mockResolvedValueOnce(nameless(session, extra))
     io.reservedNameHashes.mockResolvedValueOnce(hashes("carol", "niall"))
     flow.showPasskeys()
     await flush()
@@ -94,8 +90,8 @@ describe("a reservation", () => {
   })
 
   it("nothing names asks for its tag, which a carried name never fills", async () => {
-    const { flow, io, own } = await open("named=carol")
-    io.enterWithPasskey.mockResolvedValueOnce(nameless(own))
+    const { flow, io, session } = await open("named=carol")
+    io.enterWithPasskey.mockResolvedValueOnce(nameless(session))
     io.reservedNameHashes.mockResolvedValueOnce(hashes("dave"))
     flow.showPasskeys()
     await flush()
@@ -104,10 +100,10 @@ describe("a reservation", () => {
   })
 
   it("found for a session since replaced is neither replayed nor kept", async () => {
-    const { flow, io, own, entered } = await open()
+    const { flow, io, session, entered } = await open()
     let held = true
     io.enterWithPasskey.mockResolvedValueOnce(
-      nameless(own, { userHandle: "carol", held: () => held }),
+      nameless(session, { userHandle: "carol", held: () => held }),
     )
     io.reservedNameHashes.mockResolvedValueOnce(hashes("carol"))
     io.claimTag.mockImplementationOnce(async () => {
@@ -122,7 +118,7 @@ describe("a reservation", () => {
 
     held = false
     io.enterWithPasskey.mockResolvedValueOnce(
-      nameless(own, { userHandle: "carol", held: () => held }),
+      nameless(session, { userHandle: "carol", held: () => held }),
     )
     io.reservedNameHashes.mockResolvedValueOnce(hashes("carol"))
     flow.showPasskeys()
@@ -133,10 +129,10 @@ describe("a reservation", () => {
 
   it("a recovery that commits another account reloads carrying the passkey's name", async () => {
     await seedDeviceKeys({ storageId: "storage-a" })
-    const { flow, io, own } = await open()
+    const { flow, io, session } = await open()
     io.enterWithPasskey.mockImplementationOnce(async () => {
       await seedDeviceKeys({ storageId: "storage-b" })
-      return nameless(own, { userHandle: "carol" })
+      return nameless(session, { userHandle: "carol" })
     })
     flow.showPasskeys()
     await flush()
@@ -144,10 +140,10 @@ describe("a reservation", () => {
   })
 
   it("whose claim cannot be replayed keeps the card whose way on is the signup", async () => {
-    const { flow, io, own, navigate } = await open()
+    const { flow, io, session, navigate } = await open()
     io.lookup.mockResolvedValueOnce(resolved("bob"))
     await typeTag(flow, "bob")
-    io.enterWithPasskey.mockResolvedValueOnce(nameless(own))
+    io.enterWithPasskey.mockResolvedValueOnce(nameless(session))
     io.reservedNameHashes.mockResolvedValueOnce(hashes("bob"))
     io.claimTag.mockRejectedValueOnce(new Error("claim ledger unavailable"))
     flow.login()
@@ -161,9 +157,9 @@ describe("a reservation", () => {
 describe("a bound grant", () => {
   it("returns its own passkey to the unfinished claim", async () => {
     boundGrant()
-    const { flow, io, own, navigate, lastEntry } = await found("handle=alice&bound=1")
+    const { flow, io, session, navigate, lastEntry } = await found("handle=alice&bound=1")
     io.boundNameGrantOwner.mockResolvedValueOnce(true)
-    io.enterWithPasskey.mockResolvedValueOnce(nameless(own))
+    io.enterWithPasskey.mockResolvedValueOnce(nameless(session))
     flow.login()
     await flush()
     expect(lastEntry()).toMatchObject({ grantToken: "bound-token" })
@@ -176,8 +172,8 @@ describe("a bound grant", () => {
 
   it("keeps a different passkey out of its signup", async () => {
     boundGrant()
-    const { flow, io, own, navigate } = await found("handle=alice&bound=1")
-    io.enterWithPasskey.mockResolvedValueOnce(nameless(own))
+    const { flow, io, session, navigate } = await found("handle=alice&bound=1")
+    io.enterWithPasskey.mockResolvedValueOnce(nameless(session))
     flow.login()
     await flush()
     expect(flow.state.get().refusal?.name).toBe("DifferentPasskeyError")
@@ -187,8 +183,8 @@ describe("a bound grant", () => {
 
   it("retries an owner-check outage without another passkey prompt", async () => {
     boundGrant()
-    const { flow, io, own, navigate } = await found("handle=alice&bound=1")
-    io.enterWithPasskey.mockResolvedValueOnce(nameless(own))
+    const { flow, io, session, navigate } = await found("handle=alice&bound=1")
+    io.enterWithPasskey.mockResolvedValueOnce(nameless(session))
     io.boundNameGrantOwner.mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce(true)
     flow.login()
     await flush()

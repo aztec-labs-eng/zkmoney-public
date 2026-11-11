@@ -1,0 +1,58 @@
+{
+  "walletCommit": "aeedab65e3716c119c9815f9713edcc3c5dbd39a",
+  "artifacts": {
+    "alpha_account/obsidion_alpha_account-ObsidionAccountAlpha.json": {
+      "sha256": "29c497fcbc683813212cec834191f8d789dd248c0d6aea934d51c1c9d8081222",
+      "classId": "0x06013e0eedac9bdfc73cbc7afc530edc4df974b40f8a97eba59a17a30e2fb68a"
+    },
+    "alpha_account_simulated/obsidion_alpha_account_simulated-ObsidionAccountAlphaSimulated.json": {
+      "sha256": "75b308d737bddaea1631bc0e97800055ccc47dc6a8bb4d8f417e360c0d4abbfe",
+      "classId": "0x1942fda3bfe3ecc9b9cd66886a1977f2ed053de0f1774da2e292213e2f99ab6a"
+    },
+    "alpha_account_test/obsidion_alpha_account_test-ObsidionAccountAlphaTest.json": {
+      "sha256": "26af838380bb03ebb8061476c9e30b5d57755184e844816958bac014335aad93",
+      "classId": "0x25f989451666553d47a8e8a9a4499311bc2253f1d0d3e1625640472cde06a580"
+    },
+    "claim_fpc/claim_fpc-ClaimFPC.json": {
+      "sha256": "924df623ae6436770940de464583985c3a7cfb6573739fd42b47fa117e293775",
+      "classId": "0x217b80f37dbee39f0baaa77fe1a1fcfd984c148ceccbf51474b4fcbe9e20e35e"
+    },
+    "deposit/deposit_contract-Deposit.json": {
+      "sha256": "011074d70737c403be554d7aa97a7f1a0c2024998dfedb1cdf5d7262e4de92a5",
+      "classId": "0x1cb700a131ddcb9abc3629e44f1186003b35ab11bc893d0bc26c05802ee826bb"
+    },
+    "eligibility/eligibility.json": {
+      "sha256": "26f25be87adc5d407f25a8d375857c7fb514b48b63ad1a07bac5dd0cf2d24c96"
+    },
+    "golden_ticket/golden_ticket.json": {
+      "sha256": "b8713cdffee9f9839862757e3cf427e7d7d54fea579dccdc96959451ccb79993"
+    },
+    "oidc_key_registry/oidc_key_registry-OidcKeyRegistry.json": {
+      "sha256": "829c469c55c6ec1ce5375b44c7da712f051d5741e5d2d22937ea15f8b2cd1d60",
+      "classId": "0x05c0419f2029dadb95fd75fc8fea90382d8d1f43261de91a3691f9db85b44220"
+    },
+    "password_fpc/password_fpc-PasswordFPC.json": {
+      "sha256": "b1cbfd9c2e073b89f8f476da375e76606426e5c20cb1ef05c34aff8a76fa5ddc",
+      "classId": "0x2cde216a69f02fc5307ab7b621f81b9dfe65bb7cb17694dfcba641041f8a6120"
+    },
+    "paylink_direct/paylink_direct-PaylinkDirect.json": {
+      "sha256": "08fbae24c6f5588abaf41457f927c1fdb8dd8e022e3fb23783645e9f657a30e7",
+      "classId": "0x0a77f7ca61f6ed00ad183bbfd3940a7d1a4a538650aea3f0bfce34074fa6118d"
+    },
+    "paylink_email/paylink_email-PaylinkEmail.json": {
+      "sha256": "9486668700d2e0de67c90cb69ecf4f219ffa65bb546476cf73fa70e1cae8fc84",
+      "classId": "0x1ec8a10a791592abada41a9d25ba9e5164dcdba2b0d85d51b56acbe59f952f81"
+    },
+    "sponsor_fpc/sponsor_fpc-SponsorFPC.json": {
+      "sha256": "b78e614dd163899b5bdff48ef4d6b1ca06e7502f05f38d86b5ec7e8c4dabd188",
+      "classId": "0x16e3bc75390913891be8d91d1f7246bc8193a4db5f97046b727e417487531adc"
+    },
+    "test_token/test_token-TestToken.json": {
+      "sha256": "1bc07aa031adebe677562a8515d6297865f2d49eb5e8b6c76165d554a248f092",
+      "classId": "0x0eab2256ad306c22b2ec41b547932aaad86a71439ef036bb5e6f59c22e3b4cb4"
+    },
+    "zkJWT/zkJWT.json": {
+      "sha256": "2ddd07a4c42d58359ba21afecbebdd9a145a64b3224ec32054e1ac9fa274913c"
+    }
+  }
+}

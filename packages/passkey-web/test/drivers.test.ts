@@ -41,7 +41,12 @@ import { bitwardenLineFor } from "../src/refusals/refusalCopy.js"
 import { trustsAttachmentLabel } from "../src/browser/passkeyCapabilities.js"
 import {
   CHROMIUM_VIRTUAL_AUTHENTICATOR_AAGUID,
+  LOCAL_MANAGER_NAMES,
+  PROTON_PASS,
+  PROTON_PASS_AAGUID,
   WINDOWS_HELLO,
+  localManagersClause,
+  providerNameFor,
 } from "../src/rules/passkeyProviders.js"
 import { passkeyRouteFor } from "../src/telemetry/passkeyTelemetry.js"
 import { hmac } from "@noble/hashes/hmac"
@@ -52,6 +57,7 @@ import {
   contextualiseLocal,
   fakePrf,
 } from "./support/fakePasskeyCeremony.js"
+import { WINDOWS_FIREFOX_UA, edge, windows } from "./support/laptopRows.js"
 
 /** Outside the measured set, and unknown to the name table, so a refusal cannot name it. */
 const UNMEASURED = "0f0f0f0f-0f0f-0f0f-0f0f-0f0f0f0f0f0f"
@@ -71,6 +77,8 @@ function create(
     userAgent?: UserAgentInfo
     laptopHints?: readonly PasskeyHint[] | null
     localCreation?: PasskeyCreationOptions["localCreation"]
+    extensionAllowed?: true
+    withdrawnManagers?: readonly LocalManager[]
     extraProviders?: readonly string[]
   } = {},
 ) {
@@ -366,7 +374,7 @@ describe("runPasskeyCreation on the laptop's own route", () => {
     })
   })
 
-  describe("Firefox's Windows and Linux rows: 1Password alone, behind a trusted label", () => {
+  describe("Firefox's Windows and Linux rows: 1Password, behind a trusted label", () => {
     /** The driver's options as the wallet builds them from the row, once a gate admits it. */
     const firefox = (userAgent: string, fake: FakeCeremonyOptions) => {
       const ua = parseUserAgent({ userAgent })
@@ -407,9 +415,11 @@ describe("runPasskeyCreation on the laptop's own route", () => {
           expect(passkeyRouteFor("create", result.created)).toBe("same_device")
         })
 
-        it("refuses another provider's id", async () => {
+        it("refuses another provider's id, and Windows Hello's off Windows", async () => {
           const windowsHello = "08987058-cadc-4b81-b6e1-30de50dcbe96"
-          for (const aaguid of [GPM_AAGUID, BITWARDEN, windowsHello]) {
+          const others =
+            os === "Windows" ? [GPM_AAGUID, BITWARDEN] : [GPM_AAGUID, BITWARDEN, windowsHello]
+          for (const aaguid of others) {
             await expect(firefox(userAgent, { aaguid }).run).rejects.toThrow(
               named("UnsupportedProviderError"),
             )
@@ -440,16 +450,16 @@ describe("runPasskeyCreation on the laptop's own route", () => {
     await expect(withdrawn.run).rejects.toThrow(
       expect.objectContaining({
         name: "UnsupportedProviderError",
-        providerName: "Google Password Manager",
-        message: expect.stringContaining("Apple Passwords, or use your phone instead"),
+        providerName: providerNameFor(GPM_AAGUID),
+        message: expect.stringContaining(localManagersClause(["apple"])),
       }),
     )
     const hello = local({ aaguid: "08987058-cadc-4b81-b6e1-30de50dcbe96" })
     await expect(hello.run).rejects.toThrow(
       expect.objectContaining({
         name: "UnsupportedProviderError",
-        providerName: "Windows Hello",
-        message: expect.stringContaining("or use your phone instead"),
+        providerName: WINDOWS_HELLO,
+        message: expect.stringContaining(localManagersClause(macChrome.managers)),
       }),
     )
     // A security key's id on this device's own answer is the contradiction the phone route
@@ -459,7 +469,7 @@ describe("runPasskeyCreation on the laptop's own route", () => {
       expect.objectContaining({
         name: "UnsupportedProviderError",
         kind: "security-key",
-        message: expect.stringContaining("Google Password Manager (sign in to Chrome first)"),
+        message: expect.stringContaining(localManagersClause(macChrome.managers)),
       }),
     )
   })
@@ -469,14 +479,14 @@ describe("runPasskeyCreation on the laptop's own route", () => {
     await expect(bound.run).rejects.toThrow(
       expect.objectContaining({
         name: "DeviceBoundPasskeyError",
-        message: expect.stringContaining("or use your phone instead"),
+        message: expect.stringContaining(localManagersClause(macChrome.managers)),
       }),
     )
     const single = local({ manager: "gpm", aaguid: GPM_AAGUID, secondSlot: false })
     await expect(single.run).rejects.toThrow(
       expect.objectContaining({
         name: "SingleSaltProviderError",
-        message: expect.stringContaining("or use your phone instead"),
+        message: expect.stringContaining(localManagersClause(macChrome.managers)),
       }),
     )
     const none = local({
@@ -488,7 +498,7 @@ describe("runPasskeyCreation on the laptop's own route", () => {
     await expect(none.run).rejects.toThrow(
       expect.objectContaining({
         name: "NoPrfError",
-        message: expect.stringContaining("or use your phone instead"),
+        message: expect.stringContaining(localManagersClause(macChrome.managers)),
       }),
     )
   })
@@ -524,7 +534,7 @@ describe("runPasskeyCreation on the laptop's own route", () => {
     await expect(unreported.run).rejects.toThrow(
       expect.objectContaining({
         name: "PhoneRequiredError",
-        message: expect.stringContaining("or use your phone instead"),
+        message: expect.stringContaining(localManagersClause(macChrome.managers)),
       }),
     )
   })
@@ -605,6 +615,55 @@ describe("Windows Hello on Chrome on Windows 11's row", () => {
     await expect(run).rejects.toThrow(named("DeviceBoundPasskeyError"))
   })
 
+  it("refuses an id-less answer in its name, retrying without it, before any follow-up", async () => {
+    const refused = {
+      name: "LaptopPasskeyRefusedError",
+      kind: "windows-hello",
+      managers: ["gpm", "1password"],
+      appleRefusedHere: false,
+    }
+    for (const aaguid of [undefined, ZERO_AAGUID]) {
+      // The measured shape, no key material and no backup flag, would otherwise ask a follow-up.
+      const bare = hello({ aaguid, prfAtCreate: false })
+      await expect(bare.run).rejects.toMatchObject(refused)
+      expect(bare.ceremony.assertRequests).toHaveLength(0)
+      await expect(hello({ aaguid }).run).rejects.toMatchObject(refused)
+      // A row without Windows Hello keeps the generic refusal.
+      const without = create(
+        "laptop",
+        { route: "local", aaguid, backupEligible: false },
+        { localCreation: { managers: ["1password"] } },
+      )
+      await expect(without.run).rejects.toMatchObject({
+        name: "LaptopPasskeyRefusedError",
+        kind: "unnamed",
+        managers: ["1password"],
+      })
+    }
+    // Another device's id-less answer is still off-route, and a key is still a key.
+    const phone = create(
+      "laptop",
+      { route: "cross-device", aaguid: ZERO_AAGUID, transports: ["hybrid", "internal"] },
+      { localCreation: row },
+    )
+    await expect(phone.run).rejects.toMatchObject({
+      name: "LaptopPasskeyRefusedError",
+      kind: "not-local",
+    })
+    const key = create(
+      "laptop",
+      {
+        route: "cross-device",
+        manager: "security-key",
+        aaguid: ZERO_AAGUID,
+        transports: ["usb"],
+        backupEligible: false,
+      },
+      { localCreation: row },
+    )
+    expect((await key.run).securityKey).toBe(true)
+  })
+
   it("keeps the key-material gate, naming the row's other managers", async () => {
     const { ceremony, run } = hello({ prfAtCreate: false, prfAtAssert: false })
     const others = new NoPrfError({ manager: "windows_hello", localManagers: ["gpm", "1password"] })
@@ -625,6 +684,312 @@ describe("Windows Hello on Chrome on Windows 11's row", () => {
     expect(bytesToHex(result.prfOutput)).toBe(
       bytesToHex(ceremony.prfFor(result.created.credentialId, "second")),
     )
+  })
+})
+
+describe("Windows Hello on the other Windows browsers' rows, as shipped", () => {
+  const HELLO = "08987058-cadc-4b81-b6e1-30de50dcbe96"
+  /** The driver's options as the wallet builds them from the browser's own row and label trust. */
+  const on = (ua: UserAgentInfo, fake: FakeCeremonyOptions = {}) => {
+    const creation = laptopCreationFor(ua)
+    if (!creation.local) throw new Error("no local row")
+    return create(
+      "laptop",
+      { route: "local", aaguid: HELLO, backupEligible: false, ...fake },
+      {
+        userAgent: ua,
+        localCreation: { managers: creation.managers },
+        attachmentLabelTrusted: trustsAttachmentLabel(ua),
+      },
+    )
+  }
+  const rows = [
+    ["Edge on Windows 11", windows(edge), ["1password", "proton"]],
+    ["Firefox on Windows", parseUserAgent({ userAgent: WINDOWS_FIREFOX_UA }), []],
+  ] as const
+
+  describe.each(rows)("%s", (_, ua, others) => {
+    it("binds its device-bound passkey past the backup gate, from the creation or the follow-up", async () => {
+      for (const prfAtCreate of [true, false]) {
+        const { ceremony, run } = on(ua, { prfAtCreate })
+        const result = await run
+        expect(result).toMatchObject({ slot: "second", securityKey: false, backupEligible: false })
+        expect(bytesToHex(result.prfOutput)).toBe(
+          bytesToHex(ceremony.prfFor(result.created.credentialId, "second")),
+        )
+        expect(ceremony.assertRequests).toHaveLength(prfAtCreate ? 0 : 1)
+      }
+    })
+
+    it("refuses an answer with no key, and an id-less one in Windows Hello's name", async () => {
+      await expect(on(ua, { prfAtCreate: false, prfAtAssert: false }).run).rejects.toMatchObject({
+        name: "NoPrfError",
+        manager: "windows_hello",
+      })
+      await expect(on(ua, { aaguid: ZERO_AAGUID }).run).rejects.toMatchObject({
+        name: "LaptopPasskeyRefusedError",
+        kind: "windows-hello",
+        managers: others,
+      })
+    })
+  })
+
+  it("is refused on Edge's Windows 10 row", async () => {
+    await expect(on(windows(edge, "10.0.0")).run).rejects.toMatchObject({
+      name: "UnsupportedProviderError",
+      providerName: WINDOWS_HELLO,
+    })
+  })
+})
+
+describe("Proton Pass at creation", () => {
+  const row = { managers: ["gpm", "1password", "proton"] as const }
+  const withdrawn = ["windows_hello", "proton"] as const
+  const ua = (userAgent: string) => parseUserAgent({ userAgent })
+  const android = ua(
+    "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Mobile Safari/537.36",
+  )
+  const iphone = ua(
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.4 Mobile/15E148 Safari/604.1",
+  )
+  const mac = ua(
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36",
+  )
+  const refused = expect.objectContaining({
+    name: "UnsupportedProviderError",
+    providerName: PROTON_PASS,
+  })
+
+  describe("on the laptop's own route", () => {
+    const proton = (fake: FakeCeremonyOptions = {}, extra: Parameters<typeof create>[2] = {}) =>
+      create(
+        "laptop",
+        { route: "local", aaguid: PROTON_PASS_AAGUID, ...fake },
+        { localCreation: row, ...extra },
+      )
+    const picked = { extensionAllowed: true } as const
+
+    it("binds the sheet's Proton Pass pick on a row that names it, over the kept wrapper", async () => {
+      const { ceremony, run } = proton({}, picked)
+      const result = await run
+      expect(result).toMatchObject({ slot: "second", securityKey: false, backupEligible: true })
+      expect(bytesToHex(result.prfOutput)).toBe(
+        bytesToHex(ceremony.prfFor(result.created.credentialId, "second")),
+      )
+      expect(ceremony.creates[0]).toMatchObject({
+        extensionAllowed: true,
+        hints: ["client-device", "security-key"],
+      })
+      expect(ceremony.assertRequests).toHaveLength(0)
+    })
+
+    it("sends no kept wrapper for any other pick, which still admits the row's other managers", async () => {
+      for (const fake of [
+        { manager: "1password", aaguid: ONEPASSWORD_AAGUID },
+        { manager: "gpm", aaguid: GPM_AAGUID },
+      ] as const) {
+        const { ceremony, run } = create(
+          "laptop",
+          { route: "local", ...fake },
+          { localCreation: row },
+        )
+        expect((await run).slot).toBe("second")
+        expect(ceremony.creates[0]!.extensionAllowed).toBeUndefined()
+      }
+    })
+
+    /** The refusal the driver builds for a Proton answer the row's managers cannot admit. */
+    const refusal = (localManagers: readonly LocalManager[]) =>
+      new UnsupportedProviderError("manager", {
+        providerName: PROTON_PASS,
+        keyOfferable: true,
+        localManagers,
+      })
+
+    it("refuses its answer to any other pick, before any follow-up, naming the sheet's own option", async () => {
+      const { ceremony, run } = proton({ prfAtCreate: false })
+      const expected = refusal(row.managers)
+      await expect(run).rejects.toThrow(refused)
+      await expect(run).rejects.toMatchObject({ message: expected.message })
+      expect(expected.message).toContain(localManagersClause(row.managers))
+      expect(expected.message).not.toBe(refusal(["gpm", "1password"]).message)
+      expect(ceremony.assertRequests).toHaveLength(0)
+    })
+
+    it("refuses it where the row does not name it, pointing at the row's managers", async () => {
+      const { ceremony, run } = create(
+        "laptop",
+        { route: "local", aaguid: PROTON_PASS_AAGUID, prfAtCreate: false },
+        { localCreation: { managers: ["gpm", "1password"] }, ...picked },
+      )
+      const expected = refusal(["gpm", "1password"])
+      await expect(run).rejects.toThrow(refused)
+      await expect(run).rejects.toMatchObject({ message: expected.message })
+      expect(expected.message).toContain(localManagersClause(["gpm", "1password"]))
+      expect(ceremony.assertRequests).toHaveLength(0)
+    })
+
+    it("refuses it on a build that withdraws it", async () => {
+      const { ceremony, run } = proton(
+        { prfAtCreate: false },
+        { ...picked, withdrawnManagers: withdrawn },
+      )
+      await expect(run).rejects.toThrow(refused)
+      expect(ceremony.assertRequests).toHaveLength(0)
+    })
+
+    it("binds the follow-up's key when creation returned none, pinned to the passkey just made", async () => {
+      const { ceremony, run } = proton({ prfAtCreate: false }, picked)
+      const result = await run
+      expect(result.chained?.credentialId).toBe(result.created.credentialId)
+      expect(ceremony.asserts[0]).toEqual([result.created.credentialId])
+      expect(bytesToHex(result.prfOutput)).toBe(
+        bytesToHex(ceremony.prfFor(result.created.credentialId, "second")),
+      )
+    })
+
+    it("keeps the key-material gate, naming this device and the row's other managers", async () => {
+      const { ceremony, run } = proton({ prfAtCreate: false, prfAtAssert: false }, picked)
+      const others = new NoPrfError({ manager: "proton", localManagers: ["gpm", "1password"] })
+      await expect(run).rejects.toMatchObject({
+        name: "NoPrfError",
+        manager: "proton",
+        message: others.message,
+      })
+      expect(others.message).toContain(localManagersClause(["gpm", "1password"]))
+      expect(others.message).not.toContain(LOCAL_MANAGER_NAMES.proton)
+      for (const manager of ["windows_hello", undefined] as const) {
+        expect(others.message).not.toBe(
+          new NoPrfError({ manager, localManagers: ["gpm", "1password"] }).message,
+        )
+      }
+      expect(ceremony.asserts).toHaveLength(1)
+    })
+
+    it("refuses a follow-up answered by another device, as for any manager", async () => {
+      const { run } = proton({ prfAtCreate: false, assertAttachment: "cross-platform" }, picked)
+      await expect(run).rejects.toThrow(
+        expect.objectContaining({ name: "LaptopPasskeyRefusedError", kind: "not-local" }),
+      )
+    })
+
+    it("refuses a follow-up answered by another passkey, or flags that stay unreadable", async () => {
+      let stray = ""
+      const ceremony = new FakePasskeyCeremony({
+        route: "local",
+        aaguid: PROTON_PASS_AAGUID,
+        prfAtCreate: false,
+        assertOverride: () => stray,
+      })
+      stray = (
+        await ceremony.create({
+          rpId: "localhost",
+          rpName: "zk.money",
+          userName: "@bob",
+          ...(await prfSalts()),
+        })
+      ).credentialId
+      const other = runPasskeyCreation(ceremony, {
+        posture: "laptop",
+        rpId: "localhost",
+        rpName: "zk.money",
+        userName: "@alice",
+        challengeForChained: () => CHALLENGE,
+        attachmentLabelTrusted: true,
+        localCreation: row,
+        ...picked,
+      })
+      await expect(other).rejects.toThrow(named("IncompleteCreationError"))
+      const unreadable = proton({ backupEligible: "unknown" }, picked)
+      await expect(unreadable.run).rejects.toThrow(named("DeviceBoundPasskeyError"))
+    })
+
+    it("keeps the backup gate: no exemption beside Windows Hello's", async () => {
+      await expect(proton({ backupEligible: false }, picked).run).rejects.toThrow(
+        named("DeviceBoundPasskeyError"),
+      )
+      const both = { managers: ["gpm", "windows_hello", "1password", "proton"] as const }
+      const hello = create(
+        "laptop",
+        { route: "local", aaguid: "08987058-cadc-4b81-b6e1-30de50dcbe96", backupEligible: false },
+        { localCreation: both, ...picked },
+      )
+      expect((await hello.run).backupEligible).toBe(false)
+      const proton2 = create(
+        "laptop",
+        { route: "local", aaguid: PROTON_PASS_AAGUID, backupEligible: false },
+        { localCreation: both, ...picked },
+      )
+      await expect(proton2.run).rejects.toThrow(named("DeviceBoundPasskeyError"))
+    })
+  })
+
+  it("is refused on a laptop's phone route", async () => {
+    const { run } = create("laptop", {
+      route: "cross-device",
+      aaguid: PROTON_PASS_AAGUID,
+      transports: ["hybrid", "internal"],
+    })
+    await expect(run).rejects.toThrow(refused)
+  })
+
+  describe("on a phone's own route", () => {
+    const proton = (extra: Parameters<typeof create>[2] = {}, fake: FakeCeremonyOptions = {}) =>
+      create("phone", { route: "local", aaguid: PROTON_PASS_AAGUID, ...fake }, extra)
+
+    it("binds on every OS the browser names but iOS", async () => {
+      for (const userAgent of [android, mac]) {
+        const { ceremony, run } = proton({ userAgent })
+        const result = await run
+        expect(result).toMatchObject({ slot: "second", securityKey: false, backupEligible: true })
+        expect(ceremony.creates[0]!.extensionAllowed).toBeUndefined()
+      }
+    })
+
+    it("is refused on an iPhone, before any follow-up, with copy about its app", async () => {
+      const { ceremony, run } = proton({ userAgent: iphone }, { prfAtCreate: false })
+      const onIphone = (userAgent: UserAgentInfo) =>
+        new UnsupportedProviderError("manager", {
+          providerName: PROTON_PASS,
+          keyOfferable: true,
+          userAgent,
+        })
+      await expect(run).rejects.toThrow(refused)
+      await expect(run).rejects.toMatchObject({ message: onIphone(iphone).message })
+      expect(onIphone(iphone).message).not.toBe(onIphone(android).message)
+      expect(ceremony.assertRequests).toHaveLength(0)
+    })
+
+    it("is refused when the browser does not say which OS it runs", async () => {
+      await expect(proton().run).rejects.toThrow(refused)
+      const unknown = ua("Mozilla/5.0 (compatible)")
+      expect(unknown.osFamily).toBe("unknown")
+      await expect(proton({ userAgent: unknown }).run).rejects.toThrow(refused)
+    })
+
+    it("is refused on a build that withdraws it, which still admits the measured managers", async () => {
+      const options = { userAgent: android, withdrawnManagers: withdrawn }
+      const { ceremony, run } = proton(options, { prfAtCreate: false })
+      await expect(run).rejects.toThrow(refused)
+      expect(ceremony.assertRequests).toHaveLength(0)
+      const gpm = create("phone", { route: "local", manager: "gpm", aaguid: GPM_AAGUID }, options)
+      expect((await gpm.run).slot).toBe("second")
+    })
+
+    it("keeps the key-material gate, naming Proton Pass with the phone route's tail", async () => {
+      const { run } = proton({ userAgent: android }, { prfAtCreate: false, prfAtAssert: false })
+      const expected = new NoPrfError({ manager: "proton" })
+      await expect(run).rejects.toMatchObject({
+        name: "NoPrfError",
+        manager: "proton",
+        message: expected.message,
+      })
+      expect(expected.message).toContain(PROTON_PASS)
+      expect(expected.message).not.toBe(new NoPrfError().message)
+      expect(expected.message).not.toBe(
+        new NoPrfError({ manager: "proton", localManagers: ["gpm"] }).message,
+      )
+    })
   })
 })
 
@@ -840,7 +1205,7 @@ describe("runPasskeyCreation", () => {
     await expect(run).rejects.toMatchObject({
       name: "UnsupportedProviderError",
       kind: "manager",
-      providerName: "Bitwarden",
+      providerName: providerNameFor(BITWARDEN),
     })
     expect(ceremony.assertRequests).toHaveLength(0)
   })
@@ -1225,7 +1590,10 @@ describe("the line a Bitwarden answer's refusal adds on a laptop", () => {
       const err = await refusal(
         create("laptop", { route: "local", aaguid: BITWARDEN }, { ...trusted, laptopHints }).run,
       )
-      expect(err).toMatchObject({ name: "PhoneRequiredError", providerName: "Bitwarden" })
+      expect(err).toMatchObject({
+        name: "PhoneRequiredError",
+        providerName: providerNameFor(BITWARDEN),
+      })
       expect(err.message).toContain(line)
     }
   })

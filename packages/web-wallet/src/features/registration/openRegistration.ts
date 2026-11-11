@@ -143,12 +143,6 @@ export function registrationCustody(
   })
 }
 
-/** Whether the active wallet's pending tag is already claimed on L1, so it can no longer be lost. */
-export function useNameClaimedOnL1(): boolean {
-  const open = openRegistration(useStageReads())
-  return open !== null && (open.stage === "crediting" || open.stage === "registered")
-}
-
 /** `readRegistrationStage` for one record, kept current. Null without a record. */
 export function useRegistrationStage(
   record: PendingRegistrationRecord,

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { pinnedOxideDeployment } from "@obsidion/core/oxide"
 
 const DAI = "0x00000000000000000000000000000000000000d1"
@@ -43,67 +43,62 @@ const sky = (roles: Record<string, string>) => ({
   },
 })
 
-const state = vi.hoisted(() => ({ manifest: undefined as unknown, url: 0, hang: false }))
+const state = vi.hoisted(() => ({ manifest: undefined as unknown, hang: false }))
 vi.mock("../../../src/config/oxideTuple", () => ({
   ASSET_TUPLE_TIMEOUT_MS: 20_000,
-  oxideProfileKey: (config: { oxideProfile: { manifestUrl: string; portal: string } }) =>
-    `${config.oxideProfile.manifestUrl}|${config.oxideProfile.portal}`,
-  getOxideDeployment: async () =>
-    state.hang
-      ? new Promise(() => {})
-      : pinnedOxideDeployment(state.manifest, { portal: MAIN_PORTAL }),
-  getOxideTuple: async () =>
-    pinnedOxideDeployment(state.manifest, { portal: MAIN_PORTAL }).pinned.tuple,
   l1PublicClient: () => ({
     readContract: async () => {
       throw new Error("no L1 read expected")
     },
   }),
 }))
-vi.mock("../../../src/config/env", () => ({
-  // A fresh manifest URL per test, so each reads its own manifest.
-  getConfig: () => ({
-    oxideProfile: { manifestUrl: `http://manifest.test/${state.url}.json`, portal: MAIN_PORTAL },
+import {
+  moveSummary,
+  readSkySavings,
+  savingsTuple,
+} from "../../../src/features/savings/savingsGateway"
+import type { PageFacts } from "../../../src/session/pageChain"
+import { fakeReads } from "../../support/fakeReads"
+
+const hung = new Promise<never>(() => {})
+const pinned = () => pinnedOxideDeployment(state.manifest, { portal: MAIN_PORTAL })
+const page = {
+  chain: fakeReads({
+    oxideDeployment: () => (state.hang ? hung : pinned()),
+    oxideTuple: () => pinned().pinned.tuple,
   }),
-}))
-import { getConfig } from "../../../src/config/env"
-import { getSavingsTuple, moveSummary } from "../../../src/features/savings/savingsGateway"
+} as unknown as PageFacts
+const savingsTupleRead = () => savingsTuple(fakeReads({ skySavings: () => readSkySavings(page) }))
 
-beforeEach(() => {
-  state.url += 1
-})
-
-describe("getSavingsTuple", () => {
+describe("savingsTuple", () => {
   it("is the sUSDS bridge the pinned deployment's Sky feature binds", async () => {
     state.manifest = manifest(sky({ sUsds: "brg-susds-sandbox", dai: "brg-dai-sandbox" }))
-    await expect(getSavingsTuple(getConfig())).resolves.toMatchObject({ portal: SKY_PORTAL })
+    await expect(savingsTupleRead()).resolves.toMatchObject({ portal: SKY_PORTAL })
   })
 
   it("is nothing where the deployment names no Sky savings", async () => {
     state.manifest = manifest()
-    await expect(getSavingsTuple(getConfig())).resolves.toBeUndefined()
+    await expect(savingsTupleRead()).resolves.toBeNull()
   })
 
   it("is nothing where the feature pairs Savings with another bridge than Main", async () => {
     state.manifest = manifest(sky({ sUsds: "brg-susds-sandbox", dai: "brg-susds-sandbox" }))
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
-    await expect(getSavingsTuple(getConfig())).resolves.toBeUndefined()
+    await expect(savingsTupleRead()).resolves.toBeNull()
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("not the pinned portal"))
     warn.mockRestore()
   })
 })
 
-describe("getSkySavings", () => {
-  it("gives up on a stalled read, and reads again on the next call", async () => {
+describe("readSkySavings", () => {
+  it("gives up on a stalled read", async () => {
     vi.useFakeTimers()
     try {
       state.manifest = manifest(sky({ sUsds: "brg-susds-sandbox", dai: "brg-dai-sandbox" }))
       state.hang = true
-      const stalled = expect(getSavingsTuple(getConfig())).rejects.toThrow("timed out")
+      const stalled = expect(readSkySavings(page)).rejects.toMatchObject({ code: "timeout" })
       await vi.advanceTimersByTimeAsync(20_000)
       await stalled
-      state.hang = false
-      await expect(getSavingsTuple(getConfig())).resolves.toMatchObject({ portal: SKY_PORTAL })
     } finally {
       state.hang = false
       vi.useRealTimers()

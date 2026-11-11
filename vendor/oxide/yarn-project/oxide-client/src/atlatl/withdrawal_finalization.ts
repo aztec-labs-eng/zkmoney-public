@@ -1,6 +1,7 @@
 import type { Fr } from '@aztec-labs/aztec.js/fields';
 
 import { OxidePortalAbi } from '@oxide/l1-contracts/artifacts.js';
+import type { WithdrawArgs } from '@oxide/l1-contracts/oxide_portal.js';
 import { toOutboxWithdrawal } from '@oxide/oxide-lib/withdrawal_finalization_data.js';
 
 import { type Hex, encodeFunctionData } from 'viem';
@@ -26,6 +27,19 @@ export async function buildWithdrawalFinalizationCalldata(
     relayerPayload: Buffer;
   },
 ): Promise<Hex> {
+  const withdrawArgs = await buildWithdrawArgs(ctx, args);
+  return encodeFunctionData({ abi: OxidePortalAbi, functionName: 'withdraw', args: [withdrawArgs] });
+}
+
+/** The portal's `withdraw` arguments of one withdrawal, verified against its initiation tx and signed by the TEE. */
+export async function buildWithdrawArgs(
+  ctx: WithdrawalPortalContext,
+  args: {
+    withdrawal: WithdrawalInTx;
+    archiveRoot: Fr;
+    relayerPayload: Buffer;
+  },
+): Promise<WithdrawArgs> {
   const resolved = await resolveWithdrawal(ctx, args.withdrawal);
   const archive = await resolveArchive(ctx.chain, args.archiveRoot);
   const witness = await computeWithdrawalWitness({
@@ -43,28 +57,22 @@ export async function buildWithdrawalFinalizationCalldata(
   });
 
   const content = toOutboxWithdrawal(resolved.finalizationData);
-  return encodeFunctionData({
-    abi: OxidePortalAbi,
-    functionName: 'withdraw',
-    args: [
-      {
-        content: {
-          executor: content.executor.toString() as Hex,
-          userPayloadHash: content.userPayloadHash.toString() as Hex,
-          amount: content.amount,
-          proverTip: content.proverTip,
-          randomness: content.randomness.toBigInt(),
-        },
-        userPayload: `0x${resolved.finalizationData.userPayload.toString('hex')}` as Hex,
-        relayerPayload: `0x${args.relayerPayload.toString('hex')}` as Hex,
-        epochNumber: BigInt(witness.epochNumber),
-        numCheckpointsInEpoch: witness.numCheckpointsInEpoch,
-        leafIndex: witness.leafIndex,
-        path: witness.siblingPath.map(p => p.toString() as Hex),
-        checkpointNumber: BigInt(archive.checkpointNumber),
-        withdrawalId: finalization.withdrawalId.toString() as Hex,
-        teeSignature: finalization.signature.toString() as Hex,
-      },
-    ],
-  });
+  return {
+    content: {
+      executor: content.executor.toString() as Hex,
+      userPayloadHash: content.userPayloadHash.toString() as Hex,
+      amount: content.amount,
+      proverTip: content.proverTip,
+      randomness: content.randomness.toBigInt(),
+    },
+    userPayload: `0x${resolved.finalizationData.userPayload.toString('hex')}` as Hex,
+    relayerPayload: `0x${args.relayerPayload.toString('hex')}` as Hex,
+    epochNumber: BigInt(witness.epochNumber),
+    numCheckpointsInEpoch: witness.numCheckpointsInEpoch,
+    leafIndex: witness.leafIndex,
+    path: witness.siblingPath.map(p => p.toString() as Hex),
+    checkpointNumber: BigInt(archive.checkpointNumber),
+    withdrawalId: finalization.withdrawalId.toString() as Hex,
+    teeSignature: finalization.signature.toString() as Hex,
+  };
 }

@@ -52,7 +52,7 @@ export const addContactSchema = z
     verified: z.boolean().optional(),
     tag: z.string().optional(),
     // Root-level L2 provenance (distinct from l1Wallet.provenance). Parity with
-    // ContactStorage.ContactProvenance; the QR-handshake write path uses
+    // engine/contacts ContactProvenance; the QR-handshake write path uses
     // addOrMergeContact directly, but keep the schema in sync.
     provenance: z.enum(["qr-scan"]).optional(),
     avatar: z

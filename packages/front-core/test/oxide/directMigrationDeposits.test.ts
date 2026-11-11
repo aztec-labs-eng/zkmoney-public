@@ -52,7 +52,11 @@ const direct = {
 
 /** The deposit store over memory, its records as a map once loaded, and a spy on its writes. */
 function makeStore() {
-  const store = createSipaDeposits({ db: openDatabase(memoryBackend()), account: true })
+  const store = createSipaDeposits({
+    db: openDatabase(memoryBackend()),
+    account: true,
+    now: () => Date.now(),
+  })
   const held = {
     ...store,
     get records() {

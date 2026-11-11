@@ -1,3 +1,4 @@
+import { WalletError } from "@obsidion/core/errors"
 import {
   PAYLINK_TERMS_REFUSAL,
   type PaylinkNoteView,
@@ -22,7 +23,8 @@ export async function readPaylinkNote(
   try {
     return await service.sync_note(params)
   } catch (e) {
-    if (e instanceof Error && e.message === PAYLINK_TERMS_REFUSAL) throw e
+    if (e instanceof Error && e.message === PAYLINK_TERMS_REFUSAL)
+      throw new WalletError("paylink.termsMismatch", PAYLINK_TERMS_REFUSAL, { cause: e })
     return undefined
   }
 }

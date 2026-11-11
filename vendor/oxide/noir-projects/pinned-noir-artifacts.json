@@ -1,0 +1,46 @@
+{
+  "broadcaster_contract/broadcaster_contract-Broadcaster.json": {
+    "kind": "periphery",
+    "sha256": "9838abfe4563bcd60ef69cc2651355157641be278e7e7c919c0234b04c59e75e",
+    "classId": "0x24f2762acb13987a767a20c311d980936ed4379147c8bf6db04c193aa93778ae"
+  },
+  "frozen_deposits_refund/frozen_deposits_refund.json": {
+    "kind": "refund",
+    "sha256": "3aff97b5c712cbc1b1397e154767d0a92be7d28c7b4ca21c8c184849c654c14a"
+  },
+  "frozen_deposits_refund/vk": {
+    "kind": "refund",
+    "sha256": "071dc869b6946c05dae3402b7a7b62a37204c652fcb09507562186ace4ac2fcd"
+  },
+  "frozen_notes_refund/frozen_notes_refund.json": {
+    "kind": "refund",
+    "sha256": "1268f69d20ceb9d81ad1ee058c615fd5c90ec197157720300c8d627692845365"
+  },
+  "frozen_notes_refund/vk": {
+    "kind": "refund",
+    "sha256": "7eb20a895fc3a75ace09796385d84e05f75228de0e5b838e13f5ee44a1e43772"
+  },
+  "name_notification_test_contract/name_notification_test_contract-NameNotificationTest.json": {
+    "kind": "test",
+    "sha256": "61b353cdf85725f9c6ff8ed625acd3e79e7aecdeb08bd7bef65cc492fa8012ff",
+    "classId": "0x08ac5f1652e91af9f0c8891a92e2f6e8f880a67d0944ae54a108fbdbdb3e8c07"
+  },
+  "oxide_token_contract/oxide_token_contract-OxideToken.json": {
+    "kind": "core",
+    "sha256": "ce98df16a81804ad4352554aee3c5055f87c98c6d82ba21a6572e06e55c361b9",
+    "classId": "0x27df40f914de0e4368b39b4d02821d42573dfe703502c3e7a44f5254345f3949"
+  },
+  "passkey_test_account_contract/passkey_test_account_contract-PasskeyTestAccount.json": {
+    "kind": "test",
+    "sha256": "f20252f8b00e44a151bd203410e0eeaff3ffd8bca6f1db9716ba07d905a90e5e",
+    "classId": "0x10fe1cc9973dee72ad8dd06063c45300623008769899df73e48291643b33b539"
+  },
+  "unprocessed_deposit_refund/unprocessed_deposit_refund.json": {
+    "kind": "refund",
+    "sha256": "12daeb3c1dd98ec41a36989fad3ecc67dd4bc51e5b95a8bdcf2c7f5d2146198b"
+  },
+  "unprocessed_deposit_refund/vk": {
+    "kind": "refund",
+    "sha256": "15ad2311cf674596c077d20cdabed5220483103558f8071546c07fd40b411b37"
+  }
+}

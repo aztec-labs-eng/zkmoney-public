@@ -1,7 +1,7 @@
 /**
  * An in-memory L1 behind a real viem client: the JSON-RPC methods the SIPA pipeline sends, answered
  * from contract state and logs a test builds. Calls are ABI-decoded and answers ABI-encoded, so the
- * sdk readers run unchanged. `fakeL1.anvil.test.ts` holds it to a real chain.
+ * sdk readers run unchanged. `fakeL1.l1.test.ts` holds it to a real EVM.
  */
 import {
   createPublicClient,
@@ -11,6 +11,7 @@ import {
   encodeEventTopics,
   encodeFunctionResult,
   erc20Abi,
+  erc4626Abi,
   multicall3Abi,
   pad,
   toHex,
@@ -40,6 +41,8 @@ export interface L1Call {
   fn?: string
   /** A log read's blocks. */
   range?: [bigint, bigint]
+  /** The block an `eth_call` reads at; absent at the head. */
+  block?: bigint
 }
 
 interface Log {
@@ -49,6 +52,24 @@ interface Log {
   block: bigint
   tx: Hex
   index: number
+}
+
+/** What an extra factory or table answers. */
+export interface ContractState {
+  implementations: Map<number, Address>
+  intentOf: Map<string, number>
+  cloneImplementation: Map<string, Address>
+  rows: Map<string, TableRow>
+  row(token: Address, intent: number, row: TableRow): void
+}
+
+/** A deployed clone: the implementation its code delegates to and the arguments it reports. */
+export interface CloneArgs {
+  implementation: Address
+  intentHash: Hex
+  recoveryCommitment: Hex
+  forwardingTable: Address
+  resweepable: boolean
 }
 
 export interface TableRow {
@@ -84,10 +105,14 @@ export class FakeL1 {
   readonly caps = new Map<string, bigint>()
   readonly decimals = new Map<string, number>()
   readonly symbols = new Map<string, string>()
+  /** Each ERC-4626 vault's assets per whole share, by block. */
+  readonly sharePrices = new Map<string, (block: bigint) => bigint>()
   readonly client: PublicClient
   private readonly logs: Log[] = []
   private readonly balances = new Map<string, bigint>()
   private readonly abis = new Map<string, Abi>([[MULTICALL3, multicall3Abi as Abi]])
+  private readonly own = new Map<string, ContractState>()
+  private readonly clones = new Map<string, CloneArgs>()
   private txs = 0
 
   constructor(readonly contracts: { factory: Address; table: Address; portals: Address[] }) {
@@ -101,6 +126,23 @@ export class FakeL1 {
     }) as PublicClient
   }
 
+  /**
+   * Another SIPA factory or forwarding table, an earlier SIPA set's. It answers from its own state,
+   * which starts empty.
+   */
+  contract(address: Address, kind: "factory" | "table"): ContractState {
+    this.abis.set(lower(address), (kind === "factory" ? SIPAFactoryAbi : ForwardingTableAbi) as Abi)
+    const state: ContractState = {
+      implementations: new Map(),
+      intentOf: new Map(),
+      cloneImplementation: new Map(),
+      rows: new Map(),
+      row: (token, intent, row) => state.rows.set(`${lower(token)}:${intent}`, row),
+    }
+    this.own.set(lower(address), state)
+    return state
+  }
+
   /** A block's timestamp, seconds. */
   timeOf(block: bigint): bigint {
     return 1_700_000_000n + block * 12n
@@ -110,6 +152,13 @@ export class FakeL1 {
     this.abis.set(lower(address), erc20Abi as Abi)
     this.symbols.set(lower(address), symbol)
     this.decimals.set(lower(address), decimals)
+  }
+
+  /** An ERC-4626 vault whose whole share redeems for `priceAt(block)` of its asset. */
+  vault(address: Address, decimals: number, priceAt: (block: bigint) => bigint): void {
+    this.abis.set(lower(address), [...erc20Abi, ...erc4626Abi] as Abi)
+    this.decimals.set(lower(address), decimals)
+    this.sharePrices.set(lower(address), priceAt)
   }
 
   row(token: Address, intent: number, row: TableRow): void {
@@ -180,8 +229,22 @@ export class FakeL1 {
     alsoEmitted?: Address[]
     /** A transaction that already swept another SIPA. */
     tx?: Hex
+    /** The swept clone's arguments; zero when the test does not care. */
+    clone?: CloneArgs
   }): { tx: Hex; key: Hex } {
     const tx = s.tx ?? this.tx()
+    this.abis.set(lower(s.sipa), SIPAAbi as Abi)
+    if (s.clone || !this.clones.has(lower(s.sipa)))
+      this.clones.set(
+        lower(s.sipa),
+        s.clone ?? {
+          intentHash: pad("0x0", { size: 32 }),
+          recoveryCommitment: pad("0x0", { size: 32 }),
+          forwardingTable: zeroAddress,
+          resweepable: true,
+          implementation: zeroAddress,
+        },
+      )
     const key = pad(toHex(0x5000n + s.index), { size: 32 })
     const at = { tx, block: s.block }
     for (const forger of s.alsoEmitted ?? [])
@@ -249,17 +312,20 @@ export class FakeL1 {
     ).length
   }
 
-  private answer(to: Address, data: Hex): Hex {
+  private answer(to: Address, data: Hex, block = this.head): Hex {
     const target = lower(to)
     const abi = this.abis.get(target)
     if (!abi) return "0x"
     const { functionName, args = [] } = decodeFunctionData({ abi, data })
-    const result = this.read(target, functionName, args as readonly unknown[])
+    const result = this.read(target, functionName, args as readonly unknown[], block)
     return encodeFunctionResult({ abi, functionName, result } as never)
   }
 
-  private read(target: string, fn: string, args: readonly unknown[]): unknown {
+  private read(target: string, fn: string, args: readonly unknown[], block: bigint): unknown {
     if (this.reverts(target, fn, args)) throw new Reverted(fn)
+    const state = this.own.get(target) ?? this
+    const clone = this.clones.get(target)
+    if (clone && fn in clone) return clone[fn as keyof CloneArgs]
     switch (fn) {
       case "balanceOf":
         return this.balanceOf(args[0] as Address, target as Address)
@@ -271,14 +337,22 @@ export class FakeL1 {
         return this.balanceOf(args[0] as Address)
       case "getCurrentBlockTimestamp":
         return this.timeOf(this.head)
+      case "convertToAssets": {
+        const priceAt = this.sharePrices.get(target)!
+        return ((args[0] as bigint) * priceAt(block)) / 10n ** BigInt(this.decimals.get(target)!)
+      }
       case "implementationFor":
-        return this.implementations.get(Number(args[0])) ?? zeroAddress
+        return state.implementations.get(Number(args[0])) ?? zeroAddress
       case "sipaIntentOf":
-        return this.intentOf.get(lower(args[0] as string)) ?? 0
+        return state.intentOf.get(lower(args[0] as string)) ?? 0
       case "cloneImplementation":
-        return this.cloneImplementation.get(lower(args[0] as string)) ?? zeroAddress
+        return (
+          state.cloneImplementation.get(lower(args[0] as string)) ??
+          this.clones.get(lower(args[0] as string))?.implementation ??
+          zeroAddress
+        )
       case "rowFor": {
-        const row = this.rows.get(`${lower(args[0] as string)}:${Number(args[1])}`)
+        const row = state.rows.get(`${lower(args[0] as string)}:${Number(args[1])}`)
         if (!row) throw new Reverted("no row")
         return [
           row.portal,
@@ -354,6 +428,7 @@ export class FakeL1 {
       call.to = lower(first.to!)
       const abi = this.abis.get(call.to)
       call.fn = abi ? decodeFunctionData({ abi, data: first.data! }).functionName : undefined
+      if (typeof list[1] === "string" && list[1].startsWith("0x")) call.block = BigInt(list[1])
     }
     if (method === "eth_getLogs")
       call.range = [BigInt(first.fromBlock as Hex), BigInt(first.toBlock as Hex)]
@@ -371,7 +446,7 @@ export class FakeL1 {
         try {
           return call.to === MULTICALL3 && call.fn === "aggregate3"
             ? this.aggregate(first.data!)
-            : this.answer(first.to!, first.data!)
+            : this.answer(first.to!, first.data!, call.block)
         } catch (err) {
           if (err instanceof Reverted) throw Object.assign(new Error("execution reverted"), err)
           throw err

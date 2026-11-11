@@ -75,10 +75,16 @@ export interface RequestInlinePacket {
   /** Lets a payer re-predict `sipaAddress` from the active deployment. Rides only with `sipaAddress`. */
   sipaPreimage?: SipaLinkPreimage
   /**
-   * A Receive code (format 4), sized to scan: a 128-bit request id, and no token, network, requester
-   * address or preimage. Its token and network are the payer's own; it decodes with `networkId: ""`.
+   * A Receive code (format 4), sized to scan: a 128-bit request id, `requesterPin` for the requester
+   * address, and no token, network or preimage. Its token and network are the payer's own; it decodes
+   * with `networkId: ""`.
    */
   compact?: boolean
+  /**
+   * A code's stand-in for `requesterAddress`: its first 8 bytes, written from `requesterAddress` at
+   * encode. Enough to tell the tag's accounts apart; the link is unsigned, so more bytes add no proof.
+   */
+  requesterPin?: string
   /** A code's stand-in for the preimage: `sipaDeploymentTag` of the deployment `sipaAddress` is from. */
   sipaDeployment?: string
 }
@@ -103,6 +109,7 @@ export interface SipaLinkPreimage {
 // v4 is the compact Receive code: see `compact`.
 const FORMAT = 3
 const FORMAT_CODE = 4
+// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
 const SUPPORTED_FORMATS = new Set<number>([1, 2, 3, FORMAT_CODE])
 
 const KEY_FORMAT = 1
@@ -121,6 +128,7 @@ const KEY_SIPA_PREIMAGE = 13
 const KEY_SIPA_DEPLOYMENT = 14
 
 /** Every key a given wire format knows. An unknown key fails closed. */
+// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
 const KNOWN_KEYS_LEGACY = new Set<number>([
   KEY_FORMAT,
   KEY_REQUEST_ID,
@@ -132,6 +140,7 @@ const KNOWN_KEYS_LEGACY = new Set<number>([
   KEY_NETWORK_ID,
   KEY_DECIMALS,
 ])
+// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
 const KNOWN_KEYS_V3 = new Set<number>([
   ...KNOWN_KEYS_LEGACY,
   KEY_TOKEN_ADDRESS,
@@ -140,10 +149,13 @@ const KNOWN_KEYS_V3 = new Set<number>([
   KEY_SIPA_PREIMAGE,
 ])
 
+// Unknown keys fail closed, so a build that predates a key rejects every code that carries it.
+// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
 const KNOWN_KEYS_CODE = new Set<number>([
   KEY_FORMAT,
   KEY_REQUEST_ID,
   KEY_REQUESTER_TAG,
+  KEY_REQUESTER_ADDRESS,
   KEY_AMOUNT,
   KEY_NOTE,
   KEY_EXPIRES_AT,
@@ -158,6 +170,7 @@ const FIELD_BYTES = 32 // BN254 field / L2 address
 const ETH_ADDRESS_BYTES = 20 // L1 SIPA
 const HASH_BYTES = 32 // keccak / commitment
 const DEPLOYMENT_TAG_BYTES = 4
+const REQUESTER_PIN_BYTES = 8
 const BN254_FR_MODULUS = 0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001n
 
 /* -------------------------------------------------------------------------- */
@@ -241,6 +254,12 @@ function encodeCode(packet: RequestInlinePacket): string {
   map.set(KEY_FORMAT, FORMAT_CODE)
   map.set(KEY_REQUEST_ID, amountToBytes(id))
   map.set(KEY_REQUESTER_TAG, packet.requesterTag)
+  if (packet.requesterAddress !== undefined) {
+    map.set(
+      KEY_REQUESTER_ADDRESS,
+      hexToFieldBytes(packet.requesterAddress).subarray(0, REQUESTER_PIN_BYTES),
+    )
+  }
   if (packet.amountAtomic > 0n) {
     if (packet.tokenDecimals === undefined || !isDecimals(packet.tokenDecimals))
       throw new RequestEncodeError("A code's amount needs its decimals")
@@ -369,6 +388,12 @@ function decodeCode(decoded: unknown): RequestInlinePacket {
     packet.tokenDecimals = asDecimals(readRequired(decoded, KEY_DECIMALS))
   } else if (readField(decoded, KEY_DECIMALS) !== undefined) {
     throw new RequestDecodeError()
+  }
+  const pin = readField(decoded, KEY_REQUESTER_ADDRESS)
+  if (pin !== undefined) {
+    if (!(pin instanceof Uint8Array) || pin.length !== REQUESTER_PIN_BYTES)
+      throw new RequestDecodeError()
+    packet.requesterPin = `0x${Buffer.from(pin).toString("hex")}`
   }
   const sipaAddress = readField(decoded, KEY_SIPA_ADDRESS)
   const deployment = readField(decoded, KEY_SIPA_DEPLOYMENT)

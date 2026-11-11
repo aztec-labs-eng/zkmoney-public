@@ -1,14 +1,13 @@
 import { decodePaylinkInline, readPaylinkEscrowNote } from "@obsidion/sdk"
 import type { ContractService, ObsidionWallet } from "@obsidion/sdk"
 import type { OxideEnvTuple } from "@obsidion/core/types"
-import { getConfig } from "../../config/env"
-import { getOxideTuple } from "../../config/oxideTuple"
+import type { PageFacts } from "../../session/pageChain"
 import { findHistoricTuple } from "../migration/historicTokenContext"
 
-export async function paylinkTuple(tokenAddress: string): Promise<OxideEnvTuple> {
-  const active = await getOxideTuple(getConfig())
+export async function paylinkTuple(page: PageFacts, tokenAddress: string): Promise<OxideEnvTuple> {
+  const active = await page.chain.oxideTuple.read()
   if (active.l2Token.toLowerCase() === tokenAddress.toLowerCase()) return active
-  const source = await findHistoricTuple(tokenAddress)
+  const source = await findHistoricTuple(page.config, tokenAddress)
   if (!source) throw new Error("This link's token deployment is unavailable")
   return source
 }
@@ -16,10 +15,11 @@ export async function paylinkTuple(tokenAddress: string): Promise<OxideEnvTuple>
 export async function readPaylinkSource(
   deps: { wallet: ObsidionWallet; contractService: ContractService },
   fragment: string,
+  page: PageFacts,
 ) {
   const params = decodePaylinkInline(fragment)
   const note = await readPaylinkEscrowNote(deps, params)
-  const tuple = await paylinkTuple(note.tokenAddress.toString())
+  const tuple = await paylinkTuple(page, note.tokenAddress.toString())
   return { params, note, tuple }
 }
 

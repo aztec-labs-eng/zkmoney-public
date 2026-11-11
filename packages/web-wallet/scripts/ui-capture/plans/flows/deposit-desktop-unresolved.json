@@ -3,18 +3,32 @@
   "path": "/deposit?flowFixture=success&desktopFixture=unresolved",
   "steps": [
     {
-      "action": "waitFor",
-      "selector": ".ww-deposit-disclaimer"
+      "action": "click",
+      "testId": "deposit-show-address"
     },
     {
       "action": "click",
-      "role": "button",
-      "name": "Got it!",
-      "exact": false
+      "testId": "deposit-chain-31337"
+    },
+    {
+      "action": "click",
+      "testId": "picker-DAI"
+    },
+    {
+      "action": "waitFor",
+      "testId": "deposit-privacy-continue"
+    },
+    {
+      "action": "click",
+      "testId": "deposit-privacy-continue"
     },
     {
       "action": "waitFor",
       "selector": "[data-testid=\"deposit-address\"][title=\"0x1111111111111111111111111111111111111111\"]"
+    },
+    {
+      "action": "waitFor",
+      "selector": "[data-testid=\"deposit-copy\"]:not([aria-disabled])"
     },
     {
       "action": "screenshot",
@@ -22,42 +36,47 @@
       "state": "desktop: published address, nothing sent yet"
     },
     {
+      "action": "press",
+      "selector": "dialog[aria-label=\"Deposit\"]",
+      "key": "Escape"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[aria-label=\"Deposit\"]",
+      "state": "hidden"
+    },
+    {
       "action": "click",
-      "role": "button",
-      "name": "Deposit from your browser",
-      "exact": false
+      "testId": "deposit-new-address"
+    },
+    {
+      "action": "waitFor",
+      "label": "Amount to receive"
     },
     {
       "action": "fill",
-      "selector": ".ww-fund__amount input",
+      "label": "Amount to receive",
       "value": "24"
     },
     {
       "action": "click",
       "role": "button",
-      "name": "Deposit funds",
-      "exact": false
+      "name": "Review",
+      "exact": true
     },
     {
       "action": "click",
       "role": "button",
-      "name": "Confirm deposit",
-      "exact": false
+      "name": "Send DAI",
+      "exact": true
     },
     {
       "action": "waitFor",
-      "testId": "deposit-send-unresolved"
+      "selector": "dialog:modal [data-testid=\"deposit-send-unresolved\"]"
     },
     {
       "action": "waitFor",
       "testId": "deposit-address",
-      "state": "detached"
-    },
-    {
-      "action": "waitFor",
-      "role": "button",
-      "name": "Deposit from your browser",
-      "exact": false,
       "state": "detached"
     },
     {
@@ -67,9 +86,7 @@
     },
     {
       "action": "click",
-      "role": "button",
-      "name": "View activity",
-      "exact": false
+      "selector": "dialog:modal button:has-text(\"View activity\")"
     },
     {
       "action": "waitForUrl",
@@ -84,7 +101,7 @@
     },
     {
       "action": "waitFor",
-      "testId": "deposit-address",
+      "testId": "deposit-show-address",
       "state": "detached"
     },
     {
@@ -98,12 +115,36 @@
     },
     {
       "action": "waitFor",
+      "testId": "deposit-send-unresolved",
+      "state": "detached"
+    },
+    {
+      "action": "click",
+      "testId": "deposit-show-address"
+    },
+    {
+      "action": "click",
+      "testId": "deposit-chain-31337"
+    },
+    {
+      "action": "click",
+      "testId": "picker-DAI"
+    },
+    {
+      "action": "waitFor",
+      "testId": "deposit-privacy-continue"
+    },
+    {
+      "action": "click",
+      "testId": "deposit-privacy-continue"
+    },
+    {
+      "action": "waitFor",
       "selector": "[data-testid=\"deposit-address\"][title=\"0x2222222222222222222222222222222222222222\"]"
     },
     {
       "action": "waitFor",
-      "testId": "deposit-send-unresolved",
-      "state": "detached"
+      "selector": "[data-testid=\"deposit-copy\"]:not([aria-disabled])"
     },
     {
       "action": "screenshot",

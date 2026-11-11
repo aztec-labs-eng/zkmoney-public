@@ -2,13 +2,12 @@
  * The Standard/Faster choice every tipped burn offers, and the row that shows it. A flow reads the
  * choice, prices its fee with `pricedTip`, then settles the tip it burns against what it can afford.
  */
-import { useEffect, useState } from "react"
-import type { WithdrawalSpeedupNode } from "@obsidion/front-core"
+import { useState } from "react"
 import {
   fasterIsWorthIt,
   useFasterWithdrawal,
   type FasterWithdrawal,
-  type LoadFasterWithdrawal,
+  type WithdrawalEta,
 } from "./useFasterWithdrawal"
 import {
   WithdrawalSpeedChecking,
@@ -24,6 +23,8 @@ export const LIMIT_TIP_BLOCKED_COPY = `The tip would put this over the ${formatP
 
 export interface SpeedChoice {
   offer?: FasterWithdrawal
+  /** The standard ETA of the latest quote, tip or not. */
+  eta?: WithdrawalEta
   /** The first quote is still out. */
   loading: boolean
   speed: WithdrawalSpeed
@@ -49,36 +50,43 @@ export const opensOnFaster = (offer: FasterWithdrawal, amount: bigint) =>
 
 export function useSpeedChoice({
   active,
-  node,
   amount,
   initialSpeed,
   answerWithinMs,
-  load,
   held,
 }: {
   active: boolean
-  node?: WithdrawalSpeedupNode
   /** What the burn moves, in the tip's token; the opening choice weighs the tip against it. */
   amount?: bigint
   /** Overrides the opening choice, which is otherwise decided once by {@link opensOnFaster}. */
   initialSpeed?: WithdrawalSpeed
   answerWithinMs?: number
-  load?: LoadFasterWithdrawal
   held?: FasterWithdrawal
 }): SpeedChoice {
   const [chosen, setSpeed] = useState<WithdrawalSpeed | undefined>(initialSpeed)
-  const live = useFasterWithdrawal({ active, node, answerWithinMs, load })
+  const live = useFasterWithdrawal({ active, answerWithinMs })
   const offer = held ?? live.offer
-  // Fixed by the first offer, so re-quotes around the limit never flip it; reopened with the flow.
+  // Fixed by the first settled offer, so re-quotes around the limit never flip it; reopened with
+  // the flow.
   const [opening, setOpening] = useState<WithdrawalSpeed>()
+  const settledOffer = held ?? (live.current ? live.offer : undefined)
   if (!active && opening !== undefined) setOpening(undefined)
-  if (active && opening === undefined && offer && amount !== undefined) {
-    setOpening(opensOnFaster(offer, amount) ? "faster" : "standard")
+  if (active && opening === undefined && settledOffer && amount !== undefined) {
+    setOpening(opensOnFaster(settledOffer, amount) ? "faster" : "standard")
   }
   const speed = chosen ?? opening ?? "standard"
   const settled = !held && !!offer && !fasterIsWorthIt(offer)
   const pricedTip = speed === "faster" && offer && !settled ? offer.proverTip : 0n
-  return { offer, loading: live.loading, speed, setSpeed, settled, held: !!held, pricedTip }
+  return {
+    offer,
+    eta: live.eta,
+    loading: live.loading,
+    speed,
+    setSpeed,
+    settled,
+    held: !!held,
+    pricedTip,
+  }
 }
 
 export interface SpeedOutcome {
@@ -99,15 +107,26 @@ export function useSpeedOutcome(
 ): SpeedOutcome {
   const { offer, settled, held, speed, setSpeed } = choice
   const blocked = offer && !settled && !held && covers === false ? blockedCopy : undefined
-  useEffect(() => {
+  // Each block falls back to Standard, and that counts as the choice.
+  const [seenBlock, setSeenBlock] = useState<string>()
+  if (seenBlock !== blocked) {
+    setSeenBlock(blocked)
     if (blocked) setSpeed("standard")
-  }, [blocked, setSpeed])
+  }
   const proverTip = speed === "faster" && offer && !settled && !blocked ? offer.proverTip : 0n
   return { blocked, proverTip }
 }
 
 /** The Speed row: checking while the first quote is out, then the choice; nothing without an offer. */
-export function SpeedRow({ choice, outcome }: { choice: SpeedChoice; outcome: SpeedOutcome }) {
+export function SpeedRow({
+  choice,
+  outcome,
+  disabled,
+}: {
+  choice: SpeedChoice
+  outcome: SpeedOutcome
+  disabled?: boolean
+}) {
   if (!choice.offer) return choice.loading ? <WithdrawalSpeedChecking /> : null
   return (
     <WithdrawalSpeedPicker
@@ -116,6 +135,7 @@ export function SpeedRow({ choice, outcome }: { choice: SpeedChoice; outcome: Sp
       faster={choice.offer}
       settled={choice.settled}
       fasterBlocked={outcome.blocked}
+      disabled={disabled}
     />
   )
 }

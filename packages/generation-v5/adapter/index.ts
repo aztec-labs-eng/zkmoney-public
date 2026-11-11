@@ -1,6 +1,7 @@
 // The v5 source generation. Built inside a checkout of the pinned v5 wallet commit (see
 // scripts/build.mjs), so every import below resolves to that commit's packages.
 import { NO_FROM } from "@aztec/aztec.js/account"
+import { Barretenberg } from "@aztec/bb.js"
 import { AztecAddress, EthAddress } from "@aztec/aztec.js/addresses"
 import { Fr } from "@aztec/aztec.js/fields"
 import type { AztecNode } from "@aztec/aztec.js/node"
@@ -82,7 +83,7 @@ import {
   type SourceRefundRuntime,
   type SourceSipaScan,
 } from "./protocol"
-import { encodeSipaDeploy, registrationDeposit } from "./sipa"
+import { encodeSipaDeploy, registrationDeposit, resolverDeposit } from "./sipa"
 import { fresh, memoryStorage, takeTurn } from "./stores"
 
 export { encodeSipaDeploy }
@@ -247,6 +248,7 @@ export const open: SourceGenerationModule["open"] = async (params) => {
     rollupAddress: rollupAddress.toString(),
     contracts: params.contracts as ContractServiceConfig,
     hold,
+    startProver: () => Barretenberg.initSingleton(params.bb),
   })
 }
 
@@ -260,6 +262,8 @@ function session(o: {
   rollupAddress: string
   contracts: ContractServiceConfig
   hold: (tip: L2TipId | undefined) => void
+  /** Starts the bb.js instance that the refund proofs share, so it takes the host's settings. */
+  startProver: () => Promise<unknown>
 }): SourceGenerationSession {
   const { wallet, account, client } = o
   const portalOf = (tuple: OxideEnvTuple) =>
@@ -781,6 +785,18 @@ function session(o: {
         request,
       ),
 
+    resolverDeposit: (request) =>
+      resolverDeposit(
+        {
+          client,
+          l1ChainId: o.l1ChainId,
+          masterSecret: o.masterSecret,
+          rollupAddress: o.rollupAddress,
+          l2Address: account.getAddress().toString() as Hex,
+        },
+        request,
+      ),
+
     async savingsMoves({ tuple }) {
       await holdAtFreeze(tuple)
       await registerClaimFpc(tuple)
@@ -919,6 +935,7 @@ function session(o: {
           escrowNotes: (escrows, fresh) =>
             readFrozenEscrowNotes(tuple, { ...read, escrows }, fresh),
         },
+        o.startProver,
       )
     },
   }
@@ -991,6 +1008,7 @@ function plainRuntime(
       fresh: boolean,
     ): ReturnType<typeof readRefundableEscrowNotes>
   },
+  startProver: () => Promise<unknown>,
 ): SourceRefundRuntime {
   const plainCall = executorCallOf(runtime)
   // The Inbox leaf of each deposit a read classified.
@@ -1042,6 +1060,7 @@ function plainRuntime(
     },
     build: async (selection, executorCall) => {
       const call = v5ExecutorCall(executorCall)
+      await startProver()
       const view: FrozenRefundMigrationRuntime = Object.create(base, {
         executorCall: { value: (() => call) satisfies ExecutorCallOf },
       })

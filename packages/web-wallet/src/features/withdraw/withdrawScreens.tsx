@@ -3,9 +3,9 @@ import { useState, type ReactNode } from "react"
 import type { Hex } from "viem"
 import { Icon, PrimaryGradientButton } from "@obsidion/web-ds"
 import doneBadge from "../../assets/cutover/done-badge.png"
-import { l1TxUrl } from "../../ui/detailRows"
+import { useL1Links } from "../../ui/detailRows"
 import { shortL1Addr, usdAtomicFloor } from "../../ui/format"
-import { cutoverAccount } from "../cutover/account"
+import { useCutoverAccount } from "../cutover/account"
 import {
   upgradingCopy,
   withdrawChoiceCopy as choiceCopy,
@@ -68,8 +68,7 @@ export function WithdrawChoice(props: {
   zkMoneyFee?: bigint
   /** Its fee could not be read. */
   zkMoneyFeeFailed: boolean
-  /** What the zk.money route moves before its fee, which can be less than `total`. */
-  zkMoneyMoving?: bigint
+  receive: Record<WithdrawRoute, string>
   /** The wallet route's gas, in USD; undefined while not read. */
   walletFee?: bigint
   route: WithdrawRoute
@@ -93,7 +92,7 @@ export function WithdrawChoice(props: {
   return (
     <>
       <CutoverPage
-        account={cutoverAccount()}
+        account={useCutoverAccount()}
         onBack={props.onBack}
         testId="cutover-withdraw-choice"
         footer={
@@ -139,11 +138,7 @@ export function WithdrawChoice(props: {
                 ? choiceCopy.zkMoney.low(fee, balance)
                 : props.zkMoneyFeeFailed
                 ? choiceCopy.zkMoney.feeFailed
-                : choiceCopy.zkMoney.value(
-                    props.zkMoneyMoving === undefined || props.zkMoneyFee === undefined
-                      ? "…"
-                      : usdAtomicFloor(props.zkMoneyMoving - props.zkMoneyFee),
-                  )
+                : choiceCopy.zkMoney.value(props.receive["zk-money"])
             }
             active
             onSelect={() => props.onRoute("zk-money")}
@@ -154,10 +149,10 @@ export function WithdrawChoice(props: {
             title={choiceCopy.wallet.title}
             body={
               low
-                ? choiceCopy.wallet.lowBody(walletFee, balance)
+                ? choiceCopy.wallet.lowBody(walletFee, props.receive.wallet)
                 : choiceCopy.wallet.body(walletFee)
             }
-            value={choiceCopy.wallet.value(balance)}
+            value={choiceCopy.wallet.value(props.receive.wallet)}
             active={low || !!waiting}
             onSelect={() => props.onRoute("wallet")}
           />
@@ -203,7 +198,7 @@ export function ZkProgress(props: { stage: ZkMoneyExitStage; to: string; total: 
   ]
   return (
     <ProgressScreen
-      account={cutoverAccount()}
+      account={useCutoverAccount()}
       testId="cutover-withdrawing"
       percent={sending ? 38 : 1}
       caption={slow ? upgradingCopy.longerRing : sending ? upgradingCopy.left(2) : copy.withdrawing}
@@ -253,7 +248,7 @@ export function WalletProgress(props: {
   const body = copy.approveBody(props.approveIn)
   return (
     <ProgressScreen
-      account={cutoverAccount()}
+      account={useCutoverAccount()}
       testId="cutover-wallet-withdrawing"
       percent={proving ? 20 : approving ? 38 : 72}
       caption={approving ? copy.waitingYou : proving ? copy.withdrawing : upgradingCopy.left(2)}
@@ -283,7 +278,8 @@ export function WithdrawDone(props: {
   hashes: Hex[]
   onClose: () => void
 }) {
-  const [shown] = useState(cutoverAccount)
+  const { l1TxUrl } = useL1Links()
+  const [shown] = useState(useCutoverAccount())
   const where = props.wallet ? `${props.wallet} (${shortL1Addr(props.to)})` : shortL1Addr(props.to)
   const open = (hash: Hex) => window.open(l1TxUrl(hash), "_blank", "noopener")
   return (

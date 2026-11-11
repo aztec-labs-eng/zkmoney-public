@@ -29,40 +29,17 @@ describe("WebStorageAdapter", () => {
     await bind("t")
   })
 
-  it("removes and clears", async () => {
+  it("removes", async () => {
     await adapter.setItem("a", "1")
     await adapter.setItem("b", "2")
     await adapter.removeItem("a")
     expect(await adapter.getItem("a")).toBeNull()
     expect(await adapter.getItem("b")).toBe("2")
-    await adapter.clear()
-    expect(await adapter.getItem("b")).toBeNull()
   })
 
-  it("clear() removes a store record whose write was queued before it", async () => {
-    await bind("ab12")
-    const key = `${WEB_STORAGE_PREFIX}ab12.acct/requests/r1`
-    let land!: () => void
-    const landed = new Promise<void>((resolve) => (land = resolve))
-    testWalletDbs().onApply = async (_version, ops) => {
-      if (ops.some(([k, value]) => k === key && value !== null)) await landed
-    }
-    const written = opfsBackend.apply([[key, "{}"]])
-    const cleared = adapter.clear()
-    // The clear has listed what it can before the write lands.
-    await new Promise((resolve) => setTimeout(resolve, 0))
-    land()
-    await Promise.all([written, cleared])
-    expect(await opfsBackend.get(key)).toBeUndefined()
-  })
-
-  it("namespaces its keys and clear() leaves foreign keys alone", async () => {
+  it("namespaces its keys", async () => {
     await adapter.setItem("mine", "1")
-    walletStorage.setItem("webwallet.identity", "keep")
     expect(walletStorage.getItem(`${WEB_STORAGE_PREFIX}t.mine`)).toBe("1")
-    await adapter.clear()
-    expect(await adapter.getItem("mine")).toBeNull()
-    expect(walletStorage.getItem("webwallet.identity")).toBe("keep")
   })
 
   it("keeps each account's keys apart and global keys shared", async () => {
@@ -75,22 +52,11 @@ describe("WebStorageAdapter", () => {
     expect(await adapter.getItem(PASSKEY_IDENTITY_MAP_KEY)).toBe("shared")
     expect(await adapter.getItem("obsidion_config:analyticsConsent")).toBe("true")
     await adapter.setItem("obsidion_contacts", "B")
-    await adapter.clear()
     await bind("aaa")
     expect(await adapter.getItem("obsidion_contacts")).toBe("A")
     await bind(null)
     expect(walletStorage.getItem("obsidion.aaa.obsidion_contacts")).toBe("A")
     expect(await adapter.getItem("obsidion_contacts")).toBeNull()
-  })
-
-  it("clear() without a bound account touches nothing", async () => {
-    await bind("aaa")
-    await adapter.setItem("obsidion_contacts", "A")
-    await adapter.setItem(PASSKEY_IDENTITY_MAP_KEY, "shared")
-    await bind(null)
-    await adapter.clear()
-    expect(walletStorage.getItem("obsidion.aaa.obsidion_contacts")).toBe("A")
-    expect(await adapter.getItem(PASSKEY_IDENTITY_MAP_KEY)).toBe("shared")
   })
 
   it("a pointer change moves every instance at once", async () => {

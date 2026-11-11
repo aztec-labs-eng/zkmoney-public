@@ -5,14 +5,6 @@
 import { Network } from "@obsidion/core/constants"
 
 /**
- * Drop the scheme so the label under a QR reads as a friendly handle
- * rather than a URL.
- */
-export function qrPayloadDisplayLabel(payload: string): string {
-  return payload.replace(/^https?:\/\//, "")
-}
-
-/**
  * Parse a bare user tag out of a QR-code payload.
  *
  * The wallet's current QR encodes `https://<tag>.zk.money`, but we accept
@@ -28,7 +20,7 @@ export function qrPayloadDisplayLabel(payload: string): string {
  *     earlier build, kept here so older QRs still resolve.
  *
  * Tag chars match `normalizeTag` upstream (alphanum + `_-`). The result
- * is lowercased for canonical lookup against `ContactStorage`. Returns
+ * is lowercased for canonical lookup against the contact book. Returns
  * `null` for anything unrecognized so the caller can ignore foreign QR
  * codes without crashing.
  */

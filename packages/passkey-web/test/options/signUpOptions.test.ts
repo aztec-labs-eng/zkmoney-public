@@ -80,7 +80,9 @@ const UA = {
   windows10Chrome: hinted(WINDOWS_CHROME_UA, "Windows", "10.0.0", chrome),
   /** Windows Chrome without Client Hints: phone creation, still on Windows. */
   windowsChromeUnhinted: parseUserAgent({ userAgent: WINDOWS_CHROME_UA }),
-  windowsEdge: hinted(WINDOWS_CHROME_UA, "Windows", "15.0.0", edge),
+  /** Edge on Windows 10: no Windows Hello, so its row has the extensions alone. */
+  windowsEdge: hinted(WINDOWS_CHROME_UA, "Windows", "10.0.0", edge),
+  windows11Edge: hinted(WINDOWS_CHROME_UA, "Windows", "15.0.0", edge),
   windowsBrave: hinted(WINDOWS_CHROME_UA, "Windows", "15.0.0", brave),
   windowsFirefox: parseUserAgent({ userAgent: WINDOWS_FIREFOX_UA }),
   linuxChrome: hinted(LINUX_CHROME_UA, "Linux", "", chrome),
@@ -100,9 +102,11 @@ function sheet(ua: UserAgentInfo, input: Partial<SignUpOptionsInput> = {}): Sign
     creation: laptopCreationFor(ua, FIREFOX_ADMITTED),
     reach: "ok",
     extension: "none",
+    protonKept: false,
     refusedOften: false,
     ignoresHints: ignoresHintsFor(ua),
     os: ua.osFamily,
+    backupAddable: true,
     ...input,
   })
 }
@@ -121,6 +125,7 @@ const {
   "gpm": GPM,
   "windows_hello": WINDOWS_HELLO,
   "1password": ONE_PASSWORD,
+  "proton": PROTON,
 } = SUPPORTED_NAMES
 const KEY = PHONE_STEPS_COPY.supported.providers.filter(
   (p) => !Object.values(SUPPORTED_NAMES).includes(p),
@@ -163,19 +168,36 @@ const TABLE: Row[] = [
       { options: ["phone-or-key"], selected: "phone-or-key" },
     ),
   ),
-  ...[UA.windowsFirefox, UA.linuxFirefox].flatMap((ua) =>
-    both(
-      `${ua.osFamily} Firefox`,
-      ua,
-      { options: ["phone-or-key"], selected: "phone-or-key", line: "install-extension" },
-      { options: ["1password", "phone-or-key"], selected: "1password" },
-    ),
+  ...both(
+    "linux Firefox",
+    UA.linuxFirefox,
+    { options: ["phone-or-key"], selected: "phone-or-key", line: "install-extension" },
+    { options: ["1password", "phone-or-key"], selected: "1password" },
   ),
   ...both(
-    `${UA.windowsEdge.osFamily} ${UA.windowsEdge.browserFamily}`,
+    "Windows Firefox as shipped, its extensions withdrawn",
+    UA.windowsFirefox,
+    { options: ["computer", "phone-or-key"], selected: "computer" },
+    { options: ["computer", "phone-or-key"], selected: "computer" },
+    laptopCreationFor(UA.windowsFirefox),
+  ),
+  ...both(
+    "Windows Firefox with its extensions admitted",
+    UA.windowsFirefox,
+    { options: ["computer", "phone-or-key"], selected: "computer" },
+    { options: ["1password", "computer", "phone-or-key"], selected: "1password" },
+  ),
+  ...both(
+    "Windows 10 edge",
     UA.windowsEdge,
     { options: ["phone-or-key"], selected: "phone-or-key", line: "install-extension" },
     { options: ["1password", "phone-or-key"], selected: "1password" },
+  ),
+  ...both(
+    "Windows 11 edge",
+    UA.windows11Edge,
+    { options: ["computer", "phone-or-key"], selected: "computer" },
+    { options: ["1password", "computer", "phone-or-key"], selected: "1password" },
   ),
   ...both(
     "Windows Chrome without Client Hints",
@@ -352,7 +374,14 @@ describe("signUpOptionsFor", () => {
     const over = { extension: "1password" as const, refusedOften: true }
 
     it("opens on this computer where the row has its own manager, with the refused-often advice", () => {
-      for (const ua of [UA.windowsChrome, UA.macChrome, UA.macSafari, UA.macFirefox]) {
+      for (const ua of [
+        UA.windowsChrome,
+        UA.windows11Edge,
+        UA.windowsFirefox,
+        UA.macChrome,
+        UA.macSafari,
+        UA.macFirefox,
+      ]) {
         const s = sheet(ua, over)
         expect(s.selected).toBe("computer")
         expect(option(s, "computer").advice).toEqual([L.extension, L.refusedOften])
@@ -366,10 +395,10 @@ describe("signUpOptionsFor", () => {
       for (const preferred of [undefined, "1password", "computer"] as const) {
         const input = { ...over, ...(preferred ? { preferred } : {}) }
         expect(sheet(UA.linuxEdge, input)).toMatchObject({ selected: "phone", line: steeredPhone })
-        for (const ua of [UA.windowsEdge, UA.windowsFirefox]) {
+        for (const ua of [UA.windowsEdge, UA.linuxFirefox]) {
           expect(sheet(ua, input)).toMatchObject({ selected: "phone-or-key", line: steeredPhone })
         }
-        for (const ua of [UA.linuxEdge, UA.windowsEdge, UA.windowsFirefox]) {
+        for (const ua of [UA.linuxEdge, UA.windowsEdge, UA.linuxFirefox]) {
           expect(sheet(ua, { ...input, reach: "no-hybrid" })).toMatchObject({
             selected: "key",
             line: steeredKey,
@@ -485,7 +514,7 @@ describe("signUpOptionsFor", () => {
     })
 
     it("carries the full caption where it is the only option", () => {
-      for (const ua of [UA.chromeOs, UA.macSafariOld, UA.windowsEdge, UA.windowsFirefox]) {
+      for (const ua of [UA.chromeOs, UA.macSafariOld, UA.windowsEdge, UA.linuxFirefox]) {
         expect(option(sheet(ua, { reach: "no-hybrid" }), "key").advice).toEqual([
           PHONE_STEPS_COPY.noPhone.caption,
         ])
@@ -543,12 +572,162 @@ describe("signUpOptionsFor", () => {
       expect(option(rows[0]!, "computer").supported).toEqual([GPM])
     })
 
+    it("is This computer's one manager on Windows 11 in Edge and Brave, and in Firefox as shipped", () => {
+      for (const ua of [UA.windows11Edge, UA.windowsBrave]) {
+        expect(option(sheet(ua), "computer")).toMatchObject({
+          supported: [WINDOWS_HELLO],
+          advice: [L.installExtension],
+          helloWarning: C.computer.helloWarning,
+        })
+      }
+      const firefox = sheet(UA.windowsFirefox, {
+        creation: laptopCreationFor(UA.windowsFirefox),
+        extension: "1password",
+        protonKept: true,
+      })
+      expect(ids(firefox)).toEqual(["computer", "phone-or-key"])
+      expect(option(firefox, "computer")).toMatchObject({
+        supported: [WINDOWS_HELLO],
+        advice: [L.extension],
+        helloWarning: C.computer.helloWarning,
+      })
+    })
+
+    it("leaves the sheet as it was once a build withdraws Windows Hello and Proton Pass", () => {
+      const strip = (creation: LaptopCreation) =>
+        withoutManager(withoutManager(creation, "windows_hello"), "proton")
+      const edge = sheet(UA.windows11Edge, { creation: strip(laptopCreationFor(UA.windows11Edge)) })
+      expect(ids(edge)).toEqual(["phone-or-key"])
+      expect(edge.line?.kind).toBe("install-extension")
+      const steered = sheet(UA.windows11Edge, {
+        creation: strip(laptopCreationFor(UA.windows11Edge)),
+        extension: "1password",
+        refusedOften: true,
+      })
+      expect(steered).toMatchObject({ selected: "phone-or-key", line: { kind: "steered" } })
+      const firefox = sheet(UA.windowsFirefox, {
+        creation: strip(laptopCreationFor(UA.windowsFirefox)),
+      })
+      expect(ids(firefox)).toEqual(["phone-or-key"])
+      for (const s of [edge, steered, firefox]) {
+        for (const o of s.options) expect(o.helloWarning).toBeUndefined()
+      }
+    })
+
     it("says on Windows 10, before the prompt, that Windows Hello can't hold the passkey", () => {
       expect(option(sheet(UA.windows10Chrome), "computer")).toMatchObject({
         supported: [GPM],
         advice: [C.computer.windows10, L.installExtension],
       })
       expect(option(sheet(UA.windowsChrome), "computer").advice).toEqual([L.installExtension])
+    })
+  })
+
+  describe("Proton Pass", () => {
+    const kept = { protonKept: true } as const
+
+    it("is its own option where the row names it and the lock kept its wrapper, and opens the sheet", () => {
+      const s = sheet(UA.macChrome, kept)
+      expect(ids(s)).toEqual(["proton", "computer", "phone", "key"])
+      expect(s.selected).toBe("proton")
+      expect(option(s, "proton")).toEqual({
+        id: "proton",
+        label: C.proton.label,
+        description: C.proton.description,
+        advice: [],
+        protonWarning: C.proton.warning,
+        supported: [PROTON],
+      })
+      const computer = option(s, "computer")
+      expect(computer.description).not.toContain(PROTON)
+      expect(computer.supported).toEqual([ICLOUD, GPM, ONE_PASSWORD])
+      expect(computer.protonWarning).toBeUndefined()
+    })
+
+    it("stands after 1Password's option, which keeps the opening", () => {
+      const s = sheet(UA.macChrome, { ...kept, extension: "1password" })
+      expect(ids(s)).toEqual(["1password", "proton", "computer", "phone", "key"])
+      expect(s.selected).toBe("1password")
+    })
+
+    it("carries neither the Windows Hello tip, which stays on This computer, nor the key's", () => {
+      const s = sheet(UA.windowsChrome, kept)
+      expect(ids(s)).toEqual(["proton", "computer", "phone-or-key"])
+      expect(option(s, "computer").helloWarning).toEqual(C.computer.helloWarning)
+      expect(option(s, "proton").helloWarning).toBeUndefined()
+      expect(option(s, "proton").keyWarning).toBeUndefined()
+    })
+
+    it("shows on Safari's row, and on no row that withdraws it nor on a phone", () => {
+      expect(ids(sheet(UA.macSafari, kept))).toEqual(["proton", "computer", "phone-or-key"])
+      for (const ua of [UA.macFirefox, UA.windowsFirefox, UA.linuxFirefox]) {
+        expect(ids(sheet(ua, { ...kept, creation: laptopCreationFor(ua) }))).not.toContain("proton")
+      }
+      expect(ids(sheet(UA.chromeOs, kept))).toEqual(["phone", "key"])
+      const withdrawn = withoutManager(laptopCreationFor(UA.macChrome), "proton")
+      expect(ids(sheet(UA.macChrome, { ...kept, creation: withdrawn }))).toEqual([
+        "computer",
+        "phone",
+        "key",
+      ])
+    })
+
+    it("needs no install line, and none asks for 1Password once it is off the row", () => {
+      const edge = sheet(UA.windowsEdge, kept)
+      expect(ids(edge)).toEqual(["proton", "phone-or-key"])
+      expect(edge.selected).toBe("proton")
+      expect(edge.line).toBeUndefined()
+      const linuxEdge = sheet(UA.linuxEdge, kept)
+      expect(ids(linuxEdge)).toEqual(["proton", "phone", "key"])
+      expect(linuxEdge.line).toBeUndefined()
+      const protonOnly = withoutManager(laptopCreationFor(UA.windowsEdge), "1password")
+      const alone = sheet(UA.windowsEdge, { ...kept, creation: protonOnly })
+      expect(ids(alone)).toEqual(["proton", "phone-or-key"])
+      expect(alone.line).toBeUndefined()
+      const neither = sheet(UA.windowsEdge, { creation: protonOnly })
+      expect(ids(neither)).toEqual(["phone-or-key"])
+      expect(neither.selected).toBe("phone-or-key")
+      expect(neither.line).toBeUndefined()
+    })
+
+    it("is where a preference for it lands, else the nearest local option", () => {
+      expect(sheet(UA.macChrome, { ...kept, preferred: "proton" }).selected).toBe("proton")
+      expect(
+        sheet(UA.macChrome, { ...kept, extension: "1password", preferred: "proton" }).selected,
+      ).toBe("proton")
+      expect(sheet(UA.macChrome, { extension: "1password", preferred: "proton" }).selected).toBe(
+        "1password",
+      )
+      expect(sheet(UA.macChrome, { preferred: "proton" }).selected).toBe("computer")
+      expect(sheet(UA.macChrome, { ...kept, preferred: "1password" }).selected).toBe("computer")
+      expect(sheet(UA.windowsEdge, { ...kept, preferred: "computer" }).selected).toBe("proton")
+      expect(sheet(UA.windowsEdge, { ...kept, preferred: "1password" }).selected).toBe("proton")
+      expect(sheet(UA.windowsEdge, { preferred: "proton" }).selected).toBe("phone-or-key")
+    })
+
+    it("is steered past like the other local picks once refusals are past the limit", () => {
+      const over = {
+        ...kept,
+        extension: "1password",
+        refusedOften: true,
+        preferred: "proton",
+      } as const
+      expect(sheet(UA.macChrome, over).selected).toBe("computer")
+      expect(sheet(UA.windowsEdge, over)).toMatchObject({
+        selected: "phone-or-key",
+        line: { kind: "steered" },
+      })
+      expect(sheet(UA.linuxEdge, over)).toMatchObject({
+        selected: "phone",
+        line: { kind: "steered" },
+      })
+    })
+
+    it("is named by no phone or key option", () => {
+      const s = sheet(UA.macChrome, kept)
+      expect(option(s, "phone").supported).not.toContain(PROTON)
+      expect(option(s, "key").supported).not.toContain(PROTON)
+      expect(option(sheet(UA.windowsChrome, kept), "phone-or-key").supported).not.toContain(PROTON)
     })
   })
 
@@ -559,6 +738,12 @@ describe("signUpOptionsFor", () => {
       expect(option(chromium, id).keyWarning).toBeUndefined()
     }
     expect(option(sheet(UA.macSafari), "phone-or-key").keyWarning).toEqual(C.keyWarning)
+  })
+
+  it("the key warning names no backup passkey where none can be added", () => {
+    const off = { backupAddable: false } as const
+    expect(option(sheet(UA.macChrome, off), "key").keyWarning).toBe(C.keyWarningNoBackup)
+    expect(option(sheet(UA.macSafari, off), "phone-or-key").keyWarning).toBe(C.keyWarningNoBackup)
   })
 
   it("the 1Password option carries no advice, whatever else is offered", () => {
@@ -721,6 +906,7 @@ describe("routeForChoice", () => {
   it("sends this computer's options locally, the phone's to a phone, the key to a key", () => {
     expect(routeForChoice("computer")).toBe("this-device")
     expect(routeForChoice("1password")).toBe("this-device")
+    expect(routeForChoice("proton")).toBe("this-device")
     expect(routeForChoice("phone")).toBe("phone")
     expect(routeForChoice("phone-or-key")).toBe("phone")
     expect(routeForChoice("key")).toBe("security-key")

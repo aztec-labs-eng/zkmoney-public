@@ -5,10 +5,13 @@ import type { PublicClient } from "viem"
 import { SipaNameUndepositableError } from "@obsidion/sdk"
 import {
   linkDeployment,
-  RequestDecimalsMismatchError,
-  RequesterNotUpgradedError,
+  MISMATCH_REASON_TIMEOUT_MS,
   resolveAccountlessRequest,
 } from "../../../src/features/requests/accountlessRequest"
+import {
+  RequestDecimalsMismatchError,
+  RequesterNotUpgradedError,
+} from "../../../src/features/requests/accountlessRequestErrors"
 import {
   buildErc20TransferUri,
   buildErc20TransferUriWithoutAmount,
@@ -17,10 +20,12 @@ import {
 const SIPA = `0x${"aa".repeat(20)}`
 const CCIP_SIPA = `0x${"bb".repeat(20)}`
 const L2 = `0x${"cc".repeat(32)}`
+const MOVED = `0x${"dd".repeat(32)}`
 const TOKEN = `0x${"22".repeat(20)}` as const
 const IMPLEMENTATION = `0x${"77".repeat(20)}`
 const PORTAL = `0x${"88".repeat(20)}`
 const FEE = 250_000n
+const HEAD = 500n
 
 const resolveSipaAddressMock = vi.fn(async (..._args: unknown[]) => CCIP_SIPA)
 const readDepositFeeMock = vi.fn(async (..._args: unknown[]) => FEE)
@@ -36,6 +41,8 @@ const tuple = {
   token: TOKEN,
   l2Token: `0x${"33".repeat(32)}`,
   registry: `0x${"44".repeat(20)}`,
+  accountMetadataRegistry: `0x${"45".repeat(20)}`,
+  deployedAtBlock: "100",
   sipaResolver: `0x${"66".repeat(20)}`,
   ensDomain: "sandbox.oxide",
   sipaFactory: `0x${"55".repeat(20)}`,
@@ -67,38 +74,63 @@ function packet(over: Partial<RequestInlinePacket> = {}): RequestInlinePacket {
   }
 }
 
-/** An L1 where the token has `decimals` and each address holds what `chain` says. */
+/** The requester's registry record: the L2 address written at each block, oldest first. */
+type History = { block: bigint; l2Address: string }[]
+
+/**
+ * An L1 where the token has `decimals`, each address holds what `chain` says and the registry holds
+ * `history`. A `history` that is a promise stands for a log read that fails or never settles.
+ */
 function l1(
   decimals = 6,
   chain: Record<string, { balance?: bigint; code?: string; tokens?: Record<string, bigint> }> = {},
   predict: (address: string, args: unknown[]) => string = () => SIPA,
+  history: History | (() => Promise<never>) = [],
 ): PublicClient {
+  const recordAt = (block: bigint) =>
+    typeof history === "function" ? undefined : [...history].reverse().find((r) => r.block <= block)
   return {
     readContract: async ({
       address,
       functionName,
       args,
+      blockNumber,
     }: {
       address: string
       functionName: string
       args?: string[]
+      blockNumber?: bigint
     }) =>
       functionName === "decimals"
         ? decimals
         : functionName === "predictSIPA"
         ? predict(address, args!)
+        : functionName === "hasUserRecord"
+        ? !!recordAt(blockNumber!)
+        : functionName === "getUserRecord"
+        ? { l2Address: recordAt(blockNumber!)!.l2Address }
         : chain[args![0]]?.tokens?.[address] ??
           (address === TOKEN ? chain[args![0]]?.balance : 0n) ??
           0n,
     getCode: async ({ address }: { address: string }) => chain[address]?.code,
+    getBlockNumber: async () => HEAD,
+    getContractEvents: async ({ fromBlock, toBlock }: { fromBlock: bigint; toBlock: bigint }) =>
+      typeof history === "function"
+        ? history()
+        : history
+            .filter((r) => r.block >= fromBlock && r.block <= toBlock)
+            .map((r) => ({ args: { record: { l2Address: r.l2Address } } })),
   } as unknown as PublicClient
 }
 
-function deps(resolveRequester: () => Promise<RegistryTagResolution> = async () => resolved) {
+function deps(
+  resolveRequester: () => Promise<RegistryTagResolution> = async () => resolved,
+  history?: Parameters<typeof l1>[3],
+) {
   return {
     tuple,
     // The token contract reports the decimals the packets below declare.
-    publicClient: l1(),
+    publicClient: l1(6, {}, () => SIPA, history),
     resolveRequester,
     chainId: 11155111,
     acceptedTokens: [TOKEN],
@@ -191,22 +223,142 @@ describe("resolveAccountlessRequest", () => {
     expect(result.paymentUri).toBe(`ethereum:${TOKEN}@11155111/transfer?address=${SIPA}`)
   })
 
-  it("keeps the QR when the @tag no longer matches — the SIPA is the payee", async () => {
+  it("keeps the QR when the @tag is no longer registered — the SIPA is the payee", async () => {
     const result = await resolveAccountlessRequest(
       packet({ sipaAddress: SIPA }),
       deps(async () => ({ status: "notFound" })),
     )
     expect(result.sipaAddress).toBe(SIPA)
-    expect(result.tagWarning).toMatch(/no longer registered/)
+    expect(result.tagWarning).toBe("unregistered")
   })
 
-  it("warns when the @tag resolves to a different account than the link pinned", async () => {
+  it("keeps the QR when the @tag cannot be checked, and says so", async () => {
     const result = await resolveAccountlessRequest(
       packet({ sipaAddress: SIPA }),
-      deps(async () => ({ ...resolved, l2Address: `0x${"dd".repeat(32)}` })),
+      deps(async () => {
+        throw new Error("Failed to fetch")
+      }),
     )
     expect(result.sipaAddress).toBe(SIPA)
-    expect(result.tagWarning).toMatch(/no longer matches/)
+    expect(result.tagWarning).toBe("unchecked")
+  })
+
+  it("pays a Receive code whose pin is the @tag's current account", async () => {
+    const result = await resolveAccountlessRequest(
+      packet({
+        sipaAddress: SIPA,
+        requesterAddress: undefined,
+        requesterPin: L2.toUpperCase().replace("0X", "0x").slice(0, 18),
+      }),
+      deps(),
+    )
+    expect(result.sipaAddress).toBe(SIPA)
+    expect(result.tagWarning).toBeUndefined()
+  })
+
+  it("pays a link that pins no address, whatever the @tag resolves to", async () => {
+    const result = await resolveAccountlessRequest(
+      packet({ sipaAddress: SIPA, requesterAddress: undefined }),
+      deps(async () => ({ ...resolved, l2Address: MOVED })),
+    )
+    expect(result.sipaAddress).toBe(SIPA)
+    expect(result.tagWarning).toBeUndefined()
+  })
+
+  it("pays a Receive code that carries no pin, whatever the @tag resolves to", async () => {
+    const result = await resolveAccountlessRequest(
+      packet({ sipaAddress: SIPA, requesterAddress: undefined, compact: true }),
+      deps(async () => ({ ...resolved, l2Address: MOVED })),
+    )
+    expect(result.sipaAddress).toBe(SIPA)
+  })
+
+  describe("when the @tag names another account than the link pins", () => {
+    const moved = (history: Parameters<typeof l1>[3] = []) =>
+      deps(async () => ({ ...resolved, l2Address: MOVED }), history)
+    const refusal = (reason: string) => ({
+      code: "contact.requestMismatch",
+      data: { tag: "alice", reason },
+    })
+
+    it("refuses as moved when the tag's account recorded the pinned address", async () => {
+      // Recorded before the deployment's first block: a deployment can adopt an older registry.
+      const history = [
+        { block: 50n, l2Address: L2.toUpperCase().replace("0X", "0x") },
+        { block: 150n, l2Address: MOVED },
+      ]
+      await expect(
+        resolveAccountlessRequest(packet({ sipaAddress: SIPA }), moved(history)),
+      ).rejects.toMatchObject(refusal("moved"))
+      expect(resolveSipaAddressMock).not.toHaveBeenCalled()
+    })
+
+    it("refuses as another owner's when the pinned address is not in its history", async () => {
+      await expect(
+        resolveAccountlessRequest(
+          packet({ sipaAddress: SIPA }),
+          moved([{ block: 150n, l2Address: MOVED }]),
+        ),
+      ).rejects.toMatchObject(refusal("otherOwner"))
+      expect(resolveSipaAddressMock).not.toHaveBeenCalled()
+    })
+
+    it("ignores an address the record held only before the active deployment", async () => {
+      const history = [
+        { block: 50n, l2Address: L2 },
+        { block: 80n, l2Address: MOVED },
+      ]
+      await expect(
+        resolveAccountlessRequest(packet({ sipaAddress: SIPA }), moved(history)),
+      ).rejects.toMatchObject(refusal("otherOwner"))
+    })
+
+    it("refuses a Receive code whose pin is the old account's", async () => {
+      const code = packet({
+        sipaAddress: SIPA,
+        requesterAddress: undefined,
+        requesterPin: L2.slice(0, 18),
+        compact: true,
+      })
+      const history = [
+        { block: 100n, l2Address: L2 },
+        { block: 150n, l2Address: MOVED },
+      ]
+      await expect(resolveAccountlessRequest(code, moved(history))).rejects.toMatchObject(
+        refusal("moved"),
+      )
+      expect(resolveSipaAddressMock).not.toHaveBeenCalled()
+    })
+
+    it("refuses a link without an embedded SIPA before the resolver", async () => {
+      await expect(resolveAccountlessRequest(packet(), moved())).rejects.toMatchObject(
+        refusal("otherOwner"),
+      )
+      expect(resolveSipaAddressMock).not.toHaveBeenCalled()
+    })
+
+    it("refuses without a cause, and names no payee, when the history cannot be read", async () => {
+      const failing = () => Promise.reject(new Error("RPC down"))
+      await expect(
+        resolveAccountlessRequest(packet({ sipaAddress: SIPA }), moved(failing)),
+      ).rejects.toMatchObject(refusal("unknown"))
+      expect(resolveSipaAddressMock).not.toHaveBeenCalled()
+    })
+
+    it("refuses without a cause once the history read runs past its limit", async () => {
+      vi.useFakeTimers()
+      try {
+        const stalled = resolveAccountlessRequest(
+          packet({ sipaAddress: SIPA }),
+          moved(() => new Promise(() => {})),
+        )
+        const settled = expect(stalled).rejects.toMatchObject(refusal("unknown"))
+        await vi.advanceTimersByTimeAsync(MISMATCH_REASON_TIMEOUT_MS)
+        await settled
+      } finally {
+        vi.useRealTimers()
+      }
+    })
   })
 
   it("times out a CCIP resolve that never settles", async () => {
@@ -258,7 +410,7 @@ describe("resolveAccountlessRequest", () => {
       deps(async () => ({ status: "staleRollup" })),
     )
     expect(result.sipaAddress).toBe(SIPA)
-    expect(result.tagWarning).toBe("@alice hasn't upgraded yet")
+    expect(result.tagWarning).toBe("notUpgraded")
   })
 })
 

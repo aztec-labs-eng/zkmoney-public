@@ -1,10 +1,6 @@
-// Interim backstop until the claim-reconciliation PR makes `isClaimed`
-// authoritative: claim/refund/cancel all consume the SAME paylink nullifier, so
-// refunding an already-claimed-or-refunded paylink reverts with a
-// nullifier-already-spent error. Map only that revert to a friendly message;
-// fee/network errors must fall through to generic handling.
-//
-// The exact revert string must be confirmed on sandbox.
+// A claim, refund and cancel spend the same nullifier, so a refund of a link another device claimed
+// or refunded before the sweep saw it reverts with a nullifier-already-spent error. Map only that
+// revert to a friendly message; fee and network errors fall through to generic handling.
 
 export const PAYLINK_ALREADY_SPENT_MESSAGE = "This paylink has already been claimed or refunded."
 

@@ -45,7 +45,7 @@ export const legSettled = (leg: Pick<UpgradeLeg, "arrival">) =>
 export function upgradeRunsOf(items: readonly ActivityItem[]): UpgradeRun[] {
   const deposits = new Map(
     items.flatMap((item) =>
-      item.kind === "bridge.sipaDeposit" && !item.credit
+      item.kind === "bridge.sipaDeposit" && !item.payment
         ? [[item.record.sipaAddress.toLowerCase(), item.record] as const]
         : [],
     ),
@@ -134,6 +134,8 @@ export interface UpgradePricing {
   sharePrice?: bigint
   /** The token run `run` credits, which values a batch until its deposit is swept. */
   runToken?(run: string): string | undefined
+  /** Every input has given its first answer, so a run still unpriced is not about to be priced. */
+  settled: boolean
 }
 
 /** Dollar value in the credited asset. An unknown credited token or Savings price stays unknown. */

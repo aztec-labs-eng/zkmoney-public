@@ -1,10 +1,16 @@
 import { stopSession } from "../../session/session"
-import type { Store } from "@obsidion/front-core"
+import type { Service, Store } from "@obsidion/front-core"
+import type { ObsidionWallet } from "@obsidion/sdk"
 import { leavePage } from "../../platform/storage/walletStorage"
 import { showReportableError } from "../../errors/errorModal"
 import { signOut, type SignOutPage } from "./signOut"
 
 const FAILED = "Couldn't sign out. Try again."
+
+/** Stops the page's PXE, if it booted. */
+export async function stopPageWallet({ wallet }: { wallet: Service<ObsidionWallet> }) {
+  if (wallet.get().status === "ready") await (await wallet.ready()).pxe.stop()
+}
 
 /**
  * Local sign-out. The passkey and the on-chain claim survive, so /enter brings the account back.
@@ -27,6 +33,8 @@ export async function logout(
     showReportableError(e, "identity:logout", { message: FAILED })
     return
   }
+  // Before the PXE stops: a task that ran against a stopped PXE would fail and save a backoff.
+  stopSession()
   await leave(stopPxe)
 }
 
@@ -40,6 +48,5 @@ async function leave(stopPxe: () => Promise<void>): Promise<void> {
     })
     return
   }
-  stopSession()
   await leavePage("/claim")
 }

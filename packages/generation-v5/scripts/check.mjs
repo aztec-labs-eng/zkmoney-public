@@ -37,13 +37,15 @@ const filesIn = (dir) =>
 
 /**
  * The files of this checkout that `build.mjs` puts into the bundle, other than the pinned wallet
- * commit: the adapter, the boundary, the pin and the build script.
+ * commit: the adapter, the boundary, the pin, the pinned artifacts' manifest and the build scripts.
  */
 export const bundleInputs = [
   ...filesIn(path.join(pkg, "adapter")),
   boundaryFile,
   path.join(pkg, "source.json"),
+  path.join(pkg, "pinned/v5-wallet-artifacts.json"),
   path.join(pkg, "scripts/build.mjs"),
+  path.join(pkg, "scripts/pins.mjs"),
 ]
 
 /**

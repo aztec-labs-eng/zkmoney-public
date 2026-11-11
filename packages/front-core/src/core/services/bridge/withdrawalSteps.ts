@@ -44,6 +44,7 @@ export function withdrawalStepIndex(phase: WithdrawalPhase, swap = false): numbe
     case "failed":
       return 1
     case "swapping":
+    case "bridging":
     case "recoverable":
       return steps.length - (swap ? 2 : 1)
     default:

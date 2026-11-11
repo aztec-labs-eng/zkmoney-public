@@ -3,6 +3,7 @@
 import { describe, expect, it } from "vitest"
 import type { Address, Hex } from "viem"
 import type { OxideEnvTuple } from "@obsidion/core/types"
+import { tagPriceOf } from "../../../src/engine/feedRules"
 import {
   DAI,
   FEE,
@@ -199,6 +200,24 @@ describe("self-initiated records", () => {
       claimedInboxIndexes: ["9"],
     })
     expect(await w.records()).toHaveLength(1)
+  })
+
+  // Another device of the wallet seeded the fee; this one lists the tag purchase all the same.
+  it("takes an unseeded registration's fee from what its first sweep took", async () => {
+    const w = await pipelineWorld()
+    const sipa = await w.announced(1, {
+      intentHash: REGISTRATION_HASH,
+      implementation: REGISTRATION_IMPL,
+    })
+    w.pay(sipa.address, 5n * ONE)
+    w.sweep(sipa, 9n, { credit: (3n * ONE) / 4n })
+
+    await w.pass()
+
+    const record = (await w.get(sipa.address))!
+    const fee = ((425n * ONE) / 100n).toString()
+    expect(record).toMatchObject({ phase: "claimed", registrationFee: fee, fee })
+    expect(tagPriceOf(record)).toBe((375n * ONE) / 100n)
   })
 
   it("takes a pinned record's missing intent from its event: registration pricing, and backfills it", async () => {

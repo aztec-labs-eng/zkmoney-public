@@ -7,38 +7,31 @@ export interface ScannedWindow<T> extends BlockRange {
   logs: T[];
 }
 
-const PROVIDER_CAP =
-  /more than \d+ results|query returned|exceeds? (the )?(limit|max)|block range|response size|too large/i;
-const RATE_LIMIT = /rate limit|too many requests|\b429\b/i;
+const RATE_LIMIT = /rate limit|request rate|too many requests/i;
+const RATE_LIMIT_CODE = 429;
 
 /**
- * True when the provider refused the query as too large. The L1 transport replaces the thrown error, so this
- * predicate reads the whole `cause` chain. A rate limit anywhere in the chain excludes the match, because a smaller
- * window does not answer a rate limit.
- *
- * Each step gives the text that the provider wrote. A viem error puts that text in `details` and builds its own
- * `message` from the request URL and the request body, which hold digits that these patterns must not read.
+ * True when the provider refused the query for its rate. The L1 transport replaces the thrown error, so this predicate
+ * reads the whole `cause` chain.
  */
-export function isProviderCapError(err: unknown): boolean {
-  const texts: string[] = [];
+function isRateLimitError(err: unknown): boolean {
   const seen = new Set<unknown>();
   let current: unknown = err;
   while (current instanceof Error && !seen.has(current)) {
     seen.add(current);
-    const details = (current as { details?: unknown }).details;
-    texts.push(typeof details === 'string' && details !== '' ? details : current.message);
+    const { status, code } = current as { status?: unknown; code?: unknown };
+    if (status === RATE_LIMIT_CODE || code === RATE_LIMIT_CODE || RATE_LIMIT.test(current.message)) {
+      return true;
+    }
     current = current.cause;
   }
-  if (texts.length === 0) {
-    texts.push(String(err));
-  }
-  return texts.some(t => PROVIDER_CAP.test(t)) && !texts.some(t => RATE_LIMIT.test(t));
+  return !(err instanceof Error) && RATE_LIMIT.test(String(err));
 }
 
 /**
- * Walk `[fromBlock, toBlock]` in windows of at most `window` blocks. A window the provider refuses as too large
- * (range or result cap) is retried at half its span; a one-block window that still fails, and any other error,
- * propagate.
+ * Walk `[fromBlock, toBlock]` in windows of at most `window` blocks. A failed window is retried at half its span,
+ * because providers word their range and result caps differently. A one-block window that still fails propagates, and
+ * so does a rate limit, because a smaller window does not answer one.
  */
 export async function* scanWindows<T>(
   range: BlockRange & { window: bigint },
@@ -56,7 +49,7 @@ export async function* scanWindows<T>(
       logs = await fetch(lo, hi);
     } catch (err: unknown) {
       const span = hi - lo + 1n;
-      if (span > 1n && isProviderCapError(err)) {
+      if (span > 1n && !isRateLimitError(err)) {
         window = span / 2n;
         continue;
       }

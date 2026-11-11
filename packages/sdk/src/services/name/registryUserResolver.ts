@@ -11,6 +11,7 @@
  * `RegistryTagResolver`.
  */
 
+import { BaseError, ContractFunctionZeroDataError } from "viem"
 import type { Address, Hex, PublicClient } from "viem"
 import {
   AccountMetadataRegistryAbi,
@@ -21,6 +22,7 @@ import {
   readUserAddress,
   type K1PointArg,
 } from "@oxide/l1-contracts"
+import { chunkedContractEvents } from "../helpers/l1Logs.js"
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
 
@@ -137,4 +139,58 @@ export async function readUserL2AddressAt(
     args: [account],
   })
   return record.rollupVersion === rollupVersion ? record.l2Address : null
+}
+
+/**
+ * Every L2 address `account`'s record named in `range`: the record in effect at `range.fromBlock`,
+ * then each one written in the range, oldest first. A registry can outlive the deployment whose
+ * window the caller passes, so the first read covers a record written before it, and one deployed
+ * inside the window has no record at its start. That read needs archive state; a transport failure
+ * throws.
+ */
+export async function readUserL2AddressHistory(
+  publicClient: PublicClient,
+  accountMetadataRegistry: Address,
+  account: Address,
+  range: { fromBlock: bigint; toBlock: bigint },
+): Promise<Hex[]> {
+  const registry = {
+    address: accountMetadataRegistry,
+    abi: AccountMetadataRegistryAbi,
+    blockNumber: range.fromBlock,
+  }
+  const [first, logs] = await Promise.all([
+    publicClient
+      .readContract({ ...registry, functionName: "hasUserRecord", args: [account] })
+      .catch((err: unknown) => {
+        // No code at `fromBlock` returns no data: the registry was deployed later.
+        if (err instanceof BaseError && err.walk((e) => e instanceof ContractFunctionZeroDataError))
+          return false
+        throw err
+      })
+      .then((had) =>
+        had
+          ? publicClient.readContract({
+              ...registry,
+              functionName: "getUserRecord",
+              args: [account],
+            })
+          : undefined,
+      ),
+    chunkedContractEvents(
+      publicClient,
+      {
+        address: accountMetadataRegistry,
+        abi: AccountMetadataRegistryAbi,
+        eventName: "UserRecordUpdated",
+        args: { user: account },
+      },
+      range.fromBlock,
+      range.toBlock,
+    ),
+  ])
+  const written = logs
+    .map((log) => (log as { args?: { record?: { l2Address?: Hex } } }).args?.record?.l2Address)
+    .filter((l2Address): l2Address is Hex => !!l2Address)
+  return first ? [first.l2Address, ...written] : written
 }

@@ -26,6 +26,7 @@ const liveDeps = {
   contractService: {},
   teeSigner: { live: true },
   rollupAddress: "0xrollup",
+  session: { page: { config: {}, chain: { reads: true } } },
 } as unknown as SponsoredPaylinkDeps
 const row = (tokenAddress?: string) => ({ tokenAddress } as never)
 
@@ -36,8 +37,13 @@ describe("refundDepsForRow", () => {
     h.findHistoricTuple.mockResolvedValueOnce(tuple)
     h.historicTokenContext.mockResolvedValueOnce(context)
     const out = await refundDepsForRow(liveDeps, row(HISTORIC))
-    expect(h.findHistoricTuple).toHaveBeenCalledWith(HISTORIC)
-    expect(h.historicTokenContext).toHaveBeenCalledWith(liveDeps.wallet, liveDeps.account, tuple)
+    expect(h.findHistoricTuple).toHaveBeenCalledWith({}, HISTORIC)
+    expect(h.historicTokenContext).toHaveBeenCalledWith(
+      liveDeps.session.page.chain,
+      liveDeps.wallet,
+      liveDeps.account,
+      tuple,
+    )
     expect(out.deps).toMatchObject({ ...context, contractService: liveDeps.contractService })
     expect(out.tuple).toBe(tuple)
   })

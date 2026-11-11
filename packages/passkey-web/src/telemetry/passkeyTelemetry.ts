@@ -173,6 +173,7 @@ const POLICY_REFUSALS: Readonly<Record<string, PasskeyRefusalReason>> = {
 const LAPTOP_REFUSALS: Readonly<Record<LaptopRefusalKind, PasskeyRefusalReason>> = {
   "apple": "apple_below_floor",
   "unnamed": "provider_unnamed",
+  "windows-hello": "provider_unnamed",
   "not-local": "local_route_mismatch",
 }
 

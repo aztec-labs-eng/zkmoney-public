@@ -1,25 +1,26 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { seedDeviceKeys, testCore, testPage } from "../../support/page"
 import {
+  createContacts,
+  fixed,
   HISTORIC_ACTIVITY_IMPORTED_KEY,
+  HISTORIC_CONTACTS_IMPORTED_KEY,
+  memoryBackend,
+  openDatabase,
+  startRuntime,
   TRANSACTIONS_STORAGE_KEY,
   type Transaction,
 } from "@obsidion/front-core"
-import { importHistoricActivityOnce } from "../../../src/features/migration/historicActivityImport"
 import {
-  activeNamespace,
-  closeSession,
-  switchSession,
-  session,
-} from "../../../src/session/session"
+  historicImports,
+  importHistoricActivityOnce,
+} from "../../../src/features/migration/historicActivityImport"
+import { activeNamespace, closeSession, switchSession } from "../../../src/session/session"
 import { pageSessionDeps } from "../../../src/app/sessionDeps"
-import { setActiveRollup } from "../../../src/platform/storage/rollupStorage"
-import {
-  closeWalletStore,
-  openWalletStore,
-} from "../../../src/platform/storage/walletStorage"
+import { closeWalletStore, openWalletStore } from "../../../src/platform/storage/walletStorage"
 import { WEB_STORAGE_PREFIX, webStorage } from "../../../src/platform/storage/WebStorageAdapter"
 import { testWalletDbs } from "../../support/fakeWalletDb"
+import { sessions } from "../../../../front-core/test/engine/taskTable"
 
 const dbs = testWalletDbs()
 const ROLLUP = "900"
@@ -54,7 +55,6 @@ const row = (txHash: string): Transaction =>
 // The setup's store is in memory, which has no other databases; a persistent one does.
 beforeEach(async () => {
   await closeWalletStore()
-  setActiveRollup(ROLLUP)
   await openWalletStore(ROLLUP, { persistent: true })
 })
 
@@ -98,19 +98,42 @@ describe("importHistoricActivityOnce", () => {
 
   it("carries the account's rows from the retired rollup's database into this one, once", async () => {
     await activate("acct1")
-    switchSession(activeNamespace(testCore().device), pageSessionDeps(testPage()))
+    const session = switchSession(activeNamespace(testCore().device), pageSessionDeps(testPage()))
     const old = dbs.db(OLD_ROLLUP).state
     old.set(scoped("acct1", TRANSACTIONS_STORAGE_KEY), JSON.stringify([row("0xA1")]))
     old.set(scoped("acct1", CURSOR), "10")
     old.set(scoped("acct2", TRANSACTIONS_STORAGE_KEY), JSON.stringify([row("0xB1")]))
 
-    const result = await importHistoricActivityOnce("acct1")
+    const result = await importHistoricActivityOnce(session, "acct1")
 
     expect(result).toMatchObject({ databases: 1, transactions: 1 })
-    await session().activity.ready
-    const rows = await session().activity.all()
+    await session.transfers.ready
+    const rows = await session.transfers.all()
     expect(rows.map((r) => [r.txHash, r.networkId])).toEqual([["0xA1", OLD_NETWORK]])
     expect(await webStorage.getItem(HISTORIC_ACTIVITY_IMPORTED_KEY)).not.toBeNull()
-    await expect(importHistoricActivityOnce("acct1")).resolves.toBe(result)
+    await expect(importHistoricActivityOnce(session, "acct1")).resolves.toBe(result)
+  })
+})
+
+describe("historicImports", () => {
+  afterEach(() => closeSession())
+
+  it("carries the account's contacts from the retired rollup's book by default", async () => {
+    await activate("acct1")
+    const session = switchSession(activeNamespace(testCore().device), pageSessionDeps(testPage()))
+    const alice = { name: "alice", address: `0x${"a5".repeat(32)}`, tag: "alice", verified: true }
+    dbs.db(OLD_ROLLUP).state.set(scoped("acct1", "obsidion_contacts"), JSON.stringify([alice]))
+    const contacts = createContacts({ db: openDatabase(memoryBackend()), now: () => Date.now() })
+    const h = sessions(startRuntime)
+    h.tasks.push(...historicImports(fixed("wallet", {}), { storageId: "acct1", contacts }, session))
+    h.start()
+    try {
+      await vi.waitFor(async () =>
+        expect(await webStorage.getItem(HISTORIC_CONTACTS_IMPORTED_KEY)).not.toBeNull(),
+      )
+    } finally {
+      h.end()
+    }
+    expect((await contacts.all()).map((c) => c.tag)).toEqual(["alice"])
   })
 })

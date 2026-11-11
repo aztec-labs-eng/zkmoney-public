@@ -16,6 +16,7 @@ import {
   wireTermsFundTicket,
   termsUnpriced,
 } from "../../../src/features/registration/registrationTerms"
+import { reportShortAsk } from "../../../src/features/registration/registrationAsk"
 import { PAID_ASK, RANDOM, RANDOM_ASK } from "../../support/registrationPrices"
 import { dai } from "../../support/registrationFixtures"
 
@@ -219,16 +220,16 @@ describe("what to ask for and what the chain takes are two figures", () => {
     expect(() => askedTotal("future_kind" as never)).toThrow("future_kind")
   })
 
-  it("reports a floor above the asked total and quotes the floor, never a refused figure", () => {
+  it("quotes a floor above the asked total, never a refused figure, and the read reports it", () => {
     const report = vi.spyOn(console, "error").mockImplementation(() => {})
     try {
       // Renders call this, so a misconfigured deployment must not take the screen down with it.
       const quote = registrationQuote({ min: dai(15), fee: dai(1) }, "standard")
       expect(quote.total).toBe(dai(16))
       expect(quote.floor).toBe(dai(16))
-      expect(report).toHaveBeenCalledTimes(1)
-      // Once per distinct message: a re-render must not fill the console.
-      registrationQuote({ min: dai(15), fee: dai(1) }, "standard")
+      expect(report).not.toHaveBeenCalled()
+      // The schedule's read reports it, not each render.
+      reportShortAsk({ min: dai(15), fee: dai(1) })
       expect(report).toHaveBeenCalledTimes(1)
     } finally {
       report.mockRestore()

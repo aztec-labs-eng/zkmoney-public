@@ -1,8 +1,9 @@
-import { useEffect, useState, type ReactNode } from "react"
+import { useState, type ReactNode } from "react"
 import { PrimaryGradientButton } from "@obsidion/web-ds"
 import type { Network } from "@obsidion/core/constants"
 import { tryNormalizeEndpoint } from "../config/endpointOverrides"
 import { assertHostProfileUrl, parseNetwork } from "../config/profilePolicy"
+import { formatLocalDate, formatUtcDate } from "../lib/date"
 import { EndpointFields, useEndpointEditor } from "../ui/endpointsEditor"
 import {
   readDesktopSettingsState,
@@ -10,6 +11,7 @@ import {
   type ConfigValues,
   type DesktopSettingsState,
 } from "./state"
+import { useDomEffect } from "../ui/useDomEffect"
 
 const ENV_NAMES: Record<ConfigKey, string> = {
   configProfileUrl: "OBSIDION_CONFIG_PROFILE_URL",
@@ -24,14 +26,6 @@ const REQUEST_TIMEOUT_MS = 15_000
 
 type Status = { tone: "error" | "info"; text: string }
 type Answer = { ok: true; status?: string } | { ok: false; error: string } | "no-answer"
-
-function formatDate(value: string | undefined): string | undefined {
-  if (!value) return undefined
-  const parsed = new Date(value)
-  return Number.isNaN(parsed.getTime())
-    ? value
-    : parsed.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
-}
 
 /** Why the launcher or the wallet would refuse this URL; undefined when neither would. */
 function profileUrlError(url: string, shipped: boolean, network: Network): string | undefined {
@@ -195,7 +189,7 @@ function SettingsForm({ state, network }: { state: DesktopSettingsState; network
   const canSave = editor.valid && urlError === undefined && !busy && !relaunching
 
   // Closing the page mid-save would leave it half done with nobody told.
-  useEffect(() => {
+  useDomEffect(() => {
     if (!busy) return
     const warn = (event: BeforeUnloadEvent) => event.preventDefault()
     window.addEventListener("beforeunload", warn)
@@ -306,14 +300,14 @@ function SettingsForm({ state, network }: { state: DesktopSettingsState; network
           <tbody>
             <tr>
               <td>Bundle built</td>
-              <td>{formatDate(state.builtAt) ?? "unknown"}</td>
+              <td>{state.builtAt ? formatUtcDate(state.builtAt) : "unknown"}</td>
             </tr>
             <tr>
               <td>Shipped configuration</td>
               <td>
                 {baked
-                  ? `version ${baked.current}, published ${formatDate(baked.publishedAt)}` +
-                    (baked.expiresAt ? `, expires ${formatDate(baked.expiresAt)}` : "")
+                  ? `version ${baked.current}, published ${formatUtcDate(baked.publishedAt)}` +
+                    (baked.expiresAt ? `, expires ${formatLocalDate(baked.expiresAt)}` : "")
                   : "none in this build"}
               </td>
             </tr>
@@ -413,10 +407,10 @@ function SettingsForm({ state, network }: { state: DesktopSettingsState; network
         contracts and this app is out of date.
         <br />
         On the shipped copy the wallet uses the contracts from{" "}
-        {formatDate(baked?.publishedAt) ?? "the release date"}. If zk.money has moved since,
-        transactions may fail, deposits can land in a retired portal, and if those contracts were
-        retired for a fault your funds could be exposed. Confirm through a source you trust before
-        sending funds.
+        {baked ? formatUtcDate(baked.publishedAt) : "the release date"}. If zk.money has moved
+        since, transactions may fail, deposits can land in a retired portal, and if those contracts
+        were retired for a fault your funds could be exposed. Confirm through a source you trust
+        before sending funds.
       </p>
       {state.sources.bootFromBakedProfile === "env" && (
         <EnvWarning name={ENV_NAMES.bootFromBakedProfile} />

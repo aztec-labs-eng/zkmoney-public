@@ -58,7 +58,7 @@ export default {
     token: "Token",
     tokenRate: "1 {symbol} ≈ $1",
     network: "Network",
-    networkValue: "Ethereum (ERC20)",
+    networkValue: "Ethereum",
     to: "To",
     youSend: "You send",
     tagPrice: "Tag price",

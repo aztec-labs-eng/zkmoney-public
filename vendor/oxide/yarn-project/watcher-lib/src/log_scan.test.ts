@@ -1,30 +1,73 @@
 import { describe, expect, it } from '@jest/globals';
-import { LimitExceededRpcError, RpcRequestError } from 'viem';
+import { HttpRequestError, RpcRequestError } from 'viem';
 
-import { isProviderCapError, scanWindows } from './log_scan.js';
+import { scanWindows } from './log_scan.js';
 
-const INFURA_RESULT_CAP = 'query returned more than 10000 results. Try with this block range [0x1, 0x2].';
-const INFURA_RANGE_CAP = 'range 25887126 - 25897126 exceeds limit of 10000';
-const HEX_BLOCK_HOLDING_429 = '0x18b4293';
+const PROVIDER_URL = 'https://mainnet.infura.io/v3/PROJECT_ID';
+const RANGE = { fromBlock: 0n, toBlock: 19n, window: 16n };
+const ALL_LOGS = Array.from({ length: 20 }, (_, i) => BigInt(i));
 
-function wrapLikeL1Transport(rpcMessage: string, url = 'https://mainnet.infura.io/v3/PROJECT_ID'): Error {
-  const request = new RpcRequestError({
-    body: { method: 'eth_getLogs', params: [{ fromBlock: HEX_BLOCK_HOLDING_429, toBlock: '0x18b42d4' }] },
-    error: { code: -32005, message: rpcMessage },
-    url,
+function rpcError(message: string, code = -32005): Error {
+  return new RpcRequestError({
+    body: { method: 'eth_getLogs', params: [{ fromBlock: '0x18b4293', toBlock: '0x18b42d4' }] },
+    error: { code, message },
+    url: PROVIDER_URL,
   });
-  return new Error('L1 RPC request failed', { cause: new LimitExceededRpcError(request) });
 }
 
-function fetchWithCap(
-  maxSpan: bigint,
-  calls: Array<[bigint, bigint]> = [],
-  makeError: (message: string) => Error = message => new Error(message),
-) {
+function httpError(status: number, details: string): Error {
+  return new HttpRequestError({ url: PROVIDER_URL, status, details });
+}
+
+function viaL1Transport(cause: Error): Error {
+  return new Error('L1 RPC request failed', { cause });
+}
+
+function causeCycle(message: string): Error {
+  const inner = new Error(message);
+  const outer = viaL1Transport(inner);
+  (inner as { cause?: unknown }).cause = outer;
+  return outer;
+}
+
+const WINDOW_ERRORS: Array<[string, number, string]> = [
+  ['a Geth range cap', -32602, 'exceed maximum block range 10000'],
+  ['a reth range cap', -32602, 'query exceeds max block range 100000'],
+  ['a reth result cap', -32602, 'query exceeds max results 20000, retry with the range 23879634-23879696'],
+  ['a Besu range cap', -32005, 'Requested range exceeds maximum RPC range limit'],
+  ['a Besu timeout', -32603, 'Timeout expired'],
+  ['an Erigon range cap', -32602, 'query block range exceeds server limit, narrow your filter: 1000'],
+  ['an Erigon result cap', -32602, 'query returns too many logs, narrow your filter: 20000'],
+  ['a Nethermind result cap', -32005, 'Too many logs requested. Max logs per response is 20000.'],
+  ['an Infura range cap', -32005, 'range 25887126 - 25897126 exceeds limit of 10000'],
+  [
+    'an Infura result cap',
+    -32005,
+    'query returned more than 10000 results. Try with this block range [0x18b4293, 0x18b42d4].',
+  ],
+  ['a QuickNode range cap', -32602, 'eth_getLogs and eth_newFilter are limited to a 10,000 blocks range'],
+  ['a BlockPI range cap', -32602, 'eth_getLogs is limited to 1024 block range.'],
+  ['a free tier range cap', 35, 'ranges over 10000 blocks are not supported on freetier'],
+  ['a size cap', -32603, 'eth_getLogs range is too large, max is 1k blocks'],
+  ['a wording that no client uses', -32000, 'the provider said no'],
+];
+
+const RATE_LIMITS: Array<[string, unknown]> = [
+  ['an HTTP 429 with a status text', viaL1Transport(httpError(429, 'Too Many Requests'))],
+  ['an HTTP 429 with no rate limit text', viaL1Transport(httpError(429, '{"message":"capacity exceeded"}'))],
+  ['a JSON-RPC code 429', viaL1Transport(rpcError('capacity exceeded', 429))],
+  ['a throttle with code -32005', viaL1Transport(rpcError('Too Many Requests'))],
+  ['a rate limit text', viaL1Transport(rpcError('rate limit exceeded'))],
+  ['a request rate text', viaL1Transport(rpcError('project ID request rate exceeded'))],
+  ['a rate limit in a cause cycle', causeCycle('Too Many Requests')],
+  ['a rejection that is not an Error', 'Too Many Requests'],
+];
+
+/** Rejects each window wider than `maxSpan` with `error`, and returns one log per block for the others. */
+function fetchWithCap(maxSpan: bigint, error: Error) {
   return (fromBlock: bigint, toBlock: bigint): Promise<bigint[]> => {
-    calls.push([fromBlock, toBlock]);
     if (toBlock - fromBlock + 1n > maxSpan) {
-      return Promise.reject(makeError(INFURA_RESULT_CAP));
+      return Promise.reject(error);
     }
     const logs: bigint[] = [];
     for (let b = fromBlock; b <= toBlock; b++) {
@@ -32,6 +75,16 @@ function fetchWithCap(
     }
     return Promise.resolve(logs);
   };
+}
+
+/** Rejects every call with `error`, and records the window of each call. */
+function failingFetch(error: unknown) {
+  const calls: Array<[bigint, bigint]> = [];
+  const fetch = (fromBlock: bigint, toBlock: bigint): Promise<never> => {
+    calls.push([fromBlock, toBlock]);
+    return Promise.reject(error);
+  };
+  return { calls, fetch };
 }
 
 async function collect<T>(gen: AsyncGenerator<{ fromBlock: bigint; toBlock: bigint; logs: T[] }>) {
@@ -44,54 +97,10 @@ async function collect<T>(gen: AsyncGenerator<{ fromBlock: bigint; toBlock: bigi
   return { windows, logs };
 }
 
-describe('isProviderCapError', () => {
-  it('matches the result cap and the range cap, not a rate limit', () => {
-    expect(isProviderCapError(new Error(INFURA_RESULT_CAP))).toBe(true);
-    expect(isProviderCapError(new Error(INFURA_RANGE_CAP))).toBe(true);
-    expect(isProviderCapError(new Error('Too Many Requests (429): rate limit exceeded'))).toBe(false);
-    expect(isProviderCapError(new Error('ECONNRESET'))).toBe(false);
-  });
-
-  it('matches the cap through the error chain the L1 transport throws', () => {
-    const wrapped = wrapLikeL1Transport(INFURA_RESULT_CAP);
-    expect(wrapped.message).toBe('L1 RPC request failed');
-    expect((wrapped.cause as Error).message).toContain(HEX_BLOCK_HOLDING_429);
-    expect(isProviderCapError(wrapped)).toBe(true);
-    expect(isProviderCapError(wrapLikeL1Transport(INFURA_RANGE_CAP))).toBe(true);
-    expect(isProviderCapError(new Error('L1 RPC request failed', { cause: new Error(INFURA_RESULT_CAP) }))).toBe(true);
-  });
-
-  it('excludes a rate limit that sits anywhere in the chain', () => {
-    expect(isProviderCapError(wrapLikeL1Transport('Too Many Requests'))).toBe(false);
-    expect(isProviderCapError(wrapLikeL1Transport('daily request count exceeded, request rate limited'))).toBe(false);
-  });
-
-  it('reads only the text the provider wrote, not the request URL or body', () => {
-    const wrapped = wrapLikeL1Transport(INFURA_RESULT_CAP, 'https://rpc.example.com/key-429-abc');
-    expect((wrapped.cause as Error).message).toContain('key-429-abc');
-    expect(isProviderCapError(wrapped)).toBe(true);
-  });
-
-  it('rethrows a throttle that carries no cap text', () => {
-    expect(isProviderCapError(wrapLikeL1Transport('project ID request rate exceeded'))).toBe(false);
-  });
-
-  it('stops on a cycle, a non-Error cause, and a non-Error input', () => {
-    const inner = new Error(INFURA_RESULT_CAP);
-    const outer = new Error('L1 RPC request failed', { cause: inner });
-    (inner as { cause?: unknown }).cause = outer;
-    expect(isProviderCapError(outer)).toBe(true);
-    expect(isProviderCapError(new Error('L1 RPC request failed', { cause: INFURA_RESULT_CAP }))).toBe(false);
-    expect(isProviderCapError(INFURA_RESULT_CAP)).toBe(true);
-  });
-});
-
 describe('scanWindows', () => {
   it('walks the range in windows of the given size', async () => {
-    const calls: Array<[bigint, bigint]> = [];
-    const { windows, logs } = await collect(
-      scanWindows({ fromBlock: 3n, toBlock: 13n, window: 5n }, fetchWithCap(100n, calls)),
-    );
+    const noCap = fetchWithCap(100n, new Error('unused'));
+    const { windows, logs } = await collect(scanWindows({ fromBlock: 3n, toBlock: 13n, window: 5n }, noCap));
     expect(windows).toEqual([
       [3n, 7n],
       [8n, 12n],
@@ -100,41 +109,28 @@ describe('scanWindows', () => {
     expect(logs).toEqual([3n, 4n, 5n, 6n, 7n, 8n, 9n, 10n, 11n, 12n, 13n]);
   });
 
-  it('halves the window on a provider cap and delivers every log once, in order', async () => {
-    const calls: Array<[bigint, bigint]> = [];
-    const { windows, logs } = await collect(
-      scanWindows({ fromBlock: 0n, toBlock: 19n, window: 16n }, fetchWithCap(3n, calls)),
-    );
-    expect(logs).toEqual(Array.from({ length: 20 }, (_, i) => BigInt(i)));
-    expect(windows.every(([lo, hi]) => hi - lo + 1n <= 3n)).toBe(true);
-    expect(calls.filter(([lo, hi]) => hi - lo + 1n > 3n)).toEqual([
-      [0n, 15n],
-      [0n, 7n],
-      [0n, 3n],
-    ]);
+  it.each(WINDOW_ERRORS)('delivers every log, once and in order, past %s', async (_, code, message) => {
+    const { logs } = await collect(scanWindows(RANGE, fetchWithCap(3n, viaL1Transport(rpcError(message, code)))));
+    expect(logs).toEqual(ALL_LOGS);
   });
 
-  it('halves the window on a cap the L1 transport wrapped', async () => {
-    const { windows, logs } = await collect(
-      scanWindows({ fromBlock: 0n, toBlock: 19n, window: 16n }, fetchWithCap(3n, [], wrapLikeL1Transport)),
-    );
-    expect(logs).toEqual(Array.from({ length: 20 }, (_, i) => BigInt(i)));
-    expect(windows.every(([lo, hi]) => hi - lo + 1n <= 3n)).toBe(true);
+  it('reaches a one-block window before it gives up on a persistent error', async () => {
+    const { calls, fetch } = failingFetch(new Error('ECONNRESET'));
+    const range = { fromBlock: 0n, toBlock: 1023n, window: 1024n };
+    await expect(collect(scanWindows(range, fetch))).rejects.toThrow('ECONNRESET');
+    expect(calls.at(-1)).toEqual([0n, 0n]);
+    expect(calls.length).toBeLessThanOrEqual(11);
   });
 
-  it('propagates a cap error on a one-block window', async () => {
-    await expect(collect(scanWindows({ fromBlock: 5n, toBlock: 5n, window: 4n }, fetchWithCap(0n)))).rejects.toThrow(
-      /more than 10000 results/,
-    );
-  });
-
-  it('propagates any other error', async () => {
-    const fetch = (): Promise<never> => Promise.reject(new Error('ECONNRESET'));
-    await expect(collect(scanWindows({ fromBlock: 0n, toBlock: 9n, window: 4n }, fetch))).rejects.toThrow(/ECONNRESET/);
+  it.each(RATE_LIMITS)('stops on the first call on %s', async (_, error) => {
+    const { calls, fetch } = failingFetch(error);
+    await expect(collect(scanWindows(RANGE, fetch))).rejects.toBe(error);
+    expect(calls).toHaveLength(1);
   });
 
   it('rejects a non-positive window', async () => {
-    await expect(collect(scanWindows({ fromBlock: 0n, toBlock: 9n, window: 0n }, fetchWithCap(9n)))).rejects.toThrow(
+    const { fetch } = failingFetch(new Error('unused'));
+    await expect(collect(scanWindows({ fromBlock: 0n, toBlock: 9n, window: 0n }, fetch))).rejects.toThrow(
       /must be positive/,
     );
   });

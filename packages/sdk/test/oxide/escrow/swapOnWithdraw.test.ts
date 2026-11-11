@@ -16,8 +16,9 @@ import {
 import { deriveRecoveryCommitment } from "@oxide/oxide-lib/sipa_recovery.js"
 import { MULTICALL3_ADDRESS } from "../../../src/services/sipa/sipaClaim.js"
 import {
-  buildSwapEscrowExecuteCall,
-  buildSwapEscrowRecoverCall,
+  buildEscrowRecoverCall,
+  encodeSwapEscrowDeployOnly,
+  encodeSwapEscrowExecute,
   planSwapOnWithdraw,
   predictSwapEscrow,
   swapRouteForOutput,
@@ -132,11 +133,13 @@ describe("swap escrow self-execution and recovery calls", () => {
     const result = plan()
     return {
       result,
-      call: buildSwapEscrowRecoverCall({
+      call: buildEscrowRecoverCall({
         deployed,
-        factory: FACTORY,
         escrow: result.escrow,
-        commitment: { layout: "v2", args: result.escrowArgs },
+        deploy: {
+          to: FACTORY,
+          data: encodeSwapEscrowDeployOnly({ layout: "v2", args: result.escrowArgs }),
+        },
         recovery: result.recovery,
         signature: SIG,
         target: TARGET,
@@ -158,8 +161,9 @@ describe("swap escrow self-execution and recovery calls", () => {
 
   it("execute is the same factory.deployAndExecute the broadcast carries", () => {
     const result = plan()
-    const call = buildSwapEscrowExecuteCall(FACTORY, { layout: "v2", args: result.escrowArgs })
-    expect(call).toEqual({ to: FACTORY, data: result.deployCalldata })
+    expect(encodeSwapEscrowExecute({ layout: "v2", args: result.escrowArgs })).toBe(
+      result.deployCalldata,
+    )
   })
 
   it("recovers a deployed escrow with a direct recoverERC20 opening the commitment", () => {
@@ -223,31 +227,10 @@ describe("legacy swap escrows", () => {
   })
 
   it("runs the swap with the legacy deployAndExecute", () => {
-    expect(buildSwapEscrowExecuteCall(LEGACY_FACTORY, legacy)).toEqual({
-      to: LEGACY_FACTORY,
-      data: `0xd1cb17ef${ENCODED}`,
-    })
+    expect(encodeSwapEscrowExecute(legacy)).toBe(`0xd1cb17ef${ENCODED}`)
   })
 
-  it("deploys an escrow without code with the legacy deploy before the recovery", () => {
-    const call = buildSwapEscrowRecoverCall({
-      deployed: false,
-      factory: LEGACY_FACTORY,
-      escrow: ESCROW,
-      commitment: legacy,
-      recovery: RECOVERY,
-      signature: `0x${"ab".repeat(65)}`,
-      target: RECIPIENT,
-      token: DAI,
-      nonce: OTHER_NONCE,
-      deadline: 1_800_000_000n,
-    })
-    const decoded = decodeFunctionData({ abi: multicall3Abi, data: call.data }) as {
-      args: readonly [readonly { target: string; callData: `0x${string}` }[]]
-    }
-    const [deployLeg, recoverLeg] = decoded.args[0]
-    expect(deployLeg!.target.toLowerCase()).toBe(LEGACY_FACTORY)
-    expect(deployLeg!.callData).toBe(`0xebd3470d${ENCODED}`)
-    expect(recoverLeg!.target.toLowerCase()).toBe(ESCROW.toLowerCase())
+  it("deploys an escrow without code with the legacy deploy", () => {
+    expect(encodeSwapEscrowDeployOnly(legacy)).toBe(`0xebd3470d${ENCODED}`)
   })
 })

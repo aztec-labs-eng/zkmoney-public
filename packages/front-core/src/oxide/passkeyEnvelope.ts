@@ -12,7 +12,7 @@
  * the flow that adds a backup refuses one that roots a registered account before it seals.
  *
  * On chain the envelope sits behind oxide's metadata prefix, `0x01 ‖ keccak256(tag ‖ credential id)`
- * (`oxide-client/passkey_rotation.ts`), and the raw credential id follows it, so a sign-in by tag
+ * (`oxide-client/add_passkey.ts`), and the raw credential id follows it, so a sign-in by tag
  * can name a passkey the browser cannot list. The prefix is copied here because the module defining
  * it cannot be imported at runtime; the drift test pins the copy to oxide's own output. The sign-up
  * passkey keeps its raw credential id as metadata, so the readers accept both layouts.
@@ -41,7 +41,7 @@ const KEK_INFO = new TextEncoder().encode("zk.money/passkey-envelope/v1")
 
 const SLOT_BYTE: Record<PrfSlot, number> = { first: 0x00, second: 0x01 }
 
-/** The metadata version and credential-id tag of `oxide-client/passkey_rotation.ts`. */
+/** The metadata version and credential-id tag of `oxide-client/add_passkey.ts`. */
 const METADATA_VERSION: Hex = "0x01"
 const CREDENTIAL_ID_TAG = stringToHex("oxide.passkey.credential-id.v1")
 const METADATA_PREFIX_BYTES = 33

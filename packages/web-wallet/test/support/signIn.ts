@@ -7,7 +7,7 @@ import {
 } from "../../src/features/onboarding/EnterAppScreen/signInFlow"
 import type { GateResult } from "../../src/features/identity/ceremonyGate"
 import type { Session } from "../../src/session/session"
-import { seedDeviceKeys } from "./page"
+import { defaultConfig, seedDeviceKeys } from "./page"
 import { openTestSession } from "./session"
 
 export const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
@@ -55,13 +55,13 @@ export const unknownResult = (extra: object = {}) => ({
   addresses: [OTHER],
   ...extra,
 })
-/** A recovered account with no registered name, committed under `own`. */
-export const nameless = (own: Session, extra: object = {}) => ({
+/** A recovered account with no registered name, committed under `session`. */
+export const nameless = (session: Session, extra: object = {}) => ({
   entered: false,
   reason: "unclaimed",
   account: { getAddress: () => ({ toString: () => L2 }) },
   held: () => true,
-  own,
+  session,
   bootstrap: { address: "0xE0A0000000000000000000000000000000000001" },
   ensDomain: "zk.money",
   ...extra,
@@ -95,17 +95,26 @@ const LAPTOP: GateResult = {
   signal: new AbortController().signal,
 }
 
-/** The flow as `/enter?<search>` opens it, over a ready wallet unless `wallet` is given. */
+/**
+ * The flow as `/enter?<search>` opens it, over a ready wallet unless `wallet` is given, against a
+ * live account service.
+ */
 export async function openSignIn(
   search = "",
-  options: { start?: boolean; next?: string; wallet?: unknown } = {},
+  options: {
+    start?: boolean
+    next?: string
+    wallet?: unknown
+    accountServiceTestMode?: boolean
+  } = {},
 ) {
-  const own = openTestSession({
+  const session = openTestSession({
+    config: { ...defaultConfig, accountServiceTestMode: options.accountServiceTestMode ?? false },
     wallet: options.wallet ?? { networkId: "0xnet" },
     contractService: {},
     auth: { recoverFromCache: vi.fn(async () => undefined), recordsStale: () => false },
   })
-  await own.registrations.ready
+  await session.registrations.ready
   const io = {
     telemetry: () => createPasskeyTelemetry({ send: () => {} }),
     fire: vi.fn(),
@@ -137,7 +146,7 @@ export async function openSignIn(
     gate,
   }
   const flow = openSignInFlow(
-    { own, origin: "http://localhost:3000", io: io as never },
+    { session, origin: "http://localhost:3000", io: io as never },
     () => inputs,
   )
   const ended = new AbortController()
@@ -157,7 +166,7 @@ export async function openSignIn(
       .filter(([name]) => name === "action_failed")
       .map(([, props]) => [(props as { action: string }).action, (props as { code: string }).code])
   const entered = () => navigate.mock.calls.some(([to]) => to === "/")
-  return { flow, io, own, gate, navigate, ended, start, lastEntry, failures, entered }
+  return { flow, io, session, gate, navigate, ended, start, lastEntry, failures, entered }
 }
 
 /** Types `tag` and leaves the field, so it is read at once. */

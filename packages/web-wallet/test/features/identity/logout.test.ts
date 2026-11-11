@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { walletStorage } from "../../../src/platform/storage/walletStorage"
 import { testWalletDbs } from "../../support/fakeWalletDb"
 import { openTestSession } from "../../support/session"
-import { closeSession, openedSession, session } from "../../../src/session/session"
+import { closeSession, openedSession } from "../../../src/session/session"
 
 import { type ErrorModalPayload, subscribeErrorModal } from "../../../src/errors/errorModal"
 import { logout } from "../../../src/features/identity/logout"
@@ -11,7 +11,7 @@ import { cachedMsk } from "../../../src/platform/storage/activeStorage"
 import { writeDeviceKeys } from "../../../src/platform/storage/deviceKeys"
 import { testPage, committed } from "../../support/page"
 
-const page = testPage()
+const page = testPage(undefined, { profileRollupVersion: "r" } as never)
 const deviceDb = page.database
 const CACHE = JSON.stringify({
   v: 1,
@@ -57,7 +57,7 @@ describe("logout", () => {
     const reads: unknown[] = []
     const stop = openedSession.subscribe(() => {
       try {
-        reads.push(session())
+        reads.push(openedSession.get())
       } catch (e) {
         reads.push(e)
       }
@@ -66,7 +66,22 @@ describe("logout", () => {
     stop()
     expect(assign).toHaveBeenCalledWith("/claim")
     expect(reads.every((read) => read === open)).toBe(true)
-    expect(session()).toBe(open)
+    expect(openedSession.get()).toBe(open)
+    closeSession()
+  })
+
+  it("stops the session's work before the PXE, so no task runs against a stopped PXE", async () => {
+    await writeDeviceKeys(deviceDb, { storageId: "aaa" })
+    const open = openTestSession()
+    const pending = Symbol("pending")
+    let stopped: boolean | symbol = pending
+    stopPxe.mockImplementationOnce(async () => {
+      const waits = open.milestones.after({ firstBalance: true })
+      const later = new Promise<symbol>((resolve) => setTimeout(() => resolve(pending), 0))
+      stopped = await Promise.race([waits, later])
+    })
+    await logout(page, stopPxe)
+    expect(stopped).toBe(false)
     closeSession()
   })
 

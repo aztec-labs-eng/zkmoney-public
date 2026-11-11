@@ -1,37 +1,22 @@
-import React from "react"
+import { bestEffort } from "@obsidion/core/errors"
 import { PrimaryGradientButton } from "@obsidion/web-ds"
+import { useStore, type QueryEntry } from "@obsidion/front-core"
 import { ActiveTabGate } from "./ActiveTabGate/ActiveTabGate"
 import type { PageBoot } from "./app/sessionDeps"
-import { GOOGLE_CALLBACK_PATH, GoogleCallbackScreen } from "./features/paylink/googleAuth"
+import { GoogleCallbackScreen } from "./features/paylink/googleAuth"
+import { GOOGLE_CALLBACK_PATH } from "./features/paylink/googleRelay"
 import { getDesktopSettingsPath } from "./platform/desktopBridge"
 import { BOOT_ERROR_LAYOUT } from "./ui/BootErrorScreen"
 import { PreBootLayer } from "./ui/PreBootLayer"
 import { BootSplash } from "./ui/PxeBoot"
 import { PreviewDraftRecovery } from "./dev/PreviewDraftRecovery"
 
-export function BootGate({ resolveBoot }: { resolveBoot: () => Promise<PageBoot> }) {
-  const [boot, setBoot] = React.useState<PageBoot>()
-  const [error, setError] = React.useState<Error>()
-  const [attempt, setAttempt] = React.useState(0)
-  const bootAttempt = React.useRef<Promise<PageBoot> | undefined>(undefined)
-
-  React.useEffect(() => {
-    let live = true
-    // StrictMode's repeated effect shares the same configuration attempt.
-    void (bootAttempt.current ??= resolveBoot()).then(
-      (resolved) => live && setBoot(resolved),
-      (e: Error) => live && setError(e),
-    )
-    return () => {
-      live = false
-    }
-  }, [attempt, resolveBoot])
-
-  const retry = () => {
-    bootAttempt.current = undefined
-    setError(undefined)
-    setAttempt((n) => n + 1)
-  }
+/** The page's configuration, read once the gate subscribes. */
+export function BootGate({ boot: read }: { boot: QueryEntry<PageBoot> }) {
+  const state = useStore(read)
+  const boot = state.status === "ready" ? state.value : undefined
+  const error = state.status === "failed" ? (state.error as Error) : undefined
+  const retry = () => void bestEffort("unknown", read.read())
 
   if (error) {
     const settingsPath = getDesktopSettingsPath()
@@ -42,6 +27,7 @@ export function BootGate({ resolveBoot }: { resolveBoot: () => Promise<PageBoot>
           className="zkm-type-body"
           style={{ color: "var(--text-secondary)", overflowWrap: "anywhere" }}
         >
+          {/* eslint-disable-next-line local/message-in-state -- ZKM-1895 */}
           {error.message}
         </span>
         {settingsPath && (
@@ -65,7 +51,12 @@ export function BootGate({ resolveBoot }: { resolveBoot: () => Promise<PageBoot>
   return (
     <>
       <ActiveTabGate boot={boot} />
-      <PreBootLayer />
+      <PreBootLayer
+        preBoot={boot.page.preBoot}
+        page={boot.page}
+        landingRate={boot.page.landingRate}
+        ticketOffer={boot.page.ticketOffer}
+      />
     </>
   )
 }

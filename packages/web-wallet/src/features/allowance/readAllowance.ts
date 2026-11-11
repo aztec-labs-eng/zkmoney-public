@@ -5,8 +5,13 @@
  * subscribed on, and the payer another account of this wallet's whose note the batches spend. While
  * the account's registration is pending no instance is picked yet, so the current one answers.
  */
-import { readClaimFpcAllowance, type ClaimSponsorContext } from "@obsidion/sdk"
-import type { AllowanceRead } from "@obsidion/front-core"
+import {
+  readClaimFpcAllowance,
+  type ClaimSponsorContext,
+  type ContractService,
+  type ObsidionWallet,
+} from "@obsidion/sdk"
+import type { AccountService, AllowanceRead, Service } from "@obsidion/front-core"
 import {
   claimSponsorContext,
   claimSponsorRail,
@@ -14,6 +19,23 @@ import {
 } from "../registration/claimSponsorship"
 import { RegistrationPendingError } from "../registration/registrationRail"
 import { RAIL_REGISTERED } from "../registration/rails"
+import { signerKitOf } from "../../session/session"
+
+/** The services an account session's allowance reads over. */
+interface SignerServices {
+  wallet: Service<ObsidionWallet>
+  contractService: Service<ContractService>
+  account: AccountService | null
+}
+
+/** What the allowance reads over: the session's wallet, contracts and account once up. */
+export const sponsorDeps = async <S extends ClaimSponsorDeps["session"] & SignerServices>(
+  session: S,
+  signal?: AbortSignal,
+): Promise<ClaimSponsorDeps & { session: S }> => ({
+  session,
+  ...(await signerKitOf(session, signal)),
+})
 
 export async function readSponsoredAllowance(deps: ClaimSponsorDeps): Promise<AllowanceRead> {
   let sponsor: ClaimSponsorContext

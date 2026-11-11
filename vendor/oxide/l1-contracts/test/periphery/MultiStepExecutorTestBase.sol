@@ -140,8 +140,7 @@ abstract contract MultiStepExecutorHelpers is OxidePortalBase {
 abstract contract MultiStepExecutorTestBase is MultiStepExecutorHelpers {
   uint256 internal constant AMOUNT = 2500e18;
   uint256 internal constant TIP = 25e18;
-  uint256 internal constant FEE = 3e18;
-  uint256 internal constant NET = AMOUNT - FEE - TIP;
+  uint256 internal constant NET = AMOUNT - TIP;
 
   bytes32 internal constant RECOVERY_SALT = keccak256("recovery-salt");
   uint256 internal constant PASSKEY_INDEX = 0;
@@ -155,7 +154,6 @@ abstract contract MultiStepExecutorTestBase is MultiStepExecutorHelpers {
   uint256 internal passkey;
 
   address internal relayer = makeAddr("relayer");
-  address internal feeBeneficiary = makeAddr("fee-beneficiary");
   address internal alice = makeAddr("alice");
   address internal bob = makeAddr("bob");
 
@@ -166,7 +164,7 @@ abstract contract MultiStepExecutorTestBase is MultiStepExecutorHelpers {
     dai = underlying;
     callTarget = new MockCallTarget();
 
-    executor = new MultiStepExecutor(address(portal), FEE, feeBeneficiary);
+    executor = new MultiStepExecutor();
 
     OxideAccountFactory recoveryAccountFactory = new OxideAccountFactory();
     recoveryAccount = OxideAccount(payable(recoveryAccountFactory.deploy(makeAddr("bootstrap"))));

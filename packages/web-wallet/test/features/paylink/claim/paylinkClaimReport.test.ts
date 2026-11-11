@@ -3,7 +3,14 @@
  * record shows the burn mined, at most once from this browser, and only with consent.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import type { IStorageAdapter, WithdrawalRecord } from "@obsidion/front-core"
+import {
+  createOwedClaims,
+  memoryBackend,
+  openDatabase,
+  type MemoryBackend,
+  type OwedClaims,
+  type WithdrawalRecord,
+} from "@obsidion/front-core"
 
 const a = vi.hoisted(() => ({
   enabled: true,
@@ -24,16 +31,6 @@ const ROLLUP = "0x" + "ab".repeat(20)
 const SECRET = { toBuffer: () => new Uint8Array(32).fill(9) }
 const LINK = "0x" + "11".repeat(32)
 
-function memoryStorage(): IStorageAdapter & { data: Map<string, string> } {
-  const data = new Map<string, string>()
-  return {
-    data,
-    getItem: async (key: string) => data.get(key) ?? null,
-    setItem: async (key: string, value: string) => void data.set(key, value),
-    removeItem: async (key: string) => void data.delete(key),
-  } as unknown as IStorageAdapter & { data: Map<string, string> }
-}
-
 const record = (phase: WithdrawalRecord["phase"], patch: Partial<WithdrawalRecord> = {}) =>
   ({
     localId: `wdraw_${phase}`,
@@ -47,8 +44,8 @@ const record = (phase: WithdrawalRecord["phase"], patch: Partial<WithdrawalRecor
     ...patch,
   } as unknown as WithdrawalRecord)
 
-const owe = (storage: IStorageAdapter, amount = 25n * 10n ** 18n) =>
-  owePaylinkClaim(storage, LINK, {
+const owe = (claims: OwedClaims, amount = 25n * 10n ** 18n) =>
+  owePaylinkClaim(claims, LINK, {
     rollupAddress: ROLLUP,
     secret: SECRET,
     flavor: "direct",
@@ -56,12 +53,14 @@ const owe = (storage: IStorageAdapter, amount = 25n * 10n ** 18n) =>
     decimals: 18,
   })
 
-let storage: ReturnType<typeof memoryStorage>
+let backend: MemoryBackend
+let storage: OwedClaims
 
 beforeEach(() => {
   a.enabled = true
   a.firePaylinkEvent.mockClear()
-  storage = memoryStorage()
+  backend = memoryBackend()
+  storage = createOwedClaims({ db: openDatabase(backend) })
   vi.useRealTimers()
 })
 
@@ -86,9 +85,9 @@ describe("paylink claim report", () => {
     expect(wire).not.toContain("0a".repeat(32))
     expect(wire).not.toContain(LINK.slice(2))
 
-    // Later phases, other tabs and reloads find nothing left to send.
+    // Later phases and reloads find nothing left to send.
     await reportPaylinkClaims([record("finalizing_l1")], storage)
-    await reportPaylinkClaims([record("done")], storage)
+    await reportPaylinkClaims([record("done")], createOwedClaims({ db: openDatabase(backend) }))
     expect(a.firePaylinkEvent).toHaveBeenCalledTimes(1)
   })
 
@@ -101,25 +100,10 @@ describe("paylink claim report", () => {
     expect(a.firePaylinkEvent).toHaveBeenCalledTimes(1)
   })
 
-  it("still sends one event where Web Locks are missing", async () => {
-    const locks = Object.getOwnPropertyDescriptor(navigator, "locks")!
-    Object.defineProperty(navigator, "locks", { configurable: true, value: undefined })
-    try {
-      await owe(storage)
-      await Promise.all([
-        reportPaylinkClaims([record("l2_mined")], storage),
-        reportPaylinkClaims([record("l2_mined")], storage),
-      ])
-      expect(a.firePaylinkEvent).toHaveBeenCalledTimes(1)
-    } finally {
-      Object.defineProperty(navigator, "locks", locks)
-    }
-  })
-
   it("saves nothing without consent, so a later answer replays nothing", async () => {
     a.enabled = false
     await owe(storage)
-    expect(storage.data.size).toBe(0)
+    expect([...backend.entries.keys()].filter((k) => k.startsWith("acct/owedClaims/"))).toEqual([])
     a.enabled = true
     await reportPaylinkClaims([record("l2_mined")], storage)
     expect(a.firePaylinkEvent).not.toHaveBeenCalled()

@@ -11,5 +11,5 @@ const OFFER: actual.FasterWithdrawal = {
 export const useFasterWithdrawal: typeof actual.useFasterWithdrawal = (opts) => {
   const fixture = fixtureState() !== null
   const live = actual.useFasterWithdrawal(fixture ? { ...opts, active: false } : opts)
-  return fixture && opts.active ? { offer: OFFER, loading: false } : live
+  return fixture && opts.active ? { offer: OFFER, current: true, loading: false } : live
 }

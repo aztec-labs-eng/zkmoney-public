@@ -1,16 +1,18 @@
 /**
  * Web implementations of the front-core receiver ports (stage-3 inbox): sender-tag resolution over
  * the Registry (always a fresh manifest — the contact cache never vouches for a sender) and
- * store writes over the web stores (requests, ContactStorage). Transfer receive is
+ * store writes over the web stores (requests, contacts). Transfer receive is
  * chain-native (the `transferScan` task), not an XMTP port.
  */
 
+import { bestEffort } from "@obsidion/core/errors"
 import {
   approvedContactTags,
   contactRowFromEntry,
   incomingRequestToRow,
   isPaymentContactEntry,
   type Contact,
+  type Contacts,
   type ContactsByL2,
   type IncomingRequestInput,
   type RequestSenderPolicy,
@@ -18,7 +20,9 @@ import {
   type RequestStoreWrites,
   type RequestTagBindingResolver,
 } from "@obsidion/front-core"
-import { verifyTag } from "../../features/contacts/registryResolution"
+
+/** The book, read once. */
+type ContactReads = { all(): Promise<readonly Contact[]> }
 
 /**
  * Contact lookup + auto-add for transfer attribution. `registerL2`: a first-time
@@ -28,15 +32,14 @@ import { verifyTag } from "../../features/contacts/registryResolution"
  * an unsolicited transfer can never finish a handshake the user is still waiting on. The row is
  * `autoAdded`: a transfer does not make the sender a contact who may send requests.
  */
-export function createContactsByL2(contacts: {
-  getEntries(): Promise<Contact[]>
-  addOrMergeContact(entry: Contact): Promise<Contact>
-}): ContactsByL2 {
+export function createContactsByL2(
+  contacts: ContactReads & Pick<Contacts, "addOrMergeContact">,
+): ContactsByL2 {
   return {
     async findByL2Address(addr: string): Promise<{ tag: string } | null> {
       try {
         const needle = addr.toLowerCase()
-        const match = (await contacts.getEntries()).find(
+        const match = (await contacts.all()).find(
           (e) =>
             e.tag &&
             (e.addressKind ?? "aztec-l2") === "aztec-l2" &&
@@ -51,7 +54,7 @@ export function createContactsByL2(contacts: {
       // A stranger who claims a tag the user is mid-handshake with could otherwise take over that
       // contact by sending dust: the merge REPLACES a pending row on a tag/name collision.
       const needle = tag.toLowerCase()
-      const entries = await contacts.getEntries().catch(() => [] as Contact[])
+      const entries: readonly Contact[] = (await bestEffort("unknown", contacts.all())) ?? []
       const collidesWithPending = entries.some(
         (e) =>
           (e.addressKind as string | undefined) === "pending-handshake" &&
@@ -76,7 +79,7 @@ export function createContactsByL2(contacts: {
  * manifest. Tag not resolvable → null (skip); transport throw propagates so the receiver defers.
  */
 export function createRequestBindingResolver(
-  verify: (tag: string) => Promise<{ xmtpAddress?: string } | null> = verifyTag,
+  verify: (tag: string) => Promise<{ xmtpAddress?: string } | null>,
 ): RequestTagBindingResolver {
   return {
     async resolveXmtpBinding(tag: string): Promise<string | null> {
@@ -88,26 +91,27 @@ export function createRequestBindingResolver(
 
 /** With the Settings toggle off, only contacts the user added may send requests. */
 export function createRequestSenderPolicy(
-  contacts: { getEntries(): Promise<Contact[]> },
+  contacts: ContactReads,
   allowNonContacts: () => boolean,
 ): RequestSenderPolicy {
   return {
     async admitsRequester(tag: string): Promise<boolean> {
       if (allowNonContacts()) return true
-      const rows = (await contacts.getEntries())
-        .filter(isPaymentContactEntry)
-        .map(contactRowFromEntry)
+      const rows = (await contacts.all()).filter(isPaymentContactEntry).map(contactRowFromEntry)
       return approvedContactTags(rows).has(tag.toLowerCase())
     },
   }
 }
 
 /** Receiver writes over the requests store, via the shared row mapping. */
-export function createRequestStoreWrites(store: Requests): RequestStoreWrites {
+export function createRequestStoreWrites(
+  store: Requests,
+  now: () => number = Date.now,
+): RequestStoreWrites {
   return {
     findById: async (requestId: string) => (await store.get(requestId)) ?? null,
     addIncomingRequest: (input: IncomingRequestInput) =>
-      store.addIfAbsent(incomingRequestToRow(input)),
+      store.addIfAbsent(incomingRequestToRow(input, now())),
     decline: (requestId) => store.decline(requestId),
   }
 }

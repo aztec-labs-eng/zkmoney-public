@@ -1,0 +1,72 @@
+{
+  "scenario": "activity",
+  "viewport": "402x879,1280x832",
+  "path": "/settings?flowFixture=success&backupFixture=recovery",
+  "ready": {
+    "selector": ".ww-settings__user"
+  },
+  "steps": [
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Passkeys",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": "html[data-backup-screen=recovery]"
+    },
+    {
+      "action": "screenshot",
+      "file": "recovery-held.png",
+      "state": "Funding held at the deposit address"
+    },
+    {
+      "action": "goto",
+      "path": "/settings?flowFixture=success&backupFixture=recovery-sent"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-settings__user"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Passkeys",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": "html[data-backup-screen=recovery]"
+    },
+    {
+      "action": "screenshot",
+      "file": "recovery-sent.png",
+      "state": "The recovery is on its way back"
+    },
+    {
+      "action": "goto",
+      "path": "/settings?flowFixture=success&backupFixture=recovery-recovered"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-settings__user"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Passkeys",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": "html[data-backup-screen=recovery]"
+    },
+    {
+      "action": "screenshot",
+      "file": "recovery-recovered.png",
+      "state": "The funding is back"
+    }
+  ],
+  "finalScreenshot": false
+}

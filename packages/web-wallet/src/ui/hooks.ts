@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useLocation, useNavigate } from "react-router-dom"
+import { bestEffort } from "@obsidion/core/errors"
 import { showReportableError } from "../errors/errorModal"
 import { failureCode, fireEvent } from "../lib/analytics"
 import { holdSigningFlow } from "../lib/passkeyTelemetry"
+import { useDomEffect } from "./useDomEffect"
 
 /**
  * History-aware back for ScreenNavBar arrows: pop the browser history when this isn't the first
@@ -64,14 +66,12 @@ export function useAsyncAction() {
  * selection-based copy, which still works inside a click, is the fallback.
  */
 export async function writeClipboard(text: string): Promise<boolean> {
-  try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text)
-      return true
-    }
-  } catch {
-    // Fall through to the selection-based copy.
+  const asyncCopy = async () => {
+    if (!navigator.clipboard?.writeText) return false
+    await navigator.clipboard.writeText(text)
+    return true
   }
+  if (await bestEffort("unknown", asyncCopy())) return true
   const area = document.createElement("textarea")
   area.value = text
   area.setAttribute("readonly", "")
@@ -111,6 +111,7 @@ export function useProvingOutcome(flow: string) {
     [flow],
   )
 
+  // eslint-disable-next-line local/effect-hook -- ZKM-1806
   useEffect(() => {
     const onPageHide = () => report("proving_abandoned")
     window.addEventListener("pagehide", onPageHide)
@@ -140,11 +141,22 @@ export function useProvingOutcome(flow: string) {
   )
 }
 
+/** A send the user starts from a button, and how it went. */
+export function useSubmit(send: () => Promise<boolean>) {
+  const [status, setStatus] = useState<"idle" | "sending" | "failed" | "sent">("idle")
+  const submit = async () => {
+    setStatus("sending")
+    setStatus((await send()) ? "sent" : "failed")
+  }
+  return { status, submit }
+}
+
 /** Clipboard write with a 2s "Copied!" indicator; the timer dies with the component. */
 export function useCopy() {
   const [copied, setCopied] = useState(false)
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined)
 
+  // eslint-disable-next-line local/effect-hook -- ZKM-1806
   useEffect(() => () => clearTimeout(timer.current), [])
 
   // A refused clipboard (permission denied, no gesture, insecure context) is ordinary and
@@ -154,6 +166,7 @@ export function useCopy() {
     if (!(await writeClipboard(text))) return false
     setCopied(true)
     clearTimeout(timer.current)
+    // eslint-disable-next-line local/timer-in-view -- ZKM-1806
     timer.current = setTimeout(() => setCopied(false), 2000)
     return true
   }, [])
@@ -188,23 +201,24 @@ export function useLinkSharing(url?: string, title = "Payment request", text?: s
 
 /** Keeps the screen on while `active`. The browser drops the lock when the page hides, so it is taken again on return. */
 export function useWakeLock(active: boolean): void {
-  useEffect(() => {
+  useDomEffect(() => {
     if (!active || typeof navigator === "undefined" || !("wakeLock" in navigator)) return
     let lock: WakeLockSentinel | undefined
     let done = false
     const take = () => {
       if (document.visibilityState !== "visible") return
-      navigator.wakeLock.request("screen").then(
-        (l) => (done ? void l.release().catch(() => {}) : (lock = l)),
-        () => {},
-      )
+      void bestEffort("unknown", navigator.wakeLock.request("screen")).then((l) => {
+        if (!l) return
+        if (done) void bestEffort("unknown", l.release())
+        else lock = l
+      })
     }
     take()
     document.addEventListener("visibilitychange", take)
     return () => {
       done = true
       document.removeEventListener("visibilitychange", take)
-      void lock?.release().catch(() => {})
+      if (lock) void bestEffort("unknown", lock.release())
     }
   }, [active])
 }

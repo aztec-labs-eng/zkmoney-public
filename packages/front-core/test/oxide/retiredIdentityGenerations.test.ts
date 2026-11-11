@@ -17,7 +17,7 @@ const tuple = (over: Partial<OxideEnvTuple>): OxideEnvTuple =>
     accountFactory: "0x842f0f87bf2318fe7b68a516e360cd1fded36c9b",
     namePortal: "0x5555555555555555555555555555555555555555",
     ...over,
-  }) as OxideEnvTuple
+  } as OxideEnvTuple)
 
 describe("retiredIdentityGenerations", () => {
   it("maps a retired deployment's static fields into one admission candidate", () => {

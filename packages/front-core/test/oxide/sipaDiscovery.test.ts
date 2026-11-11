@@ -17,7 +17,9 @@ const { fetchRecordsMock, historicalRecordsMock, selectResolverMock, FAKE_ARTIFA
 vi.mock("@obsidion/sdk", async (importOriginal) => ({
   ensureContractRegisteredInPXE: (await importOriginal<typeof import("@obsidion/sdk")>())
     .ensureContractRegisteredInPXE,
-  fetchSipaResolverOperators: fetchRecordsMock,
+  sipaResolverOperatorsOf: (await importOriginal<typeof import("@obsidion/sdk")>())
+    .sipaResolverOperatorsOf,
+  readSipaResolverOperatorEvents: fetchRecordsMock,
   fetchHistoricalSipaResolverOperators: historicalRecordsMock,
   selectManifestResolverOperator: selectResolverMock,
   getBroadcasterArtifact: () => FAKE_ARTIFACT,
@@ -36,8 +38,22 @@ vi.mock("@aztec-labs/aztec.js/addresses", () => ({
   },
 }))
 import { Network } from "@obsidion/sdk"
-import { setupSipaDiscovery } from "../../src/oxide/sipaDiscovery"
-import { resetResolverOperatorRecordsForTests } from "../../src/oxide/resolverOperatorRecords"
+import { setupSipaDiscovery as setup } from "../../src/oxide/sipaDiscovery"
+import { deploymentScans } from "../../src/oxide/resolverOperatorRecords"
+import { createPace } from "@obsidion/core/cadence"
+import { openDatabase } from "../../src/engine/database"
+import { memoryBackend } from "../../src/engine/memoryBackend"
+import { queries } from "../../src/engine/query"
+import { memoryStore } from "../../src/engine/store"
+
+/** Each test's scans start empty. */
+let scans = deploymentScans(
+  queries({ pace: createPace(), visible: memoryStore(true).readonly, now: () => Date.now() }),
+  () => CLIENT,
+  openDatabase(memoryBackend()),
+)
+const setupSipaDiscovery = (deps: Omit<Parameters<typeof setup>[0], "scans">) =>
+  setup({ ...deps, scans })
 
 const PREFERRED_RESOLVER_OWNER = "0xe959F1c4F84C55c10114f3FA46a8DcFB51ab8d30"
 
@@ -48,6 +64,7 @@ const DEPLOYED_AT = new Date(Number(DEPLOY_BLOCK) * BLOCK_SEC * 1000).toISOStrin
 
 const TUPLE = {
   deployedAt: DEPLOYED_AT,
+  deployedAtBlock: String(DEPLOY_BLOCK),
   portal: "0x2c5a54e7fff0593778371ee02a8b31e39c0cf8fc",
   forwardingTable: "0xfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfb",
   registry: "0x0b903b955dbc0c97252f1ce9e43f8c26e8f5635f",
@@ -85,8 +102,14 @@ function makeNode(instance: unknown = INSTANCE) {
 }
 
 beforeEach(() => {
-  resetResolverOperatorRecordsForTests()
-  fetchRecordsMock.mockReset().mockResolvedValue([RESOLVER_RECORD])
+  scans = deploymentScans(
+    queries({ pace: createPace(), visible: memoryStore(true).readonly, now: () => Date.now() }),
+    () => CLIENT,
+    openDatabase(memoryBackend()),
+  )
+  fetchRecordsMock
+    .mockReset()
+    .mockResolvedValue([{ record: RESOLVER_RECORD, blockNumber: DEPLOY_BLOCK, logIndex: 0 }])
   historicalRecordsMock.mockReset().mockResolvedValue([RESOLVER_RECORD])
   selectResolverMock.mockReset().mockReturnValue(RESOLVER_RECORD)
 })
@@ -149,7 +172,7 @@ describe("setupSipaDiscovery", () => {
     expect(sources[0]!.sender.toString()).toBe(RESOLVER_RECORD.l2Address)
   })
 
-  it("bounds the operator scan by the caller's head, so one probe reads against one tip", async () => {
+  it("bounds a historical scan by the caller's head, so one probe reads against one tip", async () => {
     const getBlockNumber = vi.fn(async () => HEAD)
     const client = {
       readContract: vi.fn(),
@@ -165,13 +188,16 @@ describe("setupSipaDiscovery", () => {
       publicClient: client,
       tuple: TUPLE,
       network: SANDBOX,
+      historical: true,
       scanHead: 980n,
     })
 
-    expect(fetchRecordsMock).toHaveBeenCalledWith(client, TUPLE.accountMetadataRegistry, {
-      fromBlock: DEPLOY_BLOCK,
-      toBlock: 980n,
-    })
+    expect(historicalRecordsMock).toHaveBeenCalledWith(
+      client,
+      TUPLE.accountMetadataRegistry,
+      { fromBlock: DEPLOY_BLOCK, toBlock: 980n },
+      expect.objectContaining({ forwardingTable: TUPLE.forwardingTable }),
+    )
     expect(getBlockNumber).not.toHaveBeenCalled()
   })
 

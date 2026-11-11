@@ -1,11 +1,11 @@
 import { writeClipboard } from "../ui/hooks"
-import { getConfig } from "../config/env"
+import type { Network } from "@obsidion/core/constants"
 import { isDemoMode } from "../dev/demoFlag"
 import { analyticsUrl, appVersion, reportId } from "../lib/analytics"
 import type { ErrorModalPayload } from "./errorModal"
 
 /** Plain-text diagnostic blob for clipboard copy. */
-function errorReportText(payload: ErrorModalPayload): string {
+function errorReportText(payload: ErrorModalPayload, network: Network): string {
   return [
     "zk.money error report",
     `Title: ${payload.title}`,
@@ -13,15 +13,15 @@ function errorReportText(payload: ErrorModalPayload): string {
     payload.detail ? `Detail: ${payload.detail}` : null,
     payload.context ? `Context: ${payload.context}` : null,
     `Time: ${new Date().toISOString()}`,
-    `Network: ${getConfig().network}`,
+    `Network: ${network}`,
   ]
     .filter((line): line is string => line !== null)
     .join("\n")
 }
 
 /** Writes the report to the clipboard. */
-export async function copyErrorReport(payload: ErrorModalPayload): Promise<void> {
-  await writeClipboard(errorReportText(payload))
+export async function copyErrorReport(payload: ErrorModalPayload, network: Network): Promise<void> {
+  await writeClipboard(errorReportText(payload, network))
 }
 
 /**

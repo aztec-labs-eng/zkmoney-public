@@ -1,4 +1,5 @@
 /** The pool task, once boot let it run, refills on a hand-out's wake rather than its cadence. */
+import { createPace } from "@obsidion/core/cadence"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import {
@@ -11,13 +12,12 @@ import {
   startRuntime,
   type SipaDeposit,
 } from "@obsidion/front-core"
-import { getConfig } from "../../../../src/config/env"
-import { primeOxideTuple } from "../../../../src/config/oxideTuple"
 import {
   createSipaAddresses,
   sipaPoolDeployment,
 } from "../../../../src/features/deposit/sipaAddresses"
-import { seedBootConfig } from "../../../support/seedBootConfig"
+import { defaultConfig } from "../../../support/page"
+import { answered } from "../../../support/query"
 
 const ACCOUNT = `0x${"a1".repeat(32)}`
 const POOLED = "0x00000000000000000000000000000000000000c1"
@@ -32,8 +32,6 @@ afterEach(() => stop?.())
 
 describe("sipaPool", () => {
   it("refills as soon as a hand-out takes the pooled address, not on its next tick", async () => {
-    await seedBootConfig()
-    primeOxideTuple(getConfig(), TUPLE)
     const pooled: SipaDeposit = {
       sipaAddress: POOLED,
       recipientL2Address: ACCOUNT,
@@ -66,20 +64,21 @@ describe("sipaPool", () => {
       ["acct/meta/sipaDeposits", "3"],
     ])
     const db = openDatabase(backend)
-    const store = createSipaDeposits({ db, account: true })
+    const store = createSipaDeposits({ db, account: true, now: () => Date.now() })
     // The fill's first L2 read: it shows the refill started, and holds it there.
     const getBlock = vi.fn(() => new Promise<never>(() => {}))
     const addresses = createSipaAddresses({
+      page: { config: defaultConfig, chain: { oxideTuple: answered(TUPLE) } } as never,
       store,
       wallet: fixed("wallet", { node: { getBlock }, networkId: "0xnet" } as never),
       keys: fixed("keys", { recipient: { toString: () => ACCOUNT } } as never),
-      discovery: fixed("discovery", {} as never),
+      discovery: () => fixed("discovery", {} as never),
       identity: memoryStore({
         value: { handle: "alice", address: ACCOUNT, claimedAt: 1 },
         loaded: true,
         failed: false,
       }).readonly,
-      railPending: memoryStore(undefined).readonly,
+      railPending: memoryStore({ status: "pending" } as const).readonly,
       wakeBroadcasts: () => {},
       wake: (task) => runtime.wake(task),
     })
@@ -87,6 +86,8 @@ describe("sipaPool", () => {
       db,
       milestones: { after: async () => true, reached: () => true },
       visible: memoryStore(true).readonly,
+      pace: createPace(),
+      now: () => Date.now(),
     })
     stop = () => runtime.stop()
     // Boot's run finds the pool full and fills nothing.

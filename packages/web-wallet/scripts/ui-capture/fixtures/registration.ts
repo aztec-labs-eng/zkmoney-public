@@ -1,8 +1,7 @@
 import * as actual from "../../../src/features/registration/webRegistration"
 import { currentRegistration } from "@obsidion/front-core"
-import { fixtureState, operation } from "./control"
+import { captureSession, fixtureState, operation } from "./control"
 import { putRegistration } from "./registration-seed"
-import { session } from "../../../src/session/session"
 export * from "../../../src/features/registration/webRegistration"
 
 export const buildWebDetectionDeps: typeof actual.buildWebDetectionDeps = async (...args) => {
@@ -14,8 +13,14 @@ export const runDetectionTick: typeof actual.runDetectionTick = async (...args) 
   // The background task's ticks leave the seeded records as they are.
   if (!args[1]?.force) return { outcome: "pending", nextMs: 0 }
   await operation("registration-check")
-  const record = currentRegistration(actual.loadedRegistrations(session().registrations))
+  const session = captureSession()
+  const record = currentRegistration(actual.loadedRegistrations(session.registrations))
   if (record)
-    await putRegistration({ ...record, broadcast: true, retries: 0, startTime: Date.now() })
+    await putRegistration(session, {
+      ...record,
+      broadcast: true,
+      retries: 0,
+      startTime: Date.now(),
+    })
   return { outcome: "pending", nextMs: 0 }
 }

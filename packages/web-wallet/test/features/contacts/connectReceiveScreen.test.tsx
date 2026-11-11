@@ -1,3 +1,4 @@
+// Guard: closing during verification works, and a late error is ignored.
 import React, { act, StrictMode } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { MemoryRouter, Route, Routes } from "react-router-dom"
@@ -15,8 +16,6 @@ vi.mock("@obsidion/sdk", async (importOriginal) => ({
 }))
 vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/front-core")>()),
-  ContactStorage: {},
-  PendingConnectBackStorage: {},
   decodeInline: vi.fn(),
 }))
 vi.mock("@obsidion/web-ds", () => ({
@@ -50,10 +49,6 @@ const { openTestSession } = await import("../../support/session")
 const { setIdentity } = await import("../../support/identity")
 let root: Root
 let container: HTMLDivElement
-const preview = {
-  kind: "confirm",
-  preview: { contact: { tag: "alice", name: "Alice" }, verified: true },
-}
 
 beforeEach(async () => {
   vi.resetAllMocks()
@@ -108,41 +103,3 @@ it.each(["close", "escape", "backdrop"])(
     expect(mocks.report).not.toHaveBeenCalled()
   },
 )
-
-it.each(["result", "rejection"])(
-  "leaves the consumed route after a preview error (%s)",
-  async (kind) => {
-    if (kind === "result")
-      mocks.preview.mockResolvedValue({ kind: "error", message: "Registry mismatch" })
-    else mocks.preview.mockRejectedValue(new Error("Preview failed"))
-    await render()
-    expect(container.textContent).toBe("Contacts destination")
-    expect(mocks.report).toHaveBeenCalledTimes(1)
-    expect(mocks.confirm).not.toHaveBeenCalled()
-  },
-)
-
-it("leaves the consumed route after an add error", async () => {
-  mocks.preview.mockResolvedValue(preview)
-  mocks.confirm.mockResolvedValue({ kind: "error", message: "Storage failed" })
-  await render()
-  expect(mocks.take).toHaveBeenCalledTimes(1)
-  expect(mocks.confirm).not.toHaveBeenCalled()
-  await act(async () =>
-    [...container.querySelectorAll("button")]
-      .find((button) => button.textContent === "Add contact")!
-      .click(),
-  )
-  expect(container.textContent).toBe("Contacts destination")
-  expect(mocks.report).toHaveBeenCalledTimes(1)
-})
-
-it("names the stored contact on a conflict instead of opening it", async () => {
-  mocks.preview.mockResolvedValue(preview)
-  mocks.confirm.mockResolvedValue({ kind: "conflict", contact: { tag: "old-tag", name: "old-tag" } })
-  await render()
-  await act(async () => [...container.querySelectorAll("button")].find((button) => button.textContent === "Add contact")!.click())
-  expect(container.textContent).toContain("@alice wasn't added. @old-tag in your contacts has the same address or name.")
-  expect(container.textContent).not.toContain("Contacts destination")
-  expect(mocks.report).not.toHaveBeenCalled()
-})

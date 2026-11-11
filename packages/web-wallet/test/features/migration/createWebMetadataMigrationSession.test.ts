@@ -3,6 +3,7 @@
  * its writes and its consent prompts, as another account signed in does.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { fakeReads } from "../../support/fakeReads"
 
 const h = vi.hoisted(() => ({
   session: vi.fn(async (o: unknown) => o),
@@ -10,29 +11,27 @@ const h = vi.hoisted(() => ({
 }))
 
 vi.mock("@obsidion/front-core", async (importOriginal) => ({
-  ...(({ openDatabase, memoryStore }) => ({ openDatabase, memoryStore }))(
-    await importOriginal<typeof import("@obsidion/front-core")>(),
-  ),
+  ...(({ openDatabase, memoryStore, queries, ACROSS_INPUT_DECIMALS }) => ({
+    openDatabase,
+    memoryStore,
+    queries,
+    ACROSS_INPUT_DECIMALS,
+  }))(await importOriginal<typeof import("@obsidion/front-core")>()),
   createMetadataMigrationSession: h.session,
   pubkeyToR1KeyArg: (hex: string) => ({ qx: hex, qy: hex }),
   UpgradeActivity: { get: () => ({}) },
-  BalanceStorage: { get: () => ({}) },
   WalletSyncCoordinator: {},
   BROADCASTS_STORAGE_KEY: "broadcasts",
   OPERATIONS_STORAGE_KEY: "operations",
 }))
-vi.mock("@obsidion/sdk", () => ({
+vi.mock("@obsidion/sdk", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@obsidion/sdk")>()),
   createLocalMetadataMigrationSource: vi.fn(),
   FrozenMetadataMigrationSource: class {},
   frozenRuntimeFromSourceGeneration: vi.fn(),
 }))
-vi.mock("../../../src/config/env", () => ({ getConfig: () => ({ network: "sandbox" }) }))
-vi.mock("../../../src/session/session", () => ({
-  session: () => ({ activity: { all: async () => [] } }),
-}))
 vi.mock("../../../src/config/oxideTuple", () => ({
   l1MulticallClient: () => ({}),
-  getFeeTokenBridgeTuple: async () => ({ portal: `0x${"ab".repeat(20)}` }),
 }))
 vi.mock("../../../src/session/account", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../src/session/account")>()),
@@ -81,7 +80,16 @@ async function compose(): Promise<Run> {
     account,
     deposits: { get: async () => undefined },
     auth: { signMetadataChallenge: h.sign } as never,
-    own: { namespace: { id: "wallet-1" }, device: testCore().device } as never,
+    own: {
+      page: {
+        config: { network: "sandbox" },
+        chain: fakeReads({ feeTokenBridgeTuple: async () => tuple }),
+      },
+      namespace: { id: "wallet-1" },
+      device: testCore().device,
+      balanceStore: {},
+      transfers: { all: async () => [] },
+    } as never,
     handle: undefined,
     contractService: {} as never,
     toTokenService: {} as never,

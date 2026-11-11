@@ -10,7 +10,7 @@ import {ICurve3Pool} from "@periphery/interfaces/ICurve3Pool.sol";
 import {IAcrossSpokePool} from "@periphery/interfaces/IAcrossSpokePool.sol";
 import {RecoveryCommitmentLib} from "@periphery/RecoveryCommitmentLib.sol";
 import {EscrowRecoveryTestBase} from "@test/periphery/EscrowRecoveryTestBase.sol";
-import {MockAcrossSpokePool} from "./MockAcrossSpokePool.sol";
+import {MockAcrossSpokePool} from "@test/mocks/MockAcrossSpokePool.sol";
 import {MockCurve3Pool} from "@test/mocks/MockCurve3Pool.sol";
 
 abstract contract AcrossBridgeEscrowTestBase is EscrowRecoveryTestBase {

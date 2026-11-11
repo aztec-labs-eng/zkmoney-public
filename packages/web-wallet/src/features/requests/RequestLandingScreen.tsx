@@ -15,15 +15,15 @@
  */
 import { useEffect, useMemo, useRef, useState } from "react"
 import { Outlet, useLocation, useNavigate, useParams } from "react-router-dom"
-import { createPublicClient, formatUnits, type PublicClient } from "viem"
+import { createPublicClient, type PublicClient } from "viem"
 import type { AztecNode } from "@aztec-labs/aztec.js/node"
 import {
   decodeRequestInline,
   normalizeTag,
   type RegistryTagResolution,
   type RequestInlinePacket,
-  useContractServiceContext,
   useStore,
+  serviceStatus,
 } from "@obsidion/front-core"
 import type { ChainIdentity } from "@obsidion/core/types"
 import { bundledLinkLocator, decodeLinkFragment, LinkKind } from "@obsidion/sdk"
@@ -35,10 +35,9 @@ import {
   Spinner,
   TopNavIconButton,
 } from "@obsidion/web-ds"
-import { getConfig, l1Transport } from "../../config/env"
-import { getOxideTuple } from "../../config/oxideTuple"
+import { l1Transport, type WebWalletConfig } from "../../config/env"
 import { fireEvent, reportLanding, requestAmountBucket } from "../../lib/analytics"
-import { usdBalance, usdFigure } from "../../ui/format"
+import { usdBalance } from "../../ui/format"
 import { useBack, useLinkSharing } from "../../ui/hooks"
 import { BootSplash, usePxeBoot, verifiedIdentity } from "../../ui/PxeBoot"
 import { enteredIdentity } from "../../session/account"
@@ -46,51 +45,75 @@ import { useSession } from "../../session/session"
 import { resolveTagForCommit } from "../contacts/registryResolution"
 import { recipientNotUpgradedCopy } from "../migration/upgradeCopy"
 import { InvitationChrome } from "../onboarding/InvitationChrome"
-import {
-  RequestDecimalsMismatchError,
-  RequesterNotUpgradedError,
-  resolveAccountlessRequest,
-  type AccountlessResolveResult,
-} from "./accountlessRequest"
+import { resolveAccountlessRequest } from "./accountlessRequest"
+import type { AccountlessResolveResult, TagWarning } from "./accountlessRequest"
+import { RequestDecimalsMismatchError, RequesterNotUpgradedError } from "./accountlessRequestErrors"
+import type { RequesterMismatch } from "./accountlessRequestErrors"
 import { ExternalWalletPayModal } from "./ExternalWalletPayModal"
 import { loadDepositTokens } from "../sipa/loadDepositFacts"
 import { requestAmountDisplay, validateRequestPacket, type RequestLinkProblem } from "./requestLink"
 import { fireRequestOpened } from "./requestOpened"
 import { resolveShortRequest } from "./shortRequestLink"
 import { useShortLinkLookup } from "../shortLinks"
+import type { PayStart } from "./payStart"
 import { errorMessage } from "../../errors/catalog"
 import { fmt } from "../../lib/fmt"
 import copy from "./RequestLandingScreen.copy"
 import { WalletError, type ErrorCode } from "@obsidion/core/errors"
+import { useOpened } from "../../ui/useScreenFlow"
 
 /** The registry's identity refusals: final, so the payer gets no retry. */
-const FINAL_CODES: ReadonlySet<ErrorCode> = new Set([
-  "contact.unregistered",
-  "contact.requestMismatch",
-])
+const FINAL_CODES: ReadonlySet<ErrorCode> = new Set(["contact.unregistered"])
 
 /**
  * `unknownPayee`: a pay page for a tag nobody holds, such as a mistyped `<tag>.zk.money`.
  * `notUpgraded`: the payee's tag is still on a retired rollup.
+ * `requesterMoved` / `requesterChanged` / `requesterMismatch`: the tag names another L2 account
+ * than the link pins: the requester's own new one, another owner's, or one whose history could not
+ * be read.
  */
-type PayProblem = RequestLinkProblem | "unknownPayee" | "notUpgraded"
+type PayProblem =
+  | RequestLinkProblem
+  | "unknownPayee"
+  | "notUpgraded"
+  | "requesterMoved"
+  | "requesterChanged"
+  | "requesterMismatch"
 
-const PROBLEM_COPY: Record<PayProblem, string> = {
-  unknownPayee: "There's no zk.money account with this name.",
-  notUpgraded: recipientNotUpgradedCopy.payPageHint,
-  expired: "This payment request has expired.",
-  wrongNetwork: "This payment request is for a different network.",
-  wrongToken: "This payment request is for a token this wallet doesn't support.",
-  legacyUnverifiable:
-    "This link is from an older app version and can't be paid from the web without an account — sign up, or open it in the zk.money app.",
+const MISMATCH_PROBLEM: Record<RequesterMismatch, PayProblem> = {
+  moved: "requesterMoved",
+  otherOwner: "requesterChanged",
+  unknown: "requesterMismatch",
+}
+
+/** A refused link offers no way on to pay, since the send sheet refuses it too. */
+const refusesRequester = (problem: PayProblem) => Object.values(MISMATCH_PROBLEM).includes(problem)
+
+function problemCopy(problem: PayProblem, tag: string): string {
+  return problem === "notUpgraded"
+    ? recipientNotUpgradedCopy.payPageHint
+    : fmt(copy.problems[problem], { tag })
+}
+
+function tagWarningCopy(warning: TagWarning, tag: string): string {
+  return fmt(copy.tagWarning, {
+    warning:
+      warning === "notUpgraded"
+        ? recipientNotUpgradedCopy.title(tag)
+        : fmt(copy.tagWarnings[warning], { tag }),
+  })
 }
 
 /**
  * The rollup the active tab verified before the app mounted. Without one (demo mode) it reads the
  * identity the boot would: L1's, with the default node standing in when L1 gives no answer.
  */
-async function rollupAddressOf(node: AztecNode, identity?: ChainIdentity): Promise<string> {
-  return (identity ?? (await verifiedIdentity(getConfig(), node))).rollupAddress
+async function rollupAddressOf(
+  config: WebWalletConfig,
+  node: AztecNode,
+  identity?: ChainIdentity,
+): Promise<string> {
+  return (identity ?? (await verifiedIdentity(config, node))).rollupAddress
 }
 
 /** 31 random bytes: a valid field, so it can ride in the transfer's request reference. */
@@ -112,7 +135,12 @@ async function standingProblem(payee: Promise<RegistryTagResolution>): Promise<P
 }
 
 /** A short link's fragment is looked up on chain first and replaced by the request it stands for. */
-export function RequestLandingScreen(props: { node: AztecNode; chainIdentity?: ChainIdentity }) {
+export function RequestLandingScreen(props: {
+  node: AztecNode
+  chainIdentity?: ChainIdentity
+  /** The request the page opens on, with its pay sheet open, in place of the link's. */
+  start?: PayStart
+}) {
   const location = useLocation()
   const fragment = location.hash.replace(/^#/, "")
   const short = useMemo(() => {
@@ -130,10 +158,16 @@ function ShortRequestLanding({ seed, node }: { seed: Uint8Array; node: AztecNode
   const navigate = useNavigate()
   const location = useLocation()
   // A browser with no account has no contract service; the bundled class still finds the link.
-  const classes = useContractServiceContext().contractService ?? bundledLinkLocator
+  const { contractService } = useSession()
+  const contracts = useStore(contractService, serviceStatus) === "ready"
   const resolve = useMemo(
-    () => () => resolveShortRequest(node, classes, seed),
-    [node, classes, seed],
+    () => async () =>
+      resolveShortRequest(
+        node,
+        contracts ? await contractService.ready() : bundledLinkLocator,
+        seed,
+      ),
+    [node, contracts, contractService, seed],
   )
   useShortLinkLookup(resolve, (fragment) =>
     navigate(`${location.pathname}#${fragment}`, { replace: true, state: location.state }),
@@ -144,9 +178,11 @@ function ShortRequestLanding({ seed, node }: { seed: Uint8Array; node: AztecNode
 function FullRequestLanding({
   node,
   chainIdentity,
+  start,
 }: {
   node: AztecNode
   chainIdentity?: ChainIdentity
+  start?: PayStart
 }) {
   const location = useLocation()
   const { tag: pathTag } = useParams()
@@ -154,9 +190,13 @@ function FullRequestLanding({
   // A signed-in payer who chose the Ethereum route on the send sheet comes back here for it.
   const forceExternal = (location.state as { external?: boolean } | null)?.external === true
   const session = useSession()
-  const entered = enteredIdentity(useStore(session.identity), useStore(session.device).passkeyMap)
+  const entered = enteredIdentity(
+    useStore(session.identity),
+    useStore(session.device).passkeyMap,
+    session.page.config.rpId,
+  )
   const standing = !fragment && pathTag !== undefined
-  const packet = useMemo(() => {
+  const read = useMemo(() => {
     // The link is untrusted input and its tag derives the payee's deposit address, which a
     // different case resolves differently. Fold it once here so every consumer agrees; a tag
     // that does not survive the fold is a link nothing can be paid to.
@@ -173,13 +213,14 @@ function FullRequestLanding({
       return null
     }
   }, [fragment, pathTag])
+  const packet = start?.request ?? read
   // The loaded identity + MSK breadcrumb. An unreadable identity is not a visitor's.
   const identity = entered ?? undefined
   const hasIdentity = entered !== null
 
   if (!packet) {
     return (
-      <div className="ww-flow">
+      <div className="ww-flow" data-testid="request-unreadable">
         <ScreenNavBar title="Payment request" />
         <Card style={{ marginTop: 24 }}>
           <div style={{ textAlign: "center", padding: "18px 8px", color: "var(--text-secondary)" }}>
@@ -191,7 +232,7 @@ function FullRequestLanding({
   }
   // The payee sees their own page as payers do, with a way to share it.
   const own = !!identity?.handle && normalizeTag(identity.handle) === packet.requesterTag
-  return hasIdentity && !forceExternal && !own ? (
+  return hasIdentity && !forceExternal && !own && !start ? (
     <SignedInRequest
       packet={packet}
       standing={standing}
@@ -208,6 +249,7 @@ function FullRequestLanding({
       chainIdentity={chainIdentity}
       signedIn={hasIdentity && !own}
       own={own}
+      start={start}
     />
   )
 }
@@ -227,17 +269,22 @@ function SignedInRequest({
 }) {
   const navigate = useNavigate()
   const { pathname, hash } = useLocation()
+  const { page } = useSession()
+  const { config, chain } = page
   const [problem, setProblem] = useState<PayProblem | null>(null)
   const [error, setError] = useState<string>()
 
+  // eslint-disable-next-line local/effect-hook -- ZKM-1806
   useEffect(() => {
     let cancelled = false
     ;(async () => {
       try {
         const [rollupAddress, tuple, payeeProblem] = await Promise.all([
-          rollupAddressOf(node, chainIdentity),
-          getOxideTuple(getConfig()),
-          standing ? standingProblem(resolveTagForCommit(packet.requesterTag)) : null,
+          rollupAddressOf(config, node, chainIdentity),
+          chain.oxideTuple.read(),
+          standing
+            ? standingProblem(resolveTagForCommit({ config, chain }, packet.requesterTag))
+            : null,
         ])
         if (cancelled) return
         const found = standing
@@ -261,7 +308,7 @@ function SignedInRequest({
               tag: packet.requesterTag,
               amount: amountDisplay ? Number(amountDisplay) : 0,
               source: "link",
-              requesterAddress: packet.requesterAddress,
+              requesterPin: packet.requesterAddress ?? packet.requesterPin,
               note: packet.note,
               link: `${pathname}${hash}`,
               standing,
@@ -276,15 +323,20 @@ function SignedInRequest({
     return () => {
       cancelled = true
     }
-  }, [packet, standing, navigate])
+  }, [packet, standing, navigate, config, chain])
 
   // The boot screen stays up through the hand-off to the send screen.
   if (!problem && !error) return <BootSplash />
   return (
-    <InvitationChrome>
-      <div className="ww-invite__content ww-invite__content--landing ww-invite__content--pay">
+    <InvitationChrome page={page}>
+      <div
+        className="ww-invite__content ww-invite__content--landing ww-invite__content--pay"
+        data-testid="request-problem"
+      >
         <PaySummary packet={packet} />
-        <p className="ww-paylink-summary__caption">{problem ? PROBLEM_COPY[problem] : error}</p>
+        <p className="ww-paylink-summary__caption">
+          {problem ? problemCopy(problem, packet.requesterTag) : error}
+        </p>
       </div>
     </InvitationChrome>
   )
@@ -326,6 +378,7 @@ function AccountlessRequest({
   chainIdentity,
   signedIn = false,
   own = false,
+  start,
 }: {
   packet: RequestInlinePacket
   standing: boolean
@@ -333,9 +386,12 @@ function AccountlessRequest({
   node: AztecNode
   chainIdentity?: ChainIdentity
   signedIn?: boolean
+  start?: PayStart
 }) {
   const navigate = useNavigate()
   const { pathname, hash } = useLocation()
+  const { page } = useSession()
+  const { config, chain } = page
   const here = `${pathname}${hash}`
   const back = useBack("/")
   const { copied, share } = useLinkSharing(
@@ -345,8 +401,10 @@ function AccountlessRequest({
   const [signup, setSignup] = useState(false)
   // "Pay with zk.money" asks first whether an account exists: Log in leads, Create account follows.
   const [receiving, setReceiving] = useState(false)
-  const [payOpen, setPayOpen] = useState(false)
-  const { demandBoot } = usePxeBoot()
+  const [payOpen, setPayOpen] = useState(!!start)
+  // The start holds for the sheet's first showing only.
+  const [opening, setOpening] = useState(start)
+  const { startBoot } = usePxeBoot(page)
   const [state, setState] = useState<PanelState>({ kind: "loading" })
   const [attempt, setAttempt] = useState(0)
   // Keep one resolution per packet/attempt, including development effect replay.
@@ -362,31 +420,33 @@ function AccountlessRequest({
 
   // The signed-in path reports its open from the contact send screen; this covers the
   // accountless surface (usually a no-op — a visitor with no account granted no consent).
-  useEffect(() => {
+  useOpened(() => {
     if (!own && !signedIn) reportLanding(standing ? "pay_page" : "request_link")
     if (!own) fireRequestOpened(source, packet.requestId, amount, packet.requesterTag)
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only funnel entry
-  }, [])
+  })
 
+  // eslint-disable-next-line local/effect-hook -- ZKM-1806
   useEffect(() => {
     if (inFlight.current?.packet !== packet || inFlight.current.attempt !== attempt) {
+      const stub = page.loaders.accountlessRequest
       const result = (async (): Promise<PanelState> => {
+        if (stub) return { kind: "resolved", result: await stub(packet) }
         try {
-          const config = getConfig()
           const publicClient = createPublicClient({
             chain: config.l1Chain,
             transport: l1Transport(config),
           }) as PublicClient
-          const tupleRead = getOxideTuple(config)
+          const tupleRead = chain.oxideTuple.read()
           // A standing packet's one check is its payee, which the resolve pins too, so both start at
           // once. A link's checks come first: an expired link must not reach the CCIP resolver.
-          const payee = standing ? resolveTagForCommit(packet.requesterTag) : undefined
+          const page = { config, chain }
+          const payee = standing ? resolveTagForCommit(page, packet.requesterTag) : undefined
           const resolve = () =>
-            Promise.all([tupleRead, loadDepositTokens(config)]).then(([tuple, accepted]) =>
+            Promise.all([tupleRead, loadDepositTokens(page)]).then(([tuple, accepted]) =>
               resolveAccountlessRequest(packet, {
                 tuple,
                 publicClient,
-                resolveRequester: payee ? () => payee : resolveTagForCommit,
+                resolveRequester: payee ? () => payee : (tag) => resolveTagForCommit(page, tag),
                 chainId: config.l1ChainId,
                 acceptedTokens: accepted.options.map((t) => t.address),
               }),
@@ -394,7 +454,7 @@ function AccountlessRequest({
           const early = standing ? resolve() : undefined
           early?.catch(() => {})
           const [rollupAddress, tuple, payeeProblem] = await Promise.all([
-            rollupAddressOf(node, chainIdentity),
+            rollupAddressOf(config, node, chainIdentity),
             tupleRead,
             payee ? standingProblem(payee) : null,
           ])
@@ -414,14 +474,14 @@ function AccountlessRequest({
           if (e instanceof RequesterNotUpgradedError) {
             return { kind: "problem", problem: "notUpgraded" }
           }
+          if (e instanceof WalletError && e.code === "contact.requestMismatch") {
+            const reason = e.data?.reason as RequesterMismatch
+            return { kind: "problem", problem: MISMATCH_PROBLEM[reason] }
+          }
           // Registry identity failures are final and worded for the payer; anything else retries and
           // stays in the console.
           if (e instanceof WalletError && FINAL_CODES.has(e.code)) {
-            const final =
-              e.code === "contact.requestMismatch"
-                ? fmt(copy.requestMismatch, { tag: e.data?.tag ?? "" })
-                : errorMessage(e)
-            return { kind: "error", final }
+            return { kind: "error", final: errorMessage(e) }
           }
           console.error("Payment address failed to prepare", e)
           return { kind: "error" }
@@ -439,9 +499,10 @@ function AccountlessRequest({
     return () => {
       cancelled = true
     }
-  }, [packet, standing, attempt])
+  }, [packet, standing, attempt, config, chain])
 
   const result = state.kind === "resolved" ? state.result : undefined
+  const refused = state.kind === "problem" && refusesRequester(state.problem)
   // Signup returns here, where the identity branch hands the request to the send flow.
   const startSignup = () => {
     setSignup(true)
@@ -450,7 +511,7 @@ function AccountlessRequest({
 
   if (signup) {
     return (
-      <InvitationChrome>
+      <InvitationChrome page={page}>
         <Outlet />
       </InvitationChrome>
     )
@@ -458,7 +519,7 @@ function AccountlessRequest({
 
   if (receiving) {
     return (
-      <InvitationChrome>
+      <InvitationChrome page={page}>
         <div className="ww-invite__content ww-invite__content--landing ww-invite__content--pay">
           <span className="ww-invite-modal-badge">
             <Icon name="arrow-down" size={32} color="#fff" />
@@ -499,15 +560,11 @@ function AccountlessRequest({
     if (state.kind === "error") return "Couldn't prepare a payment address."
     if (!result) return "Preparing a payment address…"
     if (result.deployment === "expired") return "This link has expired."
-    return packet.amountAtomic > 0n
-      ? `Pay ${usdFigure(
-          formatUnits(result.grossAtomic, result.decimals),
-        )} with fee. Public onchain payment.`
-      : "Public onchain payment."
+    return signedIn ? copy.publicPayment : copy.feePublicPayment
   }
 
   return (
-    <InvitationChrome>
+    <InvitationChrome page={page}>
       <div className="ww-invite__content ww-invite__content--landing ww-invite__content--pay">
         {own && (
           <span className="ww-invite__back">
@@ -517,18 +574,20 @@ function AccountlessRequest({
         <PaySummary packet={packet} />
 
         {state.kind === "problem" ? (
-          <p className="ww-paylink-summary__caption">{PROBLEM_COPY[state.problem]}</p>
+          <p className="ww-paylink-summary__caption">
+            {problemCopy(state.problem, packet.requesterTag)}
+          </p>
         ) : (
           <>
-            {/* The @tag is the identity on screen but the link supplies the address — a mismatch
-                has to outrank the pay buttons, not sit under them. */}
+            {/* The @tag is the identity on screen but the link supplies the address — an
+                unchecked @tag has to outrank the pay buttons, not sit under them. */}
             {result?.tagWarning && (
               <p className="ww-invite-modal-error" role="alert">
-                {result.tagWarning} — check with them before sending.
+                {tagWarningCopy(result.tagWarning, packet.requesterTag)}
               </p>
             )}
             <p className="ww-paylink-summary__caption">
-              {signedIn ? "Pay with an Ethereum wallet" : "Choose how to pay"}
+              {signedIn ? copy.feeApplies : copy.chooseHowToPay}
             </p>
             <div className="ww-paymethods">
               {!signedIn && (
@@ -537,7 +596,7 @@ function AccountlessRequest({
                   className="zkm-btn-reset zkm-pressable ww-deposit__connect ww-paymethod ww-paymethod--best"
                   onClick={() => {
                     // Both ways on from here need the PXE.
-                    demandBoot()
+                    startBoot()
                     setReceiving(true)
                   }}
                 >
@@ -558,6 +617,7 @@ function AccountlessRequest({
               <button
                 type="button"
                 className="zkm-btn-reset zkm-pressable ww-deposit__connect ww-paymethod"
+                data-testid="request-pay-with-wallet"
                 disabled={!result}
                 onClick={() => setPayOpen(true)}
               >
@@ -565,7 +625,7 @@ function AccountlessRequest({
                   <Icon name="wallet" size={24} color="#fff" />
                 </span>
                 <span className="ww-deposit__connect-text">
-                  <b>Pay with an Ethereum wallet</b>
+                  <b>{copy.payWithWallet}</b>
                   <span>{externalCaption()}</span>
                 </span>
                 {state.kind === "loading" ? (
@@ -587,7 +647,7 @@ function AccountlessRequest({
           </>
         )}
 
-        {own ? (
+        {refused ? null : own ? (
           <>
             <p className="ww-invite-modal-foot">
               This is a preview of your pay page. Share it to get paid.
@@ -629,7 +689,11 @@ function AccountlessRequest({
         <ExternalWalletPayModal
           packet={packet}
           result={result}
-          onClose={() => setPayOpen(false)}
+          start={opening}
+          onClose={() => {
+            setOpening(undefined)
+            setPayOpen(false)
+          }}
           onFeeChanged={() => setAttempt((n) => n + 1)}
           onPaid={
             own

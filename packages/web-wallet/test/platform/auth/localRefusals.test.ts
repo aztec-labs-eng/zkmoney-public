@@ -1,4 +1,6 @@
-import { afterEach, describe, expect, it, vi } from "vitest"
+// @vitest-environment node
+import { memoryBackend, openDatabase } from "@obsidion/front-core"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
   DeviceBoundPasskeyError,
   LaptopPasskeyRefusedError,
@@ -8,21 +10,13 @@ import {
 } from "@obsidion/passkey-web"
 import {
   LOCAL_REFUSAL_LIMIT,
-  clearLocalRefusals,
+  countingLocalRefusals,
   countsAsLocalRefusal,
-  localRefusalCount,
   localRefusalsOverLimit,
-  noteLocalRefusal,
 } from "../../../src/platform/auth/localRefusals"
-import { DEVICE_KEYS } from "../../../src/platform/storage/rollupStorage"
 
 const unsupported = () =>
   new UnsupportedProviderError("manager", { providerName: "Bitwarden", localManagers: ["gpm"] })
-
-afterEach(() => {
-  vi.unstubAllGlobals()
-  clearLocalRefusals()
-})
 
 describe("which refusals count", () => {
   it("counts what another manager's answer causes", () => {
@@ -49,38 +43,30 @@ describe("which refusals count", () => {
 
 describe("the count", () => {
   it("is over the limit only above it, and only while an extension answers", () => {
-    for (let i = 0; i < LOCAL_REFUSAL_LIMIT; i++) noteLocalRefusal()
-    expect(localRefusalCount()).toBe(2)
-    expect(localRefusalsOverLimit(true)).toBe(false)
-    noteLocalRefusal()
-    expect(localRefusalsOverLimit(true)).toBe(true)
-    expect(localRefusalsOverLimit(false)).toBe(false)
-    clearLocalRefusals()
-    expect(localRefusalCount()).toBe(0)
-    expect(localRefusalsOverLimit(true)).toBe(false)
+    expect(localRefusalsOverLimit(true, LOCAL_REFUSAL_LIMIT)).toBe(false)
+    expect(localRefusalsOverLimit(true, LOCAL_REFUSAL_LIMIT + 1)).toBe(true)
+    expect(localRefusalsOverLimit(false, LOCAL_REFUSAL_LIMIT + 1)).toBe(false)
+  })
+})
+
+describe("counting creations on this computer", () => {
+  // A scripted `create` is an extension answering the page's passkeys.
+  beforeEach(() => vi.stubGlobal("navigator", { credentials: { create: async () => null } }))
+  afterEach(() => vi.unstubAllGlobals())
+
+  async function run(...creations: Promise<string>[]) {
+    const backend = memoryBackend()
+    const db = openDatabase(backend)
+    await Promise.allSettled(creations.map((c) => countingLocalRefusals(db, c)))
+    await db.write(async () => {})
+    return backend.entries.get("webwallet.local-refusals")
+  }
+
+  it("counts each of two refusals close together", async () => {
+    expect(await run(Promise.reject(unsupported()), Promise.reject(unsupported()))).toBe("2")
   })
 
-  it("is kept about this browser, so no rollup roll or wallet reset removes it", () => {
-    noteLocalRefusal()
-    expect(localStorage.getItem("webwallet.local-refusals")).toBe("1")
-    expect(DEVICE_KEYS.has("webwallet.local-refusals")).toBe(true)
-  })
-
-  it("reads anything but a positive whole number as none", () => {
-    for (const stored of ["", "x", "-1", "1.5", "NaN"]) {
-      localStorage.setItem("webwallet.local-refusals", stored)
-      expect(localRefusalCount()).toBe(0)
-    }
-  })
-
-  it("counts nothing, and raises nothing, where storage throws", () => {
-    const refuse = () => {
-      throw new DOMException("denied", "SecurityError")
-    }
-    vi.stubGlobal("localStorage", { getItem: refuse, setItem: refuse, removeItem: refuse })
-    expect(() => noteLocalRefusal()).not.toThrow()
-    expect(() => clearLocalRefusals()).not.toThrow()
-    expect(localRefusalCount()).toBe(0)
-    expect(localRefusalsOverLimit(true)).toBe(false)
+  it("clears a refusal still saving when the next attempt is accepted", async () => {
+    expect(await run(Promise.reject(unsupported()), Promise.resolve("made"))).toBe("0")
   })
 })

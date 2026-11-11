@@ -8,10 +8,13 @@
  * Each test re-imports the module graph: the front-core stores are singletons that cache their
  * loaded records, so two scenarios in one graph would see each other's rows.
  */
+import { createPace } from "@obsidion/core/cadence"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { PaylinkTransaction } from "@obsidion/front-core"
 import type { Hex } from "viem"
-import { DEMO_ROLLUP, setActiveRollup } from "../../src/platform/storage/rollupStorage"
+import type { WebWalletConfig } from "../../src/config/env"
+import type { Page } from "../../src/app/sessionDeps"
+import { DEMO_ROLLUP } from "../../src/platform/storage/rollupStorage"
 import {
   closeWalletStore,
   openWalletStore,
@@ -19,6 +22,7 @@ import {
 } from "../../src/platform/storage/walletStorage"
 import { sandboxProfile } from "../fixtures/sandboxProfile"
 import { testWalletDbs } from "../support/fakeWalletDb"
+const pace = createPace()
 
 // Every test, and the hook closing its session, re-imports the aztec + front-core graph; the first
 // one pays the cold transform.
@@ -55,21 +59,27 @@ const injected = () =>
   }
 
 /**
- * The wallet boots from a config profile and `seedDemo` reads `getConfig()`, so the module graph
- * needs a resolved boot before seeding — main.tsx establishes the same precondition from the same
- * in-process demo profile. One boot per fresh graph (`vi.resetModules` wipes the seeded config with
- * the graph). The empty base env stands in for a shell with no profile pair.
+ * `seedDemo` builds its page over a resolved boot, from the same in-process demo profile main.tsx
+ * boots. One boot per fresh graph (`vi.resetModules` wipes the graph). The empty base env stands in
+ * for a shell with no profile pair. A test session reads the last boot's `config`.
  */
+let config: WebWalletConfig
+/** The last seeded page. */
+let seeded: Page
 async function bootConfig() {
   const { resolveBootConfig } = await import("../../src/config/env")
   const { demoBootInput } = await import("../../src/dev/demoProfile")
-  await resolveBootConfig(demoBootInput({}))
+  const boot = await resolveBootConfig(demoBootInput({}))
+  config = boot.config
+  return boot
 }
 
 async function seed(scenario: string): Promise<boolean> {
-  await bootConfig()
+  const boot = await bootConfig()
   const { seedDemo } = await import("../../src/dev/seedDemo")
-  return (await seedDemo(scenario as never)) !== null
+  const page = await seedDemo(scenario as never, boot)
+  if (page) seeded = page
+  return page !== null
 }
 
 /** Move the wall clock the fake L1 ages its transactions and its head against. */
@@ -81,8 +91,6 @@ beforeEach(async () => {
   vi.resetModules()
   localStorage.clear()
   sessionStorage.clear()
-  // The partition outlives the module graph; each test starts on the real one, as a fresh page does.
-  setActiveRollup(sandboxProfile().shared.rollupVersion)
   window.history.replaceState({}, "", "/")
   vi.spyOn(console, "info").mockImplementation(() => {})
 })
@@ -91,12 +99,12 @@ beforeEach(async () => {
 /** The session's deposit records, once loaded. */
 async function depositRecords() {
   const { loadRecords } = await import("@obsidion/front-core")
-  const { session } = await import("../../src/session/session")
-  return [...(await loadRecords(session().sipaDeposits.view))]
+  const { openTestSession } = await import("../support/session")
+  return [...(await loadRecords(openTestSession({ config }).sipaDeposits.view))]
 }
 
 async function withdrawalStore() {
-  const store = (await import("../../src/session/session")).session().withdrawals
+  const store = (await import("../support/session")).openTestSession({ config }).withdrawals
   await store.ready
   return store
 }
@@ -155,18 +163,17 @@ describe("demo flag", () => {
 })
 
 describe("explorer links", () => {
-  const l1TxUrl = async () => (await import("../../src/ui/detailRows")).l1TxUrl
+  const l1TxUrl = async () =>
+    (await import("../../src/ui/detailRows")).l1Links((await bootConfig()).config).l1TxUrl
 
   it("links L1 hashes in demo mode, where the chain carries no explorer", async () => {
     window.history.replaceState({}, "", "/?demo=activity")
-    await bootConfig()
     expect((await l1TxUrl())("0xabc")).toBe("https://sepolia.etherscan.io/tx/0xabc")
   })
 
   it("leaves the hash bare off demo when the chain carries no explorer", async () => {
-    await bootConfig()
-    const { getConfig } = await import("../../src/config/env")
-    expect(getConfig().l1Chain.blockExplorers).toBeUndefined()
+    const { config } = await bootConfig()
+    expect(config.l1Chain.blockExplorers).toBeUndefined()
     expect((await l1TxUrl())("0xabc")).toBeUndefined()
   })
 
@@ -174,8 +181,6 @@ describe("explorer links", () => {
     window.history.replaceState({}, "", "/?demo=activity")
     await bootConfig()
     const { l2TxUrl } = await import("../../src/lib/explorer")
-    const { getConfig } = await import("../../src/config/env")
-    const config = getConfig()
     expect(l2TxUrl(config.network, config.nodeUrl, "0xabc")).toContain("/tx-effects/0xabc")
   })
 })
@@ -183,10 +188,10 @@ describe("explorer links", () => {
 /** The open session's entered identity, as the wallet-route gate reads it. */
 async function entered() {
   const { enteredIdentity } = await import("../../src/session/account")
-  const { session } = await import("../../src/session/session")
-  const { identity, device } = session()
+  const { openTestSession } = await import("../support/session")
+  const { identity, device, page } = openTestSession({ config })
   await identity.ready
-  return enteredIdentity(identity.get(), device.get().passkeyMap)
+  return enteredIdentity(identity.get(), device.get().passkeyMap, page.config.rpId)
 }
 
 /** An entered identity in the open wallet database, as a real wallet saves it, and its reader. */
@@ -213,16 +218,14 @@ describe("seeded session", () => {
       globalThis.fetch = fetchBefore
       window.history.replaceState({}, "", "/?demo=onboarding")
       await seed("onboarding")
-      const { session } = await import("../../src/session/session")
-      const { getOxideTuple } = await import("../../src/config/oxideTuple")
+      const { openTestSession } = await import("../support/session")
       const { loadDepositTokens } = await import("../../src/features/sipa/loadDepositFacts")
-      const { getConfig } = await import("../../src/config/env")
       const { DEMO_OXIDE_TUPLE } = await import("../../src/dev/demoFixtures")
-      expect(session().identity.get().value).toBeNull()
+      expect(openTestSession({ config }).identity.get().value).toBeNull()
       expect(window.ethereum).toBe(provider)
-      expect(await getOxideTuple(getConfig())).toEqual(DEMO_OXIDE_TUPLE)
+      expect(await seeded.chain.oxideTuple.read()).toEqual(DEMO_OXIDE_TUPLE)
       // Only the L1 endpoint is answered locally, so the token lists read the table.
-      expect((await loadDepositTokens(getConfig())).options.map((t) => t.symbol)).toEqual([
+      expect((await loadDepositTokens(seeded)).options.map((t) => t.symbol)).toEqual([
         "DAI",
         "USDC",
         "USDT",
@@ -242,8 +245,8 @@ describe("seeded session", () => {
     async (scenario) => {
       await seed(scenario)
       expect((await entered())?.handle).toBe("demo")
-      const { session } = await import("../../src/session/session")
-      expect(session().auth.isUnlocked()).toBe(true)
+      const { openTestSession } = await import("../support/session")
+      expect(openTestSession({ config }).auth.isUnlocked()).toBe(true)
     },
   )
 
@@ -264,35 +267,41 @@ describe("seeded session", () => {
     expect(help).not.toContain("(no description)")
   })
 
-  it("seeds the token + balance pair the home figure hydrates from", async () => {
+  it("seeds the named balance the home figure hydrates from", async () => {
     await seed("fresh")
-    const { BalanceStorage, TokenStorage } = await import("@obsidion/front-core")
+    const { loadRecords, selectEntry } = await import("@obsidion/front-core")
     const { DEMO_BALANCE_RAW, DEMO_COMPLETE_ADDRESS, DEMO_L2_TOKEN } = await import(
       "../../src/dev/demoFixtures"
     )
-    const { getConfig } = await import("../../src/config/env")
-    expect(await TokenStorage.get().getTokens()).toEqual([
-      { address: DEMO_L2_TOKEN, name: "DAI", symbol: "DAI", decimals: 18 },
-    ])
-    const scope = `${getConfig().network}:${DEMO_COMPLETE_ADDRESS}`
-    expect(await BalanceStorage.get().getBalance(scope, DEMO_L2_TOKEN)).toBe(DEMO_BALANCE_RAW)
+    const { balanceStore } = (await import("../support/session")).openTestSession({ config })
+    const scope = `${config.network}:${DEMO_COMPLETE_ADDRESS}`
+    await loadRecords(balanceStore!.view)
+    expect(selectEntry(balanceStore!.view.get(), scope, DEMO_L2_TOKEN)).toMatchObject({
+      atomic: DEMO_BALANCE_RAW,
+      symbol: "DAI",
+    })
   })
 
   it("seeds the empty scenario with a known zero balance and no transactions", async () => {
     await seed("empty")
-    const { BalanceStorage } = await import("@obsidion/front-core")
+    const { loadRecords, selectEntry } = await import("@obsidion/front-core")
     const { DEMO_COMPLETE_ADDRESS, DEMO_L2_TOKEN } = await import("../../src/dev/demoFixtures")
-    const { getConfig } = await import("../../src/config/env")
-    const scope = `${getConfig().network}:${DEMO_COMPLETE_ADDRESS}`
-    expect(await BalanceStorage.get().getBalance(scope, DEMO_L2_TOKEN)).toBe(0n)
-    expect(await (await import("../../src/session/session")).session().activity.all()).toEqual([])
+    const scope = `${config.network}:${DEMO_COMPLETE_ADDRESS}`
+    const { balanceStore } = (await import("../support/session")).openTestSession({ config })
+    await loadRecords(balanceStore!.view)
+    expect(selectEntry(balanceStore!.view.get(), scope, DEMO_L2_TOKEN)?.atomic).toBe(0n)
+    expect(
+      await (await import("../support/session")).openTestSession({ config }).transfers.all(),
+    ).toEqual([])
   })
 
   it("leaves the fresh scenario with nothing in the feed", async () => {
     await seed("fresh")
     expect(await depositRecords()).toEqual([])
     expect((await withdrawalStore()).list.get().records).toEqual([])
-    expect(await (await import("../../src/session/session")).session().activity.all()).toEqual([])
+    expect(
+      await (await import("../support/session")).openTestSession({ config }).transfers.all(),
+    ).toEqual([])
   })
 })
 
@@ -303,7 +312,6 @@ describe("existing wallet guard", () => {
     const { isDemoMode, demoScenario } = await import("../../src/dev/demoFlag")
     expect(demoScenario()).toBe("recovery")
 
-    setActiveRollup(DEMO_ROLLUP)
     await openWalletStore(DEMO_ROLLUP, { persistent: false })
     const alice = await saveAlice()
     localStorage.setItem("obsidion.marker", "untouched")
@@ -332,8 +340,8 @@ describe("existing wallet guard", () => {
     expect(await seed("recovery")).toBe(true)
 
     expect(saved()).toEqual(real)
-    const { session } = await import("../../src/session/session")
-    expect(session().identity.get().value?.handle).not.toBe("alice")
+    const { openTestSession } = await import("../support/session")
+    expect(openTestSession({ config }).identity.get().value?.handle).not.toBe("alice")
   })
 
   it("refuses on a passkey from an onboarding that never claimed a handle", async () => {
@@ -344,10 +352,9 @@ describe("existing wallet guard", () => {
     const { WebPasskeyIdentityMap } = await import("../../src/platform/auth/WebPasskeyIdentityMap")
     const { openDatabase } = await import("@obsidion/front-core")
     const { opfsBackend } = await import("../../src/platform/storage/walletStorage")
-    const { getConfig } = await import("../../src/config/env")
     // Half-onboarded: the passkey exists and holds the account key, the handle never landed. The
     // identity record alone would read this origin as empty and seed over a real wallet's key.
-    await new WebPasskeyIdentityMap(openDatabase(opfsBackend), getConfig().rpId).upsert({
+    await new WebPasskeyIdentityMap(openDatabase(opfsBackend), config.rpId).upsert({
       credentialId: "alice-credential",
       l2Address: `0x${"a1".repeat(32)}`,
       pubkey: "ff".repeat(64),
@@ -427,10 +434,8 @@ describe("recovery scenario", () => {
 
   it("carries the manifest surface the sweep binds its CREATE2 args to", async () => {
     await seed("recovery")
-    const { getConfig } = await import("../../src/config/env")
-    const { getOxideTuple } = await import("../../src/config/oxideTuple")
     const { sweepManifestFrom } = await import("../../src/features/sipa/sipaSweep")
-    const tuple = await getOxideTuple(getConfig())
+    const tuple = await seeded.chain.oxideTuple.read()
     // Thin fixtures would fail here, naming the field — not at the wallet prompt.
     expect(sweepManifestFrom(tuple).sipaFactory).toBe(tuple.sipaFactory)
   })
@@ -464,27 +469,29 @@ describe("recovery scenario", () => {
 describe("activity scenario", () => {
   it("seeds a mixed feed across every source the activity list reads", async () => {
     await seed("activity")
-    const { ContactStorage, SEND_SUBMIT_TIMEOUT_MS } = await import("@obsidion/front-core")
-    const { session } = await import("../../src/session/session")
-    const { WebStorageAdapter } = await import("../../src/platform/storage/WebStorageAdapter")
-    const adapter = new WebStorageAdapter()
+    const { openTestSession } = await import("../support/session")
 
-    const transactions = await session().activity.all()
-    expect(transactions.map((tx) => tx.status)).toContain("pending")
+    const transactions = await openTestSession({ config }).transfers.all()
     expect(transactions.map((tx) => tx.status)).toContain("failed")
-    // One pre-submit send is two hours old: the load-time sweep fails it and leaves the live one.
-    const failed = await session().activity.failInterrupted(Date.now(), SEND_SUBMIT_TIMEOUT_MS)
-    expect(failed.map((tx) => tx.operationId)).toEqual(["demo-send-interrupted"])
-    const { walletStorage } = await import("../../src/platform/storage/walletStorage")
-    await walletStorage.flush()
-    expect(
-      (await session().activity.all()).filter((tx) => tx.status === "pending" && !tx.txHash),
-    ).toHaveLength(1)
+    // The pending sends are their operations, one in the mempool. One pre-submit send is two hours
+    // old: a sweep from a tab active since an hour ago fails it and leaves the live one.
+    const { operations } = openTestSession({ config })
+    const sends = (state: string) =>
+      operations.view.get().records.filter((op) => op.kind === "send" && op.state === state)
+    const unsent = () => sends("local")
+    expect(sends("sent")).toHaveLength(1)
+    expect(unsent()).toHaveLength(2)
+    await operations.sweep(Date.now() - 60 * 60 * 1000)
+    expect(unsent().map((op) => op.operationId)).toEqual(["demo-send-proving"])
+    expect(await operations.get("demo-send-interrupted")).toMatchObject({
+      state: "failed",
+      cause: "interrupted",
+    })
     expect((await withdrawalStore()).list.get().records.length).toBeGreaterThan(0)
     expect((await depositRecords()).length).toBeGreaterThan(0)
-    expect(await ContactStorage.get(adapter).getEntries()).toHaveLength(6)
+    expect(await openTestSession({ config }).contacts?.all()).toHaveLength(6)
 
-    const requests = session().requests.view.get()
+    const requests = openTestSession({ config }).requests.view.get()
     expect(
       new Set(
         requests.filter((r) => r.status === "pending").map((r) => `${r.direction}:${r.kind}`),
@@ -493,9 +500,8 @@ describe("activity scenario", () => {
     // Settled requests (fulfilled + declined), which the pending filter drops from the list.
     expect(requests.filter((r) => r.status !== "pending")).toHaveLength(2)
     // The announce carries the token trio and the network with every row, so no row lacks them.
-    const { getConfig } = await import("../../src/config/env")
     for (const request of requests) {
-      expect(request.networkId).toBe(getConfig().network)
+      expect(request.networkId).toBe(config.network)
       expect(request.tokenDecimals).toBe(18)
       expect(BigInt(request.amountAtomic!)).toBe(BigInt(request.amount) * 10n ** 18n)
     }
@@ -505,7 +511,7 @@ describe("activity scenario", () => {
     await seed("activity")
     const { validateAddress } = await import("@obsidion/front-core")
     const rows = (
-      await (await import("../../src/session/session")).session().activity.all()
+      await (await import("../support/session")).openTestSession({ config }).transfers.all()
     ).filter((tx) => tx.action === "receive") as { from?: string; senderL2Address?: string }[]
 
     expect(rows.length).toBeGreaterThan(0)
@@ -529,12 +535,15 @@ describe("activity scenario", () => {
     const { creatorLinkAction } = await import("@obsidion/front-core")
     const { DEMO_L2_ADDRESS } = await import("../../src/dev/demoFixtures")
 
-    const rows = (
-      await (await import("../../src/session/session")).session().activity.all()
-    ).filter((tx) => tx.action === "Pay To Email") as PaylinkTransaction[]
+    const { openTestSession } = await import("../support/session")
+    const { linkedActivity } = await import("@obsidion/front-core")
+    const { transfers, paylinks, operations } = openTestSession({ config })
+    const rows = (await linkedActivity(transfers, paylinks, operations)).filter(
+      (tx) => tx.action === "Pay To Email",
+    ) as PaylinkTransaction[]
     const nowSec = Math.floor(Date.now() / 1000)
     const offered = rows.map((row) =>
-      creatorLinkAction(row, {
+      creatorLinkAction(row, row.status, {
         nowSec,
         liveStatus: paylinkStatusFor(row, nowSec),
         account: DEMO_L2_ADDRESS,
@@ -703,8 +712,7 @@ describe("fake L1", () => {
     await seed("recovery")
     const provider = injected()
     const { DEMO_L1_ACCOUNT, DEMO_RECEIPT_DELAY_MS } = await import("../../src/dev/fakeL1Rpc")
-    const { getConfig } = await import("../../src/config/env")
-    const chainId = getConfig().l1ChainId
+    const chainId = config.l1ChainId
 
     expect(await provider.request({ method: "eth_chainId" })).toBe(`0x${chainId.toString(16)}`)
     expect(await provider.request({ method: "eth_accounts" })).toEqual([DEMO_L1_ACCOUNT])
@@ -777,10 +785,9 @@ describe("fake L1", () => {
     const { createPublicClient, custom, erc20Abi } = await import("viem")
     const { loadDepositTokens } = await import("../../src/features/sipa/loadDepositFacts")
     const { DEMO_L1_ACCOUNT, DEMO_L1_TOKENS } = await import("../../src/dev/fakeL1Rpc")
-    const { getConfig } = await import("../../src/config/env")
     const client = createPublicClient({ transport: custom(window.ethereum!) })
 
-    const picked = (await loadDepositTokens(getConfig())).options.filter((t) => t.swapped)
+    const picked = (await loadDepositTokens(seeded)).options.filter((t) => t.swapped)
     expect(picked.map((t) => t.symbol)).toEqual(["USDC", "USDT"])
 
     for (const option of picked) {
@@ -810,10 +817,9 @@ describe("fake L1", () => {
       "../../src/dev/fakeL1Rpc"
     )
     const { DEMO_L1_TOKEN, DEMO_OXIDE_TUPLE } = await import("../../src/dev/demoFixtures")
-    const { getConfig } = await import("../../src/config/env")
 
     const call = async (to: string, data: string) => {
-      const response = await fetch(getConfig().l1RpcUrl, {
+      const response = await fetch(config.l1RpcUrl, {
         method: "POST",
         body: JSON.stringify({ id: 1, method: "eth_call", params: [{ to, data }, "latest"] }),
       })
@@ -861,7 +867,7 @@ describe("fake L1", () => {
     ).toBe(DEMO_TX_AMOUNT_CAP)
 
     // The picker shows the mainnet tokens whatever network the demo booted on.
-    expect((await loadDepositTokens(getConfig())).options.map((t) => t.symbol)).toEqual([
+    expect((await loadDepositTokens(seeded)).options.map((t) => t.symbol)).toEqual([
       "DAI",
       "USDC",
       "USDT",
@@ -882,11 +888,10 @@ describe("fake L1", () => {
   it("answers the balance read on the app's own L1 endpoint", async () => {
     await seed("recovery")
     const { decodeAbiParameters } = await import("viem")
-    const { getConfig } = await import("../../src/config/env")
     const { DEMO_SIPA_BALANCE } = await import("../../src/dev/fakeL1Rpc")
 
     const post = async (body: unknown) => {
-      const response = await fetch(getConfig().l1RpcUrl, {
+      const response = await fetch(config.l1RpcUrl, {
         method: "POST",
         body: JSON.stringify(body),
       })
@@ -911,7 +916,6 @@ describe("fake L1", () => {
   it("answers the reads the self-sweep makes before it signs", async () => {
     await seed("recovery")
     const { decodeAbiParameters, encodeFunctionData, parseAbi } = await import("viem")
-    const { getConfig } = await import("../../src/config/env")
     const { DEMO_DEPOSIT_FEE, DEMO_L1_TOKEN, DEMO_SIPA_BALANCE } = await import(
       "../../src/dev/fakeL1Rpc"
     )
@@ -920,7 +924,7 @@ describe("fake L1", () => {
     )!
 
     const call = async (data: string) => {
-      const response = await fetch(getConfig().l1RpcUrl, {
+      const response = await fetch(config.l1RpcUrl, {
         method: "POST",
         body: JSON.stringify({ id: 1, method: "eth_call", params: [{ data }, "latest"] }),
       })
@@ -970,7 +974,7 @@ describe("fake L1", () => {
     )
 
     // Counterfactual, so the sweep takes the deploy-and-sweep branch.
-    const code = await fetch(getConfig().l1RpcUrl, {
+    const code = await fetch(config.l1RpcUrl, {
       method: "POST",
       body: JSON.stringify({ id: 2, method: "eth_getCode", params: [stuck.sipaAddress, "latest"] }),
     })
@@ -993,9 +997,7 @@ describe("withdrawal self-finalize", () => {
 
   const wiring = async () => {
     const { resolveWithdrawalWiring } = await import("@obsidion/front-core")
-    const { getOxideTuple } = await import("../../src/config/oxideTuple")
-    const { getConfig } = await import("../../src/config/env")
-    return resolveWithdrawalWiring(await getOxideTuple(getConfig()))
+    return resolveWithdrawalWiring(await seeded.chain.oxideTuple.read())
   }
 
   it("resolves the withdrawal rails from the fixture manifest", async () => {
@@ -1041,13 +1043,13 @@ describe("withdrawal self-finalize", () => {
 
   it("drives the delayed record to a finalization hash without advancing its phase", async () => {
     await seed("activity")
-    const { getConfig } = await import("../../src/config/env")
     const { injectedWalletChannel } = await import("../../src/features/sipa/l1ExitChannels")
     const { selfFinalizeWithdrawal } = await import("../../src/features/withdraw/selfFinalize")
     const { demoFinalizationBuilder } = await import("../../src/dev/demoFinalization")
     const { DEMO_OXIDE_TUPLE } = await import("../../src/dev/demoFixtures")
     const { DEMO_RECEIPT_DELAY_MS } = await import("../../src/dev/fakeL1Rpc")
     const { createPublicClient, custom } = await import("viem")
+    const { testWagmi } = await import("../support/page")
 
     const store = await withdrawalStore()
     const record = store.list.get().records.find((r) => r.localId === "wdraw_demo_7")!
@@ -1055,7 +1057,9 @@ describe("withdrawal self-finalize", () => {
     const stages: string[] = []
     // viem's HTTP transport cannot run under jsdom, so the receipt poll reads through the
     // injected demo wallet rather than the app's RPC.
-    const base = await injectedWalletChannel(getConfig(), {
+    const base = await injectedWalletChannel(config, {
+      pace,
+      wagmi: testWagmi,
       onStage: (s) => stages.push(s),
       readClient: createPublicClient({ transport: custom(window.ethereum!) }),
     })
@@ -1091,29 +1095,28 @@ describe("withdrawal self-finalize", () => {
 describe("demo profile", () => {
   it("boots with no profile pair in the environment", async () => {
     await bootConfig()
-    const { getConfig } = await import("../../src/config/env")
-    expect(getConfig().l1RpcUrl).toBe("http://demo.invalid/l1")
+    expect(config.l1RpcUrl).toBe("http://demo.invalid/l1")
   })
 
   it("boots on sandbox whatever network the shell names", async () => {
-    const { resolveBootConfig, getConfig } = await import("../../src/config/env")
+    const { resolveBootConfig } = await import("../../src/config/env")
     const { demoBootInput } = await import("../../src/dev/demoProfile")
-    await resolveBootConfig(demoBootInput({ VITE_NETWORK: "testnet" }))
-    expect(getConfig().network).toBe("sandbox")
+    const { config } = await resolveBootConfig(demoBootInput({ VITE_NETWORK: "testnet" }))
+    expect(config.network).toBe("sandbox")
   })
 
   it("boots from the fixture even when the shell holds a profile pair", async () => {
-    const { resolveBootConfig, getConfig } = await import("../../src/config/env")
+    const { resolveBootConfig } = await import("../../src/config/env")
     const { demoBootInput, DEMO_PROFILE_ID } = await import("../../src/dev/demoProfile")
-    await resolveBootConfig(
+    const { config } = await resolveBootConfig(
       demoBootInput({
         VITE_NETWORK: "testnet",
         VITE_CONFIG_PROFILE_URL: "http://localhost:8083/profiles/sandbox.json",
         VITE_CONFIG_EXPECTED_PROFILE_ID: "sandbox",
       }),
     )
-    expect(getConfig().network).toBe("sandbox")
-    expect(getConfig().oxideProfile?.manifestUrl).toBe("http://demo.invalid/oxide/sandbox.json")
+    expect(config.network).toBe("sandbox")
+    expect(config.oxideProfile?.manifestUrl).toBe("http://demo.invalid/oxide/sandbox.json")
     expect(DEMO_PROFILE_ID).toBe("demo")
   })
 

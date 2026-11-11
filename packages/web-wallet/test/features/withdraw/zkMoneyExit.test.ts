@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { createPace } from "@obsidion/core/cadence"
 import { WITHDRAW_RELAYER_TIP as TIP } from "@obsidion/core/constants"
 
 type Refund = { ids: string[]; usd: string; l1TxHash?: string }
@@ -21,11 +22,11 @@ vi.mock("@obsidion/sdk", () => ({
       .filter((c) => BigInt(c.amount) >= o.minimumAmount)
       .map((c) => ({ amount: BigInt(c.amount) })),
 }))
-vi.mock("../../../src/config/env", () => ({ getConfig: () => ({}) }))
 vi.mock("../../../src/config/oxideTuple", () => ({
   l1PublicClient: () => ({ getBlockNumber: async () => 100n }),
 }))
-vi.mock("../../../src/features/migration/freezeWatch", () => ({ pause: async () => {} }))
+// Ethereum is read again at once rather than after a live network's interval.
+const exit = () => zkMoneyExit({} as never, {} as never, createPace({ maxMs: 0 }))
 vi.mock("../../../src/features/withdraw/oldVersionWithdrawals", () => ({
   getOldVersionWithdrawalStore: () => ({
     load: async () => {},
@@ -91,7 +92,7 @@ beforeEach(() => {
     return { phase: "done" }
   })
   // The portals run the refunds on the second look.
-  m.settle.mockReset().mockImplementation(async (id: string) => {
+  m.settle.mockReset().mockImplementation(async (_config: unknown, _moves: unknown, id: string) => {
     const record = m.saved.at(-1)!
     expect(record.id).toBe(id)
     return m.settle.mock.calls.length < 2
@@ -109,12 +110,7 @@ describe("withdrawing old versions' funds to Ethereum from zk.money", () => {
     const savings = source("s", true, [5n * TIP])
     const main = source("m", false, [3n * TIP])
 
-    const result = await zkMoneyExit().run(
-      [savings.ws, main.ws],
-      TO,
-      (stage) => m.order.push(stage),
-      usd,
-    )
+    const result = await exit().run([savings.ws, main.ws], TO, (stage) => m.order.push(stage), usd)
 
     // Safe to close only once every refund is broadcast.
     expect(m.order).toEqual(["preparing", "register", "refund m", "refund s", "sending"])
@@ -138,7 +134,7 @@ describe("withdrawing old versions' funds to Ethereum from zk.money", () => {
     m.register.mockResolvedValue({ phase: "needsAttention", error: "The record update failed" })
     const main = source("m", false, [3n * TIP])
 
-    await expect(zkMoneyExit().run([main.ws], TO, () => {}, usd)).rejects.toThrow(
+    await expect(exit().run([main.ws], TO, () => {}, usd)).rejects.toThrow(
       "The record update failed",
     )
     expect(main.frozen.refundTo).not.toHaveBeenCalled()
@@ -151,13 +147,13 @@ describe("withdrawing old versions' funds to Ethereum from zk.money", () => {
     const main = source("m", false, [3n * TIP])
     const stages: string[] = []
 
-    expect(await zkMoneyExit().fee([main])).toEqual({
+    expect(await exit().fee([main])).toEqual({
       moving: { main: 0n, savings: 0n },
       tips: { main: 0n, savings: 0n },
     })
-    await expect(
-      zkMoneyExit().run([main.ws], TO, (stage) => stages.push(stage), usd),
-    ).rejects.toThrow("Nothing is left to send")
+    await expect(exit().run([main.ws], TO, (stage) => stages.push(stage), usd)).rejects.toThrow(
+      "Nothing is left to send",
+    )
     expect(stages).toEqual(["preparing"])
   })
 
@@ -165,7 +161,7 @@ describe("withdrawing old versions' funds to Ethereum from zk.money", () => {
     const main = source("m", false, [3n * TIP, TIP, 2n * TIP])
     const savings = source("s", true, [5n * TIP])
 
-    expect(await zkMoneyExit().fee([main, savings])).toEqual({
+    expect(await exit().fee([main, savings])).toEqual({
       moving: { main: 5n * TIP, savings: 5n * TIP },
       tips: { main: 2n * TIP, savings: TIP },
     })

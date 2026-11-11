@@ -6,11 +6,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 const h = vi.hoisted(() => ({
-  warmBarretenberg: vi.fn(async () => {}),
+  warmSyncBackend: vi.fn(async () => {}),
   originWasFresh: vi.fn(async () => true),
   getHardcodedArtifact: vi.fn(async (_name: string) => ({})),
 }))
-vi.mock("../../src/platform/bbWasm", () => ({ warmBarretenberg: h.warmBarretenberg }))
+vi.mock("../../src/platform/barretenberg", () => ({ warmSyncBackend: h.warmSyncBackend })) // slice-check-ignore: the test counts the boot's warm-up calls; a real warm-up loads bb.js's wasm
 vi.mock("../../src/platform/storage/freshOrigin", () => ({ originWasFresh: h.originWasFresh }))
 vi.mock("@obsidion/sdk", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/sdk")>()),
@@ -21,7 +21,7 @@ import { warmBoot } from "../../src/bootWarmup"
 
 afterEach(() => {
   vi.unstubAllGlobals()
-  h.warmBarretenberg.mockClear()
+  h.warmSyncBackend.mockClear()
   h.originWasFresh.mockClear()
   h.getHardcodedArtifact.mockClear()
 })
@@ -39,7 +39,7 @@ describe("warmBoot", () => {
     "leaves bb.js for later on %s, whose PXE may never boot",
     async (path) => {
       await warmBoot(path)
-      expect(h.warmBarretenberg).not.toHaveBeenCalled()
+      expect(h.warmSyncBackend).not.toHaveBeenCalled()
       expect(h.originWasFresh).toHaveBeenCalledTimes(1)
     },
   )
@@ -54,7 +54,7 @@ describe("warmBoot", () => {
     locks(["webwallet.active-tab"])
     await warmBoot("/link")
     await new Promise((resolve) => setTimeout(resolve, 0))
-    expect(h.warmBarretenberg).not.toHaveBeenCalled()
+    expect(h.warmSyncBackend).not.toHaveBeenCalled()
     expect(h.getHardcodedArtifact).not.toHaveBeenCalled()
     expect(h.originWasFresh).toHaveBeenCalledTimes(1)
   })
@@ -62,7 +62,7 @@ describe("warmBoot", () => {
   it("starts them when no tab holds the wallet", async () => {
     locks(["another-lock"])
     await warmBoot("/link")
-    expect(h.warmBarretenberg).toHaveBeenCalledTimes(1)
+    expect(h.warmSyncBackend).toHaveBeenCalledTimes(1)
     await vi.waitFor(() => expect(h.getHardcodedArtifact).toHaveBeenCalledWith("paylinkDirect"))
   })
 })

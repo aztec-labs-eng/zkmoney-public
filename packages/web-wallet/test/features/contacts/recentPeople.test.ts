@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import type { ContactRow, PaymentRequest, Transaction } from "@obsidion/front-core"
-import { recentPeople } from "../../../src/features/contacts/recentPeople"
+import { holdOrder, recentPeople } from "../../../src/features/contacts/recentPeople"
 
 const addr = (byte: string) => `0x${byte.repeat(32)}`
 const contact = (tag: string, byte: string): ContactRow => ({
@@ -64,5 +64,32 @@ describe("recentPeople", () => {
   it("keeps to the limit", () => {
     const rows = recentPeople([ada, bob], { requests: [request("grace", 1), request("hal", 2)] }, 2)
     expect(rows.map((r) => r.tag)).toEqual(["hal", "grace"])
+  })
+})
+
+describe("holdOrder", () => {
+  const cleo = contact("cleo", "0c")
+  const dan = contact("dan", "0d")
+  const tags = (rows: readonly ContactRow[]) => rows.map((r) => r.tag)
+
+  it.each([
+    ["keeps shown rows in place when the ranking changes", [ada, bob], [bob, ada], 2, ["ada", "bob"]],
+    ["keeps a shown row that fell out of the ranking", [ada, bob], [cleo, dan], 2, ["ada", "bob"]],
+    ["gives a free slot to a person found later", [ada], [cleo, ada], 3, ["ada", "cleo"]],
+    ["fills an empty list in ranked order", [], [cleo, ada, bob], 2, ["cleo", "ada"]],
+  ])("%s", (_, shown, latest, limit, expected) => {
+    expect(tags(holdOrder(shown, latest, [], limit))).toEqual(expected)
+  })
+
+  it("shows a held row's new details", () => {
+    const renamed = { ...ada, name: "Ada L" }
+    expect(holdOrder([ada, bob], [renamed], [], 2)[0]).toBe(renamed)
+    // The row fell out of the ranking, and the contact list has the new name.
+    expect(holdOrder([ada, bob], [cleo], [renamed], 2)[0]).toBe(renamed)
+  })
+
+  it("returns the shown list when nothing changed, so a render can settle", () => {
+    const shown = [ada, bob]
+    expect(holdOrder(shown, [bob, ada], [], 2)).toBe(shown)
   })
 })

@@ -13,18 +13,12 @@ import {SkyWithdrawalExecutor} from "@periphery/experiments/sky/SkyWithdrawalExe
 import {SkyEscrow} from "@periphery/experiments/sky/SkyEscrow.sol";
 import {SkyEscrowFactory} from "@periphery/experiments/sky/SkyEscrowFactory.sol";
 import {SkyRoute} from "@periphery/experiments/sky/SkyTypes.sol";
-import {IDaiUsds} from "@periphery/experiments/sky/interfaces/IDaiUsds.sol";
+import {IDaiUsds} from "@periphery/interfaces/IDaiUsds.sol";
 import {ISUsds} from "@periphery/experiments/sky/interfaces/ISUsds.sol";
 import {DAI} from "@periphery/ThreePoolLib.sol";
 import {MainnetForkFixture} from "@test/fork/MainnetForkFixture.sol";
 import {OxidePortalBase} from "@test/core/OxidePortalBase.t.sol";
 import {SkyHelpers} from "@test/periphery/experiments/sky/SkyTestBase.sol";
-
-interface IDaiUsdsView {
-  function dai() external view returns (address);
-
-  function usds() external view returns (address);
-}
 
 contract SkySavingsForkTest is MainnetForkFixture, SkyHelpers {
   using SafeERC20 for IERC20;
@@ -75,8 +69,8 @@ contract SkySavingsForkTest is MainnetForkFixture, SkyHelpers {
     assertEq(IERC20Metadata(address(USDS)).symbol(), "USDS", "the usds address is wrong");
     assertEq(IERC20Metadata(address(SUSDS)).symbol(), "sUSDS", "the susds address is wrong");
     assertEq(SUSDS.asset(), address(USDS), "susds does not hold usds");
-    assertEq(IDaiUsdsView(address(DAI_USDS)).dai(), address(DAI), "the converter does not hold dai");
-    assertEq(IDaiUsdsView(address(DAI_USDS)).usds(), address(USDS), "the converter does not hold usds");
+    assertEq(DAI_USDS.dai(), address(DAI), "the converter does not hold dai");
+    assertEq(DAI_USDS.usds(), address(USDS), "the converter does not hold usds");
     assertGe(SUSDS.convertToAssets(1e18), 1e18, "the susds share price never drops under one");
   }
 

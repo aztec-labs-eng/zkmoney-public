@@ -36,7 +36,7 @@ export function SettingsRow({
       className="zkm-settings-row__label"
       style={{
         fontSize: labelSize,
-        color: disabled ? "rgba(255,255,255,0.4)" : "var(--text-primary)",
+        color: disabled ? "rgba(var(--ink-rgb), 0.4)" : "var(--text-primary)",
       }}
     >
       {label}
@@ -101,14 +101,15 @@ export function ContactRow({ tag, name, isL1 = false, colors, onClick, avatarSty
   const hasLabel = isL1
     ? !!label && label !== "External Wallet"
     : !!label && label !== handle && !/^0x[0-9a-f]+$/i.test(label)
-  const title = hasLabel ? label! : isL1 ? tag : `@${handle}`
-  const subtitle = isL1 ? (hasLabel ? tag : "Ethereum wallet") : hasLabel ? `@${handle}.zk.money` : "zk.money"
+  // An L1 row names the wallet over its address, "Ethereum wallet" when it has no name.
+  const title = hasLabel ? label! : isL1 ? "Ethereum wallet" : `@${handle}`
+  const subtitle = isL1 ? tag : hasLabel ? `@${handle}.zk.money` : "zk.money"
   const initialSource = hasLabel ? label! : tag.replace(/^@/, "")
   return (
     <button type="button" className={["zkm-btn-reset zkm-contact-row", className].filter(Boolean).join(" ")} onClick={onClick}>
       <GradientInitialAvatar name={initialSource} colors={colors} size={44} style={avatarStyle} />
       <span className="zkm-contact-row__text">
-        <GradientText size={16} weight={500} className={hasLabel ? undefined : "zkm-contact-row__tag"}>
+        <GradientText size={16} weight={500} className={hasLabel || isL1 ? undefined : "zkm-contact-row__tag"}>
           {title}
         </GradientText>
         <span className="zkm-contact-row__subtitle">{subtitle}</span>

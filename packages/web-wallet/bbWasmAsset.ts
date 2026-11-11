@@ -35,7 +35,7 @@ export function bbWasmAsset(source = BB_THREADS_WASM): Plugin {
     generateBundle() {
       if (fileName) this.emitFile({ type: "asset", fileName, source: readFileSync(source) })
     },
-    // As the deployed host serves it (web-wallet-publish.sh), so a preview exercises the same path.
+    // As the deployed host serves it (publish_wallet_bundle.sh), so a preview exercises the same path.
     configurePreviewServer(server) {
       server.middlewares.use(gzipEncodedWasm)
     },

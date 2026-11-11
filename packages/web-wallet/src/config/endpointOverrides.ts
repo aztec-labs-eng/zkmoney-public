@@ -5,6 +5,7 @@
  * alike.
  */
 import { sha256 } from "@noble/hashes/sha2"
+import { WalletError } from "@obsidion/core/errors"
 import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils"
 import { deviceStorage } from "../platform/storage/rollupStorage"
 
@@ -25,10 +26,11 @@ const STORAGE_KEY = "webwallet.endpoints"
  * digest only — the URL the wallet dials is the input as typed.
  */
 export function normalizeEndpoint(url: string): string {
-  if (!/^https?:\/\//i.test(url)) throw new Error("Endpoint must start with http:// or https://")
+  if (!/^https?:\/\//i.test(url))
+    throw new WalletError("config.invalid", "Endpoint must start with http:// or https://")
   const parsed = new URL(url)
   if (parsed.username || parsed.password) {
-    throw new Error("Endpoint must not embed credentials")
+    throw new WalletError("config.invalid", "Endpoint must not embed credentials")
   }
   parsed.hash = ""
   return parsed.href

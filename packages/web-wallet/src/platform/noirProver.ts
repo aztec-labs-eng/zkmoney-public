@@ -1,4 +1,4 @@
-/** Proves a plain Noir circuit in the browser, on bb.js UltraHonk's default verifier target. */
+/** Proves a plain Noir circuit in the browser, on bb.js UltraHonk. */
 import initACVM, {
   compressWitness,
   executeCircuit,
@@ -8,49 +8,31 @@ import initABI, {
   abiDecodeError,
   abiEncode,
 } from "@aztec-foundation/noir-noirc_abi/web/noirc_abi_wasm.js"
-import { Barretenberg, UltraHonkBackend } from "@aztec-foundation/bb.js"
-import { createLogger } from "@aztec-labs/foundation/log"
-import { barretenbergWasm } from "./bbWasmPath"
+import { UltraHonkBackend } from "@aztec-foundation/bb.js"
+import type { VerifierTarget } from "@aztec-foundation/bb.js"
+import { WalletError } from "@obsidion/core/errors"
+import { proverBackend } from "./barretenberg"
+import type { IosSettings } from "./barretenberg"
 
 export interface NoirCircuit {
   bytecode: string
   abi: unknown
 }
 
-let wasmReady: Promise<void> | null = null
-/** A failed init is not kept, so a warm-up that failed leaves the proof its own attempt. */
-function initWasm(): Promise<void> {
-  if (!wasmReady) {
-    const ready = Promise.all([initACVM(), initABI()]).then(() => undefined)
-    ready.catch(() => {
-      if (wasmReady === ready) wasmReady = null
-    })
-    wasmReady = ready
-  }
-  return wasmReady
-}
+/** Starts the witness wasm. The page keeps one start; a worker starts it per proof. */
+export const initNoirWasm = (): Promise<void> =>
+  Promise.all([initACVM(), initABI()]).then(() => undefined)
+
+/** The witness wasm a proof waits for. */
+export type NoirWasm = () => Promise<void>
 
 /** A proof's laps, each reported with the ms since the proof started. */
 export type NoirProofLap = "wasm" | "witness" | "backend" | "proof"
-
-/**
- * bb.js's page-wide instance, the one the PXE's ClientIVC prover takes too, so the wasm module, its
- * worker pool and the reference string load once. It outlives every proof. The logger is the one
- * the PXE's prover would pass, so its thread-count line still prints.
- */
-export function proverBackend(): Promise<Barretenberg> {
-  return Barretenberg.initSingleton({
-    logger: createLogger("pxe:prover").verbose,
-    ...barretenbergWasm(),
-  })
-}
-
-/** The simulator's wasm, which the PXE shares: started ahead of a page's first simulation. */
-export const warmNoirWasm = initWasm
+type OnLap = (lap: NoirProofLap, ms: number) => void
 
 /** Starts the witness wasm and the proving backend, so a later proof finds both ready. */
-export function warmNoirProver(): Promise<void> {
-  return Promise.all([initWasm(), proverBackend()]).then(() => undefined)
+export function warmNoirProver(wasm: NoirWasm): Promise<void> {
+  return Promise.all([wasm(), proverBackend()]).then(() => undefined)
 }
 
 /** A failed assert as the circuit's own message, when its ABI names one; else the error as thrown. */
@@ -69,10 +51,15 @@ export async function proveNoirCircuit(
   circuit: NoirCircuit,
   inputs: Record<string, unknown>,
   label: string,
-  onLap?: (lap: NoirProofLap, ms: number) => void,
+  {
+    wasm,
+    onLap,
+    ios,
+    verifierTarget,
+  }: { wasm: NoirWasm; onLap?: OnLap; ios?: IosSettings; verifierTarget?: VerifierTarget },
 ): Promise<{ proof: Uint8Array; publicInputs: string[] }> {
   const started = performance.now()
-  await initWasm()
+  await wasm()
   const lap = (name: NoirProofLap) => {
     const ms = Math.round(performance.now() - started)
     onLap?.(name, ms)
@@ -84,14 +71,17 @@ export async function proveNoirCircuit(
   const witnessMap = abiEncode(circuit.abi as never, inputs as never)
   const bytecode = Uint8Array.from(atob(circuit.bytecode), (c) => c.charCodeAt(0))
   const solved = await executeCircuit(bytecode, witnessMap, () => {
-    throw new Error(`${label} has no oracles — a foreign call means the wrong circuit`)
+    throw new WalletError(
+      "invariant",
+      `${label} has no oracles — a foreign call means the wrong circuit`,
+    )
   }).catch((err: unknown) => {
     throw circuitError(circuit, err)
   })
   step("witness", "witness solved")
-  const backend = new UltraHonkBackend(circuit.bytecode, await proverBackend())
+  const backend = new UltraHonkBackend(circuit.bytecode, await proverBackend(ios))
   step("backend", "backend ready")
-  const result = await backend.generateProof(compressWitness(solved))
+  const result = await backend.generateProof(compressWitness(solved), { verifierTarget })
   console.log(`[${label}] proof in ${lap("proof")}ms`)
   return result
 }

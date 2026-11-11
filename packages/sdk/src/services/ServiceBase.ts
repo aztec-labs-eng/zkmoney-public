@@ -1,5 +1,5 @@
 import { EventEmitter } from "eventemitter3"
-import { ContractService, type ContractName } from "@obsidion/contracts"
+import type { ContractName, ContractService } from "@obsidion/contracts"
 import type { ObsidionWallet } from "../obsidion/ObsidionWallet.js"
 import type { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import {
@@ -17,12 +17,11 @@ import {
 } from "@aztec-labs/aztec.js/contracts"
 import type { Account } from "@aztec-labs/aztec.js/account"
 import { type TxReceipt, TxHash, type TxProfileResult } from "@aztec-labs/stdlib/tx"
-import { waitForTx } from "@aztec-labs/aztec.js/node"
+import { waitForTx } from "../utils/waitForTx.js"
 import { TESTNET_TIMEOUT } from "../utils/constants.js"
 import { QueueStatus, TransactionProgress } from "@obsidion/core/constants"
 import { createAsyncTransaction } from "../utils/helper.js"
-import { ProvingStage, provingProgress } from "@obsidion/proving-progress"
-import type { OriginalFlowKind } from "@obsidion/proving-progress"
+import type { OriginalFlowKind } from "@obsidion/core/types"
 import type { RegisteredTeeSigner } from "@oxide/oxide-client/types.js"
 import { type BuildTeeOperationSendOpts, dedupeByAddressString } from "./tee/teeOperation.js"
 
@@ -30,11 +29,11 @@ export interface BaseServiceMethodOptions {
   sendOptions?: SendInteractionOptions
   /** Log gate counts before sending. */
   profile?: boolean
-  /** Proving-scope op id, so the UI row and proving events share one id. */
+  /** The operation's id, so the UI row and the wallet's stages share one id. */
   operationId?: string
-  /** Proving-progress flow kind. The wallet defaults it to `"send"`. */
+  /** The flow kind. The wallet defaults it to `"send"`. */
   kind?: OriginalFlowKind
-  /** Skip this class's status and proving-progress emits. `wallet.sendTx` still emits its own. */
+  /** Skip this class's status emits. `wallet.sendTx` still reports its stages. */
   silent?: boolean
   /** Holds `wallet.sendTx` until the user confirms. Rejects on dismiss. */
   confirmGate?: Promise<unknown>
@@ -237,24 +236,20 @@ export class ServiceBase extends EventEmitter {
             offchainEffects: offchainEffects,
           }
         } catch (error) {
-          if (!options?.silent) {
-            provingProgress.emitReset()
-            this.emitFailed(undefined)
-          }
+          if (!options?.silent) this.emitFailed(undefined)
           throw error
         }
       },
       async (init) => {
         try {
           if (!options?.silent) this.emitMining()
-          const receipt = await waitForTx(this.wallet.node, TxHash.fromString(init.txHash), {
-            ...this.wallet.defaultWaitOpts,
-            timeout: TESTNET_TIMEOUT,
-          })
-          if (!options?.silent) {
-            provingProgress.emitStageComplete(ProvingStage.Mining, options?.operationId)
-            this.emitSuccess(init.txHash)
-          }
+          const receipt = await waitForTx(
+            this.wallet.node,
+            TxHash.fromString(init.txHash),
+            { ...this.wallet.defaultWaitOpts, timeout: TESTNET_TIMEOUT },
+            this.wallet.pace,
+          )
+          if (!options?.silent) this.emitSuccess(init.txHash)
           const { interaction, sendOpts, ...rest } = init
           return await buildResult({ ...rest, receipt } as Omit<
             TInit,
@@ -264,10 +259,7 @@ export class ServiceBase extends EventEmitter {
             receipt: TxReceipt
           } & OffchainOutput)
         } catch (error) {
-          if (!options?.silent) {
-            provingProgress.emitReset()
-            this.emitFailed(init.txHash)
-          }
+          if (!options?.silent) this.emitFailed(init.txHash)
           throw error
         }
       },
@@ -276,9 +268,8 @@ export class ServiceBase extends EventEmitter {
 }
 
 export abstract class ServiceContractBase extends ServiceBase {
-  private static registrationPromises: Map<ContractName, Promise<void>> = new Map()
-
   protected contractService: ContractService
+  private readonly registration: Promise<void>
   private deploymentInProgress: Promise<ContractBase | undefined> | null = null
   protected contractAddress: AztecAddress | undefined
   protected contractName: ContractName
@@ -294,12 +285,11 @@ export abstract class ServiceContractBase extends ServiceBase {
     teeSigner?: RegisteredTeeSigner,
   ) {
     super(wallet, teeSigner)
-    this.contractService = contractService ?? ContractService.getInstance()
+    this.contractService = contractService ?? wallet.contractService
     this.contractName = contractName
     this.contractAddress = contractAddress
     this.deployer = deployer
-
-    this.registerContract()
+    this.registration = this.contractService.registerContractOnce(contractName)
   }
 
   protected getDeployer(): AztecAddress {
@@ -309,26 +299,8 @@ export abstract class ServiceContractBase extends ServiceBase {
     return this.deployer.getAddress()
   }
 
-  private registerContract(): void {
-    if (ServiceContractBase.registrationPromises.has(this.contractName)) {
-      return
-    }
-
-    const promise = this.contractService
-      .registerContractWithName(this.contractName)
-      .catch((error) => {
-        console.error(`Error registering contract ${this.contractName}:`, error)
-        ServiceContractBase.registrationPromises.delete(this.contractName)
-      })
-
-    ServiceContractBase.registrationPromises.set(this.contractName, promise)
-  }
-
-  protected async ensureContractsRegistered(): Promise<void> {
-    const promise = ServiceContractBase.registrationPromises.get(this.contractName)
-    if (promise) {
-      await promise
-    }
+  protected ensureContractsRegistered(): Promise<void> {
+    return this.registration
   }
 
   public async getContractAddress(): Promise<AztecAddress> {

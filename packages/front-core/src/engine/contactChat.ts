@@ -99,7 +99,7 @@ function depositBubble(record: SipaDeposit): Pick<ChatItem, "role" | "status" | 
       : record.phase === "recovered"
       ? "recovered"
       : shown(role)
-  // A record that swaps into its row token holds that token's amounts; a credit split out by
+  // A record that swaps into its row token holds that token's amounts; a past payment split out by
   // `sipaCredits` holds its own token's.
   const decimals = record.rowToken ? DEFAULT_DECIMALS : record.tokenDecimals ?? DEFAULT_DECIMALS
   const amounts = depositAmounts(record, decimals)
@@ -121,9 +121,7 @@ function l1Items(feed: Feed, address: string): ChatItem[] {
       const { record } = item
       // A minted address nothing has funded yet.
       if (lower(record.walletAddress) !== address || record.phase === "resolved") return []
-      return [
-        { id: record.sipaAddress, ts: record.startTime, source: item, ...depositBubble(record) },
-      ]
+      return [{ id: item.id, ts: record.startTime, source: item, ...depositBubble(record) }]
     }
     if (item.kind === "withdrawal") {
       const { record } = item

@@ -1,7 +1,7 @@
 /**
  * RecordStorage — Generic persistence + subscription kernel for domain stores.
  *
- * Shared by every domain store not yet on a persistent store (`OperationStore`, ...), which share
+ * Shared by every domain store not yet on a persistent store, which share
  * one implementation of:
  *   - lazy load-from-storage with shared promise to prevent double-load
  *   - single-key persistence as a JSON object keyed by the record's

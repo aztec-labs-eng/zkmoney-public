@@ -16,8 +16,8 @@ import {
 } from "@obsidion/front-core"
 import type { NameClaimResponse } from "@obsidion/core/types"
 import { WalletError, type ErrorCode } from "@obsidion/core/errors"
-import { getConfig } from "../../config/env"
 import type { OnboardingKeys } from "../../session/account"
+import type { PageFacts } from "../../session/pageChain"
 import { accountServiceFor } from "./registrationDeps"
 import { rememberReissuedClaim } from "./registrationTerms"
 import type { SignupStash } from "./signupStash"
@@ -47,6 +47,7 @@ export async function requireNameClaim(
     nameClaims: Pick<NameClaims, "get" | "put">
     registrations: Pick<RegistrationStore, "apply">
     signup?: Pick<SignupStash, "grantToken">
+    page: PageFacts
   },
   record: Pick<
     PendingRegistrationRecord,
@@ -80,7 +81,8 @@ export async function requireNameClaim(
 
   let fresh: NameClaimResponse
   try {
-    const accountService = accountServiceFor(getConfig(), keys, own.signup?.grantToken(record.tag))
+    const { config } = own.page
+    const accountService = accountServiceFor(config, keys, own.signup?.grantToken(record.tag))
     fresh = await withClaimRetry(
       () =>
         accountService.signDomain({

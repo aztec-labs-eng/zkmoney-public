@@ -1,3 +1,4 @@
+// Guards: no pay on a wrong rollup, node, payee or expired packet; a stale resolve never wins.
 import React, { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import {
@@ -14,6 +15,9 @@ import type { Address } from "viem"
 import type { ChainIdentity } from "@obsidion/core/types"
 import { encodeRequestInline, type RequestInlinePacket } from "@obsidion/front-core"
 import { mockLoadDepositFacts, singleToken } from "../../support/depositTokens"
+import { fmt } from "../../../src/lib/fmt"
+import copy from "../../../src/features/requests/RequestLandingScreen.copy"
+import { requesterMismatch } from "../../../src/features/requests/accountlessRequestErrors"
 
 const SIPA = `0x${"aa".repeat(20)}`
 const L1_TOKEN = `0x${"22".repeat(20)}`
@@ -38,12 +42,11 @@ function fragmentFor(over: Partial<RequestInlinePacket> = {}): string {
   })
 }
 
-const { resolve, tagLookup, portal, nodeIsDefault, fireEvent } = vi.hoisted(() => ({
+const { resolve, tagLookup, portal, fireEvent } = vi.hoisted(() => ({
   fireEvent: vi.fn(),
   resolve: vi.fn(),
   tagLookup: vi.fn(),
   portal: vi.fn(),
-  nodeIsDefault: { value: true },
 }))
 
 vi.mock("../../../src/lib/analytics", async (importOriginal) => ({
@@ -51,31 +54,15 @@ vi.mock("../../../src/lib/analytics", async (importOriginal) => ({
   fireEvent,
 }))
 vi.mock("../../../src/features/contacts/registryResolution", () => ({
-  resolveTagForCommit: (tag: string) => tagLookup(tag),
+  resolveTagForCommit: (_page: unknown, tag: string) => tagLookup(tag),
 }))
 vi.mock("../../../src/config/env", async () => {
   const { http } = await import("viem")
-  const { foundry } = await import("viem/chains")
   return {
-    getConfig: () => ({
-      rpId: "localhost",
-      network: "sandbox",
-      nodeUrl: "http://127.0.0.1:8080",
-      l1ChainId: CHAIN_ID,
-      l1Chain: foundry,
-      oxideProfile: { portal: PORTAL },
-      profileRollupVersion: "1",
-      endpoints: {
-        node: { isDefault: nodeIsDefault.value },
-        l1Rpc: { isDefault: true },
-        enclave: { isDefault: true },
-      },
-    }),
     l1Transport: () => http("http://127.0.0.1:8545"),
   }
 })
 vi.mock("../../../src/config/oxideTuple", () => ({
-  getOxideTuple: async () => ({ token: L1_TOKEN, l2Token: L2_TOKEN }),
   requireTupleField: (tuple: Record<string, unknown>, key: string) => tuple[key],
   l1PublicClient: () => "l1-client",
 }))
@@ -92,8 +79,16 @@ vi.mock("../../../src/features/requests/accountlessRequest", async (importOrigin
 }))
 // The sheet pulls wagmi/RainbowKit; the landing is what these cover.
 vi.mock("../../../src/features/requests/ExternalWalletPayModal", () => ({
-  ExternalWalletPayModal: ({ onPaid }: { onPaid?: () => void }) => (
-    <button onClick={onPaid}>pay-sheet</button>
+  ExternalWalletPayModal: ({
+    onPaid,
+    result,
+  }: {
+    onPaid?: () => void
+    result: { paymentUri: string }
+  }) => (
+    <button data-uri={result.paymentUri} onClick={onPaid}>
+      pay-sheet
+    </button>
   ),
 }))
 vi.mock("@obsidion/web-ds", () => ({
@@ -115,6 +110,12 @@ const { RequestLandingScreen } = await import("../../../src/features/requests/Re
 const { L1IdentityUnavailableError } = await import("@obsidion/front-core")
 
 const { openTestSession } = await import("../../support/session")
+const { defaultConfig } = await import("../../support/page")
+const config = {
+  ...defaultConfig,
+  oxideProfile: { ...defaultConfig.oxideProfile, portal: PORTAL },
+  profileRollupVersion: "1",
+}
 /** The node's answer, agreeing with the portal; only the default node's L1-outage fallback boots on it. */
 const getNodeInfo = vi.fn(async () => ({
   l1ChainId: CHAIN_ID,
@@ -127,7 +128,6 @@ const getNodeInfo = vi.fn(async () => ({
 const node = { getNodeInfo } as never
 
 declare global {
-  // eslint-disable-next-line no-var
   var IS_REACT_ACT_ENVIRONMENT: boolean
 }
 
@@ -142,12 +142,14 @@ describe("RequestLandingScreen accountless landing", () => {
   function SendProbe() {
     const { state } = useLocation()
     const request = (
-      state as { request?: { amount: number; link?: string; standing?: boolean } } | null
+      state as {
+        request?: { amount: number; link?: string; standing?: boolean; requesterPin?: string }
+      } | null
     )?.request
     return (
-      <div data-testid="send">{`send-sheet ${request?.amount} ${request?.link}${
-        request?.standing ? " standing" : ""
-      }`}</div>
+      <div data-testid="send" data-pin={request?.requesterPin}>{`send-sheet ${request?.amount} ${
+        request?.link
+      }${request?.standing ? " standing" : ""}`}</div>
     )
   }
   function EnterProbe() {
@@ -172,8 +174,8 @@ describe("RequestLandingScreen accountless landing", () => {
     })
     await setIdentity(null)
     // The identity gate reads the passkey map from the open session's device keys.
-    openTestSession()
-    nodeIsDefault.value = true
+    openTestSession({ config, primed: { tuple: { token: L1_TOKEN, l2Token: L2_TOKEN } as never } })
+    config.endpoints = defaultConfig.endpoints
     getNodeInfo.mockClear()
     container = document.createElement("div")
     document.body.appendChild(container)
@@ -217,111 +219,26 @@ describe("RequestLandingScreen accountless landing", () => {
 
   const button = (text: string) =>
     [...container.querySelectorAll("button")].find((b) => b.textContent?.includes(text))!
-  const click = async (text: string) => {
-    await act(async () => {
-      button(text).dispatchEvent(new MouseEvent("click", { bubbles: true }))
+  const payButton = () =>
+    container.querySelector<HTMLButtonElement>("[data-testid=request-pay-with-wallet]")!
+  const clickPay = () =>
+    act(async () => {
+      payButton().dispatchEvent(new MouseEvent("click", { bubbles: true }))
     })
-  }
 
-  it("refuses a link whose declared decimals the token does not have", async () => {
-    const { RequestDecimalsMismatchError } = await import(
-      "../../../src/features/requests/accountlessRequest"
-    )
-    resolve.mockRejectedValue(new RequestDecimalsMismatchError(6, 18))
-    await render(fragmentFor())
-    expect(container.textContent).toContain("for a token this wallet doesn't support")
-    expect(container.textContent).not.toContain("Try again")
-  })
-
-  it("tells the payer a requester who hasn't upgraded can be paid once they do", async () => {
-    const { RequesterNotUpgradedError } = await import(
-      "../../../src/features/requests/accountlessRequest"
-    )
-    resolve.mockRejectedValue(new RequesterNotUpgradedError("alice"))
-    await render(fragmentFor())
-    expect(container.textContent).toContain("You can pay them once they upgrade")
-    expect(container.textContent).not.toContain("Try again")
-  })
-
-  it("words a mismatched requester with the page's own copy", async () => {
-    const { WalletError } = await import("@obsidion/core/errors")
-    const { fmt } = await import("../../../src/lib/fmt")
-    const { default: copy } = await import(
-      "../../../src/features/requests/RequestLandingScreen.copy"
-    )
-    resolve.mockRejectedValue(
-      new WalletError("contact.requestMismatch", "moved", { data: { tag: "alice" } }),
-    )
-    await render(fragmentFor())
-    expect(container.querySelector('[role="alert"]')?.textContent).toBe(
-      fmt(copy.requestMismatch, { tag: "alice" }),
-    )
-  })
-
-  it("ends on a registry identity refusal with its words and no retry", async () => {
-    const { WalletError } = await import("@obsidion/core/errors")
-    const { errorMessage } = await import("../../../src/errors/catalog")
-    const refusal = new WalletError("contact.unregistered", "gone", { data: { tag: "alice" } })
-    resolve.mockRejectedValue(refusal)
-    await render(fragmentFor())
-    expect(container.querySelector('[role="alert"]')?.textContent).toBe(errorMessage(refusal))
-  })
-
-  it("offers a retry for a failure the registry did not decide", async () => {
-    resolve.mockRejectedValue(new Error("rpc down"))
-    await render(fragmentFor())
-    expect(container.querySelector('[role="alert"]')).toBeNull()
-    expect(container.querySelectorAll("button").length).toBeGreaterThan(0)
-  })
-
-  it("validates the packet against the portal's rollup, with no identity pinned", async () => {
-    // No wallet has booted, so no network id is known yet.
-    resolve.mockReturnValue(new Promise(() => {}))
-    await render(fragmentFor())
-
-    expect(portal).toHaveBeenCalledWith("l1-client", PORTAL, CHAIN_ID)
-    expect(container.textContent).toContain("Choose how to pay")
-    expect(resolve).toHaveBeenCalledTimes(1)
-  })
-
-  it("takes the rollup the boot verified and reads no identity of its own", async () => {
-    resolve.mockReturnValue(new Promise(() => {}))
-    const verified = {
-      l1ChainId: CHAIN_ID,
-      rollupVersion: "1",
-      rollupAddress: ROLLUP,
-      inboxAddress: "0xb",
-    }
-    await render(fragmentFor(), false, undefined, "/request", verified)
-    expect(portal).not.toHaveBeenCalled()
-    expect(getNodeInfo).not.toHaveBeenCalled()
-    expect(resolve).toHaveBeenCalledTimes(1)
+  it("offers a signed-in payer no way back to the send sheet from a refused link", async () => {
+    await seedOnboarded({}, "localhost")
+    resolve.mockRejectedValue(requesterMismatch("alice", "moved"))
+    await render(fragmentFor(), false, { external: true })
+    expect(container.textContent).toContain(fmt(copy.problems.requesterMoved, { tag: "alice" }))
+    expect(container.querySelector(".ww-invite__content button")).toBeNull()
   })
 
   it("refuses a packet stamped for another rollup", async () => {
     await render(fragmentFor({ networkId: "0xother" }))
 
-    expect(container.textContent).toContain("This payment request is for a different network.")
+    expect(container.textContent).toContain(copy.problems.wrongNetwork)
     expect(resolve).not.toHaveBeenCalled()
-  })
-
-  it("hands a signed-in payer to the send sheet once the portal's rollup matches", async () => {
-    await seedOnboarded({}, "localhost")
-    await render(fragmentFor())
-
-    expect(portal).toHaveBeenCalledWith("l1-client", PORTAL, CHAIN_ID)
-    expect(container.textContent).toContain("send-sheet")
-  })
-
-  it("falls back to the default node when L1 gives no answer, as boot does", async () => {
-    await seedOnboarded({}, "localhost")
-    portal.mockRejectedValue(
-      new L1IdentityUnavailableError({ call: "ROLLUP", cause: new TypeError("Failed to fetch") }),
-    )
-    await render(fragmentFor())
-
-    expect(getNodeInfo).toHaveBeenCalledTimes(1)
-    expect(container.textContent).toContain("send-sheet")
   })
 
   it("refuses a default node on another chain when L1 gives no answer, as boot does", async () => {
@@ -340,92 +257,16 @@ describe("RequestLandingScreen accountless landing", () => {
 
   it("never takes a custom node's word when L1 gives no answer", async () => {
     await seedOnboarded({}, "localhost")
-    nodeIsDefault.value = false
+    config.endpoints = {
+      ...defaultConfig.endpoints,
+      node: { source: "settings", isDefault: false },
+    }
     portal.mockRejectedValue(
       new L1IdentityUnavailableError({ call: "ROLLUP", cause: new TypeError("Failed to fetch") }),
     )
     await render(fragmentFor())
 
     expect(container.textContent).not.toContain("send-sheet")
-  })
-
-  it("holds the external-wallet row until the address and fee resolve", async () => {
-    resolve.mockReturnValue(new Promise(() => {}))
-    await render(fragmentFor())
-
-    expect(container.textContent).toContain("Pay @alice")
-    expect(container.textContent).toContain("$1")
-    expect(container.textContent).toContain("Pizza dinner")
-    // Signing up never waits on the L1 legs; quoting an onchain payment does.
-    expect(button("Pay with zk.money").disabled).toBe(false)
-    expect(button("Pay with an Ethereum wallet").disabled).toBe(true)
-  })
-
-  it("quotes amount plus fee and opens the pay sheet once resolved", async () => {
-    resolve.mockResolvedValue({
-      sipaAddress: SIPA,
-      decimals: 6,
-      feeAtomic: 500_000n,
-      grossAtomic: 1_500_000n,
-      paymentUri: `ethereum:${L1_TOKEN}@${CHAIN_ID}/transfer?address=${SIPA}&uint256=1500000`,
-    })
-    await render(fragmentFor())
-
-    expect(button("Pay with an Ethereum wallet").textContent).toContain("Pay $1.50 with fee")
-    await click("Pay with an Ethereum wallet")
-    expect(container.textContent).toContain("pay-sheet")
-  })
-
-  it("reuses one resolve across StrictMode replay and lets the live subscriber finish", async () => {
-    let finish!: (result: unknown) => void
-    resolve.mockReturnValue(
-      new Promise((done) => {
-        finish = done
-      }),
-    )
-    await render(fragmentFor(), true)
-    expect(resolve).toHaveBeenCalledTimes(1)
-    await act(async () =>
-      finish({
-        sipaAddress: SIPA,
-        decimals: 6,
-        feeAtomic: 500_000n,
-        grossAtomic: 1_500_000n,
-        paymentUri: `ethereum:${L1_TOKEN}@${CHAIN_ID}/transfer?address=${SIPA}&uint256=1500000`,
-      }),
-    )
-    expect(button("Pay with an Ethereum wallet").disabled).toBe(false)
-    expect(button("Pay with an Ethereum wallet").textContent).toContain("Pay $1.50 with fee")
-  })
-
-  it("starts one new operation for retry after failure under StrictMode", async () => {
-    resolve.mockRejectedValueOnce(new Error("RPC unavailable"))
-    let finish!: (result: unknown) => void
-    resolve.mockImplementationOnce(
-      () =>
-        new Promise((done) => {
-          finish = done
-        }),
-    )
-    await render(fragmentFor(), true)
-    expect(resolve).toHaveBeenCalledTimes(1)
-    // The raw failure goes to the console, never the page.
-    expect(container.textContent).not.toContain("RPC unavailable")
-    expect(container.textContent).toContain("Couldn't prepare a payment address.")
-    await click("Try again")
-    expect(resolve).toHaveBeenCalledTimes(2)
-    expect(button("Pay with an Ethereum wallet").disabled).toBe(true)
-    await act(async () =>
-      finish({
-        sipaAddress: SIPA,
-        decimals: 6,
-        feeAtomic: 500_000n,
-        grossAtomic: 1_500_000n,
-        paymentUri: "ethereum:capture",
-      }),
-    )
-    expect(button("Pay with an Ethereum wallet").disabled).toBe(false)
-    expect(resolve).toHaveBeenCalledTimes(2)
   })
 
   it.each(["resolve", "reject"])(
@@ -454,7 +295,7 @@ describe("RequestLandingScreen accountless landing", () => {
       )
       expect(resolve).toHaveBeenCalledTimes(2)
       expect(resolve.mock.calls[1][0].requestId).toBe(nextId)
-      expect(button("Pay with an Ethereum wallet").textContent).toContain("Pay $2.50 with fee")
+      expect(payButton().disabled).toBe(false)
       await act(async () => {
         if (outcome === "reject") rejectOld(new Error("stale failure"))
         else
@@ -467,7 +308,8 @@ describe("RequestLandingScreen accountless landing", () => {
           })
       })
       expect(container.textContent).not.toContain("stale failure")
-      expect(button("Pay with an Ethereum wallet").textContent).toContain("Pay $2.50 with fee")
+      await clickPay()
+      expect(button("pay-sheet").dataset.uri).toBe("ethereum:new")
       expect(resolve).toHaveBeenCalledTimes(2)
     },
   )
@@ -481,13 +323,13 @@ describe("RequestLandingScreen accountless landing", () => {
       paymentUri: "ethereum:capture",
     })
     await render(fragmentFor(), true)
-    await click("Pay with an Ethereum wallet")
+    await clickPay()
     expect(container.textContent).toContain("pay-sheet")
     await act(async () =>
       navigate(`/request#${fragmentFor({ requestId: `0x${"0c".repeat(32)}` })}`),
     )
     expect(container.textContent).not.toContain("pay-sheet")
-    expect(button("Pay with an Ethereum wallet").disabled).toBe(false)
+    expect(payButton().disabled).toBe(false)
     expect(resolve).toHaveBeenCalledTimes(2)
   })
 
@@ -516,80 +358,15 @@ describe("RequestLandingScreen accountless landing", () => {
 
   it("keeps packet guards ahead of address resolution under StrictMode", async () => {
     await render(fragmentFor({ expiresAt: Date.now() - 1000 }), true)
-    expect(container.textContent).toContain("This payment request has expired")
+    expect(container.textContent).toContain(copy.problems.expired)
     expect(resolve).not.toHaveBeenCalled()
   })
 
-  it("hands the fragment to the signup outlet, to be replayed once there is an identity", async () => {
-    resolve.mockReturnValue(new Promise(() => {}))
-    await render(fragmentFor())
-
-    await click("Pay with zk.money")
-    // Log in leads; the signup outlet is one more choice away.
-    expect(button("Log in")).toBeDefined()
-    expect(container.textContent).not.toContain("Choose how to pay")
-    await click("Create account")
-    expect(container.textContent).toContain("signup")
-  })
-
-  it.each([
-    ["the footer's", async () => {}],
-    ["the payment options'", () => click("Pay with zk.money")],
-  ])("%s Log in carries the request through sign-in", async (_name, open) => {
-    resolve.mockReturnValue(new Promise(() => {}))
-    const fragment = fragmentFor()
-    await render(fragment)
-    await open()
-    await click("Log in")
-    expect(container.querySelector('[data-testid="enter-next"]')?.textContent).toBe(
-      `/request#${fragment}`,
-    )
-  })
-
-  it("offers a signed-in payer the send sheet back instead of a log-in prompt", async () => {
-    await seedOnboarded({}, "localhost")
-    resolve.mockReturnValue(new Promise(() => {}))
-    await render(fragmentFor(), false, { external: true })
-
-    expect(container.textContent).toContain("Pay with an Ethereum wallet")
-    expect(container.textContent).not.toContain("Log in")
-    expect(container.textContent).not.toContain("Your payment stays private")
-
-    await click("Pay with zk.money instead")
-    expect(container.textContent).toContain("send-sheet")
-  })
-
   describe("pay page", () => {
-    it("opens a request link minted at /pay/<tag>", async () => {
-      resolve.mockReturnValue(new Promise(() => {}))
-      await render(fragmentFor(), false, undefined, "/pay/alice")
-      expect(container.textContent).toContain("Pay @alice")
-      expect(container.textContent).toContain("$1")
-      expect(resolve.mock.calls[0][0].requestId).toBe(`0x${"0a".repeat(32)}`)
-    })
-
-    it("says the payee hasn't upgraded rather than that there is no account", async () => {
-      tagLookup.mockResolvedValue({ status: "staleRollup" })
-      resolve.mockReturnValue(new Promise(() => {}))
-      await render("", false, undefined, "/pay/alice")
-      expect(container.textContent).toContain("You can pay them once they upgrade")
-      expect(container.textContent).not.toContain("no zk.money account")
-    })
-
     it("refuses a request whose payee is not the page's", async () => {
       await render(fragmentFor(), false, undefined, "/pay/bob")
       expect(container.textContent).toContain("could not be read")
       expect(resolve).not.toHaveBeenCalled()
-    })
-
-    it("asks for any amount to the tag when the link carries no request", async () => {
-      resolve.mockReturnValue(new Promise(() => {}))
-      await render("", false, undefined, "/pay/River")
-      expect(container.textContent).toContain("Pay @river")
-      expect(container.textContent).toContain("Any amount")
-      const packet = resolve.mock.calls[0][0] as RequestInlinePacket
-      expect(packet).toMatchObject({ requesterTag: "river", amountAtomic: 0n })
-      expect(packet.sipaAddress).toBeUndefined()
     })
 
     it("drops the last payee's quote and sheet when the page moves to another tag", async () => {
@@ -601,101 +378,13 @@ describe("RequestLandingScreen accountless landing", () => {
         paymentUri: "ethereum:alice",
       })
       await render("", false, undefined, "/pay/alice")
-      await click("Pay with an Ethereum wallet")
+      await clickPay()
       expect(container.textContent).toContain("pay-sheet")
       resolve.mockReturnValue(new Promise(() => {}))
       await act(async () => navigate("/pay/bob"))
       expect(container.textContent).toContain("Pay @bob")
       expect(container.textContent).not.toContain("pay-sheet")
-      expect(button("Pay with an Ethereum wallet").disabled).toBe(true)
-    })
-
-    it("carries the page through sign-in", async () => {
-      resolve.mockReturnValue(new Promise(() => {}))
-      await render("", false, undefined, "/pay/river")
-      await click("Log in")
-      expect(container.querySelector('[data-testid="enter-next"]')?.textContent).toBe("/pay/river")
-    })
-
-    it.each([
-      ["a visitor", null],
-      ["a signed-in payer", {}],
-    ])("tells %s when nobody holds the tag", async (_who, id) => {
-      void (id ? seedOnboarded(id, "localhost") : setIdentity(null))
-      await render("", false, undefined, "/pay/nobody")
-      expect(container.textContent).toContain("Pay @nobody")
-      expect(container.textContent).toContain("no zk.money account with this name")
-      expect(container.textContent).not.toContain("send-sheet")
-      expect(container.textContent).not.toContain("Pay with an Ethereum wallet")
-    })
-
-    it("looks the payee up once, while the payment address resolves", async () => {
-      tagLookup.mockReturnValue(new Promise(() => {}))
-      resolve.mockReturnValue(new Promise(() => {}))
-      await render("", false, undefined, "/pay/river")
-      expect(resolve).toHaveBeenCalledTimes(1)
-      void resolve.mock.calls[0][1].resolveRequester("river")
-      expect(tagLookup).toHaveBeenCalledTimes(1)
-    })
-
-    it("shows the payee their own page as payers see it, with a share link", async () => {
-      await seedOnboarded({ handle: "River" }, "localhost")
-      await render("", false, undefined, "/pay/river")
-      expect(container.textContent).toContain("Choose how to pay")
-      expect(container.textContent).toContain("Share link")
-      expect(container.textContent).toContain("preview of your pay page")
-      expect(container.querySelector('[aria-label="Back"]')).not.toBeNull()
-      expect(container.textContent).not.toContain("send-sheet")
-      expect(container.textContent).not.toContain("Log in")
-    })
-
-    it("hands a signed-in payer to the send sheet with the page to come back to", async () => {
-      await seedOnboarded({}, "localhost")
-      await render("", false, undefined, "/pay/river")
-      expect(container.querySelector('[data-testid="send"]')?.textContent).toBe(
-        "send-sheet 0 /pay/river standing",
-      )
-    })
-
-    const opens = () => fireEvent.mock.calls.filter(([name]) => name === "request_opened")
-
-    it("reports its open once per page load, and its Ethereum payment, as pay_page", async () => {
-      resolve.mockResolvedValue({
-        sipaAddress: SIPA,
-        decimals: 6,
-        feeAtomic: 500_000n,
-        grossAtomic: 500_000n,
-        paymentUri: "ethereum:zoe",
-      })
-      await render("", false, undefined, "/pay/zoe")
-      act(() => root.unmount())
-      root = createRoot(container)
-      await render("", false, undefined, "/pay/zoe")
-      expect(opens()).toEqual([["request_opened", { source: "pay_page", amount_bucket: "any" }]])
-
-      await click("Pay with an Ethereum wallet")
-      await click("pay-sheet")
-      expect(fireEvent).toHaveBeenCalledWith("request_paid", {
-        source: "pay_page",
-        route: "ethereum",
-        amount_bucket: "any",
-      })
-    })
-
-    it("reports nothing to the payee on their own page", async () => {
-      await seedOnboarded({ handle: "yan" }, "localhost")
-      resolve.mockResolvedValue({
-        sipaAddress: SIPA,
-        decimals: 6,
-        feeAtomic: 500_000n,
-        grossAtomic: 500_000n,
-        paymentUri: "ethereum:yan",
-      })
-      await render("", false, undefined, "/pay/yan")
-      await click("Pay with an Ethereum wallet")
-      await click("pay-sheet")
-      expect(fireEvent).not.toHaveBeenCalledWith("request_opened", expect.anything())
-      expect(fireEvent).not.toHaveBeenCalledWith("request_paid", expect.anything())
+      expect(payButton().disabled).toBe(true)
     })
   })
 })

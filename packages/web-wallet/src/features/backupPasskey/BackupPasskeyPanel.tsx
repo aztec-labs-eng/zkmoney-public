@@ -1,97 +1,47 @@
-import { useEffect, useRef, useState } from "react"
-import { Icon, IconCircle, PrimaryGradientButton, Spinner, StatusBadge } from "@obsidion/web-ds"
-import { DEFAULT_DECIMALS } from "@obsidion/core/constants"
 import {
-  cancelRotation,
-  cancellable,
-  fundingLanding,
-  fundRotation,
-  moveDeclined,
-  noteRecovery,
-  recordMoved,
-  RotationFlowError,
-  signRotation,
-  type BackupRotationRecord,
-  type FlowRefusal,
-} from "@obsidion/front-core"
-import { passkeyWritten } from "@obsidion/passkey-web"
-import { BackupCredentialIdLengthError, RotationRouteNotLiveError } from "@obsidion/sdk"
+  Icon,
+  IconCircle,
+  PrimaryGradientButton,
+  Spinner,
+  StatusBadge,
+} from "@obsidion/web-ds"
 import { formatUnits } from "viem"
-import { l1AddressUrl, l1TxUrl, whenLabel } from "../../ui/detailRows"
-import { shortAddr, tokenFigure } from "../../ui/format"
+import { DEFAULT_DECIMALS } from "@obsidion/core/constants"
+import { useL1Links, whenLabel } from "../../ui/detailRows"
+import { shortAddr, usdFigure } from "../../ui/format"
 import { DepositFact } from "../../ui/screens/DepositFact"
 import { BroadcastStatusRow } from "../broadcasts/BroadcastStatusRow/BroadcastStatusRow"
-import { DepositExitModal } from "../deposit/DepositExitModal/DepositExitModal"
-import { DepositReadError, EmptyDepositError } from "../deposit/depositReadErrors"
-import type { StrandedToken } from "../deposit/recovery/sipaRecovery"
-import { BackupStepError, LeftoverPasskeyError, passkeyDeclined } from "./backupPasskeyAdd"
+import { failureLine, type BackupFailure } from "./backupFailure"
 import {
   approveCopy,
-  attentionCopy,
+  attentionLine,
+  costCopy,
   entryCopy,
+  formatDai,
   fundCopy,
   moveCopy,
   panelCopy,
   recoveryCopy,
-  recoveryState,
   rotationSteps,
   stepDetail,
   stepIndex,
   type NamedLine,
-  type RecoveryState,
 } from "./backupPasskeyCopy"
-import type { BackupFlowDeps } from "./backupPasskeyRuntime"
-import { getRotationDriver, useRotationDrive } from "./rotationDrive"
+import type {
+  BackupActions,
+  BackupPayFacts,
+  BackupScreen,
+  RotationScreen,
+} from "./backupScreen"
+import { IntroScreen } from "./screens/IntroScreen/IntroScreen"
+import { KeysScreen } from "./screens/KeysScreen/KeysScreen"
+import { PlaceScreen } from "./screens/PlaceScreen/PlaceScreen"
 import "./backupPasskey.css"
 
-export const formatDai = (atomic: bigint) =>
-  tokenFigure(formatUnits(atomic, DEFAULT_DECIMALS), "DAI")
-
-/**
- * Logs a failure by its name and, for a step the record refused, its code. No message, cause or
- * field reaches the console: the driver's and the flow's errors are not a secrecy boundary.
+/*
+ * Today's Passkeys panel, drawn from a screen's props. Each screen renders it until the
+ * redesign's sheet for that screen replaces it; a failure raised over A1–A3 shows here under them.
  */
-export function warnFailure(what: string, error: unknown): void {
-  if (error instanceof LeftoverPasskeyError)
-    return warnFailure(`${what} after creation`, error.cause)
-  const name = error instanceof Error ? error.name : typeof error
-  const code =
-    error instanceof BackupStepError || error instanceof RotationFlowError ? ` ${error.code}` : ""
-  console.warn(`[backup-passkey] ${what}: ${name}${code}`)
-}
-
-/**
- * What an action's failure says, in the user's terms, with the leftover line once when a passkey
- * was written before the failure: by the driver's own marker, or by a step after it returned.
- */
-export function errorLine(error: unknown): string {
-  if (error instanceof LeftoverPasskeyError)
-    return `${failureLine(error.cause)} ${panelCopy.leftoverPasskey}`
-  const line = failureLine(error)
-  return written(error) ? `${line} ${panelCopy.leftoverPasskey}` : line
-}
-
-function written(error: unknown): boolean {
-  try {
-    return passkeyWritten(error)
-  } catch {
-    return false
-  }
-}
-
-/** What a refusal of the flow's says; `phase` and `gone` are shown by the record itself. */
-const refusalLine: Partial<Record<FlowRefusal, string>> = {
-  "funding-open": panelCopy.fundingOnItsWay,
-  "not-cancellable": panelCopy.notCancellable,
-}
-
-function failureLine(error: unknown): string {
-  if (error instanceof DepositReadError) return error.message
-  if (error instanceof RotationRouteNotLiveError) return panelCopy.routeNotLive
-  if (error instanceof BackupCredentialIdLengthError) return panelCopy.credentialIdTooLong
-  if (error instanceof RotationFlowError && refusalLine[error.code]) return refusalLine[error.code]!
-  return passkeyDeclined(error) ? panelCopy.declined : panelCopy.unverifiable
-}
 
 function Named({ line: [before, name, after] }: { line: NamedLine }) {
   return (
@@ -103,25 +53,15 @@ function Named({ line: [before, name, after] }: { line: NamedLine }) {
   )
 }
 
-function Steps({
-  record,
-  approver,
-  waiting,
-}: {
-  record: BackupRotationRecord
-  approver?: string
-  /** The line for a step that waits on the user, in place of the step's own. */
-  waiting?: string
-}) {
-  const current =
-    record.phase === "attention" || record.phase === "conflict" ? -1 : stepIndex(record)
-  const detail =
-    waiting ??
-    (record.phase === "created" ? (
-      <Named line={approveCopy.detail(approver)} />
-    ) : (
-      stepDetail(record)
-    ))
+/** A failure on the step it stopped; a declined approval names the passkey to use. */
+function stepLine(failure: BackupFailure, approver?: string): React.ReactNode {
+  // A wrong passkey ends the prompt the way a closed one does.
+  if (failure.step === "approve" && failure.kind === "declined")
+    return <Named line={approveCopy.declined(approver)} />
+  return failureLine(failure)
+}
+
+function Steps({ current, detail }: { current: number; detail?: React.ReactNode }) {
   return (
     <ol className="ww-backup__steps" aria-label="Backup passkey steps">
       {rotationSteps.map((label, i) => {
@@ -151,37 +91,51 @@ function Steps({
 }
 
 function FundScreen({
-  record,
+  pay,
   busy,
   onFund,
   onCancel,
 }: {
-  record: BackupRotationRecord
+  pay: BackupPayFacts
   busy: boolean
   onFund: () => void
   onCancel: () => void
 }) {
-  const plan = record.plan!
-  const amount = BigInt(plan.fundingAmount)
-  const credited = BigInt(plan.credited)
+  const { sent, fees, credited } = pay
+  // Dollars, as the funding's Activity row and the balance show them.
+  const usd = (atomic: bigint) => usdFigure(formatUnits(atomic, DEFAULT_DECIMALS))
   return (
     <div className="ww-backup__fund" data-testid="backup-fund">
       <div className="ww-sheet__facts">
         <DepositFact label={fundCopy.destination}>
-          <b>{shortAddr(plan.address)}</b>
+          <b>{shortAddr(pay.address)}</b>
         </DepositFact>
-        <DepositFact label={fundCopy.fees}>
-          <b>{formatDai(amount - credited)}</b>
+        <DepositFact label={costCopy.sent}>
+          <b>{usd(sent)}</b>
         </DepositFact>
+        {typeof fees === "bigint" ? (
+          <DepositFact label={costCopy.fees}>
+            <b>-{usd(fees)}</b>
+          </DepositFact>
+        ) : (
+          <>
+            <DepositFact label={costCopy.withdrawalFee}>
+              <b>-{usd(fees.withdrawal)}</b>
+            </DepositFact>
+            <DepositFact label={costCopy.accountChangeFee}>
+              <b>-{usd(fees.accountChange)}</b>
+            </DepositFact>
+          </>
+        )}
         <DepositFact label={fundCopy.approvals}>
-          <b>{fundCopy.approvalsValue(plan.approvals, plan.moves, plan.refunds)}</b>
+          <b>{fundCopy.approvalsValue(pay.approvals, pay.moves, pay.refunds)}</b>
         </DepositFact>
         <DepositFact label={fundCopy.takes}>
           <b>{fundCopy.takesValue}</b>
         </DepositFact>
         <hr className="ww-divider" />
         <DepositFact label={fundCopy.receive}>
-          <b>{formatDai(credited)}</b>
+          <b>{usd(credited)}</b>
         </DepositFact>
       </div>
       <div className="ww-backup__actions">
@@ -249,33 +203,24 @@ const RECOVERY_BADGE = { held: "failed", sent: "pending", recovered: "cancelled"
  * read as "press again"; a link still recovers funding that lands later.
  */
 function RecoveryCard({
-  record,
-  state,
-  busy,
-  empty,
+  screen,
   onRecover,
   onDone,
 }: {
-  record: BackupRotationRecord
-  state: RecoveryState
-  busy: boolean
-  /** The address held nothing when the user last asked to recover it. */
-  empty: boolean
+  screen: Extract<BackupScreen, { id: "recovery" }>
   onRecover: () => void
   onDone: () => void
 }) {
-  // A funding that landed after the backup was added: the backup stands, only that funding is held.
-  const extra = record.suspended === "done"
+  const { l1TxUrl, l1AddressUrl } = useL1Links()
+  const { state, extra, busy, empty, recoveryTx, sipa } = screen
   const line =
     state !== "held"
       ? recoveryCopy.line[state]
       : extra
       ? recoveryCopy.line.extra
-      : record.attention === "corrupt"
+      : screen.damaged
       ? recoveryCopy.line.damaged
       : recoveryCopy.line.held
-  const sipa = record.rotation?.sipa
-  const recovery = state !== "held" ? record.recovery?.txHash : undefined
   return (
     <div className="zkm-activity-row ww-backup__recovery" data-testid="backup-recovery">
       <div className="zkm-activity-row__top">
@@ -285,21 +230,21 @@ function RecoveryCard({
             {extra ? recoveryCopy.extraTitle : recoveryCopy.title}
           </span>
           <span className="zkm-activity-row__time">
-            {extra ? recoveryCopy.extraSubtitle : recoveryCopy.started(whenLabel(record.createdAt))}
+            {extra ? recoveryCopy.extraSubtitle : recoveryCopy.started(whenLabel(screen.startedAt))}
           </span>
         </div>
         <StatusBadge label={recoveryCopy.badge[state]} badgeStyle={RECOVERY_BADGE[state]} />
       </div>
       <p className="ww-backup__recovery-line">{line}</p>
       <div className="ww-backup__recovery-facts">
-        {record.plan?.deposited && (
+        {screen.deposited !== undefined && (
           <DepositFact label={recoveryCopy.funding}>
-            <b>{formatDai(BigInt(record.plan.deposited))}</b>
+            <b>{formatDai(screen.deposited)}</b>
           </DepositFact>
         )}
-        {recovery ? (
+        {recoveryTx ? (
           <DepositFact label={recoveryCopy.recovery}>
-            <ExplorerValue value={recovery} url={l1TxUrl(recovery)} />
+            <ExplorerValue value={recoveryTx} url={l1TxUrl(recoveryTx)} />
           </DepositFact>
         ) : (
           sipa && (
@@ -372,262 +317,173 @@ function SecondaryButton({
   )
 }
 
-/**
- * A pending rotation from its saved record: the step it is on, what the user can do there, and
- * the side states. The session's driver resumes it; the panel shows the driver's answer and runs
- * the steps the user taps, the move's passkey prompts included. A declined move prompt waits for
- * the user's Try again.
- */
-export function BackupPasskeyPanel({
-  record,
-  deps,
-  approver,
-  onCancelled,
-  onFinished,
-}: {
-  record: BackupRotationRecord
-  deps: BackupFlowDeps
-  /** The approving passkey's custom or manager name; unnamed where it has neither. */
-  approver?: string
-  /** The attempt was dropped; the caller shows the leftover-passkey line. */
-  onCancelled: () => void
-  onFinished: () => void
-}) {
-  const [busy, setBusy] = useState(false)
-  const [stepError, setStepError] = useState<{ error: unknown; approving: boolean }>()
-  const [recovering, setRecovering] = useState<StrandedToken>()
-  // The recovery the address was found empty under, so the note clears once another is sent.
-  const [emptyUnder, setEmptyUnder] = useState<string>()
-  const drive = useRotationDrive(record.owner)
-  // Closing the panel withdraws its taps: a send that has not asked for the passkey yet stops.
-  const open = useRef<AbortController>(undefined)
-  useEffect(() => {
-    const controller = new AbortController()
-    open.current = controller
-    return () => controller.abort()
-  }, [])
+/** An attempt the user dropped: its passkey stays on the device. */
+function CancelledLine() {
+  return (
+    <p className="ww-sheet__note" data-testid="backup-cancelled">
+      {panelCopy.cancelled} {panelCopy.leftoverPasskey}
+    </p>
+  )
+}
 
-  const run = async (step: () => Promise<unknown>, approving = false) => {
-    setBusy(true)
-    setStepError(undefined)
-    try {
-      await step()
-    } catch (err) {
-      if (recordMoved(err)) return
-      warnFailure("step failed", err)
-      setStepError({ error: err, approving })
-    } finally {
-      setBusy(false)
-    }
-  }
+/** A start screen with the failure raised over it, which has no sheet of its own yet. */
+const withFailure = (screen: React.ReactNode, failure?: BackupFailure) => (
+  <>
+    {screen}
+    {failure && (
+      <p className="ww-search__error" aria-live="assertive">
+        {failureLine(failure)}
+      </p>
+    )}
+  </>
+)
 
-  // An answer for another attempt is not shown.
-  const resume = drive?.record.attemptId === record.attemptId ? drive.resume : undefined
-  const wait = resume?.wait
-  const approving = drive?.approving ?? false
-  const checking = record.phase !== "created" && resume === undefined
-  // Only once the driver answers `declined`: an earlier chunk in flight comes first.
-  const declinedMove = moveDeclined(record) && wait === "declined"
-  // Worded here so a declined approval names the approver as it stands. A wrong passkey ends the
-  // prompt the way a closed one does.
-  const stepLine =
-    stepError &&
-    (stepError.approving && passkeyDeclined(stepError.error) ? (
-      <Named line={approveCopy.declined(approver)} />
-    ) : (
-      errorLine(stepError.error)
-    ))
-  const error =
-    stepLine ??
-    (declinedMove
-      ? panelCopy.declined
-      : resume?.error === undefined
-      ? undefined
-      : errorLine(resume.error))
-  const driver = getRotationDriver()
-  const checkAgain = () => {
-    setStepError(undefined)
-    driver.check(record.owner)
-  }
-  const cancel = () =>
-    run(async () => {
-      await cancelRotation(deps, record)
-      onCancelled()
-    })
-  const retry = () => run(() => driver.retry(record.owner, open.current?.signal))
-  const approveMove = () => run(() => driver.approve(record.owner, open.current?.signal))
-  const recovery = recoveryState(record)
-  const recoveryKey = record.recovery?.txHash ?? "held"
-  const recover = () =>
-    run(async () => {
-      setEmptyUnder(undefined)
-      let found: StrandedToken
-      try {
-        found = await deps.strandedDeposit(record)
-      } catch (err) {
-        // Nothing to recover is not a failure: the card says so in its own neutral line.
-        if (err instanceof EmptyDepositError) return setEmptyUnder(recoveryKey)
-        throw err
+/** The step today's five a screen is on, and its line; -1 when a parked state is on none. */
+function stepsOf(screen: RotationScreen): { current: number; detail?: React.ReactNode } {
+  switch (screen.id) {
+    case "approve":
+      return {
+        current: stepIndex(screen.progress),
+        detail:
+          screen.progress.stage === "sign" ? (
+            <Named line={approveCopy.detail(screen.approver)} />
+          ) : (
+            stepDetail(screen.progress)
+          ),
       }
-      setRecovering(found)
-    })
-  const finish = () =>
-    run(async () => {
-      await deps.store.remove(record.owner)
-      onFinished()
-    })
+    case "adding":
+      return screen.delay === "route"
+        ? { current: -1 }
+        : { current: stepIndex(screen.progress), detail: stepDetail(screen.progress) }
+    case "finish":
+      if (screen.paused) return { current: -1 }
+      return {
+        current: stepIndex(screen.progress),
+        detail:
+          screen.ask === "approve" || screen.declined
+            ? moveCopy.line(screen.progress)
+            : screen.linkExpiring
+            ? moveCopy.linkExpiring
+            : stepDetail(screen.progress),
+      }
+    case "done":
+      return { current: rotationSteps.length }
+    default:
+      return { current: -1 }
+  }
+}
 
-  const landing = record.fundings.some(fundingLanding)
+/**
+ * A pending rotation: the step it is on, what the user can do there, and the side states. The
+ * session's driver resumes it; the host runs the steps the user taps.
+ */
+function RotationStandIn({
+  screen,
+  actions,
+  failure: over,
+}: {
+  screen: Exclude<RotationScreen, { id: "failed" }>
+  actions: BackupActions
+  failure?: BackupFailure
+}) {
+  const failure = over ?? screen.failure
+  const approver = "approver" in screen ? screen.approver : undefined
+  const error = failure && stepLine(failure, approver)
+  const stage = "progress" in screen ? screen.progress.stage : undefined
+  const busy = "busy" in screen && screen.busy
+  const checking = "checking" in screen && screen.checking
+  const canCancel = "canCancel" in screen && screen.canCancel
+  const cancel = <SecondaryButton label={panelCopy.cancel} onClick={actions.cancel} disabled={busy} />
+  const tryAgain = (
+    <PrimaryGradientButton
+      title={panelCopy.tryAgain}
+      isLoading={checking}
+      onClick={actions.check}
+      testId="backup-watch-retry"
+    />
+  )
   // The error is part of the line where the step itself is the check.
   let errorInline = false
   let body: React.ReactNode
-  if (recovery) {
-    body = (
-      <RecoveryCard
-        record={record}
-        state={recovery}
-        busy={busy}
-        empty={emptyUnder === recoveryKey}
-        onRecover={recover}
-        onDone={finish}
-      />
-    )
-  } else if (record.phase === "created") {
+  if (screen.id === "recovery") {
+    body = <RecoveryCard screen={screen} onRecover={actions.recover} onDone={actions.finish} />
+  } else if (screen.id === "approve" && screen.progress.stage === "sign") {
     body = (
       <div className="ww-backup__actions">
         <PrimaryGradientButton
           title={busy ? panelCopy.approving : approveCopy.button(approver)}
           isLoading={busy}
-          onClick={() =>
-            run(async () => signRotation(deps, record, await deps.prepare(record)), true)
-          }
+          onClick={actions.approve}
           testId="backup-approve"
         />
-        <SecondaryButton label={panelCopy.cancel} onClick={cancel} disabled={busy} />
+        {cancel}
       </div>
     )
-  } else if (record.phase === "signed" && record.rotation) {
+  } else if (screen.id === "approve" && screen.sipa) {
     body = (
       <>
-        <BroadcastStatusRow address={record.rotation.sipa.toLowerCase()} />
+        <BroadcastStatusRow address={screen.sipa.toLowerCase()} />
         <div className="ww-backup__actions">
-          {error && (
-            <PrimaryGradientButton
-              title={panelCopy.tryAgain}
-              isLoading={checking}
-              onClick={checkAgain}
-              testId="backup-watch-retry"
-            />
-          )}
-          <SecondaryButton label={panelCopy.cancel} onClick={cancel} disabled={busy} />
+          {error && tryAgain}
+          {cancel}
         </div>
       </>
     )
-  } else if (record.phase === "published" && !landing) {
-    if (wait === "funding") {
-      body = (
-        <FundScreen
-          record={record}
-          busy={busy}
-          onFund={() => run(() => fundRotation(deps, record))}
-          onCancel={cancel}
-        />
-      )
-    } else {
-      errorInline = true
-      body = (
-        <>
-          <p className="ww-sheet__note" aria-live="polite">
-            {error ? (
-              <>
-                {error}{" "}
-                <button
-                  type="button"
-                  className="zkm-btn-reset ww-deposit__link"
-                  onClick={checkAgain}
-                >
-                  {panelCopy.tryAgain}
-                </button>
-              </>
-            ) : (
-              entryCopy.checking
-            )}
-          </p>
-          <SecondaryButton label={panelCopy.cancel} onClick={cancel} disabled={busy} />
-        </>
-      )
-    }
-  } else if (record.phase === "done") {
+  } else if (screen.id === "approve" && screen.pay) {
+    body = (
+      <FundScreen pay={screen.pay} busy={busy} onFund={actions.fund} onCancel={actions.cancel} />
+    )
+  } else if (screen.id === "approve" && screen.progress.stage === "pay") {
+    errorInline = true
+    body = (
+      <>
+        <p className="ww-sheet__note" aria-live="polite">
+          {error ? (
+            <>
+              {error}{" "}
+              <button type="button" className="zkm-btn-reset ww-deposit__link" onClick={actions.check}>
+                {panelCopy.tryAgain}
+              </button>
+            </>
+          ) : (
+            entryCopy.checking
+          )}
+        </p>
+        {cancel}
+      </>
+    )
+  } else if (screen.id === "done") {
     body = (
       <>
         <p className="ww-sheet__note">{panelCopy.doneLine}</p>
-        <PrimaryGradientButton title={panelCopy.done} onClick={finish} testId="backup-done" />
+        <PrimaryGradientButton title={panelCopy.done} onClick={actions.finish} testId="backup-done" />
       </>
     )
-  } else if (record.phase === "conflict") {
-    body = (
-      <>
-        <p className="ww-sheet__note">{panelCopy.conflict}</p>
-        {cancellable(record) && (
-          <SecondaryButton label={panelCopy.startOver} onClick={cancel} disabled={busy} />
-        )}
-      </>
-    )
-  } else if (record.phase === "attention" && record.attention && record.attention !== "stranded") {
-    const copy = attentionCopy(record.attention, record)
+  } else if (screen.id === "adding" && screen.delay === "route") {
     // A recheck that could not complete says so; the parked verdict is not repeated as current.
-    errorInline = record.attention === "route"
-    const line = errorInline && error ? panelCopy.unverifiable : copy.line
+    errorInline = true
+    body = <p className="ww-sheet__note">{error ? panelCopy.unverifiable : attentionLine.route}</p>
+  } else if (screen.id === "finish" && screen.ask === "retry") {
     body = (
       <>
-        <p className="ww-sheet__note">{line}</p>
+        {screen.paused && <p className="ww-sheet__note">{attentionLine.move}</p>}
         <div className="ww-backup__actions">
-          {copy.actions.map((action) =>
-            action === "checkAgain" ? (
-              <PrimaryGradientButton
-                key={action}
-                title={panelCopy.checkAgain}
-                isLoading={busy || checking}
-                onClick={checkAgain}
-              />
-            ) : action === "retry" ? (
-              <PrimaryGradientButton
-                key={action}
-                title={panelCopy.tryAgain}
-                isLoading={busy || checking || approving}
-                onClick={retry}
-                testId="backup-move-retry"
-              />
-            ) : (
-              <SecondaryButton
-                key={action}
-                label={action === "cancel" ? panelCopy.cancel : panelCopy.startOver}
-                onClick={cancel}
-                disabled={busy}
-              />
-            ),
-          )}
+          <PrimaryGradientButton
+            title={panelCopy.tryAgain}
+            isLoading={busy || checking || screen.approving}
+            onClick={actions.retryMove}
+            testId="backup-move-retry"
+          />
         </div>
       </>
     )
-  } else if (declinedMove) {
+  } else if (screen.id === "finish" && (screen.ask === "approve" || screen.approving)) {
     body = (
       <div className="ww-backup__actions">
         <PrimaryGradientButton
-          title={panelCopy.tryAgain}
-          isLoading={busy || checking || approving}
-          onClick={retry}
-          testId="backup-move-retry"
-        />
-      </div>
-    )
-  } else if (wait === "approval" || approving) {
-    body = (
-      <div className="ww-backup__actions">
-        <PrimaryGradientButton
-          title={busy || approving ? panelCopy.approving : approveCopy.button(approver)}
-          isLoading={busy || approving}
-          onClick={approveMove}
+          title={busy || screen.approving ? panelCopy.approving : approveCopy.button(approver)}
+          isLoading={busy || screen.approving}
+          onClick={actions.approveMove}
           testId="backup-move-approve"
         />
       </div>
@@ -635,36 +491,22 @@ export function BackupPasskeyPanel({
   } else if (error) {
     body = (
       <div className="ww-backup__actions">
-        <PrimaryGradientButton
-          title={panelCopy.tryAgain}
-          isLoading={checking}
-          onClick={checkAgain}
-          testId="backup-watch-retry"
-        />
-        {cancellable(record) && (
-          <SecondaryButton label={panelCopy.cancel} onClick={cancel} disabled={busy} />
-        )}
+        {tryAgain}
+        {canCancel && cancel}
       </div>
     )
-  } else if (cancellable(record)) {
-    body = <SecondaryButton label={panelCopy.cancel} onClick={cancel} disabled={busy} />
+  } else if (canCancel) {
+    body = cancel
   }
-
+  const { current, detail } = stepsOf(screen)
   return (
     <section className="ww-contacts__section ww-backup" data-testid="backup-panel">
-      <span className="ww-contacts__label">Backup passkey</span>
-      {!recovery && (
-        <Steps
-          record={record}
-          approver={approver}
-          waiting={
-            wait === "approval" || declinedMove
-              ? moveCopy.line(record)
-              : wait === "link"
-              ? moveCopy.linkExpiring
-              : undefined
-          }
-        />
+      {/* The recovery sheet's own title names the section. */}
+      {screen.id !== "recovery" && (
+        <>
+          <span className="ww-contacts__label">{panelCopy.title}</span>
+          <Steps current={current} detail={detail} />
+        </>
       )}
       <p
         className="ww-search__error ww-backup__error"
@@ -674,19 +516,69 @@ export function BackupPasskeyPanel({
         {errorInline ? undefined : error}
       </p>
       {body}
-      {recovering && (
-        <DepositExitModal
-          record={recovering.record}
-          reason="stranded"
-          canSweep={false}
-          stranded={recovering}
-          onRecovered={(hash) => void run(() => noteRecovery(deps, record, hash))}
-          onClose={() => setRecovering(undefined)}
-        />
-      )}
-      {record.phase !== "created" && cancellable(record) && (
+      {canCancel && stage !== "sign" && (
         <p className="ww-sheet__note ww-backup__fine">{panelCopy.approvalStays}</p>
       )}
     </section>
   )
+}
+
+/** Today's UI for `screen`, with `failure` shown on it when a sheet raised over it stands in. */
+export function BackupStandIn({
+  screen,
+  actions,
+  failure,
+}: {
+  screen: BackupScreen
+  actions: BackupActions
+  failure?: BackupFailure
+}) {
+  if ("under" in screen && screen.under)
+    return <BackupStandIn screen={screen.under} actions={actions} failure={screen.failure} />
+  switch (screen.id) {
+    case "loading":
+      return screen.rotation ? (
+        <p className="ww-sheet__note" aria-live="polite">
+          {entryCopy.checking}
+        </p>
+      ) : screen.cancelled ? (
+        <CancelledLine />
+      ) : null
+    case "keys":
+      return withFailure(<KeysScreen screen={screen} actions={actions} />, failure)
+    case "intro":
+      return withFailure(<IntroScreen screen={screen} actions={actions} />, failure)
+    case "place":
+      return withFailure(<PlaceScreen screen={screen} actions={actions} />, failure)
+    case "unreadable":
+      if (screen.read === "keys") return screen.cancelled ? <CancelledLine /> : null
+      if (screen.read === "entry") return null
+      return (
+        <p className="ww-sheet__note" aria-live="polite">
+          {entryCopy.unreadable}{" "}
+          <button
+            type="button"
+            className="zkm-btn-reset ww-deposit__link"
+            onClick={() => actions.retryRead(screen.read)}
+            data-testid={screen.read === "records" ? "backup-store-retry" : "backup-deps-retry"}
+          >
+            {panelCopy.tryAgain}
+          </button>
+        </p>
+      )
+    case "approve":
+    case "adding":
+    case "finish":
+    case "done":
+    case "recovery":
+      return <RotationStandIn screen={screen} actions={actions} failure={failure} />
+    // Draws its own sheet.
+    case "failed":
+      return null
+    // Entered from A1's button; empty until their own sheets replace these.
+    case "unavailable":
+    case "firstPasskey":
+    case "blocked":
+      return null
+  }
 }

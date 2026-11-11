@@ -1,0 +1,24 @@
+/* The connected wallet and its address; the name and address ellipsize before the icon does. */
+.walletPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #9c04ff, #0693ff);
+  font-size: 11px;
+  font-weight: 600;
+  /* Whole pixels, so the pill paints the same in its slide-in layer and after. */
+  line-height: 14px;
+  color: #fdfdfd;
+  white-space: nowrap;
+}
+.walletPill > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.walletPill > svg {
+  flex: none;
+}

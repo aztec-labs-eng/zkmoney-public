@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react"
-import type { Contact, RegistryTagResolution } from "../core"
+import type { RegistryTagResolution } from "../core"
+import type { Contact } from "../engine/contacts"
 import { normalizeTag } from "../utils"
 
 type AddContactState = "idle" | "resolving" | "success" | "error"
@@ -106,9 +107,11 @@ export function useAddContactSheet({
 
         setState("success")
         setVisible(false)
+        // eslint-disable-next-line local/timer-in-view -- ZKM-1806
         setTimeout(() => setState("idle"), 2000)
       } catch (err) {
         setState("error")
+        // eslint-disable-next-line local/message-in-state -- ZKM-1895
         setError(err instanceof Error ? err.message : "Could not resolve tag")
       }
     },

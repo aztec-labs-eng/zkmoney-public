@@ -2,7 +2,7 @@ import {
   fundingStarted,
   sealMasterKey,
   type BackupRotationRecord,
-  type BackupRotationStore,
+  type BackupRotations,
 } from "@obsidion/front-core"
 import {
   bytesToBase64Url,
@@ -25,7 +25,7 @@ export interface BackupAddDeps {
     signal?: AbortSignal,
   ): Promise<BackupCreation>
   track: BackupAddTracker
-  store: BackupRotationStore
+  store: BackupRotations
   seal?: typeof sealMasterKey
   now?: () => number
   attemptId?: () => string

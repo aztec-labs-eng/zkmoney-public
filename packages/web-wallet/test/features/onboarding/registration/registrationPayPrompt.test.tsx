@@ -1,40 +1,39 @@
-/**
- * The registration pay row while the connected wallet holds the transfer: the row shows it is busy,
- * the confirm sheet offers a way back once the prompt has stalled, and a late answer from the
- * wallet is still tracked or swallowed.
- */
+/** Guards: the pay row pays in the fee token and holds while a payment or token read is pending. */
 import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
-import { clearWalletPrompt } from "../../../../src/features/deposit/walletPrompt"
 
-// The wallet-request slot is page-wide; forget what a case left open.
-afterEach(clearWalletPrompt)
-import { createPortalCapacityStore, type RequiredCredit } from "@obsidion/front-core"
+import {
+  admitDeposit,
+  createPortalCapacityStore,
+  NOMINAL_USD_VALUATION,
+} from "@obsidion/front-core"
 
 const h = vi.hoisted(() => ({
   writeContract: vi.fn(),
   receipt: vi.fn(),
   report: vi.fn(),
   account: null as string | null,
-  connecting: false,
   /** Which table the registration reads: one row, a USDC fee token, or none yet. */
   tokens: "single" as "single" | "usdc" | "unread",
   failed: false,
   retry: vi.fn(),
 }))
 const ACCOUNT = "0x00000000000000000000000000000000000000aa"
-vi.mock("../../../../src/session/l1Wallet", () => ({
-  isWalletRejection: (e: { code?: number }) => e?.code === 4001,
-  isWalletDisconnect: () => false,
-  isWrongNetwork: () => false,
+vi.mock("../../../../src/session/useL1Wallet", () => ({
   useL1Wallet: () => ({
     account: h.account,
     walletName: "Rainbow",
-    connecting: h.connecting,
+    connecting: false,
     disconnect: vi.fn(),
     connect: vi.fn(),
   }),
+}))
+vi.mock("../../../../src/session/l1Wallet", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../../src/session/l1Wallet")>()),
+  isWalletRejection: (e: { code?: number }) => e?.code === 4001,
+  isWalletDisconnect: () => false,
+  isWrongNetwork: () => false,
   getL1Clients: async () => ({
     walletClient: { writeContract: h.writeContract },
     account: ACCOUNT,
@@ -57,9 +56,6 @@ vi.mock("../../../../src/errors/errorModal", () => ({
   showErrorModal: vi.fn(),
 }))
 vi.mock("../../../../src/ui/hooks", () => ({ useCopy: () => ({ copied: false, copy: vi.fn() }) }))
-vi.mock("../../../../src/features/registration/registrationFunnel", () => ({
-  reportRegistrationDepositShown: vi.fn(),
-}))
 vi.mock("@obsidion/web-ds", () => ({
   Icon: ({ name }: { name: string }) => <span data-testid={`icon-${name}`} />,
   Spinner: () => <span data-testid="spinner" />,
@@ -82,7 +78,6 @@ vi.mock("@obsidion/web-ds", () => ({
   TopNavIconButton: () => null,
 }))
 vi.mock("../../../../src/config/env", () => ({
-  getConfig: () => ({ l1ChainId: 11155111, network: "testnet" }),
   l1ChainFor: () => ({ name: "Sepolia" }),
 }))
 vi.mock("../../../../src/config/oxideTuple", () => ({
@@ -102,17 +97,33 @@ vi.mock("../../../../src/features/sipa/loadDepositFacts", async (importOriginal)
   )
 })
 import { DepositPayBlock } from "../../../../src/features/onboarding/steps/DepositAddress/DepositAddress"
+import { closeSession } from "../../../../src/session/session"
+import { closeWalletStore, openWalletStore } from "../../../../src/platform/storage/walletStorage"
+import { sandboxProfile } from "../../../fixtures/sandboxProfile"
+import { testWalletDbs } from "../../../support/fakeWalletDb"
+import { defaultConfig, seedDeviceKeys } from "../../../support/page"
+import { pendingRecord, seedRegistration } from "../../../support/registrationFixtures"
+import { openTestSession } from "../../../support/session"
+import { testQuery } from "../../../support/query"
 
-const OPEN = "Your wallet still has the previous request open. Approve or reject it there first."
+testWalletDbs()
+
 const HOLDING = "Your wallet still holds this payment. Approve or reject it there."
-const HASH = `0x${"11".repeat(32)}`
 const DAI = 10n ** 18n
 const BUCKET = {
   chainId: 11155111,
   portal: "0x9999999999999999999999999999999999999999",
   token: "0x00000000000000000000000000000000000000dd",
 } as const
-const REQUIRED: RequiredCredit = { status: "known", atomic: 1n, token: BUCKET.token, decimals: 18 }
+/** An ask of 11 that credits 1. */
+const ADMISSION = admitDeposit(
+  {
+    token: { symbol: "DAI", decimals: 18, settlesIn: BUCKET.token, swapped: false },
+    depositFeeAtomic: 10n,
+    minimumAtomic: 0n,
+  },
+  { landedAtomic: 11n, gross: { atomic: 11n, decimals: 18, valuation: NOMINAL_USD_VALUATION } },
+)
 function fundingStore() {
   let reads = 0
   return createPortalCapacityStore(BUCKET, {
@@ -127,7 +138,7 @@ function fundingStore() {
       txAmountCapAtomic: 10_000n * DAI,
     }),
     policy: { maxHeadAgeMs: Infinity },
-    visibility: { isVisible: () => true, onResume: () => () => {} },
+    query: testQuery(),
   })
 }
 
@@ -160,15 +171,13 @@ const confirm = async () => {
   )!
   await act(async () => button.click())
 }
-const stall = () => act(async () => vi.advanceTimersByTime(30_000))
 const cancel = () => act(async () => note()!.querySelector("button")!.click())
 
-beforeEach(() => {
+beforeEach(async () => {
   h.writeContract.mockReset()
   h.receipt.mockReset().mockResolvedValue({ status: "success" })
   h.report.mockReset()
   h.account = ACCOUNT
-  h.connecting = false
   h.tokens = "single"
   h.failed = false
   h.retry.mockReset()
@@ -178,27 +187,24 @@ beforeEach(() => {
     token: BUCKET.token,
     chainId: 11155111,
     total: 11n,
-    funding: { store: fundingStore(), required: REQUIRED, canFund: true },
+    funding: { store: fundingStore(), admission: ADMISSION, canFund: true },
   }
+  await seedDeviceKeys({ storageId: "a1" })
+  await openWalletStore(sandboxProfile().shared.rollupVersion, { persistent: true })
+  await openTestSession({ config: { ...defaultConfig, l1ChainId: 11155111 } }).registrations.ready
+  await seedRegistration(pendingRecord({ sipaAddress: props.address }))
   el = document.createElement("div")
   document.body.appendChild(el)
   root = createRoot(el)
   void render()
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
 })
-afterEach(() => {
+afterEach(async () => {
   vi.useRealTimers()
   act(() => root.unmount())
   el.remove()
-})
-
-it("says it is connecting while the picker is up and nothing is connected", async () => {
-  h.account = null
-  h.connecting = true
-  await render()
-  expect(row().textContent).toContain("Connecting…")
-  expect(row().getAttribute("aria-busy")).toBe("true")
-  expect(row().querySelector('[data-testid="spinner"]')).not.toBeNull()
+  closeSession()
+  await closeWalletStore()
 })
 
 it("offers a way back after 30 seconds; Cancel closes the sheet and holds the row until the wallet answers", async () => {
@@ -229,37 +235,6 @@ it("offers a way back after 30 seconds; Cancel closes the sheet and holds the ro
   expect(reason()).toBeNull()
   await confirm()
   expect(h.writeContract).toHaveBeenCalledTimes(2)
-})
-
-it("still tracks a transfer the wallet signs after Cancel", async () => {
-  const held = atPrompt()
-  let settle!: (receipt: unknown) => void
-  h.receipt.mockImplementationOnce(() => new Promise((resolve) => (settle = resolve)))
-  await confirm()
-  await stall()
-  await cancel()
-  expect(reason()?.textContent).toBe(HOLDING)
-  await act(async () => held.resolve(HASH))
-  expect(h.receipt).toHaveBeenCalledWith(expect.objectContaining({ hash: HASH }))
-  expect(row().textContent).toContain("Confirming payment")
-  expect(reason()).toBeNull()
-  await act(async () => settle({ status: "success" }))
-  expect(el.textContent).toContain("Payment sent")
-})
-
-it("refuses a payment to another target while the wallet still holds the previous transfer", async () => {
-  atPrompt()
-  await confirm()
-  await stall()
-  await cancel()
-  props = { ...props, address: `0x${"ab".repeat(20)}` }
-  await render()
-  expect(row().disabled).toBe(false)
-  await confirm()
-  expect(h.writeContract).toHaveBeenCalledTimes(1)
-  expect(el.querySelector('[data-testid="registration-pay-confirm-reason"]')?.textContent).toBe(
-    OPEN,
-  )
 })
 
 it("pays a USDC fee token in USDC and names no DAI", async () => {

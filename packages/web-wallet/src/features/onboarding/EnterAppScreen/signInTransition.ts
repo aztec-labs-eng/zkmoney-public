@@ -2,7 +2,7 @@ import type { Hex } from "viem"
 import type { RememberedAccount } from "../../../platform/auth/WebPasskeyIdentityMap"
 import type { EnterResult } from "../oxideOnboarding"
 import type { Found, KeyOption } from "../rowKeys"
-import type { ByTagNotice } from "../steps/ConfirmTagModal"
+import type { ByTagNotice } from "../steps/ConfirmTagModal/ConfirmTagModal"
 import type { Refusal } from "./signInSettle"
 
 export type Unclaimed = Extract<EnterResult, { reason: "unclaimed" }>

@@ -9,11 +9,13 @@ const mocks = vi.hoisted(() => ({
   assertEmail: vi.fn(),
   nonce: vi.fn(() => "nonce"),
 }))
-vi.mock("../../../../src/features/paylink/googleAuth", () => ({ signInWithGoogleIdToken: mocks.login }))
+vi.mock("../../../../src/features/paylink/googleRelay", () => ({
+  signInWithGoogleIdToken: mocks.login,
+}))
 vi.mock("../../../../src/features/paylink/zkJwtProver", () => ({ WebZkJwtProver: class {} }))
-vi.mock("../../../../src/config/env", () => ({ getConfig: () => ({ googleClientId: "google-client" }) }))
-vi.mock("../../../../src/platform/storage/WebStorageAdapter", () => ({ webStorage: {} }))
-vi.mock("../../../../src/platform/storage/MskWebCryptoProvider", () => ({ MskWebCryptoProvider: class {} }))
+vi.mock("../../../../src/platform/storage/MskWebCryptoProvider", () => ({
+  MskWebCryptoProvider: class {},
+}))
 vi.mock("@obsidion/sdk", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@obsidion/sdk")>()
   return {
@@ -26,14 +28,14 @@ vi.mock("@obsidion/sdk", async (importOriginal) => {
 })
 vi.mock("@obsidion/front-core", () => ({
   generateZkJwtProof: mocks.generate,
-  EncryptedStorageAdapter: class {},
-  ZkJwtService: class {},
-  ZkJwtStorage: class {},
 }))
-const { emailL1Caller, obtainEmailL1Proof } = await import("../../../../src/features/paylink/emailClaim")
+const { emailL1Caller, obtainEmailL1Proof } = await import(
+  "../../../../src/features/paylink/emailClaim"
+)
 const { paylinkL1Caller, plainUserPayload } = await vi.importActual<typeof import("@obsidion/sdk")>(
   "@obsidion/sdk",
 )
+const page = { config: { googleClientId: "google-client" }, noirWasm: async () => {} } as never
 const recipient = "0x2222222222222222222222222222222222222222"
 const executor = "0x3333333333333333333333333333333333333333"
 const caller = await emailL1Caller(executor, recipient)
@@ -76,7 +78,7 @@ describe("email withdrawal caller", () => {
 describe("email withdrawal verification", () => {
   it("opens Google immediately and binds the nonce and prover to the caller without account access", async () => {
     const controller = new AbortController()
-    const result = obtainEmailL1Proof(caller, params, vi.fn(), () => true, controller.signal)
+    const result = obtainEmailL1Proof(page, caller, params, vi.fn(), () => true, controller.signal)
     expect(mocks.login).toHaveBeenCalledWith(
       "nonce",
       "google-client",
@@ -101,14 +103,14 @@ describe("email withdrawal verification", () => {
       return bundle()
     })
     let active = true
-    await expect(obtainEmailL1Proof(caller, params, vi.fn(), () => active)).rejects.toThrow(
+    await expect(obtainEmailL1Proof(page, caller, params, vi.fn(), () => active)).rejects.toThrow(
       "Cancelled",
     )
     mocks.generate.mockResolvedValueOnce({
       ...bundle(),
       publicInputs: ["0x01", ...bundle().publicInputs.slice(1)],
     })
-    await expect(obtainEmailL1Proof(caller, params, vi.fn(), () => true)).rejects.toThrow(
+    await expect(obtainEmailL1Proof(page, caller, params, vi.fn(), () => true)).rejects.toThrow(
       /destination/,
     )
   })

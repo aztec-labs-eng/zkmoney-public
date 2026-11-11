@@ -14,6 +14,7 @@
   "include": [
     "src/types/index.ts",
     "src/constants/index.ts",
+    "src/cadence/index.ts",
     "src/oxide/index.ts",
     "src/oxide/manifestEntriesCli.ts",
     "src/text/index.ts",

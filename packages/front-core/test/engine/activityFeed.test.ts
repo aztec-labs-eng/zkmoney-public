@@ -1,131 +1,35 @@
 import { describe, expect, it } from "vitest"
 import type { Hex } from "viem"
-import type { UpgradeBatchItem } from "../../src/core/migration/upgradeActivity"
 import type { OldVersionWithdrawal } from "../../src/core/migration/OldVersionWithdrawalStorage"
-import type { WithdrawalRecord } from "../../src/core/services/bridge/types"
-import type { SipaDeposit } from "../../src/engine/sipaDeposits"
-import type { ContactRow } from "../../src/hooks/useContactsDirectory"
+import type { BridgeInRecord } from "../../src/core/services/crossChain/types"
+import type { FeedContext, FeedItem } from "../../src/engine/activityFeed"
 import {
+  nonContactInbox,
   selectActivity,
-  selectFeed,
   selectHome,
   selectRequests,
-  type FeedContext,
-  type FeedItem,
-  type FeedSources,
 } from "../../src/engine/activityFeed"
-import { depositDetailId, depositDetailItem } from "../../src/engine/feedRules"
-import { resolveRequests, type PaymentRequest } from "../../src/engine/requests"
-import type { Transaction } from "../../src/types/transactions"
-
-const NOW = 1_800_000_000_000
-const HOUR = 3_600_000
-const E18 = 10n ** 18n
-const addr = (byte: string) => `0x${byte.repeat(20)}`
-const token = {
-  address: "0xt",
-  name: "DAI",
-  symbol: "DAI",
-  decimals: 18,
-  logo: "",
-  amount: 0,
-  price: 1,
-}
-
-const tx = (over: Partial<Transaction> & { action: string }): Transaction =>
-  ({
-    id: over.txHash ?? "op",
-    token,
-    amountAtomic: 5n * E18,
-    timestamp: NOW - HOUR,
-    status: "success",
-    txHash: "0xaa",
-    ...over,
-  } as Transaction)
-
-const request = (over: Partial<PaymentRequest> = {}): PaymentRequest => ({
-  id: "req",
-  contactTag: "ada",
-  amount: 10,
-  amountAtomic: (10n * E18).toString(),
-  tokenDecimals: 18,
-  asset: "DAI",
-  direction: "incoming",
-  status: "pending",
-  createdAt: NOW - 2 * HOUR,
-  kind: "contact",
-  ...over,
-})
-
-const deposit = (over: Partial<SipaDeposit> = {}): SipaDeposit =>
-  ({
-    sipaAddress: addr("d1"),
-    phase: "claimed",
-    amount: "20",
-    netAmount: (20n * E18).toString(),
-    fee: "0",
-    startTime: NOW - 3 * HOUR,
-    ...over,
-  } as SipaDeposit)
-
-const burn = (over: Partial<WithdrawalRecord> = {}): WithdrawalRecord =>
-  ({
-    localId: "w1",
-    recipient: addr("e1"),
-    amount: "7",
-    tokenSymbol: "DAI",
-    phase: "done",
-    startTime: NOW - 4 * HOUR,
-    endTime: NOW - 4 * HOUR,
-    ...over,
-  } as WithdrawalRecord)
-
-const ada: ContactRow = {
-  id: "ada",
-  name: "Ada",
-  tag: "ada",
-  address: "0xada",
-  addressKind: "aztec-l2",
-}
-
-function feedOf(
-  over: Partial<{
-    rows: Transaction[]
-    requests: PaymentRequest[]
-    deposits: SipaDeposit[]
-    withdrawals: WithdrawalRecord[]
-    upgrades: UpgradeBatchItem[]
-    upgradesLoaded: boolean
-    oldVersionWithdrawals: OldVersionWithdrawal[]
-    catchingUp: boolean
-  }> = {},
-  ctx: Partial<FeedContext> = {},
-) {
-  const sources: FeedSources = {
-    rows: { records: over.rows ?? [], loaded: true, failed: false },
-    requests: over.requests ?? [],
-    deposits: { records: over.deposits ?? [], loaded: true, failed: false },
-    withdrawals: { records: over.withdrawals ?? [], hydrated: true },
-    upgrades: {
-      items: over.upgrades ?? [],
-      recipients: new Set((over.upgrades ?? []).map((b) => b.recipient.toLowerCase())),
-      loaded: over.upgradesLoaded ?? true,
-    },
-    moves: { records: [], hydrated: true },
-    oldVersionWithdrawals: over.oldVersionWithdrawals ?? [],
-    processing: new Map(),
-    refunding: new Set(),
-    catchingUp: over.catchingUp ?? false,
-    now: NOW,
-  }
-  return selectFeed(sources, {
-    contacts: { rows: [ada], hydrated: true, failed: false },
-    registrations: { records: [] },
-    ...ctx,
-  })
-}
-
-const kinds = (items: readonly FeedItem[]) => items.map((i) => `${i.kind}:${i.id}`)
+import { createBridgeIns } from "../../src/engine/bridgeIns"
+import { openDatabase } from "../../src/engine/database"
+import { memoryBackend } from "../../src/engine/memoryBackend"
+import { resolveRequests } from "../../src/engine/requests"
+import type { SIPADepositPhase, SipaDeposit } from "../../src/engine/sipaDeposits"
+import type { OperationRecord } from "../../src/engine/operationTransition"
+import {
+  ada,
+  addr,
+  burn,
+  deposit,
+  E18,
+  feedOf,
+  HOUR,
+  kinds,
+  link,
+  NOW,
+  request,
+  token,
+  tx,
+} from "./feedFixtures"
 
 describe("selectFeed", () => {
   it("merges every source newest first, keeping the merge order on a tie", () => {
@@ -148,8 +52,10 @@ describe("selectFeed", () => {
       rows: [
         tx({ action: "send", txHash: "", id: "op1", status: "pending" }),
         tx({ action: "receive", txHash: "0xr" }),
-        tx({ action: "Pay To Email", txHash: "0xp", untilClaimable: NOW / 1000 + 60 } as never),
-        tx({ action: "Pay To Email", txHash: "0xq", isClaimed: true } as never),
+      ],
+      links: [
+        link({ txHash: "0xp", untilClaimable: NOW / 1000 + 60 }),
+        link({ txHash: "0xq", isClaimed: true }),
       ],
     }).items
     const by = Object.fromEntries(items.map((i) => [i.id, [i.direction, i.pending]]))
@@ -180,6 +86,26 @@ describe("selectFeed", () => {
     }).items
     expect(kinds(items)).toEqual(["paidLink:link"])
     expect(items[0]).toMatchObject({ amount: { atomic: 5n * E18, decimals: 18 } })
+  })
+
+  it("shows a link as recovering while its refund is local, from the refund's begin", () => {
+    const funded = link({ txHash: "0xf", untilClaimable: Math.floor(NOW / 1000) + 3600 })
+    const refund = {
+      operationId: "refund",
+      flow: "paylink-reclaim",
+      summary: "",
+      state: "local",
+      startedAt: NOW,
+      kind: "paylink-refund",
+      payload: { networkId: "net", token, amountAtomic: "0", flavor: "direct", linkId: "0xf" },
+    } as OperationRecord
+    const recovering = (state: OperationRecord["state"]) => {
+      const operations = [{ ...refund, state }]
+      const [item] = feedOf({ links: [funded], operations }).items
+      return item.kind === "link" ? item.view.recovering : "none"
+    }
+    expect(recovering("local")).toBe("cancel")
+    expect(recovering("failed")).toBeFalsy()
   })
 
   it("dates an L2-paid link at its payment, which can land long after the ask", () => {
@@ -330,6 +256,20 @@ describe("selectFeed", () => {
     expect(tag).toMatchObject({ kind: "tagPurchase", ts: row.ts - 1, direction: "out" })
   })
 
+  // Activity adds up to the balance: the registration row reads what landed plus the tag's price.
+  it("gives a registration row the price its tag purchase row takes back off", () => {
+    const record = deposit({ registrationFee: (3n * E18).toString() } as never)
+    const registrations = {
+      records: [{ sipaAddress: record.sipaAddress, tag: "ada", phase: "confirmed" } as never],
+    }
+    const items = (d: SipaDeposit) => feedOf({ deposits: [d] }, { registrations }).items
+    const [row, tag] = items(record)
+    expect(tag).toMatchObject({ kind: "tagPurchase", price: (5n * E18) / 2n })
+    expect(row).toMatchObject({ kind: "deposit", tagPrice: (5n * E18) / 2n })
+    // No purchase row until the deposit is claimed, so nothing to add back.
+    expect(items({ ...record, phase: "pendingClaim" })[0]).not.toHaveProperty("tagPrice")
+  })
+
   it("keeps the registration row unless a burn from this wallet paid it", () => {
     const registration = { sipaAddress: addr("0b"), ts: NOW }
     expect(kinds(feedOf({}, { registration }).items)).toEqual(["registration:registration-deposit"])
@@ -338,76 +278,6 @@ describe("selectFeed", () => {
       { registration },
     )
     expect(paid.items.some((i) => i.kind === "registration")).toBe(false)
-  })
-
-  it("files a SIPA the account pays itself as a migration arrival", () => {
-    const [item] = feedOf({ deposits: [deposit({ intent: "user-op" })] }).items
-    expect(item).toMatchObject({ kind: "deposit", intent: "migration" })
-  })
-
-  it("splits another token an address credited into a row of its own, with no tag purchase", () => {
-    const record = deposit({
-      tokenAddress: addr("a1"),
-      registrationFee: (3n * E18).toString(),
-      sweeps: [
-        { tokenAddress: addr("b2"), netAmount: "4000000", tokenDecimals: 6, inboxIndex: "7" },
-      ],
-    } as never)
-    const feed = feedOf(
-      { deposits: [record] },
-      {
-        registrations: {
-          records: [{ sipaAddress: record.sipaAddress, tag: "ada", phase: "confirmed" } as never],
-        },
-      },
-    )
-    const ids = kinds(feed.items)
-    expect(ids).toContain(`deposit:${record.sipaAddress}:${addr("b2")}`)
-    expect(ids.filter((id) => id.startsWith("tagPurchase:"))).toHaveLength(1)
-    const credit = feed.items.find((i) => i.id.endsWith(addr("b2")))
-    expect(credit).toMatchObject({ credit: addr("b2"), record: { phase: "claimed" } })
-  })
-
-  it("opens each credited token's row on that token's detail, and keeps it when its token turns latest", () => {
-    const DAI = addr("da")
-    const SUSDS = addr("5d")
-    const sweep = (inboxIndex: string, tokenAddress: string, tokenSymbol: string, net: bigint) => ({
-      inboxIndex,
-      sweepTxHash: `0x${inboxIndex.repeat(64)}`,
-      netAmount: net.toString(),
-      tokenAddress,
-      tokenSymbol,
-      tokenDecimals: 18,
-    })
-    const twice = deposit({
-      tokenAddress: SUSDS,
-      tokenSymbol: "sUSDS",
-      tokenDecimals: 18,
-      amount: "2",
-      netAmount: (2n * E18).toString(),
-      inboxIndex: "8",
-      sweeps: [sweep("7", DAI, "DAI", 5n * E18), sweep("8", SUSDS, "sUSDS", 2n * E18)],
-    } as never)
-    const feed = feedOf({ deposits: [twice] })
-    const rows = feed.items.flatMap((i) => (i.kind === "deposit" ? [i] : []))
-    const opened = rows.map((row) => depositDetailItem(feed.bridge, depositDetailId(row))?.record)
-    expect(opened.map((r) => [r?.tokenSymbol, r?.amount]).sort()).toEqual([
-      ["DAI", "5"],
-      ["sUSDS", "2"],
-    ])
-
-    const daiId = depositDetailId(rows.find((r) => r.credit)!)
-    const later = deposit({
-      ...twice,
-      tokenAddress: DAI,
-      tokenSymbol: "DAI",
-      amount: "3",
-      netAmount: (3n * E18).toString(),
-      inboxIndex: "9",
-      sweeps: [...(twice.sweeps ?? []), sweep("9", DAI, "DAI", 3n * E18)],
-    } as never)
-    const reopened = depositDetailItem(feedOf({ deposits: [later] }).bridge, daiId)?.record
-    expect([reopened?.tokenSymbol, reopened?.amount]).toEqual(["DAI", "3"])
   })
 
   it("lists an upgrade's direct deposits as its run once this device's runs are read", () => {
@@ -420,27 +290,26 @@ describe("selectFeed", () => {
   })
 
   it("retires a link made on another rollup: nothing here shares or recovers it", () => {
-    const link = tx({
-      action: "Pay To Email",
-      emailPaymentAction: "Pay To Email",
+    const made = link({
       txHash: "0xp",
       paylink: "https://l/#x",
       untilClaimable: NOW / 1000 + 60,
       networkId: "0xold",
-    } as never)
+    })
     const view = (activeNetworkId: string) =>
-      (feedOf({ rows: [link] }, { activeNetworkId }).items[0] as Extract<FeedItem, { kind: "tx" }>)
-        .link
+      (
+        feedOf({ links: [made] }, { activeNetworkId }).items[0] as Extract<
+          FeedItem,
+          { kind: "link" }
+        >
+      ).view
     expect(view("0xold")?.canShare).toBe(true)
     expect(view("0xnew")?.canShare).toBe(false)
   })
 
   it("offers a link's recovery only to the account that made it", () => {
     const nowSec = NOW / 1000
-    const link = tx({
-      action: "Pay To Email",
-      emailPaymentAction: "Pay To Email",
-      flavor: "direct",
+    const made = link({
       txHash: "0xp",
       paylink: "https://l/#x",
       fallbackSecret: "0xf",
@@ -448,12 +317,12 @@ describe("selectFeed", () => {
       fromClaimable: 0,
       untilClaimable: nowSec + 86_400,
       refundableUntil: nowSec + 3_600,
-    } as never)
+    })
     const offer = (account: string) =>
       (
-        feedOf({ rows: [link] }, { chainNowSec: nowSec, account }).items[0] as Extract<
+        feedOf({ links: [made] }, { chainNowSec: nowSec, account }).items[0] as Extract<
           FeedItem,
-          { kind: "tx" }
+          { kind: "link" }
         >
       ).creatorAction
     expect(offer("0xONE")).toBe("cancel")
@@ -480,6 +349,163 @@ describe("selectFeed", () => {
     expect(feedOf({ oldVersionWithdrawals: [run("done")] }).items[0].pending).toBe(false)
   })
 
+  describe("bridge-ins", () => {
+    const bridged = (status: BridgeInRecord["status"]): BridgeInRecord => ({
+      id: `bridge-in:0x${"b1".repeat(32)}`,
+      originTxHash: `0x${"b1".repeat(32)}`,
+      originChainId: 8453,
+      depositor: addr("a1"),
+      recipient: addr("D1"),
+      symbol: "USDC",
+      inputAmount: "20500000",
+      outputAmount: (20n * E18).toString(),
+      fee: "500000",
+      inputDecimals: 6,
+      outputSymbol: "DAI",
+      outputDecimals: 18,
+      status,
+      startTime: NOW - HOUR,
+    })
+    const unfunded = deposit({ phase: "broadcast", amount: "0", netAmount: undefined })
+
+    it("lists a bridge-in while it bridges, and once it comes back", () => {
+      const [pending] = feedOf({ bridgeIns: [bridged("pending")] }).items
+      expect(pending).toMatchObject({
+        kind: "bridgeIn",
+        id: `bridge-in:0x${"b1".repeat(32)}`,
+        direction: "in",
+        pending: true,
+      })
+      for (const status of ["refunded", "expired"] as const)
+        expect(feedOf({ bridgeIns: [bridged(status)] }).items).toMatchObject([
+          { kind: "bridgeIn", pending: false },
+        ])
+    })
+
+    it("hands a bridge-in to its deposit's row only once the deposit is funded", () => {
+      for (const status of ["pending", "filled"] as const) {
+        const record = bridged(status)
+        const row = `bridgeIn:bridge-in:0x${"b1".repeat(32)}`
+        // No deposit record yet, or one that has not seen the funds: the bridge-in stands for it.
+        expect(kinds(feedOf({ bridgeIns: [record] }).items)).toEqual([row])
+        expect(kinds(feedOf({ bridgeIns: [record], deposits: [unfunded] }).items)).toEqual([row])
+        expect(kinds(feedOf({ bridgeIns: [record], deposits: [deposit()] }).items)).toEqual([
+          `deposit:${addr("d1")}`,
+        ])
+      }
+    })
+
+    it("names the bridge-in on the funded deposit it paid, once, on one row", () => {
+      // Funds can reach the address before the provider reports the fill.
+      for (const status of ["pending", "filled"] as const) {
+        // The recipient is matched without case.
+        const record = { ...bridged(status), recipient: addr("d1").toUpperCase() as Hex }
+        const { items } = feedOf({ bridgeIns: [record], deposits: [deposit()] })
+        expect(items).toHaveLength(1)
+        expect(items[0]).toMatchObject({ kind: "deposit", bridgeIn: record })
+      }
+    })
+
+    it("names no bridge-in on a deposit another address or a returned bridge-in paid", () => {
+      const other = { ...bridged("filled"), recipient: addr("e9") }
+      const withOther = feedOf({ bridgeIns: [other], deposits: [deposit()] }).items
+      expect(withOther.find((i) => i.kind === "deposit")).not.toHaveProperty("bridgeIn")
+      for (const status of ["refunded", "expired"] as const) {
+        const items = feedOf({ bridgeIns: [bridged(status)], deposits: [deposit()] }).items
+        expect(items.find((i) => i.kind === "deposit")).not.toHaveProperty("bridgeIn")
+        expect(kinds(items)).toContain(`bridgeIn:bridge-in:0x${"b1".repeat(32)}`)
+      }
+    })
+
+    it("lists a sped-up bridge-in once, under its own id", async () => {
+      const store = createBridgeIns({ db: openDatabase(memoryBackend()), newId: () => "a" })
+      const { originTxHash, ...sent } = bridged("pending")
+      const { id } = await store.start({
+        ...sent,
+        quote: {
+          inputAmount: 20_500_000n,
+          maxInputAmount: 20_500_000n,
+          outputAmount: 20n * E18,
+          fee: 500_000n,
+          fillSeconds: 4,
+          txs: [{ chainId: 8453, to: addr("b5") as Hex, data: "0xb0b0" }],
+        },
+        nonceHint: 0,
+      })
+      expect(feedOf({ bridgeIns: [...store.list.get().records] }).items).toEqual([])
+      await store.markSent(id, originTxHash!)
+      await store.apply(id, [{ type: "sent", originTxHash: `0x${"5e".repeat(32)}` }])
+      expect(kinds(feedOf({ bridgeIns: [...store.list.get().records] }).items)).toEqual([
+        "bridgeIn:bridge-in:a",
+      ])
+    })
+
+    it("lists a bridge-in paying someone else as an outgoing payment, never on a deposit", () => {
+      const pays = { payee: "bob", requestId: "r1" }
+      for (const status of ["pending", "filled"] as const) {
+        const record = { ...bridged(status), pays }
+        const { items } = feedOf({ bridgeIns: [record], deposits: [deposit()] })
+        expect(items.find((i) => i.kind === "deposit")).not.toHaveProperty("bridgeIn")
+        expect(items.find((i) => i.kind === "bridgeIn")).toMatchObject({
+          direction: "out",
+          pending: status === "pending",
+          pays,
+        })
+      }
+    })
+
+    it("leaves out a bridge-in whose call was never sent", () => {
+      const { originTxHash: _, ...unsent } = bridged("signing")
+      expect(feedOf({ bridgeIns: [unsent, { ...unsent, status: "failed" }] }).items).toEqual([])
+    })
+
+    it("is not hydrated until the bridge-ins load", () => {
+      expect(feedOf({}).hydrated).toBe(true)
+      expect(feedOf({ bridgeInsHydrated: false }).hydrated).toBe(false)
+    })
+  })
+
+  describe("a deposit replayed onto this device", () => {
+    const FUNDING = `0x${"f1".repeat(32)}` as Hex
+    const replayed = (over: Partial<SipaDeposit> = {}) =>
+      deposit({ replayed: true, fundingTxHash: FUNDING, ...over })
+    const rebuilt: BridgeInRecord = {
+      id: "bridge-in:rebuilt",
+      originTxHash: `0x${"b1".repeat(32)}`,
+      originChainId: 56,
+      depositor: addr("a1"),
+      recipient: addr("d1"),
+      symbol: "USDT",
+      inputAmount: "20000000",
+      outputAmount: (20n * E18).toString(),
+      fee: "0",
+      inputDecimals: 18,
+      outputSymbol: "DAI",
+      outputDecimals: 18,
+      status: "filled",
+      startTime: NOW - 4 * HOUR,
+      replayed: true,
+    }
+    const row = [`deposit:${addr("d1")}`]
+
+    it("lists at once, whatever its funding is known to be", () => {
+      for (const over of [
+        { fundingTxHash: undefined },
+        {},
+        { funding: "transfer" as const },
+        { funding: "bridge" as const },
+      ])
+        expect(kinds(feedOf({ deposits: [replayed(over)] }).items)).toEqual(row)
+    })
+
+    it("gains its bridge-in once one is rebuilt", () => {
+      const bridged = replayed({ funding: "bridge" })
+      const { items } = feedOf({ deposits: [bridged], bridgeIns: [rebuilt] })
+      expect(kinds(items)).toEqual(row)
+      expect(items[0]).toMatchObject({ bridgeIn: rebuilt })
+    })
+  })
+
   it("leaves a deposit to a rotated wallet's previous account out of what Home counts as arriving", () => {
     const previous = `0x${"0d".repeat(32)}`
     const swept = deposit({ phase: "pendingClaim", recipientL2Address: previous })
@@ -487,6 +513,68 @@ describe("selectFeed", () => {
     expect(
       feedOf({ deposits: [swept] }, { previousAccount: `0x${"0D".repeat(32)}` }).arriving.main,
     ).toBe(0n)
+  })
+
+  it("lists a deposit to a rotated wallet's previous account only once it landed there", () => {
+    const previous = `0x${"0D".repeat(32)}`
+    const to = (phase: SIPADepositPhase, sipaAddress: string) =>
+      deposit({ phase, sipaAddress, recipientL2Address: previous.toLowerCase() })
+    const deposits = [
+      to("pendingClaim", addr("01")),
+      to("funded", addr("02")),
+      to("claimed", addr("03")),
+      to("recoverable", addr("04")),
+      deposit({ phase: "pendingClaim", sipaAddress: addr("05") }),
+    ]
+    const ids = (ctx?: Partial<FeedContext>) =>
+      feedOf({ deposits }, ctx)
+        .items.map((i) => i.id)
+        .sort()
+    expect(ids({ previousAccount: previous })).toEqual([addr("03"), addr("04"), addr("05")])
+    expect(ids()).toHaveLength(5)
+  })
+
+  it("lists a stuck deposit to a rotated wallet's previous account, with its exit", () => {
+    const stuck = deposit({
+      phase: "sweeping",
+      recipientL2Address: `0x${"0d".repeat(32)}`,
+      messageSecret: `0x${"01".repeat(32)}`,
+      recipientHash: `0x${"02".repeat(32)}`,
+      recoveryAddress: addr("b0"),
+    })
+    const [item] = feedOf({ deposits: [stuck] }, { previousAccount: `0x${"0D".repeat(32)}` }).items
+    expect(item).toMatchObject({ id: stuck.sipaAddress, offer: { reason: "stuck" } })
+  })
+
+  it("leaves out a transfer from a rotated wallet's previous account by its sender address alone", () => {
+    const previous = `0x${"0d".repeat(32)}`
+    const rows = [
+      tx({ action: "receive", txHash: "0xm", from: previous, senderL2Address: addr("0b") }),
+      tx({ action: "receive", txHash: "0xt", from: "ada", senderL2Address: previous }),
+      tx({ action: "receive", txHash: "0xo", from: "ada", senderL2Address: addr("0a") }),
+      tx({ action: "send", txHash: "0xs", to: previous }),
+    ]
+    const ids = (ctx?: Partial<FeedContext>) =>
+      feedOf({ rows }, ctx)
+        .items.map((i) => i.id)
+        .sort()
+    expect(ids({ previousAccount: `0x${"0D".repeat(32)}` })).toEqual(["0xm", "0xo", "0xs"])
+    expect(ids()).toEqual(["0xm", "0xo", "0xs", "0xt"])
+  })
+
+  it("leaves out the move a device filed as the previous account's send to this one", () => {
+    const previous = `0x${"0d".repeat(32)}`
+    const account = `0x${"0e".repeat(32)}`
+    const send = (txHash: string, recipientL2Address: string) =>
+      tx({ action: "send", txHash, senderL2Address: previous, recipientL2Address })
+    const rows = [send("0xmove", account.toUpperCase()), send("0xpaid", addr("0a"))]
+    const ids = (ctx?: Partial<FeedContext>) =>
+      feedOf({ rows }, ctx)
+        .items.map((i) => i.id)
+        .sort()
+    expect(ids({ previousAccount: previous, account })).toEqual(["0xpaid"])
+    expect(ids({ previousAccount: previous })).toEqual(["0xmove", "0xpaid"])
+    expect(ids({ account })).toEqual(["0xmove", "0xpaid"])
   })
 
   it("holds the skeleton while a chain scan rebuilds history", () => {
@@ -519,6 +607,28 @@ describe("selectors over the feed", () => {
       ["request:mine"],
       ["request:req"],
       3,
+    ])
+  })
+})
+
+describe("nonContactInbox", () => {
+  it("lists pending, unexpired requests from non-contacts, newest first", () => {
+    const requests = [
+      request({ id: "old", contactTag: "mina", createdAt: NOW - 3 * HOUR }),
+      request({ id: "new", contactTag: "mina", createdAt: NOW - HOUR }),
+      request({ id: "contact", contactTag: "ADA" }),
+      request({ id: "auto", contactTag: "bo" }),
+      request({ id: "mine", contactTag: "mina", direction: "outgoing" }),
+      request({ id: "paid", contactTag: "mina", status: "fulfilled" }),
+      request({ id: "expired", contactTag: "mina", expiresAt: NOW - 1 }),
+      request({ id: "open", contactTag: "mina", expiresAt: NOW + 1, createdAt: NOW - 4 * HOUR }),
+    ]
+    const contacts = [ada, { ...ada, id: "bo", tag: "bo", autoAdded: true }]
+    expect(nonContactInbox(requests, contacts, NOW).map((r) => r.id)).toEqual([
+      "new",
+      "auto",
+      "old",
+      "open",
     ])
   })
 })

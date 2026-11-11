@@ -1,6 +1,7 @@
 import { createLogger } from "@aztec-labs/foundation/log"
 import { createNode, ObsidionWallet, type ObsidionAccount } from "@obsidion/sdk"
-import { getConfig } from "../config/env"
+import type { WebWalletConfig } from "../config/env"
+import { barretenbergWasm } from "./barretenberg"
 import { SessionChangedError } from "./auth/sessionErrors"
 import type { WebAlphaAuthService } from "./auth/WebAlphaAuthService"
 import { createPxeStore } from "./storage/createPxeStore"
@@ -10,6 +11,7 @@ export interface SourceRollupWallet {
   account: ObsidionAccount
 }
 
+// eslint-disable-next-line no-restricted-syntax -- ZKM-1625
 const opened = new Map<string, Promise<SourceRollupWallet>>()
 
 /**
@@ -19,13 +21,15 @@ const opened = new Map<string, Promise<SourceRollupWallet>>()
  * its own store, as the active node's `nodeEndpointDigest` gives it one.
  */
 export async function openSourceRollupWallet(
+  config: WebWalletConfig,
   nodeUrl: string,
-  account: ObsidionAccount,
+  active: SourceRollupWallet,
   auth: SessionKeys,
 ): Promise<SourceRollupWallet> {
+  const { account } = active
   let source = opened.get(nodeUrl)
   if (!source) {
-    source = open(nodeUrl, account, auth)
+    source = open(config, nodeUrl, active, auth)
     opened.set(nodeUrl, source)
     source.catch(() => opened.delete(nodeUrl))
   }
@@ -63,12 +67,12 @@ async function signedAs(
 }
 
 async function open(
+  { proverEnabled, sourceRollupApiKey, sourceNodeEndpointDigest }: WebWalletConfig,
   nodeUrl: string,
-  account: ObsidionAccount,
+  { account, wallet: active }: SourceRollupWallet,
   auth: SessionKeys,
 ): Promise<SourceRollupWallet> {
   const { secretKey, authProvider } = await sessionPair(account, auth)
-  const { proverEnabled, sourceRollupApiKey, sourceNodeEndpointDigest } = getConfig()
   const node = createNode(nodeUrl, sourceRollupApiKey)
   const { rollupAddress } = await node.getL1ContractAddresses()
   const store = await createPxeStore(rollupAddress.toString(), sourceNodeEndpointDigest)
@@ -76,7 +80,8 @@ async function open(
     const wallet = await ObsidionWallet.create(
       node,
       { proverEnabled },
-      { loggers: { pxe: createLogger("pxe:source") }, store },
+      { loggers: { pxe: createLogger("pxe:source") }, proverOrOptions: barretenbergWasm(), store },
+      { contractService: () => active.contractService },
     )
     return {
       wallet,

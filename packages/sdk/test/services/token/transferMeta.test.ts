@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { Fr } from "@aztec-labs/aztec.js/fields"
-import { TRANSFER_META_LEN, emptyTransferMeta } from "@obsidion/core/constants"
+import { MAX_TAG_LENGTH, TRANSFER_META_LEN, emptyTransferMeta } from "@obsidion/core/constants"
 import {
   buildTransferMeta,
   buildTransferMetaForSend,
@@ -79,7 +79,7 @@ describe("transferMeta", () => {
     }
   })
 
-  it("clamps the memo to 111 bytes at a codepoint boundary regardless of other entries", () => {
+  it("clamps the memo to 113 bytes at a codepoint boundary regardless of other entries", () => {
     const max = "m".repeat(TRANSFER_MEMO_MAX_BYTES)
     expect(decodeTransferMeta(buildTransferMeta({ memo: max + "overflow" })).memo).toBe(max)
     // A 3-byte codepoint straddling the cut is dropped whole.
@@ -90,14 +90,14 @@ describe("transferMeta", () => {
     // Two max tags + reference + max memo fills the buffer with the terminator intact.
     const packed = buildTransferMeta({
       requestId: Fr.random().toString(),
-      senderTag: "t".repeat(32),
-      recipientTag: "r".repeat(32),
+      senderTag: "t".repeat(MAX_TAG_LENGTH),
+      recipientTag: "r".repeat(MAX_TAG_LENGTH),
       memo: max,
     })
     expect(decodeTransferMeta(packed)).toMatchObject({
       memo: max,
-      senderTag: "t".repeat(32),
-      recipientTag: "r".repeat(32),
+      senderTag: "t".repeat(MAX_TAG_LENGTH),
+      recipientTag: "r".repeat(MAX_TAG_LENGTH),
     })
   })
 
@@ -166,7 +166,11 @@ describe("transferMeta", () => {
     const requestId = Fr.random().toString()
     expect(
       decodeTransferMeta(
-        buildTransferMetaForSend({ requestId, senderTag: "t".repeat(33), memo: "still pay" }),
+        buildTransferMetaForSend({
+          requestId,
+          senderTag: "t".repeat(MAX_TAG_LENGTH + 1),
+          memo: "still pay",
+        }),
       ),
     ).toEqual({ requestId: requestId.toLowerCase(), memo: "still pay" })
     expect(
@@ -183,7 +187,7 @@ describe("transferMeta", () => {
   })
 
   it("strict builder throws on an oversize tag; a charset-invalid tag encodes and drops on decode", () => {
-    expect(() => buildTransferMeta({ senderTag: "t".repeat(33) })).toThrow()
+    expect(() => buildTransferMeta({ senderTag: "t".repeat(MAX_TAG_LENGTH + 1) })).toThrow()
     expect(
       decodeTransferMeta(buildTransferMeta({ senderTag: "Bad Tag" })).senderTag,
     ).toBeUndefined()
@@ -216,7 +220,7 @@ describe("transferMeta", () => {
       for (const tag of [out.senderTag, out.recipientTag]) {
         if (tag === undefined) continue
         expect(tag).toMatch(/^[a-z0-9_-]+$/)
-        expect(tag.length).toBeLessThanOrEqual(32)
+        expect(tag.length).toBeLessThanOrEqual(MAX_TAG_LENGTH)
       }
       if (out.requestId !== undefined) expect(out.requestId).toMatch(/^0x[0-9a-f]{64}$/)
       if (out.memo !== undefined) expect(out.memo.length).toBeGreaterThan(0)
@@ -234,7 +238,7 @@ describe("paylink payout lane (claim payout Transfer.meta)", () => {
   it("round-trips beside a full tag and a full memo", () => {
     const input = {
       memo: "m".repeat(TRANSFER_MEMO_MAX_BYTES),
-      senderTag: "t".repeat(32),
+      senderTag: "t".repeat(MAX_TAG_LENGTH),
       paylinkPayout: { flavor: "email" as const, secret, fallbackKeyHash },
     }
     expect(decodeTransferMeta(buildTransferMetaForSend(input))).toEqual(input)
@@ -269,12 +273,12 @@ describe("paylink created lane (funding Transfer.meta)", () => {
     const email = "e".repeat(64)
     const meta = buildTransferMetaForSend({
       memo: "m".repeat(PAYLINK_MEMO_MAX_BYTES),
-      senderTag: "t".repeat(32),
+      senderTag: "t".repeat(MAX_TAG_LENGTH),
       paylinkCreated: { flavor: "email", day, secret, fallbackKeyHash, email },
     })
     expect(decodeTransferMeta(meta)).toEqual({
       memo: "m".repeat(PAYLINK_MEMO_MAX_BYTES),
-      senderTag: "t".repeat(32),
+      senderTag: "t".repeat(MAX_TAG_LENGTH),
       paylinkCreated: { flavor: "email", day, secret, fallbackKeyHash, email },
     })
   })

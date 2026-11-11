@@ -11,9 +11,8 @@ import {
   type WithdrawalRecord,
 } from "@obsidion/front-core"
 import { GradientText, Icon, PrimaryGradientButton, type StatusBadgeStyle } from "@obsidion/web-ds"
-import { getConfig } from "../../config/env"
 import { l2TxUrl } from "../../lib/explorer"
-import { l1AddressUrl, l1TxUrl, whenLabel } from "../../ui/detailRows"
+import { l1Links, whenLabel } from "../../ui/detailRows"
 import { rowTimestamp, tokenAmount, usdAtomic, usdAtomicFloor } from "../../ui/format"
 import { Modal } from "../../ui/Modal"
 import { DepositFact } from "../../ui/screens/DepositFact"
@@ -28,6 +27,7 @@ import {
   savingsMoveStatus,
 } from "./SavingsMoveRow"
 import { savingsEtaCopy } from "./savingsMoveTiming"
+import { useSession } from "../../session/session"
 import { withdrawalFailureText } from "../withdraw/withdrawalFailure"
 
 /** The sheet's status: the row's one state, or the done state once the deposit is claimed. */
@@ -98,7 +98,8 @@ export function SavingsMoveDetailModal({
   onWithdraw?: () => void
   onClose: () => void
 }) {
-  const config = getConfig()
+  const { config } = useSession().page
+  const { l1TxUrl, l1AddressUrl } = l1Links(config)
   const into = move.direction === "in"
   const from = into ? "Main Account" : "Savings"
   const to = into ? "Savings" : "Main Account"

@@ -1,39 +1,40 @@
 import { useCallback, useEffect, useRef, useState } from "react"
-import { useNavigate } from "react-router-dom"
-import { formatUnits } from "viem"
+import { useLocation, useNavigate } from "react-router-dom"
+import { formatUnits, type Address } from "viem"
 import {
-  broadcastJobs,
-  isUnfundedSipaDeposit,
+  bestEffort,
+  depositsOffered,
   maximumCreditAtomic,
   maximumSendAtomic,
   maximumSendForCapacity,
+  selectSipaDeposit,
+  sipaSweepsReceived,
+  unresolvedSendState,
   useStore,
   type AddressRoute,
+  type SIPADepositPhase,
   type SipaDeposit,
-  useContractServiceContext,
-  useResource,
+  serviceStatus,
 } from "@obsidion/front-core"
 import type { SipaIntentName } from "@obsidion/core/oxide"
-import { GradientText, Icon, PrimaryGradientButton, Spinner } from "@obsidion/web-ds"
-import paylinkCoins from "../../../assets/home/paylink-coins.webp"
-import { getConfig } from "../../../config/env"
-import { useUserFlowActive } from "../../provingGate"
-import { showReportableError } from "../../../errors/errorModal"
-import { errorCopy, errorMessage } from "../../../errors/catalog"
 import {
-  amountBucket,
-  failureCode,
-  fireEvent,
-  fireOnboardingEvent,
-  lapTimer,
-} from "../../../lib/analytics"
+  ContactRow,
+  GradientText,
+  Icon,
+  RowChevron,
+  PrimaryGradientButton,
+  Spinner,
+} from "@obsidion/web-ds"
+import paylinkCoins from "../../../assets/home/paylink-coins.webp"
+import { useUserFlowActive } from "../../operations/operations"
+import { errorCopy, errorMessage } from "../../../errors/catalog"
+import { amountBucket, failureCode, fireEvent, fireOnboardingEvent } from "../../../lib/analytics"
 import { useCopy } from "../../../ui/hooks"
-import { shortL1Addr, tokenFigure } from "../../../ui/format"
+import { shortL1Addr, tokenFigure, usdFigure } from "../../../ui/format"
 import {
   useRegistrationEscalated,
   useTagPresentationPending,
 } from "../../registration/webRegistration"
-import { RegistrationPendingError } from "../../registration/registrationRail"
 import { useOwedRegistration } from "../../registration/owedRegistration"
 import type { ChosenNameClaim } from "../../registration/chooseOwnName"
 import { useRegistrationDepositTarget } from "../../registration/registrationDepositTarget"
@@ -48,10 +49,18 @@ import {
   useRegistrationTagConfirmed,
 } from "../../registration/openRegistration"
 import { buildErc20TransferUriWithoutAmount } from "../../requests/eip681"
-import { DepositFromWalletModal, type SentDeposit } from "../DepositFromWalletModal"
-import { DepositCoinModal, DepositTokensStatus } from "../DepositCoinModal"
+import { DepositFromWalletModal } from "../DepositFromWalletModal/DepositFromWalletModal"
+import {
+  DepositSentStatus,
+  depositArrivedFigure,
+  depositSentStatusSheet,
+} from "../DepositSentStatus/DepositSentStatus"
+import sentStatusCopy from "../DepositSentStatus/DepositSentStatus.copy"
+import { Modal } from "../../../ui/Modal"
+import { CornerButton } from "../../../ui/flow/CornerButton/CornerButton"
+import { DepositCoinModal, DepositTokensStatus } from "../DepositCoinModal/DepositCoinModal"
 import { isDemoMode } from "../../../dev/demoFlag"
-import { DepositDetailModal } from "../../../ui/screens/DepositDetailModal"
+import { DepositDetailModal } from "../../../ui/screens/DepositDetailModal/DepositDetailModal"
 import {
   depositCreditNote,
   loadDepositDisplayFacts,
@@ -65,57 +74,81 @@ import { sentDepositRecord } from "../sentDepositRecord"
 import { AddressLimitsDetail } from "../AddressLimits"
 import { ADDRESS_RECHECK_NOTE, swapCapacityNote } from "../../limits/limitsCopy"
 import { WalletAboutLimitsSheet } from "../../limits/AboutLimitsSheet"
-import { InfoButton } from "../../limits/InfoButton"
+import { InfoButton } from "../../../ui/InfoButton/InfoButton"
 import { formatPublicLimit, usdFigureGrouped } from "../../limits/publicLimit"
 import { sourceFromTarget } from "../../limits/capacitySources"
-import type { LimitsTopic } from "../../limits/aboutLimitsView"
 import { targetEligibility, useTargetCapacity } from "../targetCapacity"
 import { fundingCapacityView } from "../fundingCapacity"
-import { useL1Wallet } from "../../../session/l1Wallet"
+import { permittedAccount, pickAccount, savedInWallet } from "../../../session/l1Wallet"
+import { useL1Wallet } from "../../../session/useL1Wallet"
+import { ChangeWalletPicker, ConnectedTrailing } from "../ChangeWalletPicker/ChangeWalletPicker"
 import { useDepositWatch } from "../../sipa/useDepositWatch"
 import { isDesktopL1SubmitActive } from "../../../platform/desktopBridge"
 import { OneTimeAddressPoints, type OneTimeAddressPoint } from "../OneTimeAddressWarning"
+import { DepositPrivacyDisclaimer } from "../DepositPrivacyDisclaimer/DepositPrivacyDisclaimer"
+import { MethodOption } from "../../../ui/MethodOption/MethodOption"
+import { ChainIcon } from "../../../ui/ChainIcon/ChainIcon"
+import { IconStack } from "../../../ui/IconStack/IconStack"
+import { ChainStack } from "../../../ui/flow/ChainStack/ChainStack"
+import { BridgeInModal } from "../BridgeInModal/BridgeInModal"
+import { SwitchAccountModal } from "../SwitchAccountModal/SwitchAccountModal"
+import { bridgeRoutes } from "../bridgeChains"
+import { profileBridge } from "../../../session/walletChains"
 import {
-  DepositPrivacyDisclaimer,
-  isDepositPrivacyDisclaimerHidden,
-} from "../DepositPrivacyDisclaimer"
+  DepositFlow,
+  type DepositFlowNav,
+  type DepositOrigin,
+  type DepositFlowSheet,
+  type WalletKind,
+} from "../DepositFlow/DepositFlow"
+import { useSavedL1WalletList } from "../../../session/savedL1Wallets"
+import type { SavedL1Wallet } from "../../../session/savedL1Wallets"
+import { tokenName } from "../../token/tokenName"
+import { CoinIcon } from "../../../ui/CoinIcon/CoinIcon"
 import {
-  CoinIcon,
   DepositAddressSheet,
   LimitsRow,
   type DepositSheetPhase,
   type DepositSpottedProblem,
-} from "../DepositAddressSheet"
-import { CheckAgainPill } from "../WaitingBlock"
-import type { DepositStage } from "../sipaAddresses"
-import type { ShownAddress } from "../../sipa/depositTarget"
-import { AddressesPublishingError, addressesPublishing } from "../addressesPublishing"
+} from "../DepositAddressSheet/DepositAddressSheet"
+import { CheckAgainPill } from "../../../ui/CheckAgainPill/CheckAgainPill"
+import { AddressesPublishingError } from "../addressesPublishing"
+import { openDepositHandOutFlow } from "../depositHandOutFlow"
+import { openDepositScreenFlow, type DepositScreenInputs } from "./depositScreenFlow"
+import { depositScreenStart } from "./depositScreenTransition"
 import {
-  clearUnresolvedSend,
-  holdUnresolvedSend,
-  readUnresolvedSend,
-  UnresolvedSendHeldError,
-  type UnresolvedSendState,
-} from "../unresolvedSend"
+  selectDepositHold,
+  selectEntry,
+  selectEntrySheet,
+  selectSwitch,
+} from "../depositScreenView"
+import { useOpened, useScreenFlow } from "../../../ui/useScreenFlow"
 import { depositValuation } from "../depositValuation"
 import { useDepositArrivalMinutes } from "../depositArrival"
 import { useSession } from "../../../session/session"
-import { fmt } from "../../../lib/fmt"
+import { reloadPage } from "../../../platform/storage/walletStorage"
+import { fmt, fmtNodes } from "../../../lib/fmt"
 import depositCopy from "./DepositScreen.copy"
+import sendCopy from "../sendFromWallet.copy"
 import styles from "./DepositScreen.module.css"
+import type { DepositStart } from "../depositStart"
 
-/** Shown, unfunded addresses still publishing above which the screen waits instead of deriving. */
-const PUBLISHING_LIMIT = 2
-
-/** How long the sheet says "Address copied!" before it waits for the funds. */
-const COPIED_MS = 2_000
+/** A sent deposit in these phases shows its detail and its Recover action, not its status. */
+const SENT_ENDED: SIPADepositPhase[] = ["recoverable", "recovered"]
 
 /** The smallest deposit the relayer sweeps, as the limits drawer states it. */
 const MINIMUM_DEPOSIT = "$1"
 
-/** The coin row's subtitle. */
-const COIN_NAMES: Record<string, string> = { USDT: "Tether" }
-const coinName = (token: DepositTokenOption) => COIN_NAMES[token.symbol] ?? token.symbol
+const coinName = (token: DepositTokenOption) => tokenName(token.symbol)
+
+/** "USDC, USDT and DAI". */
+const listed = (symbols: string[]) =>
+  symbols.length < 2
+    ? symbols.join("")
+    : fmt(depositCopy.coinList.last, {
+        rest: symbols.slice(0, -1).join(depositCopy.coinList.separator),
+        last: symbols.at(-1)!,
+      })
 
 const DEPOSIT_INFO_POINTS: OneTimeAddressPoint[] = [
   {
@@ -131,6 +164,10 @@ const DEPOSIT_INFO_POINTS: OneTimeAddressPoint[] = [
     body: depositCopy.info.rotatesBody,
   },
 ]
+
+/** The coin the screen opens on: Main's settlement token when offered. */
+const defaultCoin = (tokens: DepositTokens) =>
+  tokens.offered.find((t) => t.address === tokens.settlement.address) ?? tokens.offered[0]!
 
 /** Map raw errors to something a user can act on (esp. the stale-identity resolve revert). */
 function friendlyError(e: unknown): string {
@@ -149,7 +186,12 @@ function friendlyError(e: unknown): string {
  * modal over Home instead of a page: the coin pick, then the same address sheet. An owed
  * registration's address takes the place of a fresh deposit address.
  */
-export function DepositScreen(props: { claimName: ChosenNameClaim; onClose?: () => void }) {
+export function DepositScreen(props: {
+  claimName: ChosenNameClaim
+  onClose?: () => void
+  /** Where the screen and its sheets open on their first showing. */
+  start?: DepositStart
+}) {
   const owed = useOwedRegistration() !== null
   // Unknown while the withdrawals load: the screen waits rather than offer a plain deposit.
   const open = useOpenRegistration()
@@ -184,14 +226,17 @@ function DepositScreenBody({
   onClose,
   tokens,
   intent,
+  start,
 }: {
   claimName: ChosenNameClaim
   onClose?: () => void
   tokens: DepositTokens
   intent: SipaIntentName
+  start?: DepositStart
 }) {
   const navigate = useNavigate()
-  const identity = useStore(useSession().identity).value
+  const session = useSession()
+  const identity = useStore(session.identity).value
   const handle = identity?.handle
   // The gate is effectful, not cosmetic: while the registration is unconfirmed, deriving and
   // publishing a deposit address for a name that may be lost must not happen at all.
@@ -206,6 +251,7 @@ function DepositScreenBody({
   // The registration's funds landed: Home carries its progress, so this screen does not turn into
   // a plain deposit (and its privacy disclaimer) under the user.
   const wasOwed = useRef(owed)
+  // eslint-disable-next-line local/effect-hook -- ZKM-1806
   useEffect(() => {
     if (owed) wasOwed.current = true
     else if (wasOwed.current) {
@@ -213,93 +259,121 @@ function DepositScreenBody({
       else navigate("/", { replace: true })
     }
   }, [owed, navigate, onClose])
-  const session = useSession()
-  const obsidionWallet = useResource(session.wallet)
-  const { contractService } = useContractServiceContext()
+  const walletBuilt = useStore(session.wallet, serviceStatus) === "ready"
+  const contracts = useStore(session.contractService, serviceStatus) === "ready"
   const { sipaAddresses } = session
-  const config = getConfig()
-  const { l1Chain, l1ChainId, l1RpcUrl, network, oxideProfile } = config
+  const { config } = session.page
+  const { l1Chain, l1ChainId, l1RpcUrl, oxideProfile } = config
   const manifestUrl = oxideProfile.manifestUrl
-  const chainName = l1ChainId === 1 ? "Ethereum Mainnet" : l1Chain.name
+  const chainName = l1Chain.name
+  const l1 = useL1Wallet({ expectedChainId: l1ChainId, rpcUrl: l1RpcUrl })
+  // Desktop launcher: no wallet extension, the transfer is approved in the default browser.
+  const bridgeMode = isDesktopL1SubmitActive()
+  // The default pick, when Main offers it: a pinned product row is never offered.
+  const [token, setToken] = useState<DepositTokenOption>(
+    () =>
+      (start?.origin?.chainId === l1ChainId &&
+        tokens.offered.find((c) => c.symbol === start.origin?.symbol)) ||
+      defaultCoin(tokens),
+  )
+  // `startDeposit` in router state opens the deposit flow at its first step.
+  const location = useLocation()
+  const startDeposit = !!(location.state as { startDeposit?: boolean } | null)?.startDeposit
+  const startKey = startDeposit && !onClose ? location.key : undefined
+  // Filled below once this render's callbacks exist: the flow reads it when the wallet changes.
+  const screenInputs = {} as DepositScreenInputs
+  const steps = useScreenFlow(screenInputs, (latest) =>
+    openDepositScreenFlow(
+      {
+        l1Wallet: session.page.l1Wallet,
+        // Over Home the flow opens at once; on the page a card opens it. A registration skips the
+        // privacy step.
+        initial: depositScreenStart(start, {
+          picking: !onClose ? "closed" : owed ? "coin" : "privacy",
+          symbol: token.symbol,
+          now: session.page.now(),
+        }),
+      },
+      latest,
+    ),
+  )
+  const screen = useStore(steps.state)
+  // The start holds for the first showing only: closing the flow ends it.
+  const opening = screen.start
+  const { sheet: openSheetKind, funded, balance, lastReadAt, readError } = screen
+  const sheetOpen = openSheetKind?.kind === "address"
+  const fundOpen = openSheetKind?.kind === "fund"
+  const bridging = openSheetKind?.kind === "bridge"
+  const sent = openSheetKind?.kind === "sent" ? openSheetKind.deposit : undefined
+  const { carried, holdError } = screen
+  const entry = selectEntry(screen, startKey)
+  const step = screen.awaiting ? "awaiting" : "address"
 
-  const [deposit, setDeposit] = useState<ShownAddress>()
   const target = useRegistrationDepositTarget(registration, handle, registrationAsk)
   // Read by callbacks the funding poll holds, so a new ask does not restart the poll.
   const targetRef = useRef(target)
   targetRef.current = target
+  const addresses = (walletBuilt && contracts && !claiming && sipaAddresses) || undefined
+  const account = identity?.address
+  const handOut = useScreenFlow({ handle, account, addresses, sheetOpen }, (latest) =>
+    openDepositHandOutFlow(latest, session.sipaDeposits.view, friendlyError),
+  )
+  const handedOut = useStore(handOut.state)
+  const { address: deposit, failed: resolveFailed } = handedOut
+  // A start that holds the address back as creating or capped.
+  const seededAddress = opening?.address
+  const generating =
+    !!handedOut.running || seededAddress === "creating" || seededAddress === "capped"
+  const capped = handedOut.capped || seededAddress === "capped"
   const shown = target ? target.address : deposit
-  const [generating, setGenerating] = useState(false)
-  const [resolveFailed, setResolveFailed] = useState(false)
-  const [capped, setCapped] = useState(false)
   const busy = useUserFlowActive()
-  const l1 = useL1Wallet({ expectedChainId: l1ChainId, rpcUrl: l1RpcUrl })
-  // Desktop launcher: no wallet extension, the transfer is approved in the default browser.
-  const bridgeMode = isDesktopL1SubmitActive()
   const canFund = bridgeMode || !!l1.account
-  const [sheetOpen, setSheetOpen] = useState(false)
   const [infoOpen, setInfoOpen] = useState(true)
-  // Copying hands the address over; the sheet then waits for the funds.
-  const [step, setStep] = useState<"address" | "awaiting">("address")
-  // The balance seen at the shown address; set once, no new address appears after it.
-  const [funded, setFunded] = useState<bigint>()
-  const [balance, setBalance] = useState(0n)
-  const [lastReadAt, setLastReadAt] = useState<number>()
-  const [readError, setReadError] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
-  const [fundOpen, setFundOpen] = useState(false)
-  const [aboutLimits, setAboutLimits] = useState<LimitsTopic>()
-  // A funding click made while disconnected, waiting on the wallet the picker is asking for.
-  const [fundOnConnect, setFundOnConnect] = useState(false)
+  const [aboutLimits, setAboutLimits] = useState(start?.aboutLimits)
+  const bridge = profileBridge(config)
+  const bridgeIn = useStore(session.page.bridgeInProvider, serviceStatus) === "ready"
+  const savedWallets = useSavedL1WalletList(Infinity).wallets
   // A desktop send may have been approved without a known hash: that address may still be funded, so
   // new funding waits until funds reach it or the user starts again.
-  const unresolvedScope = identity?.address ?? "unknown"
-  const [hold, setHold] = useState<UnresolvedSendState>(() =>
-    readUnresolvedSend(network, unresolvedScope),
-  )
-  const unresolved = hold.status === "held" ? hold.send : undefined
-  const [holdError, setHoldError] = useState(false)
-  const [discovered, setDiscovered] = useState<SipaDeposit>()
+  const holds = session.unresolvedSends
+  const saved = unresolvedSendState(useStore(holds.view))
   // After the wallet broadcasts a deposit the detail sheet tracks it: a client-side `funding` view
   // until event discovery creates the store record, then that record as it advances.
-  const [sent, setSent] = useState<SentDeposit>()
   const { records } = useStore(session.sipaDeposits.view)
+  // Funds reached the address the unresolved send was going to: its deposit shows, and closing it
+  // ends the hold. A close whose clear failed still closes; the saved hold reopens it on the next visit.
+  const { hold, unresolved, arrived: arrivedShown } = selectDepositHold(screen, saved, records)
+  // Nothing new is offered while the saved holds are still being read.
+  const offering = depositsOffered(hold)
   const stored = sent
     ? records.find((r) => r.sipaAddress.toLowerCase() === sent.address.toLowerCase())
     : undefined
-  // The user's explicit choice; the hold stays until the saved marker is really gone.
-  const startNewDeposit = useCallback(() => {
-    clearUnresolvedSend(network, unresolvedScope).then(
-      () => {
-        setHoldError(false)
-        setHold({ status: "none" })
-      },
-      () => setHoldError(true),
-    )
-  }, [network, unresolvedScope])
-  // Funds reached the address the unresolved send was going to: show that deposit. A published
-  // address already has an unfunded record from discovery, which proves nothing.
-  useEffect(() => {
-    if (!unresolved) return
-    const record = records.find(
-      (r) =>
-        r.sipaAddress.toLowerCase() === unresolved.address.toLowerCase() &&
-        !isUnfundedSipaDeposit(r),
-    )
-    if (!record) return
-    // The funded record ends the hold; a marker left behind ends the same way on the next mount.
-    clearUnresolvedSend(network, unresolvedScope).catch((err: unknown) =>
-      console.warn("[deposit] could not remove the unresolved send", err),
-    )
-    setHold({ status: "none" })
-    setDiscovered(record)
-  }, [unresolved, records, network, unresolvedScope])
-  const coins = tokens.offered
-  // The default pick, when Main offers it: a pinned product row is never offered.
-  const [token, setToken] = useState<DepositTokenOption>(
-    () => coins.find((t) => t.address === tokens.settlement.address) ?? coins[0]!,
+  const shownRecord = useStore(session.sipaDeposits.view, (set) =>
+    shown ? selectSipaDeposit(set, shown.address) : undefined,
   )
+  const addressRecord = shownRecord
+  // The spotted deposit is in the private funds once the rail has claimed its sweeps.
+  const landed =
+    addressRecord && sipaSweepsReceived(addressRecord)
+      ? depositArrivedFigure(addressRecord, tokens)
+      : undefined
+  // The user's explicit choice; the hold stays until the saved marker is really gone.
+  const clearHold = useCallback(
+    (only?: { address?: string }) =>
+      holds.apply({ type: "cleared", only }).then(
+        () => {
+          steps.holdError(false)
+          steps.held(undefined)
+        },
+        () => steps.holdError(true),
+      ),
+    [holds, steps],
+  )
+  const coins = tokens.offered
   const settlement = settlementOf(tokens, token)
-  const [disclaimer, setDisclaimer] = useState(() => !isDepositPrivacyDisclaimerHidden())
+  const flow = screen.picking
+  const closeFlow = () => (onClose ? onClose() : steps.pick("closed"))
   const [facts, setFacts] = useState<DepositDisplayFacts>()
   const [factsFailed, setFactsFailed] = useState(false)
   const [factsAttempt, setFactsAttempt] = useState(0)
@@ -315,11 +389,9 @@ function DepositScreenBody({
   const quoteLoading = fee == null && !factsFailed
   const reloadFacts = () => setFactsAttempt((n) => n + 1)
 
-  useEffect(() => {
-    fireEvent("deposit_sheet_opened", owed ? { registration: true } : undefined)
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- once per opening
-  }, [])
+  useOpened(() => fireEvent("deposit_sheet_opened", owed ? { registration: true } : undefined))
   const reportedOwed = useRef(false)
+  // eslint-disable-next-line local/effect-hook -- ZKM-1806
   useEffect(() => {
     if (!owed || reportedOwed.current) return
     reportedOwed.current = true
@@ -328,11 +400,12 @@ function DepositScreenBody({
 
   // The quote is the picked token's row for the screen's intent, read again on Retry and when the row, the intent or
   // the deployment changes.
+  // eslint-disable-next-line local/effect-hook -- ZKM-1806
   useEffect(() => {
     let stale = false
     setFacts(undefined)
     setFactsFailed(false)
-    void loadDepositDisplayFacts(token, intent)
+    void loadDepositDisplayFacts(session.page, token, intent)
       .then((next) => {
         if (!stale) setFacts(next)
       })
@@ -345,159 +418,79 @@ function DepositScreenBody({
     return () => {
       stale = true
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- the row it settles on keys the quote
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- ZKM-1806 the row it settles on keys the quote
   }, [factsAttempt, l1RpcUrl, l1ChainId, manifestUrl, token.settlesIn, intent])
 
   // A demo page's fixture address stands in for a derived one.
   const { demoDepositAddress } = session
+  const heldBack = seededAddress === "creating" || seededAddress === "capped"
+  // eslint-disable-next-line local/effect-hook -- ZKM-1806
   useEffect(() => {
-    if (!demoDepositAddress || claiming || deposit || !handle) return
-    setDeposit(demoDepositAddress(handle))
-  }, [demoDepositAddress, claiming, deposit, handle])
+    if (!demoDepositAddress || heldBack || claiming || deposit || !handle) return
+    handOut.show(demoDepositAddress(handle))
+  }, [demoDepositAddress, heldBack, claiming, deposit, handle, handOut])
 
-  // A resolve waiting for the account's keys ends when the screen does.
-  const screen = useRef<AbortController | null>(null)
-  useEffect(() => {
-    const life = (screen.current = new AbortController())
-    return () => life.abort()
-  }, [])
-  // One resolve at a time: a second would derive, and owe a proof for, an address nobody sees. The
-  // open reads the pool only (limit 0); the coin row may derive, after a pool read still in flight.
-  const resolving = useRef<{ limit: number; run: Promise<boolean> } | null>(null)
-  const resolveAddress = useCallback(
-    (limit: number = PUBLISHING_LIMIT): Promise<boolean> => {
-      if (!handle || !obsidionWallet || !contractService || !sipaAddresses || claiming)
-        return Promise.resolve(false)
-      if (resolving.current) {
-        const current = resolving.current
-        if (current.limit >= limit) return current.run
-        return current.run.then((ok) => (ok ? true : resolveAddress(limit)))
-      }
-      // The open's pool read fails quietly and stays out of the derive funnel; the coin row reports.
-      const quiet = limit === 0
-      setGenerating(true)
-      setResolveFailed(false)
-      setCapped(false)
-      const elapsed = lapTimer()
-      const stageLap = lapTimer()
-      let sawResolving = false
-      if (!quiet) fireEvent("address_resolve_started", { fresh: false })
-      const onStage = (next: DepositStage) => {
-        if (next === "resolving") sawResolving = true
-        fireEvent("deposit_resolve_stage", { stage: next, prev_stage_ms: stageLap() })
-      }
-      const signal = screen.current?.signal
-      const run = (async () => {
-        const next = await sipaAddresses.depositAddress(handle, {
-          onStage,
-          publishingLimit: limit,
-          signal,
-        })
-        if (!quiet)
-          fireEvent("address_resolve_succeeded", {
-            duration_ms: elapsed(),
-            cached: !sawResolving,
-            fresh: false,
-          })
-        const { publish, source } = next
-        setDeposit({ address: next.address, name: next.name, source, publishing: !!publish })
-        if (publish) {
-          const publishLap = lapTimer()
-          // The ledger keeps it owed whatever this reports; the status row shows where it stands.
-          void publish().then(
-            () => {
-              if (!quiet) fireEvent("address_published", { duration_ms: publishLap() })
-              setDeposit((d) => (d?.address === next.address ? { ...d, publishing: false } : d))
-            },
-            (e) => {
-              if (e instanceof RegistrationPendingError) {
-                fireEvent("address_publish_deferred", { reason: e.state.pending })
-              } else {
-                fireEvent("address_publish_failed", {
-                  duration_ms: publishLap(),
-                  code: failureCode(e),
-                })
-              }
-            },
-          )
-        }
-        return true
-      })()
-        .catch((e) => {
-          if (signal?.aborted) return false
-          if (e instanceof AddressesPublishingError) {
-            if (!quiet) setCapped(true)
-            return false
-          }
-          if (!quiet) {
-            fireEvent("address_resolve_failed", { duration_ms: elapsed(), code: failureCode(e) })
-            showReportableError(e, "deposit:resolve", { message: friendlyError(e) })
-            setResolveFailed(true)
-          }
-          return false
-        })
-        .finally(() => {
-          resolving.current = null
-          setGenerating(false)
-        })
-      resolving.current = { limit, run }
-      return run
-    },
-    [sipaAddresses, handle, obsidionWallet, contractService, claiming],
-  )
-
-  // The address appears on open: one nobody was shown from the pool, else a fresh derivation. While
+  // The address appears on open when the pool holds one nobody was shown; the coin row derives. While
   // a sent deposit's detail is open, the next address waits for the user to come back to the sheet.
+  const opens =
+    !target && !deposit && !capped && !resolveFailed && !busy && !sent && hold.status === "none"
+  // eslint-disable-next-line local/effect-hook -- ZKM-1806
   useEffect(() => {
-    if (target || claiming || deposit || capped || resolveFailed || busy || sent) return
-    if (hold.status !== "none" || !handle || !obsidionWallet || !contractService) return
-    void resolveAddress(0)
-  }, [
-    target,
-    claiming,
-    deposit,
-    capped,
-    resolveFailed,
-    busy,
-    sent,
-    hold.status,
-    handle,
-    obsidionWallet,
-    contractService,
-    resolveAddress,
-  ])
-
-  // Held by the limit until one of the counted addresses lands or is funded.
-  const stillPublishing = addressesPublishing(broadcastJobs(records))
-  useEffect(() => {
-    if (!capped || stillPublishing >= PUBLISHING_LIMIT) return
-    setCapped(false)
-    // The sheet is waiting on it: derive now.
-    if (sheetOpen) void resolveAddress()
-  }, [capped, stillPublishing, sheetOpen, resolveAddress])
+    if (opens) void handOut.handOut(0)
+  }, [opens, handle, addresses, handOut])
 
   /** Open the funding sheet. Funding needs the address the user is shown, so derive one first. */
   const beginFunding = useCallback(() => {
-    if (fee == null || (claiming && !target)) return
+    if (!offering || fee == null || (claiming && !target)) return
     // The sheet moves the wallet's money, so it opens only for an address whose broadcast landed.
-    if (shown) return void setFundOpen(true)
-    if (!generating) void resolveAddress().then((ok) => ok && setFundOpen(true))
-  }, [fee, shown, generating, resolveAddress, claiming, target])
+    if (shown) return steps.open({ kind: "fund" })
+    if (!generating) void handOut.handOut().then((ok) => ok && steps.open({ kind: "fund" }))
+  }, [offering, fee, shown, generating, handOut, claiming, target, steps])
 
-  // `l1.connect` only opens the wallet picker; the account lands renders later, so the click that
-  // asked to fund would otherwise stop at "Wallet connected" and need a second one. A picker that
-  // closes without a wallet takes the click with it, so a wallet connecting on its own later does
-  // not find it waiting. A successful pick cannot close the picker ahead of its account: wagmi
-  // stores the connection before RainbowKit reacts to it.
-  useEffect(() => {
-    if (!fundOnConnect) return
-    if (canFund) {
-      setFundOnConnect(false)
-      beginFunding()
-    } else if (!l1.pickerOpen) {
-      setFundOnConnect(false)
+  const switching = selectSwitch(screen, l1)
+  /** Fund or bridge in from the connected wallet; a saved one must be the account it has selected. */
+  const beginWallet = useCallback(
+    (kind: WalletKind, saved?: SavedL1Wallet) => {
+      if (kind === "fund" && bridgeMode) return beginFunding()
+      // The wallet as it is now: a held step carries on before the render that shows it.
+      const { account: connected, accounts } = session.page.l1Wallet.view.get()
+      if (!connected) {
+        steps.awaitConnect({ kind, saved })
+        return void l1.connect()
+      }
+      // The wallet is asked for a saved account it has not granted; this carries on once it does.
+      if (saved && !pickAccount({ ...l1, accounts }, saved.address))
+        return steps.awaitAccount({ kind, saved })
+      if (kind === "fund") beginFunding()
+      else steps.open({ kind: "bridge" })
+    },
+    [l1, bridgeMode, beginFunding, steps, session],
+  )
+  const beginBridge = useCallback(
+    (saved?: SavedL1Wallet) => beginWallet("bridge", saved),
+    [beginWallet],
+  )
+  /** Connects a new wallet, then opens the deposit modal to pick what it sends. */
+  const connectThenPick = () => {
+    if (bridgeMode) {
+      steps.entry({ intent: "wallet" })
+      return beginFunding()
     }
-  }, [fundOnConnect, canFund, l1.pickerOpen, beginFunding])
+    steps.awaitConnect({ kind: "pick" })
+    l1.connectAnother()
+  }
+  // `l1.connect` only opens the wallet picker; the account lands later, so the click that asked to
+  // fund would otherwise stop at "Wallet connected" and need a second one. A successful pick cannot
+  // close the picker ahead of its account: wagmi stores the connection before RainbowKit reacts.
+  const latestScreen: DepositScreenInputs = {
+    startKey,
+    clearStart: () => navigate(".", { replace: true, state: null }),
+    bridgeMode,
+    pickerShown: l1.pickerShown,
+    resume: (kind, saved) =>
+      kind === "pick" ? steps.entry({ intent: "wallet" }) : beginWallet(kind, saved),
+  }
+  Object.assign(screenInputs, latestScreen)
 
   // A target's sweep takes its own fee, not the plain deposit fee. Priced in the settlement token,
   // which a stablecoin matches one to one.
@@ -521,7 +514,7 @@ function DepositScreenBody({
   const maxSend = maximumSendAtomic(route, valuation)
   // The address on this screen is derived from the active deployment, so its bucket is the active one.
   const capacity = useTargetCapacity({ kind: "active", token: token.settlesIn })
-  const arrivalMinutes = useDepositArrivalMinutes(obsidionWallet?.node)
+  const arrivalMinutes = useDepositArrivalMinutes()
   const capacityEligibility = targetEligibility(capacity, { status: "unknown" })
   const capacityView = fundingCapacityView({
     eligibility: capacityEligibility,
@@ -561,69 +554,88 @@ function DepositScreenBody({
     : askLeft === undefined
     ? depositCopy.quotePending
     : formatDepositDue(askLeft, settlement.decimals).replace(/\.00$/, "")
-  const limitsDrawer = (
-    <>
-      <LimitsRow
-        label={depositCopy.limits.minimum}
-        value={depositMinimum}
-        info={
-          <InfoButton
-            label={depositCopy.limits.aboutLimit}
-            onClick={() => setAboutLimits("limit")}
-          />
-        }
-      />
-      <LimitsRow
-        label={depositCopy.limits.now}
-        value={
-          capacityKnown
-            ? fmt(depositCopy.limits.nowValue, { limit: limitNow })
-            : capacityEligibility.kind === "checking"
-            ? depositCopy.quotePending
-            : depositCopy.limits.unchecked
-        }
-        testId="deposit-limit-now"
-        info={
-          <InfoButton
-            label={depositCopy.limits.aboutCapacity}
-            testId="about-capacity-link"
-            onClick={() => setAboutLimits("capacity")}
-          />
-        }
-        action={
+  const minimumRow = (
+    <LimitsRow
+      label={depositCopy.limits.minimum}
+      value={depositMinimum}
+      testId="deposit-minimum"
+      info={
+        <InfoButton
+          label={depositCopy.limits.aboutLimit}
+          outline
+          onClick={() => setAboutLimits("limit")}
+        />
+      }
+    />
+  )
+  /** The address sheet re-reads the limit in place; the privacy step leaves it to About limits. */
+  const limitRow = (checkAgain: boolean) => (
+    <LimitsRow
+      label={depositCopy.limits.now}
+      value={
+        capacityKnown
+          ? fmt(depositCopy.limits.nowValue, { limit: limitNow })
+          : capacityEligibility.kind === "checking"
+          ? depositCopy.quotePending
+          : depositCopy.limits.unchecked
+      }
+      testId="deposit-limit-now"
+      info={
+        <InfoButton
+          label={depositCopy.limits.aboutCapacity}
+          testId="about-capacity-link"
+          outline
+          onClick={() => setAboutLimits("capacity")}
+        />
+      }
+      action={
+        checkAgain && (
           <CheckAgainPill
             checking={capacityEligibility.kind === "checking"}
             onClick={capacity.retry}
             testId="funding-capacity-retry"
           />
-        }
-      />
-      <LimitsRow
-        label={depositCopy.limits.fee}
-        value={
-          depositFee != null
-            ? tokenFigure(depositFee, settlement.symbol)
-            : quoteFailed
-            ? depositCopy.limits.unavailable
-            : depositCopy.quotePending
-        }
-        testId="deposit-fee"
-        info={
-          <InfoButton label={depositCopy.limits.aboutFee} onClick={() => setAboutLimits("limit")} />
-        }
-        action={
-          quoteFailed && (
-            <button
-              type="button"
-              className="zkm-btn-reset ww-deposit__link"
-              data-testid="deposit-facts-retry"
-              onClick={reloadFacts}
-            >
-              {depositCopy.limits.retry}
-            </button>
-          )
-        }
-      />
+        )
+      }
+    />
+  )
+  const feeRow = (
+    <LimitsRow
+      label={depositCopy.limits.fee}
+      value={
+        depositFee != null
+          ? usdFigure(depositFee)
+          : quoteFailed
+          ? depositCopy.limits.unavailable
+          : depositCopy.quotePending
+      }
+      testId="deposit-fee"
+      info={
+        <InfoButton
+          label={depositCopy.limits.aboutFee}
+          outline
+          onClick={() => setAboutLimits("limit")}
+        />
+      }
+      action={
+        quoteFailed && (
+          <button
+            type="button"
+            className="zkm-btn-reset ww-deposit__link"
+            data-testid="deposit-facts-retry"
+            onClick={reloadFacts}
+          >
+            {depositCopy.limits.retry}
+          </button>
+        )
+      }
+    />
+  )
+  const limitsDrawer = (
+    <>
+      {minimumRow}
+      {limitRow(true)}
+      {feeRow}
       <LimitsRow
         label={depositCopy.limits.arrival}
         value={
@@ -668,23 +680,19 @@ function DepositScreenBody({
     ),
   }
 
-  // Terminal: overlapping slow reads can both settle funded in the same tick.
-  const fundedSeen = useRef(false)
   const markFunded = useCallback(
     (next: bigint) => {
-      if (fundedSeen.current) return
-      fundedSeen.current = true
+      if (!steps.funded(next)) return
       const funded = targetRef.current
       fireEvent("deposit_funded", {
         funding: "external",
         amount_bucket: amountBucket(next, token.decimals),
         ...(funded?.kind === "registration" && { registration: true }),
       })
-      setFunded(next)
       // The scanner moves the record on; back on its per-tick lane, the row shows within a tick.
       if (funded) funded.onFunded(next, token.decimals)
     },
-    [token.decimals],
+    [token.decimals, steps],
   )
   // The ask is priced in the settlement token; any stablecoin funds it one to one, in its own units.
   const settledToToken = (settled: bigint) =>
@@ -699,15 +707,13 @@ function DepositScreenBody({
       : (target.floor * 10n ** BigInt(token.decimals) + unit - 1n) / unit
   const recordRead = useCallback(
     (next: bigint, at: number) => {
-      setReadError(false)
-      setBalance(next)
-      setLastReadAt(at)
+      steps.read(next, at)
       if (next === 0n) return
       const floor = floorRef.current
       if (targetRef.current && (floor === undefined || next < floor)) return
       markFunded(next)
     },
-    [markFunded],
+    [markFunded, steps],
   )
 
   // A third-party send leaves no local trace: the rail's record of the address is what moves the
@@ -725,6 +731,7 @@ function DepositScreenBody({
       : null,
   )
   const watchedBalance = settledToToken(watched.balance)
+  // eslint-disable-next-line local/effect-hook -- ZKM-1806
   useEffect(() => {
     if (watched.readAt !== undefined) recordRead(watchedBalance, watched.readAt)
   }, [watched.readAt, watchedBalance, recordRead])
@@ -736,7 +743,7 @@ function DepositScreenBody({
     watched
       .read()
       .catch((e) => {
-        setReadError(true)
+        steps.readFailed()
         console.warn("[deposit] balance read failed:", e)
       })
       .finally(() => setRefreshing(false))
@@ -744,6 +751,7 @@ function DepositScreenBody({
 
   // Once per address per mount, when the sheet shows it.
   const reportedShown = useRef(new Set<string>())
+  // eslint-disable-next-line local/effect-hook -- ZKM-1806
   useEffect(() => {
     if (!sheetOpen || !shown || reportedShown.current.has(shown.address)) return
     reportedShown.current.add(shown.address)
@@ -752,50 +760,31 @@ function DepositScreenBody({
   }, [sheetOpen, shown])
 
   // A sheet with nothing to show and nothing coming closes: the derivation failed or never started.
+  // eslint-disable-next-line local/effect-hook -- ZKM-1806
   useEffect(() => {
-    if (sheetOpen && !shown && !generating && !capped) setSheetOpen(false)
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs on sheet or address changes
+    if (sheetOpen && !shown && !generating && !capped) steps.shut("address")
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- ZKM-1806 runs on sheet or address changes
   }, [sheetOpen, shown, generating])
 
-  const waitTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
-  useEffect(() => () => clearTimeout(waitTimer.current), [])
   // Copying is the hand-off: after the copied feedback the sheet waits for the funds. A refused
   // clipboard copies nothing, so the sheet stays put.
   const copyAddress = () => {
     if (!shown) return
-    void copy(shown.address).then((ok) => {
-      if (!ok || step !== "address") return
-      clearTimeout(waitTimer.current)
-      waitTimer.current = setTimeout(() => setStep("awaiting"), COPIED_MS)
-    })
-  }
-  /** Back to the address: a copy's pending hand-off goes with it. */
-  const showAddress = () => {
-    clearTimeout(waitTimer.current)
-    setStep("address")
+    void copy(shown.address).then((ok) => ok && steps.copied())
   }
   /** A coin row: the sheet for that coin, deriving an address when none is held yet. */
   const openSheet = (next: DepositTokenOption) => {
-    setSheetOpen(true)
-    // Spotted funds belong to the coin they were read in.
+    if (!offering) return
+    // The picker sets the coin before the sheet opens, so `token` cannot tell the last one shown.
+    steps.coin(next.symbol)
     if (funded != null) return
-    // The same coin reopens where it was, waiting included; another coin starts at its address.
-    if (next.symbol !== token.symbol) {
-      showAddress()
-      setBalance(0n)
-      setLastReadAt(undefined)
-    }
     setToken(next)
-    if (shown) return
-    void resolveAddress()
+    if (!shown) void handOut.handOut()
   }
   /** The held address was spent or may be: the next sheet derives a fresh one. */
   const dropAddress = () => {
-    setDeposit(undefined)
-    setSheetOpen(false)
-    showAddress()
-    setBalance(0n)
-    setLastReadAt(undefined)
+    handOut.drop()
+    steps.dropAddress()
   }
   const phase: DepositSheetPhase =
     funded != null ? "spotted" : !shown ? "creating" : step === "awaiting" ? "waiting" : "ready"
@@ -835,6 +824,12 @@ function DepositScreenBody({
           token.symbol,
         )
       : undefined
+  const bridgeRecipient = async () =>
+    (shown?.address as Address | undefined) ??
+    ((await handOut.handOut()) ? (handOut.state.get().address?.address as Address) : undefined)
+  // The desktop launcher signs Ethereum sends only, through its helper page.
+  const canBridge = !!bridge && !!bridgeIn && !owed && !bridgeMode
+  const bridgeChains = canBridge && bridge ? bridge.chains : []
   const tagLabel = handle ? `@${handle}` : depositCopy.tagFallback
   const walletLabel = l1.account
     ? fmt(depositCopy.fromWallet, {
@@ -851,10 +846,10 @@ function DepositScreenBody({
         className="zkm-btn-reset ww-deposit__link"
         data-testid="deposit-connect-link"
         // An unconfirmed tag has no broadcast queued to sweep what arrives, so nothing may be sent yet.
-        disabled={fee == null || (claiming && !target) || (owed && !tagConfirmed)}
+        disabled={!offering || fee == null || (claiming && !target) || (owed && !tagConfirmed)}
         onClick={() => {
           if (!canFund) {
-            setFundOnConnect(true)
+            steps.awaitConnect({ kind: "fund" })
             return void l1.connect()
           }
           beginFunding()
@@ -908,7 +903,7 @@ function DepositScreenBody({
       <p className="ww-deposit__note">{fmt(depositCopy.claiming.note, { tag: tagLabel })}</p>
     </>
   )
-  const holdBlock = hold.status !== "none" && (
+  const holdBlock = (hold.status === "held" || hold.status === "unreadable") && (
     <div className="ww-deposit__unresolved" role="status" data-testid="deposit-send-unresolved">
       {unresolved ? (
         <>
@@ -929,11 +924,7 @@ function DepositScreenBody({
         <button
           type="button"
           className="zkm-btn-reset ww-deposit__link"
-          onClick={() =>
-            unresolved
-              ? navigate("/activity")
-              : setHold(readUnresolvedSend(network, unresolvedScope))
-          }
+          onClick={() => (unresolved ? navigate("/activity") : void reloadPage())}
         >
           {unresolved ? depositCopy.hold.viewActivity : depositCopy.hold.checkAgain}
         </button>
@@ -941,7 +932,7 @@ function DepositScreenBody({
           type="button"
           className="zkm-btn-reset ww-deposit__link"
           data-testid="deposit-send-unresolved-restart"
-          onClick={startNewDeposit}
+          onClick={() => void clearHold()}
         >
           {depositCopy.hold.restart}
         </button>
@@ -950,131 +941,159 @@ function DepositScreenBody({
   )
   const shownCoin = (!owed || tagConfirmed) && !claimingBlock && !holdBlock
 
-  const sheets = (
-    <>
-      {sheetOpen && (
-        <DepositAddressSheet
-          token={token}
-          chainName={chainName}
-          phase={phase}
-          address={shown?.address}
-          paymentUri={paymentUri}
-          publishing={!!shown?.publishing}
-          creatingNote={capped ? new AddressesPublishingError().message : undefined}
-          canCopy={ready}
-          copied={copied}
-          onCopy={copyAddress}
-          balance={balance}
-          lastReadAt={lastReadAt}
-          checking={refreshing}
-          onCheck={refresh}
-          funded={funded}
-          arriving={arriving}
-          swapInto={swap ? settlement.symbol : undefined}
-          limitNow={limitNow}
-          limits={limitsDrawer}
-          capacityNote={capacityNote}
-          arrivalMinutes={arrivalMinutes}
-          onPayWithWallet={() => {
-            setSheetOpen(false)
-            if (!canFund) {
-              setFundOnConnect(true)
-              return void l1.connect()
-            }
-            beginFunding()
-          }}
-          walletLabel={walletLabel}
-          readError={readError}
-          problem={spottedProblem}
-          limitLabel={formatPublicLimit()}
-          onOpenActivity={() => navigate("/activity")}
-          ask={owed && <RegistrationAskLine />}
-          onClose={() => {
-            setSheetOpen(false)
-            // Funds spotted: the deposit carries on in Activity, so the screen is done.
-            if (phase === "spotted") return onClose ? onClose() : navigate("/")
-            // A copy's pending hand-off is dropped; a sheet already waiting keeps waiting.
-            clearTimeout(waitTimer.current)
-            // Over Home there is no page behind the sheet.
-            onClose?.()
-          }}
-        />
-      )}
-
-      {fundOpen && shown && canFund && (
-        <DepositFromWalletModal
-          l1={l1}
-          deposit={shown}
-          token={token}
-          fee={depositFee}
-          target={target?.kind}
-          minimum={targetMinimum}
-          valuation={valuation}
-          onClose={() => setFundOpen(false)}
-          onSent={(next) => {
-            setFundOpen(false)
-            setSent(next)
-            // The address was spent; the next visit derives a fresh one.
-            dropAddress()
-            // A known hash replaces the hold; if the marker cannot be removed, the funded record ends it.
-            clearUnresolvedSend(network, unresolvedScope, { address: next.address }).catch(
-              (err: unknown) => console.warn("[deposit] could not remove the unresolved send", err),
-            )
-          }}
-          onSendFailed={() => setSent(undefined)}
-          onFeeChanged={reloadFacts}
-          onApproving={async (submission) => {
-            try {
-              await holdUnresolvedSend(network, unresolvedScope, {
-                address: shown.address,
-                at: Date.now(),
-                submission,
-              })
-            } catch (err) {
-              // A saved hold this screen is not showing: it waits on it too.
-              if (err instanceof UnresolvedSendHeldError) {
-                setHold(readUnresolvedSend(network, unresolvedScope))
+  /** In the deposit modal the sheet goes back to the step before it and closes the modal. */
+  type InFlow = {
+    onBack: () => void
+    onClose: () => void
+  }
+  const addressSheet = (flow?: InFlow) => (
+    <DepositAddressSheet
+      token={token}
+      chainId={l1ChainId}
+      chainName={chainName}
+      phase={phase}
+      address={shown?.address}
+      paymentUri={paymentUri}
+      publishing={!!shown?.publishing}
+      // eslint-disable-next-line local/message-in-state -- ZKM-1895
+      creatingNote={capped ? new AddressesPublishingError().message : undefined}
+      canCopy={ready}
+      copied={copied}
+      onCopy={copyAddress}
+      balance={balance}
+      lastReadAt={lastReadAt}
+      checking={refreshing}
+      onCheck={refresh}
+      funded={funded}
+      arriving={arriving}
+      swapInto={swap ? settlement : undefined}
+      limitNow={limitNow}
+      limits={limitsDrawer}
+      capacityNote={capacityNote}
+      arrivalMinutes={arrivalMinutes}
+      onPayWithWallet={
+        flow || canBridge
+          ? undefined
+          : () => {
+              steps.shut("address")
+              if (!canFund) {
+                steps.awaitConnect({ kind: "fund" })
+                return void l1.connect()
               }
-              throw err
+              beginFunding()
             }
-          }}
-          onNotApproved={(submission) =>
-            // Its hold can land after the refusal; nothing was sent, so it goes.
-            clearUnresolvedSend(network, unresolvedScope, { submission }).catch((err: unknown) =>
-              console.warn("[deposit] could not remove the unresolved send", err),
-            )
-          }
-          onSendUnresolved={() => {
-            // The marker was saved before the approval; this page holds even if it is gone now.
-            const saved = readUnresolvedSend(network, unresolvedScope)
-            setHold(
-              saved.status === "held"
-                ? saved
-                : { status: "held", send: { address: shown.address, at: Date.now() } },
-            )
-            setFundOpen(false)
-            // That address may already hold the transfer; it is never offered again.
-            dropAddress()
-          }}
-        />
-      )}
-      {discovered && (
-        <DepositDetailModal record={discovered} onClose={() => setDiscovered(undefined)} />
-      )}
+      }
+      walletLabel={walletLabel}
+      readError={readError}
+      problem={spottedProblem}
+      limitLabel={formatPublicLimit()}
+      arrived={landed}
+      onOpenActivity={() => navigate("/activity")}
+      ask={owed && <RegistrationAskLine />}
+      onBack={flow?.onBack}
+      onClose={() => {
+        // A copy's pending hand-off is dropped; a sheet already waiting keeps waiting.
+        steps.shut("address")
+        // Funds spotted: the deposit carries on in Activity, so the screen is done.
+        if (phase === "spotted") {
+          flow?.onClose()
+          return onClose ? onClose() : navigate("/")
+        }
+        if (flow) flow.onClose()
+        else closeFlow()
+      }}
+    />
+  )
 
-      {sentRecord && (
+  // The saved wallet the modal was opened from names the connected account it is.
+  const savedName =
+    entry?.saved && entry.saved.address.toLowerCase() === l1.account?.toLowerCase()
+      ? entry.saved.name
+      : undefined
+  const fundSheet = (flow?: InFlow & { onChange?: () => void; onChangeWallet?: () => void }) =>
+    fundOpen &&
+    shown && (
+      <DepositFromWalletModal
+        l1={l1}
+        walletLabel={savedName}
+        deposit={shown}
+        token={token}
+        fee={depositFee}
+        target={target?.kind}
+        minimum={targetMinimum}
+        valuation={valuation}
+        handle={handle}
+        minutes={arrivalMinutes}
+        carried={carried}
+        onCarry={steps.carry}
+        start={opening?.fund}
+        onChangeOrigin={flow?.onChange}
+        onChangeWallet={flow?.onChangeWallet}
+        onBack={flow?.onBack}
+        onClose={flow?.onClose ?? (() => steps.shut("fund"))}
+        onSent={(next) => {
+          steps.open({ kind: "sent", deposit: next })
+          // The address was spent; the next visit derives a fresh one.
+          dropAddress()
+          // A known hash replaces the hold; if it cannot be removed, the funded record ends it.
+          void bestEffort("unknown", clearHold({ address: next.address }))
+        }}
+        onSendFailed={() => steps.shut("sent")}
+        onFeeChanged={reloadFacts}
+        onApproving={(submission) =>
+          holds.apply({
+            type: "held",
+            send: { address: shown.address, at: Date.now(), submission },
+          })
+        }
+        onNotApproved={(submission) =>
+          // Its hold can land after the refusal; nothing was sent, so it goes.
+          void bestEffort("unknown", holds.apply({ type: "cleared", only: { submission } }))
+        }
+        onSendUnresolved={() => {
+          // The hold was saved before the approval; this page holds even if it is gone now.
+          steps.held({ id: "send", address: shown.address, at: Date.now() })
+          steps.shut("fund")
+          // That address may already hold the transfer; it is never offered again.
+          dropAddress()
+        }}
+      />
+    )
+  /** A sent deposit's status, or its detail once it needs recovery. */
+  const sentSheet = (record: SipaDeposit, onDone: () => void) =>
+    SENT_ENDED.includes(record.phase) ? (
+      <DepositDetailModal record={record} onClose={onDone} />
+    ) : (
+      <Modal
+        variant="bare"
+        label={sentStatusCopy.label}
+        className={`ww-deposit-warning ww-deposit-sheet ww-bridge-sheet ${depositSentStatusSheet}`}
+        onClose={onDone}
+      >
+        <div className="ww-deposit-warning__close">
+          <CornerButton kind="close" label={sendCopy.arrived.close} onClick={onDone} />
+        </div>
+        <DepositSentStatus
+          record={record}
+          tokens={tokens}
+          l1ChainId={l1ChainId}
+          l1ChainName={chainName}
+          minutes={arrivalMinutes}
+          onClose={onDone}
+        />
+      </Modal>
+    )
+  const otherSheets = (
+    <>
+      {arrivedShown && (
         <DepositDetailModal
-          record={sentRecord}
+          record={arrivedShown}
           onClose={() => {
-            setSent(undefined)
-            // A registration's deposit is in flight: asking for it again risks a second payment.
-            if (!target) return
-            if (onClose) onClose()
-            else navigate("/")
+            steps.arrivalClosed(arrivedShown.sipaAddress)
+            void clearHold({ address: arrivedShown.sipaAddress })
           }}
         />
       )}
-
       {aboutLimits && (
         <WalletAboutLimitsSheet
           topic={aboutLimits}
@@ -1086,57 +1105,400 @@ function DepositScreenBody({
       )}
     </>
   )
+  const sheets = (
+    <>
+      {sheetOpen && addressSheet()}
+      {fundSheet()}
+      {sentRecord &&
+        (target ? (
+          <DepositDetailModal
+            record={sentRecord}
+            onClose={() => {
+              steps.shut("sent")
+              // A registration's deposit is in flight: asking for it again risks a second payment.
+              if (onClose) onClose()
+              else navigate("/")
+            }}
+          />
+        ) : (
+          sentSheet(sentRecord, () => steps.shut("sent"))
+        ))}
+      {otherSheets}
+    </>
+  )
+
+  const symbols = listed(coins.map((coin) => coin.symbol))
+  const flowStep = !sheetOpen && !fundOpen && !sentRecord && !arrivedShown ? flow : "closed"
+  const bridgeSheet = (flow?: InFlow & { nav: DepositFlowNav }) =>
+    bridging &&
+    bridge &&
+    bridgeIn && (
+      <BridgeInModal
+        bridge={bridge}
+        depositMinutes={arrivalMinutes}
+        account={l1.account}
+        l1={l1}
+        walletName={l1.walletName ?? sendCopy.walletFallback}
+        walletLabel={savedName}
+        handle={handle}
+        l1ChainId={l1ChainId}
+        l1ChainName={chainName}
+        coins={coins}
+        carried={carried}
+        onCarry={steps.carry}
+        recipient={bridgeRecipient}
+        start={opening?.bridge}
+        onSent={dropAddress}
+        onRetry={() => {
+          steps.shut("bridge")
+          if (flow) flow.nav.restart()
+          else steps.pick("coin")
+        }}
+        origin={flow?.nav.origin}
+        onEthereum={() => {
+          steps.shut("bridge")
+          if (flow) flow.nav.restart()
+          else beginFunding()
+        }}
+        onChangeOrigin={flow?.nav.change}
+        onChangeWallet={flow?.nav.changeWallet}
+        onBack={flow?.onBack}
+        onClose={flow?.onClose ?? (() => steps.shut("bridge"))}
+      />
+    )
+  const switchSheet = (flow?: InFlow) =>
+    switching &&
+    l1.account && (
+      <SwitchAccountModal
+        walletName={l1.walletName ?? switching.saved.name ?? sendCopy.walletFallback}
+        saved={switching.saved.address}
+        connected={l1.account}
+        onUseConnected={() => {
+          steps.dropAccount()
+          if (switching.kind === "fund") beginFunding()
+          else steps.open({ kind: "bridge" })
+        }}
+        onBack={flow?.onBack}
+        onClose={flow?.onClose ?? (() => steps.dropAccount())}
+      />
+    )
+  const flowModals = (
+    <>
+      {bridgeSheet()}
+      {switchSheet()}
+      {flowStep === "privacy" && (
+        <DepositPrivacyDisclaimer
+          rows={
+            <>
+              {feeRow}
+              {minimumRow}
+              {limitRow(false)}
+            </>
+          }
+          onContinue={() => steps.pick("coin")}
+          onClose={closeFlow}
+        />
+      )}
+      {flowStep === "coin" && (
+        <DepositCoinModal
+          title={owed ? depositCopy.titleActivate : depositCopy.title}
+          subtitle={owed ? undefined : fmt(depositCopy.coinSubtitle, { chain: chainName })}
+          coins={coins}
+          coinName={coinName}
+          token={token}
+          onPick={setToken}
+          rows={
+            owed && (
+              <>
+                {feeRow}
+                {minimumRow}
+              </>
+            )
+          }
+          note={
+            !owed && (
+              <>
+                {fmt(depositCopy.coinNote.only, { symbols, chain: chainName })}
+                {canBridge && (
+                  <>
+                    {" "}
+                    {fmtNodes(depositCopy.coinNote.otherChain, {
+                      link: (
+                        <button
+                          type="button"
+                          className="zkm-btn-reset ww-deposit__link"
+                          onClick={() => {
+                            steps.pick("closed")
+                            beginBridge()
+                          }}
+                        >
+                          {depositCopy.coinNote.bridgeIn}
+                        </button>
+                      ),
+                    })}
+                  </>
+                )}
+              </>
+            )
+          }
+          footer={
+            canBridge && (
+              <button
+                type="button"
+                className="zkm-btn-reset ww-deposit__link"
+                data-testid="deposit-bridge-link"
+                onClick={() => {
+                  steps.pick("closed")
+                  beginBridge()
+                }}
+              >
+                {depositCopy.coinNote.bridgeInWallet}
+              </button>
+            )
+          }
+          status={claimingBlock || holdBlock || undefined}
+          canContinue={shownCoin && offering && !(busy && !shown)}
+          onContinue={() => openSheet(token)}
+          onClose={closeFlow}
+        />
+      )}
+    </>
+  )
 
   if (onClose)
     return (
       <>
-        {!sheetOpen && !fundOpen && !sentRecord && !discovered && (
-          <DepositCoinModal
-            title={owed ? depositCopy.titleActivate : depositCopy.title}
-            coins={coins}
-            coinName={coinName}
-            token={token}
-            onPick={setToken}
-            rows={
-              <>
-                <LimitsRow
-                  label={depositCopy.limits.fee}
-                  value={
-                    depositFee != null
-                      ? tokenFigure(depositFee, settlement.symbol)
-                      : quoteFailed
-                      ? depositCopy.limits.unavailable
-                      : depositCopy.quotePending
-                  }
-                  testId="deposit-fee"
-                  info={
-                    <InfoButton
-                      label={depositCopy.limits.aboutFee}
-                      onClick={() => setAboutLimits("limit")}
-                    />
-                  }
-                />
-                <LimitsRow
-                  label={depositCopy.limits.minimum}
-                  value={depositMinimum}
-                  testId="deposit-minimum"
-                  info={
-                    <InfoButton
-                      label={depositCopy.limits.aboutLimit}
-                      onClick={() => setAboutLimits("limit")}
-                    />
-                  }
-                />
-              </>
-            }
-            status={claimingBlock || holdBlock || undefined}
-            canContinue={shownCoin && !(busy && !shown)}
-            onContinue={() => openSheet(token)}
-            onClose={onClose}
-          />
-        )}
+        {flowModals}
         {sheets}
       </>
+    )
+
+  const closeEntry = steps.close
+  const closeSent = () => {
+    closeEntry()
+    // A registration's deposit is in flight: asking for it again risks a second payment.
+    if (target) navigate("/")
+  }
+  /** The sheet the deposit modal shows over its own steps, latest first. */
+  const entrySheet = (nav: DepositFlowNav): DepositFlowSheet | undefined => {
+    const inFlow = (onBack: () => void) => ({ onBack, onClose: closeEntry })
+    const onL1 = (next: DepositOrigin) => next.chainId === l1ChainId
+    const closeAddress = () => steps.shut("address")
+    const top = selectEntrySheet(screen, l1)
+    switch (top?.kind) {
+      case "sent":
+        return sentRecord && { key: "sent", node: sentSheet(sentRecord, closeSent) }
+      case "switch":
+        // Over the fund or bridge sheet it was asked from.
+        return { key: "switch", node: switchSheet(inFlow(steps.dropAccount)) }
+      case "fund": {
+        const node = fundSheet({
+          ...inFlow(() => steps.shut("fund")),
+          onChange: nav.change,
+          onChangeWallet: nav.changeWallet,
+        })
+        return node
+          ? {
+              key: "fund",
+              node,
+              // The flow already picked the L1 coin the sheet sends.
+              onOrigin: (next) => {
+                if (onL1(next)) return "kept"
+                // Another chain bridges in from the same wallet.
+                if (!l1.account || !bridge || !bridgeIn) {
+                  steps.shut("fund")
+                  return "closed"
+                }
+                steps.open({ kind: "bridge" })
+                return "kept"
+              },
+            }
+          : undefined
+      }
+      case "address":
+        return {
+          key: "address",
+          node: addressSheet(inFlow(closeAddress)),
+          onOrigin: (next) => {
+            const coin = onL1(next) && coins.find((c) => c.symbol === next.symbol)
+            if (coin) {
+              openSheet(coin)
+              return "kept"
+            }
+            closeAddress()
+            return "closed"
+          },
+        }
+      case "bridge": {
+        const node = bridgeSheet({ ...inFlow(() => steps.shut("bridge")), nav })
+        return node
+          ? {
+              key: "bridge",
+              node,
+              // The sheet follows a bridged origin itself.
+              onOrigin: (next) => {
+                if (!onL1(next)) return "kept"
+                // Ethereum sends from the same wallet to the address already made for it.
+                if (!offering || !shown || fee == null || (claiming && !target)) {
+                  steps.shut("bridge")
+                  return "closed"
+                }
+                steps.open({ kind: "fund" })
+                return "kept"
+              },
+            }
+          : undefined
+      }
+    }
+    return undefined
+  }
+
+  const isConnected = (address: string) => address.toLowerCase() === l1.account?.toLowerCase()
+
+  if (!owed)
+    return (
+      <div className="ww-move-landing">
+        <h1>{depositCopy.landing.title}</h1>
+        {claimingBlock || holdBlock || (
+          <section className="ww-move-landing__wallets">
+            <div className="ww-move-landing__intro">
+              <div className="ww-method-banners">
+                {bridgeChains.length > 0 && (
+                  <MethodOption
+                    glow="blue"
+                    title={depositCopy.landing.bridgeTitle}
+                    body={depositCopy.landing.bridgeBody}
+                    testId="deposit-bridge-in"
+                    onOpen={() => steps.entry({ intent: "bridge" })}
+                  >
+                    <span className="ww-deposit-banner__icons">
+                      <ChainStack
+                        chains={[{ chainId: l1ChainId, name: chainName }, ...bridgeChains]}
+                        size={26}
+                        label={fmt(depositCopy.landing.networks, {
+                          count: bridgeChains.length + 1,
+                        })}
+                      />
+                    </span>
+                  </MethodOption>
+                )}
+                <MethodOption
+                  glow="purple"
+                  title={depositCopy.landing.addressTitle}
+                  body={fmt(depositCopy.landing.addressBody, { chain: chainName })}
+                  testId="deposit-show-address"
+                  onOpen={() => steps.entry({ intent: "address" })}
+                >
+                  <span className="ww-deposit-banner__icons">
+                    <IconStack>
+                      <ChainIcon chainId={l1ChainId} name={chainName} size={26} />
+                    </IconStack>
+                    {depositCopy.landing.moreSoon}
+                  </span>
+                </MethodOption>
+              </div>
+            </div>
+            <span className="ww-move-landing__wallets-head">
+              {depositCopy.landing.savedWallets}
+            </span>
+            <button
+              type="button"
+              className="zkm-btn-reset zkm-pressable ww-move-landing__new ww-move-landing__new--wallet"
+              data-testid="deposit-new-address"
+              onClick={connectThenPick}
+            >
+              <span className="ww-move-landing__plus">
+                <Icon name="wallet" size={20} color="#fff" />
+              </span>
+              <span>
+                <b>{depositCopy.landing.connect}</b>
+                {!bridgeMode && <small>{depositCopy.landing.bridgeFrom}</small>}
+              </span>
+              <RowChevron />
+            </button>
+            {!bridgeMode && savedWallets.length > 0 && (
+              <div className="ww-move-landing__list">
+                {savedWallets.map((wallet) => (
+                  <ContactRow
+                    key={wallet.address}
+                    name={wallet.name}
+                    tag={shortL1Addr(wallet.address)}
+                    isL1
+                    trailing={isConnected(wallet.address) ? <ConnectedTrailing /> : undefined}
+                    onClick={() => steps.entry({ intent: "wallet", saved: wallet })}
+                  />
+                ))}
+              </div>
+            )}
+          </section>
+        )}
+        {entry && (
+          <DepositFlow
+            l1ChainId={l1ChainId}
+            chainName={chainName}
+            coins={coins}
+            token={token}
+            onPickToken={setToken}
+            routes={canBridge && bridge ? bridgeRoutes(bridge, coins) : []}
+            steps={opening?.steps}
+            startChainId={opening?.origin?.chainId}
+            startSymbol={opening?.origin?.symbol}
+            saved={entry.saved}
+            wallet={
+              l1.account
+                ? {
+                    name: savedName ?? l1.walletName ?? sendCopy.walletFallback,
+                    address: shortL1Addr(l1.account),
+                  }
+                : undefined
+            }
+            // The wallet's chain, once the account the flow sends from is the connected one.
+            walletChainId={
+              l1.account &&
+              (!entry.saved || entry.saved.address.toLowerCase() === l1.account.toLowerCase())
+                ? l1.chainId ?? undefined
+                : undefined
+            }
+            intent={entry.intent}
+            fundReady={fee != null && !(claiming && !target)}
+            addressReady={!(busy && !shown)}
+            status={claimingBlock || holdBlock || undefined}
+            privacyRows={
+              <>
+                {feeRow}
+                {minimumRow}
+                {limitRow(false)}
+              </>
+            }
+            onAddress={() => openSheet(token)}
+            onWallet={beginWallet}
+            sheet={entrySheet}
+            walletPicker={
+              bridgeMode
+                ? undefined
+                : (done) => (
+                    <ChangeWalletPicker
+                      l1={l1}
+                      saved={savedWallets}
+                      onSaved={(saved) => {
+                        done()
+                        if (permittedAccount(l1.accounts, saved.address))
+                          return void pickAccount(l1, saved.address)
+                        // An account of another wallet connects that wallet first.
+                        const inWallet = !!l1.account && savedInWallet(saved.entry, l1.walletName)
+                        if (inWallet) void l1.switchAccount(saved.address)
+                        else l1.connectAnother()
+                        steps.awaitAccount({ kind: fundOpen ? "fund" : "bridge", saved })
+                      }}
+                      onPicked={done}
+                    />
+                  )
+            }
+            onClose={closeEntry}
+          />
+        )}
+        {otherSheets}
+      </div>
     )
 
   return (
@@ -1186,7 +1548,7 @@ function DepositScreenBody({
                         type="button"
                         className="zkm-btn-reset ww-deposit__coin"
                         data-testid={`deposit-coin-${t.symbol}`}
-                        disabled={busy && !shown}
+                        disabled={!offering || (busy && !shown)}
                         onClick={() => openSheet(t)}
                       >
                         <CoinIcon token={t} />
@@ -1227,11 +1589,6 @@ function DepositScreenBody({
       {sheets}
       {choosingName && handle && (
         <ChooseNameSheet tag={handle} claim={claimName} onClose={() => setChoosingName(false)} />
-      )}
-
-      {/* The fresh-address model applies to deposits, not the registration address. */}
-      {disclaimer && !owed && (
-        <DepositPrivacyDisclaimer handle={handle} onClose={() => setDisclaimer(false)} />
       )}
     </div>
   )

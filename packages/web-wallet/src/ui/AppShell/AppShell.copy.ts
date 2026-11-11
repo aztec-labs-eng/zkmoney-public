@@ -21,6 +21,11 @@ export default {
   primaryNav: "Primary navigation",
   closeMenu: "Close menu",
   logOut: "Log out",
+  /** The theme control names the theme it switches to. */
+  theme: {
+    light: "Switch to light theme",
+    dark: "Switch to dark theme",
+  },
   accountSettings: "Account settings, {identity}",
   quickNav: "Quick navigation",
   search: "tag",

@@ -117,6 +117,17 @@ export class UnprofitableSweepError extends Error {
 }
 
 /**
+ * The sweep reverts in the executor's simulation, so the relayer would not send it. A read that
+ * does not complete throws its own error instead, since it says nothing about the sweep.
+ */
+export class RevertingSweepError extends Error {
+  constructor(message: string, cause: Error) {
+    super(message, { cause })
+    this.name = "RevertingSweepError"
+  }
+}
+
+/**
  * Prices a rotation's deploy-and-sweep as the relayer will: the SIPA is given `funding` of the token
  * by storage override, the operation is simulated once for its payout and once more with that
  * payout as the executor's floor for the gas it covers, and the relayer's floor is that gas at the
@@ -180,7 +191,7 @@ export async function quoteBackupSweep(
     })
   const run = await simulate(0n)
   if (run.status === "failure") {
-    throw new Error(`The backup sweep does not run: ${run.error.message}`)
+    throw new RevertingSweepError(`The backup sweep does not run: ${run.error.message}`, run.error)
   }
   const payout = decodeFunctionResult({
     abi: version === "legacy" ? LegacyOperationExecutorAbi : OperationExecutorAbi,
@@ -189,7 +200,10 @@ export async function quoteBackupSweep(
   }) as bigint
   const priced = await simulate(payout)
   if (priced.status === "failure") {
-    throw new Error(`The backup sweep does not pay its own payout: ${priced.error.message}`)
+    throw new RevertingSweepError(
+      `The backup sweep does not pay its own payout: ${priced.error.message}`,
+      priced.error,
+    )
   }
   const floor = relayerGasCost(
     version,

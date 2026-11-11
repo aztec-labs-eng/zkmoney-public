@@ -2,7 +2,7 @@ import { showErrorModal } from "../../errors/errorModal"
 import { useStore } from "@obsidion/front-core"
 import { useSession } from "../../session/session"
 import { balanceMovingCopy } from "./backupPasskeyCopy"
-import { useBalanceMoving } from "./backupRotationStore"
+import { useBalanceMoving } from "./backupRotations"
 
 /**
  * Runs a press that spends through the sponsor, or shows why it waits while a backup passkey

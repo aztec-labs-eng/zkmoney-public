@@ -26,6 +26,7 @@ export {
   type PayloadFinalizer,
 } from "./stagedExecution.js"
 export { FeeUnavailableError } from "./FeeUnavailableError.js"
+export { serialTurns, type SendProgress, type SendTurns } from "./sendTurns.js"
 export {
   proveTxWithProgress,
   readTimingBenchFlag,
@@ -46,9 +47,7 @@ export {
   normalizeFunctionName,
   NON_ALLOWLISTED,
 } from "./benchmark/simFunctionExtract.js"
-// Flow-kind types — re-exported from proving-progress, which owns them.
-// See packages/proving-progress/src/race.ts.
-export type { OriginalFlowKind, TxKind } from "@obsidion/proving-progress"
+export type { OriginalFlowKind, TxKind } from "@obsidion/core/types"
 // Pending-tx store interface + in-memory default.
 export {
   CLOCK_SKEW_MARGIN_MS,

@@ -8,34 +8,38 @@
 import type { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import type { Address } from "viem"
 import {
+  deploymentScanRange,
   bestEffort,
   claimSipaDeposits,
+  createTurn,
   createResolverWindow,
-  deploymentScanRange,
   derived,
   ensureDirectMigrationDepositRecords,
   loadRecords,
   scanSipaDeposits,
-  readyValue,
+  RESOLVER_SLOTS,
+  SELF_SLOTS,
   selfSipaResolverKeys,
   stopIfAborted,
   task,
-  UpgradeActivity,
+  type UpgradeActivity,
   upsertDepositL1WalletContact,
   within,
+  liveStore,
   memoryStore,
   type CatchUp,
+  type Contacts,
+  type UpsertDepositL1WalletContactParams,
   type Database,
   type Milestones,
   type ReadonlyStore,
-  type Resource,
-  type ResourceState,
   type SipaClaimResult,
   type SipaDeposit,
   type SipaDeposits,
   type SipaScanResult,
   type SipaRow,
   type Task,
+  type Service,
 } from "@obsidion/front-core"
 import {
   migrationDirectCommitment,
@@ -45,18 +49,17 @@ import {
   type TokenService,
 } from "@obsidion/sdk"
 import type { OxideEnvTuple } from "@obsidion/core/types"
-import { getConfig } from "../../config/env"
-import { getOxideTuple, l1PublicClient, requireTupleField } from "../../config/oxideTuple"
+import { l1PublicClient, requireTupleField } from "../../config/oxideTuple"
+import type { PageFacts } from "../../session/pageChain"
+import type { Session } from "../../session/session"
 import { fireEvent } from "../../lib/analytics"
-import { webStorage } from "../../platform/storage/WebStorageAdapter"
 import { registrationScheduleForSipa, type Registrations } from "../registration/webRegistration"
 import { l2TokenService } from "../token/l2TokenService"
-import { txAmountCap } from "../token/oxideToken"
-import type { FundingStamps } from "./fundDeposit"
 import {
   pinnedToken,
   railRows,
-  type ResolverDeploymentsRead,
+  windowKeys,
+  type ResolverDeployments,
   type SipaDiscovery,
   type SipaKeys,
 } from "./sipaRail"
@@ -67,8 +70,6 @@ const WATCH_MS = 4_000
 const ACTIVE_MS = 12_000
 /** A full pass once nothing is expected to change soon. */
 const IDLE_MS = 60_000
-/** How long one read of the resolver deployments serves the window. */
-const RESOLVER_DEPLOYMENTS_TTL_MS = 15 * 60_000
 
 /**
  * Reports each address's first claim once, and only one that settled from `since` on: records load
@@ -101,48 +102,45 @@ export function createSyncFailureReporter(): (failed: number) => boolean {
  * whose `signal` aborted while it waited does not start.
  */
 export function passQueue() {
-  let last: Promise<unknown> = Promise.resolve()
-  return <T>(
-    label: string,
-    signal: AbortSignal | undefined,
-    pass: () => Promise<T>,
-  ): Promise<T> => {
-    const next = last.then(() => {
+  const turn = createTurn()
+  return <T>(label: string, signal: AbortSignal | undefined, pass: () => Promise<T>): Promise<T> =>
+    turn(() => {
       stopIfAborted(signal, label)
       return pass()
     })
-    last = Promise.allSettled([next])
-    return next
-  }
 }
 
 export interface SipaPipelineDeps {
   store: SipaDeposits
   registrations: Registrations
   db: Pick<Database, "get" | "write">
-  wallet: Resource<ObsidionWallet>
-  keys: Resource<SipaKeys>
-  discovery: Resource<SipaDiscovery>
-  deployments: Resource<ResolverDeploymentsRead>
-  account: Resource<ObsidionAccount>
-  token: Resource<TokenService>
+  wallet: Service<ObsidionWallet>
+  keys: Service<SipaKeys>
+  discovery: () => Service<SipaDiscovery>
+  deployments: ResolverDeployments
+  account: Service<ObsidionAccount>
+  token: Service<TokenService>
   milestones: Pick<Milestones, "mark" | "progress">
   visible: ReadonlyStore<boolean>
   catchUp: CatchUp
   /** A registration holds funds in signup's custody. */
   custody: ReadonlyStore<boolean>
-  stamps: FundingStamps
+  /** Where each deposit's funding wallet is saved. */
+  contacts: Pick<Contacts, "upsertL1WalletContact">
   /** Reads the balance after claims landed. */
   refreshBalance(): Promise<void>
-  /** Owes the landed broadcast of `sipa` again from L2 block `sinceBlock`; false when none landed. */
-  republish(sipa: Address, sinceBlock: number): Promise<boolean>
+  /** Runs the broadcasts a pass owes again. */
+  wakeBroadcasts(): void
+  /** The upgrade runs, whose direct deposits each get a record. */
+  upgrades: Pick<UpgradeActivity, "directBatches">
+  page: Pick<Session["page"], "config" | "chain" | "tokenServices">
 }
 
 /** A pass's inputs read once per run. */
-async function railInputs(store: SipaDeposits, networkId: string) {
-  const config = getConfig()
-  const tuple = await getOxideTuple(config)
-  const [meta, rows] = await Promise.all([pinnedToken(config, tuple), railRows(config)])
+async function railInputs(page: PageFacts, store: SipaDeposits, networkId: string) {
+  const { config } = page
+  const tuple = await page.chain.oxideTuple.read()
+  const [meta, rows] = await Promise.all([pinnedToken(page, tuple), railRows(page)])
   // Every sweep recorded before rows was claimed through the pinned bridge.
   await store.stampSweepRows(networkId, {
     portal: requireTupleField(tuple, "portal") as Address,
@@ -152,27 +150,20 @@ async function railInputs(store: SipaDeposits, networkId: string) {
   return { config, tuple, rows }
 }
 
-const WATCHING: ResourceState<number> = { status: "ready", value: WATCH_MS }
-const IN_CUSTODY: ResourceState<number> = { status: "ready", value: ACTIVE_MS }
-const UNWATCHED: ResourceState<number> = { status: "pending" }
-
 export function sipaPipeline(deps: SipaPipelineDeps) {
   const { store } = deps
-  const watchers = memoryStore(0)
-  /** Ready, with the pace to read L1 at, while a screen watches or signup holds funds. */
-  const shownAddresses: Resource<number> = {
-    ...derived([watchers.readonly, deps.custody], (n, custody) =>
-      n > 0 ? WATCHING : custody ? IN_CUSTODY : UNWATCHED,
-    ),
-    name: "sipaShownAddresses",
-    demand() {},
-    retry() {},
-    close() {},
-  }
+  const shown = memoryStore(false)
+  /** L1 is read while a screen subscribes or signup holds funds. */
+  const watched = derived([shown.readonly, deps.custody], (screen, custody) => screen || custody)
+  /** The interval to read L1 at: a screen's, else custody's. */
+  const l1Interval = derived([shown.readonly], (screen) => (screen ? WATCH_MS : ACTIVE_MS))
   const observedAt = memoryStore<number | undefined>(undefined)
   /** The head's time at the last balance read, ms epoch. */
   const chainTime = memoryStore<number | undefined>(undefined)
-  const window = createResolverWindow()
+  const window = createResolverWindow(RESOLVER_SLOTS)
+  const ownWindow = createResolverWindow(SELF_SLOTS)
+  // Addresses are keyed by the chain's UTC day, not the device's.
+  const chainNow = () => chainTime.get() ?? Date.now()
   /**
    * What the last scan failed, written by `sipaScan` alone: a clean claim run after a clean one
    * replays the deposits.
@@ -206,18 +197,12 @@ export function sipaPipeline(deps: SipaPipelineDeps) {
       networkId: wallet.networkId,
       registrationScheduleFor: (sipa: string) =>
         registrationScheduleForSipa(deps.registrations, sipa),
-      onFundingWalletDetected: upsertDepositL1WalletContact,
-      onSweptAddressFunded: async (sipa: Address) => {
-        if (!(await deps.republish(sipa, Number(await wallet.node.getBlockNumber()))))
-          console.warn(`[sipa] ${sipa} has no landed broadcast to repeat; stuck exits remain`)
-      },
-      // Only this wallet's own broadcasts can be repeated; a resolver-published address cannot.
-      onSweepOverdue: async (sipa: Address) =>
-        deps.republish(sipa, Number(await wallet.node.getBlockNumber())),
+      onFundingWalletDetected: (funder: UpsertDepositL1WalletContactParams) =>
+        upsertDepositL1WalletContact(deps.contacts, funder),
       // The account has no on-chain creation block, and no deposit to it predates the deployment.
       historyStartBlock: async (head: bigint) =>
         (await deploymentScanRange(publicClient, inputs.tuple, head)).fromBlock,
-      txAmountCap: (row: SipaRow) => txAmountCap(publicClient, row.portal),
+      txAmountCap: (row: SipaRow) => deps.page.chain.txAmountCap(row.portal).read(),
     }
   }
 
@@ -225,7 +210,7 @@ export function sipaPipeline(deps: SipaPipelineDeps) {
     wallet: ObsidionWallet,
     recipient: AztecAddress,
     inputs: { tuple: OxideEnvTuple; rows: readonly SipaRow[] },
-    tokenServiceFor: (l2Token: string) => Promise<Pick<TokenService, "claimSweptDeposit">>,
+    tokenServiceFor?: (l2Token: string) => Promise<Pick<TokenService, "claimSweptDeposit">>,
   ) => ({
     store,
     node: wallet.node as never,
@@ -237,18 +222,11 @@ export function sipaPipeline(deps: SipaPipelineDeps) {
 
   /** The resolver's addresses with no record yet, read while the page is shown. */
   const resolverCandidates = async (keys: SipaKeys, signal: AbortSignal) => {
-    const read = deps.deployments.get()
-    if (
-      read.status === "failed" ||
-      (read.status === "ready" && Date.now() - read.value.at > RESOLVER_DEPLOYMENTS_TTL_MS)
-    )
-      deps.deployments.retry()
     return window(
-      { stealthScalar: keys.stealthKey.scalar, recipient: keys.recipient },
-      (await readyValue(deps.deployments, signal)).deployments,
+      windowKeys(keys),
+      await deps.deployments(keys).read(signal),
       await loadRecords(store.view),
-      // The resolver keys its addresses by the chain's UTC day, not the device's.
-      chainTime.get() ?? Date.now(),
+      chainNow(),
     )
   }
 
@@ -265,7 +243,7 @@ export function sipaPipeline(deps: SipaPipelineDeps) {
       // Only this account's runs: a run's key ends in its account (`webMetadataMigrationKey`).
       batches: async () =>
         (
-          await UpgradeActivity.get(webStorage).directBatches()
+          await deps.upgrades.directBatches()
         ).filter((batch) =>
           batch.run.toLowerCase().endsWith(`/${recipient.toString().toLowerCase()}`),
         ),
@@ -293,13 +271,13 @@ export function sipaPipeline(deps: SipaPipelineDeps) {
     async run({ wallet, keys, account, token, signal }) {
       const result: SipaClaimResult = await within(
         oneAtATime("sipaClaim", signal, async () => {
-          const inputs = await railInputs(store, wallet.networkId)
+          const inputs = await railInputs(deps.page, store, wallet.networkId)
           const pinnedL2Token = requireTupleField(inputs.tuple, "l2Token").toLowerCase()
           return claimSipaDeposits({
             ...claimDeps(wallet, keys.recipient, inputs, (l2Token) =>
               l2Token.toLowerCase() === pinnedL2Token
                 ? Promise.resolve(token)
-                : l2TokenService(wallet, account, l2Token),
+                : l2TokenService(deps.page, account, l2Token),
             ),
             refreshBalance: deps.refreshBalance,
             onProgress: (done, total) => deps.milestones.progress("deposits", done, total),
@@ -323,24 +301,31 @@ export function sipaPipeline(deps: SipaPipelineDeps) {
     },
   })
 
-  /** What every pass leaves for the screens and the funding stamps. */
-  const observed = async (result: SipaScanResult) => {
+  /** A scan pass: the broadcasts it owes run at once. */
+  const scanPass = async (pass: Parameters<typeof scanSipaDeposits>[0]) => {
+    const result = await scanSipaDeposits(pass)
+    if (result.republished > 0 || result.resolverFunded > 0) deps.wakeBroadcasts()
+    return result
+  }
+
+  /** What every pass leaves for the screens. */
+  const observed = (result: SipaScanResult) => {
     if (result.chainTime !== undefined) chainTime.set(result.chainTime)
     observedAt.set(Date.now())
-    await deps.stamps.drain()
   }
 
   const check: Task = task("sipaCheck", {
-    needs: { wallet: deps.wallet, keys: deps.keys, pace: shownAddresses },
-    every: WATCH_MS,
+    needs: { wallet: deps.wallet, keys: deps.keys },
+    when: watched,
+    every: l1Interval,
     whenHidden: ACTIVE_MS,
-    // Capped near the pace, so a watched screen never waits out a long backoff.
+    // Capped near the interval, so a watched screen never waits out a long backoff.
     backoff: { baseMs: 12_000, maxMs: 30_000 },
-    async run({ wallet, keys, pace, signal, wake }) {
+    async run({ wallet, keys, signal, wake }) {
       const result: SipaScanResult = await within(
         oneAtATime("sipaCheck", signal, async () => {
-          const inputs = await railInputs(store, wallet.networkId)
-          return scanSipaDeposits({
+          const inputs = await railInputs(deps.page, store, wallet.networkId)
+          return scanPass({
             ...scanDeps(wallet, keys, keys.recipient, inputs),
             discover: false,
             signal,
@@ -349,10 +334,9 @@ export function sipaPipeline(deps: SipaPipelineDeps) {
         "sipaCheck",
         { signal },
       )
-      await observed(result)
+      observed(result)
       // New funds or a new sweep: the full pass, and the claim it wakes, run now.
       if (result.found > 0) void wake(scan)
-      return { nextMs: pace }
     },
   })
 
@@ -364,10 +348,10 @@ export function sipaPipeline(deps: SipaPipelineDeps) {
     whenHidden: ACTIVE_MS,
     backoff: { baseMs: 12_000, maxMs: 300_000 },
     async run({ wallet, keys, signal, wake }) {
-      await readyValue(deps.discovery, signal)
+      await deps.discovery().ready(signal)
       const result: SipaScanResult = await within(
         oneAtATime("sipaScan", signal, async () => {
-          const inputs = await railInputs(store, wallet.networkId)
+          const inputs = await railInputs(deps.page, store, wallet.networkId)
           await bestEffort(
             "scan.incomplete",
             discoverDirectDeposits(keys, wallet.networkId, inputs),
@@ -375,17 +359,19 @@ export function sipaPipeline(deps: SipaPipelineDeps) {
           const candidates = deps.visible.get()
             ? (await bestEffort("scan.incomplete", resolverCandidates(keys, signal))) ?? []
             : []
-          return scanSipaDeposits({
+          return scanPass({
             ...scanDeps(wallet, keys, keys.recipient, inputs),
             discover: true,
             resolverCandidates: candidates,
+            selfCandidates: (deployment, records, salts) =>
+              ownWindow(windowKeys(keys), [deployment], records, chainNow(), salts),
             signal,
           })
         }),
         "sipaScan",
         { signal },
       )
-      await observed(result)
+      observed(result)
       scanFailed.set(result.failed)
       if (result.resolverFunded > 0) void wake(scan)
       // History replayed onto this device holds the balance and activity placeholders until its
@@ -405,18 +391,21 @@ export function sipaPipeline(deps: SipaPipelineDeps) {
     check,
     scan,
     claim,
-    /** When a pass last read the chain, ms epoch: what a watching screen shows as last checked. */
-    observedAt: observedAt.readonly,
-    /** L1 is read at once, then on the watch cadence while any watch is held. Returns the release. */
-    watch(): () => void {
-      watchers.set(watchers.get() + 1)
-      let released = false
-      return () => {
-        if (released) return
-        released = true
-        watchers.set(watchers.get() - 1)
-      }
-    },
+    /**
+     * When a pass last read the chain, ms epoch: what a screen shows as last checked. While
+     * subscribed, L1 is read on the watch cadence, and at once when the last read is older.
+     */
+    observedAt: liveStore(observedAt.get(), {
+      whileSubscribed(set) {
+        shown.set(true)
+        const off = observedAt.subscribe(() => set(observedAt.get()))
+        set(observedAt.get())
+        return () => {
+          off()
+          shown.set(false)
+        }
+      },
+    }),
     /**
      * One scan and claim pass over `recipient`, another account of the session's key, claimed
      * through `tokenServiceFor`. It stays out of the session's catch-up. `completed` is false while
@@ -429,10 +418,11 @@ export function sipaPipeline(deps: SipaPipelineDeps) {
       const wallet = deps.wallet.get()
       const keys = deps.keys.get()
       if (wallet.status !== "ready" || keys.status !== "ready") return { completed: false }
-      await readyValue(deps.discovery)
+
+      await deps.discovery().ready()
       return oneAtATime("passFor", undefined, async () => {
-        const inputs = await railInputs(store, wallet.value.networkId)
-        const scanned = await scanSipaDeposits({
+        const inputs = await railInputs(deps.page, store, wallet.value.networkId)
+        const scanned = await scanPass({
           ...scanDeps(wallet.value, keys.value, recipient, inputs),
           discover: true,
         })
@@ -442,7 +432,27 @@ export function sipaPipeline(deps: SipaPipelineDeps) {
         return { completed: scanned.complete && claimed.complete, scanned, claimed }
       })
     },
+    /**
+     * One scan over `recipient`, another account of the session's key, that records the deposits it
+     * finds and claims or publishes nothing: that account's history, for Activity. Deposits already
+     * claimed, on any device, are saved as claimed so Activity lists them.
+     */
+    async historyFor(recipient: AztecAddress): Promise<{ completed: boolean }> {
+      const wallet = deps.wallet.get()
+      const keys = deps.keys.get()
+      if (wallet.status !== "ready" || keys.status !== "ready") return { completed: false }
+
+      await deps.discovery().ready()
+      return oneAtATime("historyFor", undefined, async () => {
+        const inputs = await railInputs(deps.page, store, wallet.value.networkId)
+        const scanned = await scanSipaDeposits({
+          ...scanDeps(wallet.value, keys.value, recipient, inputs),
+          republishes: false,
+          discover: true,
+        })
+        const settled = await claimSipaDeposits(claimDeps(wallet.value, recipient, inputs))
+        return { completed: scanned.complete && settled.complete }
+      })
+    },
   }
 }
-
-export type SipaPipeline = ReturnType<typeof sipaPipeline>

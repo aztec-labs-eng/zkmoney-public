@@ -61,6 +61,7 @@ type Unknown = Extract<EnterResult, { reason: "unknown" }>
  * Cards whose retry would run the same attempt again: the screen is where the user tries again —
  * the row, the tag, or Show passkeys — so these offer Back and the cancel instead.
  */
+// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
 export const NO_RETRY = new Set<string>([
   "NoWalletForPasskeyError",
   PASSKEY_NOT_OFFERED,

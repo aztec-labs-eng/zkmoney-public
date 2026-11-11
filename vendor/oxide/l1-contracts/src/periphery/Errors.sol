@@ -1,13 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity >=0.8.27;
 
+import {Intent} from "@periphery/Intent.sol";
+
 library Errors {
-  error UserOpSIPA__Resweepable();
-  error UserOpSIPA__PreconditionFailed();
-  error UserOpSIPA__PostconditionFailed();
-  error UserOpSIPA__ConditionReverted();
-  error UserOpSIPA__ConditionTargetHasNoCode();
-  error UserOpSIPA__NonceNotReached();
+  error AddPasskeySIPA__ZeroAccountFactory();
+  error AddPasskeySIPA__ZeroNameRegistry();
+  error AddPasskeySIPA__ZeroNamePortal();
+  error AddPasskeySIPA__Resweepable();
+  error AddPasskeySIPA__RecordRollupVersionMismatch(uint256 recordRollupVersion, uint256 sipaRollupVersion);
+  error AddPasskeySIPA__NotFactoryAccount(address owner);
+  error AddPasskeySIPA__NonceNotReached(uint256 accountNonce, uint64 intentNonce);
+  error AddPasskeySIPA__RecordNotSet();
   error OperationExecutor__InsufficientPayout(uint256 payout, uint256 minPayout);
 
   error PlainWithdrawalExecutor__InvalidUserPayload();
@@ -26,9 +30,13 @@ library Errors {
   error MultiStepExecutor__ZeroRemainderRecipient();
   error MultiStepExecutor__NotThisExecutor();
   error MultiStepExecutor__ZeroRecoveryRecipient();
+  error MultiStepExecutor__NotTheRecoveryPortal();
 
   error CoreAdapter__ZeroRecipient();
   error MakerPsmAdapter__InsufficientOutput(uint256 amountOut, uint256 minOut);
+  error ERC4626Adapter__InsufficientOutput(uint256 amountOut, uint256 minOut);
+  error AcrossAdapter__AmountNotAboveFee(uint256 amount, uint256 fee);
+  error LifiIntentAdapter__NotSelf();
 
   error OxideAccount__InvalidR1Key();
   error OxideAccount__AuthKeyIndexOutOfBounds();
@@ -52,12 +60,12 @@ library Errors {
   error ForwardingTable__ZeroPortal();
   error ForwardingTable__NoIntents();
   error ForwardingTable__NoneIntent();
-  error ForwardingTable__IntentAlreadyListed(address token, uint8 intent);
+  error ForwardingTable__IntentAlreadyListed(address token, Intent intent);
   error ForwardingTable__TokenAlreadyListed(address token);
   error ForwardingTable__ZeroSweepTip();
   error ForwardingTable__ZeroBeneficiary();
   error ForwardingTable__TokenNotListed(address token);
-  error ForwardingTable__IntentNotListed(address token, uint8 intent);
+  error ForwardingTable__IntentNotListed(address token, Intent intent);
   error ForwardingTable__TokenNotPortalUnderlying(address token, address underlying);
   error ForwardingTable__RollupVersionMismatch(uint256 portalVersion, uint256 tableVersion);
 
@@ -139,7 +147,7 @@ library Errors {
   error DepositSubsidy__SIPABoundToAnotherPortal(address sipa);
   error DepositSubsidy__FeedWithoutCode();
   error DepositSubsidy__UnexpectedFeedDecimals(uint8 decimals);
-  error DepositSubsidy__NoImplementationForIntent(uint8 intent);
+  error DepositSubsidy__NoImplementationForIntent(Intent intent);
   error DepositSubsidy__TableNotApproved(address table);
 
   error PlainWithdrawalSubsidy__UnauthorizedExecutor();
@@ -176,7 +184,7 @@ library Errors {
   error FPCFunder__NothingToDeposit();
   error FPCFunder__FeedWithoutCode();
 
-  error FeePool__WethWithoutCode();
+  error FeePool__TokenWithoutCode();
   error FeePool__ZeroSpender();
   error FeePool__ActiveUntilNotInFuture(uint64 activeUntil);
   error FeePool__ZeroPeriod();

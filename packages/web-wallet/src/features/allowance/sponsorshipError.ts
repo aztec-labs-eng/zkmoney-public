@@ -5,6 +5,7 @@ import { LIMITS_DOCS_URL } from "../../lib/links"
  * are reported under. The voucher and registration-broadcast rails refuse with the same
  * "allowance exhausted", but their one-use allowance is not the account's and never renews.
  */
+// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
 const REGISTERED_RAIL_CONTEXTS = new Set([
   "contact:send",
   "paylink:create",
@@ -28,8 +29,7 @@ export function sponsorshipErrorCopy(
     if (/insufficient fee payer balance/i.test(text)) {
       return {
         title: "Sponsored transactions paused",
-        message:
-          "This transaction was not sent. Please try again later.",
+        message: "This transaction was not sent. Please try again later.",
       }
     }
     // `_assert_fee_within_max` in claim_fpc/src/main.nr.

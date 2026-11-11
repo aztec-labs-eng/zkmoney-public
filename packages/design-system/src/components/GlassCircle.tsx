@@ -68,12 +68,12 @@ export function IconCircle({ name, size = 44, glyphSize = 18, className }: IconC
       className={["zkm-glass-circle zkm-glass-circle--bright", className].filter(Boolean).join(" ")}
       style={{ width: size, height: size }}
     >
-      <Icon name={name} size={glyphSize} color="#fff" strokeWidth={2.2} />
+      <Icon name={name} size={glyphSize} color="var(--ink)" strokeWidth={2.2} />
     </div>
   )
 }
 
 /** Muted right chevron used at the trailing edge of tappable rows. */
 export function RowChevron() {
-  return <Icon name="chevron-right" size={12} color="rgba(255,255,255,0.5)" strokeWidth={2.5} />
+  return <Icon name="chevron-right" size={12} color="rgba(var(--ink-rgb), 0.5)" strokeWidth={2.5} />
 }

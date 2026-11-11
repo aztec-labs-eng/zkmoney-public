@@ -2,7 +2,7 @@ import type { ReactNode } from "react"
 import { IN_APP_UP_FRONT_COPY as COPY, type InAppUpFront } from "@obsidion/passkey-web"
 import { showReportableError } from "../../errors/errorModal"
 import type { InAppCardScreen } from "./inAppCardTelemetry"
-import { OpenInBrowser } from "./OpenInBrowser"
+import { OpenInBrowser } from "./OpenInBrowser/OpenInBrowser"
 
 /**
  * The way out of an app's built-in browser, shown in place of the passkey button before any

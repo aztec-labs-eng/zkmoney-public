@@ -1,6 +1,7 @@
-import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react"
+import { useId, useRef, useState, type KeyboardEvent } from "react"
 import { Icon, type IconName } from "@obsidion/web-ds"
 import { usePickerDismiss } from "../../ui/usePickerDismiss"
+import { useDomEffect } from "../../ui/useDomEffect"
 
 export interface SignUpChoiceOption<Id extends string = string> {
   id: Id
@@ -60,7 +61,7 @@ export function SignUpChoiceSelect<Id extends string>({
   if (open && disabled) setOpen(false)
 
   usePickerDismiss(open, setOpen, anchorRef, triggerRef)
-  useEffect(() => {
+  useDomEffect(() => {
     // usePickerDismiss scrolls the list into view.
     if (open) listRef.current?.focus({ preventScroll: true })
   }, [open])

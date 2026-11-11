@@ -11,7 +11,9 @@ import { parseUnits, type Address } from "viem"
 import type { SipaPortalTerms } from "@obsidion/sdk"
 import type { RecordSet } from "../engine/persistentStore"
 import { isUnfundedSipaDeposit, type SipaDeposit } from "../engine/sipaDeposits"
-import { memoryStore, type ReadonlyStore } from "../engine/store"
+import { liveStore } from "../engine/liveStore"
+import type { QueryEntry } from "../engine/query"
+import type { ReadonlyStore } from "../engine/store"
 import {
   isAwaitingSweep,
   nextSipaSweepBlocker,
@@ -28,17 +30,14 @@ import {
   type PortalCapacityStore,
 } from "./portalCapacityStore"
 import { sipaProcessingReason, sipaRequiredCredit } from "./sipaProcessingReason"
-import { sipaRecordRoute, sipaRouteKey, type SipaRecordRoute } from "./sipaRoute"
-
-/** How long a failed terms read waits before another pass may try again. `retry` does not wait. */
-const TERMS_RETRY_MS = 15_000
+import { sipaRecordRoute, type SipaRecordRoute } from "./sipaRoute"
 
 export interface SipaProcessingObserverOptions {
   deposits: ReadonlyStore<RecordSet<SipaDeposit>>
   /** The one shared store for a capacity bucket. */
   capacity: (key: PortalCapacityKey) => PortalCapacityStore
-  /** Usually `readSipaPortalTerms` on the configured L1 client, for the deployment's settlement token. */
-  readTerms: (route: SipaRecordRoute) => Promise<SipaPortalTerms>
+  /** The terms of the row a deposit in `token` settles on: the page's one read of them. */
+  terms: (route: SipaRecordRoute, token: string | undefined) => QueryEntry<SipaPortalTerms>
   /** The configured L1 chain. A deposit recorded on another chain has no portal here. */
   l1ChainId: number
   now?: () => number
@@ -75,7 +74,7 @@ export type SipaCapacityKey =
 export interface SipaProcessingObserver {
   /**
    * Why each deposit waiting for its sweep waits, by lowercase address; a new value also when a portal lookup settles.
-   * The first watcher starts the capacity reads for the pending deposits; the last one stops them.
+   * Reads the pending deposits' capacity while subscribed.
    */
   readonly states: ReadonlyStore<ReadonlyMap<string, SipaProcessingState>>
   /** Undefined for a deposit that is not waiting for a sweep. */
@@ -97,11 +96,6 @@ export interface SipaProcessingObserver {
     live?: Omit<SipaSweepSubject, "sipaAddress">,
   ): Promise<SipaProcessingState | undefined>
 }
-
-type TermsEntry =
-  | { status: "pending"; promise: Promise<void> }
-  | { status: "ready"; terms: SipaPortalTerms }
-  | { status: "failed"; at: number }
 
 type LiveFunding = Omit<SipaSweepSubject, "sipaAddress">
 
@@ -168,60 +162,57 @@ export function createSipaProcessingObserver(
   options: SipaProcessingObserverOptions,
 ): SipaProcessingObserver {
   const now = options.now ?? Date.now
-  const terms = new Map<string, TermsEntry>()
   const blockers = new Map<string, SipaSweepBlocker>()
   /** The largest funding a manual sweep read, per deposit, kept in memory while it can be newer than the store. */
   const liveFunding = new Map<string, LiveFunding>()
-  const state = memoryStore<ReadonlyMap<string, SipaProcessingState>>(new Map())
-  let watchers = 0
+  /** Publishes `states`, while subscribed. */
+  let publish: ((states: ReadonlyMap<string, SipaProcessingState>) => void) | undefined
   const buckets = new Map<string, () => void>()
-  let stopDeposits: (() => void) | undefined
+  /** The terms of the deposits waiting for a sweep, heard while subscribed. */
+  const heard = new Map<QueryEntry<SipaPortalTerms>, () => void>()
+  /** Terms a pass started a read of. */
+  const reading = new Set<QueryEntry<SipaPortalTerms>>()
   let emitted = ""
   /** Bumped when a portal lookup settles, so a key change reaches subscribers even for a deposit with no reason. */
   let lookups = 0
 
-  const loadTerms = (route: SipaRecordRoute): TermsEntry => {
-    const id = sipaRouteKey(route)
-    const promise = options.readTerms(route).then(
-      (value) => {
-        terms.set(id, { status: "ready", terms: value })
-        lookups += 1
-      },
-      () => {
-        terms.set(id, { status: "failed", at: now() })
-        lookups += 1
-      },
-    )
-    const entry: TermsEntry = { status: "pending", promise }
-    terms.set(id, entry)
-    void promise.then(() => update())
-    return entry
+  const termsOf = (record: SipaSweepSubject) => {
+    const route = record.l1ChainId === options.l1ChainId ? sipaRecordRoute(record) : undefined
+    return route && options.terms(route, record.tokenAddress)
   }
 
-  const termsFor = (route: SipaRecordRoute, force = false): TermsEntry => {
-    const known = terms.get(sipaRouteKey(route))
-    if (!known) return loadTerms(route)
-    if (known.status === "failed" && (force || now() - known.at >= TERMS_RETRY_MS)) {
-      return loadTerms(route)
+  const looked = () => {
+    lookups += 1
+    update()
+  }
+
+  /** One read of terms nobody has read yet; a failed one is read again by its retry. */
+  const lookUp = (entry: QueryEntry<SipaPortalTerms>) => {
+    if (reading.has(entry)) return
+    reading.add(entry)
+    const settled = () => {
+      reading.delete(entry)
+      looked()
     }
-    return known
+    void entry.read().then(settled, settled)
   }
-
-  const routeOf = (record: SipaSweepSubject) =>
-    record.l1ChainId === options.l1ChainId ? sipaRecordRoute(record) : undefined
 
   const portalOf = (record: SipaSweepSubject): Portal => {
-    const route = routeOf(record)
-    if (!route) return "unresolved"
-    const entry = termsFor(route)
-    if (entry.status === "pending") return "pending"
-    if (entry.status === "failed") return "failed"
+    const entry = termsOf(record)
+    if (!entry) return "unresolved"
+    const state = entry.get()
+    if (state.status === "pending") {
+      lookUp(entry)
+      return "pending"
+    }
+    if (state.status === "failed") return "failed"
+    const terms = state.value
     const key = portalCapacityKey({
       chainId: options.l1ChainId,
-      portal: entry.terms.portal,
-      token: entry.terms.token,
+      portal: terms.portal,
+      token: terms.token,
     })
-    return { key, terms: entry.terms }
+    return { key, terms }
   }
 
   const compute = (
@@ -262,10 +253,18 @@ export function createSipaProcessingObserver(
     return { state: blocker ? { reason, blocker } : { reason }, key }
   }
 
+  /** Marked before it subscribes: a subscribe that notifies at once re-enters `update`. */
+  const follow = <K>(map: Map<K, () => void>, key: K, subscribe: () => () => void) => {
+    if (map.has(key)) return
+    map.set(key, () => {})
+    map.set(key, subscribe())
+  }
+
   /** Recomputes every pending deposit, follows the buckets they need and publishes a change. */
   function update() {
     const states: [string, SipaProcessingState][] = []
     const keys = new Map<string, PortalCapacityKey>()
+    const entries = new Set<QueryEntry<SipaPortalTerms>>()
     for (const stored of options.deposits.get().records) {
       const record = subjectOf(stored.sipaAddress)
       if (!record) continue
@@ -273,26 +272,28 @@ export function createSipaProcessingObserver(
       if (!computed) continue
       states.push([record.sipaAddress.toLowerCase(), computed.state])
       if (computed.key) keys.set(portalCapacityKeyId(computed.key), computed.key)
+      const entry = termsOf(record)
+      if (entry) entries.add(entry)
     }
-    if (watchers === 0) return
+    if (!publish) return
+    for (const [entry, stop] of heard) {
+      if (entries.has(entry)) continue
+      stop()
+      heard.delete(entry)
+    }
+    for (const entry of entries) follow(heard, entry, () => entry.subscribe(looked))
     for (const [id, stop] of buckets) {
       if (keys.has(id)) continue
       stop()
       buckets.delete(id)
     }
-    for (const [id, key] of keys) {
-      if (!buckets.has(id))
-        buckets.set(
-          id,
-          options.capacity(key).subscribe(() => update()),
-        )
-    }
+    for (const [id, key] of keys) follow(buckets, id, () => options.capacity(key).subscribe(update))
     const serialized = JSON.stringify([lookups, states], (_, value) =>
       typeof value === "bigint" ? value.toString() : value,
     )
     if (serialized === emitted) return
     emitted = serialized
-    state.set(new Map(states))
+    publish(new Map(states))
   }
 
   const recordOf = (sipaAddress: string) => {
@@ -324,10 +325,11 @@ export function createSipaProcessingObserver(
     const record = subjectOf(sipaAddress, true)
     if (!record) return undefined
     // The portal lookup serves the key of any recorded deposit, so a failed one is repeated first.
-    const route = routeOf(record)
-    if (route) {
-      const entry = termsFor(route, true)
-      if (entry.status === "pending") await entry.promise
+    const entry = termsOf(record)
+    if (entry) {
+      const before = entry.get()
+      await entry.read().catch(() => undefined)
+      if (entry.get() !== before) lookups += 1
       const portal = portalOf(record)
       if (typeof portal === "object" && isAwaitingSweep(record)) {
         await read(options.capacity(portal.key))
@@ -344,28 +346,22 @@ export function createSipaProcessingObserver(
   }
 
   return {
-    states: {
-      get: state.get,
-      subscribe(listener) {
-        const off = state.subscribe(listener)
-        if (watchers++ === 0) {
-          stopDeposits = options.deposits.subscribe(() => update())
-          update()
-        }
-        let done = false
+    states: liveStore<ReadonlyMap<string, SipaProcessingState>>(new Map(), {
+      whileSubscribed(set) {
+        publish = set
+        const stopDeposits = options.deposits.subscribe(() => update())
+        update()
         return () => {
-          if (done) return
-          done = true
-          off()
-          if (--watchers > 0) return
-          stopDeposits?.()
-          stopDeposits = undefined
+          publish = undefined
+          stopDeposits()
           for (const stop of buckets.values()) stop()
           buckets.clear()
+          for (const stop of heard.values()) stop()
+          heard.clear()
           emitted = ""
         }
       },
-    },
+    }),
     stateFor,
     capacityKeyFor(sipaAddress) {
       const record = recordOf(sipaAddress)

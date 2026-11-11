@@ -5,8 +5,10 @@ import {
   useEffect,
   useRef,
   useState,
+  type Context,
   type ReactNode,
 } from "react"
+import type { Network } from "@obsidion/sdk"
 import { useLocation, useNavigate } from "react-router-dom"
 import { formatUnits } from "viem"
 import { DEFAULT_DECIMALS } from "@obsidion/core/constants"
@@ -23,14 +25,10 @@ import {
   savingsMoveExitOffer,
   savingsMoveOfWithdrawal,
   tagPriceOf,
-  useContactsDirectory,
-  useSavingsPosition,
-  useSavingsSource,
   useStore,
   withdrawalExit,
   worstWithdrawalPhase,
   type CreatorLinkAction,
-  type PaylinkTransaction,
   type Feed,
   type FeedItem,
   type PaymentRequest,
@@ -48,18 +46,22 @@ import {
   type ReadonlyStore,
   type RecordSet,
   type Transaction,
-  useResource,
   WalletError,
+  serviceStatus,
 } from "@obsidion/front-core"
+import { useContactDirectory } from "../../../session/contacts"
 import { useActionGuard } from "../../../features/actionGate"
 import { useBalanceMovingPause } from "../../../features/backupPasskey/balanceMovingPause"
 import { RequestDetailModal } from "../../../features/contacts/RequestDetailModal/RequestDetailModal"
 import { declineRequestById } from "../../../features/contacts/requestActions"
 import { useRemind, type RemindState } from "../../../features/contacts/useRemind"
+import { BridgeInDetailModal } from "../../../features/deposit/BridgeInDetailModal/BridgeInDetailModal"
 import { DepositExitModal } from "../../../features/deposit/DepositExitModal/DepositExitModal"
 import { settlementDecimals, useDepositTokens } from "../../../features/sipa/loadDepositFacts"
+import { useSavedL1Wallets } from "../../../session/savedL1Wallets"
+import { profileBridge } from "../../../session/walletChains"
 import { upgradeRunTitle } from "../../../features/migration/upgradeCopy"
-import { upgradeRunAccount, upgradeRunToken } from "../../../features/migration/upgradeRunAccount"
+import { upgradeRunAccount } from "../../../features/migration/upgradeRunAccount"
 import { RegistrationDepositDetailModal } from "../../../features/onboarding/RegistrationDepositDetailModal/RegistrationDepositDetailModal"
 import {
   useRegistrationDepositEntry,
@@ -71,25 +73,32 @@ import { CancelRequestLinkModal } from "../../../features/requests/CancelRequest
 import { IncomingRequestDetailModal } from "../../../features/requests/IncomingRequestDetailModal"
 import { SharePaylinkModal } from "../../../features/requests/SharePaylinkModal"
 import { SavingsMoveDetailModal } from "../../../features/savings/SavingsMoveDetailModal"
-import { savingsFinalizeDeployment } from "../../../features/savings/savingsGateway"
+import {
+  savingsFinalizeDeployment,
+  useSavingsAsset,
+} from "../../../features/savings/savingsGateway"
 import { useSavingsMoveTiming } from "../../../features/savings/savingsMoveTiming"
 import { OldVersionRefundExitModal } from "../../../features/withdraw/OldVersionRefundExitModal"
 import { SwapExitModal } from "../../../features/withdraw/SwapExitModal"
 import { useWithdrawals } from "../../../features/withdraw/useWithdrawals"
 import { WithdrawalExitModal } from "../../../features/withdraw/WithdrawalExitModal"
-import { wallClock } from "../../../lib/clock"
 import { writeClipboard } from "../../hooks"
 import { usdFigure } from "../../format"
-import { DepositDetailModal, TagPurchaseModal } from "../../screens/DepositDetailModal"
+import { PasskeysSheet } from "../../PasskeysSheet/PasskeysSheet"
+import {
+  DepositDetailModal,
+  TagPurchaseModal,
+} from "../../screens/DepositDetailModal/DepositDetailModal"
 import { FreshWithdrawalDetailModal } from "../../screens/FreshWithdrawalDetailModal"
-import { TxDetailModal } from "../../screens/TxDetailModal"
+import { TxDetailModal } from "../../screens/TxDetailModal/TxDetailModal"
 import { UpgradeBatchDetailModal } from "../../screens/UpgradeBatchDetailModal"
 import { UpgradeRunDetailModal } from "../../screens/UpgradeRunDetailModal"
 import { WithdrawalDetailModal, withdrawalHeroAmount } from "../../screens/WithdrawalDetailModal"
 import {
   linkFragmentOf,
   txNoteFor,
-  txRowView,
+  rowView,
+  type RowItem,
   type ActivityRowView,
 } from "../../screens/activityView"
 import copy from "../ActivityRow.copy"
@@ -97,7 +106,7 @@ import { exitTitle } from "../ActivityRow/ActivityRow"
 import { useFeed } from "../useFeed"
 import { useSession } from "../../../session/session"
 
-type TxItem = Extract<FeedItem, { kind: "tx" }>
+const hashOf = (item: RowItem) => (item.kind === "link" ? item.link.txHash : item.tx.txHash)
 
 /**
  * The notification text a detail opened with. `staleOn` marks a failure alert: the row status that
@@ -115,13 +124,14 @@ export function detailNoticeFor(
 
 /** The one detail open. Held by id, so it follows its record as the trackers advance it. */
 export type DetailTarget =
-  | { kind: "tx"; item: TxItem }
+  | { kind: "tx"; item: RowItem }
   /** A record's localId or a fresh withdrawal's group id. */
   | { kind: "withdrawal"; id: string }
   | { kind: "upgradeBatch"; id: string }
   | { kind: "upgradeRun"; id: string }
-  /** `address:token` picks that token's row, an address alone the address's own. */
+  /** `address:index` picks that payment's row, an address alone the address's own. */
   | { kind: "deposit"; address: string }
+  /** The payment that bought the tag, keyed as a deposit is. */
   | { kind: "tag"; address: string }
   | { kind: "savings"; id: string }
   | { kind: "requestLink"; id: string }
@@ -129,6 +139,8 @@ export type DetailTarget =
   | { kind: "cancelRequest"; id: string }
   | { kind: "sentRequest"; id: string }
   | { kind: "incomingRequest"; id: string }
+  /** A bridge-in from another chain, by origin hash. */
+  | { kind: "bridgeIn"; id: string }
 
 /**
  * The open exit sheet, held by value: a submitted exit advances its record out of the list under
@@ -155,6 +167,8 @@ type Exit =
 type Sheet =
   | { detail: DetailTarget; notice?: DetailNotice; backRun?: string }
   | { exit: Exit }
+  /** Where a stopped backup attempt's funding is recovered; closing it reopens the funding's sheet. */
+  | { passkeys: DetailTarget }
   | null
 
 export interface ActivityHost {
@@ -164,7 +178,7 @@ export interface ActivityHost {
   withdrawalExit(record: WithdrawalRecord, exit: WithdrawalExit): void
   /** Process manually: the user sends a refund no relayer sent. */
   oldVersionExit(record: OldVersionWithdrawal, refund: OldVersionRefund): void
-  linkRecovery(item: TxItem): void
+  linkRecovery(item: RowItem): void
   checkAgain(l2TxHash: string): void
   decline(id: string): void
   send(request: PaymentRequest): void
@@ -172,6 +186,12 @@ export interface ActivityHost {
   remindState(id: string, remindedAt?: number): RemindState
   shareLink(url: string, text: string): void
   copyLink(id: string, url: string): void
+  /** The page's network, which names the short-link host. */
+  network: Network
+  /** The profile's L1. */
+  l1ChainId: number
+  /** A bridge chain's name from the profile; empty for a chain it does not list. */
+  chainName(chainId: number): string
   copiedLinkId: string | null
   registration?: RegistrationDepositEntry
   sharePrice?: bigint
@@ -182,7 +202,10 @@ export interface ActivityHost {
   savingsEta(move: SavingsMoveRecord, burn?: WithdrawalRecord): SavingsMoveEta | undefined
 }
 
-const HostContext = createContext<ActivityHost | null>(null)
+// Kept across hot updates: a re-run module's new context would leave mounted rows outside its host.
+const hot = import.meta.hot?.data as { hostContext?: Context<ActivityHost | null> } | undefined
+const HostContext = hot?.hostContext ?? createContext<ActivityHost | null>(null)
+if (hot) hot.hostContext = HostContext
 
 export function useActivityHost(): ActivityHost {
   const host = useContext(HostContext)
@@ -199,6 +222,8 @@ interface RouterState {
   openUpgradeRun?: string
   /** A request link's id: its share sheet. */
   openRequestId?: string
+  /** A bridge-in's origin hash. */
+  openBridgeIn?: string
   /** Full text of the notification that opened the detail. */
   notice?: string
   noticeStaleOn?: "success"
@@ -226,27 +251,24 @@ export function ActivityDetailHost({
   const navigate = useNavigate()
   const guard = useActionGuard()
   const pauseForMove = useBalanceMovingPause()
-  const tokenService = useResource(useSession().token)
-  const obsidionWallet = useResource(useSession().wallet)
-  const { contacts } = useContactsDirectory()
+  const session = useSession()
+  const tokenAddress = useStore(session.mainToken)?.address
+  const walletBuilt = useStore(session.wallet, serviceStatus) === "ready"
+  const accountAddress = useStore(session.identity, (i) => i.value?.address)
+  const { contacts } = useContactDirectory()
   const paylinkDeps = usePaylinkDeps()
   const { checkAgain } = useWithdrawals()
-  const savingsSource = useSavingsSource()
-  const sharePrice = useSavingsPosition().position?.sharePrice
+  const savingsAsset = useSavingsAsset() ?? undefined
+  const savingsPosition = useStore(session.savingsHolding).position
+  const sharePrice = savingsPosition?.sharePrice
+  const settleTask = session.tasks.savingsSettle
   const depositTokens = useDepositTokens()
-  const upgradePricing: UpgradePricing = {
-    mainToken: depositTokens?.settlement.address,
-    savingsToken: savingsSource?.assetAddress,
-    sharePrice,
-    runToken: (run) =>
-      upgradeRunToken(run, {
-        main: depositTokens?.settlement.address,
-        savings: savingsSource?.assetAddress,
-      }),
-  }
+  const upgradePricing = useStore(session.upgradePricing)
   const timing = useSavingsMoveTiming()
+  const { wallClock } = useSession().page
   const now = useStore(wallClock)
   const registrationDeposit = useRegistrationDepositEntry()
+  const savedWallets = useSavedL1Wallets(Infinity)
   // A just-created paylink or a tapped notification lands here with its row key in router state;
   // open its detail once the row exists, then clear the state so a back or refresh doesn't reopen it.
   const {
@@ -256,19 +278,20 @@ export function ActivityDetailHost({
     openDepositAddress,
     openUpgradeRun,
     openRequestId,
+    openBridgeIn,
     notice: routedText,
     noticeStaleOn: routedStale,
   } = (useLocation().state as RouterState | null) ?? {}
   const [sheet, setSheet] = useState<Sheet>(null)
   const detail = sheet && "detail" in sheet ? sheet.detail : undefined
   // A row outside the listed rows stays watched by its hash while its sheet is open.
-  const shownHash = detail?.kind === "tx" ? detail.item.tx.txHash : undefined
+  const shownHash = detail?.kind === "tx" ? hashOf(detail.item) : undefined
   const { feed, registrations, handle } = useFeed({
     registration: registrationDeposit
       ? { sipaAddress: registrationDeposit.sipaAddress, ts: registrationDeposit.ts }
       : undefined,
-    chainNode: paylinkDeps?.wallet.node,
-    account: paylinkDeps?.account.getAddress().toString(),
+    chainTime: !!paylinkDeps,
+    account: paylinkDeps && accountAddress,
     rows,
     txHash: openTxHash ?? shownHash,
   })
@@ -277,22 +300,32 @@ export function ActivityDetailHost({
   const back = backRun ? () => setSheet({ detail: { kind: "upgradeRun", id: backRun } }) : undefined
   const exit = sheet && "exit" in sheet ? sheet.exit : undefined
   const close = useCallback(() => setSheet(null), [])
-  const open = useCallback((target: DetailTarget) => setSheet({ detail: target }), [])
+  const sweep = session.paylinkSweep
+  const open = useCallback(
+    (target: DetailTarget) => {
+      // A sent link's sheet asks the chain whether it was claimed since the last sweep.
+      if (target.kind === "tx" && target.item.kind === "link") sweep.recheck()
+      setSheet({ detail: target })
+    },
+    [sweep],
+  )
   const regs = { records: registrations, handle }
 
   // Desktop has no useful share sheet, so a sent link's row copies; the id keeps the "Copied!"
   // flash on the one row that was clicked.
   const [copiedLinkId, setCopiedLinkId] = useState<string | null>(null)
   const copiedTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
+  // eslint-disable-next-line local/effect-hook -- ZKM-1806
   useEffect(() => () => clearTimeout(copiedTimer.current), [])
   const copyLink = useCallback(async (id: string, url: string) => {
     if (!(await writeClipboard(url))) return
     setCopiedLinkId(id)
     clearTimeout(copiedTimer.current)
+    // eslint-disable-next-line local/timer-in-view -- ZKM-1806
     copiedTimer.current = setTimeout(() => setCopiedLinkId(null), 2000)
   }, [])
 
-  const { remind, stateOf } = useRemind(tokenService?.tokenAddress?.toString())
+  const { remind, stateOf } = useRemind(tokenAddress)
   const requests = feed.csv.requests
   const requestById = (id: string) => requests.find((r) => r.id === id)
   const send = (request: PaymentRequest) =>
@@ -311,7 +344,9 @@ export function ActivityDetailHost({
       }),
     )
   const decline = (id: string) =>
-    void declineRequestById(id).catch((err) => console.warn("[activity] decline failed:", err))
+    void declineRequestById(session, id).catch((err) =>
+      console.warn("[activity] decline failed:", err),
+    )
   const savingsEta = (move: SavingsMoveRecord, burn?: WithdrawalRecord) =>
     timing ? savingsMoveEta(move, burn, timing, now) : undefined
 
@@ -329,6 +364,7 @@ export function ActivityDetailHost({
     setSheet({ exit: { kind: "deposit", record, ...offer } })
   }
 
+  // eslint-disable-next-line local/effect-hook -- ZKM-1806
   useEffect(() => {
     const notice = routedText ? { text: routedText, staleOn: routedStale } : undefined
     const settle = (target: DetailTarget, withNotice: DetailNotice | undefined = notice) => {
@@ -337,11 +373,11 @@ export function ActivityDetailHost({
     }
     if (openTxHash || openPaylink) {
       const item = feed.items.find(
-        (i): i is TxItem =>
-          i.kind === "tx" &&
+        (i): i is RowItem =>
+          (i.kind === "tx" || i.kind === "link") &&
           (openTxHash
-            ? i.tx.txHash === openTxHash
-            : !!openPaylink && (i.tx as PaylinkTransaction).paylink === openPaylink),
+            ? hashOf(i) === openTxHash
+            : i.kind === "link" && !!openPaylink && i.link.paylink === openPaylink),
       )
       if (item) return settle({ kind: "tx", item })
     }
@@ -353,7 +389,8 @@ export function ActivityDetailHost({
         routedText ? { text: routedText } : undefined,
       )
     if (openRequestId && feed.csv.requests.some((r) => r.id === openRequestId))
-      settle({ kind: "requestLink", id: openRequestId })
+      return settle({ kind: "requestLink", id: openRequestId })
+    if (openBridgeIn) settle({ kind: "bridgeIn", id: openBridgeIn })
   }, [
     openTxHash,
     openPaylink,
@@ -361,6 +398,7 @@ export function ActivityDetailHost({
     openDepositAddress,
     openUpgradeRun,
     openRequestId,
+    openBridgeIn,
     routedText,
     routedStale,
     feed,
@@ -369,13 +407,14 @@ export function ActivityDetailHost({
 
   // The savings ledger's figure may be off: the console says why, once per change.
   const { ledger } = feed.savings
-  const position = useSavingsPosition().position
+  const position = savingsPosition
   const ledgerKey =
     ledger && position
       ? `${ledger.shares}/${position.shares}/${ledger.excluded
           .map((e) => e.withdrawalLocalId)
           .join(",")}`
       : undefined
+  // eslint-disable-next-line local/effect-hook -- ZKM-1806
   useEffect(() => {
     if (!ledger || !position || !ledgerKey) return
     if (ledger.shares !== position.shares || ledger.excluded.length > 0)
@@ -393,7 +432,7 @@ export function ActivityDetailHost({
             : ""),
       )
     // Keyed on what the line would say, so it prints once per change.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- ZKM-1806
   }, [ledgerKey])
 
   const host: ActivityHost = {
@@ -405,7 +444,7 @@ export function ActivityDetailHost({
     // Straight to the confirm sheet: the row's own status put the button there. A claim that beat
     // it spends the same nullifier, and that revert has its own copy.
     linkRecovery(item) {
-      const row = txRowView(item)
+      const row = rowView(item)
       const fragment = row.paylink ? linkFragmentOf(row.paylink) : null
       const { creatorAction: action, paylinkRow } = row
       if (!action || !fragment || !paylinkRow) return
@@ -430,6 +469,10 @@ export function ActivityDetailHost({
     remindState: stateOf,
     shareLink,
     copyLink: (id, url) => void copyLink(id, url),
+    network: session.network,
+    l1ChainId: session.page.config.l1ChainId,
+    chainName: (chainId) =>
+      profileBridge(session.page.config)?.chains.find((c) => c.chainId === chainId)?.name ?? "",
     copiedLinkId,
     registration: registrationDeposit ?? undefined,
     sharePrice,
@@ -448,20 +491,24 @@ export function ActivityDetailHost({
 
   const modal = (): ReactNode => {
     if (exit) return exitModal(exit)
+    if (sheet && "passkeys" in sheet) {
+      const from = sheet.passkeys
+      return <PasskeysSheet onClose={() => open(from)} onLeave={close} />
+    }
     if (!detail) return null
     switch (detail.kind) {
       case "tx": {
-        // The sheet follows its row as it settles: its id moves from queue id to tx hash, and a
-        // creator link's URL gains the tx; the link's secret is what stays put.
-        const secret = (i: TxItem) => (i.tx as { payToEmailSecret?: string }).payToEmailSecret
+        // The sheet follows its row as it settles: its id moves from operation id to tx hash, and
+        // a creator link's URL gains the tx; the link's record id is what stays put.
+        const linkId = (i: RowItem) => (i.kind === "link" ? i.link.id : undefined)
         const live =
           feed.items.find(
-            (i): i is TxItem =>
-              i.kind === "tx" &&
+            (i): i is RowItem =>
+              (i.kind === "tx" || i.kind === "link") &&
               (i.id === detail.item.id ||
-                (!!secret(detail.item) && secret(i) === secret(detail.item))),
+                (!!linkId(detail.item) && linkId(i) === linkId(detail.item))),
           ) ?? detail.item
-        const row = txRowView(live)
+        const row = rowView(live)
         return (
           <TxDetailModal
             row={row}
@@ -486,10 +533,26 @@ export function ActivityDetailHost({
         if (!record) return null
         const hash = record.l2TxHash
         const offer = withdrawalExit(record, now)
+        // Only the feed item carries these: they read records the bridge list hides.
+        const item = feed.items.flatMap((i) =>
+          i.kind === "withdrawal" && i.id === record.localId ? [i] : [],
+        )[0]
+        const recovery = item?.recovery
+        const cost = item?.cost
+        const intent = item?.intent
         return (
           <WithdrawalDetailModal
             record={record}
-            amount={withdrawalHeroAmount(record)}
+            intent={intent}
+            amount={withdrawalHeroAmount(record, cost)}
+            cost={cost}
+            added={item?.added}
+            recovery={recovery}
+            onOpenPasskeys={
+              recovery && recovery.state !== "recovered"
+                ? () => setSheet({ passkeys: detail })
+                : undefined
+            }
             notice={detailNoticeFor(notice, record)}
             onClose={close}
             onCheckAgain={
@@ -526,7 +589,7 @@ export function ActivityDetailHost({
         return run ? (
           <UpgradeRunDetailModal
             run={run}
-            title={upgradeRunTitle[upgradeRunAccount(run.run)]}
+            title={upgradeRunTitle[upgradeRunAccount(session.page.config, run.run)]}
             pricing={upgradePricing}
             onViewDeposit={(deposit) =>
               setSheet({
@@ -553,9 +616,26 @@ export function ActivityDetailHost({
           registration: registrationFor(regs, record.sipaAddress),
           now,
         })
+        const bridgeIn = feed.items.flatMap((i) =>
+          i.kind === "deposit" && i.record.sipaAddress === record.sipaAddress && i.bridgeIn
+            ? [i.bridgeIn]
+            : [],
+        )[0]
+        const funder =
+          bridgeIn &&
+          savedWallets.find((w) => w.address.toLowerCase() === bridgeIn.depositor.toLowerCase())
         return (
           <DepositDetailModal
             record={record}
+            bridgeIn={
+              bridgeIn && {
+                record: bridgeIn,
+                walletName: funder?.name,
+                chainName: profileBridge(session.page.config)?.chains.find(
+                  (c) => c.chainId === bridgeIn.originChainId,
+                )?.name,
+              }
+            }
             registrationTag={registrationTagForDeposit(regs, record)}
             exit={
               offer
@@ -601,12 +681,7 @@ export function ActivityDetailHost({
             sharePrice={sharePrice}
             eta={savingsEta(move, burn)}
             onCheckAgain={
-              savingsSource
-                ? () =>
-                    void savingsSource
-                      .settle()
-                      .catch((err) => console.warn("[savings] settle failed:", err))
-                : undefined
+              savingsAsset && settleTask ? () => void session.wake(settleTask) : undefined
             }
             exit={
               burn && offer
@@ -643,6 +718,8 @@ export function ActivityDetailHost({
           />
         ) : null
       }
+      case "bridgeIn":
+        return <BridgeInDetailModal id={detail.id} onClose={close} />
       case "cancelLink":
         return <CancelRequestLinkModal requestId={detail.id} onClose={close} />
       case "cancelRequest":
@@ -710,8 +787,8 @@ export function ActivityDetailHost({
           <WithdrawalExitModal
             record={sheet.record}
             deployment={
-              sheet.savings && obsidionWallet
-                ? () => savingsFinalizeDeployment(sheet.record)
+              sheet.savings && walletBuilt
+                ? () => savingsFinalizeDeployment(session, sheet.record)
                 : undefined
             }
             onClose={close}
@@ -725,6 +802,7 @@ export function ActivityDetailHost({
               moves.find((m) => m.withdrawalLocalId === sheet.move.withdrawalLocalId) ?? sheet.move
             }
             reason="stuck"
+            pace={session.page.pace}
             onClose={close}
           />
         )
@@ -737,6 +815,7 @@ export function ActivityDetailHost({
           <SwapExitModal
             record={burns.get(sheet.record.localId) ?? sheet.record}
             reason={sheet.reason}
+            pace={session.page.pace}
             onClose={close}
           />
         )
@@ -747,9 +826,7 @@ export function ActivityDetailHost({
   const incomingGone =
     detail?.kind === "incomingRequest" &&
     !feed.items.some((i) => i.kind === "request" && i.role === "incoming" && i.id === detail.id)
-  useEffect(() => {
-    if (incomingGone) close()
-  }, [incomingGone, close])
+  if (incomingGone) close()
 
   return (
     <HostContext.Provider value={host}>

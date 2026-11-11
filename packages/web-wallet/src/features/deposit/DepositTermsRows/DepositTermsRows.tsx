@@ -108,7 +108,7 @@ export function DepositTermsRows({
   limitInfo,
   ...terms
 }: DepositTerms & {
-  /** The chain the deposit is sent on, e.g. "Ethereum (ERC20)". */
+  /** The chain the deposit is sent on, e.g. "Ethereum". */
   networkLabel?: string
   /** Opens the limit's details. */
   limitInfo?: ReactNode

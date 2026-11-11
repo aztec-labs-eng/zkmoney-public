@@ -1,6 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest"
 import { carryRetiredConfig } from "../../../src/platform/storage/retiredConfig"
-import { setActiveRollup } from "../../../src/platform/storage/rollupStorage"
 import {
   closeWalletStore,
   openWalletStore,
@@ -9,6 +8,7 @@ import {
 import { sandboxProfile } from "../../fixtures/sandboxProfile"
 import { testWalletDbs } from "../../support/fakeWalletDb"
 import { testCore } from "../../support/page"
+import { deviceState } from "../../../src/platform/storage/deviceKeys"
 
 const dbs = testWalletDbs()
 const ACTIVE = sandboxProfile().shared.rollupVersion
@@ -19,9 +19,11 @@ function seed(version: string, settings: Record<string, string>) {
   for (const [setting, raw] of Object.entries(settings)) state.set(key(setting), raw)
 }
 
+const seedPrefs = (version: string, prefs: Record<string, string>) =>
+  Object.entries(prefs).forEach(([pref, raw]) => dbs.db(version).state.set(pref, raw))
+
 async function boot() {
   await closeWalletStore()
-  setActiveRollup(ACTIVE)
   await openWalletStore(ACTIVE, { persistent: true })
   await carryRetiredConfig(testCore().database)
 }
@@ -66,5 +68,53 @@ describe("retired settings", () => {
     dbs.db("111").held = true
     await boot()
     expect(read("analyticsConsent")).toBeNull()
+  })
+
+  it("carries the preferences the retired databases agree on, and none they disagree on", async () => {
+    seedPrefs("111", { "webwallet.ticket-intro-seen": "1", "webwallet.hide-paylink-info": "true" })
+    seedPrefs("222", { "webwallet.ticket-intro-seen": "1", "webwallet.hide-paylink-info": "false" })
+    seedPrefs("333", { "webwallet.passkey-names": "{unclosed" })
+    await boot()
+    expect(walletStorage.getItem("webwallet.ticket-intro-seen")).toBe("1")
+    expect(walletStorage.getItem("webwallet.hide-paylink-info")).toBeNull()
+    expect(walletStorage.getItem("webwallet.passkey-names")).toBeNull()
+  })
+
+  it("puts a retired preference ahead of the older copy the device load would carry", async () => {
+    seedPrefs("111", { "webwallet.hide-balances": "false" })
+    localStorage.setItem("webwallet.hide-balances", "true")
+    try {
+      await boot()
+      const device = deviceState(testCore().database)
+      await device.load()
+      expect(device.get().hideBalances).toBe(false)
+    } finally {
+      localStorage.removeItem("webwallet.hide-balances")
+    }
+  })
+
+  it("hides balances when retired databases disagree on it", async () => {
+    seedPrefs("111", { "webwallet.hide-balances": "false" })
+    seedPrefs("222", { "webwallet.hide-balances": "true" })
+    await boot()
+    expect(walletStorage.getItem("webwallet.hide-balances")).toBe("true")
+  })
+
+  it("tries the settings again on a later boot when this database holds only preferences", async () => {
+    seed("111", { allowNonContactRequests: "false" })
+    dbs.db("111").held = true
+    seedPrefs(ACTIVE, { "webwallet.hide-balances": "true" })
+    await boot()
+    expect(read("allowNonContactRequests")).toBeNull()
+    dbs.db("111").held = false
+    await boot()
+    expect(read("allowNonContactRequests")).toBe("false")
+  })
+
+  it("carries a preference this database lacks beside settings of its own", async () => {
+    seed(ACTIVE, { analyticsConsent: "true" })
+    seedPrefs("111", { "webwallet.hide-paylink-info": "true" })
+    await boot()
+    expect(walletStorage.getItem("webwallet.hide-paylink-info")).toBe("true")
   })
 })

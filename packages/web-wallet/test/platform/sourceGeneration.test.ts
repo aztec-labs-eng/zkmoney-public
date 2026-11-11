@@ -14,14 +14,12 @@ vi.mock("@obsidion/sdk", () => ({
   }),
   WebAuthnAlphaAuthProvider: class {},
 }))
-vi.mock("../../src/config/env", () => ({
-  getConfig: () => ({
-    nodeUrl: "https://v6.rpc.example",
-    nodeApiKey: "key",
-    sourceRollupApiKey: "build-key",
-    sourceRollups: [{ nodeUrl: "https://v6r.rpc.example" }, { nodeUrl: "https://v5r.rpc.example" }],
-  }),
-}))
+const config = {
+  nodeUrl: "https://v6.rpc.example",
+  nodeApiKey: "key",
+  sourceRollupApiKey: "build-key",
+  sourceRollups: [{ nodeUrl: "https://v6r.rpc.example" }, { nodeUrl: "https://v5r.rpc.example" }],
+} as never
 
 const { WebAuthnAlphaAuthProvider } = await import("@obsidion/sdk")
 const {
@@ -46,15 +44,15 @@ beforeEach(() => {
 describe("nodeAztecMajor", () => {
   it("reads the major version, whatever the patch or prefix", async () => {
     h.versions.set("https://a.example", "v5.0.0")
-    await expect(nodeAztecMajor("https://a.example")).resolves.toBe("5")
+    await expect(nodeAztecMajor(config, "https://a.example")).resolves.toBe("5")
   })
 
   it("asks a node once, and again after a failed read", async () => {
     h.getNodeInfo.mockRejectedValueOnce(new Error("down"))
-    await expect(nodeAztecMajor("https://b.example")).rejects.toThrow("down")
+    await expect(nodeAztecMajor(config, "https://b.example")).rejects.toThrow("down")
     h.versions.set("https://b.example", "5.2.0")
-    await expect(nodeAztecMajor("https://b.example")).resolves.toBe("5")
-    await nodeAztecMajor("https://b.example")
+    await expect(nodeAztecMajor(config, "https://b.example")).resolves.toBe("5")
+    await nodeAztecMajor(config, "https://b.example")
     expect(h.getNodeInfo).toHaveBeenCalledTimes(2)
   })
 })
@@ -63,8 +61,8 @@ describe("isOtherGeneration", () => {
   it("compares the source node's major version with the active node's", async () => {
     h.versions.set("https://v5.rpc.example", "5.2.0")
     h.versions.set("https://v6b.rpc.example", "6.1.0")
-    await expect(isOtherGeneration("https://v5.rpc.example")).resolves.toBe(true)
-    await expect(isOtherGeneration("https://v6b.rpc.example")).resolves.toBe(false)
+    await expect(isOtherGeneration(config, "https://v5.rpc.example")).resolves.toBe(true)
+    await expect(isOtherGeneration(config, "https://v6b.rpc.example")).resolves.toBe(false)
   })
 })
 
@@ -74,9 +72,9 @@ describe("retiredRollupMajor", () => {
     h.rollups.set("https://v5r.rpc.example", "0x5555")
     h.versions.set("https://v6r.rpc.example", "6.1.0")
     h.rollups.set("https://v6r.rpc.example", "0x6666")
-    await expect(retiredRollupMajor("0x5555")).resolves.toBe("5")
-    await expect(retiredRollupMajor("0x6666")).resolves.toBeUndefined()
-    await expect(retiredRollupMajor("0x7777")).resolves.toBeUndefined()
+    await expect(retiredRollupMajor(config, "0x5555")).resolves.toBe("5")
+    await expect(retiredRollupMajor(config, "0x6666")).resolves.toBeUndefined()
+    await expect(retiredRollupMajor(config, "0x7777")).resolves.toBeUndefined()
   })
 
   it("still names the source rollup's major when the active node does not answer", async () => {
@@ -91,7 +89,7 @@ describe("retiredRollupMajor", () => {
         l1ContractAddresses: { rollupAddress: h.rollups.get(url) ?? "0x00" },
       }
     })
-    await expect(fresh.retiredRollupMajor("0x5555")).resolves.toBe("5")
+    await expect(fresh.retiredRollupMajor(config, "0x5555")).resolves.toBe("5")
   })
 })
 
@@ -100,7 +98,7 @@ describe("the probe's API key", () => {
     vi.resetModules()
     const fresh = await import("../../src/platform/sourceGeneration")
     h.versions.set("https://v5.rpc.example", "5.2.0")
-    await fresh.isOtherGeneration("https://v5.rpc.example")
+    await fresh.isOtherGeneration(config, "https://v5.rpc.example")
     expect(h.getNodeInfo).toHaveBeenCalledWith("https://v6.rpc.example", "key")
     expect(h.getNodeInfo).toHaveBeenCalledWith("https://v5.rpc.example", "build-key")
   })

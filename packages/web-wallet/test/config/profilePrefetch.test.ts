@@ -3,11 +3,7 @@
  * response, and its deadline still applies.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import {
-  __resetProfilePrefetchForTests,
-  prefetchProfile,
-  profileFetch,
-} from "../../src/config/profilePrefetch"
+import { prefetchProfile } from "../../src/config/profilePrefetch"
 
 const URL = "https://cdn.example.test/profiles/v5/current.json"
 const env = { VITE_CONFIG_PROFILE_URL: URL }
@@ -18,13 +14,12 @@ beforeEach(() => {
   vi.stubGlobal("fetch", fetchMock)
 })
 afterEach(() => {
-  __resetProfilePrefetchForTests()
   vi.unstubAllGlobals()
 })
 
 describe("prefetchProfile", () => {
   it("requests the profile once, and the boot's request takes it", async () => {
-    prefetchProfile(env)
+    const profileFetch = prefetchProfile(env)!
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(fetchMock.mock.calls[0][0]).toBe(URL)
     const response = await profileFetch(URL, { headers: { accept: "application/json" } })
@@ -36,13 +31,13 @@ describe("prefetchProfile", () => {
   })
 
   it("leaves any other request to fetch", async () => {
-    prefetchProfile(env)
+    const profileFetch = prefetchProfile(env)!
     await profileFetch("https://cdn.example.test/artifacts/manifest.json")
     expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
   it("aborts the prefetch when the boot's deadline does", async () => {
-    prefetchProfile(env)
+    const profileFetch = prefetchProfile(env)!
     const prefetchSignal = fetchMock.mock.calls[0][1].signal as AbortSignal
     const deadline = new AbortController()
     void profileFetch(URL, { signal: deadline.signal })
@@ -52,7 +47,7 @@ describe("prefetchProfile", () => {
   })
 
   it("is not made by a desktop build, whose launcher may name another profile", () => {
-    prefetchProfile({ ...env, VITE_DESKTOP_BUILD: "true" })
+    expect(prefetchProfile({ ...env, VITE_DESKTOP_BUILD: "true" })).toBeUndefined()
     expect(fetchMock).not.toHaveBeenCalled()
   })
 })

@@ -7,9 +7,14 @@ export default {
     "This device already has a wallet. Recovering a different security key here would replace it — " +
     "confirm 'replace this device's wallet' to proceed.",
   "account.locked": "the wallet is locked",
+  "account.outdated":
+    "This page is running an outdated account for your wallet. Refresh the page to continue.",
   "account.noPasskeyCredential":
     "no passkey credential id for the current account — cannot install the r1 key on registration",
   "tx.overGasLimit": "This transaction exceeds the network's gas limit and cannot be submitted.",
+  "sponsorship.unconfirmed":
+    "This transaction was not sent: zk.money could not confirm it is sponsored. Please try again " +
+    "in a moment.",
   "wallet.notReady": "The wallet is still starting. Try again in a moment.",
   "wallet.missing": "wallet not found",
   "onboarding.signupUnsaved":
@@ -37,6 +42,8 @@ export default {
   "deposit.broadcastFailed": "The address was not published",
   "deposit.addressUnpublished": "This address is no longer published",
   "deposit.addressRetired": "This address is no longer in use",
+  "deposit.sendHeld": "Another deposit from your browser wallet may still be sent.",
+  "deposit.holdUnsaved": "This browser couldn't save the deposit's progress.",
   "deposit.belowFee": "Amount must exceed the deposit fee ({fee} {symbol})",
   "deposit.overCap": "This amount is over the network's maximum per deposit",
   "deposit.fundingReverted": "Funding transfer {hash} reverted",
@@ -55,7 +62,8 @@ export default {
     "This wallet is still looking up this deposit's details. Try again once it has them.",
   "recovery.strandedEmpty": "This deposit address no longer holds any {symbol}.",
   "recovery.noEth": "This deposit address holds no ETH. It may already have been recovered.",
-  "recovery.ethUnsupported": "This deposit address cannot recover ETH. Contact support to move it.",
+  "recovery.ethUnsupported":
+    "This deposit address can't recover ETH. The ETH stays at the address.",
   "recovery.wrongChain": "Switch to the deposit's original chain before recovery",
   "recovery.destinationMissing":
     "Enter the Ethereum address that should receive the recovered funds.",
@@ -146,5 +154,14 @@ export default {
   "refund.incomplete":
     "The original refund is not complete. Check it before requesting a new address.",
   "refund.receiptUnread": "A refund receipt could not be read. Try again.",
+  "paylink.termsMismatch": "This link doesn't match its escrow",
+  // Proposed copy for the bridge refusals, pending review.
+  "bridge.belowFee": "This amount is too small to cover the bridge fee.",
+  "bridge.quoteFailed": "Couldn't get a bridge quote. Try again.",
+  "withdraw.bridgeBelowFloor": "This amount is too small to bridge.",
+  "withdraw.escrowRan": "This escrow has already run. The record will update shortly.",
+  // Proposed copy for the two operation refusals, pending review.
+  "operation.running": "This transaction is already in progress.",
+  "operation.sent": "This transaction was already sent.",
   "unknown": "Something went wrong. Try again.",
 } as const satisfies Partial<Record<ErrorCode, string>>

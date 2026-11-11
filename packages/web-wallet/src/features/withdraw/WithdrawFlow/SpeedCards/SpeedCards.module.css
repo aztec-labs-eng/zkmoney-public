@@ -1,0 +1,95 @@
+/* The speed choice: two radio cards under the transfer widget. */
+.speeds {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  /* With the fields' 12px gap and the step's 16px: 24px from the fields and to the button. */
+  margin-block: 12px 8px;
+}
+.speed.speed {
+  display: flex;
+  flex: 1 1 0;
+  align-items: center;
+  gap: 24px;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 12px 16px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+  text-align: left;
+}
+/* Selected: a rounded gradient ring over the card's own border, which goes clear. */
+.speed.speed[aria-checked="true"] {
+  position: relative;
+  border-color: transparent;
+}
+.speed.speed[aria-checked="true"]::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  padding: 1px;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #9c04ff, #0693ff);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  pointer-events: none;
+}
+.speed.speed:disabled {
+  cursor: default;
+}
+.speed.speed:disabled[aria-checked="false"] {
+  opacity: 0.5;
+}
+.speedText {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.speedText b {
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+}
+.speedText small {
+  font-size: 12px;
+  color: #bfc2d7;
+}
+.radio {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  box-sizing: border-box;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 50%;
+}
+[aria-checked="true"] > .radio {
+  border: 0;
+  background: linear-gradient(135deg, #9c04ff, #0693ff);
+}
+[aria-checked="true"] > .radio::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #fff;
+}
+/* Narrow sheets stack the cards. */
+@media (max-width: 420px) {
+  .speeds {
+    flex-direction: column;
+  }
+}
+.speedNote {
+  flex-basis: 100%;
+  font-size: 11px;
+  color: #bfc2d7;
+}

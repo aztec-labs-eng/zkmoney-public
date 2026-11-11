@@ -1,0 +1,49 @@
+{
+  "scenario": "activity",
+  "viewport": "402x879,1280x832",
+  "path": "/settings?flowFixture=success&backupFixture=first-passkey",
+  "ready": {
+    "selector": ".ww-settings__user"
+  },
+  "steps": [
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Passkeys",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": "html[data-backup-screen=firstPasskey]"
+    },
+    {
+      "action": "screenshot",
+      "file": "b4-first-passkey.png",
+      "state": "B4: signed in with a key other than the first passkey"
+    },
+    {
+      "action": "goto",
+      "path": "/settings?flowFixture=success&backupFixture=first-passkey-raised"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-settings__user"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Passkeys",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": "html[data-backup-screen=firstPasskey]"
+    },
+    {
+      "action": "screenshot",
+      "file": "b4-first-passkey-raised.png",
+      "state": "B4: raised over a step only the first passkey signs"
+    }
+  ],
+  "finalScreenshot": false
+}

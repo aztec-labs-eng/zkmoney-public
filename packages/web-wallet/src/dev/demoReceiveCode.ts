@@ -2,14 +2,15 @@
  * Dev demo: Receive's code without a wallet. The deposit fixture address stands in for a pooled one,
  * and the request is minted but not stored. The token stands in too: the L2 fixture is not a field.
  */
-import { mintRequestLink, randomCodeRequestId } from "@obsidion/front-core"
-import { receiveCodeKey, type CodeDeps } from "../features/receive/receiveCode"
+import { mintRequestLink, randomCodeRequestId, type ReceiveCodes } from "@obsidion/front-core"
+import { receiveCodeId, type CodeDeps } from "../features/receive/receiveCode"
 import type { CodePayment } from "../features/receive/useReceiveCode"
 import { demoDepositAddress } from "./demoDeposit"
 
-export function demoCodeDeps(tag: string): CodeDeps {
+export function demoCodeDeps(tag: string, codes: ReceiveCodes): CodeDeps {
   return {
-    key: receiveCodeKey("demo", tag),
+    codes,
+    id: receiveCodeId("demo", tag),
     readyAddress: async () => ({
       address: demoDepositAddress(tag).address,
       day: Math.floor(Date.now() / 86_400_000),

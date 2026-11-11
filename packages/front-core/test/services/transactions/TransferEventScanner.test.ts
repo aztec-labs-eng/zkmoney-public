@@ -1,107 +1,22 @@
 import { describe, expect, it, vi } from "vitest"
-import { PaylinkActionEnum, TokenActionEnum } from "@obsidion/core/constants"
-import type { Transaction } from "../../../src/types/transactions"
+import { PaylinkActionEnum } from "@obsidion/core/constants"
 import {
-  TransferEventScanner,
   TRANSFER_SCAN_CATCH_UP_BLOCKS,
   TRANSFER_SCAN_REORG_MARGIN,
   type ScannedTransferEvent,
-  type TransferEventSource,
-  type TransferScanPass,
   scannedRow,
 } from "../../../src/core/services/transactions/TransferEventScanner"
-import { seededActivity } from "../../utils/activityFixture"
 import type { MemoryBackend } from "../../../src/engine/memoryBackend"
 import { syncCatchUp } from "../../../src/engine/catchUp"
-
-const ME = "0x" + "aa".repeat(32)
-const ALICE = "0x" + "bb".repeat(32)
-const MALLORY = "0x" + "cc".repeat(32)
-const TOKEN = { address: "0x" + "11".repeat(32), symbol: "DAI", decimals: 6 }
-const STORE_WRITE_FAILED = new Error("store write failed")
-
-function event(overrides: Partial<ScannedTransferEvent> = {}): ScannedTransferEvent {
-  return {
-    txHash: "0x" + "01".repeat(32),
-    from: ALICE,
-    to: ME,
-    amount: "5000000",
-    blockNumber: 10,
-    senderTag: "alice",
-    ...overrides,
-  }
-}
-
-function harness(opts: {
-  contactTag?: string
-  events?: ScannedTransferEvent[]
-  head?: number | (() => number)
-  /** PXE synced block; unset means the source has no anchorBlock. */
-  anchor?: () => number
-  /** Range-aware event source; wins over `events`. */
-  list?: (fromBlock: number, toBlockExclusive: number) => ScannedTransferEvent[]
-  resolve?: (tag: string) => Promise<{ l2Address: string } | null>
-  /** Hashes already held by a row of some OTHER action (a paylink claim/refund). */
-  otherRowHashes?: string[]
-  /** Throw from the store write, to exercise a poison event. */
-  addThrows?: () => boolean
-  onSynced?: (anchor: number) => Promise<void>
-  /** Block time read; defaults to `block * 1000`. Undefined means the node could not serve it. */
-  blockTime?: (block: number) => number | undefined
-  sourceTimeoutMs?: number
-}) {
-  const activity = seededActivity(
-    (opts.otherRowHashes ?? []).map((txHash) => ({
-      action: PaylinkActionEnum.CLAIM,
-      emailPaymentAction: PaylinkActionEnum.CLAIM,
-      txHash,
-      timestamp: 1,
-      status: "success",
-    })) as Transaction[],
-  )
-  const { backend } = activity
-  const adds: Transaction[] = []
-  const payouts: Transaction[] = []
-  const record = activity.record.bind(activity)
-  vi.spyOn(activity, "record").mockImplementation(async (row, recordOpts, w) => {
-    if (opts.addThrows?.()) throw STORE_WRITE_FAILED
-    ;(recordOpts?.replaces === TokenActionEnum.RECEIVE ? payouts : adds).push(row)
-    return record(row, recordOpts, w)
-  })
-  const registered: { tag: string; l2Address: string }[] = []
-  const listIncoming = vi.fn(async (a: number, b: number) =>
-    opts.list ? opts.list(a, b) : opts.events ?? [],
-  )
-  const source: TransferEventSource = {
-    headBlock: async () => (typeof opts.head === "function" ? opts.head() : opts.head ?? 100),
-    listIncoming,
-    blockTimestampMs: async (b) => (opts.blockTime ? opts.blockTime(b) : b * 1000),
-    ...(opts.anchor ? { anchorBlock: async () => opts.anchor!() } : {}),
-  }
-  /** The persisted cursor, read straight from storage — call args are not proof of state. */
-  const cursor = async () =>
-    Number(backend.entries.get(`@obsidion/transfer-scan/cursor/v1/net/${ME}`) ?? 0)
-  const scanner = new TransferEventScanner({
-    source,
-    db: activity.db,
-    transactionStore: activity,
-    tags: {
-      resolveL2: opts.resolve ?? (async (tag) => (tag === "alice" ? { l2Address: ALICE } : null)),
-    },
-    contacts: {
-      findByL2Address: async () => (opts.contactTag ? { tag: opts.contactTag } : null),
-      registerL2: async (args) => void registered.push(args),
-    },
-    token: TOKEN,
-    onSynced: opts.onSynced,
-    sourceTimeoutMs: opts.sourceTimeoutMs,
-  })
-  const ctx = { accountAddress: ME, accountTag: "me", networkId: "net" }
-  /** A full pass unless told otherwise: a wake, as the runtime runs on start, show and refresh. */
-  const pass = (o: TransferScanPass = {}, c: typeof ctx & { endpointScope?: string } = ctx) =>
-    scanner.pass(c, { full: true, ...o })
-  return { scanner, ctx, pass, adds, payouts, activity, registered, listIncoming, cursor, backend }
-}
+import {
+  ALICE,
+  event,
+  harness,
+  MALLORY,
+  ME,
+  STORE_WRITE_FAILED,
+  TOKEN,
+} from "./transferScannerHarness"
 
 describe("TransferEventScanner", () => {
   it("files a receive with a verified payout lane as a paylink claim, not a receive", async () => {
@@ -132,7 +47,7 @@ describe("TransferEventScanner", () => {
   it("upgrades a payout filed as a plain receive before its lane was read", async () => {
     const lane = { flavor: "direct" as const, secret: {} as never, fallbackKeyHash: {} as never }
     const h = harness({ events: [event({ paylinkPayout: lane })] })
-    await h.activity.record(
+    await h.transfers.record(
       scannedRow({
         txHash: event().txHash,
         from: ALICE,
@@ -224,6 +139,20 @@ describe("TransferEventScanner", () => {
     })
     await h.pass()
     expect(h.adds).toHaveLength(1)
+  })
+
+  it("skips transfers with the wallet's other account, either way", async () => {
+    const h = harness({
+      events: [
+        event({ txHash: "0x" + "02".repeat(32) }),
+        event({ from: ME, to: ALICE, txHash: "0x" + "03".repeat(32) }),
+        event({ from: MALLORY, senderTag: undefined, txHash: "0x" + "04".repeat(32) }),
+      ],
+    })
+    await h.pass({}, { ...h.ctx, ownAccount: "0x" + "BB".repeat(32) })
+    expect(h.adds).toEqual([
+      expect.objectContaining({ senderL2Address: MALLORY, recipientL2Address: ME }),
+    ])
   })
 
   it("adopts a send's recipient tag as a contact once the registry resolves it to the recipient", async () => {
@@ -368,6 +297,20 @@ describe("TransferEventScanner", () => {
     expect(h.adds).toHaveLength(0)
     // Still retrying the same range from block 1 — the event was never abandoned.
     expect(h.listIncoming).toHaveBeenLastCalledWith(1, 101)
+  })
+
+  it("reads the anchor before the list, so a sync while it lists never moves the cursor", async () => {
+    let anchor = 40
+    const h = harness({
+      head: 1_000,
+      anchor: () => anchor,
+      list: () => {
+        anchor = 900
+        return []
+      },
+    })
+    await h.pass()
+    expect(await h.cursor()).toBe(40)
   })
 
   it("never persists the cursor past the PXE anchor, and ingests the gap once it catches up", async () => {
@@ -587,10 +530,10 @@ describe("TransferEventScanner", () => {
 })
 
 describe("TransferEventScanner cursor scope", () => {
-  const UNSCOPED_KEY = `@obsidion/transfer-scan/cursor/v1/net/${ME}`
-  const SCOPED_KEY = `@obsidion/transfer-scan/cursor/v1/net/A/${ME}`
+  const UNSCOPED_KEY = `acct/transferScanCursor/net/${ME}`
+  const SCOPED_KEY = `acct/transferScanCursor/net/A/${ME}`
   const cursorKeys = (backend: MemoryBackend) =>
-    [...backend.entries.keys()].filter((k) => k.startsWith("@obsidion/transfer-scan/cursor/"))
+    [...backend.entries.keys()].filter((k) => k.startsWith("acct/transferScanCursor/"))
 
   it("keeps the cursor under the scoped key and never touches the unscoped one", async () => {
     const h = harness({ events: [] })

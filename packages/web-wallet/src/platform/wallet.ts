@@ -1,33 +1,36 @@
 /**
- * The page's wallet: one PXE per page, over the store the active tab opened. Lazy, so a pay page
- * that waits for demand boots nothing until a screen needs it. A failed boot waits for a reload.
+ * The page's wallet: one PXE per page, over the store the active tab opened. It boots once the page
+ * wants it, so a pay page boots nothing until a screen needs it. A failed boot waits for a reload.
  */
 import type { AztecNode } from "@aztec-labs/aztec.js/node"
 import { createLogger } from "@aztec-labs/foundation/log"
+import type { Pace } from "@obsidion/core/cadence"
 import { l1ChainIdForNetwork } from "@obsidion/core/constants"
 import {
+  derived,
   memoryStore,
-  resource,
-  setActiveGenerationNode,
+  service,
+  WalletError,
   type ReadonlyStore,
-  type Resource,
+  type Service,
 } from "@obsidion/front-core"
-import { ObsidionWallet } from "@obsidion/sdk"
-import { getConfig } from "../config/env"
+import { ObsidionWallet, type ContractServiceFactory, type SendTurns } from "@obsidion/sdk"
+import type { WebWalletConfig } from "../config/env"
 import { fireEvent } from "../lib/analytics"
 import { provingDevice } from "../lib/provingDevice"
 import type { PxeBootTarget } from "../ui/PxeBoot"
-import { barretenbergWasm } from "./bbWasmPath"
+import { barretenbergWasm } from "./barretenberg"
 import { isActiveTab } from "./storage/activeTab"
 import { tabStash } from "./storage/tabStash"
 import { reloadPage } from "./storage/walletStorage"
 
 export type PxeTarget = Extract<PxeBootTarget, { kind: "pxe" }>
-/** `bb` is where the PXE's prover loads bb.js, when the page serves it. */
+/** `bb` is the page's bb.js options, which the PXE's prover starts on. */
 export type CreateWallet = (
   node: AztecNode,
   target: PxeTarget,
-  bb: { wasmPath?: string },
+  bb: ReturnType<typeof barretenbergWasm>,
+  contractService: ContractServiceFactory,
 ) => Promise<ObsidionWallet>
 
 /** The node did not answer a request; the transport error rides as `cause`. */
@@ -77,88 +80,111 @@ function clearDownloadReloads(): void {
   }
 }
 
-/** The wallet pinned to the identity the active tab checked against L1. */
-const createWallet: CreateWallet = (node, { store, identity }, { wasmPath }) => {
-  const config = getConfig()
-  const pxeConfig = {
-    proverEnabled: config.proverEnabled,
-    proveTxPerfLogs: true,
-    l1ChainId: l1ChainIdForNetwork(config.network),
-  }
-  return ObsidionWallet.create(
-    node,
-    pxeConfig,
-    {
-      loggers: {
-        pxe: createLogger("pxe"),
-        store: createLogger("pxe:store"),
-        prover: createLogger("pxe:prover"),
+/**
+ * The wallet pinned to the identity the active tab checked against L1, its waits on `pace` and its
+ * sends on the page's `prover`.
+ */
+export const createWallet =
+  (config: WebWalletConfig, pace: Pace, prover: SendTurns): CreateWallet =>
+  (node, { store, identity }, bb, contractService) => {
+    const pxeConfig = {
+      proverEnabled: config.proverEnabled,
+      proveTxPerfLogs: true,
+      l1ChainId: l1ChainIdForNetwork(config.network),
+    }
+    return ObsidionWallet.create(
+      node,
+      pxeConfig,
+      {
+        loggers: {
+          pxe: createLogger("pxe"),
+          store: createLogger("pxe:store"),
+          prover: createLogger("pxe:prover"),
+        },
+        // The boot's bb.js, so the first proof downloads it no second time.
+        proverOrOptions: bb,
+        store,
       },
-      // The boot's bb.js, so the first proof downloads it no second time.
-      proverOrOptions: wasmPath ? { wasmPath } : undefined,
-      store,
-    },
-    {
-      chainInfo: { l1ChainId: identity.l1ChainId, rollupVersion: Number(identity.rollupVersion) },
-      networkId: identity.rollupAddress,
-    },
-  )
-}
+      {
+        chainInfo: { l1ChainId: identity.l1ChainId, rollupVersion: Number(identity.rollupVersion) },
+        networkId: identity.rollupAddress,
+        pace,
+        prover,
+        contractService,
+      },
+    )
+  }
+
+/** Never settles: the page is reloading, so the boot stays pending. */
+const reloading = () => new Promise<never>(() => {})
 
 /**
  * Boots the PXE. A tab another tab took over while it booted keeps it pending: it is reloading, and
  * closed the store under the PXE, so a failure is expected. A failed module download reloads the
  * page, twice at most.
  */
-async function boot(node: AztecNode, target: PxeTarget, create: CreateWallet) {
+async function boot(
+  node: AztecNode,
+  target: PxeTarget,
+  create: CreateWallet,
+  contractService: ContractServiceFactory,
+) {
   try {
-    const wallet = await create(node, target, barretenbergWasm())
-    setActiveGenerationNode(wallet.node)
+    const wallet = await create(node, target, barretenbergWasm(), contractService)
     fireEvent("pxe_boot_completed", {
       duration_ms: Math.round(performance.now() - target.bootStartedAt),
       attempts: target.attempts,
       ...provingDevice(),
     })
     clearDownloadReloads()
-    return isActiveTab() ? wallet : undefined
+    return isActiveTab() ? wallet : reloading()
   } catch (e) {
-    if (!isActiveTab()) return undefined
+    if (!isActiveTab()) return reloading()
     const error = isNodeFetchFailure(e) ? new NodeUnreachableError(e) : e
-    if (isModuleDownloadFailure(error) && takeDownloadReload()) return void reloadPage()
+    if (isModuleDownloadFailure(error) && takeDownloadReload()) {
+      void reloadPage()
+      return reloading()
+    }
     throw error
   }
 }
 
-const demanded = memoryStore(false)
-/** A screen asked for the wallet. */
-export const walletDemanded: ReadonlyStore<boolean> = demanded.readonly
-
-/** Stands in on a page whose tab opened no store: demo mode boots no wallet, so it stays pending. */
-const NO_WALLET = resource(
-  "wallet",
-  { from: [], lazy: true, backoff: "manual" },
-  () => new Promise<ObsidionWallet>(() => {}),
-)
-let page: Resource<ObsidionWallet> | undefined
-
-/** Builds the page's wallet over the active tab's store; the first call wins. */
-export function startPageWallet(
-  node: AztecNode,
-  target: PxeTarget,
-  create: CreateWallet = createWallet,
-): Resource<ObsidionWallet> {
-  if (page) return page
-  const built = resource("wallet", { from: [], lazy: true, backoff: "manual" }, () =>
-    boot(node, target, create),
-  )
-  page = {
-    ...built,
-    demand() {
-      demanded.set(true)
-      built.demand()
-    },
-  }
-  return page
+/** The page's wallet, the no-wallet stand-in until the active tab opens its store. */
+export interface PageWallet {
+  /** Pending until the page wants it over an opened store: demo mode opens none. `ready()` wants it. */
+  wallet: Service<ObsidionWallet>
+  /** The rollup address the wallet is pinned to, once it is built. */
+  networkId: ReadonlyStore<string | undefined>
+  /** The page wants the wallet; the PXE boots while it holds. */
+  walletWanted: ReadonlyStore<boolean>
+  /** The boot asks for the wallet. Before `openWallet` it asks for nothing. */
+  wantWallet(): void
+  /** Builds the wallet over the active tab's store; the first call wins. */
+  openWallet(node: AztecNode, target: PxeTarget, create: CreateWallet): void
 }
 
-export const pageWallet = (): Resource<ObsidionWallet> => page ?? NO_WALLET
+/** A want before the store opens boots nothing, even once it opens. */
+export function createPageWallet(contractService: ContractServiceFactory): PageWallet {
+  const wanted = memoryStore(false)
+  const opened = memoryStore<(() => Promise<ObsidionWallet>) | undefined>(undefined)
+  const wallet = service(
+    "wallet",
+    { from: [], when: wanted.readonly, dispose: (w) => w.pxe.stop(), retry: "manual" },
+    () => {
+      const open = opened.get()
+      if (!open) throw new WalletError("invariant", "the wallet is wanted before its store opened")
+      return open()
+    },
+  )
+  const wantWallet = () => void (opened.get() && wanted.set(true))
+  return {
+    // A flow that waits for the wallet asks for it, as a boot screen does.
+    wallet: { ...wallet, ready: (signal) => (wantWallet(), wallet.ready(signal)) },
+    networkId: derived([wallet], (s) => (s.status === "ready" ? s.value.networkId : undefined)),
+    walletWanted: wanted.readonly,
+    wantWallet,
+    openWallet(node, target, create) {
+      if (!opened.get()) opened.set(() => boot(node, target, create, contractService))
+    },
+  }
+}

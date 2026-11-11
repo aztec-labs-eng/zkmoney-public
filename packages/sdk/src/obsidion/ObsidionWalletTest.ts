@@ -27,7 +27,9 @@ import {
   type ObsidionWalletOptions,
 } from "./ObsidionWallet.js"
 import { proveTxWithProgress } from "./proving-progress-helpers.js"
-import { type AztecNode, waitForTx } from "@aztec-labs/aztec.js/node"
+import { type AztecNode } from "@aztec-labs/aztec.js/node"
+import type { Pace } from "@obsidion/core/cadence"
+import { waitForTx } from "../utils/waitForTx.js"
 import {
   NO_WAIT,
   type NoWait,
@@ -50,7 +52,7 @@ import type { CompleteFeeOptionsConfig, FeeOptions } from "@aztec-labs/wallet-sd
 import { inspect } from "util"
 import { SimulationError } from "@aztec-labs/stdlib/errors"
 import type { ContractArtifact } from "@aztec-labs/stdlib/abi"
-import { ContractService, DEFAULT_CONTRACTS, type ContractName } from "@obsidion/contracts"
+import { DEFAULT_CONTRACTS, type ContractName } from "@obsidion/contracts"
 
 type SchnorrTestAccountType = "schnorr" | "schnorr_initializerless"
 
@@ -65,6 +67,16 @@ type SchnorrTestAccountType = "schnorr" | "schnorr_initializerless"
  * - proveTx: Prove transactions without sending (privacy risk)
  * - getNotes: Access internal note data (exposes contract internals)
  */
+/**
+ * Where a PXE store named `name` lives: a relative name under PXE_DATA_ROOT when a test run gives one (the light-node
+ * configs: a directory of the run's own), else beside the process. Anything that reads a store's files by name (a
+ * snapshot of it) resolves it here too.
+ */
+export function pxeDataDirectory(name: string): string {
+  const root = process.env.PXE_DATA_ROOT
+  return root && !name.startsWith("/") ? `${root}/${name}` : name
+}
+
 export class ObsidionWalletTest extends ObsidionWallet {
   // Integration tests share anvil account #0 with the sandbox sequencer's L1 publisher; waiting
   // for CHECKPOINTED keeps test L1 writes out of the publisher's in-flight window.
@@ -75,7 +87,7 @@ export class ObsidionWalletTest extends ObsidionWallet {
   }
 
   protected override async getAccountArtifact(): Promise<ContractArtifact> {
-    return ContractService.getInstance().getArtifactForContract(this.getAccountContractName())
+    return this.contractService.getArtifactForContract(this.getAccountContractName())
   }
 
   protected override getAccountContractName(): ContractName {
@@ -108,7 +120,7 @@ export class ObsidionWalletTest extends ObsidionWallet {
       autoSync: overridePXEConfig?.autoSync ?? false,
       ...overridePXEConfig,
     })
-    pxeConfig.dataDirectory = pxeConfig.dataDirectory ?? `pxe-${networkId}`
+    pxeConfig.dataDirectory = pxeDataDirectory(pxeConfig.dataDirectory ?? `pxe-${networkId}`)
 
     const pxe = await (await import("@aztec-labs/pxe/server")).createPXE(node, pxeConfig, options)
     return new ObsidionWalletTest(pxe, node, networkId, walletOpts)
@@ -303,6 +315,7 @@ export class ObsidionWalletTest extends ObsidionWallet {
     )
     return new ProvenTx(
       this.aztecNode,
+      this.pace,
       await txProvingResult.toTx(),
       txProvingResult.getOffchainEffects(),
       txProvingResult.stats,
@@ -347,6 +360,7 @@ export type ProvenTxSendReturn<T extends NoWait | WaitOpts | undefined> = T exte
 export class ProvenTx extends Tx {
   constructor(
     private node: AztecNode,
+    private pace: Pick<Pace, "wait">,
     tx: Tx,
     public offchainEffects: OffchainEffect[],
     public stats?: ProvingStats,
@@ -375,7 +389,7 @@ export class ProvenTx extends Tx {
     }
 
     const waitOpts = typeof options?.wait === "object" ? options.wait : undefined
-    return await waitForTx(this.node, txHash, waitOpts)
+    return await waitForTx(this.node, txHash, waitOpts, this.pace)
   }
 
   private contextualizeError(err: Error, ...context: string[]): Error {

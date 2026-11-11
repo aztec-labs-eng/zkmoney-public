@@ -8,7 +8,11 @@ import { Fr } from "@aztec-labs/aztec.js/fields"
 import { getAddress, type Hex } from "viem"
 import { buildDepositIntent, deriveSelfSipaSecret, selfSipaNonce } from "@obsidion/sdk"
 import type { SipaDeposit } from "@obsidion/front-core"
-import { publishInputsFromRecord } from "../../../../src/features/broadcasts/slotExecutor"
+import type { OxideEnvTuple } from "@obsidion/core/types"
+import {
+  isKnownSipaSet,
+  publishInputsFromRecord,
+} from "../../../../src/features/broadcasts/slotExecutor"
 import { slotFloor } from "../../../../src/features/deposit/sipaAddresses"
 
 const KEY = new Fr(0x5e1fn)
@@ -105,5 +109,40 @@ describe("publishInputsFromRecord", () => {
         }),
       ),
     ).toBeNull()
+  })
+})
+
+describe("isKnownSipaSet", () => {
+  const TABLE = getAddress(`0x${"77".repeat(20)}`)
+  const OLD_FACTORY = getAddress(`0x${"88".repeat(20)}`)
+  const OLD_TABLE = getAddress(`0x${"99".repeat(20)}`)
+  const tuple = {
+    sipaFactory: FACTORY,
+    forwardingTable: TABLE,
+    priorSipaGenerations: [{ sipaFactory: OLD_FACTORY, forwardingTable: OLD_TABLE }],
+  } as unknown as OxideEnvTuple
+  const candidate = (sipaFactory: string, forwardingTable: string) =>
+    publishInputsFromRecord(
+      record({
+        origin: {
+          ...origin,
+          sipaFactory,
+          protocol: "account",
+          rollupVersion: "7",
+          resweepable: true,
+          recoveryCommitment: `0x${"66".repeat(32)}`,
+          recoveryAccount: RECOVERY,
+          accountFactory: FACTORY,
+          forwardingTable,
+        },
+      }),
+    )!.candidate
+
+  it("publishes an address of the current factory, or of an earlier set by factory and table", () => {
+    expect(isKnownSipaSet(candidate(FACTORY, TABLE), tuple)).toBe(true)
+    expect(isKnownSipaSet(candidate(FACTORY, OLD_TABLE), tuple)).toBe(true)
+    expect(isKnownSipaSet(candidate(OLD_FACTORY, OLD_TABLE), tuple)).toBe(true)
+    expect(isKnownSipaSet(candidate(OLD_FACTORY, TABLE), tuple)).toBe(false)
+    expect(isKnownSipaSet(candidate(getAddress(`0x${"aa".repeat(20)}`), TABLE), tuple)).toBe(false)
   })
 })

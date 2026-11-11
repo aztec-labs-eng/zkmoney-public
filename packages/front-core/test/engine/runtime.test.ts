@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { createPace } from "@obsidion/core/cadence"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createCatchUp } from "../../src/engine/catchUp"
 import { openDatabase } from "../../src/engine/database"
@@ -24,8 +25,11 @@ function gate() {
 /** A run that lasts until it is aborted. */
 const untilAborted = ({ signal }: { signal: AbortSignal }) =>
   new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve()))
-const t = (spec: Omit<TaskSpec<Record<string, never>>, "needs">, name = "t") =>
-  task(name, { needs: {}, ...spec })
+type Spec = TaskSpec<Record<string, never>>
+const t = (
+  spec: Spec extends infer S ? (S extends Spec ? Omit<S, "needs"> : never) : never,
+  name = "t",
+) => task(name, { needs: {}, ...spec })
 
 describe("task runtime", () => {
   let runtime: Runtime | undefined
@@ -39,6 +43,8 @@ describe("task runtime", () => {
       db: openDatabase(memoryBackend()),
       milestones: createMilestones({ catchUp: createCatchUp() }),
       visible: memoryStore(true).readonly,
+      pace: createPace(),
+      now: () => Date.now(),
       ...deps,
     }))
 
@@ -74,7 +80,7 @@ describe("task runtime", () => {
     const run = vi.fn(async () => {})
     start([
       task("t", {
-        needs: { wallet: wallet.resource },
+        needs: { wallet: wallet.service },
         after: { firstBalance: 60_000 },
         every: "once",
         run,
@@ -144,6 +150,20 @@ describe("task runtime", () => {
     expect([...backend.entries.keys()]).toEqual([])
   })
 
+  it("counts a saved backoff on the time it is given", async () => {
+    const db = openDatabase(memoryBackend())
+    const run = vi.fn(async () => {
+      throw new Error("down")
+    })
+    const task = t({ every: "once", backoff: { baseMs: 10_000, maxMs: 10_000 }, run })
+    const rt = start([task], { db })
+    await flush()
+    rt.stop()
+    start([task], { db, now: () => Date.now() + 10_000 })
+    await flush()
+    expect(run).toHaveBeenCalledTimes(2)
+  })
+
   it("reads a restart's backoff once the failed run's save has landed", async () => {
     const inner = memoryBackend()
     const saving = gate()
@@ -180,6 +200,21 @@ describe("task runtime", () => {
     expect(run).toHaveBeenCalledTimes(2)
     await vi.advanceTimersByTimeAsync(1)
     expect(run).toHaveBeenCalledTimes(3)
+  })
+
+  it("runs again at once on a signalled wake that came while its cadence run was in flight", async () => {
+    const pace = createPace({ signalled: true })
+    const runs: ReturnType<typeof gate>[] = []
+    const run = () => (runs.push(gate()), runs[runs.length - 1].opened)
+    start([t({ every: 5_000, run })], { pace })
+    await flush()
+    pace.wake()
+    runs[0].open()
+    await flush()
+    expect(runs).toHaveLength(2)
+    runs[1].open()
+    await flush()
+    expect(runs).toHaveLength(2)
   })
 
   it("backs off a failed run, however short the delay the clean ones return", async () => {
@@ -221,6 +256,127 @@ describe("task runtime", () => {
     expect(run).toHaveBeenCalledTimes(3)
     await vi.advanceTimersByTimeAsync(1)
     expect(run).toHaveBeenCalledTimes(4)
+  })
+
+  it("runs at its store's interval, and at once when a shorter one has already passed", async () => {
+    const interval = memoryStore(10_000)
+    const run = vi.fn(async () => {})
+    start([t({ every: interval.readonly, run })])
+    await flush()
+    await vi.advanceTimersByTimeAsync(9_999)
+    expect(run).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(run).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(6_000)
+    interval.set(4_000)
+    await flush()
+    expect(run).toHaveBeenCalledTimes(3)
+    // Not yet passed: the wait in place ends 4 s after the last run.
+    await vi.advanceTimersByTimeAsync(1_000)
+    interval.set(3_000)
+    await vi.advanceTimersByTimeAsync(1_999)
+    expect(run).toHaveBeenCalledTimes(3)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(run).toHaveBeenCalledTimes(4)
+  })
+
+  it("lengthens the wait in place when its store's interval grows, with no extra run", async () => {
+    const interval = memoryStore(4_000)
+    const run = vi.fn(async () => {})
+    start([t({ every: interval.readonly, run })])
+    await flush()
+    await vi.advanceTimersByTimeAsync(2_000)
+    interval.set(10_000)
+    await vi.advanceTimersByTimeAsync(7_999)
+    expect(run).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(run).toHaveBeenCalledTimes(2)
+  })
+
+  it("lets a run finish when its interval changes during it, then waits the new interval", async () => {
+    const interval = memoryStore(10_000)
+    const runs: ReturnType<typeof gate>[] = []
+    const run = vi.fn(
+      (_: { signal: AbortSignal }) => (runs.push(gate()), runs[runs.length - 1].opened),
+    )
+    start([t({ every: interval.readonly, run })])
+    await vi.advanceTimersByTimeAsync(20_000)
+    interval.set(4_000)
+    await flush()
+    expect([run.mock.calls.length, run.mock.calls[0][0].signal.aborted]).toEqual([1, false])
+    runs[0].open()
+    await vi.advanceTimersByTimeAsync(3_999)
+    expect(run).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(run).toHaveBeenCalledTimes(2)
+  })
+
+  it("stops listening to its interval's store on stop", async () => {
+    const interval = memoryStore(10_000)
+    let listening = 0
+    const every = {
+      get: interval.get,
+      subscribe(listener: () => void) {
+        listening++
+        const off = interval.subscribe(listener)
+        return () => (listening--, off())
+      },
+    }
+    const run = vi.fn(async () => {})
+    const rt = start([t({ every, run })])
+    await flush()
+    expect(listening).toBe(1)
+    rt.stop()
+    interval.set(0)
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect([listening, run.mock.calls.length]).toEqual([0, 1])
+  })
+
+  it("ignores its interval's store while hidden at a hidden pace, and follows it once shown", async () => {
+    const visible = memoryStore(true)
+    const interval = memoryStore(4_000)
+    const run = vi.fn(async () => {})
+    start([t({ every: interval.readonly, whenHidden: 30_000, run })], { visible: visible.readonly })
+    await flush()
+    visible.set(false)
+    // The wait begun while shown keeps its 4 s; the next one is the hidden 30 s.
+    await vi.advanceTimersByTimeAsync(1_000)
+    interval.set(1_000)
+    await vi.advanceTimersByTimeAsync(2_999)
+    expect(run).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(run).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(29_999)
+    expect(run).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(run).toHaveBeenCalledTimes(3)
+    visible.set(true)
+    await flush()
+    expect(run).toHaveBeenCalledTimes(4)
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(run).toHaveBeenCalledTimes(5)
+  })
+
+  it("compiles a spec only in a form the runtime runs", () => {
+    const n = memoryStore(1).readonly
+    task("periodic", {
+      needs: {},
+      every: n,
+      whenHidden: 1_000,
+      run: async () => ({ nextMs: 1 }),
+    })
+    task("once", {
+      needs: {},
+      every: "once",
+      on: { n },
+      run: async ({ n }) => void (n satisfies number),
+    })
+    // @ts-expect-error a store change reruns only a once task
+    task("on", { needs: {}, every: 1_000, on: { n }, run: async () => {} })
+    // @ts-expect-error a hidden pace is a periodic task's
+    task("hidden", { needs: {}, every: "once", whenHidden: 1_000, run: async () => {} })
+    // @ts-expect-error a returned delay is a periodic task's
+    task("next", { needs: {}, every: "once", run: async () => ({ nextMs: 1 }) })
   })
 
   it("pauses while hidden, aborting the run in flight, and runs at once on show", async () => {
@@ -288,12 +444,11 @@ describe("task runtime", () => {
     expect(woken).toBe(true)
   })
 
-  it("runs once its needs are ready, with their values, and never demands them", async () => {
+  it("runs once its needs are ready, with their values", async () => {
     const wallet = later<string>("wallet")
-    const demand = vi.spyOn(wallet.resource, "demand")
     const seen: string[] = []
     const needing = task("t", {
-      needs: { wallet: wallet.resource },
+      needs: { wallet: wallet.service },
       every: 5_000,
       run: async (ctx) => void seen.push(ctx.wallet),
     })
@@ -304,7 +459,6 @@ describe("task runtime", () => {
     wallet.ready("w1")
     await flush()
     expect(seen).toEqual(["w1"])
-    expect(demand).not.toHaveBeenCalled()
   })
 
   it("aborts the run in flight when a need is lost or replaced, and runs with its value once back; a once task runs clean once per value", async () => {
@@ -314,8 +468,8 @@ describe("task runtime", () => {
     const once = vi.fn(async (ctx: { wallet: string }) => void seen.push(ctx.wallet))
     const run = vi.fn<(ctx: { signal: AbortSignal; wallet: string }) => Promise<void>>(untilAborted)
     start([
-      task("periodic", { needs: { wallet: wallet.resource }, every: 5_000, run }),
-      task("once", { needs: { wallet: wallet.resource }, every: "once", run: once }),
+      task("periodic", { needs: { wallet: wallet.service }, every: 5_000, run }),
+      task("once", { needs: { wallet: wallet.service }, every: "once", run: once }),
     ])
     await flush()
     wallet.lose()
@@ -333,6 +487,144 @@ describe("task runtime", () => {
       ["w2", false],
     ])
     expect(seen).toEqual(["w1", "w2"])
+  })
+
+  it("runs only while when holds: false aborts the run and pauses the task, true runs it again", async () => {
+    const when = memoryStore(false)
+    const run = vi.fn<(ctx: { signal: AbortSignal }) => Promise<void>>(untilAborted)
+    const gated = task("t", { needs: {}, when: when.readonly, every: 5_000, run })
+    const rt = start([gated])
+    await flush()
+    expect(run).not.toHaveBeenCalled()
+    when.set(true)
+    await flush()
+    expect(run).toHaveBeenCalledTimes(1)
+    when.set(false)
+    expect(run.mock.calls[0]![0].signal.aborted).toBe(true)
+    await rt.wake(gated)
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(run).toHaveBeenCalledTimes(1)
+    when.set(true)
+    await flush()
+    expect(run).toHaveBeenCalledTimes(2)
+    expect(run.mock.calls[1]![0].signal.aborted).toBe(false)
+  })
+
+  it("runs a once task again on each change of a store it runs on", async () => {
+    const store = memoryStore(1)
+    const run = vi.fn(async () => {})
+    start([task("t", { needs: {}, on: { n: store.readonly }, every: "once", run })])
+    await flush()
+    expect(run).toHaveBeenCalledTimes(1)
+    store.set(2)
+    await flush()
+    store.set(3)
+    await flush()
+    expect(run).toHaveBeenCalledTimes(3)
+  })
+
+  it("gives the run each store it runs on as it is at the run, undefined included", async () => {
+    const store = memoryStore<string | undefined>(undefined)
+    const seen: (string | undefined)[] = []
+    start([
+      task("t", {
+        needs: {},
+        on: { v: store.readonly },
+        every: "once",
+        run: async ({ v }) => void seen.push(v),
+      }),
+    ])
+    await flush()
+    store.set("a")
+    await flush()
+    store.set("b")
+    await flush()
+    expect(seen).toEqual([undefined, "a", "b"])
+  })
+
+  it("finishes a run whose store changes during it, then runs on the new value: at once, or after the backoff of a failed run", async () => {
+    const due = memoryStore(["a", "b"])
+    let broken = true
+    const seen: [string[], boolean][] = []
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    start([
+      task("t", {
+        needs: {},
+        on: { items: due.readonly },
+        every: "once",
+        backoff: { baseMs: 1_000, maxMs: 1_000 },
+        run: async ({ items, signal }) => {
+          try {
+            for (const item of items) {
+              if (item === "b" && broken) throw new Error("b failed")
+              due.set(due.get().filter((held) => held !== item))
+            }
+          } finally {
+            seen.push([items, signal.aborted])
+          }
+        },
+      }),
+    ])
+    await flush()
+    expect(seen).toEqual([[["a", "b"], false]])
+    expect(warn).toHaveBeenCalledWith("[runtime] t failed:", expect.any(Error))
+    broken = false
+    await vi.advanceTimersByTimeAsync(999)
+    expect(seen).toHaveLength(1)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(seen).toEqual([
+      [["a", "b"], false],
+      [["b"], false],
+      [[], false],
+    ])
+    warn.mockRestore()
+  })
+
+  it("runs a failed once task with no backoff again only on a change after the run", async () => {
+    const due = memoryStore(1)
+    const seen: number[] = []
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    start([
+      task("t", {
+        needs: {},
+        on: { n: due.readonly },
+        every: "once",
+        run: async ({ n }) => {
+          seen.push(n)
+          due.set(n + 1)
+          await flush()
+          throw new Error("failed")
+        },
+      }),
+    ])
+    await flush()
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(seen).toEqual([1])
+    due.set(10)
+    await flush()
+    expect(seen).toEqual([1, 10])
+    warn.mockRestore()
+  })
+
+  it("runs a once task while hidden: at start, and on each change of what it hears", async () => {
+    const visible = memoryStore(false)
+    const store = memoryStore(1)
+    const seen: number[] = []
+    start(
+      [
+        task("t", {
+          needs: {},
+          on: { n: store.readonly },
+          every: "once",
+          run: async ({ n }) => void seen.push(n),
+        }),
+      ],
+      { visible: visible.readonly },
+    )
+    await flush()
+    store.set(2)
+    await flush()
+    expect(seen).toEqual([1, 2])
   })
 
   it("ends a wait on its signal, even one aborted before it began, and observes the late work", async () => {
@@ -363,5 +655,106 @@ describe("task runtime", () => {
     await woken
     await vi.advanceTimersByTimeAsync(10_000)
     expect(run).toHaveBeenCalledTimes(1)
+  })
+
+  describe("cadence and backoff on the page's pace", () => {
+    const failing = (fails: () => boolean) =>
+      vi.fn(async () => {
+        if (fails()) throw new Error("down")
+      })
+
+    it("with timers: a cadence waits its interval or a wake, a backoff its timer", async () => {
+      const pace = createPace()
+      let fails = false
+      const run = failing(() => fails)
+      start([t({ every: 5_000, backoff: { baseMs: 10_000, maxMs: 10_000 }, run })], { pace })
+      await flush()
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(run).toHaveBeenCalledTimes(2)
+      pace.wake()
+      await flush()
+      expect(run).toHaveBeenCalledTimes(3)
+      fails = true
+      pace.wake()
+      await flush()
+      expect(run).toHaveBeenCalledTimes(4)
+      // The failed run backs off 10 s, whatever the pace says.
+      pace.wake()
+      await vi.advanceTimersByTimeAsync(9_999)
+      expect(run).toHaveBeenCalledTimes(4)
+      fails = false
+      await vi.advanceTimersByTimeAsync(1)
+      expect(run).toHaveBeenCalledTimes(5)
+    })
+
+    it("signalled: a cadence waits for a wake alone, a backoff still its timer", async () => {
+      const pace = createPace({ signalled: true })
+      let fails = false
+      const run = failing(() => fails)
+      start([t({ every: 5_000, backoff: { baseMs: 1_000, maxMs: 1_000 }, run })], { pace })
+      await flush()
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(run).toHaveBeenCalledTimes(1)
+      fails = true
+      pace.wake()
+      await flush()
+      expect(run).toHaveBeenCalledTimes(2)
+      pace.wake()
+      await flush()
+      expect(run).toHaveBeenCalledTimes(2)
+      fails = false
+      await vi.advanceTimersByTimeAsync(1_000)
+      expect(run).toHaveBeenCalledTimes(3)
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(run).toHaveBeenCalledTimes(3)
+    })
+
+    it("signalled: a passed interval from its store waits for a wake", async () => {
+      const pace = createPace({ signalled: true })
+      const interval = memoryStore(10_000)
+      const run = vi.fn(async () => {})
+      start([t({ every: interval.readonly, run })], { pace })
+      await vi.advanceTimersByTimeAsync(20_000)
+      interval.set(1_000)
+      await flush()
+      expect(run).toHaveBeenCalledTimes(1)
+      pace.wake()
+      await flush()
+      expect(run).toHaveBeenCalledTimes(2)
+    })
+
+    it("signalled: a wake runs no hidden, stopped or restarted-in-backoff task", async () => {
+      const pace = createPace({ signalled: true })
+      const db = openDatabase(memoryBackend())
+      const visible = memoryStore(true)
+      let fails = false
+      const run = failing(() => fails)
+      const task = t({ every: 5_000, backoff: { baseMs: 1_000, maxMs: 1_000 }, run })
+      const rt = start([task], { pace, db, visible: visible.readonly })
+      await flush()
+      visible.set(false)
+      pace.wake()
+      await flush()
+      expect(run).toHaveBeenCalledTimes(1)
+      visible.set(true)
+      await flush()
+      expect(run).toHaveBeenCalledTimes(2)
+      fails = true
+      pace.wake()
+      await flush()
+      expect(run).toHaveBeenCalledTimes(3)
+      rt.stop()
+      pace.wake()
+      await flush()
+      expect(run).toHaveBeenCalledTimes(3)
+      // A restart keeps the saved backoff: a wake does not cut it short.
+      fails = false
+      start([task], { pace, db, visible: visible.readonly })
+      pace.wake()
+      await vi.advanceTimersByTimeAsync(999)
+      expect(run).toHaveBeenCalledTimes(3)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(run).toHaveBeenCalledTimes(4)
+    })
   })
 })

@@ -81,20 +81,27 @@ export function ChatBubble({
         </div>
         {actions && actions.length > 0 && (
           <span className={styles.bubbleActions}>
-            {actions.map((a, i) => (
-              <button
-                key={a.label}
-                type="button"
-                className={`zkm-btn-reset ${styles.bubbleBtn}`}
-                data-primary={(i === actions.length - 1 && !a.secondary) || undefined}
-                disabled={a.disabled || a.loading}
-                aria-busy={a.loading || undefined}
-                aria-label={a.loading ? a.label : undefined}
-                onClick={a.onClick}
-              >
-                {a.loading ? <Spinner size={12} color="#fff" /> : a.label}
-              </button>
-            ))}
+            {actions.map((a, i) => {
+              const primary = i === actions.length - 1 && !a.secondary
+              return (
+                <button
+                  key={a.label}
+                  type="button"
+                  className={`zkm-btn-reset ${styles.bubbleBtn}${primary ? " zkm-on-brand" : ""}`}
+                  data-primary={primary || undefined}
+                  disabled={a.disabled || a.loading}
+                  aria-busy={a.loading || undefined}
+                  aria-label={a.loading ? a.label : undefined}
+                  onClick={a.onClick}
+                >
+                  {a.loading ? (
+                    <Spinner size={12} color={primary ? "#fff" : "var(--ink)"} />
+                  ) : (
+                    a.label
+                  )}
+                </button>
+              )
+            })}
           </span>
         )}
       </div>

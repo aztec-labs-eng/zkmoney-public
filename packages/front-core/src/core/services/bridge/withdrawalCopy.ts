@@ -34,6 +34,7 @@ export const WITHDRAWAL_PHASE_COPY: Readonly<Record<WithdrawalPhase, WithdrawalP
   awaiting_proven: RELEASING,
   finalizing_l1: RELEASING,
   swapping: { pill: "Swapping", status: "Waiting for the swap", live: "Swapping" },
+  bridging: { pill: "Bridging", status: "Waiting for the bridge", live: "Bridging" },
   recoverable: { pill: "Needs recovery", status: "Needs recovery" },
   recovered: { pill: "Recovered", status: "Recovered" },
   done: { status: "Paid" },

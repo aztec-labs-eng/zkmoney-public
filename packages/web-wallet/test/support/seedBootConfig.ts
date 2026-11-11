@@ -1,32 +1,34 @@
-/**
- * Boot config for component tests.
- *
- * `getConfig()` throws until a profile has resolved, so any test that mounts a component reaching
- * for config has to boot one first — the app does it once in `main.tsx` before it renders anything.
- */
+/** Boot configs for tests, resolved from in-process profiles the way `main.tsx` boots. */
 import { sandboxProfile, testnetProfile } from "../fixtures/sandboxProfile"
 
-/** Resolve the boot config from an in-process profile, `env` over its own. Safe to call again. */
-export const seedBootConfigWith = (env: Record<string, string>) =>
-  seed(sandboxProfile(), "http://localhost:8083/profiles/sandbox.json", env)
-export const seedBootConfig = () => seedBootConfigWith({})
+/** Where `test/setup.ts` puts the config a test page holds when its suite passes none. */
+export const TEST_CONFIG = Symbol.for("zk.money/test-config")
 
-/** The same on testnet, whose L1 has a public explorer. */
-export const seedTestnetBootConfig = () =>
-  seed(testnetProfile(), "https://cdn.zk.money/profiles/v5/current.json")
+/** The boot the sandbox profile resolves to. */
+export const sandboxBoot = () =>
+  boot(sandboxProfile(), "http://localhost:8083/profiles/sandbox.json")
 
-async function seed(
-  profile: { profileId: string; network: string },
-  profileUrl: string,
-  env: Record<string, string> = {},
-): Promise<void> {
+/** The sandbox profile's config, as a page booted on it holds it. */
+export const sandboxConfig = async () => (await sandboxBoot()).config
+
+/** The testnet profile's config: its L1 has a public explorer. */
+export const testnetConfig = async () =>
+  (await boot(testnetProfile(), "https://cdn.zk.money/profiles/v5/current.json")).config
+
+/** The testnet profile's config with `bridge` as its version's bridge block. */
+export const bridgeConfig = async (bridge: unknown) => {
+  const profile = testnetProfile()
+  profile.versions[profile.current].bridge = bridge
+  return (await boot(profile, "https://cdn.zk.money/profiles/v5/current.json")).config
+}
+
+async function boot(profile: { profileId: string; network: string }, profileUrl: string) {
   const { resolveBootConfig } = await import("../../src/config/env")
-  await resolveBootConfig({
+  return resolveBootConfig({
     env: {
       VITE_NETWORK: profile.network,
       VITE_CONFIG_PROFILE_URL: profileUrl,
       VITE_CONFIG_EXPECTED_PROFILE_ID: profile.profileId,
-      ...env,
     },
     fetchImpl: (async () =>
       new Response(JSON.stringify(profile), {

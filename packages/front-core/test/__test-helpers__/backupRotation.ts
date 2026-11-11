@@ -3,7 +3,7 @@ import {
   type BackupFunding,
   type BackupRotationRecord,
   type BackupRotationStored,
-} from "../../src/core/storages/BackupRotationStore"
+} from "../../src/engine/backupRotations"
 
 export const OWNER = "0xAbCdEf0000000000000000000000000000001234"
 export const addr = (n: number) => `0x${n.toString(16).padStart(40, "0")}` as `0x${string}`
@@ -15,13 +15,19 @@ export const storedRotation = (over: Partial<BackupRotationStored> = {}): Backup
   owner: addr(1),
   intent: {
     rollupVersion: "6",
-    precondition: { target: addr(2), data: "0x1234", resultHash: word(3) },
-    postcondition: { target: addr(2), data: "0x1234", resultHash: word(4) },
     recipientCommitment: word(5),
     owner: addr(1),
     nonce: "7",
-    callData: "0xabcd",
     accountGasLimits: word(8),
+    record: {
+      l2Address: TWO_KEY,
+      rollupVersion: "6",
+      publicKey: { x: "11", y: "12" },
+      resolverOperator: addr(13),
+    },
+    namePortalRecipient: TWO_KEY,
+    key: { qx: word(21), qy: word(22) },
+    metadata: "0x0134",
   },
   sharedSecretSalt: word(9),
   nonce: "7",

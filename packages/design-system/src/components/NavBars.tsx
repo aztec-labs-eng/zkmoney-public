@@ -55,7 +55,7 @@ export function TopNavIconButton({
       disabled={disabled}
       testId={testId}
     >
-      <Icon name={icon} size={16} color="#fff" />
+      <Icon name={icon} size={16} color="var(--ink)" />
     </GlassCircleButton>
   )
 }
@@ -84,7 +84,7 @@ export function ScreenNavBar({
 }: ScreenNavBarProps) {
   const leadingButton = onLeading ? (
     <GlassCircleButton onClick={onLeading} ariaLabel={leadingIcon === "back" ? "Back" : "Close"}>
-      <Icon name={leadingIcon === "back" ? "arrow-left" : "x"} size={leadingIcon === "back" ? 12 : 14} color="#fff" />
+      <Icon name={leadingIcon === "back" ? "arrow-left" : "x"} size={leadingIcon === "back" ? 12 : 14} color="var(--ink)" />
     </GlassCircleButton>
   ) : null
   const titleStack = (

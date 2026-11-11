@@ -1,5 +1,5 @@
 import type { QueueStatus } from "@obsidion/sdk"
-import type { OriginalFlowKind } from "@obsidion/proving-progress"
+import type { OriginalFlowKind } from "@obsidion/core/types"
 import type { TokenAction, TokenInTxService, PaylinkAction } from "./tokens"
 import type { TxStatus } from "@aztec-labs/stdlib/tx"
 import type { Failure } from "../engine/errors"
@@ -22,7 +22,7 @@ export type BaseTransaction = {
   timestamp: number
   status: TransactionStatus
   txHash: string
-  /** The user operation that wrote this row; proving-progress events carry the same id. */
+  /** The user operation that wrote this row; the stages its send reports carry the same id. */
   operationId?: string
   detailedStatus?: QueueStatus
   progress?: number
@@ -60,6 +60,8 @@ export type TokenTransaction = BaseTransaction & {
   // Sender-attached note: persisted on an outgoing send, or decoded from an incoming transfer's on-chain meta.
   memo?: string
   senderL2Address?: string
+  /** The L2 address a scanned transfer went to: a receive's says which of the wallet's accounts. */
+  recipientL2Address?: string
   /** Recipient's @tag on an outgoing send, so a send to someone not saved still reads as them. */
   toTag?: string
   /** Payment request this transfer fulfills (from the on-chain `Transfer.meta`). */
@@ -134,6 +136,12 @@ export type PaylinkTransaction = BaseTransaction & {
   // no nullifier read ever settles this row.
   isMigrated?: boolean
 }
+
+/** A created link's own facts, as its record and an older build's row both hold them. */
+export type LinkFacts = Omit<
+  PaylinkTransaction,
+  Exclude<keyof BaseTransaction, "networkId"> | "action" | "emailPaymentAction"
+>
 
 export function isPaylinkTransaction(tx: Transaction): tx is PaylinkTransaction {
   return (tx as PaylinkTransaction).emailPaymentAction !== undefined

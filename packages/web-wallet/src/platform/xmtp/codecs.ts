@@ -6,8 +6,9 @@ import { AztecPaymentRequestCodec, ConnectBackCodec } from "@obsidion/sdk"
  * codecs already implement, so they register as-is; the `Client.create`/`build` call site casts
  * across the primitives-v2 vs wasm-bindings nominal types (structurally identical).
  */
-export const webConnectBackCodec = new ConnectBackCodec()
-export const webPaymentRequestCodec = new AztecPaymentRequestCodec()
+export const webConnectBackCodec: Readonly<ConnectBackCodec> = new ConnectBackCodec()
+export const webPaymentRequestCodec: Readonly<AztecPaymentRequestCodec> =
+  new AztecPaymentRequestCodec()
 
 /** Every codec the web client registers: connect-backs and payment requests. */
 export const webXmtpCodecs = [webConnectBackCodec, webPaymentRequestCodec]

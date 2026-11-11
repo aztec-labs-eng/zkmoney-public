@@ -1,11 +1,7 @@
-/**
- * Each row of the pinned table credits its own token one to one, less its fee, in that token's units; only a swap
- * input names the token it is swapped into. Over a two-row table (DAI and USDC, each its own row) no USDC copy names
- * DAI.
- */
-import { act } from "react"
-import { createRoot, type Root } from "react-dom/client"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+// @vitest-environment node
+/** The row a funding token settles on, the funding tokens' labels, and fee and price figures. */
+import { parseUnits } from "viem"
+import { describe, expect, it } from "vitest"
 import {
   MAINNET_DAI,
   MAINNET_USDC,
@@ -13,15 +9,18 @@ import {
   ROW_SUSDS,
   ROW_USDC,
   savingsRowTokens,
+  singleToken,
   twoRowTokens,
-  usdcFeeTokens,
 } from "../../support/depositTokens"
-
-const { settlementToken } = await import("../../../src/features/sipa/loadDepositFacts")
-const { tokenFigure } = await import("../../../src/ui/format")
-const { DepositTermsRows, fundingAssetsLabel, swapAssetsLabel } = await import(
-  "../../../src/features/deposit/DepositTermsRows/DepositTermsRows"
-)
+import { settlementToken } from "../../../src/features/sipa/loadDepositFacts"
+import { tokenFigure } from "../../../src/ui/format"
+import { fmt } from "../../../src/lib/fmt"
+import {
+  formatDepositAmount,
+  fundingAssetsLabel,
+  swapAssetsLabel,
+} from "../../../src/features/deposit/DepositTermsRows/DepositTermsRows"
+import copy from "../../../src/features/deposit/DepositTermsRows/DepositTermsRows.copy"
 
 describe("what a row's token credits", () => {
   it("finds the row a funding token settles on", () => {
@@ -38,6 +37,11 @@ describe("what a row's token credits", () => {
     expect(fundingAssetsLabel(savingsRowTokens())).toBe("DAI")
     expect(swapAssetsLabel(savingsRowTokens())).toBeUndefined()
   })
+
+  it("names the tokens a mainnet table swaps, and none for a single token", () => {
+    expect(swapAssetsLabel(mainnetTokens())).toBe(fmt(copy.or, { list: "USDC", last: "USDT" }))
+    expect(swapAssetsLabel(singleToken(MAINNET_DAI))).toBeUndefined()
+  })
 })
 
 describe("a fee in the row token's units", () => {
@@ -48,39 +52,9 @@ describe("a fee in the row token's units", () => {
   })
 })
 
-describe("copy over a two-row table", () => {
-  let container: HTMLDivElement
-  let root: Root
-
-  beforeEach(() => {
-    container = document.createElement("div")
-    document.body.appendChild(container)
-    root = createRoot(container)
-  })
-
-  afterEach(async () => {
-    await act(async () => root.unmount())
-    container.remove()
-  })
-
-  it("quotes a USDC fee token's registration terms with no swap note", async () => {
-    await act(async () => {
-      root.render(
-        <DepositTermsRows
-          total={15_000_000n}
-          fee={5_000_000n}
-          sweepFee={500_000n}
-          tokenSymbol="USDC"
-          tokenDecimals={6}
-          kind="standard"
-          swapAssets={swapAssetsLabel(usdcFeeTokens())}
-        />,
-      )
-    })
-    expect(container.querySelector('[data-testid="deposit-terms-swap-note"]')).toBeNull()
-    expect(
-      container.querySelector('[data-testid="deposit-terms-opening-balance"]')?.textContent,
-    ).toBe("$10.00")
-    expect(container.textContent).not.toContain("DAI")
+describe("a registration price", () => {
+  it("rounds to the nearest cent", () => {
+    expect(formatDepositAmount(parseUnits("15.005", 18), 18)).toBe("$15.01")
+    expect(formatDepositAmount(parseUnits("15.004", 18), 18)).toBe("$15.00")
   })
 })

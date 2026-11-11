@@ -1,12 +1,11 @@
 /**
- * Web `CryptoProvider` over WebCrypto AES-256-GCM, keyed by
+ * Web `ProofSealer` over WebCrypto AES-256-GCM, keyed by
  * `WebAlphaAuthService.getDerivedKey(domain)` (MSK-derived; the MSK itself never crosses
  * this module). Printable envelope: `<iv-hex>:<ciphertext-hex>:<auth-tag-hex>`. Callers pick the
- * domain (`zkjwt-store`,
- * `pending-store`, …) so each encrypted blob family has its own key.
+ * domain, so each sealed family has its own key.
  */
 import type { AlphaAuthService } from "@obsidion/sdk"
-import type { CryptoProvider, KnownDerivedKeyDomain } from "@obsidion/front-core"
+import type { KnownDerivedKeyDomain, ProofSealer } from "@obsidion/front-core"
 
 const IV_BYTES = 12
 const TAG_BYTES = 16
@@ -23,7 +22,7 @@ function fromHex(hex: string): Uint8Array {
   return out
 }
 
-export class MskWebCryptoProvider implements CryptoProvider {
+export class MskWebCryptoProvider implements ProofSealer {
   private key?: CryptoKey
 
   constructor(
@@ -71,17 +70,5 @@ export class MskWebCryptoProvider implements CryptoProvider {
       sealed,
     )
     return new TextDecoder().decode(plain)
-  }
-
-  keyAvailable(): boolean {
-    // `getDerivedKey` throws while the MSK is locked; callers gate on the unlocked account
-    // before constructing the claim flow, so an optimistic true is safe here.
-    return true
-  }
-
-  onKeyChanged(): () => void {
-    // The web auth service holds one MSK for the tab's lifetime; the key never rotates, so the
-    // listener would never fire.
-    return () => {}
   }
 }

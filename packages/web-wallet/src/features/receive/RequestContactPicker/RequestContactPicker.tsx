@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react"
-import { normalizeTag, useContactsDirectory, useStore } from "@obsidion/front-core"
+import { normalizeTag, useStore } from "@obsidion/front-core"
+import { useContactDirectory } from "../../../session/contacts"
 import { ContactRow, TextField, avatarColors } from "@obsidion/web-ds"
 import { filterContacts } from "../../contacts/contactsView"
 import { recentPeople } from "../../contacts/recentPeople"
@@ -21,7 +22,7 @@ export function RequestContactPicker({
   dimmed?: boolean
   onRequest: (tag: string) => void
 }) {
-  const { contacts } = useContactsDirectory()
+  const { contacts } = useContactDirectory()
   const sources = useStore(useSession().contactActivity)
   const [query, setQuery] = useState("")
   const ownTag = useStore(useSession().identity, (s) => s.value?.handle)
@@ -49,7 +50,10 @@ export function RequestContactPicker({
         colors={avatarColors(tag)}
         onClick={() => !sending && onRequest(target)}
         trailing={
-          <span className={styles.requestPickAsk} data-dimmed={dimmed || undefined}>
+          <span
+            className={`zkm-on-brand ${styles.requestPickAsk}`}
+            data-dimmed={dimmed || undefined}
+          >
             {sending === target ? copy.sending : copy.request}
           </span>
         }

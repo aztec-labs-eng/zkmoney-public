@@ -4,8 +4,11 @@ import { Icon } from "./Icon"
 
 export interface PrimaryGradientButtonProps {
   title: string
-  /** "gradient" = brand purple→cyan primary; "dark" = liquid-glass secondary; "danger" = pink capsule. */
-  buttonStyle?: "gradient" | "dark" | "danger"
+  /**
+   * "gradient" = brand purple→cyan primary; "dark" = liquid-glass secondary; "danger" = pink
+   * capsule; "plain" = flat gray capsule for a sheet whose only action is to close it.
+   */
+  buttonStyle?: "gradient" | "dark" | "danger" | "plain"
   /** Leading icon name (e.g. "share", "file-copy"). */
   leadingIcon?: string
   /** Trailing icon name (e.g. "arrow-right"). */
@@ -32,7 +35,7 @@ const DARK_GLASS_OPTICS = {
   brightness: 0,
 }
 
-/** Full-width 56px capsule CTA. "gradient" = primary; "dark" = liquid-glass secondary; "danger" = destructive. */
+/** Full-width 56px capsule CTA in one of the `buttonStyle`s. */
 export function PrimaryGradientButton({
   title,
   buttonStyle = "gradient",
@@ -88,7 +91,7 @@ export function PrimaryGradientButton({
       data-testid={testId}
       className={[
         "zkm-btn-reset zkm-pressable zkm-primary-btn",
-        buttonStyle === "danger" ? "zkm-primary-btn--danger" : "zkm-primary-btn--gradient",
+        `zkm-primary-btn--${buttonStyle}`,
         disabled ? "zkm-primary-btn--disabled" : "",
         className,
       ]
@@ -189,7 +192,7 @@ export function HomeQuickActionsRow({ actions, className }: HomeQuickActionsRowP
             <Icon
               name={a.icon}
               size={26}
-              color={a.disabled ? "rgba(255,255,255,0.35)" : "var(--text-secondary)"}
+              color={a.disabled ? "rgba(var(--ink-rgb), 0.35)" : "var(--text-secondary)"}
             />
           </span>
           <span className="zkm-quick-action__caption">{a.title}</span>

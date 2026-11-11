@@ -10,15 +10,15 @@
  * paylink cash-out's burn is the link escrow's and carries no recovery data, so only a relayer
  * releases it.
  *
- * Unlike the deposit exits this module exposes no `getConfig()`-shaped entry of its own: the node
- * and the TEE signer live in React context, so the call site hands them in — or hands in nothing,
- * which is what a locked or still-connecting wallet looks like from here.
+ * The node and the TEE signer live in React context, so the call site hands them in — or hands in
+ * nothing, which is what a locked or still-connecting wallet looks like from here.
  */
 import type { AztecAddress } from "@aztec-labs/aztec.js/addresses"
 import type { AztecNode } from "@aztec-labs/aztec.js/node"
 import type { Wallet } from "@aztec-labs/aztec.js/wallet"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import { createPublicClient, type Address, type Hex, type PublicClient } from "viem"
+import type { Config } from "wagmi"
 import {
   buildWithdrawFinalizationCall,
   isWithdrawalSpent,
@@ -35,8 +35,7 @@ import {
   type Withdrawals,
   type WithdrawalWiring,
 } from "@obsidion/front-core"
-import { getConfig, l1Transport, type WebWalletConfig } from "../../config/env"
-import { getOxideTuple } from "../../config/oxideTuple"
+import { l1Transport, type WebWalletConfig } from "../../config/env"
 import { isDemoMode } from "../../dev/demoFlag"
 import {
   desktopBridgeChannel,
@@ -45,8 +44,7 @@ import {
   type L1ExitStage,
 } from "../sipa/l1ExitChannels"
 import { isDesktopL1SubmitActive } from "../../platform/desktopBridge"
-import { portalDomain } from "../token/oxideToken"
-import { session } from "../../session/session"
+import type { Session } from "../../session/session"
 
 /** Said whenever the withdrawal turns out to be released already, from either check. */
 const ALREADY_RELEASED =
@@ -176,12 +174,15 @@ function finalizationFailureMessage(err: unknown): string {
 }
 
 export interface SelfFinalizeOptions {
+  wagmi: Config
   /** Injected-wallet mode: pins the submitting (and tipped) account to the app's selection. */
   from?: Hex
   /** The deployment the burn was made on; Main's live one when absent. A Savings move out's is Savings'. */
   tuple?: OxideEnvTuple
   onHelperOpened?: (submitUrl: string) => void
   onStage?: (stage: L1ExitStage) => void
+  /** The session whose burn this is. */
+  session: Pick<Session, "withdrawals" | "page">
 }
 
 /**
@@ -204,7 +205,12 @@ export async function finalizeChannel(params: {
 }): Promise<L1ExitChannel> {
   const { config, record, opts } = params
   if (!isDesktopL1SubmitActive()) {
-    return await injectedWalletChannel(config, { from: opts.from, onStage: opts.onStage })
+    return await injectedWalletChannel(config, {
+      pace: opts.session.page.pace,
+      wagmi: opts.wagmi,
+      from: opts.from,
+      onStage: opts.onStage,
+    })
   }
   const { final, viaEscrow } = withdrawalRecipients(record)
   return desktopBridgeChannel({
@@ -220,6 +226,7 @@ export async function finalizeChannel(params: {
     },
     onHelperOpened: opts.onHelperOpened,
     onStage: opts.onStage,
+    pace: opts.session.page.pace,
   })
 }
 
@@ -240,13 +247,13 @@ async function demoBuilder(portal: Address): Promise<FinalizationBuilder | undef
 export async function selfFinalize(
   record: WithdrawalRecord,
   wallet: FinalizeWallet | null,
-  opts: SelfFinalizeOptions = {},
+  opts: SelfFinalizeOptions,
 ): Promise<Hex> {
-  const config = getConfig()
+  const { config, chain } = opts.session.page
   const publicClient = createPublicClient({ transport: l1Transport(config) })
   const wiring =
     recordWiring(record) ??
-    legacyWiring(record, resolveWithdrawalWiring(opts.tuple ?? (await getOxideTuple(config))))
+    legacyWiring(record, resolveWithdrawalWiring(opts.tuple ?? (await chain.oxideTuple.read())))
   if (!wiring) {
     throw new Error("Finalizing by hand isn't available on this network.")
   }
@@ -257,7 +264,7 @@ export async function selfFinalize(
   const build =
     (await demoBuilder(wiring.portal)) ??
     walletFinalizationBuilder(needWallet(wallet), {
-      portal: await portalDomain(wiring.portal),
+      portal: await chain.portalDomain(wiring.portal).read(),
       executor: wiring.plainWithdrawalExecutor,
       l1: publicClient,
     })
@@ -267,7 +274,7 @@ export async function selfFinalize(
     channel,
     build,
     ...ctx,
-    store: session().withdrawals,
+    store: opts.session.withdrawals,
   })
 }
 

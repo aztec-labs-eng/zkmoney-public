@@ -1,0 +1,127 @@
+/* A resolved address rated High, or the ether.fi address: the field turns green. */
+.resolved {
+  box-shadow: inset 0 0 0 1px #56e79d;
+}
+.address {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: #bfc2d7;
+}
+.address b {
+  font-weight: 500;
+  color: #fdfdfd;
+}
+
+/* The address's privacy, tinted by its level, a refusal or an unanswered read; grey while reading. */
+.privacy {
+  --level: 107, 111, 128;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 16px;
+  border: 1px solid rgb(var(--level));
+  border-radius: 12px;
+  background: rgba(var(--level), 0.05);
+  text-align: left;
+}
+.privacy[data-level="High"] {
+  --level: 86, 231, 157;
+}
+.privacy[data-level="Medium"] {
+  --level: 245, 197, 66;
+}
+.privacy[data-level="Low"],
+.privacy[data-level="blocked"] {
+  --level: 254, 112, 139;
+}
+.privacy[data-level="error"] {
+  --level: 245, 197, 66;
+}
+.privacyHead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  color: rgb(var(--level));
+}
+/* One box for every head icon, so the text starts at the same place. */
+.privacyIcon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+}
+/* Under the head's text. */
+.privacyRetry.privacyRetry {
+  padding-left: 16px;
+}
+.privacy p {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: #bfc2d7;
+}
+.privacy a {
+  color: #fdfdfd;
+  text-decoration: underline;
+}
+
+.or {
+  width: 100%;
+}
+
+.gasCard {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 12px 16px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  text-align: left;
+}
+.gasHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #fdfdfd;
+}
+.gasCard p {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: #bfc2d7;
+}
+.chips {
+  margin-block: 8px;
+}
+.chips > * {
+  flex: 1;
+}
+.gasNote {
+  font-size: 11px;
+  font-weight: 500;
+  opacity: 0.5;
+}
+
+/* The amount step's head sits 24px over the fields, as the deposit amount view's does. */
+.amountStep.amountStep > :global(.ww-deposit-sheet__head) {
+  margin-bottom: 8px;
+}
+
+/* A fee from the last answer, shown while the new one is priced. */
+.stale {
+  opacity: 0.5;
+}

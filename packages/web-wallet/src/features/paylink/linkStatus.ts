@@ -1,10 +1,12 @@
 import { formatUnits } from "viem"
 import { tokenDecimalsForNetwork } from "@obsidion/core/constants"
-import { getConfig } from "../../config/env"
+import { bestEffortSync } from "@obsidion/core/errors"
+import { tabStash, type TabKey } from "../../platform/storage/tabStash"
 import { latestChainSeconds } from "./chainTime"
 import { peekClaimStash, peekTicketSignup } from "./claimStash"
 import { withExpiry } from "./claimWindow"
 import { linkIdentity } from "./linkIdentity"
+import type { WebWalletConfig } from "../../config/env"
 import { decodeLink, viewLink, type ViewLinkDeps } from "./sponsoredPaylink"
 import type { PaymentLink } from "./types"
 
@@ -28,9 +30,9 @@ function noteRead(link: Partial<PaymentLink>): NoteRead | null {
   return { amount, claimableFrom, claimableUntil, memo, senderTag, txHash }
 }
 
-function cacheKey(fragment: string): string | null {
+function cacheKey(fragment: string): TabKey | null {
   try {
-    return READ_CACHE_PREFIX + linkIdentity(fragment)
+    return `${READ_CACHE_PREFIX}${linkIdentity(fragment)}`
   } catch {
     return null
   }
@@ -40,7 +42,7 @@ function cacheKey(fragment: string): string | null {
 function cachedRead(fragment: string): NoteRead | null {
   const key = cacheKey(fragment)
   try {
-    const raw = key && sessionStorage.getItem(key)
+    const raw = key && tabStash.get(key)
     return raw ? (JSON.parse(raw) as NoteRead) : null
   } catch {
     return null
@@ -50,24 +52,23 @@ function cachedRead(fragment: string): NoteRead | null {
 function writeRead(fragment: string, read: NoteRead | null): void {
   const key = cacheKey(fragment)
   if (!key) return
-  try {
+  // A tab without storage reads the link again on the next page.
+  bestEffortSync(() => {
     const kept = read && noteRead(read)
-    if (kept) sessionStorage.setItem(key, JSON.stringify(kept))
-    else sessionStorage.removeItem(key)
-  } catch {
-    // A tab without storage reads the link again on the next page.
-  }
+    if (kept) tabStash.set(key, JSON.stringify(kept))
+    else tabStash.remove(key)
+  }, undefined)
 }
 
 /** What the visitor page read before a ticket signup, off its marker. */
-function markerRead(fragment: string): KnownRead | null {
-  const marker = peekTicketSignup()
+function markerRead(config: WebWalletConfig, fragment: string): KnownRead | null {
+  const marker = peekTicketSignup(tabStash)
   if (!marker || marker.fragment !== fragment) return null
   const read = noteRead({
     amount:
       marker.amount === undefined
         ? undefined
-        : formatUnits(BigInt(marker.amount), tokenDecimalsForNetwork(getConfig().network)),
+        : formatUnits(BigInt(marker.amount), tokenDecimalsForNetwork(config.network)),
     claimableFrom: marker.claimableFrom,
     claimableUntil: marker.claimableUntil,
     memo: marker.memo,
@@ -78,24 +79,24 @@ function markerRead(fragment: string): KnownRead | null {
 }
 
 /** What this tab knows of the note before reading it: its own last read over the signup's marker. */
-function knownRead(fragment: string): KnownRead | null {
-  const marker = markerRead(fragment)
+function knownRead(config: WebWalletConfig, fragment: string): KnownRead | null {
+  const marker = markerRead(config, fragment)
   const cached = cachedRead(fragment)
   return marker || cached ? { ...marker, ...cached } : null
 }
 
 /** Whether this tab holds an earlier read of the link, which {@link seededLink} shows. */
-export function readBefore(fragment: string): boolean {
-  return knownRead(fragment) !== null
+export function readBefore(config: WebWalletConfig, fragment: string): boolean {
+  return knownRead(config, fragment) !== null
 }
 
 /**
  * The decoded link with what this tab last read of its escrow note, so a reload or the hand-off to
  * Home shows the amount and the window at once while the link is read again. Throws as `decodeLink`.
  */
-export function seededLink(fragment: string): PaymentLink {
-  const link = decodeLink(fragment)
-  const read = knownRead(fragment)
+export function seededLink(config: WebWalletConfig, fragment: string): PaymentLink {
+  const link = decodeLink(config, fragment)
+  const read = knownRead(config, fragment)
   return read ? { ...link, ...read } : link
 }
 
@@ -120,7 +121,7 @@ export function watchLink(
 ): () => void {
   let cancelled = false
   let timer: ReturnType<typeof setTimeout> | undefined
-  let known = knownRead(fragment)
+  let known = knownRead(deps.session.page.config, fragment)
   const read = (attempt: number) =>
     viewLink(deps, fragment)
       .then((fresh) => {
@@ -155,14 +156,14 @@ export function watchLink(
  * the link's own signup instead. Null with none stashed, a closed link, or a failed read.
  */
 export async function openStashedLink(deps: ViewLinkDeps): Promise<string | null> {
-  const fragment = peekClaimStash()
+  const fragment = peekClaimStash(tabStash)
   if (!fragment) return null
   try {
     const [fresh, chainNow] = await Promise.all([
       viewLink(deps, fragment),
       latestChainSeconds(deps.wallet.node),
     ])
-    const known = knownRead(fragment)
+    const known = knownRead(deps.session.page.config, fragment)
     const missed = fresh.claimableFrom == null && known
     const link = withExpiry(missed ? { ...fresh, ...known } : fresh, chainNow)
     return link.status === "unclaimed" ? fragment : null

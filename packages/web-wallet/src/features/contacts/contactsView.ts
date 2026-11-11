@@ -83,7 +83,10 @@ export function inlinePanelState(
 }
 
 /** Resolve a detail-route param (directory row id, tag, or address) to its stored entry. */
-export function findContactEntry(entries: Contact[], idOrTag: string): Contact | undefined {
+export function findContactEntry(
+  entries: readonly Contact[],
+  idOrTag: string,
+): Contact | undefined {
   const needle = decodeURIComponent(idOrTag)
   const tag = normalizeTag(needle)
   return entries.find(
@@ -92,6 +95,22 @@ export function findContactEntry(entries: Contact[], idOrTag: string): Contact |
       e.address.toLowerCase() === needle.toLowerCase() ||
       (isPaymentContactEntry(e) && contactRowFromEntry(e).id === needle),
   )
+}
+
+/**
+ * The detail page's person: the stored contact, else the registry's unsaved one. A row the wallet
+ * added reads unsaved, unless it appeared or changed while the page was open: the page's Send flow
+ * saves the person.
+ */
+export function contactDetail(
+  stored: Contact | undefined,
+  /** The stored contact when the visit first read the book; null when there was none. */
+  first: Contact | null,
+  /** The registry's answer for a person not stored; undefined while it is asked. */
+  unsaved: Contact | null | undefined,
+): { entry: Contact | null | undefined; saved: boolean } {
+  if (stored) return { entry: stored, saved: !stored.autoAdded || stored !== first }
+  return { entry: unsaved, saved: !unsaved }
 }
 
 /** One-line address-kind description for the detail header. */
@@ -106,7 +125,7 @@ export function addressKindLabel(entry: Contact): string {
   }
 }
 
-/** Identity descriptor for `ContactStorage.removeEntry`, kind-aware so pending-handshake and L1
+/** Identity descriptor for `Contacts.removeEntry`, kind-aware so pending-handshake and L1
  *  rows delete correctly. */
 export function removeIdentityOf(entry: Contact): {
   address: string
@@ -143,7 +162,9 @@ export function l2ContactLabel(entry: Pick<Contact, "name" | "tag">): string | u
 
 /** How Activity and other lists name a saved contact: its rename, else its @tag; an Ethereum
  *  wallet by its label. */
-export function contactDisplayName(contact: Pick<ContactRow, "name" | "tag" | "addressKind">): string {
+export function contactDisplayName(
+  contact: Pick<ContactRow, "name" | "tag" | "addressKind">,
+): string {
   if (contact.addressKind === "ethereum-l1") return contact.name
   return l2ContactLabel(contact) ?? `@${contact.tag}`
 }
@@ -152,5 +173,7 @@ export function contactDisplayName(contact: Pick<ContactRow, "name" | "tag" | "a
 export function l2ContactHeader(entry: Contact): { title: string; subtitle: string } {
   const handle = entry.tag ?? entry.name
   const label = l2ContactLabel(entry)
-  return label ? { title: label, subtitle: `@${handle}.zk.money` } : { title: `@${handle}`, subtitle: ".zk.money" }
+  return label
+    ? { title: label, subtitle: `@${handle}.zk.money` }
+    : { title: `@${handle}`, subtitle: ".zk.money" }
 }

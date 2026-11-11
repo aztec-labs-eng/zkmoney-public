@@ -15,8 +15,8 @@ The root [README](../../README.md) gives the full build from a clean checkout.
 ## Pointing it at another network
 
 Every network-dependent value resolves once in `src/config/env.ts` — `resolveBootConfig()` runs
-before React mounts and seeds the memoized `getConfig()` every consumer reads — so switching targets
-is env-only. `VITE_NETWORK` picks the L1 chain id, `VITE_CONFIG_PROFILE_URL` names the config
+before React mounts, and every consumer reads its config from the page built over it (`openPage`) —
+so switching targets is env-only. `VITE_NETWORK` picks the L1 chain id, `VITE_CONFIG_PROFILE_URL` names the config
 profile that supplies the endpoints and contract addresses, and everything else overrides a
 default.
 

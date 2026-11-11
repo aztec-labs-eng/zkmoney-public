@@ -3,8 +3,7 @@
  * ready from the deposit pool; with none ready the code carries no address until one is.
  */
 import type { Address } from "viem"
-import type { MintedRequestLink } from "@obsidion/front-core"
-import { walletStorage } from "../../platform/storage/walletStorage"
+import type { MintedRequestLink, ReceiveCode, ReceiveCodes } from "@obsidion/front-core"
 
 const DAY_MS = 86_400_000
 
@@ -20,24 +19,17 @@ export interface ReadyAddress {
   day: number
 }
 
-export interface ReceiveCode {
-  requestId: string
-  url: string
-  /** Dollars; 0 is any amount. */
-  amount: number
-  note?: string
-  address?: Address
-  day?: number
-  expiresAt: number
-}
-
 export interface CodeForm {
   amountInput: string
   noteInput: string
 }
 
 export interface CodeDeps {
-  key: string
+  codes: ReceiveCodes
+  /** The code's id: `<networkId>.<tag>`. */
+  id: string
+  /** The account's L2 address now; a code pinned to another one is replaced. */
+  requester?: string
   readyAddress(): Promise<ReadyAddress | null>
   /** Mints and stores the request for the code. */
   mint(
@@ -48,28 +40,20 @@ export interface CodeDeps {
   paid(code: ReceiveCode): Promise<boolean>
 }
 
-export const receiveCodeKey = (networkId: string, tag: string) =>
-  `webwallet.receiveCode.${networkId}.${tag}`
+export const receiveCodeId = (networkId: string, tag: string) => `${networkId}.${tag}`
 
-function isReceiveCode(v: unknown): v is ReceiveCode {
-  const c = v as ReceiveCode
-  return (
-    typeof c?.requestId === "string" && typeof c.url === "string" && typeof c.expiresAt === "number"
-  )
+/**
+ * Minted for another L2 address than the account's now: a backup passkey moves the account to a new
+ * one, payers refuse a code pinned to the old, and its deposit address pays the old account. A code
+ * that records no requester may carry no pin, so it counts as well.
+ */
+function mintedForOtherAccount(code: ReceiveCode, requester?: string): boolean {
+  return !!requester && code.requester?.toLowerCase() !== requester.toLowerCase()
 }
 
-export function readReceiveCode(key: string): ReceiveCode | null {
-  try {
-    const parsed = JSON.parse(walletStorage.getItem(key) ?? "null")
-    return isReceiveCode(parsed) ? parsed : null
-  } catch {
-    return null
-  }
-}
-
-/** Expired, or its address is too old to be swept. */
-export function codeIsStale(code: ReceiveCode, now: number): boolean {
-  if (code.expiresAt <= now) return true
+/** Expired, its address is too old to be swept, or minted for another account. */
+export function codeIsStale(code: ReceiveCode, now: number, requester?: string): boolean {
+  if (code.expiresAt <= now || mintedForOtherAccount(code, requester)) return true
   return code.day !== undefined && code.day <= (now - CODE_ADDRESS_MAX_AGE_MS) / DAY_MS
 }
 
@@ -97,8 +81,9 @@ export async function replaceCode(
     address: next.ready?.address,
     day: next.ready?.day,
     expiresAt: minted.row.expiresAt ?? now + CODE_LIFETIME_MS,
+    requester: minted.row.requesterAddress,
   }
-  await walletStorage.commitItem(deps.key, JSON.stringify(code))
+  await deps.codes.put(deps.id, code)
   if (previous && !next.previousPaid) await deps.cancel(previous.requestId)
   return code
 }
@@ -115,10 +100,10 @@ const formOf = (code: ReceiveCode | null): CodeForm => ({
  * A code without an address takes one as soon as one is ready.
  */
 export async function currentCode(deps: CodeDeps, now: number = Date.now()): Promise<ReceiveCode> {
-  const code = readReceiveCode(deps.key)
+  const code = await deps.codes.get(deps.id)
   // Paid while Receive was closed: its address is spent.
   if (code && (await deps.paid(code))) return nextCode(deps, code, now)
-  const good = code && !codeIsStale(code, now) ? code : null
+  const good = code && !codeIsStale(code, now, deps.requester) ? code : null
   if (good?.address) return good
   const ready = await deps.readyAddress()
   if (good && !ready) return good
@@ -127,8 +112,8 @@ export async function currentCode(deps: CodeDeps, now: number = Date.now()): Pro
 
 /** The code Receive opens on: an amount or note from an earlier visit is cleared, the address kept. */
 export async function openCode(deps: CodeDeps, now: number = Date.now()): Promise<ReceiveCode> {
-  const code = readReceiveCode(deps.key)
-  if (!code || (code.amount === 0 && !code.note) || codeIsStale(code, now))
+  const code = await deps.codes.get(deps.id)
+  if (!code || (code.amount === 0 && !code.note) || codeIsStale(code, now, deps.requester))
     return currentCode(deps, now)
   if (await deps.paid(code)) return nextCode(deps, code, now)
   return clearCode(deps, now)
@@ -139,15 +124,15 @@ export function clearCode(deps: CodeDeps, now: number = Date.now()): Promise<Rec
   return setCodeAmount(deps, BLANK_FORM, now)
 }
 
-/** Puts an amount and note on the code, keeping its address. */
+/** Puts an amount and note on the code, keeping its address while it is still the account's. */
 export async function setCodeAmount(
   deps: CodeDeps,
   form: CodeForm,
   now: number = Date.now(),
 ): Promise<ReceiveCode> {
-  const code = readReceiveCode(deps.key)
+  const code = await deps.codes.get(deps.id)
   const ready =
-    code?.address && code.day !== undefined
+    code?.address && code.day !== undefined && !mintedForOtherAccount(code, deps.requester)
       ? { address: code.address, day: code.day }
       : await deps.readyAddress()
   return replaceCode(deps, code, { ready, form }, now)

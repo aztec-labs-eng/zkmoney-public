@@ -3,11 +3,11 @@ pragma solidity >=0.8.27;
 
 import {Test, Vm} from "forge-std/Test.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
-import {IWETH9} from "@uniswap/v4-periphery/src/interfaces/external/IWETH9.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {FeePool} from "@periphery/fee_pool/FeePool.sol";
 import {IFeePool} from "@periphery/interfaces/IFeePool.sol";
 import {Errors} from "@periphery/Errors.sol";
-import {MockWETH9} from "@test/mocks/MockWETH9.sol";
+import {MintableToken} from "@test/mocks/MintableToken.sol";
 
 contract ReentrantSpender {
   FeePool internal immutable POOL;
@@ -22,12 +22,29 @@ contract ReentrantSpender {
     return POOL.pull(_amount);
   }
 
-  receive() external payable {
+  function onReceive() external {
     if (reentered) {
       return;
     }
     reentered = true;
     nestedAmount = POOL.pull(type(uint256).max);
+  }
+}
+
+contract HookedToken is MintableToken {
+  address public hook;
+
+  constructor() MintableToken("Aztec", "AZTEC", 18) {}
+
+  function setHook(address _hook) external {
+    hook = _hook;
+  }
+
+  function _update(address _from, address _to, uint256 _value) internal override {
+    super._update(_from, _to, _value);
+    if (_to == hook) {
+      ReentrantSpender(_to).onReceive();
+    }
   }
 }
 
@@ -44,27 +61,27 @@ contract FeePoolTest is Test {
   address internal subsidyManager = makeAddr("subsidyManager");
   address internal nextSpender = makeAddr("nextSpender");
 
-  MockWETH9 internal weth;
+  HookedToken internal token;
   FeePool internal pool;
 
   function setUp() public {
-    weth = new MockWETH9();
-    pool = new FeePool(owner, IWETH9(address(weth)));
+    token = new HookedToken();
+    pool = new FeePool(owner, token);
   }
 
-  function test_constructorStoresWethAndOwner() public view {
-    assertEq(address(pool.WETH()), address(weth));
+  function test_constructorStoresTokenAndOwner() public view {
+    assertEq(address(pool.TOKEN()), address(token));
     assertEq(pool.owner(), owner);
   }
 
-  function test_constructorRejectsWethWithoutCode() public {
-    vm.expectRevert(Errors.FeePool__WethWithoutCode.selector);
-    new FeePool(owner, IWETH9(makeAddr("noCode")));
+  function test_constructorRejectsTokenWithoutCode() public {
+    vm.expectRevert(Errors.FeePool__TokenWithoutCode.selector);
+    new FeePool(owner, IERC20(makeAddr("noCode")));
   }
 
   function test_constructorRejectsZeroOwner() public {
     vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableInvalidOwner.selector, address(0)));
-    new FeePool(address(0), IWETH9(address(weth)));
+    new FeePool(address(0), token);
   }
 
   function test_onlyTheOwnerAppends() public {
@@ -164,38 +181,22 @@ contract FeePoolTest is Test {
     _append(fpcFunder, 10 ether, NO_CAP);
     _append(subsidyManager, 15 ether, NO_CAP);
 
-    _fundWeth(50 ether);
+    _fund(50 ether);
     assertEq(pool.available(fpcFunder), 50 ether);
     assertEq(pool.available(subsidyManager), 40 ether);
 
-    _setWethBalance(22 ether);
+    _setBalance(22 ether);
     assertEq(pool.available(fpcFunder), 22 ether);
     assertEq(pool.available(subsidyManager), 12 ether);
 
-    _setWethBalance(8 ether);
+    _setBalance(8 ether);
     assertEq(pool.available(fpcFunder), 8 ether);
     assertEq(pool.available(subsidyManager), 0);
   }
 
-  function test_balanceCountsEthAndWeth() public {
-    _fundWeth(5 ether);
-    _fundEth(3 ether);
-    assertEq(pool.balance(), 8 ether);
-  }
-
-  function test_receiveAcceptsEthFromAnySender() public {
-    address sender = makeAddr("sender");
-    vm.deal(sender, 1 ether);
-    vm.prank(sender);
-    (bool ok,) = address(pool).call{value: 1 ether}("");
-    assertTrue(ok);
-    assertEq(address(pool).balance, 1 ether);
-  }
-
-  function test_pullPaysEthBeforeItUnwrapsWeth() public {
+  function test_pullPaysTheToken() public {
     _append(fpcFunder, 0, NO_CAP);
-    _fundEth(3 ether);
-    _fundWeth(5 ether);
+    _fund(8 ether);
 
     vm.expectEmit();
     emit IFeePool.Pulled(fpcFunder, 6 ether);
@@ -203,27 +204,26 @@ contract FeePoolTest is Test {
     uint256 amount = pool.pull(6 ether);
 
     assertEq(amount, 6 ether);
-    assertEq(fpcFunder.balance, 6 ether);
-    assertEq(address(pool).balance, 0);
-    assertEq(weth.balanceOf(address(pool)), 2 ether);
+    assertEq(token.balanceOf(fpcFunder), 6 ether);
+    assertEq(token.balanceOf(address(pool)), 2 ether);
   }
 
   function test_pullMaxTakesTheUnprotectedBalance() public {
     _append(fpcFunder, 10 ether, NO_CAP);
     _append(subsidyManager, 15 ether, NO_CAP);
-    _fundWeth(22 ether);
+    _fund(22 ether);
 
     vm.prank(subsidyManager);
     uint256 amount = pool.pull(type(uint256).max);
 
     assertEq(amount, 12 ether);
-    assertEq(subsidyManager.balance, 12 ether);
+    assertEq(token.balanceOf(subsidyManager), 12 ether);
     assertEq(pool.balance(), 10 ether, "the protected reserve stays in the pool");
   }
 
   function test_pullMaxTakesTheRateCap() public {
     _append(fpcFunder, 0, 4 ether);
-    _fundWeth(10 ether);
+    _fund(10 ether);
 
     vm.prank(fpcFunder);
     assertEq(pool.pull(type(uint256).max), 4 ether);
@@ -232,7 +232,7 @@ contract FeePoolTest is Test {
   function test_pullRevertsAboveAvailable() public {
     _append(fpcFunder, 10 ether, NO_CAP);
     _append(subsidyManager, 15 ether, NO_CAP);
-    _fundWeth(22 ether);
+    _fund(22 ether);
 
     vm.expectRevert(abi.encodeWithSelector(Errors.FeePool__AmountAboveAvailable.selector, 13 ether, 12 ether));
     vm.prank(subsidyManager);
@@ -241,7 +241,7 @@ contract FeePoolTest is Test {
 
   function test_pullZeroRestartsTheIdleTimer() public {
     _append(fpcFunder, 0, NO_CAP);
-    _fundWeth(1 ether);
+    _fund(1 ether);
     skip(IDLE_TIMEOUT);
 
     vm.recordLogs();
@@ -263,7 +263,7 @@ contract FeePoolTest is Test {
     vm.prank(fpcFunder);
     assertEq(pool.pull(type(uint256).max), 0);
     assertEq(vm.getRecordedLogs().length, 0, "an empty pull emits no event");
-    assertEq(fpcFunder.balance, 0);
+    assertEq(token.balanceOf(fpcFunder), 0);
 
     skip(IDLE_TIMEOUT);
     vm.expectRevert(abi.encodeWithSelector(Errors.FeePool__SpenderNotReleasable.selector, fpcFunder));
@@ -272,7 +272,7 @@ contract FeePoolTest is Test {
 
   function test_pullMaxWithNothingPullableKeepsTheRefill() public {
     _append(fpcFunder, 0, 7 ether);
-    _fundWeth(7 ether);
+    _fund(7 ether);
     vm.prank(fpcFunder);
     pool.pull(7 ether);
 
@@ -280,12 +280,12 @@ contract FeePoolTest is Test {
     vm.prank(fpcFunder);
     assertEq(pool.pull(type(uint256).max), 0);
 
-    _fundWeth(10 ether);
+    _fund(10 ether);
     assertEq(pool.available(fpcFunder), 3 ether, "the refill before the empty pull is kept");
   }
 
   function test_pullRevertsForAnUnknownSpender() public {
-    _fundWeth(1 ether);
+    _fund(1 ether);
     vm.expectRevert(abi.encodeWithSelector(Errors.FeePool__NotALiveSpender.selector, nextSpender));
     vm.prank(nextSpender);
     pool.pull(1 ether);
@@ -293,32 +293,34 @@ contract FeePoolTest is Test {
 
   function test_aNestedPullStaysWithinTheRateCap() public {
     ReentrantSpender spender = new ReentrantSpender(pool);
+    token.setHook(address(spender));
     _append(address(spender), 0, 6 ether);
-    _fundWeth(20 ether);
+    _fund(20 ether);
 
     assertEq(spender.pull(4 ether), 4 ether);
 
     assertEq(spender.nestedAmount(), 2 ether);
-    assertEq(address(spender).balance, 6 ether);
+    assertEq(token.balanceOf(address(spender)), 6 ether);
     assertEq(pool.available(address(spender)), 0);
   }
 
   function test_aNestedPullLeavesTheProtectedReserves() public {
     _append(fpcFunder, 5 ether, NO_CAP);
     ReentrantSpender spender = new ReentrantSpender(pool);
+    token.setHook(address(spender));
     _append(address(spender), 0, NO_CAP);
-    _fundWeth(12 ether);
+    _fund(12 ether);
 
     assertEq(spender.pull(4 ether), 4 ether);
 
     assertEq(spender.nestedAmount(), 3 ether);
-    assertEq(address(spender).balance, 7 ether);
+    assertEq(token.balanceOf(address(spender)), 7 ether);
     assertEq(pool.balance(), 5 ether);
   }
 
   function test_rateCapRefillsOverThePeriod() public {
     _append(fpcFunder, 0, 7 ether);
-    _fundWeth(100 ether);
+    _fund(100 ether);
 
     vm.prank(fpcFunder);
     pool.pull(7 ether);
@@ -337,7 +339,7 @@ contract FeePoolTest is Test {
 
   function test_expiredSpenderCannotPull() public {
     _appendUntil(fpcFunder, 0, NO_CAP, uint64(block.timestamp + ACTIVE_FOR));
-    _fundWeth(10 ether);
+    _fund(10 ether);
 
     skip(ACTIVE_FOR);
     assertEq(pool.available(fpcFunder), 10 ether, "the spender is live up to and at activeUntil");
@@ -352,7 +354,7 @@ contract FeePoolTest is Test {
   function test_expiredReserveCountsUntilTheSpenderIsReleased() public {
     _appendUntil(fpcFunder, 10 ether, NO_CAP, uint64(block.timestamp + ACTIVE_FOR));
     _append(subsidyManager, 0, NO_CAP);
-    _fundWeth(10 ether);
+    _fund(10 ether);
 
     skip(ACTIVE_FOR + 1);
     assertEq(pool.available(subsidyManager), 0, "an expired spender that is not released still holds its reserve");
@@ -368,7 +370,7 @@ contract FeePoolTest is Test {
   function test_renounceFreesTheReserve() public {
     _append(fpcFunder, 10 ether, NO_CAP);
     _append(subsidyManager, 0, NO_CAP);
-    _fundWeth(10 ether);
+    _fund(10 ether);
 
     vm.expectEmit();
     emit IFeePool.Renounced(fpcFunder);
@@ -392,16 +394,6 @@ contract FeePoolTest is Test {
 
     Vm.Log[] memory logs = vm.getRecordedLogs();
     assertEq(logs.length, 0, "a released or unknown spender renounces without a revert or an event");
-  }
-
-  function test_renounceAcceptsEth() public {
-    _append(fpcFunder, 0, NO_CAP);
-    vm.deal(fpcFunder, 2 ether);
-
-    vm.prank(fpcFunder);
-    pool.renounce{value: 2 ether}();
-
-    assertEq(pool.balance(), 2 ether);
   }
 
   function test_appendDropsTheExpiredSpenders() public {
@@ -496,7 +488,7 @@ contract FeePoolTest is Test {
   function test_anyoneReleasesAnIdleSpender() public {
     _append(fpcFunder, 10 ether, NO_CAP);
     _append(subsidyManager, 0, NO_CAP);
-    _fundWeth(10 ether);
+    _fund(10 ether);
 
     skip(IDLE_TIMEOUT);
     vm.expectRevert(abi.encodeWithSelector(Errors.FeePool__SpenderNotReleasable.selector, fpcFunder));
@@ -529,7 +521,7 @@ contract FeePoolTest is Test {
   function test_aSpenderPullsDuringTheIdleDelay() public {
     vm.prank(owner);
     pool.append(_config(fpcFunder, 0, 4 ether, NO_EXPIRY), IDLE_DELAY);
-    _fundWeth(10 ether);
+    _fund(10 ether);
 
     assertEq(pool.available(fpcFunder), 4 ether, "the rate cap does not refill during the idle delay");
     vm.prank(fpcFunder);
@@ -542,7 +534,7 @@ contract FeePoolTest is Test {
 
   function test_pullRestartsTheIdleTimer() public {
     _append(fpcFunder, 0, NO_CAP);
-    _fundWeth(1 ether);
+    _fund(1 ether);
 
     skip(IDLE_TIMEOUT);
     vm.prank(fpcFunder);
@@ -595,7 +587,7 @@ contract FeePoolTest is Test {
     _assertOrder(_list(subsidyManager, fpcFunder));
     assertEq(_spender(1).protectedReserves, 15 ether);
 
-    _fundWeth(20 ether);
+    _fund(20 ether);
     assertEq(pool.available(subsidyManager), 20 ether);
     assertEq(pool.available(fpcFunder), 5 ether, "the renewed spender comes after the subsidy manager");
   }
@@ -618,7 +610,7 @@ contract FeePoolTest is Test {
     if (_middleExpired) {
       skip(ACTIVE_FOR + 1);
     }
-    _fundWeth(_balance);
+    _fund(_balance);
 
     uint256 protectedReserves = uint256(_firstReserve) + (_middleRenounced ? 0 : _middleReserve);
     uint256 expected = _balance > protectedReserves ? _balance - protectedReserves : 0;
@@ -696,23 +688,17 @@ contract FeePoolTest is Test {
     });
   }
 
-  function _fundWeth(uint256 _amount) internal {
-    vm.deal(address(this), _amount);
-    weth.deposit{value: _amount}();
-    weth.transfer(address(pool), _amount);
+  function _fund(uint256 _amount) internal {
+    token.mint(address(pool), _amount);
   }
 
-  function _fundEth(uint256 _amount) internal {
-    vm.deal(address(pool), address(pool).balance + _amount);
-  }
-
-  function _setWethBalance(uint256 _amount) internal {
-    uint256 current = weth.balanceOf(address(pool));
+  function _setBalance(uint256 _amount) internal {
+    uint256 current = token.balanceOf(address(pool));
     if (_amount < current) {
       vm.prank(address(pool));
-      weth.transfer(address(0xdead), current - _amount);
+      token.transfer(address(0xdead), current - _amount);
     } else if (_amount > current) {
-      _fundWeth(_amount - current);
+      _fund(_amount - current);
     }
   }
 }

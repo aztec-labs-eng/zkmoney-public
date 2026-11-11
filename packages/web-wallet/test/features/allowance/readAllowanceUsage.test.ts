@@ -3,7 +3,7 @@
  * the payer's own before a rotation, the acting account's after it.
  */
 import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 
 const { readClaimFpcSubscriptionNotes, broadcastTxHashes } = vi.hoisted(() => ({
@@ -18,28 +18,23 @@ vi.mock("@obsidion/sdk", async (importOriginal) => ({
 }))
 
 const { readAllowanceUsage } = await import("../../../src/features/allowance/readAllowanceUsage")
-const { getConfig } = await import("../../../src/config/env")
-const { primeOxideTuple } = await import("../../../src/config/oxideTuple")
 const { closeSession } = await import("../../../src/session/session")
 const { openTestSession } = await import("../../support/session")
-const { seedBootConfig } = await import("../../support/seedBootConfig")
 
-beforeAll(async () => {
-  await seedBootConfig()
-  primeOxideTuple(getConfig(), {
-    rollupVersion: "1",
-    l2Token: `0x${"01".repeat(32)}`,
-  } as OxideEnvTuple)
-})
+const primed = {
+  tuple: { rollupVersion: "1", l2Token: `0x${"01".repeat(32)}` } as OxideEnvTuple,
+}
 afterEach(closeSession)
 
 const acting = AztecAddress.fromNumberUnsafe(0x11)
 const payer = AztecAddress.fromNumberUnsafe(0x22)
-const deps = {
-  wallet: {},
-  account: { getAddress: () => acting },
-  contractService: { getArtifactForContract: async () => ({}) },
-} as never
+const deps = () =>
+  ({
+    session: openTestSession({ sipaDiscovery: {}, primed }),
+    wallet: {},
+    account: { getAddress: () => acting },
+    contractService: { getArtifactForContract: async () => ({}) },
+  } as never)
 const note = (uses: number, txHash: string, blockNumber = 10) => ({
   uses,
   txHash,
@@ -56,13 +51,16 @@ const read = (payerAddress: AztecAddress) => ({
 describe("readAllowanceUsage", () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    openTestSession({ sipaDiscovery: {} })
+    openTestSession({ sipaDiscovery: {}, primed })
   })
 
   it("reads the broadcasts of the one account that pays and acts", async () => {
     readClaimFpcSubscriptionNotes.mockResolvedValueOnce([note(99, "0xa"), note(98, "0xb")])
     broadcastTxHashes.mockResolvedValueOnce(new Set(["0xb"]))
-    expect(await readAllowanceUsage(deps, read(acting))).toEqual({ yours: 1, depositAddresses: 1 })
+    expect(await readAllowanceUsage(deps(), read(acting))).toEqual({
+      yours: 1,
+      depositAddresses: 1,
+    })
     expect(broadcastTxHashes).toHaveBeenCalledTimes(1)
     expect(broadcastTxHashes).toHaveBeenCalledWith({}, acting, 10)
   })
@@ -76,7 +74,7 @@ describe("readAllowanceUsage", () => {
     broadcastTxHashes.mockImplementation(async (_wallet: unknown, account: AztecAddress) =>
       account.equals(payer) ? new Set(["0xa"]) : new Set(["0xc"]),
     )
-    expect(await readAllowanceUsage(deps, read(payer))).toEqual({ yours: 1, depositAddresses: 2 })
+    expect(await readAllowanceUsage(deps(), read(payer))).toEqual({ yours: 1, depositAddresses: 2 })
     expect(broadcastTxHashes).toHaveBeenCalledTimes(2)
     expect(broadcastTxHashes).toHaveBeenCalledWith({}, payer, 5)
     expect(broadcastTxHashes).toHaveBeenCalledWith({}, acting, 5)

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import { keccak256, type Address, type Hex } from "viem"
 import { secp256k1 } from "@noble/curves/secp256k1"
 import { AztecAddress } from "@aztec-labs/aztec.js/addresses"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 import { EthAddress } from "@aztec-labs/foundation/eth-address"
 import { encodeDepositIntentData } from "@oxide/l1-contracts"
 import { computeSIPAAddress } from "@oxide/oxide-lib/sipa_address.js"
@@ -29,6 +30,10 @@ import { computeStealthRecipientHash, deriveSharedSecret } from "@obsidion/sdk"
 import {
   createResolverWindow,
   readResolverDeployments,
+  RESOLVER_LOOKBACK_DAYS,
+  RESOLVER_MAX_NONCES_PER_DAY,
+  RESOLVER_NONCE_LOOKAHEAD as LOOKAHEAD,
+  RESOLVER_SLOTS,
   type ResolverDeployment,
   type ResolverDeploymentSource,
 } from "../../src/oxide/resolverPayments"
@@ -59,7 +64,7 @@ const STEALTH_SCALAR = 0x1f2e3d4c5b6a79881726354453627180918273645546372819a0b1c
 const RESOLVER_SCALAR = 0x0a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20212223242526272829n
 const STEALTH_PUBLIC = point(STEALTH_SCALAR)
 const RESOLVER_PUBLIC = point(RESOLVER_SCALAR)
-const KEYS = { stealthScalar: STEALTH_SCALAR, recipient: RECIPIENT }
+const KEYS = { stealthScalar: STEALTH_SCALAR, selfSipaKey: new Fr(9n), recipient: RECIPIENT }
 
 const NOW = Date.UTC(2026, 0, 15, 12)
 const TODAY = Math.floor(NOW / 1000 / 86_400)
@@ -119,9 +124,13 @@ async function handedOut(d: ResolverDeployment, day: number, nonces: number[]) {
 
 const range = (from: number, to: number) => Array.from({ length: to - from }, (_, i) => from + i)
 
-/** A held record at `address` under `salt`. */
+/** The account's held record at `address` under `salt`. */
 const held = (address: string, salt: { toString(): string }) =>
-  ({ sipaAddress: address, messageSecret: salt.toString() } as SipaDeposit)
+  ({
+    sipaAddress: address,
+    messageSecret: salt.toString(),
+    recipientL2Address: RECIPIENT.toString(),
+  } as SipaDeposit)
 
 const addresses = (candidates: { sipaAddress: string }[]) =>
   candidates.map((c) => c.sipaAddress.toLowerCase())
@@ -130,19 +139,22 @@ beforeEach(() => {
   mocks.readAccountResolution.mockReset()
 })
 
-describe("createResolverWindow", () => {
-  it("names the addresses each deployment's resolver hands out for yesterday and today", async () => {
-    const window = createResolverWindow()
+// Each case derives hundreds of real addresses.
+describe("createResolverWindow", { timeout: 30_000 }, () => {
+  /** The window's days, today first. */
+  const days = (today: number) => range(0, RESOLVER_LOOKBACK_DAYS).map((i) => today - i)
+  const daysOf = async (d: ResolverDeployment, today: number) =>
+    (await Promise.all(days(today).map((day) => handedOut(d, day, range(0, LOOKAHEAD))))).flat()
+
+  it("names the addresses each deployment's resolver hands out over the look-back days", async () => {
+    const window = createResolverWindow(RESOLVER_SLOTS)
     const [dai, susds] = [deployment("DAI"), deployment("sUSDS")]
 
     const candidates = await window(KEYS, [dai, susds], [], NOW)
 
-    const nonces = range(0, 8)
     expect(addresses(candidates)).toEqual([
-      ...(await handedOut(dai, TODAY - 1, nonces)),
-      ...(await handedOut(dai, TODAY, nonces)),
-      ...(await handedOut(susds, TODAY - 1, nonces)),
-      ...(await handedOut(susds, TODAY, nonces)),
+      ...(await daysOf(dai, TODAY)),
+      ...(await daysOf(susds, TODAY)),
     ])
     const paid = await resolverHandsOut(dai, TODAY, 2)
     expect(candidates.find((c) => c.sipaAddress.toLowerCase() === paid.address)).toMatchObject({
@@ -163,64 +175,61 @@ describe("createResolverWindow", () => {
     const dai = deployment("DAI")
     const used = await resolverHandsOut(dai, TODAY, 2)
 
-    const candidates = await createResolverWindow()(
+    const candidates = await createResolverWindow(RESOLVER_SLOTS)(
       KEYS,
       [dai],
       [held(used.address, used.salt)],
       NOW,
     )
 
-    // Nonces 0 and 1 were handed out before 2 and may still be paid; 3..10 are the look-ahead.
-    expect(addresses(candidates).slice(8)).toEqual(
-      await handedOut(dai, TODAY, [0, 1, ...range(3, 11)]),
+    // Nonces 0 and 1 were handed out before 2 and may still be paid; the look-ahead follows 2.
+    expect(addresses(candidates).slice(0, LOOKAHEAD + 2)).toEqual(
+      await handedOut(dai, TODAY, [0, 1, ...range(3, 3 + LOOKAHEAD)]),
     )
-    expect(addresses(candidates).slice(0, 8)).toEqual(await handedOut(dai, TODAY - 1, range(0, 8)))
+    expect(addresses(candidates).slice(LOOKAHEAD + 2, 2 * LOOKAHEAD + 2)).toEqual(
+      await handedOut(dai, TODAY - 1, range(0, LOOKAHEAD)),
+    )
   })
 
   it("never derives past the per-day bound however far the used nonces reach", async () => {
     const dai = deployment("DAI")
     const records = await Promise.all(
-      range(0, 40).map(async (nonce) => {
+      range(0, RESOLVER_MAX_NONCES_PER_DAY + 10).map(async (nonce) => {
         const { address, salt } = await resolverHandsOut(dai, TODAY, nonce)
         return held(address, salt)
       }),
     )
 
-    const candidates = await createResolverWindow()(KEYS, [dai], records, NOW)
+    const candidates = await createResolverWindow(RESOLVER_SLOTS)(KEYS, [dai], records, NOW)
 
-    expect(addresses(candidates)).toEqual(await handedOut(dai, TODAY - 1, range(0, 8)))
+    expect(candidates.filter((c) => c.day === TODAY)).toEqual([])
+    expect(candidates).toHaveLength((RESOLVER_LOOKBACK_DAYS - 1) * LOOKAHEAD)
   })
 
-  it("moves to the next day with the time it is given", async () => {
+  it("moves to the next day with the time it is given, and drops the oldest", async () => {
     const dai = deployment("DAI")
 
-    const candidates = await createResolverWindow()(KEYS, [dai], [], NOW + DAY_MS)
+    const candidates = await createResolverWindow(RESOLVER_SLOTS)(KEYS, [dai], [], NOW + DAY_MS)
 
-    expect(addresses(candidates)).toEqual([
-      ...(await handedOut(dai, TODAY, range(0, 8))),
-      ...(await handedOut(dai, TODAY + 1, range(0, 8))),
-    ])
+    expect(addresses(candidates)).toEqual(await daysOf(dai, TODAY + 1))
   })
 
   it("derives new addresses when a refreshed deployment changes an input", async () => {
-    const window = createResolverWindow()
+    const window = createResolverWindow(RESOLVER_SLOTS)
     const dai = deployment("DAI")
     await window(KEYS, [dai], [], NOW)
     const changed = { ...dai, implementation: SUSDS_IMPLEMENTATION as Address }
 
     const candidates = await window(KEYS, [changed], [], NOW)
 
-    expect(addresses(candidates)).toEqual([
-      ...(await handedOut(changed, TODAY - 1, range(0, 8))),
-      ...(await handedOut(changed, TODAY, range(0, 8))),
-    ])
+    expect(addresses(candidates)).toEqual(await daysOf(changed, TODAY))
   })
 
   it("leaves out an address discovery already holds under the same salt", async () => {
     const dai = deployment("DAI")
     const paid = await resolverHandsOut(dai, TODAY, 0)
 
-    const candidates = await createResolverWindow()(
+    const candidates = await createResolverWindow(RESOLVER_SLOTS)(
       KEYS,
       [dai],
       [held("0x1111111111111111111111111111111111111111", paid.salt)],

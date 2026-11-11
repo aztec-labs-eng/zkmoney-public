@@ -12,26 +12,23 @@ import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 
 export type WebClassArtifactResolver = ReturnType<typeof createClassArtifactResolver>
 
-let resolveWebClassArtifact: WebClassArtifactResolver | undefined
-
-export function setWebClassArtifactResolver(resolve: WebClassArtifactResolver): void {
-  resolveWebClassArtifact = resolve
-}
-
-/** `instance`: the broadcaster's on-chain instance when the caller already read it. */
-export function getWebBroadcasterArtifact(
-  wallet: ObsidionWallet,
-  address: string | AztecAddress,
-  instance?: { currentContractClassId: { toString(): string } },
-) {
-  if (!resolveWebClassArtifact) return getBroadcasterArtifact()
-  return resolveInstanceArtifact(
-    instance ? { getContract: async () => instance } : wallet.node,
-    typeof address === "string" ? AztecAddress.fromStringUnsafe(address) : address,
-    getBroadcasterArtifact,
-    resolveWebClassArtifact,
-  )
-}
+/**
+ * The broadcaster artifact of the instance at an address, through the profile's class catalog
+ * `resolve`. `instance`: the broadcaster's on-chain instance when the caller already read it.
+ */
+export const webBroadcasterArtifact =
+  (resolve: WebClassArtifactResolver | undefined) =>
+  (
+    wallet: ObsidionWallet,
+    address: string | AztecAddress,
+    instance?: { currentContractClassId: { toString(): string } },
+  ) =>
+    resolveInstanceArtifact(
+      instance ? { getContract: async () => instance } : wallet.node,
+      typeof address === "string" ? AztecAddress.fromStringUnsafe(address) : address,
+      getBroadcasterArtifact,
+      resolve,
+    )
 
 /** The deployment's L2 token, registered in this PXE: it sends a SIPA's `SIPA` event. */
 export async function getWebOxideToken(

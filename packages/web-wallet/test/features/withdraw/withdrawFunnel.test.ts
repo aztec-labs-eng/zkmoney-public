@@ -1,12 +1,15 @@
 import { describe, expect, it, vi } from "vitest"
-import { walletStorage } from "../../../src/platform/storage/walletStorage"
-import type { WithdrawalRecord } from "@obsidion/front-core"
+import {
+  createWithdrawFunnel,
+  memoryBackend,
+  openDatabase,
+  type ReportedPhases,
+  type WithdrawalRecord,
+} from "@obsidion/front-core"
 import {
   reportWithdrawFunnel,
   withdrawTransitions,
-  type ReportedPhases,
 } from "../../../src/features/withdraw/withdrawFunnel"
-import { WebStorageAdapter } from "../../../src/platform/storage/WebStorageAdapter"
 import { fireEvent } from "../../../src/lib/analytics"
 
 vi.mock("../../../src/lib/analytics", async (importOriginal) => ({
@@ -97,25 +100,25 @@ describe("withdrawTransitions", () => {
 })
 
 describe("reportWithdrawFunnel", () => {
-  it("persists through the shared adapter and reports each phase once", async () => {
-    // jsdom has no Web Locks; run the callback directly.
-    Object.defineProperty(navigator, "locks", {
-      value: { request: (_name: string, cb: () => Promise<void>) => cb() },
-      configurable: true,
-    })
-    localStorage.clear()
+  it("reports each phase once, across a reload and two reports at once", async () => {
+    const backend = memoryBackend()
+    const funnel = () => createWithdrawFunnel({ db: openDatabase(backend) })
     const fired = vi.mocked(fireEvent)
     fired.mockClear()
 
-    reportWithdrawFunnel([record({})], new WebStorageAdapter())
-    await new Promise((r) => setTimeout(r, 0))
+    const open = funnel()
+    await Promise.all([
+      reportWithdrawFunnel([record({})], open),
+      reportWithdrawFunnel([record({})], open),
+    ])
     expect(fired).toHaveBeenCalledTimes(1)
-    expect(walletStorage.getItem("obsidion.analytics.withdrawFunnel")).toBe(
-      JSON.stringify({ wdraw_a: "finalizing_l1" }),
-    )
 
-    reportWithdrawFunnel([record({})], new WebStorageAdapter())
-    await new Promise((r) => setTimeout(r, 0))
+    await reportWithdrawFunnel([record({})], funnel())
     expect(fired).toHaveBeenCalledTimes(1)
+    await reportWithdrawFunnel([record({ phase: "done", endTime: 2_000 })], funnel())
+    expect(fired.mock.calls.map(([event]) => event)).toEqual([
+      "withdraw_finalization_ready",
+      "withdraw_finalized",
+    ])
   })
 })

@@ -25,7 +25,7 @@ import { deriveStealthKey } from "../../../src/oxide/oxideAccountKeys"
 import { claimSipaDeposits, type SipaClaimDeps } from "../../../src/oxide/sipaClaim"
 import { scanSipaDeposits, type SipaScanDeps } from "../../../src/oxide/sipaScan"
 import type { SipaRow } from "../../../src/oxide/sipaRows"
-import { FakeL1 } from "./fakeL1"
+import { FakeL1, type CloneArgs } from "./fakeL1"
 import { FakeL2 } from "./fakeL2"
 
 export const DAI = "0x6b175474e89094c44da98b954eedeac495271d0f" as Address
@@ -37,7 +37,7 @@ export const FACTORY = "0x239474855dff1eb58dca3ee877d599e3c6bd0bd2" as Address
 export const TABLE = "0x00000000000000000000000000000000000000d1" as Address
 export const DEPOSIT_IMPL = "0x39dd57b9f2b16e5c9e9e35e18b73c8a2a5d1f7c4" as Address
 export const REGISTRATION_IMPL = "0x0000000000000000000000000000000000000c02" as Address
-export const USER_OP_IMPL = "0x0000000000000000000000000000000000000c03" as Address
+export const ADD_PASSKEY_IMPL = "0x0000000000000000000000000000000000000c03" as Address
 export const FUNDER = "0x00000000000000000000000000000000000000f1" as Address
 export const L2_TOKEN = `0x0${"12".repeat(31)}2`
 export const SAVINGS_L2_TOKEN = `0x0${"34".repeat(31)}4`
@@ -47,9 +47,9 @@ export const FEE = 10n ** 17n
 export const CAP = 10n ** 24n
 export const DEPOSIT = 1n
 export const REGISTRATION = 2n
-export const USER_OP = 3n
+export const ADD_PASSKEY = 4n
 
-const MSK = new Fr(7n)
+export const MSK = new Fr(7n)
 export const RECIPIENT = AztecAddress.fromBigIntUnsafe(0xbeefn)
 export const RECOVERY_ACCOUNT = "0x00000000000000000000000000000000000000ac" as Address
 
@@ -71,7 +71,7 @@ export const DAI_ROW: SipaRow = {
   l2Token: L2_TOKEN,
   token: token(DAI, "DAI"),
   swapped: [token(USDC, "USDC", 6)],
-  intents: ["deposit", "registration", "user-op"],
+  intents: ["deposit", "registration", "add-passkey"],
 }
 export const SAVINGS_ROW: SipaRow = {
   portal: SAVINGS_PORTAL,
@@ -91,15 +91,15 @@ export async function pipelineWorld(rows: readonly SipaRow[] = [DAI_ROW]) {
     l1.token(t.address, t.symbol, t.decimals)
   l1.implementations.set(1, DEPOSIT_IMPL)
   l1.implementations.set(2, REGISTRATION_IMPL)
-  l1.bless(3, USER_OP_IMPL, 1n)
+  l1.bless(4, ADD_PASSKEY_IMPL, 1n)
   for (const row of rows) {
     l1.caps.set(row.portal.toLowerCase(), CAP)
     for (const t of [row.token, ...row.swapped])
-      for (const intent of [1, 2, 3])
+      for (const intent of [1, 2, 4])
         l1.row(t.address, intent, { portal: row.portal, sweepTip: FEE })
   }
   const db = openDatabase(memoryBackend())
-  const store = createSipaDeposits({ db, account: true })
+  const store = createSipaDeposits({ db, account: true, now: () => Date.now() })
   const stealth = deriveStealthKey(MSK)
 
   /** The address an event announces, derived as discovery derives it. */
@@ -110,20 +110,31 @@ export async function pipelineWorld(rows: readonly SipaRow[] = [DAI_ROW]) {
       implementation?: Address
       resweepable?: boolean
       recipient?: AztecAddress
+      /** An earlier SIPA set's factory and table. */
+      sipaFactory?: Address
+      forwardingTable?: Address
     } = {},
   ) => {
     const recipient = opts.recipient ?? RECIPIENT
     const commitment = await computeStealthRecipientHash(s, recipient)
     const intentHash =
       opts.intentHash ?? (`0x${keccak256(commitment.toBuffer()).toString("hex")}` as Hex)
+    const recoveryCommitment = deriveRecoveryCommitment(s, EthAddress.fromString(RECOVERY_ACCOUNT))
+    const clone: CloneArgs = {
+      intentHash,
+      recoveryCommitment: recoveryCommitment.toString() as Hex,
+      forwardingTable: opts.forwardingTable ?? TABLE,
+      resweepable: opts.resweepable ?? true,
+      implementation: opts.implementation ?? DEPOSIT_IMPL,
+    }
     const address = computeSIPAAddress({
-      sipaFactory: EthAddress.fromString(FACTORY),
-      implementation: EthAddress.fromString(opts.implementation ?? DEPOSIT_IMPL),
+      sipaFactory: EthAddress.fromString(opts.sipaFactory ?? FACTORY),
+      implementation: EthAddress.fromString(clone.implementation),
       intentHash: Buffer.from(intentHash.slice(2), "hex"),
       rollupVersion: BigInt(TUPLE.rollupVersion),
-      resweepable: opts.resweepable ?? true,
-      recoveryCommitment: deriveRecoveryCommitment(s, EthAddress.fromString(RECOVERY_ACCOUNT)),
-      forwardingTable: EthAddress.fromString(TABLE),
+      resweepable: clone.resweepable,
+      recoveryCommitment,
+      forwardingTable: EthAddress.fromString(clone.forwardingTable),
     } as never)
     return {
       salt: s,
@@ -131,6 +142,7 @@ export async function pipelineWorld(rows: readonly SipaRow[] = [DAI_ROW]) {
       address: address.toString() as Address,
       commitment: commitment.toString() as Hex,
       intentHash,
+      clone,
     }
   }
 
@@ -158,7 +170,7 @@ export async function pipelineWorld(rows: readonly SipaRow[] = [DAI_ROW]) {
     },
     /** The relayer sweeps what `sipa` holds of `t` through `row`, `credit` reaching L2. */
     sweep(
-      sipa: { address: Address; commitment: Hex },
+      sipa: { address: Address; commitment: Hex; clone?: CloneArgs },
       index: bigint,
       opts: { t?: Address; row?: SipaRow; block?: bigint; credit?: bigint } = {},
     ) {
@@ -173,6 +185,7 @@ export async function pipelineWorld(rows: readonly SipaRow[] = [DAI_ROW]) {
         commitment: sipa.commitment,
         portal: (opts.row ?? DAI_ROW).portal,
         block: opts.block ?? l1.head - 40n,
+        clone: sipa.clone,
       })
     },
     /** A record this device saved before any event, as a hand-out or a seed writes it. */

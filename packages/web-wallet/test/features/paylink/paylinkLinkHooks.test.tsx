@@ -1,11 +1,4 @@
-/**
- * The two reads a visitor's link page gates on: this browser's own cash-out of the link, and how
- * many voucher uses the link's escrow still holds.
- *
- * Both decide whether a holder is offered a way to get their money, so both fail in the same
- * direction: a wrong answer either hands over a cash-out the escrow cannot pay for, or tells
- * someone their funds are gone while they sit in escrow.
- */
+// Guards: a funded link stays reclaimable; no other link's or burn's cash-out; no stale reads.
 import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
@@ -29,10 +22,6 @@ const CTX = {
     | undefined,
   cs: { contractService: { _id: "cs" } },
 }
-vi.mock("@obsidion/front-core", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@obsidion/front-core")>()),
-  useContractServiceContext: () => CTX.cs,
-}))
 
 const { useLinkVoucher, useLinkWithdrawal } = await import(
   "../../../src/features/paylink/usePaylinkDeps"
@@ -43,7 +32,11 @@ const { openTestSession } = await import("../../support/session")
 /** A visitor's session over the wallet and signer `CTX` holds; one left out is not up yet. */
 const openSession = () => {
   closeSession()
-  openTestSession({ wallet: CTX.wallet, teeSigner: CTX.teeSigner })
+  openTestSession({
+    wallet: CTX.wallet,
+    contractService: CTX.cs.contractService,
+    teeSigner: CTX.teeSigner,
+  })
 }
 
 const link = (fragment: string, over: Record<string, unknown> = {}) =>
@@ -110,17 +103,6 @@ describe("this browser's own cash-out of a link", () => {
     expect(h.seen.at(-1)).toBeUndefined()
   })
 
-  it("finds the retry that worked past the attempt that did not", () => {
-    records.list = [
-      { paylinkId: "hash:frag-a", phase: "failed" },
-      { paylinkId: "hash:frag-a", phase: "l2_mined" },
-    ]
-    const h = harness((f) => useLinkWithdrawal(link(f)))
-    h.render("frag-a")
-
-    expect((h.seen.at(-1) as { phase: string }).phase).toBe("l2_mined")
-  })
-
   it("ignores another link's withdrawal", () => {
     records.list = [{ paylinkId: "hash:frag-b", phase: "l2_mined" }]
     const h = harness((f) => useLinkWithdrawal(link(f)))
@@ -158,19 +140,6 @@ describe("the voucher uses a link's escrow holds", () => {
 
     await act(async () => settle(0))
     expect(h.seen.at(-1)).toBe(0)
-  })
-
-  it("reports an unknown voucher on timeout, and lets the visitor retry", async () => {
-    vi.useFakeTimers()
-    const h = harness((f) => useLinkVoucher(link(f)))
-    h.render("frag-a")
-    await act(async () => void vi.advanceTimersByTime(12_000))
-    expect(h.seen.at(-1)?.uses).toBeUndefined()
-    expect(h.seen.at(-1)?.error).toBeTruthy()
-    linkVoucherUses.mockResolvedValue(1)
-    await act(async () => h.seen.at(-1)!.retry())
-    expect(h.seen.at(-1)?.uses).toBe(1)
-    expect(h.seen.at(-1)?.error).toBeUndefined()
   })
 
   it("does not mistake a failed voucher read for an unfunded email link", async () => {

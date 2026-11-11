@@ -1,19 +1,7 @@
 import type { Database, Write } from "./database"
-import {
-  APP_NOTIFICATION_STORAGE_KEY,
-  legacyNotificationEvents,
-  legacyNotificationState,
-} from "./notificationsLegacy"
-import {
-  decodeRecord,
-  encodeRecord,
-  loadRecords,
-  persistentStore,
-  timeKey,
-  type RecordSet,
-} from "./persistentStore"
-import { WalletError } from "./errors"
+import { loadRecords, persistentStore, timeKey, type RecordSet } from "./persistentStore"
 import { derived, memoryStore, type ReadonlyStore } from "./store"
+import { migrateNotifications } from "../storageMigrations/notifications"
 
 /** How long after its record settles an entry still rings when first seen; older ones never show. */
 export const NOTIFICATION_WINDOW_MS = 24 * 60 * 60 * 1000
@@ -154,7 +142,6 @@ export function notificationTransition(
       if (state?.dismissedAt === undefined) {
         return event ? { ...record, event: change.event } : arrived(id, change.event, state)
       }
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const { dismissedAt, ...shown } = state
       return event ? { id, state: shown, event: change.event } : arrived(id, change.event, shown)
     }
@@ -201,42 +188,20 @@ export interface Notifications {
 }
 
 const PREFIX = "acct/notifications"
-/** Where the two stores of the previous version kept their records. */
-const STATE_PREFIX = "acct/notificationState/"
-const EVENTS_PREFIX = "acct/notificationEvents/"
-
 const UNREAD = "1"
 
-/** Imports the previous version's two stores, or, before them, the legacy blob; they stay as they were. */
-async function migrate(db: Database, from: number | undefined, w: Write): Promise<void> {
-  if (from !== undefined)
-    throw new WalletError("invariant", `notifications: unknown version ${from}`)
-  const [stateVersion, eventsVersion, blob] = await w.getMany([
-    "acct/meta/notificationState",
-    "acct/meta/notificationEvents",
-    APP_NOTIFICATION_STORAGE_KEY,
-  ])
-  const records = new Map<string, NotificationRecord>()
-  const at = (id: string) => records.get(id) ?? { id }
-  const states = stateVersion === undefined ? legacyNotificationState(blob) : []
-  const events = eventsVersion === undefined ? legacyNotificationEvents(blob) : []
-  for (const [key, raw] of await db.range(STATE_PREFIX))
-    states.push([key.slice(STATE_PREFIX.length), decodeRecord(raw) as NotificationState])
-  for (const [key, raw] of await db.range(EVENTS_PREFIX))
-    events.push([key.slice(EVENTS_PREFIX.length), decodeRecord(raw) as NotificationEvent])
-  for (const [id, state] of states) records.set(id, { ...at(id), state })
-  for (const [id, event] of events) records.set(id, { ...at(id), event })
-  for (const [id, record] of records) {
-    if (!id.includes("/")) w.put(`${PREFIX}/${id}`, encodeRecord(record))
-  }
-}
-
-export function createNotifications(db: Database): Notifications {
+export function createNotifications({
+  db,
+  now,
+}: {
+  db: Database
+  now: () => number
+}): Notifications {
   const store = persistentStore<NotificationRecord, "seen" | "unread">(db, {
     prefix: PREFIX,
     version: 1,
     id: (record) => record.id,
-    migrate: (from, w) => migrate(db, from, w),
+    migrate: (from, w) => migrateNotifications(from, w, { db, prefix: PREFIX }),
     indexes: {
       // The later of its first showing and its fact: a fact reported anew enters the last day.
       seen: (record) => {
@@ -249,7 +214,7 @@ export function createNotifications(db: Database): Notifications {
     },
     load: { index: "unread", key: UNREAD },
   })
-  const recent = store.query("seen", { after: timeKey(Date.now() - NOTIFICATION_WINDOW_MS) })
+  const recent = store.where("seen", { after: timeKey(now() - NOTIFICATION_WINDOW_MS) })
   const loaded = derived([store.view, recent] as const, (unread, recent) => {
     const byId = new Map<string, NotificationRecord>()
     for (const record of [...recent.records, ...unread.records]) byId.set(record.id, record)
@@ -293,8 +258,8 @@ export function createNotifications(db: Database): Notifications {
     stamped: stamped.readonly,
     ready: store.ready,
     has: async (id) => !!(await store.get(id))?.event,
-    markRead: (ids, at = Date.now()) => each(ids, { type: "read", at }),
-    dismiss: (ids, at = Date.now()) => each(ids, { type: "dismissed", at }),
+    markRead: (ids, at = now()) => each(ids, { type: "read", at }),
+    dismiss: (ids, at = now()) => each(ids, { type: "dismissed", at }),
     record: (event) => each([event.id], { type: "recorded", event }),
     report: (event) => each([event.id], { type: "reported", event }),
     retract: (id) => each([id], { type: "retracted" }),
@@ -315,7 +280,7 @@ export function createNotifications(db: Database): Notifications {
         trimmed = true
         // The limit drops only rows whose records are gone: a fact keeps its row, listed or not, so
         // recording it again never rings.
-        const saved = await loadRecords(store.query("seen", {}))
+        const saved = await loadRecords(store.where("seen", {}))
         const ids = new Set([...saved.map((record) => record.id), ...live])
         const current = await Promise.all([...ids].map((id) => store.get(id, w)))
         const rows = current.flatMap((record) => (record?.state ? [record] : []))

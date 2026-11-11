@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { fakeReads } from "../../support/fakeReads"
 
 const h = vi.hoisted(() => ({
   session: vi.fn(),
@@ -9,7 +10,7 @@ const h = vi.hoisted(() => ({
   fromGeneration: vi.fn((runtime: unknown) => ({ converted: runtime })),
   sweptDeposits: vi.fn(),
   savingsDeposits: vi.fn(async () => [] as unknown[]),
-  updateBalance: vi.fn(),
+  writeBalance: vi.fn(),
   readSavingsPrice: vi.fn(),
   readSavingsVault: vi.fn(),
   savingsValue: vi.fn(),
@@ -20,17 +21,21 @@ const h = vi.hoisted(() => ({
   deployment: vi.fn(),
 }))
 
-vi.mock("@obsidion/front-core", () => ({
+vi.mock("@obsidion/front-core", async (importOriginal) => ({
+  ...(({ memoryStore, queries }) => ({ memoryStore, queries }))(
+    await importOriginal<typeof import("@obsidion/front-core")>(),
+  ),
   createMetadataMigrationSession: h.session,
   pubkeyToR1KeyArg: () => "r1",
   UpgradeActivity: { get: () => ({}) },
-  BalanceStorage: { get: () => ({ updateBalance: h.updateBalance }) },
   readSavingsPrice: h.readSavingsPrice,
   readSavingsVault: h.readSavingsVault,
   savingsValue: h.savingsValue,
   WalletSyncCoordinator: {},
 }))
-vi.mock("@obsidion/sdk", () => ({
+// The escrow leg reads the sdk's address predictors at load, so the real module stands under the stubs.
+vi.mock("@obsidion/sdk", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@obsidion/sdk")>()),
   createLocalMetadataMigrationSource: h.localSource,
   FrozenMetadataMigrationSource: class {
     constructor(readonly options: unknown) {
@@ -40,14 +45,8 @@ vi.mock("@obsidion/sdk", () => ({
   frozenRuntimeFromSourceGeneration: h.fromGeneration,
   migrationRouteFor: (...args: unknown[]) => h.routeFor(...args),
 }))
-vi.mock("../../../src/config/env", () => ({
-  getConfig: () => ({ network: "testnet", oxideProfile: { portal: "0xcurrent" } }),
-}))
 vi.mock("../../../src/config/oxideTuple", () => ({
   l1MulticallClient: () => ({ getBlockNumber: async () => 9n }),
-  getRetiredRollupSources: async () => [historic],
-  getFeeTokenBridgeTuple: () => h.feeBridge(),
-  getOxideDeployment: () => h.deployment(),
 }))
 vi.mock("../../../src/platform/storage/WebStorageAdapter", () => ({ webStorage: {} }))
 vi.mock("../../../src/platform/auth/sessionErrors", () => ({ SessionChangedError: class {} }))
@@ -85,9 +84,17 @@ const { createWebMetadataMigration, createWebMetadataMigrationQuietly } = await 
 const { ManifestUnavailableError } = await import("../../../src/features/migration/freezeWatch")
 
 const account = { getAddress: () => "0xacct" } as never
+const config = { network: "testnet", oxideProfile: { portal: "0xcurrent" } }
+const pageChain = fakeReads({
+  feeTokenBridgeTuple: h.feeBridge,
+  oxideDeployment: h.deployment,
+  retiredRollupSources: async () => [historic],
+})
 const own = {
+  page: { config, chain: pageChain },
   namespace: { id: "store", prefix: "" },
   device: { get: () => ({ storageId: "store", credentialId: "cred" }) },
+  balanceStore: { write: h.writeBalance },
 } as never
 const destinationDeployment = { features: [], bridges: [] }
 const route = { executor: "0xroute", subsidy: "0xsubsidy" }
@@ -172,7 +179,7 @@ describe("createWebMetadataMigration — a source this release reads", () => {
     h.historicTokenContext.mockResolvedValue({ tokenService: "ts", teeSigner: "tee" })
     h.localSource.mockResolvedValue("local")
     await expect(sourceFor()).resolves.toBe("local")
-    expect(h.historicTokenContext).toHaveBeenCalledWith("w", "a", historic)
+    expect(h.historicTokenContext).toHaveBeenCalledWith(pageChain, "w", "a", historic)
     expect(h.localSource.mock.calls[0]![0]).toMatchObject({
       teeSigner: "tee",
       source: { tuple: historic, tokenService: "ts" },
@@ -197,9 +204,7 @@ describe("createWebMetadataMigration — retired holdings", () => {
   it("keeps the pinned deployment's holdings in DAI units", async () => {
     await sourceFor()
     await h.session.mock.calls[0]![0].holdings(10n, 9n)
-    expect(h.updateBalance).toHaveBeenCalledWith(expect.any(String), "0xsource-token", 10n, 9n, {
-      strict: true,
-    })
+    expect(h.writeBalance).toHaveBeenCalledWith(expect.any(String), "0xsource-token", 10n, 9n)
     expect(h.readSavingsPrice).not.toHaveBeenCalled()
   })
 
@@ -212,9 +217,7 @@ describe("createWebMetadataMigration — retired holdings", () => {
     expect(h.readSavingsVault).toHaveBeenCalledWith(expect.anything(), "0xsavings")
     expect(h.readSavingsPrice).toHaveBeenCalledWith(expect.anything(), "0xvault")
     expect(h.savingsValue).toHaveBeenCalledWith(10n, 120n)
-    expect(h.updateBalance).toHaveBeenCalledWith(expect.any(String), "0xsource-token", 12n, 9n, {
-      strict: true,
-    })
+    expect(h.writeBalance).toHaveBeenCalledWith(expect.any(String), "0xsource-token", 12n, 9n)
   })
 })
 

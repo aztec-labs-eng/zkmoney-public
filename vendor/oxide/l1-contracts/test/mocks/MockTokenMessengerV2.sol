@@ -24,6 +24,20 @@ contract MockTokenMessengerV2 is ITokenMessengerV2 {
     return $lastBurn;
   }
 
+  function depositForBurn(
+    uint256 _amount,
+    uint32 _destinationDomain,
+    bytes32 _mintRecipient,
+    address _burnToken,
+    bytes32 _destinationCaller,
+    uint256 _maxFee,
+    uint32 _minFinalityThreshold
+  ) external {
+    _burn(
+      _amount, _destinationDomain, _mintRecipient, _burnToken, _destinationCaller, _maxFee, _minFinalityThreshold, ""
+    );
+  }
+
   function depositForBurnWithHook(
     uint256 _amount,
     uint32 _destinationDomain,
@@ -34,6 +48,28 @@ contract MockTokenMessengerV2 is ITokenMessengerV2 {
     uint32 _minFinalityThreshold,
     bytes calldata _hookData
   ) external {
+    _burn(
+      _amount,
+      _destinationDomain,
+      _mintRecipient,
+      _burnToken,
+      _destinationCaller,
+      _maxFee,
+      _minFinalityThreshold,
+      _hookData
+    );
+  }
+
+  function _burn(
+    uint256 _amount,
+    uint32 _destinationDomain,
+    bytes32 _mintRecipient,
+    address _burnToken,
+    bytes32 _destinationCaller,
+    uint256 _maxFee,
+    uint32 _minFinalityThreshold,
+    bytes memory _hookData
+  ) private {
     IERC20(_burnToken).transferFrom(msg.sender, address(this), _amount);
     burnCount++;
     $lastBurn = Burn({

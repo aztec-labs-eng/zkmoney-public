@@ -1,6 +1,7 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react"
+import { createContext, useCallback, useContext, useRef, useState, type ReactNode } from "react"
 import { useLocation, useNavigate } from "react-router-dom"
 import type { ScanDestination } from "./scanPayload"
+import { useDomEffect } from "../../ui/useDomEffect"
 
 const NavigationContext = createContext<((destination: ScanDestination) => void) | null>(null)
 
@@ -16,7 +17,7 @@ export function ScanNavigationProvider({ children }: { children: ReactNode }) {
     navigate(destination.to, { state: destination.state })
   }, [navigate])
 
-  useEffect(() => {
+  useDomEffect(() => {
     const destination = pending.current
     if (!destination) return
     pending.current = null

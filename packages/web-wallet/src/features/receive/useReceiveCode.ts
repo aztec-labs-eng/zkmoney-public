@@ -5,17 +5,16 @@ import {
   payerAddedToContacts,
   randomCodeRequestId,
   payerForPaidLink,
-  useContactsDirectory,
-  useContractServiceContext,
-  type Activity,
   type ContactRow,
-  type Requests,
-  useResource,
+  type ReceiveCode,
   useStore,
+  NO_SERVICE,
+  serviceStatus,
 } from "@obsidion/front-core"
+import { useContactDirectory } from "../../session/contacts"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { isDemoMode } from "../../dev/demoFlag"
-import { session, useSession } from "../../session/session"
+import { useSession, type Session } from "../../session/session"
 import { useDepositWatch } from "../sipa/useDepositWatch"
 import { createAndStoreRequestLink, requestLinkOrigin } from "../requests/requestLinkCreation"
 import {
@@ -25,11 +24,10 @@ import {
   currentCode,
   nextCode,
   openCode,
-  receiveCodeKey,
+  receiveCodeId,
   setCodeAmount,
   type CodeDeps,
   type CodeForm,
-  type ReceiveCode,
 } from "./receiveCode"
 
 /** How often a failed or address-less code is retried. */
@@ -49,13 +47,6 @@ export interface CodePayment {
 /** A payment as saved: `added` is read from the payer's contact as it changes. */
 type PaidCode = Omit<CodePayment, "added"> & { payerId?: string }
 
-/** What a claimed deposit to the code's address credited; the request's own amount without one. */
-async function sweptAmount(code: ReceiveCode, requested: number): Promise<number> {
-  if (!code.address) return requested
-  const credited = Number((await session().sipaDeposits.get(code.address))?.amount)
-  return credited > 0 ? credited : requested
-}
-
 /**
  * Calls `onPaid` once, when the code's request reads paid: by a receive carrying its id, else by a
  * deposit to its address. A failed read leaves it to the next update. Returns the stop.
@@ -63,13 +54,18 @@ async function sweptAmount(code: ReceiveCode, requested: number): Promise<number
 export function watchRequestPayment(
   code: ReceiveCode,
   deps: {
-    requests: Pick<Requests, "view">
-    activity: Pick<Activity, "query">
+    session: Pick<Session, "requests" | "transfers" | "sipaDeposits">
     contacts: () => readonly ContactRow[]
     onPaid: (found: Omit<PaidCode, "hadAddress">) => void
   },
 ): () => void {
-  const { requests, activity } = deps
+  const { requests, transfers, sipaDeposits } = deps.session
+  /** What a claimed deposit to the code's address credited; the request's own amount without one. */
+  const sweptAmount = async (requested: number) => {
+    if (!code.address) return requested
+    const credited = Number((await sipaDeposits.get(code.address))?.amount)
+    return credited > 0 ? credited : requested
+  }
   let done = false
   // One read at a time; a failed one lets the next update try again.
   let reading = false
@@ -79,11 +75,11 @@ export function watchRequestPayment(
     reading = true
     try {
       const hash = row.fulfillmentTxHash?.toLowerCase()
-      const paying = await loadRecords(activity.query("request", code.requestId.toLowerCase()))
+      const paying = await loadRecords(transfers.where("request", code.requestId.toLowerCase()))
       const receives = receivesForRequest(paying, code.requestId)
       const tx = receives.find((r) => r.txHash?.toLowerCase() === hash)
       if (!tx) {
-        const amount = await sweptAmount(code, row.amount)
+        const amount = await sweptAmount(row.amount)
         if (done) return
         done = true
         return deps.onPaid({ via: "ethereum", amount })
@@ -118,15 +114,17 @@ export function watchRequestPayment(
 export function useReceiveCode(enabled: boolean) {
   const identity = useStore(useSession().identity).value
   const tag = identity?.handle
-  const obsidionWallet = useResource(useSession().wallet)
-  const rollupAddress = obsidionWallet?.networkId
-  const { contractService } = useContractServiceContext()
-  const tokenService = useResource(useSession().token)
-  const { activity, requests, sipaDeposits, sipaAddresses } = useSession()
+  const session = useSession()
+  const rollupAddress = useStore(session.page.networkId)
+  const { requests, sipaDeposits, sipaAddresses, receiveCodes, token } = session
+  const contracts = useStore(session.contractService, serviceStatus)
+  const tokenStatus = useStore(token ?? NO_SERVICE, serviceStatus)
+  const built = contracts === "ready" && tokenStatus === "ready"
+  /** The code this visit resolved, as committed; a saved code shows only once it is resolved. */
   const [code, setCode] = useState<ReceiveCode>()
   const [paidWith, setPayment] = useState<PaidCode>()
   const [failed, setFailed] = useState(false)
-  const contacts = useContactsDirectory()
+  const contacts = useContactDirectory()
   const directory = useRef(contacts)
   directory.current = contacts
 
@@ -139,39 +137,34 @@ export function useReceiveCode(enabled: boolean) {
   }, [paidWith, payerContact])
 
   const walletDeps = useMemo((): CodeDeps | null => {
-    if (
-      !enabled ||
-      !tag ||
-      !rollupAddress ||
-      !obsidionWallet ||
-      !contractService ||
-      !tokenService ||
-      !sipaAddresses
-    )
+    if (!enabled || !tag || !rollupAddress || !built || !token || !sipaAddresses || !receiveCodes)
       return null
     return {
-      key: receiveCodeKey(rollupAddress, tag),
+      codes: receiveCodes,
+      id: receiveCodeId(rollupAddress, tag),
+      requester: identity?.address,
       readyAddress: () =>
         sipaAddresses.readyAddress(CODE_ADDRESS_MAX_AGE_MS).catch((err) => {
           console.warn("[receive] no ready address:", err)
           return null
         }),
       mint: async (args) => {
-        const token = await tokenService.fetchTokenInformation()
+        const info = await (await token.ready()).fetchTokenInformation()
         return createAndStoreRequestLink(
           {
             requestId: randomCodeRequestId(),
             compact: true,
             requesterTag: tag,
             requesterAddress: identity?.address,
-            tokenAddress: token.address,
-            tokenDecimals: token.decimals,
-            tokenSymbol: token.symbol,
+            tokenAddress: info.address,
+            tokenDecimals: info.decimals,
+            tokenSymbol: info.symbol,
             networkId: rollupAddress,
-            baseUrl: requestLinkOrigin(),
+            baseUrl: requestLinkOrigin(session.network),
             ...args,
           },
           requests,
+          async (sipa) => (await sipaDeposits.get(sipa))?.origin,
         )
       },
       cancel: (requestId) => requests.cancel(requestId),
@@ -187,23 +180,24 @@ export function useReceiveCode(enabled: boolean) {
     enabled,
     tag,
     rollupAddress,
-    obsidionWallet,
-    contractService,
-    tokenService,
+    built,
+    token,
     identity?.address,
     requests,
     sipaDeposits,
     sipaAddresses,
+    receiveCodes,
   ])
   // Dev demo has no wallet; a production build drops this body and the import with it.
   const [demoDeps, setDemoDeps] = useState<CodeDeps>()
+  // eslint-disable-next-line local/effect-hook -- ZKM-1806
   useEffect(() => {
-    if (!import.meta.env.DEV || !isDemoMode() || !enabled || !tag) return
+    if (!import.meta.env.DEV || !isDemoMode() || !enabled || !tag || !receiveCodes) return
     void import("../../dev/demoReceiveCode").then(({ demoCodeDeps, demoPayment }) => {
-      setDemoDeps(demoCodeDeps(tag))
+      setDemoDeps(demoCodeDeps(tag, receiveCodes))
       setPayment(demoPayment(location.search))
     })
-  }, [enabled, tag])
+  }, [enabled, tag, receiveCodes])
   const deps = demoDeps ?? walletDeps
 
   // One write at a time: two mints would show one code and leave the other's request behind.
@@ -232,15 +226,19 @@ export function useReceiveCode(enabled: boolean) {
   const refresh = useCallback(() => load(currentCode), [load])
 
   // Each visit opens on a plain code, retried while it cannot be made.
+  // eslint-disable-next-line local/effect-hook -- ZKM-1806
   useEffect(() => load(openCode), [load])
+  // eslint-disable-next-line local/effect-hook -- ZKM-1806
   useEffect(() => {
     if (!failed || code) return
+    // eslint-disable-next-line local/timer-in-view -- ZKM-1806
     const timer = setTimeout(() => load(openCode), POLL_MS)
     return () => clearTimeout(timer)
   }, [failed, code, load])
 
   // A paid code never shows again: it is dropped at once and its replacement retried until minted.
   const retry = useRef<ReturnType<typeof setTimeout>>(undefined)
+  // eslint-disable-next-line local/effect-hook -- ZKM-1806
   useEffect(() => () => clearTimeout(retry.current), [])
   const paid = useCallback(
     (paidCode: ReceiveCode, found: Omit<PaidCode, "hadAddress">) => {
@@ -252,6 +250,7 @@ export function useReceiveCode(enabled: boolean) {
           .then(setCode)
           .catch((err) => {
             console.warn("[receive] next code not minted, retrying:", err)
+            // eslint-disable-next-line local/timer-in-view -- ZKM-1806
             retry.current = setTimeout(replace, POLL_MS)
           })
       replace()
@@ -263,30 +262,33 @@ export function useReceiveCode(enabled: boolean) {
   const demo = import.meta.env.DEV && isDemoMode()
   const watched = useDepositWatch(code?.address && !payment && !demo ? code.address : null)
   const { record } = watched
+  // eslint-disable-next-line local/effect-hook -- ZKM-1806
   useEffect(() => {
     if (code?.address && record && !isUnfundedSipaDeposit(record))
       paid(code, { via: "ethereum", amount: Number(record.amount) })
   }, [code, record, paid])
 
   // A code waiting for an address takes one when ready, and a stale one is replaced.
+  // eslint-disable-next-line local/effect-hook -- ZKM-1806
   useEffect(() => {
     if (!code || payment || demo) return
-    const timer = setInterval(() => {
-      if (!code.address || codeIsStale(code, Date.now())) refresh()
-    }, POLL_MS)
-    return () => clearInterval(timer)
-  }, [code, payment, demo, refresh])
+    const replaceStale = () => {
+      if (!code.address || codeIsStale(code, Date.now(), deps?.requester)) refresh()
+    }
+    // eslint-disable-next-line local/timer-in-view -- ZKM-1707
+    return session.page.pace.every(POLL_MS, replaceStale)
+  }, [code, payment, demo, refresh, deps?.requester, session.page.pace])
 
   // Private: a receive carrying the code's request id pays it.
+  // eslint-disable-next-line local/effect-hook -- ZKM-1806
   useEffect(() => {
     if (!code || payment) return
     return watchRequestPayment(code, {
-      requests,
-      activity,
+      session,
       contacts: () => directory.current.contacts,
       onPaid: (found) => paid(code, found),
     })
-  }, [code, payment, paid, activity, requests])
+  }, [code, payment, paid, session])
 
   const setAmount = useCallback(
     async (form: CodeForm) => {

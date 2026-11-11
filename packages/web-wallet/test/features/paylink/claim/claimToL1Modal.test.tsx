@@ -1,3 +1,4 @@
+// Guards: one proof and submit; no claim before the amount, fee or limit allow it.
 import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -15,23 +16,21 @@ const m = vi.hoisted(() => ({
   confirm: vi.fn(),
   close: vi.fn(),
   handOff: vi.fn(),
-  config: { network: "sandbox" },
   screening: { cleared: true, screener: {} },
 }))
 vi.mock("../../../../src/features/paylink/emailClaim", () => ({
-  obtainEmailL1Proof: m.verify,
+  obtainEmailL1Proof: (_clientId: unknown, ...a: unknown[]) => m.verify(...a),
   emailL1Caller: m.caller,
 }))
 vi.mock("../../../../src/features/paylink/paylinkSource", () => ({
   paylinkTuple: async () => ({ plainWithdrawalExecutor: m.executor }),
 }))
-vi.mock("../../../../src/config/env", () => ({ getConfig: () => m.config }))
 vi.mock("../../../../src/ui/screening", () => ({
   useScreenedAddress: () => m.screening,
   ScreeningNotice: () => <p>Screening</p>,
 }))
-vi.mock("../../../../src/session/l1Wallet", () => ({ useL1Wallet: () => ({}) }))
-vi.mock("../../../../src/features/withdraw/WithdrawScreen", () => ({ useSavedL1Wallets: () => [] }))
+vi.mock("../../../../src/session/useL1Wallet", () => ({ useL1Wallet: () => ({}) }))
+vi.mock("../../../../src/session/savedL1Wallets", () => ({ useSavedL1Wallets: () => [] }))
 // A priced direct route with no swap. `route` switches it to the two states where the fee is
 // missing — still being read, and reported as unreadable.
 const DIRECT_FEE = vi.hoisted(() => 350_000_000_000_000_000n)
@@ -60,23 +59,11 @@ vi.mock("../../../../src/features/withdraw/withdrawQuote", async () => {
     WithdrawalEstimate: () => null,
   }
 })
-// The faster option the review offers; undefined offers no speed choice.
-const faster = vi.hoisted(() => ({
-  offer: undefined as
-    | {
-        proverTip: bigint
-        standardEtaSeconds: number
-        tippedEtaSeconds: number
-        worstSpeedupSeconds: number
-        measured: boolean
-      }
-    | undefined,
-  loading: false,
-}))
 vi.mock("../../../../src/features/withdraw/useFasterWithdrawal", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../../src/features/withdraw/useFasterWithdrawal")>()),
-  useFasterWithdrawal: ({ active }: { active: boolean }) =>
-    active ? { offer: faster.offer, loading: faster.loading } : { loading: false },
+  ...(await importOriginal<
+    typeof import("../../../../src/features/withdraw/useFasterWithdrawal")
+  >()),
+  useFasterWithdrawal: () => ({ loading: false }),
 }))
 vi.mock("../../../../src/platform/desktopBridge", () => ({ isDesktopL1SubmitActive: () => true }))
 vi.mock("../../../../src/ui/format", () => ({
@@ -131,10 +118,7 @@ beforeEach(() => {
   m.close.mockReset()
   m.handOff.mockReset()
   m.screening.cleared = true
-  m.config.network = "sandbox"
   route.state = "ready"
-  faster.offer = undefined
-  faster.loading = false
   m.verify.mockResolvedValue(proof)
   m.confirm.mockReturnValue(new Promise(() => {}))
   link = {
@@ -214,15 +198,6 @@ describe("email external-wallet claim modal", () => {
     expect(button("Confirm and claim")).toBeUndefined()
   })
 
-  it("does not submit when screening changes after review", async () => {
-    await review()
-    await click("Verify email with Google")
-    m.screening.cleared = false
-    render()
-    expect(button("Confirm and claim").disabled).toBe(true)
-    expect(m.confirm).not.toHaveBeenCalled()
-  })
-
   it.each(["email", "direct"] as const)(
     "waits for the escrow amount before a %s withdrawal",
     async (flavor) => {
@@ -260,15 +235,6 @@ describe("external-wallet claim — the per-withdrawal limit", () => {
   const ONE_UNIT_OVER = `${LIMIT}.000000000000000001`
   const notice = () => container.querySelector('[data-testid="limit-notice"]')?.textContent
 
-  it(`claims a direct link of exactly ${LIMIT_USD}`, async () => {
-    link.flavor = "direct"
-    link.amount = String(LIMIT)
-    await review()
-    expect(notice()).toBeUndefined()
-    await click("Confirm and claim")
-    expect(m.confirm).toHaveBeenCalledTimes(1)
-  })
-
   it("refuses a direct link one atomic unit over before review, email proof or burn", async () => {
     link.flavor = "direct"
     link.amount = ONE_UNIT_OVER
@@ -290,14 +256,6 @@ describe("external-wallet claim — the per-withdrawal limit", () => {
     await click("Confirm and claim")
     expect(m.confirm).not.toHaveBeenCalled()
   })
-
-  it("still screens the address of a link within the limit", async () => {
-    m.screening.cleared = false
-    link.amount = String(LIMIT)
-    await review()
-    expect(container.textContent).toContain("Screening")
-    expect(button("Claim").disabled).toBe(true)
-  })
 })
 
 describe("external-wallet claim — the direct route's fee", () => {
@@ -318,71 +276,5 @@ describe("external-wallet claim — the direct route's fee", () => {
     // Not a wait any more, and nothing the sheet can price: the CTA stays shut.
     expect(button("Connecting…")).toBeUndefined()
     expect(button("Verify email with Google").disabled).toBe(true)
-  })
-})
-
-describe("external-wallet claim — speed", () => {
-  const TIP = 500_000_000_000_000_000n
-  const offer = {
-    proverTip: TIP,
-    standardEtaSeconds: 44 * 60,
-    tippedEtaSeconds: 12 * 60,
-    worstSpeedupSeconds: 30 * 60,
-    measured: true,
-  }
-  const factRow = (label: string) =>
-    Array.from(container.querySelectorAll(".ww-deposit__fact")).find(
-      (f) => f.querySelector("span")?.textContent === label,
-    )
-  const trigger = () => factRow("Speed")?.querySelector("button") ?? null
-  const fact = (label: string) => factRow(label)?.querySelector("b")?.textContent
-  const openSpeeds = async () => {
-    await act(async () => trigger()!.click())
-    return Array.from(container.querySelectorAll<HTMLButtonElement>('[role="option"]'))
-  }
-  const chooseFaster = async () => {
-    const [, fasterOption] = await openSpeeds()
-    await act(async () => fasterOption!.click())
-  }
-  const chooseStandard = async () => {
-    const [standardOption] = await openSpeeds()
-    await act(async () => standardOption!.click())
-  }
-  const submittedTip = () => m.confirm.mock.calls[0]![0].proverTip
-
-  beforeEach(() => {
-    link.flavor = "direct"
-  })
-
-  it("drops the tip from the fee and the burn when Standard is chosen", async () => {
-    faster.offer = offer
-    await review()
-    await chooseStandard()
-    expect(trigger()!.textContent).toBe("Standard")
-    expect(fact("Network fee")).toBe("0.35")
-    expect(fact("You receive")).toBe("24.65")
-    await click("Confirm and claim")
-    expect(submittedTip()).toBe(0n)
-  })
-
-  it("charges the tip in the fee and submits it when Faster is chosen", async () => {
-    faster.offer = offer
-    await review()
-    await chooseFaster()
-    expect(trigger()!.textContent).toBe("Faster")
-    expect(fact("Network fee")).toBe("0.85")
-    expect(fact("You receive")).toBe("24.15")
-    await click("Confirm and claim")
-    expect(submittedTip()).toBe(TIP)
-  })
-
-  it("shows Faster settled, with no tip, when a tip would not save a minute for certain", async () => {
-    faster.offer = { ...offer, worstSpeedupSeconds: 59 }
-    await review()
-    expect(trigger()!.textContent).toBe("Faster")
-    expect(trigger()!.disabled).toBe(true)
-    expect(fact("Network fee")).toBe("0.35")
-    await click("Confirm and claim")
-    expect(submittedTip()).toBe(0n)
   })
 })

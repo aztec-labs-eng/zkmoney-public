@@ -1,7 +1,7 @@
 import { APPLE_ICLOUD_AAGUID, YUBIKEY_5_NFC_AAGUID, ZERO_AAGUID } from "@obsidion/core/constants"
 import { describe, expect, it } from "vitest"
 import { PhoneRequiredError } from "../../src/refusals/passkeyErrors.js"
-import { providerNameFor } from "../../src/rules/passkeyProviders.js"
+import { localManagersClause, providerNameFor } from "../../src/rules/passkeyProviders.js"
 import {
   EVERY_SIGN_IN_ROUTE,
   checkAssertionRoute,
@@ -205,12 +205,13 @@ describe("the creation route rule", () => {
   })
 
   it("names what answered a laptop only when the browser reported this device", () => {
-    expect(() => checkCreationRoute("laptop", "platform", false, "Bitwarden")).toThrow(
-      expect.objectContaining({ name: "PhoneRequiredError", providerName: "Bitwarden" }),
+    const answered = "Bitwarden"
+    expect(() => checkCreationRoute("laptop", "platform", false, answered)).toThrow(
+      expect.objectContaining({ name: "PhoneRequiredError", providerName: answered }),
     )
     // An unreported answer says nothing about the device, so the name is dropped and the sign-up
     // wording says where to create the passkey.
-    expect(() => checkCreationRoute("laptop", undefined, false, "Bitwarden")).toThrow(
+    expect(() => checkCreationRoute("laptop", undefined, false, answered)).toThrow(
       expect.objectContaining({
         name: "PhoneRequiredError",
         providerName: undefined,
@@ -222,9 +223,10 @@ describe("the creation route rule", () => {
   it("ends a laptop's refusal with the advice it is given, and only then", () => {
     const advice = "Add this site to the manager's excluded domains."
     const named = new PhoneRequiredError({ providerName: "Bitwarden" }).message
+    const advised = new PhoneRequiredError({ providerName: "Bitwarden", advice }).message
     expect(() =>
       checkCreationRoute("laptop", "platform", false, "Bitwarden", undefined, advice),
-    ).toThrow(expect.objectContaining({ message: `${named} ${advice}` }))
+    ).toThrow(expect.objectContaining({ message: advised }))
     expect(() => checkCreationRoute("laptop", "platform", false, "Bitwarden")).toThrow(
       expect.objectContaining({ message: named }),
     )
@@ -295,7 +297,7 @@ describe("the laptop's own route", () => {
     expect(() => checkCreationRoute("laptop", undefined, false, undefined, managers)).toThrow(
       expect.objectContaining({
         name: "PhoneRequiredError",
-        message: expect.stringContaining("Google Password Manager"),
+        message: expect.stringContaining(localManagersClause(managers)),
       }),
     )
   })

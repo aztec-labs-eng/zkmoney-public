@@ -12,10 +12,11 @@ import {
   walletConnectWallet,
   zerionWallet,
 } from "@rainbow-me/rainbowkit/wallets"
-import { getConfig, l1ChainFor, l1Transport } from "../config/env"
+import { l1Transport, type WebWalletConfig } from "../config/env"
 import { isDemoMode } from "../dev/demoFlag"
 import { rabbyWallet } from "./rabbyWallet"
-import { createConfig } from "wagmi"
+import { walletChains } from "./walletChains"
+import { createConfig, type Config } from "wagmi"
 
 const base = darkTheme({
   accentColor: "#a000ff",
@@ -61,25 +62,21 @@ const projectId =
   (import.meta.env.VITE_WALLETCONNECT_PROJECT_ID as string | undefined) ||
   "119816ec622bbdb56824439b1e72e824"
 
-let cached: ReturnType<typeof getDefaultConfig> | undefined
-
-/** wagmi config for RainbowKit: the active network's L1 chain only, over the shared transport. */
-export function wagmiConfig() {
-  if (cached) return cached
-  const config = getConfig()
-  const chain = l1ChainFor(config.l1ChainId)
+/** wagmi config for RainbowKit: the L1 over the shared transport, then the bridge's chains. */
+export function wagmiConfig(config: WebWalletConfig): Config {
+  const { chains, transports: bridgeTransports } = walletChains(config)
+  const transports = { ...bridgeTransports, [chains[0].id]: l1Transport(config) }
   // Capture fixtures do not initialize wallet connectors or their remote configuration clients.
   if (import.meta.env.DEV && isDemoMode()) {
-    cached = createConfig({
-      chains: [chain],
+    return createConfig({
+      chains,
       connectors: [],
       multiInjectedProviderDiscovery: false,
-      transports: { [chain.id]: l1Transport(config) },
+      transports,
       storage: null,
     })
-    return cached
   }
-  cached = getDefaultConfig({
+  return getDefaultConfig({
     appName: "zk.money",
     appDescription: "Private payments on Ethereum",
     appUrl: window.location.origin,
@@ -116,8 +113,8 @@ export function wagmiConfig() {
         ],
       },
     ],
-    chains: [chain],
-    transports: { [chain.id]: l1Transport(config) },
+    chains,
+    transports,
     // No storage. A persisted connection is never revived (reconnectOnMount is off), but wagmi
     // rehydrates it as a method-less {id,name,type,uid} stub with `current` set — and a cancelled
     // connect then flips status back to "connected" on that stub, so the app claims a session the
@@ -125,5 +122,4 @@ export function wagmiConfig() {
     // rk-recent key, so nothing about reconnecting gets harder.
     storage: null,
   })
-  return cached
 }

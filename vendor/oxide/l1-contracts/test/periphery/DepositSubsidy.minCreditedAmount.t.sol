@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity >=0.8.27;
 
+import {SweepGasCeilings} from "@test/helpers/SweepGasCeilings.sol";
 import {Test} from "forge-std/Test.sol";
 import {IERC20} from "@oz/token/ERC20/IERC20.sol";
 
@@ -11,7 +12,6 @@ import {ForwardingTable} from "@periphery/ForwardingTable.sol";
 import {IOperationExecutor} from "@periphery/interfaces/IOperationExecutor.sol";
 import {OperationExecutor} from "@periphery/OperationExecutor.sol";
 import {SIPAFactory} from "@periphery/SIPAFactory.sol";
-import {SIPABase} from "@periphery/SIPABase.sol";
 import {DAI, USDC, THREE_POOL} from "@periphery/ThreePoolLib.sol";
 import {AggregatorV3Interface} from "@periphery/interfaces/AggregatorV3Interface.sol";
 import {ISIPA} from "@periphery/interfaces/ISIPA.sol";
@@ -23,6 +23,7 @@ import {MockV3Aggregator} from "@test/mocks/MockV3Aggregator.sol";
 import {SweepGasFixture} from "@test/periphery/SweepGasFixture.sol";
 import {ForwardingTableFixture, DEPOSIT_SWEEP_TIP} from "@test/helpers/ForwardingTableFixture.sol";
 import {RelayerTransaction} from "@test/periphery/RelayerTransaction.sol";
+import {Intents} from "@periphery/Intent.sol";
 
 contract DepositSubsidyMinCreditedAmountTest is SweepGasFixture {
   uint256 internal constant DEPOSIT = 100 ether;
@@ -37,7 +38,8 @@ contract DepositSubsidyMinCreditedAmountTest is SweepGasFixture {
       address(portal),
       IOperationExecutor(address(operationExecutor)),
       AggregatorV3Interface(address(feed)),
-      sipaFactory
+      sipaFactory,
+      SweepGasCeilings.initial()
     );
     underlying.mint(address(sm), 1_000_000 ether);
     vm.fee(PRICED_BASEFEE);
@@ -168,7 +170,7 @@ contract DepositSubsidyMinCreditedAmountTest is SweepGasFixture {
       DepositSubsidy.deployAndSweepForSubsidy,
       (
         forwardingTable,
-        SIPABase.Intent.Deposit,
+        Intents.DEPOSIT,
         _recoveryCommitment("recovery"),
         true,
         address(underlying),
@@ -240,7 +242,8 @@ contract DepositSubsidyMinCreditedAmountUsdcTest is Test {
       address(daiPortal),
       IOperationExecutor(address(new OperationExecutor())),
       AggregatorV3Interface(address(feed)),
-      sipaFactory
+      sipaFactory,
+      SweepGasCeilings.initial()
     );
     MintableToken(address(DAI)).mint(address(sm), 1_000_000e18);
   }
@@ -268,7 +271,7 @@ contract DepositSubsidyMinCreditedAmountUsdcTest is Test {
   function _deployAndSweepUsdc() internal returns (uint256) {
     bytes memory intent = abi.encode(bytes32(uint256(2)));
     address sipa = sipaFactory.predictSIPA(
-      sipaFactory.implementationFor(SIPABase.Intent.Deposit), keccak256(intent), RECOVERY, ROLLUP_VERSION, true, table
+      sipaFactory.implementationFor(Intents.DEPOSIT), keccak256(intent), RECOVERY, ROLLUP_VERSION, true, table
     );
     MintableToken(address(USDC)).mint(sipa, AMOUNT_6DEC);
     (uint256 subsidy,) = RelayerTransaction.send(
@@ -276,7 +279,7 @@ contract DepositSubsidyMinCreditedAmountUsdcTest is Test {
       sm,
       abi.encodeCall(
         DepositSubsidy.deployAndSweepForSubsidy,
-        (table, SIPABase.Intent.Deposit, RECOVERY, true, address(USDC), address(sm.EXECUTOR()), intent, "")
+        (table, Intents.DEPOSIT, RECOVERY, true, address(USDC), address(sm.EXECUTOR()), intent, "")
       )
     );
     return subsidy;

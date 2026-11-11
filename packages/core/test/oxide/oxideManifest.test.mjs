@@ -65,6 +65,22 @@ test("loadOxideManifestTuple reads the deployment's Sky escrow factory", async (
   assert.equal(tuple.skyEscrowFactory, factory)
 })
 
+test("loadOxideManifestTuple reads the deployment's bridge escrow factories", async () => {
+  const across = "0x00000000000000000000000000000000000000a1"
+  const cctp = "0x00000000000000000000000000000000000000c1"
+  const tuple = await loadOxideManifestTuple({
+    manifestUrl: MANIFEST_URL,
+    portal: PORTAL,
+    network: Network.TESTNET,
+    fetchImpl: jsonFetch(
+      manifest({ acrossBridgeEscrowFactory: across, cctpBridgeEscrowFactory: cctp }),
+    ),
+  })
+
+  assert.equal(tuple.acrossBridgeEscrowFactory, across)
+  assert.equal(tuple.cctpBridgeEscrowFactory, cctp)
+})
+
 test("loadOxideManifestTuple gates and overlays the pinned mainnet entry", async () => {
   const tuple = await loadOxideManifestTuple({
     manifestUrl: MANIFEST_URL,
@@ -227,4 +243,93 @@ test("loadOxideManifestTuple rejects two swap features for one bridge", async ()
   })
 
   await assert.rejects(tupleFor(manifest), /more than one swap feature \(fea-swap-a, fea-swap-b\)/)
+})
+
+const ACROSS_FACTORY = "0x00000000000000000000000000000000000005a1"
+const CCTP_FACTORY = "0x00000000000000000000000000000000000005c1"
+
+function bridgeFeature(project, contract, bridge, factory) {
+  return { project, bridges: { dai: bridge }, contracts: { [contract]: factory }, variables: {} }
+}
+
+test("loadOxideManifestTuple reads the Across and CCTP factories of the features that bind the bridge", async () => {
+  const manifest = manifestV5WithFeatures({
+    "fea-across-v6": bridgeFeature(
+      "across",
+      "acrossBridgeEscrowFactory",
+      "brg-dai-v6",
+      ACROSS_FACTORY,
+    ),
+    "fea-cctp-v6": bridgeFeature("cctp", "cctpBridgeEscrowFactory", "brg-dai-v6", CCTP_FACTORY),
+  })
+
+  const dai = await tupleFor(manifest)
+  assert.equal(dai.acrossBridgeEscrowFactory, ACROSS_FACTORY)
+  assert.equal(dai.cctpBridgeEscrowFactory, CCTP_FACTORY)
+  const susds = await tupleFor(manifest, SUSDS_PORTAL)
+  assert.equal(susds.acrossBridgeEscrowFactory, undefined)
+  assert.equal(susds.cctpBridgeEscrowFactory, undefined)
+})
+
+test("loadOxideManifestTuple keeps the Across and CCTP escrow factories that a bridge names itself", async () => {
+  const across = "0x00000000000000000000000000000000000005a2"
+  const cctp = "0x00000000000000000000000000000000000005c2"
+  const bare = manifestV5WithFeatures(undefined, {
+    acrossBridgeEscrowFactory: across,
+    cctpBridgeEscrowFactory: cctp,
+  })
+  delete bare.deployments[0].features
+
+  const tuple = await tupleFor(bare)
+  assert.equal(tuple.acrossBridgeEscrowFactory, across)
+  assert.equal(tuple.cctpBridgeEscrowFactory, cctp)
+
+  const withFeatures = manifestV5WithFeatures(
+    {
+      "fea-across-v6": bridgeFeature(
+        "across",
+        "acrossBridgeEscrowFactory",
+        "brg-dai-v6",
+        ACROSS_FACTORY,
+      ),
+    },
+    { acrossBridgeEscrowFactory: across },
+  )
+  assert.equal((await tupleFor(withFeatures)).acrossBridgeEscrowFactory, across)
+})
+
+test("loadOxideManifestTuple ignores an Across feature that binds another bridge", async () => {
+  const manifest = manifestV5WithFeatures({
+    "fea-across-v6": bridgeFeature(
+      "across",
+      "acrossBridgeEscrowFactory",
+      "brg-susds-v6",
+      ACROSS_FACTORY,
+    ),
+  })
+
+  assert.equal((await tupleFor(manifest)).acrossBridgeEscrowFactory, undefined)
+  assert.equal((await tupleFor(manifest, SUSDS_PORTAL)).acrossBridgeEscrowFactory, ACROSS_FACTORY)
+})
+
+test("loadOxideManifestTuple rejects two Across features for one bridge", async () => {
+  const manifest = manifestV5WithFeatures({
+    "fea-across-a": bridgeFeature(
+      "across",
+      "acrossBridgeEscrowFactory",
+      "brg-dai-v6",
+      ACROSS_FACTORY,
+    ),
+    "fea-across-b": bridgeFeature(
+      "across",
+      "acrossBridgeEscrowFactory",
+      "brg-dai-v6",
+      "0x00000000000000000000000000000000000005a3",
+    ),
+  })
+
+  await assert.rejects(
+    tupleFor(manifest),
+    /more than one across feature \(fea-across-a, fea-across-b\)/,
+  )
 })

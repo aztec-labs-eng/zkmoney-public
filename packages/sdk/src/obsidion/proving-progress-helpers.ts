@@ -2,15 +2,12 @@ import type { Logger } from "@aztec-labs/foundation/log"
 import type { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import type { TxExecutionRequest, TxProvingResult } from "@aztec-labs/stdlib/tx"
 import type { PXE } from "@aztec-labs/pxe/client/lazy"
-import { ProvingStage, provingProgress } from "@obsidion/proving-progress"
+import { ProvingStage } from "@obsidion/core/types"
+import type { SendProgress } from "./sendTurns.js"
 
 /**
- * Wraps a PXE proveTx call to emit proving progress. PXE reports no progress
- * itself, so the stages come from our own call boundaries.
- *
- * Emits `simulating` start immediately before `pxe.proveTx`. The matching
- * `simulating` complete + `witgen` + `proving` events fire only from an injected
- * prover that emits them. The upstream WASM prover does not, so progression is partial.
+ * Wraps a PXE proveTx call to report its stage. PXE reports no progress itself, so the stage comes
+ * from our own call boundary: `simulating`, just before `pxe.proveTx`.
  */
 export async function proveTxWithProgress(
   pxe: Pick<PXE, "proveTx" | "sync">, // Only list the functions we use to make stubbing in tests easy
@@ -27,25 +24,14 @@ export async function proveTxWithProgress(
      * top-of-send sync already covers simulation, finalize, and proving.
      */
     sync?: boolean
+    /** Hears the stage under `operationId`: the send's. */
+    progress?: SendProgress
+    operationId?: string
   },
 ): Promise<TxProvingResult> {
-  // Pass the registered op id so consumers (the synth-row stage-feed bridge,
-  // the per-op stage snapshot) can correlate this stage event to a specific
-  // in-flight tx. Falls back to undefined when called outside a scope (which
-  // doesn't happen on the wallet's main path, but stays defensive).
-  const opId = provingProgress.getCurrentOperationContext()?.operationId
-  provingProgress.emitStageStart(ProvingStage.Simulating, opId)
-  try {
-    if (opts?.sync) {
-      // Inside the try so a failure clears the Simulating stage via the
-      // catch-block's `emitReset`.
-      await pxe.sync()
-    }
-    return await pxe.proveTx(txRequest, proveOpts)
-  } catch (err) {
-    provingProgress.emitReset()
-    throw err
-  }
+  if (opts?.operationId) opts.progress?.stage(ProvingStage.Simulating, opts.operationId)
+  if (opts?.sync) await pxe.sync()
+  return pxe.proveTx(txRequest, proveOpts)
 }
 
 /** Runtime override for {@link readPerfLogFlag}, for hosts without `process.env` (the browser). */

@@ -5,9 +5,12 @@
  *   1. Build a Google-shaped JWT whose nonce = poseidon2(preimage, caller) using
  *      the repo's mocked JWKS (test/fixtures/jwks.json).
  *   2. Run it through `prepareJwtFromProvider` to produce a JwtInput.
- *   3. Write Prover.toml for circuits/zkJWT and call the prove script
- *      (which uses @aztec-foundation/bb.js UltraHonkBackend).
- *   4. Pack {proof, public_inputs, vk_base64} into test/fixtures/zkjwt/fixture.json.
+ *   3. Solve the witness with noir_js over the pinned zkJWT artifact, and prove with
+ *      bb.js UltraHonkBackend. Nothing is compiled.
+ *   4. Pack {proof, public_inputs, vk_base64} into a fixture object.
+ *
+ * A test proves for its own caller as it runs: the proof stays in this process's memory, so no test writes anything
+ * another reads. Only regenerateZkJwtFixture, run by hand, rewrites the committed test/fixtures/zkjwt/fixture.json.
  *
  * The helper installs a global fetch interceptor (setupJwtMocking) so that
  * PublicKeyRegistry resolves to the test JWKS — the same JWKS callers can then
@@ -15,70 +18,53 @@
  * calling restoreFetch() in afterAll.
  */
 
-import {
-  readFileSync,
-  writeFileSync,
-  existsSync,
-  mkdirSync,
-  renameSync,
-  rmSync,
-  statSync,
-} from "fs"
-import { tmpdir } from "os"
+import { readFileSync, writeFileSync, existsSync } from "fs"
+import { createHash } from "crypto"
 import { resolve, dirname } from "path"
 import { fileURLToPath } from "url"
-import { execSync } from "child_process"
+import { Barretenberg, UltraHonkBackend } from "@aztec-foundation/bb.js"
+import { Noir } from "@aztec-foundation/noir-noir_js"
 import { Fr } from "@aztec-labs/aztec.js/fields"
-import { computeNonce, prepareJwtFromProvider, type JwtInput } from "../../../src/email/utils.js"
+import {
+  computeNonce,
+  prepareJwtFromProvider,
+  zkJwtInputMap,
+  type JwtInput,
+} from "../../../src/email/utils.js"
 import { PublicKeyRegistry } from "../../../src/email/PublicKeyRegistry.js"
 import { createJwtPayload, setupJwtMocking } from "./email.js"
-import { writeZkJwtProverToml } from "./zkjwtProverToml.js"
 import type { ZkJwtFixture } from "./zkJwtFixtureHelpers.js"
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const SDK_ROOT = resolve(__dirname, "../../..")
-const CIRCUIT_DIR = resolve(SDK_ROOT, "../contracts/circuits/zkJWT")
-const PROVER_TOML = resolve(CIRCUIT_DIR, "Prover.toml")
-const TARGET_PROOF_DIR = resolve(CIRCUIT_DIR, "target/proof")
-const TARGET_VK_DIR = resolve(CIRCUIT_DIR, "target/vk")
+/** Extracted from `packages/contracts/pinned/` by `pnpm build-contracts`. */
+const CIRCUIT_PATH = resolve(SDK_ROOT, "../contracts/src/artifacts/target/zkJWT/zkJWT.json")
 const FIXTURE_PATH = resolve(__dirname, "../../fixtures/zkjwt/fixture.json")
-const PROVE_SCRIPT = resolve(SDK_ROOT, "scripts/jwt/generate-zkjwt-proof.mjs")
 const ZKJWT_PUBLIC_INPUT_COUNT = 7
-/** Proving writes fixed paths under CIRCUIT_DIR, so files running side by side take turns. */
-const PROVE_LOCK = resolve(tmpdir(), "obsidion-zkjwt-prove.lock")
-/** Longer than any prove; a lock this old was left by a killed run. */
-const PROVE_LOCK_STALE_MS = 15 * 60_000
-
-async function withProveLock<T>(work: () => Promise<T>): Promise<T> {
-  for (;;) {
-    try {
-      mkdirSync(PROVE_LOCK)
-      break
-    } catch {
-      const lock = statSync(PROVE_LOCK, { throwIfNoEntry: false })
-      if (lock && Date.now() - lock.mtimeMs > PROVE_LOCK_STALE_MS)
-        rmSync(PROVE_LOCK, { recursive: true, force: true })
-      await new Promise((r) => setTimeout(r, 500))
-    }
-  }
-  try {
-    return await work()
-  } finally {
-    rmSync(PROVE_LOCK, { recursive: true, force: true })
-  }
-}
+/** bb.js has hung in `Barretenberg.new` and `getVerificationKey`; a hung prove fails the test. */
+const PROVE_TIMEOUT_MS = 10 * 60_000
 
 function normalizeCaller(callerHex: string): string {
   // Canonicalise to 0x-prefixed 64-char lowercase so string compare is meaningful.
   return Fr.fromHexString(callerHex).toString()
 }
 
-async function buildJwtInputForCaller(
-  callerHex: string,
-  iatSeconds: number = Math.floor(Date.now() / 1000),
-): Promise<JwtInput> {
+/** The default `iat`: the start of today (UTC), well inside PaylinkEmail's freshness gate, so a day's proofs repeat. */
+const todaysIat = () => Math.floor(Date.now() / 86_400_000) * 86_400
+
+/** A proof's inputs, from which its nonce preimage derives: the same caller and iat give the same proof. */
+const proofKey = (callerHex: string, iat: number) =>
+  createHash("sha256")
+    .update(`zkjwt:${normalizeCaller(callerHex)}:${iat}`)
+    .digest()
+
+/** This process's proofs by caller and iat, so a file claiming twice for one caller proves once. */
+const proofs = new Map<string, Promise<ZkJwtFixture>>()
+
+async function buildJwtInputForCaller(callerHex: string, iatSeconds: number): Promise<JwtInput> {
   const callerBigInt = BigInt(callerHex)
-  const preimage = Fr.random().toBigInt()
+  // Derived from the inputs rather than random, so the same caller and iat give the same proof.
+  const preimage = BigInt(`0x${proofKey(callerHex, iatSeconds).toString("hex")}`) % Fr.MODULUS
   const nonce = computeNonce(preimage, callerBigInt)
 
   const payload = createJwtPayload(undefined, nonce, {
@@ -101,60 +87,78 @@ async function buildJwtInputForCaller(
  * @param iatSeconds  JWT `iat` to embed (defaults to now). Backdate it past
  *                    PaylinkEmail's IAT_ALLOWED_DELAY to exercise the claim
  *                    freshness gate.
- * @param persist     When true (default) the fixture is also written to the
- *                    shared fixture.json. Pass false for one-off proofs (e.g. a
- *                    stale-iat proof) that must not clobber the happy-path
- *                    fixture the other tests rely on.
+ * @param persist     When true the fixture is also written to the committed
+ *                    fixture.json (regenerateZkJwtFixture, by hand). A test never
+ *                    passes it.
  */
 export async function generateZkJwtFixtureForCaller(
   callerHex: string,
   opts: { iatSeconds?: number; persist?: boolean } = {},
 ): Promise<ZkJwtFixture> {
-  return withProveLock(() => proveForCaller(callerHex, opts))
+  return proveForCaller(callerHex, opts)
 }
 
 async function proveForCaller(
   callerHex: string,
-  { iatSeconds, persist = true }: { iatSeconds?: number; persist?: boolean },
+  { iatSeconds, persist = false }: { iatSeconds?: number; persist?: boolean },
 ): Promise<ZkJwtFixture> {
-  const input = await buildJwtInputForCaller(callerHex, iatSeconds)
-  writeZkJwtProverToml(PROVER_TOML, input, callerHex)
-
-  // Use `aztec-nargo` (matches the project's contract-compile toolchain at
-  // `noir_version: 1.0.0-beta.21`). Plain `nargo` from ~/.nargo/bin/ may be a
-  // mismatched version (e.g. beta.12) and crashes with a Rust stack overflow
-  // on the zkJWT circuit.
-  execSync(`node ${JSON.stringify(PROVE_SCRIPT)} --prove`, {
-    cwd: SDK_ROOT,
-    stdio: "inherit",
-    timeout: 600_000,
-    env: { ...process.env, NARGO: process.env.NARGO ?? "aztec-nargo" },
-  })
-
-  const proofJson = JSON.parse(readFileSync(resolve(TARGET_PROOF_DIR, "proof.json"), "utf-8")) as {
-    proof: string[]
-  }
-  const publicInputsJson = JSON.parse(
-    readFileSync(resolve(TARGET_PROOF_DIR, "public_inputs.json"), "utf-8"),
-  ) as { public_inputs: string[] }
-  const vkBytes = readFileSync(resolve(TARGET_VK_DIR, "vk"))
-
-  const fixture: ZkJwtFixture = {
-    proof: proofJson.proof,
-    public_inputs: publicInputsJson.public_inputs,
-    vk_base64: vkBytes.toString("base64"),
-  }
-  if (persist) {
-    // Renamed into place: a reader never sees a half-written fixture.
-    writeFileSync(`${FIXTURE_PATH}.${process.pid}`, JSON.stringify(fixture, null, 2))
-    renameSync(`${FIXTURE_PATH}.${process.pid}`, FIXTURE_PATH)
-  }
+  const iat = iatSeconds ?? todaysIat()
+  const key = `${normalizeCaller(callerHex)}:${iat}`
+  if (!proofs.has(key)) proofs.set(key, proveWithDeadline(callerHex, iat))
+  const fixture = await proofs.get(key)!
+  if (persist) writeFileSync(FIXTURE_PATH, JSON.stringify(fixture, null, 2))
   return fixture
 }
 
-/** Regenerate `test/fixtures/zkjwt/fixture.json` bound to `callerHex`. */
+async function proveWithDeadline(callerHex: string, iat: number): Promise<ZkJwtFixture> {
+  let timer: NodeJS.Timeout | undefined
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`zkJWT fixture proving took over ${PROVE_TIMEOUT_MS / 60_000} min`)),
+      PROVE_TIMEOUT_MS,
+    )
+  })
+  try {
+    return await Promise.race([prove(callerHex, iat), deadline])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+async function prove(callerHex: string, iat: number): Promise<ZkJwtFixture> {
+  const input = await buildJwtInputForCaller(callerHex, iat)
+  const circuit = JSON.parse(readFileSync(CIRCUIT_PATH, "utf-8")) as ConstructorParameters<
+    typeof Noir
+  >[0]
+  const { witness } = await new Noir(circuit).execute(zkJwtInputMap(input, callerHex))
+
+  // The settings PaylinkEmail's `verify_proof_with_type` expects.
+  const target = { verifierTarget: "noir-recursive" } as const
+  const api = await Barretenberg.new({})
+  let proof: Uint8Array, publicInputs: string[], vkBytes: Uint8Array
+  try {
+    const backend = new UltraHonkBackend(circuit.bytecode, api)
+    vkBytes = await backend.getVerificationKey(target)
+    ;({ proof, publicInputs } = await backend.generateProof(witness, target))
+    if (!(await backend.verifyProof({ proof, publicInputs }, target)))
+      throw new Error("zkJWT fixture proof did not verify")
+  } finally {
+    await api.destroy()
+  }
+
+  return {
+    proof: Array.from(
+      { length: proof.length / 32 },
+      (_, i) => "0x" + Buffer.from(proof.subarray(i * 32, (i + 1) * 32)).toString("hex"),
+    ),
+    public_inputs: publicInputs,
+    vk_base64: Buffer.from(vkBytes).toString("base64"),
+  }
+}
+
+/** Regenerate the committed `test/fixtures/zkjwt/fixture.json` bound to `callerHex`: by hand, never from a test. */
 export async function regenerateZkJwtFixture(callerHex: string): Promise<ZkJwtFixture> {
-  return generateZkJwtFixtureForCaller(callerHex)
+  return generateZkJwtFixtureForCaller(callerHex, { persist: true })
 }
 
 // A committed fixture's `iat` (public_inputs[4]) is frozen at generation time.
@@ -166,12 +170,11 @@ const FIXTURE_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 
 /**
  * Returns a fixture whose `public_inputs[0]` equals `callerHex` AND whose `iat`
- * is fresh enough to pass PaylinkEmail's on-chain freshness gate. Regenerates
- * (full prove) on caller mismatch or when the on-disk fixture's iat is stale;
- * otherwise returns the on-disk fixture as-is.
+ * is fresh enough to pass PaylinkEmail's on-chain freshness gate: the committed
+ * fixture when it is one, else a proof made now (proveForCaller).
  */
 export async function ensureZkJwtFixtureForCaller(callerHex: string): Promise<ZkJwtFixture> {
-  return withProveLock(() => ensureUnlocked(callerHex))
+  return ensureUnlocked(callerHex)
 }
 
 async function ensureUnlocked(callerHex: string): Promise<ZkJwtFixture> {

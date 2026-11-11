@@ -1,24 +1,24 @@
 // Vitest setup (vitest.config.ts `setupFiles`): the React 19 act() environment flag,
 // previously re-declared per test file.
-import { beforeEach } from "vitest"
-import { activateTab } from "../src/platform/storage/activeTab"
-import { setActiveRollup } from "../src/platform/storage/rollupStorage"
-import {
-  __setWalletDbBackendForTests,
-  closeWalletStore,
-  openWalletStore,
-} from "../src/platform/storage/walletStorage"
+import { beforeEach, vi } from "vitest"
 import { sandboxProfile } from "./fixtures/sandboxProfile"
+import { sandboxConfig, TEST_CONFIG } from "./support/seedBootConfig"
 import { testWalletDbs } from "./support/fakeWalletDb"
+
+// The config a test page holds when its suite passes none (`support/page.ts`). Resolving it loads
+// the config's module graph; the reset drops that graph, so a suite's mocks reach those modules.
+;(globalThis as { [key: symbol]: unknown })[TEST_CONFIG] = await sandboxConfig()
+vi.resetModules()
+const { activateTab } = await import("../src/platform/storage/activeTab")
+const { __setWalletDbBackendForTests, closeWalletStore, openWalletStore } = await import(
+  "../src/platform/storage/walletStorage"
+)
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
-// The storage partition a booted wallet would have, so suites that never boot a profile can use
-// storage, and one that boots the sandbox fixture later lands on the same partition.
-setActiveRollup(sandboxProfile().shared.rollupVersion)
-
-// Every test starts on an empty in-memory wallet database for that rollup. Suites that need
-// persistence, failures or several rollups reopen through `testWalletDbs()`.
+// Every test starts on an empty in-memory wallet database for the sandbox fixture's rollup, which a
+// suite that boots that fixture lands on. Suites that need persistence, failures or several rollups
+// reopen through `testWalletDbs()`.
 const walletDbs = testWalletDbs()
 const TEST_PAGE = Symbol.for("zk.money/test-page")
 __setWalletDbBackendForTests(walletDbs)

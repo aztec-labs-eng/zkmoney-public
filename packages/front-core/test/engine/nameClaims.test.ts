@@ -1,11 +1,8 @@
 import { describe, expect, it } from "vitest"
 import { openDatabase } from "../../src/engine/database"
 import { memoryBackend, type MemoryBackend } from "../../src/engine/memoryBackend"
-import {
-  LEGACY_NAME_CLAIMS_KEY,
-  createNameClaims,
-  type NameClaimRecord,
-} from "../../src/engine/nameClaims"
+import { createNameClaims, type NameClaimRecord } from "../../src/engine/nameClaims"
+import { LEGACY_NAME_CLAIMS_KEY } from "../../src/storageMigrations/nameClaims"
 
 const NS = "obsidion.ns."
 const PENDING = "0x00000000000000000000000000000000000000000000000000000000000000A1"

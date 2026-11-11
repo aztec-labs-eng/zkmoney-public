@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react"
+import { useCallback, useRef, useState, type ReactNode } from "react"
+import { useDomEffect, useDomLayoutEffect } from "./useDomEffect"
 
 /** Stays mounted through its slide out; with no animation running it closes at once. */
 export function MobileMenu({
@@ -33,7 +34,7 @@ function MenuDialog({
   onClosed: () => void
 }) {
   const ref = useRef<HTMLDialogElement>(null)
-  useEffect(() => {
+  useDomEffect(() => {
     const dialog = ref.current!
     const opener = document.activeElement
     const previousOverflow = document.documentElement.style.overflow
@@ -58,13 +59,14 @@ function MenuDialog({
       }
     }
   }, [])
-  useLayoutEffect(() => {
+  useDomLayoutEffect(() => {
     if (!closing) return
     const animations = ref.current!.getAnimations?.({ subtree: true }) ?? []
     if (animations.length === 0) return onClosed()
     let live = true
     const done = () => live && onClosed()
     void Promise.all(animations.map((animation) => animation.finished)).then(done, done)
+    // eslint-disable-next-line local/timer-in-view -- ZKM-1806
     const timer = setTimeout(done, 1000)
     return () => {
       live = false

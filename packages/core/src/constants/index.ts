@@ -388,6 +388,12 @@ export const PAYLINK_GRACE_PERIOD_SECONDS = 100n
 export const PAYLINK_CANCEL_MARGIN_SECONDS = 30n
 
 /**
+ * The shortest claim window a paylink is made with. A device rebuilding a refunded link from chain
+ * cannot read its expiry, so it reads a refund this soon after the funding as a cancel.
+ */
+export const PAYLINK_MIN_CLAIM_WINDOW_SECONDS = SECONDS_IN_A_DAY
+
+/**
  * Length of the `meta` passthrough on the oxide token's `transfer` (aztec-nr's
  * `MAX_EVENT_SERIALIZED_LEN - 3`, mirrored by `TestToken` so both tokens share one selector). The
  * wallet fills it with a versioned TLV byte stream (sdk `transferMeta.ts`); other sends are all-zero. The
@@ -402,9 +408,10 @@ export const TRANSFER_META_LEN = 7
  * lane and the memo budget around it. If they ever drifted apart, a legitimately claimed tag would
  * be silently dropped from the wire.
  *
- * X caps handles at 15 chars; the headroom is for tags claimed off the X rail.
+ * X caps handles at 15 chars; the headroom is for tags claimed off the X rail. The cap is 31 so a
+ * tag fits in one Field.
  */
-export const MAX_TAG_LENGTH = 32
+export const MAX_TAG_LENGTH = 31
 
 /** The all-zero `meta` argument. A fresh array per call, since the ABI encoder takes a mutable one. */
 export const emptyTransferMeta = (): number[] => new Array<number>(TRANSFER_META_LEN).fill(0)
@@ -505,6 +512,13 @@ export const WITHDRAW_RELAYER_TIP = 100_000_000_000_000_000n
  * points: 1.5x. The prover decides minutes after the burn, and gas can rise in between.
  */
 export const PROVER_TIP_GAS_PRICE_BUFFER_BPS = 15_000n
+
+/**
+ * Blocks behind the Ethereum tip at which the backup add reads a block as settled: the sweep, the
+ * install, a funding's release and a recovery count once this deep. Three covers every reorg depth
+ * measured on Ethereum since the merge; docs/account/l1-settled-depth.md has the data.
+ */
+export const L1_SETTLED_DEPTH = 3n
 
 /** "GOLD": separator for the golden ticket nullifier, so it never matches a note's own nullifier. */
 export const DOM_SEP__GOLDEN_TICKET = 0x474f4c44

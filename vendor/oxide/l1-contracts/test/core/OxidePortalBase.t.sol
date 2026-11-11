@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity >=0.8.27;
+import {SweepGasCeilings} from "@test/helpers/SweepGasCeilings.sol";
 import {Test} from "forge-std/Test.sol";
 import {OxideConstants} from "@generated/OxideConstants.gen.sol";
 import {NameRegistry} from "@periphery/NameRegistry.sol";
@@ -213,7 +214,12 @@ abstract contract OxidePortalBase is Test {
     );
     operationExecutor = new OperationExecutor();
     depositSubsidy = new DepositSubsidy(
-      OWNER, address(portal), IOperationExecutor(address(operationExecutor)), ethUsdFeed, sipaFactory
+      OWNER,
+      address(portal),
+      IOperationExecutor(address(operationExecutor)),
+      ethUsdFeed,
+      sipaFactory,
+      SweepGasCeilings.initial()
     );
     plainWithdrawalSubsidy = plainWithdrawalExecutor.SUBSIDY();
     proverSubsidy = new ProverSubsidy(OWNER, address(portal));

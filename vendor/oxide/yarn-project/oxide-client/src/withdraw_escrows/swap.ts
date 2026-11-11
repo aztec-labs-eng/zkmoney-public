@@ -20,7 +20,10 @@ import {
 } from './escrow_withdrawal.js';
 
 export interface SwapOnWithdrawArgs extends EscrowWithdrawalArgs {
-  /** The factory under the `swapEscrowFactoryV2` key of the deployment manifest: it takes `daiForGas`. */
+  /**
+   * The factory that takes `daiForGas`: `contracts.swapEscrowFactory` of the deployment's `swap` feature, or the
+   * `swapEscrowFactoryV2` key of a bridge in a deployment without features.
+   */
   swapEscrowFactoryV2: EthAddress;
   route: SwapRoute;
   /** Final L1 recipient of the swap output. It must accept ETH on the ETH route, and when `daiForGas` is above 0. */

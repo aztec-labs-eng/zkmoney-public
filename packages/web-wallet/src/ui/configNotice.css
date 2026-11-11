@@ -37,7 +37,7 @@
 }
 .ww-config-notice__dismiss {
   display: flex;
-  color: rgba(255, 255, 255, 0.6);
+  color: rgba(var(--ink-rgb), 0.6);
 }
 .ww-config-notice__dismiss:hover {
   color: var(--text-primary);

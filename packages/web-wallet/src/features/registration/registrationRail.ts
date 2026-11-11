@@ -28,13 +28,13 @@ import {
   type VerifiedOxideIdentity,
 } from "@obsidion/front-core"
 import type { Hex } from "viem"
-import type { WebWalletConfig } from "../../config/env"
+import type { PageFacts } from "../../session/pageChain"
 import { l1PublicClient, rollupScanFloor } from "../../config/oxideTuple"
 import type { OnboardingKeys } from "../../session/account"
 
 export interface RegistrationRailDeps {
   wallet: ObsidionWallet
-  config: WebWalletConfig
+  page: PageFacts
   /**
    * The L1 account the portal attested about and the name it holds, or undefined when no published
    * generation holds a name for this wallet's key.
@@ -76,15 +76,15 @@ export async function registrationGateWitness(
 ): Promise<RegistrationGate> {
   if (!deps.identity) return { pending: "message" }
   const { nameHash } = deps.identity
-  const publicClient = l1PublicClient(deps.config)
+  const publicClient = l1PublicClient(deps.page.config)
   // The message binds chain id and rollup version: the wallet's pinned identity. The Inbox to scan
   // is the portal's word on L1, not the node's.
   const [{ l1ChainId, rollupVersion }, { inboxAddress }] = await Promise.all([
     deps.wallet.getNodeIdentity(),
     readPortalChainIdentity(
       publicClient,
-      deps.config.oxideProfile.portal as Hex,
-      deps.config.l1ChainId,
+      deps.page.config.oxideProfile.portal as Hex,
+      deps.page.config.l1ChainId,
     ),
   ])
 
@@ -99,7 +99,7 @@ export async function registrationGateWitness(
       rollupVersion,
       l1ChainId,
     },
-    { fromBlock: await rollupScanFloor(deps.config, publicClient, String(rollupVersion)) },
+    { fromBlock: await rollupScanFloor(deps.page.chain, publicClient, String(rollupVersion)) },
   )
   if (!message) return { pending: "message" }
   if (message.status === "pending") return { pending: "import", messageHash: message.messageHash }

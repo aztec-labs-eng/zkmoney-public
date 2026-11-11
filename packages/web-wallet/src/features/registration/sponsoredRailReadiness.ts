@@ -6,7 +6,7 @@
  * paid for. The route gate uses it to hold flows that would only be refused on chain, and the
  * upgrade to tell an account still being set up on this version.
  */
-import { useStore } from "@obsidion/front-core"
+import { useStore, type QueryState, type ReadonlyStore } from "@obsidion/front-core"
 import { claimSponsorContext } from "./claimSponsorship"
 import { RegistrationPendingError, type RegistrationPending } from "./registrationRail"
 import { RAIL_REGISTERED } from "./rails"
@@ -32,20 +32,28 @@ export async function sponsoredRailPending(
 /** Why the account last could not ride the sponsored rail; false when it can, undefined unread. */
 export type RailPending = RegistrationPending | false | undefined
 
+/** The `sponsoredRail` query; a visitor's is never read. */
+export type RailQuery = ReadonlyStore<QueryState<RegistrationPending | false>>
+
+/** The last answer of the `sponsoredRail` query. */
+export const railPendingOf = (s: QueryState<RegistrationPending | false>): RailPending =>
+  s.status === "ready" ? s.value : undefined
+
 /**
  * Whether the account still waits to ride the sponsored rail, from the `sponsoredRail` task.
  * A `false` means the account can ride the rail, not that any given batch is paid for.
  */
 export function useSponsoredRailPending(): boolean | undefined {
-  return useStore(useSession().railPending, (waiting) =>
-    waiting === undefined ? undefined : waiting !== false,
-  )
+  return useStore(useSession().railPending, (s) => {
+    const waiting = railPendingOf(s)
+    return waiting === undefined ? undefined : waiting !== false
+  })
 }
 
 /** The last read failed: pending above means unknown, not a registration on its way. */
 export function useSponsoredRailReadFailed(): boolean {
-  return useStore(
-    useSession().railPending,
-    (waiting) => !!waiting && waiting.pending === "read-error",
-  )
+  return useStore(useSession().railPending, (s) => {
+    const waiting = railPendingOf(s)
+    return !!waiting && waiting.pending === "read-error"
+  })
 }

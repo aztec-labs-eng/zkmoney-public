@@ -17,6 +17,6 @@ export const resolveAccountlessRequest: typeof actual.resolveAccountlessRequest 
   const uri = { token: DEMO_L1_TOKEN, chainId: deps.chainId, to: SIPA }
   return { sipaAddress: SIPA, token: DEMO_L1_TOKEN, decimals: 18, feeAtomic, grossAtomic, deployment: "active",
     paymentUri: grossAtomic > 0n ? buildErc20TransferUri({ ...uri, rawAmount: grossAtomic }) : buildErc20TransferUriWithoutAmount(uri),
-    ...(state === "warning" ? { tagWarning: "@ada no longer matches the address on this request" } : {}),
+    ...(state === "warning" ? { tagWarning: "unchecked" as const } : {}),
   }
 }

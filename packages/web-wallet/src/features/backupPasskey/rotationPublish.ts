@@ -8,10 +8,10 @@ import {
 } from "@obsidion/front-core"
 import type { PersistedRotation } from "@obsidion/sdk"
 import type { Address } from "viem"
-import { session } from "../../session/session"
-import { oweRotationBroadcast } from "../broadcasts/rotationBroadcastExecutor"
+import { oweRotationBroadcast, type RotationSession } from "../broadcasts/rotationBroadcastExecutor"
 
 export interface RotationDepositInput {
+  session: RotationSession
   record: BackupRotationRecord
   l1ChainId: number
   /** The wallet's network, stamped on the deposit record. */
@@ -29,10 +29,10 @@ export interface RotationDepositInput {
  */
 export async function seedRotationDeposit(input: RotationDepositInput): Promise<SipaDeposit> {
   const { plan, rotation } = input.record
-  if (!rotation) throw new Error("nothing signed to publish")
+  if (!rotation) throw new WalletError("invariant", "nothing signed to publish")
   const origin = rotationDepositOrigin(rotation, input)
   const sipa = rotation.sipa
-  const deposits = session().sipaDeposits
+  const deposits = input.session.sipaDeposits
   const existing = await deposits.get(sipa)
   if (existing?.origin) return existing
   if (existing) {
@@ -42,7 +42,8 @@ export async function seedRotationDeposit(input: RotationDepositInput): Promise<
     } as const
     return (await deposits.apply(sipa, event)) ?? existing
   }
-  if (!plan || !rotation.sharedSecretSalt) throw new Error("nothing signed to publish")
+  if (!plan || !rotation.sharedSecretSalt)
+    throw new WalletError("invariant", "nothing signed to publish")
   const fields = {
     sipaAddress: sipa,
     phase: "broadcast" as const,
@@ -57,7 +58,7 @@ export async function seedRotationDeposit(input: RotationDepositInput): Promise<
     tokenSymbol: WALLET_TOKEN_SYMBOL,
     startTime: Date.now(),
     tokenAddress: input.token,
-    intent: "user-op" as const,
+    intent: "add-passkey" as const,
   }
   return (await deposits.apply(sipa, { type: "rotationSeeded", fields })) ?? fields
 }
@@ -72,10 +73,10 @@ export async function publishRotationAddress(
 ): Promise<void> {
   const sipa = input.rotation.sipa
   await seedRotationDeposit(input)
-  await oweRotationBroadcast(input.owner, sipa)
-  const { view } = session().sipaDeposits
-  while (!(await broadcastSettled(view, sipa))) {
-    if (!(await session().sipaDeposits.get(sipa))?.broadcast)
+  await oweRotationBroadcast(input.session, input.owner, sipa)
+  const { sipaDeposits } = input.session
+  while (!(await broadcastSettled(sipaDeposits.view, sipa))) {
+    if (!(await sipaDeposits.get(sipa))?.broadcast)
       throw new WalletError("deposit.addressUnpublished")
   }
 }
@@ -85,16 +86,17 @@ export async function publishRotationAddress(
  * fresh one when the ledger lost the job; the flow decides when. False while a send is already owed.
  */
 export async function republishRotationAddress(
+  session: RotationSession,
   owner: Address,
   record: BackupRotationRecord,
   sinceBlock: () => Promise<number>,
 ): Promise<boolean> {
   const sipa = record.rotation?.sipa.toLowerCase()
   if (!sipa) return false
-  const { sipaDeposits, tasks, wake } = session()
+  const { sipaDeposits, tasks, wake } = session
   const job = (await sipaDeposits.get(sipa))?.broadcast
   if (!job) {
-    await oweRotationBroadcast(owner, sipa, await sinceBlock())
+    await oweRotationBroadcast(session, owner, sipa, await sinceBlock())
     return true
   }
   if (job.state !== "landed") return false

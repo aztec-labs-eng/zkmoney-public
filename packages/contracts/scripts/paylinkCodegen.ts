@@ -9,15 +9,14 @@
 import {
   readFileSync,
   writeFileSync,
-  copyFileSync,
   renameSync,
   unlinkSync,
   rmSync,
   mkdtempSync,
   mkdirSync,
 } from "fs"
-import { resolve, join, dirname } from "path"
-import { execSync } from "child_process"
+import { resolve, join, dirname, delimiter } from "path"
+import { execFileSync, execSync } from "child_process"
 import { tmpdir } from "os"
 import { fileURLToPath } from "url"
 import { poseidon2Hash } from "@aztec-labs/foundation/crypto/poseidon"
@@ -106,7 +105,7 @@ function splitAroundMarkedSection(
 }
 
 /**
- * Recompile the zkJWT circuit, derive its verification key, compute the plain
+ * Derive the pinned zkJWT circuit's verification key, compute the plain
  * Poseidon2 hash of the vk fields, and write it to the `ZKJWT_VKEY_HASH`
  * constant in `@obsidion/core/constants` — alongside refreshing the committed
  * binary vk at `circuits/zkJWT/target/vk/vk`.
@@ -120,46 +119,27 @@ function splitAroundMarkedSection(
  *
  * Idempotent at the file-diff level: when the recomputed hash equals the
  * current constant, the constant file is left untouched; the binary vk is
- * rewritten with identical bytes (no git diff). `nargo compile` still runs
- * (artifact mtime moves) and `bb write_vk` writes a tempdir, cleaned up after.
+ * rewritten with identical bytes (no git diff). `bb write_vk` writes a tempdir,
+ * cleaned up after.
  *
- * Throws on any failure (toolchain missing, compile failure, vk length
- * mismatch).
+ * Throws on any failure (toolchain missing, vk length mismatch).
  */
 export async function refreshZkJwtVkeyHash(): Promise<ZkJwtVkeyHashRefreshResult> {
   // 0. Toolchain preflight — opaque ENOENT errors from execSync are hard to diagnose.
-  requireTool("aztec-nargo")
-  requireTool("bb")
+  requireTool("aztec-bb")
 
   const zkJwtDir = resolve(repoRoot, "packages/contracts/circuits/zkJWT")
-  const zkJwtArtifactPath = resolve(zkJwtDir, "target/zkJWT.json")
-
-  // 1. Compile zkJWT. Brillig soundness warnings on sha256/jwt_lib are pre-existing
-  //    dependency warnings, not failures.
-  console.log("   Compiling zkJWT circuit...")
-  execSync("aztec-nargo compile", { cwd: zkJwtDir, stdio: "inherit" })
-
-  // 1a. Sync the freshly-compiled zkJWT artifact into src/artifacts/target/zkJWT/.
-  //     `nargo compile` only writes to circuits/zkJWT/target/, but every consumer
-  //     (sdk, contracts service) loads from src/artifacts/target/.
-  //     Without this copy the two diverge: paylink_email gets compiled against the
-  //     fresh VKEY_HASH while clients generate proofs against the stale artifact,
-  //     causing `Recursive Ultra Verifier: VK Hash Mismatch` at claim time.
-  //     `bash packages/contracts/scripts/build_contracts.sh` does an equivalent copy for paylinks
-  //     ("Copying compiled outputs … to src/artifacts/target/paylink_*"); this
-  //     mirrors that behavior for the zkJWT circuit.
-  const zkJwtCanonicalDir = resolve(repoRoot, "packages/contracts/src/artifacts/target/zkJWT")
-  const zkJwtCanonicalPath = resolve(zkJwtCanonicalDir, "zkJWT.json")
-  mkdirSync(zkJwtCanonicalDir, { recursive: true })
-  copyFileSync(zkJwtArtifactPath, zkJwtCanonicalPath)
-  console.log(`   Synced zkJWT artifact → ${zkJwtCanonicalPath}`)
+  const zkJwtArtifactPath = resolve(
+    repoRoot,
+    "packages/contracts/src/artifacts/target/zkJWT/zkJWT.json",
+  )
 
   // 2. Derive the VK via bb write_vk. Use noir-recursive target (Poseidon2-compatible, ZK).
   const vkOutDir = mkdtempSync(join(tmpdir(), "zkjwt-vk-"))
   try {
     console.log("   Deriving zkJWT verification key...")
     execSync(
-      `bb write_vk -b ${zkJwtArtifactPath} -o ${vkOutDir} -t noir-recursive --output_format json`,
+      `aztec-bb write_vk -b ${zkJwtArtifactPath} -o ${vkOutDir} -t noir-recursive --output_format json`,
       { stdio: "inherit" },
     )
 
@@ -295,6 +275,15 @@ export async function compilePaylinks(contractDirs: string[]): Promise<PaylinkCo
  */
 export async function recompilePaylinks(): Promise<PaylinkCompileResult> {
   console.log(`\n🔄 Recompiling paylink contracts...`)
+  const pinned = "packages/contracts/scripts/pinned-contracts.mjs"
+  // The vk must come from the toolchain that compiled the pinned circuit.
+  const bin = execFileSync("node", [pinned, "toolchain"], { cwd: repoRoot, encoding: "utf8" })
+  process.env.PATH = `${bin.trim()}${delimiter}${process.env.PATH}`
+  // The build extracts pinned packages, so re-pin the circuit and both paylinks before reading them.
+  execFileSync("node", [pinned, "pin", "zkJWT", "paylink_email", "paylink_direct"], {
+    cwd: repoRoot,
+    stdio: "inherit",
+  })
   await refreshZkJwtVkeyHash()
   const result = await compilePaylinks(["paylink_email", "paylink_direct"])
   console.log(`\n✅ Paylink recompilation complete. No on-chain transactions sent.`)

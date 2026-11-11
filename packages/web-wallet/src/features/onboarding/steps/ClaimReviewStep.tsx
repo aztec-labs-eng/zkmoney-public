@@ -4,7 +4,7 @@ import type { PaylinkSignupQuote } from "../../paylink/paylinkSignupQuote"
 import { OperationHandOff, type OperationHandOffHandle } from "../../operations/OperationHandOff"
 import { OnboardingCard } from "../OnboardingCard"
 import { ticketAmountFigure } from "./GoldenTicketHead"
-import { PaylinkSignupRows } from "./PaylinkSignupRows"
+import { PaylinkSignupRows } from "./PaylinkSignupRows/PaylinkSignupRows"
 import { SignupStepper } from "./SignupStepper"
 import { senderLine } from "../../paylink/senderLine"
 
@@ -80,7 +80,7 @@ export function ClaimReviewStep({
           {memo && <span className="ww-paylink-summary__note">{memo}</span>}
         </div>
         <p className="ww-reg-sheet__summary">
-          <Icon name="coins" size={20} color="#fff" />
+          <Icon name="coins" size={20} color="var(--ink)" />
           <span>
             The fees come out of the payment to register your tag; the remainder stays in your
             wallet. Registration can take up to 40 minutes.

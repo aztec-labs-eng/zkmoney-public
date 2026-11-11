@@ -1,3 +1,4 @@
+import { WalletError, bestEffort } from "@obsidion/core/errors"
 import { createQrDecoder, type QrDecoder } from "./qrDecoder"
 import { MAX_QR_FRAME_SIDE } from "./qrFrame"
 
@@ -27,7 +28,7 @@ function frameReader() {
   const canvas = document.createElement("canvas")
   const context = canvas.getContext("2d", { willReadFrequently: true })
   return (video: HTMLVideoElement): ImageData | null => {
-    if (!context) throw new Error("Camera frames are unavailable")
+    if (!context) throw new WalletError("unknown", "Camera frames are unavailable")
     if (video.readyState < 2 || !video.videoWidth || !video.videoHeight) return null
     const scale = Math.min(1, MAX_QR_FRAME_SIDE / Math.max(video.videoWidth, video.videoHeight))
     canvas.width = Math.max(1, Math.round(video.videoWidth * scale))
@@ -76,7 +77,8 @@ export class CameraSession {
       }
       this.stream = stream
       const track = stream.getVideoTracks()[0]
-      if (!track || track.readyState === "ended") throw new Error("No usable camera")
+      if (!track || track.readyState === "ended")
+        throw new WalletError("unknown", "No usable camera")
       track.addEventListener("ended", this.onEnded)
       video.srcObject = stream
       await video.play()
@@ -94,9 +96,9 @@ export class CameraSession {
       }
       onState(this.active)
       // Device enumeration must not delay capture, and labels are useful only after permission.
-      void mediaDevices
-        .enumerateDevices()
-        .then((devices) => {
+      void bestEffort(
+        "unknown",
+        mediaDevices.enumerateDevices().then((devices) => {
           if (this.stopped || !this.active) return
           const alternatives = devices.filter(
             (device, index) =>
@@ -109,8 +111,8 @@ export class CameraSession {
           )
           this.active = { ...this.active, alternatives }
           onState(this.active)
-        })
-        .catch(() => {})
+        }),
+      )
       try {
         this.decoder = (this.options.createDecoder ?? createQrDecoder)()
         void this.scan(this.options.readFrame ?? frameReader())

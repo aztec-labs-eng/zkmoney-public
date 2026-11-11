@@ -8,6 +8,7 @@ import {
   prfOutputFor,
   prfOutputsOf,
 } from "../../src/rules/evidence.js"
+import { NoPrfError } from "../../src/refusals/passkeyErrors.js"
 
 const bytes = (n: number, fill = 7) => new Uint8Array(n).fill(fill)
 const first = bytes(32, 1)
@@ -95,6 +96,20 @@ describe("candidatesFrom", () => {
     expect(() =>
       candidatesFrom({ backupEligible: true, prfFirst: bytes(31), prfSecond: bytes(0) }),
     ).toThrow(expect.objectContaining({ name: "NoPrfError" }))
+  })
+
+  it("tells an iPhone with no key that a Proton Pass passkey cannot open the wallet there", () => {
+    const onIphone = new NoPrfError({ signInOnIos: true }).message
+    const elsewhere = new NoPrfError().message
+    expect(onIphone).not.toBe(elsewhere)
+    expect(() => candidatesFrom({ backupEligible: true }, "ios")).toThrow(
+      expect.objectContaining({ name: "NoPrfError", message: onIphone }),
+    )
+    for (const os of ["android", "windows", undefined] as const) {
+      expect(() => candidatesFrom({ backupEligible: true }, os)).toThrow(
+        expect.objectContaining({ name: "NoPrfError", message: elsewhere }),
+      )
+    }
   })
 
   it("accepts another device's answer that cannot be backed up, and only that", () => {

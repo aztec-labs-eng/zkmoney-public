@@ -5,6 +5,7 @@ import {
   DEFAULT_CEREMONY_TIMING,
 } from "../../src/ceremony/passkeyCeremony.js"
 import {
+  BackupPasskeyRefusedError,
   DeviceBoundPasskeyError,
   IncompleteCreationError,
   LaptopPasskeyRefusedError,
@@ -18,8 +19,13 @@ import {
   passkeyWritten,
 } from "../../src/refusals/passkeyErrors.js"
 import { bitwardenLineFor } from "../../src/refusals/refusalCopy.js"
-import { WINDOWS_HELLO, localManagersClause } from "../../src/rules/passkeyProviders.js"
-import { MACOS_APPLE_PRF_FLOOR } from "../../src/browser/userAgentInfo.js"
+import {
+  PROTON_PASS,
+  WINDOWS_HELLO,
+  localManagersClause,
+} from "../../src/rules/passkeyProviders.js"
+import { MACOS_APPLE_PRF_FLOOR, parseUserAgent } from "../../src/browser/userAgentInfo.js"
+import { windows } from "../support/laptopRows.js"
 
 const BITWARDEN_FRAME =
   "CredentialsContainer.<anonymous> (chrome-extension://nngceckbapebfimnlniiiahkandclblb/content/fido2-page-script.js:1259:27)"
@@ -48,6 +54,18 @@ describe("the laptop's own route refusals", () => {
   it("words an unnamed answer apart from an off-route one", () => {
     const unnamed = new LaptopPasskeyRefusedError("unnamed", managers)
     expect(new LaptopPasskeyRefusedError("not-local", managers).message).not.toBe(unnamed.message)
+  })
+
+  it("names Windows Hello for an unnamed answer on its row, and retries without it", () => {
+    const others = ["gpm", "1password"] as const
+    const hello = new LaptopPasskeyRefusedError("windows-hello", others)
+    expect(hello.message).toContain(WINDOWS_HELLO)
+    expect(hello.message).toContain(localManagersClause(others))
+    expect(hello.message).not.toBe(new LaptopPasskeyRefusedError("unnamed", others).message)
+    expect(hello.appleRefusedHere).toBe(false)
+    const phoneOnly = new LaptopPasskeyRefusedError("windows-hello")
+    expect(phoneOnly.message).toContain(WINDOWS_HELLO)
+    expect(phoneOnly.message).not.toContain(localManagersClause(others))
   })
 
   it("gives the existing refusals a local-route message built from the managers", () => {
@@ -150,5 +168,45 @@ describe("the written mark", () => {
     expect(passkeyWritten(undefined)).toBe(false)
     expect(passkeyWritten("NotAllowedError")).toBe(false)
     expect(markPasskeyWritten("x")).toBe("x")
+  })
+})
+
+describe("the backup refusal sheets", () => {
+  const iphone = parseUserAgent({
+    userAgent:
+      "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like " +
+      "Gecko) Version/18.5 Mobile/15E148 Safari/604.1",
+  })
+  const named = { providerName: "Bitwarden" }
+  /** The nine refusals, the ones that name where to delete the leftover passkey first. */
+  const cleaned = [
+    new BackupPasskeyRefusedError("provider", { providerName: PROTON_PASS, userAgent: iphone }),
+    new BackupPasskeyRefusedError("no-prf", {
+      providerName: WINDOWS_HELLO,
+      userAgent: windows(undefined, "10.0.0"),
+    }),
+    new BackupPasskeyRefusedError("no-prf", { providerName: WINDOWS_HELLO, userAgent: windows() }),
+    new BackupPasskeyRefusedError("key-no-prf"),
+  ]
+  const plain = [
+    new BackupPasskeyRefusedError("provider", named),
+    new BackupPasskeyRefusedError("provider", { ...named, overQr: true }),
+    new BackupPasskeyRefusedError("no-prf", named),
+    new BackupPasskeyRefusedError("unverified"),
+    new BackupPasskeyRefusedError("other-credential"),
+  ]
+
+  it("gives each its own title and a fix", () => {
+    const all = [...cleaned, ...plain]
+    expect(new Set(all.map((e) => e.copy.title)).size).toBe(9)
+    for (const { copy } of all) expect(copy.fix).not.toBe("")
+  })
+
+  it("says where to delete the leftover passkey only where the device names it, in its message", () => {
+    for (const refusal of cleaned) {
+      expect(refusal.removalAdvice).toBe(true)
+      expect(refusal.message).toContain(refusal.copy.cleanup)
+    }
+    for (const refusal of plain) expect(refusal.removalAdvice).toBe(false)
   })
 })

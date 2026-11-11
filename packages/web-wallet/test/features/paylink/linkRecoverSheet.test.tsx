@@ -1,8 +1,4 @@
-/**
- * The creator-recovery confirm sheet: it names the recovery, says what to expect of the race, runs
- * the matching submit leg, and maps a lost race to the shared already-spent copy instead of a
- * reportable stack.
- */
+// Guard: link recovery waits for a new link's create before it runs.
 import { act } from "react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createRoot, type Root } from "react-dom/client"
@@ -17,12 +13,14 @@ vi.mock("../../../src/features/paylink/sponsoredPaylink", () => ({
   recoverSponsoredLink: (...args: unknown[]) =>
     asOperation(h.recoverSponsoredLink, "paylink-reclaim")(...args),
 }))
-vi.mock("../../../src/lib/analytics", () => ({ fireEvent: h.fireEvent, failureCode: () => "unknown" }))
+vi.mock("../../../src/lib/analytics", () => ({
+  fireEvent: h.fireEvent,
+  failureCode: () => "unknown",
+}))
 
 const { LinkRecoverModal } = await import("../../../src/features/paylink/LinkRecoverModal")
 
 declare global {
-  // eslint-disable-next-line no-var
   var IS_REACT_ACT_ENVIRONMENT: boolean
 }
 

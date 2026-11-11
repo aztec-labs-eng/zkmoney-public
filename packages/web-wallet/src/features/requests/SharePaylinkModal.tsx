@@ -13,6 +13,7 @@ import { Modal } from "../../ui/Modal"
 import { linkExpiryLabel, requestShareStatus, requestShareText } from "./shareView"
 import { usePhoneLayout } from "../../ui/usePhoneLayout"
 import { requestLinkOrigin } from "./requestLinkCreation"
+import { useSession } from "../../session/session"
 import { useShortRequestLink } from "./shortRequestLink"
 
 /**
@@ -36,7 +37,8 @@ export function SharePaylinkModal({
   onCancel?: () => void
   onClose: () => void
 }) {
-  const full = buildRequestShareUrl(request, requesterTag, requestLinkOrigin()) ?? undefined
+  const { network } = useSession()
+  const full = buildRequestShareUrl(request, requesterTag, requestLinkOrigin(network)) ?? undefined
   // A request with no short link yet publishes one on its first share, as Receive does.
   const unpublished = useMemo(
     () =>

@@ -21,14 +21,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { useLocation, useNavigate } from "react-router-dom"
 import {
-  BalanceStorage,
   bestEffort,
   checkSpentViaPaylinkService,
   type After,
   dataKey,
   loadRecords,
-  useContractServiceContext,
-  useSavingsPosition,
   useStore,
   retryableStop,
   readSavingsPrice,
@@ -59,7 +56,6 @@ import {
   TopNavIconButton,
 } from "@obsidion/web-ds"
 import { formatUnits, type Address } from "viem"
-import { fetchLiveProfilePortal, getConfig } from "../../../config/env"
 import { l1PublicClient } from "../../../config/oxideTuple"
 import { showReportableError } from "../../../errors/errorModal"
 import { BootSplash } from "../../../ui/PxeBoot"
@@ -86,14 +82,14 @@ import {
   watchForFreeze,
 } from "../freezeWatch"
 import { itemNote, lockedUntil, money } from "../residualNotes"
-import { useSession } from "../../../session/session"
+import { useSession, type Session } from "../../../session/session"
 import {
   isFlowCancelled,
   runListedOperation,
   useBusyLabel,
   useLeavingLosesTransaction,
+  useUserFlowActive,
 } from "../../operations/operations"
-import { runUserFlow, useUserFlowActive } from "../../provingGate"
 import { upgradeVerdict } from "../../actionGate"
 import { OperationHandOff } from "../../operations/OperationHandOff"
 import { PayWorking } from "../../contacts/PayWorking"
@@ -183,11 +179,11 @@ const NO_DESTINATIONS: ReadonlyMap<string, ResidualDestination> = new Map()
 /** The upgrade stopped for the user: the dialog and the bell say why. */
 class UpgradeStopped extends Error {}
 
-function useProfileRepoint(): boolean {
-  const booted = getConfig().oxideProfile.portal.toLowerCase()
+function useProfileRepoint({ config, liveProfilePortal }: Session["page"]): boolean {
+  const booted = config.oxideProfile.portal.toLowerCase()
   const { data } = useQuery({
     queryKey: ["profile-portal", booted],
-    queryFn: () => fetchLiveProfilePortal(),
+    queryFn: () => liveProfilePortal(),
     initialData: booted,
     staleTime: PROFILE_REPOINT_POLL_MS,
     refetchInterval: PROFILE_REPOINT_POLL_MS,
@@ -208,13 +204,20 @@ function escrowed(row: HistoricResidualSummary["frozenLinks"][number]): boolean 
 }
 
 export function MigrationDetectionMount() {
-  const obsidionWallet = useResource(useSession().wallet)
-  const obsidionAccount = useResource(useSession().account)
-  const tokenService = useResource(useSession().token)
-  const { auth, balances, sipaDeposits, registrations, device, namespace, identity } = useSession()
+  const session = useSession()
+  // eslint-disable-next-line local/held-service -- ZKM-1625
+  const obsidionWallet = useResource(session.wallet)
+  // eslint-disable-next-line local/held-service -- ZKM-1625
+  const obsidionAccount = useResource(session.account)
+  // eslint-disable-next-line local/held-service -- ZKM-1625
+  const tokenService = useResource(session.token)
+  const { auth, balances, balanceStore, sipaDeposits, registrations, device, namespace, identity } =
+    session
   const named = useStore(identity, (s) => !!s.value?.handle)
-  const { contractService } = useContractServiceContext()
-  const { notifications, milestones } = useSession()
+  // eslint-disable-next-line local/held-service -- ZKM-1625
+  const contractService = useResource(session.contractService)
+  const { notifications, milestones } = session
+  const { config } = session.page
   const [residuals, setResiduals] = useState<HistoricResidualSummary[]>([])
   const [historic, setHistoric] = useState<OxideEnvTuple[]>()
   const [current, setCurrent] = useState<OxideEnvTuple | null>(null)
@@ -241,7 +244,7 @@ export function MigrationDetectionMount() {
   const [residualsAsked, setResidualsAsked] = useState(false)
   // An action asked: the sheet is titled for it, and a held one starts once no upgrade is needed.
   const [actionAsked, setActionAsked] = useState<Exclude<MigrationDialogReason, string>>()
-  const repointed = useProfileRepoint()
+  const repointed = useProfileRepoint(session.page)
   const [repointDismissed, setRepointDismissed] = useState(false)
   // Its Reload would end a running proof, so the prompt waits for the transaction to settle.
   const losesTransaction = useLeavingLosesTransaction()
@@ -300,15 +303,18 @@ export function MigrationDetectionMount() {
   const withdrawing = useLocation().pathname.startsWith("/withdraw")
   const networkReady = useNetworkReady()
   const ask = useApprovalAsk()
+  // eslint-disable-next-line local/effect-hook -- ZKM-1625
   useEffect(() => () => migrationRun.current?.abort(), [obsidionWallet, obsidionAccount])
+  // eslint-disable-next-line local/effect-hook -- ZKM-1625
   useEffect(() => {
     if (!obsidionAccount) return
     const account = obsidionAccount.getAddress().toString()
     let live = true
     let timer: ReturnType<typeof setTimeout> | undefined
     const check = () =>
-      checkUpgradeLock(account).catch((error) => {
+      checkUpgradeLock(config, account).catch((error) => {
         console.warn("[migration] upgrade lock check failed:", error)
+        // eslint-disable-next-line local/timer-in-view -- ZKM-1625
         if (live) timer = setTimeout(check, LOCK_RETRY_MS)
       })
     void check()
@@ -316,12 +322,13 @@ export function MigrationDetectionMount() {
       live = false
       clearTimeout(timer)
     }
-  }, [obsidionAccount])
+  }, [config, obsidionAccount])
   // Boot decides once, before the wallet shows, whether 1 Choose stands in for Home while the check
   // runs: from this browser's last answer, else whether the account's L1 record still waits for the
   // upgrade, read within `RECORD_CHECK_WAIT_MS`.
   const account = obsidionAccount?.getAddress().toString()
   const [bootChoice, setBootChoice] = useState<{ account: string; choose: boolean }>()
+  // eslint-disable-next-line local/effect-hook -- ZKM-1625
   useEffect(() => {
     if (!obsidionAccount) return
     const account = obsidionAccount.getAddress().toString()
@@ -329,10 +336,11 @@ export function MigrationDetectionMount() {
     const decide = (choose: boolean) => {
       if (live) setBootChoice((now) => (now?.account === account ? now : { account, choose }))
     }
-    const answered = upgradeMovedFunds(account)
+    const answered = upgradeMovedFunds(config, account)
     if (answered !== undefined) decide(answered)
+    // eslint-disable-next-line local/timer-in-view -- ZKM-1625
     const wait = setTimeout(() => decide(false), RECORD_CHECK_WAIT_MS)
-    webAccountRecordStale(obsidionAccount)
+    webAccountRecordStale(session, obsidionAccount)
       .then((stale) => {
         console.info(`[migration] record stale=${stale} at ${Math.round(performance.now())}ms`)
         decide(stale)
@@ -345,20 +353,21 @@ export function MigrationDetectionMount() {
       live = false
       clearTimeout(wait)
     }
-  }, [obsidionAccount])
+  }, [session, config, obsidionAccount])
   const chooseFirst =
     account === undefined
       ? undefined
       : bootChoice?.account === account
       ? bootChoice.choose
-      : upgradeMovedFunds(account)
+      : upgradeMovedFunds(config, account)
   const mainBalance = useStore(balances.view)
   const oldHoldings = useOldVersionHoldings()
   // Old versions not read yet hold the boot sync open.
+  // eslint-disable-next-line local/effect-hook -- ZKM-1625
   useEffect(() => {
     if (!oldHoldings.pending) milestones.mark("oldVersionsRead")
   }, [oldHoldings.pending, milestones])
-  const savings = useSavingsPosition()
+  const savings = useStore(useSession().savingsHolding)
 
   // A source moves into the pinned deployment, or into the product of its asset.
   const destinationOf = useCallback(
@@ -396,6 +405,7 @@ export function MigrationDetectionMount() {
       let found: Awaited<ReturnType<typeof probeAccountResiduals>>
       try {
         found = await probeAccountResiduals(
+          session,
           obsidionWallet,
           obsidionAccount,
           identity.get().value?.handle,
@@ -404,6 +414,7 @@ export function MigrationDetectionMount() {
         console.warn("[migration] re-probe failed:", error)
         if (error instanceof ManifestUnavailableError && scan === scans.current) {
           clearTimeout(probeRetry.current)
+          // eslint-disable-next-line local/timer-in-view -- ZKM-1806
           probeRetry.current = setTimeout(() => void refresh({ ifIdle: true }), FREEZE_POLL_MS)
         }
         return
@@ -419,7 +430,7 @@ export function MigrationDetectionMount() {
         return
       }
       setCurrent(found.current)
-      setOldVersionDestinations(found.current.portal, found.destinations ?? NO_DESTINATIONS)
+      setOldVersionDestinations(config, found.current.portal, found.destinations ?? NO_DESTINATIONS)
       setDestinations(found.destinations ?? NO_DESTINATIONS)
       setResiduals(found.residuals)
       setPendingWithdrawals(found.pendingWithdrawals)
@@ -427,10 +438,12 @@ export function MigrationDetectionMount() {
       // A source that froze since the last probe is historic now.
       setHistoric(found.historic ?? [])
     },
-    [obsidionWallet, obsidionAccount, identity],
+    [session, config, obsidionWallet, obsidionAccount, identity],
   )
+  // eslint-disable-next-line local/effect-hook -- ZKM-1625
   useEffect(() => () => clearTimeout(probeRetry.current), [refresh])
 
+  // eslint-disable-next-line local/effect-hook -- ZKM-1625
   useEffect(() => {
     if (!obsidionWallet || !obsidionAccount) return
     let cancelled = false
@@ -441,6 +454,7 @@ export function MigrationDetectionMount() {
       if (!(await milestones.after(PROBE_AFTER)) || cancelled) return
       logStep("probe start")
       const found = await probeAccountResiduals(
+        session,
         obsidionWallet,
         obsidionAccount,
         identity.get().value?.handle,
@@ -452,7 +466,7 @@ export function MigrationDetectionMount() {
       setProbed(true)
       if (!found) return
       setCurrent(found.current)
-      setOldVersionDestinations(found.current.portal, found.destinations ?? NO_DESTINATIONS)
+      setOldVersionDestinations(config, found.current.portal, found.destinations ?? NO_DESTINATIONS)
       setDestinations(found.destinations ?? NO_DESTINATIONS)
       setResiduals(found.residuals)
       setPendingWithdrawals(found.pendingWithdrawals)
@@ -466,6 +480,7 @@ export function MigrationDetectionMount() {
         // nothing shows meanwhile.
         if (error instanceof ManifestUnavailableError) {
           setManifestUnread(true)
+          // eslint-disable-next-line local/timer-in-view -- ZKM-1625
           retry = setTimeout(() => setChecks((n) => n + 1), FREEZE_POLL_MS)
         } else setCheckFailed(true)
       })
@@ -474,7 +489,7 @@ export function MigrationDetectionMount() {
       cancelled = true
       clearTimeout(retry)
     }
-  }, [obsidionWallet, obsidionAccount, checks, milestones, identity])
+  }, [session, config, obsidionWallet, obsidionAccount, checks, milestones, identity])
 
   // The sources that wait for their migration feature: a saved run of one waits with it.
   const featurePending = residuals
@@ -486,6 +501,7 @@ export function MigrationDetectionMount() {
   const followRun = useRef<(source: OxideEnvTuple, promptless: boolean, shown?: boolean) => void>(
     () => {},
   )
+  // eslint-disable-next-line local/effect-hook -- ZKM-1625
   useEffect(() => {
     // A follower needs both services, so the saved runs are read only once it can start.
     if (!obsidionWallet || !obsidionAccount || !current || !historic) return
@@ -508,13 +524,13 @@ export function MigrationDetectionMount() {
       setFollowing(count(1))
       try {
         const destination = destinationOf(source)!
-        const session = await createWebMetadataMigrationQuietly(
+        const migration = await createWebMetadataMigrationQuietly(
           {
             wallet: obsidionWallet,
             account: obsidionAccount,
             deposits: sipaDeposits,
             auth,
-            own: { device, namespace },
+            own: session,
             handle: identity.get().value?.handle,
             contractService,
             toTokenService: await destinationTokenService(
@@ -532,24 +548,28 @@ export function MigrationDetectionMount() {
           observing.signal,
         )
         const unsubscribe = shown
-          ? session.controller.subscribe(() => {
+          ? migration.controller.subscribe(() => {
               if (observing.signal.aborted) return
               setResumeSource(source)
-              setMetadataRecord(session.controller.getSnapshot())
+              setMetadataRecord(migration.controller.getSnapshot())
             })
           : () => {}
         try {
-          await session.controller.load()
+          await migration.controller.load()
           const record = await runMetadataMigration(
-            session.controller,
+            migration.controller,
             promptless
               ? {
                   signal: observing.signal,
                   promptless: true,
-                  exclusive: backgroundSend,
+                  exclusive: backgroundSend(session),
                 }
               : // A re-send of a late batch waits its turn on the prover too.
-                { signal: observing.signal, observeOnly: true, exclusive: backgroundSend },
+                {
+                  signal: observing.signal,
+                  observeOnly: true,
+                  exclusive: backgroundSend(session),
+                },
           )
           if (observing.signal.aborted || !record) return
           if (record.phase === "done") {
@@ -590,6 +610,7 @@ export function MigrationDetectionMount() {
         // Its run waits with the source: the source shows as waiting, and nothing offers to continue
         // the run until the migration route is back.
         if (awaitsFeature(source)) continue
+        // eslint-disable-next-line local/legacy-store -- ZKM-1625
         const raw = await webStorage.getItem(
           webMetadataMigrationKey(destinationOf(source) ?? current, source, obsidionAccount),
         )
@@ -629,7 +650,7 @@ export function MigrationDetectionMount() {
       followRun.current = () => {}
     }
     // A finished run's refreshes need not restart the follow.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- ZKM-1625
   }, [
     obsidionWallet,
     obsidionAccount,
@@ -641,12 +662,13 @@ export function MigrationDetectionMount() {
     featurePending,
   ])
 
+  // eslint-disable-next-line local/effect-hook -- ZKM-1625
   useEffect(() => {
     if (!obsidionWallet) return
-    void reconcilePendingPaylinks(obsidionWallet, checkSpent).catch((error) =>
+    void reconcilePendingPaylinks(session, obsidionWallet, checkSpent).catch((error) =>
       console.warn("[migration] paylink reconcile failed:", error),
     )
-  }, [obsidionWallet, checkSpent, scanRevision])
+  }, [session, obsidionWallet, checkSpent, scanRevision])
 
   // A destination with a metadata registry settles every source through the record update.
   const metadataFlow = !!current?.accountMetadataRegistry
@@ -661,6 +683,7 @@ export function MigrationDetectionMount() {
   }>()
   // The last scan left an old version's holdings unread.
   const [holdingsUnread, setHoldingsUnread] = useState(false)
+  // eslint-disable-next-line local/effect-hook -- ZKM-1625
   useEffect(() => {
     // A running migration moves the funds it would quote; it quotes them again once it stops.
     if (migrating) return
@@ -673,7 +696,8 @@ export function MigrationDetectionMount() {
       !obsidionAccount ||
       !current ||
       !tokenService ||
-      !contractService
+      !contractService ||
+      !balanceStore
     ) {
       setChecked(undefined)
       return
@@ -691,7 +715,7 @@ export function MigrationDetectionMount() {
         const portal = destination.portal.toLowerCase()
         if (destination === current || prices.has(portal)) continue
         try {
-          const client = l1PublicClient(getConfig())
+          const client = l1PublicClient(config)
           const vault = await readSavingsVault(client, destination.portal as `0x${string}`)
           prices.set(portal, (await readSavingsPrice(client, vault)).sharePrice)
         } catch (error) {
@@ -718,13 +742,11 @@ export function MigrationDetectionMount() {
             unread = true
             continue
           }
-          await BalanceStorage.get(webStorage)
-            .updateBalance(
-              oldVersionScope(tuple.portal, obsidionAccount.getAddress().toString()),
+          await balanceStore
+            .write(
+              oldVersionScope(config, tuple.portal, obsidionAccount.getAddress().toString()),
               tuple.l2Token,
               0n,
-              undefined,
-              { strict: true },
             )
             .catch((error) => {
               unread = true
@@ -734,13 +756,13 @@ export function MigrationDetectionMount() {
         }
         try {
           const destination = destinationOf(tuple)!
-          const session = await createWebMetadataMigrationQuietly(
+          const migration = await createWebMetadataMigrationQuietly(
             {
               wallet: obsidionWallet,
               account: obsidionAccount,
               deposits: sipaDeposits,
               auth,
-              own: { device, namespace },
+              own: session,
               handle: identity.get().value?.handle,
               contractService,
               toTokenService: await destinationTokenService(
@@ -759,8 +781,8 @@ export function MigrationDetectionMount() {
             FREEZE_POLL_MS,
             () => setManifestUnread(true),
           )
-          if (!(await session.holdings())) unread = true
-          if (quoting) next.set(portal, await session.service.quote())
+          if (!(await migration.holdings())) unread = true
+          if (quoting) next.set(portal, await migration.service.quote())
           logStep(`quote ${tuple.portal}`)
         } catch (error) {
           unread = true
@@ -771,13 +793,15 @@ export function MigrationDetectionMount() {
       if (cancelled) return
       setChecked({ residuals, quotes: next, prices, failed })
       setHoldingsUnread(unread)
-      if (!unread) markOldHoldingsRead(obsidionAccount.getAddress().toString())
+      if (!unread) markOldHoldingsRead(config, obsidionAccount.getAddress().toString())
     })()
     return () => {
       cancelled = true
       reading.abort()
     }
   }, [
+    session,
+    config,
     auth,
     device,
     namespace,
@@ -795,6 +819,7 @@ export function MigrationDetectionMount() {
     current,
     tokenService,
     contractService,
+    balanceStore,
     milestones,
   ])
   const quoted = checked?.residuals === residuals ? checked : undefined
@@ -822,13 +847,14 @@ export function MigrationDetectionMount() {
     .filter((r) => r.awaitingFreeze)
     .map((r) => r.tuple.portal.toLowerCase())
     .join(",")
+  // eslint-disable-next-line local/effect-hook -- ZKM-1625
   useEffect(() => {
     if (!awaitingPortals) return
     const awaiting = residuals.filter((r) => r.awaitingFreeze).map((r) => r.tuple)
-    return watchForFreeze(awaiting, () => void refresh())
+    return watchForFreeze(config, awaiting, () => void refresh(), session.page.pace)
     // `awaitingPortals` names the watched set; a new residuals array alone does not restart it.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [awaitingPortals, refresh])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- ZKM-1625
+  }, [awaitingPortals, refresh, session.page.pace])
   // Withdraw refunds a frozen source to L1 instead, while no upgrade run holds its funds.
   const withdrawable = useMemo(
     () =>
@@ -853,7 +879,7 @@ export function MigrationDetectionMount() {
                   account: obsidionAccount,
                   deposits: sipaDeposits,
                   auth,
-                  own: { device, namespace },
+                  own: session,
                   handle: identity.get().value?.handle,
                   contractService,
                   toTokenService: await destinationTokenService(
@@ -875,7 +901,7 @@ export function MigrationDetectionMount() {
                   account: obsidionAccount,
                   deposits: sipaDeposits,
                   auth,
-                  own: { device, namespace },
+                  own: session,
                   handle: identity.get().value?.handle,
                   contractService,
                   toTokenService: tokenService,
@@ -885,7 +911,7 @@ export function MigrationDetectionMount() {
             }))
         : [],
     // `following` is what `followed` reads.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- ZKM-1625
     [
       metadataFlow,
       obsidionWallet,
@@ -901,28 +927,34 @@ export function MigrationDetectionMount() {
       destinationOf,
     ],
   )
+  // eslint-disable-next-line local/effect-hook -- ZKM-1625
   useEffect(() => setWithdrawableSources(withdrawable), [withdrawable])
+  // eslint-disable-next-line local/effect-hook -- ZKM-1625
   useEffect(() => () => setWithdrawableSources([]), [])
   const withdrawn = useOldVersionWithdrawals()
+  // eslint-disable-next-line local/effect-hook -- ZKM-1625
   useEffect(() => {
     if (withdrawn) void refresh()
   }, [withdrawn, refresh])
   // A frozen source waits for its destination's migration feature: each poll reads only the
   // manifest again, and probes again once a waiting source has a route, with no reload.
+  // eslint-disable-next-line local/effect-hook -- ZKM-1625
   useEffect(() => {
     if (!featurePending || !current) return
     const waiting = residuals
       .filter((r) => r.awaitingFeature)
       .map((r) => ({ source: r.tuple, destination: destinationOf(r.tuple) ?? current }))
     return watchForFeature(
-      () => migrationFeatureListed(waiting),
+      () => migrationFeatureListed(session.page.chain, waiting),
       () => void refresh({ ifIdle: true }),
+      session.page.pace,
     )
     // `featurePending` names the watched set; a new residuals array alone does not restart it.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [featurePending, current, destinationOf, refresh])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- ZKM-1625
+  }, [featurePending, current, destinationOf, refresh, session.page.pace])
   // A run waits with its source for the migration feature, as at boot; the saved runs are read
   // again once the feature is back.
+  // eslint-disable-next-line local/effect-hook -- ZKM-1625
   useEffect(() => {
     if (migrating || !resumeSource) return
     if (!featurePending.split(",").includes(resumeSource.portal.toLowerCase())) return
@@ -983,6 +1015,7 @@ export function MigrationDetectionMount() {
     metadataFlow &&
     registrationAnswer?.ask === registrationAsk &&
     !!registrationAnswer?.failed
+  // eslint-disable-next-line local/effect-hook -- ZKM-1625
   useEffect(() => {
     if (!registrationAsk) return
     const ask = registrationAsk
@@ -990,13 +1023,13 @@ export function MigrationDetectionMount() {
     // A manifest that cannot be read holds the check, which reads as still checking, until it can.
     const reading = new AbortController()
     void (async () => {
-      const session = await createWebMetadataMigrationQuietly(
+      const migration = await createWebMetadataMigrationQuietly(
         {
           wallet: ask.obsidionWallet,
           account: ask.obsidionAccount,
           deposits: sipaDeposits,
           auth,
-          own: { device, namespace },
+          own: session,
           handle: identity.get().value?.handle,
           contractService: ask.contractService,
           toTokenService: ask.tokenService,
@@ -1007,13 +1040,13 @@ export function MigrationDetectionMount() {
         FREEZE_POLL_MS,
         () => setManifestUnread(true),
       )
-      const needed = await session.service.needsMigration()
+      const needed = await migration.service.needsMigration()
       logStep("registration answer")
       if (!cancelled) setRegistrationAnswer({ ask, needed })
       // Display only: a failed read leaves the sheet without its approvals and never fails the check.
       if (needed)
         void (async () => {
-          const approvals = await session.service.consentApprovals()
+          const approvals = await migration.service.consentApprovals()
           if (!cancelled)
             setRegistrationAnswer((now) => (now?.ask === ask ? { ...now, approvals } : now))
         })().catch((error) => console.warn("[migration] approvals read failed:", error))
@@ -1025,7 +1058,7 @@ export function MigrationDetectionMount() {
       cancelled = true
       reading.abort()
     }
-  }, [auth, device, namespace, registrationAsk, sipaDeposits, identity])
+  }, [session, auth, device, namespace, balanceStore, registrationAsk, sipaDeposits, identity])
   // Only a named account that would otherwise read as finishing needs this browser's records. A
   // nameless one has no registration to finish.
   const askRegisteredHere =
@@ -1035,6 +1068,7 @@ export function MigrationDetectionMount() {
     railPending === true &&
     !railUnread &&
     named
+  // eslint-disable-next-line local/effect-hook -- ZKM-1625
   useEffect(() => {
     if (!obsidionAccount || !askRegisteredHere) return
     let cancelled = false
@@ -1051,21 +1085,26 @@ export function MigrationDetectionMount() {
   }, [obsidionAccount, askRegisteredHere, registrations])
   // Home waits until a check reads every old version, unless the deployment counts none. With the
   // wallet locked nothing can be read in this page.
+  // eslint-disable-next-line local/effect-hook -- ZKM-1625
   useEffect(() => {
     if (!obsidionAccount) return
     if (probed && scanned && !metadataFlow)
-      markOldHoldingsRead(obsidionAccount.getAddress().toString())
+      markOldHoldingsRead(config, obsidionAccount.getAddress().toString())
     releaseOldHoldingsWait(probed && !scanned)
-  }, [obsidionAccount, probed, scanned, metadataFlow])
+  }, [config, obsidionAccount, probed, scanned, metadataFlow])
+  // eslint-disable-next-line local/effect-hook -- ZKM-1625
   useEffect(() => () => releaseOldHoldingsWait(false), [])
   // No check has read every old version yet, and the last one left one unread.
   const holdingsMissing =
-    holdingsUnread && !!obsidionAccount && !oldHoldingsRead(obsidionAccount.getAddress().toString())
+    holdingsUnread &&
+    !!obsidionAccount &&
+    !oldHoldingsRead(config, obsidionAccount.getAddress().toString())
   const source =
     resumeSource ??
     (registrationNeeded ? current : registrationNeeded === false ? fundsOnly[0]?.tuple : undefined)
   const request = useMigrationDialogRequest()
   const seenRequest = useRef(request)
+  // eslint-disable-next-line local/effect-hook -- ZKM-1625
   useEffect(() => {
     if (request === seenRequest.current) return
     seenRequest.current = request
@@ -1213,6 +1252,7 @@ export function MigrationDetectionMount() {
   const stuckKey = dataKey(stuck)
   // Only a complete scan judges the row; an incomplete one leaves it as it is.
   const scanComplete = scanned && !scanFailed && !checkingMovable && !chainTimeUnknown
+  // eslint-disable-next-line local/effect-hook -- ZKM-1625
   useEffect(() => {
     if (!scanComplete) return
     if (stuck.length === 0)
@@ -1228,7 +1268,7 @@ export function MigrationDetectionMount() {
       }),
     )
     // `stuck` is read whenever its data changes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- ZKM-1625
   }, [scanComplete, stuckKey, notifications])
 
   // The run the dialog shows goes on without the user, from before its saved record is read.
@@ -1295,6 +1335,7 @@ export function MigrationDetectionMount() {
   const registration = metadataFlow && (!!source || finishing)
   // A run's operation keeps the tab, as the bell says.
   const keepOpen = metadataFlow && runActive && losesTransaction
+  // eslint-disable-next-line local/effect-hook -- ZKM-1625
   useEffect(
     () =>
       setUpgradeStatus({
@@ -1305,17 +1346,24 @@ export function MigrationDetectionMount() {
       }),
     [state, runPhase, registration, keepOpen],
   )
+  // eslint-disable-next-line local/effect-hook -- ZKM-1625
   useEffect(() => () => setUpgradeStatus({ state: "checking", registration: false }), [])
   // What an answered check found, so the next boot shows 1 Choose before its probe answers.
+  // eslint-disable-next-line local/effect-hook -- ZKM-1625
   useEffect(() => {
     if (!obsidionAccount || !metadataFlow) return
     if (state === "offered" || state === "finishing" || state === "none")
-      markUpgradeMovesFunds(obsidionAccount.getAddress().toString(), state === "offered" && funded)
-  }, [obsidionAccount, metadataFlow, state, funded])
+      markUpgradeMovesFunds(
+        config,
+        obsidionAccount.getAddress().toString(),
+        state === "offered" && funded,
+      )
+  }, [config, obsidionAccount, metadataFlow, state, funded])
   // A run the user started here ends: a stop asks for the user, an upgraded account shows 5 Done, and
   // a declined prompt 2 Sign again. A run still arriving stays the user's until one of these.
   const runStopped =
     metadataRecord?.phase === "needsAttention" || metadataRecord?.phase === "needsApproval"
+  // eslint-disable-next-line local/effect-hook -- ZKM-1625
   useEffect(() => {
     if (!flowRun || runActive) return
     setLeaving(false)
@@ -1338,6 +1386,7 @@ export function MigrationDetectionMount() {
     }
   }, [flowRun, runActive, state, runStopped, metadataRecord?.phase])
   // Any finished upgrade, a followed run's too.
+  // eslint-disable-next-line local/effect-hook -- ZKM-1625
   useEffect(() => {
     if (state === "none" || metadataRecord?.phase === "done")
       notifyIfArmed(upgradeDoneCopy.title, upgradingCopy.doneNotice)
@@ -1350,15 +1399,17 @@ export function MigrationDetectionMount() {
   useBackGuard(preparingShown, () => setLeaving(true))
   // Fully upgraded here: Home shows the live balance again.
   const [releaseRetries, setReleaseRetries] = useState(0)
+  // eslint-disable-next-line local/effect-hook -- ZKM-1625
   useEffect(() => {
     if (state !== "none" || !obsidionAccount) return
     let timer: ReturnType<typeof setTimeout> | undefined
-    releaseUpgradeLock(obsidionAccount.getAddress().toString()).catch((error) => {
+    releaseUpgradeLock(config, obsidionAccount.getAddress().toString()).catch((error) => {
       console.warn("[migration] upgrade lock release failed:", error)
+      // eslint-disable-next-line local/timer-in-view -- ZKM-1625
       timer = setTimeout(() => setReleaseRetries((n) => n + 1), LOCK_RETRY_MS)
     })
     return () => clearTimeout(timer)
-  }, [state, obsidionAccount, releaseRetries])
+  }, [config, state, obsidionAccount, releaseRetries])
   // A held action goes ahead once the gate would let a press through now.
   const lock = useUpgradeLock(obsidionAccount?.getAddress().toString())
   const cleared = !upgradeVerdict({
@@ -1367,6 +1418,7 @@ export function MigrationDetectionMount() {
     locked: lock.state === "held",
     lockChecked: lock.checked,
   })
+  // eslint-disable-next-line local/effect-hook -- ZKM-1625
   useEffect(() => {
     if (!requested || !cleared || !actionAsked?.then) return
     const run = actionAsked.then
@@ -1384,6 +1436,7 @@ export function MigrationDetectionMount() {
     (!probed || (metadataFlow && residuals.some((r) => movableState(r) !== false)))
   const repointAsked = repointed && !repointDismissed && !losesTransaction
   const onScreen = expected && !withdrawing && !repointAsked
+  // eslint-disable-next-line local/effect-hook -- ZKM-1625
   useEffect(() => {
     if (account && chooseFirst && !(onScreen && !actionAsked))
       setBootChoice({ account, choose: false })
@@ -1391,6 +1444,7 @@ export function MigrationDetectionMount() {
   // It shows before Home, which holds every way to ask for the dialog, so no request can reach it.
   // One that does is reported, and still answered.
   const askedOverChoose = onScreen && requested
+  // eslint-disable-next-line local/effect-hook -- ZKM-1625
   useEffect(() => {
     if (!askedOverChoose) return
     console.warn("[migration] a dialog request reached boot's 1 Choose")
@@ -1403,6 +1457,7 @@ export function MigrationDetectionMount() {
     (probed && !scanned) ||
     SENT.has(metadataRecord?.phase ?? "preparing")
   const needsYou = waiting ?? (state === "failed" ? "failed" : undefined)
+  // eslint-disable-next-line local/effect-hook -- ZKM-1625
   useEffect(() => {
     if (!needsYou) {
       const retract = async () => {
@@ -1450,13 +1505,13 @@ export function MigrationDetectionMount() {
   const queueJob = async (tuple: OxideEnvTuple, signal: AbortSignal): Promise<QueueJob> => {
     const destination = destinationOf(tuple)!
     const registration = tuple.portal.toLowerCase() === current!.portal.toLowerCase()
-    const session = await createWebMetadataMigrationQuietly(
+    const migration = await createWebMetadataMigrationQuietly(
       {
         wallet: obsidionWallet!,
         account: obsidionAccount!,
         deposits: sipaDeposits,
         auth,
-        own: { device, namespace },
+        own: session,
         handle: identity.get().value?.handle,
         contractService: contractService!,
         toTokenService: await destinationTokenService(
@@ -1472,14 +1527,14 @@ export function MigrationDetectionMount() {
       },
       signal,
     )
-    await session.controller.load()
+    await migration.controller.load()
     const residual = residuals.find(
       (r) => r.tuple.portal.toLowerCase() === tuple.portal.toLowerCase(),
     )
     const quote = residual && quoteOf(residual)
     return {
       tuple,
-      controller: session.controller,
+      controller: migration.controller,
       summary: registration
         ? registers && registrationApprovals !== undefined
           ? { fees: "0", approvals: registrationApprovals }
@@ -1558,7 +1613,7 @@ export function MigrationDetectionMount() {
     left.current = false
     try {
       const address = obsidionAccount.getAddress().toString()
-      await acquireUpgradeLock(address, heldMain, heldSavings)
+      await acquireUpgradeLock(config, address, heldMain, heldSavings)
       const lead = registers ? undefined : await registrationLead(run.signal)
       if (lead) setUpdatesAccount(true)
       if (upgradeSources.length > 1 || registers || lead) {
@@ -1574,6 +1629,7 @@ export function MigrationDetectionMount() {
           // Only the prepare pass is a user flow; each send is its own background operation.
           let approved = false
           const sent = await runGatedMigrationQueue(
+            session,
             {
               operationId: `migration_${crypto.randomUUID()}`,
               flow: "migration",
@@ -1627,13 +1683,13 @@ export function MigrationDetectionMount() {
         return
       }
       const destination = destinationOf(source)!
-      const session = await createWebMetadataMigrationQuietly(
+      const migration = await createWebMetadataMigrationQuietly(
         {
           wallet: obsidionWallet,
           account: obsidionAccount,
           deposits: sipaDeposits,
           auth,
-          own: { device, namespace },
+          own: session,
           handle: identity.get().value?.handle,
           contractService,
           toTokenService: await destinationTokenService(
@@ -1650,11 +1706,11 @@ export function MigrationDetectionMount() {
         },
         run.signal,
       )
-      const unsubscribe = session.controller.subscribe(() => {
-        if (!run.signal.aborted) setMetadataRecord(session.controller.getSnapshot())
+      const unsubscribe = migration.controller.subscribe(() => {
+        if (!run.signal.aborted) setMetadataRecord(migration.controller.getSnapshot())
       })
       try {
-        await session.controller.load()
+        await migration.controller.load()
         setResumeSource(source)
         const progress = {
           signal: run.signal,
@@ -1663,6 +1719,7 @@ export function MigrationDetectionMount() {
             beforeApproval(approved, total, run.signal),
         }
         const sent = await runListedOperation(
+          session,
           {
             operationId: `migration_${crypto.randomUUID()}`,
             flow: "migration",
@@ -1678,8 +1735,8 @@ export function MigrationDetectionMount() {
             }
             // The user's own pass asks for the approvals and builds the proofs. It sends
             // nothing, and it ends before the send pass starts.
-            const prepared = await runUserFlow(() =>
-              runMetadataMigration(session.controller, {
+            const prepared = await session.page.prover.runUserFlow(() =>
+              runMetadataMigration(migration.controller, {
                 ...progress,
                 prepareOnly: true,
                 retry: true,
@@ -1691,13 +1748,13 @@ export function MigrationDetectionMount() {
             if (!prepared) return prepared
             // The send pass can wait for the subsidy or for the registration run's
             // sponsorship. Thus it is not a user flow, and each send is a background step.
-            const record = await runMetadataMigration(session.controller, {
+            const record = await runMetadataMigration(migration.controller, {
               ...progress,
               beforeApproval: undefined,
               retry: true,
               prompts: false,
               untilArriving: true,
-              exclusive: backgroundSend,
+              exclusive: backgroundSend(session),
               onPrepared: () => setPrepared(true),
             })
             stopped(record)
@@ -1707,10 +1764,10 @@ export function MigrationDetectionMount() {
         // The rest follows from chain evidence, with no prompt. Only a late batch is sent again.
         const record =
           sent?.phase === "arriving"
-            ? await runMetadataMigration(session.controller, {
+            ? await runMetadataMigration(migration.controller, {
                 signal: run.signal,
                 observeOnly: true,
-                exclusive: backgroundSend,
+                exclusive: backgroundSend(session),
               })
             : sent
         if (run.signal.aborted) return

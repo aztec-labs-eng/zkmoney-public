@@ -12,6 +12,8 @@
  * the new tab could see the old one write.
  */
 
+import { memoryStore, type ReadonlyStore } from "@obsidion/front-core"
+
 export const ACTIVE_TAB_LOCK = "webwallet.active-tab"
 
 /** A browser realm without Web Locks: the passkey policy admits none, so the wallet refuses it. */
@@ -65,7 +67,7 @@ export type ActiveTabState<T> =
    * has held one too long. `ready` once this tab has opened them and is marked active.
    */
   | { kind: "opening"; takeover: boolean; stalled: boolean }
-  | { kind: "ready"; opened: T; activeSince: number }
+  | { kind: "ready"; opened: T }
   /** Another tab took over from `opening` or `ready`: this page closes its databases and reloads. */
   | { kind: "displaced" }
   /** Missing Web Locks or any unexpected error. The page stays inactive until it reloads. */
@@ -87,18 +89,12 @@ interface Attempt<T> {
 }
 
 export class ActiveTabLifecycle<T extends OpenedStorage> {
-  private state: ActiveTabState<T> = { kind: "starting" }
-  private readonly listeners = new Set<() => void>()
+  private readonly current = memoryStore<ActiveTabState<T>>({ kind: "starting" })
+  /** Where this tab stands; reading it takes no lock. */
+  readonly state: ReadonlyStore<ActiveTabState<T>> = this.current.readonly
   private started = false
 
   constructor(private readonly deps: ActiveTabDeps<T>) {}
-
-  getState = (): ActiveTabState<T> => this.state
-
-  subscribe = (listener: () => void): (() => void) => {
-    this.listeners.add(listener)
-    return () => this.listeners.delete(listener)
-  }
 
   /** Takes the active-tab lock if no other tab holds it. Later calls do nothing. */
   start = (): void => {
@@ -109,7 +105,7 @@ export class ActiveTabLifecycle<T extends OpenedStorage> {
 
   /** Takes the active-tab lock from whichever tab holds it. Only an `inactive` tab offers this. */
   takeOver = (): void => {
-    const { state } = this
+    const state = this.current.get()
     if (state.kind !== "inactive" || state.claiming) {
       throw new Error(
         `Cannot take over while ${state.kind === "inactive" ? "claiming" : state.kind}`,
@@ -120,8 +116,7 @@ export class ActiveTabLifecycle<T extends OpenedStorage> {
   }
 
   private set(state: ActiveTabState<T>): void {
-    this.state = state
-    for (const listener of [...this.listeners]) listener()
+    this.current.set(state)
   }
 
   private claim({ steal }: { steal: boolean }): void {
@@ -171,7 +166,7 @@ export class ActiveTabLifecycle<T extends OpenedStorage> {
       await this.deps.prepare(opened)
       if (!attempt.live) return
       this.clearTimers(attempt)
-      this.set({ kind: "ready", opened, activeSince: Date.now() })
+      this.set({ kind: "ready", opened })
     } catch (error) {
       this.fail(attempt, error)
     }
@@ -204,8 +199,9 @@ export class ActiveTabLifecycle<T extends OpenedStorage> {
   /** Guidance to close the other tab, only while another tab is what keeps this one waiting. */
   private updateStalled(attempt: Attempt<T>): void {
     const stalled = attempt.overdue && attempt.blocked
-    if (attempt.live && this.state.kind === "opening" && this.state.stalled !== stalled) {
-      this.set({ ...this.state, stalled })
+    const state = this.current.get()
+    if (attempt.live && state.kind === "opening" && state.stalled !== stalled) {
+      this.set({ ...state, stalled })
     }
   }
 

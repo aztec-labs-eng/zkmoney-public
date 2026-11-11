@@ -230,17 +230,44 @@ describe('TransferIngester', () => {
     expect(reorgs).toEqual([160n - 64n + 1n]);
   });
 
+  it('ingests every transfer and reaches the tip when the provider caps the window', async () => {
+    const { onEvents, onReorg, batches } = recordingSink();
+    const cursorStore = inMemoryCursorStore({ block: 0n, hash: defaultHash(0n) });
+    const client = fakeClient({
+      logsByToken: {
+        [TOKEN_A.toString()]: [transferLog(RECIPIENT.toString(), 2n), transferLog(RECIPIENT.toString(), 9n)],
+      },
+      onScan: ({ fromBlock, toBlock }) => {
+        if (toBlock - fromBlock + 1n > 2n) {
+          throw new Error('Too many logs requested. Max logs per response is 20000.');
+        }
+      },
+    });
+    const ingester = new TransferIngester({
+      publicClient: client,
+      cursorStore,
+      tokens: [TOKEN_A],
+      window: 5n,
+      onEvents,
+      onReorg,
+    });
+
+    await ingester.ingestUpTo(10n, defaultHash(10n));
+
+    expect(batches.flat().map(e => e.block)).toEqual([2n, 9n]);
+    await expect(cursorStore.get()).resolves.toEqual({ block: 10n, hash: defaultHash(10n) });
+  });
+
   it('leaves the cursor untouched on a mid-scan failure, so a retry rescans the whole range from the previous tip', async () => {
     const cursorStore = inMemoryCursorStore({ block: 0n, hash: defaultHash(0n) });
     const scans: Array<{ fromBlock: bigint; toBlock: bigint }> = [];
-    let failNextScan = true;
+    let failing = true;
     const client = {
       getBlock: ({ blockNumber }: { blockNumber: bigint }) =>
         Promise.resolve({ number: blockNumber, hash: defaultHash(blockNumber) }),
       getLogs: ({ fromBlock, toBlock }: { fromBlock: bigint; toBlock: bigint }) => {
         scans.push({ fromBlock, toBlock });
-        if (fromBlock === 6n && failNextScan) {
-          failNextScan = false;
+        if (fromBlock === 6n && failing) {
           return Promise.reject(new Error('provider error'));
         }
         return Promise.resolve([]);
@@ -259,6 +286,7 @@ describe('TransferIngester', () => {
     await expect(ingester.ingestUpTo(10n, defaultHash(10n))).rejects.toThrow('provider error');
     await expect(cursorStore.get()).resolves.toEqual({ block: 0n, hash: defaultHash(0n) });
 
+    failing = false;
     scans.length = 0;
     await ingester.ingestUpTo(10n, defaultHash(10n));
 

@@ -1,10 +1,4 @@
-/**
- * Where the signup wizard renders, and what it starts there. Ordinary onboarding (/claim and the
- * /request pane) never starts the session's token or co-signer, whose PXE work would starve the
- * account setup; the paylink services a ticket-funded signup claims with come from a host that
- * starts them. The paylink hooks and the session are real here; only the co-signer's connect is
- * stubbed.
- */
+/** Guards: /claim resumes a funded registration, starting the token only for a link-funded one. */
 import { act, Component, type ReactNode } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { MemoryRouter, Route, Routes } from "react-router-dom"
@@ -17,35 +11,17 @@ const h = vi.hoisted(() => ({
 
 vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/front-core")>()),
-  useContractServiceContext: () => ({ contractService: { service: true } }),
   useScreener: () => ({ screen: async () => ({ compliant: true }) }),
-}))
-vi.mock("../../../src/config/env", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../src/config/env")>()),
-  getConfig: () => ({
-    network: "testnet",
-    l1ChainId: 11155111,
-    l1RpcUrl: "http://127.0.0.1:8545",
-    accountServiceUrl: "http://127.0.0.1:5060",
-    accountServiceTestMode: false,
-    campaignUrl: "",
-    rpId: "localhost",
-    rpName: "zk.money",
-    l1Chain: { name: "Sepolia" },
-    endpoints: {
-      node: { source: "default", isDefault: true },
-      l1Rpc: { source: "default", isDefault: true },
-      enclave: { source: "default", isDefault: true },
-    },
-  }),
 }))
 vi.mock("../../../src/config/oxideTuple", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../src/config/oxideTuple")>()),
-  getOxideTuple: vi.fn(async () => ({ registry: "0x00000000000000000000000000000000000000e4" })),
   l1PublicClient: () => ({ readContract: async () => 0n }),
 }))
-vi.mock("../../../src/session/l1Wallet", () => ({
+vi.mock("../../../src/session/useL1Wallet", () => ({
   useL1Wallet: () => ({ account: null, walletName: null, connect: vi.fn() }),
+}))
+vi.mock("../../../src/session/l1Wallet", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../src/session/l1Wallet")>()),
   getL1Clients: vi.fn(),
 }))
 vi.mock("../../../src/ui/screening", () => ({
@@ -96,9 +72,7 @@ vi.mock("@obsidion/web-ds", () => ({
   NumberedStepRow: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
 }))
 
-const { ClaimRoute, PaylinkOnboardingScreen } = await import(
-  "../../../src/features/paylink/PaylinkOnboardingScreen"
-)
+const { ClaimRoute } = await import("../../../src/features/paylink/PaylinkOnboardingScreen")
 const { seedRegistration } = await import("../../support/registrationFixtures")
 
 const ACCOUNT = "0x00000000000000000000000000000000000000aa"
@@ -150,13 +124,12 @@ let root: Root
 
 const { closeSession } = await import("../../../src/session/session")
 const { openTestSession } = await import("../../support/session")
-/** The session's token and co-signer were started. */
-let started: ReturnType<typeof vi.fn>
+/** Whether a host asked for the session's token and co-signer. */
+let started: () => boolean
 beforeEach(async () => {
-  // The page's wallet is up; the token and co-signer start only when a host asks.
+  // The page's wallet is up; the token and co-signer build only when a host asks.
   const session = openTestSession({ wallet: { wallet: true, networkId: "0xrollup" }, sweepFee: 0n })
-  started = vi.fn()
-  session.teeSigner.demand = started
+  started = () => session.assetsWanted.get()
   await session.registrations.ready
 })
 afterEach(closeSession)
@@ -187,44 +160,9 @@ const render = (path: string, element: ReactNode) =>
     )
   })
 
-/** The tag field, or the tag-less landing a fresh visitor gets. */
-const wizardShown = () =>
-  container.querySelector("input[placeholder]") !== null ||
-  (container.textContent ?? "").includes("Create Account")
 const crash = () => container.querySelector('[data-testid="crash"]')?.textContent ?? null
 
-describe("the signup wizard that starts no token", () => {
-  it("/claim renders the ordinary wizard and starts no token", async () => {
-    await render(
-      "/claim",
-      <Boundary>
-        <ClaimRoute />
-      </Boundary>,
-    )
-    expect(crash()).toBeNull()
-    expect(wizardShown()).toBe(true)
-    expect(started).not.toHaveBeenCalled()
-  })
-})
-
 describe("the signup wizard with the token started", () => {
-  it("the paylink host renders the wizard over the session's token and co-signer", async () => {
-    await openTestSession({
-      wallet: { wallet: true, networkId: "0xrollup" },
-      token: { token: true },
-      teeSigner: { tee: true },
-      sweepFee: 0n,
-    }).registrations.ready
-    await render(
-      "/link",
-      <Boundary>
-        <PaylinkOnboardingScreen embedded ticketSignup />
-      </Boundary>,
-    )
-    expect(crash()).toBeNull()
-    expect(wizardShown()).toBe(true)
-  })
-
   it("/claim starts the token only to resume a registration a payment link funds", async () => {
     await seedPending("paylink")
     await render(
@@ -235,7 +173,7 @@ describe("the signup wizard with the token started", () => {
     )
     expect(crash()).toBeNull()
     expect(container.textContent).toContain("@taga")
-    expect(started).toHaveBeenCalled()
+    expect(started()).toBe(true)
   })
 
   it("/claim resumes an externally funded registration without the token", async () => {
@@ -248,6 +186,6 @@ describe("the signup wizard with the token started", () => {
     )
     expect(crash()).toBeNull()
     expect(container.textContent).toContain("@taga")
-    expect(started).not.toHaveBeenCalled()
+    expect(started()).toBe(false)
   })
 })

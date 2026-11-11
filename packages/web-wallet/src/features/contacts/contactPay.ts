@@ -7,33 +7,24 @@
  */
 import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import { Fr } from "@aztec-labs/aztec.js/fields"
+import { nextOperationId } from "@obsidion/sdk"
 import {
-  type ContractService,
-  nextOperationId,
-  type ObsidionAccount,
-  type ObsidionWallet,
-  type TokenService,
-} from "@obsidion/sdk"
-import {
-  bestEffort,
-  ContactStorage,
   RequestBroadcaster,
-  toFailure,
   trackSubmission,
   TxInFlightError,
   resolveAssetConstants,
   WalletError,
+  type Contacts,
 } from "@obsidion/front-core"
 import { parseUnits } from "viem"
-import { getConfig } from "../../config/env"
-import { isFlowCancelled, runOperation } from "../operations/operations"
-import { session } from "../../session/session"
+import { runOperation, type OperationHandle } from "../operations/operations"
+import { accountKitOf, type AccountKit, type Session } from "../../session/session"
+import { accountContacts } from "../../session/contacts"
 import {
   getXmtpSender,
   getXmtpUiState,
   xmtpUnavailableCode,
 } from "../../platform/xmtp/xmtpLifecycle"
-import { maybeRefuelFpc } from "../fees/fpcRefuel"
 import { claimSponsorContext, noteSubscribed } from "../registration/claimSponsorship"
 import { RAIL_REGISTERED } from "../registration/rails"
 import { recipientNotUpgradedCopy } from "../migration/upgradeCopy"
@@ -41,12 +32,7 @@ import { resolveTagForCommit, resolveTagViaRegistry } from "./registryResolution
 
 export type PayStage = "resolving" | "proving" | "submitting"
 
-export interface ContactPayDeps {
-  wallet: ObsidionWallet
-  account: ObsidionAccount
-  tokenService: TokenService
-  contractService: ContractService
-}
+type ContactPayKit = AccountKit & { session: Session; contacts: Contacts }
 
 /** The recipient's tag is still on a retired rollup, so funds sent now would not reach them. */
 export class RecipientNotUpgradedError extends Error {
@@ -60,16 +46,19 @@ export class RecipientNotUpgradedError extends Error {
  * Whether `tag` has upgraded, read from the cached manifest before the user enters an amount. A
  * failed read answers true: the commit-time resolution is the guard.
  */
-export async function recipientUpgraded(tag: string): Promise<boolean> {
+export async function recipientUpgraded(
+  session: Pick<Session, "page">,
+  tag: string,
+): Promise<boolean> {
   try {
-    return (await resolveTagViaRegistry(tag)).status !== "staleRollup"
+    return (await resolveTagViaRegistry(session.page, tag)).status !== "staleRollup"
   } catch {
     return true
   }
 }
 
-async function resolveContact(tag: string) {
-  const resolved = await resolveTagForCommit(tag)
+async function resolveContact(session: Pick<Session, "page">, tag: string) {
+  const resolved = await resolveTagForCommit(session.page, tag)
   if (resolved.status === "staleRollup") throw new RecipientNotUpgradedError(tag)
   if (resolved.status !== "resolved")
     throw new WalletError("contact.unregistered", `@${tag}`, { data: { tag } })
@@ -81,47 +70,49 @@ async function resolveContact(tag: string) {
  * recipient discovers it from the chain — the send carries the sender tag / memo / request id in
  * `Transfer.meta`.
  *
- * The transaction row is written before the proof rather than after the mine, and advanced in
- * place, because the screen can close mid-flight and the contact chat is where the user lands. Its
- * three states are the tx's own: no hash while proving, the real hash, saved before the node takes
- * the tx, then `success`. The chat draws them as a spinner, one tick, two ticks.
+ * The operation is the send's record: it takes what the row shows before the proof, because the
+ * screen can close mid-flight and the contact chat is where the user lands. Its three states are
+ * the tx's own: no hash while proving, the real hash, saved before the node takes the tx, then
+ * settled. The chat draws them as a spinner, one tick, two ticks.
  */
 export function sendToContact(
-  deps: ContactPayDeps,
+  session: Session,
   args: {
     tag: string
     senderTag: string
     amountDisplay: string
-    expectedL2Address?: string
+    /** The requester's L2 address, whole from a link or its first bytes from a Receive code. */
+    requesterPin?: string
     note?: string
     /** Payment request this send fulfills; rides the on-chain `Transfer.meta`. */
     requestId?: string
     /**
-     * Save the resolved tag as a contact. It is saved as `autoAdded` before the row is written, so
+     * Save the resolved tag as a contact. It is saved as `autoAdded` before the send's row shows, so
      * the send shows its name, and becomes a contact for requests only once the send lands.
      */
     saveContact?: boolean
   },
   onStage: (stage: PayStage) => void,
 ): Promise<{ txHash: string }> {
-  // Correlates the TEE and prove benchmark legs → one tx_timing analytics event, and keys the row
-  // this send advances (there is no txHash to key it by until the wallet reaches Mining).
+  // Correlates the TEE and prove benchmark legs → one tx_timing analytics event, and keys the
+  // operation that is this send's record (there is no txHash until the wallet reaches Mining).
   const operationId = nextOperationId("send")
   return runOperation(
+    session,
     { operationId, flow: "send", summary: `$${args.amountDisplay} to @${args.tag}` },
-    () => sendToContactFlow(operationId, deps, args, onStage),
+    (op) => sendToContactFlow(op, session, args, onStage),
     (r) => r.txHash,
   )
 }
 
 async function sendToContactFlow(
-  operationId: string,
-  deps: ContactPayDeps,
+  op: OperationHandle,
+  session: Session,
   args: {
     tag: string
     senderTag: string
     amountDisplay: string
-    expectedL2Address?: string
+    requesterPin?: string
     note?: string
     /** Payment request this send fulfills; rides the on-chain `Transfer.meta`. */
     requestId?: string
@@ -130,12 +121,12 @@ async function sendToContactFlow(
   onStage: (stage: PayStage) => void,
 ): Promise<{ txHash: string }> {
   onStage("resolving")
-  const resolved = await resolveContact(args.tag)
-  // requesterAddress pin from a v3 request link: the tag must still resolve to
-  // the address the link was minted for, or the funds go to a re-registered tag.
+  const deps = { ...(await accountKitOf(session)), session, contacts: accountContacts(session) }
+  const resolved = await resolveContact(session, args.tag)
+  // The tag must still name the account the request was made for, or the funds go to its new one.
   if (
-    args.expectedL2Address &&
-    resolved.l2Address.toLowerCase() !== args.expectedL2Address.toLowerCase()
+    args.requesterPin &&
+    !resolved.l2Address.toLowerCase().startsWith(args.requesterPin.toLowerCase())
   ) {
     throw new WalletError("contact.requestMismatch", `@${args.tag}`, { data: { tag: args.tag } })
   }
@@ -143,21 +134,20 @@ async function sendToContactFlow(
   let added = false
   if (args.saveContact) {
     const unapproved = { ...contact, autoAdded: true }
-    added =
-      (await ContactStorage.get().addOrMergeContact(unapproved).catch(console.warn)) === unapproved
+    added = (await deps.contacts.addOrMergeContact(unapproved).catch(console.warn)) === unapproved
   }
-  return sendResolved(operationId, deps, args, resolved.l2Address, onStage).catch(async (err) => {
+  return sendResolved(op, deps, args, resolved.l2Address, onStage).catch(async (err) => {
     // A send that may still land keeps the row; one that cannot takes back the row it added.
     if (added && !(err instanceof TxInFlightError)) {
-      await ContactStorage.get().removeEntry({ address: contact.address }).catch(console.warn)
+      await deps.contacts.removeEntry({ address: contact.address }).catch(console.warn)
     }
     throw err
   })
 }
 
 async function sendResolved(
-  operationId: string,
-  deps: ContactPayDeps,
+  op: OperationHandle,
+  deps: ContactPayKit,
   args: Parameters<typeof sendToContactFlow>[2],
   l2Address: string,
   onStage: (stage: PayStage) => void,
@@ -170,33 +160,30 @@ async function sendResolved(
   ])
 
   onStage("proving")
-  const { activity } = session()
-  const walletAsset = resolveAssetConstants(getConfig().network).DAI
-  await activity.insertPending({
-    id: operationId,
-    operationId,
-    networkId: deps.wallet.networkId,
-    action: "send",
-    token: {
-      address: token.address,
-      name: token.name,
-      symbol: token.symbol,
-      decimals: token.decimals,
-      logo: walletAsset.logo,
-      price: walletAsset.price,
-      amount: Number(args.amountDisplay),
+  const { operationId } = op
+  const walletAsset = resolveAssetConstants(deps.session.network).DAI
+  await op.transfer({
+    kind: "send",
+    payload: {
+      networkId: deps.wallet.networkId.toLowerCase(),
+      token: {
+        address: token.address,
+        name: token.name,
+        symbol: token.symbol,
+        decimals: token.decimals,
+        logo: walletAsset.logo,
+        price: walletAsset.price,
+        amount: Number(args.amountDisplay),
+      },
+      amountAtomic: parseUnits(args.amountDisplay, token.decimals).toString(),
+      to: l2Address,
+      toTag: args.tag,
+      ...(args.note ? { memo: args.note } : {}),
+      // Lets the feed hide the request this send pays while it is pending.
+      ...(args.requestId ? { requestId: args.requestId } : {}),
     },
-    amountAtomic: parseUnits(args.amountDisplay, token.decimals),
-    timestamp: Date.now(),
-    status: "pending",
-    txHash: "",
-    to: l2Address,
-    toTag: args.tag,
-    ...(args.note ? { memo: args.note } : {}),
-    // Lets the feed hide the request this send pays while the row is pending.
-    ...(args.requestId ? { requestId: args.requestId } : {}),
   })
-  const submission = trackSubmission(operationId)
+  const submission = trackSubmission(deps.session.page.prover.progress, operationId)
 
   // Resolves on the L2 receipt: the sponsored rail owns simulate/attest/prove/submit as one step,
   // so there is no pre-mine handle to broadcast against.
@@ -214,52 +201,41 @@ async function sendResolved(
         senderTag: args.senderTag,
         recipientTag: args.tag,
         memo: args.note,
-        // A missing row saved nothing, so the send must not go out.
-        onTxHash: async (txHash) => {
-          if (!(await activity.setHash(operationId, txHash)))
-            throw new WalletError("invariant", "send row missing")
-        },
+        // The operation is the send's record: one that did not save the hash sends nothing.
+        onTxHash: op.sent,
       },
     )
   } catch (err) {
     // Failed only if the send never reached the node or a receipt says so; past the submit boundary
-    // the row stays at MINING for ReorgMonitor to settle from the chain.
+    // the operation stays sent for the chain to settle.
     const inFlight = await submission.survived(deps.wallet.node)
     if (inFlight) throw new TxInFlightError(inFlight, err)
-    // A closed passkey prompt sent nothing: drop the row rather than leave a failed send behind.
-    await bestEffort<unknown>(
-      "unknown",
-      isFlowCancelled(err)
-        ? activity.remove(operationId)
-        : activity.fail(operationId, toFailure(err, "tx.failed")),
-    )
     throw err
   } finally {
     submission.stop()
   }
-  if (sponsor.subscribe) noteSubscribed(deps.account, sponsor.fpcAddress, sponsor.railId)
-  maybeRefuelFpc({ ...deps, fpc: { address: sponsor.fpcAddress, artifact: sponsor.fpcArtifact } })
+  if (sponsor.subscribe) noteSubscribed(deps, sponsor.fpcAddress, sponsor.railId)
+  deps.session.oweFpcRefuel({ address: sponsor.fpcAddress, artifact: sponsor.fpcArtifact })
   const txHash = result.txHash
   onStage("submitting")
-
-  await bestEffort("unknown", activity.settle(operationId, txHash))
   // Paying someone makes them a contact whose requests show as a contact's.
-  if (args.saveContact) void ContactStorage.get().addEntry(contact).catch(console.warn)
-  else void ContactStorage.get().approveAutoAdded(l2Address).catch(console.warn)
+  if (args.saveContact) void deps.contacts.addEntry(contact).catch(console.warn)
+  else void deps.contacts.approveAutoAdded(l2Address).catch(console.warn)
   return { txHash }
 }
 
 /** Announce a payment request over XMTP and persist the outgoing row on delivery. */
 export async function requestFromContact(
-  deps: Pick<ContactPayDeps, "tokenService" | "wallet">,
+  session: Session,
   args: { tag: string; requesterTag: string; amountDisplay: string; note?: string },
 ): Promise<void> {
   const xmtp = getXmtpSender()
   if (!xmtp) {
     throw new WalletError(xmtpUnavailableCode(getXmtpUiState()))
   }
-  const resolved = await resolveContact(args.tag)
-  const token = await deps.tokenService.fetchTokenInformation()
+  const resolved = await resolveContact(session, args.tag)
+  const { tokenService, wallet } = await accountKitOf(session)
+  const token = await tokenService.fetchTokenInformation()
   // A field: the fulfilling send carries it in the on-chain `Transfer.meta`.
   const requestId = Fr.random().toString()
   const amountAtomic = parseUnits(args.amountDisplay, token.decimals).toString()
@@ -271,7 +247,7 @@ export async function requestFromContact(
     amountAtomic,
     token: { address: token.address, symbol: token.symbol, decimals: token.decimals },
     // The wire value a receiver compares: another network's packet is dropped.
-    networkId: deps.wallet.networkId,
+    networkId: wallet.networkId,
     note: args.note,
   })
   if (status.status === "skipped") throw new WalletError("contact.cannotReceive", status.reason)
@@ -279,7 +255,7 @@ export async function requestFromContact(
     throw new WalletError("request.undelivered", status.reason, { data: { reason: status.reason } })
   }
 
-  await session().requests.add({
+  await session.requests.add({
     id: requestId,
     contactTag: args.tag,
     amount: Number(args.amountDisplay),
@@ -292,20 +268,20 @@ export async function requestFromContact(
     tokenAddress: token.address,
     amountAtomic,
     tokenDecimals: token.decimals,
-    networkId: deps.wallet.networkId,
+    networkId: wallet.networkId,
   })
 }
 
 export type ContactPayRequest = {
   id: string
   source?: "link"
-  requesterAddress?: string
+  requesterPin?: string
 }
 
 type RunContactPayArgs =
   | {
       mode: "send"
-      deps: ContactPayDeps
+      session: Session
       tag: string
       senderTag: string
       amountDisplay: string
@@ -315,7 +291,7 @@ type RunContactPayArgs =
     }
   | {
       mode: "request"
-      deps: Pick<ContactPayDeps, "tokenService" | "wallet">
+      session: Session
       tag: string
       senderTag: string
       amountDisplay: string
@@ -329,12 +305,12 @@ export async function runContactPay(
 ): Promise<{ txHash?: string }> {
   if (args.mode === "send") {
     const { txHash } = await sendToContact(
-      args.deps,
+      args.session,
       {
         tag: args.tag,
         senderTag: args.senderTag,
         amountDisplay: args.amountDisplay,
-        expectedL2Address: args.request?.requesterAddress,
+        requesterPin: args.request?.requesterPin,
         note: args.note,
         requestId: args.request?.id,
         saveContact: !!args.request && args.saveUnsavedRequester,
@@ -344,7 +320,7 @@ export async function runContactPay(
     return { txHash }
   }
   onStage("submitting")
-  await requestFromContact(args.deps, {
+  await requestFromContact(args.session, {
     tag: args.tag,
     requesterTag: args.senderTag,
     amountDisplay: args.amountDisplay,

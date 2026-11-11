@@ -2,7 +2,7 @@
  * Reset the `instance` field on a singleton class between tests.
  *
  * Usage:
- *   resetSingleton(BalanceStorage as unknown as { instance: BalanceStorage | null })
+ *   resetSingleton(Store as unknown as { instance: Store | null })
  *
  * The `as unknown as { instance: ... }` cast at the call site is deliberate —
  * the field is `private static`, and this helper keeps the non-goal "no

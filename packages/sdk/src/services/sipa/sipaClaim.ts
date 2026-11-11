@@ -213,19 +213,19 @@ export async function readSipaBalancesMany(
   return out
 }
 
-/** `holder`'s balance of `token` at `blockTag`. */
+/** `holder`'s balance of `token` at the latest block or at a block number. */
 export function readTokenBalanceAt(
   publicClient: PublicClient,
   token: Address,
   holder: Address,
-  blockTag: "finalized" | "latest",
+  at: "latest" | bigint,
 ): Promise<bigint> {
   return publicClient.readContract({
     address: token,
     abi: erc20Abi,
     functionName: "balanceOf",
     args: [holder],
-    blockTag,
+    ...(typeof at === "bigint" ? { blockNumber: at } : { blockTag: at }),
   })
 }
 

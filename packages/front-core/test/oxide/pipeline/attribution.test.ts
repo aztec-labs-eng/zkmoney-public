@@ -204,31 +204,47 @@ describe("a second payment to a claimed address", () => {
     const sipa = await w.announced(1, { resweepable })
     w.pay(sipa.address, ONE, DAI, w.l1.head - 1_010n)
     const first = w.sweep(sipa, 7n, { block: w.l1.head - 1_000n })
-    const onSweptAddressFunded = vi.fn<(sipa: Address) => Promise<void>>(async () => {})
-    await w.pass({ scan: { onSweptAddressFunded } })
+    await w.pass()
     expect(await w.get(sipa.address)).toMatchObject({ phase: "claimed", sweepTxHash: first.tx })
     w.l1.head += 10n
     w.l1.setBalance(sipa.address, DAI, ONE / 2n)
-    await w.scan({ onSweptAddressFunded })
-    return { w, sipa, first, onSweptAddressFunded }
+    await w.scan()
+    return { w, sipa, first }
   }
 
-  it("reopens a resweepable address on a fresh stuck clock and asks for one republish", async () => {
+  it("reopens a resweepable address on a fresh stuck clock, owing its broadcast once", async () => {
     const before = Date.now()
-    const { w, sipa, onSweptAddressFunded } = await payAgain(true)
+    const { w, sipa } = await payAgain(true)
 
     const record = (await w.get(sipa.address))!
     expect(record).toMatchObject({ phase: "sweeping", amount: "0.5", claimedInboxIndexes: ["7"] })
     expect(record.sweepTxHash).toBeUndefined()
     expect(record.netAmount).toBeUndefined()
     expect(record.startTime).toBeGreaterThanOrEqual(before)
-    expect(onSweptAddressFunded.mock.calls).toEqual([[sipa.address]])
+    expect(record.broadcast).toMatchObject({ state: "queued", republishSince: w.l2.block })
+    await w.store.apply(sipa.address, { type: "broadcastLanded" })
     w.l1.head += 1n
-    await w.scan({ onSweptAddressFunded })
-    expect(onSweptAddressFunded).toHaveBeenCalledOnce()
+    await w.scan()
+    expect((await w.get(sipa.address))?.broadcast?.state).toBe("landed")
   })
 
-  it("keeps the claim when the republish fails, and republishes on the next pass", async () => {
+  it("owes a payment its transfer dates over an hour back its broadcast once", async () => {
+    const w = await pipelineWorld()
+    const sipa = await w.announced(1, { resweepable: true })
+    w.pay(sipa.address, ONE, DAI, w.l1.head - 1_010n)
+    w.sweep(sipa, 7n, { block: w.l1.head - 1_000n })
+    await w.pass()
+    w.l1.head += 10n
+    w.pay(sipa.address, ONE / 2n, DAI, w.l1.head - 5n)
+
+    expect(await w.scan()).toMatchObject({ republished: 1 })
+    await w.store.apply(sipa.address, { type: "broadcastLanded" })
+    w.l1.head += 1n
+    expect(await w.scan()).toMatchObject({ republished: 0 })
+    expect((await w.get(sipa.address))?.broadcast?.state).toBe("landed")
+  })
+
+  it("keeps the claim until the L2 head reads, then owes the broadcast", async () => {
     const w = await pipelineWorld()
     const sipa = await w.announced(1, { resweepable: true })
     w.pay(sipa.address, ONE, DAI, w.l1.head - 1_010n)
@@ -236,22 +252,27 @@ describe("a second payment to a claimed address", () => {
     await w.pass()
     w.l1.head += 10n
     w.l1.setBalance(sipa.address, DAI, ONE / 2n)
-    const onSweptAddressFunded = vi.fn<(sipa: Address) => Promise<void>>(async () => {})
-    onSweptAddressFunded.mockRejectedValueOnce(new Error("node down"))
+    w.l2.headError = new Error("node down")
 
-    expect(await w.scan({ onSweptAddressFunded })).toMatchObject({ complete: false })
-    expect(await w.get(sipa.address)).toMatchObject({ phase: "claimed", sweepTxHash: first.tx })
+    expect(await w.scan()).toMatchObject({ complete: false })
+    const held = await w.get(sipa.address)
+    expect(held).toMatchObject({ phase: "claimed", sweepTxHash: first.tx })
+    expect(held?.broadcast).toBeUndefined()
+    w.l2.headError = undefined
     w.l1.head += 1n
-    await w.scan({ onSweptAddressFunded })
-    expect(await w.get(sipa.address)).toMatchObject({ phase: "sweeping" })
-    expect(onSweptAddressFunded).toHaveBeenCalledTimes(2)
+    await w.scan()
+    expect(await w.get(sipa.address)).toMatchObject({
+      phase: "sweeping",
+      broadcast: { state: "queued" },
+    })
   })
 
   it("sends a second payment to an address that refuses a second sweep to recovery", async () => {
-    const { w, sipa, onSweptAddressFunded } = await payAgain(false)
+    const { w, sipa } = await payAgain(false)
 
-    expect(await w.get(sipa.address)).toMatchObject({ phase: "recoverable" })
-    expect(onSweptAddressFunded).not.toHaveBeenCalled()
+    const record = await w.get(sipa.address)
+    expect(record?.phase).toBe("recoverable")
+    expect(record?.broadcast).toBeUndefined()
   })
 
   it("reopens a sweeping record still stamped with its claimed sweep", async () => {
@@ -266,15 +287,14 @@ describe("a second payment to a claimed address", () => {
       sweepTxHash: `0x${"5e".repeat(32)}`,
     })
     w.l1.setBalance(sipa.address, DAI, ONE / 2n)
-    const onSweptAddressFunded = vi.fn<(sipa: Address) => Promise<void>>(async () => {})
 
-    await w.scan({ onSweptAddressFunded })
+    await w.scan()
 
     const record = (await w.get(sipa.address))!
     expect(record.sweepTxHash).toBeUndefined()
     expect(record.endTime).toBeUndefined()
     expect(isStuckSweep(record, record.startTime + STUCK_SWEEP_MS)).toBe(true)
-    expect(onSweptAddressFunded).toHaveBeenCalledOnce()
+    expect(record.broadcast).toMatchObject({ state: "queued" })
   })
 })
 

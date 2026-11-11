@@ -1,0 +1,50 @@
+.stack {
+  display: inline-flex;
+  align-items: center;
+}
+.stack > * {
+  display: grid;
+  place-items: center;
+  box-sizing: content-box;
+  padding: 3px;
+  margin-right: -11px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.05);
+}
+.stack > :last-child {
+  margin-right: 0;
+}
+/* The first icon on top: its children come reversed and lay out right to left. */
+.stack.front {
+  flex-direction: row-reverse;
+  /* Reversed, the main start is the right edge; this keeps the discs on the left. */
+  justify-content: flex-end;
+}
+/* Each disc paints whole, and the crescent its left neighbor covers is cut out, so the
+   translucent discs never show the logo under them. The neighbor is 32px, 11px over this one: its
+   center sits 5px left of this disc's edge. */
+.front > * {
+  position: relative;
+  isolation: isolate;
+}
+.front > :not(:last-child) {
+  -webkit-mask: radial-gradient(circle at -5px 50%, transparent 16px, #000 16.5px);
+  mask: radial-gradient(circle at -5px 50%, transparent 16px, #000 16.5px);
+}
+.small.front > :not(:last-child) {
+  -webkit-mask: radial-gradient(circle at -2.5px 50%, transparent 8px, #000 8.5px);
+  mask: radial-gradient(circle at -2.5px 50%, transparent 8px, #000 8.5px);
+}
+.front > :last-child {
+  margin-right: -11px;
+}
+.front > :first-child {
+  margin-right: 0;
+}
+/* A 16px disc around a 13px logo, overlapping in proportion. */
+.small > * {
+  padding: 1.5px;
+}
+.small.front > :not(:first-child) {
+  margin-right: -5.5px;
+}

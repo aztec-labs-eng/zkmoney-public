@@ -2,9 +2,9 @@
  * Reaches the migration dialog from outside `MigrationDetectionMount`: a request to open it, and
  * where the account's upgrade stands, which the mount derives and nothing persists.
  */
+import { memoryStore } from "@obsidion/front-core"
 import { useSyncExternalStore } from "react"
 import type { MetadataMigrationPhase } from "@obsidion/front-core"
-import { createExternalState } from "../../lib/externalState"
 import type { WalletAction } from "../actionGate"
 
 /**
@@ -33,9 +33,12 @@ export interface UpgradeStatus {
   keepOpen?: boolean
 }
 
-const requests = createExternalState(0)
+// eslint-disable-next-line no-restricted-syntax -- ZKM-1625
+const requests = memoryStore(0)
+// eslint-disable-next-line no-restricted-syntax -- ZKM-1625
 let requestReason: MigrationDialogReason | undefined
-const status = createExternalState<UpgradeStatus>({ state: "checking", registration: false })
+// eslint-disable-next-line no-restricted-syntax -- ZKM-1625
+const status = memoryStore<UpgradeStatus>({ state: "checking", registration: false })
 
 /**
  * What asked for the dialog, when it should show that first: the residuals row lists what is left;
@@ -70,6 +73,8 @@ export function setUpgradeStatus(next: UpgradeStatus): void {
     status.set(next)
   }
 }
+
+export const upgradeStatus = (): UpgradeStatus => status.get()
 
 export function useUpgradeStatus(): UpgradeStatus {
   return useSyncExternalStore(status.subscribe, status.get)

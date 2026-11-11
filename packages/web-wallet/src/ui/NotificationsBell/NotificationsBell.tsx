@@ -1,21 +1,22 @@
 import { Icon, Toast } from "@obsidion/web-ds"
 import { useCallback, useEffect, useRef, useState } from "react"
-import type { NotificationEntry } from "@obsidion/front-core"
 import { fmt } from "../../lib/fmt"
 import { useOperationsInProgress, useTabBoundOperation } from "../../features/operations/operations"
 import type { TabPlace } from "../../features/operations/TabLine"
 import {
   NotificationsPanel,
-  freshToasts,
-  toastKey,
+  nextToasts,
   useNotificationList,
   useNotificationsPanelOpen,
   useRouteOpener,
   type EntryOpener,
   type NotificationScope,
+  type Toasts,
 } from "../NotificationsPanel/NotificationsPanel"
 import copy from "../notifications.copy"
 import { notificationText } from "../notificationText"
+import { useSession } from "../../session/session"
+import { profileBridge } from "../../session/walletChains"
 import { PhoneIcon } from "../PhoneIcon"
 import { usePhoneLayout } from "../usePhoneLayout"
 import styles from "./NotificationsBell.module.css"
@@ -61,7 +62,7 @@ function BellButton({
       onClick={onClick}
     >
       {ring && <span className={`ww-notifications__bell-ring ${ring}`} />}
-      {phone ? <PhoneIcon name="bell" color="#fff" /> : <Icon name="bell" size={24} />}
+      {phone ? <PhoneIcon name="bell" color="var(--ink)" /> : <Icon name="bell" size={24} />}
       {unread && <span className={styles.notificationsBellDot} />}
     </button>
   )
@@ -78,9 +79,10 @@ export function NotificationsBell({
 }) {
   const byRoute = useRouteOpener()
   const opener = openEntry ?? byRoute
+  const bridge = profileBridge(useSession().page.config)
   const [open, setOpen] = useNotificationsPanelOpen()
   const anchorRef = useRef<HTMLDivElement>(null)
-  const { entries, hydrated, unreadCount, opened, markAllRead } = useNotificationList(scope)
+  const { entries, state, hydrated, unreadCount, opened, markAllRead } = useNotificationList(scope)
   const inScope = (op: { operationId: string } | undefined) =>
     !!op && (!scope || scope.operation(op.operationId))
   // Every unfinished operation, including a sent one this page no longer runs.
@@ -91,6 +93,7 @@ export function NotificationsBell({
   const hasPending = entries.some((e) => e.pending)
   const spinning = running || hasPending
   const wasOpen = useRef(open)
+  // eslint-disable-next-line local/effect-hook -- ZKM-1806
   useEffect(() => {
     if (wasOpen.current && !open) markAllRead()
     wasOpen.current = open
@@ -99,31 +102,20 @@ export function NotificationsBell({
 
   // Entries first seen after this bell mounted pop a toast, one at a time; the backlog, all the list
   // holds once it is first complete (`hydrated`), stays behind the bell. An id leaves the queue once
-  // its toast has shown. `seen` holds the listed entries' keys only, so an entry forgotten and
-  // listed again under its id toasts again.
-  const seen = useRef<Set<string> | null>(null)
+  // its toast has shown.
   const [since] = useState(Date.now)
-  const [queue, setQueue] = useState<NotificationEntry[]>([])
-  const toast = queue[0] ?? null
-  useEffect(() => {
-    if (!hydrated) return
-    const fresh = seen.current ? freshToasts(entries, seen.current, since) : []
-    seen.current = new Set(entries.map(toastKey))
-    if (fresh.length) setQueue((q) => [...q, ...fresh])
-  }, [entries, hydrated, since])
-  const dropToast = useCallback(() => setQueue((q) => q.slice(1)), [])
+  const [toasts, setToasts] = useState<Toasts>({ seen: null, backlog: new Map(), queue: [], open })
+  const next = nextToasts(toasts, { entries, state, hydrated, open, since })
+  if (next !== toasts) setToasts(next)
+  const toast = next.queue[0] ?? null
+  const dropToast = useCallback(() => setToasts((t) => ({ ...t, queue: t.queue.slice(1) })), [])
+  // eslint-disable-next-line local/effect-hook -- ZKM-1806
   useEffect(() => {
     if (!toast) return
+    // eslint-disable-next-line local/timer-in-view -- ZKM-1806
     const t = setTimeout(dropToast, 8000)
     return () => clearTimeout(t)
   }, [toast, dropToast])
-  // Opening the panel shows the same entries; a toast for a dismissed entry has nothing to open.
-  useEffect(() => {
-    if (open) setQueue([])
-  }, [open])
-  useEffect(() => {
-    if (toast && !entries.some((e) => e.id === toast.id)) dropToast()
-  }, [entries, toast, dropToast])
   const openToast = () => {
     if (!toast) return
     opened(toast)
@@ -131,6 +123,7 @@ export function NotificationsBell({
     opener(toast)?.()
   }
 
+  // eslint-disable-next-line local/effect-hook -- ZKM-1806
   useEffect(() => {
     if (!open) return
     const onDown = (e: MouseEvent) => {
@@ -169,7 +162,7 @@ export function NotificationsBell({
         <Toast
           className="ww-notifications__toast"
           kind={toast.severity === "error" ? "error" : "success"}
-          message={fmt(copy.panel.toast, notificationText(toast))}
+          message={fmt(copy.panel.toast, notificationText(toast, bridge))}
           actionLabel={opener(toast) ? copy.panel.open : undefined}
           onAction={openToast}
           onDismiss={dropToast}

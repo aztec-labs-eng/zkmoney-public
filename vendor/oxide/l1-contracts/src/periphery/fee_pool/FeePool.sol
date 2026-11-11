@@ -2,30 +2,30 @@
 pragma solidity >=0.8.27;
 
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
-import {Address} from "@openzeppelin/contracts/utils/Address.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
-import {IWETH9} from "@uniswap/v4-periphery/src/interfaces/external/IWETH9.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {IFeePool} from "@periphery/interfaces/IFeePool.sol";
 import {Errors} from "@periphery/Errors.sol";
 
 // solhint-disable-next-line oxide/no-comments
 /**
- * @notice Holds protocol fees as ETH and WETH, and pays them as ETH to spenders.
+ * @notice Holds protocol fees in one token, and pays them to spenders.
  * Each spender has a rate cap, an expiry, and a reserve that spenders appended later cannot take.
  */
 contract FeePool is IFeePool, Ownable {
-  IWETH9 public immutable WETH;
+  using SafeERC20 for IERC20;
+
+  IERC20 public immutable TOKEN;
 
   address[] internal $spenderList;
 
   mapping(address spender => Spender) internal $spenders;
 
-  constructor(address _owner, IWETH9 _weth) Ownable(_owner) {
-    require(address(_weth).code.length > 0, Errors.FeePool__WethWithoutCode());
-    WETH = _weth;
+  constructor(address _owner, IERC20 _token) Ownable(_owner) {
+    require(address(_token).code.length > 0, Errors.FeePool__TokenWithoutCode());
+    TOKEN = _token;
   }
-
-  receive() external payable {}
 
   function append(SpenderConfig calldata _config, uint64 _idleDelay) external override onlyOwner {
     require(_config.spender != address(0), Errors.FeePool__ZeroSpender());
@@ -64,17 +64,12 @@ contract FeePool is IFeePool, Ownable {
       return 0;
     }
     emit Pulled(msg.sender, amount);
-
-    uint256 ethBalance = address(this).balance;
-    if (ethBalance < amount) {
-      WETH.withdraw(amount - ethBalance);
-    }
-    Address.sendValue(payable(msg.sender), amount);
+    TOKEN.safeTransfer(msg.sender, amount);
   }
 
   // solhint-disable-next-line oxide/no-comments
   /// @notice The spender calls this to remove itself from the pool.
-  function renounce() external payable override {
+  function renounce() external override {
     if (!_isListed($spenders[msg.sender])) {
       // solhint-disable-next-line oxide/no-comments
       // Another call can remove a spender before it renounces. Do nothing instead of a revert.
@@ -114,7 +109,7 @@ contract FeePool is IFeePool, Ownable {
   }
 
   function balance() public view override returns (uint256) {
-    return address(this).balance + WETH.balanceOf(address(this));
+    return TOKEN.balanceOf(address(this));
   }
 
   function _isListed(Spender storage _spender) internal view returns (bool) {

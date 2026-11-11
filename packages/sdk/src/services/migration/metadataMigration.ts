@@ -2,12 +2,12 @@ import type { AztecAddress } from "@aztec-labs/aztec.js/addresses"
 import { EthAddress } from "@aztec-labs/aztec.js/addresses"
 import {
   CANONICAL_ENTRY_POINT_V08,
+  computeUserOpHash,
   depositPayoutTokenFor,
   encodeExecuteBatch,
   encodeSetUserRecord,
   encodeUserRecordMetadata,
   getAccountNonce,
-  getUserOpHash,
   OxidePortalContract,
   readAccountMetadataRegistry,
   readMetadataStateHash,
@@ -261,7 +261,7 @@ export async function restoreRecordUpdate(
 ): Promise<Omit<PreparedRecordUpdate, "operation">> {
   const signed = JSON.parse(raw, bigintRevive) as Omit<PreparedRecordUpdate, "operation">
   const { update } = signed
-  const { client, destination, owner, record } = context
+  const { destination, owner, record } = context
   const writeData = encodeSetUserRecord(owner, record)
   const namePortalRecipient = context.fpc.toString() as Hex
   const op = update.userOp
@@ -295,7 +295,8 @@ export async function restoreRecordUpdate(
       ),
     )
   if (!expected) throw new StalePlanError("Stored record update does not match the destination")
-  if (!same(await getUserOpHash(client, CANONICAL_ENTRY_POINT_V08, op), update.userOpHash))
+  const localHash = computeUserOpHash(Number(destination.chainId), CANONICAL_ENTRY_POINT_V08, op)
+  if (!same(localHash, update.userOpHash))
     throw new StalePlanError("Stored record update does not match its hash")
   return signed
 }

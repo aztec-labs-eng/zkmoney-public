@@ -2,10 +2,6 @@ import { AztecAddress } from "@aztec-labs/aztec.js/addresses"
 import type { ContractFunctionInteraction } from "@aztec-labs/aztec.js/contracts"
 import type { Fr } from "@aztec-labs/aztec.js/fields"
 import { EthAddress } from "@aztec-labs/foundation/eth-address"
-import {
-  predictSkyEscrowAddressLocally,
-  type SkyEscrowArgs,
-} from "@oxide/experiments/sky/sky_savings.js"
 import { broadcastL1Operation } from "@oxide/oxide-client/broadcaster_calls.js"
 import { readPlainWithdrawalFee } from "@oxide/oxide-client/executors/plain_withdrawal_executor.js"
 import {
@@ -27,7 +23,7 @@ import type { Address, PublicClient } from "viem"
 import type { ObsidionWallet } from "../../obsidion/ObsidionWallet.js"
 import type { PlainWithdrawalContext, WithdrawOperation } from "../../oxide/withdrawal/plainWithdrawal.js"
 import { swapOutputForRoute, type SwapOnWithdrawPlan } from "../../oxide/escrow/swapOnWithdraw.js"
-import { encodeWithdrawalMemo } from "./withdrawalMemo.js"
+import { encodeWithdrawalMemo, memoDerivesEscrow, type EscrowMemo } from "./withdrawalMemo.js"
 
 export type WithdrawalDeployment = Pick<
   OxideEnvTuple,
@@ -47,19 +43,19 @@ export interface WithdrawalOptions {
   /** Swap-on-withdraw: the burn pays this escrow, and the escrow's swap broadcast rides the burn tx. */
   swap?: Pick<SwapOnWithdrawPlan, "escrowArgs" | "recovery">
   /**
-   * An escrow oxide-client built (Sky savings): the burn pays `escrow` under its `userPayload`,
-   * and the escrow's `l1Operation` rides the burn tx. `broadcaster` is the L2 broadcaster of the
-   * deployment whose relayer runs it; absent, the source's. `sky` is what the escrow address
-   * commits to, checked against `escrow`. `executor` is the executor the burn pays; absent, the
-   * source's plain one. `withdrawalFee` is what that executor takes, as the escrow was priced with:
-   * a Sky withdrawal executor takes none.
+   * An escrow oxide-client built (a Sky savings move or a bridge-out): the burn pays `escrow` under
+   * its `userPayload`, and the escrow's `l1Operation` rides the burn tx. `broadcaster` is the L2
+   * broadcaster of the deployment whose relayer runs it; absent, the source's. `memo` is what the
+   * escrow address commits to, checked against `escrow` and carried in the burn's recovery memo.
+   * `executor` is the executor the burn pays; absent, the source's plain one. `withdrawalFee` is
+   * what that executor takes, as the escrow was priced with: a Sky withdrawal executor takes none.
    */
   escrow?: {
     escrow: EthAddress
     userPayload: Buffer
     l1Operation: BroadcastL1Operation
     broadcaster?: string
-    sky?: SkyEscrowArgs & { factory: Address }
+    memo: Exclude<EscrowMemo, { swap: unknown }>
     executor?: Address
     withdrawalFee: bigint
   }
@@ -127,15 +123,12 @@ export async function planPayout(
   const plainWithdrawal = { executor, fee }
 
   if (options.escrow) {
-    const { escrow, userPayload, l1Operation: run, broadcaster: runner, sky } = options.escrow
+    const { escrow, userPayload, l1Operation: run, broadcaster: runner, memo } = options.escrow
     if (!escrow.equals(burn.recipient)) {
       throw new Error("The escrow differs from the withdrawal destination")
     }
-    if (
-      sky &&
-      !EthAddress.fromString(predictSkyEscrowAddressLocally(sky.factory, sky)).equals(escrow)
-    ) {
-      throw new Error("The Sky escrow args do not derive the withdrawal destination")
+    if (!memoDerivesEscrow(memo, escrow.toString() as Address)) {
+      throw new Error("The escrow args do not derive the withdrawal destination")
     }
     const runBroadcaster =
       !runner || runner.toLowerCase() === tuple.l2Broadcaster.toLowerCase()
@@ -145,7 +138,7 @@ export async function planPayout(
       plainWithdrawal,
       userPayload,
       finalizationRequest,
-      memo: encodeWithdrawalMemo({ sky }),
+      memo: encodeWithdrawalMemo(memo),
       broadcasts: [broadcastL1Operation(runBroadcaster, run)],
     }
   }

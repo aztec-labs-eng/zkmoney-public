@@ -3,8 +3,10 @@
  * import, and the vendored `@oxide/l1-contracts` barrel reaches it through its deploy helpers. No
  * wallet flow deploys L1 contracts; the returned `require` fails loudly if one ever runs.
  */
+import { WalletError } from "@obsidion/core/errors"
+
 export function createRequire(_from: string | URL): (id: string) => never {
   return (id) => {
-    throw new Error(`require("${id}") is not available in the browser`)
+    throw new WalletError("invariant", `require("${id}") is not available in the browser`)
   }
 }

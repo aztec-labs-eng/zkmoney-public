@@ -1,0 +1,27 @@
+/* Why a funded deposit is still waiting; neutral, since a wait is not a failure. */
+.notice {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border-subtle, rgba(var(--ink-rgb), 0.12));
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+  text-align: left;
+}
+.notice b {
+  color: var(--text-primary);
+}
+/* The headline and its info button share these metrics. */
+.head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+}
+.notice p {
+  margin: 0;
+}

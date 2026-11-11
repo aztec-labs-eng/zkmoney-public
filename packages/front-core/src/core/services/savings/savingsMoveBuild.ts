@@ -83,7 +83,7 @@ export async function buildSavingsMove(
       l1Operation: built.l1Operation,
       // Main's relayer runs every Sky escrow, either way: it watches the DAI each escrow waits for.
       broadcaster: tupleField(main, "l2Broadcaster"),
-      sky: { ...built.escrowArgs, factory: deps.factory.address },
+      memo: { sky: { ...built.escrowArgs, factory: deps.factory.address } },
       executor,
       withdrawalFee: quote.withdrawalFee,
     },

@@ -1,35 +1,36 @@
 import {
   WITHDRAWAL_RECORD_VERSION,
   WITHDRAWAL_TERMINAL_PHASES,
-  type WithdrawalPhase,
   type WithdrawalRecord,
 } from "../core/services/bridge/types"
 import type { OnNetwork } from "../types/networkStamp"
 import type { Database, Write } from "./database"
-import { WalletError, type ErrorCode, type Failure } from "./errors"
-import { decodeRecord, encodeRecord, loadRecords, persistentStore } from "./persistentStore"
+import { decodeRecord, loadRecords, persistentStore } from "./persistentStore"
 import type { Loaded } from "./recordSource"
 import { derived, type ReadonlyStore } from "./store"
+import {
+  decodeWithdrawals,
+  KEY_WITHDRAWALS,
+  migrateWithdrawals,
+} from "../storageMigrations/withdrawals"
 import {
   withdrawalTransition,
   type BurnExecutor,
   type WithdrawalEvent,
 } from "./withdrawalTransition"
 
-/** The blob older builds kept every withdrawal in, one JSON object keyed by lowercase `localId`. */
-export const KEY_WITHDRAWALS = "@obsidion/withdrawals/records"
-
 /** Longest a pre-mine `submitting` row may sit before it counts as interrupted; proving takes minutes. */
 export const WITHDRAWAL_SUBMIT_TIMEOUT_MS = 10 * 60 * 1000
 
-/** Fresh `wdraw_*` key for a record created at Confirm. */
-export function newWithdrawalLocalId(): string {
-  return `wdraw_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`
+/** Fresh `wdraw_*` key for a record created at `at`, such as at Confirm. */
+export function newWithdrawalLocalId(at: number): string {
+  return `wdraw_${at.toString(36)}_${Math.random().toString(36).slice(2, 10)}`
 }
 
 export interface WithdrawalsDeps {
   /** The account's database. */
   db: Database
+  now: () => number
 }
 
 /**
@@ -41,6 +42,8 @@ export interface WithdrawalsDeps {
 export interface Withdrawals {
   /** Saved records, newest first; `hydrated` once they loaded. */
   readonly list: ReadonlyStore<Loaded<WithdrawalRecord>>
+  /** The first read finished, even if it failed. */
+  readonly settled: ReadonlyStore<boolean>
   readonly ready: Promise<void>
   /** Every record, read once. */
   all(): Promise<readonly WithdrawalRecord[]>
@@ -71,109 +74,6 @@ const PREFIX = "acct/withdrawals"
 
 const key = (id: string) => id.toLowerCase()
 
-/** Records stored without `tokenDecimals` all burned an 18-decimal token. */
-const UNSTAMPED_TOKEN_DECIMALS = 18
-
-const PHASE_RANK: Record<WithdrawalPhase, number> = {
-  submitting: 0,
-  l2_mined: 1,
-  awaiting_proven: 2,
-  finalizing_l1: 3,
-  swapping: 4,
-  recoverable: 5,
-  failed: 6,
-  recovered: 7,
-  done: 8,
-}
-
-/** Two saved copies of one record: the furthest phase, and every field either one learned. */
-function merge(existing: WithdrawalRecord, incoming: WithdrawalRecord): WithdrawalRecord {
-  const phase =
-    PHASE_RANK[incoming.phase] >= PHASE_RANK[existing.phase] ? incoming.phase : existing.phase
-  return {
-    ...existing,
-    ...incoming,
-    localId: existing.localId,
-    phase,
-    l2TxHash: incoming.l2TxHash ?? existing.l2TxHash,
-    blockNumber: incoming.blockNumber ?? existing.blockNumber,
-    rawAmount: incoming.rawAmount ?? existing.rawAmount,
-    relayerTip: incoming.relayerTip ?? existing.relayerTip,
-    withdrawalFee: incoming.withdrawalFee ?? existing.withdrawalFee,
-    withdrawalId: incoming.withdrawalId ?? existing.withdrawalId,
-    l1TxHash: incoming.l1TxHash ?? existing.l1TxHash,
-    receivedAmount: incoming.receivedAmount ?? existing.receivedAmount,
-    finalizeTxHash: incoming.finalizeTxHash ?? existing.finalizeTxHash,
-    failure: incoming.failure ?? existing.failure,
-    endTime:
-      existing.endTime != null && incoming.endTime != null
-        ? Math.max(existing.endTime, incoming.endTime)
-        : incoming.endTime ?? existing.endTime,
-    phaseEnteredAt: incoming.phaseEnteredAt ?? existing.phaseEnteredAt,
-  }
-}
-
-/** The words a failed withdrawal carried before failures were codes, by the code each one is. */
-const FAILURE_TEXTS: readonly (readonly [RegExp, ErrorCode])[] = [
-  [/^This withdrawal was interrupted before it finished\./, "withdrawal.interrupted"],
-  [/^Withdrawal transaction dropped in a reorg$/, "withdrawal.reorged"],
-  [/^The withdrawal transaction was dropped or reverted\./, "withdrawal.dropped"],
-  [/not the active zk\.money tab/i, "withdrawal.inactiveTab"],
-  [/^This transaction was not sent\. Please try again later\.$/, "sponsorship.paused"],
-  [/^This transaction was not sent\. Aztec network fees are too high/, "sponsorship.feesTooHigh"],
-  [
-    /^This transaction was not sent: the account has no sponsored transactions left/,
-    "sponsorship.allowanceExhausted",
-  ],
-]
-
-/** A failure's text as its code: the text stays as debug detail when no code names it. */
-export function withdrawalFailure(text: string): Failure {
-  const code = FAILURE_TEXTS.find(([pattern]) => pattern.test(text))?.[1]
-  if (code) return { code }
-  return text === "Withdrawal failed"
-    ? { code: "withdrawal.failed" }
-    : { code: "withdrawal.failed", detail: text }
-}
-
-/** A record as this version keeps it: a stored `error` text becomes its `failure`. */
-function withFailure(record: WithdrawalRecord): WithdrawalRecord {
-  const { error, ...rest } = record as WithdrawalRecord & { error?: unknown }
-  if (typeof error !== "string" || rest.failure) return rest
-  return { ...rest, failure: withdrawalFailure(error) }
-}
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value)
-
-/**
- * The records a `KEY_WITHDRAWALS` blob holds, keyed as this store keys them; copies of one record
- * merge. A malformed blob holds none.
- */
-export function decodeWithdrawals(raw: string | null | undefined): [string, WithdrawalRecord][] {
-  let parsed: unknown
-  try {
-    parsed = raw === null || raw === undefined ? undefined : JSON.parse(raw)
-  } catch {
-    return []
-  }
-  if (!isRecord(parsed)) return []
-  const out = new Map<string, WithdrawalRecord>()
-  for (const value of Object.values(parsed)) {
-    if (!isRecord(value) || typeof value.localId !== "string" || typeof value.phase !== "string")
-      continue
-    const stored = withFailure(value as unknown as WithdrawalRecord)
-    const record =
-      stored.tokenDecimals === undefined
-        ? { ...stored, tokenDecimals: UNSTAMPED_TOKEN_DECIMALS }
-        : stored
-    const id = key(record.localId)
-    const held = out.get(id)
-    out.set(id, held ? merge(held, record) : record)
-  }
-  return [...out]
-}
-
 /**
  * The withdrawals a database no withdrawal store is open on holds, such as a retired rollup's: this
  * store's records, then the blob's records it lacks.
@@ -189,7 +89,7 @@ export function storedWithdrawals(db: {
     const record = decodeRecord(raw) as WithdrawalRecord
     if (typeof record?.localId === "string") out.set(key(record.localId), record)
   }
-  for (const [id, record] of decodeWithdrawals(db.get(KEY_WITHDRAWALS))) {
+  for (const [id, record] of decodeWithdrawals(db.get(KEY_WITHDRAWALS), key)) {
     if (!out.has(id)) out.set(id, record)
   }
   return [...out.values()]
@@ -197,25 +97,11 @@ export function storedWithdrawals(db: {
 
 export function createWithdrawals(deps: WithdrawalsDeps): Withdrawals {
   const { db } = deps
-  /**
-   * The first open imports the blob, each `error` text as its `failure`; a record saved under the
-   * store already wins.
-   */
-  const migrate = async (from: number | undefined, w: Write): Promise<void> => {
-    if (from !== undefined)
-      throw new WalletError("invariant", `withdrawals: unknown version ${from}`)
-    // A withdrawal can be funds in flight: every record carries over. The blob stays for a rollback.
-    const records = decodeWithdrawals(await w.get(KEY_WITHDRAWALS))
-    const saved = await w.getMany(records.map(([id]) => `${PREFIX}/${id}`))
-    records.forEach(([id, record], i) => {
-      if (saved[i] === undefined) w.put(`${PREFIX}/${id}`, encodeRecord(record))
-    })
-  }
   const store = persistentStore<WithdrawalRecord, "hash">(db, {
     prefix: PREFIX,
     version: 1,
     id: (record) => key(record.localId),
-    migrate,
+    migrate: (from, w) => migrateWithdrawals(from, w, { prefix: PREFIX, key }),
     indexes: { hash: (record) => (record.l2TxHash ? [key(record.l2TxHash)] : []) },
     load: "all",
   })
@@ -232,7 +118,7 @@ export function createWithdrawals(deps: WithdrawalsDeps): Withdrawals {
   const byHash = async (l2TxHash: string, w?: Write) => {
     if (!l2TxHash) return undefined
     const hash = key(l2TxHash)
-    const [indexed] = await loadRecords(store.query("hash", hash))
+    const [indexed] = await loadRecords(store.where("hash", hash))
     const record = indexed && (await store.get(key(indexed.localId), w))
     return record?.l2TxHash && key(record.l2TxHash) === hash ? record : undefined
   }
@@ -242,7 +128,7 @@ export function createWithdrawals(deps: WithdrawalsDeps): Withdrawals {
   const applyAll = (events: readonly (readonly [string, WithdrawalEvent])[], w?: Write) =>
     writing(w, async (w) => {
       const changed: WithdrawalRecord[] = []
-      const now = Date.now()
+      const now = deps.now()
       for (const [id, event] of events) {
         const record = await get(id, w)
         const next = record && withdrawalTransition(record, event, now)
@@ -261,7 +147,7 @@ export function createWithdrawals(deps: WithdrawalsDeps): Withdrawals {
     }
     const stored =
       WITHDRAWAL_TERMINAL_PHASES.has(stamped.phase) && !stamped.endTime
-        ? { ...stamped, endTime: Date.now() }
+        ? { ...stamped, endTime: deps.now() }
         : stamped
     await store.put(stored, w)
     return stored
@@ -269,6 +155,7 @@ export function createWithdrawals(deps: WithdrawalsDeps): Withdrawals {
 
   return {
     list,
+    settled: derived([store.view], ({ loaded, failed }) => loaded || failed),
     ready: store.ready,
     all,
     get,

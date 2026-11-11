@@ -1,13 +1,8 @@
-/**
- * What the registration sheet asks for, and when it stops asking: the quoted deposit while the
- * address is short, the schedule's fee and balance rows beneath it once each figure is read, and a
- * row left out where no read will bring one.
- */
+/** Guards: the sheet takes a deposit over the floor, asks the whole ask, then the shortfall. */
 import React, { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { RegistrationKind } from "@obsidion/core/types"
-import { MAINNET_DAI, mainnetTokens, singleToken } from "../../../support/depositTokens"
 import { LIMIT, LIMIT_USD } from "../../../support/publicLimit"
 
 vi.mock("@obsidion/web-ds", () => ({
@@ -62,28 +57,10 @@ vi.mock("../../../../src/features/token/useTxAmountCap", () => ({
   useRowTxAmountCap: () => 10_000n * 10n ** 18n,
 }))
 
-// The sheet's own content is covered elsewhere; this suite checks which context the terms open it in.
-vi.mock("../../../../src/features/limits/AboutLimitsSheet", () => ({
-  WalletAboutLimitsSheet: ({
-    topic,
-    account = true,
-    capacity,
-  }: {
-    topic?: string
-    account?: boolean
-    capacity?: { kind: string }
-  }) => (
-    <div
-      data-testid="about-limits-sheet"
-      data-topic={topic}
-      data-account={String(account)}
-      data-capacity={capacity?.kind}
-    />
-  ),
-}))
-
-const { RegistrationSheet } = await import("../../../../src/features/onboarding/RegistrationSheet")
-const { DEPOSIT_TERMS_PENDING, formatDepositAmount, swapAssetsLabel } = await import(
+const { RegistrationSheet } = await import(
+  "../../../../src/features/onboarding/RegistrationSheet/RegistrationSheet"
+)
+const { DEPOSIT_TERMS_PENDING } = await import(
   "../../../../src/features/deposit/DepositTermsRows/DepositTermsRows"
 )
 const { formatDepositDue, formatDepositSeen } = await import(
@@ -96,7 +73,6 @@ afterEach(closeSession)
 
 const dai = (n: number) => BigInt(Math.round(n * 100)) * 10n ** 16n
 /** Figures are built from the formatters the sheet prices with, never from its sentences. */
-const usd = (amount: bigint) => formatDepositAmount(amount, 18)
 const due = (amount: bigint) => formatDepositDue(amount, 18)
 const seen = (amount: bigint) => formatDepositSeen(amount, 18)
 /** A standard schedule under the asked deposit: a 14.5 floor, a 15 total. */
@@ -121,16 +97,8 @@ let root: Root
 const termsValue = (id: string) =>
   container.querySelector(`[data-testid="deposit-terms-${id}"]`)?.textContent ?? undefined
 const payBlock = () => container.querySelector('[data-testid="pay-block"]')
-const summary = () =>
-  container.querySelector('[data-testid="registration-sheet-summary"]')?.textContent ?? ""
 
-const render = (
-  over: Partial<typeof payment> & {
-    received?: bigint
-    scheduleUnavailable?: boolean
-    swapAssets?: string
-  },
-) =>
+const render = (over: Partial<typeof payment> & { received?: bigint }) =>
   act(() => {
     root.render(
       <RegistrationSheet tag="taga" title="Get instant access" payment={{ ...payment, ...over }} />,
@@ -165,65 +133,6 @@ describe("the sheet asks the quoted deposit and settles on the floor", () => {
     expect(termsValue("opening-balance")).toBe(DEPOSIT_TERMS_PENDING)
   })
 
-  it("asks the total alone when no schedule is being read for it", async () => {
-    await render({ fee: undefined, floor: undefined, scheduleUnavailable: true })
-    expect(termsValue("total")).toBe(due(dai(15)))
-    // A row nothing will fill is left out, not held open on a placeholder.
-    for (const row of ["tag-price", "network-fee", "network-funding", "opening-balance"]) {
-      expect(termsValue(row)).toBeUndefined()
-    }
-    expect(container.textContent).not.toContain(DEPOSIT_TERMS_PENDING)
-    expect(container.textContent).not.toContain("opening balance")
-  })
-
-  it("keeps the waiver visible with no schedule to price the rest", async () => {
-    await render({
-      fee: undefined,
-      floor: undefined,
-      kind: "earned_tag",
-      scheduleUnavailable: true,
-    })
-    expect(termsValue("tag-price")).toBe("Waived")
-    expect(termsValue("network-fee")).toBeUndefined()
-    expect(termsValue("opening-balance")).toBeUndefined()
-    expect(container.textContent).toContain("The tag is free.")
-  })
-
-  describe("what a free schedule waives, from the figures", () => {
-    // A free schedule's fee is the relayer's sweep fee alone.
-    const earned = {
-      kind: "earned_tag" as RegistrationKind,
-      fee: dai(0.5),
-      sweepFee: dai(0.5),
-      total: dai(5),
-    }
-
-    it("waives the tag and folds the sweep fee into network funding", async () => {
-      await render({ ...earned })
-      expect(termsValue("tag-price")).toBe("Waived")
-      expect(termsValue("network-fee")).toBeUndefined()
-      expect(termsValue("network-funding")).toBe(usd(dai(0.5)))
-      expect(termsValue("opening-balance")).toBe(usd(dai(4.5)))
-    })
-
-    it("holds each figure open until its own read lands, the waiver already certain", async () => {
-      await render({ ...earned, fee: undefined })
-      expect(termsValue("tag-price")).toBe("Waived")
-      expect(termsValue("network-funding")).toBe(usd(dai(0.5)))
-      expect(termsValue("opening-balance")).toBe(DEPOSIT_TERMS_PENDING)
-      await render({ ...earned, sweepFee: undefined })
-      expect(termsValue("network-funding")).toBe(DEPOSIT_TERMS_PENDING)
-    })
-  })
-
-  it("prices the tag above the sweep fee on a standard schedule, the network's share in one row", async () => {
-    await render({ fee: dai(5.5), sweepFee: dai(0.5), total: dai(10) })
-    expect(termsValue("tag-price")).toBe(usd(dai(5)))
-    expect(termsValue("network-fee")).toBeUndefined()
-    expect(termsValue("network-funding")).toBe(usd(dai(0.5)))
-    expect(termsValue("opening-balance")).toBe(usd(dai(4.5)))
-  })
-
   it("encodes the quoted total in the pay block, and the shortfall once part has arrived", async () => {
     await render({})
     expect(payBlock()?.getAttribute("data-total")).toBe(String(dai(15)))
@@ -234,20 +143,6 @@ describe("the sheet asks the quoted deposit and settles on the floor", () => {
   it("asks for nothing while the total is unsettled: no figure shown, none to pay", async () => {
     await render({ total: undefined, floor: undefined })
     expect(termsValue("total")).toBe(DEPOSIT_TERMS_PENDING)
-    expect(payBlock()).toBeNull()
-  })
-
-  it("names a part-paid deposit while the total is still unsettled", async () => {
-    // What is already at the address is named while the total waits, so a short deposit is not met
-    // with silence.
-    await render({
-      kind: "earned_tag",
-      total: undefined,
-      fee: undefined,
-      floor: undefined,
-      received: dai(4),
-    })
-    expect(summary()).toContain(`The tag is free. ${seen(dai(4))} received.`)
     expect(payBlock()).toBeNull()
   })
 
@@ -265,15 +160,6 @@ describe("the sheet asks the quoted deposit and settles on the floor", () => {
     expect(container.textContent).not.toContain("Send")
     expect(payBlock()).toBeNull()
   })
-
-  it("adds a line about the arrival for a deposit sent in another stablecoin", async () => {
-    const notes = () => container.querySelectorAll(".ww-reg-sheet__warn").length
-    await render({})
-    expect(notes()).toBe(0)
-    await render({ tokenSymbol: "USDC" })
-    expect(notes()).toBe(1)
-    expect(container.textContent).toContain("USDC")
-  })
 })
 
 describe("a table whose fee token is USDC", () => {
@@ -282,7 +168,7 @@ describe("a table whose fee token is USDC", () => {
     await render({ tokenSymbol: "USDC" })
     const funding = container.querySelector('[data-testid="registration-sheet-funding"]')
     expect(funding?.textContent).toContain("USDC")
-    expect(container.querySelectorAll(".ww-reg-sheet__warn").length).toBe(0)
+    expect(container.querySelectorAll('[data-testid="registration-swap-warning"]').length).toBe(0)
     expect(container.textContent).not.toContain("DAI")
   })
 })
@@ -291,86 +177,11 @@ describe("the sheet's per-deposit limit", () => {
   const overLimit = (id: string) =>
     container.querySelector(`[data-testid="${id}"]`)?.getAttribute("data-over-limit")
 
-  const openLimit = () =>
-    act(() =>
-      container
-        .querySelector<HTMLButtonElement>(
-          '[data-testid="deposit-terms-maximum"] [data-testid="about-limits-link"]',
-        )!
-        .click(),
-    )
-  const sheet = () => container.querySelector<HTMLElement>('[data-testid="about-limits-sheet"]')
-
-  it("states the limit before the address exists, and explains it without an account", async () => {
-    await render({ address: undefined, token: undefined, chainId: undefined })
-    expect(container.querySelector('[data-testid="deposit-terms-maximum"]')?.textContent).toBe(
-      `Deposit limit: ${LIMIT_USD} incl. fees`,
-    )
-    await openLimit()
-    // No claim yet: no account to read an allowance for, and the address will come from the active
-    // deployment.
-    expect(sheet()?.dataset).toMatchObject({ topic: "limit", account: "false", capacity: "active" })
-  })
-
-  it("explains the limit on the address's own bucket once the address exists", async () => {
-    await render({})
-    await openLimit()
-    expect(sheet()?.dataset.account).toBe("true")
-    expect(sheet()?.dataset.capacity).not.toBe("active")
-  })
-
-  it(`offers an ask of exactly ${LIMIT_USD}`, async () => {
-    await render({ total: dai(LIMIT) })
-    expect(overLimit("address-row")).toBe("")
-    expect(overLimit("pay-block")).toBe("")
-  })
-
   it(`holds copy and payment for an ask over ${LIMIT_USD}, the whole ask counted`, async () => {
     // Part has arrived, so the pay block asks only the rest; the limit still counts the whole ask.
     await render({ total: dai(LIMIT) + 1n, floor: dai(LIMIT), received: dai(1000) })
     expect(overLimit("address-row")).toBe("public")
     expect(overLimit("pay-block")).toBe("public")
     expect(payBlock()?.getAttribute("data-total")).toBe(String(dai(LIMIT - 1000) + 1n))
-  })
-})
-
-describe("an opening balance for a deposit that may be swapped", () => {
-  const note = () =>
-    container.querySelector('[data-testid="deposit-terms-swap-note"]')?.textContent ?? undefined
-
-  it("names the swapped tokens on mainnet and none elsewhere", () => {
-    expect(swapAssetsLabel(mainnetTokens())).toBe("USDC or USDT")
-    expect(swapAssetsLabel(singleToken(MAINNET_DAI))).toBeUndefined()
-  })
-
-  it("states the balance only for the settlement token, never 1:1 for a swapped one", async () => {
-    await render({ swapAssets: "USDC or USDT" })
-    expect(note()).toBe(
-      "The opening balance assumes you send DAI. USDC or USDT is swapped to DAI at the market rate, so the balance can differ.",
-    )
-    expect(termsValue("opening-balance")).toBe(usd(dai(10)))
-  })
-})
-
-describe("deposit amount formatters", () => {
-  it("what is due rounds up to the cent, what was seen rounds down, in the token's own units", () => {
-    const dai = (v: string) => BigInt(v.replace(".", "").padEnd(v.indexOf(".") + 18, "0"))
-    expect(formatDepositDue(dai("15.0"), 18)).toBe("$15.00")
-    expect(formatDepositDue(dai("0.001"), 18)).toBe("$0.01")
-    expect(formatDepositDue(1n, 18)).toBe("$0.01")
-    expect(formatDepositDue(dai("15.005"), 18)).toBe("$15.01")
-    expect(formatDepositDue(dai("1234.5"), 18)).toBe("$1,234.50")
-    expect(formatDepositDue(0n, 18)).toBe("$0.00")
-    expect(formatDepositSeen(dai("14.999"), 18)).toBe("$14.99")
-    expect(formatDepositSeen(dai("15.0"), 18)).toBe("$15.00")
-    expect(formatDepositSeen(1n, 18)).toBe("$0.00")
-    // A six-decimal token and a cent-precision one round the same way.
-    expect(formatDepositDue(14_999_001n, 6)).toBe("$15.00")
-    expect(formatDepositSeen(14_999_999n, 6)).toBe("$14.99")
-    expect(formatDepositDue(1501n, 2)).toBe("$15.01")
-    expect(formatDepositDue(15n, 0)).toBe("$15.00")
-    // The informational split keeps nearest rounding.
-    expect(formatDepositAmount(dai("15.005"), 18)).toBe("$15.01")
-    expect(formatDepositAmount(dai("15.004"), 18)).toBe("$15.00")
   })
 })

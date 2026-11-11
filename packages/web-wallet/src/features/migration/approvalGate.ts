@@ -2,8 +2,8 @@
  * Each passkey prompt of an upgrade opens from the user's tap on "Use passkey" (Figma 2b and 3c).
  * A tap grants one prompt. A prompt with no grant asks for the next one and waits.
  */
+import { memoryStore } from "@obsidion/front-core"
 import { useSyncExternalStore } from "react"
-import { createExternalState } from "../../lib/externalState"
 
 export interface ApprovalAsk {
   /** The approval asked for, counted from 1. */
@@ -11,9 +11,12 @@ export interface ApprovalAsk {
   total: number
 }
 
+// eslint-disable-next-line no-restricted-syntax -- ZKM-1625
 let grants = 0
+// eslint-disable-next-line no-restricted-syntax -- ZKM-1625
 let waiter: { resolve: () => void; reject: (error: Error) => void } | undefined
-const asked = createExternalState<ApprovalAsk | null>(null)
+// eslint-disable-next-line no-restricted-syntax -- ZKM-1625
+const asked = memoryStore<ApprovalAsk | null>(null)
 
 /** A tap on "Use passkey": the next prompt may open. */
 export function grantApproval(): void {

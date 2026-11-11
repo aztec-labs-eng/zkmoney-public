@@ -1,5 +1,4 @@
-import { PaylinkActionEnum } from "@obsidion/core/constants"
-import type { PaylinkTransaction, TransactionStatus } from "../../../types/transactions"
+import type { LinkFacts, TransactionStatus } from "../../../types/transactions"
 import { PAYLINK_STATUS_LABEL, paylinkStatusFor, type PaylinkStatusKind } from "./paylinkStatus"
 
 /** A creator's way back to an unclaimed link's escrow: in-window cancel, or post-expiry reclaim. */
@@ -43,8 +42,12 @@ export interface PaylinkRowView {
  * that ran, or Refunded where the row never recorded which.
  */
 export function paylinkRowView(
-  row: PaylinkTransaction,
+  row: LinkFacts,
   opts: {
+    /** The create's own state, or the claim's. */
+    status: TransactionStatus
+    /** A link this account created; else one it claimed. */
+    create: boolean
     /** A fresher lifecycle than the row's own flags, e.g. the detail sheet's chain recheck. */
     linkStatus?: PaylinkStatusKind
     offer?: PaylinkRecovery | null
@@ -55,10 +58,10 @@ export function paylinkRowView(
     nowSec: number
   },
 ): PaylinkRowView {
-  const create = row.action === PaylinkActionEnum.PAY
+  const { create } = opts
   const none = { canShare: false, recovery: null, recovering: null, refunded: false } as const
-  if (row.status === "failed") return { title: "Paylink", statusLabel: "Failed", ...none }
-  if (row.status === "pending") {
+  if (opts.status === "failed") return { title: "Paylink", statusLabel: "Failed", ...none }
+  if (opts.status === "pending") {
     return { title: "Paylink", statusLabel: "Pending", ...none, canShare: create && !!row.paylink }
   }
   if (!create) return { title: "Received via paylink", ...none }

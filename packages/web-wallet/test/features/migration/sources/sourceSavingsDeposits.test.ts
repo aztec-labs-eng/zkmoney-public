@@ -15,6 +15,7 @@ describe("source Savings deposit recovery", () => {
     }
     await expect(
       sourceSavingsDeposits({
+        page: {} as never,
         chain: { kind: "generation", session: { address: "account", savingsMoves } } as never,
         tuple: target,
         sourceTuples: [target],

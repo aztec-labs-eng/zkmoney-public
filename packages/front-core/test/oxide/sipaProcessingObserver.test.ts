@@ -6,11 +6,12 @@ import type { RecordSet } from "../../src/engine/persistentStore"
 import type { SipaDeposit } from "../../src/engine/sipaDeposits"
 import { memoryStore } from "../../src/engine/store"
 import { sipaSweepAllowed } from "../../src/core/services/deposits/sipaProcessing"
+import { createPace } from "@obsidion/core/cadence"
 import {
   createPortalCapacityRegistry,
   type PortalCapacityKey,
-  type VisibilitySource,
 } from "../../src/oxide/portalCapacityStore"
+import { queries } from "../../src/engine/query"
 import { createSipaProcessingObserver } from "../../src/oxide/sipaProcessingObserver"
 import type { SipaRecordRoute } from "../../src/oxide/sipaRoute"
 import { SipaIntent } from "@oxide/l1-contracts"
@@ -26,6 +27,7 @@ const OLD_TABLE = `0x${"0e".repeat(20)}` as Address
 const SIPA = `0x${"5a".repeat(20)}` as Address
 
 const TX_CAP = 10_000n * E18
+const TERMS_RETRY_MS = 15_000
 
 const TERMS: Record<string, SipaPortalTerms> = {
   [ACTIVE_TABLE]: { portal: ACTIVE_PORTAL, token: DAI, depositFee: E18, txAmountCap: TX_CAP },
@@ -37,8 +39,6 @@ const route = (forwardingTable: Address): SipaRecordRoute => ({
   forwardingTable,
   intent: SipaIntent.Deposit,
 })
-
-const visibility: VisibilitySource = { isVisible: () => true, onResume: () => () => {} }
 
 function snapshot(portal: Address, availableAtomic: bigint): PortalCapacitySnapshot {
   return {
@@ -86,7 +86,7 @@ function fallback(over: Partial<SipaDeposit> = {}): SipaDeposit {
   }
 }
 
-function setup() {
+function setup(termsSpec: { stale?: number; poll?: number } = {}) {
   const deposits = memoryStore<RecordSet<SipaDeposit>>({ records: [], loaded: true, failed: false })
   const capacity = new Map<string, bigint | Error>([
     [ACTIVE_PORTAL, 50_000n * E18],
@@ -98,9 +98,14 @@ function setup() {
     if (value instanceof Error) throw value
     return snapshot(key.portal, value)
   })
+  const query = queries({
+    pace: createPace(),
+    visible: memoryStore(true).readonly,
+    now: () => Date.now(),
+  })
   const registry = createPortalCapacityRegistry({
     read,
-    visibility,
+    query,
     policy: { maxHeadAgeMs: Infinity },
   })
   const termsFailures = new Set<string>()
@@ -108,10 +113,15 @@ function setup() {
     if (termsFailures.has(forwardingTable)) throw new Error("rpc down")
     return TERMS[forwardingTable]!
   })
+  const terms = query<[SipaRecordRoute, string | undefined], SipaPortalTerms>("terms", {
+    load: (route) => readTerms(route),
+    retry: { baseMs: TERMS_RETRY_MS, maxMs: TERMS_RETRY_MS },
+    ...termsSpec,
+  })
   const observer = createSipaProcessingObserver({
     deposits: deposits.readonly,
     capacity: (key) => registry.store(key),
-    readTerms,
+    terms,
     l1ChainId: CHAIN,
   })
   const upsert = (over: Partial<SipaDeposit> = {}, phase: SipaDeposit["phase"] = "sweeping") => {
@@ -120,7 +130,7 @@ function setup() {
     deposits.set({ records: [record], loaded: true, failed: false })
     return Promise.resolve()
   }
-  return { deposits, observer, read, readTerms, capacity, termsFailures, upsert }
+  return { deposits, observer, read, readTerms, terms, capacity, termsFailures, upsert }
 }
 
 describe("createSipaProcessingObserver", () => {
@@ -267,6 +277,30 @@ describe("createSipaProcessingObserver", () => {
     expect(observer.stateFor(SIPA)).toBeUndefined()
     await upsert({ sweepTxHash: undefined }, "recoverable")
     expect(observer.stateFor(SIPA)).toBeUndefined()
+  })
+
+  it("reads a deposit's terms from the one entry for its row and token, which others share", async () => {
+    const { observer, readTerms, terms, upsert } = setup()
+    await upsert()
+    await terms(route(OLD_TABLE), DAI).read()
+    expect(observer.capacityKeyFor(SIPA)).toEqual({
+      status: "known",
+      key: { chainId: CHAIN, portal: OLD_PORTAL, token: DAI },
+    })
+    expect(readTerms).toHaveBeenCalledOnce()
+  })
+
+  it("retries a failed portal lookup on the terms' backoff while subscribed", async () => {
+    const { observer, termsFailures, upsert } = setup()
+    termsFailures.add(OLD_TABLE)
+    await upsert()
+    const stop = observer.states.subscribe(() => {})
+    await vi.advanceTimersByTimeAsync(0)
+    expect(observer.capacityKeyFor(SIPA)).toEqual({ status: "unknown", retryable: true })
+    termsFailures.clear()
+    await vi.advanceTimersByTimeAsync(TERMS_RETRY_MS)
+    expect(observer.states.get().get(SIPA.toLowerCase())?.reason.kind).toBe("capacity")
+    stop()
   })
 
   it("reports a failed portal lookup as unavailable and retries it on request", async () => {
@@ -471,6 +505,19 @@ describe("createSipaProcessingObserver", () => {
     const count = read.mock.calls.length
     await vi.advanceTimersByTimeAsync(120_000)
     expect(read.mock.calls.length).toBe(count)
+  })
+
+  it("stops hearing terms whose subscribe notifies at once when the last subscriber leaves", async () => {
+    // Stale at once: subscribing to terms read before starts a read, which notifies as it begins.
+    const { observer, readTerms, terms, upsert } = setup({ stale: 0, poll: 1_000 })
+    await upsert()
+    await terms(route(OLD_TABLE), DAI).read()
+    const stop = observer.states.subscribe(() => {})
+    await vi.advanceTimersByTimeAsync(0)
+    stop()
+    const count = readTerms.mock.calls.length
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(readTerms.mock.calls.length).toBe(count)
   })
 
   it("follows a deposit swept while it is watched", async () => {

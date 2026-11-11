@@ -2,13 +2,11 @@
  * Funds an old version still holds that no balance here shows: a Savings move that version closed
  * before it finished, and a payment link nobody claimed there.
  */
-import { PaylinkActionEnum } from "@obsidion/core/constants"
 import {
   isOtherRollupLink,
   isStrandedSavingsMove,
   paylinkStatusIsUnspent,
   type FeedItem,
-  type PaylinkTransaction,
   type SavingsItem,
 } from "@obsidion/front-core"
 import { savingsMoveDestination, savingsMoveFigure } from "../savings/SavingsMoveRow"
@@ -47,17 +45,15 @@ export function oldVersionLeftovers(o: {
   }
   const { network } = o
   const links = o.items.flatMap((item) =>
-    item.kind === "tx" &&
-    item.tx.status === "success" &&
-    item.tx.action === PaylinkActionEnum.PAY &&
-    !!item.paylinkStatus &&
+    item.kind === "link" &&
+    item.funding === "settled" &&
     paylinkStatusIsUnspent(item.paylinkStatus) &&
-    isOtherRollupLink(item.tx as PaylinkTransaction, network)
-      ? [item.tx as PaylinkTransaction]
+    isOtherRollupLink(item.link, network)
+      ? [item.link]
       : [],
   )
-  const linkUsd = links.reduce((sum, row) => {
-    const token = row.token
+  const linkUsd = links.reduce((sum, link) => {
+    const token = link.token
     return sum + BigInt(Math.round((token?.amount ?? 0) * (token?.price || 1) * 100)) * CENT
   }, 0n)
   return { savings, deposited, links: linkUsd, linkCount: links.length }

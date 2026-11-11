@@ -9,9 +9,10 @@ import type { Fr } from "@aztec-labs/aztec.js/fields"
 import type { AnchorTier, CandidateProbe } from "@obsidion/front-core"
 import { getContractAddress } from "viem"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { fakeReads } from "../../support/fakeReads"
 import { testPage, committed, pageOver } from "../../support/page"
 import { openTestSession } from "../../support/session"
-import { session } from "../../../src/session/session"
+import { closeSession } from "../../../src/session/session"
 import { recordingAccounts } from "../../support/accountRecord"
 import { WebAlphaAuthService } from "../../../src/platform/auth/WebAlphaAuthService"
 import { cachedMsk } from "../../../src/platform/storage/activeStorage"
@@ -28,11 +29,6 @@ const h = vi.hoisted(() => ({
 }))
 
 vi.mock("../../../src/config/oxideTuple", () => ({
-  getOxideTuple: async () => ({
-    accountFactory: `0x${"11".repeat(20)}`,
-    registry: `0x${"22".repeat(20)}`,
-    ensDomain: "zkmoney.eth",
-  }),
   requireTupleField: (tuple: Record<string, string>, key: string) => tuple[key],
   l1PublicClient: () => ({}),
 }))
@@ -79,13 +75,14 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
 const { enterWithPasskey } = await import("../../../src/features/onboarding/oxideOnboarding")
 const { credentialIdToMetadata, deriveBootstrapKey } = await import("@obsidion/front-core")
 let accounts = recordingAccounts()
-/** What a sign-in reads beside its request: the account records and the page's auth. */
+/** What a sign-in reads beside its request: the account records and the session it starts in. */
 const signInDeps = {
   get accounts() {
     return accounts
   },
-  get auth() {
-    return session().auth
+  get session() {
+    const { device, page } = openTestSession()
+    return { auth: h.service as never, device, page }
   },
 }
 const { predictAccountAddressLocally } = await import("@oxide/l1-contracts")
@@ -98,7 +95,12 @@ const account = {
   getAddress: () => ({ toString: () => ADDR }),
   getCompleteAddress: () => ({ toString: () => `${ADDR}:complete` }),
 }
-const config = { rpId: "localhost" } as never
+const oxideTuple = async () => ({
+  accountFactory: `0x${"11".repeat(20)}`,
+  registry: `0x${"22".repeat(20)}`,
+  ensDomain: "zkmoney.eth",
+})
+const page = { config: { rpId: "localhost" }, chain: fakeReads({ oxideTuple }) } as never
 
 /** A gate that starts one attempt, picks `route`, and lets the approve-again tap through. */
 function gateFor(route?: "this-device" | "phone" | "security-key") {
@@ -147,11 +149,8 @@ async function freshBrowserWithPasskey(manager: "icloud" | "gpm" = "icloud") {
 }
 
 const store = new Map<string, string>()
-/**
- * What this browser holds, for asserting that a refusal wrote nothing. The environment record is
- * diagnostics, written for every ceremony whether refused or not, so it is left out.
- */
-const held = () => JSON.stringify([...store].filter(([k]) => k !== "webwallet.passkeyEnv").sort())
+/** What this browser holds in `localStorage`, for asserting that a refusal wrote nothing. */
+const held = () => JSON.stringify([...store].sort())
 
 beforeEach(() => {
   accounts = recordingAccounts()
@@ -170,6 +169,7 @@ beforeEach(() => {
   h.readAuthKeys.mockResolvedValue([])
 })
 afterEach(() => vi.unstubAllGlobals())
+afterEach(closeSession)
 
 describe("a sign-in anchored only by the master key adopts the credential's real key", () => {
   const masterKeyOnly = (secret: Fr): AnchorTier[] => {
@@ -200,8 +200,8 @@ describe("a sign-in anchored only by the master key adopts the credential's real
     namesOnly(created.secretKey)
     installed(created)
     const { gate } = gateFor()
-    const result = await enterWithPasskey(wallet as never, config, undefined, {
-      ...signInDeps,
+    const result = await enterWithPasskey(wallet as never, page, undefined, {
+      signIn: signInDeps,
       contractService: {} as never,
       gate,
       tiers: masterKeyOnly(created.secretKey),
@@ -235,8 +235,8 @@ describe("a sign-in anchored only by the master key adopts the credential's real
     const { gate } = gateFor()
     const before = held()
     await expect(
-      enterWithPasskey(wallet as never, config, undefined, {
-        ...signInDeps,
+      enterWithPasskey(wallet as never, page, undefined, {
+        signIn: signInDeps,
         contractService: {} as never,
         gate,
         tiers: masterKeyOnly(created.secretKey),
@@ -255,8 +255,8 @@ describe("a sign-in anchored only by the master key adopts the credential's real
       await freshBrowserWithPasskey()
     installed(created)
     const { gate } = gateFor()
-    const result = await enterWithPasskey(wallet as never, config, undefined, {
-      ...signInDeps,
+    const result = await enterWithPasskey(wallet as never, page, undefined, {
+      signIn: signInDeps,
       contractService: {} as never,
       gate,
       tiers: masterKeyOnly(created.secretKey),
@@ -290,8 +290,8 @@ describe("a sign-in anchored only by the master key adopts the credential's real
       isMskRoot: true,
     })
     const { gate } = gateFor()
-    const result = await enterWithPasskey(wallet as never, config, undefined, {
-      ...signInDeps,
+    const result = await enterWithPasskey(wallet as never, page, undefined, {
+      signIn: signInDeps,
       contractService: {} as never,
       gate,
       tiers: masterKeyOnly(created.secretKey),
@@ -314,8 +314,8 @@ describe("a sign-in anchored only by the master key adopts the credential's real
       },
     }
     const { gate } = gateFor()
-    const result = await enterWithPasskey(wallet as never, config, undefined, {
-      ...signInDeps,
+    const result = await enterWithPasskey(wallet as never, page, undefined, {
+      signIn: signInDeps,
       contractService: {} as never,
       gate,
       tiers: masterKeyOnly(created.secretKey),
@@ -339,8 +339,8 @@ describe("a sign-in anchored only by the master key adopts the credential's real
       return { ...setup, recorded }
     }
     const signIn = (wallet: unknown, tiers: AnchorTier[]) =>
-      enterWithPasskey(wallet as never, config, undefined, {
-        ...signInDeps,
+      enterWithPasskey(wallet as never, page, undefined, {
+        signIn: signInDeps,
         contractService: {} as never,
         gate: gateFor("phone").gate,
         tiers,
@@ -430,8 +430,8 @@ describe("a sign-in anchored only by the master key adopts the credential's real
 
     describe("steered to the phone", () => {
       const phoneSignIn = (wallet: unknown, tiers: AnchorTier[], hints?: object) =>
-        enterWithPasskey(wallet as never, config, undefined, {
-          ...signInDeps,
+        enterWithPasskey(wallet as never, page, undefined, {
+          signIn: signInDeps,
           contractService: {} as never,
           gate: gateFor().gate,
           tiers,

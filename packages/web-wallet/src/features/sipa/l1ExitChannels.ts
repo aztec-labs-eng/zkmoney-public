@@ -5,12 +5,17 @@
  * the funds go to an address the user types (any EOA can submit — only `target` is paid).
  */
 import type { Address, Hex, PublicClient } from "viem"
+import type { Config } from "wagmi"
+import type { Pace } from "@obsidion/core/cadence"
 import { WalletError } from "@obsidion/core/errors"
 import { l1ChainFor, type WebWalletConfig } from "../../config/env"
 import { l1PublicClient } from "../../config/oxideTuple"
 import { submitViaDesktopBridge } from "../../platform/desktopBridge"
 import { getL1Clients } from "../../session/l1Wallet"
 import copy from "./l1ExitChannels.copy"
+
+/** A live L1 receipt wait's interval. viem keeps its own timer, which no pace wake reaches. */
+export const L1_RECEIPT_POLL_MS = 4_000
 
 /** Progress of one L1 submission — shared by both exits. */
 export type L1ExitStage = "signing" | "awaiting-browser" | "confirming"
@@ -33,12 +38,19 @@ export interface L1ExitChannel {
 export async function injectedWalletChannel(
   config: WebWalletConfig,
   opts: {
+    wagmi: Config
     from?: Hex
     onStage?: (stage: L1ExitStage) => void
     readClient?: PublicClient
-  } = {},
+    /** The page's: the receipt wait polls at its interval. */
+    pace: Pick<Pace, "foreignMs">
+  },
 ): Promise<L1ExitChannel> {
-  const { walletClient, account, chain } = await getL1Clients(config.l1ChainId, opts.from)
+  const { walletClient, account, chain } = await getL1Clients(
+    opts.wagmi,
+    config.l1ChainId,
+    opts.from,
+  )
   const publicClient = opts.readClient ?? l1PublicClient(config)
   return {
     target: account,
@@ -64,7 +76,10 @@ export async function injectedWalletChannel(
     },
     waitForReceipt: async (hash) => {
       opts.onStage?.("confirming")
-      const receipt = await publicClient.waitForTransactionReceipt({ hash })
+      const receipt = await publicClient.waitForTransactionReceipt({
+        hash,
+        pollingInterval: opts.pace.foreignMs(L1_RECEIPT_POLL_MS),
+      })
       return receipt.status === "success"
     },
   }
@@ -85,6 +100,8 @@ export interface DesktopBridgeChannelParams {
   display: { title: string; lines: [string, string][] }
   onHelperOpened?: (submitUrl: string) => void
   onStage?: (stage: L1ExitStage) => void
+  /** The page's: the receipt wait polls at its interval. */
+  pace: Pick<Pace, "foreignMs">
 }
 
 /** Submission through the desktop launcher's helper page in the user's default browser. */
@@ -104,7 +121,10 @@ export function desktopBridgeChannel(params: DesktopBridgeChannelParams): L1Exit
     },
     waitForReceipt: async (hash) => {
       params.onStage?.("confirming")
-      const receipt = await params.publicClient.waitForTransactionReceipt({ hash })
+      const receipt = await params.publicClient.waitForTransactionReceipt({
+        hash,
+        pollingInterval: params.pace.foreignMs(L1_RECEIPT_POLL_MS),
+      })
       return receipt.status === "success"
     },
   }

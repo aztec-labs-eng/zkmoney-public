@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity >=0.8.27;
+import {SweepGasCeilings} from "@test/helpers/SweepGasCeilings.sol";
 import {console2} from "forge-std/console2.sol";
 
 import {DepositSIPA} from "@periphery/DepositSIPA.sol";
@@ -28,6 +29,7 @@ import {
   REGISTRATION_SWEEP_TIP
 } from "@test/helpers/ForwardingTableFixture.sol";
 import {RelayerTransaction} from "@test/periphery/RelayerTransaction.sol";
+import {Intents} from "@periphery/Intent.sol";
 
 contract RoguePortal {
   IERC20 public immutable UNDERLYING;
@@ -142,7 +144,8 @@ contract SIPAPlumbingBindingTest is RegistrationTestBase {
       address(portal),
       IOperationExecutor(address(operationExecutor)),
       AggregatorV3Interface(address(feed)),
-      sipaFactory
+      sipaFactory,
+      SweepGasCeilings.initial()
     );
     underlying.mint(address(sm), 100_000 ether);
     vm.prank(OWNER);
@@ -183,7 +186,8 @@ contract SIPAPlumbingBindingTest is RegistrationTestBase {
       address(portal),
       IOperationExecutor(address(operationExecutor)),
       AggregatorV3Interface(address(feed)),
-      sipaFactory
+      sipaFactory,
+      SweepGasCeilings.initial()
     );
     underlying.mint(address(sm), 100_000 ether);
     vm.prank(OWNER);
@@ -192,8 +196,8 @@ contract SIPAPlumbingBindingTest is RegistrationTestBase {
     vm.txGasPrice(1 gwei);
 
     assertGt(
-      sm.quoteSubsidy(fee, sm.SWEEP_GAS_REGISTRATION_CEILING()),
-      sm.quoteSubsidy(fee, sm.SWEEP_GAS_DEPOSIT_CEILING()),
+      sm.quoteSubsidy(fee, sm.$sweepGasCeilings(Intents.REGISTRATION)),
+      sm.quoteSubsidy(fee, sm.$sweepGasCeilings(Intents.DEPOSIT)),
       "a registration must be quoted above a deposit at the ceiling"
     );
     assertGt(sm.SWEEP_GAS_SWAP_USDC_HOP(), 0, "the USDC route carries swap gas");
@@ -240,8 +244,8 @@ contract SIPAPlumbingBindingTest is RegistrationTestBase {
 
     assertTrue(sipaFactory.approvedTable(address(nextTable)));
     assertTrue(sipaFactory.approvedTable(address(forwardingTable)), "the earlier table stays approved");
-    assertEq(sipaFactory.implementationFor(SIPABase.Intent.Deposit), address(depositSIPAImplementation));
-    assertEq(sipaFactory.implementationFor(SIPABase.Intent.Registration), address(registrationSIPAImplementation));
+    assertEq(sipaFactory.implementationFor(Intents.DEPOSIT), address(depositSIPAImplementation));
+    assertEq(sipaFactory.implementationFor(Intents.REGISTRATION), address(registrationSIPAImplementation));
   }
 
   function test_GivenANewImplementation_ThenItsIntentIsPointedAgainAndOlderSIPAsStillSweep() external {
@@ -253,13 +257,13 @@ contract SIPAPlumbingBindingTest is RegistrationTestBase {
     vm.prank(OWNER);
     sipaFactory.blessImplementation(nextDeposit);
 
-    assertEq(sipaFactory.implementationFor(SIPABase.Intent.Deposit), nextDeposit);
+    assertEq(sipaFactory.implementationFor(Intents.DEPOSIT), nextDeposit);
     assertEq(
-      sipaFactory.implementationFor(SIPABase.Intent.Registration),
+      sipaFactory.implementationFor(Intents.REGISTRATION),
       address(registrationSIPAImplementation),
       "the other intents keep their pointers"
     );
-    assertTrue(sipaFactory.intentOf(address(depositSIPAImplementation)) == SIPABase.Intent.Deposit);
+    assertTrue(sipaFactory.intentOf(address(depositSIPAImplementation)) == Intents.DEPOSIT);
     address newer = sipaFactory.deploySIPA(
       nextDeposit, keccak256(intent), _recoveryCommitment("recovery"), ROLLUP_VERSION, true, forwardingTable
     );
@@ -273,9 +277,9 @@ contract SIPAPlumbingBindingTest is RegistrationTestBase {
   }
 
   function test_GivenADepositImplementation_ThenItDoesNotAuthenticateARegistration() external {
-    assertTrue(sipaFactory.intentOf(address(depositSIPAImplementation)) == SIPABase.Intent.Deposit);
-    assertTrue(sipaFactory.intentOf(address(registrationSIPAImplementation)) == SIPABase.Intent.Registration);
-    assertTrue(sipaFactory.intentOf(makeAddr("neither")) == SIPABase.Intent.None);
+    assertTrue(sipaFactory.intentOf(address(depositSIPAImplementation)) == Intents.DEPOSIT);
+    assertTrue(sipaFactory.intentOf(address(registrationSIPAImplementation)) == Intents.REGISTRATION);
+    assertTrue(sipaFactory.intentOf(makeAddr("neither")) == Intents.NONE);
   }
 
   function test_GivenANonOwner_WhenBlessing_ThenReverts() external {
@@ -293,7 +297,7 @@ contract SIPAPlumbingBindingTest is RegistrationTestBase {
 
   function test_GivenAnImplementationOfNoIntent_WhenBlessing_ThenReverts() external {
     address noIntent = makeAddr("noIntent");
-    vm.mockCall(noIntent, abi.encodeCall(SIPABase.INTENT, ()), abi.encode(SIPABase.Intent.None));
+    vm.mockCall(noIntent, abi.encodeCall(SIPABase.INTENT, ()), abi.encode(Intents.NONE));
     vm.prank(OWNER);
     vm.expectRevert(Errors.SIPAFactory__ZeroImplementation.selector);
     sipaFactory.blessImplementation(noIntent);

@@ -74,7 +74,10 @@ export interface SetupTestnetOptions {
   /** Build the real testnet oxide TEE signer + spend-metadata resolver. */
   attachTeeSigner?: boolean
   /** Front-end composition supplies the front-core TEE source without reversing the package graph. */
-  loadTeeSigner?(l1RpcUrl: string): Promise<RegisteredTeeSigner | undefined>
+  loadTeeSigner?(
+    l1RpcUrl: string,
+    contractService: ContractService,
+  ): Promise<RegisteredTeeSigner | undefined>
   /**
    * Deploy the account on-chain. A fresh Schnorr account needs this (it does
    * not auto-deploy); alpha accounts auto-deploy on their first tx, so this is
@@ -126,34 +129,11 @@ export async function setupTestnet(options?: SetupTestnetOptions): Promise<Testn
   console.log(`[setupTestnet] oxide manifest: ${oxideManifestUrl} (${oxidePortal})`)
 
   const node = createNode(nodeUrl, AZTEC_NODE_API_KEY)
-  // PXE MUST run with `proverEnabled: true` for testnet — the node's
-  // `TxProofValidator` uses a real BB circuit verifier that rejects the
-  // test prover's fake proofs with `Invalid proof`. Mirrors
-  // `packages/tooling/l2-contracts-deployer/scripts/bridgeFeeJuice.ts` which sets
-  // `proverEnabled = !isSandbox`. (Server-side PXE proving for testnet
-  // is several seconds per circuit — WASM via bb.js.)
-  const wallet = await ObsidionWalletTest.create(node, {
-    proverEnabled: true,
-    dataDirectory: options?.dataDirectory,
-  })
-
-  // CRITICAL: ObsidionWalletTest.completeFeeOptions defaults the fee
-  // payer to upstream Aztec's SponsoredFPC (sponsored.aztec) when the
-  // executionPayload doesn't embed a feePayer. On testnet that FPC has
-  // ZERO fee juice (the canonical sponsored.aztec deployment is
-  // sandbox-only). Patch completeFeeOptions to route through Obsidion's
-  // own sponsorFPC (resolved below) — same architectural pattern as
-  // Aztec's, but funded.
-  // We do this by attaching the override AFTER the sponsorFPC address
-  // is resolved (further down in this function).
-
-  // ContractService must be initialized BEFORE createObsidionAccount. The harness owns its
-  // address store: the deployed contracts are seeded from the staging profile document's live
-  // version below, so we resolve the Obsidion sponsorFPC deployment (rather than the upstream
-  // Aztec SponsoredFPC, which is a different contract). oxideToken is deliberately NOT
-  // seeded — the profile never carries it, and the ContractService oxide overlay supplies it
+  // The harness owns its address store: the deployed contracts are seeded from the staging
+  // profile document's live version below, so we resolve the Obsidion sponsorFPC deployment (rather
+  // than the upstream Aztec SponsoredFPC, which is a different contract). oxideToken is deliberately
+  // NOT seeded — the profile never carries it, and the ContractService oxide overlay supplies it
   // from the manifest pointer above.
-  ContractService.resetInstance()
   const storage = new NodeContractServiceStorage(Network.TESTNET)
   const profile = JSON.parse(readFileSync(profilePath, "utf-8")) as {
     current?: string
@@ -166,22 +146,42 @@ export async function setupTestnet(options?: SetupTestnetOptions): Promise<Testn
       await storage.setContractAddress(name, AztecAddress.fromStringUnsafe(address))
     }
   }
-  // local-ledger: ObsidionWalletTest pulls ObsidionAccountAlphaTest (a TEST-only
-  // artifact) which the deployed slots do not describe.
-  const contractService = ContractService.getInstance(
-    storage,
-    wallet.node,
-    wallet.pxe,
-    Network.TESTNET,
+  // PXE MUST run with `proverEnabled: true` for testnet — the node's
+  // `TxProofValidator` uses a real BB circuit verifier that rejects the
+  // test prover's fake proofs with `Invalid proof`. Mirrors
+  // `packages/tooling/l2-contracts-deployer/scripts/bridgeFeeJuice.ts` which sets
+  // `proverEnabled = !isSandbox`. (Server-side PXE proving for testnet
+  // is several seconds per circuit — WASM via bb.js.)
+  const wallet = await ObsidionWalletTest.create(
+    node,
+    { proverEnabled: true, dataDirectory: options?.dataDirectory },
+    undefined,
     {
-      source: "local-ledger",
-      oxideEnvProfile: {
-        manifestUrl: oxideManifestUrl,
-        portal: oxidePortal,
-        expectedGitSha: process.env.OXIDE_EXPECTED_GIT_SHA || undefined,
-      },
+      // local-ledger: ObsidionWalletTest pulls ObsidionAccountAlphaTest (a TEST-only
+      // artifact) which the deployed slots do not describe.
+      contractService: (node, pxe) =>
+        new ContractService(storage, node, pxe, Network.TESTNET, {
+          source: "local-ledger",
+          oxideEnvProfile: {
+            manifestUrl: oxideManifestUrl,
+            portal: oxidePortal,
+            expectedGitSha: process.env.OXIDE_EXPECTED_GIT_SHA || undefined,
+          },
+        }),
     },
   )
+
+  // CRITICAL: ObsidionWalletTest.completeFeeOptions defaults the fee
+  // payer to upstream Aztec's SponsoredFPC (sponsored.aztec) when the
+  // executionPayload doesn't embed a feePayer. On testnet that FPC has
+  // ZERO fee juice (the canonical sponsored.aztec deployment is
+  // sandbox-only). Patch completeFeeOptions to route through Obsidion's
+  // own sponsorFPC (resolved below) — same architectural pattern as
+  // Aztec's, but funded.
+  // We do this by attaching the override AFTER the sponsorFPC address
+  // is resolved (further down in this function).
+
+  const contractService = wallet.contractService
 
   // Register the sponsorFPC contract instance + artifact in PXE so fee-method
   // calls decode against the right contract class.
@@ -245,7 +245,6 @@ export async function setupTestnet(options?: SetupTestnetOptions): Promise<Testn
   // for our SponsorFPC) to mark the FPC as fee payer.
   // We override the FULL completeFeeOptions because the test wallet's
   // current override hardcodes Aztec's SponsoredFPC.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ;(wallet as any).completeFeeOptions = async function (config: any): Promise<any> {
     const { gasSettings: configGas, feePayer } = config
     const maxFeesPerGas =
@@ -293,9 +292,7 @@ export async function setupTestnet(options?: SetupTestnetOptions): Promise<Testn
   // "SponsoredFPC not deployed." Route the no-options default through Obsidion's
   // own FPC: the PasswordFPC when FPC_PASSWORD is set, else the fee-juice
   // sponsorFPC. Explicit-options calls defer to the original behavior.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const origGetDefaultSendOptions = (wallet as any).getDefaultSendOptions.bind(wallet)
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ;(wallet as any).getDefaultSendOptions = async function (from: AztecAddress, opts?: any) {
     if (opts) return origGetDefaultSendOptions(from, opts)
     return {
@@ -363,7 +360,7 @@ export async function setupTestnet(options?: SetupTestnetOptions): Promise<Testn
   // createOxideTeeSignerSource path). oxide-token / paylink ops won't
   // validate without it. The oxide env-registry client must fetch its
   // manifest tuple before the signer can load — the same lifecycle the
-  // app's ContractServiceProvider drives via client.initialize().
+  // app's manifest gate drives via client.initialize().
   let teeSigner: RegisteredTeeSigner | undefined
   let resolveSpendMetadata: SpendMetadataResolver | undefined
   if (options?.attachTeeSigner) {
@@ -388,7 +385,7 @@ export async function setupTestnet(options?: SetupTestnetOptions): Promise<Testn
         "[setupTestnet] attachTeeSigner needs a front-end supplied loadTeeSigner callback",
       )
     }
-    teeSigner = await options.loadTeeSigner(l1RpcUrl)
+    teeSigner = await options.loadTeeSigner(l1RpcUrl, contractService)
     if (!teeSigner) {
       throw new Error("[setupTestnet] attachTeeSigner: TEE signer failed to load from oxide tuple")
     }

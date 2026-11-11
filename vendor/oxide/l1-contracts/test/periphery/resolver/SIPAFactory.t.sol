@@ -11,6 +11,7 @@ import {Clones} from "@oz/proxy/Clones.sol";
 import {ForwardingTable} from "@periphery/ForwardingTable.sol";
 import {SIPAFactory} from "@periphery/SIPAFactory.sol";
 import {IForwardingTable} from "@periphery/interfaces/IForwardingTable.sol";
+import {Intent, Intents} from "@periphery/Intent.sol";
 
 contract SIPAFactoryTest is RegistriesTestBase {
   function testFuzz_deployMatchesPredictionAndWiresImmutables(
@@ -85,6 +86,26 @@ contract SIPAFactoryTest is RegistriesTestBase {
     assertTrue(sipaFactory.isBlessed(blessed));
   }
 
+  function testFuzz_aBlessedImplementationOfAnyIntentIsRecognised(uint8 _intent) public {
+    Intent intent = Intent.wrap(uint8(bound(_intent, 1, type(uint8).max)));
+    address implementation = address(new OpenIntentImplementation(intent));
+    vm.prank(registryOwner);
+    sipaFactory.blessImplementation(implementation);
+
+    address clone = sipaFactory.deploySIPA(
+      implementation,
+      keccak256("intent"),
+      RecoveryCommitmentLib.deriveRecoveryCommitment(keccak256("recovery"), address(0)),
+      ROLLUP_VERSION,
+      true,
+      forwardingTable
+    );
+
+    assertTrue(sipaFactory.intentOf(implementation) == intent, "the factory records the implementation's intent");
+    assertEq(sipaFactory.implementationFor(intent), implementation, "the intent points at the implementation");
+    assertTrue(sipaFactory.sipaIntentOf(clone) == intent, "a clone of the implementation is a SIPA of the intent");
+  }
+
   function test_eachParamChangesAddress() public {
     address impl = address(depositSIPAImplementation);
     bytes32 intentHash = keccak256("intent");
@@ -124,7 +145,7 @@ contract SIPAFactoryTest is RegistriesTestBase {
       unapproved
     );
 
-    assertTrue(sipaFactory.sipaIntentOf(clone) == SIPABase.Intent.None);
+    assertTrue(sipaFactory.sipaIntentOf(clone) == Intents.NONE);
     assertFalse(sipaFactory.isBlessed(clone));
   }
 
@@ -132,7 +153,7 @@ contract SIPAFactoryTest is RegistriesTestBase {
     bytes memory shortArgs = abi.encode(keccak256("intent"), bytes32(0), ROLLUP_VERSION, true);
     address clone = Clones.cloneWithImmutableArgs(address(depositSIPAImplementation), shortArgs);
 
-    assertTrue(sipaFactory.sipaIntentOf(clone) == SIPABase.Intent.None);
+    assertTrue(sipaFactory.sipaIntentOf(clone) == Intents.NONE);
   }
 
   function test_aCloneThatTheFactoryDidNotDeployIsNotASIPA() public {
@@ -147,14 +168,14 @@ contract SIPAFactoryTest is RegistriesTestBase {
     );
     address clone = Clones.cloneWithImmutableArgs(address(depositSIPAImplementation), args);
 
-    assertTrue(sipaFactory.sipaIntentOf(clone) == SIPABase.Intent.None);
+    assertTrue(sipaFactory.sipaIntentOf(clone) == Intents.NONE);
   }
 
   function test_blessImplementationEmitsTheImplementationAndItsIntent() public {
     address nextDeposit = address(new DepositSIPA());
 
     vm.expectEmit(address(sipaFactory));
-    emit SIPAFactory.ImplementationBlessed(nextDeposit, SIPABase.Intent.Deposit);
+    emit SIPAFactory.ImplementationBlessed(nextDeposit, Intents.DEPOSIT);
     vm.prank(registryOwner);
     sipaFactory.blessImplementation(nextDeposit);
   }
@@ -167,5 +188,17 @@ contract SIPAFactoryTest is RegistriesTestBase {
     emit SIPAFactory.TableBlessed(address(nextTable));
     vm.prank(registryOwner);
     sipaFactory.blessTable(nextTable);
+  }
+}
+
+contract OpenIntentImplementation {
+  Intent internal immutable OPEN_INTENT;
+
+  constructor(Intent _intent) {
+    OPEN_INTENT = _intent;
+  }
+
+  function INTENT() external view returns (Intent) {
+    return OPEN_INTENT;
   }
 }

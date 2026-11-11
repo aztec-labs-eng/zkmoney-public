@@ -17,14 +17,11 @@ vi.mock("@obsidion/sdk", async () => {
   const actual = await vi.importActual<typeof import("@obsidion/sdk")>("@obsidion/sdk")
   return {
     ...actual,
-    ContractService: {
-      getInstance: () => ({ getOxideClient: () => oxideClientHolder.current }),
-    },
     loadTeeSigner: loadTeeSignerMock,
   }
 })
 
-import { createOxideTeeSignerSource, sharedFleetSigners } from "../../src/tee/teeSignerSource"
+import { createOxideTeeSignerSource } from "../../src/tee/teeSignerSource"
 
 const FAKE_PORTAL = "0x10c20f5ec11aa51de97edd0cfb01bfcb11e8fbf3"
 const FAKE_ENCLAVE_URL = "http://enclave/rpc"
@@ -52,7 +49,11 @@ function makeFakeClient(tuple: any = null) {
   }
 }
 
-const L1_OPTS = { l1RpcUrl: "http://l1.rpc", l1Chain: sepolia }
+const L1_OPTS = {
+  l1RpcUrl: "http://l1.rpc",
+  l1Chain: sepolia,
+  oxideClient: () => oxideClientHolder.current,
+}
 
 describe("createOxideTeeSignerSource", () => {
   beforeEach(() => {
@@ -186,41 +187,6 @@ describe("createOxideTeeSignerSource", () => {
       FAKE_PORTAL,
       expect.any(Object),
     )
-  })
-})
-
-describe("sharedFleetSigners", () => {
-  const SKY_PORTAL = "0x20c20f5ec11aa51de97edd0cfb01bfcb11e8fbf4"
-  beforeEach(() => vi.clearAllMocks())
-
-  it("connects one signer per portal domain over the one fleet", async () => {
-    const connect = vi.fn(async (_url: string, portal: string) => ({ portal } as any))
-    const signers = sharedFleetSigners(connect)
-
-    const [main, again, sky] = await Promise.all([
-      signers(FAKE_ENCLAVE_URL, FAKE_PORTAL),
-      signers(FAKE_ENCLAVE_URL, FAKE_PORTAL.toUpperCase().replace("0X", "0x") as `0x${string}`),
-      signers(FAKE_ENCLAVE_URL, SKY_PORTAL),
-    ])
-
-    expect(again).toBe(main)
-    expect(sky).not.toBe(main)
-    expect(connect.mock.calls).toEqual([
-      [FAKE_ENCLAVE_URL, FAKE_PORTAL],
-      [FAKE_ENCLAVE_URL, SKY_PORTAL],
-    ])
-  })
-
-  it("connects again after a failed connect", async () => {
-    const connect = vi
-      .fn()
-      .mockRejectedValueOnce(new Error("not registered"))
-      .mockResolvedValueOnce(FAKE_SIGNER)
-    const signers = sharedFleetSigners(connect)
-
-    await expect(signers(FAKE_ENCLAVE_URL, FAKE_PORTAL)).rejects.toThrow("not registered")
-    expect(await signers(FAKE_ENCLAVE_URL, FAKE_PORTAL)).toBe(FAKE_SIGNER)
-    expect(connect).toHaveBeenCalledTimes(2)
   })
 
   it("is how a source connects when given", async () => {

@@ -2,6 +2,7 @@ import { sha256 } from "@noble/hashes/sha2"
 import { WalletError, type ErrorCode } from "@obsidion/core/errors"
 import { isDemoMode } from "../dev/demoFlag"
 import { deviceStorage } from "../platform/storage/rollupStorage"
+import { removeOlderAnalyticsIds } from "../platform/storage/storageMigrations/analyticsIds"
 import { firstInTab, landingAttribution } from "./trafficSource"
 
 /** Every event the web wallet emits, grouped by funnel. */
@@ -173,6 +174,7 @@ export const appVersion = (import.meta.env.VITE_APP_VERSION as string | undefine
  * identifier (see `fireSignupEvent`), and a report the user submits by hand, which is its own
  * consent.
  */
+// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
 let consentGranted: () => boolean = () => false
 
 export function bindAnalyticsConsent(getter: () => boolean) {
@@ -193,8 +195,6 @@ export const ANALYTICS_CONSENT_COPY =
   "Share anonymous data on how you use the wallet — like timings and paylink activity shown in amount ranges (e.g., “under $50”) linked to an anonymized ID. Exact amounts, addresses, or tags are never shared. Signup and login steps are always counted, with no ID. You can update this anytime in settings."
 
 const BASE_ID_KEY = "zkm_bid"
-/** Storage keys of the pre-base independent random ids; unread now, deleted when the base is minted. */
-const LEGACY_ID_KEYS = ["zkm_sid", "zkm_rid"]
 
 const baseIdMemory: { id?: string } = {}
 
@@ -216,7 +216,7 @@ function baseId(): string {
     if (!id) {
       id = baseIdMemory.id ?? crypto.randomUUID()
       deviceStorage.setItem(BASE_ID_KEY, id)
-      for (const key of LEGACY_ID_KEYS) deviceStorage.removeItem(key)
+      removeOlderAnalyticsIds()
     }
     return (baseIdMemory.id = id)
   } catch {
@@ -245,6 +245,7 @@ function deriveId(domain: string, base: string): string {
   )}-${hex.slice(20)}`
 }
 
+// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
 let derived: { base: string; sid: string; rid: string } | undefined
 
 function derivedIds(): { sid: string; rid: string } {

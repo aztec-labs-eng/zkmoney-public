@@ -1,3 +1,4 @@
+import { bestEffortSync } from "@obsidion/core/errors"
 import type { AccountServiceClient } from "@obsidion/front-core"
 import { deviceStorage } from "../../platform/storage/rollupStorage"
 
@@ -8,18 +9,18 @@ const STORAGE_KEY = "webwallet.inbound-invite"
 export const INBOUND_INVITE_TTL_MS = 60 * 60 * 1000
 /** Refusals that will not change on a retry: a malformed or unknown code, the user's own, or an
  *  invitee already registered. */
+// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
 const FINAL_REFUSALS = new Set([400, 403, 404, 409])
 
 /** Keeps the code from `?invite=`; runs before routing, which can drop the query. */
 export function captureInboundInvite(href = window.location.href, now = Date.now()): void {
-  try {
+  // Without storage the invite is not credited.
+  bestEffortSync(() => {
     const code = new URL(href).searchParams.get("invite")
     if (code && INVITE_CODE.test(code)) {
       deviceStorage.setItem(STORAGE_KEY, JSON.stringify({ code, at: now }))
     }
-  } catch {
-    // Without storage the invite is not credited.
-  }
+  }, undefined)
 }
 
 export function inboundInvite(now = Date.now()): string | undefined {
@@ -34,11 +35,8 @@ export function inboundInvite(now = Date.now()): string | undefined {
 }
 
 function forget(): void {
-  try {
-    deviceStorage.removeItem(STORAGE_KEY)
-  } catch {
-    // Nothing kept.
-  }
+  // Without storage there is nothing to forget.
+  bestEffortSync(() => deviceStorage.removeItem(STORAGE_KEY), undefined)
 }
 
 /**

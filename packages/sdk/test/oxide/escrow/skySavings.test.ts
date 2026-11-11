@@ -12,14 +12,10 @@ import {
 import {
   SkyEscrowFactoryAbi,
   SkyRoute,
-  encodeSkyEscrowDeploy,
   predictSkyEscrowAddressLocally,
 } from "@oxide/experiments/sky/sky_savings.js"
-import { PlainWithdrawalSubsidyAbi, encodeEscrowRecoverERC20 } from "@oxide/l1-contracts"
-import { Fr } from "@aztec-labs/foundation/curves/bn254"
-import { multicall3Abi } from "viem"
+import { PlainWithdrawalSubsidyAbi } from "@oxide/l1-contracts"
 import { L1_OPERATION_TIP_MARGIN_BPS } from "@obsidion/core/constants"
-import { MULTICALL3_ADDRESS } from "../../../src/services/sipa/sipaClaim.js"
 import {
   ETH_USD_FEED_DECIMALS,
   ETH_USD_MAX_PRICE_AGE_SECONDS,
@@ -34,8 +30,7 @@ import {
 import {
   SKY_RELEASE_GAS,
   SkyTipExceedsFundingError,
-  buildSkyEscrowRecoverCall,
-  buildSkyEscrowRunCall,
+  encodeSkyEscrowDeployOnly,
   quoteSkyEscrowTip,
   quoteSkyReleaseTip,
 } from "../../../src/oxide/escrow/skySavings.js"
@@ -245,46 +240,12 @@ describe("Sky escrow exits", () => {
     relayerTip: 7n,
     nonce: `0x${"ef".repeat(32)}` as Hex,
   }
-  const ESCROW = predictSkyEscrowAddressLocally(FACTORY, args)
-  const recover = {
-    escrow: ESCROW,
-    factory: FACTORY,
-    args,
-    recovery: { account: SENDER, salt: new Fr(42n) },
-    signature: "0x1234" as Hex,
-    target: SENDER,
-    token: DAI,
-    nonce: `0x${"01".repeat(32)}` as Hex,
-    deadline: 99n,
-  }
-  const recoverData = encodeEscrowRecoverERC20({
-    recoverySalt: recover.recovery.salt.toString() as Hex,
-    account: SENDER,
-    signature: recover.signature,
-    target: SENDER,
-    token: DAI,
-    nonce: recover.nonce,
-    deadline: 99n,
-  })
 
-  it("runs the escrow through the factory", () => {
-    expect(buildSkyEscrowRunCall(FACTORY, args)).toEqual({
-      to: FACTORY,
-      data: encodeSkyEscrowDeploy(args),
+  it("deploys the clone without its run", () => {
+    const deploy = decodeFunctionData({
+      abi: SkyEscrowFactoryAbi,
+      data: encodeSkyEscrowDeployOnly(args),
     })
-  })
-
-  it("recovers from a deployed escrow directly, and deploys one that never ran in the same call", () => {
-    expect(buildSkyEscrowRecoverCall({ ...recover, deployed: true })).toEqual({
-      to: ESCROW,
-      data: recoverData,
-    })
-    const undeployed = buildSkyEscrowRecoverCall({ ...recover, deployed: false })
-    expect(undeployed.to).toBe(MULTICALL3_ADDRESS)
-    const [calls] = decodeFunctionData({ abi: multicall3Abi, data: undeployed.data })
-      .args as readonly [readonly { target: Address; callData: Hex }[]]
-    const deploy = decodeFunctionData({ abi: SkyEscrowFactoryAbi, data: calls[0]!.callData })
     expect([deploy.functionName, deploy.args[0]]).toEqual(["deploy", args])
-    expect(calls[1]).toMatchObject({ target: ESCROW, callData: recoverData })
   })
 })

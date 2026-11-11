@@ -43,7 +43,7 @@ const gate = (
   row: PaylinkTransaction,
   liveStatus: PaylinkStatusKind = "awaitingClaim",
   account = CREATOR,
-) => creatorLinkAction(row, { nowSec: NOW, liveStatus, account })
+) => creatorLinkAction(row, row.status, { nowSec: NOW, liveStatus, account })
 
 describe("paylinkStatusIsUnspent", () => {
   it("admits only the statuses whose escrow still holds funds", () => {
@@ -85,7 +85,7 @@ describe("creatorLinkAction", () => {
 
   it("keeps the offer when the session account is not known yet", () => {
     expect(
-      creatorLinkAction(payRow({ refundableUntil: NOW + 60 }), {
+      creatorLinkAction(payRow({ refundableUntil: NOW + 60 }), "success", {
         nowSec: NOW,
         liveStatus: "awaitingClaim",
       }),
@@ -118,7 +118,7 @@ describe("isOtherRollupLink", () => {
 
 describe("isOpenCreatorLink", () => {
   const open = (over: Partial<PaylinkTransaction> = {}, account = CREATOR, network?: string) =>
-    isOpenCreatorLink(payRow(over), account, network)
+    isOpenCreatorLink(payRow(over), payRow(over).status, account, network)
 
   it("is a link the account can take back now or once it expires", () => {
     expect(open({ refundableUntil: NOW + 60 })).toBe(true)
@@ -140,8 +140,7 @@ describe("isOpenCreatorLink", () => {
     expect(open({}, OTHER)).toBe(false)
   })
 
-  it("is not a claim leg, a zk link, or a link on another rollup", () => {
-    expect(open({ emailPaymentAction: "Claim With Email" })).toBe(false)
+  it("is not a zk link, or a link on another rollup", () => {
     expect(open({ flavor: "zk" })).toBe(false)
     expect(open({ networkId: "0xOLD" }, CREATOR, "0xNEW")).toBe(false)
   })

@@ -6,12 +6,15 @@
  *     portal and pays them the tip; the settle pass then claims the deposit;
  *   - recover the DAI to an address they name, signed by the move's recovery account.
  */
-import type { SkyEscrowArgs } from "@oxide/experiments/sky/sky_savings.js"
 import type { Address, Hex } from "viem"
-import { buildSkyEscrowRecoverCall, buildSkyEscrowRunCall } from "@obsidion/sdk"
+import {
+  escrowLeg,
+  escrowRecoverCall,
+  escrowRunCall,
+  type SkyLeg,
+} from "../core/services/bridge/escrowLeg"
 import { SWAP_STUCK_THRESHOLD_MS } from "../core/services/bridge/withdrawalPhases"
 import type { WithdrawalRecord } from "../core/services/bridge/types"
-import { savingsRoute } from "../core/services/savings/savingsMoveQuote"
 import { isSavingsMovePending, type SavingsMove } from "./savingsMoves"
 import {
   requireFunded,
@@ -22,30 +25,10 @@ import {
 
 const RAN = "This move's escrow has already run. Savings will update shortly."
 
-export interface SkyEscrowTarget {
-  escrow: Address
-  factory: Address
-  args: SkyEscrowArgs
-}
-
-/** The move's escrow as its burn committed to it; undefined for a burn without Sky meta. */
-export function skyEscrowTarget(
-  move: Pick<SavingsMove, "escrow">,
-  burn: Pick<WithdrawalRecord, "skyMove">,
-): SkyEscrowTarget | undefined {
-  const sky = burn.skyMove
-  if (!sky) return undefined
-  return {
-    escrow: move.escrow,
-    factory: sky.factory,
-    args: {
-      route: savingsRoute(sky.direction),
-      recipientCommitment: sky.recipientCommitment,
-      recoveryCommitment: sky.recoveryCommitment,
-      relayerTip: BigInt(sky.relayerTip),
-      nonce: sky.nonce,
-    },
-  }
+/** The Sky escrow a move's burn paid, as the burn committed to it; undefined for any other burn. */
+export function skyEscrowLeg(burn: WithdrawalRecord): SkyLeg | undefined {
+  const leg = escrowLeg(burn)
+  return leg?.kind === "sky" ? leg : undefined
 }
 
 /**
@@ -61,13 +44,14 @@ export function canSelfRunSkyEscrow(
     burn.phase === "done" &&
     isSavingsMovePending(move) &&
     !move.deposit &&
-    skyEscrowTarget(move, burn) !== undefined &&
+    skyEscrowLeg(burn) !== undefined &&
     now - (burn.endTime ?? burn.phaseEnteredAt ?? burn.startTime) >= SWAP_STUCK_THRESHOLD_MS
   )
 }
 
 export interface SkyEscrowExitDeps {
-  target: SkyEscrowTarget
+  leg: SkyLeg
+  dai: Address
   channel: SwapEscrowExitDeps["channel"]
   reader: SwapEscrowExitDeps["reader"]
 }
@@ -81,27 +65,25 @@ async function send(deps: SkyEscrowExitDeps, call: { to: Address; data: Hex }, w
 
 /** Run the escrow as the relayer would: its deposit lands and the tip comes back to the sender. */
 export async function runSkyEscrow(deps: SkyEscrowExitDeps): Promise<Hex> {
-  await requireFunded(deps, deps.target.escrow, RAN)
-  return send(deps, buildSkyEscrowRunCall(deps.target.factory, deps.target.args), "escrow run")
+  await requireFunded(deps, deps.leg.escrow, deps.dai, RAN)
+  return send(deps, escrowRunCall(deps.leg), "escrow run")
 }
 
-/** Send the escrow's DAI to `deps.target`, signed by the move's recovery account. */
+/** Send the escrow's DAI to `to`, signed by the move's recovery account. */
 export async function runSkyEscrowRecovery(
   deps: SkyEscrowExitDeps & Omit<EscrowRecoverySigning, "reader" | "channel" | "target">,
   to: Address,
 ): Promise<Hex> {
-  const { target } = deps
+  const { leg } = deps
   const signed = await signEscrowRecovery(
     { ...deps, target: to },
-    target.escrow,
-    target.args.recoveryCommitment,
+    leg.escrow,
+    leg.recoveryCommitment,
+    deps.dai,
     { owner: "move", ran: RAN },
   )
-  const call = buildSkyEscrowRecoverCall({
-    deployed: await deps.reader.isDeployed(target.escrow),
-    factory: target.factory,
-    escrow: target.escrow,
-    args: target.args,
+  const call = escrowRecoverCall(leg, {
+    deployed: await deps.reader.isDeployed(leg.escrow),
     recovery: deps.recovery,
     target: to,
     token: deps.dai,

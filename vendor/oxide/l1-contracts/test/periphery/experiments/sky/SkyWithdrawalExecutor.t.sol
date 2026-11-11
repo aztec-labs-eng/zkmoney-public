@@ -10,10 +10,10 @@ import {PlainWithdrawalSubsidy} from "@periphery/PlainWithdrawalSubsidy.sol";
 import {SkyWithdrawalExecutor} from "@periphery/experiments/sky/SkyWithdrawalExecutor.sol";
 import {SkyErrors} from "@periphery/experiments/sky/SkyErrors.sol";
 import {SkyRoute} from "@periphery/experiments/sky/SkyTypes.sol";
-import {IDaiUsds} from "@periphery/experiments/sky/interfaces/IDaiUsds.sol";
+import {IDaiUsds} from "@periphery/interfaces/IDaiUsds.sol";
 import {ISUsds} from "@periphery/experiments/sky/interfaces/ISUsds.sol";
 import {SkyTestBase} from "@test/periphery/experiments/sky/SkyTestBase.sol";
-import {MockDaiUsds} from "@test/periphery/experiments/sky/mocks/MockDaiUsds.sol";
+import {MockDaiUsds} from "@test/mocks/MockDaiUsds.sol";
 import {MockSUsds} from "@test/periphery/experiments/sky/mocks/MockSUsds.sol";
 import {ReenteringSUsds} from "@test/periphery/experiments/sky/mocks/ReenteringSUsds.sol";
 

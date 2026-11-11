@@ -149,7 +149,7 @@ export const errorCopy = {
   what: "What happened",
   reference: "Reference",
   retry: "Retry",
-  support: "Contact support",
+  support: "Report this issue",
 }
 
 /** Figma W2 394:2165 / 426:1941, and E3 398:2009 / 426:2135 when the fee is more than the balance. */

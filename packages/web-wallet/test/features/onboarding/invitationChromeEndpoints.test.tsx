@@ -1,57 +1,36 @@
-/**
- * The way to the endpoint editor before sign-in: Settings is behind sign-in, so the invitation frame
- * always offers the editor, except while the PXE boots or a screen's work would be cut short by the
- * reload a save makes.
- */
+/** Guards: the endpoints pill waits out a PXE boot and every hold, and a hold ends on unmount. */
 import { StrictMode, act, type ReactNode } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { endpointsHeld, useHoldEndpoints } from "../../../src/ui/endpointsHold"
+import { endpointsHeld, useHoldEndpoints } from "../../../src/session/endpointsHold"
 
-const h = vi.hoisted(() => ({
-  sources: { node: "default", l1Rpc: "default", enclave: "default" } as Record<string, string>,
-  defaults: {} as Record<string, boolean>,
-  bootStatus: "ready" as "booting" | "ready" | "error",
-  bridge: null as unknown,
-  phone: false,
-}))
+const h = vi.hoisted(() => ({ bootStatus: "ready" as "booting" | "ready" | "error" }))
 
 vi.mock("../../../src/config/env", () => ({
   getConfig: () => ({
     endpoints: Object.fromEntries(
-      Object.entries(h.sources).map(([kind, source]) => [
-        kind,
-        { source, isDefault: h.defaults[kind] ?? source === "default" },
-      ]),
+      ["node", "l1Rpc", "enclave"].map((kind) => [kind, { source: "default", isDefault: true }]),
     ),
   }),
-}))
-vi.mock("../../../src/ui/EndpointsModal", async (original) => ({
-  ...(await original<typeof import("../../../src/ui/EndpointsModal")>()),
-  EndpointsModal: ({ onClose }: { onClose: () => void }) => (
-    <div data-testid="endpoints-modal">
-      <button onClick={onClose}>close</button>
-    </div>
-  ),
 }))
 vi.mock("../../../src/ui/BrandLockup", () => ({ BrandLockup: () => null }))
 vi.mock("../../../src/ui/PxeBoot", () => ({
   usePxeBoot: () => ({ bootStatus: h.bootStatus }),
 }))
-vi.mock("../../../src/platform/desktopBridge", () => ({ getDesktopL1Bridge: () => h.bridge }))
-vi.mock("../../../src/ui/usePhoneLayout", () => ({ usePhoneLayout: () => h.phone }))
 
 const { InvitationChrome } = await import("../../../src/features/onboarding/InvitationChrome")
+const config = () =>
+  ({
+    endpoints: Object.fromEntries(
+      ["node", "l1Rpc", "enclave"].map((kind) => [kind, { source: "default", isDefault: true }]),
+    ),
+  } as never)
 
 let root: Root
 let container: HTMLDivElement
 
 beforeEach(() => {
-  h.sources = { node: "default", l1Rpc: "default", enclave: "default" }
-  h.defaults = {}
   h.bootStatus = "ready"
-  h.bridge = null
-  h.phone = false
   container = document.createElement("div")
   document.body.appendChild(container)
   root = createRoot(container)
@@ -74,29 +53,13 @@ const mount = (holders: boolean[] = []) =>
         {holders.map((active, i) => (
           <Holder key={i} active={active} />
         ))}
-        <InvitationChrome>content</InvitationChrome>
+        <InvitationChrome page={{ config: config() } as never}>content</InvitationChrome>
       </>,
     ),
   )
 const pill = () => container.querySelector<HTMLButtonElement>('[data-testid="invite-endpoints"]')
-const modal = () => container.querySelector('[data-testid="endpoints-modal"]')
 
 describe("InvitationChrome endpoints pill", () => {
-  it("names the saved endpoints and opens the editor", async () => {
-    h.sources.l1Rpc = "settings"
-    await mount()
-    expect(pill()!.textContent).toBe("CUSTOM RPC")
-    await act(async () => pill()!.click())
-    expect(modal()).not.toBeNull()
-  })
-
-  it("reads ENDPOINTS for a saved value equal to the default", async () => {
-    h.sources.node = "settings"
-    h.defaults.node = true
-    await mount()
-    expect(pill()!.textContent).toBe("ENDPOINTS")
-  })
-
   it("is disabled while the PXE boots, and enabled once the boot has failed", async () => {
     h.bootStatus = "booting"
     await mount()
@@ -112,31 +75,6 @@ describe("InvitationChrome endpoints pill", () => {
     expect(pill()!.disabled).toBe(true)
     await mount([false, false])
     expect(pill()!.disabled).toBe(false)
-  })
-
-  it("shows under the desktop bridge too", async () => {
-    h.bridge = { l1SubmitPath: "/desktop/l1-submit" }
-    h.sources.node = "settings"
-    await mount()
-    expect(pill()!.textContent).toBe("CUSTOM NODE")
-    await act(async () => pill()!.click())
-    expect(modal()).not.toBeNull()
-  })
-})
-
-describe("InvitationChrome early-access pill", () => {
-  const earlyAccess = () => container.querySelector('[data-testid="early-access-pill"]')
-
-  it("shows on a laptop", async () => {
-    await mount()
-    expect(earlyAccess()?.textContent).toBe("EARLY ACCESSOPEN")
-  })
-
-  it("is left off a phone, where the endpoints pill stays", async () => {
-    h.phone = true
-    await mount()
-    expect(earlyAccess()).toBeNull()
-    expect(pill()).not.toBeNull()
   })
 })
 

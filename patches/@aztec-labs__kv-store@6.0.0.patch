@@ -1,0 +1,51 @@
+diff --git a/dest/sqlite-opfs/array.js b/dest/sqlite-opfs/array.js
+index 8dcfe46b2f2f812b7192ce46bfe989dbccb123c2..0ab7fdc5334cac9feb29f7998c23c8626cc475c7 100644
+--- a/dest/sqlite-opfs/array.js
++++ b/dest/sqlite-opfs/array.js
+@@ -37,7 +37,8 @@ _computedKey = Symbol.asyncIterator;
+                     this.#container,
+                     this.#encodedKey(),
+                     length + 1,
+-                    hash(val),
++                    // As map.js, with the element's slot: as unique per index as the hash.
++                    globalThis.__KV_SKIP_VALUE_HASH ? this.#slot(length) : hash(val),
+                     this.#encoder.pack(val)
+                 ]);
+                 length += 1;
+@@ -87,7 +88,7 @@ _computedKey = Symbol.asyncIterator;
+                 this.#container,
+                 this.#encodedKey(),
+                 resolved + 1,
+-                hash(val),
++                globalThis.__KV_SKIP_VALUE_HASH ? this.#slot(resolved) : hash(val),
+                 this.#encoder.pack(val)
+             ]);
+             return true;
+diff --git a/dest/sqlite-opfs/map.js b/dest/sqlite-opfs/map.js
+index 74ca79af5611bf2ffcf5d44919a162908c3f051d..f87243854594489bc7be0db219d27cfa7b1aff4e 100644
+--- a/dest/sqlite-opfs/map.js
++++ b/dest/sqlite-opfs/map.js
+@@ -61,7 +61,8 @@ import { hash } from 'ohash';
+             this.container,
+             this.encodedKey(key),
+             1,
+-            hash(val),
++            // An E2E run sets __KV_SKIP_VALUE_HASH: ohash walks the whole value in JS (seconds for a contract artifact), and a row is told apart by its slot, so the hash column carries nothing there.
++            globalThis.__KV_SKIP_VALUE_HASH ? '' : hash(val),
+             this.encoder.pack(val)
+         ]);
+     }
+diff --git a/dest/sqlite-opfs/singleton.js b/dest/sqlite-opfs/singleton.js
+index 8f92ead7a0e0563659041538e171408773197618..881f7fe385b623c608cb1acb8d96bfb96d761478 100644
+--- a/dest/sqlite-opfs/singleton.js
++++ b/dest/sqlite-opfs/singleton.js
+@@ -34,7 +34,8 @@ import { hash } from 'ohash';
+                 this.#slot
+             ]),
+             1,
+-            hash(val),
++            // As map.js.
++            globalThis.__KV_SKIP_VALUE_HASH ? '' : hash(val),
+             this.#encoder.pack(val)
+         ]);
+         return changes > 0;

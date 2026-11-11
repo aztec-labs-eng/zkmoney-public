@@ -4,7 +4,10 @@
  * what the recipient is left with, since nothing reads it back off chain.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { fakeReads } from "../../support/fakeReads"
 import { testPage, testCore } from "../../support/page"
+import { openTestSession } from "../../support/session"
+import type { AccountKit } from "../../../src/session/session"
 import { custom, getAddress, parseUnits, type Address, type Hex } from "viem"
 import { WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
 import type { ScannedWithdrawEvent } from "@obsidion/sdk"
@@ -19,6 +22,7 @@ import {
   watchWalletDb,
   type WalletSendOptions,
 } from "../../support/submitBoundary"
+import { operationRecord, testOperations } from "../../support/operations"
 
 const L2_TX = `0x${"0a".repeat(32)}` as Hex
 const TX_AMOUNT_CAP = 5166n * 10n ** 18n
@@ -44,12 +48,10 @@ vi.mock("../../../src/features/withdraw/withdrawalFee", () => ({
   activeWithdrawalFee: async () => 0n,
   activeWithdrawalExecutor: async () => ({ fee: 0n }),
   withdrawalExecutor: async () => ({ fee: 0n }),
-  withdrawalExecutorAt: (...args: unknown[]) => executorAt(...args),
   useActiveWithdrawalFee: () => 0n,
 }))
 vi.mock("../../../src/config/env", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../src/config/env")>()),
-  getConfig: () => ({ l1ChainId: 11155111 }),
   // The tracker's rails build an L1 client this suite never reads.
   l1Transport: () => custom({ request: async () => undefined }),
 }))
@@ -63,6 +65,7 @@ const WIRED_TUPLE = {
   plainWithdrawalExecutor: `0x${"e8".repeat(20)}`,
 }
 const mockTuple = vi.fn<() => Record<string, string>>(() => ({ ...PORTAL_ONLY }))
+const reads = fakeReads({ oxideTuple: () => mockTuple(), currentTxAmountCap: () => TX_AMOUNT_CAP })
 // Only the seams that would dial the network are stubbed; `requireTupleField` stays REAL, so the
 // thin-manifest tests below assert the message and the rejection rule production actually has.
 // A swap asks the account factory for the wallet's account.
@@ -71,23 +74,20 @@ const readContract = vi.fn(async ({ functionName }: { functionName: string }) =>
 )
 vi.mock("../../../src/config/oxideTuple", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../src/config/oxideTuple")>()),
-  getOxideTuple: async () => mockTuple(),
   l1PublicClient: () => ({ readContract }),
 }))
 vi.mock("../../../src/features/token/oxideToken", () => ({
-  currentTxAmountCap: async () => TX_AMOUNT_CAP,
   portalDomainOfToken: async () => ({}),
 }))
 vi.mock("../../../src/features/registration/claimSponsorship", () => ({
   claimSponsorContext: async () => ({ fpcAddress: {}, policy: {} }),
   noteSubscribed: vi.fn(),
 }))
-vi.mock("../../../src/features/fees/fpcRefuel", () => ({ maybeRefuelFpc: vi.fn() }))
 // The L1 token a burn's amount counts; its symbol differs from the L2 token's.
 const SUSDS = `0x${"5d".repeat(20)}`
 const l1Symbol = async (token: string) => (token === SUSDS ? "sUSDS" : "DAI")
 vi.mock("../../../src/features/sipa/loadDepositFacts", () => ({
-  tokenMetadata: async (_config: unknown, token: string) => ({
+  tokenMetadata: async (_page: unknown, token: string) => ({
     symbol: await l1Symbol(token),
     decimals: 18,
   }),
@@ -112,21 +112,21 @@ vi.mock("@obsidion/sdk", async (importOriginal) => ({
   })),
 }))
 
+const D120 = parseUnits("120", 18)
 const { planSwapLeg, rescanWithdrawals, submitSponsoredWithdrawal } = await import(
   "../../../src/features/withdraw/withdrawGateway"
 )
-
-const { getOperationStore } = await import("../../../src/features/operations/operations")
-const { activeNamespace, closeSession, switchSession, session } = await import(
+const { activeNamespace, closeSession, switchSession } = await import(
   "../../../src/session/session"
 )
 const { pageSessionDeps } = await import("../../../src/app/sessionDeps")
-beforeEach(
-  () =>
-    void switchSession(activeNamespace(testCore().device), pageSessionDeps(testPage(fakeAuth()))),
-)
+beforeEach(() => {
+  const page = testPage(fakeAuth())
+  Object.assign(page.chain, reads)
+  void switchSession(activeNamespace(testCore().device), pageSessionDeps(page))
+})
 afterEach(closeSession)
-const withdrawals = () => session().withdrawals
+const withdrawals = () => openTestSession().withdrawals
 const clearWithdrawals = () =>
   Promise.all(
     withdrawals()
@@ -134,12 +134,11 @@ const clearWithdrawals = () =>
       .records.map((r) => withdrawals().remove(r.localId)),
   )
 
-const deps = () =>
-  ({
+const deps = () => {
+  const kit = {
     wallet: { networkId: "0xnet", node: { getContract: async () => ({}) }, pxe: {} },
     account: { getAddress: () => ({ toString: () => "0xuser" }) },
     contractService: {},
-    screener: { screen: async () => ({ compliant: true }) },
     tokenService: {
       fetchTokenInformation: async () => ({ symbol: "oxDAI", decimals: 18 }),
       getTokenContract: vi.fn(async () => ({} as never)),
@@ -151,13 +150,22 @@ const deps = () =>
         l1Recipient: RECIPIENT,
       })),
     },
-  } as unknown as Parameters<typeof submitSponsoredWithdrawal>[0])
+  }
+  const session = openTestSession({ ...kit, token: kit.tokenService })
+  return {
+    ...kit,
+    screener: { screen: async () => ({ compliant: true }) },
+    session,
+  } as unknown as Parameters<typeof submitSponsoredWithdrawal>[0] & AccountKit
+}
 
 const rescanDeps = () => ({
   store: withdrawals(),
   deployment: async () => WIRED_TUPLE as never,
   l1Symbol,
   wake: () => {},
+  readExecutor: fakeReads({ withdrawalExecutorAt: executorAt }).withdrawalExecutorAt,
+  chain: {} as never,
 })
 
 describe("submitSponsoredWithdrawal", () => {
@@ -167,10 +175,10 @@ describe("submitSponsoredWithdrawal", () => {
   })
 
   it("records the relayer tip beside the amount the burn removed", async () => {
-    const record = await submitSponsoredWithdrawal(deps(), RECIPIENT, "120", vi.fn())
+    const record = await submitSponsoredWithdrawal(deps(), RECIPIENT, D120, vi.fn())
 
     expect(record.phase).toBe("l2_mined")
-    expect(record.rawAmount).toBe(parseUnits("120", 18).toString())
+    expect(record.rawAmount).toBe(D120.toString())
     expect(record.relayerTip).toBe(WITHDRAW_RELAYER_TIP.toString())
     expect(record.tokenSymbol).toBe("DAI")
     const stored = await withdrawals().get(record.localId)
@@ -178,7 +186,7 @@ describe("submitSponsoredWithdrawal", () => {
   })
 
   it("stamps the recipient alias onto the record", async () => {
-    const record = await submitSponsoredWithdrawal(deps(), RECIPIENT, "120", vi.fn(), "Rainbow")
+    const record = await submitSponsoredWithdrawal(deps(), RECIPIENT, D120, vi.fn(), "Rainbow")
     expect(record.recipientAlias).toBe("Rainbow")
   })
 
@@ -193,7 +201,7 @@ describe("submitSponsoredWithdrawal", () => {
       return { txHash: L2_TX, blockNumber: 42, amount: parseUnits("120", 18) }
     }) as never
 
-    await submitSponsoredWithdrawal(d, RECIPIENT, "120", vi.fn())
+    await submitSponsoredWithdrawal(d, RECIPIENT, D120, vi.fn())
     expect(heldAtNode).toBe(true)
   })
 
@@ -206,7 +214,7 @@ describe("submitSponsoredWithdrawal", () => {
       return { txHash: L2_TX, blockNumber: 42, amount: parseUnits("120", 18) }
     }) as never
 
-    await expect(submitSponsoredWithdrawal(d, RECIPIENT, "120", vi.fn())).rejects.toThrow(
+    await expect(submitSponsoredWithdrawal(d, RECIPIENT, D120, vi.fn())).rejects.toThrow(
       "quota exceeded",
     )
     expect(node).not.toHaveBeenCalled()
@@ -225,20 +233,20 @@ describe("submitSponsoredWithdrawal", () => {
       throw new Error("fetch failed")
     }) as never
 
-    const record = await submitSponsoredWithdrawal(d, RECIPIENT, "120", vi.fn())
+    const record = await submitSponsoredWithdrawal(d, RECIPIENT, D120, vi.fn())
     expect(record).toMatchObject({ phase: "submitting", l2TxHash: L2_TX })
     expect((await withdrawals().get(record.localId))?.failure).toBeUndefined()
     // Left to the chain: the operation is sent, and no flow owns it any more.
-    const ops = getOperationStore()
-    expect(ops.get(record.operationId!)).toMatchObject({ state: "sent", txHash: L2_TX })
-    expect(ops.isLive(record.operationId!)).toBe(false)
+    const ops = testOperations()
+    expect(operationRecord(record.operationId!)).toMatchObject({ state: "sent", txHash: L2_TX })
+    expect(ops.live.get().has(record.operationId!)).toBe(false)
   })
 
   it("drops the seeded record when the stage callback cancels before the burn", async () => {
     const cancel = (stage: string) => {
       if (stage === "proving") throw new Error("Cancelled")
     }
-    await expect(submitSponsoredWithdrawal(deps(), RECIPIENT, "120", cancel)).rejects.toThrow(
+    await expect(submitSponsoredWithdrawal(deps(), RECIPIENT, D120, cancel)).rejects.toThrow(
       /Cancelled/,
     )
     expect([...(await withdrawals().all())].sort((a, b) => b.startTime - a.startTime)).toHaveLength(
@@ -252,7 +260,7 @@ describe("submitSponsoredWithdrawal", () => {
     const record = await submitSponsoredWithdrawal(
       d,
       RECIPIENT,
-      "120",
+      D120,
       vi.fn(),
       undefined,
       "DAI",
@@ -267,7 +275,7 @@ describe("submitSponsoredWithdrawal", () => {
     )
 
     const plain = deps()
-    const untipped = await submitSponsoredWithdrawal(plain, RECIPIENT, "120", vi.fn())
+    const untipped = await submitSponsoredWithdrawal(plain, RECIPIENT, D120, vi.fn())
     const plainExit = plain.tokenService.exitToL1PrivateSponsored as ReturnType<typeof vi.fn>
     expect((plainExit.mock.calls[0]![3] as { proverTip?: bigint }).proverTip).toBe(0n)
     expect(untipped.proverTip).toBeUndefined()
@@ -276,14 +284,19 @@ describe("submitSponsoredWithdrawal", () => {
   // A stale sheet or a direct caller reaches the gateway with whatever amount it holds.
   it(`burns exactly ${LIMIT_USD} and refuses one atomic unit more before screening, recording or burning`, async () => {
     const exact = deps()
-    await submitSponsoredWithdrawal(exact, RECIPIENT, String(LIMIT), vi.fn())
+    await submitSponsoredWithdrawal(exact, RECIPIENT, parseUnits(String(LIMIT), 18), vi.fn())
     const exit = exact.tokenService.exitToL1PrivateSponsored as ReturnType<typeof vi.fn>
     expect(exit.mock.calls[0]![1]).toBe(parseUnits(String(LIMIT), 18).toString())
     await clearWithdrawals()
 
     const over = deps()
     const screen = vi.spyOn(over.screener, "screen")
-    const run = submitSponsoredWithdrawal(over, RECIPIENT, `${LIMIT}.000000000000000001`, vi.fn())
+    const run = submitSponsoredWithdrawal(
+      over,
+      RECIPIENT,
+      parseUnits(String(LIMIT), 18) + 1n,
+      vi.fn(),
+    )
     await expect(run).rejects.toThrow(
       `This withdrawal is over the ${LIMIT_USD} limit, fees included.`,
     )
@@ -293,9 +306,9 @@ describe("submitSponsoredWithdrawal", () => {
       0,
     )
     expect(
-      getOperationStore()
-        .list()
-        .filter((op) => op.state === "local"),
+      testOperations()
+        .view.get()
+        .records.filter((op) => op.state === "local"),
     ).toHaveLength(0)
   })
 })
@@ -311,7 +324,7 @@ describe("submitSponsoredWithdrawal — swap-on-withdraw", () => {
     const record = await submitSponsoredWithdrawal(
       d,
       RECIPIENT,
-      "120",
+      D120,
       vi.fn(),
       undefined,
       "USDC",
@@ -376,7 +389,7 @@ describe("submitSponsoredWithdrawal — swap-on-withdraw", () => {
     const record = await submitSponsoredWithdrawal(
       d,
       RECIPIENT,
-      "120",
+      D120,
       vi.fn(),
       undefined,
       "USDC",
@@ -395,7 +408,7 @@ describe("submitSponsoredWithdrawal — swap-on-withdraw", () => {
       submitSponsoredWithdrawal(
         rejected,
         RECIPIENT,
-        "120",
+        D120,
         vi.fn(),
         undefined,
         "USDC",
@@ -413,7 +426,7 @@ describe("submitSponsoredWithdrawal — swap-on-withdraw", () => {
     // The rescan reads the account's burns only where the withdrawal rails resolve.
     mockTuple.mockReturnValue(WIRED_TUPLE)
     const d = deps()
-    const known = await submitSponsoredWithdrawal(d, RECIPIENT, "120", vi.fn())
+    const known = await submitSponsoredWithdrawal(d, RECIPIENT, D120, vi.fn())
     const ESCROW = getAddress(`0x${"e5".repeat(20)}`)
     const RETIRED_EXECUTOR = getAddress(`0x${"e9".repeat(20)}`)
     scannedEvents.mockResolvedValue([
@@ -440,7 +453,7 @@ describe("submitSponsoredWithdrawal — swap-on-withdraw", () => {
       },
     ])
 
-    const rebuilt = await rescanWithdrawals(rescanDeps())(d.wallet, d.account, [
+    const rebuilt = await rescanWithdrawals(rescanDeps())(d.wallet, "0xuser", [
       { tokenService: d.tokenService },
     ])
 
@@ -485,7 +498,7 @@ describe("submitSponsoredWithdrawal — swap-on-withdraw", () => {
       },
     ])
 
-    const [record] = await rescanWithdrawals(rescanDeps())(d.wallet, d.account, [
+    const [record] = await rescanWithdrawals(rescanDeps())(d.wallet, "0xuser", [
       {
         tokenService: d.tokenService,
         tuple: { ...WIRED_TUPLE, l2Token: `0x${"5c".repeat(32)}`, underlying: SUSDS } as never,
@@ -508,9 +521,9 @@ describe("submitSponsoredWithdrawal — swap-on-withdraw", () => {
     const token = { tokenService: d.tokenService }
     const scans = scannedEvents.mock.calls.length
 
-    await rescan(d.wallet, d.account, [token])
-    await rescan(d.wallet, d.account, [token])
-    await rescan(d.wallet, d.account, [token])
+    await rescan(d.wallet, "0xuser", [token])
+    await rescan(d.wallet, "0xuser", [token])
+    await rescan(d.wallet, "0xuser", [token])
 
     // The read that failed drops the pass; the next one reads its executor and is kept.
     expect(scannedEvents.mock.calls.length).toBe(scans + 2)
@@ -521,7 +534,7 @@ describe("submitSponsoredWithdrawal — swap-on-withdraw", () => {
     const record = await submitSponsoredWithdrawal(
       deps(),
       RECIPIENT,
-      "120",
+      D120,
       vi.fn(),
       undefined,
       "ETH",
@@ -536,7 +549,7 @@ describe("submitSponsoredWithdrawal — swap-on-withdraw", () => {
 
   it("refuses a swap without a simulated tip, before any record exists", async () => {
     await expect(
-      submitSponsoredWithdrawal(deps(), RECIPIENT, "120", vi.fn(), undefined, "USDC"),
+      submitSponsoredWithdrawal(deps(), RECIPIENT, D120, vi.fn(), undefined, "USDC"),
     ).rejects.toThrow(/Swap fee unavailable/)
     expect([...(await withdrawals().all())].sort((a, b) => b.startTime - a.startTime)).toHaveLength(
       0,
@@ -546,7 +559,7 @@ describe("submitSponsoredWithdrawal — swap-on-withdraw", () => {
   it("fails before any record exists while the wallet is locked — no recoverer, no escrow", async () => {
     mockSecretKey.mockResolvedValueOnce(undefined as never)
     await expect(
-      submitSponsoredWithdrawal(deps(), RECIPIENT, "120", vi.fn(), undefined, "USDC", SWAP_COMMIT),
+      submitSponsoredWithdrawal(deps(), RECIPIENT, D120, vi.fn(), undefined, "USDC", SWAP_COMMIT),
     ).rejects.toThrow(/Unlock your wallet/)
     expect([...(await withdrawals().all())].sort((a, b) => b.startTime - a.startTime)).toHaveLength(
       0,
@@ -556,7 +569,7 @@ describe("submitSponsoredWithdrawal — swap-on-withdraw", () => {
   it("fails before any record exists when the manifest names no account factory", async () => {
     mockTuple.mockReturnValue({ ...SWAP_TUPLE, accountFactory: "" })
     await expect(
-      submitSponsoredWithdrawal(deps(), RECIPIENT, "120", vi.fn(), undefined, "USDC", SWAP_COMMIT),
+      submitSponsoredWithdrawal(deps(), RECIPIENT, D120, vi.fn(), undefined, "USDC", SWAP_COMMIT),
     ).rejects.toThrow(/accountFactory/)
     expect([...(await withdrawals().all())].sort((a, b) => b.startTime - a.startTime)).toHaveLength(
       0,
@@ -571,12 +584,12 @@ describe("planSwapLeg", () => {
     readContract.mockClear()
     const secret = { toString: () => `0x${"22".repeat(32)}` }
     const leg = await planSwapLeg(
-      {} as never,
+      reads as never,
+      async () => ({ account: RECIPIENT, secret }),
       "USDC",
       RECIPIENT,
       parseUnits("120", 18),
       SWAP_COMMIT,
-      { account: RECIPIENT, secret },
     )
 
     expect(leg!.plan.recovery).toEqual({

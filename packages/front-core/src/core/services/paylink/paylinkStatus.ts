@@ -1,4 +1,4 @@
-import type { PaylinkTransaction } from "../../../types/transactions"
+import type { LinkFacts } from "../../../types/transactions"
 
 /** Coarse claim-lifecycle state for a stored paylink row's status pill. */
 export type PaylinkStatusKind = "awaitingClaim" | "claimed" | "refunded" | "migrated" | "expired"
@@ -19,7 +19,7 @@ export const PAYLINK_STATUS_LABEL = {
  * defense-in-depth so a refunded row can never read as "Claimed". `migrated` ranks
  * below both and above `expired` = unclaimed past `untilClaimable`.
  */
-export function paylinkStatusFor(tx: PaylinkTransaction, nowSec: number): PaylinkStatusKind {
+export function paylinkStatusFor(tx: LinkFacts, nowSec: number): PaylinkStatusKind {
   if (tx.isRefunded) return "refunded"
   if (tx.isClaimed) return "claimed"
   if (tx.isMigrated) return "migrated"

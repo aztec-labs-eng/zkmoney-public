@@ -256,7 +256,8 @@ test("phone claim notification opens the stored claim transaction, including no-
         const fundingHash = await page.evaluate(async () => {
           const { demoClaimFragments } = await import("/src/dev/demoFixtures.ts")
           const { decodeLink } = await import("/scripts/ui-capture/fixtures/paylinks.ts")
-          return decodeLink(demoClaimFragments().direct).txHash
+          const { captureSession } = await import("/scripts/ui-capture/fixtures/control.ts")
+          return decodeLink(captureSession().page.config, demoClaimFragments().direct).txHash
         })
         await prompt.getByRole("button", { name: "Accept", exact: true }).click()
         const working = page.getByRole("dialog", { name: "Claiming payment", exact: true })
@@ -401,7 +402,8 @@ test("prepared creator link opens pending details and settles in the same sheet"
       assert.equal(pending.txHash, "")
       const preparedHash = await page.evaluate(async (url) => {
         const { decodeLink } = await import("/scripts/ui-capture/fixtures/paylinks.ts")
-        return decodeLink(new URL(url).hash.slice(1)).txHash
+        const { captureSession } = await import("/scripts/ui-capture/fixtures/control.ts")
+        return decodeLink(captureSession().page.config, new URL(url).hash.slice(1)).txHash
       }, pending.paylink)
       assert.equal(preparedHash, undefined)
       await page.waitForFunction(async () => (await (await import("/scripts/ui-capture/fixtures/paylinks.ts")).capturePaylinkRows()).some((row) => row.kind === "paylink-create" && row.status === "success"))

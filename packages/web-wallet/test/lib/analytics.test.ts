@@ -253,3 +253,30 @@ describe("lapTimer", () => {
     now.mockRestore()
   })
 })
+
+describe("reportLanding", () => {
+  it("reports the first landing page in a tab, once", async () => {
+    vi.resetModules()
+    vi.stubEnv("VITE_ZKMONEY_API_URL", "/svc/usage")
+    const fetch = vi.fn(async (_url: string, _init: RequestInit) => ({ ok: true } as Response))
+    vi.stubGlobal("fetch", fetch)
+    sessionStorage.removeItem("zkm.once.landing_viewed")
+    try {
+      const analytics = await import("../../src/lib/analytics")
+      analytics.reportLanding("paylink")
+      analytics.reportLanding("signup")
+      expect(fetch).toHaveBeenCalledOnce()
+      const [url, init] = fetch.mock.calls[0]!
+      expect(url).toBe("/svc/usage/events")
+      expect(JSON.parse(String(init.body))).toMatchObject({
+        event: "landing_viewed",
+        props: { page: "paylink" },
+      })
+    } finally {
+      vi.unstubAllGlobals()
+      vi.unstubAllEnvs()
+      vi.resetModules()
+      sessionStorage.removeItem("zkm.once.landing_viewed")
+    }
+  })
+})

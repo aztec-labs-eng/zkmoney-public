@@ -14,7 +14,7 @@ const INTENT_NAMES: Record<SipaIntent, SipaIntentName | undefined> = {
   [SipaIntent.None]: undefined,
   [SipaIntent.Deposit]: "deposit",
   [SipaIntent.Registration]: "registration",
-  [SipaIntent.UserOp]: "user-op",
+  [SipaIntent.AddPasskey]: "add-passkey",
 }
 
 /** The row intent of a factory intent. */
@@ -53,14 +53,14 @@ export type SipaRecordRoute = Omit<SipaRoute, "token">
 export function sipaRecordIntentOf(intent: SipaIntent): SipaDeposit["intent"] | null {
   if (intent === SipaIntent.Deposit) return undefined
   if (intent === SipaIntent.Registration) return "registration"
-  if (intent === SipaIntent.UserOp) return "user-op"
+  if (intent === SipaIntent.AddPasskey) return "add-passkey"
   return null
 }
 
 /** The factory intent a recorded SIPA commits to. */
 export function sipaRecordIntent(intent: SipaDeposit["intent"]): SipaIntent {
   if (intent === "registration") return SipaIntent.Registration
-  if (intent === "user-op") return SipaIntent.UserOp
+  if (intent === "add-passkey") return SipaIntent.AddPasskey
   return SipaIntent.Deposit
 }
 

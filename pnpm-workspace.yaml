@@ -4,7 +4,6 @@ packages:
   - packages/config-client
   - packages/passkey-web
   - packages/contracts
-  - packages/proving-progress
   - packages/oxide-build
   - packages/sdk
   - packages/front-core

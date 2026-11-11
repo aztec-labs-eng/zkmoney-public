@@ -150,7 +150,7 @@ The account writes its own record with one ERC-4337 user operation that its pass
 
 Rules:
 
-- No check on chain makes sure that the record did not change after the build. A pending update can overwrite a newer record. Thus send one record update for each account at a time, and serialize every user operation of the account on nonce key 0, passkey rotations included.
+- No check on chain makes sure that the record did not change after the build. A pending update can overwrite a newer record. Thus send one record update for each account at a time, and serialize every user operation of the account on nonce key 0, passkey additions included.
 - `failed` means that the account call failed. The nonce is used anyway. The L2 sponsorship is spent when the broadcast lands, even if the L1 operation never runs. To recover, a named operator pays for `NamePortal.notify` for the account on L1, which gives the account its sponsorship back. Then:
   - After `not-run` with `nonceUsed` false, broadcast the same operation again.
   - After `failed`, or `not-run` with `nonceUsed` true, build and sign the update again, which uses the new nonce.

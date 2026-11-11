@@ -1,7 +1,11 @@
 import { concatHex, keccak256, toBytes, toHex, type Hex } from "viem"
 import type { Fr } from "@aztec-labs/aztec.js/fields"
 import { L2_BINDING_MESSAGE_PREFIX } from "@obsidion/core/constants"
-import { bootstrapKeyProof, type OxideAccountBinding, type RegistrationWitness } from "@obsidion/sdk"
+import {
+  bootstrapKeyProof,
+  type OxideAccountBinding,
+  type RegistrationWitness,
+} from "@obsidion/sdk"
 import { deriveBootstrapKey, deriveBootstrapScalar } from "./oxideAccountKeys"
 
 /** Shared web/mobile NameClaim and attestation binding to the destination L2 account. */

@@ -1,7 +1,7 @@
 /** A Receive code's request read paid: a failed read of its payment is tried again, never dropped. */
 import { describe, expect, it, vi } from "vitest"
 import {
-  createActivity,
+  createTransfers,
   createRequests,
   memoryBackend,
   memoryStore,
@@ -10,7 +10,8 @@ import {
   type TokenTransaction,
 } from "@obsidion/front-core"
 import { watchRequestPayment } from "../../../src/features/receive/useReceiveCode"
-import type { ReceiveCode } from "../../../src/features/receive/receiveCode"
+import { openTestSession } from "../../support/session"
+import type { ReceiveCode } from "@obsidion/front-core"
 
 const TOKEN = "0x" + "aa".repeat(32)
 const TX = "0x" + "ab".repeat(32)
@@ -46,8 +47,8 @@ describe("watchRequestPayment", () => {
   it("reads the payment again on the next update after a failed read", async () => {
     const backend = memoryBackend()
     const db = openDatabase(backend)
-    const activity = createActivity({ db })
-    await activity.record({ ...receive, networkId: "0xnet" })
+    const transfers = createTransfers({ db, now: () => Date.now() })
+    await transfers.record({ ...receive, networkId: "0xnet" })
     const payments = memoryStore({ rows: [receive], deposits: [], loaded: true, failed: false })
     const requests = createRequests({ db, payments: payments.readonly })
     await requests.add(request)
@@ -57,8 +58,7 @@ describe("watchRequestPayment", () => {
     backend.failing = { reads: true }
     const onPaid = vi.fn()
     const stop = watchRequestPayment({ requestId: REQ } as ReceiveCode, {
-      requests,
-      activity,
+      session: { requests, transfers, sipaDeposits: openTestSession().sipaDeposits },
       contacts: () => [],
       onPaid,
     })

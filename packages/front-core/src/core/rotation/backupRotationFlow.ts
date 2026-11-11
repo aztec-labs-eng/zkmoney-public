@@ -18,6 +18,7 @@ import {
   type TxHashCallback,
 } from "@obsidion/sdk"
 import type { Address, Hex } from "viem"
+import { WalletError } from "../../engine/errors"
 import { INCLUDED_TIERS, type ReorgTxReceiptLike } from "../services/chain/receiptTypes"
 import {
   fundingLanding,
@@ -32,13 +33,13 @@ import {
   type BackupRotationPhase,
   type BackupRotationPlan,
   type BackupRotationRecord,
-  type BackupRotationStore,
+  type BackupRotations,
   type LinkRefundRecord,
   type LinkRefunds,
   type MoveChunkRecord,
   type MoveRun,
   type MoveSend,
-} from "../storages/BackupRotationStore"
+} from "../../engine/backupRotations"
 import { planMove, type MoveDeposits } from "./planMove"
 
 export const PUBLISH_INTERVAL_MS = 24 * 60 * 60 * 1000
@@ -132,12 +133,24 @@ export interface SweepSeen {
   credited: bigint
 }
 
+/**
+ * A block `L1_SETTLED_DEPTH` confirmations behind the Ethereum tip: what the flow counts a sweep, an
+ * install, a release or a recovery on, in place of Ethereum finality. A record past one of those is
+ * not re-checked against a deeper reorg.
+ */
+export interface SettledBlock {
+  number: number
+  hash: Hex
+}
+
 export interface RotationL1 {
-  finalizedBlock(): Promise<{ number: number; hash: Hex }>
-  /** Whether the block is still in the finalized chain. */
-  isFinal(block: { blockNumber: number; blockHash: Hex }): Promise<boolean>
-  /** The deposit address's balance at the finalized block, or at the latest one when asked. */
-  sipaBalance(sipa: Address, at?: "finalized" | "latest"): Promise<bigint>
+  settledBlock(): Promise<SettledBlock>
+  /** Whether the block is still on the chain and settled. */
+  isSettled(block: { blockNumber: number; blockHash: Hex }): Promise<boolean>
+  /** The block holding an L1 transaction, if one does. */
+  txBlock(txHash: Hex): Promise<{ blockNumber: number; blockHash: Hex } | undefined>
+  /** The deposit address's balance at the settled block (the one given, else read now), or at the latest one when asked. */
+  sipaBalance(sipa: Address, at?: "latest" | SettledBlock): Promise<bigint>
   /** The deposit address's sweep since `fromBlock`, if one ran. */
   sweep(sipa: Address, fromBlock: number): Promise<SweepSeen | undefined>
   /**
@@ -145,8 +158,8 @@ export interface RotationL1 {
    * Only a sweep or a recovery moves tokens out, so it is a recovery.
    */
   recovery(sipa: Address, fromBlock: number): Promise<Hex | undefined>
-  /** Whether the portal shows the withdrawal spent at the finalized block. */
-  releaseFinal(withdrawalId: string): Promise<boolean>
+  /** Whether the portal shows the withdrawal spent at the settled block `at`. */
+  releaseSettled(withdrawalId: string, at: SettledBlock): Promise<boolean>
 }
 
 export interface MoveDeps {
@@ -177,7 +190,7 @@ export interface MoveDeps {
 }
 
 export interface RotationFlowDeps {
-  store: BackupRotationStore
+  store: BackupRotations
   now(): number
   mintAttemptId(): string
   /** When this tab became the active one; a row seeded before it belongs to no live burn. */
@@ -392,7 +405,7 @@ const installedPatch = async (
   deps: RotationFlowDeps,
   rotation: PersistedRotation,
 ): Promise<Patch> => {
-  const block = await deps.l1.finalizedBlock()
+  const block = await deps.l1.settledBlock()
   const held = await depositHeld(deps, rotation.sipa)
   return () => ({
     phase: "installed",
@@ -434,11 +447,12 @@ export async function signRotation(
 }
 
 /**
- * The checks before anything is published or funded: the route and the quote, then the
- * fundability read. Answers the phase the record goes to instead, or nothing to proceed. A change
- * the factory no longer clones restarts the attempt at `created`, since a funding of it would
- * strand; money there that could be the funding strands it instead. Every answer is written over
- * the record as read here, so a record that moved during the reads declines it.
+ * The checks before anything is published or funded: the fundability read, then the route and the
+ * quote. Only a change that can still run asks the route, since the sweep of any other fails its
+ * quote. Answers the phase the record goes to instead, or nothing to proceed. A change the factory
+ * no longer clones restarts the attempt at `created`, since a funding of it would strand; money
+ * there that could be the funding strands it instead. Every answer is written over the record as
+ * read here, so a record that moved during the reads declines it.
  */
 async function preconditions(
   deps: RotationFlowDeps,
@@ -449,8 +463,12 @@ async function preconditions(
     (patch: Patch): Patch =>
     (c) =>
       unmoved(c, record) ? patch(c) : null
-  if ((await deps.route(rotation)) !== "ok") return { patch: fenced((c) => attention(c, "route")) }
-  switch (await readFundability(deps, rotation)) {
+  const verdict = await readFundability(deps, rotation)
+  switch (verdict) {
+    case "fundable":
+      return (await deps.route(rotation)) === "ok"
+        ? undefined
+        : { patch: fenced((c) => attention(c, "route")) }
     case "conflict":
       return { patch: fenced(() => CONFLICT) }
     case "applied":
@@ -461,8 +479,11 @@ async function preconditions(
       const held = (await readDeposit(deps, rotation.sipa, fundingFloor(record.plan))).held
       return { patch: fenced((c) => (held ? attention(c, "stranded") : RESTART)) }
     }
-    default:
-      return undefined
+    default: {
+      // Returning nothing would publish or fund, so a verdict this switch does not know stops it.
+      const unknown: never = verdict
+      throw new WalletError("invariant", `backup rotation: unknown fundability ${String(unknown)}`)
+    }
   }
 }
 
@@ -489,15 +510,17 @@ export async function publishRotation(
 }
 
 /**
- * `published` → `funded`: one funding send, its entry appended before it goes out. The hash is
- * written to the record and the tracker's row before the node takes the transaction; a write that
- * fails aborts the send, as does a record a resume parked meanwhile. A throw before the hash marks
- * the entry `never-sent`; the phase moves on the hash alone. A deposit address that already holds
- * the funding, settled, moves on with no send.
+ * `published` → `funded`: one funding send, its entry appended before it goes out, with the prover
+ * tip it carries written on the plan in the same write. The hash is written to the record and the
+ * tracker's row before the node takes the transaction; a write that fails aborts the send, as does
+ * a record a resume parked meanwhile. A throw before the hash marks the entry `never-sent`; the
+ * phase moves on the hash alone. A deposit address that already holds the funding, settled, moves
+ * on with no send.
  */
 export async function fundRotation(
   deps: RotationFlowDeps,
   record: BackupRotationRecord,
+  proverTip = 0n,
 ): Promise<FlowResult> {
   const rotation = whole(record)
   if (!rotation || record.phase !== "published")
@@ -519,7 +542,12 @@ export async function fundRotation(
     outcome: "pending",
   }
   const seeded = await save(deps, record, (c) =>
-    unmoved(c, record) ? { fundings: [...c.fundings, entry] } : null,
+    unmoved(c, record)
+      ? {
+          ...(c.plan ? { plan: tippedPlan(c.plan, proverTip) } : {}),
+          fundings: [...c.fundings, entry],
+        }
+      : null,
   )
   const pending = (c: BackupRotationRecord) =>
     c.fundings.some((f) => f.attemptId === attemptId && f.outcome === "pending")
@@ -572,9 +600,9 @@ export async function fundRotation(
 }
 
 /**
- * `funded` → `swept`: the deposit address's sweep, counted once its block is final; it supersedes a
- * stranded report, except on a finished attempt, which keeps nothing to move on with. A sweep gone
- * before finality returns the record to `funded`; the publish bound reached with the funding
+ * `funded` → `swept`: the deposit address's sweep, counted once its block is settled; it supersedes
+ * a stranded report, except on a finished attempt, which keeps nothing to move on with. A sweep gone
+ * before it settles returns the record to `funded`; the publish bound reached with the funding
  * unswept, a route that died, or a withdrawal row naming another address are reported as attention.
  */
 export async function watchRotation(
@@ -598,7 +626,7 @@ export async function watchRotation(
       unmoved(c, record) ? patch(c) : null
   const sweep = await deps.l1.sweep(sipa, record.fromBlock)
   if (sweep) {
-    if (!(await deps.l1.isFinal(sweep))) return { record, wait: "sweep" }
+    if (!(await deps.l1.isSettled(sweep))) return { record, wait: "sweep" }
     const { fundings, corrupt } = await reconcileFundings(deps, record)
     return {
       record: await save(
@@ -712,20 +740,22 @@ async function readSends<T extends MoveSend<string>>(
       if (!send.txHash || send.state === "mined") return send
       const outcome = await txOutcome(deps.node, send.txHash, send.expiresAtMs, deps.now())
       switch (outcome.kind) {
-        case "included":
+        case "included": {
+          const inclusion = { blockNumber: outcome.blockNumber, blockHash: outcome.blockHash }
           if (outcome.checkpointed) {
             return outcome.effect === "reverted"
               ? replan(send)
-              : { ...send, state: "mined", effect: undefined }
+              : { ...send, state: "mined", inclusion, effect: undefined }
           }
           return {
             ...send,
             state: "included",
-            inclusion: { blockNumber: outcome.blockNumber, blockHash: outcome.blockHash },
+            inclusion,
             ...(outcome.effect === "reverted"
               ? { effect: "reverted" as const }
               : { effect: undefined }),
           }
+        }
         case "mined":
           return { ...send, state: "mined", effect: undefined }
         case "reverted":
@@ -903,12 +933,28 @@ async function sendNextChunk(
     }
     if (!declined && !withdrawn) throw err
   }
+  await readSentChunk(deps, record, at)
   const after = await deps.store.get(record.owner)
   if (after?.attemptId !== record.attemptId) throw new RotationFlowError("gone", "attempt is gone")
   return {
     record: after,
     wait: withdrawn ? "approval" : moveDeclined(after) ? "declined" : "chunk",
   }
+}
+
+/**
+ * Saves a chunk's block once its send resolves. A balance read can hold the chunk before the
+ * driver's next step reads its receipt, and until its block is saved Home counts it twice.
+ */
+async function readSentChunk(deps: RotationFlowDeps, record: BackupRotationRecord, at: number) {
+  const stored = await deps.store.get(record.owner)
+  const sent = stored?.move?.runs.at(-1)?.chunks[at]
+  if (!stored || sent?.state !== "submitted" || !sent.txHash) return
+  const [seen] = await readSends(deps, [sent], replanChunk)
+  if (!seen || !sendDone(seen)) return
+  await save(deps, stored, (c) =>
+    c.phase === stored.phase && sameRuns(c, stored) ? runsWith(c, at, seen) : null,
+  ).catch(() => undefined)
 }
 
 /** Whether the refunds still read as the snapshot a step decided over. */
@@ -1107,9 +1153,9 @@ export async function fundingEvidence(
 }
 
 /**
- * The deposit address, read once at both block tags against `floor`, the least that counts. Every
- * decision about money there takes one of two answers: `held` (on the latest or the finalized
- * block) guards whatever drops or strips the salt; `settled` (on the finalized block) is what the
+ * The deposit address, read once at the latest block and once at the settled one (`at`, else read
+ * now) against `floor`, the least that counts. Every decision about money there takes one of two
+ * answers: `held` (on either block) guards whatever drops or strips the salt; `settled` is what the
  * flow counts on past the sweep window.
  */
 interface Deposit {
@@ -1121,14 +1167,30 @@ async function readDeposit(
   deps: Pick<RotationFlowDeps, "l1">,
   sipa: Address,
   floor = 1n,
+  at?: SettledBlock,
 ): Promise<Deposit> {
   const latest = await deps.l1.sipaBalance(sipa, "latest")
-  const finalized = await deps.l1.sipaBalance(sipa)
-  return { held: latest >= floor || finalized >= floor, settled: finalized >= floor }
+  const settled = await deps.l1.sipaBalance(sipa, at)
+  return { held: latest >= floor || settled >= floor, settled: settled >= floor }
 }
 
 async function depositHeld(deps: Pick<RotationFlowDeps, "l1">, sipa: Address): Promise<boolean> {
   return (await readDeposit(deps, sipa)).held
+}
+
+/** The plan's funding without its prover tip: what the burn carries before a speed is chosen. */
+export function untippedFunding(
+  plan: Pick<BackupRotationPlan, "fundingAmount" | "proverTip">,
+): bigint {
+  return BigInt(plan.fundingAmount) - BigInt(plan.proverTip ?? 0)
+}
+
+/** The plan funded with `tip` on top of its untipped funding; a zero tip leaves no field behind. */
+function tippedPlan(plan: BackupRotationPlan, tip: bigint): BackupRotationPlan {
+  const tipped = { ...plan, fundingAmount: (untippedFunding(plan) + tip).toString() }
+  if (tip > 0n) tipped.proverTip = tip.toString()
+  else delete tipped.proverTip
+  return tipped
 }
 
 /**
@@ -1169,19 +1231,24 @@ async function depositSeen(
 }
 
 /**
- * The fundings as the tracker and the node show them now. A funding mined on L2 is swept once the
- * portal shows its withdrawal spent at the finalized block (its money reached the deposit address)
- * and nothing is held there; before that the sweep may have taken someone else's money and left
- * this one to land later.
+ * The fundings as the tracker and the node show them now. A funding on L2 is swept once the portal
+ * shows its withdrawal spent at the settled block (its money reached the deposit address) and
+ * nothing is held there at that same block; before that the sweep may have taken someone else's
+ * money and left this one to land later. A funding on L2 whose row is misfiled is never released:
+ * `stuck`.
  */
 async function reconcileFundings(
   deps: RotationFlowDeps,
   record: BackupRotationRecord,
-): Promise<{ fundings: BackupFunding[]; corrupt: boolean; burn: boolean }> {
+): Promise<{ fundings: BackupFunding[]; corrupt: boolean; stuck: boolean; burn: boolean }> {
   const sipa = record.rotation?.sipa
   let corrupt = false
+  let stuck = false
   let burn = false
   const released = new Set<string>()
+  // One settled block for every release read and the balance read that judges them together.
+  let settledAt: Promise<SettledBlock> | undefined
+  const settled = () => (settledAt ??= deps.l1.settledBlock())
   const judged = await Promise.all(
     record.fundings.map(async (funding): Promise<BackupFunding> => {
       if (!fundingLanding(funding)) return funding
@@ -1193,14 +1260,17 @@ async function reconcileFundings(
             funding.txHash !== undefined &&
             row.l2TxHash.toLowerCase() !== funding.txHash.toLowerCase()))
       if (misfiled) corrupt = true
-      /** A funding mined on L2 whose withdrawal is spent at the finalized block had its money at the address. */
-      const judge = async (f: BackupFunding) => {
-        const releasing =
-          f.outcome === "mined" && !misfiled && row?.phase === "done" && row.withdrawalId
-        if (releasing && (await deps.l1.releaseFinal(row.withdrawalId!))) released.add(f.attemptId)
+      /** A funding on L2 (`onL2`) whose withdrawal is spent at the settled block had its money at the address. */
+      const judge = async (f: BackupFunding, onL2: boolean) => {
+        // Only a mined funding is stuck for good: an included one can still drop, so it stays polled.
+        if (misfiled && f.outcome === "mined") stuck = true
+        const releasing = onL2 && !misfiled && row?.phase === "done" && row.withdrawalId
+        if (releasing && (await deps.l1.releaseSettled(row.withdrawalId!, await settled()))) {
+          released.add(f.attemptId)
+        }
         return f
       }
-      if (funding.outcome === "mined") return judge(funding)
+      if (funding.outcome === "mined") return judge(funding, true)
       // A hash only the row holds comes with no expiry: a receipt alone ends that funding.
       const txHash = funding.txHash ?? (row?.l2TxHash as Hex | undefined)
       if (txHash) {
@@ -1209,7 +1279,10 @@ async function reconcileFundings(
           outcome.kind === "mined" || outcome.kind === "reverted" || outcome.kind === "dead"
             ? outcome.kind
             : "pending"
-        return judge({ ...funding, txHash, outcome: next })
+        // An included funding is still `pending` on the record, but its withdrawal can already be released.
+        const onL2 =
+          next === "mined" || (outcome.kind === "included" && outcome.effect === "success")
+        return judge({ ...funding, txHash, outcome: next }, onL2)
       }
       // A send this life of the wallet started may still be between its entry and its row.
       const seededHere = funding.session === deps.session
@@ -1221,13 +1294,19 @@ async function reconcileFundings(
       return { ...funding, outcome: "never-sent" }
     }),
   )
-  if (released.size === 0 || !sipa || (await readDeposit(deps, sipa)).settled) {
-    return { fundings: judged, corrupt, burn }
+  if (released.size === 0 || !sipa) return { fundings: judged, corrupt, stuck, burn }
+  const at = await settled()
+  // The reads above went by number: a block replaced under them is judged again next time.
+  if (
+    (await readDeposit(deps, sipa, 1n, at)).settled ||
+    !(await deps.l1.isSettled({ blockNumber: at.number, blockHash: at.hash }))
+  ) {
+    return { fundings: judged, corrupt, stuck, burn }
   }
   const fundings = judged.map((f) =>
     released.has(f.attemptId) ? { ...f, outcome: "swept" as const } : f,
   )
-  return { fundings, corrupt, burn }
+  return { fundings, corrupt, stuck, burn }
 }
 
 /**
@@ -1286,7 +1365,7 @@ async function resumeOnce(
     const snapshot = current
     const sipa = current.rotation.sipa
     const fromBlock = current.fromBlock
-    const { fundings, corrupt, burn } = await reconcileFundings(deps, snapshot)
+    const { fundings, corrupt, stuck, burn } = await reconcileFundings(deps, snapshot)
     let wait: FlowWait | undefined
     let decided: Patch
     if (corrupt) {
@@ -1312,12 +1391,17 @@ async function resumeOnce(
         wait = "burn"
       } else if (rotation && beforeSweep) {
         const sweep = await deps.l1.sweep(sipa, fromBlock)
-        if (sweep && (await deps.l1.isFinal(sweep))) {
-          then = sweptPatch(sweep)
-        } else if (!sweep) {
+        // A published record's own wait is the user's: what settles on its own returns a polled one.
+        const published = acting({ ...snapshot, ...moved }) === "published"
+        if (sweep) {
+          if (await deps.l1.isSettled(sweep)) then = sweptPatch(sweep)
+          else if (published) wait = "sweep"
+        } else {
           const verdict = await readFundability(deps, rotation)
           if (verdict === "applied") {
             then = await installedPatch(deps, rotation)
+          } else if (verdict === "applied-pending" && published) {
+            wait = "applied-pending"
           } else if (verdict === "superseded" || verdict === "conflict") {
             // Money that could be the funding of a change that cannot run is the user's to recover.
             const held = (await readDeposit(deps, sipa, fundingFloor(snapshot.plan))).held
@@ -1343,7 +1427,8 @@ async function resumeOnce(
       throw err
     }
     if (wait) return { record: current, wait }
-    if (corrupt) return { record: current }
+    // Nothing on chain releases a stuck funding: a wait would have the driver re-check it forever.
+    if (stuck) return { record: current }
   }
   switch (current.phase) {
     case "signed":
@@ -1371,10 +1456,10 @@ async function resumeOnce(
 /**
  * A parked record returns to the phase it left when the reason has passed: the route paying again,
  * a late sweep, money gone from the deposit address, nothing left to land there. Money gone by a
- * recovery ends the attempt at `recovered` instead, unless the signed change ran anyway: then the
- * backup is installed and the attempt goes on. A finished attempt stays parked while money may sit
- * there, with nothing run twice. A paused move waits for the user; a corrupt record waits until its
- * money is recovered.
+ * recovery ends the attempt at `recovered` once the recovery is settled, unless the signed change ran
+ * anyway: then the backup is installed and the attempt goes on. A finished attempt stays parked
+ * while money may sit there, with nothing run twice. A paused move waits for the user; a corrupt
+ * record waits until its money is recovered.
  */
 async function resumeAttention(
   deps: RotationFlowDeps,
@@ -1399,8 +1484,11 @@ async function resumeAttention(
     case "stranded": {
       if (finished) return strandedStanding(deps, record, suspended)
       if (await nothingLanding(deps, record)) {
-        const recovery = record.recovery ?? (await recoverySeen(deps, record))
+        const recovery = await currentRecovery(deps, record)
         if (recovery) {
+          if (!(await recoverySettled(deps, recovery))) {
+            return awaitRecovery(deps, record, recovery, true)
+          }
           const rotation = whole(record)
           const live = rotation ? await readFundability(deps, rotation) : undefined
           if (live !== "applied" && live !== "applied-pending") {
@@ -1437,9 +1525,12 @@ async function resumeAttention(
       if (finished) return { record }
       // Read the recovery before the balance: the panel re-checks a damaged record only while this
       // returns a `wait`, so a recovery still settling must return one.
-      const recovery = record.recovery ?? (await recoverySeen(deps, record))
+      const recovery = await currentRecovery(deps, record)
       if (!recovery) return { record }
-      if (!(await nothingLanding(deps, record))) return { record, wait: "recovery" }
+      const emptied = await nothingLanding(deps, record)
+      if (!emptied || !(await recoverySettled(deps, recovery))) {
+        return awaitRecovery(deps, record, recovery, emptied)
+      }
       return { record: await save(deps, record, endRecovered(record, recovery)) }
     }
     default:
@@ -1462,14 +1553,68 @@ async function recoverySeen(
 }
 
 /**
- * Ends the attempt at `recovered`. Callers check that nothing can land first, so `stripSettled`
- * drops the salt along with the signature and the envelope.
+ * The recovery the attempt waits on. A saved one with no block may still be pending, so it stands
+ * unless the chain shows another: dropped by a reorg, or followed by a recovery from Settings, it
+ * would hold the attempt open for good.
+ */
+async function currentRecovery(
+  deps: RotationFlowDeps,
+  record: BackupRotationRecord,
+): Promise<BackupRotationRecord["recovery"]> {
+  const saved = record.recovery
+  if (!saved) return recoverySeen(deps, record)
+  if (await deps.l1.txBlock(saved.txHash)) return saved
+  return (await recoverySeen(deps, record)) ?? saved
+}
+
+/**
+ * Whether the recovery's L1 block is settled. A deposit not settled yet reads as nothing held at
+ * the settled block, so until then a reorg could drop the recovery alone and leave money at the
+ * address with its salt gone.
+ */
+async function recoverySettled(
+  deps: RotationFlowDeps,
+  recovery: NonNullable<BackupRotationRecord["recovery"]>,
+): Promise<boolean> {
+  const block = await deps.l1.txBlock(recovery.txHash)
+  return !!block && (await deps.l1.isSettled(block))
+}
+
+/**
+ * Waits on a recovery still settling. One read from the chain is kept, as `noteRecovery` keeps one
+ * the tab saw, so the card shows it as sent rather than offering a recovery again. Once the address
+ * is `emptied`, that read is the recovery that took the money, so it replaces a saved one that
+ * never landed; before then, the chain's latest may be older than a saved one still pending.
+ */
+async function awaitRecovery(
+  deps: RotationFlowDeps,
+  record: BackupRotationRecord,
+  recovery: NonNullable<BackupRotationRecord["recovery"]>,
+  emptied: boolean,
+): Promise<FlowResult> {
+  const saved = record.recovery
+  const kept = saved && (!emptied || saved.txHash.toLowerCase() === recovery.txHash.toLowerCase())
+  if (kept || !recoverable(record)) return { record, wait: "recovery" }
+  const noted = await save(deps, record, (c) => (unmoved(c, record) ? { recovery } : null))
+  return { record: noted, wait: "recovery" }
+}
+
+/**
+ * Ends the attempt at `recovered`. Callers check that nothing can land and the recovery is settled
+ * first, so `stripSettled` drops the salt along with the signature and the envelope.
  */
 const endRecovered =
   (record: BackupRotationRecord, recovery: NonNullable<BackupRotationRecord["recovery"]>): Patch =>
   (c) =>
     unmoved(c, record)
-      ? stripSettled({ ...c, phase: "recovered", ...CLEARED, unswept: undefined, recovery })
+      ? stripSettled({
+          ...c,
+          phase: "recovered",
+          ...CLEARED,
+          unswept: undefined,
+          recovery,
+          recovered: recovery,
+        })
       : null
 
 /** Whether nothing can reach the deposit address any more: no funding landing, no sweep, nothing held. */
@@ -1485,7 +1630,7 @@ async function nothingLanding(
 
 /**
  * A finished attempt parked over money at its deposit address returns to its phase once nothing can
- * land there and nothing is held; the salt leaves with it.
+ * land there, nothing is held and a recovery that took it is settled; the salt leaves with it.
  */
 async function strandedStanding(
   deps: RotationFlowDeps,
@@ -1494,6 +1639,10 @@ async function strandedStanding(
 ): Promise<FlowResult> {
   const sipa = record.rotation?.sipa
   if (!sipa || inFlight(record) || (await depositHeld(deps, sipa))) return { record }
+  const recovery = await currentRecovery(deps, record)
+  if (recovery && !(await recoverySettled(deps, recovery))) {
+    return awaitRecovery(deps, record, recovery, true)
+  }
   return {
     record: await save(deps, record, (c) =>
       unmoved(c, record)
@@ -1504,7 +1653,7 @@ async function strandedStanding(
 }
 
 /**
- * A finished attempt with money that may sit at its deposit address is reported: a funding final
+ * A finished attempt with money that may sit at its deposit address is reported: a funding on L2
  * with no sweep to take it, money held after the change ran, or money at the address now.
  */
 async function lateFunding(
@@ -1535,8 +1684,20 @@ export const recoverable = (record: BackupRotationRecord): boolean =>
   (record.attention === "stranded" || (record.attention === "corrupt" && !cancellable(record)))
 
 /**
+ * Where an attempt whose funding has to go back stands: held at the deposit address, sent back
+ * and waiting for Ethereum to settle it, or recovered. Undefined for every other attempt.
+ */
+export type RecoveryState = "held" | "sent" | "recovered"
+
+export function recoveryState(record: BackupRotationRecord): RecoveryState | undefined {
+  if (record.phase === "recovered") return "recovered"
+  if (!recoverable(record)) return undefined
+  return record.recovery ? "sent" : "held"
+}
+
+/**
  * Keeps the L1 transaction that sent the deposit address's money back out on a parked attempt. The
- * attempt stays parked until the recovery is final: a resume ends it once nothing can land and the
+ * attempt stays parked until the recovery is settled: a resume ends it once nothing can land and the
  * address holds nothing.
  */
 export async function noteRecovery(

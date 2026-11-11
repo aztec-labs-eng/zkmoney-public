@@ -14,6 +14,12 @@
  *                 → swapping → recoverable       (funded, and `deployAndExecute` reverts: the route cannot deliver)
  *                            → recovered         (the user's recoverERC20 emptied it: the escrow's recovery log)
  *
+ * A bridge-out's escrow run deposits to the bridge, so it waits once more, on the bridge's report:
+ *
+ *   swapping → bridging → done                 (filled on the other chain)
+ *                       → recoverable          (the bridge refunded the escrow its input token)
+ *                                  → recovered (the user's recoverERC20 emptied it)
+ *
  * The flow (`runBurn`) writes the pre-mine `submitting` row, submits the burn, marks it mined and
  * wakes the tracker. Each pass reads chain for every record past submit:
  *   - lazily derive + stamp the `withdrawalId` (needs the burn's tx effect,
@@ -51,8 +57,10 @@ import {
   type SwapEscrowReader,
   type WithdrawalFinalizationReader,
 } from "@obsidion/sdk"
+import type { BridgeOutProviderId } from "@obsidion/sdk"
 import type { Hex } from "viem"
-import { swapEscrowTarget } from "../core/services/bridge/swapEscrowArgs"
+import type { BridgeOutTracking } from "../core/services/bridge/bridgeOutProvider"
+import { escrowLeg, escrowRunCall, escrowRunPayee } from "../core/services/bridge/escrowLeg"
 import { withdrawalRecipients } from "../core/services/bridge/withdrawalRecipients"
 import type {
   WithdrawalDeployment,
@@ -67,45 +75,72 @@ import {
 import { isFailedSubmission, trackSubmission } from "../core/services/transactions/trackSubmission"
 import { logger } from "../utils/logger"
 import { makeLimiter } from "../utils/makeLimiter"
-import type { Write } from "./database"
+import type { Database, Write } from "./database"
+import type { Operations } from "./operations"
+import type { ProvingProgress } from "./prover"
+import type { ReadonlyStore } from "./store"
 import { bestEffort, WalletError } from "./errors"
-import type { Resource } from "./resource"
+import type { Service } from "./service"
 import { task, within, type Task } from "./runtime"
 import type { Withdrawals } from "./withdrawals"
 import type { WithdrawalPatch } from "./withdrawalTransition"
 
-/** Records a live in-process submission owns, so the tracker stands off until it releases. */
-const liveSubmissions = new Set<string>()
-
 /**
  * {@link trackSubmission} over a withdrawal record. `stamp` is the burn's `onTxHash`: it saves the
- * hash onto the record, strictly, so a stamp that did not persist sends nothing. A rejection is
- * answered with the record whenever the burn may still land, so a lost connection never fails a
- * withdrawal that is already on chain. `announce: false` for a record riding another's tx.
+ * hash onto the record and, given `own`, onto its operation, strictly and in one write, so
+ * a stamp that did not persist sends nothing. A rejection is answered with the record whenever the
+ * burn may still land, so a lost connection never fails a withdrawal that is already on chain. A
+ * record riding another's tx takes no `own`: that tx's write sends its operation.
  */
+/** Saves a burn's hash on its withdrawal and, when `operations` is given, on its operation too. */
+async function stampRecord(
+  store: Withdrawals,
+  localId: string,
+  operationId: string | undefined,
+  operations: Pick<Operations, "apply"> | undefined,
+  txHash: string,
+  w?: Write,
+): Promise<void> {
+  if (!(await store.get(localId, w)))
+    throw new WalletError("invariant", `withdrawal: no record ${localId} to stamp`)
+  await store.apply(
+    localId,
+    { type: "patch", fields: { phase: "submitting", l2TxHash: txHash as Hex } },
+    w,
+  )
+  if (!operations) return
+  if (!operationId || !(await operations.apply(operationId, { type: "sent", txHash }, w)))
+    throw new WalletError("invariant", `withdrawal: no operation ${operationId} to stamp`)
+}
+
+/** Saves a burn's hash on its withdrawal and on the operation the record names, in one write. */
+export function stampWithdrawal(
+  own: { db: Database; withdrawals: Withdrawals; operations: Pick<Operations, "apply"> },
+  localId: string,
+  txHash: string,
+): Promise<void> {
+  return own.db.write(async (w) => {
+    const operationId = (await own.withdrawals.get(localId, w))?.operationId
+    await stampRecord(own.withdrawals, localId, operationId, own.operations, txHash, w)
+  })
+}
+
 export function trackWithdrawalSubmission(
+  progress: ReadonlyStore<ProvingProgress>,
   store: Withdrawals,
   localId: string,
   operationId: string,
-  opts: { announce?: boolean } = {},
+  own?: { db: Database; operations: Pick<Operations, "apply"> },
 ) {
-  liveSubmissions.add(localId)
-  const submission = trackSubmission(operationId, opts)
-  const stampIn = async (txHash: string, w?: Write): Promise<void> => {
-    if (!(await store.get(localId, w)))
-      throw new WalletError("invariant", `withdrawal: no record ${localId} to stamp`)
-    await store.apply(
-      localId,
-      { type: "patch", fields: { phase: "submitting", l2TxHash: txHash as Hex } },
-      w,
-    )
-  }
+  const submission = trackSubmission(progress, operationId)
+  const stampIn = (txHash: string, w?: Write): Promise<void> =>
+    stampRecord(store, localId, operationId, own?.operations, txHash, w)
   return {
     /** The hash emitted at the submit boundary; undefined until then. */
     get txHash() {
       return submission.txHash
     },
-    stamp: (txHash: string) => stampIn(txHash),
+    stamp: (txHash: string) => (own ? own.db.write((w) => stampIn(txHash, w)) : stampIn(txHash)),
     /** The stamp inside the caller's transaction. */
     stampIn,
     /** The record while the burn may still land, else null. */
@@ -113,10 +148,7 @@ export function trackWithdrawalSubmission(
       if (!(await submission.survived(node))) return null
       return (await store.get(localId)) ?? null
     },
-    stop() {
-      submission.stop()
-      liveSubmissions.delete(localId)
-    },
+    stop: () => submission.stop(),
   }
 }
 
@@ -176,6 +208,8 @@ export interface TrackerRails {
    * way a direct withdrawal does, and the swap leg goes unwatched.
    */
   swapEscrowReader?: SwapEscrowReader
+  /** The bridge a bridge-out record names, for its deposit's report; null where the page has none. */
+  bridgeOut?: (provider: BridgeOutProviderId) => BridgeOutTracking | null
   /** The first L1 block at or after a time (ms). The release search starts at the burn's, not the
    *  reader's default look-back, which misses an older release. */
   l1BlockAt?: (ms: number) => Promise<bigint | undefined>
@@ -183,6 +217,8 @@ export interface TrackerRails {
 
 export interface TrackerWiring extends TrackerRails {
   node: WithdrawalTrackerNode
+  /** The operations a flow in this page runs: their `submitting` records are the flow's. */
+  live: ReadonlyStore<ReadonlySet<string>>
   /** A burn's withdrawal ids; `fetchWithdrawalIds` unless given. */
   withdrawalIds?: typeof fetchWithdrawalIds
 }
@@ -204,14 +240,16 @@ function rebuiltSettledAt(record: WithdrawalRecord): number | undefined {
 export function withdrawalStepper(
   store: Withdrawals,
   wiring: TrackerWiring,
-  now: () => number = Date.now,
+  now: () => number,
 ): () => Promise<void> {
   const {
     node,
+    live,
     finalizationReader,
     deployment,
     readerForDeployment,
     swapEscrowReader,
+    bridgeOut,
     l1BlockAt,
     withdrawalIds = fetchWithdrawalIds,
   } = wiring
@@ -274,8 +312,8 @@ export function withdrawalStepper(
     const { reader, l2Token } = bindingsFor(record)
 
     if (record.phase === "submitting") {
-      // Mining publishes the hash before sendTx; don't race the live submission.
-      if (liveSubmissions.has(record.localId)) return
+      // Mining publishes the hash before sendTx; don't race the flow that sends it.
+      if (record.operationId && live.get().has(record.operationId)) return
       const receipt = await node.getTxReceipt(txHash)
       if (isFailedSubmission(receipt)) {
         await patch(record.localId, {
@@ -375,6 +413,36 @@ export function withdrawalStepper(
 
     if (record.phase === "swapping" || record.phase === "recoverable") {
       await stepSwap(record)
+    } else if (record.phase === "bridging") {
+      await stepBridge(record)
+    }
+  }
+
+  /** A bridge-out's deposit, once its escrow ran: filled on the other chain, or refunded to the escrow. */
+  const stepBridge = async (record: WithdrawalRecord): Promise<void> => {
+    if (!record.swapExecuteTxHash || !record.bridgeOut) return
+    const provider = bridgeOut?.(record.bridgeOut.provider)
+    if (!provider) return
+    const status = await provider.status(record.swapExecuteTxHash)
+    if (status?.status === "filled") {
+      // A failed read throws: the record stays bridging and the next pass reads it again.
+      const filled = await provider.fill(
+        record.bridgeOut.chainId,
+        status.fillTxHash,
+        record.recipient,
+      )
+      await patch(record.l2TxHash!, {
+        phase: "done",
+        bridgeOut: {
+          ...record.bridgeOut,
+          fillTxHash: status.fillTxHash,
+          ...(filled === undefined ? {} : { filledAmount: filled.toString() }),
+        },
+        endTime: rebuiltSettledAt(record),
+        reorgEpoch: record.reorgEpoch,
+      })
+    } else if (status?.status === "refunded") {
+      await advancePhase(record, "recoverable")
     }
   }
 
@@ -385,7 +453,7 @@ export function withdrawalStepper(
    */
   const stepSwap = async (record: WithdrawalRecord): Promise<void> => {
     const reader = swapEscrowReader
-    const target = swapEscrowTarget(record)
+    const leg = escrowLeg(record)
     if (!reader || !record.swapEscrow) return
     const l2TxHash = record.l2TxHash!
     const [balance, deployed] = await Promise.all([
@@ -396,18 +464,32 @@ export function withdrawalStepper(
     if (balance === 0n) {
       if (!deployed) return // release not indexed yet, or balance read raced it — defer
       // A failed log read throws and the step retries: read as "no log" it would misreport.
-      const factory = target?.factory ?? record.swapEscrowFactory
+      const factory = leg?.factory ?? record.swapEscrowFactory
       const [executed, recovered] = await Promise.all([
         factory ? reader.executedTxHash(factory, record.swapEscrow) : undefined,
         reader.recoveredTxHash(record.swapEscrow),
       ])
-      if (recovered && !executed) {
+      // A bridge-out's escrow can run and then be recovered: its bridge refunds to the escrow.
+      if (recovered && (!executed || record.bridgeOut)) {
         await patch(l2TxHash, {
           phase: "recovered",
           recoveryTxHash: recovered.txHash,
           recoveryTarget: recovered.target,
           reorgEpoch: record.reorgEpoch,
         })
+        return
+      }
+      // A bridge-out's run only deposits to the bridge; its fill is read off the run's tx.
+      if (record.bridgeOut) {
+        // A refunded deposit stays recoverable: the escrow holds the refund, not DAI.
+        if (!executed || (record.phase === "recoverable" && record.swapExecuteTxHash)) return
+        const bridging = await patch(l2TxHash, {
+          phase: "bridging",
+          phaseEnteredAt: now(),
+          swapExecuteTxHash: executed,
+          reorgEpoch: record.reorgEpoch,
+        })
+        await stepBridge(bridging)
         return
       }
       await patch(l2TxHash, {
@@ -419,9 +501,13 @@ export function withdrawalStepper(
       return
     }
 
-    // Funded. Without rebuildable args nothing can be simulated: the record waits on a relayer.
-    if (!target) return
-    const fillable = await reader.deploySimulates(target.factory, target)
+    // Funded. Without a rebuildable leg nothing can be simulated: the record waits on a relayer.
+    if (!leg) return
+    const fillable = await reader.deploySimulates(
+      leg.factory,
+      escrowRunCall(leg).data,
+      escrowRunPayee(leg),
+    )
     if (!fillable && record.phase === "swapping") {
       await advancePhase(record, "recoverable")
     } else if (fillable && record.phase === "recoverable") {
@@ -452,18 +538,20 @@ export function withdrawalStepper(
 }
 
 export interface WithdrawalTrackerDeps {
-  wallet: Resource<Pick<ObsidionWallet, "node">>
+  wallet: Service<Pick<ObsidionWallet, "node">>
   store: Withdrawals
+  operations: Pick<Operations, "live">
   /** The manifest's withdrawal rails; null where it has none. */
   rails(): Promise<TrackerRails | null>
-  now?: () => number
+  now: () => number
 }
 
 /**
  * Steps the session's withdrawals every 20 s, and every minute while hidden: a burn already on L2
  * keeps advancing with nobody watching.
  */
-export function withdrawalTracker({ wallet, store, rails, now }: WithdrawalTrackerDeps): Task {
+export function withdrawalTracker(deps: WithdrawalTrackerDeps): Task {
+  const { wallet, store, rails, now } = deps
   let built:
     | { rails: TrackerRails; node: WithdrawalTrackerNode; pass: () => Promise<void> }
     | undefined
@@ -479,7 +567,8 @@ export function withdrawalTracker({ wallet, store, rails, now }: WithdrawalTrack
       const wired = await within(rails(), "withdrawal rails", { signal })
       if (!wired) return
       if (built?.rails !== wired || built.node !== wallet.node) {
-        const pass = withdrawalStepper(store, { ...wired, node: wallet.node }, now)
+        const wiring = { ...wired, node: wallet.node, live: deps.operations.live }
+        const pass = withdrawalStepper(store, wiring, now)
         built = { rails: wired, node: wallet.node, pass }
       }
       await within(built.pass(), "withdrawal pass", { signal })

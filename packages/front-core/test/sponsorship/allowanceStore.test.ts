@@ -1,13 +1,17 @@
 /**
- * The signed-in account's allowance. It belongs to one account on one deployment: switching either
- * clears it before a new read lands, and a late answer for the old one is dropped.
+ * One session's allowance: each reader that opens reads it again over the last count, and readers
+ * open together share one read.
  */
 import { describe, expect, it, vi } from "vitest"
+import { createPace } from "@obsidion/core/cadence"
 import type { ClaimFpcAllowance } from "@obsidion/sdk"
+import { queries } from "../../src/engine/query"
+import { memoryStore } from "../../src/engine/store"
 import {
-  SponsoredAllowanceStore,
+  sponsoredAllowance,
   type AllowanceRead,
   type AllowanceUsage,
+  type SponsoredAllowance,
 } from "../../src/core/sponsorship"
 
 function deferred<T>() {
@@ -28,255 +32,269 @@ const read = (allowance: Partial<ClaimFpcAllowance>): AllowanceRead => ({
 })
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
+const query = () =>
+  queries({ pace: createPace(), visible: memoryStore(true).readonly, now: () => Date.now() })
+const noUsage = async (): Promise<AllowanceUsage | undefined> => undefined
+const listen = (allowance: SponsoredAllowance) => allowance.snapshot.subscribe(() => {})
 
-describe("SponsoredAllowanceStore", () => {
-  it("starts signed out and loads when an account scope arrives", async () => {
-    const store = new SponsoredAllowanceStore()
-    expect(store.getSnapshot()).toEqual({ status: "signed-out" })
-    store.setScope({ key: "alice|v1", read: async () => read({ uses: 5 }) })
-    expect(store.getSnapshot()).toEqual({ status: "loading", scope: "alice|v1" })
+describe("sponsoredAllowance", () => {
+  it("reads nothing until a reader comes, then reads once for each reader that opens", async () => {
+    const fetch = vi.fn(async () => read({ uses: 5 }))
+    const allowance = sponsoredAllowance(query(), fetch, noUsage)
+    expect(fetch).not.toHaveBeenCalled()
+    const off = listen(allowance)
     await flush()
-    expect(store.getSnapshot()).toMatchObject({
-      status: "ready",
-      scope: "alice|v1",
-      state: { kind: "available", available: 5 },
-    })
-  })
-
-  it("clears on an account change and drops the old account's late answer", async () => {
-    const store = new SponsoredAllowanceStore()
-    const alice = deferred<AllowanceRead>()
-    store.setScope({ key: "alice|v1", read: () => alice.promise })
-    store.setScope({
-      key: "bob|v1",
-      read: async () => read({ subscribed: false }),
-    })
-    expect(store.getSnapshot()).toEqual({ status: "loading", scope: "bob|v1" })
+    expect(allowance.snapshot.get()).toMatchObject({ status: "ready", state: { available: 5 } })
+    expect(fetch).toHaveBeenCalledTimes(1)
+    off()
+    listen(allowance)
     await flush()
-    alice.resolve(read({ uses: 9 }))
-    await flush()
-    expect(store.getSnapshot()).toMatchObject({
-      scope: "bob|v1",
-      state: { kind: "not-subscribed" },
-    })
-  })
-
-  it("clears on a deployment change", async () => {
-    const store = new SponsoredAllowanceStore()
-    store.setScope({ key: "alice|v1", read: async () => read({ uses: 9 }) })
-    await flush()
-    store.setScope({ key: "alice|v2", read: () => new Promise(() => {}) })
-    expect(store.getSnapshot()).toEqual({ status: "loading", scope: "alice|v2" })
-  })
-
-  it("forgets the account on sign-out", async () => {
-    const store = new SponsoredAllowanceStore()
-    store.setScope({ key: "alice|v1", read: async () => read({ uses: 9 }) })
-    await flush()
-    store.setScope(undefined)
-    expect(store.getSnapshot()).toEqual({ status: "signed-out" })
-  })
-
-  it("does not notify when a signed-out store is told it is signed out", () => {
-    const store = new SponsoredAllowanceStore()
-    const listener = vi.fn()
-    store.subscribe(listener)
-    store.setScope(undefined)
-    expect(listener).not.toHaveBeenCalled()
-  })
-
-  it("keeps the read when the same scope re-renders with a new reader", async () => {
-    const store = new SponsoredAllowanceStore()
-    const first = vi.fn(async () => read({ uses: 9 }))
-    store.setScope({ key: "alice|v1", read: first })
-    await flush()
-    const second = vi.fn(async () => read({ uses: 8 }))
-    store.setScope({ key: "alice|v1", read: second })
-    expect(store.getSnapshot()).toMatchObject({ status: "ready", state: { available: 9 } })
-    expect(second).not.toHaveBeenCalled()
-    await store.refresh()
-    expect(store.getSnapshot()).toMatchObject({ status: "ready", state: { available: 8 } })
+    expect(fetch).toHaveBeenCalledTimes(2)
   })
 
   it("reports a failed read as unavailable rather than as zero", async () => {
-    const store = new SponsoredAllowanceStore()
-    store.setScope({
-      key: "alice|v1",
-      read: async () => {
-        throw new Error("PXE is busy")
+    const allowance = sponsoredAllowance(
+      query(),
+      async () => {
+        throw new Error("PXE down")
       },
-    })
+      noUsage,
+    )
+    listen(allowance)
     await flush()
-    expect(store.getSnapshot()).toMatchObject({ status: "unavailable", scope: "alice|v1" })
+    expect(allowance.snapshot.get()).toMatchObject({ status: "unavailable" })
   })
 
   it("shares one read between concurrent refreshes", async () => {
-    const store = new SponsoredAllowanceStore()
-    const reader = vi.fn(async () => read({ uses: 2 }))
-    store.setScope({ key: "alice|v1", read: reader })
-    await Promise.all([store.refresh(), store.refresh()])
-    expect(reader).toHaveBeenCalledTimes(1)
-  })
-
-  it("forgets the account when the last subscriber leaves", async () => {
-    const store = new SponsoredAllowanceStore()
-    const first = store.subscribe(() => {})
-    const second = store.subscribe(() => {})
-    store.setScope({ key: "alice|v1", read: async () => read({ uses: 3 }) })
+    const fetch = vi.fn(async () => read({ uses: 1 }))
+    const allowance = sponsoredAllowance(query(), fetch, noUsage)
+    allowance.refresh()
+    allowance.refresh()
+    listen(allowance)
     await flush()
-    first()
-    expect(store.getSnapshot()).toMatchObject({ status: "ready", scope: "alice|v1" })
-    second()
-    expect(store.getSnapshot()).toEqual({ status: "signed-out" })
+    expect(fetch).toHaveBeenCalledTimes(1)
   })
 
-  it("marks a ready read as refreshing while a new read runs, and clears the mark when it lands", async () => {
-    const store = new SponsoredAllowanceStore()
+  it("shows the last count, marked refreshing, while a new read runs", async () => {
     const next = deferred<AllowanceRead>()
-    const reads = [async () => read({ refillPeriod: 0 }), () => next.promise]
-    store.setScope({ key: "alice|v1", read: () => reads.shift()!() })
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(read({ uses: 5 }))
+      .mockReturnValueOnce(next.promise)
+    const allowance = sponsoredAllowance(query(), fetch, noUsage)
+    const off = listen(allowance)
     await flush()
-    const refreshing = store.refresh()
-    expect(store.getSnapshot()).toMatchObject({
+    off()
+    listen(allowance)
+    expect(allowance.snapshot.get()).toMatchObject({
       status: "ready",
-      state: { kind: "does-not-renew" },
+      state: { available: 5 },
       refreshing: true,
     })
-    next.resolve(read({ uses: 4 }))
-    await refreshing
-    expect(store.getSnapshot()).toMatchObject({ state: { kind: "available" }, refreshing: false })
+    next.resolve(read({ uses: 6 }))
+    await flush()
+    expect(allowance.snapshot.get()).toMatchObject({ state: { available: 6 }, refreshing: false })
   })
 
-  it("drops an obsolete read after the scope goes A → B → A, whether it lands before or after the new one", async () => {
-    const store = new SponsoredAllowanceStore()
-    const oldA = deferred<AllowanceRead>()
-    const newA = deferred<AllowanceRead>()
-    store.setScope({ key: "alice|v1", read: () => oldA.promise })
-    store.setScope({ key: "bob|v1", read: () => new Promise(() => {}) })
-    store.setScope({ key: "alice|v1", read: () => newA.promise })
-
-    oldA.resolve(read({ uses: 9 }))
+  it("keeps the last count after a failed re-read, marked with the failure", async () => {
+    const error = new Error("PXE down")
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(read({ uses: 0, refillPeriod: 0 }))
+      .mockRejectedValueOnce(error)
+    const allowance = sponsoredAllowance(query(), fetch, noUsage)
+    listen(allowance)
     await flush()
-    expect(store.getSnapshot()).toEqual({ status: "loading", scope: "alice|v1" })
-
-    newA.resolve(read({ uses: 2 }))
+    allowance.refresh()
     await flush()
-    expect(store.getSnapshot()).toMatchObject({ status: "ready", state: { available: 2 } })
+    expect(allowance.snapshot.get()).toMatchObject({
+      status: "ready",
+      state: { kind: "does-not-renew" },
+      refreshing: false,
+      error,
+    })
   })
 
-  it("drops an obsolete read that lands after the new activation's read", async () => {
-    const store = new SponsoredAllowanceStore()
-    const oldA = deferred<AllowanceRead>()
-    store.setScope({ key: "alice|v1", read: () => oldA.promise })
-    store.setScope({ key: "bob|v1", read: () => new Promise(() => {}) })
-    store.setScope({ key: "alice|v1", read: async () => read({ uses: 2 }) })
+  it("reads again on a refresh after a failed read", async () => {
+    const fetch = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("PXE down"))
+      .mockResolvedValueOnce(read({ uses: 6 }))
+    const allowance = sponsoredAllowance(query(), fetch, noUsage)
+    listen(allowance)
     await flush()
-    oldA.resolve(read({ refillPeriod: 0 }))
+    expect(allowance.snapshot.get()).toMatchObject({ status: "unavailable" })
+    allowance.refresh()
     await flush()
-    expect(store.getSnapshot()).toMatchObject({ status: "ready", state: { kind: "available" } })
-  })
-
-  it("drops an obsolete failure after the scope goes A → B → A", async () => {
-    const store = new SponsoredAllowanceStore()
-    const oldA = deferred<AllowanceRead>()
-    store.setScope({ key: "alice|v1", read: () => oldA.promise })
-    store.setScope({ key: "bob|v1", read: () => new Promise(() => {}) })
-    store.setScope({ key: "alice|v1", read: async () => read({ uses: 2 }) })
-    await flush()
-    oldA.reject(new Error("PXE is busy"))
-    await flush()
-    expect(store.getSnapshot()).toMatchObject({ status: "ready", state: { available: 2 } })
-  })
-
-  it("drops a read from before the last subscriber left when the same account comes back", async () => {
-    const store = new SponsoredAllowanceStore()
-    const before = deferred<AllowanceRead>()
-    const after = deferred<AllowanceRead>()
-    const leave = store.subscribe(() => {})
-    store.setScope({ key: "alice|v1", read: () => before.promise })
-    leave()
-    store.subscribe(() => {})
-    store.setScope({ key: "alice|v1", read: () => after.promise })
-
-    before.resolve(read({ refillPeriod: 0 }))
-    await flush()
-    expect(store.getSnapshot()).toEqual({ status: "loading", scope: "alice|v1" })
-    after.resolve(read({ uses: 4 }))
-    await flush()
-    expect(store.getSnapshot()).toMatchObject({ status: "ready", state: { available: 4 } })
-  })
-
-  it("keeps a pending read when the same scope only swaps its reader", async () => {
-    const store = new SponsoredAllowanceStore()
-    const pending = deferred<AllowanceRead>()
-    store.setScope({ key: "alice|v1", read: () => pending.promise })
-    store.setScope({ key: "alice|v1", read: async () => read({ uses: 1 }) })
-    pending.resolve(read({ uses: 6 }))
-    await flush()
-    expect(store.getSnapshot()).toMatchObject({ status: "ready", state: { available: 6 } })
+    expect(allowance.snapshot.get()).toMatchObject({ status: "ready", state: { available: 6 } })
   })
 
   describe("usage split", () => {
-    const usageOf = (store: SponsoredAllowanceStore) => {
-      const snapshot = store.getSnapshot()
+    const usageOf = (allowance: SponsoredAllowance) => {
+      const snapshot = allowance.snapshot.get()
       return snapshot.status === "ready" ? snapshot.read.usage : "not ready"
     }
 
     it("shows the count before the split lands, then adds it", async () => {
-      const store = new SponsoredAllowanceStore()
       const split = deferred<AllowanceUsage | undefined>()
-      store.setScope({
-        key: "alice|v1",
-        read: async () => read({ uses: 5 }),
-        readUsage: () => split.promise,
-      })
+      const allowance = sponsoredAllowance(
+        query(),
+        async () => read({ uses: 5 }),
+        () => split.promise,
+      )
+      listen(allowance)
       await flush()
-      expect(store.getSnapshot()).toMatchObject({ status: "ready", state: { available: 5 } })
-      expect(usageOf(store)).toBeUndefined()
-
+      expect(allowance.snapshot.get()).toMatchObject({ status: "ready", state: { available: 5 } })
+      expect(usageOf(allowance)).toBeUndefined()
       split.resolve({ yours: 3, depositAddresses: 2 })
       await flush()
-      expect(usageOf(store)).toEqual({ yours: 3, depositAddresses: 2 })
+      expect(usageOf(allowance)).toEqual({ yours: 3, depositAddresses: 2 })
     })
 
-    it("keeps the last split through a refresh and drops a split for a replaced read", async () => {
-      const store = new SponsoredAllowanceStore()
+    it("drops a split for a replaced read, and adds the new read's own", async () => {
       const splits = [
         deferred<AllowanceUsage | undefined>(),
         deferred<AllowanceUsage | undefined>(),
       ]
       let call = 0
-      store.setScope({
-        key: "alice|v1",
-        read: async () => read({ uses: 5 - call }),
-        readUsage: () => splits[call++]!.promise,
-      })
+      const allowance = sponsoredAllowance(
+        query(),
+        async () => read({ uses: 5 - call }),
+        () => splits[call++]!.promise,
+      )
+      listen(allowance)
       await flush()
+      allowance.refresh()
+      await flush()
+      expect(allowance.snapshot.get()).toMatchObject({ state: { available: 4 } })
       splits[0]!.resolve({ yours: 3, depositAddresses: 2 })
       await flush()
-
-      await store.refresh()
-      expect(store.getSnapshot()).toMatchObject({ state: { available: 4 } })
-      expect(usageOf(store)).toEqual({ yours: 3, depositAddresses: 2 })
-
+      expect(usageOf(allowance)).toBeUndefined()
       splits[1]!.resolve({ yours: 3, depositAddresses: 3 })
       await flush()
-      expect(usageOf(store)).toEqual({ yours: 3, depositAddresses: 3 })
+      expect(usageOf(allowance)).toEqual({ yours: 3, depositAddresses: 3 })
+    })
+
+    it.each([
+      ["before", true],
+      ["after", false],
+    ])(
+      "splits a reopened reader's count when it lands %s the split in flight",
+      async (_, countFirst) => {
+        const splits = [
+          deferred<AllowanceUsage | undefined>(),
+          deferred<AllowanceUsage | undefined>(),
+        ]
+        const second = deferred<AllowanceRead>()
+        const fetch = vi
+          .fn()
+          .mockResolvedValueOnce(read({ uses: 5 }))
+          .mockReturnValueOnce(second.promise)
+        let call = 0
+        const allowance = sponsoredAllowance(query(), fetch, () => splits[call++]!.promise)
+        const off = listen(allowance)
+        await flush()
+        off()
+        listen(allowance)
+        if (countFirst) second.resolve(read({ uses: 4 }))
+        await flush()
+        splits[0]!.resolve({ yours: 3, depositAddresses: 2 })
+        await flush()
+        second.resolve(read({ uses: 4 }))
+        await flush()
+        splits[1]!.resolve({ yours: 4, depositAddresses: 2 })
+        await flush()
+        expect(allowance.snapshot.get()).toMatchObject({ state: { available: 4 } })
+        expect(usageOf(allowance)).toEqual({ yours: 4, depositAddresses: 2 })
+      },
+    )
+
+    it("splits each fresh count again, the same count included", async () => {
+      const split = vi
+        .fn<() => Promise<AllowanceUsage | undefined>>()
+        .mockResolvedValueOnce({ yours: 3, depositAddresses: 2 })
+        .mockResolvedValueOnce({ yours: 4, depositAddresses: 1 })
+        .mockResolvedValueOnce({ yours: 5, depositAddresses: 0 })
+      const allowance = sponsoredAllowance(query(), async () => read({ uses: 5 }), split)
+      const off = listen(allowance)
+      await flush()
+      await flush()
+      expect(usageOf(allowance)).toEqual({ yours: 3, depositAddresses: 2 })
+      allowance.refresh()
+      await flush()
+      await flush()
+      expect(split).toHaveBeenCalledTimes(2)
+      expect(usageOf(allowance)).toEqual({ yours: 4, depositAddresses: 1 })
+      // A reader that opens later reads the count and its split again.
+      off()
+      listen(allowance)
+      await flush()
+      await flush()
+      expect(split).toHaveBeenCalledTimes(3)
+      expect(usageOf(allowance)).toEqual({ yours: 5, depositAddresses: 0 })
+    })
+
+    it("reads a failed split again on its backoff, never taking the failure for no split", async () => {
+      vi.useFakeTimers()
+      try {
+        const split = vi
+          .fn<() => Promise<AllowanceUsage | undefined>>()
+          .mockRejectedValueOnce(new Error("PXE sync failed"))
+          .mockResolvedValueOnce({ yours: 3, depositAddresses: 2 })
+        const allowance = sponsoredAllowance(query(), async () => read({ uses: 5 }), split)
+        listen(allowance)
+        await vi.advanceTimersByTimeAsync(0)
+        expect(usageOf(allowance)).toBeUndefined()
+        await vi.advanceTimersByTimeAsync(5_000)
+        expect(split).toHaveBeenCalledTimes(2)
+        expect(usageOf(allowance)).toEqual({ yours: 3, depositAddresses: 2 })
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it.each([
+      ["spent back down after a renewal", 4],
+      ["renewed", 100],
+    ])("shows no split under a new count, %s, until that count's own lands", async (_, uses) => {
+      const splits = [
+        deferred<AllowanceUsage | undefined>(),
+        deferred<AllowanceUsage | undefined>(),
+      ]
+      const counts = [read({ uses: 5 }), read({ uses })]
+      let call = 0
+      const allowance = sponsoredAllowance(
+        query(),
+        async () => counts[call]!,
+        () => splits[call++]!.promise,
+      )
+      listen(allowance)
+      await flush()
+      splits[0]!.resolve({ yours: 90, depositAddresses: 5 })
+      await flush()
+      expect(usageOf(allowance)).toEqual({ yours: 90, depositAddresses: 5 })
+      allowance.refresh()
+      await flush()
+      expect(allowance.snapshot.get()).toMatchObject({ state: { available: uses } })
+      expect(usageOf(allowance)).toBeUndefined()
+      splits[1]!.resolve({ yours: 1, depositAddresses: 0 })
+      await flush()
+      expect(usageOf(allowance)).toEqual({ yours: 1, depositAddresses: 0 })
     })
 
     it("keeps the count when the split fails", async () => {
-      const store = new SponsoredAllowanceStore()
-      store.setScope({
-        key: "alice|v1",
-        read: async () => read({ uses: 5 }),
-        readUsage: async () => {
+      const allowance = sponsoredAllowance(
+        query(),
+        async () => read({ uses: 5 }),
+        async () => {
           throw new Error("PXE sync failed")
         },
-      })
+      )
+      listen(allowance)
       await flush()
       await flush()
-      expect(store.getSnapshot()).toMatchObject({ status: "ready", state: { available: 5 } })
-      expect(usageOf(store)).toBeUndefined()
+      expect(allowance.snapshot.get()).toMatchObject({ status: "ready", state: { available: 5 } })
+      expect(usageOf(allowance)).toBeUndefined()
     })
   })
 })

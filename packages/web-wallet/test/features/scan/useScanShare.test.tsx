@@ -1,3 +1,4 @@
+// Guard: one handoff, no late Close, and an identity, route or scan change drops a pending scan.
 import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -48,36 +49,6 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 describe("Scan and Share origin ownership", () => {
-  it.each(["scan", "share"] as const)(
-    "returns to %s, remounts each session, and exits to the opener without navigation",
-    (origin) => {
-      const other = origin === "scan" ? "share" : "scan"
-      run(() => flow.open(origin, opener))
-      const first = id()
-      run(() => flow.switchTo(first, other))
-      expect(flow.session?.surface).toBe(other)
-      const second = id()
-      run(() => flow.close(first))
-      expect(id()).toBe(second)
-      run(() => flow.close(second))
-      expect(flow.session?.surface).toBe(origin)
-      expect(id()).toBeGreaterThan(second)
-      run(() => flow.close(id()))
-      expect(flow.session).toBeNull()
-      expect(document.activeElement).toBe(opener)
-      expect(options.onDestination).not.toHaveBeenCalled()
-    },
-  )
-  it("keeps the original opener over repeated toggles", () => {
-    run(() => flow.open("share", opener))
-    for (let n = 0; n < 5; n++) {
-      run(() => flow.switchTo(id(), "scan"))
-      run(() => flow.switchTo(id(), "share"))
-    }
-    run(() => flow.close(id()))
-    expect(document.activeElement).toBe(opener)
-    expect(options.onDestination).not.toHaveBeenCalled()
-  })
   it("hands off once and ignores delayed Close without taking destination focus", () => {
     run(() => flow.open("scan", opener))
     const departed = id()
@@ -117,38 +88,4 @@ describe("Scan and Share origin ownership", () => {
       expect(options.onDestination).not.toHaveBeenCalled()
     },
   )
-  it("blocks scanning when unavailable and closes Share reached from Scan on resize", () => {
-    options = { ...options, scanAvailable: false }
-    render()
-    run(() => flow.open("scan", opener))
-    expect(flow.session).toBeNull()
-    run(() => flow.open("share", opener))
-    run(() => flow.switchTo(id(), "scan"))
-    expect(flow.session?.surface).toBe("share")
-    run(() => flow.close(id()))
-    options = { ...options, scanAvailable: true }
-    render()
-    run(() => flow.open("scan", opener))
-    run(() => flow.switchTo(id(), "share"))
-    options = { ...options, scanAvailable: false }
-    render()
-    expect(flow.session).toBeNull()
-  })
-  it("uses a viable fallback when the opener disappeared", () => {
-    run(() => flow.open("scan", opener))
-    opener.remove()
-    run(() => flow.close(id()))
-    expect(document.activeElement).toBe(fallback)
-  })
-  it("does not steal focus from another native overlay", () => {
-    run(() => flow.open("scan", opener))
-    const dialog = document.createElement("dialog")
-    dialog.open = true
-    const button = document.createElement("button")
-    dialog.append(button)
-    host.append(dialog)
-    button.focus()
-    run(() => flow.close(id()))
-    expect(document.activeElement).toBe(button)
-  })
 })

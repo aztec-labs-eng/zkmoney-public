@@ -28,7 +28,7 @@
  * Runs in ~tens of milliseconds. Belongs in every CI run, not just ci-sandbox.
  */
 
-import { describe, it, expect, beforeEach, afterAll, vi } from "vitest"
+import { describe, it, expect, vi } from "vitest"
 import { ContractService, NodeContractServiceStorage, DEFAULT_CONTRACTS, Network } from "../../src"
 import type { ContractName, ContractServiceConfig, FetchFunction } from "@obsidion/core/types"
 import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
@@ -54,7 +54,7 @@ function buildService(opts: {
   listClassIds?: (artifactName: string) => Promise<string[]>
 }) {
   const storage = new NodeContractServiceStorage(opts.network ?? Network.TESTNET)
-  const service = ContractService.getInstance(
+  const service = new ContractService(
     storage,
     opts.node as never,
     opts.pxe as never,
@@ -71,14 +71,6 @@ function buildService(opts: {
 }
 
 describe("ContractService", () => {
-  beforeEach(() => {
-    ContractService.resetInstance()
-  })
-
-  afterAll(() => {
-    ContractService.resetInstance()
-  })
-
   describe("local-ledger reads", () => {
     it("answers a seeded address from storage without touching the network", async () => {
       const { service, storage } = buildService({})
@@ -171,7 +163,7 @@ describe("ContractService", () => {
       oxide: { manifestUrl: oxideUrl, portal: PROD_PORTAL, expectedGitSha: PROD_SHA },
     }
     const storage = new NodeContractServiceStorage(Network.MAINNET)
-    const service = ContractService.getInstance(storage, undefined, undefined, Network.MAINNET, {
+    const service = new ContractService(storage, undefined, undefined, Network.MAINNET, {
       fetchFunction: manifestFetch,
       source: "profile",
       config,
@@ -235,7 +227,6 @@ describe("ContractService", () => {
         DEFAULT_CONTRACTS.obsidionAccountAlpha,
       )
       const classId = (await getContractClassFromArtifact(bundled)).id
-      ContractService.resetInstance()
 
       const node = { getContract: async () => undefined }
       const pxe = {
@@ -267,11 +258,10 @@ describe("ContractService", () => {
       ).rejects.toThrow(/Historical contract instance is missing/)
     })
 
-    it("an anchored lookup reads the instance on the chain it is given, not the singleton's", async () => {
+    it("an anchored lookup reads the instance on the chain it is given, not the service's own", async () => {
       const { service: bundledOnly } = buildService({})
       const bundled = await bundledOnly.getArtifactForContract(DEFAULT_CONTRACTS.oxideToken)
       const classId = (await getContractClassFromArtifact(bundled)).id
-      ContractService.resetInstance()
 
       const empty = {
         getContractInstance: async () => undefined,
@@ -363,7 +353,6 @@ describe("ContractService", () => {
       )
       const secretKey = Fr.random()
       const instance = await alphaInstance(bundledOnly, secretKey)
-      ContractService.resetInstance()
       const resolver = vi.fn(async (classId: string): Promise<ContractArtifact> => {
         throw new Error(`resolver must not run for a bundled class (${classId})`)
       })
@@ -385,7 +374,6 @@ describe("ContractService", () => {
         DEFAULT_CONTRACTS.obsidionAccountAlphaTest,
       )
       const historicalClass = (await getContractClassFromArtifact(historical)).id.toString()
-      ContractService.resetInstance()
       const resolver = vi.fn(async (classId: string): Promise<ContractArtifact> => {
         if (classId !== historicalClass) throw new Error(`unexpected class ${classId}`)
         return historical
@@ -424,14 +412,10 @@ describe("ContractService", () => {
 })
 
 describe("ContractService.getKnownClassIds", () => {
-  beforeEach(() => ContractService.resetInstance())
-  afterAll(() => ContractService.resetInstance())
-
   it("lists the bundled class, then the manifest's classes under the artifact's name, once each", async () => {
     const { service: bundledOnly } = buildService({})
     const bundled = await bundledOnly.getArtifactForContract(DEFAULT_CONTRACTS.paylinkDirect)
     const current = (await getContractClassFromArtifact(bundled)).id.toString()
-    ContractService.resetInstance()
 
     const historical = `0x${"ab".repeat(32)}`
     const listClassIds = vi.fn(async () => [historical, current])
@@ -448,7 +432,6 @@ describe("ContractService.getKnownClassIds", () => {
     const { service: bundledOnly } = buildService({})
     const email = await bundledOnly.getArtifactForContract(DEFAULT_CONTRACTS.paylinkEmail)
     const overrideClass = (await getContractClassFromArtifact(email)).id.toString()
-    ContractService.resetInstance()
 
     const { service } = buildService({})
     expect(await service.getKnownClassIds(DEFAULT_CONTRACTS.paylinkDirect)).not.toContain(

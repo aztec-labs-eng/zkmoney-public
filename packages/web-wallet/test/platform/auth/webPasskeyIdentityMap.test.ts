@@ -2,6 +2,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import {
   WebPasskeyIdentityMap,
+  answerRecordFor,
   backupRecordFor,
   hasOpeningBreadcrumb,
   hasRecordFor,
@@ -354,6 +355,47 @@ describe("records that open the wallet", () => {
   })
 })
 
+describe("several records staged in a caller's write", () => {
+  beforeEach(() => localStorage.clear())
+
+  it("commit with the caller's other writes in one transaction, each keeping its stored fields", async () => {
+    const map = new WebPasskeyIdentityMap(deviceDb, RP)
+    await map.upsert({ ...entry("a"), transports: ["usb"] })
+    await rememberUsertag(deviceDb, RP, "a", "alice")
+    const saves: string[][] = []
+    testWalletDbs().onApply = (_version, ops) => void saves.push(ops.map(([key]) => key))
+
+    await deviceDb.write(async (w) => {
+      await map.upsertIn(w, [
+        { ...entry("a"), l2Address: "0xmoved" },
+        { ...entry("b"), l2Address: "0xmoved", isMskRoot: false, backup: BACKUP },
+      ])
+      w.put("beside", "1")
+    })
+
+    expect(saves).toEqual([["obsidion.obsidion_web_passkey_identity_map", "beside"]])
+    expect(await map.get("a")).toMatchObject({ l2Address: "0xmoved", transports: ["usb"] })
+    expect(usertagFor(committed().passkeyMap, RP, "a")).toBe("alice")
+    expect(await map.get("b")).toMatchObject({
+      l2Address: "0xmoved",
+      backup: BACKUP,
+      isMskRoot: false,
+    })
+  })
+
+  it("refuse a record whose set lacks its own key, so the caller's write saves nothing", async () => {
+    const map = new WebPasskeyIdentityMap(deviceDb, RP)
+    await expect(
+      deviceDb.write(async (w) => {
+        w.put("beside", "1")
+        await map.upsertIn(w, [entry("a"), { ...entry("b"), passkeySet: ["cd".repeat(64)] }])
+      }),
+    ).rejects.toMatchObject({ code: "invariant" })
+    expect(await map.get("a")).toBeUndefined()
+    expect(await deviceDb.get("beside")).toBeUndefined()
+  })
+})
+
 describe("WebPasskeyIdentityMap answered", () => {
   beforeEach(() => localStorage.clear())
 
@@ -384,6 +426,18 @@ describe("WebPasskeyIdentityMap answered", () => {
       usertag: "alice",
       l2Address: "0xmoved",
     })
+  })
+})
+
+describe("answerRecordFor", () => {
+  beforeEach(() => localStorage.clear())
+
+  it("reads where a credential's passkey answered from, under any RP", async () => {
+    await new WebPasskeyIdentityMap(deviceDb, "other.example").upsert(entry("a"))
+    await new WebPasskeyIdentityMap(deviceDb, "other.example").setAnswered("a", "remote")
+    expect(answerRecordFor(committed().passkeyMap, "a")).toMatchObject({ answered: "remote" })
+    expect(answerRecordFor(committed().passkeyMap, "missing")).toBeUndefined()
+    expect(answerRecordFor(null, "a")).toBeUndefined()
   })
 })
 
@@ -472,10 +526,12 @@ describe("remembered accounts on earlier rollups", () => {
 
   it("reads nothing from a store that is not persistent", async () => {
     const dbs = testWalletDbs()
-    dbs.db("1000000001").state.set(
-      MAP_KEY,
-      JSON.stringify({ version: 1, entries: { c: remembered("c", "carol", 1) } }),
-    )
+    dbs
+      .db("1000000001")
+      .state.set(
+        MAP_KEY,
+        JSON.stringify({ version: 1, entries: { c: remembered("c", "carol", 1) } }),
+      )
     const list = vi.spyOn(dbs, "list")
     expect(await listRetiredUsertagCandidates(RP)).toEqual([])
     expect(list).not.toHaveBeenCalled()

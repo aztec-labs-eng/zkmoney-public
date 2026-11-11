@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type ReactNode } from "react"
+import { useId, useRef, useState, type ReactNode } from "react"
 import { Icon } from "@obsidion/web-ds"
 import {
   aboutLimitsView,
@@ -9,17 +9,29 @@ import {
   type LimitsTopic,
 } from "./aboutLimitsView"
 import { LIMITS_DOCS_URL } from "../../lib/links"
+import { CheckAgainPill } from "../../ui/CheckAgainPill/CheckAgainPill"
 import * as copy from "./limitsCopy"
+import { useDomEffect } from "../../ui/useDomEffect"
 import "./aboutLimits.css"
 
 /** Label and value rows in the sheet's style, for a caller's own detail. */
-export function LimitsRows({ rows }: { rows: (LimitsRow & { testId?: string })[] }) {
+export function LimitsRows({
+  rows,
+  recheck,
+}: {
+  rows: (LimitsRow & { testId?: string })[]
+  /** Shown after the value of a `recheck` row. */
+  recheck?: ReactNode
+}) {
   return (
     <dl className="ww-about-limits__rows">
       {rows.map((row) => (
         <div key={row.label} className="ww-about-limits__row">
           <dt>{row.label}</dt>
-          <dd data-testid={row.testId}>{row.value}</dd>
+          <dd data-testid={row.testId}>
+            {row.value}
+            {row.recheck && recheck}
+          </dd>
         </div>
       ))}
     </dl>
@@ -48,10 +60,12 @@ function LimitsSection({
   const bodyId = useId()
   const statusRef = useRef<HTMLParagraphElement>(null)
   const retried = useRef(false)
-  const showRetry = !!view.canRetry && !!onRetry
+  // A read with a check time is checked again from that row.
+  const rowRetry = !!onRetry && view.rows.some((row) => row.recheck)
+  const showRetry = !!view.canRetry && !!onRetry && !rowRetry
   // A successful retry removes the focused button. Keep keyboard focus in the section, unless the
   // user already moved it elsewhere.
-  useEffect(() => {
+  useDomEffect(() => {
     if (showRetry || !retried.current) return
     retried.current = false
     const status = statusRef.current
@@ -108,7 +122,20 @@ function LimitsSection({
       )}
       <div id={bodyId} className="ww-about-limits__body" hidden={!expanded}>
         {detail}
-        {view.rows.length > 0 && <LimitsRows rows={view.rows} />}
+        {view.rows.length > 0 && (
+          <LimitsRows
+            rows={view.rows}
+            recheck={
+              rowRetry && (
+                <CheckAgainPill
+                  checking={view.state === "loading"}
+                  onClick={onRetry!}
+                  testId={`${testId}-retry`}
+                />
+              )
+            }
+          />
+        )}
         {view.notes.map((note) => (
           <p key={note} className="ww-about-limits__note">
             {note}

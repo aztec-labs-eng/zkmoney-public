@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
+import { passkeyTelemetry } from "../../src/lib/passkeyTelemetry"
 import {
   type ErrorModalPayload,
   outOfMemoryCopy,
@@ -135,5 +136,20 @@ describe("showReportableError with a value that is not an Error", () => {
     expect(reported(raw).message).toBe(
       "Non-Error object with keys: k0, k1, k2, k3, k4, k5, k6, k7, k8, k9",
     )
+  })
+})
+
+describe("showErrorModal", () => {
+  afterEach(() => vi.restoreAllMocks())
+
+  it("shows the error without a device description when the device cannot be described", () => {
+    vi.spyOn(passkeyTelemetry, "snapshot").mockImplementation(() => {
+      throw new Error("no device")
+    })
+    const seen: ErrorModalPayload[] = []
+    const unsub = subscribeErrorModal((p) => seen.push(p))
+    showErrorModal({ title: "t", message: "m" })
+    unsub()
+    expect(seen).toEqual([expect.objectContaining({ title: "t", env: undefined })])
   })
 })

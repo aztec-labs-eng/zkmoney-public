@@ -54,10 +54,6 @@ export class DeferredSetItemAdapter implements IStorageAdapter {
     this.data.delete(key)
   }
 
-  async clear(): Promise<void> {
-    this.data.clear()
-  }
-
   /**
    * Resolve the oldest pending `setItem`. Writes to the backing Map and splices
    * the entry off the queue. Returns true if a pending entry was resolved.

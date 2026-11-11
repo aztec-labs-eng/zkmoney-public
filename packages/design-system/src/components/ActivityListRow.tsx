@@ -68,6 +68,8 @@ export const STATUS_STYLE = {
   // A paylink refund on its way back to the creator.
   "Cancelling": "pending",
   "Reclaiming": "pending",
+  // A backup passkey's funding on its way back from its deposit address.
+  "Recovering": "pending",
   // Money has arrived but is not credited yet — the same in-flight orange a deposit row wears,
   // since that is the deposit this row stands in for.
   "Payment detected": "pending",
@@ -179,7 +181,7 @@ export function ActivityListRow({
               onClick={a.onClick}
             >
               {a.isLoading ? (
-                <Spinner size={16} color="#fff" />
+                <Spinner size={16} color={a.actionStyle === "gradient" ? "#fff" : "var(--ink)"} />
               ) : (
                 <>
                   {a.icon && <Icon name={a.icon} size={16} />}

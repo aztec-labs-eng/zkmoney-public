@@ -1,6 +1,7 @@
 import type { ReactNode } from "react"
 import { Modal } from "../../ui/Modal"
-import { GradientText, TopNavIconButton } from "@obsidion/web-ds"
+import { GradientText } from "@obsidion/web-ds"
+import { CornerButton } from "../../ui/flow/CornerButton/CornerButton"
 import walletLineIcon from "../../assets/deposit/wallet-line.svg"
 import { shortL1Addr } from "../../ui/format"
 import { GradientQrCard } from "../../ui/GradientQrCard"
@@ -28,7 +29,7 @@ export function DepositQrSheet({
   return (
     <Modal variant="bare" label={title} className="ww-deposit-warning" onClose={onClose}>
       <div className="ww-deposit-warning__close">
-        <TopNavIconButton icon="x" ariaLabel="Close" onClick={onClose} />
+        <CornerButton kind="close" onClick={onClose} />
       </div>
       <span className="ww-deposit__connect-icon ww-deposit-warning__icon">
         <img src={walletLineIcon} alt="" width={32} height={29} />

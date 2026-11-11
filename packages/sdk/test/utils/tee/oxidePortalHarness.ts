@@ -14,10 +14,12 @@ import {
   deployPlainWithdrawalExecutor,
   deployPortalFactory,
   deployTeeRegistry,
+  ADD_PASSKEY_SWEEP_FEE,
   DEPOSIT_SWEEP_FEE,
   REGISTRATION_SWEEP_FEE,
-  USER_OP_SWEEP_FEE,
   SipaIntent,
+  blessSIPAImplementation,
+  deployAddPasskeySIPA,
   deployForwardingTable,
   deploySIPAImplementations,
   deployRegistrationController,
@@ -162,7 +164,7 @@ export interface DeploymentResultWithNitro {
   /** Blessed on `sipaFactory` for `forwardingTable`. */
   depositSIPAImplementation: Address
   registrationSIPAImplementation: Address
-  userOpSIPAImplementation: Address
+  addPasskeySIPAImplementation: Address
   portal: OxidePortalContract
   /** The L2 token the portal is bound to, and the immutables it was published with. */
   l2Token: AztecAddress
@@ -358,17 +360,29 @@ export async function deploySandboxOxidePortalStack(
             beneficiaryFee: 0n,
             sweepTip: HARNESS_REGISTRATION_FEE,
           },
-          { intent: SipaIntent.UserOp, beneficiaryFee: 0n, sweepTip: USER_OP_SWEEP_FEE },
+          { intent: SipaIntent.AddPasskey, beneficiaryFee: 0n, sweepTip: ADD_PASSKEY_SWEEP_FEE },
         ],
       },
     ],
   })
-  const { depositSIPAImplementation, registrationSIPAImplementation, userOpSIPAImplementation } =
+  const { depositSIPAImplementation, registrationSIPAImplementation } =
     await deploySIPAImplementations(walletClient, publicClient, {
       sipaFactory,
       forwardingTable,
       nameRegistry,
     })
+  // The implementation only refuses zero addresses: without `registration` the deployer stands in.
+  const addPasskeySIPAImplementation = await deployAddPasskeySIPA(walletClient, publicClient, {
+    accountFactory: accountFactory ?? account.address,
+    nameRegistry,
+    namePortal: namePortal ?? account.address,
+  })
+  await blessSIPAImplementation(
+    walletClient,
+    publicClient,
+    sipaFactory,
+    addPasskeySIPAImplementation,
+  )
   // The executor's own subsidy prices its payout off an ETH/USD feed: 8 decimals, $3000.
   const { address: priceFeed } = await deployL1Contract(
     extendedClient,
@@ -400,7 +414,7 @@ export async function deploySandboxOxidePortalStack(
     forwardingTable,
     depositSIPAImplementation,
     registrationSIPAImplementation,
-    userOpSIPAImplementation,
+    addPasskeySIPAImplementation,
     portal,
     l2Token,
     immutables,

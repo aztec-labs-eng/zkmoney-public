@@ -184,13 +184,9 @@ SEARCH_ROOTS=()
 # The vendored oxide contracts must match oxide's deploy compile flags exactly so the bytecode (and therefore the
 # contract class id) matches the on-chain instances deployed by oxide's pipeline. oxide compiles every contract with
 # `--inliner-aggressiveness 0` (`build_contract` in vendor/oxide/noir-projects/bootstrap.sh, invoked by
-# deploy/build.sh).
+# deploy/build.sh). The flags live in noir-source.mjs, so the pins' source key hashes the flags this compiles with.
 compile_args() {
-  if [[ "$1" == "oxide_token_contract" || "$1" == "broadcaster_contract" ]]; then
-    echo "--silence-warnings --inliner-aggressiveness 0"
-  else
-    echo "--silence-warnings"
-  fi
+  echo --silence-warnings $(node "$REPO_ROOT/packages/contracts/scripts/noir-source.mjs" flags "$1")
 }
 
 # Circuits whose VK is pinned in @obsidion/core/constants — a stale pin ships the proof/VK mismatch class the SSoT
@@ -199,9 +195,35 @@ vk_pinned() {
   [[ "$1" == "golden_ticket" || "$1" == "eligibility" ]]
 }
 
+# Pinned packages (packages/contracts/pinned) are extracted, not compiled. PIN_REBUILD names the
+# packages pinned-contracts.mjs is re-pinning: exactly those compile, and nothing is extracted.
+PINS_SCRIPT="$REPO_ROOT/packages/contracts/scripts/pinned-contracts.mjs"
+PINNED_DIRS=()
+if [[ -z "${PIN_REBUILD:-}" ]]; then
+  node "$PINS_SCRIPT" extract
+  PINNED_LIST=$(node "$PINS_SCRIPT" dirs)
+  while IFS= read -r dir; do
+    [[ -n "$dir" ]] && PINNED_DIRS+=("$dir")
+  done <<<"$PINNED_LIST"
+fi
+
+is_pinned() {
+  local dir
+  for dir in "${PINNED_DIRS[@]}"; do
+    [[ "$1" == "$dir" ]] && return 0
+  done
+  return 1
+}
+
 PACKAGE_DIRS=()
 for NARGO_FILE in $(find "${SEARCH_ROOTS[@]}" -type f -name "Nargo.toml" -not -path '*/node_modules/*' -not -path '*/libs/*' -not -path '*/lib/*' -not -path '*/.git/*'); do
   CONTRACT_DIR=$(dirname "$NARGO_FILE")
+
+  if [[ -n "${PIN_REBUILD:-}" ]]; then
+    [[ " $PIN_REBUILD " == *" $(basename "$CONTRACT_DIR") "* ]] && PACKAGE_DIRS+=("$CONTRACT_DIR")
+    continue
+  fi
+  is_pinned "$CONTRACT_DIR" && continue
 
   # Skip if we're targeting a specific contract and this isn't it
   if [[ -n "$TARGET_CONTRACT" && ! "$CONTRACT_DIR" == *"$TARGET_CONTRACT"* ]]; then
@@ -256,6 +278,12 @@ if [[ "${ENABLE_NIX:-0}" == "1" ]]; then
     echo "Compiling with Nix: ${PACKAGE_DIRS[*]}"
     "$REPO_ROOT/packages/contracts/nix/build.sh" "[$NIX_SPEC]"
   fi
+fi
+
+# CI compiles no Noir package (.github/scripts/noir-compile-guard.sh); name the unpinned ones.
+if [[ ( -n "${CI:-}" || -n "${GITHUB_ACTIONS:-}" ) && -z "${PIN_REBUILD:-}" && ${#PACKAGE_DIRS[@]} -gt 0 ]]; then
+  echo "::error title=Noir compile in CI::these Noir packages are not pinned, and CI compiles none: ${PACKAGE_DIRS[*]}. Pin them (docs/conventions/pinned-contracts.md)."
+  exit 1
 fi
 
 # Copies a package's target/ outputs to the central target directory. Runs in the package directory.
@@ -460,7 +488,7 @@ fi
 # echo "============================================================"
 # cd "$ARTIFACTS_DIR"
 # VERSION=$VERSION aztec-postprocess-contract
-cd - > /dev/null
+cd "$REPO_ROOT"
 
 if [[ -n "$TARGET_CONTRACT" ]]; then
   echo "Finished building contracts containing: $TARGET_CONTRACT"
@@ -473,7 +501,7 @@ echo "Compiled contract outputs are available in: $COMPILED_TARGET_DIR"
 # Stamp the source content key this artifact set was built from, so a later build can
 # tell a current set from one left behind by earlier sources or another vendor/oxide
 # pin. A filtered build leaves the set partial and writes no stamp.
-if [[ -z "$TARGET_CONTRACT" && ${#EXCLUDE_CONTRACTS[@]} -eq 0 ]]; then
+if [[ -z "$TARGET_CONTRACT" && ${#EXCLUDE_CONTRACTS[@]} -eq 0 && -z "${PIN_REBUILD:-}" ]]; then
   NOIR_KEY="$(AZTEC_VERSION="${VERSION#v}" node "$REPO_ROOT/.github/scripts/noir-cache.mjs" store-key 2>/dev/null || true)"
   if [[ -n "$NOIR_KEY" ]]; then
     printf '%s\n' "$NOIR_KEY" > "$COMPILED_TARGET_DIR/.noir-store-key"

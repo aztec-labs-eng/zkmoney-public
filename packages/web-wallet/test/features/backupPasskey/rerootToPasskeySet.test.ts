@@ -1,3 +1,4 @@
+import { WalletError } from "@obsidion/front-core"
 import type { AlphaAuthProvider, ObsidionAccount, RecoveryMetadata } from "@obsidion/sdk"
 import { describe, expect, it, vi } from "vitest"
 import {
@@ -23,24 +24,27 @@ function harness(stored: RecoveryMetadata | undefined = ROOT_RECORD) {
   const provider = { id: "two-key" } as unknown as AlphaAuthProvider
   const account = {
     getAddress: () => ({ toString: () => TWO_KEY }),
-    getCompleteAddress: () => ({ toString: () => `${TWO_KEY}:complete` }),
+    getCompleteAddress: () => ({ toString: () => TWO_KEY }),
   } as unknown as ObsidionAccount
   const deps: RerootDeps = {
     derive: vi.fn(async (set: readonly string[]) => (set.length === 2 ? TWO_KEY : OWNER)),
     root: { credentialId: "root-credential", pubkeyHex: ROOT },
     rootRecord: vi.fn(async () => stored),
-    writeRecord: vi.fn(async (meta) => {
-      written.push(meta)
-      calls.push(`write:${meta.credentialId}`)
-    }),
+    session: vi.fn(() => () => session.held),
     providerFor: vi.fn(() => provider),
+    account: vi.fn(async () => {
+      calls.push("account")
+      return account
+    }),
+    persist: vi.fn(async (_account, records) => {
+      written.push(...records)
+      calls.push("persist")
+    }),
     commit: vi.fn(async () => {
       calls.push("commit")
-      return () => session.held
     }),
-    account: vi.fn(async () => account),
-    persist: vi.fn(async () => {
-      calls.push("persist")
+    moveIdentity: vi.fn(async () => {
+      calls.push("identity")
     }),
     switchAccount: vi.fn(() => {
       calls.push("switch")
@@ -55,20 +59,13 @@ function harness(stored: RecoveryMetadata | undefined = ROOT_RECORD) {
 }
 
 describe("rerootToPasskeySet", () => {
-  it("names the set under both passkeys, signs over it, saves the two-key account and switches", async () => {
+  it("builds the two-key account, saves it with both records, then signs over the set and switches", async () => {
     const h = harness()
     const record = signedRecord({ phase: "swept" })
     const result = await rerootToPasskeySet(h.deps, record, h.checkpoint)
 
     expect(result).toEqual({ switched: true, rebound: true })
-    expect(h.calls).toEqual([
-      "write:root-credential",
-      `write:${record.backup.credentialId}`,
-      "commit",
-      "persist",
-      "switch",
-      "checkpoint",
-    ])
+    expect(h.calls).toEqual(["account", "persist", "commit", "switch", "identity", "checkpoint"])
     expect(h.checkpoints).toEqual([{ switched: true }])
     const set = [ROOT, record.backup.pubkeyHex]
     expect(h.written[0]).toEqual({
@@ -90,8 +87,19 @@ describe("rerootToPasskeySet", () => {
     expect(h.deps.providerFor).toHaveBeenCalledWith(set)
     expect(h.deps.commit).toHaveBeenCalledWith(h.provider)
     expect(h.deps.account).toHaveBeenCalledWith(h.provider)
-    expect(h.deps.persist).toHaveBeenCalledWith(h.account)
+    expect(h.deps.persist).toHaveBeenCalledWith(h.account, expect.anything(), expect.any(Function))
+    expect(h.deps.moveIdentity).toHaveBeenCalledWith(h.account)
     expect(h.deps.switchAccount).toHaveBeenCalledWith(h.account)
+  })
+
+  it("saves nothing while the account builds, so a reload then finds the one-key wallet", async () => {
+    const h = harness()
+    const unloaded = new Error("page unloaded")
+    vi.mocked(h.deps.account).mockRejectedValueOnce(unloaded)
+    await expect(
+      rerootToPasskeySet(h.deps, signedRecord({ phase: "swept" }), h.checkpoint),
+    ).rejects.toBe(unloaded)
+    expect(h.deps.persist).not.toHaveBeenCalled()
   })
 
   it("refuses a two-key address that is not the signed one, writing nothing", async () => {
@@ -118,13 +126,25 @@ describe("rerootToPasskeySet", () => {
     expect(h.written[0]).toMatchObject({ isMskRoot: true, prfSlot: "first" })
   })
 
-  it("saves and shows nothing once the session ended under the commit", async () => {
+  it("saves and shows nothing once the session ended during the build", async () => {
     const h = harness()
     h.session.held = false
     await expect(
       rerootToPasskeySet(h.deps, signedRecord({ phase: "swept" }), h.checkpoint),
-    ).rejects.toThrow("session changed")
+    ).rejects.toMatchObject({ code: "aborted" })
     expect(h.deps.persist).not.toHaveBeenCalled()
+    expect(h.deps.commit).not.toHaveBeenCalled()
+    expect(h.deps.switchAccount).not.toHaveBeenCalled()
+    expect(h.checkpoints).toEqual([])
+  })
+
+  it("leaves the identity and shows nothing once the session ended under the commit", async () => {
+    const h = harness()
+    vi.mocked(h.deps.commit).mockRejectedValueOnce(new WalletError("aborted"))
+    await expect(
+      rerootToPasskeySet(h.deps, signedRecord({ phase: "swept" }), h.checkpoint),
+    ).rejects.toMatchObject({ code: "aborted" })
+    expect(h.deps.moveIdentity).not.toHaveBeenCalled()
     expect(h.deps.switchAccount).not.toHaveBeenCalled()
     expect(h.checkpoints).toEqual([])
   })
@@ -137,6 +157,10 @@ describe("rerootToPasskeySet", () => {
       { ...record, backup: { ...record.backup, securityKey: true, transports: ["usb"] } },
       h.checkpoint,
     )
-    expect(h.written[1]).toMatchObject({ authenticatorType: "security-key", transports: ["usb"] })
+    expect(h.written[1]).toMatchObject({
+      authenticatorType: "security-key",
+      securityKey: true,
+      transports: ["usb"],
+    })
   })
 })

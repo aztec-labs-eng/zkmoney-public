@@ -51,7 +51,7 @@ export function encodeSwapEscrowExecute(commitment: SwapEscrowCommitment): Hex {
 }
 
 /** `factory.deploy(args)` calldata in the escrow's layout: the clone without the swap. */
-function encodeSwapEscrowDeployOnly(commitment: SwapEscrowCommitment): Hex {
+export function encodeSwapEscrowDeployOnly(commitment: SwapEscrowCommitment): Hex {
   return commitment.layout === "v2"
     ? encodeFunctionData({
         abi: SwapEscrowFactoryAbi,
@@ -202,28 +202,20 @@ export interface SwapEscrowCall {
   data: Hex
 }
 
-/** `SwapEscrowFactory.deployAndExecute(args)`: run the swap and keep the tip — the permissionless self-execution path. */
-export function buildSwapEscrowExecuteCall(
-  factory: Address,
-  commitment: SwapEscrowCommitment,
-): SwapEscrowCall {
-  return { to: factory, data: encodeSwapEscrowExecute(commitment) }
-}
-
 /**
- * `SwapEscrow.recoverERC20`, the escape hatch for DAI the committed route cannot deliver: the
- * recovery account's ERC-1271 signature over `escrowERC20RecoveryDigest`, plus the salt and
- * account that open the escrow's `recoveryCommitment`. A reverting `deployAndExecute` unwinds the
- * clone, so an escrow whose swap never ran has no code: the deploy-only `deploy` leg and the
- * recovery then ride one Multicall3 `aggregate3`, all-or-nothing, the way {@link buildSipaSweepCall}
- * deploys and sweeps a SIPA. Any EOA can submit.
+ * `recoverERC20` on any `EscrowBase` escrow, the escape hatch for DAI its run cannot deliver: the
+ * recovery account's ERC-1271 signature over `escrowERC20RecoveryDigest`, plus the salt and account
+ * that open the escrow's `recoveryCommitment`. A reverting `deployAndExecute` unwinds the clone, so
+ * an escrow that never ran has no code: the factory's deploy-only `deploy` call and the recovery
+ * then ride one Multicall3 `aggregate3`, all-or-nothing, the way {@link buildSipaSweepCall} deploys
+ * and sweeps a SIPA. Any EOA can submit.
  */
-export function buildSwapEscrowRecoverCall(params: {
+export function buildEscrowRecoverCall(params: {
   /** Whether the escrow already has code (`getCode` non-empty). */
   deployed: boolean
-  factory: Address
   escrow: Address
-  commitment: SwapEscrowCommitment
+  /** The factory's `deploy(args)` call for this escrow. */
+  deploy: SwapEscrowCall
   recovery: SwapRecovery
   signature: Hex
   target: Address
@@ -246,11 +238,7 @@ export function buildSwapEscrowRecoverCall(params: {
     return { to: params.escrow, data: recoverData }
   }
   const calls = [
-    {
-      target: params.factory,
-      allowFailure: false,
-      callData: encodeSwapEscrowDeployOnly(params.commitment),
-    },
+    { target: params.deploy.to, allowFailure: false, callData: params.deploy.data },
     { target: params.escrow, allowFailure: false, callData: recoverData },
   ]
   return {

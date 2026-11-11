@@ -1,4 +1,5 @@
-import { getWebBroadcasterArtifact, getWebOxideToken } from "../../config/classArtifacts"
+import { WalletError } from "@obsidion/core/errors"
+import { getWebOxideToken } from "../../config/classArtifacts"
 /**
  * D3a: publish a registration SIPA to relayers (registration-fee.md §Relayers). It rides the
  * one-shot `registration-broadcast` rail, so the tx that subscribes against the NameClaim also pays
@@ -35,22 +36,17 @@ import {
 } from "@obsidion/sdk"
 import {
   composeWireNameHash,
-  type NameClaims,
   type RegistrationBroadcaster,
   type RegistrationBroadcastPayload,
 } from "@obsidion/front-core"
 
-import { claimSponsorContext } from "./claimSponsorship"
+import { claimSponsorContext, type ClaimSponsorDeps } from "./claimSponsorship"
 import { RAIL_REGISTRATION_BROADCAST } from "./rails"
-import {
-  getFeeTokenBridgeTuple,
-  getOxideTuple,
-  l1PublicClient,
-  requireTupleField,
-} from "../../config/oxideTuple"
+import { l1PublicClient, requireTupleField } from "../../config/oxideTuple"
 import { readSipaDeployed } from "../sipa/sipaSweep"
 import { getSipaSweepRoutes } from "../sipa/sipaSweepRoutes"
 import type { WebWalletConfig } from "../../config/env"
+import type { PageChain } from "../../session/pageChain"
 import { bridgeUnderlying } from "@obsidion/core/oxide"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 
@@ -61,8 +57,8 @@ export interface WebRegistrationBroadcasterDeps {
   config: WebWalletConfig
   /** The bare tag being registered — names the cached NameClaim so the subscribe leg resolves it. */
   handle: string
-  /** The account's NameClaims, where the fresh claim is cached. */
-  nameClaims: Pick<NameClaims, "put">
+  /** The session whose NameClaims cache the fresh claim. */
+  session: ClaimSponsorDeps["session"]
 }
 
 /**
@@ -71,11 +67,11 @@ export interface WebRegistrationBroadcasterDeps {
  * registration's broadcast, wherever it is sent.
  */
 export async function cacheFreshClaim(
-  deps: Pick<WebRegistrationBroadcasterDeps, "account" | "config" | "handle" | "nameClaims">,
+  deps: Pick<WebRegistrationBroadcasterDeps, "account" | "handle" | "session">,
   payload: RegistrationBroadcastPayload,
 ): Promise<void> {
-  const tuple = await getOxideTuple(deps.config)
-  await deps.nameClaims.put({
+  const tuple = await deps.session.page.chain.oxideTuple.read()
+  await deps.session.nameClaims.put({
     address: deps.account.getAddress().toString(),
     handle: deps.handle,
     nameHash: composeWireNameHash(deps.handle, requireTupleField(tuple, "ensDomain")),
@@ -103,13 +99,15 @@ export async function cacheFreshClaim(
  * but only once the wallet is open). A PXE that already holds it is not asked again.
  */
 export async function registeredBroadcaster(
+  chain: PageChain,
   wallet: ObsidionWallet,
   tuple: OxideEnvTuple,
 ): Promise<BroadcasterContract> {
   const address = AztecAddress.fromStringUnsafe(requireTupleField(tuple, "l2Broadcaster"))
   const instance = await wallet.node.getContract(address)
-  if (!instance) throw new Error(`Broadcaster instance not found at ${address}`)
-  const artifact = await getWebBroadcasterArtifact(wallet, address, instance)
+  if (!instance)
+    throw new WalletError("config.invalid", `Broadcaster instance not found at ${address}`)
+  const artifact = await chain.broadcasterArtifact(wallet, address, instance)
   // The instance is read once: the registration takes the one the artifact lookup used.
   await ensureContractRegisteredInPXE(
     wallet.pxe,
@@ -131,10 +129,10 @@ export async function registrationBroadcastCalls(
 ): Promise<ContractFunctionInteraction[]> {
   const { wallet, contractService, config } = deps
   // A registration settles on the fee token's row, so it sweeps through that bridge.
-  const tuple = await getFeeTokenBridgeTuple(config)
+  const tuple = await deps.session.page.chain.feeTokenBridgeTuple.read()
   const l1 = l1PublicClient(config)
   const routes = getSipaSweepRoutes(
-    config,
+    deps.session.page,
     tuple,
     payload.sipaArgs,
     "registration",
@@ -154,7 +152,7 @@ export async function registrationBroadcastCalls(
       }
       return deployed
     }),
-    registeredBroadcaster(wallet, tuple),
+    registeredBroadcaster(deps.session.page.chain, wallet, tuple),
     getWebOxideToken(wallet, contractService, requireTupleField(tuple, "l2Token")),
     routes,
   ])
@@ -191,12 +189,15 @@ export async function registrationBroadcastCalls(
 export function createWebRegistrationBroadcaster(
   deps: WebRegistrationBroadcasterDeps,
 ): RegistrationBroadcaster {
-  const { wallet, account, contractService } = deps
+  const { session, wallet, account, contractService } = deps
   return async (payload: RegistrationBroadcastPayload, attempt = {}) => {
     const address = account.getAddress()
     await cacheFreshClaim(deps, payload)
     const [sponsor, broadcastCalls] = await Promise.all([
-      claimSponsorContext({ wallet, account, contractService }, RAIL_REGISTRATION_BROADCAST),
+      claimSponsorContext(
+        { session, wallet, account, contractService },
+        RAIL_REGISTRATION_BROADCAST,
+      ),
       registrationBroadcastCalls(deps, payload).then(async (interactions) =>
         (
           await Promise.all(interactions.map((call) => call.request()))

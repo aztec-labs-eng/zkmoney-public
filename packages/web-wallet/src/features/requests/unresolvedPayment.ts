@@ -1,56 +1,70 @@
 /**
- * A request payment this browser sent or approved, with nothing here to show it settled. The pay sheet holds until the
- * payer chooses to pay again. The payer may have no account, so the marker is a device key, one entry per payee
- * address: saved before a desktop approval, and with the hash once a wallet returns one.
+ * A request payment this browser sent or approved, with nothing here to show it settled. The pay
+ * sheet holds until the payer chooses to pay again. The payer may have no account, so the hold is
+ * page device state, one entry per payee address, saved before a desktop approval or a browser
+ * wallet's prompt. Another send's hold refuses a new one until the payer chooses to pay again.
  */
+import { WalletError, type Database } from "@obsidion/front-core"
 import type { Address } from "viem"
-import { deviceStorage } from "../../platform/storage/rollupStorage"
-import { UnresolvedSendStorageError } from "../deposit/unresolvedSend"
-
-const STORAGE_KEY = "webwallet.unresolved-payments"
-
-type Held = Record<string, { at: number; submission: string }>
+import {
+  DEVICE_KEYS,
+  type DeviceState,
+  type UnresolvedPayments,
+} from "../../platform/storage/deviceKeys"
 
 const entry = (network: string, address: Address) => `${network}:${address.toLowerCase()}`
 
-function read(): Held {
-  try {
-    const parsed = JSON.parse(deviceStorage.getItem(STORAGE_KEY) ?? "{}") as unknown
-    return parsed && typeof parsed === "object" ? (parsed as Held) : {}
-  } catch {
-    return {}
-  }
+export const paymentHeld = (state: DeviceState, network: string, address: Address): boolean =>
+  state.unresolvedPayments.has(entry(network, address))
+
+/** One commit over the saved holds; `change` returns undefined to leave them. */
+function change(
+  db: Database,
+  next: (held: UnresolvedPayments) => UnresolvedPayments | undefined,
+): Promise<void> {
+  return db.write(async (w) => {
+    const raw = await w.get(DEVICE_KEYS.unresolvedPayments)
+    const held = next(new Map(Object.entries(raw ? (JSON.parse(raw) as object) : {})))
+    if (!held) return
+    if (held.size === 0) w.remove(DEVICE_KEYS.unresolvedPayments)
+    else w.put(DEVICE_KEYS.unresolvedPayments, JSON.stringify(Object.fromEntries(held)))
+  })
 }
 
-function write(held: Held): void {
-  const value = JSON.stringify(held)
-  if (Object.keys(held).length === 0) deviceStorage.removeItem(STORAGE_KEY)
-  else deviceStorage.setItem(STORAGE_KEY, value)
-}
-
-export function paymentHeld(network: string, address: Address): boolean {
-  return entry(network, address) in read()
-}
-
-/** Throws `UnresolvedSendStorageError` unless the marker is saved, so nothing is approved without it. */
-export function holdPayment(network: string, address: Address, submission: string): void {
-  try {
-    write({ ...read(), [entry(network, address)]: { at: Date.now(), submission } })
-  } catch (err) {
-    throw new UnresolvedSendStorageError(err)
-  }
-  if (!paymentHeld(network, address)) throw new UnresolvedSendStorageError()
-}
-
-/** With `submission`, only that approval's marker goes. */
-export function clearPayment(network: string, address: Address, submission?: string): void {
-  const held = read()
+/** Resolves once the hold is saved, so nothing is approved without it. */
+export async function holdPayment(
+  db: Database,
+  network: string,
+  address: Address,
+  submission: string,
+): Promise<void> {
   const key = entry(network, address)
-  if (!held[key] || (submission && held[key].submission !== submission)) return
-  delete held[key]
+  let other = false
   try {
-    write(held)
+    await change(db, (held) => {
+      const saved = held.get(key)
+      other = !!saved && saved.submission !== submission
+      return other ? undefined : new Map(held).set(key, { at: Date.now(), submission })
+    })
   } catch (err) {
-    console.warn("[pay] could not remove the unresolved payment", err)
+    throw new WalletError("deposit.holdUnsaved", undefined, { cause: err })
   }
+  if (other) throw new WalletError("deposit.sendHeld")
+}
+
+/** With `submission`, only that approval's hold goes. */
+export function clearPayment(
+  db: Database,
+  network: string,
+  address: Address,
+  submission?: string,
+): Promise<void> {
+  return change(db, (held) => {
+    const key = entry(network, address)
+    const saved = held.get(key)
+    if (!saved || (submission && saved.submission !== submission)) return undefined
+    const next = new Map(held)
+    next.delete(key)
+    return next
+  })
 }

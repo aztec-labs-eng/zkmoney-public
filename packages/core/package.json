@@ -17,6 +17,12 @@
       "import": "./dist/constants/index.js",
       "require": "./dist/constants/index.js"
     },
+    "./cadence": {
+      "source": "./src/cadence/index.ts",
+      "types": "./dist/cadence/index.d.ts",
+      "import": "./dist/cadence/index.js",
+      "require": "./dist/cadence/index.js"
+    },
     "./oxide": {
       "source": "./src/oxide/index.ts",
       "types": "./dist/oxide/index.d.ts",
@@ -39,7 +45,7 @@
   "scripts": {
     "build": "rm -rf dist && tsc -b",
     "clean": "rm -rf ./dist .tsbuildinfo",
-    "typecheck": "tsc --noEmit && eslint",
+    "typecheck": "tsc --noEmit && eslint --max-warnings 0",
     "test": "node --test"
   },
   "devDependencies": {

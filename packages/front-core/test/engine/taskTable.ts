@@ -1,9 +1,10 @@
 // The lifecycle table every task passes, and the engine tests' shared fakes: front-core's here,
 // web-wallet's through a relative import. `start` is the package's own `startRuntime`.
+import { createPace, type Pace } from "@obsidion/core/cadence"
 import { afterEach, beforeEach, expect, vi } from "vitest"
 import { openDatabase, type Database } from "../../src/engine/database"
 import { memoryBackend } from "../../src/engine/memoryBackend"
-import type { Resource, ResourceState } from "../../src/engine/resource"
+import { readyOf, type Service, type ServiceState } from "../../src/engine/service"
 import { memoryStore, type ReadonlyStore } from "../../src/engine/store"
 
 type Task = { readonly name: string }
@@ -13,7 +14,13 @@ type Milestones = {
 }
 type Start = (
   tasks: readonly Task[],
-  deps: { db: Database; milestones: Milestones; visible: ReadonlyStore<boolean> },
+  deps: {
+    db: Database
+    milestones: Milestones
+    visible: ReadonlyStore<boolean>
+    pace: Pace
+    now: () => number
+  },
 ) => { stop(): void }
 
 export const flush = () => vi.advanceTimersByTimeAsync(0)
@@ -30,12 +37,13 @@ export function fakeClock() {
   })
 }
 
-/** A resource pending until the test makes it ready, replaces its value, or loses it. */
+/** A service pending until the test makes it ready, replaces its value, or loses it. */
 export function later<T>(name: string) {
-  const state = memoryStore<ResourceState<T>>({ status: "pending" })
-  const resource: Resource<T> = { ...state.readonly, name, demand() {}, retry() {}, close() {} }
+  const state = memoryStore<ServiceState<T>>({ status: "pending" })
+  const ready = (signal?: AbortSignal) => readyOf(state.readonly, name, signal)
+  const service: Service<T> = { ...state.readonly, name, ready, retry() {}, close() {} }
   return {
-    resource,
+    service,
     ready: (value: T) => state.set({ status: "ready", value }),
     lose: () => state.set({ status: "pending" }),
   }
@@ -47,12 +55,16 @@ const reachedAll: Milestones = { after: async () => true, reached: () => false }
 export function sessions(start: Start, milestones = reachedAll) {
   const db = openDatabase(memoryBackend())
   const visible = memoryStore(true)
+  const pace = createPace()
   const tasks: Task[] = []
   const started: { stop(): void }[] = []
   return {
     tasks,
     visible,
-    start: () => void started.push(start(tasks, { db, milestones, visible: visible.readonly })),
+    start: () =>
+      void started.push(
+        start(tasks, { db, milestones, visible: visible.readonly, pace, now: () => Date.now() }),
+      ),
     stop: () => started.at(-1)?.stop(),
     hide: () => visible.set(false),
     show: () => visible.set(true),

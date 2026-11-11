@@ -26,17 +26,16 @@ import {
   useMemo,
   useSyncExternalStore,
 } from "react"
-import { getConfig, type WebWalletConfig } from "../config/env"
+import type { WebWalletConfig } from "../config/env"
 import { l1PublicClient } from "../config/oxideTuple"
 import { outOfMemoryCopy, showReportableError } from "../errors/errorModal"
-import { openedSession } from "../session/session"
+import { openedSession, type Session } from "../session/session"
 import { networkHasSwapStack } from "../features/withdraw/freshAddressAvailability"
 import { fireEvent } from "../lib/analytics"
-import { createExternalState } from "../lib/externalState"
 import { reloadPage } from "../platform/storage/walletStorage"
-import { NodeUnreachableError, pageWallet, walletDemanded } from "../platform/wallet"
+import { NodeUnreachableError } from "../platform/wallet"
 
-/** `idle`: the boot waits for a screen that needs it (`bootWaitsForDemand`). */
+/** `idle`: the boot waits for a screen that needs it (`bootWaitsForStart`). */
 type BootStatus = "idle" | "booting" | "ready" | "error"
 
 export type BootErrorKind =
@@ -63,33 +62,35 @@ interface PxeBootState {
   /** Retry a failed boot, by reloading the page. */
   retryBoot: () => void
   /** Start an idle boot. */
-  demandBoot: () => void
+  startBoot: () => void
 }
 
 const PxeBootContext = createContext<PxeBootTarget | undefined>(undefined)
 
 const retryBoot = () => void reloadPage()
-const demandBoot = () => pageWallet().demand()
+
+export type BootPage = Pick<Session["page"], "config" | "wallet" | "walletWanted" | "wantWallet">
 
 /**
  * The page wallet's boot, as the screens show it. Demo mode boots none and reads as ready. Outside
  * the provider, before the active tab opens a store (the pre-boot layer), it reads as booting.
  */
-export function usePxeBoot(): PxeBootState {
+export function usePxeBoot({ config, wallet, walletWanted, wantWallet }: BootPage): PxeBootState {
   const target = useContext(PxeBootContext)
-  const state = useStore(pageWallet())
-  const demanded = useStore(walletDemanded)
+  const state = useStore(wallet)
+  const started = useStore(walletWanted)
+  const startBoot = wantWallet
   const identity = useStore(useOpenIdentity())
   const bootError = useMemo(
-    () => (state.status === "failed" ? describeBootError(state.error) : undefined),
-    [state],
+    () => (state.status === "failed" ? describeBootError(state.error, config) : undefined),
+    [state, config],
   )
   if (target?.kind === "demo" || state.status === "ready") {
-    return { bootStatus: "ready", retryBoot, demandBoot }
+    return { bootStatus: "ready", retryBoot, startBoot }
   }
-  if (state.status === "failed") return { bootStatus: "error", bootError, retryBoot, demandBoot }
-  const waits = target !== undefined && !demanded && bootWaitsForDemand(identity)
-  return { bootStatus: waits ? "idle" : "booting", retryBoot, demandBoot }
+  if (state.status === "failed") return { bootStatus: "error", bootError, retryBoot, startBoot }
+  const waits = target !== undefined && !started && bootWaitsForStart(identity)
+  return { bootStatus: waits ? "idle" : "booting", retryBoot, startBoot }
 }
 
 /**
@@ -129,6 +130,7 @@ const NODE_READ_TIMEOUT_MS = 30_000
 
 function withinDeadline<T>(read: Promise<T>, what: string): Promise<T> {
   return new Promise((resolve, reject) => {
+    // eslint-disable-next-line local/timer-in-view -- ZKM-1806
     const timer = setTimeout(
       () => reject(new Error(`${what} did not answer`)),
       NODE_READ_TIMEOUT_MS,
@@ -208,7 +210,7 @@ const isCorrupt = (e: unknown): boolean =>
   e instanceof SqliteCorruptionError || (e instanceof AggregateError && e.errors.some(isCorrupt))
 
 /** A title names the endpoint at fault, when the boot knows it, so the user knows which to change. */
-export function describeBootError(e: unknown): BootError {
+export function describeBootError(e: unknown, config: WebWalletConfig): BootError {
   if (e instanceof NodeIdentityMismatchError) {
     // The chain id is the network's constant, which L1 need not have answered.
     const expected =
@@ -216,13 +218,13 @@ export function describeBootError(e: unknown): BootError {
     return {
       kind: "mismatch",
       field: e.field,
-      title: `The node at ${getConfig().nodeUrl} is not on this rollup`,
+      title: `The node at ${config.nodeUrl} is not on this rollup`,
       message: `It reports ${e.field} ${e.got}; ${expected}. The wallet does not use a node that disagrees with L1.`,
     }
   }
   if (e instanceof ProfileRollupSkewError) {
     // Only a custom node or RPC can make the pinned version the user's doing; the enclave cannot.
-    const { node, l1Rpc } = getConfig().endpoints
+    const { node, l1Rpc } = config.endpoints
     const custom = !node.isDefault || !l1Rpc.isDefault
     return {
       kind: "profile-skew",
@@ -240,21 +242,20 @@ export function describeBootError(e: unknown): BootError {
     return {
       kind: "mismatch",
       field: e.field,
-      title: `The Ethereum RPC at ${shownL1Rpc(getConfig())} is on the wrong chain`,
+      title: `The Ethereum RPC at ${shownL1Rpc(config)} is on the wrong chain`,
       message: `It answered chain id ${e.got}; this network is chain ${e.expected}.`,
     }
   }
   if (e instanceof L1RpcSimulationUnsupportedError) {
     return {
       kind: "l1-rpc-no-simulate",
-      title: `The Ethereum RPC at ${shownL1Rpc(getConfig())} can't price withdrawals`,
+      title: `The Ethereum RPC at ${shownL1Rpc(config)} can't price withdrawals`,
       message:
         "It does not support eth_simulateV1, which the wallet needs to price a withdrawal to USDC, USDT or ETH. " +
         "Use an RPC that supports it, or go back to the default.",
     }
   }
   if (e instanceof L1IdentityUnavailableError) {
-    const config = getConfig()
     return {
       kind: "l1-unavailable",
       title: `The Ethereum RPC at ${shownL1Rpc(config)} gave no rollup identity`,
@@ -281,6 +282,7 @@ export function describeBootError(e: unknown): BootError {
   return {
     kind: "other",
     title: "zk.money failed to start",
+    // eslint-disable-next-line local/message-in-state -- ZKM-1895
     message: e instanceof Error ? e.message : String(e),
   }
 }
@@ -291,9 +293,10 @@ export function describeBootError(e: unknown): BootError {
  */
 export function reportBootFailure(
   e: unknown,
-  { bootStartedAt, attempts }: { bootStartedAt: number | undefined; attempts: number },
+  config: WebWalletConfig,
+  { bootStartedAt, attempts }: { bootStartedAt?: number; attempts: number },
 ): void {
-  const { kind, title } = describeBootError(e)
+  const { kind, title } = describeBootError(e, config)
   fireEvent("pxe_boot_failed", {
     duration_ms:
       bootStartedAt === undefined ? undefined : Math.round(performance.now() - bootStartedAt),
@@ -301,6 +304,7 @@ export function reportBootFailure(
     attempts,
   })
   // The inline copy names no cause; devtools keeps the transport error.
+  // eslint-disable-next-line local/message-in-state -- ZKM-1895
   if (e instanceof NodeUnreachableError) console.error(e.message, e.cause)
   // The identity refusals render in place with their exits.
   if (kind === "other")
@@ -337,40 +341,47 @@ const useOpenIdentity = () => useStore(openedSession)?.identity ?? NO_IDENTITY
  * A signed-out visitor on a pay page shows nothing the PXE serves, so the boot waits until a screen
  * needs it. An identity that cannot be read is not a visitor's.
  */
-export function bootWaitsForDemand(identity: IdentityView, pathname = location.pathname): boolean {
+export function bootWaitsForStart(identity: IdentityView, pathname = location.pathname): boolean {
   return isPayPath(pathname) && !identity.value && !identity.failed
 }
 
 /** Reports a failed boot of the page wallet; `pxeBoot` is the store the active tab opened. */
 export function PxeBootProvider({
   pxeBoot,
+  page: { config, wallet },
   children,
 }: {
   pxeBoot: PxeBootTarget
+  page: BootPage
   children: ReactNode
 }) {
-  const state = useStore(pageWallet())
+  const state = useStore(wallet)
+  // eslint-disable-next-line local/effect-hook -- ZKM-1806
   useEffect(() => {
-    if (state.status === "failed" && pxeBoot.kind === "pxe") reportBootFailure(state.error, pxeBoot)
-  }, [state, pxeBoot])
+    if (state.status === "failed" && pxeBoot.kind === "pxe")
+      reportBootFailure(state.error, config, pxeBoot)
+  }, [state, pxeBoot, config])
   return <PxeBootContext.Provider value={pxeBoot}>{children}</PxeBootContext.Provider>
 }
 
-/** Inside the router: demands the boot on any route where it does not wait. */
-export function BootDemand() {
+/** Inside the router: starts the boot on any route where it does not wait. */
+export function BootStarter({ wantWallet }: Pick<BootPage, "wantWallet">) {
   const { pathname } = useLocation()
   const identity = useOpenIdentity()
   // On a route change only: an identity saved on a pay page waits for the screen that needs it.
+  // eslint-disable-next-line local/effect-hook -- ZKM-1806
   useEffect(() => {
-    if (!bootWaitsForDemand(identity.get(), pathname)) demandBoot()
-  }, [identity, pathname])
+    if (!bootWaitsForStart(identity.get(), pathname)) wantWallet()
+  }, [identity, pathname, wantWallet])
   return null
 }
 
 const mountedSplashes: { inShell: boolean; covers: boolean }[] = []
+// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
 let bootScreenShown = false
 /** The app has drawn its first screen, so a screen standing in for it must go. */
-const firstScreen = createExternalState(false)
+// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+const firstScreen = memoryStore(false)
 
 export function useFirstScreenShown(): boolean {
   return useSyncExternalStore(firstScreen.subscribe, firstScreen.get)
@@ -380,7 +391,9 @@ const rootShowsText = () => {
   const root = document.getElementById("root")
   return (root?.innerText ?? root?.textContent ?? "").trim() !== ""
 }
+// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
 let splashWatch: number | undefined
+// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
 let splashLeaving: ReturnType<typeof setTimeout> | undefined
 
 /** The splash's fade in index.html. */
@@ -437,6 +450,7 @@ function releaseSplash(): void {
     bootScreenShown = true
     firstScreen.set(true)
     document.body.dataset.bootLeaving = ""
+    // eslint-disable-next-line local/timer-in-view -- ZKM-1806
     splashLeaving = setTimeout(() => {
       delete document.body.dataset.booting
       delete document.body.dataset.bootLeaving
@@ -459,6 +473,7 @@ export function BootSplash({
   inShell?: boolean
   covers?: boolean
 }) {
+  // eslint-disable-next-line local/effect-hook -- ZKM-1806
   useLayoutEffect(() => {
     const copy = { inShell, covers }
     mountedSplashes.push(copy)
@@ -469,5 +484,9 @@ export function BootSplash({
       else releaseSplash()
     }
   }, [inShell, covers])
-  return <span style={VISUALLY_HIDDEN}>Loading zk.money…</span>
+  return (
+    <span style={VISUALLY_HIDDEN} data-testid="boot-splash">
+      Loading zk.money…
+    </span>
+  )
 }

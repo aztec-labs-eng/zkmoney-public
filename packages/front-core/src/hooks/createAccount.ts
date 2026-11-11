@@ -22,7 +22,7 @@ export async function createAccount(
     wallet: ObsidionWallet
     authService: AlphaAuthService
     /** The signed-in session's account record, read once the secret is committed. */
-    accounts: () => Pick<AccountRecord, "save">
+    accounts: () => Pick<AccountRecord, "apply">
   },
   _authType: AUTH_TYPE,
   updateStatus: (status: string) => void,
@@ -118,17 +118,15 @@ export async function createAccount(
 }
 
 async function storeAccount(
-  accounts: Pick<AccountRecord, "save">,
+  accounts: Pick<AccountRecord, "apply">,
   obsidionAccount: ObsidionAccount,
   credentialId: string,
   pubkey: string,
   authenticatorType?: "platform" | "security-key",
 ) {
-  await accounts.save({
+  await accounts.apply({
+    type: "saved",
     completeAddress: obsidionAccount.getCompleteAddress().toString(),
-    signKeyConfig: {
-      type: AUTH_TYPE.WEB_AUTHN,
-      webauthnData: { credentialId, pubkey, ...(authenticatorType ? { authenticatorType } : {}) },
-    },
+    signer: { credentialId, pubkey, ...(authenticatorType ? { authenticatorType } : {}) },
   })
 }

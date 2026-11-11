@@ -3,7 +3,9 @@ import { Fr } from "@aztec-labs/aztec.js/fields"
 import type { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import type { EthAddress } from "@aztec-labs/foundation/eth-address"
 import type { AztecNode } from "@aztec-labs/aztec.js/node"
-import { isL1ToL2MessageReady, waitForL1ToL2MessageReady } from "@aztec-labs/aztec.js/messaging"
+import { isL1ToL2MessageReady } from "@aztec-labs/aztec.js/messaging"
+import { TimeoutError } from "@aztec-labs/foundation/error"
+import type { Pace } from "@obsidion/core/cadence"
 import { InboxContract } from "@aztec-labs/ethereum/contracts"
 import type { ViemClient } from "@aztec-labs/ethereum/types"
 import { sha256ToField } from "@aztec-labs/foundation/crypto/sha256"
@@ -150,7 +152,9 @@ export async function findRegistrationMessage(
         logs.push(...(await inbox.getMessageSentEvents(from, to)))
       }
     }
-    await Promise.all(Array.from({ length: Math.min(SCAN_CHUNK_CONCURRENCY, ranges.length) }, worker))
+    await Promise.all(
+      Array.from({ length: Math.min(SCAN_CHUNK_CONCURRENCY, ranges.length) }, worker),
+    )
     return newest(logs)
   }
 
@@ -197,14 +201,27 @@ export async function registrationMessageStatus(
   node: RegistrationMessageNode,
   messageHash: Fr,
 ): Promise<RegistrationMessageStatus> {
-  return (await isL1ToL2MessageReady(node as unknown as AztecNode, messageHash)) ? "ready" : "pending"
+  return (await isL1ToL2MessageReady(node as unknown as AztecNode, messageHash))
+    ? "ready"
+    : "pending"
 }
 
-/** Block until the rollup imports the message (a few L1 blocks after the registry sends it). */
-export function waitForRegistrationMessage(
+/**
+ * Block until the rollup imports the message (a few L1 blocks after the registry sends it), its
+ * reads waiting on `pace`. aztec.js's `waitForL1ToL2MessageReady` at the latest tip, with its
+ * TimeoutError past `timeoutSeconds`: docs/conventions/dependency-patches.md.
+ */
+export async function waitForRegistrationMessage(
   node: RegistrationMessageNode,
   messageHash: Fr,
   opts: { timeoutSeconds: number },
+  pace: Pick<Pace, "wait">,
 ): Promise<boolean> {
-  return waitForL1ToL2MessageReady(node, messageHash, opts)
+  const deadline = Date.now() + opts.timeoutSeconds * 1000
+  for (;;) {
+    if (await isL1ToL2MessageReady(node as unknown as AztecNode, messageHash)) return true
+    await pace.wait(1_000)
+    if (opts.timeoutSeconds && Date.now() > deadline)
+      throw new TimeoutError(`Timeout awaiting L1 to L2 message ${messageHash.toString()} ready`)
+  }
 }

@@ -12,8 +12,9 @@ import {
 import { useBack } from "../../ui/hooks"
 import { requestAmountLabel } from "../../ui/format"
 import { declineRequestById } from "../contacts/requestActions"
+import { useSession } from "../../session/session"
 import { IncomingRequestDetailModal } from "./IncomingRequestDetailModal"
-import { RequestsUnavailableNotice } from "./RequestsUnavailableNotice"
+import { RequestsUnavailableNotice } from "./RequestsUnavailableNotice/RequestsUnavailableNotice"
 import {
   NON_CONTACT_REQUESTS_PATH,
   requestMeta,
@@ -52,7 +53,7 @@ export function NonContactRequestsEntry({
         <span className="ww-noncontacts-entry__summary">{requestersSummary(requests)}</span>
       </span>
       <span className="ww-noncontacts-entry__count">{requests.length}</span>
-      <Icon name="arrow-right-s-line" size={14} color="#fdfdfd" />
+      <Icon name="arrow-right-s-line" size={14} color="var(--text-primary)" />
     </button>
   )
 }
@@ -111,6 +112,7 @@ export function NonContactRequestsScreen() {
   const navigate = useNavigate()
   const guard = useActionGuard()
   const back = useBack("/contacts")
+  const session = useSession()
   const { requests, allowed, unavailable } = useNonContactRequests()
   const [detailId, setDetailId] = useState<string | null>(null)
   // Closes when the request leaves the list: expired, answered, declined, or no longer checkable.
@@ -118,11 +120,12 @@ export function NonContactRequestsScreen() {
   const [decliningAll, setDecliningAll] = useState(false)
   const now = Date.now()
 
-  const decline = (id: string) => void declineRequestById(id).catch(console.warn)
+  const decline = (id: string) => void declineRequestById(session, id).catch(console.warn)
   const declineAll = async () => {
     setDecliningAll(true)
     try {
-      for (const request of requests) await declineRequestById(request.id).catch(console.warn)
+      for (const request of requests)
+        await declineRequestById(session, request.id).catch(console.warn)
     } finally {
       setDecliningAll(false)
     }

@@ -13,7 +13,7 @@ import { hasDepositAdmission } from "../../../src/features/registration/admissio
 import { loadRegistrationTerms } from "../../../src/features/registration/registrationTerms"
 import { registrationRecordForSipa } from "../../../src/features/registration/webRegistration"
 import { setIdentity } from "../../support/identity"
-import { closeSession, session, type Session } from "../../../src/session/session"
+import { closeSession, type Session } from "../../../src/session/session"
 import { openTestSession } from "../../support/session"
 import { seedDeviceKeys } from "../../support/page"
 import { DAI, accountRecords, earnedTerms, nameClaim } from "../../support/registrationFixtures"
@@ -62,7 +62,7 @@ const randomClaim = () =>
     terms: earnedTerms({ fee: String(RANDOM.fee), minDeposit: String(RANDOM.min) }),
   })
 
-let own: Session
+let session: Session
 let harness: ReturnType<typeof claimHarness>
 const claim = (over: Partial<ClaimRequest> = {}) =>
   claimWith(harness.deps, { handle: "demo", keys, requireEarnedQuote: true, ticket: null, ...over })
@@ -80,9 +80,9 @@ const signInPending = (claimedAt: number) =>
 beforeEach(async () => {
   localStorage.clear()
   await seedDeviceKeys({ storageId: "a1" })
-  own = openTestSession()
-  await own.registrations.ready
-  harness = claimHarness(own)
+  session = openTestSession()
+  await session.registrations.ready
+  harness = claimHarness(session)
   await accountRecords.upsert(OWNER, {}, old)
   await seedSipaDeposit({
     sipaAddress: OLD,
@@ -99,7 +99,7 @@ beforeEach(async () => {
     recoveryTxHash: HASH,
     startTime: 1,
   })
-  await loadRecords(own.sipaDeposits.view)
+  await loadRecords(session.sipaDeposits.view)
   await signInPending(1)
   await holdAtSipa(OLD, REFUND)
   harness.h.sign.mockResolvedValue(randomClaim())
@@ -119,9 +119,9 @@ describe("a restart from a refund", () => {
       refundedEntry: { sipaAddress: OLD, recoveryTxHash: HASH, amount: String(REFUND) },
       replaced: { sipaAddress: OLD, refunded: true, broadcastSpent: true },
     })
-    expect(hasDepositAdmission(session().sipaDeposits, replacement)).toBe(false)
+    expect(hasDepositAdmission(openTestSession().sipaDeposits, replacement)).toBe(false)
     // A manual sweep needs the claim cached; the spent rail leaves no payload to send.
-    expect((await own.nameClaims.get(L2))?.terms?.fee).toBe(String(RANDOM.fee))
+    expect((await session.nameClaims.get(L2))?.terms?.fee).toBe(String(RANDOM.fee))
     expect(harness.payloads.has(NEW.toLowerCase())).toBe(false)
   })
 
@@ -204,7 +204,7 @@ describe("a restart from a refund", () => {
     })
     harness.h.derive.mockResolvedValue({ ...DERIVATION, sipaAddress: OLD })
     await holdAtSipa(OLD, 5n * DAI)
-    expect(hasDepositAdmission(session().sipaDeposits, current())).toBe(true)
+    expect(hasDepositAdmission(openTestSession().sipaDeposits, current())).toBe(true)
     await pending(restart())
     expect(current()).toMatchObject({
       sipaAddress: OLD,
@@ -213,7 +213,7 @@ describe("a restart from a refund", () => {
       refundedEntry: { sipaAddress: OLD, amount: String(REFUND) },
     })
     expect(current().replaced).toBeUndefined()
-    expect(loadRegistrationTerms(session().registrations, OWNER, "demo")).toMatchObject({
+    expect(loadRegistrationTerms(openTestSession().registrations, OWNER, "demo")).toMatchObject({
       fee: String(RANDOM.fee),
       minDeposit: String(RANDOM.min),
       feeWaived: true,
@@ -224,14 +224,14 @@ describe("a restart from a refund", () => {
     expect(viewedSipaDeposit(OLD)?.recoveryTxHash).toBeUndefined()
     // Once the rail reads it empty, the resumed registration asks again.
     await holdAtSipa(OLD, 0n)
-    expect(hasDepositAdmission(session().sipaDeposits, current())).toBe(false)
+    expect(hasDepositAdmission(openTestSession().sipaDeposits, current())).toBe(false)
   })
 
   it("leaves the broadcast to the relayer rail when the refunded address never used it", async () => {
     await accountRecords.upsert(OWNER, { broadcast: false })
     await pending(restart())
     // The sheet that shows the new address owes it, on the payload the session kept.
-    expect(broadcastJob(own.sipaDeposits.view.get().records, NEW)).toBeUndefined()
+    expect(broadcastJob(session.sipaDeposits.view.get().records, NEW)).toBeUndefined()
     expect(harness.payloads.has(NEW.toLowerCase())).toBe(true)
     expect(harness.payloads.has(OLD.toLowerCase())).toBe(false)
     expect(current().replaced).toEqual({ sipaAddress: OLD, refunded: true, broadcastSpent: false })
@@ -250,10 +250,10 @@ describe("a replacement of an address nothing reached", () => {
     expect(current().refundedEntry).toBeUndefined()
     // The old address was broadcast: the rail's one use is gone, so only a manual sweep finishes.
     expect(current().replaced).toEqual({ sipaAddress: OLD, refunded: false, broadcastSpent: true })
-    const archived = registrationRecordForSipa(session().registrations, OLD)!
+    const archived = registrationRecordForSipa(openTestSession().registrations, OLD)!
     expect(archived).toMatchObject({ fee: String(PAID.fee), phase: "replaced" })
     expect(canManualRegistrationSweep(archived)).toBe(false)
-    expect((await own.nameClaims.get(L2))?.terms?.fee).toBe(String(RANDOM.fee))
+    expect((await session.nameClaims.get(L2))?.terms?.fee).toBe(String(RANDOM.fee))
   })
 
   it("inherits a spent broadcast through a chain of replacements", async () => {
@@ -275,7 +275,7 @@ it("stamps no waiver for a claim that signed no schedule", async () => {
   const unpriced = nameClaim()
   harness.h.sign.mockResolvedValue(unpriced)
   await pending(claim({ requireEarnedQuote: false }))
-  const terms = loadRegistrationTerms(session().registrations, OWNER, "demo")
+  const terms = loadRegistrationTerms(openTestSession().registrations, OWNER, "demo")
   expect(terms?.deadline).toBe(Number(unpriced.deadline))
   // Absent is "no schedule named a kind", which is not the same as the standard one.
   expect(terms && "feeWaived" in terms).toBe(false)

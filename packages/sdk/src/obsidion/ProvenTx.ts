@@ -5,10 +5,11 @@ import {
   type TxHash,
   type TxReceipt,
 } from "@aztec-labs/stdlib/tx"
-import { type AztecNode, waitForTx } from "@aztec-labs/aztec.js/node"
+import { type AztecNode } from "@aztec-labs/aztec.js/node"
+import type { Pace } from "@obsidion/core/cadence"
+import { waitForTx } from "../utils/waitForTx.js"
 import { NO_WAIT, type NoWait, type WaitOpts } from "@aztec-labs/aztec.js/contracts"
 import { SimulationError } from "@aztec-labs/stdlib/errors"
-import { ProvingStage, provingProgress } from "@obsidion/proving-progress"
 import { inspect } from "util"
 
 export type ProvenTxSendOpts = {
@@ -25,6 +26,7 @@ export type ProvenTxSendReturn<T extends NoWait | WaitOpts | undefined> = T exte
 export class ProvenTx extends Tx {
   constructor(
     private node: AztecNode,
+    private pace: Pick<Pace, "wait">,
     tx: Tx,
     public offchainEffects: OffchainEffect[],
     public stats?: ProvingStats,
@@ -45,24 +47,16 @@ export class ProvenTx extends Tx {
   ): Promise<ProvenTxSendReturn<W>>
   async send(options?: ProvenTxSendOpts): Promise<TxHash | TxReceipt> {
     const txHash = this.getTxHash()
-    provingProgress.emitStageStart(ProvingStage.Mining)
-    try {
-      await this.node.sendTx(this).catch((err) => {
-        throw this.contextualizeError(err, inspect(this))
-      })
+    await this.node.sendTx(this).catch((err) => {
+      throw this.contextualizeError(err, inspect(this))
+    })
 
-      if (options?.wait === NO_WAIT) {
-        return txHash
-      }
-
-      const waitOpts = typeof options?.wait === "object" ? options.wait : undefined
-      const receipt = await waitForTx(this.node, txHash, { ...this.defaultWaitOpts, ...waitOpts })
-      provingProgress.emitStageComplete(ProvingStage.Mining)
-      return receipt
-    } catch (err) {
-      provingProgress.emitReset()
-      throw err
+    if (options?.wait === NO_WAIT) {
+      return txHash
     }
+
+    const waitOpts = typeof options?.wait === "object" ? options.wait : undefined
+    return waitForTx(this.node, txHash, { ...this.defaultWaitOpts, ...waitOpts }, this.pace)
   }
 
   private contextualizeError(err: Error, ...context: string[]): Error {

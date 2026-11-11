@@ -2,7 +2,8 @@
   "scenario": "activity",
   "path": "/send",
   "ready": {
-    "selector": ".ww-panel--send"
+    "text": "Send via paylink",
+    "exact": true
   },
   "steps": [
     {
@@ -50,7 +51,7 @@
     },
     {
       "action": "waitFor",
-      "selector": ".ww-receive-card"
+      "selector": ".ww-request-form"
     },
     {
       "action": "screenshot",
@@ -59,13 +60,14 @@
     },
     {
       "action": "click",
-      "role": "button",
-      "name": "Request via paylink"
+      "role": "tab",
+      "name": "Anyone",
+      "exact": true
     },
     {
       "action": "screenshot",
       "file": "request-link.png",
-      "state": "Request link form"
+      "state": "Request from anyone"
     },
     {
       "action": "goto",
@@ -73,12 +75,12 @@
     },
     {
       "action": "waitFor",
-      "selector": ".ww-withdraw"
+      "selector": ".ww-move-landing"
     },
     {
       "action": "screenshot",
       "file": "withdraw.png",
-      "state": "Withdrawal recipient"
+      "state": "Withdraw landing"
     },
     {
       "action": "goto",

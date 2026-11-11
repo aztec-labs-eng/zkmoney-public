@@ -13,7 +13,7 @@
  */
 import type { Database } from "@obsidion/front-core"
 import { DEVICE_KEYS, writeDeviceKeys, type DeviceState } from "./deviceKeys"
-import { removeOldWalletKeys } from "./rollupStorage"
+import { removeOldWalletKeys } from "./storageMigrations/oldLocalStorage"
 import { removeFromOtherDatabases, walletStoreIsPersistent } from "./walletStorage"
 
 const ID_KEY = DEVICE_KEYS.storageId
@@ -61,12 +61,12 @@ export function writeSessionTuple(db: Database, tuple: SessionTuple): Promise<vo
 /**
  * The tuple out of every other rollup's database, and any copy of it an older build left in
  * `localStorage` (an older-build tab may write one after this tab's boot); rejects if a copy
- * cannot be removed. This database is the caller's.
+ * cannot be removed. This database, `rollup`'s, is the caller's.
  */
-export async function clearSessionEverywhere(): Promise<void> {
+export async function clearSessionEverywhere(rollup: string): Promise<void> {
   if (!walletStoreIsPersistent()) return
   await removeFromOtherDatabases(SESSION_TUPLE_KEYS)
-  removeOldWalletKeys(SESSION_TUPLE_KEYS)
+  removeOldWalletKeys(rollup, SESSION_TUPLE_KEYS)
 }
 
 export async function storageIdFromSecret(msk: Uint8Array): Promise<string> {

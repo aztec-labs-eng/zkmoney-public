@@ -6,15 +6,22 @@
  * The burn's withdrawal ids come from an injected fake of `fetchWithdrawalIds`.
  */
 
+import { createProver } from "../../src/engine/prover"
+import { createPace } from "@obsidion/core/cadence"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { TxStatus, TxExecutionResult } from "@aztec-labs/stdlib/tx"
-import { ProvingStage, provingProgress } from "@obsidion/proving-progress"
 import type { Address, Hex } from "viem"
-import type { SwapEscrowReader, WithdrawalFinalizationReader } from "@obsidion/sdk"
+import {
+  encodeSwapEscrowExecute,
+  predictSwapEscrow,
+  type SwapEscrowReader,
+  type WithdrawalFinalizationReader,
+} from "@obsidion/sdk"
 
 import { openDatabase } from "../../src/engine/database"
+import { createOperations } from "../../src/engine/operations"
 import { memoryBackend } from "../../src/engine/memoryBackend"
-import type { ResourceState } from "../../src/engine/resource"
+import type { ServiceState } from "../../src/engine/service"
 import { startRuntime, type Runtime } from "../../src/engine/runtime"
 import { memoryStore } from "../../src/engine/store"
 import { createWithdrawals, type Withdrawals } from "../../src/engine/withdrawals"
@@ -53,17 +60,17 @@ const DEPLOYMENT: WithdrawalDeployment = {
   l2Token: "0x" + "0b".repeat(32),
 }
 
+/** No flow in the page runs an operation. */
+const NO_FLOWS = memoryStore<ReadonlySet<string>>(new Set()).readonly
+
 /** The tracker's pass over `store`, on the live deployment unless given; each `syncOnce` runs one. */
 function stepper({
   store,
-  now,
+  now = () => Date.now(),
   ...wiring
-}: Omit<TrackerWiring, "deployment"> & {
-  deployment?: WithdrawalDeployment
-  store: Withdrawals
-  now?: () => number
-}) {
-  const full = { deployment: DEPLOYMENT, withdrawalIds: mockFetch, ...wiring }
+}: Omit<TrackerWiring, "deployment" | "live"> &
+  Partial<TrackerWiring> & { store: Withdrawals; now?: () => number }) {
+  const full = { deployment: DEPLOYMENT, withdrawalIds: mockFetch, live: NO_FLOWS, ...wiring }
   return { syncOnce: withdrawalStepper(store, full, now) }
 }
 
@@ -89,14 +96,26 @@ function makeReader(
   }
 }
 
-const ESCROW = `0x${"e5".repeat(20)}` as Address
 const FACTORY = `0x${"fa".repeat(20)}` as Address
+/** What the swap record below commits its escrow to: a legacy layout, as it names none. */
+const SWAP_COMMITMENT = {
+  layout: "legacy",
+  args: {
+    route: 0,
+    recipient: RECIPIENT,
+    recoveryCommitment: `0x${"5a".repeat(32)}` as Hex,
+    relayerTip: 5n * 10n ** 18n,
+    nonce: ("0x" + "77".repeat(32)) as Hex,
+  },
+} as const
+const ESCROW = predictSwapEscrow(FACTORY, SWAP_COMMITMENT)
 const EXEC_TX = ("0x" + "5e".repeat(32)) as Hex
 
 /** A funded escrow whose swap fills: the state right after the release. */
 function makeEscrowReader(overrides: Partial<SwapEscrowReader> = {}): SwapEscrowReader {
   return {
     daiBalance: vi.fn(async () => 95n * 10n ** 18n),
+    tokenBalance: vi.fn(async () => 0n),
     isDeployed: vi.fn(async () => false),
     deploySimulates: vi.fn(async () => true),
     executedTxHash: vi.fn(async () => undefined),
@@ -121,7 +140,7 @@ function makeNode(status: TxStatus = TxStatus.PENDING): WithdrawalTrackerNode {
 }
 
 async function seedStore(): Promise<Withdrawals> {
-  const store = createWithdrawals({ db: openDatabase(memoryBackend()) })
+  const store = createWithdrawals({ db: openDatabase(memoryBackend()), now: () => Date.now() })
   await store.ready
   return store
 }
@@ -157,21 +176,19 @@ describe("withdrawal tracker (chain-watching)", () => {
       "recovers a terminal unsuccessful paylink receipt %s without waiting for a burn log",
       async (status) => {
         const store = await seedStore()
-        await store.create({ ...submittingRecord("w1"), source: "paylink", l2TxHash: L2TX_1 })
+        const burn = { source: "paylink", l2TxHash: L2TX_1, operationId: "op" } as const
+        await store.create({ ...submittingRecord("w1"), ...burn })
         const node = makeNode(status)
         vi.mocked(node.getTxReceipt).mockResolvedValue({
           status,
           executionResult: TxExecutionResult.REVERTED,
         } as never)
-        const tracker = stepper({ store, node, finalizationReader: makeReader() })
-        const active = trackWithdrawalSubmission(store, "w1", "operation")
-        try {
-          await tracker.syncOnce()
-          expect(node.getTxReceipt).not.toHaveBeenCalled()
-          expect((await store.get("w1"))?.phase).toBe("submitting")
-        } finally {
-          await active.stop()
-        }
+        const live = memoryStore<ReadonlySet<string>>(new Set(["op"]))
+        const tracker = stepper({ store, node, finalizationReader: makeReader(), live })
+        await tracker.syncOnce()
+        expect(node.getTxReceipt).not.toHaveBeenCalled()
+        expect((await store.get("w1"))?.phase).toBe("submitting")
+        live.set(new Set())
         await tracker.syncOnce()
         expect((await store.get("w1"))?.phase).toBe("failed")
         expect(mockFetch).not.toHaveBeenCalled()
@@ -870,14 +887,8 @@ describe("withdrawal tracker (chain-watching)", () => {
       expect((await store.get("w1"))?.phaseEnteredAt).toBeGreaterThan(0)
       expect(reader.deploySimulates).toHaveBeenCalledWith(
         FACTORY,
-        expect.objectContaining({
-          layout: "legacy",
-          args: expect.objectContaining({
-            route: 0,
-            recipient: RECIPIENT,
-            nonce: swapFields().swapNonce,
-          }),
-        }),
+        encodeSwapEscrowExecute(SWAP_COMMITMENT),
+        RECIPIENT,
       )
       await tracker.syncOnce()
       expect((await store.get("w1"))?.phase).toBe("swapping")
@@ -1088,13 +1099,18 @@ describe("withdrawal tracker (chain-watching)", () => {
 describe("trackWithdrawalSubmission's hash stamp", () => {
   it("resolves once the hash persisted", async () => {
     const backend = memoryBackend()
-    const store = createWithdrawals({ db: openDatabase(backend) })
+    const store = createWithdrawals({ db: openDatabase(backend), now: () => Date.now() })
     await store.ready
     await store.create(submittingRecord("w1"))
-    const submission = trackWithdrawalSubmission(store, "w1", "op")
+    const submission = trackWithdrawalSubmission(
+      createProver({ now: () => Date.now() }).progress,
+      store,
+      "w1",
+      "op",
+    )
     try {
       await submission.stamp(L2TX_1)
-      const reopened = createWithdrawals({ db: openDatabase(backend) })
+      const reopened = createWithdrawals({ db: openDatabase(backend), now: () => Date.now() })
       expect((await reopened.get("w1"))?.l2TxHash).toBe(L2TX_1)
       expect([...backend.entries.values()].some((raw) => raw.includes(L2TX_1))).toBe(true)
     } finally {
@@ -1105,11 +1121,16 @@ describe("trackWithdrawalSubmission's hash stamp", () => {
   // Nothing reached the node, so the burn is not in flight.
   it("rejects a hash that did not persist, and leaves nothing to recover", async () => {
     const backend = memoryBackend()
-    const store = createWithdrawals({ db: openDatabase(backend) })
+    const store = createWithdrawals({ db: openDatabase(backend), now: () => Date.now() })
     await store.ready
     await store.create(submittingRecord("w1"))
     backend.failing.commits = true
-    const submission = trackWithdrawalSubmission(store, "w1", "op")
+    const submission = trackWithdrawalSubmission(
+      createProver({ now: () => Date.now() }).progress,
+      store,
+      "w1",
+      "op",
+    )
     try {
       await expect(submission.stamp(L2TX_1)).rejects.toMatchObject({ code: "unknown" })
       expect(await submission.recover({ getTxReceipt: vi.fn() } as never)).toBeNull()
@@ -1118,21 +1139,40 @@ describe("trackWithdrawalSubmission's hash stamp", () => {
     }
   })
 
-  it("does not announce a record that rides another record's tx", async () => {
-    const store = await seedStore()
+  it("saves the burn's hash and its operation's in one write, or neither", async () => {
+    const db = openDatabase(memoryBackend())
+    const store = createWithdrawals({ db, now: () => Date.now() })
+    const operations = createOperations({ db, now: () => Date.now() })
+    await Promise.all([store.ready, operations.ready])
     await store.create(submittingRecord("w1"))
-    const heard = vi.fn()
-    provingProgress.on("tx-hash-saved", heard)
-    const submission = trackWithdrawalSubmission(store, "w1", "op", { announce: false })
-    try {
-      await submission.stamp(L2TX_1)
-      provingProgress.emitStageStart(ProvingStage.Mining, "op", L2TX_1)
-      expect((await store.get("w1"))?.l2TxHash).toBe(L2TX_1)
-      expect(heard).not.toHaveBeenCalled()
-    } finally {
-      submission.stop()
-      provingProgress.off("tx-hash-saved", heard)
-    }
+    const orphan = trackWithdrawalSubmission(
+      createProver({ now: () => Date.now() }).progress,
+      store,
+      "w1",
+      "op",
+      {
+        db,
+        operations,
+      },
+    )
+    await expect(orphan.stamp(L2TX_1)).rejects.toMatchObject({ code: "invariant" })
+    orphan.stop()
+    expect((await store.get("w1"))?.l2TxHash).toBeUndefined()
+    await operations.begin({ operationId: "op", flow: "withdraw", summary: "" })
+    const submission = trackWithdrawalSubmission(
+      createProver({ now: () => Date.now() }).progress,
+      store,
+      "w1",
+      "op",
+      {
+        db,
+        operations,
+      },
+    )
+    await submission.stamp(L2TX_1)
+    submission.stop()
+    expect((await store.get("w1"))?.l2TxHash).toBe(L2TX_1)
+    expect(await operations.get("op")).toMatchObject({ state: "sent", txHash: L2TX_1 })
   })
 })
 
@@ -1203,15 +1243,17 @@ describe("withdrawalTracker task", () => {
   })
 
   function harness(rails: () => Promise<TrackerRails | null>, store?: Withdrawals) {
-    const wallet = memoryStore<ResourceState<{ node: WithdrawalTrackerNode }>>({
+    const wallet = memoryStore<ServiceState<{ node: WithdrawalTrackerNode }>>({
       status: "pending",
     })
     const visible = memoryStore(true)
     const db = openDatabase(memoryBackend())
     const tracker = withdrawalTracker({
-      wallet: { ...wallet.readonly, name: "wallet", demand() {}, retry() {}, close() {} },
-      store: store ?? createWithdrawals({ db }),
+      wallet: { ...wallet.readonly, name: "wallet", start() {}, retry() {}, close() {} },
+      store: store ?? createWithdrawals({ db, now: () => Date.now() }),
+      operations: { live: NO_FLOWS },
       rails,
+      now: () => Date.now(),
     })
     let runtime: Runtime | undefined
     const start = () => {
@@ -1219,6 +1261,8 @@ describe("withdrawalTracker task", () => {
         db,
         milestones: { after: async () => true, reached: () => false },
         visible: visible.readonly,
+        pace: createPace(),
+        now: () => Date.now(),
       })
       runtimes.push(runtime)
       return runtime

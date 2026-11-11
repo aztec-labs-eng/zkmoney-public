@@ -6,7 +6,7 @@ import { beforeAll, describe, expect, it } from "vitest"
 import initACVM from "@aztec-foundation/noir-acvm_js/web/acvm_js.js"
 import initABI from "@aztec-foundation/noir-noirc_abi/web/noirc_abi_wasm.js"
 import circuit from "../../../contracts/src/artifacts/target/golden_ticket/golden_ticket.json"
-import { proveNoirCircuit } from "../../src/platform/noirProver"
+import { initNoirWasm, proveNoirCircuit } from "../../src/platform/noirProver"
 
 const require = createRequire(import.meta.url)
 const wasm = (path: string) => ({ module_or_path: readFileSync(require.resolve(path)) })
@@ -51,9 +51,9 @@ describe("proveNoirCircuit on a failed assert", () => {
   })
 
   it("throws the circuit's message and keeps acvm's error as the cause", async () => {
-    const err = (await proveNoirCircuit(circuit, outsideThePair, "golden-ticket").catch(
-      (e: unknown) => e,
-    )) as Error & { cause?: { rawAssertionPayload?: unknown } }
+    const err = (await proveNoirCircuit(circuit, outsideThePair, "golden-ticket", {
+      wasm: initNoirWasm,
+    }).catch((e: unknown) => e)) as Error & { cause?: { rawAssertionPayload?: unknown } }
     expect(err).toBeInstanceOf(Error)
     expect(err.message).toBe("escrow class is not a paylink")
     expect(err.cause?.rawAssertionPayload).toBeDefined()

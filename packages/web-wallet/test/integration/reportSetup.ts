@@ -8,6 +8,7 @@ for (const name of [
   "document",
   "navigator",
   "localStorage",
+  "sessionStorage",
   "HTMLElement",
   "HTMLDialogElement",
 ] as const) {

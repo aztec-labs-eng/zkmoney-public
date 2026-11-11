@@ -26,7 +26,7 @@ import {
   metadataMigrationBinding,
   registrationKeyProof,
 } from "../../oxide/metadataMigrationBinding"
-import { readResolverOperatorRecords } from "../../oxide/resolverOperatorRecords"
+import type { DeploymentScans } from "../../oxide/resolverOperatorRecords"
 import type { IStorageAdapter, StorageLock } from "../storages/adapter"
 import { claimedSweepsTotal, directDepositKey, type SipaDeposits } from "../../engine/sipaDeposits"
 import { MetadataMigrationController } from "./MetadataMigrationController"
@@ -54,6 +54,8 @@ export interface MetadataMigrationSessionOptions {
   network: Network
   secretKey: Fr
   client: PublicClient
+  scans: DeploymentScans
+  // eslint-disable-next-line local/legacy-store -- ZKM-1625
   storage: Pick<IStorageAdapter, "getItem" | "setItem">
   lock: StorageLock
   key: string
@@ -158,11 +160,7 @@ export async function createMetadataMigrationSession(o: MetadataMigrationSession
         depositSubsidy: o.current.depositSubsidy as Address,
       }
     : destination
-  const records = await readResolverOperatorRecords(
-    o.client,
-    destination.metadataRegistry,
-    o.current,
-  )
+  const records = await o.scans.operatorRecords(destination.metadataRegistry, o.current).read()
   const resolver = selectManifestResolverOperator(records, {
     forwardingTable: destination.forwardingTable,
     resolverGatewayUrl: o.current.resolverGatewayUrl,

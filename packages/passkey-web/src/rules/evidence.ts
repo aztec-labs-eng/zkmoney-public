@@ -94,7 +94,8 @@ export function prfOutputsOf(assertion: Evidence): PrfCandidates {
  * here, nor Windows Hello from another manager. Another device's answer is exempt from the backup
  * gate on that account: creation only ever admits a synced passkey or a security key from there,
  * and the caller's anchors decide which account, if any, the candidates open. The device's own
- * answer is exempt only on Windows (`osFamily`), where creation admits Windows Hello.
+ * answer is exempt only on Windows (`osFamily`), where creation admits Windows Hello. An iPhone
+ * that returned no key is told a Proton Pass passkey cannot open the wallet there.
  */
 export function candidatesFrom(assertion: Evidence, osFamily?: OsFamily): PrfCandidates {
   checkBackup(
@@ -102,7 +103,9 @@ export function candidatesFrom(assertion: Evidence, osFamily?: OsFamily): PrfCan
     assertion.authenticatorAttachment === "cross-platform" || osFamily === "windows",
   )
   const candidates = prfOutputsOf(assertion)
-  if (!candidates.first && !candidates.second) throw new NoPrfError()
+  if (!candidates.first && !candidates.second) {
+    throw new NoPrfError(osFamily === "ios" ? { signInOnIos: true } : {})
+  }
   return candidates
 }
 

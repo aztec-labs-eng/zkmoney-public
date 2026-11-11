@@ -14,7 +14,6 @@ export function productLimitFacts(): ProductLimitFacts {
 
 export function sponsorshipFacts(snapshot: AllowanceSnapshot): SponsorshipFacts {
   switch (snapshot.status) {
-    case "signed-out":
     case "loading":
       return { state: "loading" }
     case "unavailable":

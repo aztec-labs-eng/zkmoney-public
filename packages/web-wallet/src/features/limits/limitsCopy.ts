@@ -83,3 +83,9 @@ export const renewsAfterUsedUp = (period: string) => `${period} after being used
 
 export const RENEWAL_UNKNOWN_NOTE =
   "We can't confirm renewal yet. Your next eligible transaction may start a new allowance."
+
+// The notice under an amount over a limit
+
+export const OVER_LIMIT = "Over the limit"
+export const maximumNow = (operation: string, maximum: string) =>
+  `The most you can ${operation} right now is ${maximum}.`

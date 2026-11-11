@@ -1,5 +1,5 @@
 /**
- * Feature switches read from the build environment. Each defaults to off and is turned on with the
+ * Feature switches. Those read from the build environment default to off and are turned on with the
  * string "true", the convention the other VITE_ flags follow.
  */
 
@@ -31,7 +31,10 @@ export const zkMoneyLinkHostEnabled = import.meta.env.VITE_ZK_MONEY_LINK_HOST ==
  * Lets a user start adding a backup passkey from the Passkeys sheet in settings
  * (`VITE_BACKUP_PASSKEY_SETTINGS`). Off by default. The rotation signs a real L1 user operation,
  * moves the balance and re-roots the wallet. It must stay off until it takes turns with the
- * upgrade's record update, which uses the same nonce. Off hides only the "Add a backup passkey"
- * row; a rotation already saved still shows and runs to the end.
+ * upgrade's record update, which uses the same nonce. Off hides the "Add a backup passkey" row and
+ * an empty Settings → Account history; a rotation already saved still shows and runs to the end.
  */
 export const backupPasskeySettingsEnabled = import.meta.env.VITE_BACKUP_PASSKEY_SETTINGS === "true"
+
+/** Shows the ether.fi entry on the withdraw landing; set to false to hide it. */
+export const etherfiEntryShown = false

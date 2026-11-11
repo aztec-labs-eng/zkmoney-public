@@ -1,45 +1,33 @@
 {
   "scenario": "activity",
-  "path": "/withdraw?flowFixture=success&balanceFixture=10000",
+  "path": "/withdraw/fresh?flowFixture=success&balanceFixture=10000",
   "steps": [
     {
-      "action": "waitFor",
-      "selector": ".ww-deposit-disclaimer"
-    },
-    {
-      "action": "click",
-      "role": "button",
-      "name": "Got it!",
-      "exact": false
-    },
-    {
       "action": "fill",
-      "placeholder": "Enter or paste address",
+      "testId": "withdraw-address",
       "value": "0x7777777777777777777777777777777777777777"
     },
     {
       "action": "fill",
-      "label": "Wallet name (optional)",
+      "label": "Name this address",
       "value": "Weekend savings wallet"
     },
     {
+      "action": "waitFor",
+      "selector": "[data-testid=\"withdraw-address-continue\"]:enabled"
+    },
+    {
       "action": "click",
-      "role": "button",
-      "name": "Continue",
-      "exact": true
+      "testId": "withdraw-address-continue"
     },
     {
       "action": "waitFor",
-      "selector": ".ww-fund__amount input"
-    },
-    {
-      "action": "waitFor",
-      "testId": "operation-limits"
+      "testId": "withdraw-amount"
     },
     {
       "action": "screenshot",
       "file": "limits-before-typing.png",
-      "state": "per-withdrawal limit before typing"
+      "state": "amount before typing"
     },
     {
       "action": "click",
@@ -49,7 +37,7 @@
     },
     {
       "action": "waitFor",
-      "selector": ".ww-fund__amount input[value=\"5000\"]"
+      "selector": "[data-testid=\"withdraw-amount\"][value=\"5000\"]"
     },
     {
       "action": "screenshot",
@@ -58,7 +46,7 @@
     },
     {
       "action": "fill",
-      "selector": ".ww-fund__amount input",
+      "testId": "withdraw-amount",
       "value": "5000.01"
     },
     {
@@ -67,7 +55,7 @@
     },
     {
       "action": "waitFor",
-      "selector": "dialog[open] button:disabled:has-text(\"Withdraw funds\")"
+      "selector": "dialog[open] [data-testid=\"withdraw-amount-continue\"]:disabled"
     },
     {
       "action": "screenshot",
@@ -76,7 +64,7 @@
     },
     {
       "action": "hover",
-      "selector": "dialog[open] button:disabled:has-text(\"Withdraw funds\")"
+      "selector": "dialog[open] :has(> [data-testid=\"withdraw-amount-continue\"]:disabled)"
     },
     {
       "action": "screenshot",
@@ -85,14 +73,12 @@
     },
     {
       "action": "press",
-      "role": "button",
-      "name": "Use maximum ($5,000)",
-      "exact": true,
+      "testId": "limit-notice-use-maximum",
       "key": "Enter"
     },
     {
       "action": "waitFor",
-      "selector": ".ww-fund__amount input[value=\"5000\"]"
+      "selector": "[data-testid=\"withdraw-amount\"][value=\"5000\"]"
     },
     {
       "action": "waitFor",
@@ -101,16 +87,24 @@
     },
     {
       "action": "press",
-      "role": "button",
-      "name": "Withdraw funds",
-      "exact": true,
+      "testId": "withdraw-amount-continue",
       "key": "Enter"
     },
     {
+      "action": "waitFor",
+      "testId": "withdraw-gas-continue"
+    },
+    {
+      "action": "click",
+      "selector": "[role=\"group\"][aria-label=\"ETH for gas\"] button:has-text(\"None\")"
+    },
+    {
+      "action": "click",
+      "testId": "withdraw-gas-continue"
+    },
+    {
       "action": "reachable",
-      "role": "button",
-      "name": "Confirm withdrawal",
-      "exact": true
+      "testId": "withdraw-confirm"
     },
     {
       "action": "screenshot",

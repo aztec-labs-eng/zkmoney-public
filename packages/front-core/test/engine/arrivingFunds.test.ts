@@ -220,7 +220,7 @@ describe("arrivingFunds beside an upgrade", () => {
   it("counts no deposit a backup passkey rotation pays itself", () => {
     const funds = arrivingFunds({
       ...none,
-      deposits: [swept({ sipaAddress: `0x${"c3".repeat(20)}`, intent: "user-op" })],
+      deposits: [swept({ sipaAddress: `0x${"c3".repeat(20)}`, intent: "add-passkey" })],
     })
 
     expect(funds.main).toBe(0n)
@@ -241,6 +241,18 @@ describe("arrivingFunds beside an upgrade", () => {
         oldVersions: { main: 59n * E18, savings: 40n * E18 },
       }),
     ).toEqual({ main: NET + 59n * E18, savings: 40n * E18 })
+  })
+})
+
+describe("arrivingFunds during a backup passkey add", () => {
+  it("counts what the move still owes, Main as is and Savings' shares at their price", () => {
+    const backupMove = { main: 2n * E18, shares: 4n * E18 }
+    const oldVersions = { main: E18, savings: 0n }
+    expect(arrivingFunds({ ...none, oldVersions, backupMove, sharePrice: E18 / 2n })).toEqual({
+      main: 3n * E18,
+      savings: 2n * E18,
+    })
+    expect(arrivingFunds({ ...none, backupMove }).savings).toBe(0n)
   })
 })
 

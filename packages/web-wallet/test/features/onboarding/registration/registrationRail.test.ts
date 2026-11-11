@@ -27,7 +27,6 @@ vi.mock("@obsidion/sdk", async (importOriginal) => ({
 }))
 vi.mock("../../../../src/config/oxideTuple", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../../src/config/oxideTuple")>()),
-  getOxideTuple: async () => CURRENT_TUPLE,
   l1PublicClient: () => L1_CLIENT,
   rollupScanFloor: async () => 7_000n,
 }))
@@ -40,10 +39,6 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/front-core")>()),
   createOxideL1Reader,
 }))
-vi.mock("../../../../src/config/env", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../../src/config/env")>()),
-  getConfig: () => ({ network: "sandbox" }),
-}))
 
 import { Fr } from "@aztec-labs/aztec.js/fields"
 import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
@@ -52,6 +47,8 @@ import { deriveBootstrapKey, deriveBootstrapScalar } from "@obsidion/front-core"
 import { claimSponsorContext } from "../../../../src/features/registration/claimSponsorship"
 import { registrationGateWitness } from "../../../../src/features/registration/registrationRail"
 import { RAIL_REGISTERED } from "../../../../src/features/registration/rails"
+import { selfPayingSession } from "../../../support/sponsors"
+import { answered } from "../../../support/query"
 
 const REGISTRY = "0x1111111111111111111111111111111111111111"
 const INBOX = "0x2222222222222222222222222222222222222222"
@@ -101,7 +98,9 @@ const IDENTITY = { account: OXIDE_ACCOUNT, nameHash: NAME_HASH, generations: [] 
 const witnessDeps = (identity: unknown, tuple: { namePortal: string } = CURRENT_TUPLE) =>
   ({
     wallet,
-    config: { network: "sandbox", l1ChainId: L1_CHAIN_ID, oxideProfile: { portal: PORTAL } },
+    page: {
+      config: { network: "sandbox", l1ChainId: L1_CHAIN_ID, oxideProfile: { portal: PORTAL } },
+    },
     identity,
     generation: { fpcAddress: FPC.toString(), namePortal: tuple.namePortal },
   } as never)
@@ -232,6 +231,7 @@ describe("the registration message a sponsored subscribe rides on", () => {
 
     const sponsor = await claimSponsorContext(
       {
+        session: selfPayingSession({ oxideTuple: answered(CURRENT_TUPLE) }),
         wallet: { pxe: {}, node },
         account: { getAddress: () => AztecAddress.fromNumberUnsafe(15) },
         contractService: { getArtifactForContract: vi.fn().mockResolvedValue({}) },

@@ -1,4 +1,3 @@
-import { useEffect } from "react"
 import type { Address } from "viem"
 import { memoryStore, useStore, type SipaDeposit } from "@obsidion/front-core"
 import { useSession } from "../../session/session"
@@ -26,18 +25,14 @@ export function useSipaRecord(address: string | null): SipaDeposit | undefined {
 }
 
 /**
- * The deposit address's balance as its rail record holds it. While watched, `sipaCheck` reads L1
+ * The deposit address's balance as its rail record holds it. While subscribed, `sipaCheck` reads L1
  * every few seconds, so the screen says "received" within a few seconds of the block.
  */
 export function useDepositWatch(address: Address | null): DepositWatch {
   const record = useSipaRecord(address)
   const { sipaPipeline, tasks, wake } = useSession()
-  const passAt = useStore(sipaPipeline?.observedAt ?? NEVER_READ)
+  const passAt = useStore(address && sipaPipeline ? sipaPipeline.observedAt : NEVER_READ)
   const read = tasks.sipaCheck
-  useEffect(
-    () => (address && sipaPipeline ? sipaPipeline.watch() : undefined),
-    [address, sipaPipeline],
-  )
   const balance = BigInt(record?.heldBalance ?? 0)
   return {
     balance,

@@ -12,10 +12,10 @@
  * The window arithmetic and every material/lifecycle guard come from the shared
  * `isPaylinkInRefundWindow` / `paylinkRefundEligibility`.
  */
-import { PAYLINK_CANCEL_MARGIN_SECONDS, PaylinkActionEnum } from "@obsidion/core/constants"
-import type { PaylinkTransaction, Transaction } from "../../../types/transactions"
+import { PAYLINK_CANCEL_MARGIN_SECONDS } from "@obsidion/core/constants"
+import type { LinkFacts, TransactionStatus } from "../../../types/transactions"
 import type { PaylinkStatusKind } from "./paylinkStatus"
-import { isPaylinkInRefundWindow, paylinkRefundEligibility } from "./refundParamsFromRow"
+import { isPaylinkInRefundWindow, linkRefundEligibility } from "./refundParamsFromRow"
 
 export type CreatorLinkAction = "reclaim" | "cancel"
 
@@ -37,7 +37,7 @@ export function paylinkStatusIsUnspent(status: PaylinkStatusKind): boolean {
  * the upgrade refunds it.
  */
 export function isOtherRollupLink(
-  row: Pick<PaylinkTransaction, "networkId">,
+  row: Pick<LinkFacts, "networkId">,
   network: string | undefined,
 ): boolean {
   return !!network && !!row.networkId && row.networkId.toLowerCase() !== network.toLowerCase()
@@ -47,7 +47,10 @@ export function isOtherRollupLink(
  * Whether `account` made the link. A row without `obsidionAccountAddress` predates that field and
  * counts as the account's: this wallet's store holds only its own rows.
  */
-export function linkMadeBy(row: PaylinkTransaction, account: string): boolean {
+export function linkMadeBy(
+  row: Pick<LinkFacts, "obsidionAccountAddress">,
+  account: string,
+): boolean {
   const creator = row.obsidionAccountAddress
   return !creator || creator.toLowerCase() === account.toLowerCase()
 }
@@ -58,16 +61,17 @@ export function linkMadeBy(row: PaylinkTransaction, account: string): boolean {
  * `account`. A create still in flight counts, since its escrow may land.
  */
 export function isOpenCreatorLink(
-  row: PaylinkTransaction,
+  row: LinkFacts,
+  status: TransactionStatus,
   account: string,
   network: string | undefined,
 ): boolean {
-  if (row.emailPaymentAction !== PaylinkActionEnum.PAY || !linkMadeBy(row, account)) return false
+  if (!linkMadeBy(row, account)) return false
   if (row.flavor !== "email" && row.flavor !== "direct") return false
   if (isOtherRollupLink(row, network)) return false
-  if (row.status === "pending") return true
+  if (status === "pending") return true
   // A time past every expiry lifts the window checks, leaving only spent and missing material.
-  return paylinkRefundEligibility(row, Number.POSITIVE_INFINITY).eligible
+  return linkRefundEligibility(row, status, Number.POSITIVE_INFINITY).eligible
 }
 
 /** Why a backup passkey add waits on an open link instead of taking it back itself. */
@@ -81,24 +85,28 @@ export type BackupLinkHold =
   /** It can't be cancelled before its expiry, `until` in seconds, and only then reclaimed. */
   | { kind: "expiry"; until: number }
 
+/** A link's facts and the token its escrow holds. */
+type BackupLink = LinkFacts & { tokenAddress?: string }
+
 /**
- * Whether an open link holds the add. The add cancels a link inside its refund window and reclaims
- * an expired one; a link whose window closes before its expiry, or that records none, would be out
- * of the add's reach in between, so the user cancels it while they still can, or the add waits for
- * its expiry. Links made today close both at once.
+ * Whether an open link holds the add, `status` its funding's. The add cancels a link inside its
+ * refund window and reclaims an expired one; a link whose window closes before its expiry, or that
+ * records none, would be out of the add's reach in between, so the user cancels it while they
+ * still can, or the add waits for its expiry. Links made today close both at once.
  */
 export function backupLinkHold(
-  row: PaylinkTransaction,
+  link: BackupLink,
+  status: TransactionStatus,
   nowSec: number,
   token: string,
 ): BackupLinkHold | undefined {
-  if (row.status === "pending") return { kind: "creating" }
-  if (row.tokenAddress && row.tokenAddress.toLowerCase() !== token.toLowerCase())
+  if (status === "pending") return { kind: "creating" }
+  if (link.tokenAddress && link.tokenAddress.toLowerCase() !== token.toLowerCase())
     return { kind: "token" }
-  const until = row.untilClaimable ?? 0
-  const gap = row.refundableUntil == null || row.refundableUntil < until
+  const until = link.untilClaimable ?? 0
+  const gap = link.refundableUntil == null || link.refundableUntil < until
   if (!gap || nowSec > until) return undefined
-  return row.refundableUntil != null && canCancelAt(row.refundableUntil, nowSec)
+  return link.refundableUntil != null && canCancelAt(link.refundableUntil, nowSec)
     ? { kind: "cancel" }
     : { kind: "expiry", until }
 }
@@ -109,28 +117,30 @@ type ExpiryHold = Extract<BackupLinkHold, { kind: "expiry" }>
  * The open links `account` made on `network` that a backup add takes back, and what holds the add
  * instead: a create in flight first, then a retired token, then a link to cancel, then the latest
  * expiry it waits for. `claimed` are the links a recipient's claim spent, in the moved token: a
- * reorg that undoes the claim reopens the link.
+ * reorg that undoes the claim reopens the link. `statusOf` reads a link's funding status.
  */
-export function backupLinks(
-  rows: readonly Transaction[],
+export function backupLinks<L extends BackupLink>(
+  links: readonly L[],
+  statusOf: (link: L) => TransactionStatus,
   opts: { account: string; network: string | undefined; token: string; nowSec: number },
-): { open: PaylinkTransaction[]; claimed: PaylinkTransaction[]; hold?: BackupLinkHold } {
-  const open: PaylinkTransaction[] = []
-  const claimed: PaylinkTransaction[] = []
+): { open: L[]; claimed: L[]; hold?: BackupLinkHold } {
+  const open: L[] = []
+  const claimed: L[] = []
   const holds: BackupLinkHold[] = []
-  for (const row of rows as readonly PaylinkTransaction[]) {
-    if (row.isClaimed) {
+  for (const link of links) {
+    const status = statusOf(link)
+    if (link.isClaimed) {
       if (
-        isOpenCreatorLink({ ...row, isClaimed: false }, opts.account, opts.network) &&
-        (!row.tokenAddress || row.tokenAddress.toLowerCase() === opts.token.toLowerCase())
+        isOpenCreatorLink({ ...link, isClaimed: false }, status, opts.account, opts.network) &&
+        (!link.tokenAddress || link.tokenAddress.toLowerCase() === opts.token.toLowerCase())
       )
-        claimed.push(row)
+        claimed.push(link)
       continue
     }
-    if (!isOpenCreatorLink(row, opts.account, opts.network)) continue
-    const hold = backupLinkHold(row, opts.nowSec, opts.token)
+    if (!isOpenCreatorLink(link, status, opts.account, opts.network)) continue
+    const hold = backupLinkHold(link, status, opts.nowSec, opts.token)
     if (hold) holds.push(hold)
-    else open.push(row)
+    else open.push(link)
   }
   const hold =
     holds.find((h) => h.kind === "creating") ??
@@ -140,8 +150,10 @@ export function backupLinks(
   return hold ? { open, claimed, hold } : { open, claimed }
 }
 
+/** `status`: its funding's. */
 export function creatorLinkAction(
-  row: PaylinkTransaction,
+  row: LinkFacts,
+  status: TransactionStatus,
   opts: {
     /** Chain-tip seconds where readable — the contract checks block time at inclusion. */
     nowSec: number
@@ -156,7 +168,7 @@ export function creatorLinkAction(
   // can't contradict the row's own stamp, and these rows are this device's.
   if (opts.account && !linkMadeBy(row, opts.account)) return null
   if (row.flavor !== "email" && row.flavor !== "direct") return null
-  if (!paylinkRefundEligibility(row, opts.nowSec).eligible) return null
+  if (!linkRefundEligibility(row, status, opts.nowSec).eligible) return null
   if (isPaylinkInRefundWindow(row, opts.nowSec)) {
     return canCancelAt(row.refundableUntil!, opts.nowSec) ? "cancel" : null
   }

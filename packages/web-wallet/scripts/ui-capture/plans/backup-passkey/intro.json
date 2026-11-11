@@ -1,0 +1,26 @@
+{
+  "scenario": "activity",
+  "viewport": "402x879,1280x832",
+  "path": "/settings?flowFixture=success&backupFixture=intro",
+  "ready": {
+    "selector": ".ww-settings__user"
+  },
+  "steps": [
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Passkeys",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": "html[data-backup-screen=intro]"
+    },
+    {
+      "action": "screenshot",
+      "file": "a2-intro.png",
+      "state": "A2: before you start"
+    }
+  ],
+  "finalScreenshot": false
+}

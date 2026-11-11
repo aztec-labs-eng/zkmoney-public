@@ -1,6 +1,8 @@
+// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
 const SEPARATORS = new Set([",", "٫", "．", "，"])
 
 // Every decimal digit the runtime can format, keyed by glyph. Algorithmic systems (roman…) are filtered out.
+// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
 const DIGITS = new Map<string, string>()
 for (const numberingSystem of Intl.supportedValuesOf("numberingSystem"))
   for (let d = 0; d <= 9; d++) {

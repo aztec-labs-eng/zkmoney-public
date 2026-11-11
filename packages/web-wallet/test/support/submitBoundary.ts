@@ -1,5 +1,6 @@
-import { provingProgress, ProvingStage } from "@obsidion/proving-progress"
+import { ProvingStage } from "@obsidion/core/types"
 import { testWalletDbs } from "./fakeWalletDb"
+import { testSession } from "./operations"
 
 export interface WalletSendOptions {
   operationId?: string
@@ -8,17 +9,23 @@ export interface WalletSendOptions {
 
 /**
  * `ObsidionWallet.sendTx` across its submit boundary: the caller's `onTxHash` is awaited, then
- * Mining is emitted, then `node()` stands for `aztecNode.sendTx`. A rejected `onTxHash` sends
+ * Mining is reported in the page prover's turn, then `node()` stands for `aztecNode.sendTx`. A rejected `onTxHash` sends
  * nothing.
  */
 export async function sendLikeTheWallet(
   options: WalletSendOptions,
   txHash: string,
   node: () => void,
+  /** A create's link, which the sdk hands over before it signs. */
+  prepared?: unknown,
 ): Promise<void> {
+  if (prepared !== undefined)
+    await (options as { onPrepared?: (link: unknown) => Promise<void> }).onPrepared?.(prepared)
   await options.onTxHash?.(txHash, { expiresAtMs: Date.now() + 60_000 })
-  provingProgress.emitStageStart(ProvingStage.Mining, options.operationId ?? "", txHash)
-  node()
+  await testSession().page.prover.turn(async ({ stage }) => {
+    stage(ProvingStage.Mining, options.operationId ?? "", txHash)
+    node()
+  })
 }
 
 /** The writes the wallet database saved, and a switch to refuse some. */

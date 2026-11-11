@@ -44,7 +44,7 @@
   justify-content: flex-end;
   min-height: 86px;
   padding: 16px 24px 16px 96px;
-  border: 1px solid rgba(253, 253, 253, 0.12);
+  border: 1px solid rgba(var(--ink-rgb), 0.12);
   border-radius: var(--radius-12);
   background: linear-gradient(
     154.086deg,
@@ -86,7 +86,7 @@
   align-items: flex-start;
   padding: 12px 14px;
   border-radius: var(--radius-12);
-  background: rgba(238, 208, 78, 0.1);
+  background: rgba(var(--accent-gold-rgb), 0.1);
   box-shadow: inset 0 0 0 1px var(--accent-gold);
   font-size: 14px;
   line-height: 1.4;

@@ -1,7 +1,8 @@
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import type { PublicClient } from "viem"
+import { WalletError } from "../engine/errors"
 
-type BlockReader = Pick<PublicClient, "getBlock" | "getBlockNumber">
+type BlockReader = Pick<PublicClient, "getBlock">
 
 /**
  * Finds the first block at or after `timestampSec`, in whole seconds.
@@ -26,40 +27,16 @@ export async function findBlockAtTime(
   return low
 }
 
-/**
- * Maps `chainId:deployedAtMs` to the block a deployment's scans start at.
- */
-const deploymentStartBlocks = new Map<string, Promise<bigint | undefined>>()
-
-/** Clears the cache - for testing only. */
-export function resetDeploymentScanRangeForTests(): void {
-  deploymentStartBlocks.clear()
-}
-
-/**
- * Only a found block keeps its entry. A failed read and a chain that has not reached the timestamp
- * are both statements about now, and an entry holding either would answer for the whole session.
- */
-function cached(
-  tuple: OxideEnvTuple,
-  search: (deployedAtMs: number) => Promise<bigint | undefined>,
-) {
-  const deployedAtMs = Date.parse(tuple.deployedAt)
-  const key = `${tuple.chainId ?? "?"}:${deployedAtMs}`
-  const known = deploymentStartBlocks.get(key)
-  if (known) return known
-
-  const found = search(deployedAtMs)
-    .then((block) => {
-      if (block === undefined) deploymentStartBlocks.delete(key)
-      return block
-    })
-    .catch((error) => {
-      deploymentStartBlocks.delete(key)
-      throw error
-    })
-  deploymentStartBlocks.set(key, found)
-  return found
+/** The block a deployment's own transactions start at, as its manifest entry names it. */
+export function deploymentStartBlock(
+  tuple: Pick<OxideEnvTuple, "deployedAtBlock" | "portal">,
+): bigint {
+  if (tuple.deployedAtBlock === undefined)
+    throw new WalletError(
+      "config.invalid",
+      `oxide manifest entry for portal ${tuple.portal} names no deployedAtBlock, so no scan can start at its deployment`,
+    )
+  return BigInt(tuple.deployedAtBlock)
 }
 
 /**
@@ -68,24 +45,13 @@ function cached(
  * funding transfers — is complete inside this window and cannot be complete in a shorter one.
  */
 export async function deploymentScanRange(
-  publicClient: BlockReader,
-  tuple: OxideEnvTuple,
+  publicClient: Pick<PublicClient, "getBlockNumber">,
+  tuple: Pick<OxideEnvTuple, "deployedAtBlock" | "portal">,
   head?: bigint,
 ): Promise<{ fromBlock: bigint; toBlock: bigint }> {
+  const start = deploymentStartBlock(tuple)
   const toBlock = head ?? (await publicClient.getBlockNumber({ cacheTime: 0 }))
-
-  // If the deployment has a known block number, use it.
-  const start =
-    tuple.deployedAtBlock !== undefined
-      ? BigInt(tuple.deployedAtBlock)
-      : await cached(tuple, (deployedAtMs) =>
-          findBlockAtTime(publicClient, Math.floor(deployedAtMs / 1000), toBlock),
-        )
-
-  // The deployment starts above the head — an RPC behind it, or a chain that has not reached
-  // `deployedAt`. Either way nothing about it can be below the head, so the window collapses onto
+  // An RPC behind the deployment has nothing about it below its head, so the window collapses onto
   // the head.
-  const fromBlock = start === undefined || start > toBlock ? toBlock : start
-
-  return { fromBlock, toBlock }
+  return { fromBlock: start > toBlock ? toBlock : start, toBlock }
 }

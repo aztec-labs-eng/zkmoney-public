@@ -20,19 +20,17 @@ The `e2e_deposit_subsidy` ladder checks each payment against the gas in the rece
 
 No contract can read the EIP-3529 refund of its transaction. Thus the subsidy subtracts a constant for each slot that a sweep clears or restores. The tests in [Measurement](#measurement) compare these constants with the refund that forge counts.
 
-The subsidy does not subtract a refund of 4,800 gas in two cases. In these cases, `subsidyGas` can be more than `gasUsed`, which [Why farming is prevented](../../../engineering-design-docs/subsidy.md#why-farming-is-prevented) does not allow:
-- The payment that empties the subsidy's balance. This occurs once for each top-up.
-- A user op that clears storage, for example the slots of a passkey that it replaces. No test limits this case. A passkey replacement in [UserOpSIPA.t.sol](../../test/periphery/UserOpSIPA.t.sol) has a `subsidyGas` that is approximately 118,000 gas more than its `gasUsed`.
+The subsidy does not subtract the refund of 4,800 gas of the payment that empties its balance. This occurs once for each top-up. In this case, `subsidyGas` can be more than `gasUsed`, which [Why farming is prevented](../../../engineering-design-docs/subsidy.md#why-farming-is-prevented) does not allow.
 
 ## Subsidy gas ceilings
 
-The ceilings in [DepositSubsidy.sol](./DepositSubsidy.sol) limit `subsidyGas`. Below its ceiling, the meter prices an operation. Keep the deposit and registration ceilings, the deploy allowance and the USDC and USDT hops between the chain cost of a representative cold operation and 10% above that cost.
+Each intent has a ceiling in [DepositSubsidy.sol](./DepositSubsidy.sol) that limits `subsidyGas`. Below its ceiling, the meter prices an operation. An intent without a ceiling gets no subsidy. The constructor takes the starting ceilings, and the owner can change them with `setSweepGasCeiling`. Keep each ceiling, the deploy allowance and the USDC and USDT hops between the chain cost of a representative cold operation and 10% above that cost.
 
 Each calibration test adds a chain-cost offset to the gas that forge counts:
 - [DepositSubsidy.executorPath.t.sol](../../test/periphery/DepositSubsidy.executorPath.t.sol) calibrates the deposit ceiling and the deploy allowance against a relayer transaction. Its offset, `HARNESS_TO_CHAIN_RELAY`, comes from the receipts of the `e2e_deposit_subsidy` ladder.
 - [DepositSubsidy.executorPath.fork.t.sol](../../test/fork/DepositSubsidy.executorPath.fork.t.sol) calibrates the USDC and USDT hops against relayer transactions that swap through the 3pool: the deposit ceiling and each hop against a resweep, and with the deploy allowance against a first sweep. Its offset, `FORK_TO_CHAIN_RELAY`, is the chain cost of the resweep that `DepositSubsidy.executorPath.t.sol` calibrates the deposit ceiling against, less the gas of the same DAI relayer transaction on the fork.
 - [DepositSubsidy.sweepGas.t.sol](../../test/periphery/DepositSubsidy.sweepGas.t.sol) calibrates the registration ceiling against a direct registration sweep. Its offset, `HARNESS_TO_CHAIN` in [SweepGasFixture.sol](../../test/periphery/SweepGasFixture.sol), adds the gas that the deployed contracts use and the test mocks do not. The test also checks that the meter, not the ceiling, prices a cheap relayer transaction.
-- [UserOpSIPA.t.sol](../../test/periphery/UserOpSIPA.t.sol) checks that a passkey rotation is below the user op ceiling, and that the ceiling is at most 10% above the chain cost of an add-passkey rotation.
+- [AddPasskeySIPA.t.sol](../../test/periphery/AddPasskeySIPA.t.sol) checks that an add with the longest credential id is below the add-passkey ceiling, and that the ceiling is at most 10% above its chain cost.
 - [SIPA.stableSweep.fork.t.sol](../../test/fork/SIPA.stableSweep.fork.t.sol) measures the USDC and USDT swap allowances on the pinned mainnet fork. The subsidy adds them to the base ceiling.
 
 Calibrate again when the gas of an operation changes.

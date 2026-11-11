@@ -1,5 +1,5 @@
 import { ModalFrame } from "../../../ui/Modal"
-import { useEffect, useState, type ReactNode } from "react"
+import type { ReactNode } from "react"
 import { useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom"
 import type { Address } from "viem"
 import {
@@ -7,30 +7,24 @@ import {
   normalizeTag,
   pendingRecordState,
   selectPendingEntry,
-  useResource,
   useStore,
 } from "@obsidion/front-core"
 import { WALLET_TOKEN_SYMBOL, tokenDecimalsForNetwork } from "@obsidion/core/constants"
 import { Icon, PrimaryGradientButton } from "@obsidion/web-ds"
-import { getConfig } from "../../../config/env"
 import { errorMessage } from "../../../errors/catalog"
-import { useHoldEndpoints } from "../../../ui/endpointsHold"
+import { useHoldEndpoints } from "../../../session/endpointsHold"
 import { useNextRoute } from "../../../ui/hooks"
 import { useDepositAdmission, useDepositShown } from "../../registration/admission"
-import { PHONE_CREATION, useCeremonyGate } from "../../identity/ceremonyGate"
+import { openCreationProbe, useCeremonyGate } from "../../identity/ceremonyGate"
 import { IosFloorNotice } from "../../identity/IosFloorNotice"
 import { PasskeyRefusal, leadsWithPhone, refusalFor } from "../../identity/PasskeyRefusal"
 import { GateStep, PhoneSteps } from "../../identity/PhoneSteps"
-import {
-  currentDevicePosture,
-  currentOpenInBrowserHref,
-  type LaptopCreation,
-  type PhoneReach,
-} from "@obsidion/passkey-web"
+import { currentDevicePosture, currentOpenInBrowserHref } from "@obsidion/passkey-web"
 import { InAppBrowserNotice } from "../../identity/InAppBrowserNotice"
 import { walletInAppUpFront } from "../../identity/inAppUpFront"
 import { enteredIdentity } from "../../../session/account"
-import { peekTicketSignup, updateTicketSignup } from "../../paylink/claimStash"
+import { peekTicketSignup } from "../../paylink/claimStash"
+import { tabStash } from "../../../platform/storage/tabStash"
 import { OperationHandOff } from "../../operations/OperationHandOff"
 import { isTicketSignupCreating } from "../../paylink/ticketSignupAccount"
 import {
@@ -44,13 +38,13 @@ import { useActiveWithdrawalFee } from "../../withdraw/withdrawalFee"
 import { useRegistrationSpeed } from "../../paylink/registrationProverTip"
 import { SpeedRow } from "../../withdraw/speedChoice"
 import { belowTicketThresholdCopy, ticketEligibility } from "../../paylink/ticketThreshold"
-import { type SignupStage } from "../oxideOnboarding"
+import type { SignupStage } from "../oxideOnboarding"
 import { registrationAddressPublished } from "../../registration/webRegistration"
 import { ActivationDraft } from "../ActivationHome/ActivationHome"
-import { OwnTagSheet } from "../OwnTagSheet"
+import { OwnTagSheet } from "../OwnTagSheet/OwnTagSheet"
 import { useRegistrationStage } from "../../registration/openRegistration"
 import { InvitationChrome } from "../InvitationChrome"
-import { CreateWalletStep } from "../steps/CreateWalletStep"
+import { CreateWalletStep } from "../steps/CreateWalletStep/CreateWalletStep"
 import { LostRegistrationNoticeCard } from "../LostRegistrationNoticeCard/LostRegistrationNoticeCard"
 import { ConnectPendingNotice } from "../../contacts/ConnectPendingNotice"
 import { OnboardingSpinnerBody } from "../OnboardingCard"
@@ -63,7 +57,7 @@ import {
 import { passkeysSupported, UNSUPPORTED_BROWSER_MESSAGE } from "@obsidion/passkey-web"
 import { formatTokenAmount, swapAssetsLabel } from "../../deposit/DepositTermsRows/DepositTermsRows"
 import { formatDepositDue, formatDepositSeen } from "../../registration/depositAmounts"
-import { RegistrationSheet, type RegistrationCheck } from "../RegistrationSheet"
+import { RegistrationSheet, type RegistrationCheck } from "../RegistrationSheet/RegistrationSheet"
 import { useRegistrationRefunded } from "../../registration/registrationRecovery"
 import { RegistrationRefundAction } from "../RegistrationRefundAction/RegistrationRefundAction"
 import { ManualSweepAction } from "../RegistrationDepositDetailModal/RegistrationDepositDetailModal"
@@ -71,11 +65,11 @@ import { useSipaProcessing } from "../../deposit/sipaProcessing"
 import { useDepositTokens } from "../../sipa/loadDepositFacts"
 import { heldDepositLine } from "../../deposit/processingCopy"
 import { canManualRegistrationSweep } from "@obsidion/front-core"
-import { InvitationStep, type InviteNotice } from "../steps/InvitationStep"
+import { InvitationStep, type InviteNotice } from "../steps/InvitationStep/InvitationStep"
 import { ClaimTagModal } from "../steps/ClaimTagModal"
-import { ChooseTagStep } from "../steps/ChooseTagStep"
+import { ChooseTagStep } from "../steps/ChooseTagStep/ChooseTagStep"
 import { TicketPaymentCard, ticketClaimLabel } from "../steps/GoldenTicketHead"
-import { PaylinkSignupRows } from "../steps/PaylinkSignupRows"
+import { PaylinkSignupRows } from "../steps/PaylinkSignupRows/PaylinkSignupRows"
 import { WelcomeStep } from "../steps/WelcomeStep"
 import { useDepositWatch } from "../../sipa/useDepositWatch"
 import {
@@ -87,7 +81,6 @@ import {
   quotedRegistrationKind,
   registrationQuote,
   reservedUntil,
-  commitRegistrationProverTip,
   scheduleForRecord,
   signedSchedule,
   signedWithoutSchedule,
@@ -96,7 +89,6 @@ import {
 } from "../../registration/registrationTerms"
 import { useRegistrationPricing } from "../../registration/registrationPricing"
 import { pendingEntry } from "../../registration/registrationTasks"
-import { bestEffort } from "@obsidion/core/errors"
 import { useSession } from "../../../session/session"
 import { fmt } from "../../../lib/fmt"
 import copy from "./OnboardingScreen.copy"
@@ -105,7 +97,6 @@ import { retryChoiceFor } from "./createFailure"
 import { openSignupFlow, type SignupInputs } from "./signupFlow"
 import type { InviteNote } from "./signupTransition"
 import { useScreenFlow } from "../../../ui/useScreenFlow"
-import { wallClock } from "../../../lib/clock"
 
 // Age past which a funded-but-unconfirmed claim warrants the retry lead and the urgency copy.
 // Presentation only; the machine guards the claim budget. A record still waiting for its deposit
@@ -154,20 +145,8 @@ const NOTE_TEXT = {
 function TicketSheet(
   props: Omit<Parameters<typeof PhoneSteps>[0], "reach" | "creation" | "loading">,
 ) {
-  const [probed, setProbed] = useState<{ reach: PhoneReach; creation: LaptopCreation }>()
   const { auth } = useSession()
-  useEffect(() => {
-    let live = true
-    void Promise.all([
-      bestEffort("unknown", auth.probePhoneReach()).then((reach): PhoneReach => reach ?? "unknown"),
-      auth.probeLaptopCreation().catch(() => PHONE_CREATION),
-    ]).then(([reach, creation]) => {
-      if (live) setProbed({ reach, creation })
-    })
-    return () => {
-      live = false
-    }
-  }, [auth])
+  const probed = useStore(useScreenFlow(undefined, () => openCreationProbe(auth)).answers)
   return (
     <PhoneSteps
       {...props}
@@ -214,10 +193,9 @@ export function OnboardingScreen({
   const [params] = useSearchParams()
   const navigate = useNavigate()
   const next = useNextRoute()
-  const config = getConfig()
   const rendered = useSession()
-  const { signup, pastUser, device } = rendered
-  const obsidionWallet = useResource(rendered.wallet)
+  const { config } = rendered.page
+  const { pastUser, device } = rendered
   const { gate, state: gateState, cancel: cancelGate, dismiss: dismissGate } = useCeremonyGate()
   // The paylink's hooks below fill in the ticket signup's hold and speed.
   const inputs: SignupInputs = {
@@ -234,18 +212,14 @@ export function OnboardingScreen({
     next,
     boundGrantOwner: (location as { boundGrantOwner?: string } | null)?.boundGrantOwner,
   }
-  const flow = useScreenFlow(inputs, (live) =>
-    openSignupFlow({ own: rendered, mock: rendered.onboardingMock?.() }, live),
+  const flow = useScreenFlow(inputs, (latest) =>
+    openSignupFlow({ session: rendered, mock: rendered.onboardingMock?.() }, latest),
   )
   const { fromPaylink, freshStart, mock, resuming } = flow
   const s = useStore(flow.state)
   const { step, handle } = s
   const busy = s.busy > 0
-  // A route grant keeps the link here; the flow's check drops one that is spent.
-  useStore(signup.state)
-  const routeGrantToken = routeHandle ? signup.grantToken(routeHandle) : undefined
-  const routeGrant =
-    routeHandle && routeGrantToken ? { handle: routeHandle, token: routeGrantToken } : undefined
+  const tagField = useStore(flow.tagField)
   const boundGrant = (tag: string) =>
     flow.enterGo(`/enter?handle=${encodeURIComponent(tag)}&bound=1`)
   const pastUserVerified = useStore(pastUser.state, (p) => p.verified)
@@ -256,6 +230,7 @@ export function OnboardingScreen({
   const identityView = useStore(rendered.identity)
   const { passkeyMap } = useStore(device)
   const record = flow.record()
+  const { wallClock } = useSession().page
   const nowMs = useStore(wallClock)
   const { ticketAttempt } = s
   const resumingTicket = ticketAttempt !== null && !isTicketSignupCreating(ticketAttempt)
@@ -285,7 +260,7 @@ export function OnboardingScreen({
    * must never land on the invitation, which is the signup for someone with no account: that is the
    * loop where a passkey is touched, the sheet appears, and closing it returns to /claim.
    */
-  const alreadyEntered = enteredIdentity(identityView, passkeyMap) !== null
+  const alreadyEntered = enteredIdentity(identityView, passkeyMap, config.rpId) !== null
   const stage = useRegistrationStage(record)
   // A capacity blocker on the address outranks "being processed", in the words its stated reason uses.
   const { shown: sweepHold } = useSipaProcessing(record?.sipaAddress)
@@ -303,7 +278,7 @@ export function OnboardingScreen({
   const broadcastSpent = record?.replaced?.broadcastSpent === true
   // A ticket-funded claim waiting on this tab: the link pays for the registration. The hosted
   // wizard owns the marker outright; a pending reservation only the link its terms name.
-  const ticketStash = fromPaylink ? peekTicketSignup() : boundTicketSignup(terms)
+  const ticketStash = fromPaylink ? peekTicketSignup(tabStash) : boundTicketSignup(terms)
   const paylinkStashed = ticketStash !== null
   const pendingUrgent =
     openPending &&
@@ -365,21 +340,12 @@ export function OnboardingScreen({
       }
     : undefined
   const ticketWithdrawalFee = useActiveWithdrawalFee(!mock && ticketStash !== null)
-  // Before the terms exist the stash holds the tip, and the terms take it once signed.
   const ticketSpeed = useRegistrationSpeed({
     active: !mock && ticketStash !== null,
-    node: obsidionWallet?.node,
     noteAmount: ticketStash?.amount !== undefined ? BigInt(ticketStash.amount) : undefined,
     schedule: ticketSchedule,
     withdrawalFee: ticketWithdrawalFee,
     initialSpeed: ticketStash?.speed ?? terms?.speed,
-    onCommit: (tip, speed) => {
-      updateTicketSignup({ proverTip: tip.toString(), speed })
-      return record
-        ? commitRegistrationProverTip(rendered.registrations, record, tip, speed)
-        : undefined
-    },
-    commitKey: terms && record ? `${record.account}:${record.tag}` : undefined,
   })
   inputs.ticketSpeed = ticketSpeed
   // Before the passkey the split is Standard's until the tip quote answers: the quote refines it,
@@ -909,11 +875,11 @@ export function OnboardingScreen({
             senderTag: ticketStash?.senderTag,
             paid: ticketStash?.paid,
           }}
-          initialHandle={handle || undefined}
+          tagField={tagField}
+          onType={flow.typeTag}
           busy={s.inviteBusy}
           notice={inviteNotice}
           resuming={resuming || flow.leftoverTag !== undefined}
-          grant={routeGrant}
           boundGrantOwner={flow.boundGrantOwner()}
           onBoundGrant={boundGrant}
           split={ticketRows}
@@ -1186,12 +1152,11 @@ export function OnboardingScreen({
         />
       ) : (
         <InvitationStep
-          initialHandle={routeHandle ?? flow.openRecord?.tag ?? undefined}
+          tagField={tagField}
+          onType={flow.typeTag}
           busy={s.inviteBusy}
           header={inviteHeader}
           notice={step === "invite" ? inviteNotice : undefined}
-          checkAvailability={step === "invite"}
-          grant={routeGrant}
           resuming={resuming}
           boundGrantOwner={flow.boundGrantOwner()}
           onBoundGrant={boundGrant}
@@ -1211,8 +1176,9 @@ export function OnboardingScreen({
       </>
     )
   }
+  const landing = freshStart && !draftTag
   return (
-    <InvitationChrome bare={freshStart && !draftTag} landing={freshStart && !draftTag}>
+    <InvitationChrome bare={landing} landing={landing} page={rendered.page}>
       {invitation}
       {modals}
     </InvitationChrome>

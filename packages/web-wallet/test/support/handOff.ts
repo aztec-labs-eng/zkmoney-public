@@ -1,6 +1,6 @@
 import { act } from "react"
-import { provingProgress } from "@obsidion/proving-progress"
 import { runOperation, type OperationFlow } from "../../src/features/operations/operations"
+import { testSession } from "./operations"
 
 let nextId = 0
 
@@ -13,12 +13,14 @@ export function asOperation<A extends unknown[], R>(
   flow: OperationFlow = "send",
 ): (...args: A) => Promise<R> {
   return (...args) =>
-    runOperation({ operationId: `op-test-${++nextId}`, flow, summary: "$25 to @alice" }, () =>
-      fn(...args),
+    runOperation(
+      testSession(),
+      { operationId: `op-test-${++nextId}`, flow, summary: "$25 to @alice" },
+      () => fn(...args),
     )
 }
 
 /** End the passkey ceremony: the flow's modal hands off to the bell. */
 export async function endSigningAndHandOff(): Promise<void> {
-  await act(async () => provingProgress.emitSigningEnd())
+  await act(async () => testSession().page.prover.signing.end())
 }

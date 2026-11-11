@@ -5,11 +5,15 @@
  */
 import type { Address, Hex } from "viem"
 import { WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
-import { runMetadataMigration, type OldVersionWithdrawal } from "@obsidion/front-core"
+import {
+  runMetadataMigration,
+  type OldVersionWithdrawal,
+  type SavingsMoves,
+} from "@obsidion/front-core"
 import { FrozenMetadataMigrationSource, planFrozenSelfRefunds } from "@obsidion/sdk"
-import { getConfig } from "../../config/env"
+import type { WebWalletConfig } from "../../config/env"
 import { l1PublicClient } from "../../config/oxideTuple"
-import { pause } from "../migration/freezeWatch"
+import type { Pace } from "@obsidion/core/cadence"
 import type { WithdrawableSource } from "../migration/oldVersionWithdraw"
 import type { FrozenExitRead } from "./frozenExitRun"
 import {
@@ -79,9 +83,14 @@ async function inFlight() {
   return pendingRefundIds(records.list())
 }
 
-async function settled(id: string) {
-  for (const end = Date.now() + CONFIRM_TIMEOUT_MS; ; await pause(POLL_MS)) {
-    const record = await settleOldVersionWithdrawal(id)
+async function settled(
+  config: WebWalletConfig,
+  moves: SavingsMoves,
+  id: string,
+  pace: Pick<Pace, "wait">,
+) {
+  for (const end = Date.now() + CONFIRM_TIMEOUT_MS; ; await pace.wait(POLL_MS)) {
+    const record = await settleOldVersionWithdrawal(config, moves, id)
     if (record?.phase === "done") return record
     if (record?.phase === "failed")
       throw new Error("Your withdrawal didn't go through. Nothing moved.")
@@ -92,7 +101,12 @@ async function settled(id: string) {
   }
 }
 
-export function zkMoneyExit(): ZkMoneyExit {
+/** `pace`: the page's, which the wait for each refund to settle reads on. */
+export function zkMoneyExit(
+  moves: SavingsMoves,
+  config: WebWalletConfig,
+  pace: Pick<Pace, "wait">,
+): ZkMoneyExit {
   return {
     async fee(reads) {
       const quote: ZkMoneyQuote = {
@@ -123,7 +137,7 @@ export function zkMoneyExit(): ZkMoneyExit {
         startTime: Date.now(),
         to,
         feeUsd: "0",
-        fromBlock: String(await l1PublicClient(getConfig()).getBlockNumber()),
+        fromBlock: String(await l1PublicClient(config).getBlockNumber()),
         refunds: [],
         phase: "sending",
       }
@@ -170,7 +184,7 @@ export function zkMoneyExit(): ZkMoneyExit {
         throw new Error("Nothing is left to send. A withdrawal on its way shows in Activity.")
       // Every refund is broadcast, so closing the app now loses nothing.
       onStage("sending")
-      const done = await settled(base.id)
+      const done = await settled(config, moves, base.id, pace)
       const hash = done.refunds.at(-1)?.l1TxHash as Hex | undefined
       return { sent: withdrawalSent(done), left, ...(hash ? { hash } : {}) }
     },

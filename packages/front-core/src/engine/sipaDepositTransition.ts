@@ -15,6 +15,9 @@ import type {
 /** The record schema the transition writes: version 2 stamps each sweep with the row it settled on. */
 export const SIPA_DEPOSIT_RECORD_VERSION = 2
 
+/** A record's id: its lowercase address. */
+export const sipaDepositId = (address: string) => address.toLowerCase()
+
 /** A new record, whole: `phase` is the one it starts in. */
 export type SipaDepositFields = OnNetwork<SipaDeposit>
 
@@ -62,6 +65,8 @@ export type SipaDepositEvent =
         "fundingTxHash" | "walletName" | "walletAddress" | "tokenSymbol"
       >
     }
+  /** The funding tx's receipt was read: it was a plain transfer or a bridge fill. Set once. */
+  | { type: "fundingRead"; funding: NonNullable<SipaDeposit["funding"]> }
   /** A sweep this wallet sent, or one the registration's detection saw. */
   | { type: "sweepSent"; txHash: Hash }
   /**
@@ -97,7 +102,7 @@ export type SipaDepositEvent =
   | { type: "broadcastInterrupted" }
   /** Nothing is left to publish: the broadcast leaves the record. */
   | { type: "broadcastAbandoned" }
-  /** Paid again after landing: owed once more, landing only at or after `sinceBlock`. */
+  /** Paid again or overdue: the broadcast is owed again, landing only at or after `sinceBlock`. */
   | { type: "broadcastRepublish"; sinceBlock: number; at: number }
 
 /**
@@ -117,6 +122,7 @@ const BEFORE_SWEEP: ReadonlySet<SIPADepositPhase> = new Set([
   "broadcast",
 ])
 
+// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
 const CREATIONS = new Set<SipaDepositEvent["type"]>([
   "derived",
   "seeded",
@@ -276,30 +282,52 @@ function owe(job: SipaBroadcast | undefined, owed: OwedBroadcast, at: number): S
 }
 
 /**
+ * The relayer sweeps an address once per publish, so its broadcast is owed again: a landed one
+ * reopens, an owed one moves to the front. A resweepable address with none owes one its record
+ * rebuilds, which the executor drops if the record no longer deploys there; any other publishes
+ * only from the inputs its own device signed.
+ */
+function republish(
+  record: SipaDeposit,
+  { sinceBlock, at }: Extract<BroadcastEvent, { type: "broadcastRepublish" }>,
+): SipaBroadcast | undefined {
+  const job = record.broadcast
+  if (!job)
+    return record.origin?.resweepable
+      ? owe(
+          undefined,
+          { kind: "deposit", source: { type: "slot" }, fundedAt: at, republishSince: sinceBlock },
+          at,
+        )
+      : undefined
+  return job.state === "landed"
+    ? {
+        ...job,
+        state: "queued",
+        republishSince: sinceBlock,
+        fundedAt: at,
+        failures: 0,
+        retryAt: undefined,
+        txHash: undefined,
+        failure: undefined,
+        wait: undefined,
+        operationId: undefined,
+      }
+    : markFunded(job, at)
+}
+
+/**
  * A broadcast's next state: `null` when it leaves the record, `undefined` when it stays as it is.
  * A landed broadcast is final but for a republish; `sent` takes the hash already saved.
  */
 function broadcastTransition(
-  job: SipaBroadcast | undefined,
+  record: SipaDeposit,
   event: BroadcastEvent,
 ): SipaBroadcast | null | undefined {
+  const job = record.broadcast
   if (event.type === "broadcastOwed") return owe(job, event.owed, event.at)
+  if (event.type === "broadcastRepublish") return republish(record, event)
   if (!job) return undefined
-  if (event.type === "broadcastRepublish")
-    return job.state === "landed"
-      ? {
-          ...job,
-          state: "queued",
-          republishSince: event.sinceBlock,
-          fundedAt: event.at,
-          failures: 0,
-          retryAt: undefined,
-          txHash: undefined,
-          failure: undefined,
-          wait: undefined,
-          operationId: undefined,
-        }
-      : undefined
   if (job.state === "landed") return undefined
   switch (event.type) {
     case "broadcastRetry":
@@ -480,6 +508,8 @@ export function sipaDepositTransition(
       if (defined.length === 0 && job === record.broadcast) return undefined
       return { ...record, ...Object.fromEntries(defined), broadcast: job }
     }
+    case "fundingRead":
+      return record.funding ? undefined : { ...record, funding: event.funding }
     case "sweepSent": {
       const phase = BEFORE_SWEEP.has(record.phase) ? "sweeping" : record.phase
       if (phase === record.phase && record.sweepTxHash) return undefined
@@ -508,7 +538,7 @@ export function sipaDepositTransition(
           }
         : undefined
     default:
-      return withBroadcast(record, broadcastTransition(record.broadcast, event))
+      return withBroadcast(record, broadcastTransition(record, event))
   }
 }
 

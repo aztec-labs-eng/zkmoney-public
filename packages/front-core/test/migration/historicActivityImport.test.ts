@@ -5,28 +5,25 @@ import {
   ACCOUNT_STORAGE_KEY,
   HISTORIC_ACTIVITY_IMPORTED_KEY,
   importHistoricActivity,
-  KEY_SAVINGS_MOVES,
   retiredDatabaseOf,
   retiredSipaDeposit,
-  SavingsMoveStorage,
   TRANSACTIONS_STORAGE_KEY,
-  TRANSFER_SCAN_CURSOR_PREFIX,
-  transferScanNetworkOf,
+  scannedNetworks,
   type RetiredDatabase,
   type SavingsMoveRecord,
   type WithdrawalRecord,
 } from "../../src/core"
-import { createActivity } from "../../src/engine/activity"
+import { createTransfers } from "../../src/engine/transfers"
+import { createSavingsMoves } from "../../src/engine/savingsMoves"
+import { KEY_SAVINGS_MOVES } from "../../src/storageMigrations/savingsMoves"
 import { openDatabase } from "../../src/engine/database"
 import { memoryBackend } from "../../src/engine/memoryBackend"
 import { scannedRow } from "../../src/core/services/transactions/TransferEventScanner"
 import { encodeRecord, loadRecords } from "../../src/engine/persistentStore"
-import {
-  createSipaDeposits,
-  KEY_SIPA_DEPOSITS,
-  type SipaDeposit,
-} from "../../src/engine/sipaDeposits"
-import { createWithdrawals, KEY_WITHDRAWALS } from "../../src/engine/withdrawals"
+import { createSipaDeposits, type SipaDeposit } from "../../src/engine/sipaDeposits"
+import { createWithdrawals } from "../../src/engine/withdrawals"
+import { KEY_SIPA_DEPOSITS } from "../../src/storageMigrations/sipaDeposits"
+import { KEY_WITHDRAWALS } from "../../src/storageMigrations/withdrawals"
 import type { TokenInTxService, TokenTransaction, Transaction } from "../../src/types"
 
 const ACTIVE = "0xactive"
@@ -81,7 +78,7 @@ const withdrawal = (overrides: Partial<WithdrawalRecord>): WithdrawalRecord =>
     ...overrides,
   } as WithdrawalRecord)
 
-const cursorKey = (networkId: string) => `${TRANSFER_SCAN_CURSOR_PREFIX}${networkId}/${ACCOUNT}`
+const cursorKey = (networkId: string) => `@obsidion/transfer-scan/cursor/v1/${networkId}/${ACCOUNT}`
 
 const retired = retiredDatabaseOf
 
@@ -121,11 +118,18 @@ const readOf =
 
 function setup() {
   const storage = new InMemoryStorageAdapter()
-  const transactions = createActivity({ db: openDatabase(memoryBackend()) })
+  const transactions = createTransfers({ db: openDatabase(memoryBackend()), now: () => Date.now() })
   const sipaBackend = memoryBackend()
-  const sipaDeposits = createSipaDeposits({ db: openDatabase(sipaBackend), account: true })
-  const withdrawals = createWithdrawals({ db: openDatabase(memoryBackend()) })
-  const savingsMoves = new SavingsMoveStorage(storage)
+  const sipaDeposits = createSipaDeposits({
+    db: openDatabase(sipaBackend),
+    account: true,
+    now: () => Date.now(),
+  })
+  const withdrawals = createWithdrawals({
+    db: openDatabase(memoryBackend()),
+    now: () => Date.now(),
+  })
+  const savingsMoves = createSavingsMoves({ db: openDatabase(memoryBackend()) })
   const deps = (dbs: RetiredDatabase[], ownsStorage?: () => boolean) => ({
     storage,
     readOtherDatabases: readOf(dbs),
@@ -252,7 +256,22 @@ describe("importHistoricActivity", () => {
     })
 
     expect((await importHistoricActivity(deps([db])))?.savingsMoves).toBe(1)
-    expect(savingsMoves.list()).toEqual([{ ...move("w1", { deposit: claimed }), retired: true }])
+    expect(await savingsMoves.all()).toEqual([
+      { ...move("w1", { deposit: claimed }), retired: true },
+    ])
+  })
+
+  it("skips a retired Savings move that does not read, and carries the rest", async () => {
+    const { savingsMoves, deps } = setup()
+    const good = { withdrawalLocalId: "w1", direction: "in", amount: "5", startTime: 1 }
+    const db = database("7", {
+      scanned: [OLD],
+      withdrawals: [withdrawal({}), withdrawal({ localId: "w2" })],
+      savingsMoves: [good, { withdrawalLocalId: "w2", amount: "5" }] as SavingsMoveRecord[],
+    })
+
+    expect((await importHistoricActivity(deps([db])))?.savingsMoves).toBe(1)
+    expect(await savingsMoves.all()).toEqual([{ ...good, retired: true }])
   })
 
   it("dedups link rows by link when they carry no hash", async () => {
@@ -549,13 +568,14 @@ describe("retiredSipaDeposit", () => {
   })
 })
 
-describe("transferScanNetworkOf", () => {
-  it("reads the network off a cursor key, with or without an endpoint scope", () => {
-    expect(transferScanNetworkOf(cursorKey(OLD))).toBe(OLD)
-    expect(transferScanNetworkOf(`${TRANSFER_SCAN_CURSOR_PREFIX}${OLD}/abc123/${ACCOUNT}`)).toBe(
-      OLD,
-    )
-    expect(transferScanNetworkOf(`${TRANSFER_SCAN_CURSOR_PREFIX}/${ACCOUNT}`)).toBeUndefined()
-    expect(transferScanNetworkOf("@obsidion/transfer-scan/joined/v1/0xold/0xacc")).toBeUndefined()
+describe("scannedNetworks", () => {
+  it("reads the networks off cursor keys in both layouts, with or without an endpoint scope", () => {
+    const db = retired("7", {
+      [cursorKey(OLD)]: "1",
+      [`acct/transferScanCursor/0xnew/abc123/${ACCOUNT}`]: "2",
+      [`acct/transferScanCursor//${ACCOUNT}`]: "3",
+      "@obsidion/transfer-scan/joined/v1/0xother/0xacc": "4",
+    })
+    expect([...scannedNetworks(db)].sort()).toEqual(["0xnew", OLD].sort())
   })
 })

@@ -11,6 +11,7 @@ export function PreviewDraftRecovery() {
       clearProfileDraft()
       await reloadPage()
     } catch (cause) {
+      // eslint-disable-next-line local/message-in-state -- ZKM-1895
       setError((cause as Error).message)
     }
   }

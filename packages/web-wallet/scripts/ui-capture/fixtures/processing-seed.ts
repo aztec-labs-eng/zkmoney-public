@@ -1,8 +1,7 @@
 import type { SipaDepositFields } from "@obsidion/front-core"
 import type { Address } from "viem"
-import { getConfig } from "../../../src/config/env"
 import { currentRegistration } from "@obsidion/front-core"
-import { session } from "../../../src/session/session"
+import type { Session } from "../../../src/session/session"
 import { DEMO_L1_TOKEN, DEMO_L2_ADDRESS } from "../../../src/dev/demoFixtures"
 import { putRegistration, seedRegistration } from "./registration-seed"
 import { ROLLUP, SIPA, field } from "./data"
@@ -17,8 +16,8 @@ const CONVERSION_SIPA = "0xc0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0" as Address
  * - `earned-sweep`: an earned registration whose one-shot broadcast was spent on the refunded address, funded and
  *   waiting for its manual sweep.
  */
-export async function seedProcessing(kind: string) {
-  const deposits = session().sipaDeposits
+export async function seedProcessing(session: Session, kind: string) {
+  const deposits = session.sipaDeposits
   // A record the demo already holds is only moved to its sweep.
   const seed = async (fields: SipaDepositFields) => {
     if (await deposits.adopt(fields)) return
@@ -27,7 +26,7 @@ export async function seedProcessing(kind: string) {
       fields: { phase: fields.phase },
     })
   }
-  const { l1ChainId } = getConfig()
+  const { l1ChainId } = session.page.config
   const base = {
     recipientL2Address: DEMO_L2_ADDRESS,
     messageSecret: field("0d"),
@@ -51,9 +50,9 @@ export async function seedProcessing(kind: string) {
     return
   }
   if (kind === "earned-sweep") {
-    await seedRegistration("awaiting")
-    const record = currentRegistration(session().registrations.view.get().records)!
-    await putRegistration({
+    await seedRegistration(session, "awaiting")
+    const record = currentRegistration(session.registrations.view.get().records)!
+    await putRegistration(session, {
       ...record,
       broadcast: false,
       fundedAt: Date.now() - 5 * 60_000,

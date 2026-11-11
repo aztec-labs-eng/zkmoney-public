@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { Network } from "@obsidion/core/constants"
 import type { OxideDeployment } from "@obsidion/core/oxide"
 import type { WebWalletConfig } from "../../src/config/env"
+import { testChain } from "../support/query"
 
 const h = vi.hoisted(() => ({ readDeploymentTable: vi.fn() }))
 vi.mock("@obsidion/sdk", async (importOriginal) => ({
@@ -10,7 +11,7 @@ vi.mock("@obsidion/sdk", async (importOriginal) => ({
   readDeploymentTable: h.readDeploymentTable,
 }))
 
-const { getSipaDeploymentTable } = await import("../../src/config/oxideTuple")
+const { createPageChain } = await import("../../src/app/pageChain")
 
 const MANIFEST_URL = "https://oxide.example/sipa-table.json"
 const address = (byte: string) => `0x${byte.repeat(20)}`
@@ -24,7 +25,11 @@ const bridge = (token: string, portal: string) => ({
   portal,
   l2Token: `0x${portal.slice(2, 4).repeat(32)}`,
 })
-const deployment = (label: string, forwardingTable: string, bridges: ReturnType<typeof bridge>[]) => ({
+const deployment = (
+  label: string,
+  forwardingTable: string,
+  bridges: ReturnType<typeof bridge>[],
+) => ({
   label,
   updatedAt: "2026-10-20T00:00:00Z",
   deployedAt: "2026-10-01T00:00:00Z",
@@ -50,14 +55,17 @@ const config = {
 } as unknown as WebWalletConfig
 
 beforeEach(() => {
-  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(manifest))))
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => new Response(JSON.stringify(manifest))),
+  )
   h.readDeploymentTable.mockReset().mockResolvedValue({ rows: [] })
 })
 afterEach(() => vi.unstubAllGlobals())
 
-describe("getSipaDeploymentTable", () => {
+describe("sipaDeploymentTable", () => {
   it("reads an earlier table over the pinned bridges, then every other bridge the manifest lists", async () => {
-    await getSipaDeploymentTable(config, EARLIER_TABLE)
+    await createPageChain(config, testChain()).sipaDeploymentTable(EARLIER_TABLE).read()
 
     const [, read] = h.readDeploymentTable.mock.calls[0] as [unknown, OxideDeployment]
     expect(read.forwardingTable).toBe(EARLIER_TABLE)

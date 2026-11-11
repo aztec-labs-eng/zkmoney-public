@@ -11,7 +11,8 @@ import { formatUnits } from "viem"
 import { PaylinkActionEnum } from "@obsidion/core/constants"
 import type { SIPADepositPhase, WithdrawalPhase } from "@obsidion/core/types"
 import type { Transaction, TransactionStatus } from "../../../types/transactions"
-import { requestLinkedSipaAddresses } from "../../paymentRequest/sipaRequestFulfillment"
+import type { PaylinkRecord } from "../../../engine/paylinkTransition"
+import { fundingKeys, isLinkFunding } from "../../../engine/paylinks"
 import type { PaymentRequest } from "../../../engine/requests"
 import type { ActivityItem } from "../../../engine/feedRules"
 import type { WithdrawalRecord } from "../bridge/types"
@@ -85,7 +86,10 @@ export interface ActivityCsvToken {
 
 export interface ActivityCsvSources {
   walletToken: ActivityCsvToken
+  /** Transfers; a listed link's funding transfer is left out, as the link reports it. */
   transactions: readonly Transaction[]
+  /** Created links, with their funding's state. */
+  links?: readonly { link: PaylinkRecord; status: TransactionStatus }[]
   items: readonly ActivityItem[]
   requests: readonly PaymentRequest[]
 }
@@ -113,6 +117,7 @@ const WITHDRAWAL_SETTLED: Record<WithdrawalPhase, boolean> = {
   awaiting_proven: false,
   finalizing_l1: false,
   swapping: false,
+  bridging: false,
   recoverable: false,
   failed: false,
 }
@@ -216,7 +221,7 @@ const DEPOSIT_TYPE: Record<DepositKind, ActivityCsvType> = {
   "request": "Payment request paid",
   "registration": "Name registration",
   "migration": "Upgrade in",
-  "user-op": "Backup passkey added",
+  "add-passkey": "Backup passkey added",
 }
 
 type ItemRows = (item: ActivityItem, ctx: ItemContext) => ActivityCsvRow[]
@@ -224,8 +229,12 @@ type ItemRows = (item: ActivityItem, ctx: ItemContext) => ActivityCsvRow[]
 interface ItemContext {
   walletToken: ActivityCsvToken
   migrationArrivals: ReadonlySet<string>
-  requestAddresses: ReadonlySet<string>
+  /** The deposit payments fulfilled requests count, by `paymentKey`. */
+  requestPayments: ReadonlySet<string>
 }
+
+const paymentKey = (address: string, inboxIndex: string | undefined) =>
+  `${address.toLowerCase()}:${inboxIndex ?? ""}`
 
 /** Feed items by kind. Transfer kinds are reported from the stored transactions instead. */
 const ITEM_KIND: Record<ActivityItem["kind"], ItemRows> = {
@@ -233,9 +242,9 @@ const ITEM_KIND: Record<ActivityItem["kind"], ItemRows> = {
     item.kind === "bridge.withdrawal" && WITHDRAWAL_SETTLED[item.record.phase]
       ? [withdrawalRow(item.record)]
       : [],
-  // A token split out of its address's record is reported among that record's sweeps.
+  // A past payment split out of its address's record is reported among that record's sweeps.
   "bridge.sipaDeposit": (item, ctx) =>
-    item.kind === "bridge.sipaDeposit" && !item.credit ? depositRows(item.record, ctx) : [],
+    item.kind === "bridge.sipaDeposit" && !item.payment ? depositRows(item.record, ctx) : [],
   "upgrade.batch": (item, ctx) =>
     item.kind === "upgrade.batch" && UPGRADE_SETTLED[item.batch.state]
       ? [upgradeRow(item.batch, ctx.walletToken)]
@@ -266,9 +275,18 @@ export function buildActivityCsvRows(sources: ActivityCsvSources): ActivityCsvRo
         i.kind === "upgrade.batch" ? [i.batch.recipient.toLowerCase()] : [],
       ),
     ]),
-    requestAddresses: requestLinkedSipaAddresses(sources.requests),
+    requestPayments: new Set(
+      sources.requests.flatMap(({ paidByDeposit: paid }) =>
+        paid ? [paymentKey(paid.sipaAddress, paid.inboxIndex)] : [],
+      ),
+    ),
   }
-  const txRows = sources.transactions.flatMap((tx) => {
+  const funded = fundingKeys((sources.links ?? []).map(({ link }) => link))
+  const transfers = sources.transactions.filter((tx) => !isLinkFunding(tx, funded))
+  const links = (sources.links ?? []).map(
+    ({ link, status }) => ({ ...link, status, action: PaylinkActionEnum.PAY } as Transaction),
+  )
+  const txRows = [...transfers, ...links].flatMap((tx) => {
     const row = TRANSACTION_ACTION[tx.action]
     return row && TRANSACTION_SETTLED[tx.status] ? [row(tx, sources.walletToken)] : []
   })
@@ -440,35 +458,39 @@ function upgradeRow(batch: UpgradeBatchItem, token: ActivityCsvToken): ActivityC
 /**
  * The sweeps a deposit is reported from: every ledger entry, whatever the address's current phase,
  * since a re-used address is mid-sweep again while its earlier credits stand. A record claimed
- * before the ledger existed has its latest, with no gross, once it is settled.
+ * before the ledger existed has its latest, in its own token with no gross, once it is settled.
  */
 function settledSweeps(record: SipaDeposit): readonly Partial<SIPASweep>[] {
   if (record.sweeps?.length) return record.sweeps
   if (!DEPOSIT_SETTLED[record.phase]) return []
   return [
-    { inboxIndex: record.inboxIndex, sweepTxHash: record.sweepTxHash, netAmount: record.netAmount },
+    {
+      inboxIndex: record.inboxIndex,
+      sweepTxHash: record.sweepTxHash,
+      netAmount: record.netAmount,
+      tokenSymbol: record.tokenSymbol,
+      tokenDecimals: record.tokenDecimals,
+    },
   ]
 }
 
 /** One row per claimed sweep: a re-used address is credited once per sweep. */
 function depositRows(record: SipaDeposit, ctx: ItemContext): ActivityCsvRow[] {
   const address = record.sipaAddress.toLowerCase()
-  const type =
-    DEPOSIT_TYPE[
-      record.intent ??
-        (ctx.migrationArrivals.has(address)
-          ? "migration"
-          : ctx.requestAddresses.has(address)
-          ? "request"
-          : "deposit")
-    ]
+  const kind = (sweep: Partial<SIPASweep>): DepositKind =>
+    record.intent ??
+    (ctx.migrationArrivals.has(address)
+      ? "migration"
+      : ctx.requestPayments.has(paymentKey(address, sweep.inboxIndex))
+      ? "request"
+      : "deposit")
   const counterparty: Counterparty | undefined = record.fundingFromAddress
     ? { address: record.fundingFromAddress, network: "Ethereum" }
     : undefined
   return settledSweeps(record).map((sweep, i) => {
-    // A sweep is credited in its row's token; one recorded before rows carries the record's.
-    const currency = sweep.tokenSymbol || record.tokenSymbol || ctx.walletToken.symbol
-    const decimals = sweep.tokenDecimals ?? record.tokenDecimals ?? ctx.walletToken.decimals
+    // As in `creditOf`: a sweep that names no token credited the wallet token.
+    const currency = sweep.tokenSymbol || ctx.walletToken.symbol
+    const decimals = sweep.tokenDecimals ?? ctx.walletToken.decimals
     const sentCurrency = sweep.fundingTokenSymbol ?? currency
     const sentDecimals = sweep.fundingTokenDecimals ?? decimals
     const sent = sweep.grossAmount != null ? BigInt(sweep.grossAmount) : undefined
@@ -481,7 +503,7 @@ function depositRows(record: SipaDeposit, ctx: ItemContext): ActivityCsvRow[] {
     return {
       // Dated at the sweep, when the funds it settled left the address and were credited.
       timestampMs: sweep.settledAt ?? record.startTime,
-      type,
+      type: DEPOSIT_TYPE[kind(sweep)],
       received: money(gross ?? net ?? 0n, decimals, currency),
       fee: gross === undefined ? undefined : money(gross - net!, decimals, currency),
       counterparty,

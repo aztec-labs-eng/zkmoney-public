@@ -9,7 +9,7 @@ import initABI from "@aztec-foundation/noir-noirc_abi/web/noirc_abi_wasm.js"
 import { Barretenberg, BarretenbergSync, UltraHonkVerifierBackend } from "@aztec-foundation/bb.js"
 import { ELIGIBILITY_SIGN_MESSAGE, ELIGIBILITY_VK_BASE64 } from "@obsidion/core/constants"
 import circuit from "../../../../../contracts/src/artifacts/target/eligibility/eligibility.json"
-import { proveNoirCircuit } from "../../../../src/platform/noirProver"
+import { initNoirWasm, proveNoirCircuit } from "../../../../src/platform/noirProver"
 import {
   isPastUserAddress,
   NotPastUserError,
@@ -49,12 +49,10 @@ describe("past-user proof", () => {
     const signature = await pastUser.signMessage({ message: ELIGIBILITY_SIGN_MESSAGE })
     const inputs = await pastUserInputs({ signature, owner: OWNER, leaves })
     const laps: [string, number][] = []
-    const { proof, publicInputs } = await proveNoirCircuit(
-      circuit,
-      inputs,
-      "past-user",
-      (lap, ms) => laps.push([lap, ms]),
-    )
+    const { proof, publicInputs } = await proveNoirCircuit(circuit, inputs, "past-user", {
+      wasm: initNoirWasm,
+      onLap: (lap, ms) => laps.push([lap, ms]),
+    })
     expect(laps.map(([lap]) => lap)).toEqual(["wasm", "witness", "backend", "proof"])
     const times = laps.map(([, ms]) => ms)
     expect(times).toEqual([...times].sort((a, b) => a - b))

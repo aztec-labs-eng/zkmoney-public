@@ -2,63 +2,40 @@
   "scenario": "activity",
   "steps": [
     {
-      "action": "waitFor",
-      "selector": ".ww-deposit-disclaimer"
-    },
-    {
-      "action": "click",
-      "role": "button",
-      "name": "Got it!",
-      "exact": false
-    },
-    {
       "action": "fill",
-      "placeholder": "Search or paste an address",
+      "testId": "withdraw-address",
       "value": "0x7777777777777777777777777777777777777777"
     },
     {
-      "action": "click",
-      "role": "button",
-      "name": "New address",
-      "exact": false
-    },
-    {
       "action": "fill",
-      "label": "Wallet name (optional)",
+      "label": "Name this address",
       "value": "Weekend savings wallet"
     },
     {
-      "action": "reachable",
-      "selector": "[role=\"dialog\"][aria-label=\"Withdraw\"] button:has-text(\"Continue\")"
+      "action": "waitFor",
+      "selector": "[data-testid=\"withdraw-address-continue\"]:enabled"
     },
     {
       "action": "screenshot",
       "file": "address.png",
-      "state": "address"
+      "state": "address with its privacy card"
     },
     {
       "action": "click",
-      "selector": "[role=\"dialog\"][aria-label=\"Withdraw\"] button:has-text(\"Continue\")"
-    },
-    {
-      "action": "screenshot",
-      "file": "privacy.png",
-      "state": "privacy"
-    },
-    {
-      "action": "click",
-      "role": "button",
-      "name": "Continue without privacy",
-      "exact": true
+      "testId": "withdraw-address-continue"
     },
     {
       "action": "waitFor",
-      "selector": ".ww-fund__amount input"
+      "testId": "withdraw-amount"
     },
     {
       "action": "fill",
-      "selector": ".ww-fund__amount input",
+      "testId": "withdraw-amount",
       "value": "24"
+    },
+    {
+      "action": "waitFor",
+      "selector": "[data-testid=\"withdraw-amount-continue\"]:enabled"
     },
     {
       "action": "screenshot",
@@ -67,9 +44,23 @@
     },
     {
       "action": "click",
-      "role": "button",
-      "name": "Review",
-      "exact": true
+      "testId": "withdraw-amount-continue"
+    },
+    {
+      "action": "waitFor",
+      "testId": "withdraw-gas-continue"
+    },
+    {
+      "action": "click",
+      "selector": "[role=\"group\"][aria-label=\"ETH for gas\"] button:has-text(\"None\")"
+    },
+    {
+      "action": "click",
+      "testId": "withdraw-gas-continue"
+    },
+    {
+      "action": "waitFor",
+      "testId": "withdraw-confirm"
     },
     {
       "action": "screenshot",
@@ -78,9 +69,7 @@
     },
     {
       "action": "click",
-      "role": "button",
-      "name": "Confirm withdrawal",
-      "exact": true
+      "testId": "withdraw-confirm"
     },
     {
       "action": "wait",
@@ -97,27 +86,39 @@
     },
     {
       "action": "screenshot",
-      "file": "handed-off.png",
-      "state": "Handed off to the bell after simulated signing"
-    },
-    {
-      "action": "wait",
-      "ms": 3500
-    },
-    {
-      "action": "screenshot",
-      "file": "notifications-result.png",
-      "state": "notifications result"
-    },
-    {
-      "action": "click",
-      "role": "button",
-      "name": "Notifications",
-      "exact": true
+      "file": "status.png",
+      "state": "The status step after simulated signing"
     },
     {
       "action": "waitFor",
-      "selector": ".ww-notifications__item:has-text(\"could not be submitted\")"
+      "role": "alertdialog"
+    },
+    {
+      "action": "screenshot",
+      "file": "submission-failure.png",
+      "state": "Submission failure over the withdraw sheet"
+    },
+    {
+      "action": "press",
+      "selector": "[role=\"alertdialog\"]",
+      "key": "Escape"
+    },
+    {
+      "action": "click",
+      "selector": "[role=\"dialog\"][aria-label=\"Withdraw\"] button[aria-label=\"Close\"]"
+    },
+    {
+      "action": "waitFor",
+      "selector": "[role=\"dialog\"][aria-label=\"Withdraw\"]",
+      "state": "hidden"
+    },
+    {
+      "action": "click",
+      "selector": "button[aria-label^=\"Notifications\"]"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-notifications__item:has-text(\"Withdrawal failed\")"
     },
     {
       "action": "screenshot",
@@ -126,6 +127,6 @@
     }
   ],
   "finalScreenshot": false,
-  "path": "/withdraw/existing?flowFixture=post-signing-failure",
+  "path": "/withdraw/fresh?flowFixture=post-signing-failure",
   "recordHoldMs": 0
 }

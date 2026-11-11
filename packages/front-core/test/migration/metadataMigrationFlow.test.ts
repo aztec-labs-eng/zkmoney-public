@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 import { ApprovalNeededError, MigrationSubsidyNotReadyError, StalePlanError } from "@obsidion/sdk"
-import { provingProgress } from "@obsidion/proving-progress"
+import type { MigrationSendGate } from "@obsidion/sdk"
 import {
   advanceMetadataMigration,
   newMetadataMigration,
@@ -540,27 +540,30 @@ describe("shared metadata migration", () => {
     expect(exclusive).toHaveBeenCalledTimes(1)
   })
 
-  it("names each single-transaction step's operation to the step, and announces its saved hash", async () => {
-    const { drive, steps, observed } = fixture()
-    const saved = vi.fn()
-    provingProgress.on("tx-hash-saved", saved)
-    try {
-      const exclusive = <T>(step: (operationId?: string) => Promise<T>) => step("op-step")
-      await drive({ start: true, exclusive })
-      expect(steps.broadcast).toHaveBeenCalledWith("signed-plan", expect.any(Function), "op-step")
-      observed.bootstrapStatus = "included"
-      observed.bootstrapSpent = true
-      observed.metadataSettled = true
-      observed.messagesReady = true
-      await drive({ promptless: true, exclusive })
-      expect(steps.subscribe).toHaveBeenCalledWith("signed-plan", expect.any(Function), "op-step")
-      expect(saved.mock.calls.map(([ev]) => ev)).toEqual([
-        expect.objectContaining({ operationId: "op-step", txHash: "bootstrap-hash" }),
-        expect.objectContaining({ operationId: "op-step", txHash: "subscription-hash" }),
-      ])
-    } finally {
-      provingProgress.off("tx-hash-saved", saved)
+  it("names each step's operation, and sends nothing until the operation holds the saved hash", async () => {
+    const { drive, steps, observed, stored } = fixture()
+    const held: string[] = []
+    const sent = async (txHash: string) => {
+      // The record holds the hash first; the step waits for the operation's save.
+      expect([stored()?.bootstrapTx, stored()?.subscriptionTx]).toContain(txHash)
+      await Promise.resolve()
+      held.push(txHash)
     }
+    const exclusive: MigrationSendGate = (step) => step("op-step", sent)
+    await drive({ start: true, exclusive })
+    expect(steps.broadcast).toHaveBeenCalledWith("signed-plan", expect.any(Function), "op-step")
+    expect(held).toEqual(["bootstrap-hash"])
+    observed.bootstrapStatus = "included"
+    observed.bootstrapSpent = true
+    observed.metadataSettled = true
+    observed.messagesReady = true
+    await drive({ promptless: true, exclusive })
+    expect(held).toEqual(["bootstrap-hash", "subscription-hash"])
+    const refused: MigrationSendGate = (step) =>
+      step("op-step", async () => Promise.reject(new Error("not saved")))
+    const again = fixture()
+    const halted = await again.drive({ start: true, exclusive: refused })
+    expect(halted.phase).toBe("needsAttention")
   })
 
   it("waits for the record update without reserving the prover", async () => {

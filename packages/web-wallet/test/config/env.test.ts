@@ -2,17 +2,10 @@
 import { Network } from "@obsidion/sdk"
 import { CLAIM_FPC_FUNDING } from "@obsidion/core/constants"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { getConfig, loadConfig } from "../../src/config/env"
+import { loadConfig } from "../../src/config/env"
 
 afterEach(() => {
   vi.unstubAllGlobals()
-})
-
-describe("getConfig", () => {
-  it("throws before a profile boot has seeded it", () => {
-    // Nothing in this file runs resolveBootConfig, so the module-level cache is unseeded here.
-    expect(() => getConfig()).toThrow(/before resolveBootConfig/)
-  })
 })
 
 const sandboxEnv = {}

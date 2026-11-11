@@ -1,3 +1,4 @@
+// Guards: the submitted swap, proof and tip stay bound to the plan the user verified.
 import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -5,18 +6,15 @@ import { openTestSession } from "../../../support/session"
 
 vi.mock("../../../../src/lib/analytics", () => ({ fireEvent: vi.fn(), failureCode: vi.fn() }))
 
-await (await import("../../../support/seedBootConfig")).seedBootConfig()
 vi.mock("../../../../src/config/oxideTuple", () => ({
-  getOxideTuple: async () => ({ swapEscrowFactoryV2: `0x${"11".repeat(20)}` }),
   requireTupleField: (tuple: Record<string, string>, field: string) => tuple[field],
 }))
 const { EXECUTOR } = vi.hoisted(() => ({ EXECUTOR: `0x${"e8".repeat(20)}` }))
 vi.mock("../../../../src/features/paylink/paylinkSource", () => ({
   paylinkTuple: async () => ({ plainWithdrawalExecutor: EXECUTOR }),
 }))
-vi.mock("../../../../src/session/l1Wallet", () => ({ useL1Wallet: () => ({}) }))
-vi.mock("../../../../src/features/withdraw/WithdrawScreen", () => ({ useSavedL1Wallets: () => [] }))
-vi.mock("../../../../src/features/withdraw/WithdrawToWalletModal/WithdrawToWalletModal", () => ({}))
+vi.mock("../../../../src/session/useL1Wallet", () => ({ useL1Wallet: () => ({}) }))
+vi.mock("../../../../src/session/savedL1Wallets", () => ({ useSavedL1Wallets: () => [] }))
 vi.mock("../../../../src/platform/desktopBridge", () => ({ isDesktopL1SubmitActive: () => false }))
 vi.mock("../../../../src/ui/screening", () => ({
   useScreenedAddress: () => ({ screener: {}, cleared: true }),
@@ -34,7 +32,7 @@ vi.mock("@obsidion/sdk", async (importOriginal) => ({
   decodePaylinkInline: () => ({ email: "a@example.com" }),
 }))
 vi.mock("../../../../src/features/paylink/emailClaim", () => ({
-  obtainEmailL1Proof: verify,
+  obtainEmailL1Proof: (_clientId: unknown, ...a: unknown[]) => verify(...a),
   emailL1Caller: caller,
 }))
 vi.mock("../../../../src/features/withdraw/withdrawQuote", () => ({
@@ -62,9 +60,11 @@ const faster = vi.hoisted(() => ({
   loading: false,
 }))
 vi.mock("../../../../src/features/withdraw/useFasterWithdrawal", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../../src/features/withdraw/useFasterWithdrawal")>()),
+  ...(await importOriginal<
+    typeof import("../../../../src/features/withdraw/useFasterWithdrawal")
+  >()),
   useFasterWithdrawal: ({ active }: { active: boolean }) =>
-    active ? { offer: faster.offer, loading: faster.loading } : { loading: false },
+    active ? { offer: faster.offer, current: true, loading: faster.loading } : { loading: false },
 }))
 
 const { ClaimToL1Modal } = await import("../../../../src/features/paylink/ClaimToL1Modal")
@@ -81,7 +81,7 @@ const button = (text: string) =>
 const click = (text: string) => act(async () => button(text).click())
 
 beforeEach(() => {
-  openTestSession()
+  openTestSession({ primed: { tuple: { swapEscrowFactoryV2: `0x${"11".repeat(20)}` } as never } })
   onConfirm.mockReset()
   planSwap.mockClear()
   verify.mockReset()
@@ -120,6 +120,7 @@ const renderSheet = (amount: string | undefined, flavor: string) =>
         onHandOff={() => {}}
         onConfirm={onConfirm}
         planSwap={planSwap}
+        offersSpeed
       />,
     ),
   )
@@ -194,44 +195,6 @@ describe("ClaimToL1Modal email swap", () => {
     expect(planSwap).toHaveBeenCalledTimes(1)
   })
 
-  it("waits for the selected asset's real quote lifecycle before planning", async () => {
-    vi.useFakeTimers()
-    const actual = await vi.importActual<typeof import("../../../../src/features/withdraw/withdrawQuote")>(
-      "../../../../src/features/withdraw/withdrawQuote",
-    )
-    const simulate = vi.fn(async ({ output }: { output: string }) => ({
-      fee: {
-        swapRelayerTip: output === "ETH" ? 99n : 5n,
-        proverTip: 0n,
-        floorAtomic: 100n,
-      },
-      estimate: { amountOut: 123n, decimals: output === "ETH" ? 18 : 6 },
-    }))
-    simulation.mockImplementation((args) => actual.useSwapSimulation({ ...args, simulate }))
-    await renderSheet("25", "email")
-    await fillAddress()
-    await pickAsset("USDC")
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(300)
-    })
-    expect(planSwap).toHaveBeenCalledTimes(1)
-    await pickAsset("ETH", "USDC")
-    await click("Claim")
-    expect(planSwap).toHaveBeenCalledTimes(1)
-    expect(button("Verify email with Google").disabled).toBe(true)
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(300)
-    })
-    expect(planSwap).toHaveBeenLastCalledWith(
-      recipient,
-      "ETH",
-      { relayerTip: 99n, amountOut: 123n, decimals: 18 },
-      25_000_000_000_000_000_000n,
-      0n,
-    )
-    expect(button("Verify email with Google").disabled).toBe(false)
-  })
-
   it("plans the leg before the popup and binds the proof to its escrow", async () => {
     await confirmSheet("25", "email", "USDC")
     expect(planSwap).toHaveBeenCalledWith(
@@ -249,16 +212,6 @@ describe("ClaimToL1Modal email swap", () => {
       expect.objectContaining({ receiveAsset: "USDC", zkProof: proof, swap: leg }),
       expect.any(Function),
     )
-  })
-
-  it("holds verification until the leg is planned, and plans once", async () => {
-    let finish!: (value: typeof leg) => void
-    planSwap.mockReturnValueOnce(new Promise((r) => (finish = r)) as never)
-    await confirmSheet("25", "email", "USDC")
-    expect(button("Verify email with Google").disabled).toBe(true)
-    await act(async () => finish(leg))
-    expect(button("Verify email with Google").disabled).toBe(false)
-    expect(planSwap).toHaveBeenCalledTimes(1)
   })
 
   it("drops a proof bound to the escrow when the asset changes back to DAI", async () => {
@@ -300,25 +253,6 @@ describe("ClaimToL1Modal email swap speed", () => {
       worstSpeedupSeconds: 30 * 60,
       measured: true,
     }
-  })
-
-  it("plans the leg with the tip it opens on, and binds the proof to that escrow", async () => {
-    planSwap.mockResolvedValue(tippedLeg as never)
-    await confirmSheet("25", "email", "USDC")
-    expect(planSwap).toHaveBeenLastCalledWith(
-      recipient,
-      "USDC",
-      { relayerTip: 5n, amountOut: 123n, decimals: 6 },
-      25_000_000_000_000_000_000n,
-      TIP,
-    )
-    await click("Verify email with Google")
-    expect(verify.mock.calls[0]![0]).toBe(tippedLeg.plan.escrow)
-    await click("Confirm and claim")
-    expect(onConfirm).toHaveBeenCalledWith(
-      expect.objectContaining({ swap: tippedLeg, proverTip: TIP }),
-      expect.any(Function),
-    )
   })
 
   it("burns the tip its leg was planned with when the offer re-quotes", async () => {

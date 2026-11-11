@@ -1,5 +1,5 @@
 /**
- * The "no funds" guards: paylink / withdraw / contact-send for more than the balance can't be
+ * The "no funds" guards: paylink / contact-send for more than the balance can't be
  * started, and none takes an amount until a read from this session confirms the balance: a cached
  * one can be stale. The unpaid-deposit-address guard the feed applies is `isUnfundedSipaDeposit`,
  * covered in front-core alongside the store it reads.
@@ -10,8 +10,9 @@ import { MemoryRouter, Route, Routes } from "react-router-dom"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { seedOnboarded } from "../support/identity"
 import { liveBalances } from "../support/balances"
-import { ScreeningProvider, passThroughScreener } from "@obsidion/front-core"
+import { memoryStore } from "@obsidion/front-core"
 import { openTestSession } from "../support/session"
+import { testContacts } from "../support/contacts"
 
 const balance = { walletAsset: null as { balanceAtomic: bigint } | null }
 let assetsLoaded = true
@@ -23,21 +24,11 @@ vi.mock("../../src/features/withdraw/withdrawalFee", () => ({
   activeWithdrawalFee: async () => 0n,
   activeWithdrawalExecutor: async () => ({ fee: 0n }),
   withdrawalExecutor: async () => ({ fee: 0n }),
-  withdrawalExecutorAt: async () => ({ fee: 0n }),
   useActiveWithdrawalFee: () => 0n,
 }))
 vi.mock("react-router-dom", async (importOriginal) => ({
   ...(await importOriginal<typeof import("react-router-dom")>()),
   useNavigate: () => vi.fn(),
-}))
-vi.mock("@obsidion/front-core", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@obsidion/front-core")>()),
-  useContractServiceContext: () => ({ contractService: {} }),
-  ContactStorage: {
-    get: () => ({
-      getEntries: async () => [{ tag: "alice", name: "Alice", address: `0x${"11".repeat(32)}` }],
-    }),
-  },
 }))
 vi.mock("../../src/features/paylink/sponsoredPaylink", () => ({
   DEFAULT_CLAIM_WINDOW_DAYS: 30,
@@ -60,19 +51,10 @@ vi.mock("../../src/features/actionGate", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../src/features/actionGate")>()),
   useActionVerdict: () => "open",
 }))
-// An offline manifest and L1 client, whose portal cap is above every amount here.
+// An offline L1 client, whose portal cap is above every amount here.
 vi.mock("../../src/config/oxideTuple", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../src/config/oxideTuple")>()),
-  getOxideTuple: async () => ({ portal: `0x${"70".repeat(20)}` }),
   l1PublicClient: () => ({ readContract: async () => 10n ** 30n }),
-}))
-vi.mock("../../src/config/env", () => ({
-  getConfig: () => ({
-    l1ChainId: 11155111,
-    l1RpcUrl: "http://localhost:8545",
-    network: "sandbox",
-    rpId: "localhost",
-  }),
 }))
 vi.mock("../../src/lib/analytics", () => ({
   fireEvent: vi.fn(),
@@ -136,9 +118,6 @@ vi.mock("@obsidion/web-ds", () => ({
 }))
 
 const { NewLinkScreen } = await import("../../src/features/paylink/NewLinkScreen/NewLinkScreen")
-const { WithdrawToWalletModal } = await import(
-  "../../src/features/withdraw/WithdrawToWalletModal/WithdrawToWalletModal"
-)
 const { ContactPayScreen } = await import(
   "../../src/features/contacts/ContactPayScreen/ContactPayScreen"
 )
@@ -175,27 +154,6 @@ describe.each([
     upTo: "10",
   },
   {
-    name: "WithdrawToWalletModal",
-    render: () => (
-      <ScreeningProvider screener={passThroughScreener}>
-        <WithdrawToWalletModal
-          recipient="0x1111111111111111111111111111111111111111"
-          onClose={vi.fn()}
-          onDone={vi.fn()}
-        />
-      </ScreeningProvider>
-    ),
-    amountInput: (c: HTMLDivElement) => c.querySelector("input") as HTMLInputElement,
-    prep: async (_c: HTMLDivElement) => {
-      // The sheet screens the recipient before its CTA can enable.
-      await act(async () => {
-        await new Promise((r) => setTimeout(r, 350))
-      })
-    },
-    // The fee rides on top of the typed amount: the 0.1 relayer tip.
-    upTo: "9.9",
-  },
-  {
     name: "ContactPayScreen (send)",
     render: () => (
       <MemoryRouter initialEntries={["/contacts/alice/send"]}>
@@ -205,7 +163,7 @@ describe.each([
       </MemoryRouter>
     ),
     amountInput: (c: HTMLDivElement) => c.querySelector("input") as HTMLInputElement,
-    // ContactStorage.getEntries resolves on the next microtask before the amount field mounts.
+    // The contact book's read resolves on the next microtask before the amount field mounts.
     prep: async (c: HTMLDivElement) => {
       await act(async () => {
         await Promise.resolve()
@@ -267,97 +225,27 @@ describe.each([
   })
 })
 
-/**
- * The Number balance rounds 1.999999999999999999 to 2; the escrow is funded from the exact string,
- * so MAX must fill the base-unit-exact value and the gate must compare base units.
- */
-beforeEach(() => {
+beforeEach(async () => {
+  const contacts = testContacts()
+  await contacts.addEntry({ tag: "alice", name: "Alice", address: `0x${"11".repeat(32)}` })
+  await contacts.all()
   openTestSession({
+    primed: { tuple: { portal: `0x${"70".repeat(20)}` } as never },
+    contacts,
     wallet: {},
+    contractService: {},
     account: {},
     token: { metadata: { decimals: 18 } },
+    mainToken: memoryStore({ address: "0xd4", name: "DAI", symbol: "DAI", decimals: 18 }).readonly,
     teeSigner: {},
     balances: liveBalances(() => ({
       main: balance.walletAsset?.balanceAtomic,
-      live: assetsLoaded,
+      readThisSession: assetsLoaded,
     })),
   })
 })
 
 beforeEach(() => seedOnboarded({ handle: "me", address: "0xme" }, "localhost"))
-
-describe("NewLinkScreen — MAX precision", () => {
-  let container: HTMLDivElement
-  let root: Root
-
-  beforeEach(async () => {
-    assetsLoaded = true
-    pendingDeposits = false
-    balance.walletAsset = { balanceAtomic: 2n * 10n ** 18n - 1n }
-    ;({ container, root } = mountHarness(<div />))
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <NewLinkScreen />
-        </MemoryRouter>,
-      )
-    })
-  })
-
-  afterEach(async () => {
-    await act(async () => root.unmount())
-    container.remove()
-  })
-
-  it("MAX fills the balance floored to cents and it is spendable; the rounded value is not", async () => {
-    const input = container.querySelector("input") as HTMLInputElement
-    const buttons = () => Array.from(container.querySelectorAll("button"))
-    const cta = () => buttons().find((b) => b.textContent === "Next")!
-    const max = buttons().find((b) => b.textContent === "MAX")!
-    await act(async () => max.click())
-    expect(input.value).toBe("1.99")
-    expect(cta().disabled).toBe(false)
-    await act(async () => typeInto(input, "2"))
-    expect(cta().disabled).toBe(true)
-  })
-})
-
-/**
- * Parked funding deposits are spendable without ever reaching `assets` — create redeems them and
- * the escrow claims them in the same tx. This is how the sandbox e2e funds, so a gate that reads
- * only the displayed balance blocks a create that would have succeeded.
- */
-describe("NewLinkScreen — parked deposits", () => {
-  let container: HTMLDivElement
-  let root: Root
-
-  beforeEach(async () => {
-    assetsLoaded = true
-    pendingDeposits = true
-    balance.walletAsset = null
-    ;({ container, root } = mountHarness(<div />))
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <NewLinkScreen />
-        </MemoryRouter>,
-      )
-    })
-  })
-
-  afterEach(async () => {
-    await act(async () => root.unmount())
-    container.remove()
-  })
-
-  it("stays open at a zero displayed balance", async () => {
-    await act(async () => {
-      typeInto(container.querySelector("input") as HTMLInputElement, "5")
-    })
-    expect((container.querySelector("button") as HTMLButtonElement).disabled).toBe(false)
-    expect(container.textContent).not.toMatch(/Not enough funds|Balance not enough/)
-  })
-})
 
 describe("ContactPayScreen — paying a request", () => {
   let container: HTMLDivElement

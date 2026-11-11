@@ -1,0 +1,72 @@
+{
+  "scenario": "activity",
+  "viewport": "402x879,1280x832",
+  "path": "/settings?flowFixture=success&backupFixture=unreadable-keys",
+  "ready": {
+    "selector": ".ww-settings__user"
+  },
+  "steps": [
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Passkeys",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": "html[data-backup-screen=unreadable]"
+    },
+    {
+      "action": "screenshot",
+      "file": "b3-unreadable-keys.png",
+      "state": "B3: the key read failed"
+    },
+    {
+      "action": "goto",
+      "path": "/settings?flowFixture=success&backupFixture=unreadable-entry"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-settings__user"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Passkeys",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": "html[data-backup-screen=unreadable]"
+    },
+    {
+      "action": "screenshot",
+      "file": "b3-unreadable-entry.png",
+      "state": "B3: the add's reads failed"
+    },
+    {
+      "action": "goto",
+      "path": "/settings?flowFixture=success&backupFixture=unreadable-deps"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-settings__user"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Passkeys",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": "html[data-backup-screen=unreadable]"
+    },
+    {
+      "action": "screenshot",
+      "file": "b3-unreadable-deps.png",
+      "state": "B3: a saved attempt's dependencies failed"
+    }
+  ],
+  "finalScreenshot": false
+}

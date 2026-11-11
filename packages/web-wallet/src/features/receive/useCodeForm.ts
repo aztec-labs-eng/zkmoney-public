@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from "react"
 import { amountError, decimalInput } from "../../ui/format"
-import type { CodeForm, ReceiveCode } from "./receiveCode"
+import { useLookup } from "@obsidion/front-core"
+import type { ReceiveCode } from "@obsidion/front-core"
+import { useSession } from "../../session/session"
+import type { CodeForm } from "./receiveCode"
 import { parseRequestAmount } from "./receiveView"
 
 /** Typing settles for this long before the code is minted again. */
@@ -29,6 +32,7 @@ export function useCodeForm(
   const applied = useRef(keyOf(0, ""))
 
   // A code from elsewhere (a fresh visit, the next one after a payment) resets the form.
+  // eslint-disable-next-line local/effect-hook -- ZKM-1806
   useEffect(() => {
     if (!code) return
     const key = keyOf(code.amount, code.note ?? "")
@@ -39,22 +43,35 @@ export function useCodeForm(
   }, [code])
 
   const parsed = amount.trim() ? parseRequestAmount(amount) : 0
-  useEffect(() => {
-    if (!code || parsed === null) return
-    const key = keyOf(parsed, note)
-    if (key === applied.current) return
-    const timer = setTimeout(() => {
-      applied.current = key
-      onSubmit({ amountInput: parsed ? String(parsed) : "", noteInput: note }).then(
-        () => setFailed(false),
-        () => {
-          applied.current = ""
-          setFailed(true)
-        },
-      )
-    }, SETTLE_MS)
-    return () => clearTimeout(timer)
-  }, [code, parsed, note, onSubmit])
+  const typed = code && parsed !== null ? keyOf(parsed, note) : undefined
+  const latest = useRef({ parsed, note, onSubmit })
+  latest.current = { parsed, note, onSubmit }
+  // A form's code: minted again each time the form settles on it.
+  const { query } = useSession().page
+  const [mints] = useState(() =>
+    query<[string], void>("receiveCodeMint", {
+      load: (key) => {
+        // A code from elsewhere may have settled the form while the wait ran.
+        if (key === applied.current) return Promise.resolve()
+        applied.current = key
+        const form = latest.current
+        return form
+          .onSubmit({
+            amountInput: form.parsed ? String(form.parsed) : "",
+            noteInput: form.note,
+          })
+          .then(
+            () => setFailed(false),
+            () => {
+              applied.current = ""
+              setFailed(true)
+            },
+          )
+      },
+      stale: 0,
+    }),
+  )
+  useLookup(typed === applied.current ? undefined : typed, mints, { delayMs: SETTLE_MS })
 
   return {
     amount,

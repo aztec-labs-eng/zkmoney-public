@@ -4,9 +4,8 @@ import {
   valueOf,
   type AccountRecord,
   type Database,
-  type Resource,
-  type WebAuthnData,
   WalletError,
+  type Service,
 } from "@obsidion/front-core"
 import { Network } from "@obsidion/core/constants"
 import {
@@ -16,7 +15,6 @@ import {
   type PasskeyCeremony,
 } from "@obsidion/passkey-web"
 import { AUTH_TYPE, type ObsidionWallet } from "@obsidion/sdk"
-import { backupPasskeySettingsEnabled } from "../../config/features"
 import { passkeyTelemetry } from "../../lib/passkeyTelemetry"
 import { writeDeviceKeys } from "../storage/deviceKeys"
 import {
@@ -50,13 +48,16 @@ function recordingCreateRequests(ceremony: PasskeyCeremony, db: Database): Passk
   }
 }
 
+/** The page's relying party and network. */
+export type AuthConfig = { network: Network; rpId: string; rpName: string }
+
 /**
  * The page's auth service over its database, device keys and session lock: `onSessionSaved`
- * follows each saved session change.
+ * follows each saved session change. `backupPasskeySettings` says a backup passkey can be added.
  */
 export function createAuthService(
-  config: { network: Network; rpId: string; rpName: string },
-  page: Pick<WebAlphaAuthServiceOptions, "database" | "device" | "sessionLock">,
+  config: AuthConfig & { backupPasskeySettings: boolean },
+  page: Pick<WebAlphaAuthServiceOptions, "database" | "device" | "sessionLock" | "signing">,
   onSessionSaved: () => Promise<void>,
 ): WebAlphaAuthService {
   // The e2e build drives Chromium's virtual authenticators: the hybrid hint can steer the sheet
@@ -81,14 +82,15 @@ export function createAuthService(
     ceremony: virtualAuthenticators ? recordingCreateRequests(ceremony, page.database) : ceremony,
     laptopHints: virtualAuthenticators ? null : undefined,
     extraProviders: virtualAuthenticators ? [CHROMIUM_VIRTUAL_AUTHENTICATOR_AAGUID] : undefined,
-    // Windows Hello keeps the only copy, so it is offered only where a backup can be added.
-    withdrawnManagers: backupPasskeySettingsEnabled ? undefined : ["windows_hello"],
+    // Windows Hello keeps the only copy and Proton Pass is `semiDeviceBound`: both keep the wallet
+    // within one device's reach, so they are offered only where a backup can be added.
+    withdrawnManagers: config.backupPasskeySettings ? undefined : ["windows_hello", "proton"],
     onSessionSaved,
   })
 }
 
 /** The signed-in session's account record, or none for a visitor. */
-export type AccountsOf = () => Pick<AccountRecord, "get" | "save"> | null
+export type AccountsOf = () => Pick<AccountRecord, "get" | "apply"> | null
 
 /** The stored account as a cache restore compares it. */
 async function readStoredAccount(accounts: AccountsOf): Promise<StoredAccountSnapshot | null> {
@@ -105,17 +107,6 @@ async function readStoredAccount(accounts: AccountsOf): Promise<StoredAccountSna
   }
 }
 
-/** Names `signer` as the stored account's signer, at the address it already holds. */
-export async function writeStoredSigner(accounts: AccountsOf, signer: WebAuthnData): Promise<void> {
-  const record = accounts()
-  const account = await record?.get()
-  if (account?.signKeyConfig.type !== AUTH_TYPE.WEB_AUTHN) return
-  await record?.save({
-    ...account,
-    signKeyConfig: { ...account.signKeyConfig, webauthnData: signer },
-  })
-}
-
 /**
  * The auth service over `wallet`: its address derivation and the stored account, so a cached key
  * can be proved before the account's unlock asks for it.
@@ -129,14 +120,16 @@ export function walletAuth(
     (await wallet.deriveAccountAddress(msk, passkeys)).toString(),
   )
   service.setAccountReader(() => readStoredAccount(accounts))
-  service.setSignerWriter((signer) => writeStoredSigner(accounts, signer))
+  service.setSignerWriter(
+    async (signer) => void (await accounts()?.apply({ type: "signerReplaced", signer })),
+  )
   return service
 }
 
 /** Hands the page's wallet to the auth service once it is up, whichever session the page runs. */
 export function bindWalletAuth(
   service: WebAlphaAuthService,
-  wallet: Resource<ObsidionWallet>,
+  wallet: Service<ObsidionWallet>,
   accounts: AccountsOf,
 ): void {
   const bind = () => {

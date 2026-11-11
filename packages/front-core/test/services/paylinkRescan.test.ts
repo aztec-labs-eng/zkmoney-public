@@ -8,8 +8,13 @@ import { scannedRow } from "../../src/core/services/transactions/TransferEventSc
 import { memoryBackend, type MemoryBackend } from "../../src/engine/memoryBackend"
 import { deriveNotifications } from "../../src/engine/notificationFeed"
 import { isOld, NOTIFICATION_WINDOW_MS } from "../../src/engine/notifications"
-import type { Transaction } from "../../src/types/transactions"
-import { seededActivity } from "../utils/activityFixture"
+import { createOperations } from "../../src/engine/operations"
+import { linkedActivity } from "../../src/engine/paylinks"
+import { loadRecords } from "../../src/engine/persistentStore"
+import type { PaylinkTransaction, Transaction } from "../../src/types/transactions"
+import { seededActivity } from "../utils/transferFixture"
+
+type Storage = ReturnType<typeof seededActivity>
 
 const ME = "0x00aa"
 const secret = Fr.random()
@@ -31,8 +36,9 @@ function event(over: Partial<ScannedTransferEvent>): ScannedTransferEvent {
   }
 }
 
+// Each link has its own secret, and its identity is derived from it.
 const params = (txHash: string) => ({
-  secret,
+  secret: txHash === "0x1" ? secret : Fr.fromString(txHash),
   fallbackSecret,
   classId: Fr.ZERO,
   chainId: 31337,
@@ -49,7 +55,17 @@ function makeDeps(
   backend: MemoryBackend = memoryBackend(),
 ) {
   const store = seededActivity(
-    [{ action: PaylinkActionEnum.PAY, txHash: "0xknown", timestamp: 1, status: "success" }],
+    [
+      {
+        action: PaylinkActionEnum.PAY,
+        emailPaymentAction: PaylinkActionEnum.PAY,
+        flavor: "direct",
+        payToEmailSecret: "0xknown",
+        txHash: "0xknown",
+        timestamp: 1,
+        status: "success",
+      } as Partial<Transaction>,
+    ],
     { backend },
   )
   vi.spyOn(store, "record")
@@ -81,6 +97,7 @@ function makeDeps(
       paylinkService: paylinkService as never,
       linkFor,
       store,
+      links: store.paylinks,
       db: store.db,
       token: TOKEN,
       now: () => 9_999,
@@ -92,12 +109,22 @@ function makeDeps(
   }
 }
 
-/** The rows the rescan recorded: its PAY rows, and the payouts that replace a receive. */
-const recorded = (store: { record: unknown }, kind: "pay" | "payout"): Transaction[] =>
+/** The payouts the rescan recorded, which replace a receive. */
+const payouts = (store: { record: unknown }): Transaction[] =>
   vi
     .mocked(store.record as (row: Transaction, opts?: { replaces?: string }) => unknown)
-    .mock.calls.filter(([row]) => (row.action === PaylinkActionEnum.PAY) === (kind === "pay"))
+    .mock.calls.filter(([row]) => row.action !== PaylinkActionEnum.PAY)
     .map(([row]) => row)
+
+/** Every row, each link on its funding row. */
+const rowsOf = (store: Storage) =>
+  linkedActivity(store, store.paylinks, createOperations({ db: store.db, now: () => Date.now() }))
+
+/** The links the rescan filed, on their funding rows, oldest first. */
+const filed = async (store: Storage) =>
+  (await rowsOf(store)).filter(
+    (row) => (row as PaylinkTransaction).payToEmailSecret && row.txHash !== "0xknown",
+  )
 
 describe("rebuildPaylinks", () => {
   it("writes one PAY row per unknown, unspent funding transfer of the account, oldest first", async () => {
@@ -120,7 +147,7 @@ describe("rebuildPaylinks", () => {
       expect.anything(),
       MASTER_SECRET,
     )
-    expect(recorded(store, "pay")[0]).toMatchObject({
+    expect((await filed(store))[0]).toMatchObject({
       txHash: "0x1",
       flavor: "direct",
       blockNumber: 10,
@@ -134,10 +161,10 @@ describe("rebuildPaylinks", () => {
       untilClaimable: 200,
       refundableUntil: 200,
       memo: "lunch",
-      networkId: "network-A",
+      networkId: "network-a",
       token: { symbol: "DAI", amount: 2.5, price: 1 },
     })
-    expect(recorded(store, "pay")[1]).toMatchObject({
+    expect((await filed(store))[1]).toMatchObject({
       txHash: "0x2",
       timestamp: 9_999,
     })
@@ -149,7 +176,7 @@ describe("rebuildPaylinks", () => {
     })
 
     expect(await rebuildPaylinks(deps)).toEqual({ created: [], complete: false })
-    expect(recorded(store, "pay")).toEqual([])
+    expect(await filed(store)).toEqual([])
   })
 
   it("is not complete when aborted", async () => {
@@ -165,7 +192,8 @@ describe("rebuildPaylinks", () => {
 
   // Claimed at the claim's block, whose time the source reads as 5_000.
   const CLAIMED = { isClaimed: true, claimedAt: 5_000, claimedBy: "self" }
-  const REFUNDED = { isRefunded: true, refundTxHash: "0xpayout" }
+  // Refunded 4 s after its funding: a cancel.
+  const REFUNDED = { isRefunded: true, refundTxHash: "0xpayout", refundKind: "cancel" }
   it.each([
     [
       "no payout: someone else claimed it",
@@ -228,24 +256,80 @@ describe("rebuildPaylinks", () => {
     await rebuildPaylinks(deps)
 
     expect(paylinkService.sync_note).not.toHaveBeenCalled()
-    const written = recorded(store, "pay")[0]
-    expect(written).toMatchObject({ txHash: "0x1", untilClaimable: undefined, ...row })
+    const written = (await filed(store))[0]
+    expect(written).toMatchObject({ txHash: "0x1", ...row })
+    expect((written as PaylinkTransaction).untilClaimable).toBeUndefined()
     if (!("isRefunded" in row)) expect(written).not.toHaveProperty("isRefunded")
     if (!("isClaimed" in row)) expect(written).not.toHaveProperty("claimedAt")
     if (payoutAction) {
-      expect(recorded(store, "payout")).toEqual([
+      expect(payouts(store)).toEqual([
         expect.objectContaining({ action: payoutAction, txHash: "0xpayout", blockNumber: 12 }),
       ])
     } else {
-      expect(recorded(store, "payout")).toEqual([])
+      expect(payouts(store)).toEqual([])
     }
   })
 })
 
+describe("a rebuilt refund's kind", () => {
+  const HOUR = 3_600_000
+  const payout = event({
+    txHash: "0xpayout",
+    from: "0xescrow",
+    to: ME,
+    blockNumber: 12,
+    paylinkCreated: undefined,
+    memo: undefined,
+  })
+  const atTimes = (deps: ReturnType<typeof makeDeps>["deps"], payoutAt: number | undefined) =>
+    deps.source.blockTimestampMs.mockImplementation(async (b: number) =>
+      b === 10 ? 1_000 : b === 12 ? payoutAt : undefined,
+    )
+
+  // Another device reads "Cancelled" where the creator's device does, not "Refunded".
+  it.each([
+    ["a cancel within a day of its funding", 1_000 + 22 * HOUR, "cancel"],
+    ["unnamed later, with no expiry to read", 1_000 + 30 * HOUR, undefined],
+    ["unnamed with no block time for it", undefined, undefined],
+  ])("reads a spent link's refund as %s", async (_, payoutAt, kind) => {
+    const { deps, store } = makeDeps([event({}), payout], {
+      paylinkClaimBlock: vi.fn(async () => 12),
+    })
+    atTimes(deps, payoutAt)
+
+    await rebuildPaylinks(deps)
+
+    const [written] = await filed(store)
+    expect(written).toMatchObject({ isRefunded: true })
+    expect((written as { refundKind?: string }).refundKind).toBe(kind)
+  })
+
+  it.each([
+    ["a cancel before it", 150_000, "cancel"],
+    ["a reclaim after it", 300_000, "reclaim"],
+    ["unnamed with no block time for it", undefined, undefined],
+  ])("reads a refund landing on a row that kept its expiry as %s", async (_, at, kind) => {
+    const { deps } = makeDeps([event({})])
+    const storage = seededActivity()
+    const pass = () =>
+      rebuildPaylinks({ ...deps, store: storage, links: storage.paylinks, db: storage.db })
+    // Rebuilt while unspent: its note gives the expiry, 200 s.
+    await pass()
+
+    deps.source.listIncoming.mockResolvedValue([event({}), payout])
+    atTimes(deps, at)
+    await pass()
+
+    const link = (await rowsOf(storage)).find((r) => r.txHash === "0x1") as PaylinkTransaction
+    expect(link).toMatchObject({ isRefunded: true })
+    expect(link.refundKind).toBe(kind)
+  })
+})
+
 describe("paylink rescan cursor", () => {
-  const KEY = `@obsidion/paylink-rescan/cursor/v2/network-A/${ME}`
+  const KEY = `acct/paylinkRescanCursor/network-A/${ME}`
   const cursors = (backend: MemoryBackend) =>
-    [...backend.entries.keys()].filter((k) => k.startsWith("@obsidion/paylink-rescan/"))
+    [...backend.entries.keys()].filter((k) => k.startsWith("acct/paylinkRescanCursor/"))
 
   it("resumes a reorg margin behind the saved cursor and saves PXE's synced block", async () => {
     const { deps, backend } = makeDeps([])
@@ -266,6 +350,17 @@ describe("paylink rescan cursor", () => {
     expect(source.listIncoming).toHaveBeenLastCalledWith(1, 201)
     await rebuildPaylinks({ ...deps, source })
     expect(source.listIncoming).toHaveBeenLastCalledWith(200 - 64, 201)
+  })
+
+  it("resumes from an older build's cursor and never writes it", async () => {
+    const { deps, backend } = makeDeps([])
+    const OLDER = `@obsidion/paylink-rescan/cursor/v2/network-A/${ME}`
+    backend.entries.set(OLDER, "150")
+    deps.source.headBlock.mockResolvedValue(200)
+    await rebuildPaylinks(deps)
+    expect(deps.source.listIncoming).toHaveBeenLastCalledWith(150 - 64, 201)
+    expect(backend.entries.get(KEY)).toBe("200")
+    expect(backend.entries.get(OLDER)).toBe("150")
   })
 
   it("keeps neither the rebuilt rows nor the cursor when their save fails", async () => {
@@ -301,7 +396,7 @@ describe("paylink rescan cursor", () => {
   })
 
   describe("endpoint scope", () => {
-    const SCOPED_KEY = `@obsidion/paylink-rescan/cursor/v2/network-A/A/${ME}`
+    const SCOPED_KEY = `acct/paylinkRescanCursor/network-A/A/${ME}`
 
     it("keeps the cursor under the scoped key and never touches the unscoped one", async () => {
       const { deps, backend } = makeDeps([])
@@ -355,12 +450,16 @@ describe("paylink rescan ownership", () => {
       )
     if (order === "send-first") await writeSend()
     expect(
-      (await rebuildPaylinks({ ...deps, store: storage, db: storage.db })).created,
+      (await rebuildPaylinks({ ...deps, store: storage, links: storage.paylinks, db: storage.db }))
+        .created,
     ).toHaveLength(1)
     // Also covers a scanner that passed its hasTxHash check before recovery wrote.
     if (order === "paylink-first") await writeSend()
-    expect((await rebuildPaylinks({ ...deps, store: storage, db: storage.db })).created).toEqual([])
-    expect(await storage.all()).toEqual([
+    expect(
+      (await rebuildPaylinks({ ...deps, store: storage, links: storage.paylinks, db: storage.db }))
+        .created,
+    ).toEqual([])
+    expect(await rowsOf(storage)).toEqual([
       expect.objectContaining({
         txHash: "0x1",
         flavor: "direct",
@@ -395,9 +494,9 @@ describe("paylink rescan ownership", () => {
       scannedRow({ ...row, action: "receive", txHash: "0x2", from: "0xescrow", to: ME }),
     )
 
-    await rebuildPaylinks({ ...deps, store: storage, db: storage.db })
+    await rebuildPaylinks({ ...deps, store: storage, links: storage.paylinks, db: storage.db })
 
-    const rows = await storage.all()
+    const rows = await rowsOf(storage)
     expect(rows).toEqual([
       expect.objectContaining({
         txHash: "0x1",
@@ -427,15 +526,15 @@ describe("paylink rescan ownership", () => {
     const storage = seededActivity()
 
     // The funding event is decrypted before the payout: the link reads claimed by someone else.
-    await rebuildPaylinks({ ...deps, store: storage, db: storage.db })
-    expect(await storage.all()).toEqual([
+    await rebuildPaylinks({ ...deps, store: storage, links: storage.paylinks, db: storage.db })
+    expect(await rowsOf(storage)).toEqual([
       expect.objectContaining({ txHash: "0x1", isClaimed: true, paylink: "https://link/0x1" }),
     ])
 
     deps.source.listIncoming.mockResolvedValue([funding, payout])
-    await rebuildPaylinks({ ...deps, store: storage, db: storage.db })
-    await rebuildPaylinks({ ...deps, store: storage, db: storage.db }) // idempotent
-    const rows = await storage.all()
+    await rebuildPaylinks({ ...deps, store: storage, links: storage.paylinks, db: storage.db })
+    await rebuildPaylinks({ ...deps, store: storage, links: storage.paylinks, db: storage.db }) // idempotent
+    const rows = await rowsOf(storage)
     expect(rows).toEqual([
       expect.objectContaining({
         txHash: "0x1",
@@ -452,9 +551,9 @@ describe("paylink rescan ownership", () => {
     const { deps } = makeDeps([event({})])
     const storage = seededActivity()
 
-    await rebuildPaylinks({ ...deps, store: storage, db: storage.db })
+    await rebuildPaylinks({ ...deps, store: storage, links: storage.paylinks, db: storage.db })
 
-    expect(await storage.all()).toEqual([
+    expect(await rowsOf(storage)).toEqual([
       expect.objectContaining({ txHash: "0x1", networkId: "network-a" }),
     ])
   })
@@ -482,7 +581,7 @@ describe("paylink rescan ownership", () => {
       }
 
       expect((await rebuildPaylinks({ ...deps, signal: controller.signal })).created).toEqual([])
-      expect(recorded(store, "pay")).toEqual([])
+      expect(await filed(store)).toEqual([])
     },
   )
 })
@@ -494,11 +593,13 @@ describe("a rebuilt claim in the bell", () => {
     const storage = seededActivity()
     for (const events of passes) {
       const { deps } = makeDeps(events, { paylinkClaimBlock: vi.fn(async () => 12) })
-      await rebuildPaylinks({ ...deps, store: storage, db: storage.db })
+      await rebuildPaylinks({ ...deps, store: storage, links: storage.paylinks, db: storage.db })
     }
     const sources = {
-      rows: [...(await storage.all())],
+      rows: await storage.all(),
+      links: await loadRecords(storage.paylinks.view),
       oldVersionWithdrawals: [],
+      bridgeIns: { records: [], hydrated: true },
       deposits: { records: [], loaded: true, failed: false },
       withdrawals: { records: [], hydrated: true },
       upgrades: { items: [], recipients: new Set<string>(), loaded: true },

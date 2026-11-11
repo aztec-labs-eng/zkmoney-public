@@ -1,7 +1,7 @@
 import { prepareJwtFromProvider, PublicKeyRegistry, type JwtProvider } from "@obsidion/sdk"
 import { ZKJWT_PUBLIC_INPUT_COUNT } from "@obsidion/core/constants"
 import type { IZkJwtProver } from "./IZkJwtProver"
-import { ZKJWT_EMAIL_HASH_VERSION, type ProofBundle } from "./ZkJwtStorage"
+import { ZKJWT_EMAIL_HASH_VERSION, type ZkJwtProof } from "../../../engine/zkJwtProofs"
 
 /** Generate a proof without storage; callers decide whether it should be cached. */
 export async function generateZkJwtProof(
@@ -11,7 +11,7 @@ export async function generateZkJwtProof(
   noncePreimage: bigint,
   callerAddress: string,
   onProving?: () => void,
-): Promise<ProofBundle> {
+): Promise<ZkJwtProof> {
   const { input, jwk_id, email } = await prepareJwtFromProvider(
     jwt,
     noncePreimage,

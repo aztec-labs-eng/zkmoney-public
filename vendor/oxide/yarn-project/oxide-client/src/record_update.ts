@@ -12,12 +12,12 @@ import {
   type UserRecordArg,
   type WebAuthnAuthArg,
   buildUserOp,
+  computeUserOpHash,
   encodeExecuteBatch,
   encodeR1UserOpSignature,
   encodeSetUserRecord,
   getAccountNonce,
   getAuthKeys,
-  getUserOpHash,
   readAccountMetadataRegistry,
   readMetadataStateHash,
   readRegistrationController,
@@ -84,14 +84,15 @@ export type RecordUpdateResult =
  *
  * - There is no on-chain check that the record did not change since the build, so a pending update can overwrite a
  *   newer record. Send one record update for each account at a time, and serialize every user operation of the account
- *   on nonce key 0, passkey rotations included.
+ *   on nonce key 0, passkey additions included.
  * - `namePortalRecipient` must be the ClaimFPC of the destination: the gate of its registered rail consumes the
  *   notification. The builder cannot check that.
  * - `write` defaults to `setUserRecord`. A registry of another schema needs its own `write`; its address alone does
  *   not show the schema.
  *
- * Throws when `metadataRegistry` is not the current registry of the name registry, when the record and the
- * notification name different rollup versions, when a recipient is zero, or when the account does not hold `passkey`.
+ * Throws when `publicClient` has no configured chain, when `metadataRegistry` is not the current registry of the name
+ * registry, when the record and the notification name different rollup versions, when a recipient is zero, or when
+ * the account does not hold `passkey`.
  */
 export async function buildRecordUpdate(
   publicClient: PublicClient,
@@ -108,6 +109,7 @@ export async function buildRecordUpdate(
   },
 ): Promise<RecordUpdate> {
   const { owner, metadataRegistry, namePortal, rollupVersion, record } = args;
+  const chainId = configuredChainId(publicClient);
   if (record.rollupVersion !== rollupVersion) {
     throw new Error(
       `The record names rollup version ${record.rollupVersion}, but the notification names ${rollupVersion}`,
@@ -170,8 +172,17 @@ export async function buildRecordUpdate(
     write,
     keyIndex: BigInt(keyIndex),
     userOp,
-    userOpHash: await getUserOpHash(publicClient, CANONICAL_ENTRY_POINT_V08, userOp),
+    userOpHash: computeUserOpHash(chainId, CANONICAL_ENTRY_POINT_V08, userOp),
   };
+}
+
+/** The id of the configured chain of `publicClient`. Throws when the client has no configured chain. */
+export function configuredChainId(publicClient: PublicClient): number {
+  const chainId = publicClient.chain?.id;
+  if (chainId === undefined) {
+    throw new Error('The public client needs a configured chain');
+  }
+  return chainId;
 }
 
 /**
@@ -336,7 +347,7 @@ function decodeRevert(data: Hex): string {
 }
 
 /** The intrinsic gas of a call with `data`: the base cost and the calldata cost. */
-function intrinsicGas(data: Hex): bigint {
+export function intrinsicGas(data: Hex): bigint {
   const bytes = hexToBytes(data);
   const zeros = bytes.filter(b => b === 0).length;
   return 21_000n + 4n * BigInt(zeros) + 16n * BigInt(bytes.length - zeros);

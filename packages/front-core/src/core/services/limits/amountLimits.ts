@@ -93,48 +93,6 @@ export function checkProtocolCeiling(
   return creditAtomic > txAmountCap ? "over" : "within"
 }
 
-export interface DepositLimits {
-  /** What the wallet sends: the amount to receive plus the fee. */
-  sendAtomic: bigint
-  publicLimit: PublicLimitCheck
-  protocolCeiling: ProtocolCeilingCheck
-  /** Largest amount to receive that passes both checks; undefined without a valuation. */
-  maxReceiveAtomic?: bigint
-}
-
-/**
- * A deposit typed as the amount to receive. The published limit counts the gross send in the sent
- * token; the protocol ceiling counts the net settlement credit, known only on the settlement-token
- * route, where it equals the amount to receive.
- */
-export function depositLimits(input: {
-  receiveAtomic: bigint
-  feeAtomic: bigint
-  decimals: number
-  valuation: UsdValuation | undefined
-  settlementCreditAtomic: bigint | undefined
-  txAmountCap: bigint | undefined
-}): DepositLimits {
-  const { receiveAtomic, feeAtomic, decimals, valuation, settlementCreditAtomic, txAmountCap } =
-    input
-  const sendAtomic = receiveAtomic + feeAtomic
-  const limit = publicLimitAtomic(decimals, valuation)
-  let maxReceiveAtomic: bigint | undefined
-  if (limit !== undefined) {
-    const net = limit > feeAtomic ? floorToTypeable(limit - feeAtomic, decimals) : 0n
-    maxReceiveAtomic =
-      settlementCreditAtomic !== undefined && txAmountCap !== undefined && net > txAmountCap
-        ? floorToTypeable(txAmountCap, decimals)
-        : net
-  }
-  return {
-    sendAtomic,
-    publicLimit: checkPublicLimit(sendAtomic, decimals, valuation),
-    protocolCeiling: checkProtocolCeiling(settlementCreditAtomic, txAmountCap),
-    maxReceiveAtomic,
-  }
-}
-
 export interface WithdrawalLimits {
   publicLimit: PublicLimitCheck
   protocolCeiling: ProtocolCeilingCheck

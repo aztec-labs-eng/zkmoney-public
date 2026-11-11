@@ -17,7 +17,7 @@ import {
 } from "@obsidion/front-core"
 import { GradientText, Icon } from "@obsidion/web-ds"
 import ethIcon from "../../assets/deposit/ethereum.webp"
-import { l1AddressUrl, whenLabel } from "../detailRows"
+import { useL1Links, whenLabel } from "../detailRows"
 import { tokenAmount, usdFigure } from "../format"
 import { L1AddressLabel } from "../L1AddressLabel"
 import { Modal } from "../Modal"
@@ -42,6 +42,7 @@ export function FreshWithdrawalDetailModal({
   onViewLeg: (record: WithdrawalRecord) => void
   onClose: () => void
 }) {
+  const { l1AddressUrl } = useL1Links()
   const head = group.legs.gas ?? group.records[0]
   const recipientUrl = l1AddressUrl(head.recipient)
   const legs = [group.legs.gas, group.legs.funds].flatMap((record) => record ?? [])
@@ -79,14 +80,11 @@ export function FreshWithdrawalDetailModal({
         </DepositFact>
         <DepositFact label="To">
           <b>
-            {head.recipientAlias && `${head.recipientAlias} · `}
-            {recipientUrl ? (
-              <a href={recipientUrl} target="_blank" rel="noreferrer">
-                <L1AddressLabel address={head.recipient} />
-              </a>
-            ) : (
-              <L1AddressLabel address={head.recipient} />
-            )}
+            <L1AddressLabel
+              address={head.recipient}
+              name={head.recipientAlias || undefined}
+              href={recipientUrl}
+            />
           </b>
         </DepositFact>
         <DepositFact label="Network">

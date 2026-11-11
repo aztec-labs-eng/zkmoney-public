@@ -1,0 +1,78 @@
+:global(.zkm-btn-reset).alt {
+  display: block;
+  margin: 12px auto 0;
+}
+/* The sign-in screen's remembered accounts: five rows tall, the rest scroll inside the box. */
+.list {
+  --ww-account-row: 48px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: calc(5 * var(--ww-account-row));
+  overflow-y: auto;
+  border-radius: 12px;
+  background: rgba(var(--ink-rgb), 0.06);
+}
+/* The separator is drawn inside the row, so five rows are exactly five row heights. */
+.list li + li .row {
+  box-shadow: inset 0 1px 0 rgba(var(--ink-rgb), 0.08);
+}
+:global(.zkm-btn-reset).row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  height: var(--ww-account-row);
+  padding: 0 12px;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 500;
+  text-align: left;
+}
+:global(.zkm-btn-reset).row:not(:disabled):hover {
+  background: rgba(var(--ink-rgb), 0.06);
+}
+:global(.zkm-btn-reset).row:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.tag {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.domain {
+  color: var(--text-secondary);
+}
+.note {
+  display: block;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 400;
+}
+.go {
+  color: var(--text-secondary);
+  font-size: 20px;
+  line-height: 1;
+}
+/* A remembered account with more than one key: selected, its keys take Login's place. Rounded like
+   the list, which clips it, and above the row separator and hover. */
+.list :global(.zkm-btn-reset).selected,
+.list :global(.zkm-btn-reset).selected:not(:disabled):hover {
+  border-radius: 12px;
+  background: rgba(160, 0, 255, 0.1);
+  box-shadow: inset 0 0 0 1.5px rgba(173, 51, 255, 0.75);
+}
+.check {
+  display: grid;
+  flex-shrink: 0;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--gradient-brand);
+}
+.keyStatus {
+  text-align: center;
+}

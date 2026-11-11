@@ -3,10 +3,14 @@
  * the cents while the page shows it, with as many digits as it takes to see it move. Ported from
  * Harry's #2198 (`EARN_ESTIMATE_TICK_MS`, `splitTicking`).
  */
-import { useEffect, useState } from "react"
-import { projectValueAtomic, type SavingsPosition } from "@obsidion/front-core"
+import {
+  memoryStore,
+  projectValueAtomic,
+  useStore,
+  type SavingsPosition,
+} from "@obsidion/front-core"
 import { usdAtomicFloor } from "../../ui/format"
-import { pauseWhenHidden } from "../../platform/visibilityScheduler"
+import { useSession } from "../../session/session"
 
 /** Tick while funded with a rate: the micro-cent estimate moves, so must the figure. */
 export const SAVINGS_ESTIMATE_TICK_MS = 120
@@ -44,28 +48,37 @@ export interface SavingsEstimate {
   ticking: boolean
 }
 
+/** Whether the figure moves: `enabled`, funded, and a rate to carry it at. */
+export const ticking = (position: SavingsPosition | null, enabled: boolean): boolean =>
+  !!position && enabled && position.shares > 0n && (position.apy ?? 0) > 0
+
+/** The figure at `now`: carried at the rate while it ticks; else as read. */
+export function selectSavingsEstimate(
+  position: SavingsPosition | null,
+  enabled: boolean,
+  now: number,
+): SavingsEstimate {
+  if (!position) return { value: undefined, ticking: false }
+  const moving = ticking(position, enabled)
+  return {
+    value: moving
+      ? projectValueAtomic(position.value, position.readAt, now, position.apy!)
+      : position.value,
+    ticking: moving,
+  }
+}
+
+const STILL = memoryStore(0).readonly
+
 /**
- * The Savings value as the screen shows it. It ticks every {@link SAVINGS_ESTIMATE_TICK_MS} while
- * `enabled` and the position is funded with a rate, pauses with the page hidden, and reads plain
- * otherwise.
+ * The Savings value as the screen shows it, on the page's estimate clock: it ticks every
+ * {@link SAVINGS_ESTIMATE_TICK_MS} while it moves and the page shows.
  */
 export function useSavingsEstimate(
   position: SavingsPosition | null,
   enabled: boolean,
 ): SavingsEstimate {
-  const ticking = enabled && position !== null && position.shares > 0n && (position.apy ?? 0) > 0
-  const [now, setNow] = useState(Date.now)
-  useEffect(() => {
-    if (!ticking) return
-    setNow(Date.now())
-    const id = pauseWhenHidden.setInterval(() => setNow(Date.now()), SAVINGS_ESTIMATE_TICK_MS)
-    return () => pauseWhenHidden.clearInterval(id)
-  }, [ticking])
-  if (!position) return { value: undefined, ticking: false }
-  return {
-    value: ticking
-      ? projectValueAtomic(position.value, position.readAt, now, position.apy!)
-      : position.value,
-    ticking,
-  }
+  const { page } = useSession()
+  const now = useStore(ticking(position, enabled) ? page.savingsEstimateClock : STILL)
+  return selectSavingsEstimate(position, enabled, now)
 }

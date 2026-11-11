@@ -21,7 +21,7 @@ describe("a boot failure after the wallet database closes", () => {
     await saveSetting(deviceDb, "analyticsConsent", granted)
     bindSavedConsent(testCore().device)
     await closeWalletStore()
-    reportBootFailure(new Error("boom"), { bootStartedAt: undefined, attempts: 0 })
+    reportBootFailure(new Error("boom"), {} as never, { bootStartedAt: undefined, attempts: 0 })
     expect(sent()).toEqual(events)
   })
 })

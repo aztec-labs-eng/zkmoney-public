@@ -1,6 +1,9 @@
 import { isDemoMode } from "../../../src/dev/demoFlag"
-import { provingProgress } from "@obsidion/proving-progress"
-import { runOperation, type OperationFlow } from "../../../src/features/operations/operations"
+import { ProvingStage } from "@obsidion/core/types"
+import type { Prover } from "@obsidion/front-core"
+import { runOperation, type OperationFlow, type OperationHandle } from "../../../src/features/operations/operations"
+import { activeNamespace, type Session } from "../../../src/session/session"
+import type { Page } from "../../../src/app/sessionDeps"
 import { TX_HASH } from "./data"
 
 const STATES = ["success", "post-signing-failure", "retry", "pending", "signing", "signing-failure", "signing-retry", "no-signing", "failure", "loading", "no-voucher", "claimed", "terminal", "warning"] as const
@@ -22,11 +25,17 @@ export function fixtureState(): FixtureState | null {
   return value as FixtureState
 }
 
+/** The seeded page, for the hooks the capture driver calls from outside the app. */
+let seeded: Page | undefined
+export const captureOn = (page: Page) => void (seeded = page)
+/** The seeded page's committed session, as a test opens it. */
+export const captureSession = (page = seeded!) => page.switchTo(activeNamespace(page.device))
+
 export const pause = (ms = 900) => new Promise<void>((resolve) => setTimeout(resolve, ms))
 const attempts = new Map<string, number>()
 
 /** The operation `inOperation` runs; user flows are single-flight, so there is at most one. */
-let current: string | undefined
+let current: { operationId: string; operations: Session["operations"]; prover: Prover } | undefined
 let operationSequence = 0
 
 /**
@@ -34,18 +43,20 @@ let operationSequence = 0
  * panel rows render as in production. `operation` marks it proving and sent along the way.
  */
 export function inOperation<T>(
+  session: Pick<Session, "operations" | "page">,
   flow: OperationFlow,
   summary: string,
-  run: () => Promise<T>,
+  run: (op: OperationHandle) => Promise<T>,
   txHashOf?: (result: T) => string | undefined,
 ): Promise<T> {
   const operationId = `capture-op-${++operationSequence}`
   return runOperation(
+    session,
     { operationId, flow, summary },
-    async () => {
-      current = operationId
+    async (op) => {
+      current = { operationId, operations: session.operations, prover: session.page.prover }
       try {
-        return await run()
+        return await run(op)
       } finally {
         current = undefined
       }
@@ -60,6 +71,10 @@ interface OperationOptions {
   txHash?: string
   /** Persist a prepared result after the cancellation boundary, before any signing event. */
   onPrepared?: () => void | Promise<void>
+  /** Saves the hash on the flow's records; without it the operation alone takes it. */
+  onTxHash?: (txHash: string) => Promise<void>
+  /** The session of a flow that runs its own operation, whose prover hears the signature. */
+  session?: Pick<Session, "page">
 }
 
 /** A pending fixture deliberately never settles; closing its context releases its timers. */
@@ -73,19 +88,23 @@ export async function operation(name: string, onStage?: (stage: "proving" | "sub
   }
   onStage?.("proving")
   await options.onPrepared?.()
+  const prover = current?.prover ?? options.session?.page.prover
   if (signing && state !== "no-signing") {
-    provingProgress.emitSigningStart(options.operationId)
+    prover?.signing.start()
     if (state === "signing") await new Promise<void>(() => {})
     await pause(1400)
     const failed = state === "signing-failure" || (state === "signing-retry" && attempt === 1)
-    provingProgress.emitSigningEnd(options.operationId, failed)
+    prover?.signing.end(failed)
     if (failed) throw new Error("The signing request was declined. Try again.")
   }
-  if (current) provingProgress.emitStageStart("proving", current)
+  const proving = current
+  if (proving) await proving.prover.turn(async ({ stage }) => stage(ProvingStage.Proving, proving.operationId))
   if (state === "pending") await new Promise<void>(() => {})
   await pause(2400)
   if (state === "post-signing-failure") throw new Error("The transaction could not be submitted. Try again.")
-  if (current) provingProgress.emitTxHashSaved(current, options.txHash ?? TX_HASH)
+  const txHash = options.txHash ?? TX_HASH
+  if (options.onTxHash) await options.onTxHash(txHash)
+  else if (current) await current.operations.apply(current.operationId, { type: "sent", txHash })
   onStage?.("submitting")
   await pause()
 }

@@ -3,21 +3,11 @@
  * the settle of the passkey's key, and the commit and save of the account it opens.
  */
 import type { Fr } from "@aztec-labs/aztec.js/fields"
-import type { AccountRecord, RecoveredCandidates } from "@obsidion/front-core"
-import {
-  AUTH_TYPE,
-  type ObsidionAccount,
-  type ObsidionWallet,
-  type PrfSlot,
-  type RecoverPasskeyResult,
-} from "@obsidion/sdk"
-import {
-  PasskeyPolicyError,
-  backupSignInFacts,
-  type PasskeyRequestScope,
-} from "@obsidion/passkey-web"
-import { reportBackupPasskeySignIn } from "../../lib/backupPasskeyTelemetry"
+import type { AccountEvent, AccountRecord, RecoveredCandidates } from "@obsidion/front-core"
+import type { ObsidionAccount, ObsidionWallet, PrfSlot, RecoverPasskeyResult } from "@obsidion/sdk"
+import { PasskeyPolicyError, type PasskeyRequestScope } from "@obsidion/passkey-web"
 import { SessionChangedError } from "../../platform/auth/sessionErrors"
+import type { StoredRecoveryMetadata } from "../../platform/auth/WebPasskeyIdentityMap"
 import {
   type AccountPasskeys,
   type BeginRecoveryResult,
@@ -26,17 +16,60 @@ import {
   isUnsettled,
 } from "../../platform/auth/WebAlphaAuthService"
 import { pubkeyHexFrom, type OnboardingKeys } from "../../session/account"
+import { noteBackupSignIn } from "./backupSignIn"
 import { GateCancelledError, type CeremonyGate } from "./ceremonyGate"
-import { commitSecret, type Session } from "../../session/session"
+import { commitSecret, handOffAccount, type CommitScope, type Session } from "../../session/session"
 
 /** Where a sign-in saves the account it adopted: the session's record once the commit lands. */
-export type AccountsOf = () => Pick<AccountRecord, "save">
+export type AccountsOf = () => Pick<AccountRecord, "apply">
 
-/** What a sign-in takes from the page: its auth service and where it saves the account. */
+/** What a sign-in takes: the session it starts in, and where it saves the account. */
 export interface SignInDeps {
-  auth: WebAlphaAuthService
+  session: CommitScope
   accounts: AccountsOf
 }
+
+/** The key an adoption commits and records: a ceremony's result, or a record the session already holds. */
+export type AdoptedKey = Pick<
+  WebRecoverResult,
+  | "credentialId"
+  | "pubkey"
+  | "authProvider"
+  | "passkeys"
+  | "backup"
+  | "backupFacts"
+  | "transports"
+  | "staleSet"
+  | "expectedAddress"
+>
+
+/** The record an adoption writes for its key: the account `derived` under the key's set. */
+export const recoveryRecord = (
+  recovered: Pick<AdoptedKey, "credentialId" | "pubkey" | "passkeys" | "backup" | "transports">,
+  derived: string,
+  slot: PrfSlot,
+): StoredRecoveryMetadata => ({
+  credentialId: recovered.credentialId,
+  l2Address: derived,
+  pubkey: recovered.pubkey,
+  prfSlot: slot,
+  isMskRoot: recovered.backup === undefined,
+  ...(recovered.backup ? { backup: recovered.backup } : {}),
+  passkeySet: recovered.passkeys ?? [recovered.pubkey],
+  authenticatorType: "platform",
+  transports: recovered.transports,
+})
+
+/** The save of the account a reload's session unlocks: `account`, signed by the passkey. */
+export const accountSaved = (
+  account: ObsidionAccount,
+  credentialId: string,
+  pubkey: string,
+): Extract<AccountEvent, { type: "saved" }> => ({
+  type: "saved",
+  completeAddress: account.getCompleteAddress().toString(),
+  signer: { credentialId, pubkey, authenticatorType: "platform" },
+})
 
 /** Persist the account so a reload's session can unlock it. */
 async function persistAccount(
@@ -45,13 +78,7 @@ async function persistAccount(
   credentialId: string,
   pubkey: string,
 ) {
-  await accounts().save({
-    completeAddress: account.getCompleteAddress().toString(),
-    signKeyConfig: {
-      type: AUTH_TYPE.WEB_AUTHN,
-      webauthnData: { credentialId, pubkey, authenticatorType: "platform" },
-    },
-  })
+  await accounts().apply(accountSaved(account, credentialId, pubkey))
 }
 
 /**
@@ -82,33 +109,21 @@ async function persistAccount(
  */
 export async function adoptRecoveredAccount(
   wallet: ObsidionWallet,
-  { auth, accounts }: SignInDeps,
-  recovered: WebRecoverResult,
+  { session: start, accounts }: SignInDeps,
+  recovered: AdoptedKey,
   msk: Fr,
   slot: PrfSlot,
   derived: string,
   attempt: AbortSignal,
   beforeCommit?: () => Promise<void>,
   stillOwns?: () => boolean,
-): Promise<{ account: ObsidionAccount; held: () => boolean; own: Session }> {
+): Promise<{ account: ObsidionAccount; held: () => boolean; session: Session }> {
+  const { auth } = start
   const owns = () => !attempt.aborted && (stillOwns === undefined || stillOwns())
   const ended = () => !owns()
   if (ended()) throw new GateCancelledError()
   const writeRecord = (stillOwns?: () => boolean) =>
-    auth.recordRecoveryMetadata(
-      {
-        credentialId: recovered.credentialId,
-        l2Address: derived,
-        pubkey: recovered.pubkey,
-        prfSlot: slot,
-        isMskRoot: recovered.backup === undefined,
-        ...(recovered.backup ? { backup: recovered.backup } : {}),
-        passkeySet: recovered.passkeys ?? [recovered.pubkey],
-        authenticatorType: "platform",
-        transports: recovered.transports,
-      },
-      stillOwns,
-    )
+    auth.recordRecoveryMetadata(recoveryRecord(recovered, derived, slot), stillOwns)
   const staleRecord = recovered.staleSet !== undefined
   if (!staleRecord) {
     await writeRecord(owns)
@@ -120,13 +135,10 @@ export async function adoptRecoveredAccount(
   // The address the page's stores were loaded for, read while that session is still the one.
   const before = await auth.sessionAddress()
   const input = { secretKey: msk, authProvider: recovered.authProvider }
-  const committed = await commitSecret(auth, input, owns)
+  const committed = await commitSecret(start, input, owns)
   if (committed === false) throw new GateCancelledError()
-  const { generation, own } = committed
-  if (recovered.backupFacts) {
-    const { backupEligible, aaguid } = recovered.backupFacts
-    reportBackupPasskeySignIn("succeeded", backupSignInFacts({ backupEligible }, { aaguid }))
-  }
+  const { generation, session } = committed
+  if (recovered.backupFacts) noteBackupSignIn("succeeded", recovered.backupFacts)
   // The address moved under the same key: the page's stores still hold the old one. The session's
   // own address is the evidence; the incoming record's stands in only when there was no session.
   const from = before ?? recovered.expectedAddress
@@ -135,20 +147,22 @@ export async function adoptRecoveredAccount(
   try {
     // A commit saving over this session is waited out: one cancelled as it saved put the session
     // back, and the work goes on.
-    await own.sessionLock(async () => {
+    await session.sessionLock(async () => {
       if (!held()) throw new SessionChangedError()
       if (staleRecord) await writeRecord(held)
       if (!held()) throw new SessionChangedError()
     })
     const account = await wallet.createObsidionAccount(msk, recovered.authProvider)
-    await own.sessionLock(async () => {
+    await session.sessionLock(async () => {
       if (!held()) throw new SessionChangedError()
       await persistAccount(accounts, account, recovered.credentialId, recovered.pubkey)
       // A sign-out that landed during the save owns the session: the snapshot stays, the account
       // reaches no caller.
       if (!held()) throw new SessionChangedError()
     })
-    return { account, held, own }
+    // A save over a record that failed to open is read by the session the hand-off opens.
+    const failed = session.accountRecord?.view.get().failed
+    return { account, held, session: failed ? handOffAccount(session, account) : session }
   } catch (err) {
     throw markCommitted(err)
   }
@@ -161,7 +175,7 @@ export async function adoptRecoveredAccount(
 export const isCommittedFailure = (err: unknown): boolean =>
   typeof err === "object" && err !== null && (err as { committed?: boolean }).committed === true
 
-const markCommitted = (err: unknown): unknown =>
+export const markCommitted = (err: unknown): unknown =>
   typeof err === "object" && err !== null ? Object.assign(err, { committed: true }) : err
 
 /** `derive` computed once per key, and every address it produced, in derivation order. */
@@ -429,7 +443,7 @@ export async function reusePasskeyAccount(
   signal?: AbortSignal,
   own?: PasskeyRequestScope,
 ): Promise<OnboardingKeys> {
-  const { recovered, attempt } = await keyMaterial(signIn.auth, hints, gate, signal, own)
+  const { recovered, attempt } = await keyMaterial(signIn.session.auth, hints, gate, signal, own)
   // The attempt owns the prompt; the caller's cancel owns everything after it.
   const owns = () => !attempt?.aborted && !signal?.aborted
   const settled = await settleRecovery(recovered, gate, attempt)

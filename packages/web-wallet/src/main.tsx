@@ -35,6 +35,7 @@ class RootErrorBoundary extends React.Component<{ children: React.ReactNode }, {
       return (
         <div style={{ padding: 24, fontFamily: "monospace", color: "#f66" }}>
           <p>zk.money failed to start:</p>
+          {/* eslint-disable-next-line local/message-in-state -- ZKM-1895 */}
           <pre style={{ whiteSpace: "pre-wrap" }}>{this.state.error.message}</pre>
         </div>
       )
@@ -47,7 +48,6 @@ function startWallet() {
   const missing = missingBrowserFeatures()
   captureLandingSource()
   captureInboundInvite()
-  if (location.pathname !== RESET_PATH && missing.length === 0) prefetchProfile()
 
   createRoot(document.getElementById("root")!).render(
     <React.StrictMode>
@@ -62,7 +62,7 @@ function startWallet() {
           <UnsupportedBrowser missing={missing} />
         ) : (
           <React.Suspense fallback={null}>
-            <WalletBoot />
+            <WalletBoot profileFetch={prefetchProfile()} />
           </React.Suspense>
         )}
       </RootErrorBoundary>

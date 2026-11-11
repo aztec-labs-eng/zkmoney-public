@@ -10,7 +10,7 @@ import {
   predictSkyEscrowAddressLocally,
   type SkyEscrowArgs,
 } from "@oxide/experiments/sky/sky_savings.js"
-import { PlainWithdrawalSubsidyAbi, encodeEscrowRecoverERC20 } from "@oxide/l1-contracts"
+import { PlainWithdrawalSubsidyAbi } from "@oxide/l1-contracts"
 import {
   UINT256_EXTRA_CALLDATA_GAS,
   estimateL1OperationFeeValues,
@@ -19,15 +19,12 @@ import {
   decodeFunctionResult,
   encodeFunctionData,
   keccak256,
-  multicall3Abi,
   numberToHex,
   type Address,
   type Hex,
   type PublicClient,
 } from "viem"
-import { MULTICALL3_ADDRESS } from "../../services/sipa/sipaClaim.js"
 import { quoteL1OperationTip, type RelayerTipEstimate } from "../tip/l1OperationQuote.js"
-import type { SwapEscrowCall, SwapRecovery } from "./swapOnWithdraw.js"
 import { findBalanceOfSlot, mappingSlot } from "./swapOnWithdrawSimulator.js"
 import {
   PAR_TIP_TOKEN,
@@ -202,50 +199,7 @@ export async function quoteSkyReleaseTip(
   }
 }
 
-/** Run a Sky escrow nobody relayed: `deployAndExecute(args)`, which pays the sender its tip. Any EOA can send it. */
-export function buildSkyEscrowRunCall(factory: Address, args: SkyEscrowArgs): SwapEscrowCall {
-  return { to: factory, data: encodeSkyEscrowDeploy(args) }
-}
-
-/**
- * `recoverERC20` on a Sky escrow, signed by its recovery account. An escrow that never ran has no code,
- * so the factory's deploy-only `deploy` and the recovery then ride one Multicall3 `aggregate3`, as the
- * swap escrow's recovery does. Any EOA can send it.
- */
-export function buildSkyEscrowRecoverCall(params: {
-  deployed: boolean
-  factory: Address
-  escrow: Address
-  args: SkyEscrowArgs
-  recovery: SwapRecovery
-  signature: Hex
-  target: Address
-  token: Address
-  nonce: Hex
-  /** Unix seconds after which the escrow refuses the signature. */
-  deadline: bigint
-}): SwapEscrowCall {
-  const recoverData = encodeEscrowRecoverERC20({
-    recoverySalt: params.recovery.salt.toString() as Hex,
-    account: params.recovery.account,
-    signature: params.signature,
-    target: params.target,
-    token: params.token,
-    nonce: params.nonce,
-    deadline: params.deadline,
-  })
-  if (params.deployed) return { to: params.escrow, data: recoverData }
-  const deploy = encodeFunctionData({
-    abi: SkyEscrowFactoryAbi,
-    functionName: "deploy",
-    args: [params.args],
-  })
-  const calls = [
-    { target: params.factory, allowFailure: false, callData: deploy },
-    { target: params.escrow, allowFailure: false, callData: recoverData },
-  ]
-  return {
-    to: MULTICALL3_ADDRESS,
-    data: encodeFunctionData({ abi: multicall3Abi, functionName: "aggregate3", args: [calls] }),
-  }
+/** `factory.deploy(args)`: the Sky clone without the run. */
+export function encodeSkyEscrowDeployOnly(args: SkyEscrowArgs): Hex {
+  return encodeFunctionData({ abi: SkyEscrowFactoryAbi, functionName: "deploy", args: [args] })
 }

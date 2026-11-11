@@ -3,6 +3,7 @@
  * already showing, and the one writer of `fundingSent`. The deposit lands in the L2 balance through
  * the SIPA pipeline.
  */
+import type { Pace } from "@obsidion/core/cadence"
 import {
   encodeFunctionData,
   erc20Abi,
@@ -15,14 +16,18 @@ import {
 } from "viem"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import { WalletError, type SipaDeposit, type SipaDeposits } from "@obsidion/front-core"
-import { getConfig, l1ChainFor } from "../../config/env"
+import { l1ChainFor, type WebWalletConfig } from "../../config/env"
 import { requireTupleField } from "../../config/oxideTuple"
-import type { submitViaDesktopBridge } from "../../platform/desktopBridge"
-import type { getL1Clients } from "../../session/l1Wallet"
+import {
+  DesktopSendUnresolvedError,
+  type submitViaDesktopBridge,
+} from "../../platform/desktopBridge"
+import { isWalletRejection, type getL1Clients } from "../../session/l1Wallet"
 import { InsufficientL1BalanceError, type L1TokenBalance } from "./l1DepositTokenBalance"
-import type { loadDepositDisplayFacts } from "../sipa/loadDepositFacts"
+import type { DepositDisplayFacts, DepositTokenOption } from "../sipa/loadDepositFacts"
 import type { DepositStage } from "./sipaAddresses"
 import type { DepositAddress } from "../sipa/depositTarget"
+import { L1_RECEIPT_POLL_MS } from "../sipa/l1ExitChannels"
 
 /** The sandbox token's open mint (faucet convenience; a real sender already holds funds). */
 const SANDBOX_MINT_ABI = parseAbi(["function mint(address to, uint256 amount)"])
@@ -56,38 +61,13 @@ export type FundingStamp = Pick<SipaDeposit, "fundingTxHash" | "walletName" | "w
     fundingTxHash: Hex
   }
 
-/**
- * Funding hashes whose record discovery has not created yet, kept for the session. Only the
- * pipeline's discovery creates a record, since the event fields recovery needs are not in hand
- * here; the funding receipt can beat it, so an unmatched hash waits for the next scan. An
- * app close before then costs a display row.
- */
-export function createFundingStamps(store: Pick<SipaDeposits, "apply">) {
-  const pending = new Map<string, FundingStamp>()
-  return {
-    /** Stamps the transfer onto the deposit it funded, or keeps it for the record's discovery. */
-    async stamp(sipa: Address, stamp: FundingStamp): Promise<void> {
-      const fields = Object.fromEntries(Object.entries(stamp).filter(([, v]) => v !== undefined))
-      const changed = await store.apply(sipa, { type: "fundingSent", fields })
-      if (!changed) pending.set(sipa.toLowerCase(), stamp)
-    },
-    /** Lands every kept hash whose record now exists. */
-    async drain(): Promise<void> {
-      for (const [sipa, stamp] of [...pending]) {
-        if (await store.apply(sipa, { type: "fundingSent", fields: stamp })) pending.delete(sipa)
-      }
-    },
-  }
-}
-
-export type FundingStamps = ReturnType<typeof createFundingStamps>
-
 /** A mined-but-reverted transfer funded nothing; it must never be stamped as a deposit. */
 async function confirmed(
   publicClient: Pick<PublicClient, "waitForTransactionReceipt">,
   hash: Hex,
+  pollingInterval: number,
 ): Promise<void> {
-  const receipt = await publicClient.waitForTransactionReceipt({ hash })
+  const receipt = await publicClient.waitForTransactionReceipt({ hash, pollingInterval })
   if (receipt.status !== "success")
     throw new WalletError("deposit.fundingReverted", undefined, { data: { hash } })
 }
@@ -122,18 +102,42 @@ export interface FundDepositParams {
    * may follow, or reject so the send is refused.
    */
   beforeApprove?: (submission: string) => Promise<void>
+  /**
+   * Browser wallet only: runs right before the wallet prompt. It must resolve once it has durably
+   * recorded that a send may follow, or reject so the send is refused.
+   */
+  beforeSend?: () => Promise<void>
+}
+
+const BROWSER = "browser:"
+
+/** The id a hold saved before a browser wallet's prompt carries. */
+export const browserSubmission = () => `${BROWSER}${crypto.randomUUID()}`
+
+/**
+ * Whether a funding that failed ends the hold saved under `submission`: a desktop one's, unless the
+ * helper's send stayed unresolved; a browser wallet's only on the wallet's refusal, since any other
+ * failure may follow its broadcast.
+ */
+export function holdEnds(submission: string, e: unknown): boolean {
+  if (submission.startsWith(BROWSER)) return isWalletRejection(e)
+  return !(e instanceof DesktopSendUnresolvedError)
 }
 
 /** What a funding transfer reads and drives: the pinned deployment, L1 and the desktop bridge. */
 export interface FundDepositDeps {
-  fundingStamps: FundingStamps
+  /** The wallet's own deposit addresses: each has its record before it can be funded. */
+  deposits: Pick<SipaDeposits, "apply">
   wakeBroadcasts(): void
   tuple(): Promise<OxideEnvTuple>
   publicClient: Pick<PublicClient, "waitForTransactionReceipt">
+  /** The page's: a receipt wait polls at its interval. */
+  pace: Pick<Pace, "foreignMs">
+  config: WebWalletConfig
   tokenMetadata(token: Address): Promise<{ symbol: string; decimals: number }>
-  displayFacts: typeof loadDepositDisplayFacts
+  displayFacts(token?: Pick<DepositTokenOption, "settlesIn">): Promise<DepositDisplayFacts>
   balance(account: Address, token: Address): Promise<L1TokenBalance>
-  l1Clients: typeof getL1Clients
+  l1Clients: (chainId: number, from?: Hex) => ReturnType<typeof getL1Clients>
   desktop: { active(): boolean; submit: typeof submitViaDesktopBridge }
 }
 
@@ -147,8 +151,8 @@ export async function fundDeposit(
   params: FundDepositParams,
   deps: FundDepositDeps,
 ): Promise<{ txHash: Hex; address: Address; name: string }> {
-  const config = getConfig()
-  const { publicClient } = deps
+  const { config, publicClient } = deps
+  const receiptPoll = deps.pace.foreignMs(L1_RECEIPT_POLL_MS)
   const onStage = params.onStage ?? (() => {})
   const { address, name } = params.target
   const pinned = requireTupleField(await deps.tuple(), "token") as Address
@@ -182,7 +186,7 @@ export async function fundDeposit(
    */
   const stampFunding = async (stamp: FundingStamp) => {
     try {
-      await deps.fundingStamps.stamp(address, stamp)
+      await deps.deposits.apply(address, { type: "fundingSent", fields: stamp })
     } catch (err) {
       console.warn("[fundDeposit] could not record the funding transaction locally", err)
     }
@@ -227,7 +231,7 @@ export async function fundDeposit(
     })
     onStage("confirming")
     params.onSubmitted?.(txHash)
-    await confirmed(publicClient, txHash)
+    await confirmed(publicClient, txHash, receiptPoll)
     if (params.record !== false)
       await stampFunding({
         fundingTxHash: txHash,
@@ -251,13 +255,17 @@ export async function fundDeposit(
       account,
       chain,
     })
-    await publicClient.waitForTransactionReceipt({ hash: mintHash })
+    await publicClient.waitForTransactionReceipt({
+      hash: mintHash,
+      pollingInterval: receiptPoll,
+    })
   }
 
   // Last stop before the wallet prompt — account may have moved since the form ceiling was read.
   const balance = await deps.balance(account, token)
   if (balance.raw < amount) throw new InsufficientL1BalanceError(balance)
   await params.preflight({ feeDisplay })
+  await params.beforeSend?.()
 
   onStage("sending")
   const txHash = await walletClient.writeContract({
@@ -270,7 +278,7 @@ export async function fundDeposit(
   })
   onStage("confirming")
   params.onSubmitted?.(txHash)
-  await confirmed(publicClient, txHash)
+  await confirmed(publicClient, txHash, receiptPoll)
   if (params.record !== false)
     await stampFunding({
       fundingTxHash: txHash,

@@ -1,3 +1,4 @@
+import { createPace } from "@obsidion/core/cadence"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { watchForFeature, watchForFreeze } from "../../../src/features/migration/freezeWatch"
 
@@ -14,7 +15,7 @@ describe("watchForFreeze", () => {
       .mockRejectedValueOnce(new Error("rpc down"))
       .mockResolvedValue(true)
     const onFrozen = vi.fn()
-    watchForFreeze([tuple("0xa")], onFrozen, 1_000, isFrozen)
+    watchForFreeze({} as never, [tuple("0xa")], onFrozen, createPace(), 1_000, isFrozen)
     await vi.advanceTimersByTimeAsync(1_000)
     await vi.advanceTimersByTimeAsync(1_000)
     expect(onFrozen).not.toHaveBeenCalled()
@@ -27,7 +28,14 @@ describe("watchForFreeze", () => {
   it("reports nothing after it is stopped", async () => {
     vi.useFakeTimers()
     const onFrozen = vi.fn()
-    const stop = watchForFreeze([tuple("0xa")], onFrozen, 1_000, async () => true)
+    const stop = watchForFreeze(
+      {} as never,
+      [tuple("0xa")],
+      onFrozen,
+      createPace(),
+      1_000,
+      async () => true,
+    )
     stop()
     await vi.advanceTimersByTimeAsync(5_000)
     expect(onFrozen).not.toHaveBeenCalled()
@@ -45,7 +53,7 @@ describe("watchForFeature", () => {
       .mockRejectedValueOnce(new Error("fetch failed"))
       .mockResolvedValue(true)
     const onRoute = vi.fn()
-    const stop = watchForFeature(routed, onRoute, 1_000)
+    const stop = watchForFeature(routed, onRoute, createPace(), 1_000)
     await vi.advanceTimersByTimeAsync(2_000)
     expect(routed).toHaveBeenCalledTimes(2)
     expect(onRoute).not.toHaveBeenCalled()
@@ -62,7 +70,7 @@ describe("watchForFeature", () => {
     let finish!: (found: boolean) => void
     const routed = vi.fn(() => new Promise<boolean>((resolve) => (finish = resolve)))
     const onRoute = vi.fn()
-    const stop = watchForFeature(routed, onRoute, 1_000)
+    const stop = watchForFeature(routed, onRoute, createPace(), 1_000)
     await vi.advanceTimersByTimeAsync(3_000)
     expect(routed).toHaveBeenCalledTimes(1)
     finish(true)

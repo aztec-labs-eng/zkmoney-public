@@ -2,17 +2,21 @@
   "scenario": "onboarding",
   "bootstrap": "/request?demo=onboarding&flowFixture=success&flowEntry=request",
   "ready": {
-    "role": "button",
-    "name": "Pay with an Ethereum wallet",
-    "exact": false
+    "testId": "request-pay-with-wallet"
   },
   "finalScreenshot": false,
   "steps": [
     {
       "action": "click",
-      "role": "button",
-      "name": "Pay with an Ethereum wallet",
-      "exact": false
+      "selector": "[data-testid=\"request-pay-with-wallet\"]:enabled"
+    },
+    {
+      "action": "click",
+      "testId": "deposit-select-continue"
+    },
+    {
+      "action": "click",
+      "testId": "deposit-method-address"
     },
     {
       "action": "waitFor",

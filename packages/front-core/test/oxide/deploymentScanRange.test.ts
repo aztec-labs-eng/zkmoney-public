@@ -17,13 +17,12 @@ function chain(head = 25_000n) {
   return { client: { getBlock, getBlockNumber } as unknown as PublicClient, getBlock }
 }
 
-/** The search cache outlives one test, so each tuple takes its own chain unless it says otherwise. */
-let chains = 0
+const range = deploymentScanRange
 const tuple = (over: Partial<OxideEnvTuple> = {}): OxideEnvTuple =>
   ({
     portal: "0x" + "aa".repeat(20),
-    chainId: String(++chains),
     deployedAt: iso(12_000n),
+    deployedAtBlock: "12000",
     timestamp: iso(24_000n),
     ...over,
   } as OxideEnvTuple)
@@ -73,9 +72,10 @@ describe("findBlockAtTime", () => {
 describe("deploymentScanRange", () => {
   it("takes the manifest's deployedAtBlock without reading a single header", async () => {
     const { client, getBlock } = chain()
-    await expect(
-      deploymentScanRange(client, tuple({ deployedAtBlock: "9876" }), 25_000n),
-    ).resolves.toEqual({ fromBlock: 9_876n, toBlock: 25_000n })
+    await expect(range(client, tuple({ deployedAtBlock: "9876" }), 25_000n)).resolves.toEqual({
+      fromBlock: 9_876n,
+      toBlock: 25_000n,
+    })
     expect(getBlock).not.toHaveBeenCalled()
   })
 
@@ -83,61 +83,26 @@ describe("deploymentScanRange", () => {
     // An RPC behind a freshly published manifest. An inverted range is skipped whole by
     // chunkedContractEvents, which reads as a clean scan that found nothing.
     const { client } = chain()
-    await expect(
-      deploymentScanRange(client, tuple({ deployedAtBlock: "30000" }), 25_000n),
-    ).resolves.toEqual({ fromBlock: 25_000n, toBlock: 25_000n })
-  })
-
-  it("falls back to the block of deployedAt, not of the later updatedAt", async () => {
-    const { client } = chain()
-    await expect(deploymentScanRange(client, tuple(), 25_000n)).resolves.toEqual({
-      fromBlock: 12_000n,
+    await expect(range(client, tuple({ deployedAtBlock: "30000" }), 25_000n)).resolves.toEqual({
+      fromBlock: 25_000n,
       toBlock: 25_000n,
     })
   })
 
   it("reads the head itself when the caller has none", async () => {
     const { client } = chain()
-    await expect(deploymentScanRange(client, tuple())).resolves.toMatchObject({
+    await expect(range(client, tuple())).resolves.toMatchObject({
       toBlock: 25_000n,
     })
   })
 
-  it("searches once per chain and deployment, across separate clients", async () => {
-    const shared = tuple()
-    const first = chain()
-    await deploymentScanRange(first.client, shared, 25_000n)
-    expect(first.getBlock.mock.calls.length).toBeGreaterThan(0)
-
-    const second = chain()
-    await expect(deploymentScanRange(second.client, shared, 25_000n)).resolves.toMatchObject({
-      fromBlock: 12_000n,
-    })
-    expect(second.getBlock).not.toHaveBeenCalled()
-  })
-
-  it("does not cache a failed search", async () => {
-    const shared = tuple()
+  it("fails with a config error, and reads nothing, for an entry naming no deployedAtBlock", async () => {
     const { client, getBlock } = chain()
-    getBlock.mockImplementationOnce(async () => Promise.reject(new Error("rate limited")))
-    await expect(deploymentScanRange(client, shared, 25_000n)).rejects.toThrow(/rate limited/)
-    await expect(deploymentScanRange(client, shared, 25_000n)).resolves.toMatchObject({
-      fromBlock: 12_000n,
+    await expect(
+      range(client, tuple({ deployedAtBlock: undefined }), 25_000n),
+    ).rejects.toMatchObject({
+      code: "config.invalid",
     })
-  })
-
-  it("holds only the head while no block has reached deployedAt, and re-searches once one has", async () => {
-    const unborn = tuple({ deployedAt: iso(30_000n) })
-    const early = chain()
-    await expect(deploymentScanRange(early.client, unborn, 25_000n)).resolves.toEqual({
-      fromBlock: 25_000n,
-      toBlock: 25_000n,
-    })
-
-    const later = chain(35_000n)
-    await expect(deploymentScanRange(later.client, unborn)).resolves.toEqual({
-      fromBlock: 30_000n,
-      toBlock: 35_000n,
-    })
+    expect(getBlock).not.toHaveBeenCalled()
   })
 })

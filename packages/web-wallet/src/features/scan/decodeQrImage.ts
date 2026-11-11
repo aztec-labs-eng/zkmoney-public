@@ -1,3 +1,4 @@
+import { WalletError } from "@obsidion/core/errors"
 import jsQR from "jsqr"
 import { MAX_QR_FRAME_SIDE } from "./qrFrame"
 
@@ -38,7 +39,7 @@ export function decodeQrImage(
     !(data instanceof Uint8ClampedArray) ||
     data.length !== width * height * 4
   ) {
-    throw new RangeError("Invalid camera frame")
+    throw new WalletError("invariant", "Invalid camera frame")
   }
   const options = { inversionAttempts: "attemptBoth" as const }
   const decoded = jsQR(data, width, height, options)

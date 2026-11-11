@@ -1,9 +1,12 @@
 {
   // Typecheck, lint and editor config: workspace dependencies resolve to their source.
   // `build` emits from tsconfig.build.json, which resolves their dist.
+  // The runtime's tests are typechecked too: they pin which task specs compile.
   "extends": "./tsconfig.build.json",
   "compilerOptions": {
     "customConditions": ["source"],
-    "noEmit": true
-  }
+    "noEmit": true,
+    "rootDir": "."
+  },
+  "include": ["src", "src/**/*.json", "src/**/*.jpeg", "src/**/*.png", "test/engine/runtime.test.ts"]
 }

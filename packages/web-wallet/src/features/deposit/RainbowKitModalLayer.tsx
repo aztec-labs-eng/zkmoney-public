@@ -1,6 +1,7 @@
-import { useEffect, type ReactNode } from "react"
+import type { ReactNode } from "react"
 import { useAccountModal, useChainModal, useConnectModal } from "@rainbow-me/rainbowkit"
 import { ModalSuspension } from "../../ui/Modal"
+import { useDomEffect } from "../../ui/useDomEffect"
 
 /** RainbowKit portals to body, outside the native dialog top layer used by our sheets. */
 export function RainbowKitModalLayer({ children }: { children: ReactNode }) {
@@ -8,7 +9,7 @@ export function RainbowKitModalLayer({ children }: { children: ReactNode }) {
   const { accountModalOpen } = useAccountModal()
   const { chainModalOpen } = useChainModal()
   const open = connectModalOpen || accountModalOpen || chainModalOpen
-  useEffect(() => {
+  useDomEffect(() => {
     if (!open) return
     // RainbowKit handles Escape itself. Prevent its default action from cancelling the native
     // sheet restored by that same key event, without stopping RainbowKit's keydown listener.

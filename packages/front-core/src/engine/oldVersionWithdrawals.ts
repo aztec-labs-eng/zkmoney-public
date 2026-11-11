@@ -2,7 +2,7 @@ import type { OldVersionWithdrawal } from "../core/migration/OldVersionWithdrawa
 import { bestEffort } from "./errors"
 import { BOOT_WAIT_MS } from "./milestones"
 import type { Loaded } from "./recordSource"
-import type { Resource } from "./resource"
+import type { Service } from "./service"
 import { task, within, type Task } from "./runtime"
 import type { ReadonlyStore } from "./store"
 
@@ -11,7 +11,7 @@ export const REFUND_CHECK_TIMEOUT_MS = 60_000
 
 /** Checks each sending old-version withdrawal for its refunds every 15 s; `settle` saves them. */
 export function oldVersionWithdrawalTask<W>(deps: {
-  wallet: Resource<W>
+  wallet: Service<W>
   records: ReadonlyStore<Loaded<OldVersionWithdrawal>>
   settle(id: string, wallet: W): Promise<unknown>
 }): Task {

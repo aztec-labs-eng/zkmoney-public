@@ -2,7 +2,7 @@
  * A page parses each bundled artifact once and hashes each artifact's class once, however often a
  * read resolves them: on a phone each costs tens to hundreds of ms.
  */
-import { afterAll, beforeEach, describe, expect, it, vi } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 
 const h = vi.hoisted(() => ({ classHashes: 0 }))
 vi.mock("@aztec-labs/stdlib/contract", async (importOriginal) => {
@@ -27,7 +27,7 @@ const explodingFetch: FetchFunction = async (url) => {
 }
 
 function buildService() {
-  return ContractService.getInstance(
+  return new ContractService(
     new NodeContractServiceStorage(Network.TESTNET),
     undefined as never,
     undefined as never,
@@ -37,13 +37,9 @@ function buildService() {
 }
 
 describe("bundled artifacts", () => {
-  beforeEach(() => ContractService.resetInstance())
-  afterAll(() => ContractService.resetInstance())
-
   it("are parsed once per page", async () => {
     const service = buildService()
     const first = await service.getArtifactForContract(DEFAULT_CONTRACTS.paylinkDirect)
-    ContractService.resetInstance()
     const again = await buildService().getArtifactForContract(DEFAULT_CONTRACTS.paylinkDirect)
     expect(again).toBe(first)
   })

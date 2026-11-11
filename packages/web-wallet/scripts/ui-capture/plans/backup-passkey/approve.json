@@ -1,0 +1,105 @@
+{
+  "scenario": "activity",
+  "viewport": "402x879,1280x832",
+  "path": "/settings?flowFixture=success&backupFixture=approve",
+  "ready": {
+    "selector": ".ww-settings__user"
+  },
+  "steps": [
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Passkeys",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": "html[data-backup-screen=approve]"
+    },
+    {
+      "action": "screenshot",
+      "file": "a4-approve.png",
+      "state": "A4: approve with the signed-in passkey"
+    },
+    {
+      "action": "goto",
+      "path": "/settings?flowFixture=success&backupFixture=approve-publish"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-settings__user"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Passkeys",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": "html[data-backup-screen=approve]"
+    },
+    {
+      "action": "screenshot",
+      "file": "a4-approve-publish.png",
+      "state": "Step 2: publishing the approved change"
+    },
+    {
+      "action": "goto",
+      "path": "/settings?flowFixture=success&backupFixture=approve-pay"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-settings__user"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Passkeys",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": "html[data-backup-screen=approve]"
+    },
+    {
+      "action": "screenshot",
+      "file": "l3-approve-pay.png",
+      "state": "Step 2: pay, the driver waits for the funding"
+    },
+    {
+      "action": "scroll",
+      "selector": ".ww-modal",
+      "top": "end"
+    },
+    {
+      "action": "screenshot",
+      "file": "l3-approve-pay-end.png",
+      "state": "Step 2: pay, scrolled to the sheet's end"
+    },
+    {
+      "action": "goto",
+      "path": "/settings?flowFixture=success&backupFixture=approve-declined"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-settings__user"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Passkeys",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": "html[data-backup-screen=approve]"
+    },
+    {
+      "action": "screenshot",
+      "file": "c3-approve-declined.png",
+      "state": "C3: the approval prompt closed"
+    }
+  ],
+  "finalScreenshot": false
+}

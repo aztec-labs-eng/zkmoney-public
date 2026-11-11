@@ -7,7 +7,6 @@ import {
   BroadcastDeferred,
   WalletError,
   isTerminalRegistrationPhase,
-  readyValue,
   rebuildRegistrationBroadcast,
   registrationAt,
   type AccountRecord,
@@ -15,10 +14,11 @@ import {
   type BroadcastJobOf,
   type PendingRegistrationRecord,
   type RegistrationBroadcastPayload,
-  type Resource,
+  type Service,
 } from "@obsidion/front-core"
 import type { ContractService, ObsidionAccount, ObsidionWallet } from "@obsidion/sdk"
 import type { WebWalletConfig } from "../../config/env"
+import type { SponsorParts } from "../../session/session"
 import { buildRetrySignDeps } from "../registration/registrationDeps"
 import { registrationBroadcastSeen, unlockedSessionKeys } from "../registration/registrationResume"
 import { rememberReissuedClaim } from "../registration/registrationTerms"
@@ -40,7 +40,7 @@ export function payloadDeadlineMs(payload: RegistrationBroadcastPayload): number
 export type RegistrationPayloads = Map<string, RegistrationBroadcastPayload>
 
 /** What a session's registration broadcasts read: the payloads it signed, and its stores. */
-export interface RegistrationBroadcastStores extends DetectionStores {
+export interface RegistrationBroadcastStores extends DetectionStores, SponsorParts {
   registrationPayloads: RegistrationPayloads
   accountRecord: Pick<AccountRecord, "get"> | null
 }
@@ -50,18 +50,18 @@ export interface RegistrationBroadcastStores extends DetectionStores {
  * `now` drops a backoff, for the user's own retry.
  */
 export async function oweRegistrationBroadcast(
-  own: Pick<RegistrationBroadcastStores, "registrationPayloads" | "sipaDeposits">,
+  session: Pick<RegistrationBroadcastStores, "registrationPayloads" | "sipaDeposits">,
   wakeBroadcasts: () => void,
   record: Pick<PendingRegistrationRecord, "account" | "sipaAddress">,
   opts: { payload?: RegistrationBroadcastPayload; now?: boolean } = {},
 ): Promise<void> {
   const address = record.sipaAddress.toLowerCase()
-  if (opts.payload) own.registrationPayloads.set(address, opts.payload)
-  await own.sipaDeposits.oweBroadcast(address, {
+  if (opts.payload) session.registrationPayloads.set(address, opts.payload)
+  await session.sipaDeposits.oweBroadcast(address, {
     kind: "registration",
     source: { type: "registration", account: record.account },
   })
-  if (opts.now) await own.sipaDeposits.apply(address, { type: "broadcastRetry" })
+  if (opts.now) await session.sipaDeposits.apply(address, { type: "broadcastRetry" })
   wakeBroadcasts()
 }
 
@@ -71,25 +71,25 @@ async function rebuild(
   networkId: string,
   record: PendingRegistrationRecord,
   keys: NonNullable<Awaited<ReturnType<typeof unlockedSessionKeys>>>,
-  own: RegistrationBroadcastStores,
+  session: RegistrationBroadcastStores,
 ): Promise<RegistrationBroadcastPayload> {
   const signDeps = await buildRetrySignDeps(
-    own.signup.grantToken(record.tag),
+    session.signup.grantToken(record.tag),
     keys,
-    config,
+    session.page,
     networkId,
-    own.sipaDeposits,
-    own.accountRecord,
+    session.sipaDeposits,
+    session.accountRecord,
   )
   const { accountService } = signDeps
-  const deps = await buildWebDetectionDeps(config, own)
+  const deps = await buildWebDetectionDeps(config, session)
   const result = await rebuildRegistrationBroadcast(deps, record, {
     ...signDeps,
     accountService: {
       // A re-issued claim carries a new hold, and the stored terms follow it.
       signDomain: async (...args: Parameters<typeof accountService.signDomain>) => {
         const claim = await accountService.signDomain(...args)
-        rememberReissuedClaim(own.registrations, record, claim)
+        rememberReissuedClaim(session.registrations, record, claim)
         return claim
       },
     },
@@ -109,22 +109,22 @@ export async function registrationBroadcastPayload(
   wallet: ObsidionWallet,
   config: WebWalletConfig,
   record: PendingRegistrationRecord,
-  own: RegistrationBroadcastStores,
+  session: RegistrationBroadcastStores,
 ): Promise<{ payload: RegistrationBroadcastPayload; account: ObsidionAccount }> {
   if (isTerminalRegistrationPhase(record.phase))
     throw new WalletError("deposit.addressRetired", "registration ended")
   if (record.replaced?.broadcastSpent)
     throw new WalletError("deposit.addressRetired", "registration broadcast spent")
-  const keys = await unlockedSessionKeys(wallet)
+  const keys = await unlockedSessionKeys(session, wallet)
   const owned =
     keys?.account.getAddress().toString().toLowerCase() === record.l2Address.toLowerCase()
   if (!keys || !owned) throw new BroadcastDeferred(Date.now() + BROADCAST_WAIT_MS, "unlock")
   // A cached payload whose claim or signed terms have lapsed would be refused at the sweep.
-  const cached = own.registrationPayloads.get(record.sipaAddress.toLowerCase())
+  const cached = session.registrationPayloads.get(record.sipaAddress.toLowerCase())
   const fresh =
     cached && payloadDeadlineMs(cached) > Date.now() + BROADCAST_WAIT_MS ? cached : undefined
   return {
-    payload: fresh ?? (await rebuild(config, wallet.networkId, record, keys, own)),
+    payload: fresh ?? (await rebuild(config, wallet.networkId, record, keys, session)),
     account: keys.account,
   }
 }
@@ -132,41 +132,53 @@ export async function registrationBroadcastPayload(
 export function registrationExecutor(
   wallet: ObsidionWallet,
   config: WebWalletConfig,
-  own: RegistrationBroadcastStores,
-  contractService: Resource<ContractService>,
+  session: RegistrationBroadcastStores,
+  contractService: Service<ContractService>,
 ): BroadcastExecutor<BroadcastJobOf<"registration">> {
   const recordOf = (job: BroadcastJobOf<"registration">) =>
-    registrationAt(knownRegistrations(own.registrations), job.address)
+    registrationAt(knownRegistrations(session.registrations), job.address)
 
   return {
     landed: async (job) => {
       const record = recordOf(job)
       if (!record) return false
-      return registrationBroadcastSeen(own.sipaDeposits, record, config, wallet, job.republishSince)
+      return registrationBroadcastSeen(
+        session.sipaDeposits,
+        record,
+        session.page,
+        wallet,
+        job.republishSince,
+      )
     },
     send: async (job, attempt) => {
       const record = recordOf(job)
       // An address the registration moved off (a refund at the earned price) closed as replaced:
       // it is recovered, not swept.
       if (!record) throw new WalletError("deposit.addressRetired", "registration ended")
-      const { payload, account } = await registrationBroadcastPayload(wallet, config, record, own)
+      const { payload, account } = await registrationBroadcastPayload(
+        wallet,
+        config,
+        record,
+        session,
+      )
       const broadcast = createWebRegistrationBroadcaster({
         wallet,
         account,
-        contractService: await readyValue(contractService),
+
+        contractService: await contractService.ready(),
         config,
         handle: record.tag,
-        nameClaims: own.nameClaims,
+        session,
       })
       const txHash = await broadcast(payload, attempt)
-      own.registrationPayloads.delete(job.address)
-      await own.registrations.broadcastSent(job.address)
+      session.registrationPayloads.delete(job.address)
+      await session.registrations.broadcastSent(job.address)
       return txHash
     },
     // A broadcast found on chain, e.g. one an earlier page sent before it could stamp the record.
     onLanded: async (job) => {
-      own.registrationPayloads.delete(job.address)
-      if (recordOf(job)?.broadcast === false) await own.registrations.broadcastSent(job.address)
+      session.registrationPayloads.delete(job.address)
+      if (recordOf(job)?.broadcast === false) await session.registrations.broadcastSent(job.address)
     },
   }
 }

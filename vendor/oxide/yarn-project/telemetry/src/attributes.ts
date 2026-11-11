@@ -216,7 +216,7 @@ export const L1_OBSERVER_OPERATION_KIND = defineAttribute({
     'unprocessed_deposit_refund',
     'deposit',
     'registration',
-    'user_op',
+    'add_passkey',
   ] as const,
   privacy: 'A fixed enum of operation kinds; it contains no user data.',
 });

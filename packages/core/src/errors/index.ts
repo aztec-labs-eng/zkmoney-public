@@ -11,13 +11,18 @@ export type ErrorCode =
   | "withdrawal.dropped"
   | "withdrawal.inactiveTab"
   | "withdrawal.failed"
+  | "operation.running"
+  | "operation.sent"
   | "sponsorship.paused"
   | "sponsorship.feesTooHigh"
   | "sponsorship.allowanceExhausted"
+  | "sponsorship.unconfirmed"
   | "account.unlockFailed"
   | "account.creationCancelled"
   | "account.replaceUnconfirmed"
   | "account.locked"
+  /** The page runs an account the tag's record has moved past; a reload opens the current one. */
+  | "account.outdated"
   | "account.noPasskeyCredential"
   | "wallet.notReady"
   | "wallet.missing"
@@ -29,6 +34,9 @@ export type ErrorCode =
   | "contact.unregistered"
   | "contact.requestMismatch"
   | "contact.cannotReceive"
+  /** Another contact holds the address, tag, email or wallet. */
+  | "contact.duplicate"
+  | "contact.nameTaken"
   | "request.undelivered"
   | "messaging.anotherTab"
   | "messaging.unsupported"
@@ -38,10 +46,18 @@ export type ErrorCode =
   | "deposit.registrationMoved"
   | "migration.noResolverRegistry"
   | "deposit.broadcastDropped"
+  | "deposit.sendHeld"
+  | "deposit.holdUnsaved"
   | "deposit.broadcastFailed"
   | "deposit.addressRetired"
   | "deposit.addressUnpublished"
   | "deposit.belowFee"
+  /** The bridge refused an amount under its fees. */
+  | "bridge.belowFee"
+  | "bridge.quoteFailed"
+  /** A bridge-out under the least burn that pays its escrow; `data.floor` is that burn, atomic. */
+  | "withdraw.bridgeBelowFloor"
+  | "withdraw.escrowRan"
   | "deposit.overCap"
   | "deposit.fundingReverted"
   | "deposit.fundingFailed"
@@ -113,7 +129,18 @@ export type ErrorCode =
   | "refund.notRecovered"
   | "refund.incomplete"
   | "refund.receiptUnread"
+  | "paylink.voucherUnread"
+  | "paylink.termsMismatch"
+  | "backupPasskey.changeMismatch"
   | "config.invalid"
+  /** A holding feature binds no bridge in a role it needs; `detail` names the role. */
+  | "holding.missingRole"
+  /** A holding feature binds a bridge its deployment does not list. */
+  | "holding.unknownBridge"
+  /** A contract a holding feature needs is missing, malformed or zero; `detail` names it. */
+  | "holding.unusableAddress"
+  /** A holding's yearly rate could not be read; its figures show without one. */
+  | "holding.rateUnread"
   | "timeout"
   | "aborted"
   /** A broken programmer assumption; `detail` names it. */
@@ -154,5 +181,15 @@ export async function bestEffort<T>(code: ErrorCode, work: Promise<T>): Promise<
   } catch (e) {
     console.warn(`[${code}]`, e)
     return undefined
+  }
+}
+
+/** `bestEffort` for synchronous work: a throw is logged and `fallback` returned. */
+export function bestEffortSync<T>(fn: () => T, fallback: T): T {
+  try {
+    return fn()
+  } catch (e) {
+    console.warn("[bestEffort]", e)
+    return fallback
   }
 }

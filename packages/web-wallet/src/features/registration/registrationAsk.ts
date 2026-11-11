@@ -5,7 +5,7 @@
  * deposit the chain takes.
  *
  * A schedule reaching these functions is either the figures or undefined: none signed, or the read
- * still out. The `registrationSchedule` resource adds a third state, null, for a deployment that
+ * still out. The `registrationSchedule` query adds a third state, null, for a deployment that
  * prices no registration at all. `registrationScheduleForSipa` answers the SIPA deposit lane with
  * its own states, named on `RegistrationScheduleAnswer`.
  *
@@ -155,13 +155,18 @@ export interface RegistrationQuote {
   floor?: bigint
 }
 
-const reportedQuotes = new Set<string>()
-
-/** A deployment misconfiguration says itself once; a render path must not repeat it per frame. */
-function reportOnce(message: string): void {
-  if (reportedQuotes.has(message)) return
-  reportedQuotes.add(message)
-  console.error(message)
+/**
+ * A schedule whose floor outgrew the standard ask is misconfigured; each one read or signed says
+ * so. An earned ask under the floor is quoted on the standard schedule instead.
+ */
+export function reportShortAsk(schedule: RegistrationSchedule): void {
+  const floor = registrationFloor(schedule)
+  const total = askedTotal("standard")
+  if (floor > total)
+    console.error(
+      `the standard registration deposit this build asks for (${total}) does not cover this ` +
+        `deployment's floor (${floor}); raise ${askOverrideName("standard")}`,
+    )
 }
 
 /**
@@ -169,8 +174,8 @@ function reportOnce(message: string): void {
  * own figures once they are known. Anything the total carries above `fee` lands in the opening
  * balance.
  *
- * A deployment whose floor outgrew the asked total is a configuration error. Renders call this, so
- * it reports rather than throws, and quotes the floor rather than a figure the registry refuses.
+ * A schedule whose floor outgrew the asked total is a configuration error, which `reportShortAsk`
+ * reports; this quotes the floor rather than a figure the registry refuses.
  */
 export function registrationQuote(
   schedule: RegistrationSchedule | undefined,
@@ -179,14 +184,7 @@ export function registrationQuote(
   const total = askedTotal(kind)
   if (schedule === undefined) return { total }
   const floor = registrationFloor(schedule)
-  if (floor > total) {
-    const envName = askOverrideName(kind)
-    reportOnce(
-      `the ${kind} registration deposit this build asks for (${total}) does not cover this ` +
-        `deployment's floor (${floor}); raise ${envName}`,
-    )
-    return { total: floor, fee: schedule.fee, floor }
-  }
+  if (floor > total) return { total: floor, fee: schedule.fee, floor }
   return { total, fee: schedule.fee, floor }
 }
 

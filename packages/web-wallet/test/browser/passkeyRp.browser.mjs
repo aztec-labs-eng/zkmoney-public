@@ -1,11 +1,12 @@
 import assert from "node:assert/strict"
 import { createHash, createPublicKey, verify, X509Certificate } from "node:crypto"
 import { execFileSync } from "node:child_process"
-import { mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { createServer } from "node:https"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { chromium } from "@playwright/test"
+import { build } from "vite"
 
 const temp = mkdtempSync(join(tmpdir(), "passkey-rp-"))
 const keyFile = join(temp, "key.pem")
@@ -34,6 +35,24 @@ const spki = createHash("sha256")
   .update(new X509Certificate(cert).publicKey.export({ type: "spki", format: "der" }))
   .digest("base64")
 const root = new URL("../../../", import.meta.url)
+// The page's two passkey-web modules, bundled as the wallet bundles them, imports and all.
+const entry = join(temp, "page.js")
+writeFileSync(
+  entry,
+  `export { BrowserPasskeyCeremony } from ${JSON.stringify(
+    new URL("passkey-web/dist/ceremony/passkeyCeremony.js", root).pathname,
+  )}
+export { selectWebPasskeyRpId } from ${JSON.stringify(
+    new URL("passkey-web/dist/rules/relyingParty.js", root).pathname,
+  )}`,
+)
+const [bundle] = await build({
+  configFile: false,
+  logLevel: "silent",
+  cacheDir: join(temp, ".vite"),
+  build: { write: false, minify: false, lib: { entry, formats: ["es"], fileName: "page" } },
+})
+const pageModule = bundle.output[0].code
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest()
 let relatedOriginRequests = 0
 const server = createServer({ key: readFileSync(keyFile), cert }, (req, res) => {
@@ -43,18 +62,13 @@ const server = createServer({ key: readFileSync(keyFile), cert }, (req, res) => 
     relatedOriginRequests++
     res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" })
     res.end(readFileSync(new URL("auth-web/public/.well-known/webauthn", root)))
-  } else if (url.pathname.startsWith("/passkey/") && !url.pathname.includes("..")) {
+  } else if (url.pathname === "/page.js") {
     res.writeHead(200, { "content-type": "text/javascript" })
-    res.end(readFileSync(new URL(`passkey-web/dist/${url.pathname.slice(9)}`, root)))
-  } else if (url.pathname === "/core.js") {
-    res.writeHead(200, { "content-type": "text/javascript" })
-    res.end(readFileSync(new URL("core/dist/constants/index.js", root)))
+    res.end(pageModule)
   } else {
     res.writeHead(200, { "content-type": "text/html" })
-    res.end(`<script type="importmap">{"imports":{"@obsidion/core/constants":"/core.js"}}</script>
-      <script type="module">
-        import { BrowserPasskeyCeremony } from "/passkey/ceremony/passkeyCeremony.js"
-        import { selectWebPasskeyRpId } from "/passkey/rules/relyingParty.js"
+    res.end(`<script type="module">
+        import { BrowserPasskeyCeremony, selectWebPasskeyRpId } from "/page.js"
         window.ceremony = new BrowserPasskeyCeremony({focusWaitMs: 0})
         window.rp = (environment) => selectWebPasskeyRpId({ VITE_PASSKEY_ENVIRONMENT: environment })
       </script>`)
@@ -157,7 +171,9 @@ try {
   checkSignature(production, walletProof, "auth.zk.money", "https://wallet.zk.money")
   checkSignature(production, await sign("production"), "auth.zk.money", "https://wallet.zk.money")
   assert.ok(relatedOriginRequests > 0, "Chromium must fetch the related-origins document")
-  console.log("PASS production campaign creation, wallet signing and discoverable recovery over related origins")
+  console.log(
+    "PASS production campaign creation, wallet signing and discoverable recovery over related origins",
+  )
 
   await visit("https://launch.staging.zk.money")
   const staging = await create("staging")
@@ -170,9 +186,14 @@ try {
     checkSignature(staging, await sign("preview", staging.credentialId), "staging.zk.money", origin)
   }
   const credentials = await cdp.send("WebAuthn.getCredentials", { authenticatorId })
-  assert.deepEqual(credentials.credentials.map((c) => c.rpId).sort(), ["auth.zk.money", "staging.zk.money"])
+  assert.deepEqual(credentials.credentials.map((c) => c.rpId).sort(), [
+    "auth.zk.money",
+    "staging.zk.money",
+  ])
   const crossRp = await page.evaluate(async (credentialId) => {
-    const id = Uint8Array.from(atob(credentialId.replaceAll("-", "+").replaceAll("_", "/")), (c) => c.charCodeAt(0))
+    const id = Uint8Array.from(atob(credentialId.replaceAll("-", "+").replaceAll("_", "/")), (c) =>
+      c.charCodeAt(0),
+    )
     try {
       await navigator.credentials.get({
         signal: AbortSignal.timeout(500),
@@ -188,7 +209,9 @@ try {
     }
   }, production.credentialId)
   assert.ok(["NotAllowedError", "AbortError", "TimeoutError"].includes(crossRp), crossRp)
-  console.log("PASS staging/paired previews share credentials; production credentials remain separate")
+  console.log(
+    "PASS staging/paired previews share credentials; production credentials remain separate",
+  )
 
   await visit("https://unapproved.zk.money")
   const denied = await page.evaluate(async () => {
@@ -204,7 +227,12 @@ try {
 
   await visit(`https://localhost:${port}`)
   const local = await create("local")
-  checkSignature(local, await sign("local", local.credentialId), "localhost", `https://localhost:${port}`)
+  checkSignature(
+    local,
+    await sign("local", local.credentialId),
+    "localhost",
+    `https://localhost:${port}`,
+  )
   console.log("PASS local browser/desktop origin uses localhost")
 } finally {
   await browser?.close()

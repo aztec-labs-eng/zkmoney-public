@@ -20,9 +20,8 @@ import {
   type RegistrationStore,
   type SipaDeposits,
 } from "@obsidion/front-core"
-import type { WebWalletConfig } from "../../config/env"
 import type { WebAlphaAuthService } from "../../platform/auth/WebAlphaAuthService"
-import { oxideEnvFor } from "../../config/oxideTuple"
+import type { PageFacts } from "../../session/pageChain"
 
 /** The salt seeded with a registration address on this device, if any. */
 export const seededRegistrationSalt =
@@ -87,7 +86,7 @@ function fundsBearing(record: PendingRegistrationRecord): boolean {
  */
 export async function healRegistrationDeposits(
   own: RegistrationSeedStores,
-  config: WebWalletConfig,
+  page: PageFacts,
   networkId: string,
 ): Promise<number> {
   const identity = own.identity.get().value
@@ -108,7 +107,7 @@ export async function healRegistrationDeposits(
   )
   if (candidates.length === 0) return 0
 
-  const { tuple, env, publicClient } = await oxideEnvFor(config)
+  const { tuple, env, publicClient } = await page.chain.oxideEnv.read()
   const derive = createRegistrationSipaDeriver({
     publicClient,
     env,

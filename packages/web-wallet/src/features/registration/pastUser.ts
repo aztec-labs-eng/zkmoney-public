@@ -1,10 +1,14 @@
 import { useMemo } from "react"
 import type { Hex } from "viem"
-import { memoryStore, useResource, useStore } from "@obsidion/front-core"
-import type { ErrorCode } from "@obsidion/core/errors"
+import type { Config } from "wagmi"
+import { memoryStore, useStore, NO_SERVICE, serviceStatus } from "@obsidion/front-core"
+import { bestEffortSync, type ErrorCode } from "@obsidion/core/errors"
 import type { ObsidionAccount } from "@obsidion/sdk"
-import type { tabStash } from "../../platform/storage/tabStash"
+import type { TabKey, tabStash } from "../../platform/storage/tabStash"
+import type { WebWalletConfig } from "../../config/env"
+import { collectOnboardingKeys } from "../../session/account"
 import { isWalletRejection } from "../../session/l1Wallet"
+import type { WebAlphaAuthService } from "../../platform/auth/WebAlphaAuthService"
 import { useSession } from "../../session/session"
 import {
   claimPastUser,
@@ -12,7 +16,8 @@ import {
   provePastUserForGrant,
   type PastUserProof,
 } from "./pastUserClaim"
-import { NotPastUserError, signPastUserMessage } from "./pastUserProver"
+import { NotPastUserError, provePastUser, signPastUserMessage } from "./pastUserProver"
+import { accountServiceFor } from "./registrationDeps"
 import { readStash } from "./signupStash"
 
 /** `not_found` and `claimed` end a check that cannot pass with this wallet. */
@@ -62,14 +67,19 @@ export interface PastUserVerified extends PastUserProof {
 }
 
 const VERIFIED_KEY = "zkm.pastUserVerified"
-const checkKey = (owner: string) => `zkm.pastUserCheck.${owner}`
+const checkKey = (owner: string): TabKey => `zkm.pastUserCheck.${owner}`
 
 /**
  * The page's past-user check: one at a time, so closing its modal leaves it running and its result
  * reopens the modal. A passed check is kept for the tab, per account; before one, the owner-less
  * proof waits for a tag.
  */
-export function createPastUser(stash: typeof tabStash) {
+export function createPastUser(
+  stash: typeof tabStash,
+  wagmi: Config,
+  auth: WebAlphaAuthService,
+  config: WebWalletConfig,
+) {
   const state = memoryStore({
     check: undefined as (PastUserState & { owner?: string }) | undefined,
     running: false,
@@ -78,13 +88,8 @@ export function createPastUser(stash: typeof tabStash) {
   })
   const patch = (next: Partial<ReturnType<typeof state.get>>) =>
     state.set({ ...state.get(), ...next })
-  const tryStash = (write: () => void) => {
-    try {
-      write()
-    } catch {
-      // The page keeps the check.
-    }
-  }
+  // Without tab storage the page keeps the check.
+  const tryStash = (write: () => void) => bestEffortSync(write, undefined)
   /** `owner`'s check as the tab remembers it: only a passed one survives a reload. */
   const recall = (owner: string | undefined): PastUserState => {
     const saved = owner
@@ -123,10 +128,16 @@ export function createPastUser(stash: typeof tabStash) {
       patch({ running: true })
       dispatch(owner, { type: "connected", account })
       try {
-        const signature = await signPastUserMessage(account)
+        const signature = await signPastUserMessage(wagmi, account)
         dispatch(owner, { type: "signed" })
-        if (obsidionAccount) await claimPastUser(obsidionAccount, signature)
-        else setVerified({ account, ...(await provePastUserForGrant(signature)) })
+        if (obsidionAccount) {
+          const keys = await collectOnboardingKeys({ auth }, obsidionAccount)
+          await claimPastUser(signature, {
+            keys,
+            accountService: accountServiceFor(config, keys),
+            prove: (req) => provePastUser(config, req),
+          })
+        } else setVerified({ account, ...(await provePastUserForGrant(config, signature)) })
         dispatch(owner, { type: "confirmed" })
       } catch (err) {
         if (err instanceof NotPastUserError) dispatch(owner, { type: "ended", step: "not_found" })
@@ -159,8 +170,10 @@ export type PastUser = ReturnType<typeof createPastUser>
 
 /** The page's check as the signed-in account sees it. */
 export function usePastUserCheck() {
-  const { pastUser, account } = useSession()
-  const owner = useResource(account)?.getAddress().toString()
+  const { pastUser, identity, account } = useSession()
+  const unlocked = useStore(account ?? NO_SERVICE, serviceStatus) === "ready"
+  const address = useStore(identity, (i) => i.value?.address)
+  const owner = unlocked ? address : undefined
   const recalled = useMemo(() => pastUser.recall(owner), [pastUser, owner])
   const state = useStore(pastUser.state, () => pastUser.current(owner, recalled))
   return { state, owner }

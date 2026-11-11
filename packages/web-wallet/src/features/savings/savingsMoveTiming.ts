@@ -2,32 +2,30 @@
  * What a move's time note is built from: the slot grid the deposit screen reads, and
  * the release ETA the withdrawal flow's estimator gives for a burn landing at a given time.
  */
-import { useEffect, useState } from "react"
 import {
   estimateWithdrawalSpeedup,
+  memoryStore,
+  type QueryFactory,
+  type QueryState,
   type SavingsMoveEta,
   type SavingsMoveTiming,
-  useResource,
+  serviceStatus,
+  useStore,
 } from "@obsidion/front-core"
-import type { ObsidionWallet } from "@obsidion/sdk"
-import { getConfig } from "../../config/env"
-import { l1PublicClient } from "../../config/oxideTuple"
 import { loadArrivalGrid } from "../deposit/depositArrival"
 import { etaLabel } from "../withdraw/WithdrawalSpeedPicker"
-import { speedupEstimator } from "../withdraw/useFasterWithdrawal"
-import { useSession } from "../../session/session"
+import { useSession, type Session } from "../../session/session"
 
 /** A burn that has landed: its release is estimated from where it sits in its epoch. */
 const LANDED = { expected: 0, earliest: 0, latest: 0 }
 
-let loading: Promise<SavingsMoveTiming> | undefined
+type TimingPage = Pick<Session["page"], "speedupEstimator" | "wallet">
 
-type SavingsNode = ObsidionWallet["node"]
-
-async function loadTiming(node: SavingsNode | undefined): Promise<SavingsMoveTiming> {
-  if (!node) throw new Error("Savings timing needs the node")
-  const config = getConfig()
-  const estimator = speedupEstimator(config.network, node, l1PublicClient(config))
+async function loadTiming(page: TimingPage, signal: AbortSignal): Promise<SavingsMoveTiming> {
+  const [{ node }, estimator] = await Promise.all([
+    page.wallet.ready(signal),
+    page.speedupEstimator.ready(signal),
+  ])
   const [grid, constants, calibration] = await Promise.all([
     loadArrivalGrid(node),
     node.getL1Constants(),
@@ -41,26 +39,22 @@ async function loadTiming(node: SavingsNode | undefined): Promise<SavingsMoveTim
   }
 }
 
-/** The timing every move's note shares; undefined while it loads or where a read failed. */
+/** The timing every move's note shares: read once per page, and again after a failed read. */
+export const savingsMoveTimings = (query: QueryFactory, page: () => TimingPage) =>
+  query<[], SavingsMoveTiming>("savingsMoveTiming", {
+    load: (signal) => loadTiming(page(), signal),
+  })
+
+export type SavingsMoveTimings = ReturnType<typeof savingsMoveTimings>
+
+const UNREAD = memoryStore<QueryState<SavingsMoveTiming>>({ status: "pending" }).readonly
+
+/** The shared timing once the wallet is up; undefined while it loads or where a read failed. */
 export function useSavingsMoveTiming(): SavingsMoveTiming | undefined {
-  const node = useResource(useSession().wallet)?.node
-  const [timing, setTiming] = useState<SavingsMoveTiming>()
-  useEffect(() => {
-    if (!node) return
-    let live = true
-    loading ??= loadTiming(node).catch((err) => {
-      loading = undefined
-      throw err
-    })
-    loading.then(
-      (loaded) => live && setTiming(loaded),
-      () => {},
-    )
-    return () => {
-      live = false
-    }
-  }, [node])
-  return timing
+  const { page, wallet } = useSession()
+  const up = useStore(wallet, serviceStatus) === "ready"
+  const timing = useStore(up ? page.savingsMoveTiming() : UNREAD)
+  return timing.status === "ready" ? timing.value : undefined
 }
 
 /** "About 12 min left" while a leg counts down, "Usually about 25 min" for a typical duration. */

@@ -18,14 +18,16 @@ import {
   type OxideSignDeps,
   type RegistrationStore,
   type SipaDeposits,
+  type Turn,
 } from "@obsidion/front-core"
 import { SANDBOX_REGISTRATION_BENEFICIARY_ID } from "@obsidion/core/constants"
 import type { NameClaimResponse } from "@obsidion/core/types"
 import type { NameClaimWitness, OxideAccountBinding } from "@obsidion/sdk"
 import type { WebWalletConfig } from "../../config/env"
-import { getOxideTuple, oxideEnvFor, requireTupleField } from "../../config/oxideTuple"
+import { requireTupleField } from "../../config/oxideTuple"
+import type { PageFacts } from "../../session/pageChain"
 import { oxideAccountPasskey } from "../../platform/auth/oxideAccountPasskey"
-import { type OnboardingKeys } from "../../session/account"
+import type { OnboardingKeys } from "../../session/account"
 import type { SignupStash } from "./signupStash"
 import { makeRegistrationDepositSeeder, seededRegistrationSalt } from "./registrationDepositSeed"
 import { readRegistrationSchedule, resolveBeneficiary } from "./registrationTerms"
@@ -88,24 +90,24 @@ export async function registrationAddressDeps(
   handle: string,
   secretKey: Fr,
   l2Address: Hex,
-  config: WebWalletConfig,
+  page: PageFacts,
   networkId: string,
   deposits: Pick<SipaDeposits, "apply">,
   l1Client?: PublicClient,
   grantToken?: string,
 ) {
-  const { tuple, env, publicClient: envClient } = await oxideEnvFor(config)
+  const { tuple, env, publicClient: envClient } = await page.chain.oxideEnv.read()
   const publicClient = l1Client ?? envClient
   return {
     tag: handle,
     env,
     masterSecret: secretKey,
     l2Address,
-    accountService: accountServiceFor(config, { secretKey }, grantToken),
-    beneficiary: await resolveBeneficiary(config, Number(SANDBOX_REGISTRATION_BENEFICIARY_ID)),
+    accountService: accountServiceFor(page.config, { secretKey }, grantToken),
+    beneficiary: await resolveBeneficiary(page, Number(SANDBOX_REGISTRATION_BENEFICIARY_ID)),
     // Read live at derivation: the committed fee must be exactly what the controller checks at
     // sweep, and signed terms (when the claim carries them) take precedence over this schedule.
-    scheduleFee: () => readRegistrationSchedule(config).then((schedule) => schedule.fee),
+    scheduleFee: () => readRegistrationSchedule(page).then((schedule) => schedule.fee),
     l1: createOxideL1Reader(publicClient),
     deriveRegistrationSipa: createRegistrationSipaDeriver({
       publicClient,
@@ -124,13 +126,14 @@ export async function registrationAddressDeps(
 export async function registrationSessionDeps(
   handle: string,
   keys: OnboardingKeys,
-  config: WebWalletConfig,
+  page: PageFacts,
   networkId: string,
   own: {
     registrations: RegistrationStore
     sipaDeposits: Pick<SipaDeposits, "apply">
     accountRecord: AccountOf
     signup: Pick<SignupStash, "grantToken">
+    page: { registrationTurn: Turn }
   },
   onStage?: (stage: OxideRegistrationStage) => void,
 ): Promise<OxideRegistrationSessionDeps> {
@@ -140,7 +143,7 @@ export async function registrationSessionDeps(
       handle,
       keys.secretKey,
       l2Address,
-      config,
+      page,
       networkId,
       own.sipaDeposits,
       undefined,
@@ -150,6 +153,7 @@ export async function registrationSessionDeps(
     passkey: await oxideAccountPasskey(keys.account.getAuthProvider()),
     credentialId: await requireCredentialId(own.accountRecord),
     registrations: own.registrations,
+    turn: own.page.registrationTurn,
     onStage,
   }
 }
@@ -162,15 +166,15 @@ export async function registrationSessionDeps(
 export async function buildRetrySignDeps(
   grantToken: string | undefined,
   keys: OnboardingKeys,
-  config: WebWalletConfig,
+  page: PageFacts,
   networkId: string,
   deposits: Pick<SipaDeposits, "get" | "apply">,
   account: AccountOf,
 ): Promise<OxideSignDeps> {
-  const { tuple, env, publicClient } = await oxideEnvFor(config)
+  const { tuple, env, publicClient } = await page.chain.oxideEnv.read()
   return {
     masterSecret: keys.secretKey,
-    accountService: accountServiceFor(config, keys, grantToken),
+    accountService: accountServiceFor(page.config, keys, grantToken),
     r1Key: pubkeyToR1KeyArg(keys.pubkeyHex),
     passkey: await oxideAccountPasskey(keys.account.getAuthProvider()),
     credentialId: await requireCredentialId(account),
@@ -217,10 +221,10 @@ export async function buildClaimSubscribeWitness(
   handle: string,
   keys: Pick<OnboardingKeys, "account" | "secretKey">,
   claim: Pick<NameClaimResponse, "signature" | "nonce" | "deadline">,
-  config: WebWalletConfig,
+  { chain }: PageFacts,
   nameHash?: Hex,
 ): Promise<NameClaimWitness> {
-  const tuple = await getOxideTuple(config)
+  const tuple = await chain.oxideTuple.read()
   const ensDomain = requireTupleField(tuple, "ensDomain")
   const node = nameHash ?? composeWireNameHash(handle, ensDomain)
   return {

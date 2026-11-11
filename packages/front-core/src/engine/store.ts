@@ -18,7 +18,9 @@ export interface Store<T> extends ReadonlyStore<T> {
   readonly readonly: ReadonlyStore<T>
 }
 
+// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
 let depth = 0
+// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
 const queue = new Set<() => void>()
 
 function schedule(job: () => void): void {

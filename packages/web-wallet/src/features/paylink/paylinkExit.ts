@@ -11,16 +11,12 @@
  * The burn lands in the shared withdrawal store, so oxide's relayer finalizes it and the tracker
  * walks it to `done` like any other. Its provenance says nobody here owns the destination.
  */
-import { EthAddress } from "@aztec-labs/aztec.js/addresses"
+import { AztecAddress, EthAddress } from "@aztec-labs/aztec.js/addresses"
 import { formatUnits, type Address } from "viem"
 import {
   decodePaylinkInline,
   exitPaylinkWithVoucher,
-  nextOperationId,
   paylinkVoucherUses,
-  type ContractService,
-  type ObsidionWallet,
-  type RegisteredTeeSigner,
   type PaylinkL1Proof,
 } from "@obsidion/sdk"
 import {
@@ -36,16 +32,14 @@ import {
   type WithdrawalRecord,
 } from "@obsidion/front-core"
 import { withdrawalExecutorFee } from "../withdraw/withdrawalFee"
-import { getConfig } from "../../config/env"
-import { webStorage } from "../../platform/storage/WebStorageAdapter"
-import { runOperation, type OperationHandle } from "../operations/operations"
+import type { OperationHandle } from "../operations/operations"
 import { withTimeout } from "../../lib/withTimeout"
 import { claimSponsorRail } from "../registration/claimSponsorship"
 import { RAIL_VOUCHER } from "../registration/rails"
-import { l1PublicClient } from "../../config/oxideTuple"
 import { owePaylinkClaim, reportPaylinkClaims } from "./paylinkClaimReport"
 import { assertPaylinkSwapSource, paylinkTuple, readPaylinkSource } from "./paylinkSource"
 import { linkIdentity } from "./linkIdentity"
+import { runLinkBurn } from "./linkBurn"
 import { historicTeeSigner } from "../migration/historicTokenContext"
 import { assertWithinWithdrawalLimit } from "../limits/withdrawalLimit"
 import type { WithdrawalReceiveAsset } from "../withdraw/withdrawAssets"
@@ -53,37 +47,29 @@ import {
   currentDeployment,
   planSwapLeg,
   runBurn,
+  type BurnSession,
   swapRecordFields,
   withdrawalOptions,
   type SwapCommit,
   type SwapLeg,
   type WithdrawStage,
 } from "../withdraw/withdrawGateway"
-import { oxideTokenImmutablesOf, txAmountCap } from "../token/oxideToken"
-import { session } from "../../session/session"
+import { planBridgeLeg, type BridgeOutChoice } from "../withdraw/bridgeOut"
+import { chainOf, type ChainSession, type Session } from "../../session/session"
 
-/** Wallet + contracts + the enclave signer: everything a bearer exit needs, and no account. */
+/** What a bearer exit needs beside the session's wallet and contracts: no account. */
 export interface PaylinkExitDeps {
-  wallet: ObsidionWallet
-  contractService: ContractService
-  teeSigner: RegisteredTeeSigner
   /** Active network's rollup address, a `paylinkPh` input; without it the claim is not reported. */
   rollupAddress?: string
+  session: ChainSession & BurnSession & Pick<Session, "owedClaims" | "page">
 }
 
 /** The voucher rail's sponsor context plus the link's escrow, registered in this PXE. */
-async function voucherDeps(
-  deps: Pick<PaylinkExitDeps, "wallet" | "contractService">,
-  fragment: string,
-) {
-  const source = await readPaylinkSource(deps, fragment)
-  const { sponsor } = await claimSponsorRail(deps, RAIL_VOUCHER, { tuple: source.tuple })
-  return {
-    wallet: deps.wallet,
-    contractService: deps.contractService,
-    sponsor,
-    ...source,
-  }
+async function voucherDeps(session: PaylinkExitDeps["session"], fragment: string) {
+  const chain = await chainOf(session)
+  const source = await readPaylinkSource(chain, fragment, session.page)
+  const { sponsor } = await claimSponsorRail(chain, RAIL_VOUCHER, { tuple: source.tuple })
+  return { ...chain, sponsor, ...source }
 }
 
 /** Bound on the escrow read; the visitor page holds its CTAs until this settles. */
@@ -96,22 +82,17 @@ const VOUCHER_READ_TIMEOUT_MS = 10_000
  * the note's token as a read already found it, so the note is not read again for it.
  */
 export async function linkVoucherUses(
-  deps: Pick<PaylinkExitDeps, "wallet" | "contractService">,
+  session: ChainSession & Pick<Session, "page">,
   fragment: string,
   tokenAddress?: string,
 ): Promise<number> {
   const params = decodePaylinkInline(fragment)
+  const chain = await chainOf(session)
   const tuple = tokenAddress
-    ? await paylinkTuple(tokenAddress)
-    : (await readPaylinkSource(deps, fragment)).tuple
-  const { sponsor } = await claimSponsorRail(deps, RAIL_VOUCHER, { tuple })
-  return withTimeout(
-    paylinkVoucherUses(
-      { wallet: deps.wallet, contractService: deps.contractService, sponsor },
-      params,
-    ),
-    VOUCHER_READ_TIMEOUT_MS,
-  )
+    ? await paylinkTuple(session.page, tokenAddress)
+    : (await readPaylinkSource(chain, fragment, session.page)).tuple
+  const { sponsor } = await claimSponsorRail(chain, RAIL_VOUCHER, { tuple })
+  return withTimeout(paylinkVoucherUses({ ...chain, sponsor }, params), VOUCHER_READ_TIMEOUT_MS)
 }
 
 /** Stable recovery identity of a link's withdrawal record. */
@@ -125,13 +106,11 @@ export function cashOutNet(amountAtomic: bigint, withdrawalFee: bigint): bigint 
   return net > 0n ? net : 0n
 }
 
-/** Bearer burns in flight, by fragment: a second confirm while one proves joins it instead of re-burning. */
-const inFlight = new Map<string, Promise<WithdrawalRecord>>()
-
 /**
  * Burn the link's escrow to `recipient`, swap route included (a non-DAI output burns to the planned
  * escrow with the deploy broadcast riding the burn). Returns the persisted record, already mined on
  * L2 and armed with the chain watcher; the L1 release is oxide's relayer, as for every withdrawal.
+ * The link has one burn operation, so a cash-out while one runs or after one was sent is refused.
  */
 export function cashOutLink(
   deps: PaylinkExitDeps & { screener: AddressScreener },
@@ -144,20 +123,27 @@ export function cashOutLink(
   zkProof?: PaylinkL1Proof,
   /** A leg planned ahead of the burn (an email proof binds to its escrow); planned here otherwise. */
   swap?: SwapLeg,
+  /** Land on another chain: the burn pays an Across escrow instead of a swap. */
+  bridge?: BridgeOutChoice,
 ): Promise<WithdrawalRecord> {
-  const live = inFlight.get(fragment)
-  if (live) return live
-  const run = runOperation(
-    {
-      operationId: nextOperationId("paylink-claim"),
-      flow: "paylink-claim-l1",
-      summary: "Cash-out to Ethereum",
-    },
+  return runLinkBurn(
+    deps.session,
+    fragment,
+    `Cash-out to ${bridge?.chain.name ?? "Ethereum"}`,
     (op) =>
-      cashOutLinkFlow(op, deps, fragment, recipient, onStage, receiveAsset, quote, zkProof, swap),
-  ).finally(() => inFlight.delete(fragment))
-  inFlight.set(fragment, run)
-  return run
+      cashOutLinkFlow(
+        op,
+        deps,
+        fragment,
+        recipient,
+        onStage,
+        receiveAsset,
+        quote,
+        zkProof,
+        swap,
+        bridge,
+      ),
+  )
 }
 
 /**
@@ -166,17 +152,19 @@ export function cashOutLink(
  * secret, so the destination can take back a swap the route cannot deliver.
  */
 export async function planCashOutSwap(
-  deps: Pick<PaylinkExitDeps, "wallet" | "contractService">,
+  session: ChainSession & Pick<Session, "page">,
   fragment: string,
   amount: bigint,
   recipient: Address,
   receiveAsset: WithdrawalReceiveAsset,
   quote?: SwapCommit,
 ): Promise<SwapLeg | undefined> {
-  const { params, note, tuple } = await readPaylinkSource(deps, fragment)
+  const chain = await chainOf(session)
+  const reads = session.page.chain
+  const { params, note, tuple } = await readPaylinkSource(chain, fragment, session.page)
   if (note.amount !== amount) throw new Error("The link balance changed; reopen the withdrawal")
   const recoverer = { account: recipient, secret: params.secret }
-  return planSwapLeg(deps.wallet, receiveAsset, recipient, amount, quote, recoverer, tuple)
+  return planSwapLeg(reads, async () => recoverer, receiveAsset, recipient, amount, quote, tuple)
 }
 
 async function cashOutLinkFlow(
@@ -189,9 +177,9 @@ async function cashOutLinkFlow(
   quote?: SwapCommit,
   zkProof?: PaylinkL1Proof,
   planned?: SwapLeg,
+  bridge?: BridgeOutChoice,
 ): Promise<WithdrawalRecord> {
   onStage?.("building")
-  const network = getConfig().network
 
   // Re-screen at the commit point, before the burn: oxide's relayer enforces the same policy when
   // it batches, where a blocked recipient means a burned-but-never-finalized withdrawal. A screener
@@ -201,36 +189,52 @@ async function cashOutLinkFlow(
     throw new Error(verdict.reason?.message ?? "This address can't receive withdrawals")
   }
 
-  const { params, note, tuple, ...voucher } = await voucherDeps(deps, fragment)
+  const { params, note, tuple, ...voucher } = await voucherDeps(deps.session, fragment)
   const { amount } = note
-  const decimals = tokenDecimalsForNetwork(network)
+  const decimals = tokenDecimalsForNetwork(deps.session.page.config.network)
   assertWithinWithdrawalLimit(
     amount,
-    await txAmountCap(l1PublicClient(getConfig()), tuple.portal as Address),
+    await deps.session.page.chain.txAmountCap(tuple.portal as Address).read(),
     "link",
     decimals,
   )
-  const withdrawalFee = await withdrawalExecutorFee(tuple)
+  const withdrawalFee = await withdrawalExecutorFee(deps.session.page.chain, tuple)
   if (amount <= withdrawalFee + WITHDRAW_RELAYER_TIP) {
     throw new Error("This link holds too little to cover the withdrawal fee")
   }
   const tokenAddress = note.tokenAddress
   const [signer, token] = await Promise.all([
-    historicTeeSigner(tuple),
-    oxideTokenImmutablesOf(tuple.l2Token),
+    historicTeeSigner(deps.session.page.chain, tuple),
+    deps.session.page.chain.tokenImmutablesOf(tuple.l2Token).read(),
   ])
   // The escrow is sized off the note; the burn refuses to sign if the note holds anything else.
   // A bearer has no passkey secret; its destination wallet owns escrow recovery.
-  const swap =
-    planned ?? (await planCashOutSwap(deps, fragment, amount, recipient, receiveAsset, quote))
+  // A bridge leg's refund is the destination's to recover too, salted from the link's secret.
+  const bridgeLeg =
+    bridge &&
+    (await planBridgeLeg(deps.session.page, voucher, tuple, {
+      ...bridge,
+      // The builder's own withdraw operation is never sent; only its payload and run are used.
+      from: AztecAddress.ZERO,
+      amount,
+      recipient,
+      recoverer: { account: recipient, secret: params.secret },
+    }))
+  const swap = bridgeLeg
+    ? undefined
+    : planned ??
+      (await planCashOutSwap(deps.session, fragment, amount, recipient, receiveAsset, quote))
   assertPaylinkSwapSource(swap, tuple)
-  const withdrawal = withdrawalOptions(tuple, swap)
+  const { config } = deps.session.page
+  const withdrawal = bridgeLeg
+    ? { ...withdrawalOptions(config, tuple), escrow: bridgeLeg.escrow }
+    : withdrawalOptions(config, tuple, swap)
 
   const net = formatUnits(cashOutNet(amount, withdrawalFee), decimals)
-  op.describe(`$${net} to Ethereum`)
+  op.describe(`$${net} to ${bridge?.chain.name ?? "Ethereum"}`)
   const paylinkId = paylinkIdentity(params)
   if (deps.rollupAddress) {
-    await owePaylinkClaim(webStorage, paylinkId, {
+    await owePaylinkClaim(deps.session.owedClaims, paylinkId, {
       rollupAddress: deps.rollupAddress,
       secret: params.secret,
       flavor: params.paylinkType === DEFAULT_CONTRACTS.paylinkEmail ? "email" : "direct",
@@ -240,7 +244,7 @@ async function cashOutLinkFlow(
   }
   const { record, result } = await runBurn({
     op,
-    wallet: deps.wallet,
+    session: deps.session,
     // The voucher's one-use allowance never renews, so the account-allowance copy does not apply.
     reportContext: "paylink:claim",
     record: {
@@ -258,10 +262,9 @@ async function cashOutLinkFlow(
       phase: "submitting",
       startTime: Date.now(),
       deployment: await currentDeployment(tuple),
-      ...swapRecordFields(swap, quote),
+      ...(bridgeLeg ? bridgeLeg.record : swapRecordFields(swap, quote)),
     },
     burn: (seeded, onTxHash) => {
-      if (getConfig().network !== network) throw new Error("Network changed — reopen the link")
       onStage?.("proving")
       return exitPaylinkWithVoucher({
         ...voucher,
@@ -286,9 +289,9 @@ async function cashOutLinkFlow(
   // A burn left to the chain reports once the tracker marks its record mined.
   void bestEffort(
     "unknown",
-    session()
-      .withdrawals.all()
-      .then((burns) => reportPaylinkClaims(burns, webStorage)),
+    deps.session.withdrawals
+      .all()
+      .then((burns) => reportPaylinkClaims(burns, deps.session.owedClaims)),
   )
   return record
 }

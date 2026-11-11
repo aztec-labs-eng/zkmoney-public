@@ -24,7 +24,7 @@ import {
   Title,
   type Step,
 } from "../cutover/parts"
-import { cutoverAccount } from "../cutover/account"
+import { useCutoverAccount } from "../cutover/account"
 import { SLOW_AFTER_MS, useElapsed } from "../cutover/elapsed"
 import { ChooseTransactions } from "../cutover/ChooseTransactions/ChooseTransactions"
 import { ProgressScreen } from "../cutover/ProgressScreen"
@@ -61,8 +61,6 @@ function figures(balance: UpgradeBalance) {
 function moving({ balance, updateOnly }: { balance: UpgradeBalance; updateOnly?: boolean }) {
   return updateOnly ? undefined : { label: upgradingCopy.moving, value: figures(balance).total }
 }
-
-const account = cutoverAccount
 
 const CHECK_SLOW_AFTER_MS = 30_000
 
@@ -126,6 +124,7 @@ export function UpgradeChoose(props: {
   // A phone that sleeps suspends the run, so every migration screen keeps it awake.
   useWakeLock(true)
   const { checking, onShown } = props
+  // eslint-disable-next-line local/effect-hook -- ZKM-1625
   useEffect(() => {
     if (!checking) onShown?.()
   }, [checking, onShown])
@@ -137,7 +136,7 @@ export function UpgradeChoose(props: {
   return (
     <>
       <CutoverPage
-        account={account()}
+        account={useCutoverAccount()}
         testId="cutover-choose"
         footer={
           <div className="ww-cutover__actions">
@@ -240,7 +239,7 @@ export function UpgradePreparing(props: {
   const { percent } = props.ring
   return (
     <ProgressScreen
-      account={account()}
+      account={useCutoverAccount()}
       testId="cutover-upgrading"
       percent={percent}
       tip={upgradingCopy.tip}
@@ -284,7 +283,7 @@ export function UpgradeMoving(props: {
   const longer = elapsed !== undefined && elapsed > SLOW_AFTER_MS
   return (
     <ProgressScreen
-      account={account()}
+      account={useCutoverAccount()}
       testId="cutover-upgrading"
       percent={percent}
       caption={longer ? upgradingCopy.longerRing : undefined}
@@ -319,7 +318,7 @@ export function UpgradeDone(props: {
   useWakeLock(true)
   const shown = figures(props.balance)
   return (
-    <CutoverPage account={account()} testId="cutover-upgrade-done" center>
+    <CutoverPage account={useCutoverAccount()} testId="cutover-upgrade-done" center>
       <span className="ww-cutover__hero" aria-hidden>
         <img src={doneBadge} alt="" />
       </span>
@@ -363,7 +362,7 @@ export function UpgradeLeft(props: {
   useWakeLock(true)
   return (
     <>
-      <CutoverPage account={account()} testId="cutover-stopped" center>
+      <CutoverPage account={useCutoverAccount()} testId="cutover-stopped" center>
         <div className="ww-cutover__intro">
           <Badge icon="refresh" />
           <Title>{stoppedCopy.title}</Title>
@@ -393,7 +392,7 @@ export function UpgradeFinish(props: { balance: UpgradeBalance; onResume: () => 
   steps[1]!.status = finishCopy.started
   return (
     <ProgressScreen
-      account={account()}
+      account={useCutoverAccount()}
       testId="cutover-finish"
       title={finishCopy.title}
       body={finishCopy.body}

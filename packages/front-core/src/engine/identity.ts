@@ -1,10 +1,10 @@
-import { ACCOUNT_STORAGE_KEY } from "../core/storages/constants"
 import type { Database, Reads, Write } from "./database"
-import { WalletError } from "./errors"
 import type { Sourced } from "./legacyStore"
 import { decodeRecord, encodeRecord, loadRecords, persistentStore } from "./persistentStore"
-import { ownAddress } from "./registrations"
 import { derived, type ReadonlyStore } from "./store"
+import { LEGACY_IDENTITY_KEY, migrateIdentity } from "../storageMigrations/identity"
+
+export { LEGACY_IDENTITY_KEY }
 
 /** The account this namespace entered: its L2 address, plus its tag once one is claimed. */
 export interface WalletIdentity {
@@ -25,8 +25,6 @@ export interface Identity extends ReadonlyStore<IdentityView> {
   readonly ready: Promise<void>
 }
 
-/** Where older builds kept the identity. This build reads it once to carry it, and writes it on. */
-export const LEGACY_IDENTITY_KEY = "webwallet.identity"
 const RECORD = "acct/identity/current"
 
 /**
@@ -56,25 +54,13 @@ export interface IdentityDeps {
   opened(): string | undefined
 }
 
-/**
- * Version 1 carries the legacy identity when it is this namespace's: its address is the saved
- * account's, or the passkey's when none is saved. The saved version records that the carry ran, so
- * a later removal stays removed.
- */
 export function createIdentity({ db, legacy, opened }: IdentityDeps): Identity {
   const store = persistentStore<WalletIdentity>(db, {
     prefix: "acct/identity",
     version: 1,
     id: () => "current",
     load: "all",
-    async migrate(from, w) {
-      if (from !== undefined)
-        throw new WalletError("invariant", `identity: unknown version ${from}`)
-      const carried = decodeIdentity(await legacy.get(LEGACY_IDENTITY_KEY))
-      if (!carried || (await w.get(RECORD)) !== undefined) return
-      const own = (await ownAddress(await w.get(ACCOUNT_STORAGE_KEY))) ?? opened()?.toLowerCase()
-      if (own === carried.address.toLowerCase()) w.put(RECORD, encodeRecord(carried))
-    },
+    migrate: (from, w) => migrateIdentity(from, w, { legacy, opened, record: RECORD }),
   })
   const view = derived([store.view], ({ records, loaded, failed }) => ({
     value: records[0] ?? null,
@@ -87,18 +73,5 @@ export function createIdentity({ db, legacy, opened }: IdentityDeps): Identity {
     get ready() {
       return store.ready.then(async () => void (await loadRecords(store.view)))
     },
-  }
-}
-
-/** The legacy record as older builds read it: one that does not parse is none. */
-function decodeIdentity(raw: string | undefined): WalletIdentity | null {
-  try {
-    if (!raw) return null
-    const parsed = JSON.parse(raw) as WalletIdentity
-    if (typeof parsed.address !== "string") return null
-    if (parsed.handle !== undefined && typeof parsed.handle !== "string") return null
-    return parsed
-  } catch {
-    return null
   }
 }

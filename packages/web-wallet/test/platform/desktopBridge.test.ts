@@ -9,6 +9,7 @@ import {
   DesktopRecheckTimeoutError,
   DesktopSendOpenError,
   DesktopSendUnresolvedError,
+  getDesktopSettingsPath,
   submitViaDesktopBridge,
 } from "../../src/platform/desktopBridge"
 
@@ -351,5 +352,22 @@ describe("submitViaDesktopBridge with a recheck", () => {
     ).catch((e: unknown) => e)
     expect(error).toBe(cannotKeep)
     expect(answers()).toEqual([{ check: 1, ok: false, message: cannotKeep.message }])
+  })
+})
+
+describe("getDesktopSettingsPath", () => {
+  const bridge = (settingsPath: unknown) => {
+    ;(globalThis as { __ZKMONEY_DESKTOP_BRIDGE__?: unknown }).__ZKMONEY_DESKTOP_BRIDGE__ = {
+      l1SubmitPath: PATH,
+      settingsPath,
+    }
+  }
+
+  it("is the launcher's settings path, and null off the desktop or for a path off the origin", () => {
+    expect(getDesktopSettingsPath()).toBeNull()
+    bridge("/desktop/settings")
+    expect(getDesktopSettingsPath()).toBe("/desktop/settings")
+    bridge("https://elsewhere.test/settings")
+    expect(getDesktopSettingsPath()).toBeNull()
   })
 })

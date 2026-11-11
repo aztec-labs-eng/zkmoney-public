@@ -9,6 +9,7 @@ import { Fr } from "@aztec-labs/aztec.js/fields"
 import { BlockNumber } from "@aztec-labs/foundation/branded-types"
 import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import { getAddress, type Address, type Hex } from "viem"
+import { sipaGenerationOf } from "@obsidion/core/oxide"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import {
   assertSubsidySweepsSipa,
@@ -17,7 +18,6 @@ import {
   buildDepositIntent,
   buildSipaSweepBroadcasts,
   claimFpcSponsoredFee,
-  ContractService,
   fetchSipaEvents,
   OxideSipaIntent,
   readSipaBroadcastTxHashes,
@@ -26,27 +26,26 @@ import {
   type SipaIntent,
 } from "@obsidion/sdk"
 import {
+  balanceMovingNow,
   BROADCAST_WAIT_MS,
   BroadcastDeferred,
-  readyValue,
   sipaDeployArgCandidates,
   WalletError,
   type BroadcastExecutor,
   type BroadcastJobOf,
   type SipaDeposit,
   type SipaRecoverCandidate,
+  type Service,
 } from "@obsidion/front-core"
 import { getWebOxideToken } from "../../config/classArtifacts"
-import { getConfig } from "../../config/env"
-import { getOxideTuple, l1PublicClient, requireTupleField } from "../../config/oxideTuple"
-import { session } from "../../session/session"
-import { balanceMovingNow } from "../backupPasskey/backupRotationStore"
+import type { WebWalletConfig } from "../../config/env"
+import { l1PublicClient, requireTupleField } from "../../config/oxideTuple"
+import type { ExecutorSession } from "../../session/session"
 import { readSipaDeployed } from "../sipa/sipaSweep"
 import { getSipaSweepRoutes } from "../sipa/sipaSweepRoutes"
 import { predictSipaCandidate } from "../deposit/sipaPredict"
 import { deriveSipa, sipaPoolDeployment } from "../deposit/sipaAddresses"
-import type { SipaKeys } from "../deposit/sipaRail"
-import { maybeRefuelFpc } from "../fees/fpcRefuel"
+import type { SipaDiscovery, SipaKeys } from "../deposit/sipaRail"
 import { claimSponsorContext, noteSubscribed } from "../registration/claimSponsorship"
 import { RegistrationPendingError } from "../registration/registrationRail"
 import { RAIL_REGISTERED } from "../registration/rails"
@@ -58,6 +57,8 @@ export interface SipaPublishInputs {
   messageSecret: Fr
   intent: SipaIntent
   sipaArgs: SipaRecoverCandidate["args"]
+  /** The factory the address deploys through: its SIPA set's. */
+  sipaFactory: Address
 }
 
 /** Publish inputs read back from a record, with the CREATE2 origin they came from. */
@@ -89,24 +90,40 @@ export function publishInputsFromRecord(
     messageSecret: Fr.fromHexString(record.messageSecret),
     intent,
     sipaArgs: candidate.args,
+    sipaFactory: candidate.sipaFactory,
     candidate,
   }
 }
 
 /**
+ * Whether `candidate` deploys through the deployment's factory, or is of one of its earlier SIPA
+ * sets.
+ */
+export function isKnownSipaSet(candidate: SipaRecoverCandidate, tuple: OxideEnvTuple): boolean {
+  if (candidate.sipaFactory.toLowerCase() === tuple.sipaFactory?.toLowerCase()) return true
+  const forwardingTable =
+    "forwardingTable" in candidate.args ? candidate.args.forwardingTable : undefined
+  return !!sipaGenerationOf(tuple, {
+    sipaFactory: candidate.sipaFactory,
+    forwardingTable,
+    implementation: candidate.args.implementation,
+  })
+}
+
+/**
  * What an address that no longer re-derives still publishes: its record, provided the record's args
- * deploy exactly that address under this deployment's factory. An address of another factory is not
- * this deployment's to publish; its record stays for recovery.
+ * deploy exactly that address under one of the deployment's SIPA sets. An address of another set is
+ * not this deployment's to publish; its record stays for recovery.
  */
 async function recordedPublishInputs(
+  config: WebWalletConfig,
   record: SipaDeposit | undefined,
   tuple: OxideEnvTuple,
 ): Promise<SipaPublishInputs | null> {
   const recorded = publishInputsFromRecord(record)
   if (!recorded || !record) return null
-  const factory = requireTupleField(tuple, "sipaFactory") as Address
-  if (recorded.candidate.sipaFactory.toLowerCase() !== factory.toLowerCase()) return null
-  const predicted = await predictSipaCandidate(l1PublicClient(getConfig()), recorded.candidate)
+  if (!isKnownSipaSet(recorded.candidate, tuple)) return null
+  const predicted = await predictSipaCandidate(l1PublicClient(config), recorded.candidate)
   return predicted.toLowerCase() === record.sipaAddress.toLowerCase() ? recorded : null
 }
 
@@ -115,17 +132,19 @@ async function recordedPublishInputs(
  * event its salt names, from `sinceBlock` on when the address is being published again.
  */
 async function broadcastLanded(
+  session: SlotSession,
   wallet: ObsidionWallet,
   address: string,
   sinceBlock?: number,
 ): Promise<boolean> {
-  const { sipaDeposits, sipaKeys, sipaDiscovery } = session()
+  const { sipaDeposits, sipaKeys, sipaDiscovery } = session
   const record = await sipaDeposits.get(address)
   const keys = sipaKeys?.get()
   const salt = record?.messageSecret
   if (!salt || keys?.status !== "ready") return false
-  await readyValue(sipaDiscovery)
-  const tuple = await getOxideTuple(getConfig())
+
+  await sipaDiscovery().ready()
+  const tuple = await session.page.chain.oxideTuple.read()
   const events = await fetchSipaEvents(
     wallet,
     AztecAddress.fromStringUnsafe(requireTupleField(tuple, "l2Token")),
@@ -141,41 +160,58 @@ async function broadcastLanded(
 /**
  * Sponsors the L2 broadcast that tells the relayer the address exists. Re-derives from the slot
  * rather than taking the first derivation: the second derivation is independent, which makes the
- * equality check below a real check. An address that no longer re-derives publishes from its
- * record instead; nothing else is published under it.
+ * equality check below a real check. An address that no longer re-derives, or has no slot on this
+ * device, publishes from its record instead; nothing else is published under it.
  */
 async function broadcastSipa(
   wallet: ObsidionWallet,
   tuple: OxideEnvTuple,
   keys: SipaKeys,
   record: SipaDeposit,
-  slot: { day: number; nonce: number },
+  slot: { day: number; nonce: number } | undefined,
   opts: {
+    session: Pick<
+      SlotSession,
+      "sipaDiscovery" | "subscriptionChecks" | "page" | "contractService" | "oweFpcRefuel"
+    >
     sponsor: ClaimSponsorContext
     operationId?: string
     onTxHash?: (txHash: string) => Promise<void>
   },
 ): Promise<string> {
-  const config = getConfig()
+  const { config } = opts.session.page
   const publicClient = l1PublicClient(config)
-  const contractService = ContractService.getInstance()
-  const derived = await deriveSipa(wallet, tuple, keys, slot.day, slot.nonce)
+
+  const contractService = await opts.session.contractService.ready()
+  const derived =
+    slot && (await deriveSipa(opts.session.page, wallet, tuple, keys, slot.day, slot.nonce))
   // The user already holds the address and may have shared it. Broadcasting anything else strands
   // whatever they were sent.
   const inputs: SipaPublishInputs | null =
-    derived.address.toLowerCase() === record.sipaAddress.toLowerCase()
-      ? { ...derived, messageSecret: derived.resolution.messageSecret }
-      : await recordedPublishInputs(record, tuple)
-  if (!inputs) throw new WalletError("deposit.addressRetired", "the address no longer derives")
-  const { address, user, messageSecret, intent, sipaArgs } = inputs
+    derived && derived.address.toLowerCase() === record.sipaAddress.toLowerCase()
+      ? {
+          ...derived,
+          messageSecret: derived.resolution.messageSecret,
+          sipaFactory: requireTupleField(tuple, "sipaFactory") as Address,
+        }
+      : await recordedPublishInputs(config, record, tuple)
+  if (!inputs) throw new WalletError("deposit.addressRetired")
+  const { address, user, messageSecret, intent, sipaArgs, sipaFactory } = inputs
   const [deployed, routes] = await Promise.all([
     readSipaDeployed(publicClient, address),
-    getSipaSweepRoutes(config, tuple, sipaArgs, "deposit", requireTupleField(tuple, "token")),
+    getSipaSweepRoutes(
+      opts.session.page,
+      tuple,
+      sipaArgs,
+      "deposit",
+      requireTupleField(tuple, "token"),
+      sipaFactory,
+    ),
   ])
   if (!deployed && !("recoveryAddress" in sipaArgs)) {
     await assertSubsidySweepsSipa(publicClient, {
       routes,
-      sipaFactory: requireTupleField(tuple, "sipaFactory") as Address,
+      sipaFactory,
       intent: OxideSipaIntent.Deposit,
       deployArgs: sipaArgs,
       intentData: intent.intentData,
@@ -184,12 +220,14 @@ async function broadcastSipa(
   }
   const { sponsor } = opts
   const { fpcAddress, fpcArtifact, railId, policy, subscribe } = sponsor
-  // The payer's note pays; the event is still sent to, and read as, this account.
-  const payer = sponsor.payer ?? user
-  const scopes = sponsor.payer ? [payer, user] : [user]
+  // The payer's note pays, else the session account's. The event is still sent to, and read as,
+  // the address's account, which a previous account's record names.
+  const payer = sponsor.payer ?? keys.recipient
+  const scopes = payer.equals(user) ? [user] : [payer, user]
   // The event rides the pinned bridge's token, where this wallet reads its own SIPA events.
   const token = await getWebOxideToken(wallet, contractService, requireTupleField(tuple, "l2Token"))
-  const { broadcaster } = await readyValue(session().sipaDiscovery)
+
+  const { broadcaster } = await opts.session.sipaDiscovery().ready()
   const interactions = buildSipaSweepBroadcasts(token, broadcaster, {
     recipient: user,
     sharedSecretSalt: messageSecret,
@@ -197,7 +235,7 @@ async function broadcastSipa(
     intentHash: intent.intentHash,
     sipa: address,
     deployed,
-    sipaFactory: requireTupleField(tuple, "sipaFactory") as Address,
+    sipaFactory,
     intent: OxideSipaIntent.Deposit,
     deployArgs: sipaArgs,
     intentData: intent.intentData,
@@ -234,30 +272,42 @@ async function broadcastSipa(
     operationId: opts.operationId,
     ...(opts.onTxHash ? { onTxHash: opts.onTxHash } : {}),
   })
-  if (subscribe) noteSubscribed(keys.account, fpcAddress, railId)
-  maybeRefuelFpc({ wallet, contractService, fpc: { address: fpcAddress, artifact: fpcArtifact } })
+  if (subscribe) noteSubscribed({ ...opts, account: keys.account }, fpcAddress, railId)
+  opts.session.oweFpcRefuel({ address: fpcAddress, artifact: fpcArtifact })
   return receipt.txHash.toString()
 }
 
+/** The session's stores and SIPA services: a visitor has no keys. */
+// Spelled out: a `Pick<Session, "sipaKeys">` here types the services by the tasks that build them.
+type SlotSession = ExecutorSession & {
+  sipaKeys: Service<SipaKeys> | null
+  sipaDiscovery: () => Service<SipaDiscovery>
+}
+
 /** What the broadcasts task runs for the account's own deposit addresses. */
-export function slotExecutor(wallet: ObsidionWallet): BroadcastExecutor<BroadcastJobOf<"slot">> {
+export function slotExecutor(
+  wallet: ObsidionWallet,
+  session: SlotSession,
+): BroadcastExecutor<BroadcastJobOf<"slot">> {
   return {
-    landed: (job) => broadcastLanded(wallet, job.address, job.republishSince),
+    landed: (job) => broadcastLanded(session, wallet, job.address, job.republishSince),
     send: async (job, attempt) => {
-      const { sipaDeposits, sipaKeys } = session()
+      const { sipaDeposits, sipaKeys } = session
       const record = await sipaDeposits.get(job.address)
-      if (!record?.slot) throw new WalletError("deposit.addressRetired", "not a deposit address")
+      if (!record) throw new WalletError("deposit.addressRetired")
       const keys = sipaKeys?.get()
       if (keys?.status !== "ready")
         throw new BroadcastDeferred(Date.now() + BROADCAST_WAIT_MS, "unlock")
       // The broadcast pays with the note a backup passkey's balance move spends.
-      if (await balanceMovingNow(keys.value.recipient.toString()))
+      if (await balanceMovingNow(session.backupRotations, keys.value.recipient.toString()))
         throw new BroadcastDeferred(Date.now() + BROADCAST_WAIT_MS, "balanceMove")
-      const tuple = await getOxideTuple(getConfig())
+      const tuple = await session.page.chain.oxideTuple.read()
+
+      const contractService = await session.contractService.ready()
       let sponsor: ClaimSponsorContext
       try {
         sponsor = await claimSponsorContext(
-          { wallet, account: keys.value.account, contractService: ContractService.getInstance() },
+          { session, wallet, account: keys.value.account, contractService },
           RAIL_REGISTERED,
         )
       } catch (err) {
@@ -265,9 +315,10 @@ export function slotExecutor(wallet: ObsidionWallet): BroadcastExecutor<Broadcas
         throw new BroadcastDeferred(Date.now() + BROADCAST_WAIT_MS, "registration")
       }
       // Registered on the pinned deployment's rollup: a fill of the previous one is never served.
-      if (job.kind === "pool" && record.slot.deployment !== sipaPoolDeployment(tuple))
-        throw new WalletError("deposit.addressRetired", "pool fill of a retired deployment")
+      if (job.kind === "pool" && record.slot?.deployment !== sipaPoolDeployment(tuple))
+        throw new WalletError("deposit.addressRetired")
       return broadcastSipa(wallet, tuple, keys.value, record, record.slot, {
+        session,
         sponsor,
         operationId: attempt.operationId,
         onTxHash: attempt.onTxHash,
@@ -278,12 +329,14 @@ export function slotExecutor(wallet: ObsidionWallet): BroadcastExecutor<Broadcas
 
 /** Txs from `fromBlock` on that broadcast one of `user`'s deposit addresses. */
 export async function broadcastTxHashes(
+  session: Pick<SlotSession, "sipaDiscovery" | "page">,
   wallet: ObsidionWallet,
   user: AztecAddress,
   fromBlock: number,
 ): Promise<Set<string>> {
-  const tuple = await getOxideTuple(getConfig())
-  await readyValue(session().sipaDiscovery)
+  const tuple = await session.page.chain.oxideTuple.read()
+
+  await session.sipaDiscovery().ready()
   const token = AztecAddress.fromStringUnsafe(requireTupleField(tuple, "l2Token"))
   return readSipaBroadcastTxHashes(wallet, token, user, fromBlock)
 }

@@ -1,44 +1,37 @@
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
-import { AccountServiceError } from "@obsidion/front-core"
-import { seedBootConfig } from "../../../support/seedBootConfig"
+import { beforeEach, describe, expect, it, vi } from "vitest"
+import type { Hex } from "viem"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { AccountServiceError, deriveBootstrapKey } from "@obsidion/front-core"
+import {
+  claimPastUser,
+  PastUserAlreadyUsedError,
+} from "../../../../src/features/registration/pastUserClaim"
 
-const OWNER = `0x${"ab".repeat(20)}`
-const h = vi.hoisted(() => ({ prove: vi.fn(), claim: vi.fn() }))
-vi.mock("@obsidion/front-core", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@obsidion/front-core")>()),
-  deriveBootstrapKey: () => ({ address: `0x${"AB".repeat(20)}` }),
-}))
-vi.mock("../../../../src/session/account", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../../src/session/account")>()),
-  collectOnboardingKeys: async () => ({ secretKey: "sk" }),
-}))
-vi.mock("../../../../src/features/registration/registrationDeps", () => ({
-  accountServiceFor: () => ({ claimPastUser: h.claim }),
-}))
-vi.mock("../../../../src/features/registration/pastUserProver", () => ({ provePastUser: h.prove }))
-
-const { claimPastUser, PastUserAlreadyUsedError } = await import(
-  "../../../../src/features/registration/pastUserClaim"
-)
+const SECRET = new Fr(7n)
+const OWNER = deriveBootstrapKey(SECRET).address.toLowerCase()
 
 describe("claimPastUser", () => {
-  const proved = { proof: "0xaa", publicInputs: ["0x1", "0x2", "0x3", "0x4"] }
-  beforeAll(seedBootConfig)
+  const proved = { proof: "0xaa" as Hex, publicInputs: ["0x1", "0x2", "0x3", "0x4"] }
+  const prove = vi.fn()
+  const claim = vi.fn()
+  const deps = () => ({
+    keys: { secretKey: SECRET },
+    accountService: { claimPastUser: claim },
+    prove,
+  })
   beforeEach(() => {
-    h.prove.mockReset().mockResolvedValue(proved)
-    h.claim.mockReset().mockResolvedValue({ status: "created" })
+    prove.mockReset().mockResolvedValue(proved)
+    claim.mockReset().mockResolvedValue({ status: "created" })
   })
 
   it("proves for this account's bootstrap key and submits only the proof", async () => {
-    await claimPastUser({} as never, "0x5151")
-    expect(h.prove).toHaveBeenCalledWith({ signature: "0x5151", owner: OWNER })
-    expect(h.claim).toHaveBeenCalledWith(proved)
+    await claimPastUser("0x5151", deps())
+    expect(prove).toHaveBeenCalledWith({ signature: "0x5151", owner: OWNER })
+    expect(claim).toHaveBeenCalledWith(proved)
   })
 
   it("reports a nullifier that was already spent", async () => {
-    h.claim.mockRejectedValue(new AccountServiceError(409, "past_user_claimed"))
-    await expect(claimPastUser({} as never, "0x5151")).rejects.toBeInstanceOf(
-      PastUserAlreadyUsedError,
-    )
+    claim.mockRejectedValue(new AccountServiceError(409, "past_user_claimed"))
+    await expect(claimPastUser("0x5151", deps())).rejects.toBeInstanceOf(PastUserAlreadyUsedError)
   })
 })

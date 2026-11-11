@@ -33,6 +33,24 @@ export function demoProfile(): Record<string, unknown> {
           manifestUrl: "http://demo.invalid/oxide/sandbox.json",
           portal: DEMO_OXIDE_TUPLE.portal,
         },
+        bridge: {
+          provider: "across",
+          apiUrl: "http://demo.invalid/across",
+          chains: [
+            { chainId: 8453, name: "Base", etaMinutes: 7, rpcUrl: "http://demo.invalid/base" },
+            { chainId: 42161, name: "Arbitrum", etaMinutes: 7, rpcUrl: "http://demo.invalid/arb" },
+            { chainId: 10, name: "Optimism", etaMinutes: 7, rpcUrl: "http://demo.invalid/op" },
+          ].map((chain) => ({
+            ...chain,
+            in: [
+              { symbol: "USDC", address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" },
+              { symbol: "USDT", address: "0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2" },
+              { symbol: "DAI", address: "0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb" },
+              { symbol: "ETH", native: true, comingSoon: true },
+            ],
+            out: [{ symbol: "USDC", address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" }],
+          })),
+        },
         contracts: {
           obsidionAccountAlpha: { classId: F32(1) },
           paylinkDirect: { classId: F32(2) },

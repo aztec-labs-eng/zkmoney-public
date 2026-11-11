@@ -7,6 +7,9 @@
  */
 export const WEB_STORAGE_PREFIX = "obsidion."
 
+/** The page's chain reads the wallet database keeps, beside the device's keys. */
+export const CHAIN_READS_PREFIX = "webwallet.chain."
+
 /** Where older builds kept each view's deposit address and the pool, outside the account's keys. */
 export const SIPA_SLOTS_PREFIX = "webwallet.sipa.address."
 

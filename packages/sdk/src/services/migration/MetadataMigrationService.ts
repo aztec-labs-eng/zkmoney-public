@@ -50,9 +50,13 @@ import {
 
 /**
  * Runs one step that sends one transaction, as the operation it names to the step. The host uses it
- * to send each transaction in its turn on the prover. The default runs the step immediately.
+ * to send each transaction in its turn on the prover. `sent` saves the hash on that operation,
+ * once the step's own record holds it, so a reload settles it from the chain. The default runs the
+ * step immediately.
  */
-export type MigrationSendGate = <T>(step: (operationId?: string) => Promise<T>) => Promise<T>
+export type MigrationSendGate = <T>(
+  step: (operationId?: string, sent?: (txHash: string) => Promise<void>) => Promise<T>,
+) => Promise<T>
 
 /** A source generation supplies public DTOs; its Aztec objects/prover never cross into this SDK. */
 export interface MetadataMigrationSource {

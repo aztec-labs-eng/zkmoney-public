@@ -45,7 +45,10 @@ const unspent: CheckSpent = async (rows) => new Map(rows.map((r) => [r.txHash, f
 /** The reclaim notices the bell holds. */
 /** A bell store whose loaded facts are watched, as the session's are. */
 function watchedNotifications(): Notifications {
-  const notifications = createNotifications(openDatabase(memoryBackend()))
+  const notifications = createNotifications({
+    db: openDatabase(memoryBackend()),
+    now: () => Date.now(),
+  })
   notifications.events.subscribe(() => {})
   return notifications
 }

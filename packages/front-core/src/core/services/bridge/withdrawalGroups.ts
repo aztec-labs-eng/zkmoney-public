@@ -28,6 +28,7 @@ const PHASE_PRECEDENCE: readonly WithdrawalPhase[] = [
   "awaiting_proven",
   "finalizing_l1",
   "swapping",
+  "bridging",
   "recovered",
   "done",
 ]

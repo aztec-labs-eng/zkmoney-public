@@ -8,9 +8,11 @@ import {
   memoryBackend,
   memoryStore,
   openDatabase,
+  queries,
   startRuntime,
   type PendingRegistrationRecord,
 } from "@obsidion/front-core"
+import { createPace } from "@obsidion/core/cadence"
 import type { RegistrationSchedule } from "@obsidion/core/types"
 import { registrationEntry } from "../../../src/features/registration/registrationTasks"
 import {
@@ -22,13 +24,25 @@ import { PAID, RANDOM } from "../../support/registrationPrices"
 import {
   fakeClock,
   flush,
-  later,
   sessions,
   table,
   type Step,
 } from "../../../../front-core/test/engine/taskTable"
 
 fakeClock()
+
+/** A price whose read lands once the test sets it. */
+function later<T>(name: string) {
+  let land!: (value: T) => void
+  const value = new Promise<T>((resolve) => (land = resolve))
+  const query = queries({
+    pace: createPace({ signalled: false }),
+    visible: memoryStore(true),
+    now: () => Date.now(),
+  })
+  return { entry: query<[], T>(name, { load: () => value })(), ready: (v: T) => land(v) }
+}
+
 const ends: (() => void)[] = []
 afterEach(() => {
   for (const end of ends.splice(0)) end()
@@ -46,12 +60,13 @@ const PAID_TAG = { fee: String(PAID.fee), route: "paid", terms: signed(PAID) } a
 
 async function entry(over: Partial<PendingRegistrationRecord> = PAID_TAG) {
   const db = openDatabase(memoryBackend()).scoped("a.")
-  const sipaDeposits = createSipaDeposits({ db, account: true })
+  const sipaDeposits = createSipaDeposits({ db, account: true, now: () => Date.now() })
   const registrations = createRegistrations({
     db,
     legacy: openDatabase(memoryBackend()),
     deposits: sipaDeposits,
     account: true,
+    now: () => Date.now(),
   })
   const open = async (record: Partial<PendingRegistrationRecord>) => {
     const { phase, broadcast, retries, startTime, terms, route, ...start } = pendingRecord(record)
@@ -73,8 +88,8 @@ async function entry(over: Partial<PendingRegistrationRecord> = PAID_TAG) {
       sipaDeposits,
       withdrawals: { list: memoryStore({ records: [], hydrated: true }).readonly } as never,
       registrationRecovery: { refunded: () => false },
-      sweepFee: fee.resource,
-      registrationSchedule: schedule.resource,
+      sweepFee: fee.entry,
+      registrationSchedule: schedule.entry,
       linkFunds,
       confirmTag,
     }),

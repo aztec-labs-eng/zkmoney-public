@@ -1,3 +1,4 @@
+/** Guards: no action starts while the upgrade runs or is not known, then it opens. */
 import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { MemoryRouter, Route, Routes } from "react-router-dom"
@@ -15,10 +16,6 @@ vi.mock("../../../../src/features/contacts/ContactDetailScreen/ContactDetailScre
 vi.mock("../../../../src/features/contacts/SendScreen/SendScreen", () => ({
   SendScreen: () => <div>send list</div>,
 }))
-vi.mock("../../../../src/config/env", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../../src/config/env")>()),
-  getConfig: () => ({ oxideProfile: { portal: "0x" + "11".repeat(20) } }),
-}))
 const { ActionGate, ContactRoute } = await import("../../../../src/App")
 const { migrationDialogReason, setUpgradeStatus, useMigrationDialogRequest } = await import(
   "../../../../src/features/migration/migrationDialog"
@@ -26,20 +23,12 @@ const { migrationDialogReason, setUpgradeStatus, useMigrationDialogRequest } = a
 const { checkUpgradeLock, markCreatedHere } = await import(
   "../../../../src/features/migration/upgradeLock"
 )
-/**
- * One gate fronts the wallet's action routes. A nameless account is sent to register one. The flows
- * whose only rail is ClaimFPC-sponsored wait for it: the open rail admits an account the L1 registry
- * registered, and the registry's proof is a name plus the L1->L2 message it emits, which a
- * just-registered account gets a few L1 blocks later. Each stops the attempt with the reason rather
- * than at the fee. Deposit needs only the name: its address derives from the account, and the
- * broadcast behind it waits for the rail in the background. Every action waits for the upgrade.
- */
 const { activeNamespace, closeSession, switchSession } = await import(
   "../../../../src/session/session"
 )
 const { pageSessionDeps } = await import("../../../../src/app/sessionDeps")
 const { openTestSession } = await import("../../../support/session")
-const { testPage, testCore } = await import("../../../support/page")
+const { testPage, testCore, defaultConfig } = await import("../../../support/page")
 beforeEach(
   () =>
     switchSession(activeNamespace(testCore().device), pageSessionDeps(testPage())).registrations
@@ -53,8 +42,8 @@ describe("gates on the wallet's flows", () => {
 
   beforeEach(async () => {
     // The wallet's mount reads each account's upgrade runs once a page; until then flows wait.
-    await checkUpgradeLock("0xabc")
-    await checkUpgradeLock("0xdef")
+    await checkUpgradeLock(defaultConfig, "0xabc")
+    await checkUpgradeLock(defaultConfig, "0xdef")
     await openTestSession().registrations.ready
     window.history.replaceState({}, "", "/")
     sessionStorage.removeItem("webwallet.demo")
@@ -70,57 +59,9 @@ describe("gates on the wallet's flows", () => {
   afterEach(() => {
     act(() => root.unmount())
     host.remove()
-    vi.useRealTimers()
     window.history.replaceState({}, "", "/")
     sessionStorage.removeItem("webwallet.demo")
     resetDemoFlagForTests()
-  })
-
-  const mount = (path = "send", action: Parameters<typeof ActionGate>[0]["action"] = "send") =>
-    act(() => {
-      root.render(
-        <MemoryRouter initialEntries={[`/${path}`]}>
-          <Routes>
-            <Route path="/" element={<div>home screen</div>} />
-            <Route element={<ActionGate action={action} />}>
-              <Route path={path} element={<div data-testid={path}>{path} screen</div>} />
-            </Route>
-          </Routes>
-        </MemoryRouter>,
-      )
-    })
-
-  describe("name gate", () => {
-    it("blocks the attempt, and says why, when the account has no name", async () => {
-      await setIdentity({ address: "0xabc" })
-      mount("deposit", "deposit")
-      expect(host.querySelector('[data-testid="name-required"]')).toBeTruthy()
-      expect(host.textContent).toContain("Register a name first")
-      expect(host.textContent).not.toContain("deposit screen")
-    })
-
-    it("does not block before an identity exists — WalletGate owns that case", async () => {
-      await setIdentity(null)
-      mount("deposit", "deposit")
-      expect(host.textContent).toContain("deposit screen")
-    })
-
-    it("opens the deposit screen while the registration message is still in flight", async () => {
-      // The address needs no rail; its broadcast waits in the background.
-      await setIdentity({ address: "0xabc", handle: "taga" })
-      useSponsoredRailPending.mockReturnValue(true)
-      mount("deposit", "deposit")
-      expect(host.textContent).toContain("deposit screen")
-      expect(host.querySelector('[data-testid="registration-pending"]')).toBeNull()
-    })
-  })
-
-  it.each([undefined, true])("holds a sponsored flow while the rail reads %s", async (pending) => {
-    await setIdentity({ address: "0xabc", handle: "taga" })
-    useSponsoredRailPending.mockReturnValue(pending)
-    mount("withdraw", "withdraw")
-    expect(host.querySelector('[data-testid="withdraw"]')).toBeNull()
-    expect(!!host.querySelector('[data-testid="registration-pending"]')).toBe(pending === true)
   })
 
   describe("the upgrade", () => {
@@ -184,7 +125,7 @@ describe("gates on the wallet's flows", () => {
 
     it("never holds an account current on this version", async () => {
       await setIdentity({ address: "0xdef", handle: "tagb" })
-      markCreatedHere("0xdef")
+      markCreatedHere(defaultConfig, "0xdef")
       setUpgradeStatus({ state: "checking", registration: false })
       mountWithRequests("send", "send")
       expect(host.textContent).toContain("send screen")

@@ -17,7 +17,7 @@
  */
 
 import { appVersion } from "../lib/analytics"
-import { getConfig } from "../config/env"
+import type { WebWalletConfig } from "../config/env"
 import {
   installFetchInterceptor,
   installWasmInterceptor,
@@ -32,6 +32,7 @@ export type { Category, ProfileRecord, ProfileReport, ProfileEnv } from "./types
 // ─── Method wrapping ─────────────────────────────────────────────────────────
 
 // Methods to skip — internal plumbing, getters, or things that break if wrapped.
+// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
 const SKIP = new Set([
   // JS fundamentals
   "constructor",
@@ -196,6 +197,7 @@ function wrapAllMethods(target: any, category: Category, profiler: Profiler): ()
  * contractSyncService.node, synchronizer.node, …) is swapped for the same facade and spans are not
  * attributed to clones.
  */
+// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
 const facades = new WeakMap<object, any>()
 
 /**
@@ -244,27 +246,16 @@ function isQueueLike(obj: any): boolean {
   }
 }
 
-/** Best-effort build/tier attribution stamped into every report. Pre-boot reads throw; "" then. */
-function captureEnv(): ProfileEnv {
-  let network = ""
-  let nodeUrl = ""
-  let proverEnabled = false
-  try {
-    const config = getConfig()
-    network = config.network
-    nodeUrl = config.nodeUrl
-    proverEnabled = config.proverEnabled
-  } catch {
-    // getConfig() throws until resolveBootConfig has seeded it.
-  }
+/** Build/tier attribution stamped into every report; empty before {@link Profiler.install}. */
+function captureEnv(config: WebWalletConfig | undefined): ProfileEnv {
   return {
-    network,
-    nodeUrl,
+    network: config?.network ?? "",
+    nodeUrl: config?.nodeUrl ?? "",
     appVersion,
     origin: window.location.origin,
     userAgent: navigator.userAgent,
     zoneTracking: zoneAvailable(),
-    proverEnabled,
+    proverEnabled: config?.proverEnabled ?? false,
     hardwareConcurrency: navigator.hardwareConcurrency ?? 0,
   }
 }
@@ -280,6 +271,7 @@ class Profiler {
   private _cleanups: (() => void)[] = []
   private _installed = false
   private _installPromise: Promise<void> | undefined
+  private _config: WebWalletConfig | undefined
   private _instrumentedWallets = new WeakSet<object>()
   /**
    * Generation counter — incremented on each start() so leaked zones from a previous recording
@@ -392,7 +384,8 @@ class Profiler {
   }
 
   /** Install the global interceptors (fetch, bb.js WASM, TEE signer). Idempotent. */
-  async install() {
+  async install(config: WebWalletConfig) {
+    this._config = config
     if (this._installed) return this._installPromise
     // Set the flag BEFORE any await to prevent a concurrent double-install.
     this._installed = true
@@ -519,7 +512,7 @@ class Profiler {
 
   stop(): ProfileReport {
     if (!this._recording) {
-      return { name: "", startedAt: 0, durationMs: 0, records: [], env: captureEnv() }
+      return { name: "", startedAt: 0, durationMs: 0, records: [], env: captureEnv(this._config) }
     }
     this._recording = false
     const durationMs = performance.now() - this._origin
@@ -528,7 +521,7 @@ class Profiler {
       startedAt: this._startedAt,
       durationMs,
       records: [...this._records],
-      env: captureEnv(),
+      env: captureEnv(this._config),
     }
     console.info(
       `[profiler] Stopped: "${this._name}" — ${(durationMs / 1000).toFixed(2)}s, ` +
@@ -555,5 +548,6 @@ class Profiler {
   }
 }
 
+// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
 export const profiler = new Profiler()
 export type { Profiler }

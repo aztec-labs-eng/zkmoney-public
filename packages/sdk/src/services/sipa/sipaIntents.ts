@@ -28,6 +28,7 @@ import {
   encodeRegistrationProofs,
   readForwardingTableRow,
   readSIPAImplementation,
+  SIPAAbi,
   SIPAFactoryAbi,
   SipaIntent as OxideSipaIntent,
   type DomainAuthArg,
@@ -48,7 +49,17 @@ import {
   L1OperationCondition,
   type BroadcastL1Operation,
 } from "@oxide/oxide-lib/l1_operation_calldata.js"
-import { erc20Abi, keccak256, toHex, type Address, type Hex, type PublicClient } from "viem"
+import {
+  BaseError,
+  ContractFunctionRevertedError,
+  InternalRpcError,
+  erc20Abi,
+  keccak256,
+  toHex,
+  type Address,
+  type Hex,
+  type PublicClient,
+} from "viem"
 import { chunkedContractEvents } from "../helpers/l1Logs.js"
 
 /**
@@ -88,18 +99,50 @@ export async function readRegistrationSIPAImplementation(
   return requireBlessedImplementation(implementation, "registration")
 }
 
-/** The user-op implementation new SIPAs clone. */
-export async function readUserOpSIPAImplementation(
+/** The add-passkey implementation new SIPAs clone. */
+export async function readAddPasskeySIPAImplementation(
   publicClient: PublicClient,
   sipaFactory: Address,
 ): Promise<Address> {
   const implementation = await readSIPAImplementation(
     publicClient,
     sipaFactory,
-    OxideSipaIntent.UserOp,
+    OxideSipaIntent.AddPasskey,
   )
-  return requireBlessedImplementation(implementation, "user-op")
+  return requireBlessedImplementation(implementation, "add-passkey")
 }
+
+/**
+ * A factory built without the `AddPasskey` intent rejects the argument in its ABI decoder:
+ * a bare revert, no data. For that intent, such a revert reads as an unset pointer. A revert with
+ * data, an internal RPC error, or any other failure propagates.
+ */
+async function readImplementationOrUnset(
+  publicClient: PublicClient,
+  sipaFactory: Address,
+  intent: OxideSipaIntent,
+): Promise<Address> {
+  try {
+    return await readSIPAImplementation(publicClient, sipaFactory, intent)
+  } catch (err) {
+    if (intent === OxideSipaIntent.AddPasskey && isBareRevert(err)) return ZERO_ADDRESS
+    throw err
+  }
+}
+
+function isBareRevert(err: unknown): boolean {
+  if (!(err instanceof BaseError)) return false
+  if (err.walk((e) => e instanceof InternalRpcError)) return false
+  const reverted = err.walk((e) => e instanceof ContractFunctionRevertedError)
+  return (
+    reverted instanceof ContractFunctionRevertedError &&
+    reverted.reason === "execution reverted" &&
+    (reverted.raw === undefined || reverted.raw === "0x") &&
+    reverted.data === undefined
+  )
+}
+
+const ZERO_ADDRESS: Address = `0x${"00".repeat(20)}`
 
 /**
  * Every implementation the factory has blessed for `intent`, the one new SIPAs clone first. A bless
@@ -115,7 +158,7 @@ export async function readBlessedImplementations(
   fromBlock = 0n,
 ): Promise<Address[]> {
   const [current, head] = await Promise.all([
-    readSIPAImplementation(publicClient, sipaFactory, intent),
+    readImplementationOrUnset(publicClient, sipaFactory, intent),
     publicClient.getBlockNumber(),
   ])
   const request = {
@@ -177,6 +220,36 @@ export async function readSipaCloneImplementation(
   })) as Address
 }
 
+/** The arguments a deployed clone was cloned with, as the clone reports them. */
+export interface SipaCloneArgs {
+  intentHash: Hex
+  recoveryCommitment: Hex
+  forwardingTable: Address
+  resweepable: boolean
+}
+
+/** Reads a deployed clone's arguments from the clone. */
+export async function readSipaCloneArgs(
+  publicClient: PublicClient,
+  clone: Address,
+): Promise<SipaCloneArgs> {
+  const read = (
+    functionName: "intentHash" | "recoveryCommitment" | "forwardingTable" | "resweepable",
+  ) => publicClient.readContract({ address: clone, abi: SIPAAbi, functionName })
+  const [intentHash, recoveryCommitment, forwardingTable, resweepable] = await Promise.all([
+    read("intentHash"),
+    read("recoveryCommitment"),
+    read("forwardingTable"),
+    read("resweepable"),
+  ])
+  return {
+    intentHash: intentHash as Hex,
+    recoveryCommitment: recoveryCommitment as Hex,
+    forwardingTable: forwardingTable as Address,
+    resweepable: resweepable as boolean,
+  }
+}
+
 /**
  * `DepositSubsidy.$depositConfig()`: the profit the subsidy pays a relayer on top of the gas it
  * prices (the sweep fee caps it), the most it pays for one sweep, and the least a sweep must credit
@@ -205,6 +278,7 @@ export type SweepRouteDeadReason =
   | "the forwarding table has no row for the token and intent"
   | "the subsidy pays no relayer profit"
   | "the row's tip is zero, so the subsidy pays no relayer profit"
+  | "the row's tip is zero, so no relayer is paid"
   | "the subsidy's cap is zero"
   | "the subsidy holds none of the token"
 
@@ -214,8 +288,9 @@ export type SweepRouteLiveness =
 
 /**
  * Whether a sweep of `token` for `intent` is configured to pay a relayer: the row exists, the
- * subsidy pays a profit on top of the gas, and it can pay. Configuration only; a quote says
- * whether it pays enough.
+ * subsidy pays a profit on top of the gas, and it can pay. An add-passkey sweep is paid by the
+ * row's tip alone (the subsidy's ceiling for it is 0), so only the row and its tip gate it.
+ * Configuration only; a quote says whether it pays enough.
  */
 export async function readSweepRouteLiveness(
   publicClient: PublicClient,
@@ -238,6 +313,12 @@ export async function readSweepRouteLiveness(
   ])
   if (!row)
     return { live: false, reason: "the forwarding table has no row for the token and intent" }
+  if (args.intent === OxideSipaIntent.AddPasskey) {
+    if (row.sweepTip === 0n) {
+      return { live: false, reason: "the row's tip is zero, so no relayer is paid" }
+    }
+    return { live: true, row, config, balance }
+  }
   if (config.targetRelayerProfit === 0n) {
     return { live: false, reason: "the subsidy pays no relayer profit" }
   }
@@ -399,6 +480,19 @@ export interface SubsidySweepTarget {
 }
 
 /**
+ * The factory clones another implementation than the one the SIPA was derived from: a later change
+ * superseded it. The subsidy check's other refusals are a deployment or wallet fault instead.
+ */
+export class SupersededImplementationError extends Error {
+  constructor(depositSubsidy: Address, sipa: Address, implementation: Address) {
+    super(
+      `Deposit subsidy ${depositSubsidy} would not sweep SIPA ${sipa}: the factory's implementation is ${implementation}`,
+    )
+    this.name = "SupersededImplementationError"
+  }
+}
+
+/**
  * `DepositSubsidy.deployAndSweepForSubsidy` deploys the SIPA it derives from its own factory and rollup version and
  * the broadcast's table, and sweeps only into its own portal. Refuse to publish unless every route's subsidy deploys
  * `sipa` and serves the route's portal: otherwise a funded address is never swept. A SIPA that has code is swept as is.
@@ -465,7 +559,7 @@ async function assertOneSubsidySweepsSipa(
   }
   const implementation = await readSIPAImplementation(publicClient, sipaFactory, params.intent)
   if (!sameAddress(implementation, deployArgs.implementation)) {
-    refuse(`the factory's implementation is ${implementation}`)
+    throw new SupersededImplementationError(depositSubsidy, params.sipa, implementation)
   }
   const predicted = await predictSIPA(
     publicClient,

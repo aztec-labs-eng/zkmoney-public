@@ -1,0 +1,6 @@
+/* The sheet body's own gap between boxes, kept inside the radio group. */
+.choices {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+}

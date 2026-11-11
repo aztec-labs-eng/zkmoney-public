@@ -6,10 +6,12 @@ import {
   type SignUpOptions,
   currentUserAgentInfoSync,
   ignoresHintsFor,
+  keptPasskeyApiFor,
   passkeyExtensionFor,
   signUpOptionsFor,
 } from "@obsidion/passkey-web"
 import type { IconName } from "@obsidion/web-ds"
+import { backupPasskeySettingsEnabled } from "../../config/features"
 import { localRefusalsOverLimit } from "../../platform/auth/localRefusals"
 
 /**
@@ -21,21 +23,27 @@ export function signUpSheetOptions(input: {
   reach: PhoneReach
   preferred?: SignUpChoice
   reopened?: SheetReopen
+  /** The device's `localRefusals`. */
+  refusals: number
 }): SignUpOptions {
   const extension = passkeyExtensionFor()
   const ua = currentUserAgentInfoSync()
+  const { refusals, ...probed } = input
   return signUpOptionsFor({
-    ...input,
+    ...probed,
     extension,
-    refusedOften: localRefusalsOverLimit(extension !== "none"),
+    protonKept: keptPasskeyApiFor("create") !== undefined,
+    refusedOften: localRefusalsOverLimit(extension !== "none", refusals),
     ignoresHints: ignoresHintsFor(ua),
     os: ua.osFamily,
+    backupAddable: backupPasskeySettingsEnabled,
   })
 }
 
 export const SIGN_UP_ICONS: Readonly<Record<SignUpChoice, IconName>> = {
   "computer": "fingerprint",
   "1password": "lock",
+  "proton": "lock",
   "phone": "qr-code",
   "phone-or-key": "qr-code",
   "key": "key",

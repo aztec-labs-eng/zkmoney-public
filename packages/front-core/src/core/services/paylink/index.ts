@@ -23,15 +23,6 @@ export {
 } from "./creatorLinkAction"
 export type { PaylinkRecovery, PaylinkRowStatusLabel, PaylinkRowView } from "./paylinkRowView"
 export {
-  isRefundInFlight,
-  markRefundInFlight,
-  clearRefundInFlight,
-  onRefundInFlightChanged,
-  refundInFlightVersion,
-  refundsInFlight,
-  withRefundInFlight,
-} from "./refundInFlight"
-export {
   isPaylinkAlreadySpentRevert,
   isPaylinkWindowRevert,
   isPaylinkWindowNotOpenRevert,
@@ -39,16 +30,12 @@ export {
   PaylinkWindowClosedError,
 } from "./refundRevert"
 export {
-  PaylinkClaimReconciler,
   checkSpentViaPaylinkService,
   demotePaylinkClaim,
   markPaylinkMigrated,
+  sweepLinks,
 } from "./PaylinkClaimReconciler"
-export type {
-  CheckSpent,
-  ReconcilerStorage,
-  PaylinkClaimReconcilerDeps,
-} from "./PaylinkClaimReconciler"
+export type { CheckSpent, LinkSweepDeps, SpendCheckInput } from "./PaylinkClaimReconciler"
 export {
   PendingPaylinkMigrationStore,
   PENDING_PAYLINK_MIGRATION_STORAGE_KEY,

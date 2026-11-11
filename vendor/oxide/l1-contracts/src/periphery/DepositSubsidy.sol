@@ -11,7 +11,6 @@ import {Math} from "@oz/utils/math/Math.sol";
 import {ISIPA} from "./interfaces/ISIPA.sol";
 import {IOperationExecutor} from "./interfaces/IOperationExecutor.sol";
 import {SIPAFactory} from "./SIPAFactory.sol";
-import {SIPABase} from "./SIPABase.sol";
 import {IForwardingTable} from "./interfaces/IForwardingTable.sol";
 import {IOxidePortal} from "@core/interfaces/IOxidePortal.sol";
 import {USDC, USDT} from "./ThreePoolLib.sol";
@@ -19,6 +18,7 @@ import {AggregatorV3Interface} from "./interfaces/AggregatorV3Interface.sol";
 import {EthUsdMinOutLib} from "./EthUsdMinOutLib.sol";
 import {Errors} from "@periphery/Errors.sol";
 import {OxideConstants} from "@generated/OxideConstants.gen.sol";
+import {Intent, Intents} from "@periphery/Intent.sol";
 
 contract DepositSubsidy is Ownable, ReentrancyGuardTransient {
   using SafeERC20 for IERC20;
@@ -54,6 +54,11 @@ contract DepositSubsidy is Ownable, ReentrancyGuardTransient {
   }
   // solhint-enable oxide/no-comments
 
+  struct SweepGasCeiling {
+    Intent intent;
+    uint256 gas;
+  }
+
   address public immutable PORTAL;
   IERC20 public immutable TOKEN;
   uint8 public immutable TOKEN_DECIMALS;
@@ -68,10 +73,6 @@ contract DepositSubsidy is Ownable, ReentrancyGuardTransient {
   uint256 internal constant MAX_PRICE_AGE = EthUsdMinOutLib.MAX_PRICE_AGE;
 
   uint8 public constant FEED_DECIMALS = 8;
-
-  uint256 public constant SWEEP_GAS_DEPOSIT_CEILING = 290_000;
-  uint256 public constant SWEEP_GAS_REGISTRATION_CEILING = 810_000;
-  uint256 public constant SWEEP_GAS_USER_OP_CEILING = 740_000;
 
   uint256 public constant SWEEP_GAS_SWAP_USDC_HOP = 132_000;
   uint256 public constant SWEEP_GAS_SWAP_USDT_HOP = 136_000;
@@ -101,15 +102,18 @@ contract DepositSubsidy is Ownable, ReentrancyGuardTransient {
   // solhint-enable oxide/no-comments
 
   Config public $depositConfig;
+  mapping(Intent intent => uint256 gas) public $sweepGasCeilings;
 
   event DepositConfigSet(uint128 targetRelayerProfit, uint128 maxSubsidyPerOperation, uint128 minCreditedAmount);
+  event SweepGasCeilingSet(Intent indexed intent, uint256 gas);
 
   constructor(
     address _owner,
     address _portal,
     IOperationExecutor _executor,
     AggregatorV3Interface _priceFeed,
-    SIPAFactory _sipaFactory
+    SIPAFactory _sipaFactory,
+    SweepGasCeiling[] memory _initialCeilings
   ) Ownable(_owner) {
     require(address(_priceFeed).code.length > 0, Errors.DepositSubsidy__FeedWithoutCode());
     // solhint-disable oxide/no-comments
@@ -126,6 +130,9 @@ contract DepositSubsidy is Ownable, ReentrancyGuardTransient {
     TOKEN_DECIMALS = IERC20Metadata(address(token)).decimals();
     ROLLUP_VERSION = IOxidePortal(_portal).ROLLUP_VERSION();
     PRICE_FEED = _priceFeed;
+    for (uint256 i = 0; i < _initialCeilings.length; i++) {
+      _setSweepGasCeiling(_initialCeilings[i].intent, _initialCeilings[i].gas);
+    }
   }
 
   function setDepositConfig(uint128 _targetRelayerProfit, uint128 _maxSubsidyPerOperation, uint128 _minCreditedAmount)
@@ -140,9 +147,13 @@ contract DepositSubsidy is Ownable, ReentrancyGuardTransient {
     emit DepositConfigSet(_targetRelayerProfit, _maxSubsidyPerOperation, _minCreditedAmount);
   }
 
+  function setSweepGasCeiling(Intent _intent, uint256 _gas) external onlyOwner {
+    _setSweepGasCeiling(_intent, _gas);
+  }
+
   function deployAndSweepForSubsidy(
     IForwardingTable _table,
-    SIPABase.Intent _intent,
+    Intent _intent,
     bytes32 _recoveryCommitment,
     bool _resweepable,
     address _token,
@@ -168,6 +179,11 @@ contract DepositSubsidy is Ownable, ReentrancyGuardTransient {
     subsidy = _sweepForSubsidy(_sipa, _token, _relayer, _intentData, _proofs, meter);
   }
 
+  function _setSweepGasCeiling(Intent _intent, uint256 _gas) internal {
+    $sweepGasCeilings[_intent] = _gas;
+    emit SweepGasCeilingSet(_intent, _gas);
+  }
+
   function _openMeter(uint256 _startGas, address _relayer) internal view returns (Meter memory meter) {
     meter.startGas = _startGas;
     if (msg.sender != address(EXECUTOR) || _relayer != address(EXECUTOR)) {
@@ -191,16 +207,16 @@ contract DepositSubsidy is Ownable, ReentrancyGuardTransient {
     bytes calldata _proofs,
     Meter memory _meter
   ) internal returns (uint256 subsidy) {
-    SIPABase.Intent intent = SIPA_FACTORY.sipaIntentOf(address(_sipa));
-    require(intent != SIPABase.Intent.None, Errors.DepositSubsidy__NotASIPA(address(_sipa)));
+    Intent intent = SIPA_FACTORY.sipaIntentOf(address(_sipa));
+    require(intent != Intents.NONE, Errors.DepositSubsidy__NotASIPA(address(_sipa)));
     uint256 fee = _routedFee(_sipa);
 
-    uint256 credited = _sweepAndMeasureCredit(_sipa, _token, _relayer, _intentData, _proofs);
-    bool eligible = credited >= $depositConfig.minCreditedAmount && _meter.relayerTransaction
-      && _sweepGasCeilingFor(intent, _token, _meter.deployed) != 0;
+    uint256 ceiling = _sweepGasCeilingFor(intent, _token, _meter.deployed);
+    bool eligible = _sweepAndMeasureCredit(_sipa, _token, _relayer, _intentData, _proofs)
+        >= $depositConfig.minCreditedAmount && _meter.relayerTransaction && ceiling != 0;
     uint256 tokenWeiPerEth = eligible ? _tokenWeiPerEth() : 0;
     _meter.frameGas = _meter.startGas - gasleft();
-    uint256 pricedGas = eligible ? _pricedGas(intent, _token, _meter) : 0;
+    uint256 pricedGas = eligible ? _pricedGas(ceiling, _token, _meter) : 0;
     subsidy = _quoteSubsidy(fee, pricedGas, tokenWeiPerEth);
 
     if (subsidy > 0) {
@@ -216,14 +232,14 @@ contract DepositSubsidy is Ownable, ReentrancyGuardTransient {
 
   function _deploySIPAIfAbsent(
     IForwardingTable _table,
-    SIPABase.Intent _intent,
+    Intent _intent,
     bytes32 _intentHash,
     bytes32 _recoveryCommitment,
     bool _resweepable
   ) internal returns (address sipa, bool deployed) {
     require(SIPA_FACTORY.approvedTable(address(_table)), Errors.DepositSubsidy__TableNotApproved(address(_table)));
     address implementation = SIPA_FACTORY.implementationFor(_intent);
-    require(implementation != address(0), Errors.DepositSubsidy__NoImplementationForIntent(uint8(_intent)));
+    require(implementation != address(0), Errors.DepositSubsidy__NoImplementationForIntent(_intent));
 
     sipa =
       SIPA_FACTORY.predictSIPA(implementation, _intentHash, _recoveryCommitment, ROLLUP_VERSION, _resweepable, _table);
@@ -247,11 +263,7 @@ contract DepositSubsidy is Ownable, ReentrancyGuardTransient {
     return portalAfter > portalBefore ? portalAfter - portalBefore : 0;
   }
 
-  function _pricedGas(SIPABase.Intent _intent, address _token, Meter memory _meter) internal view returns (uint256) {
-    uint256 ceiling = _sweepGasCeilingFor(_intent, _token, _meter.deployed);
-    if (!_meter.relayerTransaction || ceiling == 0) {
-      return 0;
-    }
+  function _pricedGas(uint256 _ceiling, address _token, Meter memory _meter) internal view returns (uint256) {
     // solhint-disable-next-line oxide/no-comments
     // A relayer transaction is paid its whole gas, so add the gas outside this call.
     uint256 gross = _meter.frameGas + TX_INTRINSIC_GAS + _meter.calldataGas + _meter.executorHeadGas + EXECUTOR_PATH_GAS;
@@ -259,7 +271,7 @@ contract DepositSubsidy is Ownable, ReentrancyGuardTransient {
       // solhint-disable-next-line oxide/no-comments
       // The payout writes a new balance for a relayer with no TOKEN, outside the sweep, so the ceiling grows too.
       gross += FRESH_BALANCE_GAS;
-      ceiling += FRESH_BALANCE_GAS;
+      _ceiling += FRESH_BALANCE_GAS;
     }
     // solhint-disable-next-line oxide/no-comments
     // The refunds of the sweep, and of the executor's TOKEN balance, which pays the fee and the subsidy out.
@@ -268,7 +280,7 @@ contract DepositSubsidy is Ownable, ReentrancyGuardTransient {
     // solhint-disable-next-line oxide/no-comments
     // The EVM gives back at most one fifth of the gas that the transaction used.
     refund = Math.min(refund, gross / 5);
-    return Math.min(gross - refund, ceiling);
+    return Math.min(gross - refund, _ceiling);
   }
 
   function _sweepRefund(address _token) internal view returns (uint256 refund) {
@@ -284,19 +296,9 @@ contract DepositSubsidy is Ownable, ReentrancyGuardTransient {
     }
   }
 
-  function _sweepGasCeilingFor(SIPABase.Intent _intent, address _token, bool _deployed)
-    internal
-    view
-    returns (uint256)
-  {
-    uint256 ceiling;
-    if (_intent == SIPABase.Intent.Deposit) {
-      ceiling = SWEEP_GAS_DEPOSIT_CEILING;
-    } else if (_intent == SIPABase.Intent.Registration) {
-      ceiling = SWEEP_GAS_REGISTRATION_CEILING;
-    } else if (_intent == SIPABase.Intent.UserOp) {
-      ceiling = SWEEP_GAS_USER_OP_CEILING;
-    } else {
+  function _sweepGasCeilingFor(Intent _intent, address _token, bool _deployed) internal view returns (uint256) {
+    uint256 ceiling = $sweepGasCeilings[_intent];
+    if (ceiling == 0) {
       return 0;
     }
     if (_deployed) {

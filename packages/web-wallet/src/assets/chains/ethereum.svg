@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24">
+    <path fill="#627EEA" d="M24 0H0v24h24z"/>
+    <g fill="#fff">
+        <path fill-opacity=".602" d="M12 4v5.912l5 2.237z"/>
+        <path d="m12 4-5 8.148 5-2.235z"/>
+        <path fill-opacity=".602" d="M12 15.98V20l5-6.92z"/>
+        <path d="M12 20v-4.02l-5-2.9z"/>
+        <path fill-opacity=".2" d="m12 15.049 5-2.9-5-2.236z"/>
+        <path fill-opacity=".602" d="m7 12.149 5 2.9V9.913z"/>
+    </g>
+</svg>

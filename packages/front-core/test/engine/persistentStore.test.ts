@@ -11,6 +11,7 @@ import {
   type RecordSet,
 } from "../../src/engine/persistentStore"
 import type { ReadonlyStore } from "../../src/engine/store"
+import { liveStore } from "../../src/engine/liveStore"
 import { WalletError } from "../../src/engine/errors"
 
 const INVARIANT = { code: "invariant" }
@@ -170,7 +171,7 @@ describe("persistentStore", () => {
     const { rows } = open()
     await expect(rows.put(row("a/b", 1))).rejects.toThrow(/\//)
     await expect(rows.put(row("a", 1, "x/y"))).rejects.toThrow(/\//)
-    expect(() => rows.query("status", "x/y")).toThrow(/\//)
+    expect(() => rows.where("status", "x/y")).toThrow(/\//)
   })
 })
 
@@ -266,11 +267,11 @@ describe("persistentStore queries", () => {
     await rows.put(row("b", 20, "done", { peers: ["q"] }))
     await settle()
     const range = vi.spyOn(backend, "range")
-    const day = rows.query("time", { after: timeKey(15), before: timeKey(30) })
+    const day = rows.where("time", { after: timeKey(15), before: timeKey(30) })
     expect(day.get()).toEqual({ records: [], loaded: false, failed: false })
     expect(range).not.toHaveBeenCalled()
     const first = watch(day)
-    const second = watch(rows.query("time", { after: timeKey(15), before: timeKey(30) }))
+    const second = watch(rows.where("time", { after: timeKey(15), before: timeKey(30) }))
     await settle()
     expect(range).toHaveBeenCalledTimes(1)
     expect(ids(day.get())).toEqual(["b"])
@@ -278,7 +279,7 @@ describe("persistentStore queries", () => {
     await rows.put(row("late", 30))
     expect(ids(first.last())).toEqual(["b", "c"])
     expect(second.last()).toBe(first.last())
-    expect(rows.query("time", { after: timeKey(15), before: timeKey(30) })).toBe(day)
+    expect(rows.where("time", { after: timeKey(15), before: timeKey(30) })).toBe(day)
     first.off()
     second.off()
     expect(day.get().loaded).toBe(false)
@@ -286,10 +287,31 @@ describe("persistentStore queries", () => {
     expect(range).toHaveBeenCalledTimes(1)
   })
 
+  it("shares one read between handles made before either subscribes, while either is", async () => {
+    const backend = memoryBackend()
+    const { rows } = open({}, backend)
+    await rows.put(row("a", 10))
+    await settle()
+    const range = vi.spyOn(backend, "range")
+    const at = { after: timeKey(5), before: timeKey(30) }
+    const made = [rows.where("time", at), rows.where("time", at)]
+    const [first, second] = made.map(watch)
+    await settle()
+    expect(range).toHaveBeenCalledTimes(1)
+    first.off()
+    const third = watch(rows.where("time", at))
+    await settle()
+    expect(range).toHaveBeenCalledTimes(1)
+    expect(ids(third.last())).toEqual(["a"])
+    expect(third.last()).toBe(second.last())
+    second.off()
+    third.off()
+  })
+
   it("reads a key's records and follows each record's changes", async () => {
     const { rows } = open()
     await rows.put(row("a", 1, "done", { peers: ["p"] }))
-    const chat = watch(rows.query("peer", "p"))
+    const chat = watch(rows.where("peer", "p"))
     await settle()
     expect(ids(chat.last())).toEqual(["a"])
     await rows.put(row("b", 2, "done", { peers: ["p", "q"] }))
@@ -315,7 +337,7 @@ describe("persistentStore queries", () => {
   it("moves the sole row of a full window", async () => {
     const { rows } = open()
     await rows.put(row("a", 1))
-    const newest = watch(rows.query("time", { reverse: true, limit: 1 }))
+    const newest = watch(rows.where("time", { reverse: true, limit: 1 }))
     await settle()
     await rows.put(row("a", 5))
     await settle()
@@ -325,7 +347,7 @@ describe("persistentStore queries", () => {
   it("pages older rows from a cursor", async () => {
     const { rows } = open()
     for (let i = 1; i <= 5; i++) await rows.put(row(`r${i}`, i))
-    const page = watch(rows.query("time", { before: `${timeKey(4)}/r4`, limit: 2, reverse: true }))
+    const page = watch(rows.where("time", { before: `${timeKey(4)}/r4`, limit: 2, reverse: true }))
     await settle()
     expect(ids(page.last())).toEqual(["r3", "r2"])
   })
@@ -335,12 +357,12 @@ describe("persistentStore queries", () => {
     const { rows } = open({}, backend)
     await rows.put(row("a", 1))
     backend.failing = { reads: true }
-    const failed = watch(rows.query("status", "done"))
+    const failed = watch(rows.where("status", "done"))
     await settle()
     expect(failed.last()).toEqual({ records: [], loaded: false, failed: true })
     failed.off()
     backend.failing = {}
-    const again = watch(rows.query("status", "done"))
+    const again = watch(rows.where("status", "done"))
     await settle()
     expect(again.last()).toEqual({ records: [row("a", 1)], loaded: true, failed: false })
   })
@@ -354,7 +376,7 @@ describe("persistentStore queries", () => {
     let release!: () => void
     const gate = new Promise<void>((resolve) => (release = resolve))
     backend.range = (...args) => range(...args).then((found) => gate.then(() => found))
-    const done = watch(rows.query("status", "done"))
+    const done = watch(rows.where("status", "done"))
     await settle()
     await rows.put(row("b", 2))
     backend.range = range
@@ -365,8 +387,27 @@ describe("persistentStore queries", () => {
 
   it("refuses an index the spec does not declare, or an empty limit", () => {
     const { rows } = open()
-    expect(() => rows.query("nope" as Index, "x")).toThrow(WalletError)
-    expect(() => rows.query("time", { limit: 0 })).toThrow(/positive/)
+    expect(() => rows.where("nope" as Index, "x")).toThrow(WalletError)
+    expect(() => rows.where("time", { limit: 0 })).toThrow(/positive/)
+  })
+})
+
+describe("loadRecords", () => {
+  it("resolves a set that lands as it is subscribed, and stops listening", async () => {
+    let listeners = 0
+    const rows: Row[] = [{ id: "a", at: 1, status: "open" }]
+    const set = liveStore<RecordSet<Row>>(
+      { records: [], loaded: false, failed: false },
+      {
+        whileSubscribed: (write) => {
+          listeners++
+          write({ records: rows, loaded: true, failed: false })
+          return () => listeners--
+        },
+      },
+    )
+    expect(await loadRecords(set)).toEqual(rows)
+    expect(listeners).toBe(0)
   })
 })
 

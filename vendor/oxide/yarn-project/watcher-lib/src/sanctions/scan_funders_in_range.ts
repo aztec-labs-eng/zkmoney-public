@@ -13,7 +13,7 @@ export interface ScanFundersInRangeOptions {
   sipa: EthAddress;
   fromBlock: bigint;
   toBlock: bigint;
-  /** Max blocks per `eth_getLogs` call; a window the provider caps is retried at half its span. */
+  /** Max blocks per `eth_getLogs` call; a failed window is retried at half its span. */
   blocksPerQuery: bigint;
 }
 

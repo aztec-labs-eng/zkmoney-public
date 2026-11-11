@@ -12,6 +12,7 @@ import { reloadPage } from "../platform/storage/walletStorage"
 import { Modal, PageModal, PageModalPanel } from "../ui/Modal"
 import { assertProfilePolicy, parseNetwork } from "../config/profilePolicy"
 import { clearProfileDraft, profileDraft, saveProfileDraft } from "./configDraft"
+import { useDomEffect } from "../ui/useDomEffect"
 
 const PROFILE_URL = import.meta.env.VITE_CONFIG_PROFILE_URL as string | undefined
 
@@ -65,7 +66,7 @@ export function ConfigProfileModal({ onClose }: { onClose: () => void }) {
     setLoadError(undefined)
   }
 
-  useEffect(() => {
+  useDomEffect(() => {
     if (editing) {
       const scroll = editButton.current?.closest<HTMLElement>(".ww-page-modal__scroll")
       if (scroll) scroll.scrollTop = 0
@@ -98,6 +99,7 @@ export function ConfigProfileModal({ onClose }: { onClose: () => void }) {
         }
       })
       .catch((error: Error) => {
+        // eslint-disable-next-line local/message-in-state -- ZKM-1895
         if (!controller.signal.aborted && !userSelectedText.current) setLoadError(error.message)
       })
       .finally(() => {
@@ -111,6 +113,7 @@ export function ConfigProfileModal({ onClose }: { onClose: () => void }) {
     try {
       return { value: validate(text) }
     } catch (error) {
+      // eslint-disable-next-line local/message-in-state -- ZKM-1895
       return { error: (error as Error).message }
     }
   }, [text])
@@ -133,6 +136,7 @@ export function ConfigProfileModal({ onClose }: { onClose: () => void }) {
       saveProfileDraft(PROFILE_URL, text)
       void reloadPage()
     } catch (error) {
+      // eslint-disable-next-line local/message-in-state -- ZKM-1895
       setSaveError((error as Error).message)
     }
   }
@@ -142,6 +146,7 @@ export function ConfigProfileModal({ onClose }: { onClose: () => void }) {
       clearProfileDraft()
       void reloadPage()
     } catch (error) {
+      // eslint-disable-next-line local/message-in-state -- ZKM-1895
       setSaveError((error as Error).message)
     }
   }
@@ -182,6 +187,7 @@ export function ConfigProfileModal({ onClose }: { onClose: () => void }) {
       setText(candidate)
       setSaveError(undefined)
     } catch (error) {
+      // eslint-disable-next-line local/message-in-state -- ZKM-1895
       if (!controller.signal.aborted) setUrlError((error as Error).message)
     } finally {
       if (!controller.signal.aborted) setLoadingUrl(false)

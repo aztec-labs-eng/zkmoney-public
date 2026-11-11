@@ -6,7 +6,6 @@ import {
   type MigrationHalt,
   type MigrationSendGate,
 } from "@obsidion/sdk"
-import { provingProgress } from "@obsidion/proving-progress"
 
 /** Shared migration driver. Contract actions live in the SDK adapter; this layer owns durability. */
 export type MetadataMigrationPhase =
@@ -221,15 +220,11 @@ export async function advanceMetadataMigration(
     await persist(record)
   }
   // A step cancelled while it waited its turn never starts.
-  const send = <T>(step: (operationId?: string) => Promise<T>) =>
-    exclusive((operationId) => {
+  const send: MigrationSendGate = (step) =>
+    exclusive((operationId, sent) => {
       signal?.throwIfAborted()
-      return step(operationId)
+      return step(operationId, sent)
     })
-  // The record holds the hash, so the step's operation is safe to reload over.
-  const saved = (operationId: string | undefined, txHash: string) => {
-    if (operationId) provingProgress.emitTxHashSaved(operationId, txHash)
-  }
   const progress = async (approved: number, total: number) => {
     await save({ approvals: { approved, total } })
     if (approved < total) await beforeApproval?.(approved, total)
@@ -300,9 +295,9 @@ export async function advanceMetadataMigration(
       // Each funds send waits its turn through `send`, one transaction at a time.
       // Saved before the send: a send whose result is unknown may still move funds.
       const sendFunds: MigrationSendGate = (step) =>
-        send(async (operationId) => {
+        send(async (operationId, sent) => {
           if (!record.fundsSent) await save({ fundsSent: true })
-          return step(operationId)
+          return step(operationId, sent)
         })
       if (observeOnly) await steps.reconcileRemaining?.(plan, signal, sendFunds)
       else await steps.recoverRemaining(plan, signal, sendFunds)
@@ -325,13 +320,14 @@ export async function advanceMetadataMigration(
       }
       await save({ phase: "subscribing", error: undefined })
       signal?.throwIfAborted()
-      await send((operationId) =>
+      await send((operationId, sent) =>
         steps.subscribe(
           plan,
           async (txHash) => {
             signal?.throwIfAborted()
             await save({ subscriptionTx: txHash, subscriptionStatus: "unknown" })
-            saved(operationId, txHash)
+            // The record holds the hash, so the step's operation is safe to reload over.
+            await sent?.(txHash)
           },
           operationId,
         ),
@@ -380,7 +376,7 @@ export async function advanceMetadataMigration(
       await save({ phase: "broadcasting", error: undefined })
       signal?.throwIfAborted()
       // Called before submission: a cancel here means nothing is sent.
-      await send((operationId) =>
+      await send((operationId, sent) =>
         steps.broadcast(
           record.plan!,
           async (txHash) => {
@@ -390,7 +386,8 @@ export async function advanceMetadataMigration(
               bootstrapStatus: "unknown",
               allowance: observed.recurringSponsorship ? "registered" : "unknown",
             })
-            saved(operationId, txHash)
+            // The record holds the hash, so the step's operation is safe to reload over.
+            await sent?.(txHash)
           },
           operationId,
         ),

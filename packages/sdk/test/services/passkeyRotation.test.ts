@@ -5,30 +5,30 @@
 import { describe, expect, it } from "vitest"
 import { AztecAddress, EthAddress } from "@aztec-labs/aztec.js/addresses"
 import { Fr } from "@aztec-labs/aztec.js/fields"
-import { WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
+import { L1_SETTLED_DEPTH, WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
 import {
-  AccountMetadataRegistryAbi,
   DepositSubsidyAbi,
   ForwardingTableAbi,
   SipaIntent,
-  conditionHash,
+  encodeAddPasskeyIntentData,
+  encodeAddPasskeyProofs,
   encodeR1UserOpSignature,
-  encodeUserOpIntentData,
-  encodeUserOpProofs,
+  packU128LimbsToBytes32,
+  type AddPasskeyIntent,
   type AuthKeyEntry,
   type R1PublicKeyArg,
   type UserRecordArg,
 } from "@oxide/l1-contracts"
+import { MAX_ADD_PASSKEY_CALL_GAS } from "@oxide/oxide-client/add_passkey.js"
+import { USER_OP_VERIFICATION_GAS } from "@oxide/oxide-client/record_update.js"
 import { computeRecipientCommitment } from "@oxide/oxide-lib/recipient_commitment.js"
 import { computeSIPAAddress } from "@oxide/oxide-lib/sipa_address.js"
 import { deriveRecoveryCommitment } from "@oxide/oxide-lib/sipa_recovery.js"
 import {
   ContractFunctionRevertedError,
   decodeFunctionData,
-  encodeFunctionResult,
   hexToBytes,
   keccak256,
-  stringToHex,
   toHex,
   type Address,
   type Hex,
@@ -46,11 +46,14 @@ import {
   VerificationUnavailableError,
   backupKeyEntry,
   backupKeyPayload,
+  backupSweepRefused,
   buildBackupSweep,
   fundingAmount,
+  isAddPasskeyGasLimits,
   prepareBackupRotation,
   readAccountState,
   readRotationFundability,
+  rotationUserOpHash,
   verifyPersistedRotation,
   verifyWebAuthnUserOpSignature,
   type BackupRotationTuple,
@@ -58,6 +61,11 @@ import {
   type PreparedBackupRotation,
   type RotationLocalTruth,
 } from "../../src/services/passkeyRotation.js"
+import {
+  RevertingSweepError,
+  UnprofitableSweepError,
+} from "../../src/oxide/tip/l1OperationQuote.js"
+import { SupersededImplementationError } from "../../src/services/sipa/sipaIntents.js"
 import { SoftwareWebauthnKey } from "../utils/wallet/softwareWebauthn.js"
 import { r1Key, signUserOpHash, webAuthnAuthArg } from "../utils/wallet/userOpSignature.js"
 
@@ -67,6 +75,7 @@ const REGISTRY = addr("4e6")
 const FACTORY = addr("fac")
 const TABLE = addr("7ab1e")
 const NAME_PORTAL = addr("4a4e")
+const NAME_REGISTRY = addr("4a4e6")
 const PORTAL = addr("90")
 const TOKEN = addr("70")
 const SUBSIDY = addr("5b5")
@@ -78,11 +87,16 @@ const OPERATOR = addr("09")
 const BENEFICIARY = addr("be")
 const ZERO = addr("")
 const ROLLUP_VERSION = 7n
+const CHAIN_ID = 11_155_111
 const TIP = 5n * 10n ** 17n
 const ONE_ETH = 10n ** 18n
 
+const gasLimits = (callGas: bigint, verificationGas = USER_OP_VERIFICATION_GAS) =>
+  packU128LimbsToBytes32(verificationGas, callGas)
+
 const ONE_KEY = AztecAddress.fromBigIntUnsafe(0x1111n)
 const TWO_KEY = AztecAddress.fromBigIntUnsafe(0x2222n)
+const OTHER_TWO_KEY = AztecAddress.fromBigIntUnsafe(0x3333n)
 const PUBLIC_KEY = { x: 11n, y: 22n }
 const RECORD: UserRecordArg = {
   l2Address: ONE_KEY.toString() as Hex,
@@ -130,59 +144,47 @@ interface Snapshot {
   record: UserRecordArg | undefined
 }
 
-const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase()
-
 function fakeChain(initial: Partial<Snapshot> = {}) {
   const history: Snapshot[] = [{ nonce: 3n, keys: [ROOT], record: RECORD, ...initial }]
   /** How many times each height was replaced: a replaced block has another hash. */
   const forks = new Map<number, number>()
   const hashOf = (n: number) => keccak256(toHex(n + 1_000 * (forks.get(n) ?? 0)))
   const state = {
-    finalized: 0,
     /** Watches every contract read; a test replaces a block from here. */
     onRead: undefined as ((functionName: string) => void) | undefined,
     /** The first block the account, registry and entry point have code at. */
     deployedAt: 0,
     implementationFor: IMPL as Address,
-    blessed: new Map<string, SipaIntent>([[IMPL.toLowerCase(), SipaIntent.UserOp]]),
+    blessed: new Map<string, SipaIntent>([[IMPL.toLowerCase(), SipaIntent.AddPasskey]]),
     config: [TIP, 10_000n * ONE_ETH, ONE_ETH] as [bigint, bigint, bigint],
     subsidyBalance: 1000n * ONE_ETH,
     subsidyPortal: PORTAL as Address,
     row: [PORTAL, BENEFICIARY, 0n, TIP] as [Address, Address, bigint, bigint] | undefined,
     withdrawalFee: ONE_ETH / 10n,
+    /** What `eth_estimateGas` answers for the add's account call. */
+    estimate: 1_200_000n,
     failing: new Set<string>(),
   }
   const latest = () => history[history.length - 1]!
   const at = (blockNumber?: bigint) =>
     history[blockNumber === undefined ? history.length - 1 : Number(blockNumber)]!
   const client = {
+    chain: { id: CHAIN_ID },
     getBlock: async (params: { blockTag?: string; blockHash?: Hex; blockNumber?: bigint } = {}) => {
       const n = params.blockHash
         ? history.findIndex((_, i) => hashOf(i) === params.blockHash)
         : params.blockNumber !== undefined
         ? Number(params.blockNumber)
-        : params.blockTag === "finalized"
-        ? state.finalized
         : history.length - 1
       if (n < 0 || n >= history.length) throw new Error("unknown block")
       return { number: BigInt(n), hash: hashOf(n), timestamp: 0n, baseFeePerGas: 7n }
     },
     getBlockNumber: async () => BigInt(history.length - 1),
+    estimateGas: async () => state.estimate,
     getCode: async ({ blockNumber }: { address: Address; blockNumber?: bigint }) =>
       blockNumber !== undefined && Number(blockNumber) < state.deployedAt
         ? undefined
         : ("0x60" as Hex),
-    call: async ({ to }: { to: Address }) => {
-      const record = latest().record
-      if (!same(to, REGISTRY) || !record) return { data: "0x" as Hex }
-      return {
-        data: encodeFunctionResult({
-          abi: AccountMetadataRegistryAbi,
-          functionName: "getUserRecord",
-          result: record,
-        }),
-      }
-    },
     readContract: async ({
       functionName,
       args = [],
@@ -206,9 +208,15 @@ function fakeChain(initial: Partial<Snapshot> = {}) {
           if (!snapshot.record) throw new Error("no record")
           return snapshot.record
         case "implementationFor":
-          return Number(args[0]) === SipaIntent.UserOp ? state.implementationFor : ZERO
+          return Number(args[0]) === SipaIntent.AddPasskey ? state.implementationFor : ZERO
         case "intentOf":
           return state.blessed.get(String(args[0]).toLowerCase()) ?? SipaIntent.None
+        case "NAME_REGISTRY":
+          return NAME_REGISTRY
+        case "NAME_PORTAL":
+          return NAME_PORTAL
+        case "accountMetadataRegistry":
+          return REGISTRY
         case "predictSIPA": {
           const [
             implementation,
@@ -228,15 +236,12 @@ function fakeChain(initial: Partial<Snapshot> = {}) {
             forwardingTable: EthAddress.fromString(table),
           }).toString()
         }
-        case "getUserOpHash":
-          return keccak256(
-            stringToHex(
-              JSON.stringify(args[0], (_, v) => (typeof v === "bigint" ? v.toString() : v)),
-            ),
-          )
         case "$depositConfig":
           return state.config
         case "rowFor":
+          if (Number(args[1]) !== SipaIntent.AddPasskey) {
+            throw new Error(`rowFor asked for intent ${String(args[1])}`)
+          }
           if (!state.row) {
             throw new ContractFunctionRevertedError({
               abi: ForwardingTableAbi,
@@ -281,6 +286,11 @@ const applied = (prepared: PreparedBackupRotation): Partial<Snapshot> => ({
   record: prepared.rotation.newRecord,
 })
 
+/** Mines the settled depth, so the latest block's state is what the settled read shows. */
+const settle = (chain: ReturnType<typeof fakeChain>) => {
+  for (let i = 0n; i < L1_SETTLED_DEPTH; i++) chain.advance({})
+}
+
 const persisted = (prepared: PreparedBackupRotation, signature: Hex): PersistedRotation => ({
   owner: OWNER,
   intent: prepared.rotation.intent,
@@ -296,12 +306,33 @@ const persisted = (prepared: PreparedBackupRotation, signature: Hex): PersistedR
 })
 
 async function preparedAndSigned(chain = fakeChain()) {
-  const prepared = await prepareBackupRotation(chain.client, PREPARE)
+  const prepared = {
+    ...(await prepareBackupRotation(chain.client, PREPARE)),
+    metadataRegistry: REGISTRY,
+  }
   const signature = await signUserOpHash(A, prepared.rotation.userOpHash)
   return { chain, prepared, signature, record: persisted(prepared, signature) }
 }
 
 describe("prepareBackupRotation", () => {
+  it("builds the intent over the add and the recipient, hashed as the wallet rehashes it", async () => {
+    const chain = fakeChain()
+    const { rotation, builtOver, implementation } = await prepareBackupRotation(
+      chain.client,
+      PREPARE,
+    )
+    const { intent } = rotation
+    expect(intent.key).toEqual(ADD.pubkey)
+    expect(intent.metadata).toBe(backupKeyEntry(ADD).metadata)
+    expect(intent.record).toEqual({ ...RECORD, l2Address: TWO_KEY.toString() })
+    expect(BigInt(intent.namePortalRecipient)).toBe(TWO_KEY.toBigInt())
+    expect(intent.owner).toBe(OWNER)
+    expect(intent.nonce).toBe(3n)
+    expect(builtOver).toEqual(RECORD)
+    expect(implementation).toBe(IMPL)
+    expect(rotation.userOpHash).toBe(rotationUserOpHash(chain.client, intent, TUPLE))
+  })
+
   it("refuses an account with no record, or a record that names another address or version", async () => {
     await expect(
       prepareBackupRotation(fakeChain({ record: undefined }).client, PREPARE),
@@ -329,10 +360,26 @@ describe("prepareBackupRotation", () => {
     expect((refusal as BackupSetConflictError).live).toEqual([{ key: r1Key(C), metadata: "0x" }])
   })
 
-  it("refuses a factory with no user-op implementation", async () => {
+  it("signs the call gas oxide estimates, and refuses an estimate above oxide's cap", async () => {
+    const low = fakeChain()
+    const high = fakeChain()
+    high.state.estimate = 2_000_000n
+    const [a, b] = await Promise.all([
+      prepareBackupRotation(low.client, PREPARE),
+      prepareBackupRotation(high.client, PREPARE),
+    ])
+    expect(a.rotation.intent.accountGasLimits).not.toBe(b.rotation.intent.accountGasLimits)
+    expect(isAddPasskeyGasLimits(a.rotation.intent.accountGasLimits)).toBe(true)
+    expect(isAddPasskeyGasLimits(b.rotation.intent.accountGasLimits)).toBe(true)
+    const over = fakeChain()
+    over.state.estimate = 10_000_000n
+    await expect(prepareBackupRotation(over.client, PREPARE)).rejects.toThrow(/call gas/)
+  })
+
+  it("refuses a factory with no add-passkey implementation", async () => {
     const chain = fakeChain()
     chain.state.implementationFor = ZERO
-    await expect(prepareBackupRotation(chain.client, PREPARE)).rejects.toThrow(/user-op/)
+    await expect(prepareBackupRotation(chain.client, PREPARE)).rejects.toThrow(/add-passkey/)
   })
 
   it("carries a credential id up to the cap, and refuses one outside 16..cap before any intent", async () => {
@@ -349,42 +396,42 @@ describe("prepareBackupRotation", () => {
   })
 })
 
+describe("isAddPasskeyGasLimits", () => {
+  it("accepts gas limits only in their 32-byte spelling", () => {
+    const word = gasLimits(400_000n)
+    expect(isAddPasskeyGasLimits(word)).toBe(true)
+    for (const spelling of [`0x${word.slice(3)}`, `0x00${word.slice(2)}`, "0x"] as Hex[]) {
+      expect(isAddPasskeyGasLimits(spelling)).toBe(false)
+    }
+  })
+})
+
 describe("readRotationFundability", () => {
   it("is fundable while the account is as the intent was built", async () => {
     const { chain, prepared } = await preparedAndSigned()
     expect(await readRotationFundability(chain.client, prepared)).toBe("fundable")
-    expect(await readRotationFundability(chain.client, prepared, { at: "finalized" })).toBe(
-      "fundable",
-    )
   })
 
-  it("is applied-pending once the operation ran at the latest block, applied once finalized", async () => {
+  it("is applied-pending once the operation ran at the latest block, applied once settled", async () => {
     const { chain, prepared } = await preparedAndSigned()
     chain.advance(applied(prepared))
-
     expect(await readRotationFundability(chain.client, prepared)).toBe("applied-pending")
-    expect(await readRotationFundability(chain.client, prepared, { at: "finalized" })).toBe(
-      "applied-pending",
-    )
 
-    chain.state.finalized = 1
+    // The settled read floors at the genesis block while the chain is shallower than the depth.
+    for (let i = 1n; i < L1_SETTLED_DEPTH; i++) chain.advance({})
+    expect(await readRotationFundability(chain.client, prepared)).toBe("applied-pending")
+
+    chain.advance({})
     expect(await readRotationFundability(chain.client, prepared)).toBe("applied")
-    expect(await readRotationFundability(chain.client, prepared, { at: "finalized" })).toBe(
-      "applied",
-    )
   })
 
-  it("stays applied-pending while the finalized block predates the account and registry", async () => {
+  it("stays applied-pending while the settled block predates the account and registry", async () => {
     const { chain, prepared } = await preparedAndSigned()
     chain.state.deployedAt = 1
     chain.advance(applied(prepared))
-
     expect(await readRotationFundability(chain.client, prepared)).toBe("applied-pending")
-    expect(await readRotationFundability(chain.client, prepared, { at: "finalized" })).toBe(
-      "applied-pending",
-    )
 
-    chain.state.finalized = 1
+    settle(chain)
     expect(await readRotationFundability(chain.client, prepared)).toBe("applied")
   })
 
@@ -419,19 +466,16 @@ describe("readRotationFundability", () => {
     const { chain, prepared } = await preparedAndSigned()
     chain.state.implementationFor = OTHER_IMPL
     expect(await readRotationFundability(chain.client, prepared)).toBe("superseded")
-    expect(await readRotationFundability(chain.client, prepared, { at: "finalized" })).toBe(
-      "superseded",
-    )
 
     chain.advance(applied(prepared))
     expect(await readRotationFundability(chain.client, prepared)).toBe("applied-pending")
-    chain.state.finalized = 1
+    settle(chain)
     expect(await readRotationFundability(chain.client, prepared)).toBe("applied")
   })
 })
 
 describe("readAccountState", () => {
-  it("reads nonce, keys and record at the latest block, a tag, or a block hash", async () => {
+  it("reads nonce, keys and record at the latest block, a block number, or a block hash", async () => {
     const chain = fakeChain()
     const before = await readAccountState(chain.client, OWNER, { metadataRegistry: REGISTRY })
     expect(before).toEqual({
@@ -452,11 +496,11 @@ describe("readAccountState", () => {
       at: before.blockHash,
     })
     expect(pinned).toEqual(before)
-    const finalized = await readAccountState(chain.client, OWNER, {
+    const numbered = await readAccountState(chain.client, OWNER, {
       metadataRegistry: REGISTRY,
-      at: "finalized",
+      at: 0n,
     })
-    expect(finalized).toEqual(before)
+    expect(numbered).toEqual(before)
   })
 
   it("reads a block before the account and registry existed as empty", async () => {
@@ -464,7 +508,7 @@ describe("readAccountState", () => {
     chain.state.deployedAt = 1
     chain.advance({ nonce: 4n })
     expect(
-      await readAccountState(chain.client, OWNER, { metadataRegistry: REGISTRY, at: "finalized" }),
+      await readAccountState(chain.client, OWNER, { metadataRegistry: REGISTRY, at: 0n }),
     ).toEqual({
       blockNumber: 0n,
       blockHash: chain.hashOf(0),
@@ -492,7 +536,22 @@ describe("readAccountState", () => {
     expect(refusal).toMatchObject({ blockNumber: 1n, expected: named, canonical: chain.hashOf(1) })
   })
 
-  it("follows a tag to the block that replaced the one it started reading", async () => {
+  it("refuses a number whose block the chain replaced while it read", async () => {
+    const chain = fakeChain()
+    chain.advance({ nonce: 4n })
+    const named = chain.hashOf(1)
+    chain.state.onRead = (functionName) => {
+      if (functionName === "getNonce") chain.replace(1, { nonce: 8n })
+    }
+    const refusal = await readAccountState(chain.client, OWNER, {
+      metadataRegistry: REGISTRY,
+      at: 1n,
+    }).catch((e: unknown) => e)
+    expect(refusal).toBeInstanceOf(AccountStateReorgedError)
+    expect(refusal).toMatchObject({ blockNumber: 1n, expected: named, canonical: chain.hashOf(1) })
+  })
+
+  it("follows the latest block to the one that replaced it mid-read", async () => {
     const chain = fakeChain()
     chain.advance({ nonce: 4n })
     let replaced = false
@@ -506,7 +565,7 @@ describe("readAccountState", () => {
     ).toMatchObject({ blockNumber: 1n, blockHash: chain.hashOf(1), nonce: 8n })
   })
 
-  it("follows a tag when the read failed under the block that replaced it", async () => {
+  it("follows the latest block when the read failed under the one that replaced it", async () => {
     const chain = fakeChain()
     chain.advance({ nonce: 4n })
     let replaced = false
@@ -591,7 +650,7 @@ describe("verifyPersistedRotation", () => {
 
   it("accepts an implementation the factory blessed after this one", async () => {
     const { chain, record } = await preparedAndSigned()
-    chain.state.blessed.set(OTHER_IMPL.toLowerCase(), SipaIntent.UserOp)
+    chain.state.blessed.set(OTHER_IMPL.toLowerCase(), SipaIntent.AddPasskey)
     chain.state.implementationFor = OTHER_IMPL
     const verdict = await verifyPersistedRotation(chain.client, record, TUPLE, TRUTH)
     expect(verdict.verdict).toBe("verified")
@@ -657,90 +716,23 @@ describe("verifyPersistedRotation", () => {
       "the record's shape",
     )
     expect(await corrupt({ implementation: OTHER_IMPL })).toBe(
-      "the implementation is not a blessed user-op clone",
+      "the implementation is not a blessed add-passkey clone",
     )
-    expect(await corrupt({}, { ...TUPLE, rollupVersion: 8n })).toBe("the rollup version")
-    expect(await corrupt({ intent: { ...intent, owner: OTHER_IMPL } })).toBe("the owner")
-    expect(await corrupt({ add: { ...ADD, envelope: `0x${"cd".repeat(48)}` } })).toBe(
-      "the call data",
+    expect(await corrupt({}, { ...TUPLE, rollupVersion: 8n })).toBe(
+      "the record built over names another rollup version",
     )
-    expect(await corrupt({ add: { ...ADD, credentialId: toHex("other-credential") } })).toBe(
-      "the call data",
-    )
-    expect(await corrupt({}, { ...TUPLE, metadataRegistry: OTHER_IMPL })).toBe("the call data")
-    expect(await corrupt({ intent: { ...intent, accountGasLimits: `0x${"01".repeat(32)}` } })).toBe(
-      "the gas limits",
-    )
-    expect(
-      await corrupt({
-        intent: { ...intent, precondition: { ...intent.precondition, data: "0x1234" } },
-      }),
-    ).toBe("the precondition call")
-    expect(
-      await corrupt({
-        intent: {
-          ...intent,
-          postcondition: { ...intent.postcondition, resultHash: `0x${"02".repeat(32)}` },
-        },
-      }),
-    ).toBe("the postcondition")
-    expect(await corrupt({ nonce: intent.nonce + 1n })).toBe("the nonce")
     expect(await corrupt({ builtOver: { ...RECORD, l2Address: TWO_KEY.toString() as Hex } })).toBe(
       "the record built over names another address",
     )
-    // The precondition hash rewritten to agree with the forged record changes nothing.
-    const forged = { ...RECORD, l2Address: TWO_KEY.toString() as Hex }
-    expect(
-      await corrupt({
-        builtOver: forged,
-        intent: {
-          ...intent,
-          precondition: {
-            ...intent.precondition,
-            resultHash: conditionHash(
-              encodeFunctionResult({
-                abi: AccountMetadataRegistryAbi,
-                functionName: "getUserRecord",
-                result: forged,
-              }),
-            ),
-          },
-        },
-      }),
-    ).toBe("the record built over names another address")
-    expect(await corrupt({ builtOver: { ...RECORD, rollupVersion: 8n } })).toBe("the call data")
-    // No local truth names the operator, so the rebuilt call data is what binds the saved one.
-    expect(await corrupt({ builtOver: { ...RECORD, resolverOperator: BENEFICIARY } })).toBe(
-      "the call data",
+    expect(await corrupt({ builtOver: { ...RECORD, rollupVersion: 8n } })).toBe(
+      "the record built over names another rollup version",
     )
     expect(await corrupt({}, TUPLE, { ...TRUTH, publicKey: { x: 1n, y: 2n } })).toBe(
       "the record built over names another public key",
     )
-    expect(
-      await corrupt({
-        intent: {
-          ...intent,
-          precondition: { ...intent.precondition, resultHash: `0x${"00".repeat(32)}` },
-        },
-      }),
-    ).toBe("the precondition hash")
-    expect(
-      await corrupt({
-        intent: {
-          ...intent,
-          precondition: {
-            ...intent.precondition,
-            resultHash: conditionHash(
-              encodeFunctionResult({
-                abi: AccountMetadataRegistryAbi,
-                functionName: "getUserRecord",
-                result: { ...RECORD, resolverOperator: BENEFICIARY },
-              }),
-            ),
-          },
-        },
-      }),
-    ).toBe("the precondition hash")
+    expect(await corrupt({ intent: { ...intent, owner: OTHER_IMPL } })).toBe("the owner")
+    expect(await corrupt({ intent: { ...intent, rollupVersion: 8n } })).toBe("the rollup version")
+    expect(await corrupt({ nonce: intent.nonce + 1n })).toBe("the nonce")
     expect(
       await corrupt({ intent: { ...intent, recipientCommitment: `0x${"03".repeat(32)}` } }),
     ).toBe("the recipient commitment")
@@ -753,9 +745,30 @@ describe("verifyPersistedRotation", () => {
     expect(await corrupt({ deployArgs: { ...deployArgs, implementation: OTHER_IMPL } })).toBe(
       "the deploy args' implementation",
     )
+    // Another blessed clone named as the implementation: caught before any deployment read.
+    chain.state.blessed.set(OTHER_IMPL.toLowerCase(), SipaIntent.AddPasskey)
+    expect(await corrupt({ implementation: OTHER_IMPL })).toBe("the deploy args' implementation")
+    expect(
+      await corrupt({
+        implementation: OTHER_IMPL,
+        deployArgs: { ...deployArgs, implementation: OTHER_IMPL },
+      }),
+    ).toBe("the SIPA address")
+    chain.state.blessed.delete(OTHER_IMPL.toLowerCase())
     expect(
       await corrupt({ deployArgs: { ...deployArgs, intentHash: `0x${"05".repeat(32)}` } }),
     ).toBe("the intent hash")
+    // One intent field changed alone, the stored hash kept: the hash answers before the field.
+    const changes: Partial<AddPasskeyIntent>[] = [
+      { record: { ...intent.record, resolverOperator: BENEFICIARY } },
+      { namePortalRecipient: ONE_KEY.toString() as Hex },
+      { key: r1Key(C) },
+      { metadata: "0x01" },
+      { accountGasLimits: `0x${"01".repeat(32)}` },
+    ]
+    for (const change of changes) {
+      expect(await corrupt({ intent: { ...intent, ...change } })).toBe("the intent hash")
+    }
     expect(await corrupt({ deployArgs: { ...deployArgs, resweepable: true } })).toBe(
       "the deploy args' plumbing",
     )
@@ -775,6 +788,76 @@ describe("verifyPersistedRotation", () => {
       "the deploy args' plumbing",
     )
     expect(await corrupt({ sipa: OTHER_IMPL })).toBe("the SIPA address")
+    // The intent changed with its hash and the SIPA recomputed over it, the stored signature kept:
+    // the field checks name the field.
+    const rehashed = (changed: AddPasskeyIntent): Partial<PersistedRotation> => {
+      const args = { ...deployArgs, intentHash: keccak256(encodeAddPasskeyIntentData(changed)) }
+      return { intent: changed, deployArgs: args, sipa: sipaOf(args) }
+    }
+    expect(
+      await corrupt(
+        rehashed({ ...intent, record: { ...intent.record, l2Address: ONE_KEY.toString() as Hex } }),
+      ),
+    ).toBe("the record")
+    expect(
+      await corrupt(
+        rehashed({ ...intent, record: { ...intent.record, resolverOperator: BENEFICIARY } }),
+      ),
+    ).toBe("the record")
+    // No local truth names the operator, so the record built over is what binds the intent's.
+    expect(await corrupt({ builtOver: { ...RECORD, resolverOperator: BENEFICIARY } })).toBe(
+      "the record",
+    )
+    expect(
+      await corrupt(rehashed({ ...intent, namePortalRecipient: ONE_KEY.toString() as Hex })),
+    ).toBe("the name-portal recipient")
+    expect(await corrupt(rehashed({ ...intent, key: r1Key(C) }))).toBe("the key")
+    expect(await corrupt(rehashed({ ...intent, metadata: "0x01" }))).toBe("the metadata")
+    expect(await corrupt({ add: { ...ADD, envelope: `0x${"cd".repeat(48)}` } })).toBe(
+      "the metadata",
+    )
+    expect(await corrupt({ add: { ...ADD, credentialId: toHex("other-credential") } })).toBe(
+      "the metadata",
+    )
+    // Another added key moves the recipient derived from it, and its commitment, before the key is
+    // compared.
+    const byKeys: RotationLocalTruth = {
+      ...TRUTH,
+      derive: (keys) =>
+        keys.length === 1 ? ONE_KEY : keys[1]!.qx === ADD.pubkey.qx ? TWO_KEY : OTHER_TWO_KEY,
+    }
+    expect(await corrupt({}, TUPLE, byKeys)).toBe("verified")
+    expect(await corrupt({ add: { ...ADD, pubkey: r1Key(C) } }, TUPLE, byKeys)).toBe(
+      "the recipient commitment",
+    )
+    const resigned = async (changed: Partial<PersistedRotation>) => ({
+      ...changed,
+      signature: await signUserOpHash(A, rotationUserOpHash(chain.client, changed.intent!, TUPLE)),
+    })
+    // Another allowed call gas passes the gas rule; only the root signature tells it from the one signed.
+    const otherGas = rehashed({ ...intent, accountGasLimits: gasLimits(400_001n) })
+    expect(await corrupt(otherGas)).toBe("the signature: the challenge")
+    expect(await corrupt(await resigned(otherGas))).toBe("verified")
+    // A record signed over the old fixed call gas still verifies.
+    const fixedGas = rehashed({ ...intent, accountGasLimits: gasLimits(400_000n) })
+    expect(await corrupt(await resigned(fixedGas))).toBe("verified")
+    // Gas limits outside oxide's rule are refused even under a root signature over them.
+    for (const accountGasLimits of [
+      gasLimits(MAX_ADD_PASSKEY_CALL_GAS + 1n),
+      gasLimits(0n),
+      gasLimits(400_000n, USER_OP_VERIFICATION_GAS + 1n),
+    ]) {
+      expect(await corrupt(await resigned(rehashed({ ...intent, accountGasLimits })))).toBe(
+        "the gas limits",
+      )
+    }
+    // A tuple naming other targets hashes another operation than the one signed.
+    expect(await corrupt({}, { ...TUPLE, metadataRegistry: OTHER_IMPL })).toBe(
+      "the signature: the challenge",
+    )
+    expect(await corrupt({}, { ...TUPLE, namePortal: OTHER_IMPL })).toBe(
+      "the signature: the challenge",
+    )
     // A new salt with both commitments, the intent hash and the SIPA recomputed over it: the same
     // recipient and owner-bound recovery, and the signed operation untouched.
     const salt = Fr.random()
@@ -788,7 +871,7 @@ describe("verifyPersistedRotation", () => {
         salt,
         EthAddress.fromString(OWNER),
       ).toString() as Hex,
-      intentHash: keccak256(encodeUserOpIntentData(resalted)),
+      intentHash: keccak256(encodeAddPasskeyIntentData(resalted)),
     }
     expect(
       await corrupt({
@@ -822,11 +905,6 @@ describe("verifyPersistedRotation", () => {
     chain.state.failing.add("intentOf")
     await expect(verifyPersistedRotation(chain.client, record, TUPLE, TRUTH)).rejects.toThrow(
       /the factory's blessing/,
-    )
-    chain.state.failing.clear()
-    chain.state.failing.add("getUserOpHash")
-    await expect(verifyPersistedRotation(chain.client, record, TUPLE, TRUTH)).rejects.toThrow(
-      /the rotation's rebuild/,
     )
   })
 })
@@ -938,19 +1016,40 @@ describe("buildBackupSweep", () => {
     const [table, intent, recovery, resweepable, token, relayer, intentData, proofs] =
       call.args as readonly unknown[] as [Address, number, Hex, boolean, Address, Address, Hex, Hex]
     expect([table, token, relayer].map((a) => a.toLowerCase())).toEqual([TABLE, TOKEN, EXECUTOR])
-    expect(intent).toBe(SipaIntent.UserOp)
+    expect(intent).toBe(SipaIntent.AddPasskey)
     expect(recovery).toBe(prepared.rotation.deployArgs.recoveryCommitment)
     expect(resweepable).toBe(false)
-    expect(intentData).toBe(encodeUserOpIntentData(prepared.rotation.intent))
-    expect(proofs).toBe(encodeUserOpProofs(signature))
+    expect(intentData).toBe(encodeAddPasskeyIntentData(prepared.rotation.intent))
+    expect(proofs).toBe(encodeAddPasskeyProofs(signature))
   })
 
-  it("refuses a subsidy that serves another portal", async () => {
+  it("refuses a subsidy that serves another portal, as a fault rather than the chain's refusal", async () => {
     const { chain, prepared, signature } = await preparedAndSigned()
     chain.state.subsidyPortal = OTHER_IMPL
-    await expect(
-      buildBackupSweep(chain.client, prepared.rotation, signature, TUPLE),
-    ).rejects.toThrow(/would not sweep/)
+    const refusal = await buildBackupSweep(chain.client, prepared.rotation, signature, TUPLE).catch(
+      (e: unknown) => e,
+    )
+    expect(String(refusal)).toMatch(/would not sweep/)
+    expect(backupSweepRefused(refusal)).toBe(false)
+  })
+
+  it("refuses a change the factory superseded as the chain's refusal", async () => {
+    const { chain, prepared, signature } = await preparedAndSigned()
+    chain.state.implementationFor = OTHER_IMPL
+    const refusal = await buildBackupSweep(chain.client, prepared.rotation, signature, TUPLE).catch(
+      (e: unknown) => e,
+    )
+    expect(refusal).toBeInstanceOf(SupersededImplementationError)
+    expect(backupSweepRefused(refusal)).toBe(true)
+  })
+})
+
+describe("backupSweepRefused", () => {
+  it("counts a dead route and a sweep that reverts or underpays, not a read that failed", () => {
+    expect(backupSweepRefused(new RotationRouteNotLiveError("no row"))).toBe(true)
+    expect(backupSweepRefused(new RevertingSweepError("reverts", new Error("revert")))).toBe(true)
+    expect(backupSweepRefused(new UnprofitableSweepError(1n, 2n))).toBe(true)
+    expect(backupSweepRefused(new Error("fetch failed"))).toBe(false)
   })
 })
 
@@ -996,11 +1095,16 @@ describe("fundingAmount", () => {
     const noRow = fakeChain()
     noRow.state.row = undefined
     expect(await dead(noRow)).toBe("the forwarding table has no row for the token and intent")
-    const unfunded = fakeChain()
-    unfunded.state.subsidyBalance = 0n
-    expect(await dead(unfunded)).toBe("the subsidy holds none of the token")
-    const capped = fakeChain()
-    capped.state.config = [TIP, 0n, ONE_ETH]
-    expect(await dead(capped)).toBe("the subsidy's cap is zero")
+    const untipped = fakeChain()
+    untipped.state.row = [PORTAL, BENEFICIARY, 0n, 0n]
+    expect(await dead(untipped)).toBe("the row's tip is zero, so no relayer is paid")
+  })
+
+  it("prices the add without a funded subsidy: the sweep tip pays the relayer", async () => {
+    const chain = fakeChain()
+    chain.state.config = [0n, 0n, ONE_ETH]
+    chain.state.subsidyBalance = 0n
+    const funding = await fundingAmount(chain.client, args)
+    expect(funding.breakdown.sweepTip).toBe(TIP)
   })
 })

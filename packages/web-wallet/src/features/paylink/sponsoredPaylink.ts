@@ -1,4 +1,5 @@
 import { WalletError } from "@obsidion/core/errors"
+import type { PageFacts } from "../../session/pageChain"
 import { assertPaylinkSwapSource, readPaylinkSource } from "./paylinkSource"
 import { paylinkRowUrl, paylinkShareUrl } from "../shortLinks"
 /**
@@ -16,15 +17,18 @@ import type { ContractFunctionInteraction } from "@aztec-labs/aztec.js/contracts
 import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import { TxHash } from "@aztec-labs/stdlib/tx"
 import { formatUnits, getAddress, parseUnits, type Address, type Hex } from "viem"
-import type { PaylinkL1Proof } from "@obsidion/sdk"
+import type { Network, PaylinkL1Proof } from "@obsidion/sdk"
 import {
   bestEffort,
   broadcastAttemptEnded,
   broadcastJob,
-  isRefundInFlight,
+  refundRuns,
   withdrawalFailure,
+  linkIdFor,
+  linkIdOf,
   loadRecords,
   paylinkIdentity,
+  type PaylinkRecord,
   type Write,
 } from "@obsidion/front-core"
 import { withdrawalExecutorFee } from "../withdraw/withdrawalFee"
@@ -41,15 +45,15 @@ import {
   encodePaylinkInline,
   decodePaylinkInline,
   nextOperationId,
-  PaylinkActionEnum,
   PAYLINK_TERMS_REFUSAL,
-  QueueStatus,
   paylinkVoucherUses,
   readClaimFpcAllowance,
   UnknownRailError,
   ClaimBatchFullError,
   type ClaimSponsorContext,
   type ObsidionAccount,
+  type PaylinkNoteView,
+  type PaylinkParams,
   type ObsidionWallet,
   type RegisteredTeeSigner,
   type TokenService,
@@ -59,6 +63,7 @@ import {
 import {
   DEFAULT_CONTRACTS,
   PAYLINK_GRACE_PERIOD_SECONDS,
+  PAYLINK_MIN_CLAIM_WINDOW_SECONDS,
   SECONDS_IN_A_DAY,
   tokenDecimalsForNetwork,
   ZKJWT_VKEY_HASH,
@@ -68,9 +73,7 @@ import type { OxideEnvTuple } from "@obsidion/core/types"
 import {
   parseEscrowAmount,
   PaylinkWindowClosedError,
-  toFailure,
-  type PaylinkTransaction,
-  type Transaction,
+  type TokenInTxService,
   newWithdrawalLocalId,
   upsertSavedL1WalletContact,
   type AddressScreener,
@@ -81,9 +84,9 @@ import {
   withdrawalRecipients,
   currentRegistration,
   goldenTicketCoverage,
-  withRefundInFlight,
   allowanceCovers,
   deriveAllowanceState,
+  type OperationKind,
   type PendingRegistrationRecord,
 } from "@obsidion/front-core"
 import {
@@ -95,9 +98,9 @@ import {
 } from "../registration/registrationTerms"
 import { recordBurnDuration } from "../withdraw/burnTiming"
 import { isFlowCancelled, runOperation, type OperationHandle } from "../operations/operations"
-import { webStorage } from "../../platform/storage/WebStorageAdapter"
-import { session } from "../../session/session"
-import { walletStorage } from "../../platform/storage/walletStorage"
+import { chainOf } from "../../session/session"
+import type { Chain, ChainSession, Session, SessionDeps } from "../../session/session"
+import { writeDeviceKeys, type DeviceState } from "../../platform/storage/deviceKeys"
 import { deadline, TimeoutError, withTimeout } from "../../lib/withTimeout"
 import {
   firePaylinkEvent,
@@ -106,10 +109,8 @@ import {
   type PaylinkEvent,
 } from "../../lib/analytics"
 import { holdSigningFlow } from "../../lib/passkeyTelemetry"
-import { getConfig } from "../../config/env"
+import type { WebWalletConfig } from "../../config/env"
 import { emailLockedLinksEnabled } from "../../config/features"
-import { getOxideTuple, l1PublicClient } from "../../config/oxideTuple"
-import { maybeRefuelFpc } from "../fees/fpcRefuel"
 import { findHistoricTuple, historicTokenContext } from "../migration/historicTokenContext"
 import { assertWithinWithdrawalLimit } from "../limits/withdrawalLimit"
 import {
@@ -120,14 +121,15 @@ import {
 import { latestChainSeconds } from "./chainTime"
 import { resolveTagViaRegistry } from "../contacts/registryResolution"
 import { owePaylinkClaim, reportPaylinkClaims } from "./paylinkClaimReport"
+import { runLinkBurn } from "./linkBurn"
 import { RAIL_REGISTERED, RAIL_VOUCHER } from "../registration/rails"
 import { isPasskeyCancelled } from "@obsidion/passkey-web"
 import { canCancelAt, linkMadeBy } from "@obsidion/front-core"
 import type { WithdrawalReceiveAsset } from "../withdraw/withdrawAssets"
 import {
   currentDeployment,
-  wakeWithdrawalTracker,
   planSwapLeg,
+  sessionSwapRecoverer,
   runBurn,
   swapRecordFields,
   withdrawalOptions,
@@ -135,10 +137,13 @@ import {
   type SwapLeg,
   type WithdrawStage,
 } from "../withdraw/withdrawGateway"
+import { planBridgeLeg, type BridgeOutChoice } from "../withdraw/bridgeOut"
 import type { CreateStage, LinkFlavor, PaymentLink } from "./types"
 import { sponsorshipErrorCopy } from "../allowance/sponsorshipError"
-import { txAmountCap } from "../token/oxideToken"
-import { registrationBroadcastPayload } from "../broadcasts/registrationExecutor"
+import {
+  registrationBroadcastPayload,
+  type RegistrationBroadcastStores,
+} from "../broadcasts/registrationExecutor"
 import {
   cacheFreshClaim,
   createWebRegistrationBroadcaster,
@@ -150,7 +155,6 @@ import { loadedRegistrations } from "../registration/webRegistration"
 export const DEFAULT_CLAIM_WINDOW_DAYS = 30
 /** E2e-only: opens a `from_claimable` grace window (seconds after chain now). Unset = {@link PAYLINK_GRACE_PERIOD_SECONDS}. */
 const GRACE_PERIOD_OVERRIDE = import.meta.env.VITE_E2E_PAYLINK_GRACE_SECONDS as string | undefined
-const PENDING_DEPOSITS_KEY = "webwallet.pendingDeposits"
 /** Cap on `viewLink`'s escrow-note read; see the call site. */
 const NOTE_READ_TIMEOUT_MS = 20_000
 const SENDER_TAG_CHECK_TIMEOUT_MS = 5_000
@@ -179,17 +183,31 @@ const CLAIM_PREPARE_TIMEOUT_MESSAGE =
 const CLAIM_BATCHES_REGISTRATION_BROADCAST = true
 
 export interface SponsoredPaylinkDeps {
-  wallet: ObsidionWallet
-  account: ObsidionAccount
-  tokenService: TokenService
-  contractService: ContractService
-  teeSigner: RegisteredTeeSigner
   /** Active network's rollup address (hydrated by AztecContext at boot) — a `paylinkPh` input. */
   rollupAddress: string
+  /** The session the flow runs in: a task's core, or the screen's session. */
+  session: PaylinkSession
+  /** Who pays in place of the session: a backup's one-key account, or signup's new account. */
+  account?: ObsidionAccount
+  tokenService?: TokenService
+  teeSigner?: RegisteredTeeSigner
+}
+
+/** The deps with the session's wallet, contracts and payer, each ready. */
+export type ReadyPaylinkDeps = Required<SponsoredPaylinkDeps> & Chain
+
+export async function readyPaylinkDeps(deps: SponsoredPaylinkDeps): Promise<ReadyPaylinkDeps> {
+  const { session } = deps
+  const account = deps.account ?? (session.account && (await session.account.ready()))
+  const tokenService = deps.tokenService ?? (session.token && (await session.token.ready()))
+  if (!account || !tokenService) throw new WalletError("wallet.notReady", "no account session")
+  const teeSigner = deps.teeSigner ?? (await session.teeSigner.ready())
+  return { ...deps, ...(await chainOf(session)), account, tokenService, teeSigner }
 }
 
 /** Wallet + contract service are enough for the nullifier status read (no passkey). */
 export interface ViewLinkDeps {
+  session: Pick<Session, "page">
   wallet: ObsidionWallet
   contractService: ContractService
   /** When present, `sync_note` simulates from this account instead of the placeholder. */
@@ -203,7 +221,7 @@ interface PendingDeposit {
   messageSecret: string
 }
 
-function service(deps: SponsoredPaylinkDeps): PaylinkService {
+function service(deps: ReadyPaylinkDeps): PaylinkService {
   return new PaylinkService(
     deps.wallet,
     deps.account,
@@ -215,9 +233,9 @@ function service(deps: SponsoredPaylinkDeps): PaylinkService {
 }
 
 /** Parked funding deposits, or [] when the key is absent or unparseable. */
-function readPendingDeposits(): PendingDeposit[] {
+function readPendingDeposits(device: DeviceState): PendingDeposit[] {
   try {
-    const parsed = JSON.parse(walletStorage.getItem(PENDING_DEPOSITS_KEY) ?? "[]")
+    const parsed = JSON.parse(device.pendingDeposits ?? "[]")
     return Array.isArray(parsed) ? parsed : []
   } catch {
     return []
@@ -230,8 +248,8 @@ function readPendingDeposits(): PendingDeposit[] {
  * this way creates links fine while `assets` still reads zero — the overspend gate has to stand
  * down rather than block a create that would have worked.
  */
-export function hasPendingDeposits(): boolean {
-  return readPendingDeposits().length > 0
+export function hasPendingDeposits(device: DeviceState): boolean {
+  return readPendingDeposits(device).length > 0
 }
 
 /**
@@ -239,8 +257,11 @@ export function hasPendingDeposits(): boolean {
  * (STORE PARAMS): `store_deposit` is a free utility sim in this PXE;
  * the create tx then claims the deposit lazily.
  */
-async function redeemPendingDeposits(deps: SponsoredPaylinkDeps): Promise<void> {
-  const pending = readPendingDeposits()
+async function redeemPendingDeposits(
+  session: Pick<Session, "database" | "device">,
+  deps: ReadyPaylinkDeps,
+): Promise<void> {
+  const pending = readPendingDeposits(session.device.get())
   if (pending.length === 0) return
   const token = await deps.tokenService.getTokenContract()
   const user = deps.account.getAddress()
@@ -258,57 +279,77 @@ async function redeemPendingDeposits(deps: SponsoredPaylinkDeps): Promise<void> 
       if (!/already|dedup/i.test(msg)) remaining.push(dep)
     }
   }
-  walletStorage.setItem(PENDING_DEPOSITS_KEY, JSON.stringify(remaining))
+  await writeDeviceKeys(session.database, { pendingDeposits: JSON.stringify(remaining) })
+}
+
+/** The wallet token as a link's record, and its claim's or refund's row, show it. */
+async function linkToken(
+  deps: ReadyPaylinkDeps,
+  amount: { atomic: bigint; human: number } | undefined,
+): Promise<TokenInTxService> {
+  const token = await deps.tokenService.fetchTokenInformation()
+  return {
+    symbol: token.symbol,
+    name: token.name,
+    address: token.address,
+    logo: "",
+    amount: amount?.human ?? 0,
+    decimals: token.decimals,
+    // Single USD-pegged asset; the activity feed multiplies amount × price.
+    price: 1,
+    hasUnknownAmount: amount === undefined,
+  }
+}
+
+type Payout = Extract<OperationKind, { kind: "paylink-claim" | "paylink-refund" }>
+
+/** What a claim's or refund's row shows. */
+async function payout(
+  deps: ReadyPaylinkDeps,
+  kind: Payout["kind"],
+  params: PaylinkParams,
+  amount: { atomic: bigint; human: number } | undefined,
+): Promise<Payout> {
+  return {
+    kind,
+    payload: {
+      networkId: deps.wallet.networkId.toLowerCase(),
+      token: await linkToken(deps, amount),
+      amountAtomic: String(amount?.atomic ?? 0n),
+      flavor: params.paylinkType === DEFAULT_CONTRACTS.paylinkEmail ? "email" : "direct",
+      linkId: linkIdFor(params),
+    },
+  }
+}
+
+/** A claim's or refund's operation takes what its row shows, before the proof. */
+async function startPayout(
+  op: OperationHandle,
+  deps: ReadyPaylinkDeps,
+  kind: Payout["kind"],
+  params: PaylinkParams,
+  amount: { atomic: bigint; human: number } | undefined,
+): Promise<void> {
+  await op.transfer(await payout(deps, kind, params, amount))
 }
 
 /**
- * A link's activity row: pending before sign/prove, keyed by its operation, its txHash written at
- * the submit boundary (`saveRowTxHash`), paylink fields patched after. The flow settles it as soon
- * as the sponsored call resolves, or the chain does after a reload.
+ * The note a claim reads before its proof. A note the link was not made for is the link's claim's
+ * final failure, so the claim's payload goes on before the refusal throws.
  */
-export async function startPaylinkRow(
-  deps: SponsoredPaylinkDeps,
-  kind: "paylink-create" | "paylink-claim" | "paylink-refund",
-  action: PaylinkActionEnum.PAY | PaylinkActionEnum.CLAIM | PaylinkActionEnum.CLAIM_BACK,
-  amount: { atomic: bigint; human: number } | undefined,
-  opts?: { flavor?: LinkFlavor; to?: string; memo?: string; operationId?: string },
-): Promise<{ operationId: string }> {
-  const token = await deps.tokenService.fetchTokenInformation()
-  // One id for the row and the wallet call both: the submit boundary's hash is matched by it.
-  const operationId = opts?.operationId ?? nextOperationId(kind)
-  const now = Date.now()
-  await session().activity.insertPending({
-    id: operationId,
-    operationId,
-    networkId: deps.wallet.networkId,
-    action,
-    emailPaymentAction: action,
-    flavor: opts?.flavor ?? "direct",
-    kind,
-    ...(opts?.to !== undefined ? { to: opts.to } : {}),
-    ...(opts?.memo !== undefined ? { memo: opts.memo } : {}),
-    token: {
-      symbol: token.symbol,
-      name: token.name,
-      address: token.address,
-      logo: "",
-      amount: amount?.human ?? 0,
-      decimals: token.decimals,
-      // Single USD-pegged asset; the activity feed multiplies amount × price.
-      price: 1,
-      hasUnknownAmount: amount === undefined,
-    },
-    amountAtomic: amount?.atomic ?? 0n,
-    timestamp: now,
-    status: "pending",
-    txHash: "",
-    detailedStatus: QueueStatus.PENDING,
-    progress: 0,
-    startTime: now,
-    obsidionAccountAddress: deps.account.getAddress().toString(),
-    tokenAddress: token.address,
-  })
-  return { operationId }
+export async function claimNote(
+  op: OperationHandle,
+  deps: ReadyPaylinkDeps,
+  params: PaylinkParams,
+  read: Promise<PaylinkNoteView | undefined>,
+): Promise<PaylinkNoteView | undefined> {
+  try {
+    return await read
+  } catch (e) {
+    if (e instanceof WalletError && e.code === "paylink.termsMismatch")
+      await startPayout(op, deps, "paylink-claim", params, undefined)
+    throw e
+  }
 }
 
 /** The operation's one-line name, e.g. "$25 paylink". */
@@ -316,77 +357,126 @@ function linkSummary(amount: string | number | null | undefined): string {
   return amount == null ? "Paylink" : `$${amount} paylink`
 }
 
-/** The row's `onTxHash`: the hash is saved before the node takes the tx, so a reload finds it. */
-function saveRowTxHash(operationId: string) {
-  return async (txHash: string): Promise<void> => {
-    await session().activity.setHash(operationId, txHash)
+/** The stores a link's writes commit to together. */
+export type LinkStores = Pick<Session, "paylinks" | "operations" | "db">
+
+/** What a paylink flow reads and writes in the session it runs in: a task's core, or a session. */
+export type PaylinkSession = Pick<
+  Session,
+  | "paylinks"
+  | "operations"
+  | "page"
+  | "db"
+  | "withdrawals"
+  | "owedClaims"
+  | "burnDurations"
+  | "contacts"
+  | "wake"
+  | "withdrawalTracker"
+> &
+  Pick<Session, "wallet" | "contractService" | "account" | "token" | "teeSigner"> &
+  RegistrationBroadcastStores &
+  Pick<SessionDeps, "auth" | "database" | "device"> & {
+    holdBroadcast(address: string): () => void
   }
-}
 
-type PaylinkRowFields = Partial<
-  Pick<
-    PaylinkTransaction,
-    | "payToEmailSecret"
-    | "paylink"
-    | "fallbackSecret"
-    | "fromClaimable"
-    | "untilClaimable"
-    | "refundableUntil"
-  >
->
+type PaylinkRowFields = Pick<
+  PaylinkRecord,
+  "fallbackSecret" | "fromClaimable" | "untilClaimable" | "refundableUntil" | "paylink"
+> & { payToEmailSecret: string }
 
-function patchPaylinkRow(operationId: string, fields: PaylinkRowFields, w?: Write) {
-  return session().activity.patch(operationId, (row) => ({ ...row, ...fields } as Transaction), w)
-}
+/** What a create knows of its link before the link's secrets exist. */
+export type LinkDraft = Omit<PaylinkRecord, "id" | keyof PaylinkRowFields>
 
-/** Saves a prepared link on its row before signing, so a funded link keeps its refund details. */
-export async function savePreparedLink(
+/** The link this operation creates, once prepared. */
+async function linkOfOperation(
+  { paylinks }: LinkStores,
   operationId: string,
+): Promise<PaylinkRecord | undefined> {
+  const [link] = await loadRecords(paylinks.where("operation", operationId.toLowerCase()))
+  return link
+}
+
+/** Runs `fn` in one write, once the operations and link stores are open. */
+async function writing<T>(
+  { operations, paylinks, db }: LinkStores,
+  fn: (w: Write) => Promise<T>,
+): Promise<T> {
+  await Promise.all([operations.ready, paylinks.ready])
+  return db.write(fn)
+}
+
+/**
+ * Files a prepared link before signing, so a funded link keeps its refund details. An earlier
+ * create that never sent can leave a link at the same slot: this one takes its place.
+ */
+export async function savePreparedLink(
+  stores: LinkStores,
+  draft: LinkDraft,
   fields: PaylinkRowFields,
 ): Promise<void> {
-  await patchPaylinkRow(operationId, fields)
+  const { paylinks } = stores
+  const id = linkIdOf({ ...draft, ...fields })
+  await writing(stores, async (w) => {
+    if (await paylinks.get(id, w)) await paylinks.remove(id, w)
+    await paylinks.put({ ...draft, ...fields, id }, w)
+  })
 }
 
-/** Settles the row once the link's tx is out; a failed save is logged, never the flow's failure. */
-export async function finishPaylinkRow(
+/**
+ * The create's `onTxHash`: its operation and its link take the hash in one write, before the node
+ * takes the tx, so a reload finds both.
+ */
+export function saveLinkTxHash(stores: LinkStores, operationId: string) {
+  return async (txHash: string): Promise<void> => {
+    const { operations, paylinks } = stores
+    const link = await linkOfOperation(stores, operationId)
+    await writing(stores, async (w) => {
+      const held = link && ((await paylinks.apply(link.id, { type: "sent", txHash }, w)) ?? link)
+      const sent = await operations.apply(operationId, { type: "sent", txHash }, w)
+      if (!sent || held?.txHash !== txHash)
+        throw new WalletError("invariant", "paylink create: no record for its hash")
+    })
+  }
+}
+
+/**
+ * Puts the create's tx-bearing `paylink` on its link once the tx is out; a failed save is logged,
+ * never the flow's failure.
+ */
+export async function fundLink(
+  stores: LinkStores,
   operationId: string,
-  txHash: string,
-  paylinkFields?: PaylinkRowFields,
+  paylink: string,
 ): Promise<void> {
-  const { activity, db } = session()
-  const settle = async () => {
-    await activity.ready
-    await db.write(async (w) => {
-      if (paylinkFields) await patchPaylinkRow(operationId, paylinkFields, w)
-      await activity.apply(operationId, { type: "settled", at: Date.now(), txHash }, w)
-    })
+  const fund = async () => {
+    const link = await linkOfOperation(stores, operationId)
+    if (link) await stores.paylinks.apply(link.id, { type: "funded", paylink })
   }
-  await bestEffort("unknown", settle())
+  await bestEffort("unknown", fund())
 }
 
-export async function failPaylinkRow(operationId: string, error: unknown): Promise<void> {
-  const { activity, db } = session()
-  const fail = async () => {
-    await activity.ready
-    await db.write(async (w) => {
-      // A closed passkey prompt before submit sent nothing: the row goes.
-      if (isPasskeyCancelled(error) && !(await activity.get(operationId, w))?.txHash) {
-        await activity.remove(operationId, w)
-        return
-      }
-      const failure = toFailure(error, "tx.failed")
-      await activity.apply(operationId, { type: "failed", at: Date.now(), failure }, w)
-    })
+/** A closed passkey prompt before submit sent nothing: the prepared link goes. */
+async function dropCancelledLink(
+  stores: LinkStores,
+  operationId: string,
+  error: unknown,
+): Promise<void> {
+  if (!isPasskeyCancelled(error)) return
+  const drop = async () => {
+    const link = await linkOfOperation(stores, operationId)
+    if (link && !link.txHash) await writing(stores, (w) => stores.paylinks.remove(link.id, w))
   }
-  await bestEffort("unknown", fail())
+  await bestEffort("unknown", drop())
 }
 
 /**
  * The error a rejected sponsored call surfaces. Past the submit boundary the transaction may still
- * land, so the row stays pending for the chain to settle and the caller gets a `TxInFlightError`
- * to report as such; otherwise the row is failed and the transport error stands.
+ * land, so the operation stays sent for the chain to settle and the caller gets a
+ * `TxInFlightError` to report as such; otherwise the transport error stands.
  */
 export async function paylinkFailure(
+  stores: LinkStores,
   operationId: string,
   error: unknown,
   submission: Pick<SubmissionTracker, "survived">,
@@ -394,110 +484,90 @@ export async function paylinkFailure(
 ): Promise<unknown> {
   const inFlight = await submission.survived(node)
   if (inFlight) return new TxInFlightError(inFlight, error)
-  await failPaylinkRow(operationId, error)
+  await dropCancelledLink(stores, operationId, error)
   return error
 }
 
 /**
- * Predicate for THIS link's create row. Match secret and flavor: flavor is part of the row
- * identity, and of the key hash, so same-day direct and email links never share a secret.
+ * The link `account` made that `params` names. The flavor and the rollup are part of its identity,
+ * so same-day direct and email links, and two rollups' links, never share one.
  */
-function createRowMatcher(secret: string, flavor: LinkFlavor, account?: string) {
-  return (tx: unknown): boolean => {
-    const ptx = tx as Partial<PaylinkTransaction> & { flavor?: LinkFlavor }
-    return (
-      ptx.emailPaymentAction === PaylinkActionEnum.PAY &&
-      ptx.payToEmailSecret === secret &&
-      ptx.flavor === flavor &&
-      (account === undefined || ptx.obsidionAccountAddress === account)
-    )
-  }
-}
-
-/** This account's create row for the link, when it has one. */
-async function createRow(
-  secret: string,
-  flavor: LinkFlavor,
+async function createdLink(
+  { paylinks }: LinkStores,
+  params: PaylinkParams,
   account?: string,
   w?: Write,
-): Promise<PaylinkTransaction | undefined> {
-  const { activity } = session()
-  const rows = await loadRecords(activity.query("link", secret.toLowerCase()))
-  const id = rows.find(createRowMatcher(secret, flavor, account))?.id
-  const row = id === undefined ? undefined : await activity.get(id, w)
-  return row && createRowMatcher(secret, flavor, account)(row)
-    ? (row as PaylinkTransaction)
+): Promise<PaylinkRecord | undefined> {
+  const link = await paylinks.get(linkIdFor(params), w)
+  return link && (account === undefined || link.obsidionAccountAddress === account)
+    ? link
     : undefined
 }
 
-/** When this account created the link, flip its PAY row to claimed. */
-export async function markCreateRowClaimed(
-  secret: string,
-  flavor: LinkFlavor,
+/** When this account created the link, marks it claimed by this account. */
+export async function markLinkClaimed(
+  stores: LinkStores,
+  params: PaylinkParams,
   account: string,
 ): Promise<void> {
-  const row = await createRow(secret, flavor, account)
-  if (!row) return
-  await session().activity.apply(row.id, {
+  const link = await createdLink(stores, params, account)
+  if (!link) return
+  await stores.paylinks.apply(link.id, {
     type: "claimed",
     at: Date.now(),
-    epoch: row.reorgEpoch,
-    refundInFlight: isRefundInFlight(secret),
+    epoch: link.reorgEpoch,
+    refundInFlight: refundRuns(stores.operations, link.id),
     by: "self",
   })
 }
 
-/**
- * Flip the creator's PAY row to refunded, stamping the refund
- * transaction on it — that row is the only record of the round trip, so it carries both hashes.
- */
-export async function markCreateRowRefunded(
-  secret: string,
-  flavor: LinkFlavor,
+/** Marks the creator's link refunded, with the refund's hash: the link carries the round trip. */
+export async function markLinkRefunded(
+  stores: LinkStores,
+  params: PaylinkParams,
   account: string,
   refundTxHash?: string,
   refundKind?: PaylinkRecovery,
 ): Promise<void> {
-  const row = await createRow(secret, flavor, account)
-  if (!row) return
-  await session().activity.apply(row.id, { type: "refunded", refundTxHash, refundKind })
+  const link = await createdLink(stores, params, account)
+  if (!link) return
+  await stores.paylinks.apply(link.id, { type: "refunded", refundTxHash, refundKind })
 }
 
 /**
- * Saves a submitted refund's hash on its own row and on the creator's PAY row in one write; the
- * claim reconciler settles the link from that pair.
+ * Saves a submitted refund's hash on its operation and on the creator's link in one write; the
+ * sweep settles the link from that pair. A refund by fragment alone has no link here.
  */
 export async function saveRefundSubmitted(
+  stores: LinkStores,
   operationId: string,
-  secret: string,
-  flavor: LinkFlavor,
+  params: PaylinkParams,
   account: string,
   refundTxHash: string,
   refundKind: PaylinkRecovery,
 ): Promise<void> {
-  const { activity, db } = session()
-  await activity.ready
-  await db.write(async (w) => {
-    await activity.apply(operationId, { type: "sent", txHash: refundTxHash }, w)
-    const row = await createRow(secret, flavor, account, w)
-    if (row) await activity.apply(row.id, { type: "refundSubmitted", refundTxHash, refundKind }, w)
+  const { operations, paylinks } = stores
+  await writing(stores, async (w) => {
+    if (!(await operations.apply(operationId, { type: "sent", txHash: refundTxHash }, w)))
+      throw new WalletError("invariant", "paylink refund: no record for its hash")
+    const link = await createdLink(stores, params, account, w)
+    if (link)
+      await paylinks.apply(link.id, { type: "refundSubmitted", refundTxHash, refundKind }, w)
   })
 }
 
-/**
- * This device's create row for a link, keyed by the fragment's secret + flavor — presence marks
- * the viewer as the creator; the full row feeds front-core's `paylinkRefundEligibility`.
- */
-export async function creatorRowFor(fragment: string): Promise<PaylinkTransaction | null> {
+/** This device's link for a fragment: presence marks the viewer as the creator. */
+export async function creatorLinkFor(
+  stores: LinkStores,
+  fragment: string,
+): Promise<PaylinkRecord | null> {
   let params
   try {
     params = decodePaylinkInline(fragment)
   } catch {
     return null
   }
-  const flavor: LinkFlavor =
-    params.paylinkType === DEFAULT_CONTRACTS.paylinkEmail ? "email" : "direct"
-  return (await createRow(params.secret.toString(), flavor)) ?? null
+  return (await createdLink(stores, params)) ?? null
 }
 
 /**
@@ -507,7 +577,7 @@ export async function creatorRowFor(fragment: string): Promise<PaylinkTransactio
 function emitPaylinkStage(
   stage: PaylinkEvent["stage"],
   flavor: LinkFlavor,
-  deps: SponsoredPaylinkDeps,
+  deps: ReadyPaylinkDeps,
   secret: { toBuffer(): Uint8Array },
   amount: bigint | undefined,
   decimals: number,
@@ -546,19 +616,19 @@ export interface CreateLinkOptions {
  * for a retry rather than deciding on a guess: a guess of "spent" sends a claimer with no rail of
  * their own to a refusal, and the voucher stays unspent either way.
  */
-export class VoucherReadError extends Error {
+export class VoucherReadError extends WalletError {
   constructor(cause: unknown) {
-    super("We couldn't check whether this link still pays for its claim. Please try again.", {
-      cause,
-    })
+    super(
+      "paylink.voucherUnread",
+      "We couldn't check whether this link still pays for its claim. Please try again.",
+      { cause },
+    )
     this.name = "VoucherReadError"
   }
 }
 
 /** The voucher rail's sponsor context, or undefined where this deployment declares no such rail. */
-async function voucherSponsor(
-  deps: SponsoredPaylinkDeps,
-): Promise<ClaimSponsorContext | undefined> {
+async function voucherSponsor(deps: ReadyPaylinkDeps): Promise<ClaimSponsorContext | undefined> {
   try {
     return (await claimSponsorRail(deps, RAIL_VOUCHER)).sponsor
   } catch (err) {
@@ -571,14 +641,11 @@ async function voucherSponsor(
  * The link's own voucher, when its escrow still holds one: the sponsor context a claim pays itself
  * with, so a claimer fresh from signup needs no subscription. Undefined for an unvouchered or spent
  * link, which only a read that succeeded can say; a read that failed throws {@link VoucherReadError}.
- * `after`: a PXE read started first, which this one queues behind; the deadline starts once it is
- * over, so it bounds this read alone.
  */
 async function linkVoucher(
-  deps: SponsoredPaylinkDeps,
+  deps: ReadyPaylinkDeps,
   params: ReturnType<typeof decodePaylinkInline>,
   timeoutMs = VOUCHER_CHECK_TIMEOUT_MS,
-  after?: Promise<unknown>,
 ): Promise<ClaimSponsorContext | undefined> {
   const sponsor = await voucherSponsor(deps)
   if (!sponsor) return undefined
@@ -588,7 +655,6 @@ async function linkVoucher(
       { wallet: deps.wallet, contractService: deps.contractService, sponsor },
       params,
     )
-    if (after) await Promise.race([read, after]).catch(() => {})
     uses = await withTimeout(read, timeoutMs)
   } catch (err) {
     throw new VoucherReadError(err)
@@ -603,10 +669,11 @@ async function linkVoucher(
  * none, since the read cannot say whether the create renews it. Never throws — a link without a
  * voucher is still a link.
  */
-export async function voucherAvailable(deps: SponsoredPaylinkDeps): Promise<boolean> {
+export async function voucherAvailable(input: SponsoredPaylinkDeps): Promise<boolean> {
   try {
     return await withTimeout(
       (async () => {
+        const deps = await readyPaylinkDeps(input)
         // The deployment has to offer the rail at all — an older one has no voucher slot.
         await claimSponsorRail(deps, RAIL_VOUCHER)
         const { sponsor } = await claimSponsorRail(deps, RAIL_REGISTERED)
@@ -649,9 +716,10 @@ export function createSponsoredLink(
   if (opts.email && !emailLockedLinksEnabled) {
     return Promise.reject(new EmailPaylinkUnsupportedError())
   }
-  const decimals = tokenDecimalsForNetwork(getConfig().network)
+  const decimals = tokenDecimalsForNetwork(deps.session.page.config.network)
   const summary = linkSummary(parseEscrowAmount(amountDisplay, decimals).human)
   return runOperation(
+    deps.session,
     { operationId: nextOperationId("paylink-create"), flow: "paylink-create", summary },
     (op) => createSponsoredLinkFlow(op, deps, amountDisplay, onStage, opts),
     (created) => created.txHash,
@@ -660,11 +728,12 @@ export function createSponsoredLink(
 
 async function createSponsoredLinkFlow(
   op: OperationHandle,
-  deps: SponsoredPaylinkDeps,
+  input: SponsoredPaylinkDeps,
   amountDisplay: string,
   onStage?: (stage: CreateStage) => void,
   opts: CreateLinkOptions = {},
 ): Promise<CreatedLink> {
+  const deps = await readyPaylinkDeps(input)
   const { email, expiryDays = DEFAULT_CLAIM_WINDOW_DAYS, memo, senderTag, voucher = false } = opts
   onStage?.("building")
   const svc = service(deps)
@@ -672,7 +741,7 @@ async function createSponsoredLinkFlow(
   // A link matters more than the gift riding it: a voucher rail that has rolled away or cannot be
   // read since the review sheet asked costs the recipient a cash-out, not the creator their link.
   const voucherRail = voucher ? await voucherSponsor(deps).catch(() => undefined) : undefined
-  await redeemPendingDeposits(deps)
+  await redeemPendingDeposits(deps.session, deps)
 
   let emailInit: { address: string; registryAddress: AztecAddress; vkeyHash: Fr } | undefined
   if (email) {
@@ -690,11 +759,13 @@ async function createSponsoredLinkFlow(
   }
   const flavor: LinkFlavor = email ? "email" : "direct"
 
-  const decimals = tokenDecimalsForNetwork(getConfig().network)
+  const { network } = input.session.page.config
+  const decimals = tokenDecimalsForNetwork(network)
   const { atomic: amount, human } = parseEscrowAmount(amountDisplay, decimals)
   // A locked session would derive random secrets, and the signing ceremony that unlocks it runs
   // too late to help. Fail before any funds move.
-  const masterSecret = await session().auth.getSecretKey()
+  const stores = deps.session
+  const masterSecret = await stores.auth.getSecretKey()
   if (!masterSecret) throw new WalletError("account.locked", "no master secret to create a paylink")
 
   // Anchor the windows AFTER the passkey ceremony — a slow approval must not eat the grace
@@ -712,16 +783,29 @@ async function createSponsoredLinkFlow(
       `paylink grace period (${graceSeconds}s) must be shorter than the claim window (${windowSeconds}s)`,
     )
   }
+  // Another device names a rebuilt link's refund by this floor, since a spent link's expiry is gone.
+  if (windowSeconds < PAYLINK_MIN_CLAIM_WINDOW_SECONDS) {
+    throw new WalletError("config.invalid", `claim window ${windowSeconds}s is under a day`)
+  }
   const windows = paylinkWindows(chainNow, windowSeconds, graceSeconds)
 
-  const { operationId } = await startPaylinkRow(
-    deps,
-    "paylink-create",
-    PaylinkActionEnum.PAY,
-    { atomic: amount, human },
-    { flavor, to: email, memo, operationId: op.operationId },
-  )
-  // The row keeps the full link: refunds, migration and status reads decode it. Shares convert it.
+  const { operationId } = op
+  const token = await linkToken(deps, { atomic: amount, human })
+  const draft: LinkDraft = {
+    timestamp: Date.now(),
+    operationId,
+    networkId: deps.wallet.networkId.toLowerCase(),
+    kind: "paylink-create",
+    amountAtomic: amount,
+    token,
+    tokenAddress: token.address,
+    flavor,
+    obsidionAccountAddress: deps.account.getAddress().toString(),
+    ...(email !== undefined ? { to: email } : {}),
+    ...(memo !== undefined ? { memo } : {}),
+  }
+  // The link record keeps the full link: refunds, migration and status reads decode it. Shares
+  // convert it.
   const rowFields = (p: { secret: Fr; fallbackSecret: Fr }, link: PaymentLink) => ({
     payToEmailSecret: p.secret.toString(),
     fallbackSecret: p.fallbackSecret.toString(),
@@ -732,7 +816,7 @@ async function createSponsoredLinkFlow(
   })
   let params: Awaited<ReturnType<PaylinkService["createSponsoredPaylink"]>>
   let link: PaymentLink | undefined
-  const submission = trackSubmission(operationId)
+  const submission = trackSubmission(deps.session.page.prover.progress, operationId)
   try {
     // createSponsoredPaylink runs sign → prove → submit in one call; emit a coarse
     // proving marker around it (the fine-grained sheet is the passkey prompt itself).
@@ -755,29 +839,29 @@ async function createSponsoredLinkFlow(
       {
         // Correlates the TEE and prove benchmark legs → one tx_timing analytics event.
         operationId,
-        onTxHash: saveRowTxHash(operationId),
+        onTxHash: saveLinkTxHash(stores, operationId),
         // The fragment needs nothing from the funding tx, so the link exists before the passkey
-        // prompt: the pending row carries it from here, and the caller can show it while the
+        // prompt: its record carries it from here, and the caller can show it while the
         // proof runs.
         onPrepared: async (prepared) => {
           link = {
-            ...linkShape(encodePaylinkInline(prepared), amount, decimals, flavor, email),
+            ...linkShape(network, encodePaylinkInline(prepared), amount, flavor, email),
             memo,
           }
-          await savePreparedLink(operationId, rowFields(prepared, link))
+          await savePreparedLink(stores, draft, rowFields(prepared, link))
           opts.onLink?.(link)
         },
       },
     )
-    if (sponsor.subscribe) noteSubscribed(deps.account, sponsor.fpcAddress, sponsor.railId)
-    maybeRefuelFpc({ ...deps, fpc: { address: sponsor.fpcAddress, artifact: sponsor.fpcArtifact } })
+    if (sponsor.subscribe) noteSubscribed(deps, sponsor.fpcAddress, sponsor.railId)
+    deps.session.oweFpcRefuel({ address: sponsor.fpcAddress, artifact: sponsor.fpcArtifact })
     onStage?.("submitting")
     if (!link) throw new Error("sponsored paylink create never prepared its link")
-    // The row now carries the tx-bearing link: later copies let a claimer read the memo.
-    link = { ...linkShape(encodePaylinkInline(params), amount, decimals, flavor, email), memo }
-    await finishPaylinkRow(operationId, params.txHash, rowFields(params, link))
+    // The link now carries the tx-bearing URL: later copies let a claimer read the memo.
+    link = { ...linkShape(network, encodePaylinkInline(params), amount, flavor, email), memo }
+    await fundLink(stores, operationId, paylinkRowUrl(link.fragment))
   } catch (e) {
-    throw await paylinkFailure(operationId, e, submission, deps.wallet.node)
+    throw await paylinkFailure(stores, operationId, e, submission, deps.wallet.node)
   } finally {
     submission.stop()
   }
@@ -803,6 +887,7 @@ export async function claimSponsoredLink(
   const release = opts?.fundRegistration ? holdSigningFlow("onboarding") : undefined
   try {
     return await runOperation(
+      deps.session,
       {
         operationId: nextOperationId("paylink-claim"),
         flow: "paylink-claim",
@@ -822,6 +907,7 @@ export async function claimSponsoredLink(
         )
       },
       (txHash) => txHash,
+      { dropRetryable: opts?.dropRetryable },
     )
   } finally {
     release?.()
@@ -831,6 +917,8 @@ export async function claimSponsoredLink(
 export interface ClaimSponsoredLinkOptions {
   /** The claim pays for this account's pending registration: the SIPA burn is required, not optional. */
   fundRegistration?: boolean
+  /** Home's automatic claim: a retryable failure before its proof leaves no record. */
+  dropRetryable?: boolean
   /** {@link CLAIM_BATCHES_REGISTRATION_BROADCAST} for this claim. */
   batchRegistrationBroadcast?: boolean
 }
@@ -838,7 +926,7 @@ export interface ClaimSponsoredLinkOptions {
 /** Resolves to the claim tx hash. */
 async function claimSponsoredLinkFlow(
   op: OperationHandle,
-  deps: SponsoredPaylinkDeps,
+  input: SponsoredPaylinkDeps,
   fragment: string,
   prepare: ReturnType<typeof deadline>,
   onStage?: (stage: CreateStage) => void,
@@ -846,39 +934,41 @@ async function claimSponsoredLinkFlow(
   opts?: ClaimSponsoredLinkOptions,
 ): Promise<string> {
   onStage?.("building")
+  const deps = await readyPaylinkDeps(input)
+  const stores = deps.session
   const svc = service(deps)
   const params = decodePaylinkInline(fragment)
   const isEmail = params.paylinkType === DEFAULT_CONTRACTS.paylinkEmail
   if (isEmail && !zkProof) {
     throw new Error("This link is locked to an email — sign in first to prove ownership")
   }
-  // The operation's row is up already; these reads only fill it in. The note read reaches the PXE
-  // first, so the voucher read's deadline waits for it.
-  const noteRead = readPaylinkNote(svc, params)
-  const [{ sponsor, voucherRail }, note] = await prepare.within(
+  // The operation's row is up already; the note read fills it in. The payload names the link, so
+  // every failure after it, the voucher's refusal included, is the link's claim's.
+  const note = await claimNote(op, deps, params, prepare.within(readPaylinkNote(svc, params)))
+  const flavor: LinkFlavor = isEmail ? "email" : "direct"
+  const decimals = tokenDecimalsForNetwork(input.session.page.config.network)
+  op.describe(linkSummary(note && formatUnits(note.amount, decimals)))
+  const { operationId } = op
+  await startPayout(
+    op,
+    deps,
+    "paylink-claim",
+    params,
+    note && { atomic: note.amount, human: Number(formatUnits(note.amount, decimals)) },
+  )
+  const [{ sponsor, voucherRail }] = await prepare.within(
     Promise.all([
-      claimRail(deps, params, Boolean(opts?.fundRegistration), noteRead),
-      noteRead,
+      claimRail(deps, params, Boolean(opts?.fundRegistration)),
       isEmail
         ? deps.contractService.registerContractWithName(DEFAULT_CONTRACTS.oidcKeyRegistry)
         : undefined,
     ]),
   )
-  const flavor: LinkFlavor = isEmail ? "email" : "direct"
-  const decimals = tokenDecimalsForNetwork(getConfig().network)
-  op.describe(linkSummary(note && formatUnits(note.amount, decimals)))
-  const { operationId } = await startPaylinkRow(
-    deps,
-    "paylink-claim",
-    PaylinkActionEnum.CLAIM,
-    note && { atomic: note.amount, human: Number(formatUnits(note.amount, decimals)) },
-    { flavor, operationId: op.operationId },
-  )
   onStage?.("proving")
   let txHash: string
   let burn: Awaited<ReturnType<typeof seedRegistrationBurn>> | undefined
   let publish: Awaited<ReturnType<typeof registrationPublish>> | undefined
-  const submission = trackSubmission(operationId)
+  const submission = trackSubmission(deps.session.page.prover.progress, operationId)
   try {
     const slice = await prepare.within(
       registrationSlice(deps, note?.amount, Boolean(opts?.fundRegistration)),
@@ -898,13 +988,12 @@ async function claimSponsoredLinkFlow(
     const send = (broadcasts?: ContractFunctionInteraction[]) =>
       svc.claimSponsoredPaylink(params, sponsor, {
         operationId,
-        // The claim's row and the burn riding it hold the hash, in one write, before the node
-        // takes it.
+        // The claim's operation and the burn riding it hold the hash, in one write, before the
+        // node takes it.
         onTxHash: async (hash) => {
-          const { activity, db } = session()
-          await activity.ready
-          await db.write(async (w) => {
-            await activity.setHash(operationId, hash, w)
+          await writing(stores, async (w) => {
+            if (!(await stores.operations.apply(operationId, { type: "sent", txHash: hash }, w)))
+              throw new WalletError("invariant", "paylink claim: no record for its hash")
             await burn?.stamp(hash, w)
           })
         },
@@ -942,17 +1031,16 @@ async function claimSponsoredLinkFlow(
     }
     await publish?.landed()
     await burn?.mined(txHash)
-    if (sponsor.subscribe) noteSubscribed(deps.account, sponsor.fpcAddress, sponsor.railId)
-    maybeRefuelFpc({ ...deps, fpc: { address: sponsor.fpcAddress, artifact: sponsor.fpcArtifact } })
+    if (sponsor.subscribe) noteSubscribed(deps, sponsor.fpcAddress, sponsor.railId)
+    deps.session.oweFpcRefuel({ address: sponsor.fpcAddress, artifact: sponsor.fpcArtifact })
     onStage?.("submitting")
-    await finishPaylinkRow(operationId, txHash)
     await bestEffort(
       "unknown",
-      markCreateRowClaimed(params.secret.toString(), flavor, deps.account.getAddress().toString()),
+      markLinkClaimed(stores, params, deps.account.getAddress().toString()),
     )
   } catch (e) {
     if (e instanceof TxInFlightError) throw e
-    throw await paylinkFailure(operationId, e, submission, deps.wallet.node)
+    throw await paylinkFailure(stores, operationId, e, submission, deps.wallet.node)
   } finally {
     submission.stop()
   }
@@ -1017,19 +1105,12 @@ function burnArgs({ l1Recipient, amount, proverTip, withdrawal }: RegistrationSl
  * to retry on, and only a read that succeeded can call the voucher spent.
  */
 export async function claimRail(
-  deps: SponsoredPaylinkDeps,
+  deps: ReadyPaylinkDeps,
   params: ReturnType<typeof decodePaylinkInline>,
   fundRegistration: boolean,
-  /** A PXE read the voucher read queues behind, as {@link linkVoucher}'s `after`. */
-  after?: Promise<unknown>,
 ): Promise<{ sponsor: ClaimSponsorContext; voucherRail: ClaimSponsorContext | undefined }> {
   if (fundRegistration) {
-    const voucherRail = await linkVoucher(
-      deps,
-      params,
-      REGISTRATION_VOUCHER_CHECK_TIMEOUT_MS,
-      after,
-    )
+    const voucherRail = await linkVoucher(deps, params, REGISTRATION_VOUCHER_CHECK_TIMEOUT_MS)
     if (!voucherRail)
       throw new Error("this link's voucher is spent, so it cannot pay for the account")
     return { sponsor: voucherRail, voucherRail }
@@ -1037,7 +1118,7 @@ export async function claimRail(
   try {
     return { sponsor: await claimSponsorContext(deps, RAIL_REGISTERED), voucherRail: undefined }
   } catch (err) {
-    const voucherRail = await linkVoucher(deps, params, VOUCHER_CHECK_TIMEOUT_MS, after)
+    const voucherRail = await linkVoucher(deps, params, VOUCHER_CHECK_TIMEOUT_MS)
     if (!voucherRail) throw err
     return { sponsor: voucherRail, voucherRail }
   }
@@ -1053,14 +1134,14 @@ export async function claimRail(
  * is published by the claim.
  */
 export async function registrationSlice(
-  deps: SponsoredPaylinkDeps,
+  deps: ReadyPaylinkDeps,
   noteAmount: bigint | undefined,
   required: boolean,
   nowMs: number = Date.now(),
 ): Promise<RegistrationSlice | undefined> {
   if (!required) return undefined
   const record = currentRegistration(
-    loadedRegistrations(session().registrations),
+    loadedRegistrations(deps.session.registrations),
     deps.account.getAddress().toString(),
   )
   if (!record || record.phase !== "awaiting_deposit" || record.fundedAt !== undefined) {
@@ -1096,8 +1177,7 @@ export async function registrationSlice(
   if (noteAmount === undefined) {
     throw new RegistrationFundingError("unpriced", "the link's amount is unknown")
   }
-  const config = getConfig()
-  const tuple = await getOxideTuple(config)
+  const tuple = await deps.session.page.chain.oxideTuple.read()
   const unpriced = (what: string, err: unknown) =>
     new RegistrationFundingError(
       "unpriced",
@@ -1106,7 +1186,7 @@ export async function registrationSlice(
   const proverTip = committedProverTip(terms)
   let withdrawalFee: bigint
   try {
-    withdrawalFee = await withdrawalExecutorFee(tuple)
+    withdrawalFee = await withdrawalExecutorFee(deps.session.page.chain, tuple)
   } catch (err) {
     throw unpriced("withdrawal fee", err)
   }
@@ -1119,7 +1199,7 @@ export async function registrationSlice(
   }
   let withdrawal: WithdrawalOptions
   try {
-    withdrawal = withdrawalOptions(tuple)
+    withdrawal = withdrawalOptions(deps.session.page.config, tuple)
   } catch (err) {
     throw unpriced("withdrawal state", err)
   }
@@ -1142,14 +1222,13 @@ export async function registrationSlice(
  * landed, nothing left to publish.
  */
 async function registrationPublish(
-  deps: SponsoredPaylinkDeps,
+  deps: ReadyPaylinkDeps,
   record: PendingRegistrationRecord,
   batched: boolean,
 ) {
-  const config = getConfig()
+  const { config } = deps.session.page
   const address = record.sipaAddress.toLowerCase()
-  const own = session()
-  const { sipaDeposits: store, holdBroadcast, nameClaims, registrationPayloads } = own
+  const { sipaDeposits: store, holdBroadcast, registrationPayloads } = deps.session
   await store.ready
   const job = () => broadcastJob(store.view.get().records, address)
   try {
@@ -1163,7 +1242,7 @@ async function registrationPublish(
   }
   const landed = async (): Promise<void> => {
     registrationPayloads.delete(address)
-    await session().registrations.broadcastSent(address)
+    await deps.session.registrations.broadcastSent(address)
     if (job()) await store.apply(address, { type: "broadcastLanded" })
   }
   if (job()?.state === "landed") {
@@ -1172,7 +1251,7 @@ async function registrationPublish(
   }
   let built: Awaited<ReturnType<typeof registrationBroadcastPayload>>
   try {
-    built = await registrationBroadcastPayload(deps.wallet, config, record, own)
+    built = await registrationBroadcastPayload(deps.wallet, config, record, deps.session)
   } catch (err) {
     throw new RegistrationFundingError(
       "unpublished",
@@ -1187,7 +1266,7 @@ async function registrationPublish(
     contractService: deps.contractService,
     config,
     handle: record.tag,
-    nameClaims,
+    session: deps.session,
   }
   await cacheFreshClaim(sender, built.payload)
   const calls = batched ? await registrationBroadcastCalls(sender, built.payload) : undefined
@@ -1246,16 +1325,16 @@ async function registrationPublish(
  * what offers the burn's manual finalization if the relayer stalls.
  */
 async function seedRegistrationBurn(
-  deps: SponsoredPaylinkDeps,
+  deps: ReadyPaylinkDeps,
   params: ReturnType<typeof decodePaylinkInline>,
   slice: RegistrationSlice,
   operationId: string,
 ) {
-  const store = session().withdrawals
+  const store = deps.session.withdrawals
   await store.ready
   const token = await deps.tokenService.fetchTokenInformation()
-  const tuple = await getOxideTuple(getConfig())
-  const localId = newWithdrawalLocalId()
+  const tuple = await deps.session.page.chain.oxideTuple.read()
+  const localId = newWithdrawalLocalId(deps.session.page.now())
   const startTime = Date.now()
   await store.create({
     localId,
@@ -1278,8 +1357,13 @@ async function seedRegistrationBurn(
     startTime,
     deployment: await currentDeployment(tuple),
   })
-  // The claim's own tracker announces the batch.
-  const submission = trackWithdrawalSubmission(store, localId, operationId, { announce: false })
+  // The claim's own write sends the operation.
+  const submission = trackWithdrawalSubmission(
+    deps.session.page.prover.progress,
+    store,
+    localId,
+    operationId,
+  )
   return {
     /** Saves the burn's hash on its record; rejects when it did not persist. */
     stamp: (hash: string, w?: Write) => submission.stampIn(hash, w),
@@ -1292,7 +1376,7 @@ async function seedRegistrationBurn(
         const pending = await submission.recover(deps.wallet.node)
         const broadcast = pending && (pending.l2TxHash ?? submission.txHash)
         if (pending && broadcast) {
-          wakeWithdrawalTracker()
+          void deps.session.wake(deps.session.withdrawalTracker)
           return broadcast
         }
         const message =
@@ -1325,14 +1409,14 @@ async function seedRegistrationBurn(
             rawAmount: slice.amount.toString(),
             relayerTip: slice.relayerTip.toString(),
           })
-          void recordBurnDuration(durationMs)
+          void recordBurnDuration(deps.session.burnDurations, durationMs)
         } else {
           await store.apply(localId, {
             type: "patch",
             fields: { phase: "submitting", l2TxHash: txHash as Hex },
           })
         }
-        wakeWithdrawalTracker()
+        void deps.session.wake(deps.session.withdrawalTracker)
       } catch (e) {
         console.warn("registration burn mined; its record could not be updated, resumes on boot", e)
       }
@@ -1340,16 +1424,13 @@ async function seedRegistrationBurn(
   }
 }
 
-/** L1 claims in flight, by fragment: a second confirm while one proves joins it instead of re-burning. */
-const inFlightL1Claims = new Map<string, Promise<WithdrawalRecord>>()
-
 /**
  * Sponsored `claim_to_l1`: the escrow burns to `recipient` through the portal and
  * the result is tracked as a withdrawal — the record is seeded pre-sign, marked mined, and armed on
  * the chain watcher exactly like a balance withdrawal, swap route included (a non-DAI output burns
  * to the planned escrow with the deploy broadcast riding the burn). No paylink queue row is
  * written; the withdrawal record is the activity row. A create row this device made is still
- * marked claimed.
+ * marked claimed. Like a cash-out, it runs under the link's one burn operation.
  */
 export function claimLinkToL1(
   deps: SponsoredPaylinkDeps,
@@ -1366,35 +1447,32 @@ export function claimLinkToL1(
   swap?: SwapLeg,
   /** Paid to the first prover of the burn's checkpoint; a planned leg's must match. */
   proverTip = 0n,
+  /** Land on another chain: the burn pays an Across escrow instead of a swap. */
+  bridge?: BridgeOutChoice,
 ): Promise<WithdrawalRecord> {
-  const live = inFlightL1Claims.get(fragment)
-  if (live) return live
   const summary = `Paylink to ${recipientAlias?.trim() || "Ethereum"}`
-  const run = runOperation(
-    { operationId: nextOperationId("paylink-claim"), flow: "paylink-claim-l1", summary },
-    (op) =>
-      claimLinkToL1Flow(
-        op,
-        deps,
-        fragment,
-        recipient,
-        screener,
-        onStage,
-        recipientAlias,
-        receiveAsset,
-        quote,
-        zkProof,
-        swap,
-        proverTip,
-      ),
-  ).finally(() => inFlightL1Claims.delete(fragment))
-  inFlightL1Claims.set(fragment, run)
-  return run
+  return runLinkBurn(deps.session, fragment, summary, (op) =>
+    claimLinkToL1Flow(
+      op,
+      deps,
+      fragment,
+      recipient,
+      screener,
+      onStage,
+      recipientAlias,
+      receiveAsset,
+      quote,
+      zkProof,
+      swap,
+      proverTip,
+      bridge,
+    ),
+  )
 }
 
 /** The swap leg of a link claim, sized off the escrow note's `amount` (the link carries none). */
 export async function planLinkClaimSwap(
-  deps: Pick<SponsoredPaylinkDeps, "wallet" | "contractService">,
+  session: ChainSession & Pick<Session, "auth" | "page">,
   fragment: string,
   amount: bigint,
   recipient: Address,
@@ -1402,15 +1480,16 @@ export async function planLinkClaimSwap(
   quote?: SwapCommit,
   proverTip = 0n,
 ): Promise<SwapLeg | undefined> {
-  const { note, tuple } = await readPaylinkSource(deps, fragment)
+  const chain = await chainOf(session)
+  const { note, tuple } = await readPaylinkSource(chain, fragment, session.page)
   if (note.amount !== amount) throw new Error("The link balance changed; reopen the withdrawal")
   return planSwapLeg(
-    deps.wallet,
+    session.page.chain,
+    (tuple) => sessionSwapRecoverer(session, tuple),
     receiveAsset,
     recipient,
     amount,
     quote,
-    undefined,
     tuple,
     proverTip,
   )
@@ -1418,7 +1497,7 @@ export async function planLinkClaimSwap(
 
 async function claimLinkToL1Flow(
   op: OperationHandle,
-  liveDeps: SponsoredPaylinkDeps,
+  input: SponsoredPaylinkDeps,
   fragment: string,
   recipient: Address,
   screener: AddressScreener,
@@ -1429,12 +1508,15 @@ async function claimLinkToL1Flow(
   zkProof?: PaylinkL1Proof,
   planned?: SwapLeg,
   proverTip = 0n,
+  bridge?: BridgeOutChoice,
 ): Promise<WithdrawalRecord> {
   const startedAt = Date.now()
   onStage("building")
-  const network = getConfig().network
-  const { params, note, tuple } = await readPaylinkSource(liveDeps, fragment)
-  const sourceContext = await historicTokenContext(liveDeps.wallet, liveDeps.account, tuple)
+  const { config, chain } = input.session.page
+  const liveDeps = await readyPaylinkDeps(input)
+  const { params, note, tuple } = await readPaylinkSource(liveDeps, fragment, input.session.page)
+  const { wallet, account } = liveDeps
+  const sourceContext = await historicTokenContext(chain, wallet, account, tuple)
   const deps = { ...liveDeps, ...sourceContext }
   const flavor: LinkFlavor =
     params.paylinkType === DEFAULT_CONTRACTS.paylinkEmail ? "email" : "direct"
@@ -1443,14 +1525,14 @@ async function claimLinkToL1Flow(
   // would revert, or leave the recipient nothing — refuse up front. The whole note is the
   // withdrawal the limit counts.
   const amount = note.amount
-  const decimals = tokenDecimalsForNetwork(network)
+  const decimals = tokenDecimalsForNetwork(config.network)
   assertWithinWithdrawalLimit(
     amount,
-    await txAmountCap(l1PublicClient(getConfig()), tuple.portal as Address),
+    await chain.txAmountCap(tuple.portal as Address).read(),
     "link",
     decimals,
   )
-  const withdrawalFee = await withdrawalExecutorFee(tuple)
+  const withdrawalFee = await withdrawalExecutorFee(input.session.page.chain, tuple)
   const fee = withdrawalFee + WITHDRAW_RELAYER_TIP + proverTip
   if (amount <= fee) {
     throw new Error("This link holds too little to cover the withdrawal fee")
@@ -1463,15 +1545,36 @@ async function claimLinkToL1Flow(
   }
   const sponsor = await claimSponsorContext(deps, RAIL_REGISTERED, { tuple })
   // The escrow is sized off the note; the burn refuses to sign if the note holds anything else.
-  const swap =
-    planned ??
-    (await planLinkClaimSwap(deps, fragment, amount, recipient, receiveAsset, quote, proverTip))
+  const bridgeLeg =
+    bridge &&
+    (await planBridgeLeg(input.session.page, deps, tuple, {
+      ...bridge,
+      from: deps.account.getAddress(),
+      amount,
+      recipient,
+      proverTip,
+      recoverer: await sessionSwapRecoverer(deps.session, tuple),
+    }))
+  const swap = bridgeLeg
+    ? undefined
+    : planned ??
+      (await planLinkClaimSwap(
+        deps.session,
+        fragment,
+        amount,
+        recipient,
+        receiveAsset,
+        quote,
+        proverTip,
+      ))
   assertPaylinkSwapSource(swap, tuple)
-  const withdrawal = withdrawalOptions(tuple, swap)
+  const withdrawal = bridgeLeg
+    ? { ...withdrawalOptions(config, tuple), escrow: bridgeLeg.escrow }
+    : withdrawalOptions(config, tuple, swap)
   const token = await deps.tokenService.fetchTokenInformation()
   op.describe(`$${formatUnits(amount - fee, decimals)} to ${recipientAlias?.trim() || "Ethereum"}`)
   const paylinkId = paylinkIdentity(params)
-  await owePaylinkClaim(webStorage, paylinkId, {
+  await owePaylinkClaim(deps.session.owedClaims, paylinkId, {
     rollupAddress: deps.rollupAddress,
     secret: params.secret,
     flavor,
@@ -1480,7 +1583,7 @@ async function claimLinkToL1Flow(
   })
   const { record, result } = await runBurn({
     op,
-    wallet: deps.wallet,
+    session: deps.session,
     record: {
       recipient,
       recipientProvenance: "saved-recipient",
@@ -1497,10 +1600,9 @@ async function claimLinkToL1Flow(
       phase: "submitting",
       startTime: Date.now(),
       deployment: await currentDeployment(tuple),
-      ...swapRecordFields(swap, quote),
+      ...(bridgeLeg ? bridgeLeg.record : swapRecordFields(swap, quote)),
     },
     burn: (seeded, onTxHash) => {
-      if (getConfig().network !== network) throw new Error("Network changed — reopen the link")
       onStage("proving")
       // Off the persisted record, so what the burn pays can never drift from what was written.
       return svc.claimSponsoredPaylinkToL1(
@@ -1520,12 +1622,12 @@ async function claimLinkToL1Flow(
   // A burn left to the chain reports once the tracker marks its record mined.
   void bestEffort(
     "unknown",
-    session()
-      .withdrawals.all()
-      .then((burns) => reportPaylinkClaims(burns, webStorage)),
+    deps.session.withdrawals
+      .all()
+      .then((burns) => reportPaylinkClaims(burns, deps.session.owedClaims)),
   )
   if (!result) return record
-  void recordBurnDuration(Date.now() - startedAt)
+  void recordBurnDuration(deps.session.burnDurations, Date.now() - startedAt)
   // Mined and irreversible: none of this may fail the record.
   onStage("submitting")
   let mined = record
@@ -1534,16 +1636,17 @@ async function claimLinkToL1Flow(
     if (mined.rawAmount !== amount.toString()) {
       const net = { phase: mined.phase, amount: withdrawalAmounts(mined).netDisplay }
       mined =
-        (await session().withdrawals.apply(mined.localId, { type: "patch", fields: net })) ?? mined
+        (await deps.session.withdrawals.apply(mined.localId, { type: "patch", fields: net })) ??
+        mined
     }
-    if (sponsor.subscribe) noteSubscribed(deps.account, sponsor.fpcAddress, sponsor.railId)
-    maybeRefuelFpc({ ...deps, fpc: { address: sponsor.fpcAddress, artifact: sponsor.fpcArtifact } })
-    await markCreateRowClaimed(
-      params.secret.toString(),
-      flavor,
-      deps.account.getAddress().toString(),
-    )
-    void upsertSavedL1WalletContact({ address: recipient, name: recipientAlias })
+    if (sponsor.subscribe) noteSubscribed(deps, sponsor.fpcAddress, sponsor.railId)
+    deps.session.oweFpcRefuel({ address: sponsor.fpcAddress, artifact: sponsor.fpcArtifact })
+    await markLinkClaimed(deps.session, params, deps.account.getAddress().toString())
+    if (deps.session.contacts)
+      void upsertSavedL1WalletContact(deps.session.contacts, {
+        address: recipient,
+        name: recipientAlias,
+      })
   } catch (e) {
     console.warn("paylink claim_to_l1 mined; post-mine bookkeeping failed", e)
   }
@@ -1559,24 +1662,25 @@ async function claimLinkToL1Flow(
  * creator's authwit, pays the note's bound sender, and decides the branch from chain time.
  * Recorded as a refund since the funds come back.
  */
-export function recoverSponsoredLink(
-  deps: SponsoredPaylinkDeps,
+export async function recoverSponsoredLink(
+  input: SponsoredPaylinkDeps,
   fragment: string,
   onStage?: (stage: CreateStage) => void,
   /** Runs at the submit boundary before the rows learn the hash; a throw aborts the send. */
   onTxHash?: TxHashCallback,
 ): Promise<string> {
+  const params = decodePaylinkInline(fragment)
+  const deps = await readyPaylinkDeps(input)
   return runOperation(
+    deps.session,
     {
       operationId: nextOperationId("paylink-refund"),
       flow: "paylink-reclaim",
       summary: linkSummary(null),
+      // The link reads as refunding from the tap.
+      ...(await payout(deps, "paylink-refund", params, undefined)),
     },
-    // The link reads as refunding from here: its row learns the refund's hash only at submit.
-    (op) =>
-      withRefundInFlight(decodePaylinkInline(fragment).secret.toString(), () =>
-        recoverSponsoredLinkFlow(op, deps, fragment, onStage, onTxHash),
-      ),
+    (op) => recoverSponsoredLinkFlow(op, deps, fragment, params, onStage, onTxHash),
     (txHash) => txHash,
   )
 }
@@ -1588,7 +1692,7 @@ export function recoverSponsoredLink(
  */
 export async function linkRefundable(
   deps: ViewLinkDeps,
-  row: PaylinkTransaction | null,
+  row: Pick<PaylinkRecord, "untilClaimable" | "refundableUntil"> | null,
   fragment: string,
 ): Promise<"now" | "later" | "spending" | "spent"> {
   const spentAt = await statusService(deps).paylinkClaimBlock(decodePaylinkInline(fragment))
@@ -1606,37 +1710,39 @@ export async function linkRefundable(
  * live deps.
  */
 export async function refundDepsForRow(
-  deps: SponsoredPaylinkDeps,
-  row: PaylinkTransaction | null,
-): Promise<{ deps: SponsoredPaylinkDeps; tuple?: OxideEnvTuple }> {
+  deps: ReadyPaylinkDeps,
+  row: Pick<PaylinkRecord, "tokenAddress"> | null,
+): Promise<{ deps: ReadyPaylinkDeps; tuple?: OxideEnvTuple }> {
   const tokenAddress = row?.tokenAddress
   const current = deps.tokenService.tokenAddressOrNull?.toString()
   if (!tokenAddress || !current || tokenAddress.toLowerCase() === current.toLowerCase()) {
     return { deps }
   }
-  const historic = await findHistoricTuple(tokenAddress)
+  const { config, chain } = deps.session.page
+  const historic = await findHistoricTuple(config, tokenAddress)
   if (!historic) {
     throw new Error(`The refund token ${tokenAddress} has no available deployment`)
   }
-  const context = await historicTokenContext(deps.wallet, deps.account, historic)
+  const context = await historicTokenContext(chain, deps.wallet, deps.account, historic)
   return { deps: { ...deps, ...context }, tuple: historic }
 }
 
 async function recoverSponsoredLinkFlow(
   op: OperationHandle,
-  liveDeps: SponsoredPaylinkDeps,
+  liveDeps: ReadyPaylinkDeps,
   fragment: string,
+  params: PaylinkParams,
   onStage?: (stage: CreateStage) => void,
   onTxHash?: TxHashCallback,
 ): Promise<string> {
   onStage?.("building")
-  const params = decodePaylinkInline(fragment)
   const flavor: LinkFlavor =
     params.paylinkType === DEFAULT_CONTRACTS.paylinkEmail ? "email" : "direct"
   // The offer was made from a polled tip that may be seconds old; the refund tx expires at
   // `refundable_until` unless the link is already past expiry. Re-read once before anything is
   // proven or recorded.
-  const row = await creatorRowFor(fragment)
+  const stores = liveDeps.session
+  const row = await creatorLinkFor(stores, fragment)
   const now = await latestChainSeconds(liveDeps.wallet.node)
   // The escrow pays only its creator: another account's refund would fail after proving.
   if (row && !linkMadeBy(row, liveDeps.account.getAddress().toString())) {
@@ -1650,21 +1756,22 @@ async function recoverSponsoredLinkFlow(
   if (!expired && row?.refundableUntil != null && !canCancelAt(row.refundableUntil, now)) {
     throw new PaylinkWindowClosedError()
   }
-  const decimals = tokenDecimalsForNetwork(getConfig().network)
+  const decimals = tokenDecimalsForNetwork(liveDeps.session.page.config.network)
   // The link carries no amount; the create row does.
   const rowAmount = row?.token?.amount
   op.describe(linkSummary(rowAmount))
-  const { operationId } = await startPaylinkRow(
+  const { operationId } = op
+  // The row's amount, and the token a retired deployment refunds.
+  await startPayout(
+    op,
     deps,
     "paylink-refund",
-    PaylinkActionEnum.CLAIM_BACK,
+    params,
     row && rowAmount !== undefined ? { atomic: row.amountAtomic, human: rowAmount } : undefined,
-    { flavor, operationId: op.operationId },
   )
   onStage?.("proving")
-  const secret = params.secret.toString()
   const account = deps.account.getAddress().toString()
-  const submission = trackSubmission(operationId)
+  const submission = trackSubmission(liveDeps.session.page.prover.progress, operationId)
   let txHash: string
   try {
     txHash = await svc.refundSponsoredPaylink(params, sponsor, {
@@ -1673,16 +1780,15 @@ async function recoverSponsoredLinkFlow(
       // reconciler would otherwise read the spent note as a recipient's claim.
       onTxHash: async (hash, tx) => {
         await onTxHash?.(hash, tx)
-        await saveRefundSubmitted(operationId, secret, flavor, account, hash, refundKind)
+        await saveRefundSubmitted(stores, operationId, params, account, hash, refundKind)
       },
     })
-    if (sponsor.subscribe) noteSubscribed(deps.account, sponsor.fpcAddress, sponsor.railId)
-    maybeRefuelFpc({ ...deps, fpc: { address: sponsor.fpcAddress, artifact: sponsor.fpcArtifact } })
+    if (sponsor.subscribe) noteSubscribed(deps, sponsor.fpcAddress, sponsor.railId)
+    deps.session.oweFpcRefuel({ address: sponsor.fpcAddress, artifact: sponsor.fpcArtifact })
     onStage?.("submitting")
-    await finishPaylinkRow(operationId, txHash)
-    await bestEffort("unknown", markCreateRowRefunded(secret, flavor, account, txHash, refundKind))
+    await bestEffort("unknown", markLinkRefunded(stores, params, account, txHash, refundKind))
   } catch (e) {
-    throw await paylinkFailure(operationId, e, submission, deps.wallet.node)
+    throw await paylinkFailure(stores, operationId, e, submission, deps.wallet.node)
   } finally {
     submission.stop()
   }
@@ -1698,17 +1804,18 @@ async function recoverSponsoredLinkFlow(
 }
 
 function linkShape(
+  network: Network,
   fragment: string,
   amount: bigint | undefined,
-  decimals: number,
   flavor: LinkFlavor,
   email?: string,
   txHash?: string,
 ): PaymentLink {
   return {
-    url: paylinkShareUrl(fragment),
+    url: paylinkShareUrl(fragment, network),
     fragment,
-    amount: amount === undefined ? undefined : formatUnits(amount, decimals),
+    amount:
+      amount === undefined ? undefined : formatUnits(amount, tokenDecimalsForNetwork(network)),
     status: "unclaimed",
     flavor,
     email,
@@ -1725,13 +1832,12 @@ function linkShape(
  * Every inbound link decodes here (`/link`, Home's stash, `viewLink`), so an email link is refused
  * while email-locked links are off, before any signup, Google sign-in or transaction.
  */
-export function decodeLink(fragment: string): PaymentLink {
+export function decodeLink(config: WebWalletConfig, fragment: string): PaymentLink {
   const params = decodePaylinkInline(fragment)
   const flavor: LinkFlavor =
     params.paylinkType === DEFAULT_CONTRACTS.paylinkEmail ? "email" : "direct"
   if (flavor === "email" && !emailLockedLinksEnabled) throw new EmailPaylinkUnsupportedError()
-  const config = getConfig()
-  const link = linkShape(fragment, undefined, tokenDecimalsForNetwork(config.network), flavor)
+  const link = linkShape(config.network, fragment, undefined, flavor)
   return isRetiredLink(params, config) ? { ...link, status: "retired" } : link
 }
 
@@ -1792,10 +1898,17 @@ function statusService(deps: ViewLinkDeps): PaylinkService {
  * transfer's sender: the creator writes the tag, so any creator could write any tag. A read that
  * fails drops it.
  */
-async function verifiedSenderTag(tag?: string, from?: string): Promise<string | undefined> {
+async function verifiedSenderTag(
+  page: PageFacts,
+  tag?: string,
+  from?: string,
+): Promise<string | undefined> {
   if (!tag || !from) return undefined
   try {
-    const resolution = await withTimeout(resolveTagViaRegistry(tag), SENDER_TAG_CHECK_TIMEOUT_MS)
+    const resolution = await withTimeout(
+      resolveTagViaRegistry(page, tag),
+      SENDER_TAG_CHECK_TIMEOUT_MS,
+    )
     return resolution.status === "resolved" &&
       resolution.l2Address.toLowerCase() === from.toLowerCase()
       ? tag
@@ -1811,9 +1924,14 @@ async function verifiedSenderTag(tag?: string, from?: string): Promise<string | 
  * passkey. `resolveLink` also unpacks `from_claimable` so `/link` can withhold Claim
  * during grace; the placeholder sender is enough to reconstruct the escrow.
  */
+/** Whether the link's note is spent on chain, read now: the nullifier read the sweep makes. */
+export function linkClaimed(deps: ViewLinkDeps, fragment: string): Promise<boolean> {
+  return statusService(deps).isPaylinkClaimed(decodePaylinkInline(fragment))
+}
+
 export async function viewLink(deps: ViewLinkDeps, fragment: string): Promise<PaymentLink> {
   const params = decodePaylinkInline(fragment)
-  const link = decodeLink(fragment)
+  const link = decodeLink(deps.session.page.config, fragment)
   if (link.status === "retired") return link
   const svc = statusService(deps)
   const claimed = await svc.isPaylinkClaimed(params)
@@ -1824,8 +1942,9 @@ export async function viewLink(deps: ViewLinkDeps, fragment: string): Promise<Pa
     // read cannot pin the screen's status check; without it the link shows as claimable now and
     // the contract still gates the claim.
     const resolved = await withTimeout(svc.resolveLink(params, deps.account), NOTE_READ_TIMEOUT_MS)
-    const decimals = tokenDecimalsForNetwork(getConfig().network)
-    const senderTag = await verifiedSenderTag(resolved.senderTag, resolved.from)
+    const { page } = deps.session
+    const decimals = tokenDecimalsForNetwork(page.config.network)
+    const senderTag = await verifiedSenderTag(page, resolved.senderTag, resolved.from)
     return {
       ...link,
       status: "unclaimed",
@@ -1841,7 +1960,8 @@ export async function viewLink(deps: ViewLinkDeps, fragment: string): Promise<Pa
     }
   } catch (e) {
     // A note other than the one the link was made for is refused outright.
-    if (e instanceof Error && e.message === PAYLINK_TERMS_REFUSAL) throw e
+    if (e instanceof Error && e.message === PAYLINK_TERMS_REFUSAL)
+      throw new WalletError("paylink.termsMismatch", PAYLINK_TERMS_REFUSAL, { cause: e })
     // Note sync failed but nullifier says unclaimed — no amount to show; the watcher retries.
   }
   return { ...link, status: "unclaimed" }

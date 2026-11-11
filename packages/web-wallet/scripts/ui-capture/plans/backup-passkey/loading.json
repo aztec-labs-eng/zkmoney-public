@@ -1,0 +1,49 @@
+{
+  "scenario": "activity",
+  "viewport": "402x879,1280x832",
+  "path": "/settings?flowFixture=success&backupFixture=loading",
+  "ready": {
+    "selector": ".ww-settings__user"
+  },
+  "steps": [
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Passkeys",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": "html[data-backup-screen=loading]"
+    },
+    {
+      "action": "screenshot",
+      "file": "loading.png",
+      "state": "The key read is out"
+    },
+    {
+      "action": "goto",
+      "path": "/settings?flowFixture=success&backupFixture=loading-rotation"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-settings__user"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Passkeys",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": "html[data-backup-screen=loading]"
+    },
+    {
+      "action": "screenshot",
+      "file": "loading-rotation.png",
+      "state": "A saved attempt waits on its dependencies"
+    }
+  ],
+  "finalScreenshot": false
+}

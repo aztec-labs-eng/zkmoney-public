@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest"
 import type { PaymentRequest } from "@obsidion/front-core"
-import { linkExpiryLabel, requestShareStatus } from "../../../src/features/requests/shareView"
+import {
+  linkExpiryLabel,
+  requestShareStatus,
+  requestShareText,
+} from "../../../src/features/requests/shareView"
+import { requestAmountLabel } from "../../../src/ui/format"
 
 const DAY = 86_400_000
 const NOW = 1_700_000_000_000
@@ -60,5 +65,13 @@ describe("linkExpiryLabel", () => {
 
   it("is null without an expiry", () => {
     expect(linkExpiryLabel(undefined, NOW)).toBeNull()
+  })
+})
+
+describe("requestShareText", () => {
+  it("names a fixed amount, and names none for an any-amount link", () => {
+    expect(requestShareText(1234.5)).toContain(requestAmountLabel(1234.5))
+    expect(requestShareText(0)).not.toContain("$")
+    expect(requestShareText(0)).not.toBe(requestShareText(1234.5))
   })
 })

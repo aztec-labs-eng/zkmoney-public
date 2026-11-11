@@ -21,25 +21,15 @@ const h = vi.hoisted(() => ({
 }))
 
 vi.mock("@obsidion/sdk", () => ({
-  ContractService: { getInstance: () => ({}) },
   createTransferEventSource: () => ({}),
   discoverFrozenEscrows: h.discover,
   PaylinkService: class {},
   TokenService: { create: async () => ({}) },
 }))
-vi.mock("../../../../src/session/session", () => ({
-  session: () => ({
-    activity: {
-      all: async () => {
-        h.reads++
-        return h.rows
-      },
-    },
-  }),
-}))
 vi.mock("@obsidion/front-core", () => ({
-  // A database stands for its own rows here.
-  storedActivity: (rows: unknown[]) => rows,
+  // A database stands for its own rows here, links folded in.
+  storedTransfers: (rows: unknown[]) => rows,
+  linkedActivity: (transfers: { all(): Promise<unknown[]> }) => transfers.all(),
   markPaylinkMigrated: (txHash: string) => {
     h.marked.push(txHash)
     return true
@@ -58,7 +48,6 @@ vi.mock("../../../../src/platform/storage/WebStorageAdapter", () => ({
     },
   },
 }))
-vi.mock("../../../../src/config/env", () => ({ getConfig: () => ({ l1ChainId: 31337 }) }))
 
 const { markRefundedSourceLinks, sourceFrozenEscrows, sourceLinkRows } = await import(
   "../../../../src/features/migration/sourceFrozenEscrows"
@@ -82,11 +71,18 @@ const row = (name: string, over: Record<string, unknown> = {}) => ({
 const names = (rows: Array<{ link: { name: string } }>) => rows.map((r) => r.link.name)
 /** The session the rows are read for, account "acct-a"; `h.storageId` is the committed account. */
 const own = {
+  page: { config: { l1ChainId: 31337 } },
   namespace: { id: "acct-a" },
   device: { get: () => ({ storageId: h.storageId }) },
   sessionLock: async <T>(fn: () => Promise<T>) => {
     h.locked++
     return fn()
+  },
+  transfers: {
+    all: async () => {
+      h.reads++
+      return h.rows
+    },
   },
 } as never
 const read = () => sourceLinkRows({ tuple, current, own })
@@ -134,6 +130,7 @@ describe("sourceFrozenEscrows", () => {
   it("hints the links of the rows it is given", async () => {
     await sourceFrozenEscrows({
       chain: { wallet: {} as never, account: { getAddress: () => "0xacc" } as never },
+      contractService: {} as never,
       tuple,
       masterSecret: {} as never,
       rows: [row("a"), row("b")] as never,

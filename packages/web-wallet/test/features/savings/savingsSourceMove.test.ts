@@ -3,18 +3,18 @@
  * again after a failed connect; a move whose fees rose since its review stops before burning.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { assignReads, fakeReads } from "../../support/fakeReads"
 import { testPage, testCore } from "../../support/page"
 import {
-  SavingsMoveStorage,
   SkyFactoryMismatchError,
+  createSavingsMoves,
+  fixed,
+  memoryBackend,
+  openDatabase,
   type SavingsQuote,
 } from "@obsidion/front-core"
-import { InMemoryStorageAdapter } from "../../support/memoryStorage"
-import {
-  executorSubsidyAt,
-  withdrawalExecutorAt,
-} from "../../../src/features/withdraw/withdrawalFee"
 
+import type { Session } from "../../../src/session/session"
 const h = vi.hoisted(() => ({
   signerLoad: vi.fn(),
   signerToken: vi.fn(),
@@ -28,7 +28,7 @@ const h = vi.hoisted(() => ({
   factoryPortals: vi.fn(),
   exit: vi.fn(),
 }))
-const moves = new SavingsMoveStorage(new InMemoryStorageAdapter())
+const moves = createSavingsMoves({ db: openDatabase(memoryBackend()) })
 const TX_AMOUNT_CAP = 5166n * 10n ** 18n
 const TUPLE = {
   portal: `0x${"71".repeat(20)}`,
@@ -39,6 +39,10 @@ const TUPLE = {
 }
 const SKY_EXECUTOR = `0x${"5e".repeat(20)}`
 const FACTORY = "0xnew"
+const SKY = {
+  deployments: { main: TUPLE, savings: TUPLE, skyExecutor: SKY_EXECUTOR },
+  factory: { address: FACTORY },
+}
 
 vi.mock("@obsidion/sdk", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/sdk")>()),
@@ -57,11 +61,6 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
   loadOxideManifestTuple: h.loadTuple,
   settleSavingsMoves: h.settle,
   skyBridgesOfFactory: h.bridges,
-  readSavingsVault: async () => `0x${"cc".repeat(20)}`,
-  resolveSkySavings: async () => ({
-    deployments: { main: TUPLE, savings: TUPLE, skyExecutor: SKY_EXECUTOR },
-    factory: { address: FACTORY },
-  }),
   buildSavingsMove: async () => ({
     escrow: `0x${"ee".repeat(20)}`,
     nonce: `0x${"01".repeat(32)}`,
@@ -70,34 +69,9 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
     escrowOptions: {},
   }),
 }))
-vi.mock("../../../src/config/env", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../src/config/env")>()),
-  getConfig: () => ({
-    network: "sandbox",
-    l1ChainId: 31337,
-    enclaveUrl: "/svc/enclave",
-    oxideProfile: { manifestUrl: "http://manifest.test/sandbox.json" },
-  }),
-}))
-vi.mock("../../../src/features/withdraw/withdrawalFee", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../src/features/withdraw/withdrawalFee")>()),
-  skyFactoryPortalsAt: h.factoryPortals,
-}))
 vi.mock("../../../src/config/oxideTuple", () => ({
-  getOxideTuple: async () => TUPLE,
-  getOxideDeployment: async () => ({ deployment: {} }),
-  getManifestDeployments: h.manifestDeployments,
-  oxideProfileKey: () => "profile",
   ASSET_TUPLE_TIMEOUT_MS: 20_000,
-  getPortalTuple: (_config: unknown, portal: string) => h.loadTuple({ portal }),
   l1PublicClient: () => ({ getBlockNumber: async () => 100n }),
-}))
-vi.mock("../../../src/features/token/oxideToken", () => ({
-  txAmountCap: async () => TX_AMOUNT_CAP,
-  teeSignerOfToken: (token: string) => {
-    h.signerToken(token)
-    return h.signerLoad()
-  },
 }))
 vi.mock("../../../src/features/limits/withdrawalLimit", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../src/features/limits/withdrawalLimit")>()),
@@ -108,18 +82,16 @@ vi.mock("../../../src/features/registration/claimSponsorship", () => ({
 }))
 vi.mock("../../../src/features/operations/operations", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../src/features/operations/operations")>()),
-  runOperation: (_meta: unknown, run: (op: unknown) => unknown) => run({ operationId: "op-1" }),
+  runOperation: (_ops: unknown, _meta: unknown, run: (op: unknown) => unknown) =>
+    run({ operationId: "op-1" }),
 }))
 vi.mock("../../../src/features/withdraw/withdrawGateway", () => ({
   noteSponsoredMine: () => {},
-  ownSwapRecoverer: async () => ({ secret: {}, account: {} }),
+  sessionSwapRecoverer: async () => ({ secret: {}, account: {} }),
   runBurn: h.runBurn,
   withdrawalOptions: () => ({}),
 }))
 const fakeAuth = () => ({ getSecretKey: async () => ({}) })
-vi.mock("../../../src/features/savings/savingsMoveStore", () => ({
-  getSavingsMoveStore: () => moves,
-}))
 
 const { createSavingsSource, savingsFinalizeDeployment } = await import(
   "../../../src/features/savings/savingsGateway"
@@ -129,10 +101,25 @@ const { activeNamespace, closeSession, switchSession } = await import(
   "../../../src/session/session"
 )
 const { pageSessionDeps } = await import("../../../src/app/sessionDeps")
-beforeEach(
-  () =>
-    void switchSession(activeNamespace(testCore().device), pageSessionDeps(testPage(fakeAuth()))),
-)
+const { pageTokenServices } = await import("../../../src/features/token/tokenServices")
+/** The session each test opens. */
+let session: Session
+beforeEach(() => {
+  session = switchSession(activeNamespace(testCore().device), pageSessionDeps(testPage(fakeAuth())))
+  assignReads(session.page.chain, {
+    oxideTuple: async () => TUPLE,
+    oxideDeployment: async () => ({ deployment: {} }),
+    manifestDeployments: h.manifestDeployments,
+    portalTuple: (portal: string) => h.loadTuple({ portal }),
+    txAmountCap: async () => TX_AMOUNT_CAP,
+    skySavings: async () => SKY,
+    savingsVault: async () => `0x${"cc".repeat(20)}`,
+    teeSignerOfToken: (token: string) => {
+      h.signerToken(token)
+      return h.signerLoad()
+    },
+  })
+})
 afterEach(closeSession)
 
 const quoteOf = (net: bigint): SavingsQuote => ({
@@ -154,33 +141,36 @@ const source = () =>
       account: { getAddress: () => ({}), getCompleteAddress: () => "0xcomplete" },
       contractService: {},
       network: "sandbox",
+      price: { read: async () => null },
       tokenService: {
         getBalance: async () => 10n ** 30n,
         fetchTokenInformation: async () => ({ symbol: "DAI" }),
         exitToL1PrivateSponsored: h.exit,
       },
+      // The session's stores, with the test's moves and wallet.
+      session: Object.assign(Object.create(session), {
+        savingsMoves: moves,
+        wallet: fixed("wallet", {}),
+        page: {
+          ...session.page,
+          tokenServices: pageTokenServices(fixed("wallet", {} as never)),
+          chain: {
+            ...session.page.chain,
+            ...fakeReads({ skyFactoryPortalsAt: h.factoryPortals }),
+          },
+        },
+      }),
     } as never,
-    TUPLE as never,
+    SKY as never,
   )
 
 beforeEach(async () => {
-  await moves.load()
+  await moves.ready
   for (const fn of Object.values(h)) fn.mockReset()
   h.factoryPortals.mockResolvedValue({ daiPortal: TUPLE.portal, sUsdsPortal: TUPLE.portal })
   h.runBurn.mockResolvedValue({
     record: { localId: "w1", startTime: 1 },
     result: undefined,
-  })
-})
-
-describe("createSavingsSource quote", () => {
-  it("quotes through the session's cached executor reads", async () => {
-    h.quote.mockResolvedValue(quoteOf(90n))
-    await source().quote("in", 100n)
-    expect(h.quote.mock.calls[0][0].executorReads).toEqual({
-      executor: withdrawalExecutorAt,
-      subsidy: executorSubsidyAt,
-    })
   })
 })
 
@@ -190,7 +180,6 @@ describe("createSavingsSource move", () => {
     h.signerLoad.mockRejectedValueOnce(new Error("TEE not registered")).mockResolvedValue(signer)
     h.quote.mockResolvedValue(quoteOf(90n))
     const savings = source()
-    await savings.readPrice().catch(() => {})
     expect(h.signerLoad).not.toHaveBeenCalled()
     await expect(savings.move("out", 100n, () => {})).rejects.toThrow(
       "The Savings co-signer isn't reachable. Try again in a moment.",
@@ -294,14 +283,14 @@ describe("createSavingsSource move", () => {
     const old = { ...TUPLE, portal: `0x${"0d".repeat(20)}`, l2Token: `0x${"0e".repeat(32)}` }
     h.loadTuple.mockResolvedValue(old)
     h.signerLoad.mockResolvedValue({ id: "tee" })
-    const older = await savingsFinalizeDeployment({
+    const older = await savingsFinalizeDeployment(session as never, {
       deployment: { portal: old.portal as `0x${string}`, l2Token: old.l2Token },
     })
     expect(h.loadTuple).toHaveBeenCalledWith(expect.objectContaining({ portal: old.portal }))
     expect(older.tuple).toBe(old)
     expect(h.signerToken).toHaveBeenLastCalledWith(old.l2Token)
     h.loadTuple.mockClear()
-    const current = await savingsFinalizeDeployment({})
+    const current = await savingsFinalizeDeployment(session as never, {})
     expect(current.tuple).toBe(TUPLE)
     expect(h.loadTuple).not.toHaveBeenCalled()
   })
@@ -314,7 +303,7 @@ describe("createSavingsSource move", () => {
     h.bridges.mockImplementation(async (_client: unknown, deployments: unknown, factory: string) =>
       deployments === listed && factory === "0xold" ? { main: TUPLE, savings: older } : undefined,
     )
-    await source().settle()
+    await source().settle(new AbortController().signal)
     const { destinationFor } = h.settle.mock.calls[0][1] as {
       destinationFor: (move: object) => Promise<{ portal: string }>
     }
@@ -333,7 +322,7 @@ describe("createSavingsSource move", () => {
   it("fails the search of a move whose factory no deployment lists, and looks again on the next pass", async () => {
     h.manifestDeployments.mockResolvedValue([])
     h.bridges.mockReturnValue(undefined)
-    await source().settle()
+    await source().settle(new AbortController().signal)
     const { destinationFor } = h.settle.mock.calls.at(-1)![1] as {
       destinationFor: (move: object) => Promise<{ portal: string }>
     }

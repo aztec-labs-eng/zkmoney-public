@@ -1,6 +1,6 @@
 import type { Database, Write } from "./database"
-import { WalletError } from "./errors"
-import { encodeRecord, persistentStore } from "./persistentStore"
+import { persistentStore } from "./persistentStore"
+import { migrateNameClaims } from "../storageMigrations/nameClaims"
 
 /**
  * The L1 NameClaim artifacts ClaimFPC's NameClaim gate verifies, for one L2 account. The Registry
@@ -40,60 +40,19 @@ export interface NameClaims {
   put(record: NameClaimRecord, w?: Write): Promise<void>
 }
 
-/** The blob older builds kept in the account's namespace, keyed by lowercase L2 address. */
-export const LEGACY_NAME_CLAIMS_KEY = "obsidion_name_claims"
-
 const claimId = (address: string) => address.toLowerCase()
 
-/**
- * Version 1 carries the older build's pending claims, the entries with signed terms; the detection
- * rebuilds a confirmed claim from the log. A blob that cannot be read fails the open and keeps its
- * bytes, since a pending claim's terms exist nowhere else.
- */
 export function createNameClaims({ db }: { db: Database }): NameClaims {
   const store = persistentStore<NameClaimRecord>(db, {
     prefix: "acct/nameClaims",
     version: 1,
     id: (record) => claimId(record.address),
     load: "all",
-    async migrate(from, w) {
-      if (from !== undefined)
-        throw new WalletError("invariant", `nameClaims: unknown version ${from}`)
-      for (const record of pendingClaims(await w.get(LEGACY_NAME_CLAIMS_KEY)))
-        w.put(`acct/nameClaims/${claimId(record.address)}`, encodeRecord(record))
-    },
+    migrate: (from, w) => migrateNameClaims(from, w, { id: claimId }),
   })
   return {
     ready: store.ready,
     get: (address) => store.get(claimId(address)),
     put: (record, w) => store.put(record, w),
   }
-}
-
-const unreadable = (detail: string) => new WalletError("unknown", `nameClaims: ${detail}`)
-
-const isObject = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value)
-
-const CLAIM_STRINGS = ["address", "handle", "signature", "nonce", "deadline"] as const
-const TERMS_STRINGS = ["fee", "minDeposit", "nonce", "deadline", "signature"] as const
-
-function pendingClaims(raw: string | undefined): NameClaimRecord[] {
-  if (raw === undefined) return []
-  let saved: unknown
-  try {
-    saved = JSON.parse(raw)
-  } catch {
-    throw unreadable("the saved claims do not parse")
-  }
-  if (!isObject(saved)) throw unreadable("the saved claims are not a claim map")
-  return Object.values(saved).flatMap((value) => {
-    if (!isObject(value) || !CLAIM_STRINGS.every((key) => typeof value[key] === "string"))
-      throw unreadable("a saved claim is not one")
-    if (value.terms === undefined) return []
-    const terms = value.terms
-    if (!isObject(terms) || !TERMS_STRINGS.every((key) => typeof terms[key] === "string"))
-      throw unreadable(`the saved claim of ${String(value.address)} has unreadable terms`)
-    return [value as unknown as NameClaimRecord]
-  })
 }

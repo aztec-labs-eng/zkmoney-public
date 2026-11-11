@@ -1,8 +1,11 @@
+/** Guards: the mount waits for the PXE, drives the account's rotation once, and no other's. */
 import { StrictMode, act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { TxStatus } from "@aztec-labs/stdlib/tx"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { setIdentity } from "../../support/identity"
+import { testPage } from "../../support/page"
+import { writeDeviceKeys } from "../../../src/platform/storage/deviceKeys"
 
 const boot = vi.hoisted(() => ({
   status: "booting" as "booting" | "ready",
@@ -11,20 +14,16 @@ const boot = vi.hoisted(() => ({
 }))
 
 vi.mock("../../../src/ui/PxeBoot", () => ({ usePxeBoot: () => ({ bootStatus: boot.status }) }))
-vi.mock("../../../src/features/backupPasskey/backupRotationStore", () => ({
-  getBackupRotationStore: () => boot.made.store,
-}))
 vi.mock("../../../src/features/backupPasskey/backupPasskeyRuntime", () => ({
   buildBackupFlowDeps: vi.fn(async () => boot.made.deps),
 }))
 
 import { BackupRotationMount } from "../../../src/features/backupPasskey/BackupRotationMount"
 import { buildBackupFlowDeps } from "../../../src/features/backupPasskey/backupPasskeyRuntime"
-import { getRotationDriver, ownsRotation } from "../../../src/features/backupPasskey/rotationDrive"
+import { getRotationDriver } from "../../../src/features/backupPasskey/rotationDrive"
 import {
   OWNER,
   SIPA,
-  TWO_KEY,
   makeFlowDeps,
   receipt,
   sent,
@@ -34,7 +33,7 @@ import {
 
 /** The one-key account the test records' change was built over. */
 const ONE_KEY = word(10)
-const { closeSession, handOffAccount } = await import("../../../src/session/session")
+const { closeSession } = await import("../../../src/session/session")
 const { openTestSession } = await import("../../support/session")
 beforeEach(() => openTestSession({ wallet: { tag: "wallet" } }).milestones.mark("firstBalance"))
 afterEach(closeSession)
@@ -62,6 +61,7 @@ beforeEach(async () => {
   boot.status = "booting"
   await setIdentity({ address: ONE_KEY })
   boot.made = makeFlowDeps()
+  openTestSession({ wallet: { tag: "wallet" }, backupRotations: boot.made.store })
   container = document.createElement("div")
   document.body.appendChild(container)
   root = createRoot(container)
@@ -87,9 +87,9 @@ describe("BackupRotationMount", () => {
     await render()
     await flush(3)
     expect(buildBackupFlowDeps).toHaveBeenCalledWith({
-      wallet: { tag: "wallet" },
+      session: expect.objectContaining({ backupRotations: boot.made.store }),
       owner: OWNER,
-      switchAccount: handOffAccount,
+      switchAccount: expect.any(Function),
     })
     expect(getRotationDriver().drive(OWNER)?.resume).toEqual({ wait: "sweep" })
 
@@ -108,6 +108,13 @@ describe("BackupRotationMount", () => {
     await flush(5)
     expect(getRotationDriver().drive(OWNER)?.resume).toEqual({ wait: "approval" })
     expect(deps.move.send).not.toHaveBeenCalled()
+    // Its re-root commits its two-key account, then hands it to the page's committed session.
+    const reRooted = { tag: "two-key" } as never
+    await writeDeviceKeys(testPage().database, { storageId: "two-key" })
+    vi.mocked(buildBackupFlowDeps).mock.calls[0][0].switchAccount!(reRooted)
+    const committed = openTestSession()
+    expect(committed.namespace.id).toBe("two-key")
+    expect(committed.account!.get()).toEqual({ status: "ready", value: reRooted })
   })
 
   it("publishes once under StrictMode, where the mount's effect runs twice", async () => {
@@ -134,15 +141,5 @@ describe("BackupRotationMount", () => {
     await flush(5)
     expect(boot.made.deps.verify).not.toHaveBeenCalled()
     expect(getRotationDriver().getSnapshot().size).toBe(0)
-  })
-})
-
-describe("ownsRotation", () => {
-  it("matches the account the change was built over or the one it moves to, in any case", () => {
-    const record = signedRecord()
-    expect(ownsRotation(record, ONE_KEY.toUpperCase().replace("0X", "0x"))).toBe(true)
-    expect(ownsRotation(record, TWO_KEY)).toBe(true)
-    expect(ownsRotation(record, word(0x99))).toBe(false)
-    expect(ownsRotation(record, undefined)).toBe(false)
   })
 })

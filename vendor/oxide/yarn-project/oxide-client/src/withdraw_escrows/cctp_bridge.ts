@@ -104,6 +104,10 @@ export function quoteCctpBridge(args: CctpBridgeQuoteArgs, fees: CctpFee[]): Cct
 }
 
 export interface CctpBridgeOnWithdrawArgs extends EscrowWithdrawalArgs {
+  /**
+   * `contracts.cctpBridgeEscrowFactory` of the deployment's `cctp` feature, or the `cctpBridgeEscrowFactory` key of a
+   * bridge in a deployment without features.
+   */
   cctpBridgeEscrowFactory: EthAddress;
   destination: CctpBridgeDestination;
   /** For `hyperCoreDestination`, the HyperCore account. */

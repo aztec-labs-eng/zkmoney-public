@@ -1,8 +1,7 @@
 // The accounts the sign-in lists: this browser's rows, earlier rollups', and the keys a tap chooses.
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it } from "vitest"
 import { closeSession } from "../../../src/session/session"
 import { seedDeviceKeys } from "../../support/page"
-import { seedBootConfigWith } from "../../support/seedBootConfig"
 import {
   ACCOUNT,
   CREDENTIAL,
@@ -76,9 +75,6 @@ function rememberWallet(spare: boolean, root: object = {}, backup: Record<string
 const ids = (options?: { credentialId: string; lastUsed?: true }[]) =>
   options?.map((o) => [o.credentialId, !!o.lastUsed])
 
-beforeEach(async () => {
-  await seedBootConfigWith({ VITE_ACCOUNT_SERVICE_TEST_MODE: "false" })
-})
 afterEach(() => {
   for (const end of ended) end.abort()
   ended = []

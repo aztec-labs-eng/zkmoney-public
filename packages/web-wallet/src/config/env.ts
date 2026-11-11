@@ -7,12 +7,11 @@ import {
   type ConfigProfileErrorCode,
   type WalletSourceRollup,
   type WalletSourceRollupIssue,
+  type ConfigBridge,
   type ConfigVersion,
   type WalletProfileBoot,
-  type ResolveWalletProfileInput,
 } from "@obsidion/config-client"
-import { setWebClassArtifactResolver } from "./classArtifacts"
-import { DEMO_ROLLUP, setActiveRollup } from "../platform/storage/rollupStorage"
+import { DEMO_ROLLUP } from "../platform/storage/rollupStorage"
 import { openWalletStore } from "../platform/storage/walletStorage"
 import {
   endpointDigest,
@@ -137,6 +136,8 @@ export type WebWalletConfig = {
   predicate?: PredicateScreeningConfig
   /** The version's assets, the wallet token among them. Empty where the profile lists none. */
   assets: ProfileAsset[]
+  /** The one bridge the profile offers; absent keeps deposits and withdrawals on L1. */
+  bridge?: ConfigBridge
 }
 
 /** Viem chain for an L1 chain id; unknown ids get a generic local-chain shape. */
@@ -302,6 +303,7 @@ export type BaseWebWalletConfig = Omit<
   | "nodeEndpointDigest"
   | "profileRollupVersion"
   | "assets"
+  | "bridge"
   | "xmtpEnv"
 >
 
@@ -336,38 +338,6 @@ export function loadConfig(
   }
 }
 
-let cached: WebWalletConfig | undefined
-type LiveProfileRequest = Pick<
-  ResolveWalletProfileInput,
-  "profileUrl" | "expectedProfileId" | "expectedZkJwtVkeyHash"
-> & { network: Network }
-
-let liveProfileRequest: LiveProfileRequest | undefined
-let contractServiceOptions: ContractServiceOptions | undefined
-let liveProfileFetchImpl: typeof fetch | undefined
-
-/**
- * The process-wide config, seeded by `resolveBootConfig` once the profile has supplied the oxide
- * pointer. Reading it earlier is a boot-order bug and throws — no complete config exists yet.
- */
-export function getConfig(): WebWalletConfig {
-  if (!cached) {
-    throw new WalletError(
-      "invariant",
-      "getConfig() before resolveBootConfig() — the wallet boots from a config profile, and no " +
-        "config exists until it has resolved.",
-    )
-  }
-  return cached
-}
-
-/** The page's contract service options, seeded with `getConfig()`. */
-export function getContractServiceOptions(): ContractServiceOptions {
-  if (!contractServiceOptions)
-    throw new WalletError("invariant", "getContractServiceOptions() before resolveBootConfig()")
-  return contractServiceOptions
-}
-
 /** Test injections; every default reads the build's own `import.meta.env`. */
 export interface ResolveBootConfigInput {
   env?: Record<string, string | undefined>
@@ -385,8 +355,9 @@ export interface ResolveBootConfigInput {
 
 export interface WebBootConfig {
   config: WebWalletConfig
-  /** The page's contract service options (`getContractServiceOptions`). */
   contractServiceOptions: ContractServiceOptions
+  /** The portal the live profile pins now, read with the boot's expectations. */
+  liveProfilePortal(): Promise<string>
   /** The version's zkJWT vkey hash differs from the bundled one. Reported at boot, never gating. */
   zkJwtVkeySkew: boolean
   /** The build's baked profile booted the wallet: the service was unreachable, or the host asked. */
@@ -481,6 +452,7 @@ function mergeProfileConfig(
     sourceRollupIssues: boot.sourceRollupIssues,
     claimFpcAddress: boot.snapshot.contracts.claimFpc?.address,
     assets: boot.version.assets ?? [],
+    bridge: boot.version.bridge,
   }
 }
 
@@ -518,8 +490,7 @@ function accountServiceFrom(boot: WalletProfileBoot): string {
 
 /**
  * The app's one boot path: `VITE_CONFIG_PROFILE_URL` names the profile, or a host override replaces
- * it; a build with neither does not boot. Seeds `getConfig()` before returning — consumers read it
- * synchronously.
+ * it; a build with neither does not boot.
  */
 export async function resolveBootConfig(
   input: ResolveBootConfigInput = {},
@@ -542,7 +513,7 @@ export async function resolveBootConfig(
     )
   }
 
-  const request: LiveProfileRequest = {
+  const request = {
     profileUrl,
     expectedProfileId: env.VITE_CONFIG_EXPECTED_PROFILE_ID,
     network,
@@ -556,11 +527,9 @@ export async function resolveBootConfig(
     now: input.now,
   })
 
-  // The rollup first, before anything reads storage. A wallet's database opens only once its tab is
-  // the active tab; demo mode's opens here.
-  const rollup = input.demoStorage ? DEMO_ROLLUP : boot.profile.shared.rollupVersion
-  setActiveRollup(rollup)
-  if (input.demoStorage) await openWalletStore(rollup, { persistent: false })
+  // A wallet's database, named after the profile's rollup, opens only once its tab is the active
+  // tab; demo mode's opens here.
+  if (input.demoStorage) await openWalletStore(DEMO_ROLLUP, { persistent: false })
 
   if (boot.zkJwtVkeySkew) {
     console.error(
@@ -617,50 +586,26 @@ export async function resolveBootConfig(
     fetchImpl: input.fetchImpl,
   })
   const resolveClassArtifact = createClassArtifactResolver(artifacts.resolvePin, input.fetchImpl)
-  setWebClassArtifactResolver(resolveClassArtifact)
-  return seed(request, input.fetchImpl, {
+  return {
     config: merged,
     contractServiceOptions: {
       source: "profile",
       config: boot.snapshot,
       resolveClassArtifact,
       listClassIds: artifacts.classIds,
-      // The same pointer `getConfig()` now serves, so ContractService and every other oxide
-      // consumer read one value.
+      // The config's own pointer, so ContractService and every other oxide consumer read one value.
       oxideEnvProfile: merged.oxideProfile,
     },
+    liveProfilePortal: async () =>
+      assertProfilePolicy(
+        await resolveWalletProfile({ ...request, fetchImpl: input.fetchImpl }),
+        network,
+      ).portal,
     zkJwtVkeySkew: boot.zkJwtVkeySkew,
     bootedFromBakedProfile: boot.bootedFromBakedProfile,
     ...(bakedProfile ? { bakedProfile } : {}),
     ...(customProfileUrl ? { customProfileUrl } : {}),
-  })
-}
-
-function seed(
-  request: LiveProfileRequest,
-  fetchImpl: typeof fetch | undefined,
-  boot: WebBootConfig,
-): WebBootConfig {
-  cached = boot.config
-  contractServiceOptions = boot.contractServiceOptions
-  liveProfileRequest = request
-  liveProfileFetchImpl = fetchImpl
-  return boot
-}
-
-export async function fetchLiveProfilePortal(fetchImpl?: typeof fetch): Promise<string> {
-  if (!liveProfileRequest) {
-    throw new WalletError(
-      "invariant",
-      "fetchLiveProfilePortal() before resolveBootConfig() — no profile request exists until the " +
-        "wallet has booted from one.",
-    )
   }
-  const live = await resolveWalletProfile({
-    ...liveProfileRequest,
-    fetchImpl: fetchImpl ?? liveProfileFetchImpl,
-  })
-  return assertProfilePolicy(live, liveProfileRequest.network).portal
 }
 
 /**

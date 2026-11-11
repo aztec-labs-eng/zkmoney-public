@@ -16,7 +16,6 @@ vi.mock("@obsidion/sdk", async (importOriginal) => ({
   prepareGoldenTicketWitness: h.prepare,
   assertGoldenTicketNoteSettled: h.settled,
   decodePaylinkInline: () => ({}),
-  ContractService: { getInstance: () => ({}) },
 }))
 vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/front-core")>()),
@@ -29,8 +28,9 @@ vi.mock("../../../src/features/paylink/goldenTicketProver", () => ({
   warmGoldenTicketProver: h.warm,
 }))
 
-const { PREPARED_ROOT_MAX_AGE_BLOCKS, prewarmGoldenTicket, redeemGoldenTicketForLink } =
-  await import("../../../src/features/onboarding/goldenTicket")
+const ticket = await import("../../../src/features/onboarding/goldenTicket")
+const { PREPARED_ROOT_MAX_AGE_BLOCKS, prewarmGoldenTicket, redeemGoldenTicketForLink } = ticket
+const prepared = ticket.createPreparedTicket(async () => {})
 
 const DAI = 10n ** 18n
 const offer = {
@@ -60,9 +60,12 @@ const preparedAt = (blockNumber: number) => ({
 const redeem = (wallet = walletAt({ block: 5 }), info: object = offer, onProving?: () => void) =>
   redeemGoldenTicketForLink({
     wallet,
+    contractService: {} as never,
     accountService: service(info),
     secretKey: {} as never,
     fragment: "frag",
+    device: {} as never,
+    prepared,
     onProving,
   })
 
@@ -101,7 +104,7 @@ describe("redeemGoldenTicketForLink", () => {
   it("remembers a ticket the service refused as spent, and still surfaces the refusal", async () => {
     h.redeem.mockRejectedValueOnce(new AccountServiceError(409, "ticket_spent"))
     await expect(redeem()).rejects.toThrow("ticket_spent")
-    expect(rememberTicketSpent).toHaveBeenCalledWith("frag")
+    expect(rememberTicketSpent).toHaveBeenCalledWith(expect.anything(), "frag")
   })
 
   it("binds the passkey's owner and the live threshold to the prepared witness, and says when it proves", async () => {
@@ -138,7 +141,7 @@ describe("redeemGoldenTicketForLink", () => {
     it("reads the witness again once its root has aged past the bound", async () => {
       const head = { block: 5 }
       const wallet = walletAt(head)
-      prewarmGoldenTicket(wallet, "frag")
+      prewarmGoldenTicket(prepared, { wallet, contractService: {} as never }, "frag")
       head.block = 5 + PREPARED_ROOT_MAX_AGE_BLOCKS + 1
       h.prepare.mockImplementation(async () => preparedAt(head.block))
       h.redeem.mockResolvedValueOnce({ status: "created" })
@@ -151,7 +154,7 @@ describe("redeemGoldenTicketForLink", () => {
       const head = { block: 5 }
       const wallet = walletAt(head)
       h.prepare.mockImplementationOnce(async () => preparedAt(9))
-      prewarmGoldenTicket(wallet, "frag")
+      prewarmGoldenTicket(prepared, { wallet, contractService: {} as never }, "frag")
       h.redeem.mockResolvedValueOnce({ status: "created" })
       await redeem(wallet)
       expect(h.prepare).toHaveBeenCalledTimes(2)
@@ -161,7 +164,7 @@ describe("redeemGoldenTicketForLink", () => {
     it("reads the witness again on the retry after the service refused its root", async () => {
       const head = { block: 5 }
       const wallet = walletAt(head)
-      prewarmGoldenTicket(wallet, "frag")
+      prewarmGoldenTicket(prepared, { wallet, contractService: {} as never }, "frag")
       h.redeem.mockRejectedValueOnce(new AccountServiceError(400, "ticket_root_mismatch"))
       await expect(redeem(wallet)).rejects.toThrow("ticket_root_mismatch")
       expect(h.prepare).toHaveBeenCalledTimes(1)
@@ -176,7 +179,7 @@ describe("redeemGoldenTicketForLink", () => {
 
     it("spends no ticket on a prepared note the link spent since, and reads it again on the retry", async () => {
       const wallet = walletAt({ block: 5 })
-      prewarmGoldenTicket(wallet, "frag")
+      prewarmGoldenTicket(prepared, { wallet, contractService: {} as never }, "frag")
       const spent = new GoldenTicketWitnessError(
         "The link's note is no longer in this wallet's view.",
       )
@@ -205,7 +208,7 @@ describe("redeemGoldenTicketForLink", () => {
     it("reads the witness again when the early read failed", async () => {
       const wallet = walletAt({ block: 5 })
       h.prepare.mockRejectedValueOnce(new Error("note not synced"))
-      prewarmGoldenTicket(wallet, "frag")
+      prewarmGoldenTicket(prepared, { wallet, contractService: {} as never }, "frag")
       h.redeem.mockResolvedValueOnce({ status: "created" })
       await expect(redeem(wallet)).resolves.toEqual({ status: "created", amount: 3n * DAI })
       expect(h.prepare).toHaveBeenCalledTimes(2)

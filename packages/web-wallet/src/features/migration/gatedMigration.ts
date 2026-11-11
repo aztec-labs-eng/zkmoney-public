@@ -1,6 +1,6 @@
 /**
  * How an upgrade shares the prover with the user's own transactions. Local proving is single-flight
- * (`provingGate`): only the steps that ask the user something run as a user flow, and each step
+ * (`page.prover`): only the steps that ask the user something run as a user flow, and each step
  * that sends one transaction runs as its own background operation.
  */
 import {
@@ -8,7 +8,8 @@ import {
   runListedOperation,
   type OperationInput,
 } from "../operations/operations"
-import { runUserFlow } from "../provingGate"
+import type { MigrationSendGate } from "@obsidion/sdk"
+import type { Session } from "../../session/session"
 import { runMigrationQueue, type MigrationQueueJob } from "./runMigrationQueue"
 
 /**
@@ -16,12 +17,14 @@ import { runMigrationQueue, type MigrationQueueJob } from "./runMigrationQueue"
  * turn on the prover, and no user flow waits for it. Do not call it from inside a user flow or from
  * inside another background operation, because it would wait for itself.
  */
-export function backgroundSend<T>(step: (operationId?: string) => Promise<T>): Promise<T> {
-  return runBackgroundOperation(
-    { operationId: `migration_${crypto.randomUUID()}`, flow: "migration", summary: "Upgrade" },
-    (op) => step(op.operationId),
-  )
-}
+export const backgroundSend =
+  (session: Pick<Session, "operations" | "page">): MigrationSendGate =>
+  (step) =>
+    runBackgroundOperation(
+      session,
+      { operationId: `migration_${crypto.randomUUID()}`, flow: "migration", summary: "Upgrade" },
+      (op) => step(op.operationId, op.sent),
+    )
 
 /**
  * Runs a queue as one listed operation: the bell shows it and it keeps the tab until it ends. Only
@@ -30,6 +33,7 @@ export function backgroundSend<T>(step: (operationId?: string) => Promise<T>): P
  * each transaction through {@link backgroundSend}.
  */
 export function runGatedMigrationQueue<T extends MigrationQueueJob>(
+  session: Pick<Session, "operations" | "page">,
   operation: OperationInput,
   jobs: T[],
   options: Omit<Parameters<typeof runMigrationQueue<T>>[1], "prepare" | "exclusive"> & {
@@ -40,11 +44,11 @@ export function runGatedMigrationQueue<T extends MigrationQueueJob>(
     onEnd?(sent: boolean): void
   },
 ): Promise<boolean> {
-  return runListedOperation(operation, async () => {
+  return runListedOperation(session, operation, async () => {
     const sent = await runMigrationQueue(jobs, {
       ...options,
-      prepare: runUserFlow,
-      exclusive: backgroundSend,
+      prepare: (flow) => session.page.prover.runUserFlow(flow),
+      exclusive: backgroundSend(session),
     })
     options.onEnd?.(sent)
     return sent

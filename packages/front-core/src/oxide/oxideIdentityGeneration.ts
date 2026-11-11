@@ -151,7 +151,11 @@ export async function resolveOxideIdentity(
     const expected = await addressOn(record.rollupVersion.toString())
     if (!expected || !sameAddress(record.l2Address, expected)) continue
     const onCurrentRollup = generation.rollupVersion === deps.rollupVersion
-    verifiedByAccount.set(key, { account, nameHash, generations: onCurrentRollup ? [generation] : [] })
+    verifiedByAccount.set(key, {
+      account,
+      nameHash,
+      generations: onCurrentRollup ? [generation] : [],
+    })
   }
 
   if (admitted === 0) return { kind: "no-generation" }

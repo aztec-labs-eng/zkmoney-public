@@ -5,12 +5,11 @@ import { memoryBackend, type MemoryBackend } from "../../src/engine/memoryBacken
 import { decodeRecord, loadRecords } from "../../src/engine/persistentStore"
 import {
   createSipaDeposits,
-  BROADCASTS_STORAGE_KEY,
-  KEY_SIPA_DEPOSITS,
   sipaCursorKey,
   type SipaDeposit,
   type SipaDepositFields,
 } from "../../src/engine/sipaDeposits"
+import { BROADCASTS_STORAGE_KEY, KEY_SIPA_DEPOSITS } from "../../src/storageMigrations/sipaDeposits"
 
 const NETWORK = "0x00000000000000000000000000000000000000e1"
 const RECIPIENT = `0x${"2a".repeat(32)}`
@@ -39,7 +38,7 @@ const fields = (over: Partial<SipaDeposit> = {}): SipaDepositFields => ({
 
 function open(backend: MemoryBackend = memoryBackend(), account = true) {
   const db = openDatabase(backend)
-  return { db, backend, store: createSipaDeposits({ db, account }) }
+  return { db, backend, store: createSipaDeposits({ db, account, now: () => Date.now() }) }
 }
 
 describe("createSipaDeposits migration", () => {
@@ -130,6 +129,7 @@ describe("createSipaDeposits broadcast migration", () => {
       db: page.scoped(ACCOUNT),
       account: true,
       legacy: { db: page.scoped(PAGE), scope: "acct" },
+      now: () => Date.now(),
     })
   }
 
@@ -224,6 +224,7 @@ describe("createSipaDeposits slot migration", () => {
       db: page.scoped("acct."),
       account: true,
       legacy: { db: page, scope: "acct", slots: page.scoped(SLOTS) },
+      now: () => Date.now(),
     })
   }
 
@@ -321,7 +322,12 @@ describe("createSipaDeposits", () => {
   it("hears a registration address's first funds once, whichever write saved them", async () => {
     const db = openDatabase(memoryBackend())
     let funded = 0
-    const store = createSipaDeposits({ db, account: true, funded: () => void funded++ })
+    const store = createSipaDeposits({
+      db,
+      account: true,
+      funded: () => void funded++,
+      now: () => Date.now(),
+    })
     const held = (sipaAddress: Address, heldBalance: string) =>
       [sipaAddress, { type: "observed", fields: { heldBalance } }] as const
     const seed = { type: "seeded" as const, fields: fields({ intent: "registration" }) }

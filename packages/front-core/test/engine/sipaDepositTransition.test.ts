@@ -262,6 +262,14 @@ describe("sipaDepositTransition", () => {
     expect(sipaDepositTransition(funded, { type: "shown", at: NOW }, NOW)).toBeUndefined()
   })
 
+  it("stamps a funding transfer without blanking a stored field, and only onto a record", () => {
+    const fields = { fundingTxHash: HASH, tokenSymbol: undefined }
+    const event: SipaDepositEvent = { type: "fundingSent", fields }
+    const stamped = sipaDepositTransition(record({ tokenSymbol: "DAI" }), event, NOW)
+    expect(stamped).toMatchObject({ tokenSymbol: "DAI", fundingTxHash: HASH })
+    expect(sipaDepositTransition(undefined, event, NOW)).toBeUndefined()
+  })
+
   it("names the token a confirmed recovery moved, and clears a reverted one's hash", () => {
     const token = { tokenAddress: SIPA, tokenSymbol: "USDC", tokenDecimals: 6 }
     const recovered = sipaDepositTransition(

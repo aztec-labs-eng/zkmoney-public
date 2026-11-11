@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest"
+import { MAX_TAG_LENGTH } from "@obsidion/core/constants"
 import {
   CHAIN_TO_CBOR,
   FORMAT_TO_CBOR,
@@ -166,8 +167,8 @@ describe("tag field", () => {
     expect(decodeInline(encodeInline(minimalPacket())).tag).toBeUndefined()
   })
 
-  it("accepts the full registry charset (digits, leading underscore, inner hyphen, 32 chars)", () => {
-    for (const tag of ["a", "honk-goose", "_ab-c9", "a".repeat(32)]) {
+  it("accepts the full registry charset (digits, leading underscore, inner hyphen, max length)", () => {
+    for (const tag of ["a", "honk-goose", "_ab-c9", "a".repeat(MAX_TAG_LENGTH)]) {
       expect(decodeInline(encodeInline({ ...minimalPacket(), tag })).tag).toBe(tag)
     }
   })
@@ -181,7 +182,7 @@ describe("tag field", () => {
       "-alice",
       "alice-",
       "",
-      "a".repeat(33),
+      "a".repeat(MAX_TAG_LENGTH + 1),
       "a_b",
       "xn--foo",
       "аlice",
@@ -205,7 +206,7 @@ describe("handshakeInlineCodec — tampered tag rejects", () => {
       "аlice",
       "-alice",
       "",
-      "a".repeat(33),
+      "a".repeat(MAX_TAG_LENGTH + 1),
       "a_b",
       "xn--foo",
       "al\u202Eice",

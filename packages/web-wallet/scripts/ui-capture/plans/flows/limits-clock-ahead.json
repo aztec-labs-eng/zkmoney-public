@@ -3,33 +3,29 @@
   "path": "/deposit?flowFixture=success&capacityFixture=clock-ahead",
   "steps": [
     {
-      "action": "waitFor",
-      "selector": ".ww-deposit-disclaimer"
+      "action": "click",
+      "testId": "deposit-new-address"
     },
     {
       "action": "click",
-      "role": "button",
-      "name": "Got it!",
-      "exact": false
+      "testId": "deposit-chain-31337"
     },
     {
       "action": "click",
-      "role": "button",
-      "name": "Connect your wallet",
-      "exact": false
+      "testId": "picker-DAI"
     },
     {
       "action": "waitFor",
-      "selector": ".ww-fund__amount input"
+      "label": "Amount to receive"
     },
     {
       "action": "fill",
-      "selector": ".ww-fund__amount input",
+      "label": "Amount to receive",
       "value": "24"
     },
     {
       "action": "waitFor",
-      "selector": "dialog[open] button:enabled:has-text(\"Deposit funds\")"
+      "selector": "dialog[open] button:enabled:has-text(\"Review\")"
     },
     {
       "action": "waitFor",
@@ -43,12 +39,12 @@
     },
     {
       "action": "hover",
-      "selector": "dialog[open] button:enabled:has-text(\"Deposit funds\")"
+      "selector": "dialog[open] button:enabled:has-text(\"Review\")"
     },
     {
       "action": "screenshot",
       "file": "clock-ahead.png",
-      "state": "device clock ahead: the capacity read looks old, so capacity is unknown; nothing is said and Deposit funds stays available"
+      "state": "device clock ahead: the capacity read looks old, so capacity is unknown; nothing is said and Review stays available"
     }
   ],
   "finalScreenshot": false,

@@ -17,9 +17,9 @@
  *
  * Every known SIPA is observed every pass, settled or not, since a claimed SIPA can be paid again;
  * claims dedup by inbox index. The relayer sweeps an address once per publish, so new funds on a
- * claimed SIPA reopen its record and ask the caller to publish it again (`onSweptAddressFunded`);
- * an address that is not resweepable can only be recovered. A funded SIPA whose balance is at or
- * below the deposit floor — the relayer's sweep fee — can never be swept, so it flips to
+ * claimed SIPA reopen its record and owe its broadcast again, as does a sweep the relayer left
+ * overdue; an address that is not resweepable can only be recovered. A funded SIPA whose balance
+ * is at or below the deposit floor — the relayer's sweep fee — can never be swept, so it flips to
  * `recoverable`, surfacing the `recoverERC20` exit.
  *
  * A SIPA reads its whole history once, then rides the deployment's cursor: each pass reads only the
@@ -34,7 +34,8 @@ import { EthAddress } from "@aztec-labs/foundation/eth-address"
 import { keccak256 } from "@aztec-labs/foundation/crypto/keccak"
 import { Fr } from "@aztec-labs/aztec.js/fields"
 import { formatUnits, type Address, type Hex, type PublicClient } from "viem"
-import type { OxideEnvTuple, RegistrationSchedule } from "@obsidion/core/types"
+import type { OxideEnvTuple, RegistrationSchedule, SipaGeneration } from "@obsidion/core/types"
+import { sipaGenerations } from "@obsidion/core/oxide"
 import { registrationFloor } from "@obsidion/core/constants"
 import {
   directAnnouncementIntentHash,
@@ -44,6 +45,7 @@ import {
   readDepositFee,
   readDepositSIPAImplementation,
   readRegistrationSIPAImplementation,
+  readSipaCloneArgs,
   readSipaCloneImplementation,
   readSipaDepositsConsumed,
   readSipaIntent,
@@ -64,6 +66,7 @@ import {
   sipaIntentName,
   sipaRecordIntent,
   sipaRecordIntentOf,
+  sipaRecordRoute,
 } from "./sipaRoute"
 import {
   sipaDefaultRow,
@@ -84,7 +87,12 @@ import {
   type SipaFundingToken,
 } from "./sipaFunding"
 import { observeSipas, type ObservedSweep, type ObservedSipa } from "./sipaObservation"
-import { resolverPaymentFields, type ResolverCandidate } from "./resolverPayments"
+import {
+  resolverPaymentFields,
+  selfDeployment,
+  type ResolverCandidate,
+  type SipaDeployment,
+} from "./resolverPayments"
 import {
   computeStealthRecipientHash,
   deriveRecoveryAddress,
@@ -97,6 +105,7 @@ import {
   isUnfundedSipaDeposit,
   maybeMisfiled,
   sipaCursorKey,
+  sipaSetsKey,
   sipaDepositId,
   sipaDepositTransition,
   sipaSweepFields,
@@ -164,8 +173,11 @@ export interface SipaScanDeps {
   publicClient: PublicClient
   /** Reads the recipient's `SIPA` events off the token. */
   wallet: Pick<Wallet, "getPrivateEvents">
-  /** Finds the pending sweeps whose deposits were already spent, so they never read as arriving. */
-  node: Pick<AztecNode, "findLeavesIndexes">
+  /**
+   * Finds the pending sweeps whose deposits were already spent, so they never read as arriving, and
+   * the L2 block a broadcast owed again must land from.
+   */
+  node: Pick<AztecNode, "findLeavesIndexes" | "getBlockNumber">
   masterNullifierHidingKey: GrumpkinScalar
   /**
    * Which of `messageKeys` the chain consumed on `l2Token`, in order. Defaults to the node's
@@ -200,6 +212,12 @@ export interface SipaScanDeps {
   networkId: string
   /** Addresses the resolver could have handed out with no record yet, read with the holdings. */
   resolverCandidates?: readonly ResolverCandidate[]
+  /** This account's own addresses past each day's floor in `salts` (`SELF_SLOTS`), read likewise. */
+  selfCandidates?: (
+    deployment: SipaDeployment,
+    records: readonly SipaDeposit[],
+    salts: ReadonlySet<string>,
+  ) => Promise<readonly ResolverCandidate[]>
   /**
    * Fired once per SIPA when funding attribution first lands — the app-level
    * hook for saving deposit-attested contacts. Wallet identity fields are set
@@ -219,16 +237,10 @@ export interface SipaScanDeps {
    */
   historyStartBlock?: (head: bigint) => Promise<bigint>
   /**
-   * A claimed SIPA holds new funds. The relayer sweeps it again only after a newer publish on
-   * Aztec, so the caller publishes it again. Fired once, when the record reopens.
+   * False for a pass over another account's history: it owes no broadcast again, so a claimed SIPA
+   * paid again stays claimed for a pass that can owe it.
    */
-  onSweptAddressFunded?: (sipaAddress: Address) => Promise<void>
-  /**
-   * A funded, sweepable SIPA has gone unswept for `SWEEP_OVERDUE_MS`: the relayer dropped its
-   * operation (it drops one that waits 14 days) or never had it. The caller publishes it again and
-   * says whether it could. Asked at most once per `REPUBLISH_INTERVAL_MS`, whatever the answer.
-   */
-  onSweepOverdue?: (sipaAddress: Address) => Promise<boolean>
+  republishes?: boolean
   /** Ends the pass at its next step, before it commits. */
   signal?: AbortSignal
 }
@@ -260,10 +272,15 @@ export interface SipaScanResult {
   complete: boolean
   /** It found events with no record here: history replayed onto this device. */
   replaying: boolean
-  /** Resolver addresses found funded and recorded: the next pass reads them. */
+  /**
+   * Resolver and own addresses found funded and recorded: the next pass reads them, and the caller
+   * wakes the broadcasts they owe.
+   */
   resolverFunded: number
   /** SIPAs the saved pass found newly funded or newly swept. */
   found: number
+  /** Broadcasts the saved pass owes again: the caller wakes the broadcasts. */
+  republished: number
   /** The head's time, ms epoch, when the pass read balances: the resolver's days follow it. */
   chainTime?: number
 }
@@ -294,6 +311,7 @@ export async function scanSipaDeposits(callerDeps: SipaScanDeps): Promise<SipaSc
     replaying: false,
     resolverFunded: 0,
     found: 0,
+    republished: 0,
   }
 
   // A received deposit is the deposit intent, so its clone delegates to the factory's deposit
@@ -341,13 +359,14 @@ export async function scanSipaDeposits(callerDeps: SipaScanDeps): Promise<SipaSc
   // per run — and none at all if no SIPA reaches the probe. A failed read is dropped from the map, so
   // one transient RPC error leaves only its own event unpriced.
   const fees = new Map<string, Promise<bigint>>()
-  const feeFor = (intent: SipaIntent, row: SipaRow) => {
-    const key = `${intent}:${row.portal.toLowerCase()}`
+  const feeFor = (intent: SipaIntent, row: SipaRow, record?: SipaDeposit | null) => {
+    const table = (record && sipaRecordRoute(record)?.forwardingTable) ?? tuple.forwardingTable
+    const key = `${intent}:${row.portal.toLowerCase()}:${table?.toLowerCase()}`
     const cached = fees.get(key)
     if (cached) return cached
     const pending = readDepositFee(
       deps.publicClient,
-      deploymentSipaRoute(tuple, intent, row.token.address),
+      deploymentSipaRoute({ ...tuple, forwardingTable: table }, intent, row.token.address),
     )
     fees.set(key, pending)
     pending.catch(() => {
@@ -385,22 +404,29 @@ export async function scanSipaDeposits(callerDeps: SipaScanDeps): Promise<SipaSc
     result.complete = complete && !historyFailed && result.failed === 0
     return result
   }
-  // A user operation's SIPA delegates to the implementation the factory blessed when it was
+  // An add-passkey SIPA delegates to the implementation the factory blessed when it was
   // prepared, and a later bless keeps the earlier one blessed, so every blessed one is a candidate.
   // Read once per run, however it answered, only when an event needs it. The sdk reads the factory's
   // whole history where the RPC allows and this pass's window where it does not.
   let blessedRead: Promise<EthAddress[]> | undefined
-  const userOpImplementations = () =>
+  const addPasskeyImplementations = () =>
     (blessedRead ??= (async () =>
       readBlessedImplementations(
         deps.publicClient,
         tuple.sipaFactory as Address,
-        SipaIntent.UserOp,
+        SipaIntent.AddPasskey,
         (await historyStart()) ?? lookbackStart(head),
       ))().then((addresses) => addresses.map((address) => EthAddress.fromString(address))))
-  /** A factory clone's record intent, null for an address the factory does not vouch for. */
-  const cloneIntent = async (clone: Address) =>
-    sipaRecordIntentOf(await readSipaIntent(deps.publicClient, tuple.sipaFactory as Address, clone))
+  const factories = [...new Set(sipaGenerations(tuple).map((g) => g.sipaFactory.toLowerCase()))]
+  const vouchedClone = async (clone: Address) => {
+    for (const factory of factories) {
+      const intent = sipaRecordIntentOf(
+        await readSipaIntent(deps.publicClient, factory as Address, clone),
+      )
+      if (intent !== null) return { intent, sipaFactory: factory as Address }
+    }
+    return null
+  }
   const cloneImplementation = async (clone: Address) => {
     const implementation = await readSipaCloneImplementation(
       deps.publicClient,
@@ -410,14 +436,15 @@ export async function scanSipaDeposits(callerDeps: SipaScanDeps): Promise<SipaSc
     return /^0x0+$/i.test(implementation) ? undefined : EthAddress.fromString(implementation)
   }
   const recordWrites: (() => void)[] = []
+  let l2HeadRead: Promise<number> | undefined
   const run: SyncRunContext = {
     retryFrom: new Map(),
     head,
     now,
     feeFor,
     registrationImplementation,
-    userOpImplementations,
-    cloneIntent,
+    addPasskeyImplementations,
+    vouchedClone,
     cloneImplementation,
     txAmountCap,
     fundingTokens,
@@ -426,6 +453,7 @@ export async function scanSipaDeposits(callerDeps: SipaScanDeps): Promise<SipaSc
     incomplete: () => {
       complete = false
     },
+    l2Head: () => (l2HeadRead ??= deps.node.getBlockNumber().then(Number)),
   }
 
   result.replaying = events.some((_, i) => !localByKey.has(eventKey(i)))
@@ -489,20 +517,25 @@ export async function scanSipaDeposits(callerDeps: SipaScanDeps): Promise<SipaSc
     // Every row's portal is observed in one pass, so the pass is read through the earliest of their
     // cursors. A portal with none, such as a row the table added, has unread history on every SIPA,
     // so the pass backfills them all, and the portal gets a cursor only once that backfill is whole.
+    // An earlier SIPA set the cursors were not read with adds addresses with unread history the
+    // same way.
     const portals = [...new Set(deps.rows.map((row) => row.portal.toLowerCase()))] as Address[]
-    const cursors = await Promise.all(
-      portals.map(async (portal) => {
-        const saved = await deps.db.get(sipaCursorKey(portal, recipient))
-        return saved === undefined ? undefined : BigInt(saved)
-      }),
-    )
-    const cursor = cursors.some((c) => c === undefined)
-      ? undefined
-      : cursors.reduce((min, c) => (c! < min! ? c : min))
-    for (const address of unplanned) {
-      const start = windowStart(deps.store.get(address), cursor)
-      if (start !== undefined) run.record(markForRescan(deps, address, start))
-    }
+    const [cursors, readSets] = await Promise.all([
+      Promise.all(
+        portals.map(async (portal) => {
+          const saved = await deps.db.get(sipaCursorKey(portal, recipient))
+          return saved === undefined ? undefined : BigInt(saved)
+        }),
+      ),
+      deps.db.get(sipaSetsKey(recipient)),
+    ])
+    // Only events derive earlier-set addresses, so only a discovery pass backfills a new set.
+    const sets = priorSetsKey(tuple)
+    const newSets = deps.discover && (readSets ?? "") !== sets
+    const cursor =
+      cursors.some((c) => c === undefined) || newSets
+        ? undefined
+        : cursors.reduce((min, c) => (c! < min! ? c : min))
     // Reading L1 alone, with every SIPA read through a cursor the head has not passed: nothing is new.
     if (
       !deps.discover &&
@@ -513,9 +546,16 @@ export async function scanSipaDeposits(callerDeps: SipaScanDeps): Promise<SipaSc
       !deps.resolverCandidates?.length
     )
       return finish()
-    const backfillFrom = planned.some((p) => windowStart(p.owner, cursor) === undefined)
+    const owners = [...planned.map((p) => p.owner), ...unplanned.map((a) => deps.store.get(a))]
+    const backfillFrom = owners.some((owner) => windowStart(owner, cursor) === undefined)
       ? (await historyStart()) ?? lookbackStart(head)
       : 0n
+    for (const address of unplanned) {
+      const record = deps.store.get(address)
+      // A pass that backfills every SIPA leaves a failed one the whole history to re-read.
+      const start = windowStart(record, cursor) ?? (record?.observedFrom ? backfillFrom : undefined)
+      if (start !== undefined) run.record(markForRescan(deps, address, start))
+    }
     const windowOf = (plan: PlannedEvent) => {
       const start = windowStart(plan.owner, cursor)
       return {
@@ -524,7 +564,14 @@ export async function scanSipaDeposits(callerDeps: SipaScanDeps): Promise<SipaSc
         complete: start !== undefined || !historyFailed,
       }
     }
-    const candidates = deps.resolverCandidates ?? []
+    // A slot shown and never published has no event; only its own derivation finds it.
+    const self = selfDeployment(tuple, implementation, deps.recoveryAccount, fundingTokens)
+    const salts = new Set(events.map((event) => event.sharedSecretSalt.toString()))
+    const own =
+      deps.discover && self && deps.selfCandidates
+        ? await deps.selfCandidates(self, deps.store.list(), salts)
+        : []
+    const candidates = [...(deps.resolverCandidates ?? []), ...own]
     const { observed, strays, held, chainTime } = await observeSipas(deps.publicClient, {
       portals,
       holdings: candidates.map((c) => c.sipaAddress),
@@ -536,7 +583,10 @@ export async function scanSipaDeposits(callerDeps: SipaScanDeps): Promise<SipaSc
           // The stored hash is what the address was derived with.
           commitment: (plan.owner?.recipientHash || plan.recipientCommitment.toString()) as Hex,
           fromBlock: windowOf(plan).fromBlock,
-          inflows: !plan.owner?.fundingFromAddress && !plan.owner?.direct,
+          // Read for a claimed address too: a new payment there is dated by its transfer.
+          inflows:
+            (!plan.owner?.fundingFromAddress || (!!plan.owner && claimedBefore(plan.owner))) &&
+            !plan.owner?.direct,
           ...(plan.owner?.direct ? { direct: true } : {}),
         })),
       ),
@@ -545,7 +595,8 @@ export async function scanSipaDeposits(callerDeps: SipaScanDeps): Promise<SipaSc
     live()
     if (chainTime !== undefined) result.chainTime = Number(chainTime) * 1000
     await adoptStrays(deps, run, planned, strays)
-    // A funded resolver address is recorded now; the next pass reads its history.
+    // A funded window address is recorded now; the next pass reads its history. Nobody else
+    // publishes it, so it owes its broadcast, unless it holds only ETH, which no sweep moves.
     for (const candidate of candidates) {
       const balances = held.get(candidate.sipaAddress.toLowerCase())
       if (!balances || deps.store.get(candidate.sipaAddress)) continue
@@ -556,7 +607,17 @@ export async function scanSipaDeposits(callerDeps: SipaScanDeps): Promise<SipaSc
         now,
       })
       if (!fields) continue
-      deps.store.apply(candidate.sipaAddress, { type: "discovered", fields })
+      const address = candidate.sipaAddress
+      const { day, nonce } = candidate
+      const slot = own.includes(candidate) ? { slot: { day, nonce } } : {}
+      deps.store.apply(address, { type: "discovered", fields: { ...fields, ...slot } })
+      if (deps.republishes !== false && fields.tokenAddress !== NATIVE_ETH.address)
+        deps.store.apply(address, {
+          type: "broadcastOwed",
+          address,
+          owed: { kind: "deposit", source: { type: "slot" }, fundedAt: now },
+          at: now,
+        })
       result.resolverFunded += 1
     }
 
@@ -597,18 +658,18 @@ export async function scanSipaDeposits(callerDeps: SipaScanDeps): Promise<SipaSc
         await deps.saved.applyAll(deps.store.events, w)
         live()
         for (const portal of advanced) w.put(sipaCursorKey(portal, recipient), head.toString())
+        if (newSets && !historyFailed) w.put(sipaSetsKey(recipient), sets)
       })
       result.found = foundCount(startRecords, deps.store.list())
+      result.republished = deps.store.events.filter(
+        ([, e]) => e.type === "broadcastRepublish",
+      ).length
     } catch (err) {
       live()
       result.failed += 1
       logger.warn("[sipaScan] the pass did not save (reconciled next pass):", err)
     }
   }
-
-  // TODO: a resolver deposit whose discovery event never arrives (resolver or broadcaster failed)
-  // has a record only if the resolver window saw it funded (the chain's today and yesterday, a few
-  // nonces past the last one used). Anything older has no record and no exit.
 
   return finish()
 }
@@ -671,6 +732,21 @@ async function directAnnouncementOf(
   return BigInt(event.intentHash) === BigInt(directAnnouncementIntentHash(commitment))
     ? (commitment.toLowerCase() as Hex)
     : undefined
+}
+
+/** The earlier SIPA sets of `tuple` as one value. */
+function priorSetsKey(tuple: OxideEnvTuple): string {
+  return (tuple.priorSipaGenerations ?? [])
+    .map((g) =>
+      [
+        g.sipaFactory,
+        g.forwardingTable,
+        g.depositSIPAImplementation,
+        g.registrationSIPAImplementation,
+      ].join(":"),
+    )
+    .join(",")
+    .toLowerCase()
 }
 
 /**
@@ -786,8 +862,11 @@ async function adoptStrays(
           deposit.index,
         )) {
           if (await recordAnywhere(deps, sipa)) return
-          const intent = await run.cloneIntent(sipa)
-          if (intent === null) continue
+          const vouched = await run.vouchedClone(sipa)
+          if (!vouched) continue
+          const { intent } = vouched
+          const origin =
+            (await cloneOrigin(deps, plan, sipa, vouched.sipaFactory)) ?? plan.originOf(sipa)
           logger.info(
             `[sipaScan] tracking ${sipa}: it swept deposit ${deposit.index} to this wallet`,
           )
@@ -807,6 +886,7 @@ async function adoptStrays(
               tokenSymbol: sipaDefaultRow(deps.tuple, deps.rows, intent).token.symbol,
               startTime: Date.now(),
               tokenAddress: sipaDefaultRow(deps.tuple, deps.rows, intent).token.address,
+              ...(origin ? { origin } : {}),
               ...(intent ? { intent } : {}),
             },
           })
@@ -820,6 +900,30 @@ async function adoptStrays(
         logger.warn(`[sipaScan] could not track the SIPA behind deposit ${deposit.index}:`, err)
       }
     }),
+  )
+}
+
+/**
+ * A swept clone's origin as the chain holds it, so a pass without events files it too. Undefined
+ * unless its recovery commitment is the plan's: only then is it this wallet's to recover.
+ */
+async function cloneOrigin(
+  deps: PassDeps,
+  plan: PlannedEvent,
+  clone: Address,
+  sipaFactory: Address,
+): Promise<SipaDeposit["origin"]> {
+  if (!plan.accountProtocol) return undefined
+  const [implementation, args] = await Promise.all([
+    readSipaCloneImplementation(deps.publicClient, sipaFactory, clone),
+    readSipaCloneArgs(deps.publicClient, clone),
+  ])
+  if (args.recoveryCommitment.toLowerCase() !== plan.recoveryCommitment!.toString().toLowerCase())
+    return undefined
+  return plan.originFor(
+    EthAddress.fromString(implementation),
+    { sipaFactory, forwardingTable: args.forwardingTable },
+    args,
   )
 }
 
@@ -900,7 +1004,7 @@ const NO_EVENT_INTENT = "0x0"
 
 /**
  * Whether an event announces a deposit, and the hash its address commits to. A deposit commits to
- * the recipient, so its hash re-derives here. Any other hash is a registration or a user operation,
+ * the recipient, so its hash re-derives here. Any other hash is a registration or an add-passkey,
  * whose intent data only the event's sender holds.
  */
 function eventIntent(
@@ -941,12 +1045,15 @@ type DueScan = Awaited<ReturnType<typeof finishEvent>>[number]
 interface SyncRunContext {
   head: bigint
   now: number
-  feeFor: (intent: SipaIntent, row: SipaRow) => Promise<bigint>
+  /** A sweep's fee on `row`, from the table `record`'s origin names, else the pinned one. */
+  feeFor: (intent: SipaIntent, row: SipaRow, record?: SipaDeposit | null) => Promise<bigint>
   registrationImplementation: () => Promise<EthAddress>
-  /** Every user-op implementation the factory has blessed, the current one first. */
-  userOpImplementations: () => Promise<EthAddress[]>
-  /** The intent a deployed clone was cloned for, from the factory. Throws for an address it did not clone. */
-  cloneIntent: (clone: Address) => Promise<SipaDeposit["intent"] | null>
+  /** Every add-passkey implementation the factory has blessed, the current one first. */
+  addPasskeyImplementations: () => Promise<EthAddress[]>
+  /** The first SIPA set's factory that cloned `clone`, and the intent it cloned it for; else null. */
+  vouchedClone: (
+    clone: Address,
+  ) => Promise<{ intent: SipaDeposit["intent"]; sipaFactory: Address } | null>
   /** The implementation a deployed clone delegates to, from its code. Undefined for an address without one. */
   cloneImplementation: (clone: Address) => Promise<EthAddress | undefined>
   /** A row portal's `TX_AMOUNT_CAP()`: the most one sweep may credit. */
@@ -964,6 +1071,8 @@ interface SyncRunContext {
   incomplete: () => void
   /** Blocks SIPAs must re-read from on a later pass, by lowercased address: a stray they lost. */
   retryFrom: Map<string, bigint>
+  /** The L2 head, read once per pass when a broadcast is owed again. */
+  l2Head: () => Promise<number>
 }
 
 /** The pass's L1 client: a block is read once however many steps need it. A failed read is dropped. */
@@ -1104,78 +1213,147 @@ async function planEvent(
   const recoveryCommitment = accountProtocol
     ? deriveRecoveryCommitment(sharedSecretSalt, EthAddress.fromString(deps.recoveryAccount))
     : undefined
-  const predict = (implementation: EthAddress) => {
+  const [current, ...prior] = sipaGenerations(tuple)
+  const predict = (implementation: EthAddress, generation: SipaGeneration = current!) => {
     if (!fromEvent) return undefined
     const inputs = {
-      sipaFactory: EthAddress.fromString(tuple.sipaFactory!),
+      sipaFactory: EthAddress.fromString(generation.sipaFactory),
       implementation,
       intentHash: fromEvent.intentHash,
       rollupVersion: BigInt(tuple.rollupVersion),
       resweepable: sipaEvent.resweepable,
     }
-    return accountProtocol
-      ? computeAccountSIPAAddress({
-          ...inputs,
-          recoveryCommitment: recoveryCommitment!,
-          forwardingTable: EthAddress.fromString(tuple.forwardingTable!),
-        })
-      : computeSIPAAddress({ ...inputs, recoveryAddress })
+    if (!accountProtocol) return computeSIPAAddress({ ...inputs, recoveryAddress })
+    // A set from before the table derives no account-protocol address.
+    if (!generation.forwardingTable) return undefined
+    return computeAccountSIPAAddress({
+      ...inputs,
+      recoveryCommitment: recoveryCommitment!,
+      forwardingTable: EthAddress.fromString(generation.forwardingTable),
+    })
+  }
+  const originFor = (
+    implementation: EthAddress,
+    generation: { sipaFactory?: string; forwardingTable?: string } = tuple,
+    clone: { intentHash: Hex; resweepable: boolean } = {
+      intentHash: sipaEvent.intentHash,
+      resweepable: sipaEvent.resweepable,
+    },
+  ): SipaDeposit["origin"] => ({
+    sipaFactory: generation.sipaFactory! as Address,
+    implementation: implementation.toString() as Address,
+    intentHash: clone.intentHash,
+    rollupVersion: tuple.rollupVersion,
+    resweepable: clone.resweepable,
+    ...(accountProtocol
+      ? {
+          protocol: "account" as const,
+          accountFactory: tuple.accountFactory! as Address,
+          forwardingTable: generation.forwardingTable! as Address,
+          recoveryAccount: deps.recoveryAccount,
+          recoveryCommitment: recoveryCommitment!.toString() as Hex,
+        }
+      : {
+          protocol: "legacy-eoa" as const,
+          recoveryAddress: recoveryAddress.toString() as Address,
+        }),
+  })
+  /** The origin of `address` when the event derives it under any SIPA set's implementation. */
+  const originOf = (address: Address): SipaDeposit["origin"] => {
+    for (const generation of sipaGenerations(tuple))
+      for (const listed of [
+        generation.depositSIPAImplementation,
+        generation.registrationSIPAImplementation,
+      ]) {
+        if (!listed) continue
+        const implementation = EthAddress.fromString(listed)
+        const derived = predict(implementation, generation)?.toString()
+        if (derived?.toLowerCase() === address.toLowerCase())
+          return originFor(implementation, generation)
+      }
+    return undefined
   }
   // The intent comes from the record when it holds one, else the event. Only the event's sender
-  // holds a non-deposit intent's data, so the chain decides: a user operation's SIPA is swept when
+  // holds a non-deposit intent's data, so the chain decides: an add-passkey SIPA is swept when
   // the relayer runs it, and a clone holding a registration's intent hash cannot be. Until that
-  // sweep, the event reads as a registration. A record that may be a misfiled user operation keeps
+  // sweep, the event reads as a registration. A record that may be a misfiled add-passkey keeps
   // watching for it until it is swept.
   const pinned = local ? deps.store.get(local) : null
   const recheck = maybeMisfiled(pinned)
   const resolving = !!fromEvent && !fromEvent.deposit && (!pinned?.intent || recheck)
   const guess = resolving ? "registration" : pinned?.intent
-  const candidate = (implementation: EthAddress): UserOpCandidate | undefined => {
+  const candidate = (implementation: EthAddress): AddPasskeyCandidate | undefined => {
     const address = predict(implementation)?.toString() as Address | undefined
     return address && { implementation, address }
   }
-  // A recorded user operation's SIPA was prepared on the implementation its origin names, else on
+  // A recorded add-passkey SIPA was prepared on the implementation its origin names, else on
   // the one its deployed clone delegates to, else on the blessed one that derives it.
-  const userOpImplementation = async () => {
+  const addPasskeyImplementation = async () => {
     const recorded = pinned?.origin?.implementation
     if (recorded) return EthAddress.fromString(recorded)
     const deployed = local ? await run.cloneImplementation(local) : undefined
     if (deployed) return deployed
-    const blessed = await run.userOpImplementations()
+    const blessed = await run.addPasskeyImplementations()
     const found = blessed.find(
       (impl) => candidate(impl)?.address.toLowerCase() === local?.toLowerCase(),
     )
     if (!found)
-      throw new WalletError("scan.incomplete", `no blessed user-op implementation derives ${local}`)
+      throw new WalletError(
+        "scan.incomplete",
+        `no blessed add-passkey implementation derives ${local}`,
+      )
     return found
   }
   const implementation =
     guess === "registration"
       ? await run.registrationImplementation()
-      : guess === "user-op"
-      ? await userOpImplementation()
+      : guess === "add-passkey"
+      ? await addPasskeyImplementation()
       : depositImplementation
   const predicted = predict(implementation)
   const primary = local ?? (predicted?.toString() as Address | undefined)
   if (!primary) throw new WalletError("invariant", "a SIPA event with no address")
-  // An implementation that derives the registration address is no user operation's.
+  // An implementation that derives the registration address is no add-passkey's.
   const taken = new Set([primary.toLowerCase()])
-  const userOpCandidates: UserOpCandidate[] = []
+  const addPasskeyCandidates: AddPasskeyCandidate[] = []
   // Without the blessed list the event resolves as a registration this pass; a registration is not
   // held back by a read it does not need.
   let candidatesKnown = true
   if (resolving) {
-    const blessed = await run.userOpImplementations().catch((err: unknown) => {
+    const blessed = await run.addPasskeyImplementations().catch((err: unknown) => {
       candidatesKnown = false
       run.incomplete()
-      logger.warn("[sipaScan] blessed user-op implementations unread this pass:", err)
+      logger.warn("[sipaScan] blessed add-passkey implementations unread this pass:", err)
       return [] as EthAddress[]
     })
     for (const impl of blessed) {
       const found = candidate(impl)
       if (!found || taken.has(found.address.toLowerCase())) continue
       taken.add(found.address.toLowerCase())
-      userOpCandidates.push(found)
+      addPasskeyCandidates.push(found)
+    }
+  }
+  // An event the scan found but no record shows funded may be an earlier SIPA set's: its address
+  // under each one is read too, until it has a record of its own.
+  const generationCandidates: GenerationCandidate[] = []
+  const unexplained = !pinned || (!!pinned.replayed && isUnfundedSipaDeposit(pinned))
+  if (fromEvent && unexplained && guess !== "add-passkey") {
+    for (const generation of prior) {
+      const implementation =
+        guess === "registration"
+          ? generation.registrationSIPAImplementation
+          : generation.depositSIPAImplementation
+      if (!implementation) continue
+      const address = predict(EthAddress.fromString(implementation), generation)?.toString() as
+        | Address
+        | undefined
+      if (!address || taken.has(address.toLowerCase()) || deps.store.get(address)) continue
+      taken.add(address.toLowerCase())
+      generationCandidates.push({
+        generation,
+        implementation: EthAddress.fromString(implementation),
+        address,
+      })
     }
   }
   return {
@@ -1190,29 +1368,51 @@ async function planEvent(
     accountProtocol,
     recoveryCommitment,
     predict,
+    originFor,
+    originOf,
     pinned,
     recheck,
-    userOpCandidates,
+    addPasskeyCandidates,
+    generationCandidates,
     candidatesKnown,
     guess,
     implementation,
     predicted,
     /** The record whose history and cursor this event's reads follow. */
     owner: deps.store.get(primary),
-    addresses: [primary, ...userOpCandidates.map((c) => c.address)],
+    addresses: [
+      primary,
+      ...addPasskeyCandidates.map((c) => c.address),
+      ...generationCandidates.map((c) => c.address),
+    ],
   }
 }
 
 type PlannedEvent = Awaited<ReturnType<typeof planEvent>>
 
-/** A blessed user-op implementation and the address an event's clone has on it. */
-interface UserOpCandidate {
+/** A blessed add-passkey implementation and the address an event's clone has on it. */
+interface AddPasskeyCandidate {
   implementation: EthAddress
   address: Address
 }
 
-/** A user operation's clone the chain showed swept. */
-type SweptClone = UserOpCandidate & { intent: "user-op" }
+/** The event's address under an earlier SIPA set. */
+interface GenerationCandidate extends AddPasskeyCandidate {
+  generation: SipaGeneration
+}
+
+/** A clone the chain showed in use beside the event's address: a swept add-passkey, or an earlier set's. */
+type SweptClone = AddPasskeyCandidate & {
+  intent: SipaDeposit["intent"]
+  generation?: SipaGeneration
+}
+
+/** Whether the chain shows an address funded, swept or emptied. */
+function inUse(observed: ObservedSipa | undefined): boolean {
+  if (!observed) return false
+  if (observed.sweeps.length || observed.outflows.length || observed.inflows?.length) return true
+  return [...observed.balances.values()].some((balance) => balance > 0n)
+}
 
 /** Writes what discovery learned about one event and hands each swept clone's observation to the scan. */
 async function finishEvent(
@@ -1222,19 +1422,20 @@ async function finishEvent(
   result: SipaScanResult,
   run: SyncRunContext,
 ) {
-  const { deps, sipaEvent, depositImplementation, local, sharedSecretSalt, recipientCommitment } =
-    plan
-  const { recoveryAddress, fromEvent, accountProtocol, recoveryCommitment, predict, pinned } = plan
-  const { recheck, userOpCandidates, guess } = plan
-  const { tuple } = deps
+  const { deps, depositImplementation, local, sharedSecretSalt, recipientCommitment } = plan
+  const { recoveryAddress, fromEvent, accountProtocol, predict, originFor, originOf, pinned } = plan
+  const { recheck, addPasskeyCandidates, guess } = plan
   let intent = pinned?.intent
   let misfiled: Address | undefined
   const swept = (address: Address) => !!observed.get(address.toLowerCase())?.sweeps.length
-  const sweptUserOps = userOpCandidates.filter((c) => swept(c.address))
-  const userOp = sweptUserOps[0]
+  const sweptAddPasskeys = addPasskeyCandidates.filter((c) => swept(c.address))
+  const addPasskey = sweptAddPasskeys[0]
   // Every swept clone holds a credit of its own: the first resolves the event, the others get records
   // beside it.
-  const sweptClones: SweptClone[] = sweptUserOps.map((c) => ({ ...c, intent: "user-op" as const }))
+  const sweptClones: SweptClone[] = sweptAddPasskeys.map((c) => ({
+    ...c,
+    intent: "add-passkey" as const,
+  }))
   if (fromEvent && !fromEvent.deposit && (!intent || recheck)) {
     const clone = sweptClones[0]
     // A funded, misfiled record keeps its stray funds under its own intent: the swept clone gets a
@@ -1246,39 +1447,31 @@ async function finishEvent(
       intent = resolved
     }
   }
+  // Each earlier set's address the chain shows in use holds funds of its own, so it gets a record
+  // beside the event's.
+  const movedClones: SweptClone[] =
+    intent === guess
+      ? plan.generationCandidates
+          .filter((c) => inUse(observed.get(c.address.toLowerCase())))
+          .map((c) => ({ ...c, intent }))
+      : []
   const implementation =
     intent === guess
       ? plan.implementation
       : intent === "registration"
       ? await run.registrationImplementation()
-      : intent === "user-op"
-      ? userOp!.implementation
+      : intent === "add-passkey"
+      ? addPasskey!.implementation
       : depositImplementation
   const predicted = intent === guess ? plan.predicted : predict(implementation)
   const sipaAddress = (misfiled ? undefined : local) ?? (predicted?.toString() as Address)
-  const originFor = (implementation: EthAddress): SipaDeposit["origin"] => ({
-    sipaFactory: tuple.sipaFactory! as Address,
-    implementation: implementation.toString() as Address,
-    intentHash: sipaEvent.intentHash,
-    rollupVersion: tuple.rollupVersion,
-    resweepable: sipaEvent.resweepable,
-    ...(accountProtocol
-      ? {
-          protocol: "account" as const,
-          accountFactory: tuple.accountFactory! as Address,
-          forwardingTable: tuple.forwardingTable! as Address,
-          recoveryAccount: deps.recoveryAccount,
-          recoveryCommitment: recoveryCommitment!.toString() as Hex,
-        }
-      : {
-          protocol: "legacy-eoa" as const,
-          recoveryAddress: recoveryAddress.toString() as Address,
-        }),
-  })
+  // A record adopted as a stray holds an address the event derives under some other set.
   const origin =
     predicted?.toString().toLowerCase() === sipaAddress.toLowerCase()
       ? originFor(implementation)
-      : undefined
+      : pinned?.origin
+      ? undefined
+      : originOf(sipaAddress)
   result.discovered += 1
 
   const fallback: Omit<SipaDepositFields, "sipaAddress" | "phase"> = {
@@ -1316,7 +1509,9 @@ async function finishEvent(
     !!record?.messageSecret && record.recipientL2Address?.toLowerCase() === recipientKey
   // The other swept clones get records beside the event's and scans of their own, unless one is
   // planned on its own or is another account's.
-  const others = sweptClones.filter((c) => c.address.toLowerCase() !== sipaAddress.toLowerCase())
+  const others = [...sweptClones, ...movedClones].filter(
+    (c) => c.address.toLowerCase() !== sipaAddress.toLowerCase(),
+  )
   const extras = (
     await Promise.all(
       others.map(async (clone) => ({ clone, before: await recordAnywhere(deps, clone.address) })),
@@ -1328,8 +1523,8 @@ async function finishEvent(
   )
   const cloneFields = (clone: SweptClone): typeof fallback => ({
     ...fallback,
-    origin: originFor(clone.implementation),
-    intent: clone.intent,
+    origin: originFor(clone.implementation, clone.generation),
+    ...(clone.intent ? { intent: clone.intent } : {}),
   })
   for (const { clone } of extras) file(clone.address, cloneFields(clone))
 
@@ -1416,7 +1611,7 @@ async function scanOne(due: DueScan): Promise<void> {
     const stored = deps.store.get(sipaAddress) ?? record
     // A direct deposit has no sweep, so it pays no sweep fee.
     if (stored?.direct) return "0"
-    const [read] = await Promise.allSettled([run.feeFor(sipaRecordIntent(intent), row)])
+    const [read] = await Promise.allSettled([run.feeFor(sipaRecordIntent(intent), row, stored)])
     if (read.status !== "fulfilled") {
       run.incomplete()
       return undefined
@@ -1464,18 +1659,6 @@ async function scanOne(due: DueScan): Promise<void> {
   }
 
   if (sweeps.length === 0) {
-    // An event means the resolver broadcast, so a sweep should follow within
-    // moments — a persistent zero here is the derivation-mismatch signature
-    // (derived address ≠ the funded SIPA) or a stuck relayer. Once a sweep has
-    // been claimed off this SIPA an empty window is just the steady state.
-    if (!record?.claimedInboxIndexes?.length) {
-      logger.log(
-        `[sipaScan] event → ${sipaAddress.slice(
-          0,
-          10,
-        )}… has no sweeps on L1 yet (sweep in flight, or derived address mismatch)`,
-      )
-    }
     // Each row's floor and ceiling at once, and settled: an RPC failure on one row must not cost the
     // event its funding and sweep reads, nor price a balance on another row. A table with no row
     // for the intent prices nothing, and the balance is still read.
@@ -1489,7 +1672,7 @@ async function scanOne(due: DueScan): Promise<void> {
       ? await Promise.allSettled(
           rows.map(async (row) => {
             const [fee, cap] = await Promise.all([
-              run.feeFor(factoryIntent, row),
+              run.feeFor(factoryIntent, row, deps.store.get(sipaAddress) ?? record),
               run.txAmountCap(row),
             ])
             return { row, fee, cap }
@@ -1561,11 +1744,23 @@ async function scanOne(due: DueScan): Promise<void> {
     // A listed sweep the observation no longer shows is dropped here.
     const scanned = covered(due)
     const paidAgain = funding.balance > 0n && !!before && claimedBefore(before)
+    // A new payment to a claimed address: the claimed one stays in the ledger, and the record's
+    // own fields describe the new one, with no sweep yet. It is dated by its L1 transfer, the
+    // latest into the address, or by now when none was read.
+    const paidAt = paidAgain ? await latestInflowTime(deps.publicClient, observed) : undefined
+    const reopened = paidAgain
+      ? {
+          startTime: paidAt ?? run.now,
+          endTime: undefined,
+          netAmount: undefined,
+          sweepTxHash: undefined,
+        }
+      : {}
     const resweepable = (before?.origin ?? fallback.origin)?.resweepable !== false
     if (unsweepable && funding.balance > 0n) {
       // recoverERC20 is the only exit and it owes nothing to the fee reads, so this outranks an
       // unpriced pass — holding here would pin the record short of every recovery entry point.
-      observe(deps, sipaAddress, { phase: "recoverable", ...funded, ...scanned })
+      observe(deps, sipaAddress, { phase: "recoverable", ...funded, ...scanned, ...reopened })
       result.recoverable += 1
     } else if (undecided && funding.balance > 0n) {
       run.incomplete()
@@ -1574,27 +1769,21 @@ async function scanOne(due: DueScan): Promise<void> {
       // Outside the sweep window — the balance is at or below the sweep fee, or what clears it
       // exceeds the per-transaction cap — or a second payment to an address that refuses a second
       // sweep. No sweep moves it.
-      observe(deps, sipaAddress, { phase: "recoverable", ...funded, ...scanned })
+      observe(deps, sipaAddress, { phase: "recoverable", ...funded, ...scanned, ...reopened })
       result.recoverable += 1
     } else if (paidAgain) {
-      // Publish first: the record keeps its claim until then, so a failed publish retries next scan.
-      try {
-        await deps.onSweptAddressFunded?.(sipaAddress)
-      } catch (err) {
-        run.incomplete()
-        logger.warn(`[sipaScan] ${sipaAddress} republish failed, retrying next scan:`, err)
-        return
+      // The record keeps its claim until it can owe the broadcast again: the two commit together.
+      // Its re-read point does not wait, since the cursor moves on regardless.
+      const held = () => {
+        if (scanned.rescanFrom) observe(deps, sipaAddress, { rescanFrom: scanned.rescanFrom })
       }
-      // The record now tracks the new payment: the stuck clock starts now, with no sweep yet.
-      observe(deps, sipaAddress, {
-        phase: "sweeping",
-        ...funded,
-        ...scanned,
-        startTime: run.now,
-        endTime: undefined,
-        netAmount: undefined,
-        sweepTxHash: undefined,
-      })
+      if (deps.republishes === false) return held()
+      const sinceBlock = await republishFrom(run)
+      if (sinceBlock === undefined) return held()
+      observe(deps, sipaAddress, { phase: "sweeping", ...funded, ...scanned, ...reopened })
+      // This owe is the interval's ask: a payment dated an hour back is not overdue next pass.
+      deps.store.apply(sipaAddress, { type: "republishDue", at: run.now })
+      deps.store.apply(sipaAddress, { type: "broadcastRepublish", sinceBlock, at: run.now })
     } else if (funding.balance > 0n) {
       observe(deps, sipaAddress, { phase: "sweeping", ...funded, ...scanned })
       await republishIfOverdue(deps, run, sipaAddress)
@@ -1677,6 +1866,20 @@ async function scanOne(due: DueScan): Promise<void> {
       sweptFunding(observed.outflows, sweep.txHash, tokens) ??
       (savedToken ? { token: savedToken, gross: saved!.gross } : undefined)
     const swept = tokens.length === 1 ? { token: row.token, gross: found?.gross } : found
+    // Only the device that started a registration stores its fee, so another device reads it off
+    // the first sweep: what it took less what it credited, tag price included. Amounts in two
+    // tokens can't be subtracted, so a registration paid in a swapped token stays unpriced.
+    const before = deps.store.get(sipaAddress) ?? record
+    if (
+      intent === "registration" &&
+      before?.registrationFee === undefined &&
+      !before?.sweeps?.length &&
+      sweep === sweeps[0] &&
+      swept?.gross !== undefined &&
+      swept.gross >= sweep.amount &&
+      swept.token.address.toLowerCase() === row.token.address.toLowerCase()
+    )
+      observe(deps, sipaAddress, { registrationFee: (swept.gross - sweep.amount).toString() })
     // A sweep's fee is its own row's, read for this pass; the record's fee is its latest sweep's. A
     // sweep keeps the fee a pass already saved for it, since the owner may reprice the row before
     // the claim.
@@ -1822,21 +2025,38 @@ function covered(due: DueScan, pending: SIPAPendingSweep[] = []): SipaObservatio
   return patch
 }
 
-/** Publishes a funded SIPA again when the relayer has left it unswept past `SWEEP_OVERDUE_MS`. */
+/** The L2 block a broadcast owed again must land from; undefined, for a later pass, if unread. */
+async function republishFrom(run: SyncRunContext): Promise<number | undefined> {
+  const block = await bestEffort("unknown", run.l2Head())
+  if (block === undefined) run.incomplete()
+  return block
+}
+
+/**
+ * Owes a funded SIPA's broadcast again when the relayer has left it unswept past
+ * `SWEEP_OVERDUE_MS`: it dropped the operation (after 14 days) or never had it.
+ */
 async function republishIfOverdue(deps: PassDeps, run: SyncRunContext, sipa: Address) {
   const record = deps.store.get(sipa)
-  if (!deps.onSweepOverdue || !record || run.now - record.startTime < SWEEP_OVERDUE_MS) return
+  if (deps.republishes === false || !record || run.now - record.startTime < SWEEP_OVERDUE_MS) return
   if (record.republishAskedAt && run.now - record.republishAskedAt < REPUBLISH_INTERVAL_MS) return
-  // Asked once per interval whatever the answer: an address with no broadcast of ours to repeat
-  // answers no every time.
+  const sinceBlock = await republishFrom(run)
+  if (sinceBlock === undefined) return
+  // Once per interval whatever it owes: an address with nothing to rebuild owes nothing each time.
   deps.store.apply(sipa, { type: "republishDue", at: run.now })
-  try {
-    if (await deps.onSweepOverdue(sipa))
-      logger.info(`[sipaScan] ${sipa} is overdue for its sweep: published again`)
-  } catch (err) {
-    run.incomplete()
-    logger.warn(`[sipaScan] ${sipa} republish failed, asking again in a day:`, err)
-  }
+  deps.store.apply(sipa, { type: "broadcastRepublish", sinceBlock, at: run.now })
+}
+
+/** The L1 block time of the latest transfer into a SIPA, ms epoch. */
+async function latestInflowTime(
+  publicClient: PublicClient,
+  { inflows }: ObservedSipa,
+): Promise<number | undefined> {
+  const latest = inflows?.reduce<bigint | undefined>(
+    (max, flow) => (max === undefined || flow.blockNumber > max ? flow.blockNumber : max),
+    undefined,
+  )
+  return latest === undefined ? undefined : readBlockTimeMs(publicClient, latest)
 }
 
 /**

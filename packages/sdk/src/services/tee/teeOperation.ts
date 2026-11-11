@@ -176,8 +176,8 @@ export interface BuildTeeOperationSendOpts {
  * `wallet.sendTx`); the wallet runs ONE kernelless simulation (authwit
  * capture + gas estimation + the TEE-attestation source, all in the same
  * pass) and invokes `sendOpts.finalize` with the result, then proves and
- * submits the finalized payload. The full pipeline (proving-progress emits,
- * withProvingScope, pendingTxStore) fires as for any other send.
+ * submits the finalized payload. The full pipeline (its turn, the stages it
+ * reports, pendingTxStore) runs as for any other send.
  */
 export interface BuildTeeOperationResult {
   batchCall: BatchCall
@@ -374,7 +374,7 @@ export async function signTeeBatch(args: {
  * simulation-shape `BatchCall` plus a {@link PayloadFinalizer} that maps the
  * wallet's pre-simulation result to the production (TEE-signed) payload. The
  * caller owns dispatch (so `wallet.sendTx` runs and the full
- * proving-progress / persist pipeline fires); the wallet owns the
+ * stage / persist pipeline runs); the wallet owns the
  * single simulation that feeds BOTH the TEE attestation and its own
  * authwit-capture / gas-estimation pass, plus the PXE sync point and the
  * gas pricing of the finalize delta (see `obsidion/stagedExecution.ts`).

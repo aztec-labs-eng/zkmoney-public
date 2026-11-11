@@ -15,7 +15,6 @@ import {
   openDatabase,
   type Database,
 } from "@obsidion/front-core"
-import { provingProgress } from "@obsidion/proving-progress"
 import { deriveMskFromPrfOutput } from "@obsidion/sdk"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { opfsBackend, walletStorage } from "../../../src/platform/storage/walletStorage"
@@ -29,15 +28,20 @@ import {
   type PasskeyAssertRequest,
   type PasskeyCeremony,
   type PasskeyRequestScope,
+  PROTON_PASS,
+  PROTON_PASS_AAGUID,
+  type SignUpChoice,
   type UserAgentInfo,
   parseUserAgent,
 } from "@obsidion/passkey-web"
-import { backupReminderApplies } from "../../../src/features/backupPasskey/backupReminder"
+import { backupNudge } from "../../../src/features/backupPasskey/backupReminder"
 import type { BackupCreationDriver } from "../../../src/platform/auth/backupCreation"
-import { localRefusalCount, noteLocalRefusal } from "../../../src/platform/auth/localRefusals"
 import { statusForAttempt } from "../../../src/platform/auth/passkeyAttemptScope"
 import { WebAlphaAuthService, isUnsettled } from "../../../src/platform/auth/WebAlphaAuthService"
-import { WebPasskeyIdentityMap } from "../../../src/platform/auth/WebPasskeyIdentityMap"
+import {
+  type BackupRecord,
+  WebPasskeyIdentityMap,
+} from "../../../src/platform/auth/WebPasskeyIdentityMap"
 import { storageIdFromSecret, cachedMsk } from "../../../src/platform/storage/activeStorage"
 import {
   FakePasskeyCeremony,
@@ -47,12 +51,15 @@ import {
 import { testWalletDbs } from "../../support/fakeWalletDb"
 import { writeDeviceKeys } from "../../../src/platform/storage/deviceKeys"
 import { NO_SESSION, writeSessionTuple } from "../../../src/platform/storage/activeStorage"
-import { testPage, pageOver, testCore } from "../../support/page"
+import { testPage, pageOver, testCore, seedDeviceKeys } from "../../support/page"
+import { adoptRecoveredAccount } from "../../../src/features/identity/passkeyAccount"
+import { recordingAccounts } from "../../support/accountRecord"
+import { sessionPage } from "../../support/session"
 
 const deviceDb = testPage().database
 
 const h = vi.hoisted(() => ({ noteBackupSignIn: vi.fn() }))
-vi.mock("../../../src/features/onboarding/backupSignIn", () => ({
+vi.mock("../../../src/features/identity/backupSignIn", () => ({
   noteBackupSignIn: h.noteBackupSignIn,
 }))
 
@@ -76,6 +83,7 @@ function makeService({
     ...pageOver(storage),
     rpId: "localhost",
     ceremony,
+    signing: { start: () => void signaturesStarted++, end: () => {} },
     posture: () => posture,
     misreportsCrossDevice: () => misreportsCrossDevice,
     trustsAttachmentLabel: () => trustsAttachmentLabel,
@@ -83,6 +91,9 @@ function makeService({
   })
   return { service, ceremony, storage }
 }
+
+/** Signatures the services' signers began, across the file. */
+let signaturesStarted = 0
 
 /** A laptop whose ceremonies a phone answers over the cross-device route. */
 const laptop = (opts: ServiceOptions = {}) =>
@@ -607,14 +618,8 @@ describe("a Windows Hello account from Chrome on Windows 11", () => {
     const entry = await new WebPasskeyIdentityMap(storage, "localhost").get(created.credentialId)
     expect(entry?.backupEligible).toBe(false)
     expect(
-      backupReminderApplies({
-        enabled: true,
-        record: entry,
-        noAddSaved: true,
-        backupOnChain: false,
-        dismissed: false,
-      }),
-    ).toBe(true)
+      backupNudge({ enabled: true, record: entry, noAddSaved: true, backupOnChain: false }),
+    ).toBe("oneDevice")
   })
 
   it("signs back in with the same secret on Windows: on its record, by tag, and with no record", async () => {
@@ -649,6 +654,152 @@ describe("a Windows Hello account from Chrome on Windows 11", () => {
       ...ROW,
       managers: ["gpm", "1password"],
     })
+  })
+})
+
+describe("a Proton Pass account from Chrome on a Mac", () => {
+  const ROW: LaptopCreation = {
+    local: true,
+    os: "macos",
+    row: "macChrome",
+    managers: ["apple", "gpm", "1password", "proton"],
+    withdrawn: [],
+  }
+  const ANDROID_CHROME_UA =
+    "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Mobile Safari/537.36"
+  const on = (userAgent: string) => async () => parseUserAgent({ userAgent })
+  /** This computer's own synced answer, as Proton Pass's extension gives it. */
+  const PROTON: ServiceOptions = {
+    posture: "laptop",
+    route: "local",
+    aaguid: PROTON_PASS_AAGUID,
+    trustsAttachmentLabel: true,
+    userAgent: on(MAC_CHROME_UA),
+  }
+  const signUp = async (choice: SignUpChoice = "proton") => {
+    const made = makeService(PROTON)
+    made.service.useLaptopCreation(ROW, choice)
+    const created = await made.service.createPasskey("@alice", undefined, { route: "this-device" })
+    await made.service.recordRecoveryMetadata({
+      credentialId: created.credentialId,
+      l2Address: "0xacct",
+      pubkey: created.pubkey,
+      prfSlot: created.prfSlot,
+      prfAaguid: created.prfAaguid,
+      isMskRoot: true,
+      transports: created.transports,
+    })
+    return { ...made, created }
+  }
+  const browser = (
+    ceremony: PasskeyCeremony,
+    userAgent: string,
+    storage: Database = openDatabase(memoryBackend()),
+  ) =>
+    new WebAlphaAuthService({
+      ...pageOver(storage),
+      rpId: "localhost",
+      ceremony,
+      posture: () => "laptop",
+      userAgent: on(userAgent),
+    })
+  const reminded = (record: BackupRecord | undefined) =>
+    backupNudge({ enabled: true, record, noAddSaved: true, backupOnChain: false }) === "oneDevice"
+  /** The record a sign-in writes, as the app does: no provider id of its own. */
+  const signedIn = (recovered: { credentialId: string; pubkey: string }) =>
+    ({
+      credentialId: recovered.credentialId,
+      l2Address: "0xacct",
+      pubkey: recovered.pubkey,
+      prfSlot: "second",
+      isMskRoot: true,
+      passkeySet: [recovered.pubkey],
+      authenticatorType: "platform",
+    } as const)
+
+  it("sends the pick to the kept wrapper, steered to this device, and records a synced passkey Home still reminds", async () => {
+    const { ceremony, storage, created } = await signUp()
+    expect(ceremony.creates[0]).toMatchObject({ extensionAllowed: true, hints: ["client-device"] })
+    const entry = await new WebPasskeyIdentityMap(storage, "localhost").get(created.credentialId)
+    expect(entry).toMatchObject({ prfAaguid: PROTON_PASS_AAGUID, backupEligible: true })
+    expect(reminded(entry)).toBe(true)
+  })
+
+  it("signs back in with the same secret, and the record it rewrites keeps the provider id", async () => {
+    const { service, storage, created } = await signUp()
+    service.clear()
+    const recovered = await service.recoverPasskey({ credentialId: created.credentialId })
+    expect(recovered.candidates.second?.toString()).toBe(created.secretKey.toString())
+    const adopted = await service.adoptAccountPasskey(accountOf(rootKey(created)))
+    expect(adopted.candidates.second?.toString()).toBe(created.secretKey.toString())
+    await service.recordRecoveryMetadata(signedIn(recovered))
+    const entry = await new WebPasskeyIdentityMap(storage, "localhost").get(created.credentialId)
+    expect(entry).toMatchObject({ prfAaguid: PROTON_PASS_AAGUID, backupEligible: true })
+    expect(reminded(entry)).toBe(true)
+  })
+
+  it("opens on a fresh browser, whose record carries no provider id and so no reminder", async () => {
+    const { ceremony, created } = await signUp()
+    const storage = openDatabase(memoryBackend())
+    const fresh = browser(ceremony, MAC_CHROME_UA, storage)
+    const recovered = await fresh.recoverPasskey({})
+    expect(recovered.candidates.second?.toString()).toBe(created.secretKey.toString())
+    await fresh.recordRecoveryMetadata(signedIn(recovered))
+    const entry = await new WebPasskeyIdentityMap(storage, "localhost").get(created.credentialId)
+    expect(entry).toMatchObject({ backupEligible: true })
+    expect(entry?.prfAaguid).toBeUndefined()
+    expect(reminded(entry)).toBe(false)
+  })
+
+  it("refuses its answer to any other pick, which sends no kept wrapper", async () => {
+    for (const choice of ["computer", "1password"] as const) {
+      const { service, ceremony } = makeService({ ...PROTON, prfAtCreate: false })
+      service.useLaptopCreation(ROW, choice)
+      await expect(
+        service.createPasskey("@alice", undefined, { route: "this-device" }),
+      ).rejects.toMatchObject({ name: "UnsupportedProviderError", providerName: PROTON_PASS })
+      expect(ceremony.creates[0]!.extensionAllowed).toBeUndefined()
+      expect(ceremony.assertRequests).toHaveLength(0)
+    }
+  })
+
+  it("is offered only where the build withdraws nothing", async () => {
+    const service = (withdrawnManagers?: readonly LocalManager[]) =>
+      new WebAlphaAuthService({
+        ...pageOver(openDatabase(memoryBackend())),
+        rpId: "localhost",
+        posture: () => "laptop",
+        laptopCreation: async () => ROW,
+        ...(withdrawnManagers ? { withdrawnManagers } : {}),
+      })
+    expect(await service().probeLaptopCreation()).toEqual(ROW)
+    expect(await service(["windows_hello", "proton"]).probeLaptopCreation()).toEqual({
+      ...ROW,
+      managers: ["apple", "gpm", "1password"],
+    })
+  })
+
+  it("on an Android phone, binds where the build offers it and is refused where it withdraws it", async () => {
+    const phone = (withdrawnManagers?: readonly LocalManager[]) => {
+      const ceremony = new FakePasskeyCeremony({ route: "local", aaguid: PROTON_PASS_AAGUID })
+      const service = new WebAlphaAuthService({
+        ...pageOver(openDatabase(memoryBackend())),
+        rpId: "localhost",
+        ceremony,
+        posture: () => "phone",
+        userAgent: on(ANDROID_CHROME_UA),
+        ...(withdrawnManagers ? { withdrawnManagers } : {}),
+      })
+      return { ceremony, service }
+    }
+    const offered = phone()
+    expect((await offered.service.createPasskey("@alice")).prfAaguid).toBe(PROTON_PASS_AAGUID)
+    const withdrawn = phone(["windows_hello", "proton"])
+    await expect(withdrawn.service.createPasskey("@alice")).rejects.toMatchObject({
+      name: "UnsupportedProviderError",
+      providerName: PROTON_PASS,
+    })
+    expect(withdrawn.ceremony.assertRequests).toHaveLength(0)
   })
 })
 
@@ -1183,8 +1334,7 @@ describe("WebAlphaAuthService.createPasskey", () => {
           },
           credentials: { create },
         })
-      // The count is kept about the browser, and this suite's environment has no localStorage.
-      beforeEach(() => void stubLocalStorage())
+      const refusals = () => testCore().device.get().localRefusals
       afterEach(() => vi.unstubAllGlobals())
 
       it("counts an answer from a manager the row does not admit, before the refusal reaches the caller", async () => {
@@ -1193,35 +1343,33 @@ describe("WebAlphaAuthService.createPasskey", () => {
         await expect(
           service.createPasskey("@alice", undefined, { route: "this-device" }),
         ).rejects.toMatchObject({ name: "UnsupportedProviderError" })
-        expect(localRefusalCount()).toBe(1)
+        await vi.waitFor(() => expect(refusals()).toBe(1))
       })
 
       it("clears the count when the driver accepts the passkey", async () => {
         browser("Google Chrome", async () => null)
-        noteLocalRefusal()
-        noteLocalRefusal()
-        noteLocalRefusal()
+        await seedDeviceKeys({ localRefusals: "3" })
         await held().service.createPasskey("@alice", undefined, { route: "this-device" })
-        expect(localRefusalCount()).toBe(0)
+        await vi.waitFor(() => expect(refusals()).toBe(0))
       })
 
       it("leaves the count alone for a missing key, for the phone route, and with no extension", async () => {
         browser("Google Chrome", async () => null)
-        noteLocalRefusal()
+        await seedDeviceKeys({ localRefusals: "1" })
         const silent = held({ prfAtCreate: false, prfAtAssert: false })
         await expect(
           silent.service.createPasskey("@alice", undefined, { route: "this-device" }),
         ).rejects.toMatchObject({ name: "NoPrfError", manager: "gpm" })
         const byPhone = held({ route: "cross-device" })
         await byPhone.service.createPasskey("@alice", undefined, { route: "phone" })
-        expect(localRefusalCount()).toBe(1)
+        expect(refusals()).toBe(1)
 
         browser("Google Chrome", Object.create)
         const hello = held({ aaguid: WINDOWS_HELLO_AAGUID })
         await expect(
           hello.service.createPasskey("@alice", undefined, { route: "this-device" }),
         ).rejects.toMatchObject({ name: "UnsupportedProviderError" })
-        expect(localRefusalCount()).toBe(1)
+        expect(refusals()).toBe(1)
       })
     })
 
@@ -2770,6 +2918,61 @@ describe("WebAlphaAuthService cached key restore", () => {
     }
   })
 
+  it("the boot catch-up's writes restore the two-key account from the cache with no ceremony", async () => {
+    const { restore, service, storage, created, fresh, inject, snapshot, ceremonies } =
+      await committed()
+    try {
+      const NEW = `0x${"bb".repeat(32)}`
+      const passkeys = [created.pubkey, "ef".repeat(64)]
+      const accounts = recordingAccounts()
+      const wallet = {
+        createObsidionAccount: async () => ({
+          getAddress: () => ({ toString: () => NEW }),
+          getCompleteAddress: () => ({ toString: () => `${NEW}:complete` }),
+        }),
+      } as never
+      // What the catch-up hands the adoption: the session's record under the chain's two keys.
+      await adoptRecoveredAccount(
+        wallet,
+        {
+          session: { auth: service, device: pageOver(storage).device, page: sessionPage(service) },
+          accounts,
+        },
+        {
+          credentialId: created.credentialId,
+          pubkey: created.pubkey,
+          passkeys,
+          staleSet: [created.pubkey],
+          expectedAddress: ADDR,
+          authProvider: service.providerFor({
+            credentialId: created.credentialId,
+            pubkeyHex: created.pubkey,
+            passkeys,
+          }),
+        },
+        created.secretKey,
+        created.prfSlot!,
+        NEW,
+        new AbortController().signal,
+      )
+      expect(service.recordsStale()).toBe(true)
+      expect(await service.sessionAddress()).toBe(NEW)
+      expect((await accounts().get())?.completeAddress).toBe(`${NEW}:complete`)
+      // The reload restores the key under the record's new set, with no assertion request.
+      const before = ceremonies()
+      inject({
+        derive: deriveFor(created, NEW, passkeys),
+        read: async () => ({ ...snapshot, address: NEW }),
+      })
+      expect((await fresh.getSecretKey())?.toString()).toBe(created.secretKey.toString())
+      expect(fresh.isUnlocked()).toBe(true)
+      expect(ceremonies()).toBe(before)
+      expect(await fresh.sessionAddress()).toBe(NEW)
+    } finally {
+      restore()
+    }
+  })
+
   it("a signer handed out before the key could be proved stays the session's signer", async () => {
     const { restore, created, fresh, inject, snapshot } = await committed()
     try {
@@ -4176,13 +4379,10 @@ describe("WebAlphaAuthService providerFor", () => {
     expect(ceremony.assertRequests.at(-1)!.signal).toBe(screen.signal)
 
     const asked = ceremony.assertRequests.length
-    let started = false
-    const onStart = () => void (started = true)
-    provingProgress.on("signing-start", onStart)
+    const started = signaturesStarted
     screen.abort()
     await expect(signWith(provider)).rejects.toBe(screen.signal.reason)
-    provingProgress.off("signing-start", onStart)
     expect(ceremony.assertRequests).toHaveLength(asked)
-    expect(started).toBe(false)
+    expect(signaturesStarted).toBe(started)
   })
 })

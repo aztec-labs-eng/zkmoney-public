@@ -7,29 +7,13 @@ import {
   isPhysicalOnly,
   providerSlugFor,
 } from "@obsidion/passkey-web"
-import { provingProgress } from "@obsidion/proving-progress"
 import { type AnswerRecord, answerRecordFor } from "../platform/auth/WebPasskeyIdentityMap"
-import type { DeviceState } from "../platform/storage/deviceKeys"
-import { deviceStorage } from "../platform/storage/rollupStorage"
+import { bestEffort } from "@obsidion/core/errors"
+import { countHintShowing, savePrefs, type DeviceState } from "../platform/storage/deviceKeys"
 import { useSession } from "../session/session"
 
-const SHOWN_KEY = "webwallet.local-passkey-hint-shown"
 /** Signature attempts the line accompanies before it stops by itself. */
 const MAX_SHOWN = 3
-
-const shownCount = () => Number(deviceStorage.getItem(SHOWN_KEY)) || 0
-
-/** Counts one more attempt; false once they are spent. A store that fails costs a showing, not the beat. */
-function countAttempt(): boolean {
-  try {
-    const shown = shownCount()
-    if (shown >= MAX_SHOWN) return false
-    deviceStorage.setItem(SHOWN_KEY, String(shown + 1))
-  } catch {
-    // Best-effort.
-  }
-  return true
-}
 
 type Readers = {
   posture: () => DevicePosture
@@ -40,9 +24,13 @@ type Readers = {
 }
 
 /** The readers over the page's saved device keys. */
-export const liveHintReaders = ({ credentialId, passkeyMap }: DeviceState): Readers => ({
+export const liveHintReaders = ({
+  credentialId,
+  passkeyMap,
+  localPasskeyHintShown,
+}: DeviceState): Readers => ({
   posture: currentDevicePosture,
-  shown: shownCount,
+  shown: () => localPasskeyHintShown,
   record: () => (credentialId ? answerRecordFor(passkeyMap, credentialId) : undefined),
   osFamily: () => currentUserAgentInfoSync().osFamily,
 })
@@ -73,7 +61,7 @@ export const localPasskeyHintCopy = (osFamily: OsFamily) =>
  * sits beside is one showing; it stays through the last one.
  */
 export function LocalPasskeyHint() {
-  const { device } = useSession()
+  const { database, device, page } = useSession()
   const [show, setShow] = useState(() => {
     try {
       return localPasskeyHintApplies(liveHintReaders(device.get()))
@@ -81,16 +69,20 @@ export function LocalPasskeyHint() {
       return false
     }
   })
+  // eslint-disable-next-line local/effect-hook -- ZKM-1806
   useEffect(() => {
     if (!show) return
-    const onAttempt = () => {
-      if (!countAttempt()) setShow(false)
-    }
-    provingProgress.on("signing-start", onAttempt)
-    return () => {
-      provingProgress.off("signing-start", onAttempt)
-    }
-  }, [show])
+    // Each attempt counts one showing; once they are spent the line goes.
+    const { progress } = page.prover
+    let started = progress.get().signing.started
+    return progress.subscribe(() => {
+      if (progress.get().signing.started === started) return
+      started = progress.get().signing.started
+      void bestEffort("unknown", countHintShowing(database, MAX_SHOWN)).then((shown) => {
+        if (shown !== undefined && shown >= MAX_SHOWN) setShow(false)
+      })
+    })
+  }, [show, database, page])
 
   if (!show) return null
   return (
@@ -100,11 +92,7 @@ export function LocalPasskeyHint() {
         type="button"
         className="zkm-btn-reset ww-pay__hint-dismiss"
         onClick={() => {
-          try {
-            deviceStorage.setItem(SHOWN_KEY, String(MAX_SHOWN))
-          } catch {
-            // Hidden for this mount either way.
-          }
+          savePrefs(database, { localPasskeyHintShown: String(MAX_SHOWN) })
           setShow(false)
         }}
       >

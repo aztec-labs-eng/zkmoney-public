@@ -450,8 +450,8 @@ export class TokenService extends ServiceContractBase {
 
     // Merge caller-supplied operationId onto sendOptions. With the U4 dispatch
     // path (`buildTeeOperation` + `sendAndWait`), the final `BatchCall.send`
-    // routes back through `wallet.sendTx`, so op-id minting / withProvingScope
-    // / persistPendingRecord fire as expected.
+    // routes back through `wallet.sendTx`, so op-id minting, its stages and
+    // persistPendingRecord run as expected.
     const sendOptionsBase = await this.getSendOptions(userAccount.getAddress(), options)
     const sendOptions =
       options?.operationId !== undefined
@@ -629,7 +629,7 @@ export class TokenService extends ServiceContractBase {
    *
    * Routed through `buildTeeOperation + sendAndWait`, so the final
    * `BatchCall.send` flows back through `wallet.sendTx` and the
-   * proving-progress + persist pipeline fires.
+   * stage + persist pipeline runs.
    */
   public async exitToL1Private(
     l1Recipient: EthAddress,
@@ -662,9 +662,8 @@ export class TokenService extends ServiceContractBase {
 
     // Merge caller-supplied operationId / kind onto sendOptions. With the U4
     // dispatch path (`buildTeeOperation` + `sendAndWait`), the final
-    // `BatchCall.send` routes back through `wallet.sendTx`, so op-id minting /
-    // withProvingScope / persistPendingRecord fire as
-    // expected.
+    // `BatchCall.send` routes back through `wallet.sendTx`, so op-id minting,
+    // its stages and persistPendingRecord run as expected.
     const sendOptionsBase = await this.getSendOptions(userAccount.getAddress(), options)
     const sendOptions =
       options?.operationId !== undefined || options?.kind !== undefined

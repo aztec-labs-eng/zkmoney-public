@@ -198,6 +198,11 @@ export default defineConfig(({ command, mode }) => {
     define: {
       "process.env.LOG_LEVEL": JSON.stringify(process.env.PXE_LOG_LEVEL ?? "info"),
       "__BUILD_COMMIT__": JSON.stringify(resolveBuildCommit(env)),
+      // The kv-store patch's test switch (docs/conventions/dependency-patches.md): only an E2E
+      // build keeps it, so no other bundle can turn it on.
+      ...(env.VITE_E2E_WALLET_HOOK === "true"
+        ? {}
+        : { "globalThis.__KV_SKIP_VALUE_HASH": "false" }),
     },
     ...(buildTarget ? { build: { target: buildTarget } } : {}),
     plugins: [

@@ -1,6 +1,7 @@
 import { useState } from "react"
 import { Card } from "@obsidion/web-ds"
 import { hasConnectStash } from "./connectReceive"
+import { tabStash } from "../../platform/storage/tabStash"
 
 /**
  * Signup and sign-in context for a visitor who opened a connect link: the link waits in this tab
@@ -8,7 +9,7 @@ import { hasConnectStash } from "./connectReceive"
  * only verified after sign-in.
  */
 export function ConnectPendingNotice() {
-  const [pending] = useState(() => hasConnectStash())
+  const [pending] = useState(() => hasConnectStash(tabStash))
   if (!pending) return null
   return (
     <Card padding={16} style={{ marginBottom: 24 }}>

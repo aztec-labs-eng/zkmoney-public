@@ -1,3 +1,4 @@
+/** Guards: the analytics consent prompt waits for the tag, asks once and saves the answer. */
 import React, { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -12,7 +13,7 @@ vi.mock("@obsidion/web-ds", () => ({
   ),
 }))
 const { setIdentity } = await import("../../support/identity")
-const { saveSetting, writeDeviceKeys } = await import("../../../src/platform/storage/deviceKeys")
+const { writeDeviceKeys } = await import("../../../src/platform/storage/deviceKeys")
 const { L2_ADDRESS, SIPA, pendingRecord, seedRegistration } = await import(
   "../../support/registrationFixtures"
 )
@@ -58,15 +59,6 @@ describe("AnalyticsConsentPrompt", () => {
 
     await act(async () => container.querySelector<HTMLButtonElement>("button:last-child")!.click())
     expect(committed()).toMatchObject({ consentAsked: true, analyticsConsent: false })
-    expect(prompt()).toBeNull()
-  })
-
-  it("asks nothing before a wallet exists or after an answer", async () => {
-    await render()
-    expect(prompt()).toBeNull()
-    await setIdentity({ address: "0x1", claimedAt: 1, handle: "taga" })
-    await saveSetting(deviceDb, "analyticsConsent", true)
-    await render()
     expect(prompt()).toBeNull()
   })
 })

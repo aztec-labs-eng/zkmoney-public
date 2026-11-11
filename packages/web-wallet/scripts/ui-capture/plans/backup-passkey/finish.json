@@ -1,0 +1,95 @@
+{
+  "scenario": "activity",
+  "viewport": "402x879,1280x832",
+  "path": "/settings?flowFixture=success&backupFixture=finish",
+  "ready": {
+    "selector": ".ww-settings__user"
+  },
+  "steps": [
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Passkeys",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": "html[data-backup-screen=finish]"
+    },
+    {
+      "action": "screenshot",
+      "file": "a6-finish.png",
+      "state": "A6: approve to finish moving the balance"
+    },
+    {
+      "action": "goto",
+      "path": "/settings?flowFixture=success&backupFixture=finish-declined"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-settings__user"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Passkeys",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": "html[data-backup-screen=finish]"
+    },
+    {
+      "action": "screenshot",
+      "file": "c7-finish-declined.png",
+      "state": "C7: the last approval closed"
+    },
+    {
+      "action": "goto",
+      "path": "/settings?flowFixture=success&backupFixture=finish-uses"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-settings__user"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Passkeys",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": "html[data-backup-screen=finish]"
+    },
+    {
+      "action": "screenshot",
+      "file": "c6-finish-uses.png",
+      "state": "C6: the last moves wait on the sponsor's uses"
+    },
+    {
+      "action": "goto",
+      "path": "/settings?flowFixture=success&backupFixture=finish-paused"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-settings__user"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Passkeys",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": "html[data-backup-screen=finish]"
+    },
+    {
+      "action": "screenshot",
+      "file": "finish-paused.png",
+      "state": "Part of the balance could not move"
+    }
+  ],
+  "finalScreenshot": false
+}

@@ -1,0 +1,45 @@
+/* Beats `.zkm-btn-reset`. */
+.crumb.crumb {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  height: 30px;
+  box-sizing: border-box;
+  padding: 0 10px 0 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.07);
+  color: #fdfdfd;
+  white-space: nowrap;
+}
+.crumbCoin {
+  position: relative;
+  display: flex;
+  flex: none;
+}
+.crumbChain {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  display: flex;
+}
+.crumbText {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12px;
+  font-weight: 600;
+}
+.crumbLocked {
+  margin: 0;
+  line-height: 30px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+@media (hover: hover) {
+  .crumb:hover {
+    background: rgba(255, 255, 255, 0.1);
+  }
+}

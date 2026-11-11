@@ -1,0 +1,23 @@
+.name {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+}
+.name > p {
+  margin: 0;
+  padding-left: 4px;
+}
+.field {
+  width: 100%;
+}
+.ok {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent-green);
+}

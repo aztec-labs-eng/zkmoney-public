@@ -7,10 +7,10 @@ import {
   type ObsidionAccount,
   type ObsidionWallet,
 } from "@obsidion/sdk"
-import { accountResource, createAccountRecord } from "../../src/engine/account"
+import { openAccount, createAccountRecord, type AccountRecord } from "../../src/engine/account"
 import { openDatabase } from "../../src/engine/database"
 import { memoryBackend } from "../../src/engine/memoryBackend"
-import { fixed, valueOf } from "../../src/engine/resource"
+import { fixed, valueOf } from "../../src/engine/service"
 import type { AccountState } from "../../src/types"
 import { fakeClock, flush, later } from "./taskTable"
 
@@ -42,14 +42,14 @@ function setup(o: { stored?: Partial<AccountState> | null; key?: boolean } = {})
   }
 }
 
-describe("accountResource", () => {
+describe("openAccount", () => {
   fakeClock()
   beforeEach(() => void vi.spyOn(CompleteAddress, "fromString").mockResolvedValue(PARSED))
 
   it("unlocks once a late wallet arrives", async () => {
     const { wallet, deps } = setup()
     const late = later<ObsidionWallet>("wallet")
-    const account = accountResource({ ...deps, wallet: late.resource })
+    const account = openAccount({ ...deps, wallet: late.service })
     await flush()
     expect(account.get().status).toBe("pending")
     late.ready(wallet as unknown as ObsidionWallet)
@@ -60,10 +60,10 @@ describe("accountResource", () => {
   it("unlocks once the contract service arrives after the wallet, with no retry", async () => {
     const { wallet, deps } = setup()
     const late = later<ContractService>("contractService")
-    const account = accountResource({
+    const account = openAccount({
       ...deps,
       wallet: fixed("wallet", wallet as never),
-      contractService: late.resource,
+      contractService: late.service,
     })
     await flush()
     expect(account.get().status).toBe("pending")
@@ -73,17 +73,21 @@ describe("accountResource", () => {
     expect(valueOf(account)).toBe(built)
   })
 
-  it("stays pending with no stored account", async () => {
+  it("stays pending with no stored account, and ready() waits for a sign-in's hand-off", async () => {
     const { wallet, deps } = setup({ stored: null })
-    const account = accountResource({ ...deps, wallet: fixed("wallet", wallet as never) })
+    const account = openAccount({ ...deps, wallet: fixed("wallet", wallet as never) })
     await flush()
     expect(account.get().status).toBe("pending")
     expect(wallet.getObsidionAccountWallet).not.toHaveBeenCalled()
+    const ready = account.ready()
+    const signedIn = {} as ObsidionAccount
+    account.handOff(signedIn)
+    expect(await ready).toBe(signedIn)
   })
 
   it("waits for a retry when no key is cached, then unlocks", async () => {
     const { wallet, deps, cacheKey } = setup({ key: false })
-    const account = accountResource({ ...deps, wallet: fixed("wallet", wallet as never) })
+    const account = openAccount({ ...deps, wallet: fixed("wallet", wallet as never) })
     await flush()
     expect(account.get()).toMatchObject({
       status: "failed",
@@ -99,7 +103,7 @@ describe("accountResource", () => {
 
   it("unlocks the stored address", async () => {
     const { wallet, deps } = setup()
-    accountResource({ ...deps, wallet: fixed("wallet", wallet as never) })
+    openAccount({ ...deps, wallet: fixed("wallet", wallet as never) })
     await flush()
     expect(CompleteAddress.fromString).toHaveBeenCalledWith(STORED)
     expect(wallet.getObsidionAccountWallet).toHaveBeenCalledWith(
@@ -112,7 +116,7 @@ describe("accountResource", () => {
   it("returns a sign-in's account as is, and installs a later one in place", async () => {
     const { wallet, deps } = setup()
     const handed = {} as ObsidionAccount
-    const account = accountResource({
+    const account = openAccount({
       ...deps,
       wallet: fixed("wallet", wallet as never),
       handoff: handed,
@@ -136,7 +140,10 @@ describe("createAccountRecord", () => {
     signKeyConfig: { type: AUTH_TYPE.WEB_AUTHN, webauthnData: { credentialId: "c", pubkey: "p" } },
   }
   const open = (entries: Record<string, string>) =>
-    createAccountRecord({ db: openDatabase(memoryBackend(new Map(Object.entries(entries)))) })
+    createAccountRecord({
+      db: openDatabase(memoryBackend(new Map(Object.entries(entries)))),
+      now: () => Date.now(),
+    })
 
   it.each([
     ["carries the blob without its name", { obsidion_accounts: JSON.stringify(LEGACY) }, false],
@@ -154,28 +161,35 @@ describe("createAccountRecord", () => {
     "fails the open over an invalid blob %s, and keeps its bytes",
     async (blob) => {
       const backend = memoryBackend(new Map([["obsidion_accounts", blob]]))
-      const record = createAccountRecord({ db: openDatabase(backend) })
+      const record = createAccountRecord({ db: openDatabase(backend), now: () => Date.now() })
       await expect(record.get()).rejects.toThrow()
       expect(record.view.get()).toMatchObject({ value: undefined, failed: true })
       expect(backend.entries.get("obsidion_accounts")).toBe(blob)
     },
   )
 
-  it("lets a sign-in replace an unreadable blob, which this record and the next open read", async () => {
+  const SAVED = {
+    type: "saved",
+    completeAddress: "0xv5",
+    signer: LEGACY.signKeyConfig.webauthnData,
+  } as const
+  const saved = { completeAddress: "0xv5", signKeyConfig: LEGACY.signKeyConfig }
+  const entered = (record: AccountRecord) =>
+    record.apply({ type: "entered" }).then((r) => r !== undefined)
+
+  it("stays failed after a sign-in replaces an unreadable blob, which the next open reads", async () => {
     const blob = "not json"
     const backend = memoryBackend(new Map([["obsidion_accounts", blob]]))
-    const saved = { completeAddress: "0xv5", signKeyConfig: LEGACY.signKeyConfig } as AccountState
-    const record = createAccountRecord({ db: openDatabase(backend) })
-    const seen: unknown[] = []
-    record.view.subscribe(() => seen.push(record.view.get().value))
+    const record = createAccountRecord({ db: openDatabase(backend), now: () => Date.now() })
     await expect(record.get()).rejects.toThrow()
-    await record.save(saved)
-    expect(await record.get()).toEqual(saved)
+    await expect(entered(record)).rejects.toThrow()
+    expect(await record.apply(SAVED)).toEqual(saved)
     await new Promise((r) => setTimeout(r))
-    expect(record.view.get()).toMatchObject({ value: saved, loaded: true, failed: false })
-    expect(seen.at(-1)).toEqual(saved)
-    expect(await record.firstEntry()).toBe(true)
-    expect(await createAccountRecord({ db: openDatabase(backend) }).get()).toMatchObject(saved)
+    await expect(record.get()).rejects.toThrow()
+    expect(record.view.get()).toMatchObject({ value: undefined, failed: true })
+    const next = createAccountRecord({ db: openDatabase(backend), now: () => Date.now() })
+    expect(await next.get()).toEqual(saved)
+    expect(await entered(next)).toBe(true)
     expect(backend.entries.get("obsidion_accounts")).toBe(blob)
   })
 
@@ -184,22 +198,60 @@ describe("createAccountRecord", () => {
       ["acct/meta/account", "2"],
       ["acct/account/current", "{}"],
     ])
-    const record = createAccountRecord({ db: openDatabase(memoryBackend(entries)) })
-    await expect(record.save({ completeAddress: "0xv5" } as AccountState)).rejects.toThrow()
+    const record = createAccountRecord({
+      db: openDatabase(memoryBackend(entries)),
+      now: () => Date.now(),
+    })
+    await expect(record.apply(SAVED)).rejects.toThrow()
     expect(entries.get("acct/account/current")).toBe("{}")
   })
 
   it("keeps the entry mark when a recovery saves the account again", async () => {
     const record = open({ obsidion_accounts: JSON.stringify(LEGACY) })
-    expect(await record.firstEntry()).toBe(true)
-    await record.save({ completeAddress: "0xv5", signKeyConfig: LEGACY.signKeyConfig })
+    expect(await entered(record)).toBe(true)
+    await record.apply(SAVED)
     expect((await record.get())?.enteredAt).toEqual(expect.any(Number))
-    expect(await record.firstEntry()).toBe(false)
+    expect(await entered(record)).toBe(false)
   })
 
   it("marks the first of two overlapping entries only", async () => {
     const record = open({ obsidion_accounts: JSON.stringify(LEGACY) })
-    expect(await Promise.all([record.firstEntry(), record.firstEntry()])).toEqual([true, false])
-    expect(await record.firstEntry()).toBe(false)
+    expect(await Promise.all([entered(record), entered(record)])).toEqual([true, false])
+    expect(await entered(record)).toBe(false)
+  })
+
+  it("moves the account inside a write the caller opened, which lands it with the caller's writes or not at all", async () => {
+    const db = openDatabase(memoryBackend())
+    const record = createAccountRecord({ db: db.scoped("acct-a/"), now: () => Date.now() })
+    await record.apply(SAVED)
+    const moved = { type: "moved", completeAddress: "0xmoved", signer: SAVED.signer } as const
+
+    await expect(
+      db.write(async (w) => {
+        await record.apply(moved, w.scoped("acct-a/"))
+        throw new Error("unloaded")
+      }),
+    ).rejects.toThrow("unloaded")
+    expect((await record.get())?.completeAddress).toBe("0xv5")
+
+    await db.write(async (w) => {
+      await record.apply(moved, w.scoped("acct-a/"))
+      w.put("beside", "1")
+    })
+    expect((await record.get())?.completeAddress).toBe("0xmoved")
+    expect(await db.get("beside")).toBe("1")
+  })
+
+  it("reads the same account after a reload, and a repeated write changes no byte", async () => {
+    const backend = memoryBackend()
+    const first = createAccountRecord({ db: openDatabase(backend), now: () => Date.now() })
+    await first.apply(SAVED)
+    await entered(first)
+    const before = new Map(backend.entries)
+    const reloaded = createAccountRecord({ db: openDatabase(backend), now: () => Date.now() })
+    expect(await reloaded.get()).toEqual(await first.get())
+    await reloaded.apply(SAVED)
+    expect(await entered(reloaded)).toBe(false)
+    expect(backend.entries).toEqual(before)
   })
 })

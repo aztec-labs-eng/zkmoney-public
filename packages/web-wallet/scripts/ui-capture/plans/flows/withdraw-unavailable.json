@@ -1,41 +1,48 @@
 {
   "scenario": "activity",
-  "path": "/withdraw?flowFixture=success&quoteFixture=unavailable",
+  "path": "/withdraw/fresh?flowFixture=success&quoteFixture=unavailable",
   "steps": [
     {
-      "action": "waitFor",
-      "selector": ".ww-deposit-disclaimer"
-    },
-    {
-      "action": "click",
-      "role": "button",
-      "name": "Got it!",
-      "exact": false
-    },
-    {
-      "action": "click",
-      "role": "button",
-      "name": "Receive as",
-      "exact": false
-    },
-    {
-      "action": "click",
-      "role": "option",
-      "name": "USDC",
-      "exact": false
-    },
-    {
       "action": "fill",
-      "placeholder": "Enter or paste address",
+      "testId": "withdraw-address",
       "value": "0x7777777777777777777777777777777777777777"
     },
     {
-      "action": "waitFor",
-      "selector": ".ww-withdraw .ww-withdraw__warning:has-text(\"Swap fee unavailable. Withdraw DAI instead.\")"
+      "action": "fill",
+      "label": "Name this address",
+      "value": "Weekend savings wallet"
     },
     {
       "action": "waitFor",
-      "selector": ".ww-withdraw button:disabled:has-text(\"Continue\")"
+      "selector": "[data-testid=\"withdraw-address-continue\"]:enabled"
+    },
+    {
+      "action": "click",
+      "testId": "withdraw-address-continue"
+    },
+    {
+      "action": "waitFor",
+      "testId": "withdraw-amount"
+    },
+    {
+      "action": "click",
+      "selector": "[data-testid=\"withdraw-to\"] [data-testid=\"transfer-asset\"]"
+    },
+    {
+      "action": "click",
+      "testId": "withdraw-chain-31337"
+    },
+    {
+      "action": "click",
+      "testId": "picker-USDC"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[open] .ww-withdraw__warning:has-text(\"The fee can't be read right now\")"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[open] [data-testid=\"withdraw-amount-continue\"]:disabled"
     },
     {
       "action": "screenshot",

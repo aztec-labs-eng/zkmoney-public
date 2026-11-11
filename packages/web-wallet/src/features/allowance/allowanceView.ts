@@ -11,13 +11,14 @@ export function formatPeriod(seconds: number): string {
 
 /**
  * Why a sponsored action cannot be sent, when the allowance proves it; undefined otherwise. Only a
- * stored zero on a rail that never renews proves it. A zero that may renew, a failed read, or a read
- * being replaced blocks nothing: the chain decides.
+ * fresh stored zero on a rail that never renews proves it. A zero that may renew, a failed read or
+ * re-read, or a read being replaced blocks nothing: the chain decides.
  */
 export function sponsoredActionBlock(snapshot: AllowanceSnapshot): string | undefined {
   if (
     snapshot.status !== "ready" ||
     snapshot.refreshing ||
+    snapshot.error !== undefined ||
     !allowanceBlocksSponsoredAction(snapshot.state)
   )
     return undefined

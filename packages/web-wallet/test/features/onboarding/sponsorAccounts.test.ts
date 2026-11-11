@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { createKeyedTurn } from "@obsidion/front-core"
 import { describe, expect, it, vi } from "vitest"
 import {
   ObsidionAccount,
@@ -116,7 +117,7 @@ function harness(opts: {
   } as never
   const acting = account(TWO_KEY)
   return {
-    deps: { wallet, session, holdsSubscription },
+    deps: { wallet, session, holdsSubscription, registering: createKeyedTurn() },
     acting,
     created,
     providerFor,

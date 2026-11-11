@@ -3,7 +3,7 @@
  * What a pass reads and asks for, and how often: the overdue republish, the held balance, the
  * L1-only pass, the in-flight count the cadence follows, and the request budget.
  */
-import { describe, expect, it, vi } from "vitest"
+import { describe, expect, it } from "vitest"
 import {
   isUnfundedSipaDeposit,
   sipaCursorKey,
@@ -28,32 +28,82 @@ async function observed(w: PipelineWorld, n: number, over: Partial<SipaDeposit> 
 }
 
 describe("the overdue republish", () => {
-  it("publishes a funded SIPA the relayer left unswept again, at most once a day", async () => {
+  it("owes an address the relayer left unswept its broadcast again, once a day", async () => {
     const w = await pipelineWorld()
     await setCursor(w, w.l1.head - 1n)
     const sipa = await observed(w, 1, { phase: "sweeping", startTime: Date.now() - 2 * HOUR })
     w.pay(sipa.address, ONE)
-    const onSweepOverdue = vi.fn(async () => true)
 
-    await w.scan({ onSweepOverdue })
-    await w.scan({ onSweepOverdue })
-
-    expect(onSweepOverdue).toHaveBeenCalledOnce()
-    expect(onSweepOverdue).toHaveBeenCalledWith(sipa.address)
-    expect((await w.get(sipa.address))?.republishAskedAt).toEqual(expect.any(Number))
+    expect(await w.scan()).toMatchObject({ republished: 1 })
+    expect(await w.get(sipa.address)).toMatchObject({
+      republishAskedAt: expect.any(Number),
+      broadcast: {
+        kind: "deposit",
+        source: { type: "slot" },
+        state: "queued",
+        republishSince: w.l2.block,
+      },
+    })
+    await w.store.apply(sipa.address, { type: "broadcastLanded" })
+    expect(await w.scan()).toMatchObject({ republished: 0 })
+    expect((await w.get(sipa.address))?.broadcast?.state).toBe("landed")
   })
 
-  it("asks once a day for an address it cannot publish again, too", async () => {
+  it("owes nothing in a pass over another account's history, and leaves the ask for one that can", async () => {
     const w = await pipelineWorld()
     await setCursor(w, w.l1.head - 1n)
     const sipa = await observed(w, 1, { phase: "sweeping", startTime: Date.now() - 2 * HOUR })
     w.pay(sipa.address, ONE)
-    const onSweepOverdue = vi.fn(async () => false)
 
-    await w.scan({ onSweepOverdue })
-    await w.scan({ onSweepOverdue })
+    expect(await w.scan({ republishes: false })).toMatchObject({ republished: 0 })
+    const held = await w.get(sipa.address)
+    expect(held?.broadcast).toBeUndefined()
+    expect(held?.republishAskedAt).toBeUndefined()
+    expect(await w.scan()).toMatchObject({ republished: 1 })
+  })
 
-    expect(onSweepOverdue).toHaveBeenCalledOnce()
+  it("asks once a day for an address with nothing to rebuild, owing nothing", async () => {
+    const w = await pipelineWorld()
+    await setCursor(w, w.l1.head - 1n)
+    const sipa = await w.announced(1, { resweepable: false })
+    await w.saved(sipa, {
+      phase: "sweeping",
+      startTime: Date.now() - 2 * HOUR,
+      observedFrom: (w.l1.head - 1_000n).toString(),
+    })
+    w.pay(sipa.address, ONE)
+
+    await w.scan()
+    const asked = (await w.get(sipa.address))?.republishAskedAt
+    await w.scan()
+
+    expect(asked).toEqual(expect.any(Number))
+    expect(await w.get(sipa.address)).toMatchObject({ republishAskedAt: asked })
+    expect((await w.get(sipa.address))?.broadcast).toBeUndefined()
+  })
+
+  it("owes an overdue address's broadcast in the pass that found it", async () => {
+    const w = await pipelineWorld()
+    const sipa = await w.announced(1)
+    w.pay(sipa.address, ONE)
+
+    await w.scan()
+
+    expect((await w.get(sipa.address))?.broadcast).toMatchObject({ republishSince: w.l2.block })
+  })
+
+  it("asks again on the next pass when the L2 head does not read", async () => {
+    const w = await pipelineWorld()
+    await setCursor(w, w.l1.head - 1n)
+    const sipa = await observed(w, 1, { phase: "sweeping", startTime: Date.now() - 2 * HOUR })
+    w.pay(sipa.address, ONE)
+    w.l2.headError = new Error("node down")
+
+    expect(await w.scan()).toMatchObject({ failed: 0, complete: false, republished: 0 })
+    expect((await w.get(sipa.address))?.republishAskedAt).toBeUndefined()
+    w.l2.headError = undefined
+    await w.scan()
+    expect((await w.get(sipa.address))?.broadcast).toMatchObject({ state: "queued" })
   })
 
   it("leaves a SIPA funded within the hour to the relayer", async () => {
@@ -62,11 +112,12 @@ describe("the overdue republish", () => {
     const sipa = await observed(w, 1, { phase: "sweeping", startTime: Date.now() - 60_000 })
     // No funding log to date it: the record's own clock stands.
     w.l1.setBalance(sipa.address, DAI, ONE)
-    const onSweepOverdue = vi.fn(async () => true)
 
-    await w.scan({ onSweepOverdue })
+    await w.scan()
 
-    expect(onSweepOverdue).not.toHaveBeenCalled()
+    const record = await w.get(sipa.address)
+    expect(record?.republishAskedAt).toBeUndefined()
+    expect(record?.broadcast).toBeUndefined()
   })
 })
 

@@ -1,3 +1,4 @@
+import { createPace } from "@obsidion/core/cadence"
 import { memoryBackend } from "../../src/engine/memoryBackend"
 import { openDatabase } from "../../src/engine/database"
 // @vitest-environment node
@@ -8,7 +9,7 @@ import {
   REFUND_CHECK_TIMEOUT_MS,
 } from "../../src/engine/oldVersionWithdrawals"
 import type { Loaded } from "../../src/engine/recordSource"
-import { fixed } from "../../src/engine/resource"
+import { fixed } from "../../src/engine/service"
 import { startRuntime, type Runtime } from "../../src/engine/runtime"
 import { memoryStore } from "../../src/engine/store"
 import { later, periodicSteps, sessions, table } from "./taskTable"
@@ -53,6 +54,8 @@ describe("oldVersionWithdrawals task", () => {
       db: openDatabase(memoryBackend()),
       milestones: { after: async () => (await opts.stage, true), reached: () => false },
       visible: visible.readonly,
+      pace: createPace(),
+      now: () => Date.now(),
     })
     runtimes.push(runtime)
     return { visible, records, checked, runtime }
@@ -64,7 +67,7 @@ describe("oldVersionWithdrawals task", () => {
     const records = memoryStore({ records: [record("a", "sending")], hydrated: true })
     const h = sessions(startRuntime)
     const settle = async (id: string, w: string) => void checked.push(`${id}@${w}`)
-    h.tasks.push(oldVersionWithdrawalTask({ wallet: wallet.resource, records, settle }))
+    h.tasks.push(oldVersionWithdrawalTask({ wallet: wallet.service, records, settle }))
     runtimes.push({ stop: h.end } as Runtime)
     await table(
       periodicSteps(h, () => wallet.ready("w"), POLL),

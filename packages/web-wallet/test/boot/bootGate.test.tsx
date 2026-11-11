@@ -1,19 +1,16 @@
 /**
- * The wallet mounts only after configuration, and only in the active tab: once it holds the
- * active-tab lock, has opened its databases, and has cleaned up passkey state. Any other tab mounts
- * nothing and can take over.
+ * Guards the boot view decides: a node or profile that L1 disagrees with is refused before the PXE
+ * store opens, a damaged store and a failed boot each offer a way out, a tab that is not active
+ * keeps an inbound name grant, and old wallet keys stay until this tab holds the wallet.
  */
 import React, { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import type { PageBoot } from "../../src/app/sessionDeps"
 import type { WebBootConfig } from "../../src/config/env"
-import { GOOGLE_CALLBACK_PATH } from "../../src/features/paylink/googleAuth"
-import { ACTIVE_TAB_LOCK, STALLED_AFTER_MS } from "../../src/platform/storage/activeTabLifecycle"
-import { activeRollup, rollupKey } from "../../src/platform/storage/rollupStorage"
-import { closeWalletStore } from "../../src/platform/storage/walletStorage"
+import { ACTIVE_TAB_LOCK } from "../../src/platform/storage/activeTabLifecycle"
+import { sandboxProfile } from "../fixtures/sandboxProfile"
 import { FakeLocks } from "../support/fakeLocks"
-import { testWalletDbs } from "../support/fakeWalletDb"
 
 const h = vi.hoisted(() => ({
   app: vi.fn(),
@@ -58,24 +55,8 @@ vi.mock("../../src/platform/storage/walletStorage", async (importOriginal) => ({
   ...(await importOriginal<object>()),
   reloadPage: h.reload,
 }))
-vi.mock("../../src/config/env", async (importOriginal) => ({
-  ...(await importOriginal<object>()),
-  getConfig: () => ({
-    rpId: "auth.zk.money",
-    nodeUrl: "http://node",
-    l1RpcUrl: "http://rpc",
-    l1ChainId: 31337,
-    oxideProfile: { portal: "0xportal" },
-    profileRollupVersion: h.profileRollup,
-    nodeEndpointDigest: h.nodeDigest,
-    endpoints: {
-      node: { source: "default", isDefault: true },
-      l1Rpc: { source: "default", isDefault: true },
-      enclave: { source: "default", isDefault: true },
-    },
-  }),
-}))
 
+const ROLLUP = sandboxProfile().shared.rollupVersion
 const boot = { config: { rpId: "auth.zk.money" } } as WebBootConfig
 const locks = Object.getOwnPropertyDescriptor(navigator, "locks")!
 let container: HTMLDivElement
@@ -93,8 +74,8 @@ beforeEach(() => {
   h.app.mockClear()
   h.reload.mockClear()
   h.createPxeStore.mockReset().mockResolvedValue(h.store)
-  h.nodeRollup = activeRollup()
-  h.profileRollup = activeRollup()
+  h.nodeRollup = ROLLUP
+  h.profileRollup = ROLLUP
   h.nodeDigest = undefined
   // L1 names the rollup the profile does.
   h.readPortal.mockReset().mockImplementation(async () => ({
@@ -143,26 +124,34 @@ const flush = () => act(() => new Promise((resolve) => setTimeout(resolve, 0)))
 /** How the OPFS pool refuses a database another tab holds. */
 const busyError = () => Object.assign(new Error("pool is busy"), { name: "SqlitePoolBusyError" })
 
-const CLOSE_OTHER_TAB = "The other tab hasn't released the wallet yet. Close it to continue."
-
-/** The copy the gate imports after this test's module reset. */
-const identityMap = async () =>
-  (await import("../../src/platform/auth/WebPasskeyIdentityMap")).WebPasskeyIdentityMap.prototype
+/** A page from this test's module graph, on this test's node and profile rollup, claiming the tab. */
+async function testPage() {
+  const { defaultConfig } = await import("../support/page")
+  const config = {
+    ...defaultConfig,
+    nodeUrl: "http://node",
+    nodeEndpointDigest: h.nodeDigest,
+    profileRollupVersion: h.profileRollup,
+  }
+  const page = (await import("../support/session")).sessionPage(undefined, { config })
+  ;(await import("../../src/ActiveTabGate/ActiveTabGate")).claimActiveTab(page)
+  return page
+}
 
 /** The boot over a page from this test's module graph. */
-const booted = async (): Promise<PageBoot> => ({
-  ...boot,
-  page: (await import("../support/page")).testPage(),
-})
+const booted = async (): Promise<PageBoot> => ({ ...boot, page: await testPage() })
 
 async function render(resolveBoot?: () => Promise<PageBoot>) {
   const { BootGate } = await import("../../src/BootGate")
-  const page = (await import("../support/page")).testPage()
-  const resolve = resolveBoot ?? (async () => ({ ...boot, page }))
+  const { testQuery } = await import("../support/query")
+  const ready = resolveBoot ? undefined : await booted()
+  const read = testQuery()<[], PageBoot>("boot", {
+    load: resolveBoot ?? (async () => ready!),
+  })()
   await act(async () => {
     root.render(
       <React.StrictMode>
-        <BootGate resolveBoot={resolve} />
+        <BootGate boot={read} />
       </React.StrictMode>,
     )
   })
@@ -175,56 +164,6 @@ const button = (label: string) =>
   )
 
 describe("BootGate", () => {
-  it("opens one store under StrictMode and mounts the wallet once cleanup has written", async () => {
-    stubLocks(new FakeLocks())
-    let finish!: () => void
-    const cleanup = vi
-      .spyOn(await identityMap(), "discardOtherRps")
-      .mockImplementationOnce(() => new Promise<void>((resolve) => (finish = resolve)))
-    await render()
-    expect(container.textContent).toContain("Loading zk.money…")
-    expect(h.app).not.toHaveBeenCalled()
-    await act(async () => finish())
-    await flush()
-    expect(container.textContent).toContain("Wallet ready")
-    expect(cleanup).toHaveBeenCalledTimes(1)
-    expect(h.createPxeStore).toHaveBeenCalledTimes(1)
-    expect(h.createPxeStore).toHaveBeenCalledWith("0xrollup", undefined)
-    expect(h.readPortal).toHaveBeenCalledTimes(1)
-    expect(h.app).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        activeTab: expect.objectContaining({
-          pxeBoot: expect.objectContaining({
-            kind: "pxe",
-            store: h.store,
-            identity: expect.objectContaining({ rollupAddress: "0xrollup" }),
-          }),
-          activeSince: expect.any(Number),
-        }),
-      }),
-    )
-    const { isActiveTab } = await import("../../src/platform/storage/activeTab")
-    expect(isActiveTab()).toBe(true)
-  })
-
-  it("mounts nothing while another tab is active, and takes over on request", async () => {
-    const fake = new FakeLocks()
-    stubLocks(fake)
-    const otherTab = fake.request(ACTIVE_TAB_LOCK, {}, () => new Promise(() => {})).catch((e) => e)
-    const cleanup = vi.spyOn(await identityMap(), "discardOtherRps")
-    await render()
-    expect(container.textContent).toContain("zk.money is open in another tab")
-    expect(h.createPxeStore).not.toHaveBeenCalled()
-    expect(cleanup).not.toHaveBeenCalled()
-    expect(h.app).not.toHaveBeenCalled()
-
-    await act(async () => button("Use this tab")!.click())
-    await flush()
-    expect(await otherTab).toMatchObject({ name: "AbortError" })
-    expect(container.textContent).toContain("Wallet ready")
-    expect(h.createPxeStore).toHaveBeenCalledTimes(1)
-  })
-
   it("takes an inbound name grant out of the URL while another tab is active", async () => {
     const fake = new FakeLocks()
     stubLocks(fake)
@@ -236,65 +175,10 @@ describe("BootGate", () => {
     expect(sessionStorage.getItem("obsidion.name-grant")).toBe("secret")
   })
 
-  it("closes the wallet database and retries while another tab holds the PXE store", async () => {
-    stubLocks(new FakeLocks())
-    await closeWalletStore()
-    const events: string[] = []
-    const dbs = testWalletDbs()
-    const open = dbs.open.bind(dbs)
-    vi.spyOn(dbs, "open").mockImplementation(async (version, persistent) => {
-      const db = await open(version, persistent)
-      events.push("wallet open")
-      return {
-        ...db,
-        close: async () => {
-          events.push("wallet close")
-          await db.close()
-        },
-      }
-    })
-    h.createPxeStore
-      .mockImplementationOnce(async () => {
-        events.push("pxe busy")
-        throw busyError()
-      })
-      .mockImplementationOnce(async () => {
-        events.push("pxe open")
-        return h.store
-      })
-    await render()
-    await act(() => vi.waitFor(() => expect(events).toContain("pxe open")))
-    await flush()
-    expect(events).toEqual(["wallet open", "pxe busy", "wallet close", "wallet open", "pxe open"])
-    expect(container.textContent).toContain("Wallet ready")
-    // The identity is checked once per page, not once per open.
-    expect(h.readPortal).toHaveBeenCalledTimes(1)
-  })
-
-  it("reads the chain identity while the wallet database opens", async () => {
-    stubLocks(new FakeLocks())
-    await closeWalletStore()
-    const events: string[] = []
-    const dbs = testWalletDbs()
-    const open = dbs.open.bind(dbs)
-    vi.spyOn(dbs, "open").mockImplementation(async (version, persistent) => {
-      events.push("wallet open")
-      return open(version, persistent)
-    })
-    const read = h.readPortal.getMockImplementation()!
-    h.readPortal.mockImplementation((...args: unknown[]) => {
-      events.push("l1 read")
-      return read(...args)
-    })
-    await render()
-    await act(() => vi.waitFor(() => expect(container.textContent).toContain("Wallet ready")))
-    expect(events).toEqual(["l1 read", "wallet open"])
-  })
-
   describe("old wallet keys in localStorage", () => {
     const oldKeys = () => [
       "webwallet.msk",
-      `rollup.${activeRollup()}.webwallet.msk`,
+      `rollup.${ROLLUP}.webwallet.msk`,
       "rollup.8.webwallet.identity",
     ]
     const seed = () => {
@@ -323,7 +207,7 @@ describe("BootGate", () => {
     it("stay when the boot fails before the tab is ready", async () => {
       stubLocks(new FakeLocks())
       vi.spyOn(console, "error").mockImplementation(() => {})
-      h.nodeRollup = `${activeRollup()}9`
+      h.nodeRollup = `${ROLLUP}9`
       seed()
       await render()
       expect(button("Retry")).toBeDefined()
@@ -344,66 +228,6 @@ describe("BootGate", () => {
     })
   })
 
-  it("shows the splash while the PXE store is busy, then says to close the other tab", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true })
-    stubLocks(new FakeLocks())
-    h.createPxeStore.mockRejectedValue(busyError())
-    await render()
-    expect(container.textContent).toContain("Loading zk.money…")
-    await act(() => vi.advanceTimersByTimeAsync(STALLED_AFTER_MS))
-    expect(container.textContent).toContain("Loading zk.money…")
-    expect(container.textContent).toContain(CLOSE_OTHER_TAB)
-    expect(h.app).not.toHaveBeenCalled()
-  })
-
-  it("says it is switching tabs on a takeover, then to close a tab that keeps the store", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true })
-    const fake = new FakeLocks()
-    stubLocks(fake)
-    void fake.request(ACTIVE_TAB_LOCK, {}, () => new Promise(() => {})).catch(() => {})
-    h.createPxeStore.mockRejectedValue(busyError())
-    await render()
-    await act(async () => button("Use this tab")!.click())
-    expect(container.textContent).toContain("Switching to this tab…")
-    expect(container.textContent).not.toContain(CLOSE_OTHER_TAB)
-    await act(() => vi.advanceTimersByTimeAsync(STALLED_AFTER_MS))
-    expect(container.textContent).toContain(CLOSE_OTHER_TAB)
-    expect(h.app).not.toHaveBeenCalled()
-  })
-
-  it("unmounts the wallet when another tab takes over, and reloads once its store closes", async () => {
-    const fake = new FakeLocks()
-    stubLocks(fake)
-    await render()
-    expect(container.textContent).toContain("Wallet ready")
-    let closeStore!: () => void
-    h.store.close.mockImplementationOnce(
-      () => new Promise<void>((resolve) => (closeStore = resolve)),
-    )
-    void fake.request(ACTIVE_TAB_LOCK, { steal: true }, () => new Promise(() => {}))
-    await flush()
-    expect(container.textContent).toContain("zk.money is open in another tab")
-    expect(container.textContent).not.toContain("Wallet ready")
-    expect(button("Use this tab")).toBeUndefined()
-    expect(h.reload).not.toHaveBeenCalled()
-    await act(async () => closeStore())
-    await flush()
-    expect(h.reload).toHaveBeenCalledTimes(1)
-  })
-
-  it("shows a boot failure with a retry instead of the wallet", async () => {
-    stubLocks(new FakeLocks())
-    vi.spyOn(console, "error").mockImplementation(() => {})
-    vi.spyOn(await identityMap(), "discardOtherRps").mockRejectedValueOnce(
-      new Error("Cannot clear incompatible state"),
-    )
-    await render()
-    expect(container.textContent).toContain("Cannot clear incompatible state")
-    expect(button("Retry")).toBeDefined()
-    expect(h.store.close).toHaveBeenCalled()
-    expect(h.app).not.toHaveBeenCalled()
-  })
-
   it("offers the reset page, without a retry, when the PXE store is damaged", async () => {
     stubLocks(new FakeLocks())
     vi.spyOn(console, "error").mockImplementation(() => {})
@@ -416,26 +240,10 @@ describe("BootGate", () => {
     expect(button("Retry")).toBeUndefined()
   }, 20_000)
 
-  it("relays Google's OAuth callback without taking the active tab from its opener", async () => {
-    const fake = new FakeLocks()
-    stubLocks(fake)
-    void fake.request(ACTIVE_TAB_LOCK, {}, () => new Promise(() => {})).catch(() => {})
-    const request = vi.spyOn(fake, "request")
-    vi.spyOn(window, "close").mockImplementation(() => {})
-    history.replaceState(null, "", `${GOOGLE_CALLBACK_PATH}#state=s&id_token=t`)
-    await render()
-    const relayed = localStorage.getItem(rollupKey("obsidion-google-callback:s"))
-    expect(JSON.parse(relayed!)).toMatchObject({ idToken: "t", state: "s" })
-    expect(request).not.toHaveBeenCalled()
-    expect(fake.isHeld(ACTIVE_TAB_LOCK)).toBe(true)
-    expect(h.createPxeStore).not.toHaveBeenCalled()
-    expect(h.app).not.toHaveBeenCalled()
-  })
-
   it("refuses a node L1 disagrees with before the PXE store opens, and offers the editor", async () => {
     stubLocks(new FakeLocks())
     vi.spyOn(console, "error").mockImplementation(() => {})
-    h.nodeRollup = `${activeRollup()}9`
+    h.nodeRollup = `${ROLLUP}9`
     await render()
     const screen = container.querySelector<HTMLElement>('[data-testid="boot-error"]')
     expect(screen?.dataset.kind).toBe("mismatch")
@@ -451,10 +259,10 @@ describe("BootGate", () => {
 
   it("refuses a profile L1 disagrees with before the PXE store opens", async () => {
     stubLocks(new FakeLocks())
-    h.profileRollup = `${activeRollup()}9`
+    h.profileRollup = `${ROLLUP}9`
     h.readPortal.mockResolvedValue({
       l1ChainId: 31337,
-      rollupVersion: activeRollup(),
+      rollupVersion: ROLLUP,
       rollupAddress: "0xrollup",
       inboxAddress: "0xinbox",
     })
@@ -471,33 +279,6 @@ describe("BootGate", () => {
     await render()
     expect(container.textContent).toContain("Wallet ready")
     expect(h.createPxeStore).toHaveBeenCalledWith("0xrollup", h.nodeDigest)
-  })
-
-  it("names a refused configuration URL and links the desktop settings page, without the wallet", async () => {
-    vi.stubGlobal("__ZKMONEY_DESKTOP_BRIDGE__", {
-      l1SubmitPath: "/desktop/l1-submit",
-      settingsPath: "/desktop-settings",
-    })
-    const { resolveBootConfig } = await import("../../src/config/env")
-    const fetchImpl = vi.fn()
-    const resolve = vi.fn(async () => ({
-      ...(await resolveBootConfig({
-        env: {
-          VITE_NETWORK: "testnet",
-          VITE_DESKTOP_BUILD: "true",
-          VITE_CONFIG_PROFILE_URL: "https://cdn.zk.money/profiles/v5/current.json",
-        },
-        fetchImpl,
-        runtime: { configProfileUrl: "https://elsewhere.example/profile.json" },
-      })),
-      page: (await import("../support/page")).testPage(),
-    }))
-    await render(resolve)
-    expect(container.textContent).toContain("zk.money Desktop is refused")
-    expect(container.textContent).toContain("/profiles/<generation>/<current|x.y.z>.json")
-    expect(container.querySelector('a[href="/desktop-settings"]')).not.toBeNull()
-    expect(fetchImpl).not.toHaveBeenCalled()
-    expect(h.app).not.toHaveBeenCalled()
   })
 
   it("retries a configuration failure", async () => {

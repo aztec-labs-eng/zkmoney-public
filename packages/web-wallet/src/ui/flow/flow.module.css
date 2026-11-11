@@ -1,0 +1,339 @@
+/* Every step's card: the deposit sheet, with its corner buttons 24px in. Every phase of a step
+   swap decelerates on one easing. */
+.card.card {
+  --flow-ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --flow-leave: 198ms;
+  --flow-resize: 264ms;
+  --flow-enter: 264ms;
+  border-radius: 24px;
+}
+/* The picker's swaps run slower: the card grows to the picker's width. */
+.card.card[data-dir="up"],
+.card.card[data-dir="settle"] {
+  --flow-leave: 264ms;
+  --flow-resize: 396ms;
+  --flow-enter: 363ms;
+}
+/* The picker's content is gone well before its sink ends; the card starts resizing then. */
+.card.card[data-dir="settle"] {
+  --flow-leave: 200ms;
+}
+/* The flow's own steps: one spacing between blocks, and 40px from the title to the content. */
+.card.card.step {
+  gap: var(--space-16);
+}
+.step > :global(.ww-deposit-sheet__head) {
+  margin-bottom: 24px;
+}
+/* A status head sits 24px from its card. */
+.step > :global(.ww-status-head) {
+  margin-bottom: 8px;
+}
+/* The title's box is the bar title's, whatever font loads. */
+.step > :global(.ww-deposit-sheet__head) > :global(.zkm-gradient-text) {
+  line-height: 30px;
+}
+/* A head title outside a flow step. Whole pixels keep what is under it from moving 1px when its
+   slide-in layer goes. */
+.headTitle {
+  line-height: 35px;
+}
+.step :global(.ww-deposit-coin__fields) {
+  gap: var(--space-16);
+}
+.card > :global(.ww-deposit-warning__back) {
+  top: 24px;
+  left: 24px;
+}
+.card > :global(.ww-deposit-warning__close) {
+  top: 24px;
+  right: 24px;
+}
+
+/* A step swap runs in three phases that `ModalSteps` sets on the card as `data-phase`: the old step
+   leaves (its card kept as a ghost), the card resizes with no step showing, then the new step
+   enters, in the direction on the card as `data-dir`. Forward leaves left and enters from the
+   right, Back the mirror; the picker rises over
+   the step and sinks away. The card and its corner buttons, crumb and title bar stay. */
+[data-dir="fwd"][data-phase="leave"]
+  > :not(
+    :global(.ww-deposit-warning__back),
+    :global(.ww-deposit-warning__close),
+    :global(.ww-modal__back),
+    :global(.ww-modal__close),
+    .crumbBar,
+    .bar
+  ) {
+  animation: step-out-left var(--flow-leave) var(--flow-ease) both;
+}
+[data-dir="back"][data-phase="leave"]
+  > :not(
+    :global(.ww-deposit-warning__back),
+    :global(.ww-deposit-warning__close),
+    :global(.ww-modal__back),
+    :global(.ww-modal__close),
+    .crumbBar,
+    .bar
+  ) {
+  animation: step-out-right var(--flow-leave) var(--flow-ease) both;
+}
+[data-dir="up"][data-phase="leave"]
+  > :not(
+    :global(.ww-deposit-warning__back),
+    :global(.ww-deposit-warning__close),
+    :global(.ww-modal__back),
+    :global(.ww-modal__close),
+    .crumbBar,
+    .bar
+  ) {
+  animation: fade-out var(--flow-leave) var(--flow-ease) both;
+}
+[data-dir="settle"][data-phase="leave"]
+  > :not(
+    :global(.ww-deposit-warning__back),
+    :global(.ww-deposit-warning__close),
+    :global(.ww-modal__back),
+    :global(.ww-modal__close),
+    .crumbBar,
+    .bar
+  ) {
+  animation: step-down var(--flow-leave) var(--flow-ease) both;
+}
+[data-phase="resize"]
+  > :not(
+    :global(.ww-deposit-warning__back),
+    :global(.ww-deposit-warning__close),
+    :global(.ww-modal__back),
+    :global(.ww-modal__close),
+    .crumbBar,
+    .bar
+  ) {
+  visibility: hidden;
+}
+/* The flow's first card, when it opens on the picker: the step rises as the dialog opens. */
+[data-dir="up"][data-phase="open"]
+  > :not(
+    :global(.ww-deposit-warning__back),
+    :global(.ww-deposit-warning__close),
+    :global(.ww-modal__back),
+    :global(.ww-modal__close),
+    .crumbBar,
+    .bar
+  ) {
+  animation: step-up var(--flow-enter) var(--flow-ease) both;
+}
+/* Moving content takes no pointer: no hover or click while a step leaves, resizes or enters. */
+[data-phase]
+  > :not(
+    :global(.ww-deposit-warning__back),
+    :global(.ww-deposit-warning__close),
+    :global(.ww-modal__back),
+    :global(.ww-modal__close),
+    .crumbBar,
+    .bar
+  ) {
+  pointer-events: none;
+}
+[data-dir="fwd"][data-phase="enter"]
+  > :not(
+    :global(.ww-deposit-warning__back),
+    :global(.ww-deposit-warning__close),
+    :global(.ww-modal__back),
+    :global(.ww-modal__close),
+    .crumbBar,
+    .bar
+  ) {
+  animation: step-fwd var(--flow-enter) var(--flow-ease) both;
+}
+[data-dir="back"][data-phase="enter"]
+  > :not(
+    :global(.ww-deposit-warning__back),
+    :global(.ww-deposit-warning__close),
+    :global(.ww-modal__back),
+    :global(.ww-modal__close),
+    .crumbBar,
+    .bar
+  ) {
+  animation: step-back var(--flow-enter) var(--flow-ease) both;
+}
+[data-dir="up"][data-phase="enter"]
+  > :not(
+    :global(.ww-deposit-warning__back),
+    :global(.ww-deposit-warning__close),
+    :global(.ww-modal__back),
+    :global(.ww-modal__close),
+    .crumbBar,
+    .bar
+  ) {
+  animation: step-up var(--flow-enter) var(--flow-ease) both;
+}
+[data-dir="settle"][data-phase="enter"]
+  > :not(
+    :global(.ww-deposit-warning__back),
+    :global(.ww-deposit-warning__close),
+    :global(.ww-modal__back),
+    :global(.ww-modal__close),
+    .crumbBar,
+    .bar
+  ) {
+  animation: fade-in var(--flow-enter) var(--flow-ease) both;
+}
+/* A swapped-in card never replays the dialog's open animation; the first card plays it. */
+[data-dir][data-dir]:not([data-phase="open"]) {
+  animation: none;
+}
+@keyframes step-fwd {
+  from {
+    opacity: 0;
+    transform: translateX(36px);
+  }
+}
+@keyframes step-back {
+  from {
+    opacity: 0;
+    transform: translateX(-36px);
+  }
+}
+@keyframes step-up {
+  from {
+    opacity: 0;
+    transform: translateY(36px);
+  }
+}
+@keyframes step-out-left {
+  to {
+    opacity: 0;
+    transform: translateX(-36px);
+  }
+}
+@keyframes step-out-right {
+  to {
+    opacity: 0;
+    transform: translateX(36px);
+  }
+}
+@keyframes step-down {
+  to {
+    opacity: 0;
+    transform: translateY(36px);
+  }
+}
+@keyframes fade-out {
+  to {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-phase] > * {
+    animation: none;
+  }
+}
+
+/* The network and coin, centered between the corner buttons; the step starts below it. */
+.card.card:has(> .crumbBar) {
+  padding-top: 68px;
+}
+.crumbBar {
+  position: absolute;
+  z-index: 3;
+  top: 24px;
+  left: 75px;
+  right: 75px;
+  display: flex;
+  justify-content: center;
+}
+/* The phone picker's networks and coins swap with a fade; only a step's arrival slides. */
+.fade {
+  animation: fade-in 0.18s ease both;
+}
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+.rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-16);
+  width: 100%;
+  text-align: left;
+}
+.row:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.note {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0;
+  padding: 12px 16px;
+  border: 1px solid rgba(122, 168, 199, 0.3);
+  border-radius: 12px;
+  background: rgba(122, 168, 199, 0.1);
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+.note > svg {
+  flex: none;
+  transform: translateY(1px);
+}
+
+/* The method step: the crumb lower than the corner buttons. */
+.method .rows {
+  gap: 8px;
+}
+@media (min-width: 641px) {
+  .card.card.method:has(> .crumbBar) {
+    padding-top: 86px;
+  }
+  .method > .crumbBar {
+    top: 40px;
+  }
+}
+
+/* A step with a header bar: title between back and close, the body below runs to the edges. */
+.card.card.card.step.barred {
+  --flow-pad-x: 0px;
+  align-items: stretch;
+  gap: 0;
+  padding: 0;
+  text-align: left;
+}
+.bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 24px 24px 20px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+/* The network and coin picker: two panes on a wide card, one view at a time on a phone. */
+.card.card.card.step.picker {
+  overflow: hidden;
+}
+@media (min-width: 641px) {
+  .card.card.card.step.picker {
+    width: min(800px, calc(100vw - 32px));
+    height: min(572px, 86dvh);
+  }
+}
+.panes {
+  display: grid;
+  flex: 1;
+  grid-template-columns: 300px minmax(0, 1fr);
+  min-height: 0;
+}
+.card.card.card.step.picker > .pane,
+.card.card.card.step.picker > .panes {
+  flex-shrink: 1;
+  min-height: 0;
+}
+.pane {
+  box-sizing: border-box;
+  padding: 20px 20px 12px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+}

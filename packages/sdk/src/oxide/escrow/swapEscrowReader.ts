@@ -8,29 +8,29 @@
 import {
   BaseError,
   ContractFunctionRevertedError,
+  ExecutionRevertedError,
+  RawContractError,
   erc20Abi,
   type Address,
   type Hex,
   type PublicClient,
 } from "viem"
-import {
-  LegacySwapEscrowEventsAbi,
-  LegacySwapEscrowFactoryAbi,
-  SwapEscrowAbi,
-  SwapEscrowFactoryAbi,
-} from "@oxide/l1-contracts"
-import type { SwapEscrowCommitment } from "./swapOnWithdraw.js"
+import { LegacySwapEscrowEventsAbi, SwapEscrowAbi, SwapEscrowFactoryAbi } from "@oxide/l1-contracts"
 
 export interface SwapEscrowReader {
   /** DAI held at the escrow. Zero once the swap ran or the DAI was recovered. */
   daiBalance(escrow: Address): Promise<bigint>
+  /** `token` held at the escrow: what a bridge refunded once its run deposited. */
+  tokenBalance(token: Address, escrow: Address): Promise<bigint>
   /** Whether the escrow has code. A clone only appears through `deployAndExecute` or `deploy`. */
   isDeployed(escrow: Address): Promise<boolean>
   /**
-   * Whether `factory.deployAndExecute(args)` would succeed now. False only on a contract revert (a min-out
-   * miss, an ETH recipient that rejects ETH); an RPC failure throws so the caller retries.
+   * Whether the escrow's `factory.deployAndExecute(args)` call `data`, sent by `sender`, would succeed now.
+   * False only on a contract revert (a min-out miss, an ETH recipient that rejects ETH); an RPC failure
+   * throws so the caller retries. `deployAndExecute` pays its sender the tip, and an ERC20 refuses the
+   * zero address, so `sender` is a real payee.
    */
-  deploySimulates(factory: Address, commitment: SwapEscrowCommitment): Promise<boolean>
+  deploySimulates(factory: Address, data: Hex, sender: Address): Promise<boolean>
   /**
    * Tx of the factory's execution log for `escrow`. Undefined when none is in the lookback window; an
    * RPC failure throws so the caller retries rather than reading it as "no swap".
@@ -72,8 +72,12 @@ export class L1SwapEscrowReader implements SwapEscrowReader {
   }
 
   daiBalance(escrow: Address): Promise<bigint> {
+    return this.tokenBalance(this.dai, escrow)
+  }
+
+  tokenBalance(token: Address, escrow: Address): Promise<bigint> {
     return this.client.readContract({
-      address: this.dai,
+      address: token,
       abi: erc20Abi,
       functionName: "balanceOf",
       args: [escrow],
@@ -85,20 +89,20 @@ export class L1SwapEscrowReader implements SwapEscrowReader {
     return code !== undefined && code !== "0x"
   }
 
-  async deploySimulates(factory: Address, commitment: SwapEscrowCommitment): Promise<boolean> {
+  async deploySimulates(factory: Address, data: Hex, sender: Address): Promise<boolean> {
     try {
-      await this.client.simulateContract({
-        address: factory,
-        abi: commitment.layout === "v2" ? SwapEscrowFactoryAbi : LegacySwapEscrowFactoryAbi,
-        functionName: "deployAndExecute",
-        args: [commitment.args] as never,
-        // `deployAndExecute` pays its caller the tip, and an ERC20 refuses the zero address, so the simulation
-        // needs a real payee. The recipient is one the escrow already commits to.
-        account: commitment.args.recipient,
-      })
+      await this.client.call({ to: factory, data, account: sender })
       return true
     } catch (err) {
-      if (err instanceof BaseError && err.walk((e) => e instanceof ContractFunctionRevertedError)) {
+      if (
+        err instanceof BaseError &&
+        err.walk(
+          (e) =>
+            e instanceof ContractFunctionRevertedError ||
+            e instanceof ExecutionRevertedError ||
+            e instanceof RawContractError,
+        )
+      ) {
         return false
       }
       // A revert without decodable data still surfaces as an execution error carrying "reverted".

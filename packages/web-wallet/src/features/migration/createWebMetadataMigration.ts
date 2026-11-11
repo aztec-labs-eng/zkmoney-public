@@ -1,6 +1,5 @@
 import {
   accountRecordStale,
-  BalanceStorage,
   createMetadataMigrationSession,
   pubkeyToR1KeyArg,
   readSavingsPrice,
@@ -22,19 +21,13 @@ import {
 } from "@obsidion/sdk"
 import type { FrozenDepositDescriptor, OxideEnvTuple } from "@obsidion/core/types"
 import type { Address } from "viem"
-import { getConfig } from "../../config/env"
-import {
-  getFeeTokenBridgeTuple,
-  getOxideDeployment,
-  getOxideTuple,
-  getRetiredRollupSources,
-  l1MulticallClient,
-} from "../../config/oxideTuple"
+import { l1MulticallClient } from "../../config/oxideTuple"
+import { proverBackend } from "../../platform/barretenberg"
 import { withSourceSigner } from "../../platform/sourceGeneration"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
 import { SessionChangedError } from "../../platform/auth/sessionErrors"
 import { collectOnboardingKeys } from "../../session/account"
-import type { SessionDeps } from "../../session/session"
+import type { Session } from "../../session/session"
 import { stillCommitted } from "../../session/stillCommitted"
 import { portalContract } from "../token/oxideToken"
 import { historicTokenContext, sourceChain } from "./historicTokenContext"
@@ -54,12 +47,15 @@ export const webMetadataMigrationKey = (
   `metadata-migration/${current.portal.toLowerCase()}/${historic.portal.toLowerCase()}/${account.getAddress()}`
 
 /** `accountRecordStale` with this session's key and the pinned deployment. */
-export async function webAccountRecordStale(account: ObsidionAccount): Promise<boolean> {
-  const config = getConfig()
+export async function webAccountRecordStale(
+  session: Pick<Session, "auth" | "page">,
+  account: ObsidionAccount,
+) {
+  const { config, chain: pageChain } = session.page
   const [keys, current, metadataCurrent] = await Promise.all([
-    collectOnboardingKeys(account),
-    getOxideTuple(config),
-    getFeeTokenBridgeTuple(config),
+    collectOnboardingKeys(session, account),
+    pageChain.oxideTuple.read(),
+    pageChain.feeTokenBridgeTuple.read(),
   ])
   return accountRecordStale({
     account,
@@ -77,8 +73,8 @@ export async function createWebMetadataMigration(params: {
   /** The session's deposit records: the rail claims the migration's direct deposits. */
   deposits: Pick<SipaDeposits, "get">
   auth: Pick<WebAlphaAuthService, "getSecretKey" | "sessionKeys" | "signMetadataChallenge">
-  /** The session the run is for. */
-  own: Pick<SessionDeps, "device" | "namespace">
+  /** The session the run is for; the run records old-version holdings in its balance store. */
+  own: Session
   /** The account's name: its registration addresses are found from it. */
   handle: string | undefined
   contractService: ContractService
@@ -93,14 +89,15 @@ export async function createWebMetadataMigration(params: {
   /** Swept deposits the account's own scan misses, such as an address no `SIPA` event announced. */
   extraDeposits?: FrozenDepositDescriptor[]
 }) {
-  const config = getConfig()
+  const { config, chain: pageChain } = params.own.page
   // Folds contract reads, such as the migration subsidy's, into Multicall3 calls.
   const client = l1MulticallClient(config)
-  const keys = await collectOnboardingKeys(params.account)
+  const keys = await collectOnboardingKeys(params, params.account)
   const { own } = params
   const storageId = own.namespace.id
+  const balances = own.balanceStore
   const { credentialId } = own.device.get()
-  if (!storageId || !stillCommitted(own)) throw new SessionChangedError()
+  if (!storageId || !balances || !stillCommitted(own)) throw new SessionChangedError()
   // The run is one session's: another account, or this account under another passkey, ends it.
   const checkSession = () => {
     if (!stillCommitted(own) || own.device.get().credentialId !== credentialId) {
@@ -111,6 +108,7 @@ export async function createWebMetadataMigration(params: {
   const hasSource = params.historic.portal.toLowerCase() !== params.current.portal.toLowerCase()
   const chain = hasSource
     ? await sourceChain(
+        config,
         { wallet: params.wallet, account: params.account },
         params.current,
         params.historic,
@@ -119,10 +117,11 @@ export async function createWebMetadataMigration(params: {
     : undefined
   const sourceContext =
     chain?.kind === "pxe"
-      ? await historicTokenContext(chain.wallet, chain.account, params.historic)
+      ? await historicTokenContext(pageChain, chain.wallet, chain.account, params.historic)
       : undefined
   const depositDescriptors = async () => {
     const scan = {
+      page: own.page,
       chain: chain!,
       tuple: params.historic,
       publicClient: client,
@@ -134,7 +133,7 @@ export async function createWebMetadataMigration(params: {
       sourceSweptDeposits(scan),
       sourceSavingsDeposits({
         ...scan,
-        sourceTuples: [params.historic, ...(await getRetiredRollupSources(config))],
+        sourceTuples: [params.historic, ...(await pageChain.retiredRollupSources.read())],
       }),
     ])
     const all = [...sipas.descriptors, ...savings, ...(params.extraDeposits ?? [])]
@@ -146,7 +145,7 @@ export async function createWebMetadataMigration(params: {
    * reads as none: that source cannot move yet, and no other source is blocked.
    */
   const usableRoute = async (destinationPortal: Address, operationExecutor: Address) => {
-    const { deployment } = await getOxideDeployment(config).catch((error) => {
+    const { deployment } = await pageChain.oxideDeployment.read().catch((error) => {
       throw new ManifestUnavailableError(error)
     })
     try {
@@ -184,12 +183,13 @@ export async function createWebMetadataMigration(params: {
     contracts: params.contractService,
     tokenService: params.toTokenService,
     current: params.current,
-    metadataCurrent: await getFeeTokenBridgeTuple(config).catch((error) => {
+    metadataCurrent: await pageChain.feeTokenBridgeTuple.read().catch((error) => {
       throw new ManifestUnavailableError(error)
     }),
     ...(params.recoveryOnly ? { recoveryOnly: true } : {}),
     network: config.network,
     client,
+    scans: pageChain.scans,
     secretKey: keys.secretKey,
     key,
     activity: UpgradeActivity.get(webStorage),
@@ -210,17 +210,17 @@ export async function createWebMetadataMigration(params: {
               ).sharePrice,
             )
       checkSession()
-      await BalanceStorage.get(webStorage).updateBalance(
-        oldVersionScope(params.historic.portal, params.account.getAddress().toString()),
+      await balances.write(
+        oldVersionScope(config, params.historic.portal, params.account.getAddress().toString()),
         params.historic.l2Token,
         value,
         anchor,
-        { strict: true },
       )
     },
     storage: {
       getItem: async (key) => {
         checkSession()
+        // eslint-disable-next-line local/legacy-store -- ZKM-1625
         return webStorage.getItem(key)
       },
       setItem: async (key, value) => {
@@ -305,6 +305,7 @@ export async function createWebMetadataMigration(params: {
           await usableRoute(context.destination.portal, context.destination.operationExecutor)
         ).deployment,
         wrapRefundSigner: savedRefundSigner,
+        startProver: proverBackend,
         source: { tuple: params.historic, tokenService: sourceContext.tokenService },
         sourceChain: chain?.kind === "pxe" ? chain : undefined,
         depositDescriptors,
@@ -314,6 +315,7 @@ export async function createWebMetadataMigration(params: {
           sourceFrozenEscrows({
             chain:
               chain?.kind === "pxe" ? chain : { wallet: params.wallet, account: params.account },
+            contractService: params.contractService,
             tuple: params.historic,
             masterSecret: keys.secretKey,
             rows: await paylinkRows(),

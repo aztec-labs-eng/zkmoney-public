@@ -4,6 +4,7 @@
  * and store write belong to front-core's `runSipaRecovery` and are covered there — here it is a
  * fake, so what these tests assert is the wiring.
  */
+import { createPace } from "@obsidion/core/cadence"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { zeroAddress, type Address, type Hex } from "viem"
 import {
@@ -12,6 +13,7 @@ import {
   type SipaDepositEvent,
 } from "@obsidion/front-core"
 import { LIMIT_USD } from "../../../support/publicLimit"
+const pace = createPace()
 
 const SIPA = `0x${"11".repeat(20)}` as Address
 const TUPLE_TOKEN = `0x${"22".repeat(20)}` as Address
@@ -23,7 +25,10 @@ const HASH = `0x${"ab".repeat(32)}` as Hex
 const l1Clients = vi.hoisted(() => ({ getL1Clients: vi.fn() }))
 const bridge = vi.hoisted(() => ({ submitViaDesktopBridge: vi.fn() }))
 
-vi.mock("../../../../src/session/l1Wallet", () => l1Clients)
+vi.mock("../../../../src/session/l1Wallet", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../../src/session/l1Wallet")>()),
+  ...l1Clients,
+}))
 vi.mock("../../../../src/platform/desktopBridge", () => ({
   isDesktopL1SubmitActive: () => false,
   ...bridge,
@@ -268,6 +273,8 @@ describe("injectedWalletChannel", () => {
     })
     const stages: L1ExitStage[] = []
     const channel = await injectedWalletChannel(config, {
+      pace,
+      wagmi: {} as never,
       onStage: (s) => stages.push(s),
       readClient: { waitForTransactionReceipt, estimateGas, getBlock } as never,
     })
@@ -307,6 +314,8 @@ describe("injectedWalletChannel", () => {
         chain: { id: chainId },
       })
       const channel = await injectedWalletChannel({ l1ChainId: chainId } as never, {
+        pace,
+        wagmi: {} as never,
         readClient: {
           getBlock: vi.fn(async () => ({ gasLimit: blockLimit })),
           estimateGas: vi.fn(async () => estimate),
@@ -329,6 +338,8 @@ describe("injectedWalletChannel", () => {
         chain: { id: 11155111 },
       })
       const channel = await injectedWalletChannel(config, {
+        pace,
+        wagmi: {} as never,
         onStage,
         readClient: {
           getBlock: vi.fn(async () => ({ gasLimit: 60_000_000n })),
@@ -354,6 +365,7 @@ describe("desktopBridgeChannel", () => {
     const onHelperOpened = vi.fn()
     const stages: L1ExitStage[] = []
     const channel = desktopBridgeChannel({
+      pace,
       destination: TYPED,
       chainId: 11155111,
       publicClient: { waitForTransactionReceipt } as never,
@@ -383,7 +395,7 @@ describe("desktopBridgeChannel", () => {
     })
 
     await expect(channel.waitForReceipt(HASH)).resolves.toBe(true)
-    expect(waitForTransactionReceipt).toHaveBeenCalledWith({ hash: HASH })
+    expect(waitForTransactionReceipt).toHaveBeenCalledWith({ hash: HASH, pollingInterval: 4_000 })
     expect(stages).toEqual(["awaiting-browser", "confirming"])
   })
 })

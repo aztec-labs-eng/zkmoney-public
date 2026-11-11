@@ -72,6 +72,7 @@ const RUNS_KEY = "metadata-migration/runs"
  * reports each write through `changed`.
  */
 export class UpgradeActivity {
+  // eslint-disable-next-line no-restricted-syntax -- ZKM-1625
   private static instances = new WeakMap<object, UpgradeActivity>()
   private listeners = new Set<() => void>()
   private cached: UpgradeBatchItem[] = []
@@ -80,6 +81,7 @@ export class UpgradeActivity {
   private read = false
   private registering = Promise.resolve()
 
+  // eslint-disable-next-line local/legacy-store -- ZKM-1625
   static get(storage: Pick<IStorageAdapter, "getItem" | "setItem">): UpgradeActivity {
     let activity = UpgradeActivity.instances.get(storage)
     if (!activity) UpgradeActivity.instances.set(storage, (activity = new UpgradeActivity(storage)))

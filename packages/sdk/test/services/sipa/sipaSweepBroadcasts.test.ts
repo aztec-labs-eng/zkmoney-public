@@ -14,6 +14,7 @@ import {
   assertSubsidySweepsSipa,
   buildSipaSweepBroadcasts,
   splitIntentHash,
+  SupersededImplementationError,
 } from "../../../src/services/sipa/sipaIntents.js"
 
 const address = (byte: string) => `0x${byte.repeat(20)}` as Address
@@ -261,10 +262,27 @@ describe("assertSubsidySweepsSipa", () => {
 
   it.each([
     ["another factory", { SIPA_FACTORY: address("cc") }, "deploys through"],
-    ["another implementation", { implementationFor: address("dd") }, "implementation is"],
     ["another address", { predictSIPA: address("ee") }, "would deploy"],
-  ])("refuses a subsidy with %s", async (_, chain, reason) => {
-    await expect(assertSubsidySweepsSipa(l1(chain).client, target)).rejects.toThrow(reason)
+  ])("refuses a subsidy with %s, a fault no later change lifts", async (_, chain, reason) => {
+    const refusal = assertSubsidySweepsSipa(l1(chain).client, target)
+    await expect(refusal).rejects.toThrow(reason)
+    await expect(refusal).rejects.not.toBeInstanceOf(SupersededImplementationError)
+  })
+
+  it("refuses a factory that clones another implementation as superseded", async () => {
+    const chain = { implementationFor: address("dd") }
+    const refusal = assertSubsidySweepsSipa(l1(chain).client, target)
+    await expect(refusal).rejects.toThrow("implementation is")
+    await expect(refusal).rejects.toBeInstanceOf(SupersededImplementationError)
+  })
+
+  it("lets a read that fails through as itself, not as a refusal", async () => {
+    const readContract = async () => {
+      throw new Error("fetch failed")
+    }
+    const read = assertSubsidySweepsSipa({ readContract } as unknown as PublicClient, target)
+    await expect(read).rejects.toThrow("fetch failed")
+    await expect(read).rejects.not.toBeInstanceOf(SupersededImplementationError)
   })
 
   it("checks every row's subsidy against that row's portal", async () => {

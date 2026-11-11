@@ -1,0 +1,22 @@
+/* A saved wallet's account is not the connected one. */
+:global(.ww-deposit-sheet__head).head {
+  gap: 16px;
+}
+.text {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+.text p {
+  max-width: 280px;
+}
+.foot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+.foot :global(.ww-deposit-sheet__note) {
+  max-width: 222px;
+}

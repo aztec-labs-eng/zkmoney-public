@@ -9,13 +9,14 @@ import {
   type ClaimRequest,
 } from "../../../src/features/onboarding/oxideOnboarding"
 import { stashClaimLink } from "../../../src/features/paylink/claimStash"
+import { tabStash } from "../../../src/platform/storage/tabStash"
 import { linkIdentity } from "../../../src/features/paylink/linkIdentity"
 import {
   ticketSignupContinuation,
   ticketSignupRegistration,
 } from "../../../src/features/paylink/ticketContinuation"
 import { loadRegistrationTerms } from "../../../src/features/registration/registrationTerms"
-import { closeSession, session } from "../../../src/session/session"
+import { closeSession } from "../../../src/session/session"
 import { openTestSession } from "../../support/session"
 import { seedDeviceKeys } from "../../support/page"
 import { DAI, accountRecords, earnedTerms, nameClaim } from "../../support/registrationFixtures"
@@ -40,9 +41,9 @@ const closeTabAfterCheckpoint = () =>
 beforeEach(async () => {
   tab.clear()
   await seedDeviceKeys({ storageId: "a1" })
-  const own = openTestSession()
-  await own.registrations.ready
-  harness = claimHarness(own)
+  const session = openTestSession()
+  await session.registrations.ready
+  harness = claimHarness(session)
   harness.h.sign.mockResolvedValue(
     nameClaim({ terms: earnedTerms({ fee: String(PAID.fee), minDeposit: String(PAID.min) }) }),
   )
@@ -93,37 +94,39 @@ describe("ticket redemption after the registration preflight", () => {
   })
 
   it("keeps the link on the checkpoint, so a reopen resumes without another proof or claim", async () => {
+    const session = openTestSession()
     harness.h.redeem.mockResolvedValue("redeemed")
     harness.h.sign.mockResolvedValue(nameClaim({ terms: earnedTerms({ ticket: true }) }))
     closeTabAfterCheckpoint()
     await expect(register()).rejects.toThrow()
     expect(harness.h.redeem).toHaveBeenCalledTimes(1)
     expect(accountRecords.get(OWNER)).toMatchObject({ sipaAddress: NEW, phase: "awaiting_deposit" })
-    expect(loadRegistrationTerms(session().registrations, OWNER, "demo")).toMatchObject({
+    expect(loadRegistrationTerms(session.registrations, OWNER, "demo")).toMatchObject({
       feeWaived: true,
       paylinkFunded: true,
       paylinkId: linkIdentity(PAYLINK_FRAGMENT),
     })
     // What the reopened wizard resumes by, pinned to the account the ticket bound.
-    expect(ticketSignupRegistration(PAYLINK_FRAGMENT, L2)?.account).toBe(OWNER)
-    expect(ticketSignupRegistration(PAYLINK_FRAGMENT, `0x${"99".repeat(32)}`)).toBeNull()
+    expect(ticketSignupRegistration(session, PAYLINK_FRAGMENT, L2)?.account).toBe(OWNER)
+    expect(ticketSignupRegistration(session, PAYLINK_FRAGMENT, `0x${"99".repeat(32)}`)).toBeNull()
   })
 
   it("binds no link to a checkpoint whose quote does not honour the ticket", async () => {
+    const session = openTestSession()
     harness.h.redeem.mockResolvedValue("unavailable")
     closeTabAfterCheckpoint()
     await expect(register()).rejects.toThrow()
     expect(accountRecords.get(OWNER)).toMatchObject({ sipaAddress: NEW })
-    expect(loadRegistrationTerms(session().registrations, OWNER, "demo")).not.toHaveProperty(
+    expect(loadRegistrationTerms(session.registrations, OWNER, "demo")).not.toHaveProperty(
       "paylinkId",
     )
-    expect(ticketSignupRegistration(PAYLINK_FRAGMENT, L2)).toBeNull()
+    expect(ticketSignupRegistration(session, PAYLINK_FRAGMENT, L2)).toBeNull()
   })
 })
 
 describe("a link with no ticket for this signup, which pays the name's own deposit", () => {
   beforeEach(() => {
-    stashClaimLink(PAYLINK_FRAGMENT)
+    stashClaimLink(tabStash, PAYLINK_FRAGMENT)
     harness.h.sign.mockResolvedValue(
       nameClaim({
         terms: earnedTerms({ fee: String(RANDOM.fee), minDeposit: String(RANDOM.min) }),
@@ -140,9 +143,10 @@ describe("a link with no ticket for this signup, which pays the name's own depos
   const burn = (proverTip: bigint) => goldenTicketBurn(RANDOM, proverTip, 0n).burn
 
   it("binds the registration to the link, with its tip, when the note covers the signed deposit", async () => {
+    const session = openTestSession()
     const outcome = await register(20n * DAI, DAI / 10n)
     expect(outcome).toMatchObject({ kind: "pending", depositLink: { fragment: PAYLINK_FRAGMENT } })
-    expect(loadRegistrationTerms(session().registrations, OWNER, "demo")).toMatchObject({
+    expect(loadRegistrationTerms(session.registrations, OWNER, "demo")).toMatchObject({
       paylinkFunded: true,
       paylinkDeposit: true,
       paylinkId: linkIdentity(PAYLINK_FRAGMENT),
@@ -150,7 +154,9 @@ describe("a link with no ticket for this signup, which pays the name's own depos
       speed: "faster",
     })
     // Home's claim of the link pays the registration.
-    expect(ticketSignupContinuation(PAYLINK_FRAGMENT, L2, [])?.activation.state).toBe("ready")
+    expect(ticketSignupContinuation(session, PAYLINK_FRAGMENT, L2, [])?.activation.state).toBe(
+      "ready",
+    )
   })
 
   it.each([
@@ -163,12 +169,13 @@ describe("a link with no ticket for this signup, which pays the name's own depos
       },
     ],
   ])("leaves the registration on its own deposit when the note %s", async (_, run) => {
+    const session = openTestSession()
     const outcome = await run()
     expect(outcome).toMatchObject({ kind: "pending" })
     expect(outcome).not.toHaveProperty("depositLink")
-    expect(loadRegistrationTerms(session().registrations, OWNER, "demo")).not.toHaveProperty(
+    expect(loadRegistrationTerms(session.registrations, OWNER, "demo")).not.toHaveProperty(
       "paylinkId",
     )
-    expect(ticketSignupContinuation(PAYLINK_FRAGMENT, L2, [])).toBeNull()
+    expect(ticketSignupContinuation(session, PAYLINK_FRAGMENT, L2, [])).toBeNull()
   })
 })

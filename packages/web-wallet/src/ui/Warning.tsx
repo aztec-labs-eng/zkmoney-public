@@ -19,6 +19,7 @@ export function Warning({
   style,
   children,
   onDismiss,
+  testId,
 }: {
   title: ReactNode
   tone?: WarningTone
@@ -27,10 +28,17 @@ export function Warning({
   children?: ReactNode
   /** Adds a close button to a card with a body. */
   onDismiss?: () => void
+  testId?: string
 }) {
   if (!children) {
     return (
-      <p className="ww-withdraw__warning" data-tone={tone} role={role} style={style}>
+      <p
+        className="ww-withdraw__warning"
+        data-tone={tone}
+        role={role}
+        style={style}
+        data-testid={testId}
+      >
         {title}
       </p>
     )

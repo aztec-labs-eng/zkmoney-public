@@ -11,7 +11,6 @@ import {
   registrationAt,
   type PendingRegistrationRecord,
 } from "@obsidion/front-core"
-import { getConfig } from "../../config/env"
 import type { RegistrationDepositDetailModal } from "./RegistrationDepositDetailModal/RegistrationDepositDetailModal"
 import { useFundingTransfer } from "../registration/registrationFunding"
 import { useSession, type Session } from "../../session/session"
@@ -121,12 +120,12 @@ export interface RegistrationDepositEntry {
  * confirms until the SIPA rail's own deposit row takes over.
  */
 export function useRegistrationDepositEntry(): RegistrationDepositEntry | null {
-  const config = getConfig()
-  const own = useSession()
-  useStore(own.registrations.view)
-  useStore(own.sipaDeposits.view)
-  useStore(own.identity)
-  const record = registrationForFeed(own)
+  const session = useSession()
+  const { config } = session.page
+  useStore(session.registrations.view)
+  useStore(session.sipaDeposits.view)
+  useStore(session.identity)
+  const record = registrationForFeed(session)
   const stage = useRegistrationStage(record)
   const depositAdmitted = useDepositAdmission(record)
   const shown = useDepositShown(record)
@@ -152,7 +151,7 @@ export function useRegistrationDepositEntry(): RegistrationDepositEntry | null {
     funding === undefined ? undefined : funding?.normalized ?? 0n,
     shown,
   )
-  const returned = refundedAwaitingPayment(own, record)
+  const returned = refundedAwaitingPayment(session, record)
   const seen =
     returned || depositAdmitted || stage === "registered" || fundsIn(stage) || (gross ?? 0n) > 0n
   if (!seen) return null

@@ -6,6 +6,7 @@ import {
   type PublicClient,
 } from "viem"
 import { normalize } from "viem/ens"
+import type { QueryEntry, QueryFactory } from "../../engine/query"
 
 /** A client on the L1 whose ENS names the lookups resolve. */
 export type EnsClient = Pick<PublicClient, "getEnsName" | "getEnsAddress">
@@ -20,24 +21,29 @@ function isNormalized(name: string): boolean {
   }
 }
 
-const names = new Map<string, Promise<string | null>>()
+/** An address's ENS primary name, or null for none. Readers take a failed lookup as none. */
+export type EnsNames = (address: Address) => QueryEntry<string | null>
 
-/** The address's ENS primary name, cached per address. Best effort: any failure reads as none. */
-export function lookupEnsName(getClient: GetEnsClient, address: Address): Promise<string | null> {
-  const key = address.toLowerCase()
-  let name = names.get(key)
-  if (!name) {
-    name = (async () => {
+/** Primary-name lookups over `getClient`, one per address; a failed one is read again. */
+export function ensNames(query: QueryFactory, getClient: GetEnsClient): EnsNames {
+  return query<[Address], string | null>("ensName", {
+    load: async (address) => {
       const primary = (await getClient()?.getEnsName({ address })) ?? null
       // ENSIP-19: an unnormalized primary name reads as none, so a look-alike name never shows.
       return primary && isNormalized(primary) ? primary : null
-    })().catch(() => {
-      names.delete(key)
-      return null
-    })
-    names.set(key, name)
-  }
-  return name
+    },
+  })
+}
+
+/**
+ * ENS names' addresses over `getClient`. Never fresh: a stealth-address name (a Fluidkey
+ * *.fkey.id) answers a new address per lookup.
+ */
+export function ensAddresses(query: QueryFactory, getClient: GetEnsClient) {
+  return query<[name: string], Address | null>("ensAddress", {
+    load: (name) => lookupEnsAddress(getClient, name),
+    stale: 0,
+  })
 }
 
 /** Dotted text with no empty label: what ENS's guidelines say to look up. */
@@ -56,6 +62,7 @@ export function ensNameOf(text: string): string | undefined {
 }
 
 /** Universal Resolver reverts that mean the name has no address, not that the lookup failed. */
+// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
 const NO_ADDRESS = new Set([
   "ResolverNotFound",
   "ResolverNotContract",

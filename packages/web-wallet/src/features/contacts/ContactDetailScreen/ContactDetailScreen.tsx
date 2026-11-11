@@ -1,9 +1,10 @@
 import { amountError, decimalInput, parseAmount } from "../../../ui/format"
 import { Fragment, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react"
 import { useNavigate, useParams } from "react-router-dom"
+import type { Address } from "viem"
 import { useActionGuard } from "../../actionGate"
 import {
-  ContactStorage,
+  WalletError,
   contactRowFromEntry,
   isPaymentContactEntry,
   resolveAssetConstants,
@@ -13,7 +14,6 @@ import {
   useStore,
   type Contact,
   type SipaDeposit,
-  useResource,
 } from "@obsidion/front-core"
 import { TRANSFER_MEMO_MAX_BYTES, truncateUtf8 } from "@obsidion/sdk"
 import {
@@ -27,14 +27,13 @@ import {
   TwoPartyAmountCard,
   avatarColors,
 } from "@obsidion/web-ds"
-import { getConfig } from "../../../config/env"
 import { showReportableError } from "../../../errors/errorModal"
 import { fireEvent, requestAmountBucket } from "../../../lib/analytics"
 import { useBack } from "../../../ui/hooks"
 import { pageBottom, revealAboveKeyboard, useKeyboardInset } from "../../../ui/keyboardInset"
 import { usePhoneLayout } from "../../../ui/usePhoneLayout"
+import { accountContacts, contactBook } from "../../../session/contacts"
 import { useSession } from "../../../session/session"
-import { wallClock } from "../../../lib/clock"
 import {
   ActivityDetailHost,
   useActivityHost,
@@ -49,12 +48,13 @@ import {
 } from "../../../platform/xmtp/xmtpLifecycle"
 import emptyArt from "../../../assets/contacts/empty-txns.webp"
 import { ChatBubble } from "../ChatBubble/ChatBubble"
-import { DepositDetailModal } from "../../../ui/screens/DepositDetailModal"
-import { TxDetailModal } from "../../../ui/screens/TxDetailModal"
+import { DepositDetailModal } from "../../../ui/screens/DepositDetailModal/DepositDetailModal"
+import { TxDetailModal } from "../../../ui/screens/TxDetailModal/TxDetailModal"
 import { txNoteFor, txRowView, type ActivityRowView } from "../../../ui/screens/activityView"
 import { chatContactOf, chatMessageOf, type ChatMessage } from "../contactChat"
 import {
   addressKindLabel,
+  contactDetail,
   findContactEntry,
   l1AliasDraft,
   l1ContactHeader,
@@ -69,18 +69,22 @@ import { RequestDetailModal } from "../RequestDetailModal/RequestDetailModal"
 import { recipientNotUpgradedCopy } from "../../migration/upgradeCopy"
 import { useRecipientUpgraded } from "../useRecipientUpgraded"
 import { lookUpUnsavedContact, saveUnsavedContact } from "../unsavedContact"
+import type { WithdrawLocationState } from "../../../session/routeStates"
 import styles from "./ContactDetailScreen.module.css"
 import copy from "./ContactDetailScreen.copy"
 import { fmt } from "../../../lib/fmt"
+import { useDomEffect } from "../../../ui/useDomEffect"
 
 /** Contact detail: identity header, delete, the payments chat — the chronological R15 record
  *  kinds (transfers, requests, paylinks, SIPA deposits, withdrawals) between the user and this
  *  contact — plus L2 payment-request actions and Send, or L1 Deposit + Withdraw. A registered tag
  *  that is not saved opens here too, with Add contact in place of delete. */
 export function ContactDetailScreen() {
+  // Another person is another page: no form, answer or late result carries over.
+  const { idOrTag } = useParams()
   return (
     <ActivityDetailHost>
-      <ContactDetail />
+      <ContactDetail key={idOrTag} />
     </ActivityDetailHost>
   )
 }
@@ -92,13 +96,23 @@ function ContactDetail() {
   const phone = usePhoneLayout()
   const back = useBack("/contacts")
   const { idOrTag } = useParams()
-  const tokenService = useResource(session.token)
-  const networkId = useResource(session.wallet)?.networkId
+  const tokenAddress = useStore(session.mainToken)?.address
+  const networkId = useStore(session.page.networkId)
   const ownTag = useStore(session.identity, (s) => s.value?.handle)
-  const [entry, setEntry] = useState<Contact | null | undefined>(undefined)
-  const [saved, setSaved] = useState(true)
+  const book = contactBook(session)
+  const stored = useStore(book, (b) => findContactEntry(b.records, idOrTag ?? ""))
+  const loaded = useStore(book, (b) => b.loaded)
+  const unreadable = useStore(book, (b) => b.failed && !b.loaded)
+  // What the visit first read of the book, and the registry's answer when it held nobody.
+  const [first, setFirst] = useState<Contact | null>()
+  const firstSeen = first !== undefined ? first : stored ?? null
+  if (loaded && first === undefined) setFirst(firstSeen)
+  const [unsaved, setUnsaved] = useState<Contact | null>()
   const [lookingUp, setLookingUp] = useState(false)
   const [lookupFailed, setLookupFailed] = useState(false)
+  const { entry, saved } = !loaded
+    ? { entry: unreadable ? null : undefined, saved: true }
+    : contactDetail(stored, firstSeen, unsaved)
   const [adding, setAdding] = useState(false)
   const [addError, setAddError] = useState("")
   const [confirmingDelete, setConfirmingDelete] = useState(false)
@@ -106,8 +120,15 @@ function ContactDetail() {
   const [alias, setAlias] = useState("")
   const [savingAlias, setSavingAlias] = useState(false)
   const [renameError, setRenameError] = useState("")
+  // A person still on an older zk.money keeps their history here but can't be paid or asked. A
+  // request waits for the answer, and a form opened before it closes.
+  const upgraded = useRecipientUpgraded(
+    entry?.addressKind === "ethereum-l1" ? undefined : entry?.tag,
+  )
+  const notUpgraded = upgraded === false
   /** The open inline request form; undefined when closed, so closing also drops the draft. */
-  const [requestDraft, setRequestDraft] = useState<{ amount: string; note: string }>()
+  const [draft, setRequestDraft] = useState<{ amount: string; note: string }>()
+  const requestDraft = notUpgraded ? undefined : draft
   const [submitting, setSubmitting] = useState(false)
   const [requestDetail, setRequestDetail] = useState<{ id: string; step: "detail" | "confirm" }>()
   const host = useActivityHost()
@@ -119,11 +140,12 @@ function ContactDetail() {
       ? [party.address, ...(party.retiredAddresses ?? [])].join(",")
       : ""
   const chatRows = useMemo(
-    () => peerRows(session.activity, peers ? peers.split(",") : []),
-    [session.activity, peers],
+    () => peerRows(session.transfers, session.operations, peers ? peers.split(",") : []),
+    [session.transfers, session.operations, peers],
   )
   const { feed } = useFeed({ rows: chatRows })
   // Kept while the bubbles and their day labels say the same, so a clock tick changes nothing.
+  const { wallClock } = useSession().page
   const thread = useStore(
     wallClock,
     (now) => ({
@@ -141,12 +163,9 @@ function ContactDetail() {
   const inboxState = useSyncExternalStore(subscribeXmtpInboxState, getXmtpInboxState)
   const chatBody = useRef<HTMLDivElement>(null)
   const chatFooter = useRef<HTMLDivElement>(null)
-  // Route visit count. Add contact reads it when it starts and checks it before each state write,
-  // so a late result cannot change a later route, including a return to the same person.
-  const routeVisit = useRef(0)
   // Only a new message scrolls the chat to its end.
   const latestMessage = messages.at(-1)?.id
-  useEffect(() => {
+  useDomEffect(() => {
     const el = chatBody.current
     if (phone) {
       const footer = chatFooter.current
@@ -159,7 +178,7 @@ function ContactDetail() {
   const requestAmountError = amountError(requestDraft?.amount ?? "")
   const requestAmountInvalid = Boolean(requestAmountError)
   const requesting = Boolean(requestDraft)
-  useEffect(() => {
+  useDomEffect(() => {
     if (phone && requesting) chatFooter.current?.scrollIntoView({ block: "end" })
   }, [phone, requesting, requestAmountInvalid])
   // The keyboard covers the page's foot, so the page needs room below the form to scroll it clear.
@@ -171,93 +190,51 @@ function ContactDetail() {
   )
   const requestForm = useRef<HTMLDivElement>(null)
 
+  // A person the book did not hold when the visit first read it is asked of the registry.
+  const asksRegistry = loaded && firstSeen === null
+  // eslint-disable-next-line local/effect-hook -- ZKM-1806
   useEffect(() => {
+    if (!asksRegistry) return
     let cancelled = false
-    routeVisit.current += 1
-    // The previous person's page and its open forms must not survive into this route.
-    setEntry(undefined)
-    setSaved(true)
-    setLookupFailed(false)
-    setAdding(false)
-    setAddError("")
-    setRenaming(false)
-    setConfirmingDelete(false)
-    setRequestDraft(undefined)
-    ;(async () => {
-      const found = findContactEntry(await ContactStorage.get().getEntries(), idOrTag ?? "")
-      if (found) {
-        if (!cancelled) {
-          // A row the wallet added is not the user's contact until they add or pay it.
-          setSaved(!found.autoAdded)
-          setEntry(found)
-        }
-        return
-      }
-      setLookingUp(true)
-      const unsaved = await lookUpUnsavedContact(
-        idOrTag ?? "",
-        session.identity.get().value?.handle,
+    setLookingUp(true)
+    lookUpUnsavedContact(session, idOrTag ?? "", session.identity.get().value?.handle)
+      .then(
+        (contact) => {
+          if (!cancelled) setUnsaved(contact)
+        },
+        (e: unknown) => {
+          console.warn(e)
+          if (cancelled) return
+          setLookupFailed(true)
+          setUnsaved(null)
+        },
       )
-      if (cancelled) return
-      setSaved(!unsaved)
-      setEntry(unsaved)
-    })()
-      .catch((e) => {
-        console.warn(e)
-        if (cancelled) return
-        setLookupFailed(true)
-        setEntry(null)
-      })
       .finally(() => {
         if (!cancelled) setLookingUp(false)
       })
-    // The page stays mounted under its Send flow, which can save this person.
-    const unsubscribe = ContactStorage.get().onChange(() => {
-      void ContactStorage.get()
-        .getEntries()
-        .then((entries) => {
-          const found = findContactEntry(entries, idOrTag ?? "")
-          if (found && !cancelled) {
-            setSaved(true)
-            setEntry(found)
-          }
-        })
-        .catch(console.warn)
-    })
     return () => {
       cancelled = true
-      unsubscribe()
     }
-  }, [idOrTag, session.identity])
+  }, [asksRegistry, idOrTag, session])
 
   const addToContacts = async () => {
     if (!entry || saved || adding) return
-    const visit = routeVisit.current
-    const sameVisit = () => routeVisit.current === visit
     setAdding(true)
     setAddError("")
     try {
-      const result = await saveUnsavedContact(entry)
-      if (!sameVisit()) return
-      if (result === "changed") {
-        setAddError(copy.errors.changed)
-        return
-      }
-      const stored = findContactEntry(await ContactStorage.get().getEntries(), idOrTag ?? "")
-      if (!sameVisit()) return
-      if (stored) setEntry(stored)
-      setSaved(true)
+      const result = await saveUnsavedContact(session, accountContacts(session), entry)
+      if (result === "changed") setAddError(copy.errors.changed)
     } catch (e) {
       console.warn(e)
-      if (sameVisit()) setAddError(copy.errors.addFailed)
+      setAddError(copy.errors.addFailed)
     } finally {
-      if (sameVisit()) setAdding(false)
+      setAdding(false)
     }
   }
 
   const remove = async () => {
     if (!entry) return
-    await ContactStorage.get().removeEntry(removeIdentityOf(entry))
+    await accountContacts(session).removeEntry(removeIdentityOf(entry))
     navigate("/contacts", { replace: true })
   }
 
@@ -277,13 +254,12 @@ function ContactDetail() {
     setRenameError("")
     try {
       if (entry.addressKind === "ethereum-l1") {
-        const updated = await updateSavedL1WalletContact({
+        await updateSavedL1WalletContact(accountContacts(session), {
           originalAddress: entry.address,
           provider: entry.l1Wallet?.provider ?? "unknown",
           address: entry.address,
           name: alias,
         })
-        setEntry(updated)
       } else {
         // A 0x… name reads as a messaging address saved before the tag resolved, so it would
         // never show.
@@ -293,12 +269,11 @@ function ContactDetail() {
         }
         // Blank goes back to the tag, which is what every zk.money contact saves under.
         const renamed = { ...entry, name: alias.trim() || entry.tag! }
-        await ContactStorage.get().modifyEntry(renamed, removeIdentityOf(entry))
-        setEntry(renamed)
+        await accountContacts(session).modifyEntry(renamed, removeIdentityOf(entry))
       }
       setRenaming(false)
     } catch (e) {
-      if (e instanceof Error && e.message === "Duplicate entry - name") {
+      if (e instanceof WalletError && e.code === "contact.nameTaken") {
         setRenameError(copy.errors.aliasTaken)
       } else {
         showReportableError(e, "contact:rename")
@@ -310,22 +285,11 @@ function ContactDetail() {
 
   // Compose: persist the outgoing row (the chat subscription renders the "Owes you" bubble
   // immediately), then announce over XMTP in the background — delivery is best-effort.
-  // A person still on an older zk.money keeps their history here but can't be paid or asked. A
-  // request waits for the answer, and a form opened before it closes.
-  const upgraded = useRecipientUpgraded(
-    entry?.addressKind === "ethereum-l1" ? undefined : entry?.tag,
-  )
-  const notUpgraded = upgraded === false
-  useEffect(() => {
-    if (notUpgraded) setRequestDraft(undefined)
-  }, [notUpgraded])
-
   const submitRequest = async () => {
     if (!entry?.tag || !requestDraft || submitting || upgraded !== true) return
     setSubmitting(true)
     try {
-      const config = getConfig()
-      const walletAsset = resolveAssetConstants(config.network).DAI
+      const walletAsset = resolveAssetConstants(session.network).DAI
       const row = newOutgoingRequest(
         entry.tag,
         requestDraft.amount,
@@ -344,11 +308,10 @@ function ContactDetail() {
       setRequestDraft(undefined)
       const broadcaster = getRequestBroadcaster()
       const requesterTag = session.identity.get().value?.handle
-      const tokenAddress = tokenService?.tokenAddress?.toString()
       if (!broadcaster || !requesterTag || !tokenAddress || !networkId) return
       void announceOutgoingRequest(row, {
         broadcaster,
-        resolveXmtpAddress,
+        resolveXmtpAddress: (tag) => resolveXmtpAddress(session, tag),
         requesterTag,
         // The wire value peers compare on receive.
         networkId,
@@ -381,7 +344,7 @@ function ContactDetail() {
     )
   }
 
-  const { remind, stateOf: remindStateOf } = useRemind(tokenService?.tokenAddress?.toString())
+  const { remind, stateOf: remindStateOf } = useRemind(tokenAddress)
 
   // Every bubble opens its own sheet.
   const openMessage = (m: ChatMessage) => {
@@ -408,7 +371,7 @@ function ContactDetail() {
     if (m.role === "request-in") {
       const decline = {
         label: copy.actions.decline,
-        onClick: () => void declineRequestById(m.id).catch(console.warn),
+        onClick: () => void declineRequestById(session, m.id).catch(console.warn),
         secondary: true,
       }
       if (notUpgraded) return [decline]
@@ -441,7 +404,7 @@ function ContactDetail() {
       <div className="ww-panel">
         <div className="ww-chat__head">
           <GlassCircleButton ariaLabel={copy.back} onClick={back}>
-            <Icon name="arrow-left" size={20} color="#fff" />
+            <Icon name="arrow-left" size={20} color="var(--ink)" />
           </GlassCircleButton>
           <span>{copy.contact}</span>
           <span style={{ width: 40 }} />
@@ -450,7 +413,9 @@ function ContactDetail() {
           {entry === undefined ? (
             <Spinner size={20} />
           ) : (
-            <span>{lookupFailed ? copy.errors.lookupFailed : copy.errors.notFound}</span>
+            <span>
+              {lookupFailed || unreadable ? copy.errors.lookupFailed : copy.errors.notFound}
+            </span>
           )}
         </div>
       </div>
@@ -476,7 +441,7 @@ function ContactDetail() {
     <div className="ww-panel" ref={setPanel}>
       <div className="ww-chat__head">
         <GlassCircleButton ariaLabel={copy.back} onClick={back}>
-          <Icon name="arrow-left" size={20} color="#fff" />
+          <Icon name="arrow-left" size={20} color="var(--ink)" />
         </GlassCircleButton>
         <span className={styles.chatWho}>
           {renamable ? (
@@ -500,7 +465,7 @@ function ContactDetail() {
         <span className={styles.chatHeadActions}>
           {renamable && !renaming && (
             <GlassCircleButton ariaLabel={copy.rename} size={32} onClick={startRename}>
-              <Icon name="pencil" size={14} color="#fff" />
+              <Icon name="pencil" size={14} color="var(--ink)" />
             </GlassCircleButton>
           )}
           {saved && !confirmingDelete && (
@@ -512,7 +477,7 @@ function ContactDetail() {
                 setConfirmingDelete(true)
               }}
             >
-              <Icon name="trash" size={14} color="#fff" />
+              <Icon name="trash" size={14} color="var(--ink)" />
             </GlassCircleButton>
           )}
           <GradientInitialAvatar name={avatarName} colors={avatarColors(avatarKey)} size={40} />
@@ -599,8 +564,14 @@ function ContactDetail() {
               style={{ flex: 1 }}
               onClick={() =>
                 guard("withdraw", () =>
-                  navigate("/withdraw/existing", {
-                    state: { recipient: entry.address, alias: entry.name },
+                  navigate("/withdraw", {
+                    state: {
+                      withdraw: {
+                        recipient: entry.address as Address,
+                        name: entry.name,
+                        atAmount: true,
+                      },
+                    } satisfies WithdrawLocationState,
                   }),
                 )
               }

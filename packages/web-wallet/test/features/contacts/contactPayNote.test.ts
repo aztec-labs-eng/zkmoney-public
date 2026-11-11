@@ -1,17 +1,18 @@
 /**
  * The note typed on the pay form must reach its carriers — for a request the XMTP announce +
  * the requests store, for a send the on-chain `Transfer.meta` (via sendTokenSponsored's memo option)
- * and the activity row the rail writes before proving and advances in place.
+ * and the send's operation, which takes what its row shows before proving and advances in place.
  */
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest"
-import { testPage, testCore } from "../../support/page"
-import type { Activity } from "@obsidion/front-core"
+import { operationRows } from "@obsidion/front-core"
 import type { WalletSendOptions } from "../../support/submitBoundary"
+import { testWalletDbs } from "../../support/fakeWalletDb"
+import { operationRecord, testOperations } from "../../support/operations"
+import type { Session } from "../../../src/session/session"
 
 const h = vi.hoisted(() => ({
   announce: vi.fn(async (_input: object) => ({ status: "sent", messageId: "m1" })),
   requestAdd: undefined as unknown as MockInstance,
-  activity: undefined as unknown as Activity,
   sendTokenSponsored: vi.fn(async (..._args: unknown[]) => ({ txHash: "0xhash", amount: 5n })),
   addEntry: vi.fn(async (_entry: object) => {}),
   addOrMergeContact: vi.fn(async (entry: object) => entry),
@@ -26,25 +27,18 @@ const h = vi.hoisted(() => ({
   },
 }))
 
-// The operation record has its own tests; here it only has to run the flow.
-vi.mock("../../../src/features/operations/operations", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../src/features/operations/operations")>()),
-  isFlowCancelled: (await import("@obsidion/passkey-web")).isPasskeyCancelled,
-  runOperation: (input: { operationId: string }, run: (op: unknown) => Promise<unknown>) =>
-    run({ operationId: input.operationId, leaveToChain() {} }),
-}))
+/** The book the send writes through. */
+const contacts = {
+  addEntry: h.addEntry,
+  addOrMergeContact: h.addOrMergeContact,
+  approveAutoAdded: h.approveAutoAdded,
+  removeEntry: h.removeEntry,
+} as never
+
 vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/front-core")>()),
   RequestBroadcaster: class {
     announce = h.announce
-  },
-  ContactStorage: {
-    get: () => ({
-      addEntry: h.addEntry,
-      addOrMergeContact: h.addOrMergeContact,
-      approveAutoAdded: h.approveAutoAdded,
-      removeEntry: h.removeEntry,
-    }),
   },
   resolveAssetConstants: () => ({ DAI: { logo: "", price: 1 } }),
   trackSubmission: () => ({
@@ -70,26 +64,20 @@ vi.mock("@obsidion/core/constants", async (original) => ({
     CANCELLED: "cancelled",
   },
 }))
-vi.mock("@obsidion/proving-progress", () => ({
-  ProvingStage: { Mining: "mining" },
-  provingProgress: { on: () => {}, off: () => {} },
-}))
 vi.mock("@aztec-labs/stdlib/aztec-address", () => ({
   AztecAddress: { fromStringUnsafe: (s: string) => s },
 }))
-vi.mock("../../../src/config/env", () => ({ getConfig: () => ({ network: "sandbox" }) }))
 vi.mock("../../../src/platform/xmtp/xmtpLifecycle", () => ({
   getXmtpSender: () => ({}),
   getXmtpUiState: () => ({}),
   xmtpUnavailableCode: () => "messaging.starting",
 }))
-vi.mock("../../../src/features/fees/fpcRefuel", () => ({ maybeRefuelFpc: () => {} }))
 vi.mock("../../../src/features/registration/claimSponsorship", () => ({
-  claimSponsorContext: async () => ({ subscribe: false }),
+  claimSponsorContext: async () => ({ subscribe: false, fpcAddress: "0xfpc" }),
   noteSubscribed: () => {},
 }))
 vi.mock("../../../src/features/contacts/registryResolution", () => ({
-  resolveTagForCommit: async (tag: string) =>
+  resolveTagForCommit: async (_page: unknown, tag: string) =>
     tag === "stale"
       ? { status: "staleRollup" }
       : { status: "resolved", l2Address: "0xabc", xmtpAddress: "0xxmtp" },
@@ -98,23 +86,26 @@ vi.mock("../../../src/features/contacts/registryResolution", () => ({
 const { runContactPay, RecipientNotUpgradedError } = await import(
   "../../../src/features/contacts/contactPay"
 )
-const { activeNamespace, closeSession, switchSession } = await import(
-  "../../../src/session/session"
-)
-const { pageSessionDeps } = await import("../../../src/app/sessionDeps")
-const { walletStorage } = await import("../../../src/platform/storage/walletStorage")
+const { closeSession } = await import("../../../src/session/session")
+const { openTestSession } = await import("../../support/session")
 
+let session: Session
 beforeEach(() => {
-  const opened = switchSession(activeNamespace(testCore().device), pageSessionDeps(testPage()))
-  h.activity = opened.activity
-  vi.spyOn(h.activity, "insertPending")
-  h.requestAdd = vi.spyOn(opened.requests, "add")
+  session = openTestSession({
+    token,
+    account: { makeSpendMetadataResolver: async () => () => {} },
+    wallet: { networkId: "0xnet" },
+    contractService: {},
+    contacts,
+  })
+  h.requestAdd = vi.spyOn(session.requests, "add")
 })
 afterEach(() => {
   vi.restoreAllMocks()
   closeSession()
 })
-const inserted = () => vi.mocked(h.activity.insertPending).mock.calls[0]?.[0]
+/** The send's operation, its record; `nextOperationId` names every one "op". */
+const sendOp = () => operationRecord("op")
 
 const token = {
   fetchTokenInformation: async () => ({
@@ -133,12 +124,7 @@ describe("recipient upgrade check", () => {
       runContactPay(
         {
           mode: "send",
-          deps: {
-            tokenService: token as never,
-            account: { makeSpendMetadataResolver: async () => () => {} } as never,
-            wallet: { networkId: "0xnet" } as never,
-            contractService: {} as never,
-          },
+          session,
           tag: "stale",
           senderTag: "bob",
           amountDisplay: "5",
@@ -146,8 +132,37 @@ describe("recipient upgrade check", () => {
         () => {},
       ),
     ).rejects.toBeInstanceOf(RecipientNotUpgradedError)
-    expect(h.activity.insertPending).not.toHaveBeenCalled()
+    expect(sendOp()).toBeUndefined()
     expect(h.sendTokenSponsored).not.toHaveBeenCalled()
+  })
+})
+
+describe("request pin", () => {
+  // The registry resolves every tag here to 0xabc.
+  const pay = (requesterPin: string) =>
+    runContactPay(
+      {
+        mode: "send",
+        session,
+        tag: "alice",
+        senderTag: "bob",
+        amountDisplay: "5",
+        request: { id: "0x" + "0c".repeat(32), source: "link", requesterPin },
+      },
+      () => {},
+    )
+
+  it("refuses a send whose @tag no longer names the pinned account, before anything is written", async () => {
+    vi.clearAllMocks()
+    await expect(pay("0xabd")).rejects.toMatchObject({ code: "contact.requestMismatch" })
+    expect(sendOp()).toBeUndefined()
+    expect(h.sendTokenSponsored).not.toHaveBeenCalled()
+  })
+
+  it("pays when the pin is the first bytes of the @tag's address, as a Receive code's is", async () => {
+    vi.clearAllMocks()
+    await pay("0xAB")
+    expect(h.sendTokenSponsored).toHaveBeenCalledOnce()
   })
 })
 
@@ -156,7 +171,7 @@ describe("contact pay note", () => {
     await runContactPay(
       {
         mode: "request",
-        deps: { tokenService: token as never, wallet: { networkId: "0xrollup" } as never },
+        session,
         tag: "alice",
         senderTag: "bob",
         amountDisplay: "5",
@@ -169,15 +184,16 @@ describe("contact pay note", () => {
   })
 
   it("persists a send note in the same write as the transaction row", async () => {
+    vi.clearAllMocks()
+    let atProof: ReturnType<typeof sendOp>
+    h.sendTokenSponsored.mockImplementationOnce(async () => {
+      atProof = sendOp()
+      return { txHash: "0xhash", amount: 5n }
+    })
     await runContactPay(
       {
         mode: "send",
-        deps: {
-          tokenService: token as never,
-          account: { makeSpendMetadataResolver: async () => () => {} } as never,
-          wallet: { networkId: "0xnet" } as never,
-          contractService: {} as never,
-        },
+        session,
         tag: "alice",
         senderTag: "bob",
         amountDisplay: "5",
@@ -187,7 +203,11 @@ describe("contact pay note", () => {
     )
     // The tag rides the same write, so a send to someone unsaved still reads as them. Written
     // pending, before the proof — the chat needs a bubble to advance while it runs.
-    expect(inserted()).toMatchObject({ memo: "dinner", toTag: "alice", status: "pending" })
+    expect(atProof).toMatchObject({
+      state: "local",
+      kind: "send",
+      payload: { memo: "dinner", toTag: "alice" },
+    })
     // The note also rides the on-chain meta, with the sender tag.
     expect(h.sendTokenSponsored.mock.calls[0][3]).toMatchObject({
       memo: "dinner",
@@ -202,15 +222,12 @@ describe("contact pay note", () => {
       txHash: "0xhash",
       amount: 5n,
     }))
+    // The open session, with this token in place of the suite's.
+    openTestSession({ token: { ...token, sendTokenSponsored } })
     await runContactPay(
       {
         mode: "send",
-        deps: {
-          tokenService: { ...token, sendTokenSponsored } as never,
-          account: { makeSpendMetadataResolver: async () => () => {} } as never,
-          wallet: { networkId: "0xnet" } as never,
-          contractService: {} as never,
-        },
+        session,
         tag: "alice",
         senderTag: "bob",
         amountDisplay: "5",
@@ -220,21 +237,20 @@ describe("contact pay note", () => {
     )
     expect(sendTokenSponsored.mock.calls[0][3]).toMatchObject({ requestId: REQ })
     // The pending row carries the request id so the feed hides the request it pays.
-    expect(inserted()).toMatchObject({ requestId: REQ })
+    expect(sendOp()).toMatchObject({ kind: "send", payload: { requestId: REQ } })
   })
 
   it("saves an unsaved requester before the send row is written, and approves them once it lands", async () => {
     vi.clearAllMocks()
     const order: string[] = []
+    // Each step names whether the send's row was written by then.
+    const row = () => sendOp()?.kind ?? "no row"
     h.addOrMergeContact.mockImplementationOnce(async (entry) => {
-      order.push("contact")
+      order.push(`contact, ${row()}`)
       return entry
     })
-    vi.mocked(h.activity.insertPending).mockImplementationOnce(async () => {
-      order.push("row")
-    })
     h.sendTokenSponsored.mockImplementationOnce(async () => {
-      order.push("send")
+      order.push(`send, ${row()}`)
       return { txHash: "0xhash", amount: 5n }
     })
     h.addEntry.mockImplementationOnce(async () => {
@@ -243,12 +259,7 @@ describe("contact pay note", () => {
     await runContactPay(
       {
         mode: "send",
-        deps: {
-          tokenService: token as never,
-          account: { makeSpendMetadataResolver: async () => () => {} } as never,
-          wallet: { networkId: "0xnet" } as never,
-          contractService: {} as never,
-        },
+        session,
         tag: "alice",
         senderTag: "bob",
         amountDisplay: "5",
@@ -260,7 +271,7 @@ describe("contact pay note", () => {
     const contact = { name: "alice", address: "0xabc", verified: true, tag: "alice" }
     expect(h.addOrMergeContact).toHaveBeenCalledWith({ ...contact, autoAdded: true })
     expect(h.addEntry).toHaveBeenCalledWith(contact)
-    expect(order).toEqual(["contact", "row", "send", "approval"])
+    expect(order).toEqual(["contact, no row", "send, send", "approval"])
   })
 })
 
@@ -269,12 +280,7 @@ it("makes a payee the wallet added a contact once the send lands", async () => {
   await runContactPay(
     {
       mode: "send",
-      deps: {
-        tokenService: token as never,
-        account: { makeSpendMetadataResolver: async () => () => {} } as never,
-        wallet: { networkId: "0xnet" } as never,
-        contractService: {} as never,
-      },
+      session,
       tag: "alice",
       senderTag: "bob",
       amountDisplay: "5",
@@ -288,11 +294,8 @@ it("makes a payee the wallet added a contact once the send lands", async () => {
 describe("approving an unsaved requester", () => {
   const send = {
     mode: "send" as const,
-    deps: {
-      tokenService: token as never,
-      account: { makeSpendMetadataResolver: async () => () => {} } as never,
-      wallet: { networkId: "0xnet" } as never,
-      contractService: {} as never,
+    get session() {
+      return session
     },
     tag: "alice",
     senderTag: "bob",
@@ -351,11 +354,8 @@ describe("approving an unsaved requester", () => {
 describe("the row a failed send added", () => {
   const send = {
     mode: "send" as const,
-    deps: {
-      tokenService: token as never,
-      account: { makeSpendMetadataResolver: async () => () => {} } as never,
-      wallet: { networkId: "0xnet" } as never,
-      contractService: {} as never,
+    get session() {
+      return session
     },
     tag: "alice",
     senderTag: "bob",
@@ -412,11 +412,8 @@ describe("the row a failed send added", () => {
 describe("contact send cancellation and failure identity", () => {
   const send = {
     mode: "send" as const,
-    deps: {
-      tokenService: token as never,
-      account: { makeSpendMetadataResolver: async () => () => {} } as never,
-      wallet: { networkId: "0xnet" } as never,
-      contractService: {} as never,
+    get session() {
+      return session
     },
     tag: "alice",
     senderTag: "bob",
@@ -431,7 +428,7 @@ describe("contact send cancellation and failure identity", () => {
         if (stage === "proving") throw cancelled
       }),
     ).rejects.toBe(cancelled)
-    expect(await h.activity.all()).toEqual([])
+    expect(sendOp()).toBeUndefined()
     expect(h.sendTokenSponsored).not.toHaveBeenCalled()
   })
 
@@ -440,16 +437,12 @@ describe("contact send cancellation and failure identity", () => {
     const rejection = new Error("passkey rejected")
     h.sendTokenSponsored.mockRejectedValueOnce(rejection)
     await expect(runContactPay(send, () => {})).rejects.toBe(rejection)
-    const operationId = inserted()!.id
-    expect(inserted()).toMatchObject({ status: "pending", operationId })
-    expect(h.sendTokenSponsored.mock.calls[0][3]).toMatchObject({ operationId })
-    expect(await h.activity.all()).toEqual([
-      expect.objectContaining({
-        id: operationId,
-        status: "failed",
-        detailedStatus: "failed",
-        failure: { code: "tx.failed", detail: rejection.message },
-      }),
+    expect(h.sendTokenSponsored.mock.calls[0][3]).toMatchObject({ operationId: "op" })
+    // Failed before its proof: kept as the send's history, with no notification.
+    expect(sendOp()).toMatchObject({ kind: "send", state: "failed", error: rejection.message })
+    expect(sendOp()?.readAt).toBeDefined()
+    expect(operationRows(testOperations().view.get()).records).toEqual([
+      expect.objectContaining({ id: "op", status: "failed", failure: { code: "tx.failed" } }),
     ])
   })
 
@@ -458,29 +451,34 @@ describe("contact send cancellation and failure identity", () => {
     let heldAtNode: string | undefined
     h.sendTokenSponsored.mockImplementationOnce(async (...args: unknown[]) => {
       await (args[3] as WalletSendOptions).onTxHash?.("0xhash", { expiresAtMs: 0 })
-      heldAtNode = (await h.activity.all())[0]?.txHash
+      heldAtNode = sendOp()?.state === "sent" ? sendOp()?.txHash : undefined
       return { txHash: "0xhash", amount: 5n }
     })
     await runContactPay(send, () => {})
     expect(heldAtNode).toBe("0xhash")
+    expect(sendOp()).toMatchObject({ state: "settled", txHash: "0xhash" })
   })
 
   it("sends nothing, and fails the row, when the hash cannot be saved", async () => {
     vi.clearAllMocks()
-    vi.spyOn(h.activity, "setHash").mockRejectedValueOnce(new Error("quota exceeded"))
+    testWalletDbs().onApply = (_version, written) => {
+      if (written.some(([key, value]) => key.endsWith("/op") && value?.includes('"state":"sent"')))
+        throw new Error("quota exceeded")
+    }
     const node = vi.fn()
     h.sendTokenSponsored.mockImplementationOnce(async (...args: unknown[]) => {
       await (args[3] as WalletSendOptions).onTxHash?.("0xhash", { expiresAtMs: 0 })
       node()
       return { txHash: "0xhash", amount: 5n }
     })
-    const err = await runContactPay(send, () => {}).catch((e: unknown) => e)
+    const err = await runContactPay(send, () => {})
+      .catch((e: unknown) => e)
+      .finally(() => (testWalletDbs().onApply = undefined))
     expect(err).toMatchObject({ message: "quota exceeded" })
     expect(err).not.toBeInstanceOf(h.TxInFlightError)
     expect(node).not.toHaveBeenCalled()
-    // The failure saves in the background; the rows show it once saved.
-    await walletStorage.flush()
-    expect(await h.activity.all()).toEqual([expect.objectContaining({ status: "failed" })])
+    expect(sendOp()).toMatchObject({ state: "failed" })
+    expect(sendOp()?.txHash).toBeUndefined()
   })
 
   // ULT-876: the wallet emits the submit boundary before handing the tx to the node, so a
@@ -496,7 +494,7 @@ describe("contact send cancellation and failure identity", () => {
       expect(thrown).toBeInstanceOf(h.TxInFlightError)
       expect(thrown).toMatchObject({ txHash: "0xsubmitted", message: rejection.message })
       // Neither failed nor dropped: the chain settles it.
-      expect(await h.activity.all()).toEqual([expect.objectContaining({ status: "pending" })])
+      expect(sendOp()).toMatchObject({ state: "sent", txHash: "0xsubmitted" })
     } finally {
       h.survivingHash = undefined
     }
@@ -508,9 +506,13 @@ describe("contact send cancellation and failure identity", () => {
       "The operation either timed out or was not allowed.",
       "NotAllowedError",
     )
-    h.sendTokenSponsored.mockRejectedValueOnce(closed)
+    let written: string | undefined
+    h.sendTokenSponsored.mockImplementationOnce(async () => {
+      written = sendOp()?.kind
+      throw closed
+    })
     await expect(runContactPay(send, () => {})).rejects.toBe(closed)
-    expect(inserted()).toBeDefined()
-    expect(await h.activity.all()).toEqual([])
+    expect(written).toBe("send")
+    expect(sendOp()).toBeUndefined()
   })
 })

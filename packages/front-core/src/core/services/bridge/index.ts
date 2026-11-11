@@ -11,13 +11,21 @@ export type {
   WithdrawalRecord,
 } from "./types"
 
-export { swapWithdrawalAmounts, withdrawalAmounts } from "./withdrawalAmounts"
+export { ACROSS_INPUT_DECIMALS, swapWithdrawalAmounts, withdrawalAmounts } from "./withdrawalAmounts"
 export type { SwapWithdrawalAmounts, WithdrawalAmounts } from "./withdrawalAmounts"
 
 export { withdrawalRecipients } from "./withdrawalRecipients"
 export type { WithdrawalRecipients } from "./withdrawalRecipients"
-export { swapEscrowTarget } from "./swapEscrowArgs"
-export type { SwapEscrowTarget } from "./swapEscrowArgs"
+export {
+  escrowHeldToken,
+  escrowLeg,
+  escrowRecoverCall,
+  escrowRunCall,
+  escrowRunPayee,
+  isBridgeRefund,
+} from "./escrowLeg"
+export type { BridgeLeg, EscrowLeg, SkyLeg, SwapLeg } from "./escrowLeg"
+export type { BridgeOutProvider, BridgeOutTracking } from "./bridgeOutProvider"
 
 export { rebuildWithdrawals } from "./withdrawalRescan"
 export type { WithdrawalRescanDeps } from "./withdrawalRescan"

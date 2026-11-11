@@ -1,9 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { fixed } from "@obsidion/front-core"
 import {
   CLAIM_STASH_KEY,
   peekTicketSignup,
   stashTicketSignup,
 } from "../../../../src/features/paylink/claimStash"
+import { tabStash } from "../../../../src/platform/storage/tabStash"
 import type { WebWalletConfig } from "../../../../src/config/env"
 
 const h = vi.hoisted(() => ({
@@ -15,13 +17,11 @@ vi.mock("../../../../src/features/withdraw/withdrawalFee", () => ({
   activeWithdrawalFee: async () => 10n ** 17n,
   activeWithdrawalExecutor: async () => ({ fee: 10n ** 17n }),
   withdrawalExecutor: async () => ({ fee: 10n ** 17n }),
-  withdrawalExecutorAt: async () => ({ fee: 10n ** 17n }),
 }))
 vi.mock("../../../../src/features/onboarding/goldenTicket", () => ({
   redeemGoldenTicketForLink: h.redeem,
 }))
 vi.mock("../../../../src/config/oxideTuple", () => ({
-  getOxideTuple: async () => ({ portal: "0x00000000000000000000000000000000000000f0" }),
   l1PublicClient: () => ({}),
   requireTupleField: (tuple: Record<string, string>, key: string) => tuple[key],
 }))
@@ -37,9 +37,10 @@ const keys = {
 
 const config = { accountServiceUrl: "http://127.0.0.1:5060" } as WebWalletConfig
 const wallet = { wallet: true } as never
+const device = { page: {}, contractService: fixed("contractService", {}) } as never
 const DAI = 10n ** 18n
 const ticket = () =>
-  stashTicketSignup({
+  stashTicketSignup(tabStash, {
     fragment: "paylink-frag",
     threshold: (2n * DAI).toString(),
     schedule: { fee: (DAI / 2n).toString(), minDeposit: "0" },
@@ -53,13 +54,13 @@ describe("redeemLinkedGoldenTicket", () => {
 
   it("never reads a marker the hosting wizard did not hand in", async () => {
     ticket()
-    await expect(redeemLinkedGoldenTicket(keys, config, wallet, null)).resolves.toBe("none")
+    await expect(redeemLinkedGoldenTicket(device, keys, config, wallet, null)).resolves.toBe("none")
     expect(h.redeem).not.toHaveBeenCalled()
   })
 
   it("throws when the ticket cannot be redeemed, naming the reason", async () => {
     ticket()
-    const redeem = () => redeemLinkedGoldenTicket(keys, config, wallet, peekTicketSignup())
+    const redeem = () => redeemLinkedGoldenTicket(device, keys, config, wallet, peekTicketSignup(tabStash))
     h.redeem.mockResolvedValueOnce({ status: "below_threshold", amount: DAI })
     await expect(redeem()).rejects.toMatchObject({ code: "registration.ticketBelowThreshold" })
     h.redeem.mockResolvedValueOnce({ status: "cannot_cover", amount: DAI })
@@ -82,10 +83,10 @@ describe("redeemLinkedGoldenTicket", () => {
         return { status: "created", amount: 20n * DAI }
       },
     )
-    await expect(redeemLinkedGoldenTicket(keys, config, wallet, peekTicketSignup())).resolves.toBe(
+    await expect(redeemLinkedGoldenTicket(device, keys, config, wallet, peekTicketSignup(tabStash))).resolves.toBe(
       "redeemed",
     )
-    expect(peekTicketSignup()?.amount).toBe((20n * DAI).toString())
+    expect(peekTicketSignup(tabStash)?.amount).toBe((20n * DAI).toString())
     expect(sessionStorage.getItem(CLAIM_STASH_KEY)).toBe("paylink-frag")
   })
 })

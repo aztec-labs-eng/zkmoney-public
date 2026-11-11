@@ -15,9 +15,10 @@ import { type PublicClient, zeroAddress } from 'viem';
 
 import { type RunConfig, redactRunConfig } from './cli/config.js';
 import {
+  type ResolvedDeploymentEnvManifest,
   type ResolvedManifestDeployment,
   describeSkip,
-  resolveDeploymentEnvManifest,
+  waitForDeploymentEnvManifest,
 } from './config/deployment_env_manifest.js';
 import { DeploymentManifestRefresher } from './config/deployment_manifest_refresher.js';
 import { FpcFunderCaller } from './fpc_funding/fpc_funder_caller.js';
@@ -58,12 +59,25 @@ export async function runRelayer(config: RunConfig, opts: RunRelayerOptions = {}
   // Assert read URL is not mistakenly set to Flashbots
   assertNotFlashbots(config.readL1RpcUrl);
 
-  const manifest = await resolveDeploymentEnvManifest({
-    deploymentEnvManifestUrl: config.deploymentEnvManifestUrl,
-    portal: config.portal,
-    excludePortals: config.excludePortals,
-    acceptedPayoutTokens: config.l1OperationsPayoutTokens,
-  });
+  // Listen for signals only during the wait. A signal during the rest of startup ends the process at once.
+  const manifestShutdown = listenForShutdown(opts.shutdownSignal);
+  let manifest: ResolvedDeploymentEnvManifest | undefined;
+  try {
+    manifest = await waitForDeploymentEnvManifest({
+      deploymentEnvManifestUrl: config.deploymentEnvManifestUrl,
+      portal: config.portal,
+      excludePortals: config.excludePortals,
+      acceptedPayoutTokens: config.l1OperationsPayoutTokens,
+      log,
+      signal: manifestShutdown.signal,
+    });
+  } finally {
+    manifestShutdown.dispose();
+  }
+  if (!manifest) {
+    log.info('Shutdown before the deployment env manifest was available');
+    return;
+  }
   const currentPublicConfig = manifest.current.publicConfig;
   for (const skipped of manifest.skipped) {
     log.info(describeSkip(skipped));
@@ -375,6 +389,25 @@ export async function assertSimulateV1Supported(
       `l1-operations mode needs a read RPC that supports eth_simulateV1; ${rpcHost(readL1RpcUrl)} answered: ${message}`,
     );
   }
+}
+
+/**
+ * A signal that aborts on the first SIGINT or SIGTERM, or when `external` aborts. The first process signal removes
+ * the listeners, so a second one ends the process at once. Call `dispose` to remove the listeners.
+ */
+function listenForShutdown(external?: AbortSignal): { signal: AbortSignal; dispose: () => void } {
+  const controller = new AbortController();
+  const dispose = (): void => {
+    process.off('SIGINT', abort);
+    process.off('SIGTERM', abort);
+  };
+  const abort = (): void => {
+    dispose();
+    controller.abort();
+  };
+  process.on('SIGINT', abort);
+  process.on('SIGTERM', abort);
+  return { signal: external ? AbortSignal.any([controller.signal, external]) : controller.signal, dispose };
 }
 
 function waitForShutdown(signal?: AbortSignal): Promise<void> {

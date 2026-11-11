@@ -133,17 +133,7 @@
     },
     {
       "action": "waitFor",
-      "selector": ".ww-withdraw"
-    },
-    {
-      "action": "waitFor",
-      "selector": ".ww-deposit-disclaimer"
-    },
-    {
-      "action": "click",
-      "role": "button",
-      "name": "Got it!",
-      "exact": false
+      "testId": "withdraw-amount"
     },
     {
       "action": "screenshot",

@@ -1,7 +1,6 @@
 import { useState } from "react"
 import { formatUnits, isAddress, type Address } from "viem"
 import { ConfirmationSheetDetailRow, TextField } from "@obsidion/web-ds"
-import { getConfig } from "../../../config/env"
 import { l1PublicClient } from "../../../config/oxideTuple"
 import { showReportableError } from "../../../errors/errorModal"
 import { failureCode, fireEvent } from "../../../lib/analytics"
@@ -14,7 +13,8 @@ import { openMigrationDialog } from "../../migration/migrationDialog"
 import { SourceBusyError } from "../../migration/migrationErrors"
 import { isFlowCancelled, runOperation } from "../../operations/operations"
 import { ManualExitSheet } from "../../withdraw/ManualExitSheet"
-import { useL1Wallet } from "../../../session/l1Wallet"
+import { useL1Wallet } from "../../../session/useL1Wallet"
+import { useSession } from "../../../session/session"
 import copy from "./FrozenDepositRefundModal.copy"
 import { refundFrozenDeposit } from "./frozenDepositRefund"
 import type { StrandedFrozenDeposit } from "./sipaRecovery"
@@ -28,7 +28,8 @@ export function FrozenDepositRefundModal({
   found: StrandedFrozenDeposit
   onClose: () => void
 }) {
-  const config = getConfig()
+  const session = useSession()
+  const { config, pace } = session.page
   const bridgeMode = isDesktopL1SubmitActive()
   const l1 = useL1Wallet({ expectedChainId: config.l1ChainId, rpcUrl: config.l1RpcUrl })
   const [typed, setTyped] = useState("")
@@ -95,8 +96,9 @@ export function FrozenDepositRefundModal({
           {copy.moveInstead}
         </TextButton>
       }
-      run={({ from, onHelperOpened, onStage, nextRequest }) =>
+      run={({ wagmi, from, onHelperOpened, onStage, nextRequest }) =>
         runOperation(
+          session,
           { operationId: crypto.randomUUID(), flow: "withdraw", summary: copy.operationSummary },
           async () => {
             const to = target as Address
@@ -108,9 +110,10 @@ export function FrozenDepositRefundModal({
                   display: { title: copy.helperTitle, lines: [[copy.to, to]] },
                   onHelperOpened,
                   onStage,
+                  pace,
                 })
-              : await injectedWalletChannel(config, { from, onStage })
-            const result = await refundFrozenDeposit(frozen, to, channel, nextRequest)
+              : await injectedWalletChannel(config, { wagmi, from, onStage, pace })
+            const result = await refundFrozenDeposit(session, frozen, to, channel, nextRequest)
             setPaid({ amount: result.refunded, to })
             return result.hashes
           },

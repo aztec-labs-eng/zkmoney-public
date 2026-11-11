@@ -1,5 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity >=0.8.27;
+import {Intents} from "@periphery/Intent.sol";
+import {
+  SweepGasCeilings,
+  SWEEP_GAS_DEPOSIT_CEILING,
+  SWEEP_GAS_REGISTRATION_CEILING,
+  SWEEP_GAS_ADD_PASSKEY_CEILING
+} from "@test/helpers/SweepGasCeilings.sol";
 import {Ownable} from "@oz/access/Ownable.sol";
 import {IERC20} from "@oz/token/ERC20/IERC20.sol";
 
@@ -68,7 +75,8 @@ contract DepositSubsidyTest is OxidePortalBase {
       address(portal),
       IOperationExecutor(address(operationExecutor)),
       AggregatorV3Interface(address(feed)),
-      sipaFactory
+      sipaFactory,
+      SweepGasCeilings.initial()
     );
     assertEq(address(fresh.PRICE_FEED()), address(feed));
   }
@@ -85,7 +93,8 @@ contract DepositSubsidyTest is OxidePortalBase {
       address(portal),
       IOperationExecutor(address(operationExecutor)),
       AggregatorV3Interface(address(feed)),
-      sipaFactory
+      sipaFactory,
+      SweepGasCeilings.initial()
     );
   }
 
@@ -96,7 +105,8 @@ contract DepositSubsidyTest is OxidePortalBase {
       address(portal),
       IOperationExecutor(address(operationExecutor)),
       AggregatorV3Interface(makeAddr("eoa-feed")),
-      sipaFactory
+      sipaFactory,
+      SweepGasCeilings.initial()
     );
 
     vm.expectRevert(Errors.DepositSubsidy__FeedWithoutCode.selector);
@@ -105,7 +115,8 @@ contract DepositSubsidyTest is OxidePortalBase {
       address(portal),
       IOperationExecutor(address(operationExecutor)),
       AggregatorV3Interface(address(0)),
-      sipaFactory
+      sipaFactory,
+      SweepGasCeilings.initial()
     );
   }
 
@@ -113,6 +124,12 @@ contract DepositSubsidyTest is OxidePortalBase {
     MockV3Aggregator feed18 = new MockV3Aggregator(18, 2500e18);
     vm.expectRevert(abi.encodeWithSelector(Errors.DepositSubsidy__UnexpectedFeedDecimals.selector, 18));
     _newSm(address(feed18));
+  }
+
+  function test_GivenInitialCeilings_WhenConstructed_ThenEachIntentHasItsCeiling() external view {
+    assertEq(sm.$sweepGasCeilings(Intents.DEPOSIT), SWEEP_GAS_DEPOSIT_CEILING);
+    assertEq(sm.$sweepGasCeilings(Intents.REGISTRATION), SWEEP_GAS_REGISTRATION_CEILING);
+    assertEq(sm.$sweepGasCeilings(Intents.ADD_PASSKEY), SWEEP_GAS_ADD_PASSKEY_CEILING);
   }
 
   function test_GivenOwner_WhenSetDepositConfig_ThenStoresAndAnnounces() external {
@@ -130,6 +147,20 @@ contract DepositSubsidyTest is OxidePortalBase {
   function test_GivenNonOwner_WhenSetDepositConfig_ThenReverts() external {
     vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, address(this)));
     sm.setDepositConfig(FEE, 5e18, 0);
+  }
+
+  function test_GivenOwner_WhenSetSweepGasCeiling_ThenStoresAndEmits() external {
+    vm.expectEmit(true, true, true, true, address(sm));
+    emit DepositSubsidy.SweepGasCeilingSet(Intents.ADD_PASSKEY, 900_000);
+    vm.prank(OWNER);
+    sm.setSweepGasCeiling(Intents.ADD_PASSKEY, 900_000);
+
+    assertEq(sm.$sweepGasCeilings(Intents.ADD_PASSKEY), 900_000);
+  }
+
+  function test_GivenNonOwner_WhenSetSweepGasCeiling_ThenReverts() external {
+    vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, address(this)));
+    sm.setSweepGasCeiling(Intents.ADD_PASSKEY, 900_000);
   }
 
   function test_GivenNoDepositConfig_WhenDepositSubsidyQueried_ThenZero() external {
@@ -202,7 +233,8 @@ contract DepositSubsidyTest is OxidePortalBase {
       address(portal6),
       IOperationExecutor(address(operationExecutor)),
       AggregatorV3Interface(address(feed)),
-      sipaFactory
+      sipaFactory,
+      SweepGasCeilings.initial()
     );
     vm.prank(OWNER);
     sm.setDepositConfig(1e5, type(uint128).max, 0);
@@ -410,7 +442,12 @@ contract DepositSubsidyTest is OxidePortalBase {
 
   function _newSm(address _feed) internal {
     sm = new DepositSubsidy(
-      OWNER, address(portal), IOperationExecutor(address(operationExecutor)), AggregatorV3Interface(_feed), sipaFactory
+      OWNER,
+      address(portal),
+      IOperationExecutor(address(operationExecutor)),
+      AggregatorV3Interface(_feed),
+      sipaFactory,
+      SweepGasCeilings.initial()
     );
   }
 

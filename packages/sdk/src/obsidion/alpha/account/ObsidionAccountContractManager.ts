@@ -11,7 +11,7 @@ import {
 import { Fr } from "@aztec-labs/aztec.js/fields"
 import type { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import type { ContractArtifact } from "@aztec-labs/stdlib/abi"
-import { ContractService, type ContractName } from "@obsidion/contracts"
+import type { ContractName, ContractService } from "@obsidion/contracts"
 import type { PXE } from "@aztec-labs/pxe/client/lazy"
 import type {
   DepositSpendMetadata,
@@ -29,6 +29,7 @@ export interface AlphaContractManagerOptions {
   contractName: ContractName
   /** The PXE of the wallet that runs the account; registration writes here. */
   pxe: PXE
+  contractService: ContractService
 }
 
 /**
@@ -42,7 +43,7 @@ export interface AlphaContractManagerOptions {
  * account is bound to one set of keys for its whole life.
  */
 export class ObsidionAccountContractManager {
-  private contractService: ContractService = ContractService.getInstance()
+  private readonly contractService: ContractService
   private contractRegistration: Promise<void> | null = null
   private instance: ContractInstanceWithAddress | null = null
   private completeAddress: CompleteAddress | null = null
@@ -96,6 +97,7 @@ export class ObsidionAccountContractManager {
     this.artifact = options.artifact
     this.contractName = options.contractName
     this.pxe = options.pxe
+    this.contractService = options.contractService
   }
 
   get address(): AztecAddress {

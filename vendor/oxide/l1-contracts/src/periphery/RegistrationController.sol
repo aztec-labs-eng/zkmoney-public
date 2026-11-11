@@ -19,6 +19,7 @@ import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Errors} from "@periphery/Errors.sol";
+import {Intents} from "@periphery/Intent.sol";
 
 contract RegistrationController is IRegistrationController, IAccountMetadataController, EIP712 {
   bytes32 private constant SIGNED_TERMS_TYPEHASH = keccak256(
@@ -216,7 +217,7 @@ contract RegistrationController is IRegistrationController, IAccountMetadataCont
 
   function _requireRegistrationSIPA(address caller, bytes calldata registrationData) internal view {
     require(
-      SIPAFactory(SIPA_FACTORY).sipaIntentOf(caller) == SIPABase.Intent.Registration,
+      SIPAFactory(SIPA_FACTORY).sipaIntentOf(caller) == Intents.REGISTRATION,
       Errors.RegistrationController__CallerNotSIPA(caller)
     );
 

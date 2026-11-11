@@ -1,20 +1,28 @@
-import { useCallback, useEffect, useState } from "react"
-import { erc20Abi, formatUnits, type Address } from "viem"
-import { MAINNET_CHAIN_ID } from "@oxide/l1-contracts"
+import { WalletError } from "@obsidion/core/errors"
+import type { PageFacts } from "../../session/pageChain"
+import { formatUnits, getAddress, type Address } from "viem"
+import { depositPayoutTokenFor, MAINNET_CHAIN_ID } from "@oxide/l1-contracts"
+import { EthAddress } from "@aztec-labs/foundation/eth-address"
 import {
   bridgeByToken,
   SIPA_INTENT_NAMES,
+  sipaIntentToken,
+  type PinnedOxideDeployment,
   type OxideTableRow,
   type SipaIntentName,
 } from "@obsidion/core/oxide"
-import { depositRows, depositTokenRoutes, type SipaFundingToken } from "@obsidion/front-core"
+import {
+  depositRows,
+  depositTokenRoutes,
+  useStore,
+  type SipaFundingToken,
+} from "@obsidion/front-core"
 import { readSipaPortalTerms, sipaIntentOf } from "@obsidion/sdk"
-import { getConfig, type WebWalletConfig } from "../../config/env"
+import type { WebWalletConfig } from "../../config/env"
+import { useSession } from "../../session/session"
 import { isDemoMode } from "../../dev/demoFlag"
-import { getDeploymentTable, getOxideDeployment, l1PublicClient } from "../../config/oxideTuple"
-import daiIcon from "../../assets/deposit/dai.svg"
-import usdcIcon from "../../assets/deposit/USDCToken.svg"
-import usdtIcon from "../../assets/deposit/USDTToken.svg"
+import { l1PublicClient } from "../../config/oxideTuple"
+import { ICONS } from "../../ui/CoinIcon/coinIcons"
 import testIcon from "../../assets/deposit/ethereum.webp"
 
 export interface DepositTokenOption {
@@ -38,9 +46,6 @@ export interface DepositTokens {
   settlement: DepositTokenOption
 }
 
-/** Icons by symbol; any other token shows the generic one. */
-const ICONS: Record<string, string> = { DAI: daiIcon, USDC: usdcIcon, USDT: usdtIcon }
-
 const sameAddress = (a: string, b: string) => a.toLowerCase() === b.toLowerCase()
 
 /** The option a picked token settles in: itself, or the row token it swaps into. */
@@ -48,28 +53,9 @@ export function settlementOf(tokens: DepositTokens, token: DepositTokenOption): 
   return tokens.options.find((t) => sameAddress(t.address, token.settlesIn)) ?? tokens.settlement
 }
 
-const metadata = new Map<string, Promise<{ symbol: string; decimals: number }>>()
-
-/** A token's ERC-20 symbol and decimals, read once per token: both are immutable. */
-export function tokenMetadata(
-  config: WebWalletConfig,
-  token: Address,
-): Promise<{ symbol: string; decimals: number }> {
-  const key = `${config.l1ChainId}:${token.toLowerCase()}`
-  let read = metadata.get(key)
-  if (!read) {
-    const client = l1PublicClient(config)
-    read = Promise.all([
-      client.readContract({ address: token, abi: erc20Abi, functionName: "symbol" }),
-      client.readContract({ address: token, abi: erc20Abi, functionName: "decimals" }),
-    ]).then(([symbol, decimals]) => ({ symbol, decimals }))
-    metadata.set(key, read)
-    read.catch(() => {
-      if (metadata.get(key) === read) metadata.delete(key)
-    })
-  }
-  return read
-}
+/** A token's ERC-20 symbol and decimals, off the page's read. */
+export const tokenMetadata = ({ chain }: Pick<PageFacts, "chain">, token: Address) =>
+  chain.tokenMetadata(token).read()
 
 /** The chain whose SIPA swap rule applies. A dev demo shows the mainnet shape on any chain. */
 function swapChainId(config: WebWalletConfig): bigint {
@@ -82,16 +68,19 @@ function swapChainId(config: WebWalletConfig): bigint {
  * the named ones, and an asset with no row adds nothing.
  */
 export async function loadDepositTokens(
-  config: WebWalletConfig = getConfig(),
+  { config, chain }: PageFacts,
   intent: SipaIntentName = "deposit",
 ): Promise<DepositTokens> {
   const [{ pinned }, table] = await Promise.all([
-    getOxideDeployment(config),
-    getDeploymentTable(config),
+    chain.oxideDeployment.read(),
+    chain.deploymentTable.read(),
   ])
   const routes = depositTokenRoutes(table, swapChainId(config), intent)
   if (routes.length === 0) {
-    throw new Error(`The forwarding table routes no ${intent} sweep of any token`)
+    throw new WalletError(
+      "config.invalid",
+      `The forwarding table routes no ${intent} sweep of any token`,
+    )
   }
   const rank = (row: OxideTableRow) => {
     const listed = config.assets.findIndex((asset) => sameAddress(asset.portal, row.bridge.portal))
@@ -100,7 +89,7 @@ export async function loadDepositTokens(
   const ordered = [...routes].sort((a, b) => rank(a.row) - rank(b.row))
   const options = await Promise.all(
     ordered.map(async (route): Promise<DepositTokenOption> => {
-      const read = await tokenMetadata(config, route.token)
+      const read = await tokenMetadata({ chain }, route.token)
       const named = route.swapped
         ? undefined
         : config.assets.find((asset) => sameAddress(asset.portal, route.row.bridge.portal))
@@ -123,66 +112,28 @@ export async function loadDepositTokens(
   return { options, offered, settlement }
 }
 
-/** How long a mounted reader waits before it reads the accepted tokens again after a failure. */
-export const DEPOSIT_TOKENS_RETRY_MS = 5_000
-
 /** A component's read of the accepted tokens. */
 export interface DepositTokensRead {
   /** Undefined until read. */
   tokens?: DepositTokens
-  /** The last read failed and none has landed since. A failed read is retried while mounted. */
+  /** The last read failed and none has landed since. A failed read is retried while shown. */
   failed: boolean
   /** Reads again now. */
   retry: () => void
 }
 
 /** {@link loadDepositTokens} for a component, with its loading and failure states. */
-export function useDepositTokensRead(
-  intent: SipaIntentName = "deposit",
-  load: (intent: SipaIntentName) => Promise<DepositTokens> = (i) =>
-    loadDepositTokens(getConfig(), i),
-): DepositTokensRead {
-  // Each result names its intent: one read for another intent is never this one's.
-  const [read, setRead] = useState<{ intent: SipaIntentName; tokens: DepositTokens }>()
-  const [failedFor, setFailedFor] = useState<SipaIntentName>()
-  const [attempt, setAttempt] = useState(0)
-  useEffect(() => {
-    let live = true
-    let timer: ReturnType<typeof setTimeout> | undefined
-    const next = () =>
-      load(intent).then(
-        (tokens) => {
-          if (!live) return
-          setRead({ intent, tokens })
-          setFailedFor(undefined)
-        },
-        (err: unknown) => {
-          console.warn("[deposit] accepted tokens unavailable:", err)
-          if (!live) return
-          setFailedFor(intent)
-          timer = setTimeout(next, DEPOSIT_TOKENS_RETRY_MS)
-        },
-      )
-    void next()
-    return () => {
-      live = false
-      clearTimeout(timer)
-    }
-    // The loader is fixed for the caller's life.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [intent, attempt])
-  const retry = useCallback(() => {
-    setFailedFor(undefined)
-    setAttempt((n) => n + 1)
-  }, [])
+export function useDepositTokensRead(intent: SipaIntentName = "deposit"): DepositTokensRead {
+  const read = useSession().page.depositTokens(intent)
+  const state = useStore(read)
   return {
-    tokens: read?.intent === intent ? read.tokens : undefined,
-    failed: failedFor === intent,
-    retry,
+    tokens: state.status === "ready" ? state.value : undefined,
+    failed: state.status === "failed",
+    retry: read.refresh,
   }
 }
 
-/** {@link loadDepositTokens} for a component; undefined until read. A failed read is retried while mounted. */
+/** {@link loadDepositTokens} for a component; undefined until read. A failed read is retried while shown. */
 export function useDepositTokens(intent: SipaIntentName = "deposit"): DepositTokens | undefined {
   return useDepositTokensRead(intent).tokens
 }
@@ -218,14 +169,14 @@ export function fundingTokensFrom(
  * caller knows them; otherwise the table's listing does.
  */
 export async function sipaFundingTokens(
-  config: WebWalletConfig,
+  page: PageFacts,
   head: Address | SipaFundingToken,
   intent: SipaIntentName = "deposit",
 ): Promise<[SipaFundingToken, ...SipaFundingToken[]]> {
-  const tokens = await loadDepositTokens(config, intent)
+  const tokens = await loadDepositTokens(page, intent)
   if (typeof head !== "string") return fundingTokensFrom(tokens, head)
   const listed = tokens.options.find((t) => sameAddress(t.address, head))
-  const decimals = listed?.decimals ?? (await tokenMetadata(config, head)).decimals
+  const decimals = listed?.decimals ?? (await tokenMetadata(page, head)).decimals
   return fundingTokensFrom(tokens, { address: head, symbol: listed?.symbol ?? "", decimals })
 }
 
@@ -234,11 +185,11 @@ export async function sipaFundingTokens(
  * Without the table it is `head` alone, so a recovery still moves the token it names.
  */
 export async function recoveryProbeTokens(
-  config: WebWalletConfig,
+  page: PageFacts,
   head: Address,
 ): Promise<[SipaFundingToken, ...SipaFundingToken[]]> {
   const reads = await Promise.allSettled(
-    SIPA_INTENT_NAMES.map((intent) => loadDepositTokens(config, intent)),
+    SIPA_INTENT_NAMES.map((intent) => loadDepositTokens(page, intent)),
   )
   const options: DepositTokenOption[] = []
   for (const read of reads) {
@@ -249,7 +200,7 @@ export async function recoveryProbeTokens(
         if (!options.some((t) => sameAddress(t.address, option.address))) options.push(option)
   }
   const listed = options.find((t) => sameAddress(t.address, head))
-  const decimals = listed?.decimals ?? (await tokenMetadata(config, head)).decimals
+  const decimals = listed?.decimals ?? (await tokenMetadata(page, head)).decimals
   return fundingTokensFrom({ options }, { address: head, symbol: listed?.symbol ?? "", decimals })
 }
 
@@ -270,15 +221,15 @@ export interface DepositDisplayFacts {
  * fee is stamped on the record a deposit creates, so the detail sheet can reproduce it.
  */
 export async function loadDepositDisplayFacts(
+  { config, chain }: PageFacts,
   token?: Pick<DepositTokenOption, "settlesIn">,
   intent: SipaIntentName = "deposit",
 ): Promise<DepositDisplayFacts> {
-  const config = getConfig()
-  const { deployment, pinned } = await getOxideDeployment(config)
+  const { deployment, pinned } = await chain.oxideDeployment.read()
   const settlesIn = (token?.settlesIn ?? pinned.underlying) as Address
   const bridge = bridgeByToken(deployment, settlesIn)
   if (!bridge || !deployment.forwardingTable) {
-    throw new Error(`The deployment has no ${intent} row for ${settlesIn}`)
+    throw new WalletError("config.invalid", `The deployment has no ${intent} row for ${settlesIn}`)
   }
   const [terms, { decimals }] = await Promise.all([
     readSipaPortalTerms(l1PublicClient(config), {
@@ -286,10 +237,13 @@ export async function loadDepositDisplayFacts(
       token: settlesIn,
       intent: sipaIntentOf(intent),
     }),
-    tokenMetadata(config, settlesIn),
+    tokenMetadata({ chain }, settlesIn),
   ])
   if (!sameAddress(terms.portal, bridge.portal)) {
-    throw new Error(`The forwarding table routes ${settlesIn} to ${terms.portal}, not its bridge`)
+    throw new WalletError(
+      "config.invalid",
+      `The forwarding table routes ${settlesIn} to ${terms.portal}, not its bridge`,
+    )
   }
   return {
     fee: formatUnits(terms.depositFee, decimals),
@@ -307,6 +261,24 @@ export function settlementSymbol(
 ): string {
   const funded = token && tokens?.options.find((t) => sameAddress(t.address, token))
   return funded && tokens ? settlementOf(tokens, funded).symbol : fallback
+}
+
+/**
+ * The row token a recorded SIPA's funds in `token` settle on, by the swap rule and the intent's row
+ * rule: the pinned bridge's underlying for a record that predates token tracking. Reads nothing.
+ */
+export function recordedRowToken(
+  config: WebWalletConfig,
+  { deployment, pinned }: PinnedOxideDeployment,
+  intent: SipaIntentName,
+  token: string | undefined,
+): Address {
+  const funded = token
+    ? getAddress(
+        depositPayoutTokenFor(swapChainId(config), EthAddress.fromString(token)).toString(),
+      )
+    : pinned.underlying
+  return sipaIntentToken(deployment, intent, funded) as Address
 }
 
 /**

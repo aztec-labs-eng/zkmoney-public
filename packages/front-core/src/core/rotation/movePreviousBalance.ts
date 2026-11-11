@@ -1,28 +1,23 @@
 /**
  * Forwards what reached the previous account to the session's account, one chunk in flight at a
- * time. The chunk is saved on the watch before its transfer leaves and is resolved by its hash
- * before anything else, so a reload or a second run never sends twice for one chunk.
+ * time. The chunk is saved before its transfer leaves and is resolved by its hash before anything
+ * else, so a reload or a second run never sends twice for one chunk.
  */
 import { MAX_TX_LIFETIME_MS } from "@obsidion/core/constants"
 import { isSpendEnvelopeRefusal, type SpendShape, type TxHashCallback } from "@obsidion/sdk"
-import type { Hex } from "viem"
-import type {
-  PreviousAccountMove,
-  PreviousAccountWatchStore,
-} from "../storages/PreviousAccountWatchStore"
+import { WalletError } from "../../engine/errors"
+import type { SavedPreviousAccount } from "../../engine/savedPreviousAccount"
 import type { TxOutcome } from "./backupRotationFlow"
 import { planMove, unreadDeposits } from "./planMove"
-import { isDust, openWatch, pushWatch } from "./previousAccount"
+import { isDust } from "./previousAccount"
 
 /** How long a run waits before reading the chunk in flight again. */
 export const PREVIOUS_MOVE_POLL_MS = 15_000
 
 export interface PreviousMoveDeps {
-  store: PreviousAccountWatchStore
-  /** The watch's key: the previous account's address. */
+  saved: Pick<SavedPreviousAccount, "move" | "saveMove" | "clearMove">
+  /** The previous account, which the move sends from. */
   address: string
-  /** The account the move sends from. */
-  source: string
   /** The session's account. */
   destination: string
   /** The source's shape on the moved token, read while no chunk is in flight. */
@@ -74,71 +69,26 @@ function settled(outcome: TxOutcome): boolean {
   }
 }
 
-/** Drops the stored chunk while it is still the one inspected. */
-const clearChunk = (deps: Pick<PreviousMoveDeps, "store" | "address">, txHash: string) =>
-  deps.store.update(deps.address, (current) => {
-    if (!current || current.move?.txHash !== txHash) return null
-    const { move: _, ...rest } = current
-    return rest
-  })
-
-const pushWindow = (deps: PreviousMoveDeps) => {
-  const now = deps.now()
-  return deps.store.update(deps.address, (current) =>
-    pushWatch(current ?? openWatch(deps.address, now), now),
-  )
-}
-
 /**
- * Reads the stored chunk's outcome once and clears it once settled; never plans, sends or signs.
- * Answers whether a chunk is still stored.
- */
-export async function settleStoredChunk(
-  deps: Pick<PreviousMoveDeps, "store" | "address" | "outcome">,
-): Promise<boolean> {
-  const move = (await deps.store.get(deps.address))?.move
-  if (!move) return false
-  if (!settled(await deps.outcome(move.txHash, move.expiresAtMs))) return true
-  return !!(await clearChunk(deps, move.txHash))?.move
-}
-
-/**
- * Moves the previous account's balance to the destination: the stored chunk first, by its hash,
- * then one chunk at a time cut from the live shape. Every end pushes the watch out.
+ * Moves the previous account's balance to the destination: the saved chunk first, by its hash,
+ * then one chunk at a time cut from the live shape.
  */
 export async function movePreviousBalance(
   deps: PreviousMoveDeps,
   signal: AbortSignal,
 ): Promise<PreviousMoveResult> {
-  let result: PreviousMoveResult
-  try {
-    result = await moveChunks(deps, signal)
-  } catch (err) {
-    await pushWindow(deps).catch(() => undefined)
-    throw err
-  }
-  await pushWindow(deps)
-  return result
-}
-
-async function moveChunks(
-  deps: PreviousMoveDeps,
-  signal: AbortSignal,
-): Promise<PreviousMoveResult> {
   for (;;) {
-    const move = (await deps.store.get(deps.address))?.move
+    const move = await deps.saved.move(deps.address)
     if (move) {
       if (!settled(await deps.outcome(move.txHash, move.expiresAtMs))) {
         if (signal.aborted) return STOPPED
         await deps.sleep(PREVIOUS_MOVE_POLL_MS)
         continue
       }
-      await clearChunk(deps, move.txHash)
-      if (
-        !sameAddress(move.source, deps.source) ||
-        !sameAddress(move.destination, deps.destination)
-      )
-        return { kind: "refused", reason: "destination", amount: BigInt(move.amount) }
+      await deps.saved.clearMove(deps.address, move.txHash)
+      // An earlier session's chunk: this session's account was never checked as its destination.
+      if (!sameAddress(move.destination, deps.destination))
+        return { kind: "refused", reason: "destination", amount: move.amount }
       continue
     }
     if (signal.aborted) return STOPPED
@@ -154,7 +104,7 @@ async function moveChunks(
   }
 }
 
-/** One chunk out, its hash saved first; answers how the run ends when the send fails before that. */
+/** One chunk out, saved first; answers how the run ends when the send fails before that. */
 async function sendChunk(
   deps: PreviousMoveDeps,
   amount: bigint,
@@ -162,29 +112,23 @@ async function sendChunk(
 ): Promise<PreviousMoveResult | undefined> {
   let saved = false
   const onTxHash: TxHashCallback = async (txHash, { expiresAtMs }) => {
-    const now = deps.now()
-    const move: PreviousAccountMove = {
-      source: deps.source,
+    await deps.saved.saveMove(deps.address, {
       destination: deps.destination,
-      txHash: txHash as Hex,
-      expiresAtMs: Math.min(expiresAtMs, now + MAX_TX_LIFETIME_MS),
-      amount: amount.toString(),
-    }
-    await deps.store.update(deps.address, (current) => ({
-      ...pushWatch(current ?? openWatch(deps.address, now), now),
-      move,
-    }))
+      txHash,
+      expiresAtMs: Math.min(expiresAtMs, deps.now() + MAX_TX_LIFETIME_MS),
+      amount,
+    })
     saved = true
   }
   try {
     await deps.send(amount, onTxHash, signal)
   } catch (err) {
-    // A chunk with its hash saved may have left; it is resolved by hash, never sent again.
+    // A saved chunk may have left; it is resolved by its hash, never sent again.
     if (saved) throw err
     if (isSpendEnvelopeRefusal(err)) return { kind: "refused", reason: "spend", amount }
     if (signal.aborted) return STOPPED
     throw err
   }
-  if (!saved) throw new Error("previous account move: the send saved no hash")
+  if (!saved) throw new WalletError("invariant", "previous account move: the send saved no hash")
   return undefined
 }

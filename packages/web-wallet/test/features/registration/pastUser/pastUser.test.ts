@@ -5,8 +5,11 @@ import {
   type PastUserEvent,
   type PastUserState,
 } from "../../../../src/features/registration/pastUser"
+import type { WebWalletConfig } from "../../../../src/config/env"
 import { tabStash } from "../../../../src/platform/storage/tabStash"
+import { testAuth, testWagmi } from "../../../support/page"
 
+const pastUserOf = () => createPastUser(tabStash, testWagmi, testAuth(), {} as WebWalletConfig)
 const OLD = `0x3f${"00".repeat(17)}a91c` as const
 const OWNER = "0xowner"
 const run = (...events: PastUserEvent[]) =>
@@ -35,7 +38,7 @@ describe("past-user check", () => {
   })
 
   it("reopens its closed modal when it ends, its error a code", async () => {
-    const pastUser = createPastUser(tabStash)
+    const pastUser = pastUserOf()
     pastUser.setOpen(false)
     await pastUser.check(OLD, undefined)
     expect(pastUser.state.get()).toMatchObject({ running: false, open: true })
@@ -48,19 +51,21 @@ describe("past-user check", () => {
 
   it("ends as claimed when a grant refuses the proof as spent", () => {
     sessionStorage.setItem("zkm.pastUserVerified", JSON.stringify({ account: OLD }))
-    const pastUser = createPastUser(tabStash)
+    const pastUser = pastUserOf()
     expect(pastUser.current(undefined).step).toBe("confirmed")
     pastUser.claimedAtGrant()
     expect(pastUser.state.get()).toMatchObject({ verified: undefined, open: true })
     expect(pastUser.current(undefined).step).toBe("claimed")
-    expect(createPastUser(tabStash).current(undefined).step).toBe("connect")
+    expect(pastUserOf().current(undefined).step).toBe("connect")
   })
 
   it("recalls an account's passed check only", () => {
     sessionStorage.setItem(`zkm.pastUserCheck.${OWNER}`, JSON.stringify({ step: "check" }))
-    expect(createPastUser(tabStash).recall(OWNER)).toEqual({ step: "connect" })
+    expect(pastUserOf().recall(OWNER)).toEqual({
+      step: "connect",
+    })
     const passed = { step: "confirmed", account: OLD }
     sessionStorage.setItem(`zkm.pastUserCheck.${OWNER}`, JSON.stringify(passed))
-    expect(createPastUser(tabStash).recall(OWNER)).toEqual(passed)
+    expect(pastUserOf().recall(OWNER)).toEqual(passed)
   })
 })

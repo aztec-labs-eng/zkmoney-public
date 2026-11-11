@@ -1,7 +1,8 @@
-// The sweep fee and the schedule as session resources: read once something asks, retried on their
-// backoff or at once, and built for a visitor's session too.
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest"
-import { readyValue } from "@obsidion/front-core"
+// The sweep fee and the schedule as session queries: read once something asks, retried on their
+// backoff while subscribed or at once, and built for a visitor's session too.
+import { afterEach, describe, expect, it, vi } from "vitest"
+import { createPace } from "@obsidion/core/cadence"
+import { memoryStore, queries } from "@obsidion/front-core"
 import type { RegistrationSchedule } from "@obsidion/core/types"
 import { pageSessionDeps } from "../../../src/app/sessionDeps"
 import {
@@ -11,10 +12,7 @@ import {
 import { closeSession, namespaceOf, switchSession } from "../../../src/session/session"
 import { testPage } from "../../support/page"
 import { PAID } from "../../support/registrationPrices"
-import { seedBootConfig } from "../../support/seedBootConfig"
 import { fakeClock, flush } from "../../../../front-core/test/engine/taskTable"
-
-beforeAll(seedBootConfig)
 fakeClock()
 const ends: (() => void)[] = []
 afterEach(() => {
@@ -24,8 +22,12 @@ afterEach(() => {
 
 function pricing(schedule: RegistrationSchedule = PAID) {
   const reads = { sweepFee: vi.fn(async () => 5n), schedule: vi.fn(async () => schedule) }
-  const built = registrationPricing(reads)
-  ends.push(() => (built.sweepFee.close(), built.registrationSchedule.close()))
+  const query = queries({
+    pace: createPace({ signalled: false }),
+    visible: memoryStore(true),
+    now: () => Date.now(),
+  })
+  const built = registrationPricing(query, reads)
   return { ...built, reads }
 }
 
@@ -34,8 +36,8 @@ describe("registrationPricing", () => {
     const p = pricing()
     await flush()
     expect(p.reads.sweepFee).not.toHaveBeenCalled()
-    expect(await readyValue(p.registrationSchedule)).toEqual(PAID)
-    expect(await readyValue(p.sweepFee)).toBe(5n)
+    expect(await p.registrationSchedule.read()).toEqual(PAID)
+    expect(await p.sweepFee.read()).toBe(5n)
     expect(p.reads.sweepFee).toHaveBeenCalledTimes(1)
     expect(p.reads.schedule).toHaveBeenCalledTimes(1)
   })
@@ -44,13 +46,13 @@ describe("registrationPricing", () => {
     ["prices zero", { min: 0n, fee: 0n }],
     ["prices a fee under the sweep fee", { min: PAID.min, fee: 4n }],
   ])("takes no registration where the deployment %s", async (_, schedule) => {
-    expect(await readyValue(pricing(schedule).registrationSchedule)).toBeNull()
+    expect(await pricing(schedule).registrationSchedule.read()).toBeNull()
   })
 
   it("reads a failed fee again after 2 s, doubling to 30 s", async () => {
     const p = pricing()
     p.reads.sweepFee.mockRejectedValue(new Error("rpc"))
-    p.sweepFee.demand()
+    ends.push(p.sweepFee.subscribe(() => {}))
     await flush()
     for (const [i, wait] of [2_000, 4_000, 8_000, 16_000, 30_000, 30_000].entries()) {
       await vi.advanceTimersByTimeAsync(wait - 1)
@@ -63,12 +65,12 @@ describe("registrationPricing", () => {
   it("reads a failed fee again at once on retry, and leaves a read one alone", async () => {
     const p = pricing()
     p.reads.sweepFee.mockRejectedValueOnce(new Error("rpc"))
-    p.sweepFee.demand()
+    ends.push(p.sweepFee.subscribe(() => {}))
     await flush()
     expect(p.sweepFee.get().status).toBe("failed")
     retryPricing(p)
     await flush()
-    expect(p.sweepFee.get()).toEqual({ status: "ready", value: 5n })
+    expect(p.sweepFee.get()).toEqual({ status: "ready", value: 5n, refreshing: false })
     retryPricing(p)
     await flush()
     expect(p.reads.sweepFee).toHaveBeenCalledTimes(2)

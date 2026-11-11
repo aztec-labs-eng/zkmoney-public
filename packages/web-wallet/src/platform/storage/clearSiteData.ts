@@ -1,3 +1,5 @@
+import { bestEffort } from "@obsidion/core/errors"
+
 /**
  * Something the wipe could not clear: held by another tab or page, queued behind another tab's open
  * connection (a delete can't be cancelled, so it lands when that tab closes), or refused by the
@@ -33,6 +35,7 @@ const browserDeps: ClearSiteDataDeps = {
 }
 
 // A page that just closed releases its OPFS handles and pool lock a moment later.
+// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
 const TRANSIENT = new Set([
   "SqlitePoolBusyError",
   "NoModificationAllowedError",
@@ -100,7 +103,7 @@ async function clearOpfs(
   stop: AbortSignal,
 ): Promise<void> {
   const root = await deps.opfsRoot()
-  const pools = await deps.loadPools().catch(() => undefined)
+  const pools = await bestEffort("unknown", deps.loadPools())
   const entries: [string, FileSystemHandleKind][] = []
   for await (const [name, handle] of root.entries()) entries.push([name, handle.kind])
   for (const [name, kind] of entries) {

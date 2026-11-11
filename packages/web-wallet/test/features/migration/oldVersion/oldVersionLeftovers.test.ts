@@ -20,9 +20,10 @@ const link = (
   status = "success",
 ) =>
   ({
-    kind: "tx",
+    kind: "link",
     paylinkStatus,
-    tx: { action: "Pay To Email", status, networkId, token: { amount, price: 1 } },
+    funding: status === "success" ? "settled" : "failed",
+    link: { networkId, token: { amount, price: 1 } },
   } as unknown as FeedItem)
 
 describe("old-version leftovers", () => {

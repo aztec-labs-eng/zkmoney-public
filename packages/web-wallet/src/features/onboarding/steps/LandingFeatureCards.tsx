@@ -1,11 +1,13 @@
-import { useEffect, useState } from "react"
+import { useState } from "react"
 import arrow from "../../../assets/onboarding/landing-arrow.svg"
 import savingsArt from "../../../assets/onboarding/landing-savings.webp"
 import withdrawArt from "../../../assets/onboarding/landing-withdraw.webp"
 import chainsArt from "../../../assets/onboarding/landing-withdraw-chains.webp"
 import paylinksArt from "../../../assets/onboarding/landing-paylinks.webp"
 import { apyPercent } from "../../savings/EarningsCalculator"
-import { useLiveSavingsApy } from "../../savings/savingsGateway"
+import { useStore } from "@obsidion/front-core"
+import type { LandingRate } from "../../savings/savingsGateway"
+import { useDomEffect } from "../../../ui/useDomEffect"
 
 const CARDS: {
   eyebrow: string
@@ -50,10 +52,11 @@ const cardsShown = () =>
  * shows the cards waits for it, rather than swap it in. Decided once, so a resize never puts the
  * landing back behind the boot screen.
  */
-export function useLandingRate(): { ready: boolean; apy: number | undefined } {
-  const rate = useLiveSavingsApy()
+export function useLandingRate(landing: LandingRate): { ready: boolean; apy: number | undefined } {
+  const rate = useStore(landing)
   const [waits] = useState(cardsShown)
-  return { ready: rate.settled || !waits, apy: rate.settled ? rate.apy : undefined }
+  const settled = rate.status === "ready" ? rate.value : undefined
+  return { ready: !!settled || !waits, apy: settled?.apy }
 }
 
 /**
@@ -161,7 +164,7 @@ function useFitZoom() {
   const fit = () =>
     Math.min((window.innerHeight - LANDING_CHROME_HEIGHT) / 577, (window.innerWidth * 0.45) / 549)
   const [zoom, setZoom] = useState(fit)
-  useEffect(() => {
+  useDomEffect(() => {
     const onResize = () => setZoom(fit())
     window.addEventListener("resize", onResize)
     return () => window.removeEventListener("resize", onResize)

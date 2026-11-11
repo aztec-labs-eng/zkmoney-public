@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { PaylinkActionEnum, QueueStatus } from "@obsidion/core/constants"
 import { recentContacts, type ContactActivitySources } from "../src/utils/recentContacts"
-import type { ContactRow } from "../src/hooks/useContactsDirectory"
+import type { ContactRow } from "../src/engine/contacts"
 import type { PaylinkTransaction, TokenTransaction } from "../src/types/transactions"
 import type { PaymentRequest } from "../src/engine/requests"
 import type { WithdrawalRecord } from "../src/core/services/bridge/types"

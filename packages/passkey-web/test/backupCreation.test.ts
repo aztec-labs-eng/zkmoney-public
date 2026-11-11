@@ -302,6 +302,7 @@ describe("runBackupPasskeyCreation", () => {
           overQr: true,
         }).message,
       )
+      expect((error as BackupPasskeyRefusedError).removalAdvice).toBe(false)
     })
 
     it("a candidate refused on this device keeps the message that names no route", async () => {
@@ -357,6 +358,7 @@ describe("runBackupPasskeyCreation", () => {
           userAgent: IPHONE,
         }).message,
       )
+      expect((error as BackupPasskeyRefusedError).removalAdvice).toBe(true)
       expect(ceremony.assertRequests).toHaveLength(0)
     })
 
@@ -368,6 +370,7 @@ describe("runBackupPasskeyCreation", () => {
       const error = await run.catch((e: unknown) => e)
       expect(error).toEqual(refused("no-prf"))
       expect((error as BackupPasskeyRefusedError).providerName).toBe(providerNameFor(WINDOWS_HELLO))
+      expect((error as BackupPasskeyRefusedError).removalAdvice).toBe(true)
     })
 
     it("nothing for a measured candidate on the OS it covers, and it elsewhere", async () => {
@@ -401,7 +404,7 @@ describe("runBackupPasskeyCreation", () => {
     it("a security key whose id names a manager, even one counted as other", async () => {
       const error = await backup(key({ aaguid: BRAVE })).run.catch((e: unknown) => e)
       expect(error).toEqual(refused("provider"))
-      expect((error as BackupPasskeyRefusedError).providerName).toBe("Brave")
+      expect((error as BackupPasskeyRefusedError).providerName).toBe(providerNameFor(BRAVE))
     })
 
     it("a passkey with no PRF at all, and a key with none in its own words", async () => {

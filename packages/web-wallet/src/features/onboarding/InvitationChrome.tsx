@@ -1,10 +1,9 @@
 import { useState, type ReactNode } from "react"
 import { BrandLockup } from "../../ui/BrandLockup"
 import { EndpointsModal, customEndpointsLabel } from "../../ui/EndpointsModal"
-import { useEndpointsHeld } from "../../ui/endpointsHold"
-import { usePxeBoot } from "../../ui/PxeBoot"
+import { useEndpointsHeld } from "../../session/endpointsHold"
+import { usePxeBoot, type BootPage } from "../../ui/PxeBoot"
 import { usePhoneLayout } from "../../ui/usePhoneLayout"
-import { getConfig } from "../../config/env"
 import inviteGradient from "../../assets/onboarding/invite-gradient.svg"
 import landingGradient from "../../assets/onboarding/landing-gradient.svg"
 
@@ -18,6 +17,7 @@ export function InvitationChrome({
   bare = false,
   landing = false,
   pill = true,
+  page,
   children,
 }: {
   /** Controls at the bar's end, after the pill. */
@@ -28,6 +28,7 @@ export function InvitationChrome({
   landing?: boolean
   /** The early-access pill; off for pages that are not an invitation (the 404). */
   pill?: boolean
+  page: BootPage
   children: ReactNode
 }) {
   const phone = usePhoneLayout()
@@ -41,7 +42,7 @@ export function InvitationChrome({
       <header className="ww-invite__topbar">
         {!bare && <BrandLockup />}
         <span className="ww-invite__topbar-end">
-          <EndpointsPill />
+          <EndpointsPill page={page} />
           {!bare && pill && !phone && (
             <span className="ww-invite__pill" data-testid="early-access-pill">
               EARLY ACCESS
@@ -60,11 +61,12 @@ export function InvitationChrome({
  * The way to the endpoint editor before sign-in, where Settings is out of reach. Saving reloads the
  * page, so it is disabled while the PXE boots or a screen holds it.
  */
-function EndpointsPill() {
+function EndpointsPill({ page }: { page: BootPage }) {
+  const { config } = page
   const [open, setOpen] = useState(false)
   const held = useEndpointsHeld()
-  const { bootStatus } = usePxeBoot()
-  const label = customEndpointsLabel(getConfig().endpoints)
+  const { bootStatus } = usePxeBoot(page)
+  const label = customEndpointsLabel(config.endpoints)
   return (
     <>
       <button
@@ -76,7 +78,7 @@ function EndpointsPill() {
       >
         {(label ?? "Endpoints").toUpperCase()}
       </button>
-      {open && <EndpointsModal onClose={() => setOpen(false)} />}
+      {open && <EndpointsModal config={config} onClose={() => setOpen(false)} />}
     </>
   )
 }

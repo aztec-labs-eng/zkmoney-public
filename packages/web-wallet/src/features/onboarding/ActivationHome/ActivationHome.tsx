@@ -2,10 +2,9 @@ import { bestEffort, WalletError } from "@obsidion/core/errors"
 import { useState, type ReactNode } from "react"
 import type { InviteNotice } from "../../registration/TagAvailabilityNotes/TagAvailabilityNotes"
 import { formatUnits } from "viem"
-import { depositOwed, useResource, useStore } from "@obsidion/front-core"
+import { depositOwed, useStore, NO_SERVICE, serviceStatus } from "@obsidion/front-core"
 import { GradientHeroCard, GradientSpinner, Icon, TopNavIconButton } from "@obsidion/web-ds"
 import { tokenDecimalsForNetwork } from "@obsidion/core/constants"
-import { getConfig } from "../../../config/env"
 import { fireOnboardingEvent } from "../../../lib/analytics"
 import pastUserArt from "../../../assets/onboarding/past-user-banner.webp"
 import pastUserVerifiedArt from "../../../assets/onboarding/past-user-banner-verified.webp"
@@ -14,12 +13,13 @@ import {
   ACTIVATION_STEP_COUNT,
   activationStepNumber,
   activationSteps,
+  activationStepsLeft,
   type ActivationStep,
 } from "../activationSteps"
 import { PAY_PRICE } from "../../deposit/ChooseNameSheet/ChooseNameSheet"
 import { chooseOwnName } from "../../registration/chooseOwnName"
 import { claimChosenName } from "../oxideOnboarding"
-import { OwnTagSheet } from "../OwnTagSheet"
+import { OwnTagSheet } from "../OwnTagSheet/OwnTagSheet"
 import { usePastUserCheck } from "../../registration/pastUser"
 import { useRegistrationAsk } from "../../registration/RegistrationAskLine/RegistrationAskLine"
 import { formatDepositDue, formatDepositSeen } from "../../registration/depositAmounts"
@@ -40,7 +40,8 @@ import copy from "./ActivationHome.copy"
 const RANDOM_TAG_DEPOSIT = usdFigure(formatUnits(askedTotal("earned_tag"), 18))
 const PAID_TAG_DEPOSIT = usdFigure(formatUnits(askedTotal("standard"), 18))
 const TITLES: Record<ActivationStep["id"], string> = copy.titles
-const TAG_PITCH = copy.tagPitch
+const tagPitch = (steps: ActivationStep[]) =>
+  activationStepsLeft(steps) === 1 ? copy.tagPitchOne : copy.tagPitch
 const PASSKEY_PITCH = copy.passkeyPitch
 const depositPitch = (amount: string) => fmt(copy.depositPitch, { amount })
 
@@ -82,7 +83,7 @@ function ActivationSteps(props: {
           </h2>
           {props.tagActions}
         </div>
-        <p className="ww-activation__lede">{props.subtitle ?? TAG_PITCH}</p>
+        <p className="ww-activation__lede">{props.subtitle ?? tagPitch(props.steps)}</p>
       </header>
       <div className="ww-activation__list">
         {props.steps.map((step, i) =>
@@ -326,8 +327,8 @@ export function ActivationHome() {
   const verified = useStore(session.pastUser.state, (s) => s.verified)
   const verifying = useStore(session.pastUser.state, (s) => s.open)
   const free = usePastUserCheck().state.step === "confirmed"
-  const obsidionAccount = useResource(session.account)
-  const obsidionWallet = useResource(session.wallet)
+  const unlocked = useStore(session.account ?? NO_SERVICE, serviceStatus) === "ready"
+  const walletBuilt = useStore(session.wallet, serviceStatus) === "ready"
   const [own, setOwn] = useState(false)
   const [depositing, setDepositing] = useState(false)
   // Unknown while the withdrawals load: Home waits rather than ask for a deposit already funded.
@@ -336,7 +337,7 @@ export function ActivationHome() {
   const { route } = record
   const pastUser = route === "past_user"
   const verifiedAccount = verified?.tag === record.tag ? verified.account : undefined
-  const decimals = tokenDecimalsForNetwork(getConfig().network)
+  const decimals = tokenDecimalsForNetwork(session.page.config.network)
   // A paid tag waiting on activation: a past-user pass makes it free.
   const paidPending = route === "paid" && !confirmed
   const steps = activationSteps({
@@ -435,7 +436,12 @@ export function ActivationHome() {
           onVerify={() => session.pastUser.setOpen(true)}
           onClose={() => setOwn(false)}
           onPick={async (name) => {
-            if (!obsidionAccount || !obsidionWallet) throw new WalletError("wallet.notReady")
+            if (!unlocked || !walletBuilt || !session.account)
+              throw new WalletError("wallet.notReady")
+            const [obsidionWallet, obsidionAccount] = await Promise.all([
+              session.wallet.ready(),
+              session.account.ready(),
+            ])
             const route = free ? "past_user" : "paid"
             const over = claimChosenName(session, obsidionWallet, free, route)
             await chooseOwnName(session, name, obsidionAccount, over)

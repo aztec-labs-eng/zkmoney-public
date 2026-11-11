@@ -1,9 +1,14 @@
+import { createPace } from "@obsidion/core/cadence"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
   PredicateScreeningService,
   passThroughScreener,
+  screenerOf,
+  screenings,
   type PredicateScreeningConfig,
 } from "../../src/core/services/screening/PredicateScreeningService"
+import { queries } from "../../src/engine/query"
+import { memoryStore } from "../../src/engine/store"
 
 const CONFIG: PredicateScreeningConfig = {
   apiKey: "test-key",
@@ -94,49 +99,11 @@ describe("PredicateScreeningService", () => {
     expect(fetchSpy.mock.calls[0][0]).toBe("https://staging.api.predicate.io/v2/attestation")
   })
 
-  it("checks a compliant wallet once, keyed case-insensitively", async () => {
-    fetchSpy.mockResolvedValue(compliant())
-    const service = new PredicateScreeningService(CONFIG)
-
-    await service.screen(ADDRESS)
-    await service.screen(ADDRESS.toLowerCase())
-    expect(fetchSpy).toHaveBeenCalledTimes(1)
-  })
-
-  it("shares one request across concurrent screens of the same wallet", async () => {
-    fetchSpy.mockResolvedValue(compliant())
-    const service = new PredicateScreeningService(CONFIG)
-
-    const [a, b] = await Promise.all([service.screen(ADDRESS), service.screen(ADDRESS)])
-    expect(a).toEqual({ compliant: true })
-    expect(b).toEqual({ compliant: true })
-    expect(fetchSpy).toHaveBeenCalledTimes(1)
-  })
-
-  it("re-queries a blocked wallet once its TTL passes", async () => {
-    vi.useFakeTimers()
-    fetchSpy.mockResolvedValue(blocked())
-    const service = new PredicateScreeningService(CONFIG)
-
-    await service.screen(ADDRESS)
-    await service.screen(ADDRESS)
-    expect(fetchSpy).toHaveBeenCalledTimes(1)
-
-    vi.advanceTimersByTime(61_000)
-    await service.screen(ADDRESS)
-    expect(fetchSpy).toHaveBeenCalledTimes(2)
-    vi.useRealTimers()
-  })
-
-  it("throws and does not cache on a non-ok response", async () => {
+  it("throws on a non-ok response", async () => {
     fetchSpy.mockResolvedValue(
       attestationResponse({ is_compliant: true }, { ok: false, status: 500 }),
     )
-    const service = new PredicateScreeningService(CONFIG)
-
-    await expect(service.screen(ADDRESS)).rejects.toThrow(/500/)
-    await expect(service.screen(ADDRESS)).rejects.toThrow(/500/)
-    expect(fetchSpy).toHaveBeenCalledTimes(2)
+    await expect(new PredicateScreeningService(CONFIG).screen(ADDRESS)).rejects.toThrow(/500/)
   })
 
   it("throws when the request fails", async () => {
@@ -149,5 +116,64 @@ describe("PredicateScreeningService", () => {
   it("passThroughScreener passes everything without touching the network", async () => {
     expect(await passThroughScreener.screen(ADDRESS)).toEqual({ compliant: true })
     expect(fetchSpy).not.toHaveBeenCalled()
+  })
+})
+
+describe("screenings", () => {
+  let fetchSpy: ReturnType<typeof vi.spyOn<typeof globalThis, "fetch">>
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    fetchSpy = vi.spyOn(globalThis, "fetch")
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  /** A page's verdicts over the Predicate client. */
+  const screener = () => {
+    const query = queries({
+      pace: createPace({ signalled: false }),
+      visible: memoryStore(true),
+      now: () => Date.now(),
+    })
+    return screenerOf(screenings(query, new PredicateScreeningService(CONFIG)))
+  }
+
+  it("checks a compliant wallet once, keyed case-insensitively and across concurrent screens", async () => {
+    fetchSpy.mockResolvedValue(compliant())
+    const verdicts = screener()
+
+    const [a, b] = await Promise.all([verdicts.screen(ADDRESS), verdicts.screen(ADDRESS)])
+    expect([a, b]).toEqual([{ compliant: true }, { compliant: true }])
+    await verdicts.screen(ADDRESS.toLowerCase())
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it("re-queries a blocked wallet once its TTL passes", async () => {
+    fetchSpy.mockResolvedValue(blocked())
+    const verdicts = screener()
+
+    await verdicts.screen(ADDRESS)
+    vi.advanceTimersByTime(59_000)
+    await verdicts.screen(ADDRESS)
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+
+    vi.advanceTimersByTime(1_000)
+    await verdicts.screen(ADDRESS)
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
+  })
+
+  it("keeps no failure: the next screen asks again", async () => {
+    fetchSpy.mockResolvedValue(
+      attestationResponse({ is_compliant: true }, { ok: false, status: 500 }),
+    )
+    const verdicts = screener()
+
+    await expect(verdicts.screen(ADDRESS)).rejects.toThrow(/500/)
+    await expect(verdicts.screen(ADDRESS)).rejects.toThrow(/500/)
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
   })
 })

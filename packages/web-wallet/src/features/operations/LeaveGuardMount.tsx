@@ -6,23 +6,22 @@
 import { useEffect } from "react"
 import { fireEvent } from "../../lib/analytics"
 import { isActiveTab } from "../../platform/storage/activeTab"
-import { getTabBoundOperation, useLeavingLosesTransaction } from "./operations"
+import { useTabBoundOperation } from "./operations"
 
 export function LeaveGuardMount(): null {
-  const guarded = useLeavingLosesTransaction()
+  const flow = useTabBoundOperation()?.flow
+  // eslint-disable-next-line local/effect-hook -- ZKM-1806
   useEffect(() => {
-    if (!guarded) return
+    if (!flow) return
     const onBeforeUnload = (event: BeforeUnloadEvent) => {
       if (!isActiveTab()) return
       event.preventDefault()
       // Browsers that predate `preventDefault` here prompt only on a non-empty returnValue.
       event.returnValue = ""
-      fireEvent("proving_leave_prompted", {
-        flow: getTabBoundOperation()?.flow,
-      })
+      fireEvent("proving_leave_prompted", { flow })
     }
     window.addEventListener("beforeunload", onBeforeUnload)
     return () => window.removeEventListener("beforeunload", onBeforeUnload)
-  }, [guarded])
+  }, [flow])
   return null
 }

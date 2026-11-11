@@ -46,19 +46,21 @@ describe("noirProver", () => {
   })
 
   it("proves on the page-wide instance and never destroys it", async () => {
-    const { proveNoirCircuit } = await import("../../src/platform/noirProver")
-    await proveNoirCircuit(CIRCUIT, {}, "test")
-    await proveNoirCircuit(CIRCUIT, {}, "test")
+    const { initNoirWasm, proveNoirCircuit } = await import("../../src/platform/noirProver")
+    await proveNoirCircuit(CIRCUIT, {}, "test", { wasm: initNoirWasm })
+    await proveNoirCircuit(CIRCUIT, {}, "test", { wasm: initNoirWasm })
     expect(h.backends).toEqual([h.api, h.api])
     expect(h.newInstance).not.toHaveBeenCalled()
     expect(h.api.destroy).not.toHaveBeenCalled()
   })
 
-  it("leaves a proof its own wasm init when the warm-up's failed", async () => {
-    h.initACVM.mockRejectedValueOnce(new Error("wasm fetch failed"))
+  it("leaves a proof its own wasm init when the page's warm-up failed", async () => {
+    const failed = new Error("wasm fetch failed")
+    h.initACVM.mockRejectedValueOnce(failed)
     const { proveNoirCircuit, warmNoirProver } = await import("../../src/platform/noirProver")
-    await expect(warmNoirProver()).rejects.toThrow("wasm fetch failed")
-    await expect(proveNoirCircuit(CIRCUIT, {}, "test")).resolves.toMatchObject({
+    const wasm = (await import("../../src/platform/noirWasmStart")).pageNoirWasm()
+    await expect(warmNoirProver(wasm)).rejects.toBe(failed)
+    await expect(proveNoirCircuit(CIRCUIT, {}, "test", { wasm })).resolves.toMatchObject({
       publicInputs: ["0x1"],
     })
     expect(h.initACVM).toHaveBeenCalledTimes(2)

@@ -4,7 +4,9 @@
  * for real, so the target and calldata assertions are byte-exact against the SIPA-intents encoder
  * (the local mirror until it vendors).
  */
+import { createPace } from "@obsidion/core/cadence"
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import type { Config } from "wagmi"
 import {
   decodeFunctionData,
   formatUnits,
@@ -23,6 +25,8 @@ import {
   type SipaDepositEvent,
 } from "@obsidion/front-core"
 import type { OxideEnvTuple } from "@obsidion/core/types"
+import { testQuery } from "../../../support/query"
+const pace = createPace()
 
 const SIPA = `0x${"11".repeat(20)}` as Address
 const OTHER_SIPA = `0x${"99".repeat(20)}` as Address
@@ -48,7 +52,10 @@ const bridge = vi.hoisted(() => ({
   isDesktopL1SubmitActive: vi.fn(() => false),
 }))
 
-vi.mock("../../../../src/session/l1Wallet", () => l1Clients)
+vi.mock("../../../../src/session/l1Wallet", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../../src/session/l1Wallet")>()),
+  ...l1Clients,
+}))
 vi.mock("../../../../src/platform/desktopBridge", () => bridge)
 
 const { SELF_BROADCAST_RESWEEPABLE, buildDepositIntent, encodeSweep, MULTICALL3_ADDRESS } =
@@ -115,6 +122,8 @@ const tuple = {
   forwardingTable: FORWARDING_TABLE,
   depositSubsidy: SUBSIDY,
 } satisfies OxideEnvTuple
+
+const WAGMI = {} as Config
 
 describe("sweepManifestFrom", () => {
   it("names the manifest field a thin deployment is missing", () => {
@@ -421,10 +430,10 @@ describe("selfSweepDeposit", () => {
       }))
       const registry = createPortalCapacityRegistry({
         read,
-        visibility: { isVisible: () => true, onResume: () => () => {} },
+        query: testQuery(),
         policy: { maxHeadAgeMs: Infinity },
       })
-      const readTerms = vi.fn(async () => ({
+      const readTerms = vi.fn(async (_route: unknown) => ({
         portal: PORTAL,
         token: TUPLE_TOKEN,
         depositFee: FEE,
@@ -433,7 +442,7 @@ describe("selfSweepDeposit", () => {
       const observer = createSipaProcessingObserver({
         deposits: memoryStore({ records: [stored], loaded: true, failed: false }).readonly,
         capacity: (key) => registry.store(key),
-        readTerms,
+        terms: testQuery()("terms", { load: (route) => readTerms(route) }),
         l1ChainId: 11155111,
       })
       const sweep = selfSweepDeposit(stored, {
@@ -511,10 +520,10 @@ describe("sweepChannel", () => {
       config,
       record: record(),
       publicClient: {} as never,
-      opts: { from: WALLET },
+      opts: { pace, wagmi: WAGMI, from: WALLET },
     })
     expect(channel.target).toBe(WALLET)
-    expect(l1Clients.getL1Clients).toHaveBeenCalledWith(11155111, WALLET)
+    expect(l1Clients.getL1Clients).toHaveBeenCalledWith(WAGMI, 11155111, WALLET)
   })
 
   it("tips the typed address through the desktop helper page", async () => {
@@ -525,7 +534,7 @@ describe("sweepChannel", () => {
       config,
       record: record(),
       publicClient: { waitForTransactionReceipt } as never,
-      opts: { destination: TYPED },
+      opts: { pace, wagmi: WAGMI, destination: TYPED },
     })
 
     expect(channel.target).toBe(TYPED)
@@ -543,14 +552,19 @@ describe("sweepChannel", () => {
   it("refuses bridge mode without a valid address to tip", async () => {
     bridge.isDesktopL1SubmitActive.mockReturnValue(true)
     await expect(
-      sweepChannel({ config, record: record(), publicClient: {} as never, opts: {} }),
+      sweepChannel({
+        config,
+        record: record(),
+        publicClient: {} as never,
+        opts: { pace, wagmi: WAGMI },
+      }),
     ).rejects.toMatchObject({ code: "sweep.tipDestinationMissing" })
     await expect(
       sweepChannel({
         config,
         record: record(),
         publicClient: {} as never,
-        opts: { destination: "0xnope" as Address },
+        opts: { pace, wagmi: WAGMI, destination: "0xnope" as Address },
       }),
     ).rejects.toMatchObject({ code: "sweep.tipDestinationMissing" })
   })

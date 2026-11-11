@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useRef, useState } from "react"
 import { CameraSession, type CameraState } from "./cameraSession"
+import { useDomEffect } from "../../ui/useDomEffect"
 
 export function useQrCamera(enabled: boolean, onPayload: (text: string) => void) {
   const [video, setVideo] = useState<HTMLVideoElement | null>(null)
@@ -19,11 +20,13 @@ export function useQrCamera(enabled: boolean, onPayload: (text: string) => void)
   }, [])
   const setTorch = useCallback((value: boolean) => session.current?.setTorch(value), [])
 
-  useEffect(() => {
+  useDomEffect(() => {
     if (!enabled) return
     if (!video) {
       setState((previous) =>
-        previous.kind === "denied" || previous.kind === "unavailable" || previous.kind === "decode-error"
+        previous.kind === "denied" ||
+        previous.kind === "unavailable" ||
+        previous.kind === "decode-error"
           ? previous
           : { kind: "unavailable", message: "Camera preview is unavailable. Paste a code below." },
       )

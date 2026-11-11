@@ -3,7 +3,7 @@ export default {
     head: "Important information",
     lossTitle: "Risk of loss",
     lossBody:
-      "Only send available tokens on Ethereum. Anything else is not credited, and getting it back requires manual recovery.",
+      "Send only supported tokens on Ethereum. Other tokens won't be credited and must be recovered manually.",
     rotatesTitle: "Each deposit gets a new address",
     rotatesBody:
       "Addresses you already shared keep working. Use each one only once for the best privacy.",
@@ -65,4 +65,27 @@ export default {
   keep: "Keep @{tag}",
   whichToken: "Which token are you sending?",
   network: "Network",
+  coinSubtitle: "Pick the coin you are sending on {chain}.",
+  coinList: {
+    separator: ", ",
+    last: "{rest} and {last}",
+  },
+  coinNote: {
+    only: "Only {symbols} on {chain}.",
+    otherChain: "For any other chain, use {link}.",
+    bridgeIn: "Bridge in",
+    bridgeInWallet: "Or connect a wallet to bridge in",
+  },
+  landing: {
+    title: "Deposit",
+    bridgeTitle: "Bridge in privately",
+    bridgeBody: "Bridge funds from available chains into your private balance.",
+    networks: "{count} networks",
+    addressTitle: "Show deposit address",
+    addressBody: "Get a one-time address to deposit available assets on {chain}.",
+    moreSoon: "More networks soon",
+    savedWallets: "Saved wallets",
+    connect: "Connect wallet",
+    bridgeFrom: "Deposit from your wallet on available chains",
+  },
 } as const

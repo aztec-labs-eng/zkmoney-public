@@ -1,8 +1,7 @@
-import { useMemo, useSyncExternalStore } from "react"
+import { useMemo } from "react"
 import {
+  balanceToMove,
   selectFeed,
-  useContactsDirectory,
-  useSavingsPosition,
   useStore,
   type Feed,
   type FeedSources,
@@ -10,9 +9,10 @@ import {
   type RecordSet,
   type Registrations,
   type Transaction,
-  useResource,
 } from "@obsidion/front-core"
-import { getPreviousAccountWatcher } from "../../features/backupPasskey/previousAccountWatcher"
+import { rotationView } from "../../features/backupPasskey/backupRotations"
+import { useSavingsAsset } from "../../features/savings/savingsGateway"
+import { useContactDirectory } from "../../session/contacts"
 import { useOldVersionHoldings } from "../../features/migration/oldVersionBalance"
 import { usePolledChainSeconds } from "../../features/paylink/chainTime"
 import { useSession, type Session } from "../../session/session"
@@ -24,15 +24,17 @@ export function feedRows(
   rows?: ReadonlyStore<RecordSet<Transaction>>,
   txHash?: string,
 ): ReadonlyStore<FeedSources> {
-  if (!txHash) return rows ? feedSources(session.feedBase, rows) : session.feed
-  const opened = session.activity.query("hash", txHash.toLowerCase())
-  return feedSources(session.feedBase, mergedRows([rows ?? session.homeRows, opened]))
+  if (!txHash && !rows) return session.feed
+  const listed = txHash
+    ? mergedRows([rows ?? session.homeRows, session.transfers.where("hash", txHash.toLowerCase())])
+    : rows!
+  return feedSources(session.feedBase, listed)
 }
 
 /** The feed, from the stores and what the view knows beside them. */
 export function useFeed({
   registration,
-  chainNode,
+  chainTime,
   account,
   rows,
   txHash,
@@ -43,8 +45,8 @@ export function useFeed({
   txHash?: string
   /** The pending registration's own row, while it has one. */
   registration?: { sipaAddress: string; ts: number }
-  /** The node to read chain time from, which gates a creator paylink's recovery offer. */
-  chainNode?: Parameters<typeof usePolledChainSeconds>[0]
+  /** Reads chain time, which gates a creator paylink's recovery offer. */
+  chainTime?: boolean
   /** The session's account, which alone can take back the links it made. */
   account?: string
 } = {}): {
@@ -52,24 +54,30 @@ export function useFeed({
   registrations: Registrations["records"]
   handle?: string
 } {
-  const { contacts, hydrated, failed } = useContactsDirectory()
+  const { contacts, hydrated, failed } = useContactDirectory()
   const session = useSession()
   const records = useStore(session.registrations.view, (view) => view.records)
   const handle = useStore(session.identity, (identity) => identity.value?.handle)
-  const chainNow = usePolledChainSeconds(chainNode)
+  const address = useStore(session.identity, (identity) => identity.value?.address)
+  const chainNow = usePolledChainSeconds(chainTime === true)
   const mainReadAt = useStore(useSession().balances.view, (v) => v.readAt)
-  const position = useSavingsPosition().position
+  const mainToken = useStore(session.balances.view, (v) => v.token)
+  const mainAnchor = useStore(session.balances.view, (v) => v.anchor)
+  const position = useStore(session.savingsHolding).position
   // Pending until the session knows whether Savings has a row; null where it has none.
-  const savings = useResource(session.savings)
-  const savingsToken = savings?.assetAddress
+  const savings = useSavingsAsset()
+  const savingsToken = savings ?? undefined
   const savingsUnknown = savings === undefined
-  const { main: oldMain, savings: oldSavings } = useOldVersionHoldings()
-  const watcher = getPreviousAccountWatcher()
-  const previousAccount = useSyncExternalStore(
-    watcher.subscribe,
-    () => watcher.getSnapshot().address,
+  const rotations = rotationView(session)
+  const moveMain = useStore(rotations, (set) =>
+    balanceToMove(set.records, address, mainToken, mainAnchor),
   )
-  const activeNetworkId = useResource(useSession().wallet)?.networkId
+  const moveShares = useStore(rotations, (set) =>
+    balanceToMove(set.records, address, position?.sharesToken, position?.sharesAnchor),
+  )
+  const { main: oldMain, savings: oldSavings } = useOldVersionHoldings()
+  const previousAccount = useStore(session.savedPreviousAccount.address)
+  const activeNetworkId = useStore(session.page.networkId)
   const regSipa = registration?.sipaAddress
   const regTs = registration?.ts
   const select = useMemo(() => {
@@ -79,12 +87,13 @@ export function useFeed({
       registration: regSipa !== undefined ? { sipaAddress: regSipa, ts: regTs! } : undefined,
       chainNowSec: chainNow,
       activeNetworkId,
-      account,
+      account: account ?? address,
       balanceReadAt: { main: mainReadAt, savings: position?.sharesReadAt },
       sharePrice: position?.sharePrice,
       savingsToken,
       savingsUnknown,
       oldVersions: { main: oldMain, savings: oldSavings },
+      backupMove: { main: moveMain, shares: moveShares },
       previousAccount,
     }
     return (sources: Parameters<typeof selectFeed>[0]) => selectFeed(sources, ctx)
@@ -103,8 +112,11 @@ export function useFeed({
     savingsUnknown,
     oldMain,
     oldSavings,
+    moveMain,
+    moveShares,
     activeNetworkId,
     account,
+    address,
     previousAccount,
   ])
   const sources = useMemo(() => feedRows(session, rows, txHash), [session, rows, txHash])

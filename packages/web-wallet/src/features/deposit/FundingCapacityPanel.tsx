@@ -1,8 +1,9 @@
 import type { ReactNode } from "react"
 import { Icon } from "@obsidion/web-ds"
-import { InfoButton } from "../limits/InfoButton"
+import { InfoButton } from "../../ui/InfoButton/InfoButton"
 import type { FundingCapacityView } from "./fundingCapacity"
 import { CAPACITY_CHECKING } from "../limits/limitsCopy"
+import copy from "./FundingCapacityPanel.copy"
 
 const TONE_ICON: Record<FundingCapacityView["tone"], string | undefined> = {
   ok: "check-circle",
@@ -55,7 +56,7 @@ export function FundingCapacityPanel({
           )}
         </p>
         {shown && onAboutLimits && (
-          <InfoButton label="About network capacity" onClick={onAboutLimits} />
+          <InfoButton label={copy.about} outline onClick={onAboutLimits} />
         )}
       </div>
       {shown && (

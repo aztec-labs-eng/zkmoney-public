@@ -14,7 +14,9 @@ import {
   type Database,
   type RecoveredCandidates,
   type WebAuthnData,
+  type Write,
   WalletError,
+  type SigningReport,
 } from "@obsidion/front-core"
 import {
   type BackupAddChoice,
@@ -51,6 +53,7 @@ import {
   isPhysicalOnly,
   preferredSlot,
   recordPasskeyEnvironment,
+  type PasskeyEnvironmentStore,
   recoverPubkeyFromAssertions,
   runPasskeyAssertion,
   runPasskeyCreation,
@@ -58,7 +61,7 @@ import {
   withoutManager,
 } from "@obsidion/passkey-web"
 import type { Address } from "viem"
-import { type BackupSignInFacts, noteBackupSignIn } from "../../features/onboarding/backupSignIn"
+import { type BackupSignInFacts, noteBackupSignIn } from "../../features/identity/backupSignIn"
 import type { BackupCreation, BackupCreationDriver } from "./backupCreation"
 import { openBackupEnvelope } from "./backupEnvelope"
 import {
@@ -71,7 +74,7 @@ import {
   type CachedMsk,
   type SessionLock,
 } from "../storage/activeStorage"
-import type { Device } from "../storage/deviceKeys"
+import { writeDeviceKeys, type Device } from "../storage/deviceKeys"
 import { holdsAccountRecords } from "../storage/WebStorageAdapter"
 import {
   type AlphaAuthProvider,
@@ -87,7 +90,6 @@ import {
 import { countingLocalRefusals } from "./localRefusals"
 import { type RetiredSession, findRetiredSession } from "./retiredSession"
 import { scopeOfStatus } from "./passkeyAttemptScope"
-import { PASSKEY_ENVIRONMENT_KEY } from "./passkeyEnvironmentKey"
 import { NoPasskeySessionError, SessionChangedError } from "./sessionErrors"
 import { type SigningSteering, makeWebauthnSignFn } from "./webauthnSigning"
 import {
@@ -291,6 +293,8 @@ export type WebAlphaAuthServiceOptions = {
   rpId: string
   rpName?: string
   ceremony?: PasskeyCeremony
+  /** Hears each transaction signature, which a proof waits for: the page's prover. */
+  signing?: SigningReport
   posture?: () => DevicePosture
   /** Whether the browser labels a cross-device answer as its own; tests fix it, production reads
    * the user agent. */
@@ -337,10 +341,13 @@ export type WebAlphaAuthServiceOptions = {
  */
 export class WebAlphaAuthService implements AlphaAuthService {
   private readonly ceremony: PasskeyCeremony
+  private readonly signing: SigningReport | undefined
   private readonly identityMap: WebPasskeyIdentityMap
   private readonly database: Database
   /** The page's device keys: the session tuple and the passkey map. */
   readonly device: Device
+  /** The last passkey environment, in the device's keys. */
+  private readonly environment: PasskeyEnvironmentStore
   private readonly withSessionLock: SessionLock
   readonly rpId: string
   private readonly rpName: string
@@ -381,11 +388,18 @@ export class WebAlphaAuthService implements AlphaAuthService {
   private readAccount?: () => Promise<StoredAccountSnapshot | null>
   private writeSigner?: (signer: WebAuthnData) => Promise<void>
   private readonly derivedKeys = new Map<string, Uint8Array>()
+  /** The window in which one flow may end the session signer's passkey prompt. */
+  private signingWindow?: AbortController
 
   constructor(options: WebAlphaAuthServiceOptions) {
     this.ceremony = options.ceremony ?? new BrowserPasskeyCeremony()
+    this.signing = options.signing
     this.database = options.database
     this.device = options.device
+    this.environment = {
+      last: () => options.device.get().passkeyEnv,
+      save: (record) => writeDeviceKeys(options.database, { passkeyEnv: JSON.stringify(record) }),
+    }
     this.withSessionLock = options.sessionLock
     this.identityMap = new WebPasskeyIdentityMap(options.database, options.rpId)
     this.rpId = options.rpId
@@ -405,9 +419,9 @@ export class WebAlphaAuthService implements AlphaAuthService {
   /**
    * The UI hints for a creation route: a phone opens the sheet on the QR flow, a security key names
    * itself so a manager's extension stands aside. This device takes `creationHintsFor`'s default,
-   * which names a key too, except where 1Password was picked: its extension answers only a request
-   * that names none. `creationHintsFor` adds the security-key hint where it must. A configuration
-   * that sends no hints (the browser tests) keeps sending none.
+   * which names a key too, except where 1Password or Proton Pass was picked: their extensions
+   * answer only a request steered to this device alone. `creationHintsFor` adds the security-key
+   * hint where it must. A configuration that sends no hints (the browser tests) keeps sending none.
    */
   private laptopHintsForRoute(
     route?: SignInRoute,
@@ -416,7 +430,9 @@ export class WebAlphaAuthService implements AlphaAuthService {
     if (this.laptopHints === null) return null
     if (route === "phone") return ["hybrid"]
     if (route === "security-key") return ["security-key"]
-    if (route === "this-device" && choice === "1password") return LAPTOP_LOCAL_HINTS
+    if (route === "this-device" && (choice === "1password" || choice === "proton")) {
+      return LAPTOP_LOCAL_HINTS
+    }
     return undefined
   }
 
@@ -698,10 +714,7 @@ export class WebAlphaAuthService implements AlphaAuthService {
         // Assertions carry no provider id; the creation record does, when this browser made the
         // key. The record waits on Client Hints and never holds the ceremony.
         const known = await this.identityMap.get(result.credentialId)
-        void recordPasskeyEnvironment(
-          { aaguid: known?.prfAaguid, posture },
-          PASSKEY_ENVIRONMENT_KEY,
-        )
+        void recordPasskeyEnvironment({ aaguid: known?.prfAaguid, posture }, this.environment)
       },
     })
   }
@@ -852,7 +865,7 @@ export class WebAlphaAuthService implements AlphaAuthService {
     pubkey: Uint8Array,
     credentialId: string,
     passkeys: readonly string[],
-    signalOf?: () => AbortSignal | undefined,
+    signalOf: () => AbortSignal | undefined = () => this.signingWindow?.signal,
   ): WebAuthnAlphaAuthProvider {
     const buf = Buffer.from(pubkey)
     if (!memberOf(passkeys, buf.toString("hex"))) {
@@ -864,15 +877,14 @@ export class WebAlphaAuthService implements AlphaAuthService {
       credentialId,
       pubkey,
       this.steeringFor(credentialId),
+      this.signing,
     )
-    const sign: typeof signFn = signalOf
-      ? async (challenge, opts) => {
-          const signal = opts?.signal ?? signalOf()
-          // Before the signing UI starts, so an aborted request shows nothing.
-          signal?.throwIfAborted()
-          return signFn(challenge, signal ? { ...opts, signal } : opts)
-        }
-      : signFn
+    const sign: typeof signFn = async (challenge, opts) => {
+      const signal = opts?.signal ?? signalOf()
+      // Before the signing UI starts, so an aborted request shows nothing.
+      signal?.throwIfAborted()
+      return signFn(challenge, signal ? { ...opts, signal } : opts)
+    }
     const provider = new WebAuthnAlphaAuthProvider(
       buf.subarray(0, 32),
       buf.subarray(32, 64),
@@ -881,6 +893,17 @@ export class WebAlphaAuthService implements AlphaAuthService {
     )
     this.providerCredential.set(provider, credentialId)
     return provider
+  }
+
+  /** Opens a flow's signing window; aborting the controller ends the prompt it is waiting on. */
+  beginSigning(): AbortController {
+    this.signingWindow = new AbortController()
+    return this.signingWindow
+  }
+
+  /** Closes the window `controller` opened, so later prompts are unaffected. */
+  endSigning(controller: AbortController): void {
+    if (this.signingWindow === controller) this.signingWindow = undefined
   }
 
   /**
@@ -1166,6 +1189,9 @@ export class WebAlphaAuthService implements AlphaAuthService {
       userAgent,
       laptopHints: this.laptopHintsForRoute(opts?.route, choice),
       ...(localCreation ? { localCreation } : {}),
+      // The Proton Pass pick alone calls the wrapper the page-start lock kept aside.
+      ...(choice === "proton" ? { extensionAllowed: true as const } : {}),
+      withdrawnManagers: this.withdrawnManagers,
       extraProviders: this.extraProviders,
       misreportsCrossDevice: this.misreportsCrossDevice(),
       attachmentLabelTrusted: this.trustsAttachmentLabel(),
@@ -1188,13 +1214,13 @@ export class WebAlphaAuthService implements AlphaAuthService {
               },
               posture,
             },
-            PASSKEY_ENVIRONMENT_KEY,
+            this.environment,
           )
         }
       },
     })
     const { created, slot, prfOutput, securityKey, backupEligible } = await (localCreation
-      ? countingLocalRefusals(creating)
+      ? countingLocalRefusals(this.database, creating)
       : creating
     ).catch((err: unknown) => {
       if (err instanceof LaptopPasskeyRefusedError && err.appleRefusedHere) this.appleRefused = true
@@ -1282,28 +1308,46 @@ export class WebAlphaAuthService implements AlphaAuthService {
     meta: StoredRecoveryMetadata,
     stillOwns?: () => boolean,
   ): Promise<void> {
+    await this.identityMap.upsert(this.withCreation(meta), stillOwns)
+    await this.recordLearned(meta.credentialId, stillOwns)
+  }
+
+  /**
+   * `recordRecoveryMetadata` for several records, staged in `w`, a write on the page database. The
+   * caller records what this page learned of each once the write lands (`recordLearned`).
+   */
+  async stageRecoveryMetadata(w: Write, metas: readonly StoredRecoveryMetadata[]): Promise<void> {
+    await this.identityMap.upsertIn(
+      w,
+      metas.map((meta) => this.withCreation(meta)),
+    )
+  }
+
+  /** `meta` with what this page's creation of the passkey knew. */
+  private withCreation(meta: StoredRecoveryMetadata): StoredRecoveryMetadata {
     const userHandle = meta.userHandle ?? this.createdHandles.get(meta.credentialId)
     const securityKey = meta.securityKey || this.createdSecurityKeys.has(meta.credentialId)
     const backupEligible = meta.backupEligible ?? this.backupFlags.get(meta.credentialId)
-    await this.identityMap.upsert(
-      {
-        ...meta,
-        ...(userHandle ? { userHandle } : {}),
-        ...(securityKey ? { securityKey: true } : {}),
-        ...(backupEligible !== undefined ? { backupEligible } : {}),
-      },
-      stillOwns,
-    )
-    const where = this.answerSeen(meta.credentialId)
+    return {
+      ...meta,
+      ...(userHandle ? { userHandle } : {}),
+      ...(securityKey ? { securityKey: true } : {}),
+      ...(backupEligible !== undefined ? { backupEligible } : {}),
+    }
+  }
+
+  /** Where the passkey answered and the transports its assertions implied, as this page saw them. */
+  async recordLearned(credentialId: string, stillOwns?: () => boolean): Promise<void> {
+    const where = this.answerSeen(credentialId)
     if (where) {
       await this.identityMap
-        .setAnswered(meta.credentialId, where, stillOwns)
+        .setAnswered(credentialId, where, stillOwns)
         .catch((err) => console.warn("passkey answer not recorded", err))
     }
-    const implied = this.implied.get(meta.credentialId)
+    const implied = this.implied.get(credentialId)
     if (!implied || implied === "refused") return
     await this.identityMap
-      .setInferredTransports(meta.credentialId, implied, stillOwns)
+      .setInferredTransports(credentialId, implied, stillOwns)
       .catch((err) => console.warn("passkey transports not recorded", err))
   }
 
@@ -1354,6 +1398,17 @@ export class WebAlphaAuthService implements AlphaAuthService {
    */
   sessionHeld(generation: number): boolean {
     return this.epoch === generation && this.sessionWritesInFlight === 0
+  }
+
+  /**
+   * The session as it is now, signed in as `credentialId`: the check fails once it is replaced or
+   * being replaced, and as soon as a sign-out begins, which drops the key at once. A generation
+   * alone would miss a sign-out that began before this call, since it leaves a generation of its
+   * own.
+   */
+  holdsSession(credentialId: string): () => boolean {
+    const epoch = this.epoch
+    return () => this.msk !== undefined && !this.sessionMoved(epoch, credentialId)
   }
 
   /** The address this browser's record names for the session's credential; none without a passkey session. */

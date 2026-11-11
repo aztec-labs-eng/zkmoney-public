@@ -4,7 +4,6 @@ import { PUBLIC_TX_LIMIT_USD } from "@obsidion/core/constants"
 import {
   checkProtocolCeiling,
   checkPublicLimit,
-  depositLimits,
   depositTokenValuation,
   floorToTypeable,
   NOMINAL_USD_VALUATION,
@@ -90,108 +89,6 @@ describe("protocol ceiling", () => {
 
   it("is undecided before the portal's cap is read", () => {
     expect(checkProtocolCeiling(dai("1"), undefined)).toBe("credit-unknown")
-  })
-})
-
-describe("depositLimits", () => {
-  const fee = dai("0.35")
-
-  it("counts the gross send, fee included, against the published limit", () => {
-    const at = depositLimits({
-      receiveAtomic: dai(LIMIT) - fee,
-      feeAtomic: fee,
-      decimals: 18,
-      valuation: PAR,
-      settlementCreditAtomic: dai(LIMIT) - fee,
-      txAmountCap: TX_AMOUNT_CAP,
-    })
-    expect(at).toEqual({
-      sendAtomic: dai(LIMIT),
-      publicLimit: "within",
-      protocolCeiling: "within",
-      maxReceiveAtomic: dai(LIMIT) - fee,
-    })
-    const over = depositLimits({
-      receiveAtomic: dai(LIMIT) - fee + dai(CENT),
-      feeAtomic: fee,
-      decimals: 18,
-      valuation: PAR,
-      settlementCreditAtomic: dai(LIMIT) - fee + dai(CENT),
-      txAmountCap: TX_AMOUNT_CAP,
-    })
-    expect(over.publicLimit).toBe("over")
-    expect(over.protocolCeiling).toBe("within")
-  })
-
-  it("checks the net credit against the protocol ceiling separately", () => {
-    // A valuation under a dollar lifts the published limit above the ceiling.
-    const cheap = price(4n, 10n)
-    const at = depositLimits({
-      receiveAtomic: TX_AMOUNT_CAP,
-      feeAtomic: fee,
-      decimals: 18,
-      valuation: cheap,
-      settlementCreditAtomic: TX_AMOUNT_CAP,
-      txAmountCap: TX_AMOUNT_CAP,
-    })
-    expect(at.publicLimit).toBe("within")
-    expect(at.protocolCeiling).toBe("within")
-    expect(at.maxReceiveAtomic).toBe(TX_AMOUNT_CAP)
-    const over = depositLimits({
-      receiveAtomic: dai("5166.01"),
-      feeAtomic: fee,
-      decimals: 18,
-      valuation: cheap,
-      settlementCreditAtomic: dai("5166.01"),
-      txAmountCap: TX_AMOUNT_CAP,
-    })
-    expect(over.publicLimit).toBe("within")
-    expect(over.protocolCeiling).toBe("over")
-  })
-
-  it("leaves the ceiling undecided and the maximum uncapped before the cap is read", () => {
-    const cheap = price(95n, 100n)
-    const limits = depositLimits({
-      receiveAtomic: dai("5166.01"),
-      feeAtomic: fee,
-      decimals: 18,
-      valuation: cheap,
-      settlementCreditAtomic: dai("5166.01"),
-      txAmountCap: undefined,
-    })
-    expect(limits.protocolCeiling).toBe("credit-unknown")
-    expect(limits.maxReceiveAtomic).toBe(floorToTypeable(publicLimitAtomic(18, cheap)! - fee, 18))
-  })
-
-  it("leaves the credit unknown on a swap route and prices the send in the sent token", () => {
-    const limits = depositLimits({
-      receiveAtomic: usdc(LIMIT) - usdc("0.35"),
-      feeAtomic: usdc("0.35"),
-      decimals: 6,
-      valuation: PAR,
-      settlementCreditAtomic: undefined,
-      txAmountCap: TX_AMOUNT_CAP,
-    })
-    expect(limits).toEqual({
-      sendAtomic: usdc(LIMIT),
-      publicLimit: "within",
-      protocolCeiling: "credit-unknown",
-      maxReceiveAtomic: usdc(LIMIT) - usdc("0.35"),
-    })
-  })
-
-  it("has no maximum without a valuation", () => {
-    const limits = depositLimits({
-      receiveAtomic: dai("10"),
-      feeAtomic: fee,
-      decimals: 18,
-      valuation: undefined,
-      settlementCreditAtomic: dai("10"),
-      txAmountCap: TX_AMOUNT_CAP,
-    })
-    expect(limits.publicLimit).toBe("valuation-unavailable")
-    expect(limits.protocolCeiling).toBe("within")
-    expect(limits.maxReceiveAtomic).toBeUndefined()
   })
 })
 

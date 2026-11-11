@@ -1,0 +1,49 @@
+{
+  "scenario": "activity",
+  "viewport": "402x879,1280x832",
+  "path": "/settings?flowFixture=success&backupFixture=adding",
+  "ready": {
+    "selector": ".ww-settings__user"
+  },
+  "steps": [
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Passkeys",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": "html[data-backup-screen=adding]"
+    },
+    {
+      "action": "screenshot",
+      "file": "a5-adding.png",
+      "state": "A5: funded, the network adds the backup"
+    },
+    {
+      "action": "goto",
+      "path": "/settings?flowFixture=success&backupFixture=adding-delayed"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-settings__user"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Passkeys",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": "html[data-backup-screen=adding]"
+    },
+    {
+      "action": "screenshot",
+      "file": "c6-adding-delayed.png",
+      "state": "C6: paid, the route is not paying yet"
+    }
+  ],
+  "finalScreenshot": false
+}

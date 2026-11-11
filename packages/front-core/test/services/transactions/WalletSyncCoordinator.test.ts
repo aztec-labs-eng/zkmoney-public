@@ -1,30 +1,20 @@
+import { createPace } from "@obsidion/core/cadence"
 import { memoryBackend } from "../../../src/engine/memoryBackend"
 import { openDatabase } from "../../../src/engine/database"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import type { IStorageAdapter } from "../../../src/core/storages/adapter"
 import type { WithdrawalRecord } from "../../../src/core/services/bridge/types"
 import { memoryStore } from "../../../src/engine/store"
 import { WalletSyncCoordinator } from "../../../src/core/services/transactions/WalletSyncCoordinator"
 import { TRANSFER_SCAN_CATCH_UP_TIMEOUT_MS } from "../../../src/core/services/transactions/TransferEventScanner"
-import { BalanceStorage } from "../../../src/core/storages/BalanceStorage"
+import { createBalanceStore, selectEntry } from "../../../src/engine/balances"
 import type { ScannedTransferEvent } from "@obsidion/sdk"
-import { seededActivity } from "../../utils/activityFixture"
+import { seededActivity } from "../../utils/transferFixture"
 import type { RecordSet } from "../../../src/engine/persistentStore"
 import type { Transaction } from "../../../src/types/transactions"
 import { startRuntime } from "../../../src/engine/runtime"
 import { transferScanTask } from "../../../src/engine/transferScan"
 
 const ME = "0x" + "aa".repeat(32)
-
-function memStorage(): IStorageAdapter {
-  const m = new Map<string, string>()
-  return {
-    getItem: async (k) => m.get(k) ?? null,
-    setItem: async (k, v) => void m.set(k, v),
-    removeItem: async (k) => void m.delete(k),
-    clear: async () => m.clear(),
-  }
-}
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -72,13 +62,14 @@ function harness(
     transactions.set({ records: [...txs] as Transaction[], loaded: true, failed: false })
   const tags = { resolveL2: vi.fn(async (): Promise<null> => null) }
   const balanceStore = {
-    updateBalance: vi.fn<
+    write: vi.fn<
       (
         scope: string,
         token: string,
         balance: bigint,
         anchor?: number,
-        opts?: { strict?: boolean },
+        readAt?: number,
+        symbol?: string,
       ) => Promise<boolean>
     >(
       async (scope, token, balance, anchor) => (
@@ -87,11 +78,11 @@ function harness(
     ),
   }
   const milestones = { mark: vi.fn() }
-  const activity = seededActivity()
+  const transfers = seededActivity()
   const coordinator = new WalletSyncCoordinator({
     source,
-    db: activity.db,
-    transactionStore: activity,
+    db: transfers.db,
+    transactionStore: transfers,
     tags,
     contacts: { findByL2Address: async () => null },
     token: { address: "0xtok", symbol: "DAI", decimals: 18 },
@@ -110,9 +101,11 @@ function harness(
     db: openDatabase(memoryBackend()),
     milestones: { after: async () => true, reached: () => false },
     visible: memoryStore(true).readonly,
+    pace: createPace(),
+    now: () => Date.now(),
   })
   const wake = () => runtime.wake(scan)
-  const detach = coordinator.attach({ wake, live: () => true })
+  const detach = coordinator.attach({ wake, canRun: () => true })
   const stop = () => {
     runtime.stop()
     detach()
@@ -136,6 +129,17 @@ function harness(
     tags,
     balanceStore,
   }
+}
+
+/** Backs the harness's balance writes with a real store, and returns its entry for a token. */
+function storedBalances(h: ReturnType<typeof harness>) {
+  const storage = createBalanceStore({ db: openDatabase(memoryBackend()), now: () => Date.now() })
+  const write = h.balanceStore.write.getMockImplementation()!
+  h.balanceStore.write.mockImplementation(async (...args) => {
+    await write(...args)
+    return storage.write(...args)
+  })
+  return (token: string) => selectEntry(storage.view.get(), "net:me", token)
 }
 
 /** Fires the debounce and lets the resulting tick settle. */
@@ -272,21 +276,20 @@ describe("WalletSyncCoordinator", () => {
       return late.promise
     })
     h.readBalance.mockResolvedValue(20n)
-    const storage = BalanceStorage.get(memStorage())
-    h.balanceStore.updateBalance.mockImplementation((scope, token, value, anchor, opts) =>
-      storage.updateBalance(scope, token, value, anchor, opts),
-    )
+    const storage = createBalanceStore({ db: openDatabase(memoryBackend()), now: () => Date.now() })
+    h.balanceStore.write.mockImplementation(storage.write)
+    const stored = () => selectEntry(storage.view.get(), "net:me", "0xtok")?.atomic
     const started = h.start()
     await entered.promise
     // A cursorless first pass is a catch-up, so its read gets the longer bound.
     await vi.advanceTimersByTimeAsync(TRANSFER_SCAN_CATCH_UP_TIMEOUT_MS + 1)
     await started
     await h.wake()
-    expect(await storage.getBalance("net:me", "0xtok")).toBe(20n)
+    expect(stored()).toBe(20n)
     late.resolve(100n)
     await vi.advanceTimersByTimeAsync(0)
-    expect(await storage.getBalance("net:me", "0xtok")).toBe(20n)
-    expect(h.balanceStore.updateBalance).toHaveBeenCalledTimes(1)
+    expect(stored()).toBe(20n)
+    expect(h.balanceStore.write).toHaveBeenCalledTimes(1)
     h.stop()
   })
 
@@ -395,8 +398,9 @@ describe("WalletSyncCoordinator", () => {
     h.stop()
   })
 
-  it("writes every token the snapshot read at its anchor, Main's first", async () => {
+  it("writes every token the snapshot read at its anchor, Main's first and named", async () => {
     const h = harness({ balance: () => 42n, others: () => ({ "0xsav": 7n }) })
+    const stored = storedBalances(h)
     await h.start()
     expect(h.writes).toEqual([
       { scope: "net:me", token: "0xtok", balance: 42n, anchor: 100 },
@@ -407,6 +411,10 @@ describe("WalletSyncCoordinator", () => {
       { scope: "net:me", token: "0xtok", balance: 42n, anchor: 101 },
       { scope: "net:me", token: "0xsav", balance: 7n, anchor: 101 },
     ])
+    // Only Main's read is named: a named share count would be a second candidate at boot.
+    expect(stored("0xtok")).toMatchObject({ atomic: 42n, anchor: 101, symbol: "DAI" })
+    expect(stored("0xsav")).toMatchObject({ atomic: 7n, anchor: 101 })
+    expect(stored("0xsav")).not.toHaveProperty("symbol")
     h.stop()
   })
 
@@ -469,13 +477,12 @@ describe("WalletSyncCoordinator", () => {
     it("confirms a read stored durably after the call", async () => {
       let balance = 5n
       const h = harness({ balance: () => balance })
+      const stored = storedBalances(h)
       await h.start()
       balance = 9n
 
       expect(await WalletSyncCoordinator.confirmBalance()).toBe(true)
-      expect(h.balanceStore.updateBalance).toHaveBeenLastCalledWith("net:me", "0xtok", 9n, 101, {
-        strict: true,
-      })
+      expect(stored("0xtok")).toMatchObject({ atomic: 9n, anchor: 101, symbol: "DAI" })
       h.stop()
     })
 
@@ -506,10 +513,7 @@ describe("WalletSyncCoordinator", () => {
     it("confirms nothing when storage refuses the write", async () => {
       const h = harness({ balance: () => 3n })
       await h.start()
-      h.balanceStore.updateBalance.mockImplementation(async (...args) => {
-        if (args[4]?.strict) throw new Error("QuotaExceededError")
-        return true
-      })
+      h.balanceStore.write.mockRejectedValue(new Error("QuotaExceededError"))
 
       expect(await WalletSyncCoordinator.confirmBalance()).toBe(false)
       h.stop()
@@ -518,7 +522,7 @@ describe("WalletSyncCoordinator", () => {
     it("confirms nothing when a newer read is already stored", async () => {
       const h = harness({ balance: () => 3n })
       await h.start()
-      h.balanceStore.updateBalance.mockResolvedValue(false)
+      h.balanceStore.write.mockResolvedValue(false)
 
       expect(await WalletSyncCoordinator.confirmBalance()).toBe(false)
       h.stop()
@@ -527,7 +531,7 @@ describe("WalletSyncCoordinator", () => {
     it("confirms on Main's write alone when another balance's read is passed over", async () => {
       const h = harness({ balance: () => 3n, others: () => ({ "0xshares": 1n }) })
       await h.start()
-      h.balanceStore.updateBalance.mockImplementation(async (_scope, token) => token === "0xtok")
+      h.balanceStore.write.mockImplementation(async (_scope, token) => token === "0xtok")
 
       expect(await WalletSyncCoordinator.confirmBalance()).toBe(true)
       h.stop()

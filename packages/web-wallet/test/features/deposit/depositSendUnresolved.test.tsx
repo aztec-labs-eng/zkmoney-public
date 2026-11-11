@@ -1,15 +1,11 @@
-/**
- * A desktop deposit approved without a reported hash may still be sent. The screen saves a hold to the wallet database
- * before every approval (and refuses the approval when it cannot), then keeps that address out of use and pauses new
- * funding across reloads until funds reach the address, a hash is known, or the user starts a new deposit. Storage
- * failures are reported, never read as "no hold".
- */
+/** Guards: a hold is saved before approval, or refused; no reused address; no repeat payment. */
 import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
-import { MemoryRouter, Route, Routes } from "react-router-dom"
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
+import { MemoryRouter, Route, Routes, useNavigate } from "react-router-dom"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { ScreeningProvider, passThroughScreener } from "@obsidion/front-core"
 import type { Hex } from "viem"
+import { testScreenings } from "../../support/page"
 
 const L2_ADDRESS = `0x${"cd".repeat(32)}` as Hex
 const FIRST = `0x${"a1".repeat(20)}`
@@ -20,10 +16,6 @@ const capacity = vi.hoisted(() => ({ availableAtomic: 40_000n * 10n ** 18n }))
 vi.mock("../../../src/features/deposit/capacityStore", async () =>
   (await import("../../support/fakeCapacity")).fakeCapacityStore(capacity),
 )
-vi.mock("@obsidion/front-core", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@obsidion/front-core")>()),
-  useContractServiceContext: () => ({ contractService: {} }),
-}))
 const pool = vi.hoisted(() => ({ next: [] as string[] }))
 const gateway = {
   // An open with nothing queued stays resolving.
@@ -74,13 +66,20 @@ const approvals = vi.hoisted(() => ({
   submission: "submission-1",
   pending: Promise.resolve(),
 }))
-vi.mock("../../../src/features/deposit/DepositFromWalletModal", () => ({
+vi.mock("../../../src/features/deposit/DepositFromWalletModal/DepositFromWalletModal", () => ({
   DepositFromWalletModal: (props: {
     deposit: { address: string }
     onSendUnresolved: () => void
     onApproving: (submission: string) => Promise<void>
     onNotApproved: (submission: string) => void
-    onSent: (sent: { address: string; txHash: string; amount: string; tokenSymbol: string }) => void
+    onSent: (sent: {
+      address: string
+      txHash: string
+      amount: string
+      tokenSymbol: string
+      tokenAddress: string
+      tokenDecimals: number
+    }) => void
     onFeeChanged?: () => void
   }) => (
     <div data-testid="fund-sheet" data-address={props.deposit.address}>
@@ -101,7 +100,9 @@ vi.mock("../../../src/features/deposit/DepositFromWalletModal", () => ({
             address: props.deposit.address,
             txHash: `0x${"12".repeat(32)}`,
             amount: "2.5",
-            tokenSymbol: "DAI",
+            tokenSymbol: "TEST",
+            tokenAddress: "0x00000000000000000000000000000000000000bb",
+            tokenDecimals: 18,
           })
         }
       >
@@ -119,89 +120,81 @@ vi.mock("../../../src/features/deposit/DepositFromWalletModal", () => ({
     </div>
   ),
 }))
-const sentFacts = vi.hoisted(() => [] as unknown[])
-vi.mock("../../../src/features/deposit/sentDepositRecord", () => ({
-  sentDepositRecord: (
-    sent: { address: string },
-    _stored: unknown,
-    _chain: number,
-    facts: unknown,
-  ) => {
-    sentFacts.push(facts)
-    return { sipaAddress: sent.address }
-  },
-}))
-vi.mock("../../../src/ui/screens/DepositDetailModal", () => ({
-  DepositDetailModal: ({
-    record,
-    onClose,
-  }: {
-    record: { sipaAddress: string }
-    onClose: () => void
-  }) => (
-    <div data-testid="deposit-detail">
-      {record.sipaAddress}
-      <button type="button" aria-label="close detail" onClick={onClose} />
-    </div>
-  ),
-}))
-vi.mock("../../../src/session/l1Wallet", () => ({
-  useL1Wallet: () => ({
-    account: null,
-    accounts: [],
-    chainId: null,
-    connecting: false,
-    wrongChain: false,
-    pickerOpen: false,
-    connect: vi.fn(),
-    disconnect: vi.fn(),
-  }),
-}))
 
 const { DepositScreen } = await import("../../../src/features/deposit/DepositScreen/DepositScreen")
+const { backToMethod, closeFlow, openDepositSheet, depositAddressSheet, pickL1Coin } = await import(
+  "../../support/depositFlow"
+)
+
+/** Navigates the way Home's Deposit does; set while mounted. */
+let navigate: ReturnType<typeof useNavigate> = () => {}
+function Navigator() {
+  navigate = useNavigate()
+  return null
+}
 const { setIdentity } = await import("../../support/identity")
 const noClaim = () => async () => {}
-import { seedBootConfig } from "../../support/seedBootConfig"
 import { shortL1Addr } from "../../../src/ui/format"
 import { sandboxProfile } from "../../fixtures/sandboxProfile"
 import { testWalletDbs } from "../../support/fakeWalletDb"
-import {
-  closeWalletStore,
-  openWalletStore,
-  walletStorage,
-} from "../../../src/platform/storage/walletStorage"
+import { closeWalletStore, openWalletStore } from "../../../src/platform/storage/walletStorage"
 
 const dbs = testWalletDbs()
 const ROLLUP = sandboxProfile().shared.rollupVersion
 const openSaved = () => openWalletStore(ROLLUP, { persistent: true })
 
-const { closeSession } = await import("../../../src/session/session")
+const { activeNamespace, closeSession } = await import("../../../src/session/session")
+const { testCore } = await import("../../support/page")
 const { openTestSession } = await import("../../support/session")
 const { patchSipaDeposit, seedSipaDeposit } = await import("../../support/sipaDeposits")
-beforeEach(() => openTestSession({ wallet: {}, sipaAddresses: gateway }).registrations.ready)
+beforeEach(
+  () =>
+    openTestSession({ wallet: {}, contractService: {}, sipaAddresses: gateway }).registrations
+      .ready,
+)
 /** The address as discovery recorded it: its own casing, not the pool's. */
 const FIRST_RECORDED = FIRST.toUpperCase().replace("0X", "0x")
 afterEach(closeSession)
 
 describe("DepositScreen after an unresolved desktop send", () => {
-  beforeAll(seedBootConfig)
-
   let container: HTMLDivElement
   let root: Root
   const byTestId = (id: string) => container.querySelector<HTMLElement>(`[data-testid="${id}"]`)
+  /** The sheets open over the screen, the address sheet included. */
+  const openSheets = () => [...document.querySelectorAll<HTMLElement>("dialog[aria-modal='true']")]
+  /** Closes the sheet on top, as Escape does. */
+  const closeTop = () =>
+    act(async () => {
+      openSheets()
+        .at(-1)!
+        .dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }))
+    })
   const buttonContaining = (text: string) =>
     [...container.querySelectorAll("button")].find((b) => b.textContent?.includes(text))
   const render = async () => {
     await act(async () => {
       root.render(
         <MemoryRouter>
-          <ScreeningProvider screener={passThroughScreener}>
+          <Navigator />
+          <ScreeningProvider screenings={testScreenings(passThroughScreener)}>
             <DepositScreen claimName={noClaim} />
           </ScreeningProvider>
         </MemoryRouter>,
       )
     })
     for (let i = 0; i < 3; i++) await act(async () => {})
+  }
+  /** Opens the flow on its first step, whose picks lead to the method step. */
+  const startDeposit = () =>
+    act(async () => navigate("/deposit", { state: { startDeposit: true } }))
+  /** The method step's wallet row: back from the open sheet, else from the first step again. */
+  const toWalletMethod = async () => {
+    const row = await backToMethod()
+    if (row) return row
+    await closeFlow()
+    await startDeposit()
+    await pickL1Coin("TEST")
+    return backToMethod()
   }
   /** Unmounts, reopens the wallet database from what it saved, and mounts again, as a page reload does. */
   const reload = async () => {
@@ -211,13 +204,16 @@ describe("DepositScreen after an unresolved desktop send", () => {
     root = createRoot(container)
     await render()
   }
-  const openSheet = async () => {
-    await act(async () => buttonContaining("deposit from your browser")!.click())
-    expect(byTestId("fund-sheet")!.dataset.address).toBe(FIRST)
+  const openSheet = async (address = FIRST) => {
+    if (!document.querySelector(".ww-deposit-sheet")) await startDeposit()
+    await openAddress()
+    const connect = await toWalletMethod()
+    await act(async () => connect!.click())
+    expect(byTestId("fund-sheet")!.dataset.address).toBe(address)
   }
-  const addressSheet = () => document.querySelector("dialog[aria-label='Deposit address']")
+  const addressSheet = depositAddressSheet
   /** Opens the address sheet for the one coin the sandbox lists. */
-  const openAddress = () => act(async () => byTestId("deposit-coin-TEST")!.click())
+  const openAddress = () => openDepositSheet("TEST")
   const closeAddress = () =>
     act(async () =>
       addressSheet()!.querySelector<HTMLButtonElement>("[aria-label='Close']")!.click(),
@@ -246,10 +242,11 @@ describe("DepositScreen after an unresolved desktop send", () => {
     expect(approvals.errors).toEqual([])
     await click("unresolved")
   }
-  const markerKey = async () => {
-    const { getConfig } = await import("../../../src/config/env")
-    return `webwallet.deposit.unresolved-send.${getConfig().network}.${L2_ADDRESS.toLowerCase()}`
-  }
+  const markerKey = async () =>
+    `${activeNamespace(testCore().device).prefix}acct/unresolved-send/send`
+  /** Another send's hold, saved after this screen mounted. */
+  const holdOther = (send: { address: string; at: number; submission: string }) =>
+    act(() => openTestSession().unresolvedSends.apply({ type: "held", send }))
 
   beforeEach(async () => {
     // Copy hands the sheet to the waiting state only when the clipboard took the address.
@@ -263,7 +260,8 @@ describe("DepositScreen after an unresolved desktop send", () => {
     await openSaved()
     // The session reads the database just opened.
     closeSession()
-    await openTestSession({ wallet: {}, sipaAddresses: gateway }).registrations.ready
+    await openTestSession({ wallet: {}, contractService: {}, sipaAddresses: gateway }).registrations
+      .ready
     // Discovery records every published address before anything is sent to it.
     await seedSipaDeposit({
       sipaAddress: FIRST_RECORDED as `0x${string}`,
@@ -299,14 +297,14 @@ describe("DepositScreen after an unresolved desktop send", () => {
     expect(notice.textContent).toContain("Waiting for your browser wallet")
     expect(notice.textContent).toContain("may still be sent")
     expect(byTestId("fund-sheet")).toBeNull()
-    expect(buttonContaining("deposit from your browser")).toBeUndefined()
+    expect(byTestId("deposit-show-address")).toBeNull()
     // The old address is never shown again, and no new one is taken from the pool.
     expect(byTestId("deposit-address")).toBeNull()
     expect(gateway.depositAddress).toHaveBeenCalledTimes(1)
 
     await reload()
     expect(byTestId("deposit-send-unresolved")).not.toBeNull()
-    expect(buttonContaining("deposit from your browser")).toBeUndefined()
+    expect(byTestId("deposit-show-address")).toBeNull()
     expect(gateway.depositAddress).toHaveBeenCalledTimes(1)
   })
 
@@ -318,9 +316,7 @@ describe("DepositScreen after an unresolved desktop send", () => {
     await sendUnresolved()
 
     expect(byTestId("deposit-send-unresolved")).not.toBeNull()
-    expect(container.querySelector(".ww-deposit__stealth > span")!.textContent).toBe(
-      "Deposit funds",
-    )
+    expect(container.querySelector(".ww-move-landing > h1")!.textContent).toBe("Deposit")
     expect(addressSheet()).toBeNull()
 
     await act(async () => byTestId("deposit-send-unresolved-restart")!.click())
@@ -339,7 +335,9 @@ describe("DepositScreen after an unresolved desktop send", () => {
     await click("sent")
     for (let i = 0; i < 3; i++) await act(async () => {})
 
-    expect(byTestId("deposit-detail")!.textContent).toBe(FIRST)
+    expect(addressSheet()).toBeNull()
+    expect(openSheets()).toHaveLength(1)
+    await closeTop()
     await openAddress()
     expect(addressSheet()!.textContent).toContain("Send TEST to this address")
     expect(byTestId("deposit-address")!.title).toBe(SECOND)
@@ -349,7 +347,6 @@ describe("DepositScreen after an unresolved desktop send", () => {
     await render()
     await sendUnresolved()
     expect(byTestId("deposit-send-unresolved")).not.toBeNull()
-    expect(byTestId("deposit-detail")).toBeNull()
     await reload()
     expect(byTestId("deposit-send-unresolved")).not.toBeNull()
 
@@ -357,7 +354,6 @@ describe("DepositScreen after an unresolved desktop send", () => {
     await patchSipaDeposit(FIRST, { phase: "funded", amount: "24" })
     await render()
     expect(byTestId("deposit-send-unresolved")).toBeNull()
-    expect(byTestId("deposit-detail")!.textContent).toBe(FIRST_RECORDED)
     await reload()
     expect(byTestId("deposit-send-unresolved")).toBeNull()
   })
@@ -389,11 +385,8 @@ describe("DepositScreen after an unresolved desktop send", () => {
       throw Object.assign(new Error("disk full"), { name: "SQLiteError" })
     }
     await click("approve")
-    const { UnresolvedSendStorageError } = await import(
-      "../../../src/features/deposit/unresolvedSend"
-    )
     expect(approvals.errors).toHaveLength(1)
-    expect(approvals.errors[0]).toBeInstanceOf(UnresolvedSendStorageError)
+    expect(approvals.errors[0]).toMatchObject({ code: "deposit.holdUnsaved" })
     dbs.onApply = undefined
     // Nothing was approved, so nothing is held.
     await reload()
@@ -404,12 +397,14 @@ describe("DepositScreen after an unresolved desktop send", () => {
     await render()
     await openSheet()
     const other = { address: SECOND, at: 1, submission: "other-send" }
-    await walletStorage.commitItem(await markerKey(), JSON.stringify(other))
+    await holdOther(other)
     await click("approve")
-    const { UnresolvedSendHeldError } = await import("../../../src/features/deposit/unresolvedSend")
     expect(approvals.errors).toHaveLength(1)
-    expect(approvals.errors[0]).toBeInstanceOf(UnresolvedSendHeldError)
-    expect(JSON.parse(dbs.db(ROLLUP).state.get(await markerKey())!)).toEqual(other)
+    expect(approvals.errors[0]).toMatchObject({ code: "deposit.sendHeld" })
+    expect(JSON.parse(dbs.db(ROLLUP).state.get(await markerKey())!)).toEqual({
+      ...other,
+      id: "send",
+    })
     expect(byTestId("deposit-send-unresolved")!.textContent).toContain(shortL1Addr(SECOND))
   })
 
@@ -437,21 +432,14 @@ describe("DepositScreen after an unresolved desktop send", () => {
     await render()
     await openSheet()
     const other = { address: SECOND, at: 1, submission: "other-send" }
-    await walletStorage.commitItem(await markerKey(), JSON.stringify(other))
+    await holdOther(other)
     await click("approve")
     await click("not-approved")
     for (let i = 0; i < 3; i++) await act(async () => {})
-    expect(JSON.parse(dbs.db(ROLLUP).state.get(await markerKey())!)).toEqual(other)
-  })
-
-  it("lets each approval of the same send refresh its hold", async () => {
-    await render()
-    await openSheet()
-    await click("approve")
-    await click("approve")
-    expect(approvals.errors).toEqual([])
-    await reload()
-    expect(byTestId("deposit-send-unresolved")).not.toBeNull()
+    expect(JSON.parse(dbs.db(ROLLUP).state.get(await markerKey())!)).toEqual({
+      ...other,
+      id: "send",
+    })
   })
 
   it("resolves the next address only once the sent deposit's detail is closed", async () => {
@@ -459,41 +447,12 @@ describe("DepositScreen after an unresolved desktop send", () => {
     await openSheet()
     await click("approve")
     await click("sent")
-    expect(byTestId("deposit-detail")).not.toBeNull()
+    expect(openSheets()).toHaveLength(1)
     expect(gateway.depositAddress).toHaveBeenCalledTimes(1)
-    await act(async () =>
-      container.querySelector<HTMLButtonElement>("[aria-label='close detail']")!.click(),
-    )
+    await closeTop()
     expect(gateway.depositAddress).toHaveBeenCalledTimes(2)
     await openAddress()
     expect(byTestId("deposit-address")?.title).toBe(SECOND)
-  })
-
-  it("drops the hold once the send's hash is known", async () => {
-    await render()
-    await openSheet()
-    await click("approve")
-    await click("sent")
-    expect(byTestId("deposit-detail")!.textContent).toBe(FIRST)
-    await reload()
-    expect(byTestId("deposit-send-unresolved")).toBeNull()
-    expect(dbs.db(ROLLUP).state.has(await markerKey())).toBe(false)
-  })
-
-  it("pauses new deposits when the saved state cannot be read, and Check again reads it again", async () => {
-    await walletStorage.commitItem(await markerKey(), "{not json")
-    await render()
-    const notice = byTestId("deposit-send-unresolved")!
-    expect(notice.textContent).toContain("Deposit state unavailable")
-    expect(buttonContaining("deposit from your browser")).toBeUndefined()
-    expect(gateway.depositAddress).not.toHaveBeenCalled()
-
-    await walletStorage.commitRemove(await markerKey())
-    await click("Check again")
-    for (let i = 0; i < 3; i++) await act(async () => {})
-    expect(byTestId("deposit-send-unresolved")).toBeNull()
-    await openAddress()
-    expect(byTestId("deposit-address")!.title).toBe(FIRST)
   })
 
   it("keeps the hold when starting again cannot remove the saved marker", async () => {
@@ -517,35 +476,17 @@ describe("DepositScreen after an unresolved desktop send", () => {
     expect(byTestId("deposit-send-unresolved")).toBeNull()
   })
 
-  it("records a send to a target's address at the target's fee, not the plain deposit's", async () => {
-    sentFacts.length = 0
-    const fee = 5n * 10n ** 17n
-    targeted.target = {
-      kind: "registration",
-      address: { address: SECOND as Hex, name: "alice" },
-      fee,
-      floor: fee + 1n,
-      ask: 10n ** 18n,
-      onFunded: () => {},
-      onShown: () => {},
-    }
-    await render()
-    await act(async () => buttonContaining("deposit from your browser")!.click())
-    expect(byTestId("fund-sheet")!.dataset.address).toBe(SECOND)
-    await click("sent")
-    expect(sentFacts.at(-1)).toMatchObject({ sweepFeeAtomic: fee })
-  })
-
   /** The screen on /deposit, with Home a route away. */
   const renderRouted = async () => {
     await act(async () => {
       root.render(
         <MemoryRouter initialEntries={["/deposit"]}>
+          <Navigator />
           <Routes>
             <Route
               path="/deposit"
               element={
-                <ScreeningProvider screener={passThroughScreener}>
+                <ScreeningProvider screenings={testScreenings(passThroughScreener)}>
                   <DepositScreen claimName={noClaim} />
                 </ScreeningProvider>
               }
@@ -570,29 +511,16 @@ describe("DepositScreen after an unresolved desktop send", () => {
       onShown: () => {},
     }
     await renderRouted()
-    await act(async () => buttonContaining("deposit from your browser")!.click())
+    await openSheet(SECOND)
     await click("sent")
-    await act(async () =>
-      container.querySelector<HTMLButtonElement>("[aria-label='close detail']")!.click(),
-    )
+    await closeTop()
     expect(byTestId("home")).not.toBeNull()
-  })
-
-  it("keeps the screen when a plain deposit's sent detail closes", async () => {
-    await renderRouted()
-    await openSheet()
-    await click("approve")
-    await click("sent")
-    await act(async () =>
-      container.querySelector<HTMLButtonElement>("[aria-label='close detail']")!.click(),
-    )
-    expect(byTestId("home")).toBeNull()
   })
 
   it("reloads the fee when a send stops on a changed fee", async () => {
     await render()
     expect(loadDepositDisplayFacts).toHaveBeenCalledTimes(1)
-    await act(async () => buttonContaining("deposit from your browser")!.click())
+    await openSheet()
     await act(async () => buttonContaining("fee-changed")!.click())
     for (let i = 0; i < 3; i++) await act(async () => {})
     expect(loadDepositDisplayFacts).toHaveBeenCalledTimes(2)

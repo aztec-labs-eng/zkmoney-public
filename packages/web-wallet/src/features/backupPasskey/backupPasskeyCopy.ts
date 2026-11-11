@@ -1,15 +1,11 @@
-import {
-  cancellable,
-  fundingLanding,
-  moveProgress,
-  recoverable,
-  refundProgress,
-  type BackupRotationAttention,
-  type BackupRotationRecord,
-} from "@obsidion/front-core"
+import { DEFAULT_DECIMALS } from "@obsidion/core/constants"
+import type { BackupRotationAttention } from "@obsidion/front-core"
+import { formatUnits } from "viem"
+import { tokenFigure } from "../../ui/format"
+import type { BackupProgress } from "./backupScreen"
 
-/** Whether a funding of the record's may still reach the deposit address. */
-const landing = (record: BackupRotationRecord) => record.fundings.some(fundingLanding)
+export const formatDai = (atomic: bigint) =>
+  tokenFigure(formatUnits(atomic, DEFAULT_DECIMALS), "DAI")
 
 /** The five steps the panel lists, in order. */
 export const rotationSteps = [
@@ -20,57 +16,42 @@ export const rotationSteps = [
   "Finishing",
 ] as const
 
-/** Which step a saved record is on; `rotationSteps.length` once every step is done. */
-export function stepIndex(record: BackupRotationRecord): number {
-  switch (record.phase) {
-    case "created":
+/** Which of the five steps an attempt is on. */
+export function stepIndex({ stage }: BackupProgress): number {
+  switch (stage) {
+    case "sign":
       return 1
-    case "signed":
+    case "publish":
+    case "pay":
       return 2
-    case "published":
-      return landing(record) ? 3 : 2
+    case "landing":
     case "funded":
-    case "swept":
-    case "installed":
+    case "final":
       return 3
-    case "rerooted":
-    case "moved":
+    case "installing":
+    case "moving":
       return 4
-    default:
-      return rotationSteps.length
   }
 }
 
-/** The install waits on Ethereum finality, so the step says how long and that the tab can go. */
-const finalityWait =
-  "Ethereum has to finalize your funding before the key is installed, which can take up to 40 minutes. " +
-  "You can close this tab and come back later to finish."
-
 /** The line under the current step. */
-export function stepDetail(record: BackupRotationRecord): string | undefined {
-  switch (record.phase) {
-    case "signed":
+export function stepDetail({ stage, refunds, moved }: BackupProgress): string | undefined {
+  switch (stage) {
+    case "publish":
       return "Publishing your deposit address. You can close this tab."
-    case "published":
-      return landing(record) ? "Your funding is on its way." : undefined
+    case "landing":
+      return "Your funding is on its way."
     case "funded":
-      return `Your funding is on its way. ${finalityWait}`
-    case "swept":
-    case "installed":
-      return finalityWait
-    case "rerooted":
-    case "moved": {
-      const refunds = refundProgress(record)
+      return "Your funding is on its way. You can close this tab and come back later to finish."
+    case "final":
+      return "Your funding was swept. Finishing on this device."
+    case "installing":
+      return "Installing the key."
+    case "moving":
       if (refunds) return `Cancelling your payment links (${refunds.landed} of ${refunds.total}).`
-      const moved = moveProgress(record)
-      if (!moved)
-        return record.phase === "rerooted" && !record.refunds
-          ? "Installing the key."
-          : "Moving your balance."
-      return moved.included < moved.total
+      return moved && moved.included < moved.total
         ? `Moving your balance (${moved.included} of ${moved.total}).`
         : "Moving your balance."
-    }
     default:
       return undefined
   }
@@ -84,8 +65,6 @@ export type NamedLine = readonly [before: string, name: string, after: string]
  * started it is the one it signed in with; `name` is that key as the key list names it.
  */
 export const approveCopy = {
-  ahead:
-    "You'll use two passkeys: first save the new backup, then approve it with the passkey you signed in with.",
   button: (name?: string) => `Approve with ${name ?? "your current passkey"}`,
   detail: (name?: string): NamedLine =>
     name
@@ -110,13 +89,11 @@ export const approveCopy = {
  * passkey the account was built over.
  */
 export const moveCopy = {
-  line: (record: BackupRotationRecord) => {
-    const refunds = refundProgress(record)
+  line: ({ refunds, moved }: BackupProgress) => {
     if (refunds)
       return refunds.total > 1
         ? `Approve cancelling payment link ${refunds.landed + 1} of ${refunds.total}.`
         : "Approve cancelling your open payment link."
-    const moved = moveProgress(record)
     return moved && moved.total > 1
       ? `Approve moving part ${moved.included + 1} of ${
           moved.total
@@ -132,22 +109,27 @@ export const moveCopy = {
 }
 
 export const entryCopy = {
-  row: "Add a backup passkey",
   checking: "Checking…",
   unreadable: "Could not check, try again",
 }
-
-/** What the add does with the account's open payment links: their funds land before the move. */
-export const linksCopy = (count: number) =>
-  count === 1
-    ? "Your open payment link will be cancelled. Its funds move with your balance."
-    : `Your ${count} open payment links will be cancelled. Their funds move with your balance.`
 
 /** Why a new paylink waits for the add: its escrow would refund only the account the add moves off. */
 export const linkWaitsCopy = {
   title: "Finish adding your backup passkey",
   message:
     "A paylink made now couldn't be cancelled or reclaimed once your backup passkey is added. Finish adding it in Settings first.",
+}
+
+/** The add's figures, on the Fund step and the funding's Activity sheet. */
+export const costCopy = {
+  // Proposed.
+  sent: "Sent to set up your new account",
+  fees: "Fees",
+  withdrawalFee: "Withdrawal fee",
+  // Proposed.
+  accountChangeFee: "Account change fee",
+  // Proposed: the sheet's, once the leftover is back.
+  returned: "Returned to your balance",
 }
 
 // Proposed: new copy for a Savings move held while an add has yet to switch the account.
@@ -159,7 +141,6 @@ export const savingsWaitsCopy = {
 
 export const fundCopy = {
   destination: "Your new account",
-  fees: "Fees",
   receive: "You'll receive",
   approvals: "Approvals",
   approvalsValue: (now: number, moves: number, refunds = 0) =>
@@ -169,17 +150,18 @@ export const fundCopy = {
         } and ${moves} to move your balance`
       : `${now} now, then ${moves} to move your balance`,
   takes: "Takes",
+  // Proposed: the chosen speed's ETA, worded as the speed picker words it.
+  /** The chosen speed's ETA line, or the withdrawal's own bound when no speed is offered. */
   takesValue: "Up to 40 minutes",
   afterSend: "Once sent, the funding cannot be cancelled. You can close this tab while it waits.",
   fund: "Fund and continue",
 }
 
 export const panelCopy = {
+  title: "Backup passkey",
   approving: "Approving…",
   cancel: "Cancel",
-  checkAgain: "Check again",
   tryAgain: "Try again",
-  startOver: "Start over",
   done: "Done",
   doneLine:
     "Your backup passkey is ready. It opens this account on any device once that device signs in by tag.",
@@ -189,7 +171,6 @@ export const panelCopy = {
     "The backup passkey stays on your device but does not open this account. You can delete it from your passkey manager.",
   /** From `signed` on, the approval already given stays usable until the account next changes. */
   approvalStays: "The approval you gave stays usable until your account next changes.",
-  conflict: "Your passkeys changed on another device. Start again from the current list.",
   unverifiable: "Could not check, try again",
   fundingOnItsWay: "Your funding is on its way.",
   notCancellable:
@@ -201,31 +182,24 @@ export const panelCopy = {
   declined: "The passkey request was closed or timed out.",
 }
 
-/**
- * Where an attempt whose funding has to go back stands: held at the deposit address, sent back
- * and waiting for Ethereum to finalize it, or recovered. Undefined for every other attempt, which
- * keeps the step list.
- */
-export type RecoveryState = "held" | "sent" | "recovered"
-
-export function recoveryState(record: BackupRotationRecord): RecoveryState | undefined {
-  if (record.phase === "recovered") return "recovered"
-  if (!recoverable(record)) return undefined
-  return record.recovery ? "sent" : "held"
-}
-
 /** The recovery card's copy. */
 export const recoveryCopy = {
   title: "Backup not added",
   started: (when: string) => `Started ${when}`,
   extraTitle: "Extra funding held",
   extraSubtitle: "Backup passkey added",
-  badge: { held: "Needs recovery", sent: "Recovering", recovered: "Recovered" },
+  // Proposed: `unread`, while this device's attempts are not read.
+  badge: {
+    held: "Needs recovery",
+    sent: "Recovering",
+    recovered: "Recovered",
+    unread: "Pending",
+  } as const,
   line: {
     held: "Adding this backup stopped. Your funding is safe at its deposit address.",
     damaged: "This attempt's record is damaged. Its funding is safe at the deposit address.",
     extra: "Funding arrived after your backup was added. It is safe at the deposit address.",
-    sent: "Recovery sent. Ethereum finalizes it within about 20 minutes. You can close this window.",
+    sent: "Recovery sent. It lands in a few minutes. You can close this window.",
     recovered: "Your funds were sent back. This backup was not added, so you can start a new one.",
   },
   funding: "Funding",
@@ -238,103 +212,30 @@ export const recoveryCopy = {
   nothingNew: "Nothing new at the deposit address.",
   nothingYet: "Nothing at the deposit address right now. This updates shortly.",
   done: "Done",
+  /** The funding's Activity sheet, which sends the user to the card. */
+  activity: {
+    // Proposed: the sheet's lines for each state.
+    line: {
+      held: "This backup was not added. Its funding is safe at the deposit address until you recover it.",
+      sent: "Recovery sent. It lands in a few minutes.",
+      recovered: "This backup was not added. Your funds were sent back to Ethereum.",
+      unread: "Whether this backup was added is not known yet. Passkeys shows where it stands.",
+    },
+    // Proposed: titles a stopped add's row and sheet.
+    notAdded: "Backup passkey not added",
+    // Proposed.
+    sentBack: "Sent back",
+    recoveryTx: "Recovery tx",
+    // Proposed.
+    openPasskeys: "Open Passkeys",
+  },
 }
 
-/**
- * What each attention state says and what the user can do about it from here. Once funded, only
- * the settlement can move the attempt on, so a funded state offers no action beyond running a
- * paused move again; dropping the attempt is offered only where the flow allows it. Funding held
- * at the deposit address (stranded, or damaged and not cancellable) shows on the recovery card.
- */
-export function attentionCopy(
-  reason: Exclude<BackupRotationAttention, "stranded">,
-  record: BackupRotationRecord,
-): { line: string; actions: ("checkAgain" | "retry" | "cancel" | "startOver")[] } {
-  switch (reason) {
-    case "route":
-      return {
-        line: "The network is not paying for this right now.",
-        actions: landing(record)
-          ? []
-          : cancellable(record)
-          ? ["checkAgain", "cancel"]
-          : ["checkAgain"],
-      }
-    case "corrupt":
-      return { line: "This attempt's record is damaged.", actions: ["startOver"] }
-    case "move":
-      return {
-        line: "Part of your balance could not be moved yet. It stays yours on your previous account.",
-        actions: ["retry"],
-      }
-    default:
-      return unknownReason(reason)
-  }
-}
-
-function unknownReason(reason: never): never {
-  throw new Error(`backup add: unknown attention ${String(reason)}`)
-}
-
-/**
- * Where Home's line about the previous account stands: `unchecked` while this device's rotations
- * cannot be read, `refused` after a spend refusal, `stuck` once its retries ran out, `failed` after
- * any other failed move.
- */
-export type PreviousAccountView =
-  | "moving"
-  | "move"
-  | "resume"
-  | "unchecked"
-  | "backupSession"
-  | "refused"
-  | "stuck"
-  | "failed"
-
-export const previousAccountActions = {
-  move: "Move them",
-  resume: "Resume in Settings",
-  retry: panelCopy.tryAgain,
-}
-
-/**
- * What Home's line says about money at the previous account and its action. `amount` is Main
- * Account's as shown, absent when only Savings shares sit there; `savings` adds them.
- */
-export function previousAccountCopy(
-  view: PreviousAccountView,
-  amount: string | undefined,
-  savings = false,
-): { line: string; detail?: string; action?: keyof typeof previousAccountActions } {
-  const what = savings ? (amount ? `${amount} and Savings funds` : "Savings funds") : amount ?? ""
-  const arrived = `${what} arrived at your previous account`
-  const left = `${what} ${savings ? "are" : "is"} still on your previous account`
-  switch (view) {
-    case "moving":
-      return { line: "Moving your previous account's balance…" }
-    case "move":
-      return { line: arrived, action: "move" }
-    case "resume":
-      return {
-        line: arrived,
-        detail: "Your backup passkey is still being set up.",
-        action: "resume",
-      }
-    case "unchecked":
-      return { line: arrived }
-    case "backupSession":
-      return { line: arrived, detail: "Sign in with your first passkey to move them." }
-    case "refused":
-      return {
-        line: left,
-        detail: `${savings ? "They" : "It"} could not be moved in one go.`,
-        action: "retry",
-      }
-    case "stuck":
-      return { line: left, detail: "It can't be moved from the wallet yet." }
-    case "failed":
-      return { line: arrived, detail: "Could not move them.", action: "retry" }
-  }
+/** What each parked state says. Funding held at the deposit address shows on the recovery card. */
+export const attentionLine: Record<Exclude<BackupRotationAttention, "stranded">, string> = {
+  route: "The network is not paying for this right now.",
+  corrupt: "This attempt's record is damaged.",
+  move: "Part of your balance could not be moved yet. It stays yours on your previous account.",
 }
 
 /** Why sponsored spends wait while a rotation moves the balance: the move pays with the same note. */

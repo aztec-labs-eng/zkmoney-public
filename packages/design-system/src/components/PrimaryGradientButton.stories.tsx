@@ -87,3 +87,7 @@ export const Disabled: Story = {
 export const Danger: Story = {
   args: { title: "Cancel paylink", buttonStyle: "danger" },
 }
+
+export const Plain: Story = {
+  args: { title: "Close", buttonStyle: "plain" },
+}

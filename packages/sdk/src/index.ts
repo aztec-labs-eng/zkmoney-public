@@ -11,6 +11,7 @@ export * from "./oxide/withdrawal/withdrawalExecutor.js"
 export * from "./oxide/escrow/swapOnWithdrawSimulator.js"
 export * from "./oxide/escrow/swapOnWithdraw.js"
 export * from "./oxide/escrow/skySavings.js"
+export * from "./oxide/escrow/acrossBridgeOnWithdraw.js"
 export * from "./oxide/escrow/swapEscrowReader.js"
 export * from "./oxide/portal/portalCapacity.js"
 export * from "./oxide/portal/portalFreeze.js"
@@ -23,6 +24,7 @@ export * from "./oxide/tip/tipQuote.js"
 export {
   assertBackupSweepProfitable,
   quoteBackupSweep,
+  RevertingSweepError,
   UnprofitableSweepError,
   type BackupSweepQuote,
 } from "./oxide/tip/l1OperationQuote.js"

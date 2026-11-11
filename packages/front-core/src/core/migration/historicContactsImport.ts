@@ -4,19 +4,18 @@
  * person's address once they upgrade.
  */
 import type { IStorageAdapter } from "../storages/adapter"
-import type { Contact, ContactStorage } from "../storages/ContactStorage"
-import { CONTACT_STORAGE_KEY } from "../storages/storage-constants"
+import { storedContacts, type Contact, type Contacts } from "../../engine/contacts"
 import type { RetiredDatabase } from "./historicActivityImport"
-import { logger } from "../../utils/logger"
 
 export const HISTORIC_CONTACTS_IMPORTED_KEY = "@obsidion/historic-contacts/imported/v1"
 
 export interface HistoricContactsImportDeps {
   /** The account's storage on the active rollup, where the marker lives. */
+  // eslint-disable-next-line local/legacy-store -- ZKM-1625
   storage: IStorageAdapter
   /** `read` over each retired rollup's database; rejects when one could not be read. */
   readOtherDatabases<T>(read: (db: RetiredDatabase) => T): Promise<T[]>
-  contacts: Pick<ContactStorage, "importContacts">
+  contacts: Pick<Contacts, "importContacts">
   /** Whether the account the import started for is still the active one; false stops it before a write. */
   ownsStorage?: () => boolean
   /** Runs the writes while no account switch may commit; absent, they run as they are. */
@@ -28,7 +27,7 @@ export async function importHistoricContacts(
   deps: HistoricContactsImportDeps,
 ): Promise<number | null> {
   if ((await deps.storage.getItem(HISTORIC_CONTACTS_IMPORTED_KEY)) !== null) return null
-  const books = await deps.readOtherDatabases((db) => contactsOf(db))
+  const books = await deps.readOtherDatabases((db) => storedContacts(db))
   const writes = async () => {
     if (deps.ownsStorage && !deps.ownsStorage()) {
       throw new Error("the account changed during the import")
@@ -38,18 +37,6 @@ export async function importHistoricContacts(
     return added
   }
   return deps.holdSession ? deps.holdSession(writes) : writes()
-}
-
-function contactsOf(db: RetiredDatabase): unknown[] {
-  const raw = db.get(CONTACT_STORAGE_KEY)
-  if (raw === undefined) return []
-  try {
-    const parsed: unknown = JSON.parse(raw)
-    return Array.isArray(parsed) ? parsed : []
-  } catch {
-    logger.warn(`[historicContacts] rollup ${db.version} holds a malformed contact book; skipped`)
-    return []
-  }
 }
 
 function carriesOver(value: unknown): boolean {

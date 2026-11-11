@@ -4,7 +4,7 @@ import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { type Address, type Hex, bytesToHex, concat, hexToBytes, keccak256 } from "viem"
-import { passkeyMetadata } from "@oxide/oxide-client/passkey_rotation.js"
+import { passkeyMetadata } from "@oxide/oxide-client/add_passkey.js"
 import { MSK_PRF_SALT } from "@obsidion/core/constants"
 import type { PrfSlot } from "@obsidion/core/types"
 

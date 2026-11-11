@@ -2,13 +2,7 @@ import { Modal } from "../../../ui/Modal"
 import { useEffect, useRef, useState } from "react"
 import { useNavigate } from "react-router-dom"
 import { DEFAULT_DECIMALS } from "@obsidion/core/constants"
-import {
-  exceedsBalance,
-  parseEscrowAmount,
-  TxInFlightError,
-  useStore,
-  useResource,
-} from "@obsidion/front-core"
+import { exceedsBalance, parseEscrowAmount, TxInFlightError, useStore } from "@obsidion/front-core"
 import { isPasskeyCancelled } from "@obsidion/passkey-web"
 import { PAYLINK_MEMO_MAX_BYTES, truncateUtf8 } from "@obsidion/sdk"
 import {
@@ -39,7 +33,6 @@ import {
 } from "../ticketThreshold"
 import { PayModalChrome } from "../../../ui/PayModalChrome"
 import { useBack, useProvingOutcome } from "../../../ui/hooks"
-import { useUserFlowActive } from "../../provingGate"
 import {
   amountError,
   decimalInput,
@@ -49,7 +42,7 @@ import {
   usd,
 } from "../../../ui/format"
 import { emailLockedLinksEnabled } from "../../../config/features"
-import { useBusyLabel } from "../../operations/operations"
+import { useBusyLabel, useUserFlowActive } from "../../operations/operations"
 import { OperationHandOff } from "../../operations/OperationHandOff"
 import { LocalPasskeyHint } from "../../../ui/LocalPasskeyHint"
 import {
@@ -62,6 +55,7 @@ import styles from "./NewLinkScreen.module.css"
 import copy from "./NewLinkScreen.copy"
 import balanceCopy from "../../../ui/balance.copy"
 import { fmt } from "../../../lib/fmt"
+import { useOpened } from "../../../ui/useScreenFlow"
 
 type Phase = "amount" | "options" | "confirm" | "working"
 
@@ -80,8 +74,9 @@ export function NewLinkScreen() {
   const back = useBack("/send")
   const deps = usePaylinkDeps()
   const balance = useStore(useSession().balances.view)
+  const device = useStore(useSession().device)
   const main = balance.main
-  const decimals = useResource(useSession().token)?.metadata.decimals
+  const decimals = useStore(useSession().mainToken)?.decimals
 
   const [phase, setPhase] = useState<Phase>("amount")
   const previousPhase = PREVIOUS_PHASE[phase]
@@ -90,7 +85,7 @@ export function NewLinkScreen() {
   const [expiryDays, setExpiryDays] = useState(DEFAULT_CLAIM_WINDOW_DAYS)
   const [protectEnabled, setProtectEnabled] = useState(false)
   const [email, setEmail] = useState("")
-  const { identity } = useSession()
+  const { identity, paylinkSweep } = useSession()
   const [handle] = useState(() => identity.get().value?.handle)
   const [showTag, setShowTag] = useState(true)
   const senderTag = handle && showTag ? handle : undefined
@@ -103,7 +98,7 @@ export function NewLinkScreen() {
   const left = useRef(false)
   const link = useRef<PaymentLink | null>(null)
 
-  useEffect(() => fireEvent("paylink_create_opened"), [])
+  useOpened(() => fireEvent("paylink_create_opened"))
   const outcome = useProvingOutcome("paylink-create")
 
   const leave = () => {
@@ -111,6 +106,8 @@ export function NewLinkScreen() {
     outcome.finish()
     // The row stores the full link, so the sheet is found by that, not the short one shared.
     const state = link.current ? { openPaylink: paylinkRowUrl(link.current.fragment) } : undefined
+    // The link's detail opens from the route, so it asks the chain here, as a row's tap does.
+    if (state) paylinkSweep.recheck()
     navigate("/activity", { replace: true, state })
   }
 
@@ -128,9 +125,9 @@ export function NewLinkScreen() {
   // Past those, a $0 account blocks too — the escrow it can't fund reverts a minute into proving,
   // after the passkey prompt, and the link never exists.
   const overspent =
-    !hasPendingDeposits() &&
+    !hasPendingDeposits(device) &&
     exceedsBalance(balance, validAmount ? parseEscrowAmount(amount, decimals ?? 0).atomic : 0n)
-  const canNext = balance.live && validAmount && !overspent
+  const canNext = balance.readThisSession && validAmount && !overspent
   const canConfirm = !protectEnabled || validEmail
   // The token and co-signer connect async after mount; the CTA waits for the full deps set.
   const ready = !!deps
@@ -138,6 +135,7 @@ export function NewLinkScreen() {
   const busyLabel = useBusyLabel()
   const unsponsored = useSponsoredActionBlock(phase === "confirm")
   // Resolved on the review sheet, so the row promises exactly what the create will do.
+  // eslint-disable-next-line local/effect-hook -- ZKM-1806
   useEffect(() => {
     if (phase !== "confirm" || !deps) return
     let stale = false
@@ -263,7 +261,7 @@ export function NewLinkScreen() {
                 <div className="ww-pay__field">
                   <span className="ww-pay__available">
                     {copy.available}{" "}
-                    <b className="ww-available" aria-busy={!balance.live}>
+                    <b className="ww-available" aria-busy={!balance.readThisSession}>
                       ${fixedCents(main && { ...main, decimals: decimals ?? DEFAULT_DECIMALS })}
                     </b>
                   </span>
@@ -286,7 +284,7 @@ export function NewLinkScreen() {
                       <button
                         type="button"
                         className="zkm-btn-reset ww-pay__max"
-                        disabled={!balance.live}
+                        disabled={!balance.readThisSession}
                         onClick={() =>
                           main &&
                           decimals !== undefined &&
@@ -312,7 +310,7 @@ export function NewLinkScreen() {
                   </span>
                 )}
                 <PrimaryGradientButton
-                  title={balance.live ? copy.next : balanceCopy.checking}
+                  title={balance.readThisSession ? copy.next : balanceCopy.checking}
                   isDisabled={!canNext}
                   onClick={() => setPhase("options")}
                 />

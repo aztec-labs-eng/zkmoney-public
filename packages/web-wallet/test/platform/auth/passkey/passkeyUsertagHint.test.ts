@@ -5,14 +5,13 @@
  * re-recording of the same credential — and must stay scoped to its RP.
  */
 // @vitest-environment jsdom
-import { beforeAll, beforeEach, describe, expect, it } from "vitest"
+import { beforeEach, describe, expect, it } from "vitest"
 import {
   WebPasskeyIdentityMap,
   rememberUsertag,
   usertagFor,
 } from "../../../../src/platform/auth/WebPasskeyIdentityMap"
 import { saveIdentity } from "../../../../src/session/account"
-import { seedBootConfig } from "../../../support/seedBootConfig"
 import { writeDeviceKeys } from "../../../../src/platform/storage/deviceKeys"
 import { NO_SESSION, writeSessionTuple } from "../../../../src/platform/storage/activeStorage"
 import { openTestSession } from "../../../support/session"
@@ -40,8 +39,6 @@ async function seedBreadcrumb(rpId = RP) {
 }
 
 describe("usertag hint", () => {
-  beforeAll(seedBootConfig)
-
   beforeEach(async () => {
     localStorage.clear()
     await writeDeviceKeys(deviceDb, { storageId: "s", credentialId: CREDENTIAL })

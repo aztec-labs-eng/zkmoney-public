@@ -8,9 +8,12 @@ import React, { act } from "react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createRoot, type Root } from "react-dom/client"
 import type { Hex } from "viem"
+import { sepolia } from "viem/chains"
 import type { WithdrawalRecord } from "@obsidion/front-core"
-import { clearWalletPrompt, useWalletPrompt } from "../../../src/features/deposit/walletPrompt"
+import { useWalletPrompt } from "../../../src/session/walletPrompt"
+import { closeSession } from "../../../src/session/session"
 import { openTestSession } from "../../support/session"
+import { defaultConfig } from "../../support/page"
 
 const h = vi.hoisted(() => ({ selfFinalize: vi.fn(), showReportableError: vi.fn() }))
 const CONNECTED = `0x${"cc".repeat(20)}`
@@ -23,10 +26,6 @@ const l1 = vi.hoisted(() => ({
   switchNetwork: vi.fn(),
 }))
 
-vi.mock("../../../src/config/env", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../src/config/env")>()),
-  getConfig: () => ({ l1ChainId: 11155111, l1Chain: { name: "Sepolia" } }),
-}))
 vi.mock("../../../src/features/withdraw/selfFinalize", () => ({ selfFinalize: h.selfFinalize }))
 vi.mock("../../../src/lib/analytics", () => ({
   fireEvent: vi.fn(),
@@ -34,7 +33,7 @@ vi.mock("../../../src/lib/analytics", () => ({
   lapTimer: () => () => 0,
 }))
 vi.mock("../../../src/errors/errorModal", () => ({ showReportableError: h.showReportableError }))
-vi.mock("../../../src/session/l1Wallet", () => ({
+vi.mock("../../../src/session/useL1Wallet", () => ({
   isWalletRejection: (e: { code?: number }) => e?.code === 4001,
   useL1Wallet: () => l1,
 }))
@@ -64,6 +63,7 @@ vi.mock("@obsidion/web-ds", () => ({
       {title}
     </button>
   ),
+  RowChevron: () => null,
   Spinner: () => null,
   TopNavIconButton: () => null,
 }))
@@ -72,7 +72,6 @@ const { WithdrawalExitModal } = await import("../../../src/features/withdraw/Wit
 const { ManualExitSheet } = await import("../../../src/features/withdraw/ManualExitSheet")
 
 declare global {
-  // eslint-disable-next-line no-var
   var IS_REACT_ACT_ENVIRONMENT: boolean
 }
 
@@ -96,11 +95,13 @@ function SlotProbe() {
 
 beforeEach(() => {
   openTestSession({
+    config: { ...defaultConfig, l1ChainId: sepolia.id, l1Chain: sepolia },
     wallet: { node: {} },
     account: { getAddress: () => ({}) },
     teeSigner: {},
   })
 })
+afterEach(closeSession)
 
 describe("ManualExitSheet", () => {
   type Run = React.ComponentProps<typeof ManualExitSheet>["run"]
@@ -151,7 +152,6 @@ describe("ManualExitSheet", () => {
   afterEach(async () => {
     await act(async () => root.unmount())
     container.remove()
-    clearWalletPrompt()
     vi.clearAllMocks()
   })
 
@@ -278,10 +278,7 @@ describe("WithdrawalExitModal", () => {
     }
 
     beforeEach(() => vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] }))
-    afterEach(() => {
-      vi.useRealTimers()
-      clearWalletPrompt()
-    })
+    afterEach(() => vi.useRealTimers())
 
     it("offers a way back after 30 seconds, and a late rejection reports nothing", async () => {
       const held = atPrompt()

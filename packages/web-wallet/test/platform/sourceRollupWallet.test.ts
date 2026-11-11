@@ -4,7 +4,7 @@
  * an account that is not the session's opens nothing.
  */
 import { describe, expect, it, vi } from "vitest"
-import { seedBootConfig } from "../support/seedBootConfig"
+import { sandboxConfig } from "../support/seedBootConfig"
 
 const h = vi.hoisted(() => ({
   sessionKeys: vi.fn(),
@@ -23,13 +23,15 @@ vi.mock("../../src/platform/storage/createPxeStore", () => ({
   createPxeStore: async () => ({ close: async () => {} }),
 }))
 
-await seedBootConfig()
+const config = await sandboxConfig()
 const { openSourceRollupWallet } = await import("../../src/platform/sourceRollupWallet")
 const { SessionChangedError } = await import("../../src/platform/auth/sessionErrors")
 
 const session = () => ({ secretKey: {}, authProvider: {} })
 const accountOn = (authProvider: unknown) => ({ getAuthProvider: () => authProvider } as never)
 const auth = { sessionKeys: h.sessionKeys }
+const open = (node: string, account: never) =>
+  openSourceRollupWallet(config, node, { account } as never, auth)
 
 let nodes = 0
 function setup(keys: ReturnType<typeof session>) {
@@ -49,39 +51,35 @@ describe("the source rollup wallet", () => {
     const alice = session()
     const bob = session()
     const node = setup(alice)
-    const first = await openSourceRollupWallet(node, accountOn(alice.authProvider), auth)
+    const first = await open(node, accountOn(alice.authProvider))
     h.sessionKeys.mockResolvedValue(bob)
-    const resigned = await openSourceRollupWallet(node, accountOn(bob.authProvider), auth)
+    const resigned = await open(node, accountOn(bob.authProvider))
     expect(resigned.wallet).toBe(first.wallet)
     expect(resigned.account.getAuthProvider()).toBe(bob.authProvider)
     expect(h.createObsidionAccount).toHaveBeenLastCalledWith(bob.secretKey, bob.authProvider)
     expect(h.create).toHaveBeenCalledTimes(1)
-    expect(await openSourceRollupWallet(node, accountOn(bob.authProvider), auth)).toBe(resigned)
+    expect(await open(node, accountOn(bob.authProvider))).toBe(resigned)
     expect(h.createObsidionAccount).toHaveBeenCalledTimes(2)
   })
 
   it("keeps the account as it was when the re-sign fails", async () => {
     const alice = session()
     const node = setup(alice)
-    const first = await openSourceRollupWallet(node, accountOn(alice.authProvider), auth)
+    const first = await open(node, accountOn(alice.authProvider))
     h.sessionKeys.mockResolvedValueOnce(undefined)
-    await expect(openSourceRollupWallet(node, accountOn({}), auth)).rejects.toThrow(/Unlock/)
-    expect(await openSourceRollupWallet(node, accountOn(alice.authProvider), auth)).toBe(first)
+    await expect(open(node, accountOn({}))).rejects.toThrow(/Unlock/)
+    expect(await open(node, accountOn(alice.authProvider))).toBe(first)
     expect(h.createObsidionAccount).toHaveBeenCalledTimes(1)
   })
 
   it("opens nothing for an account that is not the session's", async () => {
     const alice = session()
     const node = setup(alice)
-    await expect(openSourceRollupWallet(node, accountOn({}), auth)).rejects.toThrow(
-      SessionChangedError,
-    )
-    const first = await openSourceRollupWallet(node, accountOn(alice.authProvider), auth)
+    await expect(open(node, accountOn({}))).rejects.toThrow(SessionChangedError)
+    const first = await open(node, accountOn(alice.authProvider))
     // A stale account handed in later is refused too, and the session's account stays.
-    await expect(openSourceRollupWallet(node, accountOn({}), auth)).rejects.toThrow(
-      SessionChangedError,
-    )
-    expect(await openSourceRollupWallet(node, accountOn(alice.authProvider), auth)).toBe(first)
+    await expect(open(node, accountOn({}))).rejects.toThrow(SessionChangedError)
+    expect(await open(node, accountOn(alice.authProvider))).toBe(first)
     expect(h.createObsidionAccount).toHaveBeenCalledTimes(1)
   })
 })

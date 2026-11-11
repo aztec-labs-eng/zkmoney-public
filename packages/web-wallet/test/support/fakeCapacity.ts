@@ -8,6 +8,7 @@ import {
   type PortalCapacityKey,
   type PortalCapacityStore,
 } from "@obsidion/front-core"
+import { testQuery } from "./query"
 
 export const FAKE_ACTIVE_KEY: PortalCapacityKey = {
   chainId: 11155111,
@@ -32,12 +33,12 @@ export interface FakeCapacity {
 export function fakeCapacityStore(capacity: FakeCapacity) {
   const stores = new Map<string, PortalCapacityStore>()
   return {
-    activeCapacityKey: async (rowToken?: string) => {
+    activeCapacityKey: async (_page: unknown, rowToken?: string) => {
       capacity.rowTokens?.push(rowToken)
       if (capacity.keyFails) throw new Error("manifest unavailable")
       return FAKE_ACTIVE_KEY
     },
-    depositCapacityStore: (bucket: PortalCapacityKey) => {
+    depositCapacityStore: (_page: unknown, bucket: PortalCapacityKey) => {
       const key = portalCapacityKey(bucket)
       const id = `${key.chainId}|${key.portal}|${key.token}`
       capacity.keys?.push(id)
@@ -61,7 +62,7 @@ export function fakeCapacityStore(capacity: FakeCapacity) {
             }
           },
           policy: { maxHeadAgeMs: Infinity },
-          visibility: { isVisible: () => true, onResume: () => () => {} },
+          query: testQuery(),
         })
         stores.set(storeId, store)
       }

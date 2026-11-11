@@ -5,8 +5,10 @@ import { showReportableError, subscribeErrorModal, type ErrorModalPayload } from
 import { copyErrorReport, sendErrorReport } from "./shareErrorReport"
 import { isExtensionError } from "./extensionError"
 import { isWalletConnectChainSwitchError } from "./walletConnectError"
+import type { Network } from "@obsidion/core/constants"
 
 const WALLETCONNECT_PROPOSAL_EXPIRED = "Proposal expired"
+// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
 const BROWSER_NOTICES = new Set([
   "Script error.",
   "ResizeObserver loop completed with undelivered notifications.",
@@ -21,13 +23,14 @@ function surfaceUncaught(raw: unknown): void {
  * Global mount for the unified error/info modal. Lives at the root (over every
  * route); catch blocks surface reportable failures via `showReportableError()`.
  */
-export function ErrorModalHost() {
+export function ErrorModalHost({ network }: { network: Network }) {
   const [payload, setPayload] = useState<ErrorModalPayload | null>(null)
   const [copyLabel, setCopyLabel] = useState("Copy")
   const [reportLabel, setReportLabel] = useState("Report")
   // Errors arriving while one is visible queue behind it instead of replacing
   // a message the user is reading.
   const queueRef = useRef<ErrorModalPayload[]>([])
+  // eslint-disable-next-line local/effect-hook -- ZKM-1806
   useEffect(
     () =>
       subscribeErrorModal((next) => {
@@ -46,10 +49,13 @@ export function ErrorModalHost() {
     [],
   )
 
+  // eslint-disable-next-line local/effect-hook -- ZKM-1806
   useEffect(() => {
     const onError = (e: ErrorEvent) => {
       if (isExtensionError(e.filename, e.error)) return
+      // eslint-disable-next-line local/message-in-state -- ZKM-1806
       if (e.error == null && BROWSER_NOTICES.has(e.message)) return
+      // eslint-disable-next-line local/message-in-state -- ZKM-1806
       surfaceUncaught(e.error ?? e.message)
     }
     const onRejection = (e: PromiseRejectionEvent) => {
@@ -76,7 +82,7 @@ export function ErrorModalHost() {
   }
   const copy = async () => {
     try {
-      await copyErrorReport(payload)
+      await copyErrorReport(payload, network)
       setCopyLabel("Copied")
     } catch {
       // Clipboard denied — leave the label alone.

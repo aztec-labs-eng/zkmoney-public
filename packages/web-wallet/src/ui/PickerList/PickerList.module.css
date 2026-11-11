@@ -1,0 +1,137 @@
+/* One searchable chain or token list; the chosen row carries the check. */
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  width: 100%;
+  text-align: left;
+}
+.search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-secondary);
+}
+/* The search's own clear button replaces the browser's. */
+.search input::-webkit-search-cancel-button,
+.search input::-webkit-search-decoration {
+  -webkit-appearance: none;
+  appearance: none;
+}
+:global(.zkm-btn-reset).clear {
+  display: flex;
+  flex: none;
+  margin: -6px;
+  padding: 6px;
+  border-radius: 50%;
+  color: rgba(255, 255, 255, 0.45);
+}
+@media (hover: hover) {
+  :global(.zkm-btn-reset).clear:hover {
+    color: rgba(255, 255, 255, 0.75);
+  }
+}
+.search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 14px;
+  color: var(--text-primary);
+  outline: none;
+}
+.rows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.section {
+  margin-bottom: 4px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.empty {
+  margin: 0;
+  padding: 10px 12px;
+  font-size: 14px;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+:global(.zkm-btn-reset).row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  text-align: left;
+}
+.row:hover,
+.row[aria-selected="true"] {
+  background: rgba(255, 255, 255, 0.06);
+}
+.row:disabled {
+  cursor: default;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .rowIn {
+    animation: global(ww-fade-in) 0.18s ease both;
+  }
+}
+.text {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.text b {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 15px;
+  font-weight: 600;
+  color: #fdfdfd;
+}
+.text small {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.text b small {
+  font-size: 14px;
+  font-weight: 400;
+}
+.check {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #56e79d;
+}
+/* Inside a flow's pane: roomier text on a lighter search. */
+.list.pane {
+  gap: 12px;
+}
+/* The search icon takes the placeholder's color. */
+.pane .search,
+.pane .search input::placeholder {
+  color: rgba(255, 255, 255, 0.45);
+}
+.pane .search {
+  padding: 10px 14px;
+  background: rgba(255, 255, 255, 0.06);
+}
+.pane .search input {
+  font-size: 15px;
+}
+.pane .section {
+  font-size: 14px;
+  font-weight: 500;
+}
+.pane .text b small {
+  font-size: 15px;
+}

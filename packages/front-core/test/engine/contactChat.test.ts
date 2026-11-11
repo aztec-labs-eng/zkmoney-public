@@ -8,7 +8,7 @@ import { sameChat, selectContactChat } from "../../src/engine/contactChat"
 import { memoryStore, derived } from "../../src/engine/store"
 import { resolveRequests, type StoredRequest } from "../../src/engine/requests"
 import type { Transaction } from "../../src/types/transactions"
-import type { ContactRow } from "../../src/hooks/useContactsDirectory"
+import type { ContactRow } from "../../src/engine/contacts"
 
 const NOW = 1_800_000_000_000
 const E18 = 10n ** 18n
@@ -59,14 +59,18 @@ function feedAt(
   return selectFeed(
     {
       rows: { records: sources.rows ?? [], loaded: true, failed: false },
+      links: { records: [], loaded: true, failed: false },
+      operations: { records: [], loaded: true, failed: false },
       requests,
       deposits: { records: sources.deposits ?? [], loaded: true, failed: false },
       withdrawals: { records: sources.withdrawals ?? [], hydrated: true },
       upgrades: { items: [], recipients: new Set(), loaded: true },
       moves: { records: [], hydrated: true },
       oldVersionWithdrawals: [],
+      bridgeIns: { records: [], hydrated: true },
       processing: new Map(),
       refunding: new Set(),
+      rotations: [],
       catchingUp: false,
       now,
     } satisfies FeedSources,
@@ -253,6 +257,35 @@ describe("selectContactChat", () => {
     expect(amounts).toContainEqual({ money: { atomic: 5_000_000n, decimals: 6 }, sign: "+" })
     expect(amounts).toContainEqual({ money: { atomic: 20n * E18, decimals: 18 }, sign: "+" })
     expect(amounts).toContainEqual({ money: { atomic: 3n * E18, decimals: 18 }, sign: "+" })
+  })
+
+  it("shows each payment from a wallet to one address as a bubble of its own", () => {
+    const sweep = (inboxIndex: string, net: bigint, settledAt: number) => ({
+      inboxIndex,
+      sweepTxHash: `0x${inboxIndex.repeat(64)}`,
+      netAmount: net.toString(),
+      settledAt,
+    })
+    const deposits = [
+      {
+        sipaAddress: "0x1",
+        walletAddress: WALLET,
+        phase: "claimed",
+        amount: "6",
+        netAmount: String(6n * E18),
+        fee: "0",
+        inboxIndex: "8",
+        claimedInboxIndexes: ["7", "8"],
+        startTime: 2,
+        sweeps: [sweep("7", 9n * E18, 3), sweep("8", 6n * E18, 4)],
+      },
+    ] as SipaDeposit[]
+    expect(
+      chat({ deposits }, [], { tag: "w", address: WALLET, addressKind: "ethereum-l1" }),
+    ).toEqual([
+      ["0x1:7", "received-confirmed", undefined],
+      ["0x1", "received-confirmed", undefined],
+    ])
   })
 })
 

@@ -7,13 +7,12 @@
 import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import {
-  TokenService,
   nextOperationId,
   registerBroadcaster,
-  type ContractService,
   type ObsidionAccount,
   type ObsidionWallet,
   type RegisteredTeeSigner,
+  type TokenService,
 } from "@obsidion/sdk"
 import {
   assertSkyFactoryPortals,
@@ -21,8 +20,6 @@ import {
   buildSavingsMove,
   quoteSavingsMove,
   readSavingsApy,
-  readSavingsPrice,
-  readSavingsVault,
   resolveSkySavings,
   savingsSourceExecutor,
   savingsValue,
@@ -30,10 +27,13 @@ import {
   skyBridgesOfFactory,
   SKY_PROJECT,
   tupleField,
-  type SavingsDeployments,
+  type QueryEntry,
+  type QueryFactory,
+  type QueryState,
   type SavingsDirection,
+  type SavingsExecutorReads,
   type SavingsMoveRecord,
-  type SavingsMoveStorage,
+  type SavingsMoves,
   type SavingsMoveStage,
   type SavingsPrice,
   type SavingsQuote,
@@ -41,131 +41,98 @@ import {
   type SkySavings,
   type WithdrawalRecord,
   type Withdrawals,
+  useStore,
+  memoryStore,
 } from "@obsidion/front-core"
-import { useSyncExternalStore } from "react"
 import { formatUnits, type Address, type Hex } from "viem"
 import { usdAtomicFloor } from "../../ui/format"
-import { getConfig, type WebWalletConfig } from "../../config/env"
-import {
-  ASSET_TUPLE_TIMEOUT_MS,
-  getManifestDeployments,
-  getOxideDeployment,
-  getOxideTuple,
-  getPortalTuple,
-  l1PublicClient,
-  oxideProfileKey,
-} from "../../config/oxideTuple"
-import { createExternalState } from "../../lib/externalState"
+import { ASSET_TUPLE_TIMEOUT_MS, l1PublicClient } from "../../config/oxideTuple"
 import { withTimeout } from "../../lib/withTimeout"
 import {
   assertWithinWithdrawalLimit,
   sharesBurnLimitProblem,
   withdrawalLimitRefusal,
 } from "../limits/withdrawalLimit"
-import { claimSponsorContext } from "../registration/claimSponsorship"
+import { claimSponsorContext, type ClaimSponsorDeps } from "../registration/claimSponsorship"
 import { RAIL_REGISTERED } from "../registration/rails"
 import { runOperation, type OperationHandle } from "../operations/operations"
 import {
   noteSponsoredMine,
-  ownSwapRecoverer,
+  sessionSwapRecoverer,
   runBurn,
   withdrawalOptions,
+  type BurnSession,
   type RescanToken,
 } from "../withdraw/withdrawGateway"
-import {
-  executorSubsidyAt,
-  skyFactoryPortalsAt,
-  withdrawalExecutorAt,
-} from "../withdraw/withdrawalFee"
-import { getSavingsMoveStore } from "./savingsMoveStore"
 import { SavingsQuoteChangedError } from "./quoteChanged"
-import { teeSignerOfToken, txAmountCap } from "../token/oxideToken"
+import { exitSharePrice } from "./savingsTasks"
 import { l2TokenService } from "../token/l2TokenService"
-import { session } from "../../session/session"
-
-const savingsAvailable = createExternalState(false)
+import { accountKitOf, useSession, type AccountKit, type Session } from "../../session/session"
+import type { PageFacts, PageChain } from "../../session/pageChain"
 
 const sameAddress = (a: string, b: string) => a.toLowerCase() === b.toLowerCase()
 
-let skySavingsCached: { key: string; sky: Promise<SkySavings | undefined> } | undefined
-
 /**
  * Sky savings on the pinned deployment, its Main the pinned bridge itself; undefined where the
- * deployment names none, or pairs Savings with another bridge than the one Main holds. Read once
- * per profile; a failed read is not sticky.
+ * deployment names none, or pairs Savings with another bridge than the one Main holds.
  */
-export function getSkySavings(config: WebWalletConfig): Promise<SkySavings | undefined> {
-  const key = oxideProfileKey(config)
-  if (skySavingsCached?.key !== key) {
-    const read = async () => {
-      const [{ deployment }, pinned] = await Promise.all([
-        getOxideDeployment(config),
-        getOxideTuple(config),
-      ])
-      const found = await resolveSkySavings(l1PublicClient(config), deployment, () =>
-        getManifestDeployments(config),
+export function readSkySavings({ config, chain }: PageFacts): Promise<SkySavings | undefined> {
+  const read = async () => {
+    const [{ deployment }, pinned] = await Promise.all([
+      chain.oxideDeployment.read(),
+      chain.oxideTuple.read(),
+    ])
+    const found = await resolveSkySavings(l1PublicClient(config), deployment, () =>
+      chain.manifestDeployments.read(),
+    )
+    if (!found) return undefined
+    if (!sameAddress(found.deployments.main.portal, pinned.portal)) {
+      console.warn(
+        `[savingsGateway] Sky savings pairs ${found.deployments.main.portal}, not the pinned portal ${pinned.portal}`,
       )
-      if (!found) return undefined
-      if (!sameAddress(found.deployments.main.portal, pinned.portal)) {
-        console.warn(
-          `[savingsGateway] Sky savings pairs ${found.deployments.main.portal}, not the pinned portal ${pinned.portal}`,
-        )
-        return undefined
-      }
-      return { ...found, deployments: { ...found.deployments, main: pinned } }
+      return undefined
     }
-    const sky = withTimeout(read(), ASSET_TUPLE_TIMEOUT_MS)
-    skySavingsCached = { key, sky }
-    sky.catch(() => {
-      if (skySavingsCached?.sky === sky) skySavingsCached = undefined
-    })
+    return { ...found, deployments: { ...found.deployments, main: pinned } }
   }
-  return skySavingsCached.sky
+  return withTimeout(read(), ASSET_TUPLE_TIMEOUT_MS)
 }
 
 /** The Savings bridge; undefined where the pinned deployment has none, and nothing then shows. */
-export function getSavingsTuple(config: WebWalletConfig): Promise<OxideEnvTuple | undefined> {
-  const tuple = getSkySavings(config).then((sky) => sky?.deployments.savings)
-  tuple.then(
-    (found) => savingsAvailable.set(!!found),
-    () => {},
-  )
-  return tuple
+export async function savingsTuple(
+  reads: Pick<PageChain, "skySavings">,
+): Promise<OxideEnvTuple | null> {
+  return (await reads.skySavings.read())?.deployments.savings ?? null
 }
 
-async function readLiveSavingsApy(): Promise<number | undefined> {
-  const config = getConfig()
-  const tuple = await getSavingsTuple(config)
+export async function readLiveSavingsApy({
+  config,
+  chain,
+}: PageFacts): Promise<number | undefined> {
+  const tuple = await chain.savingsTuple.read()
   if (!tuple) return undefined
-  const client = l1PublicClient(config)
-  const vault = await readSavingsVault(client, tupleField(tuple, "portal"))
-  return readSavingsApy(client, vault, { l1ChainId: config.l1ChainId })
+  const vault = await chain.savingsVault(tupleField(tuple, "portal")).read()
+  return readSavingsApy(l1PublicClient(config), vault, { l1ChainId: config.l1ChainId })
 }
 
 /** How long the landing waits on the live rate before it shows without one. */
 const LIVE_APY_WAIT_MS = 2_000
 
-type LiveApy = { settled: false } | { settled: true; apy: number | undefined }
-const liveApy = createExternalState<LiveApy>({ settled: false })
-let liveApyStarted = false
+export type LiveApy = { apy: number | undefined }
+export type LandingRate = QueryEntry<LiveApy>
 
 /**
- * Sky's live savings rate, with no account: what the landing advertises. Read once per page, as
- * soon as the config is up, so the landing it holds usually has it by the time the PXE is.
+ * Sky's live savings rate, with no account: what the landing advertises. Read once per page,
+ * started by the boot as soon as the config is up, so the landing usually has it by the time the
+ * PXE is. A failed or slow read settles without a rate.
  */
-export function prefetchLiveSavingsApy(): void {
-  if (liveApyStarted) return
-  liveApyStarted = true
-  withTimeout(readLiveSavingsApy(), LIVE_APY_WAIT_MS).then(
-    (apy) => liveApy.set({ settled: true, apy }),
-    () => liveApy.set({ settled: true, apy: undefined }),
-  )
-}
-
-export function useLiveSavingsApy(): LiveApy {
-  prefetchLiveSavingsApy()
-  return useSyncExternalStore(liveApy.subscribe, liveApy.get)
-}
+export const liveSavingsApy = (query: QueryFactory, page: PageFacts): LandingRate =>
+  query<[], LiveApy>("landingRate", {
+    load: () =>
+      withTimeout(readLiveSavingsApy(page), LIVE_APY_WAIT_MS).then(
+        (apy) => ({ apy }),
+        () => ({ apy: undefined }),
+      ),
+  })()
 
 /**
  * The Savings token for the withdrawal rescan and the wallet's sync, with its deployment: a fresh
@@ -173,37 +140,38 @@ export function useLiveSavingsApy(): LiveApy {
  * A burn through a Sky executor the manifest knows is a move out; any other is a plain withdrawal.
  * Undefined where the pinned deployment has no Savings.
  */
-export async function savingsRescanToken(
-  wallet: ObsidionWallet,
-  account: ObsidionAccount,
-): Promise<(RescanToken & { tokenService: TokenService }) | undefined> {
-  const config = getConfig()
-  const tuple = await getSavingsTuple(config)
-  if (!tuple) return undefined
-  const [tokenService, skyExecutors] = await Promise.all([
-    l2TokenService(wallet, account, tuple.l2Token),
-    knownSkyExecutors(config),
-  ])
-  return {
-    tokenService,
-    tuple,
-    executorKind: (executor) =>
-      skyExecutors.executors.has(executor.toLowerCase()) ? "sky" : "plain",
-    ...(skyExecutors.complete ? {} : { partial: true }),
+export const savingsRescanToken =
+  (page: Pick<Session["page"], "chain" | "tokenServices">) =>
+  async (
+    _wallet: ObsidionWallet,
+    account: ObsidionAccount,
+  ): Promise<(RescanToken & { tokenService: TokenService }) | undefined> => {
+    const tuple = await page.chain.savingsTuple.read()
+    if (!tuple) return undefined
+    const [tokenService, skyExecutors] = await Promise.all([
+      l2TokenService(page, account, tuple.l2Token),
+      knownSkyExecutors(page.chain),
+    ])
+    return {
+      tokenService,
+      tuple,
+      executorKind: (executor) =>
+        skyExecutors.executors.has(executor.toLowerCase()) ? "sky" : "plain",
+      ...(skyExecutors.complete ? {} : { partial: true }),
+    }
   }
-}
 
 /**
  * The Sky executors a Savings burn may name: today's, and each one a Sky feature of the manifest lists. A failed read of
  * the manifest leaves today's alone, and the list incomplete.
  */
 async function knownSkyExecutors(
-  config: WebWalletConfig,
+  chain: PageChain,
 ): Promise<{ executors: Set<string>; complete: boolean }> {
   let complete = true
   const [sky, deployments] = await Promise.all([
-    getSkySavings(config),
-    getManifestDeployments(config).catch((err: unknown) => {
+    chain.skySavings.read(),
+    chain.manifestDeployments.read().catch((err: unknown) => {
       console.warn(
         "[savingsGateway] manifest read failed; the rescan knows today's Sky executor only",
         err,
@@ -225,43 +193,37 @@ async function knownSkyExecutors(
   return { executors, complete }
 }
 
+const savingsAsset = (s: QueryState<OxideEnvTuple | null>) =>
+  s.status === "ready" ? (s.value ? s.value.underlying ?? s.value.token : null) : undefined
+const NO_TUPLE = memoryStore<QueryState<never>>({ status: "pending" }).readonly
+
+/** The session's Savings asset once the deployment is read; null where it has none. */
+export function useSavingsAsset(): string | null | undefined {
+  const { savings, page } = useSession()
+  return useStore(savings ? page.chain.savingsTuple : NO_TUPLE, savingsAsset)
+}
+
 /** Whether Sky savings has been found for this profile: what shows the Savings surfaces. */
 export const useSavingsAvailable = (): boolean =>
-  useSyncExternalStore(savingsAvailable.subscribe, savingsAvailable.get)
+  useStore(useSession().page.chain.savingsTuple, (s) => s.status === "ready" && !!s.value)
 
+/** The session's token service is Main's: the source of a move in, and what claims a move out. */
 export interface SavingsDeps {
-  wallet: ObsidionWallet
-  account: ObsidionAccount
-  contractService: ContractService
-  /** Main's token service: the source of a move in, and what claims a move out. */
-  tokenService: TokenService
   /** The network the wallet's balance store scopes its balances to. */
   network: string
   /** Reads the balances again: a claim moves them with no `Transfer` event. */
   refreshBalance(): Promise<void>
+  /** The vault's share price the tray values a move out at. */
+  price: Pick<QueryEntry<SavingsPrice | null>, "read">
+  /** The session the moves run in. */
+  session: BurnSession &
+    ClaimSponsorDeps["session"] &
+    Pick<Session, "auth" | "savingsMoves" | "contractService" | "account" | "token" | "page">
 }
 
 export async function openSavings(deps: SavingsDeps): Promise<SavingsSource | null> {
-  const tuple = await getSavingsTuple(getConfig())
-  return tuple ? createSavingsSource(deps, tuple) : null
-}
-
-/** How long one price read answers for; Home and the move sheet read together. */
-const PRICE_TTL_MS = 5_000
-
-/** A promise kept until it fails, so one read serves every caller and a failure is retried. */
-function once<T>(make: () => Promise<T>): () => Promise<T> {
-  let pending: Promise<T> | undefined
-  return () => {
-    if (!pending) {
-      const made = make()
-      pending = made
-      made.catch(() => {
-        if (pending === made) pending = undefined
-      })
-    }
-    return pending
-  }
+  const sky = await deps.session.page.chain.skySavings.read()
+  return sky ? createSavingsSource({ ...deps, ...(await accountKitOf(deps.session)) }, sky) : null
 }
 
 /**
@@ -269,7 +231,7 @@ function once<T>(make: () => Promise<T>): () => Promise<T> {
  * the move goes with it. A seed kept as failed keeps its move, whose row reads Failed.
  */
 export async function dropMoveWithSeed(
-  moves: Pick<SavingsMoveStorage, "remove">,
+  moves: Pick<SavingsMoves, "remove">,
   burns: Pick<Withdrawals, "get">,
   localId: string | undefined,
 ): Promise<void> {
@@ -298,9 +260,12 @@ export function moveSummary(
 }
 
 /** The Savings deployment's co-signer, which a burn out of Savings and its release need. */
-export async function connectSavingsSigner(savings: OxideEnvTuple): Promise<RegisteredTeeSigner> {
+export async function connectSavingsSigner(
+  chain: PageChain,
+  savings: OxideEnvTuple,
+): Promise<RegisteredTeeSigner> {
   try {
-    return await teeSignerOfToken(savings.l2Token)
+    return await chain.teeSignerOfToken(savings.l2Token)
   } catch (cause) {
     throw new Error("The Savings co-signer isn't reachable. Try again in a moment.", { cause })
   }
@@ -308,73 +273,50 @@ export async function connectSavingsSigner(savings: OxideEnvTuple): Promise<Regi
 
 /** What finalizing a move out's burn by hand runs on: the Savings deployment and its co-signer. */
 export async function savingsFinalizeDeployment(
+  { page: { chain } }: Pick<Session, "page">,
   burn: Pick<WithdrawalRecord, "deployment">,
 ): Promise<{ tuple: OxideEnvTuple; signer: RegisteredTeeSigner }> {
-  const config = getConfig()
-  const current = await getSavingsTuple(config)
+  const current = await chain.savingsTuple.read()
   // The burn's own deployment, which an older move keeps after Savings moves to a new portal.
   const portal = burn.deployment?.portal
   const tuple =
     portal && portal.toLowerCase() !== current?.portal.toLowerCase()
-      ? await getPortalTuple(config, portal)
+      ? await chain.portalTuple(portal).read()
       : current
   if (!tuple) throw new Error("Savings isn't available on this network.")
-  return { tuple, signer: await connectSavingsSigner(tuple) }
+  return { tuple, signer: await connectSavingsSigner(chain, tuple) }
 }
 
-export function createSavingsSource(deps: SavingsDeps, savings: OxideEnvTuple): SavingsSource {
-  const config = getConfig()
+export function createSavingsSource(
+  deps: SavingsDeps & AccountKit,
+  { deployments, factory }: SkySavings,
+): SavingsSource {
+  const { savingsMoves: moves } = deps.session
+  const { config, chain } = deps.session.page
+  const { main, savings } = deployments
   const client = l1PublicClient(config)
-  const moves = getSavingsMoveStore()
-  const sky = once<SkySavings>(async () => {
-    const found = await getSkySavings(config)
-    if (!found || !sameAddress(found.deployments.savings.portal, savings.portal)) {
-      throw new Error("Savings isn't available on this network.")
-    }
-    return found
-  })
-  const deployments = once<SavingsDeployments>(async () => (await sky()).deployments)
-  const factory = async () => (await sky()).factory
-  const savingsToken = once<TokenService>(async () => {
-    const { savings } = await deployments()
-    return l2TokenService(deps.wallet, deps.account, savings.l2Token)
-  })
-  // Reads and claims need no co-signer; only a burn out of Savings does, so it connects then, and
-  // a failed connect is tried again on the next move out.
-  const savingsSigner = once(async () => connectSavingsSigner((await deployments()).savings))
-  const vault = once<Address>(async () =>
-    readSavingsVault(client, tupleField((await deployments()).savings, "portal")),
-  )
+  // The page's token services keep each one.
+  const tokenOf = (l2Token: string) => l2TokenService(deps.session.page, deps.account, l2Token)
+  const savingsToken = () => tokenOf(savings.l2Token)
+  const vault = () => chain.savingsVault(tupleField(savings, "portal")).read()
   const balance = {
     scope: balanceScope(deps.network, deps.account.getCompleteAddress().toString()),
     tokenAddress: AztecAddress.fromStringUnsafe(savings.l2Token).toString(),
   }
 
-  let lastRead: { at: number; value: Promise<SavingsPrice> } | undefined
-
-  const readPrice = () => {
-    const now = Date.now()
-    if (lastRead && now - lastRead.at < PRICE_TTL_MS) return lastRead.value
-    const value = vault().then((address) =>
-      readSavingsPrice(client, address, { l1ChainId: config.l1ChainId }),
-    )
-    lastRead = { at: now, value }
-    value.catch(() => {
-      if (lastRead?.value === value) lastRead = undefined
-    })
-    return value
-  }
-
   // The last quote given for each move: what its review showed.
   const reviewed = new Map<string, SavingsQuote>()
-  const quoteDeps = async () => ({
+  const quoteDeps = () => ({
     client,
-    deployments: await deployments(),
-    factory: await factory(),
-    executorReads: { executor: withdrawalExecutorAt, subsidy: executorSubsidyAt },
+    deployments,
+    factory,
+    executorReads: {
+      executor: (address, kind) => chain.withdrawalExecutorAt(address, kind).read(),
+      subsidy: (address) => chain.executorSubsidyAt(address).read(),
+    } satisfies SavingsExecutorReads,
   })
   const quote = async (direction: SavingsDirection, amount: bigint) => {
-    const result = await quoteSavingsMove(await quoteDeps(), direction, amount)
+    const result = await quoteSavingsMove(quoteDeps(), direction, amount)
     reviewed.set(`${direction}:${amount}`, result)
     return result
   }
@@ -386,15 +328,17 @@ export function createSavingsSource(deps: SavingsDeps, savings: OxideEnvTuple): 
     onStage: (stage: SavingsMoveStage) => void,
   ): Promise<SavingsMoveRecord> => {
     onStage("building")
-    const deployed = await deployments()
-    const { main, savings } = deployed
     // Before anything is signed: the escrow must deposit into the bridges the manifest pairs.
-    const { address: factoryAddress } = await factory()
-    assertSkyFactoryPortals(await skyFactoryPortalsAt(factoryAddress), deployed, factoryAddress)
+    assertSkyFactoryPortals(
+      await chain.skyFactoryPortalsAt(factory.address).read(),
+      deployments,
+      factory.address,
+    )
     const source = direction === "in" ? main : savings
     const sourceToken = direction === "in" ? deps.tokenService : await savingsToken()
-    if (direction === "out") sourceToken.setTeeSigner(await savingsSigner())
-    const cap = await txAmountCap(client, source.portal as Address)
+    // Only a burn out of Savings needs the co-signer; a failed connect fails this move alone.
+    if (direction === "out") sourceToken.setTeeSigner(await connectSavingsSigner(chain, savings))
+    const cap = await chain.txAmountCap(source.portal as Address).read()
     if (direction === "in") assertWithinWithdrawalLimit(amount, cap)
     else if (sharesBurnLimitProblem(amount, cap))
       throw new Error(withdrawalLimitRefusal("protocol"))
@@ -403,7 +347,7 @@ export function createSavingsSource(deps: SavingsDeps, savings: OxideEnvTuple): 
     const priced = await quote(direction, amount)
     // Fees that rose since the review stop the move; the sheet shows the new figures to confirm.
     if (confirmed && priced.net < confirmed.net) throw new SavingsQuoteChangedError(priced)
-    const recoverer = await ownSwapRecoverer(main)
+    const recoverer = await sessionSwapRecoverer(deps.session, main)
     const broadcaster = await registerBroadcaster(
       deps.wallet,
       deps.contractService,
@@ -412,8 +356,8 @@ export function createSavingsSource(deps: SavingsDeps, savings: OxideEnvTuple): 
     const build = await buildSavingsMove(
       {
         broadcaster,
-        deployments: deployed,
-        factory: await factory(),
+        deployments,
+        factory,
         masterSecret: recoverer.secret,
         recipient: deps.account.getAddress(),
         recoveryAccount: recoverer.account,
@@ -421,7 +365,7 @@ export function createSavingsSource(deps: SavingsDeps, savings: OxideEnvTuple): 
       priced,
     )
     const sponsor = await claimSponsorContext(deps, RAIL_REGISTERED)
-    const options = withdrawalOptions(source)
+    const options = withdrawalOptions(config, source)
     const token = await sourceToken.fetchTokenInformation()
     // The escrow's deposit lands after the burn, so its search starts here. A move rebuilt from the
     // burn searches from the burn's time instead.
@@ -443,7 +387,7 @@ export function createSavingsSource(deps: SavingsDeps, savings: OxideEnvTuple): 
     let seeded: WithdrawalRecord | undefined
     const { record, result } = await runBurn({
       op,
-      wallet: deps.wallet,
+      session: deps.session,
       record: {
         recipient: build.escrow,
         recipientProvenance: "saved-recipient",
@@ -459,7 +403,7 @@ export function createSavingsSource(deps: SavingsDeps, savings: OxideEnvTuple): 
         deployment: {
           portal: source.portal as Hex,
           l2Token: source.l2Token,
-          executor: savingsSourceExecutor(deployed, direction),
+          executor: savingsSourceExecutor(deployments, direction),
         },
         skyMove: { ...build.skyMove, depositScanFrom, value: priced.value.toString() },
       },
@@ -484,10 +428,10 @@ export function createSavingsSource(deps: SavingsDeps, savings: OxideEnvTuple): 
         )
       },
     }).catch(async (err: unknown) => {
-      await dropMoveWithSeed(moves, session().withdrawals, seeded?.localId)
+      await dropMoveWithSeed(moves, deps.session.withdrawals, seeded?.localId)
       throw err
     })
-    const move = moves.get(record.localId) ?? (await moves.put(moveOf(record)))
+    const move = (await moves.get(record.localId)) ?? (await moves.put(moveOf(record)))
     if (!result) return move
     onStage("submitting")
     noteSponsoredMine(deps, sponsor, "move")
@@ -496,14 +440,9 @@ export function createSavingsSource(deps: SavingsDeps, savings: OxideEnvTuple): 
 
   const move: SavingsSource["move"] = async (direction, amount, onStage) => {
     // A move out burns shares; the tray names their dollar value at the vault's share price.
-    const sharePrice =
-      direction === "out"
-        ? await readPrice().then(
-            (price) => price.sharePrice,
-            () => undefined,
-          )
-        : undefined
+    const sharePrice = direction === "out" ? await exitSharePrice(deps.price) : undefined
     return runOperation(
+      deps.session,
       {
         operationId: nextOperationId("withdraw"),
         flow: "savings",
@@ -513,23 +452,9 @@ export function createSavingsSource(deps: SavingsDeps, savings: OxideEnvTuple): 
     )
   }
 
-  // An older move's escrow deposits into the bridges its factory's Sky feature binds, which the
-  // manifest still lists; an older portal's token service is made once per token.
-  const olderTokens = new Map<string, Promise<TokenService>>()
-  const cachedOnce = <T>(cache: Map<string, Promise<T>>, key: string, make: () => Promise<T>) => {
-    let value = cache.get(key)
-    if (!value) {
-      const made = make()
-      cache.set(key, made)
-      made.catch(() => cache.delete(key))
-      value = made
-    }
-    return value
-  }
-
   let waitingForKey = false
-  const settle = async () => {
-    const masterSecret = await session().auth.getSecretKey()
+  const settle = async (signal: AbortSignal) => {
+    const masterSecret = await deps.session.auth.getSecretKey()
     if (!masterSecret) {
       // Locked: the pass runs again on the next tick once the key is back.
       if (!waitingForKey) console.info("[savingsGateway] settle pass waits for the unlocked key")
@@ -537,14 +462,13 @@ export function createSavingsSource(deps: SavingsDeps, savings: OxideEnvTuple): 
       return
     }
     waitingForKey = false
-    const { main, savings } = await deployments()
     const destination = (tuple: OxideEnvTuple, claimer: () => Promise<TokenService>) => ({
       portal: tupleField(tuple, "portal"),
       token: tupleField(tuple, "token"),
       fromBlock: BigInt(tuple.deployedAtBlock ?? 0),
       claimer,
     })
-    const withdrawals = session().withdrawals
+    const withdrawals = deps.session.withdrawals
     await withdrawals.ready
     await settleSavingsMoves(
       moves,
@@ -559,6 +483,7 @@ export function createSavingsSource(deps: SavingsDeps, savings: OxideEnvTuple): 
         masterSecret,
         recipient: deps.account.getAddress(),
         refreshBalance: deps.refreshBalance,
+        signal,
         main: destination(main, async () => deps.tokenService),
         savings: destination(savings, savingsToken),
         destinationFor: async (move) => {
@@ -566,26 +491,20 @@ export function createSavingsSource(deps: SavingsDeps, savings: OxideEnvTuple): 
             move.direction === "in"
               ? destination(savings, savingsToken)
               : destination(main, async () => deps.tokenService)
-          if (sameAddress(move.factory, (await factory()).address)) return current
-          // A read that fails or stalls fails this move's search; the pass settles the others.
+          if (sameAddress(move.factory, factory.address)) return current
+          // An older move's escrow deposits into the bridges its factory's Sky feature binds, which
+          // the manifest still lists. A read that fails or stalls fails this move's search; the pass
+          // settles the others.
           const bridges = await skyBridgesOfFactory(
             client,
-            await getManifestDeployments(config),
+            await chain.manifestDeployments.read(),
             move.factory,
           )
           if (!bridges)
             throw new Error(`No deployment lists the Sky escrow factory ${move.factory}`)
           const tuple = move.direction === "in" ? bridges.savings : bridges.main
           if (sameAddress(tuple.portal, current.portal)) return current
-          return destination(tuple, () =>
-            cachedOnce(olderTokens, tuple.l2Token.toLowerCase(), () =>
-              TokenService.create(
-                deps.wallet,
-                deps.account,
-                AztecAddress.fromStringUnsafe(tuple.l2Token),
-              ),
-            ),
-          )
+          return destination(tuple, () => tokenOf(tuple.l2Token))
         },
       },
       [...(await withdrawals.all())],
@@ -597,7 +516,6 @@ export function createSavingsSource(deps: SavingsDeps, savings: OxideEnvTuple): 
     assetAddress: savings.underlying ?? savings.token,
     moves,
     balance,
-    readPrice,
     quote,
     move,
     settle,

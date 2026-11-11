@@ -2,19 +2,19 @@ import { useEffect, useState } from "react"
 import {
   type PendingRegistrationRecord,
   type SipaDeposit,
-  useResource,
   WalletError,
+  serviceStatus,
+  useStore,
 } from "@obsidion/front-core"
 import { errorCopy, errorMessage } from "../../../errors/catalog"
 import { tokenDecimalsForNetwork } from "@obsidion/core/constants"
 import { PrimaryGradientButton } from "@obsidion/web-ds"
-import { getConfig } from "../../../config/env"
 import { DepositExitModal } from "../../deposit/DepositExitModal/DepositExitModal"
 import { isGateCancelled, useCeremonyGate } from "../../identity/ceremonyGate"
 import { GateStep } from "../../identity/PhoneSteps"
 import { PasskeyRefusal, type RefusalState } from "../../identity/PasskeyRefusal"
 import { isPasskeyCancelled, isPasskeyPolicyError } from "@obsidion/passkey-web"
-import { type OnboardingKeys } from "../../../session/account"
+import type { OnboardingKeys } from "../../../session/account"
 import { reusePasskeyAccount } from "../../identity/passkeyAccount"
 import { reloadIfSessionSwitched } from "../../../session/sessionReload"
 import { useRegistrationRefunded } from "../../registration/registrationRecovery"
@@ -41,15 +41,16 @@ export function RegistrationRefundAction({
   /** The live registration-token balance is not zero. */
   holdsFunds?: boolean
 }) {
-  const own = useSession()
-  const obsidionWallet = useResource(own.wallet)
+  const session = useSession()
+  const walletBuilt = useStore(session.wallet, serviceStatus) === "ready"
   const { gate, state, cancel } = useCeremonyGate()
   const recovered = useRegistrationRefunded(record)
   const restart = !holdsFunds && (recovered || unfunded)
   const earnedAsk = formatDepositDue(
     askedTotal("earned_tag"),
-    tokenDecimalsForNetwork(getConfig().network),
+    tokenDecimalsForNetwork(session.page.config.network),
   )
+  // eslint-disable-next-line local/effect-hook -- ZKM-1806
   useEffect(() => cancel, [cancel])
   const [deposit, setDeposit] = useState<SipaDeposit>()
   const [busy, setBusy] = useState(false)
@@ -61,17 +62,18 @@ export function RegistrationRefundAction({
     setError(undefined)
     setRefusal(undefined)
     try {
-      if (!obsidionWallet) throw new WalletError("wallet.notReady")
+      if (!walletBuilt) throw new WalletError("wallet.notReady")
+      const obsidionWallet = await session.wallet.ready()
       const keys = await reusePasskeyAccount(
         obsidionWallet,
-        { auth: own.auth, accounts: signedInAccount },
+        { session, accounts: () => signedInAccount(session) },
         record.l2Address,
         undefined,
         gate,
       )
-      if (reloadIfSessionSwitched(own, record.l2Address)) return
+      if (reloadIfSessionSwitched(session, record.l2Address)) return
       if (restart) await onRestart(keys)
-      else setDeposit(await own.registrationRecovery.prepare(record, obsidionWallet.networkId))
+      else setDeposit(await session.registrationRecovery.prepare(record, obsidionWallet.networkId))
     } catch (err) {
       if (isGateCancelled(err) || isPasskeyCancelled(err)) return
       if (isPasskeyPolicyError(err)) setRefusal({ name: err.name, message: errorMessage(err) })

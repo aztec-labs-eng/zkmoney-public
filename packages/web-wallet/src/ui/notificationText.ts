@@ -1,5 +1,5 @@
 /** The words of a bell entry, from its `about`. */
-import { parseUnits } from "viem"
+import { formatUnits, parseUnits } from "viem"
 import { DEFAULT_DECIMALS } from "@obsidion/core/constants"
 import {
   SIPA_PROCESSING_COPY,
@@ -15,14 +15,16 @@ import {
   type BridgeActivityItem,
   type NotificationAbout,
   type NotificationEntry,
-  type PaylinkTransaction,
+  type PaylinkRecord,
   type TokenTransaction,
+  type WithdrawalPhase,
 } from "@obsidion/front-core"
+import type { ConfigBridge } from "@obsidion/config-client"
 import { itemNote } from "../features/migration/residualNotes"
 import { operationText } from "../features/operations/operationEntries"
 import { withdrawalSent } from "../features/withdraw/oldVersionWithdrawals"
 import { fmt } from "../lib/fmt"
-import { fixedCents, shortL1Addr, usdAtomicFloor } from "./format"
+import { fixedCents, shortL1Addr, tokenFigure, usdAtomicFloor } from "./format"
 import copy from "./notifications.copy"
 import { withdrawalFailureText } from "../features/withdraw/withdrawalFailure"
 
@@ -57,11 +59,14 @@ function receiveFrom(tx: TokenTransaction): string {
   return addr ? truncateMiddle(addr, 15) : copy.receive.unknown
 }
 
-const paylinkAmount = (tx: PaylinkTransaction | undefined) =>
+const paylinkAmount = (tx: PaylinkRecord | undefined) =>
   tx?.token ? fmt(copy.paylink.amount, { amount: dollars(tx.amountAtomic, tx.token.decimals) }) : ""
 
 const savingsOf = (item: BridgeActivityItem) =>
   item.kind === "bridge.withdrawal" ? item.record.skyMove : undefined
+
+const bridgeOutOf = (item: BridgeActivityItem) =>
+  item.kind === "bridge.withdrawal" ? item.record.bridgeOut : undefined
 
 /**
  * The figure a bridge entry names: a withdrawal its burn, a deposit what credits the balance (a
@@ -81,14 +86,31 @@ function bridgeAmount(item: BridgeActivityItem): string {
     : dollarsOf(figure)
 }
 
+/** The phases a withdrawal spends releasing its burn on Ethereum. */
+const RELEASING_PHASES: ReadonlySet<WithdrawalPhase> = new Set([
+  "l2_mined",
+  "awaiting_proven",
+  "finalizing_l1",
+])
+
+/** The shared table's releasing line names Ethereum; a bridge-out names its destination. */
+function withdrawalLive(phase: WithdrawalPhase, destination: string | undefined): string {
+  return destination !== undefined && RELEASING_PHASES.has(phase)
+    ? fmt(copy.bridge.releasingTo, { chain: destination })
+    : WITHDRAWAL_PHASE_COPY[phase].live ?? ""
+}
+
 function bridgeLive(about: Extract<NotificationAbout, { kind: "bridgeLive" }>): NotificationText {
   const { item, migration, reason } = about
   const savings = savingsOf(item)
   const withdrawal = item.kind === "bridge.withdrawal"
+  const bridgeOut = bridgeOutOf(item)
   const title = migration
     ? copy.bridge.upgrading
     : savings
     ? savingsMoveLabel(savings.direction)
+    : bridgeOut
+    ? fmt(copy.bridge.bridgeOutLive, { chain: bridgeOut.chainName })
     : withdrawal
     ? item.record.source === "paylink"
       ? copy.bridge.paylinkWithdrawalLive
@@ -99,7 +121,7 @@ function bridgeLive(about: Extract<NotificationAbout, { kind: "bridgeLive" }>): 
   const label = reason
     ? SIPA_PROCESSING_COPY[reason].short
     : item.kind === "bridge.withdrawal"
-    ? WITHDRAWAL_PHASE_COPY[item.record.phase].live ?? ""
+    ? withdrawalLive(item.record.phase, bridgeOut?.chainName)
     : depositPhaseCopy(item.record).live ?? ""
   return { title, description: fmt(copy.bridge.live, { amount, label }) }
 }
@@ -109,10 +131,12 @@ function bridgeEnded(about: Extract<NotificationAbout, { kind: "bridgeEnded" }>)
   const done = outcome === "done"
   const recovered = item.record.phase === "recovered"
   const savings = savingsOf(item)
-  const what =
-    item.kind === "bridge.withdrawal" && item.record.source === "paylink"
-      ? copy.bridge.paylinkWithdrawal
-      : copy.bridge.withdrawal
+  const bridgeOut = bridgeOutOf(item)
+  const what = bridgeOut
+    ? copy.bridge.bridgeOut
+    : item.kind === "bridge.withdrawal" && item.record.source === "paylink"
+    ? copy.bridge.paylinkWithdrawal
+    : copy.bridge.withdrawal
   const title =
     migration && !recovered
       ? done
@@ -139,10 +163,56 @@ function bridgeEnded(about: Extract<NotificationAbout, { kind: "bridgeEnded" }>)
     ? fmt(copy.bridge.returned, { amount })
     : savings
     ? amount
+    : bridgeOut
+    ? fmt(copy.bridge.arrivedOn, { amount, chain: bridgeOut.chainName })
     : item.kind === "bridge.withdrawal"
     ? fmt(copy.bridge.sentToEthereum, { amount })
     : fmt(copy.bridge.arrived, { amount })
   return { title, description }
+}
+
+/** Origin amounts in the origin token's decimals. A payment to someone else names its payee. */
+function bridgeInEnded(
+  about: Extract<NotificationAbout, { kind: "bridgeInEnded" | "paymentBridgeEnded" }>,
+  bridge?: ConfigBridge,
+): NotificationText {
+  const { record } = about
+  const words = copy.bridgeIn
+  if (record.status === "filled") {
+    const amount = tokenFigure(
+      formatUnits(BigInt(record.outputAmount), record.outputDecimals),
+      record.outputSymbol,
+    )
+    return record.pays
+      ? {
+          title: copy.paymentBridge.filled,
+          description: fmt(copy.paymentBridge.filledDescription, {
+            amount,
+            tag: record.pays.payee,
+          }),
+        }
+      : { title: words.filled, description: fmt(words.filledDescription, { amount }) }
+  }
+  const amount = tokenFigure(
+    formatUnits(BigInt(record.inputAmount), record.inputDecimals),
+    record.symbol,
+  )
+  const network =
+    bridge?.chains.find((c) => c.chainId === record.originChainId)?.name ?? words.otherChain
+  switch (record.status) {
+    case "refunded":
+      return {
+        title: words.refunded,
+        description: fmt(words.refundedDescription, { amount, network }),
+      }
+    case "failed":
+      return { title: words.failed, description: fmt(words.failedDescription, { amount, network }) }
+    default:
+      return {
+        title: words.expired,
+        description: fmt(words.expiredDescription, { amount, network }),
+      }
+  }
 }
 
 function registrationLive(
@@ -194,7 +264,9 @@ function eventText(about: Extract<NotificationAbout, { kind: "event" }>): Notifi
     case "reclaimable":
       return {
         title: copy.paylink.reclaimable,
-        description: fmt(copy.paylink.reclaimableDescription, { amount: paylinkAmount(about.tx) }),
+        description: fmt(copy.paylink.reclaimableDescription, {
+          amount: paylinkAmount(about.link),
+        }),
       }
     case "migrationResiduals":
       return {
@@ -206,7 +278,11 @@ function eventText(about: Extract<NotificationAbout, { kind: "event" }>): Notifi
   }
 }
 
-export function notificationText(entry: Pick<NotificationEntry, "about">): NotificationText {
+/** `bridge` names a bridge-in's origin chain. */
+export function notificationText(
+  entry: Pick<NotificationEntry, "about">,
+  bridge?: ConfigBridge,
+): NotificationText {
   const { about } = entry
   switch (about.kind) {
     case "bridgeLive":
@@ -214,14 +290,30 @@ export function notificationText(entry: Pick<NotificationEntry, "about">): Notif
     case "bridgeEnded":
       return bridgeEnded(about)
     case "upgradeRun": {
-      const { run, done } = about
-      const figure = dollars(run.total)
+      const { run, done, value } = about
       const n = run.legs.length
+      // A run with no value names no figure.
       if (!done)
         return {
           title: copy.bridge.upgrading,
-          description: fmt(copy.upgrade.arrived, { figure, arrived: run.arrived, total: n }),
+          description:
+            value === undefined
+              ? fmt(copy.upgrade.arrivedUnpriced, { arrived: run.arrived, total: n })
+              : fmt(copy.upgrade.arrived, {
+                  figure: dollars(value),
+                  arrived: run.arrived,
+                  total: n,
+                }),
         }
+      if (value === undefined)
+        return {
+          title: copy.bridge.upgradeComplete,
+          description:
+            n === 1
+              ? copy.upgrade.oneTransferUnpriced
+              : fmt(copy.upgrade.transfersUnpriced, { count: n }),
+        }
+      const figure = dollars(value)
       return {
         title: copy.bridge.upgradeComplete,
         description:
@@ -232,6 +324,9 @@ export function notificationText(entry: Pick<NotificationEntry, "about">): Notif
     }
     case "registrationLive":
       return registrationLive(about)
+    case "bridgeInEnded":
+    case "paymentBridgeEnded":
+      return bridgeInEnded(about, bridge)
     case "registrationEnded":
       return about.registered
         ? {
@@ -251,11 +346,11 @@ export function notificationText(entry: Pick<NotificationEntry, "about">): Notif
         }),
       }
     case "paylinkClaimed": {
-      const { tx } = about
-      const to = tx.flavor !== "direct" && tx.to ? fmt(copy.paylink.to, { to: tx.to }) : ""
+      const { link } = about
+      const to = link.flavor !== "direct" && link.to ? fmt(copy.paylink.to, { to: link.to }) : ""
       return {
         title: copy.paylink.claimed,
-        description: fmt(copy.paylink.claimedDescription, { amount: paylinkAmount(tx), to }),
+        description: fmt(copy.paylink.claimedDescription, { amount: paylinkAmount(link), to }),
       }
     }
     case "operation":

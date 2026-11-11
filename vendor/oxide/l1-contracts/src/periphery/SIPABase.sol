@@ -9,16 +9,10 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {Errors} from "@periphery/Errors.sol";
 import {IForwardingTable} from "@periphery/interfaces/IForwardingTable.sol";
 import {RecoveryCommitmentLib} from "@periphery/RecoveryCommitmentLib.sol";
+import {Intent} from "@periphery/Intent.sol";
 
 abstract contract SIPABase {
   using SafeERC20 for IERC20;
-
-  enum Intent {
-    None,
-    Deposit,
-    Registration,
-    UserOp
-  }
 
   function INTENT() public pure virtual returns (Intent);
 

@@ -2,7 +2,7 @@
 pragma solidity >=0.8.27;
 
 import {IERC20} from "@oz/token/ERC20/IERC20.sol";
-import {IDaiUsds} from "@periphery/experiments/sky/interfaces/IDaiUsds.sol";
+import {IDaiUsds} from "@periphery/interfaces/IDaiUsds.sol";
 import {ISUsds} from "@periphery/experiments/sky/interfaces/ISUsds.sol";
 
 struct SkyRoute {

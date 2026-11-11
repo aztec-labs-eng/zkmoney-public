@@ -2,7 +2,7 @@ import { useId, type CSSProperties, type ReactNode } from "react"
 import { Icon } from "./Icon"
 
 export interface ShimmerProps {
-  /** false renders children untouched at full opacity. Default true. */
+  /** false shows the blocks without the light. Default true. */
   active?: boolean
   children: ReactNode
   className?: string
@@ -10,8 +10,8 @@ export interface ShimmerProps {
 }
 
 /**
- * Loading shimmer: dims its children to 35% opacity and sweeps a white
- * highlight band across them every 1.4s while active.
+ * Loading shimmer: while active, one soft light sweeps across every `SkeletonBlock` inside it,
+ * and only across the blocks.
  */
 export function Shimmer({ active = true, children, className, style }: ShimmerProps) {
   return (
@@ -21,9 +21,27 @@ export function Shimmer({ active = true, children, className, style }: ShimmerPr
         .join(" ")}
       style={style}
     >
-      <div className="zkm-shimmer__content">{children}</div>
-      {active && <div className="zkm-shimmer__band" />}
+      {children}
     </div>
+  )
+}
+
+export interface SkeletonBlockProps {
+  width: number | string
+  height: number
+  /** Default 8. */
+  radius?: number
+  style?: CSSProperties
+}
+
+/** Placeholder sized like the content it stands in for. Put it inside a `Shimmer`. */
+export function SkeletonBlock({ width, height, radius = 8, style }: SkeletonBlockProps) {
+  return (
+    <div
+      aria-hidden
+      className="zkm-skeleton"
+      style={{ width, height, clipPath: `inset(0 round ${radius}px)`, ...style }}
+    />
   )
 }
 
@@ -34,7 +52,7 @@ export interface DoubleCheckIconProps {
 }
 
 /** "✓✓" delivered/settled marker (MicroDoubleCheckIconShape). */
-export function DoubleCheckIcon({ color = "#56E79D", size = 14 }: DoubleCheckIconProps) {
+export function DoubleCheckIcon({ color = "var(--accent-green)", size = 14 }: DoubleCheckIconProps) {
   return (
     <svg width={size} height={size} viewBox="0 0 14 14" fill="none" aria-hidden="true">
       <path
@@ -104,6 +122,8 @@ export interface ProgressSpinnerProps {
   thickness?: number
   /** Ends of the done arc. Default round. */
   cap?: "round" | "butt"
+  /** Turns the ring like `Spinner`, keeping its arc. */
+  spin?: boolean
 }
 
 /** `Spinner`'s stroke as a determinate ring: a faint track filled clockwise from the top. */
@@ -114,13 +134,14 @@ export function ProgressSpinner({
   gradient = false,
   thickness,
   cap = "round",
+  spin = false,
 }: ProgressSpinnerProps) {
   const gradId = `zkm-progress-grad-${useId().replace(/:/g, "")}`
   const strokeWidth = thickness ?? Math.max(1.5, size * 0.12)
   const r = (size - strokeWidth) / 2
   const circumference = 2 * Math.PI * r
   const done = Math.min(1, Math.max(0, progress))
-  return (
+  const ring = (
     <svg
       width={size}
       height={size}
@@ -160,6 +181,13 @@ export function ProgressSpinner({
       />
     </svg>
   )
+  return spin ? (
+    <span className="zkm-spinner-icon" style={{ width: size, height: size }}>
+      {ring}
+    </span>
+  ) : (
+    ring
+  )
 }
 
 const GRADIENT_SPINNER_ARC =
@@ -188,6 +216,44 @@ export function GradientSpinner({ size = 40, period = 1.4 }: GradientSpinnerProp
           </linearGradient>
         </defs>
         <path d={GRADIENT_SPINNER_ARC} fill={`url(#${gradId})`} />
+      </svg>
+    </span>
+  )
+}
+
+/** Three-quarter stroked arc with round ends, purple→blue across; rotates via the spinner keyframes. */
+export function ArcSpinner({ size = 44, period = 1.4 }: GradientSpinnerProps) {
+  const gradId = `zkm-spinner-grad-${useId().replace(/:/g, "")}`
+  const strokeWidth = size * 0.1
+  const r = (size - strokeWidth) / 2
+  const circumference = 2 * Math.PI * r
+  return (
+    <span
+      className="zkm-spinner-icon"
+      style={{ width: size, height: size, animationDuration: `${period}s` }}
+    >
+      <svg
+        width={size}
+        height={size}
+        viewBox={`0 0 ${size} ${size}`}
+        fill="none"
+        aria-label="Loading"
+      >
+        <defs>
+          <linearGradient id={gradId} x1="0" y1="0" x2="1" y2="0">
+            <stop stopColor="#9c04ff" />
+            <stop offset="1" stopColor="#0693ff" />
+          </linearGradient>
+        </defs>
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={r}
+          stroke={`url(#${gradId})`}
+          strokeWidth={strokeWidth}
+          strokeLinecap="round"
+          strokeDasharray={`${circumference * 0.75} ${circumference * 0.25}`}
+        />
       </svg>
     </span>
   )
@@ -273,7 +339,7 @@ export function CopyableLinkRow({
         <div className="zkm-copyable-link-row">
           <Icon name="link" size={18} color="var(--text-secondary)" />
           <span className="zkm-copyable-link-row__url">{url}</span>
-          <Icon name="copy" size={16} color={copied ? "var(--accent-green)" : "#fff"} />
+          <Icon name="copy" size={16} color={copied ? "var(--accent-green)" : "var(--ink)"} />
         </div>
       </GlassRowCard>
     </button>

@@ -1,4 +1,4 @@
-import { formatUnits, getAddress, isAddress } from "viem"
+import { formatUnits, getAddress, isAddress, parseUnits } from "viem"
 import { groupedCents } from "./groupedCents"
 import { DEFAULT_DECIMALS } from "@obsidion/core/constants"
 import {
@@ -33,13 +33,17 @@ export function shortL1Addr(address: string): string {
 
 export { normalizeAmountInput as decimalInput, tokenAmount } from "@obsidion/front-core"
 
-/** Field message for typed amount text the wallet will not accept; nothing while the field is empty. */
-export function amountError(text: string): string | undefined {
+/**
+ * Field message for typed amount text the wallet will not accept; nothing while the field is empty.
+ * A field read with `parseUnits` passes its token's `decimals`: it takes that precision and never
+ * goes through a JS number, so it skips the number check.
+ */
+export function amountError(text: string, decimals?: number): string | undefined {
   if (!text) return undefined
   if (!isDecimalAmount(text)) return "Enter a number"
-  if (decimalPlaces(text) > AMOUNT_MAX_DECIMALS)
-    return `Use up to ${AMOUNT_MAX_DECIMALS} decimal places`
-  if (!isSafeAmountNumber(text)) return "Amount is too large"
+  const places = decimals ?? AMOUNT_MAX_DECIMALS
+  if (decimalPlaces(text) > places) return `Use up to ${places} decimal places`
+  if (decimals === undefined && !isSafeAmountNumber(text)) return "Amount is too large"
   return undefined
 }
 
@@ -50,8 +54,27 @@ export function parseAmount(text: string): number {
 
 /** MAX-button text: the balance floored to cents, so it passes `amountError` and can never overspend. */
 export function floorToCents(atomic: bigint, decimals: number): string {
-  const step = 10n ** BigInt(decimals - AMOUNT_MAX_DECIMALS)
-  return formatUnits(atomic - (atomic % step), decimals)
+  return floorTo(atomic, decimals, AMOUNT_MAX_DECIMALS)
+}
+
+/** The balance floored to `places` decimals. */
+export function floorTo(atomic: bigint, decimals: number, places: number): string {
+  return formatUnits(floorAtomic(atomic, decimals, places), decimals)
+}
+
+/** `floorTo` in base units. */
+export function floorAtomic(atomic: bigint, decimals: number, places: number): bigint {
+  if (places >= decimals) return atomic
+  return atomic - (atomic % 10n ** BigInt(decimals - places))
+}
+
+/** Wallet-side amount: what the user wants to land plus the fee, decimal-safe. */
+export function chargedAmount(amount: string, fee: string, decimals: number): string | undefined {
+  try {
+    return formatUnits(parseUnits(amount.trim(), decimals) + parseUnits(fee, decimals), decimals)
+  } catch {
+    return undefined
+  }
 }
 
 /** `1234.57`: a balance rounded half up to cents, ungrouped; `0.00` for none. */
@@ -84,10 +107,18 @@ export function tokenFigure(display: string, symbol: string): string {
   return `${groupedCents(display) ?? display} ${symbol}`
 }
 
+export function tokenAtomicFloor(atomic: bigint, symbol: string, decimals = DEFAULT_DECIMALS) {
+  const floored = floorToCents(atomic, decimals)
+  return atomic > 0n && Number(floored) === 0 ? `<0.01 ${symbol}` : tokenFigure(floored, symbol)
+}
+
 /** `$1,234.56` from base units. */
 export function usdAtomic(atomic: bigint, decimals: number = DEFAULT_DECIMALS): string {
   return usdBalance(formatUnits(atomic, decimals))
 }
+
+/** What a balance shows while the user hides balances. */
+export const HIDDEN_BALANCE = "$••••••"
 
 /**
  * `$1,234.56` from base units with the cents truncated, as the ticking Savings balance shows them;

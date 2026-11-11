@@ -1,3 +1,5 @@
+import { WalletError } from "@obsidion/core/errors"
+
 export interface QrDecoder {
   decode(frame: ImageData): Promise<string | null>
   destroy(): void
@@ -16,14 +18,14 @@ export function createQrDecoder(): QrDecoder {
     closed = true
     clearTimeout(timer)
     worker.terminate()
-    pending?.reject(new Error("QR decoder stopped"))
+    pending?.reject(new WalletError("aborted", "QR decoder stopped"))
     pending = undefined
   }
   worker.onmessage = (event: MessageEvent<{ text: string | null; error?: boolean }>) => {
     clearTimeout(timer)
     const job = pending
     pending = undefined
-    if (event.data.error) job?.reject(new Error("Couldn't read the camera frame"))
+    if (event.data.error) job?.reject(new WalletError("unknown", "Couldn't read the camera frame"))
     else job?.resolve(event.data.text)
   }
   worker.onerror = (event) => {
@@ -33,8 +35,8 @@ export function createQrDecoder(): QrDecoder {
 
   return {
     decode(frame) {
-      if (closed) return Promise.reject(new Error("QR decoder stopped"))
-      if (pending) return Promise.reject(new Error("QR decoder is busy"))
+      if (closed) return Promise.reject(new WalletError("aborted", "QR decoder stopped"))
+      if (pending) return Promise.reject(new WalletError("invariant", "QR decoder is busy"))
       return new Promise((resolve, reject) => {
         pending = { resolve, reject }
         timer = setTimeout(destroy, 10_000)

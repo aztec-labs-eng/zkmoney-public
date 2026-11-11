@@ -3,13 +3,13 @@ import { useEffect, useRef, useState, type ReactNode } from "react"
 import { Navigate } from "react-router-dom"
 import {
   memoryStore,
-  useResource,
+  NO_SERVICE,
+  serviceStatus,
   useStore,
-  type Resource,
-  type ResourceState,
+  type Service,
+  type ServiceState,
 } from "@obsidion/front-core"
 import type { ObsidionAccount } from "@obsidion/sdk"
-import { getConfig } from "../../../config/env"
 import { isDemoMode } from "../../../dev/demoFlag"
 import { failureCode, fireEvent } from "../../../lib/analytics"
 import { passkeyTelemetry } from "../../../lib/passkeyTelemetry"
@@ -140,14 +140,15 @@ function UnlockChoice({
   )
 }
 
-const NO_ACCOUNT = memoryStore<ResourceState<ObsidionAccount>>({ status: "pending" }).readonly
 /** A visitor's session has no account record: it reads as none stored. */
 const NO_RECORD = memoryStore({ value: undefined, loaded: true }).readonly
 const existence = (stored: { value: unknown; loaded: boolean }) =>
   stored.loaded ? stored.value !== undefined : undefined
+const failure = (state: ServiceState<unknown>) =>
+  state.status === "failed" ? state.error : undefined
 
 /** Unlocks the account again; resolves once it is unlocked or has failed. */
-function retryUnlock(account: Resource<ObsidionAccount> | null): Promise<void> {
+function retryUnlock(account: Service<ObsidionAccount> | null): Promise<void> {
   if (!account) return Promise.resolve()
   return new Promise((resolve) => {
     const off = account.subscribe(() => {
@@ -172,16 +173,16 @@ function retryUnlock(account: Resource<ObsidionAccount> | null): Promise<void> {
 export function UnlockGate({ children }: { children: ReactNode }) {
   const session = useSession()
   const { credentialId, passkeyMap } = useStore(session.device)
-  const account = useStore(session.account ?? NO_ACCOUNT)
-  const obsidionAccount = account.status === "ready" ? account.value : undefined
+  const unlocked = useStore(session.account ?? NO_SERVICE, serviceStatus) === "ready"
+  const accountFailure = useStore(session.account ?? NO_SERVICE, failure)
   const unlockError =
-    account.status === "failed"
-      ? account.error instanceof Error
-        ? errorMessage(account.error)
-        : copy.unlockFailed
-      : undefined
+    accountFailure === undefined
+      ? undefined
+      : accountFailure instanceof Error
+      ? errorMessage(accountFailure)
+      : copy.unlockFailed
   const accountExists = useStore(session.accountRecord?.view ?? NO_RECORD, existence)
-  const obsidionWallet = useResource(useSession().wallet)
+  const walletReady = useStore(session.wallet, serviceStatus) === "ready"
   const { busy, run } = useAsyncAction()
   // `asked`: the key the refused unlock asked for, when the user chose one; its retries ask it again.
   const [refusal, setRefusal] = useState<RouteRefusal & { asked?: string }>()
@@ -194,6 +195,7 @@ export function UnlockGate({ children }: { children: ReactNode }) {
   const phoneRef = useRef(false)
 
   // Leaving the screen ends the attempt behind its prompt: nothing commits for a pane that is gone.
+  // eslint-disable-next-line local/effect-hook -- ZKM-1806
   useEffect(
     () => () => {
       attemptRef.current?.unmounted()
@@ -203,15 +205,15 @@ export function UnlockGate({ children }: { children: ReactNode }) {
   )
 
   // Demo mode holds the master key in memory but builds no account contract — there is no PXE.
-  if (obsidionAccount || isDemoMode()) return <>{children}</>
+  if (unlocked || isDemoMode()) return <>{children}</>
   if (accountExists === false || toEnter) return <Navigate to="/enter" replace />
   if (
     accountExists &&
-    (!credentialId || !hasRecordFor(passkeyMap, getConfig().rpId, credentialId))
+    (!credentialId || !hasRecordFor(passkeyMap, session.page.config.rpId, credentialId))
   ) {
     return <Navigate to="/enter" replace />
   }
-  if (!unlockError || !obsidionWallet) return <BootSplash inShell />
+  if (!unlockError || !walletReady) return <BootSplash inShell />
 
   const unlock = (phone = false, key?: string) => {
     // A phone attempt that ends with nothing offered goes back to the card it came from.
@@ -232,10 +234,10 @@ export function UnlockGate({ children }: { children: ReactNode }) {
       try {
         await tracked.run((own) =>
           session.auth.unlock(
-            (msk, passkeys) =>
-              obsidionWallet
-                .deriveAccountAddress(msk, passkeys)
-                .then((address) => address.toString()),
+            async (msk, passkeys) => {
+              const wallet = await session.wallet.ready(controller.signal)
+              return (await wallet.deriveAccountAddress(msk, passkeys)).toString()
+            },
             {
               signal: controller.signal,
               own,
@@ -304,7 +306,7 @@ export function UnlockGate({ children }: { children: ReactNode }) {
     attempt.current?.abort()
     attemptRef.current?.userCancelled()
     void run(async () => {
-      await signOut(session)
+      await signOut(session.page)
       await leavePage(
         avoid ? `/enter?choose=1&avoid=${encodeURIComponent(avoid)}` : "/enter?choose=1",
       )
@@ -316,7 +318,7 @@ export function UnlockGate({ children }: { children: ReactNode }) {
     attempt.current?.abort()
     attemptRef.current?.userCancelled()
     void run(async () => {
-      await signOut(session)
+      await signOut(session.page)
       await leavePage(`/enter?pick=${encodeURIComponent(credentialId!)}`)
     }, "identity:choose-passkey")
   }
@@ -326,7 +328,7 @@ export function UnlockGate({ children }: { children: ReactNode }) {
   // On a card that leads with the phone, the credential that returned the wrong key is hidden there.
   const avoid = refusal?.macPhone ? failed : undefined
   const { cards, others } = credentialId
-    ? sessionKeys(passkeyMap, getConfig().rpId, credentialId, failed)
+    ? sessionKeys(passkeyMap, session.page.config.rpId, credentialId, failed)
     : { cards: undefined, others: [] }
   const exits = (
     <>

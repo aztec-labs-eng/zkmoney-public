@@ -3,7 +3,6 @@ import { signOut } from "../../../src/features/identity/signOut"
 import { pageOver, reloadDevice, testPage } from "../../support/page"
 import { WebAlphaAuthService } from "../../../src/platform/auth/WebAlphaAuthService"
 import { storageIdFromSecret } from "../../../src/platform/storage/activeStorage"
-import { setActiveRollup } from "../../../src/platform/storage/rollupStorage"
 import { closeWalletStore, openWalletStore } from "../../../src/platform/storage/walletStorage"
 import { sandboxProfile } from "../../fixtures/sandboxProfile"
 import { FakePasskeyCeremony } from "../../support/fakePasskeyCeremony"
@@ -55,7 +54,6 @@ async function seedRetired(version: string, created: Created, passkeySet?: unkno
 
 async function boot() {
   await closeWalletStore()
-  setActiveRollup(ACTIVE)
   await openWalletStore(ACTIVE, { persistent: true })
   await reloadDevice()
   await auth.findRetiredSession()
@@ -113,7 +111,7 @@ describe("retired session", () => {
     await seedRetired("111", await service().createPasskey("@alice"))
     await boot()
     expect(auth.retiredSession()).toBeDefined()
-    await signOut({ ...testPage(), auth })
+    await signOut({ ...testPage(), auth, config: { profileRollupVersion: ACTIVE } })
     expect(auth.retiredSession()).toBeUndefined()
     await auth.findRetiredSession()
     expect(auth.retiredSession()).toBeUndefined()

@@ -3,7 +3,7 @@ import {
   NOTIFICATION_WINDOW_MS,
   reorgFailedId,
   timeKey,
-  type Activity,
+  type Transfers,
   derived,
   memoryStore,
   reorgEvent,
@@ -12,21 +12,23 @@ import {
   type Milestones,
   type NotificationEvent,
   type Notifications,
+  type Operations,
   type NotificationSources,
   type NotificationState,
+  type PaylinkRecord,
+  type Paylinks,
   type ReadonlyStore,
   type PendingRegistrationRecord,
   type RecordSet,
   type Sourced,
   type WalletIdentity,
   type Transaction,
+  type UpgradePricing,
 } from "@obsidion/front-core"
 import { mergedRows } from "../../ui/activity/feedSources"
-import { wallClock } from "../../lib/clock"
 import type { FeedBase } from "../../ui/activity/feedSources"
 import { flowCopy } from "../operations/operationCopy"
 import { listsEnding } from "../operations/operationEntries"
-import { endedOperations, runningOperations } from "../operations/operations"
 
 export async function recordReorgOutcome(
   notifications: Notifications,
@@ -54,23 +56,27 @@ function waitsOver(milestones: Pick<Milestones, "after">, after: After): Readonl
   return over.readonly
 }
 
-/** The bell's entries read off an activity row: a receive by its time, a claim by its claim time. */
+/** The bell's entries read off a row or link: a receive by its time, a claim by its claim time. */
 const ROW_ENTRIES = ["transfer:receive:", "paylink:claimed:"]
 
-const UNREAD_ROWS: RecordSet<Transaction> = { records: [], loaded: false, failed: false }
+/** What the bell reads off activity and the links. */
+export type BellRows = RecordSet<Transaction> & { links: readonly PaylinkRecord[] }
+
+const UNREAD_ROWS: BellRows = { records: [], links: [], loaded: false, failed: false }
 
 /**
- * The activity rows the bell reads: receives and claims from 24 hours before its oldest unread one,
- * which settled within the window of when it first showed, and the escrowed links. The range is set
- * once the unread notifications load.
+ * The activity rows and links the bell reads: receives from 24 hours before its oldest unread one,
+ * which settled within the window of when it first showed, and the links claimed since then or
+ * still in escrow. The range is set once the unread notifications load.
  */
 export function bellRows(
-  activity: Pick<Activity, "query">,
+  transfers: Pick<Transfers, "where">,
+  paylinks: Pick<Paylinks, "where">,
   notifications: Pick<Notifications, "unread">,
-  open: ReadonlyStore<RecordSet<Transaction>>,
-): ReadonlyStore<RecordSet<Transaction>> {
+  open: ReadonlyStore<RecordSet<PaylinkRecord>>,
+): ReadonlyStore<BellRows> {
   const shown = memoryStore(UNREAD_ROWS)
-  let rows: ReadonlyStore<RecordSet<Transaction>> | undefined
+  let rows: ReadonlyStore<BellRows> | undefined
   let offs: (() => void)[] = []
   let watchers = 0
   const settle = () => {
@@ -84,11 +90,13 @@ export function bellRows(
         since = Math.min(since, state.firstSeenAt)
     }
     const after = timeKey(since - NOTIFICATION_WINDOW_MS)
-    rows = mergedRows([
-      activity.query("time", { after }),
-      activity.query("claimed", { after }),
-      open,
-    ])
+    const links = mergedRows([open, paylinks.where("claimed", { after })])
+    rows = derived([transfers.where("time", { after }), links] as const, (rows, links) => ({
+      ...rows,
+      links: links.records,
+      loaded: rows.loaded && links.loaded,
+      failed: rows.failed || links.failed,
+    }))
     offs.push(rows.subscribe(settle))
     settle()
   }
@@ -115,13 +123,15 @@ export function bellRows(
   }
 }
 
-/** The records the bell's entries are read from: `rows` are the activity rows it reads. */
+/** The records the bell's entries are read from: `rows` are the activity rows and links read. */
 export function notificationSources(
   feed: ReadonlyStore<FeedBase>,
-  rows: ReadonlyStore<RecordSet<Transaction>>,
+  rows: ReadonlyStore<BellRows>,
   identity: ReadonlyStore<Sourced<WalletIdentity | null>>,
   milestones: Pick<Milestones, "after">,
   registrationRecords: ReadonlyStore<RecordSet<PendingRegistrationRecord>>,
+  operations: Pick<Operations, "ended" | "running">,
+  previousAccount: ReadonlyStore<string | undefined>,
 ): ReadonlyStore<NotificationSources> {
   return derived(
     [
@@ -129,20 +139,24 @@ export function notificationSources(
       rows,
       registrationRecords,
       identity,
-      endedOperations,
-      runningOperations,
+      operations.ended,
+      operations.running,
       waitsOver(milestones, BELL_AFTER),
+      previousAccount,
     ] as const,
-    (feed, rows, registrations, identity, ended, running, started) => ({
+    (feed, rows, registrations, identity, ended, running, started, previousAccount) => ({
       rows: rows.records,
+      links: rows.links,
       oldVersionWithdrawals: feed.oldVersionWithdrawals,
       deposits: feed.deposits,
       withdrawals: feed.withdrawals,
+      bridgeIns: feed.bridgeIns,
       upgrades: feed.upgrades,
       processing: feed.processing,
       // Newest first: the bell speaks for the account's latest registration.
       registrations: [...registrations.records].sort((a, b) => b.startTime - a.startTime),
       account: identity.value?.address,
+      previousAccount,
       operations: {
         ended: ended.filter(listsEnding),
         // A sent withdrawal is already its own record's live row.
@@ -156,6 +170,7 @@ export function notificationSources(
         feed.deposits.loaded &&
         !feed.deposits.failed &&
         feed.withdrawals.hydrated &&
+        feed.bridgeIns.hydrated &&
         feed.upgrades.loaded &&
         registrations.loaded &&
         !registrations.failed &&
@@ -175,12 +190,31 @@ export interface Bell {
   now: number
 }
 
+/**
+ * What the bell shows: the sources with the pricing that values upgrade runs. Only the bell reads
+ * the pricing, so the stamping writer keeps no price poll alive.
+ */
 export function bell(
   sources: ReadonlyStore<NotificationSources>,
+  pricing: ReadonlyStore<UpgradePricing>,
   notifications: Notifications,
+  wallClock: ReadonlyStore<number>,
 ): ReadonlyStore<Bell> {
   return derived(
-    [sources, notifications.state, notifications.events, notifications.stamped, wallClock] as const,
-    (sources, state, events, stamped, now) => ({ sources, state, events, stamped, now }),
+    [
+      sources,
+      pricing,
+      notifications.state,
+      notifications.events,
+      notifications.stamped,
+      wallClock,
+    ] as const,
+    (sources, upgradePricing, state, events, stamped, now) => ({
+      sources: { ...sources, upgradePricing },
+      state,
+      events,
+      stamped,
+      now,
+    }),
   )
 }

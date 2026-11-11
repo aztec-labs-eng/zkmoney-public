@@ -4,7 +4,8 @@
  * (add-contact confirm, handshake verifyTag) refetches — a manifest rotated between resolution and
  * commit surfaces as staleRollup instead of persisting the stale record.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
+import { testChain } from "../../support/query"
 
 const REGISTRY = "0x0b903b955dbc0c97252f1ce9e43f8c26e8f5635f"
 const METADATA_REGISTRY = "0x0b903b955dbc0c97252f1ce9e43f8c26e8f56360"
@@ -98,10 +99,7 @@ vi.stubGlobal("fetch", async (url: string) => {
   }
 })
 
-/**
- * The sandbox profile whose version supplies the binder's oxide pointer — `getConfig()` serves
- * only what `resolveBootConfig` seeded.
- */
+/** The sandbox profile whose version supplies the binder's oxide pointer. */
 function bootProfile() {
   return {
     profileId: "sandbox",
@@ -137,23 +135,35 @@ const serveProfile = () =>
     json: async () => bootProfile(),
   })) as unknown as typeof fetch
 
-/**
- * Fresh module graph so the getOxideTuple cache starts empty per test. Seeding order matters:
- * reset first, then boot the config inside that graph, then import the binder — a config seeded
- * before the reset would be wiped with the old graph.
- */
+/** A fresh module graph and fresh page reads for each test. */
 async function loadBinder() {
   vi.resetModules()
   const { resolveBootConfig } = await import("../../../src/config/env")
-  await resolveBootConfig({
+  const { config } = await resolveBootConfig({
     env: {
       VITE_CONFIG_PROFILE_URL: "http://localhost:8083/profiles/sandbox.json",
       VITE_CONFIG_EXPECTED_PROFILE_ID: "sandbox",
     },
     fetchImpl: serveProfile(),
   })
-  return import("../../../src/features/contacts/registryResolution")
+  const { createPageChain } = await import("../../../src/app/pageChain")
+  const page = { config, chain: createPageChain(config, testChain()) }
+  const binder = await import("../../../src/features/contacts/registryResolution")
+  return {
+    resolveTagViaRegistry: (tag: string) => binder.resolveTagViaRegistry(page, tag),
+    resolveTagForCommit: (tag: string) => binder.resolveTagForCommit(page, tag),
+    resolveSignInTag: (tag: string) => binder.resolveSignInTag(page, tag),
+    resolveSignInTagForCommit: (tag: string) => binder.resolveSignInTagForCommit(page, tag),
+    verifyTag: (tag: string) => binder.verifyTag(page, tag),
+  }
 }
+
+// The binder's module graph is transformed once, here, not inside the first test's own time; each test still
+// evaluates a fresh graph (loadBinder).
+beforeAll(async () => {
+  await import("../../../src/config/env")
+  await import("../../../src/features/contacts/registryResolution")
+})
 
 beforeEach(() => {
   state.account = ACCOUNT

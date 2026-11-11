@@ -1,13 +1,21 @@
 /** Live name policy and grant status while a tag is typed. `/domain/sign` remains authoritative. */
-import { useEffect, useState } from "react"
-import { AccountServiceClient, composeWireNameHash, normalizeTag } from "@obsidion/front-core"
+import {
+  AccountServiceClient,
+  composeWireNameHash,
+  derived,
+  lookup,
+  normalizeTag,
+  type QueryFactory,
+  type ReadonlyStore,
+} from "@obsidion/front-core"
 import { WalletError } from "@obsidion/core/errors"
 import type { DrawnNameResponse } from "@obsidion/core/types"
-import { getConfig } from "../../config/env"
-import { getOxideTuple, requireTupleField } from "../../config/oxideTuple"
+import type { WebWalletConfig } from "../../config/env"
+import { requireTupleField } from "../../config/oxideTuple"
+import type { PageFacts } from "../../session/pageChain"
+import type { SignupStash } from "./signupStash"
 
 export type NameAvailability = "available" | "reserved" | "blocked" | "blocked-reserved" | "unknown"
-export type RouteNameGrant = { handle: string; token: string }
 
 /** The probe cannot identify a reservation holder. */
 export function nameIsUnavailable(
@@ -28,39 +36,37 @@ function isStatus(value: unknown): value is "available" | "reserved" | "blocked"
 }
 
 /** Credential-free: the probe is an open route, and typing a name must not need keys. */
-const accountServiceReader = (config: ReturnType<typeof getConfig>) =>
+const accountServiceReader = (config: WebWalletConfig) =>
   new AccountServiceClient(config.accountServiceUrl, { readOnly: true, timeoutMs: TIMEOUT_MS })
 
 export type NameProbe = { status: NameAvailability; grantValid: boolean; grantBound: boolean }
 
-async function readAvailability(handle: string, grantToken?: string) {
+async function readAvailability(page: PageFacts, handle: string, grantToken?: string) {
   const bare = normalizeTag(handle)
   if (bare === null) throw new WalletError("name.invalid", handle)
-  const config = getConfig()
-  const tuple = await getOxideTuple(config)
+  const tuple = await page.chain.oxideTuple.read()
   const nameHash = composeWireNameHash(bare, requireTupleField(tuple, "ensDomain"))
-  return accountServiceReader(config).availableNameDetails(nameHash, grantToken)
+  return accountServiceReader(page.config).availableNameDetails(nameHash, grantToken)
 }
 
 /** A tag the claim server draws for a visitor with no passkey yet, with the grant its claim spends. */
-export function drawTag(): Promise<DrawnNameResponse> {
-  const config = getConfig()
-  return getOxideTuple(config).then((tuple) =>
-    new AccountServiceClient(config.accountServiceUrl, { readOnly: true }).drawName(
-      requireTupleField(tuple, "ensDomain"),
-    ),
+export async function drawTag({ config, chain }: PageFacts): Promise<DrawnNameResponse> {
+  const tuple = await chain.oxideTuple.read()
+  return new AccountServiceClient(config.accountServiceUrl, { readOnly: true }).drawName(
+    requireTupleField(tuple, "ensDomain"),
   )
 }
 
 /** A route grant is usable until revoked, including after it is bound to a passkey. */
-export async function routeGrantIsCurrent(handle: string, token: string): Promise<boolean> {
-  const details = await readAvailability(handle, token)
+export async function routeGrantIsCurrent(page: PageFacts, handle: string, token: string) {
+  const details = await readAvailability(page, handle, token)
   if (!isStatus(details.status)) throw new WalletError("name.statusUnread", String(details.status))
   return details.grantValid === true || details.grantBound === true
 }
 
 /** Fold the tag before probing; failures read as unknown with no validated grant. */
 export async function probeNameAvailability(
+  page: PageFacts,
   handle: string,
   grantToken?: string,
 ): Promise<NameProbe> {
@@ -68,11 +74,14 @@ export async function probeNameAvailability(
   let timer: ReturnType<typeof setTimeout> | undefined
   // The client's read retries would stretch the per-request timeout to several seconds.
   const deadline = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error("Name availability timed out")), TIMEOUT_MS)
+    timer = setTimeout(
+      () => reject(new WalletError("timeout", "Name availability timed out")),
+      TIMEOUT_MS,
+    )
   })
   try {
     const { status, blocked, grantValid, grantBound } = await Promise.race([
-      readAvailability(handle, grantToken),
+      readAvailability(page, handle, grantToken),
       deadline,
     ])
     if (!isStatus(status)) return unknown
@@ -92,65 +101,101 @@ export async function probeNameAvailability(
 
 /** A tag's answer, plus whether one is still being worked out. */
 export type NameCheck = NameProbe & { checking: boolean }
-type StoredNameCheck = NameCheck & { handle: string | null; grantToken?: string }
+
+/** A tag to probe, with the grant its probe validates. */
+export interface NameKey {
+  handle: string
+  grantToken?: string
+}
+
+const UNKNOWN: NameProbe = { status: "unknown", grantValid: false, grantBound: false }
+
+/** What a tag probe reads: the page's facts and its query constructor. */
+export type ProbePage = PageFacts & { query: QueryFactory }
 
 /**
- * Debounced probe of the tag being typed. `checking` covers the debounce and the request together,
- * so the caller shows one uninterrupted spinner rather than blinking between the two; `status`
- * stays "unknown" until an answer lands. The cleanup drops both the pending debounce and a reply
- * that arrives after the tag moved on.
+ * The probe of the tag being typed; `key` is undefined while there is nothing to check. `check`
+ * reads "checking" from a key's change until its own answer lands, so the debounce and the request
+ * show as one spinner. Each typed tag is probed afresh. `start` probes until `signal` aborts.
  */
-export function useNameAvailability(
-  handle: string,
-  enabled: boolean,
-  grantToken?: string,
-): NameCheck {
-  const [check, setCheck] = useState<StoredNameCheck>({
-    handle: null,
-    status: "unknown",
-    checking: false,
-    grantValid: false,
-    grantBound: false,
+export function nameCheck(page: ProbePage, key: ReadonlyStore<NameKey | undefined>) {
+  const same = (a?: NameKey, b?: NameKey) =>
+    a?.handle === b?.handle && a?.grantToken === b?.grantToken
+  const stable = derived([key], (k) => k, same)
+  const probes = page.query<[string, string | undefined], NameProbe>("nameProbe", {
+    load: (handle, grantToken) => probeNameAvailability(page, handle, grantToken),
+    stale: 0,
   })
-  useEffect(() => {
-    if (!enabled || normalizeTag(handle) === null) {
-      setCheck({
-        handle: null,
-        status: "unknown",
-        checking: false,
-        grantValid: false,
-        grantBound: false,
-      })
-      return
-    }
-    setCheck({
-      handle,
-      grantToken,
-      status: "unknown",
-      checking: true,
-      grantValid: false,
-      grantBound: false,
-    })
-    let live = true
-    const timer = setTimeout(() => {
-      void probeNameAvailability(handle, grantToken).then((result) => {
-        if (live) setCheck({ handle, grantToken, ...result, checking: false })
-      })
-    }, DEBOUNCE_MS)
-    return () => {
-      live = false
-      clearTimeout(timer)
-    }
-  }, [handle, enabled, grantToken])
-  if (!enabled || normalizeTag(handle) === null)
-    return { status: "unknown", checking: false, grantValid: false, grantBound: false }
-  // A seeded tag and a just-edited tag must wait even before the effect schedules their probe.
-  if (check.handle !== handle || check.grantToken !== grantToken)
-    return { status: "unknown", checking: true, grantValid: false, grantBound: false }
+  const probe = lookup(stable, (k) => probes(k.handle, k.grantToken), { delayMs: DEBOUNCE_MS })
+  const answer = derived([probe], (p) =>
+    p.status === "answered" && p.key ? { key: p.key, probe: p.value } : undefined,
+  )
+  const check = derived(
+    [stable, answer],
+    (k, a): NameCheck =>
+      a && same(a.key, k) ? { ...a.probe, checking: false } : { ...UNKNOWN, checking: !!k },
+  )
   return {
-    status: check.status,
-    checking: check.checking,
-    grantValid: check.grantValid,
-    grantBound: check.grantBound,
+    check,
+    /** The last answer, with the key it answers; unset while a probe is due. */
+    answer,
+    start(signal: AbortSignal) {
+      const off = probe.subscribe(() => {})
+      signal.addEventListener("abort", off)
+    },
   }
+}
+
+/** A tag step's field: what is typed, its folded tag, the route grant for it, and its check. */
+export type TagField = NameCheck & { typed: string; handle: string | null; grantToken?: string }
+
+/**
+ * The tag field over what is typed. A stashed grant rides along for the route's own tag, and the
+ * tag is probed while `probing` holds of `state`.
+ */
+export function tagField<S>(
+  page: ProbePage,
+  typed: ReadonlyStore<string>,
+  { signup, routeHandle }: { signup: Pick<SignupStash, "state">; routeHandle?: string },
+  state: ReadonlyStore<S>,
+  probing: (state: S) => boolean,
+) {
+  const entry = derived([typed, signup.state], (text, { grant }) => {
+    const handle = normalizeTag(text)
+    const routed = handle !== null && handle === routeHandle && grant?.handle === handle
+    return { typed: text, handle, grantToken: routed ? grant.token : undefined }
+  })
+  const names = nameCheck(
+    page,
+    derived([entry, state], ({ handle, grantToken }, s) =>
+      handle !== null && probing(s) ? { handle, grantToken } : undefined,
+    ),
+  )
+  const field = derived([entry, names.check], (e, check): TagField => ({ ...e, ...check }))
+  return { field, start: names.start }
+}
+
+export interface TagRule {
+  resuming: boolean
+  boundGrantOwner: boolean
+  /** The step's payment cannot cover the account yet. */
+  held?: boolean
+}
+
+/**
+ * What a tag step offers on its field. The probe knows a tag is held, never by whom: a resume may
+ * continue through its own hold, and only a live route grant through the blocklist.
+ */
+export function tagSubmit(
+  { handle, grantToken, status, checking, grantValid, grantBound }: TagField,
+  { resuming, boundGrantOwner, held = false }: TagRule,
+) {
+  const recoverBoundGrant = Boolean(grantToken && grantBound && !boundGrantOwner)
+  const allowBlocked = Boolean(grantToken && (grantValid || (grantBound && boundGrantOwner)))
+  const grantUnverified = Boolean(grantToken && status === "unknown" && !checking)
+  const taken = nameIsUnavailable(status, { resuming, allowBlocked })
+  const valid = handle !== null
+  const submittable =
+    valid && (!taken || recoverBoundGrant) && !checking && !grantUnverified && !held
+  return { valid, recoverBoundGrant, allowBlocked, grantUnverified, submittable }
 }

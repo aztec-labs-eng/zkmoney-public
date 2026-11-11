@@ -1,86 +1,80 @@
+// @vitest-environment node
 import { describe, expect, it } from "vitest"
 import {
-  entryBlock,
+  entryBlocks,
   type EntryConditions,
 } from "../../../src/features/backupPasskey/backupPasskeyEntry"
+import { ENTRY_READY } from "../../support/backupAdd"
 
 const DAI = 10n ** 18n
-const amount = (atomic: bigint) => `${atomic / DAI} DAI`
 
-const ready: EntryConditions = {
-  sessionIsRoot: true,
-  verified: true,
-  routeLive: true,
-  registered: true,
-  savingsMoving: false,
-  withdrawalInFlight: false,
-  historicBalance: false,
-  balance: 10n * DAI,
-  fundingAmount: 2n * DAI,
-  chunk: { kind: "fits" },
-  plan: true,
-  usesLeft: true,
-}
-
-const date = (sec: number) => `day ${sec}`
-
-const block = (over: Partial<EntryConditions>) => entryBlock({ ...ready, ...over }, amount, date)
+const blocks = (over: Partial<EntryConditions>) => entryBlocks({ ...ENTRY_READY, ...over })
+const open = (over: Partial<EntryConditions>) => blocks(over).filter((block) => !block.done)
 
 describe("the add entry's conditions", () => {
-  it("names each unmet condition", () => {
-    expect(block({ sessionIsRoot: false })?.line).toBe("Use your first passkey to add a backup")
-    expect(block({ verified: false })?.line).toBe("This account is not registered yet")
-    expect(block({ routeLive: false })?.line).toBe("Not available on this network yet")
-    expect(block({ registered: false })).toEqual({
-      line: "Sponsored transactions are not set up",
-      action: "sponsorship",
-    })
-    expect(block({ savingsMoving: true })).toEqual({
-      line: "Finish your Savings move first",
-      action: "savings",
-    })
-    expect(block({ withdrawalInFlight: true })).toEqual({
-      line: "Finish your withdrawal first",
-      action: "activity",
-    })
-    expect(block({ linkHold: { kind: "creating" } })).toEqual({
-      line: "Finish creating your paylink first",
-      action: "activity",
-    })
-    expect(block({ linkHold: { kind: "token" } })).toEqual({
-      line: "Cancel your paylinks from before the upgrade first",
-      action: "activity",
-    })
-    expect(block({ linkHold: { kind: "cancel" } })).toEqual({
-      line: "Cancel your paylink in Activity first",
-      action: "activity",
-    })
-    expect(block({ linkHold: { kind: "expiry", until: 2000 } })).toEqual({
-      line: "A paylink you made can't be cancelled until it expires on day 2000. Try again then.",
-    })
-    expect(block({ historicBalance: true })).toEqual({
-      line: "Finish your migration first",
-      action: "migration",
-    })
-    expect(block({ balance: DAI })?.line).toBe("You need at least 2 DAI to add a backup")
-    expect(block({ chunk: { kind: "short", chunk: 3n * DAI } })?.line).toBe(
-      "Your balance is in too many small pieces to fund this. Send yourself 3 DAI first.",
-    )
-    expect(block({ plan: false })?.line).toBe(
-      "Part of your balance is still syncing. Try again in a moment.",
-    )
-    expect(block({ usesLeft: false })?.line).toBe(
-      "Not enough sponsored transactions left this period",
-    )
+  it("lists every condition, all done when nothing holds the add", () => {
+    expect(blocks({}).map((block) => block.id)).toEqual([
+      "firstPasskey",
+      "registered",
+      "route",
+      "savings",
+      "withdrawal",
+      "link",
+      "migration",
+      "balance",
+      "pieces",
+      "synced",
+      "uses",
+    ])
+    expect(open({})).toEqual([])
   })
 
-  it("names a Savings move's burn as the move, not as a withdrawal", () => {
-    expect(block({ savingsMoving: true, withdrawalInFlight: true })?.line).toBe(
-      "Finish your Savings move first",
-    )
+  it("marks each unmet condition with what clears it and what its words need", () => {
+    expect(open({ sessionIsRoot: false })).toMatchObject([{ id: "firstPasskey" }])
+    expect(open({ verified: false })).toMatchObject([{ id: "registered", finishing: false }])
+    expect(open({ registering: true })).toMatchObject([{ id: "registered", finishing: true }])
+    expect(open({ routeLive: false })).toMatchObject([{ id: "route" }])
+    expect(open({ savingsMoving: true })).toMatchObject([{ id: "savings", action: "savings" }])
+    expect(open({ withdrawalInFlight: true })).toMatchObject([
+      { id: "withdrawal", action: "activity" },
+    ])
+    for (const hold of [{ kind: "creating" }, { kind: "token" }, { kind: "cancel" }] as const)
+      expect(open({ linkHold: hold })).toEqual([
+        { id: "link", hold, done: false, action: "activity" },
+      ])
+    expect(open({ linkHold: { kind: "expiry", until: 2000 } })).toEqual([
+      { id: "link", hold: { kind: "expiry", until: 2000 }, done: false },
+    ])
+    expect(open({ historicBalance: true })).toMatchObject([
+      { id: "migration", action: "migration" },
+    ])
+    expect(open({ balance: DAI })).toEqual([
+      { id: "balance", need: 2n * DAI, have: DAI, done: false, action: "deposit" },
+    ])
+    expect(open({ chunk: { kind: "short", chunk: 3n * DAI } })).toEqual([
+      { id: "pieces", send: 3n * DAI, done: false },
+    ])
+    expect(open({ plan: false })).toMatchObject([{ id: "synced" }])
+    expect(open({ usesLeft: false })).toMatchObject([{ id: "uses" }])
+  })
+
+  it("lists every unmet condition at once, in order", () => {
+    const ids = open({ withdrawalInFlight: true, balance: DAI, usesLeft: false }).map((b) => b.id)
+    expect(ids).toEqual(["withdrawal", "balance", "uses"])
+  })
+
+  it("counts a Savings move's burn as the move, not as a withdrawal", () => {
+    expect(open({ savingsMoving: true, withdrawalInFlight: true })).toMatchObject([
+      { id: "savings" },
+    ])
+  })
+
+  it("names a balance short of the funding once, not as small pieces too", () => {
+    const short = { kind: "short", chunk: DAI } as const
+    expect(open({ balance: DAI, chunk: short }).map((b) => b.id)).toEqual(["balance"])
   })
 
   it("a balance exactly at the funding amount is enough", () => {
-    expect(block({ balance: 2n * DAI })).toBeUndefined()
+    expect(open({ balance: 2n * DAI })).toEqual([])
   })
 })

@@ -9,7 +9,7 @@ import { startCaptureServer, walletDir } from "../../scripts/ui-capture/server.m
 import { loadChromium, localBaseUrl, installCaptureGuard, verificationErrors } from "../../scripts/ui-capture/capture-support.mjs"
 import { FIXTURE_TIME, settle } from "../../scripts/ui-capture/plan.mjs"
 // The contacts demo seeds this tag at the length limit, still on a retired rollup.
-const LONG_STALE_TAG = "mslongtag".padEnd(32, "x")
+const LONG_STALE_TAG = "mslongtag".padEnd(31, "x")
 
 // Boot the real App and its CSS imports; a static shell.css subset misses flow-layout.css.
 let server, browser, base

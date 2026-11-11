@@ -92,7 +92,7 @@ function createTab(locks: FakeLocks | undefined, db: Database, options: TabOptio
     lifecycle,
     deps,
     stores,
-    state: () => lifecycle.getState(),
+    state: () => lifecycle.state.get(),
     tabState: () => tabState,
     maxOpening: () => maxOpening,
   }
@@ -122,6 +122,24 @@ async function readyTab(options?: TabOptions) {
 }
 
 describe("ActiveTabLifecycle", () => {
+  it("tells a subscriber each state change until it unsubscribes", async () => {
+    const tab = createTab(locks, db)
+    const seen: string[] = []
+    const unsubscribe = tab.lifecycle.state.subscribe(() => seen.push(tab.state().kind))
+    tab.lifecycle.start()
+    await settle()
+    expect(seen.at(-1)).toBe("ready")
+    unsubscribe()
+    const count = seen.length
+    const other = createTab(locks, db)
+    other.lifecycle.start()
+    await settle()
+    other.lifecycle.takeOver()
+    await settle()
+    expect(tab.state().kind).not.toBe("ready")
+    expect(seen).toHaveLength(count)
+  })
+
   it("keeps a second tab inactive without opening anything", async () => {
     await readyTab()
     const b = createTab(locks, db)
@@ -327,6 +345,17 @@ describe("ActiveTabLifecycle", () => {
     await settle()
     expect(a.state().kind).toBe("failed")
     expect(locks.isHeld(ACTIVE_TAB_LOCK)).toBe(true)
+  })
+
+  it("takes no lock while a view reads its state, only once it starts", async () => {
+    const a = createTab(locks, db)
+    a.lifecycle.state.subscribe(() => {})
+    await settle()
+    expect(locks.isHeld(ACTIVE_TAB_LOCK)).toBe(false)
+    expect(a.state().kind).toBe("starting")
+    a.lifecycle.start()
+    await settle()
+    expect(a.state().kind).toBe("ready")
   })
 
   it("ignores repeated starts", async () => {

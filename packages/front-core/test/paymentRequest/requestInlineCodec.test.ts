@@ -475,8 +475,31 @@ describe("requestInlineCodec", () => {
         expect(decodeRequestInline(encodeRequestInline(packet))).toEqual(packet)
     })
 
+    it("pins the requester by the first 8 bytes of their address", () => {
+      const decoded = decodeRequestInline(
+        encodeRequestInline(code({ requesterAddress: REQUESTER_ADDRESS_HEX })),
+      )
+      expect(decoded.requesterPin).toBe(REQUESTER_ADDRESS_HEX.slice(0, 18))
+      expect(decoded.requesterAddress).toBeUndefined()
+      expect(decodeRequestInline(encodeRequestInline(code())).requesterPin).toBeUndefined()
+    })
+
+    it("rejects a pin of any other length", () => {
+      for (const length of [7, 9, 32])
+        expect(() =>
+          decodeRequestInline(
+            rawFragment([
+              [1, 4],
+              [2, Buffer.alloc(16, 1)],
+              [3, "alice"],
+              [11, Buffer.alloc(length, 0x2c)],
+            ]),
+          ),
+        ).toThrow(RequestDecodeError)
+    })
+
     it("is a fraction of the full request it replaces", () => {
-      const blank = encodeRequestInline(code())
+      const blank = encodeRequestInline(code({ requesterAddress: REQUESTER_ADDRESS_HEX }))
       expect(blank.length).toBeLessThan(110)
       expect(blank.length * 2).toBeLessThan(encodeRequestInline(fullPacket()).length)
     })

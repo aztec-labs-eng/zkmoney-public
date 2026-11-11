@@ -16,7 +16,6 @@ const h = vi.hoisted(() => ({
   network: "mainnet" as string,
 }))
 
-vi.mock("../../../src/config/env", () => ({ getConfig: () => ({ network: h.network }) }))
 vi.mock("../../../src/config/oxideTuple", () => ({
   l1PublicClient: () => ({ readContract: h.readContract }),
 }))
@@ -27,8 +26,11 @@ vi.mock("viem", async (importOriginal) => ({
   }),
 }))
 
-const { checkEtherfiAddress, confirmNotEtherfi, ETHERFI_FACTORY, useEtherfiAddressVerdict } =
-  await import("../../../src/features/withdraw/etherfiCheck")
+const { checkEtherfiAddress, ETHERFI_FACTORY, useEtherfiAddressVerdict } = await import(
+  "../../../src/features/withdraw/etherfiCheck"
+)
+const { openTestSession } = await import("../../support/session")
+const { closeSession } = await import("../../../src/session/session")
 
 const TARGET = getAddress(`0x${"dd".repeat(20)}`)
 const FACTORY = ETHERFI_FACTORY
@@ -88,23 +90,6 @@ describe("checkEtherfiAddress", () => {
   })
 })
 
-describe("confirmNotEtherfi", () => {
-  it.each(["rejected", "unknown", "checking", "idle"] as const)(
-    "lets a %s verdict confirm",
-    (kind) => {
-      const toEtherfi = vi.fn()
-      expect(confirmNotEtherfi(kind, toEtherfi)).toBe(true)
-      expect(toEtherfi).not.toHaveBeenCalled()
-    },
-  )
-
-  it.each(["confirmed", "account"] as const)("sends a %s address to ether.fi", (kind) => {
-    const toEtherfi = vi.fn()
-    expect(confirmNotEtherfi(kind, toEtherfi)).toBe(false)
-    expect(toEtherfi).toHaveBeenCalledOnce()
-  })
-})
-
 describe("useEtherfiAddressVerdict", () => {
   let container: HTMLDivElement
   let root: Root
@@ -122,6 +107,7 @@ describe("useEtherfiAddressVerdict", () => {
   beforeEach(() => {
     vi.useFakeTimers()
     h.network = Network.MAINNET
+    openTestSession({ config: h as never })
     h.readContract.mockReset()
     h.publicRead.mockReset()
     h.optimismRead.mockReset().mockResolvedValue(false)
@@ -135,6 +121,7 @@ describe("useEtherfiAddressVerdict", () => {
     await act(async () => root.unmount())
     container.remove()
     vi.useRealTimers()
+    closeSession()
   })
 
   it("is idle with no address, checks through the debounce, then lands the read", async () => {

@@ -4,6 +4,7 @@ import type { IStorageAdapter } from "../storages/adapter"
 /** Access is serialized by the owning MetadataMigrationController's account-scoped lock. */
 export class MigrationFundingStore {
   constructor(
+    // eslint-disable-next-line local/legacy-store -- ZKM-1625
     private readonly storage: Pick<IStorageAdapter, "getItem" | "setItem">,
     private readonly prefix: string,
   ) {}

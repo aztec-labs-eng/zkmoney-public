@@ -8,7 +8,6 @@ import { assertScreened } from "../../../../src/features/registration/registrati
 import { registrationRecordForSipa } from "../../../../src/features/registration/webRegistration"
 import { openTestSession } from "../../../support/session"
 import { accountRecords, seedRegistration } from "../../../support/registrationFixtures"
-import { session } from "../../../../src/session/session"
 
 describe("canManualRegistrationSweep", () => {
   const base = { phase: "awaiting_deposit", sweptAt: undefined, sweepTxHash: undefined } as const
@@ -75,16 +74,16 @@ describe("registrationRecordForSipa", () => {
 
   it("finds the pending registration behind a rail-tracked SIPA, case-insensitively", async () => {
     await accountRecords.upsert(ACCOUNT, {}, record())
-    expect(registrationRecordForSipa(session().registrations, SIPA)?.tag).toBe("alice")
-    expect(registrationRecordForSipa(session().registrations, SIPA.toUpperCase() as Address)?.tag).toBe("alice")
+    expect(registrationRecordForSipa(openTestSession().registrations, SIPA)?.tag).toBe("alice")
+    expect(registrationRecordForSipa(openTestSession().registrations, SIPA.toUpperCase() as Address)?.tag).toBe("alice")
   })
 
   it("finds a registration the earned quote replaced, closed to any sweep; a live record wins", async () => {
     await seedRegistration({ ...record(), account: ACCOUNT, phase: "failed_terminal", endTime: 1 })
-    const archived = registrationRecordForSipa(session().registrations, SIPA)!
+    const archived = registrationRecordForSipa(openTestSession().registrations, SIPA)!
     expect(archived).toMatchObject({ tag: "alice", fee: "1", phase: "failed_terminal" })
     expect(canManualRegistrationSweep(archived)).toBe(false)
     await seedRegistration({ ...record(), account: ACCOUNT, tag: "alice-live" })
-    expect(registrationRecordForSipa(session().registrations, SIPA)?.tag).toBe("alice-live")
+    expect(registrationRecordForSipa(openTestSession().registrations, SIPA)?.tag).toBe("alice-live")
   })
 })

@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react"
+import { useRef } from "react"
 import { useStore } from "@obsidion/front-core"
 import { Card, PrimaryGradientButton } from "@obsidion/web-ds"
 import { isDemoMode } from "../../../dev/demoFlag"
@@ -7,6 +7,7 @@ import { saveSetting } from "../../../platform/storage/deviceKeys"
 import { useSession } from "../../../session/session"
 import { isTagPresentationPending } from "../../registration/webRegistration"
 import copy from "./AnalyticsConsentModal.copy"
+import { useDomEffect } from "../../../ui/useDomEffect"
 
 /** Asks once, in the wallet, after onboarding ends: the identity holds no pending tag. */
 export function AnalyticsConsentPrompt() {
@@ -31,7 +32,7 @@ export function AnalyticsConsentPrompt() {
 export function AnalyticsConsentModal({ onChoose }: { onChoose: (granted: boolean) => void }) {
   const ref = useRef<HTMLDialogElement>(null)
 
-  useEffect(() => {
+  useDomEffect(() => {
     ref.current?.showModal()
   }, [])
 

@@ -6,7 +6,6 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
-await (await import("../../../support/seedBootConfig")).seedBootConfig()
 const VOUCHER = { fpcAddress: {}, fpcArtifact: {}, railId: 2 }
 const REGISTERED = { fpcAddress: {}, fpcArtifact: {}, railId: 1 }
 const { claimSponsorRail, claimSponsorContext } = vi.hoisted(() => ({
@@ -24,7 +23,9 @@ vi.mock("@obsidion/sdk", async (importOriginal) => ({
   paylinkVoucherUses,
 }))
 
-const { claimRail, VoucherReadError } = await import("../../../../src/features/paylink/sponsoredPaylink")
+const { claimRail, VoucherReadError } = await import(
+  "../../../../src/features/paylink/sponsoredPaylink"
+)
 
 const deps = { wallet: {}, account: { getAddress: () => ({}) }, contractService: {} } as never
 const params = {} as never

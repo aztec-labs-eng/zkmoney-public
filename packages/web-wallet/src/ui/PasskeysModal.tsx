@@ -1,84 +1,40 @@
-import { useEffect, useId, useMemo, useRef, useState } from "react"
+import { useEffect, useState } from "react"
 import {
   GlassCircleButton,
   GradientText,
   Icon,
   IconCircle,
-  RowChevron,
   SettingsRow,
   StatusPill,
 } from "@obsidion/web-ds"
-import type { ContractService, ObsidionWallet } from "@obsidion/sdk"
 import {
   MAX_PASSKEY_CANDIDATES,
-  allowanceCovers,
   authKeyPubkeyHex,
   createOxideL1Reader,
   deriveBootstrapKey,
   envelopeSlot,
   parseKeyMetadata,
   resolveOxideIdentity,
-  useContractServiceContext,
   type ParsedKeyMetadata,
-  type ReadonlyStore,
-  useResource,
+  useStore,
+  serviceStatus,
 } from "@obsidion/front-core"
-import {
-  BACKUP_ADD_SHEET_COPY,
-  currentDevicePosture,
-  currentUserAgentInfoSoon,
-  isPhysicalOnly,
-  providerNameFor,
-  windowsHelloBackupWarning,
-  type BackupAddChoice,
-  type PhoneReach,
-  type UserAgentInfo,
-} from "@obsidion/passkey-web"
+import { isPhysicalOnly, providerNameFor } from "@obsidion/passkey-web"
 import type { Address } from "viem"
-import { getConfig } from "../config/env"
 import { backupPasskeySettingsEnabled } from "../config/features"
 import { l1PublicClient } from "../config/oxideTuple"
-import { useSponsoredAllowance } from "../features/allowance/useSponsoredAllowance"
-import { BACKUP_ADD_ICONS, backupAddSheetOptions } from "../features/backupPasskey/backupAddOptions"
-import { startBackupAdd } from "../features/backupPasskey/backupPasskeyAdd"
-import {
-  approveCopy,
-  entryCopy,
-  linksCopy,
-  panelCopy,
-} from "../features/backupPasskey/backupPasskeyCopy"
-import {
-  entryBlock,
-  type EntryAction,
-  type EntryBlock,
-} from "../features/backupPasskey/backupPasskeyEntry"
-import {
-  BackupPasskeyPanel,
-  errorLine,
-  formatDai,
-  warnFailure,
-} from "../features/backupPasskey/BackupPasskeyPanel"
-import { useBackupEntryFacts, type EntryFacts } from "../features/backupPasskey/backupPasskeyFacts"
-import {
-  buildBackupAddDeps,
-  buildBackupFlowDeps,
-  type BackupFlowDeps,
-} from "../features/backupPasskey/backupPasskeyRuntime"
-import { backupSeenOnChain } from "../features/backupPasskey/backupReminder"
-import {
-  rereadBackupRotation,
-  useBackupRotation,
-} from "../features/backupPasskey/backupRotationStore"
-import { KeyWarningLine, StepsNote } from "../features/identity/PhoneSteps"
-import { SignUpChoiceSelect } from "../features/identity/SignUpChoiceSelect"
+import { BackupPasskeyHost } from "../features/backupPasskey/BackupPasskeyHost/BackupPasskeyHost"
+import { panelCopy } from "../features/backupPasskey/backupPasskeyCopy"
+import type { EntryAction } from "../features/backupPasskey/backupPasskeyEntry"
+import { useBackupRotation } from "../features/backupPasskey/backupRotations"
+import type { BackupKey, KeysRead } from "../features/backupPasskey/backupScreen"
+import { hostSheetShows } from "../features/backupPasskey/screens/KeysScreen/keysSheet"
 import { generationAddresses } from "../features/registration/generationAddresses"
 import { loadOxideGenerations } from "../features/registration/oxideGenerations"
-import type { WebAlphaAuthService } from "../platform/auth/WebAlphaAuthService"
-import type { DeviceState } from "../platform/storage/deviceKeys"
 import { authenticatorFor, type AuthenticatorRecord } from "../platform/auth/WebPasskeyIdentityMap"
 import { Modal } from "./Modal"
-import { MAX_PASSKEY_NAME, readPasskeyNames, savePasskeyName } from "./passkeyNames"
-import { handOffAccount, useSession } from "../session/session"
+import { MAX_PASSKEY_NAME, savePasskeyName } from "./passkeyNames"
+import { useSession, type Session } from "../session/session"
 
 type KeyLabel = "Sign-up" | "Backup" | "Unknown key"
 
@@ -112,16 +68,17 @@ export function keyLabel(parsed: ParsedKeyMetadata): KeyLabel {
 }
 
 async function readAccountKeys(
-  auth: WebAlphaAuthService,
-  device: ReadonlyStore<DeviceState>,
-  wallet: ObsidionWallet,
-  contractService: ContractService,
+  own: Pick<Session, "page" | "auth" | "device" | "wallet" | "contractService">,
   address: string | undefined,
 ): Promise<AccountKeys | "unverified"> {
+  const { page, auth, device } = own
   const keys = await auth.sessionKeys()
   if (!keys || !address) throw new Error("wallet locked")
-  const config = getConfig()
-  const generations = await loadOxideGenerations(wallet, contractService, config)
+  const [wallet, contractService] = await Promise.all([
+    own.wallet.ready(),
+    own.contractService.ready(),
+  ])
+  const generations = await loadOxideGenerations(wallet, contractService, page)
   const bootstrap = deriveBootstrapKey(keys.secretKey).address
   const session = (await keys.authProvider.getPubkeys())
     .map((part) => part.toString("hex"))
@@ -130,14 +87,14 @@ async function readAccountKeys(
     generations,
     bootstrap,
     address,
-    generationAddresses(config, `0x${session}`)(keys.secretKey, address),
+    generationAddresses(page, `0x${session}`)(keys.secretKey, address),
   )
   // An account the catalog shows and does not verify, or none at all, is not registered; a read
   // that could not conclude is a failed read, so it gets a retry rather than that verdict.
   if (identity.kind === "unverified" || identity.kind === "none") return "unverified"
   if (identity.kind !== "verified") throw new Error(`identity ${identity.kind}`)
   const { entries, authKeyCount } = await createOxideL1Reader(
-    l1PublicClient(config),
+    l1PublicClient(page.config),
   ).readAuthKeysCounted(identity.identity.account, MAX_PASSKEY_CANDIDATES)
   const rows = entries.map((entry): Row => {
     const pubkeyHex = authKeyPubkeyHex(entry) ?? `${entry.key.qx.slice(2)}${entry.key.qy.slice(2)}`
@@ -164,253 +121,18 @@ function providerFor(record: AuthenticatorRecord | undefined): string | undefine
   return securityKey ? "Security key" : undefined
 }
 
-const actionLabel: Record<EntryAction, string> = {
-  sponsorship: "Sponsored transactions",
-  activity: "Activity",
-  migration: "Upgrade",
-  savings: "Savings",
-}
-
-type EntryState = "checking" | "unreadable" | "ready" | EntryBlock
-
-/** The sponsored sends the whole flow takes besides the refunds and moves: the publish and the funding. */
-const FIXED_USES = 2
-
-/**
- * The add entry for a one-key account, or one not registered yet: on a laptop, a picker for where
- * the backup passkey lives, then a row that presses only once every condition holds, the first
- * unmet one named under it. The picker waits on the phone probe; a phone has no picker.
- */
-function BackupEntry({
-  keys,
-  wallet,
-  contractService,
-  attempt,
-  onStarted,
-  onAction,
-}: {
-  keys: AccountKeys | "unverified"
-  wallet: ObsidionWallet
-  contractService: ContractService | null
-  /** The modal's slot for the add in flight; the modal aborts it when it closes. */
-  attempt: { current: AbortController | undefined }
-  onStarted: () => void
-  onAction?: (action: EntryAction) => void
-}) {
-  const allowance = useSponsoredAllowance()
-  const chain = useBackupEntryFacts(wallet, contractService, keys !== "unverified")
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string>()
-  // The row waits for this read, so a device whose own manager cannot hold a backup sees its line
-  // before any press opens the sheet.
-  const [device, setDevice] = useState<UserAgentInfo>()
-  useEffect(() => {
-    let live = true
-    void currentUserAgentInfoSoon().then((info) => {
-      if (live) setDevice(info)
-    })
-    return () => {
-      live = false
-    }
-  }, [])
-  const { auth } = useSession()
-  const [laptop] = useState(() => currentDevicePosture() === "laptop")
-  const [reach, setReach] = useState<PhoneReach>()
-  const [picked, setPicked] = useState<BackupAddChoice>()
-  const pickerLabel = useId()
-  useEffect(() => {
-    if (!laptop) return
-    let cancelled = false
-    void auth
-      .probePhoneReach()
-      .catch((): PhoneReach => "unknown")
-      .then((answer) => {
-        if (!cancelled) setReach(answer)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [auth, laptop])
-  // The page's own reads are taken once, when the probe settles.
-  const sheet = useMemo(
-    () => (laptop && reach ? backupAddSheetOptions({ reach }) : undefined),
-    [laptop, reach],
-  )
-  const option =
-    sheet && (sheet.options.find((o) => o.id === (picked ?? sheet.selected)) ?? sheet.options[0])
-
-  // The entry shows on a one-key account only, where the installed key is the sign-up passkey by
-  // definition, so the session is root when its key is the one installed; an unregistered account
-  // has that key alone. The row label plays no part: it is read off the metadata's shape and a raw
-  // credential id can look like an envelope.
-  const sessionIsRoot = keys === "unverified" || keys.rows.some((row) => row.signsHere)
-  let entry: EntryState
-  const snapshot = allowance.snapshot
-  const facts = keys === "unverified" ? UNREGISTERED_FACTS : chain.facts
-  if (snapshot.status === "unavailable" || facts === "unreadable") entry = "unreadable"
-  else if (snapshot.status !== "ready" || facts === "checking" || !device) entry = "checking"
-  else
-    entry =
-      entryBlock(
-        {
-          ...facts,
-          sessionIsRoot,
-          verified: keys !== "unverified",
-          registered: snapshot.state.kind !== "not-subscribed",
-          usesLeft: allowanceCovers(snapshot.state, FIXED_USES + facts.links + facts.moves),
-        },
-        formatDai,
-      ) ?? "ready"
-  // Only a ready laptop entry waits on the probe; a blocked one keeps its reason.
-  if (entry === "ready" && laptop && !sheet) entry = "checking"
-
-  const start = async () => {
-    if (keys === "unverified") return
-    setBusy(true)
-    setError(undefined)
-    const abort = new AbortController()
-    attempt.current = abort
-    try {
-      const deps = await buildBackupAddDeps({
-        wallet,
-        owner: keys.owner,
-        ...(option ? { choice: option.id } : {}),
-      })
-      await startBackupAdd(deps, abort.signal)
-      onStarted()
-    } catch (err) {
-      if (abort.signal.aborted) return
-      warnFailure("add failed", err)
-      setError(errorLine(err))
-    } finally {
-      if (attempt.current === abort) attempt.current = undefined
-      setBusy(false)
-    }
-  }
-
-  const line =
-    entry === "checking"
-      ? entryCopy.checking
-      : entry === "unreadable"
-      ? entryCopy.unreadable
-      : entry === "ready"
-      ? undefined
-      : entry.line
-  const action = typeof entry === "object" ? entry.action : undefined
-  const ready = entry === "ready" && !busy
-  const deviceLine = device && windowsHelloBackupWarning(device)
-  return (
-    <section className="ww-contacts__section" data-testid="backup-entry">
-      <span className="ww-contacts__label">Backup passkey</span>
-      {sheet && option && entry === "ready" && (
-        <>
-          <p className="ww-passkeys__picker-label" id={pickerLabel}>
-            {BACKUP_ADD_SHEET_COPY.pickerLabel}
-          </p>
-          <SignUpChoiceSelect
-            options={sheet.options.map((o) => ({
-              id: o.id,
-              icon: BACKUP_ADD_ICONS[o.id],
-              label: o.label,
-              description: o.description,
-            }))}
-            selected={option.id}
-            onChange={setPicked}
-            labelledBy={pickerLabel}
-            disabled={busy}
-            testId="backup-add"
-          />
-          {(option.advice.length > 0 || option.keyWarning) && (
-            <div className="ww-phone-steps__advice" data-testid="backup-add-advice">
-              {option.advice.map((text) => (
-                <StepsNote key={text}>{text}</StepsNote>
-              ))}
-              {option.keyWarning && <KeyWarningLine warning={option.keyWarning} />}
-            </div>
-          )}
-        </>
-      )}
-      {entry === "ready" && (
-        <p className="ww-sheet__note" data-testid="backup-add-ahead">
-          {approveCopy.ahead}
-        </p>
-      )}
-      {entry === "ready" && typeof facts === "object" && facts.links > 0 && (
-        <p className="ww-sheet__note" data-testid="backup-add-links">
-          {linksCopy(facts.links)}
-        </p>
-      )}
-      <div className="ww-contacts__group">
-        <button
-          type="button"
-          className={`zkm-btn-reset zkm-settings-row ww-passkeys__add${
-            line ? " zkm-settings-row--described" : ""
-          }`}
-          disabled={!ready}
-          onClick={() => void start()}
-          data-testid="backup-add"
-        >
-          <span className="zkm-settings-row__leading">
-            <IconCircle name="plus" />
-          </span>
-          <span className="zkm-settings-row__label">{entryCopy.row}</span>
-          {line ? (
-            <span className="zkm-settings-row__description" data-testid="backup-entry-line">
-              {line}
-            </span>
-          ) : (
-            <span className="zkm-row-spacer" />
-          )}
-          {ready && (
-            <span className="zkm-settings-row__trailing">
-              <RowChevron />
-            </span>
-          )}
-        </button>
-      </div>
-      {((action && onAction) || entry === "unreadable") && (
-        <div className="ww-passkeys__links">
-          {action && onAction && (
-            <button
-              type="button"
-              className="zkm-btn-reset ww-deposit__link"
-              onClick={() => onAction(action)}
-              data-testid="backup-entry-action"
-            >
-              {actionLabel[action]}
-            </button>
-          )}
-          {entry === "unreadable" && (
-            <button
-              type="button"
-              className="zkm-btn-reset ww-deposit__link"
-              onClick={() => {
-                allowance.refresh()
-                chain.refresh()
-              }}
-              data-testid="backup-entry-retry"
-            >
-              {panelCopy.tryAgain}
-            </button>
-          )}
-        </div>
-      )}
-      {deviceLine && (
-        <p className="ww-sheet__note" data-testid="backup-windows10-line">
-          {deviceLine}
-        </p>
-      )}
-      {error && (
-        <p className="ww-search__error" aria-live="assertive">
-          {error}
-        </p>
-      )}
-    </section>
-  )
-}
-
 /** A key's name from the user, else its manager. */
 const keyName = (row: Row, name?: string) => name || row.provider
+
+const ROLES = { "Sign-up": "sign-up", "Backup": "backup", "Unknown key": "unknown" } as const
+
+const backupKey = (row: Row, name?: string): BackupKey => ({
+  pubkeyHex: row.pubkeyHex,
+  role: ROLES[row.label],
+  signsHere: row.signsHere,
+  ...(name && { name }),
+  ...(row.provider && { provider: row.provider }),
+})
 
 /**
  * One installed passkey: named by the user, else by its manager, else by its role, which then
@@ -469,7 +191,7 @@ function KeyRow({
             onClick={save}
             testId="passkey-name-save"
           >
-            <Icon name="check" size={14} color="#fff" />
+            <Icon name="check" size={14} color="var(--ink)" />
           </GlassCircleButton>
         </span>
       </div>
@@ -490,26 +212,12 @@ function KeyRow({
             onClick={() => setDraft(name ?? "")}
             testId="passkey-rename"
           >
-            <Icon name="pencil" size={14} color="#fff" />
+            <Icon name="pencil" size={14} color="var(--ink)" />
           </GlassCircleButton>
         </span>
       }
     />
   )
-}
-
-/** Stands in for the chain facts on an account not registered yet: that condition is named first. */
-const UNREGISTERED_FACTS: EntryFacts = {
-  routeLive: true,
-  balance: 0n,
-  fundingAmount: 0n,
-  chunk: { kind: "fits" },
-  plan: true,
-  moves: 0,
-  savingsMoving: false,
-  withdrawalInFlight: false,
-  links: 0,
-  historicBalance: false,
 }
 
 /** The passkeys installed on the account, read from L1, with the one signing this session marked. */
@@ -521,43 +229,31 @@ export function PasskeysModal({
   /** Where an entry condition sends the user. */
   onAction?: (action: EntryAction) => void
 }) {
-  const { contractService } = useContractServiceContext()
-  const { auth, device, identity } = useSession()
-  const obsidionWallet = useResource(useSession().wallet)
+  const session = useSession()
+  const contracts = useStore(session.contractService, serviceStatus)
+  const { database, device, identity, page } = session
+  const walletBuilt = useStore(session.wallet, serviceStatus) === "ready"
   const [keys, setKeys] = useState<AccountKeys | "unreadable" | "unverified">()
-  const [names, setNames] = useState(readPasskeyNames)
+  const names = useStore(device, (s) => s.passkeyNames)
   const [reads, setReads] = useState(0)
-  const pending = useBackupRotation(typeof keys === "object" ? keys.owner : undefined)
-  // Any account's record stands in only once the key read has failed; while it is out, no record
-  // is acted on, so another account's attempt is never advanced here.
-  const record = keys !== undefined && pending && typeof pending === "object" ? pending : null
-  const deps = useRef<{ owner: string; flow: BackupFlowDeps } | undefined>(undefined)
-  const [depsReady, setDepsReady] = useState(false)
-  const [depsFailed, setDepsFailed] = useState(false)
-  const [depsRun, setDepsRun] = useState(0)
-  const [cancelled, setCancelled] = useState(false)
-  // Closing the modal ends the add in flight wherever it is: the creation, the seal or the record
-  // write. The entry itself comes and goes with the record, so it cannot own the attempt.
-  const attempt = useRef<AbortController | undefined>(undefined)
-  useEffect(() => () => attempt.current?.abort(), [])
+  const readAgain = () => {
+    setKeys(undefined)
+    setReads((n) => n + 1)
+  }
 
+  // eslint-disable-next-line local/effect-hook -- ZKM-1806
   useEffect(() => {
-    if (!contractService || !obsidionWallet) {
+    if (contracts !== "ready" || !walletBuilt) {
       setKeys("unreadable")
       return
     }
     let cancelled = false
-    readAccountKeys(
-      auth,
-      device,
-      obsidionWallet,
-      contractService,
-      identity.get().value?.address,
-    ).then(
+    readAccountKeys(session, identity.get().value?.address).then(
       (read) => {
         if (cancelled) return
         setKeys(read)
-        if (typeof read === "object" && read.authKeyCount > 1) backupSeenOnChain.set(true)
+        if (typeof read === "object" && read.authKeyCount > 1)
+          page.backupReminder.seenOnChain.set(true)
       },
       () => {
         if (!cancelled) setKeys("unreadable")
@@ -566,85 +262,57 @@ export function PasskeysModal({
     return () => {
       cancelled = true
     }
-  }, [auth, device, identity, contractService, obsidionWallet, reads])
+  }, [session, page, identity, contracts, walletBuilt, reads])
 
-  const sameOwner = (a: string, b: string) => a.toLowerCase() === b.toLowerCase()
-
-  // A saved record needs the flow's dependencies before the panel can act. They come from the
-  // record and the session, so the panel stands whether or not the key list was read.
-  useEffect(() => {
-    if (!record || !obsidionWallet) return
-    if (deps.current && sameOwner(deps.current.owner, record.owner)) return
-    let stale = false
-    setDepsFailed(false)
-    buildBackupFlowDeps({
-      wallet: obsidionWallet,
-      owner: record.owner as Address,
-      switchAccount: handOffAccount,
-    }).then(
-      (built) => {
-        if (stale) return
-        deps.current = { owner: record.owner, flow: built }
-        setDepsReady(true)
-      },
-      (err) => {
-        warnFailure("dependencies failed", err)
-        if (!stale) setDepsFailed(true)
-      },
-    )
-    return () => {
-      stale = true
-    }
-  }, [record, obsidionWallet, depsRun])
-
-  // A pending record shows whatever the account's key count is, and whether or not the keys could
-  // be read, so it can always be finished or dropped. A new add starts only on a one-key account
-  // whose saved records were read; an unregistered account gets the row with that condition named.
-  const showEntry =
-    backupPasskeySettingsEnabled &&
-    obsidionWallet &&
-    (keys === "unverified" || (typeof keys === "object" && keys.authKeyCount === 1)) &&
-    pending === null
-  const panelDeps =
-    depsReady && record && deps.current && sameOwner(deps.current.owner, record.owner)
-      ? deps.current.flow
-      : undefined
-  // The session's key signs the approval.
-  const signer = typeof keys === "object" ? keys.rows.find((row) => row.signsHere) : undefined
-  const approver = signer && keyName(signer, names[signer.pubkeyHex])
+  const read: KeysRead =
+    typeof keys === "object"
+      ? {
+          keys: keys.rows.map((row) => backupKey(row, names[row.pubkeyHex])),
+          count: keys.authKeyCount,
+        }
+      : keys
+  // The record the host reads.
+  const saved = useBackupRotation(typeof keys === "object" ? keys.owner : undefined)
+  const list =
+    (keys === "unverified" || typeof keys === "object") &&
+    !hostSheetShows(keys === "unverified" ? 0 : keys.rows.length, saved)
+  // The modal's title stays over its own list and its key-read lines. With the flag on, the
+  // backup's own sheet says the keys did not read.
+  const unreadLine = keys === "unreadable" && !backupPasskeySettingsEnabled
+  const own = list || keys === undefined || unreadLine
 
   return (
     <Modal variant="create" label="Passkeys" onClose={onClose} className="ww-feedback">
-      <div className="ww-passkeys__head">
-        <span className="ww-deposit__connect-icon">
-          <Icon name="key" size={24} color="#fff" />
-        </span>
-        <GradientText gradient="title" size={24} weight={700} style={{ textAlign: "center" }}>
-          Passkeys
-        </GradientText>
-      </div>
-      <div className="ww-addresses ww-passkeys">
+      {own && (
+        <div className="ww-passkeys__head">
+          <span className="ww-deposit__connect-icon">
+            <Icon name="key" size={24} color="#fff" />
+          </span>
+          <GradientText gradient="title" size={24} weight={700} style={{ textAlign: "center" }}>
+            Passkeys
+          </GradientText>
+        </div>
+      )}
+      {/* A sheet of the host's scrolls with the modal, not in a box of its own. */}
+      <div className={own ? "ww-addresses ww-passkeys" : "ww-passkeys__host"}>
         {keys === undefined && <p className="ww-sheet__note">Loading…</p>}
-        {keys === "unreadable" && (
+        {unreadLine && (
           <p className="ww-sheet__note">
             Couldn't read the account's keys.{" "}
             <button
               type="button"
               className="zkm-btn-reset ww-deposit__link"
-              onClick={() => {
-                setKeys(undefined)
-                setReads((n) => n + 1)
-              }}
+              onClick={readAgain}
               data-testid="keys-retry"
             >
               {panelCopy.tryAgain}
             </button>
           </p>
         )}
-        {keys === "unverified" && (
+        {keys === "unverified" && list && (
           <p className="ww-sheet__note">Keys appear once the account is registered.</p>
         )}
-        {typeof keys === "object" && (
+        {typeof keys === "object" && list && (
           <section className="ww-contacts__section">
             <span className="ww-contacts__label">Keys on the account</span>
             <div className="ww-contacts__group">
@@ -653,7 +321,7 @@ export function PasskeysModal({
                   key={row.pubkeyHex}
                   row={row}
                   name={names[row.pubkeyHex]}
-                  onRename={(name) => setNames(savePasskeyName(row.pubkeyHex, name))}
+                  onRename={(name) => savePasskeyName(database, row.pubkeyHex, name)}
                 />
               ))}
             </div>
@@ -664,65 +332,13 @@ export function PasskeysModal({
             )}
           </section>
         )}
-        {obsidionWallet && record && panelDeps && (
-          <BackupPasskeyPanel
-            record={record}
-            deps={panelDeps}
-            approver={approver}
-            onCancelled={() => setCancelled(true)}
-            onFinished={() => {
-              setKeys(undefined)
-              setReads((n) => n + 1)
-            }}
-          />
-        )}
-        {obsidionWallet && record && !panelDeps && (
-          <p className="ww-sheet__note" aria-live="polite">
-            {depsFailed ? (
-              <>
-                {entryCopy.unreadable}{" "}
-                <button
-                  type="button"
-                  className="zkm-btn-reset ww-deposit__link"
-                  onClick={() => setDepsRun((n) => n + 1)}
-                  data-testid="backup-deps-retry"
-                >
-                  {panelCopy.tryAgain}
-                </button>
-              </>
-            ) : (
-              entryCopy.checking
-            )}
-          </p>
-        )}
-        {pending === "unreadable" && (
-          <p className="ww-sheet__note" aria-live="polite">
-            {entryCopy.unreadable}{" "}
-            <button
-              type="button"
-              className="zkm-btn-reset ww-deposit__link"
-              onClick={rereadBackupRotation}
-              data-testid="backup-store-retry"
-            >
-              {panelCopy.tryAgain}
-            </button>
-          </p>
-        )}
-        {cancelled && pending === null && (
-          <p className="ww-sheet__note" data-testid="backup-cancelled">
-            {panelCopy.cancelled} {panelCopy.leftoverPasskey}
-          </p>
-        )}
-        {showEntry && (
-          <BackupEntry
-            keys={keys}
-            wallet={obsidionWallet}
-            contractService={contractService}
-            attempt={attempt}
-            onStarted={() => setCancelled(false)}
-            onAction={onAction}
-          />
-        )}
+        <BackupPasskeyHost
+          keys={read}
+          {...(typeof keys === "object" && { owner: keys.owner })}
+          {...(onAction && { onAction })}
+          onReadKeys={readAgain}
+          onClose={onClose}
+        />
       </div>
     </Modal>
   )

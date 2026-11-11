@@ -3,7 +3,10 @@
  * and swaps the gas share to ETH, its route floor on top of what the recipient should receive.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { assignReads } from "../../../support/fakeReads"
 import { testPage, testCore } from "../../../support/page"
+import { openTestSession } from "../../../support/session"
+import type { AccountKit } from "../../../../src/session/session"
 import { formatUnits, getAddress, parseUnits, type Address, type Hex } from "viem"
 import { SwapRoute } from "@oxide/l1-contracts"
 import { LIMIT, LIMIT_USD } from "../../../support/publicLimit"
@@ -27,16 +30,17 @@ const QUOTE = {
   gasOut: parseUnits("0.0016", 18),
   floorAtomic: parseUnits("2.5", 18),
 }
+const GAS = parseUnits("5", 18)
+const BURN = parseUnits("120", 18) + GAS + QUOTE.floorAtomic
 const INPUT = {
   recipient: RECIPIENT,
   recipientAlias: "Fresh",
-  fundsDisplay: "120",
-  gasDisplay: "5",
+  amountAtomic: parseUnits("122.5", 18),
+  burnAtomic: BURN,
+  gasAtomic: GAS,
   fundsAsset: "USDC" as const,
   quote: QUOTE,
 }
-const GAS = parseUnits("5", 18)
-const BURN = parseUnits("120", 18) + GAS + QUOTE.floorAtomic
 
 // The executor's withdrawal fee is priced in its own suites; here it costs nothing.
 vi.mock("../../../../src/features/withdraw/withdrawalFee", () => ({
@@ -44,12 +48,10 @@ vi.mock("../../../../src/features/withdraw/withdrawalFee", () => ({
   activeWithdrawalFee: async () => 0n,
   activeWithdrawalExecutor: async () => ({ fee: 0n }),
   withdrawalExecutor: async () => ({ fee: 0n }),
-  withdrawalExecutorAt: async () => ({ fee: 0n }),
   useActiveWithdrawalFee: () => 0n,
 }))
 vi.mock("../../../../src/config/env", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../../src/config/env")>()),
-  getConfig: () => ({ l1ChainId: 11155111 }),
   l1Transport: () => ({}),
 }))
 const readContract = vi.fn(async ({ functionName }: { functionName: string }) =>
@@ -57,18 +59,13 @@ const readContract = vi.fn(async ({ functionName }: { functionName: string }) =>
 )
 vi.mock("../../../../src/config/oxideTuple", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../../src/config/oxideTuple")>()),
-  getOxideTuple: async () => ({ ...SWAP_TUPLE }),
   l1PublicClient: () => ({ readContract }),
-}))
-vi.mock("../../../../src/features/token/oxideToken", () => ({
-  currentTxAmountCap: async () => TX_AMOUNT_CAP,
 }))
 const claimSponsorContext = vi.fn(async () => ({ fpcAddress: {}, policy: {} }))
 vi.mock("../../../../src/features/registration/claimSponsorship", () => ({
   claimSponsorContext: (...args: unknown[]) => claimSponsorContext(...(args as [])),
   noteSubscribed: vi.fn(),
 }))
-vi.mock("../../../../src/features/fees/fpcRefuel", () => ({ maybeRefuelFpc: vi.fn() }))
 const MASTER_SECRET = { toString: () => `0x${"11".repeat(32)}` }
 const mockSecretKey = vi.fn(async () => MASTER_SECRET as never)
 const fakeAuth = () => ({ getSecretKey: mockSecretKey })
@@ -76,16 +73,18 @@ const fakeAuth = () => ({ getSecretKey: mockSecretKey })
 const { submitFreshAddressWithdrawal } = await import(
   "../../../../src/features/withdraw/freshAddressGateway"
 )
-const { activeNamespace, closeSession, switchSession, session } = await import(
-  "../../../../src/session/session"
-)
+const { activeNamespace, closeSession, switchSession } = await import("../../../../src/session/session")
 const { pageSessionDeps } = await import("../../../../src/app/sessionDeps")
-beforeEach(
-  () =>
-    void switchSession(activeNamespace(testCore().device), pageSessionDeps(testPage(fakeAuth()))),
-)
+beforeEach(() => {
+  const page = testPage(fakeAuth())
+  assignReads(page.chain, {
+    oxideTuple: async () => ({ ...SWAP_TUPLE }),
+    currentTxAmountCap: async () => TX_AMOUNT_CAP,
+  })
+  void switchSession(activeNamespace(testCore().device), pageSessionDeps(page))
+})
 afterEach(closeSession)
-const withdrawals = () => session().withdrawals
+const withdrawals = () => openTestSession().withdrawals
 
 type ExitOpts = {
   useRawAmount?: boolean
@@ -105,17 +104,23 @@ const exitMock = () =>
   }))
 
 type Given = { screen?: () => Promise<unknown> }
-const deps = ({ screen = async () => ({ compliant: true }) }: Given = {}) =>
-  ({
+const deps = ({ screen = async () => ({ compliant: true }) }: Given = {}) => {
+  const kit = {
     wallet: { networkId: "0xnet", node: { getContract: async () => ({}) }, pxe: {} },
     account: { getAddress: () => ({ toString: () => "0xuser" }) },
     contractService: {},
-    screener: { screen: vi.fn(screen) },
     tokenService: {
       fetchTokenInformation: vi.fn(async () => ({ symbol: "DAI", decimals: 18 })),
       exitToL1PrivateSponsored: exitMock(),
     },
-  } as unknown as Parameters<typeof submitFreshAddressWithdrawal>[0])
+  }
+  const session = openTestSession({ ...kit, token: kit.tokenService })
+  return {
+    ...kit,
+    screener: { screen: vi.fn(screen) },
+    session,
+  } as unknown as Parameters<typeof submitFreshAddressWithdrawal>[0] & AccountKit
+}
 
 const exitCalls = (d: ReturnType<typeof deps>) =>
   (d.tokenService.exitToL1PrivateSponsored as ReturnType<typeof vi.fn>).mock.calls as ExitCall[]
@@ -199,7 +204,13 @@ describe("submitFreshAddressWithdrawal", () => {
     }
     const record = await submitFreshAddressWithdrawal(
       d,
-      { ...INPUT, fundsAsset: "DAI", gasDisplay: "0", quote },
+      {
+        ...INPUT,
+        fundsAsset: "DAI",
+        gasAtomic: 0n,
+        burnAtomic: parseUnits("120", 18) + quote.floorAtomic,
+        quote,
+      },
       vi.fn(),
     )
     expect(record.swapOutput).toBeUndefined()
@@ -225,12 +236,10 @@ describe("submitFreshAddressWithdrawal", () => {
 
 describe("submitFreshAddressWithdrawal — the per-withdrawal limit", () => {
   const LIMIT_ATOMIC = parseUnits(String(LIMIT), 18)
-  // What the recipient should receive so that the burn is `burn`, the gas share and floor on top.
-  const funds = (burn: bigint) => formatUnits(burn - GAS - QUOTE.floorAtomic, 18)
 
   it(`sends a burn of exactly ${LIMIT_USD}, gas share and fees included`, async () => {
     const d = deps()
-    await submitFreshAddressWithdrawal(d, { ...INPUT, fundsDisplay: funds(LIMIT_ATOMIC) }, vi.fn())
+    await submitFreshAddressWithdrawal(d, { ...INPUT, burnAtomic: LIMIT_ATOMIC }, vi.fn())
     expect(exitCalls(d).map(([, amount]) => amount)).toEqual([LIMIT_ATOMIC.toString()])
   })
 
@@ -238,7 +247,7 @@ describe("submitFreshAddressWithdrawal — the per-withdrawal limit", () => {
     const d = deps()
     const run = submitFreshAddressWithdrawal(
       d,
-      { ...INPUT, fundsDisplay: funds(LIMIT_ATOMIC + 1n) },
+      { ...INPUT, burnAtomic: LIMIT_ATOMIC + 1n },
       vi.fn(),
     )
     await expect(run).rejects.toThrow(

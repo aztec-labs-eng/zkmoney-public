@@ -1,3 +1,5 @@
+import { WalletError } from "@obsidion/core/errors"
+
 /**
  * Whether this page is the active tab: the one tab of the origin that runs the wallet. `pending`
  * until the tab has opened its databases. `revoked` once another tab takes over or the boot fails:
@@ -6,6 +8,7 @@
  */
 type TabState = "pending" | "active" | "revoked"
 
+// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
 let state: TabState = "pending"
 
 export class InactiveTabError extends Error {
@@ -20,7 +23,7 @@ export function isActiveTab(): boolean {
 }
 
 export function activateTab(): void {
-  if (state === "revoked") throw new Error("activateTab called on a revoked tab")
+  if (state === "revoked") throw new WalletError("invariant", "activateTab called on a revoked tab")
   state = "active"
 }
 

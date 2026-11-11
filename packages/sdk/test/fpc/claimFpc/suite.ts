@@ -10,7 +10,6 @@ import type { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import { Fr } from "@aztec-labs/aztec.js/fields"
 import { Contract } from "@aztec-labs/aztec.js/contracts"
 import type { ContractArtifact } from "@aztec-labs/stdlib/abi"
-import type { PXE } from "@aztec-labs/pxe/server"
 import { keccak256, toBytes, type Hex } from "viem"
 import {
   type TestTokenContract,
@@ -27,6 +26,7 @@ import {
   computeIntentsOnlyAuthWitHash,
   padIntentHashes,
 } from "../../../src/feePaymentMethod/index.js"
+import type { ContractServiceFactory } from "../../../src/obsidion/ObsidionWallet.js"
 import type { ObsidionWalletTest } from "../../../src/obsidion/ObsidionWalletTest.js"
 import type { ObsidionAccount } from "../../../src/obsidion/alpha/account/ObsidionAccount.js"
 import { EcdsaK256AlphaAuthProvider } from "../../../src/obsidion/alpha/auth/EcdsaK256AlphaAuthProvider.js"
@@ -213,17 +213,12 @@ export async function deliverRegistrationMessage(
   return message
 }
 
-/** Point the ContractService singleton at `pxe`; account registration follows the singleton. */
-export function repointContractService(pxe: PXE) {
-  ContractService.resetInstance()
-  ContractService.getInstance(
-    new NodeContractServiceStorage(Network.SANDBOX),
-    s.wallet.node,
-    pxe,
-    Network.SANDBOX,
-    { source: "local-ledger", oxideEnvProfile: null },
-  )
-}
+/** A fresh wallet's own contract service, over its PXE, with an empty address store. */
+export const ownContractService: ContractServiceFactory = (node, pxe) =>
+  new ContractService(new NodeContractServiceStorage(Network.SANDBOX), node, pxe, Network.SANDBOX, {
+    source: "local-ledger",
+    oxideEnvProfile: null,
+  })
 
 /** An account with no tx of its own, funded with tokens: what a first sponsored tx starts from. */
 export async function freshFundedUser(): Promise<{

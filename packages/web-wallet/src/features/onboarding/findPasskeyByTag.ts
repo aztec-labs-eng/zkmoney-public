@@ -3,6 +3,7 @@
  * account, and the reading of a pinned sign-in that no anchor named. Nothing here decides who
  * enters; `enterWithPasskey`'s anchors do.
  */
+import type { PageFacts } from "../../session/pageChain"
 import {
   MAX_PASSKEY_CANDIDATES,
   answeringKey,
@@ -12,7 +13,6 @@ import {
   type PasskeyCredentialsByTag,
 } from "@obsidion/front-core"
 import type { Address } from "viem"
-import { getConfig } from "../../config/env"
 import { l1PublicClient } from "../../config/oxideTuple"
 import { resolveSignInTagForCommit } from "../contacts/registryResolution"
 import type { EnterResult } from "./oxideOnboarding"
@@ -32,10 +32,10 @@ export type PasskeyByTagLookup =
   | { kind: "inconclusive"; tag: string; account: Address }
   | Exclude<PasskeyCredentialsByTag, { kind: "resolved" }>
 
-const readByTag = (tag: string, resolveTag: typeof resolveSignInTagForCommit) => {
-  const l1 = createOxideL1Reader(l1PublicClient(getConfig()))
+const readByTag = (page: PageFacts, tag: string, resolveTag: typeof resolveSignInTagForCommit) => {
+  const l1 = createOxideL1Reader(l1PublicClient(page.config))
   return readPasskeyCredentialsByTag(tag, {
-    resolveTag,
+    resolveTag: (t) => resolveTag(page, t),
     readAuthKeys: (account) => l1.readAuthKeysCounted(account, MAX_PASSKEY_CANDIDATES),
   })
 }
@@ -47,9 +47,9 @@ const readByTag = (tag: string, resolveTag: typeof resolveSignInTagForCommit) =>
  */
 export async function lookupPasskeyByTag(
   tag: string,
-  options?: { resolveTag?: typeof resolveSignInTagForCommit },
+  options: { page: PageFacts; resolveTag?: typeof resolveSignInTagForCommit },
 ): Promise<PasskeyByTagLookup> {
-  const read = await readByTag(tag, options?.resolveTag ?? resolveSignInTagForCommit)
+  const read = await readByTag(options.page, tag, options.resolveTag ?? resolveSignInTagForCommit)
   if (read.kind !== "resolved") return read
   if (!read.complete) return { kind: "inconclusive", tag, account: read.account }
   return {
@@ -99,8 +99,12 @@ export type MissDiagnosis =
  * one that does not is not-reproduced-here. It never asserts the strong "this computer returned
  * the wrong key" — only the record-anchored path can.
  */
-export async function diagnoseMiss(evidence: MissEvidence, tag: string): Promise<MissDiagnosis> {
-  const read = await readByTag(tag, resolveSignInTagForCommit)
+export async function diagnoseMiss(
+  evidence: MissEvidence,
+  tag: string,
+  page: PageFacts,
+): Promise<MissDiagnosis> {
+  const read = await readByTag(page, tag, resolveSignInTagForCommit)
   if (read.kind === "unreadable") return read.complete ? "unreadable" : "INCONCLUSIVE"
   if (read.kind !== "resolved") return read.kind
   const wantedKey = evidence.pubkey.toLowerCase().replace(/^0x/, "")

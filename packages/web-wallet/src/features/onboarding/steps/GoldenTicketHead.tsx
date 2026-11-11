@@ -1,8 +1,10 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ComponentProps } from "react"
+import { useEffect, useRef, useState, type ComponentProps } from "react"
 import { createPortal } from "react-dom"
 import { floorToCents } from "../../../ui/format"
-import { deviceStorage } from "../../../platform/storage/rollupStorage"
+import { savePrefs } from "../../../platform/storage/deviceKeys"
+import { useSession } from "../../../session/session"
 import { senderLine } from "../../paylink/senderLine"
+import { useDomLayoutEffect } from "../../../ui/useDomEffect"
 
 /** `25.00`: a ticket amount floored to cents, so it never shows more than the link pays. */
 export function ticketAmountFigure(amount: bigint, decimals: number): string {
@@ -90,25 +92,16 @@ export function GoldenTicketArt(props: TicketProps) {
   )
 }
 
-const INTRO_SEEN_KEY = "webwallet.ticket-intro-seen"
 const INTRO_MS = 2800
 
 const matches = (query: string) => typeof matchMedia === "function" && matchMedia(query).matches
-
-function introSeen(): boolean {
-  try {
-    return deviceStorage.getItem(INTRO_SEEN_KEY) === "1"
-  } catch {
-    return false
-  }
-}
 
 /**
  * A narrow screen has no room for the art, so the ticket opens the step once per browser and leaves
  * on its own or on a tap.
  */
 /** Whether the intro opens over the form: on a phone, once per device. */
-export const ticketIntroShows = () => matches("(max-width: 959px)") && !introSeen()
+export const ticketIntroShows = (seen: boolean) => matches("(max-width: 959px)") && !seen
 
 /** The leaving animation's full run; past it the form is handed back whether or not one ran. */
 const LEAVE_FALLBACK_MS = 800
@@ -118,13 +111,16 @@ export function GoldenTicketIntro({
   onGone,
   ...props
 }: Omit<TicketProps, "tag"> & { onGone: () => void }) {
+  const { database, device } = useSession()
   const [state, setState] = useState<"shown" | "leaving" | "gone">(() =>
-    ticketIntroShows() ? "shown" : "gone",
+    ticketIntroShows(device.get().ticketIntroSeen) ? "shown" : "gone",
   )
   const done = useRef(state === "gone")
+  // Seen once it hands the form back: a reload while it covers the form shows it again.
   const gone = () => {
     if (done.current) return
     done.current = true
+    savePrefs(database, { ticketIntroSeen: "true" })
     setState("gone")
     onGone()
   }
@@ -132,23 +128,21 @@ export function GoldenTicketIntro({
     if (matches("(prefers-reduced-motion: reduce)")) gone()
     else setState((now) => (now === "shown" ? "leaving" : now))
   }
+  // eslint-disable-next-line local/effect-hook -- ZKM-1806
   useEffect(() => {
     if (state === "gone") return
     if (state === "leaving") {
       // The animation's end dismisses the intro; a stylesheet that runs none never fires it.
+      // eslint-disable-next-line local/timer-in-view -- ZKM-1806
       const timer = setTimeout(gone, LEAVE_FALLBACK_MS)
       return () => clearTimeout(timer)
     }
-    try {
-      deviceStorage.setItem(INTRO_SEEN_KEY, "1")
-    } catch {
-      // Unsaved: the intro shows again next time.
-    }
+    // eslint-disable-next-line local/timer-in-view -- ZKM-1806
     const timer = setTimeout(open, INTRO_MS)
     return () => clearTimeout(timer)
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- once per state
   }, [state])
   // Past the art breakpoint the intro is hidden and nothing it waits for happens: hand back now.
+  // eslint-disable-next-line local/effect-hook -- ZKM-1806
   useEffect(() => {
     if (typeof matchMedia !== "function") return
     const wide = matchMedia("(min-width: 960px)")
@@ -157,14 +151,13 @@ export function GoldenTicketIntro({
     }
     wide.addEventListener("change", widened)
     return () => wide.removeEventListener("change", widened)
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- `gone` guards itself
   }, [])
   // Inside the sheet, a fixed intro takes the sheet's box until its slide-in ends, then jumps to the
   // screen's: it renders in the dialog itself, which never moves, so it covers the screen from its
   // first frame. Outside a dialog it stays where it is.
   const anchor = useRef<HTMLSpanElement>(null)
   const [host, setHost] = useState<HTMLElement | null>()
-  useLayoutEffect(() => setHost(anchor.current?.closest("dialog") ?? null), [])
+  useDomLayoutEffect(() => setHost(anchor.current?.closest("dialog") ?? null), [])
   if (state === "gone") return null
   if (host === undefined) return <span ref={anchor} hidden />
   const intro = (

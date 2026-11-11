@@ -1,6 +1,5 @@
-import { useEffect, useRef, useState, type ReactNode } from "react"
-import type { Hex } from "viem"
-import { useResource } from "@obsidion/front-core"
+import type { ReactNode } from "react"
+import { useStore } from "@obsidion/front-core"
 import {
   GradientSpinner,
   GradientText,
@@ -10,26 +9,19 @@ import {
 } from "@obsidion/web-ds"
 import coinsArt from "../../../assets/onboarding/past-user-coins.webp"
 import badgeArt from "../../../assets/onboarding/past-user-badge.webp"
-import { fireOnboardingEvent } from "../../../lib/analytics"
 import { Modal } from "../../../ui/Modal"
 import { shortL1Addr } from "../../../ui/format"
-import { useL1Wallet } from "../../../session/l1Wallet"
-import { chooseOwnName, type ChosenNameClaim } from "../chooseOwnName"
-import {
-  ADDRESS_RE,
-  PastUserAddressInput,
-  type LookupState,
-} from "../PastUserAddressInput/PastUserAddressInput"
-import { lookupPastUser } from "../pastUserProver"
+import { useScreenFlow } from "../../../ui/useScreenFlow"
+import { useL1Wallet } from "../../../session/useL1Wallet"
+import type { ChosenNameClaim } from "../chooseOwnName"
+import { PastUserAddressInput } from "../PastUserAddressInput/PastUserAddressInput"
 import { usePastUserCheck } from "../pastUser"
+import { openVerifyPastUserFlow } from "../verifyPastUserFlow"
 import { useSession } from "../../../session/session"
 import { fmt } from "../../../lib/fmt"
 import copy from "./VerifyPastUserModal.copy"
 import { WalletError } from "@obsidion/core/errors"
 import { errorMessage } from "../../../errors/catalog"
-
-/** Text that can still become an address as the user types. */
-const ADDRESS_PREFIX_RE = /^0(x[0-9a-fA-F]{0,40})?$/
 
 function Close({ onClick }: { onClick: () => void }) {
   return (
@@ -81,82 +73,17 @@ export function VerifyPastUserModal(props: {
   const wallet = useL1Wallet()
   const session = useSession()
   const { pastUser } = session
-  const obsidionAccount = useResource(session.account)
-  const check = (account: Hex) => void pastUser.check(account, obsidionAccount ?? undefined)
   const setVerifyOpen = pastUser.setOpen
-  const obsidionWallet = useResource(session.wallet)
-  const [address, setAddress] = useState<string>(state.account ?? "")
-  const [lookup, setLookup] = useState<LookupState>({ kind: "idle" })
-  const [attempt, setAttempt] = useState(0)
-  const [claiming, setClaiming] = useState(false)
-  const [claimError, setClaimError] = useState<string>()
-  const lookupSeq = useRef(0)
-  // What to do once the wallet connects: fill the address, or go on to sign.
-  const pending = useRef<"fill" | "sign" | null>(null)
+  const flow = useScreenFlow({ connect: wallet.connect }, (latest) =>
+    openVerifyPastUserFlow({ session, wagmi: wallet.wagmi, claim: props.claim }, latest),
+  )
+  const { address, lookup, claiming, error: claimError } = useStore(flow.view)
 
   const close = () => {
     pastUser.reset(owner)
     setVerifyOpen(false)
   }
-
-  useEffect(() => {
-    if (!ADDRESS_RE.test(address)) {
-      lookupSeq.current++
-      setLookup(
-        address && !ADDRESS_PREFIX_RE.test(address) ? { kind: "invalid" } : { kind: "idle" },
-      )
-      return
-    }
-    const seq = ++lookupSeq.current
-    setLookup({ kind: "loading" })
-    const timer = setTimeout(async () => {
-      try {
-        const eligible = await lookupPastUser(address as Hex)
-        if (seq === lookupSeq.current) setLookup({ kind: eligible ? "found" : "not-found" })
-      } catch {
-        if (seq === lookupSeq.current) setLookup({ kind: "error" })
-      }
-    }, 350)
-    return () => clearTimeout(timer)
-  }, [address, attempt])
-
   const same = (account: string | null) => account?.toLowerCase() === address.toLowerCase()
-
-  useEffect(() => {
-    if (!wallet.account || !pending.current) return
-    const next = pending.current
-    pending.current = null
-    // A different wallet connected: its address replaces the typed one and is checked first.
-    if (next === "sign" && same(wallet.account)) check(wallet.account)
-    else setAddress(wallet.account)
-  }, [wallet.account]) // eslint-disable-line react-hooks/exhaustive-deps
-
-  const connectWallet = () => {
-    if (wallet.account) return setAddress(wallet.account)
-    pending.current = "fill"
-    void wallet.connect()
-  }
-
-  const sign = () => {
-    if (wallet.account && same(wallet.account)) return check(wallet.account)
-    pending.current = "sign"
-    void wallet.connect()
-  }
-
-  const claimTag = async (tag: string) => {
-    if (!obsidionAccount || !obsidionWallet) return
-    setClaiming(true)
-    setClaimError(undefined)
-    try {
-      const over = props.claim(session, obsidionWallet, true, "past_user")
-      await chooseOwnName(session, tag, obsidionAccount, over)
-      fireOnboardingEvent("name_route_chosen", { route: "past_user" })
-      setVerifyOpen(false)
-    } catch (e) {
-      setClaimError(errorMessage(e))
-      setClaiming(false)
-    }
-  }
 
   if (state.step === "confirmed") {
     const { tag } = props
@@ -168,9 +95,9 @@ export function VerifyPastUserModal(props: {
         onClose={claiming ? () => {} : close}
         closeButton
       >
-        {claimError && (
+        {claimError !== undefined && (
           <p className="ww-invite__error" role="alert">
-            {claimError}
+            {errorMessage(claimError)}
           </p>
         )}
         <PrimaryGradientButton
@@ -178,7 +105,7 @@ export function VerifyPastUserModal(props: {
           testId="past-user-choose"
           isLoading={claiming}
           onClick={() => {
-            if (tag) return void claimTag(tag)
+            if (tag) return void flow.claimTag(tag)
             setVerifyOpen(false)
             props.onChoose()
           }}
@@ -216,7 +143,7 @@ export function VerifyPastUserModal(props: {
           className="zkm-btn-reset ww-verify__pill"
           onClick={() => {
             pastUser.reset(owner)
-            setAddress("")
+            flow.type("")
           }}
         >
           {copy.claimed.retry}
@@ -280,7 +207,7 @@ export function VerifyPastUserModal(props: {
           className="zkm-btn-reset zkm-pressable ww-verify__connect-main"
           data-testid="past-user-connect"
           disabled={signing}
-          onClick={connectWallet}
+          onClick={flow.connectWallet}
         >
           <span className="ww-verify__connect-icon">
             <Icon name="wallet" size={24} color="#fff" />
@@ -310,7 +237,7 @@ export function VerifyPastUserModal(props: {
             data-testid="past-user-disconnect"
             disabled={signing}
             onClick={() => {
-              if (same(wallet.account)) setAddress("")
+              if (same(wallet.account)) flow.type("")
               wallet.disconnect()
             }}
           >
@@ -327,8 +254,8 @@ export function VerifyPastUserModal(props: {
         address={address}
         state={lookup}
         connected={same(wallet.account)}
-        onAddress={setAddress}
-        onRetry={() => setAttempt((n) => n + 1)}
+        onAddress={flow.type}
+        onRetry={flow.retry}
       />
       {state.error && (
         <p className="ww-invite__error" role="alert">
@@ -341,7 +268,7 @@ export function VerifyPastUserModal(props: {
             title={signing ? copy.signing : copy.sign}
             testId="past-user-sign"
             isDisabled={signing}
-            onClick={sign}
+            onClick={flow.sign}
           />
           <p className="ww-verify__note">
             <svg

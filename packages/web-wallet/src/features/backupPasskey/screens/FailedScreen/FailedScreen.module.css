@@ -1,0 +1,4 @@
+/* Focused so it is read out; it is not a control. */
+.sheet:focus {
+  outline: none;
+}

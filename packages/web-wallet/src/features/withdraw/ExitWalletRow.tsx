@@ -3,10 +3,10 @@
  * account, so the user sees who submits (and, on a paylink recovery, who must sign) before they
  * press. The connected row opens the account modal, the way to a different account.
  */
-import { Icon } from "@obsidion/web-ds"
+import { RowChevron } from "@obsidion/web-ds"
 import connectIcon from "../../assets/deposit/eth-fill.svg"
 import { shortL1Addr } from "../../ui/format"
-import type { useL1Wallet } from "../../session/l1Wallet"
+import type { useL1Wallet } from "../../session/useL1Wallet"
 
 type ExitWallet = Pick<
   ReturnType<typeof useL1Wallet>,
@@ -38,7 +38,7 @@ export function ExitWalletRow({ l1, chainName }: { l1: ExitWallet; chainName: st
             : "Use Rainbow, MetaMask, Rabby, or WalletConnect"}
         </span>
       </span>
-      <Icon name="chevron-right" size={16} color="var(--text-secondary)" />
+      <RowChevron />
     </button>
   )
 }

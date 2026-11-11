@@ -3,30 +3,28 @@
  * address forwards to. The active deployment is used only for an address derived from it in this
  * session; a recorded SIPA is keyed by its own forwarding-table row's portal; anything else is unknown.
  */
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react"
+import { useCallback, useMemo, useSyncExternalStore } from "react"
 import { formatUnits } from "viem"
-import { readSipaPortalTerms, type SipaPortalTerms } from "@obsidion/sdk"
+import type { SipaPortalTerms } from "@obsidion/sdk"
 import {
+  admitDeposit,
   evaluateCapacityEligibility,
+  NOMINAL_USD_VALUATION,
   portalCapacityKey,
-  sipaIntentName,
   sipaRecordRoute,
   sipaRequiredCredit,
-  sipaRouteKey,
+  UNREAD,
   useStore,
   type CapacityEligibility,
+  type DepositAdmission,
   type PortalCapacityKey,
   type PortalCapacityState,
   type PortalCapacityStore,
   type RequiredCredit,
   type SipaDeposit,
-  type SipaRecordRoute,
 } from "@obsidion/front-core"
-import { getConfig } from "../../config/env"
 import { useSession } from "../../session/session"
-import { l1PublicClient } from "../../config/oxideTuple"
-import { loadDepositTokens, settlementToken } from "../sipa/loadDepositFacts"
-import { activeCapacityKey, depositCapacityStore } from "./capacityStore"
+import { depositCapacityStore } from "./capacityStore"
 
 export type CapacityTarget =
   /** An address derived from the active deployment in this session, funded with `token`'s row when named. */
@@ -61,99 +59,56 @@ const UNPROVEN: CapacityEligibility = {
   detail: "The portal this address forwards to can't be confirmed.",
 }
 
-const terms = new Map<string, Promise<SipaPortalTerms>>()
-
-/** A recorded SIPA's row: its route, and the token its funds are in, which names the row they settle on. */
-const recordedRowKey = (route: SipaRecordRoute, token: string | undefined) =>
-  `${sipaRouteKey(route)}|${token?.toLowerCase() ?? ""}`
-
-/**
- * The terms of the row a recorded SIPA's funds settle on: the row of the token they are in, or the intent's
- * settlement row while no token is recorded. One read per row serves every surface for the session; a failed read is
- * dropped.
- */
-function sipaPortalTerms(
-  route: SipaRecordRoute,
-  token: string | undefined,
-): Promise<SipaPortalTerms> {
-  const id = recordedRowKey(route, token)
-  let read = terms.get(id)
-  if (!read) {
-    const config = getConfig()
-    read = loadDepositTokens(config, sipaIntentName(route.intent)).then((tokens) =>
-      readSipaPortalTerms(l1PublicClient(config), {
-        ...route,
-        token: settlementToken(tokens, token) ?? tokens.settlement.address,
-      }),
-    )
-    read.catch(() => terms.delete(id))
-    terms.set(id, read)
-  }
-  return read
-}
-
 const noSubscribe = () => () => {}
 const noState = () => undefined
 
-type Resolved = { id: string; key?: PortalCapacityKey; terms?: SipaPortalTerms; error?: unknown }
-
 export function useTargetCapacity(target: CapacityTarget): TargetCapacity {
-  const { records, loaded, failed } = useStore(useSession().sipaDeposits.view)
+  const { page, sipaDeposits } = useSession()
+  const { config, chain } = page
+  const { records, loaded, failed } = useStore(sipaDeposits.view)
   const sipa = target.kind === "recorded" ? target.sipaAddress.toLowerCase() : undefined
   const record = sipa ? records.find((r) => r.sipaAddress.toLowerCase() === sipa) : undefined
   // Until the stored records load, a missing record is not yet evidence of a missing origin.
   const recordLoading = !!sipa && !record && (!loaded || failed)
   const route = useMemo(() => (record ? sipaRecordRoute(record) : undefined), [record])
-  const activeToken = target.kind === "active" ? target.token?.toLowerCase() : undefined
-  const id =
-    target.kind === "active"
-      ? `active|${activeToken ?? ""}`
-      : route
-      ? recordedRowKey(route, record?.tokenAddress)
+  // The active bucket's key, or the recorded row's terms that name it.
+  const keyRead = target.kind === "active" ? chain.capacityKey(target.token) : undefined
+  const termsRead =
+    target.kind !== "active" && route
+      ? chain.sipaPortalTerms(route, record?.tokenAddress)
       : undefined
-
-  const [resolved, setResolved] = useState<Resolved>()
-  const [attempt, setAttempt] = useState(0)
-  useEffect(() => {
-    if (!id) return
-    let stale = false
-    const load: Promise<Omit<Resolved, "id">> = id.startsWith("active|")
-      ? activeCapacityKey(activeToken).then((key) => ({ key }))
-      : sipaPortalTerms(route!, record?.tokenAddress).then((read) => ({
-          terms: read,
+  const read = keyRead ?? termsRead
+  const activeKey = useStore(keyRead ?? UNREAD)
+  const rowTerms = useStore(termsRead ?? UNREAD)
+  const current: { key?: PortalCapacityKey; terms?: SipaPortalTerms; error?: unknown } | undefined =
+    activeKey.status === "ready"
+      ? { key: activeKey.value }
+      : rowTerms.status === "ready"
+      ? {
+          terms: rowTerms.value,
           key: portalCapacityKey({
-            chainId: getConfig().l1ChainId,
-            portal: read.portal,
-            token: read.token,
+            chainId: config.l1ChainId,
+            portal: rowTerms.value.portal,
+            token: rowTerms.value.token,
           }),
-        }))
-    load.then(
-      (next) => {
-        if (!stale) setResolved({ id, ...next })
-      },
-      (error) => {
-        console.warn("[capacity] could not name the address's capacity bucket", error)
-        if (!stale) setResolved({ id, error })
-      },
-    )
-    return () => {
-      stale = true
-    }
-  }, [id, route, activeToken, attempt])
-
-  const current = resolved?.id === id ? resolved : undefined
+        }
+      : activeKey.status === "failed"
+      ? { error: activeKey.error }
+      : rowTerms.status === "failed"
+      ? { error: rowTerms.error }
+      : undefined
   const key = current?.key
-  const store = useMemo(() => (key ? depositCapacityStore(key) : undefined), [key])
+  const store = useMemo(() => (key ? depositCapacityStore(page, key) : undefined), [key, page])
   const state: PortalCapacityState | undefined = useSyncExternalStore(
     store ? store.subscribe : noSubscribe,
     store ? store.getState : noState,
   )
   const retry = useCallback(() => {
     if (store) void store.retry()
-    else setAttempt((n) => n + 1)
-  }, [store])
+    else read?.refresh()
+  }, [store, read])
 
-  const unknown: CapacityEligibility | undefined = !id
+  const unknown: CapacityEligibility | undefined = !read
     ? recordLoading
       ? { kind: "checking" }
       : UNPROVEN
@@ -166,7 +121,7 @@ export function useTargetCapacity(target: CapacityTarget): TargetCapacity {
     ? { kind: "checking" }
     : undefined
 
-  const resolution = !id
+  const resolution = !read
     ? recordLoading
       ? "pending"
       : "missing"
@@ -195,20 +150,33 @@ export function targetEligibility(
 }
 
 /**
- * What the portal would credit for a registration ask sent to a recorded SIPA: the ask less the
- * record's signed registration fee. Unknown until it is read.
+ * The portal's answer for a registration ask sent to a recorded SIPA: the sweep keeps the record's
+ * signed registration fee, as the SIPA's processing reads it, and credits the rest. Undefined until
+ * that credit is known.
  */
-export function registrationRequiredCredit(
+export function registrationAdmission(
   capacity: TargetCapacity,
   askAtomic: bigint | undefined,
-  decimals: number,
-): RequiredCredit {
+  token: { symbol: string; decimals: number },
+): DepositAdmission | undefined {
   const { record, terms: read } = capacity
-  if (!record || !read || askAtomic === undefined) return { status: "unknown" }
-  const tokenDecimals = record.tokenDecimals ?? decimals
-  return sipaRequiredCredit(
-    { ...record, tokenDecimals, amount: formatUnits(askAtomic, tokenDecimals) },
+  if (!record || !read || askAtomic === undefined) return undefined
+  const decimals = record.tokenDecimals ?? token.decimals
+  const credit = sipaRequiredCredit(
+    { ...record, tokenDecimals: decimals, amount: formatUnits(askAtomic, decimals) },
     read,
+  )
+  if (credit.status !== "known") return undefined
+  return admitDeposit(
+    {
+      token: { symbol: token.symbol, decimals, settlesIn: credit.token, swapped: false },
+      depositFeeAtomic: askAtomic - credit.atomic,
+      minimumAtomic: 0n,
+    },
+    {
+      landedAtomic: askAtomic,
+      gross: { atomic: askAtomic, decimals, valuation: NOMINAL_USD_VALUATION },
+    },
   )
 }
 

@@ -1,0 +1,45 @@
+export default {
+  notice: {
+    listed: "@{tag} is already on this browser — choose it in the list above, or",
+    inconclusive:
+      "@{tag}'s account has more passkeys than this version can read. Sign in on the device you registered on.",
+    notFound:
+      "No registered account for @{tag} yet. If you just signed up, continue with Show passkeys; otherwise check the spelling.",
+    reserved:
+      "@{tag} is reserved but not active yet. Tap Show passkeys and pick the passkey you reserved it with. Until its deposit lands, the network can't find @{tag} by name.",
+    staleRollup:
+      "@{tag} was registered on an earlier version of the network. Sign in on the device you registered on to move it.",
+    noKeyInstalled:
+      "@{tag}'s account has no passkey key installed yet. Continue with Show passkeys and sign in with the passkey you registered with.",
+    unreadable: "@{tag}'s passkey couldn't be read from the network. Continue with Show passkeys.",
+    lookupFailed: "Couldn't reach the network to look up @{tag}.",
+  },
+  keysReading: "Finding your passkeys…",
+  keysFailed: "Couldn't find this account's passkeys on the network.",
+  tryAgain: "Try again",
+  logIn: "Log in",
+  signInAs: "Sign in as @{tag}",
+  signInAsBackup: "Sign in as @{tag} with the backup passkey",
+  tag: "@{tag}",
+  domain: ".zk.money",
+  backupPasskey: "Backup passkey",
+  logInAs: "Log in as @{tag} with",
+  logInWith: "Log in with",
+  showPasskeys: "Show passkeys",
+  login: "Login",
+  ownNode: "Using your own node?",
+  endpoints: "Endpoints",
+  cantFind: "Can't find your account?",
+  notYours: "Not your account?",
+  goBack: "Go back",
+  typeTag: "Type your @tag",
+  confirmTag: "Confirm by typing {br}your @tag",
+  accounts: "Accounts on this browser",
+  yourTag: "Your tag",
+  at: "@",
+  placeholder: "tag",
+  findingPasskey: "Finding your passkey…",
+  differentPasskey: "use a different passkey",
+  orShowPasskeys: "or continue with Show passkeys.",
+  unprepared: "Couldn't reach the network.",
+} as const

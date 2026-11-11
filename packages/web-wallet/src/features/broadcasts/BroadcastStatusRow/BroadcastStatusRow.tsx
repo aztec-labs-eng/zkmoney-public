@@ -2,12 +2,11 @@
  * The line under an address whose broadcast has not landed: where it stands. Funds sent meanwhile
  * wait at the address.
  */
-import { useSyncExternalStore, type ReactNode } from "react"
-import { ProvingStage, provingProgress } from "@obsidion/proving-progress"
+import type { ReactNode } from "react"
+import { ProvingStage } from "@obsidion/core/types"
 import { selectSipaDeposit, useStore } from "@obsidion/front-core"
 import type { SipaBroadcast } from "@obsidion/front-core"
 import { Spinner } from "@obsidion/web-ds"
-import { wallClock } from "../../../lib/clock"
 import { useSession } from "../../../session/session"
 import copy from "./BroadcastStatusRow.copy"
 
@@ -37,11 +36,6 @@ function statusOf(job: SipaBroadcast, now: number): Status {
   return "waiting"
 }
 
-function onStage(listener: () => void): () => void {
-  provingProgress.on("stage-start", listener)
-  return () => provingProgress.off("stage-start", listener)
-}
-
 /** `fallback` reads while no broadcast is owed for the address yet, e.g. before a tick owes it. */
 export function BroadcastStatusRow({
   address,
@@ -50,12 +44,13 @@ export function BroadcastStatusRow({
   address: string
   fallback?: ReactNode
 }) {
-  const { sipaDeposits, tasks, wake } = useSession()
+  const { sipaDeposits, tasks, wake, page } = useSession()
   const job = useStore(sipaDeposits.view, (set) => selectSipaDeposit(set, address)?.broadcast)
+  const { wallClock } = useSession().page
   const now = useStore(wallClock)
   const operationId = job?.operationId
-  const stage = useSyncExternalStore(onStage, () =>
-    operationId ? provingProgress.getCurrentStageSnapshot(operationId)?.stage ?? null : null,
+  const stage = useStore(page.prover.progress, (p) =>
+    operationId ? p.stages[operationId]?.stage ?? null : null,
   )
   if (!job)
     return (

@@ -9,9 +9,10 @@ import { describe, expect, it } from "vitest"
 import type { PublicClient } from "viem"
 import {
   fetchHistoricalResolverKeys,
-  fetchSipaResolverOperators,
   readAccountResolution,
+  readSipaResolverOperatorEvents,
   selectManifestResolverOperator,
+  sipaResolverOperatorsOf,
   type SipaResolverOperatorRecord,
 } from "../../../src/services/sipa/sipaResolverDiscovery.js"
 
@@ -45,13 +46,28 @@ function assertServedRange(args: { fromBlock?: unknown; toBlock?: unknown }): vo
   if (toBlock - fromBlock > RPC_MAX_RANGE) throw new Error("exceed maximum block range: 50000")
 }
 
-/**
- * `owners` is the ResolverOperatorUpdated history — repeats are expected (one log per
- * re-registration) and the reader dedupes them.
- */
-function stubClient(owners: string[], head = 11_670_012n): PublicClient {
+type Entry = {
+  publicKey: { x: bigint; y: bigint }
+  l2Address: string
+  url: string
+  oxidePortal: string
+}
+
+/** A `ResolverOperatorUpdated` log, as viem decodes it. */
+const written = (owner: string, entry: Entry, blockNumber = 11_660_000n, logIndex = 0) => ({
+  args: { resolverOperator: owner, entry },
+  blockNumber,
+  logIndex,
+  removed: false,
+})
+const entryOf = (owner: string): Entry => {
+  const [publicKey, l2Address, url, oxidePortal] = RECORDS[owner]!
+  return { publicKey: publicKey as Entry["publicKey"], l2Address, url, oxidePortal }
+}
+
+/** A registry whose operator writes are `logs`. A per-operator read throws: records come from the logs. */
+function stubClient(logs: ReturnType<typeof written>[]): PublicClient {
   return {
-    getBlockNumber: async () => head,
     getContractEvents: async (args: {
       eventName: string
       fromBlock?: unknown
@@ -61,25 +77,26 @@ function stubClient(owners: string[], head = 11_670_012n): PublicClient {
         throw new Error(`unexpected event scan: ${args.eventName}`)
       }
       assertServedRange(args)
-      return owners.map((owner) => ({ args: { resolverOperator: owner } }))
+      return logs
     },
-    readContract: async (args: { functionName: string; args?: unknown[] }) => {
-      if (args.functionName === "resolverOperators") {
-        const [owner] = args.args as [string]
-        // An address with a log but no record reads back zero-initialized (empty url).
-        return RECORDS[owner] ?? [{ x: 0n, y: 0n }, `0x${"00".repeat(32)}`, "", ZERO]
-      }
+    readContract: async (args: { functionName: string }) => {
       throw new Error(`unexpected read: ${args.functionName}`)
     },
   } as unknown as PublicClient
 }
 
-describe("fetchSipaResolverOperators", () => {
-  it("maps every logged operator to its current record, deduping repeat registrations", async () => {
-    const records = await fetchSipaResolverOperators(
-      stubClient([OWNER_LIVE, OWNER_STALE, OWNER_LIVE]),
-      METADATA_REGISTRY,
-      RANGE,
+const operators = async (client: PublicClient, range = RANGE) =>
+  sipaResolverOperatorsOf(await readSipaResolverOperatorEvents(client, METADATA_REGISTRY, range))
+
+describe("readSipaResolverOperatorEvents and sipaResolverOperatorsOf", () => {
+  it("builds each operator's record from its last event, with no per-operator read", async () => {
+    const replaced = { ...entryOf(OWNER_LIVE), url: "https://gw.old/{sender}/{data}.json" }
+    const records = await operators(
+      stubClient([
+        written(OWNER_LIVE, replaced, 1n),
+        written(OWNER_STALE, entryOf(OWNER_STALE), 2n),
+        written(OWNER_LIVE, entryOf(OWNER_LIVE), 3n),
+      ]),
     )
     expect(records).toHaveLength(2)
     expect(records[0]).toEqual({
@@ -93,14 +110,25 @@ describe("fetchSipaResolverOperators", () => {
     expect(records[1]!.owner).toBe(OWNER_STALE)
   })
 
-  it("drops an address that has a log but no record (empty url sentinel)", async () => {
-    expect(await fetchSipaResolverOperators(stubClient([ZERO]), METADATA_REGISTRY, RANGE)).toEqual(
-      [],
-    )
+  it("drops an operator whose last write left no record (empty url sentinel)", async () => {
+    const cleared = {
+      publicKey: { x: 0n, y: 0n },
+      l2Address: `0x${"00".repeat(32)}`,
+      url: "",
+      oxidePortal: ZERO,
+    }
+    expect(
+      await operators(
+        stubClient([
+          written(OWNER_LIVE, entryOf(OWNER_LIVE), 1n),
+          written(OWNER_LIVE, cleared, 2n),
+        ]),
+      ),
+    ).toEqual([])
   })
 
   it("returns an empty array when no operator has ever registered", async () => {
-    expect(await fetchSipaResolverOperators(stubClient([]), METADATA_REGISTRY, RANGE)).toEqual([])
+    expect(await operators(stubClient([]))).toEqual([])
   })
 
   it("serves the caller's window in chunks the RPC accepts, covering both ends", async () => {
@@ -114,12 +142,11 @@ describe("fetchSipaResolverOperators", () => {
       }) => {
         assertServedRange(args)
         ranges.push({ fromBlock: args.fromBlock, toBlock: args.toBlock })
-        return [{ args: { resolverOperator: OWNER_LIVE } }]
+        return [written(OWNER_LIVE, entryOf(OWNER_LIVE), args.fromBlock)]
       },
-      readContract: async () => RECORDS[OWNER_LIVE],
     } as unknown as PublicClient
 
-    const records = await fetchSipaResolverOperators(client, METADATA_REGISTRY, wide)
+    const records = await operators(client, wide)
 
     expect(records).toHaveLength(1)
     expect(ranges.length).toBeGreaterThan(1)

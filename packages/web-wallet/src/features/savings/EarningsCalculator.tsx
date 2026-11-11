@@ -1,9 +1,10 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react"
+import { useRef, useState } from "react"
 import { DEFAULT_DECIMALS } from "@obsidion/core/constants"
 import { projectSavings, projectSavingsMonthly } from "@obsidion/front-core"
 import { GradientText, PrimaryGradientButton, TopNavIconButton } from "@obsidion/web-ds"
 import { decimalInput, floorToCents } from "../../ui/format"
 import { Modal } from "../../ui/Modal"
+import { useDomLayoutEffect } from "../../ui/useDomEffect"
 
 export const CALCULATOR_HORIZONS = [1, 5, 10] as const
 export type CalculatorHorizon = (typeof CALCULATOR_HORIZONS)[number]
@@ -163,19 +164,14 @@ export function EarningsCalculator({
   balances?: CalculatorBalances
   onMove: (amount: number) => void
 }) {
-  const [start, setStart] = useState(() => calculatorStart(balances))
   // A balance read after the sheet opened still fills the field, until the user has typed in it.
-  const touched = useRef(false)
-  useEffect(() => {
-    if (!touched.current) setStart(calculatorStart(balances))
-  }, [balances?.savings, balances?.main]) // eslint-disable-line react-hooks/exhaustive-deps
+  const [typedStart, setStart] = useState<number>()
+  const start = typedStart ?? calculatorStart(balances)
   const [monthly, setMonthly] = useState(50)
   // The assumed rate follows the live APY until the user types one; Reset hands it back.
-  const [rate, setRate] = useState(apy)
+  const [typedRate, setRate] = useState<number>()
   const [rateTouched, setRateTouched] = useState(false)
-  useEffect(() => {
-    if (!rateTouched) setRate(apy)
-  }, [apy, rateTouched])
+  const rate = rateTouched ? typedRate : apy
   // What the user is typing, shown as typed until the field blurs.
   const [rateDraft, setRateDraft] = useState<string>()
   const [horizon, setHorizon] = useState<CalculatorHorizon>(5)
@@ -187,7 +183,7 @@ export function EarningsCalculator({
   // The chart's width decides how many bars it holds; until measured, a phone's five.
   const chart = useRef<HTMLDivElement>(null)
   const [chartWidth, setChartWidth] = useState<number>()
-  useLayoutEffect(() => {
+  useDomLayoutEffect(() => {
     const element = chart.current
     if (!element || typeof ResizeObserver === "undefined") return
     const measure = () => setChartWidth(element.clientWidth || undefined)
@@ -214,12 +210,9 @@ export function EarningsCalculator({
     <div className="ww-calc">
       <div className="ww-calc__fields">
         <AmountField
-          label="Starting amount"
+          label="Starting amount" // debt-check-ignore: existing label, unmigrated component
           value={start}
-          onChange={(n) => {
-            touched.current = true
-            setStart(n)
-          }}
+          onChange={setStart}
         />
         <AmountField label="Monthly top-up" value={monthly} onChange={setMonthly} />
         {/* Not one wrapping label: the Reset button must not sit inside the input's. */}
@@ -245,7 +238,6 @@ export function EarningsCalculator({
                 onClick={() => {
                   setRateTouched(false)
                   setRateDraft(undefined)
-                  setRate(apy)
                 }}
               >
                 Reset

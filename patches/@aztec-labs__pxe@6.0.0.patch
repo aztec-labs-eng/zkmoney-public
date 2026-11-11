@@ -1,5 +1,22 @@
+diff --git a/dest/contract_function_simulator/contract_function_simulator.js b/dest/contract_function_simulator/contract_function_simulator.js
+index 9883b3a400624e87668e701ed953642b6b06283f..2670f2d089278209590027ce6d2d6e70ef360da6 100644
+--- a/dest/contract_function_simulator/contract_function_simulator.js
++++ b/dest/contract_function_simulator/contract_function_simulator.js
+@@ -286,9 +286,10 @@ class OrderedSideEffect {
+     while(executions.length !== 0){
+         const execution = executions.shift();
+         executions.unshift(...execution.nestedExecutionResults);
+-        // Just like kernels we overwrite the default value if the call sets it.
++        // The minimum over every call, as the private kernels take it (private_kernel_batch_validator.nr), 0 included:
++        // aztec-nr defaults a call to anchor + MAX_TX_LIFETIME, so a call's 0 is one it set, and expires the tx.
+         const callExpirationTimestamp = execution.publicInputs.expirationTimestamp;
+-        if (callExpirationTimestamp !== 0n && callExpirationTimestamp < expirationTimestamp) {
++        if (callExpirationTimestamp < expirationTimestamp) {
+             expirationTimestamp = callExpirationTimestamp;
+         }
+         const { contractAddress } = execution.publicInputs.callContext;
 diff --git a/dest/contract_function_simulator/oracle/private_execution_oracle.js b/dest/contract_function_simulator/oracle/private_execution_oracle.js
-index 9d67c0a..db9e59a 100644
+index 9d67c0a57e1f33d544273de70bff5308dc804436..db9e59adc2fd65bc815bf0697c2f37e50ccee7c4 100644
 --- a/dest/contract_function_simulator/oracle/private_execution_oracle.js
 +++ b/dest/contract_function_simulator/oracle/private_execution_oracle.js
 @@ -141,7 +141,7 @@ import { UtilityExecutionOracle } from './utility_execution_oracle.js';
@@ -24,8 +41,86 @@ index 9d67c0a..db9e59a 100644
      }
      /** Resolves a wallet-provided {@link TaggingSecretStrategy} into the app-siloed secret handed to the contract. */ async #resolveTaggingSecretStrategy(strategy, sender, recipient) {
          // PXE only performs the derivation; it does not reject a strategy that is unsound for the delivery mode (e.g. an
+diff --git a/dest/pxe.js b/dest/pxe.js
+index b4c3cd5337020ddef6a930058e66636d78d3f435..b1ae4a8d789a98731d19f98ede198308271cc7fa 100644
+--- a/dest/pxe.js
++++ b/dest/pxe.js
+@@ -1,3 +1,5 @@
++import { ChonkProof } from '@aztec-labs/stdlib/proofs';
++import { MAX_KEY_VALIDATION_REQUESTS_PER_TX } from '@aztec-labs/constants';
+ import { BlockNumber } from '@aztec-labs/foundation/branded-types';
+ import { Point } from '@aztec-labs/foundation/curves/grumpkin';
+ import { inspect } from '@aztec-labs/foundation/inspect';
+@@ -414,11 +416,19 @@ import { persistSenderTaggingIndexRangesForTx } from './tagging/index.js';
+    * Proves `privateExecutionResult`, the private execution of `txRequest`, within an already-open operation, and stages
+    * the sender tagging indices the tx uses.
+    */ async #proveTx({ changeSetId, syncTime, anchorBlockHeader, recording, totalMs }, txRequest, privateExecutionResult) {
+-        const { publicInputs, chonkProof, executionSteps, timings: { proving } = {} } = await this.#prove(txRequest, this.proofCreator, privateExecutionResult, anchorBlockHeader, {
++        // With proving off, prove kernelless: the kernels' outputs come from the simulator, as `#simulateTx` takes them
++        // with `skipKernels`, and the proof is the same random one the kernel prover gives with fake proofs.
++        const kernelless = !this.proverEnabled;
++        const { publicInputs, chonkProof, executionSteps, timings: { proving } = {} } = kernelless ? {
++            ...await generateSimulatedProvingResult(privateExecutionResult, (addr, sel)=>this.#getDebugFunctionName(addr, sel, anchorBlockHeader), this.node),
++            chonkProof: ChonkProof.random(),
++            timings: {}
++        } : await this.#prove(txRequest, this.proofCreator, privateExecutionResult, anchorBlockHeader, {
+             simulate: false,
+             skipFeeEnforcement: false,
+             profileMode: 'none'
+         });
++        if (kernelless) assertKernelOnlyChecks(txRequest, privateExecutionResult, publicInputs);
+         const totalTime = totalMs();
+         const perFunction = executionSteps.map(({ functionName, timings: { witgen, oracles } })=>({
+                 functionName,
+@@ -968,3 +978,46 @@ import { persistSenderTaggingIndexRangesForTx } from './tagging/index.js';
+         await this.db.close();
+     }
+ }
++
++// The checks only the private kernels make, which kernelless proving would otherwise skip: the tx's gas against
++// its limits, a static call's lack of side effects, the tx's key validation requests and a fee payer (the tail).
++// Messages are the kernels' own.
++function assertKernelOnlyChecks(txRequest, privateExecutionResult, publicInputs) {
++    const executions = [
++        privateExecutionResult.entrypoint
++    ];
++    let keyValidationRequests = 0;
++    while(executions.length !== 0){
++        const execution = executions.shift();
++        executions.push(...execution.nestedExecutionResults);
++        const call = execution.publicInputs;
++        keyValidationRequests += call.keyValidationRequestsAndSeparators.claimedLength;
++        if (!call.callContext.isStaticCall) continue;
++        for (const [name, items] of [
++            ['note_hashes', call.noteHashes],
++            ['nullifiers', call.nullifiers],
++            ['l2_to_l1_msgs', call.l2ToL1Msgs],
++            ['private_logs', call.privateLogs],
++            ['contract_class_logs_hashes', call.contractClassLogsHashes]
++        ]){
++            if (items.claimedLength !== 0) throw new Error(`${name} must be empty for static calls`);
++        }
++        if (call.privateCallRequests.getActiveItems().some((request)=>!request.callContext.isStaticCall)) {
++            throw new Error('static call cannot make non-static private calls');
++        }
++        if (call.publicCallRequests.getActiveItems().some((request)=>!request.inner.isStaticCall)) {
++            throw new Error('static call cannot enqueue non-static public calls');
++        }
++        if (!call.publicTeardownCallRequest.isEmpty() && !call.publicTeardownCallRequest.isStaticCall) {
++            throw new Error('static call cannot set a non-static teardown');
++        }
++        if (call.isFeePayer) throw new Error('static call cannot nominate itself as fee payer');
++    }
++    if (keyValidationRequests > MAX_KEY_VALIDATION_REQUESTS_PER_TX) {
++        throw new Error(`key_validation_requests exceed the per-tx maximum (${keyValidationRequests} > ${MAX_KEY_VALIDATION_REQUESTS_PER_TX})`);
++    }
++    if (publicInputs.feePayer.isZero()) throw new Error("Fee payer can't be empty");
++    if (publicInputs.gasUsed.gtAny(txRequest.txContext.gasSettings.gasLimits)) {
++        throw new Error('The gas used exceeds the gas limits');
++    }
++}
 diff --git a/src/contract_function_simulator/oracle/private_execution_oracle.ts b/src/contract_function_simulator/oracle/private_execution_oracle.ts
-index 9e1425c..96fcc77 100644
+index 9e1425c77df0806d0b982499139a2d770f4c94b4..96fcc77b97f602aedc002f59a85b0e0fcf08aeb3 100644
 --- a/src/contract_function_simulator/oracle/private_execution_oracle.ts
 +++ b/src/contract_function_simulator/oracle/private_execution_oracle.ts
 @@ -219,7 +219,7 @@ export class PrivateExecutionOracle extends UtilityExecutionOracle implements IP

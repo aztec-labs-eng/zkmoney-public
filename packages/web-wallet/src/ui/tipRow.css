@@ -23,7 +23,7 @@
   color: var(--text-primary);
 }
 .ww-tiprow__label:focus-visible {
-  outline: 2px solid #fff;
+  outline: 2px solid var(--ink);
   outline-offset: 2px;
 }
 .ww-tiprow__tip {

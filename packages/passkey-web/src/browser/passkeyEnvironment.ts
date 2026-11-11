@@ -5,9 +5,9 @@ import { UNKNOWN, currentUserAgentInfo, type UserAgentInfo } from "./userAgentIn
 /**
  * What surrounded the last passkey ceremony: the provider's self-reported id, the class the
  * browser reported on a creation, the OS and browser as they report themselves, and whether the
- * visitor was taken for a phone or a laptop. Kept device-locally under a key the consumer names,
- * for a later reporting step; never sent from here, and never holding a credential id, key
- * material, or an address.
+ * visitor was taken for a phone or a laptop. Kept device-locally in the consumer's store, for a
+ * later reporting step; never sent from here, and never holding a credential id, key material, or
+ * an address.
  */
 export type PasskeyEnvironment = {
   aaguid: string
@@ -32,7 +32,11 @@ export type PasskeyEnvironmentEvidence = {
   userAgent: UserAgentInfo
 }
 
-const store = () => (typeof localStorage === "undefined" ? undefined : localStorage)
+/** Where the consumer keeps the last record. */
+export interface PasskeyEnvironmentStore {
+  last(): PasskeyEnvironment | null
+  save(record: PasskeyEnvironment): Promise<void>
+}
 
 export function buildPasskeyEnvironment(evidence: PasskeyEnvironmentEvidence): PasskeyEnvironment {
   return {
@@ -52,17 +56,17 @@ export function buildPasskeyEnvironment(evidence: PasskeyEnvironmentEvidence): P
 }
 
 /**
- * Replaces the record under `storageKey`. An assertion keeps the creation's fields as long as it
- * does not name a different provider, so a key signing in after an Apple creation does not wear
- * the creation's transports. Never throws: a full or blocked store only loses it.
+ * Replaces the record in `store`. An assertion keeps the creation's fields as long as it does not
+ * name a different provider, so a key signing in after an Apple creation does not wear the
+ * creation's transports. Never throws: a store that refuses only loses it.
  */
 export async function recordPasskeyEnvironment(
   input: Omit<PasskeyEnvironmentEvidence, "userAgent">,
-  storageKey: string,
+  store: PasskeyEnvironmentStore,
 ): Promise<void> {
   try {
     const record = buildPasskeyEnvironment({ ...input, userAgent: await currentUserAgentInfo() })
-    const previous = input.created ? null : lastPasskeyEnvironment(storageKey)
+    const previous = input.created ? null : store.last()
     const sameProvider =
       previous !== null &&
       (record.aaguid === UNKNOWN ||
@@ -72,17 +76,8 @@ export async function recordPasskeyEnvironment(
       if (previous.attachment !== undefined) record.attachment = previous.attachment
       if (previous.transports !== undefined) record.transports = previous.transports
     }
-    store()?.setItem(storageKey, JSON.stringify(record))
+    await store.save(record)
   } catch {
     // Collection is best-effort by design.
-  }
-}
-
-export function lastPasskeyEnvironment(storageKey: string): PasskeyEnvironment | null {
-  try {
-    const raw = store()?.getItem(storageKey)
-    return raw ? (JSON.parse(raw) as PasskeyEnvironment) : null
-  } catch {
-    return null
   }
 }

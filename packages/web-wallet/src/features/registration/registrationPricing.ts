@@ -1,18 +1,19 @@
 /** The sweep fee and the deployment's schedule: one read per session, made once something asks. */
-import { useEffect } from "react"
 import type { RegistrationSchedule } from "@obsidion/core/types"
 import { OxideSipaIntent, readDepositFee } from "@obsidion/sdk"
 import {
   deploymentSipaRoute,
-  resource,
-  useResource,
+  memoryStore,
   useStore,
-  type Resource,
+  type QueryEntry,
+  type QueryFactory,
+  type QueryState,
 } from "@obsidion/front-core"
-import type { WebWalletConfig } from "../../config/env"
-import { getOxideTuple, l1PublicClient } from "../../config/oxideTuple"
+import { l1PublicClient } from "../../config/oxideTuple"
+import type { PageFacts } from "../../session/pageChain"
 import { useSession } from "../../session/session"
 import { readRegistrationSchedule } from "./registrationTerms"
+import { reportShortAsk } from "./registrationAsk"
 
 const BACKOFF = { baseMs: 2_000, maxMs: 30_000 }
 
@@ -22,42 +23,43 @@ export interface PricingReads {
   schedule(): Promise<RegistrationSchedule>
 }
 
-export const chainPricing = (config: () => WebWalletConfig): PricingReads => ({
+export const chainPricing = (page: () => PageFacts): PricingReads => ({
   sweepFee: async () =>
     readDepositFee(
-      l1PublicClient(config()),
-      deploymentSipaRoute(await getOxideTuple(config()), OxideSipaIntent.Registration),
+      l1PublicClient(page().config),
+      deploymentSipaRoute(await page().chain.oxideTuple.read(), OxideSipaIntent.Registration),
     ),
-  schedule: () => readRegistrationSchedule(config()),
+  schedule: () => readRegistrationSchedule(page()),
 })
 
 export interface RegistrationPricing {
-  sweepFee: Resource<bigint>
+  sweepFee: QueryEntry<bigint>
   /** Null where the deployment takes no registration by deposit: it prices zero, or its fee is
    *  under the sweep fee, so no balance at the address would fund the sweep. */
-  registrationSchedule: Resource<RegistrationSchedule | null>
+  registrationSchedule: QueryEntry<RegistrationSchedule | null>
 }
 
-export function registrationPricing(reads: PricingReads): RegistrationPricing {
-  const sweepFee = resource("sweepFee", { from: [], lazy: true, backoff: BACKOFF }, () =>
-    reads.sweepFee(),
-  )
-  const registrationSchedule = resource(
-    "registrationSchedule",
-    { from: [sweepFee], lazy: true, backoff: BACKOFF },
-    async ([fee]) => {
-      const read = await reads.schedule()
+export function registrationPricing(query: QueryFactory, reads: PricingReads): RegistrationPricing {
+  const sweepFee = query<[], bigint>("sweepFee", { load: () => reads.sweepFee(), retry: BACKOFF })()
+  const registrationSchedule = query<[], RegistrationSchedule | null>("registrationSchedule", {
+    load: async (signal) => {
+      const [read, fee] = await Promise.all([reads.schedule(), sweepFee.read(signal)])
+      reportShortAsk(read)
       return (read.min === 0n && read.fee === 0n) || read.fee < fee ? null : read
     },
-  )
+    retry: BACKOFF,
+  })()
   return { sweepFee, registrationSchedule }
 }
 
 /** Reads a failed price again now, ahead of its backoff. */
 export function retryPricing(pricing: RegistrationPricing): void {
   for (const r of [pricing.sweepFee, pricing.registrationSchedule])
-    if (r.get().status === "failed") r.retry()
+    if (r.get().status === "failed") r.refresh()
 }
+
+const UNREAD = memoryStore<QueryState<never>>({ status: "pending" }).readonly
+const valueIn = <T>(s: QueryState<T>) => (s.status === "ready" ? s.value : undefined)
 
 /**
  * The sweep fee while `enabled`, and the schedule too while `schedule`: undefined while unread.
@@ -66,18 +68,12 @@ export function retryPricing(pricing: RegistrationPricing): void {
 export function useRegistrationPricing(enabled: boolean, schedule = false) {
   const pricing = useSession()
   const { sweepFee, registrationSchedule } = pricing
-  useEffect(() => {
-    if (!enabled) return
-    sweepFee.demand()
-    if (schedule) registrationSchedule.demand()
-  }, [enabled, schedule, sweepFee, registrationSchedule])
-  const fee = useResource(sweepFee)
-  const amounts = useResource(registrationSchedule)
-  const failed = useStore(sweepFee, (s) => s.status === "failed")
+  const fee = useStore(enabled ? sweepFee : UNREAD)
+  const amounts = useStore(enabled && schedule ? registrationSchedule : UNREAD)
   return {
-    sweepFee: enabled ? fee : undefined,
-    schedule: enabled && schedule ? amounts : undefined,
-    failed: enabled && failed,
+    sweepFee: valueIn(fee),
+    schedule: valueIn(amounts),
+    failed: fee.status === "failed",
     retry: () => retryPricing(pricing),
   }
 }

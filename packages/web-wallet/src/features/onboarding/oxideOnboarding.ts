@@ -11,12 +11,14 @@
  * into `claimTag`'s `AccountServiceClient` before its gated routes will pass (tracked
  * alongside the registration-by-deposit rewrite — see docs/proposals/registration-fee-plan.md).
  */
+import type { PageFacts } from "../../session/pageChain"
 import { refundedEntry } from "../registration/admission"
 import { assertEarnedQuote } from "../registration/earnedQuote"
 import type { Fr } from "@aztec-labs/aztec.js/fields"
 import type { Hex } from "viem"
 import type { PrivateKeyAccount } from "viem/accounts"
 import {
+  MAX_PASSKEY_CANDIDATES,
   composeWireNameHash,
   matchWireNameHash,
   createOxideL1Reader,
@@ -46,23 +48,25 @@ import { activeWithdrawalFee } from "../withdraw/withdrawalFee"
 import type { NameClaimResponse, RegistrationSchedule } from "@obsidion/core/types"
 import { WalletError, bestEffort } from "@obsidion/core/errors"
 import {
-  claimTerms,
+  receivedClaimTerms,
   wireTermsFundLink,
   wireTermsFundTicket,
 } from "../registration/registrationTerms"
 import { linkIdentity } from "../paylink/linkIdentity"
 import { updateTicketSignup, type TicketSignupStash } from "../paylink/claimStash"
+import { tabStash } from "../../platform/storage/tabStash"
 import { redeemGoldenTicketForLink } from "./goldenTicket"
 import type { RegistrationPayloads } from "../broadcasts/registrationExecutor"
 import type { ContractService, ObsidionWallet, ObsidionAccount } from "@obsidion/sdk"
-import { getOxideTuple, l1PublicClient, requireTupleField } from "../../config/oxideTuple"
-import { getConfig, type WebWalletConfig } from "../../config/env"
+import { l1PublicClient, requireTupleField } from "../../config/oxideTuple"
+import type { WebWalletConfig } from "../../config/env"
 import {
   AmbiguousPasskeyError,
   type PasskeyRequestScope,
   currentDevicePosture,
 } from "@obsidion/passkey-web"
-import { GateCancelledError, type CeremonyGate } from "../identity/ceremonyGate"
+import { GateCancelledError, type CeremonyGate, isGateCancelled } from "../identity/ceremonyGate"
+import { markMovedAccount, movedAccount, type MovedAccount } from "../identity/movedAccount"
 import {
   PasskeyMismatchError,
   adoptRecoveredAccount,
@@ -73,9 +77,9 @@ import {
   keySetOf,
   resolveKeySource,
   settleRecovery,
-  type AccountsOf,
   type CeremonyRequest,
   type InstalledKey,
+  type SignInDeps,
 } from "../identity/passkeyAccount"
 import type { OnboardingKeys } from "../../session/account"
 import type { Session } from "../../session/session"
@@ -88,15 +92,19 @@ import {
   type Observation,
   type UnsettledRecovery,
   type WebAlphaAuthService,
+  type WebRecoverResult,
   isUnsettled,
 } from "../../platform/auth/WebAlphaAuthService"
 import { usertagFor } from "../../platform/auth/WebPasskeyIdentityMap"
+import { backupPasskeyOutcomeFor } from "../../lib/backupPasskeyTelemetry"
+import { type BackupSignInFacts, noteBackupSignIn } from "../identity/backupSignIn"
 import { enterTiers, requireResolved } from "./recoveryProbes"
 import { generationAddresses } from "../registration/generationAddresses"
 import { generationFactories, loadOxideGenerations } from "../registration/oxideGenerations"
 import { resolveTagForCommit } from "../contacts/registryResolution"
 
 import { attributeInboundInvite } from "../invite/inboundInvite"
+import type { TicketDevice } from "../paylink/ticketSignupAccount"
 
 export type ClaimStatus = "reserved" | "claimed"
 
@@ -119,7 +127,7 @@ export type EnterResult =
       account: ObsidionAccount
       held: () => boolean
       /** The session the sign-in's commit made current. */
-      own: Session
+      session: Session
       bootstrap: PrivateKeyAccount
       /** The wire domain a claimed tag hashes under, to name a reservation the caller finds. */
       ensDomain: string
@@ -165,8 +173,8 @@ export interface EnteredClaim {
   ensDomain: string
 }
 
-export async function getClaimStatus(handle: string): Promise<ClaimStatus> {
-  const resolution = await resolveTagForCommit(handle)
+export async function getClaimStatus(page: PageFacts, handle: string): Promise<ClaimStatus> {
+  const resolution = await resolveTagForCommit(page, handle)
   // Unclaimed names are reserved for whoever typed them; a claimed one (incl. a
   // stale-rollup record) routes to /enter, where the passkey proves ownership.
   return resolution.status === "notFound" ? "reserved" : "claimed"
@@ -406,6 +414,7 @@ export const isRegistrationStage = (stage: SignupStage): stage is OxideRegistrat
  * tab never reaches this signup.
  */
 export async function redeemLinkedGoldenTicket(
+  session: TicketDevice & Pick<Session, "page" | "contractService">,
   keys: OnboardingKeys,
   config: WebWalletConfig,
   wallet: ObsidionWallet | undefined,
@@ -416,14 +425,19 @@ export async function redeemLinkedGoldenTicket(
   if (!wallet) throw new WalletError("wallet.notReady")
   const outcome = await redeemGoldenTicketForLink({
     wallet,
+
+    contractService: await session.contractService.ready(),
     accountService: accountServiceFor(config, keys),
     secretKey: keys.secretKey,
     fragment: ticket.fragment,
+    device: session,
+    prepared: session.page.preparedTicket,
     covers: async (amount, advertised) =>
-      linkCoversTicketBurn(amount, advertised, await activeWithdrawalFee()),
+      linkCoversTicketBurn(amount, advertised, await activeWithdrawalFee(session.page.chain)),
     onProving,
   })
-  if (outcome.amount !== undefined) updateTicketSignup({ amount: outcome.amount.toString() })
+  if (outcome.amount !== undefined)
+    updateTicketSignup(tabStash, { amount: outcome.amount.toString() })
   switch (outcome.status) {
     case "unavailable":
       return "unavailable"
@@ -451,7 +465,7 @@ export function checkpointRegistrationTerms(
 ): RegistrationTerms {
   const ticket = opts.ticket && wireTermsFundTicket(claim.terms) ? opts.ticket : null
   return {
-    ...claimTerms(claim),
+    ...receivedClaimTerms(claim),
     ...(opts.earnedExpected ? { earnedExpected: true } : {}),
     ...(ticket
       ? {
@@ -461,6 +475,7 @@ export function checkpointRegistrationTerms(
           ...(ticket.senderTag ? { paylinkSender: ticket.senderTag } : {}),
           ...(ticket.proverTip !== undefined ? { proverTip: ticket.proverTip } : {}),
           ...(ticket.speed !== undefined ? { speed: ticket.speed } : {}),
+          ...(ticket.withdrawalFee !== undefined ? { withdrawalFee: ticket.withdrawalFee } : {}),
         }
       : opts.depositLink
       ? {
@@ -471,6 +486,9 @@ export function checkpointRegistrationTerms(
           ...(opts.depositLink.senderTag ? { paylinkSender: opts.depositLink.senderTag } : {}),
           proverTip: opts.depositLink.proverTip.toString(),
           ...(opts.depositLink.speed ? { speed: opts.depositLink.speed } : {}),
+          ...(opts.depositLink.withdrawalFee !== undefined
+            ? { withdrawalFee: opts.depositLink.withdrawalFee }
+            : {}),
         }
       : {}),
   }
@@ -484,6 +502,8 @@ export interface LinkDeposit {
   /** The prover tip the split committed, base units, and the speed with it. */
   proverTip: bigint
   speed?: "standard" | "faster"
+  /** The withdrawal fee the split was priced with, base units. */
+  withdrawalFee?: string
   /** The link creator's verified tag. */
   senderTag?: string
 }
@@ -495,7 +515,7 @@ export interface LinkDeposit {
 export async function linkCoversDeposit(
   link: LinkDeposit,
   terms: NameClaimResponse["terms"],
-  readWithdrawalFee: () => Promise<bigint> = activeWithdrawalFee,
+  readWithdrawalFee: () => Promise<bigint>,
 ): Promise<boolean> {
   if (!terms || !wireTermsFundLink(terms)) return false
   const withdrawalFee = await bestEffort("unknown", readWithdrawalFee())
@@ -514,11 +534,15 @@ export type ClaimSession = Pick<
   | "registrationPayloads"
   | "accountRecord"
   | "signup"
+  | "database"
+  | "device"
+  | "page"
+  | "contractService"
 >
 
 /** `claimWith` over this browser's account service, chain reads and ticket. */
 export function claimTag(
-  own: ClaimSession,
+  session: ClaimSession,
   handle: string,
   keys: OnboardingKeys,
   config: WebWalletConfig,
@@ -532,17 +556,18 @@ export function claimTag(
   route?: RegistrationRoute,
 ): Promise<ClaimTagOutcome> {
   const deps: ClaimDeps = {
-    registrations: own.registrations,
-    nameClaims: own.nameClaims,
-    recovery: own.registrationRecovery,
-    payloads: own.registrationPayloads,
+    registrations: session.registrations,
+    nameClaims: session.nameClaims,
+    recovery: session.registrationRecovery,
+    payloads: session.registrationPayloads,
     sessionDeps: async (stage) => {
       // Settled before anything registers: account-service refuses an invitee who already is.
       await attributeInboundInvite(accountServiceFor(config, keys))
-      return registrationSessionDeps(handle, keys, config, wallet.networkId, own, stage)
+      return registrationSessionDeps(handle, keys, session.page, wallet.networkId, session, stage)
     },
-    redeemTicket: (onProving) => redeemLinkedGoldenTicket(keys, config, wallet, ticket, onProving),
-    withdrawalFee: activeWithdrawalFee,
+    redeemTicket: (onProving) =>
+      redeemLinkedGoldenTicket(session, keys, config, wallet, ticket, onProving),
+    withdrawalFee: () => activeWithdrawalFee(session.page.chain),
   }
   const request = { handle, keys, onStage, requireEarnedQuote, refundedRecord, replacedRecord }
   return claimWith(deps, { ...request, ticket, linkDeposit, route })
@@ -550,13 +575,13 @@ export function claimTag(
 
 /** A claim on a chosen name over the registration still owed its deposit. */
 export const claimChosenName =
-  (own: ClaimSession, wallet: ObsidionWallet, earned: boolean, route: RegistrationRoute) =>
+  (session: ClaimSession, wallet: ObsidionWallet, earned: boolean, route: RegistrationRoute) =>
   (tag: string, keys: OnboardingKeys, replaced: PendingRegistrationRecord) =>
     claimTag(
-      own,
+      session,
       tag,
       keys,
-      getConfig(),
+      session.page.config,
       wallet,
       undefined,
       earned,
@@ -757,12 +782,11 @@ export async function claimWith(deps: ClaimDeps, request: ClaimRequest): Promise
  */
 export async function enterWithPasskey(
   wallet: ObsidionWallet,
-  config: WebWalletConfig,
+  page: PageFacts,
   handle: string | undefined,
   options: {
-    auth: WebAlphaAuthService
+    signIn: SignInDeps
     contractService: ContractService
-    accounts: AccountsOf
     tiers?: AnchorTier[]
     grantToken?: string
     gate: CeremonyGate
@@ -771,6 +795,8 @@ export async function enterWithPasskey(
     phone?: boolean
     hints?: SignInHints
     strictTag?: boolean
+    /** The name an earlier document's sign-in carried through its reload; tried after the passkey's. */
+    named?: string
     signal?: AbortSignal
     cacheOnly?: boolean
     restoreCache?: boolean
@@ -778,18 +804,46 @@ export async function enterWithPasskey(
     own?: PasskeyRequestScope
   },
 ): Promise<EnterResult> {
-  const tuple = await getOxideTuple(config)
+  // Set once a backup passkey's envelope opened: every end after that is this backup sign-in's.
+  const backup: { facts?: BackupSignInFacts } = {}
+  try {
+    const result = await enterOnce(wallet, page, handle, options, backup)
+    if (backup.facts && !result.entered && result.reason === "unknown") {
+      noteBackupSignIn("failed", backup.facts)
+    }
+    return result
+  } catch (err) {
+    if (backup.facts) {
+      const outcome = isGateCancelled(err) ? "cancelled" : backupPasskeyOutcomeFor(err)
+      noteBackupSignIn(outcome, backup.facts)
+    }
+    throw err
+  }
+}
+
+async function enterOnce(
+  wallet: ObsidionWallet,
+  page: PageFacts,
+  handle: string | undefined,
+  options: Parameters<typeof enterWithPasskey>[3],
+  backup: { facts?: BackupSignInFacts },
+): Promise<EnterResult> {
+  const { config } = page
+  const tuple = await page.chain.oxideTuple.read()
   const ensDomain = requireTupleField(tuple, "ensDomain")
   const l1 = createOxideL1Reader(l1PublicClient(config))
   const strict = options.strictTag || options.hints !== undefined
   // Started before the prompt, so the assertion still opens inside the click's activation window,
   // and awaited before the first account prediction.
-  const generationsRead = loadOxideGenerations(wallet, options.contractService, config)
+  const generationsRead = loadOxideGenerations(wallet, options.contractService, page)
   void bestEffort("unknown", generationsRead)
 
-  const material = await enterKeyMaterial(options)
+  const { auth } = options.signIn.session
+  const material = await enterKeyMaterial({ ...options, auth })
   if (!material) return { entered: false, reason: "ceremony-required" }
   const { recovered: begun, attempt } = material
+  // A settled key's backup envelope is already open.
+  if (!isUnsettled(begun)) backup.facts = begun.backupFacts
   const active = () => !options.signal?.aborted && !attempt?.aborted
   const throwIfEnded = () => {
     if (!active()) throw new GateCancelledError()
@@ -812,16 +866,16 @@ export async function enterWithPasskey(
     throwIfEnded()
   }
   const recovered = await settleRecovery(begun, options.gate, attemptFrom(attempt), installedKey)
+  backup.facts = recovered.backupFacts
   throwIfEnded()
   const deriver = collectingDeriver(deriveAddressWith(wallet, keySetOf(recovered)))
-  const addressesFor = generationAddresses(config, recovered.pubkey)
+  const addressesFor = generationAddresses(page, recovered.pubkey)
   // A record the chain's list has moved past still picks the key, by the set it was written with;
   // the entry then derives under the chain's set and rewrites the record to it.
   const anchorDerive = recovered.staleSet
     ? deriveAddressWith(wallet, recovered.staleSet)
     : deriver.derive
   const { observed } = recovered
-  const { auth } = options
   let resolved: ResolvedMsk
   let storedAddressMismatch = false
   let verdict: MismatchVerdict | undefined
@@ -862,11 +916,30 @@ export async function enterWithPasskey(
   // Read before `adoptRecoveredAccount` rewrites the credential's breadcrumb.
   const remembered = strict
     ? undefined
-    : usertagFor(options.auth.device.get().passkeyMap, config.rpId, recovered.credentialId) ??
+    : usertagFor(auth.device.get().passkeyMap, config.rpId, recovered.credentialId) ??
       recovered.usertag
 
-  const derived = await deriver.derive(msk)
+  let derived = await deriver.derive(msk)
+  // A record the chain's list has moved past (a backup added on another browser): the entry derives
+  // under the chain's set and rewrites the record to it. Any miss or failure leaves the refusal.
+  const movedPast = async (err: UnverifiedOxideIdentityError) => {
+    if (recovered.expectedAddress === undefined || recovered.staleSet) return undefined
+    try {
+      return await movedAccount({
+        generations,
+        bootstrap: deriveBootstrapKey(msk).address,
+        accounts: err.accounts,
+        record: { pubkey: recovered.pubkey, passkeySet: recovered.passkeys },
+        msk,
+        readAuthKeys: (account) => l1.readAuthKeysCounted(account, MAX_PASSKEY_CANDIDATES),
+        derive: (msk, passkeys) => deriveAddressWith(wallet, passkeys)(msk),
+      })
+    } catch {
+      return undefined
+    }
+  }
   let identity: ReturnType<typeof requireVerifiedIdentity>
+  let moved: MovedAccount | undefined
   try {
     identity = requireVerifiedIdentity(
       await resolveOxideIdentity(
@@ -881,7 +954,10 @@ export async function enterWithPasskey(
     // derives an address the key alone cannot, so the tag-first sign-in is the way in.
     const setUnread = isUnsettled(begun) && installedKey === undefined
     if (err instanceof UnverifiedOxideIdentityError && setUnread) throw new PasskeySetUnreadError()
-    throw err
+    moved = err instanceof UnverifiedOxideIdentityError ? await movedPast(err) : undefined
+    if (!moved) throw err
+    identity = moved.identity
+    derived = moved.address
   }
   throwIfEnded()
   // A tag named the account: the key must open that account and no other. Nothing is written for
@@ -889,13 +965,28 @@ export async function enterWithPasskey(
   // name the registry holds for it now is the claim's, confirmed below when it is not the tag.
   const pinned = options.hints && isAccountHints(options.hints) ? options.hints.account : undefined
   if (pinned && (!identity || identity.account.toLowerCase() !== pinned.toLowerCase())) {
+    // Refused, like a key the tag does not list.
+    if (recovered.backupFacts) noteBackupSignIn("refused", recovered.backupFacts)
     return { entered: false, reason: "unknown", ...evidence(), storedAddressMismatch, verdict }
   }
+  // A moved record signs over the chain's set; its own set picked the key and is rewritten.
+  const entry: WebRecoverResult = moved
+    ? {
+        ...recovered,
+        passkeys: moved.passkeys,
+        staleSet: keySetOf(recovered),
+        authProvider: auth.providerFor({
+          credentialId: recovered.credentialId,
+          pubkeyHex: recovered.pubkey,
+          passkeys: moved.passkeys,
+        }),
+      }
+    : recovered
   const adopt = async () => {
     const adopted = await adoptRecoveredAccount(
       wallet,
-      { auth, accounts: options.accounts },
-      recovered,
+      options.signIn,
+      entry,
       msk,
       slot,
       derived,
@@ -903,6 +994,7 @@ export async function enterWithPasskey(
       undefined,
       active,
     )
+    if (moved) markMovedAccount(derived)
     // The commit stands, but a scope that ended while the account was persisted hands nothing back:
     // no result reaches a screen the user left.
     throwIfEnded()
@@ -927,9 +1019,10 @@ export async function enterWithPasskey(
     ensDomain,
   }
   // Naming the claim: the caller-supplied handle (from the claim link), the tag this credential
-  // claimed on this browser, or the name the passkey itself carries, each verified against the
-  // on-chain nameHash — none that matches confirms manually.
-  const carried = strict ? undefined : recovered.userHandle
+  // claimed on this browser, or the name the passkey itself carries (from the cached key, which has
+  // none, the name the reload carried), each verified against the on-chain nameHash — none that
+  // matches confirms manually.
+  const carried = strict ? undefined : recovered.userHandle ?? options.named
   const matched =
     (handle && tagMatches(claim, handle)) ||
     (remembered && tagMatches(claim, remembered)) ||

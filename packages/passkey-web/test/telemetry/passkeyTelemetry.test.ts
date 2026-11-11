@@ -291,6 +291,7 @@ describe("classifyPasskeyError", () => {
     const reasons = {
       "apple": "apple_below_floor",
       "unnamed": "provider_unnamed",
+      "windows-hello": "provider_unnamed",
       "not-local": "local_route_mismatch",
     } as const
     for (const [kind, reason] of Object.entries(reasons)) {

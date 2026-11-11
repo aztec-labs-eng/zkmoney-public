@@ -1,32 +1,9 @@
-import type { CSSProperties } from "react"
-import { Shimmer } from "@obsidion/web-ds"
-
-/** Neutral placeholder block sized like the content it stands in for. */
-function SkeletonBlock({
-  width,
-  height,
-  radius = 8,
-  style,
-}: {
-  width: number | string
-  height: number
-  radius?: number
-  style?: CSSProperties
-}) {
-  // --surface-strong lands at ~7% white once the shimmer dims it to 35% opacity.
-  return (
-    <div
-      aria-hidden
-      style={{ width, height, borderRadius: radius, background: "var(--surface-strong)", ...style }}
-    />
-  )
-}
+import { Shimmer, SkeletonBlock } from "@obsidion/web-ds"
 
 /** Placeholder mirroring an ActivityListRow while the feed hydrates. */
 function ActivityRowSkeleton() {
   return (
-    // The shimmer band fills the wrapper, so it needs the row's radius or it sweeps a square.
-    <Shimmer style={{ borderRadius: "var(--radius-12)", overflow: "hidden" }}>
+    <Shimmer>
       <div className="zkm-activity-row">
         <div className="zkm-activity-row__top">
           <SkeletonBlock width={44} height={44} radius={22} />
@@ -59,9 +36,7 @@ export function ActivityListSkeleton({ rows = 3 }: { rows?: number }) {
  */
 export function BalanceSkeleton({ width = 190, height = 46 }: { width?: number; height?: number }) {
   return (
-    <Shimmer
-      style={{ width: "fit-content", borderRadius: 12, overflow: "hidden", margin: "6px 0" }}
-    >
+    <Shimmer style={{ width: "fit-content", margin: "6px 0" }}>
       <SkeletonBlock width={width} height={height} radius={12} />
     </Shimmer>
   )
@@ -70,7 +45,7 @@ export function BalanceSkeleton({ width = 190, height = 46 }: { width?: number; 
 /** Placeholder for a one-line text value, e.g. a detail row's value. */
 export function TextSkeleton({ width = 120 }: { width?: number }) {
   return (
-    <Shimmer style={{ width: "fit-content", borderRadius: 8, overflow: "hidden" }}>
+    <Shimmer style={{ width: "fit-content" }}>
       <SkeletonBlock width={width} height={14} />
     </Shimmer>
   )

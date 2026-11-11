@@ -3,8 +3,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import { AztecAddress, EthAddress } from "@aztec-labs/aztec.js/addresses"
 import { Fr } from "@aztec-labs/aztec.js/fields"
 import { TxExecutionResult, TxStatus } from "@aztec-labs/stdlib/tx"
-import { keccak256, toHex, zeroHash, type Address, type Hex } from "viem"
+import { zeroHash, type Address, type Hex } from "viem"
 import {
+  CANONICAL_ENTRY_POINT_V08,
+  computeUserOpHash,
   decodeMetadataUpdateIntentData,
   decodeUserRecordMetadata,
   userRecordStateHash,
@@ -107,7 +109,7 @@ function fixture() {
         case "getNonce":
           return state.nonce
         case "getUserOpHash":
-          return keccak256(toHex(`${args![0].callData}/${args![0].nonce}`))
+          return computeUserOpHash(31337, CANONICAL_ENTRY_POINT_V08, args![0])
         case "implementationFor":
           return args?.[0] === 3 ? destination.implementation : addr(8)
         case "nameOf":
@@ -138,6 +140,7 @@ function fixture() {
     },
   )
   const client = {
+    chain: { id: 31337 },
     getChainId: async () => 31337,
     getBlockNumber: async () => 1n,
     readContract,

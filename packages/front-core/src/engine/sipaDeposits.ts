@@ -1,23 +1,21 @@
 import { getAddress, keccak256, type Address, type Hash, type Hex } from "viem"
 import type { SIPADepositPhase } from "@obsidion/core/types"
-import { logger } from "../utils/logger"
 import type { Database, Reads, Write } from "./database"
 import { WalletError, type Failure } from "./errors"
+import { decodeRecord, loadRecords, persistentStore, type RecordSet } from "./persistentStore"
 import {
-  decodeRecord,
-  encodeRecord,
-  loadRecords,
-  persistentStore,
-  type RecordSet,
-} from "./persistentStore"
-import {
-  broadcastStub,
   SIPA_DEPOSIT_RECORD_VERSION,
+  sipaDepositId,
   sipaDepositTransition,
   type SipaDepositEvent,
   type SipaDepositFields,
 } from "./sipaDepositTransition"
 import type { ReadonlyStore } from "./store"
+import {
+  decodeSipaDeposits,
+  KEY_SIPA_DEPOSITS,
+  migrateSipaDeposits,
+} from "../storageMigrations/sipaDeposits"
 
 export type { SIPADepositPhase }
 export * from "./sipaDepositTransition"
@@ -134,10 +132,11 @@ export interface SipaDeposit {
   /** The resolved name (self-initiated flow), e.g. "alice.oxidestaging.eth". */
   resolvedName?: string
   /**
-   * Set when the SIPA is not a plain deposit — the intent its address commits to. `user-op` is a
-   * backup passkey rotation's funding, paid to the SIPA that runs the account's user operation.
+   * Set when the SIPA is not a plain deposit — the intent its address commits to. `add-passkey`
+   * is a backup passkey rotation's funding, paid to the SIPA that runs the account's user
+   * operation.
    */
-  intent?: "registration" | "user-op"
+  intent?: "registration" | "add-passkey"
   /**
    * Set when no SIPA exists: an upgrade's migration executor deposited straight into the portal under
    * `recipientCommitment`. The record's key is then {@link directDepositKey}, not an L1 address.
@@ -190,7 +189,10 @@ export interface SipaDeposit {
   claimLanded?: { inboxIndex: string; at: number }
   /** Sweeps seen and not yet claimed, in inbox order. */
   pendingSweeps?: SIPAPendingSweep[]
-  /** ms epoch the rail last asked for this funded, overdue SIPA to be published again. */
+  /**
+   * ms epoch the rail last asked for this SIPA to be published again, once paid again or overdue.
+   * The stuck clock runs from it.
+   */
   republishAskedAt?: number
   /**
    * The largest balance the rail last observed at the SIPA across its accepted tokens, raw units of
@@ -209,6 +211,11 @@ export interface SipaDeposit {
    * when several accepted tokens were sent. `tokenSymbol` is the credited token once swept.
    */
   fundingTokenSymbol?: string
+  /**
+   * What the funding transaction was: a plain token transfer, or an Across fill that delivered a
+   * bridge-in. Set once, from its receipt.
+   */
+  funding?: "transfer" | "bridge"
   /**
    * Sender-wallet display identity: the connected wallet on self-initiated deposits, backfilled from
    * `fundingFromAddress` on third-party ones once the funding transfer is observed.
@@ -230,7 +237,7 @@ export type BroadcastKind = "registration" | "deposit" | "pool"
 /** What the executor rebuilds the broadcast from. Nothing secret: the keys re-derive the rest. */
 export type BroadcastSource =
   | { type: "registration"; account: string }
-  /** A self-derived address: the record's `slot` rebuilds it. */
+  /** A deposit address: the record's `slot`, else its recorded publish inputs, rebuild it. */
   | { type: "slot" }
   | { type: "rotation"; owner: string }
 
@@ -342,65 +349,17 @@ export function directDepositSettled(record: SipaDeposit | null | undefined): bo
  * funding. The wallet reports it as the account's own move.
  */
 export function isAccountMoveSipa(record: Pick<SipaDeposit, "intent">): boolean {
-  return record.intent === "user-op"
+  return record.intent === "add-passkey"
 }
 
-/** The blob older builds kept every SIPA deposit in, one JSON object keyed by lowercase address. */
-export const KEY_SIPA_DEPOSITS = "@obsidion/sipa-deposits/records"
-
 const PREFIX = "acct/sipaDeposits"
-
-/** A record's id: its lowercase address. */
-export const sipaDepositId = (address: string) => address.toLowerCase()
 
 /** Where a pass keeps the block it read `recipient`'s SIPAs through at `portal`. */
 export const sipaCursorKey = (portal: string, recipient: string) =>
   `acct/sipaCursor/${portal.toLowerCase()}/${recipient.toLowerCase()}`
 
-/** Fields older builds wrote that nothing reads. */
-const DEAD_FIELDS = ["lastScannedBlock", "unresolvedSweepBlocks", "historyScanned", "lastScanAt"]
-
-const isObject = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value)
-
-/** A legacy record as this version keeps it, or undefined when it is not one. */
-function upgraded(value: unknown): SipaDeposit | undefined {
-  if (!isObject(value) || typeof value.sipaAddress !== "string" || typeof value.phase !== "string")
-    return undefined
-  const { error, ...rest } = value
-  const record = Object.fromEntries(
-    Object.entries(rest).filter(([field]) => !DEAD_FIELDS.includes(field)),
-  ) as unknown as SipaDeposit
-  return typeof error === "string" && !record.failure
-    ? { ...record, failure: { code: "unknown", detail: error } }
-    : record
-}
-
-/**
- * The records a `KEY_SIPA_DEPOSITS` blob holds, keyed as this store keys them. A record that is not
- * one is skipped; a blob that does not parse holds none.
- */
-export function decodeSipaDeposits(raw: string | undefined): [string, SipaDeposit][] {
-  if (raw === undefined) return []
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(raw)
-  } catch {
-    logger.warn("[sipaDeposits] the saved deposits do not parse; the chain refills them")
-    return []
-  }
-  if (!isObject(parsed)) {
-    logger.warn("[sipaDeposits] the saved deposits are not a record map; the chain refills them")
-    return []
-  }
-  const out: [string, SipaDeposit][] = []
-  for (const [key, value] of Object.entries(parsed)) {
-    const record = upgraded(value)
-    if (record) out.push([sipaDepositId(record.sipaAddress), record])
-    else logger.warn(`[sipaDeposits] skipped the saved deposit ${key}: not a deposit record`)
-  }
-  return out
-}
+/** The earlier SIPA sets the recipient's cursors were read with. */
+export const sipaSetsKey = (recipient: string) => `acct/sipaSets/${recipient.toLowerCase()}`
 
 /**
  * The deposits a database no deposit store is open on holds, such as a retired rollup's: this store's
@@ -423,123 +382,6 @@ export function storedSipaDeposits(db: {
   return [...out.values()]
 }
 
-/** The blob older builds kept every namespace's broadcasts in, keyed by lowercase address. */
-export const BROADCASTS_STORAGE_KEY = "@obsidion/sipa-broadcasts"
-
-/** What an older build's failure text meant. */
-const LEGACY_WAITS: Record<string, SipaBroadcastWait> = {
-  "Waiting for unlock": "unlock",
-  "Waiting for the tag to register": "registration",
-  "Waiting for the balance move": "balanceMove",
-}
-
-/** A legacy broadcast's failure text as a wait or a failure. */
-function legacyOutcome(text: unknown): Pick<SipaBroadcast, "wait" | "failure"> {
-  if (typeof text !== "string") return {}
-  const wait = LEGACY_WAITS[text]
-  if (wait) return { wait }
-  return text === "The network dropped the broadcast"
-    ? { failure: { code: "deposit.broadcastDropped" } }
-    : { failure: { code: "deposit.broadcastFailed", detail: text } }
-}
-
-/**
- * The broadcasts a legacy blob holds for namespace `scope`, as this store keeps them. One that is
- * not a broadcast is skipped; a blob that does not parse holds none.
- */
-export function decodeBroadcasts(
-  raw: string | undefined,
-  scope: string | null,
-): [string, SipaBroadcast][] {
-  let parsed: unknown
-  try {
-    parsed = raw === undefined ? undefined : JSON.parse(raw)
-  } catch {
-    logger.warn("[sipaDeposits] the saved broadcasts do not parse")
-    return []
-  }
-  if (!isObject(parsed)) return []
-  return Object.values(parsed).flatMap((value): [string, SipaBroadcast][] => {
-    if (!isObject(value) || typeof value.address !== "string" || !isObject(value.source)) return []
-    if ((value.scope ?? null) !== scope) return []
-    const job = Object.fromEntries(
-      Object.entries(value).filter(([k]) => !["address", "scope", "lastError"].includes(k)),
-    ) as unknown as SipaBroadcast
-    return [[sipaDepositId(value.address), { ...job, ...legacyOutcome(value.lastError) }]]
-  })
-}
-
-/** `record` with a version 2 slot broadcast's `(day, nonce)` moved onto its `slot`. */
-function withSlotSource(record: SipaDeposit): SipaDeposit {
-  const source = record.broadcast?.source as (BroadcastSource & Partial<SipaSlot>) | undefined
-  if (source?.type !== "slot" || source.day === undefined || source.nonce === undefined)
-    return record
-  const { day, nonce, deployment } = source
-  return {
-    ...record,
-    slot: record.slot ?? { day, nonce, ...(deployment ? { deployment } : {}) },
-    broadcast: { ...record.broadcast!, source: { type: "slot" } },
-  }
-}
-
-/** An address older builds kept outside the records: the view's slot, or a pool entry. */
-interface LegacySlot extends SipaSlot {
-  address: string
-  published: boolean
-  broadcastTxHash?: string
-  pooled: boolean
-}
-
-const isLegacySlot = (v: unknown): v is Omit<LegacySlot, "pooled"> =>
-  isObject(v) &&
-  typeof v.address === "string" &&
-  Number.isInteger(v.day) &&
-  Number.isInteger(v.nonce) &&
-  typeof v.published === "boolean"
-
-/** The slots and pool entries of older builds' saved values: an entry that is not one is skipped. */
-export function decodeSlots(values: readonly string[]): LegacySlot[] {
-  return values.flatMap((raw) => {
-    let parsed: unknown
-    try {
-      parsed = JSON.parse(raw)
-    } catch {
-      return []
-    }
-    const pooled = Array.isArray(parsed)
-    const entries = (pooled ? parsed : [parsed]) as unknown[]
-    return entries.flatMap((v) => (isLegacySlot(v) ? [{ ...v, pooled }] : []))
-  })
-}
-
-/**
- * A held record with what an older build kept of its address: its slot, a landed pool broadcast
- * for a pool entry, and an owed one for an address shown and never published.
- */
-function adoptSlot(record: SipaDeposit, legacy: LegacySlot, at: number): SipaDeposit {
-  const { day, nonce, deployment } = legacy
-  const slot = record.slot ?? { day, nonce, ...(deployment ? { deployment } : {}) }
-  if (record.broadcast || (legacy.published && !legacy.pooled)) return { ...record, slot }
-  const job: SipaBroadcast = legacy.pooled
-    ? {
-        kind: "pool",
-        source: { type: "slot" },
-        state: "landed",
-        createdAt: at,
-        failures: 0,
-      }
-    : {
-        kind: "deposit",
-        source: { type: "slot" },
-        state: legacy.broadcastTxHash ? "sent" : "queued",
-        createdAt: at,
-        shownAt: at,
-        failures: 0,
-        ...(legacy.broadcastTxHash ? { txHash: legacy.broadcastTxHash } : {}),
-      }
-  return { ...record, slot, broadcast: job }
-}
-
 export interface SipaDepositsDeps {
   /** The account's database. */
   db: Database
@@ -557,6 +399,7 @@ export interface SipaDepositsDeps {
   account: boolean
   /** Hears a registration address show its first funds, once the write that shows them commits. */
   funded?(): void
+  now: () => number
 }
 
 /** The address holds funds, or a sweep took them. */
@@ -596,64 +439,11 @@ export interface SipaDeposits {
 
 export function createSipaDeposits(deps: SipaDepositsDeps): SipaDeposits {
   const { db } = deps
-  /**
-   * Version 1 carries every legacy record forward: several exist only on this device. Version 2
-   * folds this namespace's legacy broadcasts into their records: an owed one exists nowhere else.
-   * Version 3 moves each held address's legacy slot or pool entry onto its record.
-   */
-  const migrate = async (from: number | undefined, w: Write): Promise<void> => {
-    if (from !== undefined && from !== 1 && from !== 2)
-      throw new WalletError("invariant", `sipaDeposits: unknown version ${from}`)
-    const held = new Set(
-      (await db.range(`${PREFIX}/`)).map(([key]) => key.slice(PREFIX.length + 1)),
-    )
-    const read = async (id: string) => {
-      const raw = await w.get(`${PREFIX}/${id}`)
-      return raw === undefined ? undefined : (decodeRecord(raw) as SipaDeposit)
-    }
-    const save = (record: SipaDeposit) => {
-      const id = sipaDepositId(record.sipaAddress)
-      held.add(id)
-      w.put(`${PREFIX}/${id}`, encodeRecord(record))
-    }
-    if (from === undefined) {
-      for (const [id, record] of decodeSipaDeposits(await w.get(KEY_SIPA_DEPOSITS)))
-        if (!held.has(id)) save(record)
-    }
-    if (from !== 2 && deps.legacy) {
-      const { db: page, scope } = deps.legacy
-      for (const [id, job] of decodeBroadcasts(await page.get(BROADCASTS_STORAGE_KEY), scope)) {
-        const record = await read(id)
-        if (!record?.broadcast) save({ ...(record ?? broadcastStub(id, job)), broadcast: job })
-      }
-    }
-    for (const id of held) {
-      const record = await read(id)
-      const moved = record && withSlotSource(record)
-      if (moved && moved !== record) save(moved)
-    }
-    const slots = deps.legacy?.slots
-    const legacySlots = slots ? decodeSlots((await slots.range("")).map(([, value]) => value)) : []
-    const at = Date.now()
-    for (const legacy of legacySlots) {
-      const record = await read(sipaDepositId(legacy.address))
-      if (record) save(adoptSlot(record, legacy, at))
-    }
-    // Older builds left a landed pool broadcast as it was when its address was handed out: only
-    // the saved pool still holds unshown addresses.
-    const pooled = new Set(legacySlots.flatMap((s) => (s.pooled ? [sipaDepositId(s.address)] : [])))
-    for (const id of held) {
-      const record = await read(id)
-      const job = record?.broadcast
-      if (record && job?.kind === "pool" && job.state === "landed" && !pooled.has(id))
-        save({ ...record, broadcast: { ...job, kind: "deposit", shownAt: job.shownAt ?? at } })
-    }
-  }
   const store = persistentStore<SipaDeposit, "recipient">(db, {
     prefix: PREFIX,
     version: 3,
     id: (record) => sipaDepositId(record.sipaAddress),
-    migrate,
+    migrate: (from, w) => migrateSipaDeposits(from, w, { db, prefix: PREFIX, legacy: deps.legacy }),
     indexes: {
       recipient: (record) =>
         record.recipientL2Address ? [record.recipientL2Address.toLowerCase()] : [],
@@ -678,7 +468,7 @@ export function createSipaDeposits(deps: SipaDepositsDeps): SipaDeposits {
   const applyAll: SipaDeposits["applyAll"] = (events, w) =>
     writing(w, async (w) => {
       const changed: SipaDeposit[] = []
-      const now = Date.now()
+      const now = deps.now()
       for (const [address, event] of events) {
         if (!deps.account && event.type === "seeded")
           throw new WalletError(
@@ -702,7 +492,7 @@ export function createSipaDeposits(deps: SipaDepositsDeps): SipaDeposits {
     view: store.view,
     ready: store.ready,
     get: (address, w) => store.get(sipaDepositId(address), w),
-    byRecipient: (recipient) => loadRecords(store.query("recipient", recipient.toLowerCase())),
+    byRecipient: (recipient) => loadRecords(store.where("recipient", recipient.toLowerCase())),
     applyAll,
     async apply(address, event, w) {
       const [next] = await applyAll([[address, event]], w)
@@ -716,7 +506,7 @@ export function createSipaDeposits(deps: SipaDepositsDeps): SipaDeposits {
       }),
     async oweBroadcast(address, owed) {
       const [next] = await applyAll([
-        [address, { type: "broadcastOwed", address, owed, at: Date.now() }],
+        [address, { type: "broadcastOwed", address, owed, at: deps.now() }],
       ])
       return next
     },

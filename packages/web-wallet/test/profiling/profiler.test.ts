@@ -210,7 +210,7 @@ describe("instrumentWallet", () => {
 })
 
 describe("TEE signer interceptor", () => {
-  /** The seam the token resource drives: a service inherits setTeeSigner, and the signer goes in through it. */
+  /** The seam the token service drives: a service inherits setTeeSigner, and the signer goes in through it. */
   class FakeServiceBase {
     _teeSigner: any
     setTeeSigner(signer: any) {
@@ -279,7 +279,7 @@ describe("TEE signer interceptor", () => {
   it("leaves a cleared signer as undefined rather than facading it", () => {
     const restore = installOn(FakeServiceBase.prototype)
     const service = new FakeServiceBase()
-    // The token resource clears it before every reconnect; a facade over undefined would break the
+    // The token service clears it before every reconnect; a facade over undefined would break the
     // "TEE signer not wired" guard downstream.
     service.setTeeSigner(undefined)
     expect(service._teeSigner).toBeUndefined()

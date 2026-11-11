@@ -7,6 +7,7 @@ import {SIPABase} from "@periphery/SIPABase.sol";
 import {IForwardingTable} from "@periphery/interfaces/IForwardingTable.sol";
 import {Errors} from "@periphery/Errors.sol";
 import {REGISTRATION_SWEEP_TIP} from "@test/helpers/ForwardingTableFixture.sol";
+import {Intents} from "@periphery/Intent.sol";
 
 contract RegistrationRouterTest is RegistrationTestBase {
   uint256 internal constant DEPOSIT = 100 ether;
@@ -103,7 +104,7 @@ contract RegistrationRouterTest is RegistrationTestBase {
     RegistrationRouter.RegisterParams memory p = _params(registrationData, DEPOSIT);
     vm.mockCall(
       address(sipaFactory),
-      abi.encodeWithSelector(sipaFactory.implementationFor.selector, SIPABase.Intent.Registration),
+      abi.encodeWithSelector(sipaFactory.implementationFor.selector, Intents.REGISTRATION),
       abi.encode(address(0))
     );
 

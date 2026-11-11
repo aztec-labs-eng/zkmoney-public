@@ -4,8 +4,8 @@
  * Identity: the inbox signer is the wallet's bootstrap EOA (`deriveBootstrapKey(msk)`),
  * the address the oxide account publishes as `bootstrapOwner()`, so senders reach the inbox by
  * name and the inbox has exactly one identity; the OPFS DB is encrypted under the shared
- * `deriveKeyFromSecret(msk, "xmtp-store")` key (never persisted). Warm start (`Client.build`) is
- * keyed by a per-account cached inboxId (`xmtp.v2.inboxId.<xmtpAddress>`); cold start
+ * `deriveKeyFromSecret(msk, "xmtp-store")` key (never persisted). Warm start (`Client.build`) runs
+ * once this device built an installation for the account's identity (`XmtpInbox`); cold start
  * (`Client.create`) registers a fresh installation, first revoking the inbox's oldest one when the
  * inbox is at XMTP's per-inbox installation cap; a warm start whose local DB holds no registered
  * installation, or that keeps failing to build, falls back to the cold path. Adapter methods
@@ -18,7 +18,6 @@ import {
   ConsentState,
   IdentifierKind,
   LogLevel,
-  Opfs,
   SortDirection,
   createBackend,
   getInboxIdForIdentifier,
@@ -35,23 +34,15 @@ import type { PrivateKeyAccount } from "viem/accounts"
 import {
   deriveBootstrapKey,
   type FieldLike,
-  type IStorageAdapter,
-  type HistorySyncPort,
+  type DeviceSyncPort,
   type IXmtpSender,
   type InboxConversation,
   type InboxMessage,
   type XmtpClientManagerLike,
+  type XmtpInbox,
 } from "@obsidion/front-core"
 import { buildConnectBack, type AztecPaymentRequestContent } from "@obsidion/sdk"
 import { webConnectBackCodec, webPaymentRequestCodec, webXmtpCodecs } from "./codecs"
-
-/** Legacy unkeyed cache; ignored for warm start, dropped after a successful create. */
-export const XMTP_INBOX_ID_STORAGE_KEY = "xmtp.v2.inboxId"
-
-/** Per-account warm-start flag — two wallets on one origin each keep their own installation. */
-export function xmtpInboxIdStorageKey(xmtpAddress: string): string {
-  return `${XMTP_INBOX_ID_STORAGE_KEY}.${xmtpAddress.toLowerCase()}`
-}
 
 export type WebXmtpEnv = "local" | "dev" | "production"
 
@@ -66,10 +57,6 @@ const XMTP_CAP_CHECK_ATTEMPTS = 3
 const XMTP_CAP_CHECK_BACKOFF_MS = 500
 
 const XMTP_ABANDONED = "xmtp cold start abandoned"
-
-function revokedAtStorageKey(inboxId: string): string {
-  return `xmtp.v2.revokedAt.${inboxId}`
-}
 
 // Driver's receive set: allowed + unknown, denied excluded.
 const RECEIVE_CONSENT_STATES = [ConsentState.Allowed, ConsentState.Unknown]
@@ -87,7 +74,7 @@ export interface WebXmtpClientOptions {
   /** The shared `deriveKeyFromSecret(msk, "xmtp-store")` key. */
   dbEncryptionKey: Uint8Array
   env: WebXmtpEnv
-  storage: IStorageAdapter
+  inbox: XmtpInbox
   /** Fires if the tab lifecycle gives up on this attempt; `create` then starts no further SDK call. */
   signal?: AbortSignal
 }
@@ -200,7 +187,7 @@ async function freeInstallationSlot(
   signer: Signer,
   identifier: Identifier,
   env: WebXmtpEnv,
-  storage: IStorageAdapter,
+  inbox: XmtpInbox,
   signal?: AbortSignal,
 ): Promise<void> {
   const backend = await createBackend({ env })
@@ -211,21 +198,21 @@ async function freeInstallationSlot(
   const [state] = await Client.fetchInboxStates([inboxId], backend)
   // Above the cap (an inbox from before XMTP enforced it) one revoke would not free a slot.
   if (!state || state.installations.length !== XMTP_INSTALLATION_CAP) return
-  const sinceLastRevoke = Date.now() - Number(await storage.getItem(revokedAtStorageKey(inboxId)))
+  const sinceLastRevoke = Date.now() - ((await inbox.revokedAtMs(inboxId)) ?? 0)
   if (sinceLastRevoke >= 0 && sinceLastRevoke < XMTP_REVOKE_COOLDOWN_MS) return
   if (signal?.aborted) throw new Error(XMTP_ABANDONED)
   const oldest = state.installations.reduce((min, i) => (createdAt(i) < createdAt(min) ? i : min))
   // Reserve the window first: a revoke that outlives this tab's lock must still count.
-  await storage.setItem(revokedAtStorageKey(inboxId), String(Date.now()))
+  await inbox.setRevokedAtMs(inboxId, Date.now())
   if (signal?.aborted) {
-    await storage.removeItem(revokedAtStorageKey(inboxId))
+    await inbox.setRevokedAtMs(inboxId, undefined)
     throw new Error(XMTP_ABANDONED)
   }
   try {
     await Client.revokeInstallations(signer, inboxId, [oldest.bytes], backend)
   } catch (err) {
     // Safe to retry at once: a revoke that landed anyway leaves nine, which the count check skips.
-    await storage.removeItem(revokedAtStorageKey(inboxId))
+    await inbox.setRevokedAtMs(inboxId, undefined)
     throw err
   }
   console.warn("[xmtp] revoked installation", oldest.id, "created", String(createdAt(oldest)))
@@ -236,13 +223,13 @@ async function coldStart(
   identifier: Identifier,
   clientOptions: ClientOptions,
   env: WebXmtpEnv,
-  storage: IStorageAdapter,
+  inbox: XmtpInbox,
   signal?: AbortSignal,
 ): Promise<NativeClient> {
   for (let attempt = 1; ; attempt++) {
     if (signal?.aborted) throw new Error(XMTP_ABANDONED)
     try {
-      await freeInstallationSlot(signer, identifier, env, storage, signal)
+      await freeInstallationSlot(signer, identifier, env, inbox, signal)
       break
     } catch (err) {
       if (signal?.aborted) throw err
@@ -272,7 +259,7 @@ async function coldStart(
   return client
 }
 
-export class WebXmtpClient implements XmtpClientManagerLike, IXmtpSender, HistorySyncPort {
+export class WebXmtpClient implements XmtpClientManagerLike, IXmtpSender, DeviceSyncPort {
   private constructor(
     private readonly client: NativeClient,
     /** This wallet's messaging address: the bootstrap EOA, the inbox's only identity. */
@@ -295,12 +282,9 @@ export class WebXmtpClient implements XmtpClientManagerLike, IXmtpSender, Histor
       // Raise to LogLevel.Debug to get either back.
       loggingLevel: LogLevel.Off,
     } as unknown as ClientOptions
-    const cacheKey = xmtpInboxIdStorageKey(bootstrap.address)
-    const cachedInboxId = await options.storage.getItem(cacheKey)
+    const built = await options.inbox.built(bootstrap.address)
     if (options.signal?.aborted) throw new Error(XMTP_ABANDONED)
-    const warm = cachedInboxId
-      ? await warmStart(identifier, clientOptions, options.signal)
-      : undefined
+    const warm = built ? await warmStart(identifier, clientOptions, options.signal) : undefined
     const client =
       warm ??
       (await coldStart(
@@ -308,14 +292,11 @@ export class WebXmtpClient implements XmtpClientManagerLike, IXmtpSender, Histor
         identifier,
         clientOptions,
         options.env,
-        options.storage,
+        options.inbox,
         options.signal,
       ))
     const isFirstInstallation = !warm
-    if (client.inboxId) {
-      await options.storage.setItem(cacheKey, client.inboxId)
-      await options.storage.removeItem(XMTP_INBOX_ID_STORAGE_KEY)
-    }
+    if (client.inboxId) await options.inbox.markBuilt(bootstrap.address, client.inboxId)
     // The installation is registered and cached either way; an abandoned attempt just lets it go.
     if (options.signal?.aborted) {
       closeQuietly(client)
@@ -451,12 +432,6 @@ export class WebXmtpClient implements XmtpClientManagerLike, IXmtpSender, Histor
     })
   }
 
-  /** Revoke this installation on the network (wallet reset). */
-  async revokeInstallation(): Promise<void> {
-    const bytes = this.client.installationIdBytes
-    if (bytes) await this.client.revokeInstallations([bytes])
-  }
-
   // ── Device sync (front-core `DeviceSyncPort`) ─────────────────────────────
 
   async sendSyncRequest(): Promise<void> {
@@ -469,10 +444,6 @@ export class WebXmtpClient implements XmtpClientManagerLike, IXmtpSender, Histor
 
   async processSyncArchive(pin?: string): Promise<void> {
     await this.client.processSyncArchive(pin)
-  }
-
-  async listSyncArchivePins(): Promise<string[]> {
-    return (await this.client.listAvailableArchives(7)).map((archive) => archive.pin)
   }
 
   async syncAllDeviceSyncGroups(): Promise<unknown> {
@@ -531,33 +502,5 @@ function wrapMessage(message: DecodedMessage<unknown>): InboxMessage {
     contentTypeId: `${t.authorityId}/${t.typeId}:${t.versionMajor}.${t.versionMinor}`,
     content: () => message.content,
     topic: message.conversationId,
-  }
-}
-
-/**
- * Wallet reset: revoke this installation (best-effort, needs a live client) and drop the encrypted
- * OPFS DBs + cached inboxId so the next unlock cold-starts. No web reset flow calls this yet; it is
- * the seam that flow wires up.
- */
-export async function wipeXmtpLocalState(
-  storage: IStorageAdapter,
-  liveClient?: WebXmtpClient,
-): Promise<void> {
-  if (liveClient) {
-    try {
-      await liveClient.revokeInstallation()
-    } catch {
-      // Best-effort — a failed revoke never blocks the local wipe.
-    }
-  }
-  await storage.removeItem(XMTP_INBOX_ID_STORAGE_KEY)
-  if (liveClient) await storage.removeItem(xmtpInboxIdStorageKey(liveClient.xmtpAddress))
-  try {
-    const opfs = await Opfs.create()
-    for (const file of await opfs.listFiles()) {
-      if (file.includes("xmtp-")) await opfs.deleteFile(file).catch(() => false)
-    }
-  } catch {
-    // OPFS unavailable — nothing to wipe.
   }
 }

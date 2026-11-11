@@ -16,7 +16,7 @@
   cursor: pointer;
 }
 .bubbleBody:focus-visible {
-  outline: 2px solid rgba(255, 255, 255, 0.6);
+  outline: 2px solid rgba(var(--ink-rgb), 0.6);
   outline-offset: 4px;
 }
 .bubblePill {
@@ -27,17 +27,17 @@
   border-radius: 9999px;
   font-size: 10px;
   font-weight: 500;
-  color: #fff;
-  background: rgba(253, 253, 253, 0.03);
+  color: var(--ink);
+  background: rgba(var(--ink-rgb), 0.03);
   box-shadow: 0 0 11px 3px rgba(0, 0, 0, 0.1);
 }
 :global(.ww-bubble)[data-error] .bubblePill {
-  color: #fe708b;
-  background: rgba(254, 112, 139, 0.1);
+  color: var(--accent-pink);
+  background: rgba(var(--accent-pink-rgb), 0.1);
 }
 .bubblePill[data-gold] {
-  color: #eed04e;
-  background: rgba(238, 208, 78, 0.03);
+  color: var(--accent-gold);
+  background: rgba(var(--accent-gold-rgb), 0.03);
 }
 .bubblePill[data-settled] {
   color: #2ecc71;
@@ -73,8 +73,8 @@
   text-align: center;
   font-size: 12px;
   font-weight: 600;
-  color: #fff;
-  background: rgba(253, 253, 253, 0.05);
+  color: var(--ink);
+  background: rgba(var(--ink-rgb), 0.05);
   box-shadow: 0 0 22px 6px rgba(0, 0, 0, 0.05);
 }
 :global(.ww-shell) .bubbleBtn[data-primary] {

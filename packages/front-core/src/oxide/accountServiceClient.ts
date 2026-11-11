@@ -14,7 +14,6 @@ import { sha256 } from "@aztec-labs/foundation/crypto/sha256"
 import { BOOTSTRAP_SIGNATURE_HEADER } from "@obsidion/core/constants"
 import type { DrawnNameResponse, NameClaimResponse } from "@obsidion/core/types"
 import { type Hex, encodeAbiParameters, keccak256, parseAbiParameters } from "viem"
-import type { PackedUserOperation } from "@oxide/l1-contracts"
 
 /** Produces the platform attestation assertion over a base64 clientDataHash. */
 export interface AssertionProvider {
@@ -232,15 +231,6 @@ export class ReadOnlyClientError extends Error {
     super(`AccountServiceClient is read-only — cannot call gated route ${path}`)
     this.name = "ReadOnlyClientError"
   }
-}
-
-/** The server proved custody of this exact op on an earlier POST (typed 409). */
-export function isDuplicateSubmission(err: unknown): boolean {
-  return (
-    err instanceof AccountServiceError &&
-    err.status === 409 &&
-    (err.body as { reason?: string } | undefined)?.reason === "duplicate"
-  )
 }
 
 /** The NameClaim attempts budget for this (device, name) is spent — the only terminal 429. */
@@ -769,66 +759,5 @@ export class AccountServiceClient {
       throw new AccountServiceError(res.status, message, errBody, retryAfterSec)
     }
     return res.json() as Promise<T>
-  }
-}
-
-// ── Sponsored-op helpers ────────────────────────────────────────────────────────
-//
-// The 4337 sponsored-op tail (sponsor → adopt → sign → bundle → receipt) the migration relay's
-// `updateUserL2Address` self-heal drives. Bundling is async: /bundler/bundle returns a userOpHash
-// and the client polls /bundler/receipt until the op lands.
-
-const RECEIPT_POLL_MS = 1000
-const RECEIPT_TIMEOUT_MS = 180_000
-
-/** PackedUserOperation → the account-service JSON wire shape (bigints → decimal strings). */
-export function packedToJson(op: PackedUserOperation): UserOpJson {
-  return {
-    sender: op.sender,
-    nonce: op.nonce.toString(),
-    initCode: op.initCode,
-    callData: op.callData,
-    accountGasLimits: op.accountGasLimits,
-    preVerificationGas: op.preVerificationGas.toString(),
-    gasFees: op.gasFees,
-    paymasterAndData: op.paymasterAndData,
-    signature: op.signature,
-  }
-}
-
-/**
- * Adopt the sponsored fields into the locally-built op. ONLY the four fields the
- * sponsorship fixes are taken from the server — sender, nonce, initCode, and
- * callData stay ours, so a malicious sponsor can re-price gas (its own spend) but
- * never redirect what the op does.
- */
-export function adoptSponsorship(
-  op: PackedUserOperation,
-  sponsored: SponsorResponse,
-): PackedUserOperation {
-  return {
-    ...op,
-    accountGasLimits: sponsored.accountGasLimits,
-    preVerificationGas: BigInt(sponsored.preVerificationGas),
-    gasFees: sponsored.gasFees,
-    paymasterAndData: sponsored.paymasterAndData,
-  }
-}
-
-/** Polls the bundler until the op lands. Throws on timeout. */
-export async function waitForUserOpReceipt(
-  accountService: Pick<AccountServiceClient, "receipt">,
-  userOpHash: Hex,
-  sleep: (ms: number) => Promise<void>,
-  timeoutMs: number = RECEIPT_TIMEOUT_MS,
-): Promise<UserOpReceipt> {
-  const deadline = Date.now() + timeoutMs
-  for (;;) {
-    const { receipt } = await accountService.receipt({ userOpHash })
-    if (receipt) return receipt
-    if (Date.now() >= deadline) {
-      throw new Error(`userOp ${userOpHash} not included within ${Math.round(timeoutMs / 1000)}s`)
-    }
-    await sleep(RECEIPT_POLL_MS)
   }
 }

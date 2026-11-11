@@ -5,11 +5,10 @@
  */
 import type { Address } from "viem"
 import { bridgeUnderlying } from "@obsidion/core/oxide"
-import { readyValue, type SipaDeposit } from "@obsidion/front-core"
+import { type SipaDeposit } from "@obsidion/front-core"
 import type { FrozenRefundCandidate } from "@obsidion/sdk"
-import { getConfig } from "../../../config/env"
-import { getOxideTuple, getRetiredRollupSources, l1PublicClient } from "../../../config/oxideTuple"
-import { session } from "../../../session/session"
+import { l1PublicClient } from "../../../config/oxideTuple"
+import type { Session } from "../../../session/session"
 import { createWebMetadataMigration } from "../../migration/createWebMetadataMigration"
 import {
   noteOldVersionWithdrawn,
@@ -41,22 +40,24 @@ export interface FrozenDeposit {
  * `record`'s sweeps into a frozen old version's portal, or null when no such portal holds any. The
  * migration check may not know the address, so its sweeps go to the refund runtime with it.
  */
-export async function findFrozenDeposit(record: SipaDeposit): Promise<FrozenDeposit | null> {
-  const config = getConfig()
-  const own = session()
-  const { sipaDeposits, wallet, account, token, contractService, auth } = own
+export async function findFrozenDeposit(
+  session: Session,
+  record: SipaDeposit,
+): Promise<FrozenDeposit | null> {
+  const { sipaDeposits, wallet, account, token, contractService, auth, page } = session
+  const { config } = session.page
   if (!account || !token) throw new Error(copy.signInToRefund)
   const publicClient = l1PublicClient(config)
   const [current, sources, head] = await Promise.all([
-    getOxideTuple(config),
-    getRetiredRollupSources(config),
+    session.page.chain.oxideTuple.read(),
+    session.page.chain.retiredRollupSources.read(),
     publicClient.getBlockNumber({ cacheTime: 0 }),
   ])
   for (const tuple of sources) {
     // A deployment without SIPAs, such as Sky savings, handed out no deposit address.
     if (!tuple.depositSIPAImplementation && !tuple.registrationSIPAImplementation) continue
     if (!(await portalContract(publicClient, tuple.portal as Address).isFrozen())) continue
-    const { descriptors } = await sweptDepositsOf({ publicClient, tuple, scanHead: head }, [
+    const { descriptors } = await sweptDepositsOf({ page, publicClient, tuple, scanHead: head }, [
       {
         sipaAddress: record.sipaAddress,
         recipientL2Address: record.recipientL2Address,
@@ -65,20 +66,23 @@ export async function findFrozenDeposit(record: SipaDeposit): Promise<FrozenDepo
       },
     ])
     if (!descriptors.length) continue
-    const { symbol, decimals } = await tokenMetadata(config, bridgeUnderlying(tuple) as Address)
+    const { symbol, decimals } = await tokenMetadata(
+      session.page,
+      bridgeUnderlying(tuple) as Address,
+    )
     return {
       source: {
         source: tuple,
         open: async (tipRecipient) =>
           createWebMetadataMigration({
-            wallet: await readyValue(wallet),
-            account: await readyValue(account),
+            wallet: await wallet.ready(),
+            account: await account.ready(),
             deposits: sipaDeposits,
             auth,
-            own,
-            handle: own.identity.get().value?.handle,
-            contractService: await readyValue(contractService),
-            toTokenService: await readyValue(token),
+            own: session,
+            handle: session.identity.get().value?.handle,
+            contractService: await contractService.ready(),
+            toTokenService: await token.ready(),
             historic: tuple,
             current,
             withdrawal: true,
@@ -109,12 +113,13 @@ export const pickFrozenDeposits = (
 
 /** Refunds `found` to `recipient` in a frozen exit's batches. The submitter pays the gas. */
 export async function refundFrozenDeposit(
+  session: Pick<Session, "page" | "savingsMoves">,
   found: FrozenDeposit,
   recipient: Address,
   channel: L1ExitChannel,
   onBatch?: (progress: FrozenExitProgress) => void,
 ) {
-  const exit = await openOldVersionExit(found.source, channel.target)
+  const exit = await openOldVersionExit(session.page.config, found.source, channel.target)
   const runtime: FrozenExitRuntime = {
     build: (...args) => exit.runtime.build(...args),
     candidates: async (opts) => {
@@ -127,6 +132,7 @@ export async function refundFrozenDeposit(
     // Settings offers any source, so an upgrade may hold it while this runs as a user flow.
     const result = await exit.lockNow(() =>
       runFrozenExit(
+        session.savingsMoves,
         runtime,
         channel,
         (progress) => {

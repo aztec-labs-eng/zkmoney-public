@@ -9,7 +9,11 @@ import { readFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { type Address, type Hex, getAddress, keccak256, recoverAddress } from "viem"
-import { buildR1InstallUserOp, decodeRegistrationIntentData } from "@oxide/l1-contracts"
+import {
+  buildR1InstallUserOp,
+  computeUserOpHash,
+  decodeRegistrationIntentData,
+} from "@oxide/l1-contracts"
 
 import {
   encodeRegistrationData,
@@ -230,15 +234,19 @@ describe("startOxideRegistrationSession", () => {
     expect(await at(SIPA)).toMatchObject({ broadcast: false, replaced })
   })
 
-  it("signs the R1 install with the limits of the controller the registry names", async () => {
+  it("signs the R1 install over the wallet's hash of the op built with the controller's limits", async () => {
     const { deps, l1 } = sessionDeps()
-    await startOxideRegistrationSession(deps)
+    const out = await startOxideRegistrationSession(deps)
+    if (out.status !== "awaiting_deposit") throw new Error("unreachable")
     expect(l1.readR1InstallGas).toHaveBeenCalledWith(REGISTRY)
     const metadata = `0x${Buffer.from(CREDENTIAL_ID, "base64url").toString("hex")}` as Hex
-    expect(l1.getUserOpHash).toHaveBeenCalledWith(
-      expect.anything(),
-      buildR1InstallUserOp(OWNER, 0n, R1KEY, metadata, EARLIER_R1_GAS),
-    )
+    const op = buildR1InstallUserOp(OWNER, 0n, R1KEY, metadata, EARLIER_R1_GAS)
+    expect(
+      await recoverAddress({
+        hash: computeUserOpHash(ENV.l1ChainId, ENV.entryPoint as Address, op),
+        signature: out.payload.r1Install.signature,
+      }),
+    ).toBe(deriveBootstrapKey(MSK).address)
   })
 
   it("derives the SIPA, claims, and returns the broadcast it owes without sending it", async () => {

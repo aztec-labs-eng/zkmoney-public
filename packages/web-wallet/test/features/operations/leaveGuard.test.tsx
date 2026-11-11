@@ -9,24 +9,26 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 const fireEvent = vi.hoisted(() => vi.fn())
 vi.mock("../../../src/lib/analytics", () => ({ fireEvent }))
 
-import { ProvingStage } from "@obsidion/proving-progress"
+import { ProvingStage } from "@obsidion/core/types"
 import { resetModulesAsActiveTab } from "../../support/activeTab"
 
 /** Each test is a new page, running as the active tab. */
 async function page() {
   await resetModulesAsActiveTab()
-  const { provingProgress } = await import("@obsidion/proving-progress")
   const { trackSubmission } = await import("@obsidion/front-core")
   const { runOperation } = await import("../../../src/features/operations/operations")
   const { LeaveGuardMount } = await import("../../../src/features/operations/LeaveGuardMount")
   const { revokeTab } = await import("../../../src/platform/storage/activeTab")
-  return { provingProgress, trackSubmission, runOperation, LeaveGuardMount, revokeTab }
+  const session = (await import("../../support/operations")).testSession()
+  return { trackSubmission, runOperation, session, LeaveGuardMount, revokeTab }
 }
 
 let m: Awaited<ReturnType<typeof page>>
 let container: HTMLDivElement
 let root: Root
 let finish: (() => void) | undefined
+/** The running operation's hash save, as its flow's `onTxHash` makes it. */
+let saveHash: ((txHash: string) => Promise<void>) | undefined
 
 beforeEach(async () => {
   m = await page()
@@ -55,8 +57,9 @@ function leave(): boolean {
 async function start(operationId: string, flow: "send" | "withdraw" = "withdraw") {
   let done!: Promise<void>
   await act(async () => {
-    done = m.runOperation({ operationId, flow, summary: "$25" }, () => {
-      const submission = m.trackSubmission(operationId)
+    done = m.runOperation(m.session, { operationId, flow, summary: "$25" }, (op) => {
+      saveHash = op.sent
+      const submission = m.trackSubmission(m.session.page.prover.progress, operationId)
       return new Promise<void>((resolve) => {
         finish = () => {
           submission.stop()
@@ -84,7 +87,10 @@ describe("LeaveGuardMount", () => {
     await start("op-2", "send")
     expect(leave()).toBe(true)
     await act(async () => {
-      m.provingProgress.emitStageStart(ProvingStage.Mining, "op-2", "0x" + "ab".repeat(32))
+      await saveHash?.("0x" + "ab".repeat(32))
+      await m.session.page.prover.turn(async ({ stage }) =>
+        stage(ProvingStage.Mining, "op-2", "0x" + "ab".repeat(32)),
+      )
       await new Promise((r) => setTimeout(r, 0))
     })
     expect(leave()).toBe(false)

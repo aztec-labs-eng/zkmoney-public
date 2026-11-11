@@ -239,6 +239,34 @@ describe("spent sweeps", () => {
     })
   })
 
+  it("settles the spent sweeps and claims nothing when given no token service", async () => {
+    const { w, sipa, first, second } = await spentFirst()
+    await w.scan()
+    for (const { key } of [first, second]) w.l2.settle(key)
+    const readiness = vi.spyOn(w.l2.node, "getL1ToL2MessageIndex")
+
+    expect(await w.claim({ tokenServiceFor: undefined })).toMatchObject({
+      claimed: 0,
+      reconciled: 1,
+      pendingSettlement: 1,
+      complete: true,
+    })
+    expect(readiness).not.toHaveBeenCalled()
+    expect(w.l2.claims).toEqual([])
+    expect(await w.get(sipa.address)).toMatchObject({
+      phase: "pendingClaim",
+      claimedInboxIndexes: ["7"],
+    })
+
+    w.l2.spend(L2_TOKEN, second.key)
+    await w.scan()
+    await w.claim({ tokenServiceFor: undefined })
+    expect(await w.get(sipa.address)).toMatchObject({
+      phase: "claimed",
+      claimedInboxIndexes: ["7", "9"],
+    })
+  })
+
   it("reads no balance for a run that settles only spent sweeps", async () => {
     const { w, second } = await spentFirst()
     w.l2.spend(L2_TOKEN, second.key)

@@ -15,14 +15,12 @@ vi.mock("../../../src/features/registration/registrationResume", () => ({
 }))
 vi.mock("../../../src/config/classArtifacts", () => ({ getWebOxideToken: () => {} }))
 vi.mock("../../../src/config/oxideTuple", () => ({}))
-vi.mock("../../../src/config/env", () => ({ getConfig: () => ({}) }))
 vi.mock("../../../src/features/backupPasskey/backupMoveTokens", async (importOriginal) => ({
   moveCount: (
     await importOriginal<typeof import("../../../src/features/backupPasskey/backupMoveTokens")>()
   ).moveCount,
   readMoveBalances: () => {},
 }))
-vi.mock("../../../src/features/savings/savingsMoveStore", () => ({ getSavingsMoveStore: () => {} }))
 vi.mock("../../../src/features/savings/savingsTasks", () => ({
   useSavingsMovesReplayed: () => true,
 }))
@@ -32,8 +30,9 @@ const { chainFacts, savingsMoving, withdrawalInFlight } = await import(
 )
 
 const DAI = 10n ** 18n
+const TAKES_MS = 20 * 60_000
 const funding = (amount: bigint): FundingAmount =>
-  ({ amount, credited: amount / 2n, breakdown: {} } as FundingAmount)
+  ({ amount, credited: amount / 2n, breakdown: { sweepTip: amount / 4n } } as FundingAmount)
 const shape = (notes: bigint[], depositTotal = 0n): SpendShape => ({
   notes,
   depositTotal,
@@ -42,16 +41,37 @@ const shape = (notes: bigint[], depositTotal = 0n): SpendShape => ({
 
 describe("chainFacts", () => {
   it("names a route that is not live, with nothing to fund", () => {
-    const facts = chainFacts({ funding: undefined, shape: shape([3n * DAI]), cap: 5n * DAI })
+    const facts = chainFacts({
+      funding: undefined,
+      takesMs: TAKES_MS,
+      shape: shape([3n * DAI]),
+      cap: 5n * DAI,
+    })
     expect(facts).toMatchObject({ routeLive: false, fundingAmount: 0n, chunk: { kind: "fits" } })
+    expect(facts.quote).toBeUndefined()
+  })
+
+  it("quotes what the add costs and takes, before it starts", () => {
+    const facts = chainFacts({
+      funding: funding(4n * DAI),
+      takesMs: TAKES_MS,
+      shape: shape([10n * DAI]),
+      cap: 5n * DAI,
+    })
+    expect(facts.quote).toEqual({ total: 2n * DAI, fixed: DAI, network: DAI, takesMs: TAKES_MS })
   })
 
   it("has no plan over a cap of nothing", () => {
-    const facts = chainFacts({ funding: funding(DAI), shape: shape([3n * DAI]), cap: 0n })
+    const facts = chainFacts({
+      funding: funding(DAI),
+      takesMs: TAKES_MS,
+      shape: shape([3n * DAI]),
+      cap: 0n,
+    })
     expect(facts).toMatchObject({ plan: false, moves: 0 })
   })
 
-  const main = { funding: funding(DAI), shape: shape([3n * DAI]), cap: 2n * DAI }
+  const main = { funding: funding(DAI), takesMs: TAKES_MS, shape: shape([3n * DAI]), cap: 2n * DAI }
 
   it("counts the Savings shares' sends beside Main Account's, each cut to its own cap", () => {
     const facts = chainFacts({ ...main, others: [{ shape: shape([5n * DAI]), cap: 4n * DAI }] })

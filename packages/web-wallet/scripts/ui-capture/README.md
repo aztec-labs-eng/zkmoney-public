@@ -11,10 +11,13 @@ pnpm ui:capture --plan scripts/ui-capture/plans/registration.json --preset all -
 pnpm ui:capture --plan scripts/ui-capture/plans/create.json --viewport 600x844
 pnpm ui:capture --plan scripts/ui-capture/plans/home.json --viewport 1280x832
 pnpm ui:capture --plan scripts/ui-capture/plans/registration.json --safe-area 20,12,34,12
-pnpm ui:capture --scenario fresh --path /withdraw?cap=review --path /withdraw?cap=done --viewport 402x874,1280x832
+pnpm ui:capture --scenario onboarding --path '/claim?mock=create' --path '/claim?mock=funded' --viewport 402x879,1280x832
+pnpm ui:capture --scenario fresh --path /dev/mock/deposit/bridging --path /dev/mock/withdraw/review --viewport 402x879
 ```
 
-Each run starts a Vite server, a browser and the app, which costs about 20 seconds before the first screenshot. Capture several states in one run: repeat `--path`, and list the sizes in `--viewport`. Each extra route costs one page load, about 5 seconds. Each route is saved as its own file, for example `402x874/withdraw-cap-review.png`. A single `--path` keeps the name `final.png`. Several `--path` values cannot run plan steps.
+`/dev/mock/deposit`, `/dev/mock/withdraw` and `/dev/mock/pay` list the deposit, withdraw and pay mocks; `/dev/mock/<area>/<name>` opens one on the demo page's fakes.
+
+Each run starts a Vite server, a browser and the app, which costs about 20 seconds before the first screenshot. Capture several states in one run: repeat `--path`, and list the sizes in `--viewport`. Each extra route costs one page load, about 5 seconds. Each route is saved as its own file, for example `402x879/claim-mock-create.png`. A single `--path` keeps the name `final.png`. Several `--path` values cannot run plan steps.
 
 The command owns its loopback server and stops it afterward. Port 5499 is the default; choose another with `--port`. An occupied port fails rather than reusing an unrelated server. Local `.env` files and ambient `VITE_*` settings are excluded. The server serves a synthetic config profile through the normal config-client validation path, and its `/svc/*` proxies are disabled.
 
@@ -110,4 +113,4 @@ On actual iOS Safari and Android Chrome, record device model, OS/browser version
 
 Run `pnpm test:scan-qr` for the production Share card corpus through the scanner decoder. This explicit browser suite requires Chromium and is excluded from `pnpm test`. Its temporary report records complete payloads, source and PNG hashes, and exact decode results. `pnpm test:ui-capture` also checks the bundled decoder worker against controlled canvas media under COOP/COEP, including stream release after a late permission grant. Neither suite establishes physical camera compatibility.
 
-See the [flow capture plans](./plans/flows/README.md) for the flow-specific fixture interface.
+See the [flow capture plans](./plans/flows/README.md) for the flow-specific fixture interface, and the [backup passkey plans](./plans/backup-passkey/README.md) for a capture of each backup passkey screen.

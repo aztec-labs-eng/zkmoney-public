@@ -6,6 +6,7 @@
  * where the wiring must open a real commitment.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import type { Config } from "wagmi"
 import { testPage, testCore } from "../../support/page"
 import { pad, toHex, type Address, type Hex } from "viem"
 import type { WithdrawalRecord } from "@obsidion/front-core"
@@ -38,7 +39,7 @@ const h = vi.hoisted(() => ({
   runSwapEscrowRecovery: vi.fn(),
   injectedWalletChannel: vi.fn(),
   desktopBridgeChannel: vi.fn(),
-  ownSwapRecoverer: vi.fn(),
+  sessionSwapRecoverer: vi.fn(),
   oxideAccountPasskey: vi.fn(),
   provider: { kind: "webauthn" },
   getCode: vi.fn(),
@@ -60,7 +61,7 @@ vi.mock("@obsidion/sdk", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/sdk")>()),
   L1SwapEscrowReader: class {
     constructor(public client: unknown, public config: unknown) {}
-    async daiBalance() {
+    async tokenBalance() {
       return RELAYER_TIP
     }
     async isDeployed() {
@@ -69,7 +70,8 @@ vi.mock("@obsidion/sdk", async (importOriginal) => ({
   },
   decodePaylinkInline: () => ({ secret: SECRET }),
 }))
-vi.mock("../../../src/session/l1Wallet", () => ({
+vi.mock("../../../src/session/l1Wallet", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../src/session/l1Wallet")>()),
   getL1Clients: async () => ({
     walletClient: { signMessage: h.signMessage },
     account: h.connected.current,
@@ -88,27 +90,23 @@ const fakeAuth = () => ({
 vi.mock("../../../src/platform/auth/oxideAccountPasskey", () => ({
   oxideAccountPasskey: h.oxideAccountPasskey,
 }))
-vi.mock("../../../src/config/env", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../src/config/env")>()),
-  getConfig: () => ({ l1ChainId: 11155111 }),
-}))
 vi.mock("../../../src/config/oxideTuple", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../src/config/oxideTuple")>()),
-  getOxideTuple: async () => ({ token: TOKEN }),
   l1PublicClient: () => ({
     kind: "public-client",
     getBlock: async () => ({ timestamp: CHAIN_NOW }),
   }),
 }))
 vi.mock("../../../src/features/withdraw/withdrawGateway", () => ({
-  ownSwapRecoverer: h.ownSwapRecoverer,
+  sessionSwapRecoverer: h.sessionSwapRecoverer,
 }))
 
 const { swapExitReasonFor } = await import("@obsidion/front-core")
-const { activeNamespace, closeSession, switchSession, session } = await import(
+const { activeNamespace, closeSession, switchSession } = await import(
   "../../../src/session/session"
 )
 const { pageSessionDeps } = await import("../../../src/app/sessionDeps")
+type Session = import("../../../src/session/session").Session
 afterEach(closeSession)
 const { executeSwapWithdrawal, recoverSwapWithdrawal } = await import(
   "../../../src/features/withdraw/swapRecovery"
@@ -152,6 +150,7 @@ const record = (patch: Partial<WithdrawalRecord> = {}): WithdrawalRecord => ({
   swapOutput: "USDC",
   swapEscrow: PLAN.escrow,
   swapEscrowFactory: FACTORY,
+  swapEscrowLayout: "v2",
   swapNonce: NONCE,
   swapRecoveryCommitment: PLAN.escrowArgs.recoveryCommitment,
   swapRelayerTip: RELAYER_TIP.toString(),
@@ -168,7 +167,7 @@ beforeEach(async () => {
     waitForReceipt: async () => true,
   })
   h.desktopBridgeChannel.mockReset().mockReturnValue({ target: TYPED, kind: "bridge" })
-  h.ownSwapRecoverer.mockReset().mockResolvedValue({ account: ACCOUNT, secret: SECRET })
+  h.sessionSwapRecoverer.mockReset().mockResolvedValue({ account: ACCOUNT, secret: SECRET })
   h.oxideAccountPasskey.mockReset().mockResolvedValue({ key: PASSKEY_KEY, sign: h.sign })
   h.getCode.mockReset().mockResolvedValue("0x01")
   h.readAuthKeys.mockReset().mockResolvedValue([{ key: PASSKEY_KEY, metadata: "0x" }])
@@ -176,9 +175,18 @@ beforeEach(async () => {
   h.signMessage.mockReset().mockResolvedValue(`0x${"05".repeat(65)}`)
   h.connected.current = RECIPIENT
   h.sendTransaction.mockReset().mockResolvedValue(HASH)
-  await switchSession(activeNamespace(testCore().device), pageSessionDeps(testPage(fakeAuth()))).withdrawals.create({ ...record(), networkId: "0xnet" })
+  session = switchSession(
+    activeNamespace(testCore().device),
+    pageSessionDeps(testPage(fakeAuth(), { l1ChainId: 11155111 } as never, PRIMED)),
+  )
+  await session.withdrawals.create({ ...record(), networkId: "0xnet" })
   h.bridgeActive.current = false
 })
+
+const WAGMI = {} as Config
+const PRIMED = { tuple: { token: TOKEN } as never }
+/** The session each test opens. */
+let session: Session
 
 describe("swapExitReasonFor", () => {
   it("always offers recovery to an escrow whose route cannot fill", () => {
@@ -190,7 +198,9 @@ describe("swapExitReasonFor", () => {
 
 describe("executeSwapWithdrawal", () => {
   it("signs over the injected wallet and hands the runner the escrow reader and store", async () => {
-    await expect(executeSwapWithdrawal(record(), { from: WALLET })).resolves.toBe(HASH)
+    await expect(
+      executeSwapWithdrawal(record(), { session, wagmi: WAGMI, from: WALLET }),
+    ).resolves.toBe(HASH)
     expect(h.injectedWalletChannel).toHaveBeenCalledWith(
       expect.objectContaining({ l1ChainId: 11155111 }),
       expect.objectContaining({ from: WALLET }),
@@ -198,7 +208,7 @@ describe("executeSwapWithdrawal", () => {
     const deps = h.runSwapEscrowExecute.mock.calls[0]![0] as Record<string, unknown>
     expect(deps.channel).toEqual(expect.objectContaining({ kind: "injected" }))
     expect(deps.reader).toEqual(expect.objectContaining({ config: { dai: TOKEN } }))
-    expect(deps.store).toBe(session().withdrawals)
+    expect(deps.store).toBe(session.withdrawals)
     expect(deps.record).toEqual(record())
   })
 })
@@ -206,14 +216,16 @@ describe("executeSwapWithdrawal", () => {
 describe("recoverSwapWithdrawal", () => {
   it("opens the escrow's commitment and signs with the account's installed passkey", async () => {
     h.runSwapEscrowRecovery.mockImplementation(runRecoveryForReal)
-    await expect(recoverSwapWithdrawal(record(), { from: WALLET })).resolves.toBe(HASH)
+    await expect(
+      recoverSwapWithdrawal(record(), { session, wagmi: WAGMI, from: WALLET }),
+    ).resolves.toBe(HASH)
     expect(h.oxideAccountPasskey).toHaveBeenCalledWith(h.provider)
     expect(h.readAuthKeys).toHaveBeenCalledWith(ACCOUNT, 64)
     expect(h.sign).toHaveBeenCalledOnce()
     expect(h.sendTransaction).toHaveBeenCalledWith(PLAN.escrow, expect.stringMatching(/^0x/))
     const deadline = pad(toHex(CHAIN_NOW + SWAP_ESCROW_RECOVERY_DEADLINE_S)).slice(2)
     expect(h.sendTransaction.mock.calls[0]![1]).toContain(deadline)
-    expect(await session().withdrawals.get(L2_TX)).toMatchObject({
+    expect(await session.withdrawals.get(L2_TX)).toMatchObject({
       phase: "recovered",
       recoveryTarget: RECIPIENT,
     })
@@ -222,9 +234,9 @@ describe("recoverSwapWithdrawal", () => {
   it("refuses an account still on its bootstrap key before any transaction", async () => {
     h.runSwapEscrowRecovery.mockImplementation(runRecoveryForReal)
     h.getCode.mockResolvedValue("0x")
-    await expect(recoverSwapWithdrawal(record(), { from: WALLET })).rejects.toThrow(
-      /Finish setting up your account's passkey/,
-    )
+    await expect(
+      recoverSwapWithdrawal(record(), { session, wagmi: WAGMI, from: WALLET }),
+    ).rejects.toThrow(/Finish setting up your account's passkey/)
     expect(h.sign).not.toHaveBeenCalled()
     expect(h.sendTransaction).not.toHaveBeenCalled()
   })
@@ -233,21 +245,29 @@ describe("recoverSwapWithdrawal", () => {
     const LINK = "frag"
     // The visitor's escrow commits to the recipient, salted by the link secret.
     const visitor = () =>
-      record({ swapRecoveryCommitment: planFor(RECIPIENT).escrowArgs.recoveryCommitment })
+      record({
+        swapEscrow: planFor(RECIPIENT).escrow,
+        swapRecoveryCommitment: planFor(RECIPIENT).escrowArgs.recoveryCommitment,
+      })
 
     it("is signed by the connected recipient wallet, with no account or passkey", async () => {
       h.runSwapEscrowRecovery.mockImplementation(runRecoveryForReal)
       await expect(
-        recoverSwapWithdrawal(visitor(), { from: RECIPIENT, linkFragment: LINK }),
+        recoverSwapWithdrawal(visitor(), {
+          session,
+          wagmi: WAGMI,
+          from: RECIPIENT,
+          linkFragment: LINK,
+        }),
       ).resolves.toBe(HASH)
       expect(h.signMessage).toHaveBeenCalledWith({
         account: RECIPIENT,
         message: { raw: expect.stringMatching(/^0x[0-9a-f]{64}$/) },
       })
-      expect(h.ownSwapRecoverer).not.toHaveBeenCalled()
+      expect(h.sessionSwapRecoverer).not.toHaveBeenCalled()
       expect(h.oxideAccountPasskey).not.toHaveBeenCalled()
-      expect(h.sendTransaction).toHaveBeenCalledWith(PLAN.escrow, expect.stringMatching(/^0x/))
-      expect(await session().withdrawals.get(L2_TX)).toMatchObject({
+      expect(h.sendTransaction).toHaveBeenCalledWith(planFor(RECIPIENT).escrow, expect.stringMatching(/^0x/))
+      expect(await session.withdrawals.get(L2_TX)).toMatchObject({
         phase: "recovered",
         recoveryTarget: RECIPIENT,
       })
@@ -257,7 +277,12 @@ describe("recoverSwapWithdrawal", () => {
       h.runSwapEscrowRecovery.mockImplementation(runRecoveryForReal)
       h.connected.current = OTHER_ACCOUNT
       await expect(
-        recoverSwapWithdrawal(visitor(), { from: OTHER_ACCOUNT, linkFragment: LINK }),
+        recoverSwapWithdrawal(visitor(), {
+          session,
+          wagmi: WAGMI,
+          from: OTHER_ACCOUNT,
+          linkFragment: LINK,
+        }),
       ).rejects.toThrow(new RegExp(`Connect ${RECIPIENT}`))
       expect(h.signMessage).not.toHaveBeenCalled()
       expect(h.sendTransaction).not.toHaveBeenCalled()
@@ -265,28 +290,30 @@ describe("recoverSwapWithdrawal", () => {
 
     it("has no desktop launcher path: the recipient's wallet must be in the browser", async () => {
       h.bridgeActive.current = true
-      await expect(recoverSwapWithdrawal(visitor(), { linkFragment: LINK })).rejects.toThrow(
-        /Open this link in a browser/,
-      )
+      await expect(
+        recoverSwapWithdrawal(visitor(), { session, wagmi: WAGMI, linkFragment: LINK }),
+      ).rejects.toThrow(/Open this link in a browser/)
       expect(h.desktopBridgeChannel).not.toHaveBeenCalled()
     })
   })
 
   it("refuses a record without its escrow details before asking for the account", async () => {
-    await expect(recoverSwapWithdrawal(record({ swapNonce: undefined }))).rejects.toThrow(
-      /weren't stored/,
-    )
-    expect(h.ownSwapRecoverer).not.toHaveBeenCalled()
+    await expect(
+      recoverSwapWithdrawal(record({ swapNonce: undefined }), { session, wagmi: WAGMI }),
+    ).rejects.toThrow(/weren't stored/)
+    expect(h.sessionSwapRecoverer).not.toHaveBeenCalled()
   })
 
   it("refuses a malformed destination and a locked wallet before touching a channel", async () => {
     await expect(
-      recoverSwapWithdrawal(record(), { destination: "0x1234" as Address }),
+      recoverSwapWithdrawal(record(), { session, wagmi: WAGMI, destination: "0x1234" as Address }),
     ).rejects.toThrow(/Ethereum address/)
-    h.ownSwapRecoverer.mockRejectedValue(
+    h.sessionSwapRecoverer.mockRejectedValue(
       new Error("Unlock your wallet with your passkey and try again."),
     )
-    await expect(recoverSwapWithdrawal(record())).rejects.toThrow(/Unlock your wallet/)
+    await expect(recoverSwapWithdrawal(record(), { session, wagmi: WAGMI })).rejects.toThrow(
+      /Unlock your wallet/,
+    )
     expect(h.injectedWalletChannel).not.toHaveBeenCalled()
     expect(h.runSwapEscrowRecovery).not.toHaveBeenCalled()
   })

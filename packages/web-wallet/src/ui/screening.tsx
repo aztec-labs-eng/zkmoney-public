@@ -1,33 +1,40 @@
 import { useEffect } from "react"
-import { useAddressScreening, useScreener } from "@obsidion/front-core"
+import { useLookup, useScreener, useScreenings, type ScreeningReason } from "@obsidion/front-core"
 import { fireEvent } from "../lib/analytics"
 
-export type ScreeningVerdict = ReturnType<typeof useAddressScreening>["lastScreened"]
+/** `error` means the verdict is unknown: gate flows on "compliant", never on "not blocked". */
+export type ScreeningVerdict = {
+  /** Lowercased, so callers compare against `input.toLowerCase()`. */
+  address: string
+  status: "screening" | "compliant" | "blocked" | "error"
+  /** Set only when blocked and the policy attached one. */
+  reason?: ScreeningReason
+} | null
 
 /**
  * Screen one L1 address (the current field or account value) and hold the verdict only while it
  * still matches — a stale verdict must never clear a new address. A blocked verdict reports the
- * flow to analytics (never the address).
+ * flow to analytics (never the address). `late` once `waitMs` passes with no verdict.
  */
 export function useScreenedAddress(
   address: string | null,
   flow: "deposit" | "withdraw" | "deposit-exit",
-  opts: { debounceMs?: number } = {},
+  opts: { debounceMs?: number; waitMs?: number } = {},
 ) {
   const screener = useScreener()
-  const { lastScreened, screen } = useAddressScreening(screener)
-  const debounceMs = opts.debounceMs ?? 0
-  useEffect(() => {
-    if (!address) {
-      void screen("")
-      return
-    }
-    const timer = setTimeout(() => void screen(address), debounceMs)
-    return () => clearTimeout(timer)
-  }, [address, debounceMs, screen])
-
-  const verdict =
-    address && lastScreened?.address === address.toLowerCase() ? lastScreened : null
+  const asked = address?.trim().toLowerCase() || undefined
+  const lookup = useLookup(asked, useScreenings(), {
+    delayMs: opts.debounceMs ?? 0,
+    lateMs: opts.waitMs,
+  })
+  const verdict: ScreeningVerdict = !asked
+    ? null
+    : lookup.status === "answered"
+    ? lookup.value.compliant
+      ? { address: asked, status: "compliant" }
+      : { address: asked, status: "blocked", reason: lookup.value.reason }
+    : { address: asked, status: lookup.status === "failed" ? "error" : "screening" }
+  // eslint-disable-next-line local/effect-hook -- ZKM-1806
   useEffect(() => {
     if (verdict?.status === "blocked") fireEvent("screening_blocked", { flow })
   }, [verdict?.status, verdict?.address, flow])
@@ -36,9 +43,8 @@ export function useScreenedAddress(
     screener,
     verdict,
     cleared: verdict?.status === "compliant",
-    rescreen: () => {
-      if (address) void screen(address)
-    },
+    late: lookup.status === "waiting" && lookup.late,
+    rescreen: lookup.retry,
   }
 }
 

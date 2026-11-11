@@ -99,7 +99,11 @@ type SwapWithdrawalAmountFields = WithdrawalAmountFields &
     | "swapOutputDecimals"
     | "swapDaiForGas"
     | "swapEstimatedGasOut"
+    | "bridgeOut"
   >
+
+/** Across's input tokens on Ethereum, USDC and USDT, have 6 decimals. */
+export const ACROSS_INPUT_DECIMALS = 6
 
 /** Undefined for a direct withdrawal — `withdrawalAmounts` is the whole story there. */
 export function swapWithdrawalAmounts(
@@ -108,8 +112,13 @@ export function swapWithdrawalAmounts(
   if (record.swapOutput == null) return undefined
   const { grossAtomic, feeAtomic: directFeeAtomic } = withdrawalAmounts(record)
 
-  const feeAtomic =
-    directFeeAtomic + (record.swapRelayerTip != null ? BigInt(record.swapRelayerTip) : 0n)
+  // A bridge-out keeps its escrow tip and Across's cut on `bridgeOut`.
+  const { bridgeOut } = record
+  const relayerTip = record.swapRelayerTip ?? bridgeOut?.relayerTip
+  const acrossFee = bridgeOut
+    ? BigInt(bridgeOut.acrossFee) * 10n ** BigInt(record.tokenDecimals - ACROSS_INPUT_DECIMALS)
+    : 0n
+  const feeAtomic = directFeeAtomic + (relayerTip != null ? BigInt(relayerTip) : 0n) + acrossFee
   const feeKnown = record.relayerTip != null
   const gasAtomic = record.swapDaiForGas != null ? BigInt(record.swapDaiForGas) : 0n
   const diff = grossAtomic - feeAtomic - gasAtomic
@@ -126,17 +135,16 @@ export function swapWithdrawalAmounts(
       : undefined
 
   let estimate: SwapWithdrawalAmounts["estimate"]
-  if (
-    feeKnown &&
-    swapInputAtomic > 0n &&
-    record.swapEstimatedOut != null &&
-    record.swapOutputDecimals != null
-  ) {
-    const outAtomic = BigInt(record.swapEstimatedOut)
-    const outDisplay = formatUnits(outAtomic, record.swapOutputDecimals)
+  // A filled bridge-out's paid amount, else the quote: the swap's estimate or the bridge's floor.
+  const estimatedOut =
+    bridgeOut?.filledAmount ?? record.swapEstimatedOut ?? bridgeOut?.minReceived
+  const outDecimals = record.swapOutputDecimals
+  if (feeKnown && swapInputAtomic > 0n && estimatedOut != null && outDecimals != null) {
+    const outAtomic = BigInt(estimatedOut)
+    const outDisplay = formatUnits(outAtomic, outDecimals)
     estimate = {
       outAtomic,
-      outDecimals: record.swapOutputDecimals,
+      outDecimals,
       outDisplay,
       rate: Number(outDisplay) / Number(formatUnits(swapInputAtomic, record.tokenDecimals)),
     }

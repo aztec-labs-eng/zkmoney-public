@@ -56,7 +56,7 @@ function renderCreate(authService: never) {
       {
         wallet: obsidionWalletStub as never,
         authService,
-        accounts: () => ({ save: addWebauthnAccountMock }),
+        accounts: () => ({ apply: addWebauthnAccountMock }),
       },
       ...args,
     )

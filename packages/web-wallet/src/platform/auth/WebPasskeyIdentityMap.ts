@@ -1,4 +1,4 @@
-import { withFeePayer, type Database } from "@obsidion/front-core"
+import { WalletError, withFeePayer, type Database, type Write } from "@obsidion/front-core"
 import type { AccountKey } from "@obsidion/passkey-web"
 import type { FeePayerEntry, RecoveryMetadata } from "@obsidion/sdk"
 import { DEVICE_KEYS } from "../storage/deviceKeys"
@@ -64,12 +64,14 @@ function editMap(
   edit: (map: StoredMap) => boolean | void,
   stillOwns?: () => boolean,
 ): Promise<void> {
-  return db.write(async (w) => {
-    const map = writable(await w.get(MAP_KEY))
-    if (stillOwns && !stillOwns()) return
-    if (edit(map) === false) return
-    w.put(MAP_KEY, JSON.stringify(map))
-  })
+  return db.write((w) => stageMap(w, (map) => (stillOwns && !stillOwns() ? false : edit(map))))
+}
+
+/** {@link editMap} staged in a write the caller opened. */
+async function stageMap(w: Write, edit: (map: StoredMap) => boolean | void): Promise<void> {
+  const map = writable(await w.get(MAP_KEY))
+  if (edit(map) === false) return
+  w.put(MAP_KEY, JSON.stringify(map))
 }
 
 /** {@link editMap} on `rpId`'s entry for `credentialId`: no entry, or a false `change`, writes nothing. */
@@ -93,6 +95,12 @@ const editEntry = (
 
 /** Raw 64-byte `x‖y` as lowercase hex without `0x`, the form every key comparison uses. */
 const normalKey = (hex: string) => hex.replace(/^0x/i, "").toLowerCase()
+
+function refuseForeignSet(meta: StoredRecoveryMetadata): void {
+  if (meta.passkeySet && !meta.passkeySet.some((k) => normalKey(k) === normalKey(meta.pubkey))) {
+    throw new WalletError("invariant", "the passkey set does not contain the record's own key")
+  }
+}
 
 /**
  * Whether a record opens the wallet: its PRF derives the master key (a root), or opens an
@@ -146,7 +154,7 @@ export function answerRecordFor(
 /** What the backup reminder reads from a record. */
 export type BackupRecord = Pick<
   StoredEntry,
-  "backupEligible" | "securityKey" | "backup" | "passkeySet"
+  "backupEligible" | "securityKey" | "backup" | "passkeySet" | "prfAaguid"
 >
 
 /** Sync probe: what this browser knows of a credential's backups. No RP, as `answerRecordFor`. */
@@ -363,41 +371,48 @@ export class WebPasskeyIdentityMap {
    * without a `backup` drops a stored one; a `backup` write is stored as a non-root.
    */
   async upsert(meta: StoredRecoveryMetadata, stillOwns?: () => boolean): Promise<void> {
-    if (meta.passkeySet && !meta.passkeySet.some((k) => normalKey(k) === normalKey(meta.pubkey))) {
-      throw new Error("the passkey set does not contain the record's own key")
+    refuseForeignSet(meta)
+    await editMap(this.db, (map) => this.merge(map, meta), stillOwns)
+  }
+
+  /**
+   * `upsert` for several records, staged in `w`, a write on this map's database: they commit with
+   * the caller's other writes, so a reload reads all of them or none.
+   */
+  async upsertIn(w: Write, metas: readonly StoredRecoveryMetadata[]): Promise<void> {
+    metas.forEach(refuseForeignSet)
+    await stageMap(w, (map) => {
+      for (const meta of metas) this.merge(map, meta)
+    })
+  }
+
+  private merge(map: StoredMap, meta: StoredRecoveryMetadata): void {
+    // Spread the existing entry first: re-recording a credential (every /enter) must not drop
+    // the usertag hint written after the claim.
+    const stored = map.entries[meta.credentialId]
+    const previous = stored?.rpId === this.rpId ? stored : undefined
+    // An inference is only ever written by `setInferredTransports`; a stored one survives here.
+    // A creation list and the backup flag are written once: a stored one stays, whatever this
+    // write carries.
+    const {
+      inferredTransports: _,
+      transports: incoming,
+      backupEligible: flag,
+      backup: _backup,
+      ...record
+    } = meta
+    const transports = previous?.transports ?? incoming
+    const backupEligible = previous?.backupEligible ?? flag
+    const { backup: _stored, ...kept } = previous ?? {}
+    map.entries[meta.credentialId] = {
+      ...kept,
+      ...record,
+      ...(transports ? { transports } : {}),
+      ...(backupEligible !== undefined ? { backupEligible } : {}),
+      ...(meta.backup ? { backup: meta.backup, isMskRoot: false } : {}),
+      rpId: this.rpId,
+      createdAt: Date.now(),
     }
-    await editMap(
-      this.db,
-      (map) => {
-        // Spread the existing entry first: re-recording a credential (every /enter) must not drop
-        // the usertag hint written after the claim.
-        const stored = map.entries[meta.credentialId]
-        const previous = stored?.rpId === this.rpId ? stored : undefined
-        // An inference is only ever written by `setInferredTransports`; a stored one survives here.
-        // A creation list and the backup flag are written once: a stored one stays, whatever this
-        // write carries.
-        const {
-          inferredTransports: _,
-          transports: incoming,
-          backupEligible: flag,
-          backup: _backup,
-          ...record
-        } = meta
-        const transports = previous?.transports ?? incoming
-        const backupEligible = previous?.backupEligible ?? flag
-        const { backup: _stored, ...kept } = previous ?? {}
-        map.entries[meta.credentialId] = {
-          ...kept,
-          ...record,
-          ...(transports ? { transports } : {}),
-          ...(backupEligible !== undefined ? { backupEligible } : {}),
-          ...(meta.backup ? { backup: meta.backup, isMskRoot: false } : {}),
-          rpId: this.rpId,
-          createdAt: Date.now(),
-        }
-      },
-      stillOwns,
-    )
   }
 
   /**

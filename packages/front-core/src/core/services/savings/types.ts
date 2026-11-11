@@ -1,6 +1,6 @@
 import type { Address } from "viem"
 import type { SavingsMove } from "../../../oxide/savingsMoves"
-import type { SavingsMoveStorage } from "./SavingsMoveStorage"
+import type { SavingsMoves } from "../../../engine/savingsMoves"
 
 export type SavingsDirection = "in" | "out"
 
@@ -19,6 +19,10 @@ export interface SavingsPosition {
   readAt: number
   /** When the balance store last wrote the shares, ms; a claim counts as on its way until then. */
   sharesReadAt?: number
+  /** The PXE block the shares were read at; shares moved in a later block are not in them. */
+  sharesAnchor?: number
+  /** The token the balance store keeps the shares under. */
+  sharesToken?: string
 }
 
 /** The vault's side of a position: what a share redeems for and the rate, read on L1. */
@@ -63,14 +67,13 @@ export interface SavingsMoveRecord extends SavingsMove {
   retired?: true
 }
 
-/** What a front composes over its deployments; `useSavings` reads it. */
+/** What a front composes over its deployments: the session's Savings. */
 export interface SavingsSource {
   /** L1 asset whose shares the vault prices. */
   assetAddress?: string
-  moves: SavingsMoveStorage
+  moves: SavingsMoves
   /** Where the wallet's sync writes the shares held: Main's balance store, under the Savings token. */
   balance: { scope: string; tokenAddress: string }
-  readPrice(): Promise<SavingsPrice>
   quote(direction: SavingsDirection, amount: bigint): Promise<SavingsQuote>
   /** Burns into a Sky escrow and records the move. The relayer runs the rest; `settle` claims it. */
   move(
@@ -78,6 +81,6 @@ export interface SavingsSource {
     amount: bigint,
     onStage: (stage: SavingsMoveStage) => void,
   ): Promise<SavingsMoveRecord>
-  /** Claims the deposits of moves whose escrows have run. */
-  settle(): Promise<void>
+  /** Claims the deposits of moves whose escrows have run; an abort stops the pass. */
+  settle(signal: AbortSignal): Promise<void>
 }

@@ -14,8 +14,8 @@ import {
   type SipaDeposits,
 } from "@obsidion/front-core"
 import type { Fr } from "@aztec-labs/aztec.js/fields"
-import type { WebWalletConfig } from "../../config/env"
-import { l1MulticallClient, oxideEnvFor } from "../../config/oxideTuple"
+import type { PageFacts } from "../../session/pageChain"
+import { l1MulticallClient } from "../../config/oxideTuple"
 import { registrationAddressDeps } from "./registrationDeps"
 
 /** What every registration address of one wallet and name derives from. */
@@ -29,7 +29,7 @@ export interface RegistrationCandidates {
 }
 
 export async function registrationCandidates(
-  config: WebWalletConfig,
+  page: PageFacts,
   networkId: string,
   secret: Fr,
   handle: string,
@@ -41,15 +41,15 @@ export async function registrationCandidates(
     handle,
     secret,
     l2Address,
-    config,
+    page,
     networkId,
     deposits,
-    l1MulticallClient(config),
+    l1MulticallClient(page.config),
   )
   const [owner, scheduleFee, { resolver }] = await Promise.all([
     deps.l1.predictAccountAddress(deps.env.factory, deriveBootstrapKey(secret).address as Address),
     deps.scheduleFee(),
-    oxideEnvFor(config),
+    page.chain.oxideEnv.read(),
   ])
   const nameHash = composeWireNameHash(handle, deps.env.ensDomain)
   return {

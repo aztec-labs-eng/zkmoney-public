@@ -14,7 +14,8 @@ import {
   useScreener,
   type PendingRegistrationRecord,
   type RegistrationStage,
-  useResource,
+  serviceStatus,
+  useStore,
 } from "@obsidion/front-core"
 import { errorCopy, errorMessage } from "../../../errors/catalog"
 import { useRegistrationStage } from "../../registration/openRegistration"
@@ -25,25 +26,24 @@ import {
   TopNavIconButton,
   type StatusBadgeStyle,
 } from "@obsidion/web-ds"
-import { getConfig } from "../../../config/env"
 import {
   AddressRow,
   CopyableValue,
   DetectingRow,
   HashRow,
-  l1TxUrl,
+  useL1Links,
   whenLabel,
 } from "../../../ui/detailRows"
 import { isDesktopL1SubmitActive } from "../../../platform/desktopBridge"
-import { useL1Wallet } from "../../../session/l1Wallet"
+import { useL1Wallet } from "../../../session/useL1Wallet"
 import type { L1ExitStage } from "../../sipa/l1ExitChannels"
 import {
   useWalletPrompt,
   useWalletPromptStall,
-  WalletPromptNote,
   WalletPromptOpenError,
-  type WalletPromptToken,
-} from "../../deposit/walletPrompt"
+} from "../../../session/walletPrompt"
+import type { WalletPromptToken } from "../../../session/walletPrompt"
+import { WalletPromptNote } from "../../deposit/WalletPromptNote/WalletPromptNote"
 import { isGateCancelled, useCeremonyGate } from "../../identity/ceremonyGate"
 import { PasskeyRefusal, type RefusalState } from "../../identity/PasskeyRefusal"
 import { isPasskeyPolicyError, type PasskeyAttemptHandle } from "@obsidion/passkey-web"
@@ -58,7 +58,7 @@ import { manualRegistrationSweep } from "../../registration/registrationSweep"
 import type { RegistrationTerms } from "@obsidion/front-core"
 import { reservedUntil } from "../../registration/registrationTerms"
 import { useRegistrationRefunded } from "../../registration/registrationRecovery"
-import { DepositProcessingNotice } from "../../deposit/DepositProcessingNotice"
+import { DepositProcessingNotice } from "../../deposit/DepositProcessingNotice/DepositProcessingNotice"
 import exitCopy from "../../deposit/DepositExitModal/DepositExitModal.copy"
 import { useSipaProcessing } from "../../deposit/sipaProcessing"
 import { useDepositTokens } from "../../sipa/loadDepositFacts"
@@ -77,7 +77,7 @@ import {
   DepositLimitRows,
   type DepositTerms,
 } from "../../deposit/DepositTermsRows/DepositTermsRows"
-import { InfoButton } from "../../limits/InfoButton"
+import { InfoButton } from "../../../ui/InfoButton/InfoButton"
 import type { LimitsTopic } from "../../limits/aboutLimitsView"
 import type { RegistrationFunding } from "../../registration/registrationFunding"
 import { useSession, signedInAccount } from "../../../session/session"
@@ -153,6 +153,7 @@ export function RegistrationDepositDetailModal({
   }
   onClose: () => void
 }) {
+  const { l1TxUrl } = useL1Links()
   const feeSymbol = useDepositTokens("registration")?.settlement.symbol ?? WALLET_TOKEN_SYMBOL
   const depositAdmitted = useDepositAdmission(record)
   const seen = useDepositShown(record)
@@ -323,7 +324,7 @@ function PayAtAddress({
     terms?: DepositTerms
   }
 }) {
-  const { network } = getConfig()
+  const { network } = useSession().page.config
   const decimals = tokenDecimalsForNetwork(network)
   const feeSymbol = useDepositTokens("registration")?.settlement.symbol ?? pay.tokenSymbol
   const overLimit = registrationOverLimit({
@@ -400,15 +401,15 @@ export function ManualSweepAction({
   showReason?: boolean
 }) {
   const feeSymbol = useDepositTokens("registration")?.settlement.symbol ?? WALLET_TOKEN_SYMBOL
-  const own = useSession()
-  const { auth } = own
-  const obsidionWallet = useResource(own.wallet)
+  const session = useSession()
+  const walletBuilt = useStore(session.wallet, serviceStatus) === "ready"
   const screener = useScreener()
   const { gate, state: gateState, cancel: cancelGate } = useCeremonyGate()
   // Closing the modal is the user's cancel: a sign-in still short of its keys must not go on to
   // sweep, whether it is at a prompt or adopting the key this tab already holds. The close has
   // already marked that cancel; any other removal is only an unmount.
   const op = useRef<AbortController | undefined>(undefined)
+  // eslint-disable-next-line local/effect-hook -- ZKM-1806
   useEffect(
     () => () => {
       attempt.current?.unmounted()
@@ -450,7 +451,7 @@ export function ManualSweepAction({
       void l1.connect()
       return
     }
-    if (!obsidionWallet) {
+    if (!walletBuilt) {
       setError(copy.walletStarting)
       return
     }
@@ -472,24 +473,27 @@ export function ManualSweepAction({
       const signal = op.current.signal
       const signIn = passkeyTelemetry.begin({ ceremony: "unlock", flow: "deposit" })
       attempt.current = signIn
-      const keys = await signIn.run((own) =>
+      const obsidionWallet = await session.wallet.ready(signal)
+      const keys = await signIn.run((scope) =>
         reusePasskeyAccount(
           obsidionWallet,
-          { auth, accounts: signedInAccount },
+          { session, accounts: () => signedInAccount(session) },
           record.l2Address,
           undefined,
           gate,
           signal,
-          own,
+          scope,
         ),
       )
-      if (reloadIfSessionSwitched(own, record.l2Address)) return
+      if (reloadIfSessionSwitched(session, record.l2Address)) return
       const opts = isDesktopL1SubmitActive() ? { destination: destination as Address } : {}
       // The paid address (typed destination or the connected account) is only known once the
       // channel resolves, so it is screened at submit rather than in the form.
-      await manualRegistrationSweep(own, record, {
+      await manualRegistrationSweep(session, record, {
+        wagmi: l1.wagmi,
         keys,
         ...opts,
+        pace: session.page.pace,
         screen: (a) => screener.screen(a),
         onStage,
         onNotice: setNotice,

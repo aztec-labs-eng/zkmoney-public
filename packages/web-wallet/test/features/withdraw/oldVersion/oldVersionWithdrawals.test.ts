@@ -6,7 +6,10 @@ const m = vi.hoisted(() => ({
   /** The refund nullifier each L1 transaction ran. */
   ran: new Map<string, string>(),
 }))
-vi.mock("@obsidion/front-core", () => ({
+vi.mock("@obsidion/front-core", async () => ({
+  bestEffort: (
+    await vi.importActual<typeof import("@obsidion/core/errors")>("@obsidion/core/errors")
+  ).bestEffort,
   OldVersionWithdrawalStorage: class {
     load = async () => {}
     get = (id: string) => m.records.get(id) ?? null
@@ -20,10 +23,9 @@ vi.mock("@obsidion/front-core", () => ({
       return next
     }
   },
-  useCachedRecords: () => ({ records: [], hydrated: true }),
+  noteRefundedSavingsMoves: m.noted,
   SWAP_STUCK_THRESHOLD_MS: 5 * 60 * 1000,
 }))
-vi.mock("../../../../src/config/env", () => ({ getConfig: () => ({}) }))
 vi.mock("../../../../src/config/oxideTuple", () => ({
   l1PublicClient: () => ({
     getBlockNumber: async () => 25_000n,
@@ -34,7 +36,6 @@ vi.mock("../../../../src/config/oxideTuple", () => ({
   }),
 }))
 vi.mock("../../../../src/platform/storage/WebStorageAdapter", () => ({ webStorage: {} }))
-vi.mock("../../../../src/features/savings/savingsMoveStore", () => ({ noteRefundedSavingsMoves: m.noted }))
 
 const {
   noteSelfRefunded,
@@ -44,6 +45,7 @@ const {
 } = await import("../../../../src/features/withdraw/oldVersionWithdrawals")
 
 const TO = `0x${"f1".repeat(20)}`
+const MOVES = {} as never
 const record = {
   id: "w1",
   startTime: 1,
@@ -73,15 +75,15 @@ beforeEach(() => {
 describe("following a withdrawal of old-version funds", () => {
   it("stays pending until the portal ran every refund", async () => {
     m.ran.set("0xaaa", "a")
-    expect(await settleOldVersionWithdrawal("w1")).toMatchObject({
+    expect(await settleOldVersionWithdrawal({} as never, MOVES, "w1")).toMatchObject({
       phase: "sending",
       refunds: [{ l1TxHash: "0xaaa" }, { ids: ["b", "c"] }],
     })
     // The Savings moves whose deposits the refund returned end as recovered.
-    expect(m.noted).toHaveBeenCalledWith([{ leafIndex: "7", amount: "1" }], TO, "0xaaa")
+    expect(m.noted).toHaveBeenCalledWith(MOVES, [{ leafIndex: "7", amount: "1" }], TO, "0xaaa")
 
     m.ran.set("0xbbb", "c")
-    expect(await settleOldVersionWithdrawal("w1")).toMatchObject({
+    expect(await settleOldVersionWithdrawal({} as never, MOVES, "w1")).toMatchObject({
       phase: "done",
       refunds: [{ l1TxHash: "0xaaa" }, { l1TxHash: "0xbbb" }],
     })
@@ -89,7 +91,7 @@ describe("following a withdrawal of old-version funds", () => {
 
   it("ends a withdrawal whose broadcasts L2 dropped as failed, freeing its funds", async () => {
     const dropped = async () => "dropped" as const
-    expect(await settleOldVersionWithdrawal("w1", dropped)).toMatchObject({
+    expect(await settleOldVersionWithdrawal({} as never, MOVES, "w1", dropped)).toMatchObject({
       phase: "failed",
       refunds: [{ dropped: true }, { dropped: true }],
     })
@@ -99,7 +101,7 @@ describe("following a withdrawal of old-version funds", () => {
     m.ran.set("0xaaa", "a")
     m.ran.set("0xbbb", "b")
     m.records.set("w1", { ...record, allSent: false })
-    const settling = settleOldVersionWithdrawal("w1")
+    const settling = settleOldVersionWithdrawal({} as never, MOVES, "w1")
     // The run sends a third refund while the check reads L1.
     const third = { portal: "0xold", ids: ["d"], usd: "1", l2TxHash: "0x03" }
     m.records.set("w1", { ...record, allSent: false, refunds: [...record.refunds, third] })
@@ -157,12 +159,25 @@ describe("processing an old-version withdrawal manually", () => {
         { ...record.refunds[1], dropped: true },
       ],
     })
-    expect(await noteSelfRefunded("w1", record.refunds[1] as never, "0xself")).toMatchObject({
-      phase: "done",
-      allSent: true,
-      refunds: [{ l1TxHash: "0xaaa" }, { l1TxHash: "0xself", dropped: undefined }],
+    expect(await noteSelfRefunded(MOVES, "w1", record.refunds[1] as never, "0xself")).toMatchObject(
+      {
+        phase: "done",
+        allSent: true,
+        refunds: [{ l1TxHash: "0xaaa" }, { l1TxHash: "0xself", dropped: undefined }],
+      },
+    )
+    expect(m.noted).toHaveBeenCalledWith(MOVES, [], TO, "0xself")
+  })
+
+  it("saves a refund that ran on L1 while the Savings moves cannot be read", async () => {
+    m.noted.mockRejectedValue(new Error("moves unreadable"))
+    m.ran.set("0xaaa", "a")
+    expect(await settleOldVersionWithdrawal({} as never, MOVES, "w1")).toMatchObject({
+      refunds: [{ l1TxHash: "0xaaa" }, { ids: ["b", "c"] }],
     })
-    expect(m.noted).toHaveBeenCalledWith([], TO, "0xself")
+    expect(await noteSelfRefunded(MOVES, "w1", record.refunds[1] as never, "0xself")).toMatchObject(
+      { phase: "done", refunds: [{ l1TxHash: "0xaaa" }, { l1TxHash: "0xself" }] },
+    )
   })
 
   it("keeps a refund the user sent counted when a check that read L2 before it lands after", async () => {
@@ -172,10 +187,10 @@ describe("processing an old-version withdrawal manually", () => {
     })
     const dropped = async () => {
       // The user's refund is saved while the check waits on L2.
-      await noteSelfRefunded("w1", record.refunds[1] as never, "0xself")
+      await noteSelfRefunded(MOVES, "w1", record.refunds[1] as never, "0xself")
       return "dropped" as const
     }
-    const settled = await settleOldVersionWithdrawal("w1", dropped)
+    const settled = await settleOldVersionWithdrawal({} as never, MOVES, "w1", dropped)
     expect(settled).toMatchObject({ phase: "done", refunds: [{}, { l1TxHash: "0xself" }] })
     expect(settled!.refunds[1]!.dropped).toBeFalsy()
   })

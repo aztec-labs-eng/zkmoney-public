@@ -100,6 +100,8 @@ export type LimitsStatusIcon = Extract<
 export interface LimitsRow {
   label: string
   value: string
+  /** The row dates a read that can be checked again from it. */
+  recheck?: boolean
 }
 
 export interface LimitsSectionView<S extends string> {
@@ -188,7 +190,11 @@ function capacityView(
           value: capacityAmount(observation.ceiling, observation.decimals, observation.tokenSymbol),
         },
         { label: copy.CAPACITY_ROW.rate, value: rateLabel(observation) },
-        { label: copy.CAPACITY_ROW.checked, value: format.time(observation.observedAt) },
+        {
+          label: copy.CAPACITY_ROW.checked,
+          value: format.time(observation.observedAt),
+          recheck: true,
+        },
       ]
     : []
   const noRefill = observation?.ratePerSecond === 0n

@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { setActiveRollup } from "../../../src/platform/storage/rollupStorage"
 import {
   closeWalletStore,
   isWalletOpenElsewhere,
@@ -9,7 +8,6 @@ import {
   removeFromOtherDatabases,
   walletStorage,
 } from "../../../src/platform/storage/walletStorage"
-import { sandboxProfile } from "../../fixtures/sandboxProfile"
 import { testWalletDbs } from "../../support/fakeWalletDb"
 
 const dbs = testWalletDbs()
@@ -27,7 +25,6 @@ function deferred() {
 
 async function reopen(version = ROLLUP, persistent = true) {
   await closeWalletStore()
-  setActiveRollup(version)
   await openWalletStore(version, { persistent })
 }
 
@@ -50,7 +47,6 @@ function countOpens(failFirst?: () => Error) {
 
 afterEach(() => {
   localStorage.clear()
-  setActiveRollup(sandboxProfile().shared.rollupVersion)
 })
 
 describe("walletStorage writes", () => {

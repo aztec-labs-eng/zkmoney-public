@@ -125,7 +125,7 @@ export function nextSipaSweepBlocker(
  */
 export function sipaReasonShown(
   state: SipaProcessingState | undefined,
-  record: Pick<SipaDeposit, "phase" | "startTime" | "sweepTxHash">,
+  record: Pick<SipaDeposit, "phase" | "startTime" | "sweepTxHash" | "republishAskedAt">,
   now: number = Date.now(),
 ): state is SipaProcessingState {
   if (!state) return false

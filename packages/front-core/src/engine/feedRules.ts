@@ -2,7 +2,7 @@
  * The rules the activity feed and its detail sheets read off one record, with every clock passed
  * in. They name an action, never its words.
  */
-import { formatUnits, type Address } from "viem"
+import { formatUnits, type Hex } from "viem"
 import { REGISTRATION_SCHEDULE_DEFAULTS } from "@obsidion/core/constants"
 import type { UpgradeBatchItem } from "../core/migration/upgradeActivity"
 import type { WithdrawalRecord } from "../core/services/bridge/types"
@@ -20,24 +20,91 @@ import {
 import { isStuckSweep } from "../core/services/deposits/sipaStuck"
 import {
   isAccountMoveSipa,
+  isSettledSipaPhase,
   isUnfundedSipaDeposit,
   type SIPADepositPhase,
   type SipaDeposit,
 } from "./sipaDeposits"
+import { sipaPaymentIndex } from "../core/services/deposits/sipaCredits"
 import type { PendingRegistrationRecord } from "./registrationRecord"
+import { recoveryState, type RecoveryState } from "../core/rotation/backupRotationFlow"
+import type {
+  BackupRotationPhase,
+  BackupRotationPlan,
+  BackupRotationRecord,
+} from "./backupRotations"
 import type { SavingsMoveRecord } from "../core/services/savings/types"
 import { canSelfRunSkyEscrow } from "../oxide/skyEscrowExit"
+import type { TokenTransaction, Transaction } from "../types/transactions"
+
+/**
+ * A transfer from a rotated wallet's previous account: the wallet moving its own funds, which
+ * arrived earlier under their own row, so neither the feed nor the bell lists it. A device that
+ * scanned the previous account past the move before it knew the wallet moved filed that leg as a
+ * send to `account`, the session's.
+ */
+export function isMoveFromPrevious(
+  tx: Transaction,
+  previousAccount?: string,
+  account?: string,
+): boolean {
+  if (!previousAccount) return false
+  const { senderL2Address, recipientL2Address } = tx as TokenTransaction
+  if (senderL2Address?.toLowerCase() !== previousAccount.toLowerCase()) return false
+  if (tx.action === "receive") return true
+  return (
+    tx.action === "send" && !!account && recipientL2Address?.toLowerCase() === account.toLowerCase()
+  )
+}
+
+/**
+ * A transfer a rotated wallet's previous account received from someone else. Activity lists it,
+ * but the funds stay off the balance until a move, so the bell leaves it out.
+ */
+export function isReceiveAtPrevious(tx: Transaction, previousAccount?: string): boolean {
+  if (!previousAccount || tx.action !== "receive") return false
+  const { recipientL2Address } = tx as TokenTransaction
+  return recipientL2Address?.toLowerCase() === previousAccount.toLowerCase()
+}
+
+/** A deposit to a rotated wallet's previous account. */
+export function isDepositToPrevious(
+  record: Pick<SipaDeposit, "recipientL2Address">,
+  previousAccount?: string,
+): boolean {
+  return (
+    !!previousAccount && record.recipientL2Address?.toLowerCase() === previousAccount.toLowerCase()
+  )
+}
+
+/**
+ * A deposit still on its way to a rotated wallet's previous account: the feed leaves it out until
+ * it lands, because only the Passkeys panel's check claims it and moves it on. One with an exit
+ * stays listed, since its row offers that exit: the sweep of a stuck one, or an L1 recovery.
+ */
+export function isWaitingAtPrevious(
+  record: SipaDeposit,
+  previousAccount: string | undefined,
+  offer: DepositOffer | null,
+): boolean {
+  return (
+    isDepositToPrevious(record, previousAccount) &&
+    !isSettledSipaPhase(record.phase) &&
+    record.phase !== "recoverable" &&
+    !offer
+  )
+}
 
 export type BridgeActivityItem =
   /**
    * `processing` is set while the deposit waits for a sweep and the observer explains why.
-   * `credit` is set on a deposit split out of its address's record: another token it credited.
+   * `payment` is set on a past payment split out of its address's record: its sweep's inbox index.
    */
   | {
       kind: "bridge.sipaDeposit"
       record: SipaDeposit
       processing?: SipaProcessingState
-      credit?: Address
+      payment?: string
     }
   | { kind: "bridge.withdrawal"; record: WithdrawalRecord }
 
@@ -62,8 +129,11 @@ export function hiddenBehindOwnWithdrawal(
   withdrawals: readonly WithdrawalRecord[],
   now: number,
 ): boolean {
-  if (record.phase === "failed" || record.phase === "recoverable") return false
-  if (isStuckSweep(record, now)) return false
+  // A stopped backup add's funding row shows its recovery, which the Passkeys panel runs.
+  const surfaces = record.phase === "failed" || record.phase === "recoverable"
+  if (surfaces && !isStoppedBackupDeposit(record)) return false
+  // A backup passkey's sweep can wait far past the stuck clock, and its row offers no exit.
+  if (isStuckSweep(record, now) && !isAccountMoveSipa(record)) return false
   const sipa = record.sipaAddress.toLowerCase()
   // A migration's arrival is a row of its own: the move is two legs, and the arrival ends it.
   const funding = withdrawals.filter(
@@ -85,7 +155,10 @@ export type RecoveryReason = "unsweepable" | "stuck" | "registration-quote" | "s
  * half the recovery key, so a record discovered without one cannot sign at all.
  */
 export function recoveryReasonFor(
-  record: Pick<SipaDeposit, "phase" | "messageSecret" | "startTime" | "sweepTxHash">,
+  record: Pick<
+    SipaDeposit,
+    "phase" | "messageSecret" | "startTime" | "sweepTxHash" | "republishAskedAt"
+  >,
   now: number,
 ): RecoveryReason | null {
   if (!record.messageSecret) return null
@@ -100,7 +173,13 @@ export function recoveryReasonFor(
 export function canSelfSweep(
   record: Pick<
     SipaDeposit,
-    "phase" | "startTime" | "sweepTxHash" | "recipientHash" | "recoveryAddress" | "origin"
+    | "phase"
+    | "startTime"
+    | "sweepTxHash"
+    | "republishAskedAt"
+    | "recipientHash"
+    | "recoveryAddress"
+    | "origin"
   >,
   now: number,
 ): boolean {
@@ -247,6 +326,111 @@ export function withdrawalExit(record: WithdrawalRecord, now: number): Withdrawa
   return reason ? { kind: "swap", reason } : undefined
 }
 
+/**
+ * Phases past the account change: the backup was added. Money parked over them is extra, which the
+ * Passkeys card reports on its own, so the funding keeps the tracker's status.
+ */
+const BACKUP_ADDED: readonly BackupRotationPhase[] = [
+  "swept",
+  "installed",
+  "rerooted",
+  "moved",
+  "done",
+]
+
+export interface FundingRecovery {
+  /** `unread` while this device's attempts are not read: whether the funding stopped is not known. */
+  state: RecoveryState | "unread"
+  /** What reached the deposit address and went back, base units; set once recovered. */
+  deposited?: string
+  recoveryTxHash?: Hex
+}
+
+/** Whether a sweep ran at the address: for a backup passkey's, the account change ran. */
+const swept = (deposit: SipaDeposit) =>
+  !!deposit.sweepTxHash || !!deposit.inboxIndex || !!deposit.claimedInboxIndexes?.length
+
+/** A backup passkey's deposit address that will never run the change: the add stopped. */
+export const isStoppedBackupDeposit = (deposit: SipaDeposit) =>
+  isAccountMoveSipa(deposit) &&
+  !swept(deposit) &&
+  (neverCreditsL2(deposit.phase) || deposit.phase === "failed")
+
+/** A backup passkey's deposit address that was swept: the add ran. */
+export const isAddedBackupDeposit = (deposit: SipaDeposit) =>
+  isAccountMoveSipa(deposit) && swept(deposit)
+
+/** This device's attempt holding the funding, once the attempts are read. */
+const attemptOf = (
+  record: WithdrawalRecord,
+  rotations: readonly BackupRotationRecord[] | "unread",
+) =>
+  rotations === "unread"
+    ? undefined
+    : rotations.find((r) => r.fundings.some((f) => f.localId === record.localId))
+
+/**
+ * Whether a backup passkey funding's add ran: the burn landed and its attempt passed the account
+ * change, or, with no attempt here, its deposit address was swept. Until then the funding may still
+ * be releasing, have failed, or wait on the sweep, so the row does not say added.
+ */
+export function backupAdded(
+  record: WithdrawalRecord,
+  rotations: readonly BackupRotationRecord[] | "unread",
+  deposit: SipaDeposit | undefined,
+): boolean {
+  if (withdrawalIntent(record, deposit) !== "backup" || record.phase !== "done") return false
+  const rotation = attemptOf(record, rotations)
+  if (!rotation) return !!deposit && swept(deposit)
+  const phase = rotation.phase === "attention" ? rotation.suspended : rotation.phase
+  return !!phase && BACKUP_ADDED.includes(phase)
+}
+
+/**
+ * A paid backup passkey funding whose attempt stopped without adding the backup: its money waits
+ * at the deposit address, so the row reads the rotation's recovery instead of Paid. The Passkeys
+ * panel runs the recovery; the row offers none, so it cannot race a healthy rotation.
+ */
+export function fundingRecovery(
+  record: WithdrawalRecord,
+  rotations: readonly BackupRotationRecord[] | "unread",
+  deposit: SipaDeposit | undefined,
+): FundingRecovery | undefined {
+  if (withdrawalIntent(record, deposit) !== "backup" || record.phase !== "done") return undefined
+  const rotation = attemptOf(record, rotations)
+  if (rotation) {
+    const { suspended, plan, recovery, recovered } = rotation
+    if (suspended && BACKUP_ADDED.includes(suspended)) return undefined
+    // An attempt ends at `recovered` only once none of its fundings can still land, so money parked
+    // over it later is not this funding's: its recovery is the one that ended the attempt.
+    if (suspended === "recovered") {
+      return {
+        state: "recovered",
+        deposited: plan?.deposited,
+        ...(recovered ? { recoveryTxHash: recovered.txHash } : {}),
+      }
+    }
+    const state = recoveryState(rotation)
+    if (!state) return undefined
+    // An attempt that ended without `recovered` kept its recovery in `recovery`.
+    const tx = state === "recovered" ? recovered ?? recovery : recovery
+    return {
+      state,
+      ...(state === "recovered" && plan?.deposited ? { deposited: plan.deposited } : {}),
+      ...(tx ? { recoveryTxHash: tx.txHash } : {}),
+    }
+  }
+  // The deposit address outlives the attempt's record, which the Recovered card's Done removes. A
+  // swept address ran the change, so the backup was added.
+  if (deposit && swept(deposit)) return undefined
+  if (deposit?.recoveryTxHash) {
+    // With the attempts read and none holding the funding, its attempt ended at `recovered`.
+    const final = deposit.phase === "recovered" || rotations !== "unread"
+    return { state: final ? "recovered" : "sent", recoveryTxHash: deposit.recoveryTxHash }
+  }
+  return rotations === "unread" ? { state: "unread" } : undefined
+}
+
 /** The fee fields a migration's withdrawal record carries, base units as strings. */
 export type MigrationFeeFields = Required<
   Pick<WithdrawalRecord, "relayerTip" | "arrivalFee" | "withdrawalFee">
@@ -276,6 +460,81 @@ export function migrationAmounts(
     arrivalFeeDisplay: formatUnits(arrivalFee, record.tokenDecimals),
     netAtomic,
     netDisplay: formatUnits(netAtomic, record.tokenDecimals),
+  }
+}
+
+/**
+ * What a burn paid for. A burn rebuilt from chain names no intent, so one to a backup passkey's
+ * deposit address reads as the add's funding: no other burn pays that address.
+ */
+export function withdrawalIntent(
+  record: Pick<WithdrawalRecord, "intent">,
+  deposit: Pick<SipaDeposit, "intent"> | undefined,
+): WithdrawalRecord["intent"] {
+  return record.intent ?? (deposit && isAccountMoveSipa(deposit) ? "backup" : undefined)
+}
+
+export interface BackupAddCost {
+  /** Taken before the funding reached the deposit address. */
+  withdrawalFeeDisplay: string
+  /** The deposit address's fee for running the account change. */
+  accountChangeFeeDisplay: string
+  returnedDisplay: string
+  /** Sent less returned. */
+  costDisplay: string
+}
+
+/**
+ * What adding a backup passkey cost. The funding sends more than the change needs, and the deposit
+ * address credits the rest to the new account on a deposit the feed hides as the account's own
+ * move, so the funding's gross overstates the cost. Undefined for a burn that did not land, until
+ * that credit is claimed, and unless the sweep took exactly what this funding released, since a
+ * shared credit cannot be split by payment.
+ */
+export function backupAddCost(
+  record: WithdrawalRecord,
+  deposit: SipaDeposit | undefined,
+): BackupAddCost | undefined {
+  if (record.phase !== "done" || withdrawalIntent(record, deposit) !== "backup") return undefined
+  if (!deposit || !isAccountMoveSipa(deposit)) return undefined
+  // The claimed sweep keeps the credit's figures: money paid to the address later rewrites the
+  // record's own.
+  const sweep = deposit.sweeps?.[0]
+  if (!sweep || sweep.fee == null) return undefined
+  const released = withdrawalAmounts(record)
+  const fee = BigInt(sweep.fee)
+  const returned = BigInt(sweep.netAmount)
+  // Other money paid to the address before the sweep would read as returned.
+  if (!released.feeKnown || returned + fee !== released.netAtomic) return undefined
+  const sent = released.grossAtomic
+  const display = (atomic: bigint) => formatUnits(atomic, record.tokenDecimals)
+  return {
+    withdrawalFeeDisplay: released.feeDisplay,
+    accountChangeFeeDisplay: display(fee),
+    returnedDisplay: display(returned),
+    costDisplay: display(sent - returned),
+  }
+}
+
+/** The Fund step's figures, priced from the plan before anything is sent; base units. */
+export interface BackupFundingQuote {
+  sent: bigint
+  /** One figure for a plan saved without what reaches the deposit address. */
+  fees: bigint | { withdrawal: bigint; accountChange: bigint }
+  credited: bigint
+}
+
+export function backupFundingQuote(
+  plan: Pick<BackupRotationPlan, "fundingAmount" | "deposited" | "credited">,
+): BackupFundingQuote {
+  const sent = BigInt(plan.fundingAmount)
+  const credited = BigInt(plan.credited)
+  if (plan.deposited === undefined) return { sent, fees: sent - credited, credited }
+  const deposited = BigInt(plan.deposited)
+  return {
+    sent,
+    fees: { withdrawal: sent - deposited, accountChange: deposited - credited },
+    credited,
   }
 }
 
@@ -319,69 +578,67 @@ export function bridgeItemTime(item: BridgeActivityItem): number {
   return item.record.endTime ?? item.record.startTime
 }
 
+type DepositBridgeItem = Extract<ActivityItem, { kind: "bridge.sipaDeposit" }>
+
+/** The inbox index of the payment a deposit row shows, once its sweep is seen. */
+export const depositRowPayment = (item: { record: SipaDeposit; payment?: string }) =>
+  item.payment ?? sipaPaymentIndex(item.record)
+
 /**
- * The bridge row a notification asks to open. Its target lowercases the SIPA address; records keep
- * it checksummed. A reorg notice carries only the tx hash: the burn's or the claim's.
+ * The bridge row a notification asks to open: a deposit by its detail id, a withdrawal by its id. A
+ * reorg notice carries only the tx hash: the burn's or the claim's.
  */
 export function findBridgeItem(
   items: readonly ActivityItem[],
   target: { openWithdrawalId?: string; openDepositAddress?: string; openTxHash?: string },
 ): BridgeActivityItem | undefined {
-  const { openWithdrawalId } = target
-  const deposit = target.openDepositAddress?.toLowerCase()
+  const { openWithdrawalId, openDepositAddress } = target
+  if (openDepositAddress) return depositDetailItem(items, openDepositAddress)
   const txHash = target.openTxHash?.toLowerCase()
-  if (!openWithdrawalId && !deposit && !txHash) return undefined
+  if (!openWithdrawalId && !txHash) return undefined
   return items.find(
     (item): item is BridgeActivityItem =>
-      (item.kind === "bridge.withdrawal" &&
-        (item.record.localId === openWithdrawalId ||
-          (!!txHash && item.record.l2TxHash?.toLowerCase() === txHash))) ||
-      (item.kind === "bridge.sipaDeposit" &&
-        !item.credit &&
-        item.record.sipaAddress.toLowerCase() === deposit),
+      item.kind === "bridge.withdrawal" &&
+      (item.record.localId === openWithdrawalId ||
+        (!!txHash && item.record.l2TxHash?.toLowerCase() === txHash)),
   )
 }
 
-type DepositBridgeItem = Extract<ActivityItem, { kind: "bridge.sipaDeposit" }>
-
-/** The token a deposit row shows: the one it splits out, else the record's own. */
-const depositRowToken = (item: { record: SipaDeposit; credit?: string }) =>
-  (item.credit ?? item.record.rowToken ?? item.record.tokenAddress)?.toLowerCase()
-
-/** A deposit row's detail id: its address, and the token the row shows. */
-export function depositDetailId(item: { record: SipaDeposit; credit?: string }): string {
-  const token = depositRowToken(item)
-  return token ? `${item.record.sipaAddress}:${token}` : item.record.sipaAddress
+/** A deposit row's detail id: its address, and the payment the row shows once its sweep is seen. */
+export function depositDetailId(item: { record: SipaDeposit; payment?: string }): string {
+  const payment = depositRowPayment(item)
+  return payment ? `${item.record.sipaAddress}:${payment}` : item.record.sipaAddress
 }
 
 /**
- * The row a deposit detail shows: `address:token` picks that token's row, whether it is split out
- * or the address's own by now; an address alone, or a token it no longer shows, picks the address's
- * own row.
+ * The row a deposit detail shows: `address:index` picks that payment's row, whether it is split out
+ * or the address's own by now; an address alone, or a payment it no longer shows, picks the
+ * address's own row.
  */
 export function depositDetailItem(
   items: readonly ActivityItem[],
   id: string,
 ): DepositBridgeItem | undefined {
-  const [address, token] = id.toLowerCase().split(":")
+  const [address, payment] = id.toLowerCase().split(":")
   const rows = items.filter(
     (item): item is DepositBridgeItem =>
       item.kind === "bridge.sipaDeposit" && item.record.sipaAddress.toLowerCase() === address,
   )
   return (
-    (token ? rows.find((item) => depositRowToken(item) === token) : undefined) ??
-    rows.find((item) => !item.credit)
+    (payment ? rows.find((item) => depositRowPayment(item) === payment) : undefined) ??
+    rows.find((item) => !item.payment)
   )
 }
 
 /**
  * The detail a routed bridge row opens: a Savings move's burn its Savings detail, a leg of a fresh
- * withdrawal its group, a deposit its address.
+ * withdrawal its group, a deposit its address, and a past payment at it that payment.
  */
 export function bridgeDetailTarget(
   hit: BridgeActivityItem,
 ): { kind: "savings" | "withdrawal"; id: string } | { kind: "deposit"; address: string } {
-  if (hit.kind === "bridge.sipaDeposit") return { kind: "deposit", address: hit.record.sipaAddress }
+  if (hit.kind === "bridge.sipaDeposit")
+    return { kind: "deposit", address: hit.payment ? depositDetailId(hit) : hit.record.sipaAddress }
   if (hit.record.skyMove) return { kind: "savings", id: hit.record.localId }
   return { kind: "withdrawal", id: hit.record.groupId ?? hit.record.localId }
 }

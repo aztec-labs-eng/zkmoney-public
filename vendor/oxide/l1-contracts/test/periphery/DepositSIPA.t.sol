@@ -22,6 +22,7 @@ import {StablecoinMocks} from "@test/helpers/StablecoinMocks.sol";
 import {MockCurve3Pool} from "@test/mocks/MockCurve3Pool.sol";
 import {MintableToken} from "@test/mocks/MintableToken.sol";
 import {ForwardingTableFixture, DEPOSIT_SWEEP_TIP} from "@test/helpers/ForwardingTableFixture.sol";
+import {Intent, Intents} from "@periphery/Intent.sol";
 
 contract MockDepositPortal {
   IERC20 public immutable UNDERLYING;
@@ -54,7 +55,7 @@ contract MockDepositPortal {
 
 contract FeeRoutingSIPA is SIPABase {
   function INTENT() public pure override returns (Intent) {
-    return Intent.Deposit;
+    return Intents.DEPOSIT;
   }
 
   function _execute(address token, bytes calldata intentData, bytes calldata)
@@ -668,8 +669,7 @@ contract DepositSIPAStableSettleTest is Test {
   function _listUsdc() internal returns (MockDepositPortal usdcPortal) {
     usdcPortal = new MockDepositPortal(USDC, ROLLUP_VERSION);
     IForwardingTable.IntentFees[] memory intents = new IForwardingTable.IntentFees[](1);
-    intents[0] =
-      IForwardingTable.IntentFees({intent: SIPABase.Intent.Deposit, beneficiaryFee: 0, sweepTip: USDC_SWEEP_TIP});
+    intents[0] = IForwardingTable.IntentFees({intent: Intents.DEPOSIT, beneficiaryFee: 0, sweepTip: USDC_SWEEP_TIP});
     table.addRow(address(USDC), IOxidePortal(address(usdcPortal)), intents);
   }
 

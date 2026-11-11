@@ -1,26 +1,38 @@
 /**
  * The memo a wallet withdrawal carries in its recovery data (oxide's `WithdrawOperation.recoveryMemo`), encrypted to
- * the owner. The recovery data names the L1 address the burn pays, but for a swap or a Sky savings move that is an
- * escrow, so the memo carries what the escrow address commits to. A fresh device then rebuilds the record, and with
- * it the escrow's run and recovery, from chain alone. A direct withdrawal carries an empty memo.
+ * the owner. The recovery data names the L1 address the burn pays, but for a swap, a Sky savings move or a bridge-out
+ * that is an escrow, so the memo carries what the escrow address commits to. A fresh device then rebuilds the record,
+ * and with it the escrow's run and recovery, from chain alone. A direct withdrawal carries an empty memo.
  *
  *   byte 0      format version (0x01)
  *   then        [type: u8][len: u8][value: len bytes] entries —
  *               0x01 swap route (1 byte, the escrow's `SwapRoute` id), 0x02 swap recipient (20 bytes),
  *               0x03 escrow factory (20 bytes), 0x04 recovery commitment (32 bytes), 0x05 escrow relayer tip,
  *               0x06 escrow nonce (32 bytes), 0x07 swap daiForGas, 0x08 swap minEthForGas, 0x09 Sky route
- *               (1 byte, the escrow's `SkyRoute`), 0x0a Sky recipient commitment (32 bytes). Amounts are
- *               uint256 in their fewest big-endian bytes; the gas entries are written only when nonzero.
+ *               (1 byte, the escrow's `SkyRoute`), 0x0a Sky recipient commitment (32 bytes), 0x0b bridge
+ *               provider (1 byte, 1 = Across), 0x0c destination chain id, 0x0d bridge output token (1 byte,
+ *               1 = USDC, 2 = USDT), 0x0e bridge fee, 0x0f bridge min received. A bridge-out's recipient
+ *               is 0x02. Amounts and the chain id are uint256 in their fewest big-endian bytes; the gas
+ *               entries are written only when nonzero.
  *
- * Decoding is total: any input yields a (possibly empty) memo, never a throw. A swap or a Sky move is reported only
- * when every entry it needs is present and well-formed. The values are what the wallet asserted at burn time;
+ * Decoding is total: any input yields a (possibly empty) memo, never a throw. An escrow is reported only when its
+ * kind entry (0x01, 0x09 or 0x0b) is the only one and every entry it needs is present and well-formed. The values are what the wallet asserted at burn time;
  * `withdrawEventSource.ts` checks them against the escrow the burn paid before a reader trusts them.
  */
 
-import { getAddress, isAddress, type Address, type Hex } from "viem"
-import { SkyRoute } from "@oxide/experiments/sky/sky_savings.js"
+import { getAddress, isAddress, isAddressEqual, type Address, type Hex } from "viem"
+import { SkyRoute, predictSkyEscrowAddressLocally } from "@oxide/experiments/sky/sky_savings.js"
 import type { SwapEscrowOutput } from "@obsidion/core/types"
-import { swapOutputForRoute, swapRouteForOutput } from "../../oxide/escrow/swapOnWithdraw.js"
+import {
+  acrossBridgeEscrowArgs,
+  predictAcrossBridgeEscrowAddressLocally,
+  type BridgeOutToken,
+} from "../../oxide/escrow/acrossBridgeOnWithdraw.js"
+import {
+  predictSwapEscrow,
+  swapOutputForRoute,
+  swapRouteForOutput,
+} from "../../oxide/escrow/swapOnWithdraw.js"
 
 const VERSION = 0x01
 const TYPE_SWAP_ROUTE = 0x01
@@ -33,6 +45,14 @@ const TYPE_DAI_FOR_GAS = 0x07
 const TYPE_MIN_ETH_FOR_GAS = 0x08
 const TYPE_SKY_ROUTE = 0x09
 const TYPE_RECIPIENT_COMMITMENT = 0x0a
+const TYPE_BRIDGE_PROVIDER = 0x0b
+const TYPE_BRIDGE_CHAIN = 0x0c
+const TYPE_BRIDGE_TOKEN = 0x0d
+const TYPE_BRIDGE_FEE = 0x0e
+const TYPE_BRIDGE_MIN_RECEIVED = 0x0f
+
+const BRIDGE_PROVIDERS = { across: 1 } as const satisfies Record<BridgeOutProviderId, number>
+const BRIDGE_TOKENS = { USDC: 1, USDT: 2 } as const satisfies Record<BridgeOutToken, number>
 
 const ADDRESS_LEN = 20
 const WORD_LEN = 32
@@ -66,18 +86,46 @@ export interface SkyWithdrawalMemo {
   nonce: Hex
 }
 
+/** Who carries a bridge-out to its chain. */
+export type BridgeOutProviderId = "across"
+
+/** What a bridge-out's escrow address commits to. */
+export interface BridgeWithdrawalMemo {
+  provider: BridgeOutProviderId
+  chainId: number
+  token: BridgeOutToken
+  /** Where the bridge lands the output on `chainId`. */
+  recipient: Address
+  /** The escrow factory the escrow address was derived from. */
+  factory: Address
+  /** Bridge input-token units the escrow keeps back for the bridge. */
+  fee: bigint
+  /** Output-token units the recipient receives at the swap floor. */
+  minReceived: bigint
+  recoveryCommitment: Hex
+  relayerTip: bigint
+  nonce: Hex
+}
+
+/** The escrow a burn pays, as the send names it. */
+export type EscrowMemo =
+  | { swap: SwapWithdrawalMemo }
+  | { sky: SkyWithdrawalMemo }
+  | { bridge: BridgeWithdrawalMemo }
+
+/** A decoded memo: at most one escrow. */
 export interface WithdrawalMemo {
   swap?: SwapWithdrawalMemo
   sky?: SkyWithdrawalMemo
+  bridge?: BridgeWithdrawalMemo
 }
 
-export function encodeWithdrawalMemo(memo: WithdrawalMemo): Buffer {
-  if (memo.swap && memo.sky) throw new Error("A withdrawal memo names one escrow")
+export function encodeWithdrawalMemo(memo: EscrowMemo): Buffer {
   const entries: Buffer[] = []
   const put = (type: number, value: Buffer) => {
     entries.push(Buffer.from([type, value.length]), value)
   }
-  if (memo.swap) {
+  if ("swap" in memo) {
     const { swap } = memo
     put(TYPE_SWAP_ROUTE, Buffer.from([swapRouteForOutput(swap.output)]))
     put(TYPE_SWAP_RECIPIENT, addressBytes(swap.recipient, "recipient"))
@@ -88,7 +136,7 @@ export function encodeWithdrawalMemo(memo: WithdrawalMemo): Buffer {
     if (swap.daiForGas > 0n) put(TYPE_DAI_FOR_GAS, uintBytes(swap.daiForGas))
     if (swap.minEthForGas > 0n) put(TYPE_MIN_ETH_FOR_GAS, uintBytes(swap.minEthForGas))
   }
-  if (memo.sky) {
+  if ("sky" in memo) {
     const { sky } = memo
     if (!isSkyRoute(sky.route))
       throw new Error(`withdrawal memo Sky route is unknown: ${sky.route}`)
@@ -102,13 +150,29 @@ export function encodeWithdrawalMemo(memo: WithdrawalMemo): Buffer {
     put(TYPE_RELAYER_TIP, uintBytes(sky.relayerTip))
     put(TYPE_ESCROW_NONCE, hexBytes(sky.nonce, WORD_LEN, "nonce"))
   }
-  return entries.length ? Buffer.concat([Buffer.from([VERSION]), ...entries]) : Buffer.alloc(0)
+  if ("bridge" in memo) {
+    const { bridge } = memo
+    put(TYPE_BRIDGE_PROVIDER, Buffer.from([BRIDGE_PROVIDERS[bridge.provider]]))
+    put(TYPE_BRIDGE_CHAIN, uintBytes(BigInt(bridge.chainId)))
+    put(TYPE_BRIDGE_TOKEN, Buffer.from([BRIDGE_TOKENS[bridge.token]]))
+    put(TYPE_SWAP_RECIPIENT, addressBytes(bridge.recipient, "recipient"))
+    put(TYPE_ESCROW_FACTORY, addressBytes(bridge.factory, "factory"))
+    put(TYPE_BRIDGE_FEE, uintBytes(bridge.fee))
+    put(TYPE_BRIDGE_MIN_RECEIVED, uintBytes(bridge.minReceived))
+    put(
+      TYPE_RECOVERY_COMMITMENT,
+      hexBytes(bridge.recoveryCommitment, WORD_LEN, "recoveryCommitment"),
+    )
+    put(TYPE_RELAYER_TIP, uintBytes(bridge.relayerTip))
+    put(TYPE_ESCROW_NONCE, hexBytes(bridge.nonce, WORD_LEN, "nonce"))
+  }
+  return Buffer.concat([Buffer.from([VERSION]), ...entries])
 }
 
 /**
  * A wrong version, a truncated entry, a duplicate (the first wins) or a malformed value never throws. A swap missing
  * an entry, naming the zero address or a zero recovery commitment, or naming a route no output maps to decodes as no
- * swap. A Sky move likewise, and a Sky move beside a swap route decodes as neither.
+ * swap. A Sky move and a bridge-out likewise, and two kind entries decode as no escrow.
  */
 export function decodeWithdrawalMemo(memo: Buffer): WithdrawalMemo {
   if (memo[0] !== VERSION) return {}
@@ -140,18 +204,80 @@ export function decodeWithdrawalMemo(memo: Buffer): WithdrawalMemo {
     factory && recoveryCommitment && relayerTip !== undefined && nonce
       ? { factory, recoveryCommitment, relayerTip, nonce }
       : undefined
+  const skyRoute = value(TYPE_SKY_ROUTE, 1)?.[0]
+  const provider = value(TYPE_BRIDGE_PROVIDER, 1)?.[0]
+  const kinds = [route, skyRoute, provider].filter((kind) => kind !== undefined)
+  if (kinds.length !== 1 || !escrow) return {}
+  const recipient = nonZeroAddress(value(TYPE_SWAP_RECIPIENT, ADDRESS_LEN))
   if (route) {
     const output = swapOutputForRoute(route[0]!)
-    const recipient = nonZeroAddress(value(TYPE_SWAP_RECIPIENT, ADDRESS_LEN))
-    if (!output || !recipient || !escrow) return {}
+    if (!output || !recipient) return {}
     const daiForGas = uint(TYPE_DAI_FOR_GAS) ?? 0n
     const minEthForGas = uint(TYPE_MIN_ETH_FOR_GAS) ?? 0n
     return { swap: { output, recipient, ...escrow, daiForGas, minEthForGas } }
   }
-  const skyRoute = value(TYPE_SKY_ROUTE, 1)?.[0]
-  const recipientCommitment = nonZeroHex(value(TYPE_RECIPIENT_COMMITMENT, WORD_LEN))
-  if (skyRoute === undefined || !isSkyRoute(skyRoute) || !recipientCommitment || !escrow) return {}
-  return { sky: { route: skyRoute, recipientCommitment, ...escrow } }
+  if (skyRoute !== undefined) {
+    const recipientCommitment = nonZeroHex(value(TYPE_RECIPIENT_COMMITMENT, WORD_LEN))
+    if (!isSkyRoute(skyRoute) || !recipientCommitment) return {}
+    return { sky: { route: skyRoute, recipientCommitment, ...escrow } }
+  }
+  const bridgeProvider = keyOf(BRIDGE_PROVIDERS, provider)
+  const token = keyOf(BRIDGE_TOKENS, value(TYPE_BRIDGE_TOKEN, 1)?.[0])
+  const chainId = uint(TYPE_BRIDGE_CHAIN)
+  const fee = uint(TYPE_BRIDGE_FEE)
+  const minReceived = uint(TYPE_BRIDGE_MIN_RECEIVED)
+  if (
+    !bridgeProvider ||
+    !token ||
+    !recipient ||
+    !chainId ||
+    chainId > BigInt(Number.MAX_SAFE_INTEGER) ||
+    fee === undefined ||
+    minReceived === undefined
+  ) {
+    return {}
+  }
+  return {
+    bridge: {
+      provider: bridgeProvider,
+      chainId: Number(chainId),
+      token,
+      recipient,
+      fee,
+      minReceived,
+      ...escrow,
+    },
+  }
+}
+
+/**
+ * Whether `memo`'s args derive `escrow` from its factory: the memo is what the wallet asserted at
+ * burn time, and only args the burn actually paid into are worth acting on.
+ */
+export function memoDerivesEscrow(memo: EscrowMemo, escrow: Address): boolean {
+  const predicted = predictMemoEscrow(memo)
+  return predicted !== undefined && isAddressEqual(predicted, escrow)
+}
+
+function predictMemoEscrow(memo: EscrowMemo): Address | undefined {
+  if ("swap" in memo) {
+    const { output, factory, ...args } = memo.swap
+    return predictSwapEscrow(factory, {
+      layout: "v2",
+      args: { ...args, route: swapRouteForOutput(output) },
+    })
+  }
+  if ("sky" in memo) return predictSkyEscrowAddressLocally(memo.sky.factory, memo.sky)
+  const { bridge } = memo
+  const args = acrossBridgeEscrowArgs(bridge.token, bridge.chainId, {
+    ...bridge,
+    acrossFee: bridge.fee,
+  })
+  return args && predictAcrossBridgeEscrowAddressLocally(bridge.factory, args)
+}
+
+function keyOf<K extends string>(ids: Record<K, number>, id: number | undefined): K | undefined {
+  return (Object.keys(ids) as K[]).find((key) => ids[key] === id)
 }
 
 function isSkyRoute(route: number): route is SkyRoute {

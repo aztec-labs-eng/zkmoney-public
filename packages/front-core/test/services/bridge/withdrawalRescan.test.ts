@@ -4,10 +4,15 @@ import { describe, expect, it, vi } from "vitest"
 import { Fr } from "@aztec-labs/aztec.js/fields"
 import { getAddress, type Hash, type Hex } from "viem"
 import { SkyRoute } from "@oxide/experiments/sky/sky_savings.js"
-import { planSwapOnWithdraw, type ScannedWithdrawEvent } from "@obsidion/sdk"
+import {
+  acrossBridgeEscrowArgs,
+  planSwapOnWithdraw,
+  predictAcrossBridgeEscrowAddressLocally,
+  type ScannedWithdrawEvent,
+} from "@obsidion/sdk"
 import { createWithdrawals, type Withdrawals } from "../../../src/engine/withdrawals"
 import { rebuildWithdrawals } from "../../../src/core/services/bridge/withdrawalRescan"
-import { swapEscrowTarget } from "../../../src/core/services/bridge/swapEscrowArgs"
+import { escrowLeg } from "../../../src/core/services/bridge/escrowLeg"
 import { withdrawalRecipients } from "../../../src/core/services/bridge/withdrawalRecipients"
 import { savingsMoveOfWithdrawal } from "../../../src/oxide/savingsMoves"
 import { syncCatchUp } from "../../../src/engine/catchUp"
@@ -70,7 +75,7 @@ function makeSource(
 }
 
 async function newStore(): Promise<Withdrawals> {
-  const store = createWithdrawals({ db: openDatabase(memoryBackend()) })
+  const store = createWithdrawals({ db: openDatabase(memoryBackend()), now: () => Date.now() })
   await store.ready
   return store
 }
@@ -278,12 +283,66 @@ describe("rebuildWithdrawals", () => {
       final: RECIPIENT,
       viaEscrow: true,
     })
-    expect(swapEscrowTarget(record)).toEqual({
+    expect(escrowLeg(record)).toMatchObject({
+      kind: "swap",
       factory: FACTORY,
       escrow: plan.escrow,
-      layout: "v2",
-      args: plan.escrowArgs,
+      args: { layout: "v2", args: plan.escrowArgs },
     })
+  })
+
+  it("rebuilds a bridge-out the send would have written, whose leg recovers", async () => {
+    const store = await newStore()
+    const BRIDGE_TX = `0x${"66".repeat(32)}` as Hash
+    const bridge = {
+      provider: "across" as const,
+      chainId: 56,
+      token: "USDT" as const,
+      recipient: RECIPIENT,
+      factory: FACTORY,
+      fee: 300_000n,
+      minReceived: 97n * 10n ** 18n,
+      recoveryCommitment: `0x${"4d".repeat(32)}` as Hex,
+      relayerTip: 2n * TIP,
+      nonce: NONCE,
+    }
+    const escrow = predictAcrossBridgeEscrowAddressLocally(
+      FACTORY,
+      acrossBridgeEscrowArgs("USDT", 56, { ...bridge, acrossFee: bridge.fee })!,
+    )
+    const source = makeSource([
+      { ...EVENTS[0]!, txHash: BRIDGE_TX, l1Recipient: escrow, proverTip: 0n, bridge },
+    ])
+
+    await rebuildWithdrawals({
+      networkId: "0xnet",
+      source,
+      store,
+      tokenSymbol: "DAI",
+      tokenDecimals: 18,
+      chainName: (chainId) => (chainId === 56 ? "BNB Chain" : undefined),
+    })
+
+    const record = (await store.byHash(BRIDGE_TX))!
+    expect(record).toMatchObject({
+      recipient: RECIPIENT,
+      swapOutput: "USDT",
+      swapOutputDecimals: 18,
+      swapEscrow: escrow,
+      swapEscrowFactory: FACTORY,
+      bridgeOut: {
+        provider: "across",
+        chainId: 56,
+        chainName: "BNB Chain",
+        minReceived: bridge.minReceived.toString(),
+        acrossFee: "300000",
+        nonce: NONCE,
+        recoveryCommitment: bridge.recoveryCommitment,
+        relayerTip: (2n * TIP).toString(),
+      },
+    })
+    expect(withdrawalRecipients(record)).toEqual({ release: escrow, final: RECIPIENT, viaEscrow: true })
+    expect(escrowLeg(record)).toMatchObject({ kind: "bridge", escrow })
   })
 
   it("rebuilds a Sky move's args, and the move from them", async () => {
@@ -352,6 +411,20 @@ describe("rebuildWithdrawals", () => {
       final: ESCROW,
       viaEscrow: false,
     })
+  })
+
+  it("rebuilds only the burns it keeps", async () => {
+    const store = await newStore()
+    const created = await rebuildWithdrawals({
+      networkId: "0xnet",
+      source: makeSource(),
+      store,
+      tokenSymbol: "DAI",
+      tokenDecimals: 18,
+      keep: (event) => event.txHash !== ESCROW_TX,
+    })
+    expect(created.map((r) => r.l2TxHash)).toEqual([DIRECT_TX, KNOWN_TX])
+    expect(await store.byHash(ESCROW_TX)).toBeUndefined()
   })
 
   it("rebuilds no move from a plain burn", async () => {

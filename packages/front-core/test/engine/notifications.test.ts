@@ -1,14 +1,16 @@
 import { describe, expect, it, vi } from "vitest"
-import { PaylinkActionEnum } from "@obsidion/core/constants"
+import { openActivity } from "../utils/transferFixture"
 import { demotePaylinkClaim } from "../../src/core/services/paylink/PaylinkClaimReconciler"
-import { createActivity } from "../../src/engine/activity"
+import { createPaylinks } from "../../src/engine/paylinks"
+import type { PaylinkRecord } from "../../src/engine/paylinkTransition"
 import { openDatabase } from "../../src/engine/database"
 import { memoryBackend, type MemoryBackend } from "../../src/engine/memoryBackend"
 import { encodeRecord } from "../../src/engine/persistentStore"
 import { scannedRow } from "../../src/core/services/transactions/TransferEventScanner"
 import {
+  claimReversalReports,
+  notificationStamps,
   selectNotifications,
-  watchNotifications,
   type NotificationSources,
 } from "../../src/engine/notificationFeed"
 import {
@@ -22,12 +24,28 @@ import {
   type NotificationState,
   type Notifications,
 } from "../../src/engine/notifications"
-import { APP_NOTIFICATION_STORAGE_KEY } from "../../src/engine/notificationsLegacy"
-import { memoryStore, derived } from "../../src/engine/store"
-import type { PaylinkTransaction, Transaction } from "../../src/types/transactions"
-import type { OnNetwork } from "../../src/types/networkStamp"
+import { APP_NOTIFICATION_STORAGE_KEY } from "../../src/storageMigrations/notifications"
+import { startRuntime } from "../../src/engine/runtime"
+import { memoryStore, derived, type ReadonlyStore } from "../../src/engine/store"
+import type { Transaction } from "../../src/types/transactions"
+import { sessions } from "./taskTable"
 
 const NOW = 1_800_000_000_000
+
+/** The bell's writers in a runtime of their own; returns its stop. */
+function writing(
+  sources: ReadonlyStore<NotificationSources>,
+  clock: ReadonlyStore<number>,
+  n: Notifications,
+): () => void {
+  const runtime = sessions(startRuntime)
+  runtime.tasks.push(
+    notificationStamps(sources, clock, n, () => Date.now()),
+    claimReversalReports(sources, n, () => Date.now()),
+  )
+  runtime.start()
+  return runtime.end
+}
 const OLD = NOW - NOTIFICATION_WINDOW_MS - 1
 
 const contact = (address: string, at = NOW): NotificationEvent => ({
@@ -118,7 +136,7 @@ describe("notificationTransition", () => {
 
 /** The store over `backend`, its loaded records watched, once they have loaded. */
 async function open(backend: MemoryBackend = memoryBackend()): Promise<Notifications> {
-  const n = createNotifications(openDatabase(backend))
+  const n = createNotifications({ db: openDatabase(backend), now: () => Date.now() })
   n.state.subscribe(() => {})
   n.events.subscribe(() => {})
   await n.ready
@@ -340,7 +358,7 @@ describe("saving", () => {
   it("saves a report's event and its state row as one record, in one transaction", async () => {
     const backend = memoryBackend()
     const db = openDatabase(backend)
-    const n = createNotifications(db)
+    const n = createNotifications({ db: db, now: () => Date.now() })
     await n.ready
     await n.report(residuals(1))
     await n.observe([{ id: "migration:residuals" }], [], NOW, true)
@@ -369,16 +387,18 @@ describe("saving", () => {
     const n = await open(backend)
     const sources = memoryStore<NotificationSources>({
       rows: [],
+      links: [],
       deposits: { records: [], loaded: true, failed: false },
       withdrawals: { records: [], hydrated: true },
       upgrades: { items: [], recipients: new Set<string>(), loaded: true },
       oldVersionWithdrawals: [],
+      bridgeIns: { records: [], hydrated: true },
       processing: new Map(),
       registrations: [],
       operations: { ended: [], running: [] },
       loaded: true,
     })
-    const stop = watchNotifications(sources.readonly, memoryStore(NOW).readonly, n)
+    const stop = writing(sources.readonly, memoryStore(NOW).readonly, n)
     backend.failing.commits = true
     await expect(n.record(reclaimable())).rejects.toMatchObject({ code: "unknown" })
     backend.failing.commits = false
@@ -527,7 +547,7 @@ describe("the legacy bell", () => {
   })
 })
 
-describe("watchNotifications", () => {
+describe("notificationStamps and claimReversalReports", () => {
   it("stamps entries as the records and facts change, until unsubscribed", async () => {
     const n = await open()
     const receive = (hash: string) =>
@@ -541,17 +561,19 @@ describe("watchNotifications", () => {
     const none = { records: [], hydrated: true }
     const sources = memoryStore<NotificationSources>({
       rows: [receive("0xa")],
+      links: [],
       deposits: none,
       withdrawals: none,
       upgrades: { items: [], recipients: new Set<string>(), loaded: true },
       oldVersionWithdrawals: [],
+      bridgeIns: { records: [], hydrated: true },
       processing: new Map(),
       registrations: [],
       operations: { ended: [], running: [] },
       loaded: true,
     })
     const clock = memoryStore(Date.now())
-    const stop = watchNotifications(sources.readonly, clock.readonly, n)
+    const stop = writing(sources.readonly, clock.readonly, n)
     await vi.waitFor(() => expect(n.state.get().has("transfer:receive:0xa")).toBe(true))
     sources.update((s) => ({ ...s, rows: [...s.rows, receive("0xb")] }))
     await vi.waitFor(() => expect(n.state.get().has("transfer:receive:0xb")).toBe(true))
@@ -564,12 +586,17 @@ describe("watchNotifications", () => {
     expect(n.state.get().has("transfer:receive:0xc")).toBe(false)
   })
 
-  const quiet = (rows: readonly Transaction[]): NotificationSources => ({
+  const quiet = (
+    rows: readonly Transaction[],
+    links: readonly PaylinkRecord[] = [],
+  ): NotificationSources => ({
     rows,
+    links,
     deposits: { records: [], loaded: true, failed: false },
     withdrawals: { records: [], hydrated: true },
     upgrades: { items: [], recipients: new Set<string>(), loaded: true },
     oldVersionWithdrawals: [],
+    bridgeIns: { records: [], hydrated: true },
     processing: new Map(),
     registrations: [],
     operations: { ended: [], running: [] },
@@ -587,13 +614,13 @@ describe("watchNotifications", () => {
 
   it("stamps a receive only once its row is saved, and the retry that lands stamps it", async () => {
     const backend = memoryBackend()
-    const activity = createActivity({ db: openDatabase(backend) })
-    await activity.ready
+    const transfers = openActivity(openDatabase(backend))
+    await transfers.ready
     const n = await open()
-    const sources = derived([activity.view], (rows) => quiet(rows.records))
-    const stop = watchNotifications(sources, memoryStore(Date.now()).readonly, n)
+    const sources = derived([transfers.view], (rows) => quiet(rows.records))
+    const stop = writing(sources, memoryStore(Date.now()).readonly, n)
     const scan = () =>
-      activity.record(
+      transfers.record(
         scannedRow({
           txHash: "0xa",
           from: "alice",
@@ -620,13 +647,13 @@ describe("watchNotifications", () => {
 
   it("reports a claim reversal only once the demote is saved, and only once", async () => {
     const backend = memoryBackend()
-    const activity = createActivity({ db: openDatabase(backend) })
-    await activity.record({
-      id: "0xp",
+    const paylinks = createPaylinks({
+      db: openDatabase(backend),
+      transfers: { ready: Promise.resolve() },
+    })
+    await paylinks.put({
+      id: "link",
       networkId: "net",
-      action: PaylinkActionEnum.PAY,
-      emailPaymentAction: PaylinkActionEnum.PAY,
-      status: "success",
       txHash: "0xp",
       flavor: "direct",
       token,
@@ -635,20 +662,21 @@ describe("watchNotifications", () => {
       payToEmailSecret: "0xs",
       paylink: "url",
       isClaimed: true,
-    } as OnNetwork<PaylinkTransaction>)
+      claimedAt: Date.now(),
+    })
     const n = await open()
-    const stop = watchNotifications(
-      derived([activity.view], (rows) => quiet(rows.records)),
+    const stop = writing(
+      derived([paylinks.view], (links) => quiet([], links.records)),
       memoryStore(Date.now()).readonly,
       n,
     )
     await vi.waitFor(() => expect(n.state.get().has("paylink:claimed:0xp")).toBe(true))
     const reversal = "paylink:claim-reversed:0xp"
     backend.failing.commits = true
-    await expect(demotePaylinkClaim("0xp", activity)).rejects.toMatchObject({ code: "unknown" })
+    await expect(demotePaylinkClaim("0xp", paylinks)).rejects.toMatchObject({ code: "unknown" })
     expect(n.events.get().has(reversal)).toBe(false)
     backend.failing.commits = false
-    expect(await demotePaylinkClaim("0xp", activity)).toBe(true)
+    expect(await demotePaylinkClaim("0xp", paylinks)).toBe(true)
     await vi.waitFor(() =>
       expect(n.events.get().get(reversal)).toMatchObject({
         kind: "claimReversed",

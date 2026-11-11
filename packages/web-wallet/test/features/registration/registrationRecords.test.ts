@@ -4,7 +4,7 @@
  * close that retracts the identity in the same write.
  */
 import { act, createElement } from "react"
-import { testCore, testPage } from "../../support/page"
+import { testCore, testPage, defaultConfig } from "../../support/page"
 import { createRoot } from "react-dom/client"
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { WalletError, type PendingRegistrationRecord } from "@obsidion/front-core"
@@ -14,9 +14,9 @@ import {
   activeNamespace,
   closeSession,
   followSavedSession,
-  session,
   switchSession,
 } from "../../../src/session/session"
+import { openTestSession } from "../../support/session"
 import { pageSessionDeps } from "../../../src/app/sessionDeps"
 import {
   abandonPendingRegistration,
@@ -32,6 +32,7 @@ import {
 import {
   openRegistration,
   registrationCustody,
+  registrationTagConfirmed,
 } from "../../../src/features/registration/openRegistration"
 import { useOwedRegistration } from "../../../src/features/registration/owedRegistration"
 import { holdAtSipa } from "../../support/sipaDeposits"
@@ -44,8 +45,6 @@ import {
   seedRegistrationRail,
   storedRegistration,
 } from "../../support/registrationFixtures"
-import { seedBootConfig } from "../../support/seedBootConfig"
-import { getConfig } from "../../../src/config/env"
 
 const deviceDb = testPage().database
 
@@ -53,8 +52,7 @@ const OTHER_SIPA = "0x00000000000000000000000000000000000000c9"
 const NS = "a1"
 let record: PendingRegistrationRecord
 beforeAll(async () => {
-  await seedBootConfig()
-  record = pendingRecord({ l1ChainId: getConfig().l1ChainId })
+  record = pendingRecord({ l1ChainId: defaultConfig.l1ChainId })
 })
 const identity = { handle: "taga", address: L2_ADDRESS, claimedAt: 1 }
 
@@ -66,7 +64,7 @@ async function open(blob?: string) {
       w.put(`obsidion.${NS}.@obsidion/pending-registration/records`, blob),
     )
   await followSavedSession(testCore().device, pageSessionDeps(testPage()))
-  const { withdrawals } = session()
+  const { withdrawals } = openTestSession()
   // The session's watchers keep the withdrawals loaded: a stage is known once they land.
   unwatch = withdrawals.list.subscribe(() => {})
   await withdrawals.all()
@@ -107,9 +105,12 @@ describe("the identity's pending tag", () => {
     ],
   ])("follows %s", async (_, over, pending) => {
     if (over) await seed(over)
-    expect(isTagPresentationPending(session().registrations, session().identity.get().value)).toBe(
-      pending,
-    )
+    expect(
+      isTagPresentationPending(
+        openTestSession().registrations,
+        openTestSession().identity.get().value,
+      ),
+    ).toBe(pending)
   })
 })
 
@@ -144,7 +145,7 @@ describe("the refunds task", () => {
     await seed()
     const hash = `0x${"66".repeat(32)}` as const
     await seedRegistrationRail(record, { phase: "recovered", recoveryTxHash: hash })
-    await session().wake(session().tasks.registrationRefunds)
+    await openTestSession().wake(openTestSession().tasks.registrationRefunds)
     expect((await storedRegistration())?.refunds?.txHashes).toEqual([hash])
   })
 })
@@ -156,21 +157,28 @@ describe("records that cannot be read", () => {
   })
 
   it("hold the tag pending, block the sign-out, report failed and keep custody held", () => {
-    expect(session().registrations.view.get().failed).toBe(true)
-    expect(isTagPresentationPending(session().registrations, session().identity.get().value)).toBe(
-      true,
-    )
-    expect(isLogoutBlockedByRegistration(session())).toBe(true)
-    expect(openRegistration(session())).toEqual({ failed: true })
-    const { registrations, sipaDeposits, withdrawals } = session()
+    expect(openTestSession().registrations.view.get().failed).toBe(true)
+    expect(
+      isTagPresentationPending(
+        openTestSession().registrations,
+        openTestSession().identity.get().value,
+      ),
+    ).toBe(true)
+    expect(isLogoutBlockedByRegistration(openTestSession())).toBe(true)
+    expect(openRegistration(openTestSession())).toEqual({ failed: true })
+    const { registrations, sipaDeposits, withdrawals } = openTestSession()
     expect(registrationCustody(registrations.view, sipaDeposits.view, withdrawals.list).get()).toBe(
       true,
     )
   })
   it("are unknown, never none, to the paths that route funds", () => {
     // A plain-deposit answer would send a registration address down the sweep that fails parity.
-    expect(() => registrationScheduleForSipa(session().registrations, SIPA)).toThrow(WalletError)
-    expect(() => registrationRecordForSipa(session().registrations, SIPA)).toThrow(WalletError)
+    expect(() => registrationScheduleForSipa(openTestSession().registrations, SIPA)).toThrow(
+      WalletError,
+    )
+    expect(() => registrationRecordForSipa(openTestSession().registrations, SIPA)).toThrow(
+      WalletError,
+    )
   })
 })
 
@@ -182,10 +190,13 @@ describe("the close", () => {
   })
 
   it("of a lost race retracts the identity in the same write", async () => {
-    await closeRegistration(session(), record, { type: "closed", outcome: "taken" })
+    await closeRegistration(openTestSession(), record, { type: "closed", outcome: "taken" })
     expect((await storedRegistration())?.phase).toBe("failed_taken")
-    expect(session().identity.get().value).toBeNull()
-    expect(lostRegistrationNotice(session().registrations)).toEqual({ kind: "taken", tag: "taga" })
+    expect(openTestSession().identity.get().value).toBeNull()
+    expect(lostRegistrationNotice(openTestSession().registrations)).toEqual({
+      kind: "taken",
+      tag: "taga",
+    })
   })
 
   it("that fails to commit changes neither the record nor the identity", async () => {
@@ -193,28 +204,31 @@ describe("the close", () => {
       throw new Error("disk full")
     }
     await expect(
-      closeRegistration(session(), record, { type: "closed", outcome: "taken" }),
+      closeRegistration(openTestSession(), record, { type: "closed", outcome: "taken" }),
     ).rejects.toThrow()
     testWalletDbs().onApply = undefined
     expect((await storedRegistration())?.phase).toBe("awaiting_deposit")
-    expect(session().identity.get().value).toMatchObject({ handle: "taga" })
+    expect(openTestSession().identity.get().value).toMatchObject({ handle: "taga" })
   })
 
   it.each([
     ["a moved derivation's replacement", { type: "replaced" } as const, "replaced"],
     ["a recovery", { type: "closed", outcome: "recovery" } as const, "confirmed"],
   ])("of %s keeps the record and retracts the identity", async (_, event, phase) => {
-    await closeRegistration(session(), record, event)
+    await closeRegistration(openTestSession(), record, event)
     expect((await storedRegistration())?.phase).toBe(phase)
-    expect(session().identity.get().value).toBeNull()
+    expect(openTestSession().identity.get().value).toBeNull()
   })
 
   it("of a confirmation keeps the identity", async () => {
-    await closeRegistration(session(), record, { type: "closed", outcome: "confirmed" })
-    expect(session().identity.get().value).toMatchObject({ handle: "taga" })
-    expect(isTagPresentationPending(session().registrations, session().identity.get().value)).toBe(
-      false,
-    )
+    await closeRegistration(openTestSession(), record, { type: "closed", outcome: "confirmed" })
+    expect(openTestSession().identity.get().value).toMatchObject({ handle: "taga" })
+    expect(
+      isTagPresentationPending(
+        openTestSession().registrations,
+        openTestSession().identity.get().value,
+      ),
+    ).toBe(false)
   })
 
   it("of another wallet's record leaves this identity alone", async () => {
@@ -224,8 +238,8 @@ describe("the close", () => {
       l2Address: `0x${"33".repeat(32)}`,
     }
     await seedRegistration(other)
-    await closeRegistration(session(), other, { type: "closed", outcome: "taken" })
-    expect(session().identity.get().value).toMatchObject({ handle: "taga" })
+    await closeRegistration(openTestSession(), other, { type: "closed", outcome: "taken" })
+    expect(openTestSession().identity.get().value).toMatchObject({ handle: "taga" })
   })
 })
 
@@ -234,9 +248,12 @@ describe("the lost-name notice", () => {
 
   it("tells of a loss once, and a later loss surfaces its own", async () => {
     await seed({ phase: "failed_taken", endTime: 1 })
-    expect(lostRegistrationNotice(session().registrations)).toEqual({ kind: "taken", tag: "taga" })
-    await acknowledgeLostRegistration(session().registrations)
-    expect(lostRegistrationNotice(session().registrations)).toBeNull()
+    expect(lostRegistrationNotice(openTestSession().registrations)).toEqual({
+      kind: "taken",
+      tag: "taga",
+    })
+    await acknowledgeLostRegistration(openTestSession().registrations)
+    expect(lostRegistrationNotice(openTestSession().registrations)).toBeNull()
     await seedRegistration({
       ...record,
       sipaAddress: OTHER_SIPA,
@@ -245,20 +262,23 @@ describe("the lost-name notice", () => {
       startTime: record.startTime + 1,
       endTime: 2,
     })
-    expect(lostRegistrationNotice(session().registrations)).toEqual({ kind: "failed", tag: "tagb" })
+    expect(lostRegistrationNotice(openTestSession().registrations)).toEqual({
+      kind: "failed",
+      tag: "tagb",
+    })
   })
 
   it("owes nothing for a name change, and keeps the replaced address for recovery only", async () => {
     await seed()
     const { phase, broadcast, retries, startTime, ...start } = record
     void [phase, broadcast, retries, startTime]
-    await session().registrations.start({
+    await openTestSession().registrations.start({
       type: "started",
       record: { ...start, sipaAddress: OTHER_SIPA, tag: "tagb" },
     })
     expect((await storedRegistration())?.phase).toBe("replaced")
-    expect(lostRegistrationNotice(session().registrations)).toBeNull()
-    expect(registrationScheduleForSipa(session().registrations, SIPA)).toBe("unsweepable")
+    expect(lostRegistrationNotice(openTestSession().registrations)).toBeNull()
+    expect(registrationScheduleForSipa(openTestSession().registrations, SIPA)).toBe("unsweepable")
   })
 
   it("puts a recovery first, and its dismissal leaves an unrelated failure standing", async () => {
@@ -271,12 +291,15 @@ describe("the lost-name notice", () => {
       endTime: 2,
       notice: { recovery: true },
     })
-    expect(lostRegistrationNotice(session().registrations)).toEqual({
+    expect(lostRegistrationNotice(openTestSession().registrations)).toEqual({
       kind: "recovery",
       tag: "tagb",
     })
-    await acknowledgeLostRegistration(session().registrations)
-    expect(lostRegistrationNotice(session().registrations)).toEqual({ kind: "failed", tag: "taga" })
+    await acknowledgeLostRegistration(openTestSession().registrations)
+    expect(lostRegistrationNotice(openTestSession().registrations)).toEqual({
+      kind: "failed",
+      tag: "taga",
+    })
   })
 })
 
@@ -288,10 +311,10 @@ describe("abandoning", () => {
 
   it("closes a record with no custody, retracts its identity and owes no notice", async () => {
     await seed()
-    expect(await abandonPendingRegistration(session())).toBe(true)
+    expect(await abandonPendingRegistration(openTestSession())).toBe(true)
     expect((await storedRegistration())?.phase).toBe("failed_terminal")
-    expect(session().identity.get().value).toBeNull()
-    expect(lostRegistrationNotice(session().registrations)).toBeNull()
+    expect(openTestSession().identity.get().value).toBeNull()
+    expect(lostRegistrationNotice(openTestSession().registrations)).toBeNull()
   })
 
   it.each([
@@ -299,9 +322,9 @@ describe("abandoning", () => {
     ["the sweep was seen", { phase: "funded" as const, fundedAt: 1, sweptAt: 2 }],
   ])("is refused once %s, keeping the record and its identity", async (_, over) => {
     await seed(over)
-    expect(await abandonPendingRegistration(session())).toBe(false)
+    expect(await abandonPendingRegistration(openTestSession())).toBe(false)
     expect((await storedRegistration())?.phase).toBe("funded")
-    expect(session().identity.get().value).toMatchObject({ handle: "taga" })
+    expect(openTestSession().identity.get().value).toMatchObject({ handle: "taga" })
   })
 })
 
@@ -318,7 +341,7 @@ describe("the logout gate", () => {
     ["another wallet's", { l2Address: `0x${"33".repeat(32)}` as const }, false],
   ])("for %s", async (_, over: Partial<PendingRegistrationRecord>, blocked) => {
     await seed(over)
-    expect(isLogoutBlockedByRegistration(session())).toBe(blocked)
+    expect(isLogoutBlockedByRegistration(openTestSession())).toBe(blocked)
   })
 })
 
@@ -338,7 +361,7 @@ describe("the SIPA lane's schedule for a registration address", () => {
     ],
   ])("reads %s", async (_, over, answer) => {
     if (over) await seed(over)
-    expect(registrationScheduleForSipa(session().registrations, SIPA)).toEqual(answer)
+    expect(registrationScheduleForSipa(openTestSession().registrations, SIPA)).toEqual(answer)
   })
 })
 
@@ -347,15 +370,15 @@ describe("openRegistration and custody", () => {
 
   it("speaks only for the tag the active wallet still presents as pending", async () => {
     await seed()
-    expect(openRegistration(session())).toBeNull()
+    expect(openRegistration(openTestSession())).toBeNull()
     await setIdentity({ ...identity, address: `0x${"33".repeat(32)}` })
-    expect(openRegistration(session())).toBeNull()
+    expect(openRegistration(openTestSession())).toBeNull()
     await setIdentity(identity)
-    expect(openRegistration(session())?.stage).toBe("reserved")
+    expect(openRegistration(openTestSession())?.stage).toBe("reserved")
   })
 
   it("holds custody from the record alone until the name settles", async () => {
-    const { registrations, sipaDeposits, withdrawals } = session()
+    const { registrations, sipaDeposits, withdrawals } = openTestSession()
     const custody = registrationCustody(registrations.view, sipaDeposits.view, withdrawals.list)
     const off = custody.subscribe(() => {})
     expect(custody.get()).toBe(false)
@@ -382,5 +405,22 @@ describe("openRegistration and custody", () => {
     await act(async () => void (await seed({ route: "random", phase: "funded" })))
     expect(owed).toMatchObject({ needsCheck: true })
     await act(async () => root.unmount())
+  })
+})
+
+describe("registrationTagConfirmed", () => {
+  beforeEach(() => open())
+
+  it("waits on the user for an unpublished random tag still owed its deposit", () => {
+    const random = { ...record, route: "random", broadcast: false } as const
+    expect(registrationTagConfirmed(openTestSession(), random)).toBe(false)
+    expect(registrationTagConfirmed(openTestSession(), { ...random, tagConfirmed: true })).toBe(
+      true,
+    )
+  })
+
+  it("is settled once the stage owes no deposit", () => {
+    const registered = { ...record, route: "random", broadcast: false, phase: "confirmed" } as const
+    expect(registrationTagConfirmed(openTestSession(), registered)).toBe(true)
   })
 })

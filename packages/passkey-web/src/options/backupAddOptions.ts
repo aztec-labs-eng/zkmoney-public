@@ -15,6 +15,8 @@ export type BackupAddOption = {
   advice: readonly string[]
   /** On every option that can reach a key, which keeps the only copy of the backup. */
   keyWarning?: BackupKeyWarning
+  /** The phone: a backup there survives losing this computer. */
+  recommended?: true
 }
 
 export type BackupAddOptionsInput = {
@@ -37,20 +39,48 @@ const lines = (...xs: (string | false | undefined)[]): string[] =>
   xs.filter((x): x is string => typeof x === "string")
 
 /**
- * The Passkeys sheet's picker for a backup passkey, and the option it opens on. This computer is
- * always offered: a backup has no route rule, admission reads the answer.
+ * The Passkeys sheet's picker for a backup passkey, and the option it opens on: another device
+ * first, this computer last. This computer is always offered: a backup has no route rule, admission
+ * reads the answer.
  */
 export function backupAddOptionsFor(input: BackupAddOptionsInput): BackupAddOptions {
   const { reach, extension, protonKept, ignoresHints, os } = input
   const copy = SIGN_UP_SHEET_COPY
   const own = BACKUP_ADD_SHEET_COPY
   const script = extension !== "none"
-  const onePassword = extension === "1password"
+  const mac = os === "macos"
   const phone = reach === "no-hybrid" ? undefined : ignoresHints ? "phone-or-key" : "phone"
   const crossDevice = script && PHONE_STEPS_COPY.extension
 
   const options: BackupAddOption[] = []
-  if (onePassword) {
+  if (phone === "phone") {
+    options.push({
+      id: "phone",
+      label: copy.phone.label,
+      description: own.phone.description,
+      advice: lines(crossDevice),
+      recommended: true,
+    })
+  } else if (phone === "phone-or-key") {
+    options.push({
+      id: "phone-or-key",
+      label: copy.phoneOrKey.label,
+      description: own.phoneOrKey.description,
+      advice: lines(os === "windows" && copy.phoneOrKey.windows, crossDevice),
+      keyWarning: own.keyWarning,
+      recommended: true,
+    })
+  }
+  if (phone !== "phone-or-key") {
+    options.push({
+      id: "key",
+      label: copy.key.label,
+      description: own.key.description,
+      advice: lines(phone === undefined && copy.key.noPhone, crossDevice),
+      keyWarning: own.keyWarning,
+    })
+  }
+  if (extension === "1password") {
     options.push({
       id: "1password",
       label: copy.onePassword.label,
@@ -68,34 +98,9 @@ export function backupAddOptionsFor(input: BackupAddOptionsInput): BackupAddOpti
   }
   options.push({
     id: "computer",
-    label: os === "macos" ? copy.computer.macLabel : copy.computer.label,
-    description: own.computer.description,
+    label: mac ? copy.computer.macLabel : copy.computer.label,
+    description: mac ? own.computer.macDescription : own.computer.description,
     advice: lines(script && PHONE_STEPS_COPY.local.extension),
   })
-  if (phone === "phone") {
-    options.push({
-      id: "phone",
-      label: copy.phone.label,
-      description: copy.phone.description,
-      advice: lines(own.phone.managers, crossDevice),
-    })
-  } else if (phone === "phone-or-key") {
-    options.push({
-      id: "phone-or-key",
-      label: copy.phoneOrKey.label,
-      description: copy.phoneOrKey.description,
-      advice: lines(own.phone.managers, os === "windows" && copy.phoneOrKey.windows, crossDevice),
-      keyWarning: own.keyWarning,
-    })
-  }
-  if (phone !== "phone-or-key") {
-    options.push({
-      id: "key",
-      label: copy.key.label,
-      description: copy.key.description,
-      advice: lines(phone === undefined && copy.key.noPhone, crossDevice),
-      keyWarning: own.keyWarning,
-    })
-  }
-  return { options, selected: onePassword ? "1password" : protonKept ? "proton" : "computer" }
+  return { options, selected: phone ?? "key" }
 }

@@ -1,13 +1,13 @@
 import type { Address, PublicClient, WalletClient } from 'viem';
 
 import {
+  AddPasskeySIPAAbi,
+  AddPasskeySIPABytecode,
   DepositSIPAAbi,
   DepositSIPABytecode,
   RegistrationSIPAAbi,
   RegistrationSIPABytecode,
   SIPAFactoryAbi,
-  UserOpSIPAAbi,
-  UserOpSIPABytecode,
 } from '../artifacts.js';
 import { deployContract } from './deploy_contract.js';
 
@@ -15,7 +15,6 @@ import { deployContract } from './deploy_contract.js';
 export interface SIPAImplementations {
   depositSIPAImplementation: Address;
   registrationSIPAImplementation: Address;
-  userOpSIPAImplementation: Address;
 }
 
 /** The deposit-intent implementation. It has no immutables: each clone reads its portal and its tip from the
@@ -81,11 +80,19 @@ export async function blessForwardingTable(
   }
 }
 
-export function deployUserOpSIPA(walletClient: WalletClient, publicClient: PublicClient): Promise<Address> {
-  return deployContract(walletClient, publicClient, UserOpSIPAAbi, UserOpSIPABytecode, []);
+export function deployAddPasskeySIPA(
+  walletClient: WalletClient,
+  publicClient: PublicClient,
+  args: { accountFactory: Address; nameRegistry: Address; namePortal: Address },
+): Promise<Address> {
+  return deployContract(walletClient, publicClient, AddPasskeySIPAAbi, AddPasskeySIPABytecode, [
+    args.accountFactory,
+    args.nameRegistry,
+    args.namePortal,
+  ]);
 }
 
-/** Deploy all three intent implementations, bless them, and approve `forwardingTable`. */
+/** Deploy the deposit and registration implementations, bless them, and approve `forwardingTable`. */
 export async function deploySIPAImplementations(
   walletClient: WalletClient,
   publicClient: PublicClient,
@@ -97,8 +104,7 @@ export async function deploySIPAImplementations(
 ): Promise<SIPAImplementations> {
   const depositSIPAImplementation = await deployDepositSIPA(walletClient, publicClient);
   const registrationSIPAImplementation = await deployRegistrationSIPA(walletClient, publicClient, args.nameRegistry);
-  const userOpSIPAImplementation = await deployUserOpSIPA(walletClient, publicClient);
-  for (const implementation of [depositSIPAImplementation, registrationSIPAImplementation, userOpSIPAImplementation]) {
+  for (const implementation of [depositSIPAImplementation, registrationSIPAImplementation]) {
     await blessSIPAImplementation(walletClient, publicClient, args.sipaFactory, implementation);
   }
   await blessForwardingTable(walletClient, publicClient, args.sipaFactory, args.forwardingTable);
@@ -106,6 +112,5 @@ export async function deploySIPAImplementations(
   return {
     depositSIPAImplementation,
     registrationSIPAImplementation,
-    userOpSIPAImplementation,
   };
 }

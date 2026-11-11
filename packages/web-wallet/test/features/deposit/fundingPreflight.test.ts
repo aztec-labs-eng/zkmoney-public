@@ -11,10 +11,12 @@ import {
 } from "@obsidion/front-core"
 import { PortalCapacityUnsupportedError, type PortalCapacitySnapshot } from "@obsidion/sdk"
 import {
+  FundingPreflightError,
   runFundingPreflight,
   PROCEED_READ_WAIT_MS,
 } from "../../../src/features/deposit/fundingPreflight"
 import { RECHECK_BUDGET_MS } from "../../../src/platform/desktopBridge"
+import { testQuery } from "../../support/query"
 
 const DAI = 10n ** 18n
 const KEY = {
@@ -44,7 +46,7 @@ const snapshot = (availableAtomic: bigint, blockAgeS = 0): PortalCapacitySnapsho
 const storeWith = (read: Read): PortalCapacityStore =>
   createPortalCapacityStore(KEY, {
     read,
-    visibility: { isVisible: () => true, onResume: () => () => {} },
+    query: testQuery(),
   })
 const available = (atomic: bigint) => storeWith(async () => snapshot(atomic))
 
@@ -173,12 +175,29 @@ describe("runFundingPreflight under proceed", () => {
           l1ChainId,
           l1Timestamp: synced ? BigInt(Math.floor(Date.now() / 1000)) : undefined,
         }),
-        visibility: { isVisible: () => true, onResume: () => () => {} },
+        query: testQuery(),
       })
     const error = await refusal(proceed(withReference(11155111), UNKNOWN))
     expect(error).toMatchObject({ reason: "capacity", eligibility: { kind: "unavailable" } })
     await expect(proceed(withReference(KEY.chainId, false), UNKNOWN)).resolves.toBeUndefined()
     await expect(proceed(withReference(KEY.chainId), UNKNOWN)).resolves.toBeUndefined()
+  })
+})
+
+describe("runFundingPreflight on a fee change", () => {
+  it("stops before any capacity read when the fresh fee differs from the one shown", async () => {
+    const read = vi.fn(async () => snapshot(50_000n * DAI))
+    const error = await refusal(
+      runFundingPreflight({
+        store: storeWith(read),
+        required: known(10n),
+        shownFee: "0.5",
+        freshFee: "0.6",
+      }),
+    )
+    expect(error).toBeInstanceOf(FundingPreflightError)
+    expect(error).toMatchObject({ reason: "quote-changed", eligibility: undefined })
+    expect(read).not.toHaveBeenCalled()
   })
 })
 

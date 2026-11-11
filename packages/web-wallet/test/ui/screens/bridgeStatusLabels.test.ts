@@ -7,11 +7,21 @@ import { describe, expect, it } from "vitest"
 import type { Hex } from "viem"
 import {
   WITHDRAWAL_PHASE_COPY,
+  upgradeRunsOf,
+  type ActivityItem,
   type SIPADepositPhase,
   type SipaDeposit,
 } from "@obsidion/front-core"
-import { depositRowStatusLabel } from "../../../src/ui/screens/activityView"
-import { depositStatus } from "../../../src/ui/screens/DepositDetailModal"
+import {
+  depositAttribution,
+  depositGrossFigure,
+  depositHeadline,
+  depositRowAmount,
+  depositRowStatusLabel,
+  upgradeRowStatusLabel,
+} from "../../../src/ui/screens/activityView"
+import { tokenAmount, usdFigure } from "../../../src/ui/format"
+import { depositStatus } from "../../../src/ui/screens/DepositDetailModal/DepositDetailModal"
 import { statusBadgeStyle } from "@obsidion/web-ds"
 
 const WITHDRAWAL_PHASE_LABEL = Object.fromEntries(
@@ -75,6 +85,19 @@ describe("depositStatus", () => {
   })
 })
 
+describe("depositRowAmount", () => {
+  it("adds back the price a tag purchase row lists, so the two rows net what landed", () => {
+    const E16 = 10n ** 16n
+    const registered = {
+      ...deposit("claimed"),
+      netAmount: (75n * E16).toString(),
+      fee: (425n * E16).toString(),
+    }
+    expect(depositRowAmount(registered, false)).toBe("+$0.75")
+    expect(depositRowAmount(registered, false, 18, 375n * E16)).toBe("+$4.50")
+  })
+})
+
 describe("depositRowStatusLabel", () => {
   it("leads with the recovery a deposit needs, over where it sits", () => {
     expect(depositRowStatusLabel(deposit("recoverable"))).toBe("Needs recovery")
@@ -123,5 +146,69 @@ describe("WITHDRAWAL_PHASE_LABEL", () => {
     expect(WITHDRAWAL_PHASE_LABEL.done).toBeUndefined()
     expect(WITHDRAWAL_PHASE_LABEL.submitting).toBe("Pending")
     expect(WITHDRAWAL_PHASE_LABEL.failed).toBe("Failed")
+  })
+})
+
+describe("upgradeRowStatusLabel", () => {
+  const batch = (state: "sent" | "received"): ActivityItem =>
+    ({
+      kind: "upgrade.batch",
+      batch: {
+        run: "run",
+        id: "remaining-0",
+        recipient: "0xr",
+        amount: "1",
+        state,
+        approved: true,
+        startTime: 1,
+      },
+    } as ActivityItem)
+
+  it("badges each step an unsettled upgrade shows", () => {
+    for (const state of ["sent", "received"] as const) {
+      const label = upgradeRowStatusLabel(upgradeRunsOf([batch(state)])[0]!)
+      expect(label, state).toBeDefined()
+      expect(statusBadgeStyle(label!), state).toBeDefined()
+    }
+  })
+})
+
+describe("a deposit's detail headline and gross", () => {
+  const FUNDER = `0x${"f0".repeat(20)}` as Hex
+  const WALLET = `0x${"a1".repeat(20)}` as Hex
+  const FUNDING_TX = `0x${"e6".repeat(32)}` as Hex
+
+  it("prefers the transfer's sender over the connected wallet, and names the wallet", () => {
+    const sent = { ...deposit("funded"), walletName: " Rainbow ", walletAddress: WALLET }
+    expect(depositHeadline(sent)).toEqual({ title: "Rainbow", address: WALLET })
+    expect(depositHeadline({ ...sent, walletName: "  ", fundingFromAddress: FUNDER })).toEqual({
+      title: undefined,
+      address: FUNDER,
+    })
+  })
+
+  it("takes a direct migration deposit's portal deposit as its funding tx", () => {
+    const direct: SipaDeposit = {
+      ...deposit("claimed", SWEEP_TX),
+      direct: { recipientCommitment: `0x${"c0".repeat(32)}` },
+    }
+    expect(depositAttribution(direct).fundingTxHash).toBe(SWEEP_TX)
+    expect(depositAttribution({ ...direct, fundingTxHash: FUNDING_TX }).fundingTxHash).toBe(
+      FUNDING_TX,
+    )
+    expect(depositAttribution(deposit("claimed", SWEEP_TX)).fundingTxHash).toBeUndefined()
+  })
+
+  it("shows a stable in dollars and ETH in ETH, trimmed only on a row", () => {
+    expect(depositGrossFigure(deposit("funded"))).toBe(usdFigure("18"))
+    const eth: SipaDeposit = {
+      ...deposit("funded"),
+      amount: "0.123456789",
+      tokenAddress: "0x0000000000000000000000000000000000000000",
+    }
+    expect(depositGrossFigure(eth)).toContain(eth.amount)
+    expect(depositGrossFigure(eth)).toMatch(/ETH$/)
+    expect(depositGrossFigure(eth, "row")).toBe(`${tokenAmount("0.123456789")} ETH`)
+    expect(depositGrossFigure(eth, "row")).not.toBe(depositGrossFigure(eth))
   })
 })

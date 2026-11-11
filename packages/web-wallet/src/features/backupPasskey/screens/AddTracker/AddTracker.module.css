@@ -1,0 +1,11 @@
+/* Screen readers only: the tracker's own step line is not a live region. */
+.announce {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}

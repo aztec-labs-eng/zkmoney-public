@@ -1,3 +1,4 @@
+import { useCallback } from "react"
 import * as actual from "@obsidion/front-core"
 import { DEMO_L2_ADDRESS } from "../../../src/dev/demoFixtures"
 import { fixtureState } from "./control"
@@ -32,18 +33,30 @@ const tokenService = {
   fetchTokenInformation: async () => TOKEN_INFO,
   metadata: TOKEN_INFO,
 }
-const ready: Record<string, unknown> = { wallet, account, token: tokenService, teeSigner: opaque }
-// Only explicitly listed UI consumers receive these readiness values. WalletGate, provider setup,
-// sync loops, and transaction implementations continue to read the real session resources.
-export const useResource: typeof actual.useResource = (resource) => {
-  const value = actual.useResource(resource)
-  return fixtureState() && resource && resource.name in ready
-    ? (ready[resource.name] as typeof value)
-    : value
+const ready: Record<string, unknown> = {
+  wallet,
+  account,
+  token: tokenService,
+  teeSigner: opaque,
+  contractService: opaque,
 }
-export function useContractServiceContext() {
-  const context = actual.useContractServiceContext()
-  return fixtureState()
-    ? ({ ...context, contractService: opaque } as unknown as typeof context)
-    : context
-}
+const built = Object.fromEntries(
+  Object.entries(ready).map(([name, value]) => [name, { status: "ready", value }]),
+)
+// Only explicitly listed UI consumers read these services as built. WalletGate, provider setup,
+// sync loops, and transaction implementations continue to read the real session services.
+export const useStore = ((
+  store: actual.ReadonlyStore<unknown>,
+  select?: (v: unknown) => unknown,
+) => {
+  const named = (store as { name?: string }).name
+  const fake = fixtureState() && named !== undefined ? built[named] : undefined
+  const shown = useCallback(
+    (value: unknown) => {
+      const state = fake ?? value
+      return select ? select(state) : state
+    },
+    [fake, select],
+  )
+  return actual.useStore(store, shown)
+}) as typeof actual.useStore

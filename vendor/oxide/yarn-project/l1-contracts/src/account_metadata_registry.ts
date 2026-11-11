@@ -27,7 +27,7 @@ export type ResolverOperatorArg = {
   oxidePortal: Address;
 };
 
-const RECORD_ABI = [
+export const RECORD_ABI = [
   {
     type: 'tuple',
     components: [

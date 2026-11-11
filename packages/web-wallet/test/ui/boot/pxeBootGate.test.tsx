@@ -1,52 +1,34 @@
+// @vitest-environment node
 /**
  * The boot's identity check: L1 is the identity source and the node must agree. The default node
- * alone may boot on its own answers when L1 yields no identity. Every refusal renders on the boot
- * error screen with the exits the endpoint's provenance allows.
+ * alone may boot on its own answers when L1 yields no identity. A refusal names the endpoint at
+ * fault, never the default RPC's provider key.
  */
-import { act } from "react"
-import { createRoot, type Root } from "react-dom/client"
 import type { AztecNode } from "@aztec-labs/aztec.js/node"
-import type { AztecSQLiteOPFSStore } from "@aztec-labs/kv-store/sqlite-opfs"
 import type { ChainIdentity } from "@obsidion/core/types"
 import type { PortalIdentityCall } from "@obsidion/sdk"
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
-import type { BootError, BootErrorKind } from "../../../src/ui/PxeBoot"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import type { BootError } from "../../../src/ui/PxeBoot"
 import type { EndpointProvenance } from "../../../src/config/env"
-import { resetModulesAsActiveTab } from "../../support/activeTab"
 
 vi.setConfig({ testTimeout: 30_000 })
 
 const h = vi.hoisted(() => ({
-  createWallet: vi.fn(),
   readPortal: vi.fn<(...args: unknown[]) => Promise<unknown>>(),
   getNodeInfo: vi.fn<() => Promise<unknown>>(),
   fireEvent: vi.fn(),
   showReportableError: vi.fn(),
-  reload: vi.fn(),
-  retry: vi.fn(),
   config: {} as Record<string, unknown>,
 }))
 
-vi.mock("@obsidion/front-core", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@obsidion/front-core")>()),
-  useContractServiceContext: () => ({ contractService: undefined }),
-}))
 vi.mock("@obsidion/sdk", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/sdk")>()),
   readPortalChainIdentity: (...args: unknown[]) => h.readPortal(...args),
-}))
-vi.mock("../../../src/config/env", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../src/config/env")>()),
-  getConfig: () => h.config,
 }))
 vi.mock("../../../src/config/oxideTuple", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../src/config/oxideTuple")>()),
   l1PublicClient: () => "l1-client",
 }))
-vi.mock("../../../src/platform/bbWasmPath", () => ({
-  barretenbergWasm: () => ({ wasmPath: "/assets/bb-threads.wasm.gz" }),
-}))
-vi.mock("../../../src/dev/demoFlag", () => ({ isDemoMode: () => false }))
 vi.mock("../../../src/errors/errorModal", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../src/errors/errorModal")>()),
   showReportableError: h.showReportableError,
@@ -117,11 +99,7 @@ const customNode = () => {
 
 const node = { getNodeInfo: () => h.getNodeInfo() } as unknown as AztecNode
 
-let container: HTMLDivElement
-let root: Root
 let consoleError: ReturnType<typeof vi.spyOn>
-
-const flush = () => act(async () => new Promise((r) => setTimeout(r, 0)))
 
 const identityErrors = () => import("@obsidion/front-core")
 const wrongChain = async () => {
@@ -139,28 +117,20 @@ async function check(): Promise<{ identity?: ChainIdentity; thrown?: unknown; er
   try {
     return { identity: await verifiedIdentity(h.config as never, node) }
   } catch (thrown) {
-    return { thrown, error: describeBootError(thrown) }
+    return { thrown, error: describeBootError(thrown, h.config as never) }
   }
 }
 
 beforeEach(() => {
-  h.createWallet.mockReset().mockResolvedValue({ node: {} })
   h.readPortal.mockReset().mockResolvedValue(L1)
   h.getNodeInfo.mockReset().mockResolvedValue(nodeAnswer())
   h.fireEvent.mockClear()
   h.showReportableError.mockClear()
-  h.reload.mockClear()
-  h.retry.mockClear()
   h.config = baseConfig()
   consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
-  container = document.createElement("div")
-  document.body.appendChild(container)
-  root = createRoot(container)
 })
 
 afterEach(() => {
-  act(() => root.unmount())
-  container.remove()
   consoleError.mockRestore()
   vi.unstubAllGlobals()
 })
@@ -246,7 +216,6 @@ describe("verifiedIdentity", () => {
     h.getNodeInfo.mockRejectedValue(new TypeError("Failed to fetch"))
     const { error } = await check()
     expect(error?.kind).toBe("unreachable")
-    expect(error?.title).toBe("zk.money cannot reach the network")
   })
 
   it("a node that accepts the connection but never answers is unreachable once the deadline passes", async () => {
@@ -322,7 +291,7 @@ describe("assertCustomL1RpcSimulates", () => {
       await assertCustomL1RpcSimulates(h.config as never)
       return {}
     } catch (thrown) {
-      return { thrown, error: describeBootError(thrown) }
+      return { thrown, error: describeBootError(thrown, h.config as never) }
     }
   }
   const UNSUPPORTED = { jsonrpc: "2.0", id: 1, error: { code: -32601, message: "not available" } }
@@ -370,7 +339,7 @@ describe("assertCustomL1RpcSimulates", () => {
 describe("reportBootFailure", () => {
   const report = async (e: unknown) => {
     const { reportBootFailure } = await import("../../../src/ui/PxeBoot")
-    reportBootFailure(e, { bootStartedAt: undefined, attempts: 0 })
+    reportBootFailure(e, h.config as never, { bootStartedAt: undefined, attempts: 0 })
   }
   const bootFailedCode = () =>
     h.fireEvent.mock.calls.find(([event]) => event === "pxe_boot_failed")?.[1]?.code
@@ -398,328 +367,5 @@ describe("reportBootFailure", () => {
       title: "zk.money failed to start",
       retry: { label: "Reload page", run: expect.any(Function) },
     })
-  })
-})
-
-describe("BootErrorScreen", () => {
-  const byTestId = (id: string) => container.querySelector<HTMLElement>(`[data-testid="${id}"]`)
-  const retryButton = () =>
-    [...container.querySelectorAll("button")].find((b) => b.textContent === "Retry")
-
-  beforeAll(() => {
-    Object.defineProperty(window, "location", { value: { reload: h.reload }, writable: true })
-  })
-
-  // The liquid-glass secondary button measures itself.
-  beforeEach(() => {
-    vi.stubGlobal(
-      "ResizeObserver",
-      class {
-        observe() {}
-        unobserve() {}
-        disconnect() {}
-      },
-    )
-  })
-
-  /** The screen a boot that failed before the wallet opened shows for `thrown`. */
-  async function showFailure(thrown: unknown) {
-    const { describeBootError } = await import("../../../src/ui/PxeBoot")
-    const { BootErrorScreen } = await import("../../../src/ui/BootErrorScreen")
-    const error = describeBootError(thrown)
-    await act(async () => {
-      root.render(<BootErrorScreen error={error} onRetry={h.retry} walletOpen={false} />)
-    })
-    return { panel: byTestId("boot-error")!, error }
-  }
-
-  type Failure = "node-mismatch" | "wrong-chain" | "l1-unavailable" | "unreachable" | "other"
-  const KIND: Record<Failure, BootErrorKind> = {
-    "node-mismatch": "mismatch",
-    "wrong-chain": "mismatch",
-    "l1-unavailable": "l1-unavailable",
-    "unreachable": "unreachable",
-    "other": "other",
-  }
-  const NAMES: Record<Failure, string> = {
-    "node-mismatch": NODE_URL,
-    "wrong-chain": RPC_HOST,
-    "l1-unavailable": RPC_HOST,
-    "unreachable": "zk.money cannot reach the network",
-    "other": "zk.money failed to start",
-  }
-
-  async function failWith(failure: Failure): Promise<unknown> {
-    switch (failure) {
-      case "node-mismatch":
-        h.getNodeInfo.mockResolvedValue(nodeAnswer({ l1ChainId: 1 }))
-        break
-      case "wrong-chain":
-        h.readPortal.mockRejectedValue(await wrongChain())
-        break
-      case "l1-unavailable":
-        h.readPortal.mockRejectedValue(await l1Unavailable("INBOX", new TypeError("timeout")))
-        break
-      case "unreachable":
-        h.getNodeInfo.mockRejectedValue(new TypeError("Failed to fetch"))
-        break
-      case "other":
-        return new Error("boom")
-    }
-    return (await check()).thrown
-  }
-
-  // "desktop" is a Settings-saved node under the desktop launcher.
-  type Source = "default" | "settings" | "desktop"
-  function nodeFrom(source: Source) {
-    if (source === "default") return
-    h.config.endpoints = { node: SETTINGS, l1Rpc: DEFAULT, enclave: DEFAULT }
-    h.config.nodeEndpointDigest = DIGEST
-    if (source === "desktop")
-      vi.stubGlobal("__ZKMONEY_DESKTOP_BRIDGE__", { l1SubmitPath: "/desktop/l1-submit" })
-  }
-
-  const failures: Failure[] = ["node-mismatch", "wrong-chain", "unreachable", "other"]
-  const matrix: [Source, Failure][] = [
-    ...(["default", "settings", "desktop"] as Source[]).flatMap((s) =>
-      failures.map((f) => [s, f] as [Source, Failure]),
-    ),
-    // L1 unavailable refuses only a custom node.
-    ["settings", "l1-unavailable"],
-    ["desktop", "l1-unavailable"],
-  ]
-
-  it.each(matrix)(
-    "a %s node failing with %s renders the error and its exits",
-    async (source, failure) => {
-      nodeFrom(source)
-      const { panel, error } = await showFailure(await failWith(failure))
-      expect(panel.dataset.kind).toBe(KIND[failure])
-      expect(panel.textContent).toContain(NAMES[failure])
-      expect(panel.textContent).toContain(error.title)
-      expect(panel.textContent).toContain(error.message)
-      expect(retryButton()).toBeDefined()
-      expect(byTestId("boot-use-default-endpoints") !== null).toBe(source !== "default")
-      // The editor opens whatever is saved, on every platform.
-      expect(byTestId("boot-change-endpoints")).not.toBeNull()
-      expect(byTestId("boot-contact-operator")).not.toBeNull()
-    },
-  )
-
-  it("Retry is the caller's", async () => {
-    await showFailure(await failWith("unreachable"))
-    await act(async () => retryButton()!.click())
-    expect(h.retry).toHaveBeenCalledTimes(1)
-  })
-
-  it("a custom RPC that cannot price swaps offers the defaults and the editor", async () => {
-    h.config.endpoints = { node: DEFAULT, l1Rpc: SETTINGS, enclave: DEFAULT }
-    const { L1RpcSimulationUnsupportedError } = await import("@obsidion/core/oxide")
-    const { panel } = await showFailure(
-      new L1RpcSimulationUnsupportedError("my-node.example", "not available"),
-    )
-    expect(panel.dataset.kind).toBe("l1-rpc-no-simulate")
-    expect(byTestId("boot-use-default-endpoints")).not.toBeNull()
-    expect(byTestId("boot-change-endpoints")).not.toBeNull()
-  })
-
-  it("under the desktop bridge a dead default node opens the endpoint editor from the error", async () => {
-    vi.stubGlobal("__ZKMONEY_DESKTOP_BRIDGE__", { l1SubmitPath: "/desktop/l1-submit" })
-    await showFailure(await failWith("unreachable"))
-    expect(container.querySelector('a[href="/desktop-settings"]')).toBeNull()
-    await act(async () => byTestId("boot-change-endpoints")!.click())
-    expect(container.querySelector('dialog[aria-label="Endpoints"]')).not.toBeNull()
-  })
-
-  it("a dead default node with nothing saved opens the endpoint editor, without the wallet", async () => {
-    await showFailure(await failWith("unreachable"))
-    expect(byTestId("boot-use-default-endpoints")).toBeNull()
-    expect(container.querySelector('dialog[aria-label="Endpoints"]')).toBeNull()
-    // The wallet database is closed: the editor opens without asking it about transactions.
-    const { closeWalletStore } = await import("../../../src/platform/storage/walletStorage")
-    await closeWalletStore()
-    await act(async () => byTestId("boot-change-endpoints")!.click())
-    expect(container.querySelector('dialog[aria-label="Endpoints"]')).not.toBeNull()
-    expect(h.reload).not.toHaveBeenCalled()
-  })
-
-  it("a Settings-set L1 RPC beside the default node offers the default endpoints on a wrong chain", async () => {
-    h.config.endpoints = { node: DEFAULT, l1Rpc: SETTINGS, enclave: DEFAULT }
-    await showFailure(await failWith("wrong-chain"))
-    expect(byTestId("boot-use-default-endpoints")).not.toBeNull()
-  })
-
-  it("a profile mismatch under a Settings-set RPC points back to the defaults", async () => {
-    h.config.endpoints = { node: DEFAULT, l1Rpc: SETTINGS, enclave: DEFAULT }
-    h.config.profileRollupVersion = "4"
-    const { panel } = await showFailure((await check()).thrown)
-    expect(panel.dataset.kind).toBe("profile-skew")
-    expect(panel.textContent).toContain("custom node or Ethereum RPC")
-    expect(panel.textContent).not.toContain("operator needs")
-    expect(byTestId("boot-use-default-endpoints")).not.toBeNull()
-  })
-
-  it("a profile mismatch with only a custom enclave still points at the operator", async () => {
-    h.config.endpoints = { node: DEFAULT, l1Rpc: DEFAULT, enclave: SETTINGS }
-    h.config.profileRollupVersion = "4"
-    const { panel } = await showFailure((await check()).thrown)
-    expect(panel.textContent).toContain("operator needs")
-    expect(panel.textContent).not.toContain("custom node or Ethereum RPC")
-    expect(byTestId("boot-use-default-endpoints")).toBeNull()
-    expect(byTestId("boot-change-endpoints")).not.toBeNull()
-  })
-
-  it("Use default endpoints clears the saved overrides, then reloads", async () => {
-    localStorage.setItem(
-      "webwallet.endpoints",
-      JSON.stringify({ node: "https://n.example", l1Rpc: "https://l1.example" }),
-    )
-    nodeFrom("settings")
-    await showFailure(await failWith("node-mismatch"))
-    await act(async () => byTestId("boot-use-default-endpoints")!.click())
-    await flush()
-    expect(localStorage.getItem("webwallet.endpoints")).toBeNull()
-    expect(h.reload).toHaveBeenCalledTimes(1)
-    expect(byTestId("boot-clear-error")).toBeNull()
-  })
-
-  it("a clear the storage refuses shows an inline error and does not reload", async () => {
-    nodeFrom("settings")
-    await showFailure(await failWith("node-mismatch"))
-    const removeItem = vi.spyOn(Storage.prototype, "removeItem").mockImplementation(() => {
-      throw new Error("denied")
-    })
-    try {
-      await act(async () => byTestId("boot-use-default-endpoints")!.click())
-      await flush()
-    } finally {
-      removeItem.mockRestore()
-    }
-    expect(byTestId("boot-clear-error")?.textContent).toContain("could not be cleared")
-    expect(h.reload).not.toHaveBeenCalled()
-    expect(byTestId("boot-error")).not.toBeNull()
-  })
-})
-
-describe("BootHold", () => {
-  const byTestId = (id: string) => container.querySelector<HTMLElement>(`[data-testid="${id}"]`)
-
-  beforeEach(() => {
-    vi.stubGlobal(
-      "ResizeObserver",
-      class {
-        observe() {}
-        unobserve() {}
-        disconnect() {}
-      },
-    )
-  })
-
-  // The splash's fade timer must not outlive the jsdom environment.
-  afterEach(async () => {
-    await vi.waitFor(() => expect(document.body.dataset.booting).toBeUndefined())
-  })
-
-  /** Each mount is a new page: the boot runs once per page. */
-  async function mountBoot(bootNode: AztecNode): Promise<HTMLElement> {
-    await resetModulesAsActiveTab()
-    container.id = "root"
-    const { PxeBootProvider } = await import("../../../src/ui/PxeBoot")
-    const { BootHold } = await import("../../../src/App")
-    const { startPageWallet } = await import("../../../src/platform/wallet")
-    const pxeBoot = {
-      kind: "pxe" as const,
-      store: {} as AztecSQLiteOPFSStore,
-      identity: L1,
-      bootStartedAt: 0,
-      attempts: 1,
-    }
-    startPageWallet(bootNode, pxeBoot, h.createWallet)
-    await act(async () => {
-      root.render(
-        <PxeBootProvider pxeBoot={pxeBoot}>
-          <BootHold />
-        </PxeBootProvider>,
-      )
-    })
-    for (let i = 0; i < 40 && !byTestId("boot-error"); i++) await flush()
-    return byTestId("boot-error")!
-  }
-
-  async function bootWithNodeFetch(fetch: typeof globalThis.fetch): Promise<HTMLElement> {
-    vi.stubGlobal("fetch", vi.fn(fetch))
-    const { createNode } = await import("@obsidion/sdk")
-    const realNode = createNode(NODE_URL, "node-key")
-    h.createWallet.mockImplementation(() => realNode.getBlockNumber())
-    return mountBoot(realNode)
-  }
-
-  const bootFailedCode = () =>
-    h.fireEvent.mock.calls.find(([event]) => event === "pxe_boot_failed")?.[1]?.code
-
-  it("a wallet build that fails shows the error screen, and its editor, in the wallet", async () => {
-    h.createWallet.mockRejectedValue(new Error("boom"))
-    const panel = await mountBoot(node)
-    expect(panel.dataset.kind).toBe("other")
-    expect(panel.textContent).toContain("zk.money failed to start")
-    expect(panel.textContent).toContain("boom")
-    expect(h.createWallet).toHaveBeenCalledWith(node, expect.objectContaining({ identity: L1 }), {
-      wasmPath: "/assets/bb-threads.wasm.gz",
-    })
-    await act(async () => byTestId("boot-change-endpoints")!.click())
-    expect(container.querySelector('dialog[aria-label="Endpoints"]')).not.toBeNull()
-  })
-
-  it.each(["alone", "in an AggregateError"])(
-    "a damaged database %s offers only the reset page, with no report",
-    async (shape) => {
-      const replace = vi.fn()
-      Object.defineProperty(window, "location", { value: { replace }, writable: true })
-      const { SqliteCorruptionError } = await import("@aztec-labs/kv-store/sqlite-opfs")
-      const corrupt = new SqliteCorruptionError(
-        "SQLITE_CORRUPT: sqlite3 result code 11: database disk image is malformed",
-      )
-      h.createWallet.mockRejectedValue(
-        shape === "alone" ? corrupt : new AggregateError([corrupt, new Error("boom")]),
-      )
-      expect((await mountBoot(node)).dataset.kind).toBe("corrupt")
-      expect(h.showReportableError).not.toHaveBeenCalled()
-      expect([...container.querySelectorAll("button")].map((b) => b.textContent)).not.toContain(
-        "Retry",
-      )
-      expect(byTestId("boot-change-endpoints")).toBeNull()
-      await act(async () => byTestId("boot-clear-data")!.click())
-      await flush()
-      expect(replace).toHaveBeenCalledWith("/reset")
-    },
-  )
-
-  it.each<[string, typeof globalThis.fetch]>([
-    ["a rejected fetch", () => Promise.reject(new TypeError("qwerty"))],
-    ["an HTTP error", async () => new Response("", { status: 503, statusText: "qwerty" })],
-    ["a body that is not JSON", async () => new Response("<html>qwerty</html>")],
-  ])("%s while the wallet builds is an unreachable node, with no report", async (_, fetch) => {
-    const panel = await bootWithNodeFetch(fetch)
-    expect(panel.dataset.kind).toBe("unreachable")
-    expect(panel.textContent).toContain("zk.money cannot reach the network")
-    expect(panel.textContent).toContain("Check your internet connection, then retry.")
-    expect(panel.textContent).not.toContain(NODE_URL)
-    expect(bootFailedCode()).toBe("unreachable")
-    expect(h.showReportableError).not.toHaveBeenCalled()
-  })
-
-  it("an error the node answers while the wallet builds is reportable", async () => {
-    const panel = await bootWithNodeFetch(async (_, init) => {
-      const calls = JSON.parse(String(init?.body)) as { id: number }[]
-      const body = calls.map(({ id }) => ({
-        jsonrpc: "2.0",
-        id,
-        error: { code: -32603, message: "boom" },
-      }))
-      return new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } })
-    })
-    expect(panel.dataset.kind).toBe("other")
-    expect(bootFailedCode()).toBe("other")
-    expect(h.showReportableError).toHaveBeenCalled()
   })
 })

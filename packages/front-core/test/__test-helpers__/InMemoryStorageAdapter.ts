@@ -21,8 +21,4 @@ export class InMemoryStorageAdapter implements IStorageAdapter {
   async removeItem(key: string): Promise<void> {
     this.data.delete(key)
   }
-
-  async clear(): Promise<void> {
-    this.data.clear()
-  }
 }

@@ -13,13 +13,15 @@ vi.mock("../../../../../contracts/src/artifacts/target/golden_ticket/golden_tick
   default: { bytecode: "", abi: {} },
 }))
 
-const { proveGoldenTicketInBrowser } = await import("../../../../src/features/paylink/goldenTicketProver")
+const { proveGoldenTicketInBrowser } = await import(
+  "../../../../src/features/paylink/goldenTicketProver"
+)
 
 type OnLap = (lap: NoirProofLap, ms: number) => void
 
 /** A prover that reaches these laps, then proves or fails. */
 function prover(laps: [NoirProofLap, number][], fail?: Error) {
-  h.prove.mockImplementation(async (_circuit, _inputs, _label, onLap: OnLap) => {
+  h.prove.mockImplementation(async (_circuit, _inputs, _label, { onLap }: { onLap: OnLap }) => {
     for (const [lap, ms] of laps) onLap(lap, ms)
     if (fail) throw fail
     return { proof: new Uint8Array([1]), publicInputs: [] }
@@ -52,7 +54,7 @@ describe("proveGoldenTicketInBrowser", () => {
       ],
       oom,
     )
-    await expect(proveGoldenTicketInBrowser({})).rejects.toBe(oom)
+    await expect(proveGoldenTicketInBrowser({}, async () => {})).rejects.toBe(oom)
     expect(sent()).toEqual({
       status: "failed",
       wasm_ms: 90,

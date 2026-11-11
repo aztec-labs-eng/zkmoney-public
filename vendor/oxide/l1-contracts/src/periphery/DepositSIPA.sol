@@ -3,10 +3,11 @@ pragma solidity >=0.8.27;
 
 import {SIPABase} from "./SIPABase.sol";
 import {ThreePoolLib} from "./ThreePoolLib.sol";
+import {Intent, Intents} from "./Intent.sol";
 
 contract DepositSIPA is SIPABase {
   function INTENT() public pure override returns (Intent) {
-    return Intent.Deposit;
+    return Intents.DEPOSIT;
   }
 
   function _execute(address token, bytes calldata intentData, bytes calldata)

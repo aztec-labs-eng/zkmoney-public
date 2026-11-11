@@ -3,36 +3,24 @@
   "path": "/deposit?flowFixture=success",
   "steps": [
     {
-      "action": "waitFor",
-      "selector": ".ww-deposit-disclaimer"
+      "action": "click",
+      "testId": "deposit-new-address"
     },
     {
       "action": "click",
-      "role": "button",
-      "name": "Got it!",
-      "exact": false
+      "testId": "deposit-chain-31337"
     },
     {
       "action": "click",
-      "selector": "button.ww-deposit__pill[aria-expanded]"
-    },
-    {
-      "action": "click",
-      "selector": ".ww-deposit__picker-row:nth-child(2)"
-    },
-    {
-      "action": "click",
-      "role": "button",
-      "name": "Connect your wallet",
-      "exact": false
+      "testId": "picker-USDC"
     },
     {
       "action": "waitFor",
-      "selector": ".ww-fund__amount input"
+      "label": "Amount to receive"
     },
     {
       "action": "fill",
-      "selector": ".ww-fund__amount input",
+      "label": "Amount to receive",
       "value": "4999.76"
     },
     {
@@ -41,7 +29,7 @@
     },
     {
       "action": "hover",
-      "selector": "dialog[open] button:disabled:has-text(\"Deposit funds\")"
+      "selector": "dialog[open] :has(> button:disabled:has-text(\"Review\"))"
     },
     {
       "action": "screenshot",
@@ -50,14 +38,12 @@
     },
     {
       "action": "press",
-      "role": "button",
-      "name": "Use maximum ($4,999.75)",
-      "exact": true,
+      "testId": "limit-notice-use-maximum",
       "key": "Enter"
     },
     {
       "action": "waitFor",
-      "selector": ".ww-fund__amount input[value=\"4999.75\"]"
+      "selector": "dialog:modal input[aria-label=\"Amount to receive\"][value=\"4999.75\"]"
     },
     {
       "action": "waitFor",
@@ -66,7 +52,7 @@
     },
     {
       "action": "waitFor",
-      "selector": "dialog[open] button:enabled:has-text(\"Deposit funds\")"
+      "selector": "dialog[open] button:enabled:has-text(\"Review\")"
     },
     {
       "action": "waitFor",
@@ -75,12 +61,12 @@
     },
     {
       "action": "hover",
-      "selector": "dialog[open] button:enabled:has-text(\"Deposit funds\")"
+      "selector": "dialog[open] button:enabled:has-text(\"Review\")"
     },
     {
       "action": "screenshot",
       "file": "usdc-at-limit.png",
-      "state": "USDC at the limit: its conversion credit is unknown, so nothing is said about capacity and Deposit funds is available"
+      "state": "USDC at the limit: its conversion credit is unknown, so nothing is said about capacity and Review is available"
     }
   ],
   "finalScreenshot": false,

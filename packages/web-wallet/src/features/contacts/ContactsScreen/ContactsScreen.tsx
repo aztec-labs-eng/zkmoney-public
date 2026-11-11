@@ -2,11 +2,11 @@ import { useMemo } from "react"
 import { useNavigate } from "react-router-dom"
 import {
   recentContacts,
-  useContactsDirectory,
   useStore,
   type ContactActivitySources,
   type ContactRow as DirectoryRow,
 } from "@obsidion/front-core"
+import { useContactDirectory } from "../../../session/contacts"
 import {
   ContactRow,
   GradientText,
@@ -46,7 +46,7 @@ function ContactGroup({
 }) {
   const navigate = useNavigate()
   const chevron = phone ? (
-    <PhoneIcon name="chevron-right" size={16} color="#bfc2d7" />
+    <PhoneIcon name="chevron-right" size={16} color="var(--text-secondary)" />
   ) : (
     <RowChevron />
   )
@@ -84,7 +84,7 @@ function ContactGroup({
  *  sends the cursor there. */
 export function ContactsScreen() {
   const navigate = useNavigate()
-  const { contacts } = useContactsDirectory()
+  const { contacts } = useContactDirectory()
   const phone = usePhoneLayout()
   const { openScanner, scannerAvailable } = useShellActions()
   const back = useBack(REQUESTS_PATH)
@@ -110,7 +110,7 @@ export function ContactsScreen() {
             onClick={back}
           >
             <span className="zkm-glass-circle zkm-glass-circle--faint ww-contacts__back-disc">
-              <PhoneIcon name="arrow-left" size={24} color="#fff" />
+              <PhoneIcon name="arrow-left" size={24} color="var(--ink)" />
             </span>
           </button>
         ) : (
@@ -127,7 +127,7 @@ export function ContactsScreen() {
             className={`zkm-btn-reset zkm-pressable ${styles.contactsAdd}`}
             onClick={() => navigate("/contacts", { replace: true, state: { searchFocus: true } })}
           >
-            <Icon name="user-follow" size={16} color="#fff" />
+            <Icon name="user-follow" size={16} color="var(--ink)" />
 
             {copy.add}
           </button>
@@ -143,7 +143,7 @@ export function ContactsScreen() {
               aria-label={copy.scan}
               onClick={openScanner}
             >
-              <PhoneIcon name="scan" size={20.16} color="#fff" />
+              <PhoneIcon name="scan" size={20.16} color="var(--ink)" />
             </button>
           )}
         </div>

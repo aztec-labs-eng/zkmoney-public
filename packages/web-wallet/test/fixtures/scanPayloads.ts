@@ -2,7 +2,12 @@ import { Fr } from "@aztec-labs/aztec.js/fields"
 import { Grumpkin } from "@aztec-labs/foundation/crypto/grumpkin"
 import { Network } from "@obsidion/core/constants"
 import { MAX_TAG_LENGTH } from "@obsidion/core/constants"
-import { encodeInline, encodeRequestInline, mintQRHandshakeShare } from "@obsidion/front-core"
+import {
+  CONNECT_FORMAT_VERSION,
+  buildHandshakeLink,
+  encodeInline,
+  encodeRequestInline,
+} from "@obsidion/front-core"
 import { encodePaylinkInline } from "@obsidion/sdk"
 
 export const PEER_L2 = `0x${"12".repeat(32)}` as const
@@ -52,17 +57,19 @@ export const PREPARED_PAYLINK_FRAGMENTS = {
 }
 
 export async function walletQrCorpus() {
-  const longConnect = await mintQRHandshakeShare({
-    tag: "a".repeat(MAX_TAG_LENGTH),
-    ownXmtpHandle: PEER_L1,
-    chain: Network.TESTNET,
-    l2Address: PEER_L2,
-    stealthAddress: PEER_L1,
-    baseUrl: "https://wallet-pr-123456789.staging.zk.money",
-    uuid: () => "01234567-89ab-4def-8123-456789abcdef",
-    now: () => 1750000000000,
-    record: async () => {},
-  })
+  const longConnect = buildHandshakeLink(
+    "https://wallet-pr-123456789.staging.zk.money",
+    encodeInline({
+      version: `${CONNECT_FORMAT_VERSION}:${Network.TESTNET}`,
+      kind: "handshake",
+      xmtpHandle: PEER_L1,
+      uuid: "01234567-89ab-4def-8123-456789abcdef",
+      time: 1750000000000,
+      l2Address: PEER_L2,
+      stealthAddress: PEER_L1,
+      tag: "a".repeat(MAX_TAG_LENGTH),
+    }),
+  )
   return {
     paylink: `https://paylink.zk.money/claim#${PAYLINK_FRAGMENT}`,
     request: `https://paylink.zk.money/request#${REQUEST_FRAGMENT}`,

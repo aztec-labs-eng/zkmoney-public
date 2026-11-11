@@ -8,6 +8,7 @@
  * approved on a helper page in the user's default browser. The recovery's destination is typed and
  * starts as the withdrawal's own recipient — the address the user already chose to be paid at.
  */
+import type { Pace } from "@obsidion/core/cadence"
 import { useState } from "react"
 import { isAddress, type Address, type Hex } from "viem"
 import { truncateMiddle, type SavingsMoveRecord, type WithdrawalRecord } from "@obsidion/front-core"
@@ -20,26 +21,28 @@ import {
   TextField,
   TopNavIconButton,
 } from "@obsidion/web-ds"
-import { getConfig, l1ChainFor } from "../../config/env"
+import { l1ChainFor } from "../../config/env"
 import { showReportableError } from "../../errors/errorModal"
 import { shortL1Addr, usdAtomicFloor } from "../../ui/format"
 import { Modal } from "../../ui/Modal"
 import { failureCode, fireEvent, lapTimer } from "../../lib/analytics"
 import { withdrawKind } from "./withdrawFunnel"
 import { isDesktopL1SubmitActive } from "../../platform/desktopBridge"
-import { HashRow, l1TxUrl, whenLabel } from "../../ui/detailRows"
+import { HashRow, l1Links, whenLabel } from "../../ui/detailRows"
 import { useCopy } from "../../ui/hooks"
 import { ScreeningNotice, useScreenedAddress } from "../../ui/screening"
 import { waitedLabel } from "../deposit/DepositExitModal/DepositExitModal"
-import { isWalletRejection, useL1Wallet } from "../../session/l1Wallet"
+import { isWalletRejection } from "../../session/l1Wallet"
+import { useL1Wallet } from "../../session/useL1Wallet"
+import { useSession } from "../../session/session"
 import type { L1ExitStage } from "../sipa/l1ExitChannels"
 import {
   useWalletPrompt,
   useWalletPromptStall,
-  WalletPromptNote,
   WalletPromptOpenError,
-  type WalletPromptToken,
-} from "../deposit/walletPrompt"
+} from "../../session/walletPrompt"
+import type { WalletPromptToken } from "../../session/walletPrompt"
+import { WalletPromptNote } from "../deposit/WalletPromptNote/WalletPromptNote"
 import { ExitWalletRow } from "./ExitWalletRow"
 import {
   executeSwapWithdrawal,
@@ -48,7 +51,7 @@ import {
   runSkyEscrowMove,
 } from "./swapRecovery"
 import type { SwapExitReason } from "@obsidion/front-core"
-import { unswappableCopy } from "./unswappableCopy"
+import { escrowHeldSymbol, unswappableCopy } from "./unswappableCopy"
 
 /** Which exit the user is running. */
 type ExitAction = "execute" | "recover"
@@ -81,6 +84,7 @@ export function SwapExitModal({
   reason,
   linkFragment,
   move,
+  pace,
   onClose,
 }: {
   record: WithdrawalRecord
@@ -89,9 +93,13 @@ export function SwapExitModal({
   linkFragment?: string
   /** A Savings move whose escrow `record`'s release funded: its run goes on to the move's destination. */
   move?: SavingsMoveRecord
+  /** The page's: the L1 receipt wait polls at its interval. */
+  pace: Pick<Pace, "foreignMs">
   onClose: () => void
 }) {
-  const config = getConfig()
+  const session = useSession()
+  const { config } = session.page
+  const { l1TxUrl } = l1Links(config)
   const bridgeMode = isDesktopL1SubmitActive()
   const l1 = useL1Wallet({ expectedChainId: config.l1ChainId, rpcUrl: config.l1RpcUrl })
   const { copied, copy } = useCopy()
@@ -99,6 +107,7 @@ export function SwapExitModal({
   const canExecute = move ? true : reason === "stuck" && record.phase === "swapping"
   // A move's burn paid its escrow, so there is no recipient of its own to recover to.
   const moveTo = move?.direction === "in" ? "Savings" : "Main Account"
+  const held = escrowHeldSymbol(record)
 
   const [destination, setDestination] = useState<string>(move ? "" : record.recipient)
   const [phase, setPhase] = useState<"form" | "working" | "done">("form")
@@ -143,10 +152,13 @@ export function SwapExitModal({
     const elapsed = lapTimer()
     let request: WalletPromptToken | undefined
     const opts = {
+      wagmi: l1.wagmi,
       destination: target ?? undefined,
       from: l1.account ?? undefined,
       linkFragment,
+      session,
       onHelperOpened: setSubmitUrl,
+      pace,
       // Confirming means the wallet answered; the slot frees before the receipt lands.
       onStage: (next: L1ExitStage) => {
         setStage(next)
@@ -157,8 +169,8 @@ export function SwapExitModal({
       request = prompt.begin()
       const hash = move
         ? next === "recover"
-          ? await recoverSkyEscrowMove(move, record, opts)
-          : await runSkyEscrowMove(move, record, opts)
+          ? await recoverSkyEscrowMove(session.savingsMoves, move, record, opts)
+          : await runSkyEscrowMove(record, opts)
         : next === "recover"
         ? await recoverSwapWithdrawal(record, opts)
         : await executeSwapWithdrawal(record, opts)
@@ -173,6 +185,7 @@ export function SwapExitModal({
     } catch (e) {
       setPhase("form")
       if (e instanceof WalletPromptOpenError) {
+        // eslint-disable-next-line local/message-in-state -- ZKM-1895
         setRefused(e.message)
         return
       }
@@ -276,15 +289,15 @@ export function SwapExitModal({
               </p>
             )}
             <TextField
-              label="Recover DAI to"
+              label={`Recover ${held} to`}
               placeholder="0x…"
               value={destination}
               onChange={setDestination}
               error={destination && !typedValid ? "That isn't a valid Ethereum address" : undefined}
             />
             <span style={{ color: "var(--text-secondary)", fontSize: 12 }}>
-              Anyone can submit the transaction, but only this address receives the DAI, so check it
-              carefully.
+              Anyone can submit the transaction, but only this address receives the {held}, so check
+              it carefully.
             </span>
             {target && !cleared && (
               <ScreeningNotice
@@ -296,7 +309,7 @@ export function SwapExitModal({
               />
             )}
             <PrimaryGradientButton
-              title={target ? `Recover DAI to ${shortL1Addr(target)}` : "Recover DAI"}
+              title={target ? `Recover ${held} to ${shortL1Addr(target)}` : `Recover ${held}`}
               buttonStyle={canExecute ? "dark" : undefined}
               isDisabled={!readyToRecover}
               onClick={() => void submit("recover")}

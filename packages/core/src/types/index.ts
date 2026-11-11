@@ -276,6 +276,9 @@ export interface OxideEnvTuple {
    * that lists one names its factory in {@link OxideEnvTuple.features}.
    */
   skyEscrowFactory?: string
+  /** L1 bridge-on-withdraw escrow factories. Without one the wallet offers no withdrawals through that bridge. */
+  acrossBridgeEscrowFactory?: string
+  cctpBridgeEscrowFactory?: string
   /** The deployment's features, in manifest order. */
   features?: readonly OxideFeature[]
   /** L1 OperationExecutor oxide's relayers run broadcast L1 operations through. The swap-on-withdraw
@@ -287,6 +290,22 @@ export interface OxideEnvTuple {
   fpcFunder?: string
   fpcBeneficiary?: string
   fpcBeneficiarySalt?: string
+  /** The SIPA contract sets earlier publishes of this entry served, newest first. */
+  priorSipaGenerations?: readonly SipaGeneration[]
+}
+
+/**
+ * One SIPA contract set of a deployment. An address derived under it stays this set's: it deploys
+ * through this factory and sweeps for this subsidy, whatever the deployment serves later.
+ */
+export interface SipaGeneration {
+  sipaFactory: string
+  /** Absent on a set from before the forwarding table. */
+  forwardingTable?: string
+  depositSIPAImplementation?: string
+  registrationSIPAImplementation?: string
+  /** The entry's bridge's subsidy. */
+  depositSubsidy?: string
 }
 
 /**
@@ -537,6 +556,9 @@ export type {
 // the type is reachable from the types subpath.
 export type { LocalConfig } from "../constants/index.js"
 
+// ── Proving stages and flow kinds ────────────────────────────────────
+export { ProvingStage, type OriginalFlowKind, type TxKind } from "./proving.js"
+
 // ── Benchmark DTOs ───────────────────────────────────────────────────
 // Time-performance benchmark schema (docs/plans/2026-06-03-001). Pure data.
 export type {
@@ -559,6 +581,7 @@ export type WithdrawalPhase =
   | "awaiting_proven" // Watching the L2 tx receipt until it is proven (or finalized).
   | "finalizing_l1" // L2 proven; polling the portal's `$isWithdrawalSpent` for L1 release.
   | "swapping" // Swap-on-withdraw only: DAI released to the escrow; waiting for a relayer to run the swap.
+  | "bridging" // Bridge-out only: the escrow ran and deposited to the bridge; waiting for the fill on the other chain.
   | "recoverable" // Swap-on-withdraw only: the escrow holds DAI its route cannot deliver — recoverERC20 is the exit.
   | "recovered" // Swap-on-withdraw only: recoverERC20 confirmed. Terminal.
   | "done" // L1 payout observed (the release on a direct withdrawal, the swap on a swap). Never demotable.

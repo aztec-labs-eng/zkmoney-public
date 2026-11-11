@@ -218,6 +218,13 @@ describe("stored overrides", () => {
     vi.spyOn(Storage.prototype, "removeItem").mockImplementation(() => {})
     expect(clearAllEndpointOverrides()).toEqual({ ok: false })
   })
+
+  it("a removal the storage refused reports ok: false", () => {
+    vi.spyOn(Storage.prototype, "removeItem").mockImplementation(() => {
+      throw new Error("SecurityError")
+    })
+    expect(clearAllEndpointOverrides()).toEqual({ ok: false })
+  })
 })
 
 describe("the node's API key", () => {

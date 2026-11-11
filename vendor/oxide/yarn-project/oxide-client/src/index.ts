@@ -11,6 +11,7 @@ export * from './l2_operations.js';
 export * from './record_update.js';
 export * from './submitted_withdrawal.js';
 export * from './withdrawal_finalization_request.js';
+export * from './executors/multi_step_withdrawal.js';
 export * from './executors/plain_withdrawal_executor.js';
 export * from './enclave_transport.js';
 export * from './fleet_signer.js';

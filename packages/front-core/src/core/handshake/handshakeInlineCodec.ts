@@ -115,6 +115,7 @@ const KEY_TIME = 8
 const KEY_TAG = 9
 
 /** Every key the current wire format knows. An unknown key fails closed. */
+// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
 const KNOWN_KEYS = new Set<number>([
   KEY_FORMAT,
   KEY_CHAIN,

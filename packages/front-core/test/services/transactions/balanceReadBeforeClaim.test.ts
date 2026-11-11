@@ -3,23 +3,14 @@
  * claim's `storedAt`. A read that resolved before the claim must not look like one that holds it.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import type { IStorageAdapter } from "../../../src/core/storages/adapter"
 import { WalletSyncCoordinator } from "../../../src/core/services/transactions/WalletSyncCoordinator"
-import { BalanceStorage } from "../../../src/core/storages/BalanceStorage"
-import { seededActivity } from "../../utils/activityFixture"
+import { createBalanceStore, selectEntry } from "../../../src/engine/balances"
+import { openDatabase } from "../../../src/engine/database"
+import { memoryBackend } from "../../../src/engine/memoryBackend"
+import { seededActivity } from "../../utils/transferFixture"
 
 const E18 = 10n ** 18n
 const SHARES = "0xshares"
-
-function memStorage(): IStorageAdapter {
-  const m = new Map<string, string>()
-  return {
-    getItem: async (k) => m.get(k) ?? null,
-    setItem: async (k, v) => void m.set(k, v),
-    removeItem: async (k) => void m.delete(k),
-    clear: async () => m.clear(),
-  }
-}
 
 function deferred() {
   let resolve!: () => void
@@ -37,8 +28,8 @@ describe("a balance read in flight across a claim", () => {
     const read = deferred()
     // The snapshot's closing header read queues in PXE behind the claim's store_deposit job.
     const release = deferred()
-    const storage = BalanceStorage.get(memStorage())
-    const activity = seededActivity()
+    const storage = createBalanceStore({ db: openDatabase(memoryBackend()), now: () => Date.now() })
+    const transfers = seededActivity()
     const coordinator = new WalletSyncCoordinator({
       source: {
         headBlock: async () => 100,
@@ -57,8 +48,8 @@ describe("a balance read in flight across a claim", () => {
           anchorBlock: 100,
         }),
       },
-      db: activity.db,
-      transactionStore: activity,
+      db: transfers.db,
+      transactionStore: transfers,
       tags: { resolveL2: async () => null },
       contacts: { findByL2Address: async () => null },
       token: { address: "0xtok", symbol: "DAI", decimals: 18 },
@@ -78,9 +69,9 @@ describe("a balance read in flight across a claim", () => {
     release.resolve()
     expect(await pass).toBe(true)
 
-    const record = storage.list().find((r) => r.tokenAddress === SHARES)!
-    expect(BigInt(record.balance)).toBe(6n * E18)
-    // What the balances and useSavingsContext report as the read time.
-    expect(record.readAt ?? record.updatedAt).toBeLessThan(storedAt)
+    const entry = selectEntry(storage.view.get(), "net:me", SHARES)!
+    expect(entry.atomic).toBe(6n * E18)
+    // What the balances and the Savings holding report as the read time.
+    expect(entry.readAt).toBeLessThan(storedAt)
   })
 })

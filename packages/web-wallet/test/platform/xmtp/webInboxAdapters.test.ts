@@ -6,17 +6,16 @@
 
 import { describe, expect, it } from "vitest"
 import {
-  ContactStorage,
   RequestReceiver,
   createRequests,
   memoryStore,
   TagValidationError,
   TransferEventScanner,
-  createActivity,
+  createTransfers,
   memoryBackend,
   openDatabase,
   type Database,
-  type Activity,
+  type Transfers,
   type TokenTransaction,
   approvedContactTags,
   contactRowFromEntry,
@@ -27,6 +26,7 @@ import {
   type ScannedTransferEvent,
   createTagForwardResolver,
 } from "@obsidion/front-core"
+import { testContacts } from "../../support/contacts"
 import {
   createContactsByL2,
   createRequestSenderPolicy,
@@ -56,21 +56,18 @@ function memStorage(): IStorageAdapter {
     removeItem: async (k) => {
       m.delete(k)
     },
-    clear: async () => {
-      m.clear()
-    },
   }
 }
 
 /** Each test store's database, which its scan cursor shares. */
-const dbOf = new WeakMap<Activity, Database>()
+const dbOf = new WeakMap<Transfers, Database>()
 
 /** A fresh activity store over memory. */
-async function freshTxStorage(_storage: IStorageAdapter): Promise<Activity> {
+async function freshTxStorage(_storage: IStorageAdapter): Promise<Transfers> {
   const db = openDatabase(memoryBackend())
-  const activity = createActivity({ db })
-  dbOf.set(activity, db)
-  return activity
+  const transfers = createTransfers({ db, now: () => Date.now() })
+  dbOf.set(transfers, db)
+  return transfers
 }
 
 const tags = { resolveL2: async () => ({ l2Address: SENDER_L2 }) }
@@ -88,7 +85,7 @@ function scannedEvent(overrides: Partial<ScannedTransferEvent> = {}): ScannedTra
 }
 
 function scannerOver(
-  txStorage: Activity,
+  txStorage: Transfers,
   contacts: ReturnType<typeof createContactsByL2>,
   events: ScannedTransferEvent[],
 ): TransferEventScanner {
@@ -116,7 +113,7 @@ function contactStoreFake(entries: Contact[]) {
   const writes: Contact[] = []
   return {
     writes,
-    getEntries: async () => entries,
+    all: async () => entries,
     addEntry: async (e: Contact) => {
       writes.push(e)
     },
@@ -168,6 +165,26 @@ describe("createContactsByL2", () => {
 })
 
 describe("createRequestStoreWrites", () => {
+  it("dates an incoming request by its send time, never later than now", async () => {
+    const now = 1_700_000_000_000
+    const requests = memRequests()
+    const receiver = new RequestReceiver(createRequestStoreWrites(requests, () => now))
+    const content = {
+      kind: "request" as const,
+      requestId: "req-sent",
+      requesterTag: "alice",
+      amountAtomic: "1",
+      decimals: 6,
+      token: TOKEN,
+      networkId: "aztec-dev",
+    }
+    await receiver.process({ content, sentAt: now - 3_600_000 })
+    await receiver.process({ content: { ...content, requestId: "req-future" }, sentAt: now + 1 })
+    const byId = new Map(requests.view.get().map((r) => [r.id, r.createdAt]))
+    expect(byId.get("req-sent")).toBe(now - 3_600_000)
+    expect(byId.get("req-future")).toBe(now)
+  })
+
   it("lands an incoming request in the requests store and applies a decline", async () => {
     const requests = memRequests()
     const receiver = new RequestReceiver(createRequestStoreWrites(requests))
@@ -215,7 +232,7 @@ describe("createRequestStoreWrites", () => {
 })
 
 describe("createRequestSenderPolicy", () => {
-  const contacts = (entries: Contact[]) => ({ getEntries: async () => entries })
+  const contacts = (entries: Contact[]) => ({ all: async () => entries })
   const ada: Contact = { name: "Ada", address: SENDER_L2, tag: "ada" }
 
   it("admits only tagged L2 contacts once they are blocked", async () => {
@@ -246,9 +263,8 @@ describe("requests from a sender added from a transfer", () => {
 
   /** Contact book, request store and receiver over one storage, after alice sent 0.01 unasked. */
   async function afterTransfer(allowNonContacts: boolean) {
-    ContactStorage.resetForTests()
     const storage = memStorage()
-    const contacts = ContactStorage.get(storage)
+    const contacts = testContacts()
     const requests = memRequests()
     const receiver = new RequestReceiver(
       createRequestStoreWrites(requests),
@@ -260,10 +276,10 @@ describe("requests from a sender added from a transfer", () => {
     const events = [scannedEvent({ amount: "10000" })]
     const scanner = scannerOver(txStorage, createContactsByL2(contacts), events)
     await scanner.pass(scanContext, { full: true })
-    expect(await contacts.findByTag("alice")).toMatchObject({ autoAdded: true })
+    expect((await contacts.all()).find((c) => c.tag === "alice")).toMatchObject({ autoAdded: true })
     /** Whether Activity and the inbox read the stored request as from a non-contact. */
     const listedAsNonContact = async () => {
-      const rows = (await contacts.getEntries()).filter(isPaymentContactEntry)
+      const rows = (await contacts.all()).filter(isPaymentContactEntry)
       const request = (await requests.get(announce.requestId))!
       return isFromNonContact(request, approvedContactTags(rows.map(contactRowFromEntry)))
     }

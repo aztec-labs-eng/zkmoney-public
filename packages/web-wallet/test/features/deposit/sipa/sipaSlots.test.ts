@@ -1,12 +1,26 @@
 /** Which self-derived addresses a view may take, and which slot the next derivation uses. */
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import type { OxideEnvTuple } from "@obsidion/core/types"
-import type { SipaDeposit } from "@obsidion/front-core"
 import {
+  createSipaDeposits,
+  fixed,
+  memoryBackend,
+  memoryStore,
+  openDatabase,
+  SELF_SLOTS,
+  type IdentityView,
+  type SipaDeposit,
+} from "@obsidion/front-core"
+import { AddressesPublishingError } from "../../../../src/features/deposit/addressesPublishing"
+import {
+  createSipaAddresses,
   inSipaPool,
   nextSipaSlot,
   sipaPoolDeployment,
+  unpublishedSlots,
 } from "../../../../src/features/deposit/sipaAddresses"
+import { defaultConfig } from "../../../support/page"
+import { answered } from "../../../support/query"
 
 const MAX_NONCE = 1_000_000
 const nonceOf = (slot: number) => MAX_NONCE - 1 - slot
@@ -65,5 +79,77 @@ describe("inSipaPool", () => {
     expect(
       inSipaPool(pooled({ broadcast: { ...shown, kind: "deposit", shownAt: 2 } }), USER, TUPLE, 9),
     ).toBe(false)
+  })
+})
+
+describe("the unpublished slot cap", () => {
+  const today = Math.floor(Date.now() / 86_400_000)
+  /** An own slot shown and paid whose broadcast has not landed: no publishing limit counts it. */
+  const unpublished = (n: number, over: Partial<SipaDeposit> = {}) =>
+    record({
+      sipaAddress: `0x${n.toString(16).padStart(40, "0")}`,
+      networkId: "0xnet",
+      l1ChainId: 31337,
+      slot: { day: today, nonce: nonceOf(n) },
+      broadcast: {
+        kind: "deposit",
+        source: { type: "slot" },
+        state: "queued",
+        createdAt: 1,
+        fundedAt: 2,
+        failures: 0,
+      },
+      ...over,
+    })
+
+  it("counts this account's slots of the window's days whose broadcast has not landed", () => {
+    const landed = unpublished(1).broadcast!
+    const records = [
+      unpublished(1),
+      unpublished(2, { broadcast: { ...landed, state: "landed" } }),
+      unpublished(3, { recipientL2Address: "0x0b" }),
+      unpublished(4, { slot: { day: today - 24, nonce: nonceOf(4) } }),
+      unpublished(5, { slot: { day: today - 23, nonce: nonceOf(5) } }),
+      // An ETH-only own slot, or an abandoned pool fill, owes nothing.
+      unpublished(6, { broadcast: undefined }),
+    ]
+    expect(unpublishedSlots(records, USER, Date.now())).toBe(2)
+  })
+
+  it(`refuses a new address while ${SELF_SLOTS.lookahead} slots are unpublished`, async () => {
+    const store = createSipaDeposits({
+      db: openDatabase(memoryBackend()),
+      account: true,
+      now: () => Date.now(),
+    })
+    // The derivation's first L2 read: past the cap, the derivation is under way.
+    const getBlock = vi.fn(() => new Promise<never>(() => {}))
+    const addresses = createSipaAddresses({
+      page: { config: defaultConfig, chain: { oxideTuple: answered(TUPLE) } } as never,
+      store,
+      wallet: fixed("wallet", { node: { getBlock } } as never),
+      keys: fixed("keys", { recipient: { toString: () => USER } } as never),
+      discovery: () => fixed("discovery", {} as never),
+      identity: memoryStore<IdentityView>({ value: null, loaded: true, failed: false }).readonly,
+      railPending: memoryStore({ status: "pending" } as const).readonly,
+      wakeBroadcasts: () => {},
+      wake: async () => {},
+    })
+    for (let n = 1; n <= SELF_SLOTS.lookahead; n++) {
+      const { sipaAddress, slot } = unpublished(n)
+      const fields = { ...record({ sipaAddress, slot }), networkId: "0xnet", l1ChainId: 31337 }
+      await store.apply(sipaAddress, { type: "derived", fields })
+      await store.oweBroadcast(sipaAddress, {
+        kind: "deposit",
+        source: { type: "slot" },
+        fundedAt: 2,
+      })
+    }
+    await expect(addresses.depositAddress("alice")).rejects.toBeInstanceOf(AddressesPublishingError)
+    expect(getBlock).not.toHaveBeenCalled()
+
+    await store.apply(unpublished(1).sipaAddress, { type: "broadcastLanded" })
+    void addresses.depositAddress("alice")
+    await vi.waitFor(() => expect(getBlock).toHaveBeenCalledOnce())
   })
 })

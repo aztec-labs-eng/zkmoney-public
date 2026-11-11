@@ -9,11 +9,10 @@ import {
   fixed,
   memoryBackend,
   openDatabase,
-  resource,
+  service,
 } from "@obsidion/front-core"
-import { AUTH_TYPE, type ObsidionWallet } from "@obsidion/sdk"
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
-import { seedBootConfig } from "../../support/seedBootConfig"
+import type { ObsidionWallet } from "@obsidion/sdk"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 import { writeDeviceKeys } from "../../../src/platform/storage/deviceKeys"
 import { testPage, committed } from "../../support/page"
 
@@ -26,12 +25,10 @@ const CRED = "cred-1"
 
 const h = { wallet: undefined as unknown }
 
-const { bindWalletAuth, writeStoredSigner } = await import(
-  "../../../src/platform/auth/useAuthenticator"
-)
+const { bindWalletAuth } = await import("../../../src/platform/auth/useAuthenticator")
 const { WebPasskeyIdentityMap } = await import("../../../src/platform/auth/WebPasskeyIdentityMap")
 /** A fresh device database each test, as the page's is. */
-let accounts = createAccountRecord({ db: openDatabase(memoryBackend()) })
+let accounts = createAccountRecord({ db: openDatabase(memoryBackend()), now: () => Date.now() })
 const accountsOf = () => accounts
 const { storageIdFromSecret, cachedMsk } = await import(
   "../../../src/platform/storage/activeStorage"
@@ -56,18 +53,14 @@ async function seedSession() {
 }
 
 const seedAccount = () =>
-  accounts.save({
+  accounts.apply({
+    type: "saved",
     completeAddress: `${ADDR}:complete`,
-    signKeyConfig: {
-      type: AUTH_TYPE.WEB_AUTHN,
-      webauthnData: { credentialId: CRED, pubkey: PUBKEY },
-    },
+    signer: { credentialId: CRED, pubkey: PUBKEY },
   })
 
-beforeAll(seedBootConfig)
-
 beforeEach(async () => {
-  accounts = createAccountRecord({ db: openDatabase(memoryBackend()) })
+  accounts = createAccountRecord({ db: openDatabase(memoryBackend()), now: () => Date.now() })
   localStorage.clear()
   page.auth.clear()
   h.wallet = undefined
@@ -80,10 +73,10 @@ const render = async () =>
     page.auth,
     h.wallet
       ? fixed("wallet", h.wallet as never)
-      : resource<[], ObsidionWallet>(
+      : service<[], ObsidionWallet>(
           "wallet",
-          { from: [], backoff: "manual" },
-          async () => undefined,
+          { from: [], retry: "manual" },
+          () => new Promise<never>(() => {}),
         ),
     accountsOf,
   )
@@ -121,37 +114,5 @@ describe("bindWalletAuth and the cached key", () => {
     await render()
     expect(await page.auth.getSecretKey()).toBeUndefined()
     expect(cachedMsk(committed())).toBeNull()
-  })
-})
-
-describe("the stored signer", () => {
-  it("moves to another key of the wallet, keeping the account's name and address", async () => {
-    await seedAccount()
-    const signer = {
-      credentialId: "cred-2",
-      pubkey: "cd".repeat(64),
-      authenticatorType: "security-key" as const,
-    }
-    await writeStoredSigner(accountsOf, signer)
-    expect(await accounts.get()).toEqual({
-      completeAddress: `${ADDR}:complete`,
-      signKeyConfig: { type: AUTH_TYPE.WEB_AUTHN, webauthnData: signer },
-    })
-  })
-
-  it("leaves an account that no passkey signs for, or no account, alone", async () => {
-    const signer = { credentialId: "cred-2", pubkey: "cd".repeat(64) }
-    await writeStoredSigner(accountsOf, signer)
-    expect(await accounts.get()).toBeUndefined()
-    const other = {
-      completeAddress: ADDR,
-      signKeyConfig: {
-        type: AUTH_TYPE.ECDSA_K256,
-        webauthnData: { credentialId: CRED, pubkey: PUBKEY },
-      },
-    }
-    await accounts.save(other)
-    await writeStoredSigner(accountsOf, signer)
-    expect(await accounts.get()).toEqual(other)
   })
 })
