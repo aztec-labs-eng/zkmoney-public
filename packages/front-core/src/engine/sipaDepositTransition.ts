@@ -122,7 +122,7 @@ const BEFORE_SWEEP: ReadonlySet<SIPADepositPhase> = new Set([
   "broadcast",
 ])
 
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+// eslint-disable-next-line no-restricted-syntax -- debt
 const CREATIONS = new Set<SipaDepositEvent["type"]>([
   "derived",
   "seeded",

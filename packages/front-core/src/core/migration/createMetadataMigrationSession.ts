@@ -55,7 +55,7 @@ export interface MetadataMigrationSessionOptions {
   secretKey: Fr
   client: PublicClient
   scans: DeploymentScans
-  // eslint-disable-next-line local/legacy-store -- ZKM-1625
+  // eslint-disable-next-line local/legacy-store -- debt
   storage: Pick<IStorageAdapter, "getItem" | "setItem">
   lock: StorageLock
   key: string

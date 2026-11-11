@@ -1,7 +1,7 @@
 /**
  * Storage migration: older builds' SIPA deposits, broadcasts, slots and pool entries. Remove when
  * no supported build older than the one that writes `acct/sipaDeposits` v3 remains and the rollup
- * migration (ZKM-1625) reads no deposit blob.
+ * migration reads no deposit blob.
  */
 import type { Database, Write } from "../engine/database"
 import { WalletError } from "../engine/errors"

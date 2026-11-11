@@ -105,7 +105,7 @@ function PreBootLanding({ preBoot, page, landingRate }: PreBootProps) {
 function PreBootVisitor({ link, page, ticketOffer }: VisitorProps) {
   const navigate = useNavigate()
   // Saved as the page does, so a sign-in started here still claims the link.
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => stashClaimLink(tabStash, link.fragment), [link.fragment])
   // The offer needs no wallet: read now, the page has it when it mounts.
   const offer = usePageTicketOffer(ticketOffer)

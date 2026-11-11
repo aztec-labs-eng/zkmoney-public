@@ -77,7 +77,7 @@ import "@rainbow-me/rainbowkit/styles.css"
 import "./features/deposit/rainbowkit.css"
 import { rainbowkitTheme } from "./session/wagmi"
 
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+// eslint-disable-next-line no-restricted-syntax -- debt
 const queryClient = new QueryClient()
 
 // The profiling overlay and everything it pulls in (canvas waterfall, the interceptors) sit behind
@@ -139,7 +139,7 @@ export function BootHold() {
   const { page } = useSession()
   const { bootStatus, bootError, retryBoot, startBoot } = usePxeBoot(page)
   const ready = useBootReady()
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(startBoot, [startBoot])
   if (bootStatus === "error")
     return <BootErrorScreen error={bootError} onRetry={retryBoot} walletOpen config={page.config} />
@@ -267,7 +267,7 @@ export function ActionGate({ action }: { action: WalletAction }) {
 
 /** Leaves an action's route for `to`, asking for the upgrade first. */
 function UpgradeFirst({ action, to }: { action: WalletAction; to: string }) {
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => openMigrationDialog({ action }), [action])
   return <Navigate to={to} replace />
 }

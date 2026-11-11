@@ -141,7 +141,7 @@ export function useInlineAddContact({
 
         return { tag, address }
       } catch (err) {
-        // eslint-disable-next-line local/message-in-state -- ZKM-1895
+        // eslint-disable-next-line local/message-in-state -- debt
         setSaveError(err instanceof Error ? err.message : "Could not add contact")
         return null
       } finally {

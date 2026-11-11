@@ -1,7 +1,7 @@
 /**
  * Storage migration: the failed fundings of links older builds kept on transfer rows. Remove when
  * no supported build older than the one that writes `acct/paylinks` v1 remains and the rollup
- * migration (ZKM-1625) moves no links out of legacy rows.
+ * migration moves no links out of legacy rows.
  */
 import type { Write } from "../engine/database"
 import type { OperationRecord } from "../engine/operationTransition"

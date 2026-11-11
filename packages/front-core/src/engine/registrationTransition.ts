@@ -75,7 +75,7 @@ export interface RegistrationChange {
 }
 
 /** The events a closed record still takes. */
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+// eslint-disable-next-line no-restricted-syntax -- debt
 const TERMINAL_EVENTS = new Set<RegistrationEvent["type"]>([
   "started",
   "broadcastSent",

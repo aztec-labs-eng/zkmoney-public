@@ -24,13 +24,13 @@ export class WalletPromptOpenError extends Error {
 /** True once `waiting` has held for `ms` without a break. */
 export function useWalletPromptStall(waiting: boolean, ms = WALLET_PROMPT_STALL_MS): boolean {
   const [stalled, setStalled] = useState(false)
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!waiting) {
       setStalled(false)
       return
     }
-    // eslint-disable-next-line local/timer-in-view -- ZKM-1806
+    // eslint-disable-next-line local/timer-in-view -- debt
     const timer = setTimeout(() => setStalled(true), ms)
     return () => clearTimeout(timer)
   }, [waiting, ms])

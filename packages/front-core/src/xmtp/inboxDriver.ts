@@ -136,7 +136,7 @@ export interface XmtpInboxReceiverDriverOptions {
 }
 
 export class XmtpInboxReceiverDriver {
-  // eslint-disable-next-line no-restricted-syntax -- ZKM-1628
+  // eslint-disable-next-line no-restricted-syntax -- debt
   private static instance: XmtpInboxReceiverDriver | null = null
 
   /**

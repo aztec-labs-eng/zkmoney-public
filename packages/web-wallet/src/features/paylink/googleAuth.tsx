@@ -5,7 +5,7 @@ import { relayGoogleCallback } from "./googleRelay"
 export function GoogleCallbackScreen() {
   const [message, setMessage] = useState("Finishing sign-in…")
 
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!relayGoogleCallback(window.location.hash)) {
       setMessage("Sign-in state is missing — close this window and try again.")

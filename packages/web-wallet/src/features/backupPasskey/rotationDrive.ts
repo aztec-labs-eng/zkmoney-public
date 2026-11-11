@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from "react"
 import { RotationDriver, type BackupRotationRecord, type RotationDrive } from "@obsidion/front-core"
 
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1710
+// eslint-disable-next-line no-restricted-syntax -- debt
 const driver = new RotationDriver()
 
 /** The page's one driver of saved rotations; `BackupRotationMount` starts it for the session. */

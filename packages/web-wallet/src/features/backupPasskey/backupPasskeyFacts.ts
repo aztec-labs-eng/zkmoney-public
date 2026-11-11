@@ -223,7 +223,7 @@ export function useBackupEntryFacts(active: boolean): {
   const savingsMoves = useStore(useSession().savingsMoves.view)
   const replayed = useSavingsMovesReplayed()
   const adopted = useStore(useSession().savingsSettleDue, (due) => due.unadopted === 0)
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!active || !built || !synced) return
     let stale = false

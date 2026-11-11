@@ -117,7 +117,7 @@ function store(value: Attribution, now: number): void {
   )
 }
 
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+// eslint-disable-next-line no-restricted-syntax -- debt
 let landing: Attribution = NO_ATTRIBUTION
 
 /**
@@ -177,7 +177,7 @@ export function markTicketChannel(now = Date.now()): void {
 }
 
 /** True the first time `name` is asked for in this tab; tabs without storage answer true per page. */
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+// eslint-disable-next-line no-restricted-syntax -- debt
 const askedThisPage = new Set<string>()
 export function firstInTab(name: string): boolean {
   const key = `zkm.once.${name}` as const

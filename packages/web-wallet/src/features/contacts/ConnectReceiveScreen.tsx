@@ -51,13 +51,13 @@ export function ConnectReceiveScreen() {
   const consumed = useRef(false)
   const mounted = useRef(false)
 
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     mounted.current = true
     return () => { mounted.current = false }
   }, [])
 
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (consumed.current) return
     consumed.current = true

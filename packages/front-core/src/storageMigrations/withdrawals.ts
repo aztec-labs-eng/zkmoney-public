@@ -1,6 +1,6 @@
 /**
  * Storage migration: older builds' withdrawals, from the legacy blob. Remove when no supported build
- * older than the one that writes `acct/withdrawals` v1 remains and the rollup migration (ZKM-1625)
+ * older than the one that writes `acct/withdrawals` v1 remains and the rollup migration
  * reads no withdrawal blob.
  */
 import type { WithdrawalPhase, WithdrawalRecord } from "../core/services/bridge/types"

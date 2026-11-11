@@ -84,7 +84,7 @@ import type { WebWalletConfig } from "../config/env"
 async function resetWalletStorage(): Promise<void> {
   // Both prefixes: front-core's stores go through the adapter, while the identity record and the
   // session are written directly.
-  // eslint-disable-next-line local/legacy-store -- ZKM-1625
+  // eslint-disable-next-line local/legacy-store -- debt
   await walletStorage.commitRemoveUnder(WEB_STORAGE_PREFIX)
   await walletStorage.commitRemoveUnder("webwallet.")
 }

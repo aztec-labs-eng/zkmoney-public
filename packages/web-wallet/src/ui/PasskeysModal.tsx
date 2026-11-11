@@ -241,7 +241,7 @@ export function PasskeysModal({
     setReads((n) => n + 1)
   }
 
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (contracts !== "ready" || !walletBuilt) {
       setKeys("unreadable")

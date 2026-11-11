@@ -38,7 +38,7 @@ export function useScanShare(options: Options) {
     setSession(value)
   }, [])
 
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (session && !visible) {
       focusAfterClose.current = { opener: session.opener, routeKey: session.routeKey }
@@ -57,7 +57,7 @@ export function useScanShare(options: Options) {
     target?.focus({ preventScroll: true })
   }, [visible])
 
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(
     () => () => {
       current.current = null

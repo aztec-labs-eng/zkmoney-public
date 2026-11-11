@@ -42,7 +42,7 @@ export function ScannerModal(props: ScannerModalProps) {
     if (!leaving.current && document.activeElement === document.body) closeButton.current?.focus({ preventScroll: true })
   }, [camera.state, error, busy, departing])
 
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     mounted.current = true
     const transfer = createScanHandoff({
@@ -104,7 +104,7 @@ export function ScannerModal(props: ScannerModalProps) {
 
   const paused = camera.state.kind === "paused"
   const controls = camera.state.kind === "active" && !error && !busy && !departing ? camera.state : null
-  // eslint-disable-next-line local/message-in-state -- ZKM-1895
+  // eslint-disable-next-line local/message-in-state -- debt
   const recovery = error?.message ?? ("message" in camera.state ? camera.state.message : null)
   const message = recovery ?? (departing ? "Opening your code…" : busy ? "Checking your code…" : paused
     ? "Camera paused while you were away."

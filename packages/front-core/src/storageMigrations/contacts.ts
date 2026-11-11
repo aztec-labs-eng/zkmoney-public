@@ -1,7 +1,7 @@
 /**
  * Storage migration: the contact book older builds saved as one blob. Remove when no supported
  * build older than the one that writes `acct/contacts` v1 remains and the rollup migration
- * (ZKM-1625) reads no legacy book.
+ * reads no legacy book.
  */
 import { isValidContact, reconcileL1Duplicates, type StoredContact } from "../engine/contacts"
 import type { Write } from "../engine/database"

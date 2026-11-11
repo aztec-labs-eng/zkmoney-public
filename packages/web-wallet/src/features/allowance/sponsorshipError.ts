@@ -5,7 +5,7 @@ import { LIMITS_DOCS_URL } from "../../lib/links"
  * are reported under. The voucher and registration-broadcast rails refuse with the same
  * "allowance exhausted", but their one-use allowance is not the account's and never renews.
  */
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+// eslint-disable-next-line no-restricted-syntax -- debt
 const REGISTERED_RAIL_CONTEXTS = new Set([
   "contact:send",
   "paylink:create",

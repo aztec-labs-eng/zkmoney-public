@@ -383,7 +383,7 @@ const isPaidLink = (r: PaymentRequest) =>
   r.direction === "outgoing" && r.kind === "link" && r.status === "fulfilled"
 
 // A refund is not a movement of its own: the creator's PAY row carries the round trip.
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+// eslint-disable-next-line no-restricted-syntax -- debt
 const VISIBLE_ACTIONS = new Set<string>([
   "send",
   "receive",

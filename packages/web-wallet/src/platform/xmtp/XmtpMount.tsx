@@ -208,7 +208,7 @@ export function XmtpMount(): null {
   const session = useSession()
   const ready = useAfter(session.milestones, AFTER)
   const networkId = useStore(session.page.networkId)
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (messagingCapability() !== "ok") {
       setXmtpUiState("unsupported")

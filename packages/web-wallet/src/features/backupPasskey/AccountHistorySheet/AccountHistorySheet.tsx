@@ -28,7 +28,7 @@ export function AccountHistorySheet({ onClose }: { onClose: () => void }) {
   const walletBuilt = useStore(session.wallet, serviceStatus) === "ready"
   const hideBal = useStore(session.device, (s) => s.hideBalances)
   const leave = useRef<AbortController | undefined>(undefined)
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     const controller = new AbortController()
     leave.current = controller

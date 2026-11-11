@@ -409,7 +409,7 @@ export function ManualSweepAction({
   // sweep, whether it is at a prompt or adopting the key this tab already holds. The close has
   // already marked that cancel; any other removal is only an unmount.
   const op = useRef<AbortController | undefined>(undefined)
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(
     () => () => {
       attempt.current?.unmounted()

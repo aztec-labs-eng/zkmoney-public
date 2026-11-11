@@ -205,16 +205,16 @@ function escrowed(row: HistoricResidualSummary["frozenLinks"][number]): boolean 
 
 export function MigrationDetectionMount() {
   const session = useSession()
-  // eslint-disable-next-line local/held-service -- ZKM-1625
+  // eslint-disable-next-line local/held-service -- debt
   const obsidionWallet = useResource(session.wallet)
-  // eslint-disable-next-line local/held-service -- ZKM-1625
+  // eslint-disable-next-line local/held-service -- debt
   const obsidionAccount = useResource(session.account)
-  // eslint-disable-next-line local/held-service -- ZKM-1625
+  // eslint-disable-next-line local/held-service -- debt
   const tokenService = useResource(session.token)
   const { auth, balances, balanceStore, sipaDeposits, registrations, device, namespace, identity } =
     session
   const named = useStore(identity, (s) => !!s.value?.handle)
-  // eslint-disable-next-line local/held-service -- ZKM-1625
+  // eslint-disable-next-line local/held-service -- debt
   const contractService = useResource(session.contractService)
   const { notifications, milestones } = session
   const { config } = session.page
@@ -303,9 +303,9 @@ export function MigrationDetectionMount() {
   const withdrawing = useLocation().pathname.startsWith("/withdraw")
   const networkReady = useNetworkReady()
   const ask = useApprovalAsk()
-  // eslint-disable-next-line local/effect-hook -- ZKM-1625
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => () => migrationRun.current?.abort(), [obsidionWallet, obsidionAccount])
-  // eslint-disable-next-line local/effect-hook -- ZKM-1625
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!obsidionAccount) return
     const account = obsidionAccount.getAddress().toString()
@@ -314,7 +314,7 @@ export function MigrationDetectionMount() {
     const check = () =>
       checkUpgradeLock(config, account).catch((error) => {
         console.warn("[migration] upgrade lock check failed:", error)
-        // eslint-disable-next-line local/timer-in-view -- ZKM-1625
+        // eslint-disable-next-line local/timer-in-view -- debt
         if (live) timer = setTimeout(check, LOCK_RETRY_MS)
       })
     void check()
@@ -328,7 +328,7 @@ export function MigrationDetectionMount() {
   // upgrade, read within `RECORD_CHECK_WAIT_MS`.
   const account = obsidionAccount?.getAddress().toString()
   const [bootChoice, setBootChoice] = useState<{ account: string; choose: boolean }>()
-  // eslint-disable-next-line local/effect-hook -- ZKM-1625
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!obsidionAccount) return
     const account = obsidionAccount.getAddress().toString()
@@ -338,7 +338,7 @@ export function MigrationDetectionMount() {
     }
     const answered = upgradeMovedFunds(config, account)
     if (answered !== undefined) decide(answered)
-    // eslint-disable-next-line local/timer-in-view -- ZKM-1625
+    // eslint-disable-next-line local/timer-in-view -- debt
     const wait = setTimeout(() => decide(false), RECORD_CHECK_WAIT_MS)
     webAccountRecordStale(session, obsidionAccount)
       .then((stale) => {
@@ -363,7 +363,7 @@ export function MigrationDetectionMount() {
   const mainBalance = useStore(balances.view)
   const oldHoldings = useOldVersionHoldings()
   // Old versions not read yet hold the boot sync open.
-  // eslint-disable-next-line local/effect-hook -- ZKM-1625
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!oldHoldings.pending) milestones.mark("oldVersionsRead")
   }, [oldHoldings.pending, milestones])
@@ -414,7 +414,7 @@ export function MigrationDetectionMount() {
         console.warn("[migration] re-probe failed:", error)
         if (error instanceof ManifestUnavailableError && scan === scans.current) {
           clearTimeout(probeRetry.current)
-          // eslint-disable-next-line local/timer-in-view -- ZKM-1806
+          // eslint-disable-next-line local/timer-in-view -- debt
           probeRetry.current = setTimeout(() => void refresh({ ifIdle: true }), FREEZE_POLL_MS)
         }
         return
@@ -440,10 +440,10 @@ export function MigrationDetectionMount() {
     },
     [session, config, obsidionWallet, obsidionAccount, identity],
   )
-  // eslint-disable-next-line local/effect-hook -- ZKM-1625
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => () => clearTimeout(probeRetry.current), [refresh])
 
-  // eslint-disable-next-line local/effect-hook -- ZKM-1625
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!obsidionWallet || !obsidionAccount) return
     let cancelled = false
@@ -480,7 +480,7 @@ export function MigrationDetectionMount() {
         // nothing shows meanwhile.
         if (error instanceof ManifestUnavailableError) {
           setManifestUnread(true)
-          // eslint-disable-next-line local/timer-in-view -- ZKM-1625
+          // eslint-disable-next-line local/timer-in-view -- debt
           retry = setTimeout(() => setChecks((n) => n + 1), FREEZE_POLL_MS)
         } else setCheckFailed(true)
       })
@@ -501,7 +501,7 @@ export function MigrationDetectionMount() {
   const followRun = useRef<(source: OxideEnvTuple, promptless: boolean, shown?: boolean) => void>(
     () => {},
   )
-  // eslint-disable-next-line local/effect-hook -- ZKM-1625
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     // A follower needs both services, so the saved runs are read only once it can start.
     if (!obsidionWallet || !obsidionAccount || !current || !historic) return
@@ -610,7 +610,7 @@ export function MigrationDetectionMount() {
         // Its run waits with the source: the source shows as waiting, and nothing offers to continue
         // the run until the migration route is back.
         if (awaitsFeature(source)) continue
-        // eslint-disable-next-line local/legacy-store -- ZKM-1625
+        // eslint-disable-next-line local/legacy-store -- debt
         const raw = await webStorage.getItem(
           webMetadataMigrationKey(destinationOf(source) ?? current, source, obsidionAccount),
         )
@@ -650,7 +650,7 @@ export function MigrationDetectionMount() {
       followRun.current = () => {}
     }
     // A finished run's refreshes need not restart the follow.
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- ZKM-1625
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- debt
   }, [
     obsidionWallet,
     obsidionAccount,
@@ -662,7 +662,7 @@ export function MigrationDetectionMount() {
     featurePending,
   ])
 
-  // eslint-disable-next-line local/effect-hook -- ZKM-1625
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!obsidionWallet) return
     void reconcilePendingPaylinks(session, obsidionWallet, checkSpent).catch((error) =>
@@ -683,7 +683,7 @@ export function MigrationDetectionMount() {
   }>()
   // The last scan left an old version's holdings unread.
   const [holdingsUnread, setHoldingsUnread] = useState(false)
-  // eslint-disable-next-line local/effect-hook -- ZKM-1625
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     // A running migration moves the funds it would quote; it quotes them again once it stops.
     if (migrating) return
@@ -847,13 +847,13 @@ export function MigrationDetectionMount() {
     .filter((r) => r.awaitingFreeze)
     .map((r) => r.tuple.portal.toLowerCase())
     .join(",")
-  // eslint-disable-next-line local/effect-hook -- ZKM-1625
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!awaitingPortals) return
     const awaiting = residuals.filter((r) => r.awaitingFreeze).map((r) => r.tuple)
     return watchForFreeze(config, awaiting, () => void refresh(), session.page.pace)
     // `awaitingPortals` names the watched set; a new residuals array alone does not restart it.
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- ZKM-1625
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- debt
   }, [awaitingPortals, refresh, session.page.pace])
   // Withdraw refunds a frozen source to L1 instead, while no upgrade run holds its funds.
   const withdrawable = useMemo(
@@ -911,7 +911,7 @@ export function MigrationDetectionMount() {
             }))
         : [],
     // `following` is what `followed` reads.
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- ZKM-1625
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- debt
     [
       metadataFlow,
       obsidionWallet,
@@ -927,18 +927,18 @@ export function MigrationDetectionMount() {
       destinationOf,
     ],
   )
-  // eslint-disable-next-line local/effect-hook -- ZKM-1625
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => setWithdrawableSources(withdrawable), [withdrawable])
-  // eslint-disable-next-line local/effect-hook -- ZKM-1625
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => () => setWithdrawableSources([]), [])
   const withdrawn = useOldVersionWithdrawals()
-  // eslint-disable-next-line local/effect-hook -- ZKM-1625
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (withdrawn) void refresh()
   }, [withdrawn, refresh])
   // A frozen source waits for its destination's migration feature: each poll reads only the
   // manifest again, and probes again once a waiting source has a route, with no reload.
-  // eslint-disable-next-line local/effect-hook -- ZKM-1625
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!featurePending || !current) return
     const waiting = residuals
@@ -950,11 +950,11 @@ export function MigrationDetectionMount() {
       session.page.pace,
     )
     // `featurePending` names the watched set; a new residuals array alone does not restart it.
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- ZKM-1625
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- debt
   }, [featurePending, current, destinationOf, refresh, session.page.pace])
   // A run waits with its source for the migration feature, as at boot; the saved runs are read
   // again once the feature is back.
-  // eslint-disable-next-line local/effect-hook -- ZKM-1625
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (migrating || !resumeSource) return
     if (!featurePending.split(",").includes(resumeSource.portal.toLowerCase())) return
@@ -1015,7 +1015,7 @@ export function MigrationDetectionMount() {
     metadataFlow &&
     registrationAnswer?.ask === registrationAsk &&
     !!registrationAnswer?.failed
-  // eslint-disable-next-line local/effect-hook -- ZKM-1625
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!registrationAsk) return
     const ask = registrationAsk
@@ -1068,7 +1068,7 @@ export function MigrationDetectionMount() {
     railPending === true &&
     !railUnread &&
     named
-  // eslint-disable-next-line local/effect-hook -- ZKM-1625
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!obsidionAccount || !askRegisteredHere) return
     let cancelled = false
@@ -1085,14 +1085,14 @@ export function MigrationDetectionMount() {
   }, [obsidionAccount, askRegisteredHere, registrations])
   // Home waits until a check reads every old version, unless the deployment counts none. With the
   // wallet locked nothing can be read in this page.
-  // eslint-disable-next-line local/effect-hook -- ZKM-1625
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!obsidionAccount) return
     if (probed && scanned && !metadataFlow)
       markOldHoldingsRead(config, obsidionAccount.getAddress().toString())
     releaseOldHoldingsWait(probed && !scanned)
   }, [config, obsidionAccount, probed, scanned, metadataFlow])
-  // eslint-disable-next-line local/effect-hook -- ZKM-1625
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => () => releaseOldHoldingsWait(false), [])
   // No check has read every old version yet, and the last one left one unread.
   const holdingsMissing =
@@ -1104,7 +1104,7 @@ export function MigrationDetectionMount() {
     (registrationNeeded ? current : registrationNeeded === false ? fundsOnly[0]?.tuple : undefined)
   const request = useMigrationDialogRequest()
   const seenRequest = useRef(request)
-  // eslint-disable-next-line local/effect-hook -- ZKM-1625
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (request === seenRequest.current) return
     seenRequest.current = request
@@ -1252,7 +1252,7 @@ export function MigrationDetectionMount() {
   const stuckKey = dataKey(stuck)
   // Only a complete scan judges the row; an incomplete one leaves it as it is.
   const scanComplete = scanned && !scanFailed && !checkingMovable && !chainTimeUnknown
-  // eslint-disable-next-line local/effect-hook -- ZKM-1625
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!scanComplete) return
     if (stuck.length === 0)
@@ -1268,7 +1268,7 @@ export function MigrationDetectionMount() {
       }),
     )
     // `stuck` is read whenever its data changes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- ZKM-1625
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- debt
   }, [scanComplete, stuckKey, notifications])
 
   // The run the dialog shows goes on without the user, from before its saved record is read.
@@ -1335,7 +1335,7 @@ export function MigrationDetectionMount() {
   const registration = metadataFlow && (!!source || finishing)
   // A run's operation keeps the tab, as the bell says.
   const keepOpen = metadataFlow && runActive && losesTransaction
-  // eslint-disable-next-line local/effect-hook -- ZKM-1625
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(
     () =>
       setUpgradeStatus({
@@ -1346,10 +1346,10 @@ export function MigrationDetectionMount() {
       }),
     [state, runPhase, registration, keepOpen],
   )
-  // eslint-disable-next-line local/effect-hook -- ZKM-1625
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => () => setUpgradeStatus({ state: "checking", registration: false }), [])
   // What an answered check found, so the next boot shows 1 Choose before its probe answers.
-  // eslint-disable-next-line local/effect-hook -- ZKM-1625
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!obsidionAccount || !metadataFlow) return
     if (state === "offered" || state === "finishing" || state === "none")
@@ -1363,7 +1363,7 @@ export function MigrationDetectionMount() {
   // a declined prompt 2 Sign again. A run still arriving stays the user's until one of these.
   const runStopped =
     metadataRecord?.phase === "needsAttention" || metadataRecord?.phase === "needsApproval"
-  // eslint-disable-next-line local/effect-hook -- ZKM-1625
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!flowRun || runActive) return
     setLeaving(false)
@@ -1386,7 +1386,7 @@ export function MigrationDetectionMount() {
     }
   }, [flowRun, runActive, state, runStopped, metadataRecord?.phase])
   // Any finished upgrade, a followed run's too.
-  // eslint-disable-next-line local/effect-hook -- ZKM-1625
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (state === "none" || metadataRecord?.phase === "done")
       notifyIfArmed(upgradeDoneCopy.title, upgradingCopy.doneNotice)
@@ -1399,13 +1399,13 @@ export function MigrationDetectionMount() {
   useBackGuard(preparingShown, () => setLeaving(true))
   // Fully upgraded here: Home shows the live balance again.
   const [releaseRetries, setReleaseRetries] = useState(0)
-  // eslint-disable-next-line local/effect-hook -- ZKM-1625
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (state !== "none" || !obsidionAccount) return
     let timer: ReturnType<typeof setTimeout> | undefined
     releaseUpgradeLock(config, obsidionAccount.getAddress().toString()).catch((error) => {
       console.warn("[migration] upgrade lock release failed:", error)
-      // eslint-disable-next-line local/timer-in-view -- ZKM-1625
+      // eslint-disable-next-line local/timer-in-view -- debt
       timer = setTimeout(() => setReleaseRetries((n) => n + 1), LOCK_RETRY_MS)
     })
     return () => clearTimeout(timer)
@@ -1418,7 +1418,7 @@ export function MigrationDetectionMount() {
     locked: lock.state === "held",
     lockChecked: lock.checked,
   })
-  // eslint-disable-next-line local/effect-hook -- ZKM-1625
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!requested || !cleared || !actionAsked?.then) return
     const run = actionAsked.then
@@ -1436,7 +1436,7 @@ export function MigrationDetectionMount() {
     (!probed || (metadataFlow && residuals.some((r) => movableState(r) !== false)))
   const repointAsked = repointed && !repointDismissed && !losesTransaction
   const onScreen = expected && !withdrawing && !repointAsked
-  // eslint-disable-next-line local/effect-hook -- ZKM-1625
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (account && chooseFirst && !(onScreen && !actionAsked))
       setBootChoice({ account, choose: false })
@@ -1444,7 +1444,7 @@ export function MigrationDetectionMount() {
   // It shows before Home, which holds every way to ask for the dialog, so no request can reach it.
   // One that does is reported, and still answered.
   const askedOverChoose = onScreen && requested
-  // eslint-disable-next-line local/effect-hook -- ZKM-1625
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!askedOverChoose) return
     console.warn("[migration] a dialog request reached boot's 1 Choose")
@@ -1457,7 +1457,7 @@ export function MigrationDetectionMount() {
     (probed && !scanned) ||
     SENT.has(metadataRecord?.phase ?? "preparing")
   const needsYou = waiting ?? (state === "failed" ? "failed" : undefined)
-  // eslint-disable-next-line local/effect-hook -- ZKM-1625
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!needsYou) {
       const retract = async () => {

@@ -519,7 +519,7 @@ async function namedOnL1(
   return outcome.kind === "verified"
 }
 
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1710
+// eslint-disable-next-line no-restricted-syntax -- debt
 let watcher: PreviousAccountWatcher | undefined
 
 /** The page's watcher. */

@@ -8,7 +8,7 @@ import { isWalletConnectChainSwitchError } from "./walletConnectError"
 import type { Network } from "@obsidion/core/constants"
 
 const WALLETCONNECT_PROPOSAL_EXPIRED = "Proposal expired"
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+// eslint-disable-next-line no-restricted-syntax -- debt
 const BROWSER_NOTICES = new Set([
   "Script error.",
   "ResizeObserver loop completed with undelivered notifications.",
@@ -30,7 +30,7 @@ export function ErrorModalHost({ network }: { network: Network }) {
   // Errors arriving while one is visible queue behind it instead of replacing
   // a message the user is reading.
   const queueRef = useRef<ErrorModalPayload[]>([])
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(
     () =>
       subscribeErrorModal((next) => {
@@ -49,13 +49,13 @@ export function ErrorModalHost({ network }: { network: Network }) {
     [],
   )
 
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     const onError = (e: ErrorEvent) => {
       if (isExtensionError(e.filename, e.error)) return
-      // eslint-disable-next-line local/message-in-state -- ZKM-1806
+      // eslint-disable-next-line local/message-in-state -- debt
       if (e.error == null && BROWSER_NOTICES.has(e.message)) return
-      // eslint-disable-next-line local/message-in-state -- ZKM-1806
+      // eslint-disable-next-line local/message-in-state -- debt
       surfaceUncaught(e.error ?? e.message)
     }
     const onRejection = (e: PromiseRejectionEvent) => {

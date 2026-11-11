@@ -9,7 +9,7 @@ const STORAGE_KEY = "webwallet.inbound-invite"
 export const INBOUND_INVITE_TTL_MS = 60 * 60 * 1000
 /** Refusals that will not change on a retry: a malformed or unknown code, the user's own, or an
  *  invitee already registered. */
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+// eslint-disable-next-line no-restricted-syntax -- debt
 const FINAL_REFUSALS = new Set([400, 403, 404, 409])
 
 /** Keeps the code from `?invite=`; runs before routing, which can drop the query. */

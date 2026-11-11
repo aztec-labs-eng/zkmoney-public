@@ -149,9 +149,9 @@ interface ShortLink {
 }
 
 // One record per request across every mount, so a remounted sheet neither re-keys nor re-sends.
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1628
+// eslint-disable-next-line no-restricted-syntax -- debt
 const links = new Map<string, ShortLink>()
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1628
+// eslint-disable-next-line no-restricted-syntax -- debt
 const listeners = new Set<() => void>()
 const changed = () => listeners.forEach((listener) => listener())
 
@@ -167,7 +167,7 @@ export function useShortRequestLink(code: ShareableRequest | undefined) {
   const unlocked = useStore(session.account ?? NO_SERVICE, serviceStatus) === "ready"
   const contracts = useStore(session.contractService, serviceStatus) === "ready"
   const [, rerender] = useReducer((n: number) => n + 1, 0)
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     listeners.add(rerender)
     return () => void listeners.delete(rerender)
@@ -227,7 +227,7 @@ export function useShortRequestLink(code: ShareableRequest | undefined) {
 function useShortLinksEnabled(contracts: boolean): boolean {
   const { contractService } = useSession()
   const [enabled, setEnabled] = useState(false)
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!contracts) return
     let stopped = false

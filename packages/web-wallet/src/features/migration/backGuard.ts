@@ -4,7 +4,7 @@ import { useEffect, useRef } from "react"
 export function useBackGuard(active: boolean, onBack: () => void): void {
   const back = useRef(onBack)
   back.current = onBack
-  // eslint-disable-next-line local/effect-hook -- ZKM-1625
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!active) return
     history.pushState(history.state, "")

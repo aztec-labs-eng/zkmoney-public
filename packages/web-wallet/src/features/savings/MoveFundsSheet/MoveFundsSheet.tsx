@@ -187,7 +187,7 @@ export function MoveFundsSheet({
   const key =
     burnAtomic === undefined ? "" : `${direction}:${burnAtomic}:${feeOnTop ? "top" : "off"}`
 
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!key || burnAtomic === undefined || burnAtomic <= 0n || overspent) {
       setPriced(null)
@@ -212,7 +212,7 @@ export function MoveFundsSheet({
       }
       throw new WalletError("savings.feeUnsettled")
     }
-    // eslint-disable-next-line local/timer-in-view -- ZKM-1806
+    // eslint-disable-next-line local/timer-in-view -- debt
     const timer = setTimeout(() => {
       priceMove()
         .then(
@@ -310,7 +310,7 @@ export function MoveFundsSheet({
       if (e instanceof SavingsQuoteChangedError) {
         if (left.current) return
         setPriced({ key, quote: e.quote })
-        // eslint-disable-next-line local/message-in-state -- ZKM-1895
+        // eslint-disable-next-line local/message-in-state -- debt
         setRequoted(e.message)
         setPhase("confirm")
         return

@@ -11,11 +11,11 @@ export interface ApprovalAsk {
   total: number
 }
 
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1625
+// eslint-disable-next-line no-restricted-syntax -- debt
 let grants = 0
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1625
+// eslint-disable-next-line no-restricted-syntax -- debt
 let waiter: { resolve: () => void; reject: (error: Error) => void } | undefined
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1625
+// eslint-disable-next-line no-restricted-syntax -- debt
 const asked = memoryStore<ApprovalAsk | null>(null)
 
 /** A tap on "Use passkey": the next prompt may open. */

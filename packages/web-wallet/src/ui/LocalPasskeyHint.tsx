@@ -69,7 +69,7 @@ export function LocalPasskeyHint() {
       return false
     }
   })
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!show) return
     // Each attempt counts one showing; once they are spent the line goes.

@@ -18,7 +18,7 @@ import type { WebWalletConfig } from "../../config/env"
 import { l1PublicClient } from "../../config/oxideTuple"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
 
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1625
+// eslint-disable-next-line no-restricted-syntax -- debt
 let store: OldVersionWithdrawalStorage | undefined
 
 export function getOldVersionWithdrawalStore(): OldVersionWithdrawalStorage {
@@ -38,7 +38,7 @@ export const pendingRefundIds = (records: readonly OldVersionWithdrawal[]) =>
   )
 
 // The record a zk.money run in this tab is still sending.
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1625
+// eslint-disable-next-line no-restricted-syntax -- debt
 let producing: string | undefined
 
 export function setProducingOldVersionWithdrawal(id: string | undefined) {

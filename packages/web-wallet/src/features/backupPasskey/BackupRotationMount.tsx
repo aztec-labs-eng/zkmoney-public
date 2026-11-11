@@ -18,7 +18,7 @@ export function BackupRotationMount(): null {
   const booted = usePxeBoot(session.page).bootStatus === "ready"
   const { milestones, identity, backupRotations } = session
   const ready = useAfter(milestones, AFTER)
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!booted || !ready || !walletBuilt || !backupRotations) return
     const driver = getRotationDriver()

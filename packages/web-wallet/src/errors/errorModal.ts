@@ -30,11 +30,11 @@ export type ErrorModalPayload = {
   retry?: { label: string; run: () => void }
 }
 
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1671
+// eslint-disable-next-line no-restricted-syntax -- debt
 let listener: ((payload: ErrorModalPayload) => void) | null = null
 // Buffers errors raised before `ErrorModalHost` mounts (early boot); flushed
 // on subscribe so they are not silently dropped.
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1671
+// eslint-disable-next-line no-restricted-syntax -- debt
 let pending: ErrorModalPayload[] = []
 const MAX_PENDING = 3
 

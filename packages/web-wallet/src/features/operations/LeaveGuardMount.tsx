@@ -10,7 +10,7 @@ import { useTabBoundOperation } from "./operations"
 
 export function LeaveGuardMount(): null {
   const flow = useTabBoundOperation()?.flow
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!flow) return
     const onBeforeUnload = (event: BeforeUnloadEvent) => {

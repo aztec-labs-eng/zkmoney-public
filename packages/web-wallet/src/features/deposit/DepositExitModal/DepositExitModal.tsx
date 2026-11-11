@@ -151,7 +151,7 @@ export function DepositExitModal({
   // sweeps, and closes the passkey attempt it was reported as.
   const attemptRef = useRef<PasskeyAttemptHandle | undefined>(undefined)
   const op = useRef<AbortController | undefined>(undefined)
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(
     () => () => {
       attemptRef.current?.unmounted()
@@ -303,7 +303,7 @@ export function DepositExitModal({
     } catch (e) {
       setPhase("form")
       if (e instanceof WalletPromptOpenError) {
-        // eslint-disable-next-line local/message-in-state -- ZKM-1895
+        // eslint-disable-next-line local/message-in-state -- debt
         setRefused(e.message)
         return
       }
@@ -312,7 +312,7 @@ export function DepositExitModal({
       const scope = next === "sweep" ? "deposit:self-sweep" : "deposit:recover"
       fireEvent("action_failed", { action: scope, code: failureCode(e) })
       if (isPasskeyPolicyError(e)) {
-        // eslint-disable-next-line local/message-in-state -- ZKM-1895
+        // eslint-disable-next-line local/message-in-state -- debt
         setRefusal({ name: e.name, message: e.message })
         return
       }

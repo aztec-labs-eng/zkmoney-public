@@ -8,7 +8,7 @@ import { WalletError } from "@obsidion/core/errors"
  */
 type TabState = "pending" | "active" | "revoked"
 
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+// eslint-disable-next-line no-restricted-syntax -- debt
 let state: TabState = "pending"
 
 export class InactiveTabError extends Error {

@@ -58,7 +58,7 @@ export function retiredDatabaseOf(
 
 export interface HistoricActivityImportDeps {
   /** The account's storage on the active rollup, where the marker lives. */
-  // eslint-disable-next-line local/legacy-store -- ZKM-1625
+  // eslint-disable-next-line local/legacy-store -- debt
   storage: IStorageAdapter
   /** The marker; {@link HISTORIC_ACTIVITY_IMPORTED_KEY} for this browser's databases. */
   key?: string

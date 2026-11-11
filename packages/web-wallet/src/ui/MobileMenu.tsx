@@ -66,7 +66,7 @@ function MenuDialog({
     let live = true
     const done = () => live && onClosed()
     void Promise.all(animations.map((animation) => animation.finished)).then(done, done)
-    // eslint-disable-next-line local/timer-in-view -- ZKM-1806
+    // eslint-disable-next-line local/timer-in-view -- debt
     const timer = setTimeout(done, 1000)
     return () => {
       live = false

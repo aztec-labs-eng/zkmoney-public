@@ -251,7 +251,7 @@ function DepositScreenBody({
   // The registration's funds landed: Home carries its progress, so this screen does not turn into
   // a plain deposit (and its privacy disclaimer) under the user.
   const wasOwed = useRef(owed)
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (owed) wasOwed.current = true
     else if (wasOwed.current) {
@@ -391,7 +391,7 @@ function DepositScreenBody({
 
   useOpened(() => fireEvent("deposit_sheet_opened", owed ? { registration: true } : undefined))
   const reportedOwed = useRef(false)
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!owed || reportedOwed.current) return
     reportedOwed.current = true
@@ -400,7 +400,7 @@ function DepositScreenBody({
 
   // The quote is the picked token's row for the screen's intent, read again on Retry and when the row, the intent or
   // the deployment changes.
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     let stale = false
     setFacts(undefined)
@@ -418,13 +418,13 @@ function DepositScreenBody({
     return () => {
       stale = true
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- ZKM-1806 the row it settles on keys the quote
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- debt the row it settles on keys the quote
   }, [factsAttempt, l1RpcUrl, l1ChainId, manifestUrl, token.settlesIn, intent])
 
   // A demo page's fixture address stands in for a derived one.
   const { demoDepositAddress } = session
   const heldBack = seededAddress === "creating" || seededAddress === "capped"
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!demoDepositAddress || heldBack || claiming || deposit || !handle) return
     handOut.show(demoDepositAddress(handle))
@@ -434,7 +434,7 @@ function DepositScreenBody({
   // a sent deposit's detail is open, the next address waits for the user to come back to the sheet.
   const opens =
     !target && !deposit && !capped && !resolveFailed && !busy && !sent && hold.status === "none"
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (opens) void handOut.handOut(0)
   }, [opens, handle, addresses, handOut])
@@ -731,7 +731,7 @@ function DepositScreenBody({
       : null,
   )
   const watchedBalance = settledToToken(watched.balance)
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (watched.readAt !== undefined) recordRead(watchedBalance, watched.readAt)
   }, [watched.readAt, watchedBalance, recordRead])
@@ -751,7 +751,7 @@ function DepositScreenBody({
 
   // Once per address per mount, when the sheet shows it.
   const reportedShown = useRef(new Set<string>())
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!sheetOpen || !shown || reportedShown.current.has(shown.address)) return
     reportedShown.current.add(shown.address)
@@ -760,10 +760,10 @@ function DepositScreenBody({
   }, [sheetOpen, shown])
 
   // A sheet with nothing to show and nothing coming closes: the derivation failed or never started.
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (sheetOpen && !shown && !generating && !capped) steps.shut("address")
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- ZKM-1806 runs on sheet or address changes
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- debt runs on sheet or address changes
   }, [sheetOpen, shown, generating])
 
   // Copying is the hand-off: after the copied feedback the sheet waits for the funds. A refused
@@ -955,7 +955,7 @@ function DepositScreenBody({
       address={shown?.address}
       paymentUri={paymentUri}
       publishing={!!shown?.publishing}
-      // eslint-disable-next-line local/message-in-state -- ZKM-1895
+      // eslint-disable-next-line local/message-in-state -- debt
       creatingNote={capped ? new AddressesPublishingError().message : undefined}
       canCopy={ready}
       copied={copied}

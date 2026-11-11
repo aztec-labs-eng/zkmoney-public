@@ -16,7 +16,7 @@ import { webStorage } from "../../platform/storage/WebStorageAdapter"
 import type { Session, SessionDeps } from "../../session/session"
 import { stillCommitted } from "../../session/stillCommitted"
 
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1625
+// eslint-disable-next-line no-restricted-syntax -- debt
 const imports = new Map<string, Promise<HistoricActivityImported | null>>()
 
 /** A database from elsewhere, read only when its own marker is absent. */

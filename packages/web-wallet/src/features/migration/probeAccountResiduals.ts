@@ -359,7 +359,7 @@ export async function probeAccountResiduals(
         if (!stillCommitted(session)) return false
         // A link row either import brings in later would miss its refund check.
         const imported = await Promise.all(
-          // eslint-disable-next-line local/legacy-store -- ZKM-1625
+          // eslint-disable-next-line local/legacy-store -- debt
           [key, HISTORIC_ACTIVITY_IMPORTED_KEY].map((k) => webStorage.getItem(k)),
         )
         return imported.every((marker) => marker !== null)

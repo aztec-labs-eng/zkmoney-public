@@ -1,6 +1,6 @@
 /**
  * Inbound-paylink handoff: /link stashes the fragment here and sends a signed-in visitor to Home,
- * where ClaimLinkModal replays it (ULT-671 page 6). Kept for the tab, so the prompt survives a
+ * where ClaimLinkModal replays it. Kept for the tab, so the prompt survives a
  * refresh; cleared when the modal is declined, closed, or the claim settles.
  */
 import type { tabStash } from "../../platform/storage/tabStash"

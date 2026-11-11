@@ -44,11 +44,11 @@ const NO_BALANCES = memoryStore<RecordSet<BalanceEntry>>({
 
 const readKey = (config: WebWalletConfig, account: string) =>
   `webwallet.oldHoldingsRead/${pin(config)}/${account.toLowerCase()}`
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1625
+// eslint-disable-next-line no-restricted-syntax -- debt
 const changes = memoryStore(0)
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1625
+// eslint-disable-next-line no-restricted-syntax -- debt
 const released = memoryStore(false)
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1625
+// eslint-disable-next-line no-restricted-syntax -- debt
 const savingsSources = memoryStore<ReadonlySet<string> | undefined>(undefined)
 const savingsSourcesKey = (config: WebWalletConfig) => `webwallet.oldSavingsSources/${pin(config)}`
 
@@ -63,7 +63,7 @@ export function setOldVersionDestinations(
       tuple.portal.toLowerCase() === current.toLowerCase() ? [] : [source.toLowerCase()],
     ),
   )
-  // eslint-disable-next-line local/legacy-store -- ZKM-1625
+  // eslint-disable-next-line local/legacy-store -- debt
   walletStorage.setItem(savingsSourcesKey(config), JSON.stringify([...sources]))
   savingsSources.set(sources)
 }

@@ -12,7 +12,7 @@ const PASSKEY_MISMATCH: PasskeyClassification = { outcome: "refused", reason: "p
 const SESSION_LOST: PasskeyClassification = { outcome: "failed", reason: "session_lost" }
 
 /** The page's last passkey environment, from its device keys once the page binds them. */
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+// eslint-disable-next-line no-restricted-syntax -- debt
 let lastEnvironment = (): PasskeyEnvironment | null => null
 
 export function bindPasskeyEnvironment(read: () => PasskeyEnvironment | null): void {

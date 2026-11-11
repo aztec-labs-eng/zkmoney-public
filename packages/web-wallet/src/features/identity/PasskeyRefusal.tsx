@@ -245,7 +245,7 @@ export function promptCauses(posture: DevicePosture): PromptCause[] {
 function reportableCause(error: RouteRefusal): Error {
   if (error.cause instanceof Error) return error.cause
   const { name, message, stack } = (error.cause ?? {}) as Record<string, unknown>
-  // eslint-disable-next-line local/message-in-state -- ZKM-1895
+  // eslint-disable-next-line local/message-in-state -- debt
   const reported = new Error(typeof message === "string" ? message : error.message)
   reported.name = typeof name === "string" ? name : error.name
   if (typeof stack === "string") reported.stack = stack
@@ -323,7 +323,7 @@ export function PasskeyRefusal({
       <div className="ww-invite-spinner" data-testid={testId} data-reason={error.name}>
         <h2 className="ww-passkey-refusal__title">{row.title}</h2>
         <p role="alert" className="ww-paylink-summary__caption ww-passkey-refusal__message">
-          {/* eslint-disable-next-line local/message-in-state -- ZKM-1895 */}
+          {/* eslint-disable-next-line local/message-in-state -- debt */}
           {row.message ?? error.message}
         </p>
         {error.leftover && <LeftoverPasskeyLine />}
@@ -352,7 +352,7 @@ export function PasskeyRefusal({
     <div className="ww-invite-spinner" data-testid={testId} data-reason={error.name}>
       <h2 className="ww-passkey-refusal__title">{row.title}</h2>
       <p role="alert" className="ww-paylink-summary__caption ww-passkey-refusal__message">
-        {/* eslint-disable-next-line local/message-in-state -- ZKM-1895 */}
+        {/* eslint-disable-next-line local/message-in-state -- debt */}
         {row.message ?? error.message}
       </p>
       {error.macUpdate && <MacUpdateLine />}

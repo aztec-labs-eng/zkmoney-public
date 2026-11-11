@@ -65,10 +65,10 @@ const noteRecovered = (...args: Parameters<typeof noteRefundedSavingsMoves>) =>
   bestEffort("unknown", noteRefundedSavingsMoves(...args))
 
 // Outlives the screen: a second run would resend the first one's unconfirmed batch.
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1625
+// eslint-disable-next-line no-restricted-syntax -- debt
 let running = false
 // A sent refund whose receipt never came. The next run waits for it, so it never sends it twice.
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1625
+// eslint-disable-next-line no-restricted-syntax -- debt
 let pending: { hash: Hex; deposits: RefundedDeposit[]; to: Address } | undefined
 
 /**

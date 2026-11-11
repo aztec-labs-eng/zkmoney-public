@@ -115,7 +115,7 @@ export function migrationSource(labels: readonly string[]): string | undefined {
 const key = (account: string) => `analytics.migrationFunnel/${account.toLowerCase()}`
 
 /** Accounts whose unfinished upgrade this page load counted. */
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1625
+// eslint-disable-next-line no-restricted-syntax -- debt
 const counted = new Set<string>()
 
 /** A new page load, for tests: the wallet store stays. */
@@ -125,7 +125,7 @@ export function __newPageLoadForTests(): void {
 
 function load(account: string): Funnel {
   try {
-    // eslint-disable-next-line local/legacy-store -- ZKM-1625
+    // eslint-disable-next-line local/legacy-store -- debt
     return (JSON.parse(walletStorage.getItem(key(account)) ?? "{}") as Funnel) ?? {}
   } catch {
     return {}
@@ -315,20 +315,20 @@ export function useMigrationFunnel({
   done: boolean
 }): void {
   const phase = record?.phase
-  // eslint-disable-next-line local/effect-hook -- ZKM-1625
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (account) countMigrationSession(account)
   }, [account])
-  // eslint-disable-next-line local/effect-hook -- ZKM-1625
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (account && phase) reportMigrationStage(account, phase)
   }, [account, phase])
-  // eslint-disable-next-line local/effect-hook -- ZKM-1625
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (account && (stop === "needsAttention" || stop === "failed"))
       reportMigrationStop(account, stop, record, source)
   }, [account, stop, record, source])
-  // eslint-disable-next-line local/effect-hook -- ZKM-1625
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (account && done) reportMigrationCompleted(account)
   }, [account, done])

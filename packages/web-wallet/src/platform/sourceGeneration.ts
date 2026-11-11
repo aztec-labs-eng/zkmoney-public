@@ -15,7 +15,7 @@ const BUNDLES: Readonly<Record<string, string>> = { "5": "generations/v5/index.j
 
 const majorOf = (version: string) => version.replace(/^v/, "").split(".")[0]!
 
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1625
+// eslint-disable-next-line no-restricted-syntax -- debt
 const identities = new Map<string, Promise<{ major: string; rollupAddress: string }>>()
 
 /** The Aztec major version and L1 rollup a node runs. `getNodeInfo` reads the same on every version. */
@@ -76,7 +76,7 @@ export async function isOtherGeneration(config: WebWalletConfig, nodeUrl: string
   return source !== active
 }
 
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1625
+// eslint-disable-next-line no-restricted-syntax -- debt
 const modules = new Map<string, Promise<SourceGenerationModule>>()
 
 /** The bundle built for Aztec `major`, loaded once. */
@@ -115,9 +115,9 @@ export function checkedModule(major: string, module: SourceGenerationModule) {
 
 type SourceSign = SourceAccountKeys["passkey"]["sign"]
 
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1625
+// eslint-disable-next-line no-restricted-syntax -- debt
 let signThrough: ((sign: SourceSign) => SourceSign) | undefined
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1625
+// eslint-disable-next-line no-restricted-syntax -- debt
 let signerTurn: Promise<unknown> = Promise.resolve()
 
 /**
@@ -163,7 +163,7 @@ export async function sourceAccountKeys(
   }
 }
 
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1625
+// eslint-disable-next-line no-restricted-syntax -- debt
 const sessions = new Map<string, Promise<SourceGenerationSession>>()
 
 /** The account on another generation's rollup: one session per node for the page's lifetime. */

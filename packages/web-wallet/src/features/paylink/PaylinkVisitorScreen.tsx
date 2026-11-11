@@ -125,7 +125,7 @@ export function PaylinkVisitorScreen({
   // A ticket this browser already saw refused as spent is no ticket.
   const offer = offered && ticketKnownSpent(device, link.fragment) ? null : offered
 
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     stashClaimLink(tabStash, link.fragment)
   }, [link.fragment])
@@ -138,7 +138,7 @@ export function PaylinkVisitorScreen({
   // the session the page holds then.
   const held = useRef(session)
   held.current = session
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!ticketSignup) return
     return () => {
@@ -267,7 +267,7 @@ export function PaylinkVisitorScreen({
   const resumable = ticketSignupResumable(session, link.fragment)
   const sentHere = receivesToAccount(routeState)
   const resumed = useRef(false)
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (resumed.current || signup || tracking) return
     if (offer === undefined || voucherUnread) return
@@ -284,7 +284,7 @@ export function PaylinkVisitorScreen({
     }
   })
 
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!tracking && ticketOffered === true) reportTicketStart()
   })

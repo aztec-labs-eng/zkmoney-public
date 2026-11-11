@@ -109,7 +109,7 @@ export interface SipaLinkPreimage {
 // v4 is the compact Receive code: see `compact`.
 const FORMAT = 3
 const FORMAT_CODE = 4
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+// eslint-disable-next-line no-restricted-syntax -- debt
 const SUPPORTED_FORMATS = new Set<number>([1, 2, 3, FORMAT_CODE])
 
 const KEY_FORMAT = 1
@@ -128,7 +128,7 @@ const KEY_SIPA_PREIMAGE = 13
 const KEY_SIPA_DEPLOYMENT = 14
 
 /** Every key a given wire format knows. An unknown key fails closed. */
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+// eslint-disable-next-line no-restricted-syntax -- debt
 const KNOWN_KEYS_LEGACY = new Set<number>([
   KEY_FORMAT,
   KEY_REQUEST_ID,
@@ -140,7 +140,7 @@ const KNOWN_KEYS_LEGACY = new Set<number>([
   KEY_NETWORK_ID,
   KEY_DECIMALS,
 ])
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+// eslint-disable-next-line no-restricted-syntax -- debt
 const KNOWN_KEYS_V3 = new Set<number>([
   ...KNOWN_KEYS_LEGACY,
   KEY_TOKEN_ADDRESS,
@@ -150,7 +150,7 @@ const KNOWN_KEYS_V3 = new Set<number>([
 ])
 
 // Unknown keys fail closed, so a build that predates a key rejects every code that carries it.
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+// eslint-disable-next-line no-restricted-syntax -- debt
 const KNOWN_KEYS_CODE = new Set<number>([
   KEY_FORMAT,
   KEY_REQUEST_ID,

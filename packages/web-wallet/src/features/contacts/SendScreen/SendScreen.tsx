@@ -40,7 +40,7 @@ export function SendScreen() {
   const deps = usePaylinkDeps()
   // Undefined while the allowance read is in flight.
   const [voucher, setVoucher] = useState<boolean>()
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     setVoucher(undefined)
     if (!deps) return

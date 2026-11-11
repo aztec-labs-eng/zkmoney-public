@@ -44,7 +44,7 @@ export const XMTP_CREATE_CLIENT_TIMEOUT_MS = 60_000
 
 // ── Shared UI state (banner + screens read this; the lifecycle writes it) ────
 
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1628
+// eslint-disable-next-line no-restricted-syntax -- debt
 const uiState = memoryStore<XmtpUiState>("off")
 export const getXmtpUiState = uiState.get
 export const setXmtpUiState = uiState.set
@@ -57,7 +57,7 @@ export const subscribeXmtpUiState = uiState.subscribe
 
 export type XmtpInboxState = "idle" | "catching-up" | "ready"
 
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1628
+// eslint-disable-next-line no-restricted-syntax -- debt
 const inboxState = memoryStore<XmtpInboxState>("idle")
 export const getXmtpInboxState = inboxState.get
 export const setXmtpInboxState = inboxState.set
@@ -72,7 +72,7 @@ export const subscribeXmtpInboxState = inboxState.subscribe
 /** The leader client's send surface: requests, plus the connect-back a /connect confirm sends. */
 export type LiveXmtpSender = IXmtpSender & Pick<WebXmtpClient, "sendConnectBack">
 
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1628
+// eslint-disable-next-line no-restricted-syntax -- debt
 let xmtpSender: LiveXmtpSender | null = null
 
 export function setXmtpSender(next: LiveXmtpSender | null): void {

@@ -164,7 +164,7 @@ export interface SessionDeps {
   registrationCommitted?(changes: readonly RegistrationChange[]): void
   /** An account's session only. */
   signIn?: SignInDeps
-  /** The rollup migration's page-wide stores (ZKM-1625): upgrade runs and old-version withdrawals. */
+  /** The rollup migration's page-wide stores: upgrade runs and old-version withdrawals. */
   rollup: {
     upgrades: UpgradeActivity
     oldVersionWithdrawals(): ReadonlyStore<Loaded<OldVersionWithdrawal>>
@@ -581,10 +581,10 @@ export function openSession(deps: SessionDeps): Session {
   }
 }
 
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+// eslint-disable-next-line no-restricted-syntax -- debt
 const current = memoryStore<Session | null>(null)
 /** The first account this page served: no other account's stores open before it reloads. */
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+// eslint-disable-next-line no-restricted-syntax -- debt
 let pageAccount: string | undefined
 
 /** The open session: null before boot opens one and once sign-out closes it. */
@@ -758,7 +758,7 @@ export type AccountKit = Awaited<ReturnType<typeof accountKitOf>>
 /** Builds the session's token and TEE signer once `ready`; they stay up for the session. */
 export function useStartAssets(ready: boolean): void {
   const { assetsWanted } = useSession()
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (ready) assetsWanted.set(true)
   }, [ready, assetsWanted])

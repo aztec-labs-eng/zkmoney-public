@@ -192,7 +192,7 @@ function ContactDetail() {
 
   // A person the book did not hold when the visit first read it is asked of the registry.
   const asksRegistry = loaded && firstSeen === null
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!asksRegistry) return
     let cancelled = false

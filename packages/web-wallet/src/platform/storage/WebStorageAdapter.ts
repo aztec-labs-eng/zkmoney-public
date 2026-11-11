@@ -12,7 +12,7 @@ export { PASSKEY_IDENTITY_MAP_KEY, WEB_STORAGE_PREFIX }
  * page), shared by every account on this browser. Operations carry their own scope,
  * so a visitor's and an account's survive a sign-in between them.
  */
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1625
+// eslint-disable-next-line no-restricted-syntax -- debt
 const GLOBAL_KEYS = new Set([PASSKEY_IDENTITY_MAP_KEY, OPERATIONS_STORAGE_KEY])
 const isGlobal = (key: string) => GLOBAL_KEYS.has(key) || key.startsWith(CONFIG_STORAGE_KEY_PREFIX)
 

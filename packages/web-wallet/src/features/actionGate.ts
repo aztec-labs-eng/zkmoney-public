@@ -207,7 +207,7 @@ export function useActionGuard(): (action: WalletAction, run: () => void) => voi
   const state = useRef<ActionState>(undefined as never)
   state.current = useActionState()
   const mounted = useRef(false)
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     mounted.current = true
     return () => {

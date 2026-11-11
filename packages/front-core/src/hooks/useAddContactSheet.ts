@@ -107,11 +107,11 @@ export function useAddContactSheet({
 
         setState("success")
         setVisible(false)
-        // eslint-disable-next-line local/timer-in-view -- ZKM-1806
+        // eslint-disable-next-line local/timer-in-view -- debt
         setTimeout(() => setState("idle"), 2000)
       } catch (err) {
         setState("error")
-        // eslint-disable-next-line local/message-in-state -- ZKM-1895
+        // eslint-disable-next-line local/message-in-state -- debt
         setError(err instanceof Error ? err.message : "Could not resolve tag")
       }
     },

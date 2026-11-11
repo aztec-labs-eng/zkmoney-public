@@ -128,21 +128,21 @@ export function GoldenTicketIntro({
     if (matches("(prefers-reduced-motion: reduce)")) gone()
     else setState((now) => (now === "shown" ? "leaving" : now))
   }
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (state === "gone") return
     if (state === "leaving") {
       // The animation's end dismisses the intro; a stylesheet that runs none never fires it.
-      // eslint-disable-next-line local/timer-in-view -- ZKM-1806
+      // eslint-disable-next-line local/timer-in-view -- debt
       const timer = setTimeout(gone, LEAVE_FALLBACK_MS)
       return () => clearTimeout(timer)
     }
-    // eslint-disable-next-line local/timer-in-view -- ZKM-1806
+    // eslint-disable-next-line local/timer-in-view -- debt
     const timer = setTimeout(open, INTRO_MS)
     return () => clearTimeout(timer)
   }, [state])
   // Past the art breakpoint the intro is hidden and nothing it waits for happens: hand back now.
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (typeof matchMedia !== "function") return
     const wide = matchMedia("(min-width: 960px)")

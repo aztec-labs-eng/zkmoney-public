@@ -111,7 +111,7 @@ export function useProvingOutcome(flow: string) {
     [flow],
   )
 
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     const onPageHide = () => report("proving_abandoned")
     window.addEventListener("pagehide", onPageHide)
@@ -156,7 +156,7 @@ export function useCopy() {
   const [copied, setCopied] = useState(false)
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined)
 
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => () => clearTimeout(timer.current), [])
 
   // A refused clipboard (permission denied, no gesture, insecure context) is ordinary and
@@ -166,7 +166,7 @@ export function useCopy() {
     if (!(await writeClipboard(text))) return false
     setCopied(true)
     clearTimeout(timer.current)
-    // eslint-disable-next-line local/timer-in-view -- ZKM-1806
+    // eslint-disable-next-line local/timer-in-view -- debt
     timer.current = setTimeout(() => setCopied(false), 2000)
     return true
   }, [])

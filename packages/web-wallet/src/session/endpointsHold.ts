@@ -6,7 +6,7 @@
 import { useLayoutEffect, useSyncExternalStore } from "react"
 import { memoryStore } from "@obsidion/front-core"
 
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+// eslint-disable-next-line no-restricted-syntax -- debt
 const holders = memoryStore(0)
 
 export function endpointsHeld(): boolean {
@@ -22,7 +22,7 @@ export function useEndpointsHeld(): boolean {
  * the pill is disabled in the same paint as the work that starts.
  */
 export function useHoldEndpoints(active: boolean): void {
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useLayoutEffect(() => {
     if (!active) return
     holders.set(holders.get() + 1)

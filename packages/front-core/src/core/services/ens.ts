@@ -62,7 +62,7 @@ export function ensNameOf(text: string): string | undefined {
 }
 
 /** Universal Resolver reverts that mean the name has no address, not that the lookup failed. */
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+// eslint-disable-next-line no-restricted-syntax -- debt
 const NO_ADDRESS = new Set([
   "ResolverNotFound",
   "ResolverNotContract",

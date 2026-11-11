@@ -41,9 +41,9 @@ export interface PaylinkSweep {
 
 /** A visitor's: it made no links, so nothing is rescanned or checked. */
 export const NO_SWEEP: Omit<PaylinkSweep, "task"> = {
-  // eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+  // eslint-disable-next-line no-restricted-syntax -- debt
   rescanned: memoryStore<boolean | undefined>(undefined).readonly,
-  // eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+  // eslint-disable-next-line no-restricted-syntax -- debt
   checking: memoryStore(false).readonly,
   recheck() {},
 }

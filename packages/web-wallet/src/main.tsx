@@ -35,7 +35,7 @@ class RootErrorBoundary extends React.Component<{ children: React.ReactNode }, {
       return (
         <div style={{ padding: 24, fontFamily: "monospace", color: "#f66" }}>
           <p>zk.money failed to start:</p>
-          {/* eslint-disable-next-line local/message-in-state -- ZKM-1895 */}
+          {/* eslint-disable-next-line local/message-in-state -- debt */}
           <pre style={{ whiteSpace: "pre-wrap" }}>{this.state.error.message}</pre>
         </div>
       )

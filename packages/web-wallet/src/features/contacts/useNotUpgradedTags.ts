@@ -10,7 +10,7 @@ export function useNotUpgradedTags(tags: readonly string[]): ReadonlySet<string>
   const session = useSession()
   const [stale, setStale] = useState<ReadonlySet<string>>(new Set())
   const key = [...new Set(tags.map((t) => t.toLowerCase()))].sort().join("\n")
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!key) return
     let live = true

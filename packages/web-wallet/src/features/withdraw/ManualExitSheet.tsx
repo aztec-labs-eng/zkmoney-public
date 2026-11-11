@@ -140,7 +140,7 @@ export function ManualExitSheet({
     } catch (e) {
       setPhase("form")
       if (e instanceof WalletPromptOpenError) {
-        // eslint-disable-next-line local/message-in-state -- ZKM-1895
+        // eslint-disable-next-line local/message-in-state -- debt
         setRefused(e.message)
         return
       }

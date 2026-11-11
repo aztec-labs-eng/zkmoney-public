@@ -274,7 +274,7 @@ function SignedInRequest({
   const [problem, setProblem] = useState<PayProblem | null>(null)
   const [error, setError] = useState<string>()
 
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     let cancelled = false
     ;(async () => {
@@ -425,7 +425,7 @@ function AccountlessRequest({
     if (!own) fireRequestOpened(source, packet.requestId, amount, packet.requesterTag)
   })
 
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (inFlight.current?.packet !== packet || inFlight.current.attempt !== attempt) {
       const stub = page.loaders.accountlessRequest

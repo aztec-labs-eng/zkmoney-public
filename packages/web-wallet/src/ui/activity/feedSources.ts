@@ -34,7 +34,7 @@ import {
   type Withdrawals,
 } from "@obsidion/front-core"
 
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+// eslint-disable-next-line no-restricted-syntax -- debt
 const NO_UPGRADES: FeedSources["upgrades"] = { items: [], recipients: new Set(), loaded: false }
 
 /** The account's upgrade runs: each session's feed loads its own account's. */

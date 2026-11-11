@@ -32,7 +32,7 @@ export function useCodeForm(
   const applied = useRef(keyOf(0, ""))
 
   // A code from elsewhere (a fresh visit, the next one after a payment) resets the form.
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!code) return
     const key = keyOf(code.amount, code.note ?? "")

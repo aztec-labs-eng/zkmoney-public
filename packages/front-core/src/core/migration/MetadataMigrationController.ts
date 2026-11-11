@@ -15,7 +15,7 @@ export class MetadataMigrationController {
   private record: MetadataMigrationRecord | null = null
 
   constructor(
-    // eslint-disable-next-line local/legacy-store -- ZKM-1625
+    // eslint-disable-next-line local/legacy-store -- debt
     private readonly storage: Pick<IStorageAdapter, "getItem" | "setItem">,
     private readonly steps: MetadataMigrationSteps,
     private readonly key: string,

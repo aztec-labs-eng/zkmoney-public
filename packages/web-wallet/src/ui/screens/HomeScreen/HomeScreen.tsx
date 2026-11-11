@@ -361,7 +361,7 @@ function Home() {
           savingsLedger?.excluded.map((e) => `${e.withdrawalLocalId}:${e.reason}:${e.backfilling}`),
         ].join("|")
       : undefined
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (hiddenKey === undefined) return
     console.info(
@@ -383,7 +383,7 @@ function Home() {
       }`,
     )
     // Keyed on what the line would say, so it prints once per change.
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- ZKM-1806
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- debt
   }, [hiddenKey])
   const totalText = hideBal
     ? HIDDEN_BALANCE

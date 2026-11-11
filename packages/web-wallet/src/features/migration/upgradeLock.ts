@@ -25,23 +25,23 @@ const pin = (config: WebWalletConfig) => config.oxideProfile.portal.toLowerCase(
 // v2: a read settled before registration commitments were scanned is read again.
 const sourceReadKey = (config: WebWalletConfig, account: string, source: string) =>
   `webwallet.retiredSourceRead.v2/${pin(config)}/${source.toLowerCase()}/${account.toLowerCase()}`
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1625
+// eslint-disable-next-line no-restricted-syntax -- debt
 const changes = memoryStore(0)
 const changed = () => changes.set(changes.get() + 1)
 // Accounts whose saved runs were read this page, so the lock can be trusted.
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1625
+// eslint-disable-next-line no-restricted-syntax -- debt
 const checked = memoryStore<ReadonlySet<string>>(new Set())
 // Storage shows a write before it is saved: a release reads as held until it is, and a failed one stays held.
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1625
+// eslint-disable-next-line no-restricted-syntax -- debt
 const releasing = new Map<string, { lock: UpgradeLock; saved: Promise<void> }>()
 // A take not saved yet, which a second take waits on rather than reading it as held.
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1625
+// eslint-disable-next-line no-restricted-syntax -- debt
 const acquiring = new Map<string, Promise<void>>()
 
 export function upgradeLock(config: WebWalletConfig, account: string): UpgradeLock {
   const pending = releasing.get(account.toLowerCase())
   if (pending) return pending.lock
-  // eslint-disable-next-line local/legacy-store -- ZKM-1625
+  // eslint-disable-next-line local/legacy-store -- debt
   const raw = walletStorage.getItem(lockKey(account))
   const lock = raw
     ? (JSON.parse(raw) as { portal: string; main?: string; savings?: string })
@@ -111,7 +111,7 @@ async function unfinishedRun(config: WebWalletConfig, account: string): Promise<
   for (const run of await UpgradeActivity.get(webStorage).runs()) {
     const key = run.toLowerCase()
     if (!key.startsWith(prefix) || !key.endsWith(`/${account.toLowerCase()}`)) continue
-    // eslint-disable-next-line local/legacy-store -- ZKM-1625
+    // eslint-disable-next-line local/legacy-store -- debt
     const raw = await webStorage.getItem(run)
     const record = raw ? (JSON.parse(raw) as MetadataMigrationRecord) : undefined
     if (record && record.phase !== "done") return true

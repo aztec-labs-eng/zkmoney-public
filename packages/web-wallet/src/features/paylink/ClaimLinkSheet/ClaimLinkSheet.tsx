@@ -43,7 +43,7 @@ import copy from "./ClaimLinkSheet.copy"
 import { openClaimFlow, reviewQuote, type ClaimInputs } from "./claimFlow"
 
 /**
- * Home's claim of an inbound paylink (ULT-671 pages 6–7). The prompt gives way to the claim sheet
+ * Home's claim of an inbound paylink. The prompt gives way to the claim sheet
  * for the beats that need the user present (Google sign-in, the zkJWT prove, the passkey), and the
  * sheet closes as the passkey ends: the bell carries the claim from there. A failure before the
  * hand-off reopens the prompt behind an error sheet, the prompt being the retry. Either flavor can

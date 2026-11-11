@@ -195,7 +195,7 @@ export function UnlockGate({ children }: { children: ReactNode }) {
   const phoneRef = useRef(false)
 
   // Leaving the screen ends the attempt behind its prompt: nothing commits for a pane that is gone.
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(
     () => () => {
       attemptRef.current?.unmounted()

@@ -102,10 +102,10 @@ export function viewportSettled(quietMs = 120, maxMs = 600): Promise<void> {
     }
     const bump = () => {
       clearTimeout(quiet)
-      // eslint-disable-next-line local/timer-in-view -- ZKM-1806
+      // eslint-disable-next-line local/timer-in-view -- debt
       quiet = setTimeout(done, quietMs)
     }
-    // eslint-disable-next-line local/timer-in-view -- ZKM-1806
+    // eslint-disable-next-line local/timer-in-view -- debt
     const limit = setTimeout(done, maxMs)
     viewport.addEventListener("resize", bump)
     bump()

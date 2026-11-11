@@ -96,7 +96,7 @@ const NAV_TABS: NavItem[] = NAV_PHONE.filter(
 const navItems = (items: NavItem[], savings: boolean) =>
   items.filter((item) => item.path !== "/savings" || savings)
 /** Routes that move money: with a name still waiting for its deposit they lead to Deposit. */
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+// eslint-disable-next-line no-restricted-syntax -- debt
 const ACTIVATION_GATED = new Set(["/deposit", "/send", REQUESTS_PATH, "/withdraw"])
 /** Nav items that start an action. */
 const NAV_ACTIONS: Record<string, WalletAction> = {
@@ -178,7 +178,7 @@ export function SidebarLayout({
   // above the locked pane.
   const unlocked =
     useStore(session.account ?? NO_SERVICE, serviceStatus) === "ready" || isDemoMode()
-  // eslint-disable-next-line local/page-singleton -- ZKM-1778
+  // eslint-disable-next-line local/page-singleton -- debt
   const savings = useSavingsAvailable()
   const pageHeader = phone && unlocked && mobilePageHeaderPaths.includes(location.pathname)
   const scannerAvailable =

@@ -69,7 +69,7 @@ export function transferTransition(
   }
 }
 
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+// eslint-disable-next-line no-restricted-syntax -- debt
 const FENCED = new Set<TransferEvent["type"]>(["confirmed"])
 
 /** The fields only `transferTransition` writes. */

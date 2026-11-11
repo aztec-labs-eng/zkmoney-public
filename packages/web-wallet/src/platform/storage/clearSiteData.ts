@@ -35,7 +35,7 @@ const browserDeps: ClearSiteDataDeps = {
 }
 
 // A page that just closed releases its OPFS handles and pool lock a moment later.
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+// eslint-disable-next-line no-restricted-syntax -- debt
 const TRANSIENT = new Set([
   "SqlitePoolBusyError",
   "NoModificationAllowedError",

@@ -141,7 +141,7 @@ export function OldVersionWithdrawScreen({ pace }: { pace: Pick<Pace, "wait" | "
   const networkReady = useNetworkReady()
   const funds = scanned?.funds
 
-  // eslint-disable-next-line local/effect-hook -- ZKM-1625
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     let live = true
     setScanned(undefined)
@@ -179,7 +179,7 @@ export function OldVersionWithdrawScreen({ pace }: { pace: Pick<Pace, "wait" | "
     }
   }, [config, zk, scan])
   // Withdraw stops offering what no batch refunds, such as a note above the portal's cap.
-  // eslint-disable-next-line local/effect-hook -- ZKM-1625
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!funds || done) return
     if (!funds.main.refundable)
@@ -189,14 +189,14 @@ export function OldVersionWithdrawScreen({ pace }: { pace: Pick<Pace, "wait" | "
   }, [funds, done])
   // Read again once the user leaves: before that, the gate would replace this screen.
   const mounted = useRef(true)
-  // eslint-disable-next-line local/effect-hook -- ZKM-1625
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(
     () => () => {
       mounted.current = false
     },
     [],
   )
-  // eslint-disable-next-line local/effect-hook -- ZKM-1625
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (done || zkDone) return noteOldVersionWithdrawn
   }, [done, zkDone])

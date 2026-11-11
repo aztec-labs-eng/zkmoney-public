@@ -74,14 +74,14 @@ export function OpenInBrowser({
   const latestCopy = useRef(0)
   const counted = telemetry && way.kind !== "none" ? telemetry : undefined
   // Routing may have dropped the landing's stamp; the app's own menu opens the address bar.
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (way.kind !== "none") stampLandingSource()
   }, [way.kind])
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (counted) inAppCardShown(counted)
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- ZKM-1806 once per card and screen
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- debt once per card and screen
   }, [counted?.when, counted?.screen])
 
   const copyLink = async (url: string) => {

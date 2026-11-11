@@ -52,7 +52,7 @@ export function TagSearchBar({
   const dismissRef = useRef(dismiss)
   dismissRef.current = dismiss
 
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     const onDown = (e: PointerEvent) => {
       if (!root.current?.contains(e.target as Node)) dismissRef.current()
@@ -61,7 +61,7 @@ export function TagSearchBar({
     return () => document.removeEventListener("pointerdown", onDown)
   }, [])
 
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     const state = location.state as Record<string, unknown> | null
     const seed = typeof state?.searchTag === "string" ? state.searchTag : undefined

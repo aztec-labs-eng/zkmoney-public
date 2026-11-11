@@ -10,7 +10,7 @@ import { decodeRecord, encodeRecord } from "../engine/persistentStore"
 /** The page-wide blob older builds kept every namespace's operations in, each with its `scope`. */
 export const OPERATIONS_STORAGE_KEY = "@obsidion/operations"
 
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+// eslint-disable-next-line no-restricted-syntax -- debt
 const STATES = new Set<unknown>(["local", "sent", "settled", "failed"])
 
 /** Each field a shipped record holds, and the type it holds it as; `scope` may also be null. */

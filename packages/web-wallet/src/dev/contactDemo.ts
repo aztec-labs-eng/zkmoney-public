@@ -5,7 +5,7 @@ import { demoContacts } from "./demoFixtures"
 /** A tag at the length limit, still on a retired rollup. */
 export const LONG_STALE_TAG = "mslongtag".padEnd(MAX_TAG_LENGTH, "x")
 
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+// eslint-disable-next-line no-restricted-syntax -- debt
 let retryVerification = 0
 const wait = (milliseconds: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, milliseconds))

@@ -130,7 +130,7 @@ const NODE_READ_TIMEOUT_MS = 30_000
 
 function withinDeadline<T>(read: Promise<T>, what: string): Promise<T> {
   return new Promise((resolve, reject) => {
-    // eslint-disable-next-line local/timer-in-view -- ZKM-1806
+    // eslint-disable-next-line local/timer-in-view -- debt
     const timer = setTimeout(
       () => reject(new Error(`${what} did not answer`)),
       NODE_READ_TIMEOUT_MS,
@@ -282,7 +282,7 @@ export function describeBootError(e: unknown, config: WebWalletConfig): BootErro
   return {
     kind: "other",
     title: "zk.money failed to start",
-    // eslint-disable-next-line local/message-in-state -- ZKM-1895
+    // eslint-disable-next-line local/message-in-state -- debt
     message: e instanceof Error ? e.message : String(e),
   }
 }
@@ -304,7 +304,7 @@ export function reportBootFailure(
     attempts,
   })
   // The inline copy names no cause; devtools keeps the transport error.
-  // eslint-disable-next-line local/message-in-state -- ZKM-1895
+  // eslint-disable-next-line local/message-in-state -- debt
   if (e instanceof NodeUnreachableError) console.error(e.message, e.cause)
   // The identity refusals render in place with their exits.
   if (kind === "other")
@@ -356,7 +356,7 @@ export function PxeBootProvider({
   children: ReactNode
 }) {
   const state = useStore(wallet)
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (state.status === "failed" && pxeBoot.kind === "pxe")
       reportBootFailure(state.error, config, pxeBoot)
@@ -369,7 +369,7 @@ export function BootStarter({ wantWallet }: Pick<BootPage, "wantWallet">) {
   const { pathname } = useLocation()
   const identity = useOpenIdentity()
   // On a route change only: an identity saved on a pay page waits for the screen that needs it.
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!bootWaitsForStart(identity.get(), pathname)) wantWallet()
   }, [identity, pathname, wantWallet])
@@ -377,10 +377,10 @@ export function BootStarter({ wantWallet }: Pick<BootPage, "wantWallet">) {
 }
 
 const mountedSplashes: { inShell: boolean; covers: boolean }[] = []
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+// eslint-disable-next-line no-restricted-syntax -- debt
 let bootScreenShown = false
 /** The app has drawn its first screen, so a screen standing in for it must go. */
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+// eslint-disable-next-line no-restricted-syntax -- debt
 const firstScreen = memoryStore(false)
 
 export function useFirstScreenShown(): boolean {
@@ -391,9 +391,9 @@ const rootShowsText = () => {
   const root = document.getElementById("root")
   return (root?.innerText ?? root?.textContent ?? "").trim() !== ""
 }
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+// eslint-disable-next-line no-restricted-syntax -- debt
 let splashWatch: number | undefined
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+// eslint-disable-next-line no-restricted-syntax -- debt
 let splashLeaving: ReturnType<typeof setTimeout> | undefined
 
 /** The splash's fade in index.html. */
@@ -450,7 +450,7 @@ function releaseSplash(): void {
     bootScreenShown = true
     firstScreen.set(true)
     document.body.dataset.bootLeaving = ""
-    // eslint-disable-next-line local/timer-in-view -- ZKM-1806
+    // eslint-disable-next-line local/timer-in-view -- debt
     splashLeaving = setTimeout(() => {
       delete document.body.dataset.booting
       delete document.body.dataset.bootLeaving
@@ -473,7 +473,7 @@ export function BootSplash({
   inShell?: boolean
   covers?: boolean
 }) {
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useLayoutEffect(() => {
     const copy = { inShell, covers }
     mountedSplashes.push(copy)

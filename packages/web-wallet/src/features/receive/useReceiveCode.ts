@@ -190,7 +190,7 @@ export function useReceiveCode(enabled: boolean) {
   ])
   // Dev demo has no wallet; a production build drops this body and the import with it.
   const [demoDeps, setDemoDeps] = useState<CodeDeps>()
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!import.meta.env.DEV || !isDemoMode() || !enabled || !tag || !receiveCodes) return
     void import("../../dev/demoReceiveCode").then(({ demoCodeDeps, demoPayment }) => {
@@ -226,19 +226,19 @@ export function useReceiveCode(enabled: boolean) {
   const refresh = useCallback(() => load(currentCode), [load])
 
   // Each visit opens on a plain code, retried while it cannot be made.
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => load(openCode), [load])
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!failed || code) return
-    // eslint-disable-next-line local/timer-in-view -- ZKM-1806
+    // eslint-disable-next-line local/timer-in-view -- debt
     const timer = setTimeout(() => load(openCode), POLL_MS)
     return () => clearTimeout(timer)
   }, [failed, code, load])
 
   // A paid code never shows again: it is dropped at once and its replacement retried until minted.
   const retry = useRef<ReturnType<typeof setTimeout>>(undefined)
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => () => clearTimeout(retry.current), [])
   const paid = useCallback(
     (paidCode: ReceiveCode, found: Omit<PaidCode, "hadAddress">) => {
@@ -250,7 +250,7 @@ export function useReceiveCode(enabled: boolean) {
           .then(setCode)
           .catch((err) => {
             console.warn("[receive] next code not minted, retrying:", err)
-            // eslint-disable-next-line local/timer-in-view -- ZKM-1806
+            // eslint-disable-next-line local/timer-in-view -- debt
             retry.current = setTimeout(replace, POLL_MS)
           })
       replace()
@@ -262,25 +262,25 @@ export function useReceiveCode(enabled: boolean) {
   const demo = import.meta.env.DEV && isDemoMode()
   const watched = useDepositWatch(code?.address && !payment && !demo ? code.address : null)
   const { record } = watched
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (code?.address && record && !isUnfundedSipaDeposit(record))
       paid(code, { via: "ethereum", amount: Number(record.amount) })
   }, [code, record, paid])
 
   // A code waiting for an address takes one when ready, and a stale one is replaced.
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!code || payment || demo) return
     const replaceStale = () => {
       if (!code.address || codeIsStale(code, Date.now(), deps?.requester)) refresh()
     }
-    // eslint-disable-next-line local/timer-in-view -- ZKM-1707
+    // eslint-disable-next-line local/timer-in-view -- debt
     return session.page.pace.every(POLL_MS, replaceStale)
   }, [code, payment, demo, refresh, deps?.requester, session.page.pace])
 
   // Private: a receive carrying the code's request id pays it.
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!code || payment) return
     return watchRequestPayment(code, {

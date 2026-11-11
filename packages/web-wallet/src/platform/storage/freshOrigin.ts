@@ -8,9 +8,9 @@ import { walletDatabasesExist } from "./walletStorage"
  * window. Only then is nothing stored that could change the first screen, so it may show before
  * the wallet database opens. Undefined until known; a listing that fails counts as not fresh.
  */
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+// eslint-disable-next-line no-restricted-syntax -- debt
 const fresh = memoryStore<boolean | undefined>(undefined)
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+// eslint-disable-next-line no-restricted-syntax -- debt
 let check: Promise<boolean> | undefined
 
 /** Checked once per page, before this page opens a wallet database of its own. */

@@ -8,7 +8,7 @@ import {
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
 import { getOldVersionWithdrawalStore } from "../withdraw/oldVersionWithdrawals"
 
-/** The rollup migration's page-wide stores (ZKM-1625), which every session of a page reads. */
+/** The rollup migration's page-wide stores, which every session of a page reads. */
 export interface RollupMigrationStores {
   upgrades: UpgradeActivity
   /**

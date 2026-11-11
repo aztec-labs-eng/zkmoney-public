@@ -174,7 +174,7 @@ export const appVersion = (import.meta.env.VITE_APP_VERSION as string | undefine
  * identifier (see `fireSignupEvent`), and a report the user submits by hand, which is its own
  * consent.
  */
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+// eslint-disable-next-line no-restricted-syntax -- debt
 let consentGranted: () => boolean = () => false
 
 export function bindAnalyticsConsent(getter: () => boolean) {
@@ -245,7 +245,7 @@ function deriveId(domain: string, base: string): string {
   )}-${hex.slice(20)}`
 }
 
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+// eslint-disable-next-line no-restricted-syntax -- debt
 let derived: { base: string; sid: string; rid: string } | undefined
 
 function derivedIds(): { sid: string; rid: string } {

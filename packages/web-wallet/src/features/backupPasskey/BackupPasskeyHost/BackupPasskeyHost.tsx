@@ -189,7 +189,7 @@ export function BackupPasskeyScreens({
     setPicked(undefined)
   }
   const open = useRef<AbortController>(undefined)
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     const controller = new AbortController()
     open.current = controller
@@ -349,7 +349,7 @@ function useFlowDeps(record: BackupRotationRecord | null, walletBuilt: boolean):
   if (!walletBuilt && built) setBuilt(undefined)
   const current = record && walletBuilt && built && sameOwner(built.owner, record.owner)
   // Every write of the record builds again after a failed build, as the chain may have answered.
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!record || !walletBuilt || current) return
     let stale = false

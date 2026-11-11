@@ -6,7 +6,7 @@ import { recipientUpgraded } from "./contactPay"
 export function useRecipientUpgraded(tag: string | undefined): boolean | undefined {
   const session = useSession()
   const [answer, setAnswer] = useState<{ tag: string; upgraded: boolean }>()
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!tag) return
     let live = true

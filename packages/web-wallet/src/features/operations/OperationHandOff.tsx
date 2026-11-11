@@ -92,7 +92,7 @@ export function OperationHandOff({
   useImperativeHandle(ref, () => ({ leave, beat }), [leave, beat])
 
   // The flow's operation is the root one running when this mounts, or the first to start after.
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     const check = () => {
       const live = operations.live.get()
@@ -121,12 +121,12 @@ export function OperationHandOff({
     }
   }, [leave, until, operations, setBeat])
 
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (until === "prepared" && prepared) leave()
   }, [leave, until, prepared])
 
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     const { progress } = page.prover
     let last = progress.get().signing

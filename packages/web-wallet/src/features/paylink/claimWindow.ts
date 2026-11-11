@@ -147,7 +147,7 @@ export function useClaimCountdown(
   // says "about" until then.
   const [lead, setLead] = useState<number>()
   const firstRead = useRef<number>(undefined)
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (chainNow === undefined) return
     if (firstRead.current === undefined) firstRead.current = chainNow

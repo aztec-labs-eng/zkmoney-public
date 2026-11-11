@@ -315,13 +315,13 @@ export function ActivityDetailHost({
   // flash on the one row that was clicked.
   const [copiedLinkId, setCopiedLinkId] = useState<string | null>(null)
   const copiedTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => () => clearTimeout(copiedTimer.current), [])
   const copyLink = useCallback(async (id: string, url: string) => {
     if (!(await writeClipboard(url))) return
     setCopiedLinkId(id)
     clearTimeout(copiedTimer.current)
-    // eslint-disable-next-line local/timer-in-view -- ZKM-1806
+    // eslint-disable-next-line local/timer-in-view -- debt
     copiedTimer.current = setTimeout(() => setCopiedLinkId(null), 2000)
   }, [])
 
@@ -364,7 +364,7 @@ export function ActivityDetailHost({
     setSheet({ exit: { kind: "deposit", record, ...offer } })
   }
 
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     const notice = routedText ? { text: routedText, staleOn: routedStale } : undefined
     const settle = (target: DetailTarget, withNotice: DetailNotice | undefined = notice) => {
@@ -414,7 +414,7 @@ export function ActivityDetailHost({
           .map((e) => e.withdrawalLocalId)
           .join(",")}`
       : undefined
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!ledger || !position || !ledgerKey) return
     if (ledger.shares !== position.shares || ledger.excluded.length > 0)
@@ -432,7 +432,7 @@ export function ActivityDetailHost({
             : ""),
       )
     // Keyed on what the line would say, so it prints once per change.
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- ZKM-1806
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- debt
   }, [ledgerKey])
 
   const host: ActivityHost = {

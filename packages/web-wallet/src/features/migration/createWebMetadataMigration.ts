@@ -220,7 +220,7 @@ export async function createWebMetadataMigration(params: {
     storage: {
       getItem: async (key) => {
         checkSession()
-        // eslint-disable-next-line local/legacy-store -- ZKM-1625
+        // eslint-disable-next-line local/legacy-store -- debt
         return webStorage.getItem(key)
       },
       setItem: async (key, value) => {

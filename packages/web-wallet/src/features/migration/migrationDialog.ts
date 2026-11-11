@@ -33,11 +33,11 @@ export interface UpgradeStatus {
   keepOpen?: boolean
 }
 
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1625
+// eslint-disable-next-line no-restricted-syntax -- debt
 const requests = memoryStore(0)
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1625
+// eslint-disable-next-line no-restricted-syntax -- debt
 let requestReason: MigrationDialogReason | undefined
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1625
+// eslint-disable-next-line no-restricted-syntax -- debt
 const status = memoryStore<UpgradeStatus>({ state: "checking", registration: false })
 
 /**

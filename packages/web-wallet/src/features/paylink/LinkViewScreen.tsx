@@ -56,7 +56,7 @@ function ShortLinkView({ seed }: { seed: Uint8Array }) {
   const refused = useShortLinkLookup(
     resolve,
     (fragment) => navigate(`/link#${fragment}`, { replace: true }),
-    // eslint-disable-next-line local/message-in-state -- ZKM-1895
+    // eslint-disable-next-line local/message-in-state -- debt
     (e) => (e instanceof Error && e.message === LINK_CLASS_REFUSAL ? e.message : undefined),
   )
 
@@ -112,7 +112,7 @@ function FullLinkView({ fragment }: { fragment: string }) {
   )
   const handoff = !visitor && decoded !== null
 
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!handoff) return
     stashClaimLink(tabStash, fragment)
@@ -121,7 +121,7 @@ function FullLinkView({ fragment }: { fragment: string }) {
 
   // Fetched while the PXE registers the escrow's class, which needs no network: the simulator's
   // wasm, and the token and ClaimFPC artifacts an unclaimed link's reads register next.
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (handoff || !decoded) return
     void session.page.noirWasm().catch(() => {})
@@ -132,7 +132,7 @@ function FullLinkView({ fragment }: { fragment: string }) {
 
   // Claim-funnel top for the visitor page; a handoff mount stays silent — useClaimLinkFlow emits.
   const openedFragment = useRef<string>(undefined)
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (handoff || !decoded || !rollupAddress || openedFragment.current === fragment) return
     openedFragment.current = fragment
@@ -149,7 +149,7 @@ function FullLinkView({ fragment }: { fragment: string }) {
   const [statusSettled, setStatusSettled] = useState(false)
   const [noteMissed, setNoteMissed] = useState(false)
   const [statusAttempt, setStatusAttempt] = useState(0)
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (handoff || !decoded || !statusReadable) return
     setStatusSettled(false)
@@ -166,7 +166,7 @@ function FullLinkView({ fragment }: { fragment: string }) {
         (e: unknown) => {
           showReportableError(e, "paylink:status", {
             message: `Could not check the link's status: ${
-              // eslint-disable-next-line local/message-in-state -- ZKM-1806
+              // eslint-disable-next-line local/message-in-state -- debt
               e instanceof Error ? e.message : String(e)
             }`,
           })

@@ -1,7 +1,7 @@
 /**
  * Storage migration: older builds' transfer rows, from the legacy blob or the `activity` store.
  * Remove when no supported build older than the one that writes `acct/transfers` v5 remains and
- * the rollup migration (ZKM-1625) reads no legacy rows.
+ * the rollup migration reads no legacy rows.
  */
 import { parseUnits } from "viem"
 import type { PaylinkTransaction, Transaction } from "../types/transactions"
@@ -18,7 +18,7 @@ export const ACTIVITY = "acct/activity"
 const ACTIVITY_VERSION = "acct/meta/activity"
 
 /** The texts older builds stored on a row the tab closed on before it was sent. */
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+// eslint-disable-next-line no-restricted-syntax -- debt
 const INTERRUPTED_TEXTS = new Set([
   "This payment was interrupted before it was sent. The amount is still in your balance.",
   "The tab closed before it was sent. The amount is still in your balance.",

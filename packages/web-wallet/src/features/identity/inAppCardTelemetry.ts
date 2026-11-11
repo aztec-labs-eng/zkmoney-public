@@ -37,7 +37,7 @@ export function currentInAppBrowser(): InAppBrowser {
   return x ? "android_x" : "android_other"
 }
 
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+// eslint-disable-next-line no-restricted-syntax -- debt
 const shown = new Set<InAppCardWhen>()
 
 /** The card's way out rendered. Once per page load per moment: a re-render or a second screen adds nothing. */

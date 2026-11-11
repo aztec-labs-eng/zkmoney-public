@@ -11,7 +11,7 @@ export interface SourceRollupWallet {
   account: ObsidionAccount
 }
 
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1625
+// eslint-disable-next-line no-restricted-syntax -- debt
 const opened = new Map<string, Promise<SourceRollupWallet>>()
 
 /**

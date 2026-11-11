@@ -109,7 +109,7 @@ function ContactPayFlow({ mode }: { mode: "send" | "request" }) {
   const cancelled = useRef(false)
   const left = useRef(false)
 
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (routerState?.contact) return
     let current = true
@@ -131,19 +131,19 @@ function ContactPayFlow({ mode }: { mode: "send" | "request" }) {
     return () => {
       current = false
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- ZKM-1806 the request is fixed for this entry
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- debt the request is fixed for this entry
   }, [idOrTag])
 
   // Funnel top: a fulfilling send is the payer opening a request; a plain send starts at the
   // contact pick.
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (request) {
       fireRequestOpened(requestSource, request.id, request.amount, request.tag)
     } else if (mode === "send") {
       fireEvent("send_contact_selected")
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- ZKM-1806 mount-only funnel entry
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- debt mount-only funnel entry
   }, [])
 
   const outcome = useProvingOutcome("send")
@@ -163,12 +163,12 @@ function ContactPayFlow({ mode }: { mode: "send" | "request" }) {
   // A recipient still on a retired rollup can't be paid or asked. Found before the amount is typed,
   // their chat keeps the history and says why.
   const upgraded = useRecipientUpgraded(targetTag)
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (upgraded !== false) return
     if (routerState?.from === "detail") navigate(-1)
     else navigate(`/contacts/${idOrTag}`, { replace: true })
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- ZKM-1806 leaves once, on the answer
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- debt leaves once, on the answer
   }, [upgraded])
   // Found at send time, from a fresh manifest the chat's cached read may not agree with: the sheet
   // says why itself.
@@ -195,10 +195,10 @@ function ContactPayFlow({ mode }: { mode: "send" | "request" }) {
   }
 
   // Brief success beat before the chat takes over; cleanup cancels it if the user leaves first.
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (phase !== "sent") return
-    // eslint-disable-next-line local/timer-in-view -- ZKM-1806
+    // eslint-disable-next-line local/timer-in-view -- debt
     const timer = setTimeout(finish, 1500)
     return () => clearTimeout(timer)
   }, [phase, finish])

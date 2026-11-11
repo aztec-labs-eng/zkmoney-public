@@ -103,7 +103,7 @@ export function RequestDetailModal({
   const [busy, setBusy] = useState(false)
   const session = useSession()
   const { requests } = session
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     let open = true
     // Loads once per open — the modal owns the row for its lifetime.
@@ -119,13 +119,13 @@ export function RequestDetailModal({
     return () => {
       open = false
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- ZKM-1806
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- debt
   }, [requestId])
 
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (step !== "cancelled") return
-    // eslint-disable-next-line local/timer-in-view -- ZKM-1806
+    // eslint-disable-next-line local/timer-in-view -- debt
     const t = setTimeout(onClose, 1600)
     return () => clearTimeout(t)
   }, [step, onClose])

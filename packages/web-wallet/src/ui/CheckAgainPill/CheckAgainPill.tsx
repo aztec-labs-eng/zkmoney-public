@@ -20,10 +20,10 @@ export function CheckAgainPill({
   const [pressedAt, setPressedAt] = useState<number>()
   const [spun, setSpun] = useState(false)
   const [checked, setChecked] = useState(false)
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (pressedAt === undefined) return
-    // eslint-disable-next-line local/timer-in-view -- ZKM-1806
+    // eslint-disable-next-line local/timer-in-view -- debt
     const timer = setTimeout(() => setSpun(true), CHECK_SPIN_MS)
     return () => clearTimeout(timer)
   }, [pressedAt])
@@ -32,10 +32,10 @@ export function CheckAgainPill({
     setChecked(true)
     setPressedAt(undefined)
   }
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!checked) return
-    // eslint-disable-next-line local/timer-in-view -- ZKM-1806
+    // eslint-disable-next-line local/timer-in-view -- debt
     const timer = setTimeout(() => setChecked(false), CHECKED_MS)
     return () => clearTimeout(timer)
   }, [checked])

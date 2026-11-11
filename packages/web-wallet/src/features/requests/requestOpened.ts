@@ -3,7 +3,7 @@ import { fireEvent, requestAmountBucket } from "../../lib/analytics"
 /** Where a payer opened a request. `pay_page` is a payee's standing `/pay/<tag>` page. */
 export type RequestSource = "contact" | "link" | "pay_page"
 
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+// eslint-disable-next-line no-restricted-syntax -- debt
 const opened = new Set<string>()
 
 /**

@@ -40,9 +40,9 @@ export function ModalSuspension({ suspended, children }: { suspended: boolean; c
  * non-modal so the prompt mounts on the body.
  */
 type DialogLayer = { reopen: () => void }
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+// eslint-disable-next-line no-restricted-syntax -- debt
 const layers = new Set<DialogLayer>()
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+// eslint-disable-next-line no-restricted-syntax -- debt
 let nonModal = false
 
 if (typeof window !== "undefined") {

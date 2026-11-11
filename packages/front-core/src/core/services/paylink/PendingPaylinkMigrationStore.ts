@@ -31,13 +31,13 @@ export interface PendingPaylinkMigrationRecord {
 export const PENDING_PAYLINK_MIGRATION_STORAGE_KEY = "@obsidion/paylink-migration/pending"
 
 export class PendingPaylinkMigrationStore {
-  // eslint-disable-next-line no-restricted-syntax -- ZKM-1625
+  // eslint-disable-next-line no-restricted-syntax -- debt
   private static instance: PendingPaylinkMigrationStore | null = null
   private store: RecordStorage<PendingPaylinkMigrationRecord>
 
-  // eslint-disable-next-line local/legacy-store -- ZKM-1625
+  // eslint-disable-next-line local/legacy-store -- debt
   constructor(storage: IStorageAdapter) {
-    // eslint-disable-next-line local/legacy-store -- ZKM-1625
+    // eslint-disable-next-line local/legacy-store -- debt
     this.store = new RecordStorage<PendingPaylinkMigrationRecord>({
       storage,
       storageKey: PENDING_PAYLINK_MIGRATION_STORAGE_KEY,

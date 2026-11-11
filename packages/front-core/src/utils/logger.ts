@@ -1,6 +1,6 @@
 /** App-wide logger — use instead of `console` in front-core. Routine output can be gated off. */
 
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+// eslint-disable-next-line no-restricted-syntax -- debt
 let enabled = true
 
 /** Gates log/info/debug/warn. `error` always emits. */

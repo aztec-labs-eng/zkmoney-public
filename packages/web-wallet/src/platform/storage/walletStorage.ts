@@ -116,13 +116,13 @@ type StoreState = {
 
 /** One store per page, shared by every instance of this module. */
 const STORE_STATE = Symbol.for("zk.money/wallet-store")
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1625
+// eslint-disable-next-line no-restricted-syntax -- debt
 const store: StoreState = ((globalThis as { [STORE_STATE]?: StoreState })[STORE_STATE] ??= {
   backend: opfsDatabases,
   generation: 0,
   lifecycle: Promise.resolve(),
   lifecycleBusy: 0,
-  // eslint-disable-next-line no-restricted-syntax -- ZKM-1625
+  // eslint-disable-next-line no-restricted-syntax -- debt
   committed: new Map(),
   pending: [],
   chain: Promise.resolve(),
@@ -332,7 +332,7 @@ function commitEntry(entry: Entry): Promise<void> {
   return settled
 }
 
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1625
+// eslint-disable-next-line no-restricted-syntax -- debt
 const commitListeners = new Set<(ops: readonly WalletOp[]) => void>()
 
 function background(ops: readonly WalletOp[]): void {
@@ -470,10 +470,10 @@ export const opfsBackend: DatabaseBackend = {
 }
 
 /** Reads of other databases in flight, by store generation and key. */
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1625
+// eslint-disable-next-line no-restricted-syntax -- debt
 const otherReads = new Map<string, Promise<string[]>>()
 /** Work on other databases runs one at a time, since each holds the databases it opens. */
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1625
+// eslint-disable-next-line no-restricted-syntax -- debt
 let otherWork: Promise<unknown> = Promise.resolve()
 
 function onOtherDatabases<T>(work: () => Promise<T>): Promise<T> {
@@ -690,7 +690,7 @@ async function withOther<T>(version: string, use: (db: WalletDb) => Promise<T>):
 }
 
 /** The page's database, so a test's writes reach the stores that follow its commits. */
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1625
+// eslint-disable-next-line no-restricted-syntax -- debt
 let testDatabase: Database | undefined
 
 export function bindTestDatabase(database: Database): void {

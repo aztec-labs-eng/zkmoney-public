@@ -142,25 +142,25 @@ test("another module's useResource, or a type of the hook, is no held service", 
 
 test("a block or file-wide disable fails, tagged or not, with or without rules", async () => {
   for (const comment of [
-    "/* eslint-disable -- ZKM-1778 */",
-    "/* eslint-disable no-restricted-syntax -- ZKM-1778 */",
+    "/* eslint-disable -- debt */",
+    "/* eslint-disable no-restricted-syntax -- debt */",
     "/* eslint-disable */",
-    "// eslint-disable -- ZKM-1778",
+    "// eslint-disable -- debt",
   ])
     assert.equal(disables(await lint(`${comment}\nexport let held = 1\n`), "range"), 1, comment)
 })
 
 test("a disable quoted in a string or template is no comment", async () => {
   for (const code of [
-    'export const example = "/* eslint-disable -- ZKM-1778 */"\n',
-    "export const example = `\n/* eslint-disable */\n// eslint-disable -- ZKM-1778\n`\n",
+    'export const example = "/* eslint-disable -- debt */"\n',
+    "export const example = `\n/* eslint-disable */\n// eslint-disable -- debt\n`\n",
     "/* eslint-disable */\nexport const example = `/* eslint-disable */`\n",
   ])
     assert.equal(disables(await lint(code), "range"), code.startsWith("/*") ? 1 : 0, code)
 })
 
 test("a tagged next-line disable passes", async () => {
-  const code = "// eslint-disable-next-line no-restricted-syntax -- ZKM-1778\nexport let held = 1\n"
+  const code = "// eslint-disable-next-line no-restricted-syntax -- debt\nexport let held = 1\n"
   assert.deepEqual(await lint(code), [])
 })
 
@@ -203,7 +203,7 @@ test("a disable in any package file names its issue and disables one line", asyn
   for (const file of ["test/view.test.tsx", "scripts/fixture.ts", "e2e/support.ts", "vite.config.ts"]) {
     const untagged = "// eslint-disable-next-line no-restricted-syntax\nexport const a = 1\n"
     assert.equal(disables(await lintAt(file, untagged), "untagged"), 1, file)
-    assert.equal(disables(await lintAt(file, "/* eslint-disable -- ZKM-1778 */\nexport const a = 1\n"), "range"), 1, file)
+    assert.equal(disables(await lintAt(file, "/* eslint-disable -- debt */\nexport const a = 1\n"), "range"), 1, file)
   }
 })
 
@@ -214,13 +214,13 @@ test("a same-line disable cannot hide its own missing rules or tag", async () =>
     const named = await lintAt(file, "export const a = 1 // eslint-disable-line local/tagged-disable\n")
     assert.equal(disables(named, "untagged"), 1, file)
   }
-  const tagged = "export let held = 1 // eslint-disable-line no-restricted-syntax -- ZKM-1778\n"
+  const tagged = "export let held = 1 // eslint-disable-line no-restricted-syntax -- debt\n"
   assert.deepEqual(await lintAt("src/probe.ts", tagged), [])
 })
 
 test("no disable hides a missing tag, not even a tagged disable of the tag rule", async () => {
   const code =
-    "// eslint-disable-next-line local/tagged-disable -- ZKM-1778\n" +
+    "// eslint-disable-next-line local/tagged-disable -- debt\n" +
     "// eslint-disable-next-line no-restricted-syntax\n" +
     "export let held = 1\n"
   assert.equal(disables(await lintAt("src/probe.ts", code), "untagged"), 1)
@@ -364,7 +364,7 @@ test("a wallet source file's legacy channel is debt, reported at its first use",
     found.map((m) => [m.line, m.message.includes("walletStorage")]),
     [[2, true]],
   )
-  const tagged = `// eslint-disable-next-line local/legacy-store -- ZKM-1625\n${code.split("\n").slice(1).join("\n")}`
+  const tagged = `// eslint-disable-next-line local/legacy-store -- debt\n${code.split("\n").slice(1).join("\n")}`
   assert.deepEqual(await lintAt(`${WALLET}/features/x/store.ts`, tagged), [])
 })
 

@@ -50,7 +50,7 @@ export function RegistrationRefundAction({
     askedTotal("earned_tag"),
     tokenDecimalsForNetwork(session.page.config.network),
   )
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => cancel, [cancel])
   const [deposit, setDeposit] = useState<SipaDeposit>()
   const [busy, setBusy] = useState(false)

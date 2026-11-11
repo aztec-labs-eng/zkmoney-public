@@ -68,7 +68,7 @@ export type PaylinkEvent =
   /** An upgrade returned the escrow on L1, which leaves its L2 note unspent. */
   | { type: "migrated" }
 
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+// eslint-disable-next-line no-restricted-syntax -- debt
 const FENCED = new Set<PaylinkEvent["type"]>(["claimed", "unclaimed"])
 
 /**

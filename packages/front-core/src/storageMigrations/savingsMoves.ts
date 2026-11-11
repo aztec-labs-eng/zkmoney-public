@@ -1,7 +1,7 @@
 /**
  * Storage migration: the Savings moves older builds kept in one `RecordStorage` blob. Remove when no
  * supported build older than the one that writes `acct/savingsMoves` v1 remains and the rollup
- * migration (ZKM-1625) reads no legacy blob.
+ * migration reads no legacy blob.
  */
 import type { SavingsMoveRecord } from "../core/services/savings/types"
 import type { Write } from "../engine/database"

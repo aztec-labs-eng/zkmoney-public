@@ -32,7 +32,7 @@ export type { Category, ProfileRecord, ProfileReport, ProfileEnv } from "./types
 // ─── Method wrapping ─────────────────────────────────────────────────────────
 
 // Methods to skip — internal plumbing, getters, or things that break if wrapped.
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+// eslint-disable-next-line no-restricted-syntax -- debt
 const SKIP = new Set([
   // JS fundamentals
   "constructor",
@@ -197,7 +197,7 @@ function wrapAllMethods(target: any, category: Category, profiler: Profiler): ()
  * contractSyncService.node, synchronizer.node, …) is swapped for the same facade and spans are not
  * attributed to clones.
  */
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+// eslint-disable-next-line no-restricted-syntax -- debt
 const facades = new WeakMap<object, any>()
 
 /**
@@ -548,6 +548,6 @@ class Profiler {
   }
 }
 
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+// eslint-disable-next-line no-restricted-syntax -- debt
 export const profiler = new Profiler()
 export type { Profiler }

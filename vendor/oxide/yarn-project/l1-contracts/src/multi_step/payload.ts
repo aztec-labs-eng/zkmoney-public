@@ -27,7 +27,7 @@ export function encodeMultiStepPayload(payload: MultiStepPayload): Buffer {
   return encodeBytes(payload);
 }
 
-// TODO(OX-2342): Compact the recovery chunks of a multi-step withdrawal with this decoder.
+// TODO: Compact the recovery chunks of a multi-step withdrawal with this decoder.
 export function decodeMultiStepPayload(payload: Buffer): MultiStepPayload {
   const [decoded] = decodeAbiParameters(PAYLOAD_PARAMETERS, `0x${payload.toString('hex')}`);
   const result: MultiStepPayload = {

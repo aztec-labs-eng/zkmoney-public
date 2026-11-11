@@ -133,7 +133,7 @@ export function ReceiveScreen() {
         setSendHint(recipientNotUpgradedCopy.requestHint(contact))
       } else {
         setSendError(
-          // eslint-disable-next-line local/message-in-state -- ZKM-1895
+          // eslint-disable-next-line local/message-in-state -- debt
           errorCopy(e) ?? (e instanceof Error ? e.message : "Couldn't send the request"),
         )
       }

@@ -207,14 +207,14 @@ async function operate<T>(
 }
 
 const NONE: Pick<Operations, "view" | "live" | "running" | "tabBound"> = {
-  // eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+  // eslint-disable-next-line no-restricted-syntax -- debt
   view: memoryStore<RecordSet<OperationRecord>>({ records: [], loaded: false, failed: false })
     .readonly,
-  // eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+  // eslint-disable-next-line no-restricted-syntax -- debt
   live: memoryStore<ReadonlySet<string>>(new Set()).readonly,
-  // eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+  // eslint-disable-next-line no-restricted-syntax -- debt
   running: memoryStore<readonly OperationRecord[]>([]).readonly,
-  // eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+  // eslint-disable-next-line no-restricted-syntax -- debt
   tabBound: memoryStore<OperationRecord | undefined>(undefined).readonly,
 }
 

@@ -99,7 +99,7 @@ export function ConfigProfileModal({ onClose }: { onClose: () => void }) {
         }
       })
       .catch((error: Error) => {
-        // eslint-disable-next-line local/message-in-state -- ZKM-1895
+        // eslint-disable-next-line local/message-in-state -- debt
         if (!controller.signal.aborted && !userSelectedText.current) setLoadError(error.message)
       })
       .finally(() => {
@@ -113,7 +113,7 @@ export function ConfigProfileModal({ onClose }: { onClose: () => void }) {
     try {
       return { value: validate(text) }
     } catch (error) {
-      // eslint-disable-next-line local/message-in-state -- ZKM-1895
+      // eslint-disable-next-line local/message-in-state -- debt
       return { error: (error as Error).message }
     }
   }, [text])
@@ -136,7 +136,7 @@ export function ConfigProfileModal({ onClose }: { onClose: () => void }) {
       saveProfileDraft(PROFILE_URL, text)
       void reloadPage()
     } catch (error) {
-      // eslint-disable-next-line local/message-in-state -- ZKM-1895
+      // eslint-disable-next-line local/message-in-state -- debt
       setSaveError((error as Error).message)
     }
   }
@@ -146,7 +146,7 @@ export function ConfigProfileModal({ onClose }: { onClose: () => void }) {
       clearProfileDraft()
       void reloadPage()
     } catch (error) {
-      // eslint-disable-next-line local/message-in-state -- ZKM-1895
+      // eslint-disable-next-line local/message-in-state -- debt
       setSaveError((error as Error).message)
     }
   }
@@ -187,7 +187,7 @@ export function ConfigProfileModal({ onClose }: { onClose: () => void }) {
       setText(candidate)
       setSaveError(undefined)
     } catch (error) {
-      // eslint-disable-next-line local/message-in-state -- ZKM-1895
+      // eslint-disable-next-line local/message-in-state -- debt
       if (!controller.signal.aborted) setUrlError((error as Error).message)
     } finally {
       if (!controller.signal.aborted) setLoadingUrl(false)

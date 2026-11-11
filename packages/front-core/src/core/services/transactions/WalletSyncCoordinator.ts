@@ -67,9 +67,9 @@ export interface SyncLink {
 
 export class WalletSyncCoordinator {
   // ponytail: one session per process (one wallet at a time); key by account if that changes
-  // eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+  // eslint-disable-next-line no-restricted-syntax -- debt
   private static session: { coordinator: WalletSyncCoordinator; link: SyncLink } | null = null
-  // eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+  // eslint-disable-next-line no-restricted-syntax -- debt
   private static pending: { promise: Promise<void>; settle: () => void } | null = null
 
   private static runningSession(): { coordinator: WalletSyncCoordinator; link: SyncLink } | null {

@@ -93,7 +93,7 @@ export function NotificationsBell({
   const hasPending = entries.some((e) => e.pending)
   const spinning = running || hasPending
   const wasOpen = useRef(open)
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (wasOpen.current && !open) markAllRead()
     wasOpen.current = open
@@ -109,10 +109,10 @@ export function NotificationsBell({
   if (next !== toasts) setToasts(next)
   const toast = next.queue[0] ?? null
   const dropToast = useCallback(() => setToasts((t) => ({ ...t, queue: t.queue.slice(1) })), [])
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!toast) return
-    // eslint-disable-next-line local/timer-in-view -- ZKM-1806
+    // eslint-disable-next-line local/timer-in-view -- debt
     const t = setTimeout(dropToast, 8000)
     return () => clearTimeout(t)
   }, [toast, dropToast])
@@ -123,7 +123,7 @@ export function NotificationsBell({
     opener(toast)?.()
   }
 
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!open) return
     const onDown = (e: MouseEvent) => {

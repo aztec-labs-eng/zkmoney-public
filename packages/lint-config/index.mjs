@@ -113,8 +113,8 @@ const STYLE_OFF = Object.fromEntries(
 const SOURCE = ["src/**/*.{ts,tsx,js,mjs}"]
 
 // Debt the slices remove (preamble "Lint and format"). Each existing case carries
-// `// eslint-disable-next-line <rule> -- ZKM-<n>` naming the issue that removes it.
-const SINGLETON = "Take this page-wide value from the Page or Session you were given, not from its module (ZKM-1778)."
+// `// eslint-disable-next-line <rule> -- debt`.
+const SINGLETON = "Take this page-wide value from the Page or Session you were given, not from its module."
 // A module by its file name, through any relative path.
 const relative = (name) => `^\\.\\.?/(?:.*/)?${name}(?:\\.[jt]sx?)?$`
 const frontCore = (dir, name) =>
@@ -155,7 +155,7 @@ const PAGE_STATICS = { "^@obsidion/(sdk|contracts)(?:/.*)?$": { ContractService:
 // A view reads a service's status, never its value: the flow it starts awaits the value.
 const HELD_SERVICE = "Read the service's status with serviceStatus, and let the flow await its value with ready()."
 const RESOURCE_HOOK = /^@obsidion\/front-core(\/.*)?$|\/useResource(\.[jt]sx?)?$/
-const EFFECT = "Move this effect's work into a screen flow, a runtime task or a store (ZKM-1720)."
+const EFFECT = "Move this effect's work into a screen flow, a runtime task or a store."
 const EFFECT_HOOKS = ["useEffect", "useLayoutEffect", "useInsertionEffect"]
 const DOM_EFFECTS = "^(useDomEffect|useDomLayoutEffect)$"
 const MODULE = "Keep this state in a store that the Page or the Session builds, not at module level."
@@ -314,7 +314,7 @@ function reactBindings(context, node, pick) {
   return found
 }
 const RANGE = "Disable one line at a time, with eslint-disable-next-line."
-const UNTAGGED = "End the disable with `-- ZKM-<n>`, the issue that removes it."
+const UNTAGGED = "End the disable with `-- debt`."
 const RULELESS = "List the rules this disable turns off."
 const INLINE = "Configure rules in eslint.config.mjs, not in a comment."
 // Each comment that disables or configures rules and breaks the rules above.
@@ -336,7 +336,7 @@ function disableProblems(text, filename) {
     if (!disable) continue
     if (!disable[1]) report("range", RANGE)
     else if (!disable[2]) report("ruleless", RULELESS)
-    else if (!/^ZKM-\d+\b/.test(reason.trim())) report("untagged", UNTAGGED)
+    else if (!/^debt\b/.test(reason.trim())) report("untagged", UNTAGGED)
   }
   return problems
 }

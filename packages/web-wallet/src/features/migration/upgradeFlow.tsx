@@ -124,7 +124,7 @@ export function UpgradeChoose(props: {
   // A phone that sleeps suspends the run, so every migration screen keeps it awake.
   useWakeLock(true)
   const { checking, onShown } = props
-  // eslint-disable-next-line local/effect-hook -- ZKM-1625
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!checking) onShown?.()
   }, [checking, onShown])

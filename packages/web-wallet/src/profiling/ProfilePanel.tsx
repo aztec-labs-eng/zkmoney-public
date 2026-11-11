@@ -1117,7 +1117,7 @@ export function ProfilePanel() {
   const session = useSession()
   const walletBuilt = useStore(session.wallet, serviceStatus) === "ready"
 
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     void profiler.install(session.page.config)
     // The same handle the panel drives, for scripted recordings from the console or a Playwright
@@ -1126,7 +1126,7 @@ export function ProfilePanel() {
   }, [session.page.config])
 
   // instrumentWallet is idempotent per wallet instance, so a re-render cannot double-wrap.
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!walletBuilt) return
     void session.wallet.ready().then((wallet) => profiler.instrumentWallet(wallet))

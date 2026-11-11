@@ -26,7 +26,7 @@ export async function addContact(
     await contacts.addEntry({ name, address, email, verified, tag })
     return { success: true }
   } catch (e) {
-    // eslint-disable-next-line local/message-in-state -- ZKM-1895
+    // eslint-disable-next-line local/message-in-state -- debt
     return { success: false, errors: e instanceof Error ? e.message : String(e) }
   }
 }
@@ -47,7 +47,7 @@ export function useInlineContactSearch(contacts: ContactRow[], query: string) {
     currentQuery.current = query
     generation.current += 1
   }
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     mounted.current = true
     return () => {
@@ -55,7 +55,7 @@ export function useInlineContactSearch(contacts: ContactRow[], query: string) {
       generation.current += 1
     }
   }, [])
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => setVerificationError(""), [query])
 
   const session = useSession()
@@ -80,7 +80,7 @@ export function useInlineContactSearch(contacts: ContactRow[], query: string) {
 
   // The ref dedups re-fires caused by contacts-array refreshes so a registry lookup runs once per tag.
   const lastResolveRequested = useRef<string | null>(null)
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!shouldResolveInline(contacts, query, ownTag)) {
       lastResolveRequested.current = null
@@ -88,7 +88,7 @@ export function useInlineContactSearch(contacts: ContactRow[], query: string) {
       return
     }
     if (lastResolveRequested.current === query) return
-    // eslint-disable-next-line local/timer-in-view -- ZKM-1806
+    // eslint-disable-next-line local/timer-in-view -- debt
     const timer = setTimeout(() => {
       lastResolveRequested.current = query
       void inline.resolveTag(query)
@@ -126,7 +126,7 @@ export function useInlineContactSearch(contacts: ContactRow[], query: string) {
   const [answer, setAnswer] = useState<{ tag: string; reserved: boolean } | null>(null)
   const missed = inlinePanelState(contacts, query, inline.lastResolved, ownTag)
   const missedTag = missed.kind === "no-user-found" ? missed.tag : null
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     setAnswer(null)
     if (missedTag === null) return

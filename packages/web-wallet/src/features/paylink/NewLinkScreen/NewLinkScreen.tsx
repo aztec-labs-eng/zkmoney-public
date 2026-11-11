@@ -135,7 +135,7 @@ export function NewLinkScreen() {
   const busyLabel = useBusyLabel()
   const unsponsored = useSponsoredActionBlock(phase === "confirm")
   // Resolved on the review sheet, so the row promises exactly what the create will do.
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (phase !== "confirm" || !deps) return
     let stale = false

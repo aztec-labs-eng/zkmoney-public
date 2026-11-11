@@ -89,7 +89,7 @@ export function useLinkVoucher(
   // The token the page's own read found, so the voucher read skips its own read of the note.
   const token = useRef(link?.tokenAddress)
   token.current = link?.tokenAddress
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     setUses(undefined)
     setError(undefined)
@@ -102,7 +102,7 @@ export function useLinkVoucher(
     }
     // The deadline bounds the chain read, not the wallet boot that precedes it.
     if (!walletBuilt || !contracts) return
-    // eslint-disable-next-line local/timer-in-view -- ZKM-1806
+    // eslint-disable-next-line local/timer-in-view -- debt
     const timer = setTimeout(fail, VOUCHER_ANSWER_MS)
     void linkVoucherUses(session, fragment, token.current).then(
       (n) => {

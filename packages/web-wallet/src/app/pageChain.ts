@@ -103,7 +103,7 @@ import { CHAIN_READS_PREFIX } from "../platform/storage/storageKeys"
 /** The bridge-out provider `id` names, with its routes and quotes; null where the profile has none. */
 export type BridgeOutBuilder = (provider: BridgeOutProviderId) => WebBridgeOut | null
 
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+// eslint-disable-next-line no-restricted-syntax -- debt
 const savings = () => import("../features/savings/savingsGateway")
 const depositFacts = () => import("../features/sipa/loadDepositFacts")
 const paylinkSource = () => import("../features/paylink/paylinkSource")

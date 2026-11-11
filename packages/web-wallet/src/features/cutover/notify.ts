@@ -8,14 +8,14 @@ import { useSyncExternalStore } from "react"
 /** A page can show a notification. Android's browsers show them only from a service worker. */
 export const notifySupported = () =>
   typeof Notification !== "undefined" && !/Android/i.test(navigator.userAgent)
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1625
+// eslint-disable-next-line no-restricted-syntax -- debt
 const armed = memoryStore(false)
 
 /** The user asked to be notified. */
 export const useNotifyArmed = () => useSyncExternalStore(armed.subscribe, armed.get)
 
 /** A notice whose run ended while the permission prompt was open. */
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1625
+// eslint-disable-next-line no-restricted-syntax -- debt
 let pending: { title: string; body: string } | undefined
 
 /** Arms the notice, and asks for the browser's permission. A refusal disarms it. */

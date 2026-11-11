@@ -182,7 +182,7 @@ export function ClaimToL1Modal({
     { debounceMs: 300 },
   )
 
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     emailAbort.current?.abort()
     attempt.current++
@@ -240,7 +240,7 @@ export function ClaimToL1Modal({
       )
       if (isActive()) setZkProof(proof)
     } catch (e) {
-      // eslint-disable-next-line local/message-in-state -- ZKM-1895
+      // eslint-disable-next-line local/message-in-state -- debt
       if (isActive()) setEmailError(e instanceof Error ? e.message : "Email verification failed")
     } finally {
       if (isActive()) {
@@ -340,7 +340,7 @@ export function ClaimToL1Modal({
       ? swapLeg?.leg.plan.escrow ?? (receiveOption.direct ? getAddress(recipient) : undefined)
       : undefined
   const caller = emailCaller && emailCaller.payee === emailPayee ? emailCaller.caller : undefined
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!emailPayee) return
     let live = true
@@ -352,7 +352,7 @@ export function ClaimToL1Modal({
         if (live) setEmailCaller({ payee: emailPayee, caller: hashed })
       })
       .catch((e) => {
-        // eslint-disable-next-line local/message-in-state -- ZKM-1806
+        // eslint-disable-next-line local/message-in-state -- debt
         if (live) setEmailError(e instanceof Error ? e.message : "Email verification failed")
       })
     return () => {
@@ -362,7 +362,7 @@ export function ClaimToL1Modal({
 
   // A speed choice that changes the tip moves the escrow, so its plan and the proof bound to it go.
   const replan = !!swapLeg && (speedChoice.held ? speed === "standard" : proverTip > 0n)
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!replan) return
     emailAbort.current?.abort()
@@ -377,7 +377,7 @@ export function ClaimToL1Modal({
 
   // A failed plan stays failed until the address or asset changes: re-planning on every quote
   // refresh would loop on a persistent error.
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!isEmail || receiveOption.direct || !ready || !valid || !cleared || planned.current) return
     if (!swapCommit || belowSwapFloor || amountAtomic === undefined || overLimit) return
@@ -394,7 +394,7 @@ export function ClaimToL1Modal({
       })
       .catch((e) => {
         if (planningAttempt.current === owned)
-          // eslint-disable-next-line local/message-in-state -- ZKM-1806
+          // eslint-disable-next-line local/message-in-state -- debt
           setEmailError(e instanceof Error ? e.message : "Swap unavailable")
       })
   }, [

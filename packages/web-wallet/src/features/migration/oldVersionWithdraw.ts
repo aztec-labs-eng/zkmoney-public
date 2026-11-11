@@ -25,13 +25,13 @@ export interface WithdrawableSource {
   registration(): ReturnType<typeof createWebMetadataMigration>
 }
 
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1625
+// eslint-disable-next-line no-restricted-syntax -- debt
 const withdrawable = memoryStore<readonly WithdrawableSource[]>([])
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1625
+// eslint-disable-next-line no-restricted-syntax -- debt
 let published: readonly WithdrawableSource[] = []
 // Portals whose funds no refund batch can take, such as a note above the portal's cap. A page serves
 // one account.
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1625
+// eslint-disable-next-line no-restricted-syntax -- debt
 const unrefundable = new Set<string>()
 const skipKey = (portal: string) => portal.toLowerCase()
 
@@ -60,7 +60,7 @@ export function useWithdrawableSources(): readonly WithdrawableSource[] {
   return useSyncExternalStore(withdrawable.subscribe, withdrawable.get)
 }
 
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1625
+// eslint-disable-next-line no-restricted-syntax -- debt
 const withdrawals = memoryStore(0)
 
 /** A withdrawal ended: the migration check reads the old versions again. */

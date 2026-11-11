@@ -293,7 +293,7 @@ function TabNotice({ title, children }: { title: string; children: ReactNode }) 
 function BootFailure({ error, page }: { error: unknown; page: Page }) {
   const { config, activeTab } = page
   const shown = useRef(false)
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (shown.current) return
     shown.current = true

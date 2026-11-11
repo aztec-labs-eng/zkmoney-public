@@ -24,7 +24,7 @@ const SESSION_KEY = "webwallet.demo"
  * the query string, so re-parsing per render would switch demo mode off under the user's feet.
  * `?demo=off` clears the latch.
  */
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+// eslint-disable-next-line no-restricted-syntax -- debt
 let latched: DemoScenario | null | undefined
 
 function isScenario(value: string | null): value is DemoScenario {

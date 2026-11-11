@@ -27,7 +27,7 @@ export function BootGate({ boot: read }: { boot: QueryEntry<PageBoot> }) {
           className="zkm-type-body"
           style={{ color: "var(--text-secondary)", overflowWrap: "anywhere" }}
         >
-          {/* eslint-disable-next-line local/message-in-state -- ZKM-1895 */}
+          {/* eslint-disable-next-line local/message-in-state -- debt */}
           {error.message}
         </span>
         {settingsPath && (

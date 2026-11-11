@@ -100,7 +100,7 @@ export interface Task {
   readonly name: string
 }
 
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+// eslint-disable-next-line no-restricted-syntax -- debt
 const specs = new WeakMap<Task, TaskSpec<Needs, Ons>>()
 
 export function task<const N extends Needs, const O extends Ons = Record<never, never>>(

@@ -34,7 +34,7 @@ export function useScreenedAddress(
       ? { address: asked, status: "compliant" }
       : { address: asked, status: "blocked", reason: lookup.value.reason }
     : { address: asked, status: lookup.status === "failed" ? "error" : "screening" }
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (verdict?.status === "blocked") fireEvent("screening_blocked", { flow })
   }, [verdict?.status, verdict?.address, flow])

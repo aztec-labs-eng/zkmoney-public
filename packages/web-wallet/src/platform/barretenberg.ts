@@ -8,7 +8,7 @@ declare const __BB_WASM_PATH__: string | undefined
 
 // bb.js gives these iPhone settings only to an iPhone or iPad user agent, and iPadOS and a
 // desktop-mode iPhone send a Mac one. A Web Worker has no touch points, so its page sends them.
-// When the bb.js pin includes ZKM-1779 and ZKM-1782, read them from bb.js on the page.
+// When the bb.js pin fixes these two cases, read them from bb.js on the page.
 const IOS_SETTINGS = { memory: { maximum: 2 ** 14 }, srsSize: 2 ** 18 }
 
 export type IosSettings = Pick<BackendOptions, "memory" | "srsSize">

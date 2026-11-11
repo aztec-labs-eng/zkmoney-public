@@ -26,7 +26,7 @@ export async function loadInvite(session: Pick<Session, "auth" | "page">): Promi
 export function useInvite(enabled = true): Invite {
   const [invite, setInvite] = useState<Invite>({ credited: false })
   const session = useSession()
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!enabled) return
     let alive = true

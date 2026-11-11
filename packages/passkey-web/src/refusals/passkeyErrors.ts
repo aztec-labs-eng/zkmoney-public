@@ -540,7 +540,7 @@ export function isPasskeyCancelled(err: unknown): boolean {
  * Errors thrown after the browser returned a credential: whatever the prompt saved is still there.
  * A side table rather than a property, since the browser's and an extension's errors are not ours.
  */
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+// eslint-disable-next-line no-restricted-syntax -- debt
 const written = new WeakSet<object>()
 
 export function markPasskeyWritten<T>(err: T): T {

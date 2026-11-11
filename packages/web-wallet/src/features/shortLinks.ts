@@ -63,7 +63,7 @@ export function useShortLinkLookup(
   const latest = useRef({ open, refusal })
   latest.current = { open, refusal }
 
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!resolve) return
     let timer: ReturnType<typeof setTimeout> | undefined
@@ -79,7 +79,7 @@ export function useShortLinkLookup(
         if (message) return setRefused(message)
         console.warn("[short link] lookup failed:", e)
       }
-      // eslint-disable-next-line local/timer-in-view -- ZKM-1806
+      // eslint-disable-next-line local/timer-in-view -- debt
       timer = setTimeout(() => void attempt(), SHORT_LINK_RETRY_MS)
     }
     void attempt()

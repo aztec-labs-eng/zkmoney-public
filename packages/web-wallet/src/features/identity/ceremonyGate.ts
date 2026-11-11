@@ -178,7 +178,7 @@ export function useCeremonyGate(
     attempt.current?.abort()
   }, [dismiss])
 
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     mounted.current = true
     return () => {

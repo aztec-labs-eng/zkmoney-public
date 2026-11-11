@@ -115,7 +115,7 @@ function FreshAddressHowTo() {
 function useReportPickerOpened() {
   const atPicker = useMatch("/withdraw") !== null
   const reported = useRef(false)
-  // eslint-disable-next-line local/effect-hook -- ZKM-1806
+  // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!atPicker || reported.current) return
     reported.current = true

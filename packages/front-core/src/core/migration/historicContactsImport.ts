@@ -11,7 +11,7 @@ export const HISTORIC_CONTACTS_IMPORTED_KEY = "@obsidion/historic-contacts/impor
 
 export interface HistoricContactsImportDeps {
   /** The account's storage on the active rollup, where the marker lives. */
-  // eslint-disable-next-line local/legacy-store -- ZKM-1625
+  // eslint-disable-next-line local/legacy-store -- debt
   storage: IStorageAdapter
   /** `read` over each retired rollup's database; rejects when one could not be read. */
   readOtherDatabases<T>(read: (db: RetiredDatabase) => T): Promise<T[]>

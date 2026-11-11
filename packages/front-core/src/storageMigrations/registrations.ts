@@ -35,7 +35,7 @@ const SIDE = {
 const termsKey = (account: string, tag: string) =>
   `webwallet.registration.terms:${account.toLowerCase()}:${tag.toLowerCase()}`
 
-// eslint-disable-next-line no-restricted-syntax -- ZKM-1778
+// eslint-disable-next-line no-restricted-syntax -- debt
 const PHASES = new Set<PendingRegistrationPhase>([
   "awaiting_deposit",
   "funded",
