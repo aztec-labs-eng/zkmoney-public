@@ -38,64 +38,64 @@ TARGET_WEI = 5 * GWEI + MAX_PRIORITY_FEE_WEI
 # The intents that the deposit subsidy model covers. A user operation can make the relayer raise its gas limit, which
 # the liveness argument does not cover, so a routed intent outside this list must have a sweep gas ceiling of 0.
 INTENTS = ("deposit", "registration")
-# Flows that are not live at their target, each with the Linear issue that fixes it. Its corner test asserts the
+# Flows that are not live at their target, each with the label of its cause. Its corner test asserts the
 # shortfall, so a fix makes the check fail until its entry goes.
 GAP_FLOWS: dict[str, str] = {
     # The v6-prod DAI deposit config (a 0.1 DAI profit and a 12 DAI cap) does not pay these flows at their target: the
     # profit is less than the cost of their unpriced gas, or the cap is less than the cost of their gas. Thus the fix
-    # of another issue alone leaves each of them short. Some of them also have another cause: the DAI-input
-    # registrations go over the registration ceiling constant (OX-2320), and DAI already in a USDC or USDT SIPA makes
-    # the refund estimate too large, so the subsidy prices too little gas (OX-2327). The gas-row pins fail when either
-    # is fixed. When the config pays these flows, a flow that is still short takes the issue of its other cause.
-    "v6-prod/dai/deposit/daiDepositFirstSweepUsdcIdleDai": "OX-2405",
-    "v6-prod/dai/deposit/daiDepositResweepUsdcIdleDai": "OX-2405",
-    "v6-prod/dai/deposit/daiDepositFirstSweepUsdtIdleDai": "OX-2405",
-    "v6-prod/dai/deposit/daiDepositResweepUsdtIdleDai": "OX-2405",
-    "v6-prod/dai/registration/daiRegistrationFirstSweep": "OX-2405",
-    "v6-prod/dai/registration/daiRegistrationSweep": "OX-2405",
-    "v6-prod/dai/registration/daiRegistrationFirstSweepUsdc": "OX-2405",
-    "v6-prod/dai/registration/daiRegistrationSweepUsdc": "OX-2405",
-    "v6-prod/dai/registration/daiRegistrationFirstSweepUsdt": "OX-2405",
-    "v6-prod/dai/registration/daiRegistrationSweepUsdt": "OX-2405",
-    "v6-prod/dai/registration/daiRegistrationFirstSweepUsdcIdleDai": "OX-2405",
-    "v6-prod/dai/registration/daiRegistrationSweepUsdcIdleDai": "OX-2405",
-    "v6-prod/dai/registration/daiRegistrationFirstSweepUsdtIdleDai": "OX-2405",
-    "v6-prod/dai/registration/daiRegistrationSweepUsdtIdleDai": "OX-2405",
+    # of another cause alone leaves each of them short. Some of them also have another cause: the DAI-input
+    # registrations go over the registration ceiling constant, and DAI already in a USDC or USDT SIPA makes the
+    # refund estimate too large, so the subsidy prices too little gas. The gas-row pins fail when either is fixed.
+    # When the config pays these flows, a flow that is still short takes the label of its other cause.
+    "v6-prod/dai/deposit/daiDepositFirstSweepUsdcIdleDai": "DaiConfig",
+    "v6-prod/dai/deposit/daiDepositResweepUsdcIdleDai": "DaiConfig",
+    "v6-prod/dai/deposit/daiDepositFirstSweepUsdtIdleDai": "DaiConfig",
+    "v6-prod/dai/deposit/daiDepositResweepUsdtIdleDai": "DaiConfig",
+    "v6-prod/dai/registration/daiRegistrationFirstSweep": "DaiConfig",
+    "v6-prod/dai/registration/daiRegistrationSweep": "DaiConfig",
+    "v6-prod/dai/registration/daiRegistrationFirstSweepUsdc": "DaiConfig",
+    "v6-prod/dai/registration/daiRegistrationSweepUsdc": "DaiConfig",
+    "v6-prod/dai/registration/daiRegistrationFirstSweepUsdt": "DaiConfig",
+    "v6-prod/dai/registration/daiRegistrationSweepUsdt": "DaiConfig",
+    "v6-prod/dai/registration/daiRegistrationFirstSweepUsdcIdleDai": "DaiConfig",
+    "v6-prod/dai/registration/daiRegistrationSweepUsdcIdleDai": "DaiConfig",
+    "v6-prod/dai/registration/daiRegistrationFirstSweepUsdtIdleDai": "DaiConfig",
+    "v6-prod/dai/registration/daiRegistrationSweepUsdtIdleDai": "DaiConfig",
 }
 
 # Flows whose measured settlement (test/subsidy-check/fork/DepositSubsidy.settlements.fork.t.sol) is not live at
-# the target corner, each with the Linear issue that fixes it. The measured gas is below the bounds of gas.json, so
+# the target corner, each with the label of its cause. The measured gas is below the bounds of gas.json, so
 # this set can be smaller than GAP_FLOWS. Its test asserts the shortfall, so a fix makes the check fail until its
 # entry goes.
 SETTLEMENT_GAP_FLOWS: dict[str, str] = {
     # The v6-prod DAI deposit config does not pay these flows at the target corner, as in GAP_FLOWS. DAI already in a
-    # USDC or USDT SIPA also makes them short (OX-2327).
-    "v6-prod/dai/deposit/daiDepositFirstSweepUsdcIdleDai": "OX-2405",
-    "v6-prod/dai/deposit/daiDepositResweepUsdcIdleDai": "OX-2405",
-    "v6-prod/dai/deposit/daiDepositFirstSweepUsdtIdleDai": "OX-2405",
-    "v6-prod/dai/deposit/daiDepositResweepUsdtIdleDai": "OX-2405",
+    # USDC or USDT SIPA also makes them short.
+    "v6-prod/dai/deposit/daiDepositFirstSweepUsdcIdleDai": "DaiConfig",
+    "v6-prod/dai/deposit/daiDepositResweepUsdcIdleDai": "DaiConfig",
+    "v6-prod/dai/deposit/daiDepositFirstSweepUsdtIdleDai": "DaiConfig",
+    "v6-prod/dai/deposit/daiDepositResweepUsdtIdleDai": "DaiConfig",
     # A registration's UserOp needs EntryPoint to have more gas than 3/2 of the relay's gas (AA95), so the relayer
     # doubles its gas limit, and its cover becomes about twice the gas that the relay uses. Their tests require that
     # escalation (GAS_LIMIT_ESCALATION_ISSUE), and the other gap tests require that the first gas limit confirms.
-    "v6-prod/dai/registration/daiRegistrationFirstSweep": "OX-2325",
-    "v6-prod/dai/registration/daiRegistrationSweep": "OX-2325",
-    "v6-prod/dai/registration/daiRegistrationFirstSweepUsdc": "OX-2325",
-    "v6-prod/dai/registration/daiRegistrationSweepUsdc": "OX-2325",
-    "v6-prod/dai/registration/daiRegistrationFirstSweepUsdt": "OX-2325",
-    "v6-prod/dai/registration/daiRegistrationSweepUsdt": "OX-2325",
-    "v6-prod/dai/registration/daiRegistrationFirstSweepUsdcIdleDai": "OX-2325",
-    "v6-prod/dai/registration/daiRegistrationSweepUsdcIdleDai": "OX-2325",
-    "v6-prod/dai/registration/daiRegistrationFirstSweepUsdtIdleDai": "OX-2325",
-    "v6-prod/dai/registration/daiRegistrationSweepUsdtIdleDai": "OX-2325",
+    "v6-prod/dai/registration/daiRegistrationFirstSweep": "GasLimitEscalation",
+    "v6-prod/dai/registration/daiRegistrationSweep": "GasLimitEscalation",
+    "v6-prod/dai/registration/daiRegistrationFirstSweepUsdc": "GasLimitEscalation",
+    "v6-prod/dai/registration/daiRegistrationSweepUsdc": "GasLimitEscalation",
+    "v6-prod/dai/registration/daiRegistrationFirstSweepUsdt": "GasLimitEscalation",
+    "v6-prod/dai/registration/daiRegistrationSweepUsdt": "GasLimitEscalation",
+    "v6-prod/dai/registration/daiRegistrationFirstSweepUsdcIdleDai": "GasLimitEscalation",
+    "v6-prod/dai/registration/daiRegistrationSweepUsdcIdleDai": "GasLimitEscalation",
+    "v6-prod/dai/registration/daiRegistrationFirstSweepUsdtIdleDai": "GasLimitEscalation",
+    "v6-prod/dai/registration/daiRegistrationSweepUsdtIdleDai": "GasLimitEscalation",
 }
-# The issue of the settlement gaps where the relayer's first gas limit does not confirm, so the relayer raises it.
-GAS_LIMIT_ESCALATION_ISSUE = "OX-2325"
+# The label of the settlement gaps where the relayer's first gas limit does not confirm, so the relayer raises it.
+GAS_LIMIT_ESCALATION_ISSUE = "GasLimitEscalation"
 # Flows where a relayer that holds the token gains from relaying its own sweep, at the fork's prices and the real token
-# value, each with its Linear issue. Its test asserts the gain.
+# value, each with the label of its cause. Its test asserts the gain.
 FARMING_GAP_FLOWS: dict[str, str] = {
     # The deposit subsidy values an sUSDS share at $1, and a share is worth more.
-    "v6-prod/susds/deposit/susdsDepositFirstSweep": "OX-2234",
-    "v6-prod/susds/deposit/susdsDepositResweep": "OX-2234",
+    "v6-prod/susds/deposit/susdsDepositFirstSweep": "SusdsAtOneDollar",
+    "v6-prod/susds/deposit/susdsDepositResweep": "SusdsAtOneDollar",
 }
 
 

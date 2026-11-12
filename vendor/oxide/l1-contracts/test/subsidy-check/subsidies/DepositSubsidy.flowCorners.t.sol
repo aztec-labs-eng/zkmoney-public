@@ -20,7 +20,7 @@ contract DepositSubsidyFlowCornersTest is DepositSubsidyFlowCorners {
     return _flow(25e16, 1e17, 12e18, 477_000, 2500, 5.1 gwei, 5000e8);
   }
 
-  function test_Gap_OX2405_v6prod_daiDepositFirstSweepUsdcIdleDai_IsShortAtItsTarget() external {
+  function test_Gap_DaiConfig_v6prod_daiDepositFirstSweepUsdcIdleDai_IsShortAtItsTarget() external {
     _assertShortAtTheTarget(_v6prod_daiDepositFirstSweepUsdcIdleDai());
   }
 
@@ -36,7 +36,7 @@ contract DepositSubsidyFlowCornersTest is DepositSubsidyFlowCorners {
     return _flow(25e16, 1e17, 12e18, 479_000, 2500, 5.1 gwei, 5000e8);
   }
 
-  function test_Gap_OX2405_v6prod_daiDepositFirstSweepUsdtIdleDai_IsShortAtItsTarget() external {
+  function test_Gap_DaiConfig_v6prod_daiDepositFirstSweepUsdtIdleDai_IsShortAtItsTarget() external {
     _assertShortAtTheTarget(_v6prod_daiDepositFirstSweepUsdtIdleDai());
   }
 
@@ -60,7 +60,7 @@ contract DepositSubsidyFlowCornersTest is DepositSubsidyFlowCorners {
     return _flow(25e16, 1e17, 12e18, 397_000, 1700, 5.1 gwei, 5000e8);
   }
 
-  function test_Gap_OX2405_v6prod_daiDepositResweepUsdcIdleDai_IsShortAtItsTarget() external {
+  function test_Gap_DaiConfig_v6prod_daiDepositResweepUsdcIdleDai_IsShortAtItsTarget() external {
     _assertShortAtTheTarget(_v6prod_daiDepositResweepUsdcIdleDai());
   }
 
@@ -76,7 +76,7 @@ contract DepositSubsidyFlowCornersTest is DepositSubsidyFlowCorners {
     return _flow(25e16, 1e17, 12e18, 399_000, 1700, 5.1 gwei, 5000e8);
   }
 
-  function test_Gap_OX2405_v6prod_daiDepositResweepUsdtIdleDai_IsShortAtItsTarget() external {
+  function test_Gap_DaiConfig_v6prod_daiDepositResweepUsdtIdleDai_IsShortAtItsTarget() external {
     _assertShortAtTheTarget(_v6prod_daiDepositResweepUsdtIdleDai());
   }
 
@@ -84,7 +84,7 @@ contract DepositSubsidyFlowCornersTest is DepositSubsidyFlowCorners {
     return _flow(25e16, 1e17, 12e18, 392_000, 8500, 5.1 gwei, 5000e8);
   }
 
-  function test_Gap_OX2405_v6prod_daiRegistrationFirstSweep_IsShortAtItsTarget() external {
+  function test_Gap_DaiConfig_v6prod_daiRegistrationFirstSweep_IsShortAtItsTarget() external {
     _assertShortAtTheTarget(_v6prod_daiRegistrationFirstSweep());
   }
 
@@ -92,7 +92,7 @@ contract DepositSubsidyFlowCornersTest is DepositSubsidyFlowCorners {
     return _flow(5e17, 1e17, 12e18, 925_000, 15_100, 5.1 gwei, 5000e8);
   }
 
-  function test_Gap_OX2405_v6prod_daiRegistrationFirstSweepUsdc_IsShortAtItsTarget() external {
+  function test_Gap_DaiConfig_v6prod_daiRegistrationFirstSweepUsdc_IsShortAtItsTarget() external {
     _assertShortAtTheTarget(_v6prod_daiRegistrationFirstSweepUsdc());
   }
 
@@ -100,7 +100,7 @@ contract DepositSubsidyFlowCornersTest is DepositSubsidyFlowCorners {
     return _flow(5e17, 1e17, 12e18, 1_030_000, 2500, 5.1 gwei, 5000e8);
   }
 
-  function test_Gap_OX2405_v6prod_daiRegistrationFirstSweepUsdcIdleDai_IsShortAtItsTarget() external {
+  function test_Gap_DaiConfig_v6prod_daiRegistrationFirstSweepUsdcIdleDai_IsShortAtItsTarget() external {
     _assertShortAtTheTarget(_v6prod_daiRegistrationFirstSweepUsdcIdleDai());
   }
 
@@ -108,7 +108,7 @@ contract DepositSubsidyFlowCornersTest is DepositSubsidyFlowCorners {
     return _flow(5e17, 1e17, 12e18, 1_028_000, 17_600, 5.1 gwei, 5000e8);
   }
 
-  function test_Gap_OX2405_v6prod_daiRegistrationFirstSweepUsdt_IsShortAtItsTarget() external {
+  function test_Gap_DaiConfig_v6prod_daiRegistrationFirstSweepUsdt_IsShortAtItsTarget() external {
     _assertShortAtTheTarget(_v6prod_daiRegistrationFirstSweepUsdt());
   }
 
@@ -116,7 +116,7 @@ contract DepositSubsidyFlowCornersTest is DepositSubsidyFlowCorners {
     return _flow(5e17, 1e17, 12e18, 1_032_000, 2500, 5.1 gwei, 5000e8);
   }
 
-  function test_Gap_OX2405_v6prod_daiRegistrationFirstSweepUsdtIdleDai_IsShortAtItsTarget() external {
+  function test_Gap_DaiConfig_v6prod_daiRegistrationFirstSweepUsdtIdleDai_IsShortAtItsTarget() external {
     _assertShortAtTheTarget(_v6prod_daiRegistrationFirstSweepUsdtIdleDai());
   }
 
@@ -124,7 +124,7 @@ contract DepositSubsidyFlowCornersTest is DepositSubsidyFlowCorners {
     return _flow(5e17, 1e17, 12e18, 1_030_000, 17_600, 5.1 gwei, 5000e8);
   }
 
-  function test_Gap_OX2405_v6prod_daiRegistrationSweep_IsShortAtItsTarget() external {
+  function test_Gap_DaiConfig_v6prod_daiRegistrationSweep_IsShortAtItsTarget() external {
     _assertShortAtTheTarget(_v6prod_daiRegistrationSweep());
   }
 
@@ -132,7 +132,7 @@ contract DepositSubsidyFlowCornersTest is DepositSubsidyFlowCorners {
     return _flow(5e17, 1e17, 12e18, 840_000, 12_000, 5.1 gwei, 5000e8);
   }
 
-  function test_Gap_OX2405_v6prod_daiRegistrationSweepUsdc_IsShortAtItsTarget() external {
+  function test_Gap_DaiConfig_v6prod_daiRegistrationSweepUsdc_IsShortAtItsTarget() external {
     _assertShortAtTheTarget(_v6prod_daiRegistrationSweepUsdc());
   }
 
@@ -140,7 +140,7 @@ contract DepositSubsidyFlowCornersTest is DepositSubsidyFlowCorners {
     return _flow(5e17, 1e17, 12e18, 945_000, 1900, 5.1 gwei, 5000e8);
   }
 
-  function test_Gap_OX2405_v6prod_daiRegistrationSweepUsdcIdleDai_IsShortAtItsTarget() external {
+  function test_Gap_DaiConfig_v6prod_daiRegistrationSweepUsdcIdleDai_IsShortAtItsTarget() external {
     _assertShortAtTheTarget(_v6prod_daiRegistrationSweepUsdcIdleDai());
   }
 
@@ -148,7 +148,7 @@ contract DepositSubsidyFlowCornersTest is DepositSubsidyFlowCorners {
     return _flow(5e17, 1e17, 12e18, 943_000, 17_000, 5.1 gwei, 5000e8);
   }
 
-  function test_Gap_OX2405_v6prod_daiRegistrationSweepUsdt_IsShortAtItsTarget() external {
+  function test_Gap_DaiConfig_v6prod_daiRegistrationSweepUsdt_IsShortAtItsTarget() external {
     _assertShortAtTheTarget(_v6prod_daiRegistrationSweepUsdt());
   }
 
@@ -156,7 +156,7 @@ contract DepositSubsidyFlowCornersTest is DepositSubsidyFlowCorners {
     return _flow(5e17, 1e17, 12e18, 947_000, 1900, 5.1 gwei, 5000e8);
   }
 
-  function test_Gap_OX2405_v6prod_daiRegistrationSweepUsdtIdleDai_IsShortAtItsTarget() external {
+  function test_Gap_DaiConfig_v6prod_daiRegistrationSweepUsdtIdleDai_IsShortAtItsTarget() external {
     _assertShortAtTheTarget(_v6prod_daiRegistrationSweepUsdtIdleDai());
   }
 

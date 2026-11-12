@@ -175,11 +175,11 @@ class Evidence(unittest.TestCase):
     def test_an_entry_with_passing_evidence_is_accepted(self):
         entry = Tested(
             (test("test_GivenAUnitTest_ThenItPasses"), test("testFuzz_GivenAFuzzTest_ThenItRuns")),
-            (Gap("OX-1", f"{SUITE}.test_GivenAUnitTest_ThenItPasses_Gap_OX1_"),),
+            (Gap("Cause", f"{SUITE}.test_GivenAUnitTest_ThenItPasses_Gap_Cause_"),),
         )
         raw = copy.deepcopy(FIXTURE)
         tests = raw[SUITE]["test_results"]
-        tests["test_GivenAUnitTest_ThenItPasses_Gap_OX1_()"] = tests["test_GivenAUnitTest_ThenItPasses()"]
+        tests["test_GivenAUnitTest_ThenItPasses_Gap_Cause_()"] = tests["test_GivenAUnitTest_ThenItPasses()"]
         self.assertEqual(self.problems(entry, raw), [])
 
     def test_results_that_also_hold_other_suites_are_accepted(self):
@@ -255,10 +255,10 @@ class Evidence(unittest.TestCase):
         outside = "test/periphery/Other.t.sol:FixtureSubsidyTest.test_GivenAUnitTest_ThenItPasses"
         assert_refused(self, self.problems(Tested((outside,)), raw), outside)
 
-    def test_a_gap_needs_a_linear_issue_in_its_test_name(self):
+    def test_a_gap_needs_a_cause_label_in_its_test_name(self):
         passing = test("test_GivenAUnitTest_ThenItPasses")
         assert_refused(self, self.problems(Tested((), (Gap("", passing),))), passing)
-        assert_refused(self, self.problems(Tested((), (Gap("OX-1", passing),))), passing)
+        assert_refused(self, self.problems(Tested((), (Gap("Cause", passing),))), passing)
 
     def test_an_exemption_with_no_reason_is_refused(self):
         assert_refused(self, self.problems(Exempt("  ")), "FixtureSubsidy")

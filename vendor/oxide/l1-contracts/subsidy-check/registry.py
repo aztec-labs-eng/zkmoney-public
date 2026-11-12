@@ -26,11 +26,11 @@ fails when:
 - a test is named twice;
 - a named fuzz test had no runs, or calls `vm.assume` (itself, or through a helper or modifier that it reaches in its
   own file or the test files that it imports) or returns early, so that some runs test nothing;
-- a gap has no Linear issue, or its test's name does not carry it;
+- a gap has no cause label, or its test's name does not carry it;
 - an exemption has no reason, or its source hash is not the hash of the contract's source today.
 
 Each gas row's fork pin is evidence of DepositSubsidy, so each pin must pass. So is the corner test of each mainnet
-flow (gen.py): a live flow's corner test, and a known gap's shortfall test with its issue.
+flow (gen.py): a live flow's corner test, and a known gap's shortfall test with its cause label.
 So is each flow's settlement on the fork and its farming test, with their known gaps (flows.SETTLEMENT_GAP_FLOWS and
 flows.FARMING_GAP_FLOWS).
 
@@ -62,16 +62,16 @@ SRC = L1 / "src"
 # entry names must be one of them, and each test in the folder must be named. Locally, check.sh runs only these.
 EVIDENCE_DIR = "test/subsidy-check/"
 MIGRATION_OUTSIDE = (
-    "MigrationSubsidy pays a profit to the relayer on purpose, so its tests are different. OX-2438 moves them into the "
-    "check."
+    "MigrationSubsidy pays a profit to the relayer on purpose, so its tests are different. A later change moves "
+    "them into the check."
 )
-PLAIN_WITHDRAWAL_OUTSIDE = "PlainWithdrawalSubsidy is exempt: OX-1880 replaces it and these tests."
+PLAIN_WITHDRAWAL_OUTSIDE = "PlainWithdrawalSubsidy is exempt: a later change replaces it and these tests."
 ALLOWED_OUTSIDE = {
     "test/periphery/migration/MigrationSubsidy.t.sol": MIGRATION_OUTSIDE,
     "test/periphery/migration/MigrationSubsidy.farmSafety.t.sol": MIGRATION_OUTSIDE,
     "test/periphery/migration/MigrationSubsidy.relayedExit.t.sol": MIGRATION_OUTSIDE,
-    "test/periphery/ProverSubsidy.t.sol": "ProverSubsidy is exempt: it pays a flat amount and prices no gas. OX-2404 "
-    "removes it.",
+    "test/periphery/ProverSubsidy.t.sol": "ProverSubsidy is exempt: it pays a flat amount and prices no gas. A later "
+    "change removes it.",
     "test/periphery/PlainWithdrawalSubsidy.t.sol": PLAIN_WITHDRAWAL_OUTSIDE,
     "test/periphery/PlainWithdrawalSubsidy.modeledTxGas.t.sol": PLAIN_WITHDRAWAL_OUTSIDE,
     "test/periphery/PlainWithdrawalSubsidy.relayedExit.t.sol": PLAIN_WITHDRAWAL_OUTSIDE,
@@ -88,9 +88,9 @@ def in_evidence(path: str, allowed_outside: dict = ALLOWED_OUTSIDE) -> bool:
 @dataclass(frozen=True)
 class Gap:
     issue: str
-    """The Linear issue of the gap, such as OX-2234."""
+    """The label of the gap's cause, such as DaiConfig."""
     test: str
-    """A test that passes while the gap is there. Its name carries the issue, such as testFuzz_Gap_OX2234_..."""
+    """A test that passes while the gap is there. Its name carries the label, such as test_Gap_DaiConfig_..."""
 
 
 @dataclass(frozen=True)
@@ -132,7 +132,7 @@ FARM_SAFETY = (
 )
 NO_FARM_SAFETY = {
     "MigrationSubsidy": "It pays a profit to the relayer on purpose, so a relayer gains from its own migration. Its "
-    "eligibility tests are in MigrationSubsidy.farmSafety.t.sol until OX-2438 gives it the property.",
+    "eligibility tests are in MigrationSubsidy.farmSafety.t.sol until a later change gives it the property.",
 }
 
 
@@ -345,7 +345,7 @@ SUBSIDIES = {
         ),
     ),
     "PlainWithdrawalSubsidy": Exempt(
-        "OX-1880 replaces its modeled quote with a meter and adds its property tests.",
+        "A later change replaces its modeled quote with a meter and adds its property tests.",
         "696dfd418578",
     ),
     "ProverSubsidy": Exempt("It pays a flat amount per claim that the owner sets. It prices no gas.", "f1d4e85cbca0"),
@@ -362,7 +362,7 @@ IMPORT_NAMES = re.compile(r"\{([^}]*)\}")
 ALIAS = re.compile(r"^(\w+)(?:\s+as\s+(\w+))?$")
 GAS_PRICE_READ = re.compile(r"\btx\s*\.\s*gasprice\b|\bblock\s*\.\s*basefee\b|\b(?:gasprice|basefee)\s*\(\s*\)")
 INTERFACE_SUBSIDY = re.compile(r"I\w*Subsidy")
-ISSUE = re.compile(r"[A-Z]+-\d+")
+ISSUE = re.compile(r"[A-Z][A-Za-z]*")
 TEST_ID = re.compile(r"^(?P<path>[^:]+\.sol):(?P<contract>\w+)\.(?P<function>\w+)$")
 # vm.assume, vm.assumeNoRevert, and the assume helpers of forge-std, such as assumeNotZeroAddress.
 ASSUMES = re.compile(r"\bassume\w*\s*\(")
@@ -781,9 +781,9 @@ def problems(
             found += _test_problems(name, test_id, results, root)
         for gap in entry.gaps:
             if not ISSUE.fullmatch(gap.issue):
-                found.append(f"{name}: the gap {gap.test} has no Linear issue")
+                found.append(f"{name}: the gap {gap.test} has no cause label")
             elif f"Gap_{gap.issue.replace('-', '')}_" not in gap.test:
-                found.append(f"{name}: the gap test {gap.test} does not carry its issue {gap.issue} in its name")
+                found.append(f"{name}: the gap test {gap.test} does not carry its label {gap.issue} in its name")
     return found
 
 

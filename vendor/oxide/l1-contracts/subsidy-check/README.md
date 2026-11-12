@@ -18,7 +18,7 @@ This README uses the terms of [subsidy.md](../../engineering-design-docs/subsidy
 - **Live**: the payout is at least the required payout. The subsidy rounds down and the executor rounds up, so the tests keep a margin of 1 token-wei. Without it, the payout can be 1 token-wei short.
 - **Flow**: one SIPA sweep that a relayer sends on mainnet. It is one operation (a deposit or a registration) from one token, in one state of the SIPA (for example, a first sweep or a resweep), with the fee and the config of one forwarding-table row.
 - **Target**: the prices at which each flow must be live: a 5 gwei base fee, a 0.1 gwei priority fee, and ETH at $5,000.
-- **Known gap**: a property that a subsidy does not meet today. It has a Linear issue, and a test with `Gap_OX<issue>_` in its name that passes while the gap is there. A fix makes this test fail, so the fix must also remove the gap test and the gap's entry.
+- **Known gap**: a property that a subsidy does not meet today. It has a label of its cause, such as `DaiConfig`, and a test with `Gap_<label>_` in its name that passes while the gap is there. A fix makes this test fail, so the fix must also remove the gap test and the gap's entry.
 
 ## Pricing tests
 
@@ -89,7 +89,7 @@ The check fails when a generated file is not what `gen.py` writes. A new operati
 
 Each intent that a seed routes with a gas ceiling above 0 must have rows in `gas.json`. An intent with a ceiling of 0 gets no subsidy, so the check skips it.
 
-The subsidy prices an sUSDS share at $1 (OX-2234), but the relayer values a share at its real price, which is more. Thus a flow that is live at $1 a share is live at the real price.
+The subsidy prices an sUSDS share at $1, but the relayer values a share at its real price, which is more. Thus a flow that is live at $1 a share is live at the real price.
 
 To add a flow, add its row to `gas.json` and the seed row that routes it, then run `gen.py`.
 
