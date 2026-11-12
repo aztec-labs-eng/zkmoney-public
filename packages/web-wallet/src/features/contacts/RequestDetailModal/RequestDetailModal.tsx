@@ -225,7 +225,7 @@ export function RequestDetailModal({
           <div className="ww-share-modal__buttons">
             <PrimaryGradientButton
               title={copy.cancel.action}
-              buttonStyle="dark"
+              buttonStyle="secondary"
               onClick={() => setStep("confirm")}
             />
             <PrimaryGradientButton

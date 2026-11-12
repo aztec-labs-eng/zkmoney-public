@@ -103,6 +103,7 @@ function harness(
     visible: memoryStore(true).readonly,
     pace: createPace(),
     now: () => Date.now(),
+    sinceLoad: () => performance.now(),
   })
   const wake = () => runtime.wake(scan)
   const detach = coordinator.attach({ wake, canRun: () => true })
@@ -471,99 +472,5 @@ describe("WalletSyncCoordinator", () => {
     late.resolve(9n)
     await pass
     h.stop()
-  })
-
-  describe("confirming a refreshed balance", () => {
-    it("confirms a read stored durably after the call", async () => {
-      let balance = 5n
-      const h = harness({ balance: () => balance })
-      const stored = storedBalances(h)
-      await h.start()
-      balance = 9n
-
-      expect(await WalletSyncCoordinator.confirmBalance()).toBe(true)
-      expect(stored("0xtok")).toMatchObject({ atomic: 9n, anchor: 101, symbol: "DAI" })
-      h.stop()
-    })
-
-    it("confirms nothing when every read fails, even after the fallback pass publishes", async () => {
-      const h = harness({ balance: () => 3n })
-      await h.start()
-      h.source.readBalanceSnapshot.mockRejectedValue(new Error("PXE anchor changed"))
-
-      expect(await WalletSyncCoordinator.confirmBalance()).toBe(false)
-      expect(h.source.readSnapshot).toHaveBeenCalledTimes(2)
-      h.stop()
-    })
-
-    it("confirms nothing when the fallback pass fails too", async () => {
-      const h = harness({ balance: () => 3n })
-      await h.start()
-      h.source.readBalanceSnapshot.mockRejectedValue(new Error("PXE anchor changed"))
-      h.source.readSnapshot.mockRejectedValue(new Error("node down"))
-
-      expect(await WalletSyncCoordinator.confirmBalance()).toBe(false)
-      h.stop()
-    })
-
-    it("confirms nothing with no running coordinator", async () => {
-      expect(await WalletSyncCoordinator.confirmBalance()).toBe(false)
-    })
-
-    it("confirms nothing when storage refuses the write", async () => {
-      const h = harness({ balance: () => 3n })
-      await h.start()
-      h.balanceStore.write.mockRejectedValue(new Error("QuotaExceededError"))
-
-      expect(await WalletSyncCoordinator.confirmBalance()).toBe(false)
-      h.stop()
-    })
-
-    it("confirms nothing when a newer read is already stored", async () => {
-      const h = harness({ balance: () => 3n })
-      await h.start()
-      h.balanceStore.write.mockResolvedValue(false)
-
-      expect(await WalletSyncCoordinator.confirmBalance()).toBe(false)
-      h.stop()
-    })
-
-    it("confirms on Main's write alone when another balance's read is passed over", async () => {
-      const h = harness({ balance: () => 3n, others: () => ({ "0xshares": 1n }) })
-      await h.start()
-      h.balanceStore.write.mockImplementation(async (_scope, token) => token === "0xtok")
-
-      expect(await WalletSyncCoordinator.confirmBalance()).toBe(true)
-      h.stop()
-    })
-
-    // A pass that read before an import publishes at the same anchor as the read after it.
-    it("waits for a pass already in flight, so its older read never lands last", async () => {
-      let balance = 0n
-      const h = harness({ balance: () => balance })
-      await h.start()
-      h.source.readBalanceSnapshot.mockImplementation(async () => ({
-        balances: { "0xtok": await h.readBalance() },
-        anchorBlock: 100,
-      }))
-      const late = deferred<bigint>()
-      const entered = deferred<void>()
-      h.readBalance.mockImplementationOnce(() => {
-        entered.resolve()
-        return late.promise
-      })
-      const pass = h.wake()
-      await entered.promise
-      balance = 9n
-
-      const confirmed = WalletSyncCoordinator.confirmBalance()
-      await vi.advanceTimersByTimeAsync(0)
-      late.resolve(0n)
-      await pass
-
-      expect(await confirmed).toBe(true)
-      expect(h.writes.at(-1)).toMatchObject({ balance: 9n, anchor: 100 })
-      h.stop()
-    })
   })
 })

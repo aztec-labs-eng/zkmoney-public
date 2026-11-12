@@ -4,6 +4,7 @@
  */
 import type { BackupRotationRecord, BackupRotations } from "../../engine/backupRotations"
 import { WalletError } from "../../engine/errors"
+import { RootPasskeyRequiredError } from "../../oxide/accountUserOp"
 import type { Pace } from "@obsidion/core/cadence"
 import {
   recordMoved,
@@ -16,6 +17,8 @@ import {
 
 /** How long the driver waits before asking the chain again while a step is pending on it. */
 export const RESUME_POLL_MS = 15_000
+/** The wait while a step's answer is a block or two away, such as a sweep seen but not settled. */
+export const RESUME_POLL_SOON_MS = 5_000
 
 /** Waits only a user's tap ends (Fund, Approve, Try again), so none is polled. */
 const USER_WAITS: ReadonlySet<FlowWait> = new Set(["funding", "approval", "declined"])
@@ -23,6 +26,10 @@ const USER_WAITS: ReadonlySet<FlowWait> = new Set(["funding", "approval", "decli
 /** What a resume answered. */
 export interface ResumeAnswer {
   wait?: FlowWait
+  /** The flow still re-reads the sweep: polled whatever the wait. */
+  watch?: true
+  /** Polled at `RESUME_POLL_SOON_MS`. */
+  soon?: true
   error?: unknown
 }
 
@@ -84,6 +91,12 @@ const resumeKey = (record: BackupRotationRecord) =>
 /** A park the chain alone can lift. */
 const parked = (record: BackupRotationRecord) =>
   record.attention === "route" || record.attention === "stranded"
+
+const answered = ({ wait, watch, soon }: FlowResult): ResumeAnswer => ({
+  wait,
+  ...(watch && { watch }),
+  ...(soon && { soon }),
+})
 
 /**
  * One run at a time per account: a resume whenever the record's key changes, and again after
@@ -229,7 +242,7 @@ export class RotationDriver {
       const deps = await this.depsFor(lane)
       if (generation !== this.generation || !lane.active) return
       const result = await resumeRotation(deps, record)
-      this.answer(lane, generation, { wait: result.wait })
+      this.answer(lane, generation, answered(result))
     } catch (err) {
       if (recordMoved(err)) return this.answer(lane, generation, undefined)
       this.source?.report?.("resume failed", err)
@@ -252,7 +265,7 @@ export class RotationDriver {
         const deps = await this.depsFor(lane)
         this.assertLive(lane, generation)
         const result = await step(deps, lane.drive.record)
-        this.answer(lane, generation, { wait: result.wait })
+        this.answer(lane, generation, answered(result))
         return result
       } catch (err) {
         // Resume what the failed step left, without a prompt.
@@ -288,15 +301,19 @@ export class RotationDriver {
     // The user's recheck ends with its run, whatever it answered.
     if (lane.drive.rechecking) this.update(lane, generation, { rechecking: undefined })
     if (resume) this.update(lane, generation, read ? { resume, checkedAt: Date.now() } : { resume })
+    // A session on the wrong passkey fails the same way on every poll; signing in with the first
+    // passkey starts the driver again.
     const due =
       !resume ||
-      resume.error !== undefined ||
+      (resume.error !== undefined && !(resume.error instanceof RootPasskeyRequiredError)) ||
+      resume.watch ||
       (resume.wait !== undefined && !USER_WAITS.has(resume.wait)) ||
       parked(lane.drive.record)
     const source = this.source
     if (!due || !source) return
     lane.timer?.()
-    lane.timer = source.pace.after(source.pollMs ?? RESUME_POLL_MS, () => this.kick(lane))
+    const pollMs = source.pollMs ?? (resume?.soon ? RESUME_POLL_SOON_MS : RESUME_POLL_MS)
+    lane.timer = source.pace.after(pollMs, () => this.kick(lane))
   }
 
   private update(lane: Lane, generation: number, fields: Partial<RotationDrive>): void {

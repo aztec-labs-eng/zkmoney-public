@@ -6,6 +6,7 @@ import type { EndpointKind } from "../config/endpointOverrides"
 import { reloadPage } from "../platform/storage/walletStorage"
 import { EndpointFields, defaultHost, useEndpointEditor } from "./endpointsEditor"
 import { Modal } from "./Modal"
+import copy from "./EndpointsModal.copy"
 
 export { customEndpointsLabel } from "./endpointsEditor"
 
@@ -88,7 +89,7 @@ function EndpointsDialog({
         isDisabled={!canSave}
         onClick={save}
       />
-      <PrimaryGradientButton title="Cancel" buttonStyle="dark" onClick={onClose} />
+      <PrimaryGradientButton title={copy.cancel} buttonStyle="secondary" onClick={onClose} />
     </Modal>
   )
 }

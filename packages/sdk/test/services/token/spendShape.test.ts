@@ -23,7 +23,7 @@ const note = (id: number, amount: bigint) =>
 function fixture(reads: NoteDao[][], balances: unknown[]) {
   const getNotes = vi.fn(async () => reads.shift() ?? [])
   const simulate = vi.fn(async () => ({ result: balances.shift() ?? 0n }))
-  const wallet: SpendShapeWallet = { pxe: { debug: { getNotes } } }
+  const wallet: SpendShapeWallet = { getNotes }
   const token: SpendShapeToken = { address: TOKEN, methods: { balance_of: () => ({ simulate }) } }
   return { wallet, token, getNotes, simulate }
 }

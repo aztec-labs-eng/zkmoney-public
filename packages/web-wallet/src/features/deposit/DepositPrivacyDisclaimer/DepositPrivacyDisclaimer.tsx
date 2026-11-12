@@ -46,7 +46,7 @@ export function DepositPrivacyDisclaimer({
       <div className={styles.facts}>
         <div className="ww-deposit-coin__rows">{rows}</div>
         <div className={styles.note} role="note">
-          <Icon name="alert-triangle" size={16} color="#fdfdfd" />
+          <Icon name="alert-triangle" size={16} color="var(--text-primary)" />
           <span>
             <b>{depositCopy.info.lossTitle}</b>
             <span>{depositCopy.info.lossBody}</span>

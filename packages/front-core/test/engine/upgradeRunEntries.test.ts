@@ -4,6 +4,9 @@ import { describe, expect, it } from "vitest"
 import type { UpgradeBatchItem } from "../../src/core/migration/upgradeActivity"
 import type { UpgradePricing } from "../../src/core/migration/upgradeRuns"
 import type { SipaDeposit } from "../../src/engine/sipaDeposits"
+import { openDatabase } from "../../src/engine/database"
+import { memoryBackend } from "../../src/engine/memoryBackend"
+import { createNotifications } from "../../src/engine/notifications"
 import {
   deriveNotifications,
   notificationsStamped,
@@ -115,11 +118,30 @@ describe("upgrade-run entries", () => {
     }
   })
 
+  it("saves the rows of a run whose record key holds a '/'", async () => {
+    const keyed = {
+      ...batch,
+      run: `metadata-migration/${addr("c1")}/${addr("c2")}/0x${"ab".repeat(32)}`,
+    }
+    const n = createNotifications({ db: openDatabase(memoryBackend()), now: () => NOW })
+    for (const phase of ["sweeping", "claimed"] as const) {
+      const listed = entries(
+        sources({
+          upgrades: { items: [keyed], recipients: new Set([addr("d1")]), loaded: true },
+          deposits: { records: [deposit({ phase })], loaded: true, failed: false },
+        }),
+      )
+      expect(listed).toHaveLength(1)
+      await n.observe(listed, [], NOW, true)
+      expect([...n.stamped.get()]).toEqual(expect.arrayContaining(listed.map((e) => e.id)))
+    }
+  })
+
   it("reports an upgrade read off its direct deposits once, however many legs join", () => {
     const direct = deposit({ direct: { portal: addr("f1") } } as Partial<SipaDeposit>)
     const s = sources({ deposits: { records: [direct], loaded: true, failed: false } })
     const done = entries(s).find((e) => e.id.endsWith(":done"))
-    expect(done).toMatchObject({ id: `migration-run:chain-upgrade/${addr("f1")}:done` })
+    expect(done).toMatchObject({ id: `migration-run:chain-upgrade%2F${addr("f1")}:done` })
     expect(done).not.toHaveProperty("seenWith")
   })
 })

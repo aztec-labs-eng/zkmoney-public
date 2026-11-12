@@ -6,6 +6,10 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {DepositSubsidy} from "@periphery/DepositSubsidy.sol";
 import {OperationExecutor} from "@periphery/OperationExecutor.sol";
 
+contract IsolationPing {
+  function ping() external {}
+}
+
 library RelayerTransaction {
   Vm private constant VM = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
   uint256 internal constant TX_INTRINSIC_GAS = 21_000;
@@ -47,5 +51,21 @@ library RelayerTransaction {
     for (uint256 i = 0; i < _data.length; i++) {
       total += _data[i] == 0 ? 4 : 16;
     }
+  }
+
+  function lastIsolatedTxGas() internal returns (uint256) {
+    Vm.Gas memory g = VM.lastCallGas();
+    uint256 total = uint256(g.gasTotalUsed);
+    uint256 refund = uint256(int256(g.gasRefunded));
+    return total - (refund < total / 5 ? refund : total / 5);
+  }
+
+  function requireIsolation() internal {
+    IsolationPing ping = new IsolationPing();
+    ping.ping();
+    require(
+      VM.lastCallGas().gasTotalUsed >= TX_INTRINSIC_GAS,
+      "each call must run as its own transaction: give the test contract forge-config: default.isolate = true"
+    );
   }
 }

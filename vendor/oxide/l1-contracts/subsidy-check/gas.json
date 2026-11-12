@@ -1,0 +1,203 @@
+{
+  "relayerCalldataPadding": 768,
+  "rows": {
+    "daiDepositFirstSweep": {
+      "row": "dai",
+      "intent": "deposit",
+      "deployed": true,
+      "input": "dai",
+      "idleDai": false,
+      "coverGas": 371000,
+      "unpricedGas": 2300
+    },
+    "daiDepositResweep": {
+      "row": "dai",
+      "intent": "deposit",
+      "deployed": false,
+      "input": "dai",
+      "idleDai": false,
+      "coverGas": 286000,
+      "unpricedGas": 1700
+    },
+    "daiDepositFirstSweepUsdc": {
+      "row": "dai",
+      "intent": "deposit",
+      "deployed": true,
+      "input": "usdc",
+      "idleDai": false,
+      "coverGas": 477000,
+      "unpricedGas": 2500
+    },
+    "daiDepositResweepUsdc": {
+      "row": "dai",
+      "intent": "deposit",
+      "deployed": false,
+      "input": "usdc",
+      "idleDai": false,
+      "coverGas": 397000,
+      "unpricedGas": 1700
+    },
+    "daiDepositFirstSweepUsdt": {
+      "row": "dai",
+      "intent": "deposit",
+      "deployed": true,
+      "input": "usdt",
+      "idleDai": false,
+      "coverGas": 479000,
+      "unpricedGas": 2500
+    },
+    "daiDepositResweepUsdt": {
+      "row": "dai",
+      "intent": "deposit",
+      "deployed": false,
+      "input": "usdt",
+      "idleDai": false,
+      "coverGas": 399000,
+      "unpricedGas": 1700
+    },
+    "daiDepositFirstSweepUsdcIdleDai": {
+      "row": "dai",
+      "intent": "deposit",
+      "deployed": true,
+      "input": "usdc",
+      "idleDai": true,
+      "coverGas": 475000,
+      "unpricedGas": 17600
+    },
+    "daiDepositResweepUsdcIdleDai": {
+      "row": "dai",
+      "intent": "deposit",
+      "deployed": false,
+      "input": "usdc",
+      "idleDai": true,
+      "coverGas": 390000,
+      "unpricedGas": 8100
+    },
+    "daiDepositFirstSweepUsdtIdleDai": {
+      "row": "dai",
+      "intent": "deposit",
+      "deployed": true,
+      "input": "usdt",
+      "idleDai": true,
+      "coverGas": 477000,
+      "unpricedGas": 17600
+    },
+    "daiDepositResweepUsdtIdleDai": {
+      "row": "dai",
+      "intent": "deposit",
+      "deployed": false,
+      "input": "usdt",
+      "idleDai": true,
+      "coverGas": 392000,
+      "unpricedGas": 8500
+    },
+    "daiRegistrationFirstSweep": {
+      "row": "dai",
+      "intent": "registration",
+      "deployed": true,
+      "input": "dai",
+      "idleDai": false,
+      "coverGas": 925000,
+      "unpricedGas": 15100
+    },
+    "daiRegistrationSweep": {
+      "row": "dai",
+      "intent": "registration",
+      "deployed": false,
+      "input": "dai",
+      "idleDai": false,
+      "coverGas": 840000,
+      "unpricedGas": 12000
+    },
+    "daiRegistrationFirstSweepUsdc": {
+      "row": "dai",
+      "intent": "registration",
+      "deployed": true,
+      "input": "usdc",
+      "idleDai": false,
+      "coverGas": 1030000,
+      "unpricedGas": 2500
+    },
+    "daiRegistrationSweepUsdc": {
+      "row": "dai",
+      "intent": "registration",
+      "deployed": false,
+      "input": "usdc",
+      "idleDai": false,
+      "coverGas": 945000,
+      "unpricedGas": 1900
+    },
+    "daiRegistrationFirstSweepUsdt": {
+      "row": "dai",
+      "intent": "registration",
+      "deployed": true,
+      "input": "usdt",
+      "idleDai": false,
+      "coverGas": 1032000,
+      "unpricedGas": 2500
+    },
+    "daiRegistrationSweepUsdt": {
+      "row": "dai",
+      "intent": "registration",
+      "deployed": false,
+      "input": "usdt",
+      "idleDai": false,
+      "coverGas": 947000,
+      "unpricedGas": 1900
+    },
+    "daiRegistrationFirstSweepUsdcIdleDai": {
+      "row": "dai",
+      "intent": "registration",
+      "deployed": true,
+      "input": "usdc",
+      "idleDai": true,
+      "coverGas": 1028000,
+      "unpricedGas": 17600
+    },
+    "daiRegistrationSweepUsdcIdleDai": {
+      "row": "dai",
+      "intent": "registration",
+      "deployed": false,
+      "input": "usdc",
+      "idleDai": true,
+      "coverGas": 943000,
+      "unpricedGas": 17000
+    },
+    "daiRegistrationFirstSweepUsdtIdleDai": {
+      "row": "dai",
+      "intent": "registration",
+      "deployed": true,
+      "input": "usdt",
+      "idleDai": true,
+      "coverGas": 1030000,
+      "unpricedGas": 17600
+    },
+    "daiRegistrationSweepUsdtIdleDai": {
+      "row": "dai",
+      "intent": "registration",
+      "deployed": false,
+      "input": "usdt",
+      "idleDai": true,
+      "coverGas": 945000,
+      "unpricedGas": 17000
+    },
+    "susdsDepositFirstSweep": {
+      "row": "susds",
+      "intent": "deposit",
+      "deployed": true,
+      "input": "susds",
+      "idleDai": false,
+      "coverGas": 370000,
+      "unpricedGas": 3400
+    },
+    "susdsDepositResweep": {
+      "row": "susds",
+      "intent": "deposit",
+      "deployed": false,
+      "input": "susds",
+      "idleDai": false,
+      "coverGas": 285000,
+      "unpricedGas": 2800
+    }
+  }
+}

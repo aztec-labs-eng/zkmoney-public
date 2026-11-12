@@ -5,6 +5,7 @@ import { failureCode, fireEvent } from "../../lib/analytics"
 import { Modal } from "../../ui/Modal"
 import { cancelRequestById } from "../contacts/requestActions"
 import { useSession } from "../../session/session"
+import copy from "./CancelRequestLinkModal.copy"
 
 /**
  * Cancel an unpaid request link. Nothing on chain is revoked: a minted link stays payable until it
@@ -60,7 +61,7 @@ export function CancelRequestLinkModal({
             <p style={{ color: "var(--text-secondary)", fontSize: 13, lineHeight: 1.5, margin: 0 }}>
               This request was already paid or cancelled.
             </p>
-            <PrimaryGradientButton title="Close" buttonStyle="dark" onClick={onClose} />
+            <PrimaryGradientButton title={copy.close} buttonStyle="secondary" onClick={onClose} />
           </>
         ) : (
           <>
@@ -75,7 +76,7 @@ export function CancelRequestLinkModal({
             />
             <PrimaryGradientButton
               title="Keep"
-              buttonStyle="dark"
+              buttonStyle="secondary"
               isDisabled={busy}
               onClick={onClose}
             />

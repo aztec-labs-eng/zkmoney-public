@@ -15,7 +15,8 @@ case "$1" in
     spec=$1
     shift
     output=test-results/$(sed -E 's/[^A-Za-z0-9]+/-/g' <<< "${spec#e2e/}")
-    exec scripts/e2e-light.sh "$spec" --workers=1 --output="$output" --reporter=list "$@"
+    # Under CI3, the output goes where CI3 publishes it, linked from the log (ci3/upload_test_artifacts).
+    exec scripts/e2e-light.sh "$spec" --workers=1 --output="${TEST_ARTIFACTS_DIR:-$output}" --reporter=list "$@"
     ;;
   # The report suite, on zkmoney-api's disposable Postgres: a CI3 compose project serves it.
   test:reports) exec "$root/scripts/postgres-suite.sh" packages/web-wallet test:reports zkmoney_api_test ;;

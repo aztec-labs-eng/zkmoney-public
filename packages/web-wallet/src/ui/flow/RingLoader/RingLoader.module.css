@@ -9,7 +9,7 @@
 .ripple {
   position: absolute;
   inset: 0;
-  border: 1px solid rgba(253, 253, 253, 0.14);
+  border: 1px solid rgba(var(--ink-rgb), 0.14);
   border-radius: 50%;
   animation: ripple 2.4s ease-out infinite;
   transition: opacity 0.4s ease var(--lag);
@@ -36,7 +36,7 @@
   stroke-width: 4;
 }
 .rail {
-  stroke: rgba(253, 253, 253, 0.12);
+  stroke: rgba(var(--ink-rgb), 0.12);
 }
 .arc {
   stroke-linecap: round;
@@ -136,7 +136,7 @@
   animation: none;
 }
 .ring[data-phase="failed"] .arc {
-  stroke: rgba(253, 253, 253, 0.2);
+  stroke: rgba(var(--ink-rgb), 0.2);
 }
 .ring[data-phase="failed"] .coin {
   filter: grayscale(1);

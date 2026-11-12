@@ -1,7 +1,7 @@
 import { EthAddress } from '@aztec-labs/foundation/eth-address';
 import type { Logger } from '@aztec-labs/foundation/log';
 
-import { MAINNET_DAI } from '@oxide/l1-contracts';
+import { MAINNET_DAI, MAINNET_USDC, MAINNET_USDT } from '@oxide/l1-contracts';
 import { addressKey } from '@oxide/watcher-lib/address-key';
 
 import { describe, expect, it } from '@jest/globals';
@@ -35,6 +35,8 @@ const quiet = recordingLog().log;
 
 /** The accepted tokens as `list()` reports them. */
 const keys = (...tokens: EthAddress[]) => tokens.map(token => addressKey(token));
+/** Tokens as sorted keys, because the order of the watched tokens is not part of the rule. */
+const asSet = (tokens: EthAddress[]) => tokens.map(token => addressKey(token)).sort();
 
 describe('PayoutTokenRegistry', () => {
   const dai = EthAddress.random();
@@ -114,5 +116,29 @@ describe('PayoutTokenRegistry', () => {
     await expect(
       PayoutTokenRegistry.create(fakePricer([], [sUsds]), [dai, sUsds], { chainId: TESTNET, log: quiet }),
     ).rejects.toThrow(`cannot price token ${sUsds.toString()}`);
+  });
+
+  describe('watched tokens', () => {
+    it('on mainnet, a relayer that serves only sUSDS also watches DAI, USDC and USDT, because it accepts DAI', async () => {
+      const registry = await registered(1n, [sUsds]);
+      expect(asSet(registry.watchedTokens())).toEqual(asSet([MAINNET_DAI, MAINNET_USDC, MAINNET_USDT, sUsds]));
+    });
+
+    it('a configured list sets the watched tokens, and a later deployment does not change them', async () => {
+      const registry = await PayoutTokenRegistry.create(fakePricer(), [sUsds], { chainId: 1n, log: quiet });
+      expect(registry.watchedTokens()).toEqual([sUsds]);
+      await registry.addDeployment({ label: 'v2', token: MAINNET_DAI });
+      expect(registry.watchedTokens()).toEqual([sUsds]);
+    });
+
+    it('a worker that reads the watched tokens sees a token that a later deployment adds', async () => {
+      const registry = await registered(TESTNET, [dai]);
+      // A worker started before the addition reads the watched tokens through this getter.
+      const watched = () => registry.watchedTokens();
+      expect(watched()).toEqual([dai]);
+
+      await registry.addDeployment({ label: 'v2', token: sUsds });
+      expect(watched()).toEqual([dai, sUsds]);
+    });
   });
 });

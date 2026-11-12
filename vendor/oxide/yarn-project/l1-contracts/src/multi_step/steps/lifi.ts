@@ -9,7 +9,7 @@ import {
 } from 'viem';
 
 import { LifiIntentAdapterAbi } from '../../artifacts.js';
-import { type BuildLane, LaneBuilder, compileLane, laneSteps } from '../lane.js';
+import { type BuildLane, buildFromEmptyLane, compilePaidLane } from '../lane.js';
 import { type AdapterConfig, type Chain, ETH, adapterSteps } from './step.js';
 
 export type LifiOpen<In extends Address = Address> = {
@@ -49,7 +49,7 @@ export function lifiSteps(c: AdapterConfig, chain: Chain) {
     ...c,
     open<In extends Address>(p: LifiOpen<In>) {
       assertOrder(p);
-      return define.terminal({
+      return define.noPayout({
         fn: 'lifiOpen',
         in: p.token,
         minOut: p.minOut,
@@ -64,7 +64,7 @@ export function lifiSteps(c: AdapterConfig, chain: Chain) {
         'lane' in hook
           ? laneHook(c.address, chain, hook, open)
           : { recipient: hook.target, callbackData: hook.calldata };
-      return define.terminal({
+      return define.noPayout({
         fn: 'lifiOpenWithHook',
         in: p.token,
         minOut: p.minOut,
@@ -89,11 +89,11 @@ function laneHook(
   if (isAddressEqual(hook.fallbackTo, zeroAddress)) {
     throw new Error('fallbackTo must not be zero');
   }
-  const spec = hook.lane(new LaneBuilder([]));
-  const { start, calls } = compileLane(open.outputToken, spec, [adapter, ...laneSteps(spec).map(step => step.adapter)]);
+  const spec = buildFromEmptyLane(hook.lane);
+  const { paidAt, calls } = compilePaidLane(open.outputToken, spec, [adapter, ...spec.steps.map(step => step.adapter)]);
   return {
     recipient: adapter,
-    callbackData: encodeAbiParameters(HOOK_PARAMETERS, [start, hook.fallbackTo, calls]),
+    callbackData: encodeAbiParameters(HOOK_PARAMETERS, [paidAt, hook.fallbackTo, calls]),
   };
 }
 

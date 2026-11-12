@@ -59,7 +59,7 @@ export function LostRegistrationNoticeCard() {
         </span>
         <PrimaryGradientButton
           title={text.cta}
-          buttonStyle="dark"
+          buttonStyle="secondary"
           onClick={() => {
             dismiss()
             navigate(text.to)

@@ -1,0 +1,44 @@
+{
+  "families": {
+    "dai deposit": {
+      "row": "dai",
+      "intent": "deposit",
+      "axes": {
+        "input": ["dai", "usdc", "usdt"],
+        "deployed": [true, false],
+        "idleDai": [false, true]
+      },
+      "exclude": [
+        {
+          "when": { "input": "dai", "idleDai": true },
+          "reason": "A DAI sweep sweeps the DAI that the SIPA holds, so DAI in the SIPA is its input, not an extra state."
+        }
+      ]
+    },
+    "dai registration": {
+      "row": "dai",
+      "intent": "registration",
+      "axes": {
+        "input": ["dai", "usdc", "usdt"],
+        "deployed": [true, false],
+        "idleDai": [false, true]
+      },
+      "exclude": [
+        {
+          "when": { "input": "dai", "idleDai": true },
+          "reason": "A DAI sweep sweeps the DAI that the SIPA holds, so DAI in the SIPA is its input, not an extra state."
+        }
+      ]
+    },
+    "susds deposit": {
+      "row": "susds",
+      "intent": "deposit",
+      "axes": {
+        "input": ["susds"],
+        "deployed": [true, false],
+        "idleDai": [false]
+      },
+      "exclude": []
+    }
+  }
+}

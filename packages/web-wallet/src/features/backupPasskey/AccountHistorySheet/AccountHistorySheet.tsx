@@ -7,12 +7,15 @@ import {
   IconCircle,
   PrimaryGradientButton,
 } from "@obsidion/web-ds"
-import { useStore, serviceStatus, bestEffort } from "@obsidion/front-core"
+import { WalletError, useStore, serviceStatus, bestEffort } from "@obsidion/front-core"
+import { fmt } from "../../../lib/fmt"
 import { useSession } from "../../../session/session"
 import { HIDDEN_BALANCE, shortAddr, usdAtomicFloor } from "../../../ui/format"
 import { Modal } from "../../../ui/Modal"
-import { selectHeldTotal, type CheckStatus } from "../accountHistory"
-import { getPreviousAccountWatcher } from "../previousAccountWatcher"
+import { approvalsLeft, MoveSteps, type MoveStepRow } from "../../../ui/MoveSteps/MoveSteps"
+import stepsCopy from "../../../ui/MoveSteps/MoveSteps.copy"
+import { selectHeldTotal, type CheckStatus, type MoveRowView } from "../accountHistory"
+import { getPreviousAccountWatcher, type MoveForecast } from "../previousAccountWatcher"
 import copy from "./AccountHistorySheet.copy"
 import styles from "./AccountHistorySheet.module.css"
 
@@ -83,6 +86,34 @@ function Busy({ title }: { title: string }) {
   )
 }
 
+/** A balance's row: it turns while the move works on it, and says how far a paused move got. */
+function stepRow({ kind, state }: MoveRowView, paused: boolean): MoveStepRow {
+  const label = kind === "main" ? copy.main : copy.savings
+  switch (state) {
+    case "moved":
+      return { label, state: "done" }
+    case "preparing":
+      return { label, state: "current", detail: stepsCopy.preparing }
+    case "confirming":
+      return { label, state: "current", detail: stepsCopy.confirming }
+    case "working":
+      return { label, state: "current" }
+    case "partial":
+      return { label, state: "todo", detail: copy.steps.partly }
+    case "none":
+      return { label, state: "todo", ...(paused && { detail: copy.steps.notMoved }) }
+  }
+}
+
+/** How many approvals the move takes, or the plain line where none could be planned. */
+function approvalsLine(forecast: MoveForecast | undefined): string {
+  if (!forecast) return copy.approve
+  if (forecast.upper) return fmt(copy.approveUpTo, { count: forecast.approvals })
+  return forecast.approvals === 1
+    ? copy.approveOnce
+    : fmt(copy.approveCount, { count: forecast.approvals })
+}
+
 function Status({
   status,
   check,
@@ -95,6 +126,10 @@ function Status({
   amount: (atomic: bigint) => string
 }) {
   switch (status.kind) {
+    case "settingUp":
+      return <p className={`ww-sheet__note ${styles.note}`}>{copy.settingUp}</p>
+    case "setupUnread":
+      return <p className={`ww-sheet__note ${styles.note}`}>{copy.setupUnread}</p>
     case "unchecked":
       return (
         <>
@@ -112,7 +147,7 @@ function Status({
             <span className={styles.statusTitle}>{copy.incomplete}</span>
           </div>
           <PrimaryGradientButton
-            buttonStyle="dark"
+            buttonStyle="secondary"
             title={copy.tryAgain}
             isDisabled={!check}
             onClick={check}
@@ -128,7 +163,7 @@ function Status({
           </div>
           <p className={`ww-sheet__note ${styles.note}`}>{copy.unclaimedNote}</p>
           <PrimaryGradientButton
-            buttonStyle="dark"
+            buttonStyle="secondary"
             title={copy.checkAgain}
             isDisabled={!check}
             onClick={check}
@@ -136,16 +171,17 @@ function Status({
         </>
       )
     case "empty":
+    case "moved":
       return (
         <>
           <div className={styles.status}>
             <IconCircle name="check-circle" size={56} glyphSize={26} />
             <GradientText gradient="title" size={20} weight={700}>
-              {copy.nothing}
+              {status.kind === "moved" ? copy.moved : copy.nothing}
             </GradientText>
           </div>
           <PrimaryGradientButton
-            buttonStyle="dark"
+            buttonStyle="secondary"
             title={copy.checkAgain}
             isDisabled={!check}
             onClick={check}
@@ -153,11 +189,30 @@ function Status({
         </>
       )
     case "moving":
-      return <Busy title={copy.moving} />
+      if (status.rows.length === 0) return <Busy title={copy.moving} />
+      return (
+        <>
+          {status.earlier && (
+            <p className={`ww-sheet__note ${styles.note}`}>{copy.steps.earlier}</p>
+          )}
+          <MoveSteps
+            caption={copy.steps.moving}
+            header={approvalsLeft(status.left?.count, status.left?.upper)}
+            rows={status.rows.map((row) => stepRow(row, false))}
+            note={copy.steps.keepOpen}
+          />
+        </>
+      )
     case "found": {
       const total = selectHeldTotal(status.held)
       return (
         <>
+          {status.rows && (
+            <MoveSteps
+              caption={copy.steps.paused}
+              rows={status.rows.map((row) => stepRow(row, true))}
+            />
+          )}
           {total !== undefined && (
             <div className={styles.status}>
               <GradientText gradient="title" size={40} weight={700}>
@@ -184,22 +239,32 @@ function Status({
           {status.note && (
             <p className={`ww-sheet__note ${styles.note}`}>{copy.note[status.note]}</p>
           )}
-          {status.action === "move" && (
+          {(status.action === "move" || status.action === "continue") && (
             <>
-              <PrimaryGradientButton title={copy.move} onClick={move} />
-              <p className={`ww-sheet__note ${styles.note}`}>{copy.approve}</p>
+              <PrimaryGradientButton
+                title={status.action === "move" ? copy.move : copy.continue}
+                onClick={move}
+              />
+              <p className={`ww-sheet__note ${styles.note}`}>{approvalsLine(status.forecast)}</p>
             </>
           )}
           {status.action === "retry" && (
             <PrimaryGradientButton title={copy.tryAgain} onClick={move} />
           )}
           <PrimaryGradientButton
-            buttonStyle="dark"
+            buttonStyle="secondary"
             title={copy.checkAgain}
             isDisabled={!check}
             onClick={check}
           />
         </>
+      )
+    }
+    default: {
+      const unhandled: never = status
+      throw new WalletError(
+        "invariant",
+        `AccountHistorySheet: unhandled status ${(unhandled as { kind: string }).kind}`,
       )
     }
   }

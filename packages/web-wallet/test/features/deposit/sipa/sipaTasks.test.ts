@@ -36,7 +36,7 @@ function start() {
   const db = openDatabase(backend)
   const store = createSipaDeposits({ db, account: true, now: () => Date.now() })
   const catchUp = createCatchUp()
-  const milestones = createMilestones({ catchUp })
+  const milestones = createMilestones({ catchUp, sinceLoad: () => performance.now() })
   const visible = memoryStore(true).readonly
   const custody = memoryStore(false)
   const pipeline = sipaPipeline({
@@ -65,6 +65,7 @@ function start() {
     visible,
     pace: createPace(),
     now: () => Date.now(),
+    sinceLoad: () => performance.now(),
   })
   stops.push(
     () => runtime.stop(),

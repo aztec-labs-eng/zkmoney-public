@@ -1,4 +1,4 @@
-import { useEffect } from "react"
+import { useCallback, useEffect } from "react"
 import { useLookup, useScreener, useScreenings, type ScreeningReason } from "@obsidion/front-core"
 import { fireEvent } from "../lib/analytics"
 
@@ -12,18 +12,22 @@ export type ScreeningVerdict = {
 } | null
 
 /**
- * Screen one L1 address (the current field or account value) and hold the verdict only while it
- * still matches — a stale verdict must never clear a new address. A blocked verdict reports the
- * flow to analytics (never the address). `late` once `waitMs` passes with no verdict.
+ * Screen one address (the current field or account value) on the chain it sends from, the L1 when
+ * `chainId` is unset, and hold the verdict only while it still matches — a stale verdict must never
+ * clear a new address. A blocked verdict reports the flow to analytics (never the address). `late`
+ * once `waitMs` passes with no verdict.
  */
 export function useScreenedAddress(
   address: string | null,
   flow: "deposit" | "withdraw" | "deposit-exit",
-  opts: { debounceMs?: number; waitMs?: number } = {},
+  opts: { debounceMs?: number; waitMs?: number; chainId?: number } = {},
 ) {
   const screener = useScreener()
+  const screenings = useScreenings()
+  const { chainId } = opts
+  const onChain = useCallback((a: string) => screenings(a, chainId), [screenings, chainId])
   const asked = address?.trim().toLowerCase() || undefined
-  const lookup = useLookup(asked, useScreenings(), {
+  const lookup = useLookup(asked, onChain, {
     delayMs: opts.debounceMs ?? 0,
     lateMs: opts.waitMs,
   })

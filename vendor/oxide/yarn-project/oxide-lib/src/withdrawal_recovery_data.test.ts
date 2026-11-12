@@ -4,6 +4,7 @@ import { EthAddress } from '@aztec-labs/foundation/eth-address';
 import { describe, expect, it } from '@jest/globals';
 
 import { encodePlainWithdrawalPayload } from './plain_withdrawal_executor.js';
+import { StablecoinWithdrawalRoute, encodeStablecoinWithdrawalPayload } from './stablecoin_withdrawal_executor.js';
 import type { WithdrawalFinalizationData } from './withdrawal_finalization_data.js';
 import {
   RECOVERY_CHUNK_BYTES,
@@ -38,6 +39,19 @@ describe('withdrawal recovery data', () => {
     const inputChunks = chunkRecoveryData(input);
     expect(inputChunks).toHaveLength(1);
     expect(assembleRecoveryData(inputChunks)).toEqual([input]);
+  });
+
+  it('fits a stablecoin withdrawal with its widest fields and a 57-byte memo in one chunk', () => {
+    const userPayload = encodeStablecoinWithdrawalPayload({
+      recipient: EthAddress.fromNumber(2),
+      relayerTip: MAX_AMOUNT,
+      route: StablecoinWithdrawalRoute.USDC,
+      minOut: MAX_AMOUNT,
+      recoveryCommitment: `0x00${'ab'.repeat(31)}`,
+      daiForGas: MAX_AMOUNT,
+    });
+    expect(chunkRecoveryData(recoveryData({ userPayload }, Buffer.alloc(57)))).toHaveLength(1);
+    expect(chunkRecoveryData(recoveryData({ userPayload }, Buffer.alloc(58)))).toHaveLength(2);
   });
 
   it('round-trips a memo', () => {

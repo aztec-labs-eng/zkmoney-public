@@ -14,7 +14,9 @@ const stock = vi.hoisted(() => ({
 }))
 
 vi.mock("@rainbow-me/rainbowkit", () => ({
+  cssStringFromTheme: () => "",
   darkTheme: () => ({ colors: {}, radii: {} }),
+  lightTheme: () => ({ colors: {}, radii: {} }),
   getDefaultConfig: vi.fn((args: unknown) => ({ args })),
   getWalletConnectConnector: () => stock.wcConnector,
 }))

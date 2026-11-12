@@ -82,8 +82,8 @@ export function createAuthService(
     ceremony: virtualAuthenticators ? recordingCreateRequests(ceremony, page.database) : ceremony,
     laptopHints: virtualAuthenticators ? null : undefined,
     extraProviders: virtualAuthenticators ? [CHROMIUM_VIRTUAL_AUTHENTICATOR_AAGUID] : undefined,
-    // Windows Hello keeps the only copy and Proton Pass is `semiDeviceBound`: both keep the wallet
-    // within one device's reach, so they are offered only where a backup can be added.
+    // Windows Hello keeps the only copy and Proton Pass opens no wallet on an iPhone: both are
+    // offered only where a backup can be added.
     withdrawnManagers: config.backupPasskeySettings ? undefined : ["windows_hello", "proton"],
     onSessionSaved,
   })

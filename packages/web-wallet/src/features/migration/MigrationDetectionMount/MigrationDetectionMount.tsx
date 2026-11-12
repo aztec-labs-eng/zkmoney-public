@@ -68,6 +68,7 @@ import {
   useMigrationFunnel,
 } from "../migrationFunnel"
 import { webStorage } from "../../../platform/storage/WebStorageAdapter"
+import { saveSetting } from "../../../platform/storage/deviceKeys"
 import type { HistoricResidualSummary } from "../historicResiduals"
 import {
   migrationFeatureListed,
@@ -129,7 +130,6 @@ import "../migration.css"
 import {
   createWebMetadataMigration,
   createWebMetadataMigrationQuietly,
-  webAccountRecordStale,
   webMetadataMigrationKey,
 } from "../createWebMetadataMigration"
 import {
@@ -294,6 +294,7 @@ export function MigrationDetectionMount() {
   const [leaving, setLeaving] = useState(false)
   const [errorClosed, setErrorClosed] = useState(false)
   const [supportOpen, setSupportOpen] = useState(false)
+  const analyticsConsent = useStore(device, (s) => s.analyticsConsent)
   const [celebrate, setCelebrate] = useState(false)
   // Whether the run the user started here moves no funds, fixed at its start: a funded run's
   // sources read empty once its funds land, before Done shows.
@@ -330,7 +331,8 @@ export function MigrationDetectionMount() {
   const [bootChoice, setBootChoice] = useState<{ account: string; choose: boolean }>()
   // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
-    if (!obsidionAccount) return
+    const record = session.metadataRecordState
+    if (!obsidionAccount || !record) return
     const account = obsidionAccount.getAddress().toString()
     let live = true
     const decide = (choose: boolean) => {
@@ -340,10 +342,11 @@ export function MigrationDetectionMount() {
     if (answered !== undefined) decide(answered)
     // eslint-disable-next-line local/timer-in-view -- debt
     const wait = setTimeout(() => decide(false), RECORD_CHECK_WAIT_MS)
-    webAccountRecordStale(session, obsidionAccount)
-      .then((stale) => {
-        console.info(`[migration] record stale=${stale} at ${Math.round(performance.now())}ms`)
-        decide(stale)
+    record()
+      .read()
+      .then((state) => {
+        console.info(`[migration] record ${state} at ${Math.round(performance.now())}ms`)
+        decide(state === "other")
       })
       .catch((error) => {
         console.warn("[migration] record check failed:", error)
@@ -1832,7 +1835,7 @@ export function MigrationDetectionMount() {
           <div className="ww-logout__actions">
             <PrimaryGradientButton
               title={copy.repoint.later}
-              buttonStyle="dark"
+              buttonStyle="secondary"
               onClick={() => setRepointDismissed(true)}
             />
             <PrimaryGradientButton title={copy.repoint.action} onClick={() => void reloadPage()} />
@@ -1978,7 +1981,15 @@ export function MigrationDetectionMount() {
   const reopen = state === "stopped" && metadataRecord ? reopenScreen(metadataRecord) : undefined
   if (metadataFlow && reopen && metadataRecord && !actionAsked && !withdrawing) {
     const resume = () => void onMigrate()
-    const support = supportOpen && <BugReportModal onClose={() => setSupportOpen(false)} />
+    const support = supportOpen && (
+      <BugReportModal
+        analyticsConsent={analyticsConsent}
+        onAnalyticsConsent={(granted) =>
+          void saveSetting(session.database, "analyticsConsent", granted)
+        }
+        onClose={() => setSupportOpen(false)}
+      />
+    )
     if (reopen === "finish") {
       return (
         <>

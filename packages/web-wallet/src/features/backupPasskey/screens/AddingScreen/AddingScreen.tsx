@@ -27,7 +27,7 @@ export function AddingScreen({ screen, actions }: BackupScreenProps<"adding">) {
     <SheetShell
       hero={failure ? "warning" : "key"}
       title={copy.title}
-      lead={timing ? fmt(copy.lead, { minutes: minutes(timing.takesMs) }) : copy.leadUntimed}
+      lead={copy.lead}
       primary={failure ? retryAction(screen, actions) : closeAction(actions, "plain")}
       secondary={failure ? closeAction(actions) : undefined}
     >

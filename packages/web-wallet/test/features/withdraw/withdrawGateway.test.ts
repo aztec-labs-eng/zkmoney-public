@@ -113,7 +113,7 @@ vi.mock("@obsidion/sdk", async (importOriginal) => ({
 }))
 
 const D120 = parseUnits("120", 18)
-const { planSwapLeg, rescanWithdrawals, submitSponsoredWithdrawal } = await import(
+const { burnContext, planSwapLeg, rescanWithdrawals, submitSponsoredWithdrawal } = await import(
   "../../../src/features/withdraw/withdrawGateway"
 )
 const { activeNamespace, closeSession, switchSession } = await import(
@@ -600,5 +600,14 @@ describe("planSwapLeg", () => {
     expect(readContract).not.toHaveBeenCalledWith(
       expect.objectContaining({ functionName: "predictAccountAddress" }),
     )
+  })
+})
+
+describe("burnContext", () => {
+  it("screens a bridge-out recipient on its destination chain, and stops on a block", async () => {
+    const over = deps()
+    const screen = vi.spyOn(over.screener, "screen").mockResolvedValue({ compliant: false })
+    await expect(burnContext(over, RECIPIENT, 8453)).rejects.toThrow()
+    expect(screen).toHaveBeenCalledWith(RECIPIENT, 8453)
   })
 })

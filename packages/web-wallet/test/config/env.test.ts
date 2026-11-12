@@ -102,7 +102,7 @@ describe("loadConfig", () => {
     const screenedMainnet = {
       ...mainnetEnv,
       VITE_PREDICATE_VERIFICATION_HASH: "x-managed-policy-abc",
-      VITE_PREDICATE_CHAIN: "ethereum-mainnet",
+      VITE_PREDICATE_CHAIN: "ethereum",
     }
 
     it("refuels below the network's ClaimFPC refuel threshold", () => {
@@ -148,7 +148,7 @@ describe("loadConfig", () => {
   describe("mainnet fails closed on missing pointers", () => {
     const screened = {
       VITE_PREDICATE_VERIFICATION_HASH: "x-managed-policy-abc",
-      VITE_PREDICATE_CHAIN: "ethereum-mainnet",
+      VITE_PREDICATE_CHAIN: "ethereum",
     }
 
     it("selects the RP by deployment even when the chain changes", () => {
@@ -164,7 +164,7 @@ describe("loadConfig", () => {
     const complete = {
       VITE_PREDICATE_API_KEY: "key",
       VITE_PREDICATE_VERIFICATION_HASH: "x-managed-policy-abc",
-      VITE_PREDICATE_CHAIN: "ethereum-sepolia",
+      VITE_PREDICATE_CHAIN: "sepolia",
     }
 
     it("is off when unset", () => {
@@ -177,7 +177,7 @@ describe("loadConfig", () => {
       expect(loadConfig({ ...testnetEnv, ...complete }).predicate).toEqual({
         apiKey: "key",
         verificationHash: "x-managed-policy-abc",
-        chain: "ethereum-sepolia",
+        chain: "sepolia",
         baseUrl: "/svc/predicate",
       })
     })
@@ -215,7 +215,7 @@ describe("loadConfig", () => {
     it("chain/baseUrl alone (committed env file, credentials elsewhere) stay inert", () => {
       const config = loadConfig({
         ...testnetEnv,
-        VITE_PREDICATE_CHAIN: "ethereum-sepolia",
+        VITE_PREDICATE_CHAIN: "sepolia",
         VITE_PREDICATE_BASE_URL: "https://staging.api.predicate.io",
       })
       expect(config.predicate).toBeUndefined()
@@ -225,12 +225,12 @@ describe("loadConfig", () => {
       const config = loadConfig({
         ...testnetEnv,
         VITE_PREDICATE_VERIFICATION_HASH: "x-managed-policy-abc",
-        VITE_PREDICATE_CHAIN: "ethereum-sepolia",
+        VITE_PREDICATE_CHAIN: "sepolia",
       })
       expect(config.predicate).toEqual({
         apiKey: undefined,
         verificationHash: "x-managed-policy-abc",
-        chain: "ethereum-sepolia",
+        chain: "sepolia",
         baseUrl: "/svc/predicate",
       })
     })

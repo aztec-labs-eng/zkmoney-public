@@ -1,7 +1,7 @@
 import type { EthAddress } from '@aztec-labs/foundation/eth-address';
 import type { Logger } from '@aztec-labs/foundation/log';
 
-import { depositPayoutTokenFor, depositTokensFor } from '@oxide/l1-contracts';
+import { depositPayoutTokenFor, depositTokensFor, sweepTokensFor } from '@oxide/l1-contracts';
 import { addressKey } from '@oxide/watcher-lib/address-key';
 
 import type { ExtensiblePriceOracle } from '../price_oracle/price_oracle.js';
@@ -15,8 +15,8 @@ export interface PayoutTokenFilter {
 type PayoutTokenPricer = Pick<ExtensiblePriceOracle, 'addToken'>;
 
 export class PayoutTokenRegistry implements PayoutTokenFilter {
-  /** The accepted tokens, by `addressKey`. */
-  private readonly tokens = new Set<string>();
+  /** The accepted tokens, by `addressKey`, in the order that the registry accepted them. */
+  private readonly tokens = new Map<string, EthAddress>();
   /** True when the tokens are a configured list: `addDeployment` then adds no deployment tokens. */
   private ignoresDeploymentTokens = false;
 
@@ -42,7 +42,7 @@ export class PayoutTokenRegistry implements PayoutTokenFilter {
         throw new Error('the configured payout tokens must contain at least one token');
       }
       await Promise.all(configuredTokens.map(token => pricer.addToken(token)));
-      configuredTokens.forEach(token => registry.tokens.add(addressKey(token)));
+      configuredTokens.forEach(token => registry.tokens.set(addressKey(token), token));
       registry.ignoresDeploymentTokens = true;
     }
     return registry;
@@ -66,7 +66,7 @@ export class PayoutTokenRegistry implements PayoutTokenFilter {
       ),
     );
     for (const token of added) {
-      this.tokens.add(addressKey(token));
+      this.tokens.set(addressKey(token), token);
       this.log.info(
         `accepting ${token.toString()} as a payout token for every worker, from deployment ${deployment.label}`,
       );
@@ -79,7 +79,15 @@ export class PayoutTokenRegistry implements PayoutTokenFilter {
 
   /** The accepted tokens as lowercase addresses. */
   list(): string[] {
-    return [...this.tokens];
+    return [...this.tokens.keys()];
+  }
+
+  /**
+   * The tokens of the `Balance` operations that every worker keeps and watches: each token whose sweep pays out in an
+   * accepted token. It changes only when the accepted tokens change.
+   */
+  watchedTokens(): EthAddress[] {
+    return sweepTokensFor(this.chainId, [...this.tokens.values()]);
   }
 
   /** A deployment's token and the tokens that its deposit sweeps pay out in. */

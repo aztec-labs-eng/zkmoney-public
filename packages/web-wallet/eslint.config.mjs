@@ -345,6 +345,7 @@ export default migrated({
     "src/features/deposit/DepositReview/DepositReview.tsx",
     "src/features/fees/HighGasNotice/HighGasNotice.tsx",
     "src/ActiveTabGate/ActiveTabGate.tsx",
+    "src/ui/MoveSteps/MoveSteps.tsx",
     "src/features/backupPasskey/AccountHistorySheet/AccountHistorySheet.tsx",
     "src/features/backupPasskey/BackupNudge/BackupNudge.tsx",
     "src/features/backupPasskey/BackupPasskeyHost/BackupPasskeyHost.tsx",
@@ -433,6 +434,8 @@ export default migrated({
     "src/features/deposit/ChangeWalletPicker/ChangeWalletPicker.tsx",
   ],
   tests: [
+    "e2e/preflight/page-state.spec.ts",
+    "e2e/support/pageState.ts",
     "e2e/support/test.ts",
     "e2e/support/worldRoute.ts",
     "test/app/sessionDeps.test.ts",
@@ -534,5 +537,8 @@ export default migrated({
     "test/features/backupPasskey/backupEntryGate.test.ts",
     "test/features/migration/upgrade/upgradePricing.test.ts",
     "test/features/backupPasskey/fundFitFlow.test.ts",
+    "test/ui/moveSteps.test.tsx",
+    "test/ui/screens/settingsLightMode.test.tsx",
+    "test/ui/feedbackModals.test.tsx",
   ],
 })

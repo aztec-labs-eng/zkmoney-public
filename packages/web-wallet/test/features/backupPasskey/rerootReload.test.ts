@@ -29,7 +29,8 @@ import { testAuth, testCore, testPage } from "../../support/page"
 const dbs = testWalletDbs()
 const ACCOUNT_KEY = "acct/account/current"
 const ONE_KEY = word(0x1a)
-const ROOT = "aa".repeat(64)
+// The first passkey the signed change names: a re-root refuses any other session.
+const ROOT = `${word(14).slice(2)}${word(15).slice(2)}`
 const CRED = "root-credential"
 const msk = Fr.random()
 

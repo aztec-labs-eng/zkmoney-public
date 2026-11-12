@@ -64,6 +64,7 @@ import {
   type Task,
   type TeeSignerSource,
   type QueryFactory,
+  type UnreadableRotationRow,
   type Withdrawals,
 } from "@obsidion/front-core"
 import type {
@@ -122,6 +123,8 @@ export interface SignInDeps {
   createToken(wallet: ObsidionWallet, account: ObsidionAccount): Promise<TokenService>
   /** The account a sign-in just built: the unlock returns it. */
   handoff?: ObsidionAccount
+  /** Hears a saved backup rotation that fails its check: telemetry's source. */
+  backupRotationUnreadable?(row: UnreadableRotationRow): void
   /** A rotated wallet's previous account, whose history its own scans read. */
   previousAccount?: {
     /** Serves the session whose parts these are; the answer lets go of it. */
@@ -299,7 +302,9 @@ function openCore(deps: SessionDeps, wake: Runtime["wake"], detect: () => void) 
   const teeSigner = openTeeSigner(deps.teeSignerSource, assetsWanted.readonly)
   const accountRecord = signIn ? createAccountRecord({ db, now }) : null
   const contacts = signIn ? createContacts({ db, now }) : null
-  const backupRotations = signIn ? createBackupRotations({ db }) : null
+  const backupRotations = signIn
+    ? createBackupRotations({ db, onUnreadable: signIn.backupRotationUnreadable })
+    : null
   const backupNudges = signIn && backupPasskeySettingsEnabled ? createBackupNudges({ db }) : null
   const savingsMoves = createSavingsMoves({ db })
   const receiveCodes = signIn ? createReceiveCodes({ db, legacy: deps.database }) : null
@@ -349,7 +354,7 @@ function openCore(deps: SessionDeps, wake: Runtime["wake"], detect: () => void) 
     sipaProcessingObserver: () => (observer ??= deps.sipaProcessingObserver?.(sipaDeposits.view)),
     notifications: createNotifications({ db, now }),
     savedPreviousAccount: createSavedPreviousAccount(db),
-    milestones: createMilestones({ catchUp: deps.catchUp }),
+    milestones: createMilestones({ catchUp: deps.catchUp, sinceLoad: () => performance.now() }),
     teeSigner,
     assetsWanted,
     accountRecord,
@@ -438,6 +443,7 @@ export function openSession(deps: SessionDeps): Session {
     visible: deps.visible,
     pace: deps.page.pace,
     now: deps.page.now,
+    sinceLoad: () => performance.now(),
   })
   features.started()
   return {

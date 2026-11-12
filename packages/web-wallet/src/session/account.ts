@@ -69,6 +69,23 @@ export function pubkeyHexFrom(x: Buffer, y: Buffer): string {
   return `0x${Buffer.concat([x, y]).toString("hex")}`
 }
 
+type SessionAuth = { auth: Pick<Session["auth"], "sessionKeys"> }
+
+const signsFor = (keys: { authProvider: AlphaAuthProvider }, account: ObsidionAccount) =>
+  account.getAuthProvider() === keys.authProvider
+
+/**
+ * Whether the session's keys sign for `account`: false while the session is locked, and for an
+ * account built for another session (a rotated wallet's previous account).
+ */
+export async function sessionOwnsAccount(
+  session: SessionAuth,
+  account: ObsidionAccount,
+): Promise<boolean> {
+  const keys = await session.auth.sessionKeys()
+  return keys !== undefined && signsFor(keys, account)
+}
+
 /**
  * Gather the key material the claim + FPC steps need. Call right after
  * `createAccount`, which drove the session's auth service, so the MSK / auth provider are already
@@ -76,12 +93,12 @@ export function pubkeyHexFrom(x: Buffer, y: Buffer): string {
  * must be too: one built for a session since replaced is refused as `SessionChangedError`.
  */
 export async function collectOnboardingKeys(
-  session: { auth: Pick<Session["auth"], "sessionKeys"> },
+  session: SessionAuth,
   account: ObsidionAccount,
 ): Promise<OnboardingKeys> {
   const keys = await session.auth.sessionKeys()
   if (!keys) throw new WalletError("account.locked", "no session keys to continue onboarding")
-  if (account.getAuthProvider() !== keys.authProvider) throw new SessionChangedError()
+  if (!signsFor(keys, account)) throw new SessionChangedError()
   const { secretKey, authProvider } = keys
   const [x, y] = await authProvider.getPubkeys()
   return { account, secretKey, authProvider, pubkeyHex: pubkeyHexFrom(x, y) }

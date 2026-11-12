@@ -104,7 +104,7 @@ export function StrandedRecoveryModal({ onClose }: { onClose: () => void }) {
         isDisabled={!valid || checking}
         onClick={() => void check()}
       />
-      <PrimaryGradientButton title={copy.cancel} buttonStyle="dark" onClick={onClose} />
+      <PrimaryGradientButton title={copy.cancel} buttonStyle="secondary" onClick={onClose} />
     </Modal>
   )
 }

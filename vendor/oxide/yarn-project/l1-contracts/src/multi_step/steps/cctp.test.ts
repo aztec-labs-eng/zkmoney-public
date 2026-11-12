@@ -1,5 +1,5 @@
 import { describe, expect, test } from '@jest/globals';
-import { decodeFunctionData, pad } from 'viem';
+import { decodeFunctionData, pad, zeroAddress } from 'viem';
 
 import { CctpAdapterAbi } from '../../artifacts.js';
 import { type CctpDeposit, cctpSteps } from './cctp.js';
@@ -18,7 +18,7 @@ describe('cctp', () => {
   } satisfies CctpDeposit;
 
   test('deposit pads the recipient to 32 bytes', () => {
-    const data = cctp.deposit(deposit).encode({ amount: 7n });
+    const data = cctp.deposit(deposit).encode({ amount: 7n, recipient: zeroAddress });
     expect(decodeFunctionData({ abi: CctpAdapterAbi, data })).toEqual({
       functionName: 'cctpDeposit',
       args: [7n, 6, pad(recipient, { size: 32 }), 1_000000n, 1000],
@@ -30,7 +30,7 @@ describe('cctp', () => {
     const target = '0x2222222222222222222222222222222222222222';
     const data = cctp
       .depositWithHook({ ...withoutRecipient, hook: { target, calldata: '0xbeef' } })
-      .encode({ amount: 7n });
+      .encode({ amount: 7n, recipient: zeroAddress });
     expect(decodeFunctionData({ abi: CctpAdapterAbi, data })).toEqual({
       functionName: 'cctpDepositWithHook',
       args: [7n, 6, pad(target, { size: 32 }), pad(target, { size: 32 }), 1_000000n, 1000, '0xbeef'],

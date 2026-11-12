@@ -5,7 +5,7 @@ import type { Address, Hex } from "viem"
 import { PASSKEY_ENVELOPE_BYTES } from "../oxide/passkeyEnvelope.js"
 import { migrateBackupRotations } from "../storageMigrations/backupRotations"
 import type { Database } from "./database"
-import { bestEffort, WalletError } from "./errors"
+import { bestEffort, bestEffortSync, WalletError } from "./errors"
 import { loadRecords, type RecordSet } from "./persistentStore"
 import type { SipaOrigin } from "./sipaDeposits"
 import type { ReadonlyStore } from "./store"
@@ -368,10 +368,22 @@ export interface BackupRotationRecord {
   fundings: BackupFunding[]
   /** The change ran without this wallet's funding, read so at this settled block. */
   installed?: { blockHash: Hex }
-  /** The sweep that ran the change, counted once its block is settled. */
-  sweep?: { index: string; blockHash: Hex; credited: string }
+  /**
+   * The sweep that ran the change, counted once its block is settled and re-read from the chain
+   * until `L1_SWEEP_RECHECK_DEPTH` blocks deep (`deep`). `gone` while a reorg dropped it and the
+   * relayer's re-sweep has yet to settle, `lost` once no re-sweep came within that depth.
+   */
+  sweep?: {
+    index: string
+    blockNumber?: number
+    blockHash: Hex
+    credited: string
+    recheck?: "gone" | "deep" | "lost"
+  }
   /** Money held at the deposit address when the change ran without a sweep: reported as stranded once the attempt ends, the salt kept for its recovery. */
   unswept?: true
+  /** The user left the done screen; the record is removed once nothing is watched. */
+  dismissed?: true
   /** The L1 transaction that sent the deposit address's money back out. */
   recovery?: { txHash: Hex }
   /** The recovery that ended the attempt at `recovered`; money recovered after it never replaces it. */
@@ -385,6 +397,9 @@ export interface BackupRotationRecord {
 }
 
 const PRF_SLOTS: readonly PrfSlot[] = ["first", "second"]
+const SWEEP_RECHECKS: readonly NonNullable<
+  NonNullable<BackupRotationRecord["sweep"]>["recheck"]
+>[] = ["gone", "deep", "lost"]
 /** Phases from the signature to the end of the settlement, where the signed change is kept whole. */
 const APPROVED: readonly BackupRotationPhase[] = [
   "signed",
@@ -399,7 +414,7 @@ const APPROVED: readonly BackupRotationPhase[] = [
 const PLANNED: readonly BackupRotationPhase[] = [...APPROVED, "done"]
 /** Phases where the envelope may already have left the record. */
 const STRIPPED: readonly BackupRotationPhase[] = ["done", "recovered", "attention"]
-const FUNDING_OUTCOMES: readonly BackupFundingOutcome[] = [
+export const BACKUP_FUNDING_OUTCOMES: readonly BackupFundingOutcome[] = [
   "pending",
   "never-sent",
   "mined",
@@ -512,7 +527,7 @@ function isFunding(v: unknown): v is BackupFunding {
     isStr(v.session) &&
     optional(v.txHash, isWord) &&
     optional(v.expiresAtMs, isNum) &&
-    oneOf(FUNDING_OUTCOMES, v.outcome)
+    oneOf(BACKUP_FUNDING_OUTCOMES, v.outcome)
   )
 }
 
@@ -592,11 +607,18 @@ function isRecord(v: unknown, key: string): v is BackupRotationRecord {
   if (
     !optional(
       v.sweep,
-      (s) => isObj(s) && isDecimal(s.index) && isWord(s.blockHash) && isDecimal(s.credited),
+      (s) =>
+        isObj(s) &&
+        isDecimal(s.index) &&
+        optional(s.blockNumber, isNum) &&
+        isWord(s.blockHash) &&
+        isDecimal(s.credited) &&
+        optional(s.recheck, (r) => oneOf(SWEEP_RECHECKS, r)),
     )
   )
     return false
   if (!optional(v.unswept, (u) => u === true)) return false
+  if (!optional(v.dismissed, (d) => d === true)) return false
   if (!optional(v.recovery, (r) => isObj(r) && isWord(r.txHash))) return false
   if (!optional(v.recovered, (r) => isObj(r) && isWord(r.txHash))) return false
   if (
@@ -626,6 +648,15 @@ export const fundingLanding = (funding: BackupFunding): boolean =>
 /** Whether a funding entry was ever appended; the next send mints its own id. */
 export const fundingStarted = (record: Pick<BackupRotationRecord, "fundings">): boolean =>
   record.fundings.length > 0
+
+/** Whether the sweep is still re-read from the chain: it has a block to compare and is not yet deep or lost. */
+export const sweepWatched = (record: Pick<BackupRotationRecord, "sweep">): boolean =>
+  record.sweep?.blockNumber !== undefined &&
+  (record.sweep.recheck === undefined || record.sweep.recheck === "gone")
+
+/** Whether a reorg dropped the sweep and the relayer's re-sweep has yet to settle. */
+export const sweepGone = (record: Pick<BackupRotationRecord, "sweep">): boolean =>
+  record.sweep?.recheck === "gone"
 
 /**
  * Whether the rotation has yet to switch the wallet onto the two-key account. Until then the wallet
@@ -701,8 +732,8 @@ export function movesBalance(record: Pick<BackupRotationRecord, "phase" | "reroo
 
 /**
  * The record as `done` keeps it: the signature and the envelope gone, the salt too once no funding
- * can land unswept and nothing is held. A record whose funding resolves later is stripped again by
- * the same function.
+ * can land unswept, nothing is held and the sweep is no longer re-read. A record whose funding
+ * resolves later is stripped again by the same function.
  */
 export function stripSettled(record: BackupRotationRecord): BackupRotationRecord {
   const { envelopeHex: _envelope, ...backup } = record.backup
@@ -710,7 +741,8 @@ export function stripSettled(record: BackupRotationRecord): BackupRotationRecord
   const { signature: _signature, sharedSecretSalt, add, ...rest } = record.rotation
   const { envelope: _sealed, ...addRest } = add
   const rotation: BackupRotationStored = { ...rest, add: addRest }
-  if ((record.fundings.some(fundingLanding) || record.unswept) && sharedSecretSalt) {
+  const held = record.fundings.some(fundingLanding) || record.unswept || sweepWatched(record)
+  if (held && sharedSecretSalt) {
     rotation.sharedSecretSalt = sharedSecretSalt
   }
   return { ...record, backup, rotation }
@@ -804,18 +836,62 @@ export interface BackupRotations extends StrictRecords<BackupRotationRecord> {
   remove(owner: string): Promise<void>
 }
 
+/**
+ * What telemetry learns of a saved row that fails its check: whether funds may hang on it, never
+ * the row, which may hold a salt.
+ */
+export interface UnreadableRotationRow {
+  phase: BackupRotationPhase | "unknown"
+  /** The latest funding's outcome; `none` when the row lists no funding. */
+  outcome: BackupFundingOutcome | "none" | "unknown"
+  /** The row's `unswept` flag; absent when the row holds one that is not a flag. */
+  unswept?: boolean
+}
+
+function lastOutcome(fundings: unknown): UnreadableRotationRow["outcome"] {
+  if (!Array.isArray(fundings)) return "unknown"
+  if (fundings.length === 0) return "none"
+  const last: unknown = fundings.at(-1)
+  return isObj(last) && oneOf(BACKUP_FUNDING_OUTCOMES, last.outcome) ? last.outcome : "unknown"
+}
+
+function unreadableRow(v: unknown): UnreadableRotationRow {
+  const row = isObj(v) ? v : {}
+  return {
+    phase: oneOf(BACKUP_ROTATION_PHASES, row.phase) ? row.phase : "unknown",
+    outcome: isObj(v) ? lastOutcome(row.fundings) : "unknown",
+    unswept: row.unswept === undefined ? false : row.unswept === true ? true : undefined,
+  }
+}
+
+const damaged = (key: string) => new WalletError("unknown", `backup rotation ${key} is damaged`)
+
 /** A stored record every reader can act on, or a throw that fails the read. */
 export function rotationRecordOf(value: unknown, key: string): BackupRotationRecord {
-  if (!isRecord(value, key)) throw new WalletError("unknown", `backup rotation ${key} is damaged`)
+  if (!isRecord(value, key)) throw damaged(key)
   return value
 }
 
-export function createBackupRotations({ db }: { db: Database }): BackupRotations {
+export function createBackupRotations({
+  db,
+  onUnreadable,
+}: {
+  db: Database
+  /** Hears a saved row that fails its check, before the read fails. */
+  onUnreadable?(row: UnreadableRotationRow): void
+}): BackupRotations {
+  const saved = (value: unknown, key: string): BackupRotationRecord => {
+    if (isRecord(value, key)) return value
+    // A hook that throws must not replace the damaged-row error the read fails with.
+    bestEffortSync(() => onUnreadable?.(unreadableRow(value)), undefined)
+    throw damaged(key)
+  }
   const records = strictRecords(db, {
     prefix: "acct/backupRotations",
     field: "owner",
     check: rotationRecordOf,
-    migrate: (from, w, store) => migrateBackupRotations(from, w, store, rotationRecordOf),
+    checkSaved: saved,
+    migrate: (from, w, store) => migrateBackupRotations(from, w, store, saved),
   })
   return {
     ...records,

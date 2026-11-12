@@ -30,6 +30,7 @@ export function flowFixturePlugin(walletDir) {
     ["features/registration/nameAvailability.ts", "name-availability.ts"],
     ["features/invite/useInvite.ts", "invite.ts"],
     ["features/backupPasskey/backupScreen.ts", "backup-screen.ts"],
+    ["features/backupPasskey/accountKeys.ts", "account-keys.ts"],
     ["features/registration/oxideGenerations.ts", "oxide-generations.ts"],
     ["config/features.ts", "features.ts"],
   ].map(([source, fixture]) => [path.join(walletDir, "src", source), path.join(fixtures, fixture)]))
@@ -43,6 +44,7 @@ export function flowFixturePlugin(walletDir) {
     "features/deposit/DepositScreen/DepositScreen.tsx",
     "features/deposit/DepositFromWalletModal/DepositFromWalletModal.tsx",
     "features/backupPasskey/BackupPasskeyHost/BackupPasskeyHost.tsx",
+    "ui/PasskeysModal.tsx",
   ].map((file) => path.join(walletDir, "src", file)))
   return {
     name: "wallet-ui-flow-fixtures",
@@ -58,7 +60,7 @@ export function flowFixturePlugin(walletDir) {
         return path.join(fixtures, "contexts.ts")
       }
       // The Passkeys sheet reads its keys through the backup fixture.
-      if (source === "@obsidion/front-core" && owner === path.join(walletDir, "src/ui/PasskeysModal.tsx")) {
+      if (source === "@obsidion/front-core" && owner === path.join(walletDir, "src/features/backupPasskey/accountKeys.ts")) {
         return path.join(fixtures, "passkey-keys.ts")
       }
       // The registration funding panel reads a recorded SIPA's terms from the processing observer's source.
@@ -69,10 +71,6 @@ export function flowFixturePlugin(walletDir) {
       // The Passkeys sheet reads the backup fixture's saved attempt.
       if (owner === path.join(walletDir, "src/ui/PasskeysModal.tsx") && resolved?.id === path.join(walletDir, "src/features/backupPasskey/backupRotations.ts")) {
         return path.join(fixtures, "backup-rotations.ts")
-      }
-      // The Passkeys sheet waits for the session's services before its key read.
-      if (owner === path.join(walletDir, "src/ui/PasskeysModal.tsx") && resolved?.id === path.join(walletDir, "src/session/session.ts")) {
-        return path.join(fixtures, "passkey-session.ts")
       }
       // The pay page reads its rollup through the boot's identity check.
       if (owner === path.join(walletDir, "src/features/requests/RequestLandingScreen.tsx") && resolved?.id === path.join(walletDir, "src/ui/PxeBoot.tsx")) {

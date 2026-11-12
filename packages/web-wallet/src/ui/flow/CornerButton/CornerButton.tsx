@@ -2,7 +2,7 @@ import { GlassCircleButton, Icon } from "@obsidion/web-ds"
 import copy from "./CornerButton.copy"
 import styles from "./CornerButton.module.css"
 
-const GLYPH = "rgba(255, 255, 255, 0.6)"
+const GLYPH = "rgba(var(--ink-rgb), 0.6)"
 /** The arrow fills its box and the × does not, so a smaller arrow matches the × by eye. */
 const GLYPH_SIZE = { back: 12, close: 18 }
 

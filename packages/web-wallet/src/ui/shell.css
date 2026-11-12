@@ -11,21 +11,41 @@
   --ww-safe-area-bottom: env(safe-area-inset-bottom, 0px);
   --ww-safe-area-left: env(safe-area-inset-left, 0px);
 
+  --ww-shadow-consent: 0 24px 80px rgba(0, 0, 0, 0.55); /* the analytics consent card */
+
   /* The wallet's own surfaces. */
   --ww-surface-nav: rgba(255, 255, 255, 0.05); /* the desktop sidebar */
   --ww-surface-nav-active: rgba(255, 255, 255, 0.05);
   --ww-surface-menu: #131313; /* the phone menu and the account menu */
   --ww-surface-slide: rgba(255, 255, 255, 0.1); /* home quick-action slides */
+  --ww-surface-slide-fresh: linear-gradient(90deg, rgba(156, 4, 255, 0.3), rgba(6, 147, 255, 0.3));
   --ww-surface-positive: #29312d; /* privacy and invite notices */
   --ww-surface-chip: #373737;
+  --ww-warning-rgb: 255, 224, 113; /* warning notes, and the dot of waiting ones */
+  --ww-privacy-weak-rgb: 245, 197, 66; /* the weak ring tone: Medium, or an unanswered read */
+  --ww-hint: rgba(var(--ink-rgb), 0.45); /* picker search hints and the search's clear button */
+  --ww-hint-strong: rgba(var(--ink-rgb), 0.75); /* the clear button on hover */
+  --ww-text-faint: color-mix(in srgb, var(--text-primary) 50%, transparent); /* card small print */
+  --ww-transfer-label: #cfa7ff; /* the From and To labels of a transfer */
 }
 :root[data-theme="light"] {
+  /* The dialog clips past its 16px padding, and over the pale scrim that clip shows a hard edge. */
+  --ww-shadow-consent: 0 4px 12px rgba(60, 40, 120, 0.12);
   --ww-surface-nav: rgba(255, 255, 255, 0.45);
   --ww-surface-nav-active: #ffffff;
   --ww-surface-menu: var(--surface-sheet);
   --ww-surface-slide: var(--surface-faint);
+  /* Paler, over the slide surface, so the slide's gray body text reads. */
+  --ww-surface-slide-fresh: linear-gradient(90deg, rgba(156, 4, 255, 0.15), rgba(6, 147, 255, 0.15)),
+    var(--ww-surface-slide);
   --ww-surface-positive: #e4f3ea;
   --ww-surface-chip: var(--surface-track);
+  --ww-warning-rgb: 128, 89, 0; /* darker than --accent-gold, so text holds over its own tint */
+  --ww-privacy-weak-rgb: var(--accent-gold-rgb);
+  --ww-hint: var(--text-secondary);
+  --ww-hint-strong: var(--text-primary);
+  --ww-text-faint: rgba(var(--ink-rgb), 0.65);
+  --ww-transfer-label: var(--accent-violet);
 }
 /* An app's built-in browser draws its own bar over the bottom of the page and reports no inset for
    it, so the phone layout keeps the bar's height clear itself. Sized to X's iPhone bar. */
@@ -60,6 +80,8 @@
     .ww-cutover__badge,
     .ww-cutover__stamp,
     .ww-cutover__next-num,
+    .ww-account-switcher__trigger[aria-expanded="true"],
+    .ww-landing-card,
     .ww-tiprow__tip,
     .ww-ticket-intro
   ) {
@@ -561,7 +583,7 @@
   overflow: hidden;
   border-radius: var(--radius-16);
   box-shadow: inset 0 0 0 1px rgba(var(--ink-rgb), 0.07);
-  background: linear-gradient(106deg, rgba(var(--ink-rgb), 0.05) 15%, rgba(var(--ink-rgb), 0) 100%);
+  background: linear-gradient(106deg, var(--surface-card) 15%, rgba(var(--ink-rgb), 0) 100%);
   color: var(--ink);
   text-align: left;
   cursor: pointer;
@@ -923,6 +945,8 @@
 }
 
 .ww-activation__hero {
+  /* The fill stays dark in every theme, so its focus rings keep the dark theme's blue. */
+  --blue-400: var(--on-brand-blue-400);
   position: relative;
   display: flex;
   border-radius: 20px;
@@ -1941,6 +1965,10 @@ dialog.ww-modal-overlay[data-closing] {
   transform: scaleY(-1);
   pointer-events: none;
 }
+/* The light theme's invitation: the same field as a pale wash, so dark text reads over it. */
+:root[data-theme="light"] .ww-invite__gradient {
+  opacity: 0.2;
+}
 
 /* The landing frame's field: the group's blur bounds placed on the 1280×832 frame, at half opacity. */
 .ww-invite__gradient--landing {
@@ -1951,6 +1979,10 @@ dialog.ww-modal-overlay[data-closing] {
   height: 159%;
   opacity: 0.5;
   pointer-events: none;
+}
+/* In light, a pale wash, so the gray footer and subtitle read over it. */
+:root[data-theme="light"] .ww-invite__gradient--landing {
+  opacity: 0.12;
 }
 
 .ww-invite__topbar {
@@ -1984,6 +2016,10 @@ dialog.ww-modal-overlay[data-closing] {
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.08em;
+}
+/* Over the light wash a tint of ink is too faint for the label; the pill takes a glass fill. */
+:root[data-theme="light"] .ww-invite__pill {
+  background: var(--surface-strong);
 }
 .ww-invite__pill-open {
   color: var(--accent-green);
@@ -2121,6 +2157,12 @@ dialog.ww-modal-overlay[data-closing] {
   box-shadow: 0 4px 12px -2px rgba(255, 255, 255, 0.1);
   transition: transform 700ms cubic-bezier(0.65, 0, 0.35, 1);
 }
+/* The art has white labels baked in, so in light the card keeps the dark theme's look: white 10%
+   over the dark canvas. */
+:root[data-theme="light"] .ww-landing-card {
+  background: #202020;
+  box-shadow: var(--shadow-raised);
+}
 .ww-landing-card img {
   max-width: 100%;
   height: auto;
@@ -2168,6 +2210,10 @@ dialog.ww-modal-overlay[data-closing] {
   border-radius: 999px;
   background: rgba(var(--ink-rgb), 0.25);
   cursor: pointer;
+}
+/* The arrow is a white image: on the pale light wash its disc needs more ink to hold it. */
+:root[data-theme="light"] .zkm-btn-reset.ww-landing-cards__arrow {
+  background: rgba(var(--ink-rgb), 0.55);
 }
 .ww-landing-cards__seg {
   position: relative;
@@ -3935,8 +3981,8 @@ dialog.ww-modal-overlay[data-closing] {
   box-sizing: border-box;
   padding: 12px 16px;
   border-radius: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: #2c2c2c;
+  border: 1px solid rgba(var(--ink-rgb), 0.1);
+  background: var(--surface-raised);
   text-align: left;
 }
 .ww-deposit-sheet__status--spotted {
@@ -4068,8 +4114,8 @@ dialog.ww-modal-overlay[data-closing] {
   gap: 8px;
   padding: 12px;
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.05);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+  background: rgba(var(--ink-rgb), 0.05);
+  box-shadow: inset 0 0 0 1px rgba(var(--ink-rgb), 0.1);
   text-align: left;
 }
 .ww-deposit-coin__select .ww-deposit__coin-name {
@@ -4085,13 +4131,13 @@ dialog.ww-modal-overlay[data-closing] {
   gap: 12px;
   padding: 12px 16px;
   border-radius: 12px;
-  background: #2c2c2c;
+  background: var(--surface-raised);
 }
 .ww-deposit-coin__note {
   margin: 0;
   padding: 12px 16px;
   border-radius: 12px;
-  background: #2c2c2c;
+  background: var(--surface-raised);
   font-size: 13px;
   font-weight: 400;
   line-height: 1.35;
@@ -4110,7 +4156,7 @@ dialog.ww-modal-overlay[data-closing] {
   font-size: 24px;
   font-weight: 600;
   line-height: 1.3;
-  color: #fdfdfd;
+  color: var(--text-primary);
 }
 .ww-move-landing__wallets {
   display: flex;
@@ -4141,18 +4187,18 @@ dialog.ww-modal-overlay[data-closing] {
   gap: 6px;
   padding: 5px 10px 5px 12px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.05);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  background: rgba(var(--ink-rgb), 0.05);
+  box-shadow: inset 0 0 0 1px rgba(var(--ink-rgb), 0.08);
   font-size: 12px;
   font-weight: 600;
-  color: #fdfdfd;
+  color: var(--text-primary);
 }
 /* The rows carry the card's padding, 16px around each, so a hover fills the card edge to edge. */
 .ww-move-landing__list {
   display: flex;
   flex-direction: column;
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(var(--ink-rgb), 0.05);
 }
 .ww-move-landing__list > .zkm-contact-row,
 .ww-privacy-row > .zkm-contact-row {
@@ -4164,11 +4210,11 @@ dialog.ww-modal-overlay[data-closing] {
    wallet, coin and MAX buttons. */
 @media (hover: hover) {
   .zkm-btn-reset.ww-move-landing__new:hover:not(:disabled) {
-    background: rgba(255, 255, 255, 0.08);
+    background: rgba(var(--ink-rgb), 0.08);
   }
   .ww-move-landing__list > .zkm-contact-row:hover,
   .ww-privacy-row > .zkm-contact-row:hover {
-    background: rgba(255, 255, 255, 0.06);
+    background: rgba(var(--ink-rgb), 0.06);
   }
 }
 .ww-move-landing__intro {
@@ -4182,7 +4228,7 @@ dialog.ww-modal-overlay[data-closing] {
   gap: 8px;
   padding: 12px;
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(var(--ink-rgb), 0.05);
   text-align: left;
 }
 .ww-move-landing__new > span:nth-child(2) {
@@ -4194,7 +4240,7 @@ dialog.ww-modal-overlay[data-closing] {
 .ww-move-landing__new b {
   font-size: 18px;
   font-weight: 600;
-  color: #fdfdfd;
+  color: var(--text-primary);
 }
 /* The deposit landing's row, beside the saved wallets. */
 .zkm-btn-reset.ww-move-landing__new--contact {
@@ -4217,7 +4263,6 @@ dialog.ww-modal-overlay[data-closing] {
 .ww-move-landing__new--wallet .ww-move-landing__plus {
   width: 40px;
   height: 40px;
-  background: rgba(253, 253, 253, 0.1);
 }
 .ww-move-landing__new--wallet b {
   font-size: 16px;
@@ -4237,10 +4282,10 @@ dialog.ww-modal-overlay[data-closing] {
   gap: 4px;
   padding: 4px 8px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(var(--ink-rgb), 0.1);
   font-size: 11px;
   font-weight: 500;
-  color: #fdfdfd;
+  color: var(--text-primary);
 }
 .ww-move-landing__new small {
   display: flex;
@@ -4256,7 +4301,8 @@ dialog.ww-modal-overlay[data-closing] {
   width: 48px;
   height: 48px;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(var(--ink-rgb), 0.1);
+  color: var(--ink);
 }
 
 /* A destination's privacy ring and label; hovering shows what each segment found. */
@@ -4266,7 +4312,7 @@ dialog.ww-modal-overlay[data-closing] {
   gap: 8px;
   font-size: 12px;
   font-weight: 500;
-  color: #fdfdfd;
+  color: var(--text-primary);
 }
 .ww-privacy__label {
   font-size: 12px;
@@ -4299,9 +4345,9 @@ dialog.ww-modal-overlay[data-closing] {
   width: max-content;
   max-width: min(320px, calc(100vw - 48px));
   padding: 12px 14px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(var(--ink-rgb), 0.08);
   border-radius: 12px;
-  background: #2c2c2c;
+  background: var(--surface-raised);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
   cursor: default;
 }
@@ -4331,7 +4377,7 @@ dialog.ww-modal-overlay[data-closing] {
 }
 /* A direct link's headline and answer. */
 .ww-privacy__pop [data-tone="direct"] {
-  color: #fe708b;
+  color: var(--accent-pink);
 }
 .ww-privacy__pop > b {
   display: flex;
@@ -4339,7 +4385,7 @@ dialog.ww-modal-overlay[data-closing] {
   gap: 8px;
   font-size: 13px;
   font-weight: 600;
-  color: #fdfdfd;
+  color: var(--text-primary);
 }
 .ww-privacy__rows {
   display: flex;
@@ -4352,14 +4398,14 @@ dialog.ww-modal-overlay[data-closing] {
   gap: 8px;
   font-size: 12px;
   font-weight: 500;
-  color: #fdfdfd;
+  color: var(--text-primary);
 }
 .ww-privacy__row small {
   margin-left: auto;
   padding-left: 12px;
   font-size: 12px;
   font-weight: 400;
-  color: #bfc2d7;
+  color: var(--text-secondary);
 }
 .ww-privacy__actions {
   display: flex;
@@ -4371,17 +4417,17 @@ dialog.ww-modal-overlay[data-closing] {
   align-items: center;
   gap: 6px;
   padding: 5px 12px 5px 10px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(var(--ink-rgb), 0.08);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(var(--ink-rgb), 0.05);
   font-size: 11px;
   font-weight: 600;
-  color: #fdfdfd;
+  color: var(--text-primary);
 }
 .zkm-btn-reset.ww-privacy__fresh {
   font-size: 12px;
   font-weight: 500;
-  color: #fdfdfd;
+  color: var(--text-primary);
   text-decoration: underline;
 }
 /* Entry banners of the deposit and withdraw pages: the glow names the kind of move. */
@@ -4412,7 +4458,7 @@ dialog.ww-modal-overlay[data-closing] {
   .ww-deposit__facts.ww-withdraw__howto {
     padding: 12px;
     border-radius: 12px;
-    border-color: rgba(255, 255, 255, 0.15);
+    border-color: rgba(var(--ink-rgb), 0.15);
   }
   .ww-withdraw__howto > .ww-sheet__fact {
     font-weight: 600;
@@ -5451,6 +5497,9 @@ details[open] .ww-withdraw__warning-chevron {
   text-underline-offset: 3px;
 }
 .ww-phone-steps__tiprow .ww-tiprow__tip {
+  /* The tip keeps its dark fill in every theme, so it keeps the dark theme's green too. */
+  --accent-green-rgb: 86, 231, 157;
+  --accent-green: rgb(var(--accent-green-rgb));
   padding: 12px 14px;
   border: 1px solid rgba(var(--accent-green-rgb), 0.3);
   border-radius: 14px;
@@ -5578,6 +5627,10 @@ details[open] .ww-withdraw__warning-chevron {
 .ww-choice__check {
   width: 18px;
   color: #c47bff;
+}
+/* The pale purple disappears on the selected row's light lavender. */
+:root[data-theme="light"] .ww-choice__check {
+  color: var(--accent-violet);
 }
 .ww-choice__list {
   display: flex;
@@ -6526,6 +6579,12 @@ details[open] .ww-withdraw__warning-chevron {
   gap: 24px;
   width: 100%;
 }
+/* The description also uses the switch's column, as on Settings' phone layout. */
+.ww-feedback .zkm-settings-row--described {
+  grid-template-areas:
+    "leading label trailing"
+    "leading description description";
+}
 .ww-feedback__field {
   display: flex;
   flex-direction: column;
@@ -7391,18 +7450,6 @@ details[open] .ww-withdraw__warning-chevron {
 .ww-claim-review__actions > * {
   flex: 1;
 }
-.ww-claim-review__actions .ww-claim-review__close {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 56px;
-  border-radius: 9999px;
-  background: rgba(var(--ink-rgb), 0.1);
-  color: var(--text-primary);
-  font-family: var(--font-display);
-  font-size: 18px;
-  font-weight: 600;
-}
 
 .ww-allowance-notice {
   font-size: 13px;
@@ -7925,7 +7972,7 @@ details[open] .ww-withdraw__warning-chevron {
   gap: 6px;
   font-size: 13px;
   font-weight: 600;
-  color: #47b3ff;
+  color: var(--blue-400);
 }
 .ww-receive .ww-contacts__label {
   font-size: 13px;
@@ -8021,6 +8068,11 @@ details[open] .ww-withdraw__warning-chevron {
 .ww-request-who[data-who="received"]::before {
   transform: translateX(100%);
 }
+/* On a light track a darker thumb reads as pressed, so light raises a white one. */
+:root[data-theme="light"] .ww-request-who::before {
+  background: var(--surface-raised);
+  box-shadow: 0 1px 3px rgba(var(--ink-rgb), 0.12);
+}
 .zkm-btn-reset.ww-request-who__tab {
   position: relative;
   height: 48px;
@@ -8069,7 +8121,7 @@ details[open] .ww-withdraw__warning-chevron {
   gap: 18px;
   padding: 14px;
   border-radius: 22px;
-  background: rgba(var(--ink-rgb), 0.05);
+  background: var(--surface-card);
   box-shadow: inset 0 0 0 1px rgba(var(--ink-rgb), 0.1);
 }
 .zkm-btn-reset.ww-request-anyone__qr {
@@ -8081,6 +8133,10 @@ details[open] .ww-withdraw__warning-chevron {
   border-radius: 14px;
   background: #fff;
   line-height: 0;
+}
+/* On the white light card the tile needs an edge to read as the tappable code. */
+:root[data-theme="light"] .zkm-btn-reset.ww-request-anyone__qr {
+  box-shadow: inset 0 0 0 1px var(--border-hairline);
 }
 .ww-request-anyone__qr svg {
   width: 100%;

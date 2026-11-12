@@ -9,9 +9,9 @@ import copy from "./PrivacyBadge.copy"
 import styles from "./PrivacyBadge.module.css"
 
 const TONE_COLOR: Record<RingTone, string> = {
-  clear: "#56e79d",
-  weak: "#f5c542",
-  direct: "#fe708b",
+  clear: "var(--accent-green)",
+  weak: "rgb(var(--ww-privacy-weak-rgb))",
+  direct: "var(--accent-pink)",
   unknown: "#6b6f80",
 }
 
@@ -29,7 +29,7 @@ function Ring({ colors, size }: { colors: string[]; size: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 18 18" fill="none" aria-hidden>
       {colors.map((color, i) => (
-        <path key={i} d={arc(i)} stroke={color} strokeWidth={3} strokeLinecap="round" />
+        <path key={i} d={arc(i)} style={{ stroke: color }} strokeWidth={3} strokeLinecap="round" />
       ))}
     </svg>
   )
@@ -45,7 +45,7 @@ export function PrivacyRingIcon({ ring, size = 18 }: { ring: PrivacyRing; size?:
 function SegmentGlyph({
   segment,
   size,
-  color = "#fdfdfd",
+  color = "var(--text-primary)",
 }: {
   segment: number
   size: number

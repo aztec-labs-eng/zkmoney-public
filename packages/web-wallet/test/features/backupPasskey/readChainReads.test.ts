@@ -13,7 +13,6 @@ describe("readChainReads", () => {
     await expect(
       readChainReads({
         auth,
-        burnDurations: {} as Session["burnDurations"],
         page: {} as Session["page"],
         wallet: fixed("wallet", wallet),
         contractService: fixed("contractService", {} as ContractService),

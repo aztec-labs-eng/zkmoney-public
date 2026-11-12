@@ -163,6 +163,7 @@ async function reviewAndSend(
   await flow.review({ request: r, fresh: false, fixed: !!more.fixed })
   const shown = selectQuote(flow.state.get(), bridgeQuoteKey(r))!.answer!
   await flow.send({
+    cleared: true,
     key: bridgeQuoteKey(r),
     reviewed: shown,
     request: r,
@@ -265,6 +266,15 @@ describe("bridging in", () => {
     )
   })
 
+  it("asks no wallet and saves nothing until the depositor clears screening", async () => {
+    const w = world()
+    await reviewAndSend(w, request({ inputAmount: 20_000_000n }), { cleared: false })
+    expect(sent).toEqual([])
+    expect(w.clients).not.toHaveBeenCalled()
+    expect(await w.saved()).toBeUndefined()
+    expect(w.flow.state.get()).toMatchObject({ sending: false, sent: undefined })
+  })
+
   it("reviews without the wallet: every quote is priced to the wallet itself", async () => {
     const w = world()
     const r = request({ inputAmount: 20_000_000n })
@@ -314,6 +324,7 @@ describe("bridging in", () => {
       outputAmount: 18_500_000n,
     }))
     await w.flow.send({
+      cleared: true,
       key: bridgeQuoteKey(r),
       reviewed: repriced,
       request: r,

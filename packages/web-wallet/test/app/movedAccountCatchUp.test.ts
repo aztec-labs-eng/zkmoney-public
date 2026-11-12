@@ -548,6 +548,7 @@ describe("movedAccountCatchUp", () => {
         visible: memoryStore(true).readonly,
         pace: createPace(),
         now: () => Date.now(),
+        sinceLoad: () => performance.now(),
       },
     )
     try {

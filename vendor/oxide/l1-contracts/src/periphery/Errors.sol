@@ -20,6 +20,21 @@ library Errors {
   error PlainWithdrawalExecutor__ZeroTipRecipient();
   error PlainWithdrawalExecutor__RelayerTipExceedsAmount();
 
+  error StablecoinWithdrawalExecutor__InvalidUserPayload();
+  error StablecoinWithdrawalExecutor__InvalidRelayerPayload();
+  error StablecoinWithdrawalExecutor__ZeroRecipient();
+  error StablecoinWithdrawalExecutor__ZeroTipRecipient();
+  error StablecoinWithdrawalExecutor__RelayerTipExceedsAmount();
+  error StablecoinWithdrawalExecutor__SwapOffMainnet();
+  error StablecoinWithdrawalExecutor__UnknownRoute(uint8 route);
+  error StablecoinWithdrawalExecutor__InsufficientOutput(uint256 amountOut, uint256 minOut);
+  error StablecoinWithdrawalExecutor__NotThisExecutor();
+  error StablecoinWithdrawalExecutor__ZeroRecoveryRecipient();
+  error StablecoinWithdrawalExecutor__DaiForGasExceedsAmountAfterTip();
+  error StablecoinWithdrawalExecutor__DaiForGasExceedsMax(uint256 daiForGas);
+  error StablecoinWithdrawalExecutor__EthNotFromWeth();
+  error StablecoinWithdrawalExecutor__EthTransferFailed();
+
   error FeeChargingExecutorBase__UnauthorizedCaller();
   error FeeChargingExecutorBase__InvalidPortal();
   error FeeChargingExecutorBase__ZeroBeneficiary();
@@ -37,6 +52,9 @@ library Errors {
   error ERC4626Adapter__InsufficientOutput(uint256 amountOut, uint256 minOut);
   error AcrossAdapter__AmountNotAboveFee(uint256 amount, uint256 fee);
   error LifiIntentAdapter__NotSelf();
+  error CheckAdapter__TargetHasNoCode();
+  error CheckAdapter__CallReverted();
+  error CheckAdapter__ResultMismatch();
 
   error OxideAccount__InvalidR1Key();
   error OxideAccount__AuthKeyIndexOutOfBounds();

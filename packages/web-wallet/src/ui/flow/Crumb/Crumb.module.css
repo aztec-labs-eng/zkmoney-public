@@ -8,8 +8,8 @@
   box-sizing: border-box;
   padding: 0 10px 0 6px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.07);
-  color: #fdfdfd;
+  background: rgba(var(--ink-rgb), 0.07);
+  color: var(--text-primary);
   white-space: nowrap;
 }
 .crumbCoin {
@@ -40,6 +40,6 @@
 }
 @media (hover: hover) {
   .crumb:hover {
-    background: rgba(255, 255, 255, 0.1);
+    background: rgba(var(--ink-rgb), 0.1);
   }
 }

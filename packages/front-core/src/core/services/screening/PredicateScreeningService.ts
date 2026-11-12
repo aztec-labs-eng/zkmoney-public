@@ -1,4 +1,5 @@
 import type { Query, QueryFactory } from "../../../engine/query"
+import { PREDICATE_CHAINS } from "./predicateChains"
 
 const PREDICATE_BASE_URL = "https://api.predicate.io"
 const DEFAULT_TIMEOUT_MS = 5_000
@@ -11,7 +12,7 @@ export interface PredicateScreeningConfig {
   apiKey?: string
   /** Managed policy id (`x-managed-policy-…`) sent as `verification_hash`; defines what counts as blocked. */
   verificationHash: string
-  /** Predicate chain name, e.g. `ethereum-mainnet`, `ethereum-sepolia`. */
+  /** Predicate's chain name for the build's L1: `ethereum`, or `sepolia` on testnet. */
   chain: string
   /** Predicate API base; their staging tier is `https://staging.api.predicate.io`. Default production. */
   baseUrl?: string
@@ -32,7 +33,8 @@ export type ScreeningVerdict = { compliant: true } | { compliant: false; reason?
  * callers must treat a throw as "verdict unknown" and fail closed, never as a pass.
  */
 export interface AddressScreener {
-  screen(address: string): Promise<ScreeningVerdict>
+  /** `chainId` is the chain the address sends from; none means the build's L1. */
+  screen(address: string, chainId?: number): Promise<ScreeningVerdict>
 }
 
 /** For builds with no screening configured (sandbox / local dev): every address passes. */
@@ -60,7 +62,7 @@ export class PredicateScreeningService implements AddressScreener {
     this.timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS
   }
 
-  async screen(address: string): Promise<ScreeningVerdict> {
+  async screen(address: string, chainId?: number): Promise<ScreeningVerdict> {
     const response = await fetch(`${this.baseUrl}/v2/attestation`, {
       method: "POST",
       headers: {
@@ -70,7 +72,7 @@ export class PredicateScreeningService implements AddressScreener {
       body: JSON.stringify({
         verification_hash: this.config.verificationHash,
         from: address,
-        chain: this.config.chain,
+        chain: this.chainName(chainId),
       }),
       signal: AbortSignal.timeout(this.timeoutMs),
     })
@@ -80,24 +82,29 @@ export class PredicateScreeningService implements AddressScreener {
     const body = (await response.json()) as PredicateAttestationResponse
     return body.is_compliant ? { compliant: true } : { compliant: false, reason: body.reason }
   }
+
+  /** A chain Predicate does not name is screened on the L1's: the policy is address-based. */
+  private chainName(chainId: number | undefined): string {
+    return (chainId !== undefined && PREDICATE_CHAINS[chainId]) || this.config.chain
+  }
 }
 
-/** The page's verdicts per address. */
-export type Screenings = Query<[address: string], ScreeningVerdict>
+/** The page's verdicts per address and the chain it sends from; no chain is the build's L1. */
+export type Screenings = Query<[address: string, chainId: number | undefined], ScreeningVerdict>
 
 /**
- * One check per wallet: a compliant address keeps its verdict for the page's life (the relayer
+ * One check per wallet and chain: a compliant address keeps its verdict for the page's life (the relayer
  * re-enforces the policy at commit time), a blocked one for BLOCKED_TTL_MS, and a failure is
  * read again on the next screen.
  */
 export function screenings(query: QueryFactory, screener: AddressScreener): Screenings {
-  return query<[address: string], ScreeningVerdict>("screening", {
-    load: (address) => screener.screen(address),
+  return query<[address: string, chainId: number | undefined], ScreeningVerdict>("screening", {
+    load: (address, chainId) => screener.screen(address, chainId),
     stale: (verdict, ageMs) => !verdict.compliant && ageMs >= BLOCKED_TTL_MS,
   })
 }
 
 /** Screens through the page's verdicts. */
 export const screenerOf = (verdicts: Screenings): AddressScreener => ({
-  screen: (address) => verdicts(address.trim()).read(),
+  screen: (address, chainId) => verdicts(address.trim(), chainId).read(),
 })

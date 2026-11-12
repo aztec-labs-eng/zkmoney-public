@@ -553,14 +553,17 @@ async function submitSponsoredWithdrawalFlow(
   return (await runSponsoredBurn(op, kit, ctx, burn, onStage)).record
 }
 
-/** What a sponsored burn to `recipient` settles against, read before any record exists. */
-export async function burnContext(deps: WithdrawKit, recipient: Address) {
+/**
+ * What a sponsored burn to `recipient` settles against, read before any record exists. A
+ * bridge-out names `chainId`, the chain its recipient is screened on.
+ */
+export async function burnContext(deps: WithdrawKit, recipient: Address, chainId?: number) {
   // Re-screen at the commit point, before any record or burn exists: oxide's relayer enforces
   // the same policy at batching time, where a blocked recipient means a burned-but-never-
   // finalized withdrawal. A screener throw (verdict unknown) also aborts — fail closed. For a
   // swap withdrawal the burn recipient is a fresh counterfactual escrow, so this screen on the
   // swap-output recipient is the only meaningful one.
-  const verdict = await deps.screener.screen(recipient)
+  const verdict = await deps.screener.screen(recipient, chainId)
   if (!verdict.compliant) {
     throw new Error(verdict.reason?.message ?? "This address can't receive withdrawals")
   }

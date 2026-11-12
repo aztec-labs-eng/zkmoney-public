@@ -1,13 +1,17 @@
+import { L1_SETTLED_DEPTH } from "@obsidion/core/constants"
 import { describe, expect, it } from "vitest"
+import type { WithdrawalRecord } from "../../src/core/services/bridge/types"
 import {
   BACKUP_ADD_DELAYED_AFTER_MS,
   BACKUP_ADD_TAKES_MS,
   backupAddCharged,
+  backupAddEta,
   backupAddFees,
   backupAddMoved,
   backupAddTakesMs,
   backupAddTiming,
   waitsOnGas,
+  type BackupAddRelease,
 } from "../../src/engine/backupAddQuote"
 import type { MoveChunkRecord } from "../../src/engine/backupRotations"
 import { PLAN, funding, signedRecord } from "../__test-helpers__/backupRotation"
@@ -77,28 +81,26 @@ describe("backupAddTiming", () => {
       ...over,
     })
 
-  it("counts down from the latest funding sent, by the plan's quoted time", () => {
+  it("is delayed once past the quoted time by the grace, counted from the latest funding", () => {
     const resent = [
       funding({ sentAt: 0, outcome: "dead" }),
       funding({ sentAt }),
       funding({ sentAt: sentAt + MIN, txHash: undefined, outcome: "never-sent" }),
     ]
-    expect(backupAddTiming(paid({ fundings: resent }), sentAt + 5 * MIN)).toEqual({
-      leftMs: 15 * MIN,
-      delayed: false,
-    })
+    const late = sentAt + takesMs + BACKUP_ADD_DELAYED_AFTER_MS
+    expect(backupAddTiming(paid({ fundings: resent }), late - 1)).toEqual({ delayed: false })
+    expect(backupAddTiming(paid({ fundings: resent }), late)).toEqual({ delayed: true })
   })
 
-  it("is delayed once past its time by the grace, and when the route stopped paying after it paid", () => {
-    const late = sentAt + takesMs + BACKUP_ADD_DELAYED_AFTER_MS
-    expect(backupAddTiming(paid(), late - 1)).toMatchObject({ leftMs: 0, delayed: false })
-    expect(backupAddTiming(paid(), late)?.delayed).toBe(true)
+  it("is delayed when the route stopped paying after it paid", () => {
     const parked = paid({ phase: "attention", attention: "route", suspended: "swept" })
     expect(backupAddTiming(parked, sentAt)?.delayed).toBe(true)
   })
 
   it("takes the default time for a plan saved without one", () => {
-    expect(backupAddTiming(paid({ plan: PLAN }), sentAt)?.leftMs).toBe(BACKUP_ADD_TAKES_MS)
+    const late = sentAt + BACKUP_ADD_TAKES_MS + BACKUP_ADD_DELAYED_AFTER_MS
+    expect(backupAddTiming(paid({ plan: PLAN }), late - 1)?.delayed).toBe(false)
+    expect(backupAddTiming(paid({ plan: PLAN }), late)?.delayed).toBe(true)
   })
 
   it("has none before paying, or once the add waits on the user rather than the chain", () => {
@@ -107,6 +109,118 @@ describe("backupAddTiming", () => {
     const beforePaying = paid({ phase: "attention", attention: "route", suspended: "published" })
     expect(backupAddTiming(beforePaying, sentAt)).toBeUndefined()
     expect(backupAddTiming(paid({ phase: "installed", fundings: [] }), sentAt)).toBeUndefined()
+  })
+})
+
+describe("backupAddEta", () => {
+  const NOW = 1_700_000_000_000
+  const release: BackupAddRelease = {
+    landingSeconds: 120,
+    standardEtaSeconds: 600,
+    tippedEtaSeconds: 180,
+    l1SlotSeconds: 12,
+  }
+  const settle = Number(L1_SETTLED_DEPTH) * release.l1SlotSeconds
+  /** A relayer step: two Ethereum slots. */
+  const pickup = 2 * release.l1SlotSeconds
+  /** The relayer's release and sweep, then the sweep settled. */
+  const tail = 2 * pickup + settle
+  const paid = signedRecord("funded")
+  const row = (phase: WithdrawalRecord["phase"], extra: Partial<WithdrawalRecord> = {}) =>
+    ({ phase, startTime: NOW - 20 * MIN, ...extra } as WithdrawalRecord)
+  const standard = { tipped: false }
+  const faster = { tipped: true }
+
+  it("gives the typical wait from now before the funding lands, by the speed asked", () => {
+    expect(backupAddEta(undefined, undefined, release, NOW, standard)).toEqual({
+      seconds: 120 + 600 + tail,
+      remaining: false,
+    })
+    expect(backupAddEta(undefined, undefined, release, NOW, faster)).toEqual({
+      seconds: 120 + 180 + tail,
+      remaining: false,
+    })
+  })
+
+  it("lets the row's own tip pick the release once there is a row", () => {
+    const sending = row("submitting", { proverTip: "5" })
+    expect(backupAddEta(paid, sending, release, NOW, standard)?.seconds).toBe(120 + 180 + tail)
+    const untipped = row("awaiting_proven", { minedAt: NOW - 4 * MIN })
+    const tipped = row("awaiting_proven", { minedAt: NOW - 4 * MIN, proverTip: "5" })
+    expect(backupAddEta(paid, untipped, release, NOW, faster)?.seconds).toBe(
+      (NOW - 4 * MIN) / 1000 + 600 + tail - NOW / 1000,
+    )
+    expect(backupAddEta(paid, tipped, release, NOW, standard)?.seconds).toBe(
+      (NOW - 4 * MIN) / 1000 + 180 + tail - NOW / 1000,
+    )
+  })
+
+  it.each([
+    ["l2_mined", { minedAt: NOW - 4 * MIN, phaseEnteredAt: NOW - MIN }],
+    ["awaiting_proven", { minedAt: NOW - 4 * MIN, phaseEnteredAt: NOW - MIN }],
+    ["awaiting_proven", { startTime: NOW - 4 * MIN, rebuilt: true }],
+  ] as const)(
+    "counts down from a %s row's landing, by minedAt or a rebuilt startTime, not the phase entry",
+    (phase, extra) => {
+      expect(backupAddEta(paid, row(phase, extra), release, NOW, standard)).toEqual({
+        seconds: (NOW - 4 * MIN) / 1000 + 600 + tail - NOW / 1000,
+        remaining: true,
+      })
+    },
+  )
+
+  it("counts down from the burn's block time once read, not the device's later sighting", () => {
+    const seenLate = row("awaiting_proven", { minedAt: NOW - MIN })
+    const landed = { ...release, landingSeconds: 0, landedAt: (NOW - 4 * MIN) / 1000 }
+    expect(backupAddEta(paid, seenLate, landed, NOW, standard)?.seconds).toBe(
+      (NOW - 4 * MIN) / 1000 + 600 + tail - NOW / 1000,
+    )
+  })
+
+  it("counts the tail from the proof's sighting, and the sweep and settle from the release", () => {
+    const provenAt = NOW - 30_000
+    const proven = row("finalizing_l1", { minedAt: NOW - 10 * MIN, phaseEnteredAt: provenAt })
+    expect(backupAddEta(paid, proven, release, NOW, standard)).toEqual({
+      seconds: provenAt / 1000 + tail - NOW / 1000,
+      remaining: true,
+    })
+    const releasedAt = NOW - 10_000
+    const released = row("done", { phaseEnteredAt: NOW - 3 * MIN, endTime: releasedAt })
+    expect(backupAddEta(paid, released, release, NOW, standard)).toEqual({
+      seconds: releasedAt / 1000 + pickup + settle - NOW / 1000,
+      remaining: true,
+    })
+  })
+
+  it("is a countdown at zero once run out or once the sweep is seen", () => {
+    const zero = { seconds: 0, remaining: true }
+    const longAgo = row("awaiting_proven", { minedAt: NOW - 60 * MIN })
+    expect(backupAddEta(paid, longAgo, release, NOW, standard)).toEqual(zero)
+    const swept = signedRecord("swept")
+    expect(backupAddEta(swept, row("done", { endTime: NOW }), release, NOW, standard)).toEqual(zero)
+    expect(backupAddEta(signedRecord("installed"), undefined, release, NOW, standard)).toEqual(zero)
+    const parked = signedRecord("attention", { attention: "route", suspended: "swept" })
+    expect(backupAddEta(parked, row("done", { endTime: NOW }), release, NOW, standard)).toEqual(
+      zero,
+    )
+  })
+
+  it("has nothing for a failed burn or a phase the add never passes through", () => {
+    expect(backupAddEta(paid, row("failed"), release, NOW, standard)).toBeUndefined()
+    expect(backupAddEta(paid, row("swapping"), release, NOW, standard)).toBeUndefined()
+  })
+
+  it("counts the relayer steps and the settled depth in slots of the length given", () => {
+    const narrow = backupAddEta(undefined, undefined, release, NOW, standard)!.seconds
+    const wide = backupAddEta(
+      undefined,
+      undefined,
+      { ...release, l1SlotSeconds: 24 },
+      NOW,
+      standard,
+    )!.seconds
+    // Twice the slot adds the tail once more: two relayer steps of two slots, then the depth.
+    expect(wide - narrow).toBe((2 * 2 + Number(L1_SETTLED_DEPTH)) * 12)
   })
 })
 

@@ -24,7 +24,7 @@ export function cctpSteps<Usdc extends Address>(c: CctpConfig<Usdc>) {
   return {
     ...c,
     deposit(p: CctpDeposit) {
-      return define.terminal({
+      return define.noPayout({
         fn: 'cctpDeposit',
         in: c.usdc,
         args: s => [s.amount, p.destinationDomain, mintRecipient(p), p.maxFee, p.minFinalityThreshold] as const,
@@ -33,7 +33,7 @@ export function cctpSteps<Usdc extends Address>(c: CctpConfig<Usdc>) {
 
     depositWithHook(p: CctpDepositWithHook) {
       const target = pad(p.hook.target, { size: 32 });
-      return define.terminal({
+      return define.noPayout({
         fn: 'cctpDepositWithHook',
         in: c.usdc,
         args: s =>

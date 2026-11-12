@@ -59,6 +59,7 @@ import type { OnboardingMock } from "../features/onboarding/OnboardingScreen/sig
 import type { ShownAddress } from "../features/sipa/depositTarget"
 import { registrationFunnel } from "../features/registration/registrationFunnel"
 import { fireOnboardingEvent } from "../lib/analytics"
+import { reportBackupRotationUnreadable } from "../lib/backupPasskeyTelemetry"
 import { bindPasskeyEnvironment } from "../lib/passkeyTelemetry"
 import { liveSavingsApy, type LandingRate } from "../features/savings/savingsGateway"
 import { createWalletPrompt, type WalletPrompt } from "../session/walletPrompt"
@@ -334,7 +335,10 @@ export function openPage(
     noirWasm,
     preparedTicket: createPreparedTicket(noirWasm),
     ticketOffer: pageTicketOffer(query, config),
-    theme: pageTheme(document.documentElement),
+    theme: pageTheme(
+      document.documentElement,
+      document.querySelector<HTMLMetaElement>('meta[name="theme-color"]'),
+    ),
     switchTo: (namespace, handoff) => switchSession(namespace, sessions, handoff),
     teeSignerSource,
     wagmi,
@@ -414,6 +418,7 @@ export const pageSessionDeps =
               auth: (ready: ObsidionWallet) => walletAuth(page.auth, ready, accountsOfSession),
               createToken: (wallet, account) => TokenService.create(wallet, account),
               handoff,
+              backupRotationUnreadable: reportBackupRotationUnreadable,
               previousAccount: getPreviousAccountWatcher(),
             },
           }

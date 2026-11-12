@@ -1538,8 +1538,9 @@ async function claimLinkToL1Flow(
     throw new Error("This link holds too little to cover the withdrawal fee")
   }
   // Same commit-point screen as a balance withdrawal: oxide's relayer enforces the policy at
-  // batching time, where a blocked recipient means a burned-but-never-finalized withdrawal.
-  const verdict = await screener.screen(recipient)
+  // batching time, where a blocked recipient means a burned-but-never-finalized withdrawal. A
+  // bridge screens on its destination chain.
+  const verdict = await screener.screen(recipient, bridge?.chain.chainId)
   if (!verdict.compliant) {
     throw new Error(verdict.reason?.message ?? "This address can't receive withdrawals")
   }

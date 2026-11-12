@@ -6,6 +6,8 @@ import { type CompiledRoute, encodeMultiStepPayload } from '@oxide/l1-contracts/
 import { withdrawalExecutionAmount } from '@oxide/oxide-lib/executor.js';
 import { deriveRecoveryCommitment } from '@oxide/oxide-lib/sipa_recovery.js';
 
+import { zeroAddress } from 'viem';
+
 import type { WithdrawOperation } from '../l2_operations.js';
 import type { FinalizationRequestBroadcastParams } from '../withdrawal_finalization_request.js';
 
@@ -41,15 +43,8 @@ export type MultiStepWithdrawal = {
 };
 
 /** The amount less the prover tip, `relayerTip`, `feePoolCut` and the fixed lanes. Throws at zero, since steps need funds. */
-export function checkedMultiStepRemainder(p: {
-  amount: bigint;
-  proverTip: bigint;
-  relayerTip: bigint;
-  feePoolCut: bigint;
-  fixed: readonly bigint[];
-}) {
-  const netAmount = withdrawalExecutionAmount(p.amount, p.proverTip);
-  const fixedSpend = p.fixed.reduce((sum, amount) => sum + amount, p.relayerTip + p.feePoolCut);
+export function checkedMultiStepRemainder(p: MultiStepSpend) {
+  const { netAmount, fixedSpend } = sumSpend(p);
   if (fixedSpend >= netAmount) {
     throw new Error(
       `relayerTip, feePoolCut and the fixed lanes (${fixedSpend}) must be below amount - proverTip (${netAmount})`,
@@ -63,17 +58,23 @@ export function buildMultiStepWithdrawal(args: MultiStepWithdrawalArgs): MultiSt
   if (args.recoveryAccount.isZero()) {
     throw new Error('A zero recoveryAccount cannot sign recover, so stuck funds would be lost');
   }
-  // Run only for its throw: the remainder lane must get something.
-  checkedMultiStepRemainder({
+  const spend = {
     amount: args.amount,
     proverTip: args.proverTip,
     relayerTip: args.relayerTip,
     feePoolCut: args.feePoolCut.amount,
     fixed: args.compiledRoute.transfers.map(t => t.amount),
-  });
+  };
+  if (args.compiledRoute.remainderRecipient === undefined) {
+    assertNothingRemains(spend);
+  } else {
+    // Run only for its throw: the remainder lane must get something.
+    checkedMultiStepRemainder(spend);
+  }
   const recoverySalt = args.recoverySalt ?? Fr.random();
   const userPayload = encodeMultiStepPayload({
     ...args.compiledRoute,
+    remainderRecipient: args.compiledRoute.remainderRecipient ?? zeroAddress,
     transfers: [...feePoolCutTransfers(args.feePoolCut), ...args.compiledRoute.transfers],
     relayerTip: args.relayerTip,
     recoveryCommitment: deriveRecoveryCommitment(recoverySalt, args.recoveryAccount).toString(),
@@ -90,6 +91,30 @@ export function buildMultiStepWithdrawal(args: MultiStepWithdrawalArgs): MultiSt
     authwitNonce: args.authwitNonce,
   };
   return { operation, recoverySalt };
+}
+
+type MultiStepSpend = {
+  amount: bigint;
+  proverTip: bigint;
+  relayerTip: bigint;
+  feePoolCut: bigint;
+  fixed: readonly bigint[];
+};
+
+/** A route with no remainder lane must spend everything, since the executor reverts if something remains. */
+function assertNothingRemains(p: MultiStepSpend) {
+  const { netAmount, fixedSpend } = sumSpend(p);
+  if (fixedSpend !== netAmount) {
+    throw new Error(
+      `relayerTip, feePoolCut and the fixed lanes (${fixedSpend}) must equal amount - proverTip (${netAmount}) on a route with no remainder lane`,
+    );
+  }
+}
+
+function sumSpend(p: MultiStepSpend) {
+  const netAmount = withdrawalExecutionAmount(p.amount, p.proverTip);
+  const fixedSpend = p.fixed.reduce((sum, amount) => sum + amount, p.relayerTip + p.feePoolCut);
+  return { netAmount, fixedSpend };
 }
 
 function feePoolCutTransfers(cut: FeePoolCut) {

@@ -3,7 +3,7 @@
   gap: 24px;
   padding: 40px;
   border-radius: 24px;
-  background: #212121;
+  background: var(--surface-sheet);
 }
 .head {
   display: flex;
@@ -16,13 +16,13 @@
   margin: 0;
   font-size: 24px;
   font-weight: 700;
-  color: #fdfdfd;
+  color: var(--text-primary);
 }
 .head p {
   max-width: 362px;
   margin: 0;
   font-size: 14px;
-  color: #bfc2d7;
+  color: var(--text-secondary);
 }
 .legend {
   display: flex;
@@ -30,7 +30,7 @@
   justify-content: center;
   gap: 8px 16px;
   font-size: 12px;
-  color: #bfc2d7;
+  color: var(--text-secondary);
 }
 .legend span::before {
   content: "";
@@ -39,13 +39,13 @@
   height: 8px;
   margin-right: 6px;
   border-radius: 50%;
-  background: #56e79d;
+  background: var(--accent-green);
 }
 .legend [data-tone="weak"]::before {
-  background: #f5c542;
+  background: rgb(var(--ww-privacy-weak-rgb));
 }
 .legend [data-tone="direct"]::before {
-  background: #fe708b;
+  background: var(--accent-pink);
 }
 .card {
   display: flex;
@@ -54,7 +54,7 @@
   box-sizing: border-box;
   padding: 16px;
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(var(--ink-rgb), 0.03);
   text-align: left;
 }
 .questions {
@@ -76,11 +76,11 @@
 .question b {
   font-size: 14px;
   font-weight: 600;
-  color: #fdfdfd;
+  color: var(--text-primary);
 }
 .question small {
   font-size: 13px;
-  color: #bfc2d7;
+  color: var(--text-secondary);
 }
 .level {
   display: flex;
@@ -88,7 +88,7 @@
   gap: 8px;
   font-size: 12px;
   font-weight: 500;
-  color: #bfc2d7;
+  color: var(--text-secondary);
 }
 .level small {
   margin-left: auto;

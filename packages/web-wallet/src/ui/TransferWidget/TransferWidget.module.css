@@ -14,7 +14,8 @@
   gap: 10px;
   padding: 16px;
   border-radius: 12px;
-  background: #2c2c2c;
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-raised);
 }
 .who {
   display: flex;
@@ -27,7 +28,7 @@
 }
 .who b {
   font-weight: 600;
-  color: #cfa7ff;
+  color: var(--ww-transfer-label);
 }
 /* Sits on the label row without growing it. */
 :global(.zkm-btn-reset).whoBtn {
@@ -38,7 +39,7 @@
   margin: -3px 0;
   padding: 3px 6px 3px 8px;
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(var(--ink-rgb), 0.05);
   font-size: 11px;
   color: var(--text-secondary);
 }
@@ -55,7 +56,7 @@
   min-width: 0;
   font-size: 28px;
   font-weight: 700;
-  color: #fdfdfd;
+  color: var(--text-primary);
 }
 .amount input {
   width: 100%;
@@ -96,7 +97,7 @@
 .amount :global(.ww-pay__max) {
   padding: 2px 6px;
   border-radius: 9999px;
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(var(--ink-rgb), 0.1);
   font-size: 8px;
   color: var(--text-primary);
 }
@@ -110,7 +111,7 @@
   box-sizing: border-box;
   padding: 8px;
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(var(--ink-rgb), 0.05);
 }
 .chipText {
   display: flex;
@@ -121,7 +122,7 @@
 .chipText b {
   font-size: 14px;
   font-weight: 600;
-  color: #fff;
+  color: var(--ink);
 }
 .chipText small {
   white-space: nowrap;
@@ -139,16 +140,16 @@
   box-sizing: border-box;
   border: 4px solid var(--surface-sheet);
   border-radius: 50%;
-  background: #2c2c2c;
+  background: var(--surface-raised);
   color: var(--text-secondary);
   transform: translateX(-50%);
 }
 @media (hover: hover) {
   :global(.zkm-btn-reset).whoBtn:hover,
   :global(.zkm-btn-reset).chip:hover {
-    background: rgba(255, 255, 255, 0.1);
+    background: rgba(var(--ink-rgb), 0.1);
   }
   .amount :global(.ww-pay__max):hover:not(:disabled) {
-    background: rgba(255, 255, 255, 0.16);
+    background: rgba(var(--ink-rgb), 0.16);
   }
 }

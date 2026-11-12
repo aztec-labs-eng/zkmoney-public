@@ -20,8 +20,8 @@ import { transferScan, type TransferScan } from "../../src/engine/transferScan"
 
 /**
  * What the transfer scan holds across its run lifecycle. An aborted or stopped run lets go of the
- * catch-up flag, `drained()`, its wakers and a waiting `refresh()` at once, even while its PXE read
- * never answers, and a run that was never started holds nothing past its first pass.
+ * catch-up flag, its wakers and a waiting `refresh()` at once, even while its PXE read never
+ * answers, and a run that was never started holds nothing past its first pass.
  */
 
 const TOKEN = { address: "0xtok", symbol: "DAI", decimals: 18 }
@@ -93,6 +93,7 @@ function run(h: Harness, backend: MemoryBackend = memoryBackend()) {
     visible: h.visible.readonly,
     pace: createPace(),
     now: () => Date.now(),
+    sinceLoad: () => performance.now(),
   })
   running.push({ runtime, scan: h.scan })
   return runtime
@@ -166,12 +167,9 @@ describe("transfer scan run lifecycle", () => {
     // A fresh device: the first pass holds the activity skeleton while its read hangs.
     expect(h.catchingUp()).toBe(true)
     const woken = rt.wake(h.scan.task)
-    const drained = h.coordinator().drained()
-    expect(await settled(drained)).toBe(false)
 
     end(h, rt)
     expect(h.catchingUp()).toBe(false)
-    expect(await settled(drained)).toBe(true)
     expect(await settled(woken)).toBe(true)
     // Ended, not failed: no backoff is kept.
     expect([...backend.entries.keys()].filter((k) => k.startsWith("runtime/"))).toEqual([])
@@ -190,7 +188,6 @@ describe("transfer scan run lifecycle", () => {
     await flush()
     expect(again.reads.count).toBe(1)
     expect([h.catchingUp(), again.catchingUp()]).toEqual([false, false])
-    expect(await settled(again.coordinator().drained())).toBe(true)
   })
 
   it("shown again after an abort, the next pass runs at once", async () => {

@@ -720,6 +720,406 @@ describe("moving", () => {
     }
   })
 
+  describe("the run's rows", () => {
+    /** Sends that stay unsettled until the test says so, each under its own hash. */
+    const unsettledSends = () => {
+      let sends = 0
+      h.tokenService.sendTokenSponsored!.mockImplementation(
+        async (
+          _to: unknown,
+          amount: string,
+          _sponsor: unknown,
+          opts: { onTxHash: TxHashCallback },
+        ) => {
+          await h.signGate
+          await opts.onTxHash(`0x${String(++sends).padStart(64, "0")}`, {
+            expiresAtMs: Date.now() + 60_000,
+          })
+          h.balance -= BigInt(amount)
+        },
+      )
+    }
+    const run = () => getPreviousAccountWatcher().state.get().run
+
+    it("goes preparing, confirming, moved, then preparing again, and ends with the holdings read", async () => {
+      h.balance = 5n * ONE
+      h.caps = { [h.feeTuple.portal!]: 3n * ONE }
+      const pxe = fakeWallet()
+      signIn(ROOT)
+      const watcher = getPreviousAccountWatcher()
+      await watcher.check(pxe.wallet)
+      unsettledSends()
+      vi.useFakeTimers({ toFake: ["setTimeout"] })
+      try {
+        const moving = watcher.move()
+        await vi.waitFor(() => expect(pxe.receipts).toHaveBeenCalled())
+        expect(run()).toEqual({
+          rows: [{ kind: "main", moved: 0, phase: "confirming" }],
+          approvals: 1,
+        })
+
+        const second = deferred()
+        h.signGate = second.promise
+        h.txStatus = TxStatus.FINALIZED
+        await vi.advanceTimersByTimeAsync(15_000)
+        await vi.waitFor(() =>
+          expect(run()).toEqual({
+            rows: [{ kind: "main", moved: 1, phase: "preparing" }],
+            approvals: 2,
+          }),
+        )
+
+        h.signGate = undefined
+        second.resolve()
+        expect(await moving).toEqual({ kind: "done" })
+        // No frame shows the move over with the moved funds still listed.
+        expect(watcher.state.get()).toMatchObject({
+          moving: false,
+          moved: true,
+          holdings: [main(0n)],
+        })
+        expect(run()).toBeUndefined()
+      } finally {
+        vi.useRealTimers()
+      }
+
+      await watcher.check(pxe.wallet)
+      expect(watcher.state.get().moved).toBe(false)
+    })
+
+    it("counts an approval and no moved transfer for one that reverted", async () => {
+      h.balance = 5n * ONE
+      const pxe = fakeWallet()
+      signIn(ROOT)
+      const watcher = getPreviousAccountWatcher()
+      await watcher.check(pxe.wallet)
+      let sends = 0
+      const second = deferred()
+      h.tokenService.sendTokenSponsored!.mockImplementation(
+        async (_to: unknown, _amount: string, _sponsor: unknown, opts: { onTxHash: TxHashCallback }) => {
+          if (++sends === 2) await second.promise
+          await opts.onTxHash(`0x${String(sends).padStart(64, "0")}`, {
+            expiresAtMs: Date.now() + 60_000,
+          })
+          if (sends === 2) h.balance = 0n
+        },
+      )
+      h.txStatus = TxStatus.FINALIZED
+      pxe.receipts.mockResolvedValueOnce({
+        status: TxStatus.FINALIZED,
+        executionResult: TxExecutionResult.REVERTED,
+      })
+
+      const moving = watcher.move()
+      await vi.waitFor(() =>
+        expect(run()).toEqual({
+          rows: [{ kind: "main", moved: 0, phase: "preparing" }],
+          approvals: 2,
+        }),
+      )
+      second.resolve()
+      expect(await moving).toEqual({ kind: "done" })
+    })
+
+    it("keeps how far a stopped move got, then moves only what is left", async () => {
+      h.savingsTuple = { portal: SAVINGS_PORTAL, l2Token: SAVINGS_L2 }
+      h.balance = ONE
+      h.savingsBalance = 3n * ONE
+      const pxe = fakeWallet()
+      signIn(ROOT)
+      const watcher = getPreviousAccountWatcher()
+      await watcher.check(pxe.wallet)
+      const sponsor = deferred<unknown>()
+      h.sponsor
+        .mockResolvedValueOnce({ fpcAddress: "fpc", fpcArtifact: {} })
+        .mockReturnValueOnce(sponsor.promise)
+      const leave = new AbortController()
+
+      const moving = watcher.move({ signal: leave.signal })
+      await vi.waitFor(() => expect(h.sponsor).toHaveBeenCalledTimes(2))
+      leave.abort()
+      sponsor.resolve({ fpcAddress: "fpc", fpcArtifact: {} })
+
+      expect(await moving).toEqual({ kind: "stopped" })
+      expect(watcher.state.get()).toMatchObject({
+        moving: false,
+        lastResult: { kind: "stopped" },
+        run: {
+          rows: [
+            { kind: "main", moved: 1, done: true },
+            { kind: "savings", moved: 0 },
+          ],
+          approvals: 1,
+        },
+      })
+      expect(h.savingsService.sendTokenSponsored).not.toHaveBeenCalled()
+
+      h.tokenService.sendTokenSponsored!.mockClear()
+      expect(await watcher.move()).toEqual({ kind: "done" })
+      expect(h.tokenService.sendTokenSponsored).not.toHaveBeenCalled()
+      expect(h.savingsService.sendTokenSponsored).toHaveBeenCalledTimes(1)
+      expect(watcher.state.get()).toMatchObject({ moved: true })
+      expect(run()).toBeUndefined()
+    })
+
+    it("counts a balance as moved when the move stops just as its last transfer settles", async () => {
+      h.savingsTuple = { portal: SAVINGS_PORTAL, l2Token: SAVINGS_L2 }
+      h.balance = ONE
+      h.savingsBalance = 3n * ONE
+      const pxe = fakeWallet()
+      signIn(ROOT)
+      const watcher = getPreviousAccountWatcher()
+      await watcher.check(pxe.wallet)
+      unsettledSends()
+      const leave = new AbortController()
+      vi.useFakeTimers({ toFake: ["setTimeout"] })
+      try {
+        const moving = watcher.move({ signal: leave.signal })
+        await vi.waitFor(() => expect(pxe.receipts).toHaveBeenCalled())
+        h.txStatus = TxStatus.FINALIZED
+        leave.abort()
+        await vi.advanceTimersByTimeAsync(15_000)
+
+        expect(await moving).toEqual({ kind: "stopped" })
+        expect(run()).toEqual({
+          rows: [
+            { kind: "main", moved: 1, done: true },
+            { kind: "savings", moved: 0 },
+          ],
+          approvals: 1,
+        })
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it("keeps a balance stopped between two of its transfers as part moved", async () => {
+      h.balance = 5n * ONE
+      h.caps = { [h.feeTuple.portal!]: 3n * ONE }
+      const pxe = fakeWallet()
+      signIn(ROOT)
+      const watcher = getPreviousAccountWatcher()
+      await watcher.check(pxe.wallet)
+      const sponsor = deferred<unknown>()
+      h.sponsor
+        .mockResolvedValueOnce({ fpcAddress: "fpc", fpcArtifact: {} })
+        .mockReturnValueOnce(sponsor.promise)
+      const leave = new AbortController()
+
+      const moving = watcher.move({ signal: leave.signal })
+      await vi.waitFor(() => expect(h.sponsor).toHaveBeenCalledTimes(2))
+      leave.abort()
+      sponsor.resolve({ fpcAddress: "fpc", fpcArtifact: {} })
+
+      expect(await moving).toEqual({ kind: "stopped" })
+      expect(run()).toEqual({ rows: [{ kind: "main", moved: 1 }], approvals: 1 })
+    })
+
+    it("shows a transfer an earlier run left in flight on no row, and counts no approval for it", async () => {
+      h.balance = 5n * ONE
+      const pxe = fakeWallet()
+      signIn(ROOT)
+      const watcher = getPreviousAccountWatcher()
+      await watcher.check(pxe.wallet)
+      await saved.saveMove(PREVIOUS_KEY, {
+        destination: SESSION.toString(),
+        txHash: `0x${"0e".repeat(32)}`,
+        expiresAtMs: Date.now() + 60_000,
+        amount: ONE,
+      })
+      vi.useFakeTimers({ toFake: ["setTimeout"] })
+      try {
+        const moving = watcher.move()
+        await vi.waitFor(() =>
+          expect(run()).toEqual({ rows: [{ kind: "main", moved: 0 }], approvals: 0, earlier: true }),
+        )
+
+        h.txStatus = TxStatus.FINALIZED
+        await vi.advanceTimersByTimeAsync(15_000)
+        expect(await moving).toEqual({ kind: "done" })
+        expect(h.tokenService.sendTokenSponsored).toHaveBeenCalledTimes(1)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it("drops a run when a new session starts on the same earlier address, for good", async () => {
+      h.balance = 5n * ONE
+      const pxe = fakeWallet()
+      signIn(ROOT)
+      const watcher = getPreviousAccountWatcher()
+      await watcher.check(pxe.wallet)
+      const prompt = deferred()
+      h.signGate = prompt.promise
+      const moving = watcher.move()
+      await vi.waitFor(() => expect(run()?.approvals).toBe(1))
+
+      signIn(ROOT)
+      await watcher.locate(pxe.wallet)
+      expect(watcher.state.get()).toMatchObject({ address: PREVIOUS_KEY })
+      expect(run()).toBeUndefined()
+
+      h.signGate = undefined
+      prompt.resolve()
+      await moving
+      expect(run()).toBeUndefined()
+    })
+  })
+
+  describe("the approvals forecast", () => {
+    const forecast = () => getPreviousAccountWatcher().state.get().forecast
+
+    it("plans each balance worth moving under its cap, once the check has ended", async () => {
+      h.savingsTuple = { portal: SAVINGS_PORTAL, l2Token: SAVINGS_L2 }
+      h.caps = { [h.feeTuple.portal!]: 3n * ONE }
+      h.balance = 5n * ONE
+      h.savingsBalance = ONE
+      const pxe = fakeWallet()
+      signIn(ROOT)
+
+      await getPreviousAccountWatcher().check(pxe.wallet)
+      await vi.waitFor(() => expect(forecast()).toEqual({ approvals: 3, upper: false }))
+    })
+
+    it("counts no approval for a last chunk the move would leave as dust", async () => {
+      h.caps = { [h.feeTuple.portal!]: 3n * ONE }
+      h.balance = 3n * ONE + DUST / 2n
+      const pxe = fakeWallet()
+      signIn(ROOT)
+
+      await getPreviousAccountWatcher().check(pxe.wallet)
+      await vi.waitFor(() => expect(forecast()).toEqual({ approvals: 1, upper: false }))
+    })
+
+    it("reads no shape of a balance the check found nothing in", async () => {
+      h.savingsTuple = { portal: SAVINGS_PORTAL, l2Token: SAVINGS_L2 }
+      h.balance = ONE
+      const pxe = fakeWallet()
+      signIn(ROOT)
+
+      await getPreviousAccountWatcher().check(pxe.wallet)
+      await vi.waitFor(() => expect(forecast()).toEqual({ approvals: 1, upper: false }))
+      const shapesRead = h.shape.mock.calls.map(([, token]) => (token as { l2Token: string }).l2Token)
+      expect(shapesRead).toEqual([MAIN_L2])
+    })
+
+    it("leaves the check done and its holdings published when the plan fails or never returns", async () => {
+      h.balance = 5n * ONE
+      const pxe = fakeWallet()
+      signIn(ROOT)
+      const watcher = getPreviousAccountWatcher()
+      h.shape.mockRejectedValueOnce(new Error("node timeout"))
+
+      await watcher.check(pxe.wallet)
+      await idle()
+      expect(watcher.state.get()).toMatchObject({
+        checking: false,
+        checkFailed: false,
+        holdings: [main(5n * ONE)],
+      })
+      expect(forecast()).toBeUndefined()
+
+      h.shape.mockReturnValueOnce(new Promise(() => {}))
+      await watcher.check(pxe.wallet)
+      expect(watcher.state.get()).toMatchObject({ checking: false, holdings: [main(5n * ONE)] })
+      expect(await watcher.move()).toEqual({ kind: "done" })
+    })
+
+    it("plans nothing while a transfer is saved in flight", async () => {
+      h.balance = 5n * ONE
+      const pxe = fakeWallet()
+      signIn(ROOT)
+      const watcher = getPreviousAccountWatcher()
+      await watcher.locate(pxe.wallet)
+      await saved.saveMove(PREVIOUS_KEY, {
+        destination: SESSION.toString(),
+        txHash: HASH,
+        expiresAtMs: Date.now() + 60_000,
+        amount: ONE,
+      })
+
+      await watcher.check(pxe.wallet)
+      await idle()
+      expect(forecast()).toBeUndefined()
+      expect(h.shape).not.toHaveBeenCalled()
+    })
+
+    it("plans the next move under the cap a spend refusal left", async () => {
+      h.balance = 4n * ONE
+      const pxe = fakeWallet()
+      signIn(ROOT)
+      const watcher = getPreviousAccountWatcher()
+      await watcher.check(pxe.wallet)
+      await vi.waitFor(() => expect(forecast()).toEqual({ approvals: 1, upper: false }))
+      h.tokenService.sendTokenSponsored!.mockRejectedValueOnce(
+        new Error("simulation failed", { cause: new Error("Balance too low") }),
+      )
+
+      expect(await watcher.move()).toMatchObject({ kind: "refused", reason: "spend" })
+      await vi.waitFor(() => expect(forecast()).toEqual({ approvals: 2, upper: false }))
+    })
+
+    it("drops a plan still being read when a move starts", async () => {
+      h.balance = 5n * ONE
+      const pxe = fakeWallet()
+      signIn(ROOT)
+      const watcher = getPreviousAccountWatcher()
+      const slow = deferred<unknown>()
+      h.shape.mockReturnValueOnce(slow.promise)
+      await watcher.check(pxe.wallet)
+      await vi.waitFor(() => expect(h.shape).toHaveBeenCalledTimes(1))
+
+      expect(await watcher.move()).toEqual({ kind: "done" })
+      slow.resolve({ notes: [5n * ONE], depositTotal: 0n, balance: 5n * ONE })
+      await idle()
+      expect(forecast()).toBeUndefined()
+    })
+  })
+
+  it("drops the amounts a finished move moved when its closing read fails", async () => {
+    h.balance = 5n * ONE
+    const pxe = fakeWallet()
+    signIn(ROOT)
+    const watcher = getPreviousAccountWatcher()
+    await watcher.check(pxe.wallet)
+    h.tokenService.getBalance!.mockRejectedValueOnce(new Error("node timeout"))
+
+    expect(await watcher.move()).toEqual({ kind: "done" })
+    expect(watcher.state.get()).toMatchObject({ moving: false, moved: true })
+    expect(watcher.state.get().holdings).toBeUndefined()
+  })
+
+  it("shows a move stopped before any transfer as untouched", async () => {
+    h.balance = 5n * ONE
+    const pxe = fakeWallet()
+    signIn(ROOT)
+    const watcher = getPreviousAccountWatcher()
+    await watcher.check(pxe.wallet)
+    const leave = new AbortController()
+    leave.abort()
+
+    expect(await watcher.move({ signal: leave.signal })).toEqual({ kind: "stopped" })
+    expect(watcher.state.get()).toMatchObject({
+      moving: false,
+      moved: false,
+      run: { rows: [{ kind: "main", moved: 0 }], approvals: 0 },
+    })
+  })
+
+  it("takes no pass over a token the last check found nothing in", async () => {
+    h.savingsTuple = { portal: SAVINGS_PORTAL, l2Token: SAVINGS_L2 }
+    h.balance = ONE
+    const pxe = fakeWallet()
+    signIn(ROOT)
+    const watcher = getPreviousAccountWatcher()
+    await watcher.check(pxe.wallet)
+
+    expect(await watcher.move()).toEqual({ kind: "done" })
+    const shapesRead = h.shape.mock.calls.map(([, token]) => (token as { l2Token: string }).l2Token)
+    expect(shapesRead).not.toContain(SAVINGS_L2)
+    expect(h.savingsService.sendTokenSponsored).not.toHaveBeenCalled()
+  })
+
   it("waits out a move an earlier session started, then moves for the new session", async () => {
     h.balance = 5n * ONE
     const pxe = fakeWallet()

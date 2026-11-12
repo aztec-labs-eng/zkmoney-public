@@ -214,7 +214,7 @@ export function ConfigProfileModal({ onClose }: { onClose: () => void }) {
           {savedDraft && (
             <PrimaryGradientButton
               title="Use live profile"
-              buttonStyle="dark"
+              buttonStyle="secondary"
               isDisabled={losesTransaction || loadingUrl}
               onClick={reset}
             />

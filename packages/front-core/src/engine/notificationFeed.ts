@@ -553,15 +553,19 @@ export function claimReversalReports(
   notifications: Notifications,
   now: () => number,
 ): Task {
+  const due = derived(
+    [sources, notifications.state, notifications.events] as const,
+    (sources, state, events) => (sources ? claimReversals(sources.links, state, events) : []),
+    (a, b) => a.length === b.length && a.every((hash, i) => hash === b[i]),
+  )
   return task("claimReversalReports", {
     needs: {},
     when: opened(sources),
-    on: { sources, state: notifications.state, events: notifications.events },
+    on: { due },
     every: "once",
     backoff: WRITE_BACKOFF,
-    run: async ({ sources, state, events }) => {
-      if (!sources) return
-      for (const txHash of claimReversals(sources.links, state, events)) {
+    run: async ({ due }) => {
+      for (const txHash of due) {
         const event = {
           id: claimReversedId(txHash),
           at: now(),

@@ -38,7 +38,7 @@ describe('lifi', () => {
   };
 
   test('open encodes the amount and maps the user fields to the adapter names', () => {
-    const data = lifi.open(open).encode({ amount: 7n });
+    const data = lifi.open(open).encode({ amount: 7n, recipient: zeroAddress });
     expect(decodeFunctionData({ abi: LifiIntentAdapterAbi, data })).toEqual({
       functionName: 'lifiOpen',
       args: [{ ...openArgs, amount: 7n }],
@@ -48,7 +48,7 @@ describe('lifi', () => {
   test('openWithHook makes the target the recipient and passes its calldata through', () => {
     const { recipient: _, ...order } = open;
     const hook = { target: '0x3333333333333333333333333333333333333333', calldata: '0xbeef' } as const;
-    const data = lifi.openWithHook({ ...order, hook }).encode({ amount: 7n });
+    const data = lifi.openWithHook({ ...order, hook }).encode({ amount: 7n, recipient: zeroAddress });
     expect(decodeFunctionData({ abi: LifiIntentAdapterAbi, data })).toEqual({
       functionName: 'lifiOpenWithHook',
       args: [
@@ -67,7 +67,7 @@ describe('lifi', () => {
     const sell = psm.buyGem({ psm: USDS_PSM, minOut: 1n });
     const { recipient: _, ...order } = { ...open, destinationChainId: 1n, outputToken: USDS };
     const hook = { lane: (lane: LaneBuilder) => lane.step(sell).to(open.recipient), fallbackTo: open.refundTo };
-    const data = lifi.openWithHook({ ...order, hook }).encode({ amount: 7n });
+    const data = lifi.openWithHook({ ...order, hook }).encode({ amount: 7n, recipient: zeroAddress });
     expect(decodeFunctionData({ abi: LifiIntentAdapterAbi, data })).toMatchObject({
       functionName: 'lifiOpenWithHook',
       args: [
@@ -104,7 +104,7 @@ describe('lifi', () => {
     });
     const { recipient: _, ...order } = { ...open, destinationChainId: 1n, outputToken: ETH };
     const hook = { lane: (lane: LaneBuilder) => lane.step(weth.wrap()).to(open.recipient), fallbackTo: open.refundTo };
-    const data = lifi.openWithHook({ ...order, hook }).encode({ amount: 7n });
+    const data = lifi.openWithHook({ ...order, hook }).encode({ amount: 7n, recipient: zeroAddress });
     expect(decodeFunctionData({ abi: LifiIntentAdapterAbi, data })).toMatchObject({
       args: [{ outputToken: pad(zeroAddress, { size: 32 }) }],
     });

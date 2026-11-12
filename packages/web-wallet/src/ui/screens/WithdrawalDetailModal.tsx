@@ -467,7 +467,7 @@ export function WithdrawalDetailModal({
       {onCheckAgain && (
         <PrimaryGradientButton
           title="Check again"
-          buttonStyle={exit ? "dark" : undefined}
+          buttonStyle={exit ? "secondary" : undefined}
           onClick={onCheckAgain}
         />
       )}

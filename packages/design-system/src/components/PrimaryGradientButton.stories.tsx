@@ -13,7 +13,7 @@ export const Primary: Story = {
   args: { title: "Continue", trailingIcon: "arrow-right" },
 }
 
-/* Glass is invisible over a flat fill: show the secondary over the brand gradient
+/* Glass is invisible over a flat fill: show the dark capsule over the brand gradient
    plus a list of rows, side by side with the gradient primary. */
 export const Dark: Story = {
   args: { title: "Keep waiting", buttonStyle: "dark" },
@@ -74,6 +74,15 @@ export const Dark: Story = {
       </div>
     </div>
   ),
+}
+
+export const Secondary: Story = {
+  args: {
+    title: "Button",
+    buttonStyle: "secondary",
+    leadingIcon: "arrow-left",
+    trailingIcon: "arrow-right",
+  },
 }
 
 export const Loading: Story = {

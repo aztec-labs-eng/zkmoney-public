@@ -1,7 +1,13 @@
 // @vitest-environment node
 import { Fr } from "@aztec-labs/aztec.js/fields"
 import { WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
-import { deriveBootstrapKey, fixed, fundingLocalId, persistedRotation } from "@obsidion/front-core"
+import {
+  deriveBootstrapKey,
+  fixed,
+  fundingLocalId,
+  persistedRotation,
+  RootPasskeyRequiredError,
+} from "@obsidion/front-core"
 import { predictAccountAddressLocally } from "@oxide/l1-contracts"
 import {
   encodeUserHandle,
@@ -360,8 +366,10 @@ describe("signedChangeFor", () => {
 
   it("refuses a session signed in with another passkey", () => {
     const other = `${word(21).slice(2)}${word(22).slice(2)}`
-    expect(() => signedChangeFor(rotation, other)).toThrow("first passkey")
-    expect(() => signedChangeFor({ ...rotation, expectedKeys: [] }, root)).toThrow("first passkey")
+    expect(() => signedChangeFor(rotation, other)).toThrow(RootPasskeyRequiredError)
+    expect(() => signedChangeFor({ ...rotation, expectedKeys: [] }, root)).toThrow(
+      RootPasskeyRequiredError,
+    )
   })
 
   it("refuses a record with nothing signed", () => {
@@ -625,8 +633,8 @@ describe("the move's tokens", () => {
     })
     // Main's 3 under a cap of 2 is two sends; Savings' 10 under a cap of 7 is two more.
     expect(plan.moves).toBe(4)
-    // No burns yet and no proofs this node can show: 600 s, 32 slots of 36 s, 900 s, 15 min.
-    expect(plan.takesMs).toBe(3_552_000)
+    // No burns yet and no proofs this node can show: 600 s, 32 slots of 36 s, 300 s, 15 min.
+    expect(plan.takesMs).toBe(2_952_000)
   })
 })
 
@@ -937,9 +945,9 @@ describe("the stranded deposit's recovery", () => {
       hash: word(4),
     }))
     Object.assign(fakes.client as object, { getBlockNumber, getBlock })
-    expect(await deps.l1.settledBlock()).toEqual({ number: 97, hash: word(4) })
-    expect(getBlock).toHaveBeenLastCalledWith({ blockNumber: 97n })
-    getBlockNumber.mockResolvedValue(2n)
+    expect(await deps.l1.settledBlock()).toEqual({ number: 99, hash: word(4) })
+    expect(getBlock).toHaveBeenLastCalledWith({ blockNumber: 99n })
+    getBlockNumber.mockResolvedValue(1n)
     expect(await deps.l1.settledBlock()).toEqual({ number: 0, hash: word(4) })
   })
 
@@ -948,39 +956,39 @@ describe("the stranded deposit's recovery", () => {
     const getBlockNumber = vi.fn(async () => 100n)
     const getBlock = vi.fn(async () => ({ hash: word(3) }))
     Object.assign(fakes.client as object, { getBlockNumber, getBlock })
-    expect(await deps.l1.isSettled({ blockNumber: 97, blockHash: word(3) })).toBe(true)
-    expect(await deps.l1.isSettled({ blockNumber: 98, blockHash: word(3) })).toBe(false)
-    expect(await deps.l1.isSettled({ blockNumber: 97, blockHash: word(5) })).toBe(false)
+    expect(await deps.l1.isSettled({ blockNumber: 99, blockHash: word(3) })).toBe(true)
+    expect(await deps.l1.isSettled({ blockNumber: 100, blockHash: word(3) })).toBe(false)
+    expect(await deps.l1.isSettled({ blockNumber: 99, blockHash: word(5) })).toBe(false)
     const down = new Error()
     getBlockNumber.mockRejectedValueOnce(down)
-    await expect(deps.l1.isSettled({ blockNumber: 97, blockHash: word(3) })).rejects.toBe(down)
+    await expect(deps.l1.isSettled({ blockNumber: 99, blockHash: word(3) })).rejects.toBe(down)
   })
 
   it("reads the deposit balance and the portal's release at the settled block's number", async () => {
     const deps = await setup()
     const readContract = vi.fn(async () => 7n)
-    const getBlock = vi.fn(async () => ({ number: 97n, hash: word(4) }))
+    const getBlock = vi.fn(async () => ({ number: 99n, hash: word(4) }))
     Object.assign(fakes.client as object, {
       getBlockNumber: async () => 100n,
       getBlock,
       readContract,
     })
-    const at = { number: 97, hash: word(4) }
+    const at = { number: 99, hash: word(4) }
     expect(await deps.l1.sipaBalance(SIPA, at)).toBe(7n)
     expect(readContract).toHaveBeenLastCalledWith(
-      expect.objectContaining({ functionName: "balanceOf", blockNumber: 97n }),
+      expect.objectContaining({ functionName: "balanceOf", blockNumber: 99n }),
     )
     await deps.l1.sipaBalance(SIPA, "latest")
     expect(readContract).toHaveBeenLastCalledWith(
       expect.objectContaining({ functionName: "balanceOf", blockTag: "latest" }),
     )
     await deps.l1.sipaBalance(SIPA)
-    expect(getBlock).toHaveBeenCalledWith({ blockNumber: 97n })
-    expect(readContract).toHaveBeenLastCalledWith(expect.objectContaining({ blockNumber: 97n }))
+    expect(getBlock).toHaveBeenCalledWith({ blockNumber: 99n })
+    expect(readContract).toHaveBeenLastCalledWith(expect.objectContaining({ blockNumber: 99n }))
     readContract.mockResolvedValueOnce(true as never)
     expect(await deps.l1.releaseSettled(word(7), at)).toBe(true)
     expect(readContract).toHaveBeenLastCalledWith(
-      expect.objectContaining({ functionName: "$isWithdrawalSpent", blockNumber: 97n }),
+      expect.objectContaining({ functionName: "$isWithdrawalSpent", blockNumber: 99n }),
     )
   })
 

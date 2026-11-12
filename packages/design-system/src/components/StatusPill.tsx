@@ -28,7 +28,7 @@ export function StatusPill({ label, icon, labelColor = "var(--ink)", iconColor =
 export type StatusBadgeStyle = "pending" | "awaitingClaim" | "request" | "failed" | "cancelled" | "paid"
 
 const BADGE_COLORS: Record<StatusBadgeStyle, string> = {
-  pending: "#EE9B4E",
+  pending: "var(--accent-orange)",
   awaitingClaim: "var(--accent-gold)",
   request: "var(--accent-gold)",
   failed: "var(--accent-pink)",

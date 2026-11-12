@@ -1,9 +1,25 @@
 import { Modal } from "./Modal"
 import { useState, type ReactNode } from "react"
-import { GradientText, Icon, PrimaryGradientButton, TopNavIconButton } from "@obsidion/web-ds"
+import {
+  GlassRowCard,
+  GradientText,
+  GradientToggle,
+  Icon,
+  PrimaryGradientButton,
+  SettingsRow,
+  TopNavIconButton,
+} from "@obsidion/web-ds"
 
 import { sendFeedback } from "../lib/feedback"
 import { useSubmit } from "./hooks"
+import copy from "./FeedbackModals.copy"
+import usageDataCopy from "./usageData.copy"
+
+/** The analytics consent behind Settings' usage data switch, read and saved by the caller. */
+type UsageData = {
+  analyticsConsent: boolean
+  onAnalyticsConsent: (granted: boolean) => void
+}
 
 function Sheet({
   title,
@@ -47,6 +63,22 @@ function SendFailed() {
   )
 }
 
+/** Offered when the form opens with sharing off, and kept until it closes once turned on here. */
+function UsageDataRow({ analyticsConsent, onAnalyticsConsent }: UsageData) {
+  const [offered] = useState(!analyticsConsent)
+  if (!offered) return null
+  return (
+    <GlassRowCard padding={16}>
+      <SettingsRow
+        icon="database"
+        label={usageDataCopy.label}
+        description={copy.usageDataWhy}
+        trailing={<GradientToggle isOn={analyticsConsent} onChange={onAnalyticsConsent} />}
+      />
+    </GlassRowCard>
+  )
+}
+
 // `as="div"` for groups of buttons: a <label> would forward clicks to the first one.
 function Field({
   label,
@@ -65,7 +97,7 @@ function Field({
   )
 }
 
-export function FeedbackModal({ onClose }: { onClose: () => void }) {
+export function FeedbackModal({ onClose, ...usageData }: { onClose: () => void } & UsageData) {
   const [rating, setRating] = useState<"good" | "bad">()
   const [text, setText] = useState("")
   const { status, submit } = useSubmit(() => sendFeedback({ kind: "feedback", rating, text }))
@@ -102,6 +134,7 @@ export function FeedbackModal({ onClose }: { onClose: () => void }) {
                 onChange={(e) => setText(e.target.value)}
               />
             </Field>
+            <UsageDataRow {...usageData} />
           </div>
           {status === "failed" && <SendFailed />}
           <PrimaryGradientButton
@@ -116,7 +149,7 @@ export function FeedbackModal({ onClose }: { onClose: () => void }) {
   )
 }
 
-export function BugReportModal({ onClose }: { onClose: () => void }) {
+export function BugReportModal({ onClose, ...usageData }: { onClose: () => void } & UsageData) {
   const [text, setText] = useState("")
   const { status, submit } = useSubmit(() => sendFeedback({ kind: "bug", text }))
 
@@ -130,7 +163,7 @@ export function BugReportModal({ onClose }: { onClose: () => void }) {
             <Field label="Describe the bug">
               <textarea
                 className="ww-feedback__textarea"
-                placeholder="Describe the bug in as much detail as you can: what you were doing, what you expected, and what happened instead."
+                placeholder={copy.bugPlaceholder}
                 value={text}
                 onChange={(e) => setText(e.target.value)}
               />
@@ -149,6 +182,7 @@ export function BugReportModal({ onClose }: { onClose: () => void }) {
               />
             </Field>
             */}
+            <UsageDataRow {...usageData} />
           </div>
           {status === "failed" && <SendFailed />}
           <PrimaryGradientButton

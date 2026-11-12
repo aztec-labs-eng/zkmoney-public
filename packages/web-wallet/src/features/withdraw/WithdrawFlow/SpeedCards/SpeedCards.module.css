@@ -16,9 +16,9 @@
   min-width: 0;
   box-sizing: border-box;
   padding: 12px 16px;
-  border: 1px solid rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(var(--ink-rgb), 0.07);
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(var(--ink-rgb), 0.03);
   text-align: left;
 }
 /* Selected: a rounded gradient ring over the card's own border, which goes clear. */
@@ -55,11 +55,11 @@
 .speedText b {
   font-size: 14px;
   font-weight: 600;
-  color: #fff;
+  color: var(--ink);
 }
 .speedText small {
   font-size: 12px;
-  color: #bfc2d7;
+  color: var(--text-secondary);
 }
 .radio {
   flex: none;
@@ -68,7 +68,7 @@
   width: 16px;
   height: 16px;
   box-sizing: border-box;
-  border: 1px solid rgba(255, 255, 255, 0.25);
+  border: 1px solid rgba(var(--ink-rgb), 0.25);
   border-radius: 50%;
 }
 [aria-checked="true"] > .radio {
@@ -91,5 +91,5 @@
 .speedNote {
   flex-basis: 100%;
   font-size: 11px;
-  color: #bfc2d7;
+  color: var(--text-secondary);
 }

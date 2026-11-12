@@ -18,6 +18,18 @@ export function depositTokensFor(chainId: bigint, portalToken: EthAddress): EthA
 }
 
 /**
+ * The tokens whose sweeps pay out in one of `payoutTokens`, so a relayer that accepts these payout tokens watches
+ * them. This is the inverse of `depositPayoutTokenFor`: on mainnet, USDC and USDT are on the list only when DAI is a
+ * payout token, and every other token only when it is a payout token itself.
+ */
+export function sweepTokensFor(chainId: bigint, payoutTokens: readonly EthAddress[]): EthAddress[] {
+  const candidates = chainId === MAINNET_CHAIN_ID ? [...payoutTokens, ...MAINNET_DEPOSIT_TOKENS] : [...payoutTokens];
+  const paysOut = (token: EthAddress) =>
+    payoutTokens.some(payoutToken => payoutToken.equals(depositPayoutTokenFor(chainId, token)));
+  return unique(candidates.filter(paysOut));
+}
+
+/**
  * The token a sweep of `sentToken` pays its fee and its subsidy in, and so the payout token of the L1 operation
  * that sweeps it. Every SIPA swaps: on mainnet it swaps USDC and USDT to DAI before it routes the funds. Every other
  * sweep pays in the sent token. The deposit subsidy pays in the same token.
@@ -25,4 +37,8 @@ export function depositTokensFor(chainId: bigint, portalToken: EthAddress): EthA
 export function depositPayoutTokenFor(chainId: bigint, sentToken: EthAddress): EthAddress {
   const swapped = chainId === MAINNET_CHAIN_ID && (sentToken.equals(MAINNET_USDC) || sentToken.equals(MAINNET_USDT));
   return swapped ? MAINNET_DAI : sentToken;
+}
+
+function unique(tokens: EthAddress[]): EthAddress[] {
+  return tokens.filter((token, index) => tokens.findIndex(other => other.equals(token)) === index);
 }

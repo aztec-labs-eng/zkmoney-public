@@ -31,7 +31,7 @@ const h = vi.hoisted(() => ({
   demo: false,
   tokenCreate: vi.fn(),
   featureListed: vi.fn(async () => false),
-  recordStale: vi.fn(),
+  recordState: vi.fn(),
   oldVersionsRead: vi.fn(),
   event: vi.fn(),
   /** A saved run's storage key by source portal; one key for every source when absent. */
@@ -156,7 +156,10 @@ vi.mock("../../../src/session/session", async () => {
     },
     balanceStore: stored.balances,
     registrations,
+    // The bug report sheet reads the usage data consent.
+    device: core.memoryStore({ analyticsConsent: false }).readonly,
     savingsHolding: { get: () => h.savings, subscribe: () => () => {} },
+    metadataRecordState: () => ({ read: () => h.recordState() }),
   }
   return {
     openedSession: core.memoryStore({ operations }).readonly,
@@ -201,6 +204,9 @@ vi.mock("@obsidion/web-ds", () => ({
   ),
   TopNavIconButton: () => null,
   Icon: () => null,
+  GlassRowCard: () => null,
+  SettingsRow: () => null,
+  GradientToggle: () => null,
   GradientSpinner: () => null,
   ProgressSpinner: () => null,
   Shimmer: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
@@ -253,7 +259,6 @@ vi.mock("../../../src/features/migration/createWebMetadataMigration", () => {
         }
       }
     },
-    webAccountRecordStale: () => h.recordStale(),
     webMetadataMigrationKey: (current: { portal: string }, historic: { portal: string }) =>
       h.keyFor?.(historic.portal) ??
       (historic.portal.toLowerCase() === current.portal.toLowerCase()
@@ -348,7 +353,7 @@ beforeEach(() => {
   walletStorage.removeItem("webwallet.upgradeLock/0xabc")
   walletStorage.removeItem("webwallet.version/0xabc")
   h.probe.mockResolvedValue(null)
-  h.recordStale.mockResolvedValue(false)
+  h.recordState.mockResolvedValue("none")
   // 1 Choose shows once a session: these tests start from the offer.
   sessionStorage.setItem("zkm:upgrade-choose-shown", "1")
   sessionStorage.setItem("zkm:upgrade-moving-shown", "1")
@@ -2741,20 +2746,20 @@ describe("MigrationDetectionMount — old-version holdings", () => {
     })
 
     it("shows Home if the record misses its wait, and keeps Home when it answers late", async () => {
-      let stale = (_: boolean) => {}
-      h.recordStale.mockReturnValue(new Promise((resolve) => (stale = resolve)))
+      let stale = (_: string) => {}
+      h.recordState.mockReturnValue(new Promise((resolve) => (stale = resolve)))
       await reboot()
 
       await act(async () => vi.advanceTimersByTimeAsync(RECORD_CHECK_WAIT_MS))
       expect(splash()).toBe(false)
 
-      await act(async () => stale(true))
+      await act(async () => stale("other"))
       expect(choose()).toBeNull()
     })
 
     it("keeps the boot screen up through a failed check until the record answers", async () => {
-      let stale = (_: boolean) => {}
-      h.recordStale.mockReturnValue(new Promise((resolve) => (stale = resolve)))
+      let stale = (_: string) => {}
+      h.recordState.mockReturnValue(new Promise((resolve) => (stale = resolve)))
       act(() => root.unmount())
       root = createRoot(container)
       h.probe.mockRejectedValue(new Error("node unreachable"))
@@ -2764,7 +2769,7 @@ describe("MigrationDetectionMount — old-version holdings", () => {
       expect(upgradeStatus().state).toBe("failed")
       expect(splash()).toBe(true)
 
-      await act(async () => stale(true))
+      await act(async () => stale("other"))
 
       expect(splash()).toBe(false)
       expect(choose()).toBeNull()
@@ -2799,7 +2804,7 @@ describe("MigrationDetectionMount — old-version holdings", () => {
     it("shows the probe's figure while it reads what moves, when a stale record chose it", async () => {
       withTokenService()
       session()
-      h.recordStale.mockResolvedValue(true)
+      h.recordState.mockResolvedValue("other")
       let quoted = () => {}
       quote.mockImplementationOnce(
         () =>
@@ -2829,7 +2834,7 @@ describe("MigrationDetectionMount — old-version holdings", () => {
     it("leaves deposits still waiting out of the probe's figure", async () => {
       withTokenService()
       session()
-      h.recordStale.mockResolvedValue(true)
+      h.recordState.mockResolvedValue("other")
       quote.mockImplementationOnce(() => new Promise(() => {}))
       h.probe.mockResolvedValue({
         ...found,

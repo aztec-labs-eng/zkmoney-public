@@ -163,7 +163,7 @@ export function ErrorModalHost({ network }: { network: Network }) {
             <div style={{ display: "flex", gap: 12 }}>
               <PrimaryGradientButton
                 title={copyLabel}
-                buttonStyle="dark"
+                buttonStyle="secondary"
                 onClick={() => void copy()}
                 style={{ flex: 1 }}
               />

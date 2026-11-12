@@ -231,6 +231,7 @@ describe("bridgeInRebuild task", () => {
       visible: memoryStore(true).readonly,
       pace: createPace(),
       now: () => Date.now(),
+      sinceLoad: () => performance.now(),
     })
     runtimes.push(runtime)
     return async () => {

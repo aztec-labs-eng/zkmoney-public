@@ -29,6 +29,8 @@ export {
   ProverSubsidyBytecode,
   PlainWithdrawalExecutorAbi,
   PlainWithdrawalExecutorBytecode,
+  StablecoinWithdrawalExecutorAbi,
+  StablecoinWithdrawalExecutorBytecode,
   MigrationExecutorAbi,
   MigrationExecutorBytecode,
   MigrationSubsidyAbi,
@@ -53,6 +55,7 @@ export {
   deployDepositSubsidy,
   deployProverSubsidy,
   deployPlainWithdrawalExecutor,
+  deployStablecoinWithdrawalExecutor,
   type DeployMigrationExecutorArgs,
   deployMigrationExecutor,
   deployPortalFactory,
@@ -331,6 +334,7 @@ export {
   MAINNET_USDT,
   depositPayoutTokenFor,
   depositTokensFor,
+  sweepTokensFor,
 } from './deposit_tokens.js';
 
 export { deployAddPasskeySIPA } from './deploy/deploy_sipa_implementations.js';

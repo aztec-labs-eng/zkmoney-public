@@ -6,6 +6,9 @@ import type { After, Milestone, Milestones } from "./milestones"
 import type { Backoff, Input, Service } from "./service"
 import type { ReadonlyStore } from "./store"
 
+/** A run at least this long is logged with its start and end, so a boot log shows a timeline. */
+const LOGGED_RUN_MS = 200
+
 /**
  * Background work as declared tasks. A task waits for its milestones, the bounds counted from its
  * needs first being ready, and runs only while every need is ready and `when` holds, one run at a
@@ -121,6 +124,8 @@ export interface RuntimeDeps {
   pace: Pick<Pace, "after" | "mark">
   /** The page's wall time, ms epoch: backoffs and cadence waits count from it. */
   now: () => number
+  /** Ms since the page loaded: the times its log prints. */
+  sinceLoad: () => number
 }
 
 export interface Runtime {
@@ -324,6 +329,7 @@ export function startRuntime(tasks: readonly Task[], deps: RuntimeDeps): Runtime
     }
     let failed = false
     let next: number | undefined
+    const startedAt = deps.sinceLoad()
     try {
       const result = await spec.run({
         ...ready,
@@ -336,6 +342,13 @@ export function startRuntime(tasks: readonly Task[], deps: RuntimeDeps): Runtime
     } catch (e) {
       failed = !run.signal.aborted
       if (failed) logger.warn(`[runtime] ${task.name} failed:`, e)
+    }
+    const endedAt = deps.sinceLoad()
+    if (endedAt - startedAt >= LOGGED_RUN_MS) {
+      const how = run.signal.aborted ? "aborted" : failed ? "failed" : "ok"
+      logger.log(
+        `[runtime] ${task.name} ran ${Math.round(startedAt)}-${Math.round(endedAt)}ms ${how}`,
+      )
     }
     slot.run = undefined
     release()

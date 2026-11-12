@@ -1,5 +1,6 @@
 import { Modal } from "./Modal"
 import { GradientText, Icon, PrimaryGradientButton, TopNavIconButton } from "@obsidion/web-ds"
+import copy from "./LogoutBlockedModal.copy"
 
 /**
  * Shown to a logout while the tag is still registering. OK keeps the session; the small link
@@ -33,7 +34,7 @@ export function LogoutBlockedModal({
         account. Once registration is complete, you can log out.
       </p>
       <div className="ww-logout__actions">
-        <PrimaryGradientButton title="OK" buttonStyle="dark" onClick={onClose} />
+        <PrimaryGradientButton title={copy.ok} buttonStyle="secondary" onClick={onClose} />
       </div>
       <button type="button" className="zkm-btn-reset ww-logout__anyway" onClick={onConfirm}>
         Log out anyway

@@ -6,7 +6,8 @@
 #   node and L1, with 120s for each test and hook. The metadata settlement suite's relayer is a child process, so its
 #   light node and L1 also listen on local ports; METADATA_TWO_ROLLUP=1 runs its two-rollup modes.
 #   scripts/run_test.sh v5-migration                 the suite's v5-frozen mode, which needs a local network: it starts
-#   one (`aztec start --local-network`), so CI runs it in a container of its own (ISOLATE=1). It reads the v5 inputs
+#   one (`aztec start --local-network`), so it runs in a container of its own on the host's network, as a CI3
+#   compose project (scripts/v5-migration/docker-compose.yml). It reads the v5 inputs
 #   the Makefile's v5-deps fetches.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -26,6 +27,12 @@ case "$1" in
   v5-migration)
     # Its own container's real local network: the one test the stand-ins do not hold to.
     drop_stand_ins
+    if [ -z "${V5_MIGRATION_CONTAINER:-}" ]; then
+      HOST_UID=$(id -u) HOST_GID=$(id -g) REPO_ROOT=$root
+      export HOST_UID HOST_GID REPO_ROOT
+      export PATH=$root/ci3:$PATH
+      exec run_compose_test v5_migration suite "$PWD/scripts/v5-migration"
+    fi
     export PATH=$HOME/.aztec/current/bin:$PATH
     [ -d /opt/ms-playwright ] && export PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
     log=$(mktemp)

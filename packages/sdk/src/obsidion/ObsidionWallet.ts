@@ -33,9 +33,11 @@ import {
 import { getPXEConfig, type PXEConfig } from "@aztec-labs/pxe/config"
 import {
   createPXE as createPXELazy,
+  type NotesFilter,
   type PXE,
   type PXECreationOptions,
 } from "@aztec-labs/pxe/client/lazy"
+import type { NoteDao } from "@aztec-labs/stdlib/note"
 import { ObsidionAccount } from "./alpha/account/ObsidionAccount.js"
 import {
   ObsidionAccountContractManager,
@@ -738,6 +740,16 @@ export class ObsidionWallet extends BaseWallet {
   /** `read` on one sync, with the anchor it ran at. Throws like `getPrivateEventsSnapshot`. */
   async getSnapshot<P>(read: () => Promise<P>): Promise<{ value: P; anchorBlock: number }> {
     return this.readAtOneAnchor(read, {})
+  }
+
+  /**
+   * `PXE.debug.getNotes`, the one note-preimage read. It syncs PXE whatever the wallet holds, so it
+   * runs between snapshots, never inside one. Do not await it inside a snapshot's read.
+   */
+  getNotes(filter: NotesFilter): Promise<NoteDao[]> {
+    const turn = this.snapshots.then(() => this.pxe.debug.getNotes(filter))
+    this.snapshots = turn.catch(() => {})
+    return turn
   }
 
   /** Queued behind any snapshot in flight, so each one's entry sync follows the call. */

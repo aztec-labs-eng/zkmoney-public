@@ -11,6 +11,7 @@ import {
   observeSipas,
   operationIndex,
   pubkeyToR1KeyArg,
+  RootPasskeyRequiredError,
   signAccountUserOp,
   stampWithdrawal,
   unreadDeposits,
@@ -240,9 +241,7 @@ export function signedChangeFor(
 ): { source: string; add: string } {
   if (!rotation) throw new Error("nothing signed to move")
   const root = rotation.expectedKeys[0]?.key
-  if (!root || !sameHex(keyHex(root), rootPubkeyHex)) {
-    throw new Error("the first passkey must be signed in to move the balance")
-  }
+  if (!root || !sameHex(keyHex(root), rootPubkeyHex)) throw new RootPasskeyRequiredError()
   return { source: rotation.builtOver.l2Address, add: keyHex(rotation.add.pubkey) }
 }
 

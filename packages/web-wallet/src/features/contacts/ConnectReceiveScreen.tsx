@@ -167,7 +167,7 @@ export function ConnectReceiveScreen() {
                 />
                 <PrimaryGradientButton
                   title="Decline"
-                  buttonStyle="dark"
+                  buttonStyle="secondary"
                   isDisabled={adding}
                   onClick={dismiss}
                 />

@@ -1,9 +1,9 @@
-/* The v5 → v6 cutover screens (Figma "Migration" page). Figma values that no token names yet are
-   held here once: the muted caption, the active-step purple and the banner gold. */
+/* The v5 → v6 cutover screens (Figma "Migration" page). The page's caption, active-step and
+   banner colors, named once. Only the page sets them: its sheets render outside it and inherit. */
 .ww-cutover {
-  --cutover-muted: #8b8fa8;
-  --cutover-active: #b99cff;
-  --cutover-gold: #ffe071;
+  --cutover-muted: var(--text-muted);
+  --cutover-active: var(--accent-violet);
+  --cutover-gold: rgb(var(--ww-warning-rgb));
   --cutover-column: 484px;
   /* Over the routed page, which the mount renders beside. */
   position: fixed;
@@ -269,7 +269,7 @@ button.ww-cutover__account {
   height: 80px;
 }
 .ww-cutover__badge[data-tone="warn"] {
-  background: rgba(255, 224, 113, 0.12);
+  background: rgba(var(--ww-warning-rgb), 0.12);
   color: var(--cutover-gold);
 }
 .ww-cutover__badge[data-tone="error"] {
@@ -469,8 +469,8 @@ button.ww-cutover__account {
   box-sizing: border-box;
   padding: 16px;
   border-radius: 14px;
-  border: 1px solid rgba(255, 224, 113, 0.45);
-  background: rgba(255, 224, 113, 0.1);
+  border: 1px solid rgba(var(--ww-warning-rgb), 0.45);
+  background: rgba(var(--ww-warning-rgb), 0.1);
   color: var(--cutover-gold);
   text-align: left;
 }
@@ -576,7 +576,8 @@ button.ww-cutover__account {
   padding: 10px 14px;
   border-radius: var(--radius-12);
   border: 1px solid rgba(var(--ink-rgb), 0.08);
-  background: var(--surface-raised);
+  /* Dark in every theme, like the other tips, since its text is on-brand. */
+  background: #2c2c2c;
   box-shadow: none;
   font-size: 13px;
   text-align: center;

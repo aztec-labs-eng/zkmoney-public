@@ -44,9 +44,22 @@ contract MultiStepExecutorTest is MultiStepExecutorTestBase {
     _assertNothingSticks();
   }
 
+  function test_AZeroRemainderRecipientPassesWhenTheTransfersSpendEverything() external {
+    _relay(_transfersPayload(_transfers(NET, bob), address(0)), AMOUNT);
+
+    assertEq(dai.balanceOf(bob), NET);
+    assertEq(dai.balanceOf(relayer), TIP);
+    _assertNothingSticks();
+  }
+
   function test_AZeroRecipientReverts() external {
     _assertRelayReverts(
       _transfersPayload(_noTransfers(), address(0)),
+      AMOUNT,
+      abi.encodeWithSelector(Errors.MultiStepExecutor__ZeroRemainderRecipient.selector)
+    );
+    _assertRelayReverts(
+      _transfersPayload(_transfers(NET - 1, bob), address(0)),
       AMOUNT,
       abi.encodeWithSelector(Errors.MultiStepExecutor__ZeroRemainderRecipient.selector)
     );

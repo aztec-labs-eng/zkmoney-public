@@ -75,12 +75,13 @@ const DAY_MS = 24 * 60 * 60_000
  */
 export const SIPA_POOL_MAX_AGE_MS = 14 * DAY_MS
 
-/** A pool fill is a proof: it waits for the history read to head. */
+/** A pool fill is a proof: it waits until boot's reads, the old versions' among them, are in. */
 const POOL_AFTER: After = {
   firstBalance: true,
   depositsReplayed: true,
   movesReplayed: true,
   historyAtHead: true,
+  oldVersionsRead: true,
 }
 
 /**

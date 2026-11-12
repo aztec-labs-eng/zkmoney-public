@@ -91,6 +91,30 @@ describe("ObsidionWallet anchor pin", () => {
     expect(read).toHaveBeenCalledTimes(3)
   })
 
+  it("a note read asked for mid-snapshot runs its forced sync after the snapshot ends", async () => {
+    const { wallet, stubPxe } = makeStubWallet()
+    let block = 100
+    stubPxe.sync = vi.fn(async () => {
+      block++
+    })
+    stubPxe.getSyncedBlockHeader = vi.fn(async () => header(block))
+    // `PXE.debug.getNotes` syncs PXE whatever the wallet holds.
+    const getNotes = vi.fn(async () => {
+      block++
+      return []
+    })
+    Object.assign(stubPxe, { debug: { getNotes } })
+    let notes: Promise<unknown> | undefined
+    const snapshot = await wallet.getSnapshot(async () => {
+      notes = wallet.getNotes({} as never)
+      await new Promise((r) => setTimeout(r, 5))
+      return 7n
+    })
+    expect(snapshot).toEqual({ value: 7n, anchorBlock: 101 })
+    expect(await notes).toEqual([])
+    expect(block).toBe(102)
+  })
+
   it("a failed snapshot frees the queue and the read syncs", async () => {
     const { wallet, stubPxe } = makeStubWallet()
     stubPxe.getSyncedBlockHeader = vi.fn(async () => header(10))

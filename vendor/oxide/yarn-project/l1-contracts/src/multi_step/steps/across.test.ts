@@ -1,5 +1,5 @@
 import { describe, expect, test } from '@jest/globals';
-import { decodeFunctionData } from 'viem';
+import { decodeFunctionData, zeroAddress } from 'viem';
 
 import { AcrossAdapterAbi } from '../../artifacts.js';
 import { acrossSteps } from './across.js';
@@ -18,7 +18,7 @@ describe('across', () => {
   const refundTo = '0x2222222222222222222222222222222222222222';
 
   test('deposit encodes the amount and maps refundTo to the depositor', () => {
-    const data = across.deposit({ ...deposit, refundTo }).encode({ amount: 7n });
+    const data = across.deposit({ ...deposit, refundTo }).encode({ amount: 7n, recipient: zeroAddress });
     expect(decodeFunctionData({ abi: AcrossAdapterAbi, data })).toEqual({
       functionName: 'acrossDeposit',
       args: [{ ...deposit, depositor: refundTo, amount: 7n }],
@@ -26,7 +26,9 @@ describe('across', () => {
   });
 
   test('depositWithMessage encodes the message too', () => {
-    const data = across.depositWithMessage({ ...deposit, refundTo, message: '0xbeef' }).encode({ amount: 7n });
+    const data = across
+      .depositWithMessage({ ...deposit, refundTo, message: '0xbeef' })
+      .encode({ amount: 7n, recipient: zeroAddress });
     expect(decodeFunctionData({ abi: AcrossAdapterAbi, data })).toEqual({
       functionName: 'acrossDepositWithMessage',
       args: [{ ...deposit, depositor: refundTo, amount: 7n, message: '0xbeef' }],

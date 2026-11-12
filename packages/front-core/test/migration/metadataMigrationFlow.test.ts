@@ -267,22 +267,29 @@ describe("shared metadata migration", () => {
     expect(steps.recoverRemaining).toHaveBeenCalledTimes(2)
   })
 
-  it("is done only once the balance holds what the run imported, observed or driven", async () => {
-    const { drive, steps, observed, stored } = fixture()
-    let held = false
-    steps.confirmBalance = vi.fn(async () => held)
-    steps.reconcileRemaining = vi.fn(async () => {})
-    observed.metadataSettled = true
-    observed.recurringSponsorship = true
-    observed.sent = true
-    observed.complete = true
-    await drive()
-    expect(stored().phase).toBe("arriving")
-    await drive({ observeOnly: true })
-    expect(stored().phase).toBe("arriving")
-    held = true
-    await drive({ observeOnly: true })
-    expect(stored().phase).toBe("done")
+  it("ends a pass whose observe stalls where it stands, and the next pass finishes the run", async () => {
+    vi.useFakeTimers()
+    try {
+      const { drive, steps, observed, stored } = fixture()
+      steps.reconcileRemaining = vi.fn(async () => {})
+      observed.metadataSettled = true
+      observed.recurringSponsorship = true
+      observed.sent = true
+      await drive()
+      expect(stored().phase).toBe("arriving")
+
+      vi.mocked(steps.observe).mockReturnValueOnce(new Promise(() => {}))
+      const stalled = drive({ observeOnly: true })
+      await vi.advanceTimersByTimeAsync(5 * 60_000)
+      await stalled
+      expect(stored().phase).toBe("arriving")
+
+      observed.complete = true
+      await drive({ observeOnly: true })
+      expect(stored().phase).toBe("done")
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it("observes a run the user did not start without preparing, signing or sending", async () => {

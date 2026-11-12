@@ -302,7 +302,7 @@ export function WithdrawMethodScreen({
               onClick={() => void landing.connectThenPick()}
             >
               <span className="ww-move-landing__plus">
-                <Icon name="wallet" size={20} color="#fff" />
+                <Icon name="wallet" size={20} />
               </span>
               <span>
                 <b>{copy.connect}</b>
@@ -319,7 +319,7 @@ export function WithdrawMethodScreen({
                 onClick={() => setFlow({})}
               >
                 <span className="ww-move-landing__plus">
-                  <Icon name="plus" size={20} color="#fff" />
+                  <Icon name="plus" size={20} />
                 </span>
                 <span>
                   <b>{copy.newAddress}</b>

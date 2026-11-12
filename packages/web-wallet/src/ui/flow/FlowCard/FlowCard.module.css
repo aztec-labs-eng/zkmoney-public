@@ -5,7 +5,7 @@
   font-size: 24px;
   font-weight: 500;
   line-height: 30px;
-  color: #fdfdfd;
+  color: var(--text-primary);
 }
 /* A bar title with something beside it: the title stays whole, the aside shrinks. */
 .barHead {

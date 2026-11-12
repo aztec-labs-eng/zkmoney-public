@@ -6,6 +6,7 @@
  * No UI, no ceremony, no React.
  */
 import { TxExecutionResult, TxStatus } from "@aztec-labs/stdlib/tx"
+import { L1_SWEEP_RECHECK_DEPTH } from "@obsidion/core/constants"
 import {
   BACKUP_FUNDING_MARGIN,
   BackupSetConflictError,
@@ -28,6 +29,8 @@ import {
   persistedRotation,
   storeRotation,
   stripSettled,
+  sweepGone,
+  sweepWatched,
   type BackupFunding,
   type BackupPublish,
   type BackupRotationPhase,
@@ -40,6 +43,7 @@ import {
   type MoveRun,
   type MoveSend,
 } from "../../engine/backupRotations"
+import { bestEffort } from "../../engine/errors"
 import { planMove, type MoveDeposits } from "./planMove"
 
 export const PUBLISH_INTERVAL_MS = 24 * 60 * 60 * 1000
@@ -135,8 +139,8 @@ export interface SweepSeen {
 
 /**
  * A block `L1_SETTLED_DEPTH` confirmations behind the Ethereum tip: what the flow counts a sweep, an
- * install, a release or a recovery on, in place of Ethereum finality. A record past one of those is
- * not re-checked against a deeper reorg.
+ * install, a release or a recovery on, in place of Ethereum finality. The sweep is read again after
+ * the re-root until it is `L1_SWEEP_RECHECK_DEPTH` blocks deep; the others are not re-checked.
  */
 export interface SettledBlock {
   number: number
@@ -250,6 +254,10 @@ export type FlowWait =
 export interface FlowResult {
   record: BackupRotationRecord
   wait?: FlowWait
+  /** The sweep is still re-read from the chain: the driver polls whatever the wait. */
+  watch?: true
+  /** The wait ends on its own within a block or two, so the driver polls at its short interval. */
+  soon?: true
 }
 
 export type FlowRefusal = "gone" | "phase" | "funding-open" | "not-cancellable"
@@ -357,13 +365,16 @@ const sameFunding = (a: BackupFunding, b: BackupFunding) =>
 
 /**
  * Whether the store still reads as the snapshot a step decided over, so the decision applies: the
- * same phase and side state, the same signed change, and the same fundings entry for entry.
+ * same phase and side state, the same signed change, the same sweep as last read, and the same
+ * fundings entry for entry.
  */
 const unmoved = (c: BackupRotationRecord, snapshot: BackupRotationRecord) =>
   c.phase === snapshot.phase &&
   c.attention === snapshot.attention &&
   c.suspended === snapshot.suspended &&
   c.rotation?.sipa === snapshot.rotation?.sipa &&
+  c.sweep?.blockHash === snapshot.sweep?.blockHash &&
+  c.sweep?.recheck === snapshot.sweep?.recheck &&
   c.fundings.length === snapshot.fundings.length &&
   c.fundings.every((f, i) => sameFunding(f, snapshot.fundings[i]!))
 
@@ -373,9 +384,49 @@ const sameRuns = (c: BackupRotationRecord, snapshot: BackupRotationRecord) =>
 
 const sweepKept = (sweep: SweepSeen): NonNullable<BackupRotationRecord["sweep"]> => ({
   index: sweep.index,
+  blockNumber: sweep.blockNumber,
   blockHash: sweep.blockHash,
   credited: sweep.credited.toString(),
 })
+
+/** The phases from the sweep on, where the sweep the record counts on is read again. */
+const AFTER_SWEEP: readonly BackupRotationPhase[] = ["swept", "rerooted", "moved", "done"]
+
+/**
+ * The counted sweep read again: a reorg may have moved it to another block or dropped it, and a
+ * dropped one is swept again by the relayer. Dropped, or replaced by one not settled yet, reads
+ * `gone`, or `lost` once no sweep came within `L1_SWEEP_RECHECK_DEPTH` blocks of the recorded one;
+ * one seen and settled is kept as read, `deep` once that far behind the settled block. Nothing for
+ * a sweep that reads as saved.
+ */
+async function recheckSweep(
+  deps: RotationFlowDeps,
+  record: BackupRotationRecord,
+  sipa: Address,
+  fromBlock: number,
+): Promise<Partial<BackupRotationRecord> | undefined> {
+  const saved = record.sweep!
+  const seen = await deps.l1.sweep(sipa, fromBlock)
+  const settledNumber = async () => (await deps.l1.settledBlock()).number
+  if (!seen || !(await deps.l1.isSettled(seen))) {
+    const lost = (await settledNumber()) - saved.blockNumber! >= L1_SWEEP_RECHECK_DEPTH
+    const recheck = lost ? "lost" : "gone"
+    return saved.recheck === recheck ? undefined : { sweep: { ...saved, recheck } }
+  }
+  const deep = (await settledNumber()) - seen.blockNumber >= L1_SWEEP_RECHECK_DEPTH
+  const next = { ...sweepKept(seen), ...(deep ? { recheck: "deep" as const } : {}) }
+  return sameSweep(next, saved) ? undefined : { sweep: next }
+}
+
+const sameSweep = (
+  a: NonNullable<BackupRotationRecord["sweep"]>,
+  b: NonNullable<BackupRotationRecord["sweep"]>,
+) =>
+  a.index === b.index &&
+  a.blockNumber === b.blockNumber &&
+  a.blockHash === b.blockHash &&
+  a.credited === b.credited &&
+  a.recheck === b.recheck
 
 /** The sweep recorded; which funding it took is judged by the reconciliation, not here. */
 const sweptPatch = (sweep: SweepSeen): Patch => {
@@ -626,7 +677,7 @@ export async function watchRotation(
       unmoved(c, record) ? patch(c) : null
   const sweep = await deps.l1.sweep(sipa, record.fromBlock)
   if (sweep) {
-    if (!(await deps.l1.isSettled(sweep))) return { record, wait: "sweep" }
+    if (!(await deps.l1.isSettled(sweep))) return { record, wait: "sweep", soon: true }
     const { fundings, corrupt } = await reconcileFundings(deps, record)
     return {
       record: await save(
@@ -1081,15 +1132,16 @@ async function sendNextRefund(
 
 /**
  * `moved` → `done`: the signature and the envelope leave the record, and the salt once no funding
- * can land unswept and the deposit address holds nothing, read now. An attempt with money there and
- * no sweep to take it parks over `done` as stranded.
+ * can land unswept, the deposit address holds nothing, read now, and the sweep is no longer re-read.
+ * An attempt with money there and no sweep to take it parks over `done` as stranded, unless the
+ * sweep is gone: that money waits for the relayer's re-sweep.
  */
 export async function finishRotation(
   deps: RotationFlowDeps,
   record: BackupRotationRecord,
 ): Promise<BackupRotationRecord> {
   const sipa = record.rotation?.sipa
-  const held = !!sipa && (await depositHeld(deps, sipa))
+  const held = !!sipa && !sweepGone(record) && (await depositHeld(deps, sipa))
   return save(deps, record, (c) => {
     if (!sameRuns(c, record)) return null
     const unswept = c.unswept || held
@@ -1099,18 +1151,22 @@ export async function finishRotation(
       ...CLEARED,
       ...(unswept ? { unswept: true } : {}),
     })
-    return unswept || inFlight(c) ? { ...done, ...attention(done, "stranded") } : done
+    const park = !sweepGone(c) && (unswept || inFlight(c))
+    return park ? { ...done, ...attention(done, "stranded") } : done
   })
 }
 
-/** Runs the move again once the user asks: from `attention: move`, or after a declined prompt. */
+/**
+ * Runs the move again once the user asks: from `attention: move`, or after a declined prompt. It
+ * runs as a resume, so the answer carries the sweep watch like every other.
+ */
 export async function retryMove(
   deps: RotationFlowDeps,
   record: BackupRotationRecord,
   { signal }: RunOptions = {},
 ): Promise<FlowResult> {
   if (moveDeclined(record)) {
-    return moveRotation(
+    return resumeRotation(
       deps,
       await save(deps, record, (c) => {
         if (!moveDeclined(c)) return null
@@ -1122,16 +1178,16 @@ export async function retryMove(
           ...(c.refunds && { refunds: { ...c.refunds, declined: undefined } }),
         }
       }),
-      { signal },
+      { prompt: true, signal },
     )
   }
   const suspended = record.suspended
   if (record.attention !== "move" || !suspended)
     throw new RotationFlowError("phase", "not a paused move")
-  return moveRotation(
+  return resumeRotation(
     deps,
     await save(deps, record, (c) => (unmoved(c, record) ? { phase: suspended, ...CLEARED } : null)),
-    { signal },
+    { prompt: true, signal },
   )
 }
 
@@ -1367,6 +1423,9 @@ async function resumeOnce(
     const fromBlock = current.fromBlock
     const { fundings, corrupt, stuck, burn } = await reconcileFundings(deps, snapshot)
     let wait: FlowWait | undefined
+    let soon: true | undefined
+    let sweep = snapshot.sweep
+    let watched = false
     let decided: Patch
     if (corrupt) {
       decided = (c) => ({ fundings, ...attention(c, "corrupt") })
@@ -1382,20 +1441,33 @@ async function resumeOnce(
           : phase === "published" && (landed || funded)
           ? "funded"
           : undefined
+      // The sweep is re-read from `swept` on, a parked record included, while it is watched.
+      const under = snapshot.phase === "attention" ? snapshot.suspended : snapshot.phase
+      const rechecking = !!under && AFTER_SWEEP.includes(under) && sweepWatched(snapshot)
+      // A read that fails changes nothing, and the step runs.
+      const rechecked = rechecking
+        ? await bestEffort("unknown", recheckSweep(deps, snapshot, sipa, fromBlock))
+        : undefined
+      sweep = rechecked?.sweep ?? sweep
+      watched = rechecking && sweepWatched({ sweep })
       const moved: Partial<BackupRotationRecord> = {
         fundings,
         ...(to ? (snapshot.phase === "attention" ? { suspended: to } : { phase: to }) : {}),
+        ...rechecked,
       }
       let then: Patch = () => ({})
       if (burn && acting({ ...snapshot, ...moved }) === "published") {
         wait = "burn"
       } else if (rotation && beforeSweep) {
-        const sweep = await deps.l1.sweep(sipa, fromBlock)
+        const seen = await deps.l1.sweep(sipa, fromBlock)
         // A published record's own wait is the user's: what settles on its own returns a polled one.
         const published = acting({ ...snapshot, ...moved }) === "published"
-        if (sweep) {
-          if (await deps.l1.isSettled(sweep)) then = sweptPatch(sweep)
-          else if (published) wait = "sweep"
+        if (seen) {
+          if (await deps.l1.isSettled(seen)) then = sweptPatch(seen)
+          else if (published) {
+            wait = "sweep"
+            soon = true
+          }
         } else {
           const verdict = await readFundability(deps, rotation)
           if (verdict === "applied") {
@@ -1413,7 +1485,8 @@ async function resumeOnce(
       decided = (c) => ({ ...moved, ...(then({ ...c, ...moved }) ?? {}) })
     }
     const finished = snapshot.phase === "done" || snapshot.phase === "recovered"
-    const held = finished && (await depositHeld(deps, sipa))
+    // Money at the address while the sweep is gone waits for the re-sweep: not held.
+    const held = finished && !sweepGone({ sweep }) && (await depositHeld(deps, sipa))
     try {
       current = await save(deps, snapshot, (c) => {
         if (!unmoved(c, snapshot)) return null
@@ -1426,10 +1499,22 @@ async function resumeOnce(
       if (err instanceof RotationFlowError && err.code === "phase") return MOVED
       throw err
     }
-    if (wait) return { record: current, wait }
+    const watching = (result: FlowResult): FlowResult =>
+      watched ? { ...result, watch: true } : result
+    if (wait) return watching({ record: current, wait, ...(soon && { soon }) })
     // Nothing on chain releases a stuck funding: a wait would have the driver re-check it forever.
-    if (stuck) return { record: current }
+    if (stuck) return watching({ record: current })
+    return watching(await step(deps, current, options))
   }
+  return step(deps, current, options)
+}
+
+/** The record's next step from its phase. */
+async function step(
+  deps: RotationFlowDeps,
+  current: BackupRotationRecord,
+  options: RunOptions,
+): Promise<FlowResult> {
   switch (current.phase) {
     case "signed":
       return publishRotation(deps, current)
@@ -1446,8 +1531,17 @@ async function resumeOnce(
     case "attention":
       return resumeAttention(deps, current, options)
     case "done":
-    case "recovered":
-      return lateFunding(deps, current)
+    case "recovered": {
+      const late = await lateFunding(deps, current)
+      // A dismissed record stays only while its sweep is watched.
+      if (late.record.phase === "done" && late.record.dismissed && !sweepWatched(late.record)) {
+        await deps.store.removeIf(
+          current.owner,
+          (c) => unmoved(c, late.record) && !!c.dismissed && !c.unswept && !sweepWatched(c),
+        )
+      }
+      return late
+    }
     default:
       return { record: current }
   }
@@ -1630,7 +1724,8 @@ async function nothingLanding(
 
 /**
  * A finished attempt parked over money at its deposit address returns to its phase once nothing can
- * land there, nothing is held and a recovery that took it is settled; the salt leaves with it.
+ * land there, nothing is held and a recovery that took it is settled; the salt leaves with it. It
+ * returns at once while the sweep is gone: that money waits for the re-sweep, and the salt stays.
  */
 async function strandedStanding(
   deps: RotationFlowDeps,
@@ -1638,8 +1733,10 @@ async function strandedStanding(
   suspended: BackupRotationPhase,
 ): Promise<FlowResult> {
   const sipa = record.rotation?.sipa
-  if (!sipa || inFlight(record) || (await depositHeld(deps, sipa))) return { record }
-  const recovery = await currentRecovery(deps, record)
+  if (!sipa) return { record }
+  const gone = sweepGone(record)
+  if (!gone && (inFlight(record) || (await depositHeld(deps, sipa)))) return { record }
+  const recovery = gone ? undefined : await currentRecovery(deps, record)
   if (recovery && !(await recoverySettled(deps, recovery))) {
     return awaitRecovery(deps, record, recovery, true)
   }
@@ -1654,14 +1751,15 @@ async function strandedStanding(
 
 /**
  * A finished attempt with money that may sit at its deposit address is reported: a funding on L2
- * with no sweep to take it, money held after the change ran, or money at the address now.
+ * with no sweep to take it, money held after the change ran, or money at the address now. Not while
+ * the sweep is gone: that money waits for the re-sweep.
  */
 async function lateFunding(
   deps: RotationFlowDeps,
   record: BackupRotationRecord,
 ): Promise<FlowResult> {
   const sipa = record.rotation?.sipa
-  if (!sipa) return { record }
+  if (!sipa || sweepGone(record)) return { record }
   const held = inFlight(record) || record.unswept || (await depositHeld(deps, sipa))
   if (!held) return { record }
   // Drop the earlier recovery: kept, it would read as sent for this new money and end the new park on
@@ -1676,11 +1774,12 @@ async function lateFunding(
 /**
  * Whether the user may send the deposit address's money back out: from a stranded record, or a
  * damaged one that cannot be cancelled. A damaged record that can be cancelled is started over.
- * The panel shows its recovery card on the same test, so it never offers what `noteRecovery`
- * would refuse.
+ * Never while the sweep is gone: that money is the relayer's to sweep again. The panel shows its
+ * recovery card on the same test, so it never offers what `noteRecovery` would refuse.
  */
 export const recoverable = (record: BackupRotationRecord): boolean =>
   record.phase === "attention" &&
+  !sweepGone(record) &&
   (record.attention === "stranded" || (record.attention === "corrupt" && !cancellable(record)))
 
 /**
@@ -1706,6 +1805,22 @@ export async function noteRecovery(
   txHash: Hex,
 ): Promise<BackupRotationRecord> {
   return save(deps, record, (c) => (recoverable(c) ? { recovery: { txHash } } : null))
+}
+
+/**
+ * The user left the done screen. The record goes once its sweep is no longer re-read; until then
+ * it stays, marked, and the resume removes it when the watch closes. Both fenced on the record as
+ * the screen showed it.
+ */
+export async function dismissRotation(
+  deps: Pick<RotationFlowDeps, "store" | "now">,
+  record: BackupRotationRecord,
+): Promise<void> {
+  if (record.phase === "done" && sweepWatched(record)) {
+    await save(deps, record, (c) => (unmoved(c, record) ? { dismissed: true } : null))
+    return
+  }
+  await deps.store.removeIf(record.owner, (c) => unmoved(c, record))
 }
 
 /** Whether the user may still drop the attempt from this state. */

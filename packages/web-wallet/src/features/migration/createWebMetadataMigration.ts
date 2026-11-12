@@ -1,12 +1,11 @@
 import {
-  accountRecordStale,
+  accountRecordState,
   createMetadataMigrationSession,
   pubkeyToR1KeyArg,
   readSavingsPrice,
   readSavingsVault,
   savingsValue,
   UpgradeActivity,
-  WalletSyncCoordinator,
   type SipaDeposits,
 } from "@obsidion/front-core"
 import {
@@ -46,8 +45,8 @@ export const webMetadataMigrationKey = (
 ) =>
   `metadata-migration/${current.portal.toLowerCase()}/${historic.portal.toLowerCase()}/${account.getAddress()}`
 
-/** `accountRecordStale` with this session's key and the pinned deployment. */
-export async function webAccountRecordStale(
+/** `accountRecordState` with this session's key and the pinned deployment. */
+export async function webAccountRecordState(
   session: Pick<Session, "auth" | "page">,
   account: ObsidionAccount,
 ) {
@@ -57,7 +56,7 @@ export async function webAccountRecordStale(
     pageChain.oxideTuple.read(),
     pageChain.feeTokenBridgeTuple.read(),
   ])
-  return accountRecordStale({
+  return accountRecordState({
     account,
     current,
     metadataCurrent,
@@ -194,7 +193,6 @@ export async function createWebMetadataMigration(params: {
     key,
     activity: UpgradeActivity.get(webStorage),
     deposits: params.deposits,
-    confirmBalance: () => WalletSyncCoordinator.confirmBalance(),
     holdings: async (amount, anchor) => {
       checkSession()
       const value =

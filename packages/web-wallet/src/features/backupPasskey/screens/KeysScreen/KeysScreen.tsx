@@ -13,9 +13,9 @@ const keyDetail = (key: BackupKey): string =>
   [key.name, key.provider].filter(Boolean).join(" · ") ||
   (key.signsHere ? copy.current : copy.added)
 
-/** A1: the account's keys with the backup missing, and the button that starts the add. */
+/** A1: the account's keys and the button that starts the add; a one-device passkey's list warns. */
 export function KeysScreen({ screen, actions }: BackupScreenProps<"keys">) {
-  const { keys, add, busy } = screen
+  const { keys, add, busy, oneDevice } = screen
   // The modal lists these keys itself.
   if (!keysSheetShows(keys.length))
     return screen.cancelled ? (
@@ -25,7 +25,7 @@ export function KeysScreen({ screen, actions }: BackupScreenProps<"keys">) {
     ) : null
   return (
     <SheetShell
-      hero="warning"
+      hero={oneDevice ? "warning" : "key"}
       title={copy.title}
       lead={copy.lead}
       {...(add.kind !== "none" && {
@@ -51,7 +51,9 @@ export function KeysScreen({ screen, actions }: BackupScreenProps<"keys">) {
               status="added"
             />
           ))}
-          <KeyStatusRow name={copy.roles.backup} detail={copy.notAdded} status="missing" />
+          {oneDevice && (
+            <KeyStatusRow name={copy.roles.backup} detail={copy.notAdded} status="missing" />
+          )}
         </SheetCard>
       )}
     </SheetShell>

@@ -76,3 +76,6 @@ export type {
   WithdrawalSpeedupInput,
   WithdrawalSpeedupNode,
 } from "./withdrawalSpeedup"
+
+export { withdrawalReleaseEta } from "./withdrawalReleaseEta"
+export type { WithdrawalReleaseEta } from "./withdrawalReleaseEta"

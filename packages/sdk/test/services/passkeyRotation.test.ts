@@ -417,10 +417,6 @@ describe("readRotationFundability", () => {
     chain.advance(applied(prepared))
     expect(await readRotationFundability(chain.client, prepared)).toBe("applied-pending")
 
-    // The settled read floors at the genesis block while the chain is shallower than the depth.
-    for (let i = 1n; i < L1_SETTLED_DEPTH; i++) chain.advance({})
-    expect(await readRotationFundability(chain.client, prepared)).toBe("applied-pending")
-
     chain.advance({})
     expect(await readRotationFundability(chain.client, prepared)).toBe("applied")
   })

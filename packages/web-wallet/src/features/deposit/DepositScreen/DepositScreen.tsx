@@ -1408,7 +1408,7 @@ function DepositScreenBody({
               onClick={connectThenPick}
             >
               <span className="ww-move-landing__plus">
-                <Icon name="wallet" size={20} color="#fff" />
+                <Icon name="wallet" size={20} />
               </span>
               <span>
                 <b>{depositCopy.landing.connect}</b>

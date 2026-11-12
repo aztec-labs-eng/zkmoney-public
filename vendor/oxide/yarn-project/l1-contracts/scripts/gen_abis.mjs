@@ -27,6 +27,10 @@ const TARGETS = {
     root: FOUNDRY_OUT,
     rel: 'PlainWithdrawalExecutor.sol/PlainWithdrawalExecutor.json',
   },
+  StablecoinWithdrawalExecutor: {
+    root: FOUNDRY_OUT,
+    rel: 'StablecoinWithdrawalExecutor.sol/StablecoinWithdrawalExecutor.json',
+  },
   FirstProverProofSubmitter: {
     root: FOUNDRY_OUT,
     rel: 'FirstProverProofSubmitter.sol/FirstProverProofSubmitter.json',
@@ -49,6 +53,8 @@ const TARGETS = {
   AcrossAdapter: { root: FOUNDRY_OUT, rel: 'AcrossAdapter.sol/AcrossAdapter.json' },
   CctpAdapter: { root: FOUNDRY_OUT, rel: 'CctpAdapter.sol/CctpAdapter.json' },
   LifiIntentAdapter: { root: FOUNDRY_OUT, rel: 'LifiIntentAdapter.sol/LifiIntentAdapter.json' },
+  UserOpAdapter: { root: FOUNDRY_OUT, rel: 'UserOpAdapter.sol/UserOpAdapter.json' },
+  CheckAdapter: { root: FOUNDRY_OUT, rel: 'CheckAdapter.sol/CheckAdapter.json' },
   MigrationSubsidy: { root: FOUNDRY_OUT, rel: 'MigrationSubsidy.sol/MigrationSubsidy.json' },
   ProverSubsidy: { root: FOUNDRY_OUT, rel: 'ProverSubsidy.sol/ProverSubsidy.json' },
   MockCertManager: { root: FOUNDRY_OUT, rel: 'MockCertManager.sol/MockCertManager.json' },

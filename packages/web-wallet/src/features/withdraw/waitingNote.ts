@@ -12,11 +12,13 @@ import {
   isWithdrawalDelayed,
   WITHDRAWAL_TERMINAL_PHASES,
   type WithdrawalRecord,
+  type WithdrawalReleaseEta,
 } from "@obsidion/front-core"
 import { fmt } from "../../lib/fmt"
 import chainsCopy from "../../ui/chains.copy"
 import copy from "./waitingNote.copy"
 import { unswappableCopy } from "./unswappableCopy"
+import { etaLabel } from "./WithdrawalSpeedPicker"
 import { withdrawalFailureText } from "./withdrawalFailure"
 
 const PROVING =
@@ -80,7 +82,13 @@ export function waitingNote(record: WithdrawalRecord): string | undefined {
 }
 
 const RELEASES_ON_ITS_OWN =
-  "Ethereum releases the funds on its own, usually in about 15 minutes. Reopen this link to check on it."
+  "Ethereum releases the funds on its own. Reopen this link to check on it."
+/** "…, about 12 min left." once the burn has landed; "…, usually in about 25 min." before. */
+const releasesIn = (eta: WithdrawalReleaseEta) => {
+  const about = etaLabel(eta.seconds).replace(/^About/, "about")
+  const when = eta.remaining ? `${about} left` : `usually in ${about}`
+  return `Ethereum releases the funds on its own, ${when}. Reopen this link to check on it.`
+}
 const RELEASE_DELAYED = "This is taking longer than usual."
 const RELEASE_IT_YOURSELF = `${RELEASE_DELAYED} No relayer has released it, so you can send the Ethereum transaction that does it yourself.`
 const SWAP_IT_YOURSELF = `${RELEASE_DELAYED} No relayer has run the swap, so you can run it yourself.`
@@ -92,13 +100,15 @@ const SWAP_IT_YOURSELF = `${RELEASE_DELAYED} No relayer has run the swap, so you
 export function releaseNote(
   record: WithdrawalRecord,
   now: number = Date.now(),
+  /** The release's timing where the page has it; the note names no wait without one. */
+  eta?: WithdrawalReleaseEta,
 ): string | undefined {
   if (record.phase === "recoverable") return unswappableCopy(record)
   if (!record.l2TxHash || WITHDRAWAL_TERMINAL_PHASES.has(record.phase)) return
   if (canSelfFinalizeWithdrawal(record, now)) return withSwapLeg(RELEASE_IT_YOURSELF, record)
   if (canSelfExecuteSwap(record, now)) return SWAP_IT_YOURSELF
   if (isWithdrawalDelayed(record, now)) return RELEASE_DELAYED
-  return withSwapLeg(RELEASES_ON_ITS_OWN, record)
+  return withSwapLeg(eta ? releasesIn(eta) : RELEASES_ON_ITS_OWN, record)
 }
 
 // The release pays a swap escrow, not the recipient — say so wherever a note promises the release.

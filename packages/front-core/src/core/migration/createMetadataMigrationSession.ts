@@ -6,12 +6,13 @@ import {
   readBridgeDestination,
   metadataMigrationContext,
   readNameClaimLog,
-  recordNamesOtherAccount,
+  accountRecordState as readAccountRecordState,
   SipaSelfResolver,
   resolverSelectionPolicy,
   selectManifestResolverOperator,
   type ContractService,
   type ObsidionAccount,
+  type AccountRecordState,
   type ObsidionWallet,
   type TokenService,
   type MetadataMigrationServiceOptions,
@@ -68,8 +69,6 @@ export interface MetadataMigrationSessionOptions {
   activity?: UpgradeActivity
   /** The deposit rail's records: the rail claims the migration's direct deposits. */
   deposits: Pick<SipaDeposits, "get">
-  /** Whether a balance read begun now is stored: a run is done only once it holds all it imported. */
-  confirmBalance?(): Promise<boolean>
   /** Stores what the source holds; `anchor` is the L1 block its read began at, so no older read lands last. */
   holdings?(amount: bigint, anchor: number): Promise<void>
   source(
@@ -116,18 +115,18 @@ async function accountOwner(
   )
 }
 
-/** Whether the account's L1 record still names another account or rollup. L1 reads only. */
-export async function accountRecordStale(
+/** How the account's L1 record relates to it on the destination rollup. L1 reads only. */
+export async function accountRecordState(
   o: Pick<
     MetadataMigrationSessionOptions,
     "account" | "current" | "metadataCurrent" | "secretKey" | "client"
   >,
-): Promise<boolean> {
+): Promise<AccountRecordState> {
   const [destination, owner] = await Promise.all([
     readBridgeDestination(o.client, o.metadataCurrent ?? o.current),
     accountOwner(o),
   ])
-  return recordNamesOtherAccount(
+  return readAccountRecordState(
     o.client,
     destination.metadataRegistry,
     owner,
@@ -234,7 +233,6 @@ export async function createMetadataMigrationSession(o: MetadataMigrationSession
     source,
     client: o.client,
     wallet: o.wallet,
-    confirmBalance: o.confirmBalance,
     record: {
       l2Address: o.account.getAddress().toString() as Hex,
       rollupVersion: destination.rollupVersion,
@@ -267,7 +265,6 @@ export async function createMetadataMigrationSession(o: MetadataMigrationSession
     subscribe: (...args) => service.subscribe(...args),
     recoverRemaining: (...args) => service.recoverRemaining(...args),
     reconcileRemaining: (...args) => service.reconcileRemaining(...args),
-    confirmBalance: () => service.confirmBalance(),
   }
   return {
     service,

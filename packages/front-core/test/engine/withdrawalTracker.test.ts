@@ -1263,6 +1263,7 @@ describe("withdrawalTracker task", () => {
         visible: visible.readonly,
         pace: createPace(),
         now: () => Date.now(),
+        sinceLoad: () => performance.now(),
       })
       runtimes.push(runtime)
       return runtime

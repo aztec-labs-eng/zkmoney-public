@@ -41,7 +41,8 @@ export interface L1OperationSyncerDeps {
   broadcaster: AztecAddress;
   ownership: L1OperationOwnership;
   payoutTokens: PayoutTokenFilter;
-  watchedTokens: EthAddress[];
+  /** The tokens of the `Balance` operations that the syncer keeps. It reads them on each check, so they can change. */
+  watchedTokens: () => readonly EthAddress[];
   /** Marks waiting `Balance` operations pending. Undefined leaves them waiting forever. */
   balanceWatcher?: BalanceWatcher;
   /** Marks waiting `MessageInOutbox` operations pending. */
@@ -245,7 +246,7 @@ export class L1OperationSyncer {
 
   private watchesToken(token: EthAddress): boolean {
     const key = addressKey(token);
-    return this.deps.watchedTokens.some(watched => addressKey(watched) === key);
+    return this.deps.watchedTokens().some(watched => addressKey(watched) === key);
   }
 
   private async eventSelector(): Promise<FunctionSelector> {

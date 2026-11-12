@@ -9,14 +9,18 @@ import type { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import {
   bestEffort,
   deriveBootstrapKey,
+  isDust,
   memoryStore,
   movePreviousBalance,
+  planMove,
   previousRootKey,
   resolveOxideIdentity,
   txOutcome,
+  unreadDeposits,
   valueOf,
   type PreviousMoveDeps,
   type PreviousMoveResult,
+  type TxOutcome,
 } from "@obsidion/front-core"
 import {
   normalizePubkeyHex,
@@ -52,6 +56,65 @@ export interface PreviousHolding {
   value?: bigint
 }
 
+/** One balance of a move run. */
+export interface MoveRunRow {
+  kind: PreviousHolding["kind"]
+  /** Transfers of this run that moved funds. */
+  moved: number
+  /** `preparing` from a transfer's start, `confirming` once it is out; absent between transfers. */
+  phase?: "preparing" | "confirming"
+  /** Its pass ended with nothing left to move. */
+  done?: boolean
+}
+
+export interface MoveRun {
+  /** The balances the run moves, in order. */
+  rows: readonly MoveRunRow[]
+  /** Transfers the run started, each asking for one approval. */
+  approvals: number
+  /** A transfer an earlier run left in flight is being resolved; it belongs to no row. */
+  earlier?: boolean
+}
+
+export interface MoveForecast {
+  approvals: number
+  /** `approvals` is an upper bound. */
+  upper: boolean
+}
+
+/** What a move's send sequence reports as it goes. */
+interface MoveWatch {
+  sending(): void
+  sent(txHash: string): void
+  asked(txHash: string): void
+  settled(txHash: string, outcome: TxOutcome): void
+}
+
+/** Checkpointed or final, moved or not: the wait for this transfer is over. */
+const resolved = (outcome: TxOutcome) =>
+  outcome.kind === "included"
+    ? outcome.checkpointed
+    : outcome.kind === "mined" || outcome.kind === "reverted" || outcome.kind === "dead"
+
+const movedFunds = (outcome: TxOutcome) =>
+  outcome.kind === "mined" || (outcome.kind === "included" && outcome.effect === "success")
+
+/**
+ * A run at rest: no transfer in flight. A balance it moved from is done once `holdings`, read
+ * after the run, show only dust left of it, though its pass stopped before saying so.
+ */
+const atRest = (
+  { rows, approvals }: MoveRun,
+  holdings?: readonly PreviousHolding[],
+): MoveRun => ({
+  rows: rows.map(({ kind, moved, done }) => {
+    const left = holdings?.find((holding) => holding.kind === kind)
+    const emptied = moved > 0 && left !== undefined && isDust(left.amount, left.dust)
+    return { kind, moved, ...((done || emptied) && { done: true }) }
+  }),
+  approvals,
+})
+
 export interface PreviousAccountState {
   /** The previous account; absent while none is found. */
   address?: string
@@ -65,6 +128,12 @@ export interface PreviousAccountState {
   /** The session signs for it: the session's key is its root key. */
   signs: boolean
   moving: boolean
+  /** The move running, or the last one that ended early; a check or a finished move clears it. */
+  run?: MoveRun
+  /** The approvals moving the holdings takes, where it could be planned. */
+  forecast?: MoveForecast
+  /** The last move ended with everything moved; the next check clears it. */
+  moved?: boolean
   lastResult?: PreviousMoveOutcome
   /** Spend refusals in a row, and the chunk cap the next move takes after one. */
   refusals: number
@@ -72,6 +141,9 @@ export interface PreviousAccountState {
 }
 
 const NONE: PreviousAccountState = { signs: false, moving: false, checking: false, refusals: 0 }
+
+/** How long a move that ended waits for its holdings read before it shows as over. */
+const REFRESH_WAIT_MS = 15_000
 
 /** The smallest amount `usdAtomicFloor`, Home's balance figure, shows as more than nothing. */
 export function dustFloor(decimals: number): bigint {
@@ -192,10 +264,12 @@ export class PreviousAccountWatcher {
         if (this.checkRun !== run) return
         this.checkRun = undefined
         this.patch({ checking: false, checkFailed: !read })
+        if (read) this.startForecast()
       },
     )
     this.checkRun = run
-    this.patch({ checking: true })
+    this.forecasts++
+    this.patch({ checking: true, moved: false, run: undefined, forecast: undefined })
     return run
   }
 
@@ -217,7 +291,11 @@ export class PreviousAccountWatcher {
     const { cap } = this.state.get()
     const run: Promise<PreviousMoveOutcome> = this.runMove(this.life, cap, controller.signal)
       .catch((error: unknown) => ({ kind: "failed" as const, error }))
-      .then((outcome) => {
+      .then(async (outcome) => {
+        // The holdings are read before the move shows as over, so the sheet never offers the
+        // moved funds again. A finished move whose read fell short drops the amounts it moved.
+        const read = await this.refreshed()
+        const done = outcome.kind === "done"
         const stale = this.stale === run
         if (stale) this.stale = undefined
         if (this.running === run) {
@@ -225,17 +303,28 @@ export class PreviousAccountWatcher {
           this.abortRun = undefined
         }
         const moving = !!this.running
-        this.patch(
-          stale
-            ? { moving }
-            : { lastResult: outcome, moving, ...streak(this.state.get(), outcome) },
-        )
-        void bestEffort("balance.unread", this.refresh())
+        if (stale) {
+          this.patch({ moving })
+          return outcome
+        }
+        const state = this.state.get()
+        this.patch({
+          lastResult: outcome,
+          moving,
+          moved: done,
+          run: done || !state.run ? undefined : atRest(state.run, read ? state.holdings : undefined),
+          forecast: undefined,
+          ...(done && !read ? { holdings: undefined } : {}),
+          ...streak(state, outcome),
+        })
+        // After the cap is stored: the next move's count is planned under it.
+        if (!done) this.startForecast()
         return outcome
       })
     this.running = run
     this.abortRun = controller
-    this.patch({ moving: true })
+    this.forecasts++
+    this.patch({ moving: true, moved: false, run: undefined })
     return run
   }
 
@@ -263,6 +352,10 @@ export class PreviousAccountWatcher {
     if (life) this.endRun()
     const next: Life = { wallet, signer, parts, found: Promise.resolve(undefined) }
     this.life = next
+    // An earlier lifetime's run and count are not this one's, even at the same address.
+    this.forecasts++
+    if (this.state.get().run || this.state.get().forecast)
+      this.patch({ run: undefined, forecast: undefined })
     next.found = this.find(next)
     // A failed search is the caller's error; the next call searches again.
     next.found.catch(() => {
@@ -371,6 +464,23 @@ export class PreviousAccountWatcher {
     if (life && previous) await this.read(life, previous, await this.registered(previous))
   }
 
+  /** Whether the holdings were read again within {@link REFRESH_WAIT_MS}. */
+  private async refreshed(): Promise<boolean> {
+    let timer: number | undefined
+    const late = new Promise<undefined>((resolve) => {
+      timer = window.setTimeout(resolve, REFRESH_WAIT_MS)
+    })
+    const read = bestEffort(
+      "balance.unread",
+      this.refresh().then(() => true),
+    )
+    try {
+      return (await Promise.race([read, late])) === true
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
   private async runMove(
     life: Life | undefined,
     cap: bigint | undefined,
@@ -382,12 +492,110 @@ export class PreviousAccountWatcher {
     if (!previous) throw new WalletError("invariant", "no previous account to move from")
     if (!previous.signs) throw new WalletError("invariant", "a backup session cannot move it")
     const account = await this.registered(previous)
-    for (const token of await tokensOf(previous)) {
-      const deps = await moveDeps(life.parts, previous, account, token, cap, signal)
+    const held = this.state.get().holdings
+    // A token the last check found nothing worth moving in takes no pass.
+    const tokens = (await tokensOf(previous)).filter((token) => {
+      const holding = held?.find(({ kind }) => kind === token.kind)
+      return !holding || !isDust(holding.amount, holding.dust)
+    })
+    let run: MoveRun = { rows: tokens.map(({ kind }) => ({ kind, moved: 0 })), approvals: 0 }
+    const publish = (next: MoveRun) => {
+      run = next
+      if (life === this.life) this.patch({ run })
+    }
+    publish(run)
+    /** The hashes this run sent, and the ones whose end it has counted. */
+    const ours = new Set<string>()
+    const counted = new Set<string>()
+    for (const token of tokens) {
+      const rows = (change: (row: MoveRunRow) => MoveRunRow) =>
+        run.rows.map((row) => (row.kind === token.kind ? change(row) : row))
+      const phase = () => run.rows.find((row) => row.kind === token.kind)?.phase
+      const watch: MoveWatch = {
+        sending: () =>
+          publish({
+            ...run,
+            approvals: run.approvals + 1,
+            rows: rows((row) => ({ ...row, phase: "preparing" })),
+          }),
+        sent: (txHash) => void ours.add(txHash),
+        asked: (txHash) => {
+          if (!ours.has(txHash)) {
+            if (!run.earlier) publish({ ...run, earlier: true })
+          } else if (phase() !== "confirming") {
+            publish({ ...run, rows: rows((row) => ({ ...row, phase: "confirming" })) })
+          }
+        },
+        // Counted once per hash, from what the chain says of it: a reverted or expired transfer
+        // ends the wait and moves nothing.
+        settled: (txHash, outcome) => {
+          if (!resolved(outcome) || counted.has(txHash)) return
+          counted.add(txHash)
+          if (!ours.has(txHash)) return publish({ ...run, earlier: false })
+          const more = movedFunds(outcome) ? 1 : 0
+          publish({ ...run, rows: rows(({ kind, moved }) => ({ kind, moved: moved + more })) })
+        },
+      }
+      const deps = await moveDeps(life.parts, previous, account, token, cap, signal, watch)
       const result = await movePreviousBalance(deps, signal)
       if (result.kind !== "done") return result
+      publish({ ...run, rows: rows(({ kind, moved }) => ({ kind, moved, done: true })) })
     }
     return { kind: "done" }
+  }
+
+  /** Counts the forecasts started, so one a check or a move overtook is dropped. */
+  private forecasts = 0
+
+  /**
+   * Plans the approvals a move takes, apart from every check and move: neither waits for it, and
+   * one that fails or stalls leaves no count.
+   */
+  private startForecast(): void {
+    const started = ++this.forecasts
+    const life = this.life
+    void bestEffort("balance.unread", this.planned(life)).then((forecast) => {
+      if (started === this.forecasts && life === this.life && forecast) this.patch({ forecast })
+    })
+  }
+
+  /** The move's plan over the balances worth moving, under the cap the move takes. */
+  private async planned(life: Life | undefined): Promise<MoveForecast | undefined> {
+    const previous = await life?.found
+    // The shape is read only while no spend of the account is in flight.
+    if (!life || !previous || !previous.signs || this.running) return undefined
+    if (await life.parts.saved.move(previous.address.toString())) return undefined
+    const { holdings, cap } = this.state.get()
+    const worth = (holdings ?? []).filter(({ amount, dust }) => !isDust(amount, dust))
+    const tokens = (await tokensOf(previous)).filter(({ kind }) => worth.some((h) => h.kind === kind))
+    if (tokens.length === 0) return undefined
+    const account = await this.registered(previous)
+    const contractService = await previous.session.contractService.ready()
+    const plans = await Promise.all(
+      tokens.map(async (token) => {
+        const [shape, most, dust] = await Promise.all([
+          getWebOxideToken(previous.wallet, contractService, token.l2Token).then((oxide) =>
+            readSpendShape(previous.wallet, oxide, account.getAddress()),
+          ),
+          cap ?? moveCap(previous.session.page.chain, token.l2Token),
+          dustOf(previous, account, token),
+        ])
+        const plan = planMove(shape, most, unreadDeposits(shape))
+        // The move stops once what is left is dust, so a last chunk of dust asks for nothing.
+        let left = shape.balance
+        let sends = 0
+        for (const chunk of plan.chunks) {
+          if (isDust(left, dust)) break
+          left -= chunk.amount
+          sends++
+        }
+        return { sends, upper: plan.bound === "upper" }
+      }),
+    )
+    return {
+      approvals: plans.reduce((n, plan) => n + plan.sends, 0),
+      upper: plans.some((plan) => plan.upper),
+    }
   }
 
   private patch(fields: Partial<PreviousAccountState>): void {
@@ -453,6 +661,7 @@ async function moveDeps(
   token: HeldToken,
   cap: bigint | undefined,
   signal: AbortSignal,
+  watch: MoveWatch,
 ): Promise<PreviousMoveDeps> {
   const { wallet, session } = previous
   const keys = await unlockedSessionKeys(session, wallet)
@@ -481,15 +690,25 @@ async function moveDeps(
         claimSponsorContext({ session, wallet, account, contractService }, RAIL_REGISTERED),
       ])
       if (signal.aborted) throw new WalletError("aborted", "the move was stopped")
+      watch.sending()
       await tokenService.sendTokenSponsored(destination, amount.toString(), sponsor, {
         userAccount: account,
         useRawAmount: true,
-        onTxHash,
+        onTxHash: async (txHash, meta) => {
+          watch.sent(txHash)
+          await onTxHash(txHash, meta)
+        },
         signal,
       })
       session.oweFpcRefuel({ address: sponsor.fpcAddress, artifact: sponsor.fpcArtifact })
     },
-    outcome: (txHash, expiresAtMs) => txOutcome(node, txHash, expiresAtMs),
+    // Asked only of a transfer already out, this run's or one an earlier run left in flight.
+    outcome: async (txHash, expiresAtMs) => {
+      watch.asked(txHash)
+      const outcome = await txOutcome(node, txHash, expiresAtMs)
+      watch.settled(txHash, outcome)
+      return outcome
+    },
     destinationOk: async () => {
       const record = await session.auth.accountRecord(destination.toString())
       if (!record?.passkeySet) return false

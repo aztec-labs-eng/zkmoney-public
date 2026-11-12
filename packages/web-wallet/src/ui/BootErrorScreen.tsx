@@ -96,14 +96,14 @@ function BootRecovery({ walletOpen, config }: { walletOpen: boolean; config: Web
       {fromSettings && (
         <PrimaryGradientButton
           title="Use default endpoints"
-          buttonStyle="dark"
+          buttonStyle="secondary"
           testId="boot-use-default-endpoints"
           onClick={useDefaults}
         />
       )}
       <PrimaryGradientButton
         title="Change endpoints"
-        buttonStyle="dark"
+        buttonStyle="secondary"
         testId="boot-change-endpoints"
         onClick={() => setEditing(true)}
       />

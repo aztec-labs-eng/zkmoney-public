@@ -84,8 +84,7 @@ contract DepositSubsidy is Ownable, ReentrancyGuardTransient {
   // The base gas of every transaction.
   uint256 public constant TX_INTRINSIC_GAS = 21_000;
   // The executor's entry, the executor's calldata outside the sweep call, the call to the subsidy, the subsidy's
-  // pricing and payment after frameGas, and the executor's payout to the relayer. DepositSubsidy.executorPath.t.sol
-  // calibrates it against relayer transactions to a relayer that already holds TOKEN.
+  // pricing and payment after frameGas, and the executor's payout to the relayer.
   uint256 public constant EXECUTOR_PATH_GAS = 32_500;
   // The executor's payout to a relayer that holds no TOKEN writes a new balance (20,000 gas) instead of changing one
   // (2,900 gas). EXECUTOR_PATH_GAS does not include this difference.

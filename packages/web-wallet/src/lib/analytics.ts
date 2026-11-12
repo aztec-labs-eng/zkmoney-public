@@ -96,6 +96,8 @@ export type AnalyticsEvent =
   // One per backup passkey add attempt and per backup passkey sign-in (lib/backupPasskeyTelemetry.ts).
   | "backup_passkey_add"
   | "backup_passkey_sign_in"
+  // Sent when a saved backup rotation fails its check (lib/backupPasskeyTelemetry.ts).
+  | "backup_rotation_unreadable"
   // ── v5 to v6 upgrade funnel (features/migration/migrationFunnel.ts) ──
   | "migration_prompted"
   | "migration_started"

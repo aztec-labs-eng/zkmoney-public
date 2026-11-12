@@ -56,6 +56,7 @@ describe("oldVersionWithdrawals task", () => {
       visible: visible.readonly,
       pace: createPace(),
       now: () => Date.now(),
+      sinceLoad: () => performance.now(),
     })
     runtimes.push(runtime)
     return { visible, records, checked, runtime }

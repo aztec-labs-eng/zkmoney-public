@@ -558,7 +558,9 @@ function Home() {
         )}
       </div>
       <UpgradeBanner />
-      {backupPasskeySettingsEnabled ? <BackupNudge /> : <RotationApprovalLine />}
+      {/* Without the add, the card shows only a move from the earlier address left unfinished. */}
+      <BackupNudge />
+      {!backupPasskeySettingsEnabled && <RotationApprovalLine />}
       <MovedAccountLine />
       <HomeActions actions={actions} phone={phone} />
       {onSavings ? (

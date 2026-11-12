@@ -12,7 +12,7 @@
   gap: 8px;
   padding: 12px 14px;
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(var(--ink-rgb), 0.05);
   color: var(--text-secondary);
 }
 /* The search's own clear button replaces the browser's. */
@@ -27,11 +27,11 @@
   margin: -6px;
   padding: 6px;
   border-radius: 50%;
-  color: rgba(255, 255, 255, 0.45);
+  color: var(--ww-hint);
 }
 @media (hover: hover) {
   :global(.zkm-btn-reset).clear:hover {
-    color: rgba(255, 255, 255, 0.75);
+    color: var(--ww-hint-strong);
   }
 }
 .search input {
@@ -71,7 +71,7 @@
 }
 .row:hover,
 .row[aria-selected="true"] {
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(var(--ink-rgb), 0.06);
 }
 .row:disabled {
   cursor: default;
@@ -94,7 +94,7 @@
   gap: 6px;
   font-size: 15px;
   font-weight: 600;
-  color: #fdfdfd;
+  color: var(--text-primary);
 }
 .text small {
   font-size: 12px;
@@ -110,7 +110,8 @@
   width: 20px;
   height: 20px;
   border-radius: 50%;
-  background: #56e79d;
+  background: var(--accent-green);
+  color: var(--surface-sheet);
 }
 /* Inside a flow's pane: roomier text on a lighter search. */
 .list.pane {
@@ -119,11 +120,11 @@
 /* The search icon takes the placeholder's color. */
 .pane .search,
 .pane .search input::placeholder {
-  color: rgba(255, 255, 255, 0.45);
+  color: var(--ww-hint);
 }
 .pane .search {
   padding: 10px 14px;
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(var(--ink-rgb), 0.06);
 }
 .pane .search input {
   font-size: 15px;

@@ -529,9 +529,9 @@ export function DepositFromWalletModal({
           {account && !cleared && (
             <ScreeningNotice
               verdict={verdict}
-              checkingCopy={sheetCopy.checkingWallet}
-              blockedFallback={sheetCopy.walletBlocked}
-              errorCopy={sheetCopy.walletUnverified}
+              checkingCopy={copy.checkingWallet}
+              blockedFallback={copy.walletBlocked}
+              errorCopy={copy.walletUnverified}
               onRetry={rescreen}
             />
           )}

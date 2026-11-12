@@ -88,6 +88,7 @@ describe("sipaPool", () => {
       visible: memoryStore(true).readonly,
       pace: createPace(),
       now: () => Date.now(),
+      sinceLoad: () => performance.now(),
     })
     stop = () => runtime.stop()
     // Boot's run finds the pool full and fills nothing.

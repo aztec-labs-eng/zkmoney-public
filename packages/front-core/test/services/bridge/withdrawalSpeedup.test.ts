@@ -31,7 +31,12 @@ const constants: L1RollupConstants = {
 const start = (epoch: number) => GENESIS + epoch * EPOCH
 /** A landing known exactly. */
 const at = (seconds: number) => ({ expected: seconds, earliest: seconds, latest: seconds })
-const fallback: ProofCalibration = { ...DEFAULT_PROOF_LATENCY, confidence: "fallback" }
+/** Latencies the estimate tests price with, apart from the estimator's own defaults. */
+const fallback: ProofCalibration = {
+  fullProofSeconds: 900,
+  partialProofSeconds: 180,
+  confidence: "fallback",
+}
 
 describe("estimateWithdrawalSpeedup", () => {
   it("bounds an early-epoch tip by the unproven predecessor's projected proof", () => {
@@ -208,28 +213,41 @@ const PROOFS = [
 ]
 
 describe("WithdrawalSpeedupEstimator", () => {
-  it("calibrates both latencies from recent L1 proofs", async () => {
-    const node = mockNode(7 * EPOCH_SLOTS + 10, lastOf(6))
-    const publicClient = mockClient(PROOFS)
-    const estimator = new WithdrawalSpeedupEstimator(
-      { node, publicClient },
-      { now: () => start(7) + 2000 },
-    )
+  it.each([
+    ["", PROOFS],
+    [
+      ", each landing three times",
+      PROOFS.flatMap((p) => [0, 600, 1_800].map((d) => ({ ...p, at: p.at + d }))),
+    ],
+    [
+      ", one of a lower checkpoint landing late",
+      [...PROOFS, { checkpoint: 6 * EPOCH_SLOTS + 10, at: start(7) + 1400 }],
+    ],
+  ])(
+    "calibrates both latencies from the L1 proofs that advance the proven tip%s",
+    async (_, proofs) => {
+      const node = mockNode(7 * EPOCH_SLOTS + 10, lastOf(6))
+      const publicClient = mockClient(proofs)
+      const estimator = new WithdrawalSpeedupEstimator(
+        { node, publicClient },
+        { now: () => start(7) + 2000 },
+      )
 
-    expect(await estimator.calibrate()).toEqual({
-      fullProofSeconds: 950,
-      // Median of 350, 550 and 330.
-      partialProofSeconds: 350,
-      confidence: "measured",
-    })
-    expect(publicClient.getContractEvents).toHaveBeenCalledWith(
-      expect.objectContaining({
-        eventName: "L2ProofVerified",
-        fromBlock: 10_000n - 6n * 192n,
-        toBlock: 10_000n,
-      }),
-    )
-  })
+      expect(await estimator.calibrate()).toEqual({
+        fullProofSeconds: 950,
+        // Median of 350, 550 and 330.
+        partialProofSeconds: 350,
+        confidence: "measured",
+      })
+      expect(publicClient.getContractEvents).toHaveBeenCalledWith(
+        expect.objectContaining({
+          eventName: "L2ProofVerified",
+          fromBlock: 10_000n - 6n * 192n,
+          toBlock: 10_000n,
+        }),
+      )
+    },
+  )
 
   it("falls back when there are too few partial-proof samples", async () => {
     const node = mockNode(6 * EPOCH_SLOTS + 10, lastOf(5))
@@ -283,7 +301,10 @@ describe("WithdrawalSpeedupEstimator", () => {
     publicClient.getContractEvents.mockRejectedValueOnce(new Error("rpc down"))
     const estimator = new WithdrawalSpeedupEstimator({ node, publicClient }, { now: () => now })
 
-    expect(await estimator.calibrate()).toEqual(fallback)
+    expect(await estimator.calibrate()).toEqual({
+      ...DEFAULT_PROOF_LATENCY,
+      confidence: "fallback",
+    })
     expect((await estimator.calibrate()).confidence).toBe("measured")
     now += 299
     await estimator.calibrate()
@@ -311,10 +332,53 @@ describe("WithdrawalSpeedupEstimator", () => {
         node: mockNode(7 * EPOCH_SLOTS + 1, 6 * EPOCH_SLOTS + 5),
         publicClient: clientWithoutProofs,
       },
-      { now: () => 0 },
+      // A slow full proof, so the unproven predecessor holds the tipped release back.
+      { now: () => 0, fallback },
     )
     const unprovenEstimate = await unproven.estimate(at(60))
     expect(now + 60 + unprovenEstimate.tippedEtaSeconds).toBe(start(7) + 900)
     expect(unprovenEstimate.confidence).toBe("fallback")
+  })
+
+  it("estimates a landed burn from its landing, reading its predecessor's proof", async () => {
+    const now = start(7) + 2 * SLOT
+    const client = mockClient([], now)
+    // Landed in epoch 7's second slot, before the chain's clock reached its partial proof.
+    const landedAt = start(7) + SLOT + 60
+
+    const proven = new WithdrawalSpeedupEstimator(
+      { node: mockNode(7 * EPOCH_SLOTS + 1, lastOf(6)), publicClient: client },
+      { now: () => 0, fallback },
+    )
+    const provenEstimate = await proven.estimateLanded(landedAt)
+    expect(provenEstimate.epoch).toBe(7)
+    expect(landedAt + provenEstimate.standardEtaSeconds).toBe(start(8) + 900)
+    expect(provenEstimate.tippedEtaSeconds).toBe(180)
+
+    const unproven = new WithdrawalSpeedupEstimator(
+      { node: mockNode(7 * EPOCH_SLOTS + 1, 6 * EPOCH_SLOTS + 5), publicClient: client },
+      { now: () => 0, fallback },
+    )
+    const unprovenEstimate = await unproven.estimateLanded(landedAt)
+    expect(landedAt + unprovenEstimate.tippedEtaSeconds).toBe(start(7) + 900)
+  })
+
+  it("holds a landed burn's tipped release to when its predecessor was first seen proven", async () => {
+    const landedAt = start(7) + SLOT + 60
+    const node = mockNode(7 * EPOCH_SLOTS + 1, 6 * EPOCH_SLOTS + 5)
+    const client = mockClient([])
+    const estimator = new WithdrawalSpeedupEstimator(
+      { node, publicClient: client },
+      { now: () => 0, fallback },
+    )
+    const releaseAt = async (head: number) => {
+      client.getBlock.mockResolvedValue({ timestamp: BigInt(head) })
+      return landedAt + (await estimator.estimateLanded(landedAt)).tippedEtaSeconds
+    }
+    expect(await releaseAt(landedAt + 120)).toBe(start(7) + 900)
+    // Proven only by a read 11 minutes after landing: never earlier, and fixed on later reads.
+    node.getCheckpointNumber.mockResolvedValue(lastOf(6))
+    expect(await releaseAt(landedAt + 660)).toBe(landedAt + 660)
+    expect(await releaseAt(landedAt + 720)).toBe(landedAt + 660)
   })
 })

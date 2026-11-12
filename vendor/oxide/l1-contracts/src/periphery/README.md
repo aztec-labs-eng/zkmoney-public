@@ -8,13 +8,13 @@
 
 Forge gives no transaction receipt. Thus [RelayerTransaction.sol](../../test/periphery/RelayerTransaction.sol) calculates `gasUsed` of a relayer transaction from `vm.lastCallGas`, with the base gas, the calldata gas and the refund, as the EVM does.
 
-[DepositSubsidy.executorPath.t.sol](../../test/periphery/DepositSubsidy.executorPath.t.sol) sends each kind of relayer transaction through the real executor, subsidy, SIPA and portal. It checks that `subsidyGas` is at most `gasUsed`, and at most 2,000 gas (`UNDERPAY_TOLERANCE`) below it. This calibrates `EXECUTOR_PATH_GAS` and checks the refund constants. The difference is part of `profitCoveredGas` in [When liveness holds](../../../engineering-design-docs/subsidy.md#when-liveness-holds).
+[DepositSubsidy.gasRows.fork.t.sol](../../test/subsidy-check/fork/DepositSubsidy.gasRows.fork.t.sol) calibrates `EXECUTOR_PATH_GAS` and the refund constants. It relays each mainnet deposit flow through the real executor, subsidy, SIPA and portal, checks that `subsidyGas` is at most `gasUsed`, and pins the gas that the subsidy does not price to within 500 gas. That gas is part of `profitCoveredGas` in [When liveness holds](../../../engineering-design-docs/subsidy.md#when-liveness-holds). [DepositSubsidy.executorPath.t.sol](../../test/subsidy-check/subsidies/DepositSubsidy.executorPath.t.sol) relays a sweep with 1 KiB of zero proofs, and checks that `subsidyGas` is at most `gasUsed`, and at most 2,000 gas (`UNDERPAY_TOLERANCE`) below it.
 
 Forge can make the storage of an account cold again, but not the account. Thus each check sends its transaction before any other step of the test touches the accounts of that transaction.
 
-The unit tests read a mock price feed, which uses less gas than the Chainlink feed. [DepositSubsidy.executorPath.fork.t.sol](../../test/fork/DepositSubsidy.executorPath.fork.t.sol) makes the same checks with mainnet DAI and the Chainlink ETH/USD feed. It also relays USDC and USDT sweeps, which swap to DAI through the Curve 3pool.
+The unit tests read a mock price feed, which uses less gas than the Chainlink feed. [DepositSubsidy.gasRows.fork.t.sol](../../test/subsidy-check/fork/DepositSubsidy.gasRows.fork.t.sol) relays each mainnet deposit flow with the mainnet tokens and the Chainlink ETH/USD feed, and pins its gas row in the [subsidy check](../../subsidy-check/README.md#gas-rows). It also checks that `subsidyGas` is at most `gasUsed`, for a relayer that holds the payout token and for one that does not. The USDC and USDT sweeps swap to DAI through the Curve 3pool, also from a SIPA that already holds DAI.
 
-The `e2e_deposit_subsidy` ladder checks each payment against the gas in the receipt of its relayer transaction.
+The `e2e_deposit_subsidy/sweeps` suite checks the gas rows of three flows against the receipts of their relayer transactions.
 
 ### Gas refunds
 
@@ -24,13 +24,13 @@ The subsidy does not subtract the refund of 4,800 gas of the payment that emptie
 
 ## Subsidy gas ceilings
 
-Each intent has a ceiling in [DepositSubsidy.sol](./DepositSubsidy.sol) that limits `subsidyGas`. Below its ceiling, the meter prices an operation. An intent without a ceiling gets no subsidy. The constructor takes the starting ceilings, and the owner can change them with `setSweepGasCeiling`. Keep each ceiling, the deploy allowance and the USDC and USDT hops between the chain cost of a representative cold operation and 10% above that cost.
+Each intent has a ceiling in [DepositSubsidy.sol](./DepositSubsidy.sol) that limits `subsidyGas`. Below its ceiling, the meter prices an operation. When an operation goes over the ceiling constant, the relayer pays for the gas over it. An intent without a ceiling gets no subsidy. The constructor takes the starting ceilings, and the owner can change them with `setSweepGasCeiling`.
 
-Each calibration test adds a chain-cost offset to the gas that forge counts:
-- [DepositSubsidy.executorPath.t.sol](../../test/periphery/DepositSubsidy.executorPath.t.sol) calibrates the deposit ceiling and the deploy allowance against a relayer transaction. Its offset, `HARNESS_TO_CHAIN_RELAY`, comes from the receipts of the `e2e_deposit_subsidy` ladder.
-- [DepositSubsidy.executorPath.fork.t.sol](../../test/fork/DepositSubsidy.executorPath.fork.t.sol) calibrates the USDC and USDT hops against relayer transactions that swap through the 3pool: the deposit ceiling and each hop against a resweep, and with the deploy allowance against a first sweep. Its offset, `FORK_TO_CHAIN_RELAY`, is the chain cost of the resweep that `DepositSubsidy.executorPath.t.sol` calibrates the deposit ceiling against, less the gas of the same DAI relayer transaction on the fork.
-- [DepositSubsidy.sweepGas.t.sol](../../test/periphery/DepositSubsidy.sweepGas.t.sol) calibrates the registration ceiling against a direct registration sweep. Its offset, `HARNESS_TO_CHAIN` in [SweepGasFixture.sol](../../test/periphery/SweepGasFixture.sol), adds the gas that the deployed contracts use and the test mocks do not. The test also checks that the meter, not the ceiling, prices a cheap relayer transaction.
-- [AddPasskeySIPA.t.sol](../../test/periphery/AddPasskeySIPA.t.sol) checks that an add with the longest credential id is below the add-passkey ceiling, and that the ceiling is at most 10% above its chain cost.
-- [SIPA.stableSweep.fork.t.sol](../../test/fork/SIPA.stableSweep.fork.t.sol) measures the USDC and USDT swap allowances on the pinned mainnet fork. The subsidy adds them to the base ceiling.
+For each mainnet deposit flow, [DepositSubsidy.gasRows.fork.t.sol](../../test/subsidy-check/fork/DepositSubsidy.gasRows.fork.t.sol) measures the gas that the subsidy does not price, with the gas over a ceiling constant, and pins it in the flow's gas row. The [subsidy check](../../subsidy-check/README.md#gas-rows) then tests that the relayer's margin, the smaller of `targetRelayerProfit` and the sweep tip, pays for that gas at the flow's target gas price. When you change a deposit or registration ceiling, the deploy allowance or a swap hop, update the gas rows and run the subsidy check.
 
-Calibrate again when the gas of an operation changes.
+Other gas pins:
+- [DepositSubsidy.sweepGas.t.sol](../../test/subsidy-check/subsidies/DepositSubsidy.sweepGas.t.sol) checks that the meter, not the ceiling, prices a resweep through the deploy entry and the cheapest registration.
+
+Add-passkey sweeps get no subsidy: their intent's ceiling is 0.
+
+Measure again when the gas of an operation changes.

@@ -486,7 +486,7 @@ export interface PageLoaders {
   originToken: (chainId: number, token: Address) => Promise<OriginTokenFacts>
   l1AddressActivity: (address: Address) => Promise<L1AddressActivity>
   etherfiVerdict: (address: Address) => Promise<EtherfiAddressVerdict>
-  screening: (address: string) => Promise<ScreeningVerdict>
+  screening: (address: string, chainId?: number) => Promise<ScreeningVerdict>
   ensAddress: (name: string) => Promise<Address | null>
   /** A swap route's price, and the active executor's terms the direct route prices. */
   swapQuote: {

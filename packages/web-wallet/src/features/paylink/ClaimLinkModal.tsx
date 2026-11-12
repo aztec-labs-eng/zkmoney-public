@@ -18,6 +18,7 @@ import { useBusyLabel, useUserFlowActive } from "../operations/operations"
 import { OperationHandOff } from "../operations/OperationHandOff"
 import { WORKING_WARNING } from "../contacts/PayWorking"
 import { actionUpgradeTitle, claimUpgradeLead } from "../migration/upgradeCopy"
+import copy from "./ClaimLinkModal.copy"
 
 export type ClaimStage = CreateStage | EmailClaimStage
 
@@ -134,10 +135,14 @@ export function ClaimLinkModal({
         </div>
 
         {closed ? (
-          <PrimaryGradientButton title="Go to wallet" buttonStyle="dark" onClick={onClose} />
+          <PrimaryGradientButton
+            title={copy.goToWallet}
+            buttonStyle="secondary"
+            onClick={onClose}
+          />
         ) : mustUpgrade ? (
           <div className="ww-claim-modal__actions">
-            <PrimaryGradientButton title="Decline" buttonStyle="dark" onClick={onClose} />
+            <PrimaryGradientButton title={copy.decline} buttonStyle="secondary" onClick={onClose} />
             <PrimaryGradientButton
               title={actionUpgradeTitle.claim}
               isDisabled={busy}
@@ -149,7 +154,11 @@ export function ClaimLinkModal({
             <span className="ww-claim-modal__sub">
               Couldn't check when this link can be claimed.
             </span>
-            <PrimaryGradientButton title="Try again" buttonStyle="dark" onClick={onRetryRead} />
+            <PrimaryGradientButton
+              title={copy.tryAgain}
+              buttonStyle="secondary"
+              onClick={onRetryRead}
+            />
           </div>
         ) : claimWait ? (
           <div className="ww-claim-modal__actions">
@@ -159,7 +168,7 @@ export function ClaimLinkModal({
                 New links wait a moment so the sender can cancel a mistake.
               </span>
             </div>
-            <PrimaryGradientButton title="Close" buttonStyle="dark" onClick={onClose} />
+            <PrimaryGradientButton title={copy.close} buttonStyle="secondary" onClick={onClose} />
           </div>
         ) : link.flavor === "email" ? (
           <div className="ww-claim-modal__brand-actions">
@@ -186,7 +195,11 @@ export function ClaimLinkModal({
         ) : (
           <>
             <div className="ww-claim-modal__actions">
-              <PrimaryGradientButton title="Decline" buttonStyle="dark" onClick={onClose} />
+              <PrimaryGradientButton
+                title={copy.decline}
+                buttonStyle="secondary"
+                onClick={onClose}
+              />
               <PrimaryGradientButton
                 title={busy ? busyLabel : timingPending ? "Checking…" : "Accept"}
                 isDisabled={busy || timingPending}
@@ -244,7 +257,11 @@ export function ClaimProvingModal({
             </div>
             {/* Cancel is offered only while nothing has moved; the warning takes over after. */}
             {onCancel ? (
-              <PrimaryGradientButton title="Cancel" buttonStyle="dark" onClick={onCancel} />
+              <PrimaryGradientButton
+                title={copy.cancel}
+                buttonStyle="secondary"
+                onClick={onCancel}
+              />
             ) : (
               <span className="ww-claim-proving__warning">
                 {WORKING_WARNING[0]}

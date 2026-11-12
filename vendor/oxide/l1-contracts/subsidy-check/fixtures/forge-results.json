@@ -1,0 +1,93 @@
+{
+  "test/subsidy-check/tmpfixture/FixtureSubsidy.t.sol:FixtureSubsidyTest": {
+    "duration": "7ms 573\u00b5s",
+    "test_results": {
+      "testFuzz_GivenAFuzzTest_ThenItFindsACounterexample(uint256)": {
+        "status": "Failure",
+        "reason": "ten is found: 10 >= 10",
+        "counterexample": {
+          "Single": {
+            "warp": null,
+            "roll": null,
+            "sender": "0x1804c8ab1f12e6bbf3894d4083f33e07309d1f38",
+            "addr": "0x7fa9385be102ac3eac297483dd6233d62b3e1496",
+            "calldata": "0x3a0eca520000000000000000005a82d33354ea7d7aa349022c2f4ea534c08a8b587bddee",
+            "contract_name": null,
+            "func_name": null,
+            "signature": null,
+            "args": "8669234861758692979809187392988407545320948800018963950 [8.669e54]",
+            "raw_args": "8669234861758692979809187392988407545320948800018963950",
+            "fuzz_seed": "0x1cc496c96e452d146b20277fcd997bbffaf342d32edd9461e892726d4842b0ac",
+            "fuzz_run": 2,
+            "fuzz_worker": 1
+          }
+        },
+        "decoded_logs": [],
+        "kind": {
+          "Fuzz": {
+            "first_case": {
+              "gas": 27987,
+              "stipend": 21204
+            },
+            "runs": 14,
+            "mean_gas": 7263,
+            "median_gas": 7467,
+            "failed_corpus_replays": 0
+          }
+        }
+      },
+      "testFuzz_GivenAFuzzTest_ThenItRuns(uint256)": {
+        "status": "Success",
+        "reason": null,
+        "counterexample": null,
+        "decoded_logs": [],
+        "kind": {
+          "Fuzz": {
+            "first_case": {
+              "gas": 27943,
+              "stipend": 21204
+            },
+            "runs": 256,
+            "mean_gas": 7269,
+            "median_gas": 7423,
+            "failed_corpus_replays": 0
+          }
+        }
+      },
+      "test_GivenASkippedTest_ThenItSkips()": {
+        "status": "Skipped",
+        "reason": null,
+        "counterexample": null,
+        "decoded_logs": [],
+        "kind": {
+          "Unit": {
+            "gas": 0
+          }
+        }
+      },
+      "test_GivenAUnitTest_ThenItFails()": {
+        "status": "Failure",
+        "reason": "one is not two: 1 != 2",
+        "counterexample": null,
+        "decoded_logs": [],
+        "kind": {
+          "Unit": {
+            "gas": 3590
+          }
+        }
+      },
+      "test_GivenAUnitTest_ThenItPasses()": {
+        "status": "Success",
+        "reason": null,
+        "counterexample": null,
+        "decoded_logs": [],
+        "kind": {
+          "Unit": {
+            "gas": 3488
+          }
+        }
+      }
+    },
+    "warnings": []
+  }
+}

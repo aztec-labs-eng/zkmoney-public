@@ -109,7 +109,7 @@ export function WorkingSheet({
         )}
         <PrimaryGradientButton
           title={workingCopy.cancel}
-          buttonStyle="dark"
+          buttonStyle="secondary"
           isDisabled={signing}
           testId="cutover-cancel"
           onClick={onCancel}

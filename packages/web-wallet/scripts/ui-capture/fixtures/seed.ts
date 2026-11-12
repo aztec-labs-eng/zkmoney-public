@@ -11,8 +11,13 @@ import { desktopState, installDesktopBridge, seedPublishedAddress } from "./desk
 import { parseUnits } from "viem"
 import { WalletError } from "@obsidion/front-core"
 import { WALLET_TOKEN_SYMBOL } from "@obsidion/core/constants"
-import { DEMO_COMPLETE_ADDRESS, DEMO_L2_TOKEN } from "../../../src/dev/demoFixtures"
+import {
+  DEMO_COMPLETE_ADDRESS,
+  DEMO_CREDENTIAL_ID,
+  DEMO_L2_TOKEN,
+} from "../../../src/dev/demoFixtures"
 import { saveIdentity } from "../../../src/session/account"
+import { WebPasskeyIdentityMap } from "../../../src/platform/auth/WebPasskeyIdentityMap"
 import { writeDeviceKeys } from "../../../src/platform/storage/deviceKeys"
 import { backupFixture, keyPubkey, sessionPubkeyHex } from "./backup-passkey"
 export * from "../../../src/dev/seedDemo"
@@ -60,8 +65,17 @@ export const seedDemo: typeof actual = async (scenario, boot, _primed, pace) => 
     const atomic = parseUnits(balance, 18)
     await balanceStore.write(scope, DEMO_L2_TOKEN, atomic, undefined, undefined, WALLET_TOKEN_SYMBOL)
   }
-  // `?backupFixture=<name>`: the names the fixture's keys carry on this device.
+  // `?backupFixture=<name>`: the session signs with the demo passkey, whose record Settings and the
+  // sheet read the one-device verdict from, and the fixture's keys carry their names on this device.
   const backup = backupFixture()
+  if (backup) {
+    await writeDeviceKeys(seeded.database, { credentialId: DEMO_CREDENTIAL_ID })
+    if (backup.input.oneDevice)
+      await new WebPasskeyIdentityMap(seeded.database, config.rpId).setBackupEligible(
+        DEMO_CREDENTIAL_ID,
+        false,
+      )
+  }
   if (backup && typeof backup.keys === "object") {
     const own = await sessionPubkeyHex()
     const names = Object.fromEntries(

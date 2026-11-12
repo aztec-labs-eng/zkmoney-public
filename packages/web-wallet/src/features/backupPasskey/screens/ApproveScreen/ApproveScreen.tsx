@@ -10,12 +10,7 @@ import {
   type SpeedChoice,
   type SpeedOutcome,
 } from "../../../withdraw/speedChoice"
-import {
-  etaLabel,
-  SpeedCheckingPill,
-  SpeedChoicePill,
-} from "../../../withdraw/WithdrawalSpeedPicker"
-import speedCopy from "../../../withdraw/WithdrawalSpeedPicker.copy"
+import { SpeedCheckingPill, SpeedChoicePill } from "../../../withdraw/WithdrawalSpeedPicker"
 import { costCopy } from "../../backupPasskeyCopy"
 import type { BackupPayFacts, BackupScreenProps } from "../../backupScreen"
 import {
@@ -136,15 +131,12 @@ function PaySheet({
       ? backupFundingQuote({ ...pay.plan, fundingAmount: (base + proverTip).toString() })
       : pay
   const amount = dollars(quote.sent - quote.credited)
-  const etaSeconds = offer
-    ? proverTip > 0n
-      ? offer.tippedEtaSeconds
-      : offer.standardEtaSeconds
-    : undefined
+  // The whole wait, from paying to the backup installed, at the speed the tip buys.
+  const etaSeconds = pay.eta && (proverTip > 0n ? pay.eta.tipped : pay.eta.standard)
   const time =
     etaSeconds === undefined
-      ? fmt(copy.pay.timeValue, { minutes: minutes(pay.takesMs) })
-      : fmt(speedCopy.eta, { eta: etaLabel(etaSeconds) })
+      ? undefined
+      : fmt(copy.pay.timeValue, { minutes: minutes(etaSeconds * 1000) })
   const speed = offer ? (
     <SpeedChoicePill
       value={choice.speed}
@@ -192,7 +184,7 @@ function PaySheet({
             },
           },
           ...(speed ? [{ label: copy.pay.speed, value: speed }] : []),
-          { label: copy.pay.time, value: time },
+          ...(time ? [{ label: copy.pay.time, value: time }] : []),
         ]}
       />
       {children}

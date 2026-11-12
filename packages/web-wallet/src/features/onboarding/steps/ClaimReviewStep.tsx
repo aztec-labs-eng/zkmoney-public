@@ -7,6 +7,7 @@ import { ticketAmountFigure } from "./GoldenTicketHead"
 import { PaylinkSignupRows } from "./PaylinkSignupRows/PaylinkSignupRows"
 import { SignupStepper } from "./SignupStepper"
 import { senderLine } from "../../paylink/senderLine"
+import copy from "./ClaimReviewStep.copy"
 
 /**
  * Step three of a paylink-funded signup (Figma 11118:54014): the payment, its memo and the exact
@@ -118,13 +119,7 @@ export function ClaimReviewStep({
       {notices && <div className="ww-claim-review__notices">{notices}</div>}
       {busy && <OperationHandOff ref={working} onLeave={onHandOff ?? onClose} until="sent" />}
       <div className="ww-claim-review__actions ww-sheet__actions">
-        <button
-          type="button"
-          className="zkm-btn-reset zkm-pressable ww-claim-review__close"
-          onClick={close}
-        >
-          Close
-        </button>
+        <PrimaryGradientButton title={copy.close} buttonStyle="secondary" onClick={close} />
         {!settled && !busy && (
           <PrimaryGradientButton
             title="Claim"

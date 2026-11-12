@@ -311,7 +311,7 @@ export function ExternalWalletPayModal({
       </p>
       <PrimaryGradientButton
         title={payCopy.payAgain}
-        buttonStyle="dark"
+        buttonStyle="secondary"
         onClick={() => {
           void bestEffort("unknown", clearPayment(database, config.network, payee))
           setPayingAgain(bridgeHeld)

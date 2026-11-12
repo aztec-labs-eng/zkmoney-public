@@ -1,9 +1,10 @@
-import type { Address } from 'viem';
+import { type Address, maxUint256, zeroAddress } from 'viem';
 
 import type { AdapterConfigs } from './adapters.js';
 import type { CurvePool } from './steps/curve.js';
 import type { Vault } from './steps/erc4626.js';
 import type { Psm } from './steps/maker_psm.js';
+import type { Step } from './steps/step.js';
 
 export const DAI: Address = '0x1000000000000000000000000000000000000001';
 export const USDC: Address = '0x2000000000000000000000000000000000000002';
@@ -45,4 +46,16 @@ export const ADAPTERS = {
   across: { address: '0x9000000000000000000000000000000000000008' },
   cctp: { address: '0x9000000000000000000000000000000000000009', usdc: USDC },
   lifi: { address: '0x9000000000000000000000000000000000000010' },
+  userOp: { address: '0x9000000000000000000000000000000000000011' },
+  check: { address: '0x9000000000000000000000000000000000000012' },
 } satisfies AdapterConfigs;
+
+/** The call of a swap: the whole balance, paid to `recipient`. */
+export function stepCall(step: Step, recipient: Address) {
+  return { target: step.adapter, data: step.encode({ amount: maxUint256, recipient }) };
+}
+
+/** The call of a step that puts out no token: the whole balance, and nobody to pay. */
+export function noTokenCall(step: Step) {
+  return { target: step.adapter, data: step.encode({ amount: maxUint256, recipient: zeroAddress }) };
+}

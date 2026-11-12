@@ -15,6 +15,7 @@ import { usePhoneLayout } from "../../ui/usePhoneLayout"
 import { requestLinkOrigin } from "./requestLinkCreation"
 import { useSession } from "../../session/session"
 import { useShortRequestLink } from "./shortRequestLink"
+import paylinkCopy from "./SharePaylinkModal.copy"
 
 /**
  * Share step of the request-paylink flow (ULT-671), doubling as the detail sheet for a persisted
@@ -91,7 +92,11 @@ export function SharePaylinkModal({
         {status.active &&
           (url && onCancel ? (
             <div className="ww-share-modal__buttons">
-              <PrimaryGradientButton title="Cancel request" buttonStyle="dark" onClick={onCancel} />
+              <PrimaryGradientButton
+                title={paylinkCopy.cancelRequest}
+                buttonStyle="secondary"
+                onClick={onCancel}
+              />
               <PrimaryGradientButton
                 title={copied ? "Copied!" : phone ? "Share" : "Copy link"}
                 onClick={() => void (phone ? share() : copy())}
@@ -101,7 +106,7 @@ export function SharePaylinkModal({
             <div className="ww-share-modal__buttons">
               <PrimaryGradientButton
                 title={copied ? "Copied!" : "Copy link"}
-                buttonStyle="dark"
+                buttonStyle="secondary"
                 onClick={() => void copy()}
               />
               {phone && <PrimaryGradientButton title="Share" onClick={() => void share()} />}
@@ -113,8 +118,8 @@ export function SharePaylinkModal({
               </span>
               {onCancel && (
                 <PrimaryGradientButton
-                  title="Cancel request"
-                  buttonStyle="dark"
+                  title={paylinkCopy.cancelRequest}
+                  buttonStyle="secondary"
                   onClick={onCancel}
                 />
               )}

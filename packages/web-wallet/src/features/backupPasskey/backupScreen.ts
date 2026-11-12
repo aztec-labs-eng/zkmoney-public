@@ -4,8 +4,8 @@
  */
 import {
   allowanceCovers,
-  BACKUP_ADD_TAKES_MS,
   backupAddCharged,
+  backupAddEta,
   backupAddTiming,
   backupFundingQuote,
   cancellable,
@@ -14,14 +14,18 @@ import {
   moveProgress,
   recoveryState,
   refundProgress,
+  sweepGone,
   type AllowanceSnapshot,
   type BackupAddQuote,
+  type BackupAddRelease,
   type BackupFunding,
+  type BackupFundingRow,
   type BackupFundingQuote,
   type BackupRotationPhase,
   type BackupRotationPlan,
   type BackupRotationRecord,
   type FlowWait,
+  type MoveSend,
   type RecoveryState,
   type RotationDrive,
 } from "@obsidion/front-core"
@@ -49,6 +53,7 @@ import {
 import type { EntryFacts } from "./backupPasskeyFacts"
 import type { BackupRotationState } from "./backupRotations"
 import type { FundFit } from "./fundFitFlow"
+import { fasterIsWorthIt, type FasterWithdrawal } from "../withdraw/useFasterWithdrawal"
 
 /** A passkey on the account, as the key list read it. */
 export interface BackupKey {
@@ -84,6 +89,8 @@ export interface EntryInput {
 
 export interface BackupScreenInput {
   keys: KeysRead
+  /** `keys` is an earlier read while the sheet's own read is out. */
+  keysRefreshing?: boolean
   saved: BackupRotationState
   /** The pending record's flow dependencies; `none` without a wallet to build them over. */
   deps: "none" | "building" | "ready" | "failed"
@@ -93,9 +100,22 @@ export interface BackupScreenInput {
   entry?: EntryInput
   /** Whether one transfer funds the add; read only while the funding waits on the user. */
   fit?: FundFit
+  /** The l2 tokens the move sends, once read. */
+  tokens?: MoveTokens
+  /** The attempt's funding as the withdrawal tracker has it, once sent. */
+  funding?: BackupFundingRow
+  /** When the funding is released; read only while a screen shows the add's time. */
+  release?: BackupAddRelease
+  /**
+   * The faster option, read while the start screens show: the intro's time is for the speed the pay
+   * step opens on.
+   */
+  offer?: FasterWithdrawal
   /** A new add may start from this build. */
   addable: boolean
   laptop: boolean
+  /** The session passkey lives on one device, which the key list warns about. */
+  oneDevice: boolean
   /** How far into the start screens the user went. */
   start?: "intro" | "place"
   picked?: BackupAddChoice
@@ -125,6 +145,26 @@ export type BackupStage =
   | "installing"
   | "moving"
 
+/** Main Account's l2 token, and Savings' where the deployment has Savings. */
+export interface MoveTokens {
+  main: string
+  savings?: string
+}
+
+/**
+ * Where a row of the move stands. `sending`: its prompt or proof is out. `next`: its send is the
+ * one the move makes next. `confirming`: sent, and no checkpoint holds it yet.
+ */
+export type MoveRowState = "done" | "sending" | "next" | "confirming" | "todo"
+
+/**
+ * One thing step 4 does: the paylinks it takes back, then each balance it moves. `funds` stands
+ * for the balances before they are planned, `other` for a token that is neither Main's nor Savings'.
+ */
+export type BackupMoveRow =
+  | { kind: "links"; count: number; state: MoveRowState }
+  | { kind: "funds" | "main" | "savings" | "other"; state: MoveRowState }
+
 export interface BackupProgress {
   step: 2 | 3 | 4
   stage: BackupStage
@@ -132,6 +172,12 @@ export interface BackupProgress {
   refunds?: { landed: number; total: number }
   /** The latest move run: chunks in over chunks planned. */
   moved?: { included: number; total: number }
+  /** A reorg dropped the sweep; the relayer's re-sweep has yet to settle. */
+  relanding?: true
+  /** Chunks of that run approved and sent that no block holds yet. */
+  out?: number
+  /** Step 4 as rows, once the tokens are read and it has paylinks or a balance to show. */
+  rows?: readonly BackupMoveRow[]
 }
 
 /** Why a step is slower than it should be (C6); `late` is past the time the add quoted. */
@@ -141,8 +187,8 @@ export type BackupDelay = "route" | "uses" | "late"
 export interface BackupPayFacts extends BackupFundingQuote {
   plan: BackupRotationPlan
   fit?: FundFit
-  /** The most the add takes once paid. */
-  takesMs: number
+  /** The add's wait at either speed, once the release is read. */
+  eta?: BackupEtas
   /** The two-key account the funds move to. */
   address: string
   /** Prompts now, then one per paylink taken back and per part of the balance moved. */
@@ -171,9 +217,14 @@ export type BackupRead = "keys" | "records" | "deps" | "entry"
 /** Where the new backup was saved, as far as its creation said. */
 export type BackupSaved = { securityKey: true } | { manager: string }
 
-/** A paid add's quoted time and what is left of it. */
+/** The add's whole wait on the network from paying, in seconds, at either speed. */
+export interface BackupEtas {
+  standard: number
+  tipped: number
+}
+
+/** What is left of a paid add's wait, as estimated from its funding's progress. */
 export interface BackupTiming {
-  takesMs: number
   leftMs: number
 }
 
@@ -200,13 +251,14 @@ export type BackupScreen =
    * the key list, which waits on the read.
    */
   | { id: "loading"; rotation: boolean; cancelled?: boolean }
-  /** A1: the key list and its add. */
+  /** A1: the key list and its add. `oneDevice` warns and lists the backup as missing. */
   | {
       id: "keys"
       keys: readonly BackupKey[]
       add: BackupAddState
       place?: BackupAddOptions
       device?: UserAgentInfo
+      oneDevice: boolean
       busy: boolean
       cancelled: boolean
     }
@@ -215,6 +267,8 @@ export type BackupScreen =
       id: "intro"
       links: number
       quote?: BackupAddQuote
+      /** The add's wait in seconds at the speed the pay step opens on, once the release is read. */
+      eta?: number
       picker: boolean
       device?: UserAgentInfo
       busy: boolean
@@ -264,6 +318,8 @@ export type BackupScreen =
       unlisted?: { savedIn?: BackupSaved }
       paid?: bigint
       failure?: BackupFailure
+      /** As `BackupProgress.relanding`. */
+      relanding?: true
     }
   /** Funding held at the deposit address, on its way back, or back. */
   | {
@@ -390,20 +446,46 @@ export const entryShows = ({ addable, keys, saved }: BackupScreenInput): boolean
   (keys === "unverified" || (typeof keys === "object" && keys.count === 1)) &&
   saved === null
 
+/** The phases whose screens show the add's time: the pay step and the wait after paying. */
+const TIMED: ReadonlySet<BackupRotationPhase> = new Set<BackupRotationPhase>([
+  "published",
+  "funded",
+  "swept",
+  "installed",
+])
+
+/** Whether the add's time shows: on a start screen, the pay step or the wait after paying. */
+export const timeShows = ({
+  keys,
+  saved,
+  start,
+}: Pick<BackupScreenInput, "keys" | "saved" | "start">): boolean => {
+  const record = pendingRecord(keys, saved)
+  if (!record) return saved === null && start !== undefined
+  return record.phase === "attention" ? record.attention === "route" : TIMED.has(record.phase)
+}
+
 /** What the user last found the deposit address empty under: the attempt and its recovery. */
 export const recoveryKey = (record: BackupRotationRecord): string =>
   `${record.attemptId}:${record.recovery?.txHash ?? "held"}`
+
+/** A finished record the user left, kept only while its sweep is re-read: no screen shows it. */
+const dismissed = (saved: BackupRotationState): boolean =>
+  typeof saved === "object" && saved !== null && saved.phase === "done" && saved.dismissed === true
 
 /** The saved record to act on: none while the key read is out, so another account's never is. */
 export const pendingRecord = (
   keys: KeysRead,
   saved: BackupRotationState,
 ): BackupRotationRecord | null =>
-  keys !== undefined && saved !== null && typeof saved === "object" ? saved : null
+  keys !== undefined && saved !== null && typeof saved === "object" && !dismissed(saved)
+    ? saved
+    : null
 
 /** The screen for what the wallet holds, the driver answered and the user did, with its props. */
 export function selectBackupScreen(input: BackupScreenInput): BackupScreen {
-  const { keys, saved } = input
+  const { keys } = input
+  const saved = dismissed(input.saved) ? null : input.saved
   const record = pendingRecord(keys, saved)
   if (record) return rotationScreen(record, input)
   if (saved === "unreadable") return { id: "unreadable", read: "records" }
@@ -433,6 +515,7 @@ function startScreen(
       add,
       ...(place && { place }),
       ...(device && { device }),
+      oneDevice: input.oneDevice,
       busy: input.busy,
       cancelled: input.cancelled,
     }
@@ -446,10 +529,12 @@ function startScreen(
     return { id: "place", place, ...(device && { device }), busy: input.busy }
   const facts = input.entry?.facts
   const quote = typeof facts === "object" ? facts.quote : undefined
+  const eta = introEta(input)
   return {
     id: "intro",
     links: add.links,
     ...(quote && { quote }),
+    ...(eta !== undefined && { eta }),
     picker: place !== undefined,
     ...(device && { device }),
     busy: input.busy,
@@ -467,7 +552,9 @@ function addState(
   const facts = verified ? input.entry.facts : UNREGISTERED_FACTS
   if (allowance.status === "unavailable" || facts === "unreadable" || (verified && railFailed))
     return { kind: "unreadable" }
+  // A new add starts from this open's key count, never an earlier one.
   if (
+    input.keysRefreshing ||
     allowance.status !== "ready" ||
     facts === "checking" ||
     !device ||
@@ -598,7 +685,7 @@ function recordScreen(
     : undefined
   const paid = amount === undefined ? {} : { paid: amount }
   const at = (phase: TrackedPhase): Tracked => ({
-    progress: progressAt(record, phase),
+    progress: progressAt(record, phase, input.tokens),
     ...(approver && { approver }),
     ...(savedIn && { savedIn }),
     ...paid,
@@ -611,7 +698,7 @@ function recordScreen(
   const waiting = (phase: TrackedPhase): Extract<BackupScreen, { id: "adding" }> => ({
     id: "adding",
     ...at(phase),
-    ...timingOf(record, input.now, answer.answered),
+    ...timingOf(record, input, answer.answered),
   })
   const failed = (kind: "changed" | "route" | "corrupt"): RotationScreen => ({
     id: "failed",
@@ -633,7 +720,7 @@ function recordScreen(
         id: "approve",
         ...at("published"),
         ...((answer.wait === "funding" || paying(record)) &&
-          record.plan && { pay: payFacts(record.plan, input.fit) }),
+          record.plan && { pay: payFacts(record.plan, input) }),
         ...(paying(record) && { sending: true as const }),
       }
     case "funded":
@@ -651,6 +738,7 @@ function recordScreen(
         keys,
         ...(!listed && { unlisted: savedIn ? { savedIn } : {} }),
         ...paid,
+        ...(sweepGone(record) && { relanding: true as const }),
       }
     }
     case "conflict":
@@ -715,40 +803,127 @@ function savedOf({ backup }: BackupRotationRecord): BackupSaved | undefined {
 }
 
 /**
- * A paid add's time against its quote, delayed once well past it. A sheet reopened long after
- * paying waits for the driver's first answer: the chain may have moved on meanwhile.
+ * A paid add's time left, by its funding's progress and the release read for it; delayed once well
+ * past the time it quoted. A sheet reopened long after paying waits for the driver's first answer:
+ * the chain may have moved on meanwhile.
  */
 function timingOf(
   record: BackupRotationRecord,
-  now: number,
+  input: BackupScreenInput,
   answered: boolean,
 ): { timing?: BackupTiming; delay?: BackupDelay } {
-  const timing = backupAddTiming(record, now)
-  if (!timing) return {}
-  const takesMs = takesOf(record.plan)
+  const quoted = backupAddTiming(record, input.now)
+  if (!quoted) return {}
+  const eta =
+    input.release &&
+    backupAddEta(record, input.funding, input.release, input.now, { tipped: tipped(record.plan) })
   return {
-    timing: { takesMs, leftMs: Math.min(timing.leftMs, takesMs) },
-    ...(timing.delayed && answered && { delay: "late" as const }),
+    ...(eta?.remaining && { timing: { leftMs: eta.seconds * 1000 } }),
+    ...(quoted.delayed && answered && { delay: "late" as const }),
   }
 }
 
-const takesOf = (plan?: BackupRotationPlan) => plan?.takesMs ?? BACKUP_ADD_TAKES_MS
+/** The funding carries a prover tip: its release is the faster one. */
+const tipped = (plan?: BackupRotationPlan) => BigInt(plan?.proverTip ?? 0) > 0n
+
+/**
+ * A send's wait at either speed, from the release read for it; none until read. An earlier funding's
+ * row has no say: it may have failed, or carry the tip of a speed no longer chosen.
+ */
+function addEtas({ release, now }: BackupScreenInput): BackupEtas | undefined {
+  if (!release) return undefined
+  // Without a row there is always a wait to quote.
+  const at = (tipped: boolean) => backupAddEta(undefined, undefined, release, now, { tipped })!
+  return { standard: at(false).seconds, tipped: at(true).seconds }
+}
+
+/** The intro's time: at the speed the pay step opens on, Faster where the offer is worth it. */
+function introEta(input: BackupScreenInput): number | undefined {
+  const etas = addEtas(input)
+  return etas && (input.offer && fasterIsWorthIt(input.offer) ? etas.tipped : etas.standard)
+}
 
 const hexKey = (hex: string) => hex.toLowerCase().replace(/^0x/, "")
 
-const payFacts = (plan: BackupRotationPlan, fit?: FundFit): BackupPayFacts => ({
-  ...backupFundingQuote(plan),
-  plan,
-  ...(fit && { fit }),
-  takesMs: takesOf(plan),
-  address: plan.address,
-  approvals: plan.approvals,
-  refunds: plan.refunds ?? 0,
-  moves: plan.moves,
-})
+function payFacts(plan: BackupRotationPlan, input: BackupScreenInput): BackupPayFacts {
+  const eta = addEtas(input)
+  return {
+    ...backupFundingQuote(plan),
+    plan,
+    ...(input.fit && { fit: input.fit }),
+    ...(eta && { eta }),
+    address: plan.address,
+    approvals: plan.approvals,
+    refunds: plan.refunds ?? 0,
+    moves: plan.moves,
+  }
+}
+
+type Send = Pick<MoveSend<string>, "state" | "effect">
+
+/** A send the move waits on before it makes another. */
+const sendOpen = (send: Send) =>
+  send.state === "claimed" ||
+  send.state === "submitted" ||
+  (send.state === "included" && send.effect === "reverted")
+
+/** The send the move makes next: none while one is open. */
+const nextSend = (sends: readonly Send[]) =>
+  sends.some(sendOpen) ? undefined : sends.find((send) => send.state === "planned")
+
+/** A row's state from its own sends, `next` being the move's next send. */
+function rowState(own: readonly Send[], next: Send | undefined): MoveRowState {
+  if (own.every((send) => send.state === "mined")) return "done"
+  if (own.some((send) => send.state === "claimed")) return "sending"
+  if (next && own.includes(next)) return "next"
+  // An inclusion that reverted is read again like any other.
+  return own.some((send) => send.state === "submitted" || send.state === "included")
+    ? "confirming"
+    : "todo"
+}
+
+const BALANCES = ["main", "savings", "other"] as const
+
+/**
+ * Step 4 as rows: the paylinks taken back, then the latest run's balances, each from its own
+ * chunks. Before a run is planned one row stands for the balances. A link spent another way was
+ * not taken back and is not counted.
+ */
+function moveRows(
+  record: Pick<BackupRotationRecord, "move" | "refunds">,
+  tokens: MoveTokens,
+): BackupMoveRow[] {
+  const taken = (record.refunds?.links ?? []).filter((link) => link.state !== "skipped")
+  const run = record.move?.runs.at(-1)
+  if (!run) {
+    if (taken.every((link) => link.state === "mined")) return []
+    return [
+      { kind: "links", count: taken.length, state: rowState(taken, nextSend(taken)) },
+      { kind: "funds", state: "todo" },
+    ]
+  }
+  const is = (token: string, other?: string) => token.toLowerCase() === other?.toLowerCase()
+  const kindOf = (token: string) =>
+    is(token, tokens.main) ? "main" : is(token, tokens.savings) ? "savings" : "other"
+  const next = nextSend(run.chunks)
+  const links: BackupMoveRow[] =
+    taken.length > 0 ? [{ kind: "links", count: taken.length, state: "done" }] : []
+  return [
+    ...links,
+    ...BALANCES.flatMap((kind) => {
+      const own = run.chunks.filter((chunk) => kindOf(chunk.token) === kind)
+      return own.length > 0 ? [{ kind, state: rowState(own, next) }] : []
+    }),
+  ]
+}
 
 /** The record's place on the tracker, at `phase`: its own, or the one a parked record left. */
-function progressAt(record: BackupRotationRecord, phase: TrackedPhase): BackupProgress {
+function progressAt(
+  record: BackupRotationRecord,
+  phase: TrackedPhase,
+  tokens?: MoveTokens,
+): BackupProgress {
+  const relanding = sweepGone(record) ? { relanding: true as const } : {}
   switch (phase) {
     case "created":
       return { step: 2, stage: "sign" }
@@ -760,16 +935,23 @@ function progressAt(record: BackupRotationRecord, phase: TrackedPhase): BackupPr
       return { step: 3, stage: "funded" }
     case "swept":
     case "installed":
-      return { step: 3, stage: "final" }
+      return { step: 3, stage: "final", ...relanding }
     case "rerooted":
     case "moved": {
       const refunds = refundProgress(record)
       const run = moveProgress(record)
+      const rows = tokens ? moveRows(record, tokens) : []
+      const out = (record.move?.runs.at(-1)?.chunks ?? []).filter(
+        (chunk) => chunk.state === "submitted",
+      ).length
       return {
         step: 4,
         stage: phase === "rerooted" && !record.refunds && !run ? "installing" : "moving",
         ...(refunds && { refunds }),
         ...(run && { moved: { included: run.included, total: run.total } }),
+        ...relanding,
+        ...(out > 0 && { out }),
+        ...(rows.length > 0 && { rows }),
       }
     }
   }

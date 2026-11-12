@@ -1,3 +1,4 @@
+import type { UnreadableRotationRow } from "@obsidion/front-core"
 import { bestEffort, bestEffortSync } from "@obsidion/core/errors"
 import {
   BackupPasskeyRefusedError,
@@ -20,7 +21,8 @@ import { fireEvent } from "./analytics"
 
 /**
  * Backup passkey reporters: one `backup_passkey_add` per add attempt, one `backup_passkey_sign_in`
- * per sign-in with a backup passkey. Both go through the consent-gated `fireEvent`.
+ * per sign-in with a backup passkey, and `backup_rotation_unreadable` when a saved rotation fails
+ * its check. All go through the consent-gated `fireEvent`.
  */
 
 export const BACKUP_PASSKEY_OUTCOMES = ["succeeded", "cancelled", "refused", "failed"] as const
@@ -132,4 +134,12 @@ export function reportBackupPasskeySignIn(
       }),
     undefined,
   )
+}
+
+export function reportBackupRotationUnreadable(row: UnreadableRotationRow): void {
+  fireEvent("backup_rotation_unreadable", {
+    phase: row.phase,
+    outcome: row.outcome,
+    unswept: row.unswept,
+  })
 }

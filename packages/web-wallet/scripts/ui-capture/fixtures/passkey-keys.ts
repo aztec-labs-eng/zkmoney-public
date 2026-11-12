@@ -7,7 +7,7 @@ import {
   sessionPubkeyHex,
   type FixtureKey,
 } from "./backup-passkey"
-export * from "./contexts"
+export * from "@obsidion/front-core"
 
 /*
  * The Passkeys sheet's key read, answered from the open backup fixture: the account it resolves

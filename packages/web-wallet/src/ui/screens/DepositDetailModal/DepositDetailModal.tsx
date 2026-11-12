@@ -316,7 +316,7 @@ export function DepositDetailModal({
       {exit && (
         <PrimaryGradientButton
           title={exit.title}
-          buttonStyle={exit.sweep ? "dark" : undefined}
+          buttonStyle={exit.sweep ? "secondary" : undefined}
           onClick={exit.onStart}
         />
       )}
