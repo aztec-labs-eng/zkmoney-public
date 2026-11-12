@@ -1,11 +1,18 @@
 import { AztecAddress, EthAddress } from '@aztec-labs/aztec.js/addresses';
 import { Fr } from '@aztec-labs/aztec.js/fields';
 import type { AztecNode } from '@aztec-labs/aztec.js/node';
+import type { Logger } from '@aztec-labs/foundation/log';
 import { BlockHash } from '@aztec-labs/stdlib/block';
 import type { Tx } from '@aztec-labs/stdlib/tx';
 import { TxHash } from '@aztec-labs/stdlib/tx';
 
-import { SipaIntent, buildSipaDeployAndSweepOperation, buildSipaSweepOperation } from '@oxide/l1-contracts';
+import {
+  MAINNET_CHAIN_ID,
+  MAINNET_DAI,
+  SipaIntent,
+  buildSipaDeployAndSweepOperation,
+  buildSipaSweepOperation,
+} from '@oxide/l1-contracts';
 import {
   L1OperationCondition,
   L1OperationConditionKind,
@@ -24,9 +31,9 @@ import { openSqliteStateStore } from '../state/sqlite_store.js';
 import { TEST_RELAYER_DEPLOYMENT } from '../state/test_fixtures.js';
 import { LogCursorSources, type StateStore } from '../state/types.js';
 import { BalanceWatcher, OutboxWatcher } from './l1_operation_condition.js';
-import type { L1OperationOwnership } from './l1_operation_router.js';
+import { type L1OperationOwnership, L1OperationRouter, type RoutedDeployment } from './l1_operation_router.js';
 import { L1OperationSyncer, type L1OperationSyncerDeps } from './l1_operation_syncer.js';
-import type { PayoutTokenFilter } from './payout_token_registry.js';
+import { type PayoutTokenFilter, PayoutTokenRegistry } from './payout_token_registry.js';
 import type { OutboxStatus, WithdrawalCompletion } from './withdrawal_completion.js';
 
 /** A worker that is alone on its Broadcaster, so it handles every operation. */
@@ -148,13 +155,13 @@ function buildSyncer(
     broadcaster: BROADCASTER,
     ownership: opts.ownership ?? OWNS_ALL,
     payoutTokens: acceptsOnly(PAYOUT_TOKEN),
-    watchedTokens: opts.watchedTokens ?? [WATCHED_TOKEN],
+    watchedTokens: () => opts.watchedTokens ?? [WATCHED_TOKEN],
     telemetry: opts.telemetry,
     logger: opts.logger,
     balanceWatcher: new BalanceWatcher({
       publicClient: fakePublicClient(opts.balance ?? 0n),
       store,
-      tokens: opts.watchedTokens ?? [WATCHED_TOKEN],
+      tokens: () => opts.watchedTokens ?? [WATCHED_TOKEN],
       logWindow: 1_000n,
       maxAgeMs: 48 * 60 * 60_000,
     }),
@@ -276,7 +283,7 @@ describe('L1OperationSyncer', () => {
         broadcaster: BROADCASTER,
         ownership: OWNS_ALL,
         payoutTokens: acceptsOnly(EthAddress.random(), PAYOUT_TOKEN),
-        watchedTokens: [WATCHED_TOKEN],
+        watchedTokens: () => [WATCHED_TOKEN],
       });
       await expect(syncer.runOnce()).resolves.toMatchObject({ discovered: 1 });
     });
@@ -291,7 +298,7 @@ describe('L1OperationSyncer', () => {
         broadcaster: BROADCASTER,
         ownership: OWNS_ALL,
         payoutTokens: acceptsOnly(PAYOUT_TOKEN),
-        watchedTokens: [WATCHED_TOKEN],
+        watchedTokens: () => [WATCHED_TOKEN],
       });
       await expect(syncer.runOnce()).resolves.toMatchObject({ discovered: 1, markedPending: 0 });
 
@@ -515,6 +522,108 @@ describe('L1OperationSyncer', () => {
       const [waiting] = await store.listWaitingL1Operations(L1OperationConditionKind.Balance);
       expect(waiting.operationId).toBe(computeL1OperationId(operation));
       expect(waiting.calldata.equals(operation.calldata)).toBe(true);
+    });
+  });
+
+  it('stores a Balance operation on a token that joins the watched tokens, on its next scan', async () => {
+    await withStore(async store => {
+      let tokens: EthAddress[] = [];
+      const syncer = new L1OperationSyncer({
+        node: fakeNode(10, 4, { condition: BALANCE_CONDITION }),
+        store,
+        broadcaster: BROADCASTER,
+        ownership: OWNS_ALL,
+        payoutTokens: acceptsOnly(PAYOUT_TOKEN),
+        watchedTokens: () => tokens,
+      });
+      await expect(syncer.runOnce()).resolves.toMatchObject({ discovered: 0 });
+
+      // A new list, as the payout registry gives on each read.
+      tokens = [WATCHED_TOKEN];
+      await expect(syncer.runOnce()).resolves.toMatchObject({ discovered: 1 });
+      await expect(storedOperation(store, BALANCE_CONDITION, PAYOUT_TOKEN)).resolves.toMatchObject({
+        status: 'waiting',
+      });
+    });
+  });
+
+  describe('workers of different tokens on one Broadcaster, with the watched tokens of the payout registry', () => {
+    const quietLog = { info: () => {}, warn: () => {} } as unknown as Logger;
+    const deployment = (label: string, token: EthAddress): RoutedDeployment => ({
+      label,
+      publicConfig: { portal: EthAddress.random(), token, broadcaster: BROADCASTER },
+    });
+
+    /** Routes and registers every deployment, as at startup before any worker starts. */
+    async function startup(chainId: bigint, deployments: RoutedDeployment[]) {
+      const registry = await PayoutTokenRegistry.create({ addToken: () => Promise.resolve() }, undefined, {
+        chainId,
+        log: quietLog,
+      });
+      const router = new L1OperationRouter(quietLog);
+      for (const routed of deployments) {
+        router.addWorker(routed);
+        await registry.addDeployment({ label: routed.label, token: routed.publicConfig.token });
+      }
+      return { registry, router };
+    }
+
+    /** The syncer of a running worker, whose recipients hold a balance of every token. */
+    function workerSyncer(
+      { registry, router }: Awaited<ReturnType<typeof startup>>,
+      routed: RoutedDeployment,
+      store: StateStore,
+      node: AztecNode,
+    ) {
+      router.attachStore(routed, store);
+      return new L1OperationSyncer({
+        node,
+        store,
+        broadcaster: BROADCASTER,
+        ownership: router.ownershipFor(routed),
+        payoutTokens: registry,
+        watchedTokens: () => registry.watchedTokens(),
+        balanceWatcher: new BalanceWatcher({
+          publicClient: fakePublicClient(1_000n),
+          store,
+          tokens: () => registry.watchedTokens(),
+          logWindow: 1_000n,
+          maxAgeMs: 48 * 60 * 60_000,
+        }),
+      });
+    }
+
+    it('on mainnet, the sUSDS worker discovers an sUSDS sweep and marks it pending', async () => {
+      await withStore(async store => {
+        const sUsdsToken = EthAddress.random();
+        const sUsds = deployment('susds', sUsdsToken);
+        const workers = await startup(MAINNET_CHAIN_ID, [deployment('dai', MAINNET_DAI), sUsds]);
+        const condition = L1OperationCondition.balance(sUsdsToken, SIPA);
+        const syncer = workerSyncer(workers, sUsds, store, fakeNode(10, 4, { condition, payoutToken: sUsdsToken }));
+
+        await expect(syncer.runOnce()).resolves.toEqual({ discovered: 1, markedPending: 1 });
+        await expect(storedOperation(store, condition, sUsdsToken)).resolves.toMatchObject({ status: 'pending' });
+      });
+    });
+
+    it('on another chain, one worker stores a Balance operation that waits on one token and pays in the other', async () => {
+      await withStore(storeA =>
+        withStore(async storeB => {
+          const [tokenA, tokenB] = [EthAddress.random(), EthAddress.random()];
+          const [a, b] = [deployment('a', tokenA), deployment('b', tokenB)];
+          const workers = await startup(11_155_111n, [a, b]);
+          const condition = L1OperationCondition.balance(tokenB, SIPA);
+          const node = fakeNode(10, 4, { condition, payoutToken: tokenA });
+          const syncers = [workerSyncer(workers, a, storeA, node), workerSyncer(workers, b, storeB, node)];
+          for (const syncer of syncers) {
+            await syncer.runOnce();
+          }
+
+          // The router gives it to the worker of the payout token, which watches the condition token too.
+          await expect(storedOperation(storeA, condition, tokenA)).resolves.toMatchObject({ status: 'pending' });
+          await expect(storedOperation(storeB, condition, tokenA)).resolves.toBeUndefined();
+        }),
+      );
     });
   });
 });

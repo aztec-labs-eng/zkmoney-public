@@ -9,6 +9,7 @@ import {
 import { whenLabel } from "../../ui/detailRows"
 import { requestAmountLabel } from "../../ui/format"
 import { PayModalChrome } from "../../ui/PayModalChrome"
+import copy from "./IncomingRequestDetailModal.copy"
 
 /**
  * "You owe" sheet for a pending incoming request: Decline or go pay it. A request from outside the
@@ -72,7 +73,7 @@ export function IncomingRequestDetailModal({
         )}
       </div>
       <div className="ww-txd__actions">
-        <PrimaryGradientButton title="Decline" buttonStyle="dark" onClick={onDecline} />
+        <PrimaryGradientButton title={copy.decline} buttonStyle="secondary" onClick={onDecline} />
         <PrimaryGradientButton title="Send" onClick={onSend} />
       </div>
     </Modal>

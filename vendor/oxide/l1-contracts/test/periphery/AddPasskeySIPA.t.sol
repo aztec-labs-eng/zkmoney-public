@@ -18,14 +18,12 @@ import {AccountMetadataRegistry} from "@periphery/AccountMetadataRegistry.sol";
 import {INamePortal} from "@periphery/interfaces/INamePortal.sol";
 import {INameRegistry} from "@periphery/interfaces/INameRegistry.sol";
 import {IOxideAccountFactory} from "@periphery/interfaces/IOxideAccountFactory.sol";
-import {IForwardingTable} from "@periphery/interfaces/IForwardingTable.sol";
 import {OxideAccount} from "@periphery/OxideAccount.sol";
 import {OxidePortal} from "@core/OxidePortal.sol";
 import {IOxidePortal} from "@core/interfaces/IOxidePortal.sol";
 import {DAI, USDC, THREE_POOL} from "@periphery/ThreePoolLib.sol";
 import {IERC20} from "@oz/token/ERC20/IERC20.sol";
 import {Errors} from "@periphery/Errors.sol";
-import {Intents} from "@periphery/Intent.sol";
 import {MintableToken} from "@test/mocks/MintableToken.sol";
 import {MockCurve3Pool} from "@test/mocks/MockCurve3Pool.sol";
 import {StablecoinMocks} from "@test/helpers/StablecoinMocks.sol";
@@ -396,56 +394,6 @@ abstract contract AddPasskeySIPASubsidyFixture is AddPasskeySIPAFixture {
   }
 }
 
-contract AddPasskeySIPAGasTest is AddPasskeySIPASubsidyFixture {
-  function setUp() public override {
-    super.setUp();
-    (sipa, data, proofs) = _fundAdd(_addIntent());
-  }
-
-  function test_anAddFitsItsGasCeiling() public {
-    assertLe(
-      _measure(), manager.$sweepGasCeilings(Intents.ADD_PASSKEY), "SWEEP_GAS_ADD_PASSKEY_CEILING sits under an add"
-    );
-  }
-
-  function test_addPasskeyCeilingStaysWithinTenPercentOfAnAdd() public {
-    uint256 chainGas = _measure();
-    assertLe(
-      manager.$sweepGasCeilings(Intents.ADD_PASSKEY),
-      (chainGas * 110) / 100,
-      "SWEEP_GAS_ADD_PASSKEY_CEILING has drifted well above an add"
-    );
-  }
-
-  function test_anAddIsPricedWithinItsCeiling() public {
-    (uint256 subsidy,) = RelayerTransaction.send(
-      relayer,
-      manager,
-      abi.encodeCall(
-        DepositSubsidy.sweepForSubsidy,
-        (ISIPA(address(sipa)), address(underlying), address(operationExecutor), data, proofs)
-      )
-    );
-
-    assertGt(subsidy, 0);
-    assertLe(
-      _pricedGas(subsidy, ADD_PASSKEY_SWEEP_TIP),
-      manager.$sweepGasCeilings(Intents.ADD_PASSKEY) + manager.FRESH_BALANCE_GAS()
-    );
-    assertEq(underlying.balanceOf(relayer), ADD_PASSKEY_SWEEP_TIP + subsidy);
-  }
-
-  function _measure() internal returns (uint256) {
-    bytes memory callData = abi.encodeCall(
-      DepositSubsidy.sweepForSubsidy, (ISIPA(address(sipa)), address(underlying), relayer, data, proofs)
-    );
-    vm.prank(relayer);
-    (bool ok,) = address(manager).call(callData);
-    require(ok, "direct sweep reverted");
-    return _lastCallChainCost(callData);
-  }
-}
-
 contract AddPasskeySIPACallGasTest is AddPasskeySIPASubsidyFixture {
   uint256 internal constant MAX_ADD_PASSKEY_CALL_GAS = 4_000_000;
   uint256 internal constant MAX_SIMULATION_GAS = 15_000_000;
@@ -539,76 +487,6 @@ contract AddPasskeySIPACallGasTest is AddPasskeySIPASubsidyFixture {
     }
     return
       abi.encodePacked(PASSKEY_METADATA_VERSION, keccak256(abi.encodePacked(CREDENTIAL_ID_TAG, hex"c0ffee")), walletKey);
-  }
-}
-
-contract AddPasskeySIPAClearedRecordTest is AddPasskeySIPASubsidyFixture {
-  uint256 internal constant SECOND_PASSKEY = 24_680;
-  uint128 internal constant TARGET_RELAYER_PROFIT = 0.1e18;
-  uint128 internal constant MAX_SUBSIDY_PER_OPERATION = 12e18;
-  uint256 internal constant CLEARABLE_FIELDS = 2;
-
-  address internal payer = makeAddr("payer");
-  bytes internal relay;
-
-  function setUp() public override {
-    super.setUp();
-    underlying.mint(payer, 1);
-
-    (AddPasskeySIPA first, bytes memory firstData, bytes memory firstProofs) = _fundAdd(_addIntent());
-    first.sweep(address(underlying), relayer, firstData, firstProofs);
-
-    AddPasskeyIntent memory intent = _addIntent();
-    intent.key = _passkey(SECOND_PASSKEY);
-    intent.record = _record(AccountMetadataRegistry.K1Point(G_X, G_Y), bytes32(0), address(0), ROLLUP_VERSION);
-    (sipa, data, proofs) = _fundAdd(intent);
-    relay = abi.encodeCall(
-      OperationExecutor.execute,
-      (
-        address(manager),
-        abi.encodeCall(
-          DepositSubsidy.sweepForSubsidy,
-          (ISIPA(address(sipa)), address(underlying), address(operationExecutor), data, proofs)
-        ),
-        IPayoutToken(address(underlying)),
-        0,
-        0,
-        0
-      )
-    );
-  }
-
-  function test_anAddThatClearsEveryClearableRecordFieldIsPricedAtMostTheirRefundsAboveItsGas() public {
-    (uint256 txGas, uint256 pricedGas) = _relay();
-    assertLe(
-      pricedGas,
-      txGas + CLEARABLE_FIELDS * manager.CLEARED_SLOT_REFUND(),
-      "the subsidy priced more than the cleared-field refunds above the transaction gas"
-    );
-  }
-
-  function test_aFarmerWhoRelaysTheirOwnClearingAddLosesAtTheWorstGasPrice() public {
-    (uint256 txGas, uint256 pricedGas) = _relay();
-    vm.prank(OWNER);
-    manager.setDepositConfig(TARGET_RELAYER_PROFIT, MAX_SUBSIDY_PER_OPERATION, 0);
-
-    uint256 tokenWeiPerEth = uint256(PRICED_FEED_ANSWER) * 1e10;
-    uint256 worstGasPrice = ((MAX_SUBSIDY_PER_OPERATION + ADD_PASSKEY_SWEEP_TIP - TARGET_RELAYER_PROFIT) * 1e18)
-      / (pricedGas * tokenWeiPerEth);
-    vm.fee(worstGasPrice);
-    vm.txGasPrice(worstGasPrice);
-    uint256 subsidy = manager.quoteSubsidy(ADD_PASSKEY_SWEEP_TIP, pricedGas);
-    uint256 gasCost = (txGas * worstGasPrice * tokenWeiPerEth) / 1e18;
-
-    assertLe(subsidy, gasCost, "a farmer who relays their own clearing add earns more than its gas cost");
-  }
-
-  function _relay() internal returns (uint256 txGas, uint256 pricedGas) {
-    vm.prank(payer, payer);
-    (bool ok, bytes memory ret) = address(operationExecutor).call(relay);
-    require(ok, "relay reverted");
-    txGas = RelayerTransaction.lastTxGas(relay);
-    pricedGas = _pricedGas(abi.decode(ret, (uint256)) - ADD_PASSKEY_SWEEP_TIP, ADD_PASSKEY_SWEEP_TIP);
   }
 }
 

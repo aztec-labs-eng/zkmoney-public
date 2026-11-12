@@ -55,6 +55,7 @@ async function refuels(failing = new Set<string>()) {
     visible: memoryStore(true).readonly,
     pace: createPace(),
     now: () => Date.now(),
+    sinceLoad: () => performance.now(),
   })
   runtime = started
   /** What a sponsored flow's `oweFpcRefuel` does. */

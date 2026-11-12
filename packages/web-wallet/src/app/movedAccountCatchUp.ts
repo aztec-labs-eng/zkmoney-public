@@ -89,7 +89,7 @@ export const liveCatchUpDeps: CatchUpDeps = {
 }
 
 /**
- * Runs once per session, after the account is ready; a failed read tries again with backoff. The
+ * Runs once per session, after the first balance; a failed read tries again with backoff. The
  * adding device's own rotation, loaded or still loading, holds it off: that device switches itself.
  */
 export function movedAccountCatchUp(
@@ -103,6 +103,7 @@ export function movedAccountCatchUp(
 ): Task {
   return task("movedAccountCatchUp", {
     needs: { wallet: needs.wallet, account: needs.account, contractService: needs.contractService },
+    after: { firstBalance: true },
     every: "once",
     backoff: { baseMs: 10_000, maxMs: 5 * 60_000 },
     run: ({ wallet, contractService, signal }) =>

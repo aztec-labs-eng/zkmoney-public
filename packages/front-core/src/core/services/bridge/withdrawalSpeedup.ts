@@ -54,7 +54,7 @@ export interface ProofCalibration extends ProofLatency {
 export const LAST_TIPPED_CHECKPOINT_INDEX = 25
 
 export const DEFAULT_PROOF_LATENCY: ProofLatency = {
-  fullProofSeconds: 900,
+  fullProofSeconds: 300,
   partialProofSeconds: 180,
 }
 
@@ -64,6 +64,9 @@ export interface BurnLanding {
   earliest: number
   latest: number
 }
+
+/** A burn that has landed. */
+const LANDED: BurnLanding = { expected: 0, earliest: 0, latest: 0 }
 
 export interface WithdrawalSpeedupInput {
   constants: SpeedupRollupConstants
@@ -202,6 +205,8 @@ export class WithdrawalSpeedupEstimator {
   private constants?: Promise<L1RollupConstants>
   private cached?: { at: number; value: ProofCalibration }
   private inflight?: Promise<ProofCalibration>
+  /** By epoch, the chain time a read first found its predecessor proven: the proof is no later. */
+  private readonly provenSeen = new Map<number, number>()
 
   constructor(
     private readonly deps: { node: WithdrawalSpeedupNode; publicClient: PublicClient },
@@ -214,23 +219,39 @@ export class WithdrawalSpeedupEstimator {
     this.now = options.now ?? (() => Math.floor(Date.now() / 1000))
   }
 
-  async estimate(landing: BurnLanding): Promise<WithdrawalSpeedupEstimate> {
+  /** A burn landing within `landing` of now. */
+  estimate(landing: BurnLanding): Promise<WithdrawalSpeedupEstimate> {
+    return this.estimateWithReads((now) => ({ now, landing }))
+  }
+
+  /** A burn that landed at `landedAtSeconds`: both ETAs run from that landing. */
+  estimateLanded(landedAtSeconds: number): Promise<WithdrawalSpeedupEstimate> {
+    return this.estimateWithReads(() => ({ now: landedAtSeconds, landing: LANDED }))
+  }
+
+  private async estimateWithReads(
+    burn: (now: number) => Pick<WithdrawalSpeedupInput, "now" | "landing">,
+  ): Promise<WithdrawalSpeedupEstimate> {
     // The chain's clock, not the device's: epochs are laid out on L1 time.
     const [constants, head] = await Promise.all([
       this.l1Constants(),
       this.deps.publicClient.getBlock({ blockTag: "latest" }),
     ])
     const now = Number(head.timestamp)
-    const { epoch } = burnPosition(constants, now + Math.max(0, landing.expected))
+    const { now: landsFrom, landing } = burn(now)
+    const { epoch } = burnPosition(constants, landsFrom + Math.max(0, landing.expected))
     const [predecessorProven, calibration] = await Promise.all([
       this.isProvenBefore(epoch, constants, now),
       this.calibrate(),
     ])
+    // The first sighting, not this read's: a landed burn's release must not move with every read.
+    const seen = predecessorProven ? this.provenSeen.get(epoch) ?? now : undefined
+    if (seen !== undefined) this.provenSeen.set(epoch, seen)
     return estimateWithdrawalSpeedup({
       constants,
-      now,
+      now: landsFrom,
       landing,
-      predecessorProvenAt: predecessorProven ? now : undefined,
+      predecessorProvenAt: seen === undefined ? undefined : Math.max(landsFrom, seen),
       calibration,
     })
   }
@@ -303,11 +324,15 @@ export class WithdrawalSpeedupEstimator {
       fromBlock,
       toBlock: head,
     })
-    const proofs = logs.flatMap((log) =>
-      log.args.checkpointNumber === undefined || log.blockNumber === null
-        ? []
-        : [{ checkpoint: Number(log.args.checkpointNumber), block: log.blockNumber }],
-    )
+    // Only a proof that moves the proven tip counts: provers that lose the race land the same
+    // proof again later, and timing those would stretch every latency.
+    const proofs: { checkpoint: number; block: bigint }[] = []
+    for (const log of logs) {
+      if (log.args.checkpointNumber === undefined || log.blockNumber === null) continue
+      const checkpoint = Number(log.args.checkpointNumber)
+      if (checkpoint > (proofs.at(-1)?.checkpoint ?? -1))
+        proofs.push({ checkpoint, block: log.blockNumber })
+    }
     if (proofs.length === 0) return this.fromSamples([], [])
 
     const provenAt = new Map<bigint, number>()

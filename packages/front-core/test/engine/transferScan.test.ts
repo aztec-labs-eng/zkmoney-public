@@ -233,7 +233,10 @@ describe("previousAccountScan task", () => {
   })
 
   it("waits for the balance, both replays and the account's own history, as every history reader", async () => {
-    const milestones = createMilestones({ catchUp: createCatchUp() })
+    const milestones = createMilestones({
+      catchUp: createCatchUp(),
+      sinceLoad: () => performance.now(),
+    })
     ends.push(() => milestones.stop())
     const { passes } = start(() => "0xprev", milestones)
     milestones.mark("historyAtHead")
@@ -355,7 +358,10 @@ describe("previousAccountHistory task", () => {
   }
 
   it("reads once a session, after the balance, both replays and the account's own history", async () => {
-    const milestones = createMilestones({ catchUp: createCatchUp() })
+    const milestones = createMilestones({
+      catchUp: createCatchUp(),
+      sinceLoad: () => performance.now(),
+    })
     ends.push(() => milestones.stop())
     const { reads, h } = start(milestones)
     milestones.mark("historyAtHead")
@@ -395,7 +401,10 @@ describe("previousAccountFind task", () => {
   })
 
   it("finds once a session as it opens, waiting on no milestone, and again after a failure", async () => {
-    const milestones = createMilestones({ catchUp: createCatchUp() })
+    const milestones = createMilestones({
+      catchUp: createCatchUp(),
+      sinceLoad: () => performance.now(),
+    })
     ends.push(() => milestones.stop())
     const h = sessions(startRuntime, milestones)
     const wallet = {} as ObsidionWallet

@@ -24,7 +24,7 @@ import { getUserRecord, readUserAddress } from "@oxide/l1-contracts"
 import {
   readUserByNameHash,
   readUserL2AddressHistory,
-  recordNamesOtherAccount,
+  accountRecordState,
 } from "../../../src/services/name/registryUserResolver.js"
 
 const LIVE_MANIFEST_URL =
@@ -152,33 +152,33 @@ describe.runIf(process.env.LIVE_OXIDE === "1")("live registry user record", () =
   )
 })
 
-describe("recordNamesOtherAccount", () => {
+describe("accountRecordState", () => {
   const ask = (client: PublicClient, l2Address: Hex, rollupVersion: bigint) =>
-    recordNamesOtherAccount(client, METADATA_REGISTRY, ACCOUNT, l2Address, rollupVersion)
+    accountRecordState(client, METADATA_REGISTRY, ACCOUNT, l2Address, rollupVersion)
 
   it.each([
     [
       "the same account on the same rollup",
       RECORD.l2Address.toUpperCase().replace("0X", "0x"),
       4n,
-      false,
+      "current",
     ],
-    ["another rollup", RECORD.l2Address, 5n, true],
-    ["another L2 account", `0x${"22".repeat(32)}`, 4n, true],
-  ])("compares the record with %s", async (_, l2Address, rollupVersion, stale) => {
+    ["another rollup", RECORD.l2Address, 5n, "other"],
+    ["another L2 account", `0x${"22".repeat(32)}`, 4n, "other"],
+  ])("compares the record with %s", async (_, l2Address, rollupVersion, state) => {
     const { client, calls } = stubClient({
       ownerOf: () => ZERO,
       hasUserRecord: () => true,
       getUserRecord: () => RECORD,
     })
-    expect(await ask(client, l2Address as Hex, rollupVersion)).toBe(stale)
+    expect(await ask(client, l2Address as Hex, rollupVersion)).toBe(state)
     expect(calls.every((c) => c.address === METADATA_REGISTRY)).toBe(true)
     expect(calls[0]!.args).toEqual([ACCOUNT])
   })
 
-  it("reads an account with no record as not stale, without reading the record", async () => {
+  it("reads an account with no record as none, without reading the record", async () => {
     const { client } = stubClient({ ownerOf: () => ZERO, hasUserRecord: () => false })
-    expect(await ask(client, RECORD.l2Address, 4n)).toBe(false)
+    expect(await ask(client, RECORD.l2Address, 4n)).toBe("none")
   })
 })
 

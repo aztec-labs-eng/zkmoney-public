@@ -515,10 +515,13 @@ export const PROVER_TIP_GAS_PRICE_BUFFER_BPS = 15_000n
 
 /**
  * Blocks behind the Ethereum tip at which the backup add reads a block as settled: the sweep, the
- * install, a funding's release and a recovery count once this deep. Three covers every reorg depth
- * measured on Ethereum since the merge; docs/account/l1-settled-depth.md has the data.
+ * install, a funding's release and a recovery count once this deep. One block, because the add
+ * re-checks the sweep after the re-root instead of waiting; docs/account/l1-settled-depth.md.
  */
-export const L1_SETTLED_DEPTH = 3n
+export const L1_SETTLED_DEPTH = 1n
+
+/** Blocks the settled block must be past the sweep's before the backup add stops re-checking it. */
+export const L1_SWEEP_RECHECK_DEPTH = 32
 
 /** "GOLD": separator for the golden ticket nullifier, so it never matches a note's own nullifier. */
 export const DOM_SEP__GOLDEN_TICKET = 0x474f4c44

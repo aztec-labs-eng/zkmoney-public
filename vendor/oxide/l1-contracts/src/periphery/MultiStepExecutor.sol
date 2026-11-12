@@ -124,7 +124,6 @@ contract MultiStepExecutor is IExecutor {
   function _distribute(IERC20 _asset, Transfer[] memory _transfers, address _remainderRecipient, uint256 _total)
     private
   {
-    require(_remainderRecipient != address(0), Errors.MultiStepExecutor__ZeroRemainderRecipient());
     uint256 remaining = _total;
     for (uint256 i = 0; i < _transfers.length; i++) {
       require(_transfers[i].recipient != address(0), Errors.MultiStepExecutor__ZeroTransferRecipient());
@@ -133,6 +132,7 @@ contract MultiStepExecutor is IExecutor {
     }
 
     if (remaining > 0) {
+      require(_remainderRecipient != address(0), Errors.MultiStepExecutor__ZeroRemainderRecipient());
       _asset.safeTransfer(_remainderRecipient, remaining);
     }
   }

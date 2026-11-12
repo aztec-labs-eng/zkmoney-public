@@ -394,7 +394,7 @@ export function DepositFlow({
           <div className={flowStyles.rows}>
             {row(
               {
-                icon: <Icon name="wallet" size={20} color="#fff" />,
+                icon: <Icon name="wallet" size={20} />,
                 title: copy.method.wallet,
                 detail:
                   (onL1 ? !fundReady : !bridgeReady) && labels?.walletBlocked
@@ -409,7 +409,7 @@ export function DepositFlow({
             )}
             {row(
               {
-                icon: <Icon name="qr-code" size={20} color="#fff" />,
+                icon: <Icon name="qr-code" size={20} />,
                 title: labels?.address ?? copy.method.address,
                 detail: copy.method.addressDetail,
                 comingSoon: !onL1,
@@ -480,7 +480,9 @@ export function DepositFlow({
                   <span className="ww-deposit__coin-name">
                     {fmt(flowCopy.crumb.label, { coin: coin.symbol, network: network.name })}
                   </span>
-                  {!originLocked && <Icon name="chevron-down" size={12} color="#fdfdfd" />}
+                  {!originLocked && (
+                    <Icon name="chevron-down" size={12} color="var(--text-primary)" />
+                  )}
                 </button>
               </div>
               <p className="ww-deposit-coin__note">

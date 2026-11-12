@@ -5,9 +5,11 @@ import {
   rerootToPasskeySet,
   type RerootDeps,
 } from "../../../src/features/backupPasskey/rerootToPasskeySet"
-import { OWNER, PLAN, TWO_KEY, signedRecord } from "../../support/backupAdd"
+import { RootPasskeyRequiredError } from "@obsidion/front-core"
+import { OWNER, PLAN, TWO_KEY, signedRecord, word } from "../../support/backupAdd"
 
-const ROOT = "aa".repeat(64)
+/** The root key the support record's change was built on. */
+const ROOT = `${word(14).slice(2)}${word(15).slice(2)}`
 const ROOT_RECORD: RecoveryMetadata = {
   credentialId: "root-credential",
   l2Address: OWNER,
@@ -106,6 +108,15 @@ describe("rerootToPasskeySet", () => {
     const h = harness()
     const record = signedRecord({ phase: "swept", plan: { ...PLAN, address: OWNER } })
     await expect(rerootToPasskeySet(h.deps, record, h.checkpoint)).rejects.toThrow("does not match")
+    expect(h.calls).toEqual([])
+  })
+
+  it("asks for the first passkey in a backup-passkey session, writing nothing", async () => {
+    const h = harness()
+    h.deps.root = { credentialId: "backup-credential", pubkeyHex: "bb".repeat(64) }
+    await expect(
+      rerootToPasskeySet(h.deps, signedRecord({ phase: "swept" }), h.checkpoint),
+    ).rejects.toThrow(RootPasskeyRequiredError)
     expect(h.calls).toEqual([])
   })
 

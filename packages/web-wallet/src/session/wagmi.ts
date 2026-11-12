@@ -1,4 +1,4 @@
-import { darkTheme, getDefaultConfig, type Theme } from "@rainbow-me/rainbowkit"
+import { cssStringFromTheme, darkTheme, getDefaultConfig, lightTheme } from "@rainbow-me/rainbowkit"
 import {
   base as baseWallet,
   coinbaseWallet,
@@ -18,44 +18,55 @@ import { rabbyWallet } from "./rabbyWallet"
 import { walletChains } from "./walletChains"
 import { createConfig, type Config } from "wagmi"
 
-const base = darkTheme({
-  accentColor: "#a000ff",
-  accentColorForeground: "#fdfdfd",
-  borderRadius: "medium",
-  overlayBlur: "small",
-})
-
 /** Stock RainbowKit modal, painted with web-ds tokens. */
-export const rainbowkitTheme: Theme = {
-  ...base,
-  fonts: { body: "var(--font-body)" },
-  colors: {
-    ...base.colors,
-    accentColor: "var(--purple-500)",
-    accentColorForeground: "var(--text-primary)",
-    closeButtonBackground: "var(--surface-faint)",
-    connectButtonBackground: "var(--surface-sheet)",
-    connectButtonText: "var(--text-primary)",
-    error: "var(--accent-pink)",
-    generalBorder: "var(--border-hairline)",
-    generalBorderDim: "var(--border-hairline)",
-    menuItemBackground: "var(--surface-card)",
-    modalBackground: "var(--surface-sheet)",
-    modalBorder: "var(--border-hairline)",
-    modalText: "var(--text-primary)",
-    modalTextDim: "var(--text-secondary)",
-    modalTextSecondary: "var(--text-secondary)",
-    profileAction: "var(--surface-card)",
-    profileActionHover: "var(--surface-faint)",
-    profileForeground: "var(--surface-sheet)",
-  },
-  radii: {
-    ...base.radii,
-    actionButton: "var(--radius-12)",
-    modal: "var(--radius-16)",
-    modalMobile: "var(--radius-16)",
-  },
+const painted = (stock: typeof darkTheme) => {
+  const base = stock({ borderRadius: "medium", overlayBlur: "small" })
+  return {
+    ...base,
+    fonts: { body: "var(--font-body)" },
+    colors: {
+      ...base.colors,
+      accentColor: "var(--purple-500)",
+      accentColorForeground: "var(--on-brand-text-primary)",
+      // Ink tints, not the white surface tokens, so they still show on the light sheet.
+      closeButtonBackground: "rgba(var(--ink-rgb), 0.03)",
+      connectButtonBackground: "var(--surface-sheet)",
+      connectButtonText: "var(--text-primary)",
+      error: "var(--accent-pink)",
+      generalBorder: "var(--border-hairline)",
+      generalBorderDim: "var(--border-hairline)",
+      menuItemBackground: "rgba(var(--ink-rgb), 0.05)",
+      modalBackground: "var(--surface-sheet)",
+      modalBorder: "var(--border-hairline)",
+      modalText: "var(--text-primary)",
+      modalTextDim: "var(--text-secondary)",
+      modalTextSecondary: "var(--text-secondary)",
+      profileAction: "rgba(var(--ink-rgb), 0.05)",
+      profileActionHover: "rgba(var(--ink-rgb), 0.03)",
+      profileForeground: "var(--surface-sheet)",
+    },
+    radii: {
+      ...base.radii,
+      actionButton: "var(--radius-12)",
+      modal: "var(--radius-16)",
+      modalMobile: "var(--radius-16)",
+    },
+  }
 }
+
+export const rainbowkitTheme = painted(darkTheme)
+
+const light = painted(lightTheme)
+
+/**
+ * What the wallet's light theme changes in `rainbowkitTheme`: RainbowKit's own light colors where
+ * no token stands in, and the wallet's scrim. RainbowKit switches its themes on the system's color
+ * scheme, not on the wallet's `data-theme`, so this stylesheet does it.
+ */
+export const rainbowkitLightCss = `:root[data-theme="light"] [data-rk]{${cssStringFromTheme(
+  { ...light, colors: { ...light.colors, modalBackdrop: "rgba(var(--canvas-rgb), 0.65)" } },
+  { extends: rainbowkitTheme },
+)}}`
 
 // Same fallback project id as launch-campaign-web.
 const projectId =

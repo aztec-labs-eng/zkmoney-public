@@ -8,117 +8,29 @@ import {
   StatusPill,
 } from "@obsidion/web-ds"
 import {
-  MAX_PASSKEY_CANDIDATES,
-  authKeyPubkeyHex,
-  createOxideL1Reader,
-  deriveBootstrapKey,
-  envelopeSlot,
-  parseKeyMetadata,
-  resolveOxideIdentity,
-  type ParsedKeyMetadata,
+  UNREAD,
   useStore,
   serviceStatus,
+  type QueryEntry,
+  type QueryState,
 } from "@obsidion/front-core"
-import { isPhysicalOnly, providerNameFor } from "@obsidion/passkey-web"
-import type { Address } from "viem"
 import { backupPasskeySettingsEnabled } from "../config/features"
-import { l1PublicClient } from "../config/oxideTuple"
+import type { AccountKeys, Row } from "../features/backupPasskey/accountKeys"
 import { BackupPasskeyHost } from "../features/backupPasskey/BackupPasskeyHost/BackupPasskeyHost"
 import { panelCopy } from "../features/backupPasskey/backupPasskeyCopy"
 import type { EntryAction } from "../features/backupPasskey/backupPasskeyEntry"
 import { useBackupRotation } from "../features/backupPasskey/backupRotations"
 import type { BackupKey, KeysRead } from "../features/backupPasskey/backupScreen"
 import { hostSheetShows } from "../features/backupPasskey/screens/KeysScreen/keysSheet"
-import { generationAddresses } from "../features/registration/generationAddresses"
-import { loadOxideGenerations } from "../features/registration/oxideGenerations"
-import { authenticatorFor, type AuthenticatorRecord } from "../platform/auth/WebPasskeyIdentityMap"
 import { Modal } from "./Modal"
 import { MAX_PASSKEY_NAME, savePasskeyName } from "./passkeyNames"
-import { useSession, type Session } from "../session/session"
+import { useSession } from "../session/session"
 
-type KeyLabel = "Sign-up" | "Backup" | "Unknown key"
+type KeysState = QueryState<AccountKeys | "unverified">
 
-type Row = {
-  pubkeyHex: string
-  label: KeyLabel
-  signsHere: boolean
-  /** The passkey manager, where this browser recorded it at creation. */
-  provider?: string
-}
-
-type AccountKeys = {
-  rows: Row[]
-  authKeyCount: number
-  /** The L1 account the keys are installed on. */
-  owner: Address
-  /** The key signing this session, hex. */
-  session: string
-}
-
-/** The sign-up passkey keeps its raw credential id; a backup passkey carries an envelope the opener accepts. */
-export function keyLabel(parsed: ParsedKeyMetadata): KeyLabel {
-  if (parsed.kind === "credential-id") return "Sign-up"
-  if (parsed.kind !== "envelope-prefixed") return "Unknown key"
-  try {
-    envelopeSlot(parsed.envelope)
-    return "Backup"
-  } catch {
-    return "Unknown key"
-  }
-}
-
-async function readAccountKeys(
-  own: Pick<Session, "page" | "auth" | "device" | "wallet" | "contractService">,
-  address: string | undefined,
-): Promise<AccountKeys | "unverified"> {
-  const { page, auth, device } = own
-  const keys = await auth.sessionKeys()
-  if (!keys || !address) throw new Error("wallet locked")
-  const [wallet, contractService] = await Promise.all([
-    own.wallet.ready(),
-    own.contractService.ready(),
-  ])
-  const generations = await loadOxideGenerations(wallet, contractService, page)
-  const bootstrap = deriveBootstrapKey(keys.secretKey).address
-  const session = (await keys.authProvider.getPubkeys())
-    .map((part) => part.toString("hex"))
-    .join("")
-  const identity = await resolveOxideIdentity(
-    generations,
-    bootstrap,
-    address,
-    generationAddresses(page, `0x${session}`)(keys.secretKey, address),
-  )
-  // An account the catalog shows and does not verify, or none at all, is not registered; a read
-  // that could not conclude is a failed read, so it gets a retry rather than that verdict.
-  if (identity.kind === "unverified" || identity.kind === "none") return "unverified"
-  if (identity.kind !== "verified") throw new Error(`identity ${identity.kind}`)
-  const { entries, authKeyCount } = await createOxideL1Reader(
-    l1PublicClient(page.config),
-  ).readAuthKeysCounted(identity.identity.account, MAX_PASSKEY_CANDIDATES)
-  const rows = entries.map((entry): Row => {
-    const pubkeyHex = authKeyPubkeyHex(entry) ?? `${entry.key.qx.slice(2)}${entry.key.qy.slice(2)}`
-    return {
-      pubkeyHex,
-      label: keyLabel(parseKeyMetadata(entry.metadata)),
-      signsHere: pubkeyHex === session,
-      provider: providerFor(authenticatorFor(device.get().passkeyMap, pubkeyHex)),
-    }
-  })
-  return { rows, authKeyCount, owner: identity.identity.account, session }
-}
-
-/** The manager this browser recorded for a key; a hardware key no table names is called what it is. */
-function providerFor(record: AuthenticatorRecord | undefined): string | undefined {
-  if (!record) return undefined
-  const named = providerNameFor(record.prfAaguid)
-  if (named) return named
-  const securityKey =
-    record.securityKey ||
-    record.authenticatorType === "security-key" ||
-    Boolean(record.inferredTransports) ||
-    isPhysicalOnly(record.transports)
-  return securityKey ? "Security key" : undefined
+const failedAt = (entry?: QueryEntry<AccountKeys | "unverified">): KeysState | undefined => {
+  const at = entry?.get()
+  return at?.status === "failed" ? at : undefined
 }
 
 /** A key's name from the user, else its manager. */
@@ -233,36 +145,45 @@ export function PasskeysModal({
   const contracts = useStore(session.contractService, serviceStatus)
   const { database, device, identity, page } = session
   const walletBuilt = useStore(session.wallet, serviceStatus) === "ready"
-  const [keys, setKeys] = useState<AccountKeys | "unreadable" | "unverified">()
+  const address = useStore(identity, (s) => s.value?.address)
+  const entry =
+    contracts === "ready" && walletBuilt && address ? session.accountKeys(address) : undefined
+  const state: KeysState = useStore(entry ?? UNREAD)
   const names = useStore(device, (s) => s.passkeyNames)
-  const [reads, setReads] = useState(0)
+  // The state a retry, or showing an entry whose read failed, waits to see replaced.
+  const [waiting, setWaiting] = useState(() => ({ entry, state: failedAt(entry) }))
+  if (waiting.entry !== entry) setWaiting({ entry, state: failedAt(entry) })
   const readAgain = () => {
-    setKeys(undefined)
-    setReads((n) => n + 1)
+    if (!entry) return
+    entry.refresh()
+    setWaiting({ entry, state: entry.get() })
   }
+  // Keys whose last re-read failed stay hidden until the next read lands.
+  const settled =
+    state !== waiting.state &&
+    !(state.status === "ready" && state.error !== undefined && state.refreshing)
+  const keys: AccountKeys | "unreadable" | "unverified" | undefined = !entry
+    ? "unreadable"
+    : !settled || state.status === "pending"
+    ? undefined
+    : state.status === "failed" || state.error !== undefined
+    ? "unreadable"
+    : state.value
+  const refreshing = settled && state.status === "ready" && state.refreshing
 
+  // The record the host reads.
+  const saved = useBackupRotation(typeof keys === "object" ? keys.owner : undefined)
   // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
-    if (contracts !== "ready" || !walletBuilt) {
-      setKeys("unreadable")
-      return
-    }
-    let cancelled = false
-    readAccountKeys(session, identity.get().value?.address).then(
-      (read) => {
-        if (cancelled) return
-        setKeys(read)
-        if (typeof read === "object" && read.authKeyCount > 1)
-          page.backupReminder.seenOnChain.set(true)
-      },
-      () => {
-        if (!cancelled) setKeys("unreadable")
-      },
+    if (
+      state.status === "ready" &&
+      !state.refreshing &&
+      state.error === undefined &&
+      typeof state.value === "object" &&
+      state.value.authKeyCount > 1
     )
-    return () => {
-      cancelled = true
-    }
-  }, [session, page, identity, contracts, walletBuilt, reads])
+      page.backupReminder.seenOnChain.set(true)
+  }, [page, state])
 
   const read: KeysRead =
     typeof keys === "object"
@@ -271,8 +192,6 @@ export function PasskeysModal({
           count: keys.authKeyCount,
         }
       : keys
-  // The record the host reads.
-  const saved = useBackupRotation(typeof keys === "object" ? keys.owner : undefined)
   const list =
     (keys === "unverified" || typeof keys === "object") &&
     !hostSheetShows(keys === "unverified" ? 0 : keys.rows.length, saved)
@@ -335,6 +254,7 @@ export function PasskeysModal({
         <BackupPasskeyHost
           keys={read}
           {...(typeof keys === "object" && { owner: keys.owner })}
+          {...(refreshing && { refreshing })}
           {...(onAction && { onAction })}
           onReadKeys={readAgain}
           onClose={onClose}

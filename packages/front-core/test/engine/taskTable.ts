@@ -20,6 +20,7 @@ type Start = (
     visible: ReadonlyStore<boolean>
     pace: Pace
     now: () => number
+    sinceLoad: () => number
   },
 ) => { stop(): void }
 
@@ -63,7 +64,14 @@ export function sessions(start: Start, milestones = reachedAll) {
     visible,
     start: () =>
       void started.push(
-        start(tasks, { db, milestones, visible: visible.readonly, pace, now: () => Date.now() }),
+        start(tasks, {
+          db,
+          milestones,
+          visible: visible.readonly,
+          pace,
+          now: () => Date.now(),
+          sinceLoad: () => performance.now(),
+        }),
       ),
     stop: () => started.at(-1)?.stop(),
     hide: () => visible.set(false),

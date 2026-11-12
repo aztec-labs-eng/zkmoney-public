@@ -111,7 +111,7 @@ export function PickerList({
               ) : (
                 item.id === selected && (
                   <span className={styles.check}>
-                    <Icon name="check" size={12} color="#212121" />
+                    <Icon name="check" size={12} />
                   </span>
                 )
               )}

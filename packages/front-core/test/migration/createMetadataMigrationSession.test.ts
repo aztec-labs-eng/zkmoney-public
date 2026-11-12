@@ -10,7 +10,7 @@ type RecordSigner = (userOpHash: Hex, expectedStateHash: Hex) => Promise<unknown
 
 const h = vi.hoisted(() => ({
   services: [] as Array<{ signRecordUpdate: RecordSigner }>,
-  recordNamesOtherAccount: vi.fn(async () => true),
+  accountRecordState: vi.fn(async () => "other"),
 }))
 
 vi.mock("@obsidion/sdk", () => ({
@@ -27,7 +27,7 @@ vi.mock("@obsidion/sdk", () => ({
   }),
   metadataMigrationContext: async () => ({}),
   readNameClaimLog: vi.fn(),
-  recordNamesOtherAccount: h.recordNamesOtherAccount,
+  accountRecordState: h.accountRecordState,
   SipaSelfResolver: class {
     userPublicKey = "0xpk"
   },
@@ -46,7 +46,7 @@ vi.mock("../../src/oxide/oxideRegistrationDeps", () => ({
   resolveOxideAccountFactory: () => "0xfactory",
 }))
 
-const { accountRecordStale, createMetadataMigrationSession } = await import(
+const { accountRecordState, createMetadataMigrationSession } = await import(
   "../../src/core/migration/createMetadataMigrationSession"
 )
 
@@ -143,14 +143,14 @@ describe("the migration session's approvals", () => {
 
 describe("the account record check", () => {
   it("asks whether the owner's record names this account on the destination rollup", async () => {
-    const stale = await accountRecordStale({
+    const state = await accountRecordState({
       account: { getAddress: () => "0xl2" } as never,
       current: { portal: "0xportal" } as never,
       secretKey: {} as never,
       client: {} as never,
     })
 
-    expect(stale).toBe(true)
-    expect(h.recordNamesOtherAccount).toHaveBeenCalledWith({}, "0x1", "0xowner", "0xl2", "7")
+    expect(state).toBe("other")
+    expect(h.accountRecordState).toHaveBeenCalledWith({}, "0x1", "0xowner", "0xl2", "7")
   })
 })

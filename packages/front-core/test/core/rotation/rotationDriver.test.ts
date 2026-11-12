@@ -18,7 +18,13 @@ import {
   type FlowResult,
   type RotationFlowDeps,
 } from "../../../src/core/rotation/backupRotationFlow"
-import { RotationDriver, type RotationDriveSource } from "../../../src/core/rotation/rotationDriver"
+import {
+  RESUME_POLL_MS,
+  RESUME_POLL_SOON_MS,
+  RotationDriver,
+  type RotationDriveSource,
+} from "../../../src/core/rotation/rotationDriver"
+import { RootPasskeyRequiredError } from "../../../src/oxide/accountUserOp"
 
 const resume = vi.mocked(resumeRotation)
 const retry = vi.mocked(retryMove)
@@ -120,11 +126,12 @@ describe("RotationDriver", () => {
     expect(driver.drive(OWNER)?.resume).toEqual({ wait: "funding" })
   })
 
-  it("asks again after a while on a chain wait, a failure or a park, and never on the user's waits", async () => {
+  it("asks again after a while on a chain wait, a failure or a park, never on the user's waits or the wrong passkey", async () => {
     const cases: [Partial<BackupRotationRecord>, FlowResult["wait"] | Error, boolean][] = [
       [{}, "sweep", true],
       [{}, "chunk", true],
       [{}, new Error("rpc down"), true],
+      [{ phase: "installed" }, new RootPasskeyRequiredError(), false],
       [{ phase: "attention", attention: "stranded", suspended: "funded" }, undefined, true],
       [{ phase: "published" }, "funding", false],
       [{ phase: "rerooted" }, "approval", false],
@@ -144,6 +151,52 @@ describe("RotationDriver", () => {
       await vi.advanceTimersByTimeAsync(POLL)
       expect(resume).toHaveBeenCalledTimes(polls ? 2 : 1)
     }
+  })
+
+  it("asks again while the flow watches the sweep, whatever the wait", async () => {
+    const cases: [FlowResult["wait"], boolean, boolean][] = [
+      ["approval", true, true],
+      ["approval", false, false],
+      [undefined, true, true],
+    ]
+    for (const [wait, watch, polls] of cases) {
+      driver.stop()
+      resume.mockReset()
+      resume.mockImplementation(async (_d, record) => ({
+        record,
+        wait,
+        ...(watch && { watch: true as const }),
+      }))
+      start([funded({ phase: "rerooted" })])
+      await vi.advanceTimersByTimeAsync(0)
+      expect(resume).toHaveBeenCalledTimes(1)
+      expect(driver.drive(OWNER)?.resume).toEqual({ wait, ...(watch && { watch: true }) })
+      await vi.advanceTimersByTimeAsync(POLL)
+      expect(resume).toHaveBeenCalledTimes(polls ? 2 : 1)
+    }
+  })
+
+  it("asks sooner while a sweep it saw settles, unless the source sets the interval", async () => {
+    resume.mockImplementation(async (_d, record) => ({ record, wait: "sweep", soon: true }))
+    start([funded()], { pollMs: undefined })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(driver.drive(OWNER)?.resume).toEqual({ wait: "sweep", soon: true })
+    resume.mockImplementation(async (_d, record) => ({ record, wait: "sweep" }))
+    await vi.advanceTimersByTimeAsync(RESUME_POLL_SOON_MS)
+    expect(resume).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(RESUME_POLL_SOON_MS)
+    expect(resume).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(RESUME_POLL_MS - RESUME_POLL_SOON_MS)
+    expect(resume).toHaveBeenCalledTimes(3)
+
+    driver.stop()
+    resume.mockReset()
+    resume.mockImplementation(async (_d, record) => ({ record, wait: "sweep", soon: true }))
+    start([funded()])
+    await vi.advanceTimersByTimeAsync(POLL - 1)
+    expect(resume).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(resume).toHaveBeenCalledTimes(2)
   })
 
   it("keeps when a run last read the chain, which a failed or unverified run leaves as it was", async () => {

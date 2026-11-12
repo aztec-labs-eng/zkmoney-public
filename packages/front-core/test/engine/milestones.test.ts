@@ -41,7 +41,7 @@ const AT_HEAD: After = { ...SETTLED, historyAtHead: true }
 /** Milestones over a catch-up flag the test toggles. */
 function boot(waits = {}) {
   const catchUp = catchUpSource()
-  const m = createMilestones({ catchUp, waits })
+  const m = createMilestones({ catchUp, waits, sinceLoad: () => performance.now() })
   const waiter = (after: After) => {
     const state = { over: false }
     void m.after(after).then((over) => (state.over = over))
@@ -287,5 +287,14 @@ describe("milestones", () => {
     const later = m.after(AT_HEAD)
     m.stop()
     expect(await later).toBe(false)
+  })
+
+  it("logs a milestone that another one reaches", () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {})
+    log.mockClear()
+    const { mark } = boot()
+    mark("firstBalance", "movesReplayed")
+    const lines = log.mock.calls.map(([line]) => String(line))
+    expect(lines.filter((line) => line.startsWith("[boot] movesReplayed at"))).toHaveLength(1)
   })
 })

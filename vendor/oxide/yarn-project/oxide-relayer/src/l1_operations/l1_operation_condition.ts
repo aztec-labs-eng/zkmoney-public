@@ -22,8 +22,11 @@ import type { WithdrawalCompletion } from './withdrawal_completion.js';
 export interface BalanceWatcherDeps {
   publicClient: PublicClient;
   store: StateStore;
-  /** Tokens whose `Transfer` logs are ingested. The syncer only stores Balance operations naming one of them. */
-  tokens: EthAddress[];
+  /**
+   * Tokens whose `Transfer` logs are ingested, read on each poll. The syncer only stores Balance operations naming one
+   * of them.
+   */
+  tokens: () => readonly EthAddress[];
   /** Max blocks per `eth_getLogs` call. */
   logWindow: bigint;
   maxReorgDepth?: bigint;
@@ -66,7 +69,7 @@ export class BalanceWatcher {
     const ingester = new TransferIngester({
       publicClient: this.deps.publicClient,
       cursorStore,
-      tokens: this.deps.tokens,
+      tokens: [...this.deps.tokens()],
       window: this.deps.logWindow,
       maxReorgDepth: this.deps.maxReorgDepth,
       log: this.log,

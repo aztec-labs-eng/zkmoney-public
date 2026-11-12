@@ -22,7 +22,7 @@ export function acrossSteps(c: AdapterConfig) {
   return {
     ...c,
     deposit<In extends Address>({ refundTo, ...p }: AcrossDeposit<In>) {
-      return define.terminal({
+      return define.noPayout({
         fn: 'acrossDeposit',
         in: p.inputToken,
         args: s => [{ ...p, depositor: refundTo, amount: s.amount }] as const,
@@ -30,7 +30,7 @@ export function acrossSteps(c: AdapterConfig) {
     },
 
     depositWithMessage<In extends Address>({ refundTo, ...p }: AcrossDeposit<In> & { message: Hex }) {
-      return define.terminal({
+      return define.noPayout({
         fn: 'acrossDepositWithMessage',
         in: p.inputToken,
         args: s => [{ ...p, depositor: refundTo, amount: s.amount }] as const,

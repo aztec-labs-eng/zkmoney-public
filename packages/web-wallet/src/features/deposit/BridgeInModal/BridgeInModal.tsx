@@ -59,6 +59,7 @@ import { FundingCapacityPanel } from "../FundingCapacityPanel"
 import { UNKNOWN_CAPACITY } from "../fundingPreflight"
 import { LimitNotice, usdFigureGrouped, type LimitProblem } from "../../limits/publicLimit"
 import { WalletAboutLimitsSheet } from "../../limits/AboutLimitsSheet"
+import { ScreeningNotice, useScreenedAddress } from "../../../ui/screening"
 
 /** How deep each step sits, for the direction it swaps in from. */
 const STEP_DEPTH: Record<BridgeInStep, number> = {
@@ -203,6 +204,10 @@ export function BridgeInModal({
   )
 
   const routeChain = route?.chain
+  // The depositor is screened where it sends from, as a wallet deposit's is on L1.
+  const { verdict, cleared, rescreen } = useScreenedAddress(account, "deposit", {
+    chainId: routeChain?.chainId,
+  })
   const originChain = useMemo(() => routeChain && bridgeChainFor(routeChain), [routeChain])
   const originAddress = origin && tokenAddress(origin)
   // The origin wallet's balance of the picked token, and its decimals there.
@@ -379,6 +384,7 @@ export function BridgeInModal({
     if (!quote || !quoteRequest || !quoteKey || !origin || !landing || !admit) return
     if (depositFee === undefined || inDecimals === undefined) return
     void flow.send({
+      cleared,
       key: quoteKey,
       reviewed: quote,
       request: quoteRequest,
@@ -622,12 +628,21 @@ export function BridgeInModal({
               {copy.progress.capacityChanged}
             </p>
           )}
+          {account && !cleared && (
+            <ScreeningNotice
+              verdict={verdict}
+              checkingCopy={copy.checkingWallet}
+              blockedFallback={toLabel ? copy.payerBlocked : copy.walletBlocked}
+              errorCopy={copy.walletUnverified}
+              onRetry={rescreen}
+            />
+          )}
         </>
       }
       button={{
         title: copy.review,
         testId: "bridge-in-review",
-        disabled: !quote || short || belowFee || !admitted,
+        disabled: !quote || short || belowFee || !admitted || !cleared,
         loading: reviewing,
         onClick: review,
       }}
@@ -696,7 +711,7 @@ export function BridgeInModal({
         testId: "bridge-in-send",
         loading: sending,
         // Capacity is read again when sent: a refusal goes back to the amount and says why.
-        disabled: !admission || !!admission.problem,
+        disabled: !admission || !!admission.problem || !cleared,
         onClick: send,
       }}
     />

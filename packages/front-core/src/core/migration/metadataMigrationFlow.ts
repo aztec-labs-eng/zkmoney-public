@@ -6,6 +6,12 @@ import {
   type MigrationHalt,
   type MigrationSendGate,
 } from "@obsidion/sdk"
+import { WalletError } from "../../engine/errors"
+import { within } from "../../engine/runtime"
+import { logger } from "../../utils/logger"
+
+/** An observe still running after this has stalled: its pass ends, and the next observes again. */
+const OBSERVE_MS = 5 * 60_000
 
 /** Shared migration driver. Contract actions live in the SDK adapter; this layer owns durability. */
 export type MetadataMigrationPhase =
@@ -128,8 +134,6 @@ export interface MetadataMigrationSteps {
    * `gate`.
    */
   reconcileRemaining?(plan: string, signal?: AbortSignal, gate?: MigrationSendGate): Promise<void>
-  /** Whether the balance holds everything the run imported: the run is done only then. */
-  confirmBalance?(): Promise<boolean>
 }
 
 export function newMetadataMigration(id: string, binding: string): MetadataMigrationRecord {
@@ -263,7 +267,14 @@ export async function advanceMetadataMigration(
     if (start && !observeOnly && !approvalsOnly) onPrepared?.()
     if (prepareOnly) return record
     const plan = record.plan!
-    const observed = await steps.observe(record)
+    let observed: MetadataMigrationObservation
+    try {
+      observed = await within(steps.observe(record), "observe", { ms: OBSERVE_MS, signal })
+    } catch (error) {
+      if (!(error instanceof WalletError && error.code === "timeout")) throw error
+      logger.warn("[upgrade] the run's observe stalled; the next pass observes again")
+      return record
+    }
     await save({
       bootstrapStatus: observed.bootstrapStatus,
       subscriptionStatus: observed.subscriptionStatus,
@@ -284,7 +295,7 @@ export async function advanceMetadataMigration(
       (!observed.bootstrapSpent || observed.recurringSponsorship)
 
     const complete = observed.complete && observed.recurringSponsorship && observed.metadataSettled
-    if (complete && (await steps.confirmBalance?.()) !== false) {
+    if (complete) {
       await save({ phase: "done", error: undefined })
     } else if (observed.recurringSponsorship && observed.metadataSettled) {
       const phase = observed.sent ? "arriving" : "recovering"

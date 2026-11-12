@@ -140,7 +140,7 @@ export function submitBridgeOut(
       const kit = { ...deps, ...(await accountKitOf(deps.session)) }
       const { page } = deps.session
       assertWithinWithdrawalLimit(amount, await page.chain.currentTxAmountCap.read())
-      const ctx = await burnContext(kit, args.recipient)
+      const ctx = await burnContext(kit, args.recipient, args.chain.chainId)
       const leg = await planBridgeLeg(page, kit, ctx.tuple, {
         ...args,
         from: kit.account.getAddress(),

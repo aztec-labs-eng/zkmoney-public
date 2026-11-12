@@ -176,6 +176,15 @@ describe("releaseNote", () => {
     expect(releaseNote(record({ phase: "done", l2TxHash: "0xabc" as Hex }))).toBeUndefined()
   })
 
+  it("names the release's wait where the page has it: a countdown once landed, a typical wait before", () => {
+    const sent = record({ phase: "awaiting_proven", l2TxHash: L2_TX, phaseEnteredAt: Date.now() })
+    expect(releaseNote(sent, Date.now(), { seconds: 700, remaining: true })).toMatch(/12 min left/)
+    expect(releaseNote(sent, Date.now(), { seconds: 1500, remaining: false })).toMatch(
+      /usually in about 25 min/,
+    )
+    expect(releaseNote(sent)).not.toMatch(/min/)
+  })
+
   it("says the release pays the swap escrow, not the recipient, on a swap cash-out", () => {
     const swap = { l2TxHash: L2_TX, swapOutput: "USDC" as const }
     expect(

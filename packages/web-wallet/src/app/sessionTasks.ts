@@ -62,6 +62,10 @@ import {
   type TokenService,
 } from "@obsidion/sdk"
 import { selectAccountHistory, type AccountHistory } from "../features/backupPasskey/accountHistory"
+import { backupAddReleases } from "../features/backupPasskey/backupAddTime"
+import { accountKeys, readKeysOnDone } from "../features/backupPasskey/accountKeys"
+import { webAccountRecordState } from "../features/migration/createWebMetadataMigration"
+import { metadataRecordStates, oldVersionsByRecord } from "../features/migration/metadataRecord"
 import { savedRotations } from "../features/backupPasskey/backupRotations"
 import { getPreviousAccountWatcher } from "../features/backupPasskey/previousAccountWatcher"
 import { l1PublicClient } from "../config/oxideTuple"
@@ -311,6 +315,12 @@ export function sessionTasks(session: Core) {
     return built
   }
   const signedIn = signIn ? open() : undefined
+  const metadataRecordState =
+    account &&
+    metadataRecordStates(page.query, account, (own) =>
+      webAccountRecordState({ auth: deps.auth, page }, own),
+    )
+
   /** The views' notification sources: undefined until the views open, a visitor's on first read. */
   const sources = liveStore<NotificationSources | undefined>(undefined, {
     whileSubscribed: (set) => {
@@ -503,6 +513,9 @@ export function sessionTasks(session: Core) {
         account,
         contractService,
       }),
+      ...(metadataRecordState
+        ? [oldVersionsByRecord({ account, record: metadataRecordState, milestones })]
+        : []),
     ]
     const previous = signIn.previousAccount
     if (previous) {
@@ -786,6 +799,15 @@ export function sessionTasks(session: Core) {
       ((signal) => loadFasterWithdrawal(session.burnDurations, session.page, signal)),
     page.now,
   )
+  const backupAddRelease = backupAddReleases(page.query, session.burnDurations, () => session.page)
+  const keys = accountKeys(page.query, {
+    page: deps.page,
+    auth: deps.auth,
+    device: deps.device,
+    wallet,
+    contractService,
+  })
+  stops.push(readKeysOnDone(keys, rotationView(session), session.identity))
   return {
     tasks: [...tasks, ...writers],
     named: {
@@ -843,6 +865,10 @@ export function sessionTasks(session: Core) {
       railPending,
       /** The contracts the settings list, read while a view subscribes. */
       contractAddresses: contractAddresses(page.query, { contractService, wallet }),
+      /** The passkeys installed on the account, read while the Passkeys sheet shows. */
+      accountKeys: keys,
+      /** How the account's L1 metadata record names it; null for a visitor. */
+      metadataRecordState,
       /** The account's SIPA keys; null for a visitor. */
       sipaKeys,
       /** The PXE's SIPA discovery setup, built once something asks for it. */
@@ -870,6 +896,8 @@ export function sessionTasks(session: Core) {
       },
       /** The faster withdrawal's tip. */
       fasterOffer,
+      /** When a backup add's funding is released, by its landing. */
+      backupAddRelease,
       /** Null for a visitor; its value is null without a sUSDS deployment. */
       savings: work?.savings ?? null,
       /** The Savings shares at the vault's price; a visitor holds none. */
@@ -918,12 +946,15 @@ declare module "../session/session" {
     fundingTransfers: Services["fundingTransfers"]
     railPending: Services["railPending"]
     contractAddresses: Services["contractAddresses"]
+    accountKeys: Services["accountKeys"]
+    metadataRecordState: Services["metadataRecordState"]
     sipaKeys: Services["sipaKeys"]
     sipaDiscovery: Services["sipaDiscovery"]
     sipaAddresses: Services["sipaAddresses"]
     sipaPipeline: Services["sipaPipeline"]
     fundDeposit: Services["fundDeposit"]
     fasterOffer: Services["fasterOffer"]
+    backupAddRelease: Services["backupAddRelease"]
     savings: Services["savings"]
     savingsHolding: Services["savingsHolding"]
     savingsReplayed: Services["savingsReplayed"]

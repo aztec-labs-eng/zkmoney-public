@@ -195,7 +195,7 @@ export function EnterAppScreen() {
                   {refusal.macPhone && (
                     <PrimaryGradientButton
                       title={copy.showPasskeys}
-                      buttonStyle="dark"
+                      buttonStyle="secondary"
                       testId="enter-show-passkeys"
                       onClick={showPasskeys}
                     />

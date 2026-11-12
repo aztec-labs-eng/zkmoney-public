@@ -717,12 +717,12 @@ describe("a Proton Pass account from Chrome on a Mac", () => {
       authenticatorType: "platform",
     } as const)
 
-  it("sends the pick to the kept wrapper, steered to this device, and records a synced passkey Home still reminds", async () => {
+  it("sends the pick to the kept wrapper, steered to this device, and records a synced passkey", async () => {
     const { ceremony, storage, created } = await signUp()
     expect(ceremony.creates[0]).toMatchObject({ extensionAllowed: true, hints: ["client-device"] })
     const entry = await new WebPasskeyIdentityMap(storage, "localhost").get(created.credentialId)
     expect(entry).toMatchObject({ prfAaguid: PROTON_PASS_AAGUID, backupEligible: true })
-    expect(reminded(entry)).toBe(true)
+    expect(reminded(entry)).toBe(false)
   })
 
   it("signs back in with the same secret, and the record it rewrites keeps the provider id", async () => {
@@ -735,10 +735,10 @@ describe("a Proton Pass account from Chrome on a Mac", () => {
     await service.recordRecoveryMetadata(signedIn(recovered))
     const entry = await new WebPasskeyIdentityMap(storage, "localhost").get(created.credentialId)
     expect(entry).toMatchObject({ prfAaguid: PROTON_PASS_AAGUID, backupEligible: true })
-    expect(reminded(entry)).toBe(true)
+    expect(reminded(entry)).toBe(false)
   })
 
-  it("opens on a fresh browser, whose record carries no provider id and so no reminder", async () => {
+  it("opens on a fresh browser, whose record carries no provider id", async () => {
     const { ceremony, created } = await signUp()
     const storage = openDatabase(memoryBackend())
     const fresh = browser(ceremony, MAC_CHROME_UA, storage)

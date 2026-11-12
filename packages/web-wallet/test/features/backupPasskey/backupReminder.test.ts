@@ -27,6 +27,7 @@ const home = (over: Partial<HomeNudgeFacts>) =>
     putOffAt: null,
     hiddenForSession: false,
     awaitsApproval: false,
+    moveUnfinished: false,
     ...over,
   })
 
@@ -36,9 +37,9 @@ describe("backupNudge", () => {
     expect(nudge({ backupEligible: true, securityKey: true })).toBe("oneKey")
   })
 
-  it("counts a Proton Pass passkey as one device, by the provider id its creation recorded", () => {
+  it("classifies a synced passkey by its flag, whatever provider id its creation recorded", () => {
     const proton = { backupEligible: true, prfAaguid: PROTON_PASS_AAGUID }
-    expect(nudge(proton)).toBe("oneDevice")
+    expect(nudge(proton)).toBe("oneKey")
     expect(nudge({ backupEligible: true, prfAaguid: GPM_AAGUID })).toBe("oneKey")
     // An adopted or older record carries no id.
     expect(nudge({ backupEligible: true })).toBe("oneKey")
@@ -91,6 +92,14 @@ describe("homeNudge", () => {
   it("asks for a waiting add's last approval before anything else, only in a build with the add", () => {
     expect(home({ awaitsApproval: true, noAddSaved: false })).toEqual({ kind: "finish" })
     expect(home({ awaitsApproval: true, enabled: false })).toBeUndefined()
+  })
+
+  it("asks to go on with a move from the earlier address, after a waiting add and before the rest, in every build", () => {
+    const oneDevice = { record: { backupEligible: false }, balance: 1n }
+    expect(home({ moveUnfinished: true, ...oneDevice })).toEqual({ kind: "moveFunds" })
+    expect(home({ moveUnfinished: true, awaitsApproval: true })).toEqual({ kind: "finish" })
+    // Account history moves funds in a build without the add too.
+    expect(home({ moveUnfinished: true, enabled: false })).toEqual({ kind: "moveFunds" })
   })
 
   it("shows a passkey on one device once Main holds funds, until put off for the session", () => {

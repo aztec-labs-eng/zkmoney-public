@@ -92,21 +92,3 @@
   font-weight: 600;
   color: var(--ink);
 }
-:global(.ww-shell) .chatGlassbtn {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 56px;
-  border-radius: 9999px;
-  border: 1px solid rgba(var(--ink-rgb), 0.1);
-  background: rgba(var(--ink-rgb), 0.1);
-  font-family: var(--font-display);
-  font-size: 18px;
-  font-weight: 600;
-  color: var(--ink);
-}
-:global(.ww-shell) .chatGlassbtn:disabled {
-  opacity: 0.5;
-  cursor: default;
-}

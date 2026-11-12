@@ -20,8 +20,8 @@ import { fireEvent } from "../lib/analytics"
 import { provingDevice } from "../lib/provingDevice"
 import type { PxeBootTarget } from "../ui/PxeBoot"
 import { barretenbergWasm } from "./barretenberg"
+import { clearDownloadReloads, isModuleDownloadFailure, takeDownloadReload } from "./moduleDownload"
 import { isActiveTab } from "./storage/activeTab"
-import { tabStash } from "./storage/tabStash"
 import { reloadPage } from "./storage/walletStorage"
 
 export type PxeTarget = Extract<PxeBootTarget, { kind: "pxe" }>
@@ -49,35 +49,6 @@ function isNodeFetchFailure(e: unknown): boolean {
     "data" in rpcError &&
     rpcError.data instanceof Error
   )
-}
-
-const DOWNLOAD_RELOADS_KEY = "pxeBoot.downloadReloads"
-const MAX_DOWNLOAD_RELOADS = 2
-const MODULE_DOWNLOAD_FAILURE =
-  /Failed to fetch dynamically imported module|Importing a module script failed|error loading dynamically imported module/
-
-function isModuleDownloadFailure(e: unknown): boolean {
-  if (e instanceof AggregateError) return e.errors.some(isModuleDownloadFailure)
-  return e instanceof TypeError && MODULE_DOWNLOAD_FAILURE.test(e.message)
-}
-
-function takeDownloadReload(): boolean {
-  try {
-    const reloads = Number(tabStash.get(DOWNLOAD_RELOADS_KEY)) || 0
-    if (reloads >= MAX_DOWNLOAD_RELOADS) return false
-    tabStash.set(DOWNLOAD_RELOADS_KEY, String(reloads + 1))
-    return true
-  } catch {
-    return false
-  }
-}
-
-function clearDownloadReloads(): void {
-  try {
-    tabStash.remove(DOWNLOAD_RELOADS_KEY)
-  } catch {
-    return
-  }
 }
 
 /**

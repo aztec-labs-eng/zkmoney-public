@@ -14,11 +14,11 @@
   width: 1em;
   height: 1em;
 }
-/* A 12px white ring, for an icon beside a small label. */
+/* A 12px ring, for an icon beside a small label. */
 :global(.zkm-btn-reset).button.outline {
   width: 12px;
   height: 12px;
-  color: #fff;
+  color: var(--ink);
 }
 .outline svg {
   width: 12px;

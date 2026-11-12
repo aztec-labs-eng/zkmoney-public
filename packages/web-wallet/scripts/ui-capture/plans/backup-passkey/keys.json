@@ -7,6 +7,11 @@
   },
   "steps": [
     {
+      "action": "screenshot",
+      "file": "settings-keys.png",
+      "state": "Settings: one synced passkey, no card and no badge"
+    },
+    {
       "action": "click",
       "role": "button",
       "name": "Passkeys",
@@ -19,7 +24,35 @@
     {
       "action": "screenshot",
       "file": "a1-keys.png",
-      "state": "A1: one passkey, the add ready"
+      "state": "A1: one synced passkey, the add ready"
+    },
+    {
+      "action": "goto",
+      "path": "/settings?flowFixture=success&backupFixture=keys-one-device"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-settings__user"
+    },
+    {
+      "action": "screenshot",
+      "file": "settings-keys-one-device.png",
+      "state": "Settings: one device-bound passkey, the card and the badge"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Passkeys",
+      "exact": false
+    },
+    {
+      "action": "waitFor",
+      "selector": "html[data-backup-screen=keys]"
+    },
+    {
+      "action": "screenshot",
+      "file": "a1-keys-one-device.png",
+      "state": "A1: one device-bound passkey, the backup missing, the add ready"
     },
     {
       "action": "goto",

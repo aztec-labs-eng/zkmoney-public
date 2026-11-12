@@ -13,7 +13,7 @@ import { memoryStore } from "../../src/engine/store"
 const CONFIG: PredicateScreeningConfig = {
   apiKey: "test-key",
   verificationHash: "x-managed-policy-abc",
-  chain: "ethereum-sepolia",
+  chain: "sepolia",
 }
 
 const ADDRESS = "0xAaBbCcDdEeFf00112233445566778899aAbBcCdD"
@@ -76,7 +76,21 @@ describe("PredicateScreeningService", () => {
     expect(JSON.parse(init!.body as string)).toEqual({
       verification_hash: "x-managed-policy-abc",
       from: ADDRESS,
-      chain: "ethereum-sepolia",
+      chain: "sepolia",
+    })
+  })
+
+  it("screens on the origin chain's Predicate name", async () => {
+    fetchSpy.mockResolvedValue(compliant())
+    await new PredicateScreeningService(CONFIG).screen(ADDRESS, 8453)
+    expect(JSON.parse(fetchSpy.mock.calls[0][1]!.body as string)).toMatchObject({ chain: "base" })
+  })
+
+  it("screens a chain Predicate does not name on the build's L1", async () => {
+    fetchSpy.mockResolvedValue(compliant())
+    await new PredicateScreeningService(CONFIG).screen(ADDRESS, 10)
+    expect(JSON.parse(fetchSpy.mock.calls[0][1]!.body as string)).toMatchObject({
+      chain: "sepolia",
     })
   })
 
@@ -150,6 +164,16 @@ describe("screenings", () => {
     expect([a, b]).toEqual([{ compliant: true }, { compliant: true }])
     await verdicts.screen(ADDRESS.toLowerCase())
     expect(fetchSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it("keeps a verdict per chain", async () => {
+    fetchSpy.mockResolvedValueOnce(compliant()).mockResolvedValueOnce(blocked())
+    const verdicts = screener()
+
+    expect(await verdicts.screen(ADDRESS)).toEqual({ compliant: true })
+    expect(await verdicts.screen(ADDRESS, 8453)).toMatchObject({ compliant: false })
+    expect(await verdicts.screen(ADDRESS)).toEqual({ compliant: true })
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
   })
 
   it("re-queries a blocked wallet once its TTL passes", async () => {

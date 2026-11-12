@@ -45,7 +45,7 @@
   padding: 4px 0;
   font-size: 14px;
   font-weight: 600;
-  color: #47b3ff;
+  color: var(--blue-400);
 }
 @media (max-width: 640px) {
   /* The summary takes its own full-width line under the avatars and count. */

@@ -92,7 +92,13 @@ function fakePublicClient(opts: ClientOpts = {}) {
 }
 
 function balanceWatcher(store: StateStore, client: PublicClient = fakePublicClient()) {
-  return new BalanceWatcher({ publicClient: client, store, tokens: [TOKEN], logWindow: 1_000n, maxAgeMs: MAX_AGE_MS });
+  return new BalanceWatcher({
+    publicClient: client,
+    store,
+    tokens: () => [TOKEN],
+    logWindow: 1_000n,
+    maxAgeMs: MAX_AGE_MS,
+  });
 }
 
 const CURSOR_KEY = { source: LogCursorSources.l1OperationTransferDiscovery, address: EthAddress.ZERO };
@@ -305,6 +311,40 @@ describe('BalanceWatcher', () => {
       const reorged = fakePublicClient({ tip: CHAIN_TIP + 2n, historicalHash: `0x${'ef'.repeat(32)}` });
       await expect(balanceWatcher(store, reorged).runOnce()).resolves.toBe(0);
       await expect(store.getPendingL1Operation(waiting.operationId)).resolves.toMatchObject({ status: 'pending' });
+    });
+  });
+
+  it('marks an operation on a token that joins the watched tokens pending by a later transfer to it', async () => {
+    await withStore(async store => {
+      const joinedToken = EthAddress.random();
+      const recipient = EthAddress.random();
+      const joined = operation(L1OperationCondition.balance(joinedToken, recipient), {
+        operationId: `0x${'33'.repeat(32)}`,
+        payoutToken: joinedToken,
+      });
+      const chain: ClientOpts = {};
+      let tokens = [TOKEN];
+      const watcher = new BalanceWatcher({
+        publicClient: fakePublicClient(chain),
+        store,
+        tokens: () => tokens,
+        logWindow: 1_000n,
+        maxAgeMs: MAX_AGE_MS,
+      });
+      // The watcher saves its transfer cursor on a poll for an operation on `TOKEN`.
+      await store.upsertPendingL1Operation(operation(BALANCE_CONDITION));
+      await watcher.runOnce();
+      await expect(store.getL1Cursor(CURSOR_KEY)).resolves.toMatchObject({ blockNumber: CHAIN_TIP });
+
+      // A new list, as the payout registry gives on each read. The first balance read of the joined operation is zero.
+      tokens = [TOKEN, joinedToken];
+      await store.upsertPendingL1Operation(joined);
+      await expect(watcher.runOnce()).resolves.toBe(0);
+
+      chain.tip = CHAIN_TIP + 1n;
+      chain.transfers = [transferLog(joinedToken, recipient, 1_000n, CHAIN_TIP + 1n)];
+      await expect(watcher.runOnce()).resolves.toBe(1);
+      await expect(store.getPendingL1Operation(joined.operationId)).resolves.toMatchObject({ status: 'pending' });
     });
   });
 });

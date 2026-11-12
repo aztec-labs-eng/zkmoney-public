@@ -1,10 +1,12 @@
 // @vitest-environment node
 /** Which screen each saved rotation, driver answer, entry read and failure picks, and its props. */
+import { L1_SETTLED_DEPTH } from "@obsidion/core/constants"
 import {
-  BACKUP_ADD_TAKES_MS,
   RootPasskeyRequiredError,
   RotationFlowError,
   type AllowanceSnapshot,
+  type BackupAddRelease,
+  type BackupFundingRow,
   type BackupRotationRecord,
   type ResumeAnswer,
 } from "@obsidion/front-core"
@@ -13,7 +15,9 @@ import { RotationRouteNotLiveError } from "@obsidion/sdk"
 import { describe, expect, it } from "vitest"
 import type { BackupStep } from "../../../src/features/backupPasskey/backupFailure"
 import type { EntryFacts } from "../../../src/features/backupPasskey/backupPasskeyFacts"
+import type { FasterWithdrawal } from "../../../src/features/withdraw/useFasterWithdrawal"
 import {
+  pendingRecord,
   recoveryKey,
   selectBackupScreen,
   type BackupScreen,
@@ -83,6 +87,7 @@ const select = (over: Partial<BackupScreenInput> = {}): BackupScreen =>
     deps: "ready",
     addable: true,
     laptop: false,
+    oneDevice: false,
     busy: false,
     cancelled: false,
     now: 0,
@@ -103,10 +108,23 @@ const tapped = (error: unknown, step: BackupStep, record?: BackupRotationRecord)
 
 const declined = () => new DOMException("closed", "NotAllowedError")
 const landing = sent()
+/** The release read for a funding: 2 min to land, a 10 min release, 3 min with a tip. */
+const RELEASE: BackupAddRelease = {
+  landingSeconds: 120,
+  standardEtaSeconds: 600,
+  tippedEtaSeconds: 180,
+  l1SlotSeconds: 12,
+}
+/** The wait after the release, in seconds: two relayer pickups of two slots, then the settle. */
+const TAIL = (2 * 2 + Number(L1_SETTLED_DEPTH)) * RELEASE.l1SlotSeconds
 const parked = (attention: BackupRotationRecord["attention"], over = {}) =>
   signedRecord({ phase: "attention", attention, suspended: "funded", ...over })
 const movedRecord = (over: Partial<BackupRotationRecord> = {}) =>
   signedRecord({ phase: "moved", ...sent(5, { outcome: "swept" }), ...over })
+/** A sweep a reorg dropped, the relayer's re-sweep yet to settle. */
+const gone: Pick<BackupRotationRecord, "sweep"> = {
+  sweep: { index: "3", blockNumber: 90, blockHash: word(0x90), credited: "1400", recheck: "gone" },
+}
 
 describe("selectBackupScreen, a saved rotation", () => {
   it("acts on no record while the key read is out, and waits on the record's dependencies", () => {
@@ -158,12 +176,21 @@ describe("selectBackupScreen, a saved rotation", () => {
         sent: 2n * DAI,
         fees: { withdrawal: DAI / 5n, accountChange: (4n * DAI) / 10n },
         credited: (14n * DAI) / 10n,
-        takesMs: BACKUP_ADD_TAKES_MS,
         approvals: 1,
         refunds: 0,
         moves: 2,
       },
     })
+    // The time at either speed, once the release is read: the landing, the release and the tail.
+    expect(at(published, { wait: "funding" })).not.toHaveProperty("pay.eta")
+    const etas = { pay: { eta: { standard: 120 + 600 + TAIL, tipped: 120 + 180 + TAIL } } }
+    expect(at(published, { wait: "funding" }, { release: RELEASE })).toMatchObject(etas)
+    // A send that failed, or carried another speed's tip, leaves the next send's quote alone.
+    for (const funding of [
+      { phase: "failed", startTime: 0 },
+      { phase: "submitting", startTime: 0, proverTip: "5" },
+    ] as const)
+      expect(at(published, { wait: "funding" }, { release: RELEASE, funding })).toMatchObject(etas)
   })
 
   it("waits on the network once a funding may land, through the sweep and the install", () => {
@@ -191,6 +218,30 @@ describe("selectBackupScreen, a saved rotation", () => {
     expect(at(movedRecord(), { wait: "link" })).toMatchObject({ linkExpiring: true })
     expect(at(movedRecord(), { wait: "uses" })).toMatchObject({ delay: "uses" })
     expect(at(movedRecord())).not.toHaveProperty("ask")
+  })
+
+  it("says the network is confirming the backup again while a reorg dropped the sweep", () => {
+    expect(at(signedRecord({ phase: "swept", ...landing, ...gone }))).toMatchObject({
+      id: "adding",
+      progress: { stage: "final", relanding: true },
+    })
+    expect(at(signedRecord({ phase: "rerooted", ...gone }))).toMatchObject({
+      id: "finish",
+      progress: { stage: "installing", relanding: true },
+    })
+    expect(at(movedRecord(gone), { wait: "approval" })).toMatchObject({
+      id: "finish",
+      ask: "approve",
+      progress: { relanding: true },
+    })
+    expect(at(signedRecord({ phase: "done", ...gone }))).toMatchObject({
+      id: "done",
+      relanding: true,
+    })
+    expect(at(movedRecord())).toMatchObject({
+      progress: expect.not.objectContaining({ relanding: true }),
+    })
+    expect(at(signedRecord({ phase: "done" }))).not.toHaveProperty("relanding")
   })
 
   it("counts the refunds and the move's parts it is on", () => {
@@ -242,40 +293,58 @@ describe("selectBackupScreen, a saved rotation", () => {
     })
   })
 
-  it("counts the time left from the funding against the add's quote, late well past it", () => {
+  it("counts the time left from the funding's row and release, late well past the quote", () => {
     const record = signedRecord({
       phase: "funded",
       ...sent(0),
       plan: { ...PLAN, takesMs: 40 * MIN },
     })
-    expect(at(record, {}, { now: 15 * MIN })).toMatchObject({
-      timing: { takesMs: 40 * MIN, leftMs: 25 * MIN },
+    const release = RELEASE
+    const tail = TAIL * 1000
+    const landed: BackupFundingRow = { phase: "awaiting_proven", startTime: 0, minedAt: 2 * MIN }
+    const timed = { funding: landed, release }
+    expect(at(record, {}, { now: 5 * MIN, ...timed })).toMatchObject({
+      timing: { leftMs: 2 * MIN + 600_000 + tail - 5 * MIN },
     })
-    expect(at(record, {}, { now: 15 * MIN })).not.toHaveProperty("delay")
-    expect(at(record, {}, { now: 60 * MIN })).toMatchObject({
+    expect(at(record, {}, { now: 5 * MIN, ...timed })).not.toHaveProperty("delay")
+    // Run out well before the quote: nothing left, and not yet late.
+    expect(at(record, {}, { now: 25 * MIN, ...timed })).toMatchObject({ timing: { leftMs: 0 } })
+    expect(at(record, {}, { now: 25 * MIN, ...timed })).not.toHaveProperty("delay")
+    // The row's own tip picks the faster release.
+    expect(
+      at(record, {}, { now: 5 * MIN, funding: { ...landed, proverTip: "5" }, release }),
+    ).toMatchObject({ timing: { leftMs: 2 * MIN + 180_000 + tail - 5 * MIN } })
+    // No row or no release read yet: no time, while the delay still follows the quote.
+    expect(at(record, {}, { now: 5 * MIN, release })).not.toHaveProperty("timing")
+    expect(at(record, {}, { now: 5 * MIN, funding: landed })).not.toHaveProperty("timing")
+    expect(at(record, {}, { now: 60 * MIN, ...timed })).toMatchObject({
       timing: { leftMs: 0 },
       delay: "late",
     })
+    expect(at(record, {}, { now: 60 * MIN })).toMatchObject({ delay: "late" })
     // Reopened long after paying: the driver's first answer may find the add done.
-    expect(at(record, null, { now: 60 * MIN })).not.toHaveProperty("delay")
-    // A phase the add moved to keeps the delay the page already knew of.
+    expect(at(record, null, { now: 60 * MIN, ...timed })).not.toHaveProperty("delay")
+    // A phase the add moved to keeps the delay the page already knew of, with nothing left to wait.
     const swept = { ...record, phase: "swept" as const }
     expect(
       select({
         saved: swept,
         drive: { record: swept, approving: false, checkedAt: 0 },
         now: 60 * MIN,
+        ...timed,
       }),
-    ).toMatchObject({ delay: "late" })
+    ).toMatchObject({ timing: { leftMs: 0 }, delay: "late" })
     // The user's recheck keeps the sheet it was tapped on, spinning.
     const rechecking = { record, resume: {}, approving: false, rechecking: true as const }
     expect(select({ saved: record, drive: rechecking, now: 60 * MIN })).toMatchObject({
       delay: "late",
       checking: true,
     })
-    // A funding sent before the clock's tick never reads as more than the quote.
-    expect(at(record, {}, { now: -MIN })).toMatchObject({ timing: { leftMs: 40 * MIN } })
-    expect(at(signedRecord({ phase: "published", ...landing }))).not.toHaveProperty("timing")
+    // Before the funding lands there is nothing to count from.
+    const sending: BackupFundingRow = { phase: "submitting", startTime: 0 }
+    expect(
+      at(signedRecord({ phase: "published", ...landing }), {}, { funding: sending, release }),
+    ).not.toHaveProperty("timing")
   })
 
   it("keeps the pay step while the funding's prompt or proof is out, with nothing paid", () => {
@@ -336,6 +405,136 @@ describe("selectBackupScreen, a saved rotation", () => {
         drive: { record: other, resume: { wait: "funding" }, approving: false },
       }),
     ).toMatchObject({ id: "approve", checking: true })
+  })
+})
+
+describe("selectBackupScreen, the move's rows", () => {
+  const TOKENS = { main: "0xMAIN", savings: "0xsave" }
+  type Run = NonNullable<BackupRotationRecord["move"]>["runs"][number]
+  type Chunk = Run["chunks"][number]
+  type Link = NonNullable<BackupRotationRecord["refunds"]>["links"][number]
+  const chunk = (token: string, state: Chunk["state"], over: Partial<Chunk> = {}): Chunk => ({
+    token,
+    amount: "1",
+    state,
+    ...over,
+  })
+  const run = (chunks: Chunk[]): Run => ({
+    plannedAt: 1,
+    m: chunks.length,
+    depositBound: false,
+    chunks,
+  })
+  const links = (...states: Link["state"][]) => ({
+    refunds: { links: states.map((state, i) => ({ link: `l${i}`, state })) },
+  })
+  const rows = (over: Partial<BackupRotationRecord>, tokens: { main: string } | null = TOKENS) => {
+    const screen = at(movedRecord(over), {}, tokens ? { tokens } : {})
+    return screen.id === "finish" ? screen.progress.rows : undefined
+  }
+
+  it("takes the paylinks back first, one row standing for the balances until planned", () => {
+    expect(rows(links("planned", "mined", "skipped"))).toEqual([
+      { kind: "links", count: 2, state: "next" },
+      { kind: "funds", state: "todo" },
+    ])
+    expect(rows(links("submitted", "planned"))).toMatchObject([{ state: "confirming" }, {}])
+    expect(rows(links("claimed"))).toMatchObject([{ state: "sending" }, {}])
+  })
+
+  it("shows no rows with no link left to take back and no run, or before the tokens are read", () => {
+    expect(rows({})).toBeUndefined()
+    expect(rows(links("skipped", "skipped"))).toBeUndefined()
+    expect(rows(links("mined"))).toBeUndefined()
+    expect(rows(links("planned"), null)).toBeUndefined()
+    const planned = { move: { runs: [run([chunk("0xmain", "planned")])] } }
+    expect(rows(planned, null)).toBeUndefined()
+  })
+
+  it("decides each balance from its own chunks, Main first, two active at once", () => {
+    const move = (...chunks: Chunk[]) => rows({ move: { runs: [run(chunks)] } })
+    // The next send goes out while an earlier one is included.
+    expect(move(chunk("0xSAVE", "claimed"), chunk("0xmain", "included"))).toEqual([
+      { kind: "main", state: "confirming" },
+      { kind: "savings", state: "sending" },
+    ])
+    expect(move(chunk("0xmain", "included"), chunk("0xsave", "planned"))).toEqual([
+      { kind: "main", state: "confirming" },
+      { kind: "savings", state: "next" },
+    ])
+    expect(
+      move(chunk("0xmain", "mined"), chunk("0xmain", "mined"), chunk("0xsave", "planned")),
+    ).toEqual([
+      { kind: "main", state: "done" },
+      { kind: "savings", state: "next" },
+    ])
+    // Nothing is sent while a send is out, or while a reverted inclusion is read again.
+    expect(move(chunk("0xmain", "submitted"), chunk("0xsave", "planned"))).toEqual([
+      { kind: "main", state: "confirming" },
+      { kind: "savings", state: "todo" },
+    ])
+    expect(
+      move(chunk("0xmain", "included", { effect: "reverted" }), chunk("0xmain", "planned")),
+    ).toEqual([{ kind: "main", state: "confirming" }])
+    expect(move(chunk("0xmain", "mined"), chunk("0xmain", "planned"))).toEqual([
+      { kind: "main", state: "next" },
+    ])
+  })
+
+  it("names a token that is neither Main's nor Savings' as another balance, last", () => {
+    expect(
+      rows({ move: { runs: [run([chunk("0xelse", "planned"), chunk("0xmain", "mined")])] } }),
+    ).toEqual([
+      { kind: "main", state: "done" },
+      { kind: "other", state: "next" },
+    ])
+    const savings = { move: { runs: [run([chunk("0xsave", "mined")])] } }
+    expect(rows(savings, { main: "0xmain" })).toEqual([{ kind: "other", state: "done" }])
+  })
+
+  it("keeps the paylinks row done beside a run only when a link was taken back", () => {
+    const move = { runs: [run([chunk("0xmain", "planned")])] }
+    expect(rows({ ...links("mined", "skipped"), move })).toEqual([
+      { kind: "links", count: 1, state: "done" },
+      { kind: "main", state: "next" },
+    ])
+    expect(rows({ ...links("skipped"), move })).toEqual([{ kind: "main", state: "next" }])
+  })
+
+  it("builds the rows from the latest run, and for a paused move", () => {
+    const move = {
+      runs: [run([chunk("0xmain", "mined")]), run([chunk("0xsave", "submitted")])],
+    }
+    expect(rows({ move })).toEqual([{ kind: "savings", state: "confirming" }])
+    const paused = parked("move", { suspended: "moved", ...sent(5, { outcome: "swept" }), move })
+    expect(at(paused, {}, { tokens: TOKENS })).toMatchObject({
+      paused: true,
+      progress: { rows: [{ kind: "savings", state: "confirming" }] },
+    })
+  })
+
+  it("leaves the counts of refunds and chunks as they are beside the rows", () => {
+    const record = {
+      ...links("mined", "planned"),
+      move: { runs: [{ ...run([chunk("0xmain", "mined")]), m: 3 }] },
+    }
+    expect(at(movedRecord(record), {}, { tokens: TOKENS })).toMatchObject({
+      progress: { refunds: { landed: 1, total: 2 }, moved: { included: 1, total: 3 } },
+    })
+  })
+
+  it("counts the chunks sent that no block holds yet, apart from the chunks in", () => {
+    const progress = (...chunks: Chunk[]) => {
+      const screen = at(movedRecord({ move: { runs: [run(chunks)] } }))
+      return screen.id === "finish" ? screen.progress : undefined
+    }
+    expect(progress(chunk("0xmain", "submitted"), chunk("0xsave", "planned"))).toMatchObject({
+      moved: { included: 0, total: 2 },
+      out: 1,
+    })
+    expect(progress(chunk("0xmain", "included"), chunk("0xsave", "claimed"))).not.toHaveProperty(
+      "out",
+    )
   })
 })
 
@@ -412,6 +611,16 @@ describe("selectBackupScreen, a parked or ended rotation", () => {
       at(signedRecord({ phase: "recovered", recovery: { txHash: word(0xab) } })),
     ).toMatchObject({ id: "recovery", state: "recovered" })
     expect(at(parked("stranded", { suspended: "done" }))).toMatchObject({ extra: true })
+  })
+
+  it("shows no finished record the user left, unless it parked over its funding since", () => {
+    const left = signedRecord({ phase: "done", dismissed: true, ...sent(5, { outcome: "swept" }) })
+    expect(pendingRecord(KEYS, left)).toBeNull()
+    expect(at(left)).toMatchObject({ id: "keys" })
+    expect(at(parked("stranded", { suspended: "done", dismissed: true }))).toMatchObject({
+      id: "recovery",
+      extra: true,
+    })
   })
 })
 
@@ -511,6 +720,18 @@ describe("selectBackupScreen, the add", () => {
     }
   })
 
+  it("checks while the keys read again, and leaves a saved attempt as it is", () => {
+    expect(select({ entry: entry() })).toMatchObject({ id: "keys", add: { kind: "ready" } })
+    expect(select({ keysRefreshing: true, entry: entry() })).toMatchObject({
+      id: "keys",
+      add: { kind: "checking" },
+    })
+    const published = signedRecord({ phase: "published" })
+    expect(at(published, {}, { keysRefreshing: true, entry: entry() })).toEqual(
+      at(published, {}, { entry: entry() }),
+    )
+  })
+
   it("lists every condition, and routes the first passkey and the network to theirs", () => {
     const facts = { ...FACTS, balance: DAI, withdrawalInFlight: true }
     const low = select({ entry: entry({ facts }), start: "intro" })
@@ -562,6 +783,16 @@ describe("selectBackupScreen, the add", () => {
     })
   })
 
+  it("carries the passkey's one-device verdict to the key list, registered or not", () => {
+    expect(select({ oneDevice: true })).toMatchObject({ id: "keys", oneDevice: true })
+    expect(select({ entry: entry() })).toMatchObject({ id: "keys", oneDevice: false })
+    expect(select({ keys: "unverified", entry: entry(), oneDevice: true })).toMatchObject({
+      id: "keys",
+      keys: [],
+      oneDevice: true,
+    })
+  })
+
   it("walks the start screens, a phone going from A2 straight to the add", () => {
     expect(select({ entry: entry(), start: "intro" })).toEqual({
       id: "intro",
@@ -577,12 +808,25 @@ describe("selectBackupScreen, the add", () => {
     })
   })
 
-  it("quotes the add's cost and time on A2", () => {
-    const quote = { total: DAI, fixed: DAI / 2n, network: DAI / 2n, takesMs: 45 * 60_000 }
-    expect(select({ entry: entry({ facts: { ...FACTS, quote } }), start: "intro" })).toMatchObject({
-      id: "intro",
-      quote,
-    })
+  it("quotes the add's cost on A2, and its time at the speed the pay step opens on", () => {
+    const quote = { total: DAI, fixed: DAI / 2n, network: DAI / 2n }
+    const intro = (over: Partial<BackupScreenInput> = {}) =>
+      select({ entry: entry({ facts: { ...FACTS, quote } }), start: "intro", ...over })
+    expect(intro()).toMatchObject({ id: "intro", quote })
+    expect(intro()).not.toHaveProperty("eta")
+    expect(intro({ release: RELEASE })).toMatchObject({ eta: 120 + 600 + TAIL })
+    // Faster where the offer's tip is worth it, which is what the pay step opens on.
+    const offer: FasterWithdrawal = {
+      proverTip: 1n,
+      standardEtaSeconds: 600,
+      tippedEtaSeconds: 180,
+      worstSpeedupSeconds: 420,
+      measured: true,
+    }
+    expect(intro({ release: RELEASE, offer })).toMatchObject({ eta: 120 + 180 + TAIL })
+    expect(intro({ release: RELEASE, offer: { ...offer, worstSpeedupSeconds: 30 } })).toMatchObject(
+      { eta: 120 + 600 + TAIL },
+    )
   })
 
   it("raises the add's failure over the screen it started from, with nothing charged", () => {

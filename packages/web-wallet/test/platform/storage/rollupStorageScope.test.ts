@@ -25,6 +25,8 @@ const NAVIGATION_ALLOWED = new Set([
   "platform/storage/walletStorage.ts",
   // Runs before boot with no wallet store, and must load even when the store's modules cannot.
   "ui/ResetScreen.tsx",
+  // Reloads when the boot chunk, which loads the wallet store, fails to download.
+  "platform/moduleDownload.ts",
 ])
 
 function* sourceFiles(dir: string): Generator<string> {

@@ -34,7 +34,7 @@ export function MethodOption({
     return (
       <button
         type="button"
-        className={`zkm-btn-reset zkm-pressable ${styles.banner}`}
+        className={`zkm-btn-reset zkm-pressable zkm-on-brand ${styles.banner}`}
         data-testid={testId}
         onClick={onOpen}
       >

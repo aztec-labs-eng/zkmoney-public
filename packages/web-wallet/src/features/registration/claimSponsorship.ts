@@ -28,6 +28,7 @@ import {
 } from "@obsidion/front-core"
 import {
   type ContractService,
+  claimFpcCatalogAddresses,
   claimFpcPolicySponsorsAnyCall,
   hasClaimFpcSubscription,
   KIND_BY_ADDRESS,
@@ -48,7 +49,11 @@ import type { ContractArtifact } from "@aztec-labs/stdlib/abi"
 import type { WebWalletConfig } from "../../config/env"
 import { l1PublicClient, requireTupleField } from "../../config/oxideTuple"
 import type { PageFacts } from "../../session/pageChain"
-import { collectOnboardingKeys, type OnboardingKeys } from "../../session/account"
+import {
+  collectOnboardingKeys,
+  sessionOwnsAccount,
+  type OnboardingKeys,
+} from "../../session/account"
 import { buildClaimSubscribeWitness } from "./registrationDeps"
 import {
   registrationGateWitness,
@@ -433,31 +438,36 @@ function registrationTargets(
   ]
 }
 
+interface RegistrationSponsorContext {
+  sponsor: ClaimSponsorContext
+  rail: ClaimFpcRailPolicy
+  railName: string
+  config: WebWalletConfig
+  tuple?: OxideEnvTuple
+  accounts: SponsorAccounts
+}
+
 /**
- * The ClaimFPC a registered account's batch rides, with its subscribe leg when it needs one. Only
- * an instance whose generation binds this account is asked, and only while its rail pays for the
+ * The ClaimFPC a registered account's batch rides, with its subscribe leg when it needs one. A
+ * subscription the account already holds rides as it is; a portal message mints one, and only on
+ * an instance whose generation binds this account. Either way the instance's rail must pay for the
  * deployment's token: a subscription note proves the rail admits the account, not that its policy
- * covers the calls. A subscription the account already holds rides as it is; a portal message
- * addressed to that instance mints one. Nothing falls back to an instance this account cannot
- * satisfy, and nothing rides an instance whose rail cannot pay.
+ * covers the calls. An account the session does not own (a rotated wallet's previous account)
+ * cannot mint, so its one answer is a note it holds on an instance the profile publishes, the
+ * current one first; a batch pinned to one deployment's instance asks that instance alone. Nothing
+ * falls back to an instance this account cannot satisfy, and nothing rides an instance whose rail
+ * cannot pay.
  */
 async function registrationSponsor(
   deps: ClaimSponsorDeps,
-  ctx: {
-    sponsor: ClaimSponsorContext
-    rail: ClaimFpcRailPolicy
-    railName: string
-    config: WebWalletConfig
-    tuple?: OxideEnvTuple
-    accounts: SponsorAccounts
-  },
+  ctx: RegistrationSponsorContext,
 ): Promise<ClaimSponsorContext> {
   const token = AztecAddress.fromStringUnsafe(
     ctx.tuple?.l2Token ?? (await deps.session.page.chain.oxideTuple.read()).l2Token,
   )
   const { acting } = ctx.accounts
   // A note already held on the instance the caller asked for rides as it is: the FPC checks the
-  // note and the policy, not the registration gate. Reaching any other instance needs the key, the
+  // note and the policy, not the registration gate. Minting on any instance needs the key, the
   // identity and a generation.
   if (railCovers(ctx.rail, token)) {
     const holder = await subscribedPayer(
@@ -465,6 +475,10 @@ async function registrationSponsor(
       ctx.accounts,
     )
     if (holder) return withPayer(ctx.sponsor, holder, acting)
+  }
+  if (!ctx.tuple && !(await sessionOwnsAccount(deps.session, acting))) {
+    const held = await heldOnRetired(deps, ctx, token)
+    if (held) return held
   }
 
   const keys = await collectOnboardingKeys(deps.session, acting)
@@ -509,6 +523,34 @@ async function registrationSponsor(
     waiting ??= found
   }
   throw new RegistrationPendingError(waiting ?? { pending: "message" })
+}
+
+/**
+ * The first instance the profile has retired on which the batch's payer or acting account holds
+ * the rail's note, as the batch rides it; undefined when none does. Its note may sit there because
+ * the account subscribed before the profile named the current instance.
+ */
+async function heldOnRetired(
+  deps: ClaimSponsorDeps,
+  ctx: RegistrationSponsorContext,
+  token: AztecAddress,
+): Promise<ClaimSponsorContext | undefined> {
+  const record = await deps.contractService.getContractRecord(DEFAULT_CONTRACTS.claimFpc)
+  const current = ctx.sponsor.fpcAddress.toString()
+  const retired = claimFpcCatalogAddresses(record.address, record.meta).filter(
+    (address) => !sameFpc(address, current),
+  )
+  for (const address of retired) {
+    const sponsor = await sponsorAt(deps, ctx.railName, AztecAddress.fromStringUnsafe(address))
+    if (!railCovers(sponsor.rail, token)) continue
+    const accounts = await accountsFor(deps, sponsor.sponsor)
+    const holder = await subscribedPayer(
+      legFor(deps, ctx.config, sponsor.sponsor, sponsor.rail),
+      accounts,
+    )
+    if (holder) return withPayer(sponsor.sponsor, holder, ctx.accounts.acting)
+  }
+  return undefined
 }
 
 /** The rail policy one published instance declares, and that instance registered in this PXE. */

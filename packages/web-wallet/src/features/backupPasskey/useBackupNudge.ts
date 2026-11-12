@@ -3,6 +3,7 @@ import { memoryStore, useStore, type BalanceView, type RotationDrive } from "@ob
 import { backupRecordFor } from "../../platform/auth/WebPasskeyIdentityMap"
 import type { DeviceState } from "../../platform/storage/deviceKeys"
 import { useSession } from "../../session/session"
+import { selectMoveUnfinished } from "./accountHistory"
 import { savingsMoving, withdrawalInFlight } from "./backupPasskeyFacts"
 import {
   backupNudge,
@@ -21,8 +22,8 @@ const SHOWN = memoryStore(false).readonly
 export const approvalWaiting = (drives: ReadonlyMap<string, RotationDrive>) =>
   [...drives.values()].some((drive) => awaitsApproval(drive) && !drive.approving)
 
-// At module scope, so the store's cache parses the passkey map once per change.
-const sessionRecord = ({ credentialId, passkeyMap }: DeviceState) =>
+/** The session passkey's record. At module scope, so the store's cache parses the map once per change. */
+export const sessionRecord = ({ credentialId, passkeyMap }: DeviceState) =>
   credentialId ? backupRecordFor(passkeyMap, credentialId) : undefined
 
 function useNudgeFacts(): BackupNudgeFacts {
@@ -38,7 +39,7 @@ function useNudgeFacts(): BackupNudgeFacts {
   }
 }
 
-/** The Settings card and badges for the session's account. */
+/** The session account's one-passkey classification, which Settings and the badges read. */
 export const useBackupNudge = (): BackupNudge | undefined => backupNudge(useNudgeFacts())
 
 const mainBalance = ({ known, main }: BalanceView) => (known ? main?.atomic ?? 0n : undefined)
@@ -61,6 +62,7 @@ export function useHomeNudge(): { nudge: HomeNudge | undefined; dismiss: () => v
     putOffAt: useStore(nudges?.putOffAt ?? NOT_PUT_OFF),
     hiddenForSession: useStore(nudges?.hiddenForSession ?? SHOWN),
     awaitsApproval: approvalWaiting(useRotationDrives()),
+    moveUnfinished: useStore(session.accountHistory, selectMoveUnfinished),
   })
   const dismiss = () => {
     if (nudge?.kind === "oneDevice") nudges?.hideForSession()

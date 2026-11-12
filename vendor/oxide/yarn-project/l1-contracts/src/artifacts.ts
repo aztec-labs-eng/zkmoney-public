@@ -20,6 +20,10 @@ export { TestERC20Bytecode } from '@aztec-foundation/l1-artifacts/TestERC20Bytec
 export { NitroValidatorAbi, NitroValidatorBytecode } from './abis/NitroValidator.js';
 export { TeeRegistryAbi, TeeRegistryBytecode } from './abis/TeeRegistry.js';
 export { PlainWithdrawalExecutorAbi, PlainWithdrawalExecutorBytecode } from './abis/PlainWithdrawalExecutor.js';
+export {
+  StablecoinWithdrawalExecutorAbi,
+  StablecoinWithdrawalExecutorBytecode,
+} from './abis/StablecoinWithdrawalExecutor.js';
 export { FirstProverProofSubmitterAbi, FirstProverProofSubmitterBytecode } from './abis/FirstProverProofSubmitter.js';
 export { DepositSubsidyAbi, DepositSubsidyBytecode } from './abis/DepositSubsidy.js';
 export { IFPCFunderAbi } from './abis/IFPCFunder.js';
@@ -37,6 +41,8 @@ export { PortalDepositAdapterAbi, PortalDepositAdapterBytecode } from './abis/Po
 export { AcrossAdapterAbi, AcrossAdapterBytecode } from './abis/AcrossAdapter.js';
 export { CctpAdapterAbi, CctpAdapterBytecode } from './abis/CctpAdapter.js';
 export { LifiIntentAdapterAbi, LifiIntentAdapterBytecode } from './abis/LifiIntentAdapter.js';
+export { UserOpAdapterAbi, UserOpAdapterBytecode } from './abis/UserOpAdapter.js';
+export { CheckAdapterAbi, CheckAdapterBytecode } from './abis/CheckAdapter.js';
 export { MigrationSubsidyAbi, MigrationSubsidyBytecode } from './abis/MigrationSubsidy.js';
 export { ProverSubsidyAbi, ProverSubsidyBytecode } from './abis/ProverSubsidy.js';
 export { OxidePortalAbi, OxidePortalBytecode } from './abis/OxidePortal.js';

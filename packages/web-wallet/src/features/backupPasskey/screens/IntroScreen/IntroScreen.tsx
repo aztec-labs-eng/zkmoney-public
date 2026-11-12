@@ -7,10 +7,10 @@ import copy from "./IntroScreen.copy"
 
 /** A2: what the add costs and takes, before the first passkey prompt. */
 export function IntroScreen({ screen, actions }: BackupScreenProps<"intro">) {
-  const { quote, picker, links, busy } = screen
-  const minutes = quote && Math.ceil(quote.takesMs / 60_000)
-  const facts: Fact[] =
-    quote && minutes !== undefined
+  const { quote, eta, picker, links, busy } = screen
+  const minutes = eta === undefined ? undefined : Math.ceil(eta / 60)
+  const facts: Fact[] = [
+    ...(quote
       ? [
           {
             label: copy.cost,
@@ -25,9 +25,12 @@ export function IntroScreen({ screen, actions }: BackupScreenProps<"intro">) {
               note: copy.costHint.note,
             },
           },
-          { label: copy.time, value: fmt(copy.timeValue, { minutes }) },
         ]
-      : []
+      : []),
+    ...(minutes === undefined
+      ? []
+      : [{ label: copy.time, value: fmt(copy.timeValue, { minutes }) }]),
+  ]
   return (
     <SheetShell
       hero="key"

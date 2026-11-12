@@ -4,18 +4,22 @@ Builders for the `MultiStepExecutor` payload. A route splits the withdrawn token
 
 ## Model
 
-The executor pays each lane first, then runs every step in order. A **fixed** lane gets an amount. The **remainder** lane gets the rest.
+A **step** is one adapter call: the adapter spends its whole balance and pays the next adapter, or the recipient. A step that pays nothing on L1 puts out `NO_TOKEN`.
 
-A **step** is one adapter call: the adapter spends its whole balance and pays the next adapter, or the recipient. A **terminal** step (portal deposit, Across, CCTP, LI.FI) names its own destination and closes the lane.
+A **lane** is a chain of steps. It only accepts a step that takes the token it holds. Literal addresses are checked by the compiler, plain `Address` values by the route at runtime, and the two mix.
 
-A lane only accepts a step that takes the token it holds. Literal addresses are checked by the compiler, plain `Address` values by the route at runtime, and the two mix.
+The executor pays each lane first, then runs every step in order. A route has three kinds of lanes.
+
+- A **fixed** lane gets an amount.
+- A **call** lane starts with no token (`NO_TOKEN`), so the executor pays it nothing. A step in it can make a token, and the lane then pays it on. It runs where it is declared.
+- The **remainder** lane gets the rest and runs last. A route whose tips and any fixed lanes spend everything closes with `noRemainder()` instead, and the executor reverts if something remains.
 
 ## Use
 
 Bind the adapters of a deployment once. An adapter that fixes a token or a settler at deploy time takes it beside its address.
 
 ```ts
-const { makerPsm, uniswapV3, weth, skyConverter, erc4626, portalDeposit } = adapters({
+const { makerPsm, uniswapV3, weth, skyConverter, erc4626, portalDeposit, check } = adapters({
   chainId: 1n,
   configs: {
     makerPsm: { address: '0x…' },
@@ -24,6 +28,7 @@ const { makerPsm, uniswapV3, weth, skyConverter, erc4626, portalDeposit } = adap
     skyConverter: { address: '0x…', dai: DAI, usds: USDS },
     erc4626: { address: '0x…' },
     portalDeposit: { address: '0x…' },
+    check: { address: '0x…' },
   },
 });
 ```
@@ -41,6 +46,8 @@ const compiledRoute = withdrawalRoute({ token: DAI })
       .step(erc4626.deposit({ vault: SUSDS, minOut: 9_000000000000000000n }))
       .end(portalDeposit.deposit({ portal: SUSDS_PORTAL, recipientCommitment })),
   )
+  // Revert unless a view call returns the expected result, with no token.
+  .call(lane => lane.end(check.holds(read, expected)))
   // The rest: DAI → USDC → WETH → ETH.
   .remainder(lane =>
     lane
@@ -56,7 +63,7 @@ const compiledRoute = withdrawalRoute({ token: DAI })
   );
 ```
 
-A lane ends at an address with `to`, or at a terminal step with `end`. A swap step takes a `minOut`. `UNBOUNDED` is zero, written out so the choice shows.
+A lane ends at an address with `to`, or with `end` at a step that puts out `NO_TOKEN`. A swap step takes a `minOut`. `UNBOUNDED` is zero, written out so the choice shows.
 
 ## Recovery
 

@@ -10,7 +10,7 @@ export default {
     note: "You'll see the exact amount before you pay.",
   },
   time: "Time",
-  timeValue: "Up to {minutes} min",
+  timeValue: "About {minutes} min",
   next: "What happens next?",
   steps: {
     save: "Save the backup",
@@ -20,7 +20,7 @@ export default {
     approveDetail: "The passkey you signed in with",
     wait: "Wait for the network",
     waitDetail: "Feel free to close this tab.",
-    waitFor: "Up to {minutes} min. Feel free to close this tab.",
+    waitFor: "About {minutes} min. Feel free to close this tab.",
     finish: "Approve to finish",
     finishDetail: "We'll remind you on Home",
   },

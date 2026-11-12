@@ -176,10 +176,11 @@ export function ClaimToL1Modal({
   const routes = routesRead.status === "answered" ? routesRead.value : NO_ROUTES
   const [choosingChain, setChoosingChain] = useState(false)
   const valid = isAddress(recipient)
+  // A bridge's recipient is screened on the chain it lands on.
   const { screener, verdict, cleared, rescreen } = useScreenedAddress(
     valid ? getAddress(recipient) : null,
     "withdraw",
-    { debounceMs: 300 },
+    { chainId: route.kind === "bridge" ? route.chainId : undefined, debounceMs: 300 },
   )
 
   // eslint-disable-next-line local/effect-hook -- debt

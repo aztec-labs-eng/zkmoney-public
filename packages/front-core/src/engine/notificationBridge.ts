@@ -321,7 +321,8 @@ export function bridgeEntries(sources: BridgeSources, now: number): BridgeEntry[
     runs.some((run) => !run.settled) ||
     items.some((i) => i.kind === "upgrade.batch" && i.batch.state === "planned" && i.batch.approved)
   for (const run of runs) {
-    const live = `migration-run:${run.run}`
+    // A run key is a storage path, and a saved notification id holds no "/".
+    const live = `migration-run:${encodeURIComponent(run.run)}`
     const target = { type: "upgrade.run", run: run.run } as const
     const pricing = sources.upgradePricing
     const value = pricing && upgradeRunValue(run, pricing)

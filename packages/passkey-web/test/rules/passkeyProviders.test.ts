@@ -24,7 +24,6 @@ import {
   providerNameFor,
   providerSlugFor,
   refusalKindFor,
-  semiDeviceBound,
 } from "../../src/rules/passkeyProviders.js"
 import type { OsFamily } from "../../src/browser/userAgentInfo.js"
 
@@ -123,16 +122,6 @@ describe("protonPassAdmitted", () => {
     expect(
       protonPassAdmitted({ posture: "phone", osFamily: "android", withdrawn: ["windows_hello"] }),
     ).toBe(true)
-  })
-})
-
-describe("semiDeviceBound", () => {
-  it("is true for Proton Pass's id alone", () => {
-    expect(semiDeviceBound(PROTON_PASS_AAGUID)).toBe(true)
-    expect(semiDeviceBound(PROTON_PASS_AAGUID.toUpperCase())).toBe(true)
-    for (const id of [GPM_AAGUID, WINDOWS_HELLO, ONEPASSWORD_AAGUID, ZERO_AAGUID, undefined]) {
-      expect(semiDeviceBound(id)).toBe(false)
-    }
   })
 })
 

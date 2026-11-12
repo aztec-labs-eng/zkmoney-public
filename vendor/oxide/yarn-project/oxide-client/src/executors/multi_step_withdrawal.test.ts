@@ -5,6 +5,7 @@ import { decodeMultiStepPayload } from '@oxide/l1-contracts/multi_step/index.js'
 import { deriveRecoveryCommitment } from '@oxide/oxide-lib/sipa_recovery.js';
 
 import { describe, expect, it } from '@jest/globals';
+import { zeroAddress } from 'viem';
 
 import {
   type MultiStepWithdrawalArgs,
@@ -60,6 +61,27 @@ describe('buildMultiStepWithdrawal', () => {
     const feePoolCut = { amount: 15n, beneficiary: EthAddress.random() };
 
     expect(() => buildMultiStepWithdrawal({ ...args, feePoolCut, relayerTip: 950n })).toThrow(/\(995\) must be below/);
+  });
+
+  it('accepts a route with no remainder lane whose relayer tip and fixed lanes spend all that the prover tip leaves', async () => {
+    const args = await multiStepArgs();
+    const compiledRoute = { ...args.compiledRoute, remainderRecipient: undefined };
+
+    const { operation } = buildMultiStepWithdrawal({ ...args, compiledRoute, relayerTip: 965n });
+
+    expect(decodeMultiStepPayload(operation.userPayload).remainderRecipient).toBe(zeroAddress);
+  });
+
+  it('rejects a route with no remainder lane that leaves something or spends too much', async () => {
+    const args = await multiStepArgs();
+    const compiledRoute = { ...args.compiledRoute, remainderRecipient: undefined };
+
+    expect(() => buildMultiStepWithdrawal({ ...args, compiledRoute, relayerTip: 964n })).toThrow(
+      /\(994\) must equal amount - proverTip \(995\)/,
+    );
+    expect(() => buildMultiStepWithdrawal({ ...args, compiledRoute, relayerTip: 966n })).toThrow(
+      /\(996\) must equal amount - proverTip \(995\)/,
+    );
   });
 
   it('rejects a fee pool cut without a beneficiary', async () => {

@@ -7,6 +7,7 @@ export { deployFirstProverProofSubmitter } from './deploy_first_prover_proof_sub
 export { deployDepositSubsidy } from './deploy_deposit_subsidy.js';
 export { deployProverSubsidy } from './deploy_prover_subsidy.js';
 export { deployPlainWithdrawalExecutor } from './deploy_plain_withdrawal_executor.js';
+export { deployStablecoinWithdrawalExecutor } from './deploy_stablecoin_withdrawal_executor.js';
 export { type DeployMigrationExecutorArgs, deployMigrationExecutor } from './deploy_migration_executor.js';
 export {
   type PortalRefundVerifiers,

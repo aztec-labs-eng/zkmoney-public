@@ -310,7 +310,7 @@ export function SwapExitModal({
             )}
             <PrimaryGradientButton
               title={target ? `Recover ${held} to ${shortL1Addr(target)}` : `Recover ${held}`}
-              buttonStyle={canExecute ? "dark" : undefined}
+              buttonStyle={canExecute ? "secondary" : undefined}
               isDisabled={!readyToRecover}
               onClick={() => void submit("recover")}
             />

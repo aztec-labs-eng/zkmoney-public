@@ -125,6 +125,10 @@ export function TagSearchBar({
         autoFocus={autoFocus}
         placeholder={placeholder}
         inputMode="search"
+        autoComplete="off"
+        autoCorrect="off"
+        autoCapitalize="none"
+        spellCheck={false}
         value={query}
         onChange={(e) => {
           setQuery(e.target.value)

@@ -39,6 +39,7 @@ import styles from "./AppShell.module.css"
 import copy from "./AppShell.copy"
 import { fmt } from "../../lib/fmt"
 import { useDomEffect } from "../useDomEffect"
+import { activePath } from "./activePath"
 
 /**
  * Root frame: dark canvas at full viewport width. Layout comes from the nested layouts below.
@@ -104,30 +105,6 @@ const NAV_ACTIONS: Record<string, WalletAction> = {
   "/send": "send",
   [REQUESTS_PATH]: "requests",
   "/withdraw": "withdraw",
-}
-
-function activePath(pathname: string): string {
-  // Receive and Contacts have no nav item: Requests is the way in.
-  if (
-    pathname.startsWith("/receive") ||
-    pathname.startsWith("/contacts") ||
-    pathname.startsWith("/connect") ||
-    pathname.startsWith(REQUESTS_PATH)
-  ) {
-    return REQUESTS_PATH
-  }
-  for (const p of [
-    "/savings",
-    "/activity",
-    "/settings",
-    "/deposit",
-    "/withdraw",
-    "/send",
-    "/links",
-  ]) {
-    if (pathname.startsWith(p)) return p
-  }
-  return "/"
 }
 
 type ShellAction = (event?: { currentTarget: HTMLElement }) => void

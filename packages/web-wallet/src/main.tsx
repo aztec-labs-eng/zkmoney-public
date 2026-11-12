@@ -5,12 +5,13 @@ import { prefetchProfile } from "./config/profilePrefetch"
 import { captureInboundInvite } from "./features/invite/inboundInvite"
 import { captureLandingSource } from "./lib/trafficSource"
 import { DESKTOP_SETTINGS_PATH } from "./platform/desktopBridge"
+import { importOrReload } from "./platform/moduleDownload"
 import { RESET_PATH, ResetScreen } from "./ui/ResetScreen"
 import { UnsupportedBrowser } from "./ui/UnsupportedBrowser"
 import { FREEZES, isFrozen, reloadAtFreeze, showFreezePage } from "./upgradeFreeze"
 
 // A separate chunk, so `/reset` still loads when the wallet's own modules fail.
-const WalletBoot = React.lazy(() => import("./walletBoot"))
+const WalletBoot = React.lazy(() => importOrReload(() => import("./walletBoot")))
 // The launcher's settings page, in its own chunk too. Spelled inline so every other build folds the
 // check to false and drops the chunk.
 const DesktopSettings =

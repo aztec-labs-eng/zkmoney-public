@@ -1,5 +1,6 @@
 import { acrossSteps } from './steps/across.js';
 import { type CctpConfig, cctpSteps } from './steps/cctp.js';
+import { checkSteps } from './steps/check.js';
 import { curveSteps } from './steps/curve.js';
 import { erc4626Steps } from './steps/erc4626.js';
 import { lifiSteps } from './steps/lifi.js';
@@ -8,6 +9,7 @@ import { portalDepositSteps } from './steps/portal_deposit.js';
 import { type SkyConverterConfig, skyConverterSteps } from './steps/sky_converter.js';
 import type { AdapterConfig, Chain } from './steps/step.js';
 import { uniswapV3Steps } from './steps/uniswap_v3.js';
+import { userOpSteps } from './steps/user_op.js';
 import { type WethConfig, wethSteps } from './steps/weth.js';
 
 /** An address, plus what the adapter fixes at deploy time. */
@@ -19,6 +21,8 @@ export type AdapterConfigs = {
   portalDeposit: AdapterConfig;
   across: AdapterConfig;
   lifi: AdapterConfig;
+  userOp: AdapterConfig;
+  check: AdapterConfig;
   weth: WethConfig;
   skyConverter: SkyConverterConfig;
   cctp: CctpConfig;
@@ -71,4 +75,6 @@ const STEPS = {
   across: acrossSteps,
   cctp: cctpSteps,
   lifi: lifiSteps,
+  userOp: userOpSteps,
+  check: checkSteps,
 };

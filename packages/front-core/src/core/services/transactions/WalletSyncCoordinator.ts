@@ -115,24 +115,6 @@ export class WalletSyncCoordinator {
     )
   }
 
-  /**
-   * The balance alone, read after every pass already in flight has published, so a deposit imported
-   * before the call is in it. True only once that read is stored durably: failed reads fall back to
-   * a full pass, which refreshes the view but confirms nothing, and with no running task nothing is
-   * read.
-   */
-  static async confirmBalance(): Promise<boolean> {
-    const live = WalletSyncCoordinator.runningSession()
-    if (!live) return false
-    await live.coordinator.drained()
-    try {
-      return await live.coordinator.readBalanceCoalesced()
-    } catch {
-      await live.link.wake()
-      return false
-    }
-  }
-
   private static takePending(): { settle: () => void } | null {
     const pending = WalletSyncCoordinator.pending
     WalletSyncCoordinator.pending = null
@@ -141,7 +123,6 @@ export class WalletSyncCoordinator {
 
   private readonly opts: WalletSyncCoordinatorOptions
   private readonly scanner: TransferEventScanner
-  private inFlight: Promise<boolean> | null = null
   private balanceRead: Promise<boolean> | null = null
   private balanceReadQueued: Promise<boolean> | null = null
 
@@ -158,19 +139,15 @@ export class WalletSyncCoordinator {
   }
 
   /**
-   * One scan pass. A `refresh()` that found no running task settles once it ends. An aborted pass
-   * lets go of `drained()` and that refresh at once.
+   * One scan pass. A `refresh()` that found no running task settles once it ends, or at once when
+   * the pass aborts.
    */
   async pass(context: TransferScanContext, opts: TransferScanPass = {}): Promise<boolean> {
     const waiting = WalletSyncCoordinator.takePending()
-    const pass = (this.inFlight = this.scanner.pass(context, opts))
-    const release = () => {
-      if (this.inFlight === pass) this.inFlight = null
-      waiting?.settle()
-    }
+    const release = () => waiting?.settle()
     opts.signal?.addEventListener("abort", release)
     try {
-      return await pass
+      return await this.scanner.pass(context, opts)
     } finally {
       opts.signal?.removeEventListener("abort", release)
       release()
@@ -217,11 +194,6 @@ export class WalletSyncCoordinator {
       clearTimeout(debounce)
       if (WalletSyncCoordinator.session === session) WalletSyncCoordinator.session = null
     }
-  }
-
-  /** Settles once no pass is in flight: every pass begun before the call has published. */
-  async drained(): Promise<void> {
-    while (this.inFlight) await this.inFlight.then(noop, noop)
   }
 
   /**

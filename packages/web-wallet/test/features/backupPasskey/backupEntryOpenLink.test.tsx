@@ -1,11 +1,20 @@
-/** Guards: the backup entry waits for its reads, fails closed, and counts Savings and refunds. */
+/**
+ * Guards: the backup entry waits for its reads, fails closed, counts Savings and refunds, and reads
+ * the chain again as Main Account's balance changes.
+ */
 import { act } from "react"
 import { testPage, testCore } from "../../support/page"
 import { assignReads } from "../../support/fakeReads"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { setIdentity } from "../../support/identity"
-import { fixed, memoryStore, recordOf, type PaylinkTransaction } from "@obsidion/front-core"
+import {
+  fixed,
+  memoryStore,
+  recordOf,
+  type BalanceView,
+  type PaylinkTransaction,
+} from "@obsidion/front-core"
 
 declare global {
   var IS_REACT_ACT_ENVIRONMENT: boolean
@@ -35,6 +44,8 @@ vi.mock("../../../src/config/oxideTuple", () => ({
 }))
 /** What the add moves, as each test sets it: Main Account's token, and Savings' shares. */
 let moving = [{ token: "0xmain", cap: 5n * DAI }]
+/** What each balance the add moves holds on chain. */
+let held = 3n * DAI
 vi.mock("../../../src/features/backupPasskey/backupMoveTokens", async (importOriginal) => ({
   ...(await importOriginal<
     typeof import("../../../src/features/backupPasskey/backupMoveTokens")
@@ -43,7 +54,7 @@ vi.mock("../../../src/features/backupPasskey/backupMoveTokens", async (importOri
     moving.map(({ token, cap }) => ({
       token,
       cap,
-      shape: { notes: [3n * DAI], depositTotal: 0n, balance: 3n * DAI },
+      shape: { notes: [held], depositTotal: 0n, balance: held },
     })),
 }))
 vi.mock("@obsidion/sdk", async (importOriginal) => ({
@@ -97,6 +108,18 @@ let root: Root
 const rescanned = memoryStore<boolean | undefined>(undefined)
 const wake = vi.fn()
 const markPaylinksRescanned = (complete: boolean) => rescanned.set(complete)
+/** Main Account's balance as the session shows it. */
+const MAIN: BalanceView = {
+  main: { atomic: 3n * DAI },
+  readThisSession: true,
+  known: true,
+  syncing: false,
+  progress: null,
+  readAt: undefined,
+  token: null,
+  anchor: undefined,
+}
+const mainBalance = memoryStore(MAIN)
 
 beforeEach(async () => {
   globalThis.IS_REACT_ACT_ENVIRONMENT = true
@@ -126,6 +149,13 @@ beforeEach(async () => {
       recheck: wake,
     },
   })
+  Object.defineProperty(open, "balances", {
+    configurable: true,
+    value: {
+      view: mainBalance.readonly,
+      records: memoryStore({ hydrated: true, entries: [] }).readonly,
+    },
+  })
   facts = undefined
   container = document.createElement("div")
   document.body.appendChild(container)
@@ -138,6 +168,8 @@ afterEach(async () => {
   container.remove()
   closeSession()
   moving = [{ token: "0xmain", cap: 5n * DAI }]
+  held = 3n * DAI
+  mainBalance.set(MAIN)
 })
 
 const settle = () => act(async () => new Promise((r) => setTimeout(r, 0)))
@@ -187,6 +219,19 @@ describe("the backup entry's chain read", () => {
     await sync()
     await settle()
     expect(links()).toBe(0)
+  })
+
+  it("reads again when Main Account's balance changes, so a deposit that lands counts", async () => {
+    await sync()
+    await act(async () => markPaylinksRescanned(true))
+    await settle()
+    const balance = () => (typeof facts === "object" ? facts.balance : facts)
+    expect(balance()).toBe(3n * DAI)
+
+    held = 100n * DAI
+    await act(async () => mainBalance.set({ ...MAIN, main: { atomic: held } }))
+    await settle()
+    expect(balance()).toBe(100n * DAI)
   })
 
   it("counts the sends that move Savings' shares beside Main Account's", async () => {

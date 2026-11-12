@@ -322,7 +322,7 @@ export function TxDetailModal({
               {canShare && phone && (
                 <PrimaryGradientButton
                   title={copy.share}
-                  buttonStyle="dark"
+                  buttonStyle="secondary"
                   leadingIcon="share"
                   onClick={() => {
                     // A dismissed share sheet rejects too.

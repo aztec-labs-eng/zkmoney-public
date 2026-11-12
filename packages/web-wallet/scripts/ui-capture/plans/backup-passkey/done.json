@@ -25,6 +25,34 @@
       "action": "screenshot",
       "file": "a7-done.png",
       "state": "A7: backup passkey added"
+    },
+    {
+      "action": "goto",
+      "path": "/settings?flowFixture=success&backupFixture=done-relanding"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-settings__user"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Passkeys",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": "html[data-backup-screen=done]"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-passkeys__head",
+      "state": "detached"
+    },
+    {
+      "action": "screenshot",
+      "file": "done-relanding.png",
+      "state": "A7: added, while a reorg dropped the sweep"
     }
   ],
   "finalScreenshot": false

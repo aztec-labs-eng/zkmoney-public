@@ -242,6 +242,7 @@ async function sendFromBridge(ask: Ask) {
     inputAmount: ask.landed / 10n ** 12n,
   }
   await flow.send({
+    cleared: true,
     key: "review",
     reviewed: await quoted(request),
     request,

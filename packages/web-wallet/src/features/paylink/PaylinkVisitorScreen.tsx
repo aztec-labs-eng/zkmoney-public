@@ -4,6 +4,10 @@ import { REGISTRATION_SCHEDULE_DEFAULTS, tokenDecimalsForNetwork } from "@obsidi
 import {
   canSelfFinalizeWithdrawal,
   withdrawalAmounts,
+  withdrawalReleaseEta,
+  type QueryState,
+  type SavingsMoveTiming,
+  serviceStatus,
   type WithdrawalRecord,
   memoryStore,
   useStore,
@@ -56,6 +60,7 @@ import { useSession } from "../../session/session"
 import { useOpened } from "../../ui/useScreenFlow"
 
 const NO_CLOCK = memoryStore(0).readonly
+const NO_TIMING = memoryStore<QueryState<SavingsMoveTiming>>({ status: "pending" }).readonly
 
 /** A typed name's own schedule, base units: what a link with no ticket pays for it. */
 const NAME_SCHEDULE = {
@@ -118,6 +123,9 @@ export function PaylinkVisitorScreen({
   const burned = !!withdrawal?.l2TxHash
   const { wallClock } = useSession().page
   const now = useStore(burned ? wallClock : NO_CLOCK, (t) => (burned ? t : openedAt))
+  // The release estimate the Savings moves share, read once the burn is sent and the wallet is up.
+  const walletUp = useStore(session.wallet, serviceStatus) === "ready"
+  const timing = useStore(burned && walletUp ? session.page.savingsMoveTiming() : NO_TIMING)
   // The network's ticket offer decides what "Receive to zk.money" means: the link paying for the
   // account (the three-step signup), or an ordinary signup with the link claimed on Home after. A
   // read that failed decides neither, so the choice retries it instead.
@@ -307,7 +315,13 @@ export function PaylinkVisitorScreen({
           {summary}
           <p className="ww-invite-modal-foot">
             <TabLine operationId={withdrawal.operationId} place="page" />
-            {releaseNote(withdrawal, now)}
+            {releaseNote(
+              withdrawal,
+              now,
+              timing.status === "ready"
+                ? withdrawalReleaseEta(withdrawal, timing.value.releaseSeconds, now)
+                : undefined,
+            )}
           </p>
           {canFinalize && (
             <PrimaryGradientButton

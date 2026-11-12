@@ -307,7 +307,7 @@
   align-items: center;
   gap: 12px;
   padding: 24px 24px 20px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid rgba(var(--ink-rgb), 0.08);
 }
 /* The network and coin picker: two panes on a wide card, one view at a time on a phone. */
 .card.card.card.step.picker {
@@ -335,5 +335,5 @@
   padding: 20px 20px 12px;
   overflow-y: auto;
   scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+  scrollbar-color: rgba(var(--ink-rgb), 0.18) transparent;
 }

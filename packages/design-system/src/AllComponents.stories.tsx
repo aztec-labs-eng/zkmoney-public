@@ -326,6 +326,17 @@ export const AllComponents: Story = {
             <PrimaryGradientButton title="Continue" trailingIcon="arrow-right" isDisabled />
           </div>
         </Specimen>
+        <Specimen name='PrimaryGradientButton buttonStyle="secondary"' width={300}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            <PrimaryGradientButton
+              title="Button"
+              buttonStyle="secondary"
+              leadingIcon="arrow-left"
+              trailingIcon="arrow-right"
+            />
+            <PrimaryGradientButton title="Not now" buttonStyle="secondary" isDisabled />
+          </div>
+        </Specimen>
         <Specimen name='PrimaryGradientButton buttonStyle="dark" (liquid glass)' width={300}>
           <AuroraPanel width={300}>
             <PrimaryGradientButton title="Not now" buttonStyle="dark" />

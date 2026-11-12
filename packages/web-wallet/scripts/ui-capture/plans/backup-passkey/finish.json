@@ -89,6 +89,167 @@
       "action": "screenshot",
       "file": "finish-paused.png",
       "state": "Part of the balance could not move"
+    },
+    {
+      "action": "goto",
+      "path": "/settings?flowFixture=success&backupFixture=finish-links"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-settings__user"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Passkeys",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": "html[data-backup-screen=finish]"
+    },
+    {
+      "action": "screenshot",
+      "file": "a6-finish-links.png",
+      "state": "A6: a paylink to take back before the funds move"
+    },
+    {
+      "action": "goto",
+      "path": "/settings?flowFixture=success&backupFixture=finish-main-confirming"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-settings__user"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Passkeys",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": "html[data-backup-screen=finish]"
+    },
+    {
+      "action": "screenshot",
+      "file": "a6-finish-main-confirming.png",
+      "state": "A6: Main Account confirming, Savings to come"
+    },
+    {
+      "action": "goto",
+      "path": "/settings?flowFixture=success&backupFixture=finish-savings-asking"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-settings__user"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Passkeys",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": "html[data-backup-screen=finish]"
+    },
+    {
+      "action": "screenshot",
+      "file": "a6-finish-savings-asking.png",
+      "state": "A6: Main Account moved, Savings asks for its approval"
+    },
+    {
+      "action": "goto",
+      "path": "/settings?flowFixture=success&backupFixture=finish-upper-bound"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-settings__user"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Passkeys",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": "html[data-backup-screen=finish]"
+    },
+    {
+      "action": "screenshot",
+      "file": "a6-finish-upper-bound.png",
+      "state": "A6: a run whose count is an upper bound"
+    },
+    {
+      "action": "goto",
+      "path": "/settings?flowFixture=success&backupFixture=finish-rows-declined"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-settings__user"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Passkeys",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": "html[data-backup-screen=finish]"
+    },
+    {
+      "action": "screenshot",
+      "file": "c7-finish-rows-declined.png",
+      "state": "C7: Savings' approval closed after Main Account moved"
+    },
+    {
+      "action": "goto",
+      "path": "/settings?flowFixture=success&backupFixture=finish-relanding"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-settings__user"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Passkeys",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": "html[data-backup-screen=finish]"
+    },
+    {
+      "action": "screenshot",
+      "file": "finish-relanding.png",
+      "state": "A6: a reorg dropped the sweep, the network confirms the backup again"
+    },
+    {
+      "action": "goto",
+      "path": "/settings?flowFixture=success&backupFixture=finish-relanding-approve"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-settings__user"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Passkeys",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": "html[data-backup-screen=finish]"
+    },
+    {
+      "action": "screenshot",
+      "file": "finish-relanding-approve.png",
+      "state": "A6: the move waits for approval while the network confirms the backup again"
     }
   ],
   "finalScreenshot": false

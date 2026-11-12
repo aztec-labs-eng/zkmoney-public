@@ -33,8 +33,13 @@ export function strictRecords<R>(
     prefix: string
     /** The field whose lowercased value keys a record. */
     field: keyof R & string
-    /** A saved value as the record under `key`; throws for one that fails the check. */
+    /** A value as the record under `key`; throws for one that fails the check. */
     check(value: unknown, key: string): R
+    /**
+     * Replaces `check` where this store decodes a saved row, so a hook in it never hears a refused
+     * write. A migration that carries rows passes it itself.
+     */
+    checkSaved?(value: unknown, key: string): R
     migrate(
       from: number | undefined,
       w: Write,
@@ -51,7 +56,7 @@ export function strictRecords<R>(
     ...ids,
     version: 1,
     // A record checks against the key it is stored under, so one naming another key fails the load.
-    decode: (raw, id) => spec.check(decodeRecord(raw), id),
+    decode: (raw, id) => (spec.checkSaved ?? spec.check)(decodeRecord(raw), id),
     migrate: (from, w) => spec.migrate(from, w, ids),
     load: "all",
   })

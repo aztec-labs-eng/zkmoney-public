@@ -3,8 +3,9 @@ import { createPace } from "@obsidion/core/cadence"
 import { StrictMode, act, useState, useSyncExternalStore } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { TxStatus } from "@aztec-labs/stdlib/tx"
-import { DEFAULT_DECIMALS } from "@obsidion/core/constants"
+import { DEFAULT_DECIMALS, L1_SETTLED_DEPTH } from "@obsidion/core/constants"
 import {
+  type BackupAddRelease,
   type BackupRotations,
   fundingLocalId,
   memoryStore,
@@ -213,6 +214,14 @@ const SHOWN_BALANCE = balancesOf({ main: 3n * 10n ** 18n, readThisSession: true 
 const mainBalance = memoryStore(SHOWN_BALANCE)
 /** The pace the faster option re-quotes on: a wake quotes again at once. */
 const offerPace = createPace()
+/** The funding's release read: a minute to land, 30 minutes to release, 10 with a tip. */
+const RELEASE: BackupAddRelease = {
+  landingSeconds: 60,
+  standardEtaSeconds: 1800,
+  tippedEtaSeconds: 600,
+  l1SlotSeconds: 12,
+}
+const released = memoryStore({ status: "ready", value: RELEASE, refreshing: false } as const)
 const openSession = (made: Made) =>
   openTestSession({
     config: { l1ChainId: 31337 } as never,
@@ -224,6 +233,7 @@ const openSession = (made: Made) =>
       made.quoteFaster,
       () => Date.now(),
     ),
+    backupAddRelease: () => released.readonly,
   })
 
 async function render(made: Made, strict: boolean, pollMs = 0, approver?: string) {
@@ -606,10 +616,15 @@ describe("the pay step's speed", () => {
   const cost = (tip: bigint) => usd(2n * DAI + tip - BigInt(PLAN.credited))
   /** The Withdrawal fee in the cost's breakdown, over the plan's 1.8 DAI deposit. */
   const withdrawalFee = (tip: bigint) => usd(2n * DAI + tip - BigInt(PLAN.deposited))
+  /** The whole wait at a speed: the landing, the release, two relayer pickups, then the settle. */
+  const wait = (releaseSeconds: number) => {
+    const tail = (2 * 2 + Number(L1_SETTLED_DEPTH)) * RELEASE.l1SlotSeconds
+    const minutes = Math.ceil((RELEASE.landingSeconds + releaseSeconds + tail) / 60)
+    return fmt(approveCopy.pay.timeValue, { minutes })
+  }
   const time = {
-    standard: fmt(speedCopy.eta, { eta: etaLabel(OFFER.standardEtaSeconds) }),
-    faster: fmt(speedCopy.eta, { eta: etaLabel(OFFER.tippedEtaSeconds) }),
-    quoted: fmt(approveCopy.pay.timeValue, { minutes: 40 }),
+    standard: wait(RELEASE.standardEtaSeconds),
+    faster: wait(RELEASE.tippedEtaSeconds),
   }
   /** A fact's value by its label. */
   const fact = (label: string) =>
@@ -747,7 +762,7 @@ describe("the pay step's speed", () => {
     await flush()
     expect(speed()).toBeNull()
     expect(fact(approveCopy.pay.cost)).toBe(cost(0n))
-    expect(fact(approveCopy.pay.time)).toBe(time.quoted)
+    expect(fact(approveCopy.pay.time)).toBe(time.standard)
     const stored = await pay(made)
     expect(sentPlan(made)).toMatchObject(UNTIPPED)
     expect(stored.proverTip).toBeUndefined()

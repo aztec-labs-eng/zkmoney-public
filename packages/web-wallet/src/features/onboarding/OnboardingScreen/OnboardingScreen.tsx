@@ -539,7 +539,7 @@ export function OnboardingScreen({
   const ctaStyle =
     (inAppRefusal && currentOpenInBrowserHref(window.location.href)) ||
     (step === "create" && modalRefusal && leadsWithPhone(modalRefusal))
-      ? "dark"
+      ? "secondary"
       : "gradient"
   // The card takes the idle sheet. A running attempt keeps its spinner.
   const inAppWait = inAppHold && s.modalBusy

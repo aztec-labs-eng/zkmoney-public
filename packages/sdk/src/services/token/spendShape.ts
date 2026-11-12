@@ -25,12 +25,8 @@ export class ShapeUnreadError extends Error {
   }
 }
 
-export interface SpendShapePxe {
-  debug: { getNotes(filter: NotesFilter): Promise<NoteDao[]> }
-}
-
 export interface SpendShapeWallet {
-  pxe: SpendShapePxe
+  getNotes(filter: NotesFilter): Promise<NoteDao[]>
 }
 
 export interface SpendShapeToken {
@@ -74,7 +70,7 @@ export async function readSpendShape(
     scopes: [account],
   }
   const readNotes = async (): Promise<ShapeNote[]> =>
-    (await wallet.pxe.debug.getNotes(filter)).map((dao) => ({
+    (await wallet.getNotes(filter)).map((dao) => ({
       id: dao.siloedNullifier.toString(),
       amount: dao.note.items[0]?.toBigInt() ?? 0n,
     }))

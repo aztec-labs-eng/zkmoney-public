@@ -154,7 +154,7 @@ describe('idle-cycle logging', () => {
         broadcaster: BROADCASTER,
         ownership: OWNS_ALL,
         payoutTokens: acceptsOnly(TOKEN),
-        watchedTokens: [TOKEN],
+        watchedTokens: () => [TOKEN],
         l1OperationsSubmission: { retryBackoffMs: 0, maxPendingAgeMs: 48 * 60 * 60_000 },
         executor: EXECUTOR,
         executorVersion: 'gas-to-cover',

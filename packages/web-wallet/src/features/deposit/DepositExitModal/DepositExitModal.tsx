@@ -465,7 +465,7 @@ export function DepositExitModal({
                     ? copy.switching
                     : fmt(copy.switchTo, { chain: config.l1Chain.name })
                 }
-                buttonStyle="dark"
+                buttonStyle="secondary"
                 isLoading={l1.connecting}
                 onClick={l1.switchNetwork}
               />
@@ -573,7 +573,7 @@ export function DepositExitModal({
                     ? fmt(copy.recoverTo, { address: shortL1Addr(target) })
                     : copy.recover
                 }
-                buttonStyle={canSweep ? "dark" : undefined}
+                buttonStyle={canSweep ? "secondary" : undefined}
                 isDisabled={!ready && !needsWallet}
                 className={heldClass}
                 onClick={() => press("recover")}

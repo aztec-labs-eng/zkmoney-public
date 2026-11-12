@@ -34,8 +34,22 @@ export function stepIndex({ stage }: BackupProgress): number {
   }
 }
 
+/** While a reorg dropped the sweep and the relayer's re-sweep has yet to settle. */
+export const relandingCopy = {
+  // Proposed: titles the note beside the step's own line, and on the done screen.
+  title: "Confirming again",
+  // Proposed.
+  line: "The network is confirming your backup again. Your funds are safe.",
+} as const
+
 /** The line under the current step. */
-export function stepDetail({ stage, refunds, moved }: BackupProgress): string | undefined {
+export function stepDetail({
+  stage,
+  refunds,
+  moved,
+  relanding,
+}: BackupProgress): string | undefined {
+  if (relanding) return relandingCopy.line
   switch (stage) {
     case "publish":
       return "Publishing your deposit address. You can close this tab."

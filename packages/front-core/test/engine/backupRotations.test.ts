@@ -145,6 +145,9 @@ function damaged(): unknown[] {
     { ...saved, fundings: [{ ...funding(), outcome: "lost" }] },
     { ...saved, fundings: [{ ...funding(), session: undefined }] },
     { ...saved, fundings: [{ ...funding(), txHash: "0x30" }] },
+    { ...saved, sweep: { index: "3", blockHash: word(42), credited: "1400", recheck: "pending" } },
+    { ...saved, sweep: { index: "3", blockNumber: "90", blockHash: word(42), credited: "1400" } },
+    { ...saved, dismissed: false },
     { ...signed, plan: undefined },
     { ...signed, rotation: undefined },
     { ...signed, rotation: stored({ signature: undefined }) },
@@ -290,8 +293,15 @@ describe("createBackupRotations", () => {
           }),
         ],
         installed: { blockHash: word(41) },
-        sweep: { index: "3", blockHash: word(42), credited: "1400" },
+        sweep: {
+          index: "3",
+          blockNumber: 90,
+          blockHash: word(42),
+          credited: "1400",
+          recheck: "gone",
+        },
         unswept: true,
+        dismissed: true,
         recovery: { txHash: word(43) },
         reroot: { batch: word(44), switched: true, rebound: true, receiveCode: false },
         move: {
@@ -555,6 +565,23 @@ describe("stripSettled", () => {
     expect(
       stripSettled({ ...parked, unswept: undefined }).rotation?.sharedSecretSalt,
     ).toBeUndefined()
+  })
+
+  it("keeps the salt while the sweep is re-read, and drops it once the re-check ends", () => {
+    const sweep = { index: "3", blockNumber: 90, blockHash: word(42), credited: "1400" }
+    const done = (over: Partial<typeof sweep> & { recheck?: "gone" | "deep" | "lost" }) =>
+      stripSettled(
+        record({
+          phase: "done",
+          fundings: [funding({ outcome: "swept" })],
+          sweep: { ...sweep, ...over },
+        }),
+      ).rotation?.sharedSecretSalt
+    expect(done({})).toBe(word(9))
+    expect(done({ recheck: "gone" })).toBe(word(9))
+    expect(done({ recheck: "deep" })).toBeUndefined()
+    expect(done({ recheck: "lost" })).toBeUndefined()
+    expect(done({ blockNumber: undefined })).toBeUndefined()
   })
 
   it("leaves a record with no rotation as it is, minus the envelope", () => {

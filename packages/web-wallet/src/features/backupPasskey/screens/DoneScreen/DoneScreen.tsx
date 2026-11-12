@@ -1,5 +1,6 @@
-import { FactBox, KeyStatusRow, SheetCard, SheetShell } from "@obsidion/web-ds"
+import { FactBox, InfoBox, KeyStatusRow, SheetCard, SheetShell } from "@obsidion/web-ds"
 import { failureLine } from "../../backupFailure"
+import { relandingCopy } from "../../backupPasskeyCopy"
 import type { BackupKey, BackupSaved, BackupScreenProps } from "../../backupScreen"
 import { dollars } from "../AddTracker/AddTracker"
 import copy from "./DoneScreen.copy"
@@ -14,7 +15,7 @@ const savedDetail = (saved?: BackupSaved) =>
 
 /** A7: the backup is added. Done reads the keys again and ends the attempt. */
 export function DoneScreen({ screen, actions }: BackupScreenProps<"done">) {
-  const { keys, unlisted, paid, failure } = screen
+  const { keys, unlisted, paid, failure, relanding } = screen
   return (
     <SheetShell
       hero="success"
@@ -39,6 +40,7 @@ export function DoneScreen({ screen, actions }: BackupScreenProps<"done">) {
         )}
       </SheetCard>
       {paid !== undefined && <FactBox facts={[{ label: copy.cost, value: dollars(paid) }]} />}
+      {relanding && <InfoBox title={relandingCopy.title}>{relandingCopy.line}</InfoBox>}
       {failure && (
         <p className="zkm-field__error" role="alert" style={{ margin: 0 }}>
           {failureLine(failure)}

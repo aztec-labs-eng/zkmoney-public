@@ -81,20 +81,22 @@ export async function readUserByNameHash(
   }
 }
 
-/** Whether `account`'s record names another L2 account or rollup. An account with no record reads false. */
-export async function recordNamesOtherAccount(
+/** Whether `account`'s record names `l2Address` on `rollupVersion`, names another, or is missing. */
+export type AccountRecordState = "current" | "other" | "none"
+
+export async function accountRecordState(
   publicClient: PublicClient,
   accountMetadataRegistry: Address,
   account: Address,
   l2Address: Hex,
   rollupVersion: bigint,
-): Promise<boolean> {
-  if (!(await hasUserRecord(publicClient, accountMetadataRegistry, account))) return false
+): Promise<AccountRecordState> {
+  if (!(await hasUserRecord(publicClient, accountMetadataRegistry, account))) return "none"
   const record = await getUserRecord(publicClient, accountMetadataRegistry, account)
-  return (
-    record.rollupVersion !== rollupVersion ||
-    record.l2Address.toLowerCase() !== l2Address.toLowerCase()
-  )
+  return record.rollupVersion === rollupVersion &&
+    record.l2Address.toLowerCase() === l2Address.toLowerCase()
+    ? "current"
+    : "other"
 }
 
 /**

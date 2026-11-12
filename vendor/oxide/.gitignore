@@ -53,3 +53,6 @@ bench-out/
 
 # Measurement artifacts written by tests.
 test-artifacts/
+
+# The subsidy check (l1-contracts/subsidy-check): Python bytecode of its scripts.
+__pycache__/

@@ -310,7 +310,7 @@ function SecondaryButton({
   return (
     <PrimaryGradientButton
       title={label}
-      buttonStyle="dark"
+      buttonStyle="secondary"
       isDisabled={disabled}
       onClick={onClick}
     />

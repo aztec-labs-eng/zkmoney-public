@@ -144,8 +144,6 @@ export interface MetadataMigrationServiceOptions
   signRecordUpdate(userOpHash: Hex, expectedStateHash: Hex): Promise<WebAuthnAuthArg>
   /** Scan bound captured before publication, persisted with the signed plan. */
   fromBlock?: bigint
-  /** Whether a balance read begun now is stored. Absent: an import is enough. */
-  confirmBalance?(): Promise<boolean>
 }
 
 /** What a preparation saves before it signs, so resuming it asks for the same approvals. */
@@ -393,11 +391,6 @@ export class MetadataMigrationService {
   /** What the source holds for the account, or undefined when it can't say. */
   async holdings(): Promise<bigint | undefined> {
     return this.options.source.holdings?.()
-  }
-
-  /** Whether the balance holds everything the run imported, so the run may be done. */
-  async confirmBalance(): Promise<boolean> {
-    return (await this.options.confirmBalance?.()) ?? true
   }
 
   private async recurring(): Promise<boolean> {

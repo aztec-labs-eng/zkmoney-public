@@ -90,9 +90,11 @@ export function selectSync(s: MilestoneState): BalanceSync {
 
 export function createMilestones(deps: {
   catchUp: CatchUp
+  /** Ms since the page loaded: when each milestone is reached, as its log prints. */
+  sinceLoad: () => number
   waits?: Partial<{ boot: number; deposits: number; sync: number }>
 }): Milestones {
-  const now = () => performance.now()
+  const now = deps.sinceLoad
   const waits = { boot: BOOT_WAIT_MS, deposits: DEPOSITS_WAIT_MS, sync: BALANCE_SYNC_WAIT_MS }
   Object.assign(waits, deps.waits)
   const state = memoryStore<MilestoneState>({
@@ -108,11 +110,14 @@ export function createMilestones(deps: {
 
   const write = (change: (s: MilestoneState) => MilestoneState) => {
     if (ended.signal.aborted) return
+    const before = state.get()
     state.update((s) => {
       const next = change(s)
       return { ...next, shown: selectSync(next).progress ?? next.shown }
     })
     const s = state.get()
+    for (const [m, at] of Object.entries(s.at))
+      if (!has(before, m as Milestone)) logger.log(`[boot] ${m} at ${Math.round(at)}ms`)
     if (!logged && settled(s)) {
       logged = true
       unwatch()
@@ -128,6 +133,7 @@ export function createMilestones(deps: {
     if (!deps.catchUp.status.get() || s.syncOpenedAt !== undefined || settled(s)) return
     hold = deps.catchUp.begin()
     write((s) => ({ ...s, syncOpenedAt: now() }))
+    logger.log(`[boot] sync opened at ${Math.round(now())}ms`)
     // A first balance that never comes has no replay to wait for.
     later(2 * waits.boot, (s) => (has(s, "firstBalance") ? s : { ...s, syncWaitEnded: true }))
   }

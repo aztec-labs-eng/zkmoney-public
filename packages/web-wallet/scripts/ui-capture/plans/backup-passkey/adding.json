@@ -43,6 +43,29 @@
       "action": "screenshot",
       "file": "c6-adding-delayed.png",
       "state": "C6: paid, the route is not paying yet"
+    },
+    {
+      "action": "goto",
+      "path": "/settings?flowFixture=success&backupFixture=adding-relanding"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-settings__user"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Passkeys",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": "html[data-backup-screen=adding]"
+    },
+    {
+      "action": "screenshot",
+      "file": "adding-relanding.png",
+      "state": "A5: a reorg dropped the sweep, the network confirms the backup again"
     }
   ],
   "finalScreenshot": false

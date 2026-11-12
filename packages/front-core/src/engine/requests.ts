@@ -429,7 +429,15 @@ export interface PayerApprovalDeps {
 export function payerApprovals(deps: PayerApprovalDeps): Task {
   return task("payerApprovals", {
     needs: {},
-    on: { due: derived([deps.requests.view, deps.rows] as const, payersToApprove) },
+    on: {
+      due: derived(
+        [deps.requests.view, deps.rows] as const,
+        payersToApprove,
+        (a, b) =>
+          a.length === b.length &&
+          a.every((p, i) => p.requestId === b[i].requestId && p.payer === b[i].payer),
+      ),
+    },
     every: "once",
     backoff: { baseMs: 1_000, maxMs: 60_000 },
     run: async ({ due }) => {

@@ -183,8 +183,8 @@ async function cashOutLinkFlow(
 
   // Re-screen at the commit point, before the burn: oxide's relayer enforces the same policy when
   // it batches, where a blocked recipient means a burned-but-never-finalized withdrawal. A screener
-  // throw (verdict unknown) aborts too — fail closed.
-  const verdict = await deps.screener.screen(recipient)
+  // throw (verdict unknown) aborts too — fail closed. A bridge screens on its destination chain.
+  const verdict = await deps.screener.screen(recipient, bridge?.chain.chainId)
   if (!verdict.compliant) {
     throw new Error(verdict.reason?.message ?? "This address can't receive withdrawals")
   }

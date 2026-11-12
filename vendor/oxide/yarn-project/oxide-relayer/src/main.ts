@@ -1,7 +1,7 @@
 import type { EthAddress } from '@aztec-labs/foundation/eth-address';
 import { createLogger } from '@aztec-labs/foundation/log';
 
-import { OxidePortalContract, depositTokensFor } from '@oxide/l1-contracts';
+import { OxidePortalContract } from '@oxide/l1-contracts';
 import { priceFeedForChainId } from '@oxide/oxide-client/eth_usd_price_feed.js';
 import { FleetSigner } from '@oxide/oxide-client/fleet_signer.js';
 import { readOperationExecutorVersion } from '@oxide/oxide-client/l1_operation_quote.js';
@@ -231,7 +231,7 @@ export async function runRelayer(config: RunConfig, opts: RunRelayerOptions = {}
           broadcaster: publicConfig.broadcaster,
           ownership: router.ownershipFor(deployment),
           payoutTokens: payoutTokenRegistry,
-          watchedTokens: depositTokensFor(chainId, publicConfig.token),
+          watchedTokens: () => payoutTokenRegistry.watchedTokens(),
           l1OperationsSubmission,
           allowUnprofitable: config.allowUnprofitable,
           executor: publicConfig.operationExecutor,

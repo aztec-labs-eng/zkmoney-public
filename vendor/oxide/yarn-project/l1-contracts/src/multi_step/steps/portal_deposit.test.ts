@@ -1,5 +1,5 @@
 import { describe, expect, test } from '@jest/globals';
-import { decodeFunctionData } from 'viem';
+import { decodeFunctionData, zeroAddress } from 'viem';
 
 import { PortalDepositAdapterAbi } from '../../artifacts.js';
 import { portalDepositSteps } from './portal_deposit.js';
@@ -15,7 +15,9 @@ describe('portalDeposit', () => {
   test('deposit takes the asset of the portal and encodes the portal, the amount and the commitment', () => {
     const step = portalDeposit.deposit({ portal, recipientCommitment });
     expect(step.in).toEqual(portal.asset);
-    expect(decodeFunctionData({ abi: PortalDepositAdapterAbi, data: step.encode({ amount: 7n }) })).toEqual({
+    expect(
+      decodeFunctionData({ abi: PortalDepositAdapterAbi, data: step.encode({ amount: 7n, recipient: zeroAddress }) }),
+    ).toEqual({
       functionName: 'portalDeposit',
       args: [portal.address, 7n, recipientCommitment],
     });

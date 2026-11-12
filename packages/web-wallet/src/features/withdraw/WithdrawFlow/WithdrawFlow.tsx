@@ -270,7 +270,9 @@ export function WithdrawFlow({
   const typed = asksName(search, target, !!match)
   const fieldName = addressName(typed, typedName, match?.name, ens.name)
 
+  // A bridge-out's recipient is screened on the chain it lands on.
   const screened = useScreenedAddress(recipient, "withdraw", {
+    chainId: s.route.chainId === l1ChainId ? undefined : s.route.chainId,
     debounceMs: 300,
     waitMs: READ_WAIT_MS,
   })

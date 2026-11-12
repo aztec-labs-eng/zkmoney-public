@@ -40,7 +40,6 @@ import { unlockedSessionKeys } from "../registration/registrationResume"
 import { useSavingsMovesReplayed } from "../savings/savingsTasks"
 import { gatedLinks } from "./backupEntryGate"
 import { useWithdrawals } from "../withdraw/useWithdrawals"
-import { readBackupAddTakesMs } from "./backupAddTime"
 import { moveCount, readMoveBalances, type MoveBalance } from "./backupMoveTokens"
 
 /** What the entry reads off the chain before it can be pressed. */
@@ -53,14 +52,13 @@ export interface ChainFacts {
   plan: boolean
   /** How many sponsored transfers the move takes, at most, Savings' shares included. */
   moves: number
-  /** What the add costs and takes, before it starts; none while the route is not live. */
+  /** What the add costs, before it starts; none while the route is not live. */
   quote?: BackupAddQuote
 }
 
 /** What the entry reads off the chain, before it knows this device's open paylinks. */
 export interface ChainReads {
   funding: FundingAmount | undefined
-  takesMs: number
   /** Main Account's, which pays the funding and takes the paylink refunds. */
   shape: SpendShape
   cap: bigint
@@ -76,7 +74,7 @@ export function chainFacts(
     refunds?: readonly bigint[]
   },
 ): ChainFacts {
-  const { funding, takesMs, shape, cap, others = [], refunds = [] } = input
+  const { funding, shape, cap, others = [], refunds = [] } = input
   const amount = funding?.amount ?? 0n
   const deposits = unreadDeposits(shape)
   // A throw means no plan over this balance and cap; the entry says so.
@@ -91,13 +89,13 @@ export function chainFacts(
     chunk: fundingFits(amount, cap, shape, deposits),
     plan: moves !== undefined,
     moves: moves ?? 0,
-    ...(funding && { quote: { ...backupAddFees(funding), takesMs } }),
+    ...(funding && { quote: backupAddFees(funding) }),
   }
 }
 
 /** The chain reads, and Main Account's token, which the paylinks the add takes back pay in. */
 export async function readChainReads(
-  session: Pick<Session, "auth" | "burnDurations" | "page" | "wallet" | "contractService">,
+  session: Pick<Session, "auth" | "page" | "wallet" | "contractService">,
 ): Promise<ChainReads & { token: string }> {
   const [wallet, contractService] = await Promise.all([
     session.wallet.ready(),
@@ -108,7 +106,7 @@ export async function readChainReads(
   const { config, chain } = session.page
   const client = l1PublicClient(config)
   const envTuple = await chain.feeTokenBridgeTuple.read()
-  const [funding, takesMs, [main, ...others]] = await Promise.all([
+  const [funding, [main, ...others]] = await Promise.all([
     readBridgeDestination(client, envTuple).then((tuple) =>
       fundingAmount(client, {
         tuple,
@@ -119,10 +117,9 @@ export async function readChainReads(
         throw err
       }),
     ),
-    readBackupAddTakesMs(session.burnDurations, session.page, wallet.node),
     readMoveBalances(chain, wallet, contractService, keys.account.getAddress()),
   ])
-  return { funding, takesMs, ...main!, others }
+  return { funding, ...main!, others }
 }
 
 /**
@@ -198,9 +195,10 @@ export type EntryFacts = ChainFacts & {
 const READ_AFTER: After = { firstBalance: true, movesReplayed: true }
 
 /**
- * The entry's facts for the signed-in account: the chain's read once the device has synced, and
- * again on `refresh`; the rest kept current and gated by `gatedLinks`. `refresh` also starts a
- * paylink rescan. Saved Savings moves that do not read stay unreadable until the page reloads.
+ * The entry's facts for the signed-in account: the chain's read once the device has synced,
+ * whenever Main's balance changes and on `refresh`; the rest kept current and gated by
+ * `gatedLinks`. `refresh` also starts a paylink rescan. Saved Savings moves that do not read stay
+ * unreadable until the page reloads.
  */
 export function useBackupEntryFacts(active: boolean): {
   facts: "checking" | "unreadable" | EntryFacts
@@ -223,6 +221,8 @@ export function useBackupEntryFacts(active: boolean): {
   const savingsMoves = useStore(useSession().savingsMoves.view)
   const replayed = useSavingsMovesReplayed()
   const adopted = useStore(useSession().savingsSettleDue, (due) => due.unadopted === 0)
+  // A deposit landing while Passkeys is open changes the spend shape, so the chain is read again.
+  const balance = useStore(useSession().balances.view, (view) => view.main?.atomic)
   // eslint-disable-next-line local/effect-hook -- debt
   useEffect(() => {
     if (!active || !built || !synced) return
@@ -240,7 +240,7 @@ export function useBackupEntryFacts(active: boolean): {
     return () => {
       stale = true
     }
-  }, [active, session, built, synced, run])
+  }, [active, session, built, synced, run, balance])
   const sweep = useSession().paylinkSweep
   const refresh = useCallback(() => {
     setRun((n) => n + 1)

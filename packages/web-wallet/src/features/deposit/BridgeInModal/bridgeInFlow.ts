@@ -72,6 +72,8 @@ export interface BridgeInReview {
 
 /** What one Bridge in sends, as the review has it. */
 export interface BridgeInSend {
+  /** The depositor passed screening on the origin chain: nothing is sent before. */
+  cleared: boolean
   /** The key of the request the review shows. */
   key: string
   reviewed: BridgeInQuote
@@ -202,7 +204,7 @@ export function openBridgeInFlow(deps: BridgeInDeps, latest: () => BridgeInInput
       const { reviewed, request, fixed, balance } = send
       const account = request.depositor
       const admission = send.admit(reviewed)
-      if (bridged || state.get().sending || admission.problem) return
+      if (bridged || state.get().sending || admission.problem || !send.cleared) return
       dispatch({ type: "sending", from: account })
       let started: string | undefined
       let failure: BridgeInFailure | undefined

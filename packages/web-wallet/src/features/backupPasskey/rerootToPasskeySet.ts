@@ -1,5 +1,5 @@
 import type { BackupRotationRecord, RerootCheckpoints } from "@obsidion/front-core"
-import { WalletError } from "@obsidion/front-core"
+import { RootPasskeyRequiredError, WalletError } from "@obsidion/front-core"
 import type { AlphaAuthProvider, ObsidionAccount, RecoveryMetadata } from "@obsidion/sdk"
 import type { StoredRecoveryMetadata } from "../../platform/auth/WebPasskeyIdentityMap"
 
@@ -60,6 +60,11 @@ export async function rerootToPasskeySet(
 ): Promise<RerootCheckpoints> {
   const { plan, backup } = record
   if (!plan || !backup.envelopeHex) throw new Error("nothing signed to install")
+  // A backup-passkey session would pair the backup with itself and derive the wrong address.
+  const signed = record.rotation?.expectedKeys[0]?.key
+  if (signed && !sameHex(`${signed.qx.slice(2)}${signed.qy.slice(2)}`, deps.root.pubkeyHex)) {
+    throw new RootPasskeyRequiredError()
+  }
   const held = deps.session()
   const set = [deps.root.pubkeyHex, backup.pubkeyHex]
   const address = await deps.derive(set)

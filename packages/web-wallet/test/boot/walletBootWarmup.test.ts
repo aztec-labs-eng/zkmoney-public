@@ -10,7 +10,7 @@ const h = vi.hoisted(() => ({
   originWasFresh: vi.fn(async () => true),
   getHardcodedArtifact: vi.fn(async (_name: string) => ({})),
 }))
-vi.mock("../../src/platform/barretenberg", () => ({ warmSyncBackend: h.warmSyncBackend })) // slice-check-ignore: the test counts the boot's warm-up calls; a real warm-up loads bb.js's wasm
+vi.mock("../../src/platform/barretenberg", () => ({ warmSyncBackend: h.warmSyncBackend })) // debt-check-ignore: the test counts the boot's warm-up calls; a real warm-up loads bb.js's wasm
 vi.mock("../../src/platform/storage/freshOrigin", () => ({ originWasFresh: h.originWasFresh }))
 vi.mock("@obsidion/sdk", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/sdk")>()),

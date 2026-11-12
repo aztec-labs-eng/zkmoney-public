@@ -72,7 +72,7 @@ export function ChangeWalletPicker({
       onClick={onClick}
     >
       <span className="ww-move-landing__plus">
-        {busy ? <Spinner size={20} /> : <Icon name={icon} size={20} color="#fff" />}
+        {busy ? <Spinner size={20} /> : <Icon name={icon} size={20} />}
       </span>
       <span>
         <b>{title}</b>

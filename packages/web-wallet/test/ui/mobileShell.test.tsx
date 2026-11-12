@@ -1,6 +1,6 @@
 /**
- * The shell's Log out refuses while a registration claim is in flight. The view decides it, so the
- * guard is pinned here.
+ * The shell's Log out refuses while a registration claim is in flight, and its theme control writes
+ * the page theme. The view decides both, so they are pinned here.
  */
 import { act, type ReactNode } from "react"
 import { seedDeviceKeys, testPage, testCore } from "../support/page"
@@ -107,7 +107,13 @@ vi.mock("../../src/ui/LogoutBlockedModal", () => ({
   ),
 }))
 import { SidebarLayout } from "../../src/ui/AppShell/AppShell"
-import { activeNamespace, closeSession, switchSession } from "../../src/session/session"
+import {
+  activeNamespace,
+  closeSession,
+  openedSession,
+  switchSession,
+} from "../../src/session/session"
+import shellCopy from "../../src/ui/AppShell/AppShell.copy"
 import { pageSessionDeps } from "../../src/app/sessionDeps"
 import { openTestSession } from "../support/session"
 import { seedOnboarded, setIdentity } from "../support/identity"
@@ -265,5 +271,17 @@ describe("logout gate", () => {
     expect(dialog("Log out")).not.toBeNull()
     click("Confirm logout")
     expect(state.logout).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe("theme control", () => {
+  it("switches the page theme from the phone menu, naming the theme it switches to", () => {
+    render()
+    const theme = openedSession.get()!.page.theme.current
+    click(shellCopy.openMenu)
+    click(shellCopy.theme.light)
+    expect(theme.get()).toBe("light")
+    click(shellCopy.theme.dark)
+    expect(theme.get()).toBe("dark")
   })
 })

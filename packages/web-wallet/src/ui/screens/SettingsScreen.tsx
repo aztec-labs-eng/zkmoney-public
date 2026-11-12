@@ -41,6 +41,8 @@ import { claimChosenName } from "../../features/onboarding/oxideOnboarding"
 import { selectHistoryRow } from "../../features/backupPasskey/accountHistory"
 import { AccountHistorySheet } from "../../features/backupPasskey/AccountHistorySheet/AccountHistorySheet"
 import historyCopy from "../../features/backupPasskey/AccountHistorySheet/AccountHistorySheet.copy"
+import usageDataCopy from "../usageData.copy"
+import copy from "./SettingsScreen.copy"
 
 // ponytail: hoist to config once a FAQ page exists.
 const FAQ_URL = "https://docs.zk.money/docs/faq"
@@ -81,6 +83,8 @@ export function SettingsScreen() {
   const hideBal = useStore(device, (s) => s.hideBalances)
   const identity = useStore(entered).value
   const consent = useStore(device, (s) => s.analyticsConsent)
+  const setConsent = (granted: boolean) => void saveSetting(database, "analyticsConsent", granted)
+  const theme = useStore(page.theme.current)
   const nonContact = useNonContactRequests()
   const [modal, setModal] = useState<
     | "feedback"
@@ -157,11 +161,16 @@ export function SettingsScreen() {
           />
           <SettingsRow
             icon="database"
-            label="Share anonymous usage data"
+            label={usageDataCopy.label}
+            trailing={<GradientToggle isOn={consent} onChange={setConsent} />}
+          />
+          <SettingsRow
+            icon="sun"
+            label={copy.lightMode}
             trailing={
               <GradientToggle
-                isOn={consent}
-                onChange={(on) => void saveSetting(database, "analyticsConsent", on)}
+                isOn={theme === "light"}
+                onChange={(on) => page.theme.set(on ? "light" : "dark")}
               />
             }
           />
@@ -332,8 +341,20 @@ export function SettingsScreen() {
         <span className="ww-settings__version">V {appVersion}</span>
       </div>
 
-      {modal === "feedback" && <FeedbackModal onClose={() => setModal(undefined)} />}
-      {modal === "bug" && <BugReportModal onClose={() => setModal(undefined)} />}
+      {modal === "feedback" && (
+        <FeedbackModal
+          analyticsConsent={consent}
+          onAnalyticsConsent={setConsent}
+          onClose={() => setModal(undefined)}
+        />
+      )}
+      {modal === "bug" && (
+        <BugReportModal
+          analyticsConsent={consent}
+          onAnalyticsConsent={setConsent}
+          onClose={() => setModal(undefined)}
+        />
+      )}
       {modal === "contracts" && <ContractAddressesModal onClose={() => setModal(undefined)} />}
       {modal === "passkeys" && <PasskeysSheet onClose={() => setModal(undefined)} />}
       {modal === "history" && <AccountHistorySheet onClose={() => setModal(undefined)} />}

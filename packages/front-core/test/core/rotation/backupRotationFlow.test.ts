@@ -187,7 +187,12 @@ describe("the happy path", () => {
     world.sweep = { index: "3", blockNumber: 60, blockHash: word(0x60), credited: 1400n }
     const swept = (await watchRotation(deps, funded)).record
     expect(swept.phase).toBe("swept")
-    expect(swept.sweep).toEqual({ index: "3", blockHash: word(0x60), credited: "1400" })
+    expect(swept.sweep).toEqual({
+      index: "3",
+      blockNumber: 60,
+      blockHash: word(0x60),
+      credited: "1400",
+    })
     expect(swept.fundings[0]?.outcome).toBe("swept")
 
     const rerooted = await rerootRotation(deps, swept)
@@ -222,8 +227,12 @@ describe("the happy path", () => {
     expect(done.phase).toBe("done")
     expect(done.rotation?.signature).toBeUndefined()
     expect(done.backup.envelopeHex).toBeUndefined()
-    expect(done.rotation?.sharedSecretSalt).toBeUndefined()
+    // The salt stays while the sweep is re-read; the settled block is already past the bound.
+    expect(done.rotation?.sharedSecretSalt).toBe(word(9))
     expect(done.rotation?.sipa).toBe(SIPA)
+    const settled = (await resumeRotation(deps, done)).record
+    expect(settled.sweep?.recheck).toBe("deep")
+    expect(settled.rotation?.sharedSecretSalt).toBeUndefined()
   })
 
   it("resume at each phase runs exactly the next step", async () => {

@@ -1,14 +1,15 @@
 import type { CSSProperties } from "react"
-import { Glass } from "@samasante/liquid-glass"
+import { Glass, type GlassOptics } from "@samasante/liquid-glass"
 import { Icon } from "./Icon"
 
 export interface PrimaryGradientButtonProps {
   title: string
   /**
-   * "gradient" = brand purple→cyan primary; "dark" = liquid-glass secondary; "danger" = pink
-   * capsule; "plain" = flat gray capsule for a sheet whose only action is to close it.
+   * "gradient" = brand purple→cyan primary; "secondary" = charcoal liquid-glass capsule with a lit
+   * rim; "dark" = clear liquid-glass capsule over content; "danger" = pink capsule; "plain" = flat
+   * gray capsule for a sheet whose only action is to close it.
    */
-  buttonStyle?: "gradient" | "dark" | "danger" | "plain"
+  buttonStyle?: "gradient" | "secondary" | "dark" | "danger" | "plain"
   /** Leading icon name (e.g. "share", "file-copy"). */
   leadingIcon?: string
   /** Trailing icon name (e.g. "arrow-right"). */
@@ -22,18 +23,34 @@ export interface PrimaryGradientButtonProps {
   testId?: string
 }
 
-/** Optics for the "dark" secondary capsule. Chrome/Edge bend the live backdrop
- *  (backdrop-filter: url); Safari/Firefox get frost + tint + edge light from the
- *  same component. */
-const DARK_GLASS_OPTICS = {
-  strength: 0.05,
-  bend: 0.45,
-  curvature: 0.3,
-  dispersion: 0.32,
-  frost: 6,
-  sheen: 0.32,
-  brightness: 0,
-}
+/** Tint and optics of the liquid-glass capsules. Only "dark" bends the backdrop, and only in
+ *  Chrome/Edge (backdrop-filter: url); otherwise the glass is frost + tint + edge light. */
+const GLASS_STYLES = {
+  dark: {
+    tint: "var(--glass-tint)",
+    optics: {
+      strength: 0.05,
+      bend: 0.45,
+      curvature: 0.3,
+      dispersion: 0.32,
+      frost: 6,
+      sheen: 0.32,
+      brightness: 0,
+    },
+  },
+  secondary: {
+    tint: "var(--glass-secondary-tint)",
+    optics: {
+      strength: 0,
+      dispersion: 0,
+      frost: 6,
+      brightness: 0,
+      glow: 0,
+      sheen: 0,
+      specular: 0.2,
+    },
+  },
+} satisfies Record<string, { tint: string; optics: Partial<GlassOptics> }>
 
 /** Full-width 56px capsule CTA in one of the `buttonStyle`s. */
 export function PrimaryGradientButton({
@@ -49,14 +66,16 @@ export function PrimaryGradientButton({
   testId,
 }: PrimaryGradientButtonProps) {
   const disabled = isLoading || isDisabled
+  const [leadingSize, trailingSize] = buttonStyle === "secondary" ? [14, 14] : [24, 18]
   const label = (
     <span className="zkm-primary-btn__label" style={isLoading ? { opacity: 0 } : undefined}>
-      {leadingIcon && <Icon name={leadingIcon} size={24} />}
+      {leadingIcon && <Icon name={leadingIcon} size={leadingSize} />}
       {title}
-      {trailingIcon && <Icon name={trailingIcon} size={18} />}
+      {trailingIcon && <Icon name={trailingIcon} size={trailingSize} />}
     </span>
   )
-  if (buttonStyle === "dark") {
+  if (buttonStyle === "dark" || buttonStyle === "secondary") {
+    const glass = GLASS_STYLES[buttonStyle]
     return (
       <Glass
         role="button"
@@ -65,14 +84,15 @@ export function PrimaryGradientButton({
         aria-disabled={disabled || undefined}
         className={[
           "zkm-btn-reset zkm-pressable zkm-primary-btn",
+          `zkm-primary-btn--${buttonStyle}`,
           disabled ? "zkm-primary-btn--disabled" : "",
           className,
         ]
           .filter(Boolean)
           .join(" ")}
         // Glass pins display:inline-block inline; restore the class's flex centering via the style prop.
-        style={{ display: "flex", background: "rgba(16, 16, 20, 0.35)", ...style }}
-        optics={DARK_GLASS_OPTICS}
+        style={{ display: "flex", background: glass.tint, ...style }}
+        optics={glass.optics}
         onClick={disabled ? undefined : onClick}
         onKeyDown={(e) => {
           if (disabled || (e.key !== "Enter" && e.key !== " ")) return

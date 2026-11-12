@@ -8,10 +8,7 @@ import {
   stepDetail,
   stepIndex,
 } from "../../../src/features/backupPasskey/backupPasskeyCopy"
-import type {
-  BackupProgress,
-  BackupStage,
-} from "../../../src/features/backupPasskey/backupScreen"
+import type { BackupProgress, BackupStage } from "../../../src/features/backupPasskey/backupScreen"
 
 /** The figures a line shows, in order. */
 const figures = (line: string | undefined) => line?.match(/\d+/g) ?? []
@@ -57,6 +54,17 @@ describe("stepDetail", () => {
     const noMove = stepDetail(at("moving"))
     expect(figures(stepDetail(at("moving", moved(1, 3))))).toEqual(["1", "3"])
     expect(stepDetail(at("moving", moved(3, 3)))).toBe(noMove)
+  })
+
+  it("says the network is confirming the backup again while the sweep re-lands, on any step", () => {
+    for (const stage of ["final", "installing", "moving"] as const) {
+      const line = stepDetail(at(stage, { relanding: true }))
+      expect(line).toBeDefined()
+      expect(line).not.toBe(stepDetail(at(stage)))
+    }
+    expect(stepDetail(at("moving", { relanding: true, ...moved(1, 3) }))).toBe(
+      stepDetail(at("final", { relanding: true })),
+    )
   })
 
   it("names the install apart from the move", () => {

@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity >=0.8.27;
-import {SweepGasCeilings} from "@test/helpers/SweepGasCeilings.sol";
 import {console2} from "forge-std/console2.sol";
 
 import {DepositSIPA} from "@periphery/DepositSIPA.sol";
@@ -10,25 +9,18 @@ import {INameRegistry} from "@periphery/interfaces/INameRegistry.sol";
 import {ForwardingTable} from "@periphery/ForwardingTable.sol";
 import {IForwardingTable} from "@periphery/interfaces/IForwardingTable.sol";
 import {RegistrationSIPA} from "@periphery/RegistrationSIPA.sol";
-import {DepositSubsidy} from "@periphery/DepositSubsidy.sol";
-import {IOperationExecutor} from "@periphery/interfaces/IOperationExecutor.sol";
 import {SIPABase} from "@periphery/SIPABase.sol";
-import {AccountMetadataRegistry} from "@periphery/AccountMetadataRegistry.sol";
-import {AggregatorV3Interface} from "@periphery/interfaces/AggregatorV3Interface.sol";
-import {ISIPA} from "@periphery/interfaces/ISIPA.sol";
 import {DomainAuth} from "@periphery/interfaces/INameRegistry.sol";
 import {Errors} from "@periphery/Errors.sol";
 import {IERC20} from "@oz/token/ERC20/IERC20.sol";
 
 import {RegistrationTestBase} from "@test/periphery/registration/RegistrationTestBase.sol";
-import {MockV3Aggregator} from "@test/mocks/MockV3Aggregator.sol";
 import {MockPortal} from "@test/mocks/MockPortal.sol";
 import {
   ForwardingTableFixture,
   DEPOSIT_SWEEP_TIP,
   REGISTRATION_SWEEP_TIP
 } from "@test/helpers/ForwardingTableFixture.sol";
-import {RelayerTransaction} from "@test/periphery/RelayerTransaction.sol";
 import {Intents} from "@periphery/Intent.sol";
 
 contract RoguePortal {
@@ -134,74 +126,6 @@ contract SIPAPlumbingBindingTest is RegistrationTestBase {
     _sweepRegistrationAsAttacker(victim, registrationData);
     assertEq(nameRegistry.ownerOf(NAME_HASH), defaultOwner);
     assertEq(underlying.balanceOf(address(victim)), 0, "the victim's deposit is not stranded");
-  }
-
-  function test_GivenASelfFundedSweep_ThenItDrawsLessThanItCost() external {
-    uint128 fee = uint128(DEPOSIT_SWEEP_TIP);
-    MockV3Aggregator feed = new MockV3Aggregator(8, 3000e8);
-    DepositSubsidy sm = new DepositSubsidy(
-      OWNER,
-      address(portal),
-      IOperationExecutor(address(operationExecutor)),
-      AggregatorV3Interface(address(feed)),
-      sipaFactory,
-      SweepGasCeilings.initial()
-    );
-    underlying.mint(address(sm), 100_000 ether);
-    vm.prank(OWNER);
-    sm.setDepositConfig(0.1e18, 12e18, 0);
-    vm.fee(1 gwei);
-    vm.txGasPrice(1 gwei);
-
-    bytes memory intent = _depositIntent("drain");
-    DepositSIPA sipa = _depositSIPA(intent);
-    (, uint256 sweepTip,) = sipa.route(address(underlying));
-    assertEq(sweepTip, DEPOSIT_SWEEP_TIP, "a SIPA has no fee of its own, only its table's");
-
-    bytes memory sweep = abi.encodeCall(
-      DepositSubsidy.sweepForSubsidy,
-      (ISIPA(address(sipa)), address(underlying), address(operationExecutor), intent, "")
-    );
-    underlying.mint(address(sipa), 100 ether);
-    (uint256 warm,) = RelayerTransaction.send(relayer, sm, sweep);
-    underlying.mint(address(sipa), 100 ether);
-
-    uint256 relayerBefore = underlying.balanceOf(relayer);
-    (uint256 subsidy, uint256 txGas) = RelayerTransaction.send(relayer, sm, sweep);
-
-    uint256 realCostUsd = txGas * 1 gwei * 3000;
-    console2.log("warm", warm, "subsidy", subsidy);
-    console2.log("transaction gas", txGas, "real cost (1e18 USD)", realCostUsd);
-
-    assertEq(underlying.balanceOf(relayer) - relayerBefore, subsidy + fee, "the payout is the subsidy plus the fee");
-    assertLt(subsidy, realCostUsd, "a self-swept deposit must never earn more than the gas it burnt");
-    assertLt(subsidy, 1e18, "an ordinary deposit sweep is nowhere near the 12 DAI ceiling");
-  }
-
-  function test_GivenEachIntent_ThenTheQuoteIsKeyedOnIt() external {
-    uint128 fee = uint128(DEPOSIT_SWEEP_TIP);
-    MockV3Aggregator feed = new MockV3Aggregator(8, 3000e8);
-    DepositSubsidy sm = new DepositSubsidy(
-      OWNER,
-      address(portal),
-      IOperationExecutor(address(operationExecutor)),
-      AggregatorV3Interface(address(feed)),
-      sipaFactory,
-      SweepGasCeilings.initial()
-    );
-    underlying.mint(address(sm), 100_000 ether);
-    vm.prank(OWNER);
-    sm.setDepositConfig(0.1e18, type(uint128).max, 0);
-    vm.fee(1 gwei);
-    vm.txGasPrice(1 gwei);
-
-    assertGt(
-      sm.quoteSubsidy(fee, sm.$sweepGasCeilings(Intents.REGISTRATION)),
-      sm.quoteSubsidy(fee, sm.$sweepGasCeilings(Intents.DEPOSIT)),
-      "a registration must be quoted above a deposit at the ceiling"
-    );
-    assertGt(sm.SWEEP_GAS_SWAP_USDC_HOP(), 0, "the USDC route carries swap gas");
-    assertGt(sm.SWEEP_GAS_SWAP_USDT_HOP(), 0, "the USDT route carries swap gas");
   }
 
   function test_GivenAGrowingBlessedSet_ThenTheGateCostDoesNotGrow() external {

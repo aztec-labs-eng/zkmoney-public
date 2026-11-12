@@ -57,6 +57,7 @@ const HOST: Omit<BackupScreenInput, "keys"> = {
   deps: "building",
   addable: false,
   laptop: false,
+  oneDevice: false,
   busy: false,
   cancelled: false,
   now: CAPTURE_NOW,
@@ -69,6 +70,18 @@ describe("backup passkey captures", () => {
   it.each(Object.entries(BACKUP_FIXTURES))("%s opens its screen", (_, fixture) => {
     const input = { ...HOST, keys: keysRead(fixture.keys), ...fixture.input }
     expect(selectBackupScreen(input).id).toBe(fixture.screen)
+  })
+
+  it.each([
+    "finish-links",
+    "finish-main-confirming",
+    "finish-savings-asking",
+    "finish-upper-bound",
+    "finish-rows-declined",
+  ] as const)("%s shows the move as rows", (name) => {
+    const fixture = BACKUP_FIXTURES[name]
+    const screen = selectBackupScreen({ ...HOST, keys: keysRead(fixture.keys), ...fixture.input })
+    expect(screen.id === "finish" && screen.progress.rows?.length).toBeGreaterThan(0)
   })
 
   it("has one plan per screen, opening every fixture of that screen", () => {

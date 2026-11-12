@@ -98,6 +98,7 @@ vi.mock("../../../src/features/backupPasskey/backupPasskeyFacts", () => ({
   useBackupEntryFacts: () => ({ facts: h.facts, refresh: h.factsRefresh }),
 }))
 
+import { L1_SETTLED_DEPTH } from "@obsidion/core/constants"
 import {
   credentialIdToMetadata,
   loadRecords,
@@ -105,6 +106,7 @@ import {
   memoryStore,
   RootPasskeyRequiredError,
   type AllowanceSnapshot,
+  type BackupAddRelease,
   type BackupRotations,
   type MemoryBackend,
   type QueryState,
@@ -114,7 +116,11 @@ import { RotationRouteNotLiveError } from "@obsidion/sdk"
 import unreadableCopy from "../../../src/features/backupPasskey/screens/UnreadableScreen/UnreadableScreen.copy"
 import type { RegistrationPending } from "../../../src/features/registration/registrationRail"
 import trackerCopy from "../../../src/features/backupPasskey/screens/AddTracker/AddTracker.copy"
-import type { AuthenticatorRecord } from "../../../src/platform/auth/WebPasskeyIdentityMap"
+import {
+  WebPasskeyIdentityMap,
+  type AuthenticatorRecord,
+} from "../../../src/platform/auth/WebPasskeyIdentityMap"
+import { seedDeviceKeys, testCore } from "../../support/page"
 import {
   OWNER,
   createdRecord,
@@ -125,6 +131,7 @@ import {
   testRotations,
 } from "../../support/backupAdd"
 import { openTestSession } from "../../support/session"
+import type { Session } from "../../../src/session/session"
 import introCopy from "../../../src/features/backupPasskey/screens/IntroScreen/IntroScreen.copy"
 import keysCopy from "../../../src/features/backupPasskey/screens/KeysScreen/KeysScreen.copy"
 import { fmt } from "../../../src/lib/fmt"
@@ -208,19 +215,63 @@ async function walkTo(screen: "intro" | "place") {
   if (screen === "place") await act(async () => proceed()!.click())
 }
 
-function listKeys(count: number) {
-  h.readAuthKeysCounted.mockResolvedValue({
-    entries: Array.from({ length: count }, (_, i) => ({
-      key: i === 0 ? ROOT_KEY : key(0x20 + i),
-      metadata: ROOT_METADATA,
-    })),
-    authKeyCount: count,
+const keysOf = (count: number) => ({
+  entries: Array.from({ length: count }, (_, i) => ({
+    key: i === 0 ? ROOT_KEY : key(0x20 + i),
+    metadata: ROOT_METADATA,
+  })),
+  authKeyCount: count,
+})
+/** The session passkey's record on this device: one that may sync unless `oneDevice`. */
+async function recordPasskey(oneDevice: boolean) {
+  await new WebPasskeyIdentityMap(testCore().database, "localhost").upsert({
+    credentialId: "cred",
+    l2Address: L2_ADDRESS,
+    pubkey: "ab".repeat(64),
+    isMskRoot: true,
+    backupEligible: !oneDevice,
   })
+  await seedDeviceKeys({ credentialId: "cred" })
+}
+/** The `key` hero's mark; the `warning` hero draws an icon alone. */
+const keyHero = () => container.querySelector(".zkm-sheet-shell__key")
+/** A1's key rows, and those marked added; a missing row draws an icon alone. */
+const rows = () => container.querySelectorAll(".zkm-key-status-row")
+const added = () => container.querySelectorAll(".zkm-key-status-row__added")
+
+function listKeys(count: number) {
+  h.readAuthKeysCounted.mockResolvedValue(keysOf(count))
 }
 
+/** The next key read, landed when the test says. */
+function holdRead() {
+  let land: (count: number) => void = () => {}
+  h.readAuthKeysCounted.mockReturnValueOnce(
+    new Promise((resolve) => (land = (count) => resolve(keysOf(count)))),
+  )
+  return async (count: number) => {
+    await act(async () => land(count))
+    await flush(2)
+  }
+}
+
+async function reopen() {
+  await act(async () => root.unmount())
+  container.remove()
+  await mount()
+}
+
+const renames = () => container.querySelectorAll('[data-testid="passkey-rename"]')
+const keysRetry = () => byTestId("backup-keys-retry")
+/** The read is out: neither the keys nor the failed read's sheet show. */
+const readOut = () => !start() && !keysRetry() && renames().length === 0
+
+let session: Session
 let backend: MemoryBackend
 let rotations: BackupRotations
 let rail: Store<QueryState<RegistrationPending | false>>
+/** The release read for the add's funding; pending until a test answers it. */
+let release: Store<QueryState<BackupAddRelease>>
 /** The sponsored-rail query's answer. */
 const answer = (value: RegistrationPending | false) =>
   ({ status: "ready", value, refreshing: false } as const)
@@ -230,12 +281,14 @@ beforeEach(async () => {
   backend = memoryBackend()
   rotations = testRotations(backend)
   rail = memoryStore<QueryState<RegistrationPending | false>>(answer(false))
-  openTestSession({
+  release = memoryStore<QueryState<BackupAddRelease>>({ status: "pending" })
+  session = openTestSession({
     auth: fakeAuth(),
     ...chain(),
     backupRotations: rotations,
     railPending: rail.readonly,
     sponsoredAllowance: { snapshot: allowance.readonly, refresh: h.refresh },
+    backupAddRelease: () => release.readonly,
   })
   localStorage.clear()
   page.extension = "none"
@@ -272,11 +325,14 @@ afterEach(async () => {
 })
 
 describe("the Passkeys modal's start screens", () => {
-  it("lists the key with the backup missing, and walks A1, A2 and A3 to the add", async () => {
+  it("lists a one-device key with the backup missing, and walks A1, A2 and A3 to the add", async () => {
+    await recordPasskey(true)
     await mount()
     expect(text()).toContain(keysCopy.title)
     expect(text()).toContain(keysCopy.current)
-    expect(text()).toContain(keysCopy.notAdded)
+    expect(rows()).toHaveLength(2)
+    expect(added()).toHaveLength(1)
+    expect(keyHero()).toBeNull()
     expect(rename()).toBeNull()
     await walkTo("place")
     expect(radios().find((r) => r.checked)?.value).toBe("phone")
@@ -290,18 +346,37 @@ describe("the Passkeys modal's start screens", () => {
     expect(h.addInputs).toMatchObject([{ choice: "key" }])
   })
 
-  it("quotes the cost and time on A2", async () => {
-    const quote = {
-      total: (7n * DAI) / 10n,
-      fixed: DAI / 2n,
-      network: DAI / 5n,
-      takesMs: 45 * 60_000,
-    }
+  it("lists a synced key without the missing backup, and still offers the add", async () => {
+    await recordPasskey(false)
+    await mount()
+    expect(rows()).toHaveLength(1)
+    expect(added()).toHaveLength(1)
+    expect(keyHero()).not.toBeNull()
+    await walkTo("intro")
+    expect(proceed()).not.toBeNull()
+  })
+
+  it("quotes the cost on A2, and the time once the release is read", async () => {
+    const quote = { total: (7n * DAI) / 10n, fixed: DAI / 2n, network: DAI / 5n }
     h.facts = { ...FACTS, quote }
     await mount()
     await walkTo("intro")
     expect(text()).toContain(fmt(introCopy.costValue, { amount: usdAtomic(quote.total) }))
-    expect(text()).toContain(fmt(introCopy.timeValue, { minutes: 45 }))
+    // A minute to land, a 10 minute release, then two relayer pickups and the sweep's settle.
+    const value = {
+      landingSeconds: 60,
+      standardEtaSeconds: 600,
+      tippedEtaSeconds: 180,
+      l1SlotSeconds: 12,
+    }
+    await act(async () => release.set({ status: "ready", value, refreshing: false }))
+    const tail = (2 * 2 + Number(L1_SETTLED_DEPTH)) * 12
+    const minutes = Math.ceil((60 + 600 + tail) / 60)
+    expect(text()).toContain(fmt(introCopy.timeValue, { minutes }))
+    // A wait counted from now goes once its refresh fails.
+    const failed = { status: "ready", value, refreshing: false, error: new Error("rpc") } as const
+    await act(async () => release.set(failed))
+    expect(text()).not.toContain(fmt(introCopy.timeValue, { minutes }))
   })
 
   it("starts the add from A2 on a phone, which has no picker", async () => {
@@ -561,6 +636,160 @@ describe("the Passkeys modal's add entry", () => {
     await act(async () => retry!.click())
     await flush(2)
     expect(panel()).not.toBeNull()
+  })
+
+  it("reads the keys again once the rotation is done, before Done is pressed", async () => {
+    await rotations.put(signedRecord({ phase: "installed" }))
+    await mount()
+    await flush(2)
+    const reads = h.readAuthKeysCounted.mock.calls.length
+    listKeys(2)
+    await act(() => rotations.put(signedRecord({ phase: "done" })))
+    await flush(2)
+    expect(h.readAuthKeysCounted.mock.calls.length).toBeGreaterThan(reads)
+  })
+})
+
+describe("the Passkeys modal's key read", () => {
+  it("reads nothing before the sheet opens, and shows the last read at once on a reopen", async () => {
+    expect(h.readAuthKeysCounted).not.toHaveBeenCalled()
+    await mount()
+    expect(start()?.disabled).toBe(false)
+    const land = holdRead()
+    await reopen()
+    // The last read's A1, its add waiting for this open's own count.
+    expect(start()?.disabled).toBe(true)
+    await land(1)
+    expect(start()?.disabled).toBe(false)
+  })
+
+  it("lists the second key once a reopen's read finds it", async () => {
+    await mount()
+    listKeys(2)
+    await reopen()
+    expect(start()).toBeNull()
+    expect(renames()).toHaveLength(2)
+  })
+
+  it("joins the read still out when the sheet reopens", async () => {
+    const land = holdRead()
+    await mount()
+    await reopen()
+    expect(readOut()).toBe(true)
+    await land(1)
+    expect(h.readAuthKeysCounted).toHaveBeenCalledTimes(1)
+    expect(start()?.disabled).toBe(false)
+  })
+
+  it("waits on a retry after a failed first read", async () => {
+    h.readAuthKeysCounted.mockRejectedValueOnce(new Error("rpc"))
+    await mount()
+    expect(keysRetry()).not.toBeNull()
+    const land = holdRead()
+    await act(async () => keysRetry()!.click())
+    expect(readOut()).toBe(true)
+    await land(1)
+    expect(start()?.disabled).toBe(false)
+  })
+
+  it("shows a failed re-read, and a retry from it waits rather than showing the last keys", async () => {
+    await mount()
+    h.readAuthKeysCounted.mockRejectedValueOnce(new Error("rpc"))
+    await reopen()
+    expect(keysRetry()).not.toBeNull()
+    const land = holdRead()
+    await act(async () => keysRetry()!.click())
+    expect(readOut()).toBe(true)
+    await land(1)
+    expect(start()?.disabled).toBe(false)
+  })
+
+  it("waits on a reopen's read after a failed re-read, rather than showing the last keys", async () => {
+    await mount()
+    h.readAuthKeysCounted.mockRejectedValueOnce(new Error("rpc"))
+    await reopen()
+    expect(keysRetry()).not.toBeNull()
+    const land = holdRead()
+    await reopen()
+    expect(readOut()).toBe(true)
+    await land(1)
+    expect(start()?.disabled).toBe(false)
+  })
+
+  it("waits on a reopen's read after a failed first read", async () => {
+    h.readAuthKeysCounted.mockRejectedValueOnce(new Error("rpc"))
+    await mount()
+    expect(keysRetry()).not.toBeNull()
+    const land = holdRead()
+    await reopen()
+    expect(readOut()).toBe(true)
+    await land(1)
+    expect(start()?.disabled).toBe(false)
+  })
+
+  it("reads the keys again once a finished backup is closed", async () => {
+    await rotations.put(signedRecord({ phase: "done", ...sent(5, { outcome: "swept" }) }))
+    await mount()
+    await flush(2)
+    listKeys(2)
+    await act(async () => byTestId("backup-done")!.click())
+    await flush(3)
+    expect(renames()).toHaveLength(2)
+  })
+
+  it("reads the keys of the account the session moves to", async () => {
+    await mount()
+    const other = `0x${"34".repeat(32)}`
+    listKeys(2)
+    await act(async () => setIdentity({ address: other, handle: "calm-heron-7" }))
+    await flush(3)
+    expect(h.resolveOxideIdentity).toHaveBeenLastCalledWith(
+      GENERATIONS,
+      BOOTSTRAP,
+      other,
+      expect.anything(),
+    )
+    expect(renames()).toHaveLength(2)
+  })
+
+  it("waits on the read of an account it returns to after that account's read failed", async () => {
+    h.readAuthKeysCounted.mockRejectedValueOnce(new Error("rpc"))
+    await mount()
+    expect(keysRetry()).not.toBeNull()
+    await act(async () => setIdentity({ address: `0x${"34".repeat(32)}`, handle: "calm-heron-7" }))
+    await flush(3)
+    expect(start()?.disabled).toBe(false)
+    const land = holdRead()
+    await act(async () => setIdentity({ address: L2_ADDRESS, handle: "brave-otter-42" }))
+    await flush(2)
+    expect(readOut()).toBe(true)
+    await land(1)
+    expect(start()?.disabled).toBe(false)
+  })
+
+  it("marks the backup seen on chain from a landed read, not the last one shown", async () => {
+    listKeys(2)
+    await mount()
+    const seen = session.page.backupReminder.seenOnChain
+    expect(seen.get()).toBe(true)
+    seen.set(false)
+    const land = holdRead()
+    await reopen()
+    expect(renames()).toHaveLength(2)
+    expect(seen.get()).toBe(false)
+    await land(1)
+    expect(seen.get()).toBe(false)
+  })
+
+  it("leaves the backup unmarked when the read behind the last one fails", async () => {
+    listKeys(2)
+    await mount()
+    const seen = session.page.backupReminder.seenOnChain
+    seen.set(false)
+    h.readAuthKeysCounted.mockRejectedValueOnce(new Error("rpc"))
+    await reopen()
+    expect(keysRetry()).not.toBeNull()
+    expect(seen.get()).toBe(false)
   })
 })
 

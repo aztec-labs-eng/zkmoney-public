@@ -4,6 +4,11 @@ import { clearSiteData, type Leftover } from "../platform/storage/clearSiteData"
 export const RESET_PATH = "/reset"
 
 // Self-styled: the design-system CSS loads with the wallet chunk, after the wallet's own styles.
+// The page and ink colors follow the theme that index.html applies. Light takes its boot canvas;
+// dark keeps this page's own #0b0b10.
+const themeCss =
+  ".ww-reset{--reset-bg:#0b0b10;--reset-ink:255,255,255}" +
+  ':root[data-theme="light"] .ww-reset{--reset-bg:var(--boot-bg);--reset-ink:27,25,48}'
 const page: CSSProperties = {
   minHeight: "100dvh",
   display: "flex",
@@ -11,8 +16,8 @@ const page: CSSProperties = {
   justifyContent: "center",
   padding: 24,
   boxSizing: "border-box",
-  background: "#0b0b10",
-  color: "#fff",
+  background: "var(--reset-bg)",
+  color: "rgb(var(--reset-ink))",
   fontFamily: "system-ui, -apple-system, sans-serif",
 }
 const card: CSSProperties = {
@@ -23,7 +28,7 @@ const card: CSSProperties = {
   textAlign: "center",
 }
 const title: CSSProperties = { margin: 0, fontSize: 24, fontWeight: 700 }
-const body: CSSProperties = { margin: 0, color: "rgba(255, 255, 255, 0.7)", lineHeight: 1.5 }
+const body: CSSProperties = { margin: 0, color: "rgba(var(--reset-ink), 0.7)", lineHeight: 1.5 }
 const list: CSSProperties = { ...body, padding: 0, listStyle: "none" }
 const actions: CSSProperties = { display: "flex", gap: 12, justifyContent: "center" }
 
@@ -42,13 +47,15 @@ const buttonBase: CSSProperties = {
   flex: 1,
   minHeight: 48,
   padding: "0 20px",
-  border: "1px solid rgba(255, 255, 255, 0.2)",
+  border: "1px solid rgba(var(--reset-ink), 0.2)",
   borderRadius: 999,
-  color: "#fff",
+  background: "rgba(var(--reset-ink), 0.08)",
+  color: "rgb(var(--reset-ink))",
   font: "inherit",
   fontWeight: 600,
   cursor: "pointer",
 }
+const dangerButton: CSSProperties = { ...buttonBase, background: "#d6334c", color: "#fff" }
 const spinnerCss =
   "@keyframes ww-reset-spin{to{transform:rotate(360deg)}}" +
   ".ww-reset-spinner{display:inline-block;width:16px;height:16px;margin-right:8px;vertical-align:-3px;" +
@@ -72,7 +79,7 @@ function Button({
       disabled={busy}
       aria-busy={busy}
       onClick={onClick}
-      style={{ ...buttonBase, background: danger ? "#d6334c" : "rgba(255, 255, 255, 0.08)" }}
+      style={danger ? dangerButton : buttonBase}
     >
       {busy && <span className="ww-reset-spinner" aria-hidden />}
       {children}
@@ -105,8 +112,8 @@ export function ResetScreen({ clear = clearSiteData }: { clear?: () => Promise<L
   }
 
   return (
-    <main style={page}>
-      <style>{spinnerCss}</style>
+    <main className="ww-reset" style={page}>
+      <style>{themeCss + spinnerCss}</style>
       {left ? (
         <div style={card}>
           <h1 style={title}>Some data couldn't be cleared</h1>

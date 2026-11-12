@@ -21,7 +21,7 @@ export default {
     note: "Paying sends {sent} from your balance, and {back} of it comes back once the backup is added.",
     speed: "Speed",
     time: "Time",
-    timeValue: "Up to {minutes} min",
+    timeValue: "About {minutes} min",
     pay: "Pay {amount}",
   },
   stays: {

@@ -313,14 +313,14 @@ export function ReceiveScreen() {
               <div className="ww-receive__actions">
                 <PrimaryGradientButton
                   title="Save"
-                  buttonStyle="dark"
+                  buttonStyle="secondary"
                   leadingIcon="download"
                   isLoading={card.saving}
                   onClick={() => void card.save()}
                 />
                 <PrimaryGradientButton
                   title="Print"
-                  buttonStyle="dark"
+                  buttonStyle="secondary"
                   leadingIcon="print"
                   onClick={() => window.print()}
                 />

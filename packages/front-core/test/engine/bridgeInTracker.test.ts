@@ -114,6 +114,7 @@ describe("bridgeInTracker task", () => {
       visible: visible.readonly,
       pace: createPace(),
       now: () => Date.now(),
+      sinceLoad: () => performance.now(),
     })
     runtimes.push(runtime)
     return { store: bridgeIns, provider, chain, tracker, runtime, visible }
@@ -292,6 +293,7 @@ describe("bridgeInTracker signing and payments", () => {
       visible: memoryStore(true).readonly,
       pace: createPace(),
       now: () => Date.now(),
+      sinceLoad: () => performance.now(),
     })
     runtimes.push(runtime)
     return () => runtime.wake(tracker)

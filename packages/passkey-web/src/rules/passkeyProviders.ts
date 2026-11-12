@@ -261,11 +261,3 @@ export function protonPassAdmitted(input: {
   }
   return osFamily !== undefined && osFamily !== "unknown" && osFamily !== "ios"
 }
-
-/**
- * Whether a passkey under this id keeps the wallet within one device's reach although it syncs
- * (the iOS case in `protonPassAdmitted`), so Home reminds such an account to add a backup as it
- * reminds a security key's.
- */
-export const semiDeviceBound = (aaguid: string | undefined): boolean =>
-  aaguid?.toLowerCase() === PROTON_PASS_AAGUID

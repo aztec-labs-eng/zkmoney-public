@@ -1,9 +1,9 @@
 import {
-  BACKUP_ADD_TAKES_MS,
   fundingLocalId,
   RootPasskeyRequiredError,
   WalletError,
   type AllowanceSnapshot,
+  type BackupAddRelease,
   type BackupRotationRecord,
   type BackupRotationStored,
   type ResumeAnswer,
@@ -102,8 +102,14 @@ const FACTS: EntryFacts = {
     total: (6n * DAI) / 10n,
     fixed: (35n * DAI) / 100n,
     network: (25n * DAI) / 100n,
-    takesMs: BACKUP_ADD_TAKES_MS,
   },
+}
+/** A funding's release read: a minute to land, a 20 minute release, 3 minutes with a tip. */
+const RELEASE: BackupAddRelease = {
+  landingSeconds: 60,
+  standardEtaSeconds: 20 * 60,
+  tippedEtaSeconds: 3 * 60,
+  l1SlotSeconds: 12,
 }
 const DEVICE: UserAgentInfo = {
   osFamily: "macos",
@@ -225,12 +231,55 @@ const funding = (
     },
   ],
 })
+/** The funding landed a minute after it went out. */
+const LANDED: Pick<BackupScreenInput, "funding" | "release"> = {
+  funding: {
+    phase: "awaiting_proven",
+    startTime: STARTED + 4 * 60_000,
+    minedAt: STARTED + 5 * 60_000,
+  },
+  release: RELEASE,
+}
 const moving = (over: Partial<BackupRotationRecord> = {}) =>
   signed({ phase: "moved", ...funding("swept"), ...over })
+const MAIN = word(0x7a)
+const SAVINGS = word(0x7b)
+const TOKENS = { main: MAIN, savings: SAVINGS }
+type Run = NonNullable<BackupRotationRecord["move"]>["runs"][number]
+type Chunk = Run["chunks"][number]
+const chunk = (token: string, state: Chunk["state"]): Chunk => ({
+  token,
+  amount: (60n * DAI).toString(),
+  state,
+  ...(state !== "planned" && state !== "claimed" && { txHash: word(0x201) }),
+})
+/** One paylink taken back, as a run finds it. */
+const TAKEN: Pick<BackupRotationRecord, "refunds"> = {
+  refunds: { links: [{ link: "capture-link", state: "mined", txHash: word(0x200) }] },
+}
+/** A move at its latest run, with the driver's answer and the tokens read. */
+const run = (chunks: Chunk[], resume: ResumeAnswer, over: Partial<Run> = {}) =>
+  saved(
+    moving({
+      phase: "rerooted",
+      ...TAKEN,
+      move: { runs: [{ plannedAt: 1, m: chunks.length, depositBound: false, chunks, ...over }] },
+    }),
+    resume,
+    { tokens: TOKENS },
+  )
 const parked = (
   attention: BackupRotationRecord["attention"],
   over: Partial<BackupRotationRecord> = {},
 ) => signed({ phase: "attention", ...(attention && { attention }), suspended: "funded", ...over })
+/** A sweep a reorg dropped, while the relayer's re-sweep has yet to settle. */
+const GONE: BackupRotationRecord["sweep"] = {
+  index: "3",
+  blockNumber: 90,
+  blockHash: word(0x90),
+  credited: ((14n * DAI) / 10n).toString(),
+  recheck: "gone",
+}
 
 /** The saved record, with the driver's answer for it. */
 const saved = (
@@ -255,12 +304,17 @@ export const BACKUP_FIXTURES = {
     keys: [SIGN_UP],
     input: { saved: signed(), deps: "building" },
   },
-  // A1
+  // A1. `keys` leaves the tier to the host: the demo passkey's record carries no flag, so it syncs.
   "keys": { screen: "keys", keys: [SIGN_UP], input: start() },
+  "keys-one-device": { screen: "keys", keys: [SIGN_UP], input: start({ oneDevice: true }) },
   "keys-two": { screen: "keys", keys: BOTH, input: { saved: null } },
   "keys-unregistered": { screen: "keys", keys: "unverified", input: start() },
   // A2, A3
-  "intro": { screen: "intro", keys: [SIGN_UP], input: start({ start: "intro" }) },
+  "intro": {
+    screen: "intro",
+    keys: [SIGN_UP],
+    input: start({ start: "intro", release: RELEASE }),
+  },
   "place": { screen: "place", keys: [SIGN_UP], input: start({ start: "place" }) },
   // B1-B4
   "blocked": {
@@ -301,7 +355,7 @@ export const BACKUP_FIXTURES = {
   "approve-pay": {
     screen: "approve",
     keys: [SIGN_UP],
-    input: saved(signed({ phase: "published" }), { wait: "funding" }),
+    input: saved(signed({ phase: "published" }), { wait: "funding" }, { release: RELEASE }),
   },
   "approve-declined": {
     screen: "approve",
@@ -312,12 +366,17 @@ export const BACKUP_FIXTURES = {
   "adding": {
     screen: "adding",
     keys: [SIGN_UP],
-    input: saved(signed({ phase: "funded", ...funding() })),
+    input: saved(signed({ phase: "funded", ...funding() }), {}, LANDED),
   },
   "adding-delayed": {
     screen: "adding",
     keys: [SIGN_UP],
     input: saved(parked("route", funding())),
+  },
+  "adding-relanding": {
+    screen: "adding",
+    keys: [SIGN_UP],
+    input: saved(signed({ phase: "swept", ...funding("swept"), sweep: GONE }), { watch: true }),
   },
   // A6, C6, C7
   "finish": {
@@ -345,8 +404,64 @@ export const BACKUP_FIXTURES = {
     keys: [SIGN_UP],
     input: saved(parked("move", { suspended: "moved", ...funding("swept") })),
   },
+  "finish-relanding": {
+    screen: "finish",
+    keys: [SIGN_UP],
+    input: saved(moving({ sweep: GONE }), { watch: true }),
+  },
+  "finish-relanding-approve": {
+    screen: "finish",
+    keys: [SIGN_UP],
+    input: saved(moving({ sweep: GONE }), { wait: "approval", watch: true }),
+  },
+  // Step 4 as the move's rows.
+  "finish-links": {
+    screen: "finish",
+    keys: [SIGN_UP],
+    input: saved(
+      moving({
+        phase: "rerooted",
+        refunds: { links: [{ link: "capture-link", state: "planned" }] },
+      }),
+      { wait: "approval" },
+      { tokens: TOKENS },
+    ),
+  },
+  "finish-main-confirming": {
+    screen: "finish",
+    keys: [SIGN_UP],
+    input: run([chunk(MAIN, "submitted"), chunk(SAVINGS, "planned")], { wait: "chunk" }),
+  },
+  "finish-savings-asking": {
+    screen: "finish",
+    keys: [SIGN_UP],
+    input: run([chunk(MAIN, "mined"), chunk(SAVINGS, "planned")], { wait: "approval" }),
+  },
+  "finish-upper-bound": {
+    screen: "finish",
+    keys: [SIGN_UP],
+    input: run(
+      [chunk(MAIN, "planned"), chunk(MAIN, "planned"), chunk(SAVINGS, "planned")],
+      { wait: "approval" },
+      { depositBound: true },
+    ),
+  },
+  "finish-rows-declined": {
+    screen: "finish",
+    keys: [SIGN_UP],
+    input: run(
+      [chunk(MAIN, "mined"), chunk(SAVINGS, "planned")],
+      { wait: "declined" },
+      { declined: true },
+    ),
+  },
   // A7
   "done": { screen: "done", keys: BOTH, input: saved(signed({ phase: "done" })) },
+  "done-relanding": {
+    screen: "done",
+    keys: BOTH,
+    input: saved(signed({ phase: "done", sweep: GONE }), { watch: true }),
+  },
   // C1, C2, C4, C5, C8
   "failed-closed": {
     screen: "failed",

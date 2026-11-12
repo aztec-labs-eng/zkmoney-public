@@ -1,16 +1,13 @@
 import { DEFAULT_DECIMALS } from "@obsidion/core/constants"
-import { semiDeviceBound } from "@obsidion/passkey-web"
 import { memoryStore } from "@obsidion/front-core"
 import type { BackupRecord } from "../../platform/auth/WebPasskeyIdentityMap"
 
 /**
- * Whether a record's passkey lives on one device. A Proton Pass passkey counts
- * (`semiDeviceBound`); only a record this browser's creation wrote carries the provider id. A
- * record written before the flag was kept counts when the creation driver judged it a security
- * key; any other waits for its next prompt here.
+ * Whether a record's passkey lives on one device: its backup-eligible flag is false. A record
+ * written before the flag was kept counts when the creation driver judged it a security key; any
+ * other waits for its next prompt here.
  */
-function deviceBound(record: BackupRecord): boolean {
-  if (semiDeviceBound(record.prfAaguid)) return true
+export function deviceBound(record: BackupRecord): boolean {
   if (record.backupEligible !== undefined) return !record.backupEligible
   return record.securityKey === true
 }
@@ -47,7 +44,7 @@ export type BackupNudgeFacts = {
 /** A one-passkey account's nudge: its passkey lives on one device, or the account has one key. */
 export type BackupNudge = "oneDevice" | "oneKey"
 
-/** The Settings card and badges: every one-passkey account, until a backup exists. */
+/** A one-passkey account's classification, until a backup exists. */
 export function backupNudge(facts: BackupNudgeFacts): BackupNudge | undefined {
   const { enabled, record, noAddSaved, backupOnChain } = facts
   if (!enabled || backupOnChain || !noAddSaved || !record || hasBackup(record)) return undefined
@@ -64,16 +61,24 @@ export type HomeNudgeFacts = BackupNudgeFacts & {
   hiddenForSession: boolean
   /** A saved add waits on the user's last approval. */
   awaitsApproval: boolean
+  /** A move of the funds at the earlier address stopped early and can go on. */
+  moveUnfinished: boolean
 }
 
-/** Home's card: finish a waiting add, a passkey on one device, or a balance threshold reached. */
+/**
+ * Home's card: finish a waiting add, finish a move from the earlier address, a passkey on one
+ * device, or a balance threshold reached.
+ */
 export type HomeNudge =
   | { kind: "finish" }
+  | { kind: "moveFunds" }
   | { kind: "oneDevice" }
   | { kind: "oneKey"; threshold: bigint }
 
 export function homeNudge(facts: HomeNudgeFacts): HomeNudge | undefined {
   if (facts.enabled && facts.awaitsApproval) return { kind: "finish" }
+  // Account history moves funds in every build, the add's flag or not.
+  if (facts.moveUnfinished) return { kind: "moveFunds" }
   const nudge = backupNudge(facts)
   const { balance, putOffAt } = facts
   if (!nudge || balance === undefined) return undefined

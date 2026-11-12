@@ -30,12 +30,12 @@ export function LogoutModal({
       <div className="ww-logout__actions">
         <PrimaryGradientButton
           title={losesTransaction ? "Wait" : "Cancel"}
-          buttonStyle="dark"
+          buttonStyle="secondary"
           onClick={onClose}
         />
         <PrimaryGradientButton
           title={losesTransaction ? "Log out anyway" : "Log out"}
-          buttonStyle="dark"
+          buttonStyle="secondary"
           onClick={onConfirm}
         />
       </div>

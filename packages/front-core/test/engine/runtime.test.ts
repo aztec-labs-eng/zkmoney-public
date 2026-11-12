@@ -41,15 +41,22 @@ describe("task runtime", () => {
   const start = (tasks: Task[], deps: Partial<RuntimeDeps> = {}) =>
     (runtime = startRuntime(tasks, {
       db: openDatabase(memoryBackend()),
-      milestones: createMilestones({ catchUp: createCatchUp() }),
+      milestones: createMilestones({
+        catchUp: createCatchUp(),
+        sinceLoad: () => performance.now(),
+      }),
       visible: memoryStore(true).readonly,
       pace: createPace(),
       now: () => Date.now(),
+      sinceLoad: () => performance.now(),
       ...deps,
     }))
 
   it("waits for its milestones, and runs nothing once stopped before them", async () => {
-    const milestones = createMilestones({ catchUp: createCatchUp() })
+    const milestones = createMilestones({
+      catchUp: createCatchUp(),
+      sinceLoad: () => performance.now(),
+    })
     const order: string[] = []
     const push = (id: string) => async () => void order.push(id)
     start(
@@ -66,7 +73,7 @@ describe("task runtime", () => {
     expect(order).toEqual(["b", "a"])
 
     order.length = 0
-    const later = createMilestones({ catchUp: createCatchUp() })
+    const later = createMilestones({ catchUp: createCatchUp(), sinceLoad: () => performance.now() })
     start([t({ after: { firstBalance: 60_000 }, every: "once", run: push("a") }, "a")], {
       milestones: later,
     }).stop()

@@ -34,7 +34,8 @@ export interface L1OperationRelayerConfig {
   broadcaster: AztecAddress;
   ownership: L1OperationOwnership;
   payoutTokens: PayoutTokenFilter;
-  watchedTokens: EthAddress[];
+  /** The tokens of the `Balance` operations that the worker keeps and watches. It reads them on each poll. */
+  watchedTokens: () => readonly EthAddress[];
   logScanWindow?: bigint;
   l1OperationsSubmission: L1OperationsSubmissionConfig;
   allowUnprofitable?: boolean;

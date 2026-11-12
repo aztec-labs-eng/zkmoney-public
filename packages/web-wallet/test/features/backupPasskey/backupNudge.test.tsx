@@ -1,12 +1,19 @@
-/** Guards: Home's backup card hides while a saved add does not read, and its Not now is saved. */
-import { act } from "react"
+/**
+ * Guards: Home's backup card hides while a saved add does not read, its Not now is saved, and
+ * Settings' card and badge show for a one-device passkey only.
+ */
+import { act, type ReactNode } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 // Before any import evaluates the feature flags.
 vi.hoisted(() => vi.stubEnv("VITE_BACKUP_PASSKEY_SETTINGS", "true"))
 
-import { BackupNudge } from "../../../src/features/backupPasskey/BackupNudge/BackupNudge"
+import {
+  BackupNudge,
+  BackupNudgeBadge,
+  SettingsBackupNudge,
+} from "../../../src/features/backupPasskey/BackupNudge/BackupNudge"
 import { WebPasskeyIdentityMap } from "../../../src/platform/auth/WebPasskeyIdentityMap"
 import { createBackupNudges, memoryBackend, openDatabase } from "@obsidion/front-core"
 import { balancesOf } from "../../support/balances"
@@ -42,17 +49,24 @@ describe("BackupNudge", () => {
       balances: balancesOf({ main: 150n * DOLLAR, known: true, readThisSession: true }),
     })
 
-  async function show() {
+  async function show(node: ReactNode = <BackupNudge />) {
     await act(async () => root?.unmount())
     container?.remove()
     container = document.createElement("div")
     document.body.appendChild(container)
     root = createRoot(container)
-    await act(async () => root!.render(<BackupNudge />))
+    await act(async () => root!.render(node))
     await act(() => new Promise((resolve) => setTimeout(resolve, 0)))
   }
 
   const card = () => container.querySelector('[data-testid="backup-nudge"]')
+  const badge = () => container.querySelector(".zkm-alert-badge")
+  const settings = (
+    <>
+      <SettingsBackupNudge onAdd={() => {}} />
+      <BackupNudgeBadge />
+    </>
+  )
 
   beforeEach(() => {
     localStorage.clear()
@@ -109,5 +123,21 @@ describe("BackupNudge", () => {
     open(backend)
     await show()
     expect(card()).not.toBeNull()
+  })
+
+  it("shows Settings no card and no badge for a synced passkey", async () => {
+    await signIn()
+    open()
+    await show(settings)
+    expect(card()).toBeNull()
+    expect(badge()).toBeNull()
+  })
+
+  it("shows Settings the card and the badge for a one-device passkey", async () => {
+    await signIn(true)
+    open()
+    await show(settings)
+    expect(card()).not.toBeNull()
+    expect(badge()).not.toBeNull()
   })
 })

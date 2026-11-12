@@ -1,17 +1,11 @@
 export * from './adapters.js';
-export {
-  type BuildLane,
-  type CompiledLane,
-  LaneBuilder,
-  type LaneSpec,
-  type LaneToRecipient,
-  type LaneToTerminal,
-} from './lane.js';
+export { type BuildLane, LaneBuilder, type LaneSpec } from './lane.js';
 export * from './payload.js';
 export * from './recovery.js';
 export * from './withdrawal_route.js';
 export * from './steps/across.js';
 export * from './steps/cctp.js';
+export * from './steps/check.js';
 export * from './steps/curve.js';
 export * from './steps/step.js';
 export * from './steps/erc4626.js';
@@ -20,4 +14,5 @@ export * from './steps/maker_psm.js';
 export * from './steps/portal_deposit.js';
 export * from './steps/sky_converter.js';
 export * from './steps/uniswap_v3.js';
+export * from './steps/user_op.js';
 export * from './steps/weth.js';

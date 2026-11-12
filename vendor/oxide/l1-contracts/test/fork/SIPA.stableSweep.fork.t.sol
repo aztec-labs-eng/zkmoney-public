@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity >=0.8.27;
 
-import {SweepGasCeilings} from "@test/helpers/SweepGasCeilings.sol";
 import {DepositSIPA} from "@periphery/DepositSIPA.sol";
 import {SIPABase} from "@periphery/SIPABase.sol";
 import {DAI, USDC, USDT, THREE_POOL} from "@periphery/ThreePoolLib.sol";
 import {DepositSubsidy} from "@periphery/DepositSubsidy.sol";
-import {IOperationExecutor} from "@periphery/interfaces/IOperationExecutor.sol";
 import {RegistrationController} from "@periphery/RegistrationController.sol";
 import {INameRegistry} from "@periphery/interfaces/INameRegistry.sol";
 import {SignedTerms} from "@periphery/interfaces/IRegistrationController.sol";
@@ -16,12 +14,10 @@ import {IERC20} from "@oz/token/ERC20/IERC20.sol";
 import {IERC20 as IERC20OZ} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@oz/token/ERC20/utils/SafeERC20.sol";
 import {TestERC20} from "@aztec/mock/TestERC20.sol";
-import {console2} from "forge-std/console2.sol";
 
 import {MainnetForkFixture} from "@test/fork/MainnetForkFixture.sol";
 import {OxidePortalBase} from "@test/core/OxidePortalBase.t.sol";
 import {RegistrationTestBase} from "@test/periphery/registration/RegistrationTestBase.sol";
-import {MockV3Aggregator} from "@test/mocks/MockV3Aggregator.sol";
 import {ISIPA} from "@periphery/interfaces/ISIPA.sol";
 import {IOxideAccountFactory} from "@periphery/interfaces/IOxideAccountFactory.sol";
 import {Errors} from "@periphery/Errors.sol";
@@ -129,31 +125,6 @@ contract SIPAStableSweepForkTest is MainnetForkFixture, RegistrationTestBase {
     assertGt(forwardedAmount + fee, 1225e18 + idle);
     assertLt(forwardedAmount + fee, 1275e18 + idle);
     assertEq(DAI.balanceOf(address(sipa)), 0, "the sweep settles the whole balance in the settled token");
-  }
-
-  function test_GivenUsdc_WhenDeposited_ThenTheSwapRoutePricesItself() external {
-    DepositSubsidy sm = _depositSubsidy(fee);
-
-    uint256 direct = _sweepForSubsidy(_sipa(), DAI, AMOUNT_18DEC, address(sm));
-    uint256 viaUsdc = _sweepForSubsidy(_sipa(), USDC, AMOUNT_6DEC, address(sm));
-
-    assertGt(direct, 0, "a direct sweep must draw a subsidy to compare against");
-    assertGt(viaUsdc, direct, "the swap route must draw more than the direct route");
-    assertEq(DAI.balanceOf(relayer), 2 * fee + direct + viaUsdc);
-    assertEq(USDC.balanceOf(relayer), 0);
-  }
-
-  function test_GivenTheStableRoutes_ThenTheRegistrationHopCarriesTheThreePoolSwap() external {
-    DepositSubsidy sm = _depositSubsidy(REGISTRATION_SWEEP_TIP);
-
-    uint256 dai = _steadyStateRegistrationGas(sm, DAI, REGISTRATION_QUOTE_18DEC, "reg.dai");
-    uint256 usdc = _steadyStateRegistrationGas(sm, USDC, REGISTRATION_QUOTE_6DEC, "reg.usdc");
-    uint256 usdt = _steadyStateRegistrationGas(sm, USDT, REGISTRATION_QUOTE_6DEC, "reg.usdt");
-    console2.log("registration priced gas: dai", dai, "usdc hop", usdc - dai);
-    console2.log("registration priced gas: usdt hop", usdt - dai);
-
-    assertLe(usdc - dai, sm.SWEEP_GAS_SWAP_USDC_HOP(), "the USDC hop no longer covers the 3pool swap on a registration");
-    assertLe(usdt - dai, sm.SWEEP_GAS_SWAP_USDT_HOP(), "the USDT hop no longer covers the 3pool swap on a registration");
   }
 
   function test_GivenSwapOutputBelowMinOut_WhenDeposited_ThenReverts() external {
@@ -333,16 +304,6 @@ contract SIPAStableSweepForkTest is MainnetForkFixture, RegistrationTestBase {
     }
   }
 
-  function _steadyStateRegistrationGas(DepositSubsidy _sm, IERC20 _token, uint256 _amount, string memory _salt)
-    internal
-    returns (uint256)
-  {
-    _register(_token, _amount, string.concat(_salt, ".warm"), address(_sm));
-    uint256 relayerBefore = DAI.balanceOf(relayer);
-    _register(_token, _amount, string.concat(_salt, ".steady"), address(_sm));
-    return (DAI.balanceOf(relayer) - relayerBefore - REGISTRATION_SWEEP_TIP) / 1e12;
-  }
-
   function _frontRunThreePool() internal {
     address attacker = makeAddr("attacker");
     uint256 frontRun = 60_000_000e6;
@@ -360,23 +321,6 @@ contract SIPAStableSweepForkTest is MainnetForkFixture, RegistrationTestBase {
     intents[0] = IForwardingTable.IntentFees({intent: Intents.DEPOSIT, beneficiaryFee: 0, sweepTip: USDC_SWEEP_TIP});
     vm.prank(OWNER);
     forwardingTable.addRow(address(USDC), IOxidePortal(address(usdcPortal)), intents);
-  }
-
-  function _depositSubsidy(uint256 _fee) internal returns (DepositSubsidy sm) {
-    vm.fee(4e8);
-    vm.txGasPrice(4e8);
-    MockV3Aggregator aggregator = new MockV3Aggregator(8, 2500e8);
-    sm = new DepositSubsidy(
-      OWNER,
-      address(daiPortal),
-      IOperationExecutor(address(operationExecutor)),
-      aggregator,
-      sipaFactory,
-      SweepGasCeilings.initial()
-    );
-    vm.prank(OWNER);
-    sm.setDepositConfig(uint128(_fee), type(uint128).max, 0);
-    deal(address(DAI), address(sm), 100e18);
   }
 
   function _depositIntent() internal pure returns (bytes memory) {
@@ -399,21 +343,5 @@ contract SIPAStableSweepForkTest is MainnetForkFixture, RegistrationTestBase {
   function _sweep(DepositSIPA _sipaContract, IERC20 _token, uint256 _amount) internal {
     deal(address(_token), address(_sipaContract), _amount);
     _sipaContract.sweep(address(_token), relayer, _depositIntent(), "");
-  }
-
-  function _sweepForSubsidy(DepositSIPA _sipaContract, IERC20 _token, uint256 _amount, address _sm)
-    internal
-    returns (uint256)
-  {
-    deal(address(_token), address(_sipaContract), _amount);
-    (uint256 subsidy,) = RelayerTransaction.send(
-      relayer,
-      DepositSubsidy(_sm),
-      abi.encodeCall(
-        DepositSubsidy.sweepForSubsidy,
-        (ISIPA(address(_sipaContract)), address(_token), address(operationExecutor), _depositIntent(), "")
-      )
-    );
-    return subsidy;
   }
 }

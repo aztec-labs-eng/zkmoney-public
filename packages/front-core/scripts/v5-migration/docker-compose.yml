@@ -1,0 +1,26 @@
+# The v5 migration suite's container, as a CI3 compose project (scripts/run_test.sh v5-migration, through
+# ci3/run_compose_test). It starts its own local network, so it runs apart from the stand-ins.
+#
+# On the host's network, for the reason scripts/postgres-suite/docker-compose.yml gives. The local network's fixed
+# ports are below the ephemeral range, so no test that binds a free port takes them.
+services:
+  suite:
+    image: aztecprotocol/build:3.2
+    network_mode: host
+    user: "${HOST_UID}:${HOST_GID}"
+    cpuset: ${CPU_LIST:-}
+    cpus: ${CPUS:-16}
+    mem_limit: ${MEM:-64g}
+    volumes:
+      # The Aztec toolchain, the CRS and the solc cache live under HOME.
+      - ${HOME}:${HOME}
+      - ${REPO_ROOT}:${REPO_ROOT}
+    tmpfs:
+      - /tmp:exec,size=8g
+    working_dir: ${REPO_ROOT}
+    environment:
+      HOME: ${HOME}
+      V5_MIGRATION_CONTAINER: "1"
+      NODE_OPTIONS: ${NODE_OPTIONS:-}
+      FORCE_COLOR: ${FORCE_COLOR:-}
+    entrypoint: ["scripts/run_test.sh", "packages/front-core", "v5-migration"]

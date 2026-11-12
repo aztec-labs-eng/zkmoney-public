@@ -23,6 +23,11 @@ export default {
   short: "Balance not enough",
   overspent: "Not enough funds in your wallet",
   send: "Send {coin}",
+  checkingWallet: "Checking your wallet…",
+  walletBlocked: "This wallet can't be used to deposit. Connect a different one.",
+  payerBlocked: "This wallet can't be used to pay. Connect a different one.",
+  walletUnverified:
+    "Couldn't verify your wallet. Check your internet connection or try another wallet.",
   progress: {
     switchChain: "Switch to {network} in your wallet",
     switchFailed: "Switch your wallet to {network}, then try again.",

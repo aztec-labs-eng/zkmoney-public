@@ -1,9 +1,10 @@
 import { DEFAULT_DECIMALS } from "@obsidion/core/constants"
-import { StepTracker, type SheetAction, type TrackerStep } from "@obsidion/web-ds"
+import { InfoBox, StepTracker, type SheetAction, type TrackerStep } from "@obsidion/web-ds"
 import { formatUnits } from "viem"
 import { fmt } from "../../../../lib/fmt"
 import { usdFigure } from "../../../../ui/format"
 import { failureLine, type BackupFailure } from "../../backupFailure"
+import { relandingCopy } from "../../backupPasskeyCopy"
 import type { BackupActions, BackupSaved, Tracked } from "../../backupScreen"
 import copy from "./AddTracker.copy"
 import styles from "./AddTracker.module.css"
@@ -29,11 +30,13 @@ export const approveLabel = (screen: Pick<Tracked, "approver">) =>
 export type StepLine = Pick<TrackerStep, "detail" | "tone" | "failed"> & { say?: string }
 
 /** A closed prompt names the step to retry; other failures say what stopped it. */
-const failedLine = (failure: BackupFailure): StepLine => ({
+export const failedLine = (failure: BackupFailure): StepLine => ({
   detail: failure.kind === "declined" ? copy.closed : failureLine(failure),
   tone: "warning",
   failed: true,
 })
+
+const RELANDING: StepLine = { detail: relandingCopy.line, tone: "warning" }
 
 /** C6's line: how long ago the chain was last read for the add. */
 export function delayedLine({ checkedAgoMs }: Pick<Tracked, "checkedAgoMs">): StepLine {
@@ -73,11 +76,25 @@ const savedLine = (saved?: BackupSaved) =>
     ? copy.savedOnKey
     : fmt(copy.savedIn, { manager: saved.manager })
 
-/** The add's four steps, the current one showing the attempt's failure, else `line`. */
-export function AddTracker({ screen, line }: { screen: Tracked; line?: StepLine }) {
-  const { step } = screen.progress
+/**
+ * The add's four steps. The current one shows the attempt's failure, else `prompt`, else the
+ * sweep re-landing while it does, else `line`. A failure or prompt keeps the step's line, and the
+ * re-landing shows as a note below.
+ */
+export function AddTracker({
+  screen,
+  line,
+  prompt,
+}: {
+  screen: Tracked
+  line?: StepLine
+  /** What the step asks the user to do. */
+  prompt?: StepLine
+}) {
+  const { step, relanding } = screen.progress
   const approver = approverOf(screen)
-  const shown = screen.failure ? failedLine(screen.failure) : line
+  const kept = screen.failure ? failedLine(screen.failure) : prompt
+  const shown = kept ?? (relanding ? RELANDING : line)
   // Any action in flight, such as a retry, turns a failed step's ring again.
   const retrying = screen.busy || screen.checking
   const at = (n: number): Omit<TrackerStep, "label"> =>
@@ -114,6 +131,7 @@ export function AddTracker({ screen, line }: { screen: Tracked; line?: StepLine 
           {shown.say ?? shown.detail}
         </p>
       )}
+      {relanding && kept && <InfoBox title={relandingCopy.title}>{relandingCopy.line}</InfoBox>}
     </>
   )
 }

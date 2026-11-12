@@ -1,4 +1,6 @@
 import { fixed, memoryStore, type Balances } from "@obsidion/front-core"
+import { accountKeys, readKeysOnDone } from "../../src/features/backupPasskey/accountKeys"
+import { rotationView } from "../../src/features/backupPasskey/backupRotations"
 import { activeNamespace, switchSession, type Session } from "../../src/session/session"
 import { pageSessionDeps, type Page } from "../../src/app/sessionDeps"
 import { testCore, testPage } from "./page"
@@ -38,6 +40,7 @@ export interface SessionValues {
   railPending?: unknown
   sponsoredAllowance?: unknown
   fasterOffer?: unknown
+  backupAddRelease?: unknown
 }
 
 /** Values the session holds as they are, not as services. */
@@ -58,6 +61,7 @@ const PLAIN = new Set([
   "railPending",
   "sponsoredAllowance",
   "fasterOffer",
+  "backupAddRelease",
 ])
 
 /** Services the session builds once something asks: a value stands as the one each builds. */
@@ -105,5 +109,9 @@ export function openTestSession(values: SessionValues = {}): Session {
       configurable: true,
       value: { ...session.page, networkId: memoryStore(networkId).readonly },
     })
+  // The session's own read sees its own services, not the values given here.
+  const keys = accountKeys(session.page.query, session)
+  Object.defineProperty(session, "accountKeys", { configurable: true, value: keys })
+  readKeysOnDone(keys, rotationView(session), session.identity)
   return session
 }

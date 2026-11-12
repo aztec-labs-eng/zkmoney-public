@@ -1,6 +1,6 @@
 {
-  "source": "211ba618b1a4ebf9873fbded2fd8f30697169a9d",
-  "oxidePin": "21fa8bdb8956b22e6ed54a5151ff97a2d7178c32",
+  "source": "22b15672cbc86711ad12d4b3d6c01603a4e3afc4",
+  "oxidePin": "dab3d38be1719346b717a025fa608b65c859f760",
   "walletPackages": [
     "@obsidion/auth-web",
     "@obsidion/config-client",

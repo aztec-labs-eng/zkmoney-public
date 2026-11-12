@@ -106,7 +106,7 @@ describe("BackupRotationMount", () => {
     await untilPhase("rerooted")
     expect(deps.reroot).toHaveBeenCalledTimes(1)
     await flush(5)
-    expect(getRotationDriver().drive(OWNER)?.resume).toEqual({ wait: "approval" })
+    expect(getRotationDriver().drive(OWNER)?.resume).toEqual({ wait: "approval", watch: true })
     expect(deps.move.send).not.toHaveBeenCalled()
     // Its re-root commits its two-key account, then hands it to the page's committed session.
     const reRooted = { tag: "two-key" } as never

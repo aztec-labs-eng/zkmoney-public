@@ -34,10 +34,6 @@ export default {
   notEnough: "Not enough funds in your wallet",
   max: "MAX",
   aboutLimit: "About the deposit limit",
-  checkingWallet: "Checking your wallet…",
-  walletBlocked: "This wallet can't be used to deposit. Connect a different one.",
-  walletUnverified:
-    "Couldn't verify your wallet. Check your internet connection or try another wallet.",
   payment: "Payment",
   deposit: "Deposit",
   fromLabel: "From",

@@ -552,13 +552,12 @@ function ContactDetail() {
 
         {isL1 && !inlineCard && (
           <>
-            <button
-              type="button"
-              className={`zkm-btn-reset zkm-pressable ${styles.chatGlassbtn}`}
+            <PrimaryGradientButton
+              title={copy.actions.receive}
+              buttonStyle="secondary"
+              style={{ flex: 1 }}
               onClick={() => guard("deposit", () => navigate("/deposit"))}
-            >
-              {copy.actions.receive}
-            </button>
+            />
             <PrimaryGradientButton
               title={copy.actions.send}
               style={{ flex: 1 }}
@@ -581,13 +580,12 @@ function ContactDetail() {
 
         {payable && !inlineCard && (
           <>
-            <button
-              type="button"
-              className={`zkm-btn-reset zkm-pressable ${styles.chatGlassbtn}`}
+            <PrimaryGradientButton
+              title={copy.actions.request}
+              buttonStyle="secondary"
+              style={{ flex: 1 }}
               onClick={() => guard("receive", () => setRequestDraft({ amount: "", note: "" }))}
-            >
-              {copy.actions.request}
-            </button>
+            />
             <PrimaryGradientButton
               title={copy.actions.send}
               style={{ flex: 1 }}
@@ -677,13 +675,12 @@ function ContactDetail() {
               </p>
             )}
             <div style={{ display: "flex", gap: 12 }}>
-              <button
-                type="button"
-                className={`zkm-btn-reset zkm-pressable ${styles.chatGlassbtn}`}
+              <PrimaryGradientButton
+                title={copy.actions.cancel}
+                buttonStyle="secondary"
+                style={{ flex: 1 }}
                 onClick={() => setRequestDraft(undefined)}
-              >
-                {copy.actions.cancel}
-              </button>
+              />
               <PrimaryGradientButton
                 title={submitting ? copy.actions.requesting : copy.actions.request}
                 style={{ flex: 1 }}
@@ -714,14 +711,13 @@ function ContactDetail() {
               </p>
             )}
             <div style={{ display: "flex", gap: 12, marginTop: 16 }}>
-              <button
-                type="button"
-                className={`zkm-btn-reset zkm-pressable ${styles.chatGlassbtn}`}
-                disabled={savingAlias}
+              <PrimaryGradientButton
+                title={copy.actions.cancel}
+                buttonStyle="secondary"
+                style={{ flex: 1 }}
+                isDisabled={savingAlias}
                 onClick={() => setRenaming(false)}
-              >
-                {copy.actions.cancel}
-              </button>
+              />
               <PrimaryGradientButton
                 title={savingAlias ? copy.renameForm.saving : copy.renameForm.save}
                 style={{ flex: 1 }}
@@ -741,13 +737,12 @@ function ContactDetail() {
               {copy.deleteConfirm.body}
             </div>
             <div style={{ display: "flex", gap: 12 }}>
-              <button
-                type="button"
-                className={`zkm-btn-reset zkm-pressable ${styles.chatGlassbtn}`}
+              <PrimaryGradientButton
+                title={copy.deleteConfirm.keep}
+                buttonStyle="secondary"
+                style={{ flex: 1 }}
                 onClick={() => setConfirmingDelete(false)}
-              >
-                {copy.deleteConfirm.keep}
-              </button>
+              />
               <PrimaryGradientButton
                 title={copy.deleteConfirm.delete}
                 buttonStyle="danger"

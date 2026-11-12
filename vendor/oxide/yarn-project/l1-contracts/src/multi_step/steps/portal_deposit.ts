@@ -13,7 +13,7 @@ export function portalDepositSteps(c: AdapterConfig) {
   return {
     ...c,
     deposit<Asset extends Address>(p: { portal: Portal<Asset>; recipientCommitment: Hex }) {
-      return define.terminal({
+      return define.noPayout({
         fn: 'portalDeposit',
         in: p.portal.asset,
         args: s => [p.portal.address, s.amount, p.recipientCommitment] as const,

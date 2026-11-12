@@ -156,10 +156,14 @@ describe("service", () => {
       [task("t", { needs: { svc }, every: 1_000, run: async (ctx) => void seen.push(ctx.svc) })],
       {
         db: openDatabase(memoryBackend()),
-        milestones: createMilestones({ catchUp: createCatchUp() }),
+        milestones: createMilestones({
+          catchUp: createCatchUp(),
+          sinceLoad: () => performance.now(),
+        }),
         visible: memoryStore(true).readonly,
         pace: createPace(),
         now: () => Date.now(),
+        sinceLoad: () => performance.now(),
       },
     )
     input.ready(1)

@@ -75,7 +75,7 @@ import { RainbowKitProvider } from "@rainbow-me/rainbowkit"
 import { RainbowKitModalLayer } from "./features/deposit/RainbowKitModalLayer"
 import "@rainbow-me/rainbowkit/styles.css"
 import "./features/deposit/rainbowkit.css"
-import { rainbowkitTheme } from "./session/wagmi"
+import { rainbowkitLightCss, rainbowkitTheme } from "./session/wagmi"
 
 // eslint-disable-next-line no-restricted-syntax -- debt
 const queryClient = new QueryClient()
@@ -325,6 +325,7 @@ export function App({ boot, activeTab }: { boot: PageBoot; activeTab: ActiveTabB
     <WagmiProvider config={boot.page.wagmi} reconnectOnMount={false}>
       <QueryClientProvider client={queryClient}>
         <RainbowKitProvider theme={rainbowkitTheme} modalSize="compact">
+          <style>{rainbowkitLightCss}</style>
           <RainbowKitModalLayer>
             <LeaveGuardMount />
             {ProfilePanel && (

@@ -1,5 +1,5 @@
 /* Every back and close disc of a flow card. */
 .disc.disc {
-  background: rgba(255, 255, 255, 0.12);
+  background: rgba(var(--ink-rgb), 0.12);
   box-shadow: none;
 }

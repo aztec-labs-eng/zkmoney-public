@@ -3,17 +3,22 @@ import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { failureLine, type BackupFailure } from "../../../src/features/backupPasskey/backupFailure"
+import { relandingCopy } from "../../../src/features/backupPasskey/backupPasskeyCopy"
 import type {
   BackupActions,
   BackupScreen,
   Tracked,
 } from "../../../src/features/backupPasskey/backupScreen"
+import { approveLabel } from "../../../src/features/backupPasskey/screens/AddTracker/AddTracker"
 import trackerCopy from "../../../src/features/backupPasskey/screens/AddTracker/AddTracker.copy"
 import { AddingScreen } from "../../../src/features/backupPasskey/screens/AddingScreen/AddingScreen"
 import { ApproveScreen } from "../../../src/features/backupPasskey/screens/ApproveScreen/ApproveScreen"
 import { DoneScreen } from "../../../src/features/backupPasskey/screens/DoneScreen/DoneScreen"
 import { FinishScreen } from "../../../src/features/backupPasskey/screens/FinishScreen/FinishScreen"
+import finishCopy from "../../../src/features/backupPasskey/screens/FinishScreen/FinishScreen.copy"
+import { fmt } from "../../../src/lib/fmt"
 import { closeSession } from "../../../src/session/session"
+import stepsCopy from "../../../src/ui/MoveSteps/MoveSteps.copy"
 import { PLAN } from "../../support/backupAdd"
 import { openTestSession } from "../../support/session"
 
@@ -42,7 +47,6 @@ const PAY = {
   sent: 2n * DAI,
   fees: (6n * DAI) / 10n,
   credited: (14n * DAI) / 10n,
-  takesMs: 40 * 60_000,
   address: "0x2b",
   approvals: 1,
   refunds: 0,
@@ -64,6 +68,11 @@ const pausedMove: BackupScreen = {
   ...finish,
   ask: "retry",
   paused: true,
+}
+/** Step 4 while the move runs, with `progress` over it. */
+const moving = (progress: Partial<Tracked["progress"]>): Tracked => {
+  const tracked = at(4, "moving")
+  return { ...tracked, progress: { ...tracked.progress, ...progress } }
 }
 
 let root: Root | undefined
@@ -108,6 +117,10 @@ function render(screen: BackupScreen) {
 const tap = (testId: string) =>
   act(() => container.querySelector<HTMLElement>(`[data-testid="${testId}"]`)!.click())
 const alert = () => container.querySelector('[role="alert"]')?.textContent ?? null
+const texts = (selector: string) =>
+  [...container.querySelectorAll(selector)].map((node) => node.textContent)
+const labels = () => texts(".zkm-step-tracker__step-label")
+const details = () => texts(".zkm-step-tracker__detail")
 
 afterEach(unmount)
 
@@ -124,7 +137,7 @@ describe("the tracker screens", () => {
     ["a failed read before paying checks again", failedRead, "backup-watch-retry", "check"],
     [
       "A5 closes",
-      { id: "adding", ...at(3, "funded"), timing: { takesMs: 1, leftMs: 1 } },
+      { id: "adding", ...at(3, "funded"), timing: { leftMs: 1 } },
       "backup-close",
       "close",
     ],
@@ -156,7 +169,7 @@ describe("the tracker screens", () => {
   })
 
   it.each<[string, boolean, BackupScreen]>([
-    ["A5 waits", true, { id: "adding", ...at(3, "funded"), timing: { takesMs: 1, leftMs: 1 } }],
+    ["A5 waits", true, { id: "adding", ...at(3, "funded"), timing: { leftMs: 1 } }],
     ["C6 waits", true, { id: "adding", ...at(3, "funded"), delay: "late" }],
     ["a failed read", false, failedRead],
     ["a failed read checked again", true, { ...failedRead, checking: true }],
@@ -174,6 +187,105 @@ describe("the tracker screens", () => {
     expect(alert()).toBe(trackerCopy.delayed)
     render({ id: "adding", ...at(3, "funded"), delay: "route", failure: unknown })
     expect(alert()).toBe(failureLine(unknown))
+  })
+
+  it("shows step 4 as the move's rows once they are read, the asking row naming the approver", () => {
+    const rows = [
+      { kind: "links", count: 1, state: "done" },
+      { kind: "main", state: "confirming" },
+      { kind: "savings", state: "next" },
+    ] as const
+    const moved = { included: 1, total: 2 }
+    render({ id: "finish", ...moving({ rows, moved }), ...finish, ask: "approve" })
+    expect(container.textContent).toContain(finishCopy.step)
+    expect(container.textContent).toContain(finishCopy.one)
+    expect(labels()).toEqual([finishCopy.rows.link, finishCopy.rows.main, finishCopy.rows.savings])
+    expect(details()).toEqual([stepsCopy.confirming, approveLabel({})])
+    expect(container.querySelector('[data-testid="backup-move-approve"]')).not.toBeNull()
+    // The tap's send is out: the row prepares it.
+    render({ id: "finish", ...moving({ rows, moved }), ...finish, ask: "approve", approving: true })
+    expect(details()).toEqual([stepsCopy.confirming, stepsCopy.preparing])
+    // Before the rows are read, and on the delayed sheet, the add's four steps stand.
+    render({ id: "finish", ...moving({ moved }), ...finish, ask: "approve" })
+    expect(labels()).toContain(trackerCopy.saved)
+    render({ id: "finish", ...moving({ rows, moved }), ...finish, delay: "uses" })
+    expect(labels()).toContain(trackerCopy.saved)
+  })
+
+  it("offers Close on the working step only once no approval is left", () => {
+    const close = () => container.querySelector('[data-testid="backup-close"]')
+    const toCome = [
+      { kind: "main", state: "confirming" },
+      { kind: "savings", state: "todo" },
+    ] as const
+    render({ id: "finish", ...moving({ rows: toCome, moved: { included: 1, total: 2 } }), ...finish })
+    expect(close()).toBeNull()
+    expect(container.textContent).toContain(finishCopy.working.keepOpen.one)
+    render({ id: "finish", ...moving({ rows: toCome, moved: { included: 0, total: 3 } }), ...finish })
+    expect(close()).toBeNull()
+    expect(container.textContent).toContain(fmt(finishCopy.working.keepOpen.count, { count: 3 }))
+    const links = [
+      { kind: "links", count: 2, state: "next" },
+      { kind: "funds", state: "todo" },
+    ] as const
+    // A transfer approved and sent no longer counts, though no block holds it yet.
+    render({
+      id: "finish",
+      ...moving({ rows: toCome, moved: { included: 0, total: 2 }, out: 1 }),
+      ...finish,
+    })
+    expect(close()).toBeNull()
+    expect(container.textContent).toContain(finishCopy.working.keepOpen.one)
+    const waiting = moving({ rows: links, refunds: { landed: 0, total: 2 } })
+    render({ id: "finish", ...waiting, ...finish })
+    expect(close()).toBeNull()
+    expect(container.textContent).toContain(finishCopy.working.keepOpen.several)
+    expect(labels()[0]).toBe(fmt(finishCopy.rows.links, { count: 2 }))
+    // A paylink's expiry can be a long wait, so the sheet says it may be closed.
+    render({ id: "finish", ...waiting, ...finish, linkExpiring: true })
+    expect(close()).not.toBeNull()
+    expect(container.textContent).toContain(finishCopy.working.lead)
+    expect(details()).toEqual([finishCopy.working.linkExpiring])
+    const confirming = [
+      { kind: "main", state: "done" },
+      { kind: "savings", state: "confirming" },
+    ] as const
+    const actions = render({
+      id: "finish",
+      ...moving({ rows: confirming, moved: { included: 2, total: 2 } }),
+      ...finish,
+    })
+    expect(container.textContent).toContain(finishCopy.working.lead)
+    expect(container.textContent).not.toContain(finishCopy.one)
+    tap("backup-close")
+    expect(actions.close).toHaveBeenCalledTimes(1)
+  })
+
+  it("warns under the rows while a closed prompt or a pause holds the move, no row working", () => {
+    const rows = [
+      { kind: "main", state: "confirming" },
+      { kind: "savings", state: "next" },
+    ] as const
+    const held = { id: "finish", ...moving({ rows }), ...finish, ask: "retry" } as const
+    render({ ...held, declined: true, failure: closed })
+    expect(alert()).toBe(trackerCopy.closed)
+    expect(container.querySelector('[aria-current="step"]')).toBeNull()
+    expect(details()).toEqual([stepsCopy.confirming])
+    render({ ...held, paused: true })
+    expect(alert()).toBe(finishCopy.paused.detail)
+    expect(container.querySelector('[aria-current="step"]')).toBeNull()
+    // A failure wins over the pause's own line.
+    render({ ...held, paused: true, failure: unknown })
+    expect(alert()).toBe(failureLine(unknown))
+  })
+
+  it("says under the move's rows that the network confirms the backup again", () => {
+    const rows = [{ kind: "main", state: "next" }] as const
+    render({ id: "finish", ...moving({ rows }), ...finish, ask: "approve" })
+    expect(container.textContent).not.toContain(relandingCopy.title)
+    render({ id: "finish", ...moving({ rows, relanding: true }), ...finish, ask: "approve" })
+    expect(container.textContent).toContain(relandingCopy.title)
+    expect(container.textContent).toContain(relandingCopy.line)
   })
 
   it("lists the sign-up key and the backup the key read predates", () => {

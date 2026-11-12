@@ -181,7 +181,10 @@ async function manifestDeps(fpc: string, account: string) {
     session,
     wallet: { pxe: {}, node: {} },
     account: { getAddress: () => address(account) },
-    contractService: { getArtifactForContract: vi.fn().mockResolvedValue(BUNDLED) },
+    contractService: {
+      getArtifactForContract: vi.fn().mockResolvedValue(BUNDLED),
+      getContractRecord: vi.fn().mockResolvedValue({ address: address(fpc), meta: undefined }),
+    },
   } as never
 }
 

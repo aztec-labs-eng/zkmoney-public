@@ -11,10 +11,14 @@
     <meta name="theme-color" content="#49087e" />
     <meta name="color-scheme" content="dark light" />
     <script>
-      // The saved theme, before anything paints (platform/storage/theme.ts). Dark is the default.
+      // The saved theme and its browser bar color, before anything paints
+      // (platform/storage/theme.ts). Dark is the default.
       try {
         const theme = localStorage.getItem("webwallet.theme")
-        if (theme && theme !== "dark") document.documentElement.dataset.theme = theme
+        if (theme === "light") {
+          document.documentElement.dataset.theme = theme
+          document.querySelector('meta[name="theme-color"]').content = "#f4f3f9"
+        }
       } catch {}
     </script>
     <title>zk.money</title>

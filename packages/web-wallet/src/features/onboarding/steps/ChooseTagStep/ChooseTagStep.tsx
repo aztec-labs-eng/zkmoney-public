@@ -102,6 +102,10 @@ export function ChooseTagStep({
                 placeholder={copy.tagPlaceholder}
                 value={typed}
                 ref={field}
+                autoComplete="off"
+                autoCorrect="off"
+                autoCapitalize="none"
+                spellCheck={false}
                 autoFocus={!phone && !typed && !covered}
                 data-autofocus={(!phone && !covered) || undefined}
                 onChange={(e) => onType(e.target.value)}

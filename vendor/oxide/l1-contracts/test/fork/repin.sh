@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Rebuilds the mainnet state the offline `test/fork/*` suites load. Run after bumping FORK_BLOCK in
-# MainnetForkFixture.sol or adding a fork test that touches new mainnet accounts/slots.
+# Rebuilds the mainnet state the offline fork suites (`test/fork/*` and `test/subsidy-check/fork/*`) load. Run
+# after bumping FORK_BLOCK in MainnetForkFixture.sol or adding a fork test that touches new mainnet accounts/slots.
 #
 # Forces a clean live fork run so foundry's RPC cache holds exactly the state the suites access at the pinned
 # block, then converts that cache into the committed genesis-allocs + block-env fixtures under
@@ -22,8 +22,8 @@ FIXTURES="test/fixtures/fork/mainnet_$FORK_BLOCK"
 echo "==> Clearing foundry fork cache for block $FORK_BLOCK"
 rm -f "$CACHE"
 
-echo "==> Live fork run to repopulate the cache (aztec-forge test test/fork/*)"
-aztec-forge test --match-path 'test/fork/*'
+echo "==> Live fork run to repopulate the cache (aztec-forge test of the fork suites)"
+aztec-forge test --match-path '{test/fork/*,test/subsidy-check/fork/*}'
 
 [ -f "$CACHE" ] || { echo "cache not written at $CACHE — did the live run fork?" >&2; exit 1; }
 

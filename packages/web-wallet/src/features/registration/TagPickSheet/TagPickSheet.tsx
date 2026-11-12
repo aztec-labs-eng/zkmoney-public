@@ -63,6 +63,10 @@ export function TagPickSheet(props: {
             value={typed}
             autoFocus
             disabled={busy}
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="none"
+            spellCheck={false}
             onChange={(e) => flow.type(e.target.value)}
           />
           {props.adornment?.(view)}

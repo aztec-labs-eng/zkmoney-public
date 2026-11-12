@@ -9,8 +9,14 @@ export default {
   },
   finish: {
     title: "Finish backing up your account",
-    body: "To finish backing up, you need to approve one more time.",
+    body: "To finish backing up, approve the remaining steps.",
     approve: "Approve",
+  },
+  // Proposed copy, pending review.
+  moveFunds: {
+    title: "Finish moving your funds",
+    body: "Some funds are still at your earlier address.",
+    continue: "Continue",
   },
   add: "Add backup passkey",
   notNow: "Not now",
