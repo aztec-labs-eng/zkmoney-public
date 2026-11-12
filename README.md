@@ -1,6 +1,6 @@
 # zk.money wallet
 
-Source of the zk.money web wallet and the zk.money Desktop app. This tree builds the wallet for the v6 rollup: config profile `prod-v6`, Oxide commit `21fa8bdb8`, Aztec `6.0.0`.
+Source of the zk.money web wallet and the zk.money Desktop app. This tree builds the wallet for the v6 rollup: config profile `prod-v6`, Oxide commit `dab3d38be`, Aztec `6.0.0`.
 
 ## Layout
 
@@ -11,7 +11,7 @@ Source of the zk.money web wallet and the zk.money Desktop app. This tree builds
 | `packages/core`, `contracts`, `sdk`, `front-core` | The wallet stack: shared types, Noir contracts, contract calls, and app logic. |
 | `packages/config-client`, `passkey-web`, `design-system`, `metrics-policy` | Libraries that the wallet imports. |
 | `packages/oxide-build` | Builds the vendored Oxide packages. |
-| `vendor/oxide` | The subset of Oxide that the wallet needs, the relayer source, and the refund and resolver circuits, at commit `21fa8bdb8`. |
+| `vendor/oxide` | The subset of Oxide that the wallet needs, the relayer source, and the refund and resolver circuits, at commit `dab3d38be`. |
 
 ## Prerequisites
 
@@ -84,7 +84,7 @@ See [packages/web-wallet-desktop/README.md](packages/web-wallet-desktop/README.m
 
 ## Enclave host
 
-The wallet sends signature requests to the Oxide enclave at the `enclaveUrl` in the Oxide manifest. `vendor/oxide/yarn-project/tee-proxy` is the HTTP front end of an enclave host. The host tooling that starts the enclave is in the Oxide repository, under `tee-host/`, at commit `21fa8bdb8`.
+The wallet sends signature requests to the Oxide enclave at the `enclaveUrl` in the Oxide manifest. `vendor/oxide/yarn-project/tee-proxy` is the HTTP front end of an enclave host. The host tooling that starts the enclave is in the Oxide repository, under `tee-host/`, at commit `dab3d38be`.
 
 The `TeeRegistry` contract on L1 accepts an enclave only if its PCR0 is the same as the `PCR0_HASH` that the contract got at deployment. Each new enclave must be registered with `TeeRegistry.registerTee`. The registration sends a message to L2, and each spend proves the inclusion of this message. The Oxide repository does this registration in `yarn-project/tee-registrar`.
 
@@ -112,7 +112,7 @@ The Keccak-256 hash of PCR0 equals `PCR0_HASH()` of `TeeRegistry` `0x8b705C35191
 
 ## Relayer
 
-`vendor/oxide/yarn-project/oxide-relayer` is the Oxide relayer. It completes L1 operations for users, so that users do not need ETH for gas. `vendor/oxide/yarn-project/telemetry` and `vendor/oxide/yarn-project/watcher-lib` are its Oxide dependencies. These packages are copies from Oxide commit `21fa8bdb8`, without the relayer `Dockerfile`.
+`vendor/oxide/yarn-project/oxide-relayer` is the Oxide relayer. It completes L1 operations for users, so that users do not need ETH for gas. `vendor/oxide/yarn-project/telemetry` and `vendor/oxide/yarn-project/watcher-lib` are its Oxide dependencies. These packages are copies from Oxide commit `dab3d38be`, without the relayer `Dockerfile`.
 
 To build the relayer, clone the repository and run `pnpm install --frozen-lockfile` as in [Build](#build). Then run:
 
