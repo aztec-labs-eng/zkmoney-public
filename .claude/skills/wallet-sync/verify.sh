@@ -13,7 +13,7 @@
 #   TESTS                    1 also builds the relayer and runs the typecheck and the tests of each package.
 #                            0 does not. Default: 1.
 #
-# Needs nvm with Node.js 24.15 or later and Node.js 22, Foundry, jq, and gh with a token that can read the release.
+# Needs nvm with the Node.js version in the .nvmrc of BRANCH, Foundry, jq, and gh with a token that can read the release.
 # The summary is in WORK_DIR/logs/summary.log. Each step writes WORK_DIR/logs/<step>.log.
 set -uo pipefail
 
@@ -45,8 +45,9 @@ step() {
 # shellcheck disable=SC1091
 source "${NVM_DIR:-$HOME/.nvm}/nvm.sh" >/dev/null
 
-# Job "bundle": Node.js 24, because the Aztec 6.0.0 installer needs 24.15 or later.
-nvm use 24 >/dev/null || exit 1
+# Both jobs use the Node.js version in .nvmrc, as CI does. The Aztec 6.0.0 installer needs 24.15 or later.
+NODE_VERSION=$(git -C "$REPO" show "$BRANCH:.nvmrc") || exit 1
+nvm use "$NODE_VERSION" >/dev/null || { echo "ERROR: nvm has no Node.js $NODE_VERSION. Run: nvm install $NODE_VERSION" >&2; exit 1; }
 node -e 'const [a, b] = process.versions.node.split(".").map(Number); process.exit(a > 24 || (a === 24 && b >= 15) ? 0 : 1)' ||
   { echo "ERROR: the bundle job needs Node.js 24.15 or later, found $(node --version)" >&2; exit 1; }
 corepack enable --install-directory "$OUT/bin"
@@ -102,8 +103,7 @@ fi
 echo "untracked after the bundle job: $(git status --porcelain | wc -l)" >>"$SUM"
 git status --porcelain | head -20 >>"$SUM"
 
-# Job "installers", Linux row: Node.js 22.
-nvm use 22 >/dev/null || exit 1
+# Job "installers", Linux row. It uses the same Node.js as the bundle job.
 echo "installers: node $(node --version)" >>"$SUM"
 cd packages/web-wallet-desktop || exit 1
 step npm-ci npm ci || exit 1

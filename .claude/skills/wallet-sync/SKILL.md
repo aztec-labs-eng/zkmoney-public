@@ -153,7 +153,7 @@ A scan finding also stops the workflow. To read the items and add the asset by h
 
 - An Aztec node keeps 64 checkpoints of world state (`WS_NUM_HISTORIC_CHECKPOINTS`). The v5 refund reads the state at the v5 freeze block, which is older than that. Thus the wallet needs `WEB_WALLET_V5_ARCHIVE_NODE_URL`. Without it, a refund fails with "world state history has been pruned".
 - The archive node needs the `x-api-key` header. The build sends `WEB_WALLET_NODE_API_KEY` to it if `WEB_WALLET_V5_ARCHIVE_NODE_API_KEY` is not set. A node URL that a user sets in Settings gets no key.
-- The `bundle` job uses Node.js 24, because the Aztec 6.0.0 installer needs 24.15 or later. The `installers` job uses Node.js 22.
+- The `bundle` job and the `installers` job use the Node.js version in `.nvmrc`. The Aztec 6.0.0 installer needs 24.15 or later. `web-wallet-desktop` requires `24.x`.
 - `pnpm build:oxide-circuits` does not check `resolver_circuit`. Its verifier is pinned to the circuit of the deployed Resolver module.
 - Without the `DESKTOP_MAC_*` secrets, the macOS app is not signed and not notarized. Gatekeeper shows a warning when the app opens.
 - `gh release delete` without `--cleanup-tag` keeps the tag. To delete only a draft, use `gh api -X DELETE repos/{owner}/{repo}/releases/<id>`.
